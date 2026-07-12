@@ -12,6 +12,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   transcribeVoiceNote, POSTS_BACK_DELAY_MS, flushPostsBackAck, _resetPostsBackDebounce,
   cancelPromotion, hasPendingPromotion, _resetPromotions, ECHO_MARKER,
+  markEchoObserved, hasEchoObserved,
 } from '../src/incoming-media.mjs';
 
 const fakeTranscribe = async () => 'hola que tal';
@@ -321,6 +322,62 @@ describe('transcribeVoiceNote — 👂 promotion / ordered failover (operator 20
     expect(clock.pending()).toBe(0);   // nothing armed
     await clock.advance(20_000);
     expect(sent).toEqual([]);          // withheld
+  });
+
+  // 👂 OBSERVED-ECHO SET (operator 2026-07-11): the one authority every post path consults. The bridge
+  // RECORDS a peer's 👂 (markEchoObserved) even when nothing is armed yet, so a slow standby arming
+  // AFTER the fast primary already posted still stands down — the double the bare observe-and-cancel
+  // missed (nothing to cancel at observe time). Keyed per note.
+
+  it('ARMING-ORDER DOUBLE fix: observed FIRST, then a slow rank-2 arms → never arms, never posts', async () => {
+    const sent = [];
+    const clock = makeClock();
+    markEchoObserved('chat:noteA');                                    // the fast primary's 👂 was seen first (nothing armed yet)
+    expect(hasEchoObserved('chat:noteA')).toBe(true);                  // …but it was RECORDED
+    await armVoice({ reply: (x) => sent.push(x), debounceKey: 'chat:noteA', echoRank: 2, echoTimeoutMs: 20_000, scheduler: clock });
+    expect(hasPendingPromotion('chat:noteA')).toBe(false);             // stood down at arm time — nothing armed
+    await clock.advance(20_000);                                       // even past the promotion window …
+    expect(sent).toEqual([]);                                          // … it never posts (no double). OLD code would double here.
+  });
+
+  it('TRUE FAILOVER still works: rank-2 with NO prior observe arms + posts exactly once', async () => {
+    const sent = [];
+    const clock = makeClock();
+    await armVoice({ reply: (x) => sent.push(x), debounceKey: 'chat:noteB', echoRank: 2, echoTimeoutMs: 20_000, scheduler: clock });
+    expect(hasPendingPromotion('chat:noteB')).toBe(true);             // primary silent so far → armed
+    await clock.advance(20_000);
+    expect(sent).toEqual(['👂 hola']);                                // failover fires exactly once
+  });
+
+  it('OBSERVE-AFTER-ARM (normal 3b): arm, then markEchoObserved cancels it → never posts', async () => {
+    const sent = [];
+    const clock = makeClock();
+    await armVoice({ reply: (x) => sent.push(x), debounceKey: 'chat:noteC', echoRank: 2, echoTimeoutMs: 20_000, scheduler: clock });
+    expect(markEchoObserved('chat:noteC')).toBe(true);               // observed AFTER arm → folds in the cancel (returns true)
+    await clock.advance(20_000);
+    expect(sent).toEqual([]);                                         // cancelled → no post
+    expect(hasPendingPromotion('chat:noteC')).toBe(false);
+  });
+
+  it('RANK-1 STANDS DOWN if the note was already echoed (immediate path)', async () => {
+    const sent = [];
+    markEchoObserved('chat:noteD');                                   // a peer already echoed this note
+    const t = await transcribeVoiceNote({
+      localPath: '/n.ogg', transcribe: async () => 'hola', reply: (x) => sent.push(x),
+      enabled: true, postsBack: true, echoRank: 1, debounceKey: 'chat:noteD', postsBackDelayMs: 0,
+    });
+    expect(t).toBe('hola');                                           // still HEARD
+    expect(sent).toEqual([]);                                         // …but not re-posted
+  });
+
+  it('RANK-1 NORMAL: no prior observe → posts once immediately', async () => {
+    const sent = [];
+    const t = await transcribeVoiceNote({
+      localPath: '/n.ogg', transcribe: async () => 'hola', reply: (x) => sent.push(x),
+      enabled: true, postsBack: true, echoRank: 1, debounceKey: 'chat:noteE', postsBackDelayMs: 0,
+    });
+    expect(t).toBe('hola');
+    expect(sent).toEqual(['👂 hola']);
   });
 });
 

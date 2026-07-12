@@ -51,7 +51,7 @@
 //     gates cover edit/receipt re-fires and crash replays.
 import WebSocket from 'ws';
 import { transcribeAudioFile } from '../tools/transcribe.mjs';
-import { transcribeVoiceNote, voiceTranscriptBody, POSTS_BACK_DELAY_MS, cancelPromotion, ECHO_MARKER } from '../incoming-media.mjs';
+import { transcribeVoiceNote, voiceTranscriptBody, POSTS_BACK_DELAY_MS, cancelPromotion, markEchoObserved, ECHO_MARKER } from '../incoming-media.mjs';
 import { htmlToMarkdown } from '../html-to-markdown.mjs';
 import { reactionAction, editAction } from '../dispatch-line.mjs';
 import { mentionStatus } from '../auto-mode.mjs';
@@ -1066,7 +1066,10 @@ export async function startBeeperBridge(opts = {}) {
     // replying to the note), or a 👂 to a different note, never cancels. NOT dedup — this only covers
     // an offline/slow higher rank; the rank itself is a deterministic upfront pre-assignment.
     if (replyToId && String(text ?? '').trimStart().startsWith(ECHO_MARKER)) {
-      if (cancelPromotion(`${chatID}:${replyToId}`)) onLog(`beeper: 👂 promotion cancelled — observed echo for note ${replyToId} [${info.title}]`);
+      // markEchoObserved RECORDS the observation persistently (so a standby that arms its promotion
+      // AFTER this 👂 still stands down — the arming-order double fix) AND cancels any already-armed
+      // promotion, logging only on an actual cancel (its true return), exactly as cancelPromotion did.
+      if (markEchoObserved(`${chatID}:${replyToId}`)) onLog(`beeper: 👂 promotion cancelled — observed echo for note ${replyToId} [${info.title}]`);
     }
     const from = {
       chatId: chatID,                       // opaque Beeper room id (for send-back)

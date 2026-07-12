@@ -24,7 +24,7 @@ import {
 } from '../../conversations-state.mjs';
 
 import { createIdentity, surfaceOf } from './identity.mjs';
-import { echoRank } from './echo-hrw.mjs';
+import { echoRank } from './echo-priority.mjs';
 import { shortChatId } from '../bridges/chat-id.mjs';
 import { createContacts } from './contacts.mjs';
 import { createGating } from './gating.mjs';
@@ -294,29 +294,47 @@ export async function boot({
   // notes are still transcribed + logged, just never echoed into the live chat. Default 1h.
   const echoMaxAgeMs = Number.isFinite(cfg.echo_max_age_ms) ? cfg.echo_max_age_ms : 3_600_000;
   // account_peers (operator 2026-07-09): node identities sharing THIS Beeper account (incl self).
-  // The candidate set the HRW 👂-echo rank rotates over (see echoPlan below).
+  // Still carried for the persona node-identity line (buildNodeIdentity) + the boot return; the 👂
+  // echo priority reads echo_priority (below), falling back to account_peers.
   const accountPeers = Array.isArray(cfg.account_peers) ? cfg.account_peers : [];
 
-  // 👂 ECHO — HRW RANK + ORDERED FAILOVER (operator 2026-07-11, Phase 3b; plans/2607101713-HRW-ECHO-PLAN.md).
-  // NOT dedup. Two co-account spines (REVE `kg`, DOLLY `do`) both see each voice note; 3a made
-  // exactly ONE (the rendezvous-hash rank-1) post its 👂, rotating per note, with NO coordination —
-  // the SHARED Beeper message id + identical account_peers make both nodes agree on the same order.
-  // 3b RANKS all peers so a lower rank posts if the higher ranks are OFFLINE/silent (still exactly
-  // one poster, ORDERED): the bridge posts at rank 1, ARMS a promotion at (rank-1)*echoTimeoutMs for
-  // rank>1, and cancels it when it observes the note's 👂 from a higher rank (echo-hrw.mjs +
-  // incoming-media.mjs). echoPlan(noteId) → { rank (this node's 1-indexed failover position over
-  // echoPeers), winner (rank===1) }; noteId = the voice note's stable Beeper message id (msg.id).
-  // HARD OPT-OUT preserved: echo:false → { rank: 0 }, which the bridge treats as never post / never
-  // promote — the note is still transcribed + logged.
+  // 👂 ECHO — STATIC PRIORITY + ORDERED FAILOVER (operator 2026-07-11, Phase 3b; plans/2607101713-HRW-ECHO-PLAN.md).
+  // NOT dedup. Two co-account spines (REVE `kg`, DOLLY `do`) both see each voice note; without a pick
+  // BOTH would post its 👂 → double. We DROP the earlier per-note HRW hash: it keyed on the note's
+  // Beeper message id ASSUMING that id is identical on both nodes, but Beeper ids are NODE-LOCAL, so
+  // the nodes hashed different strings and ~1/4 of notes had both compute rank-1 → double 👂. Instead
+  // a STATIC priority order (echo_priority, IDENTICAL in both configs) fixes each node's rank ONCE:
+  // rank 1 (the primary, e.g. DOLLY) posts every note; a lower rank promotes only if the higher ranks
+  // are OFFLINE/silent (the bridge posts at rank 1, ARMS a promotion at (rank-1)*echoTimeoutMs for
+  // rank>1, and stands down when it OBSERVES the note's 👂 from a higher rank — echo-priority.mjs +
+  // incoming-media.mjs). echoPlan IGNORES its noteId arg (kept ONLY so the bridge call site is
+  // unchanged): the rank is note-INDEPENDENT, which is the whole point — the two nodes can never
+  // disagree on who is rank 1. HARD OPT-OUT preserved: echo:false → { rank: 0 }, which the bridge
+  // treats as never post / never promote — the note is still transcribed + logged.
   const node_name = cfg.node_name ?? null;
-  const echoPeers = accountPeers.length ? accountPeers : [node_name];
+  // The priority order, resolved ONCE (never per note), all lowercased: echo_priority wins, else
+  // account_peers, else [self] (a solo node is always rank 1).
+  const echoPriority = (
+    Array.isArray(cfg.echo_priority) ? cfg.echo_priority
+    : Array.isArray(cfg.account_peers) ? cfg.account_peers
+    : [node_name]
+  ).map((p) => String(p).toLowerCase());
+  const staticEchoRank = echoRank(node_name, echoPriority);
   // Per-rank promotion step (operator 2026-07-11). GENEROUS default (20s) ON PURPOSE: a waiter can't
-  // tell "rank-1 DOWN" from "rank-1 SLOW", so too-short pre-empts a merely-slow winner → DOUBLE 👂
+  // tell "rank-1 DOWN" from "rank-1 SLOW", so too-short pre-empts a merely-slow primary → DOUBLE 👂
   // (the one real hazard); too-long = slow failover. Tunable per node (config echo_timeout_ms).
   const echoTimeoutMs = Number.isFinite(cfg.echo_timeout_ms) ? cfg.echo_timeout_ms : 20_000;
+  // BOOT ASSERTION (operator 2026-07-11): a node that echoes MUST appear in its own priority list. A
+  // staticEchoRank of 0 means node_name isn't in echo_priority, so this node would SILENTLY never
+  // echo (and if the peer is likewise misconfigured, no node echoes — or both do). Fail loudly so the
+  // operator fixes the config — this makes the silent-divergence class impossible. Mirrors the
+  // persona `default:true` fatal above. echo:false opts out entirely, so the check is skipped there.
+  if (cfg.echo !== false && staticEchoRank === 0) {
+    throw new Error(`boot: node_name "${node_name}" is not in the 👂 echo priority [${echoPriority.join(', ')}] — a node that echoes must appear in echo_priority (or account_peers), else it would never echo (${CONFIG_FILE}). Add "${node_name}" to the list, or set echo:false to opt out.`);
+  }
   const echoPlan = cfg.echo === false
     ? () => ({ rank: 0, winner: false })
-    : (noteId) => { const rank = echoRank(noteId, node_name, echoPeers); return { rank, winner: rank === 1 }; };
+    : () => ({ rank: staticEchoRank, winner: staticEchoRank === 1 });
 
   // The persona's node-identity addendum (operator 2026-07-10): assembled ONCE from the pieces
   // already resolved above + the persona agent's handles, and handed to the brain pool, which
@@ -385,7 +403,7 @@ export async function boot({
     flood: cfg.flood ?? {},               // send-flood guard (limit / window_ms / cooldown_ms) per chat
     personaEmoji: bodyEmojiOf(defaultKey),// 🐶 — the marker the bridge uses to suppress E's own re-ingested messages
     wakeWords,                            // the persona agent's OWN name + handles only — nothing injected (operator 2026-07-09)
-    echoPlan,                             // 👂 echo PLAN: (noteId) => { rank, winner } — HRW rank + ordered failover (operator 2026-07-11, Phase 3b). rank 1 posts now; rank>1 arms a promotion at (rank-1)*echoTimeoutMs, cancelled on observing the note's 👂; rank 0 (echo:false opt-out) never posts/promotes.
+    echoPlan,                             // 👂 echo PLAN: () => { rank, winner } — STATIC priority rank + ordered failover (operator 2026-07-11, Phase 3b; note-INDEPENDENT, the noteId arg is ignored). rank 1 posts now; rank>1 arms a promotion at (rank-1)*echoTimeoutMs, cancelled on observing the note's 👂; rank 0 (echo:false opt-out) never posts/promotes.
     echoTimeoutMs,                        // 👂 per-rank promotion step (ms); GENEROUS default so a SLOW rank-1 isn't mistaken for a DOWN one (double-👂 hazard).
     echoMaxAgeMs,                         // 👂 only echoes a note within this age of its own timestamp (operator 2026-07-09)
     stateDir: join(EGPT_HOME, 'state'),   // beeper-seen.jsonl etc. → this profile's state

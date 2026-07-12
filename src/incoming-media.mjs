@@ -68,6 +68,9 @@ function _firePendingAck(key) {
   const e = _pendingAcks.get(key);
   if (!e) return Promise.resolve();
   _pendingAcks.delete(key);
+  // A debounced rank-1 echo that got covered by a peer's 👂 while it waited stands down (operator
+  // 2026-07-11): the observed-echo set is the one authority every post path consults.
+  if (hasEchoObserved(key)) { e.onLog('👂 already echoed for this note — standing down (debounced)'); return Promise.resolve(); }
   const body = '👂 ' + e.items.join('\n\n');
   return Promise.resolve(e.reply(body)).catch((err) => e.onLog(`👂 ack failed: ${err?.message ?? err}`));
 }
@@ -81,10 +84,10 @@ export function _resetPostsBackDebounce() {
 }
 
 // 👂 PROMOTION — ORDERED FAILOVER (operator 2026-07-11, Phase 3b; plans/2607101713-HRW-ECHO-PLAN.md).
-// A co-account node that is NOT rank-1 for a note (echoRank > 1, echo-hrw.mjs) does NOT drop its 👂
+// A co-account node that is NOT rank-1 for a note (echoRank > 1, echo-priority.mjs) does NOT drop its 👂
 // as in 3a — it HOLDS the already-made transcript and schedules the post at (rank-1)*echoTimeoutMs,
 // CANCELLING it the instant it observes the note's 👂 from a higher rank (the bridge calls
-// cancelPromotion on a 👂 reply to the note — co-account peers see each other's posts as normal
+// markEchoObserved on a 👂 reply to the note — co-account peers see each other's posts as normal
 // inbound). STAGGERED by rank so failover is ORDERED: rank-2 fires at +T, rank-3 at +2T, … so when
 // rank-2 posts, rank-3 observes it before its own +2T and stands down → still exactly ONE poster
 // even if several top ranks are down. NOT dedup: the rank is a deterministic UPFRONT pre-assignment;
@@ -97,6 +100,17 @@ export function _resetPostsBackDebounce() {
 // pre-empts a merely-slow winner → DOUBLE 👂. So the boot default is GENEROUS (~20s); tune from live
 // tests. Too-long = slow failover; too-short = double.
 const _pendingPromotions = new Map();   // key -> { rank, handle, scheduler }
+
+// 👂 OBSERVED-ECHOES (operator 2026-07-11): the PERSISTENT record of "a co-account peer already posted
+// this note's 👂", consulted by EVERY post path so no path double-echoes. It supersedes the bare
+// observe-and-cancel, which kept NO record: a slow standby arms its promotion AFTER the fast primary
+// already posted, so when the primary's 👂 was observed there was nothing armed to cancel, and the
+// standby then fired anyway → double on every note. Recording the observation regardless means the
+// late-arming standby (and a debounced/immediate rank-1) checks the set and stands down. key = the
+// per-note debounceKey (`${chatID}:${noteId}`). Capped + oldest-first evicted (Map keeps insertion
+// order) so it can't grow unbounded on a long-lived node. Node globals only (browser-safe).
+const _observedEchoes = new Map();      // key -> insertion marker (Date.now()); FIFO-evicted at the cap
+const _OBSERVED_ECHOES_CAP = 1000;
 
 function _armPromotion(key, body, reply, onLog, delayMs, scheduler, rank) {
   const existing = _pendingPromotions.get(key);
@@ -121,10 +135,34 @@ export function cancelPromotion(key) {
   return true;
 }
 export function hasPendingPromotion(key) { return _pendingPromotions.has(key); }
-// Test isolation: clear all promotion timers + pending state.
+
+// Observe-and-RECORD (operator 2026-07-11): the richer observe entry point that SUPERSEDES
+// cancelPromotion. It (1) records the note's key in _observedEchoes so any LATER post path for that
+// note stands down — the fix for the arming-order double where a slow standby arms after the primary
+// already posted (nothing to cancel at observe time) — AND (2) folds in cancelPromotion: if a
+// promotion is already armed for the note, cancel it now. Returns true iff a pending promotion existed
+// and was cancelled (so the bridge keeps logging only on an actual cancel); false when nothing was
+// armed (the observation is still recorded). The bridge calls this on every co-account 👂 it sees.
+export function markEchoObserved(key) {
+  if (!_observedEchoes.has(key)) {
+    _observedEchoes.set(key, Date.now());
+    if (_observedEchoes.size > _OBSERVED_ECHOES_CAP) {
+      _observedEchoes.delete(_observedEchoes.keys().next().value);   // evict the oldest (insertion order)
+    }
+  }
+  const e = _pendingPromotions.get(key);
+  if (!e) return false;
+  try { e.scheduler.clear(e.handle); } catch { /* ignore */ }
+  _pendingPromotions.delete(key);
+  return true;
+}
+export function hasEchoObserved(key) { return _observedEchoes.has(key); }
+
+// Test isolation: clear all promotion timers + pending state + observed-echo records.
 export function _resetPromotions() {
   for (const e of _pendingPromotions.values()) { try { e.scheduler.clear(e.handle); } catch { /* ignore */ } }
   _pendingPromotions.clear();
+  _observedEchoes.clear();
 }
 
 // The in-chat 👂 echo MARKER — the prefix every posted transcript ack (immediate, debounced, or
@@ -219,28 +257,38 @@ export async function transcribeVoiceNote({
   const flagged = flagDegenerateTranscript(transcript);
   if (flagged !== transcript) { onLog(`transcription flagged unreliable (repetition loop): ${JSON.stringify(transcript.slice(0, 80))}`); transcript = flagged; }
   if (reply && postsBack && !muted) {
-    const line = _ackItem({ author, durationSec: innerMeta.durationSec, transcript });
-    if (echoRank > 1) {
-      // Phase 3b — this node is NOT rank-1 for the note. Don't post now: ARM a staggered
-      // PROMOTION (see _armPromotion) that fires the HELD 👂 at (rank-1)*echoTimeoutMs, but
-      // ONLY if no higher rank posts first (the bridge cancels it on observing the note's 👂).
-      // The 👂 body + the reply closure (a quoted reply to the note) are identical to rank-1's,
-      // so a promoted echo is indistinguishable from the winner's. Needs the per-note key to
-      // correlate the observe-and-cancel; without one (a non-batching caller) we can't stand
-      // down safely, so we WITHHOLD — fail-safe, since a missed echo beats a double 👂.
-      if (!debounceKey) { onLog('👂 promotion NOT armed — rank>1 needs a per-note debounceKey to correlate the observe-and-cancel; withholding'); }
-      else {
-        const delayMs = (echoRank - 1) * echoTimeoutMs;
-        _armPromotion(debounceKey, `👂 ${line}`, reply, onLog, delayMs, scheduler, echoRank);
-        onLog(`👂 promotion armed (rank ${echoRank}, +${Math.round(delayMs / 1000)}s, cancels on observed echo) for ${debounceKey}`);
-      }
-    } else if (debounceKey && postsBackDelayMs > 0) {
-      // HEARD already happened (we return below); hold + coalesce the SPOKEN echo.
-      _queueAck(debounceKey, line, reply, onLog, postsBackDelayMs, scheduler);
-      onLog(`👂 ack queued (debounced ${Math.round(postsBackDelayMs / 1000)}s, ${_pendingAcks.get(debounceKey)?.items.length ?? 1} pending) for ${debounceKey}`);
+    // 👂 ALREADY ECHOED (operator 2026-07-11): a co-account peer's 👂 for THIS note was already
+    // observed (recorded persistently in _observedEchoes by the bridge's observe hook). Stand down
+    // across EVERY branch below — the rank>1 promotion-arm (fixes the arming-order double: a slow
+    // standby arming AFTER the fast primary already posted, when there was nothing to cancel), the
+    // debounced rank-1 branch, and the immediate rank-1 branch. The transcript is still HEARD
+    // (returned below); only the POST is skipped.
+    if (debounceKey && hasEchoObserved(debounceKey)) {
+      onLog('👂 already echoed for this note — standing down');
     } else {
-      try { await reply(`👂 ${line}`); }
-      catch (e) { onLog(`👂 ack failed: ${e?.message ?? e}`); }
+      const line = _ackItem({ author, durationSec: innerMeta.durationSec, transcript });
+      if (echoRank > 1) {
+        // Phase 3b — this node is NOT rank-1 for the note. Don't post now: ARM a staggered
+        // PROMOTION (see _armPromotion) that fires the HELD 👂 at (rank-1)*echoTimeoutMs, but
+        // ONLY if no higher rank posts first (the bridge cancels it on observing the note's 👂).
+        // The 👂 body + the reply closure (a quoted reply to the note) are identical to rank-1's,
+        // so a promoted echo is indistinguishable from the winner's. Needs the per-note key to
+        // correlate the observe-and-cancel; without one (a non-batching caller) we can't stand
+        // down safely, so we WITHHOLD — fail-safe, since a missed echo beats a double 👂.
+        if (!debounceKey) { onLog('👂 promotion NOT armed — rank>1 needs a per-note debounceKey to correlate the observe-and-cancel; withholding'); }
+        else {
+          const delayMs = (echoRank - 1) * echoTimeoutMs;
+          _armPromotion(debounceKey, `👂 ${line}`, reply, onLog, delayMs, scheduler, echoRank);
+          onLog(`👂 promotion armed (rank ${echoRank}, +${Math.round(delayMs / 1000)}s, cancels on observed echo) for ${debounceKey}`);
+        }
+      } else if (debounceKey && postsBackDelayMs > 0) {
+        // HEARD already happened (we return below); hold + coalesce the SPOKEN echo.
+        _queueAck(debounceKey, line, reply, onLog, postsBackDelayMs, scheduler);
+        onLog(`👂 ack queued (debounced ${Math.round(postsBackDelayMs / 1000)}s, ${_pendingAcks.get(debounceKey)?.items.length ?? 1} pending) for ${debounceKey}`);
+      } else {
+        try { await reply(`👂 ${line}`); }
+        catch (e) { onLog(`👂 ack failed: ${e?.message ?? e}`); }
+      }
     }
   } else if (!postsBack) {
     onLog(`👂 ack withheld — transcription posts_back disabled for this room`);
