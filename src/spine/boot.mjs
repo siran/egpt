@@ -332,6 +332,10 @@ export async function boot({
   // tell "rank-1 DOWN" from "rank-1 SLOW", so too-short pre-empts a merely-slow primary → DOUBLE 👂
   // (the one real hazard); too-long = slow failover. Tunable per node (config echo_timeout_ms).
   const echoTimeoutMs = Number.isFinite(cfg.echo_timeout_ms) ? cfg.echo_timeout_ms : 20_000;
+  // 👂 COVERAGE THRESHOLD (operator 2026-07-12): word-token overlap fraction above which a reply to a
+  // note counts as already-covering it, so this node stands down instead of double-echoing (the bridge's
+  // noteCovered query; replaced the observed-set + arrival-lag scaffold). Default 0.6.
+  const coverageThreshold = Number.isFinite(cfg.echo_coverage_similarity) ? cfg.echo_coverage_similarity : 0.6;
   // BOOT ASSERTION (operator 2026-07-11): a node that echoes MUST appear in its own priority list. A
   // staticEchoRank of 0 means node_name isn't in echo_priority, so this node would SILENTLY never
   // echo (and if the peer is likewise misconfigured, no node echoes — or both do). Fail loudly so the
@@ -384,16 +388,10 @@ export async function boot({
     return acct?.token ?? cfg.beeper_token ?? process.env.BEEPER_ACCESS_TOKEN;
   })();
 
-  // PRE-👂 OPEN vs OBSERVE-CANCEL (operator 2026-07-12, known limitation): bridge_signature_open /
-  // transcription_open are prepended ABOVE the 👂 of a transcript echo, so a non-empty value makes the
-  // echo no longer LEAD with 👂 — which BREAKS the leading-marker observe-and-cancel (markEchoObserved,
-  // src/bridges/beeper.mjs) that keeps two co-account spines from double-echoing. WARN (not fatal) when
-  // an open is set on a multi-peer node; the operator must rework observe-cancel before relying on a
-  // pre-👂 open. A single-peer node never double-echoes, so it is not warned. (.trim() mirrors applyLayers'
-  // whitespace-skip: a whitespace-only open contributes nothing and doesn't lift the 👂.)
-  if (accountPeers.length > 1 && (String(cfg.bridge_signature_open ?? '').trim() || String(cfg.transcription_open ?? '').trim())) {
-    log.line?.(`[bridge] ⚠️ bridge_signature_open / transcription_open is set with ${accountPeers.length} account_peers — a pre-👂 OPEN lifts the 👂 off the leading edge, BREAKING the leading-marker observe-cancel (double-👂 hazard). Keep the *_open slots empty until observe-cancel is reworked.`);
-  }
+  // (The old pre-👂 OPEN vs observe-cancel warning was removed 2026-07-12: co-account de-dup is now the
+  // on-demand coverage query (src/bridges/beeper.mjs noteCovered), which matches on normalized WORD TOKENS
+  // — position- and marker-independent — so a bridge_signature_open / transcription_open that lifts the 👂
+  // off the leading edge no longer breaks dedup. The opens are safe on a multi-peer node.)
 
   // --- ports ---
   const bridge = await createBeeperBridgePort({
@@ -432,8 +430,9 @@ export async function boot({
     transcriptionOpen: cfg.transcription_open ?? '',
     transcriptionClose: cfg.transcription_close ?? '',
     wakeWords,                            // the persona agent's OWN name + handles only — nothing injected (operator 2026-07-09)
-    echoPlan,                             // 👂 echo PLAN: () => { rank, winner } — STATIC priority rank + ordered failover (operator 2026-07-11, Phase 3b; note-INDEPENDENT, the noteId arg is ignored). rank 1 posts now; rank>1 arms a promotion at (rank-1)*echoTimeoutMs, cancelled on observing the note's 👂; rank 0 (echo:false opt-out) never posts/promotes.
+    echoPlan,                             // 👂 echo PLAN: () => { rank, winner } — STATIC priority rank + ordered failover (operator 2026-07-11, Phase 3b; note-INDEPENDENT, the noteId arg is ignored). rank 1 posts now; rank>1 arms a promotion at (rank-1)*echoTimeoutMs that re-checks coverage at fire; rank 0 (echo:false opt-out) never posts/promotes.
     echoTimeoutMs,                        // 👂 per-rank promotion step (ms); GENEROUS default so a SLOW rank-1 isn't mistaken for a DOWN one (double-👂 hazard).
+    coverageThreshold,                    // 👂 word-token overlap fraction for the on-demand noteCovered query (operator 2026-07-12) — replaced the observed-set + arrival-lag/reconnect scaffold
     echoMaxAgeMs,                         // 👂 only echoes a note within this age of its own timestamp (operator 2026-07-09)
     stateDir: join(EGPT_HOME, 'state'),   // beeper-seen.jsonl etc. → this profile's state
     onLog: (m) => log.line?.(`[bridge] ${m}`),

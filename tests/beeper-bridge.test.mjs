@@ -13,7 +13,7 @@ import { startBeeperBridge, newerMsgId } from '../src/bridges/beeper.mjs';
 import { EGPT_HOME } from '../src/egpt-home.mjs';
 import { encodeMesh } from '../src/mesh/relay.mjs';
 import { surfaceOf } from '../src/spine/identity.mjs';
-import { hasEchoObserved, _resetPromotions } from '../src/incoming-media.mjs';
+import { _resetPromotions } from '../src/incoming-media.mjs';
 
 async function startFakeBeeper() {
   const posts = [];   // POSTs to /v1/chats/:id/messages
@@ -56,8 +56,13 @@ async function startFakeBeeper() {
       const msgList = req.url.match(/^\/v1\/chats\/([^/]+)\/messages(?:\?.*)?$/);
       if (req.method === 'GET' && msgList) {
         msgListGets += 1;
-        const v = messages.get(decodeURIComponent(msgList[1]));
-        res.end(JSON.stringify({ items: (typeof v === 'function' ? v() : v) ?? [] }));
+        try {
+          const v = messages.get(decodeURIComponent(msgList[1]));
+          res.end(JSON.stringify({ items: (typeof v === 'function' ? v() : v) ?? [] }));
+        } catch (e) {
+          // a throwing message-list function models a GET failure → noteCovered fails-open
+          res.statusCode = 500; res.end(JSON.stringify({ error: String(e?.message ?? e) }));
+        }
         return;
       }
       if (req.method === 'GET' && req.url === '/v1/chats') {
@@ -141,7 +146,7 @@ afterEach(async () => {
   for (const b of bridges) b.stop();
   await fake.close();
   rmSync(stateDir, { recursive: true, force: true });
-  _resetPromotions();   // clear module-global promotion timers + observed-echo records between tests (Stage B early-observe)
+  _resetPromotions();   // clear module-global promotion timers between tests
 });
 
 async function startBridge(extra = {}) {
@@ -260,12 +265,20 @@ describe('beeper bridge', () => {
     expect(incoming.some((i) => i.from.isStageDirection)).toBe(false);
   });
 
-  it("suppresses an incoming that starts with the persona body_emoji (E's own re-ingested message)", async () => {
-    const { incoming } = await startBridge({ personaEmoji: '🐶' });
-    fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: '🐶 egpt: roger', senderName: 'An' })] });   // E's own reply, echoed
-    fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: 'sentinel-human' })] });                   // a real human message
+  // OWN-MESSAGE SUPPRESSION is by wasSentByUs / isEcho (sent-text window), NOT a leading-emoji check
+  // (that fallback was removed 2026-07-12 — no emoji may reach a decision). A reply E sent is dropped
+  // when it echoes back EVEN when it does NOT lead with the persona emoji.
+  it("suppresses E's own re-ingested reply via the sent-text window — even one that does NOT lead with the persona emoji", async () => {
+    const { bridge, incoming } = await startBridge();
+    await bridge.send('🐶 egpt: roger', { chatId: CHAT('chat-1') });        // pre-records the sent text before the POST
+    await bridge.send('plain reply no emoji', { chatId: CHAT('chat-1') });  // a reply with NO leading persona emoji
+    await waitFor(() => fake.posts.length === 2);
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'echo-a', text: '🐶 egpt: roger' })] });        // both echo back (new ids)
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'echo-b', text: 'plain reply no emoji' })] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: 'sentinel-human' })] });
     await waitFor(() => incoming.some((i) => i.text === 'sentinel-human'));
-    expect(incoming.map((i) => i.text)).not.toContain('🐶 egpt: roger');   // the persona-marked message was dropped
+    expect(incoming.map((i) => i.text)).not.toContain('🐶 egpt: roger');       // suppressed via sent-text window
+    expect(incoming.map((i) => i.text)).not.toContain('plain reply no emoji');  // …and one without the emoji too
   });
 
   it('converts inbound HTML message text to markdown before dispatch', async () => {
@@ -702,24 +715,20 @@ describe('beeper bridge', () => {
   });
 
   // A HELD (backlog) voice note MUST still be transcribed locally so the backfill carries
-  // text, not "[voice note]" — and the 👂 still posts on a default (echo:true) node.
-  it('backlog voice note is transcribed + logged, and the 👂 posts (default echo, via the reconnect grace window)', async () => {
-    // Phase 3c (operator 2026-07-12, arrival-lag): a note delivered ≥ echoTimeoutMs after its own timestamp
-    // is a REPLAY, so it is routed through the grace window (armed, not immediate) — a survivor's replayed 👂
-    // could cancel it. Solo node here (no peer 👂) → it PROMOTES after the window. Fake clock drives the wait.
-    const clock = makeClock();
-    const { incoming } = await startBridge({ scheduler: clock, echoTimeoutMs: 20_000, resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }) });
+  // text, not "[voice note]" — and the 👂 still posts on a default (echo:true) node. With the
+  // arrival-lag/grace scaffold GONE, the 👂 posts immediately (coverage query finds no covering
+  // reply); the note's age only gates DISPATCH (backlog), never the 👂.
+  it('backlog voice note is transcribed + logged, and the 👂 posts (default echo)', async () => {
+    const { incoming } = await startBridge({ resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }) });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
-      text: null, type: 'VOICE', timestamp: Date.now() - 60_000,   // older than bridge start → backlog AND an arrival-lagged replay
+      text: null, type: 'VOICE', timestamp: Date.now() - 60_000,   // older than bridge start → backlog
       attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
     })] });
     await waitFor(() => incoming.length === 1);
     expect(incoming[0].from.backlog).toBe(true);                              // backfilled, never dispatched
     expect(incoming[0].text).toBe('(voice transcription) fake transcript');  // …but STILL transcribed locally
-    expect(fake.posts).toHaveLength(0);                                       // held during the grace window (not immediate)
-    await clock.advance(20_000);
     await waitFor(() => fake.posts.length === 1);
-    expect(fake.posts[0].text).toBe('👂 fake transcript');               // default echo → 👂 posts (post-grace)
+    expect(fake.posts[0].text).toBe('👂 fake transcript');                   // default echo → 👂 posts (uncovered)
   });
 
   // 👂 ECHO PLAN (operator 2026-07-11, Phase 3b HRW ordered failover): the per-note gate is now
@@ -782,7 +791,8 @@ describe('beeper bridge', () => {
   // ORDERED FAILOVER (Phase 3b) at the bridge, fake-clock driven:
   //   - rank-1 posts immediately (all-up) — see the WINNER test above;
   //   - a rank-2 node HOLDS, and PROMOTES after its window when rank-1 stays silent (rank-1 down);
-  //   - a rank-2 node that OBSERVES rank-1's 👂 (a reply-to-note 👂 inbound) stands down — no double.
+  //   - a rank-2 node whose note gets COVERED (a matching peer 👂 lands in the chat) stands down when
+  //     its timer fires and re-queries coverage — no double.
   it('rank-1 DOWN: a rank-2 node PROMOTES the held 👂 after its window (exactly one 👂, delayed)', async () => {
     const clock = makeClock();
     const { incoming } = await startBridge({
@@ -803,28 +813,24 @@ describe('beeper bridge', () => {
     expect(fake.posts[0].replyToMessageID).toBe('note-p');                     // same quoted reply as rank-1 would use
   });
 
-  it('all-up: a rank-2 node OBSERVES rank-1\'s 👂 (reply-to-note) and stands down — exactly one 👂', async () => {
+  it('all-up: a rank-2 node stands down when a matching peer 👂 already covers the note (coverage re-checked at fire)', async () => {
     const clock = makeClock();
     const { incoming } = await startBridge({
       echoPlan: () => ({ rank: 2, winner: false }),
       echoTimeoutMs: 20_000, scheduler: clock,
       resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }),
     });
-    // the voice note → this (rank-2) node arms a promotion (held, no post)
+    // the voice note → this (rank-2) node arms a promotion (held, no post; coverage empty at arm time)
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       id: 'note-o', isSender: false, text: null, type: 'VOICE',
       attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
     })] });
-    await waitFor(() => incoming.length === 1);
-    // rank-1 (the co-account peer) posts its 👂 as a quoted reply to the note — arrives here as a
-    // normal inbound (peer's account/process, not ours). The bridge observes it → cancels our timer.
-    fake.emit({ type: 'message.upserted', entries: [liveMsg({
-      id: 'peer-echo', isSender: false, text: '👂 fake transcript', linkedMessageID: 'note-o',
-    })] });
-    await waitFor(() => incoming.some((i) => i.from.msgKey === 'peer-echo'));
-    await clock.advance(20_000);                                    // our promotion window elapses …
-    await new Promise((r) => setTimeout(r, 30));                    // let any stray send settle
-    expect(fake.posts).toHaveLength(0);                             // … cancelled → we NEVER posted (no double)
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'note-o'));
+    // rank-1 (the co-account peer) posted its 👂 as a quoted reply to the note — now present in the chat.
+    fake.messages.set(CHAT('chat-1'), [{ id: 'peer-echo', text: '👂 fake transcript', linkedMessageID: 'note-o', isSender: false }]);
+    await clock.advance(20_000);                                    // our promotion window elapses → re-queries coverage …
+    await new Promise((r) => setTimeout(r, 30));                    // let the async fire settle
+    expect(fake.posts).toHaveLength(0);                             // … covered → stood down → we NEVER posted (no double)
   });
 
   // LAYERED 👂 ECHO (operator 2026-07-12): the '👂 <transcript>' core is wrapped concentrically by the
@@ -846,9 +852,9 @@ describe('beeper bridge', () => {
     expect(fake.posts[0].text).toBe('BO\nTO\n👂 fake transcript\nTC\nBC');   // concentric: opens top-down, closes bottom-up
   });
 
-  // CLOSES-ONLY (opens empty) → the 👂 still LEADS, so the observe-cancel dedup is unaffected. This is the
-  // safe multi-peer configuration: a CLOSE sits BELOW the 👂 body, never above it.
-  it('closes-only echo slots keep the 👂 LEADING (safe for a multi-peer node)', async () => {
+  // CLOSES-ONLY (opens empty) → the 👂 still LEADS. A pure render lock; with token-based coverage the
+  // leading position no longer matters for dedup, but this pins the concentric render shape.
+  it('closes-only echo slots keep the 👂 LEADING (render shape)', async () => {
     const { incoming } = await startBridge({
       transcriptionClose: 'TC', bridgeSignatureClose: '💸',   // opens empty
       resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }),
@@ -863,10 +869,12 @@ describe('beeper bridge', () => {
     expect(fake.posts[0].text.startsWith('👂')).toBe(true);          // still the LEADING char
   });
 
-  // OBSERVE-CANCEL LOCK: the promotion observe-and-cancel keys on a message STARTING with 👂. A peer's 👂
-  // carrying ITS OWN closes (trailing lines) still starts with 👂 after htmlToMarkdown, so it is recognized
-  // → records the observation + cancels our pending promotion. This is why opens must stay empty.
-  it('observe-and-cancel still fires when the peer 👂 carries CLOSE slots (👂 still leads)', async () => {
+  // POSITION-INDEPENDENT COVERAGE (operator 2026-07-12): a peer 👂 carrying a leading OPEN and/or trailing
+  // CLOSE lines (or any wrap) still COVERS the note — the coverage query matches on normalized WORD TOKENS
+  // (text-similarity), which drop the markers/wrap lines, so the overlap with our transcript stays ≥
+  // threshold regardless of position. (This is why the old "opens must stay empty" observe-cancel
+  // constraint is gone.)
+  it('a rank-2 node stands down when the peer 👂 carries OPEN + CLOSE wrap (token overlap still covers)', async () => {
     const clock = makeClock();
     const { incoming } = await startBridge({
       echoPlan: () => ({ rank: 2, winner: false }),
@@ -878,16 +886,13 @@ describe('beeper bridge', () => {
       id: 'note-sig', isSender: false, text: null, type: 'VOICE',
       attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
     })] });
-    await waitFor(() => incoming.length === 1);
-    // the co-account peer's 👂 for the same note, WITH trailing transcription + bridge CLOSE lines.
-    fake.emit({ type: 'message.upserted', entries: [liveMsg({
-      id: 'peer-echo-sig', isSender: false, text: '👂 (8s) hola\nTC\n💸', linkedMessageID: 'note-sig',
-    })] });
-    await waitFor(() => incoming.some((i) => i.from.msgKey === 'peer-echo-sig'));
-    expect(hasEchoObserved('chat-1:note-sig')).toBe(true);   // recorded despite the trailing closes — 👂 still leads
-    await clock.advance(20_000);                             // our promotion window elapses …
-    await new Promise((r) => setTimeout(r, 30));             // let any stray send settle
-    expect(fake.posts).toHaveLength(0);                      // … cancelled → we NEVER posted (no double)
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'note-sig'));
+    // the peer's 👂 for the same note, WRAPPED — leading opens (BO/TO) + trailing closes (TC/💸) around the
+    // transcript, so it does NOT lead with 👂. Token overlap ('fake transcript') still covers.
+    fake.messages.set(CHAT('chat-1'), [{ id: 'peer-echo-sig', text: 'BO\nTO\n👂 fake transcript\nTC\n💸', linkedMessageID: 'note-sig', isSender: false }]);
+    await clock.advance(20_000);                             // our promotion window elapses → re-queries coverage …
+    await new Promise((r) => setTimeout(r, 30));             // let the async fire settle
+    expect(fake.posts).toHaveLength(0);                      // … covered by token overlap despite the wrap → no double
   });
 
   // ALL-EMPTY regression lock: no echo slots → today's bare '👂 <transcript>' output, byte-for-byte.
@@ -904,10 +909,10 @@ describe('beeper bridge', () => {
     expect(fake.posts[0].text).toBe('👂 fake transcript');   // exactly today's form
   });
 
-  // KNOWN-LIMITATION LOCK (the "why opens stay empty" test, NOT a feature): a non-empty transcription_open
-  // is prepended ABOVE the 👂, so the echo no longer LEADS with 👂 — which would break the leading-marker
-  // observe-cancel on a multi-peer node (boot warns). Asserting the render documents exactly that hazard.
-  it('a non-empty transcription_open makes the 👂 NOT lead (documents the observe-cancel limitation)', async () => {
+  // RENDER LOCK: a non-empty transcription_open is prepended ABOVE the 👂, so the echo no longer LEADS
+  // with 👂. This USED to break the leading-marker observe-cancel — now DELETED — so with the token-based
+  // coverage query a pre-👂 open is harmless (position-independent). Kept as a pure render lock.
+  it('a non-empty transcription_open renders ABOVE the 👂 (token-based coverage makes a pre-👂 open safe)', async () => {
     const { incoming } = await startBridge({
       transcriptionOpen: 'TO',   // a pre-👂 open
       resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }),
@@ -919,10 +924,10 @@ describe('beeper bridge', () => {
     await waitFor(() => incoming.length === 1);
     await waitFor(() => fake.posts.length === 1);
     expect(fake.posts[0].text).toBe('TO\n👂 fake transcript');    // the open sits ABOVE the 👂
-    expect(fake.posts[0].text.startsWith('👂')).toBe(false);      // 👂 no longer leads → observe-cancel would miss it
+    expect(fake.posts[0].text.startsWith('👂')).toBe(false);      // 👂 no longer leads — coverage is token-based, so dedup is unaffected
   });
 
-  it('an UNRELATED inbound does NOT cancel: a non-👂 reply to the note, or a 👂 to a different note, still promotes', async () => {
+  it('a rank-2 node still PROMOTES when the chat has NO matching reply (prose reply to the note + a matching 👂 to a DIFFERENT note)', async () => {
     const clock = makeClock();
     const { incoming } = await startBridge({
       echoPlan: () => ({ rank: 2, winner: false }),
@@ -933,14 +938,15 @@ describe('beeper bridge', () => {
       id: 'note-u', isSender: false, text: null, type: 'VOICE',
       attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
     })] });
-    await waitFor(() => incoming.length === 1);
-    // a human replies to the SAME note but with prose (NOT a 👂) → must not cancel
-    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'human', isSender: false, text: 'gracias!', linkedMessageID: 'note-u' })] });
-    // a 👂 replying to a DIFFERENT note → must not cancel note-u's promotion
-    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'other', isSender: false, text: '👂 otra cosa', linkedMessageID: 'some-other-note' })] });
-    await waitFor(() => incoming.some((i) => i.from.msgKey === 'other'));
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'note-u'));
+    // the chat holds a prose reply to THIS note (no token overlap with 'fake transcript') and a matching
+    // 👂 replying to a DIFFERENT note — neither covers note-u.
+    fake.messages.set(CHAT('chat-1'), [
+      { id: 'human', text: 'gracias!', linkedMessageID: 'note-u', isSender: false },
+      { id: 'other', text: '👂 fake transcript', linkedMessageID: 'some-other-note', isSender: false },
+    ]);
     await clock.advance(20_000);
-    await waitFor(() => fake.posts.length === 1);                   // unobserved → still promotes
+    await waitFor(() => fake.posts.length === 1);                   // uncovered → still promotes
     expect(fake.posts[0].replyToMessageID).toBe('note-u');
     expect(fake.posts[0].text).toBe('👂 fake transcript');
   });
@@ -979,14 +985,11 @@ describe('beeper bridge', () => {
   });
 
   it('a 10-minute-old voice note still gets its 👂 (sleep-window courtesy, well within the default 1h bound)', async () => {
-    // Within the age bound → echo allowed; but arrival lag ≥ echoTimeoutMs → routed through the Phase 3c
-    // grace window (held, not immediate). Solo node → it promotes after the window (fake clock drives it).
-    const clock = makeClock();
-    const { incoming } = await startBridge({ scheduler: clock, echoTimeoutMs: 20_000, resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }) });
+    // Within the age bound → echo allowed; with the arrival-lag/grace scaffold gone it posts immediately
+    // (coverage query finds no covering reply). The note's age gates only the ECHO bound, not the timing.
+    const { incoming } = await startBridge({ resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }) });
     fake.emit({ type: 'message.upserted', entries: [voiceNoteAt(10 * 60 * 1000)] });
     await waitFor(() => incoming.length === 1);
-    expect(fake.posts).toHaveLength(0);                          // held during the grace window
-    await clock.advance(20_000);
     await waitFor(() => fake.posts.length === 1);
     expect(fake.posts[0].text).toBe('👂 fake transcript');
   });
@@ -998,18 +1001,14 @@ describe('beeper bridge', () => {
     expect(fake.posts).toHaveLength(0);
   });
 
-  it('echoMaxAgeMs: 0 disables the bound — even a 12-day-old note still gets its 👂 (via the grace window)', async () => {
-    // Bound disabled → echo allowed; arrival lag ≥ echoTimeoutMs → Phase 3c grace window (held, then promotes
-    // on a solo node). Fake clock drives the wait.
-    const clock = makeClock();
+  it('echoMaxAgeMs: 0 disables the bound — even a 12-day-old note still gets its 👂 (posts immediately)', async () => {
+    // Bound disabled → echo allowed; with no arrival-lag/grace scaffold it posts immediately (uncovered).
     const { incoming } = await startBridge({
-      echoMaxAgeMs: 0, scheduler: clock, echoTimeoutMs: 20_000,
+      echoMaxAgeMs: 0,
       resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }),
     });
     fake.emit({ type: 'message.upserted', entries: [voiceNoteAt(12 * 24 * 60 * 60 * 1000)] });
     await waitFor(() => incoming.length === 1);
-    expect(fake.posts).toHaveLength(0);                          // held during the grace window
-    await clock.advance(20_000);
     await waitFor(() => fake.posts.length === 1);
     expect(fake.posts[0].text).toBe('👂 fake transcript');
   });
@@ -1025,134 +1024,96 @@ describe('beeper bridge', () => {
     expect(fake.posts[0].text).toBe('👂 fake transcript');
   });
 
-  // 👂 PHASE 3c RECONNECT-REPLAY by ARRIVAL LAG (operator 2026-07-12, Stage B fix): a voice note delivered
-  // ≥ echoTimeoutMs after its OWN timestamp is a replay Beeper re-delivered late (this node was offline when
-  // it arrived). Detection is by LAG, NOT a WS-open event — the spine↔app WS is loopback and survives a wifi
-  // outage, so it never re-opens (the lastWsOpenMs approach failed live for this reason). The bridge computes
-  // graceMs>0 for it, so incoming-media ARMS an observe-then-post window EVEN at rank-1 (it does NOT post
-  // immediately) — a survivor's replayed 👂 would cancel it. Here (solo, no peer 👂) it promotes after the
-  // grace window. A LIVE note (lag < echoTimeoutMs) posts NOW — the rank-1 WINNER test above. This locks the
-  // bridge wiring of the arrival-lag → grace path.
-  it('an arrival-lagged voice note (reconnect replay) is echoed via the grace window, not immediately', async () => {
-    const clock = makeClock();
-    const { incoming } = await startBridge({
-      echoPlan: () => ({ rank: 1, winner: true }),   // rank-1: a LIVE note would post NOW …
-      echoTimeoutMs: 20_000, scheduler: clock,
-      resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }),
-    });
-    // timestamp 60s ago → arrival lag 60s ≥ echoTimeoutMs 20s → reconnect replay → graceMs>0 (well within
-    // the default 1h echo age bound, so it's the GRACE path, not the too-old suppression).
-    fake.emit({ type: 'message.upserted', entries: [liveMsg({
-      id: 'note-replay', text: null, type: 'VOICE', timestamp: Date.now() - 60_000,
-      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
-    })] });
-    await waitFor(() => incoming.length === 1);
-    expect(incoming[0].text).toBe('(voice transcription) fake transcript');   // HEARD
-    expect(fake.posts).toHaveLength(0);                                        // … but HELD — a live rank-1 would have posted NOW
-    await clock.advance(20_000);                                              // grace elapses, no peer 👂 observed →
-    await waitFor(() => fake.posts.length === 1);
-    expect(fake.posts[0].text).toBe('👂 fake transcript');
-    expect(fake.posts[0].replyToMessageID).toBe('note-replay');               // still a quoted reply to the note itself
-  });
-
-  // ARRIVAL-LAG DETECTION — THE CORE FIX (operator 2026-07-12, Stage B): with NO WS reconnect (the loopback
-  // stays open, so ws.on('open') never re-fires and the old lastWsOpenMs approach could never detect this),
-  // a note delivered ≥ echoTimeoutMs after its own timestamp is HELD via the grace window; a note delivered
-  // fresh (lag < echoTimeoutMs) posts IMMEDIATELY. One test, both branches — the boundary is echoTimeoutMs.
-  it('detects a replay purely by arrival lag (no WS event): laggy note HELD, fresh note posts immediately', async () => {
-    const clock = makeClock();
+  // 👂 ON-DEMAND COVERAGE QUERY (operator 2026-07-12) — the ONE de-dup mechanism, replacing the deleted
+  // observed-set + arrival-lag/grace/reconnect scaffold. Before posting a note's 👂, noteCovered lists the
+  // recent messages and stands down if a reply to THIS note already carries a matching transcript. It reads
+  // the CHAT directly, so coverage is seen in ANY delivery order (a steady-state peer echo, a reconnect
+  // replay whose covering reply is already in the list) with NO marker in the decision and NO shadow store.
+  it('STEADY STATE: rank-1 stands down when a matching peer 👂 already covers the note (no post)', async () => {
     const { incoming } = await startBridge({
       echoPlan: () => ({ rank: 1, winner: true }),
-      echoTimeoutMs: 20_000, scheduler: clock,
       resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }),
     });
-    // LAGGY: delivered 60s after its own timestamp (lag 60s > 20s) → replay → HELD (no immediate post),
-    // promotes only after the grace window elapses on this solo node.
+    // the peer's matching 👂 (a reply to this note) is ALREADY in the chat when the note is processed.
+    fake.messages.set(CHAT('chat-1'), [{ id: 'peer-echo', text: '👂 fake transcript', linkedMessageID: 'note-cov', isSender: false }]);
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
-      id: 'note-laggy', text: null, type: 'VOICE', timestamp: Date.now() - 60_000,
+      id: 'note-cov', text: null, type: 'VOICE',
       attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
     })] });
-    await waitFor(() => incoming.some((i) => i.from.msgKey === 'note-laggy'));
-    expect(fake.posts).toHaveLength(0);                                        // held — arrival lag ≥ echoTimeoutMs
-    await clock.advance(20_000);
-    await waitFor(() => fake.posts.length === 1);
-    expect(fake.posts[0].replyToMessageID).toBe('note-laggy');
-    expect(fake.posts[0].text).toBe('👂 fake transcript');
-
-    // FRESH: delivered 2s after its own timestamp (lag 2s < 20s) → live → posts IMMEDIATELY, no clock advance.
-    fake.emit({ type: 'message.upserted', entries: [liveMsg({
-      id: 'note-fresh', text: null, type: 'VOICE', timestamp: Date.now() - 2_000,
-      attachments: [{ id: 'a2', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
-    })] });
-    await waitFor(() => fake.posts.length === 2);                              // no clock.advance → not held
-    expect(fake.posts[1].replyToMessageID).toBe('note-fresh');
-    expect(fake.posts[1].text).toBe('👂 fake transcript');
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'note-cov'));
+    expect(incoming.find((i) => i.from.msgKey === 'note-cov').text).toBe('(voice transcription) fake transcript');   // HEARD
+    await new Promise((r) => setTimeout(r, 30));
+    expect(fake.posts).toHaveLength(0);                          // covered → this node does NOT echo
   });
 
-  // BURST / EARLY-OBSERVE — THE SERIALIZATION FIX (operator 2026-07-12, Stage B, the important one): the
-  // observed-echo record must be made in DELIVERY order, in the WS handler, NOT in the serialized dispatch
-  // chain — a 5-15s voice transcribe backs that chain up. On a reconnect BURST a peer's 👂 (queued BEHIND
-  // the replayed voice notes) would not be observed until the transcribe drained, by which time a graced
-  // note's promotion could already have fired → double. This locks the fix: while the note's transcribe is
-  // STILL HUNG (its dispatchMessage stuck, so the peer echo's dispatchMessage is queued and has NOT run),
-  // the peer 👂 has ALREADY been recorded in the observed-echo set. On the OLD in-dispatch-only hook the
-  // record would NOT exist yet (stuck behind the transcribe) — this assertion fails there. End to end: when
-  // the transcribe finally completes the note sees the observation and stands down (never arms), so no 👂 is
-  // ever posted for it (the survivor already echoed it — single echo).
-  it('records a peer 👂 in the observed-set on DELIVERY, before its dispatch drains — a graced note behind a slow transcribe stands down', async () => {
-    const clock = makeClock();
-    let releaseTranscribe;
-    const gate = new Promise((r) => { releaseTranscribe = r; });
+  // POSITION- + HTML-INDEPENDENCE: the covering reply is HTML-wrapped and does NOT lead with 👂 (a leading
+  // open + a linkified domain token). htmlToMarkdown + normalizeTokens still recover 'fake'/'transcript', so
+  // token overlap covers it — proving the query never depends on a leading marker (the old early-observe
+  // hook keyed on raw-starts-with-👂; this replaces it, correctly).
+  it('recognizes an HTML-wrapped, non-leading covering reply (htmlToMarkdown + token overlap)', async () => {
     const { incoming } = await startBridge({
       echoPlan: () => ({ rank: 1, winner: true }),
-      echoTimeoutMs: 20_000, scheduler: clock,
-      transcribe: async () => { await gate; return 'fake transcript'; },   // SLOW: hangs the note's dispatch until released
       resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }),
     });
-    // 1) a reconnect-replayed voice note (arrival lag 60s > 20s → would be GRACED). Its transcribe hangs, so
-    //    dispatchMessage(note) is stuck and everything chained behind it (the peer echo) is blocked.
+    fake.messages.set(CHAT('chat-1'), [{ id: 'peer', text: '<p>TO 👂 fake transcript see <a href="http://don.do">don.do</a></p>', linkedMessageID: 'note-h', isSender: false }]);
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
-      id: 'note-burst', isSender: false, text: null, type: 'VOICE', timestamp: Date.now() - 60_000,
+      id: 'note-h', text: null, type: 'VOICE',
       attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
     })] });
-    // 2) the survivor's ALSO-replayed 👂 for that note. Its dispatchMessage is QUEUED behind the hung
-    //    transcribe and CANNOT run — but the WS-handler early observe records it NOW.
-    fake.emit({ type: 'message.upserted', entries: [liveMsg({
-      id: 'peer-echo', isSender: false, text: '👂 fake transcript', linkedMessageID: 'note-burst',
-    })] });
-    await new Promise((r) => setTimeout(r, 30));   // let both WS messages be processed; the chain stays BLOCKED on the hung transcribe
-    // THE DISCRIMINATOR: the observation is recorded in delivery order — BEFORE the peer echo's own
-    // dispatchMessage runs (it is still queued behind the hung transcribe). Pre-fix (in-dispatch-only): false.
-    expect(hasEchoObserved('chat-1:note-burst')).toBe(true);
-    // Now release the transcribe → the note completes, sees the recorded observation, and stands down.
-    releaseTranscribe();
-    await waitFor(() => incoming.some((i) => i.from.msgKey === 'note-burst'));
-    expect(incoming.find((i) => i.from.msgKey === 'note-burst').text).toBe('(voice transcription) fake transcript');   // HEARD
-    await clock.advance(20_000);                    // grace window elapses …
-    await new Promise((r) => setTimeout(r, 30));    // let any stray promotion send settle
-    expect(fake.posts).toHaveLength(0);             // … no 👂 ever posts for the note (the survivor's echo stands)
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'note-h'));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(fake.posts).toHaveLength(0);                          // covered despite the HTML wrap + non-leading 👂
   });
 
-  // HTML-WRAPPED ECHO (operator 2026-07-12): Beeper delivers inbound text as HTML — a plain 👂 line can
-  // arrive wrapped in a <p> (or with a linkified domain token inside an <a>), so the RAW msg.text does not
-  // plainly start with the marker even though the rendered/markdown form does (line 901's dispatch `text`
-  // is always htmlToMarkdown(msg.text)). The early WS-handler observe hook must check the SAME
-  // htmlToMarkdown'd form, or an HTML-wrapped echo is silently missed and the reconnect double-echo guard
-  // never fires in production even though plain-text fixtures keep passing.
-  it('EARLY 👂-observe recognizes an HTML-wrapped echo (htmlToMarkdown-normalized), not just raw-starts-with-marker', async () => {
-    await startBridge();
-    // (a) block-wrapped: raw text starts with "<p>", not 👂 — only htmlToMarkdown('<p>👂 (8s) hola</p>') === '👂 (8s) hola' starts with the marker.
+  it('rank-1 POSTS when the only replies are non-matching or to a DIFFERENT note (not covered)', async () => {
+    const { incoming } = await startBridge({
+      echoPlan: () => ({ rank: 1, winner: true }),
+      resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }),
+    });
+    fake.messages.set(CHAT('chat-1'), [
+      { id: 'prose', text: 'gracias!', linkedMessageID: 'note-x', isSender: false },              // reply to THIS note, no overlap
+      { id: 'elsewhere', text: '👂 fake transcript', linkedMessageID: 'another-note', isSender: false },   // matches but wrong note
+    ]);
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
-      id: 'peer-echo-html', isSender: false, text: '<p>👂 (8s) hola</p>', linkedMessageID: 'note-html',
+      id: 'note-x', text: null, type: 'VOICE',
+      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
     })] });
-    // (b) linkified: a domain-like token after the marker gets auto-linkified into an <a href=…> — raw text
-    // still starts with 👂 here, but this locks the linkified case too since it's part of the same repro.
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'note-x'));
+    await waitFor(() => fake.posts.length === 1);                // uncovered → posts
+    expect(fake.posts[0].text).toBe('👂 fake transcript');
+  });
+
+  it('FAIL-OPEN: the coverage GET failing is treated as NOT covered → the 👂 still posts', async () => {
+    const { incoming } = await startBridge({
+      echoPlan: () => ({ rank: 1, winner: true }),
+      resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }),
+    });
+    fake.messages.set(CHAT('chat-1'), () => { throw new Error('boom'); });   // the coverage GET 500s
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
-      id: 'peer-echo-link', isSender: false, text: '👂 (8s) see <a href="http://don.do">don.do</a>', linkedMessageID: 'note-link',
+      id: 'note-fo', text: null, type: 'VOICE',
+      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
     })] });
-    await new Promise((r) => setTimeout(r, 30));   // let the WS handler's early-observe run (delivery order, no dispatch wait)
-    expect(hasEchoObserved('chat-1:note-html')).toBe(true);
-    expect(hasEchoObserved('chat-1:note-link')).toBe(true);
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'note-fo'));
+    await waitFor(() => fake.posts.length === 1);                // GET failed → fail-open → posts (a rare double beats a missed echo)
+    expect(fake.posts[0].text).toBe('👂 fake transcript');
+  });
+
+  // RECONNECT-STYLE (replaces the deleted arrival-lag/grace path): on reconnect Beeper re-delivers BOTH the
+  // note and the survivor's 👂; the coverage query sees the covering reply directly — no lag detection, no
+  // grace window, no WS-open event. The note is old (a replay) but that only gates DISPATCH, not the echo.
+  it('RECONNECT-STYLE: a replayed note whose covering reply is already in the fetched list stands down', async () => {
+    const { incoming } = await startBridge({
+      echoPlan: () => ({ rank: 1, winner: true }),
+      resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }),
+    });
+    fake.messages.set(CHAT('chat-1'), [{ id: 'survivor-echo', text: '👂 fake transcript', linkedMessageID: 'note-rc', isSender: false }]);
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({
+      id: 'note-rc', text: null, type: 'VOICE', timestamp: Date.now() - 60_000,   // an old replay — irrelevant to coverage
+      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+    })] });
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'note-rc'));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(fake.posts).toHaveLength(0);                          // covered by the replayed 👂 already in the list → no double
   });
 
   it('network scope is fail-closed WHEN SET: unknown or foreign accountID drops; prefix instance ids pass', async () => {
@@ -1498,12 +1459,14 @@ describe('beeper bridge — wake words (own handles only, no injection)', () => 
     expect(incoming[0].from.atEAnywhere).toBe(true);
   });
 
-  it("the node's OWN persona echo (🐶) is still dropped outright by the persona marker", async () => {
-    const { incoming } = await startBridge({ personaEmoji: '🐶' });
-    fake.emit({ type: 'message.upserted', entries: [liveMsg({ isSender: false, text: '🐶 egpt\nmy own reply' })] });
+  it("the node's OWN persona reply (multi-line 🐶 header) is dropped when it echoes back (sent-text window)", async () => {
+    const { bridge, incoming } = await startBridge();
+    await bridge.send('🐶 egpt\nmy own reply', { chatId: CHAT('chat-1') });   // pre-recorded before the POST
+    await waitFor(() => fake.posts.length === 1);
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'own-echo', text: '🐶 egpt\nmy own reply' })] });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ isSender: false, text: 'sentinel-own' })] });
     await waitFor(() => incoming.some((m) => m.text === 'sentinel-own'));
-    expect(incoming.map((m) => m.text)).not.toContain('🐶 egpt\nmy own reply');   // dropped, never reaches the host
+    expect(incoming.map((m) => m.text)).not.toContain('🐶 egpt\nmy own reply');   // dropped via the sent-text window
   });
 });
 

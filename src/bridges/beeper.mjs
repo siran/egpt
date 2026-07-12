@@ -51,8 +51,9 @@
 //     gates cover edit/receipt re-fires and crash replays.
 import WebSocket from 'ws';
 import { transcribeAudioFile } from '../tools/transcribe.mjs';
-import { transcribeVoiceNote, voiceTranscriptBody, POSTS_BACK_DELAY_MS, cancelPromotion, markEchoObserved, ECHO_MARKER } from '../incoming-media.mjs';
+import { transcribeVoiceNote, voiceTranscriptBody, POSTS_BACK_DELAY_MS } from '../incoming-media.mjs';
 import { htmlToMarkdown } from '../html-to-markdown.mjs';
+import { normalizeTokens, similarity } from '../text-similarity.mjs';
 import { applyLayers } from './signature-layers.mjs';
 import { reactionAction, editAction } from '../dispatch-line.mjs';
 import { mentionStatus } from '../auto-mode.mjs';
@@ -159,10 +160,10 @@ export async function startBeeperBridge(opts = {}) {
     // Trailing-debounce window for the 👂 echo (per chat, coalesced). The
     // transcript still reaches the model instantly; only the chat echo waits.
     postsBackDelayMs = POSTS_BACK_DELAY_MS,
-    // The persona body_emoji (🐶). Every message E sends is stamped with it, so any
-    // INCOMING that starts with it is E's own — suppress it (in the self-chat E
-    // posts as the operator's account, so id/text echo-suppression can race; this
-    // content marker never does, and it keeps transcript.md linear).
+    // The persona body_emoji (🐶). Accepted for compatibility (boot still passes it), but no longer
+    // used for suppression: the leading-persona-emoji own-message check was removed (operator
+    // 2026-07-12) so no emoji reaches a decision; own-message suppression is wasSentByUs / isEcho
+    // (id + pre-recorded sent-text window), which arms before the POST so it wins the self-echo race.
     personaEmoji = null,
     // Per-NODE 👂-echo WRAP layers (operator 2026-07-12): the 👂 transcript echo this bridge
     // posts is wrapped concentrically — outer bridge_signature_open/close (identifies WHICH SPINE
@@ -194,6 +195,12 @@ export async function startBeeperBridge(opts = {}) {
     // 👂 PER-RANK PROMOTION STEP (ms): rank-R waits (R-1)*echoTimeoutMs before posting the 👂 a silent
     // higher rank didn't. GENEROUS so a merely-SLOW rank-1 isn't mistaken for a DOWN one → double-👂.
     echoTimeoutMs = 20_000,
+    // 👂 COVERAGE SIMILARITY THRESHOLD (operator 2026-07-12): before posting a note's 👂, noteCovered
+    // asks the chat whether a reply to the note already carries a matching transcript — matching = the
+    // two normalized word-token SETS overlap by >= this fraction (src/text-similarity.mjs). Same-model
+    // transcripts are near-identical; 0.6 is lenient enough for minor drift. Consulted BEFORE any
+    // post/arm AND re-queried when a promotion fires; covered → this node stands down.
+    coverageThreshold = 0.6,
     // Timer seam for the 👂 debounce + promotion (forwarded to incoming-media). undefined → real
     // setTimeout; tests inject a fake clock so no real wait is needed.
     scheduler = undefined,
@@ -236,12 +243,11 @@ export async function startBeeperBridge(opts = {}) {
   // The 👂 echo's concentric WRAP: outer bridge_signature_open/close (which SPINE), inner
   // transcription_open/close (the 👂 feature), around the '👂 <transcript>' core. Empty (default)
   // → text unchanged. Wraps the reply closure once → covers immediate/debounced/promoted echoes.
-  // ⚠️ OBSERVE-CANCEL CONSTRAINT (known limitation): the promotion observe-and-cancel keys on a
-  // delivered message that STARTS with 👂 (markEchoObserved, ~line 1180). bridge_signature_open /
-  // transcription_open are prepended ABOVE the 👂, so a NON-EMPTY open makes the echo no longer
-  // lead with 👂 → the co-account peer no longer recognizes it → BREAKS the leading-marker dedup
-  // (double-👂 hazard). Boot WARNS when an open is set on a >1-peer node; opens must stay empty
-  // until observe-cancel is reworked to key on a marker that survives a prepended open.
+  // NOTE: the co-account de-dup is now the ON-DEMAND coverage query (noteCovered), which matches on
+  // normalized WORD TOKENS — position- and marker-independent — so a non-empty *_open that lifts the
+  // 👂 off the leading edge no longer breaks dedup (the old observe-and-cancel leading-marker hazard
+  // is gone). A wrap layer's own words are extra tokens; the overlap coefficient (÷ the smaller set)
+  // tolerates them.
   const withEchoLayers = (t) => applyLayers(t, [
     { open: bridgeSignatureOpen, close: bridgeSignatureClose },
     { open: transcriptionOpen, close: transcriptionClose },
@@ -734,6 +740,34 @@ export async function startBeeperBridge(opts = {}) {
     } catch { return null; }
   }
 
+  // 👂 COVERAGE QUERY (operator 2026-07-12): the ON-DEMAND replacement for the in-memory observed-set +
+  // arrival-lag/grace/reconnect scaffold. Before this node posts a note's 👂 — and again when a rank>1
+  // promotion timer fires — ask the CHAT (Beeper is the source of truth) whether the note is ALREADY
+  // covered: does a reply to THIS note already exist whose transcript matches what we'd post? List the
+  // recent messages, keep the ones replying to noteId (same reply-id extraction as the WS dispatch, ~line
+  // 1101), and score each against our OWN transcription by normalized word-token overlap (text-similarity).
+  // >= coverageThreshold ⇒ covered ⇒ stand down. Position- and marker-independent: normalization drops all
+  // emoji/markup, so a peer echo is recognized whether or not it leads with 👂 or carries wrap layers.
+  // Order-independent: the query sees the reply directly regardless of delivery order — no observe hook, no
+  // grace window, no reconnect detection needed. FAIL-OPEN on ANY error (GET throws / bad shape): return
+  // false so this node posts (a rare double 👂 beats a missed echo).
+  async function noteCovered(chatID, noteId, myTranscript) {
+    try {
+      const r = await api('GET', `/v1/chats/${encodeURIComponent(fullChatId(chatID))}/messages?limit=50`);
+      const items = Array.isArray(r?.items) ? r.items : [];
+      const mine = normalizeTokens(myTranscript);
+      for (const m of items) {
+        const rid = m?.linkedMessageID ?? m?.replyToMessageID ?? m?.quotedMessageID ?? null;
+        if (rid == null || String(rid) !== String(noteId)) continue;   // not a reply to THIS note
+        if (similarity(normalizeTokens(htmlToMarkdown(m.text) || ''), mine) >= coverageThreshold) return true;
+      }
+      return false;
+    } catch (e) {
+      onLog(`beeper: noteCovered(${noteId}) failed — ${e?.message ?? e} (fail-open → not covered)`);
+      return false;
+    }
+  }
+
   // --- reactions (MESSAGES-FIRST-CLASS-PLAN Phase 2) ---------------------------
   // Beeper delivers a reaction as TWO events (verified live 2026-06-16): a bare
   // type:'REACTION' event (reactor + linkedMessageID, but NO emoji), and a
@@ -975,20 +1009,6 @@ export async function startBeeperBridge(opts = {}) {
         // bound. No parseable timestamp -> fail-open (echo), same as the backlog gate.
         const tooOldForEcho = echoMaxAgeMs > 0 && tsMs != null && (Date.now() - tsMs) > echoMaxAgeMs;
         if (tooOldForEcho) onLog(`beeper: echo suppressed - note older than bound [${info.title}] (${new Date(tsMs).toISOString()}, bound ${echoMaxAgeMs}ms)`);
-        // 👂 PHASE 3c RECONNECT-REPLAY by ARRIVAL LAG (operator 2026-07-12, Stage B fix): the spine↔app
-        // WS is a LOOPBACK socket to the LOCAL Beeper Desktop — a wifi outage drops the app↔server sync
-        // but NOT this loopback, so ws.on('open') never re-fires and there is no reconnect EVENT to key
-        // off (the lastWsOpenMs approach failed live for exactly this reason). A replay is detectable only
-        // by its LAG: echoTimeoutMs is the exact boundary. A note delivered ≥ echoTimeoutMs after its own
-        // timestamp is one the survivor already echoed (its failover promotion would have fired by now), so
-        // we must grace it — route it through incoming-media's grace window (graceMs below) so the survivor's
-        // ALSO-replayed 👂 cancels this node's echo (kills the reconnect double). Below echoTimeoutMs the
-        // returning primary still posts BEFORE the survivor's promotion fires, so the survivor observes-and-
-        // cancels (single echo). A genuinely live note lags a few seconds (well under echoTimeoutMs), so it is
-        // never delayed. No parseable ts → graceMs 0 (unchanged). Date.now() (NOT the injected scheduler) to
-        // match this file's other echo-age math (tooOldForEcho).
-        const reconnectReplay = tsMs != null && (Date.now() - tsMs) > echoTimeoutMs;
-        if (reconnectReplay) onLog(`beeper: reconnect-replay voice note (arrival lag ≥ ${Math.round(echoTimeoutMs / 1000)}s) [${info.title}] — echo via grace window`);
         // 👂 ECHO PLAN (operator 2026-07-11, Phase 3b HRW ordered failover): this node's rank for the
         // note over the co-account peer set. msg.id is the note's SHARED Beeper message id — IDENTICAL
         // on both co-account nodes (one shared account → the same message → the same per-chat sequence
@@ -999,10 +1019,9 @@ export async function startBeeperBridge(opts = {}) {
         const echoOn = plan.rank >= 1 && !tooOldForEcho;   // is an echo POSSIBLE at all for this note on this node?
         const transcript = await transcribeVoiceNote({
           localPath: path, transcribe, audioCfg,
-          // withEchoLayers wraps the '👂 <transcript>' core with the bridge + transcription
-          // layers (covers immediate/debounced/promoted echoes). With the default EMPTY opens the
-          // 👂 still LEADS, so the observe-and-cancel dedup keeps working; a non-empty *_open lifts
-          // the 👂 off the leading edge and BREAKS it (known limitation — boot warns; see above).
+          // withEchoLayers wraps the '👂 <transcript>' core with the bridge + transcription layers
+          // (covers immediate/debounced/promoted echoes). The coverage query matches on WORD TOKENS, so
+          // it is position-independent — a wrap layer above the 👂 no longer breaks dedup.
           reply: (t) => sendMessage(chatID, withEchoLayers(t), { replyToMessageID: msg.id }),
           enabled: svc.enabled,
           // rank 1 → post now (immediate/debounced); rank>1 → HOLD + arm a promotion at
@@ -1012,7 +1031,10 @@ export async function startBeeperBridge(opts = {}) {
           postsBack: echoOn ? svc.postsBack : false,
           echoRank: plan.rank,          // 1 = rank-1 (post now); >1 = arm the ordered-failover promotion
           echoTimeoutMs,                // per-rank promotion step
-          graceMs: reconnectReplay ? echoTimeoutMs : 0,   // Phase 3c: a reconnect replay arms an observe-then-post window (even at rank-1) so a survivor's replayed 👂 cancels it before it fires
+          // ON-DEMAND COVERAGE (operator 2026-07-12): stand down if a reply to THIS note with a matching
+          // transcript is already in the chat — queried before the post AND re-queried when a promotion
+          // fires (noteCovered). Replaces the observed-set + arrival-lag/grace scaffold entirely.
+          checkCovered: (t) => noteCovered(chatID, msg.id, t),
           scheduler,                    // fake clock in tests; real setTimeout in prod
           muted: info.isMuted,
           // NO author on the 👂 ack (operator 2026-07-10): Beeper exposes no push name,
@@ -1078,15 +1100,10 @@ export async function startBeeperBridge(opts = {}) {
 
     if (text == null) return;   // nothing to route — no text, no announceable media
 
-    // Own-message suppression by persona MARKER: every message E sends starts with
-    // its body_emoji, so an incoming that does is E's own (a re-ingested reply /
-    // streamed edit). Drop it — reliable where the id/text echo race isn't (the
-    // self-chat, where E posts as the operator). Keeps E out of its own context.
-    if (personaEmoji && String(text).trimStart().startsWith(personaEmoji)) {
-      onLog(`beeper: suppressed own persona message in [${info.title}] (marker ${personaEmoji})`);
-      return;
-    }
-
+    // Own-message suppression is by wasSentByUs / isEcho (id + pre-recorded sent-text window, checked
+    // at the top of dispatch): every message E sends is rememberSent BEFORE the POST, so the WS echo —
+    // even one that beats the HTTP response — matches the text window and is dropped there. The old
+    // leading-persona-emoji fallback was removed (operator 2026-07-12): no emoji may reach a decision.
     const st = mentionStatus(text || '', wakeWords);
     // Quoted/replied-to target (operator 2026-07-04). Beeper carries a reply's quoted
     // message id as a BARE `linkedMessageID` (verified live 2026-06-16, MESSAGES-
@@ -1100,12 +1117,6 @@ export async function startBeeperBridge(opts = {}) {
     //      possible; the sent-id set IS the signal. auto-mode already gates on it.
     const replyToId = msg.linkedMessageID ?? msg.replyToMessageID ?? msg.quotedMessageID ?? null;
     const replyToBot = !!(replyToId && wasSentByUs(chatID, replyToId));
-    // 👂 PROMOTION OBSERVE-AND-CANCEL: a co-account peer's 👂 (a reply to a note we may hold a pending
-    // promotion for) now RECORDS the observation + cancels our timer in the WS `message` handler, the
-    // INSTANT it is delivered — BEFORE this serialized dispatch chain, which a slow voice transcribe backs
-    // up (see the EARLY 👂-observe block in connect()). It formerly ran here, but on a reconnect BURST the
-    // peer's 👂 queued behind the replayed voice notes, so a graced note's timer could fire before its
-    // echo was ever dispatched → double. Moved to delivery order; nothing else depends on it here.
     const from = {
       chatId: chatID,                       // opaque Beeper room id (for send-back)
       chatName: info.title,
@@ -1180,19 +1191,6 @@ export async function startBeeperBridge(opts = {}) {
           // gave), so everything downstream (dispatch, reactions, edits, onMedia,
           // onIncoming's `from`) sees the SHORT id only.
           const msg = { ...entry, chatID: shortChatId(entry.chatID ?? ev.chatID) };
-          // EARLY 👂-observe (operator 2026-07-12): record a co-account peer's echo in the observed-set the
-          // INSTANT it is delivered — BEFORE the serialized dispatch chain, which a 5-15s voice transcribe backs
-          // up. On a reconnect re-sync BURST the peer's 👂 messages queue behind the replayed voice notes, so a
-          // graced note's timer could fire before its echo is ever dispatched → double. Recording here (delivery
-          // order, not dispatch order) makes it robust to any transcription backlog. Idempotent + id-space-local
-          // (markEchoObserved both records and cancels any already-armed promotion for the note). Matches
-          // against the htmlToMarkdown'd form (same as the dispatch `text` at line ~901) — not raw msg.text —
-          // since Beeper delivers HTML and may wrap/linkify a 👂 line so the raw string doesn't plainly start
-          // with the marker even though the rendered text does.
-          const _rid = msg.linkedMessageID ?? msg.replyToMessageID ?? msg.quotedMessageID ?? null;
-          if (_rid && String(htmlToMarkdown(msg.text) || '').trimStart().startsWith(ECHO_MARKER)) {
-            if (markEchoObserved(`${msg.chatID}:${_rid}`)) onLog(`beeper: 👂 promotion cancelled — observed echo for note ${_rid}`);
-          }
           // serialize: chain dispatch so a 20s transcribe doesn't overlap the next
           _processing = _processing.then(() => dispatchMessage(msg)).catch(e => onLog(`beeper: dispatch error — ${e?.message ?? e}`));
         }

@@ -11,8 +11,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   transcribeVoiceNote, POSTS_BACK_DELAY_MS, flushPostsBackAck, _resetPostsBackDebounce,
-  cancelPromotion, hasPendingPromotion, _resetPromotions, ECHO_MARKER,
-  markEchoObserved, hasEchoObserved,
+  hasPendingPromotion, _resetPromotions, ECHO_MARKER,
 } from '../src/incoming-media.mjs';
 
 const fakeTranscribe = async () => 'hola que tal';
@@ -195,11 +194,11 @@ describe('transcribeVoiceNote — 👂 posts-back debounce (operator 2026-06-21)
   });
 });
 
-// 👂 PROMOTION — ORDERED FAILOVER (operator 2026-07-11, Phase 3b). A rank>1 co-account node HOLDS
-// its 👂 and posts it at (rank-1)*echoTimeoutMs ONLY if the higher ranks stay silent; it stands down
-// (cancelPromotion) the instant the note's 👂 is observed from a higher rank. Fake clock — no real
-// waits. cancelPromotion stands in for the bridge's observe-and-cancel hook (which fires it on a 👂
-// reply to a pending note; that correlation is locked at the bridge in beeper-bridge.test.mjs).
+// 👂 PROMOTION — ORDERED FAILOVER (operator 2026-07-11, Phase 3b; coverage-query rework 2026-07-12). A
+// rank>1 co-account node HOLDS its 👂 and posts it at (rank-1)*echoTimeoutMs ONLY if the note is STILL
+// uncovered when the timer fires — the promotion RE-QUERIES checkCovered at fire, which REPLACED the
+// in-memory observe-and-cancel + observed-set entirely. checkCovered is the bridge's on-demand noteCovered
+// query (locked at the bridge in beeper-bridge.test.mjs); here we inject a stub. Fake clock — no real waits.
 describe('transcribeVoiceNote — 👂 promotion / ordered failover (operator 2026-07-11)', () => {
   beforeEach(() => { _resetPostsBackDebounce(); _resetPromotions(); });
 
@@ -227,10 +226,10 @@ describe('transcribeVoiceNote — 👂 promotion / ordered failover (operator 20
     localPath: '/n.ogg', transcribe: async () => 'hola', reply: over.reply,
     enabled: true, postsBack: true, muted: false,
     debounceKey: over.debounceKey, echoRank: over.echoRank, echoTimeoutMs: over.echoTimeoutMs ?? 20_000,
-    scheduler: over.scheduler,
+    checkCovered: over.checkCovered, scheduler: over.scheduler,
   });
 
-  it('the marker the bridge correlates on is 👂', () => {
+  it('ECHO_MARKER is the 👂 prefix written into the echo body (never read by a decision)', () => {
     expect(ECHO_MARKER).toBe('👂');
   });
 
@@ -241,7 +240,7 @@ describe('transcribeVoiceNote — 👂 promotion / ordered failover (operator 20
       enabled: true, postsBack: true, echoRank: 1, debounceKey: 'chat:note-1', postsBackDelayMs: 0,
     });
     expect(t).toBe('hola');
-    expect(sent).toEqual(['👂 hola']);                       // rank-1 posts now
+    expect(sent).toEqual(['👂 hola']);                       // rank-1 posts now (default checkCovered → uncovered)
     expect(hasPendingPromotion('chat:note-1')).toBe(false);  // no promotion armed for rank-1
   });
 
@@ -253,22 +252,12 @@ describe('transcribeVoiceNote — 👂 promotion / ordered failover (operator 20
     expect(hasPendingPromotion('chat:note-2')).toBe(true);   // armed
   });
 
-  it('rank-2 OBSERVED before its timer → does NOT post (a higher rank posted; stand down)', async () => {
-    const sent = [];
-    const clock = makeClock();
-    await armVoice({ reply: (x) => sent.push(x), debounceKey: 'chat:note-3', echoRank: 2, echoTimeoutMs: 20_000, scheduler: clock });
-    expect(cancelPromotion('chat:note-3')).toBe(true);       // the bridge observed rank-1's 👂 → cancel
-    await clock.advance(20_000);                             // the timer WOULD have fired here …
-    expect(sent).toEqual([]);                                // … but it was cancelled → no post
-    expect(hasPendingPromotion('chat:note-3')).toBe(false);
-  });
-
-  it('rank-2 UNOBSERVED → posts the HELD transcript exactly at +echoTimeoutMs', async () => {
+  it('rank-2 UNCOVERED → posts the HELD transcript exactly at +echoTimeoutMs', async () => {
     const sent = [];
     const clock = makeClock();
     await armVoice({ reply: (x) => sent.push(x), debounceKey: 'chat:note-4', echoRank: 2, echoTimeoutMs: 20_000, scheduler: clock });
     await clock.advance(19_999); expect(sent).toEqual([]);           // not yet
-    await clock.advance(1);      expect(sent).toEqual(['👂 hola']);  // fires at +T → promotes the held 👂
+    await clock.advance(1);      expect(sent).toEqual(['👂 hola']);  // fires at +T → still uncovered → promotes
   });
 
   it('rank-3 PROMOTES only if BOTH higher ranks stay silent — posts at +2×echoTimeoutMs', async () => {
@@ -277,26 +266,6 @@ describe('transcribeVoiceNote — 👂 promotion / ordered failover (operator 20
     await armVoice({ reply: (x) => sent.push(x), debounceKey: 'chat:note-5', echoRank: 3, echoTimeoutMs: 10_000, scheduler: clock });
     await clock.advance(10_000); expect(sent).toEqual([]);           // +T: rank-2's window (on the peer) — rank-3 waits
     await clock.advance(10_000); expect(sent).toEqual(['👂 hola']);  // +2T: still silent → rank-3 promotes
-  });
-
-  it('rank-3 STANDS DOWN when it observes rank-2\'s post (staggering → exactly one poster with several ranks down)', async () => {
-    const sent = [];
-    const clock = makeClock();
-    await armVoice({ reply: (x) => sent.push(x), debounceKey: 'chat:note-6', echoRank: 3, echoTimeoutMs: 10_000, scheduler: clock });
-    await clock.advance(10_000);                             // +T: rank-2 (a lower-latency peer) posts its 👂 …
-    expect(sent).toEqual([]);                                // rank-3 hasn't reached +2T
-    expect(cancelPromotion('chat:note-6')).toBe(true);       // … which rank-3 observes before its own window → cancel
-    await clock.advance(10_000);                             // +2T
-    expect(sent).toEqual([]);                                // stood down — no double
-  });
-
-  it('an UNRELATED note\'s echo does NOT cancel this promotion (keyed per note)', async () => {
-    const sent = [];
-    const clock = makeClock();
-    await armVoice({ reply: (x) => sent.push(x), debounceKey: 'chat:note-A', echoRank: 2, echoTimeoutMs: 20_000, scheduler: clock });
-    expect(cancelPromotion('chat:note-B')).toBe(false);      // a 👂 for a DIFFERENT note → no-op
-    await clock.advance(20_000);
-    expect(sent).toEqual(['👂 hola']);                       // note-A still promotes (its own key untouched)
   });
 
   it('a TOO-OLD note (postsBack:false at the bridge) neither posts NOR promotes even at rank>1', async () => {
@@ -312,7 +281,7 @@ describe('transcribeVoiceNote — 👂 promotion / ordered failover (operator 20
     expect(sent).toEqual([]);                                // and never posts
   });
 
-  it('rank>1 with NO per-note key WITHHOLDS (can\'t correlate a cancel → fail-safe, no double)', async () => {
+  it('rank>1 with NO per-note key WITHHOLDS (can\'t key a promotion → fail-safe, no double)', async () => {
     const sent = [];
     const clock = makeClock();
     await transcribeVoiceNote({
@@ -324,117 +293,65 @@ describe('transcribeVoiceNote — 👂 promotion / ordered failover (operator 20
     expect(sent).toEqual([]);          // withheld
   });
 
-  // 👂 OBSERVED-ECHO SET (operator 2026-07-11): the one authority every post path consults. The bridge
-  // RECORDS a peer's 👂 (markEchoObserved) even when nothing is armed yet, so a slow standby arming
-  // AFTER the fast primary already posted still stands down — the double the bare observe-and-cancel
-  // missed (nothing to cancel at observe time). Keyed per note.
+  // 👂 ON-DEMAND COVERAGE (operator 2026-07-12): checkCovered (the bridge's noteCovered) is the ONE
+  // authority — consulted BEFORE any post/arm, and RE-QUERIED when a promotion fires. A covered note
+  // stands down but is still HEARD (the transcript returns). Replaces the deleted observed-set.
 
-  it('ARMING-ORDER DOUBLE fix: observed FIRST, then a slow rank-2 arms → never arms, never posts', async () => {
-    const sent = [];
-    const clock = makeClock();
-    markEchoObserved('chat:noteA');                                    // the fast primary's 👂 was seen first (nothing armed yet)
-    expect(hasEchoObserved('chat:noteA')).toBe(true);                  // …but it was RECORDED
-    await armVoice({ reply: (x) => sent.push(x), debounceKey: 'chat:noteA', echoRank: 2, echoTimeoutMs: 20_000, scheduler: clock });
-    expect(hasPendingPromotion('chat:noteA')).toBe(false);             // stood down at arm time — nothing armed
-    await clock.advance(20_000);                                       // even past the promotion window …
-    expect(sent).toEqual([]);                                          // … it never posts (no double). OLD code would double here.
-  });
-
-  it('TRUE FAILOVER still works: rank-2 with NO prior observe arms + posts exactly once', async () => {
-    const sent = [];
-    const clock = makeClock();
-    await armVoice({ reply: (x) => sent.push(x), debounceKey: 'chat:noteB', echoRank: 2, echoTimeoutMs: 20_000, scheduler: clock });
-    expect(hasPendingPromotion('chat:noteB')).toBe(true);             // primary silent so far → armed
-    await clock.advance(20_000);
-    expect(sent).toEqual(['👂 hola']);                                // failover fires exactly once
-  });
-
-  it('OBSERVE-AFTER-ARM (normal 3b): arm, then markEchoObserved cancels it → never posts', async () => {
-    const sent = [];
-    const clock = makeClock();
-    await armVoice({ reply: (x) => sent.push(x), debounceKey: 'chat:noteC', echoRank: 2, echoTimeoutMs: 20_000, scheduler: clock });
-    expect(markEchoObserved('chat:noteC')).toBe(true);               // observed AFTER arm → folds in the cancel (returns true)
-    await clock.advance(20_000);
-    expect(sent).toEqual([]);                                         // cancelled → no post
-    expect(hasPendingPromotion('chat:noteC')).toBe(false);
-  });
-
-  it('RANK-1 STANDS DOWN if the note was already echoed (immediate path)', async () => {
-    const sent = [];
-    markEchoObserved('chat:noteD');                                   // a peer already echoed this note
-    const t = await transcribeVoiceNote({
-      localPath: '/n.ogg', transcribe: async () => 'hola', reply: (x) => sent.push(x),
-      enabled: true, postsBack: true, echoRank: 1, debounceKey: 'chat:noteD', postsBackDelayMs: 0,
-    });
-    expect(t).toBe('hola');                                           // still HEARD
-    expect(sent).toEqual([]);                                         // …but not re-posted
-  });
-
-  it('RANK-1 NORMAL: no prior observe → posts once immediately', async () => {
+  it('checkCovered→true (rank-1 immediate): stands down, never posts, still HEARD', async () => {
     const sent = [];
     const t = await transcribeVoiceNote({
       localPath: '/n.ogg', transcribe: async () => 'hola', reply: (x) => sent.push(x),
-      enabled: true, postsBack: true, echoRank: 1, debounceKey: 'chat:noteE', postsBackDelayMs: 0,
+      enabled: true, postsBack: true, echoRank: 1, debounceKey: 'chat:cov-1', postsBackDelayMs: 0,
+      checkCovered: async () => true,
     });
-    expect(t).toBe('hola');
+    expect(t).toBe('hola');       // HEARD
+    expect(sent).toEqual([]);     // …but not posted (already covered)
+  });
+
+  it('checkCovered→false (rank-1 immediate): posts once', async () => {
+    const sent = [];
+    await transcribeVoiceNote({
+      localPath: '/n.ogg', transcribe: async () => 'hola', reply: (x) => sent.push(x),
+      enabled: true, postsBack: true, echoRank: 1, debounceKey: 'chat:cov-2', postsBackDelayMs: 0,
+      checkCovered: async () => false,
+    });
     expect(sent).toEqual(['👂 hola']);
   });
 
-  // 👂 PHASE 3c RECONNECT GRACE (operator 2026-07-11, Stage B — reconnect duplication). A WS-reconnect
-  // REPLAY note (graceMs > 0) is routed through an ARM-then-post-if-unobserved window EVEN at rank-1,
-  // so the survivor's replayed 👂 (recorded via markEchoObserved) cancels this node's pending echo
-  // before it fires — killing the reconnect double. graceMs 0 = a live note (unchanged).
-  const graceVoice = (over) => transcribeVoiceNote({
-    localPath: '/n.ogg', transcribe: async () => 'hola', reply: over.reply,
-    enabled: true, postsBack: true, muted: false, postsBackDelayMs: 0,
-    debounceKey: over.debounceKey, echoRank: over.echoRank ?? 1, graceMs: over.graceMs ?? 0,
-    echoTimeoutMs: over.echoTimeoutMs ?? 20_000, scheduler: over.scheduler,
+  it('checkCovered is called with THIS node\'s bare transcript', async () => {
+    const seen = [];
+    await transcribeVoiceNote({
+      localPath: '/n.ogg', transcribe: async () => 'hola que tal', reply: () => {},
+      enabled: true, postsBack: true, echoRank: 1, debounceKey: 'chat:cov-3', postsBackDelayMs: 0,
+      checkCovered: async (t) => { seen.push(t); return false; },
+    });
+    expect(seen).toEqual(['hola que tal']);
   });
 
-  it('RECONNECT STAND-DOWN: rank-1 REPLAY arms (no immediate post); a survivor 👂 then cancels it → no double', async () => {
+  it('rank-2 promotion RE-CHECKS coverage at FIRE: covered by fire time → never posts', async () => {
     const sent = [];
     const clock = makeClock();
-    await graceVoice({ reply: (x) => sent.push(x), debounceKey: 'chat:RA', echoRank: 1, graceMs: 20_000, scheduler: clock });
-    expect(sent).toEqual([]);                                  // did NOT post immediately (OLD rank-1 code would)
-    expect(hasPendingPromotion('chat:RA')).toBe(true);         // armed the grace window instead
-    markEchoObserved('chat:RA');                               // the survivor's replayed 👂 for the note
-    await clock.advance(20_000);                               // past the grace window …
-    expect(sent).toEqual([]);                                  // … stood down → no double 👂
-  });
-
-  it('RECONNECT, NO PEER (both were down): rank-1 REPLAY posts exactly once after the grace window', async () => {
-    const sent = [];
-    const clock = makeClock();
-    await graceVoice({ reply: (x) => sent.push(x), debounceKey: 'chat:RB', echoRank: 1, graceMs: 20_000, scheduler: clock });
-    expect(hasPendingPromotion('chat:RB')).toBe(true);
+    let covered = false;   // uncovered at arm; a peer's echo lands before the window elapses
+    await armVoice({
+      reply: (x) => sent.push(x), debounceKey: 'chat:cov-4', echoRank: 2, echoTimeoutMs: 20_000, scheduler: clock,
+      checkCovered: async () => covered,
+    });
+    expect(hasPendingPromotion('chat:cov-4')).toBe(true);   // armed (uncovered at arm time)
+    covered = true;                                         // covered before the timer fires
     await clock.advance(20_000);
-    expect(sent).toEqual(['👂 hola']);                         // no peer observed → posts once
+    expect(sent).toEqual([]);                               // re-checked at fire → covered → stood down (no double)
   });
 
-  it('LIVE RANK-1 UNCHANGED: graceMs 0 → posts immediately, nothing armed', async () => {
+  it('rank-2 promotion RE-CHECKS coverage at FIRE: still uncovered → posts once', async () => {
     const sent = [];
     const clock = makeClock();
-    await graceVoice({ reply: (x) => sent.push(x), debounceKey: 'chat:RC', echoRank: 1, graceMs: 0, scheduler: clock });
-    expect(sent).toEqual(['👂 hola']);                         // immediate (live path)
-    expect(hasPendingPromotion('chat:RC')).toBe(false);
-  });
-
-  it('ALREADY-OBSERVED BEFORE PROCESSING: the top guard stands down immediately (no post, nothing armed)', async () => {
-    const sent = [];
-    const clock = makeClock();
-    markEchoObserved('chat:RD');                               // survivor's 👂 seen before we even process the note
-    await graceVoice({ reply: (x) => sent.push(x), debounceKey: 'chat:RD', echoRank: 1, graceMs: 20_000, scheduler: clock });
-    expect(sent).toEqual([]);                                  // top hasEchoObserved guard → no post
-    expect(hasPendingPromotion('chat:RD')).toBe(false);        // …and no grace window armed
-  });
-
-  it('RANK-2 REPLAY: grace is ADDED to the rank stagger → fires at (rank-1)*T + grace (ordering preserved)', async () => {
-    const sent = [];
-    const clock = makeClock();
-    await graceVoice({ reply: (x) => sent.push(x), debounceKey: 'chat:RE', echoRank: 2, graceMs: 20_000, echoTimeoutMs: 20_000, scheduler: clock });
-    expect(hasPendingPromotion('chat:RE')).toBe(true);
-    await clock.advance(20_000); expect(sent).toEqual([]);            // (2-1)*20000 + 20000 = 40000 → not yet
-    await clock.advance(20_000); expect(sent).toEqual(['👂 hola']);  // fires at 40000 → grace added to the stagger
+    await armVoice({
+      reply: (x) => sent.push(x), debounceKey: 'chat:cov-5', echoRank: 2, echoTimeoutMs: 20_000, scheduler: clock,
+      checkCovered: async () => false,
+    });
+    expect(hasPendingPromotion('chat:cov-5')).toBe(true);
+    await clock.advance(20_000);
+    expect(sent).toEqual(['👂 hola']);                      // failover fires exactly once
   });
 });
 
