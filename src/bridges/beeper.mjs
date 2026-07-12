@@ -53,6 +53,7 @@ import WebSocket from 'ws';
 import { transcribeAudioFile } from '../tools/transcribe.mjs';
 import { transcribeVoiceNote, voiceTranscriptBody, POSTS_BACK_DELAY_MS, cancelPromotion, markEchoObserved, ECHO_MARKER } from '../incoming-media.mjs';
 import { htmlToMarkdown } from '../html-to-markdown.mjs';
+import { applyLayers } from './signature-layers.mjs';
 import { reactionAction, editAction } from '../dispatch-line.mjs';
 import { mentionStatus } from '../auto-mode.mjs';
 import { mediaKind } from '../media-kind.mjs';
@@ -163,6 +164,17 @@ export async function startBeeperBridge(opts = {}) {
     // posts as the operator's account, so id/text echo-suppression can race; this
     // content marker never does, and it keeps transcript.md linear).
     personaEmoji = null,
+    // Per-NODE 👂-echo WRAP layers (operator 2026-07-12): the 👂 transcript echo this bridge
+    // posts is wrapped concentrically — outer bridge_signature_open/close (identifies WHICH SPINE
+    // posted: REVE `kg` vs DOLLY `do` on one account), inner transcription_open/close (the 👂
+    // feature's own frame) — around the '👂 <transcript>' core. All default EMPTY → nothing added
+    // (zero behavior change). The persona-reply layers are applied one layer up (beeper-port.mjs,
+    // where the persona stamp is). ⚠️ A non-empty *_open lifts the 👂 off the leading edge — see
+    // withEchoLayers below (observe-cancel constraint).
+    bridgeSignatureOpen = '',
+    bridgeSignatureClose = '',
+    transcriptionOpen = '',
+    transcriptionClose = '',
     // The persona wake-word set (operator 2026-07-07): the network-wide default e/egpt
     // PLUS the persona agent's name + every configured handle (boot derives it from the
     // agents block). The gate hardcoded e/egpt and never read the config, so a node
@@ -221,6 +233,19 @@ export async function startBeeperBridge(opts = {}) {
   const token = beeperToken || process.env.BEEPER_ACCESS_TOKEN;
   const audioCfg = transcribeCfg ?? media.audio_transcribe ?? {};
   const mediaDownloadPolicy = media.download ?? 'all';   // 'all' | 'images_docs' | 'off'
+  // The 👂 echo's concentric WRAP: outer bridge_signature_open/close (which SPINE), inner
+  // transcription_open/close (the 👂 feature), around the '👂 <transcript>' core. Empty (default)
+  // → text unchanged. Wraps the reply closure once → covers immediate/debounced/promoted echoes.
+  // ⚠️ OBSERVE-CANCEL CONSTRAINT (known limitation): the promotion observe-and-cancel keys on a
+  // delivered message that STARTS with 👂 (markEchoObserved, ~line 1180). bridge_signature_open /
+  // transcription_open are prepended ABOVE the 👂, so a NON-EMPTY open makes the echo no longer
+  // lead with 👂 → the co-account peer no longer recognizes it → BREAKS the leading-marker dedup
+  // (double-👂 hazard). Boot WARNS when an open is set on a >1-peer node; opens must stay empty
+  // until observe-cancel is reworked to key on a marker that survives a prepended open.
+  const withEchoLayers = (t) => applyLayers(t, [
+    { open: bridgeSignatureOpen, close: bridgeSignatureClose },
+    { open: transcriptionOpen, close: transcriptionClose },
+  ]);
   const onLog = (m) => {
     try { appendFileSync(_BEEPER_LOG, `${new Date().toISOString()} ${m}\n`); } catch { /* ignore */ }
     try { _onLog(m); } catch { /* ignore */ }
@@ -974,7 +999,11 @@ export async function startBeeperBridge(opts = {}) {
         const echoOn = plan.rank >= 1 && !tooOldForEcho;   // is an echo POSSIBLE at all for this note on this node?
         const transcript = await transcribeVoiceNote({
           localPath: path, transcribe, audioCfg,
-          reply: (t) => sendMessage(chatID, t, { replyToMessageID: msg.id }),
+          // withEchoLayers wraps the '👂 <transcript>' core with the bridge + transcription
+          // layers (covers immediate/debounced/promoted echoes). With the default EMPTY opens the
+          // 👂 still LEADS, so the observe-and-cancel dedup keeps working; a non-empty *_open lifts
+          // the 👂 off the leading edge and BREAKS it (known limitation — boot warns; see above).
+          reply: (t) => sendMessage(chatID, withEchoLayers(t), { replyToMessageID: msg.id }),
           enabled: svc.enabled,
           // rank 1 → post now (immediate/debounced); rank>1 → HOLD + arm a promotion at
           // (rank-1)*echoTimeoutMs (incoming-media). A non-winner still HEARS (transcribes + logs);

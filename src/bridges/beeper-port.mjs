@@ -15,6 +15,7 @@
 // (tests/beeper-port.test.mjs). The live echo verify is tests-manual/phase2-echo.mjs.
 import { startBeeperBridge } from './beeper.mjs';
 import { createFloodGuard } from '../flood-guard.mjs';
+import { applyLayers } from './signature-layers.mjs';
 
 // NOTE (placeholder id resolution): resolveSentMessageId (beeper.mjs) text-matches
 // the recent list and reduces with newerMsgId, which since d7614b8 picks the
@@ -64,8 +65,27 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
   // backlog replay, an echo-suppression miss). Every outbound (send + stream open)
   // passes through it; > `limit` to one chat within `windowMs` PAUSES that chat for
   // `cooldownMs`. This is port-level, so it is not forwarded to startBeeperBridge.
-  const { flood = {}, ...rest } = opts;
+  const { flood = {}, ...rest } = opts;   // bridge_* + transcription_* stay in `rest` → forwarded to startBeeperBridge for the 👂 echo layers
   const onLog = opts.onLog ?? (() => {});
+  // Per-NODE infra WRAP (operator 2026-07-12): bridge_signature_open/close bracket EVERY fully
+  // persona-STAMPED message — open ABOVE, close BELOW — identifying WHICH SPINE posted (REVE `kg`
+  // vs DOLLY `do` sharing one Beeper account). Concentric with the per-AGENT agent_signature_open/
+  // close (resolved per-being by the sender, delivered in opts). Both default EMPTY → output
+  // byte-identical to today. Applied ONLY when a FULL persona header (bodyEmoji + label) was
+  // stamped, so mode:auto plain posts (no bodyEmoji) get NOTHING. See ./signature-layers.mjs.
+  const bridgeSignatureOpen = opts.bridgeSignatureOpen ?? '';
+  const bridgeSignatureClose = opts.bridgeSignatureClose ?? '';
+  // Wrap a persona reply concentrically: outer bridge layer (per-node, above), inner agent layer
+  // (per-being, from opts.agentSig*), around the stamped core. Gated on a full persona header so a
+  // plain/auto send passes through unstamped + unwrapped (byte-identical to a bare send).
+  const wrapPersona = (o, text) => {
+    const core = personaStamp(o.bodyEmoji, o.label, text);
+    if (!(o.bodyEmoji && o.label)) return core;   // plain/auto → no header → no layers
+    return applyLayers(core, [
+      { open: bridgeSignatureOpen, close: bridgeSignatureClose },
+      { open: o.agentSigOpen ?? '', close: o.agentSigClose ?? '' },
+    ]);
+  };
   const floodGuard = createFloodGuard({
     limit: Number(flood.limit ?? 10) || 10,
     windowMs: Number(flood.window_ms ?? 3_000) || 3_000,
@@ -102,7 +122,10 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
     // here so no caller can omit it.
     send(chat, text, opts = {}) {
       if (!floodGuard.allow(chat)) { onLog(`flood-guard: send to ${chat} BLOCKED (flood pause)`); return { blocked: true }; }
-      return real.send(personaStamp(opts.bodyEmoji, opts.label, text), { chatId: chat, replyToMessageID: opts.replyTo ?? null });
+      // wrapPersona brackets the reply with the bridge + agent layers only when a full persona
+      // header was stamped (bodyEmoji + label) — covers the persona reply's non-streamed §7
+      // fallback; a plain/auto send (no bodyEmoji) passes through unstamped + unwrapped.
+      return real.send(wrapPersona(opts, text), { chatId: chat, replyToMessageID: opts.replyTo ?? null });
     },
 
     // In-place edit-stream. Returns the §2b { update, finish, delete } plus
@@ -133,7 +156,10 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
       const h = real.startStreamMessage(placeholder, { chatId: chat, persona: opts.persona, replyToMessageID: opts.replyTo ?? null, existingMsgId: opts.existingMsgId ?? null, showThink: opts.showThink ?? false });
       return {
         update: (t) => h.update(stamp(t)),
-        finish: (t) => h.finish(stamp(t)),
+        // The infra + agent layers land ONLY on the FINAL, completed reply — the placeholder +
+        // intermediate frames stay un-wrapped (bare stamp), so the signatures appear once, at the
+        // end, and the placeholder-id resolution still matches the un-wrapped placeholder text.
+        finish: (t) => h.finish(wrapPersona(opts, t)),
         delete: () => h.delete?.(),
         get delivered() { return h.delivered; },
         get lastError() { return h.lastError; },

@@ -164,3 +164,74 @@ describe('beeper-port adapter', () => {
     expect(spy.stopped).toBe(true);
   });
 });
+
+// Layered signatures (operator 2026-07-12) — the persona reply wraps [bridge, agent] concentrically
+// around the stamped core (🐶 egpt\n… ∎). bridge_signature_open/close are per-NODE (port construction);
+// agent_signature_open/close are per-AGENT, resolved by the sender and delivered in the send/stream opts
+// (agentSigOpen/agentSigClose). Order top→bottom: bridge_open, agent_open, CORE, agent_close, bridge_close.
+// The ∎ stays INSIDE the core (sender-supplied); these are ADDITIONAL wrapper lines. Applied ONLY on a
+// full persona header (bodyEmoji + label) — NEVER on mode:auto plain posts. The 👂 echo layers live one
+// layer down (beeper.mjs); this layer forwards bridge_* + transcription_* onward.
+describe('beeper-port adapter — layered signatures (bridge + agent wrap)', () => {
+  it('a streamed persona reply renders CONCENTRIC (bridge_open, agent_open, CORE, agent_close, bridge_close); placeholder/updates stay un-wrapped', async () => {
+    const { start, spy } = fakeStart();
+    const port = await createBeeperBridgePort({ bridgeSignatureOpen: '🌉kg', bridgeSignatureClose: '💸' }, { start });
+    const s = port.startStream('!room', '⏳', { persona: 'e', bodyEmoji: '🐶', label: 'egpt', replyTo: 'm7', agentSigOpen: '— e —', agentSigClose: '~ e' });
+    s.update('Hola ⏳');
+    s.finish('Hola mundo ∎');                                    // sender supplies the ∎ end-mark (inside the core)
+    const h = spy.streams[0];
+    expect(h.init).toBe('🐶 egpt\n⏳');                          // placeholder: bare stamp, NO wrap (id resolution matches this)
+    expect(h.updates).toEqual(['🐶 egpt\nHola ⏳']);             // intermediate frame: NO wrap (sigs appear once, at the end)
+    // FINAL: outer bridge_open, inner agent_open, the stamped core (with ∎ inline), inner agent_close, outer bridge_close
+    expect(h.finals).toEqual(['🌉kg\n— e —\n🐶 egpt\nHola mundo ∎\n~ e\n💸']);
+    expect(h.finals[0].startsWith('🌉kg')).toBe(true);
+    expect(h.finals[0].endsWith('\n💸')).toBe(true);
+  });
+
+  it('each slot works alone — only agent_open+agent_close set (bridge empty) wraps just the inner layer', async () => {
+    const { start, spy } = fakeStart();
+    const port = await createBeeperBridgePort({}, { start });   // no bridge_* → outer layer invisible
+    const s = port.startStream('!room', '⏳', { bodyEmoji: '🐶', label: 'egpt', agentSigOpen: 'A_open', agentSigClose: 'A_close' });
+    s.finish('Hola ∎');
+    expect(spy.streams[0].finals).toEqual(['A_open\n🐶 egpt\nHola ∎\nA_close']);   // agent layer only, concentric around the core
+  });
+
+  it('only bridge_open+bridge_close set (agent empty) wraps just the outer layer', async () => {
+    const { start, spy } = fakeStart();
+    const port = await createBeeperBridgePort({ bridgeSignatureOpen: 'B_open', bridgeSignatureClose: 'B_close' }, { start });
+    const s = port.startStream('!room', '⏳', { bodyEmoji: '🐶', label: 'egpt' });   // no agentSig* → inner layer invisible
+    s.finish('Hola ∎');
+    expect(spy.streams[0].finals).toEqual(['B_open\n🐶 egpt\nHola ∎\nB_close']);
+  });
+
+  it('the §7 fallback send of a persona reply carries the same concentric wrap', async () => {
+    const { start, spy } = fakeStart();
+    const port = await createBeeperBridgePort({ bridgeSignatureOpen: '🌉', bridgeSignatureClose: '💸' }, { start });
+    await port.send('!room', 'reply ∎', { bodyEmoji: '🐶', label: 'egpt', replyTo: 'm1', agentSigOpen: 'A_open', agentSigClose: 'A_close' });
+    expect(spy.sent[0].text).toBe('🌉\nA_open\n🐶 egpt\nreply ∎\nA_close\n💸');
+  });
+
+  it('mode:auto plain posts get NO layers — no persona stamp → no wrap', async () => {
+    const { start, spy } = fakeStart();
+    const port = await createBeeperBridgePort({ bridgeSignatureOpen: '🌉', bridgeSignatureClose: '💸' }, { start });
+    await port.send('!room', 'Hey, all good', {});   // auto branch: no bodyEmoji/label passed
+    expect(spy.sent[0].text).toBe('Hey, all good');   // unstamped → nothing added
+  });
+
+  it('with ALL slots empty (default), a streamed persona reply is BYTE-IDENTICAL to today (regression lock)', async () => {
+    const { start, spy } = fakeStart();
+    const port = await createBeeperBridgePort({}, { start });   // no bridge_*, no agentSig*
+    const s = port.startStream('!room', '⏳', { bodyEmoji: '🐶', label: 'egpt' });
+    s.finish('Hola ∎');
+    expect(spy.streams[0].finals).toEqual(['🐶 egpt\nHola ∎']);   // exactly today's output
+  });
+
+  it('forwards bridge_* + transcription_* through to startBeeperBridge (the 👂 echo layers are applied there)', async () => {
+    const { start, spy } = fakeStart();
+    await createBeeperBridgePort({ bridgeSignatureOpen: '🌉', bridgeSignatureClose: '💸', transcriptionOpen: 'T_open', transcriptionClose: 'T_close' }, { start });
+    expect(spy.captured.bridgeSignatureOpen).toBe('🌉');
+    expect(spy.captured.bridgeSignatureClose).toBe('💸');
+    expect(spy.captured.transcriptionOpen).toBe('T_open');    // reaches beeper.mjs for the 👂 echo wrap
+    expect(spy.captured.transcriptionClose).toBe('T_close');
+  });
+});

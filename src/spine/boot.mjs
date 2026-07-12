@@ -231,6 +231,20 @@ export async function boot({
     const a = agents()[String(being ?? '').toLowerCase()];
     return (a && typeof a === 'object' && a.signature != null) ? a.signature : (cfg.signature ?? '∎');
   };
+  // Per-AGENT signature WRAP (operator 2026-07-12): agent_signature_open/close bracket a persona/being
+  // reply as the INNER concentric layer (bridge_signature_* is the outer, per-node layer — resolved at
+  // the bridge). These fall back agent → node → '' EXACTLY like signatureOf (agent → node → '∎'). The
+  // sender resolves them per-being and hands them to the port, which does the wrap. Default '' → nothing
+  // added (output byte-identical to today). Kept SEPARATE from the ∎/`signature` end-marker: ∎ stays
+  // inline INSIDE the core (the reply's end-mark); these are ADDITIONAL wrapper lines around it.
+  const agentSignatureOpenOf = (being) => {
+    const a = agents()[String(being ?? '').toLowerCase()];
+    return (a && typeof a === 'object' && a.agent_signature_open != null) ? a.agent_signature_open : (cfg.agent_signature_open ?? '');
+  };
+  const agentSignatureCloseOf = (being) => {
+    const a = agents()[String(being ?? '').toLowerCase()];
+    return (a && typeof a === 'object' && a.agent_signature_close != null) ? a.agent_signature_close : (cfg.agent_signature_close ?? '');
+  };
 
   // conv-state YAML IO — default to the real file, missing = empty state.
   const _loadState = loadState ?? (async () => {
@@ -376,6 +390,17 @@ export async function boot({
     return acct?.token ?? cfg.beeper_token ?? process.env.BEEPER_ACCESS_TOKEN;
   })();
 
+  // PRE-👂 OPEN vs OBSERVE-CANCEL (operator 2026-07-12, known limitation): bridge_signature_open /
+  // transcription_open are prepended ABOVE the 👂 of a transcript echo, so a non-empty value makes the
+  // echo no longer LEAD with 👂 — which BREAKS the leading-marker observe-and-cancel (markEchoObserved,
+  // src/bridges/beeper.mjs) that keeps two co-account spines from double-echoing. WARN (not fatal) when
+  // an open is set on a multi-peer node; the operator must rework observe-cancel before relying on a
+  // pre-👂 open. A single-peer node never double-echoes, so it is not warned. (.trim() mirrors applyLayers'
+  // whitespace-skip: a whitespace-only open contributes nothing and doesn't lift the 👂.)
+  if (accountPeers.length > 1 && (String(cfg.bridge_signature_open ?? '').trim() || String(cfg.transcription_open ?? '').trim())) {
+    log.line?.(`[bridge] ⚠️ bridge_signature_open / transcription_open is set with ${accountPeers.length} account_peers — a pre-👂 OPEN lifts the 👂 off the leading edge, BREAKING the leading-marker observe-cancel (double-👂 hazard). Keep the *_open slots empty until observe-cancel is reworked.`);
+  }
+
   // --- ports ---
   const bridge = await createBeeperBridgePort({
     beeperToken,
@@ -402,6 +427,16 @@ export async function boot({
     postsBackDelayMs: tx.postsBackDelayMs,                      // how fast the 👂 transcript echoes back
     flood: cfg.flood ?? {},               // send-flood guard (limit / window_ms / cooldown_ms) per chat
     personaEmoji: bodyEmojiOf(defaultKey),// 🐶 — the marker the bridge uses to suppress E's own re-ingested messages
+    // Per-NODE infra WRAP layers (operator 2026-07-12): bridge_signature_open/close bracket persona
+    // replies + 👂 echoes (which SPINE posted: REVE kg vs DOLLY do); transcription_open/close is the
+    // 👂 echo's own inner frame. All default '' → nothing added (byte-identical to today). The port
+    // uses bridge_* for persona replies + forwards bridge_* + transcription_* to the 👂 echo. Agent
+    // layers are per-being (agentSignature*Of), resolved in the sender, not here. ⚠️ *_open lifts the
+    // 👂 off the leading edge → breaks observe-cancel on a >1-peer node (warned above).
+    bridgeSignatureOpen: cfg.bridge_signature_open ?? '',
+    bridgeSignatureClose: cfg.bridge_signature_close ?? '',
+    transcriptionOpen: cfg.transcription_open ?? '',
+    transcriptionClose: cfg.transcription_close ?? '',
     wakeWords,                            // the persona agent's OWN name + handles only — nothing injected (operator 2026-07-09)
     echoPlan,                             // 👂 echo PLAN: () => { rank, winner } — STATIC priority rank + ordered failover (operator 2026-07-11, Phase 3b; note-INDEPENDENT, the noteId arg is ignored). rank 1 posts now; rank>1 arms a promotion at (rank-1)*echoTimeoutMs, cancelled on observing the note's 👂; rank 0 (echo:false opt-out) never posts/promotes.
     echoTimeoutMs,                        // 👂 per-rank promotion step (ms); GENEROUS default so a SLOW rank-1 isn't mistaken for a DOWN one (double-👂 hazard).
@@ -468,7 +503,7 @@ export async function boot({
     // the persona's KEY (operator 2026-07-10 — no hardcoded 'e'/'egpt').
     router: createRouter({ getAgents: () => cfg.agents ?? {}, defaultBeing: defaultKey, getNode: () => cfg.node_name ?? null, getAliases: () => cfg.node_alias ?? [], meshEnabled: () => !!cfg.mesh }),
     transcript: createTranscript({ contacts, persona: labelOf(defaultKey), defaultKey, node_name, io, onLog: (m) => log.line?.(`[transcript] ${m}`) }),
-    sender: createSender({ bridge, bodyEmojiOf, labelOf, signatureOf, defaultKey }),
+    sender: createSender({ bridge, bodyEmojiOf, labelOf, signatureOf, agentSignatureOpenOf, agentSignatureCloseOf, defaultKey }),
     // The real cadence registry the spine's tick() drives. The heartbeat LOADER
     // (below) collects every declarative heartbeat and registers it here, so each
     // beat rides the loop's own tick instead of a side timer (operator 2026-07-01).

@@ -30,7 +30,7 @@ const THINKING = '⏳ Thinking…';   // NOT a lone emoji (renders oversized in 
 // and — via `ahead` — from every other queued one, so each resolves to its own id.
 const QUEUED = (ahead) => `⏳ Queued (${ahead} ahead)…`;
 
-export function createSender({ bridge, bodyEmojiOf = () => null, labelOf = () => null, signatureOf = () => '∎', defaultKey = 'e' } = {}) {
+export function createSender({ bridge, bodyEmojiOf = () => null, labelOf = () => null, signatureOf = () => '∎', agentSignatureOpenOf = () => '', agentSignatureCloseOf = () => '', defaultKey = 'e' } = {}) {
   if (!bridge) throw new Error('createSender: bridge is required');
   const textOf = (v) => (typeof v === 'string' ? v : v?.text ?? '');
   return {
@@ -56,7 +56,12 @@ export function createSender({ bridge, bodyEmojiOf = () => null, labelOf = () =>
       const bodyEmoji = bodyEmojiOf(being);
       const label = labelOf(being);
       const endMark = signatureOf(being);          // the reply-train end-marker: this being's signature (agent → node → '∎')
-      const tag = { bodyEmoji, label, replyTo };   // the bridge enforces the persona stamp (emoji + label) from these
+      // The per-AGENT signature WRAP (operator 2026-07-12): agent_signature_open/close bracket the
+      // stamped reply as the INNER layer (the bridge does the concentric wrap in beeper-port). Resolved
+      // per-being here (agent → node → ''), mirroring signatureOf; default empty → nothing added.
+      const agentSigOpen = agentSignatureOpenOf(being);
+      const agentSigClose = agentSignatureCloseOf(being);
+      const tag = { bodyEmoji, label, replyTo, agentSigOpen, agentSigClose };   // the bridge enforces the persona stamp (emoji + label) + wraps the layers from these
       const stream = bridge.startStream?.(chatId, queued ? QUEUED(queuedAhead) : THINKING, { ...tag, persona: being });
       let acc = '';
       return {

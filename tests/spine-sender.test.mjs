@@ -61,7 +61,8 @@ describe('sender — single-message reply train', () => {
     bridge.startStream = (chat, init, opts) => { const h = { update() {}, async finish() {}, async delete() {}, delivered: false }; bridge.streams.push(h); return h; };
     const out = createSender({ bridge, bodyEmojiOf: () => '🐶' }).open('!c', { being: 'e', replyTo: 'm1' });
     await out.finish({ text: 'reply' });
-    expect(bridge.sent).toEqual([{ chat: '!c', text: 'reply ∎', opts: { bodyEmoji: '🐶', label: null, replyTo: 'm1' } }]);
+    // The tag now also carries the per-agent signature-wrap slots (empty by default → the port adds nothing).
+    expect(bridge.sent).toEqual([{ chat: '!c', text: 'reply ∎', opts: { bodyEmoji: '🐶', label: null, replyTo: 'm1', agentSigOpen: '', agentSigClose: '' } }]);
   });
 
   it('send failure ends the message with ❌', async () => {
@@ -86,6 +87,32 @@ describe('sender — single-message reply train', () => {
     const out2 = sender.open('!c', { being: 'wren' });
     await out2.finish({ text: '' }, { surface: true });           // empty → no-reply marker carries the signature too
     expect(bridge.streams[1].finals).toEqual(['⚠️ no reply (turn failed/empty) ~ wren']);
+  });
+
+  // MULTILINE signature (constraint #4, operator 2026-07-12): a signature may be multiline; it must
+  // render as a BLOCK at the reply end, not flattened/space-joined. createSender joins it verbatim
+  // (`${t} ${endMark}`), so the newline survives — verified here so a later refactor can't regress it.
+  it('a MULTILINE signature renders as a block at the reply end (newline preserved, not flattened)', async () => {
+    const bridge = fakeBridge();
+    const signatureOf = () => 'line1\nline2';
+    const out = createSender({ bridge, bodyEmojiOf: () => '🐶', signatureOf }).open('!c', { being: 'e', replyTo: 'm1' });
+    await out.finish({ text: 'Hola mundo' });
+    expect(bridge.streams[0].finals).toEqual(['Hola mundo line1\nline2']);   // block survives — newline intact
+  });
+
+  // PER-AGENT signature-wrap slots (operator 2026-07-12): the sender resolves agent_signature_open/close
+  // per-being (agent → node → '', injected like signatureOf) and threads them into the tag; the PORT does
+  // the concentric wrap. Here the fake bridge just records the tag, so this locks the resolution + hand-off.
+  it('threads the being\'s resolved agent_signature open/close into the stream + fallback tag', async () => {
+    const bridge = fakeBridge();
+    bridge.startStream = (chat, init, opts) => { const h = { update() {}, async finish() {}, async delete() {}, delivered: false, opts }; bridge.streams.push(h); return h; };
+    const agentSignatureOpenOf = (being) => (being === 'wren' ? '⟨wren⟩' : '');
+    const agentSignatureCloseOf = (being) => (being === 'wren' ? '⟨/wren⟩' : '');
+    const out = createSender({ bridge, bodyEmojiOf: () => '🐦', agentSignatureOpenOf, agentSignatureCloseOf })
+      .open('!c', { being: 'wren', replyTo: 'm1' });
+    expect(bridge.streams[0].opts).toMatchObject({ agentSigOpen: '⟨wren⟩', agentSigClose: '⟨/wren⟩' });
+    await out.finish({ text: 'listo' });   // stream did not deliver → §7 fallback send carries the same tag
+    expect(bridge.sent[0].opts).toMatchObject({ agentSigOpen: '⟨wren⟩', agentSigClose: '⟨/wren⟩' });
   });
 });
 

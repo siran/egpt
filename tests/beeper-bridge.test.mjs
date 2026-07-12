@@ -827,6 +827,101 @@ describe('beeper bridge', () => {
     expect(fake.posts).toHaveLength(0);                             // … cancelled → we NEVER posted (no double)
   });
 
+  // LAYERED 👂 ECHO (operator 2026-07-12): the '👂 <transcript>' core is wrapped concentrically by the
+  // outer bridge_signature_open/close (which SPINE posted) and the inner transcription_open/close (the
+  // 👂 feature's own frame) — top→bottom: bridge_open, transcription_open, 👂 core, transcription_close,
+  // bridge_close, empties skipped. All slots default EMPTY → byte-identical to today (existing echo tests
+  // pass no slots and assert the bare '👂 …' form).
+  it('the 👂 echo renders CONCENTRIC when all four echo slots are set (bridge outer, transcription inner)', async () => {
+    const { incoming } = await startBridge({
+      bridgeSignatureOpen: 'BO', transcriptionOpen: 'TO', transcriptionClose: 'TC', bridgeSignatureClose: 'BC',
+      resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }),
+    });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({
+      text: null, type: 'VOICE',   // fresh (Date.now()) → rank-1 default posts immediately
+      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+    })] });
+    await waitFor(() => incoming.length === 1);
+    await waitFor(() => fake.posts.length === 1);
+    expect(fake.posts[0].text).toBe('BO\nTO\n👂 fake transcript\nTC\nBC');   // concentric: opens top-down, closes bottom-up
+  });
+
+  // CLOSES-ONLY (opens empty) → the 👂 still LEADS, so the observe-cancel dedup is unaffected. This is the
+  // safe multi-peer configuration: a CLOSE sits BELOW the 👂 body, never above it.
+  it('closes-only echo slots keep the 👂 LEADING (safe for a multi-peer node)', async () => {
+    const { incoming } = await startBridge({
+      transcriptionClose: 'TC', bridgeSignatureClose: '💸',   // opens empty
+      resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }),
+    });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({
+      text: null, type: 'VOICE',
+      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+    })] });
+    await waitFor(() => incoming.length === 1);
+    await waitFor(() => fake.posts.length === 1);
+    expect(fake.posts[0].text).toBe('👂 fake transcript\nTC\n💸');   // 👂 leads, closes below (inner then outer)
+    expect(fake.posts[0].text.startsWith('👂')).toBe(true);          // still the LEADING char
+  });
+
+  // OBSERVE-CANCEL LOCK: the promotion observe-and-cancel keys on a message STARTING with 👂. A peer's 👂
+  // carrying ITS OWN closes (trailing lines) still starts with 👂 after htmlToMarkdown, so it is recognized
+  // → records the observation + cancels our pending promotion. This is why opens must stay empty.
+  it('observe-and-cancel still fires when the peer 👂 carries CLOSE slots (👂 still leads)', async () => {
+    const clock = makeClock();
+    const { incoming } = await startBridge({
+      echoPlan: () => ({ rank: 2, winner: false }),
+      echoTimeoutMs: 20_000, scheduler: clock,
+      resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }),
+    });
+    // rank-2 → this node arms a promotion for the note (held, no post)
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({
+      id: 'note-sig', isSender: false, text: null, type: 'VOICE',
+      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+    })] });
+    await waitFor(() => incoming.length === 1);
+    // the co-account peer's 👂 for the same note, WITH trailing transcription + bridge CLOSE lines.
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({
+      id: 'peer-echo-sig', isSender: false, text: '👂 (8s) hola\nTC\n💸', linkedMessageID: 'note-sig',
+    })] });
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'peer-echo-sig'));
+    expect(hasEchoObserved('chat-1:note-sig')).toBe(true);   // recorded despite the trailing closes — 👂 still leads
+    await clock.advance(20_000);                             // our promotion window elapses …
+    await new Promise((r) => setTimeout(r, 30));             // let any stray send settle
+    expect(fake.posts).toHaveLength(0);                      // … cancelled → we NEVER posted (no double)
+  });
+
+  // ALL-EMPTY regression lock: no echo slots → today's bare '👂 <transcript>' output, byte-for-byte.
+  it('with ALL echo slots empty (default), the 👂 echo is byte-identical to today', async () => {
+    const { incoming } = await startBridge({
+      resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }),
+    });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({
+      text: null, type: 'VOICE',
+      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+    })] });
+    await waitFor(() => incoming.length === 1);
+    await waitFor(() => fake.posts.length === 1);
+    expect(fake.posts[0].text).toBe('👂 fake transcript');   // exactly today's form
+  });
+
+  // KNOWN-LIMITATION LOCK (the "why opens stay empty" test, NOT a feature): a non-empty transcription_open
+  // is prepended ABOVE the 👂, so the echo no longer LEADS with 👂 — which would break the leading-marker
+  // observe-cancel on a multi-peer node (boot warns). Asserting the render documents exactly that hazard.
+  it('a non-empty transcription_open makes the 👂 NOT lead (documents the observe-cancel limitation)', async () => {
+    const { incoming } = await startBridge({
+      transcriptionOpen: 'TO',   // a pre-👂 open
+      resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }),
+    });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({
+      text: null, type: 'VOICE',
+      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+    })] });
+    await waitFor(() => incoming.length === 1);
+    await waitFor(() => fake.posts.length === 1);
+    expect(fake.posts[0].text).toBe('TO\n👂 fake transcript');    // the open sits ABOVE the 👂
+    expect(fake.posts[0].text.startsWith('👂')).toBe(false);      // 👂 no longer leads → observe-cancel would miss it
+  });
+
   it('an UNRELATED inbound does NOT cancel: a non-👂 reply to the note, or a 👂 to a different note, still promotes', async () => {
     const clock = makeClock();
     const { incoming } = await startBridge({
