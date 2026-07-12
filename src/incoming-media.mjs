@@ -216,6 +216,10 @@ export const ECHO_MARKER = '👂';
  *                                 observed. Needs a debounceKey to correlate the cancel.
  * @param {number}   [o.echoTimeoutMs] Phase 3b per-rank promotion step (ms). Only used when
  *                                 echoRank > 1.
+ * @param {number}   [o.graceMs]   Phase 3c reconnect grace — when > 0 the note is a WS-reconnect
+ *                                 REPLAY, so even rank-1 arms an observe-then-post window at this
+ *                                 delay instead of posting immediately; the survivor's replayed 👂
+ *                                 cancels it via the observed-set. 0 = a live note, unchanged.
  * @param {object}   [o.scheduler] { set, clear } timer injection (tests) — drives BOTH the
  *                                 rank-1 debounce and the rank>1 promotion.
  * @param {Function} [o.onLog]
@@ -237,6 +241,7 @@ export async function transcribeVoiceNote({
   postsBackDelayMs = POSTS_BACK_DELAY_MS,
   echoRank = 1,
   echoTimeoutMs = 0,
+  graceMs = 0,
   scheduler = _defaultScheduler,
   onLog = () => {},
   meta = null,
@@ -267,19 +272,27 @@ export async function transcribeVoiceNote({
       onLog('👂 already echoed for this note — standing down');
     } else {
       const line = _ackItem({ author, durationSec: innerMeta.durationSec, transcript });
-      if (echoRank > 1) {
-        // Phase 3b — this node is NOT rank-1 for the note. Don't post now: ARM a staggered
-        // PROMOTION (see _armPromotion) that fires the HELD 👂 at (rank-1)*echoTimeoutMs, but
-        // ONLY if no higher rank posts first (the bridge cancels it on observing the note's 👂).
-        // The 👂 body + the reply closure (a quoted reply to the note) are identical to rank-1's,
-        // so a promoted echo is indistinguishable from the winner's. Needs the per-note key to
-        // correlate the observe-and-cancel; without one (a non-batching caller) we can't stand
-        // down safely, so we WITHHOLD — fail-safe, since a missed echo beats a double 👂.
-        if (!debounceKey) { onLog('👂 promotion NOT armed — rank>1 needs a per-note debounceKey to correlate the observe-and-cancel; withholding'); }
+      // ARM (observe-then-post) instead of posting now when this node is NOT rank-1 (Phase 3b ordered
+      // failover) OR the note is a WS-reconnect REPLAY (Phase 3c, graceMs > 0). ONE unified delay:
+      // (rank-1)*echoTimeoutMs is the per-rank stagger, + graceMs the reconnect grace. So:
+      //   rank-1 LIVE   → graceMs 0 → arm SKIPPED → immediate/debounced (unchanged);
+      //   rank-1 REPLAY → arms at graceMs, observes the survivor's replayed 👂, stands down;
+      //   rank>1 LIVE   → (rank-1)*echoTimeoutMs (unchanged);
+      //   rank>1 REPLAY → (rank-1)*echoTimeoutMs + graceMs, so the rank stagger (rank-2 after rank-1)
+      //                   still holds if BOTH nodes reconnected.
+      // Either way the armed 👂 is cancelled the instant the note's 👂 is observed from a peer
+      // (markEchoObserved / hasEchoObserved) — and the top hasEchoObserved guard already covers the
+      // case where the peer's 👂 was observed BEFORE we processed the note.
+      const delayMs = (echoRank - 1) * echoTimeoutMs + graceMs;
+      if (echoRank > 1 || graceMs > 0) {
+        // The 👂 body + reply closure (a quoted reply to the note) are identical to rank-1's, so a
+        // promoted/graced echo is indistinguishable from the winner's. Needs the per-note key to
+        // correlate the observe-and-cancel; without one (a non-batching caller) we can't stand down
+        // safely, so we WITHHOLD — fail-safe, since a missed echo beats a double 👂.
+        if (!debounceKey) { onLog('👂 promotion NOT armed — the arm path needs a per-note debounceKey to correlate the observe-and-cancel; withholding'); }
         else {
-          const delayMs = (echoRank - 1) * echoTimeoutMs;
           _armPromotion(debounceKey, `👂 ${line}`, reply, onLog, delayMs, scheduler, echoRank);
-          onLog(`👂 promotion armed (rank ${echoRank}, +${Math.round(delayMs / 1000)}s, cancels on observed echo) for ${debounceKey}`);
+          onLog(`👂 promotion armed (rank ${echoRank}, +${Math.round(delayMs / 1000)}s${graceMs > 0 ? ', incl. reconnect-replay grace' : ''}, cancels on observed echo) for ${debounceKey}`);
         }
       } else if (debounceKey && postsBackDelayMs > 0) {
         // HEARD already happened (we return below); hold + coalesce the SPOKEN echo.

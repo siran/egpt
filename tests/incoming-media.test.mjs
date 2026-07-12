@@ -379,6 +379,63 @@ describe('transcribeVoiceNote — 👂 promotion / ordered failover (operator 20
     expect(t).toBe('hola');
     expect(sent).toEqual(['👂 hola']);
   });
+
+  // 👂 PHASE 3c RECONNECT GRACE (operator 2026-07-11, Stage B — reconnect duplication). A WS-reconnect
+  // REPLAY note (graceMs > 0) is routed through an ARM-then-post-if-unobserved window EVEN at rank-1,
+  // so the survivor's replayed 👂 (recorded via markEchoObserved) cancels this node's pending echo
+  // before it fires — killing the reconnect double. graceMs 0 = a live note (unchanged).
+  const graceVoice = (over) => transcribeVoiceNote({
+    localPath: '/n.ogg', transcribe: async () => 'hola', reply: over.reply,
+    enabled: true, postsBack: true, muted: false, postsBackDelayMs: 0,
+    debounceKey: over.debounceKey, echoRank: over.echoRank ?? 1, graceMs: over.graceMs ?? 0,
+    echoTimeoutMs: over.echoTimeoutMs ?? 20_000, scheduler: over.scheduler,
+  });
+
+  it('RECONNECT STAND-DOWN: rank-1 REPLAY arms (no immediate post); a survivor 👂 then cancels it → no double', async () => {
+    const sent = [];
+    const clock = makeClock();
+    await graceVoice({ reply: (x) => sent.push(x), debounceKey: 'chat:RA', echoRank: 1, graceMs: 20_000, scheduler: clock });
+    expect(sent).toEqual([]);                                  // did NOT post immediately (OLD rank-1 code would)
+    expect(hasPendingPromotion('chat:RA')).toBe(true);         // armed the grace window instead
+    markEchoObserved('chat:RA');                               // the survivor's replayed 👂 for the note
+    await clock.advance(20_000);                               // past the grace window …
+    expect(sent).toEqual([]);                                  // … stood down → no double 👂
+  });
+
+  it('RECONNECT, NO PEER (both were down): rank-1 REPLAY posts exactly once after the grace window', async () => {
+    const sent = [];
+    const clock = makeClock();
+    await graceVoice({ reply: (x) => sent.push(x), debounceKey: 'chat:RB', echoRank: 1, graceMs: 20_000, scheduler: clock });
+    expect(hasPendingPromotion('chat:RB')).toBe(true);
+    await clock.advance(20_000);
+    expect(sent).toEqual(['👂 hola']);                         // no peer observed → posts once
+  });
+
+  it('LIVE RANK-1 UNCHANGED: graceMs 0 → posts immediately, nothing armed', async () => {
+    const sent = [];
+    const clock = makeClock();
+    await graceVoice({ reply: (x) => sent.push(x), debounceKey: 'chat:RC', echoRank: 1, graceMs: 0, scheduler: clock });
+    expect(sent).toEqual(['👂 hola']);                         // immediate (live path)
+    expect(hasPendingPromotion('chat:RC')).toBe(false);
+  });
+
+  it('ALREADY-OBSERVED BEFORE PROCESSING: the top guard stands down immediately (no post, nothing armed)', async () => {
+    const sent = [];
+    const clock = makeClock();
+    markEchoObserved('chat:RD');                               // survivor's 👂 seen before we even process the note
+    await graceVoice({ reply: (x) => sent.push(x), debounceKey: 'chat:RD', echoRank: 1, graceMs: 20_000, scheduler: clock });
+    expect(sent).toEqual([]);                                  // top hasEchoObserved guard → no post
+    expect(hasPendingPromotion('chat:RD')).toBe(false);        // …and no grace window armed
+  });
+
+  it('RANK-2 REPLAY: grace is ADDED to the rank stagger → fires at (rank-1)*T + grace (ordering preserved)', async () => {
+    const sent = [];
+    const clock = makeClock();
+    await graceVoice({ reply: (x) => sent.push(x), debounceKey: 'chat:RE', echoRank: 2, graceMs: 20_000, echoTimeoutMs: 20_000, scheduler: clock });
+    expect(hasPendingPromotion('chat:RE')).toBe(true);
+    await clock.advance(20_000); expect(sent).toEqual([]);            // (2-1)*20000 + 20000 = 40000 → not yet
+    await clock.advance(20_000); expect(sent).toEqual(['👂 hola']);  // fires at 40000 → grace added to the stagger
+  });
 });
 
 // (transcription primary/standby 👂 dedup removed 2026-07-09: symmetric nodes, no

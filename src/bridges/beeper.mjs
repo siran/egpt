@@ -228,6 +228,12 @@ export async function startBeeperBridge(opts = {}) {
   if (!token) { onLog('startBeeperBridge: NO TOKEN (set whatsapp.beeper_token / beeper_token / BEEPER_ACCESS_TOKEN) — bridge inert'); }
   onLog(`startBeeperBridge: ENTRY (${baseUrl})`);
   const bridgeStartMs = Date.now();
+  // 👂 PHASE 3c RECONNECT GRACE (operator 2026-07-11, Stage B): the wall-clock ms of the CURRENT WS
+  // connection's open. A voice note whose OWN timestamp is BEFORE this is a REPLAY Beeper re-delivered
+  // late (this node was offline when it arrived) — routed through incoming-media's grace window so a
+  // survivor's ALSO-replayed 👂 can cancel this node's echo (kills the reconnect double). Date.now()
+  // (NOT the injected scheduler) to match this file's other echo-age math (tooOldForEcho). null until open.
+  let lastWsOpenMs = null;
 
   // --- REST ---
   async function api(method, path, body) {
@@ -950,6 +956,13 @@ export async function startBeeperBridge(opts = {}) {
         // bound. No parseable timestamp -> fail-open (echo), same as the backlog gate.
         const tooOldForEcho = echoMaxAgeMs > 0 && tsMs != null && (Date.now() - tsMs) > echoMaxAgeMs;
         if (tooOldForEcho) onLog(`beeper: echo suppressed - note older than bound [${info.title}] (${new Date(tsMs).toISOString()}, bound ${echoMaxAgeMs}ms)`);
+        // 👂 PHASE 3c RECONNECT-REPLAY (operator 2026-07-11, Stage B): a note recorded BEFORE our current
+        // WS connection opened is a replay we are seeing late (offline during its arrival). Route it
+        // through incoming-media's grace window (graceMs below) — even at rank-1 it ARMS then posts only
+        // if unobserved, so the survivor's replayed 👂 (also in this replay stream) cancels it → no double
+        // 👂. A live note (tsMs >= lastWsOpenMs, or no parseable ts) is graceMs 0 — unchanged.
+        const reconnectReplay = tsMs != null && lastWsOpenMs != null && tsMs < lastWsOpenMs;
+        if (reconnectReplay) onLog(`beeper: reconnect-replay voice note [${info.title}] — echo via grace window`);
         // 👂 ECHO PLAN (operator 2026-07-11, Phase 3b HRW ordered failover): this node's rank for the
         // note over the co-account peer set. msg.id is the note's SHARED Beeper message id — IDENTICAL
         // on both co-account nodes (one shared account → the same message → the same per-chat sequence
@@ -969,6 +982,7 @@ export async function startBeeperBridge(opts = {}) {
           postsBack: echoOn ? svc.postsBack : false,
           echoRank: plan.rank,          // 1 = rank-1 (post now); >1 = arm the ordered-failover promotion
           echoTimeoutMs,                // per-rank promotion step
+          graceMs: reconnectReplay ? echoTimeoutMs : 0,   // Phase 3c: a reconnect replay arms an observe-then-post window (even at rank-1) so a survivor's replayed 👂 cancels it before it fires
           scheduler,                    // fake clock in tests; real setTimeout in prod
           muted: info.isMuted,
           // NO author on the 👂 ack (operator 2026-07-10): Beeper exposes no push name,
@@ -1126,7 +1140,7 @@ export async function startBeeperBridge(opts = {}) {
   function connect() {
     if (_stopped || !token) return;
     ws = new WebSocket(wsUrl, { headers: { Authorization: `Bearer ${token}` } });
-    ws.on('open', () => onLog('beeper: WS open'));
+    ws.on('open', () => { lastWsOpenMs = Date.now(); onLog('beeper: WS open'); });
     ws.on('message', (buf) => {
       let ev; try { ev = JSON.parse(buf.toString()); } catch { return; }
       if (ev.type === 'ready') {
