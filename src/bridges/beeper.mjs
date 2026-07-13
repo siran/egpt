@@ -1037,12 +1037,12 @@ export async function startBeeperBridge(opts = {}) {
           checkCovered: (t) => noteCovered(chatID, msg.id, t),
           scheduler,                    // fake clock in tests; real setTimeout in prod
           muted: info.isMuted,
-          // NO author on the 👂 ack (operator 2026-07-10): Beeper exposes no push name,
-          // so senderDisplay would yield a bare phone number / id — useless as a name.
-          // The ack is ALREADY a per-note quoted reply to the note itself, so attribution
-          // comes from the quote; the ack just shows "👂 (<Ns>) <transcript>" (duration
-          // kept). The MODEL envelope still carries senderDisplay(msg) — this drops it
-          // ONLY from the in-chat echo.
+          // author on the 👂 ack (operator 2026-07-13): senderDisplay(msg) — for a LID
+          // sender (every WhatsApp group sender) that's the sender's OWN pushed/profile
+          // name, NEVER the operator's saved contact label (senderDisplay uses senderName
+          // only for a LID; a non-LID sender falls back to a number/id). Same value the
+          // MODEL envelope already carries.
+          author: senderDisplay(msg),
           // PER-NOTE key (chat + this note's id): each voice note gets its OWN delayed 👂
           // transcript, posted as a reply to ITSELF (operator 2026-06-24), never coalesced.
           debounceKey: `${chatID}:${msg.id}`,

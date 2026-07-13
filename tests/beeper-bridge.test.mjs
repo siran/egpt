@@ -418,11 +418,10 @@ describe('beeper bridge', () => {
     expect(incoming[0].from.senderName).not.toContain('deudor');
   });
 
-  // The 👂 voice echo NO LONGER carries an author (operator 2026-07-10): Beeper exposes no
-  // push name, so the author would be a bare number/id — the per-note quoted reply carries
-  // attribution instead. The MODEL envelope still gets the pushed name (never the saved
-  // label), so the leak guard holds where it matters (the transcript fed to the model).
-  it('the 👂 voice echo omits the author; the model envelope still carries the pushed name (not the label)', async () => {
+  // The 👂 voice echo carries the sender's pushed name (operator 2026-07-13): the same
+  // senderDisplay(msg) value the MODEL envelope already gets — the person's OWN pushed
+  // name, NEVER the saved contact label.
+  it('the 👂 voice echo carries the pushed name as author; the model envelope carries the same (not the label)', async () => {
     const { incoming } = await startBridge({ resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }) });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       isSender: false, type: 'VOICE', text: null,
@@ -431,8 +430,8 @@ describe('beeper bridge', () => {
     })] });
     await waitFor(() => incoming.length === 1);
     await waitFor(() => fake.posts.length === 1);
-    expect(fake.posts[0].text).toBe('👂 fake transcript');              // author-less echo (attribution via the quote)
-    expect(incoming[0].from.senderName).toBe('Ricki Mejia');            // …but the model still gets the pushed name
+    expect(fake.posts[0].text).toBe('👂 Ricki Mejia: fake transcript');  // pushed name leads the echo
+    expect(incoming[0].from.senderName).toBe('Ricki Mejia');            // …the model gets the same pushed name
     expect(incoming[0].from.senderName).not.toContain('amigo diana');   // never the saved label
   });
 
@@ -453,7 +452,7 @@ describe('beeper bridge', () => {
     expect(incoming[0].from.senderName).not.toContain('whatsapp_lid');
   });
 
-  it('the 👂 voice echo for a LID sender omits the author; the envelope keeps the pushed name (not the raw LID)', async () => {
+  it('the 👂 voice echo for a LID sender carries the pushed name as author; the envelope keeps it too (not the raw LID)', async () => {
     const { incoming } = await startBridge({ resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }) });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       isSender: false, type: 'VOICE', text: null,
@@ -463,7 +462,7 @@ describe('beeper bridge', () => {
     })] });
     await waitFor(() => incoming.length === 1);
     await waitFor(() => fake.posts.length === 1);
-    expect(fake.posts[0].text).toBe('👂 fake transcript');                  // author-less echo
+    expect(fake.posts[0].text).toBe('👂 le_moi: fake transcript');          // LID push name leads the echo
     expect(incoming[0].from.senderName).toBe('le_moi');                     // …envelope keeps the LID push name
     expect(incoming[0].from.senderName).not.toContain('whatsapp_lid');
   });
