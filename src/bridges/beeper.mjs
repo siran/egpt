@@ -272,6 +272,27 @@ export async function startBeeperBridge(opts = {}) {
     return t ? JSON.parse(t) : null;
   }
 
+  // OWNER's per-account display name (operator 2026-07-13): GET /v1/accounts returns
+  // each Beeper account's SELF user (accounts[].user.fullName) — the one owner-name
+  // source that's Beeper-sourced and IDENTICAL across co-account nodes (unlike the
+  // node's configured userName, which diverges node-to-node, e.g. "An" vs "AnDo" —
+  // see senderDisplay below). Populated ONCE at startup, fire-and-forget: must NOT
+  // block bridge start, and any failure/missing field just leaves the map empty —
+  // senderDisplay then falls back to today's push-name/id chain, unchanged.
+  const _ownerNameByAccount = new Map();   // lowercased accountID -> owner's fullName
+  (async () => {
+    try {
+      const accounts = await api('GET', '/v1/accounts');
+      for (const a of Array.isArray(accounts) ? accounts : []) {
+        const name = a?.user?.fullName;
+        if (a?.accountID && name) _ownerNameByAccount.set(String(a.accountID).toLowerCase(), name);
+      }
+      onLog(`beeper: owner names loaded for ${_ownerNameByAccount.size} account(s)`);
+    } catch (e) {
+      onLog(`beeper: /v1/accounts fetch failed — ${e?.message ?? e}`);
+    }
+  })();
+
   // chatID -> { title, type, isMuted, accountID } (cached; refreshed lazily)
   const _chatCache = new Map();
   // Short ids resolveChatId has independently confirmed are REAL rooms (seen via
@@ -797,7 +818,12 @@ export async function startBeeperBridge(opts = {}) {
   // separate pushName is exposed — every /v1/contacts|users|participants-by-id
   // endpoint 404s). So we never surface senderName as the author; instead, for EVERY
   // sender (owner included, operator 2026-07-10):
-  //   1. the person's OWN pushed/profile name if the payload carries one
+  //   0. for the OWNER's OWN (isSender) message ONLY: the account self-user's fullName
+  //      (_ownerNameByAccount above, GET /v1/accounts, keyed by the message's accountID —
+  //      operator 2026-07-13). Beeper-sourced and IDENTICAL on both co-account nodes, so
+  //      it does NOT reintroduce the old per-node-userName mislabel (see below) — it's the
+  //      correct owner-name source, not node config;
+  //   1. else the person's OWN pushed/profile name if the payload carries one
   //      (msg.senderPushName / msg.pushName — schema-tolerant, like _msgTimestampMs);
   //   2. else a HUMAN-READABLE NON-PRIVATE id — the phone number embedded in a
   //      WhatsApp senderID ('@whatsapp_<digits>:beeper.local' → '+<digits>'), else
@@ -807,11 +833,12 @@ export async function startBeeperBridge(opts = {}) {
   // The chat label / [chatname] / conversation folder (conversations.yaml pushedName)
   // KEEP the operator's label — that's the CHAT's name, not the person's. Display-only:
   // authorization stays id-based (GENOME I6). The OWNER (isSender) is NO LONGER exempt
-  // (operator 2026-07-10): the author is ALWAYS the push name, then number, then stable
-  // id — NEVER the node's configured userName (that mislabeled An's OWN voice notes as
-  // the node's user_name, e.g. DOLLY echoed "👂 Don"; REVE labeled the same note "An").
-  // The owner's own push name is their OWN profile name — safe. userName still names the
-  // owner for REACTION attribution (_reactorName) and cross-surface mirroring, not here.
+  // (operator 2026-07-10) from this push-name/id chain — no node config, no saved label
+  // — except step 0 above, which is Beeper's OWN self-identity (not node config; that old
+  // mislabel had An's OWN voice notes echo the node's user_name, e.g. DOLLY echoed "👂
+  // Don"; REVE labeled the same note "An" — the self-user fullName has no such divergence).
+  // userName still names the owner for REACTION attribution (_reactorName) and
+  // cross-surface mirroring, not here.
   function fallbackSenderId(msg) {
     const id = String(msg?.senderID ?? '');
     const wa = /^@whatsapp_(\d{6,15}):/i.exec(id);   // WhatsApp jid → phone number (human-readable, non-private)
@@ -831,11 +858,15 @@ export async function startBeeperBridge(opts = {}) {
   function lidPushName(msg) {
     return /^@whatsapp_lid-/i.test(String(msg?.senderID ?? '')) ? (msg?.senderName || null) : null;
   }
+  function ownerName(accountID) { return _ownerNameByAccount.get(String(accountID ?? '').toLowerCase()) || null; }
   function senderDisplay(msg) {
-    // ONE rule for EVERYONE incl. the owner (operator 2026-07-10): pushed name (incl. a
+    // The owner's OWN (isSender) message prefers the account self-user's fullName
+    // (operator 2026-07-13, Beeper-sourced via /v1/accounts — see _ownerNameByAccount
+    // above). Everyone else, and the owner when that's unavailable: pushed name (incl. a
     // LID's senderName) → non-private id (number, then stable id). NEVER the node's
     // configured userName, NEVER the saved contact label. See the block above.
-    return msg?.senderPushName || msg?.pushName || lidPushName(msg) || fallbackSenderId(msg);
+    return (msg?.isSender && ownerName(msg?.accountID))
+      || msg?.senderPushName || msg?.pushName || lidPushName(msg) || fallbackSenderId(msg);
   }
 
   function _reactorName(id, network) {

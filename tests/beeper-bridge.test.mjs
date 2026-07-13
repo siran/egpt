@@ -22,7 +22,9 @@ async function startFakeBeeper() {
   const uploads = [];     // POSTs to /v1/assets/upload (E's media limb)
   const chats = new Map();   // chatID -> chat info served by GET
   const messages = new Map();   // chatID -> recent-message list served by GET /messages (resolveSentMessageId)
+  const accounts = [];        // GET /v1/accounts fixture — tests push {accountID, user:{fullName}} before startBridge()
   let msgListGets = 0;        // GET /messages polls served — lets a test choreograph the upsert race
+  let accountsGets = 0;       // GET /v1/accounts calls served — lets a test wait for the startup fetch
   const server = createServer((req, res) => {
     let body = '';
     req.on('data', (c) => { body += c; });
@@ -69,6 +71,11 @@ async function startFakeBeeper() {
         res.end(JSON.stringify({ items: [...chats.entries()].map(([id, c]) => ({ id, ...c })) }));
         return;
       }
+      if (req.method === 'GET' && req.url === '/v1/accounts') {
+        accountsGets += 1;
+        res.end(JSON.stringify(accounts));
+        return;
+      }
       const get = req.url.match(/^\/v1\/chats\/([^/]+)$/);
       if (req.method === 'GET' && get) {
         const id = decodeURIComponent(get[1]);
@@ -89,8 +96,9 @@ async function startFakeBeeper() {
     ws.send(JSON.stringify({ type: 'ready' }));
   });
   return {
-    port, posts, edits, reactions, uploads, chats, messages,
+    port, posts, edits, reactions, uploads, chats, messages, accounts,
     msgListGets: () => msgListGets,
+    accountsGets: () => accountsGets,
     subscribed: () => subscribed,
     emit: (ev) => { for (const ws of sockets) ws.send(JSON.stringify(ev)); },
     close: () => new Promise((r) => { for (const ws of sockets) ws.terminate(); wss.close(() => server.close(r)); }),
@@ -337,6 +345,33 @@ describe('beeper bridge', () => {
     expect(wa.senderName).toBe('+16468217865');   // owner, no push name, jid → number
     expect(mx.senderName).toBe('anrodriguez');    // owner, no push name, matrix id → localpart (decoration stripped)
     for (const v of [wa.senderName, mx.senderName]) expect(v).not.toBe('Don');   // never the node userName
+  });
+
+  // ACCOUNT SELF-USER NAME (operator 2026-07-13): the owner's OWN (isSender) message now
+  // prefers the Beeper account self-user's fullName (GET /v1/accounts) over the matrix-id
+  // localpart fallback — this is Beeper-sourced and identical on both co-account nodes, so
+  // it doesn't reintroduce the old per-node userName mislabel (the prior test above).
+  it("the owner's OWN send is attributed to the /v1/accounts self-user's fullName, not the matrix-id localpart", async () => {
+    fake.accounts.push({ accountID: 'whatsapp', user: { fullName: 'An', isSelf: true } });
+    const { incoming } = await startBridge();
+    await waitFor(() => fake.accountsGets() >= 1);
+    await new Promise((r) => setTimeout(r, 50));   // let the in-flight fetch's .then populate the map
+    fake.emit({ type: 'message.upserted', entries: [
+      liveMsg({ isSender: true, accountID: 'whatsapp', senderID: '@anrodriguez:beeper.com', senderName: '@anrodriguez:beeper.com', text: 'owner' }),
+    ] });
+    await waitFor(() => incoming.length === 1);
+    expect(incoming[0].from.senderName).toBe('An');   // account self-user fullName, not 'anrodriguez'
+  });
+
+  // With no /v1/accounts fixture the map stays empty (fail-safe) — the owner falls back to
+  // TODAY's unchanged chain (push name, then non-private id).
+  it('with no /v1/accounts fixture, the owner falls back to the matrix-id localpart (unchanged)', async () => {
+    const { incoming } = await startBridge();
+    fake.emit({ type: 'message.upserted', entries: [
+      liveMsg({ isSender: true, accountID: 'whatsapp', senderID: '@anrodriguez:beeper.com', senderName: '@anrodriguez:beeper.com', text: 'owner' }),
+    ] });
+    await waitFor(() => incoming.length === 1);
+    expect(incoming[0].from.senderName).toBe('anrodriguez');
   });
 
   // MATRIX-ID DECORATION STRIP (operator 2026-07-10): with no push name, a bare Matrix
