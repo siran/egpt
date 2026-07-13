@@ -27,7 +27,7 @@
 // thread persists in a per-being NESTED block (recordThread(..., being)). codex/URL
 // brains + emitted-command stripping (the comm-handler's job, Phase 4) layer in later.
 import { slugDir, getBeing, getContact, recordThread, readIdentityFeed, readAutoModeLayer, patchContact, appendThreadStat, mutateState, nowIsoString, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS } from '../../conversations-state.mjs';
-import { isContextOverflowError, isDeadSessionError } from '../../dispatch.mjs';
+import { isContextOverflowError, isDeadSessionError } from '../brain-errors.mjs';
 import { parseFrequency } from './heartbeat-loader.mjs';
 import { WRITE_TOOLS } from '../claude-args.mjs';
 import { mkdir as fsMkdir, readFile as fsReadFile } from 'node:fs/promises';

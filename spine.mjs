@@ -18,7 +18,7 @@
 // reply → send pipe, proven against fakes. Mesh forwarding, voice/media, and the
 // shell/slash console are layered in after v1, each behind its service seam.
 import { makeSerialByKey } from './src/serial-by-key.mjs';
-import { isBrainFailureResult } from './dispatch.mjs';
+import { isBrainFailureResult } from './src/brain-errors.mjs';
 import { replyLine } from './src/transcript-log.mjs';
 
 // ---------------------------------------------------------------------------
