@@ -252,7 +252,7 @@ describe('beeper bridge', () => {
     const edit = incoming[incoming.length - 1];
     expect(edit.from.isStageDirection).toBe(true);
     expect(edit.from.isReaction).toBe(false);
-    expect(edit.text).toBe('edited #' + id + ' "imbécil" → "pobrecito"');
+    expect(edit.text).toBe('edited #' + id + '\n    - imbécil\n    + pobrecito');
   });
 
   it('does NOT emit an edit when a message re-upserts UNCHANGED (receipt/seen)', async () => {

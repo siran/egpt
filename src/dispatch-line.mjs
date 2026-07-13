@@ -73,12 +73,17 @@ export function reactionAction({ emoji, targetId, snippet } = {}) {
 }
 
 // The body of an EDIT stage-direction (MESSAGES-FIRST-CLASS-PLAN): a message's
-// text changed after it was sent → `edited #<id> "old" → "new"`. Append-only: the
-// original line stays in the transcript; this records the correction (so E sees
-// e.g. that "imbécil" was softened to "pobrecito"). Pure + test-locked.
+// text changed after it was sent → a two-line git-style diff:
+//   edited #<id>
+//       - <full old>
+//       + <full new>
+// Append-only: the original line stays in the transcript; this records the
+// correction (so E sees e.g. that "imbécil" was softened to "pobrecito").
+// NOT truncated — a change past a short prefix must stay visible on both
+// sides. Pure + test-locked.
 export function editAction({ targetId, oldText, newText } = {}) {
   const id = String(targetId ?? '').trim();
-  const o = String(oldText ?? '').replace(/\s+/g, ' ').trim().slice(0, 50);
-  const n = String(newText ?? '').replace(/\s+/g, ' ').trim().slice(0, 50);
-  return `edited #${id} "${o}" → "${n}"`;
+  const o = String(oldText ?? '').replace(/\s+/g, ' ').trim();
+  const n = String(newText ?? '').replace(/\s+/g, ' ').trim();
+  return `edited #${id}\n    - ${o}\n    + ${n}`;
 }

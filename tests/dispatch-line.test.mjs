@@ -91,13 +91,33 @@ describe('reactionAction — reaction stage-direction body', () => {
 });
 
 describe('editAction — edit stage-direction body', () => {
-  it('renders the old → new change', () => {
+  it('renders the old/new change as a two-line -/+ diff', () => {
     expect(editAction({ targetId: '142438', oldText: 'imbécil', newText: 'pobrecito' }))
-      .toBe('edited #142438 "imbécil" → "pobrecito"');
+      .toBe('edited #142438\n    - imbécil\n    + pobrecito');
   });
-  it('collapses whitespace and trims long text', () => {
-    expect(editAction({ targetId: '7', oldText: '  a\n b ', newText: 'c   d' })).toBe('edited #7 "a b" → "c d"');
-    expect(editAction({ targetId: '7', oldText: 'x'.repeat(80), newText: 'y' })).toContain('"' + 'x'.repeat(50) + '"');
+  it('collapses whitespace but does NOT truncate long text', () => {
+    expect(editAction({ targetId: '7', oldText: '  a\n b ', newText: 'c   d' }))
+      .toBe('edited #7\n    - a b\n    + c d');
+    expect(editAction({ targetId: '7', oldText: 'x'.repeat(80), newText: 'y' }))
+      .toContain('- ' + 'x'.repeat(80));
+  });
+  // Reproduce-first: a completion/append/late-typo fix changes text PAST char
+  // 50. The old `.slice(0, 50)` collapsed old/new to the SAME prefix, so the
+  // edit read as "X" → "X" — invisible. The new output must show BOTH full
+  // strings, and they must differ in the rendered result.
+  it('a change beyond char 50 stays visible (the slice(0,50) bug this replaces)', () => {
+    const prefix = 'a'.repeat(60); // common prefix, well past the old 50-char slice
+    const oldText = `${prefix} old tail`;
+    const newText = `${prefix} new tail`;
+    // what the old .slice(0, 50) behavior would have produced: identical prefixes
+    const oldSliced = oldText.slice(0, 50);
+    const newSliced = newText.slice(0, 50);
+    expect(oldSliced).toBe(newSliced); // confirms the bug: truncation collapses them
+
+    const rendered = editAction({ targetId: '9', oldText, newText });
+    expect(rendered).toBe(`edited #9\n    - ${oldText}\n    + ${newText}`);
+    expect(rendered).toContain('old tail');
+    expect(rendered).toContain('new tail');
   });
 });
 
