@@ -54,9 +54,9 @@ export function formatDispatchLine({ senderName, chatName, node, surface, body, 
   // omitted when absent (back-compat). (MESSAGES-FIRST-CLASS-PLAN Phase 1)
   const idTag = (msgId != null && String(msgId).trim()) ? ` #${String(msgId).trim()}` : '';
   // Reply reference (operator 2026-07-04): when this message QUOTES/replies to another,
-  // `↩#<id>` names the answered message so the model can respond to it directly —
+  // `re #<id>` names the answered message so the model can respond to it directly —
   // including via a /reply emit action. Omitted when absent (back-compat).
-  const replyTag = (replyToId != null && String(replyToId).trim()) ? ` ↩#${String(replyToId).trim()}` : '';
+  const replyTag = (replyToId != null && String(replyToId).trim()) ? ` re #${String(replyToId).trim()}` : '';
   return `${sender}@[${nm}].${nd} (${tstr})${idTag}${replyTag}: ${body ?? ''}`;
 }
 

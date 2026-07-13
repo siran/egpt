@@ -21,12 +21,12 @@ describe('formatDispatchLine — canonical shape', () => {
       .toBe('Ron@[HFM].wa (17:21): x');   // empty id → omitted
   });
 
-  // Reply reference (operator 2026-07-04): a quoted reply renders `↩#<id>` after the
+  // Reply reference (operator 2026-07-04): a quoted reply renders `re #<id>` after the
   // msg id so the model sees which message is being answered (and can target it back
   // via a /reply emit action). Omitted when absent (back-compat).
-  it('renders ↩#<id> for a reply, after the msg id; omitted when absent', () => {
+  it('renders re #<id> for a reply, after the msg id; omitted when absent', () => {
     expect(formatDispatchLine({ senderName: 'Bea', chatName: 'HFM', node: 'wa', body: 'gracias', ts: TS, msgId: '157267', replyToId: '157204' }))
-      .toBe('Bea@[HFM].wa (17:21) #157267 ↩#157204: gracias');
+      .toBe('Bea@[HFM].wa (17:21) #157267 re #157204: gracias');
     expect(formatDispatchLine({ senderName: 'Bea', chatName: 'HFM', node: 'wa', body: 'gracias', ts: TS, msgId: '157267' }))
       .toBe('Bea@[HFM].wa (17:21) #157267: gracias');
     // a stage-direction never carries the ↩ tag (it references its own target)
