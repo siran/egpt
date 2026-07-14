@@ -5,7 +5,7 @@
 // another agent — avoid the same-file race.)
 import { describe, it, expect } from 'vitest';
 import { createCommands } from '../src/spine/commands.mjs';
-import { emptyState, ensureContact, patchContact, recordThread, slugDir } from '../conversations-state.mjs';
+import { emptyState, ensureContact, patchContact, recordThread, slugDir } from '../src/conversations-state.mjs';
 
 // A readonly.yaml with two heartbeat entries (the shape heartbeat-loader writes).
 const READONLY_YAML = `heartbeats:

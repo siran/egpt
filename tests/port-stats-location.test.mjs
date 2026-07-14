@@ -6,7 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import * as YAML from 'yaml';
 import { portStatsLocation, backfillStatsIds, renameStatsToNames, seedMemberNames } from '../setup/port-stats-location.mjs';
-import { sanitizeStatKey } from '../conversations-state.mjs';
+import { sanitizeStatKey } from '../src/conversations-state.mjs';
 
 // A Map-backed fs. readFile throws ENOENT on a miss; rm deletes; existsSync is has().
 // Paths are normalized to forward slashes on every access so a caller that builds a path

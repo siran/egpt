@@ -8,7 +8,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { resolveChatTarget, serialize } from '../conversations-state.mjs';
+import { resolveChatTarget, serialize } from '../src/conversations-state.mjs';
 
 const dirs = [];
 const tmpState = (state) => {

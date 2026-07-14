@@ -171,7 +171,7 @@ if (isMain) {
   let convState = {};
   let slugDir = null;
   try {
-    const cs = await import('../../conversations-state.mjs');
+    const cs = await import('../conversations-state.mjs');
     convState = await cs.readState(cs.CONV_YAML_PATH);
     slugDir = cs.slugDir;
   } catch (e) { console.error(`compact: conversation scan skipped — ${e?.message ?? e}`); }

@@ -14,7 +14,7 @@
 // host (egpt.mjs, Phase 1b-iii) supplies `modeFor` = the existing E/sibling
 // auto-mode resolution, so wiring this in preserves behavior exactly.
 
-import { normalizeResidents } from '../conversations-state.mjs';
+import { normalizeResidents } from './conversations-state.mjs';
 import { normalizeMemberState, DEFAULT_MEMBER_STATE } from './room-core.mjs';
 
 /**

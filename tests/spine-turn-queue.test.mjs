@@ -16,7 +16,7 @@
 // These tests REPRODUCE the mangle first (they fail on the pre-fix spine, which only
 // opens the 2nd placeholder AFTER the 1st turn finishes), then the fix makes them pass.
 import { describe, it, expect } from 'vitest';
-import { createSpine } from '../spine.mjs';
+import { createSpine } from '../src/spine/spine.mjs';
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 

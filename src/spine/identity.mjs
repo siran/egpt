@@ -34,7 +34,7 @@ export function surfaceOf(network) {
 
 export function createIdentity({ formatLine = formatDispatchLine, now = () => Date.now() } = {}) {
   return {
-    /** @param {{ body: string, from: object }} payload @returns {import('../../spine.mjs').InboundEvent} */
+    /** @param {{ body: string, from: object }} payload @returns {import('./spine.mjs').InboundEvent} */
     build({ body, from } = {}) {
       const f = from ?? {};
       const key = netKey(f.network);

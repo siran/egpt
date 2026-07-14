@@ -138,7 +138,7 @@ beforeAll(async () => {
 
   // 2. Import the app modules NOW (EGPT_HOME already frozen to the fixture).
   ({ boot } = await import('../src/spine/boot.mjs'));
-  ({ slugDir, parse } = await import('../conversations-state.mjs'));
+  ({ slugDir, parse } = await import('../src/conversations-state.mjs'));
   ({ createContacts } = await import('../src/spine/contacts.mjs'));
   ({ createMedia } = await import('../src/spine/media.mjs'));
   ({ _BEEPER_LOG } = await import('../src/bridges/beeper.mjs'));

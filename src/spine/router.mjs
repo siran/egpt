@@ -48,7 +48,7 @@ function findAgent(agents, token) {
 
 export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', getNode = () => null, getAliases = () => [], meshEnabled = () => false } = {}) {
   return {
-    /** @param {import('../../spine.mjs').InboundEvent} ev
+    /** @param {import('./spine.mjs').InboundEvent} ev
      *  @returns {{ being: string|null, mesh?: object, mention: object|undefined }} */
     resolve(ev) {
       const body = ev?.body ?? '';

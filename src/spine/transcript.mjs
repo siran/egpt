@@ -8,7 +8,7 @@
 // Effectful deps are injected (conv-state load/write via the shared contacts
 // resolver, fs) so the service is testable in-memory; the pure path helpers are
 // imported directly.
-import { slugDir, recordMemberStat, isoFromMs } from '../../conversations-state.mjs';
+import { slugDir, recordMemberStat, isoFromMs } from '../conversations-state.mjs';
 import { transcriptAppend, replyLine } from '../transcript-log.mjs';
 import { appendFile as fsAppendFile, mkdir as fsMkdir } from 'node:fs/promises';
 import { existsSync as fsExistsSync } from 'node:fs';

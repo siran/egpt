@@ -6,7 +6,7 @@
 // config is a NO-OP and a migrated config reads the same value from the new home.
 import { describe, it, expect } from 'vitest';
 import { createGating } from '../src/spine/gating.mjs';
-import { emptyState, ensureContact } from '../conversations-state.mjs';
+import { emptyState, ensureContact } from '../src/conversations-state.mjs';
 
 // No loadState → no per-conversation view (beingView returns null), so decide()
 // resolves purely from config: exactly the GLOBAL-default path we want to lock.

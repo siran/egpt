@@ -12,7 +12,7 @@
 //             own replies delivered meanwhile) ending with its own mention line; an
 //             IMMEDIATE turn keeps its single dispatch line.
 import { describe, it, expect, vi } from 'vitest';
-import { createSpine } from '../spine.mjs';
+import { createSpine } from '../src/spine/spine.mjs';
 import { createSender } from '../src/spine/sender.mjs';
 
 const flush = () => new Promise((r) => setTimeout(r, 0));

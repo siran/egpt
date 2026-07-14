@@ -9,7 +9,7 @@
 // The pure naming/index helpers are kept (media-save.mjs); the effectful copy +
 // conv-state resolution (via the shared contacts resolver) are injected so the
 // save is testable in-memory.
-import { slugDir } from '../../conversations-state.mjs';
+import { slugDir } from '../conversations-state.mjs';
 import { surfaceOf } from './identity.mjs';
 import { mediaFileName, mediaIndexLine } from '../media-save.mjs';
 import { extractKeyframes } from '../video-frames.mjs';

@@ -3,14 +3,14 @@
 // against a fake Bridge + fake Brain. Asserts, per auto-mode, that gating +
 // transcript + delivery all behave — no network, no Claude, no live account.
 import { describe, it, expect } from 'vitest';
-import { createSpine } from '../spine.mjs';
+import { createSpine } from '../src/spine/spine.mjs';
 import { createIdentity } from '../src/spine/identity.mjs';
 import { createGating } from '../src/spine/gating.mjs';
 import { createTranscript } from '../src/spine/transcript.mjs';
 import { createContacts } from '../src/spine/contacts.mjs';
 import { createSender } from '../src/spine/sender.mjs';
 import { createRouter } from '../src/spine/router.mjs';
-import { emptyState, ensureContact } from '../conversations-state.mjs';
+import { emptyState, ensureContact } from '../src/conversations-state.mjs';
 
 function fakeBridge() {
   let cb = null;

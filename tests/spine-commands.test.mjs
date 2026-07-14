@@ -3,8 +3,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import { join } from 'node:path';
 import { createCommands } from '../src/spine/commands.mjs';
-import { createSpine } from '../spine.mjs';
-import { emptyState, ensureContact, getBeing, recordThread, patchContact, DEFAULT_ALLOWED_TOOLS, READONLY_ALLOWED_TOOLS } from '../conversations-state.mjs';
+import { createSpine } from '../src/spine/spine.mjs';
+import { emptyState, ensureContact, getBeing, recordThread, patchContact, DEFAULT_ALLOWED_TOOLS, READONLY_ALLOWED_TOOLS } from '../src/conversations-state.mjs';
 
 function harness({ config = {}, state = null, agentTypes = ['egpt', 'sonnet-high'], brains, identityLayers = ['default'], io = {} } = {}) {
   const sent = [], exits = [], rewinds = [], writes = [], evicts = [];

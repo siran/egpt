@@ -4,7 +4,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { sanitizeSlug, sanitizeName } from '../src/sanitize.mjs';
-import { sanitizeSlug as slugFromConvState } from '../conversations-state.mjs';
+import { sanitizeSlug as slugFromConvState } from '../src/conversations-state.mjs';
 import { sanitizeName as nameFromRooms } from '../src/rooms.mjs';
 
 describe('sanitizeSlug — Windows-path-safe, name-preserving (characterization)', () => {

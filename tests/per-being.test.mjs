@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { getBeing, residentsOf } from '../conversations-state.mjs';
+import { getBeing, residentsOf } from '../src/conversations-state.mjs';
 
 // A flat (un-migrated) conversation and a nested (per-being) one in the same state.
 const state = { contacts: { whatsapp: {

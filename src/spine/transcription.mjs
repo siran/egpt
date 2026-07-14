@@ -13,7 +13,7 @@ import { transcribeAudioFile } from '../tools/transcribe.mjs';
 import { transcribeViaEndpoint } from '../tools/transcriptor.mjs';
 import { startWhisperServer, makeWhisperServerTranscriber } from '../tools/whisper-server.mjs';
 import { DEFAULT_SERVICE, readTranscriptionConfig } from '../transcription-service.mjs';
-import { readState, CONV_YAML_PATH, KNOWN_SURFACES, getContact, slugDir } from '../../conversations-state.mjs';
+import { readState, CONV_YAML_PATH, KNOWN_SURFACES, getContact, slugDir } from '../conversations-state.mjs';
 
 export function createTranscription({
   getConfig = () => ({}),

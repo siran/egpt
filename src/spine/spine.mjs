@@ -17,9 +17,9 @@
 // Phase 1 scope (SPINE-REWRITE-PLAN.md §4, §6): the receive → gate → brain →
 // reply → send pipe, proven against fakes. Mesh forwarding, voice/media, and the
 // shell/slash console are layered in after v1, each behind its service seam.
-import { makeSerialByKey } from './src/serial-by-key.mjs';
-import { isBrainFailureResult } from './src/brain-errors.mjs';
-import { replyLine } from './src/transcript-log.mjs';
+import { makeSerialByKey } from '../serial-by-key.mjs';
+import { isBrainFailureResult } from '../brain-errors.mjs';
+import { replyLine } from '../transcript-log.mjs';
 
 // ---------------------------------------------------------------------------
 // Ports — the interfaces the loop depends on (injected, never global). §2b.

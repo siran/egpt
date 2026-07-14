@@ -17,7 +17,7 @@
 // E is a sibling, not a network); the whatsapp.* reads stay as back-compat fallbacks
 // so an un-migrated config is a no-op. The old config.auto_modes route is GONE —
 // modes live in conversations.yaml.
-import { getBeing } from '../../conversations-state.mjs';
+import { getBeing } from '../conversations-state.mjs';
 import { receives, replyAllowed, mayEmitChat, isSilenceReply, isAutoMode, DEFAULT_AUTO_MODE } from '../auto-mode.mjs';
 
 const _send = (v) => (v === 'always' || v === 'mode') ? v : null;

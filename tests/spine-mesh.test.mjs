@@ -5,7 +5,7 @@
 // all against fakes. No network, no Claude, no relay.mjs internals asserted directly.
 import { describe, it, expect } from 'vitest';
 import { createMeshService } from '../src/spine/mesh.mjs';
-import { createSpine } from '../spine.mjs';
+import { createSpine } from '../src/spine/spine.mjs';
 import { encodeMesh, parseMesh } from '../src/mesh/relay.mjs';
 
 const flush = async () => { await new Promise((r) => setTimeout(r, 0)); await new Promise((r) => setTimeout(r, 0)); };

@@ -9,7 +9,7 @@
 //
 // Effectful deps (conv-state load/write, fs) are injected so it's testable
 // in-memory; the pure slug/rename helpers are imported directly.
-import { slugDir, ensureContact, renameLogLine, mutateState } from '../../conversations-state.mjs';
+import { slugDir, ensureContact, renameLogLine, mutateState } from '../conversations-state.mjs';
 import { rename as fsRename, appendFile as fsAppendFile } from 'node:fs/promises';
 import { join } from 'node:path';
 

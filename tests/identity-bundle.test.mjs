@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   readIdentityBundle,
   buildIdentityAnnouncement,
-} from '../conversations-state.mjs';
+} from '../src/conversations-state.mjs';
 
 describe('readIdentityBundle', () => {
   it('passes the manifest through and returns personality under both keys', async () => {

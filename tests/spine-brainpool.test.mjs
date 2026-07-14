@@ -6,7 +6,7 @@ import { describe, it, expect } from 'vitest';
 import { createBrainPool, parseWarmBlock } from '../src/spine/brainpool.mjs';
 import { createContacts } from '../src/spine/contacts.mjs';
 import { buildClaudeArgs, DEFAULT_ALLOWED_TOOLS } from '../src/claude-args.mjs';
-import { emptyState, getBeing, getContact, ensureContact, recordThread, patchContact } from '../conversations-state.mjs';
+import { emptyState, getBeing, getContact, ensureContact, recordThread, patchContact } from '../src/conversations-state.mjs';
 
 // A fake warm pool that records run() calls and lets a test script the results.
 function fakePool(scriptedResults) {

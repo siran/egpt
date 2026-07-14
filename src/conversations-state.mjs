@@ -22,13 +22,17 @@ import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 import * as YAML from 'yaml';
-import { sanitizeSlug } from './src/sanitize.mjs';
-import { Room } from './src/room-core.mjs';
-import { EGPT_HOME } from './src/egpt-home.mjs';
-import { makeSerialByKey } from './src/serial-by-key.mjs';
+import { sanitizeSlug } from './sanitize.mjs';
+import { Room } from './room-core.mjs';
+import { EGPT_HOME } from './egpt-home.mjs';
+import { makeSerialByKey } from './serial-by-key.mjs';
 
+// This module lives in src/, but the SHIPPED asset dirs (config/skeletons,
+// config/personalities) sit at the PACKAGE ROOT — hence the '..' below. Holds for
+// both the dev repo and the installed ~/bin/egpt (config/ is a package-root sibling
+// in each). The profile dirs beside them use absolute EGPT_HOME, so they don't care.
 const _here = dirname(fileURLToPath(import.meta.url));
-const PERSONALITIES_SHIPPED_DIR  = join(_here, 'config', 'personalities');
+const PERSONALITIES_SHIPPED_DIR  = join(_here, '..', 'config', 'personalities');
 const PERSONALITIES_OPERATOR_DIR = join(EGPT_HOME, 'personalities');
 // Identities are FLAT markdown files now (operator 2026-07-03: "identities are .md
 // files not directories with a 00-file inside… an identity file 'egpt.md'"). A
@@ -43,13 +47,13 @@ const PERSONALITIES_OPERATOR_DIR = join(EGPT_HOME, 'personalities');
 //     00-identity.md (the shipped eGPT default). No repo-root identities/ back-read.
 const IDENTITIES_PROFILE_DIR    = join(EGPT_HOME, 'config', 'identities');
 const ROOM_TEMPLATE_PROFILE_DIR = join(EGPT_HOME, 'config', 'skeletons', 'room');
-const ROOM_TEMPLATE_SHIPPED_DIR = join(_here, 'config', 'skeletons', 'room');
+const ROOM_TEMPLATE_SHIPPED_DIR = join(_here, '..', 'config', 'skeletons', 'room');
 // The `mode: auto` operator-role instruction layer (a top-level skeleton, seeded
 // copy-if-missing like the room template). Appended to an auto conversation's kickoff
 // feed — NOT part of readIdentityFeed (which every conversation gets), so it reaches
 // ONLY auto chats. Profile-seeded copy wins; the repo's shipped file is the fallback.
 const SKELETONS_PROFILE_DIR     = join(EGPT_HOME, 'config', 'skeletons');
-const SKELETONS_SHIPPED_DIR     = join(_here, 'config', 'skeletons');
+const SKELETONS_SHIPPED_DIR     = join(_here, '..', 'config', 'skeletons');
 // Canonical location of the per-contact YAML registry (operator 2026-07-03: MOVED under
 // config/). Exported so daemon + slashes + tools all agree. The registry sits OUTSIDE the
 // per-conversation dirs so conversation-e (cwd-locked to its own slug dir) can't read it.
@@ -132,7 +136,7 @@ export const DETERMINISTIC_EFFORT = 'high';
 // in the tool-args leaf (src/claude-args.mjs), re-exported here so existing importers
 // (brainpool, commands) keep their path. A literal 'all' is REJECTED at the spawn
 // boundary — coerced to this list, never a bypass/full grant.
-export { DEFAULT_ALLOWED_TOOLS, READONLY_ALLOWED_TOOLS } from './src/claude-args.mjs';
+export { DEFAULT_ALLOWED_TOOLS, READONLY_ALLOWED_TOOLS } from './claude-args.mjs';
 
 // The per-surface stats ROOT (operator 2026-07-04). stats used to live INSIDE
 // conversations/<surface>/<slug>/ — the warm claude process's CONFINED cwd, which is the

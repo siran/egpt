@@ -16,7 +16,7 @@ let resolveIdentityFile, readIdentityFeed;
 
 beforeAll(async () => {
   await mkdir(tmpHome, { recursive: true });   // empty profile → shipped room template is the fallback
-  ({ resolveIdentityFile, readIdentityFeed } = await import('../conversations-state.mjs'));
+  ({ resolveIdentityFile, readIdentityFeed } = await import('../src/conversations-state.mjs'));
 });
 afterAll(async () => {
   delete process.env.EGPT_HOME;

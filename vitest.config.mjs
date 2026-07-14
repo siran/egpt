@@ -17,7 +17,7 @@ export default defineConfig({
       include: [
         'egpt.mjs',
         'egpt-daemon.mjs',
-        'conversations-state.mjs',
+        'src/conversations-state.mjs',
         'config/**/*.mjs',
         'src/**/*.mjs',
         'extension/src/**/*.{js,jsx}',

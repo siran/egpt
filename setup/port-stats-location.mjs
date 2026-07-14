@@ -36,7 +36,7 @@ import * as YAML from 'yaml';
 import {
   CONV_YAML_PATH, readState, slugDir, sanitizeStatKey, mergeStats,
   statsDir, unsanitizeStatKey, KNOWN_SURFACES, resolveStatFilename,
-} from '../conversations-state.mjs';
+} from '../src/conversations-state.mjs';
 import { sanitizeSlug } from '../src/sanitize.mjs';
 
 // Headers mirror conversations-state's STATS_HEADER / CONTACT_STATS_HEADER (not exported —

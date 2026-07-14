@@ -5,7 +5,7 @@
 // conv-state; no disk.
 import { describe, it, expect } from 'vitest';
 import { createContacts } from '../src/spine/contacts.mjs';
-import { emptyState, getContact, ensureContact, recordThread } from '../conversations-state.mjs';
+import { emptyState, getContact, ensureContact, recordThread } from '../src/conversations-state.mjs';
 
 const SURFACE = 'whatsapp';
 const CHAT = '!room:beeper.com';

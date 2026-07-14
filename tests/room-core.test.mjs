@@ -7,7 +7,7 @@
 import { describe, it, expect } from 'vitest';
 import { join } from 'node:path';
 import { Room, ConversationRoom, NamedRoom } from '../src/room-core.mjs';
-import { slugDir, slugTranscriptPath, sanitizeSlug } from '../conversations-state.mjs';
+import { slugDir, slugTranscriptPath, sanitizeSlug } from '../src/conversations-state.mjs';
 import { roomDir, roomFilesDir, sanitizeName } from '../src/rooms.mjs';
 import { EGPT_HOME } from '../src/egpt-home.mjs';
 

@@ -23,7 +23,7 @@ process.env.EGPT_HOME = tmpHome;
 let boot, emptyState, ensureContact, shouldReapStrayWhisper, whisperPortOf, buildNodeIdentity;
 beforeAll(async () => {
   ({ boot, shouldReapStrayWhisper, whisperPortOf, buildNodeIdentity } = await import('../src/spine/boot.mjs'));
-  ({ emptyState, ensureContact } = await import('../conversations-state.mjs'));
+  ({ emptyState, ensureContact } = await import('../src/conversations-state.mjs'));
 });
 afterAll(async () => {
   delete process.env.EGPT_HOME;

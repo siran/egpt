@@ -11,7 +11,7 @@
 // Timers + rng are injected (the spine's existing seam), so these tests are fully
 // deterministic — no real waiting, no vi.useFakeTimers global patching.
 import { describe, it, expect } from 'vitest';
-import { createSpine } from '../spine.mjs';
+import { createSpine } from '../src/spine/spine.mjs';
 
 // A controllable fake timer: records each armed timer (fn + delay), fires them on demand.
 // The spine arms the dwell (pre-turn) and the typing sleep (mid-turn) through here.

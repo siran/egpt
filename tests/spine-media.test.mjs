@@ -3,7 +3,7 @@
 import { describe, it, expect } from 'vitest';
 import { createMedia } from '../src/spine/media.mjs';
 import { createContacts } from '../src/spine/contacts.mjs';
-import { emptyState } from '../conversations-state.mjs';
+import { emptyState } from '../src/conversations-state.mjs';
 
 function harness() {
   let state = emptyState();

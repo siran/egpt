@@ -5,7 +5,7 @@
 // serialize/parse tests + a manual scratch-copy dry run, per the operator's ask).
 import { describe, it, expect } from 'vitest';
 import { portExplicitTools } from '../setup/port-explicit-tools.mjs';
-import { DEFAULT_ALLOWED_TOOLS } from '../conversations-state.mjs';
+import { DEFAULT_ALLOWED_TOOLS } from '../src/conversations-state.mjs';
 
 const baseEntry = (allowed_tools) => ({
   slug: 'diego-2605200133',

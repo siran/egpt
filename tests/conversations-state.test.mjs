@@ -49,7 +49,7 @@ import {
   readPersonality,
   readPersonalityMeta,
   residentsOf,
-} from '../conversations-state.mjs';
+} from '../src/conversations-state.mjs';
 
 const WA = 'whatsapp';
 const TG = 'telegram';

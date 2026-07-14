@@ -19,7 +19,7 @@ beforeAll(async () => {
   await mkdir(join(tmpHome, 'config', 'identities'), { recursive: true });
   await writeFile(join(tmpHome, 'config', 'identities', 'egpt.md'), '# profile egpt\n\nOverridden.\n', 'utf8');
   await writeFile(join(tmpHome, 'config', 'identities', 'secretary.md'), '# I am a secretary\n\nProfile-only layer.\n', 'utf8');
-  ({ listIdentityLayers, resolveIdentityFile, readIdentityFeed } = await import('../conversations-state.mjs'));
+  ({ listIdentityLayers, resolveIdentityFile, readIdentityFeed } = await import('../src/conversations-state.mjs'));
 });
 afterAll(async () => {
   delete process.env.EGPT_HOME;

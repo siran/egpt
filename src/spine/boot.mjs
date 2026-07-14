@@ -12,7 +12,7 @@ import { readFile, writeFile, mkdir, unlink, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { spawnSync, spawn } from 'node:child_process';
 
-import { createSpine } from '../../spine.mjs';
+import { createSpine } from './spine.mjs';
 import { EGPT_HOME } from '../egpt-home.mjs';
 import { createBeeperBridgePort } from '../bridges/beeper-port.mjs';
 import { createWarmPool } from '../warm-sessions.mjs';
@@ -21,7 +21,7 @@ import { readConfigSync } from '../tools/config-io.mjs';
 import { reapPort } from '../tools/reap-port.mjs';
 import {
   CONV_YAML_PATH, parse as parseConvState, serialize as serializeConvState, emptyState, KNOWN_SURFACES, slugDir,
-} from '../../conversations-state.mjs';
+} from '../conversations-state.mjs';
 
 import { createIdentity, surfaceOf } from './identity.mjs';
 import { echoRank } from './echo-priority.mjs';

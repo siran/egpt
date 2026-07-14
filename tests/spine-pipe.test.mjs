@@ -3,7 +3,7 @@
 // Claude process — every port/service is a fake, so this locks the LOOP shape
 // and the gating branches, independent of the real subsystems layered in later.
 import { describe, it, expect } from 'vitest';
-import { createSpine } from '../spine.mjs';
+import { createSpine } from '../src/spine/spine.mjs';
 import { createReplyActions } from '../src/spine/reply-actions.mjs';
 
 // --- fakes: each port/service as a tiny recorder ------------------------------

@@ -21,7 +21,7 @@
 // untouched; running it twice in a row is a no-op the second time. The orchestrator runs
 // this with the service stopped.
 import { pathToFileURL } from 'node:url';
-import { CONV_YAML_PATH, DEFAULT_ALLOWED_TOOLS, residentsOf, readState, writeState } from '../conversations-state.mjs';
+import { CONV_YAML_PATH, DEFAULT_ALLOWED_TOOLS, residentsOf, readState, writeState } from '../src/conversations-state.mjs';
 
 const isLegacyAll = (v) => v === 'all' || v === '*';
 
