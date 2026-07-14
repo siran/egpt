@@ -16,7 +16,6 @@ import { fileURLToPath } from 'node:url';
 import { CONFIG_SCHEMA } from '../config/config-schema.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const SLASH_DIR = join(ROOT, 'slash');
 
 describe('/config schema vs. v2 spine config references', () => {
   // The v2 spine (spine.mjs + src/spine/*.mjs) reads config two ways: boot() holds the
@@ -51,69 +50,4 @@ describe('/config schema vs. v2 spine config references', () => {
       expect(CONFIG_SCHEMA, `${key} read by the v2 spine but not in CONFIG_SCHEMA`).toHaveProperty(key);
     });
   }
-});
-
-// Bridge-surface coverage. Slash files reach into the WA bridge via
-// `waBridgeRef.current.<method>`; if a refactor drops the method from the bridge's
-// return object the access is a runtime TypeError that only fires when an operator
-// actually invokes the path. Caught one in production (setEgptPin disappeared from the
-// WA return object during an unrelated edit, /unpin crashed the daemon at use-time).
-// This test statically grep-extracts every `.current.<name>` access in slash/*.mjs and
-// asserts the bridge's return object exposes it.
-describe('bridge-surface integrity', () => {
-  function _extractReturnObject(src, factoryRegex) {
-    const fm = src.match(factoryRegex);
-    if (!fm) return null;
-    const needle = '\n  return {';
-    let probe = fm.index;
-    let start = -1;
-    while ((probe = src.indexOf(needle, probe + 1)) >= 0) {
-      start = probe + 1;   // skip the leading newline
-      break;
-    }
-    if (start < 0) return null;
-    let depth = 0, i = start + '  return '.length;
-    for (; i < src.length; i++) {
-      if (src[i] === '{') depth++;
-      else if (src[i] === '}') { depth--; if (depth === 0) return src.slice(start, i + 1); }
-    }
-    return null;
-  }
-  function _exportedNames(returnBlock) {
-    const names = new Set();
-    for (const m of returnBlock.matchAll(/^\s{2,6}(?:async\s+)?(get\s+)?(\w+)\s*(?:[,:(]|$)/gm)) {
-      const kw = m[2];
-      if (['return', 'if', 'else', 'const', 'let', 'var', 'for', 'while', 'function'].includes(kw)) continue;
-      names.add(kw);
-    }
-    return names;
-  }
-  function _surveyAccesses(ref) {
-    const accessed = new Map();   // method → [file, ...]
-    for (const f of readdirSync(SLASH_DIR)) {
-      if (!f.endsWith('.mjs')) continue;
-      const src = readFileSync(join(SLASH_DIR, f), 'utf8');
-      const re = new RegExp(`${ref}\\??\\.current\\??\\.(\\w+)`, 'g');
-      for (const m of src.matchAll(re)) {
-        const list = accessed.get(m[1]) ?? [];
-        list.push(f);
-        accessed.set(m[1], list);
-      }
-    }
-    return accessed;
-  }
-
-  it('WA bridge exposes every method accessed by slash files', () => {
-    // The WA transport is the beeper limb (baileys removed 2026-06-10).
-    const src = readFileSync(join(ROOT, 'src/bridges/beeper.mjs'), 'utf8');
-    const ret = _extractReturnObject(src, /export\s+async\s+function\s+startBeeperBridge\b/);
-    expect(ret, 'could not extract bridge return object — has the factory shape changed?').toBeTruthy();
-    const exposed = _exportedNames(ret);
-    const accessed = _surveyAccesses('waBridgeRef');
-    const missing = [];
-    for (const [method, files] of accessed.entries()) {
-      if (!exposed.has(method)) missing.push(`${method} (used in: ${files.join(', ')})`);
-    }
-    expect(missing, `WA bridge return object is missing methods that slash files call:\n  ${missing.join('\n  ')}`).toEqual([]);
-  });
 });

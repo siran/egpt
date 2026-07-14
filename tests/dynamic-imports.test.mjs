@@ -13,7 +13,7 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const SOURCE_DIRS = ['src', 'slash', 'config', 'extension/src'];
+const SOURCE_DIRS = ['src', 'config', 'extension/src'];
 const SOURCE_EXTENSIONS = ['.mjs', '.js', '.jsx'];
 
 async function walkSource(dir, out = []) {

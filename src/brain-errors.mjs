@@ -1,5 +1,5 @@
 // brain-errors.mjs — pure brain/CLI error-result predicates, lifted out of the
-// old-spine dispatch.mjs (dies at cutover) so v2 doesn't drag that 56 KB file in.
+// old-spine dispatch.mjs (since removed); kept here so v2 never imported that file.
 
 // The resumed claude session + the new message overflowed the model's context
 // window. Distinct from a missing-resume (the session loads fine; it's just too
@@ -19,7 +19,7 @@ export function isContextOverflowError(text) {
 // The CLI's own session store no longer has the resumed session (e.g. its
 // cwd-keyed store moved/renamed out from under a stored threadId). Distinct
 // from context-overflow (the session loads fine; it's just too big) and from
-// the legacy isMissingResumeError in dispatch.mjs (the per-contact dispatch path's
+// the legacy isMissingResumeError (the removed old-spine per-contact dispatch path's
 // "no rollout found" / "resume failed" shape) — this is the CLI's own exact
 // error string. Recovery = reset the thread and retry fresh, same as overflow.
 export function isDeadSessionError(text) {

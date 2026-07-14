@@ -1,5 +1,4 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
 import { createFloodGuard, guardedSend } from '../src/flood-guard.mjs';
 
 describe('flood-guard — bridge send fail-safe', () => {
@@ -53,17 +52,5 @@ describe('flood-guard — bridge send fail-safe', () => {
     expect(() => guardedSend({ send: async () => {} })).toThrow(/floodGuard is required/);
     expect(() => guardedSend({ send: async () => {}, floodGuard: {} })).toThrow(/floodGuard is required/);
     expect(() => guardedSend({ floodGuard: createFloodGuard() })).toThrow(/send function is required/);
-  });
-
-  // ── META: the spine actually WIRES the guard onto every bridge send. This is
-  //    the check the 2026-06-19 post-mortem said was missing — proving the guard
-  //    is in the path, not just that it works in isolation. If someone removes a
-  //    wrap, this fails. ──
-  it('META: the spine wraps EVERY bridge send through the flood guard (no bypass)', () => {
-    const src = readFileSync(new URL('../egpt-spine.mjs', import.meta.url), 'utf8');
-    // (the 'telegram' bridge wrap assertion was removed 2026-06-24 with the direct
-    // Telegram-bot transport — one channel, Beeper.)
-    expect(src).toMatch(/_wrapBridgeFlood\(bridge, 'whatsapp'\);\s*waBridgeRef\.current = bridge/);
-    expect(src).toMatch(/guardedSend\(\{[\s\S]*?floodGuard:/);   // the wrap goes through the guard
   });
 });

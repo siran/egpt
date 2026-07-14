@@ -17,17 +17,13 @@ export default defineConfig({
       include: [
         'egpt.mjs',
         'egpt-daemon.mjs',
-        'egpt-spine.mjs',
-        'dispatch.mjs',
         'conversations-state.mjs',
         'config/**/*.mjs',
-        'slash/**/*.mjs',
         'src/**/*.mjs',
         'extension/src/**/*.{js,jsx}',
       ],
       exclude: [
         'tests/**',
-        'attic/**',
         'coverage/**',
         'extension/build.mjs',
         'extension/dist/**',
