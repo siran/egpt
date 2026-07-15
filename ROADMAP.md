@@ -276,6 +276,26 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
   same trust shape as agents.relay_channel); per-channel opt-in only; flood
   guard bounds runaway. NOT YET DISPATCHED — build after the turn-ordering
   fix lands (same spine files).
+  - **LIVE FEEDBACK (operator 2026-07-15) — auto IS running, and misjudging.**
+    Two failures observed on real chats: (a) E mistakes the operator's FRIENDS for
+    SCAMMERS, and does not take information it is given at FACE VALUE — it needs an
+    instruction layer that trusts the operator's contacts by default and does not
+    accuse; (b) **the advice-channel consult never happens** — E does not ask in a
+    separate channel, so the "CONSULT THE OPERATOR when in doubt" safety valve this
+    whole design leans on is unbuilt/unwired. (a) is only survivable because of (b)'s
+    absence being noticed — fix (b) first.
+  - **PROPOSED — y/n APPROVAL GATE (operator 2026-07-15):** as auto rolls out to MORE
+    chats, gate every auto reply behind operator approval instead of sending it: E posts
+    a NUMBERED proposed reply (`<N> <txt>`) into the advice channel; the operator answers
+    y/n (or by number); only approved replies send. Turns auto from AUTONOMOUS into
+    PROPOSE-AND-APPROVE — the natural extension of the advice channel and the direct
+    mitigation for the misjudgment above. Design open: numbering + expiry of stale
+    proposals, batch approve, and whether gated-vs-ungated is a per-chat setting (so a
+    trusted chat can stay ungated).
+  - ⚠️ **DELIVERY TRAP for any instruction rewrite:** the auto layer seeds
+    copy-if-missing (readAutoModeLayer / the profile's skeleton), so improving the
+    REPO's copy does NOT reach a live profile — see the capabilities-refresher entry.
+    Rewriting the instructions and shipping them are two separate jobs.
 
 - **Deaf-bridge detection + post-deploy live smoke (live outage 2026-07-05;
   ESCALATED by the 2026-07-07 overnight incident)**:
