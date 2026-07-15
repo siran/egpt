@@ -202,13 +202,32 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
   Mechanism (how the guided config is authored, what it asks, how it validates the
   Beeper token) is not yet designed.
 
-- **CUTOVER — main becomes v2** (held for operator "go" AFTER re-inspection):
+- **CUTOVER — ✅ DONE 2026-07-15. `main` IS v2** (at `c9cf3ad`), and BOTH NODES ARE
+  DEPLOYED ON IT. What actually happened, including where the plan below was wrong:
   ```
-  git tag pre-rewrite origin/main && git push origin pre-rewrite
-  git push origin rewrite:main          # fast-forward, no force
+  git tag pre-rewrite origin/main && git push origin pre-rewrite   # v1 recovery point
+  git push --force-with-lease origin rewrite:main                  # NOT a fast-forward — see below
   git branch -D main && git branch -m rewrite main
-  git branch -u origin/main main        # /upgrade's git pull keeps working
+  git branch -u origin/main main
   ```
+  - ⚠️ **The old plan said "fast-forward, no force". That was FALSE** — the branches had
+    DIVERGED: `origin/main` carried 2 commits `rewrite` never had (`148c27c` applied the
+    system-prompt-grounding experiment, `19c4f5b` reverted it). VERIFIED net-ZERO before
+    forcing (`git diff 148c27c~1 19c4f5b` is EMPTY) and they touch ONLY `egpt-spine.mjs` +
+    `dispatch.mjs` — both deleted in v2. Forced with `--force-with-lease`.
+  - **`pre-rewrite` tag = `19c4f5b` (pushed).** The ENTIRE v1 line is recoverable from it —
+    this is how `slash/*.mjs` comes back when the console shell is rebuilt:
+    `git show pre-rewrite:slash/summarize.mjs`.
+  - **`origin/rewrite` KEPT** at the same commit as the safety ref (retire in a few days).
+  - **DEPLOY (both nodes, 2026-07-15):** each node's `~/bin/egpt` was on branch `rewrite`
+    tracking `origin/rewrite` — repointed via `git branch -m rewrite main` +
+    `git branch -u origin/main main`, then pulled. ⚠️ NOTE for any future install:
+    `/upgrade` runs a BARE `git pull` (daemon-runtime.mjs ~139) with NO hardcoded branch,
+    so repointing the checkout is sufficient — no code change was needed.
+    REVE pid 3032→19696; DOLLY 45904→46028 (its worker returns ~40s later — the whisper
+    large-v3 CUDA load — do NOT panic at ports being down immediately after a restart).
+    Both: `WS open`, seen-state ~507 sent ids, owner names 3 accounts, and
+    **`SEND ID UNCONFIRMED` = 0** (the e17493b resolver canary — clean on live traffic).
   Keep origin/rewrite for a few days. **The cutover is now JUST the git flip above** —
   the old-spine deletion it used to gate is DONE.
 
