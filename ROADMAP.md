@@ -412,10 +412,18 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
        What hid them was the bridge's OWN suppression (the 60s text window + word-bag
        fingerprints). Whoever probed *"does my own message come back?"* was looking
        THROUGH the very thing that was eating the evidence. The same resemblance layer
-       ALSO silently ate PEER relay envelopes — the mesh chain died 2026-07-06 and was
-       band-aided by exempting envelopes from that one stage (the `parseMesh` carve-out)
-       instead of diagnosing it. Both casualties, one cause; e17493b makes suppression
-       id-exact and removes the layer + the carve-out.
+       ALSO caused a REAL mesh failure: `72a1093` — *"mesh envelopes skip isEcho's fuzzy
+       word-bag stage (live multipath outage 2026-07-06)"* — patched by exempting envelopes
+       from that ONE stage rather than diagnosing the id gap underneath it. e17493b deletes
+       the word-bag entirely, so the carve-out is unnecessary and is gone — which also
+       COMPLETES `73fc57a`'s stated intent ("a node suppresses its own echoes again")
+       without a fuzzy stage left to leak through.
+       NB the exemption had TWO LIVES — do not conflate them (verified 2026-07-15):
+       `dea6365` (07-05) ADDED it deliberately as SCAFFOLDING, so ONE aliased process could
+       re-ingest its OWN posts and self-relay through aliases; `73fc57a` (07-05) REMOVED
+       that scaffolding; only `72a1093` (07-06) is the resemblance casualty. Whether the
+       outage's eaten envelopes were a PEER's or the node's OWN is NOT established — do not
+       assert either.
        **Consequence: TWO NODES ON ONE ACCOUNT SEE EACH OTHER FINE** — `_sentIds` is
        node-LOCAL, so a peer's send is ordinary inbound (unit-locked: the envelope test
        now passes by identity, no exemption). This CONFIRMS the 2026-07-08 topology (both
