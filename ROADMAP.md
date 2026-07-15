@@ -405,6 +405,26 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
      instant); every transport claim (multi-hop, multi-network, multipath,
      dedup, reply-home, traceroute) is live-proven. The rodz relay channels
      stay as the foreign-mesh testbed.
+     - ⚠️ **RODZ'S FOUNDING PREMISE WAS FALSE — corrected 2026-07-15 (fix e17493b).**
+       The second account exists because the mesh design was told *"Beeper won't notify
+       us of our own message."* That is NOT true: Beeper DOES deliver our own sends back
+       as isSender:true — `src/bridges/beeper.mjs` has always called them "loop fuel".
+       What hid them was the bridge's OWN suppression (the 60s text window + word-bag
+       fingerprints). Whoever probed *"does my own message come back?"* was looking
+       THROUGH the very thing that was eating the evidence. The same resemblance layer
+       ALSO silently ate PEER relay envelopes — the mesh chain died 2026-07-06 and was
+       band-aided by exempting envelopes from that one stage (the `parseMesh` carve-out)
+       instead of diagnosing it. Both casualties, one cause; e17493b makes suppression
+       id-exact and removes the layer + the carve-out.
+       **Consequence: TWO NODES ON ONE ACCOUNT SEE EACH OTHER FINE** — `_sentIds` is
+       node-LOCAL, so a peer's send is ordinary inbound (unit-locked: the envelope test
+       now passes by identity, no exemption). **The mesh never needed a second account.**
+       Rodz may still be WANTED as a genuinely FOREIGN identity for cross-ACCOUNT tests —
+       that is now a CHOICE, not a requirement.
+       **OPEN:** after deploying e17493b, live-verify one-account cross-trigger (@e's
+       reply reaches @don, @don's reaches @e, and each can trigger the other) — THEN
+       decide whether Rodz retires. Until that verify lands, do NOT plan new work ON Rodz
+       (including the Telegram-on-Rodz link below — re-evaluate it first).
   3. **Traceroute `via:` — LANDED (2026-07-06)**: each forwarding hop appends
      `<being>.<node>` to a comma-separated `via:` provenance key; the terminal
      responder echoes it home; the origin appends a one-line trailer on the
@@ -532,7 +552,11 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
   sets already implement exactly this (@e wakes both/primary answers;
   @ed pins do). The Rodz account does NOT retire — it remains the network's
   second identity (registry, foreign-mesh tests, its phone); it just stops
-  being what DOLLY's desktop is signed into. All a→d machinery
+  being what DOLLY's desktop is signed into. (⚠️ 2026-07-15: Rodz's ORIGINAL
+  justification — that a node could not see its own/peer messages on ONE shared
+  account — was FALSE; the bridge's own resemblance-suppression was hiding them.
+  See the correction under the mesh entry above. Keeping Rodz is now a CHOICE
+  for foreign-account testing, not a necessity.) All a→d machinery
   (stamps, holds, backfill, ack roles) is account-agnostic and transfers
   unchanged, now covering EVERY chat instead of only rodz-shared ones.
   SWITCH IN PROGRESS 2026-07-08 (operator does the DOLLY Beeper re-login;
