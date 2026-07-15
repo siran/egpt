@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
 import { createServer } from 'node:http';
 import { WebSocketServer } from 'ws';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -16,7 +16,8 @@ import { surfaceOf } from '../src/spine/identity.mjs';
 import { _resetPromotions } from '../src/incoming-media.mjs';
 
 async function startFakeBeeper() {
-  const posts = [];   // POSTs to /v1/chats/:id/messages
+  const posts = [];   // POSTs to /v1/chats/:id/messages — each records the CONFIRMED id it created
+  let confirmedSeq = 1000;   // the per-chat sequence Beeper assigns; NEVER equal to the pending id
   const edits = [];   // PUTs to /v1/chats/:id/messages/:msgId (in-place stream edits)
   const reactions = [];   // POSTs to /v1/chats/:id/messages/:msgId/reactions (E's react limb)
   const uploads = [];     // POSTs to /v1/assets/upload (E's media limb)
@@ -42,7 +43,24 @@ async function startFakeBeeper() {
       }
       const post = req.url.match(/^\/v1\/chats\/([^/]+)\/messages$/);
       if (req.method === 'POST' && post) {
-        posts.push({ chatID: decodeURIComponent(post[1]), ...JSON.parse(body) });
+        // LIVE SHAPE (the whole point of this fake): the POST answers with ONLY a
+        // pendingMessageID. Beeper then delivers that same message — over the WS AND
+        // in the message list — under a DIFFERENT, CONFIRMED id. The two NEVER match,
+        // so a bridge that remembers the PENDING id has no memory of what it sent.
+        // The confirmed id is a numeric per-chat sequence, as verified live.
+        const chatID = decodeURIComponent(post[1]);
+        const parsed = JSON.parse(body);
+        const confirmedID = `${(confirmedSeq += 10)}`;
+        posts.push({ chatID, confirmedID, ...parsed });
+        // …and the message becomes listable under that confirmed id (this is how the
+        // bridge can learn it). A FUNCTION value means the test choreographs the list
+        // itself (upsert-race models) — don't touch those.
+        const cur = messages.get(chatID);
+        if (typeof cur !== 'function') {
+          const list = cur ?? [];
+          list.push({ id: confirmedID, text: parsed.text ?? '', isSender: true });
+          messages.set(chatID, list);
+        }
         res.end(JSON.stringify({ pendingMessageID: `pm-${posts.length}` }));
         return;
       }
@@ -273,19 +291,21 @@ describe('beeper bridge', () => {
     expect(incoming.some((i) => i.from.isStageDirection)).toBe(false);
   });
 
-  // OWN-MESSAGE SUPPRESSION is by wasSentByUs / isEcho (sent-text window), NOT a leading-emoji check
+  // OWN-MESSAGE SUPPRESSION is by wasSentByUs (the ids we sent), NOT a leading-emoji check
   // (that fallback was removed 2026-07-12 — no emoji may reach a decision). A reply E sent is dropped
   // when it echoes back EVEN when it does NOT lead with the persona emoji.
-  it("suppresses E's own re-ingested reply via the sent-text window — even one that does NOT lead with the persona emoji", async () => {
+  it("suppresses E's own re-ingested reply by id — even one that does NOT lead with the persona emoji", async () => {
     const { bridge, incoming } = await startBridge();
-    await bridge.send('🐶 egpt: roger', { chatId: CHAT('chat-1') });        // pre-records the sent text before the POST
+    await bridge.send('🐶 egpt: roger', { chatId: CHAT('chat-1') });        // resolves + remembers its confirmed id
     await bridge.send('plain reply no emoji', { chatId: CHAT('chat-1') });  // a reply with NO leading persona emoji
     await waitFor(() => fake.posts.length === 2);
-    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'echo-a', text: '🐶 egpt: roger' })] });        // both echo back (new ids)
-    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'echo-b', text: 'plain reply no emoji' })] });
+    // Both echo back under the ids BEEPER assigned them (that is the only id the WS
+    // ever carries — the POST's pendingMessageID names nothing).
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: fake.posts[0].confirmedID, text: '🐶 egpt: roger' })] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: fake.posts[1].confirmedID, text: 'plain reply no emoji' })] });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: 'sentinel-human' })] });
     await waitFor(() => incoming.some((i) => i.text === 'sentinel-human'));
-    expect(incoming.map((i) => i.text)).not.toContain('🐶 egpt: roger');       // suppressed via sent-text window
+    expect(incoming.map((i) => i.text)).not.toContain('🐶 egpt: roger');       // suppressed: we sent that id
     expect(incoming.map((i) => i.text)).not.toContain('plain reply no emoji');  // …and one without the emoji too
   });
 
@@ -615,28 +635,18 @@ describe('beeper bridge', () => {
     expect(media.map((m) => m.kind)).toEqual(['image']);      // audio skipped by policy
   });
 
-  it('suppresses the WS echo of its own send (text window, different id)', async () => {
-    const { bridge, incoming } = await startBridge();
-    await bridge.send('egpt says hi', { chatId: CHAT('chat-1') });
-    await waitFor(() => fake.posts.length === 1);
-    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'totally-new-id', text: 'egpt says hi' })] });
-    fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: 'a real message' })] });
-    await waitFor(() => incoming.length === 1);
-    expect(incoming[0].text).toBe('a real message');
-  });
-
-  it("mode:auto echo: E's OWN plain reply (no persona marker) is suppressed by sent-ids/text, but the operator's genuinely-typed line passes through", async () => {
+  it("mode:auto echo: E's OWN plain reply (no persona marker) is suppressed by its sent id, but the operator's genuinely-typed line passes through", async () => {
     // In an auto chat E sends PLAIN operator text — no 🐶 body_emoji — so the
-    // persona-marker guard cannot catch its echo; the sent-ids/text window IS the
-    // suppression key (refinement #4). The operator's OWN typed line is isSender too but
-    // was never sent by us, so it is NOT suppressed and reaches the host to accumulate.
+    // persona-marker guard cannot catch its echo; the sent-id set IS the suppression
+    // key (refinement #4). The operator's OWN typed line is isSender too but was never
+    // sent by us, so it is NOT suppressed and reaches the host to accumulate.
     const { bridge, incoming } = await startBridge();   // NO personaEmoji — auto sends carry none
     await bridge.send('all good, talk soon', { chatId: CHAT('chat-1') });
     await waitFor(() => fake.posts.length === 1);
-    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'echo-id', isSender: true, text: 'all good, talk soon' })] });   // E's reply, echoed back
-    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'op-id', isSender: true, text: 'note for later' })] });          // operator's OWN typed message
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: fake.posts[0].confirmedID, isSender: true, text: 'all good, talk soon' })] });   // E's reply, echoed back under its real id
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'op-id', isSender: true, text: 'note for later' })] });                          // operator's OWN typed message
     await waitFor(() => incoming.some((i) => i.text === 'note for later'));
-    expect(incoming.map((i) => i.text)).not.toContain('all good, talk soon');   // echo suppressed via sent-ids/text window
+    expect(incoming.map((i) => i.text)).not.toContain('all good, talk soon');   // echo suppressed: we sent that id
     expect(incoming.find((i) => i.text === 'note for later').from.isSender).toBe(true);   // operator's own line passes through → spine accumulates it
   });
 
@@ -644,29 +654,30 @@ describe('beeper bridge', () => {
     // With a real second node (DOLLY, a second Beeper account) on the other end of
     // the chain, each node sees the OTHER account's posts via normal cross-account
     // delivery and never needs to re-see its own. So a mesh envelope this node just
-    // posted is an ordinary self-echo — sent-ids/text window suppresses it exactly
-    // like any other message; there's no reason to special-case the provenance tail.
+    // posted is an ordinary self-echo — the sent-id set suppresses it exactly like any
+    // other message; there's no reason to special-case the provenance tail.
     const { bridge, incoming } = await startBridge();
     const envelope = '```\nQGRvbiBob2xh\n\n---\nfrom: Me\nto: don.do\nmid: chain-1\nenc: b64\n```';
     await bridge.send(envelope, { chatId: CHAT('chat-1') });
     await waitFor(() => fake.posts.length === 1);
-    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'self-echo-id', text: envelope })] });   // our own post, echoed back
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: fake.posts[0].confirmedID, text: envelope })] });   // our own post, echoed back under its real id
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: 'a real message' })] });
     await waitFor(() => incoming.some((i) => i.text === 'a real message'));
-    expect(incoming.map((i) => i.text)).not.toContain(envelope);   // echo suppressed via sent-ids/text window
+    expect(incoming.map((i) => i.text)).not.toContain(envelope);   // echo suppressed: we sent that id
   });
 
-  // MULTIPATH MESH FUZZY-DROP (operator live test 2026-07-06): isEcho's stage-3 word-bag
-  // fallback (built for reformatted MENU echoes) was eating RELAY traffic. Two mesh envelopes
-  // in the SAME channel within the 60s TTL share almost every token — identical base64 body,
-  // same from/from_node/by/post_id/enc — differing only in `to:` and one `via:` entry. Live:
-  // REVE posted the origin envelope (to: don.do, via: [carol.kg]); ~1s later the NEXT HOP's
-  // forward arrived in the same chat (to: wren.kg, via: [carol.kg, don.do], same body/post_id) —
-  // a FOREIGN message the node had to act on — and stage 3 matched it as our own echo, dropping
-  // it BEFORE the "incoming" log line. The relay chain died silently. FIX: a message that parses
-  // as a mesh envelope skips ONLY the fuzzy stage (exact id/text stages still apply). Both
-  // envelopes are built with encodeMesh so the shape is honest.
-  it('a FOREIGN mesh-envelope forward (same body/provenance, only to:/via: differ) is NOT fuzzy-dropped as our own echo — the relay chain survives', async () => {
+  // MULTIPATH MESH FUZZY-DROP (operator live test 2026-07-06): the word-bag fallback (built for
+  // reformatted MENU echoes) was eating RELAY traffic. Two mesh envelopes in the SAME channel
+  // within the 60s TTL share almost every token — identical base64 body, same
+  // from/from_node/by/post_id/enc — differing only in `to:` and one `via:` entry. Live: REVE
+  // posted the origin envelope (to: don.do, via: [carol.kg]); ~1s later the NEXT HOP's forward
+  // arrived in the same chat (to: wren.kg, via: [carol.kg, don.do], same body/post_id) — a FOREIGN
+  // message the node had to act on — and the word-bag matched it as our own echo, dropping it
+  // BEFORE the "incoming" log line. The relay chain died silently. That stage needed a parseMesh
+  // carve-out to stop eating relay traffic; with suppression keyed on the ids we sent, no carve-out
+  // is needed — a foreign forward is simply an id we never sent. Both envelopes are built with
+  // encodeMesh so the shape is honest.
+  it('a FOREIGN mesh-envelope forward (same body/provenance, only to:/via: differ) is NOT dropped as our own echo — the relay chain survives', async () => {
     const { bridge, incoming } = await startBridge();
     const chat = CHAT('egpt-mesh-do-kg');
     // Long enough body that the ORIGIN envelope's word bag clears rememberSent's size>=8 gate.
@@ -684,35 +695,37 @@ describe('beeper bridge', () => {
     expect(incoming.some((i) => i.from.msgKey === 'foreign-fwd')).toBe(true);   // surfaced, NOT fuzzy-dropped (pre-fix: dropped)
   });
 
-  // REGRESSION LOCK (a): skipping the fuzzy stage for envelopes must NOT reopen the 73fc57a
-  // invariant — a node's OWN envelope echo (identical text, different id) is STILL suppressed by
-  // the exact-text stage. Same chat/scenario as the repro above.
-  it("a node's OWN mesh-envelope echo (identical text) is STILL suppressed — only the fuzzy stage is skipped, the exact id/text stages stay (73fc57a invariant)", async () => {
+  // REGRESSION LOCK (a): the node's OWN envelope echo is STILL suppressed — now because we
+  // sent that id, which is also why the foreign forward above survives. One rule, both cases.
+  it("a node's OWN mesh-envelope echo is STILL suppressed (73fc57a invariant) — by its sent id, the same rule that lets the foreign forward through", async () => {
     const { bridge, incoming } = await startBridge();
     const chat = CHAT('egpt-mesh-do-kg');
     const env = encodeMesh({ by: 'An', body: 'hola @don answer please a longer body here', from: 'HFM', from_node: 'kg', to: 'don.do', post_id: 'p-2', via: 'carol.kg' });
     await bridge.send(env, { chatId: chat });
     await waitFor(() => fake.posts.length === 1);
-    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'own-echo', chatID: chat, text: env })] });   // our own post, echoed back (different id, identical text)
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: fake.posts[0].confirmedID, chatID: chat, text: env })] });   // our own post, echoed back
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'sentinel-own', chatID: chat, text: 'a real message' })] });
     await waitFor(() => incoming.some((i) => i.from.msgKey === 'sentinel-own'));
-    expect(incoming.some((i) => i.from.msgKey === 'own-echo')).toBe(false);   // suppressed by the exact-text stage
+    expect(incoming.some((i) => i.from.msgKey === fake.posts[0].confirmedID)).toBe(false);   // suppressed: we sent that id
   });
 
-  // REGRESSION LOCK (b): a reformatted NON-envelope MENU echo (same words, different markers) is
-  // STILL caught by the fuzzy word-bag stage — the 2026-06-25 wizard echo-loop guard is unbroken
-  // (parseMesh returns null for a menu, so the fuzzy stage still runs for it).
-  it('a reformatted NON-envelope menu echo (same words, different markers) is STILL caught by the fuzzy word-bag stage', async () => {
+  // REGRESSION LOCK (b): the 2026-06-25/28 wizard echo-loop guard. WhatsApp can hand our OWN
+  // multi-line menu back REFORMATTED (one line, " - " bullets) — that is what defeated the exact
+  // text compare and forced the word-bag fingerprints. It defeats NOTHING now: a reformat rewrites
+  // the TEXT, never the ID, and the echo still arrives under the id Beeper gave our send. Identity
+  // holds the flood guard that resemblance was hired for — and, unlike the bag, it cannot mistake a
+  // human's paste for our own words.
+  it('a reformatted echo of our own menu (one line, re-marked) is STILL suppressed — by its id, not by its words', async () => {
     const { bridge, incoming } = await startBridge();
     const chat = CHAT('chat-1');
     const menu = 'egpt · conversations (newest first)\n  0) ✦ @egpt — global default brain\n  1) Joyce Vicente · e:haiku/mention\n  2) SPOILER ALERT · e:sonnet/mention\n(reply a number · q quit)';
-    const echo = 'egpt · conversations (newest first) 0) ✦ @egpt — global default brain - 1) Joyce Vicente · e:haiku/mention - 2) SPOILER ALERT · e:sonnet/mention - reply a number · q quit';   // reformatted one-line echo, NOT a mesh envelope
+    const echo = 'egpt · conversations (newest first) 0) ✦ @egpt — global default brain - 1) Joyce Vicente · e:haiku/mention - 2) SPOILER ALERT · e:sonnet/mention - reply a number · q quit';   // reformatted one-line echo
     await bridge.send(menu, { chatId: chat });
     await waitFor(() => fake.posts.length === 1);
-    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'menu-echo', chatID: chat, text: echo })] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: fake.posts[0].confirmedID, chatID: chat, text: echo })] });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'sentinel-menu', chatID: chat, text: 'a real human line' })] });
     await waitFor(() => incoming.some((i) => i.from.msgKey === 'sentinel-menu'));
-    expect(incoming.some((i) => i.from.msgKey === 'menu-echo')).toBe(false);   // fuzzy stage still active for non-envelopes
+    expect(incoming.some((i) => i.from.msgKey === fake.posts[0].confirmedID)).toBe(false);   // no echo-loop, no word-bag needed
   });
 
   it('dedups re-upserts of the same id (receipts/edits)', async () => {
@@ -1493,14 +1506,14 @@ describe('beeper bridge — wake words (own handles only, no injection)', () => 
     expect(incoming[0].from.atEAnywhere).toBe(true);
   });
 
-  it("the node's OWN persona reply (multi-line 🐶 header) is dropped when it echoes back (sent-text window)", async () => {
+  it("the node's OWN persona reply (multi-line 🐶 header) is dropped when it echoes back (its sent id)", async () => {
     const { bridge, incoming } = await startBridge();
-    await bridge.send('🐶 egpt\nmy own reply', { chatId: CHAT('chat-1') });   // pre-recorded before the POST
+    await bridge.send('🐶 egpt\nmy own reply', { chatId: CHAT('chat-1') });
     await waitFor(() => fake.posts.length === 1);
-    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'own-echo', text: '🐶 egpt\nmy own reply' })] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: fake.posts[0].confirmedID, text: '🐶 egpt\nmy own reply' })] });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ isSender: false, text: 'sentinel-own' })] });
     await waitFor(() => incoming.some((m) => m.text === 'sentinel-own'));
-    expect(incoming.map((m) => m.text)).not.toContain('🐶 egpt\nmy own reply');   // dropped via the sent-text window
+    expect(incoming.map((m) => m.text)).not.toContain('🐶 egpt\nmy own reply');   // dropped: we sent that id
   });
 });
 
@@ -1528,29 +1541,39 @@ describe('beeper bridge — E limbs + reply-to-E notification', () => {
     expect(post.text).toBe('look');
   });
 
-  it('wasSentByUs is true for a message this bridge sent, false otherwise', async () => {
+  // The POST's pendingMessageID is NOT an id anything else in the system ever uses:
+  // Beeper delivers the message — over the WS, in the list, and as a reply's quoted
+  // id — under a DIFFERENT CONFIRMED id. So ownership must be keyed on the CONFIRMED
+  // id. (Both this test and the replyToBot one below asserted the exact opposite —
+  // that 'pm-1' was ours and was quotable — which is the pending≠final conflation the
+  // bridge's own comments say does NOT hold live: it made every plain send unknown to
+  // wasSentByUs, so replying to E's reply never woke it.)
+  it('wasSentByUs is true for the CONFIRMED id of a message this bridge sent — never the POST pendingMessageID', async () => {
     const { bridge } = await startBridge();
-    await bridge.send('hi there', { chatId: CHAT('chat-1') });   // records pm-1 in _sentIds
-    expect(bridge.wasSentByUs(CHAT('chat-1'), 'pm-1')).toBe(true);
+    await bridge.send('hi there', { chatId: CHAT('chat-1') });
+    await waitFor(() => bridge.wasSentByUs(CHAT('chat-1'), fake.posts[0].confirmedID), 4000);
+    expect(bridge.wasSentByUs(CHAT('chat-1'), 'pm-1')).toBe(false);   // the pending id names no real message
     expect(bridge.wasSentByUs(CHAT('chat-1'), 'someone-elses-id')).toBe(false);
   });
 
   it('an inbound reply to a message WE sent → replyToBot true + ↩#id ref (operator: "reply to E isn\'t notified")', async () => {
     const { bridge, incoming } = await startBridge();
-    await bridge.send('egpt here', { chatId: CHAT('chat-1') });   // our sent id = pm-1
-    // someone replies to pm-1 (Beeper carries the quoted id as a bare linkedMessageID)
+    await bridge.send('egpt here', { chatId: CHAT('chat-1') });
+    const confirmed = fake.posts[0].confirmedID;   // the id Beeper gave our send — the only id a reply can quote
+    await waitFor(() => bridge.wasSentByUs(CHAT('chat-1'), confirmed), 4000);
+    // someone replies to it (Beeper carries the quoted id as a bare linkedMessageID)
     fake.emit({ type: 'message.upserted', entries: [
-      liveMsg({ isSender: false, senderName: 'Bea', text: 'gracias', linkedMessageID: 'pm-1' }),
+      liveMsg({ isSender: false, senderName: 'Bea', text: 'gracias', linkedMessageID: confirmed }),
     ] });
     await waitFor(() => incoming.some((i) => i.text === 'gracias'));
     const m = incoming.find((i) => i.text === 'gracias');
-    expect(m.from.replyToBot).toBe(true);       // → the gate fires without any @e
-    expect(m.from.replyToId).toBe('pm-1');      // → identity renders ↩#pm-1 in the dispatch line
+    expect(m.from.replyToBot).toBe(true);        // → the gate fires without any @e
+    expect(m.from.replyToId).toBe(confirmed);    // → identity renders ↩#<id> in the dispatch line
   });
 
   it('an inbound reply to SOMEONE ELSE → replyToBot false, but the ↩#id ref still rides', async () => {
     const { bridge, incoming } = await startBridge();
-    await bridge.send('egpt here', { chatId: CHAT('chat-1') });   // our id = pm-1
+    await bridge.send('egpt here', { chatId: CHAT('chat-1') });
     fake.emit({ type: 'message.upserted', entries: [
       liveMsg({ isSender: false, senderName: 'Bea', text: 'ya te dije', linkedMessageID: 'other-99' }),
     ] });
@@ -1568,6 +1591,78 @@ describe('beeper bridge — E limbs + reply-to-E notification', () => {
     expect(m.from.replyToBot).toBe(false);
     expect(m.from.replyToId).toBe(null);
   });
+});
+
+// OWN-SEND SUPPRESSION IS BY IDENTITY, NEVER BY RESEMBLANCE.
+// The bridge shares ONE Beeper account with the operator, so Beeper hands our OWN
+// sends back over the WS with isSender:true — and the operator's own messages, and a
+// PEER node's sends on that same account, arrive looking exactly the same. isSender
+// therefore cannot separate "we sent this" from "a human sent this"; only remembering
+// the ids WE sent can. Since the POST returns a pendingMessageID and the WS delivers a
+// DIFFERENT confirmed id, that memory only works if the bridge RESOLVES the confirmed
+// id — which is the whole fix. Exactly ONE class of inbound may ever be suppressed.
+describe('beeper bridge — own-send suppression is id-exact (shared account)', () => {
+  const chat = CHAT('chat-1');
+
+  it("our OWN send, echoed back under its CONFIRMED id (≠ the pendingMessageID), never re-enters dispatch", async () => {
+    const { bridge, incoming } = await startBridge();
+    await bridge.send('egpt says hi', { chatId: chat });
+    await waitFor(() => fake.posts.length === 1);
+    const confirmed = fake.posts[0].confirmedID;
+    await waitFor(() => bridge.wasSentByUs(chat, confirmed), 4000);
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: confirmed, chatID: chat, text: 'egpt says hi' })] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'sentinel-echo', chatID: chat, isSender: false, text: 'a real message' })] });
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'sentinel-echo'));
+    expect(incoming.map((i) => i.text)).not.toContain('egpt says hi');   // no self-loop
+  });
+
+  it("a human PASTING the bot's own text back (same words, DIFFERENT id) DISPATCHES — resemblance must never suppress", async () => {
+    const { bridge, incoming } = await startBridge();
+    // Long enough to trip BOTH removed resemblance stages: the exact sent-text window
+    // and the >=8-word bag fingerprint. Only the id may decide.
+    const line = 'egpt · conversations (newest first) — reply with a number or q to quit';
+    await bridge.send(line, { chatId: chat });
+    await waitFor(() => bridge.wasSentByUs(chat, fake.posts[0].confirmedID), 4000);
+    // The operator pastes our own line back, seconds later, from the SAME account:
+    // isSender:true, byte-identical text — but an id we never sent.
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'human-paste', chatID: chat, text: line })] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'sentinel-paste', chatID: chat, isSender: false, text: 'a real message' })] });
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'sentinel-paste'));
+    expect(incoming.some((i) => i.from.msgKey === 'human-paste')).toBe(true);   // pre-fix: silently swallowed by the 60s text window
+  });
+
+  it("the operator's OWN human message (isSender, an id we never sent) DISPATCHES", async () => {
+    const { bridge, incoming } = await startBridge();
+    await bridge.send('egpt says hi', { chatId: chat });
+    await waitFor(() => bridge.wasSentByUs(chat, fake.posts[0].confirmedID), 4000);
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'op-typed', chatID: chat, text: 'note for later' })] });
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'op-typed'));
+    expect(incoming.find((i) => i.from.msgKey === 'op-typed').from.isSender).toBe(true);   // same account, still surfaced
+  });
+
+  it("a PEER node's send on the shared account (isSender, an id we never sent) DISPATCHES — this is how @e reaches @don", async () => {
+    const { incoming } = await startBridge();
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'peer-send', chatID: chat, text: '@don please take this one' })] });
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'peer-send'));
+    expect(incoming.find((i) => i.from.msgKey === 'peer-send').from.isSender).toBe(true);
+  });
+
+  // THE SAFETY GATE, stated honestly. Identity is bootstrapped by re-finding our own
+  // message in the chat's list (resolveSentMessageId). That lookup CAN miss — and a
+  // send whose id we never learned is a send we cannot recognize: its echo will
+  // dispatch. We do NOT paper over that with a text guess; the guess is the bug being
+  // removed here, and it silently ate the operator's own messages. We fail LOUD
+  // instead, so a miss is visible in the log rather than hidden behind a heuristic.
+  // If this line ever appears live, fix the RESOLVER's matching — not by reintroducing
+  // resemblance.
+  it('a send whose confirmed id cannot be resolved is logged LOUD (never silently text-suppressed)', async () => {
+    const logs = [];
+    const { bridge } = await startBridge({ onLog: (m) => logs.push(m) });
+    const gone = CHAT('chat-unlistable');
+    fake.messages.set(gone, () => []);   // our POST never becomes findable → the resolver exhausts its polls
+    await bridge.send('a reply that never appears in the list', { chatId: gone });
+    await waitFor(() => logs.some((l) => l.includes('SEND ID UNCONFIRMED')), 8000);
+  }, 12000);
 });
 
 // resolveSentMessageId reduces its text matches with newerMsgId to pick the NEWEST
@@ -1637,6 +1732,30 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
     const targets = fake.edits.map((e) => e.messageID);
     expect(targets).toContain('200');        // the reply edited the REAL placeholder…
     expect(targets).not.toContain('100');    // …and NEVER the stale twin (pre-fix: every edit hit '100')
+  });
+
+  // SENT-ID LOG INTEGRITY: a streamed reply edits its placeholder dozens of times a
+  // turn, and every edit re-remembered the same id — appending another 's' line to
+  // beeper-seen.jsonl each time. Reload only reads the LAST 3500 lines, so a busy run
+  // could pack that window with a handful of ids repeated hundreds of times and
+  // rehydrate _sentIds with a couple dozen distinct ids instead of SEEN_SENT_CAP — a
+  // silent decay of the id memory (self-echo suppression AND replyToBot) across
+  // restarts, and the id memory is now the ONLY own-message signal. One line per id.
+  it('a streamed reply logs its sent id ONCE, not once per edit (seen-log integrity)', async () => {
+    const chat = CHAT('chat-1');
+    armStaleTwinChat(chat, { text: '⏳ Thinking…' });
+    const { bridge } = await startBridge();
+    const handle = bridge.startStreamMessage('⏳ Thinking…', { chatId: chat });
+    for (const t of ['partial one', 'partial one two']) {
+      handle.update(t);
+      await new Promise((r) => setTimeout(r, 450));   // clear the EDIT_MIN_MS debounce so each lands as a real edit
+    }
+    await handle.finish('the reply');
+    expect(fake.edits.length).toBeGreaterThanOrEqual(2);   // several real edits landed…
+    const sent = readFileSync(join(stateDir, 'beeper-seen.jsonl'), 'utf8')
+      .split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((o) => o.k === 's');
+    expect(sent).toHaveLength(1);              // …but the id was recorded once (pre-fix: one line per edit)
+    expect(sent[0].id).toBe('chat-1|200');     // the chat-qualified confirmed id
   });
 
   it('sendAndGetId refuses a stale identical-text match too (same pre-send floor)', async () => {

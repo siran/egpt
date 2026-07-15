@@ -27,13 +27,12 @@
 //     semantic as the baileys/TG bridges. Without it, a Beeper replay
 //     after restart would re-answer old messages (and egpt's own echoed
 //     replies come back isSender=true, i.e. authorized — loop fuel).
-//   - Seen-ids persist to state/beeper-seen.jsonl across restarts
-//     (in-memory-only dedup + the pendingMessageID≠final-id gap meant a
-//     restart forgot everything it ever sent or handled).
+//   - Seen-ids persist to state/beeper-seen.jsonl across restarts (in-memory-only
+//     dedup meant a restart forgot everything it ever handled or sent).
 //   - Network scope is FAIL-CLOSED: unknown accountID with a scope active
 //     drops the message (it used to pass).
 //   - WS reconnect backs off 3s→60s (a closed Beeper app was writing a
-//     log line every 3s, ~29k/day) and _sentText sweeps expired entries.
+//     log line every 3s, ~29k/day).
 //
 // Schema facts VERIFIED against a live Beeper Desktop (2026-06-10):
 //   - chatID is a Matrix room id ('!xxx:beeper.local') on the WIRE — NOT a WA
@@ -66,7 +65,6 @@ import { fileURLToPath } from 'node:url';
 import { join, basename } from 'node:path';
 import { EGPT_HOME } from '../egpt-home.mjs';
 import { shortChatId, fullChatId } from './chat-id.mjs';
-import { parseMesh } from '../mesh/relay.mjs';   // envelope detection: a mesh envelope skips isEcho's FUZZY stage only (operator 2026-07-06)
 
 // Profile-aware (NOT hardcoded ~/.egpt): EGPT_HOME selects the node, so two
 // nodes on one box (prod ~/.egpt + a v2 test node ~/.egpt2) never interleave
@@ -77,17 +75,21 @@ const SEEN_SENT_CAP = 500;
 const SEEN_COMPACT_EVERY = 1000;   // appends between jsonl compactions
 const RECONNECT_MIN_MS = 3_000;
 const RECONNECT_MAX_MS = 60_000;
+// Ceiling on how long dispatch waits for an in-flight send to confirm its id
+// (_awaitSends). Comfortably above resolveSentMessageId's own bound (6 polls × 500ms
+// + the GETs); it only ever bites when a REST call is wedged.
+const SEND_GATE_MAX_MS = 15_000;
 
-// Normalize a body for SELF-ECHO comparison (used by rememberSent/isEcho). The
-// bridge echoes our OWN sends back HTML-formatted ("🦙 l<br>…") with a DIFFERENT
-// final id than the POST's pendingMessageID — so a raw id/text compare misses it.
-// WORSE: WhatsApp/Beeper REWRITES list markers on the echo — an ordered "1)"/"2)"
-// prompt comes back as "- " bullets — so even a tag-stripped compare missed it and
-// the echoed prompt re-entered dispatch as fresh input (operator 2026-06-25: the
-// add-agent wizard echo-looped in the Self DM, flooding). Fix: strip HTML, decode
-// entities, AND flatten every LEADING list marker (-, *, •, "N.", "N)") to nothing,
-// so the sent form and any re-marked echo compare equal. Per-line, before
-// whitespace collapses — hence <br> → newline first.
+// Normalize a body so a message WE posted can be FOUND AGAIN in the chat's message
+// list — the one text compare left in this file (_matchKey → resolveSentMessageId),
+// used ONLY to learn the CONFIRMED id of our own send. It never judges an inbound:
+// suppression is id-exact (see rememberSent/wasSentByUs).
+// Beeper stores our send back HTML-formatted ("🦙 l<br>…"), and WhatsApp/Beeper
+// REWRITES list markers — an ordered "1)"/"2)" prompt comes back as "- " bullets — so
+// a literal compare cannot re-find our own message. Fix: strip HTML, decode entities,
+// AND flatten every LEADING list marker (-, *, •, "N.", "N)") to nothing, so the sent
+// form and the stored form compare equal. Per-line, before whitespace collapses —
+// hence <br> → newline first.
 export function normEchoText(t) {
   return String(t ?? '')
     .replace(/<br\s*\/?>/gi, '\n')                       // <br> → newline so per-line marker stripping works
@@ -96,25 +98,6 @@ export function normEchoText(t) {
     .replace(/&gt;/gi, '>').replace(/&#39;/g, "'").replace(/&quot;/gi, '"')
     .replace(/^[ \t]*(?:[-*•‣◦]|\d+[.)])[ \t]+/gm, '')   // drop leading list marker (WhatsApp swaps "N)" ↔ "- " on echo)
     .replace(/\s+/g, ' ').trim();
-}
-
-// Word-set fingerprint for self-echo. WhatsApp can reformat our OWN multi-line menu
-// into ONE line with " - " bullets and reordered punctuation, so even normEchoText
-// (which only flattens LEADING markers) won't make the sent and echoed forms compare
-// equal — the /e browser + add-agent menus echo-looped in the Self DM (2026-06-28).
-// A menu's WORDS survive any reformatting, so fingerprint by the lowercased token SET:
-// an incoming whose words are almost entirely contained in a recent multi-word send is
-// that send echoing back. Short operator replies (a number, "n", a name) have too few
-// words to ever match a menu, so they're never false-dropped.
-export function wordBag(t) {
-  return new Set(String(t ?? '').toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []);
-}
-// True iff `inBag` (incoming) is ≥ `threshold` contained in `sentBag` (a recent send).
-export function bagContains(sentBag, inBag, threshold = 0.85) {
-  if (!sentBag || !inBag || inBag.size === 0) return false;
-  let hit = 0;
-  for (const w of inBag) if (sentBag.has(w)) hit++;
-  return hit / inBag.size >= threshold;
 }
 
 // Pick the NEWER of two Beeper message ids — the "largest id wins" reduction
@@ -162,8 +145,8 @@ export async function startBeeperBridge(opts = {}) {
     postsBackDelayMs = POSTS_BACK_DELAY_MS,
     // The persona body_emoji (🐶). Accepted for compatibility (boot still passes it), but no longer
     // used for suppression: the leading-persona-emoji own-message check was removed (operator
-    // 2026-07-12) so no emoji reaches a decision; own-message suppression is wasSentByUs / isEcho
-    // (id + pre-recorded sent-text window), which arms before the POST so it wins the self-echo race.
+    // 2026-07-12) so no emoji reaches a decision. Own-message suppression is wasSentByUs alone —
+    // the ids we sent, nothing else (operator 2026-07-15).
     personaEmoji = null,
     // Per-NODE 👂-echo WRAP layers (operator 2026-07-12): the 👂 transcript echo this bridge
     // posts is wrapped concentrically — outer bridge_signature_open/close (identifies WHICH SPINE
@@ -406,10 +389,9 @@ export async function startBeeperBridge(opts = {}) {
   }
 
   // --- seen-id persistence (state/beeper-seen.jsonl) ---
-  // Both dedup sets reload across restarts. Without this, every restart
-  // forgot what was already handled/sent — and the upserted id can differ
-  // from the POST's pendingMessageID, so text-window suppression alone
-  // (60s) can't cover a replay.
+  // Both dedup sets reload across restarts. Without this, every restart forgot what
+  // was already handled/sent — and a Beeper replay after a restart would re-answer
+  // its own old messages.
   //
   // Keys are `${chatID}|${id}` — VERIFIED live 2026-06-10: Beeper message
   // ids are small per-chat sequence numbers (e.g. 488), NOT globally
@@ -454,69 +436,82 @@ export async function startBeeperBridge(opts = {}) {
     _persistSeen('p', key);
   }
 
-  // Echo suppression: ids egpt itself sent (so our own replies / 👂 acks don't
-  // re-trigger), plus a short-lived chatID|text fallback (the upserted id may
-  // differ from the POST's pendingMessageID). Operator's OWN messages are NOT
-  // suppressed — so the operator can @e themselves.
-  const _sentText = new Map();   // `${chatID}|${normalizedText}` -> expiry ms
-  const _sentBags = [];          // [{ chatID, bag:Set, exp }] — word-set fingerprints of recent multi-word sends (reformat-proof echo guard)
+  // OWN-SEND SUPPRESSION IS PURE IDENTITY (operator 2026-07-15). This bridge shares
+  // ONE Beeper account with the operator, so Beeper hands our own sends back with
+  // isSender:true — and so do the operator's own messages and any PEER node posting
+  // on that account. isSender cannot tell them apart; ONLY the set of ids WE sent
+  // can. So the ONE class of inbound that may ever be dropped is a message whose
+  // (chat, id) is in `_sentIds` — see wasSentByUs, the single decision point.
+  //
+  // REMOVED here: a 60s chatID|text window + word-bag fingerprints of recent sends.
+  // They existed only because the id memory MISSED — sendMessage recorded the POST's
+  // pendingMessageID, which is NEVER the id the WS delivers — so suppression fell
+  // back on RESEMBLANCE, and resemblance cannot distinguish our own echo from a human
+  // PASTING our text (the operator hit this live: their paste vanished silently), nor
+  // from a peer's near-identical relay envelope (the mesh chain died silently,
+  // 2026-07-06, patched by exempting envelopes from just one stage). The id memory no
+  // longer misses: sendMessage resolves the CONFIRMED id and dispatch waits for it
+  // (_awaitSends), so the race those windows covered is closed at the source.
+  //
   // Chat-qualified ids of OUR OWN streaming placeholders (meta-engineer 🤔→reply
   // in-place edits). Our live edits re-upsert the message; without this guard the
   // bridge would surface each as an incoming "edit" stage-direction (spam / loop).
   const _ourStreamIds = new Set();
-  // Normalize for echo matching — module-scope normEchoText (strips HTML/entities
-  // AND flattens list markers so a re-marked echo still compares equal).
+  // Normalize for re-finding our own send in the message list (module-scope
+  // normEchoText: strips HTML/entities AND flattens list markers).
   const _normEcho = normEchoText;
-  function rememberSent(id, chatID, text) {
-    if (id) { const key = msgKeyOf(chatID, id); _sentIds.add(key); _capSet(_sentIds, SEEN_SENT_CAP); _persistSeen('s', key); }
-    if (text) {
-      const now = Date.now();
-      // Sweep expired entries — this map otherwise grows for the life of a
-      // 24/7 daemon (entries "expire" logically but were never deleted).
-      if (_sentText.size > 50) { for (const [k, exp] of _sentText) { if (exp < now) _sentText.delete(k); } }
-      _sentText.set(`${chatID}|${_normEcho(text)}`, now + 60000);
-      // Word-set fingerprint for multi-word sends (menus) — survives WhatsApp's reformat.
-      // Fingerprint the NORMALIZED text (HTML stripped) so the incoming echo's bag —
-      // also normalized in isEcho — isn't diluted by tag tokens (<p>/<br>/<a…>).
-      const bag = wordBag(_normEcho(text));
-      if (bag.size >= 8) {
-        if (_sentBags.length > 40) _sentBags.splice(0, _sentBags.length - 40);
-        for (let i = _sentBags.length - 1; i >= 0; i--) if (_sentBags[i].exp < now) _sentBags.splice(i, 1);
-        _sentBags.push({ chatID, bag, exp: now + 60000 });
-      }
-    }
+  // Record a CONFIRMED id as ours. Idempotent: re-remembering a known id must not
+  // re-append to beeper-seen.jsonl — a streamed reply calls this on EVERY live edit
+  // (dozens per turn), and each append used to add a duplicate 's' line. Reload reads
+  // only the last SEEN_PROCESSED_CAP+SEEN_SENT_CAP lines, so one busy stream could
+  // fill that window with the same id repeated and rehydrate _sentIds with a couple
+  // dozen distinct ids instead of SEEN_SENT_CAP — silently degrading id suppression
+  // (and replyToBot) across restarts.
+  function rememberSent(id, chatID) {
+    if (!id) return;
+    const key = msgKeyOf(chatID, id);
+    if (_sentIds.has(key)) return;
+    _sentIds.add(key); _capSet(_sentIds, SEEN_SENT_CAP); _persistSeen('s', key);
   }
-  function isEcho(id, chatID, text) {
-    if (id && _sentIds.has(msgKeyOf(chatID, id))) return true;
-    const exp = _sentText.get(`${chatID}|${_normEcho(text)}`);   // don't delete — receipts re-fire the same upsert; let it expire
-    if (exp && exp > Date.now()) return true;
-    // A MESH ENVELOPE skips ONLY the fuzzy word-bag stage (operator 2026-07-06): the heuristic is
-    // for REFORMATTED MENU echoes — but two relay envelopes in ONE channel share ~every token across
-    // hops (identical base64 body + from/from_node/by/post_id/enc, differing only in to:/via:), so a
-    // FOREIGN forward would fuzzy-match our own origin envelope and be dropped BEFORE the "incoming"
-    // log — the multipath relay chain died silently (REVE live test, to: don.do → next hop to: wren.kg).
-    // The exact id/text stages ABOVE still suppress a node's OWN envelope echo (identical id/text —
-    // the 73fc57a invariant that removed the too-broad blanket exemption; only the fuzzy stage is skipped).
-    if (parseMesh(text)) return false;
-    // Reformat-proof fallback: a reformatted echo of our own menu — same words, same chat.
-    // Normalize first (strip HTML) so tag tokens don't dilute the containment ratio.
-    const inBag = wordBag(_normEcho(text));
-    if (inBag.size >= 5) {
-      const nowMs = Date.now();
-      for (const s of _sentBags) {
-        if (s.exp < nowMs || s.chatID !== chatID) continue;
-        if (bagContains(s.bag, inBag)) return true;
-      }
-    }
-    return false;
+
+  // In-flight confirmed-id resolutions, per chat. A send's WS echo can arrive before
+  // its confirmed id is known (the POST answers with only a pendingMessageID, and the
+  // echo can even beat the HTTP response). Rather than guess by text in that window,
+  // dispatch WAITS here until the sends in that chat have resolved — then the id
+  // memory is complete and the decision is exact. Armed BEFORE the POST goes out.
+  const _inflightSends = new Map();   // chatID -> Set<Promise>
+  function _armSend(chatID) {
+    let settle;
+    const gate = new Promise((res) => { settle = res; });
+    let set = _inflightSends.get(chatID);
+    if (!set) { set = new Set(); _inflightSends.set(chatID, set); }
+    set.add(gate);
+    gate.then(() => { set.delete(gate); if (!set.size) _inflightSends.delete(chatID); });
+    return settle;
+  }
+  // Bounded: api() has no request timeout, so a wedged Beeper could otherwise hold a
+  // gate open forever and leave this chat permanently DEAF. Past the bound we decide
+  // on what we know, which errs toward DISPATCHING — an unrecognized message gets
+  // surfaced, never silently dropped — and says so in the log.
+  async function _awaitSends(chatID) {
+    const set = _inflightSends.get(chatID);
+    if (!set?.size) return;
+    let timer;
+    const timedOut = await Promise.race([
+      Promise.all([...set]).then(() => false),   // gates always settle (never reject)
+      new Promise((res) => { timer = setTimeout(() => res(true), SEND_GATE_MAX_MS); }),
+    ]);
+    clearTimeout(timer);
+    if (timedOut) onLog(`beeper: send gate TIMED OUT after ${SEND_GATE_MAX_MS}ms [${chatID}] — a send never confirmed its id; judging this message without it (its echo may re-enter dispatch)`);
   }
   // Did THIS bridge send (chatID, messageID)? Reads the persisted _sentIds set (the
-  // '<chat>|<id>' keys reloaded from beeper-seen.jsonl). Used for two fail-closed
-  // decisions: E may only /edit or /delete a message it sent, and an inbound reply's
-  // quoted id is "a reply to E" only when we sent that id. HONEST LIMIT: the set only
-  // knows messages sent SINCE seen-state existed (and is LRU-capped, SEEN_SENT_CAP),
-  // so a reply to an older/pruned E message reads false — correct fail-closed
-  // behavior (the human just includes @e, as before).
+  // '<chat>|<id>' keys reloaded from beeper-seen.jsonl). THE own-message decision —
+  // three fail-closed uses: dispatch drops an inbound we sent (self-loop), E may only
+  // /edit or /delete a message it sent, and an inbound reply's quoted id is "a reply
+  // to E" only when we sent that id. HONEST LIMIT: the set only knows messages sent
+  // SINCE seen-state existed (and is LRU-capped, SEEN_SENT_CAP), so a reply to an
+  // older/pruned E message reads false — correct fail-closed behavior (the human just
+  // includes @e, as before).
   function wasSentByUs(chatID, messageID) {
     if (!chatID || messageID == null) return false;
     return _sentIds.has(msgKeyOf(shortChatId(chatID), messageID));
@@ -614,18 +609,49 @@ export async function startBeeperBridge(opts = {}) {
   }
 
   // --- send (efferent) ---
+  // POST a message body and learn the CONFIRMED id of the message it creates. The
+  // POST answers with only a pendingMessageID — Beeper delivers that same message
+  // under a DIFFERENT final id — so the pending id can never recognize our own send
+  // afterwards; only the resolved id can. `matchText` is how we re-find our own
+  // message in the list (resolveSentMessageId); pass null when there's nothing to
+  // match on. Returns the raw POST response + a promise of the confirmed id (null if
+  // it could not be confirmed). The in-flight gate is armed BEFORE the POST so the WS
+  // echo — which can beat the HTTP response — is held by dispatch until we know.
+  async function postAndConfirm(chatID, body, matchText) {
+    const settle = _armSend(chatID);
+    try {
+      // Pre-send id floor (live landmine 2026-07-04, see resolveSentMessageId): snapshot
+      // the chat's newest id BEFORE posting so a STALE identical-text message can never
+      // be resolved as THIS send. MUST complete before the POST, or our own message
+      // would be under the floor and never resolvable.
+      const floor = matchText ? await newestChatMsgId(chatID) : null;
+      const r = await api('POST', `/v1/chats/${encodeURIComponent(fullChatId(chatID))}/messages`, body);
+      if (!matchText) { settle(null); return { r, confirmedId: Promise.resolve(null) }; }
+      const confirmedId = resolveSentMessageId(chatID, String(matchText), { afterId: floor }).then(
+        (id) => {
+          if (id) rememberSent(id, chatID);
+          // LOUD on a miss (never a silent hole, and never a text guess): with no
+          // confirmed id this message is invisible to wasSentByUs — its echo can
+          // re-enter dispatch, and a reply to it won't read as replyToBot.
+          else onLog(`beeper: SEND ID UNCONFIRMED [${chatID}] — cannot recognize this send as ours (echo may re-enter dispatch; a reply to it won't wake E): ${JSON.stringify(String(matchText).slice(0, 60))}`);
+          settle(id);
+          return id;
+        },
+        (e) => { onLog(`beeper: send id resolve failed [${chatID}] — ${e?.message ?? e}`); settle(null); return null; },
+      );
+      return { r, confirmedId };
+    } catch (e) { settle(null); throw e; }
+  }
   // chatID may be a room id, an exact chat title, or a deterministic slug —
   // one resolution chokepoint so config/outbox entries never need raw ids.
   async function sendMessage(chatIdOrName, text, { replyToMessageID } = {}) {
     const chatID = await resolveChatId(chatIdOrName);
     if (!chatID || !text) { onLog(`beeper: send DROPPED — chat=${JSON.stringify(chatIdOrName)} resolved=${chatID} textLen=${(text || '').length}`); return null; }
-    rememberSent(null, chatID, String(text));   // pre-record text BEFORE the POST: the WS echo can arrive before the HTTP response
     try {
       const body = { text: String(text) };
       if (replyToMessageID) body.replyToMessageID = String(replyToMessageID);
-      const r = await api('POST', `/v1/chats/${encodeURIComponent(fullChatId(chatID))}/messages`, body);
-      rememberSent(r?.pendingMessageID || r?.messageID || r?.id, chatID, String(text));
-      return { ok: true, chatId: chatID, pendingMessageID: r?.pendingMessageID };
+      const { r, confirmedId } = await postAndConfirm(chatID, body, String(text));
+      return { ok: true, chatId: chatID, pendingMessageID: r?.pendingMessageID, confirmedId };
     } catch (e) { onLog(`beeper: send failed [${chatID}] — ${e?.message ?? e}`); return null; }
   }
 
@@ -688,9 +714,10 @@ export async function startBeeperBridge(opts = {}) {
       const up = await uploadAsset(filePath);
       if (!up?.uploadID) { onLog(`beeper: media upload returned no uploadID [${filePath}]`); return false; }
       const body = { attachment: { uploadID: up.uploadID, type: attachmentType(up.mimeType), ...(up.mimeType ? { mimeType: up.mimeType } : {}), ...(up.fileName ? { fileName: up.fileName } : {}) } };
-      if (caption) { body.text = String(caption); rememberSent(null, chatID, String(caption)); }   // pre-record caption (WS echo can beat the HTTP response)
-      const r = await api('POST', `/v1/chats/${encodeURIComponent(fullChatId(chatID))}/messages`, body);
-      if (caption) rememberSent(r?.pendingMessageID || r?.messageID || r?.id, chatID, String(caption));
+      if (caption) body.text = String(caption);
+      // A captioned media send is re-findable by its caption, so it gets the same
+      // CONFIRMED-id treatment as a text send (its echo is then recognized as ours).
+      await postAndConfirm(chatID, body, caption ? String(caption) : null);
       onLog(`beeper: media sent [${chatID}] ${basename(filePath)} (${up.mimeType || 'unknown'})`);
       return true;
     } catch (e) { onLog(`beeper: media send failed [${chatID}/${filePath}] — ${e?.message ?? e}`); return false; }
@@ -983,11 +1010,17 @@ export async function startBeeperBridge(opts = {}) {
     await _maybeEmitReactions(msg);
     await _maybeEmitEdits(msg);   // a re-upsert with changed text → an edit stage-direction (before dedup)
     if (msg.type === 'REACTION') return;   // bare reaction event: no body to route
-    // Echo suppression compares the RAW wire text (its own _normEcho strips HTML,
-    // C5.3) — so check it BEFORE converting. Beeper delivers text as HTML; convert
-    // it to markdown so the model + transcript see prose, not markup (the inbound
-    // complement of the outbound md→HTML path; src/html-to-markdown.mjs).
-    if (isEcho(msg.id, chatID, msg.text)) return;
+    // OWN-SEND GATE (the only suppression): drop this message iff WE sent this exact
+    // (chat, id). First let any send still in flight in this chat finish resolving its
+    // CONFIRMED id — a send's echo routinely arrives before its POST even returns, and
+    // waiting is what makes the answer EXACT instead of a text guess. The operator's
+    // own messages, a paste of our own words, and a peer node's sends all carry
+    // isSender:true on this shared account and all pass — only our own id doesn't.
+    await _awaitSends(chatID);
+    if (wasSentByUs(chatID, msg.id)) return;
+    // Beeper delivers text as HTML; convert it to markdown so the model + transcript
+    // see prose, not markup (the inbound complement of the outbound md→HTML path;
+    // src/html-to-markdown.mjs).
     let text = htmlToMarkdown(msg.text) || null, isVoice = false;
     // Dedup: message.upserted re-fires for the same id (delivery/seen/reaction
     // updates). Process each message once — across restarts (persisted).
@@ -1131,10 +1164,10 @@ export async function startBeeperBridge(opts = {}) {
 
     if (text == null) return;   // nothing to route — no text, no announceable media
 
-    // Own-message suppression is by wasSentByUs / isEcho (id + pre-recorded sent-text window, checked
-    // at the top of dispatch): every message E sends is rememberSent BEFORE the POST, so the WS echo —
-    // even one that beats the HTTP response — matches the text window and is dropped there. The old
-    // leading-persona-emoji fallback was removed (operator 2026-07-12): no emoji may reach a decision.
+    // Own-message suppression already happened at the top of dispatch — by ID ONLY
+    // (wasSentByUs, after waiting out this chat's in-flight sends). The old leading-
+    // persona-emoji fallback was removed (operator 2026-07-12): no emoji may reach a
+    // decision; nor may any text resemblance (operator 2026-07-15).
     const st = mentionStatus(text || '', wakeWords);
     // Quoted/replied-to target (operator 2026-07-04). Beeper carries a reply's quoted
     // message id as a BARE `linkedMessageID` (verified live 2026-06-16, MESSAGES-
@@ -1262,10 +1295,9 @@ export async function startBeeperBridge(opts = {}) {
     async sendAndGetId(text, { chatId, chatName } = {}) {
       const chatID = await resolveChatId(chatId ?? chatName);
       if (!chatID || !text) return null;
-      const floor = await newestChatMsgId(chatID);   // pre-send floor: a stale same-text message can't be mistaken for this send
-      const r = await sendMessage(chatID, text, {});
+      const r = await sendMessage(chatID, text, {});   // resolves the confirmed id itself (pre-send floor included)
       if (!r) return null;
-      return await resolveSentMessageId(chatID, text, { afterId: floor }) ?? null;
+      return await r.confirmedId ?? null;
     },
     // In-place edit / delete by CONFIRMED message id (used by the show-think
     // stream; also available to callers that hold a real id).
@@ -1324,19 +1356,14 @@ export async function startBeeperBridge(opts = {}) {
             _ourStreamIds.add(msgKeyOf(cid, realId)); _capSet(_ourStreamIds, 200);
             return;
           }
-          // Pre-send id floor (live landmine 2026-07-04, see resolveSentMessageId):
-          // snapshot the chat's newest id BEFORE posting so a STALE identical-text
-          // message — a previous turn's orphaned placeholder — can never be resolved
-          // as THIS placeholder. Costs one local GET; without it the first poll races
-          // the post's upsert and binds the stream to the old message, delivering the
-          // whole reply invisibly into the scrollback.
-          const floor = await newestChatMsgId(cid);
+          // sendMessage already resolves the placeholder's CONFIRMED id (pre-send id
+          // floor and all — the 2026-07-04 stale-twin landmine lives in there now) and
+          // remembers it as ours, so just take its answer: one post, one resolve.
           const r = await sendMessage(cid, placeholder, { replyToMessageID });
           if (!r) { handle.lastError = 'placeholder send failed'; return; }
-          realId = await resolveSentMessageId(cid, placeholder, { afterId: floor });
+          realId = await r.confirmedId;
           if (realId) {
             _ourStreamIds.add(msgKeyOf(cid, realId)); _capSet(_ourStreamIds, 200);
-            rememberSent(realId, cid, placeholder);
           } else { handle.lastError = 'could not resolve placeholder id'; onLog(`beeper: stream could not resolve placeholder id in ${cid} — edits will no-op (placeholder: ${JSON.stringify(String(placeholder).slice(0, 40))})`); }
         } catch (e) { handle.lastError = e?.message ?? String(e); }
       })();
@@ -1344,7 +1371,7 @@ export async function startBeeperBridge(opts = {}) {
       const applyEdit = (text) => serial(async () => {
         await ready;
         if (!cid || !realId) return false;
-        rememberSent(realId, cid, text);   // our edit re-upserts this → suppress from dispatch
+        rememberSent(realId, cid);   // our edit re-upserts this → suppress from dispatch (idempotent: only the first edit persists a line)
         return editMessage(cid, realId, text);
       });
 

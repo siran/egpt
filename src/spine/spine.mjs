@@ -365,7 +365,7 @@ export function createSpine({
     // accumulate the line into this conversation's cycle so the NEXT other-person turn is
     // prompted WITH it (full context), and run no turn. Only the operator's genuinely-
     // typed lines reach here — E's own auto replies come back isSender too but are dropped
-    // upstream by the bridge's sent-ids echo guard (isEcho), never re-entering the spine.
+    // upstream by the bridge's sent-id guard (wasSentByUs), never re-entering the spine.
     if (d.mode === 'auto' && ev.isSender) { await transcript.log(ev); pushCycle(turnKey, ev.line ?? ev.body); extendDwell(turnKey); return; }
 
     // Does E actually RUN on this message? It runs when its reply could surface
