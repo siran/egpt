@@ -6,12 +6,13 @@ import { createCommands } from '../src/spine/commands.mjs';
 import { createSpine } from '../src/spine/spine.mjs';
 import { emptyState, ensureContact, getBeing, recordThread, patchContact, DEFAULT_ALLOWED_TOOLS, READONLY_ALLOWED_TOOLS } from '../src/conversations-state.mjs';
 
-function harness({ config = {}, state = null, agentTypes = ['egpt', 'sonnet-high'], brains, identityLayers = ['default'], io = {} } = {}) {
+function harness({ config = {}, state = null, agentTypes = ['egpt', 'sonnet-high'], brains, identityLayers = ['default'], io = {}, cdp } = {}) {
   const sent = [], exits = [], rewinds = [], writes = [], evicts = [];
   const files = {};   // custom-branch authored files (agent-type yaml + identity layer)
   let st = state;
   const cmds = createCommands({
     getConfig: () => config,
+    ...(cdp ? { cdp } : {}),
     send: async (chatId, text) => sent.push({ chatId, text }),
     exit: (code) => exits.push(code),
     writeRewindTarget: (ref) => rewinds.push(ref),
@@ -542,3 +543,130 @@ describe('/e wizard: tools branch', () => {
 function contact() {
   return ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state;
 }
+
+// /chrome <node> — ATTACH-ONLY Chrome status, answered ONLY by the addressed node.
+// The CDP seam is injected everywhere here: these tests never reach a real Chrome
+// and never open a socket. The node gate is the same wake-word principle as the
+// mesh's self-set (node_name ∪ node_alias): a non-addressed node says NOTHING, so
+// on a shared Beeper account exactly one node answers.
+describe('/chrome <node>', () => {
+  const self = { chatId: '!self', surface: 'whatsapp' };
+  const kg = { node_name: 'kg', whatsapp: { chat_id: '!self' } };
+  const reachable = {
+    isRunning: async () => true,
+    cdpHost: async () => 'localhost:9221',
+    listTabs: async () => ([
+      { title: 'ChatGPT', url: 'https://chatgpt.com/c/abc' },
+      { title: 'Claude', url: 'https://claude.ai/chat/def' },
+    ]),
+  };
+  const unreachable = {
+    isRunning: async () => false,
+    cdpHost: async () => 'localhost:9221',
+    listTabs: async () => { throw new Error('Cannot reach Chrome at localhost:9221'); },
+  };
+
+  it('/chrome kg on the kg node with Chrome reachable reports attached + the host + tab info', async () => {
+    const { cmds, sent } = harness({ config: kg, cdp: reachable });
+    await cmds.run({ ...self, body: '/chrome kg' });
+    expect(sent).toHaveLength(1);
+    expect(sent[0].text).toMatch(/attached/i);
+    expect(sent[0].text).toMatch(/localhost:9221/);
+    expect(sent[0].text).toMatch(/tabs: 2/);
+    expect(sent[0].text).toMatch(/ChatGPT/);
+    expect(sent[0].text).toMatch(/chatgpt\.com/);
+  });
+
+  // The whole point of the gate: `do` must not answer a question addressed to `kg`.
+  it('/chrome kg on the `do` node replies NOTHING AT ALL (silent — only the addressed node answers)', async () => {
+    const { cmds, sent } = harness({ config: { node_name: 'do', whatsapp: { chat_id: '!self' } }, cdp: reachable });
+    await cmds.run({ ...self, body: '/chrome kg' });
+    expect(sent).toHaveLength(0);
+  });
+
+  it('a node_alias matches too (the addressed name is any of node_name ∪ node_alias)', async () => {
+    const { cmds, sent } = harness({ config: { node_name: 'kg', node_alias: ['reve'], whatsapp: { chat_id: '!self' } }, cdp: reachable });
+    await cmds.run({ ...self, body: '/chrome reve' });
+    expect(sent).toHaveLength(1);
+    expect(sent[0].text).toMatch(/attached/i);
+  });
+
+  it('the node match is case-insensitive', async () => {
+    const { cmds, sent } = harness({ config: kg, cdp: reachable });
+    await cmds.run({ ...self, body: '/chrome KG' });
+    expect(sent).toHaveLength(1);
+    expect(sent[0].text).toMatch(/attached/i);
+  });
+
+  // NOT an error: no Chrome listening is the normal resting state. The node cannot
+  // open one itself (Session 0 service — an invisible browser), so it hands the
+  // operator the exact command line to run in THEIR session.
+  it('/chrome kg with Chrome NOT reachable reports the launch command line (no throw, not a failure)', async () => {
+    const { cmds, sent } = harness({ config: kg, cdp: unreachable });
+    await cmds.run({ ...self, body: '/chrome kg' });
+    expect(sent).toHaveLength(1);
+    expect(sent[0].text).toMatch(/no chrome/i);
+    expect(sent[0].text).toMatch(/--remote-debugging-port=9221/);
+    expect(sent[0].text).toMatch(/--user-data-dir=/);
+    expect(sent[0].text).not.toMatch(/failed|error/i);
+    // The reason it can't do it itself must land in the chat, not just in a comment.
+    expect(sent[0].text).toMatch(/session/i);
+  });
+
+  it('a listTabs failure after a live isRunning degrades to the launch hint, never a throw', async () => {
+    const { cmds, sent } = harness({
+      config: kg,
+      cdp: { ...unreachable, isRunning: async () => true },
+    });
+    await expect(cmds.run({ ...self, body: '/chrome kg' })).resolves.toBeUndefined();
+    expect(sent).toHaveLength(1);
+  });
+
+  // Bare /chrome = usage, self-naming. Every node answers this ONE short line (it is
+  // the discovery path: it tells the operator the valid args). The expensive status
+  // payload stays strictly single-node.
+  it('bare /chrome shows a short usage line naming THIS node', async () => {
+    const { cmds, sent } = harness({ config: { node_name: 'kg', node_alias: ['reve'], whatsapp: { chat_id: '!self' } }, cdp: reachable });
+    await cmds.run({ ...self, body: '/chrome' });
+    expect(sent).toHaveLength(1);
+    expect(sent[0].text).toMatch(/\/chrome <node>/);
+    expect(sent[0].text).toMatch(/kg/);
+    expect(sent[0].text).toMatch(/reve/);
+    expect(sent[0].text).not.toMatch(/attached/i);   // never the status payload
+  });
+
+  // An unknown arg is a NON-MATCH, and a non-match is silent — same rule as `do`
+  // ignoring `/chrome kg`. If every node answered "unknown node" the operator would
+  // get exactly the double-answer the gate exists to prevent.
+  it('/chrome <unknown node> is silent (a non-match is a non-match, on every node)', async () => {
+    const { cmds, sent } = harness({ config: kg, cdp: reachable });
+    await cmds.run({ ...self, body: '/chrome zzz' });
+    expect(sent).toHaveLength(0);
+  });
+
+  it('/chrome is gated on the operator exactly like the other commands', () => {
+    const { cmds } = harness({ config: kg, cdp: reachable });
+    expect(cmds.isCommand({ body: '/chrome kg', chatId: '!self', surface: 'whatsapp' })).toBe(true);
+    expect(cmds.isCommand({ body: '/chrome kg', chatId: '!group', surface: 'whatsapp' })).toBe(false);
+    expect(cmds.isCommand({ body: '/chrome kg', chatId: '!group', surface: 'whatsapp', authorized: true })).toBe(true);
+  });
+
+  it('a non-operator /chrome is never run (no reply, no CDP probe)', async () => {
+    let probed = false;
+    const { cmds, sent } = harness({
+      config: kg,
+      cdp: { ...reachable, isRunning: async () => { probed = true; return true; } },
+    });
+    const ev = { body: '/chrome kg', chatId: '!group', surface: 'whatsapp' };
+    expect(cmds.isCommand(ev)).toBe(false);   // the loop never reaches run()
+    expect(sent).toHaveLength(0);
+    expect(probed).toBe(false);
+  });
+
+  // Regression lock: /chrome must not fall through to the "recognized" catch-all.
+  it('/chrome kg is NOT answered by the unwired-command catch-all', async () => {
+    const { cmds, sent } = harness({ config: kg, cdp: reachable });
+    await cmds.run({ ...self, body: '/chrome kg' });
+    expect(sent[0].text).not.toMatch(/recognized/);
+  });
+});

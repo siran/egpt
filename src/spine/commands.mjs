@@ -22,6 +22,17 @@ import { join, dirname } from 'node:path';
 import * as YAML from 'yaml';
 import { EGPT_HOME } from '../egpt-home.mjs';
 import { shortChatId } from '../bridges/chat-id.mjs';
+import { ownNodeNamesOf } from './node-names.mjs';
+import { isRunning as cdpIsRunning, listTabs as cdpListTabs, cdpHost as cdpHostOf } from '../tools/cdp.mjs';
+import { findChromeExecutable, chromeArgs, chromeCommandLine } from '../tools/chrome-launcher.mjs';
+import { fileURLToPath } from 'node:url';
+
+// Where a manually-launched Chrome should keep its profile + find the extension.
+// v1's shell used ~/.egpt/chrome/profiles/brain — kept, but derived from EGPT_HOME so
+// a test/second node's profile follows its own root instead of the production one.
+export const CHROME_BRAIN_PROFILE = join(EGPT_HOME, 'chrome', 'profiles', 'brain');
+const APP_DIR = dirname(dirname(dirname(fileURLToPath(import.meta.url))));   // src/spine/commands.mjs -> repo root
+const EXTENSION_DIST = join(APP_DIR, 'extension', 'dist');
 
 // Where the `custom` wizard branch AUTHORS its new files (injectable in tests): the
 // agent-type YAML lands in config/agents/, a free-text identity layer as a FLAT
@@ -80,6 +91,11 @@ function defaultListAgentTypes() {
   }
   return out.sort();
 }
+
+// How many of Chrome's tabs /chrome lists before it collapses the rest into a
+// "+N more" — this report lands in a chat window, not a terminal.
+const CHROME_TAB_LIMIT = 5;
+const trunc = (s, n) => { const t = String(s ?? '').replace(/\s+/g, ' ').trim(); return t.length > n ? `${t.slice(0, n - 1)}…` : t; };
 
 // Compact uptime: "2h13m" / "13m05s" / "42s". Whole seconds; drops the finest
 // unit once hours are in play so /status stays a terse ops line.
@@ -161,6 +177,10 @@ export function createCommands({
   agentsDir = PROFILE_AGENTS_DIR,        // where the custom branch writes <name>.yaml (injected in tests)
   identitiesDir = PROFILE_IDENTITIES_DIR,// where the custom branch writes a free-text identity layer (injected in tests)
   io = {},                               // { stat, readFile, writeFile, mkdir } — real fs by default; /status probes files + the custom branch authors through here
+  // CDP seam for /chrome — the real localhost probe by default; tests inject fakes so the
+  // suite never needs a live Chrome or a real socket. ATTACH-ONLY: there is deliberately no
+  // spawn seam here (see the /chrome dispatch below for why).
+  cdp = { isRunning: cdpIsRunning, listTabs: cdpListTabs, cdpHost: cdpHostOf },
   // git probe for /status (short sha + subject). Mirrors boot's gitOut so it's
   // fakeable in tests without threading spawnSync through createCommands.
   gitOut = (args) => { try { return spawnSync('git', args, { cwd: process.cwd() }).stdout?.toString().trim() || ''; } catch { return ''; } },
@@ -303,6 +323,16 @@ export function createCommands({
       return;
     }
 
+    // /chrome [<node>] — ATTACH-ONLY status of the local Chrome, answered ONLY by the
+    // addressed node. Must stay BEFORE the catch-all at the end of this dispatch (it
+    // answers ANY /token, so a fall-through would silently swallow /chrome) — that
+    // ordering IS test-enforced: the /chrome tests assert its real reply, and they fail
+    // the moment it reaches the catch-all instead. It does NOT interact with the /e
+    // wizard below: /e's match is ANCHORED at ^/(e|egpt), so it can never match /chrome
+    // (verified 2026-07-15 — an earlier comment here wrongly called /e "greedy").
+    const chromeMatch = /^\/chrome(?:\s+(.+?))?\s*$/i.exec(line);
+    if (chromeMatch) { await chrome(ev, chromeMatch[1]?.trim() || null); return; }
+
     // /e (bare) or /e <fragment> — ARM the re-point wizard (v1 parity: a guided
     // agent-type/model/effort pick, not a flag command). Bare targets THIS chat; a
     // fragment resolves the target like /e auto does. `/e auto …` is matched above, so
@@ -312,6 +342,76 @@ export function createCommands({
 
     const tok = line.split(/\s+/)[0];
     await send?.(ev.chatId, `${tok}: recognized — lifecycle (/restart, /upgrade, /rewind) + /e auto <mode> + /status are wired in v2 so far.`);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // /chrome [<node>] — ATTACH-ONLY status of the local Chrome.
+  //
+  // ⚠️ WHY THIS NEVER LAUNCHES CHROME. DO NOT "COMPLETE" THIS BY ADDING A SPAWN. ⚠️
+  //
+  // The spine runs as a Windows SERVICE, which means Session 0. The operator's desktop
+  // is Session 1. (Verified live 2026-07-15: spine pid 19696 SessionId 0, explorer.exe
+  // SessionId 1.) A child process INHERITS its parent's session, so a Chrome spawned
+  // from here would render on Session 0's isolated, headless-in-practice desktop —
+  // the operator would never see the window, and the only symptom would be a browser
+  // that "starts" and is invisible. So: the spine MUST NOT launch Chrome. It hands the
+  // operator the exact command line to run in THEIR OWN session instead.
+  //
+  // (v1's /chrome DID launch one — but v1's was `surface: 'shell'`, i.e. the Ink console
+  // running in the operator's Session 1. That precedent does not transfer to the spine.)
+  //
+  // ATTACHING, on the other hand, is fine and works across sessions: CDP is plain
+  // localhost HTTP, and the session boundary isolates window stations/desktops, not the
+  // loopback network. This is exactly how the bridge already reaches Beeper Desktop at
+  // 127.0.0.1:23373 from Session 0.
+  //
+  // NODE GATE: `<node>` is matched against this node's own names (node_name ∪ node_alias,
+  // via the shared ownNodeNamesOf). A non-match replies NOTHING AT ALL — the same
+  // wake-word principle the mesh uses, so on the shared Beeper account exactly one node
+  // answers. An UNKNOWN node name is a non-match too, and therefore also silent: if every
+  // node answered "unknown node" the operator would get the double-answer the gate exists
+  // to prevent. Bare /chrome is the one exception — it's the discovery path, so each node
+  // answers with a short usage line naming itself (never the status payload).
+  async function chrome(ev, arg) {
+    const own = ownNodeNamesOf(cfg());
+    if (!arg) { await send?.(ev.chatId, `/chrome <node> — Chrome status from a node. This node answers to: ${[...own].join(', ') || '(no node_name set)'}`); return; }
+    if (!own.has(arg.toLowerCase())) return;   // not addressed → silent, on purpose
+    await send?.(ev.chatId, await chromeReport());
+  }
+
+  // The report body. Every probe is wrapped: an unreachable (or mid-probe failing) Chrome
+  // is the NORMAL resting state, not an error — it degrades to the launch hint, never throws.
+  async function chromeReport() {
+    let host = '?';
+    try { host = await cdp.cdpHost(); } catch { host = '?'; }
+    let tabs = null;
+    try { if (await cdp.isRunning()) tabs = await cdp.listTabs(); } catch { tabs = null; }
+    if (!tabs) return chromeLaunchHint(host);
+
+    const lines = [`attached: ${host}`, `tabs: ${tabs.length}`];
+    // A few tabs only, each truncated — this lands in a chat, not a terminal.
+    for (const t of tabs.slice(0, CHROME_TAB_LIMIT)) {
+      lines.push(`  · ${trunc(t?.title ?? '(untitled)', 48)}`);
+      lines.push(`    ${trunc(t?.url ?? '', 72)}`);
+    }
+    if (tabs.length > CHROME_TAB_LIMIT) lines.push(`  … +${tabs.length - CHROME_TAB_LIMIT} more`);
+    return '```yaml\n' + lines.join('\n') + '\n```';
+  }
+
+  // No Chrome listening → tell the operator exactly what to run, in their own session.
+  // The command line is built from chrome-launcher's OWN flag set (chromeArgs), so it can
+  // never drift from what the repo would actually spawn; the port is derived from the CDP
+  // host the node will attach to, so the two always agree.
+  function chromeLaunchHint(host) {
+    const port = String(host).split(':')[1] ?? '9221';
+    const exe = findChromeExecutable() ?? 'chrome';
+    const args = chromeArgs({ port, userDataDir: CHROME_BRAIN_PROFILE, extensionDir: EXTENSION_DIST });
+    return [
+      `no Chrome is listening on ${host}.`,
+      `I can't open it myself — I run as a service in another Windows session, so any Chrome I start would be invisible to you.`,
+      `Run this in your own session and I'll attach:`,
+      '```\n' + chromeCommandLine(exe, args) + '\n```',
+    ].join('\n');
   }
 
   // Assemble the /status report as a fenced YAML block (operator 2026-07-02: the

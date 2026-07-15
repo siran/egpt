@@ -34,6 +34,7 @@ import { createSender } from './sender.mjs';
 import { createBrainPool } from './brainpool.mjs';
 import { createIngest, lifecycleExit } from './ingest.mjs';
 import { createCommands } from './commands.mjs';
+import { ownNodeNames } from './node-names.mjs';
 import { createReplyActions } from './reply-actions.mjs';
 import { createAdvice } from './advice.mjs';
 import { createMedia } from './media.mjs';
@@ -130,7 +131,7 @@ export function buildNodeIdentity({
 } = {}) {
   const address = `${String(name).toLowerCase()}.${String(nodeName).toLowerCase()}`;
   const handleStr = handles.map((h) => `@${h}`).join(' ');
-  const own = new Set([nodeName, ...nodeAlias].filter(Boolean).map((s) => String(s).toLowerCase()));
+  const own = ownNodeNames({ nodeName, nodeAlias });
   const peers = accountPeers.filter((p) => !own.has(String(p).toLowerCase()));
   let s = `You are the eGPT persona "${name}" running as ${address} — node "${nodeName}", ${userName}'s account. You answer to ${handleStr}; your reply stamp is ${emoji}.`;
   if (peers.length) s += ` Other nodes on this account: ${peers.join(', ')}.`;

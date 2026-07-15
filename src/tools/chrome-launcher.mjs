@@ -37,19 +37,16 @@ export function findChromeExecutable() {
 }
 
 /**
- * Spawn Chrome detached so it survives this Node process exiting.
- * Returns immediately — call waitForChromeReady() to know when CDP is up.
+ * The exact flag set spawnChrome uses — extracted so a caller can RENDER the
+ * command line without spawning (the spine's /chrome hands it to the operator to
+ * run in their own session; see src/spine/commands.mjs). One source for the flags:
+ * spawnChrome builds its argv from here, so the printed line and the spawned
+ * process can never drift apart.
  *
- * @param {object} opts
- * @param {number} opts.port          - --remote-debugging-port (private, localhost-only)
- * @param {string} opts.userDataDir   - persistent profile directory
- * @param {string} [opts.extensionDir]- absolute path to unpacked extension (loaded via --load-extension)
- * @param {string} [opts.url]         - initial URL (default: about:blank)
+ * @param {object} opts               - same shape as spawnChrome's
+ * @returns {string[]} argv after the executable
  */
-export async function spawnChrome({ port, userDataDir, extensionDir, url = 'about:blank' }) {
-  const chrome = findChromeExecutable();
-  if (!chrome) throw new Error('Chrome executable not found in standard locations');
-  await mkdir(userDataDir, { recursive: true });
+export function chromeArgs({ port, userDataDir, extensionDir, url = 'about:blank' }) {
   const args = [
     `--remote-debugging-port=${port}`,
     // Chrome 112+ rejects CDP WebSocket upgrades unless Origin is
@@ -94,6 +91,32 @@ export async function spawnChrome({ port, userDataDir, extensionDir, url = 'abou
     args.push(`--load-extension=${extensionDir}`);
   }
   args.push(url);
+  return args;
+}
+
+/** Render an exe + argv as a copy-pasteable command line (quote anything with a space). */
+export function chromeCommandLine(exe, args) {
+  return [exe, ...args].map((a) => (/\s/.test(a) ? `"${a}"` : a)).join(' ');
+}
+
+/**
+ * Spawn Chrome detached so it survives this Node process exiting.
+ * Returns immediately — call waitForChromeReady() to know when CDP is up.
+ *
+ * NOTE: a spawned child inherits its parent's Windows session. The spine runs as
+ * a service in Session 0, so it must NEVER call this — see src/spine/commands.mjs.
+ *
+ * @param {object} opts
+ * @param {number} opts.port          - --remote-debugging-port (private, localhost-only)
+ * @param {string} opts.userDataDir   - persistent profile directory
+ * @param {string} [opts.extensionDir]- absolute path to unpacked extension (loaded via --load-extension)
+ * @param {string} [opts.url]         - initial URL (default: about:blank)
+ */
+export async function spawnChrome({ port, userDataDir, extensionDir, url = 'about:blank' }) {
+  const chrome = findChromeExecutable();
+  if (!chrome) throw new Error('Chrome executable not found in standard locations');
+  await mkdir(userDataDir, { recursive: true });
+  const args = chromeArgs({ port, userDataDir, extensionDir, url });
 
   const child = spawn(chrome, args, {
     detached: true,
@@ -101,7 +124,7 @@ export async function spawnChrome({ port, userDataDir, extensionDir, url = 'abou
   });
   child.unref();
   // The exact Target the shell echoes on /chrome — exe + flags as spawned.
-  const command = [chrome, ...args].map((a) => (/\s/.test(a) ? `"${a}"` : a)).join(' ');
+  const command = chromeCommandLine(chrome, args);
   return { pid: child.pid, command };
 }
 
