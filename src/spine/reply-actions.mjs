@@ -17,8 +17,9 @@
 //     (mode: auto) via the injected `askAdvice` callback — never an arbitrary chat,
 //     and fail-closed (dropped + logged) when no advice channel is configured;
 //   - a malformed action line is STRIPPED and LOGGED, never surfaced, never executed;
-//   - a /reply targeting the message being answered is REDUNDANT (operator 2026-07-08,
-//     Zohykar rogue-twin: the streamed reply already quotes it) — stripped like malformed;
+//   - a /reply targeting the message THIS REPLY ALREADY QUOTES is REDUNDANT (operator
+//     2026-07-08, Zohykar rogue-twin) — the action is dropped, but its TEXT DEMOTES to
+//     prose (2026-07-15): redundant is not malformed, and discarding content is a bug;
 //   - a /media path must resolve INSIDE the conversation dir (E's confined cwd) —
 //     traversal / absolute paths are rejected at parse AND re-checked at execute;
 //   - /edit and /delete only touch a message the bridge itself SENT (wasSentByUs);
@@ -79,8 +80,9 @@ function unsafePath(p) {
 }
 
 // Parse ONE action line's arguments into an executable action, or a malformed
-// verdict. `ev` supplies the chatId every action is pinned to.
-function parseOne(verb, args, ev) {
+// verdict. `ev` supplies the chatId every action is pinned to; `opts.quotedId` is the
+// message THIS reply is itself posted as a quote of (null = it quotes nothing).
+function parseOne(verb, args, ev, opts = {}) {
   const chatId = ev?.chatId ?? null;
   const raw = String(args ?? '').trim();
   switch (verb) {
@@ -103,15 +105,26 @@ function parseOne(verb, args, ev) {
       // #<id> <text>
       const m = ID_TEXT_RE.exec(raw);
       if (!m) return { ok: false, reason: 'reply: expected "#<id> <text>"' };
-      // REDUNDANCY GUARD (operator 2026-07-08, Zohykar rogue-twin): E's streamed prose
-      // reply ALREADY quote-replies the message it is answering, so a /reply whose
-      // target is THAT SAME message (ev.msgId, the triggering event) only duplicates
-      // the train as a second, un-stamped post — it read as a rogue twin to the humans.
-      // Malformed-by-construction here, not merely discouraged: strip it like any other
-      // malformed limb (logged, never posted). A /reply at any OTHER message (e.g. an
-      // earlier one in scrollback) is unaffected — that's the real, useful case.
-      const triggerId = ev?.msgId != null ? String(ev.msgId) : null;
-      if (triggerId && m[1] === triggerId) return { ok: false, reason: 'reply: targets the message being answered — the main reply already quotes it' };
+      // REDUNDANCY GUARD (operator 2026-07-08, Zohykar rogue-twin; made HONEST + demoting
+      // 2026-07-15). When the message E is ALREADY posting quotes the target, a /reply at that
+      // same target would only duplicate the train as a second, un-stamped post — the rogue twin.
+      //
+      // The premise is the reply's ACTUAL quote target (opts.quotedId), NOT "the message being
+      // answered" (ev.msgId). Those coincide only when the placeholder was in fact opened as a
+      // quote of it; comparing against ev.msgId claimed a quote that did not exist and discarded
+      // the ONE limb by which E could quote at all.
+      //
+      // Redundant is NOT malformed, so it DEMOTES rather than strips: only the TARGET is
+      // redundant — the TEXT is E's actual reply, and stripping the line ate it whenever there
+      // was no other prose (the live 2026-07-15 shape: E's whole reply was one /reply line, so
+      // the turn went action-only and the placeholder was deleted with E's words inside it).
+      // Demoted, the text becomes prose in the reply that already quotes the target: exactly one
+      // message, nothing lost, and STILL no second post — the twin stays fixed. A /reply at any
+      // OTHER message — or from a reply that quotes NOTHING — is untouched: that is the real,
+      // useful case, and Beeper cannot retarget an existing message (its edit endpoint carries
+      // no reply target), so it can only be honored as a fresh post.
+      const quotedId = opts?.quotedId != null ? String(opts.quotedId) : null;
+      if (quotedId && m[1] === quotedId) return { ok: false, demote: m[2].trim() };
       return { ok: true, action: { type: 'reply', chatId, targetId: m[1], text: m[2].trim() } };
     }
     case 'edit': {
@@ -152,13 +165,15 @@ function parseOne(verb, args, ev) {
 
 /**
  * PURE split of a reply into { prose, run, stripped }.
- *   prose    — the reply with every action-family line removed (what gets surfaced)
+ *   prose    — the reply with every action-family line removed (what gets surfaced), plus the
+ *              TEXT of any redundant /reply, which DEMOTES to prose rather than being discarded
  *   run      — well-formed actions to execute (in order)
  *   stripped — malformed action lines { raw, reason } (logged, never executed/surfaced)
  * @param {string} text  the being's raw reply
  * @param {object} ev    the InboundEvent (supplies chatId + the default react target)
+ * @param {object} opts  { quotedId } — the message this reply itself quotes (redundancy guard)
  */
-export function parseReplyActions(text, ev = {}) {
+export function parseReplyActions(text, ev = {}, opts = {}) {
   const proseLines = [];
   const run = [];
   const stripped = [];
@@ -166,13 +181,75 @@ export function parseReplyActions(text, ev = {}) {
     const m = ACTION_LINE.exec(line.trim());
     const verb = m ? m[1].toLowerCase() : null;
     if (!verb || !ACTION_VERBS.has(verb)) { proseLines.push(line); continue; }
-    const r = parseOne(verb, m[2] ?? '', ev);
+    const r = parseOne(verb, m[2] ?? '', ev, opts);
+    // DEMOTE (redundant /reply): the action is dropped but its TEXT is content — it becomes
+    // prose VERBATIM, never re-parsed, so an action-shaped payload can't smuggle a live limb.
     if (r.ok) run.push(r.action);
+    else if (r.demote != null) proseLines.push(r.demote);
     else stripped.push({ raw: line.trim(), reason: r.reason });
   }
   // Collapse the blank lines a removed action leaves behind; trim the ends.
   const prose = proseLines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
   return { prose, run, stripped };
+}
+
+// A trailing INCOMPLETE line: could it still BECOME an action line once it terminates?
+// The line's first non-space character is fixed as soon as it exists, so anything not
+// starting with '/' can never be an action and streams at once. After the '/', either the
+// verb is still being typed (no whitespace yet → viable iff some verb starts with it) or
+// it is complete (→ viable iff it IS one of ours). '/reactx', '/hello world' and '/123'
+// are all prose by this test, exactly as ACTION_LINE + ACTION_VERBS will judge them.
+const VERB_PREFIX = /^\/([a-z]*)$/i;
+function couldBecomeAction(fragment) {
+  const t = String(fragment ?? '').trim();
+  if (!t || t[0] !== '/') return false;
+  const p = VERB_PREFIX.exec(t);
+  if (p) return [...ACTION_VERBS].some((verb) => verb.startsWith(p[1].toLowerCase()));
+  const m = ACTION_LINE.exec(t);
+  return !!m && ACTION_VERBS.has(m[1].toLowerCase());
+}
+
+// Is this trailing fragment ALREADY a redundant /reply — i.e. one that will DEMOTE to prose?
+// Load-bearing for streaming: a demoted line IS prose, so withholding it as a "viable action
+// prefix" would hold it back forever (its line never terminates until the reply ends), and the
+// very shape demote exists to rescue would never stream. Decidable early: ID_TEXT_RE requires
+// whitespace after the id, and that whitespace FIXES the id — no later character can change it
+// (only extend the text). So from `#<id> <first char>` on, the verdict is final and the text
+// grows monotonically. Before that (`/reply #15971`) the target is still unknown → keep holding.
+function isDemotingReply(fragment, opts = {}) {
+  const quotedId = opts?.quotedId != null ? String(opts.quotedId) : null;
+  if (!quotedId) return false;
+  const m = ACTION_LINE.exec(String(fragment ?? '').trim());
+  if (!m || m[1].toLowerCase() !== 'reply') return false;
+  const a = ID_TEXT_RE.exec(String(m[2] ?? '').trim());
+  return !!a && a[1] === quotedId;
+}
+
+/**
+ * The prose a PARTIAL may safely stream (operator 2026-07-15: E's `/reply #<id> …` token
+ * rendered live in the chat because the raw partial was piped straight to the placeholder).
+ * Same PURE split as parseReplyActions — so the stream shows exactly what finish() will
+ * deliver — plus the mid-line guard: a partial can end ANYWHERE, so its last line may be an
+ * action still being typed ('/', '/re', '/reply #9'). A line-based parse would render that
+ * fragment for a frame and snap it away once the newline landed, which only MOVES the bug.
+ * Such a tail is WITHHELD until it terminates; a tail that can no longer become a STRIPPED
+ * action — ordinary prose, or a /reply that will demote — streams immediately, so nothing E
+ * will actually say is ever held back.
+ *
+ * The un-withheld tail is handed to parseReplyActions as part of the WHOLE text (not appended
+ * to a separately-parsed head), so blank-line collapsing and demotion are decided exactly once,
+ * by the same code that decides the finished reply. That is what keeps every frame a true
+ * prefix of the delivered prose.
+ * @param {string} partial  the cumulative raw text streamed so far
+ * @param {object} ev       the InboundEvent (threaded to the same parse)
+ * @param {object} opts     { quotedId } — same premise as parseReplyActions (see isDemotingReply)
+ */
+export function partialProse(partial, ev = {}, opts = {}) {
+  const s = String(partial ?? '');
+  const cut = s.lastIndexOf('\n');
+  const tail = cut < 0 ? s : s.slice(cut + 1);
+  const withhold = couldBecomeAction(tail) && !isDemotingReply(tail, opts);
+  return parseReplyActions(withhold ? s.slice(0, cut + 1) : s, ev, opts).prose;
 }
 
 /**
@@ -240,7 +317,9 @@ export function createReplyActions({ bridge, bodyEmojiOf = () => null, labelOf =
   }
 
   return {
-    parse: (text, ev) => parseReplyActions(text, ev),
+    parse: (text, ev, opts) => parseReplyActions(text, ev, opts),
+    // The streaming half of the SAME split: what a partial may show (see partialProse).
+    partialProse: (partial, ev, opts) => partialProse(partial, ev, opts),
     /**
      * Execute the parsed actions. `stripped` lines are logged (never run). Every
      * action targets ev.chatId (the emit syntax has no cross-chat target); errors are

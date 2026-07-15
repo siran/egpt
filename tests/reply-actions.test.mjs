@@ -4,7 +4,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseReplyActions, createReplyActions } from '../src/spine/reply-actions.mjs';
+import { parseReplyActions, partialProse, createReplyActions } from '../src/spine/reply-actions.mjs';
 
 const EV = { chatId: '!room:beeper.local', surface: 'whatsapp', chatName: 'Bea' };
 
@@ -44,21 +44,66 @@ describe('parseReplyActions — the pure split', () => {
     expect(parseReplyActions('/reply hola', EV).stripped).toHaveLength(1);
   });
 
-  // REDUNDANCY GUARD (operator 2026-07-08, Zohykar #159710): E's streamed reply already
-  // quote-replies the message it's answering — a /reply at that SAME message id only
-  // posts a second, near-duplicate message (a rogue twin). Stripped like any malformed
-  // limb; a /reply at any OTHER message is untouched (regression-lock).
-  it('reply: targeting the message being answered (ev.msgId) is REDUNDANT — stripped, never executed', () => {
+  // REDUNDANCY GUARD (operator 2026-07-08, Zohykar #159710): when the reply E is already
+  // posting QUOTES the target, a /reply at that same id only posts a second, near-duplicate
+  // message (a rogue twin). Stripped like any malformed limb.
+  //
+  // The premise is `quotedId` — what the reply ACTUALLY quotes — NOT ev.msgId, the message
+  // being answered (made honest 2026-07-15). This test used to pass only ev.msgId and assert
+  // the strip; that assertion was WRONG, not merely inconvenient: it declared a quote that
+  // may not exist. The reply only quotes the trigger when its placeholder was OPENED as a
+  // quote of it, which the spine did solely for @-mentions — so in a mode:on/auto chat the
+  // guard discarded, as "already quoted", the one limb by which E could quote at all: the
+  // main reply posted plain AND the /reply was dropped. The parse cannot see the placeholder,
+  // so the caller must state the quote; absent that claim there is no redundancy (below).
+  // The TARGET is redundant; the WORDS are not. Stripping the whole line ate E's reply
+  // outright whenever it had no other prose (the live 2026-07-15 shape) — so a redundant
+  // /reply DEMOTES: its text becomes prose in the reply that already quotes the target.
+  // Still no second/duplicate post, so the 2026-07-08 rogue twin stays fixed.
+  it('reply: targeting the message THIS REPLY ALREADY QUOTES is REDUNDANT — DEMOTES to prose, never executed', () => {
     const ev = { ...EV, msgId: '159710' };
-    const { run, stripped } = parseReplyActions('/reply #159710 Hola Zohy 👋', ev);
-    expect(run).toEqual([]);
-    expect(stripped).toHaveLength(1);
-    expect(stripped[0].reason).toMatch(/targets the message being answered/);
+    const { prose, run, stripped } = parseReplyActions('/reply #159710 Hola Zohy 👋', ev, { quotedId: '159710' });
+    expect(run).toEqual([]);          // never executed — no repost, no twin
+    expect(stripped).toEqual([]);     // not malformed: it carries content
+    expect(prose).toBe('Hola Zohy 👋');   // …and the content survives, in the already-quoting reply
   });
 
-  it('reply: targeting a DIFFERENT message than the trigger still executes (regression-lock)', () => {
+  it('reply: a redundant /reply demotes ALONGSIDE prose — its words join the reply, not a second post', () => {
     const ev = { ...EV, msgId: '159710' };
-    const { run, stripped } = parseReplyActions('/reply #157204 sounds good to me', ev);
+    const { prose, run } = parseReplyActions('Vale, ya lo miro.\n/reply #159710 Hola Zohy 👋', ev, { quotedId: '159710' });
+    expect(run).toEqual([]);
+    expect(prose).toBe('Vale, ya lo miro.\nHola Zohy 👋');
+  });
+
+  // The demoted text is CONTENT, never re-parsed — otherwise a /reply carrying an action-shaped
+  // line would smuggle a live limb past the guard.
+  it('reply: demoted text is literal prose, NOT re-parsed as an action', () => {
+    const ev = { ...EV, msgId: '159710' };
+    const { prose, run } = parseReplyActions('/reply #159710 /react #7 🔥', ev, { quotedId: '159710' });
+    expect(run).toEqual([]);                 // the smuggled /react does NOT fire
+    expect(prose).toBe('/react #7 🔥');      // it is just text
+  });
+
+  // MALFORMED still STRIPS (the 2026-07-08 decision stands where it belongs): no id, nothing
+  // to demote, nothing to quote — there is no content-bearing reading to preserve.
+  it('reply: a MALFORMED /reply is still stripped, demote or not', () => {
+    const ev = { ...EV, msgId: '159710' };
+    expect(parseReplyActions('/reply #159710', ev, { quotedId: '159710' }).stripped).toHaveLength(1);
+    expect(parseReplyActions('/reply hola', ev, { quotedId: '159710' }).stripped).toHaveLength(1);
+  });
+
+  // The live 2026-07-15 defect, locked: the trigger is NOT quoted (no quotedId — the reply
+  // posts plain), so /reply at it is E's ONLY way to quote and MUST survive the guard.
+  it('reply: targeting the trigger when the reply quotes NOTHING still executes (the guard has no premise)', () => {
+    const ev = { ...EV, msgId: '159710' };
+    const { run, stripped } = parseReplyActions('/reply #159710 Hola Zohy 👋', ev);
+    expect(stripped).toEqual([]);
+    expect(run).toEqual([{ type: 'reply', chatId: EV.chatId, targetId: '159710', text: 'Hola Zohy 👋' }]);
+  });
+
+  it('reply: targeting a DIFFERENT message than the one quoted still executes (regression-lock)', () => {
+    const ev = { ...EV, msgId: '159710' };
+    const { run, stripped } = parseReplyActions('/reply #157204 sounds good to me', ev, { quotedId: '159710' });
     expect(stripped).toEqual([]);
     expect(run).toEqual([{ type: 'reply', chatId: EV.chatId, targetId: '157204', text: 'sounds good to me' }]);
   });
@@ -127,6 +172,67 @@ describe('parseReplyActions — the pure split', () => {
       .toEqual({ type: 'ask', chatId: EV.chatId, question: 'should I confirm the Friday move?' });
     expect(parseReplyActions('/ask', EV).stripped).toHaveLength(1);             // empty
     expect(parseReplyActions('/ask <question>', EV).stripped[0].reason).toMatch(/placeholder/);   // doc echo
+  });
+});
+
+// The STREAMING half of the split (operator 2026-07-15). A partial can end ANYWHERE, so the
+// hard case is the trailing INCOMPLETE line: parsing whole lines only would render a
+// half-typed "/repl" for a frame and snap it away — the same bug, one frame later. The tail
+// is withheld while it could still become an action, and only while it could.
+describe('partialProse — what a PARTIAL may safely stream', () => {
+  it('withholds a trailing tail that could still become an action — every prefix of the token', () => {
+    // Each is a real stream position mid-token; none may leak a character of it.
+    for (const tail of ['/', '/r', '/re', '/rep', '/reply', '/reply ', '/reply #9', '/reply #99 hi'])
+      expect(partialProse(`Hola\n${tail}`, EV)).toBe('Hola');
+    expect(partialProse('/reply #99 hi', EV)).toBe('');           // action-only → nothing to stream yet
+  });
+
+  it('streams a tail that can NO LONGER become an action — ordinary prose is never held back', () => {
+    expect(partialProse('Hola mun', EV)).toBe('Hola mun');        // mid-word, no '/' → flows
+    expect(partialProse('Hola\nhttp://x', EV)).toBe('Hola\nhttp://x');   // a slash mid-line is prose
+    expect(partialProse('/hello wor', EV)).toBe('/hello wor');    // '/hello' is not a verb of ours
+    expect(partialProse('/reactx foo', EV)).toBe('/reactx foo');  // a verb PREFIX match is not a verb
+    expect(partialProse('/123', EV)).toBe('/123');                // never action-shaped
+  });
+
+  it('strips COMPLETED action lines mid-stream while later prose keeps flowing', () => {
+    expect(partialProse('Nice\n/react #7 🔥\nby', EV)).toBe('Nice\nby');
+  });
+
+  it('is a pure prefix walk: the streamed prose only ever grows toward the finished prose', () => {
+    const full = 'Nice one!\n/react #7 🔥\nbye';
+    const seen = [];
+    for (let i = 1; i <= full.length; i++) seen.push(partialProse(full.slice(0, i), EV));
+    for (const s of seen) expect(s).not.toMatch(/\//);                       // no token, ever
+    expect(seen[seen.length - 1]).toBe(parseReplyActions(full, EV).prose);   // lands exactly on the delivered prose
+  });
+
+  // A redundant /reply DEMOTES to prose, so partialProse must stream it — it must not be
+  // withheld as a "viable action prefix" forever, or the shape that demote exists to rescue
+  // would never stream at all. The id is fixed the instant whitespace terminates it, so from
+  // `#<id> ` on the line is provably prose; before that the target is unknown and it stays held.
+  it('streams a DEMOTING /reply as prose, but only once its id is provably the one we quote', () => {
+    const opts = { quotedId: '159710' };
+    for (const held of ['/', '/re', '/reply', '/reply ', '/reply #', '/reply #15971', '/reply #159710'])
+      expect(partialProse(held, EV, opts)).toBe('');            // id not yet terminated — target still unknown
+    expect(partialProse('/reply #159710 H', EV, opts)).toBe('H');          // id fixed → the text is prose
+    expect(partialProse('/reply #159710 Hola Zohy', EV, opts)).toBe('Hola Zohy');
+  });
+
+  it('keeps WITHHOLDING a /reply aimed at a DIFFERENT id — that one is a real limb, never prose', () => {
+    const opts = { quotedId: '159710' };
+    expect(partialProse('/reply #157204 sounds', EV, opts)).toBe('');
+    expect(partialProse('Hola\n/reply #157204 sounds good', EV, opts)).toBe('Hola');
+  });
+
+  it('demoted streaming is a monotone prefix walk that lands on the delivered prose', () => {
+    const opts = { quotedId: '159710' };
+    const full = '/reply #159710 Hola Zohy';
+    const seen = [];
+    for (let i = 1; i <= full.length; i++) seen.push(partialProse(full.slice(0, i), EV, opts));
+    for (const s of seen) expect(s).not.toMatch(/\//);                             // no token, ever
+    for (let i = 1; i < seen.length; i++) expect(seen[i].startsWith(seen[i - 1])).toBe(true);
+    expect(seen[seen.length - 1]).toBe(parseReplyActions(full, EV, opts).prose);   // == 'Hola Zohy'
   });
 });
 

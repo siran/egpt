@@ -249,11 +249,10 @@ export function createSpine({
     try { d = await gating.decide(to, ev, mention); }
     catch (e) { note(`dwell ${turnKey}: re-decide failed — ${e?.message ?? e}`); return; }
     if (d.mode !== 'auto' || !d.mayReply) { note(`dwell ${turnKey}: mode ${d.mode} — dwell dropped (no auto reply)`); return; }
-    const m = mention ?? {};
-    const replyTo = (m.atEAnywhere || m.atEStart || m.replyToBot) ? ev.msgId : null;
+    const replyTo = ev.msgId ?? null;                 // quote UNIFORMLY — including auto (see openAndRunReply)
     const ahead = bumpTrain(turnKey);
     const out = sender.open(ev.chatId, { being: to, replyTo, auto: true });
-    turnBy(turnKey, () => runReplyTurn({ to, ev, d, out, turnKey, queued: ahead > 0, preLogged: true }));
+    turnBy(turnKey, () => runReplyTurn({ to, ev, d, out, replyTo, turnKey, queued: ahead > 0, preLogged: true }));
   }
 
   // enqueue resolves when THIS message's turn (if any) completes, so a caller — and
@@ -399,13 +398,13 @@ export function createSpine({
     }
 
     if (d.mayReply) {
-      // Reply branch (the reply train). Open THIS mention's OWN placeholder NOW, on
+      // Reply branch (the reply train). Open THIS message's OWN placeholder NOW, on
       // arrival — the per-message ack + streaming target, quoting the triggering message
-      // (operator: "mentions should always be replied to the message"). If a train is
-      // already in flight for this conversation, the placeholder opens in the QUEUED state
-      // and the turn WAITS its turn on turnBy; when it reaches the front it activates and
-      // streams. Uses the ROUTED mention so a sibling's @name reply quotes correctly too.
-      const turn = openAndRunReply({ to, ev, d, mention, turnKey });
+      // (operator: "mentions should always be replied to the message" — now EVERY reply,
+      // not just mentions; see openAndRunReply). If a train is already in flight for this
+      // conversation, the placeholder opens in the QUEUED state and the turn WAITS its turn
+      // on turnBy; when it reaches the front it activates and streams.
+      const turn = openAndRunReply({ to, ev, d, turnKey });
       return { turn };
     }
 
@@ -442,12 +441,19 @@ export function createSpine({
 
   // Open THIS mention's placeholder + enqueue its reply turn on the per-conversation FIFO.
   // Returns the turn's completion promise.
-  function openAndRunReply({ to, ev, d, mention, turnKey }) {
-    const m = mention ?? {};
-    const replyTo = (m.atEAnywhere || m.atEStart || m.replyToBot) ? ev.msgId : null;
+  //
+  // The placeholder ALWAYS quotes the message that triggered it (operator 2026-07-15) — every
+  // mode, INCLUDING auto. It used to quote only when E was MENTIONED, so a mode:on/auto chat
+  // got a PLAIN post and E could not quote what it was answering at all: its main reply was
+  // unquoted AND its own /reply limb was discarded as "redundant" against a quote that did not
+  // exist. Quoting from the START is also what removes the delete+repost churn for the common
+  // case: E's /reply at the message it is answering is now GENUINELY redundant, so it strips
+  // instead of tearing the placeholder down and posting a fresh quote in its place.
+  function openAndRunReply({ to, ev, d, turnKey }) {
+    const replyTo = ev.msgId ?? null;
     const ahead = bumpTrain(turnKey);
     const out = sender.open(ev.chatId, { being: to, replyTo, queued: ahead > 0, queuedAhead: ahead, auto: d.mode === 'auto' });
-    return turnBy(turnKey, () => runReplyTurn({ to, ev, d, out, turnKey, queued: ahead > 0 }));
+    return turnBy(turnKey, () => runReplyTurn({ to, ev, d, out, replyTo, turnKey, queued: ahead > 0 }));
   }
 
   // The reply train's turn body (DEFECT 1 + accumulation FEATURE). Fully guarded: from
@@ -458,7 +464,7 @@ export function createSpine({
   // is the durable record — it swallows its own errors and never throws — so the message
   // and reply survive even a bridge delivery fault), and E's own delivered reply becomes a
   // cycle line so the next queued turn accumulates it.
-  async function runReplyTurn({ to, ev, d, out, turnKey, queued, preLogged = false }) {
+  async function runReplyTurn({ to, ev, d, out, replyTo = null, turnKey, queued, preLogged = false }) {
     let recorded = false;
     try {
       out.activate?.();                                 // queued → live the moment its turn starts
@@ -477,7 +483,17 @@ export function createSpine({
       const promptEv = prepend
         ? { ...ev, line: (preLogged && pending.length ? pending : [...pending, ev.line ?? ev.body]).join('\n\n') }
         : ev;
-      const reply = await runTurnWithTimeout(to, ev, promptEv, (partial) => out.update(partial));
+      // STREAM THE PROSE ONLY (operator 2026-07-15). The raw partial used to go straight to
+      // the chat, so E's action tokens RENDERED live — the operator watched `/reply #<id> …`
+      // appear and then vanish once the completed text was parsed below. partialProse applies
+      // the SAME pure split as the parse below (and withholds a trailing INCOMPLETE line that
+      // could still become an action, so not even a half-typed "/repl" reaches the chat), which
+      // keeps the stream showing exactly what finish() will deliver. With no actions service
+      // wired nothing is stripped below either, so the raw partial streams — still a mirror.
+      // It takes the SAME quotedId as the parse below: without it the stream would strip a
+      // redundant /reply that finish() DEMOTES to prose, and the mirror would break.
+      const onPartial = (partial) => out.update(actions?.partialProse ? actions.partialProse(partial, ev, { quotedId: replyTo }) : partial);
+      const reply = await runTurnWithTimeout(to, ev, promptEv, onPartial);
       const rawText = reply?.text ?? '';
       const surfaced = gating.surfaces(d, rawText);
       // A failure-SHAPED result string (isBrainFailureResult — the CLI returned an error
@@ -489,7 +505,9 @@ export function createSpine({
       // reply — but only a reply that WOULD surface acts (a withheld/context reply doesn't
       // emit limbs), and never a failure-shaped result. The STRIPPED prose is delivered; the
       // RAW reply (action lines included) is recorded, so nothing E emitted is ever lost.
-      const parsed = (actions?.parse && surfaced && !failShaped) ? actions.parse(rawText, ev) : null;
+      // `quotedId`: the message THIS reply is itself posted as a quote of — the honest premise
+      // for the /reply redundancy guard (a /reply at what we already quote is the rogue twin).
+      const parsed = (actions?.parse && surfaced && !failShaped) ? actions.parse(rawText, ev, { quotedId: replyTo }) : null;
       const proseText = parsed ? parsed.prose : rawText;
       const hadActions = !!parsed && (parsed.run.length + parsed.stripped.length) > 0;
       // Action-only: the reply is nothing but action lines. The placeholder DELETES (the

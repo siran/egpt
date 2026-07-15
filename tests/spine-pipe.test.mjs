@@ -5,6 +5,7 @@
 import { describe, it, expect } from 'vitest';
 import { createSpine } from '../src/spine/spine.mjs';
 import { createReplyActions } from '../src/spine/reply-actions.mjs';
+import { createSender } from '../src/spine/sender.mjs';
 
 // --- fakes: each port/service as a tiny recorder ------------------------------
 function fakeBridge() {
@@ -418,5 +419,179 @@ describe('spine — advice answer hook', () => {
     await bridge.emit({ ...MSG, body: 'hola' });
     expect(routed).toHaveLength(1);
     expect(brain.calls).toHaveLength(1);
+  });
+});
+
+// LIVE BUG (operator 2026-07-15): /reply must be handled BEFORE anything is posted.
+// The operator watched the literal token `/reply #<id> …` render in the chat, then the
+// message get deleted and reposted as a native quote. Three causes, locked here:
+//   1. the streaming callback piped the RAW, UNPARSED partial to the chat, so the token
+//      rendered live (and a HALF-typed "/repl" would flicker if we only parsed whole lines);
+//   2. the placeholder only carried a reply target when the message MENTIONED E, so a
+//      no-mention chat got a PLAIN post — E could not quote what it was answering at all;
+//   3. the redundancy guard stripped `/reply #X` whenever X was the message being ANSWERED,
+//      on the premise that "the streamed reply already quotes it" — false whenever the
+//      placeholder carried no reply target.
+// The fixture is the REAL sender over a streaming bridge, so these assert what the
+// operator actually sees: the stream's frames, its reply target, and the message count.
+describe('spine — /reply handled BEFORE posting (no visible token, no delete+repost churn)', () => {
+  // A bridge that is BOTH the spine's bridge (inbound + startStream) and reply-actions'
+  // limb bridge (send/react/wasSentByUs) — so a reposted /reply limb lands in the same
+  // `sent` list as any other post, and "exactly one message" is a real count.
+  function streamingBridge() {
+    let cb = null;
+    const streams = [], sent = [];
+    return {
+      streams, sent,
+      onMessage(fn) { cb = fn; },
+      emit(msg) { return cb(msg); },
+      send(chat, text, opts) { sent.push({ chat, text, opts }); return { ok: true }; },
+      startStream(chat, init, opts) {
+        const h = {
+          chat, init, opts, frames: [], finals: [], deleted: false, delivered: false,
+          update(t) { h.frames.push(t); },
+          async finish(t) { h.finals.push(t); h.delivered = true; },
+          async delete() { h.deleted = true; },
+        };
+        streams.push(h); return h;
+      },
+      react: () => true,
+      wasSentByUs: () => true,
+      stop() {},
+    };
+  }
+
+  // `partials` are fed to the brain's onPartial in order — the CUMULATIVE raw text the CLI
+  // has emitted so far, exactly as brainpool hands it up (a plain string, and it may end
+  // MID-LINE).
+  function buildStreaming({ replyText, partials = [] }) {
+    const bridge = streamingBridge();
+    const brain = {
+      calls: [],
+      async turn(being, ev, onPartial) {
+        this.calls.push({ being, ev });
+        for (const p of partials) onPartial?.(p);
+        return { text: replyText, sessionId: 's1' };
+      },
+    };
+    const actions = createReplyActions({ bridge, bodyEmojiOf: () => '🐶', labelOf: () => 'egpt', resolveConvDir: async () => null, onLog: () => {} });
+    const spine = createSpine({
+      bridge, brain, store: fakeStore(),
+      identity: fakeIdentity, router: fakeRouter, gating: fakeGating({}),
+      sender: createSender({ bridge, bodyEmojiOf: () => '🐶', labelOf: () => 'egpt' }),
+      transcript: fakeTranscript(), heartbeats: fakeHeartbeats(), actions,
+      clock: { now: () => 1000 },
+    });
+    spine.start();
+    return { spine, bridge, brain };
+  }
+
+  // (1) The token — or ANY prefix of it — must never reach the chat. The partials below
+  // walk the token in one character at a time the way a real stream does, ending mid-line
+  // at every step ("/", "/re", "/reply #99"), so a naive "parse whole lines only" fix
+  // still renders "/re" for a frame and then snaps it away. No frame may carry a '/' at all.
+  it('a partial carrying /reply never renders — not the token, not a half-typed prefix', async () => {
+    const { bridge } = buildStreaming({
+      replyText: 'Hola\n/reply #99 hi',
+      partials: ['Hola', 'Hola\n', 'Hola\n/', 'Hola\n/re', 'Hola\n/reply', 'Hola\n/reply #99', 'Hola\n/reply #99 hi'],
+    });
+    await bridge.emit(MSG);
+
+    const frames = bridge.streams[0].frames;
+    expect(frames.length).toBeGreaterThan(0);
+    for (const f of frames) expect(f).not.toMatch(/\//);        // no token, no half-typed prefix
+    expect(new Set(frames)).toEqual(new Set(['Hola ⏳']));      // only the PROSE ever streams
+  });
+
+  // (2) MSG carries no mention and the chat is mode:on — E replies, so the reply must be a
+  // native quote of the message it is answering. Today replyTo is null unless E was
+  // mentioned, so the placeholder posts PLAIN and E cannot quote at all.
+  it('a no-mention chat still opens the placeholder as a QUOTE of the triggering message', async () => {
+    const { bridge } = buildStreaming({ replyText: 'hola' });
+    await bridge.emit(MSG);
+
+    expect(bridge.streams).toHaveLength(1);
+    expect(bridge.streams[0].opts).toMatchObject({ replyTo: MSG.msgId });   // quoted from the START
+  });
+
+  // (3) The placeholder now genuinely quotes the trigger, so a /reply at that SAME message is
+  // truly redundant — as a TARGET. Its WORDS are not redundant: they land in the reply that
+  // already quotes it, so there is still no second/duplicate post (the 2026-07-08 rogue twin
+  // stays fixed) and nothing E said is discarded.
+  it('/reply at the message the placeholder already quotes DEMOTES to prose — ONE quoted message, no delete+repost', async () => {
+    const { bridge } = buildStreaming({ replyText: `Vale, ya lo miro.\n/reply #${MSG.msgId} Hola Zohy 👋` });
+    await bridge.emit(MSG);
+
+    expect(bridge.streams[0].deleted).toBe(false);                    // the train is NOT torn down
+    expect(bridge.streams[0].finals).toEqual(['Vale, ya lo miro.\nHola Zohy 👋']);   // the twin's words land HERE
+    expect(bridge.streams[0].opts).toMatchObject({ replyTo: MSG.msgId });
+    expect(bridge.sent).toHaveLength(0);                              // nothing reposted — exactly one message
+  });
+
+  // …and the redundancy guard must stay HONEST: a /reply at a DIFFERENT message is a real
+  // limb and must still fire (delete+repost is unavoidable — Beeper's edit carries no reply
+  // target, so an existing message cannot be retargeted).
+  it('/reply at a DIFFERENT message is still honored (posts quoting that other message)', async () => {
+    const { bridge } = buildStreaming({ replyText: '/reply #157204 sounds good' });
+    await bridge.emit(MSG);
+
+    expect(bridge.streams[0].deleted).toBe(true);                     // action-only → the placeholder goes
+    expect(bridge.sent).toHaveLength(1);
+    expect(bridge.sent[0]).toMatchObject({ chat: MSG.chatId, text: 'sounds good', opts: { replyTo: '157204' } });
+  });
+
+  // THE LIVE SHAPE (operator 2026-07-15, Zohykar): E's WHOLE reply is `/reply #<trigger> …`.
+  // Stripping it as "redundant" left the reply with no prose at all → action-only → the
+  // placeholder was DELETED and nothing was posted: E's words were EATEN. Quoting the trigger
+  // unconditionally makes the guard fire on far more replies, so it widens exactly this shape
+  // — which is why the target is redundant but the WORDS are not: they demote into the reply
+  // that already quotes the target. Exactly one message, nothing lost, no repost.
+  it('an action-only /reply at the message we ALREADY quote demotes to prose — ONE quoted message, words intact', async () => {
+    const { bridge } = buildStreaming({ replyText: `/reply #${MSG.msgId} Hola Zohy 👋` });
+    await bridge.emit(MSG);
+
+    expect(bridge.streams[0].deleted).toBe(false);                    // NOT torn down (today it is — the words vanish)
+    expect(bridge.streams[0].finals).toEqual(['Hola Zohy 👋']);       // E's words ARE the reply
+    expect(bridge.streams[0].opts).toMatchObject({ replyTo: MSG.msgId });   // natively quoting the trigger
+    expect(bridge.sent).toHaveLength(0);                              // no repost — exactly one message
+  });
+
+  // A demoted /reply is PROSE, so it must STREAM like prose — it must not sit withheld as a
+  // "viable action prefix" forever. The id is fixed the moment whitespace terminates it, so
+  // from `#<id> ` on the line is provably prose and its text streams character by character.
+  // The partialProse invariant still holds throughout: never a '/' , and a monotone prefix walk.
+  it('the demoted prose streams LIVE, and no /reply token or half-typed prefix ever renders', async () => {
+    const full = `/reply #${MSG.msgId} Hola Zohy`;
+    const { bridge } = buildStreaming({
+      replyText: full,
+      partials: Array.from({ length: full.length }, (_, i) => full.slice(0, i + 1)),
+    });
+    await bridge.emit(MSG);
+
+    const frames = bridge.streams[0].frames;
+    for (const f of frames) expect(f).not.toMatch(/\//);              // the token never renders, at any position
+    const shown = frames.map((f) => f.replace(/ ⏳$/, ''));
+    expect(shown).toContain('Hola');                                  // …the demoted prose DOES stream, live
+    expect(shown[shown.length - 1]).toBe('Hola Zohy');
+    for (let i = 1; i < shown.length; i++)                            // monotone prefix walk — nothing ever un-renders
+      expect(shown[i].startsWith(shown[i - 1])).toBe(true);
+    expect(bridge.streams[0].finals).toEqual(['Hola Zohy']);          // lands exactly on the delivered prose
+    expect(bridge.streams[0].deleted).toBe(false);
+    expect(bridge.sent).toHaveLength(0);
+  });
+
+  // THE COST of streaming prose only: a TRUE action-only reply (a limb with no words of its
+  // own) has no prose, so nothing streams and the placeholder holds "⏳ Thinking…" for the
+  // whole turn. That is not a stuck placeholder — the turn still RESOLVES it at finish (here:
+  // the react IS the response, so the placeholder is deleted — the legit-silence path,
+  // UNCHANGED by the demote). Pinned so the "held, then resolved" end state stays honest.
+  it('an action-only reply streams NOTHING (placeholder holds ⏳ Thinking…) but still RESOLVES at finish', async () => {
+    const { bridge } = buildStreaming({ replyText: '/react #7 👍', partials: ['/re', '/react #7', '/react #7 👍'] });
+    await bridge.emit(MSG);
+
+    expect(bridge.streams[0].init).toBe('⏳ Thinking…');
+    expect(bridge.streams[0].frames).toEqual([]);      // no half-typed token ever rendered
+    expect(bridge.streams[0].deleted).toBe(true);      // resolved — the limb IS the response
+    expect(bridge.sent).toHaveLength(0);
   });
 });
