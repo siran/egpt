@@ -42,12 +42,20 @@ slip own-suppression (rare; self-echoes return in seconds).
 
 ## 1. Where we are
 
-Branch `rewrite`, suite ~1403 tests / 0 fail. The node runs live as the
-`egpt2-daemon` service, profile `~/.egpt`, from this working tree. All of the
-following is LANDED, test-locked, and (where marked) live-verified:
+Branch `rewrite`, suite 124 files / 1634 tests / 0 fail. The node runs live as the
+`egpt2-daemon` service, profile `~/.egpt`, from the INSTALLED copy `~/bin/egpt`.
+
+**The old spine is GONE (2026-07-14/15, ≈ −21.7k lines)** — see §3. Root now holds only
+the two entry points (`egpt.mjs`, `egpt-daemon.mjs`), `e_identity.md` (live persona
+fallback), `vitest.config.mjs`, package/docs; `conversations-state.mjs` and `spine.mjs`
+moved under `src/`. The cleanup is on `rewrite` and NOT yet deployed — it is purely
+structural (no behavior change) and rides the next `/upgrade`.
+
+All of the following is LANDED, test-locked, and (where marked) live-verified:
 
 - Core pipe (receive → gate → brain → stream-reply → send), gating modes
-  (accum retired), reply train (persona line, ∎, no nonce), flood guard — live-verified
+  (accum retired — a REVIVAL is proposed in §4), reply train (persona line, no
+  end-marker since the ∎/signature unwiring f300e24, no nonce), flood guard — live-verified
 - Voice chain + per-conversation transcription policy; media per origin surface;
   video Route A
 - Contacts: slug-follows-name + folder move + renames.log (one shared resolver)
@@ -201,27 +209,47 @@ following is LANDED, test-locked, and (where marked) live-verified:
   git branch -D main && git branch -m rewrite main
   git branch -u origin/main main        # /upgrade's git pull keeps working
   ```
-  Keep origin/rewrite for a few days. Old-spine deletion is a SEPARATE commit
-  after cutover soak. The excision (85a824e) already retired the old-spine
-  integrity scans; the deletion list (enriched by the 2026-07-03 analysis):
-  egpt-spine.mjs, author-emoji.mjs (+ src/item-format.mjs), slash/, attic/, the
-  old shell/attach CONSOLE surface (src/shell/ + src/attach/ + the ink/CDP-console
-  cluster the daemon no longer drives), config/personalities/ (identities replace
-  them), config/themes/ (shell-only), the 7 `// OLD-SPINE ONLY` migrations inside
-  conversations-state.mjs (that FILE stays — it is the v2 conv-state library),
-  compact-being.mjs's default_brain read, config-validate.mjs + their tests,
-  dispatch.mjs's own personality/threadCwd reads (dispatch.mjs itself stays — v2
-  imports isContextOverflowError), vitest.config.mjs references, and config/brains/
-  (codex.mjs, llama.mjs, claude-code.mjs old impl, config-schema.mjs, type/) —
-  ~25 old-spine-only src modules + ~34 old-spine-only test files all told (see the
-  analysis for the full list; not enumerated here to keep this terse).
+  Keep origin/rewrite for a few days. **The cutover is now JUST the git flip above** —
+  the old-spine deletion it used to gate is DONE.
+
+  **OLD-SPINE DELETION — DONE 2026-07-14/15 ON `rewrite`, decoupled from the flip**
+  (operator chose clean-now over cutover-first; every sweep reachability-verified from
+  the two v2 entries + suite-gated; ≈ −21.7k lines):
+  - `c35d0f9` prep — the 3 predicates v2 needed out of dispatch.mjs → `src/brain-errors.mjs`.
+  - `2517624` root cluster — egpt-spine.mjs (462 KB), dispatch.mjs, slash/ (54 files),
+    author-emoji.mjs, src/item-format.mjs, attic/ + 8 old-spine-only tests. THREE LIVE tests
+    were surgically trimmed because they read old-spine SOURCE at runtime (an import graph
+    can't see this): flood-guard's egpt-spine META wiring assert, integrity's slash
+    bridge-surface survey, dynamic-imports' `SOURCE_DIRS`.
+  - `7005804` layout — conversations-state.mjs → `src/`, spine.mjs → `src/spine/spine.mjs`.
+  - `5ba55ae` deeper — src/shell/, src/attach/, src/engine/, src/nucleus.mjs,
+    src/room-routing.mjs, src/config-validate.mjs, config/brains/{codex,claude-code,type/}
+    + 9 tests; plus 6 of the 7 `OLD-SPINE ONLY` migrations pruned from conversations-state.mjs.
+
+  ⚠️ **CORRECTIONS — the previous deletion list was WRONG. These are NOT dead; do NOT delete:**
+  - **`config/personalities/` is LIVE** — `src/conversations-state.mjs` reads it as
+    PERSONALITIES_SHIPPED_DIR (resolvePersonalityFile) and a test asserts on the real
+    `default.md`. ("identities replace them" was aspirational, not true.)
+  - **`config/themes/`** is read by `src/tools/theme.mjs`.
+  - **`config/brains/llama.mjs`** is imported by `src/tools/agent-loop.mjs`.
+  - **`src/rooms.mjs`** survives as a PARITY ORACLE in 3 live tests (room-core, room-members,
+    sanitize): subject live, oracle dead. Removing it needs those tests rewritten — a semantic
+    call, not a sweep.
+  - **`migrateJsonToYaml` STAYS** in conversations-state.mjs (still exercised by its test), as
+    does the mid-file `readdirSync` import (load-bearing for listIdentityLayers, now labelled).
+  - `config/brains/config-schema.mjs` never existed; TOP-LEVEL `config/config-schema.mjs` is v2-LIVE.
+
+  STILL OWED (small): compact-being.mjs's default_brain read. Also DROPPED with no v2 analog
+  yet: two anti-drift meta-tests (flood-guard-in-send-path; bridge-surface method exposure) —
+  the flood guard itself is untouched and live.
   - **Design docs already GONE (operator-directed, 2026-07-03 docs sweep):**
     ENGINE-SURFACE-SEPARATION.md (its durable gene — engine-vs-surface, commands
     engine-first — folded into GENOME I1) and ROOMS-UNIFICATION.md (superseded by
     GENOME §2.5 + the "Rooms — remaining" entry above) were deleted EARLY rather
-    than at cutover. The old-spine CODE that cited them (egpt-spine.mjs,
-    src/engine/*, src/nucleus.mjs, src/room-routing.mjs comments) still carries the
-    references as historical breadcrumbs — they die with those modules at cutover.
+    than at cutover. The old-spine CODE that cited them (egpt-spine.mjs, src/engine/*,
+    src/nucleus.mjs, src/room-routing.mjs) is now DELETED (2026-07-14/15), so those
+    breadcrumbs are gone with it. Historical mentions survive only as comments in live
+    files (e.g. "ported from v1 egpt-spine.mjs") — harmless, not references.
   - **NOT deleted (operator 2026-07-03):** `config/brains/chatgpt-cdp.mjs` +
     `config/brains/claude-cdp.mjs` are EARMARKED as FUTURE v2 engines (web-AI-via-
     browser — "browser control over CDP is eGPT's raison d'être; also to ease
