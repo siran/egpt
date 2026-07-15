@@ -620,6 +620,34 @@ following is LANDED, test-locked, and (where marked) live-verified:
 
 ## 4. Backlog (known warts, smallest last)
 
+### Operator brain-dump 2026-07-14 (NEW — recorded; scoping mostly open)
+- **`/ignore <slug>` command (BACKBURNER):** a per-chat mute so agents in that
+  chat/group/1:1 IGNORE MENTIONS from an unwanted user. `<slug>` resolves the user by
+  NAME (push name), ID (Beeper/matrix/jid), or NUMBER (phone) — the same multi-form target
+  lookup the other commands use. Trigger: 2026-07-14 incident in the SPOILER chat (operator
+  was actively drafting book ideas there; an unwanted user's mention woke the agent). A
+  per-conversation DENY overlay on top of the existing networks.<surface>.allowed_users,
+  settable by command. Design open.
+- **Revive `accum` mode (BACKBURNER):** (accum was retired — see §1.) On the next
+  @mention in a chat, feed the model the ACCUMULATED recent context (~1h window) PLUS the
+  triggering prompt, CLEARLY LABELED — "this line is THE prompt; the following is
+  accumulated context" — so a question that leans on the last hour's messages is
+  answerable. Design open: window size, labelling, per-chat opt-in.
+- **BUG — `/reply` applied post-hoc (2026-07-14):** when the agent replies to a message,
+  the bridge POSTS the reply as a plain message, THEN edits it to attach the reply-to,
+  THEN strips the `/reply` token — a visible flicker. Make it straight: DETECT/parse
+  `/reply` BEFORE posting, so it is sent as a native quoted reply from the start. Ties to
+  the Conversation-E limbs / emitted-command parse-before-send (§3).
+- **BUG — reply-to-a-reply doesn't trigger (2026-07-14):** a human REPLYING to the AGENT's
+  own reply (quoting the message the agent sent) does NOT dispatch the model. Quoting the
+  bot's reply should re-engage it; the reply-target/mention gate likely doesn't recognise a
+  quote of the bot's own message as an engagement.
+- **NOTE/verify — a 👂-bearing message is ignored by the bridge (verified 2026-07-14):** a
+  note containing 👂 does not prompt the agent. Confirm this does not wrongly suppress a
+  HUMAN message that merely contains 👂 — NO marker should reach a dispatch IF (the "evict
+  the 👂-leads crutch" line; §0 + handoff). If it's residual 👂-based self-suppression,
+  move it to content-similarity like the echo-coverage rework.
+
 - **Author-name enrichment via the stats members map (operator 2026-07-10, BACKBURNER):**
   the message/👂 author resolves push name → WA number → Matrix-id localpart → raw id
   (src/bridges/beeper.mjs senderDisplay/fallbackSenderId, the 2026-07-10 author-rule).
