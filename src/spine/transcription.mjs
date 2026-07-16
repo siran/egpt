@@ -13,6 +13,7 @@ import { transcribeAudioFile } from '../tools/transcribe.mjs';
 import { transcribeViaEndpoint } from '../tools/transcriptor.mjs';
 import { startWhisperServer, makeWhisperServerTranscriber } from '../tools/whisper-server.mjs';
 import { DEFAULT_SERVICE, readTranscriptionConfig } from '../transcription-service.mjs';
+import { POSTS_BACK_DELAY_MS } from '../incoming-media.mjs';
 import { readState, CONV_YAML_PATH, KNOWN_SURFACES, getContact, slugDir } from '../conversations-state.mjs';
 
 export function createTranscription({
@@ -52,13 +53,20 @@ export function createTranscription({
   // How long after a burst goes quiet before the 👂 transcript echoes to the chat.
   const postsBackDelayMs = txSvc?.posts_back_delay_ms ?? cfg.transcription?.posts_back_delay_ms;
 
-  // per-chat HEARD/SPOKEN verdict, resolved from the conversation FOLDER's own
-  // config.yaml (src/transcription-service.mjs): enabled = transcribe at all
-  // (HEARD), postsBack = surface the 👂 echo (SPOKEN). Both default ON; only an
-  // explicit false disables. Cost: one state read + one small file read per
+  // The GLOBAL 👂 posts-back delay — the module-level postsBackDelayMs (from
+  // transcription_service / the legacy transcription.* block), falling back to the
+  // shared POSTS_BACK_DELAY_MS floor when the config sets neither. It is the default
+  // a conversation with no per-chat override inherits.
+  const globalDelayMs = postsBackDelayMs ?? POSTS_BACK_DELAY_MS;
+
+  // per-chat HEARD/SPOKEN verdict + 👂 echo delay. enabled/postsBack come from the
+  // conversation FOLDER's own config.yaml (src/transcription-service.mjs): enabled =
+  // transcribe at all (HEARD), postsBack = surface the 👂 echo (SPOKEN). Both default
+  // ON; only an explicit false disables. postsBackDelayMs is the per-CONVERSATION echo
+  // delay (see the override below). Cost: one state read + one small file read per
   // VOICE NOTE (not per message) — cheap enough to skip any caching.
   async function resolveTranscriptionService(chatId) {
-    if (!chatId) return { ...DEFAULT_SERVICE };
+    if (!chatId) return { ...DEFAULT_SERVICE, postsBackDelayMs: Math.max(0, globalDelayMs) };
     let hit = null, surface = null;
     try {
       const state = await loadState();
@@ -74,8 +82,28 @@ export function createTranscription({
     // No contact yet (first-ever voice note from a brand-new chat) → default
     // service. Registration happens on the text pipe (ensureContact), so by the
     // next message this resolves to the folder's real config.
-    if (!hit) return { ...DEFAULT_SERVICE };
-    return readConfig(slugDir(surface, hit.slug));
+    if (!hit) return { ...DEFAULT_SERVICE, postsBackDelayMs: Math.max(0, globalDelayMs) };
+    const folder = await readConfig(slugDir(surface, hit.slug));   // { enabled, postsBack } — the folder config.yaml (rooms keep this)
+
+    // Per-CONVERSATION 👂 echo override — conversations.yaml, on the chat's OWN record
+    // (the getContact entry, sibling of `mode`), ONE key: posts_back_delay_ms. This
+    // REPLACES the folder-config.yaml approach FOR CONVERSATIONS; rooms keep the folder
+    // mechanism above. Semantics:
+    //   unset / null  → use the global default (current behavior).
+    //   -1 (any negative) → NEVER echo the 👂 (transcription still HEARD — model +
+    //                       transcript.md still get it — just not SPOKEN into the chat).
+    //   0             → echo immediately (no debounce).
+    //   N (positive)  → echo after N ms trailing-debounce.
+    const rec = hit.entry ?? {};
+    const override = Number.isFinite(rec.posts_back_delay_ms) ? rec.posts_back_delay_ms : null;
+    const effectiveDelay = override ?? globalDelayMs;
+    // postsBack: a negative override is a hard mute (effectiveDelay < 0). Otherwise the
+    // conversations.yaml override WINS for the conversation; with NO override the folder
+    // config.yaml's posts_back:false is still honored (back-compat — don't silently start
+    // echoing a room/chat that had posts_back:false). enabled is always the folder verdict.
+    const postsBack = folder.enabled && effectiveDelay >= 0 && (override != null ? true : folder.postsBack);
+    // A negative disable maps the delay to 0 (postsBack:false already prevents any post).
+    return { enabled: folder.enabled, postsBack, postsBackDelayMs: Math.max(0, effectiveDelay) };
   }
 
   return {

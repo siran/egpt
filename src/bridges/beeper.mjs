@@ -1110,7 +1110,10 @@ export async function startBeeperBridge(opts = {}) {
           // PER-NOTE key (chat + this note's id): each voice note gets its OWN delayed 👂
           // transcript, posted as a reply to ITSELF (operator 2026-06-24), never coalesced.
           debounceKey: `${chatID}:${msg.id}`,
-          postsBackDelayMs,
+          // PER-CONVERSATION echo delay (operator 2026-07-16): the resolver returns this chat's
+          // own posts_back_delay_ms (conversations.yaml override → global default); fall back to
+          // the boot-global only when a resolver doesn't supply one.
+          postsBackDelayMs: svc.postsBackDelayMs ?? postsBackDelayMs,
                     onLog: (m) => onLog(`beeper: ${m}`),
           meta: vmeta,
         });

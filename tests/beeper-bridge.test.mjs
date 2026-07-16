@@ -880,6 +880,58 @@ describe('beeper bridge', () => {
     expect(fake.posts).toHaveLength(0);                             // … covered → stood down → we NEVER posted (no double)
   });
 
+  // PER-CONVERSATION 👂 delay (operator 2026-07-16): the bridge debounces with the PER-CHAT
+  // postsBackDelayMs the resolver returns (conversations.yaml `posts_back_delay_ms`), NOT the
+  // boot-global. Here the port default is 0 (immediate), but the resolver returns 20_000 → the
+  // 👂 is HELD, proving the per-chat delay overrode the boot-global.
+  it('the bridge debounces with the resolver’s PER-CHAT postsBackDelayMs (over the boot-global)', async () => {
+    const clock = makeClock();
+    const { incoming } = await startBridge({
+      echoPlan: () => ({ rank: 1, winner: true }),
+      scheduler: clock,
+      postsBackDelayMs: 0,   // boot-global would post immediately …
+      resolveTranscriptionService: async () => ({ enabled: true, postsBack: true, postsBackDelayMs: 20_000 }),
+    });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({
+      id: 'note-delay', isSender: false, text: null, type: 'VOICE',
+      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+    })] });
+    await waitFor(() => incoming.length === 1);
+    expect(incoming[0].text).toBe('(voice transcription) fake transcript');   // HEARD immediately …
+    expect(fake.posts).toHaveLength(0);                                        // … but the 👂 is HELD (per-chat 20s, not the port's 0)
+    await clock.advance(20_000);                                              // window elapses → the held echo posts
+    await waitFor(() => fake.posts.length === 1);
+    expect(fake.posts[0].text).toBe('👂 fake transcript');
+  });
+
+  // A conversation set to `posts_back_delay_ms: -1` resolves to postsBack:false → the note is
+  // transcribed + logged (HEARD) but the 👂 NEVER posts (SPOKEN). A normal chat still posts.
+  it('a -1 conversation is transcribed + logged but posts NO 👂; a normal chat still posts', async () => {
+    const quiet = await startBridge({
+      echoPlan: () => ({ rank: 1, winner: true }),
+      resolveTranscriptionService: async () => ({ enabled: true, postsBack: false, postsBackDelayMs: 0 }),   // what -1 resolves to
+    });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({
+      text: null, type: 'VOICE',
+      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+    })] });
+    await waitFor(() => quiet.incoming.length === 1);
+    expect(quiet.incoming[0].text).toBe('(voice transcription) fake transcript');   // HEARD
+    expect(fake.posts).toHaveLength(0);                                             // … but never SPOKEN
+
+    const loud = await startBridge({
+      echoPlan: () => ({ rank: 1, winner: true }),
+      resolveTranscriptionService: async () => ({ enabled: true, postsBack: true, postsBackDelayMs: 0 }),   // normal chat
+    });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({
+      chatID: CHAT('chat-2'), text: null, type: 'VOICE',
+      attachments: [{ id: 'a2', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+    })] });
+    await waitFor(() => loud.incoming.length === 1);
+    await waitFor(() => fake.posts.length === 1);
+    expect(fake.posts[0].text).toBe('👂 fake transcript');                          // normal chat still posts
+  });
+
   // LAYERED 👂 ECHO (operator 2026-07-12): the '👂 <transcript>' core is wrapped concentrically by the
   // outer bridge_signature_open/close (which SPINE posted) and the inner transcription_open/close (the
   // 👂 feature's own frame) — top→bottom: bridge_open, transcription_open, 👂 core, transcription_close,
