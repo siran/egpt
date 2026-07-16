@@ -43,7 +43,7 @@ slip own-suppression (rare; self-echoes return in seconds).
 ## 1. Where we are
 
 Branch `rewrite`, suite 124 files / 1634 tests / 0 fail. The node runs live as the
-`egpt2-daemon` service, profile `~/.egpt`, from the INSTALLED copy `~/bin/egpt`.
+`egpt-daemon` service, profile `~/.egpt`, from the INSTALLED copy `~/bin/egpt`.
 
 **The old spine is GONE (2026-07-14/15, ≈ −21.7k lines)** — see §3. Root now holds only
 the two entry points (`egpt.mjs`, `egpt-daemon.mjs`), `e_identity.md` (live persona
@@ -962,7 +962,7 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
 
 ## 5. Operational facts (for any future session)
 
-- Node: Windows service `egpt2-daemon` → egpt-daemon.mjs → spawns `node egpt.mjs`
+- Node: Windows service `egpt-daemon` (VERIFIED 2026-07-16: this is the name on BOTH nodes — there is no "egpt2-daemon" anywhere; the "2" was vestigial from the ~/src/egpt2 rewrite era) → egpt-daemon.mjs → spawns `node egpt.mjs`
   from the INSTALLED copy `~/bin/egpt` (operator 2026-07-03: prod decoupled from
   the dev tree — src/egpt2 can be dirty, the node doesn't care). Deploy: commit+
   push from dev, then drop `/upgrade` into ~/.egpt/state/ingest/ (the installed
