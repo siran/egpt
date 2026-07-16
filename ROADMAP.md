@@ -775,6 +775,23 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
   {enabled, posts_back}` (conversation folder's config.yaml) is the SANCTIONED knob for
   "transcribe but don't echo" and is read fresh per note.
 
+- **WATCH — spine WEDGED twice (2026-07-15, ~22:40 + ~23:08); deadman recovered both.**
+  The alive beat went stale ~22 min then ~5 min; the daemon's deadman correctly caught +
+  respawned each time — proof the alive→deadman→respawn chain WORKS. NOT a simple hung turn:
+  the alive beat is a `setInterval` (`tick() → heartbeats.runDue`), INDEPENDENT of turn `await`s,
+  so a slow/hung turn cannot stop it (Node fires timers while the main thread is idle). For the
+  beat to stop, EITHER the event loop was BLOCKED SYNCHRONOUSLY, OR the beat's own
+  `echo beat > state/alive.txt` SPAWN hung — i.e. process/handle EXHAUSTION. Evidence leans
+  exhaustion: ZERO live processing in both windows (every message — Joyce 22:10, delen4 22:07/
+  22:09 … — shows up later as BACKLOG backfill, not live), and REVE runs auto-mode chats
+  (morgan, Dando Ruiz — `mode: auto`, reply to EVERY message, each spawns a claude subprocess);
+  a burst there = many concurrent child processes. UNPROVABLE from current logs — there is no
+  turn-lifecycle or spawn-count logging (that absence IS the real gap). DISPOSITION (operator
+  2026-07-16): WATCH for recurrence, do NOT fix yet. If it recurs, fix order: (1) log turn
+  start/end+duration + concurrent-child-process count so it is diagnosable, not inferred;
+  (2) bound auto-mode turn CONCURRENCY (the likely real cause); (3) lower turnTimeoutMs (currently
+  600_000 = 10 min, very long). NB `turnTimeoutMs` DOES fire (evicts the warm entry), just slowly.
+
 - **Author-name enrichment via the stats members map (operator 2026-07-10, BACKBURNER):**
   the message/👂 author resolves push name → WA number → Matrix-id localpart → raw id
   (src/bridges/beeper.mjs senderDisplay/fallbackSenderId, the 2026-07-10 author-rule).
