@@ -822,6 +822,56 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
     needs the NIC's "Wake on Magic Packet" enabled + REVE's MAC in DOLLY's
     duty). Harnesses still armed on both (5-min): DISABLE after testing —
     `schtasks /change /tn egpt-wake-duty /disable`.
+  - **✅ RESOLVED 2026-07-15 — AUTO-LOGON. The L0/L1 gap was never the spine's session.**
+    ⚠️ TERMINOLOGY: this file already uses S0/S3 for POWER states (S0 Low Power Idle, above).
+    Sessions are written **Session 0 / Session 1** in full — never "S0/S1".
+    **Verified (measured, not assumed):** there is **NO Beeper service**; ALL Beeper processes
+    run in **Session 1** on BOTH nodes; the local API `:23373` is owned by the Beeper Desktop
+    process in Session 1; Beeper starts **at LOGON** via the HKCU Run key
+    (`com.automattic.beeper.desktop`), NOT at boot. ⇒ L0's "deaf/mute by design" CONFIRMED:
+    **boot without login = no Beeper = no `:23373` = no messaging, REGARDLESS of which session
+    the spine runs in.** The service's boot-resilience buys heartbeats/cron ONLY. The gap was
+    never architectural — nobody logged in. (Spine is Session 0 vs explorer Session 1, which is
+    also why `/chrome` is attach-only — 8dd40ad.)
+    **REJECTED (do not re-litigate without new facts):**
+    - **Dual-spine + cede protocol** — `src/daemon-singleton.mjs` ALREADY documents that a
+      Session-1 process probing a Session-0 pid gets **ESRCH** (reads as DEAD), so the singleton
+      **false-negatives across exactly that boundary** ⇒ two spines on one profile+account
+      (double-answers, racing transcripts, two writers on beeper-seen.jsonl). If ever built:
+      handover must be EXPLICIT + task-driven (logon stops the service, logoff restarts it),
+      never negotiated, plus a cross-session-safe singleton (trust the FRESH alive.txt beat — a
+      file mtime is session-agnostic, and freshness is already the pid-reuse guard).
+    - **Self-hosted Beeper bridge as a service** — a bridge connects a NETWORK to Matrix; it is
+      NOT a client and exposes no API for the spine, so the Desktop dependency survives. Also
+      Linux/macOS only ("Windows users should use WSL"), foreground-only ("service mode coming
+      soon"). https://developers.beeper.com/bridges/self-hosting
+    - **ARSO** (Automatic Restart Sign-On) — covers only UPDATE-initiated restarts; a BSOD,
+      hang, manual reboot or power cut does not trigger it (operator 2026-07-15).
+    **The real long-term path to a desktop-free node (not rejected, just expensive): a headless
+    MATRIX CLIENT.** A Beeper account IS a Matrix account on Beeper's homeserver, reachable over
+    the standard Client-Server API with an access token — no GUI, no session. **GATED ON E2EE**:
+    Beeper rooms are encrypted and third-party clients hit real pain (matrix-js-sdk#4360,
+    "Failing to read encrypted messages when integrating with Beeper Homeserver"). The spine
+    would have to own device keys / verification / megolm. **The Desktop app is CARRYING THE
+    CRYPTO** — that is what it buys us, and what you'd pay back.
+    **RESOLUTION — auto-logon (zero code):**
+    - **REVE: DONE 2026-07-15** via Sysinternals Autologon (`winget install
+      Microsoft.Sysinternals.Autologon`). The capability is a Windows feature (Winlogon
+      `AutoAdminLogon` + LSA secrets); the tool is just the safe front-end. VERIFIED:
+      `AutoAdminLogon=1`, `DefaultUserName=an`, **`DefaultPassword` ABSENT** ⇒ the password is an
+      encrypted LSA secret. **NEVER use the `DefaultPassword` registry value — it is PLAINTEXT.**
+      `AutoLogonCount` unset (unlimited — if it is ever SET it counts down and auto-logon
+      silently stops; check it FIRST if this mysteriously breaks).
+    - **DOLLY: NOT YET.** Same dependency confirmed (Beeper.exe in Session 1, `AutoAdminLogon`
+      unset). Run `autologon` at its console/RDP — NOT over ssh (password → command history).
+    - **Costs accepted:** an LSA secret is extractable by a local ADMIN, so the account password
+      is recoverable on-box (matters only if reused elsewhere). REVE has NO BitLocker, so
+      physical access already meant full disk access — auto-logon does not widen that materially.
+    - **NO auto-lock task, deliberately:** a logon trigger cannot distinguish an auto-logon from
+      a manual login, so it would lock the screen on every manual login too.
+    - **UNPROVEN until a reboot** — that is the acceptance test.
+    **Consequence:** a Session-1 spine is now purely a SHELL-era question (GUI: launching Chrome,
+    the console shell) — NOT a messaging or resilience one. Both of those are solved with no code.
 
 - **BUG: bridge atE wake-word ignores configured persona handles (found by
   the 2026-07-07 DOLLY sleep test)**: on DOLLY (`agents.egpt.handles:
