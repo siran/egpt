@@ -887,9 +887,20 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
       nobody present. Expect **~3 min boot→live**, dominated by Beeper Desktop's own startup
       (measured on DOLLY: bridge ENTRY 00:41:35 → `WS open` 00:44:08; the 3s→60s retry backoff
       rides it out).
-    - **DOLLY: PROVEN 2026-07-16** — rebooted, auto-logged in, Beeper came up in Session 1, bridge
-      connected + subscribed, all unattended. **REVE: still UNPROVEN** — configured but not yet
-      rebooted. That reboot is the remaining acceptance test.
+    - **DOLLY: FULLY PROVEN 2026-07-16** — rebooted, auto-logged in, Beeper came up in Session 1,
+      bridge connected + subscribed, `don` replying — all unattended. **REVE: still UNPROVEN** —
+      configured but not yet rebooted. That reboot is the remaining acceptance test.
+    - **DOLLY's password was BLANK** (`<Enter>` unlocked it; `Password required: No`) — so the lock
+      was cosmetic. FIXED 2026-07-16: real password set, and **all THREE stores updated together**
+      (the account, autologon's LSA secret, and the `egpt-daemon` service logon). Miss any one and
+      the node dies at next boot: a stale autologon secret ⇒ no login ⇒ no Beeper ⇒ DEAF; a stale
+      service credential ⇒ "logon failure" ⇒ the daemon never starts. `net user an /passwordreq:yes`
+      set afterwards so it cannot be blanked again. **Reboot-proven**, which is the only real check —
+      the LSA secret is encrypted and cannot be read back, and `net user <u> <pw>` run as ADMIN is a
+      password RESET (it can invalidate DPAPI-protected secrets), so auto-logon surviving the reboot
+      is the evidence that it took. NB claude auth on DOLLY survived it (`claude -p` → AUTHOK).
+    - ⚠️ **"The agent isn't responding" right after a reboot is EXPECTED for ~3 min** — Beeper Desktop's
+      startup, not a fault. Do not debug it before then. (2026-07-16: `WS open` 02:10:35, traffic 02:12.)
     **Consequence:** a Session-1 spine is now purely a SHELL-era question (GUI: launching Chrome,
     the console shell) — NOT a messaging or resilience one. Both of those are solved with no code.
 
