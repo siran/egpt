@@ -867,9 +867,29 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
     - **Costs accepted:** an LSA secret is extractable by a local ADMIN, so the account password
       is recoverable on-box (matters only if reused elsewhere). REVE has NO BitLocker, so
       physical access already meant full disk access — auto-logon does not widen that materially.
-    - **NO auto-lock task, deliberately:** a logon trigger cannot distinguish an auto-logon from
-      a manual login, so it would lock the screen on every manual login too.
-    - **UNPROVEN until a reboot** — that is the acceptance test.
+    - **LOCK-ON-LOGON: task `egpt-lock-on-logon` on BOTH nodes** (2026-07-15) —
+      `rundll32.exe user32.dll,LockWorkStation`, at-logon trigger, **LogonType Interactive**
+      (it MUST run in the desktop session or LockWorkStation does nothing). Auto-logon alone
+      leaves the desktop OPEN; this locks it the instant it logs itself in.
+      ⚠️ I first argued AGAINST this, claiming an at-logon trigger would also lock the operator
+      out after every manual login. **That was WRONG: UNLOCKING IS NOT A LOGON EVENT.** Task
+      Scheduler's at-logon trigger fires on SESSION CREATION only — unlocking a locked session
+      is a different trigger type entirely. So with auto-logon on, effectively only a BOOT fires
+      it. Unlock all day; it never re-locks you.
+      **Live-proven on DOLLY** (no reboot needed): LogonUI.exe absent → `schtasks /run` → LogonUI.exe
+      present (= locked), **and the spine pid + Beeper.exe survived** — locking does NOT kill the
+      session, so a locked box is still a LIVE node. That is the property that makes this safe.
+      Gotchas if recreating: `schtasks /create /it /sc onlogon` emits invalid task XML — use the
+      PowerShell cmdlets; and the user MUST be fully qualified (`<COMPUTER>\an`) — a bare `an`
+      is rejected as malformed XML.
+    - **Net effect:** any boot (BSOD, hang, manual, update, power cut) → auto-logon → screen locks
+      immediately → Beeper starts (Run key) → the bridge attaches ⇒ live node, locked screen,
+      nobody present. Expect **~3 min boot→live**, dominated by Beeper Desktop's own startup
+      (measured on DOLLY: bridge ENTRY 00:41:35 → `WS open` 00:44:08; the 3s→60s retry backoff
+      rides it out).
+    - **DOLLY: PROVEN 2026-07-16** — rebooted, auto-logged in, Beeper came up in Session 1, bridge
+      connected + subscribed, all unattended. **REVE: still UNPROVEN** — configured but not yet
+      rebooted. That reboot is the remaining acceptance test.
     **Consequence:** a Session-1 spine is now purely a SHELL-era question (GUI: launching Chrome,
     the console shell) — NOT a messaging or resilience one. Both of those are solved with no code.
 
