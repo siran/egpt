@@ -748,6 +748,33 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
   the 👂-leads crutch" line; §0 + handoff). If it's residual 👂-based self-suppression,
   move it to content-similarity like the echo-coverage rework.
 
+### Live bugs from the SPOILER / "debacle" group (2026-07-16, NEW)
+- **BUG — replying to a 👂 transcription invokes the bot.** A 👂 echo is a message the bot
+  SENT, so with the id-exact own-send fix (e17493b) `wasSentByUs` now recognises it → a reply
+  to it sets `replyToBot` → wakes the bot even in `mention` mode. A SIDE-EFFECT of finally
+  making replyToBot work. Mitigated per-chat by `transcription.posts_back: false` (no echo →
+  nothing to reply to). GENERAL FIX: exclude 👂-transcription echoes from the replyToBot WAKE
+  (a courtesy echo is not "the agent addressing you") — tag the echo's id, skip it in replyToBot.
+- **BUG — two-node command feedback LOOP; the flood guard did NOT stop it.** The command
+  catch-all replies `<token>: recognized — …` to any unmatched `/`-message; that reply ITSELF
+  starts with the token (`/e…`) so it is re-parsed as a command. Node-local own-send suppression
+  can't stop it because it BOUNCES between REVE and DOLLY — each sees the PEER's reply as a new
+  message (not its own), answers, and the token grows one colon per round (`/e:`→`/e:::`→…),
+  unbounded ~0.7s apart. Seeded by `/e auto mute debacle` matching DOLLY but erroring on REVE
+  (name divergence below). FIXES: (a) the catch-all response must not be re-parsable as a command
+  (don't start with `/`, or mark bot-authored lines non-command); (b) a cross-node loop/flood guard.
+- **BUG — node name divergence for the SAME chat id.** `bWv3isJYZMzDwJzQWDLr` is cached
+  "Reencuentro amigos" on REVE but "Reencuentro post debacle" on DOLLY (the pushedName inline
+  comment diverged — the group was renamed, only one node refreshed). So `/e auto mute debacle`
+  matched DOLLY, errored "no chat matches" on REVE — which seeded the loop. Fix: refresh the
+  pushedName on both, or resolve command targets by chat id / shared alias, not a per-node label.
+- **NOTE — conversations.yaml FORMAT + LIVE-WRITE hazards.** REVE stores mode FLAT
+  (`<chat>.mode`), DOLLY nests it (`<chat>.egpt.mode`) — two shapes on the two nodes. And the file
+  is LIVE-WRITTEN by the running node, so hand-editing races it — prefer `/e auto` (once its loop
+  is fixed) or edit while the chat is quiet + verify. The per-conversation `transcription:
+  {enabled, posts_back}` (conversation folder's config.yaml) is the SANCTIONED knob for
+  "transcribe but don't echo" and is read fresh per note.
+
 - **Author-name enrichment via the stats members map (operator 2026-07-10, BACKBURNER):**
   the message/👂 author resolves push name → WA number → Matrix-id localpart → raw id
   (src/bridges/beeper.mjs senderDisplay/fallbackSenderId, the 2026-07-10 author-rule).
