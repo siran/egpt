@@ -6,13 +6,20 @@ import { createCommands } from '../src/spine/commands.mjs';
 import { createSpine } from '../src/spine/spine.mjs';
 import { emptyState, ensureContact, getBeing, recordThread, patchContact, DEFAULT_ALLOWED_TOOLS, READONLY_ALLOWED_TOOLS } from '../src/conversations-state.mjs';
 
-function harness({ config = {}, state = null, agentTypes = ['egpt', 'sonnet-high'], brains, identityLayers = ['default'], io = {}, cdp } = {}) {
+function harness({ config = {}, state = null, agentTypes = ['egpt', 'sonnet-high'], brains, identityLayers = ['default'], io = {}, cdp, launch, clock } = {}) {
   const sent = [], exits = [], rewinds = [], writes = [], evicts = [];
   const files = {};   // custom-branch authored files (agent-type yaml + identity layer)
   let st = state;
+  // /chrome launch + clock seams: default to a fake that reports "task not registered"
+  // and an advancing fake clock, so NO command test ever runs real schtasks or waits real
+  // wall-clock time (both seams are consumed ONLY by /chrome's chromeReport).
+  const fakeClock = clock ?? (() => { let t = 0; return { now: () => t, sleep: async (ms) => { t += ms; } }; })();
   const cmds = createCommands({
     getConfig: () => config,
     ...(cdp ? { cdp } : {}),
+    launchChromeTask: launch ?? (() => ({ ok: false })),
+    now: fakeClock.now,
+    sleep: fakeClock.sleep,
     send: async (chatId, text) => sent.push({ chatId, text }),
     exit: (code) => exits.push(code),
     writeRewindTarget: (ref) => rewinds.push(ref),
@@ -668,5 +675,79 @@ describe('/chrome <node>', () => {
     const { cmds, sent } = harness({ config: kg, cdp: reachable });
     await cmds.run({ ...self, body: '/chrome kg' });
     expect(sent[0].text).not.toMatch(/recognized/);
+  });
+
+  // ── LAUNCH (Session-0 → Session-1 scheduled-task hop) ──────────────────────────
+  // Unreachable is no longer just a hint: /chrome fires the `egpt-chrome` scheduled
+  // task (via the injected launch seam — a fake here, `schtasks /run /tn egpt-chrome`
+  // in prod), polls CDP up to ~20s (fake advancing clock → instant), then attaches.
+
+  it('/chrome kg unreachable → fires the launch task, waits, attaches, replies with tabs', async () => {
+    const launched = [];
+    // isRunning stays false until the launch fires, then comes up on the 2nd poll (proves it WAITS).
+    let polls = 0;
+    const cdp = {
+      isRunning: async () => launched.length > 0 && ++polls >= 2,
+      cdpHost: async () => 'localhost:9221',
+      listTabs: async () => ([
+        { title: 'ChatGPT', url: 'https://chatgpt.com/c/abc' },
+        { title: 'Claude', url: 'https://claude.ai/chat/def' },
+      ]),
+    };
+    const launch = () => { launched.push('fire'); return { ok: true }; };
+    const { cmds, sent } = harness({ config: kg, cdp, launch });
+    await cmds.run({ ...self, body: '/chrome kg' });
+    expect(launched).toHaveLength(1);             // the launch task WAS fired (schtasks recorded)
+    expect(polls).toBeGreaterThanOrEqual(2);      // it polled CDP, not just checked once
+    expect(sent).toHaveLength(1);
+    expect(sent[0].text).toMatch(/attached/i);
+    expect(sent[0].text).toMatch(/localhost:9221/);
+    expect(sent[0].text).toMatch(/tabs: 2/);
+    expect(sent[0].text).toMatch(/ChatGPT/);
+    expect(sent[0].text).not.toMatch(/no chrome/i);   // NOT the fallback hint
+  });
+
+  it('/chrome kg unreachable + launch task NOT registered (schtasks non-zero) → command-line fallback + setup note, no throw', async () => {
+    const launched = [];
+    const launch = () => { launched.push('fire'); return { ok: false }; };
+    const { cmds, sent } = harness({ config: kg, cdp: unreachable, launch });
+    await expect(cmds.run({ ...self, body: '/chrome kg' })).resolves.toBeUndefined();
+    expect(launched).toHaveLength(1);                  // it TRIED (fired the task) …
+    expect(sent).toHaveLength(1);
+    expect(sent[0].text).toMatch(/no chrome/i);        // … then fell back to the hint
+    expect(sent[0].text).toMatch(/--remote-debugging-port=9221/);
+    expect(sent[0].text).toMatch(/register-chrome-task\.ps1/);   // the one-line setup note
+    expect(sent[0].text).not.toMatch(/failed|error/i);
+  });
+
+  it('/chrome kg unreachable, launch fires but Chrome never comes up within the timeout → same graceful fallback', async () => {
+    const launched = [];
+    const launch = () => { launched.push('fire'); return { ok: true }; };
+    // unreachable.isRunning is always false; the advancing fake clock makes the ~20s poll instant.
+    const { cmds, sent } = harness({ config: kg, cdp: unreachable, launch });
+    await expect(cmds.run({ ...self, body: '/chrome kg' })).resolves.toBeUndefined();
+    expect(launched).toHaveLength(1);
+    expect(sent).toHaveLength(1);
+    expect(sent[0].text).toMatch(/no chrome/i);
+    expect(sent[0].text).toMatch(/register-chrome-task\.ps1/);
+  });
+
+  it('/chrome kg reachable attaches immediately and NEVER fires the launch task', async () => {
+    const launched = [];
+    const launch = () => { launched.push('fire'); return { ok: true }; };
+    const { cmds, sent } = harness({ config: kg, cdp: reachable, launch });
+    await cmds.run({ ...self, body: '/chrome kg' });
+    expect(launched).toHaveLength(0);                 // Chrome already up → no launch fired
+    expect(sent[0].text).toMatch(/attached/i);
+    expect(sent[0].text).toMatch(/tabs: 2/);
+  });
+
+  it('/chrome kg on the `do` node fires NO launch and stays silent (gate before any launch)', async () => {
+    const launched = [];
+    const launch = () => { launched.push('fire'); return { ok: true }; };
+    const { cmds, sent } = harness({ config: { node_name: 'do', whatsapp: { chat_id: '!self' } }, cdp: unreachable, launch });
+    await cmds.run({ ...self, body: '/chrome kg' });
+    expect(sent).toHaveLength(0);
+    expect(launched).toHaveLength(0);
   });
 });

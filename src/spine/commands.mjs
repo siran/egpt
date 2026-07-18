@@ -34,6 +34,23 @@ export const CHROME_BRAIN_PROFILE = join(EGPT_HOME, 'chrome', 'profiles', 'brain
 const APP_DIR = dirname(dirname(dirname(fileURLToPath(import.meta.url))));   // src/spine/commands.mjs -> repo root
 const EXTENSION_DIST = join(APP_DIR, 'extension', 'dist');
 
+// The Session-1 launch task /chrome fires to open Chrome on the operator's desktop (see the
+// chrome() dispatch for the session-hop rationale). setup/register-chrome-task.ps1 registers
+// it; the Session-0 spine triggers it with `schtasks /run /tn egpt-chrome`.
+export const CHROME_LAUNCH_TASK = 'egpt-chrome';
+const CHROME_LAUNCH_TIMEOUT_MS = 20000;   // how long to wait for a cold Chrome to bind its CDP port
+const CHROME_LAUNCH_POLL_MS = 500;
+
+// Default launch seam: fire the scheduled task and report whether schtasks accepted it. A
+// non-zero exit (the task isn't registered) or a spawn error both surface as { ok: false },
+// which drives /chrome's graceful fallback. Tests inject a fake so no real schtasks runs.
+function defaultLaunchChromeTask() {
+  try {
+    const r = spawnSync('schtasks', ['/run', '/tn', CHROME_LAUNCH_TASK], { windowsHide: true });
+    return { ok: r.status === 0 };
+  } catch { return { ok: false }; }
+}
+
 // Where the `custom` wizard branch AUTHORS its new files (injectable in tests): the
 // agent-type YAML lands in config/agents/, a free-text identity layer as a FLAT
 // config/identities/<name>.md file (operator 2026-07-03).
@@ -178,9 +195,19 @@ export function createCommands({
   identitiesDir = PROFILE_IDENTITIES_DIR,// where the custom branch writes a free-text identity layer (injected in tests)
   io = {},                               // { stat, readFile, writeFile, mkdir } — real fs by default; /status probes files + the custom branch authors through here
   // CDP seam for /chrome — the real localhost probe by default; tests inject fakes so the
-  // suite never needs a live Chrome or a real socket. ATTACH-ONLY: there is deliberately no
-  // spawn seam here (see the /chrome dispatch below for why).
+  // suite never needs a live Chrome or a real socket.
   cdp = { isRunning: cdpIsRunning, listTabs: cdpListTabs, cdpHost: cdpHostOf },
+  // Launch seam for /chrome — fires the Session-1 `egpt-chrome` scheduled task (default:
+  // `schtasks /run /tn egpt-chrome`, see defaultLaunchChromeTask). Returns { ok } — false
+  // when the task isn't registered (schtasks non-zero) or the spawn errored. Tests inject a
+  // fake so no real schtasks runs. This is NOT a direct spawn: a Chrome the spine spawned
+  // itself would render on its own Session 0 (see the chrome() dispatch); the task hops to
+  // the operator's Session 1 instead, which is the whole point.
+  launchChromeTask = defaultLaunchChromeTask,
+  // Clock seam for /chrome's post-launch CDP poll — real timers by default; tests inject an
+  // advancing fake clock so the ~20s wait is instant and deterministic.
+  now = () => Date.now(),
+  sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
   // git probe for /status (short sha + subject). Mirrors boot's gitOut so it's
   // fakeable in tests without threading spawnSync through createCommands.
   gitOut = (args) => { try { return spawnSync('git', args, { cwd: process.cwd() }).stdout?.toString().trim() || ''; } catch { return ''; } },
@@ -345,25 +372,29 @@ export function createCommands({
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // /chrome [<node>] — ATTACH-ONLY status of the local Chrome.
+  // /chrome [<node>] — Chrome status from the addressed node; LAUNCHES one when none
+  // is listening, then attaches.
   //
-  // ⚠️ WHY THIS NEVER LAUNCHES CHROME. DO NOT "COMPLETE" THIS BY ADDING A SPAWN. ⚠️
+  // ⚠️ THE SPINE STILL MUST NOT SPAWN CHROME DIRECTLY. DO NOT REPLACE THE TASK HOP
+  //    BELOW WITH A bare spawn()/spawnChrome(). ⚠️
   //
   // The spine runs as a Windows SERVICE, which means Session 0. The operator's desktop
   // is Session 1. (Verified live 2026-07-15: spine pid 19696 SessionId 0, explorer.exe
-  // SessionId 1.) A child process INHERITS its parent's session, so a Chrome spawned
-  // from here would render on Session 0's isolated, headless-in-practice desktop —
+  // SessionId 1.) A child process INHERITS its parent's session, so a Chrome the spine
+  // spawned itself would render on Session 0's isolated, headless-in-practice desktop —
   // the operator would never see the window, and the only symptom would be a browser
-  // that "starts" and is invisible. So: the spine MUST NOT launch Chrome. It hands the
-  // operator the exact command line to run in THEIR OWN session instead.
+  // that "starts" and is invisible.
   //
-  // (v1's /chrome DID launch one — but v1's was `surface: 'shell'`, i.e. the Ink console
-  // running in the operator's Session 1. That precedent does not transfer to the spine.)
+  // The HOP around that is a scheduled task registered with LogonType Interactive: it runs
+  // in the operator's Session 1, and the Session-0 spine triggers it with `schtasks /run /tn
+  // egpt-chrome` (the injected launchChromeTask seam). This is exactly the proven pattern of
+  // the egpt-lock-on-logon task (rundll32 LockWorkStation, Interactive) fired from Session 0.
+  // setup/register-chrome-task.ps1 registers it once per node; until then the launch seam
+  // reports { ok:false } and /chrome falls back to handing over the command line, as before.
   //
-  // ATTACHING, on the other hand, is fine and works across sessions: CDP is plain
-  // localhost HTTP, and the session boundary isolates window stations/desktops, not the
-  // loopback network. This is exactly how the bridge already reaches Beeper Desktop at
-  // 127.0.0.1:23373 from Session 0.
+  // ATTACHING is fine across sessions: CDP is plain localhost HTTP, and the session boundary
+  // isolates window stations/desktops, not the loopback network. This is exactly how the
+  // bridge already reaches Beeper Desktop at 127.0.0.1:23373 from Session 0.
   //
   // NODE GATE: `<node>` is matched against this node's own names (node_name ∪ node_alias,
   // via the shared ownNodeNamesOf). A non-match replies NOTHING AT ALL — the same
@@ -375,17 +406,36 @@ export function createCommands({
   async function chrome(ev, arg) {
     const own = ownNodeNamesOf(cfg());
     if (!arg) { await send?.(ev.chatId, `/chrome <node> — Chrome status from a node. This node answers to: ${[...own].join(', ') || '(no node_name set)'}`); return; }
-    if (!own.has(arg.toLowerCase())) return;   // not addressed → silent, on purpose
+    if (!own.has(arg.toLowerCase())) return;   // not addressed → silent, on purpose (BEFORE any launch)
     await send?.(ev.chatId, await chromeReport());
   }
 
-  // The report body. Every probe is wrapped: an unreachable (or mid-probe failing) Chrome
-  // is the NORMAL resting state, not an error — it degrades to the launch hint, never throws.
+  // The report body. Every probe is wrapped: an unreachable Chrome is the NORMAL resting
+  // state, not an error. When none is listening we fire the Session-1 launch task and poll
+  // CDP until it comes up, then attach; a task that isn't registered, or a Chrome that never
+  // binds its port, degrades to the launch hint. Never throws.
   async function chromeReport() {
     let host = '?';
     try { host = await cdp.cdpHost(); } catch { host = '?'; }
+
+    // Is Chrome already up? (isRunning is the launch decision — NOT whether listTabs works.)
+    let running = false;
+    try { running = await cdp.isRunning(); } catch { running = false; }
+
+    // Not listening → fire the Session-1 launch task, then poll for it to bind its CDP port.
+    // A task that isn't registered (launch seam → { ok:false }) or a Chrome that never comes
+    // up within the timeout both fall back to the hint + a one-line setup note.
+    if (!running) {
+      let ok = false;
+      try { ok = !!launchChromeTask()?.ok; } catch { ok = false; }
+      if (ok) running = await waitForChromeUp();
+      if (!running) return chromeLaunchHint(host, { setupNote: true });
+    }
+
+    // Reachable (already, or after a successful launch) → attach + report tabs. A tab-list
+    // hiccup on a live Chrome degrades to the hint WITHOUT the launch note (Chrome is up).
     let tabs = null;
-    try { if (await cdp.isRunning()) tabs = await cdp.listTabs(); } catch { tabs = null; }
+    try { tabs = await cdp.listTabs(); } catch { tabs = null; }
     if (!tabs) return chromeLaunchHint(host);
 
     const lines = [`attached: ${host}`, `tabs: ${tabs.length}`];
@@ -398,20 +448,38 @@ export function createCommands({
     return '```yaml\n' + lines.join('\n') + '\n```';
   }
 
-  // No Chrome listening → tell the operator exactly what to run, in their own session.
-  // The command line is built from chrome-launcher's OWN flag set (chromeArgs), so it can
-  // never drift from what the repo would actually spawn; the port is derived from the CDP
-  // host the node will attach to, so the two always agree.
-  function chromeLaunchHint(host) {
+  // Poll cdp.isRunning() until Chrome binds its port or the timeout elapses. The clock is
+  // injected (now/sleep), so tests advance a fake clock and never wait real time. A probe
+  // that throws mid-poll counts as "not up yet", never aborts.
+  async function waitForChromeUp() {
+    const deadline = now() + CHROME_LAUNCH_TIMEOUT_MS;
+    while (now() < deadline) {
+      let up = false;
+      try { up = await cdp.isRunning(); } catch { up = false; }
+      if (up) return true;
+      await sleep(CHROME_LAUNCH_POLL_MS);
+    }
+    return false;
+  }
+
+  // No Chrome listening → tell the operator exactly what to run, in their own session. The
+  // command line is built from chrome-launcher's OWN flag set (chromeArgs), so it can never
+  // drift from what the repo would actually spawn; the port is derived from the CDP host the
+  // node will attach to, so the two always agree. `setupNote` appends the one-liner to enable
+  // one-command launch (registering the Session-1 task) — shown only on the launch-fallback
+  // paths, not when Chrome is up but tab-listing hiccupped.
+  function chromeLaunchHint(host, { setupNote = false } = {}) {
     const port = String(host).split(':')[1] ?? '9221';
     const exe = findChromeExecutable() ?? 'chrome';
     const args = chromeArgs({ port, userDataDir: CHROME_BRAIN_PROFILE, extensionDir: EXTENSION_DIST });
-    return [
+    const lines = [
       `no Chrome is listening on ${host}.`,
       `I can't open it myself — I run as a service in another Windows session, so any Chrome I start would be invisible to you.`,
       `Run this in your own session and I'll attach:`,
       '```\n' + chromeCommandLine(exe, args) + '\n```',
-    ].join('\n');
+    ];
+    if (setupNote) lines.push(`(run setup/register-chrome-task.ps1 on this node once to enable launch)`);
+    return lines.join('\n');
   }
 
   // Assemble the /status report as a fenced YAML block (operator 2026-07-02: the
