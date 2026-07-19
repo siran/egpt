@@ -15,6 +15,7 @@ import { spawnSync, spawn } from 'node:child_process';
 import { createSpine } from './spine.mjs';
 import { EGPT_HOME } from '../egpt-home.mjs';
 import { createBeeperBridgePort } from '../bridges/beeper-port.mjs';
+import { createShellPort } from '../bridges/shell-port.mjs';
 import { createWarmPool } from '../warm-sessions.mjs';
 import { createWarmCliSession } from '../warm-cli-session.mjs';
 import { readConfigSync } from '../tools/config-io.mjs';
@@ -444,6 +445,13 @@ export async function boot({
   const media = createMedia({ contacts, io, transcribe: tx.transcribe, transcribeCfg: tx.cliCfg, onLog: (m) => log.line?.(`[media] ${m}`) });
   bridge.onMedia((m) => media.save(m));
 
+  // The operator-console LIMB (plans/2607191835-SHELL-LIMB-S1-PLAN.md Phase 1): a second
+  // SURFACE dialing OUT to an external editor at ws://127.0.0.1:23375, exactly as the
+  // beeper limb dials Beeper Desktop. Its inbound feeds the SAME pipeline (wired below,
+  // after the spine exists) and its command replies route back over its own socket (see
+  // the routed `send` handed to createCommands). A dumb pipe — no command logic here.
+  const shellPort = createShellPort({ onLog: (m) => log.line?.(`[shell] ${m}`) });
+
   // --- lifecycle announce: "restarting…" to Self before exit, "back up! <commit>"
   //     on the next boot. The bounce is otherwise invisible to the operator. ---
   const sidecar = join(EGPT_HOME, 'state', 'restart-announce.json');
@@ -526,7 +534,12 @@ export async function boot({
   // the same exit codes the daemon respawns on.
   const commands = createCommands({
     getConfig,
-    send: (chatId, text) => bridge.send(chatId, text),
+    // Surface-routed reply: a command that arrived on the shell surface answers back over
+    // the shell socket (shellPort.owns the chat id it saw inbound); everything else is a
+    // beeper chat and rides the beeper bridge. This is the one seam that lets `/status`,
+    // `/chrome kg`, … round-trip on the shell with ZERO duplicated dispatch — the same
+    // commands service, two surfaces.
+    send: (chatId, text) => (shellPort.owns(chatId) ? shellPort.send(chatId, text) : bridge.send(chatId, text)),
     exit: announceAndExit,
     writeRewindTarget: (ref) => writeFile(join(EGPT_HOME, 'rewind-target.txt'), ref, 'utf8'),
     loadState: _loadState, writeState: _writeState,   // /e auto <mode> + the /e wizard persist into conversations.yaml
@@ -639,6 +652,15 @@ export async function boot({
   spine.start();
   spine.tick();   // fire the first beat immediately so alive.txt exists at once
 
+  // Feed the shell surface into the SAME dispatch (handleInbound is the spine's documented
+  // direct-caller seam — the identical path bridge.onMessage/enqueue runs). Registered
+  // before start() so an editor already up on boot is caught. start() dials out; it is
+  // gated on the real-node flag like every other real-node side effect (whisper-reap,
+  // transcriptor, ingest) so a test's boot() never opens a real editor socket — an absent
+  // editor just backs off, never crashing the boot path.
+  shellPort.onMessage((msg) => spine.handleInbound(msg));
+  if (ingest) shellPort.start();
+
   // Back-up announce: if we respawned from a lifecycle command, tell Self (with
   // the commit we came up on). Fire-and-forget — a cold boot has no sidecar.
   // Gated on the real-node flag so tests don't read/send through it.
@@ -679,6 +701,7 @@ export async function boot({
       ingestWatcher?.stop();
       compaction.stop();
       transcriptorWorker.stop();   // stops BOTH the resident whisper-server + the :23390 endpoint
+      shellPort.stop();            // close the editor socket + cancel any pending reconnect
       spine.stop();
     },
   };
