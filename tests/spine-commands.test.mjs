@@ -4,6 +4,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { join } from 'node:path';
 import { createCommands } from '../src/spine/commands.mjs';
 import { createSpine } from '../src/spine/spine.mjs';
+import { Room } from '../src/room-core.mjs';
 import { emptyState, ensureContact, getBeing, recordThread, patchContact, DEFAULT_ALLOWED_TOOLS, READONLY_ALLOWED_TOOLS } from '../src/conversations-state.mjs';
 
 function harness({ config = {}, state = null, agentTypes = ['egpt', 'sonnet-high'], brains, identityLayers = ['default'], io = {}, cdp, launch, clock } = {}) {
@@ -749,5 +750,65 @@ describe('/chrome <node>', () => {
     await cmds.run({ ...self, body: '/chrome kg' });
     expect(sent).toHaveLength(0);
     expect(launched).toHaveLength(0);
+  });
+});
+
+// /room create <name> — the FIRST wired NamedRoom create path (Phase 2). A Room IS a
+// folder: `create` makes the standard tree (baseDir + media/files/identity.d + a minimal
+// config.yaml) so the heartbeat/transcription loaders enumerate rooms/<name>/. All fs is
+// routed through the commands io seam, so these run fully in-memory (mkdir recorded,
+// writeFile captured) and never touch a real profile. No member roster yet (later work).
+describe('/room create <name>', () => {
+  const self = { chatId: '!self', surface: 'whatsapp' };
+
+  it('/room create foo makes the room folder tree and confirms the path', async () => {
+    const mkdirs = [];
+    const { cmds, sent, files } = harness({
+      config: { whatsapp: { chat_id: '!self' } },
+      io: { mkdir: async (p) => { mkdirs.push(p); }, stat: async () => { throw new Error('ENOENT'); } },
+    });
+    await cmds.run({ ...self, body: '/room create foo' });
+    const r = Room.named('foo');
+    // the standard tree dirs were created …
+    for (const dir of [r.baseDir(), r.mediaDir, r.filesDir, r.identityDir]) expect(mkdirs).toContain(dir);
+    // … and a config.yaml was written into the room folder
+    expect(files[r.configPath]).toBeTruthy();
+    // the reply names the EGPT_HOME-relative path
+    expect(sent).toHaveLength(1);
+    expect(sent[0].text).toMatch(/rooms\/foo\//);
+    expect(sent[0].text).toMatch(/created/);
+    expect(sent[0].text).not.toMatch(/recognized/);   // NOT the unwired catch-all
+  });
+
+  it('/room create foo again reports it already exists and does NOT clobber (idempotent)', async () => {
+    const mkdirs = [];
+    const { cmds, sent, files } = harness({
+      config: { whatsapp: { chat_id: '!self' } },
+      io: { mkdir: async (p) => { mkdirs.push(p); }, stat: async () => ({ isDirectory: () => true }) },   // folder present
+    });
+    await cmds.run({ ...self, body: '/room create foo' });
+    expect(sent[0].text).toMatch(/already exists/);
+    expect(mkdirs).toHaveLength(0);              // nothing created
+    expect(Object.keys(files)).toHaveLength(0);  // nothing written → existing content untouched
+  });
+
+  it('/room create with no name replies usage and creates nothing', async () => {
+    const mkdirs = [];
+    const { cmds, sent, files } = harness({
+      config: { whatsapp: { chat_id: '!self' } },
+      io: { mkdir: async (p) => { mkdirs.push(p); }, stat: async () => { throw new Error('ENOENT'); } },
+    });
+    await cmds.run({ ...self, body: '/room create' });
+    expect(sent[0].text).toMatch(/usage: \/room create <name>/);
+    expect(mkdirs).toHaveLength(0);
+    expect(Object.keys(files)).toHaveLength(0);
+  });
+
+  it('/room (bare) and non-create subcommands note that only create is wired', async () => {
+    const { cmds, sent } = harness({ config: { whatsapp: { chat_id: '!self' } } });
+    await cmds.run({ ...self, body: '/room' });
+    expect(sent[0].text).toMatch(/only .*create.* wired/i);
+    await cmds.run({ ...self, body: '/room join fam' });
+    expect(sent[1].text).toMatch(/only .*create.* wired/i);
   });
 });

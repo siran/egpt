@@ -23,6 +23,8 @@ import * as YAML from 'yaml';
 import { EGPT_HOME } from '../egpt-home.mjs';
 import { shortChatId } from '../bridges/chat-id.mjs';
 import { ownNodeNamesOf } from './node-names.mjs';
+import { Room } from '../room-core.mjs';
+import { sanitizeName } from '../sanitize.mjs';
 import { isRunning as cdpIsRunning, listTabs as cdpListTabs, cdpHost as cdpHostOf } from '../tools/cdp.mjs';
 import { findChromeExecutable, chromeArgs, chromeCommandLine } from '../tools/chrome-launcher.mjs';
 import { fileURLToPath } from 'node:url';
@@ -76,6 +78,16 @@ personality: ${personality}
 // whole file is concatenated into the kickoff feed, so a housekeeping comment would leak
 // into the persona). Matches the default layer's plain-markdown convention.
 const identityLayerFile = (text) => `${String(text).trim()}\n`;
+
+// A fresh NamedRoom's config.yaml — a commented placeholder (like the seeded templates,
+// seed.mjs). Pure comments → parses to null, so the heartbeat/transcription loaders read
+// it as an empty {}. A new room needs NO per-room identity files: its feed layers are the
+// SHARED profile-root skeletons (config/skeletons/room/, seeded once at the profile root),
+// not per-room copies. Members are later work — no roster block yet.
+const roomConfigFile = (name) => `# room ${name} — an operator-created NamedRoom (the folder IS the room).
+# Feed layers come from the shared config/skeletons/room/ template, not per-room copies.
+# Add heartbeats:, transcription:, or members: blocks here to wire behavior.
+`;
 
 // The `/e` wizard's model/effort menus (operator 2026-07-02: v1's `/e` supplied
 // these same fixed lists — there is no canonical model/effort registry in v2, and
@@ -360,6 +372,13 @@ export function createCommands({
     const chromeMatch = /^\/chrome(?:\s+(.+?))?\s*$/i.exec(line);
     if (chromeMatch) { await chrome(ev, chromeMatch[1]?.trim() || null); return; }
 
+    // /room <sub> [<name>] — Phase 2: the FIRST wired NamedRoom create path. Only
+    // `create` is wired (join/leave/delete are backburner; the guided arm/step variant
+    // is a follow-up like /e's wizard). Slots in exactly like /chrome: a dispatch match
+    // BEFORE the anchored /e wizard and the catch-all, so /room never leaks to E.
+    const roomMatch = /^\/room(?:\s+(\S+))?(?:\s+(.+?))?\s*$/i.exec(line);
+    if (roomMatch) { await room(ev, roomMatch[1]?.toLowerCase() || null, roomMatch[2]?.trim() || null); return; }
+
     // /e (bare) or /e <fragment> — ARM the re-point wizard (v1 parity: a guided
     // agent-type/model/effort pick, not a flag command). Bare targets THIS chat; a
     // fragment resolves the target like /e auto does. `/e auto …` is matched above, so
@@ -480,6 +499,31 @@ export function createCommands({
     ];
     if (setupNote) lines.push(`(run setup/register-chrome-task.ps1 on this node once to enable launch)`);
     return lines.join('\n');
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // /room create <name> — CREATE a NamedRoom. A Room IS a folder (room-core.mjs): making
+  // the folder tree at EGPT_HOME/rooms/<name>/ IS creating the room — the heartbeat +
+  // transcription loaders (boot.mjs listEntityDirs) enumerate it from then on. Only
+  // `create` is wired: join/leave/delete + the guided arm/step variant are follow-ups.
+  // Uses the Room abstraction for the tree paths and the io seam for fs, so tests capture
+  // it in-memory and it never touches a real profile.
+  async function room(ev, sub, name) {
+    if (sub !== 'create') { await send?.(ev.chatId, '/room: only `create <name>` is wired (join/leave/delete are follow-ups)'); return; }
+    // A room NAME is operator-chosen; reject an empty/punctuation-only one (sanitizeName's
+    // 'room' fallback would otherwise silently create a generic folder) before touching fs.
+    if (!name || !/[a-z0-9]/i.test(name)) { await send?.(ev.chatId, 'usage: /room create <name>'); return; }
+    const slug = sanitizeName(name);
+    const r = Room.named(name);
+    const rel = `rooms/${slug}/`;
+    // Idempotent: an existing room folder is NEVER clobbered.
+    try { await stat(r.baseDir()); await send?.(ev.chatId, `room ${slug} already exists at ${rel}`); return; }
+    catch { /* absent → create below */ }
+    // The folder IS the room: mkdir the standard tree (baseDir + the dir getters) + a
+    // minimal config.yaml. No member roster — that's later work.
+    for (const dir of [r.baseDir(), r.mediaDir, r.filesDir, r.identityDir]) await mkdir(dir, { recursive: true });
+    await writeFile(r.configPath, roomConfigFile(slug), 'utf8');
+    await send?.(ev.chatId, `room ${slug} created at ${rel}`);
   }
 
   // Assemble the /status report as a fenced YAML block (operator 2026-07-02: the
