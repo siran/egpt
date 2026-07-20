@@ -436,6 +436,20 @@ export async function boot({
     echoTimeoutMs,                        // 👂 per-rank promotion step (ms); GENEROUS default so a SLOW rank-1 isn't mistaken for a DOWN one (double-👂 hazard).
     coverageThreshold,                    // 👂 word-token overlap fraction for the on-demand noteCovered query (operator 2026-07-12) — replaced the observed-set + arrival-lag/reconnect scaffold
     echoMaxAgeMs,                         // 👂 only echoes a note within this age of its own timestamp (operator 2026-07-09)
+    // TRANSCRIPT READ SEAM (operator 2026-07-20): a bare @e reply to a voice note REUSES the
+    // note's already-made arrival transcription from transcript.md (unbounded lookback, ZERO
+    // re-transcription — the double-transcribe is gone). The bridge can't resolve chatID →
+    // transcript.md itself, so wire it here through the SAME resolveConvDir the reply-actions /
+    // transcript writer use (contacts.resolve → slugDir) — never a duplicated/guessed path, which
+    // could pull a DIFFERENT chat's same-numbered note. resolveConvDir is declared below but only
+    // read at message-dispatch time (long post-boot), and startBeeperBridge never invokes this
+    // during setup — so the forward reference is call-time safe (no TDZ). io.readFile ?? readFile
+    // keeps it on the same fs seam as the transcript writer (tests intercept via memIo).
+    readTranscript: async (chatID, { chatName, network } = {}) => {
+      const dir = await resolveConvDir({ surface: surfaceOf(network), chatId: chatID, chatName });
+      if (!dir) return null;
+      return await (io.readFile ?? readFile)(join(dir, 'transcript.md'), 'utf8').catch(() => null);
+    },
     stateDir: join(EGPT_HOME, 'state'),   // beeper-seen.jsonl etc. → this profile's state
     onLog: (m) => log.line?.(`[bridge] ${m}`),
   }, startBridge ? { start: startBridge } : {});

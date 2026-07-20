@@ -55,6 +55,7 @@ import { htmlToMarkdown } from '../html-to-markdown.mjs';
 import { normalizeTokens, similarity } from '../text-similarity.mjs';
 import { applyLayers } from './signature-layers.mjs';
 import { reactionAction, editAction } from '../dispatch-line.mjs';
+import { stripFrontMatter } from '../transcript-meta.mjs';
 import { mentionStatus } from '../auto-mode.mjs';
 import { mediaKind } from '../media-kind.mjs';
 import { shouldDownload } from '../media-save.mjs';
@@ -113,6 +114,48 @@ export function newerMsgId(a, b) {
   const na = Number(a), nb = Number(b);
   if (Number.isFinite(na) && Number.isFinite(nb)) return nb > na ? b : a;
   return String(b) > String(a) ? b : a;
+}
+
+// REUSE the ALREADY-MADE arrival transcription (operator 2026-07-20). A received
+// voice note is transcribed ONCE when it lands (dispatchMessage, ~L1096) and written
+// to transcript.md as ONE entry whose header carries the message id and whose body
+// is the marked transcript:
+//   Sender@[chat].node (HH:MM) #<id>[ re #<rid>]: (voice transcription, Ns) <text…>
+// (dispatch-line.formatDispatchLine + incoming-media.voiceTranscriptBody). The bare-@e
+// reply branch looks THAT text up by the quoted id instead of re-transcribing the audio
+// (which was a wasteful DOUBLE transcription). The <text> MAY span multiple lines until
+// the NEXT entry — another dispatch line, a stage-direction "[ Sender@… ]", or a being
+// reply "[@being (HH:MM)]:" — so we collect continuation lines, not just the first.
+// Front matter is dropped with the shared stripFrontMatter so a `name:`/`---` line can't
+// match. Pure + exported so the parse shape is test-locked. Returns the transcription
+// text, or null when the id has no VOICE-transcription entry (→ the branch falls through
+// to @e→E; it never re-transcribes). The id is compared as a STRING (extracted from the
+// header), so no caller-supplied id is ever spliced into a regex.
+const _TS = String.raw`\(\d{1,2}:\d{2}\)`;
+// An entry header: an inbound dispatch line ("Sender@[chat].node (HH:MM)…", optionally
+// "[ "-wrapped for a stage-direction) OR a being reply ("[@being (HH:MM)]:"). A plain
+// continuation line of a transcript matches NEITHER, so it's kept as body.
+const _ENTRY_HEAD = new RegExp(String.raw`^(?:\[\s*)?[^@\n]+@\[[^\]]*\]\.\S+\s+${_TS}|^\[@\S+\s+${_TS}\]:`);
+const _ID_AFTER_TS = new RegExp(`${_TS}\\s+#([^\\s:]+)`);   // the message-id tag directly after the time
+const _VOICE_MARK = /\(voice transcription(?:,[^)]*)?\)\s*/;
+
+export function transcriptionForNoteId(doc, noteId) {
+  if (!doc || noteId == null) return null;
+  const want = String(noteId);
+  const lines = stripFrontMatter(String(doc)).split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const head = lines[i];
+    if (!_ENTRY_HEAD.test(head)) continue;                  // only a real entry header
+    const idm = head.match(_ID_AFTER_TS);
+    if (!idm || idm[1] !== want) continue;                  // …for THIS note's id
+    const vm = head.match(_VOICE_MARK);
+    if (!vm) return null;                                    // the id's entry exists but isn't a voice note
+    const parts = [head.slice(vm.index + vm[0].length)];     // text after "(voice transcription…) "
+    for (let j = i + 1; j < lines.length && !_ENTRY_HEAD.test(lines[j]); j++) parts.push(lines[j]);
+    const text = parts.join('\n').trim();
+    return text || null;
+  }
+  return null;
 }
 
 export async function startBeeperBridge(opts = {}) {
@@ -214,6 +257,17 @@ export async function startBeeperBridge(opts = {}) {
     // are backlog — seen, never dispatched. Mirrors the baileys/TG semantic.
     holdGraceMs = 5_000,
     stateDir = join(EGPT_HOME, 'state'),   // profile-aware default (boot injects it; a caller that omits it still lands in THIS node's profile, never ~/.egpt)
+    // TRANSCRIPT READ SEAM (operator 2026-07-20): the bare-@e-reply-to-voice-note
+    // shortcut REUSES the target note's already-made arrival transcription by looking it
+    // up in the chat's transcript.md (unbounded lookback; ZERO re-transcription) — see
+    // transcriptionForNoteId. The bridge CANNOT resolve chatID → transcript.md on its own:
+    // that path runs through the spine's contacts.resolve (self-heal/rename/placeholder),
+    // and a wrong guess could pull a DIFFERENT chat's same-numbered note (Beeper ids are
+    // per-chat SEQUENCE numbers). So the HOST injects the reader. Default is INERT → the
+    // shortcut falls through to @e→E (never re-transcribes, never substitutes a wrong note)
+    // until boot wires it. async (chatID, { chatName, network }) => full transcript text |
+    // null (transcript.md, plus any transcripts/ archive, concatenated).
+    readTranscript = async () => null,
     transcribe = transcribeAudioFile,
     // Whisper binary/model config — now sourced from transcription.whisper (the
     // host resolves it; falls back to the legacy whatsapp.media.audio_transcribe
@@ -816,18 +870,6 @@ export async function startBeeperBridge(opts = {}) {
     }
   }
 
-  // Fetch ONE recent message by its Beeper id — the reply-target lookup for the bare-@e
-  // in-place transcription branch (same list endpoint noteCovered uses). null on any error
-  // or a target already scrolled past the recent window (the branch then falls through to
-  // normal routing).
-  async function fetchMessageById(chatID, id) {
-    try {
-      const r = await api('GET', `/v1/chats/${encodeURIComponent(fullChatId(chatID))}/messages?limit=50`);
-      const items = Array.isArray(r?.items) ? r.items : [];
-      return items.find((m) => m?.id != null && String(m.id) === String(id)) ?? null;
-    } catch (e) { onLog(`beeper: fetchMessageById(${id}) failed — ${e?.message ?? e}`); return null; }
-  }
-
   // --- reactions (MESSAGES-FIRST-CLASS-PLAN Phase 2) ---------------------------
   // Beeper delivers a reaction as TWO events (verified live 2026-06-16): a bare
   // type:'REACTION' event (reactor + linkedMessageID, but NO emoji), and a
@@ -1197,35 +1239,46 @@ export async function startBeeperBridge(opts = {}) {
     const replyToId = msg.linkedMessageID ?? msg.replyToMessageID ?? msg.quotedMessageID ?? null;
     const replyToBot = !!(replyToId && wasSentByUs(chatID, replyToId));
 
-    // BARE @e REPLY TO A VOICE NOTE → in-place 👂 transcript (operator 2026-07-18). When a
-    // reply whose WHOLE text is just the wake-word (@e/@egpt) quotes a voice/audio note and
-    // comes from the OWNER — the same owner-signal `from.authorized` uses below
-    // (!!isSender || isAllowedUser): Beeper mis-tags the owner's OWN sends as isSender:false
-    // "even in the self-chat" (see the isSender caveats above), so isSender alone would let
-    // the operator's own @e silently miss — substitute that reply with '👂 <transcript>' IN
-    // PLACE and DON'T wake E: a deterministic, bridge-only shortcut, no persona involvement.
+    // BARE @e REPLY TO A VOICE NOTE → in-place 👂 transcript (operator 2026-07-18, reworked
+    // 2026-07-20). When a reply whose WHOLE text is just the wake-word (@e/@egpt) quotes a
+    // voice/audio note and comes from the OWNER — the same owner-signal `from.authorized` uses
+    // below (!!isSender || isAllowedUser): Beeper mis-tags the owner's OWN sends as
+    // isSender:false "even in the self-chat" (see the isSender caveats above), so isSender alone
+    // would let the operator's own @e silently miss — substitute that reply with '👂 <transcript>'
+    // IN PLACE and DON'T wake E: a deterministic, bridge-only shortcut, no persona involvement.
     // Editability is confirmed by the edit ACTUALLY succeeding — if editMessage returns false
     // (e.g. an authorized sender whose message isn't on our account), we do NOT return, so the
-    // @e is never silently eaten. The target's transcript is (re)made on demand: there is no
-    // transcription store keyed by message id to reuse. ANY miss (not a reply, extra text
-    // beyond the bare wake-word, a non-voice target, a non-owner sender, or a failed edit)
-    // falls through UNCHANGED, so a plain @e still wakes E below.
+    // @e is never silently eaten.
+    //
+    // RETRIEVAL = REUSE, NOT RE-TRANSCRIBE (operator 2026-07-20): the note was already
+    // transcribed ONCE when it arrived (dispatchMessage ~L1096) and written to transcript.md.
+    // We look THAT text up by the quoted id (transcriptionForNoteId over readTranscript) instead
+    // of downloading + whisper-ing the audio a SECOND time. The transcript entry existing as a
+    // "(voice transcription…)" line both CONFIRMS the target was a voice note AND supplies the
+    // text — so no fetchMessageById / attachmentToLocalPath / transcribeVoiceNote here. This also
+    // gives UNBOUNDED lookback: any historical note in the transcript, not just the recent-50 API
+    // window the old on-demand fetch was capped at. ANY miss (not a reply, extra text beyond the
+    // bare wake-word, no voice-transcription entry for the id, a non-owner sender, or a failed
+    // edit) falls through UNCHANGED, so a plain @e still wakes E below — and it NEVER re-transcribes.
     const bareReply = (text || '').trim().toLowerCase();
     if (replyToId && (!!msg.isSender || isAllowedUser(msg.senderID, acct)) && wakeWords.some((w) => bareReply === `@${String(w).toLowerCase()}`)) {
-      const tgt = await fetchMessageById(chatID, replyToId);
-      const vAtt = (tgt && (tgt.type === 'VOICE' || tgt.type === 'AUDIO') && Array.isArray(tgt.attachments) && tgt.attachments.length)
-        ? (tgt.attachments.find((a) => a.isVoiceNote || a.type === 'audio') || tgt.attachments[0]) : null;
-      if (vAtt) {
-        const vPath = await attachmentToLocalPath(vAtt);
-        const t = vPath && await transcribeVoiceNote({ localPath: vPath, transcribe, audioCfg, enabled: true, postsBack: false, onLog: (m) => onLog(`beeper: ${m}`) });
-        if (t) {
-          const edited = await editMessage(chatID, msg.id, `${ECHO_MARKER} ${t}`);
-          if (edited) {
-            onLog(`beeper: 👂 in-place transcript [${info.title}] #${msg.id} ↩${replyToId}`);
-            return;   // substitution replaces the @e→E routing for this message
-          }
-          onLog(`beeper: 👂 in-place edit FAILED [${info.title}] #${msg.id} ↩${replyToId} — falling through to @e→E`);
+      const doc = await readTranscript(chatID, { chatName: info.title, network: acct });
+      const t = transcriptionForNoteId(doc, replyToId);
+      if (t) {
+        const edited = await editMessage(chatID, msg.id, `${ECHO_MARKER} ${t}`);
+        if (edited) {
+          onLog(`beeper: 👂 in-place transcript [${info.title}] #${msg.id} ↩${replyToId} (reused from transcript.md)`);
+          return;   // substitution replaces the @e→E routing for this message
         }
+        onLog(`beeper: 👂 in-place edit FAILED [${info.title}] #${msg.id} ↩${replyToId} — falling through to @e→E`);
+      } else {
+        // No transcript entry for the quoted id. Arrival transcription is SYNCHRONOUS (awaited at
+        // ~L1096) and its transcript.md write rides the fire-and-forget onIncoming, so by the time a
+        // human replies @e the line exists in all but a sub-second race. There is no clean seam to
+        // force/await that SAME pending arrival transcription from the bridge WITHOUT re-transcribing
+        // (which this rework exists to remove), so a miss falls through to normal @e→E. FOLLOW-UP: a
+        // transcription store keyed by message id (or awaiting the pending arrival) would close the race.
+        onLog(`beeper: 👂 no voice-transcript entry for ↩${replyToId} [${info.title}] — falling through to @e→E`);
       }
     }
     const from = {

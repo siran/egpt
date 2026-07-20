@@ -42,10 +42,13 @@ function seedMode(state, mode, chatId = '!room:beeper.com', name = 'fam') {
 }
 
 // fake Beeper transport: captures the host onIncoming so the test can drive inbound.
+// Also captures readTranscript — the seam boot wires so the bare-@e-reply-to-voice-note
+// shortcut can reuse a note's arrival transcription from transcript.md (never re-transcribe).
 function fakeStart() {
-  const spy = { onIncoming: null, sent: [], streams: [] };
+  const spy = { onIncoming: null, readTranscript: null, sent: [], streams: [] };
   const start = async (opts) => {
     spy.onIncoming = opts.onIncoming;
+    spy.readTranscript = opts.readTranscript;
     return {
       async send(text, o) { spy.sent.push({ text, chatId: o?.chatId }); return { ok: true }; },
       startStreamMessage(init, o) {
@@ -138,6 +141,42 @@ describe('boot()', () => {
     expect(stats).toContain('chat_id: "!room:beeper.com"');
     expect(stats).toContain('u-1:');
     expect(stats).toContain('id: sess-1');
+
+    app.stop();
+  });
+
+  // TRANSCRIPT-REUSE SEAM WIRING (operator 2026-07-20): boot must hand the beeper bridge a
+  // NON-inert readTranscript — the bridge's own default is `async () => null` (inert), so the
+  // @e-reply-to-voice-note shortcut can only fire once the HOST resolves chatID → transcript.md.
+  // This locks that boot wires it AND that it reads the SAME file the transcript service writes
+  // (via the reused resolveConvDir: contacts.resolve → slugDir), never a duplicated/guessed path.
+  it('wires a NON-inert readTranscript that reads the chat transcript.md via the pipeline resolution', async () => {
+    const { start, spy } = fakeStart();
+    let state = seedMode(emptyState(), 'on');
+    const config = { whatsapp: {}, agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true } } };
+    const io = memIo();
+    const app = await boot({
+      readConfig: () => config, startBridge: start, makeSession: fakeSession,
+      loadState: async () => state, writeState: async (s) => { state = s; },
+      io, ingest: false, now: () => Date.UTC(2026, 5, 29, 14, 5), tickMs: 0, log: { line: () => {} },
+    });
+
+    // boot handed the bridge a real reader, not the inert `async () => null` default
+    expect(spy.readTranscript).toBeTypeOf('function');
+
+    // Drive one inbound so the transcript service writes transcript.md into memIo, keyed by the
+    // chat's resolved slugDir — the SAME path readTranscript resolves to.
+    await spy.onIncoming('hola E', {
+      chatId: '!room:beeper.com', chatName: 'fam', network: 'whatsapp',
+      userId: 'u-1', senderName: 'An', authorized: true, msgKey: 'm1',
+    });
+
+    // readTranscript resolves surface/slug via the reused resolveConvDir and returns THAT file.
+    const doc = await spy.readTranscript('!room:beeper.com', { chatName: 'fam', network: 'whatsapp' });
+    expect(doc).toContain('An@[fam].wa (14:05) #m1: hola E');   // the dispatch line the writer logged
+
+    // A chat with no transcript resolves cleanly to null (fail-safe, no throw).
+    expect(await spy.readTranscript('!ghost:beeper.com', { chatName: 'ghost', network: 'whatsapp' })).toBe(null);
 
     app.stop();
   });

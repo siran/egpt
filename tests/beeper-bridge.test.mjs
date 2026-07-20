@@ -9,7 +9,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { startBeeperBridge, newerMsgId } from '../src/bridges/beeper.mjs';
+import { startBeeperBridge, newerMsgId, transcriptionForNoteId } from '../src/bridges/beeper.mjs';
 import { EGPT_HOME } from '../src/egpt-home.mjs';
 import { encodeMesh } from '../src/mesh/relay.mjs';
 import { surfaceOf } from '../src/spine/identity.mjs';
@@ -1822,39 +1822,84 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
     expect(await bridge.sendAndGetId('status ping', { chatId: chat })).toBe('200');   // pre-fix: '100' (the stale twin)
   });
 
-  // BARE @e REPLY TO A VOICE NOTE → in-place 👂 transcript (operator 2026-07-18). A reply
-  // whose WHOLE text is just the wake-word, quoting a voice/audio note, on one of OUR OWN
-  // (isSender → editable in place on this shared account) messages: the bridge substitutes
-  // that reply with '👂 <transcript>' IN PLACE and does NOT wake E — deterministic, bridge-
-  // only. The target's transcript is (re)made on demand (there is no transcription store
-  // keyed by message id to reuse). Any miss falls through UNCHANGED — a plain @e still wakes E.
-  const voiceTarget = (id = 'vn-1') => ({ id, type: 'VOICE', isSender: false, attachments: [{ id: `a-${id}`, isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }] });
+  // BARE @e REPLY TO A VOICE NOTE → in-place 👂 transcript (operator 2026-07-18, reworked
+  // 2026-07-20). A reply whose WHOLE text is just the wake-word, quoting a voice/audio note, on
+  // one of OUR OWN (isSender → editable in place on this shared account) messages: the bridge
+  // substitutes that reply with '👂 <transcript>' IN PLACE and does NOT wake E — deterministic,
+  // bridge-only. The transcript is REUSED from transcript.md (the note was already transcribed at
+  // arrival), NOT re-made: retrieval is transcriptionForNoteId over the injected readTranscript
+  // seam, so the audio is NEVER whisper-ed a second time. Any miss falls through UNCHANGED — a
+  // plain @e still wakes E — and never re-transcribes.
+  //
+  // A transcript.md the way the spine writes it (front matter + dispatch-line.formatDispatchLine
+  // headers; a received voice note's body is voiceTranscriptBody's "(voice transcription, Ns) …").
+  const voiceLine = (id, txt, { sender = 'Bea', chat = 'Bea', node = 'wa', ts = '14:32', dur = '8s', replyTo = null } = {}) =>
+    `${sender}@[${chat}].${node} (${ts}) #${id}${replyTo ? ` re #${replyTo}` : ''}: (voice transcription, ${dur}) ${txt}`;
+  const textLine = (id, txt, { sender = 'Bea', chat = 'Bea', node = 'wa', ts = '14:32' } = {}) =>
+    `${sender}@[${chat}].${node} (${ts}) #${id}: ${txt}`;
+  const transcriptDoc = (...entries) => `---\nname: Bea\nsurface: whatsapp\nslug: bea\n---\n\n${entries.join('\n\n')}\n\n`;
+  // Counts every transcribe call so a test can assert ZERO whisper in the @e path.
+  const countingTranscribe = () => { const f = async () => { f.calls++; return 'RE-TRANSCRIBED (must not happen)'; }; f.calls = 0; return f; };
 
-  it('a bare @e reply to a voice note (our own message) is substituted IN PLACE with 👂 <transcript>, and E is NOT dispatched', async () => {
-    const { incoming } = await startBridge();
-    fake.messages.set(CHAT('chat-1'), [voiceTarget('vn-1')]);   // the quoted voice note, findable in the recent list
+  // THE KEY LOCK (operator 2026-07-20): the @e reply REUSES the note's already-made arrival
+  // transcription from transcript.md and NEVER re-transcribes (the old branch downloaded the audio
+  // and ran whisper a SECOND time — a wasteful double transcription this rework removes).
+  it('a bare @e reply to a voice note REUSES the transcript.md text (👂 <text>) and calls transcribe ZERO times; E is NOT dispatched', async () => {
+    const transcribe = countingTranscribe();
+    const doc = transcriptDoc(voiceLine('vn-1', 'hola que tal'));
+    const { incoming } = await startBridge({ readTranscript: async () => doc, transcribe });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-1', text: '@e', isSender: true, linkedMessageID: 'vn-1' })] });
     await waitFor(() => fake.edits.length === 1);
     expect(fake.edits[0].messageID).toBe('reply-1');            // OUR @e reply, edited in place …
-    expect(fake.edits[0].text).toBe('👂 fake transcript');      // … to the target note's transcript
+    expect(fake.edits[0].text).toBe('👂 hola que tal');         // … to the note's ALREADY-MADE transcription (from transcript.md)
+    expect(transcribe.calls).toBe(0);                           // ← NO double transcription in the @e path
     // E must NOT be woken for this message — the substitution replaces the @e→E routing.
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'sentinel', text: 'plain human line' })] });
     await waitFor(() => incoming.some((i) => i.from.msgKey === 'sentinel'));
     expect(incoming.some((i) => i.from.msgKey === 'reply-1')).toBe(false);   // the @e reply never reached the persona turn
   });
 
+  // UNBOUNDED LOOKBACK: the target is an OLD note that the old recent-50 API fetch would have
+  // scrolled past — but it's in transcript.md, so the reuse path finds it (proves retrieval is
+  // the transcript, not a bounded message-list window).
+  it('a bare @e reply to an OLD note (only in transcript.md, past any recent API window) is found and substituted', async () => {
+    const doc = transcriptDoc(
+      voiceLine('old-note', 'the very first thing said', { ts: '09:00' }),
+      ...Array.from({ length: 60 }, (_, k) => textLine(`f-${k}`, `filler ${k}`, { ts: `10:${String(k % 60).padStart(2, '0')}` })),
+    );
+    const { incoming } = await startBridge({ readTranscript: async () => doc });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-old', text: '@egpt', isSender: true, linkedMessageID: 'old-note' })] });
+    await waitFor(() => fake.edits.length === 1);
+    expect(fake.edits[0].text).toBe('👂 the very first thing said');
+    expect(incoming.some((i) => i.from.msgKey === 'reply-old')).toBe(false);
+  });
+
+  // NOT IN TRANSCRIPT (pending / never-logged): no voice-transcription entry for the quoted id →
+  // fall through to normal @e→E, and STILL never re-transcribe.
+  it('a bare @e reply whose quoted id has NO transcript entry falls through to @e→E — NO re-transcription', async () => {
+    const transcribe = countingTranscribe();
+    const doc = transcriptDoc(voiceLine('other-note', 'unrelated'));
+    const { incoming } = await startBridge({ readTranscript: async () => doc, transcribe });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-miss', text: '@e', isSender: true, linkedMessageID: 'missing-note' })] });
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'reply-miss'));
+    expect(fake.edits).toHaveLength(0);                                                   // not found → no substitution
+    expect(transcribe.calls).toBe(0);                                                     // ← still no whisper
+    expect(incoming.find((i) => i.from.msgKey === 'reply-miss').from.atEStart).toBe(true);   // a plain @e still wakes E
+  });
+
   it('REGRESSION: a bare wake-word PLUS extra text (@e what did she say) replying to a voice note wakes E normally — NO substitution', async () => {
-    const { incoming } = await startBridge();
-    fake.messages.set(CHAT('chat-1'), [voiceTarget('vn-2')]);
+    const transcribe = countingTranscribe();
+    const { incoming } = await startBridge({ readTranscript: async () => transcriptDoc(voiceLine('vn-2', 'hola')), transcribe });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-2', text: '@e what did she say', isSender: true, linkedMessageID: 'vn-2' })] });
     await waitFor(() => incoming.some((i) => i.from.msgKey === 'reply-2'));
     expect(fake.edits).toHaveLength(0);                                                     // not bare → no in-place substitution
+    expect(transcribe.calls).toBe(0);
     expect(incoming.find((i) => i.from.msgKey === 'reply-2').from.atEAnywhere).toBe(true);   // normal @e turn instead
   });
 
   it('REGRESSION: a bare @e reply to a NON-voice (text) message wakes E normally — NO substitution', async () => {
-    const { incoming } = await startBridge();
-    fake.messages.set(CHAT('chat-1'), [{ id: 'tn-1', type: 'TEXT', text: 'hello there', isSender: false }]);   // target is text, not voice
+    // The quoted id IS logged, but as a plain text line (no "(voice transcription…)") → not a voice note.
+    const { incoming } = await startBridge({ readTranscript: async () => transcriptDoc(textLine('tn-1', 'hello there')) });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-3', text: '@e', isSender: true, linkedMessageID: 'tn-1' })] });
     await waitFor(() => incoming.some((i) => i.from.msgKey === 'reply-3'));
     expect(fake.edits).toHaveLength(0);                                                  // non-voice target → no substitution
@@ -1870,8 +1915,9 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
   });
 
   it('REGRESSION: a bare @e reply to a voice note from a NON-owner (isSender:false, senderID NOT allowed) falls through — NO substitution', async () => {
-    const { incoming } = await startBridge();   // default isAllowedUser = () => false → 'someone' is not the owner
-    fake.messages.set(CHAT('chat-1'), [voiceTarget('vn-5')]);
+    // default isAllowedUser = () => false → 'someone' is not the owner; the note IS in the transcript,
+    // so the owner-gate (not a missing entry) is the reason it falls through.
+    const { incoming } = await startBridge({ readTranscript: async () => transcriptDoc(voiceLine('vn-5', 'hola')) });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-5', text: '@e', isSender: false, senderID: 'someone@beeper.local', linkedMessageID: 'vn-5' })] });
     await waitFor(() => incoming.some((i) => i.from.msgKey === 'reply-5'));
     expect(fake.edits).toHaveLength(0);                                                  // not the owner → not editable in place → falls through
@@ -1883,27 +1929,82 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
   // (!!isSender || isAllowedUser), so an allow-listed operator whose isSender was mis-tagged STILL
   // triggers the in-place substitution — otherwise the operator's own @e silently misses.
   it('a bare @e reply to a voice note from an ALLOW-LISTED owner mis-tagged isSender:false STILL substitutes in place', async () => {
-    const { incoming } = await startBridge({ isAllowedUser: (id) => id === 'op@beeper.local' });
-    fake.messages.set(CHAT('chat-1'), [voiceTarget('vn-5b')]);
+    const { incoming } = await startBridge({
+      isAllowedUser: (id) => id === 'op@beeper.local',
+      readTranscript: async () => transcriptDoc(voiceLine('vn-5b', 'buenos dias')),
+    });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-5b', text: '@e', isSender: false, senderID: 'op@beeper.local', linkedMessageID: 'vn-5b' })] });
     await waitFor(() => fake.edits.length === 1);
     expect(fake.edits[0].messageID).toBe('reply-5b');                       // the mis-tagged owner's @e, edited in place …
-    expect(fake.edits[0].text).toBe('👂 fake transcript');                  // … despite isSender:false
+    expect(fake.edits[0].text).toBe('👂 buenos dias');                      // … despite isSender:false
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'sentinel-5b', text: 'plain human line' })] });
     await waitFor(() => incoming.some((i) => i.from.msgKey === 'sentinel-5b'));
     expect(incoming.some((i) => i.from.msgKey === 'reply-5b')).toBe(false);   // substituted, not routed to E
   });
 
   // EDIT-FAILURE FALLTHROUGH (never silently eat the @e): the trigger is met and the transcript is
-  // made, but editMessage FAILS (e.g. an authorized sender whose message isn't actually on our
+  // FOUND, but editMessage FAILS (e.g. an authorized sender whose message isn't actually on our
   // account → Beeper rejects the PUT). Suppression is guarded on the edit SUCCEEDING, so on failure
   // we do NOT return — the message falls through and a normal @e still wakes E.
-  it('trigger met + transcription made but editMessage FAILS → the @e is NOT eaten; E is dispatched', async () => {
-    const { incoming } = await startBridge();
-    fake.messages.set(CHAT('chat-1'), [voiceTarget('vn-6')]);
+  it('trigger met + transcript found but editMessage FAILS → the @e is NOT eaten; E is dispatched', async () => {
+    const { incoming } = await startBridge({ readTranscript: async () => transcriptDoc(voiceLine('vn-6', 'hola')) });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'editfail-6', text: '@e', isSender: true, linkedMessageID: 'vn-6' })] });   // fake PUT 500s for an 'editfail' id
     await waitFor(() => incoming.some((i) => i.from.msgKey === 'editfail-6'));
     expect(incoming.find((i) => i.from.msgKey === 'editfail-6').from.atEStart).toBe(true);   // edit failed → fell through to E, not eaten
     expect(fake.edits).toHaveLength(0);                                                       // the rejected PUT recorded no successful edit
   });
 });
+
+// The pure transcript.md parser the reuse path depends on (operator 2026-07-20). Locks the exact
+// entry format it must read and the multi-line / id-matching / non-voice behaviour.
+describe('transcriptionForNoteId (transcript.md reuse parser)', () => {
+  it('extracts a single-line voice transcription by message id (ignoring front matter)', () => {
+    const doc = ['---', 'name: Bea', 'slug: bea', '---', '',
+      'Bea@[Bea].wa (14:32) #42: (voice transcription, 8s) hola que tal', ''].join('\n');
+    expect(transcriptionForNoteId(doc, '42')).toBe('hola que tal');
+    expect(transcriptionForNoteId(doc, 42)).toBe('hola que tal');   // id compared as string
+  });
+
+  it('extracts a MULTI-LINE transcription up to the NEXT entry (a being reply)', () => {
+    const doc = [
+      'Bea@[Bea].wa (14:32) #vn-9: (voice transcription, 20s) line one',
+      'line two continues',
+      'line three ends',
+      '',
+      '[@e.kg (14:33)]: got it',
+      '',
+    ].join('\n');
+    expect(transcriptionForNoteId(doc, 'vn-9')).toBe('line one\nline two continues\nline three ends');
+  });
+
+  it('matches the MESSAGE id (after the time), not a re-#<id> reply tag', () => {
+    const doc = 'An@[Bea].wa (14:32) #100 re #40: (voice transcription) the answer\n\n';
+    expect(transcriptionForNoteId(doc, '100')).toBe('the answer');   // the message id
+    expect(transcriptionForNoteId(doc, '40')).toBe(null);            // the reply-target tag is NOT the entry id
+  });
+
+  it('returns null for a text (non-voice) entry, and for a missing id', () => {
+    const doc = transcriptDocLike('Bea@[Bea].wa (14:32) #tn-1: just text, no marker');
+    expect(transcriptionForNoteId(doc, 'tn-1')).toBe(null);   // id present but not a voice note
+    expect(transcriptionForNoteId(doc, 'nope')).toBe(null);   // id absent
+  });
+
+  it('is not fooled by a coincidental "(HH:MM) #id" inside a LATER entry body', () => {
+    const doc = [
+      'Bea@[Bea].wa (14:32) #real: (voice transcription) the real note',
+      '',
+      'Ana@[Bea].wa (14:40) #other: talking about (14:32) #real over here',
+      '',
+    ].join('\n');
+    expect(transcriptionForNoteId(doc, 'real')).toBe('the real note');
+  });
+
+  it('returns null on empty / nullish input', () => {
+    expect(transcriptionForNoteId('', 'x')).toBe(null);
+    expect(transcriptionForNoteId(null, 'x')).toBe(null);
+    expect(transcriptionForNoteId('Bea@[Bea].wa (14:32) #1: (voice transcription) hi', null)).toBe(null);
+  });
+});
+
+// tiny local helper for the parser tests (no front matter needed)
+function transcriptDocLike(...lines) { return lines.join('\n\n') + '\n\n'; }
