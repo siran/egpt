@@ -50,7 +50,7 @@
 //     gates cover edit/receipt re-fires and crash replays.
 import WebSocket from 'ws';
 import { transcribeAudioFile } from '../tools/transcribe.mjs';
-import { transcribeVoiceNote, voiceTranscriptBody, POSTS_BACK_DELAY_MS } from '../incoming-media.mjs';
+import { transcribeVoiceNote, voiceTranscriptBody, POSTS_BACK_DELAY_MS, ECHO_MARKER } from '../incoming-media.mjs';
 import { htmlToMarkdown } from '../html-to-markdown.mjs';
 import { normalizeTokens, similarity } from '../text-similarity.mjs';
 import { applyLayers } from './signature-layers.mjs';
@@ -816,6 +816,18 @@ export async function startBeeperBridge(opts = {}) {
     }
   }
 
+  // Fetch ONE recent message by its Beeper id — the reply-target lookup for the bare-@e
+  // in-place transcription branch (same list endpoint noteCovered uses). null on any error
+  // or a target already scrolled past the recent window (the branch then falls through to
+  // normal routing).
+  async function fetchMessageById(chatID, id) {
+    try {
+      const r = await api('GET', `/v1/chats/${encodeURIComponent(fullChatId(chatID))}/messages?limit=50`);
+      const items = Array.isArray(r?.items) ? r.items : [];
+      return items.find((m) => m?.id != null && String(m.id) === String(id)) ?? null;
+    } catch (e) { onLog(`beeper: fetchMessageById(${id}) failed — ${e?.message ?? e}`); return null; }
+  }
+
   // --- reactions (MESSAGES-FIRST-CLASS-PLAN Phase 2) ---------------------------
   // Beeper delivers a reaction as TWO events (verified live 2026-06-16): a bare
   // type:'REACTION' event (reactor + linkedMessageID, but NO emoji), and a
@@ -1184,6 +1196,38 @@ export async function startBeeperBridge(opts = {}) {
     //      possible; the sent-id set IS the signal. auto-mode already gates on it.
     const replyToId = msg.linkedMessageID ?? msg.replyToMessageID ?? msg.quotedMessageID ?? null;
     const replyToBot = !!(replyToId && wasSentByUs(chatID, replyToId));
+
+    // BARE @e REPLY TO A VOICE NOTE → in-place 👂 transcript (operator 2026-07-18). When a
+    // reply whose WHOLE text is just the wake-word (@e/@egpt) quotes a voice/audio note and
+    // comes from the OWNER — the same owner-signal `from.authorized` uses below
+    // (!!isSender || isAllowedUser): Beeper mis-tags the owner's OWN sends as isSender:false
+    // "even in the self-chat" (see the isSender caveats above), so isSender alone would let
+    // the operator's own @e silently miss — substitute that reply with '👂 <transcript>' IN
+    // PLACE and DON'T wake E: a deterministic, bridge-only shortcut, no persona involvement.
+    // Editability is confirmed by the edit ACTUALLY succeeding — if editMessage returns false
+    // (e.g. an authorized sender whose message isn't on our account), we do NOT return, so the
+    // @e is never silently eaten. The target's transcript is (re)made on demand: there is no
+    // transcription store keyed by message id to reuse. ANY miss (not a reply, extra text
+    // beyond the bare wake-word, a non-voice target, a non-owner sender, or a failed edit)
+    // falls through UNCHANGED, so a plain @e still wakes E below.
+    const bareReply = (text || '').trim().toLowerCase();
+    if (replyToId && (!!msg.isSender || isAllowedUser(msg.senderID, acct)) && wakeWords.some((w) => bareReply === `@${String(w).toLowerCase()}`)) {
+      const tgt = await fetchMessageById(chatID, replyToId);
+      const vAtt = (tgt && (tgt.type === 'VOICE' || tgt.type === 'AUDIO') && Array.isArray(tgt.attachments) && tgt.attachments.length)
+        ? (tgt.attachments.find((a) => a.isVoiceNote || a.type === 'audio') || tgt.attachments[0]) : null;
+      if (vAtt) {
+        const vPath = await attachmentToLocalPath(vAtt);
+        const t = vPath && await transcribeVoiceNote({ localPath: vPath, transcribe, audioCfg, enabled: true, postsBack: false, onLog: (m) => onLog(`beeper: ${m}`) });
+        if (t) {
+          const edited = await editMessage(chatID, msg.id, `${ECHO_MARKER} ${t}`);
+          if (edited) {
+            onLog(`beeper: 👂 in-place transcript [${info.title}] #${msg.id} ↩${replyToId}`);
+            return;   // substitution replaces the @e→E routing for this message
+          }
+          onLog(`beeper: 👂 in-place edit FAILED [${info.title}] #${msg.id} ↩${replyToId} — falling through to @e→E`);
+        }
+      }
+    }
     const from = {
       chatId: chatID,                       // opaque Beeper room id (for send-back)
       chatName: info.title,

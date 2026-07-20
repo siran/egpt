@@ -66,7 +66,11 @@ async function startFakeBeeper() {
       }
       const put = req.url.match(/^\/v1\/chats\/([^/]+)\/messages\/([^/?]+)$/);
       if (req.method === 'PUT' && put) {
-        edits.push({ chatID: decodeURIComponent(put[1]), messageID: decodeURIComponent(put[2]), ...JSON.parse(body) });
+        const messageID = decodeURIComponent(put[2]);
+        // A messageID marked 'editfail' models a PUT the API REJECTS (editMessage → false),
+        // so a test can exercise the edit-failure fallthrough (never silently eat the @e).
+        if (messageID.startsWith('editfail')) { res.statusCode = 500; res.end(JSON.stringify({ error: 'edit rejected' })); return; }
+        edits.push({ chatID: decodeURIComponent(put[1]), messageID, ...JSON.parse(body) });
         res.end('{}');
         return;
       }
@@ -1816,5 +1820,90 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
     const { bridge } = await startBridge();
 
     expect(await bridge.sendAndGetId('status ping', { chatId: chat })).toBe('200');   // pre-fix: '100' (the stale twin)
+  });
+
+  // BARE @e REPLY TO A VOICE NOTE → in-place 👂 transcript (operator 2026-07-18). A reply
+  // whose WHOLE text is just the wake-word, quoting a voice/audio note, on one of OUR OWN
+  // (isSender → editable in place on this shared account) messages: the bridge substitutes
+  // that reply with '👂 <transcript>' IN PLACE and does NOT wake E — deterministic, bridge-
+  // only. The target's transcript is (re)made on demand (there is no transcription store
+  // keyed by message id to reuse). Any miss falls through UNCHANGED — a plain @e still wakes E.
+  const voiceTarget = (id = 'vn-1') => ({ id, type: 'VOICE', isSender: false, attachments: [{ id: `a-${id}`, isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }] });
+
+  it('a bare @e reply to a voice note (our own message) is substituted IN PLACE with 👂 <transcript>, and E is NOT dispatched', async () => {
+    const { incoming } = await startBridge();
+    fake.messages.set(CHAT('chat-1'), [voiceTarget('vn-1')]);   // the quoted voice note, findable in the recent list
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-1', text: '@e', isSender: true, linkedMessageID: 'vn-1' })] });
+    await waitFor(() => fake.edits.length === 1);
+    expect(fake.edits[0].messageID).toBe('reply-1');            // OUR @e reply, edited in place …
+    expect(fake.edits[0].text).toBe('👂 fake transcript');      // … to the target note's transcript
+    // E must NOT be woken for this message — the substitution replaces the @e→E routing.
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'sentinel', text: 'plain human line' })] });
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'sentinel'));
+    expect(incoming.some((i) => i.from.msgKey === 'reply-1')).toBe(false);   // the @e reply never reached the persona turn
+  });
+
+  it('REGRESSION: a bare wake-word PLUS extra text (@e what did she say) replying to a voice note wakes E normally — NO substitution', async () => {
+    const { incoming } = await startBridge();
+    fake.messages.set(CHAT('chat-1'), [voiceTarget('vn-2')]);
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-2', text: '@e what did she say', isSender: true, linkedMessageID: 'vn-2' })] });
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'reply-2'));
+    expect(fake.edits).toHaveLength(0);                                                     // not bare → no in-place substitution
+    expect(incoming.find((i) => i.from.msgKey === 'reply-2').from.atEAnywhere).toBe(true);   // normal @e turn instead
+  });
+
+  it('REGRESSION: a bare @e reply to a NON-voice (text) message wakes E normally — NO substitution', async () => {
+    const { incoming } = await startBridge();
+    fake.messages.set(CHAT('chat-1'), [{ id: 'tn-1', type: 'TEXT', text: 'hello there', isSender: false }]);   // target is text, not voice
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-3', text: '@e', isSender: true, linkedMessageID: 'tn-1' })] });
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'reply-3'));
+    expect(fake.edits).toHaveLength(0);                                                  // non-voice target → no substitution
+    expect(incoming.find((i) => i.from.msgKey === 'reply-3').from.atEStart).toBe(true);
+  });
+
+  it('REGRESSION: a bare @e that is NOT a reply wakes E normally — NO substitution', async () => {
+    const { incoming } = await startBridge();
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-4', text: '@e', isSender: true })] });   // no linkedMessageID → not a reply
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'reply-4'));
+    expect(fake.edits).toHaveLength(0);
+    expect(incoming.find((i) => i.from.msgKey === 'reply-4').from.atEStart).toBe(true);   // plain @e still wakes E
+  });
+
+  it('REGRESSION: a bare @e reply to a voice note from a NON-owner (isSender:false, senderID NOT allowed) falls through — NO substitution', async () => {
+    const { incoming } = await startBridge();   // default isAllowedUser = () => false → 'someone' is not the owner
+    fake.messages.set(CHAT('chat-1'), [voiceTarget('vn-5')]);
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-5', text: '@e', isSender: false, senderID: 'someone@beeper.local', linkedMessageID: 'vn-5' })] });
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'reply-5'));
+    expect(fake.edits).toHaveLength(0);                                                  // not the owner → not editable in place → falls through
+    expect(incoming.find((i) => i.from.msgKey === 'reply-5').from.atEStart).toBe(true);   // a plain @e still wakes E
+  });
+
+  // RELIABILITY LOCK (operator: Beeper mis-tags the owner's OWN sends as isSender:false, "even in
+  // the self-chat" — lines 202-204). The gate uses the SAME owner-signal from.authorized uses
+  // (!!isSender || isAllowedUser), so an allow-listed operator whose isSender was mis-tagged STILL
+  // triggers the in-place substitution — otherwise the operator's own @e silently misses.
+  it('a bare @e reply to a voice note from an ALLOW-LISTED owner mis-tagged isSender:false STILL substitutes in place', async () => {
+    const { incoming } = await startBridge({ isAllowedUser: (id) => id === 'op@beeper.local' });
+    fake.messages.set(CHAT('chat-1'), [voiceTarget('vn-5b')]);
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-5b', text: '@e', isSender: false, senderID: 'op@beeper.local', linkedMessageID: 'vn-5b' })] });
+    await waitFor(() => fake.edits.length === 1);
+    expect(fake.edits[0].messageID).toBe('reply-5b');                       // the mis-tagged owner's @e, edited in place …
+    expect(fake.edits[0].text).toBe('👂 fake transcript');                  // … despite isSender:false
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'sentinel-5b', text: 'plain human line' })] });
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'sentinel-5b'));
+    expect(incoming.some((i) => i.from.msgKey === 'reply-5b')).toBe(false);   // substituted, not routed to E
+  });
+
+  // EDIT-FAILURE FALLTHROUGH (never silently eat the @e): the trigger is met and the transcript is
+  // made, but editMessage FAILS (e.g. an authorized sender whose message isn't actually on our
+  // account → Beeper rejects the PUT). Suppression is guarded on the edit SUCCEEDING, so on failure
+  // we do NOT return — the message falls through and a normal @e still wakes E.
+  it('trigger met + transcription made but editMessage FAILS → the @e is NOT eaten; E is dispatched', async () => {
+    const { incoming } = await startBridge();
+    fake.messages.set(CHAT('chat-1'), [voiceTarget('vn-6')]);
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'editfail-6', text: '@e', isSender: true, linkedMessageID: 'vn-6' })] });   // fake PUT 500s for an 'editfail' id
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'editfail-6'));
+    expect(incoming.find((i) => i.from.msgKey === 'editfail-6').from.atEStart).toBe(true);   // edit failed → fell through to E, not eaten
+    expect(fake.edits).toHaveLength(0);                                                       // the rejected PUT recorded no successful edit
   });
 });
