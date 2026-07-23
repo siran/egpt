@@ -11,13 +11,12 @@
 // tab the user is looking at.
 //
 // HTTP read-only functions (listTabs, findTab, isRunning, openTab,
-// closeTab, browseTab, setCdpHostGetter, cdpHost) still come from
-// tools/cdp.mjs since they don't need debugger or WS — just /json
-// fetches.
+// closeTab, setCdpHostGetter, cdpHost) still come from tools/cdp.mjs
+// since they don't need debugger or WS — just /json fetches.
 
 export {
   listTabs, findTab, isRunning,
-  openTab, closeTab, browseTab,
+  openTab, closeTab,
   setCdpHostGetter, cdpHost,
 } from '../../../src/tools/cdp.mjs';
 

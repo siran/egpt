@@ -1,7 +1,9 @@
 // Operator slash commands: recognition (Self DM / authorized), lifecycle exits,
 // and the loop intercept (a command is never routed to the brain).
 import { describe, it, expect, vi } from 'vitest';
-import { join } from 'node:path';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createCommands } from '../src/spine/commands.mjs';
 import { createSpine } from '../src/spine/spine.mjs';
 import { Room } from '../src/room-core.mjs';
@@ -810,5 +812,97 @@ describe('/room create <name>', () => {
     expect(sent[0].text).toMatch(/only .*create.* wired/i);
     await cmds.run({ ...self, body: '/room join fam' });
     expect(sent[1].text).toMatch(/only .*create.* wired/i);
+  });
+});
+
+// /tabs /open /tab /close — Phase 1 browser command wrappers: thin dispatch over
+// cdp.mjs's listTabs/openTab/activateTarget/closeTab, same CDP seam /chrome uses (no
+// real Chrome, no real socket in these tests). /tab <n> and /close <n> address a tab by
+// the SAME 1-based number /tabs prints, resolved fresh against listTabs() on every call
+// — never a stale index carried over from an earlier /tabs (Chrome's own tab order can
+// shift between commands).
+describe('/tabs /open /tab /close', () => {
+  const self = { chatId: '!self', surface: 'whatsapp' };
+  const cfg = { whatsapp: { chat_id: '!self' } };
+  const twoTabs = [
+    { id: 'AAA111', title: 'ChatGPT', url: 'https://chatgpt.com/c/abc' },
+    { id: 'BBB222', title: 'Gmail', url: 'https://mail.google.com/mail/u/0' },
+  ];
+
+  it('/tabs lists both tabs, numbered, with title + url', async () => {
+    const { cmds, sent } = harness({ config: cfg, cdp: { listTabs: async () => twoTabs } });
+    await cmds.run({ ...self, body: '/tabs' });
+    expect(sent).toHaveLength(1);
+    expect(sent[0].text).toMatch(/tabs: 2/);
+    expect(sent[0].text).toMatch(/1 · ChatGPT/);
+    expect(sent[0].text).toMatch(/chatgpt\.com/);
+    expect(sent[0].text).toMatch(/2 · Gmail/);
+    expect(sent[0].text).toMatch(/mail\.google\.com/);
+  });
+
+  it('/open <url> calls cdp.openTab with that url and names it in the reply', async () => {
+    const opened = [];
+    const { cmds, sent } = harness({ config: cfg, cdp: { openTab: async (url) => { opened.push(url); return 'NEWID'; } } });
+    await cmds.run({ ...self, body: '/open https://example.com' });
+    expect(opened).toEqual(['https://example.com']);
+    expect(sent[0].text).toMatch(/https:\/\/example\.com/);
+  });
+
+  it('/tab 2 activates the 2nd listed tab', async () => {
+    const activated = [];
+    const cdp = { listTabs: async () => twoTabs, activateTarget: async (id) => { activated.push(id); } };
+    const { cmds, sent } = harness({ config: cfg, cdp });
+    await cmds.run({ ...self, body: '/tab 2' });
+    expect(activated).toEqual(['BBB222']);   // twoTabs[1].id — the SECOND listed tab
+    expect(sent[0].text).toMatch(/Gmail/);
+  });
+
+  it('/close 2 closes the 2nd listed tab', async () => {
+    const closed = [];
+    const cdp = { listTabs: async () => twoTabs, closeTab: async (id) => { closed.push(id); } };
+    const { cmds, sent } = harness({ config: cfg, cdp });
+    await cmds.run({ ...self, body: '/close 2' });
+    expect(closed).toEqual(['BBB222']);
+    expect(sent[0].text).toMatch(/Gmail/);
+  });
+
+  it('/tab <n> past the end of the list reports it instead of throwing', async () => {
+    const cdp = { listTabs: async () => twoTabs, activateTarget: async () => {} };
+    const { cmds, sent } = harness({ config: cfg, cdp });
+    await expect(cmds.run({ ...self, body: '/tab 5' })).resolves.toBeUndefined();
+    expect(sent[0].text).toMatch(/no tab 5/);
+  });
+
+  it('none of the four fall through to the unwired-command catch-all', async () => {
+    const cdp = { listTabs: async () => twoTabs, openTab: async () => 'X', activateTarget: async () => {}, closeTab: async () => {} };
+    const { cmds, sent } = harness({ config: cfg, cdp });
+    await cmds.run({ ...self, body: '/tabs' });
+    await cmds.run({ ...self, body: '/open https://x' });
+    await cmds.run({ ...self, body: '/tab 1' });
+    await cmds.run({ ...self, body: '/close 1' });
+    expect(sent).toHaveLength(4);
+    for (const s of sent) expect(s.text).not.toMatch(/recognized/);
+  });
+});
+
+// Regression lock (Phase 1): browseTab was a dead export (zero callers anywhere outside
+// its own definition in cdp.mjs) evicted alongside /browse. This scans every .mjs/.js
+// file under src/ (recursively) for the bare identifier — it FAILS on the pre-eviction
+// code (browseTab is defined in src/tools/cdp.mjs) and stays green once it's gone; it
+// would also catch a future caller reintroducing it.
+describe('browseTab is fully evicted from src/', () => {
+  it('no file under src/ references browseTab', () => {
+    const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+    const SRC_DIR = join(ROOT, 'src');
+    const offenders = [];
+    const walk = (dir) => {
+      for (const ent of readdirSync(dir, { withFileTypes: true })) {
+        const p = join(dir, ent.name);
+        if (ent.isDirectory()) walk(p);
+        else if (/\.m?js$/.test(ent.name) && readFileSync(p, 'utf8').includes('browseTab')) offenders.push(p);
+      }
+    };
+    walk(SRC_DIR);
+    expect(offenders).toEqual([]);
   });
 });

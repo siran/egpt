@@ -25,7 +25,7 @@ import { shortChatId } from '../bridges/chat-id.mjs';
 import { ownNodeNamesOf } from './node-names.mjs';
 import { Room } from '../room-core.mjs';
 import { sanitizeName } from '../sanitize.mjs';
-import { isRunning as cdpIsRunning, listTabs as cdpListTabs, cdpHost as cdpHostOf } from '../tools/cdp.mjs';
+import { isRunning as cdpIsRunning, listTabs as cdpListTabs, cdpHost as cdpHostOf, openTab as cdpOpenTab, activateTarget as cdpActivateTarget, closeTab as cdpCloseTab } from '../tools/cdp.mjs';
 import { findChromeExecutable, chromeArgs, chromeCommandLine } from '../tools/chrome-launcher.mjs';
 import { fileURLToPath } from 'node:url';
 
@@ -206,9 +206,9 @@ export function createCommands({
   agentsDir = PROFILE_AGENTS_DIR,        // where the custom branch writes <name>.yaml (injected in tests)
   identitiesDir = PROFILE_IDENTITIES_DIR,// where the custom branch writes a free-text identity layer (injected in tests)
   io = {},                               // { stat, readFile, writeFile, mkdir } — real fs by default; /status probes files + the custom branch authors through here
-  // CDP seam for /chrome — the real localhost probe by default; tests inject fakes so the
-  // suite never needs a live Chrome or a real socket.
-  cdp = { isRunning: cdpIsRunning, listTabs: cdpListTabs, cdpHost: cdpHostOf },
+  // CDP seam for /chrome, /tabs, /open, /tab, /close — the real localhost probe by
+  // default; tests inject fakes so the suite never needs a live Chrome or a real socket.
+  cdp = { isRunning: cdpIsRunning, listTabs: cdpListTabs, cdpHost: cdpHostOf, openTab: cdpOpenTab, activateTarget: cdpActivateTarget, closeTab: cdpCloseTab },
   // Launch seam for /chrome — fires the Session-1 `egpt-chrome` scheduled task (default:
   // `schtasks /run /tn egpt-chrome`, see defaultLaunchChromeTask). Returns { ok } — false
   // when the task isn't registered (schtasks non-zero) or the spawn errored. Tests inject a
@@ -372,6 +372,21 @@ export function createCommands({
     const chromeMatch = /^\/chrome(?:\s+(.+?))?\s*$/i.exec(line);
     if (chromeMatch) { await chrome(ev, chromeMatch[1]?.trim() || null); return; }
 
+    // /tabs, /open <url>, /tab <n>, /close <n> — Phase 1 browser command wrappers, thin
+    // dispatch over cdp.mjs's listTabs/openTab/activateTarget/closeTab (no CDP knowledge
+    // lives here). Same slot as /chrome: matched BEFORE the catch-all so none of the four
+    // leak to E. /tab and /close address a tab by the 1-based number /tabs prints —
+    // resolved fresh against listTabs() on every call, never a stale index carried over
+    // from an earlier /tabs (Chrome's own tab order can shift between commands).
+    const tabsMatch = /^\/tabs\s*$/i.exec(line);
+    if (tabsMatch) { await send?.(ev.chatId, await tabsReport()); return; }
+    const openMatch = /^\/open\s+(\S+)\s*$/i.exec(line);
+    if (openMatch) { await send?.(ev.chatId, await openTabCmd(openMatch[1])); return; }
+    const tabMatch = /^\/tab\s+(\d+)\s*$/i.exec(line);
+    if (tabMatch) { await send?.(ev.chatId, await activateTabCmd(Number(tabMatch[1]))); return; }
+    const closeMatch = /^\/close\s+(\d+)\s*$/i.exec(line);
+    if (closeMatch) { await send?.(ev.chatId, await closeTabCmd(Number(closeMatch[1]))); return; }
+
     // /room <sub> [<name>] — Phase 2: the FIRST wired NamedRoom create path. Only
     // `create` is wired (join/leave/delete are backburner; the guided arm/step variant
     // is a follow-up like /e's wizard). Slots in exactly like /chrome: a dispatch match
@@ -499,6 +514,55 @@ export function createCommands({
     ];
     if (setupNote) lines.push(`(run setup/register-chrome-task.ps1 on this node once to enable launch)`);
     return lines.join('\n');
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // /tabs — same fenced-yaml shape as /chrome's tab list, but WITH the 1-based index
+  // /tab and /close address. A listTabs() failure (no Chrome reachable) degrades to a
+  // one-line note, same "never throw" ethos as chromeReport.
+  async function tabsReport() {
+    let tabs;
+    try { tabs = await cdp.listTabs(); } catch { return 'no Chrome to list tabs from — try /chrome first'; }
+    const lines = [`tabs: ${tabs.length}`];
+    tabs.forEach((t, i) => {
+      lines.push(`  ${i + 1} · ${trunc(t?.title ?? '(untitled)', 48)}`);
+      lines.push(`      ${trunc(t?.url ?? '', 72)}`);
+    });
+    return '```yaml\n' + lines.join('\n') + '\n```';
+  }
+
+  // /open <url> — open a new tab at url. The tab hasn't loaded yet the instant it opens
+  // (nothing to title it by), so the reply names it by the url just opened.
+  async function openTabCmd(url) {
+    try { await cdp.openTab(url); return `opened: ${url}`; }
+    catch (e) { return `/open: failed — ${e?.message ?? e}`; }
+  }
+
+  // Resolve the operator's 1-based /tab or /close index against a FRESH listTabs() call
+  // (see the dispatch comment above for why: never a stale index). Returns { tab } or
+  // { error } — callers never throw on a bad index.
+  async function nthTab(n) {
+    let tabs;
+    try { tabs = await cdp.listTabs(); } catch { return { error: 'no Chrome to list tabs from — try /chrome first' }; }
+    const tab = tabs[n - 1];
+    if (!tab) return { error: `no tab ${n} — ${tabs.length} open` };
+    return { tab };
+  }
+
+  // /tab <n> — activate (focus) the nth listed tab.
+  async function activateTabCmd(n) {
+    const { tab, error } = await nthTab(n);
+    if (error) return `/tab: ${error}`;
+    try { await cdp.activateTarget(tab.id); return `activated ${n} · ${trunc(tab?.title ?? '(untitled)', 48)}`; }
+    catch (e) { return `/tab: failed — ${e?.message ?? e}`; }
+  }
+
+  // /close <n> — close the nth listed tab.
+  async function closeTabCmd(n) {
+    const { tab, error } = await nthTab(n);
+    if (error) return `/close: ${error}`;
+    try { await cdp.closeTab(tab.id); return `closed ${n} · ${trunc(tab?.title ?? '(untitled)', 48)}`; }
+    catch (e) { return `/close: failed — ${e?.message ?? e}`; }
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
