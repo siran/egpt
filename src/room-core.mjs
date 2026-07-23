@@ -149,6 +149,23 @@ export class Room {
     return list.map((m) => ({ ...m }));
   }
 
+  // Change ONLY a member's state (its contribution mode), preserving every other
+  // field — kind, id, and the brain extras (adapter / url / targetId). setMember
+  // defaults an omitted state to muted, so a mode flip must NOT go through it (that
+  // would clobber the state you're trying to keep for the OTHER fields); this touches
+  // state alone. Errors if no member has that id. Returns the roster.
+  async setMemberState(id, state) {
+    const st = normalizeMemberState(state);
+    if (!st) throw new Error(`Room.setMemberState: unknown state "${state}" (expected ${ROOM_MEMBER_STATES.join('|')})`);
+    const doc = await this.loadConfig();
+    const list = Array.isArray(doc.members) ? doc.members.slice() : [];
+    const i = list.findIndex((m) => m && String(m.id) === String(id));
+    if (i < 0) throw new Error(`Room.setMemberState: no member "${id}"`);
+    list[i] = { ...list[i], state: st };
+    await this._setConfigBlock('members', list);
+    return list.map((m) => ({ ...m }));
+  }
+
   // Remove a member by id. Returns true iff one was removed.
   async removeMember(id) {
     const doc = await this.loadConfig();

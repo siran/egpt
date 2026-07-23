@@ -25,6 +25,7 @@ import { shortChatId } from '../bridges/chat-id.mjs';
 import { ownNodeNamesOf } from './node-names.mjs';
 import { Room } from '../room-core.mjs';
 import { sanitizeName } from '../sanitize.mjs';
+import { loadAdapters as defaultLoadAdapters, matchAdapter } from '../adapters/registry.mjs';
 import { isRunning as cdpIsRunning, listTabs as cdpListTabs, cdpHost as cdpHostOf, openTab as cdpOpenTab, activateTarget as cdpActivateTarget, closeTab as cdpCloseTab } from '../tools/cdp.mjs';
 import { findChromeExecutable, chromeArgs, chromeCommandLine } from '../tools/chrome-launcher.mjs';
 import { fileURLToPath } from 'node:url';
@@ -88,6 +89,32 @@ const roomConfigFile = (name) => `# room ${name} — an operator-created NamedRo
 # Feed layers come from the shared config/skeletons/room/ template, not per-room copies.
 # Add heartbeats:, transcription:, or members: blocks here to wire behavior.
 `;
+
+// The friendly member-mode words (the command surface) ↔ the existing room-core state
+// tokens (what's stored). The design speaks disable/mention/all; room-core stores the
+// full 6-state auto-mode enum. We accept the friendly words, persist the existing token
+// — NO parallel state machine. Other stored tokens (off, mention-direct, accum) render
+// as themselves and just aren't settable through the disable|mention|all command word.
+const MODE_TO_STATE = { disable: 'muted', mention: 'mention', all: 'active' };
+const STATE_TO_MODE = { muted: 'disable', mention: 'mention', active: 'all' };
+// A one-line gloss for the mode-change confirmation (flagship parity).
+const MODE_GLOSS = { disable: 'receives nothing', mention: 'reached only when @mentioned', all: 'receives every message' };
+// A brain member's short, addressable id is its adapter name minus the -cdp suffix
+// (chatgpt-cdp → chatgpt), so the operator types /members chatgpt … not chatgpt-cdp.
+const shortAdapterId = (name) => String(name).replace(/-cdp$/i, '');
+// The host of a tab URL for the "no adapter matches <host>" refusal — best-effort.
+const hostOf = (url) => { try { return new URL(String(url)).host; } catch { return String(url ?? ''); } };
+
+// The NamedRooms on disk: the immediate subdirectories of EGPT_HOME/rooms/ (each folder
+// IS a room). Never throws — a missing rooms/ dir yields []. Injected in tests.
+function defaultListRoomNames() {
+  try {
+    return readdirSync(join(EGPT_HOME, 'rooms'), { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name)
+      .sort();
+  } catch { return []; }
+}
 
 // The `/e` wizard's model/effort menus (operator 2026-07-02: v1's `/e` supplied
 // these same fixed lists — there is no canonical model/effort registry in v2, and
@@ -209,6 +236,14 @@ export function createCommands({
   // CDP seam for /chrome, /tabs, /open, /tab, /close — the real localhost probe by
   // default; tests inject fakes so the suite never needs a live Chrome or a real socket.
   cdp = { isRunning: cdpIsRunning, listTabs: cdpListTabs, cdpHost: cdpHostOf, openTab: cdpOpenTab, activateTarget: cdpActivateTarget, closeTab: cdpCloseTab },
+  // Room/member seams (Phase 2). roomForName builds a Room for a NamedRoom by name
+  // (the real EGPT_HOME-rooted one by default); listRoomNames enumerates the saved
+  // rooms; loadAdapters yields the web-brain adapters (config/brains/*-cdp.mjs). All
+  // three are injected in tests so /rooms + /members run against temp-dir rooms and a
+  // fake adapter list — no live profile, no live Chrome, no dynamic import.
+  roomForName = (name) => Room.named(name),
+  listRoomNames = defaultListRoomNames,
+  loadAdapters = defaultLoadAdapters,
   // Launch seam for /chrome — fires the Session-1 `egpt-chrome` scheduled task (default:
   // `schtasks /run /tn egpt-chrome`, see defaultLaunchChromeTask). Returns { ok } — false
   // when the task isn't registered (schtasks non-zero) or the spawn errored. Tests inject a
@@ -230,6 +265,21 @@ export function createCommands({
   const readFile = io.readFile ?? fsReadFile;
   const writeFile = io.writeFile ?? fsWriteFile;
   const mkdir = io.mkdir ?? fsMkdir;
+
+  // Which NamedRoom /members targets, per surface (the shell, a Beeper Self-DM). Kept
+  // in-memory for Phase 2 — a /room|/rooms <slug> join sets it; a fresh boot starts with
+  // none (the operator re-joins). surface-keyed so each surface has its own current room.
+  const currentRoom = new Map();   // surface -> room slug
+  const surfaceOf = (ev) => ev?.surface ?? 'whatsapp';
+  const curRoomName = (ev) => currentRoom.get(surfaceOf(ev)) ?? null;
+
+  // The web-brain adapter list, loaded once (dynamic import of config/brains/*-cdp.mjs)
+  // and memoized. adapterFor() resolves a tab URL → its adapter, or null (→ can't add).
+  let _adapters = null;
+  async function adapterFor(url) {
+    if (!_adapters) _adapters = await loadAdapters();
+    return matchAdapter(url, _adapters);
+  }
 
   // Beeper accounts REGISTRY (operator 2026-07-08, trusted-network chunk c): a NAMED map
   // of this trusted network's Beeper accounts — which account each node fronts + its own
@@ -387,12 +437,35 @@ export function createCommands({
     const closeMatch = /^\/close\s+(\d+)\s*$/i.exec(line);
     if (closeMatch) { await send?.(ev.chatId, await closeTabCmd(Number(closeMatch[1]))); return; }
 
-    // /room <sub> [<name>] — Phase 2: the FIRST wired NamedRoom create path. Only
-    // `create` is wired (join/leave/delete are backburner; the guided arm/step variant
-    // is a follow-up like /e's wizard). Slots in exactly like /chrome: a dispatch match
-    // BEFORE the anchored /e wizard and the catch-all, so /room never leaks to E.
+    // /rooms — Phase 2: list the saved NamedRooms (bare), or an ALIAS of /room <slug>
+    // <sub> (`/rooms devwork join` == `/room devwork join`). Matched BEFORE /room: the
+    // /room regex can't match "/rooms" (the trailing 's' is neither whitespace nor end),
+    // but keeping /rooms first makes the alias intent explicit. Same pre-catch-all slot.
+    const roomsMatch = /^\/rooms(?:\s+(\S+))?(?:\s+(.+?))?\s*$/i.exec(line);
+    if (roomsMatch) {
+      const slug = roomsMatch[1]?.toLowerCase() || null;
+      if (!slug) { await send?.(ev.chatId, await roomsList(ev)); return; }
+      await room(ev, slug, roomsMatch[2]?.trim() || null);   // alias: /rooms <slug> <sub>
+      return;
+    }
+
+    // /room <sub> [<name>] — Phase 2 rooms & members. `create <name>` is the verb-first
+    // create path (unchanged); every OTHER first token is a room SLUG and the second is
+    // the sub-verb: `/room <slug> join|leave|members` (design grammar). Slots in exactly
+    // like /chrome: a dispatch match BEFORE the anchored /e wizard and the catch-all.
     const roomMatch = /^\/room(?:\s+(\S+))?(?:\s+(.+?))?\s*$/i.exec(line);
     if (roomMatch) { await room(ev, roomMatch[1]?.toLowerCase() || null, roomMatch[2]?.trim() || null); return; }
+
+    // /members … — the CURRENT room's roster. Bare: list. `add tab <n>`: adapter-match a
+    // Chrome tab and add it as a disabled brain. `<id> mode <disable|mention|all>`: flip a
+    // member's mode. Pre-catch-all so none leak to E.
+    const membersMatch = /^\/members(?:\s+(.+?))?\s*$/i.exec(line);
+    if (membersMatch) { await members(ev, membersMatch[1]?.trim() || null); return; }
+
+    // /activate <id> — reopen a brain member whose Chrome tab was closed (its saved
+    // targetId is no longer live), refreshing its targetId. A no-op when already live.
+    const activateMatch = /^\/activate\s+(\S+)\s*$/i.exec(line);
+    if (activateMatch) { await activate(ev, activateMatch[1]); return; }
 
     // /e (bare) or /e <fragment> — ARM the re-point wizard (v1 parity: a guided
     // agent-type/model/effort pick, not a flag command). Bare targets THIS chat; a
@@ -566,14 +639,30 @@ export function createCommands({
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
+  // /room — the NamedRoom router (Phase 2). Two grammars share the verb: `create <name>`
+  // is verb-first (create IS the first token); every OTHER first token is a room SLUG and
+  // the second token is the sub-verb — `/room <slug> join|leave|members`. `/rooms` (list)
+  // and `/rooms <slug> <sub>` (alias) route through here too.
+  async function room(ev, first, rest) {
+    if (!first) { await send?.(ev.chatId, 'usage: /room create <name> | /room <slug> join|leave|members'); return; }
+    // Verb-first: `create <name>` keeps its original grammar (create IS the first token).
+    if (first === 'create') { await roomCreate(ev, rest); return; }
+    // Slug-first: `/room <slug> <sub>` — the first token is a room, the second a verb.
+    // Bare `/room <slug>` (no verb) defaults to listing that room's members.
+    const slug = sanitizeName(first);
+    const sub = (rest || 'members').toLowerCase();
+    if (sub === 'join') { await roomJoin(ev, slug); return; }
+    if (sub === 'leave') { await roomLeave(ev, slug); return; }
+    if (sub === 'members') { await send?.(ev.chatId, await renderMembers(ev, slug)); return; }
+    await send?.(ev.chatId, `/room ${slug}: unknown subcommand "${sub}" — join|leave|members`);
+  }
+
   // /room create <name> — CREATE a NamedRoom. A Room IS a folder (room-core.mjs): making
   // the folder tree at EGPT_HOME/rooms/<name>/ IS creating the room — the heartbeat +
-  // transcription loaders (boot.mjs listEntityDirs) enumerate it from then on. Only
-  // `create` is wired: join/leave/delete + the guided arm/step variant are follow-ups.
-  // Uses the Room abstraction for the tree paths and the io seam for fs, so tests capture
-  // it in-memory and it never touches a real profile.
-  async function room(ev, sub, name) {
-    if (sub !== 'create') { await send?.(ev.chatId, '/room: only `create <name>` is wired (join/leave/delete are follow-ups)'); return; }
+  // transcription loaders (boot.mjs listEntityDirs) enumerate it from then on. Uses the
+  // Room abstraction for the tree paths and the io seam for fs, so tests capture it
+  // in-memory and it never touches a real profile.
+  async function roomCreate(ev, name) {
     // A room NAME is operator-chosen; reject an empty/punctuation-only one (sanitizeName's
     // 'room' fallback would otherwise silently create a generic folder) before touching fs.
     if (!name || !/[a-z0-9]/i.test(name)) { await send?.(ev.chatId, 'usage: /room create <name>'); return; }
@@ -588,6 +677,119 @@ export function createCommands({
     for (const dir of [r.baseDir(), r.mediaDir, r.filesDir, r.identityDir]) await mkdir(dir, { recursive: true });
     await writeFile(r.configPath, roomConfigFile(slug), 'utf8');
     await send?.(ev.chatId, `room ${slug} created at ${rel}`);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // /rooms — the saved NamedRooms, each with its member count, the current one marked.
+  // Never throws (a missing rooms/ dir → "no rooms yet"; a per-room count that can't be
+  // read degrades to 0).
+  async function roomsList(ev) {
+    const names = listRoomNames();
+    if (!names.length) return 'no rooms yet — /room create <name> to make one';
+    const cur = curRoomName(ev);
+    const lines = ['rooms:'];
+    for (const name of names) {
+      let n = 0;
+      try { n = (await roomForName(name).members()).length; } catch { n = 0; }
+      lines.push(`  · ${name}   ${n} members${name === cur ? '   (current)' : ''}`);
+    }
+    return lines.join('\n');
+  }
+
+  // /room <slug> join — make <slug> the current room for this surface (what bare /members
+  // targets). In-memory for Phase 2; a room folder materializes when its first member is
+  // added (setMember mkdir's it) or via /room create.
+  async function roomJoin(ev, slug) {
+    currentRoom.set(surfaceOf(ev), slug);
+    await send?.(ev.chatId, `joined '${slug}' — now current.`);
+  }
+
+  // /room <slug> leave — clear the current room for this surface iff it IS <slug>.
+  async function roomLeave(ev, slug) {
+    if (curRoomName(ev) === slug) { currentRoom.delete(surfaceOf(ev)); await send?.(ev.chatId, `left '${slug}' — no current room.`); return; }
+    await send?.(ev.chatId, `not in '${slug}' — current room is ${curRoomName(ev) ? `'${curRoomName(ev)}'` : 'none'}`);
+  }
+
+  // The roster of `roomName` as a fenced yaml block: each member's id, kind, live
+  // presence, and friendly mode. Presence for a brain member = its saved targetId is a
+  // LIVE tab (from listTabs); a listTabs hiccup degrades every brain to "inactive", never
+  // throws. Non-brain members read as "active" (a surface/chat member is present as such).
+  async function renderMembers(ev, roomName) {
+    let ms = [];
+    try { ms = await roomForName(roomName).members(); } catch { ms = []; }
+    let liveIds = new Set();
+    try { liveIds = new Set((await cdp.listTabs()).map((t) => t.id)); } catch { /* no Chrome → all brains inactive */ }
+    const lines = [`${roomName} (${ms.length} members):`];
+    for (const m of ms) {
+      const mode = STATE_TO_MODE[m.state] ?? m.state;
+      const presence = m.kind === 'brain' ? ((m.targetId && liveIds.has(m.targetId)) ? 'active' : 'inactive') : 'active';
+      lines.push(`  · ${m.id}   ${m.kind}   ${presence}   mode:${mode}`);
+    }
+    if (!ms.length) lines.push('  (no members yet)');
+    return '```yaml\n' + lines.join('\n') + '\n```';
+  }
+
+  // /members … — operate on the CURRENT room (bare = list; `add tab <n>`; `<id> mode <m>`).
+  async function members(ev, rest) {
+    const roomName = curRoomName(ev);
+    if (!roomName) { await send?.(ev.chatId, 'no current room — /room <slug> join first'); return; }
+    if (!rest) { await send?.(ev.chatId, await renderMembers(ev, roomName)); return; }
+    const add = /^add\s+tab\s+(\d+)$/i.exec(rest);
+    if (add) { await membersAddTab(ev, roomName, Number(add[1])); return; }
+    const mode = /^(\S+)\s+mode\s+(\S+)$/i.exec(rest);
+    if (mode) { await membersSetMode(ev, roomName, mode[1], mode[2]); return; }
+    await send?.(ev.chatId, 'usage: /members | /members add tab <n> | /members <id> mode <disable|mention|all>');
+  }
+
+  // /members add tab <n> — add the nth /tabs tab as a brain member of the current room,
+  // IF an adapter drives its URL. No adapter (a random site) → refuse with the host, the
+  // flagship message. On a match: add kind:brain, state:muted (mode:disable — "no chatter
+  // reaches it yet"), persisting the adapter name + url + targetId for the phase-4 relay.
+  async function membersAddTab(ev, roomName, n) {
+    let tabs;
+    try { tabs = await cdp.listTabs(); } catch { await send?.(ev.chatId, 'no Chrome to list tabs from — try /chrome first'); return; }
+    const tab = tabs[n - 1];
+    if (!tab) { await send?.(ev.chatId, `no tab ${n} — ${tabs.length} open`); return; }
+    const adapter = await adapterFor(tab.url);
+    if (!adapter) {
+      await send?.(ev.chatId, `can't add tab ${n} — no adapter matches ${hostOf(tab.url)}.\nadapters are per-site drivers (chatgpt, claude, grok…); add one to support it.`);
+      return;
+    }
+    const id = shortAdapterId(adapter.name);
+    await roomForName(roomName).setMember({ kind: 'brain', id, state: 'muted', adapter: adapter.name, url: tab.url, targetId: tab.id });
+    await send?.(ev.chatId, `added '${id}' (tab ${n} · adapter:${id}) — mode:disable (no chatter reaches it yet)`);
+  }
+
+  // /members <id> mode <disable|mention|all> — flip a member's mode. The friendly word
+  // maps to the stored room-core token (setMemberState preserves adapter/url/targetId).
+  async function membersSetMode(ev, roomName, id, word) {
+    const w = word.toLowerCase();
+    const token = MODE_TO_STATE[w];
+    if (!token) { await send?.(ev.chatId, `/members mode: unknown mode "${word}" — use disable|mention|all`); return; }
+    const r = roomForName(roomName);
+    if (!(await r.members()).some((m) => m.id === id)) { await send?.(ev.chatId, `no member '${id}' in ${roomName}`); return; }
+    await r.setMemberState(id, token);
+    await send?.(ev.chatId, `${id} → mode:${w} (${MODE_GLOSS[w]})`);
+  }
+
+  // /activate <id> — a brain member is ACTIVE while its Chrome tab is open (a live
+  // targetId). If Chrome closed it, reopen the saved url and refresh the targetId. A no-op
+  // when the tab is already live. Presence is separate from mode: activating does NOT
+  // change the member's mode.
+  async function activate(ev, id) {
+    const roomName = curRoomName(ev);
+    if (!roomName) { await send?.(ev.chatId, 'no current room — /room <slug> join first'); return; }
+    const r = roomForName(roomName);
+    const m = (await r.members()).find((x) => x.id === id);
+    if (!m) { await send?.(ev.chatId, `no member '${id}' in ${roomName}`); return; }
+    if (m.kind !== 'brain') { await send?.(ev.chatId, `'${id}' is not a tab/brain member`); return; }
+    let liveIds = new Set();
+    try { liveIds = new Set((await cdp.listTabs()).map((t) => t.id)); } catch { /* no Chrome → treat as closed */ }
+    if (m.targetId && liveIds.has(m.targetId)) { await send?.(ev.chatId, `${id} already active · tab ${m.targetId}`); return; }
+    let newId;
+    try { newId = await cdp.openTab(m.url); } catch (e) { await send?.(ev.chatId, `/activate: failed — ${e?.message ?? e}`); return; }
+    await r.setMember({ ...m, targetId: newId });   // spread keeps state/adapter/url; targetId refreshed
+    await send?.(ev.chatId, `reopened ${m.url} · tab ${newId ?? '?'} · active`);
   }
 
   // Assemble the /status report as a fenced YAML block (operator 2026-07-02: the

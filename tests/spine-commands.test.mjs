@@ -806,12 +806,50 @@ describe('/room create <name>', () => {
     expect(Object.keys(files)).toHaveLength(0);
   });
 
-  it('/room (bare) and non-create subcommands note that only create is wired', async () => {
+  it('/room (bare) shows the usage line naming the wired subcommands', async () => {
     const { cmds, sent } = harness({ config: { whatsapp: { chat_id: '!self' } } });
     await cmds.run({ ...self, body: '/room' });
-    expect(sent[0].text).toMatch(/only .*create.* wired/i);
-    await cmds.run({ ...self, body: '/room join fam' });
-    expect(sent[1].text).toMatch(/only .*create.* wired/i);
+    expect(sent[0].text).toMatch(/usage/i);
+    expect(sent[0].text).toMatch(/create/);
+    expect(sent[0].text).toMatch(/join/);
+    expect(sent[0].text).not.toMatch(/recognized/);
+  });
+
+  // Slug-first grammar (Phase 2): `/room <slug> <verb>` — a non-create first token is a
+  // room slug, the second an unknown verb here (join/leave/members are the real ones).
+  it('/room <slug> <bad-verb> reports the unknown subcommand (not "create only")', async () => {
+    const { cmds, sent } = harness({ config: { whatsapp: { chat_id: '!self' } } });
+    await cmds.run({ ...self, body: '/room join fam' });   // slug=join, verb=fam
+    expect(sent[0].text).toMatch(/unknown subcommand/i);
+  });
+});
+
+// Phase 2 dispatch recognition: /rooms, /members, /activate are operator-gated commands
+// wired BEFORE the catch-all, so they never leak to E. (Behavior lives in
+// tests/rooms-members.test.mjs; here we lock only the recognition + non-leak.)
+describe('/rooms /members /activate — dispatch recognition', () => {
+  const self = { chatId: '!self', surface: 'whatsapp' };
+  const cfg = { whatsapp: { chat_id: '!self' } };
+
+  it('are recognized from the Self DM, refused from a random chat', () => {
+    const { cmds } = harness({ config: cfg });
+    for (const body of ['/rooms', '/members', '/activate chatgpt']) {
+      expect(cmds.isCommand({ body, chatId: '!self', surface: 'whatsapp' })).toBe(true);
+      expect(cmds.isCommand({ body, chatId: '!group', surface: 'whatsapp' })).toBe(false);
+    }
+  });
+
+  it('/members with no current room replies (not the unwired catch-all)', async () => {
+    const { cmds, sent } = harness({ config: cfg });
+    await cmds.run({ ...self, body: '/members' });
+    expect(sent[0].text).toMatch(/no current room/i);
+    expect(sent[0].text).not.toMatch(/recognized/);
+  });
+
+  it('/rooms with no saved rooms replies (not the catch-all)', async () => {
+    const { cmds, sent } = harness({ config: cfg });
+    await cmds.run({ ...self, body: '/rooms' });
+    expect(sent[0].text).not.toMatch(/recognized/);
   });
 });
 

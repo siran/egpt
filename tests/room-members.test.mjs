@@ -52,6 +52,20 @@ describe('Room base — members round-trip', () => {
     expect(await room.memberState('l')).toBe('muted');
   });
 
+  it('setMemberState changes ONLY the state, preserving the brain extras', async () => {
+    // a brain member carries adapter/url/targetId — a mode flip must not clobber them
+    await room.setMember({ kind: 'brain', id: 'chatgpt', state: 'muted', adapter: 'chatgpt-cdp', url: 'https://chatgpt.com/c/abc', targetId: 'GPT1' });
+    await room.setMemberState('chatgpt', 'mention');
+    expect(await room.memberState('chatgpt')).toBe('mention');
+    expect((await room.members())[0]).toMatchObject({ id: 'chatgpt', state: 'mention', adapter: 'chatgpt-cdp', url: 'https://chatgpt.com/c/abc', targetId: 'GPT1' });
+  });
+
+  it('setMemberState errors on an absent member and on an unknown state', async () => {
+    await room.setMember({ id: 'e', state: 'active' });
+    await expect(room.setMemberState('ghost', 'muted')).rejects.toThrow(/no member/);
+    await expect(room.setMemberState('e', 'loud')).rejects.toThrow(/unknown state/);
+  });
+
   it('removeMember removes by id; returns false when absent', async () => {
     await room.setMember({ id: 'e', state: 'active' });
     expect(await room.removeMember('e')).toBe(true);
