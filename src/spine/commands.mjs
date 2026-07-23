@@ -244,6 +244,18 @@ export function createCommands({
   roomForName = (name) => Room.named(name),
   listRoomNames = defaultListRoomNames,
   loadAdapters = defaultLoadAdapters,
+  // The conversation-room resolver (bug fix 2026-07-23): (surface, chatId) → the SAME Room the
+  // phase-4 relay reads its members from. BOOT INJECTS the shared resolver (contacts.resolve →
+  // Room.forChat — the IDENTICAL function boot's roomRelay.resolveMembers uses), so a member
+  // added via /members lands in the exact conversations/<surface>/<slug>/config.yaml the relay
+  // reads → an @<brain> on that conversation drives the relay. The default here is a read-only
+  // fallback (getContact → the known chat's slug) for standalone construction; boot's injected
+  // resolver is authoritative and is what guarantees write-here == read-there.
+  resolveConvRoom = async (surface, chatId) => {
+    if (!loadState) return null;
+    try { const slug = getContact(await loadState(), surface, chatId)?.slug; return slug ? Room.forChat(surface, slug) : null; }
+    catch { return null; }
+  },
   // Launch seam for /chrome — fires the Session-1 `egpt-chrome` scheduled task (default:
   // `schtasks /run /tn egpt-chrome`, see defaultLaunchChromeTask). Returns { ok } — false
   // when the task isn't registered (schtasks non-zero) or the spawn errored. Tests inject a
@@ -266,9 +278,10 @@ export function createCommands({
   const writeFile = io.writeFile ?? fsWriteFile;
   const mkdir = io.mkdir ?? fsMkdir;
 
-  // Which NamedRoom /members targets, per surface (the shell, a Beeper Self-DM). Kept
-  // in-memory for Phase 2 — a /room|/rooms <slug> join sets it; a fresh boot starts with
-  // none (the operator re-joins). surface-keyed so each surface has its own current room.
+  // The current NamedRoom, per surface (the shell, a Beeper Self-DM) — NamedRoom NAVIGATION
+  // only now: /rooms marks it "(current)", /room <slug> leave clears it. It NO LONGER gates
+  // /members (bug fix 2026-07-23: /members operates on the CURRENT CONVERSATION's room, the
+  // room the relay reads — see resolveConvRoom). Kept in-memory; a fresh boot starts with none.
   const currentRoom = new Map();   // surface -> room slug
   const surfaceOf = (ev) => ev?.surface ?? 'whatsapp';
   const curRoomName = (ev) => currentRoom.get(surfaceOf(ev)) ?? null;
@@ -653,7 +666,7 @@ export function createCommands({
     const sub = (rest || 'members').toLowerCase();
     if (sub === 'join') { await roomJoin(ev, slug); return; }
     if (sub === 'leave') { await roomLeave(ev, slug); return; }
-    if (sub === 'members') { await send?.(ev.chatId, await renderMembers(ev, slug)); return; }
+    if (sub === 'members') { await send?.(ev.chatId, await renderMembers(ev, roomForName(slug), slug)); return; }
     await send?.(ev.chatId, `/room ${slug}: unknown subcommand "${sub}" — join|leave|members`);
   }
 
@@ -710,16 +723,18 @@ export function createCommands({
     await send?.(ev.chatId, `not in '${slug}' — current room is ${curRoomName(ev) ? `'${curRoomName(ev)}'` : 'none'}`);
   }
 
-  // The roster of `roomName` as a fenced yaml block: each member's id, kind, live
-  // presence, and friendly mode. Presence for a brain member = its saved targetId is a
-  // LIVE tab (from listTabs); a listTabs hiccup degrades every brain to "inactive", never
-  // throws. Non-brain members read as "active" (a surface/chat member is present as such).
-  async function renderMembers(ev, roomName) {
+  // The roster of `room` (a Room object) as a fenced yaml block, labelled by `label`: each
+  // member's id, kind, live presence, and friendly mode. Presence for a brain member = its
+  // saved targetId is a LIVE tab (from listTabs); a listTabs hiccup degrades every brain to
+  // "inactive", never throws. Non-brain members read as "active" (a surface/chat member is
+  // present as such). Shared by /members (the conversation room) and /room <slug> members (a
+  // NamedRoom) — the caller passes the Room + its display label.
+  async function renderMembers(ev, room, label) {
     let ms = [];
-    try { ms = await roomForName(roomName).members(); } catch { ms = []; }
+    try { ms = await room.members(); } catch { ms = []; }
     let liveIds = new Set();
     try { liveIds = new Set((await cdp.listTabs()).map((t) => t.id)); } catch { /* no Chrome → all brains inactive */ }
-    const lines = [`${roomName} (${ms.length} members):`];
+    const lines = [`${label} (${ms.length} members):`];
     for (const m of ms) {
       const mode = STATE_TO_MODE[m.state] ?? m.state;
       const presence = m.kind === 'brain' ? ((m.targetId && liveIds.has(m.targetId)) ? 'active' : 'inactive') : 'active';
@@ -729,23 +744,29 @@ export function createCommands({
     return '```yaml\n' + lines.join('\n') + '\n```';
   }
 
-  // /members … — operate on the CURRENT room (bare = list; `add tab <n>`; `<id> mode <m>`).
+  // /members … — operate on the CURRENT CONVERSATION's room (bare = list; `add tab <n>`;
+  // `<id> mode <m>`). A conversation IS a room (the model): resolveConvRoom yields the SAME Room
+  // the phase-4 relay reads, so a member added here lands in the exact config.yaml resolveMembers
+  // reads → an @<brain> on this conversation drives the relay. NO "/room <slug> join" gate — the
+  // conversation you're in IS the room. (NamedRooms stay a separate explicit construct: /rooms +
+  // /room <slug> members inspect/manage them; relay-wiring NamedRooms is a later phase.)
   async function members(ev, rest) {
-    const roomName = curRoomName(ev);
-    if (!roomName) { await send?.(ev.chatId, 'no current room — /room <slug> join first'); return; }
-    if (!rest) { await send?.(ev.chatId, await renderMembers(ev, roomName)); return; }
+    const room = await resolveConvRoom(surfaceOf(ev), ev.chatId);
+    if (!room) { await send?.(ev.chatId, "can't resolve this conversation's room"); return; }
+    const label = room.slug ?? 'this conversation';
+    if (!rest) { await send?.(ev.chatId, await renderMembers(ev, room, label)); return; }
     const add = /^add\s+tab\s+(\d+)$/i.exec(rest);
-    if (add) { await membersAddTab(ev, roomName, Number(add[1])); return; }
+    if (add) { await membersAddTab(ev, room, Number(add[1])); return; }
     const mode = /^(\S+)\s+mode\s+(\S+)$/i.exec(rest);
-    if (mode) { await membersSetMode(ev, roomName, mode[1], mode[2]); return; }
+    if (mode) { await membersSetMode(ev, room, mode[1], mode[2]); return; }
     await send?.(ev.chatId, 'usage: /members | /members add tab <n> | /members <id> mode <disable|mention|all>');
   }
 
-  // /members add tab <n> — add the nth /tabs tab as a brain member of the current room,
+  // /members add tab <n> — add the nth /tabs tab as a brain member of the conversation's room,
   // IF an adapter drives its URL. No adapter (a random site) → refuse with the host, the
   // flagship message. On a match: add kind:brain, state:muted (mode:disable — "no chatter
   // reaches it yet"), persisting the adapter name + url + targetId for the phase-4 relay.
-  async function membersAddTab(ev, roomName, n) {
+  async function membersAddTab(ev, room, n) {
     let tabs;
     try { tabs = await cdp.listTabs(); } catch { await send?.(ev.chatId, 'no Chrome to list tabs from — try /chrome first'); return; }
     const tab = tabs[n - 1];
@@ -756,19 +777,18 @@ export function createCommands({
       return;
     }
     const id = shortAdapterId(adapter.name);
-    await roomForName(roomName).setMember({ kind: 'brain', id, state: 'muted', adapter: adapter.name, url: tab.url, targetId: tab.id });
+    await room.setMember({ kind: 'brain', id, state: 'muted', adapter: adapter.name, url: tab.url, targetId: tab.id });
     await send?.(ev.chatId, `added '${id}' (tab ${n} · adapter:${id}) — mode:disable (no chatter reaches it yet)`);
   }
 
   // /members <id> mode <disable|mention|all> — flip a member's mode. The friendly word
   // maps to the stored room-core token (setMemberState preserves adapter/url/targetId).
-  async function membersSetMode(ev, roomName, id, word) {
+  async function membersSetMode(ev, room, id, word) {
     const w = word.toLowerCase();
     const token = MODE_TO_STATE[w];
     if (!token) { await send?.(ev.chatId, `/members mode: unknown mode "${word}" — use disable|mention|all`); return; }
-    const r = roomForName(roomName);
-    if (!(await r.members()).some((m) => m.id === id)) { await send?.(ev.chatId, `no member '${id}' in ${roomName}`); return; }
-    await r.setMemberState(id, token);
+    if (!(await room.members()).some((m) => m.id === id)) { await send?.(ev.chatId, `no member '${id}' in this conversation`); return; }
+    await room.setMemberState(id, token);
     await send?.(ev.chatId, `${id} → mode:${w} (${MODE_GLOSS[w]})`);
   }
 
@@ -777,18 +797,17 @@ export function createCommands({
   // when the tab is already live. Presence is separate from mode: activating does NOT
   // change the member's mode.
   async function activate(ev, id) {
-    const roomName = curRoomName(ev);
-    if (!roomName) { await send?.(ev.chatId, 'no current room — /room <slug> join first'); return; }
-    const r = roomForName(roomName);
-    const m = (await r.members()).find((x) => x.id === id);
-    if (!m) { await send?.(ev.chatId, `no member '${id}' in ${roomName}`); return; }
+    const room = await resolveConvRoom(surfaceOf(ev), ev.chatId);
+    if (!room) { await send?.(ev.chatId, "can't resolve this conversation's room"); return; }
+    const m = (await room.members()).find((x) => x.id === id);
+    if (!m) { await send?.(ev.chatId, `no member '${id}' in this conversation`); return; }
     if (m.kind !== 'brain') { await send?.(ev.chatId, `'${id}' is not a tab/brain member`); return; }
     let liveIds = new Set();
     try { liveIds = new Set((await cdp.listTabs()).map((t) => t.id)); } catch { /* no Chrome → treat as closed */ }
     if (m.targetId && liveIds.has(m.targetId)) { await send?.(ev.chatId, `${id} already active · tab ${m.targetId}`); return; }
     let newId;
     try { newId = await cdp.openTab(m.url); } catch (e) { await send?.(ev.chatId, `/activate: failed — ${e?.message ?? e}`); return; }
-    await r.setMember({ ...m, targetId: newId });   // spread keeps state/adapter/url; targetId refreshed
+    await room.setMember({ ...m, targetId: newId });   // spread keeps state/adapter/url; targetId refreshed
     await send?.(ev.chatId, `reopened ${m.url} · tab ${newId ?? '?'} · active`);
   }
 

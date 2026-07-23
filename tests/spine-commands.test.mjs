@@ -839,10 +839,14 @@ describe('/rooms /members /activate — dispatch recognition', () => {
     }
   });
 
-  it('/members with no current room replies (not the unwired catch-all)', async () => {
+  it('/members replies (not the unwired catch-all) — targets the conversation room now', async () => {
+    // No resolveConvRoom / loadState wired in this harness → the default resolver can't resolve
+    // → a graceful "can't resolve this conversation's room", NEVER the catch-all or the dropped
+    // "no current room" gate. (The real conversation-room behavior lives in rooms-members.test.mjs.)
     const { cmds, sent } = harness({ config: cfg });
     await cmds.run({ ...self, body: '/members' });
-    expect(sent[0].text).toMatch(/no current room/i);
+    expect(sent[0].text).toMatch(/can't resolve this conversation/i);
+    expect(sent[0].text).not.toMatch(/no current room/i);
     expect(sent[0].text).not.toMatch(/recognized/);
   });
 

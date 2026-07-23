@@ -259,6 +259,18 @@ export async function boot({
   // old→new + write renames.log) run for KNOWN chats too, not just new ones.
   const contacts = createContacts({ loadState: _loadState, writeState: _writeState, io, onLog: (m) => log.line?.(`[contacts] ${m}`) });
 
+  // The ONE conversation-room resolver (bug fix 2026-07-23): contacts.resolve (the shared,
+  // self-healing slug lookup) → the conversation's Room. BOTH the phase-4 relay's resolveMembers
+  // (READ the roster) and the /members command family (WRITE the roster, via createCommands) go
+  // through this SAME function, so a member added by /members lands in the EXACT
+  // conversations/<surface>/<slug>/config.yaml the relay reads → an @<brain> on that conversation
+  // fires the relay. One resolver = write-here and read-there can never diverge (was two: /members
+  // wrote a NamedRoom, the relay read the ConversationRoom, so @chatgpt silently no-op'd).
+  const resolveConvRoom = async (surface, chatId) => {
+    const slug = await contacts.resolve(surface, chatId);
+    return slug ? Room.forChat(surface, slug) : null;
+  };
+
   // Voice/video transcription: the fallback CHAIN (remote node → local whisper-
   // server → cli), driven by config.transcription_service. One transcriber feeds
   // the bridge (voice notes) and the media service (a video's audio).
@@ -561,6 +573,7 @@ export async function boot({
     exit: announceAndExit,
     writeRewindTarget: (ref) => writeFile(join(EGPT_HOME, 'rewind-target.txt'), ref, 'utf8'),
     loadState: _loadState, writeState: _writeState,   // /e auto <mode> + the /e wizard persist into conversations.yaml
+    resolveConvRoom,                                  // (surface, chatId) → the conversation's Room — the SAME resolver the phase-4 relay reads members from, so /members writes where the relay reads (bug fix 2026-07-23)
     brains,                                           // the /e wizard resolves a picked agent type through the registry
     defaultKey,                                       // the persona being-id (its map key) — /e auto + /status + wizard key their per-conversation reads/writes/evictions off this, never 'e' (operator 2026-07-10)
     evictWarm: (key) => pool.evict(key),              // drop a re-pointed conversation's warm session so it respawns fresh
@@ -675,12 +688,14 @@ export async function boot({
   // dynamic-imports config/brains/<adapter>.mjs (memoized). A member reply is NOT an agent, so it
   // is stamped with the member id + a robot glyph via a dedicated member-scoped sender. The CDP
   // engine is the real cdp.streamFromTab (tests inject a fake). resolveMembers reads the room's
-  // roster the SAME way the heartbeat loader / commands do (contacts.resolve → Room.forChat).
+  // roster through resolveConvRoom — the SAME resolver /members WRITES through (createCommands
+  // above), so the roster the relay reads is exactly the one the operator edited on this
+  // conversation (bug fix 2026-07-23: previously the two resolved to different config.yaml files).
   const memberSender = createSender({ bridge, bodyEmojiOf: () => '🤖', labelOf: (id) => id, defaultKey });
   const _adapterMods = new Map();
   const roomRelay = createRoomRelay({
     resolveMembers: async (surface, chatId) => {
-      try { const slug = await contacts.resolve(surface, chatId); return slug ? await Room.forChat(surface, slug).members() : []; }
+      try { const room = await resolveConvRoom(surface, chatId); return room ? await room.members() : []; }
       catch { return []; }
     },
     adapterOf: async (name) => {
