@@ -10,7 +10,7 @@
 // the resident llama-server pattern egpt already uses for @l.
 //
 // Used by the transcriptor WORKER (src/tools/transcriptor.mjs wiring in
-// egpt.mjs) so the GPU box answers in ~encode+decode time, not +model-
+// egpt-spine.mjs) so the GPU box answers in ~encode+decode time, not +model-
 // load. The main spine's LOCAL fallback stays whisper-cli (rare path; no
 // reason to hold a resident model there).
 import { spawn } from 'node:child_process';

@@ -49,7 +49,7 @@ export function createDaemonRuntime(opts = {}) {
   const aliveGraceMs = opts.aliveGraceMs ?? 90_000;
   let childStartedAt = 0, livenessTimer = null;
 
-  // v2 entry takes no role flags; pass argv straight through (egpt.mjs ignores it).
+  // v2 entry takes no role flags; pass argv straight through (egpt-spine.mjs ignores it).
   const shellArgs = argv;
 
   let stopping = false;
@@ -64,7 +64,7 @@ export function createDaemonRuntime(opts = {}) {
   let wedgeStreak = 0;
   // Set by checkLiveness right before it SIGTERMs a wedged child, so the exit
   // handler can tell that kill apart from an operator-initiated stop. On POSIX a
-  // wedged child traps SIGTERM and exits 0 (egpt.mjs) — identical to a clean
+  // wedged child traps SIGTERM and exits 0 (egpt-spine.mjs) — identical to a clean
   // /exit — so without this flag the daemon would stop the whole service instead
   // of respawning. (On Windows kill() hard-terminates with a non-0 code, so it
   // "worked" there by accident; this makes the wedge-restart path uniform.)
@@ -192,9 +192,9 @@ export function createDaemonRuntime(opts = {}) {
 
   function spawnShell() {
     if (stopping) return null;
-    const appPath = join(root, 'egpt.mjs');
+    const appPath = join(root, 'egpt-spine.mjs');
     const args = [appPath, ...shellArgs];
-    log('starting node egpt.mjs');
+    log('starting node egpt-spine.mjs');
     childStartedAt = now();
     child = spawn('node', args, {
       cwd: root,
@@ -278,7 +278,7 @@ export function createDaemonRuntime(opts = {}) {
     const otherPid = liveDaemonPid({ pidFileContent, beatAgeMs: beatAge() });
     if (otherPid) {
       log(`another egpt daemon is already alive (spine pid ${otherPid}, alive.txt fresh) — refusing to start a second daemon that would fight over WhatsApp. Exiting.`);
-      log('to open an interactive shell instead, run `node egpt.mjs` (the app, not this supervisor) — it takes over the running daemon via the pidfile handshake and hands WA back when you /exit.');
+      log('to open an interactive shell instead, run `node egpt.mjs` — it opens the operator shell, which SERVES a WS the running spine dials into (no pidfile handshake, no WA handback; the shell and the spine run as independent processes).');
       processObj.exit(0);
       return false;
     }

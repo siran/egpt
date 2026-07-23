@@ -1,10 +1,10 @@
 // config-schema.mjs — registered top-level keys for ~/.egpt/config.json
 // (and the local override at .egpt/config.json).
 //
-// Adding a new EGPT_CONFIG.<key> read in egpt.mjs without registering it
+// Adding a new EGPT_CONFIG.<key> read in egpt-spine.mjs without registering it
 // here means /config rejects the key as 'unknown' — broken UX. The
 // integrity test in tests/integrity.test.mjs catches that mismatch by
-// grepping egpt.mjs for EGPT_CONFIG references and comparing with this
+// grepping egpt-spine.mjs for EGPT_CONFIG references and comparing with this
 // schema. So: when you read a new key, register it here too.
 //
 // Nested config blocks (e.g. `telegram` with sub-keys bot_token,

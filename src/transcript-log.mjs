@@ -5,7 +5,7 @@
 // received message — or a reply, surfaced or withheld — always lands in
 // conversations/<surface>/<slug>/transcript.md. The regression this guards
 // against: the bot→Wren `forceTarget` route bypassed runDefaultBrainTurn's logger
-// and Telegram went unlogged. The IO wrapper lives in egpt.mjs (`_logChatLine`).
+// and Telegram went unlogged. The IO wrapper lives in egpt-spine.mjs (`_logChatLine`).
 //
 // Pure + Node-import-free (so it can't drag node builtins into a bundled limb).
 import { renderFrontMatter } from './transcript-meta.mjs';

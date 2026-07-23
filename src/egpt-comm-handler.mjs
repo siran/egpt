@@ -7,7 +7,7 @@
 // (~/.egpt/inbox/ for inbound, ~/.egpt/outbox/ for outbound + control).
 //
 // PHASE 1 (this commit): module-level extraction only. Imported in-process
-// by egpt.mjs. Same lifecycle, same callbacks, same behavior — but the
+// by egpt-spine.mjs. Same lifecycle, same callbacks, same behavior — but the
 // outbox watcher is now decoupled from React's useEffect closure, with
 // dependencies threaded explicitly via the startOutboxWatcher options.
 // Lets us verify the boundary works before splitting processes.
@@ -24,7 +24,7 @@ import { randomUUID } from 'node:crypto';
 // The baileys bridge (and its startBaileysBridge / isBaileysPaired wrappers
 // that lived here) was REMOVED 2026-06-10 (operator: "remove baileys
 // completely"). The CDP WhatsApp-Web transport was removed 2026-06-21, so
-// beeper is now the only WhatsApp transport; egpt.mjs starts it directly. This
+// beeper is now the only WhatsApp transport; egpt-spine.mjs starts it directly. This
 // module keeps the transport-agnostic comm machinery: outbox/inbox watchers, stream-over-IPC
 // channel, and deliverBridgeReply.
 
@@ -78,7 +78,7 @@ import { randomUUID } from 'node:crypto';
 //      file IPC lost the file), how long should the handler block?
 //      Proposal: 30s, then resolve with delivered=false,
 //      lastError='stream-result timeout' so the existing fallback path
-//      in egpt.mjs kicks in.
+//      in egpt-spine.mjs kicks in.
 //   2. Update bursts: handler may call update() 20+ times per reply.
 //      One file per event would flood ~/.egpt/outbox/. Should we
 //      coalesce updates inside the proxy (debounce there too, e.g.
@@ -241,7 +241,7 @@ export function createStreamProxy({
  * tiny result-promise registry. Used during Phase 2b before the
  * keeper runs in its own process. The returned factory has the
  * exact same call shape as bridge.startStreamMessage so call-site
- * swaps in egpt.mjs are mechanical.
+ * swaps in egpt-spine.mjs are mechanical.
  *
  * Late wa-stream-result deliveries (after the proxy has finalized
  * via timeout) are silently dropped — pendingResults entry is
@@ -323,7 +323,7 @@ export function createInProcessStreamChannel(bridge) {
  * pattern, only the direction is reversed (handler is the READER,
  * keeper is the WRITER).
  *
- * Future Phase 2c step 3: egpt.mjs imports this and wires its
+ * Future Phase 2c step 3: egpt-spine.mjs imports this and wires its
  * existing onIncoming dispatch behind a startInboxWatcher subscription
  * keyed on { type: 'wa-inbound' }. Other event types (wa-qr,
  * wa-presence, wa-chat-seen, wa-chats-snapshot, wa-media-saved)

@@ -13,7 +13,7 @@
 // this formatter is body-agnostic.
 //
 // Pure + exported so tests/dispatch-line.test.mjs locks the shape (CONTRACT
-// C7.6). egpt.mjs `formatAutoDispatchLine` is a thin wrapper over this, and the
+// C7.6). egpt-spine.mjs `formatAutoDispatchLine` is a thin wrapper over this, and the
 // function is passed by reference into dispatch.mjs / slash/rules.mjs — so the
 // test guards the REAL formatter every surface uses, not a copy.
 

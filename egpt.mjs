@@ -1,22 +1,45 @@
 #!/usr/bin/env node
-// egpt.mjs — the v2 node.
+// egpt.mjs — the operator SHELL EDITOR entry (egpt v2).
 //
-// The node IS the loop. boot() wires the ports + services and runs the spine;
-// there is nothing else to choose. No role flags (--client/--headless/--spine),
-// no attach probe, no pidfile handshake — all of that was the old launcher's
-// machinery for an architecture that no longer exists. The profile (config,
-// conversations, state, claude sessions) is selected by EGPT_HOME (default
-// ~/.egpt). Supervised by egpt-daemon.mjs; run it directly to drive a node by hand.
-import { boot } from './src/spine/boot.mjs';
+// A standalone Ink app that SERVES ws://127.0.0.1:23375. The running spine's `shell-port`
+// limb (src/bridges/shell-port.mjs) dials INTO this server as a client — the editor is the
+// server, the spine is the client (plan §1: the spine is a CLIENT of its surface apps).
+// Composed lines forward to the spine as `{ text }`; the spine's replies arrive as
+// `{ text, chatId }` and render in the transcript. Closing this editor NEVER touches the
+// spine — the socket just closes and the limb idles + reconnects.
+//
+// No build step: v1's Ink shell used React.createElement in plain .mjs, so this runs with
+// `node egpt.mjs` — no bundler, no JSX.
+//
+//   Usage: node egpt.mjs [--port 23375] [--theme catppuccin]
+import process from 'node:process';
+import { createShellServer, SHELL_WS_PORT } from './src/shell/server.mjs';
+import { listThemes } from './src/tools/theme.mjs';
+import { runApp } from './src/shell/app.mjs';
 
-const app = await boot({ aliveMs: 60_000 });   // beat state/alive.txt every 60s via a spine heartbeat so the daemon sees the loop isn't wedged
-
-let stopping = false;
-function stop(code = 0) {
-  if (stopping) return;
-  stopping = true;
-  try { app.stop(); } catch { /* already torn down */ }
-  process.exit(code);
+function parseArgs(argv) {
+  const args = { port: SHELL_WS_PORT, theme: 'catppuccin' };
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--port') args.port = Number(argv[++i]) || args.port;
+    else if (argv[i] === '--theme') args.theme = argv[++i] ?? args.theme;
+  }
+  return args;
 }
-process.on('SIGTERM', () => stop(0));
-process.on('SIGINT', () => stop(0));
+
+const args = parseArgs(process.argv.slice(2));
+
+// Ink needs a TTY. In a pipe/redirect there is no terminal to draw to — say so and exit
+// cleanly (exit 1), rather than letting Ink throw a raw-mode error.
+if (!process.stdout.isTTY) {
+  console.error('egpt-shell: no TTY — run this in a real terminal (Ink cannot render to a pipe).');
+  process.exit(1);
+}
+
+const server = createShellServer({ port: args.port, onLog: () => {} });
+server.start();
+
+// listThemes reads config/themes (shipped) + ~/.egpt/themes (read-only); default catppuccin.
+const themes = await listThemes();
+const initialTheme = themes.includes(args.theme) ? args.theme : (themes.includes('catppuccin') ? 'catppuccin' : themes[0]);
+
+runApp({ server, themes, initialTheme, port: args.port });

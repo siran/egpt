@@ -14,7 +14,7 @@ import * as YAML from 'yaml';
 // Canonical config lives under ~/.egpt/config/ (operator 2026-06-23).
 export const CONFIG_YAML_PATH = join(EGPT_HOME, 'config', 'config.yaml');
 
-// Sync reader — egpt.mjs loads EGPT_CONFIG at module import time before any async
+// Sync reader — egpt-spine.mjs loads EGPT_CONFIG at module import time before any async
 // machinery is available. Missing file → empty {}; parse error → logged + empty.
 export function readConfigSync() {
   try { return YAML.parse(readFileSync(CONFIG_YAML_PATH, 'utf8')) ?? {}; }

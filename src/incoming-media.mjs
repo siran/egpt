@@ -10,13 +10,13 @@
 // This is that one implementation for the voice path. The limb supplies the
 // downloaded file + a reply mechanism + the host's enrolled/mute verdict + the
 // transcriber; the ack POLICY lives here. Saving to the chat's media/ folder is
-// the host's `_saveIncomingMedia` (egpt.mjs), reached via the limb's `onMedia`
+// the host's `_saveIncomingMedia` (egpt-spine.mjs), reached via the limb's `onMedia`
 // callback — also limb-agnostic.
 //
 // IMPORTANT: this module imports NOTHING Node-only. telegram.mjs (which imports
 // it) is bundled for the browser extension; pulling in transcribe.mjs (which
 // needs node:child_process) would break that build. The transcriber is INJECTED
-// by the host (egpt.mjs / the Beeper limb), which run in Node.
+// by the host (egpt-spine.mjs / the Beeper limb), which run in Node.
 
 import { flagDegenerateTranscript } from './transcript-repeat-guard.mjs';
 

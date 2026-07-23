@@ -5,7 +5,7 @@
 // little here to get wrong.
 //
 // No JSX / no build step — v1's Ink shell used React.createElement (`h`) in a plain .mjs,
-// so `node egpt-shell.mjs` runs with no bundler. We mirror that exactly.
+// so `node egpt.mjs` runs with no bundler. We mirror that exactly.
 //
 // Presentation ported from v1's Gen-A shell (deleted egpt.mjs, git 9de159a~1): the
 // <Static> transcript with chat-style day separators, the author/time line, and the

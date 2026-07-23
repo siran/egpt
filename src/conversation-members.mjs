@@ -11,7 +11,7 @@
 //
 // PURE: the per-being mode resolver is INJECTED (`modeFor`), so this module has
 // no dependency on EGPT_CONFIG or the live resolvers and is fully testable. The
-// host (egpt.mjs, Phase 1b-iii) supplies `modeFor` = the existing E/sibling
+// host (egpt-spine.mjs, Phase 1b-iii) supplies `modeFor` = the existing E/sibling
 // auto-mode resolution, so wiring this in preserves behavior exactly.
 
 import { normalizeResidents } from './conversations-state.mjs';
@@ -19,7 +19,7 @@ import { normalizeMemberState, DEFAULT_MEMBER_STATE } from './room-core.mjs';
 
 /**
  * Resolve the resident roster for a chat — an EXACT reproduction of the legacy
- * egpt.mjs logic: a per-chat override wins, else the global list, else the
+ * egpt-spine.mjs logic: a per-chat override wins, else the global list, else the
  * persona alone; disabled siblings (enabled:false) are dropped; never empty.
  * @returns {string[]} being names
  */

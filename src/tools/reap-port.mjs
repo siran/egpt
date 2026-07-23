@@ -1,6 +1,6 @@
 // reap-port.mjs — free a TCP port by killing whatever already listens on it.
 //
-// WHY: the worker supervisors (the @l llama-server in egpt.mjs, the resident
+// WHY: the worker supervisors (the @l llama-server in egpt-spine.mjs, the resident
 // whisper-server in whisper-server.mjs) spawn a child process bound to a fixed
 // port. On Windows a child is NOT killed when its parent exits, so a soft
 // /restart (the daemon respawns its shell) ORPHANS the worker — it keeps the

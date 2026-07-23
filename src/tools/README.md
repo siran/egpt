@@ -65,7 +65,7 @@ if he does so as the reply to the actual voice message."
 WA reply-to-message uses baileys' `quoted: { key, message }` field
 on sendMessage. The voice-stream path needs to thread this through:
 
-  egpt.mjs voice branch
+  egpt-spine.mjs voice branch
     → streamFactoryRef.current(initialText, { chatId, quoted })
         (today: only chatId is forwarded)
     → egpt-comm-handler.makeStream(initialText, { chatId }, proxyOpts)

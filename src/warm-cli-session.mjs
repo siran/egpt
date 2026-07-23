@@ -28,7 +28,7 @@ function normalizeCwd(p) {
 
 // Resolve the claude binary to a FULL path. A Windows SERVICE inherits a minimal
 // PATH (not the login PATH), and — verified the hard way (operator 2026-06-14:
-// DOLLY's Don ENOENT survived an `egpt.mjs` PATH prepend) — mutating
+// DOLLY's Don ENOENT survived an `egpt-spine.mjs` PATH prepend) — mutating
 // `process.env.PATH` at runtime does NOT reliably reach libuv's spawn path-search
 // on Windows. So don't rely on PATH: prefer an explicit override
 // (config `bin` / `EGPT_CLAUDE_BIN`), else the known per-user install

@@ -8,7 +8,7 @@
 // The recipient watches the model's understanding form in real time, not the
 // model parroting their words back. Modality-mirror of the /movie alien arc.
 //
-// Extracted verbatim from egpt.mjs submitInner (Phase C, ENGINE-SURFACE-
+// Extracted verbatim from egpt-spine.mjs submitInner (Phase C, ENGINE-SURFACE-
 // SEPARATION.md) — pure logic over injected deps, no module-level state, so
 // it is finally unit-testable. Behavior preserved except one fix: the
 // transcription-ERROR path now also drains an in-flight brain pass before

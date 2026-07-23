@@ -113,7 +113,7 @@ describe('daemon runtime fake-world harness', () => {
     expect(captured).toEqual({ pidFileContent: '4242\n', beatAgeMs: 10_000 });
   });
 
-  it('spawns the v2 entry (node egpt.mjs) from the fixed root — no role flags, stdio inherit', () => {
+  it('spawns the v2 entry (node egpt-spine.mjs) from the fixed root — no role flags, stdio inherit', () => {
     const root = 'C:/repo/egpt';
     const { runtime, children } = makeRuntime({ argv: [] });
 
@@ -121,7 +121,7 @@ describe('daemon runtime fake-world harness', () => {
 
     expect(children).toHaveLength(1);
     expect(children[0].cmd).toBe('node');
-    expect(children[0].args).toEqual([join(root, 'egpt.mjs')]);   // no --headless, no flags
+    expect(children[0].args).toEqual([join(root, 'egpt-spine.mjs')]);   // no --headless, no flags
     expect(children[0].opts).toMatchObject({
       cwd: root,
       stdio: 'inherit',   // NSSM captures stdout/stderr to the service logs

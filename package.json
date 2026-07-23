@@ -4,7 +4,8 @@
   "description": "Multi-bridge chat orchestrator — file is the conversation",
   "type": "module",
   "bin": {
-    "egpt": "./egpt.mjs"
+    "egpt": "./egpt.mjs",
+    "egpt-spine": "./egpt-spine.mjs"
   },
   "scripts": {
     "build:ext": "node extension/build.mjs",

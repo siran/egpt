@@ -2,7 +2,7 @@
 // (full mirror to shell + bus + other bridges) or an "observed chat"
 // (silent listening, persona-only dispatch back to the originating chat).
 //
-// The rule set lives here, outside egpt.mjs, so it can be unit-tested in
+// The rule set lives here, outside egpt-spine.mjs, so it can be unit-tested in
 // isolation — chat classification has been the source of every WA mirror
 // regression so far (group JID auto-captured as chat_id, LID self-DM
 // failing the phone-number match, stale chat_id surviving a fix).

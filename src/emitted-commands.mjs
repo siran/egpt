@@ -9,7 +9,7 @@
 //
 // This module is the PURE split only (no execution, no policy). The caller
 // classifies each candidate (known + allowlisted?) and decides run/block/keep;
-// see the runner in egpt.mjs. Allowlist + safety live there.
+// see the runner in egpt-spine.mjs. Allowlist + safety live there.
 
 // A line is a command CANDIDATE when, trimmed, it starts with '/' + a letter
 // and a command-shaped token (letters/digits/-). Order is preserved so prose

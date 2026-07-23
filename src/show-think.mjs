@@ -22,7 +22,7 @@
 // "add an empty new line between thinking statements" → spaceThinkStatements.
 //
 // Pure + exported so tests/show-think.test.mjs locks the shape and the two
-// surfaces (resident path + meta-brain path in egpt.mjs) share ONE formatter.
+// surfaces (resident path + meta-brain path in egpt-spine.mjs) share ONE formatter.
 
 // Live (in-flight) suffix — the operator's exact wording (2026-06-12 01:48:
 // "if you are thinking, the message should end with (thinking... 🤔)").

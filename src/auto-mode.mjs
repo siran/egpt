@@ -137,7 +137,7 @@ export function mayEmit(mode, { replyAllowed = undefined, isReaction = false } =
 // layered OVER the per-chat mode gate. `paused` is `whatsapp.auto_e_paused` —
 // when true NOTHING emits, overriding mode, mention, even 'on' and an explicit
 // '@e …' (operator 2026-06-03: a PAUSED @e still answered '@e estas?' before
-// this backstop). This is the pure, testable form of egpt.mjs
+// this backstop). This is the pure, testable form of egpt-spine.mjs
 // `_eMayReplyToChat`; that wrapper only resolves chatId→mode + reads the config
 // flag, then delegates here — so a test on this function locks the REAL gate,
 // pause-kill included, instead of a parallel copy.
