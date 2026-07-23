@@ -11,7 +11,10 @@ lands **before** multi-brain chat (phase 4).
   code. A feature gets a regression lock on neighboring behavior it must not break.
 - **Surgical.** Touch only what the phase needs; match surrounding style. Every
   changed line traces to the phase goal.
-- **Suite green before and after.** Baseline today: 124 files / 1677 tests.
+- **Suite green before and after.** Baseline: 126 files / 1718 tests (main tree,
+  after phase 1). NOTE: while an agent worktree exists under `.claude/worktrees/`,
+  `npx vitest run` double-scans it (~2× counts) — use
+  `npx vitest run --exclude "**/.claude/**"` for a clean main-tree count.
 - **Commit per chunk**, specific `git add` (never `add -A`). No AI attribution.
 - **Background agents do the coding**; the orchestrator scopes, verifies the diff,
   re-runs the suite, and commits. Agents must **not** commit and must **not** write
