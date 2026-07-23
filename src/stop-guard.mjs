@@ -44,12 +44,18 @@ export function parseStopWord(text) {
 // so it counts toward the cap. Signals (each defaults to "not that", so a caller wiring
 // only some of them still gets a correct answer):
 //   - backlog     : a woken node's replay is not a live human turn.
+//   - fromBrain   : a web-brain MEMBER's own reply re-entering the room (design B, phase 4):
+//                   the finalized reply is posted, then re-fed as a synthetic inbound so it
+//                   reaches the other brains + E. It is OUR output, so NON-human by provenance
+//                   (the flag rides `from`, set by the room relay) — it counts toward the cap,
+//                   which is exactly what bounds a two-brain room at guard.turns.
 //   - isEnvelope  : relay/provenance-tail traffic (src/spine/mesh.mjs, src/mesh/relay.mjs).
 //   - wasSentByUs : one of our OWN bot sends re-entering (id-based, src/bridges/beeper.mjs);
 //                   a being's own room fan-out is likewise ours. The bridge already
 //                   suppresses most of these upstream — this is the belt.
 export function isHumanTurn(ev, { isEnvelope = () => false, wasSentByUs = () => false } = {}) {
   if (!ev || ev.backlog) return false;
+  if (ev.fromBrain) return false;
   if (isEnvelope(ev)) return false;
   if (wasSentByUs(ev)) return false;
   return true;

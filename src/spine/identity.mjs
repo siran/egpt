@@ -57,6 +57,12 @@ export function createIdentity({ formatLine = formatDispatchLine, now = () => Da
         // 2026-07-08: a waking node backfills, never re-answers stale traffic).
         backlog: !!f.backlog,
         authorized: !!f.authorized, isSender: !!f.isSender, isVoice: !!f.isTranscriptFromVoice,
+        // Provenance for a web-brain member's re-entered reply (design B, phase 4): the room
+        // relay re-feeds a member's reply as a synthetic inbound with from.fromBrain = the
+        // producing member id. Carried onto the ev so isHumanTurn classifies it NON-human (it
+        // is our own output) and the relay never feeds a reply back to its own author. Absent
+        // on every genuine inbound → undefined → no effect.
+        fromBrain: f.fromBrain ?? null,
         raw: from,
       };
       // The one dispatch line, built once (C7.6e). A reaction/edit is a

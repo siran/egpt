@@ -34,6 +34,13 @@ describe('isHumanTurn — provenance, not display name', () => {
     expect(isHumanTurn({ ...humanMsg, backlog: true }, { isEnvelope })).toBe(false);
     expect(isHumanTurn(humanMsg, { isEnvelope, wasSentByUs: () => true })).toBe(false);
   });
+
+  it('a web-brain member reply re-entering the room (fromBrain) is NON-human by provenance (phase 4, design B)', () => {
+    // The room relay re-feeds a brain member's own reply as a synthetic inbound tagged
+    // fromBrain — it is OUR output, so it counts toward the cap (bounds a two-brain room),
+    // never resets it. Provenance, not display name (senderName is the member).
+    expect(isHumanTurn({ ...humanMsg, senderName: 'chatgpt', fromBrain: 'chatgpt' }, { isEnvelope })).toBe(false);
+  });
 });
 
 describe('2026-06-19 lock — mesh-posted-AS-operator counts toward the cap, does NOT reset', () => {

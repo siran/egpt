@@ -20,6 +20,9 @@ import { createWarmPool } from '../warm-sessions.mjs';
 import { createWarmCliSession } from '../warm-cli-session.mjs';
 import { readConfigSync } from '../tools/config-io.mjs';
 import { reapPort } from '../tools/reap-port.mjs';
+import * as cdp from '../tools/cdp.mjs';
+import { Room } from '../room-core.mjs';
+import { loadAdapterModule } from '../adapters/registry.mjs';
 import {
   CONV_YAML_PATH, parse as parseConvState, serialize as serializeConvState, emptyState, KNOWN_SURFACES, slugDir, getContact,
 } from '../conversations-state.mjs';
@@ -34,6 +37,7 @@ import { createRouter } from './router.mjs';
 import { createTranscript } from './transcript.mjs';
 import { createSender } from './sender.mjs';
 import { createBrainPool } from './brainpool.mjs';
+import { createRoomRelay } from './room-relay.mjs';
 import { createIngest, lifecycleExit } from './ingest.mjs';
 import { createCommands } from './commands.mjs';
 import { ownNodeNames } from './node-names.mjs';
@@ -665,7 +669,31 @@ export async function boot({
     catch { return null; }
   };
 
-  const spine = createSpine({ bridge, brain, ...services, commands, mesh, actions, advice, guard, guardOverride, defaultBeing: defaultKey, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
+  // PHASE 4 — room brain-member relay (design B: re-entry). Deliver a received room message to
+  // each brain member (config.yaml members[]) whose mode admits it; each reply streams into the
+  // room and re-enters the pipe as a synthetic non-human turn. chatgpt ONLY for now — adapterOf
+  // dynamic-imports config/brains/<adapter>.mjs (memoized). A member reply is NOT an agent, so it
+  // is stamped with the member id + a robot glyph via a dedicated member-scoped sender. The CDP
+  // engine is the real cdp.streamFromTab (tests inject a fake). resolveMembers reads the room's
+  // roster the SAME way the heartbeat loader / commands do (contacts.resolve → Room.forChat).
+  const memberSender = createSender({ bridge, bodyEmojiOf: () => '🤖', labelOf: (id) => id, defaultKey });
+  const _adapterMods = new Map();
+  const roomRelay = createRoomRelay({
+    resolveMembers: async (surface, chatId) => {
+      try { const slug = await contacts.resolve(surface, chatId); return slug ? await Room.forChat(surface, slug).members() : []; }
+      catch { return []; }
+    },
+    adapterOf: async (name) => {
+      if (!name) return null;
+      if (!_adapterMods.has(name)) _adapterMods.set(name, await loadAdapterModule(name));
+      return _adapterMods.get(name);
+    },
+    streamFromTab: cdp.streamFromTab,
+    openStream: (memberId, chatId, opts = {}) => memberSender.open(chatId, { being: memberId, replyTo: opts.replyTo ?? null }),
+    onLog: (m) => log.line?.(`[relay] ${m}`),
+  });
+
+  const spine = createSpine({ bridge, brain, ...services, commands, mesh, actions, advice, guard, guardOverride, roomRelay, defaultBeing: defaultKey, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
   // Bind the advice service's answer-routing dispatch now that the spine exists: an
   // operator answer in the advice channel re-enters the pipe as a turn in the origin chat.
   advice.useDispatch(spine.handleInbound);

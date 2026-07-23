@@ -35,6 +35,16 @@ export async function loadAdapters({ dir = ADAPTERS_DIR } = {}) {
   return out;
 }
 
+// Dynamic-import a single adapter module BY NAME (e.g. 'chatgpt-cdp') → the full module
+// (its injectScript/pollScript + urlMatch), or null if absent/broken. The room relay (design B,
+// phase 4) resolves a brain member's `adapter` this way to DRIVE it; kept beside loadAdapters so
+// the dir/path logic lives in one place. Never throws.
+export async function loadAdapterModule(name, { dir = ADAPTERS_DIR } = {}) {
+  if (!name) return null;
+  try { return await import(pathToFileURL(join(dir, `${name}.mjs`)).href); }
+  catch { return null; }
+}
+
 // The adapter whose urlMatch matches `url`, else null. Pure: `adapters` is the
 // already-loaded list (so this stays fs-free + test-injectable). First match wins.
 export function matchAdapter(url, adapters = []) {

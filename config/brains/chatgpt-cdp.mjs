@@ -7,7 +7,11 @@ export const requires = ['targetId'];
 export const homeUrl = 'https://chatgpt.com/';
 export const urlMatch = /chatgpt\.com|chat\.openai\.com/;
 
-const POLL_SCRIPT = `
+// The DOM poll heuristic (locale-stable) + the inject builder are EXPORTED so the room
+// relay (design B, phase 4) can drive them through streamFromTab directly —
+// `streamFromTab(targetId, adapter.injectScript(text), adapter.pollScript)`. stream()/peek()
+// below reuse the same two, so the adapter has ONE source of truth for its page knowledge.
+export const pollScript = `
 (() => {
   // Stop-button detection. Only use signals that are NOT translated by the UI:
   //   - data-testid (test hooks, locale-stable by convention)
@@ -36,7 +40,7 @@ const POLL_SCRIPT = `
 })()
 `;
 
-function buildInject(message, ask = null) {
+export function injectScript(message, ask = null) {
   return `
 (() => {
   const ta = document.querySelector('#prompt-textarea');
@@ -149,13 +153,13 @@ function buildInject(message, ask = null) {
 export function stream({ message, ask = null }, onUpdate, options = {}) {
   return cdp.streamFromTab({
     targetId: options.targetId,
-    injectScript: buildInject(message, ask),
-    pollScript: POLL_SCRIPT,
+    injectScript: injectScript(message, ask),
+    pollScript,
     onUpdate,
   });
 }
 
 export async function peek(options = {}) {
   if (!options.targetId) throw new Error('no tab bound to this session');
-  return cdp.peekTab(options.targetId, POLL_SCRIPT);
+  return cdp.peekTab(options.targetId, pollScript);
 }

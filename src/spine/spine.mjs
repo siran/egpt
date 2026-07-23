@@ -95,6 +95,7 @@ export function createSpine({
   advice,                              // optional §2c advice service (mode: auto — /ask + operator-answer routing)
   guard = null,                        // optional §2c stop-guard: the SINGLE per-channel loop-breaker + human STOP/RESUME (createStopGuard, boot-wired). Null = pipe runs unguarded (tests).
   guardOverride = null,                // optional (surface, chatId) => { turns?, window? } | null — the conversation's per-channel guard override (conversations.yaml). Null = node defaults only.
+  roomRelay = null,                    // optional §Phase-4 room brain-member fan-out (createRoomRelay, boot-wired): delivers a received room message to each brain member per mode, streams the reply back, and RE-ENTERS it as a non-human turn. Null = no web-brain members (byte-identical to before).
   defaultBeing = 'e',                  // the persona a mesh-target message is gated as (it's still THIS chat's message)
   clock = { now: () => Date.now() },
   log = {},
@@ -411,6 +412,25 @@ export function createSpine({
       else await guardCountNonHuman(ev, channel);
     }
 
+    // PHASE 4 — brain-member fan-out (design B: re-entry). Kicked off HERE, concurrently with
+    // E's own dispatch below (never blocking E's turn). It delivers this received room message
+    // to each brain member whose mode admits it; each member's finalized reply is streamed into
+    // the room AND re-enters handleFast as a synthetic NON-human turn (from.fromBrain) — reaching
+    // the OTHER brains + E (per E's own mode) and counted EXACTLY ONCE by the guardCountNonHuman
+    // above (on re-entry), never here. `blocked` short-circuits a channel the counter just tripped,
+    // so a runaway multi-brain room halts at guard.turns. Its completion promise folds into the
+    // turn this message resolves on (withRelay), so a caller awaits the fan-out too. Absent roomRelay
+    // (every existing pipe path) → null → handleFast is byte-identical to before.
+    const relayTurn = (roomRelay && !(guard && guard.blocked(channel)))
+      ? roomRelay.fanOut(ev, { blocked: () => !!(guard && guard.blocked(channel)), reenter: handleInbound })
+      : null;
+    // Fold the fan-out into whatever this message resolves on: a reply/context turn (Promise.all),
+    // a no-turn branch (the fan-out alone), or — no roomRelay — the original value unchanged.
+    const withRelay = (turn) => {
+      if (!relayTurn) return turn === undefined ? undefined : { turn };
+      return { turn: turn ? Promise.all([turn, relayTurn]).then(() => {}) : relayTurn };
+    };
+
     // Per-conversation turn key = the routed being + this conversation. It maps 1:1
     // to the warm-pool key (`<being>:<engine>:<surface>:<slug>`) at the granularity
     // that matters — same being, same chat — so serializing on it is exactly "one
@@ -425,7 +445,7 @@ export function createSpine({
     // prompted WITH it (full context), and run no turn. Only the operator's genuinely-
     // typed lines reach here — E's own auto replies come back isSender too but are dropped
     // upstream by the bridge's sent-id guard (wasSentByUs), never re-entering the spine.
-    if (d.mode === 'auto' && ev.isSender) { await transcript.log(ev); pushCycle(turnKey, ev.line ?? ev.body); extendDwell(turnKey); return; }
+    if (d.mode === 'auto' && ev.isSender) { await transcript.log(ev); pushCycle(turnKey, ev.line ?? ev.body); extendDwell(turnKey); return withRelay(); }
 
     // Does E actually RUN on this message? It runs when its reply could surface
     // (mayReply), OR when the chat is send_to_egpt:'always' (E stays in context
@@ -434,14 +454,14 @@ export function createSpine({
     // the line joins the conversation's cycle, so a queued mention arriving next sees
     // this ambient chatter in its accumulated prompt.
     const runE = d.mayReply || d.sendToEgpt === 'always';
-    if (!runE) { await transcript.log(ev); pushCycle(turnKey, ev.line ?? ev.body); return; }
+    if (!runE) { await transcript.log(ev); pushCycle(turnKey, ev.line ?? ev.body); return withRelay(); }
 
     // mesh-target forwarding (Phase 4b): an @being.node that lives on ANOTHER node is
     // not a local brain. Once gating has decided this chat is received+replyable, relay
     // the message to the target's node (a visible envelope) and stop — the reply streams
     // back into this chat as a living mirror. A local-being target has meshTarget=null
     // and falls through to the brain below.
-    if (meshTarget && mesh && d.mayReply) { await transcript.log(ev); await mesh.forward(ev, meshTarget); return; }
+    if (meshTarget && mesh && d.mayReply) { await transcript.log(ev); await mesh.forward(ev, meshTarget); return withRelay(); }
 
     // AUTO DWELL (auto chats only): a person messaging an auto chat doesn't get an instant
     // reply — a human reads the burst and wanders back. Log the message NOW (received =
@@ -454,7 +474,7 @@ export function createSpine({
       await transcript.log(ev);
       pushCycle(turnKey, ev.line ?? ev.body);
       armDwell(turnKey, { to, ev, mention });
-      return;
+      return withRelay();
     }
 
     if (d.mayReply) {
@@ -465,7 +485,7 @@ export function createSpine({
       // conversation, the placeholder opens in the QUEUED state and the turn WAITS its turn
       // on turnBy; when it reaches the front it activates and streams.
       const turn = openAndRunReply({ to, ev, d, turnKey });
-      return { turn };
+      return withRelay(turn);
     }
 
     // Context turn (send_to_egpt:'always', reply won't surface): E runs to stay
@@ -474,7 +494,7 @@ export function createSpine({
     // mention correctly queues behind it.
     bumpTrain(turnKey);
     const turn = turnBy(turnKey, () => runContextTurn({ to, ev, turnKey }));
-    return { turn };
+    return withRelay(turn);
   }
 
   // A brain turn under the per-turn TIMEOUT (DEFECT 2). Races the turn against the
