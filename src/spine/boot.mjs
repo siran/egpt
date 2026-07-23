@@ -21,8 +21,9 @@ import { createWarmCliSession } from '../warm-cli-session.mjs';
 import { readConfigSync } from '../tools/config-io.mjs';
 import { reapPort } from '../tools/reap-port.mjs';
 import {
-  CONV_YAML_PATH, parse as parseConvState, serialize as serializeConvState, emptyState, KNOWN_SURFACES, slugDir,
+  CONV_YAML_PATH, parse as parseConvState, serialize as serializeConvState, emptyState, KNOWN_SURFACES, slugDir, getContact,
 } from '../conversations-state.mjs';
+import { createStopGuard } from '../stop-guard.mjs';
 
 import { createIdentity, surfaceOf } from './identity.mjs';
 import { echoRank } from './echo-priority.mjs';
@@ -419,7 +420,6 @@ export async function boot({
     transcribeCfg: tx.cliCfg,
     resolveTranscriptionService: tx.resolveTranscriptionService,// { enabled, postsBack } per chat
     postsBackDelayMs: tx.postsBackDelayMs,                      // how fast the 👂 transcript echoes back
-    flood: cfg.flood ?? {},               // send-flood guard (limit / window_ms / cooldown_ms) per chat
     personaEmoji: bodyEmojiOf(defaultKey),// 🐶 — the marker the bridge uses to suppress E's own re-ingested messages
     // Per-NODE infra WRAP layers (operator 2026-07-12): bridge_signature_open/close bracket persona
     // replies + 👂 echoes (which SPINE posted: REVE kg vs DOLLY do); transcription_open/close is the
@@ -649,7 +649,23 @@ export async function boot({
   const { finestMs } = await heartbeatLoader.collect();
   const effectiveTickMs = tickMs > 0 ? Math.max(500, Math.min(tickMs, finestMs ?? tickMs)) : tickMs;
 
-  const spine = createSpine({ bridge, brain, ...services, commands, mesh, actions, advice, defaultBeing: defaultKey, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
+  // The SINGLE guard (C7.7, plans/260722-COMMAND-SURFACE-ROADMAP.md phase 3): N consecutive
+  // NON-HUMAN turns pause a channel; a genuine human message resets it (provenance, not display
+  // name — a mesh envelope posted AS the operator counts). Replaces the flood-guard + mesh
+  // breaker. Config `guard: { turns, window }` (turns -1 = off, window minutes -1 = pure
+  // consecutive). guardOverride reads the conversation's own `guard:` block (conversations.yaml)
+  // so a busy relay room can loosen/disable it — else the node defaults apply.
+  const guard = createStopGuard({
+    turns: Number.isFinite(cfg.guard?.turns) ? cfg.guard.turns : 6,
+    window: Number.isFinite(cfg.guard?.window) ? cfg.guard.window : -1,
+    onLog: (m) => log.line?.(`[guard] ${m}`),
+  });
+  const guardOverride = async (surface, chatId) => {
+    try { const g = getContact(await _loadState(), surface, chatId)?.entry?.guard; return (g && typeof g === 'object') ? g : null; }
+    catch { return null; }
+  };
+
+  const spine = createSpine({ bridge, brain, ...services, commands, mesh, actions, advice, guard, guardOverride, defaultBeing: defaultKey, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
   // Bind the advice service's answer-routing dispatch now that the spine exists: an
   // operator answer in the advice channel re-enters the pipe as a turn in the origin chat.
   advice.useDispatch(spine.handleInbound);

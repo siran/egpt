@@ -60,17 +60,18 @@ describe('createStopGuard — kill-switch', () => {
   });
 });
 
-describe('createStopGuard — loop-guard', () => {
-  it('warns once at the soft limit, auto-stops at the hard limit', () => {
-    const g = createStopGuard({ softLimit: 4, hardLimit: 8 });
+describe('createStopGuard — loop counter (config-driven turns)', () => {
+  it('warns a couple below the cap, auto-stops at `turns` (the 6th trips)', () => {
+    const g = createStopGuard({ turns: 6 });   // hard 6, soft 4 (a couple below)
     const actions = [];
-    for (let i = 0; i < 8; i++) actions.push(g.noteBeing('A'));
-    expect(actions).toEqual(['none', 'none', 'none', 'warn', 'none', 'none', 'none', 'stop']);
+    for (let i = 0; i < 6; i++) actions.push(g.noteBeing('A'));
+    expect(actions).toEqual(['none', 'none', 'none', 'warn', 'none', 'stop']);
+    expect(g.countOf('A')).toBe(6);
   });
 
   it('a human turn resets the count (normal human↔bot talk never trips it)', () => {
-    const g = createStopGuard({ softLimit: 4, hardLimit: 8 });
-    g.noteBeing('A'); g.noteBeing('A'); g.noteBeing('A');   // 3 being turns
+    const g = createStopGuard({ turns: 6 });
+    g.noteBeing('A'); g.noteBeing('A'); g.noteBeing('A');   // 3 non-human turns
     g.noteHuman('A');                                       // human resets
     const actions = [];
     for (let i = 0; i < 4; i++) actions.push(g.noteBeing('A'));
@@ -78,10 +79,39 @@ describe('createStopGuard — loop-guard', () => {
   });
 
   it('a "…" silence still consumes a slot (caller notes silences too)', () => {
-    const g = createStopGuard({ softLimit: 3, hardLimit: 5 });
+    const g = createStopGuard({ turns: 5 });   // hard 5, soft 3
     // three real replies + two silences with no human between → hard stop
     const actions = [g.noteBeing('A'), g.noteBeing('A'), g.noteBeing('A'), g.noteBeing('A'), g.noteBeing('A')];
     expect(actions[2]).toBe('warn');
     expect(actions[4]).toBe('stop');
+  });
+
+  it('turns: -1 (global) disables tripping entirely', () => {
+    const g = createStopGuard({ turns: -1 });
+    const actions = [];
+    for (let i = 0; i < 50; i++) actions.push(g.noteBeing('A'));
+    expect(actions.every((a) => a === 'none')).toBe(true);
+  });
+
+  it('a per-conversation override wins over the node default (tighten, loosen, disable)', () => {
+    const g = createStopGuard({ turns: 6 });
+    // tighten: this channel trips at 3 (hard 3, soft 1)
+    expect(g.noteBeing('tight', { turns: 3 })).toBe('warn');   // n=1 === soft 1
+    expect(g.noteBeing('tight', { turns: 3 })).toBe('none');
+    expect(g.noteBeing('tight', { turns: 3 })).toBe('stop');   // n=3 === hard
+    // disable: this channel never trips regardless of the node default
+    const off = [];
+    for (let i = 0; i < 20; i++) off.push(g.noteBeing('free', { turns: -1 }));
+    expect(off.every((a) => a === 'none')).toBe(true);
+  });
+
+  it('window (minutes) ages out old non-human turns so only recent ones count', () => {
+    let t = 0;
+    const g = createStopGuard({ turns: 4, window: 5, now: () => t });   // 5-min window, hard 4
+    expect(g.noteBeing('A')).toBe('none');            // t=0m → [0]              n=1
+    t = 4 * 60_000; expect(g.noteBeing('A')).toBe('warn');   // t=4m → [0,4m]   n=2 (soft 2)
+    t = 6 * 60_000; expect(g.noteBeing('A')).toBe('warn');   // t=6m → [4m,6m]  the t=0 turn aged out
+    t = 7 * 60_000; expect(g.noteBeing('A')).toBe('none');   // t=7m → [4m,6m,7m] n=3
+    t = 8 * 60_000; expect(g.noteBeing('A')).toBe('stop');   // t=8m → [4m,6m,7m,8m] n=4 → stop
   });
 });

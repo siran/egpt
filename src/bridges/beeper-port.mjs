@@ -14,7 +14,6 @@
 // unit-testable with a fake bridge — no Beeper, no network, no live account
 // (tests/beeper-port.test.mjs). The live echo verify is tests-manual/phase2-echo.mjs.
 import { startBeeperBridge } from './beeper.mjs';
-import { createFloodGuard } from '../flood-guard.mjs';
 import { applyLayers } from './signature-layers.mjs';
 
 // NOTE (placeholder id resolution): resolveSentMessageId (beeper.mjs) text-matches
@@ -61,12 +60,12 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
   // call time rather than capturing it at construction.
   let onMsg = null, onEditCb = null, onMediaCb = null;
 
-  // Flood guard — the LAST line of defense against a send flood (a reply loop, a
-  // backlog replay, an echo-suppression miss). Every outbound (send + stream open)
-  // passes through it; > `limit` to one chat within `windowMs` PAUSES that chat for
-  // `cooldownMs`. This is port-level, so it is not forwarded to startBeeperBridge.
-  const { flood = {}, ...rest } = opts;   // bridge_* + transcription_* stay in `rest` → forwarded to startBeeperBridge for the 👂 echo layers
-  const onLog = opts.onLog ?? (() => {});
+  // Runaway protection is no longer port-level: the SINGLE turn-counter guard
+  // (src/stop-guard.mjs, wired at the spine's prompt chokepoint) is the whole loop-breaker
+  // now — a provenance-aware count that catches the mesh-as-operator case the old port-level
+  // flood guard existed for (plans/260722-COMMAND-SURFACE-ROADMAP.md phase 3). So this
+  // adapter just shape-translates; every outbound passes straight through.
+  const { ...rest } = opts;   // bridge_* + transcription_* stay in `rest` → forwarded to startBeeperBridge for the 👂 echo layers
   // Per-NODE infra WRAP (operator 2026-07-12): bridge_signature_open/close bracket EVERY fully
   // persona-STAMPED message — open ABOVE, close BELOW — identifying WHICH SPINE posted (REVE `kg`
   // vs DOLLY `do` sharing one Beeper account). Concentric with the per-AGENT agent_signature_open/
@@ -86,14 +85,6 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
       { open: o.agentSigOpen ?? '', close: o.agentSigClose ?? '' },
     ]);
   };
-  const floodGuard = createFloodGuard({
-    limit: Number(flood.limit ?? 10) || 10,
-    windowMs: Number(flood.window_ms ?? 3_000) || 3_000,
-    cooldownMs: Number(flood.cooldown_ms ?? 60_000) || 60_000,
-    onTrip: (chat, n, win) => onLog(`flood-guard: ⛔ FLOOD on ${chat} — ${n} sends in ${win / 1000}s; sends PAUSED (cooldown)`),
-  });
-  const NOOP_STREAM = { update() {}, finish() {}, delete() {}, get delivered() { return false; }, get lastError() { return 'flood-paused'; }, fail() {} };
-
   const real = await start({
     ...rest,
     // Forward inbound to the spine. This resolves when the message's TURN completes
@@ -121,7 +112,6 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
     // The bridge ENFORCES the being's body_emoji (operator contract): prefix it
     // here so no caller can omit it.
     send(chat, text, opts = {}) {
-      if (!floodGuard.allow(chat)) { onLog(`flood-guard: send to ${chat} BLOCKED (flood pause)`); return { blocked: true }; }
       // wrapPersona brackets the reply with the bridge + agent layers only when a full persona
       // header was stamped (bodyEmoji + label) — covers the persona reply's non-streamed §7
       // fallback; a plain/auto send (no bodyEmoji) passes through unstamped + unwrapped.
@@ -139,9 +129,6 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
     // sender's job, so update/finish only stamp + pass text through. opts:
     // { persona, bodyEmoji, replyTo }.
     startStream(chat, init, opts = {}) {
-      // A stream OPEN counts as a send for the flood guard (a reply loop = many
-      // opens); a flood-paused chat gets an inert handle so the sender no-ops.
-      if (!floodGuard.allow(chat)) { onLog(`flood-guard: stream to ${chat} BLOCKED (flood pause)`); return NOOP_STREAM; }
       const stamp = (t) => personaStamp(opts.bodyEmoji, opts.label, t);
       // The placeholder is just the stamped init — it carries the body_emoji (so a
       // re-ingested copy is caught by the persona-marker echo-suppression). No nonce:
@@ -173,16 +160,13 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
     editStatus(chat, msgId, text) { return real.editMessage?.(chat, msgId, text); },
     deleteStatus(chat, msgId) { return real.deleteMessage?.(chat, msgId); },
 
-    // Conversation-E LIMBS (ROADMAP §3). react/sendMedia are OUTBOUND sends → flood-
-    // guarded (a limb loop = many sends); editOwn/deleteOwn mutate an existing message
-    // (no new send) so they skip the guard. A media caption + an edit are E speaking →
+    // Conversation-E LIMBS (ROADMAP §3). react/sendMedia are OUTBOUND sends; editOwn/deleteOwn
+    // mutate an existing message (no new send). A media caption + an edit are E speaking →
     // persona-stamped, exactly like send(). react/delete carry no persona text.
     react(chat, msgId, emoji) {
-      if (!floodGuard.allow(chat)) { onLog(`flood-guard: react to ${chat} BLOCKED (flood pause)`); return false; }
       return real.sendReaction?.(chat, msgId, emoji);
     },
     sendMedia(chat, filePath, opts = {}) {
-      if (!floodGuard.allow(chat)) { onLog(`flood-guard: media to ${chat} BLOCKED (flood pause)`); return false; }
       const caption = opts.caption != null ? personaStamp(opts.bodyEmoji, opts.label, opts.caption) : null;
       return real.sendMedia?.(chat, filePath, { caption });
     },

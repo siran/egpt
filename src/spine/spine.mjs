@@ -20,6 +20,7 @@
 import { makeSerialByKey } from '../serial-by-key.mjs';
 import { isBrainFailureResult } from '../brain-errors.mjs';
 import { replyLine } from '../transcript-log.mjs';
+import { isHumanTurn, parseStopWord } from '../stop-guard.mjs';
 
 // ---------------------------------------------------------------------------
 // Ports — the interfaces the loop depends on (injected, never global). §2b.
@@ -92,6 +93,8 @@ export function createSpine({
   mesh,                                // optional §2c mesh service (Phase 4b cross-node relay)
   actions,                             // optional §2c reply-actions service (E's limbs: react/reply/media/edit/delete emitted in a reply)
   advice,                              // optional §2c advice service (mode: auto — /ask + operator-answer routing)
+  guard = null,                        // optional §2c stop-guard: the SINGLE per-channel loop-breaker + human STOP/RESUME (createStopGuard, boot-wired). Null = pipe runs unguarded (tests).
+  guardOverride = null,                // optional (surface, chatId) => { turns?, window? } | null — the conversation's per-channel guard override (conversations.yaml). Null = node defaults only.
   defaultBeing = 'e',                  // the persona a mesh-target message is gated as (it's still THIS chat's message)
   clock = { now: () => Date.now() },
   log = {},
@@ -117,6 +120,27 @@ export function createSpine({
     if (!dep) throw new Error(`createSpine: missing required dependency '${name}'`);
   }
   const note = (s) => { try { log.line?.(s); } catch {} };
+
+  // --- GUARD (C7.7): the SINGLE per-channel loop-breaker + human STOP/RESUME, wired at
+  //     THIS chokepoint (handleFast) through which every inbound turn flows. Injected, so
+  //     a pipe built without it is byte-identical to before. The channel key is the
+  //     conversation (surface + chatId). "human" is decided by PROVENANCE (isHumanTurn) —
+  //     a mesh envelope posted AS the operator is NON-human, so it counts toward the cap
+  //     instead of resetting it (the 2026-06-19 hole a name-based counter missed). ---
+  const guardChannel = (ev) => `${ev.surface}:${ev.chatId}`;
+  const humanTurn = (ev) => isHumanTurn(ev, {
+    isEnvelope: (e) => !!mesh?.isEnvelope?.(e),
+    wasSentByUs: (e) => !!bridge.wasSentByUs?.(e.chatId, e.msgId),
+  });
+  // Count a NON-HUMAN turn toward the loop cap (resolving any per-conversation override)
+  // and auto-STOP the channel when the cap trips. The tripping turn still runs; the STOP
+  // pauses the NEXT one (blocked() is checked at the top of every dispatch path).
+  async function guardCountNonHuman(ev, channel) {
+    const override = guardOverride ? await Promise.resolve(guardOverride(ev.surface, ev.chatId)).catch(() => null) : null;
+    const action = guard.noteBeing(channel, override);
+    if (action === 'stop') { guard.stopChannel(channel); note(`guard: ${channel} auto-STOP — ${guard.countOf(channel)} consecutive non-human turns`); }
+    else if (action === 'warn') note(`guard: ${channel} nearing the loop cap (${guard.countOf(channel)})`);
+  }
 
   // --- the inbound queue (event-driven half). Bridge callbacks push; ONE async
   //     pump drains the FAST phase serially — identity → command/mesh → route →
@@ -317,13 +341,37 @@ export function createSpine({
     // a muted/mention chat.
     if (commands?.isCommand?.(ev)) { await transcript.log(ev); await commands.run(ev); return; }
 
+    // GUARD (C7.7): the channel is the conversation (surface + chatId). Resolved once
+    // for the safe-word + the loop counter below; null when no guard is wired.
+    const channel = guard ? guardChannel(ev) : null;
+
+    // Operator safe-word: a bare STOP/STOP ALL/RESUME/RESUME ALL from an AUTHORIZED sender
+    // pauses or clears prompting for this channel (or globally). Before gating so it lands
+    // in any mode; logged like any inbound, then NEVER routed to a brain. STOP is stronger
+    // than a mode pause — a stopped channel never reaches a brain (gated below + in the
+    // envelope path); a later human turn resets the loop count, but only RESUME clears STOP.
+    if (guard && ev.authorized) {
+      const word = parseStopWord(ev.body);
+      if (word) { await transcript.log(ev); guard.applyControl(word, channel); note(`guard: '${word}' @ ${channel}`); return; }
+    }
+
     // Inbound mesh envelope: a message carrying a provenance tail is relay traffic,
     // not chat — decode + act on it (a request at the responder, a reply/mirror-update
     // at the origin) and stop. Detected EARLY, before gating: an envelope is ADDRESSED
     // traffic, so it bypasses this chat's ambient reply modes (the responder's own
     // being-turn still respects that being's availability, inside mesh.handle). Logged
-    // like any received message first (C1.2).
-    if (mesh?.isEnvelope?.(ev)) { await transcript.log(ev); await mesh.handle(ev); return; }
+    // like any received message first (C1.2). A relay envelope is NON-human traffic (it
+    // may DISPLAY as the operator — the 2026-06-19 loop), so it counts toward the loop cap;
+    // a STOPPED channel suppresses the responder turn entirely.
+    if (mesh?.isEnvelope?.(ev)) {
+      await transcript.log(ev);
+      if (guard) {
+        if (guard.blocked(channel)) { note(`guard: ${channel} stopped — mesh turn suppressed`); return; }
+        await guardCountNonHuman(ev, channel);
+      }
+      await mesh.handle(ev);
+      return;
+    }
 
     // Advice answer (mode: auto): the operator quote-replied in the advice channel to one
     // of E's /ask questions — route that answer into the ORIGIN conversation instead of
@@ -350,6 +398,18 @@ export function createSpine({
     // 'off' → not received: not logged, not processed (C4). Every OTHER mode is
     // logged below — a received message is never silently dropped (C1.2).
     if (!d.receives) return;
+
+    // GUARD (C7.7): classify this received turn by PROVENANCE + gate a stopped channel. A
+    // genuine human message RESETS the loop counter (so normal human↔bot talk never trips);
+    // a non-human turn (a being's own room fan-out re-entering, later phases) counts toward
+    // the cap. A STOPPED channel is logged (C1.2) but never prompts — cleared only by RESUME,
+    // never by a mere human turn. Runs before the reply/dwell/context branches so every
+    // received message resets or counts exactly once.
+    if (guard) {
+      if (guard.blocked(channel)) { await transcript.log(ev); note(`guard: ${channel} stopped — prompt suppressed`); return; }
+      if (humanTurn(ev)) guard.noteHuman(channel);
+      else await guardCountNonHuman(ev, channel);
+    }
 
     // Per-conversation turn key = the routed being + this conversation. It maps 1:1
     // to the warm-pool key (`<being>:<engine>:<surface>:<slug>`) at the granularity

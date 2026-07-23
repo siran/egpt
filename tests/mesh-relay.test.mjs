@@ -159,21 +159,10 @@ describe('mesh relay — YAML provenance over a shared channel', () => {
     expect(p.body).toBe('hi @don');
   });
 
-  it('CIRCUIT BREAKER: a runaway is capped — mesh sends to a channel stop after the cap', async () => {
-    const sends = [];
-    const relay = createMeshRelay({
-      node: 'do',
-      send: async (_r, t) => { sends.push(t); },
-      isLocalBeing: () => true,
-      runBeing: async () => 'ok',
-      resolveRoute: () => ({ room_id: 'C' }),
-      log: () => {},
-    });
-    for (let i = 0; i < 20; i++) {
-      await relay.onRoomMessage({ route: { room_id: 'C' }, text: encodeMesh({ by: 'An', body: `hi @don ${i}`, from: 'HFM', to: 'don.do' }) });
-    }
-    expect(sends.length).toBeLessThanOrEqual(5);   // 20 requests, but the breaker halts the flood
-  });
+  // (The mesh-local circuit breaker was removed with the guard unification —
+  // plans/260722-COMMAND-SURFACE-ROADMAP.md phase 3. Runaway relay traffic is now bounded by
+  // the single turn-counter guard at the spine chokepoint, which counts every observed
+  // envelope as a non-human turn; see tests/guard-provenance.test.mjs.)
 
   // ── STREAMING — a LIVING MIRROR (An 2026-06-21): the responder edit-streams ONE
   //    relay-room message; the origin mirrors EVERY edit onto its placeholder. The

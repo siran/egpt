@@ -120,6 +120,6 @@ networks:
 # default_time_zone: "America/New_York"                       # timezone-less heartbeat times
 # warm: { max: 6, idle_ttl_by_class: { conversation: 15m } }  # keep chats warm; 0 = never evict
 # compaction: { enabled: true, ratio: 0.20, cooling_ms: 120000 }
-# flood: { limit: 10, window_ms: 3000, cooldown_ms: 60000 }   # send-loop guard
+# guard: { turns: 6, window: -1 }   # loop-breaker: N consecutive non-human turns pause a channel (a human msg resets); -1 turns = off, -1 window = pure consecutive count
 # advice_channel: "EGPT AUTO"     # mode:auto consult chat (fail-closed if unset)
 # aliases: { "@whatsapp_5215512345678:beeper.local": An }     # /status display labels

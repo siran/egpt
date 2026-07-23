@@ -266,23 +266,14 @@ export function createMeshRelay({
   const markReplyDone = (k) => { repliesDone.add(k); if (repliesDone.size > REPLIES_DONE_CAP) repliesDone.delete(repliesDone.values().next().value); };
   const notify = ack || surface;
 
-  // CIRCUIT BREAKER — a hard, mesh-local bound that no parse bug can defeat: cap
-  // mesh sends per channel per window. If the cap trips, mesh sends to that
-  // channel STOP (logged loudly). This is the fail-safe the bot↔bot loop-guard
-  // could NOT provide (the mesh path runs before it AND posts as the operator, so
-  // the guard never saw it). Belt to the parser's suspenders.
-  const _sendLog = new Map();   // routeKey -> [ts]
-  const SEND_CAP = 5, SEND_WINDOW = 20_000;
+  // Mesh sends are no longer bounded HERE: the SINGLE turn-counter guard (src/stop-guard.mjs,
+  // wired at the spine's prompt chokepoint) now counts EVERY relay envelope this node observes
+  // as a NON-human turn — provenance-based, so a mesh message posted AS the operator is caught,
+  // the exact 2026-06-19 case the old mesh-local circuit breaker existed for. A runaway channel
+  // is STOPPED there, which suppresses the responder turn. So this is a thin send wrapper now,
+  // kept so every call site's `if (!ok)` path is preserved (plans/260722-COMMAND-SURFACE-ROADMAP.md
+  // phase 3 — turn-counter is the one guard).
   async function guardedSend(route, text) {
-    const key = String(route?.room_id ?? route?.chat ?? JSON.stringify(route ?? null));
-    const t = Date.now();
-    const arr = (_sendLog.get(key) || []).filter((x) => t - x < SEND_WINDOW);
-    if (arr.length >= SEND_CAP) {
-      _sendLog.set(key, arr);
-      log(`mesh: ⛔ CIRCUIT BREAKER tripped — ${arr.length}+ sends in ${SEND_WINDOW / 1000}s to ${key}; mesh sends PAUSED (loop guard)`);
-      return false;
-    }
-    arr.push(t); _sendLog.set(key, arr);
     await send(route, text);
     return true;
   }
@@ -290,9 +281,9 @@ export function createMeshRelay({
   // ── MULTI-HOP TRANSIT: a spine that isn't the destination forwards the message one hop
   //    toward it, via resolveRoute(destNode). No engine-level forward-once is needed — each
   //    node observes a given envelope ONCE (a node never re-sees its own posts: bridge echo
-  //    suppression; and a foreign re-delivery dedups by message id at the bridge). The
-  //    guardedSend circuit breaker is the hard backstop. It never forwards back the way the
-  //    message came (that would echo).
+  //    suppression; and a foreign re-delivery dedups by message id at the bridge). The spine's
+  //    turn-counter guard is the hard backstop now (it counts every observed envelope). It never
+  //    forwards back the way the message came (that would echo).
   const _routeKey = (r) => String(r?.room_id ?? r?.chat ?? JSON.stringify(r ?? null));
   async function forwardToward(destNode, prov, fromRoute) {
     if (!destNode) return false;
@@ -467,8 +458,8 @@ export function createMeshRelay({
       // and forward into its OWN configured route (relay agent's channel, else mesh.nodes). This
       // generalizes to an ARBITRARY-length chain: each hop only knows its OWN relay-record and
       // forwards one step. No engine-level forward-once is needed — each node observes a given
-      // envelope once (self-echo suppression + the bridge's per-id dedup); the guardedSend
-      // circuit breaker is the hard backstop.
+      // envelope once (self-echo suppression + the bridge's per-id dedup); the spine's
+      // turn-counter guard is the hard backstop.
       const _rec = await resolveBeingRelay(being);
       if (_rec) {
         // MULTIPATH (operator 2026-07-06: an agent is a list of paths) — a list-shaped relay record

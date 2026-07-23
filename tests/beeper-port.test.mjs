@@ -137,24 +137,10 @@ describe('beeper-port adapter', () => {
     expect(await spy.captured.onMessageEdit('!room', 'm1', 'new', 'old')).toBe(true);
   });
 
-  it('flood guard: blocks sends to a chat once it exceeds the limit within the window', async () => {
-    const { start, spy } = fakeStart();
-    const port = await createBeeperBridgePort({ flood: { limit: 3, window_ms: 10000 } }, { start });
-    for (let i = 0; i < 3; i++) await port.send('!room', `m${i}`);
-    const r = await port.send('!room', 'over');            // 4th within the window → over limit
-    expect(r).toEqual({ blocked: true });
-    expect(spy.sent).toHaveLength(3);                       // only the first 3 reached the transport
-  });
-
-  it('flood guard: a paused chat gets an inert stream handle (a reply loop can’t open new streams)', async () => {
-    const { start, spy } = fakeStart();
-    const port = await createBeeperBridgePort({ flood: { limit: 2, window_ms: 10000 } }, { start });
-    await port.send('!room', 'a'); await port.send('!room', 'b');   // at the limit
-    const s = port.startStream('!room', '⏳');                       // over → inert handle
-    expect(s.delivered).toBe(false);
-    s.update('x'); s.finish('y');
-    expect(spy.streams).toHaveLength(0);                             // no real stream opened
-  });
+  // (The port-level flood guard was removed with the guard unification —
+  // plans/260722-COMMAND-SURFACE-ROADMAP.md phase 3. The single turn-counter guard at the
+  // spine chokepoint is the whole loop-breaker now; its coverage lives in
+  // tests/stop-guard.test.mjs + tests/guard-provenance.test.mjs.)
 
   it('isAlive + stop proxy to the real bridge', async () => {
     const { start, spy } = fakeStart();
