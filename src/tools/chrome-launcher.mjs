@@ -11,7 +11,6 @@
 import { spawn } from 'node:child_process';
 import { existsSync, readdirSync, statSync, readFileSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { EGPT_HOME } from '../egpt-home.mjs';
 
@@ -52,7 +51,7 @@ const defaultFs = { existsSync, readdirSync, statSync };
 const defaultReadFile = (p) => readFileSync(p, 'latin1');
 
 // Immediate subdirectory names of `dir`, or [] if it doesn't exist / can't be read. Never
-// throws — a missing ~/.egpt-v1 tree is the common case on a fresh v2 install.
+// throws — a missing chrome/profiles tree is the common case on a fresh v2 install.
 function listSubdirs(fs, dir) {
   try {
     return fs.readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
@@ -97,10 +96,10 @@ function cookiesMtimeMs(fs, dir) {
  * defaulting to the (usually blank) v2 profile dir. Pure-ish + NEVER throws: every fs touch is
  * read-only and wrapped, and all seams are injectable so tests run against temp dirs.
  *
- * Candidate roots, in PRIORITY order:
+ * Candidate roots, in PRIORITY order — ALL under <egptHome>:
  *   1. <egptHome>/chrome/profiles/brain            — the v2 default
- *   2. every immediate subdir of <home>/.egpt-v1/config/browser/  — discovers the v1
- *      `egpt-extension`, `chrome`, and any other profile the operator used (NOT hardcoded)
+ *   2. every OTHER immediate subdir of <egptHome>/chrome/profiles/  — discovers any additional
+ *      profile the operator used (e.g. a future `brain2`), NOT hardcoded
  *
  * Preference of the returned dir:
  *   (a) an AI-brain (History/Cookies mentions an AI site) — if several qualify, the v2 default
@@ -110,17 +109,18 @@ function cookiesMtimeMs(fs, dir) {
  *
  * @param {object}   [opts]
  * @param {string}   [opts.egptHome]  - profile root (default: EGPT_HOME)
- * @param {string}   [opts.home]      - user home (default: os.homedir())
  * @param {object}   [opts.fs]        - { existsSync, readdirSync, statSync } (default: node:fs)
  * @param {function} [opts.readFile]  - (path) => string; defaults to readFileSync(path,'latin1')
- * @returns {string} an absolute profile directory
+ * @returns {string} an absolute profile directory, always under egptHome
  */
-export function resolveBrainProfile({ egptHome = EGPT_HOME, home = homedir(), fs = defaultFs, readFile = defaultReadFile } = {}) {
-  const v2Default = join(egptHome, 'chrome', 'profiles', 'brain');
+export function resolveBrainProfile({ egptHome = EGPT_HOME, fs = defaultFs, readFile = defaultReadFile } = {}) {
+  const profilesRoot = join(egptHome, 'chrome', 'profiles');
+  const v2Default = join(profilesRoot, 'brain');
 
   const candidates = [v2Default];
-  const v1Browser = join(home, '.egpt-v1', 'config', 'browser');
-  for (const sub of listSubdirs(fs, v1Browser)) candidates.push(join(v1Browser, sub));
+  for (const sub of listSubdirs(fs, profilesRoot)) {
+    if (sub !== 'brain') candidates.push(join(profilesRoot, sub));
+  }
 
   const real = candidates.filter((dir) => isRealProfile(fs, dir));
   const aiBrains = real.filter((dir) => isAiBrain(fs, readFile, dir));
