@@ -35,11 +35,19 @@ if (!process.stdout.isTTY) {
   process.exit(1);
 }
 
-const server = createShellServer({ port: args.port, onLog: () => {} });
+// Do NOT swallow server/socket faults. Ink owns the screen, so a raw console.error would
+// corrupt the TUI — instead forward only FAULT lines (announce/socket/server/send failures;
+// the plain connect/disconnect/announce info lines the app already tracks by polling stay
+// quiet) to the app, which renders them as loud `error` transcript rows.
+const errorListeners = [];
+const server = createShellServer({
+  port: args.port,
+  onLog: (m) => { if (/fail|error/i.test(m)) for (const fn of errorListeners) fn(m); },
+});
 server.start();
 
 // listThemes reads config/themes (shipped) + ~/.egpt/themes (read-only); default catppuccin.
 const themes = await listThemes();
 const initialTheme = themes.includes(args.theme) ? args.theme : (themes.includes('catppuccin') ? 'catppuccin' : themes[0]);
 
-runApp({ server, themes, initialTheme, port: args.port });
+runApp({ server, themes, initialTheme, port: args.port, onError: (fn) => errorListeners.push(fn) });

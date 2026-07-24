@@ -19,7 +19,9 @@ import React from 'react';
 import { render, Box, Text, Static, useInput, useApp } from 'ink';
 import { loadTheme } from '../tools/theme.mjs';
 import * as edit from './input.mjs';
+import * as hist from './history.mjs';
 import { routeCommand } from './commands.mjs';
+import { notDeliveredMessage } from './delivery.mjs';
 
 const { createElement: h, useState, useEffect, Fragment } = React;
 
@@ -48,28 +50,41 @@ function withDaySeparators(items) {
 }
 
 // One transcript row (or a day separator). `you` = the operator's own line, `egpt` = a
-// reply pushed by the spine, `system` = the editor's own local notices (theme, drops).
+// reply pushed by the spine, `system` = the editor's own local notices (theme, drops),
+// `error` = a delivery failure or other fault — kept loud on purpose, never swallowed.
 function renderItem(T, it) {
   if (it._sep) return h(Box, { key: it.id, marginTop: 1 }, h(Text, { color: T.meta }, `── ${it.body} ──`));
   const isSystem = it.author === 'system';
   const isYou = it.author === 'you';
-  const emoji = isYou ? '🦅' : '🧠';
-  const label = isYou ? 'you' : isSystem ? 'shell' : 'egpt';
-  const color = isYou ? T.authorYou : isSystem ? T.authorSystem : T.authorBrain;
+  const isError = it.author === 'error';
+  const emoji = isYou ? '🦅' : isError ? '⚠️' : '🧠';
+  const label = isYou ? 'you' : isError ? 'error' : isSystem ? 'shell' : 'egpt';
+  const color = isYou ? T.authorYou : isError ? T.error : isSystem ? T.authorSystem : T.authorBrain;
   return h(Box, { key: it.id, flexDirection: 'column', marginBottom: 1 },
     h(Text, { color, bold: true }, `${emoji} ${label} `, h(Text, { color: T.meta }, `(${hhmm(it.ts)})`)),
     ...String(it.body).split('\n').map((line, i) =>
-      h(Text, { key: i, italic: isSystem, color: isSystem ? T.systemBody : undefined }, line || ' ')));
+      h(Text, { key: i, italic: isSystem, bold: isError, color: isSystem ? T.systemBody : isError ? T.error : undefined }, line || ' ')));
+}
+
+// Rebuild a compose state from plain text (used when history recall drops a past line into
+// the composer) — cursor lands at the end, mirroring a shell recalling a history entry.
+function stateFromText(t) {
+  const lines = String(t).split('\n');
+  return { lines, row: lines.length - 1, col: lines[lines.length - 1].length };
 }
 
 // The multi-line compose input — structure ported from v1's MultiLineInput, but every key
-// delegates to the pure reducer in input.mjs. Ctrl+D submits, Enter is a newline.
+// delegates to the pure reducer in input.mjs. Ctrl+D submits, Enter is a newline. ↑/↓ move
+// the cursor within a multi-line draft as before; only at the top/bottom row boundary —
+// where edit.up/edit.down are a no-op (same object back, checked by reference) — do they
+// fall through to history.mjs's ↑/↓ recall.
 function MultiLineInput({ onSubmit }) {
   const [st, setSt] = useState(edit.empty());
+  const [hbuf, setHbuf] = useState(hist.empty());
   useInput((input, key) => {
     if (key.ctrl && input === 'd') {
       const t = edit.text(st);
-      if (t.trim()) onSubmit(t);
+      if (t.trim()) { onSubmit(t); setHbuf(hist.push(hbuf, t)); }
       setSt(edit.empty());
       return;
     }
@@ -77,8 +92,22 @@ function MultiLineInput({ onSubmit }) {
     if (key.backspace || key.delete) return setSt(edit.backspace(st));
     if (key.leftArrow) return setSt(edit.left(st));
     if (key.rightArrow) return setSt(edit.right(st));
-    if (key.upArrow) return setSt(edit.up(st));
-    if (key.downArrow) return setSt(edit.down(st));
+    if (key.upArrow) {
+      const moved = edit.up(st);
+      if (moved !== st) return setSt(moved);
+      const r = hist.up(hbuf, edit.text(st));
+      if (!r) return;
+      setHbuf(r.state);
+      return setSt(stateFromText(r.text));
+    }
+    if (key.downArrow) {
+      const moved = edit.down(st);
+      if (moved !== st) return setSt(moved);
+      const r = hist.down(hbuf);
+      if (!r) return;
+      setHbuf(r.state);
+      return setSt(stateFromText(r.text));
+    }
     if (key.ctrl && input === 'a') return setSt(edit.home(st));
     if (key.ctrl && input === 'e') return setSt(edit.end(st));
     if (!input || key.ctrl || key.meta) return;
@@ -95,7 +124,7 @@ function MultiLineInput({ onSubmit }) {
     }));
 }
 
-function App({ server, themes, initialTheme, port }) {
+function App({ server, themes, initialTheme, onError }) {
   const { exit } = useApp();
   const [items, setItems] = useState([]);
   const [themeName, setThemeName] = useState(initialTheme);
@@ -106,6 +135,8 @@ function App({ server, themes, initialTheme, port }) {
 
   useEffect(() => {
     server.onSpineMessage(m => add('egpt', m.text));
+    // Server/socket faults (from egpt.mjs's onLog sink) surface as loud error rows, never swallowed.
+    onError?.(m => add('error', m));
     // Poll the connection so the status line reflects the spine dialing in/out. shell-port's
     // backoff can take up to ~60s to connect on a fresh start (known MVP limitation).
     const iv = setInterval(() => setConnected(server.isConnected), 1000);
@@ -132,22 +163,21 @@ function App({ server, themes, initialTheme, port }) {
     if (r.action === 'clear') { setItems([]); return; }
     if (r.action === 'theme') { applyTheme(r.arg); return; }
     add('you', r.text);
-    if (!server.send(r.text)) add('system', 'not connected — the spine has not dialed in yet; message not sent (up to ~60s after a fresh start)');
+    const wasConnected = server.isConnected;
+    if (!server.send(r.text)) add('error', notDeliveredMessage(wasConnected));
   };
 
   return h(Fragment, null,
     h(Static, { items: withDaySeparators(items) }, (it) => renderItem(T, it)),
     h(Box, { flexDirection: 'column', marginTop: 1 },
-      h(Text, null,
-        h(Text, { color: T.statusBrand, bold: true }, '🧠 egpt shell'),
-        h(Text, { color: connected ? T.authorBrain : T.error }, connected ? '  ● spine connected' : '  ○ waiting for spine'),
-        h(Text, { color: T.statusSessions }, `  theme:${themeName}  :${port}`)),
-      h(Text, { color: T.hint }, 'Enter=newline · Ctrl+D=send · Ctrl+C=exit · /theme /clear /exit are local · all else → spine'),
+      // No permanent status/hint chrome — only exceptional state gets a line: the spine
+      // being down. A healthy, connected editor shows nothing here at all.
+      connected ? null : h(Text, { color: T.error, bold: true }, '○ spine disconnected — waiting for it to dial in (up to ~60s after a fresh start)'),
       h(MultiLineInput, { onSubmit: submit })));
 }
 
 // v1 rendered Ink with NO JSX and exitOnCtrlC:false so its own Ctrl+C handler ran; we mirror
 // both. Returns the Ink instance (has .waitUntilExit()).
-export function runApp({ server, themes, initialTheme = 'catppuccin', port }) {
-  return render(h(App, { server, themes, initialTheme, port }), { exitOnCtrlC: false });
+export function runApp({ server, themes, initialTheme = 'catppuccin', onError }) {
+  return render(h(App, { server, themes, initialTheme, onError }), { exitOnCtrlC: false });
 }

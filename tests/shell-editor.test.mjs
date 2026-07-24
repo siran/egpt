@@ -1,6 +1,6 @@
 // shell-editor.test.mjs — the operator SHELL EDITOR's testable logic layers (server /
-// input / commands). The Ink view (src/shell/app.mjs) is TTY-bound and NOT unit-tested;
-// these three pure/near-pure modules carry all the logic it delegates to.
+// input / commands / history / delivery). The Ink view (src/shell/app.mjs) is TTY-bound and
+// NOT unit-tested; these pure/near-pure modules carry all the logic it delegates to.
 //
 // The editor is the WS SERVER on 23375; the spine's shell-port limb dials INTO it as a
 // client. So the server test uses a REAL `ws` client as the FAKE SPINE against a REAL
@@ -14,12 +14,19 @@
 //      chunk length); multi-line paste splices + lands the cursor at the last line's end;
 //      Ctrl+A/E move to line bounds; backspace joins lines.
 //   3. commands router: /theme|/clear|/exit are editor-local actions; everything else forwards.
+//   4. history buffer: ↑ walks back through submitted entries oldest-ward, ↓ walks forward
+//      and restores the pre-navigation draft past the newest entry; both no-op (return null)
+//      past their respective ends instead of wrapping or throwing.
+//   5. delivery: notDeliveredMessage() renders a distinct, non-empty line for "never
+//      connected" vs. "send failed while connected" so a dropped send is never silent.
 import { describe, it, expect, afterEach } from 'vitest';
 import { once } from 'node:events';
 import { WebSocket } from 'ws';
 import { createShellServer } from '../src/shell/server.mjs';
 import * as edit from '../src/shell/input.mjs';
 import { routeCommand } from '../src/shell/commands.mjs';
+import * as hist from '../src/shell/history.mjs';
+import { notDeliveredMessage } from '../src/shell/delivery.mjs';
 
 async function waitFor(pred, ms = 1000) {
   const t0 = Date.now();
@@ -140,5 +147,57 @@ describe('shell editor — commands router', () => {
   it('/status and plain text forward to the spine', () => {
     expect(routeCommand('/status')).toEqual({ action: 'forward', text: '/status' });
     expect(routeCommand('hello')).toEqual({ action: 'forward', text: 'hello' });
+  });
+});
+
+describe('shell editor — history buffer (↑/↓ recall)', () => {
+  it('up() with no entries is a no-op (null)', () => {
+    expect(hist.up(hist.empty(), 'draft')).toBeNull();
+  });
+
+  it('down() when not navigating is a no-op (null)', () => {
+    expect(hist.down(hist.empty())).toBeNull();
+  });
+
+  it('↑ walks back oldest-ward through submitted entries, newest first', () => {
+    let h = hist.empty();
+    h = hist.push(h, 'first');
+    h = hist.push(h, 'second');
+
+    const r1 = hist.up(h, 'unsent draft');
+    expect(r1.text).toBe('second');       // most recent entry first
+    const r2 = hist.up(r1.state, 'unsent draft');
+    expect(r2.text).toBe('first');         // then the older one
+    expect(hist.up(r2.state, 'unsent draft')).toBeNull();   // nothing older than the oldest
+  });
+
+  it('↓ walks forward and restores the pre-navigation draft past the newest entry', () => {
+    let h = hist.empty();
+    h = hist.push(h, 'first');
+    h = hist.push(h, 'second');
+
+    const up1 = hist.up(h, 'my draft');   // → 'second', captures 'my draft'
+    const down1 = hist.down(up1.state);
+    expect(down1.text).toBe('my draft');   // walked past the newest entry → draft restored
+    expect(down1.state.cursor).toBeNull();
+  });
+
+  it('push() ends navigation and starts a fresh round', () => {
+    let h = hist.empty();
+    h = hist.push(h, 'a');
+    const up1 = hist.up(h, 'b-in-progress');
+    h = hist.push(up1.state, 'b');   // submitting while mid-navigation
+    expect(h.entries).toEqual(['a', 'b']);
+    expect(h.cursor).toBeNull();
+  });
+});
+
+describe('shell editor — delivery-failure notice', () => {
+  it('renders a distinct, non-empty line for each cause and never silently drops', () => {
+    const neverConnected = notDeliveredMessage(false);
+    const failedWhileConnected = notDeliveredMessage(true);
+    expect(neverConnected).toMatch(/not delivered/i);
+    expect(failedWhileConnected).toMatch(/not delivered/i);
+    expect(neverConnected).not.toBe(failedWhileConnected);
   });
 });
