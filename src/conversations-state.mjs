@@ -1006,16 +1006,27 @@ export function ensureContact(state, surface, jid, ctx = {}) {
     const cur = resolved.entry;
     let changed = false;
     let patch = cur;
+    // A fixed-slug seat (shell 'main' → lobby) WINS over a stored slug: an entry persisted
+    // under a name-derived slug (e.g. shell-2607201416, minted before the lobby seat existed)
+    // is migrated to the fixed slug so ('shell','main') ALWAYS resolves to lobby — existing
+    // contact or not. Slug only here; the conversation_path backfill below (keyed off patch.slug)
+    // rewrites the path to the fixed folder. The orphaned old on-disk folder is left as-is (a
+    // fixed seat is not worth a folder move — renamedFrom/To stay null so the caller won't move it).
+    if (fixed && cur.slug !== fixed) {
+      patch = { ...patch, slug: fixed };
+      changed = true;
+    }
     if (ctx.pushedName && cur.pushedName !== ctx.pushedName) {
       patch = { ...patch, pushedName: ctx.pushedName };
       changed = true;
     }
     // Backfill the STORED conversation_path for an already-known entry (operator 2026-06-27:
     // the path must be stored). One-time per entry: once written it equals the desired value,
-    // so this stops churning. A rename below overrides it for the new slug. (threadCwd is
-    // retired 2026-07-02 — no v2 reader; _SLIM_DROP purges any stray key on write.)
-    const _wantPath = conversationPathOf(surface, cur.slug);
-    if (cur.conversation_path !== _wantPath) { patch = { ...patch, conversation_path: _wantPath }; changed = true; }
+    // so this stops churning. Keyed off patch.slug so a fixed-slug migration above (or a rename
+    // below) lands the path on the CURRENT slug. (threadCwd is retired 2026-07-02 — no v2 reader;
+    // _SLIM_DROP purges any stray key on write.)
+    const _wantPath = conversationPathOf(surface, patch.slug);
+    if (patch.conversation_path !== _wantPath) { patch = { ...patch, conversation_path: _wantPath }; changed = true; }
     // Track the CURRENT name (operator 2026-06-14: "the slug must be updated with
     // the current contact/group name, not frozen"). Whenever the chat's title
     // (pushedName) changes — including a 'contact-<ts>' placeholder finally

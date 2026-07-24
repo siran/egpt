@@ -115,6 +115,52 @@ describe('shell-port limb', () => {
     expect(clock.timers).toHaveLength(1);                         // still just backing off
   });
 
+  describe('@e wakes E — the shell `from` carries the mention flags identity.build reads', () => {
+    // THE BLOCKER: the shell built `from` WITHOUT atEStart/atEAnywhere, so a shell `@e` arrived
+    // with the mention gate false → identity.build → E was never woken. The limb now runs the SAME
+    // wake matcher (mentionStatus) the beeper bridge does, stamping the flags onto `from`. These
+    // lock the `from` shape the shell hands the spine — the smallest surface that reproduces the bug.
+    function fromFor(text, wakeWords) {
+      const { WebSocket, sockets } = makeFakeWs();
+      const port = createShellPort({ WebSocket, wakeWords });
+      let captured = null;
+      port.onMessage(({ from }) => { captured = from; });
+      port.start();
+      sockets[0].fire('open');
+      sockets[0].fire('message', Buffer.from(text));
+      return captured;
+    }
+
+    it('a bare-text "@e hi" frame → atEStart AND atEAnywhere true', () => {
+      const from = fromFor('@e hi');
+      expect(from.atEStart).toBe(true);
+      expect(from.atEAnywhere).toBe(true);
+    });
+
+    it('"@e" mid-message → atEAnywhere true, atEStart false', () => {
+      const from = fromFor('hey @e look');
+      expect(from.atEAnywhere).toBe(true);
+      expect(from.atEStart).toBe(false);
+    });
+
+    it('no wake word → both false (E stays gated out, as before — but now CORRECTLY, not by omission)', () => {
+      const from = fromFor('hello');
+      expect(from.atEAnywhere).toBe(false);
+      expect(from.atEStart).toBe(false);
+    });
+
+    it('an @e inside a code fence does NOT wake — mentionStatus strips code, and it flows through the limb', () => {
+      const from = fromFor('```\n@e in a fence\n```');
+      expect(from.atEAnywhere).toBe(false);
+      expect(from.atEStart).toBe(false);
+    });
+
+    it('a configured handle (@ed) wakes when passed in wakeWords; a bare @e does not (custom handles honored)', () => {
+      expect(fromFor('@ed status', ['ed']).atEAnywhere).toBe(true);
+      expect(fromFor('@e status', ['ed']).atEAnywhere).toBe(false);
+    });
+  });
+
   describe('poke() — the editor announced itself via ingest, connect NOW', () => {
     it('while disconnected with a pending reconnect timer: cancels the timer, resets the backoff, and dials a fresh socket immediately', () => {
       const { WebSocket, sockets } = makeFakeWs();

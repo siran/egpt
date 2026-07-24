@@ -13,6 +13,9 @@
 // is a dumb pipe, exactly like beeper-port (plan §2, §8). Everything after the inbound
 // event — interpreter, gating, fan-out — is the spine's, shared with every limb.
 import WS from 'ws';
+// The SAME wake matcher the beeper limb uses (auto-mode.mjs) — reused, never duplicated,
+// so a shell `@e` is recognized by identical rules (code-fence-stripped, word-boundary).
+import { mentionStatus } from '../auto-mode.mjs';
 
 // The editor serves this fixed port; the spine dials out (like Beeper's fixed 23373).
 // Exported so boot + tests share the one number (plan §3, §9 — fixed port, not discovery).
@@ -33,6 +36,7 @@ const SHELL_USER = 'operator';
  * @param {object} opts
  * @param {string} [opts.url]                 the editor's ws endpoint (default ws://127.0.0.1:23375)
  * @param {typeof WS} [opts.WebSocket]        INJECTION SEAM — the `ws` client constructor (default the real import; tests pass a fake editor so NO real socket opens)
+ * @param {string[]} [opts.wakeWords]         the persona's wake-word set (name + configured handles), SAME set boot hands the beeper bridge. Undefined → mentionStatus' built-in e/egpt defaults.
  * @param {(m: string) => void} [opts.onLog]
  * @param {typeof globalThis.setTimeout} [opts.setTimeout]     reconnect-timer seam (tests inject a fake clock so no real wait blocks)
  * @param {typeof globalThis.clearTimeout} [opts.clearTimeout]
@@ -40,6 +44,7 @@ const SHELL_USER = 'operator';
 export function createShellPort({
   url = `ws://127.0.0.1:${SHELL_WS_PORT}`,
   WebSocket = WS,
+  wakeWords,
   onLog = () => {},
   setTimeout: setTimeoutFn = globalThis.setTimeout,
   clearTimeout: clearTimeoutFn = globalThis.clearTimeout,
@@ -78,9 +83,13 @@ export function createShellPort({
       _chatIds.add(chatId);
       // The `from` the identity service consumes: network 'shell' → the shell SURFACE +
       // 'kg' node; authorized so an operator slash command (`/status`, `/chrome kg`) is
-      // recognized (the shell is the operator's own trusted local console). No mention
-      // flags / reply-to — the interpreter reads the body.
-      const from = { chatId, chatName: 'shell', network: 'shell', userId: SHELL_USER, senderName: SHELL_USER, authorized: true, msgKey: null };
+      // recognized (the shell is the operator's own trusted local console). MENTION FLAGS
+      // computed here (mirrors beeper.mjs' `mentionStatus(text, wakeWords)`): without them
+      // a shell `@e` arrived with atEAnywhere unset → identity.build → the mention gate
+      // stayed false → E was gated out and never woke. reply-to stays null (no quoting on
+      // the shell surface).
+      const st = mentionStatus(text, wakeWords);
+      const from = { chatId, chatName: 'shell', network: 'shell', userId: SHELL_USER, senderName: SHELL_USER, authorized: true, msgKey: null, atEStart: st.atEStart, atEAnywhere: st.atEAnywhere };
       // Fire-and-forget into the spine (the beeper dispatch does the same): a slow turn
       // must not block the socket's read loop, and a handler throw is logged, never fatal.
       try { Promise.resolve(onMsg?.({ body: text, from })).catch((e) => onLog(`shell: onMessage threw — ${e?.message ?? e}`)); }

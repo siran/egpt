@@ -480,7 +480,7 @@ export async function boot({
   // beeper limb dials Beeper Desktop. Its inbound feeds the SAME pipeline (wired below,
   // after the spine exists) and its command replies route back over its own socket (see
   // the routed `send` handed to createCommands). A dumb pipe — no command logic here.
-  const shellPort = createShellPort({ onLog: (m) => log.line?.(`[shell] ${m}`) });
+  const shellPort = createShellPort({ wakeWords, onLog: (m) => log.line?.(`[shell] ${m}`) });
 
   // --- lifecycle announce: "restarting…" to Self before exit, "back up! <commit>"
   //     on the next boot. The bounce is otherwise invisible to the operator. ---

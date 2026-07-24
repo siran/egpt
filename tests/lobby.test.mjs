@@ -37,6 +37,35 @@ describe('lobby slug — the shell console seat is the durable lobby, not an aut
     expect(norm(slugDir('shell', 'lobby'))).toMatch(/conversations\/shell\/lobby$/);
   });
 
+  it('ensureContact("shell","main") MIGRATES an existing shell-<ts> entry to lobby (fixed slug wins over the stored slug)', () => {
+    // The persisted operator contact predates the lobby seat: contacts.shell.main stores the
+    // throwaway shell-2607201416 the name-derived path once minted. A fixed-slug seat must WIN —
+    // resolve to lobby AND rewrite conversation_path — so transcript/members/relay all key the
+    // lobby, not the orphaned old folder. Before the fix, step-1 returned the stored slug unchanged.
+    const seeded = {
+      contacts: {
+        shell: {
+          main: {
+            slug: 'shell-2607201416',
+            conversation_path: '.egpt/conversations/shell/shell-2607201416',
+            home_dir: 'stub',
+            threadId: null,
+            pushedName: 'shell',
+          },
+        },
+      },
+    };
+    const ens = ensureContact(seeded, 'shell', 'main', { pushedName: 'shell' });
+    expect(ens.slug).toBe('lobby');
+    expect(ens.changed).toBe(true);
+    expect(ens.entry.slug).toBe('lobby');
+    expect(norm(ens.entry.conversation_path)).toMatch(/conversations\/shell\/lobby$/);
+    // the returned STATE carries the migrated entry (not just the return value)
+    expect(getContact(ens.state, 'shell', 'main')?.slug).toBe('lobby');
+    // the orphaned old on-disk folder is left as-is — no folder move signalled to the caller
+    expect(ens.renamedFrom == null).toBe(true);
+  });
+
   it('contacts.resolve("shell","main") returns lobby and NEVER re-slugs to shell-<ts> on re-sight', async () => {
     let state = emptyState();
     let writes = 0;

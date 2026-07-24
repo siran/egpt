@@ -156,7 +156,18 @@ describe('/members add tab <n> — adapter-matched, added disabled, in the conve
     expect(sent.at(-1).text).toMatch(/mode:disable/);
     // persisted to the CONVERSATION's config.yaml, extra fields intact
     const m = (await (await resolveConvRoom(self.surface, self.chatId)).members()).find((x) => x.id === 'chatgpt');
-    expect(m).toMatchObject({ kind: 'brain', id: 'chatgpt', state: 'muted', adapter: 'chatgpt-cdp', url: 'https://chatgpt.com/c/abc', targetId: 'GPT1' });
+    expect(m).toMatchObject({ kind: 'brain', id: 'chatgpt', state: 'muted', adapter: 'chatgpt-cdp', url: 'https://chatgpt.com/c/abc', targetId: 'GPT1', title: 'ChatGPT' });
+  });
+
+  it('/members lists a brain member MULTILINE — its url + captured tab title on their own indented lines', async () => {
+    const cdp = { listTabs: async () => threeTabs };
+    const { cmds, sent } = harness({ cdp });
+    await cmds.run({ ...self, body: '/members add tab 1' });   // chatgpt tab, title 'ChatGPT'
+    await cmds.run({ ...self, body: '/members' });
+    const text = sent.at(-1).text;
+    expect(text).toMatch(/chatgpt\s+brain/);                    // the id/kind summary line stays (multiline, not replaced)
+    expect(text).toMatch(/url:\s+https:\/\/chatgpt\.com\/c\/abc/);
+    expect(text).toMatch(/title:\s+ChatGPT/);
   });
 
   it('add tab 3 (gmail) → REFUSED, "no adapter matches <host>", nothing persisted', async () => {

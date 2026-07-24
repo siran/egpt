@@ -762,6 +762,12 @@ export function createCommands({
       const mode = STATE_TO_MODE[m.state] ?? m.state;
       const presence = m.kind === 'brain' ? ((m.targetId && liveIds.has(m.targetId)) ? 'active' : 'inactive') : 'active';
       lines.push(`  · ${m.id}   ${m.kind}   ${presence}   mode:${mode}`);
+      // A brain member carries the tab it drives — surface its url + title (captured at add
+      // time) on their own indented lines so /members shows WHICH tab, not just its id.
+      if (m.kind === 'brain') {
+        if (m.url) lines.push(`      url:   ${m.url}`);
+        if (m.title) lines.push(`      title: ${m.title}`);
+      }
     }
     if (!ms.length) lines.push('  (no members yet)');
     return '```yaml\n' + lines.join('\n') + '\n```';
@@ -808,7 +814,7 @@ export function createCommands({
     const existing = await room.members();
     const same = existing.find((m) => m.kind === 'brain' && m.url === tab.url);
     if (same) {
-      await room.setMember({ ...same, targetId: tab.id });
+      await room.setMember({ ...same, targetId: tab.id, title: tab.title });
       const modeWord = STATE_TO_MODE[same.state] ?? same.state;
       await send?.(ev.chatId, `refreshed '${same.id}' (tab ${n}) — mode:${modeWord}`);
       return;
@@ -816,7 +822,7 @@ export function createCommands({
     const taken = new Set(existing.map((m) => m.id));
     let id = base, i = 2;
     while (taken.has(id)) id = `${base}-${i++}`;
-    await room.setMember({ kind: 'brain', id, state: 'muted', adapter: adapter.name, url: tab.url, targetId: tab.id });
+    await room.setMember({ kind: 'brain', id, state: 'muted', adapter: adapter.name, url: tab.url, targetId: tab.id, title: tab.title });
     await send?.(ev.chatId, `added '${id}' (tab ${n} · adapter:${base}) — mode:disable (no chatter reaches it yet)`);
   }
 
