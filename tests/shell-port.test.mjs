@@ -161,6 +161,56 @@ describe('shell-port limb', () => {
     });
   });
 
+  describe('startStream — a STREAMED reply renders through the shell socket (THE BUG: it went to Beeper)', () => {
+    // A streamed @e / brain-member reply was rendered by createSender through its injected
+    // bridge — the raw beeper bridge — so it streamed to Beeper and never reached the editor
+    // (only the command `send` closure was shell-aware, why /status showed but a reply didn't).
+    // The limb now exposes the stream shape createSender consumes; these lock its finish/fail.
+    function connected() {
+      const { WebSocket, sockets } = makeFakeWs();
+      const port = createShellPort({ WebSocket });
+      port.start();
+      sockets[0].fire('open');
+      return { port, sock: sockets[0] };
+    }
+
+    it('finish({ text }) pushes the final text as ONE frame over the socket; update() renders nothing before finish', () => {
+      const { port, sock } = connected();
+      const stream = port.startStream('main', '⏳ Thinking…', { persona: 'e' });
+      stream.update('partial');                                   // no in-place edit surface — nothing yet
+      expect(sock.sent).toHaveLength(0);
+      stream.finish({ text: 'Prueba 3 recibida.' });
+      expect(sock.sent).toHaveLength(1);
+      expect(JSON.parse(sock.sent[0]).text).toBe('Prueba 3 recibida.');
+      expect(stream.delivered).toBe(true);                       // → sender skips its §7 beeper fallback
+    });
+
+    it('finish accepts a bare string too (the shape createSender actually calls it with)', () => {
+      const { port, sock } = connected();
+      port.startStream('main').finish('done');
+      expect(JSON.parse(sock.sent[0]).text).toBe('done');
+    });
+
+    it('fail() surfaces an error line over the socket — NOT swallowed', () => {
+      const { port, sock } = connected();
+      const stream = port.startStream('main');
+      stream.fail(new Error('boom'));
+      expect(sock.sent).toHaveLength(1);
+      expect(JSON.parse(sock.sent[0]).text).toContain('boom');
+      expect(stream.lastError).toContain('boom');
+    });
+
+    it('editor not connected: finish delivers nothing and delivered stays false (sender falls back), never throws', () => {
+      const { WebSocket, sockets } = makeFakeWs();
+      const port = createShellPort({ WebSocket });
+      port.start();                                               // dialed, never opened
+      const stream = port.startStream('main');
+      expect(() => stream.finish('x')).not.toThrow();
+      expect(sockets[0].sent).toHaveLength(0);
+      expect(stream.delivered).toBe(false);
+    });
+  });
+
   describe('poke() — the editor announced itself via ingest, connect NOW', () => {
     it('while disconnected with a pending reconnect timer: cancels the timer, resets the backoff, and dials a fresh socket immediately', () => {
       const { WebSocket, sockets } = makeFakeWs();

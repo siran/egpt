@@ -104,6 +104,16 @@ export function createShellPort({
     _reconnectMs = Math.min(_reconnectMs * 2, RECONNECT_MAX_MS);
   }
 
+  // One outbound text frame to the editor. Drops (never throws) when the editor is
+  // not connected — a reply with nowhere to go must not crash the spine, same as
+  // beeper dropping a send to an unresolvable chat. Both the plain `send` and the
+  // streaming `startStream` render through this single push.
+  function pushFrame(chatId, text) {
+    if (!ws || !_wsReady) { onLog('shell: send dropped — editor not connected'); return false; }
+    try { ws.send(JSON.stringify({ text: String(text), chatId })); return true; }
+    catch (e) { onLog(`shell: send failed — ${e?.message ?? e}`); return false; }
+  }
+
   return {
     // Dial out to the editor (idempotent-enough for boot: called once). If the editor
     // never answers, the error/close handlers just re-arm the backoff — start() never throws.
@@ -124,10 +134,34 @@ export function createShellPort({
     // Push a reply frame back to the editor. Drops (never throws) when the editor is not
     // connected — a reply with nowhere to go must not crash the spine, same as beeper
     // dropping a send to an unresolvable chat.
-    send(chatId, text) {
-      if (!ws || !_wsReady) { onLog('shell: send dropped — editor not connected'); return false; }
-      try { ws.send(JSON.stringify({ text: String(text), chatId })); return true; }
-      catch (e) { onLog(`shell: send failed — ${e?.message ?? e}`); return false; }
+    send(chatId, text) { return pushFrame(chatId, text); },
+    // A STREAMING reply target with the shape createSender consumes off the beeper bridge
+    // (beeper-port.startStream → { update, finish, delete, fail, delivered, lastError }).
+    // The shell surface has NO in-place edit (text in, text out — plan §1), so the reply
+    // renders on finish: update() is a no-op and the completed text is pushed as one frame.
+    // delivered flips true once a frame lands, so the sender's §7 fallback send is skipped
+    // (the stream already delivered) instead of double-posting. A push failure surfaces on
+    // lastError; fail() posts an explicit error line (never swallowed). Without this seam a
+    // streamed @e / brain-member reply on a shell-owned chat fell through to the beeper
+    // bridge's startStream and never reached the editor.
+    startStream(chatId, _initial, _tag) {
+      const textOf = (v) => (typeof v === 'string' ? v : v?.text ?? '');
+      let _delivered = false;
+      let _lastError = null;
+      const render = (v) => {
+        const t = textOf(v);
+        if (!t) return;
+        if (pushFrame(chatId, t)) _delivered = true;
+        else _lastError = 'shell: editor not connected';
+      };
+      return {
+        update() { /* no in-place edit on the shell surface — the reply renders on finish */ },
+        finish(reply, _opts = {}) { render(reply); },
+        delete() { /* nothing posted before finish — nothing to remove */ },
+        fail(err) { _lastError = err?.message ?? String(err ?? 'shell stream failed'); render(`❌ ${_lastError}`); },
+        get delivered() { return _delivered; },
+        get lastError() { return _lastError; },
+      };
     },
     isAlive: () => _wsReady,
     stop: () => { _stopped = true; if (_reconnectTimer) clearTimeoutFn(_reconnectTimer); try { ws?.close(); } catch { /* closing */ } },

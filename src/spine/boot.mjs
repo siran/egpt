@@ -115,6 +115,22 @@ export function whisperPortOf(cfg) {
   return WHISPER_DEFAULT_PORT;
 }
 
+// Make a STREAMING sender shell-aware. createSender renders through its injected `bridge`
+// (`bridge.send` / `bridge.startStream`); handed the raw beeper bridge, a streamed @e /
+// brain-member reply on a shell-owned chat streamed to Beeper and never reached the editor
+// (the command `send` closure was the only shell-aware path — why /status showed in the shell
+// but a streamed reply did not). This facade delegates the two methods createSender calls to
+// shellPort for shell-owned chat ids and to the real bridge otherwise; every other bridge
+// method passes through unchanged (spread first). Pure so the routing is testable directly
+// (mirrors the other top-level boot helpers). The beeper path for non-shell chats is untouched.
+export function makeShellAwareBridge(bridge, shellPort) {
+  return {
+    ...bridge,
+    send: (c, t, o) => (shellPort.owns(c) ? shellPort.send(c, t) : bridge.send(c, t, o)),
+    startStream: (c, i, tag) => (shellPort.owns(c) ? shellPort.startStream(c, i, tag) : bridge.startStream(c, i, tag)),
+  };
+}
+
 // READABLE NODE-IDENTITY (operator 2026-07-10): two co-account spines (REVE `kg`, DOLLY `do`)
 // share ONE Beeper account, so on the wire every line looks "from the account owner" and the
 // persona itself couldn't say which node it is. Assemble a concise, FACTUAL who/where-am-I line
@@ -482,6 +498,13 @@ export async function boot({
   // the routed `send` handed to createCommands). A dumb pipe — no command logic here.
   const shellPort = createShellPort({ wakeWords, onLog: (m) => log.line?.(`[shell] ${m}`) });
 
+  // Shell-aware bridge facade (makeShellAwareBridge, top of file): the STREAMING senders
+  // (E's persona sender + the brain-member relay sender) render through their injected
+  // `bridge`, which was the raw beeper bridge — so a streamed @e / @member reply on a
+  // shell-owned chat streamed to Beeper and never reached the editor. Handed as `bridge` to
+  // BOTH createSender calls below; the beeper path for non-shell chats is untouched.
+  const shellAwareBridge = makeShellAwareBridge(bridge, shellPort);
+
   // --- lifecycle announce: "restarting…" to Self before exit, "back up! <commit>"
   //     on the next boot. The bounce is otherwise invisible to the operator. ---
   const sidecar = join(EGPT_HOME, 'state', 'restart-announce.json');
@@ -535,7 +558,7 @@ export async function boot({
     // the persona's KEY (operator 2026-07-10 — no hardcoded 'e'/'egpt').
     router: createRouter({ getAgents: () => cfg.agents ?? {}, defaultBeing: defaultKey, getNode: () => cfg.node_name ?? null, getAliases: () => cfg.node_alias ?? [], meshEnabled: () => !!cfg.mesh }),
     transcript: createTranscript({ contacts, persona: labelOf(defaultKey), defaultKey, node_name, io, onLog: (m) => log.line?.(`[transcript] ${m}`) }),
-    sender: createSender({ bridge, bodyEmojiOf, labelOf, agentSignatureOpenOf, agentSignatureCloseOf, defaultKey }),
+    sender: createSender({ bridge: shellAwareBridge, bodyEmojiOf, labelOf, agentSignatureOpenOf, agentSignatureCloseOf, defaultKey }),
     // The real cadence registry the spine's tick() drives. The heartbeat LOADER
     // (below) collects every declarative heartbeat and registers it here, so each
     // beat rides the loop's own tick instead of a side timer (operator 2026-07-01).
@@ -691,7 +714,7 @@ export async function boot({
   // roster through resolveConvRoom — the SAME resolver /members WRITES through (createCommands
   // above), so the roster the relay reads is exactly the one the operator edited on this
   // conversation (bug fix 2026-07-23: previously the two resolved to different config.yaml files).
-  const memberSender = createSender({ bridge, bodyEmojiOf: () => '🤖', labelOf: (id) => id, defaultKey });
+  const memberSender = createSender({ bridge: shellAwareBridge, bodyEmojiOf: () => '🤖', labelOf: (id) => id, defaultKey });
   const _adapterMods = new Map();
   const roomRelay = createRoomRelay({
     resolveMembers: async (surface, chatId) => {
