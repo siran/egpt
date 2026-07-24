@@ -966,6 +966,18 @@ export function normalizeResidents(val) {
   return [];
 }
 
+// ── The LOBBY: the shell's durable default room ─────────────────────────────
+// The shell surface has ONE console seat, keyed 'main' (shell-port's SHELL_CHAT_ID).
+// Its conversation is a FIXED, suffix-less slug — the operator's home Room at
+// conversations/shell/lobby/ — instead of the throwaway shell-<yymmddhhmm> the name-
+// derived path would mint. All keying (transcript, members, phase-4 relay) routes
+// through ensureContact, so this ONE deterministic mapping makes the shell open
+// straight into the lobby with the Room machinery it inherits for free.
+export const LOBBY_SLUG = 'lobby';
+export function fixedSlugFor(surface, jid) {
+  return (surface === 'shell' && jid === 'main') ? LOBBY_SLUG : null;
+}
+
 // ── Upsert ─────────────────────────────────────────────────────────────────
 
 // Idempotent. Schema is surface-nested + JID-keyed. Multi-JID humans
@@ -977,6 +989,10 @@ export function ensureContact(state, surface, jid, ctx = {}) {
     throw new Error(`ensureContact: unknown surface "${surface}" (expected one of ${KNOWN_SURFACES.join('|')})`);
   }
   if (!jid) return { state, surface, jid: null, slug: null, entry: null, isNew: false, changed: false };
+
+  // A fixed-slug seat (the shell 'main' → lobby) never derives its slug from a
+  // title and is NEVER re-slugged on a title change — its slug is a constant.
+  const fixed = fixedSlugFor(surface, jid);
 
   // Deep-clone the touched bucket so the original state is unchanged.
   const prevBucket = state.contacts?.[surface] ?? {};
@@ -1015,7 +1031,7 @@ export function ensureContact(state, surface, jid, ctx = {}) {
     let renamedFrom = null, renamedTo = null;
     const nameBase = sanitizeSlug(ctx.pushedName);
     const curBase = String(cur.slug ?? '').replace(/-\d{10}$/, '');
-    if (nameBase && nameBase !== 'contact' && nameBase !== curBase) {
+    if (!fixed && nameBase && nameBase !== 'contact' && nameBase !== curBase) {
       const suffix = String(cur.slug).match(/-(\d{10})$/)?.[1]
         || slugSuffix(cur.firstSeenAt ? new Date(cur.firstSeenAt) : new Date());
       const candidate = suffix ? `${nameBase}-${suffix}` : nameBase;
@@ -1051,7 +1067,9 @@ export function ensureContact(state, surface, jid, ctx = {}) {
   const baseSlug = sanitizeSlug(ctx.pushedName)
     || sanitizeSlug(ctx.slugHint)
     || 'contact';
-  const candidateSlug = appendSlugSuffix(baseSlug, firstSeen);
+  // A fixed-slug seat (shell 'main' → lobby) skips the -yymmddhhmm suffix so its
+  // folder is stable across restarts; every other contact keeps the timestamped slug.
+  const candidateSlug = fixed || appendSlugSuffix(baseSlug, firstSeen);
   const slugMatch = _findByslug(state, surface, candidateSlug);
   if (slugMatch) {
     nextBucket[jid] = { aliasOf: slugMatch.primaryJid };

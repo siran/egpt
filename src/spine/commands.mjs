@@ -10,7 +10,7 @@
 // with a short note.
 import { lifecycleExit } from './ingest.mjs';
 import { isAutoMode, AUTO_MODES, DEFAULT_AUTO_MODE } from '../auto-mode.mjs';
-import { patchContact, getContact, getBeing, slugDir, statsPath, conversationPathOf, listIdentityLayers as defaultListIdentityLayers, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS, READONLY_ALLOWED_TOOLS, KNOWN_SURFACES } from '../conversations-state.mjs';
+import { patchContact, getContact, getBeing, slugDir, statsPath, conversationPathOf, listIdentityLayers as defaultListIdentityLayers, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS, READONLY_ALLOWED_TOOLS, KNOWN_SURFACES, LOBBY_SLUG } from '../conversations-state.mjs';
 import { stripFrontMatter } from '../transcript-meta.mjs';
 import { initWizard, wizardStep, wizardPrompt } from '../agent-wizard.mjs';
 import { BUILTIN_BRAINS_DIR, PROFILE_AGENTS_DIR } from './brains.mjs';
@@ -730,9 +730,31 @@ export function createCommands({
   // "inactive", never throws. Non-brain members read as "active" (a surface/chat member is
   // present as such). Shared by /members (the conversation room) and /room <slug> members (a
   // NamedRoom) — the caller passes the Room + its display label.
-  async function renderMembers(ev, room, label) {
+  // The lobby's DEFAULT members: this node's local beings, read from the agents
+  // registry (E = the persona, plus every configured being like @d / @l). DISPLAY
+  // ONLY — they're reachable via @e/@d/@l in ANY conversation (router + wake-words),
+  // and are NEVER written to the lobby's config.yaml (which the phase-4 relay reads;
+  // these are synthetic present-and-active rows). Scoped to the shell lobby so every
+  // other conversation's roster is unchanged. `_` comment keys + `enabled:false`
+  // agents are skipped, mirroring the router's findAgent filter.
+  function lobbyBeings(ev, room) {
+    if (surfaceOf(ev) !== 'shell' || room?.slug !== LOBBY_SLUG) return [];
+    const agents = cfg().agents;
+    if (!agents || typeof agents !== 'object') return [];
+    return Object.entries(agents)
+      .filter(([name, a]) => !name.startsWith('_') && a && typeof a === 'object' && a.enabled !== false)
+      .map(([name]) => ({ kind: 'being', id: name, state: 'active', local: true }));
+  }
+
+  async function renderMembers(ev, room, label, extra = []) {
     let ms = [];
     try { ms = await room.members(); } catch { ms = []; }
+    // Prepend synthetic/local rows (e.g. the lobby's E/D/L) that don't live in
+    // config.yaml, deduping by id so a stored member never lists twice.
+    if (extra.length) {
+      const stored = new Set(ms.map((m) => m.id));
+      ms = [...extra.filter((m) => !stored.has(m.id)), ...ms];
+    }
     let liveIds = new Set();
     try { liveIds = new Set((await cdp.listTabs()).map((t) => t.id)); } catch { /* no Chrome → all brains inactive */ }
     const lines = [`${label} (${ms.length} members):`];
@@ -755,7 +777,7 @@ export function createCommands({
     const room = await resolveConvRoom(surfaceOf(ev), ev.chatId);
     if (!room) { await send?.(ev.chatId, "can't resolve this conversation's room"); return; }
     const label = room.slug ?? 'this conversation';
-    if (!rest) { await send?.(ev.chatId, await renderMembers(ev, room, label)); return; }
+    if (!rest) { await send?.(ev.chatId, await renderMembers(ev, room, label, lobbyBeings(ev, room))); return; }
     const add = /^add\s+tab\s+(\d+)$/i.exec(rest);
     if (add) { await membersAddTab(ev, room, Number(add[1])); return; }
     const mode = /^(\S+)\s+mode\s+(\S+)$/i.exec(rest);

@@ -1,0 +1,266 @@
+// lobby.test.mjs — the LOBBY: the shell's durable default Room (plans/260724-LOBBY-DEFAULT-ROOM.md).
+//
+// Reproduce-first locks for v1 (the core): opening the shell lands the operator in a
+// stable `lobby` conversation (conversations/shell/lobby/) instead of the throwaway
+// shell-<yymmddhhmm> auto slug, the lobby inherits the Room machinery (transcript,
+// members, phase-4 relay) for free, and /members lists this node's local beings E/D/L.
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  emptyState, ensureContact, getContact, slugDir, fixedSlugFor, LOBBY_SLUG,
+} from '../src/conversations-state.mjs';
+import { createContacts } from '../src/spine/contacts.mjs';
+import { createCommands } from '../src/spine/commands.mjs';
+import { createTranscript } from '../src/spine/transcript.mjs';
+import { createSpine } from '../src/spine/spine.mjs';
+import { createRoomRelay } from '../src/spine/room-relay.mjs';
+import { createStopGuard } from '../src/stop-guard.mjs';
+import { createIdentity } from '../src/spine/identity.mjs';
+import { Room } from '../src/room-core.mjs';
+
+const norm = (p) => String(p).replace(/\\/g, '/');
+
+// ── 1. the shell's default conversation resolves to the fixed slug `lobby` ────
+describe('lobby slug — the shell console seat is the durable lobby, not an auto slug', () => {
+  it('fixedSlugFor maps only the shell "main" seat to lobby', () => {
+    expect(fixedSlugFor('shell', 'main')).toBe('lobby');
+    expect(fixedSlugFor('shell', '!other')).toBe(null);   // a joined chat is not the lobby
+    expect(fixedSlugFor('whatsapp', 'main')).toBe(null);  // other surfaces are unaffected
+  });
+
+  it('ensureContact("shell","main") mints the suffix-less slug "lobby" (no shell-<ts>)', () => {
+    const ens = ensureContact(emptyState(), 'shell', 'main', { pushedName: 'shell', slugHint: 'shell' });
+    expect(ens.slug).toBe('lobby');
+    expect(ens.slug).not.toMatch(/-\d{10}$/);   // NOT the throwaway shell-2607201416 shape
+    expect(norm(slugDir('shell', 'lobby'))).toMatch(/conversations\/shell\/lobby$/);
+  });
+
+  it('contacts.resolve("shell","main") returns lobby and NEVER re-slugs to shell-<ts> on re-sight', async () => {
+    let state = emptyState();
+    let writes = 0;
+    const renames = [];
+    const contacts = createContacts({
+      loadState: async () => state,
+      writeState: async (s) => { state = s; writes++; },
+      io: { rename: async (from, to) => { renames.push({ from, to }); }, appendFile: async () => {} },
+    });
+    // first sight (transcript path passes chatName 'shell'); later sights: bare (resolveConvRoom).
+    const first = await contacts.resolve('shell', 'main', { chatName: 'shell' });
+    const second = await contacts.resolve('shell', 'main', { chatName: 'shell' });
+    const third = await contacts.resolve('shell', 'main');
+    expect(first).toBe('lobby');
+    expect(second).toBe('lobby');
+    expect(third).toBe('lobby');
+    expect(renames).toHaveLength(0);                                  // chatName 'shell' must NOT rename lobby → shell-<ts>
+    expect(getContact(state, 'shell', 'main')?.slug).toBe('lobby');
+    expect(writes).toBeLessThanOrEqual(1);                            // steady-state re-sight does not churn
+  });
+});
+
+// ── 2. /members in the lobby lists the local beings E, D, L ───────────────────
+describe('/members in the lobby — lists the node\'s local beings E/D/L', () => {
+  function lobbyCommands(agents) {
+    const sent = [];
+    const room = { slug: LOBBY_SLUG, surface: 'shell', members: async () => [] };
+    const cmds = createCommands({
+      getConfig: () => ({ agents }),
+      send: async (chatId, text) => sent.push({ chatId, text }),
+      cdp: { listTabs: async () => [] },
+      resolveConvRoom: async () => room,
+    });
+    return { cmds, sent, room };
+  }
+
+  it('bare /members shows E (persona), D, L as present being members', async () => {
+    const { cmds, sent } = lobbyCommands({
+      e: { default: true, name: 'E' },
+      d: { name: 'D' },
+      l: { name: 'L' },
+    });
+    await cmds.run({ chatId: 'main', surface: 'shell', body: '/members' });
+    const text = sent.at(-1).text;
+    expect(text).toContain('lobby (3 members)');
+    expect(text).toContain('e   being');
+    expect(text).toContain('d   being');
+    expect(text).toContain('l   being');
+  });
+
+  it('a `_`-comment key and an enabled:false agent are skipped', async () => {
+    const { cmds, sent } = lobbyCommands({
+      e: { default: true },
+      _note: 'ignored',
+      off: { enabled: false },
+    });
+    await cmds.run({ chatId: 'main', surface: 'shell', body: '/members' });
+    const text = sent.at(-1).text;
+    expect(text).toContain('lobby (1 members)');
+    expect(text).toContain('e   being');
+    expect(text).not.toContain('off   being');
+  });
+
+  it('a NON-lobby conversation does NOT get the local beings injected', async () => {
+    const sent = [];
+    const room = { slug: 'diego-2607010101', surface: 'whatsapp', members: async () => [] };
+    const cmds = createCommands({
+      getConfig: () => ({ agents: { e: { default: true }, l: {} } }),
+      send: async (chatId, text) => sent.push({ chatId, text }),
+      cdp: { listTabs: async () => [] },
+      resolveConvRoom: async () => room,
+    });
+    await cmds.run({ chatId: '!c', surface: 'whatsapp', body: '/members' });
+    const text = sent.at(-1).text;
+    expect(text).toContain('(0 members)');
+    expect(text).toContain('(no members yet)');
+  });
+});
+
+// ── 3. a shell message in the lobby logs to conversations/shell/lobby/transcript.md ──
+const readdirOver = (files) => async (dir) => {
+  const prefix = norm(dir).replace(/\/$/, '') + '/';
+  const out = new Set();
+  for (const k of files.keys()) {
+    const nk = norm(k);
+    if (nk.startsWith(prefix)) { const rest = nk.slice(prefix.length); if (!rest.includes('/')) out.add(rest); }
+  }
+  return [...out];
+};
+
+describe('lobby transcript — a shell message records under conversations/shell/lobby/', () => {
+  it('routes the transcript append to the lobby folder (via the shared contacts resolver)', async () => {
+    let state = emptyState();
+    const contacts = createContacts({
+      loadState: async () => state,
+      writeState: async (s) => { state = s; },
+      io: { rename: async () => {}, appendFile: async () => {} },
+    });
+    const files = new Map();
+    const io = {
+      appendFile: async (p, d) => { files.set(p, (files.get(p) ?? '') + d); },
+      mkdir: async () => {},
+      existsSync: (p) => files.has(p),
+      readFile: async (p) => { if (!files.has(p)) throw new Error('ENOENT'); return files.get(p); },
+      writeFile: async (p, d) => { files.set(p, d); },
+      readdir: readdirOver(files),
+    };
+    const t = createTranscript({ contacts, io });
+    const shellEv = {
+      surface: 'shell', chatId: 'main', chatName: 'shell',
+      senderId: 'operator', ts: Date.UTC(2026, 6, 24, 12, 0),
+      line: 'operator@[shell].kg (12:00) #m1: hello lobby', body: 'hello lobby',
+    };
+    expect(await t.log(shellEv)).toBe(true);
+    const transcript = [...files.entries()].find(([p]) => norm(p).endsWith('conversations/shell/lobby/transcript.md'));
+    expect(transcript).toBeTruthy();
+    expect(transcript[1]).toContain('hello lobby');
+  });
+});
+
+// ── 4. a chatgpt tab added in the lobby drives the relay for a lobby @chatgpt ──
+class TmpRoom extends Room {
+  constructor(dir, slug) { super(); this._dir = dir; this.slug = slug; }
+  baseDir() { return this._dir; }
+}
+const ADAPTERS = [{ name: 'chatgpt-cdp', urlMatch: /chatgpt\.com|chat\.openai\.com/, homeUrl: 'https://chatgpt.com/' }];
+const oneTab = [{ id: 'GPT1', title: 'ChatGPT', url: 'https://chatgpt.com/c/abc' }];
+
+function shellHuman(body) {
+  return { body, from: { network: 'shell', chatId: 'main', chatName: 'shell', userId: 'operator', senderName: 'operator', authorized: true, msgKey: 'm1' } };
+}
+
+describe('lobby relay — @chatgpt added in the lobby fires the phase-4 relay', () => {
+  let base;
+  beforeEach(() => { base = mkdtempSync(join(tmpdir(), 'egpt-lobby-')); });
+  afterEach(() => { rmSync(base, { recursive: true, force: true }); });
+
+  // The SHARED resolver both /members (WRITE) and the relay (READ) go through — the REAL
+  // contacts.resolve so ('shell','main') deterministically keys the lobby Room for both sides.
+  function makeLobbyResolveConvRoom() {
+    let state = emptyState();
+    const contacts = createContacts({
+      loadState: async () => state,
+      writeState: async (s) => { state = s; },
+      io: { rename: async () => {}, appendFile: async () => {} },
+    });
+    const rooms = new Map();
+    const resolve = async (surface, chatId) => {
+      const slug = await contacts.resolve(surface, chatId);
+      if (!slug) return null;
+      if (!rooms.has(slug)) rooms.set(slug, new TmpRoom(join(base, 'conversations', surface, slug), slug));
+      return rooms.get(slug);
+    };
+    return resolve;
+  }
+
+  function commandsFor(resolveConvRoom) {
+    const sent = [];
+    const cmds = createCommands({
+      getConfig: () => ({ agents: { e: { default: true } } }),
+      send: async (chatId, text) => sent.push({ chatId, text }),
+      cdp: { listTabs: async () => oneTab },
+      loadAdapters: async () => ADAPTERS,
+      resolveConvRoom,
+    });
+    return { cmds, sent };
+  }
+
+  function spineFor(resolveConvRoom) {
+    const relayCalls = [];
+    const posts = [];
+    let seq = 0;
+    const bridge = { sent: [], onMessage() {}, send(chat, text, opts) { this.sent.push({ chat, text, opts }); }, stop() {}, wasSentByUs: () => false };
+    const brain = { async turn(being, ev) { return { text: `E:${ev.body}`, sessionId: 's1' }; } };
+    const router = { resolve: () => 'e' };
+    const gating = { async decide() { return { mode: 'mention', receives: true, mayReply: false, sendToEgpt: 'mode' }; }, surfaces: () => false };
+    const transcript = { async log() {} };
+    const heartbeats = { runDue() {} };
+    const sender = { open() { return { activate() {}, update() {}, async finish() {}, fail() {} }; } };
+    const guard = createStopGuard({ turns: 6 });
+    const identity = createIdentity({ now: () => 1000 });
+    const roomRelay = createRoomRelay({
+      resolveMembers: async (surface, chatId) => {
+        const room = await resolveConvRoom(surface, chatId);
+        return room ? await room.members() : [];
+      },
+      adapterOf: async () => ({ injectScript: (t) => `INJECT[${t}]`, pollScript: 'POLL' }),
+      streamFromTab: async ({ targetId, injectScript, onUpdate }) => {
+        relayCalls.push({ targetId, injectScript });
+        onUpdate?.('…partial…');
+        return `brain-reply-${++seq}`;
+      },
+      openStream: (memberId, chatId, opts) => {
+        const rec = { memberId, chatId, opts, final: null };
+        posts.push(rec);
+        return { update() {}, finish: async (r) => { rec.final = typeof r === 'string' ? r : r?.text; }, fail: async () => {} };
+      },
+      onLog: () => {},
+    });
+    const spine = createSpine({
+      bridge, brain, identity, router, gating, sender, transcript, heartbeats,
+      guard, roomRelay, clock: { now: () => 1000 }, turnTimeoutMs: 0,
+    });
+    return { spine, relayCalls, posts };
+  }
+
+  it('/members add tab in the lobby → a later @chatgpt on the shell console drives the tab', async () => {
+    const resolveConvRoom = makeLobbyResolveConvRoom();
+
+    // sanity: the shell console seat resolves to the LOBBY room (not an auto slug).
+    expect((await resolveConvRoom('shell', 'main')).slug).toBe('lobby');
+
+    const { cmds, sent } = commandsFor(resolveConvRoom);
+    await cmds.run({ chatId: 'main', surface: 'shell', body: '/members add tab 1' });
+    expect(sent.at(-1).text).toMatch(/added 'chatgpt'/);
+    await cmds.run({ chatId: 'main', surface: 'shell', body: '/members chatgpt mode mention' });
+    expect(sent.at(-1).text).toMatch(/mode:mention/);
+
+    const { spine, relayCalls, posts } = spineFor(resolveConvRoom);
+    await spine.handleInbound(shellHuman('@chatgpt say hi in five words'));
+
+    expect(relayCalls).toHaveLength(1);                              // the relay FIRED on the lobby's roster
+    expect(relayCalls[0].targetId).toBe('GPT1');                    // the tab the operator added in the lobby
+    expect(relayCalls[0].injectScript).toBe('INJECT[say hi in five words]');
+    expect(posts[0].final).toBe('brain-reply-1');                   // streamed back into the lobby
+  });
+});
