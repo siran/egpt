@@ -174,6 +174,53 @@ describe('/members add tab <n> — adapter-matched, added disabled, in the conve
     await expect(cmds.run({ ...self, body: '/members add tab 9' })).resolves.toBeUndefined();
     expect(sent.at(-1).text).toMatch(/no tab 9/);
   });
+
+  // Bug fix 2026-07-24: the id was derived from the ADAPTER name alone, so two chatgpt.com
+  // tabs both minted id 'chatgpt' and the second setMember() SILENTLY OVERWROTE the first.
+  it('two DIFFERENT chatgpt.com tabs → two DISTINCT members, chatgpt + chatgpt-2 (no collision)', async () => {
+    const twoChatgptTabs = [
+      { id: 'GPT1', title: 'ChatGPT', url: 'https://chatgpt.com/c/aaa' },
+      { id: 'GPT2', title: 'ChatGPT', url: 'https://chatgpt.com/c/bbb' },
+    ];
+    const cdp = { listTabs: async () => twoChatgptTabs };
+    const { cmds, sent, resolveConvRoom } = harness({ cdp });
+    await cmds.run({ ...self, body: '/members add tab 1' });
+    expect(sent.at(-1).text).toMatch(/added 'chatgpt'/);
+    await cmds.run({ ...self, body: '/members add tab 2' });
+    expect(sent.at(-1).text).toMatch(/added 'chatgpt-2'/);
+
+    const ms = await (await resolveConvRoom(self.surface, self.chatId)).members();
+    expect(ms.map((m) => m.id).sort()).toEqual(['chatgpt', 'chatgpt-2']);
+    const a = ms.find((m) => m.id === 'chatgpt');
+    const b = ms.find((m) => m.id === 'chatgpt-2');
+    expect(a).toMatchObject({ url: 'https://chatgpt.com/c/aaa', targetId: 'GPT1' });
+    expect(b).toMatchObject({ url: 'https://chatgpt.com/c/bbb', targetId: 'GPT2' });
+  });
+
+  it('re-adding the SAME tab url refreshes the existing member in place — no chatgpt-2 spawned', async () => {
+    const cdp = { listTabs: async () => ([{ id: 'GPT1', title: 'ChatGPT', url: 'https://chatgpt.com/c/aaa' }]) };
+    const { cmds, sent, resolveConvRoom } = harness({ cdp });
+    await cmds.run({ ...self, body: '/members add tab 1' });   // chatgpt @ GPT1
+    // the SAME conversation reopens as a NEW targetId (tab closed/reopened), url unchanged
+    cdp.listTabs = async () => ([{ id: 'GPT1-NEW', title: 'ChatGPT', url: 'https://chatgpt.com/c/aaa' }]);
+    await cmds.run({ ...self, body: '/members add tab 1' });
+    expect(sent.at(-1).text).toMatch(/refreshed 'chatgpt'/);
+
+    const ms = await (await resolveConvRoom(self.surface, self.chatId)).members();
+    expect(ms.map((m) => m.id)).toEqual(['chatgpt']);   // still ONE member, no chatgpt-2
+    expect(ms[0].targetId).toBe('GPT1-NEW');            // refreshed
+    expect(ms[0].state).toBe('muted');                  // its existing mode preserved
+  });
+
+  it('/member add tab 1 (singular alias) routes to the same members handler', async () => {
+    const cdp = { listTabs: async () => threeTabs };
+    const { cmds, sent, resolveConvRoom } = harness({ cdp });
+    await cmds.run({ ...self, body: '/member add tab 1' });
+    expect(sent.at(-1).text).toMatch(/added 'chatgpt'/);
+    expect(sent.at(-1).text).not.toMatch(/recognized/);   // not the unwired catch-all
+    const ms = await (await resolveConvRoom(self.surface, self.chatId)).members();
+    expect(ms.map((m) => m.id)).toEqual(['chatgpt']);
+  });
 });
 
 describe('/members <id> mode <disable|mention|all>', () => {

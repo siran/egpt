@@ -471,8 +471,9 @@ export function createCommands({
 
     // /members … — the CURRENT room's roster. Bare: list. `add tab <n>`: adapter-match a
     // Chrome tab and add it as a disabled brain. `<id> mode <disable|mention|all>`: flip a
-    // member's mode. Pre-catch-all so none leak to E.
-    const membersMatch = /^\/members(?:\s+(.+?))?\s*$/i.exec(line);
+    // member's mode. Pre-catch-all so none leak to E. `/member` (singular) is accepted too
+    // (operators type both) — same handler.
+    const membersMatch = /^\/members?(?:\s+(.+?))?\s*$/i.exec(line);
     if (membersMatch) { await members(ev, membersMatch[1]?.trim() || null); return; }
 
     // /activate <id> — reopen a brain member whose Chrome tab was closed (its saved
@@ -764,8 +765,13 @@ export function createCommands({
 
   // /members add tab <n> — add the nth /tabs tab as a brain member of the conversation's room,
   // IF an adapter drives its URL. No adapter (a random site) → refuse with the host, the
-  // flagship message. On a match: add kind:brain, state:muted (mode:disable — "no chatter
-  // reaches it yet"), persisting the adapter name + url + targetId for the phase-4 relay.
+  // flagship message. The adapter name only gives a BASE id (chatgpt-cdp → chatgpt) — it is NOT
+  // unique by itself (two chatgpt.com tabs share the same adapter). So: if a brain member with
+  // this tab's exact url already exists, this is the SAME conversation reopened — refresh its
+  // targetId in place (id/state/adapter/url untouched), never a second member. Otherwise it's a
+  // genuinely new tab: mint a unique id (base, else base-2, base-3, … lowest free integer) so
+  // distinct tabs on the same adapter get distinct @mention-able ids. New members start
+  // kind:brain, state:muted (mode:disable — "no chatter reaches it yet").
   async function membersAddTab(ev, room, n) {
     let tabs;
     try { tabs = await cdp.listTabs(); } catch { await send?.(ev.chatId, 'no Chrome to list tabs from — try /chrome first'); return; }
@@ -776,9 +782,20 @@ export function createCommands({
       await send?.(ev.chatId, `can't add tab ${n} — no adapter matches ${hostOf(tab.url)}.\nadapters are per-site drivers (chatgpt, claude, grok…); add one to support it.`);
       return;
     }
-    const id = shortAdapterId(adapter.name);
+    const base = shortAdapterId(adapter.name);
+    const existing = await room.members();
+    const same = existing.find((m) => m.kind === 'brain' && m.url === tab.url);
+    if (same) {
+      await room.setMember({ ...same, targetId: tab.id });
+      const modeWord = STATE_TO_MODE[same.state] ?? same.state;
+      await send?.(ev.chatId, `refreshed '${same.id}' (tab ${n}) — mode:${modeWord}`);
+      return;
+    }
+    const taken = new Set(existing.map((m) => m.id));
+    let id = base, i = 2;
+    while (taken.has(id)) id = `${base}-${i++}`;
     await room.setMember({ kind: 'brain', id, state: 'muted', adapter: adapter.name, url: tab.url, targetId: tab.id });
-    await send?.(ev.chatId, `added '${id}' (tab ${n} · adapter:${id}) — mode:disable (no chatter reaches it yet)`);
+    await send?.(ev.chatId, `added '${id}' (tab ${n} · adapter:${base}) — mode:disable (no chatter reaches it yet)`);
   }
 
   // /members <id> mode <disable|mention|all> — flip a member's mode. The friendly word
