@@ -26,6 +26,8 @@ function human(body, { chatId = 'room-1', msgId = 'm1' } = {}) {
 
 function harness({ members = [], eGating, turns = 6 } = {}) {
   const relayCalls = [];
+  const activateCalls = [];
+  const callOrder = [];
   const posts = [];
   let seq = 0;
   const bridge = { sent: [], onMessage() {}, send(chat, text, opts) { this.sent.push({ chat, text, opts }); }, stop() {}, wasSentByUs: () => false };
@@ -44,9 +46,15 @@ function harness({ members = [], eGating, turns = 6 } = {}) {
   const roomRelay = createRoomRelay({
     resolveMembers: async () => members,
     adapterOf: async () => ({ injectScript: (t) => `INJECT[${t}]`, pollScript: 'POLL' }),
+    // The fake focus seam: record the drive so tests can assert it fires BEFORE streamFromTab.
+    activateTarget: async (targetId) => {
+      activateCalls.push(targetId);
+      callOrder.push(`activate:${targetId}`);
+    },
     // The fake CDP seam: record the drive, emit a partial, return a unique reply.
     streamFromTab: async ({ targetId, injectScript, pollScript, onUpdate }) => {
       relayCalls.push({ targetId, injectScript, pollScript });
+      callOrder.push(`stream:${targetId}`);
       onUpdate?.('…partial…');
       return `brain-reply-${++seq}`;
     },
@@ -63,7 +71,7 @@ function harness({ members = [], eGating, turns = 6 } = {}) {
     bridge, brain, identity, router, gating, sender, transcript, heartbeats,
     guard, roomRelay, clock: { now: () => 1000 }, turnTimeoutMs: 0,
   });
-  return { spine, bridge, brain, transcript, guard, relayCalls, posts, channel: 'whatsapp:room-1' };
+  return { spine, bridge, brain, transcript, guard, relayCalls, activateCalls, callOrder, posts, channel: 'whatsapp:room-1' };
 }
 
 describe('room relay — brain-member gated delivery (mode)', () => {
@@ -104,6 +112,15 @@ describe('room relay — brain-member gated delivery (mode)', () => {
     const { spine, relayCalls } = harness({ members });
     await spine.handleInbound(human('anyone home?'));
     expect(relayCalls).toHaveLength(0);
+  });
+
+  it('focuses the tab BEFORE injecting — activateTarget(targetId) runs ahead of streamFromTab (Chrome throttles background tabs)', async () => {
+    const members = [{ id: 'chatgpt', kind: 'brain', state: 'active', adapter: 'chatgpt-cdp', targetId: 'T1' }];
+    const { spine, activateCalls, callOrder, relayCalls } = harness({ members });
+    await spine.handleInbound(human('anything at all'));
+    expect(relayCalls).toHaveLength(1);
+    expect(activateCalls).toEqual(['T1']);
+    expect(callOrder).toEqual(['activate:T1', 'stream:T1']);
   });
 });
 

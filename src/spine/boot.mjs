@@ -727,6 +727,7 @@ export async function boot({
       return _adapterMods.get(name);
     },
     streamFromTab: cdp.streamFromTab,
+    activateTarget: cdp.activateTarget,
     openStream: (memberId, chatId, opts = {}) => memberSender.open(chatId, { being: memberId, replyTo: opts.replyTo ?? null }),
     onLog: (m) => log.line?.(`[relay] ${m}`),
   });

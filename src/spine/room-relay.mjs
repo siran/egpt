@@ -24,6 +24,7 @@ export function createRoomRelay({
   adapterOf,        // (adapterName) => Promise<{ injectScript, pollScript }|null> — the web-brain driver
   streamFromTab,    // ({ targetId, injectScript, pollScript, onUpdate }) => Promise<text> — CDP engine (fake in tests)
   openStream,       // (memberId, chatId, { replyTo }) => { update, finish, fail } — member-stamped sender
+  activateTarget = async () => {},  // (targetId) => Promise<void> — best-effort tab focus before inject (CDP, fake in tests)
   onLog = () => {},
 } = {}) {
   if (typeof resolveMembers !== 'function') throw new Error('createRoomRelay: resolveMembers is required');
@@ -81,6 +82,9 @@ export function createRoomRelay({
         const adapter = await adapterOf(m.adapter);
         if (!adapter?.injectScript || !adapter?.pollScript) { onLog(`no adapter '${m.adapter}' for member '${m.id}'`); continue; }
         const out = openStream(m.id, ev.chatId, { replyTo: ev.msgId ?? null });
+        // Focus the tab before injecting: Chrome throttles background tabs, so a backgrounded
+        // brain can miss the send or never stream a reply. Best-effort — never blocks the send.
+        try { await activateTarget(m.targetId); } catch {}
         let reply = '';
         try {
           reply = await streamFromTab({
