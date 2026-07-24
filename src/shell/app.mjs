@@ -129,7 +129,6 @@ function App({ server, themes, initialTheme, onError }) {
   const [items, setItems] = useState([]);
   const [themeName, setThemeName] = useState(initialTheme);
   const [T, setT] = useState(loadTheme(initialTheme));
-  const [connected, setConnected] = useState(server.isConnected);
 
   const add = (author, body) => setItems(prev => [...prev, { id: nextId(), ts: Date.now(), author, body: String(body) }]);
 
@@ -137,11 +136,6 @@ function App({ server, themes, initialTheme, onError }) {
     server.onSpineMessage(m => add('egpt', m.text));
     // Server/socket faults (from egpt.mjs's onLog sink) surface as loud error rows, never swallowed.
     onError?.(m => add('error', m));
-    // Poll the connection so the status line reflects the spine dialing in/out. shell-port's
-    // backoff can take up to ~60s to connect on a fresh start (known MVP limitation).
-    const iv = setInterval(() => setConnected(server.isConnected), 1000);
-    iv.unref?.();
-    return () => clearInterval(iv);
   }, []);
 
   // Ctrl+C quits the EDITOR only — the spine is a separate process and lives on.
@@ -167,12 +161,12 @@ function App({ server, themes, initialTheme, onError }) {
     if (!server.send(r.text)) add('error', notDeliveredMessage(wasConnected));
   };
 
+  // No status/connection chrome at all — the editor opens straight to the composer and is
+  // usable immediately. We ASSUME the spine is connected; if a send actually can't be
+  // delivered, submit() surfaces a loud not-delivered error at that moment (see below).
   return h(Fragment, null,
     h(Static, { items: withDaySeparators(items) }, (it) => renderItem(T, it)),
     h(Box, { flexDirection: 'column', marginTop: 1 },
-      // No permanent status/hint chrome — only exceptional state gets a line: the spine
-      // being down. A healthy, connected editor shows nothing here at all.
-      connected ? null : h(Text, { color: T.error, bold: true }, '○ spine disconnected — waiting for it to dial in (up to ~60s after a fresh start)'),
       h(MultiLineInput, { onSubmit: submit })));
 }
 
