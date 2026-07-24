@@ -143,7 +143,26 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
 
 ## 2. In flight right now
 
-- Nothing mid-flight.
+- **Command-surface revival + operator SHELL** (plans/260722-COMMAND-SURFACE-REVIVAL.md
+  + -ROADMAP.md; lobby: plans/260724-LOBBY-DEFAULT-ROOM.md). ONE spine-side,
+  surface-agnostic dispatch (shell + Beeper); adapters (per-site drivers, Beeper itself an
+  adapter); rooms hold members with per-member modes (disable/mention/all); a single
+  provenance turn-guard. LANDED on `main`, deployed to REVE (kg — the shell is a kg operator tool):
+  - Entry points renamed: `egpt.mjs` = the operator SHELL EDITOR (Ink, serves
+    ws://127.0.0.1:23375; the spine's shell-port limb dials IN); `egpt-spine.mjs` = the spine
+    (so launching the shell never boots a whole spine by accident).
+  - Browser wrappers (/chrome, /tabs, /open, /tab, /close); rooms + /members (add tab, modes);
+    provenance guard; chatgpt relay (design B — a brain reply re-enters via handleInbound as a
+    synthetic fromBrain event, counted once at the chokepoint); the LOBBY (shell's default Room
+    at rooms/lobby/, default members E/D/L, inherits transcript/media/members — like Beeper Self).
+  - 2026-07-24: streamed @e / brain-member replies now render in the SHELL, not Beeper
+    (makeShellAwareBridge facade + shellPort.startStream routing send/startStream to the shell
+    for shell-owned chats; e62f1b4). Shell UI cleaned: quiet transcript (no permanent status/hint
+    chrome), faults surfaced verbosely not swallowed (not-delivered line + egpt.mjs onLog
+    socket/server faults → loud error rows), arrow-up/down input history (c4bff40).
+  REMAINING: Phase 5 (channels + /join), Phase 6 (allowed_users), Phase 7 (long tail); lobby v2
+  (`/room <slug> join` switching to other rooms/Beeper chats + 2-way Beeper mirror); align
+  /chrome's tab list to the numbered /tabs format (minor).
 
 ## 3. Decided, not yet dispatched
 
