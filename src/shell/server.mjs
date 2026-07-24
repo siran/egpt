@@ -9,28 +9,54 @@
 // Exactly mirrors shell-port's `send(chatId, text)` / `toInbound(raw)` shapes so the two
 // ends align. One console → one connected spine socket; a second connection replaces it.
 //
-// Known limitation (MVP): shell-port's reconnect backoff grows to 60s, so after the
-// editor starts the spine may take up to ~60s to dial in. Accepted here (no-touch on
-// shell-port). Layer-2 could add a nudge, but the MVP just waits it out.
+// Nudge: the moment the WS server is listening, this editor drops a `/shell-connect`
+// marker into EGPT_HOME/state/ingest — the spine's ingest watcher (polls every 1s) reads
+// it and pokes the shell-port limb to dial in immediately, instead of riding out its
+// reconnect backoff (up to 60s, src/bridges/shell-port.mjs).
 import { WebSocketServer } from 'ws';
+import { mkdir as fsMkdir, writeFile as fsWriteFile, rename as fsRename } from 'node:fs/promises';
+import { join } from 'node:path';
+import { EGPT_HOME } from '../egpt-home.mjs';
 
 // The fixed port the editor serves; the spine dials out to it (shell-port SHELL_WS_PORT).
 export const SHELL_WS_PORT = 23375;
+// Content the spine's ingest handle recognizes (src/spine/ingest.mjs isShellConnectMarker).
+const SHELL_CONNECT_MARKER = '/shell-connect';
 
 /**
  * @param {object} opts
  * @param {number} [opts.port]                        the port to serve (default 23375; pass 0 for an ephemeral test port)
  * @param {typeof WebSocketServer} [opts.WebSocketServer]  INJECTION SEAM — the `ws` server constructor (default the real import)
  * @param {(m: string) => void} [opts.onLog]
+ * @param {object} [opts.io]                          fs seam for the ingest announce ({mkdir,writeFile,rename}); real fs by default — tests inject fakes so no real ~/.egpt write happens
  */
 export function createShellServer({
   port = SHELL_WS_PORT,
   WebSocketServer: WSS = WebSocketServer,
   onLog = () => {},
+  io = {},
 } = {}) {
+  const mkdir = io.mkdir ?? fsMkdir;
+  const writeFile = io.writeFile ?? fsWriteFile;
+  const rename = io.rename ?? fsRename;
   let wss = null;
   let sock = null;       // the single connected spine socket (one console → one client)
   let onMsg = null;      // late-bound: the app registers it after construction
+
+  // Drop the marker AFTER the server is listening (so the spine's poke has somewhere to
+  // dial into). Temp-name then rename so the ingest sweep — which skips dotfiles and
+  // *.tmp — never reads a half-written file. Never throws: a failed announce just leaves
+  // the shell-port limb to its existing reconnect backoff.
+  async function announce() {
+    try {
+      const dir = join(EGPT_HOME, 'state', 'ingest');
+      await mkdir(dir, { recursive: true });
+      const tmp = join(dir, 'shell-connect.tmp');
+      await writeFile(tmp, SHELL_CONNECT_MARKER, 'utf8');
+      await rename(tmp, join(dir, 'shell-connect'));
+      onLog('shell: announced via ingest');
+    } catch (e) { onLog(`shell: announce failed — ${e?.message ?? e}`); }
+  }
 
   // Spine frame → { text, chatId }. The symmetric read of shell-port's outbound
   // `JSON.stringify({ text, chatId })`; a non-JSON line degrades to bare text on 'main'.
@@ -50,6 +76,7 @@ export function createShellServer({
     // its 'listening' event and read the bound port (ephemeral when `port: 0`).
     start() {
       wss = new WSS({ host: '127.0.0.1', port });
+      wss.on('listening', () => { announce(); });
       wss.on('connection', (ws) => {
         sock = ws;                                   // newest connection is THE console seat
         onLog('shell-editor: spine connected');

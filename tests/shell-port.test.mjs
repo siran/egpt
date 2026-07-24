@@ -36,9 +36,10 @@ function makeFakeWs() {
 // spine/beeper tests use — no real wait blocks the suite).
 function makeFakeClock() {
   const timers = [];
-  const setTimeout = (fn, ms) => { timers.push({ fn, ms }); return timers.length; };
-  const clearTimeout = () => {};
-  return { timers, setTimeout, clearTimeout };
+  const cleared = [];
+  const setTimeout = (fn, ms) => { const id = timers.length + 1; timers.push({ id, fn, ms }); return id; };
+  const clearTimeout = (id) => { cleared.push(id); };
+  return { timers, cleared, setTimeout, clearTimeout };
 }
 
 describe('shell-port limb', () => {
@@ -112,5 +113,53 @@ describe('shell-port limb', () => {
     expect(() => sockets[0].fire('error', new Error('ECONNREFUSED'))).not.toThrow();
     expect(() => sockets[0].fire('close')).not.toThrow();
     expect(clock.timers).toHaveLength(1);                         // still just backing off
+  });
+
+  describe('poke() — the editor announced itself via ingest, connect NOW', () => {
+    it('while disconnected with a pending reconnect timer: cancels the timer, resets the backoff, and dials a fresh socket immediately', () => {
+      const { WebSocket, sockets } = makeFakeWs();
+      const clock = makeFakeClock();
+      const port = createShellPort({ WebSocket, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout });
+
+      port.start();
+      sockets[0].fire('open');
+      sockets[0].fire('close');                                   // editor drops → reconnect armed
+      expect(clock.timers).toHaveLength(1);
+      expect(clock.timers[0].ms).toBe(3_000);                     // RECONNECT_MIN_MS
+
+      port.poke();
+      expect(clock.cleared).toContain(clock.timers[0].id);        // the pending backoff timer was cancelled
+      expect(sockets).toHaveLength(2);                            // a fresh socket dialed NOW, not after the delay
+
+      // Confirm the backoff was reset (not left at whatever it had grown to): a close on
+      // the poked socket (never opened) re-arms at RECONNECT_MIN_MS again, not a grown value.
+      sockets[1].fire('close');
+      expect(clock.timers).toHaveLength(2);
+      expect(clock.timers[1].ms).toBe(3_000);
+    });
+
+    it('while already connected: a no-op — no second socket dialed', () => {
+      const { WebSocket, sockets } = makeFakeWs();
+      const clock = makeFakeClock();
+      const port = createShellPort({ WebSocket, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout });
+
+      port.start();
+      sockets[0].fire('open');                                    // now connected
+      port.poke();
+      expect(sockets).toHaveLength(1);                            // no second socket
+      expect(clock.timers).toHaveLength(0);                       // no reconnect ever touched
+    });
+
+    it('after stop(): a no-op — the limb stays stopped, never reopens', () => {
+      const { WebSocket, sockets } = makeFakeWs();
+      const clock = makeFakeClock();
+      const port = createShellPort({ WebSocket, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout });
+
+      port.start();
+      sockets[0].fire('open');
+      port.stop();
+      port.poke();
+      expect(sockets).toHaveLength(1);                            // stop() closed it; poke must not reopen
+    });
   });
 });

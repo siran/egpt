@@ -54,6 +54,14 @@ export function createIngest({ dir, handle, intervalMs = 1000, io = {}, onLog = 
   };
 }
 
+// The shell editor's self-announce marker (src/shell/server.mjs drops it into ingest right
+// after its WS server starts listening). Not a lifecycle command — boot's ingest handle
+// checks this FIRST and routes it to the shell-port limb's poke() instead of lifecycleExit,
+// so the editor's own announce never gets logged as an unknown command. Pure + exported so
+// the check is unit-testable in isolation, same as lifecycleExit below.
+export const SHELL_CONNECT_MARKER = '/shell-connect';
+export function isShellConnectMarker(line) { return String(line ?? '').trim() === SHELL_CONNECT_MARKER; }
+
 // Map a command line to the daemon exit code (+ side effect). Returns the exit
 // code to call, or null for an unknown command. Pure + exported so the mapping is
 // test-locked separately from the fs sweep.

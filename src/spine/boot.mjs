@@ -38,7 +38,7 @@ import { createTranscript } from './transcript.mjs';
 import { createSender } from './sender.mjs';
 import { createBrainPool } from './brainpool.mjs';
 import { createRoomRelay } from './room-relay.mjs';
-import { createIngest, lifecycleExit } from './ingest.mjs';
+import { createIngest, lifecycleExit, isShellConnectMarker } from './ingest.mjs';
 import { createCommands } from './commands.mjs';
 import { ownNodeNames } from './node-names.mjs';
 import { createReplyActions } from './reply-actions.mjs';
@@ -758,6 +758,9 @@ export async function boot({
       io,
       onLog: (m) => log.line?.(`[ingest] ${m}`),
       handle: async (line) => {
+        // The shell editor's self-announce — poke the shell-port limb to dial in NOW
+        // instead of waiting out its reconnect backoff. Not a lifecycle command.
+        if (isShellConnectMarker(line)) { shellPort.poke(); return; }
         const code = lifecycleExit(line, { writeRewindTarget: (ref) => writeFile(join(EGPT_HOME, 'rewind-target.txt'), ref, 'utf8') });
         if (code != null) { log.line?.(`[ingest] ${line} -> exit ${code}`); await announceAndExit(code); }
         else log.line?.(`[ingest] ignored: ${JSON.stringify(line)}`);

@@ -29,12 +29,16 @@ async function waitFor(pred, ms = 1000) {
   }
 }
 
+// A no-op fs seam for the ingest announce — keeps every test hermetic (no real ~/.egpt
+// write), since createShellServer now drops a marker on 'listening' by default.
+function fakeIo() { return { mkdir: async () => {}, writeFile: async () => {}, rename: async () => {} }; }
+
 describe('shell editor — WS server (fake spine over a real socket)', () => {
   const cleanups = [];
   afterEach(() => { for (const c of cleanups.splice(0)) try { c(); } catch {} });
 
   it('a spine frame reaches onSpineMessage; send() pushes {text} back; send with no client drops', async () => {
-    const server = createShellServer({ port: 0 });
+    const server = createShellServer({ port: 0, io: fakeIo() });
     const wss = server.start();
     cleanups.push(() => server.stop());
     await once(wss, 'listening');
@@ -62,6 +66,27 @@ describe('shell editor — WS server (fake spine over a real socket)', () => {
     expect(server.send('hi')).toBe(true);
     const [buf] = await framed;
     expect(JSON.parse(buf.toString())).toEqual({ text: 'hi' });
+  });
+
+  it('announces itself into the ingest box once listening — so the spine pokes in immediately (no real ~/.egpt write, io is faked)', async () => {
+    const calls = { mkdir: [], writeFile: [], rename: [] };
+    const io = {
+      mkdir: async (dir) => { calls.mkdir.push(dir); },
+      writeFile: async (path, data) => { calls.writeFile.push({ path, data }); },
+      rename: async (from, to) => { calls.rename.push({ from, to }); },
+    };
+    const server = createShellServer({ port: 0, io });
+    const wss = server.start();
+    cleanups.push(() => server.stop());
+    await once(wss, 'listening');
+    await waitFor(() => calls.rename.length > 0);   // announce() is fire-and-forget on 'listening'
+
+    expect(calls.writeFile).toHaveLength(1);
+    expect(calls.writeFile[0].data).toBe('/shell-connect');
+    expect(calls.writeFile[0].path.endsWith('.tmp')).toBe(true);   // temp name while writing
+    const finalName = calls.rename[0].to.split(/[\\/]/).pop();
+    expect(finalName.startsWith('.')).toBe(false);                // ingest sweep skips dotfiles
+    expect(finalName.endsWith('.tmp')).toBe(false);                // ...and *.tmp
   });
 });
 

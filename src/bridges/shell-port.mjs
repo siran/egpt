@@ -99,6 +99,15 @@ export function createShellPort({
     // Dial out to the editor (idempotent-enough for boot: called once). If the editor
     // never answers, the error/close handlers just re-arm the backoff — start() never throws.
     start() { connect(); },
+    // The operator's editor just announced itself (ingest marker, right after its WS
+    // server started listening) — connect NOW instead of riding out the reconnect backoff
+    // (up to 60s). No-op if already connected or stopped.
+    poke() {
+      if (_stopped || _wsReady) return;
+      if (_reconnectTimer) { clearTimeoutFn(_reconnectTimer); _reconnectTimer = null; }
+      _reconnectMs = RECONNECT_MIN_MS;
+      connect();
+    },
     onMessage(cb) { onMsg = cb; },
     // Does this chat id belong to the shell surface? boot's routed send consults this to
     // push a shell-surface reply back over the socket instead of the beeper bridge.
