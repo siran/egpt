@@ -60,7 +60,7 @@ routing).
 ## Flagship usage — open the shell, wire a web brain into a room
 
 ```
-$ node egpt-shell.mjs      # the operator SHELL (egpt.mjs is the spine itself — don't run that by hand)
+$ node egpt.mjs            # the operator SHELL (egpt-spine.mjs is the spine; the daemon runs it, not you)
 🧠 egpt shell · spine connected · :23375
 
 🦅 you   /rooms
