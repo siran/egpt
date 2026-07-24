@@ -27,15 +27,15 @@ import { Room } from '../room-core.mjs';
 import { sanitizeName } from '../sanitize.mjs';
 import { loadAdapters as defaultLoadAdapters, matchAdapter } from '../adapters/registry.mjs';
 import { isRunning as cdpIsRunning, listTabs as cdpListTabs, cdpHost as cdpHostOf, openTab as cdpOpenTab, activateTarget as cdpActivateTarget, closeTab as cdpCloseTab } from '../tools/cdp.mjs';
-import { findChromeExecutable, chromeArgs, chromeCommandLine } from '../tools/chrome-launcher.mjs';
-import { fileURLToPath } from 'node:url';
+import { findChromeExecutable, chromeArgs, chromeCommandLine, resolveBrainProfile } from '../tools/chrome-launcher.mjs';
 
-// Where a manually-launched Chrome should keep its profile + find the extension.
-// v1's shell used ~/.egpt/chrome/profiles/brain — kept, but derived from EGPT_HOME so
-// a test/second node's profile follows its own root instead of the production one.
-export const CHROME_BRAIN_PROFILE = join(EGPT_HOME, 'chrome', 'profiles', 'brain');
-const APP_DIR = dirname(dirname(dirname(fileURLToPath(import.meta.url))));   // src/spine/commands.mjs -> repo root
-const EXTENSION_DIST = join(APP_DIR, 'extension', 'dist');
+// Where a manually-launched Chrome should keep its profile. v1's shell hardcoded
+// ~/.egpt/chrome/profiles/brain — a usually-BLANK fresh dir. resolveBrainProfile() instead
+// SEARCHES the v2 default + the operator's v1 browser profiles and picks the one actually
+// logged in to an AI site, falling back to the v2 default when none qualify. Memoized once at
+// module load (a read-only fs scan); still derives from EGPT_HOME so a second node follows its
+// own root. See src/tools/chrome-launcher.mjs.
+export const CHROME_BRAIN_PROFILE = resolveBrainProfile();
 
 // The Session-1 launch task /chrome fires to open Chrome on the operator's desktop (see the
 // chrome() dispatch for the session-hop rationale). setup/register-chrome-task.ps1 registers
@@ -591,7 +591,7 @@ export function createCommands({
   function chromeLaunchHint(host, { setupNote = false } = {}) {
     const port = String(host).split(':')[1] ?? '9221';
     const exe = findChromeExecutable() ?? 'chrome';
-    const args = chromeArgs({ port, userDataDir: CHROME_BRAIN_PROFILE, extensionDir: EXTENSION_DIST });
+    const args = chromeArgs({ port, userDataDir: CHROME_BRAIN_PROFILE });
     const lines = [
       `no Chrome is listening on ${host}.`,
       `I can't open it myself — I run as a service in another Windows session, so any Chrome I start would be invisible to you.`,

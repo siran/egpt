@@ -40,25 +40,36 @@ $chromeCandidates = @(
 $chrome = $chromeCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $chrome) { throw "Chrome not found in standard locations: $($chromeCandidates -join ', ')" }
 
-# --- resolve the same paths /chrome uses (CHROME_BRAIN_PROFILE + EXTENSION_DIST) ---
-$repoRoot     = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$extensionDir = Join-Path $repoRoot 'extension\dist'
-$userDataDir  = Join-Path $EgptHome 'chrome\profiles\brain'
+# --- resolve the brain profile from the SAME source of truth /chrome uses: chrome-launcher's
+#     resolveBrainProfile() searches the v2 default + the operator's v1 browser profiles and
+#     returns the one actually logged in to an AI site. Shell out to node so this task and the
+#     spine pick the IDENTICAL directory. If node fails or prints nothing, fall back to the
+#     v2 default path (Chrome creates it fresh on launch). ---
+$repoRoot    = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$launcherUrl = "file:///$($repoRoot -replace '\\','/')/src/tools/chrome-launcher.mjs"
+$env:EGPT_HOME = $EgptHome
+$userDataDir = (& node -e "import('$launcherUrl').then(m=>process.stdout.write(m.resolveBrainProfile()))")
+if ($userDataDir) { $userDataDir = $userDataDir.Trim() }
+if (-not $userDataDir) {
+  Write-Warning "resolveBrainProfile via node returned empty; falling back to the v2 default profile."
+  $userDataDir = Join-Path $EgptHome 'chrome\profiles\brain'
+}
 
-# --- the CDP flag set — MIRRORS chromeArgs() in src/tools/chrome-launcher.mjs. Keep the two
-#     in sync: that function is the source of truth for what a real spawn passes. ---
+# --- the CDP flag set — MIRRORS chromeArgs() in src/tools/chrome-launcher.mjs (the source of
+#     truth for a real spawn). One deliberate exception: the browser extension is backburnered,
+#     so this launch drops --load-extension AND the DisableLoadExtensionCommandLineSwitch
+#     feature-disable that only matters when an extension is loaded. ---
 $chromeArgs = @(
   "--remote-debugging-port=$Port"
   '--remote-allow-origins=*'
   "--user-data-dir=$userDataDir"
   '--no-first-run'
-  '--disable-features=ChromeWhatsNewUI,DisableLoadExtensionCommandLineSwitch'
+  '--disable-features=ChromeWhatsNewUI'
   '--silent-debugger-extension-api'
   '--disable-backgrounding-occluded-windows'
   '--disable-background-timer-throttling'
   '--disable-renderer-backgrounding'
   '--new-window'
-  "--load-extension=$extensionDir"
   'about:blank'
 )
 
