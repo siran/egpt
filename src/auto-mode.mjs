@@ -82,8 +82,21 @@ function wakeMatchers(wakeWords) {
   if (!alt) return { anywhere: RE_ANYWHERE, start: RE_START };
   return { anywhere: new RegExp(`(^|\\s)@(?:${alt})\\b`, 'i'), start: new RegExp(`^@(?:${alt})\\b`, 'i') };
 }
+// A fenced or inline CODE region must never contribute a live wake match — e.g.
+// the /status command emits a fenced ```yaml block whose version line quotes a
+// git commit SUBJECT ("...@e voice-note transcript..."), a changelog line, not
+// an address. Strip code regions to a single space (so surrounding tokens don't
+// glue into — or lose — a word boundary) BEFORE running the wake matchers. An
+// unclosed opening ``` strips to end-of-text. (operator 2026-07-24: E replied
+// '…' to its own /status output because the raw text was matched as-is.)
+function stripCode(text) {
+  return text
+    .replace(/```[\s\S]*?```/g, ' ')   // paired fenced blocks
+    .replace(/```[\s\S]*$/g, ' ')      // unclosed fence → rest of text
+    .replace(/`[^`\n]*`/g, ' ');       // inline code spans
+}
 export function mentionStatus(text, wakeWords) {
-  const t = String(text ?? '');
+  const t = stripCode(String(text ?? ''));
   const { anywhere, start } = wakeMatchers(wakeWords);
   return {
     atEAnywhere: anywhere.test(t),

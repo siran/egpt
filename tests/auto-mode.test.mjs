@@ -39,6 +39,42 @@ describe('mentionStatus', () => {
     expect(mentionStatus('@e hi', [])).toEqual({ atEAnywhere: true, atEStart: true });
     expect(mentionStatus('@ed hi', [])).toEqual({ atEAnywhere: false, atEStart: false });   // no handles → @ed does not wake
   });
+
+  // Real bug (operator 2026-07-24): /status emits a fenced ```yaml block whose
+  // version line is a git commit SUBJECT — "refactor(bridge): @e voice-note
+  // transcript reuses transcript.md" — a changelog line, not an address. The raw
+  // matchers saw that fenced @e and woke E on its own /status output.
+  describe('code-fence / inline-code stripping (operator 2026-07-24: /status false-wake)', () => {
+    it('an @e inside a fenced code block does not wake', () => {
+      const text = [
+        'status:',
+        '```yaml',
+        'version: refactor(bridge): @e voice-note transcript reuses transcript.md',
+        '```',
+      ].join('\n');
+      expect(mentionStatus(text)).toEqual({ atEAnywhere: false, atEStart: false });
+    });
+    it('an @e inside inline code does not wake', () => {
+      expect(mentionStatus('use `@e` to mention')).toEqual({ atEAnywhere: false, atEStart: false });
+    });
+    it('an UNCLOSED fenced block strips to end-of-text — an @e after it is not detected', () => {
+      const text = 'before the fence\n```\nsome code @e trailing, never closed';
+      expect(mentionStatus(text)).toEqual({ atEAnywhere: false, atEStart: false });
+    });
+    // Regression: a genuine @e OUTSIDE any code region still wakes normally.
+    it('a real @e outside code regions still wakes (regression)', () => {
+      expect(mentionStatus('@e hello')).toEqual({ atEAnywhere: true, atEStart: true });
+      expect(mentionStatus('please @e look')).toEqual({ atEAnywhere: true, atEStart: false });
+      expect(mentionStatus('@egpt hi')).toEqual({ atEAnywhere: true, atEStart: true });
+      expect(mentionStatus('me@e.com')).toEqual({ atEAnywhere: false, atEStart: false });
+      expect(mentionStatus('hey@egpt')).toEqual({ atEAnywhere: false, atEStart: false });
+    });
+    it('custom wakeWords: a fenced @ed does not wake, but a live @ed does', () => {
+      const wake = ['ed', 'egptd'];
+      expect(mentionStatus('@ed estás?', wake)).toEqual({ atEAnywhere: true, atEStart: true });
+      expect(mentionStatus('```\n@ed estás?\n```', wake)).toEqual({ atEAnywhere: false, atEStart: false });
+    });
+  });
 });
 
 describe('replyAllowed', () => {
