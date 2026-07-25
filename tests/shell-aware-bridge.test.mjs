@@ -14,6 +14,8 @@ import { describe, it, expect } from 'vitest';
 import { makeShellAwareBridge } from '../src/spine/boot.mjs';
 import { createShellPort } from '../src/bridges/shell-port.mjs';
 import { createSender } from '../src/spine/sender.mjs';
+import { createMeshService } from '../src/spine/mesh.mjs';
+import { encodeMesh, parseMesh } from '../src/mesh/relay.mjs';
 
 // The same fake `ws` seam the shell-port tests use — no real socket, ever.
 function makeFakeWs() {
@@ -36,9 +38,11 @@ describe('makeShellAwareBridge — streaming sends route to the shell for shell-
       owns: (c) => c === 'main',
       send: (c, t) => { shellCalls.push({ m: 'send', c, t }); return true; },
       startStream: (c, i, tag) => { shellCalls.push({ m: 'startStream', c, i, tag }); return { finish() {}, get delivered() { return true; } }; },
+      postStatus: (c, t) => { shellCalls.push({ m: 'postStatus', c, t }); return null; },   // shell has no editable msg id
     };
     const beeper = {
-      onEdit() {}, postStatus() {},                                       // unrelated methods that must pass through
+      onEdit() {},                                                        // unrelated method that must pass through
+      postStatus: (c, t) => { beeperCalls.push({ m: 'postStatus', c, t }); return 'beeper-msg-id'; },
       send: (c, t, o) => { beeperCalls.push({ m: 'send', c, t, o }); },
       startStream: (c, i, tag) => { beeperCalls.push({ m: 'startStream', c, i, tag }); return { finish() {} }; },
     };
@@ -67,7 +71,28 @@ describe('makeShellAwareBridge — streaming sends route to the shell for shell-
     const { shellPort, beeper } = fakes();
     const b = makeShellAwareBridge(beeper, shellPort);
     expect(typeof b.onEdit).toBe('function');
-    expect(typeof b.postStatus).toBe('function');
+  });
+
+  // postStatus is the MESH origin-placeholder seam (operator 2026-07-25): a shell-origin relay
+  // (`@don` typed in the shell) posts its "🤔 thinking…" placeholder through bridge.postStatus.
+  // Pre-fix the facade had NO postStatus override, so the spread's beeper.postStatus fired → the
+  // placeholder streamed to Beeper and dropped. Now it routes to shellPort for shell-owned chats.
+  it('REPRODUCE-FIRST: postStatus on a shell-owned chat goes to shellPort (returns null), NOT beeper', () => {
+    const { shellPort, beeper, shellCalls, beeperCalls } = fakes();
+    const b = makeShellAwareBridge(beeper, shellPort);
+    const id = b.postStatus('main', '🤔 thinking…');
+    expect(shellCalls.map((c) => c.m)).toEqual(['postStatus']);
+    expect(beeperCalls).toHaveLength(0);
+    expect(id).toBeNull();                       // no editable shell msg id → mesh's later edit/delete is a no-op
+  });
+
+  it('postStatus on a NON-shell chat goes to the beeper bridge (returns its msg id), NOT shellPort', () => {
+    const { shellPort, beeper, shellCalls, beeperCalls } = fakes();
+    const b = makeShellAwareBridge(beeper, shellPort);
+    const id = b.postStatus('!room-9', '🤔 thinking…');
+    expect(beeperCalls.map((c) => c.m)).toEqual(['postStatus']);
+    expect(shellCalls).toHaveLength(0);
+    expect(id).toBe('beeper-msg-id');
   });
 });
 
@@ -94,13 +119,79 @@ describe('a brain-member relay reply on a shell-owned chat renders through the s
     // The REAL member sender, wired exactly as boot wires it, over the REAL facade.
     const memberSender = createSender({ bridge: makeShellAwareBridge(beeper, shellPort), bodyEmojiOf: () => '🤖', labelOf: (id) => id, defaultKey: 'e' });
 
-    // The relay's openStream shape (boot): open a member stream, then finish it with the brain reply.
+    // The relay's openStream shape (boot): open a member stream (posts the ⏳ placeholder as a
+    // live frame), then finish it with the brain reply (the committed final).
     const stream = memberSender.open('main', { being: 'chatgpt', replyTo: null });
     await stream.finish({ text: 'Prueba 3 recibida.' });
 
-    expect(sock.sent).toHaveLength(1);
-    expect(JSON.parse(sock.sent[0]).text).toContain('Prueba 3 recibida.');   // reached the SHELL
-    expect(beeper.sent).toHaveLength(0);                                       // NOT the beeper send
-    expect(beeper.streams).toBe(0);                                            // NOT the beeper stream
+    // The shell got the stream (placeholder + committed final); the beeper bridge got NOTHING.
+    const frames = sock.sent.map((s) => JSON.parse(s));
+    const committed = frames.filter((f) => f.streaming === false);
+    expect(committed).toHaveLength(1);
+    expect(committed[0].text).toContain('Prueba 3 recibida.');   // the committed reply reached the SHELL
+    expect(beeper.sent).toHaveLength(0);                          // NOT the beeper send
+    expect(beeper.streams).toBe(0);                              // NOT the beeper stream
+  });
+});
+
+// ── END-TO-END: a shell-origin mesh relay (`@don` typed in the shell on kg) streams its living-
+//    mirror reply back INTO the shell, never to Beeper (operator 2026-07-25). The REAL mesh service
+//    runs over the REAL shellPort + REAL shell-aware facade; a hand-rolled responder reply is fed
+//    back through mesh.handle. The origin PLACEHOLDER (postStatus) and the mirror (startStream) both
+//    route to the editor; only the outbound REQUEST envelope (a Beeper relay channel) hits Beeper. ──
+describe('a shell-origin mesh relay reply streams back into the shell, not Beeper', () => {
+  it('REPRODUCE-FIRST: @don from the shell → placeholder + reply land on the editor socket; only the request envelope hits Beeper', async () => {
+    // REAL shell port with a fake editor socket; mark 'main' owned by an inbound frame.
+    const { WebSocket, sockets } = makeFakeWs();
+    const shellPort = createShellPort({ WebSocket });
+    shellPort.onMessage(() => {});
+    shellPort.start();
+    const sock = sockets[0];
+    sock.fire('open');
+    sock.fire('message', Buffer.from(JSON.stringify({ text: '@don hola', chatId: 'main' })));
+    expect(shellPort.owns('main')).toBe(true);
+
+    // The REAL beeper bridge fake — the ORIGIN placeholder + mirror must NOT touch it; only the
+    // outbound relay-channel envelope (a non-shell chat) may.
+    const beeper = {
+      sent: [], statusPosts: [], streams: 0,
+      send(c, t) { this.sent.push({ c, t }); return { ok: true }; },
+      async postStatus(c, t) { this.statusPosts.push({ c, t }); return 'beeper-post-id'; },
+      startStream(c, i, o) { this.streams++; return { update() {}, async finish() {}, async delete() {}, delivered: false }; },
+    };
+
+    // The REAL mesh service over the REAL shell-aware facade, exactly as boot wires it.
+    const shellAware = makeShellAwareBridge(beeper, shellPort);
+    const mesh = createMeshService({
+      bridge: shellAware,
+      brain: { async turn() { return { text: '' }; } },          // origin never runs the being
+      getConfig: () => ({ node_name: 'kg' }),
+      bodyEmojiOf: () => '🤝',
+    });
+
+    // ORIGIN: the router-resolved route-direct target (a `surface: shell` relay agent → `to: don.do`).
+    const shellEv = { surface: 'shell', chatId: 'main', chatName: 'shell', senderName: 'operator', body: '@don hola' };
+    const ok = await mesh.forward(shellEv, { being: 'don', route: { room_id: 'egpt-mesh-do-kg' }, to: 'don.do' });
+    expect(ok).toBe(true);
+
+    // The outbound REQUEST envelope went to Beeper's relay channel (NOT shell-owned) …
+    expect(beeper.sent).toHaveLength(1);
+    expect(beeper.sent[0].c).toBe('egpt-mesh-do-kg');
+    const req = parseMesh(beeper.sent[0].t);
+    expect(req).toMatchObject({ to: 'don.do', from: 'shell', from_node: 'kg' });
+    // … but the ORIGIN placeholder did NOT (it went to the editor via shellPort.postStatus).
+    expect(beeper.statusPosts).toHaveLength(0);
+
+    // RESPONDER reply (hand-rolled as `do` would send it): echoes the request's return-address +
+    // placeholder id, stamped with don's body_emoji, done in one frame.
+    const reply = encodeMesh({ by: 'don.do', body: '🤝 hey there', re: `${req.from}.${req.from_node}`, post_id: req.post_id, done: true });
+    await mesh.handle({ surface: 'wa', chatId: 'egpt-mesh-do-kg', msgId: 'r1', body: reply });
+
+    // The editor got the living-mirror reply; the beeper bridge never streamed it.
+    const frames = sock.sent.map((s) => JSON.parse(s));
+    const committed = frames.filter((f) => f.streaming === false);
+    expect(committed.some((f) => f.text.includes('🤝 hey there'))).toBe(true);   // reply reached the SHELL
+    expect(beeper.streams).toBe(0);                                              // NOT streamed to Beeper
+    expect(beeper.sent).toHaveLength(1);                                         // still just the one request envelope
   });
 });

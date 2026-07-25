@@ -119,15 +119,21 @@ export function whisperPortOf(cfg) {
 // (`bridge.send` / `bridge.startStream`); handed the raw beeper bridge, a streamed @e /
 // brain-member reply on a shell-owned chat streamed to Beeper and never reached the editor
 // (the command `send` closure was the only shell-aware path — why /status showed in the shell
-// but a streamed reply did not). This facade delegates the two methods createSender calls to
-// shellPort for shell-owned chat ids and to the real bridge otherwise; every other bridge
+// but a streamed reply did not). This facade delegates the methods createSender + the mesh
+// service call to shellPort for shell-owned chat ids and to the real bridge otherwise; every other bridge
 // method passes through unchanged (spread first). Pure so the routing is testable directly
 // (mirrors the other top-level boot helpers). The beeper path for non-shell chats is untouched.
 export function makeShellAwareBridge(bridge, shellPort) {
   return {
     ...bridge,
-    send: (c, t, o) => (shellPort.owns(c) ? shellPort.send(c, t) : bridge.send(c, t, o)),
+    send: (c, t, o) => (shellPort.owns(c) ? shellPort.send(c, t, o) : bridge.send(c, t, o)),
     startStream: (c, i, tag) => (shellPort.owns(c) ? shellPort.startStream(c, i, tag) : bridge.startStream(c, i, tag)),
+    // The mesh posts its origin placeholder ("🤔 thinking…") via postStatus, so a shell-origin
+    // relay (`@don` typed in the shell) must land that placeholder on the editor — not stream it
+    // to Beeper and drop it — the same reason send/startStream are wrapped, extended to the mesh
+    // return path (operator 2026-07-25). shellPort.postStatus returns null (no editable shell msg
+    // id), so the mesh's later edit/delete of the placeholder is a guarded no-op.
+    postStatus: (c, t) => (shellPort.owns(c) ? shellPort.postStatus(c, t) : bridge.postStatus(c, t)),
   };
 }
 
@@ -511,7 +517,15 @@ export async function boot({
   // beeper limb dials Beeper Desktop. Its inbound feeds the SAME pipeline (wired below,
   // after the spine exists) and its command replies route back over its own socket (see
   // the routed `send` handed to createCommands). A dumb pipe — no command logic here.
-  const shellPort = createShellPort({ wakeWords, onLog: (m) => log.line?.(`[shell] ${m}`) });
+  // The SAME per-NODE bridge-signature layers the beeper bridge received (above) — so a persona
+  // reply rendered to the operator console is wrapped byte-identically to one rendered to Beeper
+  // (ONE path, operator 2026-07-25). Default '' → nothing added, exactly like the beeper side.
+  const shellPort = createShellPort({
+    wakeWords,
+    bridgeSignatureOpen: cfg.bridge_signature_open ?? '',
+    bridgeSignatureClose: cfg.bridge_signature_close ?? '',
+    onLog: (m) => log.line?.(`[shell] ${m}`),
+  });
 
   // Shell-aware bridge facade (makeShellAwareBridge, top of file): the STREAMING senders
   // (E's persona sender + the brain-member relay sender) render through their injected
@@ -595,7 +609,12 @@ export async function boot({
   // v2 services: bridge (send/postStatus/startStream), brain (the responder's turn),
   // config (node_name/agents/mesh.nodes routes). onEdit is registered here (its ONE
   // consumer) so a responder's in-place stream edits mirror to the origin placeholder.
-  const mesh = createMeshService({ bridge, brain, getConfig, bodyEmojiOf, onLog: (m) => log.line?.(`[mesh] ${m}`) });
+  // SHELL-AWARE bridge (operator 2026-07-25): a relay whose ORIGIN is the shell (`@don` typed
+  // in the operator console — origin chat_id 'main') must stream its placeholder + living-mirror
+  // reply back to the EDITOR, not to Beeper (where the shell can't see it). The raw bridge dropped
+  // it; the shell-aware facade routes the origin-side send/startStream/postStatus to shellPort for
+  // shell-owned chats. The relay-channel envelope (a Beeper chat) is not shell-owned → still Beeper.
+  const mesh = createMeshService({ bridge: shellAwareBridge, brain, getConfig, bodyEmojiOf, onLog: (m) => log.line?.(`[mesh] ${m}`) });
   bridge.onEdit((e) => mesh.onEdit({ msgId: e.msgId, newText: e.newText }));
 
   // operator slash commands (Self DM / authorized) — lifecycle wired now; reuses
