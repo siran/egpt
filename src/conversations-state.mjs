@@ -915,7 +915,9 @@ export async function resolveChatTarget(term, { waBridge = null, surface = 'what
   const needle = String(term).trim().toLowerCase();
   const hits = new Map();   // jid -> name
   try {
-    const chats = await waBridge?.listChats?.({ all: true, limit: 2000, messagesPerChat: 0, includeStatus: false }) ?? [];
+    // `all`/`limit`/`messagesPerChat`/`includeStatus` are baileys-era keys, inert against
+    // the Beeper bridge — `full: true` is the one that makes it walk every cursor page.
+    const chats = await waBridge?.listChats?.({ all: true, limit: 2000, messagesPerChat: 0, includeStatus: false, full: true }) ?? [];
     for (const c of chats) {
       const nm = String(c.name ?? '');
       if (nm && c.jid && nm.toLowerCase().includes(needle)) hits.set(c.jid, nm);

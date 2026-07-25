@@ -72,4 +72,19 @@ describe('resolveChatTarget — live list is authoritative (bug 2)', () => {
     });
     expect(r.error).toMatch(/matches 2/);
   });
+
+  it('a chat only reachable via the FULL cursor walk (page 1 misses it) still resolves', async () => {
+    // Mirrors the real Beeper bridge: listChats() with no/false `full` returns just
+    // the first page (recently-active chats); listChats({ full: true }) walks every
+    // cursor page. A chat quiet for a while only shows up in the full walk.
+    const r = await resolveChatTarget('Quiet', {
+      statePath: tmpState({ contacts: { whatsapp: {} } }),
+      waBridge: {
+        listChats: async ({ full = false } = {}) => (full
+          ? [{ jid: '!page1:beeper.local', name: 'Page One Chat' }, { jid: '!page9:beeper.local', name: 'Quiet Old Chat' }]
+          : [{ jid: '!page1:beeper.local', name: 'Page One Chat' }]),
+      },
+    });
+    expect(r).toEqual({ jid: '!page9:beeper.local', name: 'Quiet Old Chat' });
+  });
 });
