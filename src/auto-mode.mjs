@@ -71,14 +71,16 @@ export function receives(mode) { return mode !== 'off'; }
 // the network defaults — so an unqualified @e wakes every node AND a node's own @ed
 // wakes it too. The bug this fixes: a live `@ed estás?` logged atE=false because the
 // gate was hardcoded to e/egpt and never read the agents config.
-const _escapeWake = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// Exported because the AGENT matcher (spine/router.mjs `addressed`) builds the same kind of
+// @token alternation over the node's whole addressable set — one escape, not two copies.
+export const escapeMention = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const RE_ANYWHERE = /(^|\s)@(?:egpt|e)\b/i;
 const RE_START    = /^@(?:egpt|e)\b/i;
 function wakeMatchers(wakeWords) {
   if (!Array.isArray(wakeWords) || !wakeWords.length) return { anywhere: RE_ANYWHERE, start: RE_START };
   // longest-first so @egpt matches 'egpt' not 'e' (\b backtracking also handles it, but be explicit)
   const alt = [...new Set(wakeWords.map((w) => String(w).toLowerCase()).filter(Boolean))]
-    .sort((a, b) => b.length - a.length).map(_escapeWake).join('|');
+    .sort((a, b) => b.length - a.length).map(escapeMention).join('|');
   if (!alt) return { anywhere: RE_ANYWHERE, start: RE_START };
   return { anywhere: new RegExp(`(^|\\s)@(?:${alt})\\b`, 'i'), start: new RegExp(`^@(?:${alt})\\b`, 'i') };
 }
@@ -89,7 +91,7 @@ function wakeMatchers(wakeWords) {
 // glue into — or lose — a word boundary) BEFORE running the wake matchers. An
 // unclosed opening ``` strips to end-of-text. (operator 2026-07-24: E replied
 // '…' to its own /status output because the raw text was matched as-is.)
-function stripCode(text) {
+export function stripCode(text) {
   return text
     .replace(/```[\s\S]*?```/g, ' ')   // paired fenced blocks
     .replace(/```[\s\S]*$/g, ' ')      // unclosed fence → rest of text

@@ -381,14 +381,19 @@ export function createSpine({
     // Logged like any received message first (C1.2). routeAnswer is fire-and-forget.
     if (advice?.isAnswer?.(ev)) { await transcript.log(ev); await advice.routeAnswer(ev); return; }
 
-    // Router picks the being + the mention that being's gate should see. The real
-    // router returns { being, mention } (with an optional { mesh } target for an
-    // @being.node on ANOTHER node); a bare-string return (older/other fakes) is
-    // tolerated as the being with ev.mention unchanged.
+    // Router picks EVERY addressed agent + the mention each one's gate should see (operator
+    // 2026-07-25: one matcher over the node's whole addressable set — `@e and @don you here?`
+    // addresses BOTH). `targets` is that list in text order: the FIRST drives this message's own
+    // pipe below (gate, guard, cycle, turn) exactly as the single result always did, and the REST
+    // fan out beside it (fanOutExtras). A bare-string or single `{ being, mention }` return
+    // (older/other fakes) normalizes to a one-target list, so those callers are unchanged.
     const routed = router.resolve(ev);
-    const meshTarget = (routed && typeof routed === 'object') ? (routed.mesh ?? null) : null;
-    const to = (typeof routed === 'string' ? routed : routed.being) ?? defaultBeing;
-    const mention = (typeof routed === 'string' ? null : routed.mention) ?? ev.mention;
+    const targets = (Array.isArray(routed?.targets) && routed.targets.length)
+      ? routed.targets
+      : [typeof routed === 'string' ? { being: routed } : { being: routed?.being, mesh: routed?.mesh ?? null, mention: routed?.mention }];
+    const meshTarget = targets[0].mesh ?? null;
+    const to = targets[0].being ?? defaultBeing;
+    const mention = targets[0].mention ?? ev.mention;
 
     // ONE conversation-state read resolves this message's policy (mode +
     // send_to_egpt, both from conversations.yaml) and the derived gate flags. The
@@ -424,11 +429,19 @@ export function createSpine({
     const relayTurn = (roomRelay && !(guard && guard.blocked(channel)))
       ? roomRelay.fanOut(ev, { blocked: () => !!(guard && guard.blocked(channel)), reenter: handleInbound })
       : null;
-    // Fold the fan-out into whatever this message resolves on: a reply/context turn (Promise.all),
-    // a no-turn branch (the fan-out alone), or — no roomRelay — the original value unchanged.
+    // FAN-OUT (operator 2026-07-25): every OTHER agent this message addressed takes its own path
+    // from this ONE message — a local being takes a turn, a relay agent posts an envelope and
+    // waits. The two are independent and free: neither sequences the other, and neither re-logs
+    // the inbound (the branch below records it exactly once). Kicked off HERE, after the guard, so
+    // a STOPPED/looping channel silences the whole fan-out with the primary. One target (every
+    // existing path) → null → byte-identical to before.
+    const extrasTurn = targets.length > 1 ? fanOutExtras(targets.slice(1), ev) : null;
+    // Fold the fan-out(s) into whatever this message resolves on: a reply/context turn (Promise.all),
+    // a no-turn branch (the fan-out alone), or — no roomRelay, one target — the original value unchanged.
+    const sideTurn = (relayTurn && extrasTurn) ? Promise.all([relayTurn, extrasTurn]).then(() => {}) : (relayTurn ?? extrasTurn);
     const withRelay = (turn) => {
-      if (!relayTurn) return turn === undefined ? undefined : { turn };
-      return { turn: turn ? Promise.all([turn, relayTurn]).then(() => {}) : relayTurn };
+      if (!sideTurn) return turn === undefined ? undefined : { turn };
+      return { turn: turn ? Promise.all([turn, sideTurn]).then(() => {}) : sideTurn };
     };
 
     // Per-conversation turn key = the routed being + this conversation. It maps 1:1
@@ -529,11 +542,33 @@ export function createSpine({
   // exist. Quoting from the START is also what removes the delete+repost churn for the common
   // case: E's /reply at the message it is answering is now GENUINELY redundant, so it strips
   // instead of tearing the placeholder down and posting a fresh quote in its place.
-  function openAndRunReply({ to, ev, d, turnKey }) {
+  function openAndRunReply({ to, ev, d, turnKey, replyOnly = false }) {
     const replyTo = ev.msgId ?? null;
     const ahead = bumpTrain(turnKey);
     const out = sender.open(ev.chatId, { being: to, replyTo, queued: ahead > 0, queuedAhead: ahead, auto: d.mode === 'auto' });
-    return turnBy(turnKey, () => runReplyTurn({ to, ev, d, out, replyTo, turnKey, queued: ahead > 0 }));
+    return turnBy(turnKey, () => runReplyTurn({ to, ev, d, out, replyTo, turnKey, queued: ahead > 0, replyOnly }));
+  }
+
+  // The spine's FAN-OUT (operator 2026-07-25): dispatch the agents addressed BESIDE the one
+  // whose pipe this message is running. Each resolves ITSELF against its own gate — the mention
+  // the router minted for it (its real atStart/anywhere) decides its mode, so an agent named
+  // mid-sentence in a mention-direct chat stays silent — and then takes the path its kind
+  // already has: a RELAY target is forwarded as a mesh envelope, a LOCAL being takes a reply
+  // turn on its OWN per-conversation queue (so it runs concurrently with the primary, never
+  // behind it). `replyOnly`: the inbound line is recorded once by the primary's branch, so these
+  // turns append their REPLY only — one message, one inbound line, N replies. A target that may
+  // not reply is simply silent (no context turn, no dwell: it was ADDRESSED, so it either
+  // answers or it doesn't). Failures are noted and never break the other targets.
+  function fanOutExtras(extras, ev) {
+    return Promise.all(extras.map(async (t) => {
+      const being = t.being ?? defaultBeing;
+      try {
+        const d = await gating.decide(being, ev, t.mention ?? ev.mention);
+        if (!d.receives || !d.mayReply) return;
+        if (t.mesh) { if (mesh) await mesh.forward(ev, t.mesh); return; }
+        await openAndRunReply({ to: being, ev, d, turnKey: `${being}:${ev.surface}:${ev.chatId}`, replyOnly: true });
+      } catch (e) { note(`fan-out ${being}/${ev.chatId}: ${e?.message ?? e}`); }
+    })).then(() => {});
   }
 
   // The reply train's turn body (DEFECT 1 + accumulation FEATURE). Fully guarded: from
@@ -544,7 +579,7 @@ export function createSpine({
   // is the durable record — it swallows its own errors and never throws — so the message
   // and reply survive even a bridge delivery fault), and E's own delivered reply becomes a
   // cycle line so the next queued turn accumulates it.
-  async function runReplyTurn({ to, ev, d, out, replyTo = null, turnKey, queued, preLogged = false }) {
+  async function runReplyTurn({ to, ev, d, out, replyTo = null, turnKey, queued, preLogged = false, replyOnly = false }) {
     let recorded = false;
     try {
       out.activate?.();                                 // queued → live the moment its turn starts
@@ -600,7 +635,9 @@ export function createSpine({
       if (surfaced && !responded) note(`brain ${to}/${ev.chatId}: no deliverable text (${failShaped ? `failure-shaped: ${rawText.slice(0, 80)}` : 'empty'}) — placeholder resolved with no-reply marker`);
       // RECORD FIRST (durable) — reply.text is RAW (action lines kept). preLogged (auto
       // dwell): the burst inbound lines were already recorded at arrival, so log ONLY the reply.
-      await transcript.log(ev, { ...reply, surfaced: responded }, { replyOnly: preLogged });
+      // replyOnly (a FANNED-OUT agent): the primary target's branch records this message's single
+      // inbound line — an agent answering beside it appends its reply, never a second copy.
+      await transcript.log(ev, { ...reply, surfaced: responded }, { replyOnly: preLogged || replyOnly });
       recorded = true;
       if (responded) pushCycle(turnKey, replyLine({ being: to, body: rawText, surfaced: true, now: new Date() }));
       await store?.recordThread?.({ ev, reply, being: to });
@@ -620,7 +657,7 @@ export function createSpine({
       // delivery fault) → resolve the placeholder VISIBLY + record the inbound if the
       // reply-log didn't already run (C1.2: the message is never lost).
       try { await out.fail?.(e); } catch { /* best effort */ }
-      if (!recorded) { try { await transcript.log(ev); } catch { /* transcript swallows */ } }
+      if (!recorded && !replyOnly) { try { await transcript.log(ev); } catch { /* transcript swallows */ } }
       note(`turn ${to}/${ev.chatId}: ${e?.message ?? e}`);
     } finally { dropTrain(turnKey); }
   }
