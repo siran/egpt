@@ -52,8 +52,18 @@ function withDaySeparators(items) {
 // One transcript row (or a day separator). `you` = the operator's own line, `egpt` = a
 // reply pushed by the spine, `system` = the editor's own local notices (theme, drops),
 // `error` = a delivery failure or other fault — kept loud on purpose, never swallowed.
+//
+// A spine reply (`egpt`) is rendered RAW — its body ALREADY carries the persona stamp
+// (🐶 egpt\n…) from the shared wrap the spine ran, so we must NOT prepend the app's generic
+// `🧠 egpt` author line (that would double-stamp). Just a timestamp meta + the wrapped body.
+// you / system / error keep the author-line format.
 function renderItem(T, it) {
   if (it._sep) return h(Box, { key: it.id, marginTop: 1 }, h(Text, { color: T.meta }, `── ${it.body} ──`));
+  if (it.author === 'egpt') {
+    return h(Box, { key: it.id, flexDirection: 'column', marginBottom: 1 },
+      h(Text, { color: T.meta }, `(${hhmm(it.ts)})`),
+      ...String(it.body).split('\n').map((line, i) => h(Text, { key: i, color: T.authorBrain }, line || ' ')));
+  }
   const isSystem = it.author === 'system';
   const isYou = it.author === 'you';
   const isError = it.author === 'error';
@@ -64,6 +74,16 @@ function renderItem(T, it) {
     h(Text, { color, bold: true }, `${emoji} ${label} `, h(Text, { color: T.meta }, `(${hhmm(it.ts)})`)),
     ...String(it.body).split('\n').map((line, i) =>
       h(Text, { key: i, italic: isSystem, bold: isError, color: isSystem ? T.systemBody : isError ? T.error : undefined }, line || ' ')));
+}
+
+// The LIVE streaming line — the ⏳ thinking train + progressive edits, rendered BELOW the
+// <Static> transcript / above the composer so it re-renders in place (never committed until
+// finish). Its text is the already-persona-stamped streaming frame, so — like a committed
+// reply — render it raw (no generic author line), dimmed to read as in-progress.
+function renderLive(T, live) {
+  return h(Box, { flexDirection: 'column', marginBottom: 1 },
+    ...String(live.text).split('\n').map((line, i) =>
+      h(Text, { key: i, color: T.authorBrain, dimColor: true }, line || ' ')));
 }
 
 // Rebuild a compose state from plain text (used when history recall drops a past line into
@@ -127,6 +147,7 @@ function MultiLineInput({ onSubmit }) {
 function App({ server, themes, initialTheme, onError }) {
   const { exit } = useApp();
   const [items, setItems] = useState([]);
+  const [live, setLive] = useState(null);   // the in-progress streaming line: { text } or null
   const [themeName, setThemeName] = useState(initialTheme);
   const [T, setT] = useState(loadTheme(initialTheme));
 
@@ -136,8 +157,21 @@ function App({ server, themes, initialTheme, onError }) {
     // One-time launch line so a fresh start isn't ambiguous — a transcript row that scrolls
     // away as you chat, NOT the persistent status bar. Confirms the editor is up + sets the
     // model: you type, the spine replies here, faults show loud.
-    add('system', 'egpt shell ready — type to reach @e / @d / @l; replies and errors appear here');
-    server.onSpineMessage(m => add('egpt', m.text));
+    // NB the reachable beings are the SPINE's config (agents registry), which this editor
+    // process cannot read — so name only the persona's built-in handle and point at /members
+    // (which does read the registry). The old line advertised @d / @l, which this node does
+    // not configure: an unmatched @token falls through to a gated-out persona and answers
+    // NOTHING, so a wrong name here reads as a broken shell.
+    add('system', 'egpt shell ready — type to reach @e (/members lists this node’s beings); replies and errors appear here');
+    // A spine frame is either a LIVE streaming edit (the ⏳ thinking train — replace the live
+    // line in place) or a COMMITTED final (streaming:false — clear the live line and append the
+    // wrapped reply to the transcript). A `delete` final clears the live line, commits nothing.
+    server.onSpineMessage(m => {
+      if (m.streaming) { setLive({ text: m.text }); return; }
+      setLive(null);
+      if (m.delete) return;
+      add('egpt', m.text);
+    });
     // Server/socket faults (from egpt.mjs's onLog sink) surface as loud error rows, never swallowed.
     onError?.(m => add('error', m));
   }, []);
@@ -171,6 +205,7 @@ function App({ server, themes, initialTheme, onError }) {
   return h(Fragment, null,
     h(Static, { items: withDaySeparators(items) }, (it) => renderItem(T, it)),
     h(Box, { flexDirection: 'column', marginTop: 1 },
+      live ? renderLive(T, live) : null,
       h(MultiLineInput, { onSubmit: submit })));
 }
 
