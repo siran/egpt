@@ -60,7 +60,19 @@ export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', getNo
       if (agents && typeof agents === 'object' && Object.keys(agents).length) {
         const at = /^@([a-z0-9_-]+)/i.exec(body);
         if (at) {
-          const found = findAgent(agents, at[1].toLowerCase());
+          let found = findAgent(agents, at[1].toLowerCase());
+          // SURFACE PIN (operator 2026-07-25): an agent may carry `surface: <name>` so it is an
+          // agent ONLY on that surface; on any OTHER surface the @mention falls through (as if
+          // unmatched). Co-account CORRECTNESS, not convenience: `do` and `kg` share ONE Beeper
+          // account, so on Beeper `do` hears `@don` DIRECTLY and answers it — kg must NOT also
+          // relay it. kg relays `don` ONLY from the shell (which `do` can't hear), so kg pins its
+          // `don` relay agent `surface: shell`. A surface-mismatched agent is treated as NOT-FOUND
+          // → resolution continues past the agents block (persona/mesh/default fall-through). A
+          // LIST-shaped (multipath) agent is an Array with no `.surface`, so it is never pinned.
+          if (found && !Array.isArray(found.agent) && found.agent.surface != null
+              && String(found.agent.surface).toLowerCase() !== String(ev?.surface ?? '').toLowerCase()) {
+            found = null;
+          }
           if (found) {
             const { name, agent } = found;
             // MULTIPATH (operator 2026-07-06: multipath is configuration — an agent is a list of

@@ -129,6 +129,43 @@ describe('router.resolve — multi-path relay agent (operator 2026-07-06)', () =
   });
 });
 
+// ── SURFACE PIN (operator 2026-07-25: `@don` from the operator shell relays over the mesh, but
+//    `@don` on Beeper is left alone). An agent may carry `surface: <name>` so it is treated as an
+//    agent ONLY on that surface; on any OTHER surface the @mention falls through (as if unmatched).
+//    CORRECTNESS, not convenience: `do` and `kg` share ONE Beeper account, so on Beeper `do` hears
+//    `@don` DIRECTLY and answers it — kg must NOT also relay it. kg relays `don` ONLY from the shell
+//    (which `do` can't hear), so kg pins its `don` relay agent `surface: shell`. ──
+describe('router.resolve — surface-pinned relay agent (operator 2026-07-25)', () => {
+  const agents = {
+    egpt: { configuration: 'sonnet-high', handles: ['e', 'egpt'], default: true },
+    don:  { configuration: 'relay', relay_channel: 'egpt-mesh-do-kg', to: 'don.do', surface: 'shell' },   // relay ONLY on the shell surface
+  };
+  const arouter = createRouter({ getAgents: () => agents, defaultBeing: 'egpt' });
+  const evS = (body, surface) => ({ ...ev(body), surface });
+
+  it('@don on the SHELL surface → the mesh relay (its pinned surface matches)', () => {
+    const r = arouter.resolve(evS('@don ping', 'shell'));
+    expect(r.being).toBeNull();
+    expect(r.mesh).toEqual({ being: 'don', route: { room_id: 'egpt-mesh-do-kg' }, to: 'don.do' });
+    expect(r.mention).toMatchObject({ atEStart: true });
+  });
+
+  it('REPRODUCE-FIRST: @don on the WHATSAPP surface does NOT relay (surface mismatch → falls through to the persona)', () => {
+    // On CURRENT (pre-fix) code the agent matches regardless of surface → wrongly relays on Beeper,
+    // double-answering the message `do` already heard directly. After the surface gate: falls through.
+    const r = arouter.resolve(evS('@don ping', 'whatsapp'));
+    expect(r.mesh).toBeUndefined();     // NOT relayed on Beeper — `do` answers @don directly
+    expect(r.being).toBe('egpt');       // falls through to the persona (defaultBeing)
+  });
+
+  it('an UNPINNED relay agent is surface-agnostic (regression: no surface key → matches on any surface)', () => {
+    const ag = { egpt: { handles: ['e'], default: true }, don: { configuration: 'relay', relay_channel: 'Rodz' } };
+    const r = createRouter({ getAgents: () => ag, defaultBeing: 'egpt' });
+    expect(r.resolve({ ...ev('@don ping'), surface: 'whatsapp' }).mesh).toEqual({ being: 'don', route: { room_id: 'Rodz' } });
+    expect(r.resolve({ ...ev('@don ping'), surface: 'shell' }).mesh).toEqual({ being: 'don', route: { room_id: 'Rodz' } });
+  });
+});
+
 describe('router.resolve — cross-node mesh targets (Phase 4b)', () => {
   const mrouter = createRouter({ getAgents: () => ({}), getNode: () => 'kg', meshEnabled: () => true });
 
