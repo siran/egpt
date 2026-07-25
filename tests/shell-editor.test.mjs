@@ -63,10 +63,11 @@ describe('shell editor — WS server (fake spine over a real socket)', () => {
     await once(spine, 'open');
     await waitFor(() => server.isConnected);
 
-    // spine → editor: `{ text, chatId }` (the outbound shape shell-port.send emits).
+    // spine → editor: `{ text, chatId, streaming }` (the outbound shape shell-port emits now —
+    // `streaming` distinguishes a live ⏳ edit from a committed final; parse defaults it false).
     spine.send(JSON.stringify({ text: 'from-spine', chatId: 'main' }));
     await waitFor(() => inbound.length > 0);
-    expect(inbound[0]).toEqual({ text: 'from-spine', chatId: 'main' });
+    expect(inbound[0]).toEqual({ text: 'from-spine', chatId: 'main', streaming: false });
 
     // editor → spine: server.send('hi') pushes `{ text:'hi' }` (MVP single console).
     const framed = once(spine, 'message');

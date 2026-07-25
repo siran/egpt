@@ -161,42 +161,68 @@ describe('shell-port limb', () => {
     });
   });
 
-  describe('startStream — a STREAMED reply renders through the shell socket (THE BUG: it went to Beeper)', () => {
-    // A streamed @e / brain-member reply was rendered by createSender through its injected
-    // bridge — the raw beeper bridge — so it streamed to Beeper and never reached the editor
-    // (only the command `send` closure was shell-aware, why /status showed but a reply didn't).
-    // The limb now exposes the stream shape createSender consumes; these lock its finish/fail.
-    function connected() {
+  describe('startStream — the reply STREAMS through the shell socket via the SAME wrap Beeper uses', () => {
+    // ONE bridge path (operator 2026-07-25): the shell reply is no longer a degenerate
+    // finish-only push. startStream now mirrors beeper-port — it posts the ⏳ placeholder
+    // immediately as a LIVE (streaming:true) frame, streams bare-stamped edits, and lands the
+    // FULL concentric wrap (persona stamp + agent + bridge signatures) once, on the committed
+    // final (streaming:false). On the OLD no-op update/finish-only code these assertions FAIL.
+    function connected(opts = {}) {
       const { WebSocket, sockets } = makeFakeWs();
-      const port = createShellPort({ WebSocket });
+      const port = createShellPort({ WebSocket, ...opts });
       port.start();
       sockets[0].fire('open');
       return { port, sock: sockets[0] };
     }
+    const frames = (sock) => sock.sent.map((s) => JSON.parse(s));
 
-    it('finish({ text }) pushes the final text as ONE frame over the socket; update() renders nothing before finish', () => {
+    it('startStream posts the ⏳ placeholder immediately as a LIVE (streaming:true) persona-stamped frame', () => {
       const { port, sock } = connected();
-      const stream = port.startStream('main', '⏳ Thinking…', { persona: 'e' });
-      stream.update('partial');                                   // no in-place edit surface — nothing yet
-      expect(sock.sent).toHaveLength(0);
-      stream.finish({ text: 'Prueba 3 recibida.' });
+      port.startStream('main', '⏳ Thinking…', { bodyEmoji: '🐶', label: 'egpt', persona: 'e' });
       expect(sock.sent).toHaveLength(1);
-      expect(JSON.parse(sock.sent[0]).text).toBe('Prueba 3 recibida.');
+      const f = frames(sock)[0];
+      expect(f.streaming).toBe(true);
+      expect(f.text).toBe('🐶 egpt\n⏳ Thinking…');               // bare persona stamp on the placeholder
+    });
+
+    it('update() pushes live bare-stamped frames; finish() commits ONE streaming:false frame carrying the FULL wrap', () => {
+      const { port, sock } = connected({ bridgeSignatureOpen: '🌉kg', bridgeSignatureClose: '💸' });
+      const stream = port.startStream('main', '⏳ Thinking…', { bodyEmoji: '🐶', label: 'egpt', persona: 'e', agentSigOpen: '— e —', agentSigClose: '~ e' });
+      stream.update('Hola ⏳');                                    // the sender supplies the ⏳ marker
+      stream.finish('Hola mundo');
+      const fs = frames(sock);
+      expect(fs[0]).toMatchObject({ streaming: true, text: '🐶 egpt\n⏳ Thinking…' });   // placeholder: live, bare stamp
+      expect(fs[1]).toMatchObject({ streaming: true, text: '🐶 egpt\nHola ⏳' });          // update: live, bare stamp (NO sigs)
+      const final = fs[fs.length - 1];
+      expect(final.streaming).toBe(false);
+      // the ONE committed final: bridge_open, agent_open, CORE, agent_close, bridge_close
+      expect(final.text).toBe('🌉kg\n— e —\n🐶 egpt\nHola mundo\n~ e\n💸');
+      expect(fs.filter((f) => f.streaming === false)).toHaveLength(1);   // exactly one committed frame
       expect(stream.delivered).toBe(true);                       // → sender skips its §7 beeper fallback
     });
 
     it('finish accepts a bare string too (the shape createSender actually calls it with)', () => {
       const { port, sock } = connected();
-      port.startStream('main').finish('done');
-      expect(JSON.parse(sock.sent[0]).text).toBe('done');
+      port.startStream('main', '⏳', { bodyEmoji: '🐶', label: 'egpt' }).finish('done');
+      const committed = frames(sock).filter((f) => f.streaming === false);
+      expect(committed).toHaveLength(1);
+      expect(committed[0].text).toBe('🐶 egpt\ndone');
+    });
+
+    it('delete() clears the live line with a streaming:false delete frame — commits nothing', () => {
+      const { port, sock } = connected();
+      port.startStream('main', '⏳', { bodyEmoji: '🐶', label: 'egpt' }).delete();
+      const del = frames(sock).find((f) => f.delete);
+      expect(del).toBeTruthy();
+      expect(del.streaming).toBe(false);
     });
 
     it('fail() surfaces an error line over the socket — NOT swallowed', () => {
       const { port, sock } = connected();
-      const stream = port.startStream('main');
+      const stream = port.startStream('main', '⏳', { bodyEmoji: '🐶', label: 'egpt' });
       stream.fail(new Error('boom'));
-      expect(sock.sent).toHaveLength(1);
-      expect(JSON.parse(sock.sent[0]).text).toContain('boom');
+      const committed = frames(sock).filter((f) => f.streaming === false);
+      expect(committed.some((f) => f.text.includes('boom'))).toBe(true);
       expect(stream.lastError).toContain('boom');
     });
 
@@ -204,7 +230,7 @@ describe('shell-port limb', () => {
       const { WebSocket, sockets } = makeFakeWs();
       const port = createShellPort({ WebSocket });
       port.start();                                               // dialed, never opened
-      const stream = port.startStream('main');
+      const stream = port.startStream('main', '⏳', { bodyEmoji: '🐶', label: 'egpt' });
       expect(() => stream.finish('x')).not.toThrow();
       expect(sockets[0].sent).toHaveLength(0);
       expect(stream.delivered).toBe(false);

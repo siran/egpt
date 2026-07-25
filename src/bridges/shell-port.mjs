@@ -16,6 +16,11 @@ import WS from 'ws';
 // The SAME wake matcher the beeper limb uses (auto-mode.mjs) — reused, never duplicated,
 // so a shell `@e` is recognized by identical rules (code-fence-stripped, word-boundary).
 import { mentionStatus } from '../auto-mode.mjs';
+// The SAME persona stamp + concentric wrap the beeper limb renders through — ONE definition
+// (operator 2026-07-25: "the bridge must have ONE path"). The shell reply carries its ⏳
+// thinking train, its persona stamp, and (on the final frame) the agent/bridge signatures,
+// identical to Beeper — because it runs the identical machinery, not a shell-specific copy.
+import { personaStamp, makeWrapPersona } from './persona-wrap.mjs';
 
 // The editor serves this fixed port; the spine dials out (like Beeper's fixed 23373).
 // Exported so boot + tests share the one number (plan §3, §9 — fixed port, not discovery).
@@ -37,6 +42,8 @@ const SHELL_USER = 'operator';
  * @param {string} [opts.url]                 the editor's ws endpoint (default ws://127.0.0.1:23375)
  * @param {typeof WS} [opts.WebSocket]        INJECTION SEAM — the `ws` client constructor (default the real import; tests pass a fake editor so NO real socket opens)
  * @param {string[]} [opts.wakeWords]         the persona's wake-word set (name + configured handles), SAME set boot hands the beeper bridge. Undefined → mentionStatus' built-in e/egpt defaults.
+ * @param {string} [opts.bridgeSignatureOpen]  per-NODE outer wrap layer — the SAME value boot hands the beeper bridge, so a shell reply's wrap matches the Beeper wrap. Default ''.
+ * @param {string} [opts.bridgeSignatureClose]
  * @param {(m: string) => void} [opts.onLog]
  * @param {typeof globalThis.setTimeout} [opts.setTimeout]     reconnect-timer seam (tests inject a fake clock so no real wait blocks)
  * @param {typeof globalThis.clearTimeout} [opts.clearTimeout]
@@ -45,10 +52,15 @@ export function createShellPort({
   url = `ws://127.0.0.1:${SHELL_WS_PORT}`,
   WebSocket = WS,
   wakeWords,
+  bridgeSignatureOpen = '',
+  bridgeSignatureClose = '',
   onLog = () => {},
   setTimeout: setTimeoutFn = globalThis.setTimeout,
   clearTimeout: clearTimeoutFn = globalThis.clearTimeout,
 } = {}) {
+  // The SAME wrap the beeper limb binds (boot hands both ports the node's bridge_signature_*),
+  // so a persona reply rendered to the shell is wrapped identically to one rendered to Beeper.
+  const wrapPersona = makeWrapPersona({ bridgeSignatureOpen, bridgeSignatureClose });
   // Late-bound inbound handler: the spine registers it AFTER construction (as it does
   // bridge.onMessage), so the message frame reads the ref at call time.
   let onMsg = null;
@@ -104,13 +116,20 @@ export function createShellPort({
     _reconnectMs = Math.min(_reconnectMs * 2, RECONNECT_MAX_MS);
   }
 
-  // One outbound text frame to the editor. Drops (never throws) when the editor is
-  // not connected — a reply with nowhere to go must not crash the spine, same as
-  // beeper dropping a send to an unresolvable chat. Both the plain `send` and the
-  // streaming `startStream` render through this single push.
-  function pushFrame(chatId, text) {
+  // One outbound frame to the editor. Drops (never throws) when the editor is not connected
+  // — a reply with nowhere to go must not crash the spine, same as beeper dropping a send to
+  // an unresolvable chat. Carries `streaming` (a live, in-place edit the editor replaces vs a
+  // committed final) and, on a withheld reply, `delete` (clear the live line, commit nothing)
+  // — the shell's edit-in-place primitive, mirroring the beeper limb's startStreamMessage.
+  // Both the plain `send` and the streaming `startStream` render through this single push.
+  function pushFrame(chatId, text, { streaming = false, delete: del = false } = {}) {
     if (!ws || !_wsReady) { onLog('shell: send dropped — editor not connected'); return false; }
-    try { ws.send(JSON.stringify({ text: String(text), chatId })); return true; }
+    try {
+      const frame = { text: String(text), chatId, streaming: !!streaming };
+      if (del) frame.delete = true;
+      ws.send(JSON.stringify(frame));
+      return true;
+    }
     catch (e) { onLog(`shell: send failed — ${e?.message ?? e}`); return false; }
   }
 
@@ -134,34 +153,50 @@ export function createShellPort({
     // Is the operator's editor currently dialed in? /status's `shell:` field reads this
     // (boot wires shellConnected: () => shellPort.isConnected).
     get isConnected() { return _wsReady; },
-    // Push a reply frame back to the editor. Drops (never throws) when the editor is not
-    // connected — a reply with nowhere to go must not crash the spine, same as beeper
-    // dropping a send to an unresolvable chat.
-    send(chatId, text) { return pushFrame(chatId, text); },
+    // Push a reply frame back to the editor. A persona reply (tag carries bodyEmoji + label)
+    // is WRAPPED exactly like the beeper limb's send — the §7 non-streamed fallback renders
+    // wrapped too; a plain system reply (no tag, e.g. /status) passes through unwrapped. Drops
+    // (never throws) when the editor is not connected, same as beeper dropping an unresolvable send.
+    send(chatId, text, opts = {}) { return pushFrame(chatId, wrapPersona(opts, text)); },
+    // The mesh posts its ORIGIN placeholder ("🤔 thinking…") via postStatus and rides the
+    // returned message id as post_id (the responder echoes it so the origin edits the RIGHT
+    // message as the living-mirror reply streams). A shell-origin relay (`@don` typed in the
+    // shell) lands here via the shell-aware bridge facade. The shell has NO editable message id
+    // — a frame is a committed line, not an addressable Beeper message — so push it as a
+    // committed line (streaming:false) and RETURN null. With no post_id the mesh's later
+    // edit/delete of the placeholder becomes a guarded no-op, and openOriginStream opens a fresh
+    // shell stream (existingMsgId null) that streams the reply in via startStream. Drops (never
+    // throws) when the editor is not connected, same as send.
+    postStatus(chatId, text) { pushFrame(chatId, String(text), { streaming: false }); return null; },
     // A STREAMING reply target with the shape createSender consumes off the beeper bridge
-    // (beeper-port.startStream → { update, finish, delete, fail, delivered, lastError }).
-    // The shell surface has NO in-place edit (text in, text out — plan §1), so the reply
-    // renders on finish: update() is a no-op and the completed text is pushed as one frame.
-    // delivered flips true once a frame lands, so the sender's §7 fallback send is skipped
-    // (the stream already delivered) instead of double-posting. A push failure surfaces on
-    // lastError; fail() posts an explicit error line (never swallowed). Without this seam a
-    // streamed @e / brain-member reply on a shell-owned chat fell through to the beeper
-    // bridge's startStream and never reached the editor.
-    startStream(chatId, _initial, _tag) {
+    // (beeper-port.startStream → { update, finish, delete, fail, delivered, lastError }) — now
+    // rendered through the IDENTICAL machinery (operator 2026-07-25): the ⏳ thinking placeholder
+    // and progressive bare-stamped edits stream live (streaming:true frames the editor replaces
+    // in place), and the FULL concentric wrap (persona stamp + agent + bridge signatures) lands
+    // once, on the committed final frame (streaming:false) — exactly as beeper-port does over its
+    // startStreamMessage edit-in-place primitive. delivered flips true only when the FINAL lands,
+    // so the sender's §7 fallback send is skipped instead of double-posting. A push failure
+    // surfaces on lastError; fail() posts an explicit error line (never swallowed).
+    startStream(chatId, initial = '', tag = {}) {
       const textOf = (v) => (typeof v === 'string' ? v : v?.text ?? '');
+      const stamp = (t) => personaStamp(tag.bodyEmoji, tag.label, t);
       let _delivered = false;
       let _lastError = null;
-      const render = (v) => {
-        const t = textOf(v);
-        if (!t) return;
-        if (pushFrame(chatId, t)) _delivered = true;
-        else _lastError = 'shell: editor not connected';
-      };
+      // Post the placeholder immediately — the bare-stamped "⏳ Thinking…", live (mirrors
+      // beeper-port posting its placeholder via startStreamMessage).
+      pushFrame(chatId, stamp(initial), { streaming: true });
       return {
-        update() { /* no in-place edit on the shell surface — the reply renders on finish */ },
-        finish(reply, _opts = {}) { render(reply); },
-        delete() { /* nothing posted before finish — nothing to remove */ },
-        fail(err) { _lastError = err?.message ?? String(err ?? 'shell stream failed'); render(`❌ ${_lastError}`); },
+        // Live, bare-stamped intermediate frame — the sender supplies the ⏳ marker, the port
+        // only stamps (identical to beeper-port's update; signatures appear once, at the end).
+        update(v) { const t = textOf(v); pushFrame(chatId, stamp(t), { streaming: true }); },
+        // The committed final: the FULL wrap (stamp + agent + bridge) on a streaming:false frame.
+        finish(reply, _opts = {}) {
+          const ok = pushFrame(chatId, wrapPersona(tag, textOf(reply)), { streaming: false });
+          if (ok) _delivered = true; else _lastError = 'shell: editor not connected';
+        },
+        // A withheld reply: clear the live line, commit nothing.
+        delete() { pushFrame(chatId, '', { streaming: false, delete: true }); },
+        fail(err) { _lastError = err?.message ?? String(err ?? 'shell stream failed'); pushFrame(chatId, `❌ ${_lastError}`, { streaming: false }); },
         get delivered() { return _delivered; },
         get lastError() { return _lastError; },
       };
