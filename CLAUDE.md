@@ -75,6 +75,7 @@ You are the orchestrator, maintaining the goal and direction of the project. In
 the spirit of preserving your context length, please start background agents to
 do the coding.
 
+
 ### 5.1 Contextualize them, or they will add a path instead of finding one
 
 **An agent only sees what you tell it.** It cannot see the whole codebase, so it
@@ -106,10 +107,9 @@ Every brief must therefore:
    caller) and STOP for a ruling. Never ship a private variant, never a second
    attempt at one.
 
+
 **Framing invites the failure.** "Decide how to make X work" invites invention;
-"find where this already happens and reconfigure it" does not. Getting this
-wrong cost three rejected attempts on one small change in a single turn
-(2026-07-25) — the fault was the brief, not the agent.
+"find where this already happens and reconfigure it" does not.
 
 A useful signal when reviewing: an agent that reports "I could not do this
 without changing shared code, here is the line and the reason" has done the job
