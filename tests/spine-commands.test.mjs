@@ -99,6 +99,29 @@ describe('commands.run', () => {
     expect(sent[0].text).toMatch(/E mode here → on/);
   });
 
+  // The `agents:` override block WINS getBeing's field-wise merge (operator 2026-07-25), so a
+  // /e auto write into entry[e].mode was invisible — the command answered "✅ … → on" while the
+  // effective mode stayed pinned. The write must land where the READ resolves it.
+  it('/e auto <mode> changes the effective mode even when an agents: block pins it', async () => {
+    const state = ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state;
+    state.contacts.whatsapp['!room'].agents = { e: { mode: 'mention' } };
+    const { cmds, sent, getState } = harness({ state });
+    await cmds.run({ body: '/e auto on', chatId: '!room', surface: 'whatsapp' });
+    expect(getBeing(getState(), 'whatsapp', '!room', 'e').mode).toBe('on');
+    expect(sent[0].text).toMatch(/E mode here → on/);
+  });
+
+  // The other half: a conversation that has never used the new shape keeps writing the old
+  // block, and no `agents:` key is invented for it (nothing migrates).
+  it('/e auto <mode> on an old-shape conversation still writes entry[<being>] — no agents: block invented', async () => {
+    const state = ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state;
+    const { cmds, getState } = harness({ state });
+    await cmds.run({ body: '/e auto on', chatId: '!room', surface: 'whatsapp' });
+    const entry = getState().contacts.whatsapp['!room'];
+    expect(entry.e.mode).toBe('on');
+    expect(entry.agents).toBeUndefined();
+  });
+
   it('/e auto <bad> is rejected and leaves the mode unchanged', async () => {
     const state = ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state;
     const { cmds, sent, getState } = harness({ state });

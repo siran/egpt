@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { getBeing, residentsOf } from '../src/conversations-state.mjs';
+import { getBeing, residentsOf, patchBeing, recordThread, serialize, parse } from '../src/conversations-state.mjs';
 
 // A flat (un-migrated) conversation and a nested (per-being) one in the same state.
 const state = { contacts: { whatsapp: {
@@ -74,5 +74,56 @@ describe('per-being: the conversations.yaml `agents:` override block', () => {
 
   it('`agents` is a CONTAINER, never a resident — residentsOf must not list it', () => {
     expect(residentsOf(withAgents.contacts.whatsapp['!ovr:beeper.local'])).toEqual(['e']);
+  });
+});
+
+// patchBeing is the WRITE side of that merge (operator 2026-07-25: "so fix /e auto to the new
+// config"). The invariant it exists to hold: getBeing reads back exactly what was written, no
+// matter which of the two blocks the field currently resolves from.
+describe('per-being: patchBeing lands each field where getBeing resolves it', () => {
+  const base = () => ({ contacts: { whatsapp: {
+    '!ovr:beeper.local': { slug: 'ovr',
+      e:      { mode: 'on', threadId: 'T9', readonly: { model: 'opus' } },
+      agents: { e: { mode: 'mute' }, don: { mode: 'mention-direct' } },
+    },
+    '!old:beeper.local': { slug: 'old', e: { mode: 'on', threadId: 'T1' } },
+  } } });
+
+  it('a field the agents: block pins is written THERE — the effective value changes', () => {
+    const s = patchBeing(base(), 'whatsapp', '!ovr:beeper.local', 'e', { mode: 'mention' });
+    expect(getBeing(s, 'whatsapp', '!ovr:beeper.local', 'e').mode).toBe('mention');
+    const entry = s.contacts.whatsapp['!ovr:beeper.local'];
+    expect(entry.agents.e.mode).toBe('mention');
+    expect(entry.agents.don).toEqual({ mode: 'mention-direct' });   // another agent's pin untouched
+    expect(entry.e.threadId).toBe('T9');                            // the spine's block untouched
+  });
+
+  it('a field the agents: block does NOT pin keeps going to entry[being] — no machine state in the operator block', () => {
+    const s = recordThread(base(), 'whatsapp', '!ovr:beeper.local', 'T-NEW', '2026-07-25T00:00:00Z', 'e');
+    expect(getBeing(s, 'whatsapp', '!ovr:beeper.local', 'e').threadId).toBe('T-NEW');
+    const entry = s.contacts.whatsapp['!ovr:beeper.local'];
+    expect(entry.e.threadId).toBe('T-NEW');
+    expect(entry.agents.e).toEqual({ mode: 'mute' });   // the pin is not where threads get recorded
+    expect(getBeing(s, 'whatsapp', '!ovr:beeper.local', 'e').mode).toBe('mute');   // …and it still wins
+  });
+
+  it('an agents-only being: writing a pinned field updates the pin, an unpinned one opens its own block', () => {
+    const s = patchBeing(base(), 'whatsapp', '!ovr:beeper.local', 'don', { mode: 'off', threadId: 'T-DON' });
+    expect(getBeing(s, 'whatsapp', '!ovr:beeper.local', 'don')).toMatchObject({ mode: 'off', threadId: 'T-DON' });
+    const entry = s.contacts.whatsapp['!ovr:beeper.local'];
+    expect(entry.agents.don).toEqual({ mode: 'off' });
+    expect(entry.don).toEqual({ threadId: 'T-DON' });
+  });
+
+  it('a conversation with no agents: block never grows one (nothing migrates)', () => {
+    const s = patchBeing(base(), 'whatsapp', '!old:beeper.local', 'e', { mode: 'mute' });
+    const entry = s.contacts.whatsapp['!old:beeper.local'];
+    expect(entry).toEqual({ slug: 'old', e: { mode: 'mute', threadId: 'T1' } });
+    expect(getBeing(s, 'whatsapp', '!old:beeper.local', 'e').mode).toBe('mute');
+  });
+
+  it('the written override survives the YAML round-trip (it is read back off disk, not just in memory)', () => {
+    const s = patchBeing(base(), 'whatsapp', '!ovr:beeper.local', 'e', { mode: 'mention' });
+    expect(getBeing(parse(serialize(s)), 'whatsapp', '!ovr:beeper.local', 'e').mode).toBe('mention');
   });
 });

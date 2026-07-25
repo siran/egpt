@@ -815,13 +815,14 @@ const _FLAT_ENTRY_KEYS = new Set([
 // being's own block field-by-field. So an operator can hand-pin one agent's mode in one chat
 // without disturbing the threadId/readonly the spine writes into `entry[<name>]`, and every
 // entry already on disk in the current shape keeps resolving exactly as before. BOTH shapes are
-// READ; nothing is migrated and every WRITE still goes to `entry[<name>]` — the `agents:` block
-// is an operator-authored override, so a `/e auto <mode>` write into `entry[<name>].mode` stays
-// shadowed by an agents-block mode until the operator removes it (that is what override means).
+// READ; nothing is migrated. Writes go through patchBeing, which lands each field in whichever
+// of the two blocks this reader resolves it from (operator 2026-07-25: "so fix /e auto to the
+// new config") — otherwise a `/e auto <mode>` into `entry[<name>].mode` is silently shadowed and
+// the command answers ✅ for a change nobody can observe.
+const _obj = (v) => (v && typeof v === 'object' && !Array.isArray(v)) ? v : null;
 const _beingBlock = (entry, being) => {
-  const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v)) ? v : null;
-  const own = obj(entry[being]);
-  const ovr = obj(obj(entry.agents)?.[being]);
+  const own = _obj(entry[being]);
+  const ovr = _obj(_obj(entry.agents)?.[being]);
   return (own && ovr) ? { ...own, ...ovr } : (ovr ?? own);
 };
 
@@ -1163,16 +1164,34 @@ export function patchContact(state, surface, jidOrSlug, patch) {
   return state;
 }
 
+// THE write side of _beingBlock — every per-being field write (mode, readonly, threadId, …)
+// goes through here so the invariant holds: getBeing reads back exactly what was written.
+// The reader's merge is FIELD-WISE, so the write is too. A field the `agents:` override
+// already defines is written THERE (writing it to `entry[being]` would be shadowed — the
+// silent no-op `/e auto` had); every other field keeps going to `entry[being]`, so the
+// spine's machine state (threadId, readonly) never migrates into the operator's
+// hand-authored block and a conversation that has never used the new shape never grows one.
+// `fields` is merged over the block's existing fields (siblings survive), like patchContact.
+export function patchBeing(state, surface, jidOrSlug, being, fields) {
+  const entry = _entryByJidOrSlug(state, surface, jidOrSlug) ?? {};
+  const ovr = _obj(_obj(entry.agents)?.[being]);
+  const ownFields = {}, ovrFields = {};
+  for (const [k, v] of Object.entries(fields)) {
+    if (ovr && k in ovr) ovrFields[k] = v; else ownFields[k] = v;
+  }
+  const patch = {};
+  if (Object.keys(ownFields).length) patch[being] = { ..._obj(entry[being]), ...ownFields };
+  if (Object.keys(ovrFields).length) patch.agents = { ...entry.agents, [being]: { ...ovr, ...ovrFields } };
+  return patchContact(state, surface, jidOrSlug, patch);
+}
+
 // Record that a new claude thread was just spawned for a contact's resident being.
 // EVERY being (persona included, operator 2026-07-10) writes a NESTED `<being>` block so
 // its thread persists alongside the others — merged over the block's existing fields
 // (mode/readonly survive), and it then shows up as a resident (residentsOf), the intended
 // per-being conversation shape. `being` is REQUIRED (callers pass the resolved key).
 export function recordThread(state, surface, jidOrSlug, threadId, nowIso = nowIsoString(), being) {
-  const existing = _entryByJidOrSlug(state, surface, jidOrSlug)?.[being] ?? {};
-  return patchContact(state, surface, jidOrSlug, {
-    [being]: { ...existing, threadId, threadCreatedAt: nowIso, identityInjectedAt: nowIso },
-  });
+  return patchBeing(state, surface, jidOrSlug, being, { threadId, threadCreatedAt: nowIso, identityInjectedAt: nowIso });
 }
 
 // Resolve the primary entry for a jid OR slug within a surface (the same lookup

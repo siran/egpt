@@ -26,7 +26,7 @@
 // into readonly), it gets NO identity kickoff (engineers, not the persona), and its
 // thread persists in a per-being NESTED block (recordThread(..., being)). codex/URL
 // brains + emitted-command stripping (the comm-handler's job, Phase 4) layer in later.
-import { slugDir, getBeing, getContact, recordThread, readIdentityFeed, seedIdentityLayers, readAutoModeLayer, patchContact, appendThreadStat, mutateState, nowIsoString, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS } from '../conversations-state.mjs';
+import { slugDir, getBeing, recordThread, readIdentityFeed, seedIdentityLayers, readAutoModeLayer, patchBeing, appendThreadStat, mutateState, nowIsoString, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS } from '../conversations-state.mjs';
 import { isContextOverflowError, isDeadSessionError } from '../brain-errors.mjs';
 import { parseFrequency } from './heartbeat-loader.mjs';
 import { WRITE_TOOLS } from '../claude-args.mjs';
@@ -309,9 +309,8 @@ export function createBrainPool({
           // the identity feed is a property of the agent type (def.personality), read at kickoff.
           await mutateState(writeState, async () => {
             const s = await loadState();
-            const existing = getContact(s, ev.surface, ev.chatId)?.entry?.[being] ?? {};
-            await writeState(patchContact(s, ev.surface, ev.chatId, {
-              [being]: { ...existing, readonly: { agent: def.name, type: def.type ?? brainType, model: runModel, effort: runEffort, allowed_tools: def.allowed_tools ?? DEFAULT_ALLOWED_TOOLS } },
+            await writeState(patchBeing(s, ev.surface, ev.chatId, being, {
+              readonly: { agent: def.name, type: def.type ?? brainType, model: runModel, effort: runEffort, allowed_tools: def.allowed_tools ?? DEFAULT_ALLOWED_TOOLS },
             }));
           });
         }

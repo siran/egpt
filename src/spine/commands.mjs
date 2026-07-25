@@ -10,7 +10,7 @@
 // with a short note.
 import { lifecycleExit } from './ingest.mjs';
 import { isAutoMode, AUTO_MODES, DEFAULT_AUTO_MODE } from '../auto-mode.mjs';
-import { patchContact, getContact, getBeing, slugDir, statsPath, conversationPathOf, listIdentityLayers as defaultListIdentityLayers, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS, READONLY_ALLOWED_TOOLS, KNOWN_SURFACES, LOBBY_SLUG } from '../conversations-state.mjs';
+import { patchBeing, getContact, getBeing, slugDir, statsPath, conversationPathOf, listIdentityLayers as defaultListIdentityLayers, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS, READONLY_ALLOWED_TOOLS, KNOWN_SURFACES, LOBBY_SLUG } from '../conversations-state.mjs';
 import { stripFrontMatter } from '../transcript-meta.mjs';
 import { initWizard, wizardStep, wizardPrompt } from '../agent-wizard.mjs';
 import { BUILTIN_BRAINS_DIR, PROFILE_AGENTS_DIR } from './brains.mjs';
@@ -414,9 +414,9 @@ export function createCommands({
         }
         // The persona is a NESTED being keyed by defaultKey now (operator 2026-07-10) — write
         // its mode into that block (merged over the existing one), NOT a flat entry.mode, so
-        // gating reads it back via getBeing(defaultKey).
-        const prior = getContact(state, targetSurface, jid)?.entry?.[defaultKey] ?? {};
-        await writeState(patchContact(state, targetSurface, jid, { [defaultKey]: { ...prior, mode } }));
+        // gating reads it back via getBeing(defaultKey). patchBeing picks WHICH block that is
+        // (the `agents:` override when one pins this field), so the write is never shadowed.
+        await writeState(patchBeing(state, targetSurface, jid, defaultKey, { mode }));
         await send?.(ev.chatId, `✅ E mode ${where} → ${mode}`);
       } catch (e) { onLog(`/e auto ${ev.chatId}: ${e?.message ?? e}`); await send?.(ev.chatId, `/e auto: failed — ${e?.message ?? e}`); }
       return;
@@ -1265,9 +1265,8 @@ export function createCommands({
       const effort = result.effort ?? def.effort ?? DETERMINISTIC_EFFORT;
       // Freeze into the persona's NESTED block (operator 2026-07-10 — keyed by defaultKey,
       // merged over the existing block so threadId/mode survive the re-point).
-      const prior = c?.entry?.[defaultKey] ?? {};
-      await writeState(patchContact(state, surface, jid, {
-        [defaultKey]: { ...prior, readonly: { agent: def.name ?? result.configuration, type: engine, model, effort, allowed_tools: def.allowed_tools ?? DEFAULT_ALLOWED_TOOLS } },
+      await writeState(patchBeing(state, surface, jid, defaultKey, {
+        readonly: { agent: def.name ?? result.configuration, type: engine, model, effort, allowed_tools: def.allowed_tools ?? DEFAULT_ALLOWED_TOOLS },
       }));
       // The live warm session runs under the OLD engine (or the new one on a never-instanced
       // conversation); the pool keys it `<defaultKey>:<engine>:<surface>:<slug>`.
@@ -1302,9 +1301,8 @@ export function createCommands({
       const c = getContact(state, surface, jid);
       const slug = c?.slug ?? result.slug;
       const displayName = c?.entry?.pushedName ?? slug;
-      const prior = c?.entry?.[defaultKey] ?? {};
-      await writeState(patchContact(state, surface, jid, {
-        [defaultKey]: { ...prior, readonly: { agent: name, type: CCODE, model: result.model, effort: result.effort, allowed_tools: DEFAULT_ALLOWED_TOOLS } },
+      await writeState(patchBeing(state, surface, jid, defaultKey, {
+        readonly: { agent: name, type: CCODE, model: result.model, effort: result.effort, allowed_tools: DEFAULT_ALLOWED_TOOLS },
       }));
       evictWarm(`${defaultKey}:${wm.oldEngine ?? CCODE}:${surface}:${slug}`);
       await send?.(wm.chatId, `✅ «${displayName}» → ${name} · ${result.model}/${result.effort} (new type created, respawns next turn)`);
@@ -1312,7 +1310,7 @@ export function createCommands({
   }
 
   // The `tools` branch: edit ONLY allowed_tools, keeping the conversation's current
-  // agent/type/model/effort exactly as they are (readonly is written WHOLE — patchContact
+  // agent/type/model/effort exactly as they are (readonly is written WHOLE — patchBeing
   // replaces the key — so every other field is re-read fresh here, not the arm-time
   // snapshot, and carried forward unchanged). 'current' is resolved fresh + coerced, so a
   // legacy frozen 'all' is never re-frozen — it self-heals to the explicit list here too.
@@ -1330,17 +1328,13 @@ export function createCommands({
       else if (result.tools === 'custom') tools = result.toolsCustom?.length ? result.toolsCustom : DEFAULT_ALLOWED_TOOLS;
       else tools = coerceAllowedTools({ allowed_tools: cur?.allowedTools ?? null })?.allowed_tools ?? DEFAULT_ALLOWED_TOOLS;   // 'current'
       const engine = cur?.brainType ?? wm.oldEngine ?? CCODE;
-      const prior = c?.entry?.[defaultKey] ?? {};
-      await writeState(patchContact(state, surface, jid, {
-        [defaultKey]: {
-          ...prior,
-          readonly: {
-            agent: cur?.agent ?? 'egpt',
-            type: engine,
-            model: cur?.model ?? DETERMINISTIC_MODEL,
-            effort: cur?.effort ?? DETERMINISTIC_EFFORT,
-            allowed_tools: tools,
-          },
+      await writeState(patchBeing(state, surface, jid, defaultKey, {
+        readonly: {
+          agent: cur?.agent ?? 'egpt',
+          type: engine,
+          model: cur?.model ?? DETERMINISTIC_MODEL,
+          effort: cur?.effort ?? DETERMINISTIC_EFFORT,
+          allowed_tools: tools,
         },
       }));
       evictWarm(`${defaultKey}:${wm.oldEngine ?? engine}:${surface}:${slug}`);
