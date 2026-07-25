@@ -50,13 +50,26 @@ const P = {
   conversations: join(HOME, 'config', 'conversations.yaml'),
   agentEgpt:     join(HOME, 'config', 'agents', 'egpt.yaml'),
   idSecretary:   join(HOME, 'config', 'identities', 'secretary.md'),
+  roomDir:       join(HOME, 'config', 'skeletons', 'room'),
   room00:        join(HOME, 'config', 'skeletons', 'room', '00-identity.md'),
   room30:        join(HOME, 'config', 'skeletons', 'room', '30-pointers.md'),
   room40:        join(HOME, 'config', 'skeletons', 'room', '40-rules.md'),
   ingestDir:     join(HOME, 'state', 'ingest'),
   oldIngestDir:  join(HOME, 'ingest'),                    // the RETIRED location
   transcript:    join(HOME, 'conversations', 'whatsapp', SLUG, 'transcript.md'),
+  identityD:     join(HOME, 'conversations', 'whatsapp', SLUG, 'identity.d'),
   logsDir:       join(HOME, 'config', 'logs'),
+};
+
+// The room template's NUMBERED feed layers. `50-extra.md` is NOT one of the four the code
+// used to hardcode — it is here to prove the layers are ENUMERATED: dropping a new NN-*.md
+// into the room template must BOTH feed and copy with no code change (operator 2026-07-25).
+const LAYERS = {
+  '00-identity.md': '# I am eGPT\n\nfixture identity.\n',
+  '10-actions.md':  '# FIXTURE LIMBS\n\n/react #<id> <emoji>\n',
+  '30-pointers.md': '# fixture pointers\n',
+  '40-rules.md':    '# fixture rules\n',
+  '50-extra.md':    '# EXTRA LAYER\n\nAdded to the template with no code change.\n',
 };
 
 // fake Beeper transport (verbatim shape from spine-v1-boot): captures the host
@@ -86,7 +99,7 @@ const fakeSession = (opts) => ({
 // fake spawn so a heartbeat command beat never runs a real shell.
 const fakeSpawn = () => ({ on(ev, cb) { if (ev === 'exit') cb(0); return this; } });
 
-let boot, slugDir, parse, createContacts, createMedia, _BEEPER_LOG, swallow, _resetSwallowForTest;
+let boot, slugDir, parse, readIdentityFeed, createContacts, createMedia, _BEEPER_LOG, swallow, _resetSwallowForTest;
 let spy, app, delivered;
 
 beforeAll(async () => {
@@ -127,9 +140,7 @@ beforeAll(async () => {
   await fs.writeFile(P.conversations, YAML.stringify(conversations), 'utf8');
   await fs.writeFile(P.agentEgpt, 'type: ccode\nmodel: sonnet\neffort: high\n', 'utf8');
   await fs.writeFile(P.idSecretary, '# I am a secretary\n\nProfile-only preset.\n', 'utf8');
-  await fs.writeFile(P.room00, '# I am eGPT\n\nfixture identity.\n', 'utf8');
-  await fs.writeFile(P.room30, '# pointers\n', 'utf8');
-  await fs.writeFile(P.room40, '# rules\n', 'utf8');
+  for (const [file, body] of Object.entries(LAYERS)) await fs.writeFile(join(P.roomDir, file), body, 'utf8');
 
   // Pre-drop ingest probes: one in the CANONICAL box (must be consumed by boot's
   // immediate sweep), one in the RETIRED box (must be left untouched).
@@ -138,7 +149,7 @@ beforeAll(async () => {
 
   // 2. Import the app modules NOW (EGPT_HOME already frozen to the fixture).
   ({ boot } = await import('../src/spine/boot.mjs'));
-  ({ slugDir, parse } = await import('../src/conversations-state.mjs'));
+  ({ slugDir, parse, readIdentityFeed } = await import('../src/conversations-state.mjs'));
   ({ createContacts } = await import('../src/spine/contacts.mjs'));
   ({ createMedia } = await import('../src/spine/media.mjs'));
   ({ _BEEPER_LOG } = await import('../src/bridges/beeper.mjs'));
@@ -249,5 +260,30 @@ describe('GUARD 1 — boot reads the canonical layout (real constants, hermetic 
     await media.save({ ...base, kind: 'video', mime: 'video/mp4', fileName: 'clip.mp4', localPath: '/tmp/clip.mp4' });
     expect(cap.frameOutDir).toBe(mediaDir);                              // keyframes under <conv>/media
     expect(cap.transcribePath.startsWith(mediaDir)).toBe(true);         // audio transcript sidecar under <conv>/media
+  });
+
+  // (g) THE SEEDING CONTRACT (operator 2026-07-25, verbatim): "there is a skeleton folder
+  //     with numbered files 10-file 30-file2 50-file3, they all get to model at the
+  //     beginning, but should also be copied for local consult, since by default
+  //     conversation-e has only access to it's folder." The COPY half regressed on
+  //     2026-07-15 (installIdentity's only caller died with the old spine), leaving E —
+  //     which runs confineToDirs:[<conv>] — with nothing to consult after kickoff, while
+  //     BOTH pointer cards told it to read ./identity.d/. ALL layers land, 10-actions
+  //     included (the old "limbs live only in-context" carve-out is superseded).
+  it('(g) every NN-*.md room layer is COPIED into <conv>/identity.d, not just fed', async () => {
+    for (const [file, body] of Object.entries(LAYERS)) {
+      expect(await fs.readFile(join(P.identityD, file), 'utf8')).toBe(body);
+    }
+  });
+
+  // (h) ENUMERATED, not a hardcoded 00/10/30/40 quartet: `50-extra.md` exists only in the
+  //     fixture template and must BOTH feed and copy, with the feed ordered by numeric prefix.
+  it('(h) an EXTRA numbered layer feeds (in numeric-prefix order) and copies, with no code change', async () => {
+    const feed = await readIdentityFeed('egpt');
+    const idx = ['fixture identity', 'FIXTURE LIMBS', 'fixture pointers', 'fixture rules', 'EXTRA LAYER']
+      .map((s) => feed.indexOf(s));
+    expect(idx.filter((i) => i < 0)).toEqual([]);           // every layer reached the feed
+    expect(idx).toEqual([...idx].sort((a, b) => a - b));    // …in numeric-prefix order
+    expect((await fs.stat(join(P.identityD, '50-extra.md'))).isFile()).toBe(true);
   });
 });

@@ -26,7 +26,7 @@
 // into readonly), it gets NO identity kickoff (engineers, not the persona), and its
 // thread persists in a per-being NESTED block (recordThread(..., being)). codex/URL
 // brains + emitted-command stripping (the comm-handler's job, Phase 4) layer in later.
-import { slugDir, getBeing, getContact, recordThread, readIdentityFeed, readAutoModeLayer, patchContact, appendThreadStat, mutateState, nowIsoString, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS } from '../conversations-state.mjs';
+import { slugDir, getBeing, getContact, recordThread, readIdentityFeed, seedIdentityLayers, readAutoModeLayer, patchContact, appendThreadStat, mutateState, nowIsoString, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS } from '../conversations-state.mjs';
 import { isContextOverflowError, isDeadSessionError } from '../brain-errors.mjs';
 import { parseFrequency } from './heartbeat-loader.mjs';
 import { WRITE_TOOLS } from '../claude-args.mjs';
@@ -133,6 +133,7 @@ export function createBrainPool({
   isOverflow = isContextOverflowError,
   isDeadSession = isDeadSessionError,
   loadFeed = readIdentityFeed,      // (personality) -> identities/<name>/ feed string
+  seedLayers = seedIdentityLayers,  // (surface, slug, personality, {io}) -> copy the fed layers into <conv>/identity.d
   loadAutoLayer = readAutoModeLayer,// () -> the `mode: auto` operator-role instruction layer (appended to an auto conversation's kickoff)
   loadManifest = null,              // () -> e_identity.md fallback (default below)
   afterTurn = null,                 // ({key, sessionId, model, cwd, allowedTools}) — post-turn hook (auto-compaction)
@@ -326,6 +327,16 @@ export function createBrainPool({
       // missing cwd), and the brain runs before transcript creates it — so mkdir here.
       const cwd = def.cwd ?? convDir;
       await mkdir(cwd, { recursive: true });
+      // Copy the kickoff layers into the conversation's OWN folder (operator 2026-07-25:
+      // "they all get to model at the beginning, but should also be copied for local
+      // consult, since by default conversation-e has only access to it's folder"). Copy-
+      // if-missing, so it costs a stat per layer and self-heals a conversation that was
+      // started before this existed — hence every persona turn, not only the fresh
+      // kickoff (a live conversation resumes forever and would otherwise never get them).
+      // Targets convDir, NOT cwd: a def that pins a workspace must not have identity.d
+      // written into it. Persona-only — siblings are engineers with no identity feed.
+      // Best-effort by contract (seedIdentityLayers never throws) — never breaks a turn.
+      if (!isSibling) await seedLayers(ev.surface, slug, personality, { io });
 
       const key = `${being}:${engine}:${ev.surface}:${slug}`;
       lastKeyByConv.set(`${being}:${ev.surface}:${ev.chatId}`, key);

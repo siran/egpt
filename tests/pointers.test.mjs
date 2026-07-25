@@ -1,40 +1,41 @@
+// pointers.test.mjs — the POINTERS CARD is `config/skeletons/room/30-pointers.md`, and
+// nothing else. It used to have a second, INLINE copy in src/pointers.mjs (POINTERS_TEXT +
+// seedPointers); the two DIVERGED, and the module's only caller died with the old spine, so
+// the tests here guarded a corpse while the live card rotted. src/pointers.mjs was deleted
+// 2026-07-25 and this file now guards the surviving card.
+//
+// WHAT ROTS: the card is fed at kickoff AND copied to <conv>/identity.d/30-pointers.md, and
+// E reads it while confined to its conversation folder. So every `./path` it names must be a
+// path a conversation folder ACTUALLY has. It listed `./transcripts/` — a directory nothing
+// in the codebase has ever created — sending E to a dead end.
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { readFile, writeFile } from 'node:fs/promises';
-import { seedPointers, POINTERS_TEXT } from '../src/pointers.mjs';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
-const fs = { readFile, writeFile };
+const CARD = readFileSync(fileURLToPath(new URL('../config/skeletons/room/30-pointers.md', import.meta.url)), 'utf8');
 
-describe('seedPointers — per-conversation reference card', () => {
-  it('writes ./pointers.md when the folder has none', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'egpt-ptr-'));
-    try {
-      const wrote = await seedPointers(fs, dir);
-      expect(wrote).toBe(true);
-      const body = readFileSync(join(dir, 'pointers.md'), 'utf8');
-      expect(body).toBe(POINTERS_TEXT);
-      // the content must reflect the REAL current tools, not the stale CDP-only card
-      expect(body).toContain('WebSearch');
-      expect(body).toContain('WebFetch');
-      expect(body).toContain('./transcript.md');
-      expect(body).toMatch(/can.?t access the internet/i);   // the "you CAN" correction
-    } finally { rmSync(dir, { recursive: true, force: true }); }
+// What a conversation folder REALLY holds: transcript.md (transcript service), media/
+// (media service), identity.d/ (the seeded feed layers), config.yaml (optional operator
+// block: warm / heartbeats / transcription), plus optional daily-YYYY-MM-DD.md summaries.
+const REAL_PATHS = new Set(['./transcript.md', './media/', './identity.d/', './config.yaml']);
+
+describe('the pointers card (config/skeletons/room/30-pointers.md)', () => {
+  it('points at ./identity.d/ — the folder the layers are actually seeded into', () => {
+    expect(CARD).toContain('./identity.d/');
   });
 
-  it('does NOT clobber an existing (operator-customized) card', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'egpt-ptr-'));
-    try {
-      writeFileSync(join(dir, 'pointers.md'), 'MY CUSTOM CARD');
-      const wrote = await seedPointers(fs, dir);
-      expect(wrote).toBe(false);
-      expect(readFileSync(join(dir, 'pointers.md'), 'utf8')).toBe('MY CUSTOM CARD');
-    } finally { rmSync(dir, { recursive: true, force: true }); }
+  it('names ONLY paths a conversation folder actually has', () => {
+    const named = [...CARD.matchAll(/\.\/[A-Za-z0-9._-]+\/?/g)].map((m) => m[0]);
+    expect(named.length).toBeGreaterThan(0);
+    expect(named.filter((p) => !REAL_PATHS.has(p))).toEqual([]);
   });
 
-  it('is a safe no-op without fs or dir', async () => {
-    expect(await seedPointers(null, '/x')).toBe(false);
-    expect(await seedPointers(fs, '')).toBe(false);
+  it('does not send E to ./transcripts/ — nothing has ever created it', () => {
+    expect(CARD).not.toMatch(/\.\/transcripts/);
+  });
+
+  it('still carries the operator correction: E has the web directly (WebSearch/WebFetch)', () => {
+    expect(CARD).toContain('WebSearch');
+    expect(CARD).toContain('WebFetch');
   });
 });

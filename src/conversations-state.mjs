@@ -39,7 +39,9 @@ const PERSONALITIES_OPERATOR_DIR = join(EGPT_HOME, 'personalities');
 // conversation's kickoff feed = its identity file + the SHARED actions + pointers + rules
 // (the "room template", identity first, then the shared layers).
 //   - identity: EGPT_HOME/config/identities/<name>.md (profile).
-//   - shared actions/pointers/rules: config/skeletons/room/{10-actions,30-pointers,40-rules}.md
+//   - shared layers: EVERY other NN-*.md in config/skeletons/room/ (the shipped set is
+//     {10-actions,30-pointers,40-rules}.md, but the dir is ENUMERATED, not hardcoded —
+//     operator 2026-07-25 — so an added 50-*.md feeds and seeds with no code change)
 //     — the profile's seeded copy wins, the repo's shipped template is the fallback. The
 //     ACTIONS layer (the emit-limbs grammar) is a spine contract, so it feeds for EVERY
 //     being regardless of identity (operator 2026-07-06).
@@ -72,6 +74,8 @@ export const KNOWN_SURFACES = ['whatsapp', 'telegram', 'shell', 'signal'];
 //     transcript.md                ← per-thread play-script log
 //     daily-YYYY-MM-DD.md (opt)    ← optional daily summaries written by @e
 //     media/                       ← per-chat media downloads
+//     identity.d/NN-*.md           ← copies of the room template layers E was fed, so a
+//                                    cwd-confined E can re-consult them (seedIdentityLayers)
 //
 // Surface separation lets WA / TG / Signal / shell each be backed up,
 // wiped, or moved without touching the others. Pre-2026-05-21 the
@@ -1374,45 +1378,86 @@ export function listIdentityLayers() {
   return out.sort();
 }
 
-// The identity + shared actions + pointers + rules, in that order — the feed shape shared
-// by the in-context kickoff (readIdentityFeed) and the slug-dir install (installIdentity).
-// The ACTIONS layer (10-actions.md) is a SPINE CONTRACT, not an identity trait (operator
-// 2026-07-06: limbs are parsed by reply-actions.mjs for EVERY being) — so it feeds ALWAYS,
-// independent of which identity a being wears, exactly like the shared pointers/rules. A
-// custom identity file REPLACES 00-identity.md but must STILL learn the /react grammar.
+// The identity slot: the ONE layer a named persona's own file replaces.
+const IDENTITY_SLOT = '00-identity.md';
+
+// The room template's numbered feed layers, ENUMERATED (operator 2026-07-25: "there is a
+// skeleton folder with numbered files 10-file 30-file2 50-file3") rather than a hardcoded
+// 00/10/30/40 quartet — dropping a `50-foo.md` into the template must feed and seed with
+// no code change. Ordered by NUMERIC prefix (so 100- sorts after 40-, which lexical would
+// not), ties broken lexically. Never throws — an unreadable dir yields [].
+function _listRoomLayerFiles(dir) {
+  let names = [];
+  try { names = readdirSync(dir); } catch { return []; }
+  return names
+    .filter((n) => /^\d+-.+\.md$/i.test(n))
+    .sort((a, b) => (parseInt(a, 10) - parseInt(b, 10)) || a.localeCompare(b));
+}
+
+// The room template's layers in feed order, as [{ file, text }] — the shape shared by the
+// in-context kickoff (readIdentityFeed) and the conversation-folder copy (seedIdentityLayers),
+// so what E is FED and what it can later CONSULT can never disagree. A named persona's
+// profile file config/identities/<name>.md replaces the 00-identity SLOT only; every other
+// layer is shared. In particular the ACTIONS layer (10-actions.md) is a SPINE CONTRACT, not
+// an identity trait (operator 2026-07-06: limbs are parsed by reply-actions.mjs for EVERY
+// being) — a custom identity still learns the /react grammar.
 async function _identityLayers(name) {
   const room = roomTemplateDir();
   const idFile = resolveIdentityFile(name);
-  const identity = await _readFileOr(idFile ?? join(room, '00-identity.md'));
-  const actions  = await _readFileOr(join(room, '10-actions.md'));
-  const pointers = await _readFileOr(join(room, '30-pointers.md'));
-  const rules    = await _readFileOr(join(room, '40-rules.md'));
-  return { identity, actions, pointers, rules };
+  const files = _listRoomLayerFiles(room);
+  const layers = [];
+  for (const file of files) {
+    layers.push({ file, text: await _readFileOr(file === IDENTITY_SLOT && idFile ? idFile : join(room, file)) });
+  }
+  // A profile identity with no 00-identity.md in the template still LEADS the feed — a
+  // named persona must never lose its identity to a thinned-out room dir.
+  if (idFile && !files.includes(IDENTITY_SLOT)) layers.unshift({ file: IDENTITY_SLOT, text: await _readFileOr(idFile) });
+  return layers;
 }
 
-// Install identity <name> into a conversation slug-dir: write the flat layers (so
-// ./identity.md, ./pointers.md, ./rules.md exist in the sandbox) and return
-// { feed, files, dir }. feed = identity + pointers + rules for the kickoff turn.
-export async function installIdentity(surface, slug, name) {
-  const { identity, actions, pointers, rules } = await _identityLayers(name);
-  const slugd = slugDir(surface, slug);
-  await mkdir(slugd, { recursive: true });
-  const files = [];
-  await writeFile(join(slugd, 'identity.md'), identity, 'utf8'); files.push('identity.md');
-  await writeFile(join(slugd, 'pointers.md'), pointers, 'utf8'); files.push('pointers.md');
-  await writeFile(join(slugd, 'rules.md'),    rules,    'utf8'); files.push('rules.md');
-  // The actions limbs ride the kickoff feed (spine contract, operator 2026-07-06) — no flat
-  // slug-dir copy: E reads ./pointers.md on demand, but the limbs live only in-context.
-  const feed = [identity, actions, pointers, rules].map(s => s.trim()).filter(Boolean).join('\n\n');
-  return { feed, files, dir: resolveIdentityFile(name) ?? join(roomTemplateDir(), '00-identity.md') };
+// Seed the room's identity layers into a conversation's OWN folder (operator 2026-07-25:
+// "they all get to model at the beginning, but should also be copied for local consult,
+// since by default conversation-e has only access to it's folder"). E runs with
+// confineToDirs:[<conv>], so a layer that is never copied there is unreadable to it — and
+// both pointer cards tell it to read ./identity.d/.
+//
+// DESTINATION `<conv>/identity.d/<NN-name>.md`: the path both cards name and the one
+// Room.identityDir already defines ("NN-*.md fed to the room's brain(s)"). ALL layers are
+// copied, 10-actions included — the retired installIdentity deliberately skipped it ("the
+// limbs live only in-context"); the operator's instruction supersedes that.
+//
+// COPY-IF-MISSING, the house skeleton convention (seed.mjs): an operator-edited copy is
+// sacred. Consequence: an edit to the SHARED template never reaches an already-seeded
+// folder — the known capabilities-refresher trade, not solved here.
+//
+// NEVER throws — a seeding hiccup must not break a turn. Returns the filenames it wrote.
+export async function seedIdentityLayers(surface, slug, name, { io = {} } = {}) {
+  const readFileFn = io.readFile ?? readFile;
+  const writeFileFn = io.writeFile ?? writeFile;
+  const mkdirFn = io.mkdir ?? mkdir;
+  const wrote = [];
+  try {
+    const layers = await _identityLayers(name);
+    const dir = join(slugDir(surface, slug), 'identity.d');
+    await mkdirFn(dir, { recursive: true });
+    for (const { file, text } of layers) {
+      if (!text.trim()) continue;                                  // an empty layer is not a file worth writing
+      const fp = join(dir, file);
+      try { await readFileFn(fp, 'utf8'); continue; }              // already there — never clobber
+      catch { /* missing → seed below */ }
+      await writeFileFn(fp, text, 'utf8');
+      wrote.push(file);
+    }
+  } catch (e) { console.error(`!! seedIdentityLayers(${surface}/${slug}): ${e?.message ?? e}`); }
+  return wrote;
 }
 
-// Read identity <name>'s concatenated feed (identity + pointers + rules) WITHOUT
-// writing any slug-dir copies — for the first-dispatch auto-wrap, which just needs the
-// content in-context. Never empty for a resolvable persona (eGPT is the default).
+// Read identity <name>'s concatenated kickoff feed — every room layer in numeric order,
+// with the 00-identity slot resolved to the named persona. WITHOUT writing any copies (the
+// copy is seedIdentityLayers' job, called beside this at the turn boundary). Never empty
+// for a resolvable persona (eGPT is the default).
 export async function readIdentityFeed(name) {
-  const { identity, actions, pointers, rules } = await _identityLayers(name);
-  return [identity, actions, pointers, rules].map(s => s.trim()).filter(Boolean).join('\n\n');
+  return (await _identityLayers(name)).map(({ text }) => text.trim()).filter(Boolean).join('\n\n');
 }
 
 // The `mode: auto` operator-role instruction layer (config/skeletons/auto-mode.md).
