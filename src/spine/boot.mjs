@@ -614,7 +614,10 @@ export async function boot({
   // reply back to the EDITOR, not to Beeper (where the shell can't see it). The raw bridge dropped
   // it; the shell-aware facade routes the origin-side send/startStream/postStatus to shellPort for
   // shell-owned chats. The relay-channel envelope (a Beeper chat) is not shell-owned → still Beeper.
-  const mesh = createMeshService({ bridge: shellAwareBridge, brain, getConfig, bodyEmojiOf, onLog: (m) => log.line?.(`[mesh] ${m}`) });
+  // getSelfChatId: the Self chat (same first command channel announceAndExit posts to) — the mesh
+  // relays through it when a relay_channel doesn't resolve, so a missing group degrades to a
+  // working link + a notice instead of a silently dropped envelope.
+  const mesh = createMeshService({ bridge: shellAwareBridge, brain, getConfig, bodyEmojiOf, getSelfChatId: () => surfaceCfg('whatsapp').chat_ids[0] ?? null, onLog: (m) => log.line?.(`[mesh] ${m}`) });
   bridge.onEdit((e) => mesh.onEdit({ msgId: e.msgId, newText: e.newText }));
 
   // operator slash commands (Self DM / authorized) — lifecycle wired now; reuses

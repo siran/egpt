@@ -37,6 +37,7 @@ export function createMeshService({
   brain,                               // the Brain port (turn) — runs the local being for the responder
   getConfig = () => ({}),
   bodyEmojiOf = () => '',              // (being) => body_emoji — stamps the relayed reply
+  getSelfChatId = () => null,          // () => this node's Self chat id — the fallback transport when a relay channel doesn't resolve
   // Timer seams (injected so the origin-wait timeout is testable without real time).
   setTimer = (fn, ms) => { const t = setTimeout(fn, ms); if (t?.unref) t.unref(); return t; },
   clearTimer = (t) => { if (t != null) clearTimeout(t); },
@@ -83,6 +84,32 @@ export function createMeshService({
     const c = route?.room_id ?? route?.chat ?? route;
     return c == null ? null : String(c);
   };
+  // SELF-FALLBACK (operator 2026-07-25): a relay channel the bridge cannot resolve is a DEAD
+  // transport — bridge.send drops the envelope ("send DROPPED … resolved=null") and the operator
+  // sees nothing at all, just the eventual origin-wait "did not answer". Both spines ride ONE
+  // Beeper account, so any chat both see is a valid two-node link and the Self chat qualifies:
+  // relay through Self and post a notice naming the channel, ONCE per channel (a permanently
+  // missing channel must not re-notice on every @mention). Unresolved ≠ absent — the bridge may
+  // simply not see the chat yet — so the notice never asserts the group doesn't exist. No Self
+  // configured → null, and the caller keeps today's behaviour (route unchanged).
+  const noticedChannels = new Set();
+  const selfRoute = async (route, chat) => {
+    const self = String(getSelfChatId() ?? '').trim();
+    if (!self) return null;
+    if (!noticedChannels.has(chat)) {
+      noticedChannels.add(chat);
+      onLog(`relay channel ${JSON.stringify(chat)} did not resolve — relaying through Self`);
+      try { await bridge.send(self, `⚠️ relay channel "${chat}" is unreachable (did not resolve) — create group ${chat} for relay. Relaying through this chat meanwhile.`); } catch {}
+    }
+    return { ...route, room_id: self };
+  };
+  // Can the bridge reach this chat? A bridge with no resolver (test fakes) is treated as
+  // reachable so raw-id configs stay untouched; a throwing resolver likewise (fail safe).
+  const chatResolves = async (chat, network) => {
+    if (!bridge.resolveChatId) return true;
+    try { return !!(await bridge.resolveChatId(chat, network ? { network } : undefined)); }
+    catch { return true; }
+  };
   // Resolve a route's room to the CANONICAL short chat id the bridge delivers under.
   // A relay_channel is configured by NAME (e.g. "rodz2"), but the bridge sends and delivers
   // under the RESOLVED id. Resolving the relay-record's room HERE makes the relay hop forward
@@ -99,7 +126,12 @@ export function createMeshService({
     const c = chatOf(route);
     if (c == null) return route;
     const network = route.network ? String(route.network).toLowerCase() : null;
-    try { const id = await bridge.resolveChatId?.(c, network ? { network } : undefined); return id ? { ...route, room_id: id } : route; }
+    try {
+      if (!bridge.resolveChatId) return route;
+      const id = await bridge.resolveChatId(c, network ? { network } : undefined);
+      if (id) return { ...route, room_id: id };
+      return (await selfRoute(route, c)) ?? route;              // unresolved → Self transport (+ one-time notice)
+    }
     catch { return route; }
   };
 
@@ -301,9 +333,18 @@ export function createMeshService({
         return ok;
       }
       const toNode = target?.node;
-      const route = target?.route;                              // route-direct (relay agent)
+      let route = target?.route;                                // route-direct (relay agent)
       const to = String(target?.to ?? '').trim();               // declarative next-hop (chain)
       if (!being || (!toNode && !route)) { onLog(`forward: bad target ${JSON.stringify(target)}`); return false; }
+      // A route-direct hop posts into the relay_channel exactly AS CONFIGURED (the bridge resolves
+      // the name at send time), so an unresolvable channel is dropped there in silence. Check it
+      // here and fall the transport back to Self; a channel that DOES resolve rides on unchanged.
+      if (route) {
+        const c = chatOf(route);
+        if (c != null && !(await chatResolves(c, route.network ? String(route.network).toLowerCase() : null))) {
+          route = (await selfRoute(route, c)) ?? route;
+        }
+      }
       const origin = { surface: ev.surface, chat_id: ev.chatId, name: ev.chatName ?? ev.chatId };
       const sender = ev.senderName ?? 'someone';
       const label = to || (toNode ? `${being}.${toNode}` : `${being} (${chatOf(route)})`);

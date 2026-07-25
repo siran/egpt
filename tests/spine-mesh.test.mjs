@@ -20,7 +20,9 @@ function fakeBridge({ chatIds = {} } = {}) {
     // name→id resolution, as the real bridge does (relay_channel is configured by NAME;
     // an observed envelope's ev.chatId is always the RESOLVED id). Unknown → identity.
     // The optional 2nd arg is the network pin (operator 2026-07-06) — recorded, not applied.
-    async resolveChatId(nameOrId, opts) { b.resolveCalls.push({ nameOrId, opts }); return chatIds[nameOrId] ?? nameOrId; },
+    // An explicit `null` value models a chat the bridge CANNOT resolve (absent, or simply not
+    // visible to it) — the live "send DROPPED … resolved=null" case.
+    async resolveChatId(nameOrId, opts) { b.resolveCalls.push({ nameOrId, opts }); return (nameOrId in chatIds) ? chatIds[nameOrId] : nameOrId; },
     send(chat, text) { b.sent.push({ chat, text }); return { ok: true }; },
     async postStatus(chat, text) { const id = `post-${b.statusPosts.length + 1}`; b.statusPosts.push({ chat, text, id }); return id; },
     startStream(chat, init, opts = {}) {
@@ -59,12 +61,13 @@ function fakeTimers() {
 const EMOJI = { don: '🤝', wren: '🐦' };
 const bodyEmojiOf = (b) => EMOJI[String(b).toLowerCase()] ?? '';
 
-function svc({ node, aliases = [], agents = {}, meshCfg = {}, brain, timers, logs, chatIds = {} } = {}) {
+function svc({ node, aliases = [], agents = {}, meshCfg = {}, brain, timers, logs, chatIds = {}, selfChatId = null } = {}) {
   const bridge = fakeBridge({ chatIds });
   const cfg = { node_name: node, node_alias: aliases, agents, mesh: meshCfg };
   const mesh = createMeshService({
     bridge, brain: brain ?? fakeBrain(),
     getConfig: () => cfg, bodyEmojiOf,
+    getSelfChatId: () => selfChatId,
     setTimer: timers?.setTimer, clearTimer: timers?.clearTimer,
     onLog: (m) => logs?.push(m),
   });
@@ -444,6 +447,72 @@ describe('mesh service — relay_channel name resolution + reply home', () => {
     expect(mirror.finals).toContain('🤝 hey');
   });
 });
+// ── UNRESOLVED RELAY CHANNEL → SELF (operator 2026-07-25). A relay_channel the bridge cannot
+//    resolve is a DEAD transport: bridge.send drops the envelope ("send DROPPED … resolved=null")
+//    and the operator sees nothing but the eventual origin-wait "did not answer". Both spines ride
+//    ONE Beeper account, so the Self chat is a valid two-node link — relay through it and say so
+//    ONCE per channel. Unresolved ≠ absent (the bridge may just not see the chat yet), so the
+//    notice never asserts the group doesn't exist. ──
+describe('mesh service — an unresolved relay channel falls back to Self', () => {
+  const RELAY = 'egpt-mesh-do-kg';
+  const target = { being: 'don', route: { room_id: RELAY, network: 'whatsapp' }, to: 'don.do' };
+  const ev = { surface: 'whatsapp', chatId: 'CHAT', chatName: 'HFM', senderName: 'An', body: '@don hola' };
+  const envelopes = (bridge) => bridge.sent.filter((s) => parseMesh(s.text));
+  const notices = (bridge) => bridge.sent.filter((s) => !parseMesh(s.text));
+
+  it('REPRODUCE-FIRST: the envelope rides the SELF chat (not the dead name) and Self is told which channel is missing', async () => {
+    const { bridge, mesh } = svc({ node: 'kg', chatIds: { [RELAY]: null }, selfChatId: 'SELF' });
+    const ok = await mesh.forward(ev, target);
+    expect(ok).toBe(true);
+
+    // the request envelope went somewhere the other node can actually see it
+    expect(envelopes(bridge)).toHaveLength(1);
+    expect(envelopes(bridge)[0].chat).toBe('SELF');
+    expect(parseMesh(envelopes(bridge)[0].text)).toMatchObject({ to: 'don.do', body: '@don hola', from_node: 'kg' });
+
+    // and exactly one operator-readable notice naming the channel, in Self
+    expect(notices(bridge)).toHaveLength(1);
+    expect(notices(bridge)[0].chat).toBe('SELF');
+    expect(notices(bridge)[0].text).toContain(RELAY);
+  });
+
+  it('the notice is posted ONCE per channel across repeated forwards (a permanently missing channel never spams Self)', async () => {
+    const { bridge, mesh } = svc({ node: 'kg', chatIds: { [RELAY]: null }, selfChatId: 'SELF' });
+    await mesh.forward(ev, target);
+    await mesh.forward({ ...ev, chatId: 'CHAT2', body: '@don otra vez' }, target);
+    expect(notices(bridge)).toHaveLength(1);                       // one notice …
+    expect(envelopes(bridge).map((s) => s.chat)).toEqual(['SELF', 'SELF']);   // … but BOTH relays still transported
+  });
+
+  it('a RESOLVING channel is untouched: the envelope posts to the configured channel, no notice', async () => {
+    const { bridge, mesh } = svc({ node: 'kg', chatIds: { rodz2: 'ID2' }, selfChatId: 'SELF' });
+    const ok = await mesh.forward(ev, { being: 'don', route: { room_id: 'rodz2' }, to: 'don.do' });
+    expect(ok).toBe(true);
+    expect(bridge.sent).toHaveLength(1);                           // envelope only — nothing extra
+    expect(bridge.sent[0].chat).toBe('rodz2');                     // as configured (byte-identical to today)
+    expect(bridge.sent.some((s) => s.chat === 'SELF')).toBe(false);
+  });
+
+  it('NO Self configured → today\'s behaviour exactly (route unchanged, no throw, no notice)', async () => {
+    const { bridge, mesh } = svc({ node: 'kg', chatIds: { [RELAY]: null } });   // no selfChatId
+    const ok = await mesh.forward(ev, target);
+    expect(ok).toBe(true);
+    expect(bridge.sent).toHaveLength(1);
+    expect(bridge.sent[0].chat).toBe(RELAY);                       // still the raw name (the bridge drops it — unchanged)
+  });
+
+  it('the RELAY-RECORD hop (canonRoute) falls back too: an arriving envelope forwards through Self', async () => {
+    const agents = { don: { relay_channel: RELAY, to: 'wren.kg' } };
+    const { bridge, mesh } = svc({ node: 'kg', aliases: ['do'], agents, chatIds: { [RELAY]: null, rodz1: 'ID1' }, selfChatId: 'SELF' });
+    const req = encodeMesh({ by: 'An', body: 'hi', from: 'SELFCHAT', from_node: 'kg', to: 'don.do' });
+    await mesh.handle({ surface: 'wa', chatId: 'ID1', msgId: 'a1', body: req });
+    expect(envelopes(bridge).map((s) => s.chat)).toEqual(['SELF']);
+    expect(parseMesh(envelopes(bridge)[0].text)).toMatchObject({ to: 'wren.kg' });
+    expect(notices(bridge)).toHaveLength(1);
+    expect(notices(bridge)[0].text).toContain(RELAY);
+  });
+});
+
 describe('mesh service — origin-wait timeout', () => {
   it('(f) surfaces "<target> did not answer" into the origin chat when no reply arrives', async () => {
     const timers = fakeTimers();
