@@ -156,6 +156,47 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
 
 ## 2. In flight right now
 
+- **⚠️ CHAT-LIST PAGINATION — the silent name-resolution failure (found + FIXED 2026-07-25,
+  `2f4bd0e`).** `GET /v1/chats` is CURSOR-PAGINATED and `listChats()` read ONE page as if it
+  were the whole account. Live evidence off REVE's real account: a page is 25 items plus
+  `{hasMore, oldestCursor, newestCursor}`; **`?limit=100`/`?limit=500` are IGNORED** (still 25);
+  `?cursor=<oldestCursor>` walks. The full walk = **18 pages / 425 chats** (294 WhatsApp, 126
+  Telegram, 5 Matrix) — so ~94% of the account was INVISIBLE to `resolveChatId`, which logged
+  `no chat matches` and the caller **silently DROPPED the send**. The page is ordered by RECENT
+  ACTIVITY, so this is not static: a channel that goes quiet for a day falls off it.
+  - **This is what killed the mesh, and it was never a regression.** The 2026-07-08 "@cara
+    live-verified" result was real — those channels had fresh traffic THAT DAY. As they went
+    quiet they aged off page 1. Every later `@don` on Beeper (`atE=false`, no answer) and the
+    2026-07-25 shell relay drop are the same cause. Do NOT go looking for a mesh code regression.
+  - Fix: `fetchChatPages(full)` walks to `hasMore:false` (cannot spin — stops on hasMore falsy,
+    empty page, no-new-ids, missing cursor, 200-page cap). `listChats({full})` folds `full` into
+    the cache identity. `resolveChatId` keeps the single-page FAST PATH and pays the walk ONLY on
+    a miss; `_knownChatIds` then caches the id so a chat pays it once.
+  - ⚠️ **STILL OWED:** `src/conversations-state.mjs:918` calls `listChats({ all: true, limit: 2000,
+    … })` — baileys-era option names that mean nothing to the Beeper bridge, so it destructures to
+    `full:false` and **fuzzy chat-name search still sees only page 1**. That feeds name-fragment
+    resolution (`/status <target>`, `/e auto <fragment>`). One-word fix (`full: true`), not yet done.
+  - **Operational shortcut worth remembering:** `resolveChatId` short-circuits on a `!`-prefixed
+    raw id BEFORE any list call, so putting a raw chat id in `relay_channel` bypasses name
+    resolution (and this whole class of bug) entirely.
+
+- **Self-fallback for a dead relay channel (LANDED 2026-07-25, `26eb076`)** — an unresolvable
+  relay channel used to drop the envelope in total silence. Now the mesh relays through the Self
+  chat and posts a ONE-TIME notice naming the channel (never asserting the group is absent —
+  unresolved ≠ absent). Patched at BOTH sites: `canonRoute` (relay-record + multipath) AND
+  `forward`'s route-direct branch — **`canonRoute` is NOT the path a scalar relay agent takes**,
+  which is why the drop happened there. Fail-safe: no Self → old behaviour; throwing resolver →
+  no fallback; resolving channel byte-identical.
+  - NOT covered: a dead `mesh.nodes` room still drops silently (no resolution on that path).
+
+- **Beeper API facts (verified live 2026-07-25, no docs — `/openapi.json` returns 200 with an
+  EMPTY body):** `POST /v1/chats` requires `{accountID, type:'single'|'group', participantIDs[]}`.
+  **It CANNOT create a 2-member WhatsApp group**: one participant collapses to the existing DM
+  (`type:single`), two participants failed (`404 Chat not found` one ordering; `500 failed to
+  create group` from the WA bridge the other). New mesh groups must be made in the Beeper UI.
+  `PATCH /v1/chats/{id} {title}` DOES rename (response echoes the STALE title — re-read to
+  confirm). Live mesh channels all carry Rodz (An's own second account) as the other member.
+
 - **Command-surface revival + operator SHELL** (plans/260722-COMMAND-SURFACE-REVIVAL.md
   + -ROADMAP.md; lobby: plans/260724-LOBBY-DEFAULT-ROOM.md). ONE spine-side,
   surface-agnostic dispatch (shell + Beeper); adapters (per-site drivers, Beeper itself an
