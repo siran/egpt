@@ -11,6 +11,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
+import { execSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CONFIG_SCHEMA } from '../config/config-schema.mjs';
@@ -48,6 +49,38 @@ describe('/config schema vs. v2 spine config references', () => {
   for (const key of [...referencedKeys].sort()) {
     it(`v2 spine config.${key} is registered in CONFIG_SCHEMA`, () => {
       expect(CONFIG_SCHEMA, `${key} read by the v2 spine but not in CONFIG_SCHEMA`).toHaveProperty(key);
+    });
+  }
+});
+
+describe('no literal NUL bytes under src/', () => {
+  // A literal 0x00 byte in a tracked source file makes ripgrep (and Claude Code's Grep
+  // tool, which is ripgrep under the hood) classify the whole file as BINARY — matches
+  // stop silently at the first NUL, so everything after it is invisible to every future
+  // `rg`/Grep search. This happened for real in src/conversations-state.mjs: six NULs
+  // used as composite-map-key separators hid 164 lines (including several exported
+  // functions) from every text search. Use the `\0` escape inside strings/template
+  // literals instead — runtime-identical, but visible to tooling.
+  const files = execSync('git ls-files src', { cwd: ROOT, encoding: 'utf8' })
+    .split('\n')
+    .map((f) => f.trim())
+    .filter(Boolean);
+
+  it('finds at least the known src/ files (sanity)', () => {
+    expect(files.length).toBeGreaterThan(50);
+  });
+
+  for (const rel of files) {
+    it(`${rel} has no literal NUL byte`, () => {
+      const buf = readFileSync(join(ROOT, rel));
+      const nulAt = buf.indexOf(0);
+      expect(
+        nulAt,
+        `${rel} contains a literal 0x00 byte at offset ${nulAt} — this makes ripgrep/Grep ` +
+        `treat the file as binary and silently truncate searches there, hiding the rest of ` +
+        `the file from every audit. Use the "\\0" escape sequence instead (runtime-identical ` +
+        `inside strings/template literals).`
+      ).toBe(-1);
     });
   }
 });

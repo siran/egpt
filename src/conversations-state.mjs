@@ -1516,7 +1516,7 @@ export function serialize(state) {
   // Build the slimmed plain object first (drop the derived/moved keys), keeping the jid→name
   // map so we can re-attach names as key comments on the built Document.
   const src = state && typeof state === 'object' ? state : emptyState();
-  const names = {};   // `${surface} ${jid}` -> pushedName
+  const names = {};   // `${surface}\0${jid}` -> pushedName
   const outContacts = {};
   for (const [surface, bucket] of Object.entries(src.contacts ?? {})) {
     if (!bucket || typeof bucket !== 'object' || Array.isArray(bucket)) { outContacts[surface] = bucket; continue; }
@@ -1530,7 +1530,7 @@ export function serialize(state) {
       if (slim.conversation_path == null) slim.conversation_path = conversationPathOf(surface, entry.slug);
       if (slim.home_dir == null) slim.home_dir = homeDirMsys();
       outBucket[jid] = slim;
-      if (entry.pushedName) names[`${surface} ${jid}`] = String(entry.pushedName).replace(/[\r\n]+/g, ' ');
+      if (entry.pushedName) names[`${surface}\0${jid}`] = String(entry.pushedName).replace(/[\r\n]+/g, ' ');
     }
     outContacts[surface] = outBucket;
   }
@@ -1545,7 +1545,7 @@ export function serialize(state) {
       if (!bucketNode || !bucketNode.items) continue;
       for (const pair of bucketNode.items) {
         const jid = String(pair.key.value ?? pair.key);
-        const nm = names[`${surface} ${jid}`];
+        const nm = names[`${surface}\0${jid}`];
         if (nm) pair.key.comment = ' ' + nm;   // renders `"<jid>": # <name>` on the key line
       }
     }
@@ -1565,7 +1565,7 @@ export function parse(text) {
   // them (a comment/derivation only fills when the key is absent), so pre-migration YAML reads
   // byte-for-byte the same in memory.
   const contactsNode = doc.get('contacts');
-  const commentByJid = {};   // `${surface} ${jid}` -> recovered name
+  const commentByJid = {};   // `${surface}\0${jid}` -> recovered name
   if (contactsNode && contactsNode.items) {
     for (const surfPair of contactsNode.items) {
       const surface = String(surfPair.key.value ?? surfPair.key);
@@ -1574,7 +1574,7 @@ export function parse(text) {
       for (const pair of bucketNode.items) {
         const jid = String(pair.key.value ?? pair.key);
         const c = pair.value?.commentBefore ?? pair.key.comment ?? null;
-        if (c != null) commentByJid[`${surface} ${jid}`] = String(c).trim();
+        if (c != null) commentByJid[`${surface}\0${jid}`] = String(c).trim();
       }
     }
   }
@@ -1582,7 +1582,7 @@ export function parse(text) {
     if (!bucket || typeof bucket !== 'object' || Array.isArray(bucket)) continue;
     for (const [jid, entry] of Object.entries(bucket)) {
       if (!entry || typeof entry !== 'object' || Array.isArray(entry) || entry.aliasOf) continue;
-      const nm = commentByJid[`${surface} ${jid}`];
+      const nm = commentByJid[`${surface}\0${jid}`];
       if (typeof entry.pushedName !== 'string' || (nm != null)) entry.pushedName = nm ?? entry.pushedName ?? '';
       if (typeof entry.slug !== 'string' || !entry.slug) entry.slug = _pathBasename(entry.conversation_path);
     }
