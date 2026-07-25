@@ -79,6 +79,13 @@ import { isHumanTurn, parseStopWord } from '../stop-guard.mjs';
  * @property {{ runDue: (now: number) => void }} heartbeats               due-heartbeat scan + accum flush
  */
 
+// The agent a routed target is GATED as. A LOCAL target is its own being; a MESH (relay) target
+// routes with `being: null` — the being it dispatches to is nobody local — but the router carries
+// the relay AGENT's name on the mesh descriptor, so THAT is whose mode governs it (operator
+// 2026-07-25: `@don` gets its own mode instead of borrowing the persona's). `fallback` stays the
+// caller's local being (the turn key / cycle owner), untouched.
+const gateAs = (t, fallback) => t?.being ?? t?.mesh?.being ?? fallback;
+
 /**
  * Build the spine. Nothing starts until start(). All deps are injected so the
  * pipe is exercisable end-to-end against fakes.
@@ -96,7 +103,7 @@ export function createSpine({
   guard = null,                        // optional §2c stop-guard: the SINGLE per-channel loop-breaker + human STOP/RESUME (createStopGuard, boot-wired). Null = pipe runs unguarded (tests).
   guardOverride = null,                // optional (surface, chatId) => { turns?, window? } | null — the conversation's per-channel guard override (conversations.yaml). Null = node defaults only.
   roomRelay = null,                    // optional §Phase-4 room brain-member fan-out (createRoomRelay, boot-wired): delivers a received room message to each brain member per mode, streams the reply back, and RE-ENTERS it as a non-human turn. Null = no web-brain members (byte-identical to before).
-  defaultBeing = 'e',                  // the persona a mesh-target message is gated as (it's still THIS chat's message)
+  defaultBeing = 'e',                  // the persona: the being an un-addressed message dispatches to, and the turn/cycle owner for a mesh-target message (which is GATED as its own relay agent — see gateAs)
   clock = { now: () => Date.now() },
   log = {},
   tickMs = 0,
@@ -422,8 +429,9 @@ export function createSpine({
     // ONE conversation-state read resolves this message's policy (mode +
     // send_to_egpt, both from conversations.yaml) and the derived gate flags. The
     // routed mention is passed explicitly (it's the sibling's, not @e's, when a
-    // sibling was routed by its own @name).
-    const d = await gating.decide(to, ev, mention);
+    // sibling was routed by its own @name), and a RELAY target is gated as its OWN
+    // agent (gateAs) rather than borrowing the persona's mode.
+    const d = await gating.decide(gateAs(targets[0], to), ev, mention);
 
     // 'off' → not received: not recorded, not processed (C4). Every OTHER mode IS recorded
     // at the ingestion point — a received message is never silently dropped (C1.2).
@@ -594,7 +602,7 @@ export function createSpine({
     return Promise.all(extras.map(async (t) => {
       const being = t.being ?? defaultBeing;
       try {
-        const d = await gating.decide(being, ev, t.mention ?? ev.mention);
+        const d = await gating.decide(gateAs(t, being), ev, t.mention ?? ev.mention);
         if (!d.receives || !d.mayReply) return;
         if (t.mesh) { if (mesh) await mesh.forward(ev, t.mesh); return; }
         await openAndRunReply({ to: being, ev, d, turnKey: `${being}:${ev.surface}:${ev.chatId}` });

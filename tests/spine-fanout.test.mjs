@@ -12,6 +12,7 @@
 import { describe, it, expect } from 'vitest';
 import { createRouter, addressed } from '../src/spine/router.mjs';
 import { createSpine } from '../src/spine/spine.mjs';
+import { createGating } from '../src/spine/gating.mjs';
 import { replyAllowed } from '../src/auto-mode.mjs';
 
 const ev = (body, extra = {}) => ({
@@ -158,7 +159,7 @@ describe('LOCKS — every current resolve() semantic survives the fan-out', () =
 //    an envelope and waits — so neither sequences the other. ──
 const MSG = { surface: 'wa', node: 'wa', chatId: 'CHAT', chatName: 'fam', senderId: 'u', senderName: 'An', msgId: 'm1', ts: 1, kind: 'text', raw: {} };
 
-function fanoutSpine({ router = arouter, mayReply = true, mode = null } = {}) {
+function fanoutSpine({ router = arouter, mayReply = true, mode = null, gating = null } = {}) {
   const bridge = { sent: [], onMessage() {}, send(chat, text) { this.sent.push({ chat, text }); }, stop() {} };
   const brain = { calls: [], async turn(being, e) { this.calls.push({ being, body: e.body }); return { text: `↩ ${e.body}`, sessionId: 's1' }; } };
   const transcript = { entries: [], async log(e, r, opts = {}) { this.entries.push({ ev: e, r, opts }); } };
@@ -176,10 +177,10 @@ function fanoutSpine({ router = arouter, mayReply = true, mode = null } = {}) {
     defaultBeing: 'egpt',
     // `mode` runs the REAL mode semantics (auto-mode.replyAllowed) over whatever mention each
     // target was handed — the seam that proves the fan-out feeds honest per-agent flags into
-    // machinery that already knows what they mean. The mode itself is per-CONVERSATION (that is
-    // all conversations.yaml has today — there is no per-agent mode config to read), so ONE mode
-    // governs every addressed agent and only the flags differ. Without it: a flat mayReply.
-    gating: {
+    // machinery that already knows what they mean. ONE mode governs every addressed agent here
+    // and only the flags differ; `gating` swaps in the REAL gating service when a test needs
+    // each agent to resolve its OWN mode. Without either: a flat mayReply.
+    gating: gating ?? {
       async decide(being, e, mention) {
         if (!mode) return { mode: 'on', receives: true, mayReply, sendToEgpt: 'mode' };
         return { mode, receives: mode !== 'off', mayReply: replyAllowed(mode, mention ?? {}), sendToEgpt: 'mode' };
@@ -267,5 +268,41 @@ describe('spine — FAN OUT to every addressed agent', () => {
     await spine.handleInbound({ ...MSG, body: '@e and @don you here?' });
     expect(brain.calls).toHaveLength(0);
     expect(mesh.forwarded).toHaveLength(0);
+  });
+});
+
+// ── a RELAY agent resolves its OWN mode (operator 2026-07-25: per-agent mode in config.yaml) ──
+//
+// REPRODUCE-FIRST. A mesh target routes with `being: null`, so the spine gated it as the PERSONA
+// (`t.being ?? defaultBeing`): `@don` could not have a mode of its own — it borrowed @e's. The
+// router already carries the relay agent's NAME on the mesh descriptor (`t.mesh.being`), so the
+// gate now asks for THAT agent's mode. Real gating service, real config: the modes below are the
+// per-agent rung, nothing per-conversation.
+describe('spine — a RELAY target is gated as its OWN agent', () => {
+  const gatingWith = (agents) => createGating({ getConfig: () => ({ agents }), loadState: null, defaultKey: 'egpt' });
+  const MID_M = { atEStart: false, atEAnywhere: true, replyToBot: false };
+
+  it('e:mention + don:mention-direct — a MID-SENTENCE @don stays silent while the MID-SENTENCE @e answers', async () => {
+    const gating = gatingWith({ egpt: { default: true, mode: 'mention' }, don: { relay_channel: 'egpt-mesh-do-kg', mode: 'mention-direct' } });
+    const { spine, brain, mesh } = fanoutSpine({ gating });
+    await spine.handleInbound({ ...MSG, body: 'oye @e y @don, ¿están?', mention: MID_M });
+    expect(brain.calls.map((c) => c.being)).toEqual(['egpt']);   // e is 'mention' → mid-sentence is enough
+    expect(mesh.forwarded).toHaveLength(0);                      // don is 'mention-direct' → it is NOT
+  });
+
+  it('…and with @don at the HEAD of the same chat, don wakes and e still answers', async () => {
+    const gating = gatingWith({ egpt: { default: true, mode: 'mention' }, don: { relay_channel: 'egpt-mesh-do-kg', mode: 'mention-direct' } });
+    const { spine, brain, mesh } = fanoutSpine({ gating });
+    await spine.handleInbound({ ...MSG, body: '@don y @e, ¿están?', mention: MID_M });
+    expect(mesh.forwarded).toHaveLength(1);
+    expect(brain.calls.map((c) => c.being)).toEqual(['egpt']);
+  });
+
+  it('the PRIMARY target too: a muted relay agent is not forwarded even when named at the head', async () => {
+    const gating = gatingWith({ egpt: { default: true, mode: 'mention' }, don: { relay_channel: 'egpt-mesh-do-kg', mode: 'mute' } });
+    const { spine, brain, mesh } = fanoutSpine({ gating });
+    await spine.handleInbound({ ...MSG, body: '@don ping', mention: { atEStart: false, atEAnywhere: false, replyToBot: false } });
+    expect(mesh.forwarded).toHaveLength(0);
+    expect(brain.calls).toHaveLength(0);
   });
 });

@@ -800,16 +800,36 @@ const _FLAT_ENTRY_KEYS = new Set([
   // slot); it is NOT a nested resident-being, so residentsOf must skip it or it would
   // list a phantom "readonly" resident on any legacy-flat conversation.
   'readonly',
+  // `agents` is likewise object-valued but a CONTAINER of per-agent overrides (see getBeing),
+  // not a resident being — same phantom-resident reason.
+  'agents',
 ]);
 
-// Resolve a resident being's view of a conversation, reading ONLY its nested `entry[being]`
-// block (no flat fallback — the persona is a normal nested being now). Returns null when
-// there's no contact. `being` is REQUIRED (callers pass the resolved key explicitly).
+// Resolve a resident being's view of a conversation, reading its nested `entry[being]` block
+// (no flat fallback — the persona is a normal nested being now). Returns null when there's no
+// contact. `being` is REQUIRED (callers pass the resolved key explicitly).
+//
+// AGENTS BLOCK (operator 2026-07-25: "better to have in config.yaml the configuration per agent
+// on its mode. overridable in conversations.yaml with an agents block"). The per-conversation
+// OVERRIDE home is `entry.agents.<name>` — the same fields, one level in — layered OVER the
+// being's own block field-by-field. So an operator can hand-pin one agent's mode in one chat
+// without disturbing the threadId/readonly the spine writes into `entry[<name>]`, and every
+// entry already on disk in the current shape keeps resolving exactly as before. BOTH shapes are
+// READ; nothing is migrated and every WRITE still goes to `entry[<name>]` — the `agents:` block
+// is an operator-authored override, so a `/e auto <mode>` write into `entry[<name>].mode` stays
+// shadowed by an agents-block mode until the operator removes it (that is what override means).
+const _beingBlock = (entry, being) => {
+  const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v)) ? v : null;
+  const own = obj(entry[being]);
+  const ovr = obj(obj(entry.agents)?.[being]);
+  return (own && ovr) ? { ...own, ...ovr } : (ovr ?? own);
+};
+
 export function getBeing(state, surface, jid, being) {
   const c = getContact(state, surface, jid);
   if (!c) return null;
   const e = c.entry ?? {};
-  const b = (e[being] && typeof e[being] === 'object' && !Array.isArray(e[being])) ? e[being] : null;
+  const b = _beingBlock(e, being);
   const ro = b?.readonly ?? {};
   return {
     jid: c.jid, slug: c.slug, surface, being,

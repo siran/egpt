@@ -7,16 +7,19 @@
 //   decide(being, ev, mention?)  -> { mode, receives, mayReply, sendToEgpt }   (ONE conv-state read)
 //   surfaces(decision, replyText)-> boolean    POST-brain: mayReply + the 'on'-'...' silence cosmetic
 //
-// `mode` is the conversation's `<being>.mode` (conversations.yaml), defaulting to
-// the node's global default mode (config.dispatch.auto_default_mode, legacy fallback
-// config.whatsapp.auto_e_default) for E / 'mention' (sibling). `sendToEgpt` is the
-// conversation's `<being>.send_to_egpt` override, else the global config default
-// (dispatch.send_to_egpt, legacy whatsapp.send_to_egpt), else 'mode'. The absolute
-// kill is dispatch.auto_paused (legacy whatsapp.auto_e_paused). The routing globals
+// `mode` resolves down ONE chain, most specific first (operator 2026-07-25):
+//   conversations.yaml  <conv>.agents.<name>.mode   per-conversation override (the `agents:` block)
+//   conversations.yaml  <conv>.<name>.mode          per-conversation block    (getBeing reads both)
+//   config.yaml         agents.<name>.mode          the AGENT's own default
+//   config.yaml         dispatch.auto_default_mode  node-wide (persona; legacy whatsapp.auto_e_default)
+//   built-in            'mention'
+// `sendToEgpt` is the conversation's `<being>.send_to_egpt` override, else the global
+// config default (dispatch.send_to_egpt, legacy whatsapp.send_to_egpt), else 'mode'. The
+// absolute kill is dispatch.auto_paused (legacy whatsapp.auto_e_paused). The routing globals
 // moved OUT of the whatsapp transport block into `dispatch:` (operator 2026-06-25 —
 // E is a sibling, not a network); the whatsapp.* reads stay as back-compat fallbacks
 // so an un-migrated config is a no-op. The old config.auto_modes route is GONE —
-// modes live in conversations.yaml.
+// modes live in the agents registry + conversations.yaml.
 import { getBeing } from '../conversations-state.mjs';
 import { receives, replyAllowed, mayEmitChat, isSilenceReply, isAutoMode, DEFAULT_AUTO_MODE } from '../auto-mode.mjs';
 
@@ -25,10 +28,17 @@ const _send = (v) => (v === 'always' || v === 'mode') ? v : null;
 export function createGating({ getConfig = () => ({}), loadState = null, defaultKey = 'e' } = {}) {
   const cfg = () => getConfig() ?? {};
 
-  // The persona (being === defaultKey, injected by boot from the single `default:true`
-  // agent — operator 2026-07-10, no hardcoded 'e') follows the node's auto_e_default; every
-  // other being defaults to 'mention'.
+  // The mode an agent takes when its conversation says nothing. PER-AGENT FIRST (operator
+  // 2026-07-25: "better to have in config.yaml the configuration per agent on its mode"): an
+  // agent may declare its own default as `agents.<name>.mode` in the SAME registry entry that
+  // already carries its configuration/handles/relay_channel — that is what lets @don be
+  // mention-direct while @e is mention in the very same chat. Keyed lowercase, boot's own
+  // convention for that map. Below it, unchanged: the persona (being === defaultKey, injected
+  // by boot from the single `default:true` agent) follows the node's auto_default_mode; every
+  // other being falls back to 'mention'.
   function defaultMode(being, c) {
+    const own = c.agents?.[String(being ?? '').toLowerCase()]?.mode;
+    if (isAutoMode(own)) return own;
     const def = being === defaultKey ? (c.dispatch?.auto_default_mode ?? c.whatsapp?.auto_e_default) : 'mention';
     return isAutoMode(def) ? def : DEFAULT_AUTO_MODE;
   }

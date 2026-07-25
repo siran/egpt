@@ -47,3 +47,32 @@ describe('per-being reader convergence (#2)', () => {
     expect(residentsOf(state.contacts.whatsapp['!nested:beeper.local'])).toEqual(['e', 'wren']);
   });
 });
+
+// The `agents:` block (operator 2026-07-25: "overridable in conversations.yaml with an agents
+// block") — the per-conversation OVERRIDE home. It layers OVER the being's existing block
+// field-by-field, so an operator can pin one agent's mode in one chat without disturbing the
+// threadId/readonly the spine writes there, and every entry already on disk keeps working.
+describe('per-being: the conversations.yaml `agents:` override block', () => {
+  const withAgents = { contacts: { whatsapp: {
+    '!ovr:beeper.local': { slug: 'ovr',
+      e:      { mode: 'on', send_to_egpt: 'always', threadId: 'T9', readonly: { model: 'opus', agent: 'sonnet-high' } },
+      agents: { e: { mode: 'mute' }, don: { mode: 'mention-direct' } },
+    },
+  } } };
+
+  it('an agents: entry OVERRIDES the same-named field and leaves the rest of the block intact', () => {
+    expect(getBeing(withAgents, 'whatsapp', '!ovr:beeper.local', 'e')).toMatchObject({
+      present: true, mode: 'mute', send_to_egpt: 'always', threadId: 'T9', model: 'opus', agent: 'sonnet-high',
+    });
+  });
+
+  it('an agent that exists ONLY in the agents: block resolves from it (present, no legacy block needed)', () => {
+    expect(getBeing(withAgents, 'whatsapp', '!ovr:beeper.local', 'don')).toMatchObject({
+      present: true, being: 'don', mode: 'mention-direct', threadId: null,
+    });
+  });
+
+  it('`agents` is a CONTAINER, never a resident — residentsOf must not list it', () => {
+    expect(residentsOf(withAgents.contacts.whatsapp['!ovr:beeper.local'])).toEqual(['e']);
+  });
+});
