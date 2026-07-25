@@ -14,7 +14,7 @@
 // unit-testable with a fake bridge — no Beeper, no network, no live account
 // (tests/beeper-port.test.mjs). The live echo verify is tests-manual/phase2-echo.mjs.
 import { startBeeperBridge } from './beeper.mjs';
-import { applyLayers } from './signature-layers.mjs';
+import { personaStamp, makeWrapPersona } from './persona-wrap.mjs';
 
 // NOTE (placeholder id resolution): resolveSentMessageId (beeper.mjs) text-matches
 // the recent list and reduces with newerMsgId, which since d7614b8 picks the
@@ -33,18 +33,10 @@ import { applyLayers } from './signature-layers.mjs';
 // resolves to its own id too. ⇒ no two coexisting placeholders share text; no
 // disambiguating nonce needed.
 
-// The bridge-ENFORCED persona identifier: body_emoji + the agent's name as the FIRST LINE,
-// then the reply below — "🐶 egpt\n<reply>" (operator 2026-07-10: reverted to the two-line
-// header). A leading model-written self-label ("egpt:") is still stripped first so the
-// identifier is the bridge's, not the model's. No body_emoji (system sends) → text passes
-// through untouched; body_emoji with no label (echo sends) → inline emoji only, no header line.
-const _escapeRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-function personaStamp(bodyEmoji, label, text) {
-  if (!bodyEmoji) return text;
-  if (!label) return `${bodyEmoji} ${text}`;   // body_emoji only (system/echo sends) → inline, no header line
-  const clean = String(text).replace(new RegExp(`^\\s*${_escapeRe(label)}\\s*[:：]\\s*`, 'i'), '');
-  return `${bodyEmoji} ${label}\n${clean}`;      // persona header line: "🐶 egpt" then the reply
-}
+// The persona stamp + concentric wrap live in ./persona-wrap.mjs now (operator 2026-07-25):
+// ONE definition, shared with shell-port so the operator console renders a persona reply
+// through the EXACT same machinery. personaStamp is the bridge-ENFORCED identifier
+// ("🐶 egpt\n<reply>"); makeWrapPersona brackets it with the [bridge, agent] layers.
 
 /**
  * @param {object} opts  forwarded verbatim to startBeeperBridge (beeperToken,
@@ -75,16 +67,11 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
   const bridgeSignatureOpen = opts.bridgeSignatureOpen ?? '';
   const bridgeSignatureClose = opts.bridgeSignatureClose ?? '';
   // Wrap a persona reply concentrically: outer bridge layer (per-node, above), inner agent layer
-  // (per-being, from opts.agentSig*), around the stamped core. Gated on a full persona header so a
-  // plain/auto send passes through unstamped + unwrapped (byte-identical to a bare send).
-  const wrapPersona = (o, text) => {
-    const core = personaStamp(o.bodyEmoji, o.label, text);
-    if (!(o.bodyEmoji && o.label)) return core;   // plain/auto → no header → no layers
-    return applyLayers(core, [
-      { open: bridgeSignatureOpen, close: bridgeSignatureClose },
-      { open: o.agentSigOpen ?? '', close: o.agentSigClose ?? '' },
-    ]);
-  };
+  // (per-being, from opts.agentSig*), around the stamped core. The composition lives in the shared
+  // persona-wrap module (used identically by shell-port); this closure just binds this node's
+  // bridge-signature layer. Gated on a full persona header so a plain/auto send passes through
+  // unstamped + unwrapped (byte-identical to a bare send).
+  const wrapPersona = makeWrapPersona({ bridgeSignatureOpen, bridgeSignatureClose });
   const real = await start({
     ...rest,
     // Forward inbound to the spine. This resolves when the message's TURN completes
