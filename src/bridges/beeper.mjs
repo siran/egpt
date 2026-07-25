@@ -366,13 +366,41 @@ export async function startBeeperBridge(opts = {}) {
       .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
   }
 
+  // GET /v1/chats is CURSOR-PAGINATED (verified live 2026-07-25). One page is 25 items
+  // ordered by recent activity — `?limit=100`/`500` are IGNORED — plus { hasMore,
+  // oldestCursor, newestCursor }; the next page is `?cursor=<previous oldestCursor>`.
+  // The operator's account walked 18 pages / 425 chats, so treating one GET as the whole
+  // account made every chat outside the most-recently-active 25 INVISIBLE to
+  // resolveChatId (a live mesh envelope was dropped that way: the chat existed but had
+  // been idle since 2026-07-09). `full` walks to the end; otherwise it's the old single
+  // page. CANNOT SPIN: stops on hasMore false, an empty page, a page contributing no new
+  // ids (a cursor that stopped advancing), a missing cursor, and a hard page cap.
+  const CHAT_PAGE_CAP = 200;
+  async function fetchChatPages(full) {
+    const out = [];
+    const seen = new Set();
+    let cursor = null;
+    for (let page = 0; page < CHAT_PAGE_CAP; page++) {
+      const j = await api('GET', `/v1/chats${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`);
+      const items = j?.items ?? (Array.isArray(j) ? j : []);
+      if (!items.length) break;
+      let added = 0;
+      for (const c of items) { if (!seen.has(c.id)) { seen.add(c.id); out.push(c); added += 1; } }
+      if (!full || !j?.hasMore || !added || !j?.oldestCursor) break;
+      cursor = j.oldestCursor;
+      if (page === CHAT_PAGE_CAP - 1) onLog(`beeper: chat page walk hit the ${CHAT_PAGE_CAP}-page cap (${out.length} chats) — list may be truncated`);
+    }
+    return out;
+  }
+
   // All chats from the Desktop API, normalized + briefly cached (60s) —
   // powers /channels-style listings and name→chatID resolution.
-  let _chatList = null, _chatListAt = 0;
-  async function listChats() {
-    if (_chatList && Date.now() - _chatListAt < 60_000) return _chatList;
-    const j = await api('GET', '/v1/chats');
-    const items = j?.items ?? (Array.isArray(j) ? j : []);
+  // `full` is part of the cache identity: a cached FIRST PAGE must never satisfy a
+  // full request (that would re-hide the very chats the walk exists to find).
+  let _chatList = null, _chatListAt = 0, _chatListFull = false;
+  async function listChats({ full = false } = {}) {
+    if (_chatList && Date.now() - _chatListAt < 60_000 && (!full || _chatListFull)) return _chatList;
+    const items = await fetchChatPages(full);
     _chatList = items.map(c => {
       const id = shortChatId(c.id);   // SHORT past this boundary — see chat-id.mjs
       return {
@@ -393,6 +421,7 @@ export async function startBeeperBridge(opts = {}) {
       };
     });
     _chatListAt = Date.now();
+    _chatListFull = full;
     for (const c of _chatList) {
       if (!_chatCache.has(c.id)) _chatCache.set(c.id, { title: c.name, type: c.isGroup ? 'group' : 'single', isMuted: c.isMuted, accountID: c.network });
       _knownChatIds.add(c.id);
@@ -431,13 +460,19 @@ export async function startBeeperBridge(opts = {}) {
     // `c.id === s` lets an UNSEEN raw short room id (e.g. one an operator typed
     // straight from /channels output) resolve directly once listed — a raw id, not a
     // name match, so it is never network-gated. A name/slug match IS gated by the pin.
+    const matchesIn = (list) => list.filter(c =>
+      c.id === s ||
+      ((c.name === s || c.slug === want) && (!net || String(c.network ?? '').toLowerCase() === net)));
     try {
-      matches = (await listChats()).filter(c =>
-        c.id === s ||
-        ((c.name === s || c.slug === want) && (!net || String(c.network ?? '').toLowerCase() === net)));
+      matches = matchesIn(await listChats());
+      // MISS on the first page → walk EVERY page before giving up. /v1/chats is
+      // cursor-paginated by recent activity, so a real but idle chat is simply absent
+      // from page 1 and the caller would silently DROP the send (live 2026-07-25).
+      // Fast path unchanged: a page-1 hit never pays for the walk.
+      if (!matches.length) matches = matchesIn(await listChats({ full: true }));
     }
     catch (e) { onLog(`beeper: resolveChatId(${JSON.stringify(s)}) — chat list unavailable: ${e?.message ?? e}`); return null; }
-    if (!matches.length) { onLog(`beeper: resolveChatId(${JSON.stringify(s)}${net ? ` net=${net}` : ''}) — no chat matches`); return null; }
+    if (!matches.length) { onLog(`beeper: resolveChatId(${JSON.stringify(s)}${net ? ` net=${net}` : ''}) — no chat matches (searched ALL chat pages)`); return null; }
     if (matches.length > 1) onLog(`beeper: resolveChatId(${JSON.stringify(s)}) ambiguous (${matches.length} chats) — using "${matches[0].name}" (${matches[0].id})`);
     _knownChatIds.add(matches[0].id);
     return matches[0].id;

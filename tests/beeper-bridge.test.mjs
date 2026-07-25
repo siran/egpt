@@ -15,6 +15,8 @@ import { encodeMesh } from '../src/mesh/relay.mjs';
 import { surfaceOf } from '../src/spine/identity.mjs';
 import { _resetPromotions } from '../src/incoming-media.mjs';
 
+const CHATS_PER_PAGE = 2;   // fake /v1/chats page size (live it's 25) — small so page 2 is readable
+
 async function startFakeBeeper() {
   const posts = [];   // POSTs to /v1/chats/:id/messages — each records the CONFIRMED id it created
   let confirmedSeq = 1000;   // the per-chat sequence Beeper assigns; NEVER equal to the pending id
@@ -26,6 +28,10 @@ async function startFakeBeeper() {
   const accounts = [];        // GET /v1/accounts fixture — tests push {accountID, user:{fullName}} before startBridge()
   let msgListGets = 0;        // GET /messages polls served — lets a test choreograph the upsert race
   let accountsGets = 0;       // GET /v1/accounts calls served — lets a test wait for the startup fetch
+  let chatListGets = 0;       // GET /v1/chats pages served — lets a test bound the cursor walk
+  // stuckCursor models a BROKEN server that re-serves page 1 forever with hasMore:true
+  // (the cursor never advances) — the page walk must not spin on it.
+  const chatsOpts = { stuckCursor: false };
   const server = createServer((req, res) => {
     let body = '';
     req.on('data', (c) => { body += c; });
@@ -89,8 +95,27 @@ async function startFakeBeeper() {
         }
         return;
       }
-      if (req.method === 'GET' && req.url === '/v1/chats') {
-        res.end(JSON.stringify({ items: [...chats.entries()].map(([id, c]) => ({ id, ...c })) }));
+      // LIVE SHAPE (verified against a running Beeper Desktop 2026-07-25): /v1/chats is
+      // CURSOR-PAGINATED. A page answers { items, hasMore, oldestCursor, newestCursor },
+      // ?limit is IGNORED (always one page), and the NEXT page is ?cursor=<the previous
+      // page's oldestCursor>. Live that page is 25 items and the operator's account walked
+      // 18 pages / 425 chats — so a single GET only ever sees the most-recently-active
+      // slice. Page size here is CHATS_PER_PAGE (tiny) so a test can put a chat on page 2
+      // readably; a fixture with ≤2 chats still gets exactly one page, hasMore:false —
+      // identical to the old unpaginated fake.
+      const chatList = req.url.match(/^\/v1\/chats(?:\?(.*))?$/);
+      if (req.method === 'GET' && chatList) {
+        chatListGets += 1;
+        const all = [...chats.entries()].map(([id, c]) => ({ id, ...c }));
+        const cursor = new URLSearchParams(chatList[1] ?? '').get('cursor');
+        const start = (cursor && !chatsOpts.stuckCursor) ? all.findIndex((c) => c.id === cursor) + 1 : 0;
+        const page = all.slice(start, start + CHATS_PER_PAGE);
+        res.end(JSON.stringify({
+          items: page,
+          hasMore: chatsOpts.stuckCursor ? true : start + page.length < all.length,
+          oldestCursor: page.length ? page[page.length - 1].id : null,
+          newestCursor: page.length ? page[0].id : null,
+        }));
         return;
       }
       if (req.method === 'GET' && req.url === '/v1/accounts') {
@@ -118,9 +143,10 @@ async function startFakeBeeper() {
     ws.send(JSON.stringify({ type: 'ready' }));
   });
   return {
-    port, posts, edits, reactions, uploads, chats, messages, accounts,
+    port, posts, edits, reactions, uploads, chats, messages, accounts, chatsOpts,
     msgListGets: () => msgListGets,
     accountsGets: () => accountsGets,
+    chatListGets: () => chatListGets,
     subscribed: () => subscribed,
     emit: (ev) => { for (const ws of sockets) ws.send(JSON.stringify(ev)); },
     close: () => new Promise((r) => { for (const ws of sockets) ws.terminate(); wss.close(() => server.close(r)); }),
@@ -1427,6 +1453,38 @@ describe('beeper bridge — resolveChatId network pin', () => {
     fake.chats.set(CHAT('room-tg'), { title: 'Solo', type: 'single', isMuted: false, accountID: 'telegram' });
     const { bridge } = await startBridge();
     expect(await bridge.resolveChatId('Solo')).toBe('room-tg');   // no pin, telegram-only name still resolves
+  });
+});
+
+// CURSOR PAGINATION (operator 2026-07-25, live mesh-envelope drop): /v1/chats serves
+// ONE page (25 live) ordered by recent activity, and the bridge treated that page as
+// the whole account. The mesh chat 'egpt-mesh-do-kg' really existed but had been idle
+// since 2026-07-09, while page 1's oldest entry was 2026-07-22 — so resolveChatId
+// logged "no chat matches" and the caller silently DROPPED the send.
+describe('beeper bridge — /v1/chats cursor pagination', () => {
+  it('resolves a chat that is NOT on the first page (walks the cursor on a miss)', async () => {
+    // Fake page size is 2 → the mesh chat lands on page 2, the same way a
+    // weeks-idle chat lands past page 1 live.
+    fake.chats.set(CHAT('room-a'), { title: 'Recent A', type: 'single', isMuted: false, accountID: 'whatsapp' });
+    fake.chats.set(CHAT('room-b'), { title: 'Recent B', type: 'single', isMuted: false, accountID: 'whatsapp' });
+    fake.chats.set(CHAT('room-mesh'), { title: 'egpt-mesh-do-kg', type: 'group', isMuted: false, accountID: 'whatsapp' });
+    const { bridge } = await startBridge();
+    const r = await bridge.send('envelope', { chatId: 'egpt-mesh-do-kg' });
+    expect(r?.ok).toBe(true);
+    expect(fake.posts).toHaveLength(1);
+    expect(fake.posts[0].chatID).toBe(CHAT('room-mesh'));
+  });
+
+  it('the walk TERMINATES when the server repeats the same cursor forever', async () => {
+    fake.chats.set(CHAT('room-a'), { title: 'A', type: 'single', isMuted: false, accountID: 'whatsapp' });
+    fake.chats.set(CHAT('room-b'), { title: 'B', type: 'single', isMuted: false, accountID: 'whatsapp' });
+    fake.chats.set(CHAT('room-c'), { title: 'C', type: 'single', isMuted: false, accountID: 'whatsapp' });
+    fake.chatsOpts.stuckCursor = true;   // every page = page 1, hasMore always true
+    const { bridge } = await startBridge();
+    const before = fake.chatListGets();
+    const chats = await bridge.listChats({ full: true });
+    expect(chats.map((c) => c.id)).toEqual(['room-a', 'room-b']);   // page 1 only — 'C' is unreachable behind the stuck cursor
+    expect(fake.chatListGets() - before).toBeLessThanOrEqual(3);    // stopped the moment a page added no new ids
   });
 });
 
