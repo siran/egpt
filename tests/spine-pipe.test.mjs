@@ -44,7 +44,11 @@ function fakeGating({ receive = true, reply = true, send = 'mode', surface } = {
   };
 }
 
+// ONE append per call: the spine records the inbound at its single ingestion point
+// (`log(ev)`) and each answering turn appends its own reply (`log(ev, reply)`).
 function fakeTranscript() { return { entries: [], log(ev, reply) { this.entries.push({ ev, reply }); } }; }
+const inbounds = (t) => t.entries.filter((e) => e.reply == null);
+const replies = (t) => t.entries.filter((e) => e.reply != null);
 // sender wraps the bridge — a real round-trip: inbound via bridge, outbound via bridge.
 // open→update*→finish; honors the surface flag (not surfaced → nothing sent).
 function fakeSender(bridge) {
@@ -89,8 +93,9 @@ describe('spine pipe', () => {
     expect(brain.calls).toHaveLength(1);
     expect(brain.calls[0].being).toBe('e');
     expect(bridge.sent).toEqual([{ chat: 'chat-1@g.us', text: '↩ hola' }]);   // out via the same bridge
-    expect(transcript.entries).toHaveLength(1);
-    expect(transcript.entries[0].reply).toEqual({ text: '↩ hola', sessionId: 's1', surfaced: true });
+    // the message is recorded ONCE at ingestion, the reply appended after it
+    expect(transcript.entries.map((e) => e.reply == null)).toEqual([true, false]);
+    expect(replies(transcript)[0].reply).toEqual({ text: '↩ hola', sessionId: 's1', surfaced: true });
     expect(store.threads).toHaveLength(1);
     expect(store.threads[0].being).toBe('e');
   });
@@ -114,7 +119,7 @@ describe('spine pipe', () => {
     expect(brain.calls).toHaveLength(0);
     expect(bridge.sent).toHaveLength(0);
     expect(transcript.entries).toHaveLength(1);
-    expect(transcript.entries[0].reply).toBeUndefined();   // logged only — 'not contacted yet'
+    expect(transcript.entries[0].reply).toBeUndefined();   // recorded only — 'not contacted yet'
   });
 
   it('mayReply=false + send_to_egpt=always: E RUNS (context), reply recorded not-surfaced, NOT sent', async () => {
@@ -124,8 +129,8 @@ describe('spine pipe', () => {
 
     expect(brain.calls).toHaveLength(1);                          // E ran on the message
     expect(bridge.sent).toHaveLength(0);                          // but nothing surfaced
-    expect(transcript.entries).toHaveLength(1);
-    expect(transcript.entries[0].reply).toEqual({ text: '↩ hola', sessionId: 's1', surfaced: false });
+    expect(inbounds(transcript)).toHaveLength(1);
+    expect(replies(transcript)[0].reply).toEqual({ text: '↩ hola', sessionId: 's1', surfaced: false });
     expect(store.threads).toHaveLength(1);                        // thread recorded — E engaged
   });
 
@@ -136,7 +141,7 @@ describe('spine pipe', () => {
 
     expect(brain.calls).toHaveLength(1);
     expect(bridge.sent).toHaveLength(0);                          // '...' not surfaced
-    expect(transcript.entries[0].reply).toEqual({ text: '↩ hola', sessionId: 's1', surfaced: false });
+    expect(replies(transcript)[0].reply).toEqual({ text: '↩ hola', sessionId: 's1', surfaced: false });
   });
 
   it('processes inbound serially (queue drains one at a time)', async () => {
@@ -230,8 +235,8 @@ describe('spine — emitted reply actions', () => {
     await bridge.emit(MSG);
     expect(bridge.sent).toEqual([{ chat: MSG.chatId, text: 'Nice one!\nbye' }]);   // action line NOT surfaced
     expect(limbs.calls.react).toEqual([{ chat: MSG.chatId, id: '7', emoji: '🔥' }]);
-    expect(transcript.entries[0].reply.text).toBe('Nice one!\n/react #7 🔥\nbye');   // RAW recorded — nothing lost
-    expect(transcript.entries[0].reply.surfaced).toBe(true);
+    expect(replies(transcript)[0].reply.text).toBe('Nice one!\n/react #7 🔥\nbye');   // RAW recorded — nothing lost
+    expect(replies(transcript)[0].reply.surfaced).toBe(true);
   });
 
   it('action-only reply: nothing surfaces (placeholder resolves silent), the action still runs + is recorded', async () => {
@@ -240,8 +245,8 @@ describe('spine — emitted reply actions', () => {
     await bridge.emit(MSG);
     expect(bridge.sent).toHaveLength(0);                                   // no prose → nothing posted
     expect(limbs.calls.react).toEqual([{ chat: MSG.chatId, id: '7', emoji: '👍' }]);
-    expect(transcript.entries[0].reply.text).toBe('/react #7 👍');         // recorded
-    expect(transcript.entries[0].reply.surfaced).toBe(true);              // E DID respond (via the limb)
+    expect(replies(transcript)[0].reply.text).toBe('/react #7 👍');         // recorded
+    expect(replies(transcript)[0].reply.surfaced).toBe(true);              // E DID respond (via the limb)
   });
 
   it('a malformed action is stripped from the surfaced prose and NOT executed', async () => {

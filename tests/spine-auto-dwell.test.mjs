@@ -104,17 +104,17 @@ describe('auto dwell — a person message waits a randomized dwell before the tu
     expect(bridge.sent).toHaveLength(1);        // one reply
   });
 
-  it('each burst message logs at arrival (received = logged); the fired turn logs REPLY-only (no double-log)', async () => {
+  it('each burst message is recorded at arrival (received = recorded); the fired turn appends its REPLY only', async () => {
     const { bridge, transcript, timers } = build();
     await bridge.emit(other({ body: 'one', msgId: 'a' }));
     await bridge.emit(other({ body: 'two', msgId: 'b' }));
-    // two inbound logs at arrival, each an inbound-only entry (no reply, not replyOnly)
+    // two inbound appends at arrival — the ingestion point, one per received message
     expect(transcript.entries.filter((e) => e.reply == null)).toHaveLength(2);
     await settle(timers);
-    // the fired turn adds exactly one REPLY-only entry (replyOnly:true — no inbound re-log)
-    const replyEntries = transcript.entries.filter((e) => e.reply != null);
-    expect(replyEntries).toHaveLength(1);
-    expect(replyEntries[0].opts.replyOnly).toBe(true);
+    // the fired turn adds exactly ONE more entry, and it carries a reply → a reply append,
+    // never a second copy of the burst's inbound lines
+    expect(transcript.entries).toHaveLength(3);
+    expect(transcript.entries.filter((e) => e.reply != null)).toHaveLength(1);
   });
 });
 

@@ -211,7 +211,9 @@ describe('spine — FAN OUT to every addressed agent', () => {
   it('the inbound message is recorded ONCE, however many agents it addressed', async () => {
     const { spine, transcript } = fanoutSpine();
     await spine.handleInbound({ ...MSG, body: '@e and @wren and @don' });
-    expect(transcript.entries.filter((e) => !e.opts?.replyOnly)).toHaveLength(1);
+    // one inbound append (the spine's single ingestion point), then one append per reply
+    expect(transcript.entries.filter((e) => e.r == null)).toHaveLength(1);
+    expect(transcript.entries[0].r).toBeUndefined();     // …and it is the FIRST thing written
   });
 
   it('LOCK: a bare message still runs exactly the default agent, once', async () => {

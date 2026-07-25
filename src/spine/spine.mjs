@@ -264,7 +264,8 @@ export function createSpine({
   // pending dwell cleanly — the timer fires but dispatches NO turn; the accumulated cycle
   // stays for whenever a turn next runs). Robust to any mode change without cross-service
   // wiring. Still auto → dispatch ONE reply turn onto the per-conversation FIFO, draining
-  // the whole accumulated burst (preLogged: every burst line was already logged at arrival).
+  // the whole accumulated burst (`burst`: prompt with the drained lines verbatim — each of
+  // them is its own message and was recorded as one at arrival).
   async function fireDwell(turnKey) {
     const entry = dwellBy.get(turnKey);
     if (!entry) return;
@@ -277,7 +278,7 @@ export function createSpine({
     const replyTo = ev.msgId ?? null;                 // quote UNIFORMLY — including auto (see openAndRunReply)
     const ahead = bumpTrain(turnKey);
     const out = sender.open(ev.chatId, { being: to, replyTo, auto: true });
-    turnBy(turnKey, () => runReplyTurn({ to, ev, d, out, replyTo, turnKey, queued: ahead > 0, preLogged: true }));
+    turnBy(turnKey, () => runReplyTurn({ to, ev, d, out, replyTo, turnKey, queued: ahead > 0, burst: true }));
   }
 
   // enqueue resolves when THIS message's turn (if any) completes, so a caller — and
@@ -320,66 +321,89 @@ export function createSpine({
     if (r?.turn) await r.turn;
   }
 
-  // --- the FAST phase of the receive → gate → route → reply pipe (§2a). Every
-  //     RECEIVED message (everything except 'off') is logged to the transcript: a
-  //     received message is never silently dropped (C1.2); 'off' is not received at
-  //     all. Returns `{ turn }` — the dispatched turn's completion promise wrapped so
-  //     the pump does NOT await it (a bare `return turnBy(...)` from this async fn
-  //     would ADOPT the promise and re-serialize every turn globally) — or undefined
-  //     when the message runs no turn. ---
+  // --- THE SINGLE INGESTION PATH (operator 2026-07-25: "an agent only replies when
+  //     prompted. it is the bridge that adds each message to the transcript when the spine
+  //     receives it, not when it prompts the model" / "there must only be one path for
+  //     message ingestion, digestion and dispatching").
+  //
+  //     One message, one record, ONE call site. handleFast CLASSIFIES the message first
+  //     (what IS it, and — for ordinary chat — what its gate says), records the inbound line
+  //     EXACTLY ONCE right here, and only then runs whatever that classification decided.
+  //     Nothing downstream ever appends an inbound line again — a turn appends its REPLY.
+  //     That makes the record STRUCTURAL instead of remembered: a new early-return branch
+  //     cannot silently lose a message, because no branch does the logging.
+  //
+  //     It also puts the record in ARRIVAL order. The inbound used to be written at REPLY
+  //     time, so anything that answered fast — a second addressed agent, a room fan-out
+  //     re-entering — could land its reply line ABOVE the message it was answering (and,
+  //     writing the file first, rob transcript.md of its front matter).
+  //
+  //     The ONE message that is NOT recorded is 'off' — C4: 'off' is not RECEIVED at all,
+  //     so there is nothing to record. classify() returns null for exactly that case.
+  //
+  //     Returns `{ turn }` — the dispatched turn's completion promise wrapped so the pump
+  //     does NOT await it (a bare `return turnBy(...)` from this async fn would ADOPT the
+  //     promise and re-serialize every turn globally) — or undefined when no turn runs. ---
   async function handleFast(msg) {
     const ev = identity.build(msg);
+    // GUARD (C7.7): the channel is the conversation (surface + chatId). Resolved once here
+    // for the safe-word + the loop counter inside classify; null when no guard is wired.
+    const channel = guard ? guardChannel(ev) : null;
+    const act = await classify(ev, channel);
+    if (!act) return;                  // 'off' — not received (C4): not recorded, not processed
+    await transcript.log(ev);          // ←── THE INGESTION POINT (C1.2). The only one.
+    return act();
+  }
 
+  // What IS this message, and what should happen to it? Classification only — plus the
+  // readings classification itself needs (the gate, the guard's verdict). It writes NOTHING
+  // to the transcript. Returns the action to run once the message is on the record, or null
+  // when the message is not received at all ('off').
+  async function classify(ev, channel) {
     // BACKLOG BACKFILL (operator 2026-07-08, S3 wake): a message older than bridge start —
     // the node slept and woke to a replay — is transcript-logged (the record stays complete)
     // but NEVER dispatched: no command, no mesh, no gate, no mode:on (the woken node backfills,
     // it does not re-answer stale traffic).
-    if (ev.backlog) { await transcript.log(ev); return; }
+    if (ev.backlog) return () => {};
 
     // operator slash command (Self DM / authorized) → handled here, NEVER routed
-    // to the brain. Logged like any inbound, then executed (lifecycle exits the
+    // to the brain. Recorded like any inbound, then executed (lifecycle exits the
     // process; the daemon respawns). Runs before gating: a /restart works even in
     // a muted/mention chat.
-    if (commands?.isCommand?.(ev)) { await transcript.log(ev); await commands.run(ev); return; }
-
-    // GUARD (C7.7): the channel is the conversation (surface + chatId). Resolved once
-    // for the safe-word + the loop counter below; null when no guard is wired.
-    const channel = guard ? guardChannel(ev) : null;
+    if (commands?.isCommand?.(ev)) return async () => { await commands.run(ev); };
 
     // Operator safe-word: a bare STOP/STOP ALL/RESUME/RESUME ALL from an AUTHORIZED sender
     // pauses or clears prompting for this channel (or globally). Before gating so it lands
-    // in any mode; logged like any inbound, then NEVER routed to a brain. STOP is stronger
+    // in any mode; recorded like any inbound, then NEVER routed to a brain. STOP is stronger
     // than a mode pause — a stopped channel never reaches a brain (gated below + in the
     // envelope path); a later human turn resets the loop count, but only RESUME clears STOP.
     if (guard && ev.authorized) {
       const word = parseStopWord(ev.body);
-      if (word) { await transcript.log(ev); guard.applyControl(word, channel); note(`guard: '${word}' @ ${channel}`); return; }
+      if (word) return () => { guard.applyControl(word, channel); note(`guard: '${word}' @ ${channel}`); };
     }
 
     // Inbound mesh envelope: a message carrying a provenance tail is relay traffic,
     // not chat — decode + act on it (a request at the responder, a reply/mirror-update
     // at the origin) and stop. Detected EARLY, before gating: an envelope is ADDRESSED
     // traffic, so it bypasses this chat's ambient reply modes (the responder's own
-    // being-turn still respects that being's availability, inside mesh.handle). Logged
-    // like any received message first (C1.2). A relay envelope is NON-human traffic (it
-    // may DISPLAY as the operator — the 2026-06-19 loop), so it counts toward the loop cap;
+    // being-turn still respects that being's availability, inside mesh.handle). Recorded
+    // like any received message (C1.2). A relay envelope is NON-human traffic (it may
+    // DISPLAY as the operator — the 2026-06-19 loop), so it counts toward the loop cap;
     // a STOPPED channel suppresses the responder turn entirely.
     if (mesh?.isEnvelope?.(ev)) {
-      await transcript.log(ev);
       if (guard) {
-        if (guard.blocked(channel)) { note(`guard: ${channel} stopped — mesh turn suppressed`); return; }
+        if (guard.blocked(channel)) return () => { note(`guard: ${channel} stopped — mesh turn suppressed`); };
         await guardCountNonHuman(ev, channel);
       }
-      await mesh.handle(ev);
-      return;
+      return async () => { await mesh.handle(ev); };
     }
 
     // Advice answer (mode: auto): the operator quote-replied in the advice channel to one
     // of E's /ask questions — route that answer into the ORIGIN conversation instead of
     // treating it as a message in the advice channel. Detected EARLY, before gating, so
     // the operator's reply never triggers a normal E reply where the ask was posted.
-    // Logged like any received message first (C1.2). routeAnswer is fire-and-forget.
-    if (advice?.isAnswer?.(ev)) { await transcript.log(ev); await advice.routeAnswer(ev); return; }
+    // Recorded like any received message (C1.2). routeAnswer is fire-and-forget.
+    if (advice?.isAnswer?.(ev)) return async () => { await advice.routeAnswer(ev); };
 
     // Router picks EVERY addressed agent + the mention each one's gate should see (operator
     // 2026-07-25: one matcher over the node's whole addressable set — `@e and @don you here?`
@@ -401,22 +425,29 @@ export function createSpine({
     // sibling was routed by its own @name).
     const d = await gating.decide(to, ev, mention);
 
-    // 'off' → not received: not logged, not processed (C4). Every OTHER mode is
-    // logged below — a received message is never silently dropped (C1.2).
-    if (!d.receives) return;
+    // 'off' → not received: not recorded, not processed (C4). Every OTHER mode IS recorded
+    // at the ingestion point — a received message is never silently dropped (C1.2).
+    if (!d.receives) return null;
 
     // GUARD (C7.7): classify this received turn by PROVENANCE + gate a stopped channel. A
     // genuine human message RESETS the loop counter (so normal human↔bot talk never trips);
     // a non-human turn (a being's own room fan-out re-entering, later phases) counts toward
-    // the cap. A STOPPED channel is logged (C1.2) but never prompts — cleared only by RESUME,
+    // the cap. A STOPPED channel is recorded (C1.2) but never prompts — cleared only by RESUME,
     // never by a mere human turn. Runs before the reply/dwell/context branches so every
     // received message resets or counts exactly once.
     if (guard) {
-      if (guard.blocked(channel)) { await transcript.log(ev); note(`guard: ${channel} stopped — prompt suppressed`); return; }
+      if (guard.blocked(channel)) return () => { note(`guard: ${channel} stopped — prompt suppressed`); };
       if (humanTurn(ev)) guard.noteHuman(channel);
       else await guardCountNonHuman(ev, channel);
     }
 
+    return () => dispatchChat({ ev, d, to, mention, meshTarget, targets, channel });
+  }
+
+  // Ordinary chat, ALREADY on the record: fan out to the other agents this message addressed
+  // and take its own branch. Runs strictly AFTER the ingestion append, so every reply line it
+  // can produce lands below the inbound line it answers.
+  async function dispatchChat({ ev, d, to, mention, meshTarget, targets, channel }) {
     // PHASE 4 — brain-member fan-out (design B: re-entry). Kicked off HERE, concurrently with
     // E's own dispatch below (never blocking E's turn). It delivers this received room message
     // to each brain member whose mode admits it; each member's finalized reply is streamed into
@@ -431,10 +462,9 @@ export function createSpine({
       : null;
     // FAN-OUT (operator 2026-07-25): every OTHER agent this message addressed takes its own path
     // from this ONE message — a local being takes a turn, a relay agent posts an envelope and
-    // waits. The two are independent and free: neither sequences the other, and neither re-logs
-    // the inbound (the branch below records it exactly once). Kicked off HERE, after the guard, so
-    // a STOPPED/looping channel silences the whole fan-out with the primary. One target (every
-    // existing path) → null → byte-identical to before.
+    // waits. The two are independent and free: neither sequences the other, and neither touches
+    // the inbound line (ingestion already wrote it, above). One target (every existing path)
+    // → null → byte-identical to before.
     const extrasTurn = targets.length > 1 ? fanOutExtras(targets.slice(1), ev) : null;
     // Fold the fan-out(s) into whatever this message resolves on: a reply/context turn (Promise.all),
     // a no-turn branch (the fan-out alone), or — no roomRelay, one target — the original value unchanged.
@@ -453,38 +483,38 @@ export function createSpine({
     const turnKey = `${to}:${ev.surface}:${ev.chatId}`;
 
     // mode:auto is an IMPERSONATION of the operator: E replies to OTHER people AS the
-    // operator, and the operator's OWN messages (isSender) here NEVER prompt E. Log +
-    // accumulate the line into this conversation's cycle so the NEXT other-person turn is
-    // prompted WITH it (full context), and run no turn. Only the operator's genuinely-
-    // typed lines reach here — E's own auto replies come back isSender too but are dropped
-    // upstream by the bridge's sent-id guard (wasSentByUs), never re-entering the spine.
-    if (d.mode === 'auto' && ev.isSender) { await transcript.log(ev); pushCycle(turnKey, ev.line ?? ev.body); extendDwell(turnKey); return withRelay(); }
+    // operator, and the operator's OWN messages (isSender) here NEVER prompt E. Accumulate
+    // the line into this conversation's cycle so the NEXT other-person turn is prompted WITH
+    // it (full context), and run no turn. Only the operator's genuinely-typed lines reach
+    // here — E's own auto replies come back isSender too but are dropped upstream by the
+    // bridge's sent-id guard (wasSentByUs), never re-entering the spine.
+    if (d.mode === 'auto' && ev.isSender) { pushCycle(turnKey, ev.line ?? ev.body); extendDwell(turnKey); return withRelay(); }
 
     // Does E actually RUN on this message? It runs when its reply could surface
     // (mayReply), OR when the chat is send_to_egpt:'always' (E stays in context
-    // even when it won't reply). Otherwise the message is logged only — E reads
+    // even when it won't reply). Otherwise the message is recorded only — E reads
     // transcript.md for back-context if it later engages ('not contacted yet') — AND
     // the line joins the conversation's cycle, so a queued mention arriving next sees
     // this ambient chatter in its accumulated prompt.
     const runE = d.mayReply || d.sendToEgpt === 'always';
-    if (!runE) { await transcript.log(ev); pushCycle(turnKey, ev.line ?? ev.body); return withRelay(); }
+    if (!runE) { pushCycle(turnKey, ev.line ?? ev.body); return withRelay(); }
 
     // mesh-target forwarding (Phase 4b): an @being.node that lives on ANOTHER node is
     // not a local brain. Once gating has decided this chat is received+replyable, relay
     // the message to the target's node (a visible envelope) and stop — the reply streams
     // back into this chat as a living mirror. A local-being target has meshTarget=null
     // and falls through to the brain below.
-    if (meshTarget && mesh && d.mayReply) { await transcript.log(ev); await mesh.forward(ev, meshTarget); return withRelay(); }
+    if (meshTarget && mesh && d.mayReply) { await mesh.forward(ev, meshTarget); return withRelay(); }
 
     // AUTO DWELL (auto chats only): a person messaging an auto chat doesn't get an instant
-    // reply — a human reads the burst and wanders back. Log the message NOW (received =
-    // logged, in arrival order), accumulate it into this conversation's cycle, and ARM/EXTEND
-    // a randomized pre-turn dwell; the turn fires ONCE when the dwell expires (fireDwell),
-    // draining the whole accumulated burst. Pre-turn, so it's outside the turn-timeout budget.
-    // Only auto+mayReply reaches here (isSender auto handled above; a paused auto chat has
-    // mayReply=false and falls to the logged-only/context branches — no reply to delay).
+    // reply — a human reads the burst and wanders back. The message is already on the record
+    // (ingestion, in arrival order); accumulate it into this conversation's cycle and
+    // ARM/EXTEND a randomized pre-turn dwell; the turn fires ONCE when the dwell expires
+    // (fireDwell), draining the whole accumulated burst. Pre-turn, so it's outside the
+    // turn-timeout budget. Only auto+mayReply reaches here (isSender auto handled above; a
+    // paused auto chat has mayReply=false and falls to the record-only/context branches —
+    // no reply to delay).
     if (d.mayReply && d.mode === 'auto') {
-      await transcript.log(ev);
       pushCycle(turnKey, ev.line ?? ev.body);
       armDwell(turnKey, { to, ev, mention });
       return withRelay();
@@ -542,11 +572,11 @@ export function createSpine({
   // exist. Quoting from the START is also what removes the delete+repost churn for the common
   // case: E's /reply at the message it is answering is now GENUINELY redundant, so it strips
   // instead of tearing the placeholder down and posting a fresh quote in its place.
-  function openAndRunReply({ to, ev, d, turnKey, replyOnly = false }) {
+  function openAndRunReply({ to, ev, d, turnKey }) {
     const replyTo = ev.msgId ?? null;
     const ahead = bumpTrain(turnKey);
     const out = sender.open(ev.chatId, { being: to, replyTo, queued: ahead > 0, queuedAhead: ahead, auto: d.mode === 'auto' });
-    return turnBy(turnKey, () => runReplyTurn({ to, ev, d, out, replyTo, turnKey, queued: ahead > 0, replyOnly }));
+    return turnBy(turnKey, () => runReplyTurn({ to, ev, d, out, replyTo, turnKey, queued: ahead > 0 }));
   }
 
   // The spine's FAN-OUT (operator 2026-07-25): dispatch the agents addressed BESIDE the one
@@ -555,10 +585,11 @@ export function createSpine({
   // mid-sentence in a mention-direct chat stays silent — and then takes the path its kind
   // already has: a RELAY target is forwarded as a mesh envelope, a LOCAL being takes a reply
   // turn on its OWN per-conversation queue (so it runs concurrently with the primary, never
-  // behind it). `replyOnly`: the inbound line is recorded once by the primary's branch, so these
-  // turns append their REPLY only — one message, one inbound line, N replies. A target that may
-  // not reply is simply silent (no context turn, no dwell: it was ADDRESSED, so it either
-  // answers or it doesn't). Failures are noted and never break the other targets.
+  // behind it). No target re-records the message: ingestion wrote the single inbound line
+  // before any of this ran, and every turn appends only its REPLY — one message, one inbound
+  // line, N replies. A target that may not reply is simply silent (no context turn, no dwell:
+  // it was ADDRESSED, so it either answers or it doesn't). Failures are noted and never break
+  // the other targets.
   function fanOutExtras(extras, ev) {
     return Promise.all(extras.map(async (t) => {
       const being = t.being ?? defaultBeing;
@@ -566,7 +597,7 @@ export function createSpine({
         const d = await gating.decide(being, ev, t.mention ?? ev.mention);
         if (!d.receives || !d.mayReply) return;
         if (t.mesh) { if (mesh) await mesh.forward(ev, t.mesh); return; }
-        await openAndRunReply({ to: being, ev, d, turnKey: `${being}:${ev.surface}:${ev.chatId}`, replyOnly: true });
+        await openAndRunReply({ to: being, ev, d, turnKey: `${being}:${ev.surface}:${ev.chatId}` });
       } catch (e) { note(`fan-out ${being}/${ev.chatId}: ${e?.message ?? e}`); }
     })).then(() => {});
   }
@@ -576,11 +607,15 @@ export function createSpine({
   // no-reply marker (surfaced-but-empty or a failure-shaped result), or a failure marker
   // (brain throw / timeout / a fault in delivery). It can never resolve empty-and-silent
   // or stay stuck on "⏳ Thinking…". The reply is RECORDED before delivery (the transcript
-  // is the durable record — it swallows its own errors and never throws — so the message
-  // and reply survive even a bridge delivery fault), and E's own delivered reply becomes a
-  // cycle line so the next queued turn accumulates it.
-  async function runReplyTurn({ to, ev, d, out, replyTo = null, turnKey, queued, preLogged = false, replyOnly = false }) {
-    let recorded = false;
+  // is the durable record — it swallows its own errors and never throws — so the reply
+  // survives even a bridge delivery fault), and E's own delivered reply becomes a cycle line
+  // so the next queued turn accumulates it. The MESSAGE is not this function's business: it
+  // was written at ingestion, before this turn was ever dispatched.
+  //
+  // `burst` (the auto-dwell fire): this turn answers a whole accumulated burst, so it prompts
+  // with the drained cycle verbatim instead of appending its own trigger line. A PROMPT
+  // concern only — it says nothing about the record.
+  async function runReplyTurn({ to, ev, d, out, replyTo = null, turnKey, queued, burst = false }) {
     try {
       out.activate?.();                                 // queued → live the moment its turn starts
       // Drain the accumulated cycle. A QUEUED turn prompts with it (ending with its own
@@ -591,12 +626,12 @@ export function createSpine({
       // IMMEDIATE turn discards it — EXCEPT mode:auto, where the operator's OWN messages
       // accumulated WITHOUT ever running a turn, so an auto turn (immediate OR queued)
       // ALWAYS prepends them: E replies with the full context the operator would have had.
-      // preLogged (the auto DWELL fire): the whole burst — INCLUDING ev's own line — is
-      // already in `pending` (each burst message logged + accumulated at arrival), so prompt
-      // with it verbatim and don't re-append ev.line.
-      const prepend = preLogged || ((queued || d.mode === 'auto') && pending.length);
+      // burst (the auto DWELL fire): the whole burst — INCLUDING ev's own line — is already
+      // in `pending` (each burst message accumulated at arrival), so prompt with it verbatim
+      // and don't re-append ev.line.
+      const prepend = burst || ((queued || d.mode === 'auto') && pending.length);
       const promptEv = prepend
-        ? { ...ev, line: (preLogged && pending.length ? pending : [...pending, ev.line ?? ev.body]).join('\n\n') }
+        ? { ...ev, line: (burst && pending.length ? pending : [...pending, ev.line ?? ev.body]).join('\n\n') }
         : ev;
       // STREAM THE PROSE ONLY (operator 2026-07-15). The raw partial used to go straight to
       // the chat, so E's action tokens RENDERED live — the operator watched `/reply #<id> …`
@@ -633,12 +668,10 @@ export function createSpine({
       // Observability (operator: "diagnose WHY it was empty"): a turn that was meant to
       // surface but has nothing to deliver (and did nothing) is noted — the silent swallow is loud.
       if (surfaced && !responded) note(`brain ${to}/${ev.chatId}: no deliverable text (${failShaped ? `failure-shaped: ${rawText.slice(0, 80)}` : 'empty'}) — placeholder resolved with no-reply marker`);
-      // RECORD FIRST (durable) — reply.text is RAW (action lines kept). preLogged (auto
-      // dwell): the burst inbound lines were already recorded at arrival, so log ONLY the reply.
-      // replyOnly (a FANNED-OUT agent): the primary target's branch records this message's single
-      // inbound line — an agent answering beside it appends its reply, never a second copy.
-      await transcript.log(ev, { ...reply, surfaced: responded }, { replyOnly: preLogged || replyOnly });
-      recorded = true;
+      // RECORD FIRST (durable) — reply.text is RAW (action lines kept). ALWAYS the reply
+      // alone: the message itself went on the record at ingestion, so however many agents
+      // answer it, each appends exactly one reply line under the one inbound line.
+      await transcript.log(ev, { ...reply, surfaced: responded });
       if (responded) pushCycle(turnKey, replyLine({ being: to, body: rawText, surfaced: true, now: new Date() }));
       await store?.recordThread?.({ ev, reply, being: to });
       // TYPING TIME (auto only): a human takes time to type. Delay the plain post-once send
@@ -654,10 +687,11 @@ export function createSpine({
       if (parsed && hadActions) { try { await actions.execute(parsed.run, parsed.stripped, ev, { being: to }); } catch (e) { note(`actions ${to}/${ev.chatId}: ${e?.message ?? e}`); } }
     } catch (e) {
       // Any failure once the placeholder is open (brain throw, per-turn timeout, or a
-      // delivery fault) → resolve the placeholder VISIBLY + record the inbound if the
-      // reply-log didn't already run (C1.2: the message is never lost).
+      // delivery fault) → resolve the placeholder VISIBLY. The MESSAGE needs no rescue
+      // append here: it was recorded at ingestion, so C1.2 already holds whatever this
+      // turn does (that rescue used to double-record the auto-dwell burst, which had
+      // been logged at arrival but was invisible to the flag this branch checked).
       try { await out.fail?.(e); } catch { /* best effort */ }
-      if (!recorded && !replyOnly) { try { await transcript.log(ev); } catch { /* transcript swallows */ } }
       note(`turn ${to}/${ev.chatId}: ${e?.message ?? e}`);
     } finally { dropTrain(turnKey); }
   }
@@ -665,10 +699,9 @@ export function createSpine({
   async function runContextTurn({ to, ev, turnKey }) {
     try {
       const reply = await runTurnWithTimeout(to, ev, ev, undefined);
-      await transcript.log(ev, { ...reply, surfaced: false });
+      await transcript.log(ev, { ...reply, surfaced: false });   // reply only — the message is already recorded
       await store?.recordThread?.({ ev, reply, being: to });
     } catch (e) {
-      await transcript.log(ev);
       note(`brain ${to}/${ev.chatId}: ${e?.message ?? e}`);
     } finally { dropTrain(turnKey); }
   }
