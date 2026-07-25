@@ -257,6 +257,31 @@ describe('shell-port limb', () => {
     });
   });
 
+  describe('postStatus — the mesh origin placeholder ("🤔 thinking…") must be a LIVE frame, not committed', () => {
+    // THE BUG (operator, w/ screenshot): a shell-origin mesh relay (`@don`) shows TWO thinking
+    // indicators, one of which never goes away. CAUSE: postStatus pushed its placeholder with
+    // streaming:false — a COMMITTED line the shell can never replace (no editable msg id, unlike
+    // Beeper) — then the reply's openOriginStream posted a SECOND, live placeholder that streams
+    // into the real reply. The committed one is immortal. FIX: postStatus must push the SAME
+    // primitive startStream already uses for its own placeholder — streaming:true — so the later
+    // live frame REPLACES it in place instead of stacking a second one on top.
+    it('REPRODUCE-FIRST: postStatus pushes a LIVE (streaming:true) frame and still returns null (no editable shell msg id)', () => {
+      const { WebSocket, sockets } = makeFakeWs();
+      const port = createShellPort({ WebSocket });
+      port.start();
+      sockets[0].fire('open');
+      const sock = sockets[0];
+
+      const id = port.postStatus('main', '🤔 thinking…');
+
+      expect(id).toBeNull();                              // unchanged: no addressable shell message id
+      expect(sock.sent).toHaveLength(1);
+      const frame = JSON.parse(sock.sent[0]);
+      expect(frame.streaming).toBe(true);                 // LIVE — a later live frame replaces it in place
+      expect(frame.text).toBe('🤔 thinking…');
+    });
+  });
+
   describe('poke() — the editor announced itself via ingest, connect NOW', () => {
     it('while disconnected with a pending reconnect timer: cancels the timer, resets the backoff, and dials a fresh socket immediately', () => {
       const { WebSocket, sockets } = makeFakeWs();

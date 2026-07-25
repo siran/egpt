@@ -194,6 +194,56 @@ describe('a shell-origin mesh relay reply streams back into the shell, not Beepe
     expect(beeper.streams).toBe(0);                                              // NOT streamed to Beeper
     expect(beeper.sent).toHaveLength(1);                                         // still just the one request envelope
   });
+
+  // THE LIVE DEFECT (operator, with a screenshot): relaying `@don` from the shell shows TWO
+  // thinking indicators, and one NEVER goes away. CAUSE: postStatus posted its placeholder
+  // committed (streaming:false) — a line the shell can never replace — then the reply's
+  // openOriginStream posted a SECOND, live placeholder that streams into the actual reply. The
+  // committed one is immortal. Model the exact live case: a mesh origin placeholder followed by
+  // a streamed reply. On the pre-fix code this FAILS with two committed frames.
+  it('REPRODUCE-FIRST: the origin placeholder is live, not committed — after the reply commits there is exactly ONE committed frame (no lingering "thinking" line)', async () => {
+    const { WebSocket, sockets } = makeFakeWs();
+    const shellPort = createShellPort({ WebSocket });
+    shellPort.onMessage(() => {});
+    shellPort.start();
+    const sock = sockets[0];
+    sock.fire('open');
+    sock.fire('message', Buffer.from(JSON.stringify({ text: '@don hola', chatId: 'main' })));
+
+    const beeper = {
+      sent: [],
+      send(c, t) { this.sent.push({ c, t }); return { ok: true }; },
+      async postStatus(c, t) { return 'beeper-post-id'; },
+      startStream(c, i, o) { return { update() {}, async finish() {}, async delete() {}, delivered: false }; },
+    };
+
+    const shellAware = makeShellAwareBridge(beeper, shellPort);
+    const mesh = createMeshService({
+      bridge: shellAware,
+      brain: { async turn() { return { text: '' }; } },
+      getConfig: () => ({ node_name: 'kg' }),
+      bodyEmojiOf: () => '🤝',
+    });
+
+    const shellEv = { surface: 'shell', chatId: 'main', chatName: 'shell', senderName: 'operator', body: '@don hola' };
+    await mesh.forward(shellEv, { being: 'don', route: { room_id: 'egpt-mesh-do-kg' }, to: 'don.do' });
+
+    // Right after the placeholder posts (reply hasn't arrived yet): NOT committed — a live
+    // frame only, so nothing is left behind if the reply were to never arrive.
+    const preReply = sock.sent.map((s) => JSON.parse(s));
+    expect(preReply.filter((f) => f.streaming === false)).toHaveLength(0);
+    expect(preReply).toHaveLength(1);
+    expect(preReply[0]).toMatchObject({ streaming: true, text: '🤔 thinking…' });
+
+    const req = parseMesh(beeper.sent[0].t);
+    const reply = encodeMesh({ by: 'don.do', body: '🤝 hey there', re: `${req.from}.${req.from_node}`, post_id: req.post_id, done: true });
+    await mesh.handle({ surface: 'wa', chatId: 'egpt-mesh-do-kg', msgId: 'r1', body: reply });
+
+    const frames = sock.sent.map((s) => JSON.parse(s));
+    const committed = frames.filter((f) => f.streaming === false);
+    expect(committed).toHaveLength(1);                          // no leftover committed "thinking" line
+    expect(committed[0].text).toContain('hey there');           // the ONE committed frame is the reply
+  });
 });
 
 // ── THE ORIGIN NODE SIGNS WHAT IT POSTS (operator 2026-07-25) ────────────────────────────
@@ -253,8 +303,11 @@ describe('the ORIGIN node signs the relayed reply it posts home (shell surface)'
   });
 
   it('the 🤔 placeholder is NOT signed — only the reply the node actually posts is', async () => {
-    const { committed } = await shellOriginRelay();
-    expect(committed()[0].text).toBe('🤔 thinking…');
+    // The placeholder is a LIVE frame now (postStatus fix, operator: "double-thinking, one
+    // lingers"), not a committed one — check the raw frame, not committed().
+    const { sock } = await shellOriginRelay();
+    const live = sock.sent.map((s) => JSON.parse(s)).find((f) => f.streaming === true);
+    expect(live.text).toBe('🤔 thinking…');
   });
 
   it('the ONE-SHOT surface path (no stream primitive / no msgId) is signed identically', async () => {

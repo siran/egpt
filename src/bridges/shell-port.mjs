@@ -163,12 +163,18 @@ export function createShellPort({
     // returned message id as post_id (the responder echoes it so the origin edits the RIGHT
     // message as the living-mirror reply streams). A shell-origin relay (`@don` typed in the
     // shell) lands here via the shell-aware bridge facade. The shell has NO editable message id
-    // — a frame is a committed line, not an addressable Beeper message — so push it as a
-    // committed line (streaming:false) and RETURN null. With no post_id the mesh's later
-    // edit/delete of the placeholder becomes a guarded no-op, and openOriginStream opens a fresh
-    // shell stream (existingMsgId null) that streams the reply in via startStream. Drops (never
-    // throws) when the editor is not connected, same as send.
-    postStatus(chatId, text) { pushFrame(chatId, String(text), { streaming: false }); return null; },
+    // — unlike Beeper there is no msgId to edit later — so a COMMITTED (streaming:false) frame
+    // here would sit in the transcript FOREVER: the shell's only replace-in-place primitive is
+    // the live line, and a committed line is never revisited. Push it LIVE instead (streaming:
+    // true), the SAME primitive startStream uses for its own placeholder — the reply's later
+    // openOriginStream → startStream posts its own live frame, which REPLACES this one in place
+    // (src/shell/app.mjs holds ONE `live` slot), so exactly one thinking indicator is ever shown
+    // and nothing is left behind once the reply commits (operator: "double-thinking, one
+    // lingers"). Still RETURN null: with no post_id the mesh's later edit/delete of the
+    // placeholder is a guarded no-op and openOriginStream opens a fresh shell stream (existingMsgId
+    // null) that streams the reply in via startStream — unchanged. Drops (never throws) when the
+    // editor is not connected, same as send.
+    postStatus(chatId, text) { pushFrame(chatId, String(text), { streaming: true }); return null; },
     // A STREAMING reply target with the shape createSender consumes off the beeper bridge
     // (beeper-port.startStream → { update, finish, delete, fail, delivered, lastError }) — now
     // rendered through the IDENTICAL machinery (operator 2026-07-25): the ⏳ thinking placeholder
