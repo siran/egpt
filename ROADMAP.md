@@ -7,6 +7,19 @@
 
 ## 0. Echo architecture — the ALIGNED model (2026-07-12)
 
+> **UPDATE 2026-07-25 — HRW REVIVED, config relocated (both nodes on `33e175e`).** The
+> static-priority 👂 pick below is now REAL per-note HRW (rendezvous hashing) again — but keyed
+> on the voice note's AUDIO sha256 (node-stable by construction: same Beeper attachment on both
+> co-account spines), NOT the node-local Beeper id that broke the first HRW, and NOT the
+> transcript (which can differ across whisper engines). `echoRank` = pure FNV-1a over the peer
+> set, peer-index tiebreak; rank rotates per note yet both nodes agree. Config moved from
+> top-level `echo_priority`/`echo_timeout_ms` to `transcription_service.echo: { method: hrw,
+> participants: group-members, peer_priority: [do, kg], timeout_ms }` (boot keeps back-compat
+> fallback to the old top-level keys). beeper feeds the audio hash (crypto at the bridge,
+> msg.id fallback); incoming-media's rank semantics unchanged. STILL DORMANT — the spoken 👂 is
+> off (`posts_back_delay_ms: -1`); flipping it on is a separate operator decision. The
+> static-priority description below is the SUPERSEDED prior mechanism, kept for history.
+
 The 👂 echo decision is CORRECT-BEHAVIOR, not dedup. There is exactly ONE correct answer per
 note — "am I responsible for echoing this?" — and the system decides it, never posts-then-retracts.
 (Deduping = eager-post-then-suppress-a-mistake; we do not do that. "Dedup" was a mislabel — evicted.)
