@@ -600,6 +600,8 @@ export async function boot({
     brains,                                           // the /e wizard resolves a picked agent type through the registry
     defaultKey,                                       // the persona being-id (its map key) — /e auto + /status + wizard key their per-conversation reads/writes/evictions off this, never 'e' (operator 2026-07-10)
     evictWarm: (key) => pool.evict(key),              // drop a re-pointed conversation's warm session so it respawns fresh
+    warmStats: () => pool.stats(),                    // /status `warm:` field — { size, max, keys }
+    shellConnected: () => shellPort.isConnected,       // /status `shell:` field — is the operator's editor dialed in
     onLog: (m) => log.line?.(`[command] ${m}`),
   });
 

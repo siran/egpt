@@ -131,6 +131,9 @@ export function createShellPort({
     // Does this chat id belong to the shell surface? boot's routed send consults this to
     // push a shell-surface reply back over the socket instead of the beeper bridge.
     owns(chatId) { return _chatIds.has(chatId); },
+    // Is the operator's editor currently dialed in? /status's `shell:` field reads this
+    // (boot wires shellConnected: () => shellPort.isConnected).
+    get isConnected() { return _wsReady; },
     // Push a reply frame back to the editor. Drops (never throws) when the editor is not
     // connected — a reply with nowhere to go must not crash the spine, same as beeper
     // dropping a send to an unresolvable chat.

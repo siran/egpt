@@ -33,7 +33,10 @@ function threeContacts() {
   return st;
 }
 
-function harness({ io, gitOut, loadState, brains, getConfig, onLog } = {}) {
+// cdp defaults to an always-down fake — bare /status now probes cdp.isRunning() for
+// its `chrome:` field, and a test that doesn't care about Chrome must never hit the
+// real localhost CDP port. Tests targeting the chrome field override this.
+function harness({ io, gitOut, loadState, brains, getConfig, onLog, cdp, warmStats, shellConnected } = {}) {
   const sent = [];
   const cmds = createCommands({
     getConfig: getConfig ?? (() => ({ whatsapp: { chat_id: '!self' } })),
@@ -44,6 +47,9 @@ function harness({ io, gitOut, loadState, brains, getConfig, onLog } = {}) {
     gitOut,
     brains,
     onLog,
+    cdp: cdp ?? { isRunning: async () => false },
+    ...(warmStats ? { warmStats } : {}),
+    ...(shellConnected ? { shellConnected } : {}),
   });
   return { cmds, sent };
 }
@@ -424,5 +430,169 @@ describe('/status: beeper_accounts registry', () => {
 
     await cmds.run({ body: '/status', chatId: '!self', surface: 'whatsapp' });
     expect(sent[0].text).toMatch(/beeper_accounts:\n {2}dolly: dolly\.egpt@gmail\.com/);
+  });
+});
+
+// Operator-requested enrichment: node_name/peers/transcription/agents/chrome/warm/shell.
+// Every probe is independently guarded — none may throw, none may leak a secret.
+describe('/status: enriched fields', () => {
+  const HEALTHY_IO = { stat: async () => ({ mtimeMs: Date.now() }), readFile: async () => READONLY_YAML };
+  const HEALTHY_GIT = (args) => (args.includes('--short') ? 'abc1234' : 's');
+  const TOKEN_SENTINEL = 'TX-SECRET-TOKEN-DO-NOT-LEAK';
+
+  const RICH_CONFIG = {
+    whatsapp: { chat_id: '!self' },
+    node_name: 'kg',
+    account_peers: ['kg', 'do'],
+    transcription_service: {
+      enabled: true,
+      use_config: 'reve',
+      reve: {
+        fallback_order: ['remote', 'cli'],
+        remote: { type: 'whisper-server-remote', endpoint: 'http://192.168.1.102:23390', token: TOKEN_SENTINEL },
+        cli: { type: 'whisper-cli', model_path: '/m/large-v3.bin' },
+      },
+    },
+    agents: {
+      egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true },
+      carol: { relay_channel: 'rodz1', to: 'don.do' },
+      wren: [{ path1: { relay_channel: 'rodz2', to: 'ed.do' } }],
+    },
+  };
+
+  it('node_name + peers render inline when configured', async () => {
+    const { cmds, sent } = harness({ io: HEALTHY_IO, gitOut: HEALTHY_GIT, loadState: async () => threeContacts(), getConfig: () => RICH_CONFIG });
+    await cmds.run({ body: '/status', chatId: '!self', surface: 'whatsapp' });
+    const { text } = sent[0];
+    expect(text).toMatch(/node_name: kg/);
+    expect(text).toMatch(/peers: \[kg, do\]/);
+  });
+
+  it('node_name/peers are omitted entirely when unset (no false blanks)', async () => {
+    const { cmds, sent } = harness({ io: HEALTHY_IO, gitOut: HEALTHY_GIT, loadState: async () => threeContacts() });
+    await cmds.run({ body: '/status', chatId: '!self', surface: 'whatsapp' });
+    const { text } = sent[0];
+    expect(text).not.toMatch(/node_name:/);
+    expect(text).not.toMatch(/peers:/);
+  });
+
+  it('transcription block shows enabled/use_config/fallback_order/endpoint HOST only', async () => {
+    const { cmds, sent } = harness({ io: HEALTHY_IO, gitOut: HEALTHY_GIT, loadState: async () => threeContacts(), getConfig: () => RICH_CONFIG });
+    await cmds.run({ body: '/status', chatId: '!self', surface: 'whatsapp' });
+    const { text } = sent[0];
+    expect(text).toMatch(/transcription:\n {2}enabled: true\n {2}use_config: reve\n {2}fallback_order: \[remote, cli\]\n {2}endpoint: http:\/\/192\.168\.1\.102:23390/);
+  });
+
+  it('transcription: off when the block is absent', async () => {
+    const { cmds, sent } = harness({ io: HEALTHY_IO, gitOut: HEALTHY_GIT, loadState: async () => threeContacts() });
+    await cmds.run({ body: '/status', chatId: '!self', surface: 'whatsapp' });
+    expect(sent[0].text).toMatch(/^transcription: off$/m);
+  });
+
+  it('transcription: off when explicitly disabled (enabled:false)', async () => {
+    const cfg = { ...RICH_CONFIG, transcription_service: { ...RICH_CONFIG.transcription_service, enabled: false } };
+    const { cmds, sent } = harness({ io: HEALTHY_IO, gitOut: HEALTHY_GIT, loadState: async () => threeContacts(), getConfig: () => cfg });
+    await cmds.run({ body: '/status', chatId: '!self', surface: 'whatsapp' });
+    expect(sent[0].text).toMatch(/^transcription: off$/m);
+  });
+
+  // THE SECURITY-CRITICAL TEST: a naive dump of the transcription block would leak
+  // remote.token straight into an operator chat. This must fail on any implementation
+  // that surfaces the whole engine config instead of cherry-picking endpoint/host.
+  it('SECURITY: the remote transcription token never appears anywhere in /status output', async () => {
+    const { cmds, sent } = harness({ io: HEALTHY_IO, gitOut: HEALTHY_GIT, loadState: async () => threeContacts(), getConfig: () => RICH_CONFIG });
+    await cmds.run({ body: '/status', chatId: '!self', surface: 'whatsapp' });
+    expect(sent[0].text).not.toContain(TOKEN_SENTINEL);
+  });
+
+  it('agents: persona shows its handles, a scalar relay shows "name → to", a list relay shows its to once', async () => {
+    const { cmds, sent } = harness({ io: HEALTHY_IO, gitOut: HEALTHY_GIT, loadState: async () => threeContacts(), getConfig: () => RICH_CONFIG });
+    await cmds.run({ body: '/status', chatId: '!self', surface: 'whatsapp' });
+    const { text } = sent[0];
+    expect(text).toMatch(/agents:\n( {2}.*\n)*/);
+    expect(text).toMatch(/ {2}egpt \(e, egpt\)/);
+    expect(text).toMatch(/ {2}carol → don\.do/);
+    expect(text).toMatch(/ {2}wren → ed\.do/);
+  });
+
+  it('agents block is omitted when cfg().agents is absent', async () => {
+    const { cmds, sent } = harness({ io: HEALTHY_IO, gitOut: HEALTHY_GIT, loadState: async () => threeContacts() });
+    await cmds.run({ body: '/status', chatId: '!self', surface: 'whatsapp' });
+    expect(sent[0].text).not.toMatch(/agents:/);
+  });
+
+  it('chrome: up · N brain tabs — counts only tabs whose URL matches a loaded adapter', async () => {
+    const cdp = {
+      isRunning: async () => true,
+      listTabs: async () => ([
+        { url: 'https://claude.ai/chat/abc' },     // matches claude-cdp adapter
+        { url: 'https://chatgpt.com/c/xyz' },      // matches chatgpt-cdp adapter
+        { url: 'https://example.com/nope' },       // no adapter
+      ]),
+    };
+    const { cmds, sent } = harness({ io: HEALTHY_IO, gitOut: HEALTHY_GIT, loadState: async () => threeContacts(), cdp });
+    await cmds.run({ body: '/status', chatId: '!self', surface: 'whatsapp' });
+    expect(sent[0].text).toMatch(/chrome: up · 2 brain tabs/);
+  });
+
+  it('chrome: off when Chrome is not running', async () => {
+    const { cmds, sent } = harness({ io: HEALTHY_IO, gitOut: HEALTHY_GIT, loadState: async () => threeContacts() });
+    await cmds.run({ body: '/status', chatId: '!self', surface: 'whatsapp' });
+    expect(sent[0].text).toMatch(/chrome: off/);
+  });
+
+  it('warm: shows size/max from the injected warmStats seam', async () => {
+    const { cmds, sent } = harness({
+      io: HEALTHY_IO, gitOut: HEALTHY_GIT, loadState: async () => threeContacts(),
+      warmStats: () => ({ size: 3, max: 6, keys: ['a', 'b', 'c'] }),
+    });
+    await cmds.run({ body: '/status', chatId: '!self', surface: 'whatsapp' });
+    expect(sent[0].text).toMatch(/warm: 3\/6/);
+    // warm keys (conversation slugs) are never surfaced — only the count
+    expect(sent[0].text).not.toContain('a, b, c');
+  });
+
+  it('warm: omitted when warmStats returns null (default seam)', async () => {
+    const { cmds, sent } = harness({ io: HEALTHY_IO, gitOut: HEALTHY_GIT, loadState: async () => threeContacts() });
+    await cmds.run({ body: '/status', chatId: '!self', surface: 'whatsapp' });
+    expect(sent[0].text).not.toMatch(/warm:/);
+  });
+
+  it('shell: connected / none from the injected shellConnected seam', async () => {
+    const up = harness({ io: HEALTHY_IO, gitOut: HEALTHY_GIT, loadState: async () => threeContacts(), shellConnected: () => true });
+    await up.cmds.run({ body: '/status', chatId: '!self', surface: 'whatsapp' });
+    expect(up.sent[0].text).toMatch(/shell: connected/);
+
+    const down = harness({ io: HEALTHY_IO, gitOut: HEALTHY_GIT, loadState: async () => threeContacts() });
+    await down.cmds.run({ body: '/status', chatId: '!self', surface: 'whatsapp' });
+    expect(down.sent[0].text).toMatch(/shell: none/);
+  });
+
+  // Reproduce-first for the never-throw discipline: every new seam is fed a throwing
+  // (or lying) fake and /status must still reply exactly once, degraded.
+  it('never throws when cdp.isRunning/listTabs, warmStats, and shellConnected all throw', async () => {
+    const cdp = {
+      isRunning: async () => { throw new Error('cdp down'); },
+      listTabs: async () => { throw new Error('cdp down'); },
+    };
+    const { cmds, sent } = harness({
+      io: HEALTHY_IO, gitOut: HEALTHY_GIT, loadState: async () => threeContacts(),
+      cdp,
+      warmStats: () => { throw new Error('pool blew up'); },
+      shellConnected: () => { throw new Error('shell port blew up'); },
+    });
+
+    await expect(cmds.run({ body: '/status', chatId: '!self', surface: 'whatsapp' })).resolves.toBeUndefined();
+    expect(sent).toHaveLength(1);
+    expect(sent[0].text).toMatch(/chrome: off/);
+    expect(sent[0].text).toMatch(/shell: none/);
+    expect(sent[0].text).not.toMatch(/warm:/);
+  });
+
+  it('never throws when cdp.isRunning reports up but listTabs throws', async () => {
+    const cdp = { isRunning: async () => true, listTabs: async () => { throw new Error('json fetch failed'); } };
+    const { cmds, sent } = harness({ io: HEALTHY_IO, gitOut: HEALTHY_GIT, loadState: async () => threeContacts(), cdp });
+    await expect(cmds.run({ body: '/status', chatId: '!self', surface: 'whatsapp' })).resolves.toBeUndefined();
+    expect(sent[0].text).toMatch(/chrome: up · 0 brain tabs/);
   });
 });

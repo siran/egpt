@@ -26,6 +26,7 @@ import { ownNodeNamesOf } from './node-names.mjs';
 import { Room } from '../room-core.mjs';
 import { sanitizeName } from '../sanitize.mjs';
 import { loadAdapters as defaultLoadAdapters, matchAdapter } from '../adapters/registry.mjs';
+import { agentPaths } from '../mesh/relay.mjs';
 import { isRunning as cdpIsRunning, listTabs as cdpListTabs, cdpHost as cdpHostOf, openTab as cdpOpenTab, activateTarget as cdpActivateTarget, closeTab as cdpCloseTab } from '../tools/cdp.mjs';
 import { findChromeExecutable, chromeArgs, chromeCommandLine, resolveBrainProfile } from '../tools/chrome-launcher.mjs';
 
@@ -270,6 +271,13 @@ export function createCommands({
   // git probe for /status (short sha + subject). Mirrors boot's gitOut so it's
   // fakeable in tests without threading spawnSync through createCommands.
   gitOut = (args) => { try { return spawnSync('git', args, { cwd: process.cwd() }).stdout?.toString().trim() || ''; } catch { return ''; } },
+  // /status seams (operator-requested enrichment): warmStats reads the warm-session
+  // pool's { size, max, keys } (boot injects pool.stats); shellConnected reports whether
+  // the operator's editor is dialed into the shell-port limb (boot injects
+  // shellPort.isConnected). Safe no-op defaults so a standalone/test createCommands
+  // never touches a real pool or socket.
+  warmStats = () => null,
+  shellConnected = () => false,
   onLog = () => {},
 } = {}) {
   const cfg = () => getConfig() ?? {};
@@ -923,6 +931,87 @@ export function createCommands({
       lines.push('beeper_accounts:');
       for (const name of beeperNames) lines.push(`  ${name}: ${beeperAccounts[name]}`);
     }
+
+    // node_name / peers — this node's identity + its account-sharing siblings. Omitted
+    // (not '?') when unset, same optional-field pattern as `mode` above.
+    try { const nn = cfg().node_name; if (nn) lines.push(`node_name: ${nn}`); } catch { /* omit */ }
+    try {
+      const peers = cfg().account_peers;
+      if (Array.isArray(peers) && peers.length) lines.push(`peers: [${peers.join(', ')}]`);
+    } catch { /* omit */ }
+
+    // transcription — cherry-picks enabled/use_config/fallback_order/endpoint HOST only.
+    // NEVER reads .token (a SECRET, same rule as beeper_accounts). Absent/disabled → one
+    // line, no sub-block.
+    try {
+      const txSvc = cfg().transcription_service;
+      const txEnabled = !!txSvc && txSvc.enabled !== false;
+      if (txEnabled) {
+        const useConfig = txSvc.use_config;
+        const profile = useConfig ? txSvc[useConfig] : null;
+        lines.push('transcription:', '  enabled: true', `  use_config: ${useConfig ?? '?'}`);
+        const fallbackOrder = Array.isArray(profile?.fallback_order) ? profile.fallback_order : [];
+        if (fallbackOrder.length) lines.push(`  fallback_order: [${fallbackOrder.join(', ')}]`);
+        const rawEndpoint = profile?.remote?.endpoint;
+        if (rawEndpoint) {
+          let host = rawEndpoint;
+          try { host = new URL(rawEndpoint).origin; } catch { /* keep the raw string */ }
+          lines.push(`  endpoint: ${host}`);
+        }
+      } else {
+        lines.push('transcription: off');
+      }
+    } catch { lines.push('transcription: off'); }
+
+    // agents — local agents from cfg().agents. The persona (default:true) shows its
+    // handles; a relay agent (scalar or list-shaped, agentPaths normalizes both) shows
+    // its `to` once. Omitted entirely when cfg().agents is absent/empty.
+    try {
+      const agentsCfg = cfg().agents;
+      if (agentsCfg && typeof agentsCfg === 'object' && !Array.isArray(agentsCfg)) {
+        const agentLines = [];
+        for (const [name, agent] of Object.entries(agentsCfg)) {
+          try {
+            if (agent && !Array.isArray(agent) && agent.default) {
+              const handles = Array.isArray(agent.handles) ? agent.handles.join(', ') : '';
+              agentLines.push(`  ${name} (${handles})`);
+            } else {
+              const to = agentPaths(agent).find((p) => p.to)?.to;
+              if (to) agentLines.push(`  ${name} → ${to}`);
+            }
+          } catch { /* skip this one malformed agent entry */ }
+        }
+        if (agentLines.length) lines.push('agents:', ...agentLines);
+      }
+    } catch { /* omit the whole block */ }
+
+    // chrome — reuses the cdp seam + this module's own adapterFor (already memoized
+    // loadAdapters). Never blocks/throws on a down Chrome.
+    try {
+      const running = await cdp.isRunning();
+      if (running) {
+        let tabs = [];
+        try { tabs = await cdp.listTabs(); } catch { tabs = []; }
+        let n = 0;
+        for (const t of tabs) {
+          try { if (await adapterFor(t?.url)) n++; } catch { /* skip this tab */ }
+        }
+        lines.push(`chrome: up · ${n} brain tabs`);
+      } else {
+        lines.push('chrome: off');
+      }
+    } catch { lines.push('chrome: off'); }
+
+    // warm — the warm-session pool's size/max (boot wires pool.stats()). null/throw → omit.
+    try {
+      const s = warmStats();
+      if (s && typeof s.size === 'number' && typeof s.max === 'number') lines.push(`warm: ${s.size}/${s.max}`);
+    } catch { /* omit */ }
+
+    // shell — whether the operator's editor is dialed into the shell-port limb.
+    try { lines.push(shellConnected() ? 'shell: connected' : 'shell: none'); }
+    catch { lines.push('shell: none'); }
+
     return '```yaml\n' + lines.join('\n') + '\n```';
   }
 
