@@ -136,6 +136,31 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
   readIdentityFeed = identity file + shared pointers + rules (identity first); a name with no
   profile file falls back to the room template's 00-identity.md. No repo-root identities/
   back-read.
+- **Conversation-folder identity layers (operator 2026-07-25)** — "there is a skeleton folder
+  with numbered files 10-file 30-file2 50-file3, they all get to model at the beginning, but
+  should also be copied for local consult, since by default conversation-e has only access to
+  it's folder." Both halves are live again:
+  1. FEED — `_identityLayers` ENUMERATES the room template's `NN-*.md` (numeric-prefix order),
+     no longer a hardcoded 00/10/30/40 quartet → verify: boot-profile-contract (h), an extra
+     `50-*.md` feeds with no code change. `config/identities/<name>.md` still replaces the
+     `00-identity` slot only.
+  2. COPY — `seedIdentityLayers(surface, slug, name, {io})` writes the SAME bytes to
+     `<conv>/identity.d/NN-*.md`, copy-if-missing, called from `brainpool.turn` on every
+     PERSONA turn (not just the fresh kickoff, so live conversations self-heal); never throws
+     → verify: boot-profile-contract (g), all layers incl. 10-actions land on disk.
+     The COPY half had been dead since `2517624` (old-spine deletion took `installIdentity`'s
+     only caller); `installIdentity` — which wrote FLAT `identity.md`/`pointers.md`/`rules.md`
+     at the slug root, contradicting both pointer cards — is retired by it.
+  3. ONE pointers card — `config/skeletons/room/30-pointers.md` is the only copy;
+     `src/pointers.mjs` (a diverged inline `POINTERS_TEXT` + orphaned `seedPointers`) deleted.
+     The card no longer names `./transcripts/` (never existed) → verify: tests/pointers.test.mjs
+     asserts every `./path` it names is one a conversation folder really has.
+  TRADE (known, not solved here): copy-if-missing means an edit to the shared template never
+  reaches an already-seeded folder — the capabilities-refresher problem.
+- **Shell renders a TRANSPORT tag (2026-07-25)** — `NODE_OF.shell` was `'kg'`, a NODE NAME in a
+  slot whose every sibling is a transport (`wa`/`tg`/`sig`); via `formatDispatchLine` that made
+  every shell line on DOLLY claim REVE spoke it. Now `'sh'`. Node provenance stays on the reply
+  label (a transcript lives in one node's profile, so per-line node is a constant).
 - Anti-drift: integrity tests scan v2 config reads; skeleton can't-rot tests
 - **Relayout guards (2026-07-03)** — two tripwires for the class of failure that slipped
   past the green suite when the profile was relaid out: (1) `tests/boot-profile-contract.test.mjs`
@@ -259,13 +284,20 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
   > name: "…"
   > ```
   > A CONVERSATION folder holds exactly what `slugDir`'s own doc comment says and nothing more:
-  > `transcript.md`, optional `daily-YYYY-MM-DD.md`, `media/`. Identity/pointers/rules are NOT
-  > per-conversation files — they are assembled at prompt time by `readIdentityFeed` from
-  > PROFILE-level `config/skeletons/room/{00-identity,10-actions,30-pointers,40-rules}.md` +
-  > `config/identities/<name>.md`. So a fresh conversation holding only `transcript.md` is
-  > COMPLETE, not half-instantiated (this cost a live debugging detour on 2026-07-25).
+  > `transcript.md`, optional `daily-YYYY-MM-DD.md`, `media/`, and `identity.d/NN-*.md`.
+  > No `stats.yaml`.
   > The per-conversation `threads:` history below is likewise unbuilt — treat the whole block as
   > a PROPOSAL, not a description of disk.
+  >
+  > ⚠️ **SUPERSEDED LATER THE SAME DAY (2026-07-25).** This note originally read "Identity/
+  > pointers/rules are NOT per-conversation files… a fresh conversation holding only
+  > `transcript.md` is COMPLETE, not half-instantiated." That described the code, but the code
+  > was the REGRESSION: the operator's design is "they all get to model at the beginning, but
+  > should also be copied for local consult, since by default conversation-e has only access to
+  > it's folder." The copy half was orphaned on 2026-07-15 (installIdentity's only caller died
+  > with the old spine), so a folder with no `identity.d/` WAS half-instantiated — E runs
+  > `confineToDirs:[<conv>]` and could not read a single layer it had been fed, while both
+  > pointer cards told it to read `./identity.d/`. See "Conversation-folder identity layers".
 
   The original (ASPIRATIONAL, not on disk) design was: `stats.yaml` in each conversation folder,
   created by the reshape migration and appended by the brainpool on every new thread id
