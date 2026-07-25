@@ -79,11 +79,16 @@ function renderItem(T, it) {
 // The LIVE streaming line — the ⏳ thinking train + progressive edits, rendered BELOW the
 // <Static> transcript / above the composer so it re-renders in place (never committed until
 // finish). Its text is the already-persona-stamped streaming frame, so — like a committed
-// reply — render it raw (no generic author line), dimmed to read as in-progress.
+// reply — render it raw (no generic author line).
+//
+// NOT dimmed (operator 2026-07-25): dimColor read as in-progress, but this is the text you
+// are actually trying to READ while it arrives, and legibility beats the status cue. The ⏳
+// in the frame already says "still going", so the dim was carrying no information the line
+// didn't already carry.
 function renderLive(T, live) {
   return h(Box, { flexDirection: 'column', marginBottom: 1 },
     ...String(live.text).split('\n').map((line, i) =>
-      h(Text, { key: i, color: T.authorBrain, dimColor: true }, line || ' ')));
+      h(Text, { key: i, color: T.authorBrain }, line || ' ')));
 }
 
 // Rebuild a compose state from plain text (used when history recall drops a past line into
