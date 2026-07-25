@@ -18,7 +18,7 @@ import { coerceAllowedTools } from './brainpool.mjs';
 import { stat as fsStat, readFile as fsReadFile, writeFile as fsWriteFile, mkdir as fsMkdir } from 'node:fs/promises';
 import { readdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { join, dirname } from 'node:path';
+import { join, dirname, basename } from 'node:path';
 import * as YAML from 'yaml';
 import { EGPT_HOME } from '../egpt-home.mjs';
 import { shortChatId } from '../bridges/chat-id.mjs';
@@ -960,9 +960,13 @@ export function createCommands({
       if (Array.isArray(peers) && peers.length) lines.push(`peers: [${peers.join(', ')}]`);
     } catch { /* omit */ }
 
-    // transcription — cherry-picks enabled/use_config/fallback_order/endpoint HOST only.
-    // NEVER reads .token (a SECRET, same rule as beeper_accounts). Absent/disabled → one
-    // line, no sub-block.
+    // transcription — cherry-picks enabled/use_config, then RESOLVES use_config so the
+    // block is self-contained (operator 2026-07-25: `use_config: reve` named a profile
+    // whose fallback_order/engines were invisible, forcing a config.yaml read). For each
+    // engine named in fallback_order, shows only its type + WHERE it runs (endpoint origin,
+    // or a cli command's basename) — NEVER reads .token (a SECRET, same rule as
+    // beeper_accounts above). Every resolution step degrades to an honest '?'/'[]' rather
+    // than throwing or silently omitting. Absent/disabled → one line, no sub-block.
     try {
       const txSvc = cfg().transcription_service;
       const txEnabled = !!txSvc && txSvc.enabled !== false;
@@ -970,13 +974,25 @@ export function createCommands({
         const useConfig = txSvc.use_config;
         const profile = useConfig ? txSvc[useConfig] : null;
         lines.push('transcription:', '  enabled: true', `  use_config: ${useConfig ?? '?'}`);
-        const fallbackOrder = Array.isArray(profile?.fallback_order) ? profile.fallback_order : [];
-        if (fallbackOrder.length) lines.push(`  fallback_order: [${fallbackOrder.join(', ')}]`);
-        const rawEndpoint = profile?.remote?.endpoint;
-        if (rawEndpoint) {
-          let host = rawEndpoint;
-          try { host = new URL(rawEndpoint).origin; } catch { /* keep the raw string */ }
-          lines.push(`  endpoint: ${host}`);
+        if (useConfig) {
+          if (profile && typeof profile === 'object') {
+            const fallbackOrder = Array.isArray(profile.fallback_order) ? profile.fallback_order : [];
+            lines.push(`  fallback_order: [${fallbackOrder.join(', ')}]`);
+            for (const name of fallbackOrder) {
+              const engine = profile[name];
+              const type = engine?.type ?? '?';
+              let where = '?';
+              if (engine?.endpoint) {
+                where = engine.endpoint;
+                try { where = new URL(engine.endpoint).origin; } catch { /* keep the raw string */ }
+              } else if (engine?.command) {
+                where = basename(String(engine.command));
+              }
+              lines.push(`  ${name}: ${type} @ ${where}`);
+            }
+          } else {
+            lines.push('  fallback_order: ?');   // use_config named a profile that isn't defined
+          }
         }
       } else {
         lines.push('transcription: off');

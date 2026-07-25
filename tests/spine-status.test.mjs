@@ -475,7 +475,7 @@ describe('/status: enriched fields', () => {
       reve: {
         fallback_order: ['remote', 'cli'],
         remote: { type: 'whisper-server-remote', endpoint: 'http://192.168.1.102:23390', token: TOKEN_SENTINEL },
-        cli: { type: 'whisper-cli', model_path: '/m/large-v3.bin' },
+        cli: { type: 'whisper-cli', command: '/opt/whisper/whisper-cli.exe', model_path: '/m/large-v3.bin' },
       },
     },
     agents: {
@@ -501,11 +501,54 @@ describe('/status: enriched fields', () => {
     expect(text).not.toMatch(/peers:/);
   });
 
-  it('transcription block shows enabled/use_config/fallback_order/endpoint HOST only', async () => {
+  it('transcription block resolves use_config into fallback_order + each engine\'s type/location (self-contained, no config.yaml needed)', async () => {
     const { cmds, sent } = harness({ io: HEALTHY_IO, gitOut: HEALTHY_GIT, loadState: async () => threeContacts(), getConfig: () => RICH_CONFIG });
     await cmds.run({ body: '/status', chatId: '!self', surface: 'whatsapp' });
     const { text } = sent[0];
-    expect(text).toMatch(/transcription:\n {2}enabled: true\n {2}use_config: reve\n {2}fallback_order: \[remote, cli\]\n {2}endpoint: http:\/\/192\.168\.1\.102:23390/);
+    expect(text).toMatch(
+      /transcription:\n {2}enabled: true\n {2}use_config: reve\n {2}fallback_order: \[remote, cli\]\n {2}remote: whisper-server-remote @ http:\/\/192\.168\.1\.102:23390\n {2}cli: whisper-cli @ whisper-cli\.exe/,
+    );
+  });
+
+  it('degrades honestly when use_config is missing: no fallback_order/engine lines, never throws', async () => {
+    const cfg = { ...RICH_CONFIG, transcription_service: { enabled: true } };
+    const { cmds, sent } = harness({ io: HEALTHY_IO, gitOut: HEALTHY_GIT, loadState: async () => threeContacts(), getConfig: () => cfg });
+    await expect(cmds.run({ body: '/status', chatId: '!self', surface: 'whatsapp' })).resolves.toBeUndefined();
+    const { text } = sent[0];
+    expect(text).toMatch(/transcription:\n {2}enabled: true\n {2}use_config: \?/);
+    expect(text).not.toMatch(/fallback_order/);
+  });
+
+  it('degrades honestly when use_config names a profile that is not defined: fallback_order: ?, never throws', async () => {
+    const cfg = { ...RICH_CONFIG, transcription_service: { enabled: true, use_config: 'ghost' } };
+    const { cmds, sent } = harness({ io: HEALTHY_IO, gitOut: HEALTHY_GIT, loadState: async () => threeContacts(), getConfig: () => cfg });
+    await expect(cmds.run({ body: '/status', chatId: '!self', surface: 'whatsapp' })).resolves.toBeUndefined();
+    const { text } = sent[0];
+    expect(text).toMatch(/use_config: ghost\n {2}fallback_order: \?/);
+  });
+
+  it('degrades honestly when fallback_order is absent/empty on a resolved profile: fallback_order: [], never throws', async () => {
+    const cfg = { ...RICH_CONFIG, transcription_service: { enabled: true, use_config: 'reve', reve: {} } };
+    const { cmds, sent } = harness({ io: HEALTHY_IO, gitOut: HEALTHY_GIT, loadState: async () => threeContacts(), getConfig: () => cfg });
+    await expect(cmds.run({ body: '/status', chatId: '!self', surface: 'whatsapp' })).resolves.toBeUndefined();
+    const { text } = sent[0];
+    expect(text).toMatch(/use_config: reve\n {2}fallback_order: \[\]/);
+  });
+
+  it('degrades honestly when an engine is named in fallback_order but not defined: that line shows ?, siblings still resolve', async () => {
+    const cfg = {
+      ...RICH_CONFIG,
+      transcription_service: {
+        enabled: true,
+        use_config: 'reve',
+        reve: { fallback_order: ['remote', 'ghost-engine'], remote: RICH_CONFIG.transcription_service.reve.remote },
+      },
+    };
+    const { cmds, sent } = harness({ io: HEALTHY_IO, gitOut: HEALTHY_GIT, loadState: async () => threeContacts(), getConfig: () => cfg });
+    await expect(cmds.run({ body: '/status', chatId: '!self', surface: 'whatsapp' })).resolves.toBeUndefined();
+    const { text } = sent[0];
+    expect(text).toMatch(/ {2}remote: whisper-server-remote @ http:\/\/192\.168\.1\.102:23390/);
+    expect(text).toMatch(/ {2}ghost-engine: \? @ \?/);
   });
 
   it('transcription: off when the block is absent', async () => {
