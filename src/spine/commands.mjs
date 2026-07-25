@@ -220,9 +220,24 @@ function resolveTarget(state, term, surface) {
   return crossHits[0];
 }
 
+// A command reply must NEVER itself parse as a command (live incident 2026-07-25). isCommand
+// admits ANY operator line that starts with '/', and most replies here open with the command
+// they answer ("/status: no chat matches …"). On a shared Beeper account the sibling node sees
+// that reply as ordinary operator inbound, answers it through the catch-all — which echoes the
+// token and appends a colon — and the two nodes traded hundreds of messages, one colon per hop,
+// until the service was killed.
+//
+// ONE convention, enforced at the ONE reply chokepoint below rather than per message: a reply's
+// LEADING command token is wrapped in backticks — `/status`: no chat matches … — so nothing this
+// module emits can begin with '/'. Wording is otherwise untouched, and a reply that never started
+// with a slash is passed through byte-identically. The class is [a-z0-9_-]*, so trailing
+// punctuation stays OUTSIDE the quotes (`/status`: …, not `/status:` …) and a bare '/' still
+// gets wrapped — the invariant "a reply never begins with '/'" holds for every input.
+const quoteLeadingCommand = (text) => String(text ?? '').replace(/^\/([a-z0-9_-]*)/i, '`/$1`');
+
 export function createCommands({
   getConfig = () => ({}),
-  send,                                  // (chatId, text) -> deliver a plain system reply
+  send: rawSend,                         // (chatId, text) -> deliver a plain system reply
   exit = (code) => process.exit(code),
   writeRewindTarget,
   loadState = null, writeState = null,   // conv-state IO — lets /e auto persist a mode
@@ -281,6 +296,10 @@ export function createCommands({
   onLog = () => {},
 } = {}) {
   const cfg = () => getConfig() ?? {};
+  // THE reply chokepoint: every reply this module emits goes out through here, so the
+  // no-self-parsing convention (quoteLeadingCommand, above) cannot be missed by a new
+  // message — including one added later. Call sites stay `send?.(chatId, text)`.
+  const send = (chatId, text) => rawSend?.(chatId, quoteLeadingCommand(text));
   const stat = io.stat ?? fsStat;
   const readFile = io.readFile ?? fsReadFile;
   const writeFile = io.writeFile ?? fsWriteFile;

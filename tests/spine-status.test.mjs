@@ -185,7 +185,9 @@ describe('/status <target>', () => {
   it('reports no match exactly like /e auto (resolveTarget) — no state read failure either', async () => {
     const { cmds, sent } = harness({ loadState: async () => emptyState() });
     await cmds.run({ body: '/status zzz', chatId: '!self', surface: 'whatsapp' });
-    expect(sent[0].text).toMatch(/^\/status: no chat matches "zzz"/);
+    // Token QUOTED (2026-07-25 incident): this reply used to open with a bare "/status:",
+    // which made it a command in its own right — the seed of the two-node flood.
+    expect(sent[0].text).toMatch(/^`\/status`: no chat matches "zzz"/);
   });
 
   it('a NEVER-STARTED conversation with NO brains registry: default preview falls back to the deterministic constants, marked `instanced: false`', async () => {

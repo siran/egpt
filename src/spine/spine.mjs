@@ -21,6 +21,7 @@ import { makeSerialByKey } from '../serial-by-key.mjs';
 import { isBrainFailureResult } from '../brain-errors.mjs';
 import { replyLine } from '../transcript-log.mjs';
 import { isHumanTurn, parseStopWord } from '../stop-guard.mjs';
+import { lifecycleExit } from './ingest.mjs';
 
 // ---------------------------------------------------------------------------
 // Ports — the interfaces the loop depends on (injected, never global). §2b.
@@ -140,6 +141,11 @@ export function createSpine({
     isEnvelope: (e) => !!mesh?.isEnvelope?.(e),
     wasSentByUs: (e) => !!bridge.wasSentByUs?.(e.chatId, e.msgId),
   });
+  // Is this message a LIFECYCLE command (/restart, /upgrade, /rewind)? The operator's
+  // recovery path, exempt from the guard (see classify). Reuses the ONE mapping the command
+  // path itself dispatches on — no second list of "which commands are lifecycle" — and is
+  // side-effect-free here (no writeRewindTarget passed, so /rewind writes nothing).
+  const isLifecycle = (ev) => lifecycleExit(String(ev?.body ?? '').trim()) != null;
   // Count a NON-HUMAN turn toward the loop cap (resolving any per-conversation override)
   // and auto-STOP the channel when the cap trips. The tripping turn still runs; the STOP
   // pauses the NEXT one (blocked() is checked at the top of every dispatch path).
@@ -373,20 +379,45 @@ export function createSpine({
     // it does not re-answer stale traffic).
     if (ev.backlog) return () => {};
 
-    // operator slash command (Self DM / authorized) → handled here, NEVER routed
-    // to the brain. Recorded like any inbound, then executed (lifecycle exits the
-    // process; the daemon respawns). Runs before gating: a /restart works even in
-    // a muted/mention chat.
-    if (commands?.isCommand?.(ev)) return async () => { await commands.run(ev); };
-
     // Operator safe-word: a bare STOP/STOP ALL/RESUME/RESUME ALL from an AUTHORIZED sender
     // pauses or clears prompting for this channel (or globally). Before gating so it lands
     // in any mode; recorded like any inbound, then NEVER routed to a brain. STOP is stronger
     // than a mode pause — a stopped channel never reaches a brain (gated below + in the
     // envelope path); a later human turn resets the loop count, but only RESUME clears STOP.
+    //
+    // FIRST of all the dispatch branches (moved above the command intercept 2026-07-25): the
+    // safe-word is the operator's RECOVERY path and must always land. An armed `/e` wizard
+    // makes isCommand true for ANY operator line (a plain numbered answer), so a bare STOP
+    // typed while a wizard happened to be armed was swallowed by the wizard — leaving kill-
+    // the-service as the only way out of a flood. The only behavior this changes is that
+    // one case: STOP/RESUME are reserved words, never wizard answers.
     if (guard && ev.authorized) {
       const word = parseStopWord(ev.body);
       if (word) return () => { guard.applyControl(word, channel); note(`guard: '${word}' @ ${channel}`); };
+    }
+
+    // operator slash command (Self DM / authorized) → handled here, NEVER routed
+    // to the brain. Recorded like any inbound, then executed (lifecycle exits the
+    // process; the daemon respawns). Runs before gating: a /restart works even in
+    // a muted/mention chat.
+    if (commands?.isCommand?.(ev)) {
+      // ALWAYS-AVAILABLE (never blocked, never counted): the lifecycle commands. They are
+      // the operator's way back out of a broken node, and a guard that can lock them out
+      // turns a flood into an unrecoverable node. Same predicate the command path itself
+      // dispatches on (ingest.mjs lifecycleExit), called side-effect-free here.
+      if (isLifecycle(ev)) return async () => { await commands.run(ev); };
+      // GUARDED (2026-07-25 incident): every OTHER command is a turn like any other. Command
+      // turns used to return from classify BEFORE the guard block below, so a command loop was
+      // entirely unbounded — a STOPped channel kept answering commands, which is how a flood of
+      // command replies could only be ended by killing the service. Same three lines as the
+      // chat path: a stopped channel suppresses it, and PROVENANCE decides reset-vs-count (an
+      // operator who genuinely typed the command resets, our own output re-entering counts).
+      if (guard) {
+        if (guard.blocked(channel)) return () => { note(`guard: ${channel} stopped — command suppressed`); };
+        if (humanTurn(ev)) guard.noteHuman(channel);
+        else await guardCountNonHuman(ev, channel);
+      }
+      return async () => { await commands.run(ev); };
     }
 
     // Inbound mesh envelope: a message carrying a provenance tail is relay traffic,

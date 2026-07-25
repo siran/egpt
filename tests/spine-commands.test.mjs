@@ -88,7 +88,10 @@ describe('commands.run', () => {
     const { cmds, sent, exits } = harness();
     await cmds.run({ body: '/channels', chatId: '!self' });
     expect(exits).toEqual([]);
-    expect(sent[0].text).toMatch(/channels: recognized/);
+    // The echoed token is QUOTED (2026-07-25 incident): the catch-all's own reply used to
+    // start with the token, so it re-parsed as a command and the two nodes traded it forever.
+    expect(sent[0].text).toMatch(/`\/channels`: recognized/);
+    expect(sent[0].text.startsWith('/')).toBe(false);
   });
 
   it('/e auto <mode> persists the conversation mode into conversations.yaml', async () => {
@@ -662,7 +665,7 @@ describe('/chrome <node>', () => {
     const { cmds, sent } = harness({ config: { node_name: 'kg', node_alias: ['reve'], whatsapp: { chat_id: '!self' } }, cdp: reachable });
     await cmds.run({ ...self, body: '/chrome' });
     expect(sent).toHaveLength(1);
-    expect(sent[0].text).toMatch(/\/chrome <node>/);
+    expect(sent[0].text).toMatch(/`\/chrome` <node>/);   // token quoted — the reply is not itself a command
     expect(sent[0].text).toMatch(/kg/);
     expect(sent[0].text).toMatch(/reve/);
     expect(sent[0].text).not.toMatch(/attached/i);   // never the status payload
