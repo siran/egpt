@@ -195,3 +195,88 @@ describe('a shell-origin mesh relay reply streams back into the shell, not Beepe
     expect(beeper.sent).toHaveLength(1);                                         // still just the one request envelope
   });
 });
+
+// ── THE ORIGIN NODE SIGNS WHAT IT POSTS (operator 2026-07-25) ────────────────────────────
+// LIVE DEFECT, in the operator's shell on kg:
+//     @e  you there?  ->  🐶 egpt / Still here. / 🌉     (persona reply: stamped AND signed)
+//     @don ya there?  ->  🤝 Yep, still here 🤝           (relayed reply: NO 🌉)
+// kg posted that second line and signed nothing: the 🤝s are entirely DOLLY's (do's body-emoji
+// stamp + do's own bridge_signature_close, transported inside the envelope body); kg's own
+// bridge_signature_close never appeared. CAUSE: mesh.openOriginStream / mesh.surface opened
+// the origin's stream / send with a tag carrying NO wrap intent, and BOTH surface ports gate
+// their concentric wrap on a full persona header (makeWrapPersona: bodyEmoji && label) — so a
+// relayed reply, which has no persona header (the body is a REMOTE being's), got no layers.
+// A relayed reply must render through the SAME machinery a local reply does; the bridge
+// signature says WHICH SPINE POSTED, and two spines handled the message, so two signatures
+// (do's inner, in the transported body; kg's outer) is the honest outcome.
+describe('the ORIGIN node signs the relayed reply it posts home (shell surface)', () => {
+  // bodyEmojiOf is '' here on purpose: the ORIGIN is not the being's host, so the assertions
+  // stay on the bridge layer alone (the responder already stamped the body it sent).
+  async function shellOriginRelay() {
+    const { WebSocket, sockets } = makeFakeWs();
+    const shellPort = createShellPort({ WebSocket, bridgeSignatureOpen: '🌉kg', bridgeSignatureClose: '🌉' });
+    shellPort.onMessage(() => {});
+    shellPort.start();
+    const sock = sockets[0];
+    sock.fire('open');
+    sock.fire('message', Buffer.from(JSON.stringify({ text: '@don ya there?', chatId: 'main' })));
+
+    const beeper = {
+      sent: [],
+      send(c, t) { this.sent.push({ c, t }); return { ok: true }; },
+      async postStatus() { return 'beeper-post-id'; },
+      startStream() { return { update() {}, async finish() {}, async delete() {}, delivered: false }; },
+    };
+    const mesh = createMeshService({
+      bridge: makeShellAwareBridge(beeper, shellPort),
+      brain: { async turn() { return { text: '' }; } },
+      getConfig: () => ({ node_name: 'kg' }),
+      bodyEmojiOf: () => '',
+    });
+    const ev = { surface: 'shell', chatId: 'main', chatName: 'shell', senderName: 'operator', body: '@don ya there?' };
+    await mesh.forward(ev, { being: 'don', route: { room_id: 'egpt-mesh-do-kg' }, to: 'don.do' });
+    const req = parseMesh(beeper.sent[0].t);
+    // do's reply exactly as it rides the wire: its own body-emoji stamp + its own bridge close.
+    const body = '🤝 Yep, still here\n🤝';
+    const re = `${req.from}.${req.from_node}`;
+    const committed = () => sock.sent.map((s) => JSON.parse(s)).filter((f) => f.streaming === false);
+    return { mesh, sock, committed, body, re, post_id: req.post_id };
+  }
+
+  it('REPRODUCE-FIRST: the living-mirror committed final carries kg\'s bridge signature around do\'s intact body', async () => {
+    const { mesh, committed, body, re, post_id } = await shellOriginRelay();
+    await mesh.handle({ surface: 'wa', chatId: 'egpt-mesh-do-kg', msgId: 'r1', body: encodeMesh({ by: 'don.do', body, re, post_id, done: true }) });
+
+    const final = committed().at(-1);
+    // outer = kg's bridge layer; inner = do's body, transported verbatim (its own 🤝 stamp + close)
+    expect(final.text).toBe('🌉kg\n🤝 Yep, still here\n🤝\n🌉');
+  });
+
+  it('the 🤔 placeholder is NOT signed — only the reply the node actually posts is', async () => {
+    const { committed } = await shellOriginRelay();
+    expect(committed()[0].text).toBe('🤔 thinking…');
+  });
+
+  it('the ONE-SHOT surface path (no stream primitive / no msgId) is signed identically', async () => {
+    const { mesh, committed, body, re, post_id } = await shellOriginRelay();
+    // msgId null → no mirror stage can be keyed → the engine surfaces the reply home once.
+    await mesh.handle({ surface: 'wa', chatId: 'egpt-mesh-do-kg', msgId: null, body: encodeMesh({ by: 'don.do', body, re, post_id, done: true }) });
+
+    expect(committed().at(-1).text).toBe('🌉kg\n🤝 Yep, still here\n🤝\n🌉');
+  });
+
+  // TWO signatures are correct (do's inside the transported body, kg's around the delivery) —
+  // but kg must sign ONCE, at the end, not once per streamed frame. The ports apply the full wrap
+  // only on the committed final; live mirror frames carry the body bare.
+  it('kg signs ONCE, at the end — the live mirror frames carry NO signature', async () => {
+    const { mesh, sock, body, re, post_id } = await shellOriginRelay();
+    const frame = (b, done) => ({ surface: 'wa', chatId: 'egpt-mesh-do-kg', msgId: 'r1', body: encodeMesh({ by: 'don.do', body: b, re, post_id, done }) });
+    await mesh.handle(frame('🤝 Yep,', false));            // live: opens the mirror + updates it
+    await mesh.handle(frame('🤝 Yep, still', false));      // live: another update
+    await mesh.handle(frame(body, true));                  // the committed final
+
+    const all = sock.sent.map((s) => JSON.parse(s));
+    expect(all.filter((f) => f.text.includes('🌉kg'))).toHaveLength(1);                 // exactly one signed frame
+    expect(all.filter((f) => f.streaming === true).every((f) => !f.text.includes('🌉'))).toBe(true);
+  });
+});

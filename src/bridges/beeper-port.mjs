@@ -62,15 +62,16 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
   // persona-STAMPED message — open ABOVE, close BELOW — identifying WHICH SPINE posted (REVE `kg`
   // vs DOLLY `do` sharing one Beeper account). Concentric with the per-AGENT agent_signature_open/
   // close (resolved per-being by the sender, delivered in opts). Both default EMPTY → output
-  // byte-identical to today. Applied ONLY when a FULL persona header (bodyEmoji + label) was
-  // stamped, so mode:auto plain posts (no bodyEmoji) get NOTHING. See ./signature-layers.mjs.
+  // byte-identical to today. Applied to EVERY send this port makes (operator 2026-07-25: "all
+  // messages coming out from a spine to any surface are signed. period.") — a plain/auto post and
+  // a system line carry the node's bridge layer too, only the persona STAMP is conditional. The
+  // one exception is a mesh envelope (transport, not a surface send). See ./persona-wrap.mjs.
   const bridgeSignatureOpen = opts.bridgeSignatureOpen ?? '';
   const bridgeSignatureClose = opts.bridgeSignatureClose ?? '';
-  // Wrap a persona reply concentrically: outer bridge layer (per-node, above), inner agent layer
-  // (per-being, from opts.agentSig*), around the stamped core. The composition lives in the shared
-  // persona-wrap module (used identically by shell-port); this closure just binds this node's
-  // bridge-signature layer. Gated on a full persona header so a plain/auto send passes through
-  // unstamped + unwrapped (byte-identical to a bare send).
+  // Wrap what this node posts concentrically: outer bridge layer (per-node, above), inner agent
+  // layer (per-being, from opts.agentSig*), around the stamped core. The composition lives in the
+  // shared persona-wrap module (used identically by shell-port and by the 👂 echo one layer down);
+  // this closure just binds this node's bridge-signature layer.
   const wrapPersona = makeWrapPersona({ bridgeSignatureOpen, bridgeSignatureClose });
   const real = await start({
     ...rest,
@@ -99,9 +100,9 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
     // The bridge ENFORCES the being's body_emoji (operator contract): prefix it
     // here so no caller can omit it.
     send(chat, text, opts = {}) {
-      // wrapPersona brackets the reply with the bridge + agent layers only when a full persona
-      // header was stamped (bodyEmoji + label) — covers the persona reply's non-streamed §7
-      // fallback; a plain/auto send (no bodyEmoji) passes through unstamped + unwrapped.
+      // wrapPersona brackets EVERY send with the bridge (+ agent) layers — the persona reply's
+      // non-streamed §7 fallback, a plain/auto post, a system line. Only the persona STAMP needs
+      // a bodyEmoji/label; the node signature does not (a mesh envelope is the one exception).
       return real.send(wrapPersona(opts, text), { chatId: chat, replyToMessageID: opts.replyTo ?? null });
     },
 

@@ -61,9 +61,9 @@ function fakeTimers() {
 const EMOJI = { don: '🤝', wren: '🐦' };
 const bodyEmojiOf = (b) => EMOJI[String(b).toLowerCase()] ?? '';
 
-function svc({ node, aliases = [], agents = {}, meshCfg = {}, brain, timers, logs, chatIds = {}, selfChatId = null } = {}) {
+function svc({ node, aliases = [], agents = {}, meshCfg = {}, brain, timers, logs, chatIds = {}, selfChatId = null, sig = {} } = {}) {
   const bridge = fakeBridge({ chatIds });
-  const cfg = { node_name: node, node_alias: aliases, agents, mesh: meshCfg };
+  const cfg = { node_name: node, node_alias: aliases, agents, mesh: meshCfg, ...sig };   // sig = this node's bridge_signature_* (the keys boot hands the ports)
   const mesh = createMeshService({
     bridge, brain: brain ?? fakeBrain(),
     getConfig: () => cfg, bodyEmojiOf,
@@ -212,9 +212,30 @@ describe('mesh service — responder (a request arrives at the owning node)', ()
     expect(bridge.streams).toHaveLength(1);
     const s = bridge.streams[0];
     expect(s.chat).toBe('RELAY');
-    expect(parseMesh(s.updates.at(-1)).body).toBe('🤝 aquí');           // body_emoji stamped INTO the body
+    // The reply is RENDERED INTO the payload by the shared persona wrap — the same renderer a
+    // local reply gets — so the being's identity travels inside the nugget. Live frames carry the
+    // bare stamp (the ports' once-at-the-end convention); the final carries the full wrap.
+    expect(parseMesh(s.updates.at(-1)).body).toBe('🤝 don\naquí');
     const fin = parseMesh(s.finals.at(-1));
-    expect(fin).toMatchObject({ by: 'don.do', re: 'HFM.kg', post_id: 'p1', done: true, body: '🤝 aquí' });
+    expect(fin).toMatchObject({ by: 'don.do', re: 'HFM.kg', post_id: 'p1', done: true, body: '🤝 don\naquí' });
+  });
+
+  // THE NUGGET (operator 2026-07-25: "signing by do, in this case, is the message being
+  // transported… it's a nugget that gets signed again on delivery in shell"). The responder
+  // renders its reply COMPLETELY — shared stamp + its OWN bridge signature — BEFORE encodeMesh,
+  // so the rendering is the payload and travels intact. Rendering at SEND time instead would put
+  // the signature outside the fence, where parseMesh (relay.mjs) stops recognising the envelope.
+  it('the responder renders the nugget through the SHARED wrap: its stamp + its OWN bridge signature ride INSIDE the payload', async () => {
+    const brain = fakeBrain({ reply: 'aquí' });
+    // bridge_signature_* = do's own node signature, the SAME config keys boot hands the ports.
+    const { bridge, mesh } = svc({ node: 'do', agents: { don: { configuration: 'sonnet-high', name: 'don' } }, brain, sig: { bridge_signature_open: '🌉do', bridge_signature_close: '🌉do' } });
+    const req = encodeMesh({ by: 'An', body: '@don hola', from: 'HFM', from_node: 'kg', to: 'don.do', post_id: 'p1' });
+    await mesh.handle({ surface: 'whatsapp', chatId: 'RELAY', msgId: 'm1', body: req });
+    await flush();
+
+    const wire = bridge.streams[0].finals.at(-1);
+    expect(parseMesh(wire).body).toBe('🌉do\n🤝 don\naquí\n🌉do');   // stamp + signature INSIDE the nugget
+    expect(parseMesh(wire)).toMatchObject({ by: 'don.do', done: true });   // …and the envelope still parses
   });
 
   it('TASK-3 (terminal dedup): two identical envelopes (same post_id, DIFFERENT arrival rooms) → the being answers ONCE', async () => {

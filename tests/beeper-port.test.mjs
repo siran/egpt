@@ -4,6 +4,7 @@
 // LIVE echo (the Phase 2 verify gate) is tests-manual/phase2-echo.mjs.
 import { describe, it, expect } from 'vitest';
 import { createBeeperBridgePort } from '../src/bridges/beeper-port.mjs';
+import { encodeMesh, parseMesh } from '../src/mesh/relay.mjs';
 
 // A fake real-bridge that captures the host callbacks it was constructed with,
 // so a test can drive inbound by invoking the captured onIncoming.
@@ -198,11 +199,28 @@ describe('beeper-port adapter — layered signatures (bridge + agent wrap)', () 
     expect(spy.sent[0].text).toBe('🌉\nA_open\n🐶 egpt\nreply\nA_close\n💸');
   });
 
-  it('mode:auto plain posts get NO layers — no persona stamp → no wrap', async () => {
+  // WAS "mode:auto plain posts get NO layers". Operator 2026-07-25: "all messages coming out from a
+  // spine to any surface are signed. period." — the bridge layer says WHICH SPINE posted, which is
+  // true of a plain post too, so it no longer waits for a persona stamp. ⚠️ mode:auto is E writing
+  // AS the operator (src/spine/sender.mjs `auto`): it now carries the node signature like every
+  // other send — flagged to the operator as the one case that may want to stay bare.
+  it('a plain/auto post is SIGNED too — unstamped (nothing to stamp) but carrying the node bridge layer', async () => {
     const { start, spy } = fakeStart();
     const port = await createBeeperBridgePort({ bridgeSignatureOpen: '🌉', bridgeSignatureClose: '💸' }, { start });
     await port.send('!room', 'Hey, all good', {});   // auto branch: no bodyEmoji/label passed
-    expect(spy.sent[0].text).toBe('Hey, all good');   // unstamped → nothing added
+    expect(spy.sent[0].text).toBe('🌉\nHey, all good\n💸');
+  });
+
+  // A mesh envelope rides bridge.send too (mesh.mjs `send`/relayDispatch fallback) — but it is
+  // spine→spine TRANSPORT, and a signature below the provenance tail would make parseMesh stop
+  // recognising it. The port must post it verbatim.
+  it('a mesh ENVELOPE is posted verbatim — transport is never signed', async () => {
+    const { start, spy } = fakeStart();
+    const port = await createBeeperBridgePort({ bridgeSignatureOpen: '🌉', bridgeSignatureClose: '💸' }, { start });
+    const env = encodeMesh({ by: 'An', body: '@don hola', from: 'HFM', from_node: 'kg', to: 'don.do' });
+    await port.send('!room', env, {});
+    expect(spy.sent[0].text).toBe(env);
+    expect(parseMesh(spy.sent[0].text)).toMatchObject({ to: 'don.do' });
   });
 
   it('with ALL slots empty (default), a streamed persona reply is BYTE-IDENTICAL to today (regression lock)', async () => {

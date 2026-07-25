@@ -153,9 +153,10 @@ export function createShellPort({
     // Is the operator's editor currently dialed in? /status's `shell:` field reads this
     // (boot wires shellConnected: () => shellPort.isConnected).
     get isConnected() { return _wsReady; },
-    // Push a reply frame back to the editor. A persona reply (tag carries bodyEmoji + label)
-    // is WRAPPED exactly like the beeper limb's send — the §7 non-streamed fallback renders
-    // wrapped too; a plain system reply (no tag, e.g. /status) passes through unwrapped. Drops
+    // Push a reply frame back to the editor. WRAPPED exactly like the beeper limb's send — a
+    // persona reply (tag carries bodyEmoji + label), the §7 non-streamed fallback, a plain system
+    // reply (/status), a relayed mesh nugget: every one carries this node's bridge layer (operator
+    // 2026-07-25: "all messages coming out from a spine to any surface are signed. period."). Drops
     // (never throws) when the editor is not connected, same as beeper dropping an unresolvable send.
     send(chatId, text, opts = {}) { return pushFrame(chatId, wrapPersona(opts, text)); },
     // The mesh posts its ORIGIN placeholder ("🤔 thinking…") via postStatus and rides the

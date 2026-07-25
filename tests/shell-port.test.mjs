@@ -235,6 +235,26 @@ describe('shell-port limb', () => {
       expect(sockets[0].sent).toHaveLength(0);
       expect(stream.delivered).toBe(false);
     });
+
+    // THE ECHO ASYMMETRY (operator 2026-07-25). A 👂 echo is a core with NO persona header, and the
+    // shared wrap used to refuse those — so beeper.mjs carried its OWN copy of the layer stack
+    // (`withEchoLayers`, deleted) to sign the beeper echo, and the shell, having no such copy, sent
+    // an echo BARE. PRE-FIX, verbatim, with bridge BO/BC + transcription TO/TC configured:
+    //     beeper (withEchoLayers): "BO\nTO\n👂 hola\nTC\nBC"
+    //     shell   (shared wrap)  : "👂 hola"          ← unsigned
+    // One path now: both render the SAME bytes (the beeper side is locked in
+    // tests/beeper-bridge.test.mjs' 👂-echo wrap test, which did NOT change).
+    it('a 👂 echo send is SIGNED on the shell too — byte-identical to the beeper echo render', () => {
+      const { port, sock } = connected({ bridgeSignatureOpen: 'BO', bridgeSignatureClose: 'BC' });
+      port.send('main', '👂 hola', { agentSigOpen: 'TO', agentSigClose: 'TC' });
+      expect(frames(sock)[0].text).toBe('BO\nTO\n👂 hola\nTC\nBC');
+    });
+
+    it('a plain system reply (/status) carries the node bridge layer too — signing is a property of the SEND', () => {
+      const { port, sock } = connected({ bridgeSignatureOpen: '🌉kg', bridgeSignatureClose: '🌉' });
+      port.send('main', 'node: kg\npeers: do');
+      expect(frames(sock)[0].text).toBe('🌉kg\nnode: kg\npeers: do\n🌉');
+    });
   });
 
   describe('poke() — the editor announced itself via ingest, connect NOW', () => {

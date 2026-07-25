@@ -28,6 +28,10 @@
 // legacy): the chat is a relay agent's own `relay_channel`, resolved name→id by the bridge.
 // A node with no relay agents originates nothing; it can still answer what reaches it.
 import { createMeshRelay, encodeMesh, parseMesh, agentPaths } from '../mesh/relay.mjs';
+// The ONE definition of the persona stamp + concentric wrap every surface port renders through
+// ("the bridge must have ONE path", 2026-07-25). The RESPONDER renders its reply through THIS —
+// the same renderer a local reply gets — before encodeMesh, because the payload is what travels.
+import { personaStamp, makeWrapPersona } from '../bridges/persona-wrap.mjs';
 
 const PLACEHOLDER = '🤔 thinking…';
 const textOf = (v) => (typeof v === 'string' ? v : v?.text ?? '');
@@ -54,6 +58,13 @@ export function createMeshService({
     .map((a) => String(a ?? '').trim().toLowerCase()).filter(Boolean)]);
   const isSelfNode = (n) => selfNodes.has(String(n ?? '').toLowerCase());
   const agents = () => cfg().agents ?? {};                         // the unified registry (new-config-only)
+  // Render a being's reply the way EVERY other reply on this node is rendered — the shared stamp
+  // + concentric wrap, bound to this node's own bridge_signature_* (the SAME cfg keys boot hands
+  // beeper-port and shell-port). The RESPONDER renders BEFORE encodeMesh: the payload is the
+  // message being transported (operator 2026-07-25 — "signing by do … is the message being
+  // transported … a nugget"), so the stamp + this node's signature travel INSIDE it. Rendering at
+  // send time instead would land them OUTSIDE the fence and make parseMesh reject the envelope.
+  const renderReply = (being, text) => makeWrapPersona({ bridgeSignatureOpen: cfg().bridge_signature_open ?? '', bridgeSignatureClose: cfg().bridge_signature_close ?? '' })({ bodyEmoji: bodyEmojiOf(being), label: being }, text);
   const timeoutMs = () => Number(cfg().mesh?.timeout_ms ?? 60_000) || 60_000;
 
   // An agent's routable tokens: its map KEY plus any `handles:` aliases (lowercased) —
@@ -215,23 +226,22 @@ export function createMeshService({
       }
       return recordOf(a);
     },
-    // Post an envelope into a relay channel. No body_emoji → the port passes the text
-    // (the full mesh envelope) through verbatim; the tail must survive untouched.
+    // Post an envelope into a relay channel. The port passes an ENVELOPE through verbatim —
+    // transport is not a surface send, so it is never signed (persona-wrap isMeshEnvelope); the
+    // tail must survive untouched or parseMesh stops recognising it at the other end.
     send: async (route, text) => {
       const chat = chatOf(route);
       if (chat == null) throw new Error('mesh: route has no chat');
       await bridge.send(chat, text);
     },
-    // ORIGIN one-shot (no stream primitive) OR an error/status home. A being reply
-    // (info.by set) is stamped with the being's body_emoji so it reads as the being's
-    // voice, never bare operator text. Any surface home ends the origin wait.
-    surface: async (returnTo, text, info = {}) => {
+    // ORIGIN one-shot (no stream primitive) OR an error/status home. A being reply arrives
+    // RENDERED — the node that ran the being stamped and signed it before encoding — so this
+    // node posts the nugget verbatim and never re-stamps it (the origin cannot know a remote
+    // being's identity better than its own node did). Any surface home ends the origin wait.
+    surface: async (returnTo, text) => {
       const chat = returnTo?.chat_id ?? returnTo?.chatId ?? (typeof returnTo === 'string' ? returnTo : null);
       if (chat != null) clearTimeoutFor(chat);
-      const being = info.by ? String(info.by).split('.')[0].toLowerCase() : '';
-      const emoji = being ? (bodyEmojiOf(being) || '') : (info.by ? '🔗' : '');
-      const body = emoji ? `${emoji} ${text}` : text;
-      if (chat != null) await bridge.send(String(chat), body);
+      if (chat != null) await bridge.send(String(chat), text);
     },
     // ORIGIN placeholder: post "🤔 thinking…" and return its confirmed id. That id
     // rides the request as post_id; the responder echoes it in every reply frame so
@@ -248,10 +258,12 @@ export function createMeshService({
     relayDispatch: async ({ being, prompt, route, re, post_id, by, via }) => {
       const chat = chatOf(route);
       if (chat == null) return;
-      const emoji = bodyEmojiOf(being) || '';
       const wrap = (body, done = false) => {
         const b = String(body ?? '').trim();
-        const out = (!b || b === PLACEHOLDER || b === '🤔') ? PLACEHOLDER : (emoji ? `${emoji} ${b}` : b);
+        // Live frames carry the bare stamp, the FINAL carries the full wrap — the once-at-the-end
+        // convention both ports already follow for a local reply (placeholder/updates un-wrapped).
+        const out = (!b || b === PLACEHOLDER || b === '🤔') ? PLACEHOLDER
+          : done ? renderReply(being, b) : personaStamp(bodyEmojiOf(being), being, b);
         // echo `via` (the forward trail) home so the origin can show the traceroute path.
         return encodeMesh({ by, body: out, re, post_id, via, done });
       };

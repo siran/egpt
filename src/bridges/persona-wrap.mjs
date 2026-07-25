@@ -9,12 +9,21 @@
 // No body_emoji (system sends) → text passes through untouched; body_emoji with no label
 // (echo sends) → inline emoji only, no header line.
 //
-// makeWrapPersona — wrap a persona reply concentrically: outer bridge layer (per-node,
-// bridgeSignatureOpen/Close, above), inner agent layer (per-being, from o.agentSig*), around
-// the stamped core. Gated on a full persona header so a plain/auto send passes through
-// unstamped + unwrapped (byte-identical to a bare send). This is the exact composition
-// beeper-port carried before the extraction — its regression tests are the byte-identical lock.
+// makeWrapPersona — wrap what a spine emits concentrically: outer bridge layer (per-node,
+// bridgeSignatureOpen/Close, above), inner layer (per-message: the being's agent signature on a
+// persona reply, the transcription frame on a 👂 echo — from o.agentSig*), around the stamped
+// core. The bridge layer is UNCONDITIONAL (operator 2026-07-25: "all messages coming out from a
+// spine to any surface are signed. period."). SIGNING IS A PROPERTY OF THE SEND, not of whether
+// this module wrote an identity line: the old `bodyEmoji && label` gate made "sign it" and
+// "stamp it" one switch, so a node could not sign a body it had not stamped — exactly the mesh
+// nugget case (a remote being's reply, relayed home) and exactly the 👂 echo case (which had to
+// grow its OWN copy of the wrap in beeper.mjs to get signed at all). The persona STAMP stays
+// conditional (there is an identity to stamp, or there isn't); with every slot empty the wrap is
+// still byte-identical to the bare core, so a node that configures no signature is unchanged.
 import { applyLayers } from './signature-layers.mjs';
+// parseMesh — the SAME envelope test the spine applies inbound (mesh.isEnvelope), reused here so
+// there is one definition of "this is relay traffic, not chat". See isMeshEnvelope below.
+import { parseMesh } from '../mesh/relay.mjs';
 
 const _escapeRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -25,17 +34,29 @@ export function personaStamp(bodyEmoji, label, text) {
   return `${bodyEmoji} ${label}\n${clean}`;      // persona header line: "🐶 egpt" then the reply
 }
 
+// A mesh ENVELOPE is TRANSPORT, not a message to a surface — the one thing the "period" does not
+// cover. Its signature already travels INSIDE the fence (the responder renders the nugget through
+// THIS wrap before encodeMesh, mesh.mjs renderReply), and signing the envelope again on the way out
+// would break the wire format outright: parseMesh trusts the TRAILING run of provenance lines, so a
+// close line appended below the tail makes the envelope unrecognisable and the mesh goes deaf.
+// Recognition is the spine's own inbound rule (mesh.isEnvelope = parseMesh != null), narrowed to the
+// intact fenced form encodeMesh emits so ordinary prose that happens to end in "by: …" is still signed.
+const isMeshEnvelope = (t) => {
+  const s = String(t ?? '').trim();
+  return s.startsWith('```') && s.endsWith('```') && parseMesh(s) != null;
+};
+
 /**
  * @param {{ bridgeSignatureOpen?: string, bridgeSignatureClose?: string }} [cfg]
  *   the per-NODE outer layer (which spine posted). Default empty → byte-identical to a bare stamp.
- * @returns {(o: object, text: string) => string}  wrapPersona(o, text): stamps the core, then
- *   (only on a full persona header) wraps [bridge, agent] concentrically. `o` carries bodyEmoji,
- *   label, and the per-being agentSigOpen/agentSigClose.
+ * @returns {(o: object, text: string) => string}  wrapPersona(o, text): stamps the core (when there
+ *   is an identity to stamp), then wraps [bridge, inner] concentrically — ALWAYS, except around a
+ *   mesh envelope. `o` carries bodyEmoji, label, and the inner agentSigOpen/agentSigClose.
  */
 export function makeWrapPersona({ bridgeSignatureOpen = '', bridgeSignatureClose = '' } = {}) {
   return (o, text) => {
     const core = personaStamp(o.bodyEmoji, o.label, text);
-    if (!(o.bodyEmoji && o.label)) return core;   // plain/auto → no header → no layers
+    if (isMeshEnvelope(core)) return core;        // transport, not a surface send → never signed
     return applyLayers(core, [
       { open: bridgeSignatureOpen, close: bridgeSignatureClose },
       { open: o.agentSigOpen ?? '', close: o.agentSigClose ?? '' },

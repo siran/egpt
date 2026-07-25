@@ -53,7 +53,7 @@ import { transcribeAudioFile } from '../tools/transcribe.mjs';
 import { transcribeVoiceNote, voiceTranscriptBody, POSTS_BACK_DELAY_MS, ECHO_MARKER } from '../incoming-media.mjs';
 import { htmlToMarkdown } from '../html-to-markdown.mjs';
 import { normalizeTokens, similarity } from '../text-similarity.mjs';
-import { applyLayers } from './signature-layers.mjs';
+import { makeWrapPersona } from './persona-wrap.mjs';
 import { reactionAction, editAction } from '../dispatch-line.mjs';
 import { stripFrontMatter } from '../transcript-meta.mjs';
 import { mentionStatus } from '../auto-mode.mjs';
@@ -196,9 +196,9 @@ export async function startBeeperBridge(opts = {}) {
     // posts is wrapped concentrically — outer bridge_signature_open/close (identifies WHICH SPINE
     // posted: REVE `kg` vs DOLLY `do` on one account), inner transcription_open/close (the 👂
     // feature's own frame) — around the '👂 <transcript>' core. All default EMPTY → nothing added
-    // (zero behavior change). The persona-reply layers are applied one layer up (beeper-port.mjs,
-    // where the persona stamp is). ⚠️ A non-empty *_open lifts the 👂 off the leading edge — see
-    // withEchoLayers below (observe-cancel constraint).
+    // (zero behavior change). Applied through the SHARED wrap (persona-wrap.mjs) — the same one
+    // beeper-port renders a persona reply through, one layer up. ⚠️ A non-empty *_open lifts the 👂
+    // off the leading edge — see wrapEcho below (observe-cancel constraint).
     bridgeSignatureOpen = '',
     bridgeSignatureClose = '',
     transcriptionOpen = '',
@@ -278,18 +278,20 @@ export async function startBeeperBridge(opts = {}) {
   const token = beeperToken || process.env.BEEPER_ACCESS_TOKEN;
   const audioCfg = transcribeCfg ?? media.audio_transcribe ?? {};
   const mediaDownloadPolicy = media.download ?? 'all';   // 'all' | 'images_docs' | 'off'
-  // The 👂 echo's concentric WRAP: outer bridge_signature_open/close (which SPINE), inner
-  // transcription_open/close (the 👂 feature), around the '👂 <transcript>' core. Empty (default)
-  // → text unchanged. Wraps the reply closure once → covers immediate/debounced/promoted echoes.
-  // NOTE: the co-account de-dup is now the ON-DEMAND coverage query (noteCovered), which matches on
+  // The 👂 echo's concentric WRAP — now the SHARED wrap every surface send renders through
+  // (operator 2026-07-25: "all messages coming out from a spine to any surface are signed"). This
+  // used to be a THIRD copy of applyLayers([bridge, transcription]) living here, because the shared
+  // wrap refused to sign a core with no persona header; with that condition gone the echo takes the
+  // one path: outer bridge_signature_open/close (which SPINE posted), inner transcription_open/close
+  // (the 👂 feature's own frame) around the '👂 <transcript>' core, which arrives already carrying
+  // its marker (personaStamp adds nothing without a bodyEmoji). Empty (default) → text unchanged.
+  // NOTE: the co-account de-dup is the ON-DEMAND coverage query (noteCovered), which matches on
   // normalized WORD TOKENS — position- and marker-independent — so a non-empty *_open that lifts the
   // 👂 off the leading edge no longer breaks dedup (the old observe-and-cancel leading-marker hazard
   // is gone). A wrap layer's own words are extra tokens; the overlap coefficient (÷ the smaller set)
   // tolerates them.
-  const withEchoLayers = (t) => applyLayers(t, [
-    { open: bridgeSignatureOpen, close: bridgeSignatureClose },
-    { open: transcriptionOpen, close: transcriptionClose },
-  ]);
+  const wrapEcho = makeWrapPersona({ bridgeSignatureOpen, bridgeSignatureClose });
+  const echoTag = { agentSigOpen: transcriptionOpen, agentSigClose: transcriptionClose };
   const onLog = (m) => {
     try { appendFileSync(_BEEPER_LOG, `${new Date().toISOString()} ${m}\n`); } catch { /* ignore */ }
     try { _onLog(m); } catch { /* ignore */ }
@@ -1181,10 +1183,11 @@ export async function startBeeperBridge(opts = {}) {
         const echoOn = plan.rank >= 1 && !tooOldForEcho;   // is an echo POSSIBLE at all for this note on this node?
         const transcript = await transcribeVoiceNote({
           localPath: path, transcribe, audioCfg,
-          // withEchoLayers wraps the '👂 <transcript>' core with the bridge + transcription layers
-          // (covers immediate/debounced/promoted echoes). The coverage query matches on WORD TOKENS, so
-          // it is position-independent — a wrap layer above the 👂 no longer breaks dedup.
-          reply: (t) => sendMessage(chatID, withEchoLayers(t), { replyToMessageID: msg.id }),
+          // The SHARED wrap (persona-wrap.mjs) brackets the '👂 <transcript>' core with the bridge +
+          // transcription layers — the same machinery a persona reply renders through (covers
+          // immediate/debounced/promoted echoes). The coverage query matches on WORD TOKENS, so it is
+          // position-independent — a wrap layer above the 👂 no longer breaks dedup.
+          reply: (t) => sendMessage(chatID, wrapEcho(echoTag, t), { replyToMessageID: msg.id }),
           enabled: svc.enabled,
           // rank 1 → post now (immediate/debounced); rank>1 → HOLD + arm a promotion at
           // (rank-1)*echoTimeoutMs (incoming-media). A non-winner still HEARS (transcribes + logs);
