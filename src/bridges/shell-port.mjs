@@ -94,7 +94,7 @@ export function createShellPort({
       if (!text) return;
       _chatIds.add(chatId);
       // The `from` the identity service consumes: network 'shell' → the shell SURFACE +
-      // 'kg' node; authorized so an operator slash command (`/status`, `/chrome kg`) is
+      // the 'sh' transport tag; authorized so an operator slash command (`/status`, `/chrome kg`) is
       // recognized (the shell is the operator's own trusted local console). MENTION FLAGS
       // computed here (mirrors beeper.mjs' `mentionStatus(text, wakeWords)`): without them
       // a shell `@e` arrived with atEAnywhere unset → identity.build → the mention gate

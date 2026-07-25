@@ -13,7 +13,12 @@ import { formatDispatchLine } from '../dispatch-line.mjs';
 // Account-instance ids ('whatsappgo_2') prefix-match. slugDir rejects anything
 // not in KNOWN_SURFACES, so an unknown network falls back to 'whatsapp' for v1.
 const KNOWN_SURFACES = ['whatsapp', 'telegram', 'shell', 'signal'];
-const NODE_OF = { whatsapp: 'wa', telegram: 'tg', signal: 'sig', shell: 'kg' };
+// Every value here is a TRANSPORT tag (the entry point the human used), never a node
+// name: `shell` mapped to 'kg' — THIS machine's node name — so on any other node every
+// shell line read `.kg` and claimed REVE had spoken it. Per-line node provenance is a
+// constant anyway (a transcript lives in exactly one node's profile) and belongs on the
+// reply label, which already carries it.
+const NODE_OF = { whatsapp: 'wa', telegram: 'tg', signal: 'sig', shell: 'sh' };
 function netKey(network) {
   const n = String(network ?? 'whatsapp').toLowerCase();
   for (const k of KNOWN_SURFACES) if (n.startsWith(k)) return k;

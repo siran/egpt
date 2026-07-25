@@ -48,4 +48,16 @@ describe('identity.build', () => {
     // account-instance id prefix-matches; unknown network falls back to whatsapp surface
     expect(identity.build({ body: 'x', from: { ...FROM, network: 'whatsappgo_2' } })).toMatchObject({ surface: 'whatsapp', node: 'wa' });
   });
+
+  // The `node` slot is the ENTRY POINT / TRANSPORT the message arrived through (wa · tg ·
+  // sig) — every sibling is a transport tag. `shell` used to map to 'kg', which is a NODE
+  // NAME (this machine's), so on any OTHER node (DOLLY) every shell line read `.kg` and
+  // claimed REVE had spoken it. A transcript already lives in exactly one node's profile,
+  // so per-line node provenance is a constant and belongs on the reply label, not here.
+  it('maps the shell surface to a TRANSPORT tag, never a node name', () => {
+    const ev = identity.build({ body: 'hola', from: { ...FROM, network: 'shell', chatName: 'shell' } });
+    expect(ev).toMatchObject({ surface: 'shell', node: 'sh' });
+    expect(ev.node).not.toBe('kg');                       // 'kg' is a node name, not a transport
+    expect(ev.line).toBe('An@[shell].sh (14:05) #m7: hola');
+  });
 });
