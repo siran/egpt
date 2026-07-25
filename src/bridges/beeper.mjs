@@ -62,6 +62,7 @@ import { shouldDownload } from '../media-save.mjs';
 import { relMediaPath } from '../media-path.mjs';
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { join, basename } from 'node:path';
 import { EGPT_HOME } from '../egpt-home.mjs';
@@ -1127,13 +1128,21 @@ export async function startBeeperBridge(opts = {}) {
         // bound. No parseable timestamp -> fail-open (echo), same as the backlog gate.
         const tooOldForEcho = echoMaxAgeMs > 0 && tsMs != null && (Date.now() - tsMs) > echoMaxAgeMs;
         if (tooOldForEcho) onLog(`beeper: echo suppressed - note older than bound [${info.title}] (${new Date(tsMs).toISOString()}, bound ${echoMaxAgeMs}ms)`);
-        // 👂 ECHO PLAN (operator 2026-07-11, Phase 3b HRW ordered failover): this node's rank for the
-        // note over the co-account peer set. msg.id is the note's SHARED Beeper message id — IDENTICAL
-        // on both co-account nodes (one shared account → the same message → the same per-chat sequence
-        // id), so the ranks AGREE: exactly ONE rank-1 posts now, and a lower rank promotes only if the
-        // higher ranks are silent (NOT dedup). rank 0 = echo:false hard opt-out. The age bound is
-        // ORTHOGONAL — tooOldForEcho suppresses ANY post/promotion regardless of rank.
-        const plan = echoPlan(msg.id);
+        // 👂 ECHO PLAN (operator 2026-07-24; REAL HRW on a node-stable audio hash): this node's rank
+        // for the note over the co-account peer set, picked PER NOTE by rendezvous hashing. The key is
+        // the sha256 of the DOWNLOADED AUDIO BYTES at `path` — byte-identical on both co-account nodes
+        // (same Beeper attachment), so the two nodes compute the SAME ordering and AGREE on the winner:
+        // exactly ONE rank-1 posts now, a lower rank promotes only if the higher ranks are silent (NOT
+        // dedup). We key on the AUDIO, NOT msg.id (node-LOCAL — that very divergence is why the old HRW
+        // double-echoed) and NOT the transcript text (whisper engines can differ). crypto lives HERE,
+        // never in the pure echo-priority module. A hashing failure (e.g. the file vanished) FALLS BACK
+        // to msg.id instead of throwing on the hot path — a degraded key beats a dropped note. rank 0 =
+        // echo:false hard opt-out. The age bound is ORTHOGONAL — tooOldForEcho suppresses ANY
+        // post/promotion regardless of rank.
+        let audioHash = null;
+        try { audioHash = createHash('sha256').update(await readFile(path)).digest('hex'); }
+        catch (e) { onLog(`beeper: audio-hash failed for echo plan [${info.title}] — falling back to msg.id (${e?.message ?? e})`); }
+        const plan = echoPlan(audioHash ?? msg.id);
         const echoOn = plan.rank >= 1 && !tooOldForEcho;   // is an echo POSSIBLE at all for this note on this node?
         const transcript = await transcribeVoiceNote({
           localPath: path, transcribe, audioCfg,

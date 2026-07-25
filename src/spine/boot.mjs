@@ -341,47 +341,62 @@ export async function boot({
   // echo priority reads echo_priority (below), falling back to account_peers.
   const accountPeers = Array.isArray(cfg.account_peers) ? cfg.account_peers : [];
 
-  // 👂 ECHO — STATIC PRIORITY + ORDERED FAILOVER (operator 2026-07-11, Phase 3b; plans/2607101713-HRW-ECHO-PLAN.md).
-  // NOT dedup. Two co-account spines (REVE `kg`, DOLLY `do`) both see each voice note; without a pick
-  // BOTH would post its 👂 → double. We DROP the earlier per-note HRW hash: it keyed on the note's
-  // Beeper message id ASSUMING that id is identical on both nodes, but Beeper ids are NODE-LOCAL, so
-  // the nodes hashed different strings and ~1/4 of notes had both compute rank-1 → double 👂. Instead
-  // a STATIC priority order (echo_priority, IDENTICAL in both configs) fixes each node's rank ONCE:
-  // rank 1 (the primary, e.g. DOLLY) posts every note; a lower rank promotes only if the higher ranks
-  // are OFFLINE/silent (the bridge posts at rank 1, ARMS a promotion at (rank-1)*echoTimeoutMs for
-  // rank>1, and stands down when it OBSERVES the note's 👂 from a higher rank — echo-priority.mjs +
-  // incoming-media.mjs). echoPlan IGNORES its noteId arg (kept ONLY so the bridge call site is
-  // unchanged): the rank is note-INDEPENDENT, which is the whole point — the two nodes can never
-  // disagree on who is rank 1. HARD OPT-OUT preserved: echo:false → { rank: 0 }, which the bridge
-  // treats as never post / never promote — the note is still transcribed + logged.
+  // 👂 ECHO — REAL HRW ON A NODE-STABLE AUDIO HASH + ORDERED FAILOVER (operator 2026-07-24; revives
+  // HRW over the static-priority stopgap; plans/2607101713-HRW-ECHO-PLAN.md). NOT dedup. Two co-account
+  // spines (REVE `kg`, DOLLY `do`) both see each voice note; without a pick BOTH would post its 👂 →
+  // double. HRW picks the poster PER NOTE by rendezvous-hashing the co-account peer set for the note's
+  // key. The key is the sha256 of the DOWNLOADED AUDIO BYTES (computed in the bridge, passed to
+  // echoPlan) — byte-identical on both nodes, so both compute the SAME ordering and AGREE on the
+  // winner. This is why the revival is safe where the deleted HRW was not: the old one hashed the
+  // note's Beeper message id, which is NODE-LOCAL, so the nodes diverged (~1/4 double-👂). rank 1 posts
+  // now; a lower rank promotes only if the higher ranks are OFFLINE/silent (the bridge posts at rank 1,
+  // ARMS a promotion at (rank-1)*echoTimeoutMs for rank>1, and stands down when it OBSERVES the note's
+  // 👂 from a higher rank — echo-priority.mjs + incoming-media.mjs). HARD OPT-OUT preserved: echo:false
+  // → { rank: 0 }, which the bridge treats as never post / never promote — the note is still
+  // transcribed + logged.
   const node_name = cfg.node_name ?? null;
-  // The priority order, resolved ONCE (never per note), all lowercased: echo_priority wins, else
-  // account_peers, else [self] (a solo node is always rank 1).
-  const echoPriority = (
-    Array.isArray(cfg.echo_priority) ? cfg.echo_priority
+  // WINNER-SELECTION config, relocated under transcription_service.echo (operator 2026-07-24):
+  //   echo: { method: hrw, participants, peer_priority: [do, kg], timeout_ms: 20000 }
+  // BACK-COMPAT read-fallbacks keep a not-yet-migrated live config booting through the deploy→migrate
+  // window: the HRW candidate set (also the hash-collision tiebreak order) is echoCfg.peer_priority,
+  // else the legacy top-level echo_priority, else account_peers, else [self] (a solo node is always
+  // rank 1); all lowercased so config casing never splits the order.
+  const echoCfg = cfg.transcription_service?.echo ?? {};
+  const echoPeers = (
+    Array.isArray(echoCfg.peer_priority) ? echoCfg.peer_priority
+    : Array.isArray(cfg.echo_priority) ? cfg.echo_priority
     : Array.isArray(cfg.account_peers) ? cfg.account_peers
     : [node_name]
   ).map((p) => String(p).toLowerCase());
-  const staticEchoRank = echoRank(node_name, echoPriority);
+  // `method`/`participants` are descriptive for now (no behavior branches on them): assert the method,
+  // if present, is the one we implement, else warn — never hard-fail, so a config naming a future
+  // method still boots on HRW.
+  if (echoCfg.method != null && String(echoCfg.method).toLowerCase() !== 'hrw') {
+    log.line?.(`[echo] transcription_service.echo.method "${echoCfg.method}" not recognized — using hrw`);
+  }
   // Per-rank promotion step (operator 2026-07-11). GENEROUS default (20s) ON PURPOSE: a waiter can't
-  // tell "rank-1 DOWN" from "rank-1 SLOW", so too-short pre-empts a merely-slow primary → DOUBLE 👂
-  // (the one real hazard); too-long = slow failover. Tunable per node (config echo_timeout_ms).
-  const echoTimeoutMs = Number.isFinite(cfg.echo_timeout_ms) ? cfg.echo_timeout_ms : 20_000;
+  // tell "rank-1 DOWN" from "rank-1 SLOW", so too-short pre-empts a merely-slow winner → DOUBLE 👂
+  // (the one real hazard); too-long = slow failover. Tunable via transcription_service.echo.timeout_ms
+  // (back-compat: the legacy top-level echo_timeout_ms).
+  const echoTimeoutMs = Number.isFinite(echoCfg.timeout_ms) ? echoCfg.timeout_ms
+    : Number.isFinite(cfg.echo_timeout_ms) ? cfg.echo_timeout_ms : 20_000;
   // 👂 COVERAGE THRESHOLD (operator 2026-07-12): word-token overlap fraction above which a reply to a
   // note counts as already-covering it, so this node stands down instead of double-echoing (the bridge's
   // noteCovered query; replaced the observed-set + arrival-lag scaffold). Default 0.6.
   const coverageThreshold = Number.isFinite(cfg.echo_coverage_similarity) ? cfg.echo_coverage_similarity : 0.6;
-  // BOOT ASSERTION (operator 2026-07-11): a node that echoes MUST appear in its own priority list. A
-  // staticEchoRank of 0 means node_name isn't in echo_priority, so this node would SILENTLY never
-  // echo (and if the peer is likewise misconfigured, no node echoes — or both do). Fail loudly so the
-  // operator fixes the config — this makes the silent-divergence class impossible. Mirrors the
-  // persona `default:true` fatal above. echo:false opts out entirely, so the check is skipped there.
-  if (cfg.echo !== false && staticEchoRank === 0) {
-    throw new Error(`boot: node_name "${node_name}" is not in the 👂 echo priority [${echoPriority.join(', ')}] — a node that echoes must appear in echo_priority (or account_peers), else it would never echo (${CONFIG_FILE}). Add "${node_name}" to the list, or set echo:false to opt out.`);
+  // BOOT ASSERTION (operator 2026-07-11, adapted 2026-07-24): a node that echoes MUST appear in its own
+  // candidate set. echoRank returns the rank-0 never-post sentinel (note-independent) when node_name
+  // isn't in the set, so this node would SILENTLY never echo (and if the peer is likewise misconfigured,
+  // no node echoes — or both do). Fail loudly so the operator fixes the config — this makes the
+  // silent-divergence class impossible. echo:false opts out entirely, so the check is skipped there.
+  if (cfg.echo !== false && echoRank(node_name, echoPeers, '') === 0) {
+    throw new Error(`boot: node_name "${node_name}" is not in the 👂 echo peer set [${echoPeers.join(', ')}] — a node that echoes must appear in transcription_service.echo.peer_priority (or the legacy echo_priority / account_peers), else it would never echo (${CONFIG_FILE}). Add "${node_name}" to the list, or set echo:false to opt out.`);
   }
+  // Per-note HRW plan: rendezvous-hash the peer set for the note's key (the audio-hash the bridge feeds)
+  // and read off this node's rank. echo:false is the hard opt-out (rank 0, never post/promote).
   const echoPlan = cfg.echo === false
     ? () => ({ rank: 0, winner: false })
-    : () => ({ rank: staticEchoRank, winner: staticEchoRank === 1 });
+    : (noteKey) => { const rank = echoRank(node_name, echoPeers, noteKey); return { rank, winner: rank === 1 }; };
 
   // The persona's node-identity addendum (operator 2026-07-10): assembled ONCE from the pieces
   // already resolved above + the persona agent's handles, and handed to the brain pool, which
@@ -464,7 +479,7 @@ export async function boot({
     transcriptionOpen: cfg.transcription_open ?? '',
     transcriptionClose: cfg.transcription_close ?? '',
     wakeWords,                            // the persona agent's OWN name + handles only — nothing injected (operator 2026-07-09)
-    echoPlan,                             // 👂 echo PLAN: () => { rank, winner } — STATIC priority rank + ordered failover (operator 2026-07-11, Phase 3b; note-INDEPENDENT, the noteId arg is ignored). rank 1 posts now; rank>1 arms a promotion at (rank-1)*echoTimeoutMs that re-checks coverage at fire; rank 0 (echo:false opt-out) never posts/promotes.
+    echoPlan,                             // 👂 echo PLAN: (audioHash) => { rank, winner } — PER-NOTE HRW over the co-account peer set, keyed on the note's node-stable audio hash (operator 2026-07-24; revives HRW). rank 1 posts now; rank>1 arms a promotion at (rank-1)*echoTimeoutMs that re-checks coverage at fire; rank 0 (echo:false opt-out) never posts/promotes.
     echoTimeoutMs,                        // 👂 per-rank promotion step (ms); GENEROUS default so a SLOW rank-1 isn't mistaken for a DOWN one (double-👂 hazard).
     coverageThreshold,                    // 👂 word-token overlap fraction for the on-demand noteCovered query (operator 2026-07-12) — replaced the observed-set + arrival-lag/reconnect scaffold
     echoMaxAgeMs,                         // 👂 only echoes a note within this age of its own timestamp (operator 2026-07-09)

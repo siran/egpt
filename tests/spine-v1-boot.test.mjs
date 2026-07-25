@@ -378,14 +378,15 @@ describe('boot() — config-shape migration', () => {
     normal.app.stop();
   });
 
-  // 👂 ECHO — STATIC PRIORITY + ORDERED FAILOVER (operator 2026-07-11, Phase 3b; REPLACED HRW): boot
-  // hands the bridge an echoPlan() → { rank, winner } built from node_name's FIXED position in the echo
-  // priority (echo_priority, else account_peers, else [self]) PLUS the per-rank promotion step
-  // echoTimeoutMs. The rank is NOTE-INDEPENDENT (echoPlan ignores its arg) — that is the whole fix: the
-  // two co-account nodes can never disagree on who is rank 1 (HRW hashed the note's node-LOCAL Beeper
-  // id and diverged). A solo node is always rank 1 (echoes as before); cfg.echo:false folds into rank 0
-  // (hard opt-out — never post/promote); echoMaxAgeMs is unchanged (orthogonal age bound). echoTimeoutMs
-  // defaults GENEROUS (20s, the double-👂 hazard).
+  // 👂 ECHO — REAL HRW ON A NODE-STABLE AUDIO HASH + ORDERED FAILOVER (operator 2026-07-24; revives HRW
+  // over the static-priority stopgap): boot hands the bridge an echoPlan(noteKey) → { rank, winner } that
+  // rendezvous-hashes the resolved peer set (transcription_service.echo.peer_priority, else legacy
+  // echo_priority, else account_peers, else [self]) for the note's key PLUS the per-rank promotion step
+  // echoTimeoutMs (transcription_service.echo.timeout_ms, else legacy echo_timeout_ms). The rank is
+  // PER-NOTE (the bridge feeds the note's audio-byte sha256, node-stable), so the echoer ROTATES per
+  // note yet the two co-account nodes AGREE (same key → same ordering). A solo node is always rank 1;
+  // cfg.echo:false folds into rank 0 (hard opt-out — never post/promote); echoMaxAgeMs is unchanged
+  // (orthogonal age bound). echoTimeoutMs defaults GENEROUS (20s, the double-👂 hazard).
   it('echoPlan: default solo node is rank 1 (winner); cfg.echo:false → rank 0 (never); echoTimeoutMs default 20s + override; echoMaxAgeMs default 1h + override', async () => {
     const def = await captureBoot({ agents: AG });
     expect(typeof def.opts.echoPlan).toBe('function');
@@ -400,33 +401,62 @@ describe('boot() — config-shape migration', () => {
     off.app.stop();
   });
 
-  it('echoPlan: co-account STATIC rank — node_name\'s FIXED position gives distinct ranks (NOTE-INDEPENDENT, exactly one rank-1)', async () => {
+  it('echoPlan: co-account HRW rank — matches echoRank over the peer set, one rank-1 per note, reshuffles per note', async () => {
     const kg = await captureBoot({ agents: AG, node_name: 'kg', account_peers: ['kg', 'do'] });
     const doNode = await captureBoot({ agents: AG, node_name: 'do', account_peers: ['kg', 'do'] });
-    // The rank is the SAME for every note now (the whole point — no per-note divergence) and matches
-    // each node's fixed 1-indexed position in the shared priority list.
-    expect(kg.opts.echoPlan('note-1').rank).toBe(echoRank('kg', ['kg', 'do']));                 // kg is 2nd → rank 2
-    expect(kg.opts.echoPlan('DIFFERENT').rank).toBe(kg.opts.echoPlan('note-1').rank);           // note-independent — same for any id
-    expect(new Set([kg.opts.echoPlan('x').rank, doNode.opts.echoPlan('x').rank])).toEqual(new Set([1, 2]));  // distinct — a permutation of 1..2
-    expect(kg.opts.echoPlan('x').winner).toBe(!doNode.opts.echoPlan('x').winner);               // exactly one rank-1 (winner)
+    // boot's echoPlan is per-note HRW over the resolved peer set, keyed on the note key (the bridge feeds
+    // the audio hash). It matches the pure echoRank for the same key, and the two nodes are a
+    // permutation of 1..2 for EVERY note (exactly one winner).
+    for (const k of ['audio-a', 'audio-b', 'audio-c', 'audio-d']) {
+      expect(kg.opts.echoPlan(k).rank).toBe(echoRank('kg', ['kg', 'do'], k));
+      expect(new Set([kg.opts.echoPlan(k).rank, doNode.opts.echoPlan(k).rank])).toEqual(new Set([1, 2]));
+      expect(kg.opts.echoPlan(k).winner).toBe(!doNode.opts.echoPlan(k).winner);
+    }
+    // PER-NOTE (not the old static rank): different note keys reshuffle who is rank 1 — kg sees BOTH
+    // ranks across notes (the old static impl gave a single fixed value).
+    const kgRanks = new Set(Array.from({ length: 64 }, (_, i) => kg.opts.echoPlan(`audio-sha-${i}`).rank));
+    expect(kgRanks).toEqual(new Set([1, 2]));
     kg.app.stop();
     doNode.app.stop();
   });
 
-  it('echoPlan: echo_priority WINS over account_peers and fixes the rank (static primary + ordered failover)', async () => {
-    // The operator decision: a STATIC primary with ordered timeout-failover. echo_priority [do, kg]
-    // makes do rank 1 (posts every note) and kg rank 2 (promotes only if do is silent), regardless of
-    // account_peers order.
-    const kg = await captureBoot({ agents: AG, node_name: 'kg', echo_priority: ['do', 'kg'], account_peers: ['kg', 'do'] });
-    expect(kg.opts.echoPlan('n').rank).toBe(2);   // kg is 2nd in echo_priority (account_peers ignored for the rank)
+  it('echoPlan: transcription_service.echo.peer_priority is READ and WINS over legacy echo_priority / account_peers; timeout_ms too', async () => {
+    // Give the three sources DIFFERENT sets so precedence is observable: if the legacy echo_priority
+    // [kg] (a solo set) had won, kg would be rank 1 for EVERY note; the new peer_priority [do, kg]
+    // instead reshuffles kg across both ranks.
+    const node = await captureBoot({ agents: AG, node_name: 'kg',
+      transcription_service: { echo: { method: 'hrw', participants: 'group-members', peer_priority: ['do', 'kg'], timeout_ms: 7000 } },
+      echo_priority: ['kg'],                // legacy — would make kg solo (rank 1 always) if used → IGNORED
+      account_peers: ['kg', 'do', 'zz'],    // also IGNORED (new home wins)
+    });
+    for (const k of ['a', 'b', 'c', 'd']) {
+      expect(node.opts.echoPlan(k).rank).toBe(echoRank('kg', ['do', 'kg'], k));   // resolved set is the new peer_priority
+    }
+    const ranks = new Set(Array.from({ length: 64 }, (_, i) => node.opts.echoPlan(`k${i}`).rank));
+    expect(ranks).toEqual(new Set([1, 2]));   // reshuffles → the legacy solo [kg] was NOT used
+    expect(node.opts.echoTimeoutMs).toBe(7000);   // new transcription_service.echo.timeout_ms read
+    node.app.stop();
+  });
+
+  it('back-compat: legacy echo_priority / echo_timeout_ms are still READ when transcription_service.echo is absent', async () => {
+    // A not-yet-migrated config keeps booting: the peer set comes from the legacy top-level echo_priority
+    // and the failover step from the legacy echo_timeout_ms.
+    const kg = await captureBoot({ agents: AG, node_name: 'kg', echo_priority: ['do', 'kg'], echo_timeout_ms: 9000 });
+    for (const k of ['a', 'b', 'c', 'd']) {
+      expect(kg.opts.echoPlan(k).rank).toBe(echoRank('kg', ['do', 'kg'], k));   // resolved from legacy echo_priority
+    }
+    expect(kg.opts.echoTimeoutMs).toBe(9000);   // resolved from legacy echo_timeout_ms
     kg.app.stop();
   });
 
-  it('boot ASSERTION: an echoing node NOT in its own echo priority is FATAL (kills the silent-divergence class)', async () => {
-    // node_name 'zz' isn't in the priority → staticEchoRank 0 → it would SILENTLY never echo. Fatal at
-    // boot so the operator fixes the config (echo:false is the sanctioned opt-out).
+  it('boot ASSERTION: an echoing node NOT in its own echo peer set is FATAL (kills the silent-divergence class)', async () => {
+    // node_name 'zz' isn't in the peer set → rank-0 never-post sentinel → it would SILENTLY never echo.
+    // Fatal at boot so the operator fixes the config (echo:false is the sanctioned opt-out). Fires via
+    // the NEW home AND the legacy fallback.
+    await expect(captureBoot({ agents: AG, node_name: 'zz', transcription_service: { echo: { peer_priority: ['do', 'kg'] } } }))
+      .rejects.toThrow(/not in the 👂 echo peer set/);
     await expect(captureBoot({ agents: AG, node_name: 'zz', echo_priority: ['do', 'kg'] }))
-      .rejects.toThrow(/not in the 👂 echo priority/);
+      .rejects.toThrow(/not in the 👂 echo peer set/);
   });
 
   it('account_peers parsed + exposed on the boot return', async () => {
