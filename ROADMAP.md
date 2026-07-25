@@ -93,10 +93,11 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
 - Per-surface auth: whatsapp/telegram/signal each own {chat_id, allowed_users};
   empty = deny; isSender = owner's global pass
 - Siblings: @name routes to local beings, nested per-being thread persistence
-- Mesh (Phase 4b): @being.node + relay agents; envelopes detected before gating;
-  living mirror into the origin placeholder; forward-once per mid + service hop
-  cap; `config.mesh.nodes` routes + route-direct via agents.relay_channel.
-  UNIT-LOCKED ONLY — live 2-node smoke needs DOLLY awake.
+- Mesh (Phase 4b): relay agents; envelopes detected before gating; living mirror
+  into the origin placeholder; forward-once per mid + service hop cap. Routing is
+  AGENT-BASED — `agents.<name>.relay_channel` (+ optional `to:` chain). The
+  `config.mesh.nodes` table and bare `@being.node` addressing were EVICTED
+  2026-07-25 (dysfunctional legacy: a target with no route).
 - Agents registry: `agents: { <name>: { type, handles, relay_channel? } }` —
   ONE block for persona + local beings + relay targets; type files in the
   PROFILE's config/agents/; skeletons seed to the profile's config/skeletons
@@ -187,7 +188,9 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
   `forward`'s route-direct branch — **`canonRoute` is NOT the path a scalar relay agent takes**,
   which is why the drop happened there. Fail-safe: no Self → old behaviour; throwing resolver →
   no fallback; resolving channel byte-identical.
-  - NOT covered: a dead `mesh.nodes` room still drops silently (no resolution on that path).
+  - (The one remaining gap here, a dead `mesh.nodes` room dropping silently, closed itself
+    2026-07-25 when `mesh.nodes` was evicted — every route is a relay_channel now, and both
+    relay_channel sites resolve.)
 
 - **KNOWN TEST FLAKE (characterised 2026-07-25 — do NOT chase it):** `tests/beeper-bridge.test.mjs`
   › *"the owner's OWN send is attributed to the /v1/accounts self-user's fullName…"* intermittently
@@ -242,9 +245,31 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
   writes stats.yaml, idempotently. parse/serialize round-trip the comment shape (yaml
   Document API); in-memory state shape is UNCHANGED so every consumer keeps working.
 
-- **Stats module + `/status <target>`** (operator 2026-07-02): `stats.yaml` now EXISTS
-  in each conversation folder (spine-written), created by the reshape migration and
-  appended by the brainpool on every new thread id (branchable `threads:` history):
+- **Stats module + `/status <target>`** (operator 2026-07-02).
+  > ⚠️ **CORRECTED 2026-07-25 — the shape below was NEVER BUILT AS DESCRIBED. Verified on the
+  > live REVE profile: `find conversations -name stats.yaml` returns ZERO. No conversation folder
+  > has one, including the Self-DM running since June.** What EXISTS instead is PER-CONTACT,
+  > CROSS-CHAT, and lives OUTSIDE the conversation dirs:
+  > `~/.egpt/state/stats/<surface>/<sender-id>.yaml` —
+  > ```yaml
+  > # per-contact cross-chat stats (spine-written — do not edit)
+  > sender_id: "@whatsapp_lid-114469569040632:beeper.local"
+  > count: 1
+  > last_seen: 2026-07-08T13:00:15.313Z
+  > name: "…"
+  > ```
+  > A CONVERSATION folder holds exactly what `slugDir`'s own doc comment says and nothing more:
+  > `transcript.md`, optional `daily-YYYY-MM-DD.md`, `media/`. Identity/pointers/rules are NOT
+  > per-conversation files — they are assembled at prompt time by `readIdentityFeed` from
+  > PROFILE-level `config/skeletons/room/{00-identity,10-actions,30-pointers,40-rules}.md` +
+  > `config/identities/<name>.md`. So a fresh conversation holding only `transcript.md` is
+  > COMPLETE, not half-instantiated (this cost a live debugging detour on 2026-07-25).
+  > The per-conversation `threads:` history below is likewise unbuilt — treat the whole block as
+  > a PROPOSAL, not a description of disk.
+
+  The original (ASPIRATIONAL, not on disk) design was: `stats.yaml` in each conversation folder,
+  created by the reshape migration and appended by the brainpool on every new thread id
+  (branchable `threads:` history):
   ```yaml
   # stats.yaml — the conversation's stats module (spine-written)
   name: <pushedName>
@@ -757,8 +782,8 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
   on ONE node, no DOLLY needed. Operator creates the chats; config gets the relay
   entries. (The DOLLY 2-node smoke stays as the later cross-machine step.)
   - **Node aliases (operator 2026-07-04)**: a node can claim two or more names —
-    `node_name: <str>` + `aliases: [<list>]`. Routing (`@being.<node>` /
-    config.mesh.nodes) resolves any alias to the same node. An alias can even
+    `node_name: <str>` + `aliases: [<list>]`. An arriving envelope addressed to
+    ANY alias is answered locally by the same node. An alias can even
     be a fully DISTINCT SIGNED identity — the node just generates a second
     keypair ("it can generate two keys, no problem"): one machine, multiple
     cryptographic node-identities on the mesh; provenance then carries
