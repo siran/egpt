@@ -75,6 +75,46 @@ You are the orchestrator, maintaining the goal and direction of the project. In
 the spirit of preserving your context length, please start background agents to
 do the coding.
 
+### 5.1 Contextualize them, or they will add a path instead of finding one
+
+**An agent only sees what you tell it.** It cannot see the whole codebase, so it
+solves your brief LOCALLY — and a local solution to "make X work" is almost
+always a NEW path beside the one that already exists. That is how this repo
+accumulated three mention systems, three implementations of the node bridge
+signature, eleven transcript-ingestion call sites, and two identity-seeding
+functions doing the same job. None of it was designed. Each was added by someone
+who could not see the existing one.
+
+**Supplying that missing context is the orchestrator's job, not the agent's.**
+
+**We reconfigure the current code path. We do not add new patches beside it.**
+
+Every brief must therefore:
+
+1. **Name the existing thing.** Point at the module/function that already does
+   this and require the agent to route into it — "persona-wrap.mjs owns the
+   stamp", "replyAllowed owns the mode semantics", "createSender is THE reply
+   path". Do not make it go looking; it will not find what you did not name.
+2. **State the expected SHAPE.** When the defect is duplication, say the diff
+   should be a NET DELETION. "If your diff ADDS machinery to fix a duplication
+   bug, it is the wrong shape" is a test an agent can actually apply to its own
+   work.
+3. **Forbid the escape hatches explicitly** — no new tag field, no new helper,
+   no new branch that exists for one caller.
+4. **Give it a STOP rule.** If the shared path genuinely cannot express the
+   need: propose the SMALLEST change to the SHARED path (one that serves every
+   caller) and STOP for a ruling. Never ship a private variant, never a second
+   attempt at one.
+
+**Framing invites the failure.** "Decide how to make X work" invites invention;
+"find where this already happens and reconfigure it" does not. Getting this
+wrong cost three rejected attempts on one small change in a single turn
+(2026-07-25) — the fault was the brief, not the agent.
+
+A useful signal when reviewing: an agent that reports "I could not do this
+without changing shared code, here is the line and the reason" has done the job
+correctly, even though it shipped nothing.
+
 
 ## 6. The working loop (every model drives this repo the same way)
 
