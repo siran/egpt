@@ -581,11 +581,11 @@ export async function boot({
   const services = {
     identity: createIdentity({ now }),
     gating: createGating({ getConfig, loadState: _loadState, defaultKey }),
-    // Router resolves an @token against the unified `agents:` block (operator 2026-07-02),
-    // then cross-node @being.node mesh targets (Phase 4b, inert unless cfg.mesh is configured).
-    // defaultBeing = defaultKey: the persona-route + the un-@mentioned fall-through both yield
-    // the persona's KEY (operator 2026-07-10 — no hardcoded 'e'/'egpt').
-    router: createRouter({ getAgents: () => cfg.agents ?? {}, defaultBeing: defaultKey, getNode: () => cfg.node_name ?? null, getAliases: () => cfg.node_alias ?? [], meshEnabled: () => !!cfg.mesh }),
+    // Router resolves an @token against the unified `agents:` block (operator 2026-07-02) —
+    // the ONE registry, and since 2026-07-25 the ONLY source of off-node reach (a relay agent's
+    // relay_channel). defaultBeing = defaultKey: the persona-route + the un-@mentioned
+    // fall-through both yield the persona's KEY (operator 2026-07-10 — no hardcoded 'e'/'egpt').
+    router: createRouter({ getAgents: () => cfg.agents ?? {}, defaultBeing: defaultKey }),
     transcript: createTranscript({ contacts, persona: labelOf(defaultKey), defaultKey, node_name, io, onLog: (m) => log.line?.(`[transcript] ${m}`) }),
     sender: createSender({ bridge: shellAwareBridge, bodyEmojiOf, labelOf, agentSignatureOpenOf, agentSignatureCloseOf, defaultKey }),
     // The real cadence registry the spine's tick() drives. The heartbeat LOADER
@@ -607,7 +607,7 @@ export async function boot({
 
   // Cross-node being relay (Phase 4b). Supplies the mesh engine's host callbacks from
   // v2 services: bridge (send/postStatus/startStream), brain (the responder's turn),
-  // config (node_name/agents/mesh.nodes routes). onEdit is registered here (its ONE
+  // config (node_name/agents relay_channel routes). onEdit is registered here (its ONE
   // consumer) so a responder's in-place stream edits mirror to the origin placeholder.
   // SHELL-AWARE bridge (operator 2026-07-25): a relay whose ORIGIN is the shell (`@don` typed
   // in the operator console — origin chat_id 'main') must stream its placeholder + living-mirror

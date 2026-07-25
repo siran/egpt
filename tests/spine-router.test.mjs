@@ -166,31 +166,29 @@ describe('router.resolve — surface-pinned relay agent (operator 2026-07-25)', 
   });
 });
 
-describe('router.resolve — cross-node mesh targets (Phase 4b)', () => {
-  const mrouter = createRouter({ getAgents: () => ({}), getNode: () => 'kg', meshEnabled: () => true });
-
-  it('a qualified @being.node on another node → mesh target { being, node }, no local being', () => {
-    const r = mrouter.resolve(ev('@don.do do X'));
-    expect(r.being).toBeNull();
-    expect(r.mesh).toMatchObject({ being: 'don', node: 'do', target: 'don.do' });
-    expect(r.mention).toMatchObject({ atEStart: true });     // it IS addressed → gates as a mention
-  });
-
-  it('a same-node qualified @being.node is NOT a mesh target → falls through to e', () => {
-    const r = mrouter.resolve(ev('@e.kg do X'));
+// ── EVICTION (operator 2026-07-25): `mesh.nodes` and with it the bare `@being.node` routing
+//    scheme are gone. The router no longer mints a `{ being, node }` target — that shape carried
+//    no route, so nothing could ever carry it. Reaching another machine is AGENT-BASED: a relay
+//    agent's relay_channel IS the route. `@don.do` still works when `don` is a relay agent,
+//    because the leading-@token match stops at the dot. ──
+describe('router.resolve — @being.node addressing (mesh.nodes evicted)', () => {
+  it('an unmatched qualified @being.node mints NO mesh target — it falls through to the persona', () => {
+    const r = createRouter({ getAgents: () => ({}) }).resolve(ev('@don.do do X'));
     expect(r.mesh).toBeUndefined();
     expect(r.being).toBe('e');
   });
 
   it('a bare unknown @token → e (no mesh, no phantom)', () => {
-    const r = mrouter.resolve(ev('@ghost do X'));
+    const r = createRouter({ getAgents: () => ({}) }).resolve(ev('@ghost do X'));
     expect(r.mesh).toBeUndefined();
     expect(r.being).toBe('e');
   });
 
-  it('mesh disabled (default): a qualified @being.node is NOT a mesh target', () => {
-    const r = createRouter({ getAgents: () => ({}) }).resolve(ev('@don.do hi'));
-    expect(r.mesh).toBeUndefined();
-    expect(r.being).toBe('e');
+  it('SURVIVES: @<relay-agent>.<node> routes route-direct through the agent (the @token stops at the dot)', () => {
+    const ag = { egpt: { handles: ['e'], default: true }, don: { relay_channel: 'Rodz', to: 'don.do' } };
+    const r = createRouter({ getAgents: () => ag, defaultBeing: 'egpt' }).resolve(ev('@don.do do X'));
+    expect(r.being).toBeNull();
+    expect(r.mesh).toEqual({ being: 'don', route: { room_id: 'Rodz' }, to: 'don.do' });
+    expect(r.mention).toMatchObject({ atEStart: true });     // it IS addressed → gates as a mention
   });
 });

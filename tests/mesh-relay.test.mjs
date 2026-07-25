@@ -15,7 +15,6 @@ function harness({ donReply = async () => 'yes, here' } = {}) {
     surface: async (origin, text, info = {}) => { surfaced[node].push({ origin, text, info }); },
     ack: async (origin, text) => { acks[node].push({ origin, text }); },
     runBeing: run,
-    resolveRoute: () => route,
     isLocalBeing: (b) => beings.includes(b),
   });
 
@@ -70,7 +69,7 @@ describe('mesh relay — YAML provenance over a shared channel', () => {
 
   it('relays @don, acks "relayed — waiting", and surfaces the reply home', async () => {
     const h = harness({ donReply: async (_b, prompt) => `you said: ${prompt}` });
-    const ok = await h.kg.relayOut({ being: 'don', toNode: 'do', body: 'hi @don', origin: { chat_id: 'HFM-id', name: 'HFM' }, sender: 'An' });
+    const ok = await h.kg.relayOut({ being: 'don', route: h.route, to: 'don.do', body: 'hi @don', origin: { chat_id: 'HFM-id', name: 'HFM' }, sender: 'An' });
     expect(ok).toBe(true);
 
     // wire: body OPAQUE (base64, mangle-proof), readable routing tail — no cryptic minted tag
@@ -98,7 +97,7 @@ describe('mesh relay — YAML provenance over a shared channel', () => {
 
   it('a relayed reply surfaces home identified by the being (by), never bare', async () => {
     const h = harness({ donReply: async () => 'Jaja, me pillaste' });
-    await h.kg.relayOut({ being: 'don', toNode: 'do', body: 'hi @don', origin: { chat_id: 'HFM-id', name: 'HFM' }, sender: 'An' });
+    await h.kg.relayOut({ being: 'don', route: h.route, to: 'don.do', body: 'hi @don', origin: { chat_id: 'HFM-id', name: 'HFM' }, sender: 'An' });
     await h.deliver(h.channel[h.channel.length - 1]);    // do answers
     await h.deliver(h.channel[h.channel.length - 1]);    // kg surfaces home
     const s = h.surfaced.kg.at(-1);
@@ -123,7 +122,7 @@ describe('mesh relay — YAML provenance over a shared channel', () => {
 
   it('the relayer ignores its own request echo (no false "not here")', async () => {
     const h = harness();
-    await h.kg.relayOut({ being: 'don', toNode: 'do', body: 'hi @don', origin: { chat_id: 'HFM-id', name: 'HFM' }, sender: 'An' });
+    await h.kg.relayOut({ being: 'don', route: h.route, to: 'don.do', body: 'hi @don', origin: { chat_id: 'HFM-id', name: 'HFM' }, sender: 'An' });
     h.channel.length = 0;
     await h.kg.onRoomMessage({ route: h.route, text: encodeMesh({ by: 'An', body: 'hi @don', from: 'HFM', to: 'don.do' }) });
     expect(h.channel).toHaveLength(0);  // to: don.do != kg → stays quiet (no false "not here")
@@ -185,7 +184,7 @@ describe('mesh relay — YAML provenance over a shared channel', () => {
     const doSpine = createMeshRelay({
       node: 'do', send: async () => {}, surface: async () => {},
       runBeing: async () => { ranBeing = true; return 'should not run'; },
-      resolveRoute: () => ({ room_id: 'C' }), isLocalBeing: (b) => b === 'don',
+      isLocalBeing: (b) => b === 'don',
       relayDispatch: async (d) => { dispatched = d; },
     });
     await doSpine.onRoomMessage({ route: { room_id: 'C' }, text: encodeMesh({ by: 'An', body: '@don hola', from: 'HFM', to: 'don.do' }), msgId: 'm1' });
@@ -199,7 +198,7 @@ describe('mesh relay — YAML provenance over a shared channel', () => {
     const doSpine = createMeshRelay({
       node: 'do', send: async (_r, t) => sent.push(t), surface: async () => {},
       runBeing: async () => 'Jaja, aquí',
-      resolveRoute: () => ({ room_id: 'C' }), isLocalBeing: (b) => b === 'don',
+      isLocalBeing: (b) => b === 'don',
     });
     await doSpine.onRoomMessage({ route: { room_id: 'C' }, text: encodeMesh({ by: 'An', body: '@don hola', from: 'HFM', to: 'don.do' }), msgId: 'm1' });
     expect(parseMesh(sent[sent.length - 1])).toMatchObject({ by: 'don.do', body: 'Jaja, aquí', re: 'HFM' });
@@ -210,7 +209,7 @@ describe('mesh relay — YAML provenance over a shared channel', () => {
     const doSpine = createMeshRelay({
       node: 'do', send: async (_r, t) => sent.push(t), surface: async () => {},
       runBeing: async () => 'aquí', beingEmoji: () => '🤝',
-      resolveRoute: () => ({ room_id: 'C' }), isLocalBeing: (b) => b === 'don',
+      isLocalBeing: (b) => b === 'don',
     });
     await doSpine.onRoomMessage({ route: { room_id: 'C' }, text: encodeMesh({ by: 'An', body: '@don hola', from: 'HFM', to: 'don.do' }), msgId: 'm1' });
     expect(sent[sent.length - 1]).not.toMatch(/\bemoji:/);                 // emoji is not a wire key
@@ -221,10 +220,10 @@ describe('mesh relay — YAML provenance over a shared channel', () => {
     const updates = []; let finished = null; const oneShot = [];
     const kg = createMeshRelay({
       node: 'kg', send: async () => {}, surface: async (_o, t) => oneShot.push(t), ack: async () => {},
-      runBeing: async () => '', resolveRoute: () => ({ room_id: 'C' }), isLocalBeing: () => false,
+      runBeing: async () => '', isLocalBeing: () => false,
       openOriginStream: (_returnTo, info) => { updates.push({ open: info }); return { update: (b) => updates.push(b), finish: async (b) => { finished = b; } }; },
     });
-    await kg.relayOut({ being: 'don', toNode: 'do', body: '@don hola', origin: { surface: 'whatsapp', chat_id: 'X', name: 'HFM' }, sender: 'An' });
+    await kg.relayOut({ being: 'don', route: { room_id: 'C' }, to: 'don.do', body: '@don hola', origin: { surface: 'whatsapp', chat_id: 'X', name: 'HFM' }, sender: 'An' });
     // first sight of the responder's relay message (r1) opens the mirror, keyed by r1.
     // the body_emoji is part of the BODY (stamped by the responder) — no emoji key.
     await kg.onRoomMessage({ route: { room_id: 'C' }, text: encodeMesh({ by: 'don.do', body: '🤔', re: 'HFM' }), msgId: 'r1' });
@@ -242,15 +241,15 @@ describe('mesh relay — YAML provenance over a shared channel', () => {
     const surfaced = [];
     const kg = createMeshRelay({
       node: 'kg', send: async () => {}, surface: async (_o, t) => surfaced.push(t), ack: async () => {},
-      runBeing: async () => '', resolveRoute: () => ({ room_id: 'C' }), isLocalBeing: () => false,
+      runBeing: async () => '', isLocalBeing: () => false,
     });
-    await kg.relayOut({ being: 'don', toNode: 'do', body: '@don hola', origin: { surface: 'whatsapp', chat_id: 'X', name: 'HFM' }, sender: 'An' });
+    await kg.relayOut({ being: 'don', route: { room_id: 'C' }, to: 'don.do', body: '@don hola', origin: { surface: 'whatsapp', chat_id: 'X', name: 'HFM' }, sender: 'An' });
     await kg.onRoomMessage({ route: { room_id: 'C' }, text: encodeMesh({ by: 'don.do', body: 'final', re: 'HFM', done: true }), msgId: 'r1' });
     expect(surfaced).toEqual(['final']);
   });
 
   it('onRoomMessageEdit ignores an edit for a message it is not streaming (returns false → bridge handles it)', async () => {
-    const kg = createMeshRelay({ node: 'kg', send: async () => {}, surface: async () => {}, resolveRoute: () => ({ room_id: 'C' }), isLocalBeing: () => false });
+    const kg = createMeshRelay({ node: 'kg', send: async () => {}, surface: async () => {}, isLocalBeing: () => false });
     expect(await kg.onRoomMessageEdit({ msgId: 'unknown', text: 'whatever' })).toBe(false);
   });
 });
@@ -276,7 +275,7 @@ describe('mesh relay — declarative relay chain (relay_channel + to)', () => {
     const sent = [];
     const doSpine = createMeshRelay({
       node: 'do', send: async (r, t) => sent.push({ room: r.room_id, t }), surface: async () => {},
-      isSelfNode: (n) => n === 'do', isLocalBeing: () => false, resolveRoute: () => null,   // pure declarative, no mesh.nodes
+      isSelfNode: (n) => n === 'do', isLocalBeing: () => false,
       resolveBeingRelay: (b) => (b === 'don' ? { being: 'wren', node: 'kg', route: { room_id: 'Rodz2' } } : null),
     });
     const req = encodeMesh({ by: 'An', body: 'hola', from: 'Me', from_node: 'origin', to: 'don.do' });
@@ -290,7 +289,7 @@ describe('mesh relay — declarative relay chain (relay_channel + to)', () => {
     const sent = [];
     const doSpine = createMeshRelay({
       node: 'do', send: async (r, t) => sent.push({ room: r.room_id, t }), surface: async () => {},
-      isSelfNode: (n) => n === 'do', isLocalBeing: () => false, resolveRoute: () => null,
+      isSelfNode: (n) => n === 'do', isLocalBeing: () => false,
       // a LIST-shaped relay record re-addresses onward through TWO routes at once
       resolveBeingRelay: (b) => (b === 'don' ? [
         { being: 'wren', node: 'kg', route: { room_id: 'Rodz2' } },
@@ -344,7 +343,7 @@ describe('mesh relay — via traceroute', () => {
     const sent = [];
     const doSpine = createMeshRelay({
       node: 'do', send: async (_r, t) => sent.push(t), surface: async () => {},
-      isSelfNode: (n) => n === 'do', isLocalBeing: () => false, resolveRoute: () => null,
+      isSelfNode: (n) => n === 'do', isLocalBeing: () => false,
       resolveBeingRelay: (b) => (b === 'don' ? { being: 'wren', node: 'kg', route: { room_id: 'Rodz2' } } : null),
     });
     const req = encodeMesh({ by: 'An', body: 'hola', from: 'Me', from_node: 'origin', to: 'don.do' });   // origin stamps no via
@@ -380,9 +379,9 @@ describe('mesh relay — via traceroute', () => {
     const surfaced = [];
     const kg = createMeshRelay({
       node: 'kg', send: async () => {}, surface: async (_o, t) => surfaced.push(t), ackWithPostId: async () => 'p1',
-      isLocalBeing: () => false, resolveRoute: () => ({ room_id: 'R' }),
+      isLocalBeing: () => false,
     });
-    await kg.relayOut({ being: 'don', toNode: 'do', body: '@ed hi', origin: { chat_id: 'X', name: 'HFM' }, sender: 'An' });
+    await kg.relayOut({ being: 'don', route: { room_id: 'R' }, to: 'don.do', body: '@ed hi', origin: { chat_id: 'X', name: 'HFM' }, sender: 'An' });
     await kg.onRoomMessage({ route: { room_id: 'R' }, text: encodeMesh({ by: 'ed.do', body: 'answer: hi', re: 'HFM.kg', post_id: 'p1', via: 'don.do,wren.kg', done: true }), msgId: 'r1' });
     expect(surfaced).toEqual(['answer: hi']);          // clean body — no "via …" appended (would linkify)
   });
@@ -391,10 +390,10 @@ describe('mesh relay — via traceroute', () => {
     const updates = []; let finished = null;
     const kg = createMeshRelay({
       node: 'kg', send: async () => {}, surface: async () => {}, ackWithPostId: async () => 'p1',
-      isLocalBeing: () => false, resolveRoute: () => ({ room_id: 'R' }),
+      isLocalBeing: () => false,
       openOriginStream: () => ({ update: (b) => updates.push(b), finish: async (b) => { finished = b; } }),
     });
-    await kg.relayOut({ being: 'don', toNode: 'do', body: '@ed hi', origin: { chat_id: 'X', name: 'HFM' }, sender: 'An' });
+    await kg.relayOut({ being: 'don', route: { room_id: 'R' }, to: 'don.do', body: '@ed hi', origin: { chat_id: 'X', name: 'HFM' }, sender: 'An' });
     await kg.onRoomMessage({ route: { room_id: 'R' }, text: encodeMesh({ by: 'ed.do', body: 'part', re: 'HFM.kg', post_id: 'p1', via: 'don.do,wren.kg' }), msgId: 'r1' });
     await kg.onRoomMessageEdit({ msgId: 'r1', text: encodeMesh({ by: 'ed.do', body: 'answer', re: 'HFM.kg', post_id: 'p1', via: 'don.do,wren.kg', done: true }) });
     expect(updates).toEqual(['part']);
@@ -410,16 +409,6 @@ describe('mesh relay — via traceroute', () => {
     expect(parseMesh(sent[0])).toMatchObject({ via: 'carol.kg' });
   });
 
-  it('relayOut mesh.nodes path (no directRoute) does NOT seed via — `being` there is the REMOTE being', async () => {
-    const sent = [];
-    const kg = createMeshRelay({
-      node: 'kg', send: async (_r, t) => sent.push(t), surface: async () => {}, ackWithPostId: async () => 'p1',
-      resolveRoute: () => ({ room_id: 'R' }),
-    });
-    await kg.relayOut({ being: 'don', toNode: 'do', body: '@don hi', origin: { chat_id: 'X', name: 'HFM' }, sender: 'An' });
-    expect(parseMesh(sent[0])).toMatchObject({ via: '' });
-  });
-
   it('two-hop accumulation order: [origin-agent, hop1, hop2] (carol.kg → don.do → wren.kg)', async () => {
     const sentRodz1 = [];
     const origin = createMeshRelay({
@@ -428,7 +417,7 @@ describe('mesh relay — via traceroute', () => {
     const sentRodz2 = [];
     const doSpine = createMeshRelay({
       node: 'do', send: async (_r, t) => sentRodz2.push(t), surface: async () => {},
-      isSelfNode: (n) => n === 'do', isLocalBeing: () => false, resolveRoute: () => null,
+      isSelfNode: (n) => n === 'do', isLocalBeing: () => false,
       resolveBeingRelay: (b) => (b === 'don' ? { being: 'wren', node: 'kg', route: { room_id: 'Rodz2' } } : null),
     });
     const sentRodz3 = [];
@@ -456,7 +445,7 @@ describe('mesh relay — multipath (two concurrent relays from one origin chat)'
     let n = 0;
     const kg = createMeshRelay({
       node: 'kg', send: async () => {}, surface: async () => {}, log: () => {},
-      isLocalBeing: () => false, resolveRoute: () => null,
+      isLocalBeing: () => false,
       ackWithPostId: async () => `p${++n}`,                    // p1 for the first relay, p2 for the second
       openOriginStream: (returnTo, info) => {
         const pid = info.msgId;
@@ -478,36 +467,22 @@ describe('mesh relay — multipath (two concurrent relays from one origin chat)'
   });
 });
 
-// ── MULTI-HOP TRANSIT (mesh.nodes scheme): a spine that isn't the destination forwards the
-//    request one hop toward it via resolveRoute(destNode). No engine-level forward-once — each
-//    node observes a given envelope once (bridge echo suppression + per-id dedup). It never
-//    forwards a request back the way it came (that would echo). ──
-describe('mesh relay — multi-hop transit (forward toward a foreign node)', () => {
-  const A = { room_id: 'A' }, B = { room_id: 'B' };           // rooms: A = {kg,do}, B = {do,mo}
-  const routeFor = (self) => ({ kg: { do: A, mo: A }, do: { kg: A, mo: B }, mo: { kg: B, do: B } }[self]);
-
-  it('a transit node forwards a REQUEST one hop toward the target (to preserved)', async () => {
+// ── FOREIGN-NODE ENVELOPES ARE CONSUMED (operator 2026-07-25 — `mesh.nodes` evicted). There
+//    is no node routing table to forward "toward" anymore: a request only travels by riding a
+//    relay agent's own channel, hop by hop (the relay-record branch above). A node that merely
+//    OBSERVES an envelope addressed elsewhere stays silent — it neither forwards it (there is
+//    nowhere to forward it to) nor answers "no <being>.<node> here" on someone else's behalf. ──
+describe('mesh relay — an envelope for a foreign node is consumed, never re-routed', () => {
+  it('observing a request addressed to another node emits NOTHING (no transit, no false "not here")', async () => {
     const sent = [];
     const doSpine = createMeshRelay({
       node: 'do', send: async (r, t) => sent.push({ room: r.room_id, t }),
-      resolveRoute: (n) => routeFor('do')[n] ?? null, isLocalBeing: () => false,   // do does NOT own don
+      isSelfNode: (n) => n === 'do', isLocalBeing: () => false,
     });
     const req = encodeMesh({ by: 'An', body: 'hi @don', from: 'HFM', from_node: 'kg', to: 'don.mo' });
-    await doSpine.onRoomMessage({ route: A, text: req, msgId: 'a1' });              // seen in room A → forward to room B
-    expect(sent).toHaveLength(1);
-    expect(sent[0].room).toBe('B');
-    expect(parseMesh(sent[0].t)).toMatchObject({ to: 'don.mo', from: 'HFM', from_node: 'kg', body: 'hi @don' });
-  });
-
-  it('a transit node never forwards a request back the way it came (no echo loop)', async () => {
-    const sent = [];
-    const kg = createMeshRelay({
-      node: 'kg', send: async (r) => sent.push(r.room_id),
-      resolveRoute: (n) => routeFor('kg')[n] ?? null, isLocalBeing: () => false,
-    });
-    // kg's next hop toward mo is room A === the incoming room → skip (would echo)
-    await kg.onRoomMessage({ route: A, text: encodeMesh({ by: 'An', body: 'hi', from: 'HFM', from_node: 'kg', to: 'don.mo' }), msgId: 'x1' });
-    expect(sent).toHaveLength(0);
+    const consumed = await doSpine.onRoomMessage({ route: { room_id: 'A' }, text: req, msgId: 'a1' });
+    expect(consumed).toBe(true);      // consumed (relay traffic — the spine must not treat it as chat)
+    expect(sent).toHaveLength(0);     // and silent
   });
 });
 
@@ -541,7 +516,6 @@ describe('mesh relay — reply home (origin present in the terminal room)', () =
       isSelfNode: (n) => n === 'kg',
       isLocalBeing: () => false,                                    // kg hosts only relay agents
       resolveBeingRelay: (b) => (b === 'wren' ? { being: 'ed', node: 'do', route: { room_id: 'rodz3' } } : null),
-      resolveRoute: () => null,
       send: async (route, text) => { post(route.room_id, 'kg', text); },
       surface: async (origin, text, info = {}) => { surfaced.kg.push({ origin, text, info }); },
       ackWithPostId: async () => 'P',
@@ -553,7 +527,6 @@ describe('mesh relay — reply home (origin present in the terminal room)', () =
       isLocalBeing: (b) => b === 'e' || b === 'egpt' || b === 'ed',
       resolveLocalBeing: (b) => ((b === 'ed' || b === 'egpt' || b === 'e') ? 'e' : b),
       resolveBeingRelay: (b) => (b === 'don' ? { being: 'wren', node: 'kg', route: { room_id: 'rodz2' } } : null),
-      resolveRoute: () => null,
       send: async (route, text) => { post(route.room_id, 'do', text); },
       surface: async (origin, text, info = {}) => { surfaced.do.push({ origin, text, info }); },
       runBeing: async (being, prompt) => { ranAs = being; dispatchCount.do++; return `answer: ${prompt}`; },

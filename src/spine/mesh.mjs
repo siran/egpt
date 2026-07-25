@@ -13,7 +13,7 @@
 //   send / surface / ackWithPostId   ->  the Bridge port (send / postStatus)
 //   relayDispatch / openOriginStream ->  the Bridge port's startStream (edit-stream)
 //   runBeing (via relayDispatch)     ->  the Brain port (brain.turn), streaming
-//   resolveRoute / isLocalBeing / …  ->  config (node_name, agents, mesh.nodes)
+//   isLocalBeing / resolveBeingRelay ->  config (node_name, agents)
 //
 // The spine wires the three entry points into handleInbound (spine.mjs):
 //   isEnvelope(ev)  — a message carrying a provenance tail is relay traffic, not chat.
@@ -23,10 +23,10 @@
 //   onEdit(edit)    — a streamed edit in the relay chat mirrors onward (wired to
 //                     bridge.onEdit at boot); returns truthy-if-consumed (bridge contract).
 //
-// Relay-chat resolution (which chat physically carries the envelope) follows the old
-// wiring exactly: config.mesh.nodes.<node>.routes[0].room_id (names→chat via config,
-// not a new scheme). Inert until mesh.nodes is configured (resolveRoute → null →
-// relayOut surfaces "no route").
+// Relay-chat resolution (which chat physically carries the envelope) is AGENT-BASED
+// (operator 2026-07-25 — the `mesh.nodes` node routing table was evicted as dysfunctional
+// legacy): the chat is a relay agent's own `relay_channel`, resolved name→id by the bridge.
+// A node with no relay agents originates nothing; it can still answer what reaches it.
 import { createMeshRelay, encodeMesh, parseMesh, agentPaths } from '../mesh/relay.mjs';
 
 const PLACEHOLDER = '🤔 thinking…';
@@ -73,12 +73,6 @@ export function createMeshService({
       if (agentIds(name, agent).includes(t)) return { name: name.toLowerCase(), agent };
     }
     return null;
-  };
-  // Relay-chat resolution (unchanged from the old wiring): a node's listen route is
-  // config.mesh.nodes.<node>.routes[0]; its room_id is the chat the envelope rides.
-  const resolveRoute = (toNode) => {
-    const routes = cfg().mesh?.nodes?.[String(toNode).toLowerCase()]?.routes;
-    return Array.isArray(routes) && routes.length ? routes[0] : null;
   };
   const chatOf = (route) => {
     const c = route?.room_id ?? route?.chat ?? route;
@@ -165,7 +159,6 @@ export function createMeshService({
     node,
     isSelfNode,                          // node_name ∪ node_alias → several identities on one process
     log: onLog,
-    resolveRoute,
     // A local being: any LOCAL agent (enabled, configuration ≠ 'relay') matched by its KEY
     // *or any of its handles* — including the persona, which lives in the registry like any
     // other agent (operator 2026-07-10: no e/egpt shortcut; a handle like `ed` resolves via
@@ -193,9 +186,10 @@ export function createMeshService({
     },
     // RELAY-RECORD (declarative chain): a relay agent with `to: <being>.<node>` re-addresses
     // an arriving request onward. Returns { being, node, route } — the next hop's being/node
-    // and the room to post into (this agent's own relay_channel; falls back to the mesh.nodes
-    // route for `node` when relay_channel is absent). No `to` → not a relay-record (open-channel
-    // or a terminal being). This wires the engine's existing relay-record branch to config.
+    // and the room to post into (this agent's OWN relay_channel — the only source of a route
+    // since mesh.nodes was evicted, operator 2026-07-25). No `to`, or no relay_channel to carry
+    // it → not a relay-record (open-channel or a terminal being). This wires the engine's
+    // existing relay-record branch to config.
     resolveBeingRelay: async (being) => {
       const a = agents()[String(being).toLowerCase()];
       if (!a || typeof a !== 'object') return null;
@@ -204,12 +198,11 @@ export function createMeshService({
       // across networks resolves to the pinned one (see canonRoute).
       const recordOf = async (p) => {
         const to = String(p.to ?? '').trim();
-        if (!to) return null;
+        if (!to || !p.relay_channel) return null;
         const parts = to.split('.');
         const b = parts[0].toLowerCase();
         const n = (parts.length >= 2 ? parts[parts.length - 1] : '').toLowerCase();
-        const raw = p.relay_channel ? { room_id: String(p.relay_channel), ...(p.network ? { network: String(p.network).toLowerCase() } : {}) } : (n ? resolveRoute(n) : null);
-        if (!raw) return null;
+        const raw = { room_id: String(p.relay_channel), ...(p.network ? { network: String(p.network).toLowerCase() } : {}) };
         return { being: b, node: n, route: await canonRoute(raw) };   // relay_channel NAME → canonical id
       };
       // MULTIPATH (operator 2026-07-06: an agent is a list of paths, every message through every
@@ -303,18 +296,18 @@ export function createMeshService({
       return relay.onRoomMessage({ route, text: ev.body, msgId: ev.msgId });
     },
 
-    // ORIGIN: relay a human's "@being.node …" to the target's node. Arms the origin-
-    // wait timeout; relayOut posts the "🤔" placeholder + the request envelope.
+    // ORIGIN: relay a human's "@<relay-agent> …" onward. Arms the origin-wait timeout;
+    // relayOut posts the "🤔" placeholder + the request envelope.
     //
-    // Two target shapes are accepted:
-    //   { being, node }            — the mesh.nodes scheme: relayOut resolves the route
-    //                                via config.mesh.nodes.<node>.routes[0].
-    //   { being, route:{room_id} } — the ROUTE-DIRECT variant (a `type: relay` agent):
-    //                                the relay_channel IS the route, so relayOut posts
-    //                                the envelope straight into that chat. No node; the
-    //                                envelope carries no `to:` → the owner of `being` on
-    //                                the other end answers (open-channel), reply mirrors
-    //                                home through the same awaiting/re: machinery.
+    // Two target shapes are accepted, both AGENT-BASED (operator 2026-07-25 — the
+    // `{ being, node }` mesh.nodes shape was evicted along with the node routing table):
+    //   { being, route:{room_id}, to? } — a scalar relay agent: its relay_channel IS the
+    //                                route, so relayOut posts the envelope straight into
+    //                                that chat. With `to: <being>.<node>` the next hop is
+    //                                named; without it, open-channel (the owner of `being`
+    //                                on the other end answers). The reply mirrors home
+    //                                through the awaiting/re: machinery either way.
+    //   { being, paths:[…] }       — a LIST-shaped (multipath) relay agent; see below.
     async forward(ev, target) {
       const being = target?.being;
       // MULTIPATH (operator 2026-07-06: multipath is configuration — an agent is a list of paths,
@@ -332,24 +325,21 @@ export function createMeshService({
         if (!ok) clearTimeoutFor(ev.chatId);
         return ok;
       }
-      const toNode = target?.node;
-      let route = target?.route;                                // route-direct (relay agent)
+      let route = target?.route;                                // the relay agent's channel
       const to = String(target?.to ?? '').trim();               // declarative next-hop (chain)
-      if (!being || (!toNode && !route)) { onLog(`forward: bad target ${JSON.stringify(target)}`); return false; }
-      // A route-direct hop posts into the relay_channel exactly AS CONFIGURED (the bridge resolves
-      // the name at send time), so an unresolvable channel is dropped there in silence. Check it
-      // here and fall the transport back to Self; a channel that DOES resolve rides on unchanged.
-      if (route) {
-        const c = chatOf(route);
-        if (c != null && !(await chatResolves(c, route.network ? String(route.network).toLowerCase() : null))) {
-          route = (await selfRoute(route, c)) ?? route;
-        }
+      if (!being || !route) { onLog(`forward: bad target ${JSON.stringify(target)}`); return false; }
+      // The hop posts into the relay_channel exactly AS CONFIGURED (the bridge resolves the name
+      // at send time), so an unresolvable channel is dropped there in silence. Check it here and
+      // fall the transport back to Self; a channel that DOES resolve rides on unchanged.
+      const chat = chatOf(route);
+      if (chat != null && !(await chatResolves(chat, route.network ? String(route.network).toLowerCase() : null))) {
+        route = (await selfRoute(route, chat)) ?? route;
       }
       const origin = { surface: ev.surface, chat_id: ev.chatId, name: ev.chatName ?? ev.chatId };
       const sender = ev.senderName ?? 'someone';
-      const label = to || (toNode ? `${being}.${toNode}` : `${being} (${chatOf(route)})`);
+      const label = to || `${being} (${chatOf(route)})`;
       armTimeout(ev.chatId, label);
-      const ok = await relay.relayOut({ being, toNode, route, to, body: ev.body, origin, sender });
+      const ok = await relay.relayOut({ being, route, to, body: ev.body, origin, sender });
       if (!ok) clearTimeoutFor(ev.chatId);                      // relayOut already surfaced the failure
       return ok;
     },

@@ -90,8 +90,10 @@ function findSibling(siblings, name) {
 }
 
 // Resolve an @mention against the ONE per-node registry (EGPT_CONFIG.siblings) —
-// each entry local | remote(node) | relay(to). `mesh.nodes.<node>.routes` is the
-// SEPARATE transport layer (how to reach a node), not part of this registry.
+// each entry local | remote(node) | relay(to). NAME resolution only: this says WHICH
+// being/node an @mention means, never how to reach it. ORPHANED 2026-07-25 — the spine
+// router no longer calls this (the `@being.node` route it fed died with `mesh.nodes`);
+// only tests/mesh-names.test.mjs exercises it now.
 export function resolveMeshAddress(token, { localNode, localAliases = [], siblings = {} } = {}) {
   const addr = parseMeshAddress(token);
   if (!addr) return { kind: 'invalid', token: String(token ?? '') };

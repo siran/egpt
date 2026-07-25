@@ -15,10 +15,12 @@
 // OWN @name would otherwise look un-mentioned to its gate, so we hand its gate a synthetic
 // mention (atEStart/atEAnywhere true). E keeps ev.mention unchanged.
 //
-// Mesh-target resolution (Phase 4b): a leading @being.node reaches a being on ANOTHER machine.
-// resolve() then returns { being: null, mesh: <target>, mention } and the spine forwards it
-// (mesh.forward). Gated on meshEnabled() so an unconfigured node never mints a phantom target.
-import { resolveMeshAddress } from '../mesh/names.mjs';
+// Cross-node reach is AGENT-BASED (operator 2026-07-25): the ONLY way to leave this machine is
+// a RELAY agent, whose relay_channel is the route — resolve() returns { being: null, mesh:
+// <target>, mention } and the spine forwards it (mesh.forward). The old bare `@being.node`
+// scheme was evicted with its `config.mesh.nodes` routing table: it minted a target carrying no
+// route, so nothing could ever carry it. `@don.do` still works when `don` is a relay agent —
+// the leading-@token match below stops at the dot and finds the agent.
 import { agentPaths } from '../mesh/relay.mjs';
 
 // The mention a mesh (or agent) @name synthesizes for its gate: it IS addressed.
@@ -46,7 +48,7 @@ function findAgent(agents, token) {
   return null;
 }
 
-export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', getNode = () => null, getAliases = () => [], meshEnabled = () => false } = {}) {
+export function createRouter({ getAgents = () => ({}), defaultBeing = 'e' } = {}) {
   return {
     /** @param {import('./spine.mjs').InboundEvent} ev
      *  @returns {{ being: string|null, mesh?: object, mention: object|undefined }} */
@@ -115,19 +117,7 @@ export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', getNo
         }
       }
 
-      // Mesh next: a leading @being.node (dot allowed) that resolves to ANOTHER node reaches
-      // a being cross-machine. Inert unless mesh is configured. A qualified @being.node whose
-      // node isn't this one → a foreign mesh target; anything else falls through to E. Remote
-      // beings addressable by a bare @name are RELAY AGENTS (handled by the agents block above),
-      // so no sibling registry is consulted here.
-      if (meshEnabled()) {
-        const mt = /^@([a-z0-9_-]+(?:\.[a-z0-9_-]+)?)/i.exec(body);
-        if (mt) {
-          const a = resolveMeshAddress(mt[1], { localNode: getNode(), localAliases: getAliases() });
-          if (a.kind === 'foreign') return { being: null, mesh: { being: a.name, node: a.node, target: a.fqid ?? `${a.name}.${a.node}` }, mention: MENTION };
-        }
-      }
-
+      // Nothing else reaches off-node: an @token that matched no agent is the persona's.
       return { being: defaultBeing, mention: ev?.mention };
     },
   };

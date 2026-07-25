@@ -216,7 +216,6 @@ export function createMeshRelay({
   ackWithPostId = null,              // (origin, text) => Promise<string|null>
   runBeing = async () => '',         // (being, prompt, ctx) => Promise<string>
   beingEmoji = () => '',             // (being) => body_emoji — stamps the relayed reply (contract)
-  resolveRoute = () => null,         // (toNode) => route | null
   // isSelfNode(name) — is this node-name ONE OF OURS? node_name ∪ node_alias (operator
   // 2026-07-05): one process may answer to several node identities, so a REQUEST whose
   // target node is any self-name is handled locally (never forwarded to ourselves), and
@@ -278,30 +277,13 @@ export function createMeshRelay({
     return true;
   }
 
-  // ── MULTI-HOP TRANSIT: a spine that isn't the destination forwards the message one hop
-  //    toward it, via resolveRoute(destNode). No engine-level forward-once is needed — each
-  //    node observes a given envelope ONCE (a node never re-sees its own posts: bridge echo
-  //    suppression; and a foreign re-delivery dedups by message id at the bridge). The spine's
-  //    turn-counter guard is the hard backstop now (it counts every observed envelope). It never
-  //    forwards back the way the message came (that would echo).
-  const _routeKey = (r) => String(r?.room_id ?? r?.chat ?? JSON.stringify(r ?? null));
-  async function forwardToward(destNode, prov, fromRoute) {
-    if (!destNode) return false;
-    const dest = resolveRoute(destNode);
-    if (!dest || _routeKey(dest) === _routeKey(fromRoute)) return false;   // no onward route / would echo back
-    log(`mesh: forward req → ${destNode}`);
-    return guardedSend(dest, encodeMesh({
-      from: prov.from, from_node: prov.from_node, by: prov.by, to: prov.to, re: prov.re,
-      post_id: prov.post_id, body: prov.body, done: prov.done,
-    }));
-  }
-
-  // ── ORIGIN: relay a human's @being message to the channel where its node listens ──
-  // `route` (route-direct) short-circuits resolveRoute(toNode): a `type: relay` agent
-  // supplies the relay_channel directly, with no node. When there's no toNode the
-  // envelope carries an EMPTY `to:` — the open-channel path (the owner of `being` on the
-  // other end answers, everyone else stays silent) — and the labels drop the `.node`.
-  async function relayOut({ being, toNode, route: directRoute = null, to: explicitTo = '', body = '', origin = null, sender = '', paths = null } = {}) {
+  // ── ORIGIN: relay a human's @being message into a relay agent's own channel ──
+  // ROUTING IS THE AGENT (operator 2026-07-25 — the `mesh.nodes` node routing table was
+  // evicted): the caller ALWAYS supplies the route, because a route only ever comes from a
+  // relay agent's `relay_channel`. `to: <being>.<node>` names the next hop (a declarative
+  // chain); no `to` = the open-channel path (the owner of `being` on the other end answers,
+  // everyone else stays silent) and the label drops the `.node`.
+  async function relayOut({ being, route = null, to: explicitTo = '', body = '', origin = null, sender = '', paths = null } = {}) {
     // MULTIPATH (operator 2026-07-06: multipath is configuration — an agent is a list of paths,
     // every message through every path). `paths` = [{ route, to, label }] (routes already resolved
     // by the caller's canonRoute). Post the placeholder ONCE (one 🤔 / post_id for the human), then
@@ -331,8 +313,7 @@ export function createMeshRelay({
       if (awaitKey && origin) awaiting.set(awaitKey, origin);
       return true;
     }
-    const route = directRoute ?? resolveRoute(toNode);
-    const tgt = explicitTo || (toNode ? `${being}.${toNode}` : being);   // human-readable label
+    const tgt = explicitTo || being;                                     // human-readable label
     if (!route) { await surface(origin, `!! mesh: no route to ${tgt}`); return false; }
     const fromName = (origin && origin.name) || '';
     // Post the placeholder FIRST so we can capture its msgId as post_id. The responder
@@ -354,15 +335,13 @@ export function createMeshRelay({
       // so the origin can parse the return-node and look up the right route + awaiting entry.
       // `to: being.node` (e.g. "don.do") encodes both target being and node so the responder
       // can identify without relying on @mention parsing.
-      // A relay agent's declarative `to: <being>.<node>` names the next hop (chain); else a
-      // node-qualified target (mesh.nodes scheme); else empty = open-channel (no target node).
-      const to = explicitTo || (toNode ? `${being}.${toNode}` : '');
-      // SEED via (operator 2026-07-06): a ROUTE-DIRECT relayOut posts a LOCAL relay agent's own
-      // first hop (e.g. carol posting into Rodz1) — seed `via` with its own identity so the
-      // traceroute lists every relay agent the request passed through, including the origin's.
-      // The mesh.nodes path (no directRoute) must NOT seed: there `being` names the REMOTE being
-      // being addressed, not a local relay agent.
-      const viaSeed = directRoute != null ? `${being}.${node}` : '';
+      // A relay agent's declarative `to: <being>.<node>` names the next hop (chain); else
+      // empty = open-channel (no target node).
+      const to = explicitTo || '';
+      // SEED via (operator 2026-07-06): relayOut posts a LOCAL relay agent's own first hop
+      // (e.g. carol posting into Rodz1) — seed `via` with its own identity so the traceroute
+      // lists every relay agent the request passed through, including the origin's.
+      const viaSeed = `${being}.${node}`;
       const ok = await guardedSend(route, encodeMesh({ by: sender || 'someone', body, from: fromName, from_node: String(node), to, post_id: postId || '', via: viaSeed }));
       if (!ok) { await surface(origin, `!! mesh: too many sends to ${tgt}'s channel — paused (loop guard)`); return false; }
     }
@@ -453,9 +432,12 @@ export function createMeshRelay({
     // one process wears several node names (operator 2026-07-05).
     const asNode = target || String(node).toLowerCase();
     if (target) {
-      if (!isSelfNode(target)) { await forwardToward(target, prov, route); return true; }
+      // Addressed at a node that isn't one of ours: CONSUME it. There is no node routing table
+      // to forward toward anymore (operator 2026-07-25 — mesh.nodes evicted); an envelope only
+      // travels by riding a relay agent's own channel, hop by hop, which is the branch below.
+      if (!isSelfNode(target)) return true;
       // RELAY-RECORD: `being` is configured here as a relay to ANOTHER node's being — re-address
-      // and forward into its OWN configured route (relay agent's channel, else mesh.nodes). This
+      // and forward into its OWN configured route (the relay agent's channel). This
       // generalizes to an ARBITRARY-length chain: each hop only knows its OWN relay-record and
       // forwards one step. No engine-level forward-once is needed — each node observes a given
       // envelope once (self-echo suppression + the bridge's per-id dedup); the spine's
@@ -467,7 +449,7 @@ export function createMeshRelay({
         // single object (unchanged). via appends THIS hop's identity once; each envelope carries it.
         const recs = (Array.isArray(_rec) ? _rec : [_rec]).filter(Boolean);
         for (const rec of recs) {
-          const dest = rec.route ?? resolveRoute(rec.node);   // relay agent's own channel, else mesh.nodes
+          const dest = rec.route;                            // the relay agent's own channel
           if (dest) {
             log(`mesh: relay-record ${being}.${node} → ${rec.being}.${rec.node}`);
             await guardedSend(dest, encodeMesh({ from: prov.from, from_node: prov.from_node, by: prov.by, to: `${rec.being}.${rec.node}`, re: prov.re, post_id: prov.post_id, body: prov.body, via: appendVia(prov.via, `${being}.${asNode}`) }));

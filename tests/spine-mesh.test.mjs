@@ -74,12 +74,12 @@ function svc({ node, aliases = [], agents = {}, meshCfg = {}, brain, timers, log
   return { bridge, mesh, cfg };
 }
 
-describe('mesh service — outbound (origin relays @being.node)', () => {
-  it('(a) posts a 🤔 placeholder + an encoded request envelope to the resolved relay chat, with the return-address', async () => {
-    const { bridge, mesh } = svc({ node: 'kg', meshCfg: { nodes: { do: { routes: [{ room_id: 'RELAY' }] } } } });
-    const ev = { surface: 'whatsapp', chatId: 'CHAT', chatName: 'HFM', senderName: 'An', body: '@don.do do X' };
+describe('mesh service — outbound (origin relays through a relay agent)', () => {
+  it('(a) posts a 🤔 placeholder + an encoded request envelope to the relay_channel, with the return-address', async () => {
+    const { bridge, mesh } = svc({ node: 'kg' });
+    const ev = { surface: 'whatsapp', chatId: 'CHAT', chatName: 'HFM', senderName: 'An', body: '@don do X' };
 
-    const ok = await mesh.forward(ev, { being: 'don', node: 'do', target: 'don.do' });
+    const ok = await mesh.forward(ev, { being: 'don', route: { room_id: 'RELAY' }, to: 'don.do' });
     expect(ok).toBe(true);
 
     // origin placeholder (its id rides as post_id)
@@ -90,20 +90,26 @@ describe('mesh service — outbound (origin relays @being.node)', () => {
     expect(bridge.sent).toHaveLength(1);
     expect(bridge.sent[0].chat).toBe('RELAY');
     const p = parseMesh(bridge.sent[0].text);
-    expect(p).toMatchObject({ to: 'don.do', from: 'HFM', from_node: 'kg', by: 'An', body: '@don.do do X', post_id: 'post-1' });
+    expect(p).toMatchObject({ to: 'don.do', from: 'HFM', from_node: 'kg', by: 'An', body: '@don do X', post_id: 'post-1' });
   });
 
-  it('surfaces "no route" home when the target node has no relay route', async () => {
-    const { bridge, mesh } = svc({ node: 'kg', meshCfg: {} });   // no mesh.nodes
+  it('EVICTION LOCK: a routeless target (the old { being, node } mesh.nodes shape) is REJECTED, not relayed', async () => {
+    // Routing is the agent now (operator 2026-07-25): a target that names a node but carries no
+    // relay_channel route has no way to travel, so forward refuses it outright rather than
+    // minting a phantom relay. Nothing is posted anywhere — not even a placeholder.
+    const logs = [];
+    const { bridge, mesh } = svc({ node: 'kg', logs });
     const ev = { surface: 'whatsapp', chatId: 'CHAT', chatName: 'HFM', senderName: 'An', body: '@don.do hi' };
-    const ok = await mesh.forward(ev, { being: 'don', node: 'do' });
+    const ok = await mesh.forward(ev, { being: 'don', node: 'do', target: 'don.do' });
     expect(ok).toBe(false);
-    expect(bridge.sent.some((s) => s.chat === 'CHAT' && /no route/i.test(s.text))).toBe(true);
+    expect(bridge.sent).toHaveLength(0);
+    expect(bridge.statusPosts).toHaveLength(0);
+    expect(logs.some((m) => /bad target/.test(m))).toBe(true);
   });
 
   it('ROUTE-DIRECT (a relay agent): forward posts the envelope straight to the relay_channel chat, open-channel (empty `to`)', async () => {
-    // The router hands mesh.forward a route-direct target { being, route } — no node,
-    // no mesh.nodes config needed. The envelope lands in the relay_channel chat.
+    // The router hands mesh.forward a route-direct target { being, route } — the relay_channel
+    // IS the route. The envelope lands in that chat.
     const { bridge, mesh } = svc({ node: 'kg', meshCfg: {} });
     const ev = { surface: 'whatsapp', chatId: 'CHAT', chatName: 'HFM', senderName: 'An', body: '@don hola' };
 
@@ -239,9 +245,9 @@ describe('mesh service — responder (a request arrives at the owning node)', ()
 describe('mesh service — origin (the reply streams home as a living mirror)', () => {
   it('(c) edits the origin placeholder in place (existingMsgId); the done frame finalizes it', async () => {
     const timers = fakeTimers();
-    const { bridge, mesh } = svc({ node: 'kg', meshCfg: { nodes: { do: { routes: [{ room_id: 'RELAY' }] } }, timeout_ms: 60000 }, timers });
-    const ev = { surface: 'whatsapp', chatId: 'CHAT', chatName: 'HFM', senderName: 'An', body: '@don.do hola' };
-    await mesh.forward(ev, { being: 'don', node: 'do' });          // arms the wait + posts placeholder 'post-1'
+    const { bridge, mesh } = svc({ node: 'kg', meshCfg: { timeout_ms: 60000 }, timers });
+    const ev = { surface: 'whatsapp', chatId: 'CHAT', chatName: 'HFM', senderName: 'An', body: '@don hola' };
+    await mesh.forward(ev, { being: 'don', route: { room_id: 'RELAY' }, to: 'don.do' });   // arms the wait + posts 'post-1'
     expect(timers.timers).toHaveLength(1);
 
     // first reply frame (a new relay-room message) opens the origin mirror keyed by msgId r1
@@ -273,24 +279,24 @@ describe('mesh service — node_alias (one process, several node identities)', (
     expect(fin).toMatchObject({ by: 'wren.mo', re: 'HFM.do', post_id: 'p1', done: true });   // addressed-as mo, not the node_name kg
   });
 
-  it('does NOT forward an envelope addressed to a self-alias (its own relay route is never consulted)', async () => {
+  it('answers an envelope addressed to a self-alias LOCALLY (a self-name is never treated as foreign)', async () => {
     const brain = fakeBrain({ reply: 'aquí' });
-    // if `do` were treated as a foreign node this would forward to ELSEWHERE; it must stay local.
-    const { bridge, mesh } = svc({ node: 'kg', aliases: ['do'], agents: { don: { configuration: 'egpt', name: 'don' } }, brain, meshCfg: { nodes: { do: { routes: [{ room_id: 'ELSEWHERE' }] } } } });
+    // if `do` were treated as a foreign node this envelope would be consumed in silence.
+    const { bridge, mesh } = svc({ node: 'kg', aliases: ['do'], agents: { don: { configuration: 'egpt', name: 'don' } }, brain });
     const req = encodeMesh({ by: 'An', body: '@don hola', from: 'HFM', from_node: 'kg', to: 'don.do', mid: 'M2' });
     await mesh.handle({ surface: 'whatsapp', chatId: 'RELAY', msgId: 'm1', body: req });
     await flush();
     expect(brain.calls).toHaveLength(1);                                       // answered locally as don …
-    expect(bridge.sent.filter((s) => s.chat === 'ELSEWHERE')).toHaveLength(0); // … never forwarded to the `do` route
+    expect(bridge.streams[0].chat).toBe('RELAY');                              // … replying in the arrival room
   });
 
-  it('still FORWARDS an envelope addressed to a non-self node (the alias set does not swallow foreign targets)', async () => {
-    const { bridge, mesh } = svc({ node: 'kg', aliases: ['do', 'mo'], meshCfg: { nodes: { zz: { routes: [{ room_id: 'B' }] } } } });
+  it('an envelope addressed to a NON-self node is consumed in silence (nothing is emitted anywhere)', async () => {
+    const { bridge, mesh } = svc({ node: 'kg', aliases: ['do', 'mo'] });
     const req = encodeMesh({ by: 'An', body: 'hi @don', from: 'HFM', from_node: 'kg', to: 'don.zz' });
     await mesh.handle({ surface: 'whatsapp', chatId: 'A', msgId: 'a1', body: req });
-    const forwards = bridge.sent.filter((s) => s.chat === 'B');
-    expect(forwards).toHaveLength(1);
-    expect(parseMesh(forwards[0].text)).toMatchObject({ to: 'don.zz' });
+    await flush();
+    expect(bridge.sent).toHaveLength(0);      // no transit hop (mesh.nodes evicted) …
+    expect(bridge.streams).toHaveLength(0);   // … and no answer on another node's behalf
   });
 
   it('answers "no <being>.<self-alias> here" when addressed to a self-alias it does not host the being on', async () => {
@@ -304,18 +310,6 @@ describe('mesh service — node_alias (one process, several node identities)', (
 });
 
 describe('mesh service — loop safety', () => {
-  it('(d) a transit node forwards a delivered request one hop toward the target', async () => {
-    // 'do' does not own 'don' (no sibling) → it forwards toward 'mo'. Loop safety is the
-    // bridge's: it delivers each message once (echo suppression + per-id dedup), so the engine
-    // forwards each DELIVERY — there is no minted mid and no engine-level forward-once.
-    const { bridge, mesh } = svc({ node: 'do', meshCfg: { nodes: { mo: { routes: [{ room_id: 'B' }] } } } });
-    const req = encodeMesh({ by: 'An', body: 'hi @don', from: 'HFM', from_node: 'kg', to: 'don.mo' });
-    await mesh.handle({ surface: 'whatsapp', chatId: 'A', msgId: 'a1', body: req });
-    const forwards = bridge.sent.filter((s) => s.chat === 'B');
-    expect(forwards).toHaveLength(1);
-    expect(parseMesh(forwards[0].text)).toMatchObject({ to: 'don.mo' });
-  });
-
   it('a 3-hop relay-record CHAIN reaches the local terminal — a real visible hop per room, no depth cap', async () => {
     const agents = {
       carol: { relay_channel: 'rodz1', to: 'don.do' },
@@ -436,11 +430,11 @@ describe('mesh service — relay_channel name resolution + reply home', () => {
   });
 
   it('REPLY HOME: the terminal reply mirrors onto the origin placeholder (re:+awaiting), origin present in the terminal room', async () => {
-    // The origin @don.do arms awaiting('HFM') + posts placeholder 'post-1'. The reply arrives in
+    // The origin @don arms awaiting('post-1') + posts placeholder 'post-1'. The reply arrives in
     // the shared relay room; the origin observes it and edits the placeholder in place.
-    const { bridge, mesh } = svc({ node: 'kg', meshCfg: { nodes: { do: { routes: [{ room_id: 'RELAY' }] } } } });
-    await mesh.forward({ surface: 'wa', chatId: 'CHAT', chatName: 'HFM', senderName: 'An', body: '@don.do hola' },
-      { being: 'don', node: 'do' });
+    const { bridge, mesh } = svc({ node: 'kg' });
+    await mesh.forward({ surface: 'wa', chatId: 'CHAT', chatName: 'HFM', senderName: 'An', body: '@don hola' },
+      { being: 'don', route: { room_id: 'RELAY' }, to: 'don.do' });
     await mesh.handle({ surface: 'wa', chatId: 'RELAY', msgId: 'r1', body: encodeMesh({ by: 'don.do', body: '🤝 hey', re: 'HFM.kg', post_id: 'post-1', done: true }) });
     const mirror = bridge.streams.find((s) => s.opts?.existingMsgId === 'post-1');
     expect(mirror?.chat).toBe('CHAT');                                    // the origin placeholder resolved in place
@@ -516,9 +510,9 @@ describe('mesh service — an unresolved relay channel falls back to Self', () =
 describe('mesh service — origin-wait timeout', () => {
   it('(f) surfaces "<target> did not answer" into the origin chat when no reply arrives', async () => {
     const timers = fakeTimers();
-    const { bridge, mesh } = svc({ node: 'kg', meshCfg: { nodes: { do: { routes: [{ room_id: 'RELAY' }] } }, timeout_ms: 30000 }, timers });
-    const ev = { surface: 'whatsapp', chatId: 'CHAT', chatName: 'HFM', senderName: 'An', body: '@don.do hola' };
-    await mesh.forward(ev, { being: 'don', node: 'do' });
+    const { bridge, mesh } = svc({ node: 'kg', meshCfg: { timeout_ms: 30000 }, timers });
+    const ev = { surface: 'whatsapp', chatId: 'CHAT', chatName: 'HFM', senderName: 'An', body: '@don hola' };
+    await mesh.forward(ev, { being: 'don', route: { room_id: 'RELAY' }, to: 'don.do' });
     expect(timers.timers).toHaveLength(1);
     expect(timers.timers[0].ms).toBe(30000);
 
@@ -548,7 +542,7 @@ function seamSpine({ router, mesh, mayReply = true } = {}) {
 
 describe('spine seam — handleInbound ↔ mesh', () => {
   const localRouter = { resolve: () => ({ being: 'e', mention: {} }) };
-  const meshRouter = { resolve: () => ({ being: null, mesh: { being: 'don', node: 'do', target: 'don.do' }, mention: { atEStart: true, atEAnywhere: true, replyToBot: false } }) };
+  const meshRouter = { resolve: () => ({ being: null, mesh: { being: 'don', route: { room_id: 'RELAY' }, to: 'don.do' }, mention: { atEStart: true, atEAnywhere: true, replyToBot: false } }) };
   const recorderMesh = () => ({ handled: [], forwarded: [], isEnvelope: (ev) => String(ev.body).startsWith('ENV:'), async handle(ev) { this.handled.push(ev); }, async forward(ev, t) { this.forwarded.push({ ev, t }); return true; }, async onEdit() { return false; } });
   const MSG = { surface: 'wa', node: 'wa', chatId: 'CHAT', chatName: 'fam', senderId: 'u', senderName: 'An', msgId: 'm1', ts: 1, kind: 'text', raw: {} };
 
@@ -564,9 +558,9 @@ describe('spine seam — handleInbound ↔ mesh', () => {
   it('a mesh-target mention (mayReply) → mesh.forward, logged, NO brain', async () => {
     const mesh = recorderMesh();
     const { spine, brain, transcript } = seamSpine({ router: meshRouter, mesh });
-    await spine.handleInbound({ ...MSG, body: '@don.do do X' });
+    await spine.handleInbound({ ...MSG, body: '@don do X' });
     expect(mesh.forwarded).toHaveLength(1);
-    expect(mesh.forwarded[0].t).toMatchObject({ being: 'don', node: 'do' });
+    expect(mesh.forwarded[0].t).toMatchObject({ being: 'don', route: { room_id: 'RELAY' }, to: 'don.do' });
     expect(brain.calls).toHaveLength(0);
     expect(transcript.entries).toHaveLength(1);
   });
@@ -574,7 +568,7 @@ describe('spine seam — handleInbound ↔ mesh', () => {
   it('a mesh target that gating gates out (mayReply=false) → NOT forwarded (logged only)', async () => {
     const mesh = recorderMesh();
     const { spine } = seamSpine({ router: meshRouter, mesh, mayReply: false });
-    await spine.handleInbound({ ...MSG, body: '@don.do do X' });
+    await spine.handleInbound({ ...MSG, body: '@don do X' });
     expect(mesh.forwarded).toHaveLength(0);
   });
 
