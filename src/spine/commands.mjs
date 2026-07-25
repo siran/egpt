@@ -442,13 +442,23 @@ export function createCommands({
     }
 
     // /status [<target>] — bare: one compact ops line with live node health (unchanged
-    // byte-for-byte). `/status <fragment>` targets a SPECIFIC conversation instead —
-    // resolved EXACTLY like `/e auto <mode> <target>` (same resolveTarget) — and reports
-    // that conversation's operator-facing facts (§ statusTarget). Every probe in both
-    // forms is wrapped: any failure degrades to '?' so /status NEVER throws.
+    // byte-for-byte; BOTH co-account nodes answer, on purpose). `/status <fragment>`
+    // targets a SPECIFIC conversation instead — resolved EXACTLY like `/e auto <mode>
+    // <target>` (same resolveTarget) — and reports that conversation's operator-facing
+    // facts (§ statusTarget). Every probe in both forms is wrapped: any failure degrades
+    // to '?' so /status NEVER throws.
+    //
+    // NODE-FIRST (operator ruling 2026-07-25): a <target> naming a NODE is a node
+    // question, resolved through the SAME wake-word gate /chrome <node> uses — this
+    // node's own names win, a sibling's name is silent. See § statusNodeGate.
     const statusMatch = /^\/status(?:\s+(.+))?\s*$/i.exec(line);
     if (statusMatch) {
       const target = statusMatch[1]?.trim() || null;
+      if (target) {
+        const gate = statusNodeGate(target);
+        if (gate === 'silent') return;                                     // a sibling node was addressed, not us
+        if (gate === 'mine') { await send?.(ev.chatId, await status(ev)); return; }
+      }
       await send?.(ev.chatId, target ? await statusTarget(ev, target) : await status(ev));
       return;
     }
@@ -882,6 +892,33 @@ export function createCommands({
     try { newId = await cdp.openTab(m.url); } catch (e) { await send?.(ev.chatId, `/activate: failed — ${e?.message ?? e}`); return; }
     await room.setMember({ ...m, targetId: newId });   // spread keeps state/adapter/url; targetId refreshed
     await send?.(ev.chatId, `reopened ${m.url} · tab ${newId ?? '?'} · active`);
+  }
+
+  // `/status <target>` NODE GATE (operator ruling 2026-07-25) — classify <target> BEFORE
+  // the conversation-fragment search runs. Bare /status is untouched: both co-account
+  // nodes answer it, as designed. Named, exactly one node answers:
+  //
+  //   'mine'   — <target> is one of THIS node's own names (node_name ∪ node_alias, via
+  //              the SHARED ownNodeNamesOf — the same set /chrome's gate matches). This
+  //              node replies with the bare-/status node-health payload.
+  //   'silent' — <target> is a node on this Beeper account that is NOT us (cfg.account_peers,
+  //              the roster /status already surfaces as `peers:`). Reply NOTHING AT ALL —
+  //              the same deliberate silence /chrome uses. It must NOT fall through to the
+  //              fragment search: on 2026-07-25 `/status do` typed on kg did exactly that,
+  //              matched 9 conversations, and the "be more specific" reply seeded the
+  //              two-node message flood. A bare "unknown node" would be just as wrong —
+  //              every node answering that IS the double-answer the gate prevents.
+  //   null     — an ordinary fragment (or a node with no identity configured): fall through
+  //              to statusTarget, byte-identical to before.
+  //
+  // Precedence is node-first: a conversation slug colliding with a node name loses, and
+  // renaming the slug is the operator's call — no disambiguation, no warning machinery.
+  function statusNodeGate(target) {
+    const t = String(target).toLowerCase();
+    if (ownNodeNamesOf(cfg()).has(t)) return 'mine';
+    const peers = cfg().account_peers;
+    if (Array.isArray(peers) && peers.some((p) => String(p ?? '').trim().toLowerCase() === t)) return 'silent';
+    return null;
   }
 
   // Assemble the /status report as a fenced YAML block (operator 2026-07-02: the
