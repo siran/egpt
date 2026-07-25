@@ -133,6 +133,10 @@ function App({ server, themes, initialTheme, onError }) {
   const add = (author, body) => setItems(prev => [...prev, { id: nextId(), ts: Date.now(), author, body: String(body) }]);
 
   useEffect(() => {
+    // One-time launch line so a fresh start isn't ambiguous — a transcript row that scrolls
+    // away as you chat, NOT the persistent status bar. Confirms the editor is up + sets the
+    // model: you type, the spine replies here, faults show loud.
+    add('system', 'egpt shell ready — type to reach @e / @d / @l; replies and errors appear here');
     server.onSpineMessage(m => add('egpt', m.text));
     // Server/socket faults (from egpt.mjs's onLog sink) surface as loud error rows, never swallowed.
     onError?.(m => add('error', m));
