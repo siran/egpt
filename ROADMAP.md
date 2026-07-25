@@ -189,6 +189,15 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
   no fallback; resolving channel byte-identical.
   - NOT covered: a dead `mesh.nodes` room still drops silently (no resolution on that path).
 
+- **KNOWN TEST FLAKE (characterised 2026-07-25 — do NOT chase it):** `tests/beeper-bridge.test.mjs`
+  › *"the owner's OWN send is attributed to the /v1/accounts self-user's fullName…"* intermittently
+  fails with `Test timed out in 5000ms` — roughly **1 full-suite run in 3–4**. It is a startup race
+  on the `/v1/accounts` fetch that only bites under full parallel load: the file run ALONE passed
+  4/4. **PRE-EXISTING, not caused by the pagination fix** — verified by swapping the pre-pagination
+  `beeper.mjs`+test back in and reproducing it (1 fail in 3 full runs, same rate). If you see it,
+  isolate-rerun the file; a green isolated run means it is this. A real fix would need the test to
+  await the accounts fetch deterministically instead of racing a 5s budget.
+
 - **Beeper API facts (verified live 2026-07-25, no docs — `/openapi.json` returns 200 with an
   EMPTY body):** `POST /v1/chats` requires `{accountID, type:'single'|'group', participantIDs[]}`.
   **It CANNOT create a 2-member WhatsApp group**: one participant collapses to the existing DM
