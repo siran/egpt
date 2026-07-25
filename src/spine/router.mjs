@@ -26,7 +26,7 @@
 // route, so nothing could ever carry it. `@don.do` still works when `don` is a relay agent —
 // the @token match below stops at the dot and finds the agent.
 import { agentPaths } from '../mesh/relay.mjs';
-import { stripCode, escapeMention } from '../auto-mode.mjs';
+import { mentionHits } from '../auto-mode.mjs';
 
 // An agent's routable identity tokens: its map KEY plus any `handles:` aliases, all
 // lowercased. Used to match an @token and to spot the persona agent.
@@ -35,34 +35,24 @@ function agentIds(name, agent) {
   return [name, ...hs].map((h) => String(h).toLowerCase());
 }
 
-// THE mention matcher (operator 2026-07-25: "evict that hallucinated distinction between agent
-// and persona. they're all agents, agents can have persona-lities"). ONE scan over the node's
-// WHOLE addressable set — every agent's map KEY plus its `handles:` — replacing the two systems
-// that disagreed: the bridge's `mentionStatus` (scans anywhere, strips code, but knows only the
-// PERSONA's wake words) and the router's old leading-@token-on-raw-text match. Both live bugs
-// came from that split: `@e and @don you here?` woke only e (leading token, first hit, stop), and
-// an `@agent` mid-sentence was invisible.
+// Who does this message address? The node's WHOLE addressable set — every agent's map KEY plus
+// its `handles:` — run through THE mention matcher (auto-mode.mjs `mentionHits`), the same scan
+// the persona's wake words go through. That is the whole fix (operator 2026-07-25): there were
+// TWO mention systems, the bridge's persona-only one and this file's own leading-@token-on-RAW-
+// text regex, so `@e and @don you here?` woke only e and an `@agent` mid-sentence was invisible.
+// Now there is one, and an agent inherits every protection E has (code fences since 47caf19,
+// the glued-token rule, longest-token-first).
 //
-// Rules, deliberately the persona's own (auto-mode.mjs), so an agent gets the SAME protection E
-// has had since 47caf19: code regions are stripped FIRST (a fenced ```yaml block quoting "@don"
-// is documentation, not an address), and a hit must be a real mention token — preceded by
-// start-or-whitespace, so "me@e.com" / "hey@egpt" never match.
-//   · TRAILING boundary is `(?![\w-])`, TIGHTER than mentionStatus' `\b`, because agent names may
-//     carry hyphens (`don-local`): with a bare `\b` an unregistered `@don-x` would match agent
-//     `don`, where the old leading-token match resolved `don-x` and correctly found nobody. A dot
-//     is still a boundary, so `@don.do` finds `don` (the qualified form the mesh chain uses).
-//   · Longest-token-first alternation so `@egpt` matches 'egpt', not 'e'.
-//   · `_`-prefixed comment keys and `enabled: false` agents are not addressable (they fall through).
-//   · An ARRAY-shaped agent is a MULTI-PATH relay (operator 2026-07-06: an agent is a list of
-//     paths) — no handles, so it is addressed by its map KEY alone; agentIds tolerates that shape.
+// `_`-prefixed comment keys and `enabled: false` agents are not addressable — they fall through,
+// exactly as findAgent used to skip them. An ARRAY-shaped agent is a MULTI-PATH relay (operator
+// 2026-07-06: an agent is a list of paths) — it has no handles, so it is addressed by its map KEY
+// alone; agentIds tolerates that shape (agent.handles undefined → just the name).
 //
 // Returns EVERY addressed agent in TEXT ORDER, deduped by agent, each carrying its OWN
 // { atStart, anywhere } — real per-agent flags, never a blanket constant, because the auto-modes
 // rest on exactly that distinction (`mention-direct` wakes on atStart, `mention` on anywhere).
 // @returns {{name: string, agent: object, atStart: boolean, anywhere: boolean}[]}
 export function addressed(text, agents) {
-  const t = stripCode(String(text ?? '')).replace(/^\s+/, '');
-  if (!t.includes('@')) return [];
   const byToken = new Map();                       // token -> { name, agent }; first agent wins a shared handle
   for (const [name, agent] of Object.entries(agents ?? {})) {
     if (!agent || typeof agent !== 'object' || name.startsWith('_')) continue;
@@ -70,16 +60,13 @@ export function addressed(text, agents) {
     const hit = { name: name.toLowerCase(), agent };
     for (const id of agentIds(name, agent)) if (!byToken.has(id)) byToken.set(id, hit);
   }
-  if (!byToken.size) return [];
-  const alt = [...byToken.keys()].sort((a, b) => b.length - a.length).map(escapeMention).join('|');
-  const re = new RegExp(`(?:^|\\s)@(${alt})(?![\\w-])`, 'gi');
   const out = [];
   const seen = new Set();
-  for (const m of t.matchAll(re)) {
-    const hit = byToken.get(m[1].toLowerCase());
+  for (const { token, atStart } of mentionHits(text, [...byToken.keys()])) {
+    const hit = byToken.get(token);
     if (!hit || seen.has(hit.name)) continue;
     seen.add(hit.name);
-    out.push({ name: hit.name, agent: hit.agent, atStart: m.index === 0, anywhere: true });
+    out.push({ name: hit.name, agent: hit.agent, atStart, anywhere: true });
   }
   return out;
 }

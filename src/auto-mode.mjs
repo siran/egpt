@@ -59,30 +59,30 @@ export function resolveBeingMode({ autoModes = {}, autoEModes = {}, chatId, bein
 // E sees the chat at all? (everything except 'off')
 export function receives(mode) { return mode !== 'off'; }
 
-// Standalone wake-word detection. Must be a real mention token: preceded by
-// start-or-whitespace and followed by a word boundary — so "To @e my assistant"
-// counts but "me@e.com" / "hey@egpt" (glued to a word char) do NOT. Returns
-// { atEStart, atEAnywhere }.
+// THE mention matcher — ONE definition of "this text addresses <token>" (operator 2026-07-25:
+// "evict that hallucinated distinction between agent and persona. they're all agents, agents can
+// have persona-lities"). Both callers run THIS scan: the persona's wake words (mentionStatus,
+// below) and the AGENT registry (spine/router.mjs `addressed`, over every agent's key + handles).
+// There used to be two systems — this one and the router's own leading-@token-on-RAW-text regex —
+// which is exactly why `@e and @don you here?` woke only e and an `@agent` mid-sentence was
+// invisible, while the persona had been fence-protected since 47caf19.
 //
-// WAKE-WORD SET (operator 2026-07-07: the bridge gate must honor configured
-// handles). The DEFAULT set is the network-wide persona address e/egpt. A caller
-// (the bridge, from boot's persona agent) may pass an explicit `wakeWords` list —
-// the persona agent's name + every configured handle (e.g. DOLLY's [ed, egptd]) PLUS
-// the network defaults — so an unqualified @e wakes every node AND a node's own @ed
-// wakes it too. The bug this fixes: a live `@ed estás?` logged atE=false because the
-// gate was hardcoded to e/egpt and never read the agents config.
-// Exported because the AGENT matcher (spine/router.mjs `addressed`) builds the same kind of
-// @token alternation over the node's whole addressable set — one escape, not two copies.
-export const escapeMention = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const RE_ANYWHERE = /(^|\s)@(?:egpt|e)\b/i;
-const RE_START    = /^@(?:egpt|e)\b/i;
-function wakeMatchers(wakeWords) {
-  if (!Array.isArray(wakeWords) || !wakeWords.length) return { anywhere: RE_ANYWHERE, start: RE_START };
-  // longest-first so @egpt matches 'egpt' not 'e' (\b backtracking also handles it, but be explicit)
-  const alt = [...new Set(wakeWords.map((w) => String(w).toLowerCase()).filter(Boolean))]
-    .sort((a, b) => b.length - a.length).map(escapeMention).join('|');
-  if (!alt) return { anywhere: RE_ANYWHERE, start: RE_START };
-  return { anywhere: new RegExp(`(^|\\s)@(?:${alt})\\b`, 'i'), start: new RegExp(`^@(?:${alt})\\b`, 'i') };
+// A hit must be a REAL mention token: preceded by start-or-whitespace and not glued to a word
+// char or a hyphen — so "To @e my assistant" counts, "me@e.com" / "hey@egpt" do NOT, and
+// "@egpt-bot" is its OWN (unknown) token rather than @egpt + noise, which is what the router's
+// old `@([a-z0-9_-]+)` capture meant by resolving the whole hyphenated token and what
+// tests/room.test.mjs already locks for the room router. A dot IS a boundary, so `@don.do` hits
+// `don` — the qualified form the relay chain uses. Longest-token-first so @egpt matches 'egpt',
+// not 'e'. Code regions are stripped first (stripCode). Every hit, in TEXT ORDER:
+//   [{ token, atStart }]     atStart = this hit opens the message
+const _escapeWake = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+export function mentionHits(text, tokens) {
+  const t = stripCode(String(text ?? '')).replace(/^\s+/, '');
+  const list = [...new Set((Array.isArray(tokens) ? tokens : []).map((w) => String(w).toLowerCase()).filter(Boolean))]
+    .sort((a, b) => b.length - a.length);
+  if (!list.length || !t.includes('@')) return [];
+  const re = new RegExp(`(?:^|\\s)@(${list.map(_escapeWake).join('|')})(?![\\w-])`, 'gi');
+  return [...t.matchAll(re)].map((m) => ({ token: m[1].toLowerCase(), atStart: m.index === 0 }));
 }
 // A fenced or inline CODE region must never contribute a live wake match — e.g.
 // the /status command emits a fenced ```yaml block whose version line quotes a
@@ -91,19 +91,25 @@ function wakeMatchers(wakeWords) {
 // glue into — or lose — a word boundary) BEFORE running the wake matchers. An
 // unclosed opening ``` strips to end-of-text. (operator 2026-07-24: E replied
 // '…' to its own /status output because the raw text was matched as-is.)
-export function stripCode(text) {
+function stripCode(text) {
   return text
     .replace(/```[\s\S]*?```/g, ' ')   // paired fenced blocks
     .replace(/```[\s\S]*$/g, ' ')      // unclosed fence → rest of text
     .replace(/`[^`\n]*`/g, ' ');       // inline code spans
 }
+// The PERSONA's view of the matcher: does this text wake E? Returns { atEStart, atEAnywhere }.
+//
+// WAKE-WORD SET (operator 2026-07-07: the bridge gate must honor configured
+// handles). The DEFAULT set is the network-wide persona address e/egpt. A caller
+// (the bridge, from boot's persona agent) may pass an explicit `wakeWords` list —
+// the persona agent's name + every configured handle (e.g. DOLLY's [ed, egptd]) PLUS
+// the network defaults — so an unqualified @e wakes every node AND a node's own @ed
+// wakes it too. The bug this fixes: a live `@ed estás?` logged atE=false because the
+// gate was hardcoded to e/egpt and never read the agents config.
+const DEFAULT_WAKE_WORDS = ['egpt', 'e'];
 export function mentionStatus(text, wakeWords) {
-  const t = stripCode(String(text ?? ''));
-  const { anywhere, start } = wakeMatchers(wakeWords);
-  return {
-    atEAnywhere: anywhere.test(t),
-    atEStart:    start.test(t.replace(/^\s+/, '')),
-  };
+  const hits = mentionHits(text, (Array.isArray(wakeWords) && wakeWords.length) ? wakeWords : DEFAULT_WAKE_WORDS);
+  return { atEAnywhere: hits.length > 0, atEStart: hits.some((h) => h.atStart) };
 }
 
 // Given the chat's mode and the triggering message's mention status

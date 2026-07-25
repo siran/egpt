@@ -40,6 +40,22 @@ describe('mentionStatus', () => {
     expect(mentionStatus('@ed hi', [])).toEqual({ atEAnywhere: false, atEStart: false });   // no handles → @ed does not wake
   });
 
+  // ONE MATCHER (operator 2026-07-25): mentionStatus and the AGENT matcher (spine/router.mjs
+  // `addressed`) are now the same scan (mentionHits) over different token sets, so the boundary
+  // rule is one rule. A HYPHEN is part of a token, never a break: `@egpt-bot` is its own unknown
+  // token, not @egpt — which is what the router's `@([a-z0-9_-]+)` capture always meant (it
+  // resolved `don-local` whole) and what tests/room.test.mjs already locks for the room router.
+  // Agent names carry hyphens (`don-local`), so a plain \b here would let `@don-x` wake `don`.
+  it('a hyphen does not break a token: @egpt-bot / @e-bot are their OWN tokens, not the persona', () => {
+    expect(mentionStatus('@egpt-bot hi')).toEqual({ atEAnywhere: false, atEStart: false });
+    expect(mentionStatus('@e-bot hi')).toEqual({ atEAnywhere: false, atEStart: false });
+    expect(mentionStatus('@e-bot and @e hi')).toEqual({ atEAnywhere: true, atEStart: false });   // the real @e still wakes
+  });
+
+  it('a DOT is still a boundary: the qualified @e.kg form wakes the persona', () => {
+    expect(mentionStatus('@e.kg hola')).toEqual({ atEAnywhere: true, atEStart: true });
+  });
+
   // Real bug (operator 2026-07-24): /status emits a fenced ```yaml block whose
   // version line is a git commit SUBJECT — "refactor(bridge): @e voice-note
   // transcript reuses transcript.md" — a changelog line, not an address. The raw
