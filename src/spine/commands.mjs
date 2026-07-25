@@ -315,6 +315,7 @@ export function createCommands({
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
     const out = {};
     for (const [name, entry] of Object.entries(raw)) {
+      if (name === 'use') continue;   // selector naming the active account, not an entry — never warn
       if (!entry || typeof entry !== 'object' || !entry.account) { onLog(`beeper registry: "${name}" missing account — skipped`); continue; }
       out[name] = entry.account;
     }

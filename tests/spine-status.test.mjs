@@ -420,6 +420,29 @@ describe('/status: beeper_accounts registry', () => {
     expect(logs.some((m) => m.includes('broken') && m.includes('missing account'))).toBe(true);
   });
 
+  it('the reserved "use" selector key is skipped silently (not logged as broken), and a genuinely malformed sibling still warns', async () => {
+    const logs = [];
+    const { cmds, sent } = harness({
+      io: HEALTHY_IO,
+      gitOut: HEALTHY_GIT,
+      loadState: async () => threeContacts(),
+      onLog: (m) => logs.push(m),
+      getConfig: () => ({
+        whatsapp: { chat_id: '!self' },
+        beeper: {
+          use: 'main',   // selector, not an account entry — must never warn
+          main: { account: 'anrodz42@gmail.com', token: 'MAIN-SECRET-TOKEN' },
+          other: { token: 'ORPHAN-TOKEN' },   // genuinely missing account — must still warn
+        },
+      }),
+    });
+
+    await cmds.run({ body: '/status', chatId: '!self', surface: 'whatsapp' });
+    expect(logs.some((m) => m.includes('"use"'))).toBe(false);
+    expect(logs.some((m) => m.includes('"other"') && m.includes('missing account'))).toBe(true);
+    expect(sent[0].text).toMatch(/beeper_accounts:\n {2}main: anrodz42@gmail\.com/);
+  });
+
   it('tokens are optional in v1: an accounts-only entry (no token) still registers', async () => {
     const { cmds, sent } = harness({
       io: HEALTHY_IO,
