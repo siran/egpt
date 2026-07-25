@@ -16,7 +16,7 @@
 // test, easy to call from any host.
 
 import { readFile, writeFile, mkdir, stat, rename, appendFile, readdir } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
@@ -1341,10 +1341,22 @@ export async function readIdentityDir(surface, slug) {
 // identity file falls back to the room template's 00-identity.md (the shipped eGPT
 // default). No repo-root identities/ back-read (the operator's new-only house rule).
 
-// The shared room template dir: the profile's seeded copy wins; the repo's shipped
-// template is the fallback so a fresh, un-seeded profile still resolves the eGPT default.
-function roomTemplateDir() {
-  return existsSync(ROOM_TEMPLATE_PROFILE_DIR) ? ROOM_TEMPLATE_PROFILE_DIR : ROOM_TEMPLATE_SHIPPED_DIR;
+// Resolve ONE room-template layer FILENAME to a path, PER FILE (operator ruling
+// 2026-07-25: "roomTemplateDir prefer the newer file" — the old wholesale "profile dir
+// wins whenever it exists" meant an upgraded repo-shipped layer could never reach an
+// already-seeded profile, since seed.mjs's copy-if-missing had already planted the old
+// content there). Whichever copy — profile or shipped — has the NEWER mtime wins; only
+// one existing is used outright; neither existing → null. A `git pull` restamps the
+// repo file's mtime, so an upgraded template wins; an operator editing their profile
+// copy afterwards makes theirs newer again, so the edit stays sacred.
+function resolveRoomLayerFile(name) {
+  const profilePath = join(ROOM_TEMPLATE_PROFILE_DIR, name);
+  const shippedPath = join(ROOM_TEMPLATE_SHIPPED_DIR, name);
+  const profileExists = existsSync(profilePath);
+  const shippedExists = existsSync(shippedPath);
+  if (!profileExists) return shippedExists ? shippedPath : null;
+  if (!shippedExists) return profilePath;
+  return statSync(shippedPath).mtimeMs > statSync(profilePath).mtimeMs ? shippedPath : profilePath;
 }
 
 // Best-effort file read; a missing/unreadable file yields the fallback (never throws).
@@ -1384,14 +1396,20 @@ const IDENTITY_SLOT = '00-identity.md';
 // The room template's numbered feed layers, ENUMERATED (operator 2026-07-25: "there is a
 // skeleton folder with numbered files 10-file 30-file2 50-file3") rather than a hardcoded
 // 00/10/30/40 quartet — dropping a `50-foo.md` into the template must feed and seed with
-// no code change. Ordered by NUMERIC prefix (so 100- sorts after 40-, which lexical would
-// not), ties broken lexically. Never throws — an unreadable dir yields [].
-function _listRoomLayerFiles(dir) {
-  let names = [];
-  try { names = readdirSync(dir); } catch { return []; }
-  return names
-    .filter((n) => /^\d+-.+\.md$/i.test(n))
-    .sort((a, b) => (parseInt(a, 10) - parseInt(b, 10)) || a.localeCompare(b));
+// no code change. Enumerates the UNION of the profile AND shipped dirs, deduped by
+// filename (per-file resolution — resolveRoomLayerFile — decides which copy's CONTENT is
+// used; this just decides which NAMES exist at all, so a file shipped only in the repo
+// dir is still found once a profile dir exists). Ordered by NUMERIC prefix (so 100- sorts
+// after 40-, which lexical would not), ties broken lexically. Never throws — an
+// unreadable dir contributes nothing.
+function _listRoomLayerFiles() {
+  const seen = new Set();
+  for (const dir of [ROOM_TEMPLATE_PROFILE_DIR, ROOM_TEMPLATE_SHIPPED_DIR]) {
+    let names = [];
+    try { names = readdirSync(dir); } catch { names = []; }
+    for (const n of names) if (/^\d+-.+\.md$/i.test(n)) seen.add(n);
+  }
+  return [...seen].sort((a, b) => (parseInt(a, 10) - parseInt(b, 10)) || a.localeCompare(b));
 }
 
 // The room template's layers in feed order, as [{ file, text }] — the shape shared by the
@@ -1402,12 +1420,11 @@ function _listRoomLayerFiles(dir) {
 // an identity trait (operator 2026-07-06: limbs are parsed by reply-actions.mjs for EVERY
 // being) — a custom identity still learns the /react grammar.
 async function _identityLayers(name) {
-  const room = roomTemplateDir();
   const idFile = resolveIdentityFile(name);
-  const files = _listRoomLayerFiles(room);
+  const files = _listRoomLayerFiles();
   const layers = [];
   for (const file of files) {
-    layers.push({ file, text: await _readFileOr(file === IDENTITY_SLOT && idFile ? idFile : join(room, file)) });
+    layers.push({ file, text: await _readFileOr(file === IDENTITY_SLOT && idFile ? idFile : resolveRoomLayerFile(file)) });
   }
   // A profile identity with no 00-identity.md in the template still LEADS the feed — a
   // named persona must never lose its identity to a thinned-out room dir.
@@ -1461,8 +1478,10 @@ export async function readIdentityFeed(name) {
 }
 
 // The `mode: auto` operator-role instruction layer (config/skeletons/auto-mode.md).
-// Read profile-first, repo-fallback (mirror of roomTemplateDir). '' when absent (an
-// auto conversation then simply gates like 'on' with no extra layer — never throws).
+// Read profile-first, repo-fallback — a single file, not the room template's numbered
+// layer set, so it stays wholesale (not resolveRoomLayerFile's per-file mtime pick). ''
+// when absent (an auto conversation then simply gates like 'on' with no extra layer —
+// never throws).
 // Appended to an auto conversation's kickoff feed by the brainpool.
 export async function readAutoModeLayer() {
   const profile = join(SKELETONS_PROFILE_DIR, 'auto-mode.md');
