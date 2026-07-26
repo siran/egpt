@@ -89,7 +89,7 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
 - Daemon: mtime deadman, calm wedge backoff, singleton via spine.pid — live-verified
 - Warm: conversation = background agent for 15m after last message (default),
   `warm.max` keeps N warm, per-conversation override `warm: { idle_ttl }` in the
-  conv folder's config.yaml (0 = always warm)
+  conv folder's config.yaml (`-1` = always warm, `0` = never)
 - Per-surface auth: whatsapp/telegram/signal each own {chat_id, allowed_users};
   empty = deny; isSender = owner's global pass
 - Siblings: @name routes to local beings, nested per-being thread persistence

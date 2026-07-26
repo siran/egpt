@@ -868,7 +868,21 @@ export const CONFIG_SCHEMA = {
         config/agents/sonnet-high.yaml. For a relay agent, configuration is the
         literal "relay".
       handles
-        ["e","egpt",...] — alternate @<token> routes; the map KEY also routes.
+        ["e","egpt",...] — the @<token>s that WAKE this agent (operator
+        2026-07-26: "the yaml key can be discarded, an agent reacts if its
+        handle is invoked").
+
+        DECLARED  = the COMPLETE wake list; the map KEY does NOT route.
+        ABSENT    = the map key serves as the handle (a MULTIPATH agent is a
+                    LIST and has nowhere to declare handles, so it always
+                    wakes by key).
+        []        = a complete list that is empty: NO @token reaches this
+                    agent.
+
+        The map KEY is still the BEING-ID (warm sessions / thread blocks /
+        transcripts) — it simply stopped being an address. This is what lets a
+        node keyed "egpt" display and answer as "don" WITHOUT also answering
+        @egpt, which is how one message got two replies across the two spines.
       relay_channel
         Marks a RELAY agent — the chat this agent forwards to: a chat NAME or a
         raw Beeper room id in SHORT form (no "!" / ":beeper.local", operator
@@ -1341,21 +1355,26 @@ export const CONFIG_SCHEMA = {
         DEFAULT: 1800000 — ms-of-idle before an unlisted class is evicted.
       idle_ttl_by_class
         Per-class idle TTL.
-        DEFAULT: { system: 0, resident: 0, conversation: 900000, sibling: 0 }
-        where 0 = never idle-evict.
+        DEFAULT: { system: -1, resident: -1, conversation: 900000, sibling: -1 }
+
+    TTL DIALECT (operator 2026-07-26 — the same one posts_back_delay_ms and
+    guard.turns speak): -1 = never idle-evict (warm forever), 0 = always evict
+    (dropped the moment its turn ends, so every turn is a cold --resume), N =
+    evict after N ms idle. An ABSENT class falls through to idle_ttl_ms; absent
+    never means 0.
 
     CONVERSATION DEFAULT = 15m (operator 2026-07-02: "keep any conversation as a
     background agent 15m after the last message, configurable"): a conversation
     goes cold 15 min after its last turn, then idle-evicts (the transcript +
     --resume make the next turn correct, just colder). This SUPERSEDES the
-    earlier never-evict default (conversation: 0). system/resident stay
-    persistent (0); sibling stays 0.
+    earlier never-evict default. system/resident stay persistent (-1); sibling
+    stays -1.
 
     PER-CONVERSATION OVERRIDE: a conversation folder's own config.yaml (the same
     file that carries the transcription: / heartbeats: blocks) may set
     warm: { idle_ttl: 1h } — a ms number or a "<qty><unit>" duration
     (ms/s/m/h) — to override the class TTL for THAT conversation only;
-    idle_ttl: 0 there = keep this conversation always warm.
+    idle_ttl: -1 there = keep this conversation always warm.
     RESOLUTION: per-conversation override > class TTL.
   `,
 

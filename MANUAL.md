@@ -82,7 +82,7 @@ default; commented blocks are optional overrides.
 | `agents` | **Required.** The unified registry: persona, local beings, and mesh relays. Each agent = `{ configuration, handles, relay_channel? }`. `configuration` names an agent-type file (`config/agents/<type>.yaml`) or the literal `relay`. A node without an `agents` block or a persona entry (handles include `e`/`egpt`) refuses to boot. |
 | `whatsapp` / `telegram` / `signal` | Per-surface auth: `{ chat_id, allowed_users }` (empty = deny). Ids are per-surface namespaces. `whatsapp` also carries the transport config (`networks: []` = the firehose). |
 | `default_time_zone` | Interprets timezone-less heartbeat `when:` times (IANA name or an alias like `ET`/`PT`). |
-| `warm` | Warm-session policy: `max` (how many chats stay resident) + `idle_ttl_by_class.conversation` (quiet-time before eviction; default 15m, 0 = never). A chat overrides its own TTL in its folder's `config.yaml`. |
+| `warm` | Warm-session policy: `max` (how many chats stay resident) + `idle_ttl_by_class.conversation` (quiet-time before eviction; default 15m, `-1` = never evict, `0` = always). A chat overrides its own TTL in its folder's `config.yaml`. |
 | `flood` | Send-flood guard: more than `limit` bot sends to one chat within `window_ms` pauses THAT chat for `cooldown_ms`. |
 | `compaction` | After a quiet `cooling_ms`, if the warm session grew past `ratio` of the context window, native-`/compact` it in place (transcript.md keeps the full record). |
 | `heartbeats` | Declarative timers — see §3. |

@@ -35,9 +35,8 @@
 #  - { kind: brain, id: don,  state: mention-direct }
 
 
-# How long this conversation's session stays hot before idle-eviction.
-# ms number or <qty><unit> (ms|s|m|h); 0 = always warm. Absent = the rung above,
-# then the class TTL.
+# How long this conversation's session stays hot before idle-eviction: ms number
+# or <qty><unit> (ms|s|m|h); -1 = always warm, 0 = never. Absent = the rung above.
 #warm:
 #  idle_ttl: 30m
 

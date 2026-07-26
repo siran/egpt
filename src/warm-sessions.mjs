@@ -6,12 +6,13 @@
 //   - LAZY: a key warms on its FIRST turn; reused (warm) thereafter.
 //   - IDLE-EVICT: after `idleTtl` with no turn, the session is closed — freeing
 //     the Node process + context RAM. Never keep every conversation-e warm.
-//     Per-class TTL: system=persistent (0), conversation=short follow-up window,
-//     sibling=medium. 0 = never idle-evict.
+//     Per-class TTL: system=persistent (-1), conversation=short follow-up window,
+//     sibling=medium. HOUSE DIALECT (operator 2026-07-26, as posts_back_delay_ms
+//     and guard.turns): -1 = never idle-evict, 0 = always evict (at turn end), N ms.
 //     PER-RUN OVERRIDE (operator 2026-07-02: "keep any conversation as a
 //     background agent 15m after the last message, configurable … honor override
 //     per configuration"): run() takes an optional `idleTtlMs` that stamps THIS
-//     entry's own TTL, overriding the class TTL (0 still = never evict). It is
+//     entry's own TTL, overriding the class TTL (same dialect). It is
 //     re-stamped on every run that specifies one, so a changed per-conversation
 //     config takes effect on the next turn; a run that OMITS it leaves the stamp
 //     as-is (so the compactor's own pool.run never clobbers the last real turn's).
@@ -29,7 +30,7 @@
 
 export function createWarmPool({
   max = 6,
-  idleTtlMs = 180_000,
+  idleTtlMs = 180_000,               // fallback for an unlisted class — absent NEVER means 0
   idleTtlByClass = {},
   dispatchTimeoutMs = 600_000,
   injectWhileBusy = true,            // weave a mid-turn message into the live turn
@@ -43,7 +44,7 @@ export function createWarmPool({
 
   const _ttlFor = (klass) => {
     const v = idleTtlByClass?.[klass];
-    return v === undefined ? idleTtlMs : v;   // 0 = never idle-evict
+    return v === undefined ? idleTtlMs : v;   // absent class → the pool default, never 0
   };
 
   function _evict(key, why) {
@@ -59,8 +60,10 @@ export function createWarmPool({
     const e = _s.get(key);
     if (!e) return;
     if (e.idleTimer) clearTimeout(e.idleTimer);
-    const ttl = e.idleTtlMs ?? _ttlFor(e.klass);   // per-run override wins; 0 = never idle-evict
-    if (ttl > 0) { e.idleTimer = setTimeout(() => _evict(key, `idle ${ttl}ms`), ttl); e.idleTimer.unref?.(); }
+    const ttl = e.idleTtlMs ?? _ttlFor(e.klass);   // per-run override wins (null/undefined = none)
+    if (ttl < 0) return;                            // -1 = never idle-evict, stay warm forever
+    if (ttl === 0) { _evict(key, 'idle ttl 0'); return; }   // 0 = always evict, never kept warm
+    e.idleTimer = setTimeout(() => _evict(key, `idle ${ttl}ms`), ttl); e.idleTimer.unref?.();
   }
 
   function _lruEvictIfFull(exceptKey) {
@@ -109,7 +112,7 @@ export function createWarmPool({
   // Run a turn on the warm session for `key`, opening it lazily. brainOptions is
   // passed to the warm primitive (model, sessionId/resume, cwd, allowedTools,
   // confineToDirs, …). klass ∈ {system, conversation, sibling} selects the TTL;
-  // `idleTtlMs` (optional) overrides that class TTL for this entry (0 = never evict).
+  // `idleTtlMs` (optional) overrides that class TTL for this entry (-1 never, 0 always, N ms).
   function run(key, message, onUpdate = () => {}, { brainOptions = {}, klass = 'sibling', timeoutMs, idleTtlMs } = {}) {
     let e = _s.get(key);
     if (e && e.errored) { _evict(key, 'reopen after error'); e = null; }
@@ -155,7 +158,7 @@ export function createWarmPool({
     // Stamp the per-run idle override whenever the caller SPECIFIES one (undefined =
     // "leave as stamped", so the compactor's own pool.run, which omits it, never
     // clobbers the ttl the last real turn set). A changed config re-stamps here, so
-    // it takes effect on the NEXT _armIdle. 0 = never idle-evict.
+    // it takes effect on the NEXT _armIdle. null = no override (fall to the class TTL).
     if (idleTtlMs !== undefined) e.idleTtlMs = idleTtlMs;
     const p = e.chain.then(() => _doTurn(key, message, onUpdate, timeoutMs ?? dispatchTimeoutMs));
     e.chain = p.then(() => {}, () => {});   // keep the per-key chain alive across failures

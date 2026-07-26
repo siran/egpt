@@ -90,11 +90,13 @@ function confinementFor(def, cwd, onLog) {
 
 // Pure: a conversation's RESOLVED config doc → { idleTtlMs }. The `warm: { idle_ttl }`
 // override (operator 2026-07-02) sets THIS conversation's warm idle TTL, beating the class
-// TTL: a ms number or a "<qty><unit>" duration (ms/s/m/h), with `0` = keep this
-// conversation always warm (never idle-evict). Absent block / unparseable value → null (the
+// TTL: a ms number or a "<qty><unit>" duration (ms/s/m/h), with `0` = always evict this
+// conversation (at turn end) and any negative (e.g. `-1`) = keep it always warm (never
+// idle-evict). Absent block / unparseable value → null (the
 // conversation falls through to the class TTL). Reuses heartbeat-loader's
 // parseFrequency for the duration grammar, but parseFrequency rejects 0/negative,
-// so 0 is accepted here explicitly BEFORE delegating (0 is a valid value, not garbage).
+// so both are accepted here explicitly BEFORE delegating (0 and any negative are valid
+// values, not garbage).
 //
 // It takes a DOC, not config.yaml text: `warm:` is one rung-resolved block of the ONE
 // namespace now (config/config.yaml < config/conversations.yaml < <conv>/config.yaml), and
@@ -106,8 +108,9 @@ export function parseWarmBlock(doc) {
     ? doc.warm : {};
   const v = w.idle_ttl;
   if (v === undefined || v === null) return { idleTtlMs: null };
-  if (v === 0) return { idleTtlMs: 0 };               // 0 = never evict (parseFrequency rejects it)
-  return { idleTtlMs: parseFrequency(v) ?? null };    // garbage / negative → null
+  if (v === 0) return { idleTtlMs: 0 };               // 0 = always evict (parseFrequency rejects it)
+  if (typeof v === 'number' && v < 0) return { idleTtlMs: v };   // any negative = never evict (matches _armIdle's `ttl < 0`; parseFrequency also rejects negatives)
+  return { idleTtlMs: parseFrequency(v) ?? null };    // garbage → null
 }
 
 // Default identity manifest: the shipped e_identity.md (honoring a config
@@ -438,7 +441,7 @@ export function createBrainPool({
 
       // Per-conversation warm-idle override (operator 2026-07-02): this
       // conversation's own config.yaml `warm: { idle_ttl }` overrides the class TTL
-      // (0 = keep it always warm). Read per turn from the resolver's in-memory set and
+      // (0 = always evict; a negative = keep it always warm). Read per turn from the resolver's in-memory set and
       // re-stamped on the warm entry every run, so a rung edited since the last reload
       // takes effect on the next turn. Applied to BOTH the normal turn and
       // the overflow retry below. (compaction.afterTurn's own pool.run reuses this

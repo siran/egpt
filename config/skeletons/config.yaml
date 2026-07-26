@@ -45,7 +45,9 @@ user_name: "John"                  # the human here; shown as <user_name>@<surfa
 agents:
   egpt:
     configuration: egpt           # brain: config/agents/egpt.yaml (warm claude CLI)
-    handles: [e, egpt]            # @e / @egpt reach this node's persona
+    handles: [e, egpt]            # THE wake list: @e / @egpt reach this node's persona.
+    #                             # Declared handles are COMPLETE — the map key does NOT wake.
+    #                             # Omit handles and the key wakes instead; [] means nothing does.
     default: true                 # THE persona: answers un-mentioned messages + ends relay chains. EXACTLY ONE agent per node. Its map KEY is the being-id (renaming the key = a new identity).
     # name: "egpt"                # display label the bridge stamps ("<emoji> <name>: <reply>"); defaults to the key.
     # body_emoji: "<emoji>"       # reply stamp the bridge enforces; default is the dog.
@@ -118,7 +120,7 @@ networks:
 
 # --- Everyday knobs (defaults shown) -----------------------------------------
 # default_time_zone: "America/New_York"                       # timezone-less heartbeat times
-# warm: { max: 6, idle_ttl_by_class: { conversation: 15m } }  # keep chats warm; 0 = never evict
+# warm: { max: 6, idle_ttl_by_class: { conversation: 15m } }  # -1 = never evict, 0 = always
 # compaction: { enabled: true, ratio: 0.20, cooling_ms: 120000 }
 # quick_reply_string: r           # "r <text>" answers whoever spoke last (only if that was an agent); "" disables
 # guard: { turns: 6, window: -1 }   # loop-breaker: N consecutive non-human turns pause a channel (a human msg resets); -1 turns = off, -1 window = pure consecutive count

@@ -716,7 +716,7 @@ export async function boot({
     // E runs as a PERSISTENT background agent: the claude process stays resident
     // (context in memory) instead of re-spawning + `--resume`-ing (which reloads
     // the whole thread — the slow part) per message. idle_ttl_by_class: ms-of-idle
-    // before a class is evicted; 0 = never idle-evict, bounded only by `max` LRU.
+    // before a class is evicted; -1 = never idle-evict (0 = always evict), bounded only by `max` LRU.
     // E's chats are 'conversation'.
     //
     // CONVERSATION DEFAULT = 15m (operator 2026-07-02, verbatim: "keep any
@@ -724,7 +724,7 @@ export async function boot({
     // i like that you can keep a number or all agents warm. probably we should
     // honor override per configuration"). This SUPERSEDES the earlier never-evict
     // default (commit 4eaceaf "E is a persistent background agent — never idle-evict
-    // conversations", which set conversation: 0): a conversation now goes cold 15m
+    // conversations", which set conversation: 0 — never-evict under the OLD dialect): a conversation now goes cold 15m
     // after its last turn, and the transcript + `--resume` make the next turn
     // correct, just colder. system/resident stay 0 (truly persistent). `sibling`
     // stays 0 — the operator only ruled on conversations, so it is left untouched.
@@ -733,9 +733,9 @@ export async function boot({
     // knob the operator likes: the LRU cap bounds how many warm sessions live at
     // once, independent of the idle TTL. Per-conversation override: a conversation
     // folder's own config.yaml `warm: { idle_ttl }` beats the class TTL (resolved in
-    // brainpool, passed per-run to the pool); 0 there = keep THAT conversation warm.
+    // brainpool, passed per-run to the pool); a negative there = keep THAT conversation warm.
     idleTtlMs: cfg.warm?.idle_ttl_ms ?? 1_800_000,   // fallback for any unlisted class
-    idleTtlByClass: cfg.warm?.idle_ttl_by_class ?? { system: 0, resident: 0, conversation: 900_000, sibling: 0 },
+    idleTtlByClass: cfg.warm?.idle_ttl_by_class ?? { system: -1, resident: -1, conversation: 900_000, sibling: -1 },
     onLog: (m) => log.line?.(`[warm] ${m}`),
   });
 

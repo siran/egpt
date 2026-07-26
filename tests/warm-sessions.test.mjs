@@ -79,9 +79,9 @@ describe('warm-session pool', () => {
     expect(made[0].closed).toBe(true);
   });
 
-  it('never idle-evicts a class with ttl 0 (system persistent)', async () => {
+  it('never idle-evicts a class with ttl -1 (system persistent)', async () => {
     const { makeSession } = fakeFactory();
-    const pool = createWarmPool({ makeSession, idleTtlByClass: { system: 0 } });
+    const pool = createWarmPool({ makeSession, idleTtlByClass: { system: -1 } });
     await pool.run('self', 'a', () => {}, { klass: 'system' });
     await sleep(40);
     expect(pool.has('self')).toBe(true);
@@ -89,22 +89,22 @@ describe('warm-session pool', () => {
 
   // PER-RUN IDLE OVERRIDE (operator 2026-07-02): a per-conversation config.yaml can
   // set its own warm idle TTL; brainpool passes it as run()'s `idleTtlMs`. It beats
-  // the class TTL for that entry; 0 = never evict; omitted = class TTL; a later run
+  // the class TTL for that entry; -1 = never evict; omitted = class TTL; a later run
   // with a different value re-stamps the entry (takes effect next turn).
   it('per-run idleTtlMs overrides the class TTL (arms with the override, not the class)', async () => {
     const { makeSession, made } = fakeFactory();
-    const pool = createWarmPool({ makeSession, idleTtlByClass: { conversation: 0 } });   // class = never
+    const pool = createWarmPool({ makeSession, idleTtlByClass: { conversation: -1 } });   // class = never
     await pool.run('k', 'a', () => {}, { klass: 'conversation', idleTtlMs: 20 });          // override = 20ms
     expect(pool.has('k')).toBe(true);
     await sleep(60);
-    expect(pool.has('k')).toBe(false);          // evicted by the override despite class 0
+    expect(pool.has('k')).toBe(false);          // evicted by the override despite class -1
     expect(made[0].closed).toBe(true);
   });
 
-  it('idleTtlMs: 0 never arms the idle timer (keep-always-warm override)', async () => {
+  it('idleTtlMs: -1 never arms the idle timer (keep-always-warm override)', async () => {
     const { makeSession } = fakeFactory();
     const pool = createWarmPool({ makeSession, idleTtlByClass: { conversation: 20 } });   // class would evict
-    await pool.run('k', 'a', () => {}, { klass: 'conversation', idleTtlMs: 0 });           // override = never
+    await pool.run('k', 'a', () => {}, { klass: 'conversation', idleTtlMs: -1 });          // override = never
     await sleep(60);
     expect(pool.has('k')).toBe(true);
   });
@@ -119,8 +119,8 @@ describe('warm-session pool', () => {
 
   it('a later run with a different override updates the entry (next turn re-stamps)', async () => {
     const { makeSession } = fakeFactory();
-    const pool = createWarmPool({ makeSession, idleTtlByClass: { conversation: 0 } });
-    await pool.run('k', 'a', () => {}, { klass: 'conversation', idleTtlMs: 0 });   // keep warm
+    const pool = createWarmPool({ makeSession, idleTtlByClass: { conversation: -1 } });
+    await pool.run('k', 'a', () => {}, { klass: 'conversation', idleTtlMs: -1 });   // keep warm
     await sleep(30);
     expect(pool.has('k')).toBe(true);
     await pool.run('k', 'b', () => {}, { klass: 'conversation', idleTtlMs: 20 });   // now short TTL
@@ -131,7 +131,7 @@ describe('warm-session pool', () => {
   it('a later run that OMITS idleTtlMs keeps the stamped override (compactor path)', async () => {
     const { makeSession } = fakeFactory();
     const pool = createWarmPool({ makeSession, idleTtlByClass: { conversation: 20 } });
-    await pool.run('k', 'a', () => {}, { klass: 'conversation', idleTtlMs: 0 });   // stamp keep-warm
+    await pool.run('k', 'a', () => {}, { klass: 'conversation', idleTtlMs: -1 });   // stamp keep-warm
     await pool.run('k', 'b', () => {}, { klass: 'conversation' });                  // omit → keep the stamp
     await sleep(60);
     expect(pool.has('k')).toBe(true);           // still warm; the omit did NOT revert to class TTL
@@ -280,6 +280,49 @@ describe('warm-session pool', () => {
     await pool.run('k', 'a');                     // no brainOptions.sessionId at all
     await pool.run('k', 'b');
     expect(made.length).toBe(1);
+  });
+
+  // TTL CONVENTION (operator 2026-07-26: "'never evict' should be -1, 0 always,
+  // right?"). Warm now speaks the house dialect used by posts_back_delay_ms and
+  // guard.turns: -1 = never idle-evict, 0 = always evict (immediately, never kept
+  // warm), N = evict after N ms idle.
+  it('ttl -1 arms no timer and never evicts (keep warm forever)', async () => {
+    const { makeSession, made } = fakeFactory();
+    const pool = createWarmPool({ makeSession, idleTtlByClass: { system: -1 } });
+    await pool.run('self', 'a', () => {}, { klass: 'system' });
+    await sleep(40);
+    expect(pool.has('self')).toBe(true);
+    expect(made[0].closed).toBe(false);
+  });
+
+  it('ttl 0 evicts immediately — the session is never kept warm past its turn', async () => {
+    const { makeSession, made } = fakeFactory();
+    const pool = createWarmPool({ makeSession, idleTtlByClass: { conversation: 0 } });
+    await pool.run('k', 'a', () => {}, { klass: 'conversation' });
+    expect(pool.has('k')).toBe(false);          // gone the instant the turn ended
+    expect(made[0].closed).toBe(true);
+    await pool.run('k', 'b', () => {}, { klass: 'conversation' });
+    expect(made.length).toBe(2);                // every turn is a cold reopen
+  });
+
+  it('ttl N evicts after N ms idle', async () => {
+    const { makeSession, made } = fakeFactory();
+    const pool = createWarmPool({ makeSession, idleTtlByClass: { conversation: 30 } });
+    await pool.run('k', 'a', () => {}, { klass: 'conversation' });
+    expect(pool.has('k')).toBe(true);            // still warm inside the window
+    await sleep(80);
+    expect(pool.has('k')).toBe(false);
+    expect(made[0].closed).toBe(true);
+  });
+
+  it('per-run override speaks the same dialect (-1 never, 0 always)', async () => {
+    const { makeSession } = fakeFactory();
+    const pool = createWarmPool({ makeSession, idleTtlByClass: { conversation: 20 } });
+    await pool.run('never', 'a', () => {}, { klass: 'conversation', idleTtlMs: -1 });
+    await pool.run('always', 'a', () => {}, { klass: 'conversation', idleTtlMs: 0 });
+    expect(pool.has('always')).toBe(false);      // evicted at turn end
+    await sleep(60);
+    expect(pool.has('never')).toBe(true);        // survives the class TTL
   });
 
   it('reopens a fresh session after a genuine session error (not a timeout)', async () => {

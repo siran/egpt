@@ -659,14 +659,17 @@ describe('parseWarmBlock', () => {
     expect(parseWarmBlock({ warm: 'not-a-map' }).idleTtlMs).toBe(null);     // warm not an object
     expect(parseWarmBlock({ warm: [1] }).idleTtlMs).toBe(null);             // a list is not a block
     expect(parseWarmBlock({ warm: { idle_ttl: 'nonsense' } }).idleTtlMs).toBe(null);   // unparseable value
-    expect(parseWarmBlock({ warm: { idle_ttl: -5 } }).idleTtlMs).toBe(null);           // negative → null
   });
   it('duration string → ms via parseFrequency', () => {
     expect(parseWarmBlock({ warm: { idle_ttl: '1h' } }).idleTtlMs).toBe(3_600_000);
     expect(parseWarmBlock({ warm: { idle_ttl: '5m' } }).idleTtlMs).toBe(300_000);
     expect(parseWarmBlock({ warm: { idle_ttl: 900000 } }).idleTtlMs).toBe(900_000);   // bare ms number
   });
-  it('idle_ttl: 0 → 0 (never evict — accepted despite parseFrequency rejecting 0)', () => {
+  it('idle_ttl: 0 → 0 (always evict — accepted despite parseFrequency rejecting 0)', () => {
     expect(parseWarmBlock({ warm: { idle_ttl: 0 } }).idleTtlMs).toBe(0);
+  });
+  it('idle_ttl: -1 → -1 (never evict — matches _armIdle\'s `ttl < 0`, any negative)', () => {
+    expect(parseWarmBlock({ warm: { idle_ttl: -1 } }).idleTtlMs).toBe(-1);
+    expect(parseWarmBlock({ warm: { idle_ttl: -5 } }).idleTtlMs).toBe(-5);   // not special-cased to -1: any negative passes through
   });
 });
