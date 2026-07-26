@@ -228,10 +228,16 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
     flake" — match on the FILE and confirm with an isolated rerun.
   - **A deterministic regression cannot produce a fully-green run**, which is what makes this
     distinguishable from a real break. Use that test.
-  - ⚠️ **One failure fails OPEN:** the cross-surface authorization assertion went
-    `authorized: false → true` under the race. Whether the race can do that in PRODUCTION (rather
-    than only against the test's 5s budget) is NOT established and is worth its own look — an
-    auth check that degrades permissive is a different class of problem from a slow test.
+  - **CLOSED, do not reopen: the "fail-open auth" reading was WRONG.** One of the racing tests is
+    the cross-surface `allowed_users` assertion, which under the race goes `authorized: false →
+    true`. That looked like a live fail-open via the `network = … || 'whatsapp'` default
+    (`beeper.mjs:686, 1032, 1079, 1345`). It is not, on two independent grounds:
+    (a) **operator 2026-07-26: the accountID cannot be missing** — *"if it's missing it'll be
+    handled when it happens"*, so the default branch never fires on real traffic; and
+    (b) the codebase already states the design in a test's own name — *"default network scope is
+    OPEN ([]): EVERY network is processed (Beeper is the transport; **network is metadata, not a
+    gate**)"*. A fix that made an absent accountID DROP the message broke exactly that test.
+    So this is the FILE's raciness, nothing more. A partial fix was written and discarded.
   - A real fix means the test awaiting the accounts fetch deterministically instead of racing a
     timeout. The original characterisation follows.
 - **KNOWN TEST FLAKE (characterised 2026-07-25 — do NOT chase it):** `tests/beeper-bridge.test.mjs`
