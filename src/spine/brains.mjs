@@ -13,13 +13,16 @@
 //   src/brains/             shipped built-ins
 //   ~/.egpt2/config/agents/ the canonical profile home for TYPE files
 //   <slug>/brains/          one conversation only
-// config/agents overrides the built-in; a conversation's own brains/ wins over both.
+// config/agents overrides the built-in — UNLESS the built-in is NEWER, since the profile
+// file is a seeded copy of it and every seeded file resolves by prefer-newer (see resolve
+// below). A conversation's own brains/ wins over both regardless.
 // (operator 2026-07-02: the legacy config/brains layer is dropped — no baggage.)
 import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import * as YAML from 'yaml';
 import { EGPT_HOME } from '../egpt-home.mjs';
+import { preferNewer } from '../prefer-newer.mjs';
 
 export const BUILTIN_BRAINS_DIR = fileURLToPath(new URL('../brains/', import.meta.url));
 export const PROFILE_AGENTS_DIR = join(EGPT_HOME, 'config', 'agents');
@@ -32,10 +35,9 @@ export function createBrains({
   parse = YAML.parse,
   onLog = () => {},
 } = {}) {
-  function loadFrom(dir, name) {
-    const p = join(dir, `${name}.yaml`);
+  function loadFrom(p, name) {
     try { if (!exists(p)) return null; const def = parse(readFile(p, 'utf8')); return (def && typeof def === 'object') ? def : null; }
-    catch (e) { onLog(`brain ${name} @ ${dir}: ${e?.message ?? e}`); return null; }
+    catch (e) { onLog(`brain ${name} @ ${p}: ${e?.message ?? e}`); return null; }
   }
   return {
     // Resolve a brain def / agent type by name across the layers (built-in ←
@@ -44,10 +46,24 @@ export function createBrains({
     // alias (operator 2026-07-02: "no legacy, no baggage") — the type is named 'egpt';
     // stored records were ported, not aliased. So resolve('default') is null unless the
     // operator keeps a real default.yaml layer.
+    //
+    // The profile type file is a SEEDED copy of the shipped one, so which of the two wins
+    // is the house prefer-newer rule (prefer-newer.mjs), not a fixed side: the NEWER file
+    // merges LAST (operator 2026-07-26 — config/agents winning unconditionally meant an
+    // upgraded src/brains def could never reach a profile seeded copy-if-missing long ago).
+    // Only the ORDER of those two changes: a partial override still merges field-by-field,
+    // and a conversation's own brains/ still wins over both. With no readable mtimes
+    // (an injected fs seam) preferNewer returns the profile path, i.e. the historical order.
     resolve(name, { convDir = null } = {}) {
-      const dirs = [builtinDir, agentsDir, convDir && join(convDir, 'brains')].filter(Boolean);
+      const builtinPath = join(builtinDir, `${name}.yaml`);
+      const profilePath = join(agentsDir, `${name}.yaml`);
+      const seeded = preferNewer(profilePath, builtinPath, { exists });
+      const paths = [
+        ...(seeded === builtinPath ? [profilePath, builtinPath] : [builtinPath, profilePath]),
+        convDir && join(convDir, 'brains', `${name}.yaml`),
+      ].filter(Boolean);
       let def = null;
-      for (const d of dirs) { const layer = loadFrom(d, name); if (layer) def = { ...(def ?? {}), ...layer }; }
+      for (const p of paths) { const layer = loadFrom(p, name); if (layer) def = { ...(def ?? {}), ...layer }; }
       return def ? { name, ...def } : null;
     },
   };

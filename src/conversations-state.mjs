@@ -16,7 +16,7 @@
 // test, easy to call from any host.
 
 import { readFile, writeFile, mkdir, stat, rename, appendFile, readdir } from 'node:fs/promises';
-import { existsSync, statSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
@@ -26,6 +26,7 @@ import { sanitizeSlug } from './sanitize.mjs';
 import { Room } from './room-core.mjs';
 import { EGPT_HOME } from './egpt-home.mjs';
 import { makeSerialByKey } from './serial-by-key.mjs';
+import { preferNewer } from './prefer-newer.mjs';
 
 // This module lives in src/, but the SHIPPED asset dirs (config/skeletons,
 // config/personalities) sit at the PACKAGE ROOT — hence the '..' below. Holds for
@@ -1393,19 +1394,10 @@ export async function readIdentityDir(surface, slug) {
 // 2026-07-25: "roomTemplateDir prefer the newer file" — the old wholesale "profile dir
 // wins whenever it exists" meant an upgraded repo-shipped layer could never reach an
 // already-seeded profile, since seed.mjs's copy-if-missing had already planted the old
-// content there). Whichever copy — profile or shipped — has the NEWER mtime wins; only
-// one existing is used outright; neither existing → null. A `git pull` restamps the
-// repo file's mtime, so an upgraded template wins; an operator editing their profile
-// copy afterwards makes theirs newer again, so the edit stays sacred.
-function resolveRoomLayerFile(name) {
-  const profilePath = join(ROOM_TEMPLATE_PROFILE_DIR, name);
-  const shippedPath = join(ROOM_TEMPLATE_SHIPPED_DIR, name);
-  const profileExists = existsSync(profilePath);
-  const shippedExists = existsSync(shippedPath);
-  if (!profileExists) return shippedExists ? shippedPath : null;
-  if (!shippedExists) return profilePath;
-  return statSync(shippedPath).mtimeMs > statSync(profilePath).mtimeMs ? shippedPath : profilePath;
-}
+// content there). preferNewer is the house rule for EVERY seeded file (prefer-newer.mjs)
+// — this was just its first instance.
+const resolveRoomLayerFile = (name) =>
+  preferNewer(join(ROOM_TEMPLATE_PROFILE_DIR, name), join(ROOM_TEMPLATE_SHIPPED_DIR, name));
 
 // Best-effort file read; a missing/unreadable file yields the fallback (never throws).
 async function _readFileOr(fp, fallback = '') {
@@ -1537,16 +1529,17 @@ export async function readIdentityFeed(name) {
   return (await _identityLayers(name)).map(({ text }) => text.trim()).filter(Boolean).join('\n\n');
 }
 
-// The `mode: auto` operator-role instruction layer (config/skeletons/auto-mode.md).
-// Read profile-first, repo-fallback — a single file, not the room template's numbered
-// layer set, so it stays wholesale (not resolveRoomLayerFile's per-file mtime pick). ''
-// when absent (an auto conversation then simply gates like 'on' with no extra layer —
-// never throws).
+// The `mode: auto` operator-role instruction layer (config/skeletons/auto-mode.md). A
+// seeded profile file like any other, so it resolves by the same rule: preferNewer picks
+// whichever of {profile copy, shipped copy} is newer (operator 2026-07-26 — read
+// profile-first, it was the room-template staleness trap all over again: seeded once,
+// then no upgrade to the shipped layer could ever reach the node). '' when absent (an
+// auto conversation then simply gates like 'on' with no extra layer — never throws).
 // Appended to an auto conversation's kickoff feed by the brainpool.
 export async function readAutoModeLayer() {
   const profile = join(SKELETONS_PROFILE_DIR, 'auto-mode.md');
   const shipped = join(SKELETONS_SHIPPED_DIR, 'auto-mode.md');
-  return (await _readFileOr(existsSync(profile) ? profile : shipped)).trim();
+  return (await _readFileOr(preferNewer(profile, shipped))).trim();
 }
 
 // Full-install announcement: the whole identity.d bundle (manifest +
