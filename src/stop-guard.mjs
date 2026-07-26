@@ -17,6 +17,14 @@
 //      a per-channel pause: `stopAll()`'s old "egpt off without killing the process"
 //      meaning is RETIRED, because a word that sometimes only mutes a channel is exactly
 //      the ambiguity a safe word cannot have.
+//      SCOPE — IT IS A **SELF-CHAT** WORD (operator 2026-07-26: "the 'stop' safeword is
+//      super fragile. i don't really like it. is must be a single word message in Self,
+//      'stop', case insensitive"). parseStopWord below only says WHAT was typed; WHERE it
+//      counts is the spine's gate (src/spine/spine.mjs classify → isSelfChat, wired in
+//      boot to networks.whatsapp.chat_ids[0]). In any other chat, group, or on the shell
+//      console the same word is ordinary text. RESUME / RESUME ALL are NOT scoped that
+//      way — they only clear a loop-counter pause, so they stay usable in the channel
+//      that got paused.
 //      "STOP ALL" IS UNWIRED (operator 2026-07-26: "unwire 'STOP ALL' i didn't even know
 //      it existed"). Not an alias, not a hidden synonym for the kill switch — a phrase the
 //      operator does not know cannot be a second name for the most destructive word on the
@@ -84,6 +92,14 @@ export function writeStopFile({ reason = 'STOP', who = 'unknown', where = 'unkno
 // THE COMPLETE SET: 'stop' | 'resume' | 'resume_all'. Anything else — including
 // "STOP ALL", which used to be a second name for the kill switch — is null, i.e.
 // ordinary text that flows on to the normal dispatch.
+//
+// THE WHOLE TRIMMED BODY MUST BE THE WORD — "stop it", "please stop", "stopping"
+// and "we should stop" are all ordinary text, which is the operator's "single word
+// message" requirement (2026-07-26) and the reason it holds. The ONLY latitude is
+// TRAILING '.'/'!'/whitespace, kept deliberately: "stop." and "STOP!" are still the
+// bare word plus emphasis, they cannot mean anything else, and a safe word that
+// fails because the operator hit the exclamation key in an emergency is worse than
+// one that tolerates it. Nothing LEADING and nothing internal is stripped.
 export function parseStopWord(text) {
   const t = String(text ?? '').trim().toLowerCase().replace(/[.!\s]+$/, '');
   if (t === 'stop') return 'stop';

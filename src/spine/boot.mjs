@@ -27,6 +27,7 @@ import {
   CONV_YAML_PATH, parse as parseConvState, serialize as serializeConvState, emptyState, KNOWN_SURFACES, slugDir, getContact,
 } from '../conversations-state.mjs';
 import { createStopGuard, STOP_FILE, stopFilePresent, writeStopFile } from '../stop-guard.mjs';
+import { createLasso } from '../lasso.mjs';
 import { CLEAN_EXIT_CODE } from '../daemon-runtime.mjs';
 
 import { createIdentity, surfaceOf } from './identity.mjs';
@@ -234,10 +235,14 @@ export async function boot({
       // ⚠ CAPPED, exactly like announceAndExit's going-down line: the send races a 3s timer,
       // so a slow or wedged POST can never wedge the stop. If it fails or times out the node
       // still stops — the FILE is the durable record, this line is only courtesy.
+      //
+      // ⚠ bypassLasso: the outbound rate regulator (src/lasso.mjs) must NEVER hold the stop.
+      // A kill switch that queues behind the very flood it exists to end is not a kill switch,
+      // so this one send skips the gate outright (operator 2026-07-26).
       if (why.chatId) {
         try {
           await Promise.race([
-            shellAwareBridge.send(why.chatId, `🛑 STOP received — egpt is stopping (the service will not respawn).\nTo start it again:  rm ${STOP_FILE}`),
+            shellAwareBridge.send(why.chatId, `🛑 STOP received — egpt is stopping (the service will not respawn).\nTo start it again:  rm ${STOP_FILE}`, { bypassLasso: true }),
             new Promise((r) => setTimeoutFn(r, 3000)),
           ]);
         } catch (e) { log.line?.(`[stop] could not post the warning (${e?.message ?? e}) — stopping anyway`); }
@@ -491,6 +496,30 @@ export async function boot({
     const allowed_users = Array.isArray(raw.allowed_users) ? raw.allowed_users : [];
     return { ...raw, chat_ids, allowed_users };
   };
+  // === THE SELF CHAT — ONE definition, three readers ===================================
+  // The operator's own command channel: networks.whatsapp.chat_ids[0] (the live config
+  // annotates that entry "Self-DM = operator command channel"). It was already THE Self
+  // notion in two places — announceAndExit's restart-announce target and the mesh's
+  // fallback transport — spelled out inline in both. The KILL SWITCH now needs the same
+  // answer (below), so it is named ONCE here rather than copied a third time: three
+  // copies of "which chat is Self" is three chances to drift.
+  const selfChatId = () => surfaceCfg('whatsapp').chat_ids[0] ?? null;
+  // Is THIS message in Self? The ONLY place the "stop" safe word is honoured since
+  // 2026-07-26 ("is must be a single word message in Self"). Two conditions:
+  //   - the SURFACE is whatsapp — the surface Self is defined on. Ids are per-surface
+  //     namespaces, and without this a SHELL frame (which sets its own chatId, and is
+  //     hardcoded authorized:true) could name the Self room and pull the switch.
+  //   - the CHAT ID matches, compared in SHORT space (shortChatId is a no-op on an id
+  //     that is already short) so a full-form config entry matches the short id the
+  //     bridge delivers — the same normalization isAllowedUser and commands.mjs use.
+  // No Self chat configured → false: the chat safe word is simply unavailable, and
+  // `touch EGPT_HOME/STOP` (or setup/stop-egpt.cmd) is the way out. Fail-closed is the
+  // right direction for a word that takes the service down.
+  const isSelfChat = (ev) => {
+    const self = selfChatId();
+    if (!self || ev?.surface !== 'whatsapp') return false;
+    return shortChatId(ev?.chatId) === shortChatId(self);
+  };
   // Active Beeper token (operator 2026-07-09): the new `beeper:` block selects an account with
   // `use` → beeper[use].token. BACK-COMPAT: no block / no `use` → the top-level beeper_token key,
   // then the BEEPER_ACCESS_TOKEN env var (unchanged).
@@ -507,7 +536,23 @@ export async function boot({
   // off the leading edge no longer breaks dedup. The opens are safe on a multi-peer node.)
 
   // --- ports ---
-  const bridge = await createBeeperBridgePort({
+  // THE LASSO (operator 2026-07-26): "a major loop that counts how many messages in a time
+  // window has been sent out to any limb ... a big lasso that sandboxes egpt" / "under no
+  // reason must the bridge exceed a normal sending rate". ONE regulator for the whole node,
+  // built HERE — before any port exists — because every limb is wrapped by it below, so the
+  // budget is node-wide and no limb has its own. See src/lasso.mjs for throttle-vs-trip, the
+  // queue bound, and what counts as a message. Config-controlled so the operator can loosen
+  // it without a deploy; its state is published to state/lasso.json on transitions only (an
+  // async fire-and-forget — the hot path never touches the disk).
+  const lassoCfg = (cfg.lasso && typeof cfg.lasso === 'object') ? cfg.lasso : {};
+  const lasso = createLasso({
+    messages: Number.isFinite(lassoCfg.messages) ? lassoCfg.messages : 3,
+    windowMs: Number.isFinite(lassoCfg.window_ms) ? lassoCfg.window_ms : 5_000,
+    maxQueue: Number.isFinite(lassoCfg.max_queue) ? lassoCfg.max_queue : 20,
+    onLog: (m) => log.line?.(`[lasso] ${m}`),
+    writeState: (s) => { writeFile(join(EGPT_HOME, 'state', 'lasso.json'), `${JSON.stringify(s, null, 2)}\n`, 'utf8').catch(() => {}); },
+  });
+  const bridge = lasso.wrap(await createBeeperBridgePort({
     beeperToken,
     userName: cfg.whatsapp?.user_name ?? cfg.user_name ?? null,
     // Per-surface authorization (operator 2026-07-02): ids are per-surface
@@ -561,8 +606,14 @@ export async function boot({
       return await (io.readFile ?? readFile)(join(dir, 'transcript.md'), 'utf8').catch(() => null);
     },
     stateDir: join(EGPT_HOME, 'state'),   // beeper-seen.jsonl etc. → this profile's state
+    // THE ONE EMIT BELOW THE PORT (the 👂 echo, src/bridges/beeper.mjs): the transcript ack is
+    // posted by the LIMB itself, from inside the voice-note path, so wrapping the port here
+    // would miss it — a regulator with a hole exactly where a burst of notes lands. Hand the
+    // limb the SAME lasso so the echo spends from the SAME node-wide budget. Forwarded
+    // verbatim through beeper-port's `rest`.
+    echoGate: lasso.gate,
     onLog: (m) => log.line?.(`[bridge] ${m}`),
-  }, startBridge ? { start: startBridge } : {});
+  }, startBridge ? { start: startBridge } : {}));
 
   // Persist incoming attachments into the chat's media/ folder + surface them to E.
   // For a video: keyframes (ffmpeg) + audio transcript (via the same chain) — Route A.
@@ -577,12 +628,15 @@ export async function boot({
   // The SAME per-NODE bridge-signature layers the beeper bridge received (above) — so a persona
   // reply rendered to the operator console is wrapped byte-identically to one rendered to Beeper
   // (ONE path, operator 2026-07-25). Default '' → nothing added, exactly like the beeper side.
-  const shellPort = createShellPort({
+  // Wrapped by the SAME lasso as the beeper limb (never a second one): a shell-owned chat
+  // routes to this port and would otherwise leave the node unregulated — "any limb", operator
+  // 2026-07-26. The wrap is a Proxy precisely so this port's `isConnected` GETTER stays live.
+  const shellPort = lasso.wrap(createShellPort({
     wakeWords,
     bridgeSignatureOpen: cfg.bridge_signature_open ?? '',
     bridgeSignatureClose: cfg.bridge_signature_close ?? '',
     onLog: (m) => log.line?.(`[shell] ${m}`),
-  });
+  }));
 
   // Shell-aware bridge facade (makeShellAwareBridge, top of file): the STREAMING senders
   // (E's persona sender + the brain-member relay sender) render through their injected
@@ -598,7 +652,7 @@ export async function boot({
   const gitOut = (args) => { try { return spawnSync('git', args, { cwd: process.cwd() }).stdout?.toString().trim() || ''; } catch { return ''; } };
   const shortSha = () => gitOut(['rev-parse', '--short', 'HEAD']) || '?';
   async function announceAndExit(code) {
-    const selfDm = surfaceCfg('whatsapp').chat_ids[0];   // first command channel = the Self-DM announce target
+    const selfDm = selfChatId();   // the Self chat (above) = the Self-DM announce target
     try { await mkdir(join(EGPT_HOME, 'state'), { recursive: true }); await writeFile(sidecar, JSON.stringify({ chatId: selfDm, kind: KIND_OF[code] ?? '?', preSha: shortSha(), pid: process.pid })); } catch {}
     // best-effort going-down — names the PID going down (capped so a slow POST can't wedge the exit)
     try { if (selfDm) await Promise.race([bridge.send(selfDm, `↻ ${KIND_OF[code] ?? 'restart'}… (pid ${process.pid})`), new Promise((r) => setTimeout(r, 3000))]); } catch {}
@@ -675,7 +729,7 @@ export async function boot({
   // getSelfChatId: the Self chat (same first command channel announceAndExit posts to) — the mesh
   // relays through it when a relay_channel doesn't resolve, so a missing group degrades to a
   // working link + a notice instead of a silently dropped envelope.
-  const mesh = createMeshService({ bridge: shellAwareBridge, brain, getConfig, bodyEmojiOf, getSelfChatId: () => surfaceCfg('whatsapp').chat_ids[0] ?? null, onLog: (m) => log.line?.(`[mesh] ${m}`) });
+  const mesh = createMeshService({ bridge: shellAwareBridge, brain, getConfig, bodyEmojiOf, getSelfChatId: selfChatId, onLog: (m) => log.line?.(`[mesh] ${m}`) });
   bridge.onEdit((e) => mesh.onEdit({ msgId: e.msgId, newText: e.newText }));
 
   // operator slash commands (Self DM / authorized) — lifecycle wired now; reuses
@@ -829,7 +883,7 @@ export async function boot({
     onLog: (m) => log.line?.(`[relay] ${m}`),
   });
 
-  const spine = createSpine({ bridge, brain, ...services, commands, mesh, actions, advice, guard, guardOverride, stopSwitch, roomRelay, defaultBeing: defaultKey, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
+  const spine = createSpine({ bridge, brain, ...services, commands, mesh, actions, advice, guard, guardOverride, stopSwitch, isSelfChat, roomRelay, defaultBeing: defaultKey, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
   // Bind the advice service's answer-routing dispatch now that the spine exists: an
   // operator answer in the advice channel re-enters the pipe as a turn in the origin chat.
   advice.useDispatch(spine.handleInbound);
@@ -891,7 +945,7 @@ export async function boot({
   }
 
   return {
-    spine, bridge, pool, cfg, accountPeers,
+    spine, bridge, shellPort, pool, cfg, accountPeers,   // shellPort: the second LIMB — exposed so its regulation is assertable, like bridge's
     stop: () => {
       // No alive-timer teardown: the beat is a heartbeat now, riding the spine's
       // tick timer, which spine.stop() clears.

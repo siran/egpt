@@ -103,6 +103,7 @@ export function createSpine({
   advice,                              // optional §2c advice service (mode: auto — /ask + operator-answer routing)
   guard = null,                        // optional §2c stop-guard: the per-channel loop-breaker + RESUME (createStopGuard, boot-wired). Null = pipe runs unguarded (tests).
   stopSwitch = null,                   // optional §2c KILL SWITCH (boot-wired): { present(): does EGPT_HOME/STOP exist, async pull(why): warn in why.chatId (capped, best-effort) + write the file + take the SERVICE down }. Two call sites, both on paths that already exist — tick() (the operator touched the file; no chatId, so nothing to warn) and classify() (the chat safe word, which carries its chat). Null = no kill switch (tests).
+  isSelfChat = () => false,            // (ev) => is this message in THE SELF CHAT — the operator's own command channel (boot: networks.whatsapp.chat_ids[0]). The ONLY chat the safe word is honoured in (operator 2026-07-26). Default false = FAIL-CLOSED: an un-wired spine has no chat kill switch at all, which is the safe direction for a switch that takes the service down.
   guardOverride = null,                // optional (surface, chatId) => { turns?, window? } | null — the conversation's per-channel guard override (conversations.yaml). Null = node defaults only.
   roomRelay = null,                    // optional §Phase-4 room brain-member fan-out (createRoomRelay, boot-wired): delivers a received room message to each brain member per mode, streams the reply back, and RE-ENTERS it as a non-human turn. Null = no web-brain members (byte-identical to before).
   defaultBeing = 'e',                  // the persona: the being an un-addressed message dispatches to, and the turn/cycle owner for a mesh-target message (which is GATED as its own relay agent — see gateAs)
@@ -421,7 +422,17 @@ export function createSpine({
       // the loop counter uses (isHumanTurn): an agent must not be able to pull the kill
       // switch by saying the word. A non-human "stop" is not a control word at all — it
       // falls through and is handled like any other text.
-      if (stopSwitch && word === 'stop' && humanTurn(ev)) {
+      //
+      // AND IT MUST BE SAID IN SELF (operator 2026-07-26: "the 'stop' safeword is super
+      // fragile. i don't really like it. is must be a single word message in Self, 'stop',
+      // case insensitive"). It used to fire from ANY chat on ANY surface — one stray "stop"
+      // in a group, or anyone with the operator console, took the whole service down. Now
+      // the word is scoped to the ONE chat that is the operator addressing his own node:
+      // isSelfChat (boot: networks.whatsapp.chat_ids[0], the same Self-DM the restart
+      // announce posts to). ANYWHERE ELSE — another Beeper chat, a group, the shell console
+      // (which hardcodes authorized:true, so scoping is what actually closes it) — "stop" is
+      // ORDINARY TEXT and flows on to the normal dispatch.
+      if (stopSwitch && word === 'stop' && humanTurn(ev) && isSelfChat(ev)) {
         return async () => {
           note(`STOP from ${ev.senderName ?? ev.senderId ?? '?'} @ ${guardChannel(ev)} — writing the STOP file and stopping the service`);
           // AWAITED: pull warns in this chat before it exits (boot caps that post so it can

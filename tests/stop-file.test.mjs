@@ -89,13 +89,17 @@ function memIo() {
   };
 }
 
+// THE SELF CHAT — `networks.whatsapp.chat_ids[0]`, the same one entry the live config
+// annotates "Self-DM = operator command channel" and the same one announceAndExit posts
+// the restart line to. Since 2026-07-26 it is ALSO the only chat the safe word works in.
+const SELF_CHAT = '!self:beeper.com';
 const CONFIG = {
-  whatsapp: { allowed_users: ['u-1'] },
+  networks: { whatsapp: { chat_ids: [SELF_CHAT], allowed_users: ['u-1'] } },
   agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true } },
 };
 const AT = Date.UTC(2026, 6, 25, 21, 40);
 
-async function bootNode({ hangSend = false, setTimeoutFn = globalThis.setTimeout } = {}) {
+async function bootNode({ hangSend = false, setTimeoutFn = globalThis.setTimeout, config = CONFIG } = {}) {
   const exits = []; const logs = [];
   const { start, spy } = fakeStart({
     hangSend,
@@ -103,7 +107,7 @@ async function bootNode({ hangSend = false, setTimeoutFn = globalThis.setTimeout
   });
   let state = emptyState();
   const app = await boot({
-    readConfig: () => CONFIG,
+    readConfig: () => config,
     startBridge: start,
     makeSession: fakeSession,
     loadState: async () => state,
@@ -120,10 +124,14 @@ async function bootNode({ hangSend = false, setTimeoutFn = globalThis.setTimeout
 }
 
 // A beeper-surface inbound from the ONE allowed_user (CONFIG above), as beeper.mjs builds it.
+// This one lands in an ORDINARY chat — authorized, but NOT the Self chat.
 const BEEPER_FROM = {
   chatId: '!room:beeper.com', chatName: 'fam', network: 'whatsapp',
   userId: 'u-1', senderName: 'An', authorized: true, msgKey: 'm1',
 };
+// …and this one lands in SELF — the operator's own command channel, the only chat the
+// safe word is honoured in.
+const SELF_FROM = { ...BEEPER_FROM, chatId: SELF_CHAT, chatName: 'Self' };
 // Let every already-scheduled microtask + immediate run, WITHOUT advancing any injected timer.
 const settleMicrotasks = () => new Promise((r) => setImmediate(r));
 
@@ -186,48 +194,119 @@ describe('(b) a RUNNING spine halts when the file appears', () => {
 });
 
 describe('(c) the chat safe word writes the file, then stops the service', () => {
-  it('"stop" on the SHELL surface: file written with reason + provenance, service stops', async () => {
-    const { app, exits } = await bootNode();
-    await app.spine.handleInbound(shellMsg('stop'));
+  it('"stop" in the SELF chat: file written with reason + provenance, service stops', async () => {
+    const { app, spy, exits } = await bootNode();
+    await spy.onIncoming('stop', { ...SELF_FROM });
 
     expect(existsSync(STOP_PATH)).toBe(true);
     const body = await fs.readFile(STOP_PATH, 'utf8');
     expect(body).toContain('stop');                                  // the reason: the safe word itself
-    expect(body).toContain('operator');                              // who
-    expect(body).toContain('shell');                                 // which surface
-    expect(body).toContain('main');                                  // which chat
+    expect(body).toContain('An');                                    // who
+    expect(body).toContain('whatsapp');                              // which surface
+    expect(body).toContain(SELF_CHAT);                               // which chat
     expect(body).toContain(new Date(AT).toISOString());              // when
     expect(body.toLowerCase()).toContain('delete');                  // the file explains how to undo itself
     expect(exits).toEqual([0]);
     app.stop();
   });
 
-  it('"STOP" on a BEEPER surface: identical', async () => {
-    const { app, spy, exits } = await bootNode();
-    await spy.onIncoming('STOP', {
-      chatId: '!room:beeper.com', chatName: 'fam', network: 'whatsapp',
-      userId: 'u-1', senderName: 'An', authorized: true, msgKey: 'm1',
-    });
-
+  it('a FULL-form config chat_id still matches the SHORT id the bridge delivers', async () => {
+    const config = { ...CONFIG, networks: { whatsapp: { chat_ids: ['!yz3kJjWXsQJofK9naaVb:beeper.local'], allowed_users: ['u-1'] } } };
+    const { app, spy, exits } = await bootNode({ config });
+    await spy.onIncoming('stop', { ...SELF_FROM, chatId: 'yz3kJjWXsQJofK9naaVb' });
     expect(existsSync(STOP_PATH)).toBe(true);
-    const body = await fs.readFile(STOP_PATH, 'utf8');
-    expect(body).toContain('An');                                    // who
-    expect(body).toContain('whatsapp');                              // which surface
-    expect(body).toContain('!room:beeper.com');                      // which chat
     expect(exits).toEqual([0]);
     app.stop();
   });
 
-  it('an UNAUTHORIZED sender\'s "stop" does NOTHING — no file, no warning, no stop', async () => {
+  it('an UNAUTHORIZED sender\'s "stop" IN SELF does NOTHING — no file, no warning, no stop', async () => {
     const { app, spy, exits } = await bootNode();
-    // shell surface, but the frame is not the trusted console
-    await app.spine.handleInbound(shellMsg('stop', { authorized: false, senderName: 'stranger' }));
-    // beeper surface, a stranger in the chat (NOT in allowed_users, not the account owner)
-    await spy.onIncoming('STOP', { ...BEEPER_FROM, userId: 'stranger', senderName: 'Mallory', authorized: false, msgKey: 'm9' });
+    // the Self chat, but the sender is NOT in allowed_users and is not the account owner
+    await spy.onIncoming('STOP', { ...SELF_FROM, userId: 'stranger', senderName: 'Mallory', authorized: false, msgKey: 'm9' });
 
     expect(existsSync(STOP_PATH)).toBe(false);
     expect(exits).toEqual([]);
     expect(spy.sent.filter((s) => s.text.includes('STOP'))).toHaveLength(0);   // and nothing was announced
+    app.stop();
+  });
+});
+
+// === (D) THE SAFE WORD IS SELF-ONLY (operator 2026-07-26, verbatim: "the 'stop' safeword is
+//     super fragile. i don't really like it. is must be a single word message in Self, 'stop',
+//     case insensitive"). Until today an authorized "stop" ANYWHERE — any Beeper chat, any
+//     group, the operator console — took the whole service down. The word is now scoped to ONE
+//     chat: networks.whatsapp.chat_ids[0], the Self-DM the restart announce already posts to.
+//     Everywhere else "stop" is ORDINARY TEXT. ================================================
+describe('(D) "stop" is honoured ONLY in the Self chat, and only as the bare word', () => {
+  it('case-insensitive in Self: "STOP" and "Stop" both pull it', async () => {
+    for (const word of ['STOP', 'Stop']) {
+      await fs.rm(STOP_PATH, { force: true });
+      const { app, spy, exits } = await bootNode();
+      await spy.onIncoming(word, { ...SELF_FROM });
+      expect(existsSync(STOP_PATH), word).toBe(true);
+      expect(exits, word).toEqual([0]);
+      app.stop();
+    }
+  });
+
+  it('"stop" in ANOTHER beeper chat from an AUTHORIZED sender does NOTHING', async () => {
+    const { app, spy, exits } = await bootNode();
+    await spy.onIncoming('stop', { ...BEEPER_FROM });                 // authorized, but not Self
+    await spy.onIncoming('STOP', { ...BEEPER_FROM, chatName: 'a group', msgKey: 'm2' });
+
+    expect(existsSync(STOP_PATH)).toBe(false);
+    expect(exits).toEqual([]);
+    expect(spy.sent.filter((s) => s.text.includes('egpt is stopping'))).toHaveLength(0);
+    app.stop();
+  });
+
+  it('"stop" on the SHELL surface does NOTHING — the console is not Self', async () => {
+    // The shell port hardcodes authorized:true on every frame (src/bridges/shell-port.mjs),
+    // so "authorized" alone never gated the console. Scoping to Self closes that as a
+    // side effect: the shell's chat id ('main') is not the Self chat.
+    const { app, spy, exits } = await bootNode();
+    await app.spine.handleInbound(shellMsg('stop'));
+    await app.spine.handleInbound(shellMsg('STOP'));
+
+    expect(existsSync(STOP_PATH)).toBe(false);
+    expect(exits).toEqual([]);
+    expect(spy.sent.filter((s) => s.text.includes('egpt is stopping'))).toHaveLength(0);
+    app.stop();
+  });
+
+  it('a shell frame that SPOOFS the Self chat id still does nothing (surface is checked too)', async () => {
+    const { app, spy, exits } = await bootNode();
+    await app.spine.handleInbound(shellMsg('stop', { chatId: SELF_CHAT }));
+    expect(existsSync(STOP_PATH)).toBe(false);
+    expect(exits).toEqual([]);
+    expect(spy.sent.filter((s) => s.text.includes('egpt is stopping'))).toHaveLength(0);
+    app.stop();
+  });
+
+  it('"stop it" / "please stop" / "stopping" in Self are ordinary text', async () => {
+    const { app, spy, exits } = await bootNode();
+    for (const [i, word] of ['stop it', 'please stop', 'stopping', 'stop?'].entries()) {
+      await spy.onIncoming(word, { ...SELF_FROM, msgKey: `mw${i}` });
+    }
+    expect(existsSync(STOP_PATH)).toBe(false);
+    expect(exits).toEqual([]);
+    app.stop();
+  });
+
+  it('the humanTurn requirement still holds IN Self — a backlog replay never pulls it', async () => {
+    const { app, spy, exits } = await bootNode();
+    await spy.onIncoming('stop', { ...SELF_FROM, backlog: true });
+    expect(existsSync(STOP_PATH)).toBe(false);
+    expect(exits).toEqual([]);
+    app.stop();
+  });
+
+  it('NO Self chat configured → the chat safe word is unavailable (fail-closed)', async () => {
+    const config = { ...CONFIG, networks: { whatsapp: { chat_ids: [], allowed_users: ['u-1'] } } };
+    const { app, spy, exits } = await bootNode({ config });
+    await spy.onIncoming('stop', { ...SELF_FROM });
+    expect(existsSync(STOP_PATH)).toBe(false);      // `touch EGPT_HOME/STOP` is still the way out
+    expect(exits).toEqual([]);
     app.stop();
   });
 });
@@ -238,7 +317,7 @@ describe('(c) the chat safe word writes the file, then stops the service', () =>
 describe('(A) "STOP ALL" is not a safe word', () => {
   it('an AUTHORIZED "STOP ALL" writes no file, posts no warning and does not stop the node', async () => {
     const { app, spy, exits } = await bootNode();
-    await spy.onIncoming('STOP ALL', { ...BEEPER_FROM, msgKey: 'm2' });
+    await spy.onIncoming('STOP ALL', { ...SELF_FROM, msgKey: 'm2' });   // in Self, where a bare STOP WOULD land
     expect(existsSync(STOP_PATH)).toBe(false);
     expect(exits).toEqual([]);
     expect(spy.sent.filter((s) => s.text.includes('egpt is stopping'))).toHaveLength(0);
@@ -247,7 +326,7 @@ describe('(A) "STOP ALL" is not a safe word', () => {
 
   it('…and neither does "stopall"', async () => {
     const { app, spy, exits } = await bootNode();
-    await spy.onIncoming('stopall', { ...BEEPER_FROM, msgKey: 'm3' });
+    await spy.onIncoming('stopall', { ...SELF_FROM, msgKey: 'm3' });
     expect(existsSync(STOP_PATH)).toBe(false);
     expect(exits).toEqual([]);
     app.stop();
@@ -257,15 +336,16 @@ describe('(A) "STOP ALL" is not a safe word', () => {
 // === (B) THE WARNING IN THE CHAT (operator 2026-07-26: "STOP on any chat created the file and
 //     emits warning in the chat that action was taken"). The operator must SEE that it landed —
 //     but the stop must never be hangable by that post, so the send is capped exactly like
-//     boot's announceAndExit going-down line (Promise.race against a 3s timer). ===============
+//     boot's announceAndExit going-down line (Promise.race against a 3s timer). Since the
+//     narrowing the "chat it came from" is NECESSARILY Self — there is nowhere else to warn. ==
 describe('(B) STOP warns in the chat it came from, and the post can never wedge the stop', () => {
   it('warns in THAT chat, then writes the file, then exits — in that order', async () => {
     const { app, spy, exits } = await bootNode();
-    await spy.onIncoming('STOP', { ...BEEPER_FROM });
+    await spy.onIncoming('STOP', { ...SELF_FROM });
 
     const warn = spy.sent.find((s) => s.text.includes('egpt is stopping'));
     expect(warn, JSON.stringify(spy.sent)).toBeTruthy();
-    expect(warn.chatId).toBe('!room:beeper.com');           // the chat the STOP came from
+    expect(warn.chatId).toBe(SELF_CHAT);                    // the chat the STOP came from = Self
     expect(warn.text).toContain('STOP');                    // …what happened
     expect(warn.text).toContain(`rm ${STOP_PATH}`);         // …and how to undo it
     // ORDER — the snapshot taken INSIDE the send: nothing had been written, nothing had exited
@@ -283,7 +363,7 @@ describe('(B) STOP warns in the chat it came from, and the post can never wedge 
       setTimeoutFn: (fn, ms) => { timers.push({ fn, ms }); return timers.length; },
     });
     let settled = false;
-    const p = spy.onIncoming('STOP', { ...BEEPER_FROM }).then(() => { settled = true; });
+    const p = spy.onIncoming('STOP', { ...SELF_FROM }).then(() => { settled = true; });
     await settleMicrotasks();
 
     expect(spy.sent).toHaveLength(1);                       // the warning WAS attempted…
@@ -302,7 +382,9 @@ describe('(B) STOP warns in the chat it came from, and the post can never wedge 
 });
 
 // --- the wiring, in isolation: a fake switch proves the two spine call sites -------------
-function buildSpine({ guard = null, stopSwitch = null, wasSentByUs = () => false, mesh = null } = {}) {
+// `isSelfChat` defaults to TRUE here so each case below isolates the ONE gate it is about
+// (provenance, authorization, vocabulary); the Self gate itself is locked explicitly.
+function buildSpine({ guard = null, stopSwitch = null, wasSentByUs = () => false, mesh = null, isSelfChat = () => true } = {}) {
   const bridge = { onMessage() {}, send() {}, stop() {}, wasSentByUs };
   const brain = { calls: [], async turn(b, ev) { this.calls.push({ b, ev }); return { text: 'x' }; } };
   const identity = { build: (msg) => ({ ...msg }) };
@@ -316,7 +398,7 @@ function buildSpine({ guard = null, stopSwitch = null, wasSentByUs = () => false
   const sender = { open() { return { activate() {}, update() {}, async finish() {}, fail() {} }; } };
   const spine = createSpine({
     bridge, brain, identity, router, gating, sender, transcript, heartbeats,
-    mesh, guard, stopSwitch, clock: { now: () => 1000 },
+    mesh, guard, stopSwitch, isSelfChat, clock: { now: () => 1000 },
   });
   return { spine, heartbeats, brain, transcript };
 }
@@ -384,6 +466,24 @@ describe('spine wiring — one switch, two call sites', () => {
     const { spine } = buildSpine({ guard: createStopGuard(), stopSwitch: sw });
     await spine.handleInbound({ surface: 'wa', chatId: 'c', chatName: 'fam', senderName: 'Mallory', authorized: false, msgId: 'm', body: 'stop', kind: 'text', raw: {} });
     expect(sw.pulls).toHaveLength(0);
+  });
+
+  it('a STOP OUTSIDE the Self chat never reaches the switch — it is recorded as ordinary text', async () => {
+    const sw = fakeSwitch();
+    const { spine, transcript } = buildSpine({ guard: createStopGuard(), stopSwitch: sw, isSelfChat: () => false });
+    await spine.handleInbound({ surface: 'wa', chatId: 'elsewhere', chatName: 'fam', senderName: 'An', authorized: true, msgId: 'm', body: 'stop', kind: 'text', raw: {} });
+    expect(sw.pulls).toHaveLength(0);
+    expect(transcript.logged).toHaveLength(1);          // not swallowed — it flowed on like any message
+    expect(transcript.logged[0].body).toBe('stop');
+  });
+
+  it('the Self predicate is asked about THIS message (surface + chatId)', async () => {
+    const sw = fakeSwitch();
+    const seen = [];
+    const { spine } = buildSpine({ guard: createStopGuard(), stopSwitch: sw, isSelfChat: (ev) => { seen.push({ surface: ev.surface, chatId: ev.chatId }); return true; } });
+    await spine.handleInbound({ surface: 'wa', chatId: 'c', chatName: 'fam', senderName: 'An', authorized: true, msgId: 'm', body: 'stop', kind: 'text', raw: {} });
+    expect(seen).toContainEqual({ surface: 'wa', chatId: 'c' });
+    expect(sw.pulls).toHaveLength(1);
   });
 });
 
@@ -458,5 +558,58 @@ describe('writeStopFile — the file explains itself, and never clobbers an exis
     expect(writeStopFile({ reason: 'later' }, f)).toBe(false);
     expect(await fs.readFile(f, 'utf8')).toBe('mine\n');
     await fs.rm(f, { force: true });
+  });
+});
+
+// === (E) THE CLICKABLE STOP ICON (operator 2026-07-26: "probably we can prepare a clickable
+//     script to just stop the egpt-service. an autoelevating clickable icon"). setup/stop-egpt.cmd
+//     self-elevates and runs setup/stop-egpt.ps1, which writes THIS SAME FILE and then stops the
+//     service. Two writers of one format is a drift hazard — the node must be able to read a file
+//     the script wrote — so the shared skeleton is asserted against BOTH sides here. ============
+describe('(E) setup/stop-egpt.ps1 writes the same STOP file the spine does', () => {
+  const readSetup = (name) => fs.readFile(new URL(`../setup/${name}`, import.meta.url), 'utf8');
+
+  it('the file skeleton is identical on both sides (writeStopFile <-> the .ps1 template)', async () => {
+    const f = join(tmpHome, 'STOP-fmt');
+    await fs.rm(f, { force: true });
+    writeStopFile({ reason: 'R', who: 'W', where: 'X', at: 'T' }, f);
+    const body = await fs.readFile(f, 'utf8');
+    await fs.rm(f, { force: true });
+    const ps1 = await readSetup('stop-egpt.ps1');
+
+    // Every fixed part of the format, checked against BOTH writers: change either one
+    // without the other and this fails.
+    for (const part of [
+      'egpt is STOPPED.',
+      'reason: ',
+      'who:    ',
+      'where:  ',
+      'when:   ',
+      'This node refuses to start while this file exists, and a running node halts on its',
+      'next tick. Delete this file to let egpt start again:  rm ',
+    ]) {
+      expect(body, `writeStopFile: ${part}`).toContain(part);
+      expect(ps1, `stop-egpt.ps1: ${part}`).toContain(part);
+    }
+  });
+
+  it('it derives the service name exactly as the installer does, and never clobbers an existing file', async () => {
+    const [ps1, installer] = await Promise.all([readSetup('stop-egpt.ps1'), readSetup('install-nssm-service.ps1')]);
+    for (const line of ["(Split-Path $EgptHome -Leaf) -replace '^\\.', ''", '$ServiceName = "$base-daemon"']) {
+      expect(installer, line).toContain(line);
+      expect(ps1, line).toContain(line);
+    }
+    expect(ps1).toContain('if (Test-Path $stopFile)');          // idempotent: an existing STOP file is left alone
+    expect(ps1).toContain('IsInRole');                          // …and it refuses to run un-elevated
+  });
+
+  it('the .cmd auto-elevates and there is a documented way back', async () => {
+    const [cmd, startCmd, startPs1] = await Promise.all([readSetup('stop-egpt.cmd'), readSetup('start-egpt.cmd'), readSetup('start-egpt.ps1')]);
+    expect(cmd).toContain('-Verb RunAs');                       // the UAC self-elevation the installers use
+    expect(cmd).toContain('stop-egpt.ps1');
+    expect(cmd).toContain('start-egpt.cmd');                    // the way back is named in the way off
+    expect(startCmd).toContain('-Verb RunAs');
+    expect(startPs1).toContain('Remove-Item $stopFile -Force'); // …and the way back actually clears the switch
+    expect(startPs1).toContain('Start-Service -Name $ServiceName');
   });
 });

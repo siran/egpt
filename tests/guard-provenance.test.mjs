@@ -91,7 +91,10 @@ function buildSpine({ guard, guardOverride, stopSwitch = null } = {}) {
   const mesh = { isEnvelope: (ev) => parseMesh(ev?.body ?? '') != null, async handle(ev) { meshCalls.push(ev); } };
   const spine = createSpine({
     bridge, brain, identity, router, gating, sender, transcript, heartbeats,
-    mesh, guard, guardOverride, stopSwitch, clock: { now: () => 1000 },
+    // isSelfChat: TRUE for every chat in this file. These cases are about the loop counter
+    // and the kill-switch-vs-channel-pause split, not about WHERE the safe word is honoured
+    // — that scoping (Self only, since 2026-07-26) is locked in tests/stop-file.test.mjs (D).
+    mesh, guard, guardOverride, stopSwitch, isSelfChat: () => true, clock: { now: () => 1000 },
   });
   return { spine, meshCalls, transcript, brain };
 }

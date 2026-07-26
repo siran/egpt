@@ -1191,6 +1191,47 @@ export const CONFIG_SCHEMA = {
         Set higher for tolerant networks, lower for aggressive fallback.
   `,
 
+  lasso: `
+    THE OUTBOUND RATE REGULATOR (src/lasso.mjs, wired in src/spine/boot.mjs around
+    every limb port). A node-wide ceiling on how many messages egpt may EMIT per
+    time window — brain replies, command replies, mesh envelopes, 👂 echoes,
+    heartbeat posts, error lines, on every surface. Operator 2026-07-26: "a big
+    lasso that sandboxes egpt ... under no reason must the bridge exceed a normal
+    sending rate. that is a self-regulated existance."
+
+    IT THROTTLES, IT DOES NOT TRIP. An over-rate message WAITS its turn; it is not
+    dropped and the node is not stopped, so an ordinary busy moment (a voice-note
+    flurry, two agents answering one message, a mesh request + placeholder + reply)
+    is slowed by a beat rather than killed.
+
+    ONE COMMITTED MESSAGE = ONE SLOT: send / startStream (its placeholder) /
+    postStatus / sendMedia. Stream EDITS are free, so an ordinary streamed reply
+    (placeholder + N edits + final) costs exactly one.
+
+    THE STOP PATH IS NEVER THROTTLED — the kill switch cannot queue behind a flood.
+
+    KEYS:
+      messages
+        DEFAULT: 3 — messages allowed per window. 0 or negative = lasso OFF.
+      window_ms
+        DEFAULT: 5000 — the sliding window, in ms.
+      max_queue
+        DEFAULT: 20 — how many messages may WAIT at once. Past this the excess is
+        DROPPED (an unbounded delay queue is a memory leak, and a reply delivered
+        minutes late is worse than none). At the defaults the bound is ~33s of
+        backlog; only a genuine runaway ever reaches it.
+
+    VISIBLE ON DISK: every state change is published to EGPT_HOME/state/lasso.json
+    ({ state: idle | throttling | dropping, in_window, queued, delayed_total,
+    dropped_total, limit }), so "why is egpt slow" is answerable with cat. Written
+    on transitions only — the send path never does IO.
+
+    NOT THE LOOP-BREAKER. \`guard\` (below) bounds a bot↔bot CONVERSATION by counting
+    inbound non-human turns at the prompt chokepoint; this bounds the node's EMIT
+    RATE whatever the cause. The 2026-07-25 flood is why both exist: those replies
+    never prompted a brain, so the turn counter never moved.
+  `,
+
   guard: `
     The SINGLE loop-breaker (src/stop-guard.mjs, wired at the spine prompt
     chokepoint src/spine/spine.mjs; replaces the old flood-guard + mesh circuit
@@ -1220,13 +1261,27 @@ export const CONFIG_SCHEMA = {
     counter stopped (it can stop several independently).
 
     THE SAFE WORD IS SEPARATE, AND IT IS THE KILL SWITCH (operator 2026-07-25):
-    STOP from an authorized sender on ANY surface writes  EGPT_HOME/STOP  with its
-    reason + provenance, posts a one-line warning back into that chat (best-effort,
-    capped — it can never delay the stop) and stops the SERVICE (a clean exit 0,
-    which egpt-daemon does not respawn). It does NOT pause a channel. While that
-    file exists the node refuses to boot, and a RUNNING node halts on its next tick
-    — so  touch ~/.egpt/STOP  stops egpt too. Recovery is  rm ~/.egpt/STOP  and
-    nothing else: the file is the whole state.
+    a bare  stop  IN THE SELF CHAT writes  EGPT_HOME/STOP  with its reason +
+    provenance, posts a one-line warning back into Self (best-effort, capped — it
+    can never delay the stop) and stops the SERVICE (a clean exit 0, which
+    egpt-daemon does not respawn). It does NOT pause a channel. While that file
+    exists the node refuses to boot, and a RUNNING node halts on its next tick — so
+    touch ~/.egpt/STOP  stops egpt too, as does double-clicking
+    setup\\stop-egpt.cmd. Recovery is  rm ~/.egpt/STOP  (or setup\\start-egpt.cmd)
+    and nothing else: the file is the whole state.
+
+    WHERE IT WORKS: **THE SELF CHAT ONLY** (operator 2026-07-26: "is must be a
+    single word message in Self, 'stop', case insensitive") — that is
+    networks.<surface>.chat_ids[0] on whatsapp, the same Self-DM the restart
+    announce posts to. It used to fire from ANY chat on ANY surface, which made one
+    stray "stop" in a group — or anyone at the operator console, which is
+    unconditionally authorized — enough to take the node down. In every OTHER chat,
+    group, and on the shell surface, "stop" is now ordinary text. No Self chat
+    configured → the chat safe word is simply unavailable (fail-closed); the STOP
+    file is still the way out.
+
+    WHAT COUNTS AS THE WORD: the WHOLE trimmed message, case-insensitive, trailing
+    '.'/'!' tolerated. "stop it", "please stop", "stopping" are ordinary text.
 
     WHO MAY PULL IT: an authorized sender (per-surface allowed_users, or the Beeper
     account owner) AND a genuine HUMAN turn. On a shared Beeper account every send
@@ -1236,6 +1291,8 @@ export const CONFIG_SCHEMA = {
 
     THE COMPLETE SAFE-WORD VOCABULARY IS:  STOP | RESUME | RESUME ALL.
     "STOP ALL" was unwired on 2026-07-26 — it is ordinary text now, not an alias.
+    (RESUME / RESUME ALL are NOT Self-scoped: they only clear a loop-counter pause,
+    so they stay usable in the channel that got paused.)
   `,
 
   warm: `

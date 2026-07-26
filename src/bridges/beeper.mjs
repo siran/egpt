@@ -238,6 +238,13 @@ export async function startBeeperBridge(opts = {}) {
     // now. Default 1h covers the sleep-window courtesy. 0 or negative = no bound. A note with no
     // parseable timestamp echoes normally (fail-open, matching the backlog gate).
     echoMaxAgeMs = 3_600_000,
+    // 👂 OUTBOUND GATE (operator 2026-07-26): the node's rate regulator (src/lasso.mjs, wired in
+    // boot). The 👂 echo is the ONE message this limb posts on its OWN initiative — every other
+    // send arrives through the port, which boot already wrapped — so without this the echo is the
+    // one hole in a node-wide "at most N messages per window" ceiling, exactly where a burst of
+    // voice notes lands. gate(fn) runs fn when a slot is free (delaying it if not) and answers
+    // null when the regulator's queue is full. Default = run it now → byte-identical to before.
+    echoGate = (fn) => fn(),
     // Authorization: is this STABLE sender id an operator (may emit commands /
     // mentions) ON THIS network? Signature is (senderId, network) — the host reads
     // the PER-SURFACE allowed_users live (operator 2026-07-02: ids are per-surface
@@ -1187,7 +1194,10 @@ export async function startBeeperBridge(opts = {}) {
           // transcription layers — the same machinery a persona reply renders through (covers
           // immediate/debounced/promoted echoes). The coverage query matches on WORD TOKENS, so it is
           // position-independent — a wrap layer above the 👂 no longer breaks dedup.
-          reply: (t) => sendMessage(chatID, wrapEcho(echoTag, t), { replyToMessageID: msg.id }),
+          // Through the node's outbound regulator (echoGate, above): an echo is a committed
+          // message and spends from the same budget as a persona reply — the port's wrap can't
+          // see this send, so it takes the lasso directly.
+          reply: (t) => echoGate(() => sendMessage(chatID, wrapEcho(echoTag, t), { replyToMessageID: msg.id })),
           enabled: svc.enabled,
           // rank 1 → post now (immediate/debounced); rank>1 → HOLD + arm a promotion at
           // (rank-1)*echoTimeoutMs (incoming-media). A non-winner still HEARS (transcribes + logs);
