@@ -53,6 +53,46 @@ slip own-suppression (rare; self-echoes return in seconds).
 - **Mesh presence** (an OPTIMIZATION, not a replacement) — a node that KNOWS a peer is up can skip the
   timer wait and decide instantly. Nice-to-have; correctness does not need it.
 
+## 0b. 2026-07-26 — the day the registry stopped lying
+
+Both nodes on `6ab6b79`. Suite 131 files / 2148 tests. What changed, in one place,
+because most of §2–§4 below was written before it:
+
+- **CONFIG RESOLUTION IS REAL** — one walk, three rungs (node < registry < entity
+  folder), three dumps at the PROFILE ROOT (`~/.egpt/{config,conversations,
+  heartbeats}.readonly.yaml`) with a `source:` on every resolved value. The
+  heartbeats view moved out of `state/`. Combining is per-block: heartbeats UNION,
+  warm/transcription OVERRIDE, members entity-only.
+- **HANDLES ARE THE WAKE VOCABULARY; the map key is the BEING-ID, never an
+  address.** Fixed a live double-answer (`@egpt` woke both nodes). Relay agents
+  route by handle too, and a multipath agent is now a MAP with `paths:` so it can
+  declare handles like anything else. `handles: []` = addressable by nothing.
+- **THE REGISTRY STOPPED LYING.** `residentsOf` is a POSITIVE test (a key is a
+  resident iff it carries a being field) — exclusion-by-list was structurally
+  impossible once any key could appear at any rung. Flat `readonly`/`threadId`/
+  `mode` purged on write: 0 corpses left of 118 across 106 entries.
+- **A THREAD RESET IS A REAL GESTURE.** Deleting `thread_id` re-reads config,
+  archives `transcript.md` → `transcripts/<old-id>.md`, and re-copies the skeleton
+  layers (which CLOSES the capabilities-refresher gap for conversations). The
+  transcript's `chat_id`/`thread_id` front-matter fields are finally distinct —
+  `transcript.mjs` had been writing the CHAT id into the thread slot forever.
+- **THE COMPACTOR HAD BEEN COMPACTING NOTHING** — it enumerated a flat `threadId`
+  retired in July, so it trimmed 14 abandoned sessions and ZERO live ones, and its
+  warm key was hardcoded to a being named `e` when every live resident is `egpt`.
+- **THE EAR PROBE** (§3's deaf-bridge item) is built, out of band: it injects via
+  Telegram's own API and requires the message back through the Beeper WS. OFF
+  until a bot token + chat id are configured. DOLLY cannot run it until Telegram
+  is linked there.
+- **warm TTL** now speaks the house dialect: `-1` never, `0` always, `N` ms.
+- **`enabled` on an agent is GONE** — disabling is commenting out.
+- −4016 lines of dead code (17 modules the old-spine sweep missed).
+
+STILL OPEN, and none of it is in §2–§4 yet: the transcript logs every living-
+mirror EDIT FRAME in full; `isHumanTurn` cannot tell a peer node from the
+operator, so DOLLY's posts are recorded as An's AND reset the loop-guard counter;
+transcript timestamps render UTC against a −0400 clock; NamedRooms still get an
+empty `identity.d/`.
+
 ## 1. Where we are
 
 Branch `rewrite`, suite 124 files / 1634 tests / 0 fail. The node runs live as the
