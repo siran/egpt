@@ -41,13 +41,13 @@ export function createContacts({ loadState, writeState, io = {}, onLog = () => {
 
         // Rename: the chat's TITLE changed (a group renamed, or a placeholder
         // learning its real name) → ensureContact already recomputed the slug
-        // (keeping the -yymmddhhmm suffix) and NULLED the thread state (a claude
-        // session is keyed on cwd, so the renamed dir invalidates it — the same
-        // trade-off migrateToSurfaceLayout makes; the conversation's brain simply
-        // starts a fresh session in the new cwd). The pushedName-only rename logic
-        // lives entirely in ensureContact; here we only do the filesystem half the
-        // old dispatcher did: move the slug dir so transcript.md + media/ follow the
-        // name, then record the rename inside the NEW folder's own history.
+        // (keeping the -yymmddhhmm suffix). The thread is NOT reset (operator
+        // ruling 2026-07-26: a rename is the SAME conversation under a new name) —
+        // the nested per-being threadId carries over untouched. The pushedName-only
+        // rename logic lives entirely in ensureContact; here we only do the
+        // filesystem half the old dispatcher did: move the slug dir so
+        // transcript.md + media/ follow the name, then record the rename inside the
+        // NEW folder's own history.
         if (ens.renamedFrom && ens.renamedTo) {
           const newDir = slugDir(surface, ens.renamedTo);
           try {

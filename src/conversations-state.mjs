@@ -1167,11 +1167,12 @@ export function ensureContact(state, surface, jid, ctx = {}) {
     // folder always follows the name. Driven off pushedName ONLY (the title), so
     // it can't flap between two slug derivations. KEEP the original -yymmddhhmm
     // suffix (encodes firstSeen → preserves ordering + keeps the slug unique).
-    // Renaming the slug-dir changes conversation-e's cwd, which invalidates the
-    // stored threadId (a claude session keyed on cwd) — so null thread state, the
-    // same trade-off migrateToSurfaceLayout makes. The on-disk transcript is
-    // moved by the caller (renameSlugDir / dispatch), which also writes a
-    // renames.log entry into the folder.
+    // A rename does NOT reset the thread (operator ruling 2026-07-26: "a rename to
+    // the chat group doesn't reset the thread" — it's the SAME conversation under a
+    // new name). The nested per-being `entry[<being>].threadId` is untouched here;
+    // only the flat slug/conversation_path move. The on-disk transcript is moved by
+    // the caller (renameSlugDir / dispatch), which also writes a renames.log entry
+    // into the folder.
     let renamedFrom = null, renamedTo = null;
     const nameBase = sanitizeSlug(ctx.pushedName);
     const curBase = String(cur.slug ?? '').replace(/-\d{10}$/, '');
@@ -1182,7 +1183,7 @@ export function ensureContact(state, surface, jid, ctx = {}) {
       if (candidate !== cur.slug && !_findByslug(state, surface, candidate)) {
         renamedFrom = cur.slug;
         renamedTo = candidate;
-        patch = { ...patch, slug: candidate, conversation_path: conversationPathOf(surface, candidate), threadId: null, threadCreatedAt: null, identityInjectedAt: null };
+        patch = { ...patch, slug: candidate, conversation_path: conversationPathOf(surface, candidate) };
         changed = true;
       }
     }

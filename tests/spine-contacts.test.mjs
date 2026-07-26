@@ -43,8 +43,9 @@ describe('contacts.resolve', () => {
     expect(writes()).toBe(1);   // one write on creation, none on the steady re-sight
   });
 
-  it('title change: new slug returned, state updated, io.rename old→new, renames.log in the new dir, thread nulled', async () => {
-    // A KNOWN contact WITH a stored thread, so we can prove the rename invalidates it.
+  it('title change: new slug returned, state updated, io.rename old→new, renames.log in the new dir, nested thread survives', async () => {
+    // A KNOWN contact WITH a stored thread, so we can prove the rename does NOT
+    // reset it (operator ruling: a rename is the SAME conversation under a new name).
     let seed = emptyState();
     const ens = ensureContact(seed, SURFACE, CHAT, { pushedName: 'fam', slugHint: 'fam' });
     seed = recordThread(ens.state, SURFACE, CHAT, 'sess-old', undefined, 'e');
@@ -68,10 +69,10 @@ describe('contacts.resolve', () => {
     expect(appends[0].data).toContain(oldSlug);
     expect(appends[0].data).toContain(newSlug);
 
-    // state: slug moved, claude session invalidated (cwd changed under it)
+    // state: slug moved, nested thread intact (a rename does not reset the thread)
     const c = getContact(getState(), SURFACE, CHAT);
     expect(c.slug).toBe(newSlug);
-    expect(c.entry.threadId).toBe(null);
+    expect(c.entry.e.threadId).toBe('sess-old');
   });
 
   it('title change where io.rename throws ENOENT: still succeeds (slug updated, no throw, no renames.log)', async () => {

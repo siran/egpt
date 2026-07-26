@@ -153,7 +153,12 @@ describe('ensureContact — surface-aware, new contact, multi-JID merge', () => 
     expect(r2.isNew).toBe(false);
     expect(r2.changed).toBe(true);
     expect(r2.entry.pushedName).toBe('Diego Pérez (Koma)');
-    // slug tracks the current name (keeps the firstSeen suffix), thread reset
+    // slug tracks the current name (keeps the firstSeen suffix). A rename does NOT
+    // reset the thread (operator ruling: a rename is the SAME conversation under a
+    // new name) — this contact never had a thread, so there's nothing to preserve;
+    // the flat threadId:null below is inherited from contact CREATION (a separate,
+    // still-live dead write outside this task's scope), not written by the rename
+    // branch, which no longer touches threadId at all.
     expect(r2.renamedFrom).toBe(r1.slug);
     expect(r2.slug).toBe(`Diego Pérez (Koma)-${suffix}`);
     expect(r2.state.contacts[WA]['26087681749235@lid'].threadId).toBe(null);
@@ -319,9 +324,10 @@ describe('ensureContact — self-heals a placeholder slug when the title resolve
     expect(r.slug).toBe(`morgan-${suffix}`);
     expect(r.changed).toBe(true);
     expect(isPlaceholderSlug(r.slug)).toBe(false);
-    // the registry entry moved to the new slug + nulled the now-stale thread
+    // the registry entry moved to the new slug; the nested thread SURVIVES the
+    // rename (operator ruling: a rename is the SAME conversation under a new name).
     expect(r.state.contacts[WA][ROOM].slug).toBe(`morgan-${suffix}`);
-    expect(r.state.contacts[WA][ROOM].threadId).toBe(null);
+    expect(r.state.contacts[WA][ROOM].e.threadId).toBe('thread-abc');
   });
 
   it('does NOT re-slug a contact that already has a real name', () => {
@@ -362,7 +368,7 @@ describe('ensureContact — self-heals a placeholder slug when the title resolve
     expect(r.renamedFrom).toBe(before);
     expect(r.renamedTo).toBe(`Mauricio-${suffix}`);      // keeps the firstSeen suffix
     expect(r.entry.pushedName).toBe('Mauricio');
-    expect(r.state.contacts[WA][ROOM].threadId).toBe(null);   // thread reset on rename
+    expect(r.state.contacts[WA][ROOM].e.threadId).toBe('thread-xyz');   // nested thread SURVIVES the rename (operator ruling)
   });
 
   it('no rename when the name is unchanged (anti-flap / idempotent)', () => {
