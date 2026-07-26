@@ -94,6 +94,7 @@ function memIo() {
 // the restart line to. Since 2026-07-26 it is ALSO the only chat the safe word works in.
 const SELF_CHAT = '!self:beeper.com';
 const CONFIG = {
+  node_name: 'kg',   // MANDATORY since 2026-07-26 — it IS the structural node signature (boot throws without one)
   networks: { whatsapp: { chat_ids: [SELF_CHAT], allowed_users: ['u-1'] } },
   agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true } },
 };

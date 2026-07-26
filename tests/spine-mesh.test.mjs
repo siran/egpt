@@ -7,6 +7,10 @@ import { describe, it, expect } from 'vitest';
 import { createMeshService } from '../src/spine/mesh.mjs';
 import { createSpine } from '../src/spine/spine.mjs';
 import { encodeMesh, parseMesh } from '../src/mesh/relay.mjs';
+// The responder's nugget is rendered through the SHARED wrap, so since 2026-07-26 it also carries
+// the STRUCTURAL (invisible, tag-encoded) node id of the node that rendered it — decoded here so
+// the assertions read the visible bytes and the node id separately.
+import { decodeNodeSignature, stripNodeSignature } from '../src/node-signature.mjs';
 
 const flush = async () => { await new Promise((r) => setTimeout(r, 0)); await new Promise((r) => setTimeout(r, 0)); };
 
@@ -215,9 +219,11 @@ describe('mesh service — responder (a request arrives at the owning node)', ()
     // The reply is RENDERED INTO the payload by the shared persona wrap — the same renderer a
     // local reply gets — so the being's identity travels inside the nugget. Live frames carry the
     // bare stamp (the ports' once-at-the-end convention); the final carries the full wrap.
-    expect(parseMesh(s.updates.at(-1)).body).toBe('🤝 don\naquí');
+    expect(stripNodeSignature(parseMesh(s.updates.at(-1)).body)).toBe('🤝 don\naquí');
     const fin = parseMesh(s.finals.at(-1));
-    expect(fin).toMatchObject({ by: 'don.do', re: 'HFM.kg', post_id: 'p1', done: true, body: '🤝 don\naquí' });
+    expect(fin).toMatchObject({ by: 'don.do', re: 'HFM.kg', post_id: 'p1', done: true });
+    expect(stripNodeSignature(fin.body)).toBe('🤝 don\naquí');
+    expect(decodeNodeSignature(fin.body)).toBe('do');   // the STRUCTURAL id of the node that rendered it
   });
 
   // THE NUGGET (operator 2026-07-25: "signing by do, in this case, is the message being
@@ -234,8 +240,9 @@ describe('mesh service — responder (a request arrives at the owning node)', ()
     await flush();
 
     const wire = bridge.streams[0].finals.at(-1);
-    expect(parseMesh(wire).body).toBe('🌉do\n🤝 don\naquí\n🌉do');   // stamp + signature INSIDE the nugget
-    expect(parseMesh(wire)).toMatchObject({ by: 'don.do', done: true });   // …and the envelope still parses
+    expect(stripNodeSignature(parseMesh(wire).body)).toBe('🌉do\n🤝 don\naquí\n🌉do');   // stamp + VISIBLE signature INSIDE the nugget
+    expect(decodeNodeSignature(parseMesh(wire).body)).toBe('do');                        // …and the STRUCTURAL one too
+    expect(parseMesh(wire)).toMatchObject({ by: 'don.do', done: true });                 // …and the envelope still parses
   });
 
   it('TASK-3 (terminal dedup): two identical envelopes (same post_id, DIFFERENT arrival rooms) → the being answers ONCE', async () => {

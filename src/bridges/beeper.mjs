@@ -54,6 +54,7 @@ import { transcribeVoiceNote, voiceTranscriptBody, POSTS_BACK_DELAY_MS, ECHO_MAR
 import { htmlToMarkdown } from '../html-to-markdown.mjs';
 import { normalizeTokens, similarity } from '../text-similarity.mjs';
 import { makeWrapPersona } from './persona-wrap.mjs';
+import { stripNodeSignature } from '../node-signature.mjs';
 import { reactionAction, editAction } from '../dispatch-line.mjs';
 import { stripFrontMatter } from '../transcript-meta.mjs';
 import { mentionStatus } from '../auto-mode.mjs';
@@ -93,8 +94,14 @@ const SEND_GATE_MAX_MS = 15_000;
 // AND flatten every LEADING list marker (-, *, •, "N.", "N)") to nothing, so the sent
 // form and the stored form compare equal. Per-line, before whitespace collapses —
 // hence <br> → newline first.
+// The STRUCTURAL node signature is dropped here too (operator 2026-07-26): it is invisible
+// metadata, not text, and this key exists precisely so the SENT form and the STORED form compare
+// equal. Beeper preserved every tag character byte-for-byte in the live probe, so both sides
+// would normally carry it — but a compare that only works while the transport is byte-perfect is
+// exactly the kind that fails silently, and here a failure means a stream can never resolve its
+// placeholder id. Marker-independent by construction instead.
 export function normEchoText(t) {
-  return String(t ?? '')
+  return stripNodeSignature(String(t ?? ''))
     .replace(/<br\s*\/?>/gi, '\n')                       // <br> → newline so per-line marker stripping works
     .replace(/<[^>]+>/g, ' ')
     .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<')
@@ -202,6 +209,11 @@ export async function startBeeperBridge(opts = {}) {
     // off the leading edge — see wrapEcho below (observe-cancel constraint).
     bridgeSignatureOpen = '',
     bridgeSignatureClose = '',
+    // The STRUCTURAL node id (operator 2026-07-26): cfg.node_name, tag-encoded into invisible
+    // characters by the shared wrap and appended to every frame — including the 👂 echo, which is
+    // a real message this limb commits to the surface. Empty (a directly-constructed bridge) →
+    // nothing appended; boot refuses to start a node without a node_name.
+    nodeName = '',
     transcriptionOpen = '',
     transcriptionClose = '',
     // The persona wake-word set (operator 2026-07-07): the network-wide default e/egpt
@@ -315,7 +327,7 @@ export async function startBeeperBridge(opts = {}) {
   // 👂 off the leading edge no longer breaks dedup (the old observe-and-cancel leading-marker hazard
   // is gone). A wrap layer's own words are extra tokens; the overlap coefficient (÷ the smaller set)
   // tolerates them.
-  const wrapEcho = makeWrapPersona({ bridgeSignatureOpen, bridgeSignatureClose });
+  const wrapEcho = makeWrapPersona({ bridgeSignatureOpen, bridgeSignatureClose, nodeName });
   const echoTag = { agentSigOpen: transcriptionOpen, agentSigClose: transcriptionClose };
   const onLog = (m) => {
     try { appendFileSync(_BEEPER_LOG, `${new Date().toISOString()} ${m}\n`); } catch { /* ignore */ }

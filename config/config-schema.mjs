@@ -61,6 +61,17 @@ export const CONFIG_SCHEMA = {
   node_name: `
     Name this node uses on the bus (e.g. home, chr1).
     Takes effect on the next shell restart.
+
+    REQUIRED (operator 2026-07-26: "spine doesn't boot without the invisible
+    ones"). node_name IS the STRUCTURAL node signature: every frame a spine
+    commits to a surface carries it TAG-ENCODED into invisible characters
+    (src/node-signature.mjs), machine-readable, and the transcript decodes it
+    back to a legible <node>. There is deliberately no separate signature key —
+    it could only ever hold a redundant copy of this one. Absent or blank =
+    boot refuses to start.
+
+    The VISIBLE bridge_signature_open / bridge_signature_close are a SEPARATE,
+    OPTIONAL layer for human eyes only; empty is fine and never blocks boot.
   `,
 
   node_alias: `
@@ -1005,7 +1016,10 @@ export const CONFIG_SCHEMA = {
     — NOT to mode:auto plain operator posts.
 
     DEFAULT: absent or empty = NOTHING prepended (zero behavior change until
-    configured).
+    configured). PRESCINDABLE (operator 2026-07-26): this layer is decoration
+    for human purviews — the layer that actually IDENTIFIES the node is the
+    invisible, mandatory one encoded from node_name, which rides every frame
+    whether or not this is set.
 
     SAFE to set on a multi-peer node: 👂 echo double-detection is now a
     content-similarity query over normalized WORD tokens (src/text-similarity.mjs),

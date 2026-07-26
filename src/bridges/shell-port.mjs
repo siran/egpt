@@ -44,6 +44,7 @@ const SHELL_USER = 'operator';
  * @param {string[]} [opts.wakeWords]         the persona's wake-word set (its declared handles, else its map key — router.mjs wakeTokens), SAME set boot hands the beeper bridge. Undefined → mentionStatus' built-in e/egpt defaults.
  * @param {string} [opts.bridgeSignatureOpen]  per-NODE outer wrap layer — the SAME value boot hands the beeper bridge, so a shell reply's wrap matches the Beeper wrap. Default ''.
  * @param {string} [opts.bridgeSignatureClose]
+ * @param {string} [opts.nodeName]            the STRUCTURAL node id (cfg.node_name), tag-encoded invisibly onto every frame — same value boot hands the beeper bridge. Default ''.
  * @param {(m: string) => void} [opts.onLog]
  * @param {typeof globalThis.setTimeout} [opts.setTimeout]     reconnect-timer seam (tests inject a fake clock so no real wait blocks)
  * @param {typeof globalThis.clearTimeout} [opts.clearTimeout]
@@ -54,13 +55,14 @@ export function createShellPort({
   wakeWords,
   bridgeSignatureOpen = '',
   bridgeSignatureClose = '',
+  nodeName = '',
   onLog = () => {},
   setTimeout: setTimeoutFn = globalThis.setTimeout,
   clearTimeout: clearTimeoutFn = globalThis.clearTimeout,
 } = {}) {
   // The SAME wrap the beeper limb binds (boot hands both ports the node's bridge_signature_*),
   // so a persona reply rendered to the shell is wrapped identically to one rendered to Beeper.
-  const wrapPersona = makeWrapPersona({ bridgeSignatureOpen, bridgeSignatureClose });
+  const wrapPersona = makeWrapPersona({ bridgeSignatureOpen, bridgeSignatureClose, nodeName });
   // Late-bound inbound handler: the spine registers it AFTER construction (as it does
   // bridge.onMessage), so the message frame reads the ref at call time.
   let onMsg = null;

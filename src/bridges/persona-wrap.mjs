@@ -31,6 +31,12 @@
 // raw core, never from the previous frame, so replacing a signed frame with the next one can never
 // stack "💸 💸 💸".
 import { applyLayers } from './signature-layers.mjs';
+// The STRUCTURAL layer (operator 2026-07-26: "there's a structural invisible and a visible pre and
+// post signature … the visible one are prescindable, there are only for human purviews"). The
+// invisible tag-encoded node id is what actually IDENTIFIES the node; the bridge_signature_*
+// strings above it are decoration a human reads. ONE codec, shared with the inbound decode
+// (spine/identity.mjs) and the bridge's compare key (beeper.mjs normEchoText).
+import { encodeNodeSignature, stripNodeSignature } from '../node-signature.mjs';
 // parseMesh — the SAME envelope test the spine applies inbound (mesh.isEnvelope), reused here so
 // there is one definition of "this is relay traffic, not chat". See isMeshEnvelope below.
 import { parseMesh } from '../mesh/relay.mjs';
@@ -57,22 +63,34 @@ const isMeshEnvelope = (t) => {
 };
 
 /**
- * @param {{ bridgeSignatureOpen?: string, bridgeSignatureClose?: string }} [cfg]
- *   the per-NODE outer layer (which spine posted). Default empty → byte-identical to a bare stamp.
+ * @param {{ bridgeSignatureOpen?: string, bridgeSignatureClose?: string, nodeName?: string }} [cfg]
+ *   the per-NODE layers. `nodeName` is the STRUCTURAL one — tag-encoded and appended invisibly to
+ *   every frame; bridgeSignature* are the OPTIONAL visible ones. All default empty → byte-identical
+ *   to a bare stamp (boot, not this module, is where a missing node_name is fatal).
  * @returns {(o: object, text: string) => string}  wrapPersona(o, text): stamps the core (when there
- *   is an identity to stamp), then wraps [bridge, inner] concentrically — ALWAYS, except around a
- *   mesh envelope. `o` carries bodyEmoji, label, and the inner agentSigOpen/agentSigClose.
+ *   is an identity to stamp), then wraps [bridge, inner] concentrically and appends the structural
+ *   node id — ALWAYS, except around a mesh envelope. `o` carries bodyEmoji, label, and the inner
+ *   agentSigOpen/agentSigClose.
  */
-export function makeWrapPersona({ bridgeSignatureOpen = '', bridgeSignatureClose = '' } = {}) {
+export function makeWrapPersona({ bridgeSignatureOpen = '', bridgeSignatureClose = '', nodeName = '' } = {}) {
+  const nodeSig = encodeNodeSignature(nodeName);
   return (o, text) => {
     // Nothing to sign is not a message: an empty body (the mesh origin mirror opens its stream
     // with '') must stay empty, never become a signature with no content under it.
     if (!String(text ?? '').trim()) return text;
     const core = personaStamp(o.bodyEmoji, o.label, text);
     if (isMeshEnvelope(core)) return core;        // transport, not a surface send → never signed
-    return applyLayers(core, [
+    const wrapped = applyLayers(core, [
       { open: bridgeSignatureOpen, close: bridgeSignatureClose },
       { open: o.agentSigOpen ?? '', close: o.agentSigClose ?? '' },
     ]);
+    // EXACTLY ONE marker, by construction rather than by inspection: strip whatever the body
+    // arrived carrying, then append THIS node's. Idempotence already held for the stream (each
+    // frame is built from the raw core), but a body can be signed BEFORE it reaches here — a
+    // relayed mesh nugget was wrapped on the responder node. The frame belongs to whichever spine
+    // commits it to the surface, so that older marker is replaced, never stacked. Appended
+    // (not prepended) so the leading edge stays exactly as before: the 👂 observe-cancel query
+    // and the persona stamp both read the START of a message.
+    return stripNodeSignature(wrapped) + nodeSig;
   };
 }

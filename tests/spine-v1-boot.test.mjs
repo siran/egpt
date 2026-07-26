@@ -97,7 +97,7 @@ describe('boot()', () => {
   it("assembles the v1 pipe and round-trips an 'on'-mode message bridge→brain→bridge", async () => {
     const { start, spy } = fakeStart();
     let state = seedMode(emptyState(), 'on');
-    const config = { whatsapp: {}, agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true } } };
+    const config = { whatsapp: {}, node_name: 'kg', agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true } } };
 
     const io = memIo();
     const app = await boot({
@@ -153,7 +153,7 @@ describe('boot()', () => {
   it('wires a NON-inert readTranscript that reads the chat transcript.md via the pipeline resolution', async () => {
     const { start, spy } = fakeStart();
     let state = seedMode(emptyState(), 'on');
-    const config = { whatsapp: {}, agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true } } };
+    const config = { whatsapp: {}, node_name: 'kg', agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true } } };
     const io = memIo();
     const app = await boot({
       readConfig: () => config, startBridge: start, makeSession: fakeSession,
@@ -184,7 +184,7 @@ describe('boot()', () => {
   it("respects gating: a 'mute' chat invokes no brain and sends nothing", async () => {
     const { start, spy } = fakeStart();
     let state = seedMode(emptyState(), 'mute');
-    const config = { whatsapp: {}, agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true } } };
+    const config = { whatsapp: {}, node_name: 'kg', agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true } } };
     const app = await boot({
       readConfig: () => config, startBridge: start, makeSession: fakeSession,
       loadState: async () => state, writeState: async (s) => { state = s; },
@@ -199,7 +199,7 @@ describe('boot()', () => {
   it('registers the alive beat as a spawned command: spine.pid written, immediate first beat on tick, cadence honored, env carries EGPT_HOME + pump stats', async () => {
     const { start } = fakeStart();
     let state = seedMode(emptyState(), 'on');
-    const config = { whatsapp: {}, agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true } } };
+    const config = { whatsapp: {}, node_name: 'kg', agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true } } };
     let clock = Date.UTC(2026, 5, 29, 14, 5);   // June 29 14:05 UTC
 
     // Observe the beat as a SPAWN, not a written alive.txt — the alive beat is a
@@ -250,7 +250,7 @@ describe('boot()', () => {
     // must size the tick DOWN to the finest cadence. An explicit config alive loads
     // even though aliveMs is unset (0). Observe the effective tick via a fake
     // setInterval (only the spine's tick timer flows through this seam).
-    const config = { whatsapp: {}, agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true } }, heartbeats: { alive: { frequency: '1s' } } };
+    const config = { whatsapp: {}, node_name: 'kg', agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true } }, heartbeats: { alive: { frequency: '1s' } } };
     const intervals = [];
     const spawnCalls = [];
     const fakeSpawn = (cmd, opts) => { spawnCalls.push({ cmd, opts }); return { on(ev, cb) { if (ev === 'exit') cb(0); return this; } }; };
@@ -287,7 +287,7 @@ describe('boot()', () => {
   it('the readonly view has NO internal row; deleting the file and ticking hot-reloads it', async () => {
     const { start } = fakeStart();
     let state = seedMode(emptyState(), 'on');
-    const config = { whatsapp: {}, agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true } } };
+    const config = { whatsapp: {}, node_name: 'kg', agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true } } };
     const fakeSpawn = () => ({ on(ev, cb) { if (ev === 'exit') cb(0); return this; } });
 
     const app = await boot({
@@ -332,7 +332,10 @@ describe('boot() — config-shape migration', () => {
       return { async send() { return { ok: true }; }, startStreamMessage() { return { delivered: false, update() {}, async finish() {} }; }, isAlive: () => true, stop() {} };
     };
     const app = await boot({
-      readConfig: () => config, startBridge: start, makeSession: fakeSession,
+      // node_name is MANDATORY since 2026-07-26 (it IS the structural node signature — boot
+      // refuses to start without one), so the helper supplies a default; a case that cares about
+      // the node name still sets its own, which the spread keeps.
+      readConfig: () => ({ node_name: 'kg', ...config }), startBridge: start, makeSession: fakeSession,
       loadState: async () => emptyState(), writeState: async () => {},
       io: memIo(), ingest: false, tickMs: 0, log: { line: () => {} },
     });
@@ -563,7 +566,7 @@ describe('boot() — stray whisper-server reap', () => {
   it('wiring: a node with no resident whisper reaps the stray port ONCE on boot', async () => {
     const { start } = fakeStart();
     let state = seedMode(emptyState(), 'on');
-    const config = { whatsapp: {}, ...profile({ fallback_order: ['remote', 'cli'] }) };
+    const config = { whatsapp: {}, node_name: 'kg', ...profile({ fallback_order: ['remote', 'cli'] }) };
     const reaped = [];
     const app = await boot({
       readConfig: () => config, startBridge: start, makeSession: fakeSession,
@@ -580,7 +583,7 @@ describe('boot() — stray whisper-server reap', () => {
   it('wiring: a node that DOES run a resident local whisper never touches the port', async () => {
     const { start } = fakeStart();
     let state = seedMode(emptyState(), 'on');
-    const config = { whatsapp: {}, ...profile({
+    const config = { whatsapp: {}, node_name: 'kg', ...profile({
       fallback_order: ['remote', 'local', 'cli'],
       local: { type: 'whisper-server-local', command: 'ws', model: '/m', port: 8089 },
     }) };
@@ -610,7 +613,7 @@ describe('boot() — transcriptor worker role', () => {
   it('WIRING: transcriptor.enabled + real node → startTranscriptorServer bound with resolved {port,bind,keyB64} (whisper-cli per-note)', async () => {
     const { start } = fakeStart();
     const captured = [];
-    const config = { whatsapp: {}, agents: AG, transcriptor: { enabled: true, bind: '0.0.0.0', port: 23390 }, transcription: { server: { token: 'BUSKEY' } } };
+    const config = { whatsapp: {}, node_name: 'kg', agents: AG, transcriptor: { enabled: true, bind: '0.0.0.0', port: 23390 }, transcription: { server: { token: 'BUSKEY' } } };
     const app = await boot({
       readConfig: () => config, startBridge: start, makeSession: fakeSession,
       loadState: async () => emptyState(), writeState: async () => {},
@@ -631,7 +634,7 @@ describe('boot() — transcriptor worker role', () => {
   it('INGEST-GATED: ingest:false + transcriptor.enabled → the worker start seam is NEVER invoked (no real :23390 bind)', async () => {
     const { start } = fakeStart();
     const captured = [];
-    const config = { whatsapp: {}, agents: AG, transcriptor: { enabled: true, port: 23390 }, transcription: { server: { token: 'K' } } };
+    const config = { whatsapp: {}, node_name: 'kg', agents: AG, transcriptor: { enabled: true, port: 23390 }, transcription: { server: { token: 'K' } } };
     const app = await boot({
       readConfig: () => config, startBridge: start, makeSession: fakeSession,
       loadState: async () => emptyState(), writeState: async () => {},
@@ -646,7 +649,7 @@ describe('boot() — transcriptor worker role', () => {
   it('TEARDOWN: boot.stop() stops BOTH the resident whisper-server and the :23390 endpoint', async () => {
     const { start } = fakeStart();
     const stops = { whisper: 0, server: 0 };
-    const config = { whatsapp: {}, agents: AG, transcriptor: { enabled: true, port: 23390, server: { enabled: true, command: 'ws.exe', model: '/m/large-v3.bin', port: 8089 } }, transcription: { server: { token: 'K' } } };
+    const config = { whatsapp: {}, node_name: 'kg', agents: AG, transcriptor: { enabled: true, port: 23390, server: { enabled: true, command: 'ws.exe', model: '/m/large-v3.bin', port: 8089 } }, transcription: { server: { token: 'K' } } };
     const app = await boot({
       readConfig: () => config, startBridge: start, makeSession: fakeSession,
       loadState: async () => emptyState(), writeState: async () => {},
@@ -673,7 +676,7 @@ describe('boot() — persona default:true rule', () => {
   const bootWith = (agents) => {
     const { start } = fakeStart();
     return boot({
-      readConfig: () => ({ whatsapp: {}, agents }),
+      readConfig: () => ({ whatsapp: {}, node_name: 'kg', agents }),
       startBridge: start, makeSession: fakeSession,
       loadState: async () => emptyState(), writeState: async () => {},
       io: memIo(), ingest: false, tickMs: 0, log: { line: () => {} },
@@ -695,13 +698,64 @@ describe('boot() — persona default:true rule', () => {
     let opts = null;
     const start = async (o) => { opts = o; return { async send() { return { ok: true }; }, startStreamMessage() { return { delivered: false, update() {}, async finish() {} }; }, isAlive: () => true, stop() {} }; };
     const app = await boot({
-      readConfig: () => ({ whatsapp: {}, agents: { assistant: { configuration: 'egpt', handles: ['a'], body_emoji: '🤖', default: true } } }),
+      readConfig: () => ({ whatsapp: {}, node_name: 'kg', agents: { assistant: { configuration: 'egpt', handles: ['a'], body_emoji: '🤖', default: true } } }),
       startBridge: start, makeSession: fakeSession,
       loadState: async () => emptyState(), writeState: async () => {},
       io: memIo(), ingest: false, tickMs: 0, log: { line: () => {} },
     });
     expect(opts.wakeWords.sort()).toEqual(['a']);                // the default agent's DECLARED handles — not its key, not e/egpt
     expect(opts.personaEmoji).toBe('🤖');                        // resolved from the default agent's body_emoji
+    app.stop();
+  });
+});
+
+// THE STRUCTURAL NODE SIGNATURE (operator 2026-07-26: "spine doesn't boot without the invisible
+// ones. the visible one are prescindable, there are only for human purviews"). The invisible layer
+// every outbound frame carries is `node_name` TAG-encoded, so requiring the marker and requiring
+// node_name are ONE requirement — there is no second `node_signature:` key to forget. Fatal in the
+// same shape as the persona-agent rule above; the VISIBLE bridge_signature_* stay optional.
+describe('boot() — the structural node signature is mandatory', () => {
+  const AG = { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true } };
+  const bootWith = (extra) => {
+    const { start } = fakeStart();
+    return boot({
+      readConfig: () => ({ whatsapp: {}, agents: AG, ...extra }),
+      startBridge: start, makeSession: fakeSession,
+      loadState: async () => emptyState(), writeState: async () => {},
+      io: memIo(), ingest: false, tickMs: 0, log: { line: () => {} },
+    });
+  };
+
+  it('FATAL when node_name is absent — the spine refuses to start', async () => {
+    await expect(bootWith({})).rejects.toThrow(/node_name/);
+  });
+
+  it('FATAL when node_name is blank/whitespace (an empty id signs nothing)', async () => {
+    await expect(bootWith({ node_name: '' })).rejects.toThrow(/node_name/);
+    await expect(bootWith({ node_name: '   ' })).rejects.toThrow(/node_name/);
+  });
+
+  it('the error names the config key AND how to set it', async () => {
+    await expect(bootWith({})).rejects.toThrow(/config\/config\.yaml/);
+    await expect(bootWith({})).rejects.toThrow(/node_name: kg/);
+  });
+
+  it('the VISIBLE layers stay OPTIONAL — empty bridge_signature_* must NOT block boot', async () => {
+    const app = await bootWith({ node_name: 'kg', bridge_signature_open: '', bridge_signature_close: '' });
+    expect(app).toBeTruthy();
+    app.stop();
+  });
+
+  it('boot hands BOTH limbs the node name, so every surface signs structurally', async () => {
+    let opts = null;
+    const start = async (o) => { opts = o; return { async send() { return { ok: true }; }, startStreamMessage() { return { delivered: false, update() {}, async finish() {} }; }, isAlive: () => true, stop() {} }; };
+    const app = await boot({
+      readConfig: () => ({ whatsapp: {}, agents: AG, node_name: 'kg' }),
+      startBridge: start, makeSession: fakeSession,
+      loadState: async () => emptyState(), writeState: async () => {},
+      io: memIo(), ingest: false, tickMs: 0, log: { line: () => {} },
+    });
+    expect(opts.nodeName).toBe('kg');   // forwarded to the beeper limb (and through it to the 👂 echo wrap)
     app.stop();
   });
 });
@@ -720,7 +774,7 @@ describe('boot() — the persona wake set is its handles, not its key (operator 
     let opts = null;
     const start = async (o) => { opts = o; return { async send() { return { ok: true }; }, startStreamMessage() { return { delivered: false, update() {}, async finish() {} }; }, isAlive: () => true, stop() {} }; };
     const app = await boot({
-      readConfig: () => ({ whatsapp: {}, agents }),
+      readConfig: () => ({ whatsapp: {}, node_name: 'kg', agents }),
       startBridge: start, makeSession: fakeSession,
       loadState: async () => emptyState(), writeState: async () => {},
       io: memIo(), ingest: false, tickMs: 0, log: { line: () => {} },

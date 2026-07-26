@@ -77,7 +77,11 @@ export function createMeshService({
   // message being transported (operator 2026-07-25 — "signing by do … is the message being
   // transported … a nugget"), so the stamp + this node's signature travel INSIDE it. Rendering at
   // send time instead would land them OUTSIDE the fence and make parseMesh reject the envelope.
-  const renderReply = (being, text) => makeWrapPersona({ bridgeSignatureOpen: cfg().bridge_signature_open ?? '', bridgeSignatureClose: cfg().bridge_signature_close ?? '' })({ bodyEmoji: bodyEmojiOf(being), label: being }, text);
+  // nodeName carries the STRUCTURAL layer inside the nugget too — the same cfg key, read the same
+  // lazy way as the visible ones. The ORIGIN re-wraps the nugget when it posts it, and the wrap
+  // replaces rather than stacks markers, so the surfaced frame ends up naming the spine that put
+  // it on the surface while the envelope's own provenance lines still name who answered.
+  const renderReply = (being, text) => makeWrapPersona({ bridgeSignatureOpen: cfg().bridge_signature_open ?? '', bridgeSignatureClose: cfg().bridge_signature_close ?? '', nodeName: cfg().node_name ?? '' })({ bodyEmoji: bodyEmojiOf(being), label: being }, text);
   const timeoutMs = () => Number(cfg().mesh?.timeout_ms ?? 60_000) || 60_000;
 
   // Find the non-comment agent whose WAKE TOKEN matches `token` → { name, agent }

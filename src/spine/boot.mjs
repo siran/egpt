@@ -318,6 +318,21 @@ export async function boot({
   // config. Every persona check downstream compares against this, never against 'e'/'egpt'.
   const defaultKey = personaAgent().name.toLowerCase();
 
+  // === THE STRUCTURAL NODE SIGNATURE (operator 2026-07-26) ==============================
+  // "spine doesn't boot without the invisible ones. the visible one are prescindable, there are
+  // only for human purviews." The invisible, machine-readable layer every outbound frame carries
+  // is `node_name` TAG-ENCODED (src/node-signature.mjs) — so requiring the marker and requiring
+  // the name are ONE requirement, not two. A separate `node_signature:` key could only ever hold
+  // a redundant copy of node_name and a second chance to get it wrong; this is that ruling made
+  // executable. Same shape as the persona-agent throw above: a node that cannot say WHICH node it
+  // is has no business posting to an account two spines share.
+  // The VISIBLE bridge_signature_open/close stay optional and are NOT checked here — empty is a
+  // legitimate configuration and must never block boot.
+  const node_name = String(cfg.node_name ?? '').trim();
+  if (!node_name) {
+    throw new Error(`boot: no node_name — every frame a spine commits to a surface carries an invisible structural signature encoded from it, and a node that cannot identify itself must not post (${CONFIG_FILE}). Set \`node_name: <short node id>\` (e.g. \`node_name: kg\`). See config/skeletons/config.yaml.`);
+  }
+
   // A being's body_emoji + display label, resolved purely from the agents registry BY KEY
   // (the being IS the key now — no e/egpt special case). body_emoji falls back to the dog;
   // name falls back to the key.
@@ -483,7 +498,8 @@ export async function boot({
   // 👂 from a higher rank — echo-priority.mjs + incoming-media.mjs). HARD OPT-OUT preserved: echo:false
   // → { rank: 0 }, which the bridge treats as never post / never promote — the note is still
   // transcribed + logged.
-  const node_name = cfg.node_name ?? null;
+  // (`node_name` is bound + asserted non-empty at the fatal check above — it is the structural
+  // node signature now, so it can no longer be null here.)
   // WINNER-SELECTION config, relocated under transcription_service.echo (operator 2026-07-24):
   //   echo: { method: hrw, participants, peer_priority: [do, kg], timeout_ms: 20000 }
   // BACK-COMPAT read-fallbacks keep a not-yet-migrated live config booting through the deploy→migrate
@@ -658,6 +674,7 @@ export async function boot({
     // 👂 off the leading edge → breaks observe-cancel on a >1-peer node (warned above).
     bridgeSignatureOpen: cfg.bridge_signature_open ?? '',
     bridgeSignatureClose: cfg.bridge_signature_close ?? '',
+    nodeName: node_name,                  // the STRUCTURAL layer — invisible, mandatory, asserted above
     transcriptionOpen: cfg.transcription_open ?? '',
     transcriptionClose: cfg.transcription_close ?? '',
     wakeWords,                            // the persona agent's OWN name + handles only — nothing injected (operator 2026-07-09)
@@ -714,6 +731,7 @@ export async function boot({
     wakeWords,
     bridgeSignatureOpen: cfg.bridge_signature_open ?? '',
     bridgeSignatureClose: cfg.bridge_signature_close ?? '',
+    nodeName: node_name,                  // same structural layer — a shell frame is a surface send too
     onLog: (m) => log.line?.(`[shell] ${m}`),
   }));
 

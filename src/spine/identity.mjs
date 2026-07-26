@@ -7,6 +7,21 @@
 // carries the bridge's classification (chat, sender, mention status, network,
 // kind flags); identity normalizes it into the loop's surface-agnostic shape.
 import { formatDispatchLine } from '../dispatch-line.mjs';
+// THE DECODE (operator 2026-07-26: "the transcript must decode the signature into a <node>").
+// It belongs HERE, not in dispatch-line.mjs or transcript-log.mjs: those are pure byte-builders
+// handed a body that has already been decided, whereas this is the ONE place inbound text is
+// INTERPRETED (C7.6e — "the InboundEvent built once, consumed by all paths"). Decoding here fixes
+// ev.body and ev.line together; decoding in the formatter alone would leave them disagreeing, and
+// spine.mjs's quick-reply patch tests `line.endsWith(ev.body)` — it would silently stop stripping
+// the routed token from the line the brain reads.
+//
+// It is also the SMUGGLING GUARD. Invisible characters in a prompt are an injection vector and we
+// must not feed them to ourselves: after this call no path downstream — the dispatch line, the
+// transcript file and therefore the @l tail and the voice-note transcript reuse, the kickoff feed,
+// the burst/cycle join, a quoted reply snippet — can carry a raw tag byte, because every one of
+// them is built from ev.body / ev.line. Rendering rather than stripping keeps the FACT (which node
+// spoke) while removing the invisibility.
+import { renderNodeSignature } from '../node-signature.mjs';
 
 // Beeper tags each message with its origin NETWORK; map it to the conversation
 // SURFACE (the slugDir bucket) and the dispatch-line NODE (the entry-point tag).
@@ -42,7 +57,13 @@ export function surfaceOf(network) {
 export function createIdentity({ formatLine = formatDispatchLine, now = () => Date.now(), timeZone = null } = {}) {
   return {
     /** @param {{ body: string, from: object }} payload @returns {import('./spine.mjs').InboundEvent} */
-    build({ body, from } = {}) {
+    build({ body: rawBody, from } = {}) {
+      // Decode the structural node signature ONCE, before anything reads the text: `…hola` +
+      // <invisible kg> becomes `…hola<kg>`. Absence is ORDINARY (every message already in the
+      // wild has no marker) → unchanged.
+      // (typeof-guarded so a null/undefined body stays null/undefined — the envelope's shape is
+      // unchanged for every non-string caller.)
+      const body = typeof rawBody === 'string' ? renderNodeSignature(rawBody) : rawBody;
       const f = from ?? {};
       const key = netKey(f.network);
       const node = NODE_OF[key] ?? key;

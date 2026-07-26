@@ -28,7 +28,9 @@ beeper:
   #   token: "PASTE_YOUR_TOKEN_HERE"
 
 # --- This node's identity ----------------------------------------------------
-node_name: kg                     # this node's name on the network
+node_name: kg                     # REQUIRED - this node's name on the network, and the
+                                  # STRUCTURAL signature every outbound frame carries
+                                  # (tag-encoded, invisible). No node_name = no boot.
 # node_alias: [kg2, kg3]            # extra identities this ONE process also answers to
 user_name: "John"                  # the human here; shown as <user_name>@<surface>
 

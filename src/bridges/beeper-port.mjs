@@ -68,11 +68,15 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
   // one exception is a mesh envelope (transport, not a surface send). See ./persona-wrap.mjs.
   const bridgeSignatureOpen = opts.bridgeSignatureOpen ?? '';
   const bridgeSignatureClose = opts.bridgeSignatureClose ?? '';
+  // The STRUCTURAL layer (operator 2026-07-26): cfg.node_name, tag-encoded into invisible
+  // characters and appended to every frame. The visible layers above are "prescindable"; THIS is
+  // what identifies the node machine-readably, and boot refuses to start without a node_name.
+  const nodeName = opts.nodeName ?? '';
   // Wrap what this node posts concentrically: outer bridge layer (per-node, above), inner agent
   // layer (per-being, from opts.agentSig*), around the stamped core. The composition lives in the
   // shared persona-wrap module (used identically by shell-port and by the 👂 echo one layer down);
   // this closure just binds this node's bridge-signature layer.
-  const wrapPersona = makeWrapPersona({ bridgeSignatureOpen, bridgeSignatureClose });
+  const wrapPersona = makeWrapPersona({ bridgeSignatureOpen, bridgeSignatureClose, nodeName });
   const real = await start({
     ...rest,
     // Forward inbound to the spine. This resolves when the message's TURN completes

@@ -112,6 +112,7 @@ beforeAll(async () => {
 
   const config = {
     beeper_token: 'fixture-token-unused',
+    node_name: 'kg',   // MANDATORY since 2026-07-26 — it IS the structural node signature (boot throws without one)
     // auto_e_default 'mute' → an UNKNOWN chat (the empty-registry regression) stays
     // silent; our KNOWN chat's own mode 'on' is the only thing that can produce a reply.
     whatsapp: { chat_id: 'self@fixture', allowed_users: ['u-1'], auto_e_chats: [], auto_e_default: 'mute' },

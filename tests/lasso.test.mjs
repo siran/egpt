@@ -329,7 +329,7 @@ function fakeStart() {
 async function bootNode(lasso = { messages: 3, window_ms: 50, max_queue: 50 }) {
   const { start, spy } = fakeStart();
   const app = await boot({
-    readConfig: () => ({ whatsapp: {}, lasso, agents: { egpt: { configuration: 'egpt', handles: ['e'], default: true } } }),
+    readConfig: () => ({ whatsapp: {}, node_name: 'kg', lasso, agents: { egpt: { configuration: 'egpt', handles: ['e'], default: true } } }),   // node_name is MANDATORY since 2026-07-26 (the structural node signature)
     startBridge: start,
     makeSession: () => ({ sessionId: 's', async turn() { return { text: 'ok' }; }, close() {} }),
     loadState: async () => (await import('../src/conversations-state.mjs')).emptyState(),
