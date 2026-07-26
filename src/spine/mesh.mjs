@@ -80,7 +80,7 @@ export function createMeshService({
   const renderReply = (being, text) => makeWrapPersona({ bridgeSignatureOpen: cfg().bridge_signature_open ?? '', bridgeSignatureClose: cfg().bridge_signature_close ?? '' })({ bodyEmoji: bodyEmojiOf(being), label: being }, text);
   const timeoutMs = () => Number(cfg().mesh?.timeout_ms ?? 60_000) || 60_000;
 
-  // Find the enabled, non-comment agent whose WAKE TOKEN matches `token` → { name, agent }
+  // Find the non-comment agent whose WAKE TOKEN matches `token` → { name, agent }
   // (name = canonical lowercased key = the BEING-ID that runs) or null. Runs THE wake vocabulary
   // (router.mjs wakeTokens — declared `handles:`, else the map key), the same rule the router
   // applies to a direct @mention, so an envelope's `<being>.<node>` and a typed @token can never
@@ -95,14 +95,13 @@ export function createMeshService({
   // passed the gate and then its `to:` chain missed — nothing travelled (operator 2026-07-26: "the
   // relay agent must route with the handle, not with the key").
   //
-  // A LIST-shaped (multipath) agent is included: it has nowhere to declare `handles:`, so its KEY
-  // is its wake token via the fallback (`[].handles` is undefined) — kg's live `carol` is addressed
-  // exactly that way and must keep fanning out. Excluding the Array shape here would strand her.
+  // A MULTIPATH agent is included and needs no special case: since 2026-07-26 it is an ordinary
+  // map carrying a `paths:` list, so it declares `handles:` like anyone else (and falls back to
+  // its key when it doesn't).
   const findAgentByToken = (token) => {
     const t = String(token ?? '').toLowerCase();
     for (const [name, agent] of Object.entries(agents())) {
       if (!agent || typeof agent !== 'object' || name.startsWith('_')) continue;
-      if (agent.enabled === false) continue;
       if (wakeTokens(name, agent).includes(t)) return { name: name.toLowerCase(), agent };
     }
     return null;
@@ -242,22 +241,23 @@ export function createMeshService({
     node,
     isSelfNode,                          // node_name ∪ node_alias → several identities on one process
     log: onLog,
-    // A local being: any LOCAL agent (enabled, configuration ≠ 'relay') matched by its KEY
-    // *or any of its handles* — including the persona, which lives in the registry like any
-    // other agent (operator 2026-07-10: no e/egpt shortcut; a handle like `ed` resolves via
-    // findAgentByToken exactly as the router resolves a bare @ed). A hosted-but-disabled agent
-    // is treated as not-here (the engine answers "no <being>.<node> here" — never silence),
-    // respecting availability. (A relay agent forwards elsewhere via the route-direct path, so
-    // it is NOT local.)
+    // A local being: any LOCAL agent (configuration ≠ 'relay') matched by its KEY *or any of its
+    // handles* — including the persona, which lives in the registry like any other agent
+    // (operator 2026-07-10: no e/egpt shortcut; a handle like `ed` resolves via findAgentByToken
+    // exactly as the router resolves a bare @ed). A being this node does not host at all is
+    // not-here (the engine answers "no <being>.<node> here" — never silence). (A relay agent
+    // forwards elsewhere via the route-direct path, so it is NOT local.)
     isLocalBeing: (name) => {
       const found = findAgentByToken(name);
       if (!found) return false;
       const a = found.agent;
-      // A relay agent (has relay_channel / to, or explicit configuration: relay) forwards
-      // rather than answers — it is NOT a local being. A LIST-shaped agent is a MULTIPATH relay
-      // by construction (its paths carry the relay_channels), so it is never local either — it
-      // reaches this check only now that findAgentByToken sees the Array shape.
-      const isRelay = Array.isArray(a) || !!a.relay_channel || !!a.to || String(a.configuration ?? '').toLowerCase() === 'relay';
+      // A relay agent (has relay_channel / to / paths, or explicit configuration: relay) forwards
+      // rather than answers — it is NOT a local being. A MULTIPATH agent is a relay BY
+      // CONSTRUCTION (its `paths:` carry the relay_channels), so `Array.isArray(a.paths)` leads
+      // the test: 1da74ae added that clause the moment findAgentByToken stopped skipping the
+      // multipath shape, and without it carol answers as a local being on the open-channel path.
+      // It reads `a.paths`, NOT `a` — the multipath agent is a map now (2026-07-26).
+      const isRelay = Array.isArray(a.paths) || !!a.relay_channel || !!a.to || String(a.configuration ?? '').toLowerCase() === 'relay';
       return !isRelay;
     },
     // Resolve a being addressed by a HANDLE to the KEY that actually RUNS: findAgentByToken
@@ -296,11 +296,11 @@ export function createMeshService({
         const raw = { room_id: String(p.relay_channel), ...(p.network ? { network: String(p.network).toLowerCase() } : {}) };
         return { being: b, node: n, route: await canonRoute(raw) };   // relay_channel NAME → canonical id
       };
-      // MULTIPATH (operator 2026-07-06: an agent is a list of paths, every message through every
-      // path). A LIST-shaped relay record forwards an arriving envelope onward through EVERY path →
-      // an ARRAY of next-hop records (the engine fans out into all of them). A scalar agent → a
-      // single record (unchanged). agentPaths normalizes both shapes to a [{relay_channel,network,to}].
-      if (Array.isArray(a)) {
+      // MULTIPATH (operator 2026-07-06: every message through every path). A relay record carrying
+      // a `paths:` list forwards an arriving envelope onward through EVERY path → an ARRAY of
+      // next-hop records (the engine fans out into all of them). A scalar agent → a single record
+      // (unchanged). agentPaths normalizes both shapes to a [{relay_channel,network,to}].
+      if (Array.isArray(a.paths)) {
         const recs = (await Promise.all(agentPaths(a).map(recordOf))).filter(Boolean);
         return recs.length ? recs : null;
       }
@@ -406,11 +406,11 @@ export function createMeshService({
     //                                named; without it, open-channel (the owner of `being`
     //                                on the other end answers). The reply mirrors home
     //                                through the awaiting/re: machinery either way.
-    //   { being, paths:[…] }       — a LIST-shaped (multipath) relay agent; see below.
+    //   { being, paths:[…] }       — a MULTIPATH relay agent (its `paths:` list); see below.
     async forward(ev, target) {
       const being = target?.being;
-      // MULTIPATH (operator 2026-07-06: multipath is configuration — an agent is a list of paths,
-      // every message through every path). The router hands a `paths` array; resolve EACH path's
+      // MULTIPATH (operator 2026-07-06: multipath is configuration — an agent declares a list of
+      // paths, every message through every path). The router hands a `paths` array; resolve EACH path's
       // relay_channel NAME → canonical id with its OWN network pin (canonRoute) and fan out via
       // relay.relayOut({paths}) — ONE 🤔 placeholder + one envelope per path, first reply home wins.
       if (Array.isArray(target?.paths)) {

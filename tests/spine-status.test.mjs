@@ -486,7 +486,7 @@ describe('/status: enriched fields', () => {
     agents: {
       egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true },
       carol: { relay_channel: 'rodz1', to: 'don.do' },
-      wren: [{ path1: { relay_channel: 'rodz2', to: 'ed.do' } }],
+      wren: { paths: [{ path1: { relay_channel: 'rodz2', to: 'ed.do' } }] },
     },
   };
 
@@ -578,7 +578,7 @@ describe('/status: enriched fields', () => {
     expect(sent[0].text).not.toContain(TOKEN_SENTINEL);
   });
 
-  it('agents: persona shows its handles, a scalar relay shows "name → to", a list relay shows its to once', async () => {
+  it('agents: persona shows its handles, a scalar relay shows "name → to", a multipath relay shows its to once', async () => {
     const { cmds, sent } = harness({ io: HEALTHY_IO, gitOut: HEALTHY_GIT, loadState: async () => threeContacts(), getConfig: () => RICH_CONFIG });
     await cmds.run({ body: '/status', chatId: '!self', surface: 'whatsapp' });
     const { text } = sent[0];

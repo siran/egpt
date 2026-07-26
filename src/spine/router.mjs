@@ -9,8 +9,8 @@
 // being (being = agent name); a RELAY agent (configuration: relay) routes to a mesh target
 // whose ROUTE is the agent's relay_channel; the DEFAULT (persona) agent — the one carrying
 // `default: true`, whose KEY boot injects as `defaultBeing` — routes to its own key (operator
-// 2026-07-10: the being-id IS the map key, no hardcoded 'e'/'egpt'). An unknown / disabled
-// @token, or a message addressing nobody, falls through to the persona (defaultBeing).
+// 2026-07-10: the being-id IS the map key, no hardcoded 'e'/'egpt'). An unknown @token, or a
+// message addressing nobody, falls through to the persona (defaultBeing).
 //
 // resolve() returns { being, mesh?, mention, targets } — `targets` is the FULL list (the spine
 // fans out over it: every local being takes a turn, every mesh target is forwarded), with the
@@ -63,9 +63,11 @@ function quickReplyBody(text, token) {
 // This function answers only "who is addressed", never "who runs" — the callers below map a matched
 // token back to the agent's key, which is what runs.
 //
-// FALLBACK IS LOAD-BEARING, not back-compat: a MULTIPATH agent is an Array of path maps (operator
-// 2026-07-06) with nowhere to hang an agent-level `handles:` key, so kg's live `carol` is addressed
-// by its key alone. `[].handles` is undefined → the fallback branch.
+// THE FALLBACK IS FOR AGENTS THAT SIMPLY DON'T DECLARE HANDLES, and nothing else. It used to be
+// load-bearing for MULTIPATH too — that shape was a bare Array of path maps with nowhere to hang
+// an agent-level `handles:` key, so kg's `carol` was the last agent on the node addressable only
+// by its map key. Since 2026-07-26 a multipath agent is an ordinary map whose `paths:` holds the
+// list (see agentPaths in src/mesh/relay.mjs), so it declares handles like everyone else.
 //
 // `handles: []` (explicitly empty) is a complete list that happens to be empty → the agent is
 // addressable by NOTHING. Falling back to the key on empty would make `handles: []` mean the same
@@ -87,10 +89,9 @@ export function wakeTokens(name, agent) {
 // an `@agent` mid-sentence was invisible. Now there is one, and an agent inherits every protection
 // E has (code fences since 47caf19, the glued-token rule, longest-token-first).
 //
-// `_`-prefixed comment keys and `enabled: false` agents are not addressable — they fall through,
-// exactly as findAgent used to skip them. An ARRAY-shaped agent is a MULTI-PATH relay (operator
-// 2026-07-06: an agent is a list of paths) — it has nowhere to declare handles, so it is addressed
-// by its map KEY alone; wakeTokens tolerates that shape (agent.handles undefined → just the name).
+// `_`-prefixed comment keys are not addressable — they fall through, exactly as findAgent used to
+// skip them. (An agent-level `enabled:` key is NOT consulted: operator 2026-07-26, "disabling is
+// just commenting the config. no need to have or check an enabled key in this case.")
 //
 // A QUICK REPLY (`quickReply` + `lastSpeaker`) is resolved HERE too, and to ONE addressee: the
 // agent that spoke last in this conversation, ATSTART (it was directly addressed, so a
@@ -110,7 +111,6 @@ export function addressed(text, agents, { quickReply = '', lastSpeaker = null } 
   const byBeing = new Map();                       // BEING-ID (the map key) -> { name, agent }
   for (const [name, agent] of Object.entries(agents ?? {})) {
     if (!agent || typeof agent !== 'object' || name.startsWith('_')) continue;
-    if (agent.enabled === false) continue;
     const hit = { name: name.toLowerCase(), agent };
     byBeing.set(hit.name, hit);
     for (const id of wakeTokens(name, agent)) if (!byToken.has(id)) byToken.set(id, hit);
@@ -143,13 +143,13 @@ export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', getQu
     // an agent named mid-sentence in a mention-direct chat correctly stays silent. A LEADING
     // @name still yields { atEStart: true, atEAnywhere: true }, exactly the old constant.
     const mention = { atEStart: atStart, atEAnywhere: true, replyToBot: false };
-    // MULTIPATH (operator 2026-07-06: multipath is configuration — an agent is a list of
-    // paths, every message through every path). A LIST-shaped agent is a relay whose every
+    // MULTIPATH (operator 2026-07-06: multipath is configuration — an agent declares a list of
+    // paths, every message through every path). An agent carrying `paths:` is a relay whose every
     // element posts the SAME message into its own relay_channel with its own network pin.
     // Return the mesh target carrying ALL paths; mesh.forward posts one envelope per path
     // (one 🤔 placeholder for the human, same re:/post_id). Handled BEFORE the scalar check
-    // (a list has no top-level relay_channel). Each path: { route:{room_id,network?}, to?, label }.
-    if (Array.isArray(agent)) {
+    // (a multipath agent has no top-level relay_channel). Each path: { route:{room_id,network?}, to?, label }.
+    if (Array.isArray(agent.paths)) {
       const paths = agentPaths(agent).map((p) => ({
         route: { room_id: p.relay_channel, ...(p.network ? { network: String(p.network).toLowerCase() } : {}) },
         ...(String(p.to ?? '').trim() ? { to: String(p.to).trim() } : {}),
@@ -205,9 +205,9 @@ export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', getQu
           // account, so on Beeper `do` hears `@don` DIRECTLY and answers it — kg must NOT also
           // relay it. kg relays `don` ONLY from the shell (which `do` can't hear), so kg pins its
           // `don` relay agent `surface: shell`. A surface-mismatched agent is dropped from the
-          // target list (the OTHER agents this message addressed are unaffected). A LIST-shaped
-          // (multipath) agent is an Array with no `.surface`, so it is never pinned.
-          if (!Array.isArray(hit.agent) && hit.agent.surface != null
+          // target list (the OTHER agents this message addressed are unaffected). A MULTIPATH
+          // agent is an ordinary map since 2026-07-26, so it can be pinned like any other.
+          if (hit.agent.surface != null
               && String(hit.agent.surface).toLowerCase() !== String(ev?.surface ?? '').toLowerCase()) continue;
           if (hit.body != null) body = hit.body;
           targets.push(targetFor(hit, ev));

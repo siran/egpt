@@ -34,20 +34,22 @@ export function ownNodeNamesOf(cfg) {
 // <node>. Flattening every such path out of the AGENTS block therefore yields the routing
 // table itself — derived, never declared twice.
 //
-// One record per PATH (a multipath agent is a list of paths, operator 2026-07-06), each:
+// One record per PATH (a multipath agent declares a list under `paths:`, operator 2026-07-06),
+// each:
 //   { name, being, node, relay_channel, network?, surface, label }
 // `surface` is the agent's SURFACE PIN (null when unpinned) — the operator's declaration of
 // where this relay applies (kg pins `don` to `surface: shell` because on Beeper `do` hears
-// him directly). A LIST-shaped agent is an Array and carries no pin, so it is always null.
+// him directly). Every agent is a MAP since 2026-07-26, multipath included, so a multipath
+// agent can carry a pin like any other and it is read the same way.
 // Paths with no `to:` or no `relay_channel` are not routes and are skipped, as are
-// `_`-comment keys and disabled agents.
+// `_`-comment keys. (An agent-level `enabled:` key is NOT consulted — operator 2026-07-26,
+// "disabling is just commenting the config".)
 /** @returns {{name:string,being:string,node:string,relay_channel:string,network?:string,surface:string|null,label:string,to:string}[]} */
 export function agentRoutes(cfg) {
   const out = [];
   for (const [name, agent] of Object.entries(cfg?.agents ?? {})) {
     if (!agent || typeof agent !== 'object' || name.startsWith('_')) continue;
-    if (!Array.isArray(agent) && agent.enabled === false) continue;
-    const surface = (!Array.isArray(agent) && agent.surface != null) ? String(agent.surface).toLowerCase() : null;
+    const surface = agent.surface != null ? String(agent.surface).toLowerCase() : null;
     for (const p of agentPaths(agent)) {
       const to = String(p.to ?? '').trim();
       if (!to || !p.relay_channel) continue;

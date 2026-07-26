@@ -677,6 +677,32 @@ describe('YAML parse / serialize round-trip', () => {
     expect(residentsOf(back)).toEqual(['egpt']);
   });
 
+  // Reproduce (2026-07-26): the third corpse of the same class. MEASURED on the live registry:
+  // of 106 entries, 10 carry a flat `mode`, and NOTHING reads it — gating.mjs resolves a mode off
+  // the per-being view (getBeing → entry[<being>].mode / entry.agents.<name>.mode), never the flat
+  // key. Now that residentsOf is a POSITIVE test (09d1fad) a string-valued flat `mode` can no
+  // longer fake a resident, but it IS still contributed as registry-rung config and surfaces in
+  // conversations.readonly.yaml, so it keeps misinforming whoever opens the entry.
+  it('serialize purges a legacy flat `mode` but leaves the nested <being>.mode byte-intact', () => {
+    const s = {
+      contacts: { whatsapp: { j: {
+        slug: 'fam-2605200133',
+        conversation_path: conversationPathOf(WA, 'fam-2605200133'),
+        home_dir: homeDirMsys(),
+        pushedName: 'fam',
+        mode: 'mention-direct',                                   // the corpse: read by nothing
+        egpt: { mode: 'auto', threadId: 'LIVE-1ef3663e-6ad9' },   // the mode that is actually live
+      } } },
+    };
+    const text = serialize(s);
+    expect(text).not.toContain('mention-direct');                 // gone from disk
+    expect((text.match(/mode:/g) || []).length).toBe(1);          // only the nested line remains
+    const back = parse(text).contacts.whatsapp.j;
+    expect('mode' in back).toBe(false);                           // dropped for good — parse never re-hydrates it
+    expect(back.egpt.mode).toBe('auto');                          // the live per-being mode survives
+    expect(residentsOf(back)).toEqual(['egpt']);
+  });
+
   it('serialize omits slug + lifecycle keys; parse re-derives them (the slim contract)', () => {
     const s = {
       contacts: { whatsapp: { j: {

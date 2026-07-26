@@ -116,7 +116,11 @@ describe('/members in the lobby — lists the node\'s local beings E/D/L', () =>
     expect(text).toContain('l   being');
   });
 
-  it('a `_`-comment key and an enabled:false agent are skipped', async () => {
+  // A `_`-comment key is skipped — that (and commenting the agent out) IS the disable mechanism.
+  // `enabled: false` is INERT since 2026-07-26 (operator: "disabling is just commenting the
+  // config. no need to have or check an enabled key in this case"), so an agent carrying it is a
+  // lobby member like any other.
+  it('a `_`-comment key is skipped; an `enabled: false` key is inert (still a member)', async () => {
     const { cmds, sent } = lobbyCommands({
       e: { default: true },
       _note: 'ignored',
@@ -124,9 +128,10 @@ describe('/members in the lobby — lists the node\'s local beings E/D/L', () =>
     });
     await cmds.run({ chatId: 'main', surface: 'shell', body: '/members' });
     const text = sent.at(-1).text;
-    expect(text).toContain('lobby (1 members)');
+    expect(text).toContain('lobby (2 members)');
     expect(text).toContain('e   being');
-    expect(text).not.toContain('off   being');
+    expect(text).toContain('off   being');
+    expect(text).not.toContain('_note');
   });
 
   it('a NON-lobby conversation does NOT get the local beings injected', async () => {

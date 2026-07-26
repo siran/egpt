@@ -176,25 +176,37 @@ export function mentionedBeing(text) {
 }
 
 // agentPaths(agent) — the relay PATHS an agent posts through (operator 2026-07-06: multipath is
-// configuration — an agent is a list of paths, every message through every path). A SCALAR relay
-// agent → ONE unlabeled path carrying its own {relay_channel, network, to}. A LIST agent → one
-// path per element; each element is a SINGLE-KEY map { <label>: { relay_channel, network, to } }
-// (the key is the human path label). Malformed list elements (not a single-key object) are skipped.
-// Shared by the router (fan-out at the origin) and the mesh service (isLocalBeing/resolveBeingRelay).
+// configuration — every message through every path). THE ONE definition, shared by the router
+// (fan-out at the origin), the mesh service (isLocalBeing / resolveBeingRelay) and node-names
+// (agentRoutes), so "how many ways does this agent reach out" is answered in exactly one place.
+//   MULTIPATH — `paths:` is a LIST → one path per element, each a SINGLE-KEY map
+//               { <label>: { relay_channel, network, to } } (the key is the human path label).
+//               Malformed elements (not a single-key object) are skipped.
+//   SCALAR    — no `paths:` → ONE unlabeled path carrying the agent's own
+//               { relay_channel, network, to }.
+//
+// AN AGENT IS ALWAYS A MAP (operator 2026-07-26: "you can make it work with handles differing from
+// key names"). Multipath used to be the agent VALUE itself being a bare list, and a list has
+// nowhere to hang `handles:` — which left a multipath agent the last one on the node addressable
+// only by its map key, the very thing d99e462 abolished. Moving the list one level down under
+// `paths:` gives it every agent-level slot (handles:, surface:, mode:, …). Only the nesting
+// changed: each element is parsed exactly as before.
+//
+// A shape/kind test on an agent therefore reads `Array.isArray(agent.paths)`, NEVER
+// `Array.isArray(agent)` — see isRelay in src/spine/mesh.mjs, which must keep classifying a
+// multipath agent as a relay (a being-that-answers-here it is not).
 export function agentPaths(agent) {
-  if (Array.isArray(agent)) {
-    return agent.map((el) => {
-      if (!el || typeof el !== 'object' || Array.isArray(el)) return null;
-      const label = Object.keys(el)[0];
-      if (!label) return null;
-      const cfg = el[label] ?? {};
-      return { label, relay_channel: cfg.relay_channel, network: cfg.network, to: cfg.to };
-    }).filter(Boolean);
-  }
-  if (agent && typeof agent === 'object') {
+  if (!agent || typeof agent !== 'object') return [];
+  if (!Array.isArray(agent.paths)) {
     return [{ label: '', relay_channel: agent.relay_channel, network: agent.network, to: agent.to }];
   }
-  return [];
+  return agent.paths.map((el) => {
+    if (!el || typeof el !== 'object' || Array.isArray(el)) return null;
+    const label = Object.keys(el)[0];
+    if (!label) return null;
+    const cfg = el[label] ?? {};
+    return { label, relay_channel: cfg.relay_channel, network: cfg.network, to: cfg.to };
+  }).filter(Boolean);
 }
 
 // appendVia adds THIS forwarding hop's identity to the trail (operator 2026-07-06). No body

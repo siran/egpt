@@ -28,7 +28,7 @@ const KG = () => ({
   networks: { whatsapp: { chat_ids: ['!self'] } },
   agents: {
     egpt: { configuration: 'claude', handles: ['e'], default: true },
-    carol: [{ path1: { relay_channel: 'rodz1', network: 'whatsapp', to: 'don.do' } }],
+    carol: { handles: ['carol'], paths: [{ path1: { relay_channel: 'rodz1', network: 'whatsapp', to: 'don.do' } }] },
     don: { surface: 'shell', to: 'don.do', relay_channel: 'egpt-mesh-do-kg' },
   },
 });
@@ -240,10 +240,10 @@ describe('node → route derivation', () => {
   it('with nothing pinned, an UNPINNED multipath agent carries it through every one of its paths', async () => {
     const config = KG();
     delete config.agents.don;                                   // leave only carol (2 paths → do)
-    config.agents.carol = [
+    config.agents.carol = { handles: ['carol'], paths: [
       { path1: { relay_channel: 'rodz1', network: 'whatsapp', to: 'don.do' } },
       { path2: { relay_channel: 'egpt-mesh-do-kg', network: 'telegram', to: 'don.do' } },
-    ];
+    ] };
     const { bridge, spine } = nodeStack({ config });
     await spine.handleInbound({ ...SHELL, body: '/chrome do' });
     await flush();
@@ -264,10 +264,24 @@ describe('node → route derivation', () => {
     expect(plain(bridge)[0].text).toMatch(/no agent routes to node "do"/);
   });
 
-  it('a DISABLED agent is not a route', async () => {
+  // Operator 2026-07-26: "disabling is just commenting the config. no need to have or check an
+  // enabled key in this case." agentRoutes stopped consulting the key, so the routing table is
+  // built from what is IN the config — an entry carrying `enabled: false` is a route like any
+  // other, and only removing (commenting out) the agent removes the route.
+  it('an `enabled: false` key is INERT — the agent is still a route', async () => {
     const config = KG();
     delete config.agents.carol;
     config.agents.don.enabled = false;
+    const { bridge, spine } = nodeStack({ config });
+    await spine.handleInbound({ ...SHELL, body: '/chrome do' });
+    await flush();
+    expect(envelopes(bridge).map((e) => e.chat)).toEqual(['egpt-mesh-do-kg']);
+  });
+
+  it('a COMMENTED-OUT (absent) agent is not a route', async () => {
+    const config = KG();
+    delete config.agents.carol;
+    delete config.agents.don;
     const { bridge, spine } = nodeStack({ config });
     await spine.handleInbound({ ...SHELL, body: '/chrome do' });
     await flush();

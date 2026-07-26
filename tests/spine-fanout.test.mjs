@@ -22,12 +22,13 @@ const ev = (body, extra = {}) => ({
 });
 
 // The live shape: a persona agent, a route-direct relay (`don`), a second LOCAL agent,
-// a multipath list agent, a surface-pinned relay, and a disabled one.
+// a MULTIPATH relay (`carol`, keyed carol and addressed @maria — the whole point of the map
+// shape), a surface-pinned relay, and one carrying an INERT `enabled` key.
 const AGENTS = {
   egpt:  { configuration: 'sonnet-high', handles: ['e', 'egpt'], default: true },
   don:   { configuration: 'relay', relay_channel: 'egpt-mesh-do-kg', to: 'don.do' },
   wren:  { configuration: 'sonnet-high' },
-  carol: [{ path1: { relay_channel: 'rodz1', network: 'whatsapp' } }, { path2: { relay_channel: 'egpt-mesh' } }],
+  carol: { handles: ['maria'], paths: [{ path1: { relay_channel: 'rodz1', network: 'whatsapp' } }, { path2: { relay_channel: 'egpt-mesh' } }] },
   pinned: { configuration: 'relay', relay_channel: 'shell-only', surface: 'shell' },
   off:   { configuration: 'sonnet-high', enabled: false },
   _note: 'a comment key, never routable',
@@ -75,13 +76,20 @@ describe('addressed() — ONE matcher over the whole addressable set', () => {
     expect(addressed('@egpt hola', AGENTS).map((h) => h.name)).toEqual(['egpt']);
     expect(addressed('@e hola', AGENTS).map((h) => h.name)).toEqual(['egpt']);
     expect(addressed('@wren hola', AGENTS).map((h) => h.name)).toEqual(['wren']);
-    expect(addressed('@carol hola', AGENTS).map((h) => h.name)).toEqual(['carol']);   // list-shaped agent, by key
+    expect(addressed('@maria hola', AGENTS).map((h) => h.name)).toEqual(['carol']);   // multipath agent, by HANDLE → its being-id
   });
 
-  it('needs a real mention token: glued (me@e.com) and unknown/disabled/_note tokens never match', () => {
+  it('needs a real mention token: glued (me@e.com) and unknown/_note tokens never match', () => {
     expect(addressed('write me@e.com please', AGENTS)).toEqual([]);
     expect(addressed('hey@egpt', AGENTS)).toEqual([]);
-    expect(addressed('@nobody @off @_note', AGENTS)).toEqual([]);
+    expect(addressed('@nobody @_note', AGENTS)).toEqual([]);
+  });
+
+  // Operator 2026-07-26: "disabling is just commenting the config. no need to have or check an
+  // enabled key in this case." The agent-level check is gone, so `enabled: false` is inert data —
+  // the agent is addressable like any other. Commenting it out is what removes it.
+  it('an `enabled: false` key is INERT — the agent is addressed like any other', () => {
+    expect(addressed('@off hola', AGENTS).map((h) => h.name)).toEqual(['off']);
   });
 
   it('a hyphen/dot boundary: @don.do finds don (the token stops at the dot); @don-x finds NOBODY', () => {
@@ -123,18 +131,31 @@ describe('LOCKS — every current resolve() semantic survives the fan-out', () =
   it('a LEADING @name still yields exactly the old flags ({ atEStart: true, atEAnywhere: true })', () => {
     expect(arouter.resolve(ev('@don ping')).mention).toEqual({ atEStart: true, atEAnywhere: true, replyToBot: false });
     expect(arouter.resolve(ev('@wren ping')).mention).toEqual({ atEStart: true, atEAnywhere: true, replyToBot: false });
-    expect(arouter.resolve(ev('@carol ping')).mention).toEqual({ atEStart: true, atEAnywhere: true, replyToBot: false });
+    expect(arouter.resolve(ev('@maria ping')).mention).toEqual({ atEStart: true, atEAnywhere: true, replyToBot: false });
   });
 
-  it('a multipath (list-shaped) agent still resolves to ALL its paths', () => {
-    const r = arouter.resolve(ev('@carol hola'));
+  // REPRODUCE-FIRST (operator 2026-07-26: "i mean you can make it work with handles differing from
+  // key names"). Multipath used to be the agent VALUE being a bare list, which has nowhere to hang
+  // `handles:` — so `carol` was the last agent on the node reachable only by its map key. The list
+  // moved one level down under `paths:`, making a multipath agent an ordinary map, and the wake
+  // vocabulary then applies to it unchanged: declared handles are the COMPLETE list, and the KEY
+  // is not one of them.
+  it('a MULTIPATH agent is addressed by its HANDLE and resolves to ALL its paths', () => {
+    const r = arouter.resolve(ev('@maria hola'));
     expect(r.mesh).toEqual({
-      being: 'carol',
+      being: 'carol',                                   // the being-id is still the map key
       paths: [
         { route: { room_id: 'rodz1', network: 'whatsapp' }, label: 'path1' },
         { route: { room_id: 'egpt-mesh' }, label: 'path2' },
       ],
     });
+  });
+
+  it('…and by its map KEY it routes NOTHING — declared handles are the complete wake list', () => {
+    const r = arouter.resolve(ev('@carol hola'));
+    expect(r.mesh).toBeUndefined();
+    expect(r.being).toBe('egpt');                        // falls through to the persona
+    expect(r.targets).toHaveLength(1);
   });
 
   it('a surface-PINNED agent is addressed only on its pinned surface — off it, it is not a target at all', () => {
@@ -148,9 +169,9 @@ describe('LOCKS — every current resolve() semantic survives the fan-out', () =
     expect(mixed.targets.map((t) => t.mesh?.being)).toEqual(['don']);
   });
 
-  it('an unknown / disabled @token alone still falls through to the default agent', () => {
+  it('an unknown @token alone still falls through to the default agent', () => {
     expect(arouter.resolve(ev('@nobody hi')).being).toBe('egpt');
-    expect(arouter.resolve(ev('@off hi')).being).toBe('egpt');
+    expect(arouter.resolve(ev('@_note hi')).being).toBe('egpt');
   });
 });
 

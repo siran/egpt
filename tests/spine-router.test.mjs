@@ -19,7 +19,7 @@ describe('router.resolve — agents registry (operator 2026-07-02)', () => {
     don:  { configuration: 'relay', relay_channel: 'Rodz' },          // relay → chat "Rodz"
     'don-tg': { configuration: 'relay', relay_channel: 'Rodz', network: 'Telegram' },   // relay → chat "Rodz" pinned to telegram
     'don-local': { configuration: 'sonnet-high', name: 'Don' },       // local being, hyphenated name
-    off:  { configuration: 'sonnet-high', enabled: false },           // disabled → not routable
+    off:  { configuration: 'sonnet-high', enabled: false },           // `enabled` is INERT — routes like any other
     _note: 'a comment key, never routable',
   };
   // boot injects defaultBeing = the default agent's KEY ('egpt' here). The persona routes to
@@ -64,8 +64,13 @@ describe('router.resolve — agents registry (operator 2026-07-02)', () => {
     expect(arouter.resolve(ev('@DON hi')).mesh).toEqual({ being: 'don', route: { room_id: 'Rodz' } });
   });
 
-  it('a disabled agent falls through (→ defaultBeing); a _note key never routes', () => {
-    expect(arouter.resolve(ev('@off hi')).being).toBe('egpt');
+  // Operator 2026-07-26: "disabling is just commenting the config. no need to have or check an
+  // enabled key in this case." The agent-level `enabled` check was evicted as dead code — no live
+  // agent ever carried the key — so an entry that does carry it is an ordinary agent. The REAL
+  // disable mechanisms are still locked below: a `_`-prefixed comment key, and commenting the
+  // agent out entirely (an absent key routes nowhere).
+  it('an `enabled: false` key is INERT — the agent routes like any other; a _note key never routes', () => {
+    expect(arouter.resolve(ev('@off hi')).being).toBe('off');
     expect(arouter.resolve(ev('@_note hi')).being).toBe('egpt');
   });
 
@@ -98,16 +103,18 @@ describe('router.resolve — agents registry (operator 2026-07-02)', () => {
   });
 });
 
-// ── MULTIPATH (operator 2026-07-06: multipath is configuration — an agent is a LIST of paths,
-//    every message through every path). A list agent's elements are SINGLE-KEY maps { <label>:
-//    { relay_channel, network?, to? } }. The router resolves it to a mesh target carrying ALL
-//    paths; the scalar (non-list) relay shape stays byte-for-byte unchanged (regression above). ──
+// ── MULTIPATH (operator 2026-07-06: multipath is configuration — an agent declares a LIST of
+//    paths under `paths:`, every message through every path). Each element is a SINGLE-KEY map
+//    { <label>: { relay_channel, network?, to? } }. The router resolves it to a mesh target
+//    carrying ALL paths; the scalar (no-`paths:`) relay shape stays byte-for-byte unchanged
+//    (regression below). The agent itself is an ordinary MAP since 2026-07-26 — the list used to
+//    be the agent VALUE, which left it nowhere to declare `handles:`. ──
 describe('router.resolve — multi-path relay agent (operator 2026-07-06)', () => {
   const agents = {
-    carol: [
+    carol: { paths: [
       { path1: { relay_channel: 'rodz1', network: 'whatsapp', to: 'don.do' } },
       { path2: { relay_channel: 'egpt-mesh', network: 'telegram', to: 'don.do' } },
-    ],
+    ] },
     egpt: { configuration: 'sonnet-high', handles: ['e', 'egpt'] },
     don:  { configuration: 'relay', relay_channel: 'Rodz' },   // scalar relay — regression neighbor
   };
@@ -130,7 +137,7 @@ describe('router.resolve — multi-path relay agent (operator 2026-07-06)', () =
     expect(arouter.resolve(ev('@don ping')).mesh).toEqual({ being: 'don', route: { room_id: 'Rodz' } });
   });
 
-  it('case-insensitive on a list agent name: @CAROL still fans out', () => {
+  it('case-insensitive on a multipath agent name: @CAROL still fans out', () => {
     expect(arouter.resolve(ev('@CAROL hi')).mesh.being).toBe('carol');
   });
 });

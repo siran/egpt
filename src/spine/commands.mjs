@@ -889,14 +889,15 @@ export function createCommands({
   // ONLY — they're reachable via @e/@d/@l in ANY conversation (router + wake-words),
   // and are NEVER written to the lobby's config.yaml (which the phase-4 relay reads;
   // these are synthetic present-and-active rows). Scoped to the shell lobby so every
-  // other conversation's roster is unchanged. `_` comment keys + `enabled:false`
-  // agents are skipped, mirroring the router's findAgent filter.
+  // other conversation's roster is unchanged. `_` comment keys are skipped, mirroring
+  // the router's own filter (an agent-level `enabled:` key is not consulted — operator
+  // 2026-07-26, "disabling is just commenting the config").
   function lobbyBeings(ev, room) {
     if (surfaceOf(ev) !== 'shell' || room?.slug !== LOBBY_SLUG) return [];
     const agents = cfg().agents;
     if (!agents || typeof agents !== 'object') return [];
     return Object.entries(agents)
-      .filter(([name, a]) => !name.startsWith('_') && a && typeof a === 'object' && a.enabled !== false)
+      .filter(([name, a]) => !name.startsWith('_') && a && typeof a === 'object')
       .map(([name]) => ({ kind: 'being', id: name, state: 'active', local: true }));
   }
 
@@ -1161,7 +1162,7 @@ export function createCommands({
     } catch { lines.push('transcription: off'); }
 
     // agents — local agents from cfg().agents. The persona (default:true) shows its
-    // handles; a relay agent (scalar or list-shaped, agentPaths normalizes both) shows
+    // handles; a relay agent (scalar or multipath, agentPaths normalizes both) shows
     // its `to` once. Omitted entirely when cfg().agents is absent/empty.
     try {
       const agentsCfg = cfg().agents;
@@ -1169,7 +1170,7 @@ export function createCommands({
         const agentLines = [];
         for (const [name, agent] of Object.entries(agentsCfg)) {
           try {
-            if (agent && !Array.isArray(agent) && agent.default) {
+            if (agent && agent.default) {
               const handles = Array.isArray(agent.handles) ? agent.handles.join(', ') : '';
               agentLines.push(`  ${name} (${handles})`);
             } else {

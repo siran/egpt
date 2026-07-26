@@ -1718,10 +1718,19 @@ export function buildRebootAnnouncement(personalityName, bundle) {
 //             operator opening an entry saw a missing/wrong thread at the top and the real
 //             one 30 lines below. ensureContact stopped WRITING the key on 2026-07-26; this
 //             is what retires the ones already on disk.
-// Both are TOP-LEVEL-only drops — the loop below reads `Object.entries(entry)`, one level
-// deep, so the LIVE per-being `entry[<being>].readonly` / `entry[<being>].threadId` are
-// untouched (the being block is copied across whole, by reference, never walked).
-const _SLIM_DROP = new Set(['slug', 'pushedName', 'firstSeenAt', 'threadCreatedAt', 'identityInjectedAt', 'threadCwd', 'readonly', 'threadId']);
+//   mode      (2026-07-26) the same corpse one more time. MEASURED on the live file: of 106
+//             primary entries, 10 carry a flat `mode` that NOTHING reads — gating.mjs resolves a
+//             mode off the per-being view (getBeing → entry[<being>].mode, or the entry's
+//             agents.<name>.mode override), and there has been no flat fallback since 2026-07-10.
+//             Since residentsOf became a POSITIVE test (09d1fad) a string-valued flat `mode` can
+//             no longer fake a resident, but it IS still contributed as registry-rung config and
+//             surfaces in conversations.readonly.yaml, above the nested block that actually
+//             governs — the same "wrong value at the top, real one 30 lines down" trap threadId
+//             set.
+// All three are TOP-LEVEL-only drops — the loop below reads `Object.entries(entry)`, one level
+// deep, so the LIVE per-being `entry[<being>].readonly` / `.threadId` / `.mode` are untouched
+// (the being block is copied across whole, by reference, never walked).
+const _SLIM_DROP = new Set(['slug', 'pushedName', 'firstSeenAt', 'threadCreatedAt', 'identityInjectedAt', 'threadCwd', 'readonly', 'threadId', 'mode']);
 const _pathBasename = (p) => String(p ?? '').split(/[\\/]/).filter(Boolean).pop() ?? '';
 
 export function serialize(state) {

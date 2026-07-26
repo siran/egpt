@@ -253,13 +253,30 @@ describe('mesh service — responder (a request arrives at the owning node)', ()
     expect(bridge.streams).toHaveLength(1);                                         // one reply stream, not two
   });
 
-  it('answers "no <being>.<node> here" (never silence) when the being is disabled', async () => {
-    const { bridge, mesh } = svc({ node: 'do', agents: { don: { configuration: 'sonnet-high', name: 'don', enabled: false } } });
+  // NEVER SILENCE, restated to the truth (operator 2026-07-26: "disabling is just commenting the
+  // config. no need to have or check an enabled key in this case"). This used to prove the
+  // not-here answer for a being carrying `enabled: false`; that state no longer exists, so the
+  // case it now covers is the one that actually occurs live — the being is COMMENTED OUT of (or
+  // was never in) this node's registry.
+  it('answers "no <being>.<node> here" (never silence) when the being is not in the registry', async () => {
+    const { bridge, mesh } = svc({ node: 'do', agents: { someoneelse: { configuration: 'sonnet-high', name: 'someoneelse' } } });
     const req = encodeMesh({ by: 'An', body: '@don hola', from: 'HFM', from_node: 'kg', to: 'don.do', mid: 'M9' });
     await mesh.handle({ surface: 'whatsapp', chatId: 'RELAY', msgId: 'm1', body: req });
     await flush();
     const said = bridge.sent.map((s) => parseMesh(s.text)?.body).filter(Boolean);
     expect(said).toContain('no don.do here');
+  });
+
+  // …and the counterpart: an INERT `enabled: false` key does NOT make a hosted being not-here.
+  // findAgentByToken stopped consulting the key, so this agent answers exactly like any other.
+  it('an `enabled: false` key is INERT — a hosted being still answers', async () => {
+    const brain = fakeBrain({ reply: 'aquí' });
+    const { bridge, mesh } = svc({ node: 'do', agents: { don: { configuration: 'sonnet-high', name: 'don', enabled: false } }, brain });
+    const req = encodeMesh({ by: 'An', body: '@don hola', from: 'HFM', from_node: 'kg', to: 'don.do', post_id: 'p1' });
+    await mesh.handle({ surface: 'whatsapp', chatId: 'RELAY', msgId: 'm1', body: req });
+    await flush();
+    expect(brain.calls).toHaveLength(1);
+    expect(parseMesh(bridge.streams[0].finals.at(-1))).toMatchObject({ by: 'don.do', done: true });
   });
 });
 
@@ -447,22 +464,52 @@ describe('mesh service — a relay agent addressed by its HANDLE routes its `to:
     expect(bridge.sent.some((s) => /no wren2\.kg here/.test(parseMesh(s.text)?.body ?? ''))).toBe(true);
   });
 
-  // THE FALLBACK IS LOAD-BEARING: a MULTIPATH agent is an Array of single-key path maps with
-  // nowhere to declare `handles:`, so it is addressed by its KEY alone (wakeTokens' fallback —
-  // `[].handles` is undefined). Routing by wake token must reach that shape, or carol stops
-  // fanning out. She is the one agent that proves the fallback carries weight.
-  it('MULTIPATH by-key fallback survives: a LIST-shaped relay agent still fans out to every path', async () => {
+  // MULTIPATH IS NOT AN EXCEPTION ANY MORE (operator 2026-07-26: "you can make it work with
+  // handles differing from key names"). The shape used to be a bare Array of single-key path maps
+  // — nowhere to declare `handles:`, so it was addressed by its KEY alone via wakeTokens' fallback.
+  // The list now lives one level down under `paths:`, so a multipath agent is an ordinary map and
+  // routing by wake token reaches it through exactly the same lookup as every other agent.
+  const MULTIPATH = { carol: { handles: ['maria'], paths: [
+    { p1: { relay_channel: 'rodz2', network: 'whatsapp', to: 'wren.kg' } },
+    { p2: { relay_channel: 'rodz4', network: 'telegram', to: 'wren.kg' } },
+  ] } };
+
+  it('REPRODUCE-FIRST: a MULTIPATH agent addressed by its HANDLE fans out to every path', async () => {
     const chatIds = { rodz2: 'ID2', rodz4: 'ID4' };
-    const agents = { carol: [
-      { p1: { relay_channel: 'rodz2', network: 'whatsapp', to: 'wren.kg' } },
-      { p2: { relay_channel: 'rodz4', network: 'telegram', to: 'wren.kg' } },
-    ] };
-    const { bridge, mesh } = svc({ node: 'kg', aliases: ['do'], agents, chatIds });
-    const req = encodeMesh({ by: 'An', body: 'hi', from: 'SELF', from_node: 'kg', to: 'carol.do' });
+    const { bridge, mesh } = svc({ node: 'kg', aliases: ['do'], agents: MULTIPATH, chatIds });
+    const req = encodeMesh({ by: 'An', body: 'hi', from: 'SELF', from_node: 'kg', to: 'maria.do' });
     await mesh.handle({ surface: 'wa', chatId: 'ID1', msgId: 'a1', body: req });
     await flush();
     expect(bridge.sent.map((s) => s.chat).sort()).toEqual(['ID2', 'ID4']);
-    for (const s of bridge.sent) expect(parseMesh(s.text)).toMatchObject({ to: 'wren.kg', via: 'carol.do' });
+    for (const s of bridge.sent) expect(parseMesh(s.text)).toMatchObject({ to: 'wren.kg', via: 'maria.do' });
+  });
+
+  it('REGRESSION: the same MULTIPATH agent addressed by its KEY routes NOTHING', async () => {
+    const chatIds = { rodz2: 'ID2', rodz4: 'ID4' };
+    const { bridge, mesh } = svc({ node: 'kg', aliases: ['do'], agents: MULTIPATH, chatIds });
+    const req = encodeMesh({ by: 'An', body: 'hi', from: 'SELF', from_node: 'kg', to: 'carol.do' });
+    await mesh.handle({ surface: 'wa', chatId: 'ID1', msgId: 'a1', body: req });
+    await flush();
+    expect(bridge.sent.some((s) => s.chat === 'ID2' || s.chat === 'ID4')).toBe(false);
+    expect(bridge.sent.some((s) => /no carol\.do here/.test(parseMesh(s.text)?.body ?? ''))).toBe(true);
+  });
+
+  // THE LINE 1da74ae ADDED, re-pointed at the new shape. A multipath agent is a RELAY BY
+  // CONSTRUCTION — its `paths:` carry the relay_channels and it has no top-level relay_channel/to
+  // of its own, so nothing else in isRelay would catch it. When the shape was an Array the test
+  // read `Array.isArray(a)`; it now reads `Array.isArray(a.paths)`. Get this wrong and carol is
+  // classified LOCAL: brain.turn runs her on this node and she answers in her own name instead
+  // of forwarding — the exact bug that commit prevented.
+  it('a MULTIPATH agent is a RELAY, never a local being (it forwards; it does not answer here)', async () => {
+    const brain = fakeBrain({ reply: 'aquí' });
+    const chatIds = { rodz2: 'ID2', rodz4: 'ID4' };
+    const { bridge, mesh } = svc({ node: 'kg', aliases: ['do'], agents: MULTIPATH, chatIds, brain });
+    const req = encodeMesh({ by: 'An', body: 'hi', from: 'SELF', from_node: 'kg', to: 'maria.do' });
+    await mesh.handle({ surface: 'wa', chatId: 'ID1', msgId: 'a1', body: req });
+    await flush();
+    expect(brain.calls).toHaveLength(0);                                // never ran as a local being
+    expect(bridge.streams).toHaveLength(0);                             // …so no reply stream either
+    expect(bridge.sent.map((s) => s.chat).sort()).toEqual(['ID2', 'ID4']);   // it forwarded instead
   });
 });
 
@@ -483,12 +530,12 @@ describe('mesh service — relay_channel name resolution + reply home', () => {
     expect(parseMesh(bridge.sent.find((s) => s.chat === 'ID2').text)).toMatchObject({ to: 'wren.kg' });
   });
 
-  it('MULTIPATH record hop (config-driven): a LIST-shaped relay agent forwards an arriving envelope into EVERY resolved path', async () => {
+  it('MULTIPATH record hop (config-driven): a `paths:` relay agent forwards an arriving envelope into EVERY resolved path', async () => {
     const chatIds = { rodz1: 'ID1', rodz2: 'ID2', rodz4: 'ID4' };
-    const agents = { don: [
+    const agents = { don: { paths: [
       { p1: { relay_channel: 'rodz2', network: 'whatsapp', to: 'wren.kg' } },
       { p2: { relay_channel: 'rodz4', network: 'telegram', to: 'wren.kg' } },
-    ] };
+    ] } };
     const { bridge, mesh } = svc({ node: 'kg', aliases: ['do'], agents, chatIds });
     const req = encodeMesh({ by: 'An', body: 'hi', from: 'SELF', from_node: 'kg', to: 'don.do' });
     await mesh.handle({ surface: 'wa', chatId: 'ID1', msgId: 'a1', body: req });
