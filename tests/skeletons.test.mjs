@@ -18,7 +18,7 @@ import { parse as parseConvState, getContact, getBeing, residentsOf } from '../s
 const SKELETON = fileURLToPath(new URL('../config/skeletons/heartbeats.yaml', import.meta.url));
 const CONFIG_SKELETON = fileURLToPath(new URL('../config/skeletons/config.yaml', import.meta.url));
 const CONV_SKELETON = fileURLToPath(new URL('../config/skeletons/conversations.yaml', import.meta.url));
-const CONVCFG_SKELETON = fileURLToPath(new URL('../config/skeletons/conversation-config.yaml', import.meta.url));
+const CONVCFG_SKELETON = fileURLToPath(new URL('../config/skeletons/room/config.yaml', import.meta.url));
 
 describe('config/skeletons/heartbeats.yaml', () => {
   const text = readFileSync(SKELETON, 'utf8');
@@ -96,7 +96,7 @@ describe('config/skeletons/config.yaml', () => {
 // The ruling was that every conversation option must be documented and commented,
 // and that the two files must stop being conflated:
 //   config/skeletons/conversations.yaml        → the REGISTRY (one entry per chat)
-//   config/skeletons/conversation-config.yaml  → the per-conversation FOLDER config
+//   config/skeletons/room/config.yaml  → the per-conversation FOLDER config
 // NOTE the CONFIG_SCHEMA rule above does NOT extend here: that test guards
 // config/skeletons/config.yaml, whose keys ARE the /config namespace. These two
 // describe DIFFERENT files with their own key spaces (`contacts:` / `members:` …),
@@ -156,12 +156,12 @@ describe('config/skeletons/conversations.yaml (the registry)', () => {
 
   it('points at the OTHER file by path, and warns that comments here are erased', () => {
     expect(text).toContain('conversations/<surface>/<slug>/config.yaml');
-    expect(text).toContain('config/skeletons/conversation-config.yaml');
+    expect(text).toContain('config/skeletons/room/config.yaml');
     expect(text).toMatch(/COMMENTS YOU ADD HERE DO NOT SURVIVE/);
   });
 });
 
-describe('config/skeletons/conversation-config.yaml (the per-conversation folder config)', () => {
+describe('config/skeletons/room/config.yaml (the per-conversation folder config)', () => {
   const text = readFileSync(CONVCFG_SKELETON, 'utf8');
 
   it('is all-commented, and every reader takes that as "defaults"', () => {

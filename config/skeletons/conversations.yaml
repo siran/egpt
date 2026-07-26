@@ -5,7 +5,7 @@
 #
 # NOT to be confused with the per-conversation FOLDER config
 # ~/.egpt/conversations/<surface>/<slug>/config.yaml - members, warm,
-# transcription, heartbeats. See config/skeletons/conversation-config.yaml.
+# transcription, heartbeats. See config/skeletons/room/config.yaml.
 # Here: which agent replies and how. There: the conversation as a room.
 #
 # COMMENTS YOU ADD HERE DO NOT SURVIVE. The spine rewrites this file on every
