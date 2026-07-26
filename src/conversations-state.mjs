@@ -877,35 +877,19 @@ export function getContact(state, surface, jid) {
 // identityInjectedAt, threadCwd, mode, send_to_egpt, transcribe and the pre-nested flat
 // `readonly` — every one of which lost its last reader as the per-being shape landed. They
 // are gone from here (operator 2026-07-26: "do not keep maintaining legacy behavior", "do
-// not concern about live profiles"). The flat `readonly` block is OBJECT-valued, so leaving
-// it un-purged would make residentsOf report it as a phantom "readonly" resident forever;
-// instead it is purged AT THE SOURCE — `_SLIM_DROP` (below) strips it from every contact
-// entry on the next write, so a registry the spine has touched can no longer carry it.
+// not concern about live profiles"); the flat `readonly` block is additionally purged from
+// disk on the entry's next write by `_SLIM_DROP` (below).
 // The registry's OWN record of the conversation — identity + relocatable pointers. Never
 // configuration, never a resident being, so the config resolver's REGISTRY rung
 // (src/spine/config-resolver.mjs) skips these outright. `agents` is object-valued but a
-// CONTAINER of per-agent overrides (see getBeing): residentsOf must skip it or it lists a
-// phantom "agents" resident, and it must NOT be contributed as config either — the node
-// rung's `agents:` is the unrelated agent REGISTRY and layering one over the other would
-// corrupt it (a genuine collision between two namespaces, older than the resolver).
+// CONTAINER of per-agent overrides (see getBeing), and it must NOT be contributed as config
+// — the node rung's `agents:` is the unrelated agent REGISTRY and layering one over the
+// other would corrupt it (a genuine collision between two namespaces, older than the
+// resolver).
 export const CONTACT_BOOKKEEPING_KEYS = new Set([
   'slug', 'pushedName', 'firstSeenAt', 'aliasOf', 'jids', 'agents',
   'conversation_path', 'home_dir',
 ]);
-
-// CONFIG blocks an entry may carry as the resolver's middle rung (operator 2026-07-26:
-// "yaml keys in conversations.yaml are orthogonal from config.yaml; we only separate into
-// two files for logical convenience"). Object-valued, so each one MUST be listed here or
-// residentsOf reports it as a phantom resident — the trap `agents` and `guard` were each
-// patched for. A SCALAR config key needs no listing (a scalar can never be a resident).
-//   guard                 the per-conversation loop-breaker override { turns, window }
-//   warm                  { idle_ttl } — this conversation's warm idle TTL
-//   transcription_service the ONE transcription key (operator 2026-07-26), incl. posts_back
-//                         + posts_back_delay_ms, which used to be a flat entry key
-//   heartbeats            declarative beats — the UNION block
-export const ENTRY_CONFIG_KEYS = new Set(['guard', 'warm', 'transcription_service', 'heartbeats']);
-
-const _FLAT_ENTRY_KEYS = new Set([...CONTACT_BOOKKEEPING_KEYS, ...ENTRY_CONFIG_KEYS]);
 
 // Resolve a resident being's view of a conversation, reading its nested `entry[being]` block
 // (no flat fallback — the persona is a normal nested being now). Returns null when there's no
@@ -966,15 +950,46 @@ export function getBeing(state, surface, jid, being) {
   };
 }
 
+// The being fields — the vocabulary getBeing READS and patchBeing WRITES, and nothing else.
+// A block carrying any one of them is a being's block; that is what residentsOf tests.
+const _BEING_FIELDS = ['mode', 'send_to_egpt', 'threadId', 'threadCreatedAt', 'identityInjectedAt', 'readonly'];
+
 // The resident being names configured on an entry: the nested per-being keys, in entry
 // order. PURE — no implicit persona synthesized (operator 2026-07-10: a hardcoded 'e'
 // return is exactly the specialness we removed). A caller that needs "the default resident
 // when none are named" threads the config-resolved default key at its own call site.
+//
+// A POSITIVE TEST (2026-07-26). This used to be exclusion-by-list: every object-valued key
+// NOT on a hand-kept set was a resident. That set was patched reactively three times — after
+// `readonly`, after `agents`, after `guard` each produced a phantom resident — and it became
+// unmaintainable by ruling: config is ONE NAMESPACE over THREE RUNGS and "any key may appear
+// at any rung", so the entry can grow object-valued CONFIG keys nobody will remember to
+// exclude. An open set cannot be enumerated. The being vocabulary can: it is CLOSED, this
+// module owns it, and the two functions that define it sit right above.
+//
+// So a key is a resident because of what its block HAS. Consequences that must hold:
+//   - the legacy flat `readonly` freeze ({agent,type,model,effort,allowed_tools}) carries no
+//     being field → not a resident. It is the live-registry phantom this replaced.
+//   - `agents` is a CONTAINER whose children are being NAMES, not being fields → not a
+//     resident, and the test never recurses into it (one level, own keys only).
+//   - a resident that has NEVER had a turn survives: `threadId: null` alone is enough, since
+//     this tests for the KEY, not a value. That is the exact shape the registry skeleton
+//     teaches and the shape the spine writes before the first reply.
+//
+// THE COLLISION SURFACE, stated so the next person can check it: a config block at this rung
+// is misread as a resident only if it has a DIRECT CHILD named one of the six. The blocks that
+// actually appear here do not — guard{turns,window}, warm{idle_ttl}, heartbeats{<beat>},
+// transcription_service{enabled,posts_back,posts_back_delay_ms,use_config,<profile>,echo}. The
+// one realistic collision is `dispatch:{send_to_egpt,…}` written at the ENTRY rung; it is
+// honored by nothing today (boot hands createGating the NODE config accessor, so gating reads
+// dispatch from config.yaml only), so nothing working breaks — but if dispatch ever becomes
+// rung-resolved, this is the line to revisit.
 export function residentsOf(entry) {
   if (!entry || typeof entry !== 'object') return [];
-  return Object.keys(entry).filter(
-    (k) => !_FLAT_ENTRY_KEYS.has(k) && entry[k] && typeof entry[k] === 'object' && !Array.isArray(entry[k]),
-  );
+  return Object.keys(entry).filter((k) => {
+    const block = _obj(entry[k]);
+    return !!block && _BEING_FIELDS.some((f) => f in block);
+  });
 }
 
 // Top-N primary contacts across surfaces, newest first — the `/e` / `/egpt` browser.
@@ -1691,13 +1706,22 @@ export function buildRebootAnnouncement(personalityName, bundle) {
 // re-hydrates slug + pushedName as fields — so every consumer keeps working; only the FILE
 // slims. Aliases (`{aliasOf}`) pass through untouched.
 //
-// `readonly` is a different case (2026-07-26): the pre-nested flat persona freeze, dead since
-// the per-being shape landed (see _FLAT_ENTRY_KEYS) — OBJECT-valued, so leaving it on disk made
-// residentsOf report a phantom "readonly" resident. Unlike slug/pushedName it is dropped
-// PERMANENTLY, never re-hydrated by parse(): the entry's next write purges the dead block for
-// good. This is a TOP-LEVEL-only drop — the loop below reads `Object.entries(entry)`, one level
-// deep, so a LIVE per-being freeze at `entry[<being>].readonly` is untouched.
-const _SLIM_DROP = new Set(['slug', 'pushedName', 'firstSeenAt', 'threadCreatedAt', 'identityInjectedAt', 'threadCwd', 'readonly']);
+// `readonly` and `threadId` are a different case: the pre-nested flat persona slots, dead
+// since the per-being shape landed (their last reader died in 50d7f40 / 2d7d226), and unlike
+// slug/pushedName they are dropped PERMANENTLY — never re-hydrated by parse() — so the entry's
+// next write purges the dead keys for good.
+//   readonly  (2026-07-26) OBJECT-valued, so on disk it used to read as a phantom resident.
+//   threadId  (2026-07-26) the corpse that made the REGISTRY UNREADABLE. Measured on the live
+//             file: of 106 primary entries, 92 carried `threadId: null` and 14 carried a real
+//             UUID that nothing reads, sitting directly above the nested
+//             `entry[<being>].threadId` that is actually live — and the two ids DIFFER. An
+//             operator opening an entry saw a missing/wrong thread at the top and the real
+//             one 30 lines below. ensureContact stopped WRITING the key on 2026-07-26; this
+//             is what retires the ones already on disk.
+// Both are TOP-LEVEL-only drops — the loop below reads `Object.entries(entry)`, one level
+// deep, so the LIVE per-being `entry[<being>].readonly` / `entry[<being>].threadId` are
+// untouched (the being block is copied across whole, by reference, never walked).
+const _SLIM_DROP = new Set(['slug', 'pushedName', 'firstSeenAt', 'threadCreatedAt', 'identityInjectedAt', 'threadCwd', 'readonly', 'threadId']);
 const _pathBasename = (p) => String(p ?? '').split(/[\\/]/).filter(Boolean).pop() ?? '';
 
 export function serialize(state) {

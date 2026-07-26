@@ -539,20 +539,35 @@ describe('findContactsByName (cross-surface name search)', () => {
 
 describe('residentsOf — resident beings vs flat blocks', () => {
   // No implicit "e" is ever synthesized (operator 2026-07-10) — a caller threads the default
-  // key itself. The dead flat slots are no longer special-cased either (2026-07-26, "do not
-  // keep maintaining legacy behavior"): a flat scalar like `mode` can never look like a being,
-  // so it contributes nothing, while a pre-nested flat `readonly` BLOCK still reads as a
-  // resident — residentsOf is PURE and has no notion of disk state. That's now only an
-  // in-memory fact, though: `_SLIM_DROP` purges the flat block from every entry on its next
-  // write (see the YAML round-trip test below), so it can't survive to become a phantom in a
-  // registry the spine has actually touched.
-  it('a legacy FLAT entry synthesizes no persona; its dead readonly BLOCK still reads as a resident in memory (purged on next write)', () => {
+  // key itself. Residency is a POSITIVE test (2026-07-26): a key is a resident because its
+  // block carries a BEING FIELD (mode / send_to_egpt / threadId / threadCreatedAt /
+  // identityInjectedAt / readonly), not because it is absent from a hand-kept exclusion list.
+  // So the dead flat slots need no special-casing at all: a flat scalar like `mode` can never
+  // look like a being, and the pre-nested flat `readonly` BLOCK — {agent,type,model,effort,
+  // allowed_tools} — carries no being field either. (It is ALSO purged from disk by
+  // `_SLIM_DROP` on the entry's next write, see the YAML round-trip test below; that purge is
+  // now belt-and-braces rather than the only thing standing between the live registry and a
+  // phantom resident.)
+  it('a legacy FLAT entry synthesizes no persona, and its dead readonly BLOCK is not a resident', () => {
     const entry = {
       slug: 'fam', pushedName: 'fam', mode: 'on',
       readonly: { brain: 'default', type: 'claude', model: null, effort: null, allowed_tools: 'all', personality: 'default' },
     };
-    expect(residentsOf(entry)).toEqual(['readonly']);
+    expect(residentsOf(entry)).toEqual([]);
+    // getBeing is name-driven and validates nothing — asking for a being called 'readonly'
+    // still resolves that block. residentsOf is what decides the block is not a being.
     expect(getBeing({ contacts: { whatsapp: { '!x': entry } } }, 'whatsapp', '!x', 'readonly').threadId).toBe(null);
+  });
+
+  // THE TRAP the positive test must not spring: a resident CREATED but never given a turn
+  // carries almost nothing — the registry skeleton's documented block is literally
+  // `threadId: null`, and `/e auto <mode>` on a fresh chat writes only `mode`. Testing for
+  // the KEY (not a truthy value) is what keeps these residents; a predicate that wanted a
+  // real thread id would silently drop the conversation from the compactor.
+  it('a resident that has never had a turn is still a resident (threadId: null / mode alone)', () => {
+    expect(residentsOf({ slug: 'fresh', egpt: { threadId: null } })).toEqual(['egpt']);
+    expect(residentsOf({ slug: 'fresh', egpt: { mode: 'auto' } })).toEqual(['egpt']);
+    expect(residentsOf({ slug: 'fresh', egpt: { readonly: { agent: 'egpt' } } })).toEqual(['egpt']);
   });
   it('nested being blocks ARE residents, in entry order (no implicit "e" prepended)', () => {
     const entry = { slug: 'fam', e: { mode: 'on' }, dora: { mode: 'on', readonly: { model: 'x' } } };
@@ -574,6 +589,26 @@ describe('residentsOf — resident beings vs flat blocks', () => {
     };
     expect(residentsOf(entry)).toEqual(['egpt']);
   });
+
+  // REPRODUCE (2026-07-26) — verbatim from the LIVE registry (a WhatsApp group). Exclusion
+  // -by-list cannot answer this: the entry still carries the pre-nested flat `readonly`
+  // freeze (purged on WRITE by _SLIM_DROP since 28da494, but every entry written before that
+  // still has it on disk), so the excluded-key list reports TWO residents — 'readonly', which
+  // is not a being and never was, and the real one. The compactor then builds a target for a
+  // resident that does not exist.
+  it('the LIVE legacy shape (flat threadId + flat readonly + a nested being) has exactly ONE resident', () => {
+    const entry = {
+      conversation_path: '.egpt/conversations/whatsapp/some-group-2606291919',
+      threadId: null,                                                       // dead flat slot
+      readonly: { agent: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: ['Read'] },
+      home_dir: '/c/Users/an',
+      egpt: {                                                               // THE REAL RESIDENT
+        readonly: { agent: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: ['Read'] },
+        threadId: '1ef3663e-6ad9-4e99-a0d3-a2299f40f8fe',
+      },
+    };
+    expect(residentsOf(entry)).toEqual(['egpt']);
+  });
 });
 
 describe('YAML parse / serialize round-trip', () => {
@@ -585,11 +620,13 @@ describe('YAML parse / serialize round-trip', () => {
     // The on-disk shape is slim: pushedName rides as the jid-key inline comment, slug is derived
     // from conversation_path's basename, home_dir + conversation_path are stored. In-memory the
     // fields are all present (this is exactly what parse() re-hydrates).
+    // A thread lives in the NESTED per-being block; there is no flat `threadId` in the shape any
+    // more (ensureContact stopped writing it 2026-07-26, _SLIM_DROP retires the ones on disk), so
+    // the round-trip is stated on the nested one — the id that is actually live.
     const mk = (surface, slug, extra = {}) => ({
       slug,
       conversation_path: conversationPathOf(surface, slug),
       home_dir: homeDirMsys(),
-      threadId: null,
       pushedName: '',
       ...extra,
     });
@@ -598,7 +635,7 @@ describe('YAML parse / serialize round-trip', () => {
       contacts: {
         whatsapp: {
           '26087681749235@lid': mk(WA, 'diego-2605200133', {
-            threadId: 'abc',
+            egpt: { threadId: 'abc', mode: 'auto' },
             pushedName: 'Diego Pérez (Koma) 😀 "koma": #1',
           }),
           '584122182178@s.whatsapp.net': { aliasOf: '26087681749235@lid' },
@@ -611,6 +648,33 @@ describe('YAML parse / serialize round-trip', () => {
     expect(parse(serialize(s))).toEqual(s);
     // The comment carries the exact name; the derived slug is the path basename.
     expect(serialize(s)).toContain('# Diego Pérez (Koma) 😀 "koma": #1');
+  });
+
+  // Reproduce (2026-07-26): the same corpse class as the flat `readonly` below, and the one
+  // that made the operator distrust the registry. `_SLIM_DROP` listed `readonly` but not
+  // `threadId`, so every entry written before the write was removed from ensureContact kept
+  // its dead flat slot. Measured on the live file: 106 primary entries, 92 with `threadId:
+  // null`, 14 with a real UUID that NOTHING reads — sitting directly above the nested
+  // `entry[<being>].threadId` that is live, with a DIFFERENT id. Opening an entry showed the
+  // wrong thread at the top and the real one 30 lines down.
+  it('serialize purges a legacy flat `threadId` but leaves the nested <being>.threadId byte-intact', () => {
+    const s = {
+      contacts: { whatsapp: { j: {
+        slug: 'fam-2605200133',
+        conversation_path: conversationPathOf(WA, 'fam-2605200133'),
+        home_dir: homeDirMsys(),
+        pushedName: 'fam',
+        threadId: 'DEAD-c0ffee-flat-id',                       // the corpse: read by nothing
+        egpt: { mode: 'auto', threadId: 'LIVE-1ef3663e-6ad9' },  // the id that is actually live
+      } } },
+    };
+    const text = serialize(s);
+    expect(text).not.toContain('DEAD-c0ffee-flat-id');            // gone from disk
+    expect((text.match(/threadId:/g) || []).length).toBe(1);      // only the nested line remains
+    const back = parse(text).contacts.whatsapp.j;
+    expect('threadId' in back).toBe(false);                       // dropped for good — parse never re-hydrates it
+    expect(back.egpt.threadId).toBe('LIVE-1ef3663e-6ad9');        // the live thread survives untouched
+    expect(residentsOf(back)).toEqual(['egpt']);
   });
 
   it('serialize omits slug + lifecycle keys; parse re-derives them (the slim contract)', () => {
