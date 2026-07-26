@@ -302,12 +302,16 @@ describe('the ORIGIN node signs the relayed reply it posts home (shell surface)'
     expect(final.text).toBe('🌉kg\n🤝 Yep, still here\n🤝\n🌉');
   });
 
-  it('the 🤔 placeholder is NOT signed — only the reply the node actually posts is', async () => {
-    // The placeholder is a LIVE frame now (postStatus fix, operator: "double-thinking, one
+  // WAS "the 🤔 placeholder is NOT signed — only the reply the node actually posts is". C13
+  // (operator 2026-07-26): "bridge must sign. always. structurally." / "it should also sign
+  // 'thinking... 💸|🌉'". A live frame is a message a spine put on a surface for the whole
+  // duration of the turn; being transient is not an exemption.
+  it('the 🤔 placeholder IS signed — every frame the node posts carries its bridge layer', async () => {
+    // The placeholder is a LIVE frame (postStatus fix, operator: "double-thinking, one
     // lingers"), not a committed one — check the raw frame, not committed().
     const { sock } = await shellOriginRelay();
     const live = sock.sent.map((s) => JSON.parse(s)).find((f) => f.streaming === true);
-    expect(live.text).toBe('🤔 thinking…');
+    expect(live.text).toBe('🌉kg\n🤔 thinking…\n🌉');
   });
 
   it('the ONE-SHOT surface path (no stream primitive / no msgId) is signed identically', async () => {
@@ -318,18 +322,26 @@ describe('the ORIGIN node signs the relayed reply it posts home (shell surface)'
     expect(committed().at(-1).text).toBe('🌉kg\n🤝 Yep, still here\n🤝\n🌉');
   });
 
-  // TWO signatures are correct (do's inside the transported body, kg's around the delivery) —
-  // but kg must sign ONCE, at the end, not once per streamed frame. The ports apply the full wrap
-  // only on the committed final; live mirror frames carry the body bare.
-  it('kg signs ONCE, at the end — the live mirror frames carry NO signature', async () => {
+  // TWO signatures are correct (do's inside the transported body, kg's around the delivery).
+  // WAS "kg signs ONCE, at the end — the live mirror frames carry NO signature". C13 (operator
+  // 2026-07-26) reversed the once-at-the-end convention: kg signs EVERY mirror frame. What must
+  // still hold is that the signature never ACCUMULATES as the frames replace one another — each
+  // frame is rendered from the raw core, so exactly one open + one close on every one of them,
+  // and the settled bytes are unchanged.
+  it('kg signs EVERY mirror frame — exactly one signature each, never stacking', async () => {
     const { mesh, sock, body, re, post_id } = await shellOriginRelay();
     const frame = (b, done) => ({ surface: 'wa', chatId: 'egpt-mesh-do-kg', msgId: 'r1', body: encodeMesh({ by: 'don.do', body: b, re, post_id, done }) });
     await mesh.handle(frame('🤝 Yep,', false));            // live: opens the mirror + updates it
     await mesh.handle(frame('🤝 Yep, still', false));      // live: another update
     await mesh.handle(frame(body, true));                  // the committed final
 
-    const all = sock.sent.map((s) => JSON.parse(s));
-    expect(all.filter((f) => f.text.includes('🌉kg'))).toHaveLength(1);                 // exactly one signed frame
-    expect(all.filter((f) => f.streaming === true).every((f) => !f.text.includes('🌉'))).toBe(true);
+    const all = sock.sent.map((s) => JSON.parse(s)).filter((f) => !f.delete && String(f.text).trim());
+    expect(all.length).toBeGreaterThan(1);
+    for (const f of all) {
+      expect(f.text.split('🌉kg').length - 1).toBe(1);     // one open, never "🌉kg 🌉kg 🌉kg"
+      expect(f.text.endsWith('\n🌉')).toBe(true);          // one close, at the bottom
+    }
+    expect(all.filter((f) => f.streaming === false)).toHaveLength(1);      // still exactly one COMMITTED frame
+    expect(all.at(-1).text).toBe('🌉kg\n🤝 Yep, still here\n🤝\n🌉');       // settled bytes unchanged
   });
 });

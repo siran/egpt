@@ -185,20 +185,42 @@ describe('shell-port limb', () => {
       expect(f.text).toBe('🐶 egpt\n⏳ Thinking…');               // bare persona stamp on the placeholder
     });
 
-    it('update() pushes live bare-stamped frames; finish() commits ONE streaming:false frame carrying the FULL wrap', () => {
+    it('update() pushes live SIGNED frames; finish() commits ONE streaming:false frame carrying the same FULL wrap', () => {
       const { port, sock } = connected({ bridgeSignatureOpen: '🌉kg', bridgeSignatureClose: '💸' });
       const stream = port.startStream('main', '⏳ Thinking…', { bodyEmoji: '🐶', label: 'egpt', persona: 'e', agentSigOpen: '— e —', agentSigClose: '~ e' });
       stream.update('Hola ⏳');                                    // the sender supplies the ⏳ marker
       stream.finish('Hola mundo');
       const fs = frames(sock);
-      expect(fs[0]).toMatchObject({ streaming: true, text: '🐶 egpt\n⏳ Thinking…' });   // placeholder: live, bare stamp
-      expect(fs[1]).toMatchObject({ streaming: true, text: '🐶 egpt\nHola ⏳' });          // update: live, bare stamp (NO sigs)
+      // WAS: "live, bare stamp (NO sigs)". C13 (operator 2026-07-26) — a live frame is a message
+      // on a surface, so it signs; the live/committed distinction is about REPLACEMENT, not signing.
+      expect(fs[0]).toMatchObject({ streaming: true, text: '🌉kg\n— e —\n🐶 egpt\n⏳ Thinking…\n~ e\n💸' });
+      expect(fs[1]).toMatchObject({ streaming: true, text: '🌉kg\n— e —\n🐶 egpt\nHola ⏳\n~ e\n💸' });
       const final = fs[fs.length - 1];
       expect(final.streaming).toBe(false);
       // the ONE committed final: bridge_open, agent_open, CORE, agent_close, bridge_close
       expect(final.text).toBe('🌉kg\n— e —\n🐶 egpt\nHola mundo\n~ e\n💸');
       expect(fs.filter((f) => f.streaming === false)).toHaveLength(1);   // exactly one committed frame
       expect(stream.delivered).toBe(true);                       // → sender skips its §7 beeper fallback
+    });
+
+    // C13 (operator 2026-07-26): "bridge must sign. always. structurally." + "it should also sign
+    // 'thinking... 💸|🌉'". The shell limb ran the SAME defect as the beeper limb (it runs the same
+    // machinery): the ⏳ placeholder and every live edit went out bare-stamped, unsigned, and only
+    // the committed final met the wrap. A live frame is still a frame a spine put on a surface.
+    it('REPRODUCE-FIRST: placeholder → N updates → finish — EVERY frame signed, exactly once, final bytes unchanged', () => {
+      const { port, sock } = connected({ bridgeSignatureOpen: '🌉kg', bridgeSignatureClose: '💸' });
+      const stream = port.startStream('main', '⏳ Thinking…', { bodyEmoji: '🐶', label: 'egpt', persona: 'e', agentSigOpen: '— e —', agentSigClose: '~ e' });
+      stream.update('Hola ⏳');
+      stream.update('Hola mundo ⏳');
+      stream.finish('Hola mundo');
+      const fs = frames(sock);
+      expect(fs[0]).toMatchObject({ streaming: true, text: '🌉kg\n— e —\n🐶 egpt\n⏳ Thinking…\n~ e\n💸' });
+      expect(fs[1]).toMatchObject({ streaming: true, text: '🌉kg\n— e —\n🐶 egpt\nHola ⏳\n~ e\n💸' });
+      expect(fs[2]).toMatchObject({ streaming: true, text: '🌉kg\n— e —\n🐶 egpt\nHola mundo ⏳\n~ e\n💸' });
+      // settled bytes IDENTICAL to before the change
+      expect(fs[3]).toMatchObject({ streaming: false, text: '🌉kg\n— e —\n🐶 egpt\nHola mundo\n~ e\n💸' });
+      const count = (s, needle) => s.split(needle).length - 1;
+      for (const f of fs) { expect(count(f.text, '🌉kg')).toBe(1); expect(count(f.text, '💸')).toBe(1); }
     });
 
     it('finish accepts a bare string too (the shape createSender actually calls it with)', () => {
@@ -279,6 +301,20 @@ describe('shell-port limb', () => {
       const frame = JSON.parse(sock.sent[0]);
       expect(frame.streaming).toBe(true);                 // LIVE — a later live frame replaces it in place
       expect(frame.text).toBe('🤔 thinking…');
+    });
+
+    // C13 (operator 2026-07-26). postStatus was the last unsigned text frame on this port, kept
+    // that way because it is "an uncommitted live line on the operator's own console". That
+    // argument died with the ruling that the ⏳ placeholder signs: the placeholder is the SAME
+    // streaming:true primitive on the SAME surface. One rule for every frame.
+    it('is SIGNED when the node configures a signature — the same live-frame rule as the ⏳ placeholder', () => {
+      const { WebSocket, sockets } = makeFakeWs();
+      const port = createShellPort({ WebSocket, bridgeSignatureOpen: '🌉kg', bridgeSignatureClose: '💸' });
+      port.start();
+      sockets[0].fire('open');
+      port.postStatus('main', '🤔 thinking…');
+      const frame = JSON.parse(sockets[0].sent[0]);
+      expect(frame).toMatchObject({ streaming: true, text: '🌉kg\n🤔 thinking…\n💸' });
     });
   });
 

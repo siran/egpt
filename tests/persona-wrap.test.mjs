@@ -60,6 +60,28 @@ describe('makeWrapPersona — concentric [bridge, agent] wrap around the stamped
     expect(makeWrapPersona({})({}, 'Hey, all good')).toBe('Hey, all good');
   });
 
+  // C13 (2026-07-26): now that EVERY frame signs — including a stream's opener — an EMPTY opener
+  // must not become a signature with no message under it. The mesh origin mirror opens its stream
+  // with '' (mesh.mjs openOriginStream) and rides an already-posted placeholder; that empty frame
+  // has to stay empty on both ports.
+  it('an empty body is not a message — nothing to sign, passed through untouched', () => {
+    const wrap = makeWrapPersona({ bridgeSignatureOpen: '🌉kg', bridgeSignatureClose: '💸' });
+    expect(wrap({}, '')).toBe('');
+    expect(wrap({ bodyEmoji: '🐶', label: 'egpt' }, '   ')).toBe('   ');
+  });
+
+  // The stream frames REPLACE one another (a Beeper edit, a shell live-line swap). Each is built
+  // from the RAW core, never from the previous frame, so a hundred frames cannot stack "💸 💸 💸".
+  it('signing is idempotent by construction — re-signing successive frames never accumulates', () => {
+    const wrap = makeWrapPersona({ bridgeSignatureOpen: '🌉kg', bridgeSignatureClose: '💸' });
+    const frames = ['H ⏳', 'Hola ⏳', 'Hola mundo ⏳', 'Hola mundo'].map((t) => wrap({ bodyEmoji: '🐶', label: 'egpt' }, t));
+    for (const f of frames) {
+      expect(f.split('🌉kg').length - 1).toBe(1);
+      expect(f.split('💸').length - 1).toBe(1);
+    }
+    expect(frames.at(-1)).toBe('🌉kg\n🐶 egpt\nHola mundo\n💸');
+  });
+
   // THE 👂 ECHO through the ONE path (operator 2026-07-25). beeper.mjs used to apply
   // applyLayers([bridge, transcription]) ITSELF (`withEchoLayers`, now deleted) because this wrap
   // refused a core with no persona header. The echo core arrives already carrying its 👂 marker, so

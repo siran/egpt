@@ -14,7 +14,7 @@
 // unit-testable with a fake bridge — no Beeper, no network, no live account
 // (tests/beeper-port.test.mjs). The live echo verify is tests-manual/phase2-echo.mjs.
 import { startBeeperBridge } from './beeper.mjs';
-import { personaStamp, makeWrapPersona } from './persona-wrap.mjs';
+import { makeWrapPersona } from './persona-wrap.mjs';
 
 // NOTE (placeholder id resolution): resolveSentMessageId (beeper.mjs) text-matches
 // the recent list and reduces with newerMsgId, which since d7614b8 picks the
@@ -117,24 +117,27 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
     // sender's job, so update/finish only stamp + pass text through. opts:
     // { persona, bodyEmoji, replyTo }.
     startStream(chat, init, opts = {}) {
-      const stamp = (t) => personaStamp(opts.bodyEmoji, opts.label, t);
-      // The placeholder is just the stamped init — it carries the body_emoji (so a
+      // EVERY frame of the stream — placeholder, each intermediate edit, the settled final —
+      // renders through the ONE wrap (operator 2026-07-26: "bridge must sign. always.
+      // structurally."; on the placeholder specifically: "it should also sign 'thinking… 💸|🌉'").
+      // Each frame is built from the RAW core, never from the previous frame, so replacing a
+      // signed frame with the next one cannot accumulate signatures.
+      const frame = (t) => wrapPersona(opts, t);
+      // The placeholder is the wrapped init — it carries the body_emoji (so a
       // re-ingested copy is caught by the persona-marker echo-suppression). No nonce:
       // numeric newest-wins + monotonic per-chat ids + the spine's serialized turns
       // already resolve an identical-text match to THIS turn's message (see the
-      // module-top note).
-      const placeholder = stamp(init);
+      // module-top note). Id resolution is unaffected by the wrap: beeper.mjs matches on the
+      // very bytes it posted (sendMessage → postAndConfirm(…, String(text))).
+      const placeholder = frame(init);
       // existingMsgId + showThink pass through for the mesh living-mirror (Phase 4b):
       // the ORIGIN edits an ALREADY-posted placeholder (post_id) in place instead of
       // posting a fresh one, and showThink appends "✅ Done" on the final frame. Default
       // null/false → every existing caller (the reply train) is unaffected.
       const h = real.startStreamMessage(placeholder, { chatId: chat, persona: opts.persona, replyToMessageID: opts.replyTo ?? null, existingMsgId: opts.existingMsgId ?? null, showThink: opts.showThink ?? false });
       return {
-        update: (t) => h.update(stamp(t)),
-        // The infra + agent layers land ONLY on the FINAL, completed reply — the placeholder +
-        // intermediate frames stay un-wrapped (bare stamp), so the signatures appear once, at the
-        // end, and the placeholder-id resolution still matches the un-wrapped placeholder text.
-        finish: (t) => h.finish(wrapPersona(opts, t)),
+        update: (t) => h.update(frame(t)),
+        finish: (t) => h.finish(frame(t)),
         delete: () => h.delete?.(),
         get delivered() { return h.delivered; },
         get lastError() { return h.lastError; },
@@ -153,7 +156,9 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
     // byte-identical to before. The mesh's origin placeholder is signed too and is then EDITED in
     // place by the living-mirror stream, whose own final wrap replaces this text outright.
     async postStatus(chat, text) { return real.sendAndGetId ? real.sendAndGetId(wrapPersona({}, text), { chatId: chat }) : null; },
-    editStatus(chat, msgId, text) { return real.editMessage?.(chat, msgId, text); },
+    // The edit REPLACES the text of a status line that postStatus signed — an unsigned edit strips
+    // the node signature back off it, so it renders through the same wrap (C13, 2026-07-26).
+    editStatus(chat, msgId, text) { return real.editMessage?.(chat, msgId, wrapPersona({}, text)); },
     deleteStatus(chat, msgId) { return real.deleteMessage?.(chat, msgId); },
 
     // Conversation-E LIMBS (ROADMAP §3). react/sendMedia are OUTBOUND sends; editOwn/deleteOwn
@@ -162,11 +167,13 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
     react(chat, msgId, emoji) {
       return real.sendReaction?.(chat, msgId, emoji);
     },
+    // A caption and an edit are E speaking to a surface, so they carry the node signature like
+    // every other outbound (C13, 2026-07-26 — both used to stamp without wrapping).
     sendMedia(chat, filePath, opts = {}) {
-      const caption = opts.caption != null ? personaStamp(opts.bodyEmoji, opts.label, opts.caption) : null;
+      const caption = opts.caption != null ? wrapPersona(opts, opts.caption) : null;
       return real.sendMedia?.(chat, filePath, { caption });
     },
-    editOwn(chat, msgId, text, opts = {}) { return real.editMessage?.(chat, msgId, personaStamp(opts.bodyEmoji, opts.label, text)); },
+    editOwn(chat, msgId, text, opts = {}) { return real.editMessage?.(chat, msgId, wrapPersona(opts, text)); },
     deleteOwn(chat, msgId) { return real.deleteMessage?.(chat, msgId); },
     wasSentByUs(chat, msgId) { return real.wasSentByUs?.(chat, msgId); },
 

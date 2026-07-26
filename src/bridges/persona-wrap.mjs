@@ -20,6 +20,16 @@
 // grow its OWN copy of the wrap in beeper.mjs to get signed at all). The persona STAMP stays
 // conditional (there is an identity to stamp, or there isn't); with every slot empty the wrap is
 // still byte-identical to the bare core, so a node that configures no signature is unchanged.
+//
+// It is a property of the SEND, therefore of EVERY frame — including the transient ones (operator
+// 2026-07-26: "bridge must sign. always. structurally." / "it should also sign 'thinking... 💸|🌉'").
+// A stream's ⏳ placeholder and its intermediate edits are real messages, live on the surface and
+// ingestible by a co-account peer for the whole duration of a turn; both ports used to send them
+// bare-stamped and wrap only the settled frame, so "a bridge always signs" was false for exactly
+// as long as anyone was watching. Every port now renders EVERY outbound text through this one
+// function. Signing is IDEMPOTENT by construction, not by inspection: each frame is built from the
+// raw core, never from the previous frame, so replacing a signed frame with the next one can never
+// stack "💸 💸 💸".
 import { applyLayers } from './signature-layers.mjs';
 // parseMesh — the SAME envelope test the spine applies inbound (mesh.isEnvelope), reused here so
 // there is one definition of "this is relay traffic, not chat". See isMeshEnvelope below.
@@ -55,6 +65,9 @@ const isMeshEnvelope = (t) => {
  */
 export function makeWrapPersona({ bridgeSignatureOpen = '', bridgeSignatureClose = '' } = {}) {
   return (o, text) => {
+    // Nothing to sign is not a message: an empty body (the mesh origin mirror opens its stream
+    // with '') must stay empty, never become a signature with no content under it.
+    if (!String(text ?? '').trim()) return text;
     const core = personaStamp(o.bodyEmoji, o.label, text);
     if (isMeshEnvelope(core)) return core;        // transport, not a surface send → never signed
     return applyLayers(core, [

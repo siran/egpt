@@ -18,9 +18,9 @@ import WS from 'ws';
 import { mentionStatus } from '../auto-mode.mjs';
 // The SAME persona stamp + concentric wrap the beeper limb renders through — ONE definition
 // (operator 2026-07-25: "the bridge must have ONE path"). The shell reply carries its ⏳
-// thinking train, its persona stamp, and (on the final frame) the agent/bridge signatures,
+// thinking train, its persona stamp, and the agent/bridge signatures on EVERY frame,
 // identical to Beeper — because it runs the identical machinery, not a shell-specific copy.
-import { personaStamp, makeWrapPersona } from './persona-wrap.mjs';
+import { makeWrapPersona } from './persona-wrap.mjs';
 
 // The editor serves this fixed port; the spine dials out (like Beeper's fixed 23373).
 // Exported so boot + tests share the one number (plan §3, §9 — fixed port, not discovery).
@@ -174,36 +174,42 @@ export function createShellPort({
     // placeholder is a guarded no-op and openOriginStream opens a fresh shell stream (existingMsgId
     // null) that streams the reply in via startStream — unchanged. Drops (never throws) when the
     // editor is not connected, same as send.
-    postStatus(chatId, text) { pushFrame(chatId, String(text), { streaming: true }); return null; },
+    // SIGNED like every other frame (C13, operator 2026-07-26). "Uncommitted live line on the
+    // operator's own console" stopped being a reason the moment the ⏳ placeholder — the same
+    // streaming:true primitive, on the same surface — started signing: two live frames on one
+    // surface under two different rules is the hole, not the exemption.
+    postStatus(chatId, text) { pushFrame(chatId, wrapPersona({}, String(text)), { streaming: true }); return null; },
     // A STREAMING reply target with the shape createSender consumes off the beeper bridge
     // (beeper-port.startStream → { update, finish, delete, fail, delivered, lastError }) — now
     // rendered through the IDENTICAL machinery (operator 2026-07-25): the ⏳ thinking placeholder
-    // and progressive bare-stamped edits stream live (streaming:true frames the editor replaces
-    // in place), and the FULL concentric wrap (persona stamp + agent + bridge signatures) lands
-    // once, on the committed final frame (streaming:false) — exactly as beeper-port does over its
+    // and the progressive edits stream live (streaming:true frames the editor replaces in place),
+    // and the FULL concentric wrap (persona stamp + agent + bridge signatures) rides EVERY one of
+    // them as well as the committed final (streaming:false) — exactly as beeper-port does over its
     // startStreamMessage edit-in-place primitive. delivered flips true only when the FINAL lands,
     // so the sender's §7 fallback send is skipped instead of double-posting. A push failure
     // surfaces on lastError; fail() posts an explicit error line (never swallowed).
     startStream(chatId, initial = '', tag = {}) {
       const textOf = (v) => (typeof v === 'string' ? v : v?.text ?? '');
-      const stamp = (t) => personaStamp(tag.bodyEmoji, tag.label, t);
+      // EVERY frame through the ONE wrap — placeholder, each live edit, the committed final
+      // (C13, operator 2026-07-26), identical to beeper-port. Built from the RAW core each time,
+      // so a frame replacing a signed frame cannot accumulate signatures.
+      const frame = (t) => wrapPersona(tag, t);
       let _delivered = false;
       let _lastError = null;
-      // Post the placeholder immediately — the bare-stamped "⏳ Thinking…", live (mirrors
+      // Post the placeholder immediately — the signed "⏳ Thinking…", live (mirrors
       // beeper-port posting its placeholder via startStreamMessage).
-      pushFrame(chatId, stamp(initial), { streaming: true });
+      pushFrame(chatId, frame(initial), { streaming: true });
       return {
-        // Live, bare-stamped intermediate frame — the sender supplies the ⏳ marker, the port
-        // only stamps (identical to beeper-port's update; signatures appear once, at the end).
-        update(v) { const t = textOf(v); pushFrame(chatId, stamp(t), { streaming: true }); },
+        // Live intermediate frame — the sender supplies the ⏳ marker, the port signs it.
+        update(v) { const t = textOf(v); pushFrame(chatId, frame(t), { streaming: true }); },
         // The committed final: the FULL wrap (stamp + agent + bridge) on a streaming:false frame.
         finish(reply, _opts = {}) {
-          const ok = pushFrame(chatId, wrapPersona(tag, textOf(reply)), { streaming: false });
+          const ok = pushFrame(chatId, frame(textOf(reply)), { streaming: false });
           if (ok) _delivered = true; else _lastError = 'shell: editor not connected';
         },
-        // A withheld reply: clear the live line, commit nothing.
+        // A withheld reply: clear the live line, commit nothing. No text → nothing to sign.
         delete() { pushFrame(chatId, '', { streaming: false, delete: true }); },
-        fail(err) { _lastError = err?.message ?? String(err ?? 'shell stream failed'); pushFrame(chatId, `❌ ${_lastError}`, { streaming: false }); },
+        fail(err) { _lastError = err?.message ?? String(err ?? 'shell stream failed'); pushFrame(chatId, frame(`❌ ${_lastError}`), { streaming: false }); },
         get delivered() { return _delivered; },
         get lastError() { return _lastError; },
       };

@@ -9,7 +9,7 @@ import { encodeMesh, parseMesh } from '../src/mesh/relay.mjs';
 // A fake real-bridge that captures the host callbacks it was constructed with,
 // so a test can drive inbound by invoking the captured onIncoming.
 function fakeStart() {
-  const spy = { captured: null, sent: [], streams: [], statusPosts: [], statusEdits: [], statusDeletes: [], stopped: false, alive: true };
+  const spy = { captured: null, sent: [], streams: [], statusPosts: [], statusEdits: [], statusDeletes: [], media: [], stopped: false, alive: true };
   const start = async (opts) => {
     spy.captured = opts;   // { onIncoming, onMessageEdit, onMedia, ...passthrough }
     return {
@@ -25,6 +25,7 @@ function fakeStart() {
       async sendAndGetId(text, o) { const id = `id-${spy.statusPosts.length + 1}`; spy.statusPosts.push({ text, chatId: o?.chatId }); return id; },
       editMessage(chatId, msgId, text) { spy.statusEdits.push({ chatId, msgId, text }); },
       deleteMessage(chatId, msgId) { spy.statusDeletes.push({ chatId, msgId }); },
+      sendMedia(chatId, filePath, o) { spy.media.push({ chatId, filePath, caption: o?.caption ?? null }); return true; },
       isAlive: () => spy.alive,
       stop: () => { spy.stopped = true; },
     };
@@ -161,15 +162,18 @@ describe('beeper-port adapter', () => {
 // NEVER on mode:auto plain posts. The 👂 echo layers live one layer down (beeper.mjs); this layer forwards
 // bridge_* + transcription_* onward.
 describe('beeper-port adapter — layered signatures (bridge + agent wrap)', () => {
-  it('a streamed persona reply renders CONCENTRIC (bridge_open, agent_open, CORE, agent_close, bridge_close); placeholder/updates stay un-wrapped', async () => {
+  it('a streamed persona reply renders CONCENTRIC (bridge_open, agent_open, CORE, agent_close, bridge_close) on EVERY frame', async () => {
     const { start, spy } = fakeStart();
     const port = await createBeeperBridgePort({ bridgeSignatureOpen: '🌉kg', bridgeSignatureClose: '💸' }, { start });
     const s = port.startStream('!room', '⏳', { persona: 'e', bodyEmoji: '🐶', label: 'egpt', replyTo: 'm7', agentSigOpen: '— e —', agentSigClose: '~ e' });
     s.update('Hola ⏳');
     s.finish('Hola mundo');                                      // sender supplies the completed reply — NO inline end-marker
     const h = spy.streams[0];
-    expect(h.init).toBe('🐶 egpt\n⏳');                          // placeholder: bare stamp, NO wrap (id resolution matches this)
-    expect(h.updates).toEqual(['🐶 egpt\nHola ⏳']);             // intermediate frame: NO wrap (sigs appear once, at the end)
+    // WAS: "placeholder/updates stay un-wrapped … sigs appear once, at the end". C13 (operator
+    // 2026-07-26) reversed that — a live frame is a message on a surface, so it signs. Id
+    // resolution is unaffected: beeper.mjs matches on the exact bytes it posted.
+    expect(h.init).toBe('🌉kg\n— e —\n🐶 egpt\n⏳\n~ e\n💸');    // placeholder: FULL wrap
+    expect(h.updates).toEqual(['🌉kg\n— e —\n🐶 egpt\nHola ⏳\n~ e\n💸']);   // intermediate frame: FULL wrap
     // FINAL: outer bridge_open, inner agent_open, the stamped core, inner agent_close, outer bridge_close
     expect(h.finals).toEqual(['🌉kg\n— e —\n🐶 egpt\nHola mundo\n~ e\n💸']);
     expect(h.finals[0].startsWith('🌉kg')).toBe(true);
@@ -244,6 +248,81 @@ describe('beeper-port adapter — layered signatures (bridge + agent wrap)', () 
     const s = port.startStream('!room', '⏳', { bodyEmoji: '🐶', label: 'egpt' });
     s.finish('Hola');
     expect(spy.streams[0].finals).toEqual(['🐶 egpt\nHola']);   // exactly today's output — bare core, no end-marker
+  });
+
+  // C13 (operator 2026-07-26): "how is that that dolly posted without signing? bridge must sign.
+  // always. structurally." — and, on the placeholder specifically: "it should also sign
+  // 'thinking... 💸|🌉'". LIVE EVIDENCE from a real transcript: a PEER node's frames arrived BARE
+  // for the whole life of the stream —
+  //     🤝 don
+  //     ⏳ Thinking…                     ← the placeholder, no 💸
+  //     🤝 don
+  //     30 años ya — ⏳                  ← every intermediate edit, no 💸
+  // and only the SETTLED frame ended "… 💸". The placeholder and every edit are REAL messages,
+  // visible to (and ingested by) the co-account node for the entire duration of the turn, so
+  // "a bridge always signs" was false for all of it. THREE unsigned sites lived in startStream:
+  // the placeholder (`stamp(init)`) and every `update` (`stamp(t)`); only `finish` met the wrap.
+  it('REPRODUCE-FIRST: placeholder → N updates → finish — EVERY frame carries the node signature, exactly once', async () => {
+    const { start, spy } = fakeStart();
+    const port = await createBeeperBridgePort({ bridgeSignatureOpen: '🌉kg', bridgeSignatureClose: '💸' }, { start });
+    const s = port.startStream('!room', '⏳ Thinking…', { persona: 'don', bodyEmoji: '🤝', label: 'don', agentSigOpen: '— e —', agentSigClose: '~ e' });
+    s.update('30 años ⏳');
+    s.update('30 años ya — ⏳');
+    s.finish('30 años ya — y aquí seguimos');
+    const h = spy.streams[0];
+
+    // the placeholder is a real posted message → signed
+    expect(h.init).toBe('🌉kg\n— e —\n🤝 don\n⏳ Thinking…\n~ e\n💸');
+    // every intermediate edit → signed
+    expect(h.updates).toEqual([
+      '🌉kg\n— e —\n🤝 don\n30 años ⏳\n~ e\n💸',
+      '🌉kg\n— e —\n🤝 don\n30 años ya — ⏳\n~ e\n💸',
+    ]);
+    // the settled reply is BYTE-IDENTICAL to what finish produced before this change
+    expect(h.finals).toEqual(['🌉kg\n— e —\n🤝 don\n30 años ya — y aquí seguimos\n~ e\n💸']);
+    // NO ACCUMULATION: a frame EDITS a message that already carries the signature — each frame is
+    // built from the raw core, so every one of them carries exactly one open and one close.
+    const count = (s2, needle) => s2.split(needle).length - 1;
+    for (const frame of [h.init, ...h.updates, ...h.finals]) {
+      expect(count(frame, '🌉kg')).toBe(1);
+      expect(count(frame, '💸')).toBe(1);
+      expect(count(frame, '🤝 don')).toBe(1);
+    }
+  });
+
+  // The mesh's RESPONDER streams ENVELOPES (mesh.mjs relayDispatch: init + every update are
+  // encodeMesh output). parseMesh trusts the TRAILING run of provenance lines, so a close line
+  // appended below the tail makes the envelope unrecognisable and the mesh goes deaf. Signing
+  // every frame must NOT reach transport.
+  it('a streamed mesh ENVELOPE stays unsigned on EVERY frame — placeholder, update and final', async () => {
+    const { start, spy } = fakeStart();
+    const port = await createBeeperBridgePort({ bridgeSignatureOpen: '🌉', bridgeSignatureClose: '💸' }, { start });
+    const env = (body, done) => encodeMesh({ by: 'don.do', body, re: 'HFM.kg', post_id: 'p1', done });
+    const s = port.startStream('!relay', env('🤔', false), {});
+    s.update(env('🤝 don\nYep', false));
+    s.finish(env('🤝 don\nYep, still here', true));
+    const h = spy.streams[0];
+    for (const frame of [h.init, ...h.updates, ...h.finals]) {
+      expect(frame.includes('💸')).toBe(false);
+      expect(parseMesh(frame)).toMatchObject({ by: 'don.do' });
+    }
+  });
+
+  // The remaining outbound text surfaces of this port. sendMedia's caption is E speaking (a real
+  // committed message with a persona stamp on it); editOwn REPLACES the text of a message that was
+  // signed when it was sent; editStatus replaces the text of a postStatus line that IS signed. All
+  // three stamped but never wrapped → an unsigned frame out of a spine.
+  it('sendMedia caption, editOwn and editStatus are signed too', async () => {
+    const { start, spy } = fakeStart();
+    const port = await createBeeperBridgePort({ bridgeSignatureOpen: '🌉', bridgeSignatureClose: '💸' }, { start });
+    await port.sendMedia('!room', '/tmp/a.png', { caption: 'mira esto', bodyEmoji: '🐶', label: 'egpt' });
+    await port.editOwn('!room', 'm1', 'corregido', { bodyEmoji: '🐶', label: 'egpt' });
+    await port.editStatus('!room', 'm2', '📨 … ✅');
+    expect(spy.media[0].caption).toBe('🌉\n🐶 egpt\nmira esto\n💸');
+    expect(spy.statusEdits).toEqual([
+      { chatId: '!room', msgId: 'm1', text: '🌉\n🐶 egpt\ncorregido\n💸' },
+      { chatId: '!room', msgId: 'm2', text: '🌉\n📨 … ✅\n💸' },
+    ]);
   });
 
   it('forwards bridge_* + transcription_* through to startBeeperBridge (the 👂 echo layers are applied there)', async () => {
