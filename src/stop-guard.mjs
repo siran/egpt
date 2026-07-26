@@ -50,6 +50,9 @@
 import { existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { EGPT_HOME } from './egpt-home.mjs';
+// THE codec, imported — never a second copy of the frame regex here (src/node-signature.mjs
+// is the one definition the outbound wrap, the inbound envelope and this gate all share).
+import { hasNodeSignature } from './node-signature.mjs';
 
 // THE KILL SWITCH, as a file. Profile ROOT — beside config/ and state/, deliberately
 // visible — so `ls ~/.egpt` shows a stopped node at a glance and `rm ~/.egpt/STOP` is the
@@ -123,9 +126,31 @@ export function parseStopWord(text) {
 //   - wasSentByUs : one of our OWN bot sends re-entering (id-based, src/bridges/beeper.mjs);
 //                   a being's own room fan-out is likewise ours. The bridge already
 //                   suppresses most of these upstream — this is the belt.
+//   - nodeSignature: a SPINE committed this text — whoever the display sender is. The other four
+//                   are all NODE-LOCAL: on a shared Beeper account a PEER node's plain post
+//                   arrives isSender:true with an id we never sent and no envelope, so all four
+//                   said "human" — DOLLY was recorded as the operator AND reset the very loop
+//                   counter that exists to stop two nodes talking forever (operator 2026-07-26:
+//                   "the mere presence of a non-readable char points to non-human"). PRESENCE is
+//                   the whole test: an unknown node name is still not a human. It is the FRAME,
+//                   not "any invisible character" — an RGI flag emoji (🏴 + tag letters, same
+//                   block, same U+E007F terminator) and a pasted ZWSP/BOM both stay human.
+//
+//                   READ TWO WAYS, because two kinds of caller ask:
+//                     ev.fromNode — the envelope field. THE SPINE'S PATH. identity.build renders
+//                       the invisible frame into a legible `<node>` before ANY guard runs
+//                       (spine.mjs:375 builds the envelope; all four humanTurn call sites are
+//                       below it), so by the time ev.body is readable the frame is gone. The fact
+//                       is lifted off the raw text there and carried here. `!= null`, NOT
+//                       truthiness: '' means "signed, node unnameable" — still a bridge.
+//                     ev.body     — the raw-text path, for any caller holding text that has NOT
+//                       been through identity yet. Costs nothing and is the correct predicate
+//                       there; it is simply never the one that fires inside the spine.
 export function isHumanTurn(ev, { isEnvelope = () => false, wasSentByUs = () => false } = {}) {
   if (!ev || ev.backlog) return false;
   if (ev.fromBrain) return false;
+  if (ev.fromNode != null) return false;
+  if (hasNodeSignature(ev.body)) return false;
   if (isEnvelope(ev)) return false;
   if (wasSentByUs(ev)) return false;
   return true;

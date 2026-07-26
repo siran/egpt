@@ -34,6 +34,7 @@ const TAG_CANCEL = '\u{E007F}';   // CANCEL TAG — the terminator
 // tag-encoded printable-ASCII range (U+E0020..U+E007E) only, so the terminator can never be eaten.
 const FRAME_SOURCE = '\u{E0001}[\u{E0020}-\u{E007E}]*\u{E007F}';
 const FRAME_G = new RegExp(FRAME_SOURCE, 'gu');
+const FRAME_1 = new RegExp(FRAME_SOURCE, 'u');    // same frame, non-global: .test() must not carry lastIndex
 
 /**
  * The invisible frame for `node`. '' when there is no node name — the CODEC is tolerant so a
@@ -57,6 +58,18 @@ export function decodeNodeSignature(text) {
   let out = '';
   for (const ch of m[0].slice(TAG_BEGIN.length, -TAG_CANCEL.length)) out += String.fromCodePoint(ch.codePointAt(0) - TAG_BASE);
   return out || null;
+}
+
+/**
+ * Was this text committed to a surface BY A SPINE? PRESENCE of the frame is the whole test — an
+ * unknown, empty or garbled node name still means a bridge wrote it, so this never requires a
+ * successful decode (decoding is for ATTRIBUTION, this is for PROVENANCE: stop-guard's isHumanTurn).
+ * It is the frame, NOT "any invisible character": an RGI emoji tag sequence (🏴 + tag letters +
+ * U+E007F — Scotland/Wales/England) lands in this very block and shares our terminator, but has no
+ * U+E0001 opener, and a pasted ZWSP/BOM is not in the block at all. Both stay human.
+ */
+export function hasNodeSignature(text) {
+  return FRAME_1.test(String(text ?? ''));
 }
 
 /** Remove EVERY frame — total, so no invisible byte survives into a prompt. */

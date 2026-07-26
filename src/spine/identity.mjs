@@ -21,7 +21,13 @@ import { formatDispatchLine } from '../dispatch-line.mjs';
 // the burst/cycle join, a quoted reply snippet — can carry a raw tag byte, because every one of
 // them is built from ev.body / ev.line. Rendering rather than stripping keeps the FACT (which node
 // spoke) while removing the invisibility.
-import { renderNodeSignature } from '../node-signature.mjs';
+// PROVENANCE, read at the ONE moment the raw text still has it. Rendering is LOSSY on purpose —
+// after it, no downstream reader can tell `aquí<do>` written by DOLLY's bridge from `aquí<do>`
+// typed by a person — so the FACT has to be lifted off the raw body here and carried on the
+// envelope beside fromBrain. Anything else would mean re-ordering the pipeline so a guard runs
+// before the envelope is built, and "the InboundEvent is built ONCE and consumed by all paths"
+// (C7.6e, spine.mjs:50) is the contract that keeps ev.body and ev.line from disagreeing.
+import { decodeNodeSignature, hasNodeSignature, renderNodeSignature } from '../node-signature.mjs';
 
 // Beeper tags each message with its origin NETWORK; map it to the conversation
 // SURFACE (the slugDir bucket) and the dispatch-line NODE (the entry-point tag).
@@ -63,6 +69,8 @@ export function createIdentity({ formatLine = formatDispatchLine, now = () => Da
       // wild has no marker) → unchanged.
       // (typeof-guarded so a null/undefined body stays null/undefined — the envelope's shape is
       // unchanged for every non-string caller.)
+      // Read the PROVENANCE off the raw text BEFORE the render erases it (see the import note).
+      const signed = typeof rawBody === 'string' && hasNodeSignature(rawBody);
       const body = typeof rawBody === 'string' ? renderNodeSignature(rawBody) : rawBody;
       const f = from ?? {};
       const key = netKey(f.network);
@@ -91,6 +99,16 @@ export function createIdentity({ formatLine = formatDispatchLine, now = () => Da
         // is our own output) and the relay never feeds a reply back to its own author. Absent
         // on every genuine inbound → undefined → no effect.
         fromBrain: f.fromBrain ?? null,
+        // Which NODE's spine committed this text to the surface — the structural signature the
+        // render above just turned into a legible `<node>`. Carried exactly as fromBrain is, and
+        // read the same way: isHumanTurn treats a NON-NULL fromNode as non-human, whoever the
+        // display sender is (a peer node on a shared Beeper account arrives isSender:true with an
+        // id we never sent and no envelope — every other signal calls it the operator).
+        // NULL vs '' IS THE DISTINCTION, so callers must test `!= null`, never truthiness: null
+        // means UNSIGNED (a human, the ordinary case), '' means SIGNED BY A NODE WE CANNOT NAME
+        // (an empty or garbled frame). PRESENCE is the provenance test; the name is only
+        // attribution, and an unnamed node is still not a person.
+        fromNode: signed ? (decodeNodeSignature(rawBody) ?? '') : null,
         raw: from,
       };
       // The one dispatch line, built once (C7.6e). A reaction/edit is a
