@@ -717,23 +717,10 @@ export async function boot({
   const compaction = createCompaction({ pool, getConfig, onLog: (m) => log.line?.(`[compact] ${m}`) });
   const brain = createBrainPool({ pool, getConfig, contacts, loadState: _loadState, writeState: _writeState, brains, defaultKey, nodeIdentity, afterTurn: compaction.afterTurn, io, onLog: (m) => log.line?.(`[brain] ${m}`) });
 
-  // Cross-node being relay (Phase 4b). Supplies the mesh engine's host callbacks from
-  // v2 services: bridge (send/postStatus/startStream), brain (the responder's turn),
-  // config (node_name/agents relay_channel routes). onEdit is registered here (its ONE
-  // consumer) so a responder's in-place stream edits mirror to the origin placeholder.
-  // SHELL-AWARE bridge (operator 2026-07-25): a relay whose ORIGIN is the shell (`@don` typed
-  // in the operator console — origin chat_id 'main') must stream its placeholder + living-mirror
-  // reply back to the EDITOR, not to Beeper (where the shell can't see it). The raw bridge dropped
-  // it; the shell-aware facade routes the origin-side send/startStream/postStatus to shellPort for
-  // shell-owned chats. The relay-channel envelope (a Beeper chat) is not shell-owned → still Beeper.
-  // getSelfChatId: the Self chat (same first command channel announceAndExit posts to) — the mesh
-  // relays through it when a relay_channel doesn't resolve, so a missing group degrades to a
-  // working link + a notice instead of a silently dropped envelope.
-  const mesh = createMeshService({ bridge: shellAwareBridge, brain, getConfig, bodyEmojiOf, getSelfChatId: selfChatId, onLog: (m) => log.line?.(`[mesh] ${m}`) });
-  bridge.onEdit((e) => mesh.onEdit({ msgId: e.msgId, newText: e.newText }));
-
   // operator slash commands (Self DM / authorized) — lifecycle wired now; reuses
-  // the same exit codes the daemon respawns on.
+  // the same exit codes the daemon respawns on. Constructed BEFORE the mesh: a
+  // node-addressed command can arrive as an envelope and is executed through THIS
+  // service on the far side (operator 2026-07-26 — egpt as a remote control).
   const commands = createCommands({
     getConfig,
     // Surface-routed reply: a command that arrived on the shell surface answers back over
@@ -753,6 +740,23 @@ export async function boot({
     shellConnected: () => shellPort.isConnected,       // /status `shell:` field — is the operator's editor dialed in
     onLog: (m) => log.line?.(`[command] ${m}`),
   });
+
+  // Cross-node being relay (Phase 4b). Supplies the mesh engine's host callbacks from
+  // v2 services: bridge (send/postStatus/startStream), brain (the responder's turn),
+  // config (node_name/agents relay_channel routes). onEdit is registered here (its ONE
+  // consumer) so a responder's in-place stream edits mirror to the origin placeholder.
+  // SHELL-AWARE bridge (operator 2026-07-25): a relay whose ORIGIN is the shell (`@don` typed
+  // in the operator console — origin chat_id 'main') must stream its placeholder + living-mirror
+  // reply back to the EDITOR, not to Beeper (where the shell can't see it). The raw bridge dropped
+  // it; the shell-aware facade routes the origin-side send/startStream/postStatus to shellPort for
+  // shell-owned chats. The relay-channel envelope (a Beeper chat) is not shell-owned → still Beeper.
+  // getSelfChatId: the Self chat (same first command channel announceAndExit posts to) — the mesh
+  // relays through it when a relay_channel doesn't resolve, so a missing group degrades to a
+  // working link + a notice instead of a silently dropped envelope.
+  // commands: a node-addressed command arriving as an envelope is EXECUTED on this node through
+  // the command service above, instead of being handed to a being (operator 2026-07-26).
+  const mesh = createMeshService({ bridge: shellAwareBridge, brain, commands, getConfig, bodyEmojiOf, getSelfChatId: selfChatId, onLog: (m) => log.line?.(`[mesh] ${m}`) });
+  bridge.onEdit((e) => mesh.onEdit({ msgId: e.msgId, newText: e.newText }));
 
   // Conversation-E LIMBS (ROADMAP §3): a reply may carry own-line action commands
   // (react/reply/media/edit/delete) which the spine strips from the surfaced prose and

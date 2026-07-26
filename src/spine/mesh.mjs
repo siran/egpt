@@ -32,6 +32,10 @@ import { createMeshRelay, encodeMesh, parseMesh, agentPaths } from '../mesh/rela
 // ("the bridge must have ONE path", 2026-07-25). The RESPONDER renders its reply through THIS —
 // the same renderer a local reply gets — before encodeMesh, because the payload is what travels.
 import { personaStamp, makeWrapPersona } from '../bridges/persona-wrap.mjs';
+// THE routing table, derived from the AGENTS block (there is no mesh.nodes since 2026-07-25):
+// an agent with a relay_channel and `to: <being>.<node>` IS the statement that its channel
+// reaches that node. The SAME derivation the command service reads to know what a node name is.
+import { agentRoutes } from './node-names.mjs';
 
 const PLACEHOLDER = '🤔 thinking…';
 const textOf = (v) => (typeof v === 'string' ? v : v?.text ?? '');
@@ -39,6 +43,11 @@ const textOf = (v) => (typeof v === 'string' ? v : v?.text ?? '');
 export function createMeshService({
   bridge,                              // the Bridge port (send, startStream, postStatus, onEdit)
   brain,                               // the Brain port (turn) — runs the local being for the responder
+  // The command service (createCommands). A node-addressed command can travel as an envelope
+  // (operator 2026-07-26 — egpt as a remote control for the network); at the RESPONDER the
+  // arriving prompt is executed through this instead of being handed to the being. Null (tests,
+  // standalone) → an arriving command is ordinary relayed text, exactly as before.
+  commands = null,
   getConfig = () => ({}),
   bodyEmojiOf = () => '',              // (being) => body_emoji — stamps the relayed reply
   getSelfChatId = () => null,          // () => this node's Self chat id — the fallback transport when a relay channel doesn't resolve
@@ -158,12 +167,62 @@ export function createMeshService({
     if (t !== undefined) { clearTimer(t); pending.delete(String(chatId)); }
   }
 
+  // NODE → ROUTE (operator 2026-07-25: "we do agent-base routing"). Every relay path in the
+  // AGENTS block that names <node> in its `to:` is a way to reach it; agentRoutes flattens them.
+  // A SURFACE-PINNED agent wins on its own surface and is invisible on every other one — exactly
+  // how the router treats a pin, and exactly what the pin means (kg pins `don` to `surface: shell`
+  // because on Beeper `do` hears him directly, so the shell is where kg must relay). All of ONE
+  // agent's paths to the node fan out together (multipath); no agent names it → null, and the
+  // caller says so out loud rather than dropping the command in silence.
+  function routeToNode(node, surface) {
+    const n = String(node ?? '').toLowerCase();
+    const s = String(surface ?? '').toLowerCase();
+    const hits = agentRoutes(cfg()).filter((r) => r.node === n && (r.surface == null || r.surface === s));
+    if (!hits.length) return null;
+    const pinned = hits.filter((r) => r.surface != null);
+    const use = pinned.length ? pinned : hits;
+    const paths = use.filter((r) => r.name === use[0].name);
+    const routeOf = (r) => ({ room_id: r.relay_channel, ...(r.network ? { network: r.network } : {}) });
+    if (paths.length > 1) return { being: paths[0].name, paths: paths.map((r) => ({ route: routeOf(r), to: r.to, label: r.label })) };
+    return { being: paths[0].name, route: routeOf(paths[0]), to: paths[0].to };
+  }
+
   // A synthetic InboundEvent for the RESPONDER's brain.turn: the being answers in the
   // context of the relay chat it was addressed in (surface + chatId = that channel).
   function meshEv(route, prompt) {
     const chat = chatOf(route);
     const surface = route?.limb ?? route?.surface ?? 'whatsapp';
     return { surface, node, chatId: chat, chatName: chat, senderId: null, senderName: null, msgId: null, ts: Date.now(), body: prompt, line: prompt, kind: 'text', raw: null };
+  }
+
+  // RESPONDER: is this arriving prompt a node-addressed command for THIS node, and if so what
+  // does it answer? (operator 2026-07-26 — egpt as a remote control for the network.) The
+  // ALLOWLIST is the command service's own (nodeCommandForMe): lifecycle and the STOP safe word
+  // are not in it, so an envelope can never restart, upgrade, rewind or kill this node — a
+  // non-addressable command is ordinary relayed text and goes to the being, exactly as today.
+  //
+  // AUTHORIZATION IS THE ONE THAT ALREADY EXISTS. The arriving envelope EVENT rides on the route
+  // (mesh.handle), carrying the `authorized`/`isSender` the bridge computed for it — the peer
+  // shares this Beeper account (isSender), or the sender's id sits in this node's allowed_users.
+  // commands.isCommand reads exactly those, the same gate a typed command passes. Nothing is
+  // added here.
+  //
+  // The reply is CAPTURED (runCaptured) rather than posted: it has to ride home inside the
+  // envelope. It still passes the command service's no-self-parsing chokepoint, so the body the
+  // origin mirrors into its own chat can never begin with '/' (the 2026-07-25 flood fix).
+  let cmdSeq = 0;
+  async function commandReply(route, prompt) {
+    if (!commands?.nodeCommandForMe?.(prompt)) return null;
+    const src = route?.ev ?? {};
+    const ev = {
+      ...meshEv(route, prompt),
+      chatId: `${chatOf(route)}#cmd${++cmdSeq}`,   // a private id: the captured replies key off it
+      senderId: src.senderId ?? null, senderName: src.senderName ?? null,
+      authorized: !!src.authorized, isSender: !!src.isSender,
+    };
+    if (!commands.isCommand(ev)) return `⚠️ not authorized to run "${prompt}" on ${node}`;
+    const out = String(await commands.runCaptured(ev) ?? '').trim();
+    return out || `(no output from "${prompt}" on ${node})`;
   }
 
   const relay = createMeshRelay({
@@ -270,8 +329,12 @@ export function createMeshService({
       const stream = bridge.startStream(chat, wrap(''), {});
       let final = '';
       try {
-        const r = await brain.turn(being, meshEv(route, prompt), (partial) => { try { stream?.update?.(wrap(textOf(partial))); } catch {} });
-        final = textOf(r);
+        const cmd = await commandReply(route, prompt);
+        if (cmd != null) final = cmd;
+        else {
+          const r = await brain.turn(being, meshEv(route, prompt), (partial) => { try { stream?.update?.(wrap(textOf(partial))); } catch {} });
+          final = textOf(r);
+        }
       } catch (e) { final = `(${being}.${node} error: ${e?.message ?? e})`; }
       final = String(final ?? '').trim() || '…';
       if (stream) await stream.finish(wrap(final, true));
@@ -294,7 +357,7 @@ export function createMeshService({
     },
   });
 
-  return {
+  const api = {
     // A message carrying a provenance tail is relay traffic (request or reply), not chat.
     isEnvelope(ev) { return parseMesh(ev?.body ?? '') != null; },
 
@@ -304,7 +367,10 @@ export function createMeshService({
     async handle(ev) {
       const prov = parseMesh(ev?.body ?? '');
       if (!prov) return false;
-      const route = { limb: ev.surface, room_id: ev.chatId };
+      // The arriving EVENT rides along on the route — transparent to the engine (which reads
+      // room_id and nothing else). The responder's command branch reads its authorization off
+      // it: the existing allowed_users / same-account signal, never a fabricated one.
+      const route = { limb: ev.surface, room_id: ev.chatId, ev };
       return relay.onRoomMessage({ route, text: ev.body, msgId: ev.msgId });
     },
 
@@ -356,6 +422,21 @@ export function createMeshService({
       return ok;
     },
 
+    // ORIGIN: a node-addressed COMMAND for a node that cannot hear where it was typed (operator
+    // 2026-07-26 — "i open a local shell, type '/chrome mo' and a chrome in mo's spine … opens.
+    // i can drive it by typing commands on the egpt shell"). It travels as the SAME envelope a
+    // `@don` being-prompt travels in, so the reply mirrors home the same way. NEVER silence: a
+    // node no agent routes to is reported to the operator, in the chat he typed it in.
+    async forwardCommand(ev, node) {
+      const target = routeToNode(node, ev.surface);
+      if (!target) {
+        onLog(`no agent routes to node "${node}" on surface ${ev.surface}`);
+        await bridge.send(ev.chatId, `⚠️ no agent routes to node "${node}" — add an agent with a relay_channel and "to: <being>.${node}" to reach it.`);
+        return false;
+      }
+      return api.forward(ev, target);
+    },
+
     // A streamed edit in a relay chat mirrors onward (responder edits → origin mirror,
     // transit re-mirror). Returns truthy-if-consumed straight to the bridge (its
     // onMessageEdit contract); an untracked edit → false → the bridge handles it.
@@ -363,4 +444,5 @@ export function createMeshService({
       return relay.onRoomMessageEdit({ msgId, text: newText });
     },
   };
+  return api;
 }

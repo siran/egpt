@@ -475,6 +475,16 @@ export function createSpine({
         if (humanTurn(ev)) guard.noteHuman(channel);
         else await guardCountNonHuman(ev, channel);
       }
+      // NODE-ADDRESSED AT ANOTHER NODE (operator 2026-07-26 — egpt as a remote control for the
+      // network): `/chrome do` typed on the SHELL can never be heard by do (the shell is
+      // node-local — the spine dials the editor on 127.0.0.1), so the command has to TRAVEL. It
+      // rides the SAME mesh envelope a `@don` being-prompt rides, the target executes it locally,
+      // and the reply mirrors home through the same living mirror. `commands.remoteNode` is the
+      // ONE decision — an allowlisted command naming a node that is neither ours nor a
+      // co-account peer that already heard this — so a null (every case today) leaves the local
+      // command path byte-identical.
+      const remote = commands.remoteNode?.(ev);
+      if (remote && mesh?.forwardCommand) return async () => { await mesh.forwardCommand(ev, remote); };
       return async () => { await commands.run(ev); };
     }
 

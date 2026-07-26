@@ -782,7 +782,7 @@ describe('/chrome <node>', () => {
 });
 
 // /room create <name> — the FIRST wired NamedRoom create path (Phase 2). A Room IS a
-// folder: `create` makes the standard tree (baseDir + media/files/identity.d + a minimal
+// folder: `create` makes the standard tree (baseDir + media/files/identity.d/scripts + a minimal
 // config.yaml) so the heartbeat/transcription loaders enumerate rooms/<name>/. All fs is
 // routed through the commands io seam, so these run fully in-memory (mkdir recorded,
 // writeFile captured) and never touch a real profile. No member roster yet (later work).
@@ -798,7 +798,7 @@ describe('/room create <name>', () => {
     await cmds.run({ ...self, body: '/room create foo' });
     const r = Room.named('foo');
     // the standard tree dirs were created …
-    for (const dir of [r.baseDir(), r.mediaDir, r.filesDir, r.identityDir]) expect(mkdirs).toContain(dir);
+    for (const dir of [r.baseDir(), r.mediaDir, r.filesDir, r.identityDir, r.scriptsDir]) expect(mkdirs).toContain(dir);
     // … and a config.yaml was written into the room folder
     expect(files[r.configPath]).toBeTruthy();
     // the reply names the EGPT_HOME-relative path

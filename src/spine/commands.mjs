@@ -22,7 +22,7 @@ import { join, dirname, basename } from 'node:path';
 import * as YAML from 'yaml';
 import { EGPT_HOME } from '../egpt-home.mjs';
 import { shortChatId } from '../bridges/chat-id.mjs';
-import { ownNodeNamesOf } from './node-names.mjs';
+import { ownNodeNamesOf, knownNodeNames } from './node-names.mjs';
 import { Room } from '../room-core.mjs';
 import { sanitizeName } from '../sanitize.mjs';
 import { loadAdapters as defaultLoadAdapters, matchAdapter } from '../adapters/registry.mjs';
@@ -235,6 +235,31 @@ function resolveTarget(state, term, surface) {
 // gets wrapped — the invariant "a reply never begins with '/'" holds for every input.
 const quoteLeadingCommand = (text) => String(text ?? '').replace(/^\/([a-z0-9_-]*)/i, '`/$1`');
 
+// ── NODE-ADDRESSED COMMANDS ─────────────────────────────────────────────────────────────────
+// (operator 2026-07-26: "i open a local shell, type '/chrome mo' and a chrome in mo's spine, a
+// friend in germany, opens. i can drive it by typing commands on the egpt shell.")
+//
+// A command may name the NODE it is for. THE SET IS AN ALLOWLIST — the browser family that IS
+// the remote control, plus /status:
+//
+//   /chrome  /tabs  /open  /tab  /close  /status
+//
+// and nothing outside it is node-addressable, which is the lock: LIFECYCLE (/restart, /upgrade,
+// /rewind) and the STOP safe word are deliberately absent, so no envelope arriving from another
+// machine can restart, upgrade, rewind or kill this node. The responder reads the SAME allowlist
+// before it executes anything, so the lock holds at both ends.
+//
+// `/members` is NOT in the set: its object is the CURRENT CONVERSATION's room (resolveConvRoom),
+// not the node — a remote node has no such conversation. (Its bare form does still act on both
+// co-account nodes; that pre-existing double-act is untouched here.)
+const NODE_ADDRESSABLE = /^\/(chrome|status|tabs|tab|open|close)\b\s*(.*)$/i;
+
+// The SHELL is node-local: the spine dials the operator's editor on 127.0.0.1:23375, so no other
+// node ever sees a shell message. Everywhere else this node speaks is a chat on the shared Beeper
+// account, where a co-account peer heard the very same message and answers through its own gate —
+// which is exactly why a peer addressed THERE must not also be sent an envelope.
+const NODE_LOCAL_SURFACES = new Set(['shell']);
+
 export function createCommands({
   getConfig = () => ({}),
   send: rawSend,                         // (chatId, text) -> deliver a plain system reply
@@ -299,7 +324,17 @@ export function createCommands({
   // THE reply chokepoint: every reply this module emits goes out through here, so the
   // no-self-parsing convention (quoteLeadingCommand, above) cannot be missed by a new
   // message — including one added later. Call sites stay `send?.(chatId, text)`.
-  const send = (chatId, text) => rawSend?.(chatId, quoteLeadingCommand(text));
+  // A CAPTURED run diverts this chat's replies into a sink instead of sending them (the mesh
+  // responder: the reply must ride home INSIDE the envelope, not be posted raw into the relay
+  // chat). Keyed by chatId, and runCaptured's caller supplies an id nothing else uses, so
+  // concurrent runs never cross. quoteLeadingCommand still applies — the captured text becomes
+  // the body the ORIGIN posts into its own chat, so it must not parse as a command there either.
+  const sinks = new Map();   // chatId -> (text) => void
+  const send = (chatId, text) => {
+    const t = quoteLeadingCommand(text);
+    const sink = sinks.get(chatId);
+    return sink ? sink(t) : rawSend?.(chatId, t);
+  };
   const stat = io.stat ?? fsStat;
   const readFile = io.readFile ?? fsReadFile;
   const writeFile = io.writeFile ?? fsWriteFile;
@@ -369,6 +404,51 @@ export function createCommands({
     return inSelfDm || !!ev?.authorized || !!ev?.isSender;
   }
 
+  // Which NODE does this line address? The ONE parse behind every node reading below — the
+  // origin's "must this travel?", the responder's "is this for me?", and the dispatch gate.
+  // Returns { node, trailing } or null.
+  //
+  //   /chrome <node>            — its whole argument IS a node (the existing grammar), known or
+  //                               not: an unknown one is a routing error, never silence.
+  //   /status <node|fragment>   — node-FIRST (the existing gate), else an ordinary conversation
+  //                               fragment — so the token counts only when it NAMES a node.
+  //   /tabs|/tab|/open|/close   — the node is an EXTRA trailing token (`/tab 3 do`), and likewise
+  //                               only when it names one, so `/open https://x.com` is untouched.
+  //
+  // `trailing` says the token is extra baggage the command's own grammar never had: run() strips
+  // it once the gate has passed, so each handler parses exactly what it always did.
+  function nodeAddressed(text) {
+    const m = NODE_ADDRESSABLE.exec(String(text ?? '').trim());
+    if (!m) return null;
+    const rest = m[2].trim();
+    if (!rest) return null;
+    if (m[1].toLowerCase() === 'chrome') return { node: rest.toLowerCase(), trailing: false };
+    const last = rest.split(/\s+/).pop().toLowerCase();
+    if (!knownNodeNames(cfg()).has(last)) return null;
+    return { node: last, trailing: m[1].toLowerCase() !== 'status' || rest.split(/\s+/).length > 1 };
+  }
+
+  // ORIGIN reading: the node this command must TRAVEL to in order to be answered — null when it
+  // stays here. Null for a command outside the allowlist, a command with no node, a node that is
+  // one of OURS, and a node that shares this Beeper account and heard the message anyway (that
+  // one is the unchanged broadcast + gate: the sibling answers, we say nothing).
+  function remoteNode(ev) {
+    const hit = nodeAddressed(ev?.body);
+    if (!hit) return null;
+    if (ownNodeNamesOf(cfg()).has(hit.node)) return null;
+    const peers = cfg().account_peers;
+    const isPeer = Array.isArray(peers) && peers.some((p) => String(p ?? '').trim().toLowerCase() === hit.node);
+    if (isPeer && !NODE_LOCAL_SURFACES.has(String(ev?.surface ?? '').toLowerCase())) return null;
+    return hit.node;
+  }
+
+  // RESPONDER reading of the SAME parse: an envelope-delivered line is a node-addressable
+  // command for THIS node. Same allowlist, so lifecycle can never arrive over the mesh.
+  function nodeCommandForMe(text) {
+    const hit = nodeAddressed(text);
+    return !!hit && ownNodeNamesOf(cfg()).has(hit.node);
+  }
+
   // Is an un-expired `/e` wizard armed for this chat? Prunes an expired one (so an
   // abandoned wizard never lingers past its 5-min window).
   function wizardActive(ev) {
@@ -397,8 +477,18 @@ export function createCommands({
     return isOperator(ev);
   }
 
+  // Run a command and CAPTURE its reply instead of sending it. Routes through the ONE run()
+  // below — same dispatch, same gates, same no-self-parsing chokepoint — so the mesh responder
+  // executes exactly what a typed command executes. Returns the joined reply text.
+  async function runCaptured(ev) {
+    const lines = [];
+    sinks.set(ev.chatId, (t) => lines.push(t));
+    try { await run(ev); } finally { sinks.delete(ev.chatId); }
+    return lines.join('\n\n');
+  }
+
   async function run(ev) {
-    const line = String(ev.body ?? '').trim();
+    let line = String(ev.body ?? '').trim();
 
     // Armed `/e` wizard, first refusal: a PLAIN (non-slash) operator message is a
     // numbered/typed answer — step the wizard and stop (never reach E's brain). A
@@ -413,6 +503,19 @@ export function createCommands({
       await exit(code);                    // process leaves (after the bridge's "restarting…" announce); the daemon respawns
       return;
     }
+
+    // THE NODE GATE, once, for the whole node-addressable set — the SAME ownNodeNamesOf
+    // /chrome's and /status's own gates already matched, now shared by all six instead of
+    // reimplemented per command. A line naming a node that is NOT ours only reaches here
+    // because that node shares this Beeper account and heard the message too (the spine
+    // forwards every other case, see remoteNode): it answers, we say NOTHING AT ALL — the
+    // same deliberate silence, so exactly one node answers on a shared account. Bare forms
+    // and everything outside the set fall through untouched.
+    const addressed = nodeAddressed(line);
+    if (addressed && !ownNodeNamesOf(cfg()).has(addressed.node)) return;
+    // The token has done its job — drop it so each command's own grammar is unchanged
+    // (`/tab 3 do` parses as `/tab 3`). /chrome and /status already consume theirs.
+    if (addressed?.trailing) line = line.slice(0, line.length - addressed.node.length).trimEnd();
 
     // /e auto <mode> [<target>] — set a conversation's E reply-mode (modes live in
     // conversations.yaml now). In a chat: omit <target> to set THIS chat. From the
@@ -726,7 +829,7 @@ export function createCommands({
     catch { /* absent → create below */ }
     // The folder IS the room: mkdir the standard tree (baseDir + the dir getters) + a
     // minimal config.yaml. No member roster — that's later work.
-    for (const dir of [r.baseDir(), r.mediaDir, r.filesDir, r.identityDir]) await mkdir(dir, { recursive: true });
+    for (const dir of [r.baseDir(), r.mediaDir, r.filesDir, r.identityDir, r.scriptsDir]) await mkdir(dir, { recursive: true });
     await writeFile(r.configPath, roomConfigFile(slug), 'utf8');
     await send?.(ev.chatId, `room ${slug} created at ${rel}`);
   }
@@ -1414,5 +1517,5 @@ export function createCommands({
     } catch (e) { onLog(`/e wizard tools ${wm.chatId}: ${e?.message ?? e}`); await send?.(wm.chatId, `/e: failed — ${e?.message ?? e}`); }
   }
 
-  return { isCommand, run };
+  return { isCommand, run, runCaptured, remoteNode, nodeCommandForMe };
 }
