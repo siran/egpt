@@ -15,6 +15,7 @@
 // imported directly.
 import { slugDir, recordMemberStat, isoFromMs } from '../conversations-state.mjs';
 import { transcriptAppend, replyLine } from '../transcript-log.mjs';
+import { isLiveStreamFrame } from '../dispatch-line.mjs';
 import { appendFile as fsAppendFile, mkdir as fsMkdir } from 'node:fs/promises';
 import { existsSync as fsExistsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -24,6 +25,7 @@ export function createTranscript({
   persona = null,
   defaultKey = 'e',                      // the persona being-id (its map key), injected by boot — the fallback label when a reply carries no being
   node_name = null,                      // this node's name — qualifies the being's reply label as <being>.<node_name> so the record shows WHICH node produced a line (provenance; operator 2026-07-10). null → bare being label unchanged
+  timeZone = null,                       // the node's config default_time_zone (boot-resolved via the heartbeat loader's resolveTimeZone) — the zone the reply line's HH:MM renders in. null → UTC, unchanged
   io = {},                               // { appendFile, mkdir, existsSync } — real by default
   now = () => new Date(),
   onLog = () => {},
@@ -49,6 +51,15 @@ export function createTranscript({
     async log(ev, reply) {
       try {
         if (!ev?.chatId) return false;
+        // A LIVING-MIRROR STREAM FRAME IS NOT HISTORY (operator 2026-07-26: "it's better if
+        // the streaming is not logged"). A streamed reply is ONE message rewritten in place,
+        // so a node observing a peer's reply on this shared account receives every frame as
+        // an incoming edit — 492 of them, 35% of the live SPOILER transcript, burying the
+        // operator's own messages under five-plus giant near-identical blocks per reply.
+        // Only the SETTLED text is the record; the settle frame carries no live marker and
+        // still lands. A human's edit of an earlier message never carries one either, so it
+        // stays on the record — see isLiveStreamFrame.
+        if (reply == null && ev.kind === 'edit' && isLiveStreamFrame(ev.body)) return false;
         const slug = await contacts.resolve(ev.surface, ev.chatId, { chatName: ev.chatName });
         if (!slug) return false;
         const dir = slugDir(ev.surface, slug);
@@ -74,7 +85,7 @@ export function createTranscript({
           // wren.do) so the record shows WHICH node on this shared account produced the line.
           // Applies to whatever beings the transcript labels — it's this node's node_name for all.
           const label = node_name ? `${being}.${node_name}` : being;
-          await appendFile(fpath, replyLine({ being: label, body: text, surfaced, now: now() }) + '\n\n', 'utf8');
+          await appendFile(fpath, replyLine({ being: label, body: text, surfaced, now: now(), timeZone }) + '\n\n', 'utf8');
         }
         return true;
       } catch (e) { onLog(`transcript ${ev?.surface}/${ev?.chatId}: ${e?.message ?? e}`); return false; }

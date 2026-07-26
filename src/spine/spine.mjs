@@ -107,6 +107,7 @@ export function createSpine({
   guardOverride = null,                // optional (surface, chatId) => { turns?, window? } | null — the conversation's per-channel guard override (conversations.yaml). Null = node defaults only.
   roomRelay = null,                    // optional §Phase-4 room brain-member fan-out (createRoomRelay, boot-wired): delivers a received room message to each brain member per mode, streams the reply back, and RE-ENTERS it as a non-human turn. Null = no web-brain members (byte-identical to before).
   defaultBeing = 'e',                  // the persona: the being an un-addressed message dispatches to, and the turn/cycle owner for a mesh-target message (which is GATED as its own relay agent — see gateAs)
+  timeZone = null,                     // the node's config default_time_zone (boot-resolved) — the zone the CYCLE's reply lines render in, the same clock identity/transcript use so the accumulated prompt never disagrees with the file. null → UTC, unchanged.
   clock = { now: () => Date.now() },
   log = {},
   tickMs = 0,
@@ -787,7 +788,7 @@ export function createSpine({
       // alone: the message itself went on the record at ingestion, so however many agents
       // answer it, each appends exactly one reply line under the one inbound line.
       await transcript.log(ev, { ...reply, surfaced: responded });
-      if (responded) { pushCycle(turnKey, replyLine({ being: to, body: rawText, surfaced: true, now: new Date() })); noteSpeaker(ev, to); }
+      if (responded) { pushCycle(turnKey, replyLine({ being: to, body: rawText, surfaced: true, now: new Date(), timeZone })); noteSpeaker(ev, to); }
       await store?.recordThread?.({ ev, reply, being: to });
       // TYPING TIME (auto only): a human takes time to type. Delay the plain post-once send
       // by a typing-speed function of the reply length (capped 90s, outside the turn-timeout

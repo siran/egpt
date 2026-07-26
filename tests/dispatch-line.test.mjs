@@ -4,7 +4,7 @@
 // identity, NEVER hardcoded. This test is what keeps the shape from drifting
 // back to a baked-in '.wa' or to bracket-less / node-less variants.
 import { describe, it, expect } from 'vitest';
-import { formatDispatchLine, splitSurfaceTag, reactionAction, editAction } from '../src/dispatch-line.mjs';
+import { formatDispatchLine, splitSurfaceTag, reactionAction, editAction, isLiveStreamFrame } from '../src/dispatch-line.mjs';
 
 // 2026-06-11 17:21 UTC — fixed so the HH:MM (UTC) assertion is deterministic.
 const TS = Date.UTC(2026, 5, 11, 17, 21, 0);
@@ -118,6 +118,67 @@ describe('editAction — edit stage-direction body', () => {
     expect(rendered).toBe(`edited #9\n    - ${oldText}\n    + ${newText}`);
     expect(rendered).toContain('old tail');
     expect(rendered).toContain('new tail');
+  });
+});
+
+// THE TRANSCRIPT CLOCK READS IN THE CONFIGURED ZONE (operator 2026-07-26: "timestamps
+// should be rendered as per the configuration key"). Config `default_time_zone` — the
+// SAME key + the SAME resolver the heartbeat loader uses (resolveTimeZone). Live defect:
+// the operator (−0400) read his own 15:07 message rendered "(19:07)", scrolled to the
+// bottom of a live file and believed it was missing. Absent/invalid zone → UTC, unchanged.
+describe('formatDispatchLine — renders the clock in the configured zone', () => {
+  const T = Date.UTC(2026, 6, 25, 19, 7, 0);   // the live line: 19:07 UTC = 15:07 America/New_York
+  const base = { senderName: 'An', chatName: 'SPOILER', node: 'wa', body: 'hola', ts: T };
+  it('renders the configured zone, not UTC', () => {
+    expect(formatDispatchLine({ ...base, timeZone: 'America/New_York' })).toBe('An@[SPOILER].wa (15:07): hola');
+  });
+  it('no zone → UTC, byte-identical to before', () => {
+    expect(formatDispatchLine(base)).toBe('An@[SPOILER].wa (19:07): hola');
+  });
+  it('an invalid zone never throws — it falls back to UTC', () => {
+    expect(formatDispatchLine({ ...base, timeZone: 'Not/AZone' })).toBe('An@[SPOILER].wa (19:07): hola');
+  });
+  it('the zone rides a stage-direction line too', () => {
+    expect(formatDispatchLine({ ...base, stageDirection: true, body: 'x', timeZone: 'America/New_York' }))
+      .toBe('[ An@[SPOILER].wa (15:07): x ]');
+  });
+});
+
+// A LIVING-MIRROR STREAM FRAME IS NOT HISTORY (operator 2026-07-26). The reply train
+// (src/spine/sender.mjs `update()`) stamps ⏳ onto every intermediate frame and only there;
+// `finish()` posts the settled text without it. A node observing a PEER's reply on the
+// shared account receives each frame as an incoming edit, so this predicate is what keeps
+// them out of the record — while a human's edit of an earlier message stays in it.
+describe('isLiveStreamFrame — the ⏳ marker, wherever the frame carries it', () => {
+  const frame = (oldText, newText) => editAction({ targetId: '176209', oldText, newText });
+  // The bridge signature is STRUCTURAL (2026-07-26): every frame a spine commits to a
+  // surface is wrapped — open ABOVE the core, close BELOW it — so ⏳ is NOT the last
+  // character of a real frame. The close differs per node (kg vs DOLLY), so nothing here
+  // may key on a particular signature; the marker's PRESENCE is the whole test.
+  const signed = (open, core, close) => [open, core, close].filter(Boolean).join('\n');
+
+  it('an UNSIGNED intermediate frame is a stream frame', () => {
+    expect(isLiveStreamFrame(frame('🤝 don ⏳ Thinking…', '🤝 don Buen lugar random para ⏳'))).toBe(true);
+  });
+  it('a SIGNED intermediate frame is a stream frame — on either node', () => {
+    const kg = signed('🌉kg', '🤝 don\nBuen lugar random para ⏳', '🌉');
+    const dolly = signed('💸do', '🤝 don\nBuen lugar random para ⏳', '💸');
+    expect(isLiveStreamFrame(frame('🌉kg\n🤝 don\n⏳ Thinking…\n🌉', kg))).toBe(true);
+    expect(isLiveStreamFrame(frame('💸do\n🤝 don\n⏳ Thinking…\n💸', dolly))).toBe(true);
+  });
+  it('the SETTLE frame is NOT a stream frame — its `-` side still carries the marker, its `+` side does not', () => {
+    const settled = signed('🌉kg', '🤝 don\n¿la disfrutaste o se sintió como fan service?', '🌉');
+    expect(isLiveStreamFrame(frame('🌉kg\n🤝 don\n¿la disfrutaste o se sint ⏳\n🌉', settled))).toBe(false);
+  });
+  it('a HUMAN edit of an earlier message is NEVER a stream frame', () => {
+    expect(isLiveStreamFrame(frame('parece la corte frances', 'parece la corte francesa'))).toBe(false);
+    expect(isLiveStreamFrame(frame('tiene que botarla poe honor', 'tiene que botarla por honor'))).toBe(false);
+    expect(isLiveStreamFrame(frame('senegal va a sodomizar a bé\'lgica', 'senegal va a sodomizar a bélgica'))).toBe(false);
+  });
+  it('is inert on anything that is not an edit body', () => {
+    expect(isLiveStreamFrame('')).toBe(false);
+    expect(isLiveStreamFrame(null)).toBe(false);
+    expect(isLiveStreamFrame('reacted 👍 to #7 "hola"')).toBe(false);
   });
 });
 

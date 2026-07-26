@@ -60,4 +60,12 @@ describe('identity.build', () => {
     expect(ev.node).not.toBe('kg');                       // 'kg' is a node name, not a transport
     expect(ev.line).toBe('An@[shell].sh (14:05) #m7: hola');
   });
+
+  // The inbound line's clock renders in the node's configured zone (config
+  // `default_time_zone`, boot-resolved with the heartbeat loader's resolveTimeZone).
+  // Unset → UTC, exactly as before (operator 2026-07-26).
+  it('renders the dispatch-line clock in the injected time zone', () => {
+    const zoned = createIdentity({ now: () => Date.UTC(2026, 5, 29, 14, 5), timeZone: 'America/New_York' });
+    expect(zoned.build({ body: 'hola', from: FROM }).line).toBe('An@[fam].wa (10:05) #m7: hola');
+  });
 });

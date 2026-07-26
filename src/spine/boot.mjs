@@ -57,7 +57,7 @@ import { createBrains } from './brains.mjs';
 import { createMeshService } from './mesh.mjs';
 import { createCompaction } from './compaction.mjs';
 import { createHeartbeats } from './heartbeats.mjs';
-import { createHeartbeatLoader, parseFrequency } from './heartbeat-loader.mjs';
+import { createHeartbeatLoader, parseFrequency, resolveTimeZone } from './heartbeat-loader.mjs';
 import { createConfigResolver, parseEntityConfig } from './config-resolver.mjs';
 import { seedSkeletons } from './seed.mjs';
 
@@ -260,6 +260,16 @@ export async function boot({
 
   const cfg = readConfig() ?? {};
   const getConfig = () => cfg;
+
+  // THE TRANSCRIPT CLOCK'S ZONE (operator 2026-07-26: "timestamps should be rendered as per
+  // the configuration key"). ONE zone mechanism for the whole node: the same config key and
+  // the same resolver the heartbeat loader already uses — no second lookup, no new dep. Only
+  // resolved when the key is actually set, so a node without it keeps rendering UTC exactly
+  // as before (resolveTimeZone's own fallback is the MACHINE's zone, which is not what an
+  // absent key should mean for a record that was UTC yesterday).
+  const transcriptTimeZone = cfg.default_time_zone
+    ? resolveTimeZone(cfg.default_time_zone, { onLog: (m) => log.line?.(`[boot] ${m}`) })
+    : null;
 
   // Identity vs liveness are SEPARATE files now (operator 2026-07-02): state/
   // spine.pid holds the long-lived spine pid — written ONCE here because it never
@@ -759,7 +769,7 @@ export async function boot({
 
   // --- services (each DI-wired; none closes over another) ---
   const services = {
-    identity: createIdentity({ now }),
+    identity: createIdentity({ now, timeZone: transcriptTimeZone }),
     gating: createGating({ getConfig, loadState: _loadState, defaultKey }),
     // Router resolves an @token against the unified `agents:` block (operator 2026-07-02) —
     // the ONE registry, and since 2026-07-25 the ONLY source of off-node reach (a relay agent's
@@ -767,7 +777,7 @@ export async function boot({
     // fall-through both yield the persona's KEY (operator 2026-07-10 — no hardcoded 'e'/'egpt').
     // quick_reply_string: the token that addresses whoever spoke last (default 'r', '' disables).
     router: createRouter({ getAgents: () => cfg.agents ?? {}, defaultBeing: defaultKey, getQuickReply: () => cfg.quick_reply_string }),
-    transcript: createTranscript({ contacts, persona: labelOf(defaultKey), defaultKey, node_name, io, onLog: (m) => log.line?.(`[transcript] ${m}`) }),
+    transcript: createTranscript({ contacts, persona: labelOf(defaultKey), defaultKey, node_name, timeZone: transcriptTimeZone, io, onLog: (m) => log.line?.(`[transcript] ${m}`) }),
     sender: createSender({ bridge: shellAwareBridge, bodyEmojiOf, labelOf, agentSignatureOpenOf, agentSignatureCloseOf, defaultKey }),
     // The real cadence registry the spine's tick() drives. The heartbeat LOADER
     // (below) collects every declarative heartbeat and registers it here, so each
@@ -933,7 +943,7 @@ export async function boot({
     onLog: (m) => log.line?.(`[relay] ${m}`),
   });
 
-  const spine = createSpine({ bridge, brain, ...services, commands, mesh, actions, advice, guard, guardOverride, stopSwitch, isSelfChat, roomRelay, defaultBeing: defaultKey, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
+  const spine = createSpine({ bridge, brain, ...services, commands, mesh, actions, advice, guard, guardOverride, stopSwitch, isSelfChat, roomRelay, defaultBeing: defaultKey, timeZone: transcriptTimeZone, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
   // Bind the advice service's answer-routing dispatch now that the spine exists: an
   // operator answer in the advice channel re-enters the pipe as a turn in the origin chat.
   advice.useDispatch(spine.handleInbound);

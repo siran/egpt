@@ -9,6 +9,7 @@
 //
 // Pure + Node-import-free (so it can't drag node builtins into a bundled limb).
 import { renderFrontMatter } from './transcript-meta.mjs';
+import { hhmm } from './dispatch-line.mjs';
 
 /**
  * Bytes to append for one transcript line. Prepends the YAML front matter when
@@ -33,10 +34,13 @@ export function transcriptAppend({ existing = false, body, name, surface, slug, 
 /**
  * Format a being's reply line for the transcript: `[<being> (HH:MM)]: body`,
  * tagged `(not surfaced)` when the reply was withheld by the gate/mode.
+ *
+ * HH:MM renders in `timeZone` — the node's config `default_time_zone`, injected by boot
+ * through the SAME `hhmm` the inbound line uses, so the two halves of a transcript can
+ * never disagree about what time it is. Unset/invalid → UTC (operator 2026-07-26).
  */
-export function replyLine({ being, body, surfaced = true, now = new Date() } = {}) {
-  const pad = (n) => String(n).padStart(2, '0');
-  const t = `${pad(now.getUTCHours())}:${pad(now.getUTCMinutes())}`;
+export function replyLine({ being, body, surfaced = true, now = new Date(), timeZone = null } = {}) {
+  const t = hhmm(now, timeZone);
   const tag = surfaced ? '' : '(not surfaced) ';
   return `[@${being} (${t})]: ${tag}${String(body ?? '').trim()}`;
 }

@@ -45,6 +45,21 @@ describe('replyLine', () => {
     expect(replyLine({ being: 'wren', body: 'hi', surfaced: true })).toMatch(/^\[@wren \(\d\d:\d\d\)\]: hi$/);
     expect(replyLine({ being: 'wren', body: 'hi', surfaced: false })).toContain('(not surfaced) hi');
   });
+
+  // The reply line's clock is the SAME transcript clock as the inbound line's
+  // (dispatch-line.mjs) and must read in the same configured zone — config
+  // `default_time_zone`, resolved by the heartbeat loader's resolveTimeZone. Absent /
+  // invalid → UTC, exactly as before (operator 2026-07-26).
+  const NOW = new Date(Date.UTC(2026, 6, 25, 19, 7, 0));
+  it('renders the configured zone, not UTC', () => {
+    expect(replyLine({ being: 'egpt.kg', body: 'hi', now: NOW, timeZone: 'America/New_York' })).toBe('[@egpt.kg (15:07)]: hi');
+  });
+  it('no zone → UTC, byte-identical to before', () => {
+    expect(replyLine({ being: 'egpt.kg', body: 'hi', now: NOW })).toBe('[@egpt.kg (19:07)]: hi');
+  });
+  it('an invalid zone never throws — it falls back to UTC', () => {
+    expect(replyLine({ being: 'egpt.kg', body: 'hi', now: NOW, timeZone: 'Nope/Nope' })).toBe('[@egpt.kg (19:07)]: hi');
+  });
 });
 
 // End-to-end on a temp transcript: a received Telegram message MUST appear in

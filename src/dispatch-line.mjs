@@ -7,8 +7,10 @@
 // the human used: 'wa' (WhatsApp), 'kg' (the home shell), 'chrome' (the
 // extension). It is resolved from the client/surface identity, NEVER hardcoded
 // into the template (the bug this replaces: '.wa' baked in, so every line read
-// '.wa' no matter the origin). HH:MM is UTC (operator 2026-05-21: all
-// timestamps consistent, to match the reply envelope). A voice note arrives
+// '.wa' no matter the origin). HH:MM renders in the node's configured
+// `default_time_zone` (operator 2026-07-26), falling back to UTC when unset —
+// the reply envelope's clock (transcript-log.replyLine) does the same, so all
+// timestamps stay consistent (operator 2026-05-21). A voice note arrives
 // with its body already prefixed "(voice transcription, Ns) …" by the caller —
 // this formatter is body-agnostic.
 //
@@ -35,10 +37,27 @@ export function splitSurfaceTag(surface) {
   return { name: segs.slice(0, -1).join('.'), node: segs[segs.length - 1] };
 }
 
-export function formatDispatchLine({ senderName, chatName, node, surface, body, ts, msgId, replyToId, stageDirection = false } = {}) {
+// THE TRANSCRIPT CLOCK. HH:MM rendered in `timeZone` — the node's config
+// `default_time_zone`, resolved by the heartbeat loader's resolveTimeZone (ONE zone
+// mechanism, no second one) and injected by boot into the two line formatters. Operator
+// 2026-07-26: "timestamps should be rendered as per the configuration key" — he reads at
+// −0400, so a UTC line looked four hours ahead of when it happened and he believed his own
+// message was missing from the bottom of a live file.
+// No zone — or a zone Intl rejects — renders UTC, the historical behaviour. NEVER throws:
+// a transcript line is not worth losing over a clock.
+export function hhmm(ts, timeZone) {
   const d = new Date(ts ?? Date.now());
+  if (timeZone) {
+    try {
+      return new Intl.DateTimeFormat('en-GB', { timeZone, hour12: false, hourCycle: 'h23', hour: '2-digit', minute: '2-digit' }).format(d);
+    } catch { /* invalid zone → the UTC fallback below */ }
+  }
   const pad = (n) => String(n).padStart(2, '0');
-  const tstr = `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
+  return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
+}
+
+export function formatDispatchLine({ senderName, chatName, node, surface, body, ts, msgId, replyToId, stageDirection = false, timeZone = null } = {}) {
+  const tstr = hhmm(ts, timeZone);
   const sender = (senderName != null && String(senderName).trim()) ? String(senderName).trim() : 'someone';
   // Explicit { chatName, node } win; the surface tag is only a fallback source.
   const fromSurface = splitSurfaceTag(surface);
@@ -86,4 +105,28 @@ export function editAction({ targetId, oldText, newText } = {}) {
   const o = String(oldText ?? '').replace(/\s+/g, ' ').trim();
   const n = String(newText ?? '').replace(/\s+/g, ' ').trim();
   return `edited #${id}\n    - ${o}\n    + ${n}`;
+}
+
+// The LIVE-FRAME marker. src/spine/sender.mjs `update()` stamps it onto every
+// intermediate frame of a streaming reply (`${partial} ⏳`) and ONLY there — `finish()`
+// posts the settled text without it. It is the one token that separates "this message is
+// still being written" from "this is what it says".
+export const LIVE_FRAME_MARK = '⏳';
+
+// Is this edit stage-direction a LIVING-MIRROR STREAM FRAME rather than history?
+//
+// A streaming reply is ONE message rewritten in place, so every frame re-upserts it and a
+// node OBSERVING that reply (a peer spine on the same shared Beeper account — the bridge
+// only suppresses its OWN stream ids, _ourStreamIds) sees each frame as an incoming edit.
+// Those frames are TRANSIENT: only the settled text is history. A HUMAN editing their own
+// earlier message is real history and must never be caught here — which is why the test is
+// the marker OUR OWN sender stamps, not a guess about who sent it or how the text looks.
+//
+// Reads the `+` (new) side only: the SETTLE frame's `-` side is the last partial and still
+// carries the marker, and that frame is exactly the one entry we keep. PRESENCE, not
+// position — a surface may wrap a committed frame in a signature layer, so the marker is
+// not guaranteed to stay at the very end of the line.
+export function isLiveStreamFrame(editBody) {
+  const plus = String(editBody ?? '').split('\n').find((l) => l.startsWith('    + '));
+  return plus != null && plus.includes(LIVE_FRAME_MARK);
 }

@@ -37,7 +37,9 @@ export function surfaceOf(network) {
   return KNOWN_SURFACES.includes(key) ? key : 'whatsapp';
 }
 
-export function createIdentity({ formatLine = formatDispatchLine, now = () => Date.now() } = {}) {
+// `timeZone`: the node's config default_time_zone (boot-resolved via the heartbeat loader's
+// resolveTimeZone) — the zone the dispatch line's HH:MM renders in. null → UTC, unchanged.
+export function createIdentity({ formatLine = formatDispatchLine, now = () => Date.now(), timeZone = null } = {}) {
   return {
     /** @param {{ body: string, from: object }} payload @returns {import('./spine.mjs').InboundEvent} */
     build({ body, from } = {}) {
@@ -78,6 +80,7 @@ export function createIdentity({ formatLine = formatDispatchLine, now = () => Da
         // direction references its own target in the body, no `↩#` tag)
         replyToId: kind === 'text' ? ev.replyToId : null,
         stageDirection: kind !== 'text',
+        timeZone,
       });
       return ev;
     },

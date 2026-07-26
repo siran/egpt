@@ -4,6 +4,8 @@
 // spine-v1.test.mjs (fake contacts resolver + fake io).
 import { describe, it, expect, vi } from 'vitest';
 import { createTranscript } from '../src/spine/transcript.mjs';
+import { createIdentity } from '../src/spine/identity.mjs';
+import { editAction } from '../src/dispatch-line.mjs';
 
 // The collector is fire-and-forget (not awaited by log()); give its async read-merge-write
 // a beat to land before asserting on the written stats.yaml.
@@ -136,6 +138,16 @@ describe('transcript.log — §3.1 stats collector chokepoint', () => {
     expect(text).not.toContain('egpt.');
   });
 
+  // The reply line's clock reads in the node's configured zone (config `default_time_zone`,
+  // boot-resolved with the heartbeat loader's resolveTimeZone) — the same clock the inbound
+  // line renders. Unset → UTC, exactly as before (operator 2026-07-26).
+  it('renders the reply-line clock in the injected time zone', async () => {
+    const files = new Map();
+    const t = createTranscript({ contacts: fakeContacts, io: mkIo(files), node_name: 'kg', defaultKey: 'egpt', timeZone: 'America/New_York', now: () => new Date(Date.UTC(2026, 6, 25, 19, 7)) });
+    await t.log(ev, { text: 'hi', being: 'egpt' });
+    expect(transcriptText(files)).toContain('[@egpt.kg (15:07)]: hi');
+  });
+
   it('never throws/rejects when the collector io read/write throws — transcript still appended', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     const files = new Map();
@@ -158,5 +170,101 @@ describe('transcript.log — §3.1 stats collector chokepoint', () => {
     } finally {
       consoleError.mockRestore();
     }
+  });
+});
+
+// A LIVING-MIRROR STREAM FRAME IS NOT HISTORY (operator 2026-07-26: "it's better if the
+// streaming is not logged"). A bot reply on this shared Beeper account is ONE message
+// progressively rewritten in place (src/spine/sender.mjs `update()` stamps every
+// intermediate frame with the ⏳ live marker; `finish()` posts the settled text without
+// it). Each rewrite re-upserts the message, so a node OBSERVING a peer's reply saw every
+// frame as an incoming `edited #<id>` stage-direction: 492 of them / 35% of the live
+// SPOILER transcript, five-plus giant near-identical blocks per reply, burying the
+// operator's own messages between them.
+//
+// A genuine human edit of an earlier message is REAL HISTORY and must still be logged —
+// so the guard keys on the frame marker sender.mjs itself stamps, nothing else.
+describe('transcript.log — living-mirror stream frames are not recorded', () => {
+  const mkIo = (files) => ({
+    appendFile: async (p, d) => { files.set(p, (files.get(p) ?? '') + d); },
+    mkdir: async () => {},
+    existsSync: (p) => files.has(p),
+    readFile: async (p) => { if (!files.has(p)) throw new Error('ENOENT'); return files.get(p); },
+    writeFile: async (p, d) => { files.set(p, d); },
+    readdir: readdirOver(files),
+  });
+  const transcriptText = (files) => [...files.entries()].find(([p]) => p.endsWith('transcript.md'))?.[1] ?? '';
+  const identity = createIdentity({ now: () => Date.UTC(2026, 6, 25, 19, 10) });
+  const peer = {
+    chatId: '!room:beeper.com', chatName: 'fam', network: 'whatsapp',
+    userId: 'u1', senderName: 'An', isStageDirection: true, msgKey: '176209',
+  };
+  const editEv = (targetId, oldText, newText, from = peer) =>
+    identity.build({ body: editAction({ targetId, oldText, newText }), from: { ...from, msgKey: targetId } });
+
+  it('a stream sequence logs ONE settled entry and no frame blocks; a human edit of an older message still logs', async () => {
+    const files = new Map();
+    const t = createTranscript({ contacts: fakeContacts, io: mkIo(files) });
+
+    // 1. the peer's placeholder arrives as an ordinary message (recorded, as today)
+    await t.log(identity.build({ body: '🤝 don\n⏳ Thinking…', from: { ...peer, isStageDirection: false } }));
+
+    // 2. its living-mirror frames — every intermediate carries the ⏳ marker
+    const frames = [
+      '🤝 don Buen lugar random para ⏳',
+      '🤝 don Buen lugar random para verla — ¿la disfrutaste o se sint ⏳',
+    ];
+    let prev = '🤝 don ⏳ Thinking…';
+    for (const f of frames) { await t.log(editEv('176209', prev, f)); prev = f; }
+
+    // 3. the SETTLE — sender.finish() posts the answer with no ⏳
+    const settled = '🤝 don Buen lugar random para verla — ¿la disfrutaste o se sintió como fan service comparada con la original?';
+    await t.log(editEv('176209', prev, settled));
+
+    // 4. a HUMAN correcting a typo in an OLDER message — real history, must survive
+    await t.log(editEv('155403', 'parece la corte frances', 'parece la corte francesa', { ...peer, senderName: 'Andrés' }));
+
+    const text = transcriptText(files);
+    expect(text.match(/edited #\d+/g)).toEqual(['edited #176209', 'edited #155403']);
+    expect(text).toContain(`+ ${settled}`);             // the settled text IS on the record
+    expect(text).toContain('parece la corte francesa'); // the human edit IS on the record
+    expect(text).not.toContain('Buen lugar random para ⏳');   // frame 1 is gone entirely
+
+    // KNOWN RESIDUE, deliberately not asserted away: the settle entry's `-` side is the
+    // LAST partial. The baseline an edit diffs against is the BRIDGE's per-message
+    // _seenText (src/bridges/beeper.mjs), which advances on every frame — so the settle
+    // diffs against frame N, not against the placeholder. Suppressing the frames at that
+    // baseline instead would make this entry read "placeholder → settled"; it is a
+    // two-line change in a file this chunk does not own.
+  });
+
+  // THE REAL SHAPE ON A LIVE NODE (2026-07-26): the bridge signature is structural, so every
+  // frame — placeholder and intermediate alike — is wrapped, open ABOVE the core and close
+  // BELOW it. ⏳ is therefore never the last character of a real frame, and the close differs
+  // per node. An unsigned-only fixture set would leave this guard green while it suppressed
+  // nothing in production.
+  it('recognises SIGNED frames too — the marker is not at the end of a real frame', async () => {
+    const files = new Map();
+    const t = createTranscript({ contacts: fakeContacts, io: mkIo(files) });
+    const wrap = (core) => `🌉kg\n${core}\n🌉`;                    // this node's bridge layer
+    const placeholder = wrap('🤝 don\n⏳ Thinking…');
+    const frames = [wrap('🤝 don\nBuen lugar random para ⏳'), wrap('🤝 don\nBuen lugar random para verla — ¿la disfrutaste ⏳')];
+    const settled = wrap('🤝 don\nBuen lugar random para verla — ¿la disfrutaste o se sintió como fan service?');
+
+    let prev = placeholder;
+    for (const f of [...frames, settled]) { await t.log(editEv('176209', prev, f)); prev = f; }
+
+    const text = transcriptText(files);
+    expect(text.match(/edited #\d+/g)).toEqual(['edited #176209']);   // the settle only
+    expect(text).toContain('se sintió como fan service?');
+    expect(text).not.toContain('Buen lugar random para ⏳');
+  });
+
+  it('a stream frame is not a received message either — no stats side-effect', async () => {
+    const files = new Map();
+    const t = createTranscript({ contacts: fakeContacts, io: mkIo(files) });
+    expect(await t.log(editEv('176209', '🤝 don ⏳ Thinking…', '🤝 don Buen lugar ⏳'))).toBe(false);
+    await settle();
+    expect([...files.keys()].some((p) => p.endsWith('.yaml'))).toBe(false);
   });
 });
