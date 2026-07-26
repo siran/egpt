@@ -57,7 +57,7 @@ import { createBrains } from './brains.mjs';
 import { createMeshService } from './mesh.mjs';
 import { createCompaction } from './compaction.mjs';
 import { createHeartbeats } from './heartbeats.mjs';
-import { createHeartbeatLoader } from './heartbeat-loader.mjs';
+import { createHeartbeatLoader, parseFrequency } from './heartbeat-loader.mjs';
 import { createConfigResolver, parseEntityConfig } from './config-resolver.mjs';
 import { seedSkeletons } from './seed.mjs';
 
@@ -603,6 +603,19 @@ export async function boot({
     onLog: (m) => log.line?.(`[lasso] ${m}`),
     writeState: (s) => { writeFile(join(EGPT_HOME, 'state', 'lasso.json'), `${JSON.stringify(s, null, 2)}\n`, 'utf8').catch(() => {}); },
   });
+  // THE EAR PROBE (operator 2026-07-07, redesigned 2026-07-26; ROADMAP §3) — the DEAF-BRIDGE
+  // detector. It injects a message with TELEGRAM'S OWN API (out of band, sharing no machinery
+  // with Beeper) and requires it to come back through the Beeper WS; it does not arrive → drop
+  // the socket and let the existing reconnect dial a fresh session. FAIL CLOSED: no bot token
+  // or no chat id → the probe is simply OFF, never a boot error and never a fallback to some
+  // other transport. Cadence/timeout are parsed HERE with the SAME parseFrequency the heartbeats
+  // use ("30m" / "45s" / a number of ms), so the limb takes plain ms like every other time
+  // option it has. Full rationale + the noise/latency tradeoff: CONFIG_SCHEMA.ear_probe.
+  const earRaw = cfg.ear_probe;
+  const earCfg = (earRaw && typeof earRaw === 'object') ? earRaw : {};
+  const earOff = earRaw === false || earCfg.every === false || earCfg.every === 0;
+  const earTg = (earCfg.telegram && typeof earCfg.telegram === 'object') ? earCfg.telegram : {};
+
   const bridge = lasso.wrap(await createBeeperBridgePort({
     beeperToken,
     userName: cfg.whatsapp?.user_name ?? cfg.user_name ?? null,
@@ -663,6 +676,11 @@ export async function boot({
     // limb the SAME lasso so the echo spends from the SAME node-wide budget. Forwarded
     // verbatim through beeper-port's `rest`.
     echoGate: lasso.gate,
+    // THE EAR PROBE (above). Both telegram fields are required; either missing → the limb
+    // builds no injector and the probe never runs.
+    earProbeTelegram: (earTg.token && earTg.chat_id != null) ? { token: earTg.token, chatId: earTg.chat_id } : null,
+    earProbeEveryMs: earOff ? 0 : (parseFrequency(earCfg.every) ?? 30 * 60_000),
+    earProbeTimeoutMs: parseFrequency(earCfg.timeout) ?? 45_000,
     onLog: (m) => log.line?.(`[bridge] ${m}`),
   }, startBridge ? { start: startBridge } : {}));
 

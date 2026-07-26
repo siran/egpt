@@ -32,10 +32,25 @@ async function startFakeBeeper() {
   // stuckCursor models a BROKEN server that re-serves page 1 forever with hasMore:true
   // (the cursor never advances) — the page walk must not spin on it.
   const chatsOpts = { stuckCursor: false };
+  // accountsDelayMs models a SLOW /v1/accounts answer — what "under full parallel load"
+  // does to the startup fetch. It is the deterministic stand-in for the load that used to
+  // make this file race a sleep (see the startupReady test below).
+  const serverOpts = { accountsDelayMs: 0 };
+  // The EAR PROBE's out-of-band sender is Telegram's Bot API, NOT Beeper — so the fake plays
+  // both, on one port, and the probe's `apiBase` points here. Anything landing in `telegram`
+  // provably did not go through the Beeper limb (which records into `posts`).
+  const telegram = [];
   const server = createServer((req, res) => {
     let body = '';
     req.on('data', (c) => { body += c; });
     req.on('end', () => {
+      const tg = req.url.match(/^\/bot([^/]+)\/sendMessage$/);
+      if (req.method === 'POST' && tg) {
+        const parsed = JSON.parse(body);
+        telegram.push({ token: tg[1], ...parsed });
+        res.end(JSON.stringify({ ok: true, result: { message_id: telegram.length } }));
+        return;
+      }
       const react = req.url.match(/^\/v1\/chats\/([^/]+)\/messages\/([^/?]+)\/reactions$/);
       if (req.method === 'POST' && react) {
         reactions.push({ chatID: decodeURIComponent(react[1]), messageID: decodeURIComponent(react[2]), ...JSON.parse(body) });
@@ -120,7 +135,9 @@ async function startFakeBeeper() {
       }
       if (req.method === 'GET' && req.url === '/v1/accounts') {
         accountsGets += 1;
-        res.end(JSON.stringify(accounts));
+        const answer = () => res.end(JSON.stringify(accounts));
+        if (serverOpts.accountsDelayMs > 0) setTimeout(answer, serverOpts.accountsDelayMs);
+        else answer();
         return;
       }
       const get = req.url.match(/^\/v1\/chats\/([^/]+)$/);
@@ -137,21 +154,41 @@ async function startFakeBeeper() {
   const wss = new WebSocketServer({ server, path: '/v1/ws' });
   const sockets = [];
   let subscribed = 0;
+  let socketCloses = 0;   // sockets the CLIENT dropped — how the ear probe's redial is observed
   wss.on('connection', (ws) => {
     sockets.push(ws);
+    ws.on('close', () => { socketCloses += 1; });
     ws.on('message', (buf) => { try { if (JSON.parse(buf.toString()).type === 'subscriptions.set') subscribed += 1; } catch { /* noop */ } });
     ws.send(JSON.stringify({ type: 'ready' }));
   });
   return {
-    port, posts, edits, reactions, uploads, chats, messages, accounts, chatsOpts,
+    port, posts, edits, reactions, uploads, chats, messages, accounts, chatsOpts, serverOpts, telegram,
     msgListGets: () => msgListGets,
     accountsGets: () => accountsGets,
     chatListGets: () => chatListGets,
     subscribed: () => subscribed,
+    socketCloses: () => socketCloses,
     emit: (ev) => { for (const ws of sockets) ws.send(JSON.stringify(ev)); },
     close: () => new Promise((r) => { for (const ws of sockets) ws.terminate(); wss.close(() => server.close(r)); }),
   };
 }
+
+// Post through the bridge and WAIT OUT its CONFIRMED-ID resolution before returning.
+//
+// THE WHOLE-FILE FLAKE (measured 2026-07-26): `bridge.send()` resolves when the POST returns;
+// the CONFIRMED id lands one or more list polls later (resolveSentMessageId, up to 6 x 500ms).
+// Dispatch of ANY message in that chat BLOCKS on that resolution (_awaitSends) — deliberately,
+// so own-send suppression is id-exact rather than a text guess. Tests waited on
+// `fake.posts.length` (or polled `wasSentByUs` on a 4s budget), which only proves the POST
+// landed, and then emitted a message whose dispatch had to wait out the rest — racing vitest's
+// 5s per-test budget. That is why this file failed under full parallel load with a DIFFERENT
+// test each time and passed on every isolate-rerun. The bridge already hands back the promise;
+// awaiting it is exact, and it leaves the send gate settled so nothing downstream has to wait.
+const sendSettled = async (bridge, text, opts) => {
+  const r = await bridge.send(text, opts);
+  await r?.confirmedId;
+  return r;
+};
 
 const waitFor = async (cond, ms = 10000) => {
   const t0 = Date.now();
@@ -179,6 +216,9 @@ function makeClock() {
         await t.fn();
       }
     },
+    // The deadlines currently armed. Lets a test wait for an ASYNC path to have armed its
+    // timer before advancing onto it — ordering, not a sleep (the ear-probe tests below).
+    pending: () => timers.map((t) => t.at),
   };
 }
 
@@ -222,6 +262,13 @@ async function startBridge(extra = {}) {
   });
   bridges.push(bridge);
   await waitFor(() => fake.subscribed() > base);
+  // …and wait out the STARTUP FETCH too (GET /v1/accounts, fire-and-forget in the bridge so
+  // a wedged Beeper can never block start). Without this every test body ran with that
+  // request still in flight against this same in-process fake server, and any test that
+  // depended on its result could only SLEEP and hope — a guess raced against vitest's 5s
+  // per-test budget, which is what made this whole FILE flake under full parallel load.
+  // One await here, and no test in the file races the bridge's own startup any more.
+  await bridge.startupReady;
   return { bridge, incoming, media };
 }
 
@@ -326,9 +373,8 @@ describe('beeper bridge', () => {
   // when it echoes back EVEN when it does NOT lead with the persona emoji.
   it("suppresses E's own re-ingested reply by id — even one that does NOT lead with the persona emoji", async () => {
     const { bridge, incoming } = await startBridge();
-    await bridge.send('🐶 egpt: roger', { chatId: CHAT('chat-1') });        // resolves + remembers its confirmed id
-    await bridge.send('plain reply no emoji', { chatId: CHAT('chat-1') });  // a reply with NO leading persona emoji
-    await waitFor(() => fake.posts.length === 2);
+    await sendSettled(bridge, '🐶 egpt: roger', { chatId: CHAT('chat-1') });        // resolves + remembers its confirmed id
+    await sendSettled(bridge, 'plain reply no emoji', { chatId: CHAT('chat-1') });  // a reply with NO leading persona emoji
     // Both echo back under the ids BEEPER assigned them (that is the only id the WS
     // ever carries — the POST's pendingMessageID names nothing).
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: fake.posts[0].confirmedID, text: '🐶 egpt: roger' })] });
@@ -403,9 +449,10 @@ describe('beeper bridge', () => {
   // it doesn't reintroduce the old per-node userName mislabel (the prior test above).
   it("the owner's OWN send is attributed to the /v1/accounts self-user's fullName, not the matrix-id localpart", async () => {
     fake.accounts.push({ accountID: 'whatsapp', user: { fullName: 'An', isSelf: true } });
+    // Was: waitFor(accountsGets >= 1) + a 50ms sleep — the server had only SEEN the request,
+    // so the sleep was a guess about the CLIENT's parse landing in time, and under parallel
+    // load that guess loses. startBridge now awaits the fetch itself (startupReady).
     const { incoming } = await startBridge();
-    await waitFor(() => fake.accountsGets() >= 1);
-    await new Promise((r) => setTimeout(r, 50));   // let the in-flight fetch's .then populate the map
     fake.emit({ type: 'message.upserted', entries: [
       liveMsg({ isSender: true, accountID: 'whatsapp', senderID: '@anrodriguez:beeper.com', senderName: '@anrodriguez:beeper.com', text: 'owner' }),
     ] });
@@ -671,8 +718,7 @@ describe('beeper bridge', () => {
     // key (refinement #4). The operator's OWN typed line is isSender too but was never
     // sent by us, so it is NOT suppressed and reaches the host to accumulate.
     const { bridge, incoming } = await startBridge();   // NO personaEmoji — auto sends carry none
-    await bridge.send('all good, talk soon', { chatId: CHAT('chat-1') });
-    await waitFor(() => fake.posts.length === 1);
+    await sendSettled(bridge, 'all good, talk soon', { chatId: CHAT('chat-1') });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: fake.posts[0].confirmedID, isSender: true, text: 'all good, talk soon' })] });   // E's reply, echoed back under its real id
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'op-id', isSender: true, text: 'note for later' })] });                          // operator's OWN typed message
     await waitFor(() => incoming.some((i) => i.text === 'note for later'));
@@ -688,8 +734,7 @@ describe('beeper bridge', () => {
     // other message; there's no reason to special-case the provenance tail.
     const { bridge, incoming } = await startBridge();
     const envelope = '```\nQGRvbiBob2xh\n\n---\nfrom: Me\nto: don.do\nmid: chain-1\nenc: b64\n```';
-    await bridge.send(envelope, { chatId: CHAT('chat-1') });
-    await waitFor(() => fake.posts.length === 1);
+    await sendSettled(bridge, envelope, { chatId: CHAT('chat-1') });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: fake.posts[0].confirmedID, text: envelope })] });   // our own post, echoed back under its real id
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: 'a real message' })] });
     await waitFor(() => incoming.some((i) => i.text === 'a real message'));
@@ -714,8 +759,7 @@ describe('beeper bridge', () => {
     const body = 'hola @don please answer this longer relayed question so the word bag is big';
     // ORIGIN envelope this node posted (to: don.do, via: [carol.kg]) → rememberSent records its text + bag.
     const origin = encodeMesh({ by: 'An', body, from: 'HFM', from_node: 'kg', to: 'don.do', post_id: 'p-1', via: 'carol.kg' });
-    await bridge.send(origin, { chatId: chat });
-    await waitFor(() => fake.posts.length === 1);
+    await sendSettled(bridge, origin, { chatId: chat });
     // ~1s later the NEXT HOP's forward arrives in the SAME chat — a FOREIGN message: identical
     // base64 body + from/from_node/by/post_id/enc, differing ONLY in `to:` (wren.kg) and one `via:` entry.
     const forward = encodeMesh({ by: 'An', body, from: 'HFM', from_node: 'kg', to: 'wren.kg', post_id: 'p-1', via: 'carol.kg,don.do' });
@@ -731,8 +775,7 @@ describe('beeper bridge', () => {
     const { bridge, incoming } = await startBridge();
     const chat = CHAT('egpt-mesh-do-kg');
     const env = encodeMesh({ by: 'An', body: 'hola @don answer please a longer body here', from: 'HFM', from_node: 'kg', to: 'don.do', post_id: 'p-2', via: 'carol.kg' });
-    await bridge.send(env, { chatId: chat });
-    await waitFor(() => fake.posts.length === 1);
+    await sendSettled(bridge, env, { chatId: chat });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: fake.posts[0].confirmedID, chatID: chat, text: env })] });   // our own post, echoed back
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'sentinel-own', chatID: chat, text: 'a real message' })] });
     await waitFor(() => incoming.some((i) => i.from.msgKey === 'sentinel-own'));
@@ -750,8 +793,7 @@ describe('beeper bridge', () => {
     const chat = CHAT('chat-1');
     const menu = 'egpt · conversations (newest first)\n  0) ✦ @egpt — global default brain\n  1) Joyce Vicente · e:haiku/mention\n  2) SPOILER ALERT · e:sonnet/mention\n(reply a number · q quit)';
     const echo = 'egpt · conversations (newest first) 0) ✦ @egpt — global default brain - 1) Joyce Vicente · e:haiku/mention - 2) SPOILER ALERT · e:sonnet/mention - reply a number · q quit';   // reformatted one-line echo
-    await bridge.send(menu, { chatId: chat });
-    await waitFor(() => fake.posts.length === 1);
+    await sendSettled(bridge, menu, { chatId: chat });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: fake.posts[0].confirmedID, chatID: chat, text: echo })] });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'sentinel-menu', chatID: chat, text: 'a real human line' })] });
     await waitFor(() => incoming.some((i) => i.from.msgKey === 'sentinel-menu'));
@@ -1622,8 +1664,7 @@ describe('beeper bridge — wake words (own handles only, no injection)', () => 
 
   it("the node's OWN persona reply (multi-line 🐶 header) is dropped when it echoes back (its sent id)", async () => {
     const { bridge, incoming } = await startBridge();
-    await bridge.send('🐶 egpt\nmy own reply', { chatId: CHAT('chat-1') });
-    await waitFor(() => fake.posts.length === 1);
+    await sendSettled(bridge, '🐶 egpt\nmy own reply', { chatId: CHAT('chat-1') });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: fake.posts[0].confirmedID, text: '🐶 egpt\nmy own reply' })] });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ isSender: false, text: 'sentinel-own' })] });
     await waitFor(() => incoming.some((m) => m.text === 'sentinel-own'));
@@ -1664,17 +1705,16 @@ describe('beeper bridge — E limbs + reply-to-E notification', () => {
   // wasSentByUs, so replying to E's reply never woke it.)
   it('wasSentByUs is true for the CONFIRMED id of a message this bridge sent — never the POST pendingMessageID', async () => {
     const { bridge } = await startBridge();
-    await bridge.send('hi there', { chatId: CHAT('chat-1') });
-    await waitFor(() => bridge.wasSentByUs(CHAT('chat-1'), fake.posts[0].confirmedID), 4000);
+    await sendSettled(bridge, 'hi there', { chatId: CHAT('chat-1') });
+    expect(bridge.wasSentByUs(CHAT('chat-1'), fake.posts[0].confirmedID)).toBe(true);
     expect(bridge.wasSentByUs(CHAT('chat-1'), 'pm-1')).toBe(false);   // the pending id names no real message
     expect(bridge.wasSentByUs(CHAT('chat-1'), 'someone-elses-id')).toBe(false);
   });
 
   it('an inbound reply to a message WE sent → replyToBot true + ↩#id ref (operator: "reply to E isn\'t notified")', async () => {
     const { bridge, incoming } = await startBridge();
-    await bridge.send('egpt here', { chatId: CHAT('chat-1') });
+    await sendSettled(bridge, 'egpt here', { chatId: CHAT('chat-1') });
     const confirmed = fake.posts[0].confirmedID;   // the id Beeper gave our send — the only id a reply can quote
-    await waitFor(() => bridge.wasSentByUs(CHAT('chat-1'), confirmed), 4000);
     // someone replies to it (Beeper carries the quoted id as a bare linkedMessageID)
     fake.emit({ type: 'message.upserted', entries: [
       liveMsg({ isSender: false, senderName: 'Bea', text: 'gracias', linkedMessageID: confirmed }),
@@ -1687,7 +1727,7 @@ describe('beeper bridge — E limbs + reply-to-E notification', () => {
 
   it('an inbound reply to SOMEONE ELSE → replyToBot false, but the ↩#id ref still rides', async () => {
     const { bridge, incoming } = await startBridge();
-    await bridge.send('egpt here', { chatId: CHAT('chat-1') });
+    await sendSettled(bridge, 'egpt here', { chatId: CHAT('chat-1') });
     fake.emit({ type: 'message.upserted', entries: [
       liveMsg({ isSender: false, senderName: 'Bea', text: 'ya te dije', linkedMessageID: 'other-99' }),
     ] });
@@ -1720,10 +1760,8 @@ describe('beeper bridge — own-send suppression is id-exact (shared account)', 
 
   it("our OWN send, echoed back under its CONFIRMED id (≠ the pendingMessageID), never re-enters dispatch", async () => {
     const { bridge, incoming } = await startBridge();
-    await bridge.send('egpt says hi', { chatId: chat });
-    await waitFor(() => fake.posts.length === 1);
+    await sendSettled(bridge, 'egpt says hi', { chatId: chat });
     const confirmed = fake.posts[0].confirmedID;
-    await waitFor(() => bridge.wasSentByUs(chat, confirmed), 4000);
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: confirmed, chatID: chat, text: 'egpt says hi' })] });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'sentinel-echo', chatID: chat, isSender: false, text: 'a real message' })] });
     await waitFor(() => incoming.some((i) => i.from.msgKey === 'sentinel-echo'));
@@ -1735,8 +1773,7 @@ describe('beeper bridge — own-send suppression is id-exact (shared account)', 
     // Long enough to trip BOTH removed resemblance stages: the exact sent-text window
     // and the >=8-word bag fingerprint. Only the id may decide.
     const line = 'egpt · conversations (newest first) — reply with a number or q to quit';
-    await bridge.send(line, { chatId: chat });
-    await waitFor(() => bridge.wasSentByUs(chat, fake.posts[0].confirmedID), 4000);
+    await sendSettled(bridge, line, { chatId: chat });
     // The operator pastes our own line back, seconds later, from the SAME account:
     // isSender:true, byte-identical text — but an id we never sent.
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'human-paste', chatID: chat, text: line })] });
@@ -1747,8 +1784,7 @@ describe('beeper bridge — own-send suppression is id-exact (shared account)', 
 
   it("the operator's OWN human message (isSender, an id we never sent) DISPATCHES", async () => {
     const { bridge, incoming } = await startBridge();
-    await bridge.send('egpt says hi', { chatId: chat });
-    await waitFor(() => bridge.wasSentByUs(chat, fake.posts[0].confirmedID), 4000);
+    await sendSettled(bridge, 'egpt says hi', { chatId: chat });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'op-typed', chatID: chat, text: 'note for later' })] });
     await waitFor(() => incoming.some((i) => i.from.msgKey === 'op-typed'));
     expect(incoming.find((i) => i.from.msgKey === 'op-typed').from.isSender).toBe(true);   // same account, still surfaced
@@ -2066,3 +2102,176 @@ describe('transcriptionForNoteId (transcript.md reuse parser)', () => {
 
 // tiny local helper for the parser tests (no front matter needed)
 function transcriptDocLike(...lines) { return lines.join('\n\n') + '\n\n'; }
+
+// ═══ THE EAR PROBE — deaf-bridge detection (operator 2026-07-07; ROADMAP §3) ═════════
+//
+// MEASURED OUTAGE, 2026-07-07: this bridge was DEAF for ~8.5h — process alive, the spine
+// tick beating, the WS reporting "open", ZERO inbound on real traffic, operator commands
+// silently unheard. Nothing in the system could see it: the daemon's deadman
+// (src/daemon-runtime.mjs checkLiveness) only proves the LOOP runs, and `isAlive()` is
+// `_wsReady` — the ONE flag that stays TRUE through exactly this failure, which is why the
+// probe never reads it.
+//
+// The operator REJECTED a passive last-inbound-age detector (false-alarms on a quiet night;
+// a draining backlog masks real deafness — both happened that day). The check is ACTIVE, and
+// the SENDER IS OUT OF BAND (operator 2026-07-26: "a deaf-bridge detection (beeper) could be
+// done using telegram api and self sending a message to spine"): the message is injected with
+// Telegram's own API and must come back THROUGH Beeper. Send and receive share no machinery,
+// and the probe message is not "ours" — it takes the ordinary inbound path a human message
+// takes, which is exactly the path that broke. Rationale: src/ear-probe.mjs.
+describe('beeper bridge — the ear probe (deaf-bridge detection)', () => {
+  // A probe on the fake clock: 60s cadence, 45s arrival window (first probe at 20s), with the
+  // Telegram API pointed at the fake server instead of api.telegram.org.
+  const probeCfg = (over = {}) => ({
+    earProbeTelegram: { token: 'tg-bot-token', chatId: 424242, apiBase: `http://127.0.0.1:${fake.port}` },
+    earProbeEveryMs: 60_000,
+    earProbeTimeoutMs: 45_000,
+    ...over,
+  });
+
+  // Deliver the injected message the way Beeper would: an ORDINARY inbound in a bridged
+  // Telegram chat, from the bot — nothing marks it as ours. A trailing marker rides along so a
+  // test can wait on ORDER (the ear is fed entries in order) instead of sleeping.
+  const deliver = (text) => fake.emit({ type: 'message.upserted', entries: [
+    liveMsg({ id: 'tg-probe', chatID: CHAT('chat-tg'), isSender: false, senderID: 'bot@telegram.local', senderName: 'egpt-ear-bot', text }),
+    liveMsg({ id: 'after-probe', chatID: CHAT('chat-tg'), isSender: false, senderID: 'bot@telegram.local', text: 'after-the-probe' }),
+  ] });
+
+  // Budget note: this one waits out the bridge's REAL 3s reconnect backoff (RECONNECT_MIN_MS
+  // is not on the injected clock) to prove the redial actually happens — "restart the bridge"
+  // is the operator's requirement, and an unasserted restart is exactly the kind of thing that
+  // silently does not work. Every other test here is on the fake clock and costs nothing.
+  it('REPRODUCE-FIRST: a socket that reports OPEN but delivers NOTHING is called deaf, and the bridge redials', { timeout: 15_000 }, async () => {
+    const clock = makeClock();
+    const { bridge } = await startBridge({ scheduler: clock, ...probeCfg() });
+    // The live outage's signature: the health flag says everything is fine.
+    expect(bridge.isAlive()).toBe(true);
+    const closesBefore = fake.socketCloses();
+    const subsBefore = fake.subscribed();
+
+    await clock.advance(20_000);                       // the first probe fires
+    await waitFor(() => fake.telegram.length === 1);   // …injected OUT OF BAND, via the Telegram API
+    expect(fake.telegram[0].chat_id).toBe(424242);
+    expect(fake.posts).toHaveLength(0);                // …and NOT through Beeper: the sender is independent
+    // The fake never delivers it over the WS — an open socket that carries nothing.
+    // Wait for the ARRIVAL WINDOW to be armed (20s + the 45s timeout) rather than guessing
+    // how long the injection's HTTP round trip takes.
+    await waitFor(() => clock.pending().includes(65_000));
+    await clock.advance(45_000);                       // the arrival window elapses
+    await waitFor(() => fake.socketCloses() > closesBefore);   // socket dropped…
+    await waitFor(() => fake.subscribed() > subsBefore, 9_000); // …and a FRESH session subscribed
+  });
+
+  it('the injected message arriving through the bridge is the pass condition — no redial', async () => {
+    const clock = makeClock();
+    const { incoming } = await startBridge({ scheduler: clock, ...probeCfg() });
+    const closesBefore = fake.socketCloses();
+    await clock.advance(20_000);
+    await waitFor(() => fake.telegram.length === 1);
+    deliver(fake.telegram[0].text);
+    await waitFor(() => incoming.some((i) => i.text === 'after-the-probe'));
+    await clock.advance(45_000);
+    expect(fake.socketCloses()).toBe(closesBefore);
+    // It is an ORDINARY message all the way through — the probe consumes nothing and hides
+    // nothing; the spine sees it exactly as it would any other inbound.
+    expect(incoming.some((i) => i.from.msgKey === 'tg-probe')).toBe(true);
+  });
+
+  it('OTHER traffic does NOT satisfy the probe (a draining backlog must not mask deafness)', async () => {
+    const clock = makeClock();
+    const { incoming } = await startBridge({ scheduler: clock, ...probeCfg() });
+    const closesBefore = fake.socketCloses();
+    await clock.advance(20_000);
+    await waitFor(() => fake.telegram.length === 1);
+    // Messages ARE flowing — the passive last-inbound detector the operator rejected would
+    // read this as "we can hear". Only the nonce we injected counts.
+    deliver('some other message entirely');
+    await waitFor(() => incoming.some((i) => i.text === 'after-the-probe'));
+    await waitFor(() => clock.pending().includes(65_000));
+    await clock.advance(45_000);
+    await waitFor(() => fake.socketCloses() > closesBefore);
+  });
+
+  it('a FAILED injection is INCONCLUSIVE, never deaf — a broken sender cannot restart the bridge', async () => {
+    const clock = makeClock();
+    const { bridge } = await startBridge({ scheduler: clock, ...probeCfg({
+      earProbeTelegram: { token: 'tg-bot-token', chatId: 424242, apiBase: 'http://127.0.0.1:1' },   // nothing listening
+    }) });
+    const closesBefore = fake.socketCloses();
+    await clock.advance(20_000);
+    await clock.advance(45_000);
+    await new Promise((r) => setTimeout(r, 120));
+    expect(fake.socketCloses()).toBe(closesBefore);
+    expect(bridge.isAlive()).toBe(true);
+  });
+
+  it('never overlaps: a tick during a probe is DROPPED, not queued (at most one message per window, forever)', async () => {
+    const clock = makeClock();
+    // Cadence DELIBERATELY shorter than the arrival window, so the next tick lands while the
+    // first probe is still waiting — the case a queueing implementation would turn into a
+    // burst on a long outage.
+    await startBridge({ scheduler: clock, ...probeCfg({ earProbeEveryMs: 10_000 }) });
+    await clock.advance(20_000);
+    await waitFor(() => fake.telegram.length === 1);
+    await waitFor(() => clock.pending().includes(65_000));
+    await clock.advance(10_000);          // the next cadence tick, mid-probe
+    await clock.advance(10_000);          // and another
+    await new Promise((r) => setTimeout(r, 120));
+    expect(fake.telegram).toHaveLength(1);
+  });
+
+  it('no Telegram token / chat id → the probe is simply OFF (fail closed, never a boot error)', async () => {
+    const clock = makeClock();
+    const { bridge } = await startBridge({ scheduler: clock, earProbeEveryMs: 60_000, earProbeTimeoutMs: 45_000 });
+    await clock.advance(20_000);
+    await clock.advance(60_000);
+    await new Promise((r) => setTimeout(r, 120));
+    expect(fake.telegram).toHaveLength(0);
+    expect(fake.posts).toHaveLength(0);   // and NO fallback to some other transport
+    expect(bridge.isAlive()).toBe(true);
+  });
+
+  it('a token with no chat id is also OFF (both are required)', async () => {
+    const clock = makeClock();
+    await startBridge({ scheduler: clock, ...probeCfg({ earProbeTelegram: { token: 'tg-bot-token', apiBase: `http://127.0.0.1:${fake.port}` } }) });
+    await clock.advance(20_000);
+    await clock.advance(60_000);
+    await new Promise((r) => setTimeout(r, 120));
+    expect(fake.telegram).toHaveLength(0);
+  });
+
+  it('earProbeEveryMs 0 disables it (the house off-switch)', async () => {
+    const clock = makeClock();
+    await startBridge({ scheduler: clock, ...probeCfg({ earProbeEveryMs: 0 }) });
+    await clock.advance(20_000);
+    await clock.advance(3_600_000);
+    await new Promise((r) => setTimeout(r, 120));
+    expect(fake.telegram).toHaveLength(0);
+  });
+});
+
+// ═══ STARTUP READINESS — the deterministic seam this file used to race ══════════════
+//
+// The owner-name map is filled by a FIRE-AND-FORGET GET /v1/accounts at bridge start (it
+// must never block start: on a wedged Beeper, api() has no request timeout). Tests used to
+// wait for the SERVER to have seen the request and then sleep 50ms hoping the CLIENT had
+// parsed the answer — a guess raced against vitest's 5s per-test budget, which is what made
+// this whole FILE flake under full parallel load. `startupReady` settles when that fetch has
+// settled, so the wait is exact instead of hopeful.
+describe('beeper bridge — startupReady', () => {
+  it('a SLOW /v1/accounts (what parallel load does) still attributes the owner — awaited, not slept on', async () => {
+    fake.serverOpts.accountsDelayMs = 300;   // deterministic stand-in for "the machine is loaded"
+    fake.accounts.push({ accountID: 'whatsapp', user: { fullName: 'An', isSelf: true } });
+    const { incoming } = await startBridge();   // startBridge awaits startupReady — exact, no sleep
+    fake.emit({ type: 'message.upserted', entries: [
+      liveMsg({ isSender: true, accountID: 'whatsapp', senderID: '@anrodriguez:beeper.com', senderName: '@anrodriguez:beeper.com', text: 'mine' }),
+    ] });
+    await waitFor(() => incoming.length === 1);
+    expect(incoming[0].from.senderName).toBe('An');
+  });
+
+  it('settles (never rejects) even when the fetch FAILS — start is never blocked on Beeper', async () => {
+    const { bridge } = await startBridge({ baseUrl: 'http://127.0.0.1:1' });   // nothing listening
+    await expect(bridge.startupReady).resolves.toBeUndefined();
+  });
+});

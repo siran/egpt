@@ -873,9 +873,7 @@ export const CONFIG_SCHEMA = {
         handle is invoked").
 
         DECLARED  = the COMPLETE wake list; the map KEY does NOT route.
-        ABSENT    = the map key serves as the handle (a MULTIPATH agent is a
-                    LIST and has nowhere to declare handles, so it always
-                    wakes by key).
+        ABSENT    = the map key serves as the handle.
         []        = a complete list that is empty: NO @token reaches this
                     agent.
 
@@ -923,8 +921,13 @@ export const CONFIG_SCHEMA = {
         layers over the entry's existing <name>: block field-by-field, so an
         operator can pin one agent's mode in one chat without disturbing the
         threadId/readonly the spine writes there.
-      enabled
-        false to disable routing to it.
+      paths
+        Marks a MULTIPATH relay - a LIST of single-key maps
+        { <label>: { relay_channel, network?, to? } }, one per path; every
+        message goes through every path (operator 2026-07-06). The agent is an
+        ordinary map, so it carries handles:/surface:/mode: like any other
+        (operator 2026-07-26). Multipath used to be the agent VALUE itself
+        being that list, which left it addressable only by its map key.
 
     RESOLUTION of a leading @<token> (router.mjs):
       The token matches an agent's name or any handle (case-insensitive).
@@ -1235,6 +1238,76 @@ export const CONFIG_SCHEMA = {
         {delivered:false, lastError:"stream-result timeout"}. NOT a speed cap on
         @e: it only kicks in if the keeper hangs after the reply is complete.
         Set higher for tolerant networks, lower for aggressive fallback.
+  `,
+
+  ear_probe: `
+    THE DEAF-BRIDGE DETECTOR (src/ear-probe.mjs, wired into the Beeper limb by
+    src/spine/boot.mjs).
+
+    WHY IT EXISTS — a MEASURED outage, 2026-07-07: the Beeper limb was DEAF for ~8.5
+    HOURS. The process was alive, the spine tick was beating, the WebSocket reported
+    "open", the machine was confirmed not asleep — and ZERO inbound arrived on real
+    traffic, so operator commands were silently unheard. Nothing in the system could
+    see it: the daemon's deadman only proves the LOOP runs, and the bridge's own
+    isAlive() IS that "open" flag — the one thing that stays true through this exact
+    failure. So the probe never reads it.
+
+    A PASSIVE last-inbound-age check was REJECTED by the operator: it false-alarms on
+    a quiet night, and a draining backlog masks real deafness (lines scroll while the
+    ear is broken — both happened that day). The check is ACTIVE.
+
+    THE SENDER IS OUT OF BAND (operator 2026-07-26: "a deaf-bridge detection (beeper)
+    could be done using telegram api and self sending a message to spine"). The probe
+    injects a message with TELEGRAM'S OWN API — not through Beeper — into a Telegram
+    chat this Beeper account bridges, and requires it to come back THROUGH the Beeper
+    WebSocket within \`timeout\`. It does not arrive ⇒ the ear is deaf ⇒ drop the
+    socket, and the bridge's existing reconnect dials a fresh session (which is what
+    fixed the live incident: a fresh session delivered in 17s).
+
+    Send and receive therefore share NO machinery, and the probe message is not "ours"
+    as far as the bridge is concerned — it travels the ordinary inbound path a human
+    message takes, which is exactly the path the outage broke. There is NO marker in
+    the body: the probe compares against the exact nonce it injected, only while a
+    probe is in flight, and that comparison decides nothing about any other message.
+
+    REQUIRES TELEGRAM. A node whose Beeper account does not bridge Telegram cannot run
+    this probe at all. FAIL CLOSED: no bot token, no chat id, or a non-positive
+    cadence and the probe is simply OFF — silently, never a boot error, and never a
+    fallback to some other transport.
+
+    KEYS:
+      every
+        DEFAULT: 30m — how often to probe (\`45s\` / \`30m\` / \`1.5h\`, or a number of
+        ms). 0 or false = OFF. At 30m a deaf window is bounded to about half an hour
+        (the measured outage was 8.5 hours) and the probe costs 48 messages a day in
+        the probe chat. THIS is the number to tune.
+      timeout
+        DEFAULT: 45s — how long the injected message may take to come back before the
+        ear is called deaf, measured from the moment Telegram accepted it. Live, a
+        healthy session delivered a fresh message's event in ~17s; during the outage
+        nothing arrived in ~4 min. A false positive costs one WS redial: messages from
+        a deaf window are HELD on reconnect by design, so nothing is lost.
+      telegram.token
+        A Telegram BOT token (BotFather). No default — absent = the probe is off.
+      telegram.chat_id
+        The Telegram chat the bot posts into. It MUST be a chat this Beeper account
+        bridges, or the message can never come back and every probe reads deaf. No
+        default — absent = the probe is off. Prefer a quiet chat: the probe message IS
+        an ordinary inbound, so it lands in that chat's transcript, and a chat in
+        \`on\` mode would have a being answer it.
+
+    IT CANNOT STORM: one probe in flight at a time (a tick during a probe is dropped,
+    not queued) and one tick per \`every\`, so at most one message per window whatever
+    happens. NOTE: this send does NOT pass through \`lasso\` — the lasso regulates what
+    the spine emits to its LIMBS, and this leaves via Telegram, beside them. The
+    cadence and the non-overlap rule are the whole bound, which is why the cadence is
+    minutes. An injection that FAILS (Telegram unreachable, bot not in the chat) is
+    INCONCLUSIVE, never "deaf": a broken sender cannot restart the bridge.
+
+    ALSO THE POST-DEPLOY SMOKE: the first probe runs ~20s after start rather than a
+    full cadence later, so every deploy/respawn is followed within seconds by a real
+    end-to-end delivery check, recorded in EGPT_HOME/config/logs/beeper.log ("ear
+    probe OK" / "EAR DEAF"). It verifies DELIVERY, not that a being answered.
   `,
 
   lasso: `

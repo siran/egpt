@@ -67,6 +67,7 @@ import { fileURLToPath } from 'node:url';
 import { join, basename } from 'node:path';
 import { EGPT_HOME } from '../egpt-home.mjs';
 import { shortChatId, fullChatId } from './chat-id.mjs';
+import { createEarProbe, injectViaTelegram } from '../ear-probe.mjs';
 
 // Profile-aware (NOT hardcoded ~/.egpt): EGPT_HOME selects the node, so two
 // nodes on one box (prod ~/.egpt + a v2 test node ~/.egpt2) never interleave
@@ -245,6 +246,23 @@ export async function startBeeperBridge(opts = {}) {
     // voice notes lands. gate(fn) runs fn when a slot is free (delaying it if not) and answers
     // null when the regulator's queue is full. Default = run it now → byte-identical to before.
     echoGate = (fn) => fn(),
+    // ── THE EAR PROBE (operator 2026-07-07 / redesigned 2026-07-26; ROADMAP §3) ─────
+    // The deaf-bridge detector. Its whole rationale lives in src/ear-probe.mjs; this limb
+    // only supplies the two ends it owns — the inbound stream it must be heard on, and the
+    // socket to drop when it is not. The SENDER is out of band (Telegram's own API), so no
+    // Beeper machinery is shared between the send and the receive.
+    // { token, chatId, apiBase? } — a Telegram BOT token and a chat that THIS Beeper account
+    // bridges. null / missing either → the probe is simply OFF (fail closed, never fatal).
+    earProbeTelegram = null,
+    // How often. CONSERVATIVE BY DEFAULT — outbound traffic on a timer, forever, on an
+    // account that has already had a message-flood incident. 30 min bounds a deaf window to
+    // ~30 min (the measured outage was 8.5 HOURS) at 48 probe messages a day. 0 = OFF.
+    earProbeEveryMs = 30 * 60_000,
+    // How long the injected message may take to arrive through the bridge before the ear is
+    // called deaf. Live, a healthy session delivered a fresh message's event in ~17s; during
+    // the outage nothing arrived in ~4 min. 45s is generously on the safe side — a false
+    // positive costs one WS redial, and messages from the window stay HELD by design.
+    earProbeTimeoutMs = 45_000,
     // Authorization: is this STABLE sender id an operator (may emit commands /
     // mentions) ON THIS network? Signature is (senderId, network) — the host reads
     // the PER-SURFACE allowed_users live (operator 2026-07-02: ids are per-surface
@@ -326,8 +344,12 @@ export async function startBeeperBridge(opts = {}) {
   // see senderDisplay below). Populated ONCE at startup, fire-and-forget: must NOT
   // block bridge start, and any failure/missing field just leaves the map empty —
   // senderDisplay then falls back to today's push-name/id chain, unchanged.
+  // …and because it is fire-and-forget, "has it landed yet?" is otherwise unanswerable:
+  // a caller could only sleep and hope. `startupReady` (returned below) SETTLES when this
+  // fetch has settled — it never rejects and nothing awaits it on the boot path, so start
+  // stays non-blocking. The whole beeper-bridge test file used to race a 50ms sleep here.
   const _ownerNameByAccount = new Map();   // lowercased accountID -> owner's fullName
-  (async () => {
+  const _startupReady = (async () => {
     try {
       const accounts = await api('GET', '/v1/accounts');
       for (const a of Array.isArray(accounts) ? accounts : []) {
@@ -1390,6 +1412,34 @@ export async function startBeeperBridge(opts = {}) {
   let _reconnectMs = RECONNECT_MIN_MS;   // backs off to RECONNECT_MAX_MS while Beeper is down
   let _processing = Promise.resolve();   // serialize dispatch (slow transcribe must not interleave)
 
+  // --- THE EAR PROBE (operator 2026-07-07 / redesigned 2026-07-26; ROADMAP §3) -------
+  // The full rationale — why an ACTIVE check, why the sender is OUT OF BAND (Telegram's own
+  // API, so send and receive share no machinery), why isAlive()/_wsReady is never consulted,
+  // and why the correlation is a nonce we injected rather than a marker — lives in
+  // src/ear-probe.mjs. This limb owns only the two ends the probe cannot reach on its own:
+  //
+  //   HEARD  — the WS handler hands it every inbound body (below). The injected message is a
+  //            perfectly ordinary inbound here: it is not ours, so it takes the ordinary path,
+  //            which is exactly the path the outage broke.
+  //   RESTART— "restart the bridge" is DROPPING THE SOCKET. No new restart path: the existing
+  //            'close' handler redials with backoff, which is what fixed the live incident (a
+  //            fresh session delivered in 17s). Backlog from a deaf window stays HELD by
+  //            design, so a false positive costs one redial and nothing else.
+  const _timers = scheduler ?? { set: (fn, ms) => setTimeout(fn, ms), clear: (h) => clearTimeout(h) };
+  const _earProbe = createEarProbe({
+    everyMs: earProbeEveryMs,
+    timeoutMs: earProbeTimeoutMs,
+    scheduler: _timers,
+    // Beeper delivers text as HTML; undo that before the equality compare (no threshold, no
+    // resemblance — the same normalizer the bridge already uses to recognise its own text).
+    normalize: (s) => normEchoText(htmlToMarkdown(s) || s || '').trim(),
+    inject: (earProbeTelegram?.token && earProbeTelegram?.chatId)
+      ? (text) => injectViaTelegram({ ...earProbeTelegram, text })
+      : null,
+    restart: () => { try { if (ws?.terminate) ws.terminate(); else ws?.close?.(); } catch { /* already gone */ } },
+    onLog: (m) => onLog(`beeper: ${m}`),
+  });
+
   function connect() {
     if (_stopped || !token) return;
     ws = new WebSocket(wsUrl, { headers: { Authorization: `Bearer ${token}` } });
@@ -1412,6 +1462,11 @@ export async function startBeeperBridge(opts = {}) {
           // gave), so everything downstream (dispatch, reactions, edits, onMedia,
           // onIncoming's `from`) sees the SHORT id only.
           const msg = { ...entry, chatID: shortChatId(entry.chatID ?? ev.chatID) };
+          // THE EAR PROBE's one inbound hook: this is the moment the bridge HEARS. It only
+          // ever compares against the nonce IT injected, and only while a probe is in flight
+          // (a null check otherwise) — it decides nothing about any other message, and the
+          // message still rides on into dispatch exactly as it would have.
+          _earProbe.heard(msg.text);
           // serialize: chain dispatch so a 20s transcribe doesn't overlap the next
           _processing = _processing.then(() => dispatchMessage(msg)).catch(e => onLog(`beeper: dispatch error — ${e?.message ?? e}`));
         }
@@ -1443,6 +1498,10 @@ export async function startBeeperBridge(opts = {}) {
 
   return {
     chatId: null,
+    // Settles when the startup GET /v1/accounts has settled (never rejects, never blocks
+    // start). The one deterministic answer to "is the bridge finished starting up?" — see
+    // the fetch above.
+    startupReady: _startupReady,
     async send(text, { chatId, chatName, replyToMessageID = null } = {}) {
       return await sendMessage(chatId ?? chatName, text, { replyToMessageID });
     },
@@ -1564,7 +1623,12 @@ export async function startBeeperBridge(opts = {}) {
       return handle;
     },
     isAlive: () => _wsReady,
-    stop: () => { _stopped = true; if (_reconnectTimer) clearTimeout(_reconnectTimer); try { ws?.close(); } catch { /* closing */ } },
+    stop: () => {
+      _stopped = true;
+      if (_reconnectTimer) clearTimeout(_reconnectTimer);
+      _earProbe.stop();
+      try { ws?.close(); } catch { /* closing */ }
+    },
   };
 }
 
