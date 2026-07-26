@@ -161,7 +161,7 @@ const MSG = { surface: 'wa', node: 'wa', chatId: 'CHAT', chatName: 'fam', sender
 
 function fanoutSpine({ router = arouter, mayReply = true, mode = null, gating = null } = {}) {
   const bridge = { sent: [], onMessage() {}, send(chat, text) { this.sent.push({ chat, text }); }, stop() {} };
-  const brain = { calls: [], async turn(being, e) { this.calls.push({ being, body: e.body }); return { text: `↩ ${e.body}`, sessionId: 's1' }; } };
+  const brain = { calls: [], async turn(being, e) { this.calls.push({ being, body: e.body, line: e.line }); return { text: `↩ ${e.body}`, sessionId: 's1' }; } };
   const transcript = { entries: [], async log(e, r, opts = {}) { this.entries.push({ ev: e, r, opts }); } };
   const mesh = {
     handled: [], forwarded: [],
@@ -278,6 +278,96 @@ describe('spine — FAN OUT to every addressed agent', () => {
 // router already carries the relay agent's NAME on the mesh descriptor (`t.mesh.being`), so the
 // gate now asks for THAT agent's mode. Real gating service, real config: the modes below are the
 // per-agent rung, nothing per-conversation.
+// ── QUICK REPLY (operator 2026-07-25: "a lo mejor empezar la respuesta con 'r', tipo 'r ok pero
+//    que no sea tan común' … si el ultimo mensaje fue de don o de E, el bridge routes and
+//    dispatches" / "no sé el msgid como tú … solo quiero responder fácilmente al ultimo prompt").
+//
+//    `r <body>` is an ADDRESSEE, resolved by the same `addressed()` matcher an @token goes
+//    through — so the mode gate, the fan-out and mesh forwarding work unchanged. The SAFETY is
+//    the last-speaker gate: it fires only when an AGENT spoke last in this conversation, so in a
+//    human group chat (where an agent rarely spoke last) `r …` is just text. ──
+describe('QUICK REPLY — `r <body>` answers whoever spoke last, when that was an agent', () => {
+  const AT_HEAD = { atEStart: true, atEAnywhere: true, replyToBot: false };
+  const NONE    = { atEStart: false, atEAnywhere: false, replyToBot: false };
+  const routerWith = (qr) => createRouter({ getAgents: () => AGENTS, defaultBeing: 'egpt', getQuickReply: () => qr });
+
+  it('the matcher itself resolves it: addressed() returns the last speaker, atStart, body minus the token', () => {
+    expect(addressed('r ok pero que no sea tan común', AGENTS, { quickReply: 'r', lastSpeaker: 'don' }))
+      .toEqual([{ name: 'don', agent: AGENTS.don, atStart: true, anywhere: true, body: 'ok pero que no sea tan común' }]);
+  });
+
+  it('REPRODUCE-FIRST: a LOCAL being spoke last → `r …` dispatches to IT, with the token stripped', async () => {
+    const { spine, brain } = fanoutSpine({ mode: 'mention-direct' });
+    await spine.handleInbound({ ...MSG, body: '@e hola', mention: AT_HEAD });
+    await spine.handleInbound({ ...MSG, msgId: 'm2', body: 'r ok pero que no sea tan común', mention: NONE,
+      line: 'An@[fam].wa (00:00) #m2: r ok pero que no sea tan común' });
+    expect(brain.calls.map((c) => c.being)).toEqual(['egpt', 'egpt']);
+    // …directly addressed (atStart), so a mention-direct chat answers it — and the body, and the
+    // dispatch line the model reads, carry the message MINUS the quick-reply token.
+    expect(brain.calls[1].body).toBe('ok pero que no sea tan común');
+    expect(brain.calls[1].line).toBe('An@[fam].wa (00:00) #m2: ok pero que no sea tan común');
+  });
+
+  it('REPRODUCE-FIRST: a RELAY agent spoke last → `r …` forwards over the mesh exactly as `@don` does', async () => {
+    const { spine, mesh } = fanoutSpine({ mode: 'mention-direct' });
+    await spine.handleInbound({ ...MSG, body: '@don hola', mention: NONE });
+    expect(mesh.forwarded).toHaveLength(1);
+    await spine.handleInbound({ ...MSG, msgId: 'm2', body: 'r ok pero que no sea tan común', mention: NONE });
+    expect(mesh.forwarded).toHaveLength(2);
+    expect(mesh.forwarded[1].t).toEqual({ being: 'don', route: { room_id: 'egpt-mesh-do-kg' }, to: 'don.do' });
+    expect(mesh.forwarded[1].ev.body).toBe('ok pero que no sea tan común');   // mesh.forward relays ev.body
+  });
+
+  it('a HUMAN spoke last → `r u there` is ordinary text: nobody is quick-addressed', async () => {
+    const { spine, brain, mesh } = fanoutSpine({ mode: 'mention-direct' });
+    await spine.handleInbound({ ...MSG, body: '@e hola', mention: AT_HEAD });          // e speaks…
+    await spine.handleInbound({ ...MSG, msgId: 'm2', body: 'gente, alguien sabe?', mention: NONE });   // …then a human does
+    await spine.handleInbound({ ...MSG, msgId: 'm3', body: 'r u there', mention: NONE });
+    expect(brain.calls.map((c) => c.being)).toEqual(['egpt']);   // only the first message ran a turn
+    expect(mesh.forwarded).toHaveLength(0);
+  });
+
+  it('nothing spoken yet → ordinary text, reaching the default agent with the token INTACT', async () => {
+    const { spine, brain } = fanoutSpine();
+    await spine.handleInbound({ ...MSG, body: 'r hola' });
+    expect(brain.calls).toEqual([{ being: 'egpt', body: 'r hola', line: undefined }]);
+  });
+
+  it('`really?` and a bare `r` are NOT triggers — whitespace + a non-empty body are required', async () => {
+    const { spine, brain } = fanoutSpine();
+    await spine.handleInbound({ ...MSG, body: '@wren hola' });                    // wren spoke last
+    await spine.handleInbound({ ...MSG, msgId: 'm2', body: 'really?' });
+    await spine.handleInbound({ ...MSG, msgId: 'm3', body: 'r' });
+    expect(brain.calls.map((c) => c.being)).toEqual(['wren', 'egpt', 'egpt']);    // both fell through as text
+    expect(brain.calls.map((c) => c.body)).toEqual(['@wren hola', 'really?', 'r']);
+  });
+
+  it('case-insensitive: `R ok` triggers too', async () => {
+    const { spine, brain } = fanoutSpine();
+    await spine.handleInbound({ ...MSG, body: '@wren hola' });
+    await spine.handleInbound({ ...MSG, msgId: 'm2', body: 'R ok' });
+    expect(brain.calls.map((c) => c.being)).toEqual(['wren', 'wren']);
+    expect(brain.calls[1].body).toBe('ok');
+  });
+
+  it('quick_reply_string: "" DISABLES it — `r ok` is ordinary text again', async () => {
+    const { spine, brain } = fanoutSpine({ router: routerWith('') });
+    await spine.handleInbound({ ...MSG, body: '@wren hola' });
+    await spine.handleInbound({ ...MSG, msgId: 'm2', body: 'r ok' });
+    expect(brain.calls.map((c) => c.being)).toEqual(['wren', 'egpt']);            // fell through to the persona
+    expect(brain.calls[1].body).toBe('r ok');
+  });
+
+  it('a custom quick_reply_string triggers on THAT instead', async () => {
+    const { spine, brain } = fanoutSpine({ router: routerWith('resp') });
+    await spine.handleInbound({ ...MSG, body: '@wren hola' });
+    await spine.handleInbound({ ...MSG, msgId: 'm2', body: 'resp ok' });
+    await spine.handleInbound({ ...MSG, msgId: 'm3', body: 'r ok' });             // no longer the token
+    expect(brain.calls.map((c) => c.being)).toEqual(['wren', 'wren', 'egpt']);
+    expect(brain.calls.map((c) => c.body)).toEqual(['@wren hola', 'ok', 'r ok']);
+  });
+});
+
 describe('spine — a RELAY target is gated as its OWN agent', () => {
   const gatingWith = (agents) => createGating({ getConfig: () => ({ agents }), loadState: null, defaultKey: 'egpt' });
   const MID_M = { atEStart: false, atEAnywhere: true, replyToBot: false };

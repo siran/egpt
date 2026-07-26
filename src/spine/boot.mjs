@@ -585,7 +585,8 @@ export async function boot({
     // the ONE registry, and since 2026-07-25 the ONLY source of off-node reach (a relay agent's
     // relay_channel). defaultBeing = defaultKey: the persona-route + the un-@mentioned
     // fall-through both yield the persona's KEY (operator 2026-07-10 — no hardcoded 'e'/'egpt').
-    router: createRouter({ getAgents: () => cfg.agents ?? {}, defaultBeing: defaultKey }),
+    // quick_reply_string: the token that addresses whoever spoke last (default 'r', '' disables).
+    router: createRouter({ getAgents: () => cfg.agents ?? {}, defaultBeing: defaultKey, getQuickReply: () => cfg.quick_reply_string }),
     transcript: createTranscript({ contacts, persona: labelOf(defaultKey), defaultKey, node_name, io, onLog: (m) => log.line?.(`[transcript] ${m}`) }),
     sender: createSender({ bridge: shellAwareBridge, bodyEmojiOf, labelOf, agentSignatureOpenOf, agentSignatureCloseOf, defaultKey }),
     // The real cadence registry the spine's tick() drives. The heartbeat LOADER

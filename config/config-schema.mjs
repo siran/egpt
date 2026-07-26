@@ -934,6 +934,16 @@ export const CONFIG_SCHEMA = {
         don:  { configuration: relay, relay_channel: Rodz } }
   `,
 
+  quick_reply_string: `
+    Token that addresses whoever spoke LAST in a conversation, so answering the
+    last agent needs no @name: "r ok pero que no sea tan común".
+      DEFAULT: "r"      "" disables the feature
+    Fires only when an AGENT spoke last there (after a human line it is ordinary
+    text), and only with whitespace + a body — "really?" and a bare "r" are not
+    triggers. Case-insensitive. The agent is addressed as if @named at the head
+    and receives the message minus the token (src/spine/router.mjs addressed).
+  `,
+
   bridge_signature_open: `
     Per-NODE infra WRAP — OPENING line (operator 2026-07-12).
 

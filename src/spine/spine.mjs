@@ -203,6 +203,17 @@ export function createSpine({
   }
   function drainCycle(key) { const arr = cycleBy.get(key) ?? []; cycleBy.delete(key); return arr; }
 
+  // --- LAST SPEAKER per CONVERSATION (surface + chatId = guardChannel) — the one input the
+  //     router's QUICK REPLY resolution needs: `r <body>` addresses whoever spoke last, and only
+  //     when that was an AGENT. Nothing already answers that question (cycleBy is keyed per BEING
+  //     and drained every turn), so this is new information, deliberately minimal and in-memory:
+  //     set where an agent actually speaks INTO the conversation — a local being's surfaced reply
+  //     and a relay agent's forward (whose reply mirrors in from the far node, never through
+  //     runReplyTurn) — and cleared by a human inbound (handleFast), so `r …` after a human line
+  //     is ordinary text again. Per CONVERSATION, not per being: whoever spoke last wins. ---
+  const lastSpeakerBy = new Map();               // `<surface>:<chatId>` -> agent name
+  const noteSpeaker = (ev, being) => { if (being) lastSpeakerBy.set(guardChannel(ev), being); };
+
   // --- AUTO-MODE HUMANIZATION (operator 2026-07-05, "it should take time to answer …
   //     they wander off like a normal person"). AUTO CHATS ONLY — every other mode is
   //     byte-for-byte unchanged. Two timers, both PRE/POST the turn (never inside the
@@ -364,6 +375,10 @@ export function createSpine({
     const channel = guard ? guardChannel(ev) : null;
     const act = await classify(ev, channel);
     if (!act) return;                  // 'off' — not received (C4): not recorded, not processed
+    // A HUMAN line ends the agents' claim on "who spoke last" here (quick reply). AFTER classify,
+    // which just read it to route THIS message, and before the dispatch, which sets it again if
+    // an agent answers.
+    if (humanTurn(ev)) lastSpeakerBy.delete(guardChannel(ev));
     await transcript.log(ev);          // ←── THE INGESTION POINT (C1.2). The only one.
     return act();
   }
@@ -449,7 +464,15 @@ export function createSpine({
     // pipe below (gate, guard, cycle, turn) exactly as the single result always did, and the REST
     // fan out beside it (fanOutExtras). A bare-string or single `{ being, mention }` return
     // (older/other fakes) normalizes to a one-target list, so those callers are unchanged.
-    const routed = router.resolve(ev);
+    const routed = router.resolve(ev, lastSpeakerBy.get(guardChannel(ev)) ?? null);
+    // QUICK REPLY: the router resolved `r <body>` to the agent that spoke last here, and hands
+    // back the body its token was stripped from. That body is what the agent sees — here and in
+    // the dispatch line (which ends with it). The RECORD keeps the message as typed: transcript.log
+    // runs on the caller's ev, above, which this local rebind does not touch.
+    if (routed?.body != null) {
+      const line = String(ev.line ?? '');
+      ev = { ...ev, body: routed.body, ...(line.endsWith(ev.body) ? { line: line.slice(0, -ev.body.length) + routed.body } : {}) };
+    }
     const targets = (Array.isArray(routed?.targets) && routed.targets.length)
       ? routed.targets
       : [typeof routed === 'string' ? { being: routed } : { being: routed?.being, mesh: routed?.mesh ?? null, mention: routed?.mention }];
@@ -543,7 +566,7 @@ export function createSpine({
     // the message to the target's node (a visible envelope) and stop — the reply streams
     // back into this chat as a living mirror. A local-being target has meshTarget=null
     // and falls through to the brain below.
-    if (meshTarget && mesh && d.mayReply) { await mesh.forward(ev, meshTarget); return withRelay(); }
+    if (meshTarget && mesh && d.mayReply) { noteSpeaker(ev, meshTarget.being); await mesh.forward(ev, meshTarget); return withRelay(); }
 
     // AUTO DWELL (auto chats only): a person messaging an auto chat doesn't get an instant
     // reply — a human reads the burst and wanders back. The message is already on the record
@@ -635,7 +658,7 @@ export function createSpine({
       try {
         const d = await gating.decide(gateAs(t, being), ev, t.mention ?? ev.mention);
         if (!d.receives || !d.mayReply) return;
-        if (t.mesh) { if (mesh) await mesh.forward(ev, t.mesh); return; }
+        if (t.mesh) { if (mesh) { noteSpeaker(ev, t.mesh.being); await mesh.forward(ev, t.mesh); } return; }
         await openAndRunReply({ to: being, ev, d, turnKey: `${being}:${ev.surface}:${ev.chatId}` });
       } catch (e) { note(`fan-out ${being}/${ev.chatId}: ${e?.message ?? e}`); }
     })).then(() => {});
@@ -711,7 +734,7 @@ export function createSpine({
       // alone: the message itself went on the record at ingestion, so however many agents
       // answer it, each appends exactly one reply line under the one inbound line.
       await transcript.log(ev, { ...reply, surfaced: responded });
-      if (responded) pushCycle(turnKey, replyLine({ being: to, body: rawText, surfaced: true, now: new Date() }));
+      if (responded) { pushCycle(turnKey, replyLine({ being: to, body: rawText, surfaced: true, now: new Date() })); noteSpeaker(ev, to); }
       await store?.recordThread?.({ ev, reply, being: to });
       // TYPING TIME (auto only): a human takes time to type. Delay the plain post-once send
       // by a typing-speed function of the reply length (capped 90s, outside the turn-timeout
