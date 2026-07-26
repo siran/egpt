@@ -358,6 +358,39 @@ describe('beeper bridge', () => {
     expect(edit.text).toBe('edited #' + id + '\n    - imbécil\n    + pobrecito');
   });
 
+  // A PEER NODE'S LIVE STREAM FRAMES (operator 2026-07-26). A peer spine on this same shared
+  // Beeper account posts "⏳ Thinking…" and then rewrites it in place; `_ourStreamIds` holds
+  // only OUR OWN stream ids (per-process), so every one of those frames falls through here as
+  // an ordinary incoming edit. Two things follow, and this locks both. (1) A frame is NOT A
+  // MESSAGE (operator 2026-07-26: "you count completed, signed messages for the flood guard,
+  // not the edits") — one reply is one message however many frames it emits, so a frame must
+  // not surface at all: it used to, which in mode:on let a stage-direction wake a turn and made
+  // one ordinary reply count as a whole burst against the loop guard. (2) A frame must not
+  // advance the diff BASELINE, or the settle — the one entry that IS kept — reads against the
+  // last PARTIAL instead of against the placeholder.
+  it("a PEER's live stream frames are ONE message, diffed placeholder → settled", async () => {
+    const { incoming } = await startBridge();
+    const id = `${Math.floor(Math.random() * 1e6)}`;
+    const post = (text) => fake.emit({ type: 'message.upserted', entries: [liveMsg({ id, text, senderName: 'An' })] });
+    post('⏳ Thinking…');                 // the peer's placeholder — first sight, the baseline
+    await waitFor(() => incoming.some((i) => i.text === '⏳ Thinking…'));
+    const before = incoming.length;
+    post('Hola ⏳');                      // live frame …
+    post('Hola mundo ⏳');                // … live frame …
+    post('Hola mundo y ⏳');              // … live frame
+    post('Hola mundo, qué tal');          // the SETTLE — no marker
+    post('Hola mundo, ¿qué tal?');        // a HUMAN fixing the settled text afterwards
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: 'sentinel' })] });
+    await waitFor(() => incoming.some((i) => i.text === 'sentinel'));
+    const out = incoming.slice(before).filter((i) => i.from.isStageDirection);
+    // The three frames surfaced NOTHING — one reply is one message, not a burst of four.
+    expect(out).toHaveLength(2);
+    // The settle diffs against the last SETTLED text (the placeholder), not the last PARTIAL.
+    expect(out[0].text).toBe(`edited #${id}\n    - ⏳ Thinking…\n    + Hola mundo, qué tal`);
+    // …and the settle DID advance the baseline, so a genuine human edit still diffs correctly.
+    expect(out[1].text).toBe(`edited #${id}\n    - Hola mundo, qué tal\n    + Hola mundo, ¿qué tal?`);
+  });
+
   it('does NOT emit an edit when a message re-upserts UNCHANGED (receipt/seen)', async () => {
     const { incoming } = await startBridge();
     const m = liveMsg({ id: `${Math.floor(Math.random() * 1e6)}`, text: 'hola' });

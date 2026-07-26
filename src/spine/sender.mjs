@@ -13,6 +13,12 @@
 // 2026-07-12) — its successor is the `agent_signature_close` layer, applied downstream
 // in beeper-port (default EMPTY → a reply renders with no end-marker unless the operator
 // sets agent_signature_close).
+// The live-frame marker is defined ONCE, in dispatch-line.mjs, where its recogniser
+// (isLiveStreamFrame) lives — this file is the STAMPER and imports it. They were two
+// independent literals, so changing either silently stopped the guard recognising real
+// frames while every fixture-built test stayed green.
+import { LIVE_FRAME_MARK } from '../dispatch-line.mjs';
+
 const FAIL_SUFFIX = '… ❌ Sending failed.';
 // A turn that was MEANT to surface but produced no deliverable text (brainpool
 // returned '' / whitespace, OR the spine blanked a failure-shaped result) must
@@ -22,7 +28,7 @@ const FAIL_SUFFIX = '… ❌ Sending failed.';
 // port's wrapPersona, so a configured agent_signature_close layer still appends — the
 // marker no longer carries a signature itself.
 const noReplyMark = () => `⚠️ no reply (turn failed/empty)`;
-const THINKING = '⏳ Thinking…';   // NOT a lone emoji (renders oversized in some clients)
+const THINKING = `${LIVE_FRAME_MARK} Thinking…`;   // NOT a lone emoji (renders oversized in some clients)
 // A mention that arrives while THIS conversation's train is still running gets its
 // OWN placeholder immediately (the operator's per-message ack), opened in the QUEUED
 // state — `ahead` = how many trains run before it. When its turn starts it flips to
@@ -31,7 +37,7 @@ const THINKING = '⏳ Thinking…';   // NOT a lone emoji (renders oversized in 
 // text, so two coexisting "⏳ Thinking…" placeholders would collapse onto one id (the
 // live "stuck placeholder" bug). A queued placeholder's text differs from THINKING
 // and — via `ahead` — from every other queued one, so each resolves to its own id.
-const QUEUED = (ahead) => `⏳ Queued (${ahead} ahead)…`;
+const QUEUED = (ahead) => `${LIVE_FRAME_MARK} Queued (${ahead} ahead)…`;
 
 export function createSender({ bridge, bodyEmojiOf = () => null, labelOf = () => null, agentSignatureOpenOf = () => '', agentSignatureCloseOf = () => '', defaultKey = 'e' } = {}) {
   if (!bridge) throw new Error('createSender: bridge is required');
@@ -72,7 +78,7 @@ export function createSender({ bridge, bodyEmojiOf = () => null, labelOf = () =>
         // its turn starts (before the first token), so the user sees it move. No-op
         // for a placeholder that was never queued.
         activate() { if (queued) stream?.update?.(THINKING); },
-        update(partial) { const t = textOf(partial); if (!t) return; acc = t; stream?.update?.(`${t} ⏳`); },
+        update(partial) { const t = textOf(partial); if (!t) return; acc = t; stream?.update?.(`${t} ${LIVE_FRAME_MARK}`); },
         async finish(reply, { surface = true } = {}) {
           const t = textOf(reply);
           // Gate-withheld ('on'-mode '...' silence / not surfaced): delete, post nothing.

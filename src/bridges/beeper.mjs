@@ -55,7 +55,7 @@ import { htmlToMarkdown } from '../html-to-markdown.mjs';
 import { normalizeTokens, similarity } from '../text-similarity.mjs';
 import { makeWrapPersona } from './persona-wrap.mjs';
 import { stripNodeSignature } from '../node-signature.mjs';
-import { reactionAction, editAction } from '../dispatch-line.mjs';
+import { reactionAction, editAction, isLiveStreamFrame } from '../dispatch-line.mjs';
 import { stripFrontMatter } from '../transcript-meta.mjs';
 import { mentionStatus } from '../auto-mode.mjs';
 import { mediaKind } from '../media-kind.mjs';
@@ -1097,11 +1097,18 @@ export async function startBeeperBridge(opts = {}) {
     // OUR OWN streaming edit (a meta-engineer's 🤔→reply in-place edit): keep the
     // baseline current so a LATER genuine edit still diffs, but NEVER surface it.
     if (_ourStreamIds.has(key)) { _seenText.set(key, cur); return; }
-    const first = !_seenText.has(key);
+    if (!_seenText.has(key)) { _seenText.set(key, cur); _capMap(_seenText, REACTION_CAP); return; }   // first sight → baseline, never surfaced
     const prev = _seenText.get(key);
-    _seenText.set(key, cur);
-    _capMap(_seenText, REACTION_CAP);
-    if (first || !cur || prev === cur) return;   // baseline / empty / unchanged → not an edit
+    const body = editAction({ targetId: msg.id, oldText: prev, newText: cur });
+    // A PEER NODE's LIVE STREAM FRAME is transient, not history — the same predicate the
+    // transcript uses to keep it off the record (isLiveStreamFrame). `_ourStreamIds` above
+    // holds only OUR OWN stream ids, so a peer spine's frames on this shared account fall
+    // through here; advancing the baseline on one made the SETTLE frame — the one entry that
+    // IS kept — diff against the last PARTIAL. Leaving the baseline at the last SETTLED text
+    // makes it read placeholder → settled. A human's edit never carries the marker, so it
+    // still advances the baseline and still diffs exactly as before.
+    if (!isLiveStreamFrame(body)) { _seenText.set(key, cur); _capMap(_seenText, REACTION_CAP); }
+    if (!cur || prev === cur) return;   // empty / unchanged → not an edit
     // RAW edit hook: a relayed reply's relay-room message was edited by the
     // responder (streaming). Let the mesh router mirror it to the origin chat; if it
     // consumes the edit, skip the normal stage-direction surfacing.
@@ -1109,10 +1116,18 @@ export async function startBeeperBridge(opts = {}) {
       try { if (await onMessageEdit(msg.chatID, msg.id, cur, prev)) return; }
       catch (e) { onLog(`beeper: onMessageEdit threw — ${e?.message ?? e}`); }
     }
+    // A LIVE STREAM FRAME IS NOT A MESSAGE (operator 2026-07-26: "you count completed, signed
+    // messages for the flood guard, not the edits"). A peer spine's reply is ONE message however
+    // many frames it emits, so an intermediate frame must not become an InboundEvent at all: it
+    // used to be surfaced like any edit, which in mode:on let a stage-direction wake a turn AND
+    // made one ordinary reply count as a whole burst against the loop guard. Suppressed HERE,
+    // below the mesh hook above — the living mirror still streams a relayed reply home frame by
+    // frame. The SETTLE frame carries no marker and surfaces exactly as before, so a completed
+    // reply still dispatches (that is how @e reaches @don).
+    if (isLiveStreamFrame(body)) return;
     const info = await chatInfo(msg.chatID);
     const network = msg.accountID || info.accountID || 'whatsapp';   // origin network (Beeper accountID); default 'whatsapp'
     const editor = senderDisplay(msg) || _idToName.get(msg.senderID) || 'someone';
-    const body = editAction({ targetId: msg.id, oldText: prev, newText: cur });
     onLog(`beeper: edit #${msg.id} by ${editor} [${info.title}]: ${JSON.stringify(prev.slice(0, 40))} → ${JSON.stringify(cur.slice(0, 40))}`);
     const from = {
       chatId: msg.chatID, chatName: info.title,

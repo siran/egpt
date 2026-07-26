@@ -51,19 +51,26 @@ import { lifecycleExit } from './ingest.mjs';
 // ---------------------------------------------------------------------------
 /**
  * @typedef {object} InboundEvent
- * @property {string} surface   the bridge surface tag
- * @property {string} node      entry point the message arrived through ('wa'|'kg'|'chrome')
+ * @property {'whatsapp'|'telegram'|'shell'|'signal'} surface  the conversation SURFACE (the slugDir bucket), mapped from the bridge's origin network
+ * @property {string} node      entry point the message arrived through — a TRANSPORT tag, never a node name ('wa'|'tg'|'sig'|'sh')
  * @property {string} chatId    stable chat/room id (gating + delivery key — never a display name)
- * @property {string} chatName
+ * @property {string} chatName  the chat's display title (rendering only)
  * @property {string} senderId  stable sender id
- * @property {string} senderName
- * @property {string} msgId     stable, addressable message id (#id)
+ * @property {string|null} senderName  the sender's display name; null when the bridge has none
+ * @property {string|null} msgId    stable, addressable message id (#id); null when the surface has none
+ * @property {string|null} replyToId  the QUOTED message's id (rendered `re #<id>`); null when this is not a reply
  * @property {number} ts        epoch ms
- * @property {string} body
- * @property {object} [quoted]
- * @property {'text'|'media'|'reaction'|'edit'} kind
- * @property {string} [line]    the formatted dispatch line every brain sees
- * @property {any}    raw       the bridge's original payload
+ * @property {string} body      the message text, node signature already RENDERED to a legible `<node>` (no raw tag bytes reach any downstream reader)
+ * @property {'text'|'reaction'|'edit'} kind   an utterance, or a stage-direction (reaction/edit: bracket-wrapped, references its own target in the body)
+ * @property {{atEStart: boolean, atEAnywhere: boolean, replyToBot: boolean}} mention  mention status the bridge already computed — the gating service's input
+ * @property {boolean} backlog  older than bridge start (a woken node's replay): transcript-logged as backfill, NEVER dispatched
+ * @property {boolean} authorized  sender is an allowed_user on this surface — on a shared account every own-account send reads true, so this is NOT a provenance test
+ * @property {boolean} isSender    arrived on OUR OWN account (the operator, a peer node, or our own echo)
+ * @property {boolean} isVoice     the body is a voice-note transcription
+ * @property {string|null} fromBrain  the web-brain member id whose reply this is, re-entered by the room relay; null on every genuine inbound
+ * @property {string|null} fromNode   WHICH NODE's spine committed this text. null = UNSIGNED (a human, the ordinary case); '' = SIGNED BY A NODE WE CANNOT NAME; otherwise the node name. Callers test `!= null`, NEVER truthiness
+ * @property {string} [line]    the formatted dispatch line every brain sees, built once here (C7.6e)
+ * @property {any}    raw       the bridge's original `from` payload
  */
 
 // ---------------------------------------------------------------------------

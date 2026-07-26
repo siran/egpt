@@ -5,6 +5,7 @@
 // back to a baked-in '.wa' or to bracket-less / node-less variants.
 import { describe, it, expect } from 'vitest';
 import { formatDispatchLine, splitSurfaceTag, reactionAction, editAction, isLiveStreamFrame } from '../src/dispatch-line.mjs';
+import { createSender } from '../src/spine/sender.mjs';
 
 // 2026-06-11 17:21 UTC — fixed so the HH:MM (UTC) assertion is deterministic.
 const TS = Date.UTC(2026, 5, 11, 17, 21, 0);
@@ -179,6 +180,28 @@ describe('isLiveStreamFrame — the ⏳ marker, wherever the frame carries it', 
     expect(isLiveStreamFrame('')).toBe(false);
     expect(isLiveStreamFrame(null)).toBe(false);
     expect(isLiveStreamFrame('reacted 👍 to #7 "hola"')).toBe(false);
+  });
+
+  // ONE DEFINITION OF THE TOKEN (2026-07-26). The recogniser above and the STAMPER
+  // (src/spine/sender.mjs) were two independent literals, so changing either one silently
+  // stopped the guard recognising real frames — and every test here stayed green, because
+  // they all build their own fixtures. This one drives the REAL sender and feeds its REAL
+  // output back into the REAL recogniser. It never names the marker, so it is the assertion
+  // that breaks the moment the two disagree.
+  it('recognises the REAL sender\'s own frames — one marker, not two literals', () => {
+    const inits = [], frames = [];
+    const bridge = {
+      send() {},
+      startStream(chat, init) { inits.push(init); return { update: (t) => frames.push(t), async finish() {}, async delete() {} }; },
+    };
+    createSender({ bridge }).open('!c', { being: 'e' }).update('Buen lugar random para');
+    expect(isLiveStreamFrame(frame('', inits[0]))).toBe(true);          // the eager placeholder
+    expect(isLiveStreamFrame(frame(inits[0], frames[0]))).toBe(true);   // every intermediate frame
+    // …and the QUEUED placeholder, which is the same train opened behind another one.
+    const queuedInit = [];
+    createSender({ bridge: { ...bridge, startStream: (c, init) => (queuedInit.push(init), { update() {} }) } })
+      .open('!c', { being: 'e', queued: true, queuedAhead: 2 });
+    expect(isLiveStreamFrame(frame('', queuedInit[0]))).toBe(true);
   });
 });
 
