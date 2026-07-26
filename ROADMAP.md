@@ -284,6 +284,41 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
   - OPEN: node says `transcription_service:`, entity says `transcription:`. One namespace
     means one name, but renaming touches live profiles — needs a ruling.
 
+- **⭐ THE KEY IS THE STATIC INFORMATION (operator ruling 2026-07-26).** *"the key of a
+  conversation, group, thread is always the static information. in beeper we have the
+  chat-id, for agents the thread-id. on transcriptions can be joined under the same key;
+  the configurations 'remote', 'cli', etc, the paths, the post-back variables, etc."*
+  TWO static keys, never one field doing double duty: the SURFACE key (`chat_id`) and the
+  AGENT key (`thread_id`). Everything about a conversation — transcription engine list,
+  paths, `posts_back_delay_ms` — joins under the same key rather than living in three
+  differently-named homes. This settles the `transcription_service:` (node) vs
+  `transcription:` (folder) vs `posts_back_delay_ms` (registry) split: ONE key, resolved
+  across the three rungs above.
+  - Immediate consequence found + being fixed: `src/spine/transcript.mjs:67` wrote
+    `threadId: ev.chatId`, so every transcript's front matter carried the CHAT id in the
+    THREAD slot and `chat_id` was never written at all — while `transcript-meta.mjs` had
+    reserved both fields correctly all along. The archive of a retired thread keys on
+    `thread_id`, which is why this had to be fixed before the roll could be wired.
+
+- **SKELETONS RE-COPY ON THREAD REFRESH (operator 2026-07-26).** *"all skeleton files are
+  copied on refresh thread."* A refresh (thread instanced anew) overwrites `<conv>/
+  identity.d/`; an ordinary turn keeps copy-if-missing. This CLOSES the capabilities-
+  refresher gap for conversation folders — the refresh IS the refresh mechanism. Trade,
+  intended: a hand-edit to a conversation's `identity.d/` is discarded on refresh, because
+  those files are consult COPIES; the sources are the room template and
+  `config/identities/<name>.md`.
+
+- **NO LEGACY MAINTENANCE (operator 2026-07-26).** *"do not keep maintaining legacy
+  behavior"* + *"do not concern about live profiles. it's all dev environment, although
+  live as well."* Dead slots get DELETED, not supported: no migration shims, no back-compat
+  branch for data already on disk, no `# INERT` inventory of keys nothing reads. Fix
+  forward. (`2d7d226` removed the last flat-`threadId` reader; the rest follows.)
+
+- **`mode: auto` — BACKBURNER (operator 2026-07-26)**: *"stop talking about mode: auto;
+  that is in backburner until further notice."* The §3 auto design, the advice-channel
+  consult and the y/n approval gate all stay parked. `/ask` and the advice service remain
+  wired and are now signed (`2d7d226`) — they are simply not the driver of any work.
+
 - **conversations.yaml reshape — DONE** (operator 2026-07-02): the registry is SLIM
   now. Each contact entry's `pushedName` rides as the jid-key INLINE COMMENT (not a
   data key); `slug` is dropped (derived from `conversation_path`'s basename); the
