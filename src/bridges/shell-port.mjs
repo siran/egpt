@@ -41,7 +41,7 @@ const SHELL_USER = 'operator';
  * @param {object} opts
  * @param {string} [opts.url]                 the editor's ws endpoint (default ws://127.0.0.1:23375)
  * @param {typeof WS} [opts.WebSocket]        INJECTION SEAM — the `ws` client constructor (default the real import; tests pass a fake editor so NO real socket opens)
- * @param {string[]} [opts.wakeWords]         the persona's wake-word set (name + configured handles), SAME set boot hands the beeper bridge. Undefined → mentionStatus' built-in e/egpt defaults.
+ * @param {string[]} [opts.wakeWords]         the persona's wake-word set (its declared handles, else its map key — router.mjs wakeTokens), SAME set boot hands the beeper bridge. Undefined → mentionStatus' built-in e/egpt defaults.
  * @param {string} [opts.bridgeSignatureOpen]  per-NODE outer wrap layer — the SAME value boot hands the beeper bridge, so a shell reply's wrap matches the Beeper wrap. Default ''.
  * @param {string} [opts.bridgeSignatureClose]
  * @param {(m: string) => void} [opts.onLog]

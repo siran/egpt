@@ -296,6 +296,16 @@ describe('QUICK REPLY — `r <body>` answers whoever spoke last, when that was a
       .toEqual([{ name: 'don', agent: AGENTS.don, atStart: true, anywhere: true, body: 'ok pero que no sea tan común' }]);
   });
 
+  // `lastSpeaker` is a BEING-ID (the spine records the agent's map KEY, never a handle), so it is
+  // resolved BY KEY — not through the wake-token map, which since 2026-07-26 need not contain the
+  // key at all. DOLLY's persona is keyed `egpt` and wakes on [d, don]: looking the last speaker up
+  // as a wake token would find nothing and silently kill `r …` on that node.
+  it('resolves lastSpeaker by BEING-ID even when the key is not a wake token (DOLLY: key `egpt`, handles [d, don])', () => {
+    const DOLLY = { egpt: { configuration: 'egpt', handles: ['d', 'don'], default: true, name: 'don' } };
+    expect(addressed('r dale', DOLLY, { quickReply: 'r', lastSpeaker: 'egpt' }))
+      .toEqual([{ name: 'egpt', agent: DOLLY.egpt, atStart: true, anywhere: true, body: 'dale' }]);
+  });
+
   it('REPRODUCE-FIRST: a LOCAL being spoke last → `r …` dispatches to IT, with the token stripped', async () => {
     const { spine, brain } = fanoutSpine({ mode: 'mention-direct' });
     await spine.handleInbound({ ...MSG, body: '@e hola', mention: AT_HEAD });

@@ -100,12 +100,13 @@ function stripCode(text) {
 // The PERSONA's view of the matcher: does this text wake E? Returns { atEStart, atEAnywhere }.
 //
 // WAKE-WORD SET (operator 2026-07-07: the bridge gate must honor configured
-// handles). The DEFAULT set is the network-wide persona address e/egpt. A caller
-// (the bridge, from boot's persona agent) may pass an explicit `wakeWords` list —
-// the persona agent's name + every configured handle (e.g. DOLLY's [ed, egptd]) PLUS
-// the network defaults — so an unqualified @e wakes every node AND a node's own @ed
-// wakes it too. The bug this fixes: a live `@ed estás?` logged atE=false because the
-// gate was hardcoded to e/egpt and never read the agents config.
+// handles). The DEFAULT set is the network-wide persona address e/egpt, used only
+// when no caller supplies a list. A caller (the bridge, from boot's persona agent)
+// passes an explicit `wakeWords` list — the persona agent's DECLARED handles, else
+// its map key (router.mjs wakeTokens; operator 2026-07-26: the key is the being-id,
+// not an address), e.g. DOLLY's [d, don] — and that list is COMPLETE: nothing is
+// injected beside it. The bug this fixes: a live `@ed estás?` logged atE=false
+// because the gate was hardcoded to e/egpt and never read the agents config.
 const DEFAULT_WAKE_WORDS = ['egpt', 'e'];
 export function mentionStatus(text, wakeWords) {
   const hits = mentionHits(text, (Array.isArray(wakeWords) && wakeWords.length) ? wakeWords : DEFAULT_WAKE_WORDS);

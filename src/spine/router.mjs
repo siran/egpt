@@ -3,7 +3,8 @@
 //
 // The `agents:` config block is the ONE registry (operator 2026-07-02, new-config-only):
 // resolve() runs the ONE mention matcher (`addressed`, below) over the node's whole
-// addressable set — every agent's map key + its handles — and resolves EVERY agent the
+// addressable set — every agent's WAKE TOKENS (its declared `handles:`, else its map key,
+// see wakeTokens below) — and resolves EVERY agent the
 // message addressed, in text order. A LOCAL agent (configuration ≠ 'relay') routes like a
 // being (being = agent name); a RELAY agent (configuration: relay) routes to a mesh target
 // whose ROUTE is the agent's relay_channel; the DEFAULT (persona) agent — the one carrying
@@ -46,47 +47,77 @@ function quickReplyBody(text, token) {
   return rest.trim() || null;
 }
 
-// An agent's routable identity tokens: its map KEY plus any `handles:` aliases, all
-// lowercased. Used to match an @token and to spot the persona agent.
-function agentIds(name, agent) {
-  const hs = Array.isArray(agent?.handles) ? agent.handles : [];
-  return [name, ...hs].map((h) => String(h).toLowerCase());
+// THE wake vocabulary — the ONE definition of "which @tokens address this agent", lowercased
+// (operator 2026-07-26: "don must not wake or respond with 'egpt'" … "the key has no bearing …
+// the yaml key can be discarded, an agent reacts if its handle is invoked").
+//
+//   `handles:` DECLARED  →  it is the COMPLETE wake list; the map KEY is NOT a token.
+//   `handles:` ABSENT    →  the key serves as the handle.
+//
+// THE LIVE BUG this rule fixes: both spines answered ONE `@egpt` in a WhatsApp group — kg stamped
+// `egpt`, DOLLY stamped `don`. DOLLY's persona DISPLAYS as "don" but is still KEYED `egpt`, and the
+// key used to be a wake token alongside [d, don], so `@egpt` woke both nodes.
+//
+// The KEY IS STILL THE BEING-ID and nothing here touches that: it keys warm sessions and the
+// per-conversation entry[<being>] thread blocks, and renaming it is a NEW identity (config-schema).
+// This function answers only "who is addressed", never "who runs" — the callers below map a matched
+// token back to the agent's key, which is what runs.
+//
+// FALLBACK IS LOAD-BEARING, not back-compat: a MULTIPATH agent is an Array of path maps (operator
+// 2026-07-06) with nowhere to hang an agent-level `handles:` key, so kg's live `carol` is addressed
+// by its key alone. `[].handles` is undefined → the fallback branch.
+//
+// `handles: []` (explicitly empty) is a complete list that happens to be empty → the agent is
+// addressable by NOTHING. Falling back to the key on empty would make `handles: []` mean the same
+// as `handles: [<key>]`, reviving the very bug above, and would leave no way to say "no @address".
+//
+// THE ONE definition: src/spine/boot.mjs (the persona wake set it hands the ports) and
+// src/spine/mesh.mjs (an envelope's `<being>.<node>` token) import it from here. There used to be
+// three copies of this rule in those three files.
+export function wakeTokens(name, agent) {
+  const hs = Array.isArray(agent?.handles) ? agent.handles : [name];
+  return hs.map((h) => String(h ?? '').toLowerCase()).filter(Boolean);
 }
 
-// Who does this message address? The node's WHOLE addressable set — every agent's map KEY plus
-// its `handles:` — run through THE mention matcher (auto-mode.mjs `mentionHits`), the same scan
-// the persona's wake words go through. That is the whole fix (operator 2026-07-25): there were
-// TWO mention systems, the bridge's persona-only one and this file's own leading-@token-on-RAW-
-// text regex, so `@e and @don you here?` woke only e and an `@agent` mid-sentence was invisible.
-// Now there is one, and an agent inherits every protection E has (code fences since 47caf19,
-// the glued-token rule, longest-token-first).
+// Who does this message address? The node's WHOLE addressable set — every agent's WAKE TOKENS
+// (wakeTokens above: its declared `handles:`, else its map KEY) — run through THE mention matcher
+// (auto-mode.mjs `mentionHits`), the same scan the persona's wake words go through. That is the
+// whole fix (operator 2026-07-25): there were TWO mention systems, the bridge's persona-only one
+// and this file's own leading-@token-on-RAW-text regex, so `@e and @don you here?` woke only e and
+// an `@agent` mid-sentence was invisible. Now there is one, and an agent inherits every protection
+// E has (code fences since 47caf19, the glued-token rule, longest-token-first).
 //
 // `_`-prefixed comment keys and `enabled: false` agents are not addressable — they fall through,
 // exactly as findAgent used to skip them. An ARRAY-shaped agent is a MULTI-PATH relay (operator
-// 2026-07-06: an agent is a list of paths) — it has no handles, so it is addressed by its map KEY
-// alone; agentIds tolerates that shape (agent.handles undefined → just the name).
+// 2026-07-06: an agent is a list of paths) — it has nowhere to declare handles, so it is addressed
+// by its map KEY alone; wakeTokens tolerates that shape (agent.handles undefined → just the name).
 //
 // A QUICK REPLY (`quickReply` + `lastSpeaker`) is resolved HERE too, and to ONE addressee: the
 // agent that spoke last in this conversation, ATSTART (it was directly addressed, so a
 // mention-direct chat answers it), carrying the `body` the token was stripped from. The gate is
 // `lastSpeaker` — the caller passes it only when an AGENT spoke last, so after a human line (or
 // in a chat where nothing was said) `r …` matches nobody and stays ordinary text.
+// lastSpeaker is a BEING-ID (the spine records the agent's map key, never a handle), so it is
+// looked up BY KEY — not through the wake-token map, which since 2026-07-26 need not contain the
+// key at all (DOLLY's persona is keyed `egpt` and wakes on [d, don]).
 //
 // Returns EVERY addressed agent in TEXT ORDER, deduped by agent, each carrying its OWN
 // { atStart, anywhere } — real per-agent flags, never a blanket constant, because the auto-modes
 // rest on exactly that distinction (`mention-direct` wakes on atStart, `mention` on anywhere).
 // @returns {{name: string, agent: object, atStart: boolean, anywhere: boolean, body?: string}[]}
 export function addressed(text, agents, { quickReply = '', lastSpeaker = null } = {}) {
-  const byToken = new Map();                       // token -> { name, agent }; first agent wins a shared handle
+  const byToken = new Map();                       // WAKE TOKEN -> { name, agent }; first agent wins a shared handle
+  const byBeing = new Map();                       // BEING-ID (the map key) -> { name, agent }
   for (const [name, agent] of Object.entries(agents ?? {})) {
     if (!agent || typeof agent !== 'object' || name.startsWith('_')) continue;
     if (agent.enabled === false) continue;
     const hit = { name: name.toLowerCase(), agent };
-    for (const id of agentIds(name, agent)) if (!byToken.has(id)) byToken.set(id, hit);
+    byBeing.set(hit.name, hit);
+    for (const id of wakeTokens(name, agent)) if (!byToken.has(id)) byToken.set(id, hit);
   }
   const body = lastSpeaker ? quickReplyBody(text, quickReply) : null;
   if (body != null) {
-    const hit = byToken.get(String(lastSpeaker).toLowerCase());
+    const hit = byBeing.get(String(lastSpeaker).toLowerCase());
     if (hit) return [{ name: hit.name, agent: hit.agent, atStart: true, anywhere: true, body }];
   }
   const out = [];

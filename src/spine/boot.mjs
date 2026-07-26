@@ -35,7 +35,10 @@ import { echoRank } from './echo-priority.mjs';
 import { shortChatId } from '../bridges/chat-id.mjs';
 import { createContacts } from './contacts.mjs';
 import { createGating } from './gating.mjs';
-import { createRouter } from './router.mjs';
+// createRouter + THE wake vocabulary. wakeTokens is the ONE rule for "which @tokens address this
+// agent" (declared `handles:`, else the map key) — imported, not re-implemented, so the persona
+// wake set boot hands the ports and the router's own @token scan can never disagree again.
+import { createRouter, wakeTokens } from './router.mjs';
 import { createTranscript } from './transcript.mjs';
 import { createSender } from './sender.mjs';
 import { createBrainPool } from './brainpool.mjs';
@@ -284,7 +287,6 @@ export async function boot({
   // the persona is `default: true`, its being-id is its MAP KEY, nothing about the key
   // string is magic anywhere below.
   const agents = () => cfg.agents ?? {};
-  const agentIds = (name, a) => [name, ...(Array.isArray(a?.handles) ? a.handles : [])].map((h) => String(h).toLowerCase());
   const CONFIG_FILE = 'config/config.yaml';   // named in the fatal message so the operator knows where to fix it
   const personaAgent = () => {
     const found = [];
@@ -437,11 +439,18 @@ export async function boot({
 
   // The persona wake-word set (operator 2026-07-09: SYMMETRIC nodes — each wakes on its OWN
   // configured handles only, NOTHING is injected network-wide). ONE source of truth (the agents
-  // block): the persona agent's name + every configured handle, lowercased (agentIds does that).
-  // So @e wakes only a node whose persona configures `e`; a node with handles [ed, egptd] wakes
-  // on @ed, NOT @e. (Reverted the 2026-07-08 network-wide e/egpt injection — that overlap was
-  // self-inflicted and the whole suppression apparatus it needed is gone.)
-  const wakeWords = (() => { const pa = personaAgent(); return [...new Set(agentIds(pa.name, pa.agent))]; })();
+  // block, through the ONE rule — router.mjs wakeTokens): the persona agent's declared `handles:`,
+  // lowercased, or its map KEY when it declares none. So @e wakes only a node whose persona
+  // configures `e`; a node with handles [ed, egptd] wakes on @ed, NOT @e. (Reverted the 2026-07-08
+  // network-wide e/egpt injection — that overlap was self-inflicted and the whole suppression
+  // apparatus it needed is gone.)
+  //
+  // THE KEY IS NOT A WAKE TOKEN (operator 2026-07-26: "don must not wake or respond with 'egpt'").
+  // It stays the BEING-ID — defaultKey above, which keys warm sessions and the per-conversation
+  // entry[<being>] thread blocks — but it stopped being an address. The live bug: DOLLY's persona
+  // is KEYED `egpt` and DISPLAYS as "don" (handles [d, don]), so one `@egpt` in a group woke BOTH
+  // spines and the human got two replies, one stamped `egpt` and one stamped `don`.
+  const wakeWords = (() => { const pa = personaAgent(); return [...new Set(wakeTokens(pa.name, pa.agent))]; })();
   // 👂 ECHO AGE BOUND (operator 2026-07-09, Zohykar incident; renamed from transcribe_ack_max_age_ms):
   // never echo a note whose OWN timestamp is older than this — a Beeper resync's ancient backlog
   // notes are still transcribed + logged, just never echoed into the live chat. Default 1h.

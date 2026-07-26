@@ -36,6 +36,10 @@ import { personaStamp, makeWrapPersona } from '../bridges/persona-wrap.mjs';
 // an agent with a relay_channel and `to: <being>.<node>` IS the statement that its channel
 // reaches that node. The SAME derivation the command service reads to know what a node name is.
 import { agentRoutes } from './node-names.mjs';
+// THE wake vocabulary (declared `handles:`, else the map key) — the ONE rule the router applies to
+// a typed @token, imported so an envelope's `<being>.<node>` resolves identically. This file used
+// to carry its own copy, which is how the two could drift.
+import { wakeTokens } from './router.mjs';
 
 const PLACEHOLDER = '🤔 thinking…';
 const textOf = (v) => (typeof v === 'string' ? v : v?.text ?? '');
@@ -76,21 +80,20 @@ export function createMeshService({
   const renderReply = (being, text) => makeWrapPersona({ bridgeSignatureOpen: cfg().bridge_signature_open ?? '', bridgeSignatureClose: cfg().bridge_signature_close ?? '' })({ bodyEmoji: bodyEmojiOf(being), label: being }, text);
   const timeoutMs = () => Number(cfg().mesh?.timeout_ms ?? 60_000) || 60_000;
 
-  // An agent's routable tokens: its map KEY plus any `handles:` aliases (lowercased) —
-  // MIRRORS the router (src/spine/router.mjs findAgent) so the mesh resolves a being addressed
-  // by a HANDLE (e.g. `ed` for the egpt persona) exactly as the router does for a direct @mention.
-  const agentIds = (name, agent) => {
-    const hs = Array.isArray(agent?.handles) ? agent.handles : [];
-    return [name, ...hs].map((h) => String(h ?? '').toLowerCase());
-  };
-  // Find the enabled, non-comment agent whose key/handle matches `token` → { name, agent }
-  // (name = canonical lowercased key) or null.
+  // Find the enabled, non-comment agent whose WAKE TOKEN matches `token` → { name, agent }
+  // (name = canonical lowercased key = the BEING-ID that runs) or null. Runs THE wake vocabulary
+  // (router.mjs wakeTokens — declared `handles:`, else the map key), the same rule the router
+  // applies to a direct @mention, so an envelope's `<being>.<node>` and a typed @token can never
+  // disagree about who is addressed. Since 2026-07-26 the map KEY is NOT a token when handles are
+  // declared: an envelope to `egpt.do` no longer wakes DOLLY (keyed `egpt`, handles [d, don]) —
+  // answering it would stamp `by: egpt.do`, exactly what the ruling forbids — while `don.do` still
+  // resolves to the being-id `egpt` and runs.
   const findAgentByToken = (token) => {
     const t = String(token ?? '').toLowerCase();
     for (const [name, agent] of Object.entries(agents())) {
       if (!agent || typeof agent !== 'object' || Array.isArray(agent) || name.startsWith('_')) continue;
       if (agent.enabled === false) continue;
-      if (agentIds(name, agent).includes(t)) return { name: name.toLowerCase(), agent };
+      if (wakeTokens(name, agent).includes(t)) return { name: name.toLowerCase(), agent };
     }
     return null;
   };

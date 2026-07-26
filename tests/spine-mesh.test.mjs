@@ -385,6 +385,34 @@ describe('mesh service — being resolved by a handle (Part A)', () => {
     expect(brain.calls[0].being).toBe('don');                              // sibling handle → sibling being
     expect(parseMesh(bridge.streams[0].finals.at(-1)).by).toBe('donny.do'); // stamped as addressed
   });
+
+  // WAKE VOCABULARY (operator 2026-07-26: "don must not wake or respond with 'egpt'"). The mesh
+  // resolves an envelope's `<being>.<node>` through the SAME wake vocabulary the router does, so
+  // the rule holds on the wire too: declared handles are the complete list, the map KEY is not a
+  // token. DOLLY's persona is KEYED `egpt` and wakes on [d, don] — an envelope to `egpt.do` must
+  // NOT be answered here (it would respond stamped `by: egpt.do`, the very thing the ruling
+  // forbids), while `don.do` still runs the being-id `egpt`.
+  it('REPRODUCE-FIRST: an envelope to `egpt.do` is NOT answered by DOLLY (key `egpt`, handles [d, don])', async () => {
+    const brain = fakeBrain({ reply: 'hola' });
+    const DOLLY = { egpt: { configuration: 'egpt', handles: ['d', 'don'], default: true, name: 'don' } };
+    const { bridge, mesh } = svc({ node: 'do', agents: DOLLY, brain });
+    const req = encodeMesh({ by: 'An', body: '@egpt hola', from: 'HFM', from_node: 'kg', to: 'egpt.do', post_id: 'p1' });
+    await mesh.handle({ surface: 'wa', chatId: 'RELAY', msgId: 'm1', body: req });
+    await flush();
+    expect(brain.calls).toHaveLength(0);                                    // the key is not a wake token
+    expect(bridge.sent.some((s) => /no egpt\.do here/.test(parseMesh(s.text)?.body ?? ''))).toBe(true);
+  });
+
+  it('…and the SAME node still answers `don.do` by running its being-id `egpt`', async () => {
+    const brain = fakeBrain({ reply: 'hola' });
+    const DOLLY = { egpt: { configuration: 'egpt', handles: ['d', 'don'], default: true, name: 'don' } };
+    const { bridge, mesh } = svc({ node: 'do', agents: DOLLY, brain });
+    const req = encodeMesh({ by: 'An', body: '@don hola', from: 'HFM', from_node: 'kg', to: 'don.do', post_id: 'p1' });
+    await mesh.handle({ surface: 'wa', chatId: 'RELAY', msgId: 'm1', body: req });
+    await flush();
+    expect(brain.calls.map((c) => c.being)).toEqual(['egpt']);              // handle → BEING-ID (the key), which still runs
+    expect(parseMesh(bridge.streams[0].finals.at(-1))).toMatchObject({ by: 'don.do', done: true });
+  });
 });
 
 // ── FORWARD RESOLUTION + REPLY HOME. A relay_channel configured by NAME ("rodz2") resolves via

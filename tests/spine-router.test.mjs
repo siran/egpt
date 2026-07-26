@@ -4,7 +4,7 @@
 // agent to the canonical being 'e'. A qualified @being.node reaches another machine (mesh).
 // Everything else falls through to E.
 import { describe, it, expect } from 'vitest';
-import { createRouter } from '../src/spine/router.mjs';
+import { createRouter, addressed } from '../src/spine/router.mjs';
 
 const ev = (body, mention) => ({
   body,
@@ -82,11 +82,17 @@ describe('router.resolve — agents registry (operator 2026-07-02)', () => {
   // KEY, matched by the `default: true` marker — NOT the 'e'/'egpt' strings. A config whose
   // persona is keyed `assistant` (handles [a]) resolves to `assistant`; a renamed key routes
   // to the new key.
+  //
+  // UPDATED 2026-07-26 (handles are the wake list, the key is not): `@assistant` is no longer a
+  // WAKE token — the persona declares handles [a], so [a] is the complete list. It is asserted on
+  // `addressed` (which sees the real miss) rather than on resolve(), where an unmatched @token
+  // falls through to the persona and would make the assertion vacuous. The key is still the
+  // BEING-ID every hit resolves TO.
   it('persona resolution follows `default: true`, not e/egpt: key "assistant" (handles [a]) → being "assistant"', () => {
     const ag = { assistant: { configuration: 'sonnet-high', handles: ['a'], default: true }, don: { configuration: 'relay', relay_channel: 'Rodz' } };
     const r = createRouter({ getAgents: () => ag, defaultBeing: 'assistant' });
-    expect(r.resolve(ev('@a hola')).being).toBe('assistant');          // matched via handle → its key
-    expect(r.resolve(ev('@assistant hola')).being).toBe('assistant');  // matched via key
+    expect(r.resolve(ev('@a hola')).being).toBe('assistant');          // matched via handle → its key (the being-id)
+    expect(addressed('@assistant hola', ag)).toEqual([]);              // the KEY is not a wake token (handles declared)
     expect(r.resolve(ev('@nobody hi')).being).toBe('assistant');       // fall-through → the persona key
     expect(r.resolve(ev('@don ping')).mesh).toEqual({ being: 'don', route: { room_id: 'Rodz' } });  // a non-default agent still routes normally
   });
@@ -190,5 +196,70 @@ describe('router.resolve — @being.node addressing (mesh.nodes evicted)', () =>
     expect(r.being).toBeNull();
     expect(r.mesh).toEqual({ being: 'don', route: { room_id: 'Rodz' }, to: 'don.do' });
     expect(r.mention).toMatchObject({ atEStart: true });     // it IS addressed → gates as a mention
+  });
+});
+
+// ── WAKE VOCABULARY (operator 2026-07-26: "don must not wake or respond with 'egpt'" … "the key
+//    has no bearing … the yaml key can be discarded, an agent reacts if its handle is invoked").
+//
+//    THE RULE: if `handles:` is declared it is the COMPLETE wake list and the map KEY is NOT a
+//    token; if `handles:` is absent the key serves as the handle.
+//
+//    The key remains the BEING-ID — it keys warm sessions and the per-conversation entry[<being>]
+//    thread blocks, and renaming it is a new identity (config-schema). ONLY the wake vocabulary
+//    changed here.
+//
+//    THE LIVE BUG this reproduces: both spines answered ONE `@egpt` in a WhatsApp group — kg
+//    stamped `egpt`, DOLLY stamped `don`. DOLLY's persona DISPLAYS as "don" but is still KEYED
+//    `egpt`, and the key was a wake token alongside the handles, so `@egpt` woke both nodes. ──
+describe('addressed() — handles are the wake list, the map key is not (operator 2026-07-26)', () => {
+  // DOLLY's REAL shape: keyed `egpt`, wakes on [d, don], displays as "don".
+  const DOLLY = { egpt: { configuration: 'egpt', handles: ['d', 'don'], default: true, name: 'don' } };
+  // kg's REAL shape: keyed `egpt`, wakes on [e, egpt] — the key happens to BE a handle here.
+  const KG = { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true, name: 'egpt' } };
+
+  it('REPRODUCE-FIRST: DOLLY (key `egpt`, handles [d, don]) does NOT wake on @egpt', () => {
+    expect(addressed('@egpt hola', DOLLY)).toEqual([]);
+  });
+
+  it('DOLLY still wakes on its OWN handles @d and @don', () => {
+    expect(addressed('@d hola', DOLLY).map((h) => h.name)).toEqual(['egpt']);       // handle → its BEING-ID (the key)
+    expect(addressed('@don hola', DOLLY).map((h) => h.name)).toEqual(['egpt']);
+  });
+
+  it('kg (key `egpt`, handles [e, egpt]) still wakes on @e and @egpt — the key is in its handles', () => {
+    expect(addressed('@e hola', KG).map((h) => h.name)).toEqual(['egpt']);
+    expect(addressed('@egpt hola', KG).map((h) => h.name)).toEqual(['egpt']);
+  });
+
+  it('an agent with NO handles is addressed BY KEY (kg\'s relay agents, unchanged)', () => {
+    const ag = { egpt: { handles: ['e', 'egpt'], default: true }, wren: { relay_channel: 'rodz3', to: 'ed.do' } };
+    expect(addressed('@wren hola', ag).map((h) => h.name)).toEqual(['wren']);
+  });
+
+  // A MULTIPATH agent is an ARRAY of single-key path maps — there is nowhere to hang an
+  // agent-level `handles:` key, so the key-as-handle fallback is LOAD-BEARING for `carol`
+  // on the live kg node, not a back-compat courtesy. `[].handles` is undefined → fallback.
+  it('a LIST-shaped multipath agent (no place for handles) still wakes by its KEY', () => {
+    const ag = {
+      egpt: { handles: ['e', 'egpt'], default: true },
+      carol: [
+        { path1: { relay_channel: 'rodz1', network: 'whatsapp', to: 'don.do' } },
+        { path2: { relay_channel: 'egpt-mesh-do-kg', network: 'telegram', to: 'don.do' } },
+      ],
+    };
+    expect(addressed('@carol hola', ag).map((h) => h.name)).toEqual(['carol']);
+  });
+
+  // `handles: []` — DECIDED (this chunk): an EXPLICITLY EMPTY list is a COMPLETE wake list that
+  // happens to be empty, so the agent is addressable by NO @token at all. It is not "absent":
+  // absent means "undeclared, fall back to the key". Falling back on empty would make `handles: []`
+  // silently mean the same as `handles: [<key>]` — reviving the very key-as-token bug this rule
+  // removes — and would leave the operator no way to say "this agent has no @address".
+  it('`handles: []` (explicitly empty) is addressable by NOTHING — not by its key either', () => {
+    const ag = { egpt: { handles: ['e'], default: true }, silent: { configuration: 'sonnet-high', handles: [] } };
+    expect(addressed('@silent hola', ag)).toEqual([]);
+    expect(addressed('@egpt hola', ag)).toEqual([]);          // the persona's key is not a token either
+    expect(addressed('@e hola', ag).map((h) => h.name)).toEqual(['egpt']);
   });
 });

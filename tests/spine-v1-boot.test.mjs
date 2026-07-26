@@ -700,8 +700,51 @@ describe('boot() — persona default:true rule', () => {
       loadState: async () => emptyState(), writeState: async () => {},
       io: memIo(), ingest: false, tickMs: 0, log: { line: () => {} },
     });
-    expect(opts.wakeWords.sort()).toEqual(['a', 'assistant']);   // the default agent's key + handles — NOT e/egpt
+    expect(opts.wakeWords.sort()).toEqual(['a']);                // the default agent's DECLARED handles — not its key, not e/egpt
     expect(opts.personaEmoji).toBe('🤖');                        // resolved from the default agent's body_emoji
     app.stop();
+  });
+});
+
+// ── WAKE VOCABULARY (operator 2026-07-26: "don must not wake or respond with 'egpt'" … "the yaml
+//    key can be discarded, an agent reacts if its handle is invoked"). Declared `handles:` are the
+//    COMPLETE wake list and the map KEY is NOT one of them; absent handles ⇒ the key IS the handle.
+//    The key stays the BEING-ID (warm sessions, entry[<being>] thread blocks) — this is the wake
+//    set boot hands the bridge/shell ports, nothing else.
+//
+//    THE LIVE BUG: one `@egpt` in a WhatsApp group produced TWO replies — kg stamped `egpt`, DOLLY
+//    stamped `don` — because DOLLY's persona DISPLAYS as "don" but is still KEYED `egpt`, and the
+//    key was a wake token alongside [d, don]. ──
+describe('boot() — the persona wake set is its handles, not its key (operator 2026-07-26)', () => {
+  const captureWake = async (agents) => {
+    let opts = null;
+    const start = async (o) => { opts = o; return { async send() { return { ok: true }; }, startStreamMessage() { return { delivered: false, update() {}, async finish() {} }; }, isAlive: () => true, stop() {} }; };
+    const app = await boot({
+      readConfig: () => ({ whatsapp: {}, agents }),
+      startBridge: start, makeSession: fakeSession,
+      loadState: async () => emptyState(), writeState: async () => {},
+      io: memIo(), ingest: false, tickMs: 0, log: { line: () => {} },
+    });
+    app.stop();
+    return opts.wakeWords;
+  };
+
+  it('REPRODUCE-FIRST: DOLLY (key `egpt`, handles [d, don], name "don") does NOT wake on @egpt', async () => {
+    const wake = await captureWake({ egpt: { configuration: 'egpt', handles: ['d', 'don'], default: true, name: 'don' } });
+    expect(wake).not.toContain('egpt');           // the map key is NOT a wake token
+    expect([...wake].sort()).toEqual(['d', 'don']);
+  });
+
+  it('kg (key `egpt`, handles [e, egpt]) is unchanged — its key IS one of its handles', async () => {
+    const wake = await captureWake({ egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true, name: 'egpt' } });
+    expect([...wake].sort()).toEqual(['e', 'egpt']);
+  });
+
+  it('a persona with NO handles wakes on its KEY (the fallback)', async () => {
+    expect(await captureWake({ assistant: { configuration: 'egpt', default: true } })).toEqual(['assistant']);
+  });
+
+  it('`handles: []` (explicitly empty) is a COMPLETE, empty wake list — no @token wakes the persona', async () => {
+    expect(await captureWake({ egpt: { configuration: 'egpt', handles: [], default: true } })).toEqual([]);
   });
 });
