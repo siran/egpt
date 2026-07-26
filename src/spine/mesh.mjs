@@ -88,10 +88,20 @@ export function createMeshService({
   // declared: an envelope to `egpt.do` no longer wakes DOLLY (keyed `egpt`, handles [d, don]) —
   // answering it would stamp `by: egpt.do`, exactly what the ruling forbids — while `don.do` still
   // resolves to the being-id `egpt` and runs.
+  //
+  // THE ONE resolution for EVERY `<being>` token this service is handed — the wake gate
+  // (isLocalBeing/resolveLocalBeing) AND relay ROUTING (resolveBeingRelay). Routing used to do a
+  // bare `agents()[being]` (key only), so an agent addressed by a handle that differs from its key
+  // passed the gate and then its `to:` chain missed — nothing travelled (operator 2026-07-26: "the
+  // relay agent must route with the handle, not with the key").
+  //
+  // A LIST-shaped (multipath) agent is included: it has nowhere to declare `handles:`, so its KEY
+  // is its wake token via the fallback (`[].handles` is undefined) — kg's live `carol` is addressed
+  // exactly that way and must keep fanning out. Excluding the Array shape here would strand her.
   const findAgentByToken = (token) => {
     const t = String(token ?? '').toLowerCase();
     for (const [name, agent] of Object.entries(agents())) {
-      if (!agent || typeof agent !== 'object' || Array.isArray(agent) || name.startsWith('_')) continue;
+      if (!agent || typeof agent !== 'object' || name.startsWith('_')) continue;
       if (agent.enabled === false) continue;
       if (wakeTokens(name, agent).includes(t)) return { name: name.toLowerCase(), agent };
     }
@@ -244,8 +254,10 @@ export function createMeshService({
       if (!found) return false;
       const a = found.agent;
       // A relay agent (has relay_channel / to, or explicit configuration: relay) forwards
-      // rather than answers — it is NOT a local being.
-      const isRelay = !!a.relay_channel || !!a.to || String(a.configuration ?? '').toLowerCase() === 'relay';
+      // rather than answers — it is NOT a local being. A LIST-shaped agent is a MULTIPATH relay
+      // by construction (its paths carry the relay_channels), so it is never local either — it
+      // reaches this check only now that findAgentByToken sees the Array shape.
+      const isRelay = Array.isArray(a) || !!a.relay_channel || !!a.to || String(a.configuration ?? '').toLowerCase() === 'relay';
       return !isRelay;
     },
     // Resolve a being addressed by a HANDLE to the KEY that actually RUNS: findAgentByToken
@@ -263,9 +275,15 @@ export function createMeshService({
     // since mesh.nodes was evicted, operator 2026-07-25). No `to`, or no relay_channel to carry
     // it → not a relay-record (open-channel or a terminal being). This wires the engine's
     // existing relay-record branch to config.
+    //
+    // `being` is the `<being>` half of the envelope's `to:` — a WAKE TOKEN, the very same value
+    // the engine hands isLocalBeing/resolveLocalBeing a few lines later. So it resolves through
+    // findAgentByToken like they do (operator 2026-07-26: "the relay agent must route with the
+    // handle, not with the key"); the bare `agents()[being]` it used to do meant a relay agent
+    // whose handle differed from its key woke but never travelled.
     resolveBeingRelay: async (being) => {
-      const a = agents()[String(being).toLowerCase()];
-      if (!a || typeof a !== 'object') return null;
+      const a = findAgentByToken(being)?.agent;
+      if (!a) return null;
       // Resolve ONE path config → a next-hop record (or null when it carries no `to`). Carries the
       // optional NETWORK PIN (operator 2026-07-06: multi-network mesh) so a relay_channel NAME shared
       // across networks resolves to the pinned one (see canonRoute).

@@ -415,6 +415,57 @@ describe('mesh service — being resolved by a handle (Part A)', () => {
   });
 });
 
+// ── RELAY ROUTING RESOLVES BY WAKE TOKEN TOO (operator 2026-07-26: "the relay agent must route
+//    with the handle, not with the key. we must fix that"). The wake vocabulary was applied to the
+//    three WAKE sites (the router's @token scan, boot's wakeWords, and the mesh's
+//    isLocalBeing/resolveLocalBeing) but NOT to relay ROUTING: resolveBeingRelay did a bare
+//    `agents()[being]`. So an agent addressed by a handle that differs from its key passed the wake
+//    gate and then its `to:` chain missed — the envelope never travelled. It now goes through the
+//    SAME findAgentByToken (= router.mjs wakeTokens) as every other resolution here. ──
+describe('mesh service — a relay agent addressed by its HANDLE routes its `to:` chain', () => {
+  // key `wren2`, handle `wren`: nothing about this agent's KEY is an address any more.
+  const HANDLED_RELAY = { wren2: { handles: ['wren'], relay_channel: 'rodz3', to: 'ed.do' } };
+
+  it('REPRODUCE-FIRST: an envelope to `wren.kg` forwards onto wren2\'s relay channel', async () => {
+    const { bridge, mesh } = svc({ node: 'kg', agents: HANDLED_RELAY });
+    const req = encodeMesh({ by: 'An', body: 'hi', from: 'HFM', from_node: 'do', to: 'wren.kg' });
+    await mesh.handle({ surface: 'wa', chatId: 'ID1', msgId: 'a1', body: req });
+    await flush();
+    const hop = bridge.sent.find((s) => s.chat === 'rodz3');
+    expect(hop).toBeTruthy();                                        // the chain actually fired
+    expect(parseMesh(hop.text)).toMatchObject({ to: 'ed.do', body: 'hi', via: 'wren.kg' });
+    // …and the wake gate never fell through to "no <being> here"
+    expect(bridge.sent.some((s) => /no wren\.kg here/.test(parseMesh(s.text)?.body ?? ''))).toBe(false);
+  });
+
+  it('REGRESSION: the same agent addressed by its KEY (`wren2.kg`) routes NOTHING — the key is not an address', async () => {
+    const { bridge, mesh } = svc({ node: 'kg', agents: HANDLED_RELAY });
+    const req = encodeMesh({ by: 'An', body: 'hi', from: 'HFM', from_node: 'do', to: 'wren2.kg' });
+    await mesh.handle({ surface: 'wa', chatId: 'ID1', msgId: 'a1', body: req });
+    await flush();
+    expect(bridge.sent.some((s) => s.chat === 'rodz3')).toBe(false);  // no hop
+    expect(bridge.sent.some((s) => /no wren2\.kg here/.test(parseMesh(s.text)?.body ?? ''))).toBe(true);
+  });
+
+  // THE FALLBACK IS LOAD-BEARING: a MULTIPATH agent is an Array of single-key path maps with
+  // nowhere to declare `handles:`, so it is addressed by its KEY alone (wakeTokens' fallback —
+  // `[].handles` is undefined). Routing by wake token must reach that shape, or carol stops
+  // fanning out. She is the one agent that proves the fallback carries weight.
+  it('MULTIPATH by-key fallback survives: a LIST-shaped relay agent still fans out to every path', async () => {
+    const chatIds = { rodz2: 'ID2', rodz4: 'ID4' };
+    const agents = { carol: [
+      { p1: { relay_channel: 'rodz2', network: 'whatsapp', to: 'wren.kg' } },
+      { p2: { relay_channel: 'rodz4', network: 'telegram', to: 'wren.kg' } },
+    ] };
+    const { bridge, mesh } = svc({ node: 'kg', aliases: ['do'], agents, chatIds });
+    const req = encodeMesh({ by: 'An', body: 'hi', from: 'SELF', from_node: 'kg', to: 'carol.do' });
+    await mesh.handle({ surface: 'wa', chatId: 'ID1', msgId: 'a1', body: req });
+    await flush();
+    expect(bridge.sent.map((s) => s.chat).sort()).toEqual(['ID2', 'ID4']);
+    for (const s of bridge.sent) expect(parseMesh(s.text)).toMatchObject({ to: 'wren.kg', via: 'carol.do' });
+  });
+});
+
 // ── FORWARD RESOLUTION + REPLY HOME. A relay_channel configured by NAME ("rodz2") resolves via
 //    bridge.resolveChatId to the delivered id ("ID2"), so the relay hop forwards into the SAME
 //    room the terminal observes (and an origin present there catches the reply). Reply-home is the
