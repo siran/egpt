@@ -15,13 +15,18 @@ import { renderFrontMatter } from './transcript-meta.mjs';
  * the transcript is new (`existing` false). THROWS on an empty body so a
  * received message can never be silently dropped — a "logged nothing" is a bug,
  * not a no-op.
+ *
+ * The header carries the CHAT id, the static surface key this file belongs to — it is known
+ * at first sight and never changes. It does NOT carry `thread_id`: this runs at ingestion,
+ * before the turn, so no thread exists yet; conversations-state.stampThreadId fills that slot
+ * when one is minted (operator 2026-07-26: chat id and thread id are two different static keys).
  */
-export function transcriptAppend({ existing = false, body, name, surface, slug, threadId, persona } = {}) {
+export function transcriptAppend({ existing = false, body, name, surface, slug, chatId, persona } = {}) {
   const text = String(body ?? '').trim();
   if (!text) throw new Error('transcriptAppend: empty body — a received message must not be silently dropped');
   const header = existing
     ? ''
-    : renderFrontMatter({ name: name ?? threadId ?? slug, surface, slug, thread_id: threadId, persona });
+    : renderFrontMatter({ name: name ?? chatId ?? slug, surface, slug, chat_id: chatId, persona });
   return header + text + '\n\n';
 }
 

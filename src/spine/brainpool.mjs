@@ -26,7 +26,7 @@
 // into readonly), it gets NO identity kickoff (engineers, not the persona), and its
 // thread persists in a per-being NESTED block (recordThread(..., being)). codex/URL
 // brains + emitted-command stripping (the comm-handler's job, Phase 4) layer in later.
-import { slugDir, getBeing, recordThread, readIdentityFeed, seedIdentityLayers, readAutoModeLayer, patchBeing, appendThreadStat, mutateState, nowIsoString, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS } from '../conversations-state.mjs';
+import { slugDir, getBeing, recordThread, readIdentityFeed, seedIdentityLayers, readAutoModeLayer, patchBeing, appendThreadStat, mutateState, nowIsoString, rollTranscript, stampThreadId, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS } from '../conversations-state.mjs';
 import { isContextOverflowError, isDeadSessionError } from '../brain-errors.mjs';
 import { parseFrequency } from './heartbeat-loader.mjs';
 import { WRITE_TOOLS } from '../claude-args.mjs';
@@ -276,7 +276,10 @@ export function createBrainPool({
       // 'mode: auto' — E plays the operator's role here (siblings are engineers, never auto).
       const wantAuto = !isSibling && mode === 'auto';
       const autoKey = (tid) => `${ev.surface}:${ev.chatId}:${tid}`;
-      let def, runModel, runEffort;
+      // A THREAD IS BEING INSTANCED on this turn (the persona's no-thread branch below). Read
+      // after it by the layer seeding: a refresh re-copies the room template, an ordinary turn
+      // does not. Siblings never instance a thread here, so it stays false for them.
+      let def, runModel, runEffort, fresh = false;
       if (isSibling) {
         // Local agent: def from the agents block (its `configuration` names a type file);
         // never frozen into readonly. Its model/effort stay exactly as configured (may be
@@ -294,7 +297,7 @@ export function createBrainPool({
         // bought a new claude session running on the SAME stale frozen model/effort/tools:
         // the operator's one gesture half-worked. `|| !def` stays as the pre-existing
         // never-instanced case (a thread with no freeze would otherwise read off null).
-        const fresh = !sessionId || !instanced;
+        fresh = !sessionId || !instanced;
         def = fresh ? resolveDefaultBrain(convDir) : instanced;
         def = coerceAllowedTools(def);   // 'all' → explicit list (rejected); the freeze below stores the list
         // DETERMINISM (operator 2026-07-02: "don't do 'null means inherit the login default' —
@@ -331,14 +334,15 @@ export function createBrainPool({
             runModel = view.model ?? runModel;
             runEffort = view.effort ?? runEffort;
           }
-          // NOT WIRED HERE YET — the transcript roll (operator 2026-07-25: "there must be a new
-          // transcript if thread-id changes") belongs at exactly this point, and
-          // conversations-state.rollTranscript is written and tested for it. It is NOT called
-          // because the only writer of a transcript's front matter (spine/transcript.mjs, the
-          // ingestion append) fills `thread_id` with ev.chatId — the CHAT id, not the thread —
-          // so the roll cannot tell the retiring thread's transcript from the new one's and
-          // would archive every conversation's first inbound line. See rollTranscript's header
-          // for the two candidate fixes; this needs an operator ruling, not a local workaround.
+          // THE ROLL (operator 2026-07-25: "there must be a new transcript if thread-id
+          // changes"). Here, and only here: this is the moment the thread changes, whatever
+          // changed it (a deleted threadId, /e new, a dead session), and it is BEFORE the new
+          // thread writes a line. On `!sessionId` only — `fresh` also covers a thread that
+          // still resumes but carries no freeze, and nothing retires on that turn. Keyed on
+          // the transcript's OWN front matter, so a file that names no thread — a brand-new
+          // conversation, or a retry after a turn that threw before recordThread — is left
+          // alone. Never throws by contract.
+          if (!sessionId) await rollTranscript(ev.surface, slug, { io });
         }
       }
       const engine = def.type ?? brainType;
@@ -358,10 +362,14 @@ export function createBrainPool({
       // if-missing, so it costs a stat per layer and self-heals a conversation that was
       // started before this existed — hence every persona turn, not only the fresh
       // kickoff (a live conversation resumes forever and would otherwise never get them).
+      // ON A REFRESH the copies are OVERWRITTEN (operator 2026-07-26: "all skeleton files are
+      // copied on refresh thread") — that is how an edited template (10-actions.md learning
+      // /ask) reaches a conversation seeded long ago; copy-if-missing alone never could. A
+      // mid-thread turn keeps copy-if-missing so nothing is rewritten under a running E.
       // Targets convDir, NOT cwd: a def that pins a workspace must not have identity.d
       // written into it. Persona-only — siblings are engineers with no identity feed.
       // Best-effort by contract (seedIdentityLayers never throws) — never breaks a turn.
-      if (!isSibling) await seedLayers(ev.surface, slug, personality, { io });
+      if (!isSibling) await seedLayers(ev.surface, slug, personality, { io, overwrite: fresh });
 
       const key = `${being}:${engine}:${ev.surface}:${slug}`;
       lastKeyByConv.set(`${being}:${ev.surface}:${ev.chatId}`, key);
@@ -471,6 +479,12 @@ export function createBrainPool({
         await mutateState(writeState, async () => {
           await writeState(recordThread(await loadState(), ev.surface, ev.chatId, newSession, nowIso, being));
         });
+        // THE STAMP: the transcript now names the thread it belongs to. Here because this is
+        // the ONE place a new session is recorded — a transcript is born at ingestion, before
+        // any thread exists, so the slot can only be filled once the turn mints one. A turn
+        // that throws never gets here, and an un-stamped transcript is exactly what the roll
+        // above refuses to touch. Never throws by contract.
+        await stampThreadId(ev.surface, slug, newSession, { io });
         // Mirror the freshly-minted thread into the per-chat stats file's branchable history
         // (state/stats/<surface>/<chatId>.yaml — a changed threadId appends; the old id stays
         // addressable so a conversation can be branched from it). Keyed by ev.chatId (the

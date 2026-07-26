@@ -10,11 +10,23 @@ import { transcriptAppend, replyLine } from '../src/transcript-log.mjs';
 
 describe('transcriptAppend', () => {
   it('a new transcript gets the front matter + the line', () => {
-    const out = transcriptAppend({ existing: false, body: 'hola wren', name: 'DOLLY-REVE', surface: 'tg', slug: 'dolly-reve', threadId: '-5136707031', persona: 'wren' });
+    const out = transcriptAppend({ existing: false, body: 'hola wren', name: 'DOLLY-REVE', surface: 'tg', slug: 'dolly-reve', chatId: '-5136707031', persona: 'wren' });
     expect(out.startsWith('---\n')).toBe(true);
     expect(out).toContain('surface: tg');
     expect(out).toContain('persona: wren');
     expect(out).toContain('hola wren');
+  });
+
+  // TWO STATIC KEYS, NOT ONE (operator 2026-07-26: "the key of a conversation, group, thread
+  // is always the static information. in beeper we have the chat-id, for agents the
+  // thread-id"). This header is written at INGESTION — before any thread exists — so the only
+  // id it can honestly carry is the CHAT id, and it belongs in `chat_id`. The defect this
+  // locks out: the chat id was written into `thread_id`, so the live shell/lobby transcript
+  // opened with `thread_id: main` (the shell CHAT id) and the roll had no thread to key on.
+  it('names the CHAT id in chat_id and leaves thread_id unset (it is not known yet)', () => {
+    const out = transcriptAppend({ existing: false, body: 'hola', name: 'console', surface: 'shell', slug: 'lobby', chatId: 'main', persona: 'egpt' });
+    expect(out).toContain('chat_id: main');
+    expect(out).not.toContain('thread_id:');
   });
 
   it('an existing transcript gets just the line (no repeated header)', () => {
@@ -43,7 +55,7 @@ describe('a received message lands in transcript.md', () => {
     const dir = mkdtempSync(join(tmpdir(), 'egpt-tlog-'));
     const fpath = join(dir, 'transcript.md');
     const inbound = '[2026-06-13 20:19 UTC, in Telegram chat -5136707031, An said:]\nwren, you back?';
-    appendFileSync(fpath, transcriptAppend({ existing: existsSync(fpath), body: inbound, name: 'DOLLY-REVE', surface: 'tg', slug: 'dolly-reve', threadId: '-5136707031', persona: 'wren' }));
+    appendFileSync(fpath, transcriptAppend({ existing: existsSync(fpath), body: inbound, name: 'DOLLY-REVE', surface: 'tg', slug: 'dolly-reve', chatId: '-5136707031', persona: 'wren' }));
     appendFileSync(fpath, transcriptAppend({ existing: existsSync(fpath), body: replyLine({ being: 'wren', body: 'Back and live.', surfaced: true }) }));
     const t = readFileSync(fpath, 'utf8');
     expect(t).toContain('wren, you back?');     // the received message is logged

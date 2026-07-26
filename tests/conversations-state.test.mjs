@@ -37,10 +37,12 @@ import {
   slugDir,
   slugTranscriptPath,
   rollTranscript,
+  stampThreadId,
+  seedIdentityLayers,
   isPlaceholderSlug,
   patchContact,
   recordThread,
-  isMuted,
+  getBeing,
   migrateJsonToYaml,
   parse,
   serialize,
@@ -531,24 +533,20 @@ describe('findContactsByName (cross-surface name search)', () => {
   });
 });
 
-describe('isMuted predicate', () => {
-  it('isMuted true only when personality === mute', () => {
-    expect(isMuted({ personality: 'mute' })).toBe(true);
-    expect(isMuted({ personality: 'default' })).toBe(false);
-    expect(isMuted({ personality: 'silent' })).toBe(false);
-    expect(isMuted(null)).toBe(false);
-  });
-});
-
 describe('residentsOf — resident beings vs flat blocks', () => {
-  it('a legacy FLAT entry (flat mode/readonly, no nested block) has NO residents — [] (operator 2026-07-10: no implicit "e")', () => {
-    // A legacy pre-nested entry: flat readonly + mode are CONTACT/legacy-flat keys, not
-    // nested beings. residentsOf synthesizes nothing — a caller threads the default key itself.
+  // No implicit "e" is ever synthesized (operator 2026-07-10) — a caller threads the default
+  // key itself. The dead flat slots are no longer special-cased either (2026-07-26, "do not
+  // keep maintaining legacy behavior"): a flat scalar like `mode` can never look like a being,
+  // so it contributes nothing, while a pre-nested flat `readonly` BLOCK on an old entry now
+  // reads as a resident. Accepted, measured: residentsOf's only consumer is the compactor,
+  // which skips any resident with no threadId — and this one has none.
+  it('a legacy FLAT entry synthesizes no persona; only its dead readonly BLOCK reads as a resident', () => {
     const entry = {
       slug: 'fam', pushedName: 'fam', mode: 'on',
       readonly: { brain: 'default', type: 'claude', model: null, effort: null, allowed_tools: 'all', personality: 'default' },
     };
-    expect(residentsOf(entry)).toEqual([]);
+    expect(residentsOf(entry)).toEqual(['readonly']);
+    expect(getBeing({ contacts: { whatsapp: { '!x': entry } } }, 'whatsapp', '!x', 'readonly').threadId).toBe(null);
   });
   it('nested being blocks ARE residents, in entry order (no implicit "e" prepended)', () => {
     const entry = { slug: 'fam', e: { mode: 'on' }, dora: { mode: 'on', readonly: { model: 'x' } } };
@@ -1163,21 +1161,28 @@ describe('rollTranscript — a changed thread starts a new transcript', () => {
   const SURFACE = 'whatsapp', SLUG = 'roll-fixture';
   const src = slugTranscriptPath(SURFACE, SLUG);
   const archive = (id) => join(slugDir(SURFACE, SLUG), 'transcripts', `${id}.md`);
-  const TEXT = ['---', 'name: Roll', 'surface: whatsapp', 'slug: roll-fixture',
+  const TEXT = ['---', 'name: Roll', 'chat_id: !room:beeper.com', 'surface: whatsapp', 'slug: roll-fixture',
     'thread_id: THREAD-A', 'persona: egpt', 'notes:', '---', '', 'hola', '', '[@e (14:05)]: hey', '', ''].join('\n');
 
   // path → text. rename MOVES the entry, so "byte-identical" is observable, not assumed.
   const fakeFs = (files) => ({ files, io: {
     mkdir: async () => {},
     readFile: async (p) => { if (!(p in files)) { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; } return files[p]; },
+    writeFile: async (p, d) => { files[p] = d; },
     rename: async (a, b) => { files[b] = files[a]; delete files[a]; },
   } });
 
-  it('moves transcript.md to transcripts/<thread_id>.md byte-identical, leaving no transcript.md', async () => {
+  it('moves transcript.md to transcripts/<thread_id>.md byte-identical, leaving a fresh one in its place', async () => {
     const fs = fakeFs({ [src]: TEXT });
     expect(await rollTranscript(SURFACE, SLUG, { io: fs.io })).toBe(archive('THREAD-A'));
     expect(fs.files[archive('THREAD-A')]).toBe(TEXT);   // every byte, front matter included
-    expect(src in fs.files).toBe(false);                // …and the live file is gone → the next line starts a new one
+    // The replacement carries the conversation's IDENTITY forward (who this transcript is
+    // with) and drops only the retired thread — it is the same conversation, a new thread.
+    // It cannot be left for the next append to write: the very next append is the fresh
+    // turn's REPLY line, which writes no front matter, so a rename-only roll would leave
+    // transcript.md un-stamped forever and it could never roll again.
+    expect(fs.files[src]).toBe(['---', 'name: Roll', 'chat_id: !room:beeper.com', 'surface: whatsapp',
+      'slug: roll-fixture', 'persona: egpt', 'notes:', '---', '', ''].join('\n'));
   });
 
   // THE GUARD (why it exists): if a turn throws before recordThread stores the new session, the
@@ -1210,6 +1215,85 @@ describe('rollTranscript — a changed thread starts a new transcript', () => {
   it('is non-fatal: an fs failure returns null instead of throwing (a turn must not die for an archive)', async () => {
     const io = { mkdir: async () => {}, readFile: async () => TEXT, rename: async () => { throw new Error('EPERM'); } };
     expect(await rollTranscript(SURFACE, SLUG, { io })).toBe(null);
+  });
+});
+
+// THE CAPABILITIES REFRESHER (operator 2026-07-26: "all skeleton files are copied on refresh
+// thread"). Copy-if-missing alone meant an edited room template — 10-actions.md learning /ask —
+// could never reach a conversation whose identity.d was seeded once, long ago. A refresh (the
+// brainpool's fresh branch: a thread being instanced) re-copies; an ordinary turn does not.
+// Runs on an injected io whose readFile always HITS, i.e. every layer is already seeded.
+describe('seedIdentityLayers — a refresh re-copies the room template layers', () => {
+  const SURFACE = 'whatsapp', SLUG = 'seed-fixture';
+  const seeded = () => {
+    const wrote = {};
+    return { wrote, io: {
+      mkdir: async () => {},
+      readFile: async () => 'AN OLD COPY',        // the folder already holds a (stale) copy of every layer
+      writeFile: async (p, d) => { wrote[p] = d; },
+    } };
+  };
+
+  it('an ordinary turn leaves the existing copies alone', async () => {
+    const s = seeded();
+    expect(await seedIdentityLayers(SURFACE, SLUG, 'egpt', { io: s.io })).toEqual([]);
+    expect(Object.keys(s.wrote)).toEqual([]);
+  });
+
+  it('a refresh overwrites them with the template\'s current bytes', async () => {
+    const s = seeded();
+    const wrote = await seedIdentityLayers(SURFACE, SLUG, 'egpt', { io: s.io, overwrite: true });
+    expect(wrote).toContain('10-actions.md');     // the actions card — the one that went stale live
+    const actions = Object.entries(s.wrote).find(([p]) => p.endsWith('10-actions.md'))[1];
+    expect(actions).not.toBe('AN OLD COPY');
+    expect(actions.trim()).not.toBe('');
+  });
+});
+
+// THE STAMP — the write side of the roll's key (operator 2026-07-26: "the key of a
+// conversation, group, thread is always the static information. in beeper we have the
+// chat-id, for agents the thread-id"). The ingestion append knows only the chat id; the
+// thread id exists only once a session is minted, so the ONE place that records a new
+// session (brainpool → recordThread) stamps it here.
+describe('stampThreadId — the transcript names the thread it belongs to', () => {
+  const SURFACE = 'whatsapp', SLUG = 'stamp-fixture';
+  const src = slugTranscriptPath(SURFACE, SLUG);
+  const HEAD = ['---', 'name: Stamp', 'chat_id: !room:beeper.com', 'surface: whatsapp', 'slug: stamp-fixture',
+    'persona: egpt', 'notes:', '---', ''].join('\n');
+  const BODY = ['', 'hola', '', '[@egpt (14:05)]: hey', '', ''].join('\n');
+
+  const fakeFs = (files) => ({ files, io: {
+    readFile: async (p) => { if (!(p in files)) { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; } return files[p]; },
+    writeFile: async (p, d) => { files[p] = d; },
+  } });
+
+  it('fills the thread slot in the EXISTING block — every other field and every turn survives', async () => {
+    const fs = fakeFs({ [src]: HEAD + BODY });
+    expect(await stampThreadId(SURFACE, SLUG, 'THREAD-B', { io: fs.io })).toBe(true);
+    const out = fs.files[src];
+    expect(out).toContain('chat_id: !room:beeper.com');   // the chat id is NOT displaced
+    expect(out).toContain('thread_id: THREAD-B');
+    expect(out).toContain('name: Stamp');
+    expect(out).toContain('hola');
+    expect(out).toContain('[@egpt (14:05)]: hey');
+  });
+
+  it('no transcript yet → the block is born naming its thread (so the file can roll later)', async () => {
+    const fs = fakeFs({});
+    expect(await stampThreadId(SURFACE, SLUG, 'THREAD-B', { io: fs.io })).toBe(true);
+    expect(fs.files[src]).toBe(['---', 'thread_id: THREAD-B', 'notes:', '---', '', ''].join('\n'));
+  });
+
+  it('re-stamping the SAME id rewrites nothing (a transcript rewrite races the appenders)', async () => {
+    const fs = fakeFs({ [src]: ['---', 'thread_id: THREAD-B', 'notes:', '---', '', 'hola', ''].join('\n') });
+    const before = fs.files[src];
+    expect(await stampThreadId(SURFACE, SLUG, 'THREAD-B', { io: fs.io })).toBe(false);
+    expect(fs.files[src]).toBe(before);
+  });
+
+  it('is non-fatal: a write failure returns false instead of throwing (a turn must not die for a stamp)', async () => {
+    const io = { readFile: async () => HEAD + BODY, writeFile: async () => { throw new Error('EPERM'); } };
+    expect(await stampThreadId(SURFACE, SLUG, 'THREAD-B', { io })).toBe(false);
   });
 });
 

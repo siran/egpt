@@ -29,8 +29,6 @@ contacts:
       conversation_path: .egpt/conversations/whatsapp/some-group-2606291919
       # the home conversation_path is relative to, msys-style. Pointer only.
       home_dir: /c/Users/an
-      # legacy flat thread slot; the live one is per-agent, below
-      threadId: null
 
       # 👂 voice-note echo delay ms: -1 never echo, 0 immediate, N debounce
       # default: config.yaml transcription_service.posts_back_delay_ms
@@ -82,26 +80,15 @@ contacts:
   #  "88164392": # An
   #    conversation_path: .egpt/conversations/telegram/an-2605211200
   #    home_dir: /c/Users/an
-  #    threadId: null
 
   #shell:
   #  main: # console
   #    conversation_path: .egpt/conversations/shell/lobby
   #    home_dir: /c/Users/an
-  #    threadId: null
 
 
-# INERT - live registries still carry these; nothing reads them. Don't copy forward.
-#   personality     retired; identity is a property of the agent TYPE
-#   slug            derived from conversation_path's basename, never stored
-#   pushedName      stored as the `# <name>` comment on the id line
-#   firstSeenAt     dropped on write; lives in state/stats/<surface>/
-#   threadCreatedAt   "   (the NESTED per-agent ones above DO persist)
-#   identityInjectedAt "
-#   threadCwd       retired; dropped on write, so it cannot persist
-#   jids            pre-surface-layout multi-jid array; use aliasOf
-#   transcribe      no reader; see `transcription:` in the FOLDER config
-#   mode            flat: no reader - modes are per-agent (nested), always
-#   send_to_egpt    flat: same
-#   readonly        flat: pre-nested legacy slot, no fallback reads it
-#   system_thread   root-level legacy block; round-trips, nothing reads it
+# INERT - `system_thread:` at the root: round-trips, nothing reads it. Don't copy
+# forward. (The legacy FLAT entry keys that used to be listed here - threadId, mode,
+# send_to_egpt, readonly, personality, transcribe, threadCwd, firstSeenAt and the two
+# thread timestamps - were deleted from the code on 2026-07-26. An entry on disk may
+# still carry them; they are inert data, and nothing here documents them any more.)

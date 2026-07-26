@@ -23,7 +23,7 @@ import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 import * as YAML from 'yaml';
 import { sanitizeSlug } from './sanitize.mjs';
-import { parseFrontMatter } from './transcript-meta.mjs';
+import { parseFrontMatter, renderFrontMatter, stripFrontMatter } from './transcript-meta.mjs';
 import { Room } from './room-core.mjs';
 import { EGPT_HOME } from './egpt-home.mjs';
 import { makeSerialByKey } from './serial-by-key.mjs';
@@ -103,22 +103,6 @@ export function slugTranscriptPath(surface, slug) {
 // brainpool's no-thread branch, BEFORE the new thread writes anything — because that is when
 // the thread changes, whatever changed it (a deleted threadId, /e new, a dead session).
 //
-// ⚠ NOT CALLED YET (2026-07-26). It cannot be wired until the front matter names the THREAD:
-// the only writer of it (spine/transcript.mjs, the ingestion append) passes `thread_id:
-// ev.chatId` — the CHAT id — which is CONSTANT per conversation and is already present on a
-// brand-new conversation's very first line (that append runs at ingestion, before the turn).
-// So today the guard below cannot tell the retiring thread's transcript from the new one's:
-// every conversation would archive its own first inbound line, and — since the reply append
-// writes no front matter — the recreated transcript.md would then be un-stamped forever and
-// never roll again. Two candidate fixes, both needing a ruling:
-//   (a) stamp the transcript with the thread it belongs to (transcript-meta already reserves
-//       `thread_id` for "egpt resumable thread id (distinct from chat_id)" AND a `chat_id`
-//       field for what is being written there now) — the question is WHO stamps a transcript
-//       that is born before its thread exists;
-//   (b) key the archive on the RETIRING thread id from state/stats/<surface>/<chatId>.yaml
-//       (`threads:`, which brainpool already appends to) instead of on the front matter, and
-//       let "transcripts/<that id>.md already exists" BE the re-roll guard.
-//
 // WHICH id: the one the file itself names in its front matter (transcript-meta.parseFrontMatter),
 // not the registry's — the registry's is exactly what was just removed. Destination is the
 // Room's own transcriptsDir; the tree is created through Room.ensureTree, the ONE owner of it.
@@ -131,15 +115,24 @@ export function slugTranscriptPath(surface, slug) {
 // NEVER THROWS (like seedIdentityLayers): a failed archive logs and the turn continues — losing
 // a reply because a file move failed is worse than a missing archive. Returns the archive path,
 // or null when it did not roll.
+//
+// THE REPLACEMENT: the retiring header is carried forward MINUS its thread — same conversation,
+// new thread — so the fresh transcript still says who it is with. It cannot be left to the next
+// append: after a roll the next append is the fresh turn's REPLY line, which writes no front
+// matter, so a rename-only roll would leave transcript.md un-stamped forever and unable to roll
+// again. thread_id is dropped, not carried, so the guard above holds until stampThreadId lands
+// the new one.
 export async function rollTranscript(surface, slug, { io = {} } = {}) {
   const readFileFn = io.readFile ?? readFile;
+  const writeFileFn = io.writeFile ?? writeFile;
   const renameFn = io.rename ?? rename;
   const room = Room.forChat(surface, slug);
   const src = room.transcriptPath;   // the Room's own getter — same file slugTranscriptPath names
   try {
     let text = null;
     try { text = await readFileFn(src, 'utf8'); } catch { return null; }   // no transcript yet → nothing to roll
-    const id = sanitizeSlug(parseFrontMatter(text ?? '').thread_id ?? '');
+    const head = parseFrontMatter(text ?? '');
+    const id = sanitizeSlug(head.thread_id ?? '');
     if (!id) return null;                                                  // un-stamped → the guard
     const taken = async (p) => { try { return (await readFileFn(p, 'utf8')) != null; } catch { return false; } };
     let dest = join(room.transcriptsDir, `${id}.md`);
@@ -147,8 +140,38 @@ export async function rollTranscript(surface, slug, { io = {} } = {}) {
     if (await taken(dest)) return null;                                    // 99 archives of one id: leave it alone
     await room.ensureTree({ io: { mkdir: io.mkdir ?? mkdir } });
     await renameFn(src, dest);
+    await writeFileFn(src, renderFrontMatter({ ...head, thread_id: null }), 'utf8');
     return dest;
   } catch (e) { console.error(`!! rollTranscript(${surface}/${slug}): ${e?.message ?? e}`); return null; }
+}
+
+// Stamp the transcript with the thread it belongs to — the WRITE side of the key rollTranscript
+// reads (operator 2026-07-26: the chat id and the thread id are two different static keys).
+// Called from the ONE place a new session is recorded (brainpool → recordThread): a transcript
+// is born at INGESTION, before any thread exists, so `thread_id` can only be filled once the
+// turn mints one. Everything else in the block is left exactly as written — the block is
+// re-rendered through renderFrontMatter from what parseFrontMatter read, never hand-edited.
+//
+// A MISSING file gets a block of its own: the same expression covers it (no header → no fields
+// to keep), so a transcript that somehow starts without one can still name its thread and roll.
+// Idempotent: the same id already stamped rewrites nothing — this rewrites a file the appenders
+// are appending to, so it runs exactly once per thread.
+// NEVER THROWS (like rollTranscript / seedIdentityLayers): a failed stamp logs and the turn
+// continues. Returns true when it wrote.
+export async function stampThreadId(surface, slug, threadId, { io = {} } = {}) {
+  const readFileFn = io.readFile ?? readFile;
+  const writeFileFn = io.writeFile ?? writeFile;
+  const id = String(threadId ?? '').trim();
+  if (!id) return false;
+  const src = Room.forChat(surface, slug).transcriptPath;
+  try {
+    let text = '';
+    try { text = (await readFileFn(src, 'utf8')) ?? ''; } catch { text = ''; }   // no transcript yet → the block is born here
+    const head = parseFrontMatter(text);
+    if (head.thread_id === id) return false;
+    await writeFileFn(src, renderFrontMatter({ ...head, thread_id: id }) + stripFrontMatter(text), 'utf8');
+    return true;
+  } catch (e) { console.error(`!! stampThreadId(${surface}/${slug}): ${e?.message ?? e}`); return false; }
 }
 
 // Render a path msys-style: C:\Users\an → /c/Users/an (drive-letter lowercased,
@@ -848,20 +871,23 @@ export function getContact(state, surface, jid) {
 // pushedName, jids, aliasOf, …) stay flat. Consequence (accepted, one-time on deploy): a
 // legacy conversation's flat persona thread/mode/instanced-brain is abandoned — the
 // persona resets to a fresh nested block; transcript.md history stays on disk.
+//
+// THE SET IS THE CONTACT-LEVEL KEYS, nothing else (2026-07-26). It used to double as an
+// inventory of the DEAD flat slots too — personality, threadId, threadCreatedAt,
+// identityInjectedAt, threadCwd, mode, send_to_egpt, transcribe and the pre-nested flat
+// `readonly` — every one of which lost its last reader as the per-being shape landed. They
+// are gone from here (operator 2026-07-26: "do not keep maintaining legacy behavior", "do
+// not concern about live profiles"). A registry still carrying a flat `readonly` block now
+// reports it as a resident; its only consumer, the compactor, skips a being with no thread.
 const _FLAT_ENTRY_KEYS = new Set([
-  'slug', 'personality', 'threadId', 'threadCreatedAt', 'identityInjectedAt', 'threadCwd',
-  'pushedName', 'firstSeenAt', 'mode', 'send_to_egpt', 'aliasOf', 'jids', 'transcribe',
-  // `readonly` is object-valued but a LEGACY flat key (the pre-nested instanced-brain
-  // slot); it is NOT a nested resident-being, so residentsOf must skip it or it would
-  // list a phantom "readonly" resident on any legacy-flat conversation.
-  'readonly',
-  // `agents` is likewise object-valued but a CONTAINER of per-agent overrides (see getBeing),
-  // not a resident being — same phantom-resident reason.
+  'slug', 'pushedName', 'firstSeenAt', 'aliasOf', 'jids',
+  // `agents` is object-valued but a CONTAINER of per-agent overrides (see getBeing), not a
+  // resident being — residentsOf must skip it or it lists a phantom "agents" resident.
   'agents',
   // `guard` — the per-conversation loop-breaker override `{ turns, window }` (read in
   // src/spine/boot.mjs guardOverride). Object-valued, so it hit the SAME phantom-resident
-  // trap `readonly` and `agents` are listed for: any entry carrying a guard override made
-  // residentsOf report a resident named "guard" (2026-07-26).
+  // trap `agents` is listed for: any entry carrying a guard override made residentsOf
+  // report a resident named "guard" (2026-07-26).
   'guard',
   // The relocatable-pointer pair + the per-chat 👂 echo delay. Scalars, so they could never
   // produce a phantom — listed to keep this set an honest inventory of the contact-level
@@ -1281,12 +1307,6 @@ function _entryByJidOrSlug(state, surface, jidOrSlug) {
   return _findByslug(state, surface, jidOrSlug)?.entry ?? null;
 }
 
-// ── Predicates ─────────────────────────────────────────────────────────────
-
-export function isMuted(entry) {
-  return entry?.personality === 'mute';
-}
-
 // ── Personality file resolution ────────────────────────────────────────────
 
 // Resolution chain: operator dir → shipped dir. Returns absolute path or null.
@@ -1551,12 +1571,16 @@ async function _identityLayers(name) {
 // copied, 10-actions included — the retired installIdentity deliberately skipped it ("the
 // limbs live only in-context"); the operator's instruction supersedes that.
 //
-// COPY-IF-MISSING, the house skeleton convention (seed.mjs): an operator-edited copy is
-// sacred. Consequence: an edit to the SHARED template never reaches an already-seeded
-// folder — the known capabilities-refresher trade, not solved here.
+// COPY-IF-MISSING by default, the house skeleton convention (seed.mjs). `overwrite` (the
+// brainpool passes it on a REFRESH — a thread being instanced) re-copies every layer instead:
+// operator 2026-07-26, "all skeleton files are copied on refresh thread". That is the
+// capabilities refresher — an edited template (10-actions.md learning /ask) could otherwise
+// never reach a conversation that was seeded once, months ago. THE TRADE: a hand-edit to
+// <conv>/identity.d/ is discarded on the next refresh. Intended — these are consult COPIES;
+// the sources are the room template and config/identities/<name>.md.
 //
 // NEVER throws — a seeding hiccup must not break a turn. Returns the filenames it wrote.
-export async function seedIdentityLayers(surface, slug, name, { io = {} } = {}) {
+export async function seedIdentityLayers(surface, slug, name, { io = {}, overwrite = false } = {}) {
   const readFileFn = io.readFile ?? readFile;
   const writeFileFn = io.writeFile ?? writeFile;
   const mkdirFn = io.mkdir ?? mkdir;
@@ -1580,8 +1604,10 @@ export async function seedIdentityLayers(surface, slug, name, { io = {} } = {}) 
     for (const { file, text } of layers) {
       if (!text.trim()) continue;                                  // an empty layer is not a file worth writing
       const fp = join(dir, file);
-      try { await readFileFn(fp, 'utf8'); continue; }              // already there — never clobber
-      catch { /* missing → seed below */ }
+      if (!overwrite) {
+        try { await readFileFn(fp, 'utf8'); continue; }            // already there — never clobber
+        catch { /* missing → seed below */ }
+      }
       await writeFileFn(fp, text, 'utf8');
       wrote.push(file);
     }

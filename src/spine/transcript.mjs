@@ -64,7 +64,7 @@ export function createTranscript({
           // C7.6); transcriptAppend prepends front matter on a fresh file.
           await appendFile(fpath, transcriptAppend({
             existing: existsSync(fpath), body: ev.line ?? ev.body,
-            name: ev.chatName, surface: ev.surface, slug, threadId: ev.chatId, persona,
+            name: ev.chatName, surface: ev.surface, slug, chatId: ev.chatId, persona,
           }), 'utf8');
         } else {
           const text = typeof reply === 'string' ? reply : reply.text;

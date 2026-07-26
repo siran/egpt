@@ -96,6 +96,21 @@ describe('transcript.log — §3.1 stats collector chokepoint', () => {
   });
   const transcriptText = (files) => [...files.entries()].find(([p]) => p.endsWith('transcript.md'))?.[1] ?? '';
 
+  // THE LIVE DEFECT (2026-07-26): this append — the only writer of a transcript's front
+  // matter — passed the CHAT id as the thread, so conversations/shell/lobby/transcript.md
+  // opened with `thread_id: main` (the shell chat id) and `chat_id` was never written at all.
+  // Two DIFFERENT static keys (operator: "in beeper we have the chat-id, for agents the
+  // thread-id"): ingestion knows only the chat id, and the thread slot stays empty until a
+  // thread exists (stampThreadId fills it).
+  it('the ingestion header carries chat_id — the thread slot is NOT the chat id', async () => {
+    const files = new Map();
+    const t = createTranscript({ contacts: fakeContacts, io: mkIo(files) });
+    expect(await t.log(ev)).toBe(true);
+    const text = transcriptText(files);
+    expect(text).toContain(`chat_id: ${ev.chatId}`);
+    expect(text).not.toContain('thread_id:');
+  });
+
   it('qualifies the PERSONA reply label as <being>.<node_name>, not the bare being', async () => {
     const files = new Map();
     const t = createTranscript({ contacts: fakeContacts, io: mkIo(files), node_name: 'kg', defaultKey: 'egpt' });

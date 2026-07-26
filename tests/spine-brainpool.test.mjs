@@ -6,7 +6,7 @@ import { describe, it, expect } from 'vitest';
 import { createBrainPool, parseWarmBlock } from '../src/spine/brainpool.mjs';
 import { createContacts } from '../src/spine/contacts.mjs';
 import { buildClaudeArgs, DEFAULT_ALLOWED_TOOLS } from '../src/claude-args.mjs';
-import { emptyState, getBeing, getContact, ensureContact, recordThread, patchContact } from '../src/conversations-state.mjs';
+import { emptyState, getBeing, getContact, ensureContact, recordThread, patchContact, patchBeing, slugDir } from '../src/conversations-state.mjs';
 
 // A fake warm pool that records run() calls and lets a test script the results.
 function fakePool(scriptedResults) {
@@ -25,7 +25,7 @@ function fakePool(scriptedResults) {
 
 const ev = { surface: 'whatsapp', chatId: '!room:beeper.com', chatName: 'SPOILER', line: 'An@[SPOILER].wa (14:05) #m1: hola', body: 'hola' };
 
-function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, loadFeed, loadManifest, loadAutoLayer, seedSession, seedMode, seedReadonly, seedAgents, brains, afterTurn, io, nodeIdentity } = {}) {
+function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, loadFeed, loadManifest, loadAutoLayer, seedSession, seedMode, seedReadonly, seedAgents, brains, afterTurn, io, nodeIdentity, seedLayers } = {}) {
   let state = emptyState();
   if (seedSession || seedMode || seedReadonly || seedAgents) {   // pre-register the contact (WITH a stored thread, an E mode, a freeze and/or an operator pin)
     const ens = ensureContact(state, ev.surface, ev.chatId, { pushedName: ev.chatName, slugHint: ev.chatName });
@@ -58,13 +58,14 @@ function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, load
     loadFeed: loadFeed ?? (async () => ''),        // default: no folder feed
     loadManifest: loadManifest ?? (async () => ''),// default: no manifest → raw line (focus on warm logic)
     ...(nodeIdentity != null ? { nodeIdentity } : {}),   // persona node-identity addendum (operator 2026-07-10)
+    ...(seedLayers ? { seedLayers } : {}),         // the identity.d copy (default: the real seeder)
     ...(loadAutoLayer ? { loadAutoLayer } : {}),   // the mode:auto operator-role layer (default: real file)
     ...(brains ? { brains } : {}),                 // omit → falls back to a bare ccode def
     ...(afterTurn ? { afterTurn } : {}),
     ...(isOverflow ? { isOverflow } : {}),
     ...(isDeadSession ? { isDeadSession } : {}),
   });
-  return { brain, pool, getState: () => state };
+  return { brain, pool, getState: () => state, setState: (s) => { state = s; } };
 }
 
 describe('brainpool.turn', () => {
@@ -538,6 +539,108 @@ describe('getBeing — readonly.agent read (new-config-only)', () => {
     expect(v.brain).toBe('sonnet-high');   // `brain` stays the returned property
     expect(v.agent).toBe('sonnet-high');   // `agent` is the alias
     expect(v.brainType).toBe('ccode');
+  });
+});
+
+// THE FRESH MOMENT — what happens when a thread is (re-)instanced, i.e. the operator deleted
+// threadId, /e new ran, or the session died. Two things the brainpool owes that moment:
+// the retiring thread's transcript is archived under its own id and the new one is stamped
+// (operator 2026-07-25: "there must be a new transcript if thread-id changes"), and the room
+// template's layers are RE-COPIED (operator 2026-07-26: "all skeleton files are copied on
+// refresh thread") so a conversation seeded months ago finally learns the current capabilities.
+describe('brainpool.turn — the fresh moment', () => {
+  const norm = (p) => String(p).replace(/\\/g, '/');
+  const OLD = ['---', 'name: SPOILER', 'chat_id: !room:beeper.com', 'surface: whatsapp',
+    'thread_id: THREAD-OLD', 'notes:', '---', '', 'hola', '', '[@e (14:05)]: hey', '', ''].join('\n');
+
+  // A whole-profile fake fs keyed by path: the roll reads/renames/writes and the stamp
+  // rewrites through it, so nothing touches a real folder.
+  const fakeIo = (files) => ({
+    files,
+    io: {
+      mkdir: async () => {},
+      readFile: async (p) => {
+        const k = norm(p);
+        if (k in files) return files[k];
+        if (k.endsWith('config.yaml')) return null;     // no warm override
+        const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e;
+      },
+      writeFile: async (p, d) => { files[norm(p)] = d; },
+      rename: async (a, b) => { files[norm(b)] = files[norm(a)]; delete files[norm(a)]; },
+    },
+  });
+  const at = (files, suffix) => Object.entries(files).find(([p]) => p.endsWith(suffix))?.[1];
+
+  it('archives the retiring thread under its own id and stamps the transcript with the new one', async () => {
+    const fs = fakeIo({});
+    const { brain, getState, setState } = harness([{ text: 'a', sessionId: 'sid-1' }, { text: 'b', sessionId: 'sid-2' }], { io: fs.io });
+    await brain.turn('e', ev);                                      // turn 1: the conversation gets thread sid-1
+    const conv = norm(slugDir('whatsapp', getContact(getState(), 'whatsapp', ev.chatId).slug));
+    // the transcript sid-1 wrote — the shape the ingestion append + the stamp produce together
+    const before = OLD.replace('THREAD-OLD', 'sid-1');
+    fs.files[`${conv}/transcript.md`] = before;
+    // THE OPERATOR'S GESTURE: delete threadId → the next turn is fresh (operator 2026-07-25)
+    setState(patchBeing(getState(), 'whatsapp', ev.chatId, 'e', { threadId: null }));
+
+    await brain.turn('e', ev);
+
+    expect(fs.files[`${conv}/transcripts/sid-1.md`]).toBe(before);   // the retiring thread, every byte
+    const now = fs.files[`${conv}/transcript.md`];
+    expect(now).toContain('thread_id: sid-2');                       // …and the live file names the NEW thread
+    expect(now).toContain('chat_id: !room:beeper.com');              // identity carried forward, chat id untouched
+    expect(now).not.toContain('hola');                               // the turns went with the archive
+  });
+
+  it('a first-ever turn (no transcript yet) rolls nothing — and still stamps its own thread', async () => {
+    const fs = fakeIo({});
+    const { brain, getState } = harness([{ text: 'hi', sessionId: 'sid-1' }], { io: fs.io });
+    await brain.turn('e', ev);
+    const conv = norm(slugDir('whatsapp', getContact(getState(), 'whatsapp', ev.chatId).slug));
+    expect(Object.keys(fs.files).filter((p) => p.includes('/transcripts/'))).toEqual([]);   // nothing archived
+    expect(fs.files[`${conv}/transcript.md`]).toContain('thread_id: sid-1');
+  });
+
+  // A turn that THREW before the session was recorded leaves transcript.md un-stamped; the
+  // next turn is fresh again and must NOT shred it. (The roll's own guard, end-to-end.)
+  it('an un-stamped transcript is left alone by the roll', async () => {
+    const fs = fakeIo({});
+    const { brain, getState } = harness([{ text: 'hi', sessionId: 'sid-1' }], { io: fs.io });
+    const seeded = ['---', 'name: SPOILER', 'chat_id: !room:beeper.com', 'notes:', '---', '', 'hola', '', ''].join('\n');
+    // resolve the folder first (the resolver mints the slug), then plant the un-stamped file
+    const { brain: b0, getState: s0 } = harness([{ text: 'x', sessionId: 'sid-0' }], { io: fakeIo({}).io });
+    await b0.turn('e', ev);
+    const conv = norm(slugDir('whatsapp', getContact(s0(), 'whatsapp', ev.chatId).slug));
+    fs.files[`${conv}/transcript.md`] = seeded;
+    await brain.turn('e', ev);
+    expect(Object.keys(fs.files).filter((p) => p.includes('/transcripts/'))).toEqual([]);   // no archive
+    expect(fs.files[`${conv}/transcript.md`]).toContain('hola');                            // nothing lost
+  });
+
+  // `fresh` is "instance the agent" — it also fires for a thread that has no FREEZE (the
+  // re-instancing case). That turn resumes the very same session, so nothing retires and the
+  // live transcript must not be archived out from under it.
+  it('a thread that resumes (no freeze, so re-instanced) rolls nothing', async () => {
+    const fs = fakeIo({});
+    const { brain, getState } = harness([{ text: 'hi', sessionId: 'sid-live' }], { io: fs.io, seedSession: 'sid-live' });
+    const conv = norm(slugDir('whatsapp', getContact(getState(), 'whatsapp', ev.chatId).slug));
+    fs.files[`${conv}/transcript.md`] = OLD.replace('THREAD-OLD', 'sid-live');
+    await brain.turn('e', ev);
+    expect(Object.keys(fs.files).filter((p) => p.includes('/transcripts/'))).toEqual([]);
+    expect(fs.files[`${conv}/transcript.md`]).toContain('hola');   // the live record is untouched
+  });
+
+  // "all skeleton files are copied on refresh thread" (operator 2026-07-26): the copy-if-missing
+  // seeding never reached an already-seeded folder, so a template edit (e.g. 10-actions.md
+  // learning /ask) could not reach a live conversation. A refresh overwrites; a mid-thread turn
+  // does not (it must not rewrite files under a running E).
+  it('a refresh re-copies the layers; an ordinary turn keeps copy-if-missing', async () => {
+    const fs = fakeIo({});
+    const seen = [];
+    const seedLayers = async (surface, slug, name, opts = {}) => { seen.push(opts.overwrite); return []; };
+    const { brain } = harness([{ text: 'a', sessionId: 'sid-1' }, { text: 'b', sessionId: 'sid-1' }], { io: fs.io, seedLayers });
+    await brain.turn('e', ev);    // fresh → a thread is being instanced
+    await brain.turn('e', ev);    // resumed on sid-1 → ordinary turn
+    expect(seen).toEqual([true, false]);
   });
 });
 
