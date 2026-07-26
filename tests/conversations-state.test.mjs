@@ -537,10 +537,12 @@ describe('residentsOf — resident beings vs flat blocks', () => {
   // No implicit "e" is ever synthesized (operator 2026-07-10) — a caller threads the default
   // key itself. The dead flat slots are no longer special-cased either (2026-07-26, "do not
   // keep maintaining legacy behavior"): a flat scalar like `mode` can never look like a being,
-  // so it contributes nothing, while a pre-nested flat `readonly` BLOCK on an old entry now
-  // reads as a resident. Accepted, measured: residentsOf's only consumer is the compactor,
-  // which skips any resident with no threadId — and this one has none.
-  it('a legacy FLAT entry synthesizes no persona; only its dead readonly BLOCK reads as a resident', () => {
+  // so it contributes nothing, while a pre-nested flat `readonly` BLOCK still reads as a
+  // resident — residentsOf is PURE and has no notion of disk state. That's now only an
+  // in-memory fact, though: `_SLIM_DROP` purges the flat block from every entry on its next
+  // write (see the YAML round-trip test below), so it can't survive to become a phantom in a
+  // registry the spine has actually touched.
+  it('a legacy FLAT entry synthesizes no persona; its dead readonly BLOCK still reads as a resident in memory (purged on next write)', () => {
     const entry = {
       slug: 'fam', pushedName: 'fam', mode: 'on',
       readonly: { brain: 'default', type: 'claude', model: null, effort: null, allowed_tools: 'all', personality: 'default' },
@@ -593,7 +595,6 @@ describe('YAML parse / serialize round-trip', () => {
         whatsapp: {
           '26087681749235@lid': mk(WA, 'diego-2605200133', {
             threadId: 'abc',
-            readonly: { agent: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'all' },
             pushedName: 'Diego Pérez (Koma) 😀 "koma": #1',
           }),
           '584122182178@s.whatsapp.net': { aliasOf: '26087681749235@lid' },
@@ -632,6 +633,35 @@ describe('YAML parse / serialize round-trip', () => {
     expect(back.pushedName).toBe('Diego');        // recovered from the key comment
     expect('firstSeenAt' in back).toBe(false);    // dropped for good (now a stats.yaml fact)
   });
+  // Reproduce (2026-07-26): 50d7f40 removed the pre-nested flat `readonly` from
+  // _FLAT_ENTRY_KEYS, correctly — but that block is OBJECT-VALUED and nothing purges it
+  // from disk, so a registry entry still carrying it reports a phantom "readonly" resident
+  // forever. The fix is at the SOURCE: _SLIM_DROP (the mechanism that already retires
+  // threadCwd the same way) strips the flat block on every write, while the LIVE per-being
+  // freeze at `entry[<being>].readonly` — a sibling key one level deeper — must survive
+  // untouched, since `_SLIM_DROP` only walks an entry's own top-level keys.
+  it('serialize purges a legacy flat `readonly` block but leaves a nested <being>.readonly byte-intact', () => {
+    const nestedReadonly = { agent: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: ['Read', 'Write'] };
+    const s = {
+      contacts: { whatsapp: { j: {
+        slug: 'fam-2605200133',
+        conversation_path: conversationPathOf(WA, 'fam-2605200133'),
+        home_dir: homeDirMsys(),
+        pushedName: 'fam',
+        // The pre-nested flat freeze — dead data, no reader left (see _FLAT_ENTRY_KEYS).
+        readonly: { brain: 'default', type: 'claude', model: null, effort: null, allowed_tools: 'all', personality: 'default' },
+        // A LIVE per-being freeze, one level deeper — must survive the write untouched.
+        e: { mode: 'on', threadId: 'abc', readonly: nestedReadonly },
+      } } },
+    };
+    const text = serialize(s);
+    expect((text.match(/readonly:/g) || []).length).toBe(1);   // only the nested e.readonly line remains
+    const back = parse(text).contacts.whatsapp.j;
+    expect('readonly' in back).toBe(false);                    // flat block gone, in memory too
+    expect(back.e.readonly).toEqual(nestedReadonly);            // nested freeze byte-intact
+    expect(residentsOf(back)).toEqual(['e']);                   // no phantom — 'readonly' isn't a key anymore
+  });
+
   it('parse() of empty / garbage returns emptyState', () => {
     expect(parse('')).toEqual(emptyState());
     expect(parse(null)).toEqual(emptyState());

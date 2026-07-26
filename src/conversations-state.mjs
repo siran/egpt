@@ -877,8 +877,10 @@ export function getContact(state, surface, jid) {
 // identityInjectedAt, threadCwd, mode, send_to_egpt, transcribe and the pre-nested flat
 // `readonly` — every one of which lost its last reader as the per-being shape landed. They
 // are gone from here (operator 2026-07-26: "do not keep maintaining legacy behavior", "do
-// not concern about live profiles"). A registry still carrying a flat `readonly` block now
-// reports it as a resident; its only consumer, the compactor, skips a being with no thread.
+// not concern about live profiles"). The flat `readonly` block is OBJECT-valued, so leaving
+// it un-purged would make residentsOf report it as a phantom "readonly" resident forever;
+// instead it is purged AT THE SOURCE — `_SLIM_DROP` (below) strips it from every contact
+// entry on the next write, so a registry the spine has touched can no longer carry it.
 const _FLAT_ENTRY_KEYS = new Set([
   'slug', 'pushedName', 'firstSeenAt', 'aliasOf', 'jids',
   // `agents` is object-valued but a CONTAINER of per-agent overrides (see getBeing), not a
@@ -1675,7 +1677,14 @@ export function buildRebootAnnouncement(personalityName, bundle) {
 // emitted so each entry is a relocatable pointer. The IN-MEMORY shape is UNCHANGED — parse
 // re-hydrates slug + pushedName as fields — so every consumer keeps working; only the FILE
 // slims. Aliases (`{aliasOf}`) pass through untouched.
-const _SLIM_DROP = new Set(['slug', 'pushedName', 'firstSeenAt', 'threadCreatedAt', 'identityInjectedAt', 'threadCwd']);
+//
+// `readonly` is a different case (2026-07-26): the pre-nested flat persona freeze, dead since
+// the per-being shape landed (see _FLAT_ENTRY_KEYS) — OBJECT-valued, so leaving it on disk made
+// residentsOf report a phantom "readonly" resident. Unlike slug/pushedName it is dropped
+// PERMANENTLY, never re-hydrated by parse(): the entry's next write purges the dead block for
+// good. This is a TOP-LEVEL-only drop — the loop below reads `Object.entries(entry)`, one level
+// deep, so a LIVE per-being freeze at `entry[<being>].readonly` is untouched.
+const _SLIM_DROP = new Set(['slug', 'pushedName', 'firstSeenAt', 'threadCreatedAt', 'identityInjectedAt', 'threadCwd', 'readonly']);
 const _pathBasename = (p) => String(p ?? '').split(/[\\/]/).filter(Boolean).pop() ?? '';
 
 export function serialize(state) {
