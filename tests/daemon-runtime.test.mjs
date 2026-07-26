@@ -248,6 +248,27 @@ describe('daemon runtime fake-world harness', () => {
     expect(runtime.state.wedgeStreak).toBe(0);
   });
 
+  // THE KILL SWITCH'S OTHER HALF (operator 2026-07-25). A spine that finds EGPT_HOME/STOP —
+  // at boot, or on a tick while running — leaves through boot's `exit` seam with
+  // CLEAN_EXIT_CODE. THIS is why the daemon needs no STOP check of its own: a plain exit 0
+  // (no wedge kill) stops the whole daemon and schedules NOTHING, so a STOP file can never
+  // put the supervisor in a respawn loop against a spine that refuses to start.
+  it('exit code 0 (the STOP-file path) stops the daemon — no respawn, no timer', async () => {
+    const timers = [];
+    const { runtime, children, processObj, logs } = makeRuntime({
+      setTimeout: (fn, ms) => timers.push({ fn, ms }),
+      setImmediate: (fn) => timers.push({ fn, ms: 0 }),
+    });
+    runtime.spawnShell();
+
+    await children[0].child.handlers.exit(CLEAN_EXIT_CODE, null);
+
+    expect(processObj.exits).toEqual([0]);       // the daemon itself left
+    expect(children).toHaveLength(1);            // …never respawned the spine
+    expect(timers).toEqual([]);                  // …and armed no retry
+    expect(logs.join('')).toContain('user wanted out');
+  });
+
   it('exit code 43 restarts immediately without upgrade work', async () => {
     const { runtime, children, spawnSync } = makeRuntime();
     runtime.spawnShell();

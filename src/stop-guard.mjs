@@ -1,23 +1,29 @@
-// stop-guard.mjs — the spine's SINGLE per-channel guard: the human STOP/RESUME
-// kill-switch + the provenance-based bot↔bot loop counter (C7.7, re-wired for v2).
+// stop-guard.mjs — everything the word STOP means on this node: the KILL SWITCH
+// (EGPT_HOME/STOP, below) and the provenance-based bot↔bot loop counter (C7.7).
 //
-// Pure state machine. The spine calls it at the ONE prompt chokepoint (handleFast
-// in src/spine/spine.mjs), through which EVERY inbound turn flows — genuine human
-// messages, relay/mesh envelopes, and (later) a being's own room fan-out. So a STOP
-// here is definite: a stopped channel never reaches a brain at all.
+// The spine calls it at the ONE prompt chokepoint (handleFast in src/spine/spine.mjs),
+// through which EVERY inbound turn flows — genuine human messages, relay/mesh envelopes,
+// and a being's own room fan-out. So a pause here is definite: a stopped channel never
+// reaches a brain at all.
 //
-// STOP is STRONGER than a mode pause: that blocks EMIT (the brain still runs, the
-// reply is withheld). STOP blocks PROMPTING — the brain never runs. It is the human
-// override that beats the being's own clock, short of killing the service.
+// TWO SEPARATE THINGS, deliberately not conflated (operator 2026-07-25):
 //
-// Two triggers, one state:
-//   - operator safe-word: "STOP" (this channel) / "STOP ALL" (everything — egpt off
-//     without killing the process); "RESUME" / "RESUME ALL" clears it.
-//   - loop counter: per channel, count consecutive NON-HUMAN turns with no genuine
-//     human turn between them (a "…" silence still consumes a slot). At the soft limit
-//     → warn the channel; at the hard limit (`turns`) → auto-STOP the channel. A human
-//     turn resets the count (so normal human↔bot talk never trips it); a STOP is
-//     deliberate and clears only on RESUME.
+//   1. THE SAFE WORD = THE KILL SWITCH. "if i write 'stop' all activity, whatever it is,
+//      must stop" / "stop, stops egpt service point blank" / "if a file named STOP exists
+//      in .egpt it *also* stops ... STOP in a chat writes this file that inoculates
+//      service". So STOP (and STOP ALL — the loud form of the same word can never be the
+//      WEAKER one) writes EGPT_HOME/STOP and takes the SERVICE down. It is no longer a
+//      per-channel pause: `stopAll()`'s old "egpt off without killing the process" meaning
+//      is RETIRED, because a word that sometimes only mutes a channel is exactly the
+//      ambiguity a safe word cannot have.
+//
+//   2. THE LOOP COUNTER (unchanged) still pauses a CHANNEL on its own: per channel, count
+//      consecutive NON-HUMAN turns with no genuine human turn between them (a "…" silence
+//      still consumes a slot). At the soft limit → warn; at the hard limit (`turns`) →
+//      auto-STOP the channel (stopChannel). A human turn resets the count, so normal
+//      human↔bot talk never trips it. RESUME / RESUME ALL clear that pause — which is why
+//      those two words KEEP their old meaning: they are the only way back from an
+//      auto-stop short of a restart.
 //
 // THE CRUX (what makes turn-counter-ONLY safe, closing the 2026-06-19 hole): "human"
 // is decided by PROVENANCE, not display name (isHumanTurn). A turn resets the counter
@@ -26,6 +32,45 @@
 // message posted AS the operator parses as an envelope here, so it is NON-human and
 // counts toward the cap instead of resetting it — the exact case the removed flood-
 // guard existed for.
+import { existsSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { EGPT_HOME } from './egpt-home.mjs';
+
+// THE KILL SWITCH, as a file. Profile ROOT — beside config/ and state/, deliberately
+// visible — so `ls ~/.egpt` shows a stopped node at a glance and `rm ~/.egpt/STOP` is the
+// whole recovery. Nothing else persists a stopped state (contract (d)): the file IS the
+// state, so removing it is sufficient, always.
+export const STOP_FILE = join(EGPT_HOME, 'STOP');
+
+// Is the node forbidden to run? Checked at the TOP of boot (before the bridge dials
+// anything) and on every spine tick (so a `touch ~/.egpt/STOP` from a terminal halts a
+// RUNNING node without a watcher or a second timer). Never throws — an fs fault must not
+// be readable as "no STOP file", but it must not crash the boot path either.
+export function stopFilePresent(file = STOP_FILE) {
+  try { return existsSync(file); } catch { return false; }
+}
+
+// Write the STOP file so it EXPLAINS ITSELF: a halted node has no chat to explain itself
+// in, so the reason + provenance (who, which surface/chat, when) and the way to undo it
+// live in the file. NEVER clobbers an existing one — whoever stopped the node first owns
+// the explanation (an operator's hand-written `touch` reason survives a later chat STOP).
+// Returns whether it wrote.
+export function writeStopFile({ reason = 'STOP', who = 'unknown', where = 'unknown', at = new Date().toISOString() } = {}, file = STOP_FILE) {
+  if (existsSync(file)) return false;
+  writeFileSync(file, [
+    'egpt is STOPPED.',
+    '',
+    `reason: ${reason}`,
+    `who:    ${who}`,
+    `where:  ${where}`,
+    `when:   ${at}`,
+    '',
+    'This node refuses to start while this file exists, and a running node halts on its',
+    `next tick. Delete this file to let egpt start again:  rm ${file}`,
+    '',
+  ].join('\n'), 'utf8');
+  return true;
+}
 
 // Parse an operator control safe-word out of a message body. Exact, case-
 // insensitive, trailing punctuation tolerated. Returns the control or null.
@@ -67,10 +112,9 @@ export function isHumanTurn(ev, { isEnvelope = () => false, wasSentByUs = () => 
 // The soft (warn-once) limit sits a couple below the hard cap. `now` is injected for tests.
 export function createStopGuard({ turns = 6, window = -1, now = Date.now, onLog = () => {} } = {}) {
   const counts = new Map();           // channel -> [ts] of consecutive non-human turns
-  const stoppedChannels = new Set();  // channels under STOP
-  let stoppedAll = false;
+  const stoppedChannels = new Set();  // channels the loop counter auto-stopped
 
-  const blocked = (channel) => stoppedAll || stoppedChannels.has(channel);
+  const blocked = (channel) => stoppedChannels.has(channel);
 
   // Resolve the effective limits for a channel: a per-conversation override
   // ({ turns?, window? } from conversations.yaml) wins over the node defaults.
@@ -82,7 +126,6 @@ export function createStopGuard({ turns = 6, window = -1, now = Date.now, onLog 
   return {
     // Is prompting blocked for this channel? Checked at the top of the chokepoint.
     blocked,
-    isStoppedAll: () => stoppedAll,
 
     // A human turn in a channel: reset the loop count so normal human↔bot conversation
     // never trips the guard. Does NOT clear an active STOP — that is a deliberate
@@ -113,18 +156,17 @@ export function createStopGuard({ turns = 6, window = -1, now = Date.now, onLog 
     countOf(channel) { return (counts.get(channel) || []).length; },
 
     stopChannel(channel) { if (channel != null) { stoppedChannels.add(channel); onLog(`STOP ${channel}`); } },
-    stopAll() { stoppedAll = true; onLog('STOP ALL — egpt off (process still up)'); },
     resumeChannel(channel) { stoppedChannels.delete(channel); counts.set(channel, []); onLog(`RESUME ${channel}`); },
-    resumeAll() { stoppedAll = false; stoppedChannels.clear(); counts.clear(); onLog('RESUME ALL'); },
+    resumeAll() { stoppedChannels.clear(); counts.clear(); onLog('RESUME ALL'); },
 
-    // Apply a parsed control word in a channel context.
+    // Apply a parsed control word in a channel context. RESUME only: STOP / STOP ALL are
+    // the KILL SWITCH now (the spine routes them to the STOP file + exit, never here), so
+    // the only per-channel pause left is the loop counter's auto-stop — and these clear it.
     applyControl(word, channel) {
-      if (word === 'stop_all') this.stopAll();
-      else if (word === 'stop') this.stopChannel(channel);
-      else if (word === 'resume_all') this.resumeAll();
+      if (word === 'resume_all') this.resumeAll();
       else if (word === 'resume') this.resumeChannel(channel);
     },
 
-    status() { return { stoppedAll, stoppedChannels: [...stoppedChannels], counts: Object.fromEntries([...counts].map(([k, v]) => [k, v.length])) }; },
+    status() { return { stoppedChannels: [...stoppedChannels], counts: Object.fromEntries([...counts].map(([k, v]) => [k, v.length])) }; },
   };
 }

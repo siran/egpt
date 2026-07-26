@@ -1,7 +1,11 @@
-// Locks the kill-switch + loop-guard state machine (C7.7, operator 2026-06-13):
-// STOP halts prompting (channel or global), a human turn resets the loop count,
-// a "…" silence still consumes a slot, soft→warn once / hard→auto-stop, and the
-// operator safe-words parse exactly.
+// Locks the loop-guard state machine (C7.7, operator 2026-06-13): the loop counter pauses
+// a channel, a human turn resets the count, a "…" silence still consumes a slot,
+// soft→warn once / hard→auto-stop, RESUME clears it, and the operator safe-words parse
+// exactly.
+//
+// STOP / STOP ALL are NOT here any more: since 2026-07-25 they are the KILL SWITCH (write
+// EGPT_HOME/STOP, stop the service) and their contract lives in tests/stop-file.test.mjs.
+// The guard's own stopChannel survives because the LOOP COUNTER still trips it.
 import { describe, it, expect } from 'vitest';
 import { createStopGuard, parseStopWord } from '../src/stop-guard.mjs';
 
@@ -21,8 +25,8 @@ describe('parseStopWord', () => {
   });
 });
 
-describe('createStopGuard — kill-switch', () => {
-  it('STOP blocks one channel; other channels and a human turn are unaffected', () => {
+describe('createStopGuard — the per-channel pause', () => {
+  it('a stopped channel blocks; other channels and a human turn are unaffected', () => {
     const g = createStopGuard();
     g.stopChannel('A');
     expect(g.blocked('A')).toBe(true);
@@ -31,32 +35,37 @@ describe('createStopGuard — kill-switch', () => {
     expect(g.blocked('A')).toBe(false);
   });
 
-  it('STOP ALL blocks every channel; RESUME ALL clears it (egpt off → on)', () => {
+  it('RESUME ALL clears every auto-stopped channel and its counts', () => {
     const g = createStopGuard();
-    g.stopAll();
+    g.stopChannel('A'); g.stopChannel('B'); g.noteBeing('C');
     expect(g.blocked('A')).toBe(true);
-    expect(g.blocked('anything')).toBe(true);
-    expect(g.isStoppedAll()).toBe(true);
+    expect(g.blocked('B')).toBe(true);
     g.resumeAll();
     expect(g.blocked('A')).toBe(false);
-    expect(g.isStoppedAll()).toBe(false);
+    expect(g.blocked('B')).toBe(false);
+    expect(g.countOf('C')).toBe(0);
   });
 
-  it('a human turn does NOT clear an active STOP (deliberate override)', () => {
+  it('a human turn does NOT clear a stopped channel (deliberate override)', () => {
     const g = createStopGuard();
     g.stopChannel('A');
     g.noteHuman('A');
     expect(g.blocked('A')).toBe(true);   // only RESUME clears it
   });
 
-  it('applyControl routes the parsed words', () => {
+  it('applyControl routes RESUME / RESUME ALL — and never STOP (that is the kill switch)', () => {
     const g = createStopGuard();
-    g.applyControl(parseStopWord('stop'), 'A');
-    expect(g.blocked('A')).toBe(true);
+    g.stopChannel('A');
     g.applyControl(parseStopWord('resume'), 'A');
     expect(g.blocked('A')).toBe(false);
+    g.stopChannel('Z');
+    g.applyControl(parseStopWord('resume all'), 'A');
+    expect(g.blocked('Z')).toBe(false);
+    // STOP/STOP ALL reach the STOP file, not this state machine — applyControl ignores them.
+    g.applyControl(parseStopWord('stop'), 'A');
     g.applyControl(parseStopWord('stop all'), 'A');
-    expect(g.blocked('Z')).toBe(true);
+    expect(g.blocked('A')).toBe(false);
+    expect(g.blocked('anything')).toBe(false);
   });
 });
 

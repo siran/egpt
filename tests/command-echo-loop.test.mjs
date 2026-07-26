@@ -104,7 +104,7 @@ describe('(A) a command reply never parses as a command', () => {
 });
 
 // --- (B) the spine chokepoint: a command turn is guarded like any other turn --------------
-function buildSpine({ guard, isCommand = (ev) => String(ev.body ?? '').startsWith('/') } = {}) {
+function buildSpine({ guard, stopSwitch = null, isCommand = (ev) => String(ev.body ?? '').startsWith('/') } = {}) {
   const ran = [];
   const bridge = { onMessage() {}, send() {}, stop() {}, wasSentByUs: () => false };
   const brain = { async turn() { return { text: 'x' }; } };
@@ -115,9 +115,12 @@ function buildSpine({ guard, isCommand = (ev) => String(ev.body ?? '').startsWit
   const heartbeats = { runDue() {} };
   const sender = { open() { return { activate() {}, update() {}, async finish() {}, fail() {} }; } };
   const commands = { isCommand, run: async (ev) => { ran.push(ev.body); } };
-  const spine = createSpine({ bridge, brain, identity, router, gating, sender, transcript, heartbeats, commands, guard, clock: { now: () => 1000 } });
+  const spine = createSpine({ bridge, brain, identity, router, gating, sender, transcript, heartbeats, commands, guard, stopSwitch, clock: { now: () => 1000 } });
   return { spine, ran, transcript };
 }
+// The boot-wired kill switch, faked: records what would have been written to EGPT_HOME/STOP
+// before boot's exit(0). tests/stop-file.test.mjs owns the real file + exit contract.
+const fakeSwitch = (pulls) => ({ present: () => false, pull: (why) => pulls.push(why) });
 
 // The operator's Self DM. `fromBrain` is the provenance the room relay stamps on our OWN
 // output when it re-enters — a NON-human turn, exactly what a command echo is.
@@ -168,33 +171,38 @@ describe('(B) command turns pass through the loop guard', () => {
     expect(statusRuns()).toBe(before + 1);
   });
 
-  // The incident's missing recovery: mid-flood the operator types STOP. Before this, STOP did
-  // not stop commands at all — killing the service was the only way out.
-  it('STOP ends a command flood', async () => {
+  // The incident's missing recovery: mid-flood the operator types STOP. Before 2026-07-25 STOP
+  // did not stop commands at all — killing the service was the only way out. It IS that now
+  // (operator: "stop, stops egpt service point blank"): it pulls the kill switch, so the flood
+  // ends by construction — exit(0), which the daemon does not respawn.
+  it('STOP ends a command flood — it pulls the kill switch', async () => {
     const guard = createStopGuard({ turns: -1 });   // counter disabled: STOP alone must bound it
-    const { spine, ran } = buildSpine({ guard });
+    const pulls = [];
+    const { spine, ran } = buildSpine({ guard, stopSwitch: fakeSwitch(pulls) });
     await spine.handleInbound(opCmd('/status'));
     await spine.handleInbound(opCmd('STOP'));
-    for (let i = 0; i < 20; i++) await spine.handleInbound(echoed('/status'));
-    expect(ran).toHaveLength(1);                  // only the pre-STOP command ran
+    expect(pulls).toHaveLength(1);                 // the whole service goes down
+    expect(ran).toEqual(['/status']);              // STOP itself never ran as a command
   });
 
   // An armed `/e` wizard makes isCommand true for ANY operator line, which used to swallow a
   // bare STOP — the one word that must always land.
   it('STOP lands even while an /e wizard is armed (isCommand claims every line)', async () => {
     const guard = createStopGuard({ turns: 6 });
-    const { spine, ran } = buildSpine({ guard, isCommand: () => true });
+    const pulls = [];
+    const { spine, ran } = buildSpine({ guard, stopSwitch: fakeSwitch(pulls), isCommand: () => true });
     await spine.handleInbound(opCmd('STOP'));
-    expect(guard.blocked('wa:self')).toBe(true);
-    expect(ran).toHaveLength(0);
+    expect(pulls).toHaveLength(1);
+    expect(ran).toHaveLength(0);                  // never swallowed by the wizard
   });
 
   // C1.2: a suppressed command is still RECORDED — the record stays complete.
   it('a suppressed command is still transcript-logged', async () => {
-    const guard = createStopGuard({ turns: -1 });
+    const guard = createStopGuard({ turns: 1 });   // the first non-human command turn stops the channel
     const { spine, transcript } = buildSpine({ guard });
-    await spine.handleInbound(opCmd('STOP'));
-    await spine.handleInbound(opCmd('/status'));
-    expect(transcript.logged.map((e) => e.body)).toEqual(['STOP', '/status']);
+    await spine.handleInbound(echoed('/status'));  // trips the counter
+    await spine.handleInbound(opCmd('/status'));   // suppressed…
+    expect(guard.blocked('wa:self')).toBe(true);
+    expect(transcript.logged.map((e) => e.body)).toEqual(['/status', '/status']);   // …but recorded
   });
 });

@@ -26,7 +26,8 @@ import { loadAdapterModule } from '../adapters/registry.mjs';
 import {
   CONV_YAML_PATH, parse as parseConvState, serialize as serializeConvState, emptyState, KNOWN_SURFACES, slugDir, getContact,
 } from '../conversations-state.mjs';
-import { createStopGuard } from '../stop-guard.mjs';
+import { createStopGuard, STOP_FILE, stopFilePresent, writeStopFile } from '../stop-guard.mjs';
+import { CLEAN_EXIT_CODE } from '../daemon-runtime.mjs';
 
 import { createIdentity, surfaceOf } from './identity.mjs';
 import { echoRank } from './echo-priority.mjs';
@@ -192,6 +193,35 @@ export async function boot({
   setInterval: setIntervalFn = globalThis.setInterval,       // the spine tick-timer seam; injected so a test can observe the effective cadence
   clearInterval: clearIntervalFn = globalThis.clearInterval,
 } = {}) {
+  // === THE KILL SWITCH (operator 2026-07-25) — THE FIRST THING boot DOES ===============
+  // "if a file named STOP exists in .egpt it *also* stops". Checked before the config is
+  // even read, so it wins over a broken config too, and long before the bridge dials
+  // Beeper, before spine.pid is written, before a heartbeat can beat — nothing can emit.
+  // Leaves through the SAME `exit` seam every lifecycle command uses, with CLEAN_EXIT_CODE:
+  // src/daemon-runtime.mjs reads 0 as "clean exit — egpt-daemon stopping (user wanted out)"
+  // and does NOT respawn (unlike 43/42/44), so the whole SERVICE stays down. That is also
+  // why the daemon needs no STOP check of its own: it spawns the spine once, the spine
+  // refuses, and the daemon stops — a respawn loop is impossible, and a second copy of the
+  // switch would be a second thing to get wrong.
+  if (stopFilePresent(STOP_FILE)) {
+    log.line?.(`[boot] ${STOP_FILE} exists — egpt refuses to start. Delete the file to start again:  rm ${STOP_FILE}`);
+    exit(CLEAN_EXIT_CODE);
+    return null;
+  }
+  // The switch itself, handed to the spine: ONE object, two call sites (its tick, for an
+  // operator `touch`ing the file from a terminal, and the chat safe word in classify).
+  // Writing is best-effort — a write we cannot do must never PREVENT the stop — but it is
+  // never silent: the failure is logged and the node stops regardless.
+  const stopSwitch = {
+    present: () => stopFilePresent(STOP_FILE),
+    pull: (why = {}) => {
+      try { writeStopFile({ ...why, at: new Date(now()).toISOString() }, STOP_FILE); }
+      catch (e) { log.line?.(`[stop] could NOT write ${STOP_FILE} (${e?.message ?? e}) — stopping anyway, but this node will start again`); }
+      log.line?.(`[stop] egpt stopping — ${STOP_FILE}. Delete the file to start again:  rm ${STOP_FILE}`);
+      exit(CLEAN_EXIT_CODE);
+    },
+  };
+
   const cfg = readConfig() ?? {};
   const getConfig = () => cfg;
 
@@ -772,7 +802,7 @@ export async function boot({
     onLog: (m) => log.line?.(`[relay] ${m}`),
   });
 
-  const spine = createSpine({ bridge, brain, ...services, commands, mesh, actions, advice, guard, guardOverride, roomRelay, defaultBeing: defaultKey, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
+  const spine = createSpine({ bridge, brain, ...services, commands, mesh, actions, advice, guard, guardOverride, stopSwitch, roomRelay, defaultBeing: defaultKey, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
   // Bind the advice service's answer-routing dispatch now that the spine exists: an
   // operator answer in the advice channel re-enters the pipe as a turn in the origin chat.
   advice.useDispatch(spine.handleInbound);

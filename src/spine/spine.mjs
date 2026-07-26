@@ -101,7 +101,8 @@ export function createSpine({
   mesh,                                // optional §2c mesh service (Phase 4b cross-node relay)
   actions,                             // optional §2c reply-actions service (E's limbs: react/reply/media/edit/delete emitted in a reply)
   advice,                              // optional §2c advice service (mode: auto — /ask + operator-answer routing)
-  guard = null,                        // optional §2c stop-guard: the SINGLE per-channel loop-breaker + human STOP/RESUME (createStopGuard, boot-wired). Null = pipe runs unguarded (tests).
+  guard = null,                        // optional §2c stop-guard: the per-channel loop-breaker + RESUME (createStopGuard, boot-wired). Null = pipe runs unguarded (tests).
+  stopSwitch = null,                   // optional §2c KILL SWITCH (boot-wired): { present(): does EGPT_HOME/STOP exist, pull(why): write it + take the SERVICE down }. Two call sites, both on paths that already exist — tick() (the operator touched the file) and classify() (the chat safe word). Null = no kill switch (tests).
   guardOverride = null,                // optional (surface, chatId) => { turns?, window? } | null — the conversation's per-channel guard override (conversations.yaml). Null = node defaults only.
   roomRelay = null,                    // optional §Phase-4 room brain-member fan-out (createRoomRelay, boot-wired): delivers a received room message to each brain member per mode, streams the reply back, and RE-ENTERS it as a non-human turn. Null = no web-brain members (byte-identical to before).
   defaultBeing = 'e',                  // the persona: the being an un-addressed message dispatches to, and the turn/cycle owner for a mesh-target message (which is GATED as its own relay agent — see gateAs)
@@ -394,21 +395,37 @@ export function createSpine({
     // it does not re-answer stale traffic).
     if (ev.backlog) return () => {};
 
-    // Operator safe-word: a bare STOP/STOP ALL/RESUME/RESUME ALL from an AUTHORIZED sender
-    // pauses or clears prompting for this channel (or globally). Before gating so it lands
-    // in any mode; recorded like any inbound, then NEVER routed to a brain. STOP is stronger
-    // than a mode pause — a stopped channel never reaches a brain (gated below + in the
-    // envelope path); a later human turn resets the loop count, but only RESUME clears STOP.
+    // Operator safe-word from an AUTHORIZED sender. Before gating so it lands in any mode;
+    // recorded like any inbound (the caller appends it the moment this returns), then NEVER
+    // routed to a brain.
     //
     // FIRST of all the dispatch branches (moved above the command intercept 2026-07-25): the
     // safe-word is the operator's RECOVERY path and must always land. An armed `/e` wizard
     // makes isCommand true for ANY operator line (a plain numbered answer), so a bare STOP
     // typed while a wizard happened to be armed was swallowed by the wizard — leaving kill-
-    // the-service as the only way out of a flood. The only behavior this changes is that
-    // one case: STOP/RESUME are reserved words, never wizard answers.
-    if (guard && ev.authorized) {
+    // the-service as the only way out of a flood. STOP/RESUME are reserved words, never
+    // wizard answers.
+    if (ev.authorized) {
       const word = parseStopWord(ev.body);
-      if (word) return () => { guard.applyControl(word, channel); note(`guard: '${word}' @ ${channel}`); };
+      // STOP / STOP ALL — THE KILL SWITCH (operator 2026-07-25: "if i write 'stop' all
+      // activity, whatever it is, must stop" / "stop, stops egpt service point blank").
+      // Writes EGPT_HOME/STOP with this message's provenance and takes the SERVICE down —
+      // it is no longer a per-channel pause, and the loud form is NOT the weaker one, so
+      // both words hit the same switch. Recoverable by `rm EGPT_HOME/STOP`, nothing else.
+      if (stopSwitch && (word === 'stop' || word === 'stop_all')) {
+        return () => {
+          note(`STOP from ${ev.senderName ?? ev.senderId ?? '?'} @ ${guardChannel(ev)} — writing the STOP file and stopping the service`);
+          stopSwitch.pull({
+            reason: `chat safe word "${String(ev.body ?? '').trim()}"`,
+            who: `${ev.senderName ?? 'unknown'} <${ev.senderId ?? '?'}>`,
+            where: `${ev.surface} / ${ev.chatName ?? '?'} (${ev.chatId})`,
+          });
+        };
+      }
+      // RESUME / RESUME ALL — unchanged: clear a channel the LOOP COUNTER auto-stopped
+      // (the only per-channel pause left). Without these an auto-stopped channel could
+      // only be cleared by a restart.
+      if (guard && word) return () => { guard.applyControl(word, channel); note(`guard: '${word}' @ ${channel}`); };
     }
 
     // operator slash command (Self DM / authorized) → handled here, NEVER routed
@@ -769,7 +786,16 @@ export function createSpine({
   }
 
   // --- the time-driven half: due heartbeats + accum flush. ---
-  function tick() { heartbeats.runDue(clock.now()); }
+  // THE KILL SWITCH rides this pulse (operator 2026-07-25): the operator may
+  // `touch EGPT_HOME/STOP` from a terminal, and a RUNNING node must notice. Checked HERE —
+  // the loop's own tick, which already exists and which every heartbeat rides — so there is
+  // no watcher and no second timer. FIRST, and it returns: a node on its way out fires no
+  // further beats. pull() does NOT rewrite a file that is already there, so the reason the
+  // operator wrote by hand survives.
+  function tick() {
+    if (stopSwitch?.present()) { note('STOP file present — stopping the service'); stopSwitch.pull({ reason: 'EGPT_HOME/STOP appeared' }); return; }
+    heartbeats.runDue(clock.now());
+  }
 
   let timer = null;
   function start() {

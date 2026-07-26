@@ -75,7 +75,7 @@ describe('2026-06-19 lock — mesh-posted-AS-operator counts toward the cap, doe
 });
 
 // --- Spine wiring: the guard is actually IN the path (handleFast chokepoint). --------
-function buildSpine({ guard, guardOverride } = {}) {
+function buildSpine({ guard, guardOverride, stopSwitch = null } = {}) {
   const meshCalls = [];
   const bridge = { onMessage() {}, send() {}, stop() {}, wasSentByUs: () => false };
   const brain = { calls: [], async turn(b, ev) { this.calls.push({ b, ev }); return { text: 'x' }; } };
@@ -91,7 +91,7 @@ function buildSpine({ guard, guardOverride } = {}) {
   const mesh = { isEnvelope: (ev) => parseMesh(ev?.body ?? '') != null, async handle(ev) { meshCalls.push(ev); } };
   const spine = createSpine({
     bridge, brain, identity, router, gating, sender, transcript, heartbeats,
-    mesh, guard, guardOverride, clock: { now: () => 1000 },
+    mesh, guard, guardOverride, stopSwitch, clock: { now: () => 1000 },
   });
   return { spine, meshCalls, transcript, brain };
 }
@@ -113,17 +113,29 @@ describe('guard wiring at the prompt chokepoint (handleFast)', () => {
     expect(guard.blocked('wa:fam')).toBe(false);
   });
 
-  it('the STOP safe-word pauses prompting for the channel; RESUME clears it', async () => {
-    const guard = createStopGuard({ turns: 6 });
-    const { spine, meshCalls } = buildSpine({ guard });
+  // The safe-word split (operator 2026-07-25): STOP is the KILL SWITCH — it writes
+  // EGPT_HOME/STOP and stops the SERVICE, it does not pause a channel (that whole contract
+  // is locked end-to-end in tests/stop-file.test.mjs). What still pauses a channel is the
+  // LOOP COUNTER, and RESUME is still the way back from it.
+  it('STOP pulls the kill switch (never a channel pause); RESUME clears an auto-stopped channel', async () => {
+    const guard = createStopGuard({ turns: 3 });
+    const pulls = [];
+    const { spine, meshCalls } = buildSpine({ guard, stopSwitch: { present: () => false, pull: (why) => pulls.push(why) } });
+
     await spine.handleInbound({ surface: 'wa', chatId: 'relay', chatName: 'relay', authorized: true, msgId: 's1', body: 'STOP', kind: 'text', raw: {} });
+    expect(pulls).toHaveLength(1);                           // the service goes down
+    expect(guard.blocked('wa:relay')).toBe(false);           // …not a per-channel mute
+
+    for (let i = 0; i < 3; i++) await spine.handleInbound(opEnvelope());   // the counter trips at 3
+    expect(meshCalls).toHaveLength(3);
     expect(guard.blocked('wa:relay')).toBe(true);
     await spine.handleInbound(opEnvelope());                 // suppressed while stopped
-    expect(meshCalls).toHaveLength(0);
+    expect(meshCalls).toHaveLength(3);
+
     await spine.handleInbound({ surface: 'wa', chatId: 'relay', chatName: 'relay', authorized: true, msgId: 's2', body: 'RESUME', kind: 'text', raw: {} });
     expect(guard.blocked('wa:relay')).toBe(false);
     await spine.handleInbound(opEnvelope());                 // flows again
-    expect(meshCalls).toHaveLength(1);
+    expect(meshCalls).toHaveLength(4);
   });
 
   it('a per-conversation override (turns: -1) disables tripping for that channel', async () => {

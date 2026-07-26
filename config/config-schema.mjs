@@ -1214,8 +1214,16 @@ export const CONFIG_SCHEMA = {
     carry its own  guard: { turns: -1 }  to loosen or disable it for that channel
     (e.g. a busy relay room).
 
-    The human safe-word STOP / STOP ALL / RESUME / RESUME ALL (from an authorized
-    sender) pauses/clears prompting on top of this.
+    RESUME / RESUME ALL (from an authorized sender, on any surface) clear a
+    channel this counter auto-stopped — the only way back short of a restart.
+
+    THE SAFE WORD IS SEPARATE, AND IT IS THE KILL SWITCH (operator 2026-07-25):
+    STOP (or STOP ALL — the loud form is never the weaker one) from an authorized
+    sender on ANY surface writes  EGPT_HOME/STOP  with its reason + provenance and
+    stops the SERVICE (a clean exit 0, which egpt-daemon does not respawn). It
+    does NOT pause a channel. While that file exists the node refuses to boot, and
+    a RUNNING node halts on its next tick — so  touch ~/.egpt/STOP  stops egpt too.
+    Recovery is  rm ~/.egpt/STOP  and nothing else: the file is the whole state.
   `,
 
   warm: `
