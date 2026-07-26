@@ -144,7 +144,15 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
 
     // A — the knee-jerk status message: post it (returns the confirmed id), edit
     // it, or delete it (the train deletes it once the reply starts streaming).
-    async postStatus(chat, text) { return real.sendAndGetId ? real.sendAndGetId(text, { chatId: chat }) : null; },
+    //
+    // SIGNED like every other send (operator 2026-07-25, "period"; fixed 2026-07-26, HANDOFF C12).
+    // This was the one outbound here that skipped the wrap, and its other caller is the ADVICE
+    // channel post (src/spine/advice.mjs) — a terminal message a human reads, which therefore went
+    // out with no node signature on a two-node account. There is no persona to stamp on a status
+    // line (no bodyEmoji/label), so only the bridge layer lands; with the slots empty the text is
+    // byte-identical to before. The mesh's origin placeholder is signed too and is then EDITED in
+    // place by the living-mirror stream, whose own final wrap replaces this text outright.
+    async postStatus(chat, text) { return real.sendAndGetId ? real.sendAndGetId(wrapPersona({}, text), { chatId: chat }) : null; },
     editStatus(chat, msgId, text) { return real.editMessage?.(chat, msgId, text); },
     deleteStatus(chat, msgId) { return real.deleteMessage?.(chat, msgId); },
 

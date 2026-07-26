@@ -35,6 +35,10 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+// THE readers of the per-being conversation shape — imported, never re-derived here: residentsOf
+// knows which object-valued keys are residents and which are contact-level containers
+// (readonly/agents/guard), and getBeing layers the `agents.<name>` override over the block.
+import { residentsOf, getBeing } from '../conversations-state.mjs';
 
 // Context window is PER-MODEL: haiku is 200k, the large-context 4.x models
 // (sonnet/opus) are ~1M. Match by substring; a being may override with
@@ -102,20 +106,31 @@ export function compactableBeings(config) {
     });
 }
 
-// ── pure: ACTIVE conversations are ccode threads too — each contact entry holds
-//    its own persona session (threadId) + cwd (threadCwd). Same compaction, so
-//    busy chats stay thin alongside the beings (An 2026-06-19: "not only the
-//    being, the active conversations"). cwd is null when there's no threadCwd; the
-//    caller fills it with the slug-dir (the cwd the daemon resumes with). ──
+// ── pure: ACTIVE conversations are ccode threads too — same compaction, so busy chats stay
+//    thin alongside the beings (An 2026-06-19: "not only the being, the active conversations").
+//
+//    ONE TARGET PER RESIDENT BEING (fix 2026-07-26, HANDOFF C4). A conversation hosts residents,
+//    each with its OWN thread in the nested `entry[<being>]` block; the FLAT `entry.threadId`
+//    this used to read is the pre-2026-07-10 slot, ABANDONED by the agent-identity refactor
+//    (see the KEY-AS-BEING note in conversations-state.mjs). Reading it enumerated only the
+//    conversations that were already dead and missed every live one — measured on the live
+//    registry: 14 stale flat targets, 12 live nested threads, and the two sets barely overlap.
+//    `engine` is the being's FROZEN brain type (null until it is instanced) — the caller needs
+//    it for the warm key. `threadCwd` is retired, so no cwd travels here: the caller resolves
+//    the slug-dir, which is the cwd the daemon actually resumes with. ──
 export function compactableConversations(state, model = 'haiku') {
   const out = [];
   const contacts = state?.contacts ?? {};
   for (const surface of Object.keys(contacts)) {
     const bucket = contacts[surface] ?? {};
     for (const [jid, e] of Object.entries(bucket)) {
-      if (!e || e.aliasOf || typeof e.threadId !== 'string' || !e.threadId) continue;   // no live thread → nothing to compact
+      if (!e || e.aliasOf) continue;
       const slug = e.slug || jid;
-      out.push({ name: `${surface}/${slug}`, surface, slug, sessionId: e.threadId, cwd: e.threadCwd || null, model, window: windowForModel(model) });
+      for (const being of residentsOf(e)) {
+        const b = getBeing(state, surface, jid, being);
+        if (typeof b?.threadId !== 'string' || !b.threadId) continue;   // no live thread → nothing to compact
+        out.push({ name: `${surface}/${slug}#${being}`, surface, slug, being, sessionId: b.threadId, engine: b.brainType, model, window: windowForModel(model) });
+      }
     }
   }
   return out;
@@ -138,8 +153,11 @@ export function findSessionFile(sessionId) {
 //
 // The keys MUST match the warm-pool keys the dispatch/spine build, or "/compact"
 // would open a SECOND warm session resuming the same jsonl (corruption):
-//   - conversation: `e:<brainType>:<surface>:<slug>`  — dispatch.mjs (warmScope)
-//   - being:        `sib:<name>:<session_id>`          — egpt-spine.mjs sibling path
+//   - conversation: `<being>:<engine>:<surface>:<slug>` — brainpool.mjs:366 (`def.type ?? brainType`)
+//   - being:        `sib:<name>:<session_id>`           — egpt-spine.mjs sibling path
+// The conversation half was written `e:<brainType>:…` when the persona was hardcoded 'e'; the
+// resident's own name is what brainpool keys on (live profiles run `egpt`), so it comes from the
+// enumeration now instead of being spelled a second time here.
 export function compactionTargets({ config, convState, slugDir, convBrainType = 'ccode' } = {}) {
   const targets = [];
   for (const b of compactableBeings(config)) {
@@ -147,8 +165,8 @@ export function compactionTargets({ config, convState, slugDir, convBrainType = 
   }
   const model = config?.default_brain?.model || 'haiku';
   for (const c of compactableConversations(convState, model)) {
-    const cwd = c.cwd || (typeof slugDir === 'function' ? slugDir(c.surface, c.slug) : c.cwd);
-    targets.push({ name: c.name, key: `e:${convBrainType}:${c.surface}:${c.slug}`, sessionId: c.sessionId, cwd, model: c.model, window: c.window, klass: 'conversation' });
+    const cwd = typeof slugDir === 'function' ? slugDir(c.surface, c.slug) : null;
+    targets.push({ name: c.name, key: `${c.being}:${c.engine ?? convBrainType}:${c.surface}:${c.slug}`, sessionId: c.sessionId, cwd, model: c.model, window: c.window, klass: 'conversation' });
   }
   return targets;
 }

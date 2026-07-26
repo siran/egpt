@@ -211,6 +211,21 @@ describe('beeper-port adapter — layered signatures (bridge + agent wrap)', () 
     expect(spy.sent[0].text).toBe('🌉\nHey, all good\n💸');
   });
 
+  // C12 (HANDOFF 2026-07-26). postStatus was the ONE outbound in this port that never met the
+  // wrap. Its two callers are the mesh ORIGIN placeholder and — the reason this matters — the
+  // advice-channel post (src/spine/advice.mjs `ask`), a real, terminal message to a real chat:
+  // E's "❓ eGPT needs advice" landed with no node signature on a two-node account, so the
+  // operator could not tell WHICH spine was asking. "All messages coming out from a spine to any
+  // surface are signed. period." — same wrap, no second stamping site.
+  it('REPRODUCE-FIRST: postStatus is SIGNED — the advice post carries the node bridge layer', async () => {
+    const { start, spy } = fakeStart();
+    const port = await createBeeperBridgePort({ bridgeSignatureOpen: '🌉', bridgeSignatureClose: '💸' }, { start });
+    const text = '❓ eGPT needs advice — «Bea» (whatsapp):\nconfirm the Friday move?';
+    const id = await port.postStatus('!advice', text);
+    expect(spy.statusPosts[0]).toEqual({ text: `🌉\n${text}\n💸`, chatId: '!advice' });
+    expect(id).toBe('id-1');                       // the CONFIRMED id advice.ask routes answers on
+  });
+
   // A mesh envelope rides bridge.send too (mesh.mjs `send`/relayDispatch fallback) — but it is
   // spine→spine TRANSPORT, and a signature below the provenance tail would make parseMesh stop
   // recognising it. The port must post it verbatim.

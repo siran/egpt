@@ -240,19 +240,21 @@ const quoteLeadingCommand = (text) => String(text ?? '').replace(/^\/([a-z0-9_-]
 // friend in germany, opens. i can drive it by typing commands on the egpt shell.")
 //
 // A command may name the NODE it is for. THE SET IS AN ALLOWLIST — the browser family that IS
-// the remote control, plus /status:
+// the remote control, plus /status and /members:
 //
-//   /chrome  /tabs  /open  /tab  /close  /status
+//   /chrome  /tabs  /open  /tab  /close  /status  /members
 //
 // and nothing outside it is node-addressable, which is the lock: LIFECYCLE (/restart, /upgrade,
 // /rewind) and the STOP safe word are deliberately absent, so no envelope arriving from another
 // machine can restart, upgrade, rewind or kill this node. The responder reads the SAME allowlist
 // before it executes anything, so the lock holds at both ends.
 //
-// `/members` is NOT in the set: its object is the CURRENT CONVERSATION's room (resolveConvRoom),
-// not the node — a remote node has no such conversation. (Its bare form does still act on both
-// co-account nodes; that pre-existing double-act is untouched here.)
-const NODE_ADDRESSABLE = /^\/(chrome|status|tabs|tab|open|close)\b\s*(.*)$/i;
+// `/members` joined the set 2026-07-26 (HANDOFF C3). It was the one operator command left
+// outside, so on a shared Beeper account BOTH co-account nodes answered it — the same
+// double-answer the gate exists to end. Its node token is a TRAILING one (`/members do`), like
+// the browser family's, and is stripped before its own sub-grammar (`add tab <n>`,
+// `<id> mode <m>`, bare) parses — none of whose last tokens is ever a node name.
+const NODE_ADDRESSABLE = /^\/(chrome|status|tabs|tab|open|close|members?)\b\s*(.*)$/i;
 
 // The SHELL is node-local: the spine dials the operator's editor on 127.0.0.1:23375, so no other
 // node ever sees a shell message. Everywhere else this node speaks is a chat on the shared Beeper
@@ -413,7 +415,8 @@ export function createCommands({
   //   /status <node|fragment>   — node-FIRST (the existing gate), else an ordinary conversation
   //                               fragment — so the token counts only when it NAMES a node.
   //   /tabs|/tab|/open|/close   — the node is an EXTRA trailing token (`/tab 3 do`), and likewise
-  //                               only when it names one, so `/open https://x.com` is untouched.
+  //   /members                    only when it names one, so `/open https://x.com` and
+  //                               `/members chatgpt mode mention` are untouched.
   //
   // `trailing` says the token is extra baggage the command's own grammar never had: run() strips
   // it once the gate has passed, so each handler parses exactly what it always did.

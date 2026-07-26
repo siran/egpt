@@ -62,20 +62,43 @@ describe('compact-being — deterministic trigger', () => {
     expect(needsCompaction(60_000, { window: windowForModel('haiku') })).toBe(true);  // 60k ≥ 50k → compact
   });
 
-  it('compactableConversations — active threads become targets (skips aliases / no-thread), cwd null without threadCwd', () => {
+  // REPRODUCE-FIRST (HANDOFF C4, 2026-07-26): a live thread lives in the NESTED per-being block
+  // `entry[<being>].threadId` since the 2026-07-10 agent-identity refactor — the FLAT `e.threadId`
+  // is the abandoned legacy slot. Enumerating the flat slot found ZERO of the live threads on the
+  // real registry (14 stale flat targets vs 12 live nested ones, measured 2026-07-26).
+  it('compactableConversations — NESTED per-being threads become targets (skips aliases / no-thread)', () => {
     const state = { contacts: {
       whatsapp: {
-        '111@s': { slug: 'mom', threadId: 'sess-mom', threadCwd: 'C:/conv/mom' },
-        '222@s': { slug: 'work', threadId: 'sess-work' },                          // no threadCwd → cwd null
-        '333@s': { slug: 'idle' },                                                  // no threadId → skip
-        '444@s': { aliasOf: '111@s', threadId: 'x' },                              // alias → skip
+        '111@s': { slug: 'mom', egpt: { threadId: 'sess-mom', readonly: { type: 'ccode' } } },
+        '222@s': { slug: 'work', egpt: { threadId: 'sess-work' } },                  // no frozen type yet
+        '333@s': { slug: 'idle', egpt: { mode: 'auto' } },                           // resident, no thread → skip
+        '444@s': { aliasOf: '111@s', egpt: { threadId: 'x' } },                     // alias → skip
+        '555@s': { slug: 'legacy', threadId: 'sess-legacy' },                        // FLAT-only → abandoned, skip
       },
-      telegram: { '999': { slug: 'tg-chat', threadId: 'sess-tg', threadCwd: 'C:/conv/tg' } },
+      telegram: { '999': { slug: 'tg-chat', egpt: { threadId: 'sess-tg' } } },
     } };
     const got = compactableConversations(state, 'haiku');
-    expect(got.map(c => c.name).sort()).toEqual(['telegram/tg-chat', 'whatsapp/mom', 'whatsapp/work']);
-    expect(got.find(c => c.name === 'whatsapp/mom')).toMatchObject({ surface: 'whatsapp', slug: 'mom', sessionId: 'sess-mom', cwd: 'C:/conv/mom', model: 'haiku', window: 200_000 });
-    expect(got.find(c => c.name === 'whatsapp/work').cwd).toBe(null);
+    expect(got.map(c => c.name).sort()).toEqual(['telegram/tg-chat#egpt', 'whatsapp/mom#egpt', 'whatsapp/work#egpt']);
+    expect(got.find(c => c.name === 'whatsapp/mom#egpt')).toMatchObject({ surface: 'whatsapp', slug: 'mom', being: 'egpt', sessionId: 'sess-mom', engine: 'ccode', model: 'haiku', window: 200_000 });
+    expect(got.find(c => c.name === 'whatsapp/work#egpt').engine).toBe(null);
+  });
+
+  it('one conversation with TWO resident beings yields TWO targets (one thread each)', () => {
+    const state = { contacts: { whatsapp: { '111@s': { slug: 'lab',
+      egpt: { threadId: 'sess-e' },
+      scribe: { threadId: 'sess-scribe' },
+      guard: { turns: 3, window: 60 },          // a contact-level override, NOT a resident
+    } } } };
+    const got = compactableConversations(state, 'haiku');
+    expect(got.map(c => c.sessionId).sort()).toEqual(['sess-e', 'sess-scribe']);
+  });
+
+  it('an `agents:` override of threadId is honoured (getBeing is the reader, not a re-parse)', () => {
+    const state = { contacts: { whatsapp: { '111@s': { slug: 'mom',
+      egpt: { threadId: 'sess-old' },
+      agents: { egpt: { threadId: 'sess-pinned' } },
+    } } } };
+    expect(compactableConversations(state, 'haiku')[0].sessionId).toBe('sess-pinned');
   });
 
   it('selects only LOCAL ccode beings with a session_id — never sdk/codex/llama or _note', () => {
@@ -122,26 +145,28 @@ describe('compact-being — warm-pool targets (native /compact lives in the spin
       wren: { type: 'ccode', session_id: 'wren-sid', model: 'opus', cwd: 'C:/wren' },
     } };
     const convState = { contacts: { whatsapp: {
-      '120@g.us': { slug: 'SPOILER-x', threadId: 'spoiler-sid', threadCwd: 'C:/conv/spoiler' },
+      '120@g.us': { slug: 'SPOILER-x', egpt: { threadId: 'spoiler-sid', readonly: { type: 'ccode' } } },
     } } };
     const slugDir = (surface, slug) => `C:/.egpt/conversations/${surface}/${slug}`;
     const targets = compactionTargets({ config, convState, slugDir });
     const being = targets.find(t => t.name === 'wren');
-    const conv = targets.find(t => t.name === 'whatsapp/SPOILER-x');
+    const conv = targets.find(t => t.name === 'whatsapp/SPOILER-x#egpt');
     // being key MUST match egpt-spine.mjs: `sib:<name>:<session_id>`
     expect(being.key).toBe('sib:wren:wren-sid');
     expect(being).toMatchObject({ sessionId: 'wren-sid', cwd: 'C:/wren', klass: 'resident', window: 1_000_000 });
-    // conversation key MUST match dispatch.mjs warm key: `e:<brainType>:<surface>:<slug>`
-    expect(conv.key).toBe('e:ccode:whatsapp:SPOILER-x');
-    expect(conv).toMatchObject({ sessionId: 'spoiler-sid', cwd: 'C:/conv/spoiler', klass: 'conversation' });
+    // conversation key MUST match brainpool's warm key: `<being>:<engine>:<surface>:<slug>` —
+    // the being is the RESIDENT's own name (live profiles run `egpt`, never a literal 'e').
+    expect(conv.key).toBe('egpt:ccode:whatsapp:SPOILER-x');
+    expect(conv).toMatchObject({ sessionId: 'spoiler-sid', cwd: 'C:/.egpt/conversations/whatsapp/SPOILER-x', klass: 'conversation' });
   });
 
-  it('fills a null conversation cwd from slugDir (the cwd the daemon resumes with)', () => {
+  it('a not-yet-instanced thread falls back to the default engine in the key', () => {
     const config = { default_brain: { model: 'haiku' }, siblings: {} };
-    const convState = { contacts: { whatsapp: { '1@g': { slug: 'chat', threadId: 'sid' } } } };
+    const convState = { contacts: { whatsapp: { '1@g': { slug: 'chat', egpt: { threadId: 'sid' } } } } };
     const slugDir = (surface, slug) => `C:/dir/${surface}/${slug}`;
     const [conv] = compactionTargets({ config, convState, slugDir });
-    expect(conv.cwd).toBe('C:/dir/whatsapp/chat');
+    expect(conv.key).toBe('egpt:ccode:whatsapp:chat');
+    expect(conv.cwd).toBe('C:/dir/whatsapp/chat');   // the cwd the daemon resumes with
   });
 
   it('dueForCompaction reads the session jsonl and applies the threshold', () => {

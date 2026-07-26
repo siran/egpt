@@ -295,12 +295,6 @@ describe('lock — lifecycle and STOP never travel', () => {
     });
   }
 
-  it('/members is NOT in the set — its object is the conversation, not the node', async () => {
-    const { bridge, commands } = nodeStack({ config: KG() });
-    expect(commands.remoteNode({ ...SHELL, body: '/members do' })).toBe(null);
-    expect(bridge.sent).toHaveLength(0);
-  });
-
   it('a multi-line body is never node-addressed (so the token strip can never cut the text)', async () => {
     const { commands } = nodeStack({ config: KG() });
     expect(commands.remoteNode({ ...SHELL, body: '/tabs do\nand more' })).toBe(null);
@@ -405,8 +399,8 @@ describe('responder — an arriving envelope carrying a node-addressed command',
 });
 
 // ── 6. THE BROWSER FAMILY IS NODE-ADDRESSABLE (and gated by the SAME helper) ───────────────
-describe('the node-addressable set — the browser family + /status', () => {
-  for (const [line, chat] of [['/tabs do', 'egpt-mesh-do-kg'], ['/open https://x.com do', 'egpt-mesh-do-kg'], ['/tab 1 do', 'egpt-mesh-do-kg'], ['/close 1 do', 'egpt-mesh-do-kg'], ['/status do', 'egpt-mesh-do-kg']]) {
+describe('the node-addressable set — the browser family + /status + /members', () => {
+  for (const [line, chat] of [['/tabs do', 'egpt-mesh-do-kg'], ['/open https://x.com do', 'egpt-mesh-do-kg'], ['/tab 1 do', 'egpt-mesh-do-kg'], ['/close 1 do', 'egpt-mesh-do-kg'], ['/status do', 'egpt-mesh-do-kg'], ['/members do', 'egpt-mesh-do-kg']]) {
     it(`${line} on the shell travels to do`, async () => {
       const { bridge, spine } = nodeStack({ config: KG() });
       await spine.handleInbound({ ...SHELL, body: line });
@@ -447,5 +441,23 @@ describe('the node-addressable set — the browser family + /status', () => {
     await spine.handleInbound({ ...FAM, body: '/tabs do' });
     await flush();
     expect(bridge.sent).toHaveLength(0);
+  });
+
+  // C3 (HANDOFF 2026-07-26): /members was the one operator command outside the set, so on a
+  // shared Beeper account BOTH co-account nodes answered it — the very double-answer the gate
+  // exists to end. Same gate, same allowlist, no second mechanism.
+  it('REPRODUCE-FIRST: on a SHARED Beeper chat a named peer silences this node — /members do', async () => {
+    const { bridge, spine } = nodeStack({ config: KG() });
+    await spine.handleInbound({ ...FAM, body: '/members do' });
+    await flush();
+    expect(bridge.sent).toHaveLength(0);
+  });
+
+  it('bare /members is unchanged — this node still answers it', async () => {
+    const { bridge, spine } = nodeStack({ config: KG() });
+    await spine.handleInbound({ ...FAM, body: '/members' });
+    await flush();
+    expect(envelopes(bridge)).toHaveLength(0);
+    expect(plain(bridge)).toHaveLength(1);
   });
 });

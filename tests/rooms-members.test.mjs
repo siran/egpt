@@ -34,7 +34,7 @@ let base;
 beforeEach(() => { base = mkdtempSync(join(tmpdir(), 'egpt-rmc-')); });
 afterEach(() => { rmSync(base, { recursive: true, force: true }); });
 
-function harness({ cdp, adapters = ADAPTERS, roomNames = [] } = {}) {
+function harness({ cdp, adapters = ADAPTERS, roomNames = [], config = {} } = {}) {
   const sent = [];
   const rooms = new Map();       // NamedRoom name        -> TmpRoom (real fs under base/named)
   const convRooms = new Map();   // `${surface}:${chatId}` -> TmpRoom (real fs under base/conv)
@@ -51,7 +51,7 @@ function harness({ cdp, adapters = ADAPTERS, roomNames = [] } = {}) {
     return convRooms.get(key);
   };
   const cmds = createCommands({
-    getConfig: () => ({ whatsapp: { chat_id: '!conv-1' } }),
+    getConfig: () => ({ whatsapp: { chat_id: '!conv-1' }, ...config }),
     send: async (chatId, text) => sent.push({ chatId, text }),
     ...(cdp ? { cdp } : {}),
     loadAdapters: async () => adapters,
@@ -258,6 +258,42 @@ describe('/members <id> mode <disable|mention|all>', () => {
     expect(await (await resolveConvRoom(self.surface, self.chatId)).memberState('chatgpt')).toBe('muted');   // unchanged
     await cmds.run({ ...self, body: '/members ghost mode all' });
     expect(sent.at(-1).text).toMatch(/no member/i);
+  });
+});
+
+// C3 (HANDOFF 2026-07-26): /members joined the node-addressable set, so a TRAILING node token
+// is stripped by the ONE shared gate (commands.mjs) before /members' own sub-grammar parses.
+// The three things that must hold together: a peer's name silences us, OUR name runs here, and
+// the existing sub-grammar (`add tab <n>`, `<id> mode <m>`, bare) is untouched — its last token
+// is never a node name.
+describe('/members <node> — the shared node gate, with the sub-grammar intact', () => {
+  const NODES = { node_name: 'kg', account_peers: ['kg', 'do'] };
+
+  it('REPRODUCE-FIRST: /members do (a peer, not us) answers NOTHING AT ALL', async () => {
+    const { cmds, sent } = harness({ config: NODES });
+    await cmds.run({ ...self, body: '/members do' });
+    expect(sent).toEqual([]);
+  });
+
+  it('/members kg (OUR node) strips the token and lists, exactly like bare /members', async () => {
+    const cdp = { listTabs: async () => threeTabs };
+    const { cmds, sent } = harness({ cdp, config: NODES });
+    await cmds.run({ ...self, body: '/members add tab 1' });
+    await cmds.run({ ...self, body: '/members' });
+    const bare = sent.at(-1).text;
+    await cmds.run({ ...self, body: '/members kg' });
+    expect(sent.at(-1).text).toBe(bare);
+    expect(sent.at(-1).text).not.toMatch(/usage:/);
+  });
+
+  it('the sub-grammar is unchanged with nodes configured — add tab <n> and <id> mode <m>', async () => {
+    const cdp = { listTabs: async () => threeTabs };
+    const { cmds, sent, resolveConvRoom } = harness({ cdp, config: NODES });
+    await cmds.run({ ...self, body: '/members add tab 1' });
+    expect(sent.at(-1).text).toMatch(/added 'chatgpt'/);
+    await cmds.run({ ...self, body: '/members chatgpt mode mention' });
+    expect(sent.at(-1).text).toMatch(/mode:mention/);
+    expect(await (await resolveConvRoom(self.surface, self.chatId)).memberState('chatgpt')).toBe('mention');
   });
 });
 
