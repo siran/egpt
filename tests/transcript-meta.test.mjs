@@ -3,7 +3,7 @@
 // and any reader must be able to strip it cleanly so front-matter keys never
 // reach a model as conversation turns. renderFrontMatter ⟷ stripFrontMatter.
 import { describe, it, expect } from 'vitest';
-import { renderFrontMatter, stripFrontMatter } from '../src/transcript-meta.mjs';
+import { renderFrontMatter, stripFrontMatter, parseFrontMatter } from '../src/transcript-meta.mjs';
 
 describe('renderFrontMatter', () => {
   it('fences the block, emits populated fields, always emits a notes slot', () => {
@@ -50,5 +50,21 @@ describe('stripFrontMatter', () => {
   it('round-trips: render then strip yields just the body', () => {
     const body = '[An (12:00)]: hi\n\n[@e (12:01)]: hey';
     expect(stripFrontMatter(renderFrontMatter({ name: 'a', persona: 'e' }) + body)).toBe(body);
+  });
+});
+
+// The READ side: which thread the file on disk belongs to is what the transcript roll keys on
+// (conversations-state.rollTranscript), so the block has to be readable back, not only written.
+describe('parseFrontMatter', () => {
+  it('round-trips the rendered block, dropping the empty slots', () => {
+    const fields = { name: 'morgan', surface: 'tg', slug: 'morgan', thread_id: '120da173', persona: 'e' };
+    expect(parseFrontMatter(renderFrontMatter(fields) + '[An (12:00)]: hi')).toEqual(fields);   // `notes:` is empty → absent
+  });
+
+  it('no block / unterminated fence / no such field → {} or undefined, never a throw', () => {
+    expect(parseFrontMatter('just turns')).toEqual({});
+    expect(parseFrontMatter('---\nname: x\nno close')).toEqual({});
+    expect(parseFrontMatter(null)).toEqual({});
+    expect(parseFrontMatter(renderFrontMatter({ name: 'x' })).thread_id).toBeUndefined();
   });
 });

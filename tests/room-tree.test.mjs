@@ -77,6 +77,6 @@ describe('ONE owner of the Room tree — both creation paths make the SAME tree'
     });
     await cmds.run({ chatId: '!self', surface: SURFACE, body: `/room create ${ROOM_NAME}` });
     // '' is the base folder; the rest are the dir getters room-core.mjs declares.
-    expect(treeOf(named.mkdirs, Room.named(ROOM_NAME))).toEqual(['', 'files', 'identity.d', 'media', 'scripts']);
+    expect(treeOf(named.mkdirs, Room.named(ROOM_NAME))).toEqual(['', 'files', 'identity.d', 'media', 'scripts', 'transcripts']);
   });
 });

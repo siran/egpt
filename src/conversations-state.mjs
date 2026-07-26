@@ -23,6 +23,7 @@ import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 import * as YAML from 'yaml';
 import { sanitizeSlug } from './sanitize.mjs';
+import { parseFrontMatter } from './transcript-meta.mjs';
 import { Room } from './room-core.mjs';
 import { EGPT_HOME } from './egpt-home.mjs';
 import { makeSerialByKey } from './serial-by-key.mjs';
@@ -95,6 +96,59 @@ export function slugDir(surface, slug) {
 }
 export function slugTranscriptPath(surface, slug) {
   return join(slugDir(surface, slug), 'transcript.md');
+}
+
+// Archive the FINISHED thread's transcript so the new one starts empty (operator 2026-07-25:
+// "there must be a new transcript if thread-id changes"). Its home is the fresh moment — the
+// brainpool's no-thread branch, BEFORE the new thread writes anything — because that is when
+// the thread changes, whatever changed it (a deleted threadId, /e new, a dead session).
+//
+// ⚠ NOT CALLED YET (2026-07-26). It cannot be wired until the front matter names the THREAD:
+// the only writer of it (spine/transcript.mjs, the ingestion append) passes `thread_id:
+// ev.chatId` — the CHAT id — which is CONSTANT per conversation and is already present on a
+// brand-new conversation's very first line (that append runs at ingestion, before the turn).
+// So today the guard below cannot tell the retiring thread's transcript from the new one's:
+// every conversation would archive its own first inbound line, and — since the reply append
+// writes no front matter — the recreated transcript.md would then be un-stamped forever and
+// never roll again. Two candidate fixes, both needing a ruling:
+//   (a) stamp the transcript with the thread it belongs to (transcript-meta already reserves
+//       `thread_id` for "egpt resumable thread id (distinct from chat_id)" AND a `chat_id`
+//       field for what is being written there now) — the question is WHO stamps a transcript
+//       that is born before its thread exists;
+//   (b) key the archive on the RETIRING thread id from state/stats/<surface>/<chatId>.yaml
+//       (`threads:`, which brainpool already appends to) instead of on the front matter, and
+//       let "transcripts/<that id>.md already exists" BE the re-roll guard.
+//
+// WHICH id: the one the file itself names in its front matter (transcript-meta.parseFrontMatter),
+// not the registry's — the registry's is exactly what was just removed. Destination is the
+// Room's own transcriptsDir; the tree is created through Room.ensureTree, the ONE owner of it.
+//
+// GUARD — roll ONLY when transcript.md exists AND names a thread_id. If a turn throws before
+// recordThread stores the new session the NEXT turn is fresh again, and by then transcript.md is
+// the NEW thread's: un-stamped, so this is a no-op instead of shredding it.
+// NEVER CLOBBERS: a taken archive name takes the next `-N` suffix (an archive is a record; the
+// fresh-transcript guarantee must not cost an older one).
+// NEVER THROWS (like seedIdentityLayers): a failed archive logs and the turn continues — losing
+// a reply because a file move failed is worse than a missing archive. Returns the archive path,
+// or null when it did not roll.
+export async function rollTranscript(surface, slug, { io = {} } = {}) {
+  const readFileFn = io.readFile ?? readFile;
+  const renameFn = io.rename ?? rename;
+  const room = Room.forChat(surface, slug);
+  const src = room.transcriptPath;   // the Room's own getter — same file slugTranscriptPath names
+  try {
+    let text = null;
+    try { text = await readFileFn(src, 'utf8'); } catch { return null; }   // no transcript yet → nothing to roll
+    const id = sanitizeSlug(parseFrontMatter(text ?? '').thread_id ?? '');
+    if (!id) return null;                                                  // un-stamped → the guard
+    const taken = async (p) => { try { return (await readFileFn(p, 'utf8')) != null; } catch { return false; } };
+    let dest = join(room.transcriptsDir, `${id}.md`);
+    for (let n = 2; n <= 99 && await taken(dest); n++) dest = join(room.transcriptsDir, `${id}-${n}.md`);
+    if (await taken(dest)) return null;                                    // 99 archives of one id: leave it alone
+    await room.ensureTree({ io: { mkdir: io.mkdir ?? mkdir } });
+    await renameFn(src, dest);
+    return dest;
+  } catch (e) { console.error(`!! rollTranscript(${surface}/${slug}): ${e?.message ?? e}`); return null; }
 }
 
 // Render a path msys-style: C:\Users\an → /c/Users/an (drive-letter lowercased,
@@ -829,11 +883,25 @@ const _FLAT_ENTRY_KEYS = new Set([
 // of the two blocks this reader resolves it from (operator 2026-07-25: "so fix /e auto to the
 // new config") — otherwise a `/e auto <mode>` into `entry[<name>].mode` is silently shadowed and
 // the command answers ✅ for a change nobody can observe.
+//
+// THE INSTANCING FIELDS (operator 2026-07-25: "in conversations.yaml i can override an agent's
+// config for the conversation"). getBeing reads agent/type/model/effort/allowed_tools out of
+// `readonly` — the spine's freeze. A SHALLOW merge meant the only way to pin one of them was to
+// write a whole `readonly:` block inside `agents.<name>`: it wore the name of the spine's own
+// snapshot key AND clobbered the other four. So those five may be written FLAT in the override
+// block and layer FIELD-WISE over the freeze. An `agents.<name>.readonly` already on disk is
+// still read (nothing is migrated), with the flat fields winning over it.
+const _RO_FIELDS = ['agent', 'type', 'model', 'effort', 'allowed_tools'];
 const _obj = (v) => (v && typeof v === 'object' && !Array.isArray(v)) ? v : null;
 const _beingBlock = (entry, being) => {
   const own = _obj(entry[being]);
   const ovr = _obj(_obj(entry.agents)?.[being]);
-  return (own && ovr) ? { ...own, ...ovr } : (ovr ?? own);
+  if (!ovr) return own;
+  const block = { ...own, ...ovr };
+  const ro = { ..._obj(own?.readonly), ..._obj(ovr.readonly) };
+  for (const k of _RO_FIELDS) if (k in ovr) ro[k] = ovr[k];
+  if (Object.keys(ro).length) block.readonly = ro;
+  return block;
 };
 
 export function getBeing(state, surface, jid, being) {

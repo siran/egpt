@@ -34,8 +34,10 @@ const CONV = join(HOME, 'conversations', SURFACE, SLUG);
 //                (it used to appear only on the first saved file — a card pointing at a
 //                not-yet-existing folder).
 //   ON_DEMAND  — created by a service the first time it has something to put there.
-// A directory in NEITHER class is a `./transcripts/` — a pointer to nothing.
-const SEEDED_NOW = ['identity.d', 'scripts', 'media'];
+// A directory in NEITHER class is a pointer to nothing. `transcripts/` — the original offender
+// — joined SEEDED_NOW on 2026-07-26: it is part of the tree now (Room.treeDirs), which is what
+// let the card name it again, and line 72 below still checks that against DISK.
+const SEEDED_NOW = ['identity.d', 'scripts', 'media', 'transcripts'];
 const ON_DEMAND = [];
 
 let seeded;

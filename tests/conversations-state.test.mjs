@@ -35,6 +35,8 @@ import {
   recordMemberStat,
   recentContacts,
   slugDir,
+  slugTranscriptPath,
+  rollTranscript,
   isPlaceholderSlug,
   patchContact,
   recordThread,
@@ -1151,6 +1153,63 @@ describe('personality frontmatter / allowed_tools (security scoping)', () => {
     const dirs = tmpDirs.splice(0);
     await Promise.all(dirs.map(d => rm(d, { recursive: true, force: true })));
     for (const d of dirs) expect(existsSync(d)).toBe(false);
+  });
+});
+
+// THE TRANSCRIPT ROLL (operator 2026-07-25: "there must be a new transcript if thread-id
+// changes"). The retiring thread keeps its own file under transcripts/<thread_id>.md and
+// transcript.md restarts empty. Runs entirely on an injected in-memory fs — no profile touched.
+describe('rollTranscript — a changed thread starts a new transcript', () => {
+  const SURFACE = 'whatsapp', SLUG = 'roll-fixture';
+  const src = slugTranscriptPath(SURFACE, SLUG);
+  const archive = (id) => join(slugDir(SURFACE, SLUG), 'transcripts', `${id}.md`);
+  const TEXT = ['---', 'name: Roll', 'surface: whatsapp', 'slug: roll-fixture',
+    'thread_id: THREAD-A', 'persona: egpt', 'notes:', '---', '', 'hola', '', '[@e (14:05)]: hey', '', ''].join('\n');
+
+  // path → text. rename MOVES the entry, so "byte-identical" is observable, not assumed.
+  const fakeFs = (files) => ({ files, io: {
+    mkdir: async () => {},
+    readFile: async (p) => { if (!(p in files)) { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; } return files[p]; },
+    rename: async (a, b) => { files[b] = files[a]; delete files[a]; },
+  } });
+
+  it('moves transcript.md to transcripts/<thread_id>.md byte-identical, leaving no transcript.md', async () => {
+    const fs = fakeFs({ [src]: TEXT });
+    expect(await rollTranscript(SURFACE, SLUG, { io: fs.io })).toBe(archive('THREAD-A'));
+    expect(fs.files[archive('THREAD-A')]).toBe(TEXT);   // every byte, front matter included
+    expect(src in fs.files).toBe(false);                // …and the live file is gone → the next line starts a new one
+  });
+
+  // THE GUARD (why it exists): if a turn throws before recordThread stores the new session, the
+  // NEXT turn is fresh again. By then transcript.md is the NEW thread's — un-stamped. Rolling it
+  // would shred the transcript that was just started, so an un-stamped file is a no-op.
+  it('front matter with NO thread_id → no roll, nothing moved, nothing lost', async () => {
+    const noId = ['---', 'name: Roll', 'surface: whatsapp', 'notes:', '---', '', 'hola', ''].join('\n');
+    const fs = fakeFs({ [src]: noId });
+    expect(await rollTranscript(SURFACE, SLUG, { io: fs.io })).toBe(null);
+    expect(Object.keys(fs.files)).toEqual([src]);
+    expect(fs.files[src]).toBe(noId);
+  });
+
+  it('no front matter at all / no transcript.md → no roll', async () => {
+    const bare = fakeFs({ [src]: 'just turns, no block\n' });
+    expect(await rollTranscript(SURFACE, SLUG, { io: bare.io })).toBe(null);
+    expect(bare.files[src]).toBe('just turns, no block\n');
+    const empty = fakeFs({});
+    expect(await rollTranscript(SURFACE, SLUG, { io: empty.io })).toBe(null);
+    expect(Object.keys(empty.files)).toEqual([]);
+  });
+
+  it('NEVER clobbers an existing archive — a taken name gets the next suffix', async () => {
+    const fs = fakeFs({ [src]: TEXT, [archive('THREAD-A')]: 'AN OLDER ARCHIVE' });
+    expect(await rollTranscript(SURFACE, SLUG, { io: fs.io })).toBe(archive('THREAD-A-2'));
+    expect(fs.files[archive('THREAD-A')]).toBe('AN OLDER ARCHIVE');
+    expect(fs.files[archive('THREAD-A-2')]).toBe(TEXT);
+  });
+
+  it('is non-fatal: an fs failure returns null instead of throwing (a turn must not die for an archive)', async () => {
+    const io = { mkdir: async () => {}, readFile: async () => TEXT, rename: async () => { throw new Error('EPERM'); } };
+    expect(await rollTranscript(SURFACE, SLUG, { io })).toBe(null);
   });
 });
 

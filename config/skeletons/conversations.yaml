@@ -50,7 +50,8 @@ contacts:
         # persona only - keep it in context on messages it won't answer: always | mode
         #send_to_egpt: mode
 
-        # spine-written, don't hand-edit: delete threadId to start fresh (`/e new`)
+        # spine-written, don't hand-edit. Deleting threadId starts a new session
+        # AND re-reads this agent's config (the block above + the pins below).
         threadId: null
         #threadCreatedAt: 2026-07-10T16:39:39.948Z
         #identityInjectedAt: 2026-07-10T16:39:39.948Z
@@ -66,10 +67,10 @@ contacts:
         #                              # a LIST confines file tools to the folder;
         #                              # "all" is rejected and coerced back to this
 
-      # per-conversation overrides, layered field-wise OVER the blocks above.
-      # Pin one agent's mode in one chat without touching its threadId/readonly.
+      # per-conversation overrides, layered field-wise OVER the blocks above:
+      # mode, send_to_egpt, and the readonly five FLAT - each pins only itself.
       #agents:
-      #  egpt: { mode: auto }
+      #  egpt: { mode: auto, model: opus }
       #  don:  { mode: mention-direct }
 
     # a second id for the SAME contact - one thread, one folder, one mode.

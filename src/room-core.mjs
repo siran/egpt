@@ -90,6 +90,7 @@ export class Room {
   get filesDir()       { return join(this.baseDir(), 'files'); }           // operator /inject — the shared shelf
   get identityDir()    { return join(this.baseDir(), 'identity.d'); }      // NN-*.md fed to the room's brain(s)
   get scriptsDir()     { return join(this.baseDir(), 'scripts'); }         // *.x.md TEXTECUTABLES the room's brain(s) can be asked to carry out
+  get transcriptsDir() { return join(this.baseDir(), 'transcripts'); }     // finished threads: transcript.md is archived here as <thread_id>.md when the thread changes
 
   // ── the tree, ENSURED (ONE owner) ─────────────────────────────────────────
   // The list used to be written out twice — /room create's mkdir loop (spine/commands.mjs)
@@ -101,14 +102,18 @@ export class Room {
   // 2026-07-26: "the work is for the Room abstraction, it is then for free in a room or
   // conversation on any network").
   //
-  // ALL FOUR dirs, for both roots. media/ and files/ were NamedRoom-only in practice, but a
+  // transcripts/ JOINED the list on 2026-07-26, which is what ENDS that dead end: it is where
+  // a changed thread's transcript.md gets archived (conversations-state.rollTranscript — see
+  // its header, not wired yet), so the pointers card lands E in a folder that exists.
+  //
+  // ALL FIVE dirs, for both roots. media/ and files/ were NamedRoom-only in practice, but a
   // conversation IS a Room: the shipped pointers card already tells every brain to look in
   // ./media/, and /inject's shelf must land somewhere in a conversation too. An empty folder
   // is the honest answer ("nothing here yet") — the same reasoning that created scripts/
   // eagerly; a card naming a folder nothing creates is the ./transcripts/ dead-end of
   // 2026-07-25.
   treeDirs() {
-    return [this.baseDir(), this.mediaDir, this.filesDir, this.identityDir, this.scriptsDir];
+    return [this.baseDir(), this.mediaDir, this.filesDir, this.identityDir, this.scriptsDir, this.transcriptsDir];
   }
 
   // Create the tree. Idempotent (mkdir -p on every call). `io.mkdir` is the seam both

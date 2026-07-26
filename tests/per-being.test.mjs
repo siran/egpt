@@ -77,6 +77,56 @@ describe('per-being: the conversations.yaml `agents:` override block', () => {
   });
 });
 
+// THE INSTANCING FIELDS through the same block (operator 2026-07-25: "in conversations.yaml i
+// can override an agent's config for the conversation"). The five frozen fields — agent, type,
+// model, effort, allowed_tools — may be written FLAT in `agents.<name>` (no `readonly:` wrapper)
+// and layer FIELD-WISE over the spine's frozen `entry[<name>].readonly`. Before this, pinning a
+// model per-conversation meant re-authoring a whole `readonly:` block under the operator's own
+// key: it wore the name of the spine's snapshot AND clobbered the other four frozen fields.
+describe('per-being: the agents: override reaches the INSTANCING fields', () => {
+  const frozen = { agent: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: ['Read', 'Grep'] };
+  const withPin = () => ({ contacts: { whatsapp: {
+    '!pin:beeper.local': { slug: 'pin',
+      egpt:   { mode: 'on', threadId: 'T1', readonly: { ...frozen } },
+      agents: { egpt: { mode: 'auto', model: 'opus' } },
+    },
+  } } });
+
+  it('a FLAT model pins the model — agent/type/effort/allowed_tools STILL come from the freeze', () => {
+    expect(getBeing(withPin(), 'whatsapp', '!pin:beeper.local', 'egpt')).toMatchObject({
+      model: 'opus',                       // ← the pin
+      mode: 'auto',                        // the block-level override still works
+      agent: 'egpt', brain: 'egpt', brainType: 'ccode', effort: 'high', allowedTools: ['Read', 'Grep'],
+      threadId: 'T1',                      // the spine's own block is untouched
+    });
+  });
+
+  it('an agents.<name>.readonly already on disk still reads — but a FLAT field beats it', () => {
+    const s = { contacts: { whatsapp: {
+      '!ro:beeper.local': { slug: 'ro',
+        egpt:   { readonly: { ...frozen } },
+        agents: { egpt: { readonly: { model: 'haiku', effort: 'low' }, model: 'opus' } },
+      },
+    } } };
+    expect(getBeing(s, 'whatsapp', '!ro:beeper.local', 'egpt')).toMatchObject({
+      model: 'opus',        // flat wins over the override's own readonly…
+      effort: 'low',        // …which still layers where no flat field speaks…
+      agent: 'egpt', brainType: 'ccode', allowedTools: ['Read', 'Grep'],   // …over the freeze
+    });
+  });
+
+  it('a conversation with NO pin resolves exactly the freeze (nothing invented)', () => {
+    const s = { contacts: { whatsapp: { '!plain:beeper.local': { slug: 'p', egpt: { readonly: { ...frozen } } } } } };
+    expect(getBeing(s, 'whatsapp', '!plain:beeper.local', 'egpt')).toMatchObject({
+      model: 'sonnet', effort: 'high', agent: 'egpt', brainType: 'ccode', allowedTools: ['Read', 'Grep'],
+    });
+  });
+
+  it('the pin adds NO phantom resident (the _FLAT_ENTRY_KEYS trap)', () => {
+    expect(residentsOf(withPin().contacts.whatsapp['!pin:beeper.local'])).toEqual(['egpt']);
+  });
+});
+
 // patchBeing is the WRITE side of that merge (operator 2026-07-25: "so fix /e auto to the new
 // config"). The invariant it exists to hold: getBeing reads back exactly what was written, no
 // matter which of the two blocks the field currently resolves from.

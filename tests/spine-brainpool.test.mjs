@@ -25,9 +25,9 @@ function fakePool(scriptedResults) {
 
 const ev = { surface: 'whatsapp', chatId: '!room:beeper.com', chatName: 'SPOILER', line: 'An@[SPOILER].wa (14:05) #m1: hola', body: 'hola' };
 
-function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, loadFeed, loadManifest, loadAutoLayer, seedSession, seedMode, brains, afterTurn, io, nodeIdentity } = {}) {
+function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, loadFeed, loadManifest, loadAutoLayer, seedSession, seedMode, seedReadonly, seedAgents, brains, afterTurn, io, nodeIdentity } = {}) {
   let state = emptyState();
-  if (seedSession || seedMode) {   // pre-register the contact (WITH a stored thread and/or an E mode)
+  if (seedSession || seedMode || seedReadonly || seedAgents) {   // pre-register the contact (WITH a stored thread, an E mode, a freeze and/or an operator pin)
     const ens = ensureContact(state, ev.surface, ev.chatId, { pushedName: ev.chatName, slugHint: ev.chatName });
     state = ens.state;
     // Seed the persona under its NESTED 'e' block (operator 2026-07-10: the persona is a normal
@@ -37,6 +37,11 @@ function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, load
       const prior = getContact(state, ev.surface, ev.chatId)?.entry?.e ?? {};
       state = patchContact(state, ev.surface, ev.chatId, { e: { ...prior, mode: seedMode } });   // e.g. 'auto'
     }
+    if (seedReadonly) {   // a PREVIOUS instancing left frozen in entry.e.readonly
+      const prior = getContact(state, ev.surface, ev.chatId)?.entry?.e ?? {};
+      state = patchContact(state, ev.surface, ev.chatId, { e: { ...prior, readonly: seedReadonly } });
+    }
+    if (seedAgents) state = patchContact(state, ev.surface, ev.chatId, { agents: seedAgents });   // the operator's per-conversation pin
   }
   const pool = fakePool(scriptedResults);
   const loadState = async () => state;
@@ -180,6 +185,49 @@ describe('brainpool.turn', () => {
     type = 'codex';                       // operator re-points the default
     await brain.turn('e', ev);            // …but this conv stays frozen on ccode
     expect(pool.calls[1].key).toMatch(/:ccode:/);
+  });
+
+  // THREAD-KEYED FRESHNESS (operator 2026-07-25: "deleting the thread-id reloads the config").
+  // `fresh` used to key on the FREEZE, so deleting threadId bought a new claude session running
+  // on the SAME stale frozen model/effort/tools — the gesture half-worked. It keys on the THREAD
+  // now: no thread → re-read the config, re-freeze, and RUN on the re-read values.
+  const RE_READ = { resolve: (n) => n === 'sonnet-high'
+    ? ({ name: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: ['Read', 'Grep'] }) : null };
+  const RE_READ_CFG = { agents: { egpt: { configuration: 'sonnet-high', handles: ['e', 'egpt'], default: true } } };
+  const STALE = { agent: 'stale', type: 'ccode', model: 'haiku', effort: 'low', allowed_tools: ['Read'] };
+
+  it('threadId deleted with the freeze still on disk → the RUN uses the re-read config, and re-freezes', async () => {
+    const { brain, pool, getState } = harness([{ text: 'ok', sessionId: 'sid-new' }], {
+      brains: RE_READ, config: RE_READ_CFG, seedReadonly: STALE, loadFeed: async () => 'I am eGPT.',
+    });
+    await brain.turn('e', ev);
+    // the RUN itself — not just the stored snapshot
+    expect(pool.calls[0].brainOptions).toMatchObject({ model: 'sonnet', effort: 'high', allowedTools: ['Read', 'Grep'] });
+    expect(pool.calls[0].brainOptions.sessionId).toBe(null);          // a new claude session, as before
+    // …and the freeze was rewritten from config (the stale one is gone)
+    expect(getState().contacts.whatsapp['!room:beeper.com'].e.readonly)
+      .toMatchObject({ agent: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high' });
+    // the identity kickoff re-injects on this path (it was ALREADY thread-keyed: `if (!sessionId)`)
+    expect(pool.calls[0].message).toContain('I am eGPT.');
+  });
+
+  it('…and the conversation\'s own agents.<name> pin beats the re-read default on that run', async () => {
+    const { brain, pool, getState } = harness([{ text: 'ok', sessionId: 'sid-new' }], {
+      brains: RE_READ, config: RE_READ_CFG, seedReadonly: STALE, seedAgents: { e: { model: 'opus' } },
+    });
+    await brain.turn('e', ev);
+    expect(pool.calls[0].brainOptions).toMatchObject({ model: 'opus', effort: 'high' });   // pin wins on model, config supplies the rest
+    const entry = getState().contacts.whatsapp['!room:beeper.com'];
+    expect(entry.e.readonly).toMatchObject({ agent: 'sonnet-high', model: 'sonnet' });     // the freeze records what CONFIG said
+    expect(entry.agents.e).toEqual({ model: 'opus' });                                     // the operator's block is not machine state
+  });
+
+  it('a LIVE thread still runs on its freeze — a config re-point does NOT retro-alter it', async () => {
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 'sid' }], {
+      brains: RE_READ, config: RE_READ_CFG, seedSession: 'sid', seedReadonly: STALE,
+    });
+    await brain.turn('e', ev);
+    expect(pool.calls[0].brainOptions).toMatchObject({ model: 'haiku', effort: 'low' });   // frozen, untouched
   });
 
   it('fires the afterTurn hook with the key + final session (auto-compaction trigger)', async () => {

@@ -58,6 +58,26 @@ export function renderFrontMatter(fields = {}) {
 }
 
 /**
+ * Read the leading front-matter block back into a flat object of its scalar fields
+ * ({} when the text has no block). The read side of renderFrontMatter: the transcript
+ * roll (conversations-state.rollTranscript) keys on `thread_id`, i.e. which thread the
+ * file on disk belongs to. Values are kept as written (strings); empty ones are dropped,
+ * so an un-filled slot like `notes:` reads as absent rather than ''.
+ */
+export function parseFrontMatter(text) {
+  const s = String(text ?? '');
+  if (!s.startsWith('---\n')) return {};
+  const end = s.indexOf('\n---', 3);
+  if (end === -1) return {};                   // unterminated → no block
+  const out = {};
+  for (const line of s.slice(4, end).split('\n')) {
+    const m = line.match(/^([A-Za-z_][A-Za-z0-9_]*):[ \t]*(.*)$/);
+    if (m && m[2].trim()) out[m[1]] = m[2].trim();
+  }
+  return out;
+}
+
+/**
  * Remove a leading `---\n … \n---` front-matter block (and the blank lines after
  * it) so a reader sees only conversation turns. No block → text unchanged.
  */

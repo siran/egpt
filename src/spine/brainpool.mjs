@@ -284,13 +284,18 @@ export function createBrainPool({
         def = coerceAllowedTools(siblingDef(being, convDir));
         runModel = def.model; runEffort = def.effort;
       } else {
-        // The conversation's brain: its instanced (frozen) brain, or — on the first
-        // turn — the default, which we instance into conversations.yaml `readonly` now
+        // The conversation's brain: its instanced (frozen) brain, or — when there is no
+        // THREAD — the default, which we instance into conversations.yaml `readonly` now
         // so a later change to the default can't retro-alter this thread (and `/e` can
         // re-point it per-conversation).
-        def = instanced;
-        const fresh = !def;
-        if (fresh) def = resolveDefaultBrain(convDir);
+        //
+        // FRESH IS KEYED ON THE THREAD (operator 2026-07-25: "deleting the thread-id reloads
+        // the config"). It used to be `!def` — keyed on the FREEZE — so deleting threadId
+        // bought a new claude session running on the SAME stale frozen model/effort/tools:
+        // the operator's one gesture half-worked. `|| !def` stays as the pre-existing
+        // never-instanced case (a thread with no freeze would otherwise read off null).
+        const fresh = !sessionId || !instanced;
+        def = fresh ? resolveDefaultBrain(convDir) : instanced;
         def = coerceAllowedTools(def);   // 'all' → explicit list (rejected); the freeze below stores the list
         // DETERMINISM (operator 2026-07-02: "don't do 'null means inherit the login default' —
         // make it deterministic"): the frozen snapshot AND the actual run must carry CONCRETE
@@ -313,6 +318,27 @@ export function createBrainPool({
               readonly: { agent: def.name, type: def.type ?? brainType, model: runModel, effort: runEffort, allowed_tools: def.allowed_tools ?? DEFAULT_ALLOWED_TOOLS },
             }));
           });
+          // Read the freeze back through getBeing — THE reader — so the conversation's own
+          // `agents.<being>` pin layers over what config just said, exactly as it will on every
+          // later turn. Without this the pin would only take effect on the turn AFTER the one
+          // that re-instanced. The def's non-frozen fields (personality, cwd, allowed_paths,
+          // system_prompt) stay as the type file has them.
+          const view = getBeing(await loadState(), ev.surface, ev.chatId, being);
+          if (view?.brainType) {
+            // through coerceAllowedTools again: a pin may say 'all', which is REJECTED into the
+            // explicit list exactly like a type file that says it (operator 2026-07-03).
+            def = coerceAllowedTools({ ...def, name: view.brain ?? def.name, type: view.brainType, allowed_tools: view.allowedTools ?? def.allowed_tools });
+            runModel = view.model ?? runModel;
+            runEffort = view.effort ?? runEffort;
+          }
+          // NOT WIRED HERE YET — the transcript roll (operator 2026-07-25: "there must be a new
+          // transcript if thread-id changes") belongs at exactly this point, and
+          // conversations-state.rollTranscript is written and tested for it. It is NOT called
+          // because the only writer of a transcript's front matter (spine/transcript.mjs, the
+          // ingestion append) fills `thread_id` with ev.chatId — the CHAT id, not the thread —
+          // so the roll cannot tell the retiring thread's transcript from the new one's and
+          // would archive every conversation's first inbound line. See rollTranscript's header
+          // for the two candidate fixes; this needs an operator ruling, not a local workaround.
         }
       }
       const engine = def.type ?? brainType;

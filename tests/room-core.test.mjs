@@ -64,6 +64,7 @@ describe('the ONE identical tree (GENOME §2.5)', () => {
     filesDir: 'files',
     identityDir: 'identity.d',
     scriptsDir: 'scripts',
+    transcriptsDir: 'transcripts',
   };
   for (const room of [Room.forChat('whatsapp', 'x'), Room.named('y')]) {
     for (const [getter, leaf] of Object.entries(tree)) {

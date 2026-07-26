@@ -11,14 +11,20 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { basename } from 'node:path';
+import { Room } from '../src/room-core.mjs';
 
 const CARD = readFileSync(fileURLToPath(new URL('../config/skeletons/room/30-pointers.md', import.meta.url)), 'utf8');
 
-// What a conversation folder REALLY holds: transcript.md (transcript service), media/
-// (media service), identity.d/ (the seeded feed layers), scripts/ (the *.x.md
-// textecutables, seeded beside identity.d/), config.yaml (optional operator
-// block: warm / heartbeats / transcription), plus optional daily-YYYY-MM-DD.md summaries.
-const REAL_PATHS = new Set(['./transcript.md', './media/', './identity.d/', './scripts/', './config.yaml']);
+// What a conversation folder REALLY holds — DERIVED from the ONE owner of the tree
+// (Room.treeDirs, room-core.mjs) plus the two files the Room declares (transcript.md,
+// config.yaml), so this set can never drift from what is created on disk the way the
+// hand-written copy did. Optional daily-YYYY-MM-DD.md summaries live here too.
+const CONV = Room.forChat('whatsapp', 'x');
+const REAL_PATHS = new Set([
+  ...CONV.treeDirs().slice(1).map((d) => `./${basename(d)}/`),   // slice(1): baseDir itself is not a './' pointer
+  `./${basename(CONV.transcriptPath)}`, `./${basename(CONV.configPath)}`,
+]);
 
 describe('the pointers card (config/skeletons/room/30-pointers.md)', () => {
   it('points at ./identity.d/ — the folder the layers are actually seeded into', () => {
@@ -49,8 +55,13 @@ describe('the pointers card (config/skeletons/room/30-pointers.md)', () => {
     expect(named.filter((p) => !REAL_PATHS.has(p))).toEqual([]);
   });
 
-  it('does not send E to ./transcripts/ — nothing has ever created it', () => {
-    expect(CARD).not.toMatch(/\.\/transcripts/);
+  // 2026-07-26: ./transcripts/ is no longer the dead end that got this line deleted — it is
+  // part of the Room tree (Room.treeDirs), so every conversation has the folder, and a thread
+  // change archives the finished transcript into it. The card may name it again; the REAL_PATHS
+  // check above is what keeps that honest (it is derived from the tree, not from this list).
+  it('names ./transcripts/ — and the Room tree really creates it', () => {
+    expect(CARD).toMatch(/\.\/transcripts\//);
+    expect(CONV.treeDirs().map((d) => basename(d))).toContain('transcripts');
   });
 
   it('still carries the operator correction: E has the web directly (WebSearch/WebFetch)', () => {
