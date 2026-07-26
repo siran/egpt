@@ -198,10 +198,8 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
     empty page, no-new-ids, missing cursor, 200-page cap). `listChats({full})` folds `full` into
     the cache identity. `resolveChatId` keeps the single-page FAST PATH and pays the walk ONLY on
     a miss; `_knownChatIds` then caches the id so a chat pays it once.
-  - ⚠️ **STILL OWED:** `src/conversations-state.mjs:918` calls `listChats({ all: true, limit: 2000,
-    … })` — baileys-era option names that mean nothing to the Beeper bridge, so it destructures to
-    `full:false` and **fuzzy chat-name search still sees only page 1**. That feeds name-fragment
-    resolution (`/status <target>`, `/e auto <fragment>`). One-word fix (`full: true`), not yet done.
+  - ~~STILL OWED: the fuzzy chat-name search still sees only page 1~~ — **DONE**, verified
+    2026-07-26 at `src/conversations-state.mjs:1051`: `listChats({ …, full: true })`.
   - **Operational shortcut worth remembering:** `resolveChatId` short-circuits on a `!`-prefixed
     raw id BEFORE any list call, so putting a raw chat id in `relay_channel` bypasses name
     resolution (and this whole class of bug) entirely.
@@ -217,6 +215,12 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
     2026-07-25 when `mesh.nodes` was evicted — every route is a relay_channel now, and both
     relay_channel sites resolve.)
 
+- **⚠️ UNREPRODUCED SINCE 2026-07-26 — treat as unproven, not as a standing warning.** A deliberate
+  hunt that day (3 full-suite runs + 3 isolated runs of each suspect file) produced **ZERO failures**:
+  2245/2245 every full run, 122/122 every isolated `beeper-bridge` run, 9/9 every isolated
+  `transcriptor` run. Honest limit: 3 clean full runs cannot exclude a ~30%-per-run flake
+  (P ≈ 0.34), so this is *not observed lately*, not *disproven*. The original characterisation
+  follows; if it fires again, re-date it rather than trusting the 2026-07-25 rate.
 - **KNOWN TEST FLAKE (characterised 2026-07-25 — do NOT chase it):** `tests/beeper-bridge.test.mjs`
   › *"the owner's OWN send is attributed to the /v1/accounts self-user's fullName…"* intermittently
   fails with `Test timed out in 5000ms` — roughly **1 full-suite run in 3–4**. It is a startup race
@@ -251,9 +255,17 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
     for shell-owned chats; e62f1b4). Shell UI cleaned: quiet transcript (no permanent status/hint
     chrome), faults surfaced verbosely not swallowed (not-delivered line + egpt.mjs onLog
     socket/server faults → loud error rows), arrow-up/down input history (c4bff40).
-  REMAINING: Phase 5 (channels + /join), Phase 6 (allowed_users), Phase 7 (long tail); lobby v2
-  (`/room <slug> join` switching to other rooms/Beeper chats + 2-way Beeper mirror); align
-  /chrome's tab list to the numbered /tabs format (minor).
+  REMAINING (re-verified 2026-07-26 — the list had gone partly stale):
+  - Phase 5 (channels + `/join`) — OPEN, no handler exists.
+  - Phase 6 (per-conversation `allowed_users`) — OPEN; only per-SURFACE resolution exists
+    (`src/spine/boot.mjs:496-497, 572`).
+  - Phase 7 (long tail) — PARTLY LANDED: `/room leave` is live (`commands.mjs:813, 868-871`).
+    Still absent: `/recap /last /summarize /conversations /config /log /version /who /identity
+    /mirror`.
+  - lobby v2 — PARTLY LANDED: `roomJoin` exists (`commands.mjs:862-865`) and `/rooms` marks
+    `(current)`. Beeper-chat switching + the 2-way mirror do not.
+  - align `/chrome`'s tab list to the numbered `/tabs` format — OPEN (`/chrome` emits `· <title>`
+    capped at 5, `commands.mjs:708-712`; `/tabs` numbers all, `:758-761`).
 
 ## 3. Decided, not yet dispatched
 
@@ -283,6 +295,24 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
   - Hot reload by DELETION, exactly as heartbeats already does (absence = stale).
   - OPEN: node says `transcription_service:`, entity says `transcription:`. One namespace
     means one name, but renaming touches live profiles — needs a ruling.
+
+- **WHICH NODES ARE REAL (operator 2026-07-26).** *"'mo' as a node doesn't exist… it is a way of
+  referring to a hypothetical 3rd node. of course 'do' exists! that is where don lives, on
+  Dolly!"* So:
+  - **kg — REVE**, this box. The operator shell is a kg tool.
+  - **do — DOLLY**, real, hosts the being `don`. Same Beeper account as kg, so co-account
+    broadcast + the node gate are LIVE mechanics, not hypotheticals. Both nodes get deployed.
+  - **mo — HYPOTHETICAL**, the stand-in for a friend's node on a DIFFERENT account, reachable
+    only over a mesh relay. `/chrome mo` is the abstract form of `/chrome do` and must work if
+    `/chrome do` does — it is built and test-locked (`dce12f6`, `tests/remote-command.test.mjs:215`);
+    reaching a real one is CONFIG (an agent with `relay_channel` + `to: <being>.mo`, the being
+    local on mo, and the operator in mo's `allowed_users`).
+
+- **`/e` WIZARD — BACKBURNER (operator 2026-07-26).** *"i am not currently using it. nothing
+  should be using it nor be a wrapper around it."* `src/agent-wizard.mjs` and the `/e` wizard
+  branches stay as they are; do not build on them, do not wrap them, and do not let a finding
+  about them justify work (e.g. a stray `config/agents/default.yaml` showing up in the wizard's
+  type list is not a reason to touch the wizard — attic the file).
 
 - **⭐ THE KEY IS THE STATIC INFORMATION (operator ruling 2026-07-26).** *"the key of a
   conversation, group, thread is always the static information. in beeper we have the
