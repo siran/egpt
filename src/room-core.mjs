@@ -89,6 +89,7 @@ export class Room {
   get mediaDir()       { return join(this.baseDir(), 'media'); }           // per-room downloads (C2)
   get filesDir()       { return join(this.baseDir(), 'files'); }           // operator /inject — the shared shelf
   get identityDir()    { return join(this.baseDir(), 'identity.d'); }      // NN-*.md fed to the room's brain(s)
+  get scriptsDir()     { return join(this.baseDir(), 'scripts'); }         // *.x.md TEXTECUTABLES the room's brain(s) can be asked to carry out
 
   // ── config.yaml (shared with the heartbeat + transcription services) ───────
   // Read the whole config.yaml as a plain object ({} when absent/malformed).

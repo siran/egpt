@@ -7,6 +7,8 @@ Where to look what?
                     the start of this thread, so I can re-read them any time
   ./media/          files saved from this chat
   ./config.yaml     this conversation's own settings (when the operator set any)
+  ./scripts/        *.x.md textecutables — when asked to DO something, look here
+                    first and carry out the steps with my own tools
 
 To check my past chats to regain context I can check the transcript.
 

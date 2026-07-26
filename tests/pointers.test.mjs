@@ -15,13 +15,32 @@ import { fileURLToPath } from 'node:url';
 const CARD = readFileSync(fileURLToPath(new URL('../config/skeletons/room/30-pointers.md', import.meta.url)), 'utf8');
 
 // What a conversation folder REALLY holds: transcript.md (transcript service), media/
-// (media service), identity.d/ (the seeded feed layers), config.yaml (optional operator
+// (media service), identity.d/ (the seeded feed layers), scripts/ (the *.x.md
+// textecutables, seeded beside identity.d/), config.yaml (optional operator
 // block: warm / heartbeats / transcription), plus optional daily-YYYY-MM-DD.md summaries.
-const REAL_PATHS = new Set(['./transcript.md', './media/', './identity.d/', './config.yaml']);
+const REAL_PATHS = new Set(['./transcript.md', './media/', './identity.d/', './scripts/', './config.yaml']);
 
 describe('the pointers card (config/skeletons/room/30-pointers.md)', () => {
   it('points at ./identity.d/ — the folder the layers are actually seeded into', () => {
     expect(CARD).toContain('./identity.d/');
+  });
+
+  // Operator 2026-07-26: "an *.x.md goes in the scripts/ folder of a Room, so I can tell E,
+  // do yyy and it knows to read the textecutable. we have to add to pointer file an
+  // instruction like 'if you are asked to do something, check the x.md folder'." Being TOLD
+  // is the whole feature — a scripts/ folder E never hears about is dead weight.
+  it('tells E to look in ./scripts/ when it is asked to DO something', () => {
+    expect(CARD).toContain('./scripts/');
+    expect(CARD).toMatch(/\.x\.md/);
+    expect(CARD).toMatch(/asked to DO something/);
+  });
+
+  // HONESTY: E's allowed_tools are Read/Write/Edit/Glob/Grep/WebSearch/WebFetch/Task — NO
+  // Bash. It carries a textecutable out with ITS OWN tools; it cannot shell out to
+  // src/tools/textecute.mjs. The card must not promise a run it cannot perform.
+  it('does not promise E a shell it does not have', () => {
+    expect(CARD).toMatch(/with my own tools/);
+    expect(CARD).not.toMatch(/textecute\.mjs|node src\/tools|\bBash\b/);
   });
 
   it('names ONLY paths a conversation folder actually has', () => {
