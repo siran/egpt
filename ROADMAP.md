@@ -367,6 +367,23 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
     reaching a real one is CONFIG (an agent with `relay_channel` + `to: <being>.mo`, the being
     local on mo, and the operator in mo's `allowed_users`).
 
+- **COVERT CHANNEL OVER INVISIBLE CHARACTERS — BACKBURNER (operator 2026-07-26).**
+  *"this opens the door to egpt stealth messages, encoding text a-la morse using invisible
+  characters derived perhaps from a real ssh public key."* Parked deliberately; do NOT build on
+  it. Recorded because the enabling MEASUREMENT is done and would otherwise be lost: 20 candidate
+  invisible codepoints were sent through the live Beeper Self chat and read back, and **19 of 20
+  survived byte-for-byte** — only `U+0000` NUL was stripped (and NUL is independently
+  disqualified: literal NUL bytes in this repo once made ripgrep silently truncate a source file
+  and hide four functions). Survivors include the whole zero-width family, both variation-selector
+  ranges, and the TAG block. So Beeper does not sanitise invisible text, and an arbitrary-payload
+  channel between two nodes is mechanically available whenever it is wanted.
+  What LANDED from this line of work is only the node signature (see the structural-signature
+  entry) — a fixed, decodable node id, not a general payload. The keyed/derived variant (an ssh
+  public key selecting the alphabet or the encoding) is the parked part.
+  Caveat to carry forward if it is ever revived: invisible characters are the standard
+  prompt-injection smuggling vector, so anything that carries them MUST strip before a body
+  reaches a model, and transcripts must render them visibly or debugging goes blind.
+
 - **`/e` WIZARD — BACKBURNER (operator 2026-07-26).** *"i am not currently using it. nothing
   should be using it nor be a wrapper around it."* `src/agent-wizard.mjs` and the `/e` wizard
   branches stay as they are; do not build on them, do not wrap them, and do not let a finding
