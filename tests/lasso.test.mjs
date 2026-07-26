@@ -274,23 +274,23 @@ describe('lasso — the outbound ceiling', () => {
     expect(trips[0].kind).toBe('message');
   });
 
-  it('10. the SHIPPED defaults are 20 messages / 5000ms and 2000 edits', async () => {
+  it('10. the SHIPPED defaults are 18 messages / 10000ms and 4000 edits (operator: raise the ceiling, not a classification branch)', async () => {
     const clock = fakeClock();
     const trips = [];
     const port = fakePort(clock);
     const bridge = createLasso({ now: clock.now, onTrip: (t) => trips.push(t) }).wrap(port);
-    await Promise.all(Array.from({ length: 20 }, () => bridge.send('!room', 'x')));
+    await Promise.all(Array.from({ length: 18 }, () => bridge.send('!room', 'x')));
     expect(trips).toEqual([]);
-    await bridge.send('!room', 'the 21st');
-    expect(trips[0]).toMatchObject({ limit: 20, window_ms: 5000, kind: 'message' });
+    await bridge.send('!room', 'the 19th');
+    expect(trips[0]).toMatchObject({ limit: 18, window_ms: 10000, kind: 'message' });
 
     const port2 = fakePort(clock);
     const b2 = createLasso({ now: clock.now, onTrip: (t) => trips.push(t) }).wrap(port2);
     const s = b2.startStream('!room', '⏳', {});
-    for (let i = 0; i < 2000; i++) s.update(`f${i}`);
+    for (let i = 0; i < 4000; i++) s.update(`f${i}`);
     expect(trips).toHaveLength(1);
-    s.update('the 2001st');
-    expect(trips[1]).toMatchObject({ limit: 2000, kind: 'edit' });
+    s.update('the 4001st');
+    expect(trips[1]).toMatchObject({ limit: 4000, kind: 'edit' });
   });
 });
 
@@ -390,9 +390,20 @@ describe('boot() — an over-ceiling emit pulls the SAME kill switch the safe wo
       const state = await waitForLassoState();
       expect(state).toMatchObject({
         state: 'tripped',
-        limit: { messages: 3, edits: 2000, window_ms: 5000 },
+        limit: { messages: 3, edits: 4000, window_ms: 5000 },
         tripped: { kind: 'message', count: 4, limit: 3 },
       });
+    } finally { app.stop(); }
+  });
+
+  it('ships 18 messages / 10000ms and 4000 edits when the config carries no lasso: block at all', async () => {
+    const { app } = await bootNode({});   // {} → boot.mjs's OWN fallback literals, not a test override
+    try {
+      const out = await Promise.all(Array.from({ length: 19 }, (_, i) => app.bridge.send('!room:beeper.com', `x${i}`)));
+      expect(out.filter((r) => r != null)).toHaveLength(18);   // the 19th is refused
+      const state = await waitForLassoState();
+      expect(state.limit).toMatchObject({ messages: 18, edits: 4000, window_ms: 10000 });
+      expect(state.tripped).toMatchObject({ kind: 'message', count: 19, limit: 18 });
     } finally { app.stop(); }
   });
 

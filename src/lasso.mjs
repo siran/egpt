@@ -27,9 +27,9 @@
 // scenario") ═══
 //
 //   MESSAGES — a NEW line in someone's chat: send / startStream (its placeholder) /
-//     postStatus / sendMedia. Ceiling 20 per window.
+//     postStatus / sendMedia. Ceiling 18 per window.
 //   EDITS    — a PUT into a message ALREADY counted: stream.update, stream.finish,
-//     stream.fail, editStatus, editOwn. Ceiling 2000 per window.
+//     stream.fail, editStatus, editOwn. Ceiling 4000 per window.
 //
 // They are NOT merged and they are NOT peers, because the harm is not the same (operator:
 // "endless edit is not annoying, 100 messages are"). 100 new messages IS the damage — that
@@ -53,22 +53,33 @@
 // message arriving at this node is the LOOP GUARD's business (src/stop-guard.mjs, via
 // ev.fromNode). Two mechanisms, cleanly separated.
 //
-// WHY 20/5000ms AND NOT TIGHTER. The incident ran at roughly 1.4 outbound/s per node — well
-// under 4/s — so this ceiling would NOT have caught it. It does not have to: a64b209 fixed
-// the reason it had to. A peer's message now carries `ev.fromNode`, isHumanTurn returns
-// false, and the loop counter finally moves on exactly the traffic it used to miss. Bot↔bot
-// loops are the LOOP GUARD's job now; the lasso is the catastrophic backstop for a runaway
-// that outruns even that. A tighter number would halt the node on ordinary traffic — three
-// quick human lines, a voice-note flurry, a room fan-out — which is worse than none.
+// WHY 18/10000ms — AND WHY THIS IS NOT A LOOSENING (operator 2026-07-26, after a mesh
+// reply-mirror was found billing an EDIT as a MESSAGE: "it's ok, it's a matter of raising the
+// limits: instead of 6 in 10, 18 in 10?"). The prior 20/5000ms allowed a SUSTAINED rate of 4
+// messages/second; 18/10000ms allows 1.8/s — LESS THAN HALF — while widening the WINDOW so a
+// legitimate flurry (a voice-note reply flurry, a mesh exchange, two agents answering at once)
+// has room to land inside one window instead of straddling two. A longer window smooths a
+// burst; it does not raise what a SUSTAINED flood is allowed to do. Do not "fix" the number
+// back to 20/5000ms reading it as a bug — the lower rate is the point.
+//
+// The incident ran at roughly 1.4 outbound/s per node — still well under 1.8/s — so this
+// ceiling would NOT have caught it, same as 20/5000ms would not have. It does not have to:
+// a64b209 fixed the reason it had to. A peer's message now carries `ev.fromNode`, isHumanTurn
+// returns false, and the loop counter finally moves on exactly the traffic it used to miss.
+// Bot↔bot loops are the LOOP GUARD's job now; the lasso is the catastrophic backstop for a
+// runaway that outruns even that. A tighter number would halt the node on ordinary traffic —
+// three quick human lines, a voice-note flurry, a room fan-out — which is worse than none.
 //
 // WHY THE EDIT CEILING IS SO MUCH LARGER. It is counted HERE, at the port, ABOVE the limb's
 // own 400ms edit debounce (src/bridges/beeper.mjs EDIT_MIN_MS) — so what it sees is not API
 // PUTs (≤ ~13 per 5s per stream) but `update()` CALLS, and those fire once per streamed
 // token delta (src/warm-cli-session.mjs — onUpdate per content_block_delta). One long reply
 // is therefore already several hundred per window, and a room fan-out multiplies that by
-// the number of brains. 2000 clears that with room to spare while a genuine runaway — which
-// is unbounded by definition, with no I/O between iterations — crosses it in milliseconds.
-// Erring high is the correct trade: a false trip halts the node mid-conversation, a late
+// the number of brains. 4000/10000ms keeps the SAME rate as the old 2000/5000ms (erring high
+// on purpose, not left at the old absolute count, which would have quietly HALVED the rate
+// on a window that is now twice as long) — plenty of room while a genuine runaway — which is
+// unbounded by definition, with no I/O between iterations — crosses it in milliseconds either
+// way. Erring high is the correct trade: a false trip halts the node mid-conversation, a late
 // trip costs some wasted API calls on a line nobody is reading twice.
 //
 // NEVER THE STOP PATH: a send carrying `{ bypassLasso: true }` skips the gate entirely, and
@@ -80,7 +91,7 @@
 // answerable with `cat`, not a debugger. The hot path never does IO: the file is written on
 // the trip only, once.
 
-const DEFAULTS = { messages: 20, windowMs: 5_000, edits: 2_000 };
+const DEFAULTS = { messages: 18, windowMs: 10_000, edits: 4_000 };
 
 /**
  * @param {object} o

@@ -1358,16 +1358,22 @@ export const CONFIG_SCHEMA = {
 
     KEYS:
       messages
-        DEFAULT: 20 — committed messages allowed per window. 0 or negative =
+        DEFAULT: 18 — committed messages allowed per window. 0 or negative =
         lasso OFF (both counters).
       window_ms
-        DEFAULT: 5000 — the sliding window, in ms, for both counters.
+        DEFAULT: 10000 — the sliding window, in ms, for both counters.
       edits
-        DEFAULT: 2000 — edits allowed per window. 0 or negative = the EDIT counter
+        DEFAULT: 4000 — edits allowed per window. 0 or negative = the EDIT counter
         only is off. Large on purpose: edits are counted at the port, ABOVE the
         limb's 400ms edit debounce, so one streamed reply is already several
         hundred (one per streamed token delta) and a room fan-out multiplies that.
         A runaway is unbounded by definition and crosses it in milliseconds anyway.
+
+    18/10000ms (operator 2026-07-26) is NOT a loosening of the prior 20/5000ms: that allowed a
+    sustained 4 messages/second, this allows 1.8/s — less than half — while the longer window
+    gives a legitimate flurry (a voice-note reply flurry, a mesh exchange, two agents answering
+    at once) room to land inside one window. edits scaled to 4000 to hold the SAME rate as the
+    old 2000/5000ms rather than quietly halving it on a now-twice-as-long window.
 
     VISIBLE ON DISK: a trip is published to EGPT_HOME/state/lasso.json ({ state:
     tripped, limit, messages_in_window, edits_in_window, tripped: { kind, count,

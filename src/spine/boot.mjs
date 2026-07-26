@@ -627,11 +627,14 @@ export async function boot({
   // does not respawn, and only a human restart clears it. Never a second halt mechanism.
   // The trip is fire-and-forget from the send path: pull() is already once-only (`stopping`)
   // and never throws, and a send must not wait on the stop it just caused.
+  // 18/10000ms, not 20/5000ms (operator 2026-07-26): a mesh reply-mirror over-bills as a
+  // message, and the fix is headroom, not a classification branch — see src/lasso.mjs for the
+  // full reasoning (it is a LOWER sustained rate, not a loosening).
   const lassoCfg = (cfg.lasso && typeof cfg.lasso === 'object') ? cfg.lasso : {};
   const lasso = createLasso({
-    messages: Number.isFinite(lassoCfg.messages) ? lassoCfg.messages : 20,
-    windowMs: Number.isFinite(lassoCfg.window_ms) ? lassoCfg.window_ms : 5_000,
-    edits: Number.isFinite(lassoCfg.edits) ? lassoCfg.edits : 2_000,
+    messages: Number.isFinite(lassoCfg.messages) ? lassoCfg.messages : 18,
+    windowMs: Number.isFinite(lassoCfg.window_ms) ? lassoCfg.window_ms : 10_000,
+    edits: Number.isFinite(lassoCfg.edits) ? lassoCfg.edits : 4_000,
     onLog: (m) => log.line?.(`[lasso] ${m}`),
     writeState: (s) => { writeFile(join(EGPT_HOME, 'state', 'lasso.json'), `${JSON.stringify(s, null, 2)}\n`, 'utf8').catch(() => {}); },
     onTrip: (t) => { Promise.resolve(stopSwitch.pull({ reason: `lasso: ${t.reason}`, who: 'lasso', where: 'outbound' })).catch(() => {}); },
