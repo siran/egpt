@@ -78,12 +78,15 @@ answered by the persona:
 
 Restarts also work headlessly via the **ingest box**: drop a file whose content
 is the command line into `~/.egpt/state/ingest/` (write temp, then rename for
-atomicity) — the spine consumes it once. Hot-reload heartbeats by deleting
-`~/.egpt/state/heartbeats.readonly.yaml`.
+atomicity) — the spine consumes it once. Hot-reload the whole config by deleting
+any of `~/.egpt/{config,conversations,heartbeats}.readonly.yaml`.
 
 Per-chat behavior, warm-session TTLs, flood/compaction guards, transcription,
-and heartbeats are all configured in `config/config.yaml` (and per-conversation
-`config.yaml` overrides). See [`MANUAL.md`](MANUAL.md) for the full operator
+and heartbeats live in ONE namespace resolved over THREE rungs — nearest the room
+wins: `config/config.yaml` < `config/conversations.yaml` (the entry) <
+the entity's own `conversations/<slug>/config.yaml` or `rooms/<name>/config.yaml`.
+The spine dumps what it resolved, and the file each value came from, to those
+three `*.readonly.yaml` aggregates at the profile root. See [`MANUAL.md`](MANUAL.md) for the full operator
 reference and [`TESTING.md`](TESTING.md) for the manual verification tiers.
 
 ## Requirements

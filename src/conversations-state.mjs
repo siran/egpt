@@ -881,21 +881,31 @@ export function getContact(state, surface, jid) {
 // it un-purged would make residentsOf report it as a phantom "readonly" resident forever;
 // instead it is purged AT THE SOURCE — `_SLIM_DROP` (below) strips it from every contact
 // entry on the next write, so a registry the spine has touched can no longer carry it.
-const _FLAT_ENTRY_KEYS = new Set([
-  'slug', 'pushedName', 'firstSeenAt', 'aliasOf', 'jids',
-  // `agents` is object-valued but a CONTAINER of per-agent overrides (see getBeing), not a
-  // resident being — residentsOf must skip it or it lists a phantom "agents" resident.
-  'agents',
-  // `guard` — the per-conversation loop-breaker override `{ turns, window }` (read in
-  // src/spine/boot.mjs guardOverride). Object-valued, so it hit the SAME phantom-resident
-  // trap `agents` is listed for: any entry carrying a guard override made residentsOf
-  // report a resident named "guard" (2026-07-26).
-  'guard',
-  // The relocatable-pointer pair + the per-chat 👂 echo delay. Scalars, so they could never
-  // produce a phantom — listed to keep this set an honest inventory of the contact-level
-  // keys, which is the only way the next object-valued one gets caught by review.
-  'conversation_path', 'home_dir', 'posts_back_delay_ms',
+// The registry's OWN record of the conversation — identity + relocatable pointers. Never
+// configuration, never a resident being, so the config resolver's REGISTRY rung
+// (src/spine/config-resolver.mjs) skips these outright. `agents` is object-valued but a
+// CONTAINER of per-agent overrides (see getBeing): residentsOf must skip it or it lists a
+// phantom "agents" resident, and it must NOT be contributed as config either — the node
+// rung's `agents:` is the unrelated agent REGISTRY and layering one over the other would
+// corrupt it (a genuine collision between two namespaces, older than the resolver).
+export const CONTACT_BOOKKEEPING_KEYS = new Set([
+  'slug', 'pushedName', 'firstSeenAt', 'aliasOf', 'jids', 'agents',
+  'conversation_path', 'home_dir',
 ]);
+
+// CONFIG blocks an entry may carry as the resolver's middle rung (operator 2026-07-26:
+// "yaml keys in conversations.yaml are orthogonal from config.yaml; we only separate into
+// two files for logical convenience"). Object-valued, so each one MUST be listed here or
+// residentsOf reports it as a phantom resident — the trap `agents` and `guard` were each
+// patched for. A SCALAR config key needs no listing (a scalar can never be a resident).
+//   guard                 the per-conversation loop-breaker override { turns, window }
+//   warm                  { idle_ttl } — this conversation's warm idle TTL
+//   transcription_service the ONE transcription key (operator 2026-07-26), incl. posts_back
+//                         + posts_back_delay_ms, which used to be a flat entry key
+//   heartbeats            declarative beats — the UNION block
+export const ENTRY_CONFIG_KEYS = new Set(['guard', 'warm', 'transcription_service', 'heartbeats']);
+
+const _FLAT_ENTRY_KEYS = new Set([...CONTACT_BOOKKEEPING_KEYS, ...ENTRY_CONFIG_KEYS]);
 
 // Resolve a resident being's view of a conversation, reading its nested `entry[being]` block
 // (no flat fallback — the persona is a normal nested being now). Returns null when there's no
@@ -1237,11 +1247,13 @@ export function ensureContact(state, surface, jid, ctx = {}) {
   //    `conversation_path` so the conversation is individually relocatable. The
   //    per-conversation `personality` key is RETIRED — the identity feed is a property of
   //    the AGENT TYPE — so `ctx.personality` (still passed by legacy callers) is ignored.
+  //    The flat `threadId: null` went with them (2026-07-26): a thread lives in the nested
+  //    `entry[<being>]` block and the flat slot's last reader died in 50d7f40, so writing it
+  //    only minted the dead key this comment says is gone.
   const entry = {
     slug: candidateSlug,
     conversation_path: conversationPathOf(surface, candidateSlug),
     home_dir: homeDirMsys(),
-    threadId: null,
     pushedName: ctx.pushedName ?? '',
   };
   nextBucket[jid] = entry;

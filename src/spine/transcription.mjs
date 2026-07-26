@@ -8,13 +8,31 @@
 // The active profile + its fallback_order come from config.transcription_service
 // [use_config]. The result `transcribe(audioPath, cfg, log, meta)` is what the
 // bridge uses for voice notes and the media service for a video's audio.
+//
+// ONE KEY, THREE RUNGS (operator ruling 2026-07-26). `transcription_service:` is the
+// single name for the whole concern — engines, paths, and the post-back variables — and
+// it resolves through src/spine/config-resolver.mjs:
+//   config/config.yaml  <  config/conversations.yaml (the entry)  <  <entity>/config.yaml
+// It replaces the three differently-named homes this used to read: the node's
+// `transcription_service:`, the folder's `transcription:`, and a flat
+// `posts_back_delay_ms` on the conversations.yaml record.
+//
+// THE PRECEDENCE DISSOLVED WITH THEM. The old rule was NOT plain nearest-wins: a
+// conversations.yaml `posts_back_delay_ms` forced posts_back TRUE even when the folder
+// said `posts_back: false`, justified in its own comment as back-compat ("don't silently
+// start echoing a room/chat that had posts_back:false"). Operator 2026-07-26: "do not
+// concern about live profiles", "do not keep maintaining legacy behavior" — so it is plain
+// rung order now, nearest the room wins, and the folder's `posts_back: false` beats a
+// registry delay. What SURVIVES is the value semantics, which were never a precedence
+// rule: a NEGATIVE delay is a hard mute (HEARD, never SPOKEN).
 import { buildTranscriptionPipeline } from '../transcription-pipeline.mjs';
 import { transcribeAudioFile } from '../tools/transcribe.mjs';
 import { transcribeViaEndpoint } from '../tools/transcriptor.mjs';
 import { startWhisperServer, makeWhisperServerTranscriber } from '../tools/whisper-server.mjs';
-import { DEFAULT_SERVICE, readTranscriptionConfig } from '../transcription-service.mjs';
+import { parseTranscriptionConfig } from '../transcription-service.mjs';
 import { POSTS_BACK_DELAY_MS } from '../incoming-media.mjs';
 import { readState, CONV_YAML_PATH, KNOWN_SURFACES, getContact, slugDir } from '../conversations-state.mjs';
+import { DEFAULT_SERVICE } from '../transcription-service.mjs';
 
 export function createTranscription({
   getConfig = () => ({}),
@@ -27,10 +45,10 @@ export function createTranscription({
   // live-correct with no boot edit; boot can pass its own _loadState in a
   // later cleanup. Tests inject a fake so they never touch the real profile.
   loadState = () => readState(CONV_YAML_PATH),
-  // Per-entity config reader (a conversation FOLDER's config.yaml →
-  // { enabled, postsBack }; src/transcription-service.mjs). Injectable so tests
-  // read canned verdicts instead of the profile.
-  readConfig = readTranscriptionConfig,
+  // The RESOLVED config for an entity dir — the config resolver's in-memory set
+  // (configFor), already layered node < registry entry < entity folder. No file read
+  // happens here any more; tests inject a canned doc instead of touching the profile.
+  resolveConfig = () => ({}),
 } = {}) {
   const cfg = getConfig() ?? {};
   const txSvc = cfg.transcription_service;
@@ -48,25 +66,28 @@ export function createTranscription({
   });
 
   // The cli profile carries ffmpeg_command (used by the media video path) + serves
-  // as the default cfg the bridge hands the transcriber.
+  // as the default cfg the bridge hands the transcriber. (The two fallbacks here name the
+  // pre-transcription_service ENGINE block — a different legacy from the three names this
+  // chunk collapsed, and one src/spine/transcriptor-worker.mjs + the beeper bridge still
+  // read. Retiring it is its own chunk, not a silent side effect of this one.)
   const cliCfg = profile?.cli ?? cfg.transcription?.cli ?? cfg.whatsapp?.media?.audio_transcribe ?? {};
-  // How long after a burst goes quiet before the 👂 transcript echoes to the chat.
-  const postsBackDelayMs = txSvc?.posts_back_delay_ms ?? cfg.transcription?.posts_back_delay_ms;
+  // How long after a burst goes quiet before the 👂 transcript echoes to the chat — the
+  // NODE rung of the one key. Per-entity rungs override it in resolveTranscriptionService.
+  const postsBackDelayMs = txSvc?.posts_back_delay_ms;
 
-  // The GLOBAL 👂 posts-back delay — the module-level postsBackDelayMs (from
-  // transcription_service / the legacy transcription.* block), falling back to the
-  // shared POSTS_BACK_DELAY_MS floor when the config sets neither. It is the default
-  // a conversation with no per-chat override inherits.
+  // The GLOBAL 👂 posts-back delay — the node rung's value, falling back to the shared
+  // POSTS_BACK_DELAY_MS floor when it sets none. The default a conversation whose own
+  // rungs say nothing inherits.
   const globalDelayMs = postsBackDelayMs ?? POSTS_BACK_DELAY_MS;
 
-  // per-chat HEARD/SPOKEN verdict + 👂 echo delay. enabled/postsBack come from the
-  // conversation FOLDER's own config.yaml (src/transcription-service.mjs): enabled =
-  // transcribe at all (HEARD), postsBack = surface the 👂 echo (SPOKEN). Both default
-  // ON; only an explicit false disables. postsBackDelayMs is the per-CONVERSATION echo
-  // delay (see the override below). Cost: one state read + one small file read per
-  // VOICE NOTE (not per message) — cheap enough to skip any caching.
+  // per-chat HEARD/SPOKEN verdict + 👂 echo delay, from the ONE key resolved across the
+  // three rungs. enabled = transcribe at all (HEARD); postsBack = surface the 👂 echo
+  // (SPOKEN); posts_back_delay_ms = the trailing debounce, NEGATIVE = never echo. Both
+  // flags default ON; only an explicit false disables. Cost: one state read + one in-memory
+  // lookup per VOICE NOTE (not per message).
   async function resolveTranscriptionService(chatId) {
-    if (!chatId) return { ...DEFAULT_SERVICE, postsBackDelayMs: Math.max(0, globalDelayMs) };
+    const nodeRung = { ...DEFAULT_SERVICE, postsBackDelayMs: Math.max(0, globalDelayMs) };
+    if (!chatId) return nodeRung;
     let hit = null, surface = null;
     try {
       const state = await loadState();
@@ -79,31 +100,16 @@ export function createTranscription({
         if (c?.slug) { hit = c; surface = s; break; }
       }
     } catch (e) { onLog(`resolveTranscriptionService(${chatId}): ${e?.message ?? e}`); }
-    // No contact yet (first-ever voice note from a brand-new chat) → default
-    // service. Registration happens on the text pipe (ensureContact), so by the
-    // next message this resolves to the folder's real config.
-    if (!hit) return { ...DEFAULT_SERVICE, postsBackDelayMs: Math.max(0, globalDelayMs) };
-    const folder = await readConfig(slugDir(surface, hit.slug));   // { enabled, postsBack } — the folder config.yaml (rooms keep this)
+    // No contact yet (first-ever voice note from a brand-new chat) → the node rung.
+    // Registration happens on the text pipe (ensureContact), so by the next message this
+    // resolves against the conversation's own rungs.
+    if (!hit) return nodeRung;
 
-    // Per-CONVERSATION 👂 echo override — conversations.yaml, on the chat's OWN record
-    // (the getContact entry, sibling of `mode`), ONE key: posts_back_delay_ms. This
-    // REPLACES the folder-config.yaml approach FOR CONVERSATIONS; rooms keep the folder
-    // mechanism above. Semantics:
-    //   unset / null  → use the global default (current behavior).
-    //   -1 (any negative) → NEVER echo the 👂 (transcription still HEARD — model +
-    //                       transcript.md still get it — just not SPOKEN into the chat).
-    //   0             → echo immediately (no debounce).
-    //   N (positive)  → echo after N ms trailing-debounce.
-    const rec = hit.entry ?? {};
-    const override = Number.isFinite(rec.posts_back_delay_ms) ? rec.posts_back_delay_ms : null;
-    const effectiveDelay = override ?? globalDelayMs;
-    // postsBack: a negative override is a hard mute (effectiveDelay < 0). Otherwise the
-    // conversations.yaml override WINS for the conversation; with NO override the folder
-    // config.yaml's posts_back:false is still honored (back-compat — don't silently start
-    // echoing a room/chat that had posts_back:false). enabled is always the folder verdict.
-    const postsBack = folder.enabled && effectiveDelay >= 0 && (override != null ? true : folder.postsBack);
-    // A negative disable maps the delay to 0 (postsBack:false already prevents any post).
-    return { enabled: folder.enabled, postsBack, postsBackDelayMs: Math.max(0, effectiveDelay) };
+    const { enabled, postsBack, postsBackDelayMs: entityDelay } = parseTranscriptionConfig(resolveConfig(slugDir(surface, hit.slug)));
+    const effectiveDelay = entityDelay ?? globalDelayMs;
+    // A negative delay is a hard mute: still HEARD (model + transcript.md get it), never
+    // SPOKEN. Mapped to 0 on the way out — postsBack:false already prevents any post.
+    return { enabled, postsBack: enabled && postsBack && effectiveDelay >= 0, postsBackDelayMs: Math.max(0, effectiveDelay) };
   }
 
   return {

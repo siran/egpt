@@ -6,7 +6,8 @@
 // loader never touches the real profile.
 import { describe, it, expect } from 'vitest';
 import { join } from 'node:path';
-import { createHeartbeatLoader, parseFrequency, parseHeartbeatsBlock, parseWhen, resolveTimeZone, zonedWallClockToEpoch } from '../src/spine/heartbeat-loader.mjs';
+import { createHeartbeatLoader, parseFrequency, parseWhen, resolveTimeZone, zonedWallClockToEpoch } from '../src/spine/heartbeat-loader.mjs';
+import { createConfigResolver, parseEntityConfig, NODE_FILE } from '../src/spine/config-resolver.mjs';
 
 // ── fakes ───────────────────────────────────────────────────────────────────
 function makeFakeChild() {
@@ -31,6 +32,20 @@ function makeRegistry() {
 const beatsOf = (registry) => registry.registered;
 const noopIo = () => ({ writeFile: async () => {}, mkdir: async () => {} });
 
+// The loader no longer walks anything — it consumes the config RESOLVER's scan
+// (src/spine/config-resolver.mjs). So every construction here builds a REAL resolver over
+// the same fakes: what's under test is the walk the spine actually runs. The resolver's own
+// two aggregates go to a THROWAWAY io by default so the write assertions below stay about
+// heartbeats.readonly.yaml; pass `resolverIo` to observe all three together.
+function makeLoader({ getConfig = () => ({}), listEntityDirs, readEntityConfig, existsSync, egptHome = '/home', resolverIo, ...rest } = {}) {
+  const resolver = createConfigResolver({
+    getConfig, listEntityDirs, readEntityConfig, egptHome,
+    io: resolverIo ?? noopIo(),
+    existsSync: existsSync ?? (() => true),
+  });
+  return createHeartbeatLoader({ resolver, egptHome, ...rest });
+}
+
 // ── parseFrequency ────────────────────────────────────────────────────────
 describe('parseFrequency', () => {
   it('numbers pass through as ms; strings carry a ms/s/m/h unit (int or decimal)', () => {
@@ -52,55 +67,57 @@ describe('parseFrequency', () => {
   });
 });
 
-// ── parseHeartbeatsBlock ──────────────────────────────────────────────────
-describe('parseHeartbeatsBlock', () => {
-  it('extracts the heartbeats: map; absent / empty / malformed / unrelated → {}', () => {
-    expect(parseHeartbeatsBlock(null)).toEqual({});
-    expect(parseHeartbeatsBlock('')).toEqual({});
-    expect(parseHeartbeatsBlock(': : not yaml : :')).toEqual({});
-    expect(parseHeartbeatsBlock('transcription:\n  enabled: false\n')).toEqual({});
-    expect(parseHeartbeatsBlock('heartbeats:\n  cleanup:\n    frequency: 5m\n    command: node x.js\n'))
-      .toEqual({ cleanup: { frequency: '5m', command: 'node x.js' } });
+// ── parseEntityConfig (the ONE tolerant entity-file parse; it replaced the
+//    per-block text parsers, this module's old parseHeartbeatsBlock included) ──
+describe('parseEntityConfig', () => {
+  it('absent / empty / malformed / non-map → {}; a real doc keeps EVERY block, not just one', () => {
+    expect(parseEntityConfig(null)).toEqual({});
+    expect(parseEntityConfig('')).toEqual({});
+    expect(parseEntityConfig(': : not yaml : :')).toEqual({});
+    expect(parseEntityConfig('- a\n- b\n')).toEqual({});
+    expect(parseEntityConfig('transcription_service:\n  enabled: false\n')).toEqual({ transcription_service: { enabled: false } });
+    expect(parseEntityConfig('heartbeats:\n  cleanup:\n    frequency: 5m\n    command: node x.js\n'))
+      .toEqual({ heartbeats: { cleanup: { frequency: '5m', command: 'node x.js' } } });
   });
 });
 
 // ── collect() ─────────────────────────────────────────────────────────────
 describe('createHeartbeatLoader.collect', () => {
-  it('collects node-level command entries with source=config + the node cwd', async () => {
-    const loader = createHeartbeatLoader({
+  it('collects node-level command entries with source = the node FILE + the node cwd', async () => {
+    const loader = makeLoader({
       getConfig: () => ({ heartbeats: { cleanup: { frequency: '5m', command: 'node cleanup.js' } } }),
       aliveMs: 0, procCwd: '/checkout',
     });
     const { entries } = await loader.collect();
     const c = entries.find((e) => e.name === 'cleanup');
     expect(c).toBeTruthy();
-    expect(c.source).toBe('config');
+    expect(c.source).toBe(NODE_FILE);
     expect(c.everyMs).toBe(300000);
     expect(c.action).toEqual({ kind: 'command', command: 'node cleanup.js', cwd: '/checkout' });
   });
 
   it('injects the default alive command (echo one-liner, cwd = EGPT_HOME) when the node config declares none (aliveMs>0)', async () => {
-    const loader = createHeartbeatLoader({ getConfig: () => ({}), aliveMs: 60_000, aliveCommand: 'echo beat > state/alive.txt', egptHome: '/home', procCwd: '/co' });
+    const loader = makeLoader({ getConfig: () => ({}), aliveMs: 60_000, aliveCommand: 'echo beat > state/alive.txt', egptHome: '/home', procCwd: '/co' });
     const { entries } = await loader.collect();
     expect(entries).toHaveLength(1);
     // cwd is the PROFILE, not the checkout — the relative state/ must resolve into ~/.egpt
-    expect(entries[0]).toMatchObject({ name: 'alive', source: 'config', everyMs: 60_000, action: { kind: 'command', command: 'echo beat > state/alive.txt', cwd: '/home' } });
+    expect(entries[0]).toMatchObject({ name: 'alive', source: NODE_FILE, everyMs: 60_000, action: { kind: 'command', command: 'echo beat > state/alive.txt', cwd: '/home' } });
   });
 
   it('does NOT inject the default alive when aliveMs=0 (test contract)', async () => {
-    const loader = createHeartbeatLoader({ getConfig: () => ({}), aliveMs: 0 });
+    const loader = makeLoader({ getConfig: () => ({}), aliveMs: 0 });
     expect((await loader.collect()).entries).toEqual([]);
   });
 
   it('an explicit config alive with no command falls back to the default alive command + EGPT_HOME cwd (even at aliveMs=0)', async () => {
-    const loader = createHeartbeatLoader({ getConfig: () => ({ heartbeats: { alive: { frequency: '1s' } } }), aliveMs: 0, aliveCommand: 'echo beat > state/alive.txt', egptHome: '/home', procCwd: '/co' });
+    const loader = makeLoader({ getConfig: () => ({ heartbeats: { alive: { frequency: '1s' } } }), aliveMs: 0, aliveCommand: 'echo beat > state/alive.txt', egptHome: '/home', procCwd: '/co' });
     const { entries } = await loader.collect();
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({ name: 'alive', everyMs: 1000, action: { kind: 'command', command: 'echo beat > state/alive.txt', cwd: '/home' } });
   });
 
   it('an explicit config alive command REPLACES the default alive script (no double-inject)', async () => {
-    const loader = createHeartbeatLoader({ getConfig: () => ({ heartbeats: { alive: { frequency: '2s', command: 'node alive.js' } } }), aliveMs: 60_000, procCwd: '/co' });
+    const loader = makeLoader({ getConfig: () => ({ heartbeats: { alive: { frequency: '2s', command: 'node alive.js' } } }), aliveMs: 60_000, procCwd: '/co' });
     const { entries } = await loader.collect();
     expect(entries.filter((e) => e.name === 'alive')).toHaveLength(1);
     const a = entries.find((e) => e.name === 'alive');
@@ -110,45 +127,45 @@ describe('createHeartbeatLoader.collect', () => {
 
   it('alive: false disables the deadman — no entry, logged', async () => {
     const logs = [];
-    const loader = createHeartbeatLoader({ getConfig: () => ({ heartbeats: { alive: false } }), aliveMs: 60_000, onLog: (m) => logs.push(m) });
+    const loader = makeLoader({ getConfig: () => ({ heartbeats: { alive: false } }), aliveMs: 60_000, onLog: (m) => logs.push(m) });
     const { entries } = await loader.collect();
     expect(entries.find((e) => e.name === 'alive')).toBeUndefined();
     expect(logs.some((l) => l.includes('alive disabled'))).toBe(true);
   });
 
   it('namespaces entity heartbeats and points source + cwd at the entity folder', async () => {
-    const loader = createHeartbeatLoader({
+    const loader = makeLoader({
       getConfig: () => ({}), aliveMs: 0,
       listEntityDirs: async () => [
         { dir: '/home/conversations/whatsapp/diego-123', ns: 'whatsapp/diego-123' },
         { dir: '/home/rooms/standup', ns: 'room/standup' },
       ],
       readEntityConfig: async (dir) => dir.includes('diego')
-        ? { reminder: { frequency: '10m', command: 'node remind.js' } }
-        : { sweep: { frequency: '1h', command: 'node sweep.js' } },
+        ? { heartbeats: { reminder: { frequency: '10m', command: 'node remind.js' } } }
+        : { heartbeats: { sweep: { frequency: '1h', command: 'node sweep.js' } } },
     });
     const { entries } = await loader.collect();
     expect(entries.find((e) => e.name === 'whatsapp/diego-123:reminder')).toMatchObject({
-      source: '/home/conversations/whatsapp/diego-123', everyMs: 600000,
+      source: 'conversations/whatsapp/diego-123/config.yaml', everyMs: 600000,
       action: { kind: 'command', command: 'node remind.js', cwd: '/home/conversations/whatsapp/diego-123' },
     });
-    expect(entries.find((e) => e.name === 'room/standup:sweep')).toMatchObject({ source: '/home/rooms/standup', everyMs: 3600000 });
+    expect(entries.find((e) => e.name === 'room/standup:sweep')).toMatchObject({ source: 'rooms/standup/config.yaml', everyMs: 3600000 });
   });
 
   it('skips a non-alive entry with an invalid frequency (logged, never fatal)', async () => {
     const logs = [];
-    const loader = createHeartbeatLoader({ getConfig: () => ({ heartbeats: { bad: { frequency: 'nope', command: 'x' } } }), aliveMs: 0, onLog: (m) => logs.push(m) });
+    const loader = makeLoader({ getConfig: () => ({ heartbeats: { bad: { frequency: 'nope', command: 'x' } } }), aliveMs: 0, onLog: (m) => logs.push(m) });
     expect((await loader.collect()).entries).toEqual([]);
     expect(logs.some((l) => l.includes('bad') && l.includes('invalid frequency'))).toBe(true);
   });
 
   it('finestMs is the min cadence across every entry; null when there are none', async () => {
-    const loader = createHeartbeatLoader({
+    const loader = makeLoader({
       getConfig: () => ({ heartbeats: { a: { frequency: '30s', command: 'x' }, b: { frequency: '5s', command: 'y' } } }),
       aliveMs: 60_000,
     });
     expect((await loader.collect()).finestMs).toBe(5000);   // b(5s) < a(30s) < alive(60s)
-    const empty = createHeartbeatLoader({ getConfig: () => ({}), aliveMs: 0 });
+    const empty = makeLoader({ getConfig: () => ({}), aliveMs: 0 });
     expect((await empty.collect()).finestMs).toBeNull();
   });
 });
@@ -158,7 +175,7 @@ describe('createHeartbeatLoader.activate', () => {
   it('registers every entry as a command beat and writes the readonly.yaml showing the REAL alive command + cwd (nothing hidden)', async () => {
     const writes = [];
     const registry = makeRegistry();
-    const loader = createHeartbeatLoader({
+    const loader = makeLoader({
       getConfig: () => ({ heartbeats: { alive: { frequency: '1s' } } }),
       aliveMs: 0, aliveCommand: 'echo beat > state/alive.txt', egptHome: '/home', procCwd: '/co',
       io: { writeFile: async (p, c) => writes.push({ p, c }), mkdir: async () => {} },
@@ -173,7 +190,7 @@ describe('createHeartbeatLoader.activate', () => {
     expect(beats[0].fn).toBeTypeOf('function');   // the command beat, not an opaque builtin
 
     expect(writes).toHaveLength(1);
-    expect(writes[0].p).toContain(join('state', 'heartbeats.readonly.yaml'));
+    expect(writes[0].p).toBe(join('/home', 'heartbeats.readonly.yaml'));   // the PROFILE ROOT — state/ hides too much
     expect(writes[0].c).toContain('DO NOT EDIT');
     expect(writes[0].c).toContain('name: alive');
     expect(writes[0].c).toContain('source: config');
@@ -186,10 +203,10 @@ describe('createHeartbeatLoader.activate', () => {
     const logs = [];
     const { spawn, calls } = makeSpawn();
     const registry = makeRegistry();
-    const loader = createHeartbeatLoader({
+    const loader = makeLoader({
       getConfig: () => ({}), aliveMs: 0,
       listEntityDirs: async () => [{ dir: '/ent', ns: 'whatsapp/x' }],
-      readEntityConfig: async () => ({ job: { frequency: '5s', command: 'node job.js' } }),
+      readEntityConfig: async () => ({ heartbeats: { job: { frequency: '5s', command: 'node job.js' } } }),
       spawn, env: { PATH: '/bin' }, egptHome: '/home',
       io: noopIo(), onLog: (m) => logs.push(m),
     });
@@ -288,7 +305,7 @@ describe('createHeartbeatLoader — when: one-shots', () => {
     const whenMs = Date.UTC(2026, 6, 2, 12, 20);   // 7/2/2026 8:20a America/New_York
     const { spawn, calls } = makeSpawn();
     const registry = makeRegistry();
-    const loader = createHeartbeatLoader({
+    const loader = makeLoader({
       getConfig: () => ({ default_time_zone: 'America/New_York', heartbeats: { report: { when: '7/2/2026 8:20a', command: 'node report.js' } } }),
       aliveMs: 0, spawn, egptHome: '/home', io: noopIo(),
       now: () => whenMs - 5 * 60_000,   // 5 min BEFORE the time → armed (future)
@@ -311,7 +328,7 @@ describe('createHeartbeatLoader — when: one-shots', () => {
 
   it('a when >2 min in the past is stale — skipped + logged; within the 2-min grace is armed', async () => {
     const logs = [];
-    const stale = createHeartbeatLoader({
+    const stale = makeLoader({
       getConfig: () => ({ default_time_zone: 'UTC', heartbeats: { old: { when: '7/2/2026 08:20', command: 'x' } } }),
       aliveMs: 0, io: noopIo(), onLog: (m) => logs.push(m),
       now: () => Date.UTC(2026, 6, 2, 8, 23),   // 3 min after → stale
@@ -319,7 +336,7 @@ describe('createHeartbeatLoader — when: one-shots', () => {
     expect((await stale.collect()).entries.find((e) => e.name === 'old')).toBeUndefined();
     expect(logs.some((l) => l.includes('stale when'))).toBe(true);
 
-    const grace = createHeartbeatLoader({
+    const grace = makeLoader({
       getConfig: () => ({ default_time_zone: 'UTC', heartbeats: { recent: { when: '7/2/2026 08:20', command: 'x' } } }),
       aliveMs: 0, io: noopIo(),
       now: () => Date.UTC(2026, 6, 2, 8, 21),   // 1 min after → within grace
@@ -330,7 +347,7 @@ describe('createHeartbeatLoader — when: one-shots', () => {
 
   it('an entry with BOTH when and frequency is invalid — skipped + logged', async () => {
     const logs = [];
-    const loader = createHeartbeatLoader({
+    const loader = makeLoader({
       getConfig: () => ({ heartbeats: { bad: { when: '7/2/2026 08:20', frequency: '5m', command: 'x' } } }),
       aliveMs: 0, io: noopIo(), onLog: (m) => logs.push(m), now: () => 0,
     });
@@ -339,7 +356,7 @@ describe('createHeartbeatLoader — when: one-shots', () => {
   });
 
   it('when entries do NOT influence finestMs (only recurring cadences do)', async () => {
-    const loader = createHeartbeatLoader({
+    const loader = makeLoader({
       getConfig: () => ({ default_time_zone: 'UTC', heartbeats: {
         soon: { when: '7/2/2026 08:20', command: 'x' },
         sweep: { frequency: '30s', command: 'y' },
@@ -355,7 +372,7 @@ describe('createHeartbeatLoader — ai_run:', () => {
   it('expands ai_run to a node textecute.mjs command (script relative → entry cwd); readonly shows BOTH forms', async () => {
     const writes = [];
     const registry = makeRegistry();
-    const loader = createHeartbeatLoader({
+    const loader = makeLoader({
       getConfig: () => ({ heartbeats: { daily: { frequency: '24h', ai_run: 'reports/daily.x.md' } } }),
       aliveMs: 0, procCwd: '/checkout', egptHome: '/home',
       io: { writeFile: async (p, c) => writes.push({ p, c }), mkdir: async () => {} },
@@ -377,7 +394,7 @@ describe('createHeartbeatLoader — ai_run:', () => {
 
   it('an entry with BOTH command and ai_run is invalid — skipped + logged', async () => {
     const logs = [];
-    const loader = createHeartbeatLoader({
+    const loader = makeLoader({
       getConfig: () => ({ heartbeats: { dbl: { frequency: '5m', command: 'x', ai_run: 'y.x.md' } } }),
       aliveMs: 0, io: noopIo(), onLog: (m) => logs.push(m),
     });
@@ -397,11 +414,11 @@ describe('createHeartbeatLoader — hot reload', () => {
     let dirs = [];
     const writes = [];
     const registry = makeRegistry();
-    const loader = createHeartbeatLoader({
+    const loader = makeLoader({
       getConfig: () => ({ heartbeats: { alive: { frequency: '1s' } } }),
       aliveMs: 0, aliveCommand: 'echo beat > state/alive.txt', egptHome: '/home',
       listEntityDirs: async () => dirs,
-      readEntityConfig: async () => ({ ping: { frequency: '30s', command: 'node ping.js' } }),
+      readEntityConfig: async () => ({ heartbeats: { ping: { frequency: '30s', command: 'node ping.js' } } }),
       existsSync: () => present,
       io: { writeFile: async (p, c) => writes.push({ p, c }), mkdir: async () => {} },
       now: () => 0,
@@ -438,7 +455,7 @@ describe('createHeartbeatLoader — hot reload', () => {
     let existsChecks = 0;
     const writes = [];
     const registry = makeRegistry();
-    const loader = createHeartbeatLoader({
+    const loader = makeLoader({
       getConfig: () => ({ heartbeats: { alive: { frequency: '1s' } } }),
       aliveMs: 0, aliveCommand: 'echo beat', egptHome: '/home',
       existsSync: () => { existsChecks++; return false; },   // would trigger a reload IF the check were armed
@@ -458,7 +475,7 @@ describe('createHeartbeatLoader — hot reload', () => {
     let present = false;
     const writes = [];
     const registry = makeRegistry();
-    const loader = createHeartbeatLoader({
+    const loader = makeLoader({
       getConfig: () => ({ heartbeats: { alive: { frequency: '1s' } } }),
       aliveMs: 0, aliveCommand: 'echo beat', egptHome: '/home',
       existsSync: () => present,
@@ -481,10 +498,10 @@ describe('createHeartbeatLoader — hot reload', () => {
     let entBlock = { slow: { frequency: '30s', command: 'x' } };
     const logs = [];
     const registry = makeRegistry();
-    const loader = createHeartbeatLoader({
+    const loader = makeLoader({
       getConfig: () => ({}), aliveMs: 0,
       listEntityDirs: async () => [{ dir: '/ent', ns: 'whatsapp/x' }],
-      readEntityConfig: async () => entBlock,
+      readEntityConfig: async () => ({ heartbeats: entBlock }),
       existsSync: () => present,
       io: noopIo(), onLog: (m) => logs.push(m), now: () => 0,
     });
@@ -498,5 +515,62 @@ describe('createHeartbeatLoader — hot reload', () => {
     wrapped.runDue(0);
     await settle();
     expect(logs.some((l) => l.includes('finer than the boot tick'))).toBe(true);
+  });
+});
+
+// ── the THREE aggregates move together (operator 2026-07-26: "state/ hides too much") ──
+// activate() writes ALL THREE at the PROFILE ROOT, and the ABSENCE of ANY ONE of them is
+// what "the in-memory set is stale" means — so deleting config.readonly.yaml (or the
+// conversations one) re-scans every rung and brings all three back, exactly as deleting
+// heartbeats.readonly.yaml always did.
+describe('createHeartbeatLoader — the three profile-root aggregates', () => {
+  const settle = () => new Promise((r) => setTimeout(r, 0));
+  const build = (present) => {
+    const writes = [];
+    const registry = makeRegistry();
+    const io = { writeFile: async (p, c) => writes.push({ p, c }), mkdir: async () => {} };
+    const loader = makeLoader({
+      getConfig: () => ({ heartbeats: { alive: { frequency: '1s' } } }),
+      aliveMs: 0, aliveCommand: 'echo beat', egptHome: '/home',
+      listEntityDirs: async () => [{ dir: '/home/rooms/lab', ns: 'room/lab' }],
+      readEntityConfig: async () => ({ warm: { idle_ttl: '5m' } }),
+      existsSync: present, io, resolverIo: io, now: () => 0,
+    });
+    return { loader, registry, writes };
+  };
+
+  it('activate writes all three, at the profile root, none under state/', async () => {
+    const { loader, registry, writes } = build(() => true);
+    loader.wrapRegistry(registry);
+    await loader.collect();
+    await loader.activate({ stats: () => ({}), tickMs: 30_000 });
+    const paths = writes.map((w) => w.p).sort();
+    expect(paths).toEqual([
+      join('/home', 'config.readonly.yaml'),
+      join('/home', 'conversations.readonly.yaml'),
+      join('/home', 'heartbeats.readonly.yaml'),
+    ]);
+    expect(paths.some((p) => p.includes(join('state', '')))).toBe(false);
+  });
+
+  it('deleting ANY ONE of the three re-scans every rung and rewrites all three', async () => {
+    for (const gone of ['config.readonly.yaml', 'conversations.readonly.yaml', 'heartbeats.readonly.yaml']) {
+      let all = true;
+      const { loader, registry, writes } = build((p) => all || !p.endsWith(gone));
+      const wrapped = loader.wrapRegistry(registry);
+      await loader.collect();
+      await loader.activate({ stats: () => ({}), tickMs: 30_000 });
+      writes.length = 0;
+
+      all = false;                 // exactly ONE aggregate is now missing
+      wrapped.runDue(0);
+      await settle();
+      const paths = writes.map((w) => w.p).sort();
+      expect(paths, `deleting ${gone}`).toEqual([
+        join('/home', 'config.readonly.yaml'),
+        join('/home', 'conversations.readonly.yaml'),
+        join('/home', 'heartbeats.readonly.yaml'),
+      ]);
+    }
   });
 });

@@ -1,4 +1,4 @@
-// transcription-service.mjs — the per-ENTITY transcription service config.
+// transcription-service.mjs — the per-ENTITY view of the transcription service.
 //
 // Operator 2026-06-15: "transcription is surface independent … in
 // conversations.yaml, or room.yaml for the room: transcription_service_enabled
@@ -7,45 +7,48 @@
 // posts_back (default)."
 //
 // So transcription is a ROOM DEFAULT SERVICE (GENOME §2.5), NOT E and NOT a
-// transport concern — its config lives in the ENTITY's own config.yaml (a
-// conversation slug dir OR ~/.egpt/rooms/<name>/), exactly like the heartbeat
-// service (src/heartbeats.mjs). Surface-independent by construction.
+// transport concern. Surface-independent by construction.
 //
-// Two orthogonal flags, both default ON — they map onto the GENOME heart
+// ONE KEY (operator ruling 2026-07-26: "on transcriptions can be joined under the same
+// key; the configurations 'remote', 'cli', etc, the paths, the post-back variables, etc").
+// The same concern used to live under THREE names — node `transcription_service:`, entity
+// folder `transcription:`, and a flat `posts_back_delay_ms` on the conversations.yaml
+// record. They are ONE key, `transcription_service:`, resolved across the THREE rungs of
+// src/spine/config-resolver.mjs:
+//
+//   config/config.yaml  <  config/conversations.yaml (the entry)  <  <entity>/config.yaml
+//
+// `transcription_service` is the name that survived because the node rung already called
+// it that in six modules (operator 2026-07-02: "transcription_service is canonical") and
+// because the bare name `transcription:` is ALREADY OCCUPIED at the node rung by an
+// unrelated legacy shape (transcription.cli / .whisper / .token / .server, still read by
+// the transcriptor worker and the beeper bridge) — collapsing onto it would have silently
+// merged two different schemas.
+//
+// Three orthogonal settings, all defaulting ON — they map onto the GENOME heart
 // (idea #2: everything is HEARD and recorded; only some is SPOKEN):
-//   enabled    → HEARD: run the transcription at all (model + transcript.md get it)
-//   posts_back → SPOKEN: surface the 👂 <transcript> back into the chat
+//   enabled             → HEARD: run the transcription at all (model + transcript.md get it)
+//   posts_back          → SPOKEN: surface the 👂 <transcript> back into the chat
+//   posts_back_delay_ms → how long after a burst goes quiet the 👂 echo fires;
+//                         negative = never echo (HEARD but never SPOKEN)
 // `enabled:true, posts_back:false` = transcribe for the model/log but stay silent.
 //
-//   <dir>/config.yaml → { transcription: { enabled: true, posts_back: true } }
+//   <rung> → { transcription_service: { enabled: true, posts_back: true, posts_back_delay_ms: 8000 } }
 //
-// Block absent / file absent / malformed → both default ON (auto-enroll). Only an
-// explicit `false` disables. Keyed off the entity FOLDER, never a display name.
-
-import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
-import * as YAML from 'yaml';
+// Block absent / key absent → both flags default ON (auto-enroll). Only an explicit
+// `false` disables. Keyed off the entity FOLDER, never a display name.
 
 export const DEFAULT_SERVICE = { enabled: true, postsBack: true };
 
-// Pure: raw config.yaml text (or null/'' when absent) → { enabled, postsBack }.
-// Default ON; only an explicit `false` turns a flag off.
-export function parseTranscriptionConfig(yamlText) {
-  let doc = {};
-  if (yamlText && yamlText.trim()) {
-    try { doc = YAML.parse(yamlText) ?? {}; } catch { doc = {}; }
-  }
-  const t = (doc && typeof doc === 'object' && doc.transcription && typeof doc.transcription === 'object')
-    ? doc.transcription : {};
+// Pure: a RESOLVED config doc (the resolver's merge of all three rungs) →
+// { enabled, postsBack, postsBackDelayMs }. Default ON; only an explicit `false` turns a
+// flag off. postsBackDelayMs is null when no rung set one (the caller applies the floor).
+export function parseTranscriptionConfig(doc) {
+  const t = (doc && typeof doc === 'object' && doc.transcription_service && typeof doc.transcription_service === 'object')
+    ? doc.transcription_service : {};
   return {
     enabled: t.enabled !== false,
     postsBack: t.posts_back !== false,
+    postsBackDelayMs: Number.isFinite(t.posts_back_delay_ms) ? t.posts_back_delay_ms : null,
   };
-}
-
-// best-effort IO (never throws): read the entity folder's config.yaml.
-export async function readTranscriptionConfig(dir) {
-  let text = null;
-  try { text = await readFile(join(dir, 'config.yaml'), 'utf8'); } catch { /* none = defaults */ }
-  return parseTranscriptionConfig(text);
 }

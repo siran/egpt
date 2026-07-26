@@ -7,7 +7,8 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import * as YAML from 'yaml';
-import { createHeartbeatLoader, parseHeartbeatsBlock } from '../src/spine/heartbeat-loader.mjs';
+import { createHeartbeatLoader } from '../src/spine/heartbeat-loader.mjs';
+import { createConfigResolver, parseEntityConfig } from '../src/spine/config-resolver.mjs';
 import { CONFIG_SCHEMA } from '../config/config-schema.mjs';
 import { AUTO_MODES } from '../src/auto-mode.mjs';
 import { ROOM_MEMBER_STATES, ROOM_MEMBER_KINDS } from '../src/room-core.mjs';
@@ -27,14 +28,17 @@ describe('config/skeletons/heartbeats.yaml', () => {
     const doc = YAML.parse(text);
     expect(doc).toBeTypeOf('object');
     expect(doc.heartbeats).toBeTypeOf('object');
-    const block = parseHeartbeatsBlock(text);
+    const block = parseEntityConfig(text).heartbeats;
     expect(Object.keys(block).length).toBeGreaterThan(0);
   });
 
   it('every entry passes the loader parse: the when one-shot arms, the recurring one has a cadence, ai_run expands', async () => {
-    const block = parseHeartbeatsBlock(text);
+    const block = parseEntityConfig(text).heartbeats;
     const loader = createHeartbeatLoader({
-      getConfig: () => ({ default_time_zone: 'America/New_York', heartbeats: block }),
+      resolver: createConfigResolver({
+        getConfig: () => ({ default_time_zone: 'America/New_York', heartbeats: block }),
+        egptHome: '/home', io: { writeFile: async () => {}, mkdir: async () => {} },
+      }),
       aliveMs: 0, procCwd: '/checkout', egptHome: '/home',
       io: { writeFile: async () => {}, mkdir: async () => {} },
       // well before any example `when:` so the one-shot is armed, not stale
@@ -168,9 +172,12 @@ describe('config/skeletons/room/config.yaml (the per-conversation folder config)
     // Deliberate: every block here is optional, so the shipped file sets nothing
     // and each service must read it as absent rather than choke.
     expect(YAML.parse(text)).toBe(null);
-    expect(parseWarmBlock(text)).toEqual({ idleTtlMs: null });
-    expect(parseTranscriptionConfig(text)).toEqual({ enabled: true, postsBack: true });
-    expect(parseHeartbeatsBlock(text)).toEqual({});
+    // every block reader takes the RESOLVED doc now (one parse, not one per block)
+    const doc = parseEntityConfig(text);
+    expect(doc).toEqual({});
+    expect(parseWarmBlock(doc)).toEqual({ idleTtlMs: null });
+    expect(parseTranscriptionConfig(doc)).toEqual({ enabled: true, postsBack: true, postsBackDelayMs: null });
+    expect(doc.heartbeats).toBeUndefined();
   });
 
   it('the member states + kinds it documents are exactly the real ones', () => {

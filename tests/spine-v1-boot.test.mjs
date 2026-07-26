@@ -275,7 +275,7 @@ describe('boot()', () => {
 
     // the spine materialized the readonly view — the alive row shows the REAL
     // command, nothing hidden behind a builtin label
-    const readonly = await fs.readFile(join(tmpHome, 'state', 'heartbeats.readonly.yaml'), 'utf8');
+    const readonly = await fs.readFile(join(tmpHome, 'heartbeats.readonly.yaml'), 'utf8');
     expect(readonly).toContain('DO NOT EDIT');
     expect(readonly).toContain('name: alive');
     expect(readonly).toContain('command: echo beat > state/alive.txt');
@@ -299,7 +299,7 @@ describe('boot()', () => {
       log: { line: () => {} },
     });
 
-    const readonlyPath = join(tmpHome, 'state', 'heartbeats.readonly.yaml');
+    const readonlyPath = join(tmpHome, 'heartbeats.readonly.yaml');
     const before = await fs.readFile(readonlyPath, 'utf8');
     // the reload trigger rides runDue now — there is no internal beat and no internal row
     expect(before).not.toContain('heartbeats-reload');

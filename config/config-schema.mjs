@@ -135,7 +135,7 @@ export const CONFIG_SCHEMA = {
       (DEFAULT 60000) as  command: echo beat > state/alive.txt  — run with
       cwd = the profile, so the relative state/ resolves there. A plain shell
       one-liner: no hidden builtin, and the exact command is visible in
-      state/heartbeats.readonly.yaml.
+      ~/.egpt/heartbeats.readonly.yaml.
       LIVENESS IS THE FILE MTIME: any command that writes state/alive.txt is a
       valid beat, and the written content is freeform (for humans) — the daemon
       deadman only reads the file's mtime.
@@ -156,13 +156,17 @@ export const CONFIG_SCHEMA = {
 
     RESOLVED SET:
       At boot the spine materializes the full resolved set to
-      state/heartbeats.readonly.yaml (a spine-written snapshot: edit
-      config.yaml / the entity config.yaml and /restart, do not edit the
-      readonly file). The tick auto-tightens to the finest cadence, floored at
-      500ms.
-      HOT RELOAD: delete state/heartbeats.readonly.yaml and the spine re-reads
-      every heartbeat within ~30s — no restart, and new chat folders / edited
-      entity config.yaml are picked up.
+      ~/.egpt/heartbeats.readonly.yaml — at the PROFILE ROOT, beside
+      config.readonly.yaml and conversations.readonly.yaml (operator 2026-07-26:
+      "state/ hides too much"). A spine-written snapshot: edit config.yaml / the
+      entity config.yaml and /restart, do not edit the readonly file. Every row
+      carries source:, the profile-relative file it was read from. The tick
+      auto-tightens to the finest cadence, floored at 500ms.
+      heartbeats is the config resolver's one UNION block: an entity declaring a
+      beat CONTRIBUTES one, it never replaces the node's.
+      HOT RELOAD: delete ANY of the three ~/.egpt/*.readonly.yaml aggregates and
+      the spine re-scans every config rung within ~30s — no restart, and new chat
+      folders / edited entity config.yaml are picked up.
 
     Paste-ready templates live in config/skeletons/ (script.x.md,
     heartbeats.yaml).
@@ -658,18 +662,24 @@ export const CONFIG_SCHEMA = {
         ms after IT was recorded, never coalesced.
           0 = immediate (recommended — with per-note keys there is no burst to
               coalesce, and a long hold can drop the echo on a restart)
-        PER-CONVERSATION OVERRIDE (operator 2026-07-16): a conversation may set
-        posts_back_delay_ms on its OWN conversations.yaml record
-        (contacts.<surface>[<id>].posts_back_delay_ms, sibling of mode) to
-        override this global for that chat only:
-          unset/null       = this global
+        RETIRED AS A FLAT REGISTRY KEY (operator ruling 2026-07-26, ONE key).
+        This block is the LEGACY engine shape; the live home for the whole
+        concern — engines, paths and the post-back variables — is
+        transcription_service:, resolved across the THREE rungs of
+        src/spine/config-resolver.mjs:
+          config/config.yaml < config/conversations.yaml (the entry)
+                             < <entity>/config.yaml     — nearest wins.
+        So a conversation now writes transcription_service.posts_back_delay_ms
+        at whichever rung it wants, not a flat posts_back_delay_ms on its
+        registry record. Value semantics are unchanged:
+          unset/null        = the rung above
           -1 (any negative) = NEVER echo the 👂 (still HEARD: the model +
                               transcript.md get it, it is just not SPOKEN)
-          0                = immediate
-          N                = N ms debounce
-        The conversations.yaml value WINS for that conversation and REPLACES the
-        folder-config.yaml posts_back approach for conversations (rooms keep the
-        folder config.yaml).
+          0                 = immediate
+          N                 = N ms debounce
+        The old PRECEDENCE is gone with the old key: a registry delay used to
+        force posts_back TRUE even against a folder's posts_back:false. That was
+        back-compat, and it is plain rung order now — nearest the room wins.
       server
         The endpoint engine — a remote worker e.g. DOLLY, or a resident server.
           endpoint   URL, e.g. "http://192.168.1.50:23390"
@@ -694,13 +704,32 @@ export const CONFIG_SCHEMA = {
   `,
 
   transcription_service: `
-    Declarative per-note transcription fallback
+    THE ONE TRANSCRIPTION KEY (operator ruling 2026-07-26: "on transcriptions
+    can be joined under the same key; the configurations 'remote', 'cli', etc,
+    the paths, the post-back variables, etc"). Declarative per-note fallback
     (docs/TRANSCRIPTION-SERVICE-PLAN.md; supersedes the transcription.mode
     shape).
 
+    IT IS A RUNG-RESOLVED KEY, not a node-only one. The same name is read at all
+    three rungs of src/spine/config-resolver.mjs, deep-merged per leaf so a
+    folder pinning one flag keeps the node's engine chain:
+      config/config.yaml < config/conversations.yaml (the entry)
+                         < <entity>/config.yaml      — nearest the room wins.
+    It replaced the three differently-named homes this concern used to have: the
+    node's transcription_service:, the entity folder's transcription:, and a
+    flat posts_back_delay_ms on the conversations.yaml record. No migration
+    (operator: "do not concern about live profiles") — the old names are simply
+    not read any more.
+
     KEYS:
       enabled
-        Global on/off. DEFAULT: on. Overridable per-conversation.
+        On/off at this rung. DEFAULT: on. HEARD — transcribe at all.
+      posts_back
+        SPOKEN — echo the 👂 transcript into the chat. DEFAULT: on. Typically
+        set at an entity rung; only an explicit false disables.
+      posts_back_delay_ms
+        Trailing debounce before the echo. Negative = never echo (still HEARD).
+        0 = immediate. Absent = the rung above, then the shared floor.
       use_config
         Name of the active profile — THE one line that differs REVE vs DOLLY on
         a mirrored config.yaml.

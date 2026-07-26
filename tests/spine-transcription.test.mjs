@@ -39,9 +39,9 @@ describe('createTranscription', () => {
     const tx = createTranscription({
       getConfig: () => config,
       loadState: async () => stateWith('whatsapp', '!room:beeper.local', 'quiet-chat-2606010101'),
-      readConfig: async (dir) => {
+      resolveConfig: (dir) => {
         expect(dir).toContain('quiet-chat-2606010101');   // resolved to the contact's folder
-        return { enabled: true, postsBack: false };
+        return { transcription_service: { posts_back: false } };
       },
     });
     expect(await tx.resolveTranscriptionService('!room:beeper.local')).toEqual({ enabled: true, postsBack: false, postsBackDelayMs: 12345 });
@@ -51,7 +51,7 @@ describe('createTranscription', () => {
     const tx = createTranscription({
       getConfig: () => config,
       loadState: async () => stateWith('telegram', 'tg:user:9', 'muted-chat-2606010101'),
-      readConfig: async () => ({ enabled: false, postsBack: true }),
+      resolveConfig: () => ({ transcription_service: { enabled: false } }),
     });
     // postsBack now folds enabled (postsBack = enabled && …) — behaviorally inert since
     // enabled:false already short-circuits transcription (the note is never even HEARD).
@@ -63,15 +63,17 @@ describe('createTranscription', () => {
     const tx = createTranscription({
       getConfig: () => config,
       loadState: async () => ({ contacts: {} }),
-      readConfig: async () => { readCalled = true; return { enabled: false, postsBack: false }; },
+      resolveConfig: () => { readCalled = true; return { transcription_service: { enabled: false, posts_back: false } }; },
     });
     expect(await tx.resolveTranscriptionService('!unknown:beeper.local')).toEqual({ enabled: true, postsBack: true, postsBackDelayMs: 12345 });
-    expect(readCalled).toBe(false);   // no contact → no folder read
+    expect(readCalled).toBe(false);   // no contact → no entity lookup
   });
 
-  it('falls back to the legacy transcription.* block when no transcription_service', () => {
+  it('ONE key: the post-back delay is read from transcription_service ONLY — the legacy transcription.posts_back_delay_ms is not a name any more', () => {
     const tx = createTranscription({ getConfig: () => ({ transcription: { cli: { ffmpeg_command: 'ff2' }, posts_back_delay_ms: 999 } }) });
-    expect(tx.postsBackDelayMs).toBe(999);
+    expect(tx.postsBackDelayMs).toBeUndefined();
+    // the ENGINE block (transcription.cli) is a different legacy, still read by the
+    // transcriptor worker + the beeper bridge — untouched by the key collapse
     expect(tx.cliCfg.ffmpeg_command).toBe('ff2');
   });
 
@@ -93,75 +95,55 @@ describe('createTranscription', () => {
   });
 });
 
-// Per-CONVERSATION 👂 echo override (operator 2026-07-16): conversations.yaml carries a
-// single key `posts_back_delay_ms` on the chat's own record (sibling of `mode`). It REPLACES
-// the folder-config.yaml approach FOR CONVERSATIONS; the folder mechanism stays for rooms.
-//   unset/null → global default   | -1 (neg) → never echo (still HEARD) | 0 → immediate | N → N ms debounce
-// resolveTranscriptionService now also returns the per-chat postsBackDelayMs so the bridge
-// debounces per conversation. The test config's global posts_back_delay_ms is 12345.
-describe('resolveTranscriptionService — per-conversation posts_back_delay_ms override', () => {
-  // record = the chat's OWN conversations.yaml entry (getContact → entry): slug + the override.
-  const stateWith = (surface, jid, rec) => ({ contacts: { [surface]: { [jid]: rec } } });
-  const folderDefault = async () => ({ enabled: true, postsBack: true });   // folder config.yaml: both ON
+// The per-conversation 👂 echo delay is `transcription_service.posts_back_delay_ms`, one
+// key resolved across the three rungs (config.yaml < the conversations.yaml entry < the
+// entity folder). The tests below hand resolveConfig the RESOLVED doc — whichever rung it
+// came from is the resolver's business, and that is the point of the collapse.
+//   unset → the node rung's delay | -1 (neg) → never echo (still HEARD) | 0 → immediate | N → N ms
+// The test config's node-rung posts_back_delay_ms is 12345.
+describe('resolveTranscriptionService — posts_back_delay_ms, one key across the rungs', () => {
+  const stateWith = (surface, jid, slug) => ({ contacts: { [surface]: { [jid]: { slug } } } });
+  const resolvedWith = (tx) => () => ({ transcription_service: tx });
+
+  const mk = (svc) => createTranscription({
+    getConfig: () => config,
+    loadState: async () => stateWith('whatsapp', '!r:beeper.local', 'chat-2607160101'),
+    resolveConfig: resolvedWith(svc),
+  });
 
   it('-1 → NEVER echo (postsBack:false) but still HEARD (enabled:true); delay clamps to 0', async () => {
-    const tx = createTranscription({
-      getConfig: () => config,
-      loadState: async () => stateWith('whatsapp', '!r:beeper.local', { slug: 'silent-2607160101', posts_back_delay_ms: -1 }),
-      readConfig: folderDefault,
-    });
-    expect(await tx.resolveTranscriptionService('!r:beeper.local'))
+    expect(await mk({ posts_back_delay_ms: -1 }).resolveTranscriptionService('!r:beeper.local'))
       .toEqual({ enabled: true, postsBack: false, postsBackDelayMs: 0 });
   });
 
   it('0 → echo immediately (postsBack:true, postsBackDelayMs:0)', async () => {
-    const tx = createTranscription({
-      getConfig: () => config,
-      loadState: async () => stateWith('whatsapp', '!r:beeper.local', { slug: 'instant-2607160101', posts_back_delay_ms: 0 }),
-      readConfig: folderDefault,
-    });
-    expect(await tx.resolveTranscriptionService('!r:beeper.local'))
+    expect(await mk({ posts_back_delay_ms: 0 }).resolveTranscriptionService('!r:beeper.local'))
       .toEqual({ enabled: true, postsBack: true, postsBackDelayMs: 0 });
   });
 
-  it('N (8000) → echo after N ms trailing-debounce (postsBack:true, postsBackDelayMs:8000)', async () => {
-    const tx = createTranscription({
-      getConfig: () => config,
-      loadState: async () => stateWith('whatsapp', '!r:beeper.local', { slug: 'slow-2607160101', posts_back_delay_ms: 8000 }),
-      readConfig: folderDefault,
-    });
-    expect(await tx.resolveTranscriptionService('!r:beeper.local'))
+  it('N (8000) → echo after N ms trailing-debounce', async () => {
+    expect(await mk({ posts_back_delay_ms: 8000 }).resolveTranscriptionService('!r:beeper.local'))
       .toEqual({ enabled: true, postsBack: true, postsBackDelayMs: 8000 });
   });
 
-  it('unset → falls back to the global default delay + the prior folder postsBack behavior', async () => {
-    const tx = createTranscription({
-      getConfig: () => config,
-      loadState: async () => stateWith('whatsapp', '!r:beeper.local', { slug: 'plain-2607160101' }),   // no posts_back_delay_ms
-      readConfig: folderDefault,
-    });
-    expect(await tx.resolveTranscriptionService('!r:beeper.local'))
+  it('unset → the node rung delay stands', async () => {
+    expect(await mk({}).resolveTranscriptionService('!r:beeper.local'))
       .toEqual({ enabled: true, postsBack: true, postsBackDelayMs: 12345 });
   });
 
-  it('the conversations.yaml override WINS over a folder config.yaml posts_back:false', async () => {
-    const tx = createTranscription({
-      getConfig: () => config,
-      loadState: async () => stateWith('whatsapp', '!r:beeper.local', { slug: 'q-2607160101', posts_back_delay_ms: 8000 }),
-      readConfig: async () => ({ enabled: true, postsBack: false }),   // folder says quiet …
-    });
-    // … but the conversation's explicit override wins → it echoes (after 8s).
-    expect(await tx.resolveTranscriptionService('!r:beeper.local'))
-      .toEqual({ enabled: true, postsBack: true, postsBackDelayMs: 8000 });
+  // THE PRECEDENCE DISSOLVED (operator ruling 2026-07-26, "do not keep maintaining legacy
+  // behavior"). It used to be that a conversations.yaml posts_back_delay_ms forced
+  // posts_back TRUE even against a folder's posts_back:false — the registry rung beating
+  // the NEARER folder rung, justified in its own comment as back-compat. Now it is plain
+  // rung order: whichever rung the resolver says won, wins, and posts_back and the delay
+  // are two independent values that no longer imply each other.
+  it('a delay does NOT resurrect posts_back:false — the two are independent values now', async () => {
+    expect(await mk({ posts_back: false, posts_back_delay_ms: 8000 }).resolveTranscriptionService('!r:beeper.local'))
+      .toEqual({ enabled: true, postsBack: false, postsBackDelayMs: 8000 });
   });
 
-  it('back-compat: with NO override, a folder posts_back:false stays quiet (no silent re-echo)', async () => {
-    const tx = createTranscription({
-      getConfig: () => config,
-      loadState: async () => stateWith('whatsapp', '!r:beeper.local', { slug: 'q-2607160101' }),   // no override
-      readConfig: async () => ({ enabled: true, postsBack: false }),
-    });
-    expect(await tx.resolveTranscriptionService('!r:beeper.local'))
+  it('posts_back:false with no delay stays quiet at the node-rung delay', async () => {
+    expect(await mk({ posts_back: false }).resolveTranscriptionService('!r:beeper.local'))
       .toEqual({ enabled: true, postsBack: false, postsBackDelayMs: 12345 });
   });
 });

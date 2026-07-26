@@ -128,9 +128,11 @@ export class Room {
 
   // ── config.yaml (shared with the heartbeat + transcription services) ───────
   // Read the whole config.yaml as a plain object ({} when absent/malformed).
-  // This is the SAME file src/heartbeats.mjs (heartbeat:) and
-  // src/transcription-service.mjs (transcription:) read; the member block lives
-  // beside theirs, never replacing them.
+  // This file is the NEAREST rung of the config resolver (src/spine/config-resolver.mjs):
+  // config/config.yaml < config/conversations.yaml < THIS. `members:` is the one block with
+  // no rung above it, which is why this reader still opens the file directly — there is
+  // nothing to layer, and reading through the resolver's cached set would only add
+  // staleness between a /members write and the next read.
   async loadConfig() {
     try {
       const doc = YAML.parse(await readFile(this.configPath, 'utf8'));

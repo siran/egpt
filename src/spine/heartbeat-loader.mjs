@@ -8,7 +8,7 @@
 // beat). This loader makes them uniform declarative entries collected at boot
 // from three sources — the node config.yaml, every conversation's config.yaml,
 // and every room's config.yaml — parses their cadence, materializes a spine-
-// written readonly view (state/heartbeats.readonly.yaml, the same house pattern
+// written readonly view (heartbeats.readonly.yaml, the same house pattern
 // as the instanced-brain `readonly` block: a snapshot the operator reads but
 // edits at the source), and registers each onto the dumb cadence registry
 // (heartbeats.mjs). The alive-file writer is no longer special-cased NOR a
@@ -27,21 +27,30 @@
 // <script.x.md>`; both set → invalid, skipped + logged). Timezone-less `when:`
 // times resolve in config `default_time_zone` (else the machine's local zone).
 //
+// THE WALK IS NOT HERE ANY MORE (2026-07-26). Reading the node config + every
+// conversation folder + every room folder is ONE walk serving FOUR concerns
+// (heartbeats, warm, transcription, members), so it moved to the config RESOLVER
+// (src/spine/config-resolver.mjs) which layers the three rungs — config/config.yaml
+// < config/conversations.yaml < <entity>/config.yaml. This loader consumes the
+// resolved set: the node's `heartbeats:` block plus each entity's UNION-merged one.
+// `heartbeats` is the resolver's one UNION block precisely so an entity declaring a
+// beat CONTRIBUTES rather than replacing the node's (see its header).
+//
 // HOT RELOAD (operator 2026-07-02): the reload TRIGGER rides the loop's own tick.
 // The loader DECORATES the cadence registry (wrapRegistry) so that every runDue —
-// the moment the loop consults the in-memory heartbeat set — first checks whether
-// state/heartbeats.readonly.yaml is present. Its ABSENCE means the in-memory set
-// is stale ("when the spine is looping and thus needs to check the in-memory
+// the moment the loop consults the in-memory heartbeat set — first asks the resolver
+// whether the set is stale. Staleness is the ABSENCE of any of the three aggregates
+// ("when the spine is looping and thus needs to check the in-memory
 // heartbeat configuration, it checks whether the file is present. If the file is
 // not present, the in-memory heartbeat is stale, so regenerate the readonly file
 // and load it into memory" — operator 2026-07-02): re-collect everything (node
 // config once-at-boot, but entity folders re-enumerated fresh — so NEW
 // conversations/rooms + edited entity config.yaml ARE picked up), re-register,
-// rewrite the file. No restart, and no self-checking beat — the check belongs to
-// consulting the set, not to a task listed inside it.
+// rewrite all three files. No restart, and no self-checking beat — the check belongs
+// to consulting the set, not to a task listed inside it.
 //
 // Three seams, one module, because of a boot ordering constraint (see boot.mjs):
-//   collect()      — pure-ish: read config + entity dirs, parse cadences →
+//   collect()      — pure-ish: take the resolver's scan, parse cadences →
 //                    { entries, finestMs }. Runs BEFORE createSpine so boot can
 //                    size the tick to the finest cadence.
 //   wrapRegistry() — decorate the real registry into the heartbeats object the
@@ -51,19 +60,19 @@
 //                    for the pump env), register them, arm the reload check, write
 //                    the readonly.yaml. Runs AFTER createSpine.
 //
-// Every effectful edge is injected (listEntityDirs / readEntityConfig / spawn /
-// io.writeFile / io.mkdir / existsSync / now) so the whole loader is unit-testable
+// Every effectful edge is injected (the resolver / spawn / io.writeFile / io.mkdir
+// / now) so the whole loader is unit-testable
 // against fakes and never touches the real profile. Nothing here is fatal: a bad
 // frequency, a bad when, a missing dir, a malformed entity config, a non-zero
 // command exit, a reload error — all log and carry on. A heartbeat is a deadman
 // switch; one broken entry must never take the boot (or its siblings) down.
 
 import { writeFile as fsWriteFile, mkdir as fsMkdir } from 'node:fs/promises';
-import { existsSync as fsExistsSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as YAML from 'yaml';
 import { EGPT_HOME } from '../egpt-home.mjs';
+import { NODE_FILE } from './config-resolver.mjs';
 
 // The loader owns the ai_run sugar, so it resolves textecute.mjs itself (relative
 // to this file: src/spine/ → src/tools/). Absolute path, so the expanded command
@@ -188,18 +197,10 @@ export function parseWhen(str, { timeZone } = {}) {
   return null;
 }
 
-// ── entity heartbeats block (pure) ──────────────────────────────────────────
-// Read an entity's config.yaml text the SAME tolerant way transcription-service
-// does (absent/'' /malformed → no heartbeats, never throws) and return its
-// `heartbeats:` map, or {} when there is none.
-export function parseHeartbeatsBlock(yamlText) {
-  let doc = {};
-  if (yamlText && yamlText.trim()) {
-    try { doc = YAML.parse(yamlText) ?? {}; } catch { doc = {}; }
-  }
-  const hb = (doc && typeof doc === 'object') ? doc.heartbeats : null;
-  return (hb && typeof hb === 'object' && !Array.isArray(hb)) ? hb : {};
-}
+// (parseHeartbeatsBlock lived here — a config.yaml TEXT → its heartbeats: map. The
+// resolver parses each entity file ONCE into its whole doc now (parseEntityConfig) and
+// hands this loader the block already layered across the rungs, so the block-specific
+// text parser had no callers left.)
 
 // A both-command-and-ai_run collision returns this sentinel (truthy, so it isn't
 // mistaken for "no action") — the entry is invalid and skipped.
@@ -253,33 +254,27 @@ function _normalizeEntry({ name, source, cwd, raw, isAlive, aliveFallbackMs, ali
 
 /**
  * @param {object} deps
- * @param {() => object} deps.getConfig                 node config (reads config.heartbeats + config.default_time_zone)
+ * @param {object} deps.resolver                        the config RESOLVER (src/spine/config-resolver.mjs) — THE walk; supplies the node rung (heartbeats + default_time_zone), every entity's UNION-merged heartbeats block, the aggregate paths and the staleness probe
  * @param {number} [deps.aliveMs]                       boot's aliveMs; 0 = don't inject the default alive (test contract)
  * @param {string} [deps.aliveCommand]                  the default alive command boot passes in: the one-liner `echo beat > state/alive.txt` (run with cwd = egptHome so the relative state/ resolves into the profile)
  * @param {() => number} [deps.now]                     clock for the stale-`when` check at load time
- * @param {() => Promise<Array<{dir:string, ns:string}>>} deps.listEntityDirs  conversation + room folders (ns = the namespace prefix)
- * @param {(dir:string) => Promise<object>} deps.readEntityConfig              a folder's heartbeats: map ({} when none)
  * @param {(cmd:string, opts:object) => any} deps.spawn                        child_process.spawn seam (shell:true)
  * @param {object} [deps.env]                           base env commands inherit (boot: process.env)
- * @param {string} [deps.egptHome]                      EGPT_HOME (spawn env + readonly path)
+ * @param {string} [deps.egptHome]                      EGPT_HOME (spawn env + the alive beat's cwd)
  * @param {string} [deps.procCwd]                       cwd for node-level command heartbeats (the checkout)
  * @param {{writeFile?:Function, mkdir?:Function}} [deps.io]                   readonly.yaml IO seam
- * @param {(p:string) => boolean} [deps.existsSync]     readonly-file existence probe for hot reload (injectable)
  * @param {(m:string) => void} [deps.onLog]
  */
 export function createHeartbeatLoader({
-  getConfig,
+  resolver,
   aliveMs = 0,
   aliveCommand = '',
   now = () => Date.now(),
-  listEntityDirs = async () => [],
-  readEntityConfig = async () => ({}),
   spawn,
   env = {},
   egptHome = EGPT_HOME,
   procCwd = process.cwd(),
   io = {},
-  existsSync = fsExistsSync,
   onLog = () => {},
 } = {}) {
   const writeFile = io.writeFile ?? fsWriteFile;
@@ -289,7 +284,7 @@ export function createHeartbeatLoader({
   // so it must run with cwd = EGPT_HOME (not procCwd). Other node-level beats keep
   // procCwd (the checkout).
   const aliveCwd = egptHome;
-  const readonlyPath = join(egptHome, 'state', 'heartbeats.readonly.yaml');
+  const readonlyPath = resolver.paths.heartbeats;
 
   let _entries = null;    // set by collect(), consumed by activate()
   let _registry = null;   // bound in wrapRegistry() — the real registry reload replaces entries on
@@ -307,10 +302,14 @@ export function createHeartbeatLoader({
 
   // ── phase 1: collect + parse (no spine.stats yet) ─────────────────────────
   async function collect() {
-    const timeZone = resolveTimeZone(getConfig()?.default_time_zone, { onLog });
+    // ONE walk, owned by the resolver. It hands back the node rung and every entity's
+    // UNION-merged heartbeats block already layered across the registry + folder rungs.
+    const set = await resolver.collect();
+    const nodeConfig = set.node.config ?? {};
+    const timeZone = resolveTimeZone(nodeConfig.default_time_zone, { onLog });
     const nowMs = now();
     const entries = [];
-    const nodeBlock = getConfig()?.heartbeats;
+    const nodeBlock = nodeConfig.heartbeats;
     const node = (nodeBlock && typeof nodeBlock === 'object' && !Array.isArray(nodeBlock)) ? nodeBlock : {};
 
     // 1. Node-level entries (config.heartbeats). `alive` is the default beat's
@@ -327,7 +326,7 @@ export function createHeartbeatLoader({
         if (raw === false) { onLog('alive disabled (heartbeats.alive: false) — the supervisor will respawn-loop with backoff until restored'); continue; }
       }
       if (!raw || typeof raw !== 'object') { onLog(`${name}: not a heartbeat block — skipped`); continue; }
-      const e = _normalizeEntry({ name, source: 'config', cwd: procCwd, raw, isAlive, aliveFallbackMs, aliveCommand, aliveCwd, timeZone, nowMs, onLog });
+      const e = _normalizeEntry({ name, source: NODE_FILE, cwd: procCwd, raw, isAlive, aliveFallbackMs, aliveCommand, aliveCwd, timeZone, nowMs, onLog });
       if (e) entries.push(e);
     }
 
@@ -338,21 +337,19 @@ export function createHeartbeatLoader({
     //    inject" — but an explicit config alive above still loads. No builtin:
     //    the readonly view will show this real command.
     if (!aliveDeclared && aliveMs > 0) {
-      entries.push({ name: 'alive', source: 'config', everyMs: aliveMs, rawFrequency: aliveMs, action: { kind: 'command', command: aliveCommand, cwd: aliveCwd } });
+      entries.push({ name: 'alive', source: NODE_FILE, everyMs: aliveMs, rawFrequency: aliveMs, action: { kind: 'command', command: aliveCommand, cwd: aliveCwd } });
     }
 
-    // 3. Entity entries: every conversation/room folder's config.yaml heartbeats:
-    //    block. Names are namespaced (`<surface>/<slug>:<name>`, `room/<name>:
-    //    <name>`) so they can't collide with node-level names. Tolerant: a
-    //    missing/malformed config yields no entries.
-    let dirs = [];
-    try { dirs = await listEntityDirs(); } catch (e) { onLog(`listEntityDirs: ${e?.message ?? e}`); }
-    for (const { dir, ns } of dirs) {
-      let block = {};
-      try { block = (await readEntityConfig(dir)) ?? {}; } catch { block = {}; }
-      for (const [name, raw] of Object.entries(block)) {
+    // 3. Entity entries: each conversation/room's resolved heartbeats block (its
+    //    conversations.yaml entry, then its own config.yaml — nearest wins WITHIN the
+    //    entity; ACROSS entities and against the node block above it is a UNION, which
+    //    is why this appends rather than replaces). Names are namespaced
+    //    (`<surface>/<slug>:<name>`, `room/<name>:<name>`) so they can't collide with
+    //    node-level names.
+    for (const { dir, ns, heartbeats, heartbeatSource } of set.entities.values()) {
+      for (const [name, raw] of Object.entries(heartbeats)) {
         if (!raw || typeof raw !== 'object') { onLog(`${ns}:${name}: not a heartbeat block — skipped`); continue; }
-        const e = _normalizeEntry({ name: `${ns}:${name}`, source: dir, cwd: dir, raw, isAlive: false, aliveFallbackMs, aliveCommand, aliveCwd, timeZone, nowMs, onLog });
+        const e = _normalizeEntry({ name: `${ns}:${name}`, source: heartbeatSource[name], cwd: dir, raw, isAlive: false, aliveFallbackMs, aliveCommand, aliveCwd, timeZone, nowMs, onLog });
         if (e) entries.push(e);
       }
     }
@@ -409,17 +406,18 @@ export function createHeartbeatLoader({
   // ── hot reload: rebuild the whole set when the readonly file is deleted ────
   async function _reloadCheck() {
     if (_reloading) return;                    // reentrancy guard — a reload in flight blocks another
-    if (existsSync(readonlyPath)) return;      // file present → nothing to do
+    if (!resolver.stale()) return;             // all three aggregates present → nothing to do
     _reloading = true;
     try {
-      onLog('state/heartbeats.readonly.yaml deleted — reloading heartbeats');
-      const { entries, finestMs } = await collect();
+      onLog('a readonly aggregate was deleted — re-scanning every config rung');
+      const { entries, finestMs } = await collect();   // collect() re-runs the resolver's walk
       _registry.clear();   // drop the whole old set — the fresh collect() rebuilds it
       for (const entry of entries) _registerBeat(entry);
       if (finestMs != null && _bootTickMs > 0 && finestMs < _bootTickMs) {
         onLog(`reloaded cadence ${finestMs}ms finer than the boot tick ${_bootTickMs}ms — restart to honor it`);
       }
       await _writeReadonly(entries);
+      await resolver.writeReadonly();   // ALL THREE come back together — one deletion re-scans everything
     } catch (e) {
       onLog(`reload failed: ${e?.message ?? e}`);   // never let a reload error kill the tick
     } finally {
@@ -441,11 +439,11 @@ export function createHeartbeatLoader({
     return {
       ...registry,
       runDue: (now) => {
-        // One existsSync per tick (~30s), cost nil. Missing + no reload in flight →
-        // kick the reentrancy-guarded reload FIRE-AND-FORGET: THIS tick still runs
-        // the OLD set (registry.runDue below); the reload swaps entries so the NEXT
+        // Three existsSync per tick (~30s), cost nil. Any aggregate missing + no reload
+        // in flight → kick the reentrancy-guarded reload FIRE-AND-FORGET: THIS tick still
+        // runs the OLD set (registry.runDue below); the reload swaps entries so the NEXT
         // tick runs the fresh one.
-        if (_activated && !_reloading && !existsSync(readonlyPath)) _reloadCheck();
+        if (_activated && !_reloading && resolver.stale()) _reloadCheck();
         return registry.runDue(now);
       },
     };
@@ -458,6 +456,7 @@ export function createHeartbeatLoader({
     _bootTickMs = tickMs;
     for (const entry of entries) _registerBeat(entry);
     await _writeReadonly(entries);
+    await resolver.writeReadonly();   // the other two aggregates land with this one — all three or the set reads stale
     _activated = true;   // arm the decorated runDue's staleness check (see wrapRegistry)
     return { entries, finestMs: _finestMs(entries) };
   }

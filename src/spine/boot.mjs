@@ -54,7 +54,8 @@ import { createBrains } from './brains.mjs';
 import { createMeshService } from './mesh.mjs';
 import { createCompaction } from './compaction.mjs';
 import { createHeartbeats } from './heartbeats.mjs';
-import { createHeartbeatLoader, parseHeartbeatsBlock } from './heartbeat-loader.mjs';
+import { createHeartbeatLoader } from './heartbeat-loader.mjs';
+import { createConfigResolver, parseEntityConfig } from './config-resolver.mjs';
 import { seedSkeletons } from './seed.mjs';
 
 // STRAY WHISPER-SERVER REAP (operator 2026-07-10): dropping `local` from a
@@ -338,6 +339,47 @@ export async function boot({
   });
   const _writeState = writeState ?? (async (s) => { await writeFile(CONV_YAML_PATH, serializeConvState(s), 'utf8'); });
 
+  // Enumerate the entity folders (conversations/<surface>/<slug>/ + rooms/<name>/).
+  // Rooms live at EGPT_HOME/rooms/<name>/ (Room.named → NamedRoom.baseDir, src/
+  // room-core.mjs); the sibling rooms/config.yaml roster FILE is skipped (dirs
+  // only). Missing dirs are tolerated (a fresh profile has none).
+  //
+  // THIS IS THE WALK — the only one. It feeds the config RESOLVER below, which layers
+  // the three rungs and serves EVERY per-entity reader (heartbeats, warm, transcription);
+  // adding a second enumeration anywhere is the bug this replaced.
+  async function listEntityDirs() {
+    const out = [];
+    const convRoot = join(EGPT_HOME, 'conversations');
+    for (const surface of KNOWN_SURFACES) {
+      let ents = [];
+      try { ents = await readdir(join(convRoot, surface), { withFileTypes: true }); } catch { continue; }
+      for (const ent of ents) if (ent.isDirectory()) out.push({ dir: join(convRoot, surface, ent.name), ns: `${surface}/${ent.name}` });
+    }
+    let rooms = [];
+    try { rooms = await readdir(join(EGPT_HOME, 'rooms'), { withFileTypes: true }); } catch { rooms = []; }
+    for (const ent of rooms) if (ent.isDirectory()) out.push({ dir: join(EGPT_HOME, 'rooms', ent.name), ns: `room/${ent.name}` });
+    return out;
+  }
+  // An entity's WHOLE config.yaml doc — the resolver picks the blocks apart, so this
+  // reads the file ONCE for every concern that used to open it separately (heartbeats,
+  // warm, transcription). Tolerant: absent / unreadable / malformed → {}.
+  const readEntityConfig = async (dir) => {
+    try { return parseEntityConfig(await readFile(join(dir, 'config.yaml'), 'utf8')); }
+    catch { return {}; }
+  };
+
+  // THE config resolver — ONE namespace, THREE rungs, nearest the room wins
+  // (config/config.yaml < config/conversations.yaml < <entity>/config.yaml). It owns the
+  // walk above and holds the resolved set in memory; warm (brainpool), transcription and
+  // the heartbeat loader all read IT instead of each opening <entity>/config.yaml. Wired
+  // here, before the loader, because the loader's collect() drives its scan.
+  const configResolver = createConfigResolver({
+    getConfig, loadRegistry: _loadState, listEntityDirs, readEntityConfig,
+    egptHome: EGPT_HOME, io: { writeFile, mkdir },
+    onLog: (m) => log.line?.(`[config] ${m}`),
+  });
+
+
   // The ONE shared contact-resolver: every service that needs a chat's slug goes
   // through here, so the pushedName refresh + rename self-heal (move the slug dir
   // old→new + write renames.log) run for KNOWN chats too, not just new ones.
@@ -358,7 +400,7 @@ export async function boot({
   // Voice/video transcription: the fallback CHAIN (remote node → local whisper-
   // server → cli), driven by config.transcription_service. One transcriber feeds
   // the bridge (voice notes) and the media service (a video's audio).
-  const tx = createTranscription({ getConfig, onLog: (m) => log.line?.(`[transcribe] ${m}`) });
+  const tx = createTranscription({ getConfig, resolveConfig: configResolver.configFor, onLog: (m) => log.line?.(`[transcribe] ${m}`) });
 
   // Reap a stray resident whisper-server this node no longer runs (operator 2026-07-10):
   // when `local` was dropped from the active profile's fallback_order, the old chain's
@@ -715,7 +757,7 @@ export async function boot({
   // Auto-compaction: keep each conversation's warm session thin (native /compact a
   // cooling period after the last reply, once it's over ratio of the window).
   const compaction = createCompaction({ pool, getConfig, onLog: (m) => log.line?.(`[compact] ${m}`) });
-  const brain = createBrainPool({ pool, getConfig, contacts, loadState: _loadState, writeState: _writeState, brains, defaultKey, nodeIdentity, afterTurn: compaction.afterTurn, io, onLog: (m) => log.line?.(`[brain] ${m}`) });
+  const brain = createBrainPool({ pool, getConfig, contacts, loadState: _loadState, writeState: _writeState, brains, defaultKey, nodeIdentity, afterTurn: compaction.afterTurn, resolveConfig: configResolver.configFor, io, onLog: (m) => log.line?.(`[brain] ${m}`) });
 
   // operator slash commands (Self DM / authorized) — lifecycle wired now; reuses
   // the same exit codes the daemon respawns on. Constructed BEFORE the mesh: a
@@ -777,36 +819,14 @@ export async function boot({
   const actions = createReplyActions({ bridge, bodyEmojiOf, labelOf, resolveConvDir, askAdvice: (a) => advice.ask(a), defaultKey, onLog: (m) => log.line?.(`[actions] ${m}`) });
 
   // Heartbeats are DECLARATIVE now (operator 2026-07-01): the loader collects
-  // them from the node config.heartbeats block + every conversation/room folder's
-  // config.yaml heartbeats: block, materializes state/heartbeats.readonly.yaml,
+  // them from the node config.heartbeats block + every conversation/room entity's
+  // own heartbeats: block, materializes heartbeats.readonly.yaml,
   // and registers each onto services.heartbeats. The alive-file writer is no
   // longer special-cased here — it is the loader's default `alive` command
   // (echo beat > state/alive.txt), visible in the readonly view like any other.
   //
-  // Enumerate the entity folders (conversations/<surface>/<slug>/ + rooms/<name>/).
-  // Rooms live at EGPT_HOME/rooms/<name>/ (Room.named → NamedRoom.baseDir, src/
-  // room-core.mjs); the sibling rooms/config.yaml roster FILE is skipped (dirs
-  // only). Missing dirs are tolerated (a fresh profile has none).
-  async function listEntityDirs() {
-    const out = [];
-    const convRoot = join(EGPT_HOME, 'conversations');
-    for (const surface of KNOWN_SURFACES) {
-      let ents = [];
-      try { ents = await readdir(join(convRoot, surface), { withFileTypes: true }); } catch { continue; }
-      for (const ent of ents) if (ent.isDirectory()) out.push({ dir: join(convRoot, surface, ent.name), ns: `${surface}/${ent.name}` });
-    }
-    let rooms = [];
-    try { rooms = await readdir(join(EGPT_HOME, 'rooms'), { withFileTypes: true }); } catch { rooms = []; }
-    for (const ent of rooms) if (ent.isDirectory()) out.push({ dir: join(EGPT_HOME, 'rooms', ent.name), ns: `room/${ent.name}` });
-    return out;
-  }
-  const readEntityConfig = async (dir) => {
-    try { return parseHeartbeatsBlock(await readFile(join(dir, 'config.yaml'), 'utf8')); }
-    catch { return {}; }
-  };
-
   // The default alive beat is a shell one-liner, visible in config and in
-  // state/heartbeats.readonly.yaml: `echo beat > state/alive.txt`. Liveness is the
+  // heartbeats.readonly.yaml: `echo beat > state/alive.txt`. Liveness is the
   // file's MTIME (any command that writes it is a valid beat; the "beat" content
   // is freeform, for humans), so the old parsed-line contract + the 82-line script
   // are gone. The loader runs it with cwd = EGPT_HOME so the relative state/ lands
@@ -814,8 +834,7 @@ export async function boot({
   const aliveCommand = 'echo beat > state/alive.txt';
 
   const heartbeatLoader = createHeartbeatLoader({
-    getConfig, aliveMs, aliveCommand, now,
-    listEntityDirs, readEntityConfig,
+    resolver: configResolver, aliveMs, aliveCommand, now,
     // Command beats inherit process.env + EGPT_HOME + the queue-stats vars (the
     // loader adds those). The spine pid is no longer an env var — identity lives in
     // state/spine.pid now, and liveness is the alive.txt mtime, so a custom beat
@@ -827,8 +846,8 @@ export async function boot({
 
   // Decorate the real registry into the heartbeats object the spine ticks. The
   // decoration puts the hot-reload TRIGGER on runDue itself: when the loop consults
-  // the in-memory heartbeat set, it first checks whether state/heartbeats.readonly
-  // .yaml is present — its ABSENCE means that set is stale (operator 2026-07-02:
+  // the in-memory heartbeat set, it first asks the resolver whether any of the three
+  // *.readonly.yaml aggregates is missing — an ABSENCE means that set is stale (operator 2026-07-02:
   // "if the file is not present, the in-memory heartbeat is stale, so regenerate the
   // readonly file and load it into memory"). The check belongs to CONSULTING the
   // set, not to a beat listed inside it. Wired here (before createSpine) but inert

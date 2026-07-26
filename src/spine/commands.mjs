@@ -27,6 +27,9 @@ import { Room } from '../room-core.mjs';
 import { sanitizeName } from '../sanitize.mjs';
 import { loadAdapters as defaultLoadAdapters, matchAdapter } from '../adapters/registry.mjs';
 import { agentPaths } from '../mesh/relay.mjs';
+import { compactionTargets, dueForCompaction, windowForModel } from '../tools/compact-being.mjs';
+import { compactionRatio } from './compaction.mjs';
+import { NODE_FILE, REGISTRY_FILE } from './config-resolver.mjs';
 import { isRunning as cdpIsRunning, listTabs as cdpListTabs, cdpHost as cdpHostOf, openTab as cdpOpenTab, activateTarget as cdpActivateTarget, closeTab as cdpCloseTab } from '../tools/cdp.mjs';
 import { findChromeExecutable, chromeArgs, chromeCommandLine, resolveBrainProfile } from '../tools/chrome-launcher.mjs';
 
@@ -88,7 +91,8 @@ const identityLayerFile = (text) => `${String(text).trim()}\n`;
 // not per-room copies. Members are later work — no roster block yet.
 const roomConfigFile = (name) => `# room ${name} — an operator-created NamedRoom (the folder IS the room).
 # Feed layers come from the shared config/skeletons/room/ template, not per-room copies.
-# Add heartbeats:, transcription:, or members: blocks here to wire behavior.
+# Add heartbeats:, transcription_service:, or members: blocks here to wire behavior.
+# This file is the NEAREST rung: it beats config/config.yaml for any key it sets.
 `;
 
 // The friendly member-mode words (the command surface) ↔ the existing room-core state
@@ -320,6 +324,10 @@ export function createCommands({
   // never touches a real pool or socket.
   warmStats = () => null,
   shellConnected = () => false,
+  // The per-target compaction probe (src/tools/compact-being.mjs dueForCompaction) —
+  // imported, never re-derived, and injected so a test never reads ~/.claude/projects.
+  // /status is the only READER: the compacting itself lives in src/spine/compaction.mjs.
+  dueFor = dueForCompaction,
   onLog = () => {},
 } = {}) {
   const cfg = () => getConfig() ?? {};
@@ -1050,10 +1058,11 @@ export function createCommands({
       beat = `${Math.max(0, Math.round((Date.now() - s.mtimeMs) / 1000))}s`;
     } catch { beat = '?'; }
 
-    // Heartbeat count = entries in the spine-written readonly view (tolerate absence).
+    // Heartbeat count = entries in the spine-written aggregate. It lives at the PROFILE
+    // ROOT now, beside the other two (operator 2026-07-26: "state/ hides too much").
     let hb = '?';
     try {
-      const doc = YAML.parse(await readFile(join(EGPT_HOME, 'state', 'heartbeats.readonly.yaml'), 'utf8'));
+      const doc = YAML.parse(await readFile(join(EGPT_HOME, 'heartbeats.readonly.yaml'), 'utf8'));
       if (Array.isArray(doc?.heartbeats)) hb = String(doc.heartbeats.length);
     } catch { hb = '?'; }
 
@@ -1088,8 +1097,15 @@ export function createCommands({
       `beat: ${beat} ago`,
       `heartbeats: ${hb}`,
       `conversations: ${convs}`,
+      // RUNG ATTRIBUTION (operator 2026-07-26). Every value the config resolver hands out
+      // carries `source:` — the profile-relative file it was read from — and /status
+      // already filtered on it without ever SHOWING it. Bare /status is the node report:
+      // essentially every field below is the node rung, so it says so ONCE here rather
+      // than suffixing twenty lines. `/status <fragment>` attributes per conversation,
+      // where the answer actually varies by rung.
+      `config: ${NODE_FILE}`,
     ];
-    if (mode) lines.push(`mode: ${mode}`);
+    if (mode) lines.push(`mode: ${mode} (${REGISTRY_FILE})`);
     // Registry + OBSERVABILITY only (never acted on) — name + account, NEVER the token.
     const beeperNames = Object.keys(beeperAccounts);
     if (beeperNames.length) {
@@ -1183,10 +1199,48 @@ export function createCommands({
       }
     } catch { lines.push('chrome: off'); }
 
-    // warm — the warm-session pool's size/max (boot wires pool.stats()). null/throw → omit.
+    // warm — THE ACTIVE THREADS KEPT WARM (operator 2026-07-26: "must show active threads
+    // kept warm, info about them, size from total"). pool.stats() already exposed
+    // { size, max, keys }; this shows the roster instead of just the count.
+    //
+    // `size/max` is the headline because it is the thing that is easy not to know: max
+    // defaults to 6 (src/warm-sessions.mjs) and the live config leaves it unset, so with
+    // ~100 conversations in the registry the pool LRU-evicts constantly. Per entry:
+    // the warm key (it already encodes <being>:<engine>:<surface>:<slug>), the live
+    // context size, and what that size is OUT OF — the compaction threshold the SPINE
+    // applies (src/spine/compaction.mjs compactionRatio, not compact-being's own 0.25
+    // default parameter). This is a VIEW: nothing here evicts, compacts, or re-keys.
+    //
+    // The sessionId behind a key is not in the key, so it comes from compactionTargets —
+    // whose whole contract is that its keys MATCH the warm-pool keys. A key with no
+    // target (or no measurable session) still LISTS, marked, rather than vanishing.
     try {
       const s = warmStats();
-      if (s && typeof s.size === 'number' && typeof s.max === 'number') lines.push(`warm: ${s.size}/${s.max}`);
+      if (s && typeof s.size === 'number' && typeof s.max === 'number') {
+        lines.push(`warm: ${s.size}/${s.max}`);
+        const keys = Array.isArray(s.keys) ? s.keys : [];
+        if (keys.length) {
+          let targets = [];
+          try {
+            const st = loadState ? await loadState() : null;
+            targets = compactionTargets({ config: cfg(), convState: st ?? {}, slugDir });
+          } catch { targets = []; }
+          const byKey = new Map(targets.map((t) => [t.key, t]));
+          const ratio = compactionRatio(cfg());
+          for (const key of keys) {
+            const t = byKey.get(key);
+            let detail = 'no session';
+            if (t) {
+              try {
+                const { tokens, threshold } = dueFor(t, { ratio });
+                const limit = threshold ?? Math.round((t.window || windowForModel(t.model)) * ratio);
+                detail = tokens == null ? 'no session file' : `${tokens}/${limit} tok (${Math.round((tokens / limit) * 100)}% of compact)`;
+              } catch { detail = '?'; }
+            }
+            lines.push(`  ${key}: ${detail}`);
+          }
+        }
+      }
     } catch { /* omit */ }
 
     // shell — whether the operator's editor is dialed into the shell-port limb.
@@ -1304,9 +1358,27 @@ export function createCommands({
     // omitted when the readonly view is absent (matches bare /status's optional `mode`).
     let hb = null;
     try {
-      const doc = YAML.parse(await readFile(join(EGPT_HOME, 'state', 'heartbeats.readonly.yaml'), 'utf8'));
-      if (Array.isArray(doc?.heartbeats) && convDir) hb = doc.heartbeats.filter((h) => h?.source === convDir || h?.cwd === convDir).length;
+      const doc = YAML.parse(await readFile(join(EGPT_HOME, 'heartbeats.readonly.yaml'), 'utf8'));
+      // `source` is the profile-relative RUNG FILE now, so the match is on `cwd` (the
+      // entity folder, which is what an entity beat runs in).
+      if (Array.isArray(doc?.heartbeats) && convDir) hb = doc.heartbeats.filter((h) => h?.cwd === convDir).length;
     } catch { hb = null; }
+
+    // THREAD SIZE (operator 2026-07-26): the live context size of this thread and the
+    // threshold it is compacted at. Both come from compact-being — latestContextTokens via
+    // dueForCompaction — never re-derived here, and the ratio is the one the SPINE applies.
+    // Omitted entirely when no thread has started: there is nothing to measure, and a
+    // fabricated 0 would read as "empty" rather than "not yet".
+    let context = null;
+    if (b?.threadId) {
+      try {
+        const model = b.model ?? cfg().default_brain?.model ?? 'haiku';
+        const ratio = compactionRatio(cfg());
+        const { tokens, threshold } = dueFor({ sessionId: b.threadId, model, window: windowForModel(model) }, { ratio });
+        const limit = threshold ?? Math.round(windowForModel(model) * ratio);
+        if (tokens != null) context = `${tokens}/${limit} tok (compact at ${Math.round(ratio * 100)}% of ${windowForModel(model)})`;
+      } catch { context = null; }
+    }
 
     // Uninstanced fields fall back to the default preview computed above; instanced
     // fields are the exact expressions this rendered before (regression-lock: an
@@ -1334,9 +1406,22 @@ export function createCommands({
       `allowed_tools: ${toolsVal}`,
       `personality: ${personality}`,
       `thread_id: ${b?.threadId ?? 'not started'}`,
+      ...(context ? [`context: ${context}`] : []),
       `members: ${members}`,
     ];
     if (hb != null) lines.push(`heartbeats: ${hb}`);
+    // RUNG ATTRIBUTION (operator 2026-07-26). This is the CONVERSATION report, so it names
+    // the three files that could have supplied any value above, nearest last — the order
+    // src/spine/config-resolver.mjs layers them in. ~/.egpt/conversations.readonly.yaml is
+    // where the per-value answer lives; a fenced ops line points at it rather than
+    // reprinting it.
+    lines.push(
+      'config_rungs:',
+      `  1: ${NODE_FILE}`,
+      `  2: ${REGISTRY_FILE}`,
+      `  3: ${convPath ? `${String(convPath).replace(/\/?$/, '/')}config.yaml` : '?'}`,
+      '  resolved: conversations.readonly.yaml',
+    );
     return '```yaml\n' + lines.join('\n') + '\n```';
   }
 

@@ -155,13 +155,11 @@ describe('ensureContact — surface-aware, new contact, multi-JID merge', () => 
     expect(r2.entry.pushedName).toBe('Diego Pérez (Koma)');
     // slug tracks the current name (keeps the firstSeen suffix). A rename does NOT
     // reset the thread (operator ruling: a rename is the SAME conversation under a
-    // new name) — this contact never had a thread, so there's nothing to preserve;
-    // the flat threadId:null below is inherited from contact CREATION (a separate,
-    // still-live dead write outside this task's scope), not written by the rename
-    // branch, which no longer touches threadId at all.
+    // new name), and there is no FLAT threadId slot to reset either way — creation
+    // stopped minting it (2026-07-26); a thread lives in `entry[<being>].threadId`.
     expect(r2.renamedFrom).toBe(r1.slug);
     expect(r2.slug).toBe(`Diego Pérez (Koma)-${suffix}`);
-    expect(r2.state.contacts[WA]['26087681749235@lid'].threadId).toBe(null);
+    expect(r2.state.contacts[WA]['26087681749235@lid']).not.toHaveProperty('threadId');
   });
 
   it('falls back to a contact-<timestamp> slug when no slugHint or pushedName', () => {

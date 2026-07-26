@@ -9,6 +9,12 @@
 # conversation: reply mode, thread, guard). See config/skeletons/conversations
 # .yaml. Here: the conversation as a room. There: which agent replies and how.
 #
+# ONE NAMESPACE, THREE RUNGS - nearest the room wins:
+#   config/config.yaml < config/conversations.yaml (the entry) < THIS file.
+# Any key may appear at any rung; the split between the two top files is filing,
+# not schema. The spine dumps what it resolved, with the file each value came
+# from, to ~/.egpt/conversations.readonly.yaml.
+#
 # COMMENTS ARE SAFE HERE. The spine only ever writes `members:`, and it edits
 # through the YAML Document API (Room._setConfigBlock, src/room-core.mjs), so
 # your blocks and comments survive. The registry is the opposite - annotate
@@ -30,25 +36,32 @@
 
 
 # How long this conversation's session stays hot before idle-eviction.
-# ms number or <qty><unit> (ms|s|m|h); 0 = always warm. Absent = the class TTL.
+# ms number or <qty><unit> (ms|s|m|h); 0 = always warm. Absent = the rung above,
+# then the class TTL.
 #warm:
 #  idle_ttl: 30m
 
 
-# Voice notes here. Both default true; only an explicit false turns one off.
-#   enabled     transcribe at all (HEARD - model + transcript.md get the text)
-#   posts_back  also echo the 👂 transcript into the chat (SPOKEN)
-# For CONVERSATIONS the echo delay and hard mute moved to the registry entry's
-# posts_back_delay_ms, which wins when set; rooms still use this block alone.
-#transcription:
+# Voice notes here. ONE key for the whole concern - engines, paths and the
+# post-back variables all live under transcription_service:, at whichever rung
+# you put them (node config.yaml, the registry entry, or here). Flags default
+# true; only an explicit false turns one off.
+#   enabled              transcribe at all (HEARD - model + transcript.md get it)
+#   posts_back           also echo the 👂 transcript into the chat (SPOKEN)
+#   posts_back_delay_ms  trailing debounce before the echo; negative = never
+#                        echo (still HEARD, never SPOKEN); 0 = echo immediately
+#transcription_service:
 #  enabled: true
 #  posts_back: true
+#  posts_back_delay_ms: 8000
 
 
 # Beats scoped to this conversation. One trigger (when: | frequency:) and one
 # action (ai_run: | command:) each. Time formats + zones, and the full
 # reference: config/skeletons/heartbeats.yaml
-# Hot reload: delete state/heartbeats.readonly.yaml, re-read within ~30s.
+# heartbeats is the one block that UNIONS across rungs: declaring one here adds
+# to the node's, it never replaces them.
+# Hot reload: delete any ~/.egpt/*.readonly.yaml, re-read within ~30s.
 #heartbeats:
 #  daily-sweep:
 #    frequency: 24h

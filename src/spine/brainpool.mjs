@@ -88,19 +88,20 @@ function confinementFor(def, cwd, onLog) {
   return { confineToDirs: [cwd], ...(addDirs.length ? { addDirs } : {}), ...(readOnlyDirs.length ? { readOnlyDirs } : {}) };
 }
 
-// Pure: a conversation folder's config.yaml text (or null/'' when absent) →
-// { idleTtlMs }. The `warm: { idle_ttl }` override (operator 2026-07-02) sets THIS
-// conversation's warm idle TTL, beating the class TTL: a ms number or a
-// "<qty><unit>" duration (ms/s/m/h), with `0` = keep this conversation always warm
-// (never idle-evict). Absent block / malformed YAML / unparseable value → null (the
+// Pure: a conversation's RESOLVED config doc → { idleTtlMs }. The `warm: { idle_ttl }`
+// override (operator 2026-07-02) sets THIS conversation's warm idle TTL, beating the class
+// TTL: a ms number or a "<qty><unit>" duration (ms/s/m/h), with `0` = keep this
+// conversation always warm (never idle-evict). Absent block / unparseable value → null (the
 // conversation falls through to the class TTL). Reuses heartbeat-loader's
 // parseFrequency for the duration grammar, but parseFrequency rejects 0/negative,
 // so 0 is accepted here explicitly BEFORE delegating (0 is a valid value, not garbage).
-export function parseWarmBlock(yamlText) {
-  let doc = {};
-  if (yamlText && yamlText.trim()) {
-    try { doc = YAML.parse(yamlText) ?? {}; } catch { doc = {}; }
-  }
+//
+// It takes a DOC, not config.yaml text: `warm:` is one rung-resolved block of the ONE
+// namespace now (config/config.yaml < config/conversations.yaml < <conv>/config.yaml), and
+// the config resolver hands the merged doc over. A node-wide `warm: { idle_ttl }` therefore
+// finally reaches conversations that declare none — it never did while this opened the
+// folder file by itself.
+export function parseWarmBlock(doc) {
   const w = (doc && typeof doc === 'object' && doc.warm && typeof doc.warm === 'object' && !Array.isArray(doc.warm))
     ? doc.warm : {};
   const v = w.idle_ttl;
@@ -132,6 +133,7 @@ export function createBrainPool({
   io = {},
   isOverflow = isContextOverflowError,
   isDeadSession = isDeadSessionError,
+  resolveConfig = () => ({}),       // (convDir) -> that conversation's RESOLVED config doc (src/spine/config-resolver.mjs configFor). ONE namespace, three rungs; boot injects the live resolver, tests a canned doc.
   loadFeed = readIdentityFeed,      // (personality) -> identities/<name>/ feed string
   seedLayers = seedIdentityLayers,  // (surface, slug, personality, {io}) -> copy the fed layers into <conv>/identity.d
   loadAutoLayer = readAutoModeLayer,// () -> the `mode: auto` operator-role instruction layer (appended to an auto conversation's kickoff)
@@ -163,12 +165,10 @@ export function createBrainPool({
     if (autoDelivered.size > 1000) autoDelivered.delete(autoDelivered.values().next().value);
   }
 
-  // Best-effort read of a conversation folder's config.yaml warm override (never
-  // throws): absent / unreadable / malformed → null → the class TTL applies.
-  async function readWarmTtl(convDir) {
-    let text = null;
-    try { text = await readFile(join(convDir, 'config.yaml'), 'utf8'); } catch { /* none = no override */ }
-    return parseWarmBlock(text).idleTtlMs;
+  // This conversation's warm idle TTL, from the RESOLVED config (the resolver's in-memory
+  // set — no file read here any more). Absent block / unparseable → null → class TTL.
+  function readWarmTtl(convDir) {
+    return parseWarmBlock(resolveConfig(convDir)).idleTtlMs;
   }
 
   // chatId → { slug, sessionId, brain }. The shared resolver registers the
@@ -438,13 +438,13 @@ export function createBrainPool({
 
       // Per-conversation warm-idle override (operator 2026-07-02): this
       // conversation's own config.yaml `warm: { idle_ttl }` overrides the class TTL
-      // (0 = keep it always warm). Read per turn — the file is tiny and a turn
-      // already does heavier IO — and re-stamped on the warm entry every run so an
-      // edited config takes effect next turn. Applied to BOTH the normal turn and
+      // (0 = keep it always warm). Read per turn from the resolver's in-memory set and
+      // re-stamped on the warm entry every run, so a rung edited since the last reload
+      // takes effect on the next turn. Applied to BOTH the normal turn and
       // the overflow retry below. (compaction.afterTurn's own pool.run reuses this
       // same warm entry but OMITS idleTtlMs, so it keeps the ttl stamped here — no
       // need to thread the override through it.)
-      const idleTtlMs = await readWarmTtl(convDir);
+      const idleTtlMs = readWarmTtl(convDir);
       const run = (msg, opts) => pool.run(key, msg, onPartial, { brainOptions: opts, klass: 'conversation', idleTtlMs });
 
       let r, overflow = false, deadSession = false;

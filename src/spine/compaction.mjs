@@ -13,7 +13,19 @@
 import { dueForCompaction, windowForModel } from '../tools/compact-being.mjs';
 
 const DEFAULT_COOLING_MS = 120_000;   // 2 min of quiet after the last reply
-const DEFAULT_RATIO = 0.20;           // compact at 20% of the model window (operator 2026-06-30)
+export const DEFAULT_RATIO = 0.20;    // compact at 20% of the model window (operator 2026-06-30)
+
+/**
+ * THE compaction ratio the spine applies: `compaction.ratio` from config, else 0.20.
+ * ONE owner, because there are two numbers in the tree and only this one is real —
+ * compact-being.mjs also carries a COMPACT_RATIO of 0.25, but it is only that module's
+ * default PARAMETER, used when a caller passes no ratio. The spine always passes this one,
+ * so 0.25 reaches nothing but `node src/tools/compact-being.mjs`'s read-only printout.
+ * /status reports what the spine applies, so it calls this rather than re-deriving it.
+ */
+export function compactionRatio(config) {
+  return Number(config?.compaction?.ratio ?? DEFAULT_RATIO) || DEFAULT_RATIO;
+}
 
 export function createCompaction({
   pool,
@@ -24,7 +36,7 @@ export function createCompaction({
 } = {}) {
   const cfg = () => getConfig()?.compaction ?? {};
   const pending = new Map();          // warm key -> timer handle
-  const ratio = () => Number(cfg().ratio ?? DEFAULT_RATIO) || DEFAULT_RATIO;
+  const ratio = () => compactionRatio(getConfig());
   const coolingMs = () => Number(cfg().cooling_ms ?? DEFAULT_COOLING_MS) || DEFAULT_COOLING_MS;
   const windowOf = (model) => Number(cfg().context_window) || windowForModel(model);
 

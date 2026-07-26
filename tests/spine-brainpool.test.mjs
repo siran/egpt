@@ -25,7 +25,7 @@ function fakePool(scriptedResults) {
 
 const ev = { surface: 'whatsapp', chatId: '!room:beeper.com', chatName: 'SPOILER', line: 'An@[SPOILER].wa (14:05) #m1: hola', body: 'hola' };
 
-function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, loadFeed, loadManifest, loadAutoLayer, seedSession, seedMode, seedReadonly, seedAgents, brains, afterTurn, io, nodeIdentity, seedLayers } = {}) {
+function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, loadFeed, loadManifest, loadAutoLayer, seedSession, seedMode, seedReadonly, seedAgents, brains, afterTurn, io, nodeIdentity, seedLayers, resolveConfig } = {}) {
   let state = emptyState();
   if (seedSession || seedMode || seedReadonly || seedAgents) {   // pre-register the contact (WITH a stored thread, an E mode, a freeze and/or an operator pin)
     const ens = ensureContact(state, ev.surface, ev.chatId, { pushedName: ev.chatName, slugHint: ev.chatName });
@@ -52,9 +52,12 @@ function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, load
     contacts: createContacts({ loadState, writeState, io: { mkdir: async () => {} } }),
     loadState,
     writeState,
-    // don't touch disk; readFile → "no config.yaml" (no warm override); writeFile is a no-op so
-    // the stats.yaml thread-mirror stays in-memory (never writes into a real profile folder)
+    // don't touch disk; writeFile is a no-op so the stats.yaml thread-mirror stays
+    // in-memory (never writes into a real profile folder)
     io: io ?? { mkdir: async () => {}, readFile: async () => null, writeFile: async () => {} },
+    // the config RESOLVER's per-entity lookup — default: nothing resolved anywhere, so no
+    // warm override (the class TTL applies)
+    resolveConfig: resolveConfig ?? (() => ({})),
     loadFeed: loadFeed ?? (async () => ''),        // default: no folder feed
     loadManifest: loadManifest ?? (async () => ''),// default: no manifest → raw line (focus on warm logic)
     ...(nodeIdentity != null ? { nodeIdentity } : {}),   // persona node-identity addendum (operator 2026-07-10)
@@ -358,12 +361,14 @@ describe('brainpool.turn', () => {
   });
 
   // --- per-conversation warm idle_ttl override (operator 2026-07-02) ---
-  it('passes the conversation folder warm idle_ttl override to pool.run (normal + overflow retry)', async () => {
-    const yaml = 'warm:\n  idle_ttl: 5m\n';
+  // The value comes from the RESOLVED config now (src/spine/config-resolver.mjs configFor,
+  // injected as resolveConfig) — node config.yaml < the conversations.yaml entry < the
+  // conversation's own folder — not from brainpool opening the folder file itself.
+  it('passes the resolved warm idle_ttl override to pool.run (normal + overflow retry)', async () => {
     const { brain, pool } = harness([
       () => Promise.reject(new Error('claude: error_during_execution\n  Prompt is too long')),
       { text: 'fresh ok', sessionId: 'sid-2' },
-    ], { seedSession: 'huge', io: { mkdir: async () => {}, readFile: async () => yaml, writeFile: async () => {} } });
+    ], { seedSession: 'huge', resolveConfig: () => ({ warm: { idle_ttl: '5m' } }) });
     const out = await brain.turn('e', ev);
     expect(out.text).toBe('fresh ok');
     expect(pool.calls).toHaveLength(2);
@@ -371,8 +376,8 @@ describe('brainpool.turn', () => {
     expect(pool.calls[1].idleTtlMs).toBe(300000);   // AND the overflow-retry path
   });
 
-  it('no config.yaml → idleTtlMs null (class TTL applies)', async () => {
-    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }]);   // default io: readFile → null
+  it('no warm block at any rung → idleTtlMs null (class TTL applies)', async () => {
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }]);   // default resolveConfig → {}
     await brain.turn('e', ev);
     expect(pool.calls[0].idleTtlMs).toBe(null);
   });
@@ -644,22 +649,24 @@ describe('brainpool.turn — the fresh moment', () => {
   });
 });
 
+// parseWarmBlock takes the RESOLVED doc, not config.yaml text — `warm:` is one
+// rung-resolved block of the one namespace, and the resolver already did the parsing.
 describe('parseWarmBlock', () => {
-  it('absent block / malformed / garbage → null', () => {
-    expect(parseWarmBlock('').idleTtlMs).toBe(null);
+  it('absent block / wrong shape / garbage value → null', () => {
+    expect(parseWarmBlock({}).idleTtlMs).toBe(null);
     expect(parseWarmBlock(null).idleTtlMs).toBe(null);
-    expect(parseWarmBlock('foo: bar').idleTtlMs).toBe(null);          // no warm block
-    expect(parseWarmBlock('warm: not-a-map').idleTtlMs).toBe(null);   // warm not an object
-    expect(parseWarmBlock('warm:\n  idle_ttl: nonsense').idleTtlMs).toBe(null);   // unparseable value
-    expect(parseWarmBlock('warm:\n  idle_ttl: -5').idleTtlMs).toBe(null);         // negative → null
-    expect(parseWarmBlock(': : bad yaml :').idleTtlMs).toBe(null);    // malformed YAML
+    expect(parseWarmBlock({ foo: 'bar' }).idleTtlMs).toBe(null);            // no warm block
+    expect(parseWarmBlock({ warm: 'not-a-map' }).idleTtlMs).toBe(null);     // warm not an object
+    expect(parseWarmBlock({ warm: [1] }).idleTtlMs).toBe(null);             // a list is not a block
+    expect(parseWarmBlock({ warm: { idle_ttl: 'nonsense' } }).idleTtlMs).toBe(null);   // unparseable value
+    expect(parseWarmBlock({ warm: { idle_ttl: -5 } }).idleTtlMs).toBe(null);           // negative → null
   });
   it('duration string → ms via parseFrequency', () => {
-    expect(parseWarmBlock('warm:\n  idle_ttl: 1h').idleTtlMs).toBe(3_600_000);
-    expect(parseWarmBlock('warm:\n  idle_ttl: 5m').idleTtlMs).toBe(300_000);
-    expect(parseWarmBlock('warm:\n  idle_ttl: 900000').idleTtlMs).toBe(900_000);   // bare ms number
+    expect(parseWarmBlock({ warm: { idle_ttl: '1h' } }).idleTtlMs).toBe(3_600_000);
+    expect(parseWarmBlock({ warm: { idle_ttl: '5m' } }).idleTtlMs).toBe(300_000);
+    expect(parseWarmBlock({ warm: { idle_ttl: 900000 } }).idleTtlMs).toBe(900_000);   // bare ms number
   });
   it('idle_ttl: 0 → 0 (never evict — accepted despite parseFrequency rejecting 0)', () => {
-    expect(parseWarmBlock('warm:\n  idle_ttl: 0').idleTtlMs).toBe(0);
+    expect(parseWarmBlock({ warm: { idle_ttl: 0 } }).idleTtlMs).toBe(0);
   });
 });

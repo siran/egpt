@@ -5,18 +5,18 @@
 // another agent — avoid the same-file race.)
 import { describe, it, expect } from 'vitest';
 import { createCommands } from '../src/spine/commands.mjs';
-import { emptyState, ensureContact, patchContact, recordThread, slugDir } from '../src/conversations-state.mjs';
+import { emptyState, ensureContact, patchContact, recordThread, slugDir, getContact } from '../src/conversations-state.mjs';
 
 // A readonly.yaml with two heartbeat entries (the shape heartbeat-loader writes).
 const READONLY_YAML = `heartbeats:
   - name: alive
-    source: config
+    source: config/config.yaml
     frequency: 60s
     frequency_ms: 60000
     action: 'command: echo beat > state/alive.txt'
     cwd: /home/x/.egpt2
   - name: whatsapp/fam:daily
-    source: /home/x/.egpt2/conversations/whatsapp/fam
+    source: conversations/whatsapp/fam/config.yaml
     frequency: 1h
     frequency_ms: 3600000
     action: 'command: node summarize.js'
@@ -36,7 +36,7 @@ function threeContacts() {
 // cdp defaults to an always-down fake — bare /status now probes cdp.isRunning() for
 // its `chrome:` field, and a test that doesn't care about Chrome must never hit the
 // real localhost CDP port. Tests targeting the chrome field override this.
-function harness({ io, gitOut, loadState, brains, getConfig, onLog, cdp, warmStats, shellConnected } = {}) {
+function harness({ io, gitOut, loadState, brains, getConfig, onLog, cdp, warmStats, shellConnected, dueFor } = {}) {
   const sent = [];
   const cmds = createCommands({
     getConfig: getConfig ?? (() => ({ whatsapp: { chat_id: '!self' } })),
@@ -50,6 +50,8 @@ function harness({ io, gitOut, loadState, brains, getConfig, onLog, cdp, warmSta
     cdp: cdp ?? { isRunning: async () => false },
     ...(warmStats ? { warmStats } : {}),
     ...(shellConnected ? { shellConnected } : {}),
+    // the compaction probe reads ~/.claude/projects for real — always fake it here
+    dueFor: dueFor ?? (() => ({ due: false })),
   });
   return { cmds, sent };
 }
@@ -293,7 +295,10 @@ describe('/status <target>', () => {
     expect(sent[0].text).toMatch(/allowed_tools: all/);
   });
 
-  it('this conversation\'s own heartbeat count is included when trivially available (source pinned to its convDir)', async () => {
+  // `source` is the profile-relative RUNG FILE now (operator ruling 2026-07-26 — every
+  // resolved chunk names the file it was read from), so the entity match is on `cwd`,
+  // which is the entity folder a beat runs in.
+  it('this conversation\'s own heartbeat count is included when trivially available (cwd pinned to its convDir)', async () => {
     const first = ensureContact(emptyState(), 'whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' });
     const convDir = slugDir('whatsapp', first.slug);
     const { cmds, sent } = harness({
@@ -301,7 +306,7 @@ describe('/status <target>', () => {
       io: {
         readFile: readFileBySuffix({
           'transcript.md': NO_TRANSCRIPT,
-          'heartbeats.readonly.yaml': `heartbeats:\n  - name: whatsapp/hfm:daily\n    source: ${JSON.stringify(convDir)}\n`,
+          'heartbeats.readonly.yaml': `heartbeats:\n  - name: whatsapp/hfm:daily\n    source: conversations/whatsapp/hfm/config.yaml\n    cwd: ${JSON.stringify(convDir)}\n`,
         }),
       },
     });
@@ -779,5 +784,114 @@ describe('/status <node> — node-first gate', () => {
     expect(sent[0].text).toContain(`pid: ${process.pid}`);
     expect(sent[0].text).toMatch(/node_name: kg/);
     expect(sent[0].text).toMatch(/peers: \[kg, do\]/);
+  });
+});
+
+// ── /status GAINS PROVENANCE + THREAD SIZE + THE WARM VIEW (operator 2026-07-26) ────
+// Three additions, one command:
+//  1. RUNG ATTRIBUTION. Every value the config resolver hands out carries `source:` (the
+//     profile-relative file it was read from). /status filtered on it and never showed it.
+//  2. THREAD SIZE. "show the live context size of the thread and its compaction threshold".
+//  3. THE WARM POOL. "must show active threads kept warm, info about them, size from total".
+describe('/status — rung attribution, thread size, and the warm pool', () => {
+  const CFG = {
+    whatsapp: { chat_id: '!self' },
+    node_name: 'kg',
+    transcription_service: { enabled: true, use_config: 'reve', reve: { fallback_order: ['cli'], cli: { type: 'whisper-cli', command: '/bin/whisper' } } },
+    compaction: { ratio: 0.20 },
+  };
+
+  const statusOf = async (over = {}) => {
+    const { cmds, sent } = harness({
+      getConfig: () => CFG,
+      io: { stat: async () => ({ mtimeMs: Date.now() }), readFile: readFileBySuffix({ 'transcript.md': new Error('none'), 'heartbeats.readonly.yaml': READONLY_YAML }) },
+      gitOut: () => 'abc1234',
+      loadState: async () => threeContacts(),
+      ...over,
+    });
+    await cmds.run({ body: '/status', chatId: '!self', surface: 'whatsapp' });
+    return sent.at(-1)?.text ?? '';
+  };
+
+  it('names the FILE each node-rung value came from', async () => {
+    const text = await statusOf();
+    // the resolver's node rung is config/config.yaml — /status says so instead of
+    // leaving the operator to guess which of the three files set it
+    expect(text).toContain('config: config/config.yaml');
+  });
+
+  it('reads the heartbeat aggregate from the PROFILE ROOT, never state/', async () => {
+    const seen = [];
+    await statusOf({
+      io: {
+        stat: async () => ({ mtimeMs: Date.now() }),
+        readFile: async (p) => { seen.push(String(p)); if (String(p).endsWith('heartbeats.readonly.yaml')) return READONLY_YAML; throw new Error('none'); },
+      },
+    });
+    const hb = seen.find((p) => p.endsWith('heartbeats.readonly.yaml'));
+    expect(hb).toBeTruthy();
+    expect(hb).not.toMatch(/[\/]state[\/]heartbeats\.readonly\.yaml$/);
+  });
+
+  it('shows the warm pool as size/max with a line per live entry: tokens, the fraction of the window, and the compaction threshold', async () => {
+    // The warm key is derived the way compactionTargets derives it — `<being>:<engine>:
+    // <surface>:<slug>`, engine falling back to ccode until the thread is instanced — so
+    // this locks that /status joins on the SAME key the pool is actually holding.
+    let st = threeContacts();
+    st = recordThread(st, 'whatsapp', '!fam:beeper.local', 'sid-fam', undefined, 'egpt');
+    const slug = getContact(st, 'whatsapp', '!fam:beeper.local').slug;
+    const key = `egpt:ccode:whatsapp:${slug}`;
+    const text = await statusOf({
+      warmStats: () => ({ size: 2, max: 6, keys: [key, 'sib:wren:sid-w'] }),
+      loadState: async () => st,
+      dueFor: (t) => (t.sessionId === 'sid-fam' ? { due: false, tokens: 50_000, threshold: 200_000 } : { due: false }),
+    });
+    expect(text).toContain('warm: 2/6');
+    // "size from total" — the tokens AND what they are a fraction of
+    expect(text).toMatch(new RegExp(`${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}: 50000/200000 tok \\(25% of compact\\)`));
+    // a key the pool holds but nothing can measure still LISTS — never dropped silently
+    expect(text).toContain('sib:wren:sid-w:');
+  });
+
+  it('a warm key with no measurable session still lists, marked — the pool view never lies by omission', async () => {
+    const text = await statusOf({
+      warmStats: () => ({ size: 1, max: 6, keys: ['egpt:ccode:whatsapp/ghost'] }),
+      dueFor: () => ({ due: false }),
+    });
+    expect(text).toContain('warm: 1/6');
+    expect(text).toContain('egpt:ccode:whatsapp/ghost');
+  });
+
+  it('/status <fragment> shows the thread context size against the REAL threshold the spine applies', async () => {
+    let st = threeContacts();
+    st = recordThread(st, 'whatsapp', '!hfm:beeper.local', 'sid-hfm', undefined, 'e');
+    const { cmds, sent } = harness({
+      getConfig: () => CFG,
+      io: { stat: async () => ({ mtimeMs: Date.now() }), readFile: readFileBySuffix({ 'transcript.md': new Error('none'), 'heartbeats.readonly.yaml': READONLY_YAML }) },
+      gitOut: () => 'abc1234',
+      loadState: async () => st,
+      dueFor: (target, opts) => {
+        // the ratio /status hands down must be the one the SPINE applies (compaction.ratio
+        // = 0.20), NOT compact-being's own 0.25 default parameter
+        expect(opts.ratio).toBe(0.20);
+        return { due: false, tokens: 12_345, threshold: 200_000 };
+      },
+    });
+    await cmds.run({ body: '/status HFM', chatId: '!self', surface: 'whatsapp' });
+    const text = sent.at(-1)?.text ?? '';
+    expect(text).toMatch(/context: 12345\/200000/);
+  });
+
+  it('/status <fragment> on a thread that never started says so instead of faking a size', async () => {
+    const { cmds, sent } = harness({
+      getConfig: () => CFG,
+      io: { stat: async () => ({ mtimeMs: Date.now() }), readFile: readFileBySuffix({ 'transcript.md': new Error('none'), 'heartbeats.readonly.yaml': READONLY_YAML }) },
+      gitOut: () => 'abc1234',
+      loadState: async () => threeContacts(),
+      dueFor: () => { throw new Error('must not be called for a thread that never started'); },
+    });
+    await cmds.run({ body: '/status HFM', chatId: '!self', surface: 'whatsapp' });
+    expect(sent.at(-1).text).toContain('thread_id: not started');
+    expect(sent.at(-1).text).not.toContain('context:');
   });
 });
