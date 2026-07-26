@@ -28,13 +28,15 @@ const SLUG = 'scripts-fixture';
 const CONV = join(HOME, 'conversations', SURFACE, SLUG);
 
 // Every `./<dir>/` the card may name belongs to exactly one class:
-//   SEEDED_NOW — created by seedIdentityLayers itself, so it MUST be on disk the instant the
-//                card is readable. E is TOLD to go there; an absent folder is a dead end.
-//   ON_DEMAND  — created by a service the first time it has something to put there (media/ on
-//                the first saved file). "nothing saved yet" is honest; the card says as much.
+//   SEEDED_NOW — part of the Room tree Room.ensureTree() creates, so it MUST be on disk the
+//                instant the card is readable. E is TOLD to go there; an absent folder is a
+//                dead end. media/ joined this class on 2026-07-26 when the tree got ONE owner
+//                (it used to appear only on the first saved file — a card pointing at a
+//                not-yet-existing folder).
+//   ON_DEMAND  — created by a service the first time it has something to put there.
 // A directory in NEITHER class is a `./transcripts/` — a pointer to nothing.
-const SEEDED_NOW = ['identity.d', 'scripts'];
-const ON_DEMAND = ['media'];
+const SEEDED_NOW = ['identity.d', 'scripts', 'media'];
+const ON_DEMAND = [];
 
 let seeded;
 

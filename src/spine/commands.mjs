@@ -827,9 +827,11 @@ export function createCommands({
     // Idempotent: an existing room folder is NEVER clobbered.
     try { await stat(r.baseDir()); await send?.(ev.chatId, `room ${slug} already exists at ${rel}`); return; }
     catch { /* absent → create below */ }
-    // The folder IS the room: mkdir the standard tree (baseDir + the dir getters) + a
-    // minimal config.yaml. No member roster — that's later work.
-    for (const dir of [r.baseDir(), r.mediaDir, r.filesDir, r.identityDir, r.scriptsDir]) await mkdir(dir, { recursive: true });
+    // The folder IS the room: ensure the standard tree + a minimal config.yaml. The dir
+    // list belongs to the ABSTRACTION (Room.ensureTree), not to this command — a
+    // conversation seeds the identical tree through the same call.
+    // No member roster — that's later work.
+    await r.ensureTree({ io: { mkdir } });
     await writeFile(r.configPath, roomConfigFile(slug), 'utf8');
     await send?.(ev.chatId, `room ${slug} created at ${rel}`);
   }

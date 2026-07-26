@@ -91,6 +91,36 @@ export class Room {
   get identityDir()    { return join(this.baseDir(), 'identity.d'); }      // NN-*.md fed to the room's brain(s)
   get scriptsDir()     { return join(this.baseDir(), 'scripts'); }         // *.x.md TEXTECUTABLES the room's brain(s) can be asked to carry out
 
+  // ── the tree, ENSURED (ONE owner) ─────────────────────────────────────────
+  // The list used to be written out twice — /room create's mkdir loop (spine/commands.mjs)
+  // and seedIdentityLayers (conversations-state.mjs) — and the two copies had ALREADY
+  // drifted: create made media/ + files/, seeding did not, so a NamedRoom's identity.d was
+  // born empty while a conversation's was seeded, and a conversation never got the shelf.
+  // The list lives HERE now, beside the getters that define it: one edit gives BOTH
+  // implementations the folder, which is the whole point of the abstraction (operator
+  // 2026-07-26: "the work is for the Room abstraction, it is then for free in a room or
+  // conversation on any network").
+  //
+  // ALL FOUR dirs, for both roots. media/ and files/ were NamedRoom-only in practice, but a
+  // conversation IS a Room: the shipped pointers card already tells every brain to look in
+  // ./media/, and /inject's shelf must land somewhere in a conversation too. An empty folder
+  // is the honest answer ("nothing here yet") — the same reasoning that created scripts/
+  // eagerly; a card naming a folder nothing creates is the ./transcripts/ dead-end of
+  // 2026-07-25.
+  treeDirs() {
+    return [this.baseDir(), this.mediaDir, this.filesDir, this.identityDir, this.scriptsDir];
+  }
+
+  // Create the tree. Idempotent (mkdir -p on every call). `io.mkdir` is the seam both
+  // callers already thread so their tests stay in-memory; absent, real fs/promises.
+  // Deliberately does NOT swallow: /room create wants an fs failure to reach the operator,
+  // and seedIdentityLayers already runs inside its own never-throw try/catch — so error
+  // behavior at each call site is exactly what it was.
+  async ensureTree({ io = {} } = {}) {
+    const mkdirFn = io.mkdir ?? mkdir;
+    for (const dir of this.treeDirs()) await mkdirFn(dir, { recursive: true });
+  }
+
   // ── config.yaml (shared with the heartbeat + transcription services) ───────
   // Read the whole config.yaml as a plain object ({} when absent/malformed).
   // This is the SAME file src/heartbeats.mjs (heartbeat:) and

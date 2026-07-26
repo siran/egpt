@@ -339,6 +339,25 @@ async function bootNode(lasso = { messages: 3, window_ms: 50, max_queue: 50 }) {
   return { app, spy };
 }
 
+// Bounded wait for a state/lasso.json that (a) exists, (b) PARSES, and (c) carries an `at`
+// stamped at/after `since` — i.e. was written by the run under test, not an earlier one. The
+// writer is non-atomic by design (see the test below), so a read can catch it mid-write;
+// retrying is the honest fix. Throws — with what actually went wrong — if the bound expires,
+// so a genuinely absent or never-parseable file is still a failure, not a silent pass.
+async function waitForLassoState(path, since, boundMs = 5000) {
+  const deadline = Date.now() + boundMs;
+  let why = 'never appeared';
+  for (;;) {
+    try {
+      const state = JSON.parse(await fs.readFile(path, 'utf8'));
+      if (Date.parse(state.at) >= since) return state;
+      why = `only a stale snapshot (at=${state.at}, wanted >= ${new Date(since).toISOString()})`;
+    } catch (e) { why = e?.message ?? String(e); }
+    if (Date.now() >= deadline) throw new Error(`state/lasso.json after ${boundMs}ms: ${why}`);
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
 describe('boot() — the lasso is IN the assembled path, with no holes', () => {
   it('paces a flood through the bridge boot hands the spine', async () => {
     const { app, spy } = await bootNode();
@@ -388,13 +407,26 @@ describe('boot() — the lasso is IN the assembled path, with no holes', () => {
     } finally { app.stop(); }
   });
 
+  // The publisher is DELIBERATELY fire-and-forget and non-atomic (boot.mjs:
+  // `writeFile(…).catch(() => {})`) — lasso.json is observability for an emergency feature,
+  // the STOP path never touches it, and a torn read costs nothing in production. So the TEST
+  // must not race it: under full parallel suite load the write had often not landed by the
+  // time the read fired, and JSON.parse blew up on a partial file. `await flush()` (one
+  // setImmediate) never had any chance of covering a real disk write.
+  //
+  // This still proves the WHOLE claim — boot really publishes to EGPT_HOME/state/lasso.json,
+  // with this node's limits — it just waits for the file instead of assuming it. Nothing is
+  // weakened: the file is removed first and the snapshot must be stamped at/after this run
+  // started, so neither a leftover from the three boot tests above (same EGPT_HOME) nor a
+  // half-written file can satisfy it. Missing / never-parseable / only-stale all FAIL.
   it('publishes its state to EGPT_HOME/state/lasso.json when it engages', async () => {
+    const lassoJson = join(tmpHome, 'state', 'lasso.json');
+    await fs.rm(lassoJson, { force: true });
     const { app } = await bootNode();
     try {
+      const t0 = Date.now();
       await Promise.all(Array.from({ length: 6 }, (_, i) => app.bridge.send('!room:beeper.com', `x${i}`)));
-      await flush();
-      const raw = await fs.readFile(join(tmpHome, 'state', 'lasso.json'), 'utf8');
-      const state = JSON.parse(raw);
+      const state = await waitForLassoState(lassoJson, t0);
       expect(state.limit).toEqual({ messages: 3, window_ms: 50, max_queue: 50 });
       expect(['throttling', 'idle']).toContain(state.state);
       expect(state.delayed_total).toBeGreaterThan(0);
