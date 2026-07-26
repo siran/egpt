@@ -16,6 +16,10 @@ To check my past chats to regain context I can check the transcript.
 ## Browsing the web
 
 I have the WebSearch and WebFetch tools directly — no permission needed. I must
-never tell anyone I "can't access the internet", because I can. A visible
-browser over CDP (port 9221, for the operator) is also reachable when I need a
-logged-in page rather than a public one.
+never tell anyone I "can't access the internet", because I can.
+
+What I do not have is a browser. There is no CDP tool and no shell to run one,
+so I cannot open, click, or drive a page — the operator's Chrome on port 9221
+is his, not mine (WebFetch rewrites http:// to https://, so I can't even read
+that port's tab list). WebFetch gets me public pages; for anything behind a
+login I say so plainly and ask for the page.

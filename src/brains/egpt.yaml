@@ -6,21 +6,56 @@
 type: ccode           # engine: ccode | codex | chatgpt-cdp | claude-cdp | llama (only ccode wired in v2)
 model: sonnet         # concrete model the engine runs (PINNED = deterministic per conversation)
 effort: high          # reasoning effort (engine-dependent)
-allowed_tools:        # list tools explicitly (CONFINED — file tools path-limited to allowed_paths); `all` is accepted but discouraged (TRUSTED/unconfined, every tool, no prompts, full filesystem, and never grants bare Bash/Agent either way — operator 2026-07-03)
+allowed_tools:        # list tools explicitly. A LIST = CONFINED (file tools path-limited to the conversation dir + allowed_paths).
+                      # `all`/`*` is NOT a superpower: it is silently COERCED to exactly the eight below (operator 2026-07-03).
   - Read           # read files
   - Write          # create / overwrite files
   - Edit           # in-place edits
   - Glob           # find files by pattern
   - Grep           # search file contents
   - WebSearch      # web search
-  - WebFetch       # fetch a URL
-  - Task           # sub-agents
-  #- Bash(git:*)    # SCOPED shell — the house rule is Bash(<bin>:*), never bare Bash
+  - WebFetch       # fetch a URL — http:// is auto-upgraded to https://, so plain-HTTP localhost ports are unreachable
+  - Task           # sub-agents (the CLI's older name for Agent; both names work)
+  # ─── EVERYTHING ELSE THAT IS GRANTABLE — uncomment a line to turn it on ───
+  # These are the Claude Code CLI's own tool names (what `--allowedTools` accepts); there is no
+  # other vocabulary. Full reference: https://code.claude.com/docs/en/tools-reference
+  #- MultiEdit               # several edits to ONE file in a single call (write-class)
+  #- NotebookEdit            # edit Jupyter .ipynb cells (write-class)
+  #- Bash(git:*)             # SCOPED shell — the house rule is Bash(<bin>:*), NEVER bare Bash
+  #- PowerShell(Get-ChildItem *)  # scoped PowerShell, same shape as Bash(...) — Windows-only tool
+  #- Monitor                 # run a command in the background, streaming each output line back; scoped by the Bash(...) rules
+  #- LSP                     # language-server smarts: jump to definition, find references, type errors
+  #- Agent                   # sub-agents under the CLI's current name — the SAME tool as Task above; grant one
+  #- Skill                   # run a skill by name; Skill(deploy *) narrows it to some skills
+  #- Workflow                # run a dynamic workflow (a script that fans work out to many sub-agents)
+  #- TaskCreate              # session to-do list: add an item
+  #- TaskUpdate              # ...update / complete / delete one
+  #- TaskList                # ...list them
+  #- TaskGet                 # ...read one in full
+  #- TaskStop                # stop a running background task or named agent
+  #- TodoWrite               # the OLD one-call to-do list; off by default since CLI 2.1.142
+  #- ToolSearch              # load deferred MCP tools on demand (needs MCP tool-search enabled)
+  #- ListMcpResourcesTool    # list resources exposed by connected MCP servers
+  #- ReadMcpResourceTool     # read one MCP resource by URI
+  #- WaitForMcpServers       # wait for an MCP server that is still connecting
+  #- Artifact                # publish an .html/.md file as a private page on claude.ai (paid plan + /login)
+  #- EnterWorktree           # create/enter an isolated git worktree
+  #- ExitWorktree            # ...and come back out of it
+  #- EnterPlanMode           # switch into plan mode before acting
+  #- ExitPlanMode            # present the plan and leave plan mode
+  # Real tool names, but INERT in a headless chat turn — nobody is at a terminal and the spine
+  # owns the turn's lifetime: AskUserQuestion, EndConversation, PushNotification, SendUserFile,
+  # SendMessage, RemoteTrigger, ScheduleWakeup, CronCreate, CronList, CronDelete, ReportFindings,
+  # ShareOnboardingGuide, TaskOutput.
+  # NOT IN THE VOCABULARY: there is no CDP / drive-a-real-browser tool and no "execution power"
+  # beyond the two shells above — driving Chrome on :9221 needs a WebSocket and no tool speaks one.
+  # An MCP server's tools are grantable as mcp__<server>__<tool>, but this engine runs with
+  # --setting-sources '' so no MCP server is inherited from ~/.claude; there are none to grant.
 allowed_paths:
   # by default agents can access their conversation directory (the one listed in
   # conversations.yaml) — that root is granted automatically. Add extra roots here:
   #  /c/Users/you/project:               # full access (read + write)
-  #  /c/Users/you/reference:             # READ-ONLY (a tool list that omits write tools)
-  #    allowed_tools: [Read, Glob, Grep]
+  #  /c/Users/you/reference:             # READ-ONLY — a per-path list with NO write-class tool
+  #    allowed_tools: [Read, Glob, Grep] #   (write-class = Edit / Write / MultiEdit / NotebookEdit)
 # personality: egpt  # identity feed a fresh conversation boots from (identities/<name>/);
                         # a property of the TYPE, not the conversation. Absent ⇒ 'egpt'.

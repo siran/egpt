@@ -57,4 +57,20 @@ describe('the pointers card (config/skeletons/room/30-pointers.md)', () => {
     expect(CARD).toContain('WebSearch');
     expect(CARD).toContain('WebFetch');
   });
+
+  // The card used to say "A visible browser over CDP (port 9221, for the operator) is also
+  // reachable when I need a logged-in page". FALSE for E as configured, on three counts:
+  //   1. the only CDP client is src/tools/cdp.mjs, a node module — running it needs Bash,
+  //      and E's allowed_tools have none;
+  //   2. there is no CDP emit-limb — E's limbs are /react /reply /media /edit /delete
+  //      (config/skeletons/room/10-actions.md, parsed by src/spine/reply-actions.mjs);
+  //   3. WebFetch cannot even LIST tabs: it auto-upgrades http:// to https:// (documented
+  //      CLI behavior), which Chrome's plain-HTTP debug port refuses. Verified live on
+  //      2026-07-26 against a running :9221 — curl returned the JSON, WebFetch errored.
+  // A being that believes it can browse will promise a logged-in page it can never fetch.
+  it('does not promise E a browser it cannot drive (no CDP browsing)', () => {
+    expect(CARD).not.toMatch(/CDP[^.]*\breachable\b/);      // the exact old overclaim
+    expect(CARD).toMatch(/no CDP tool/);
+    expect(CARD).toMatch(/cannot open, click, or drive a page/);
+  });
 });
