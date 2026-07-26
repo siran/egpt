@@ -17,7 +17,14 @@ REM --- self-elevate if not already admin ---
 net session >nul 2>&1
 if %errorLevel% NEQ 0 (
   echo Requesting administrator privileges...
-  powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -ArgumentList '\"%PROFILE_DIR%\"' -Verb RunAs"
+  powershell -NoProfile -Command "try { Start-Process -FilePath '%~f0' -ArgumentList '\"%PROFILE_DIR%\"' -Verb RunAs -ErrorAction Stop } catch { Write-Host ('Elevation failed or was declined: ' + $_.Exception.Message) -ForegroundColor Red; exit 1 }"
+  if errorlevel 1 (
+    echo.
+    echo === Could not get administrator privileges - egpt was NOT started ===
+    echo.
+    echo Press any key to close this window.
+    pause >nul
+  )
   exit /b
 )
 
