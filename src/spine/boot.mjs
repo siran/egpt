@@ -615,19 +615,26 @@ export async function boot({
   // --- ports ---
   // THE LASSO (operator 2026-07-26): "a major loop that counts how many messages in a time
   // window has been sent out to any limb ... a big lasso that sandboxes egpt" / "under no
-  // reason must the bridge exceed a normal sending rate". ONE regulator for the whole node,
+  // reason must the bridge exceed a normal sending rate". ONE ceiling for the whole node,
   // built HERE — before any port exists — because every limb is wrapped by it below, so the
-  // budget is node-wide and no limb has its own. See src/lasso.mjs for throttle-vs-trip, the
-  // queue bound, and what counts as a message. Config-controlled so the operator can loosen
-  // it without a deploy; its state is published to state/lasso.json on transitions only (an
-  // async fire-and-forget — the hot path never touches the disk).
+  // budget is node-wide and no limb has its own. See src/lasso.mjs for the two counters
+  // (messages vs edits) and what counts as each. Config-controlled so the operator can
+  // loosen it without a deploy.
+  //
+  // OVER THE CEILING ⇒ THE NODE STOPS (operator 2026-07-26: "by throttle i did actually mean
+  // stop. there is probably a bug if there is flooding"), through the SAME stopSwitch the
+  // STOP safe word pulls — the STOP file explains itself with the lasso's reason, the daemon
+  // does not respawn, and only a human restart clears it. Never a second halt mechanism.
+  // The trip is fire-and-forget from the send path: pull() is already once-only (`stopping`)
+  // and never throws, and a send must not wait on the stop it just caused.
   const lassoCfg = (cfg.lasso && typeof cfg.lasso === 'object') ? cfg.lasso : {};
   const lasso = createLasso({
-    messages: Number.isFinite(lassoCfg.messages) ? lassoCfg.messages : 3,
+    messages: Number.isFinite(lassoCfg.messages) ? lassoCfg.messages : 20,
     windowMs: Number.isFinite(lassoCfg.window_ms) ? lassoCfg.window_ms : 5_000,
-    maxQueue: Number.isFinite(lassoCfg.max_queue) ? lassoCfg.max_queue : 20,
+    edits: Number.isFinite(lassoCfg.edits) ? lassoCfg.edits : 2_000,
     onLog: (m) => log.line?.(`[lasso] ${m}`),
     writeState: (s) => { writeFile(join(EGPT_HOME, 'state', 'lasso.json'), `${JSON.stringify(s, null, 2)}\n`, 'utf8').catch(() => {}); },
+    onTrip: (t) => { Promise.resolve(stopSwitch.pull({ reason: `lasso: ${t.reason}`, who: 'lasso', where: 'outbound' })).catch(() => {}); },
   });
   // THE EAR PROBE (operator 2026-07-07, redesigned 2026-07-26; ROADMAP §3) — the DEAF-BRIDGE
   // detector. It injects a message with TELEGRAM'S OWN API (out of band, sharing no machinery

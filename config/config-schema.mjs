@@ -1325,44 +1325,61 @@ export const CONFIG_SCHEMA = {
   `,
 
   lasso: `
-    THE OUTBOUND RATE REGULATOR (src/lasso.mjs, wired in src/spine/boot.mjs around
-    every limb port). A node-wide ceiling on how many messages egpt may EMIT per
-    time window — brain replies, command replies, mesh envelopes, 👂 echoes,
-    heartbeat posts, error lines, on every surface. Operator 2026-07-26: "a big
-    lasso that sandboxes egpt ... under no reason must the bridge exceed a normal
-    sending rate. that is a self-regulated existance."
+    THE OUTBOUND CEILING (src/lasso.mjs, wired in src/spine/boot.mjs around every
+    limb port). A node-wide hard ceiling on how much egpt may EMIT per time window —
+    brain replies, command replies, mesh envelopes, 👂 echoes, heartbeat posts,
+    error lines, on every surface. Operator 2026-07-26: "a big lasso that sandboxes
+    egpt ... under no reason must the bridge exceed a normal sending rate. that is a
+    self-regulated existance."
 
-    IT THROTTLES, IT DOES NOT TRIP. An over-rate message WAITS its turn; it is not
-    dropped and the node is not stopped, so an ordinary busy moment (a voice-note
-    flurry, two agents answering one message, a mesh request + placeholder + reply)
-    is slowed by a beat rather than killed.
+    IT TRIPS, IT DOES NOT THROTTLE (operator 2026-07-26: "by throttle i did actually
+    mean stop. there is probably a bug if there is flooding" / "bridge stops looping
+    until human intervention"). There is NO queue: the emit that would exceed the
+    ceiling is not sent late, it STOPS THE NODE — through the same kill switch the
+    STOP safe word pulls (EGPT_HOME/STOP + clean exit, so the daemon does not
+    respawn and only a human restart clears it). The STOP file's \`reason:\` names
+    the flood and the rate, so a flood-stop is distinguishable from a safe-word stop
+    without reading code.
 
-    ONE COMMITTED MESSAGE = ONE SLOT: send / startStream (its placeholder) /
-    postStatus / sendMedia. Stream EDITS are free, so an ordinary streamed reply
-    (placeholder + N edits + final) costs exactly one.
+    TWO COUNTERS, ONE TRIP ACTION (operator: "only count outbound messages or
+    edits"). They are not peers, because the harm is not the same ("endless edit is
+    not annoying, 100 messages are"):
+      MESSAGES — a NEW line in someone's chat: send / startStream (its placeholder)
+        / postStatus / sendMedia. Tight, because this is the damage.
+      EDITS — a PUT into a message already counted: stream.update / stream.finish /
+        stream.fail / editStatus / editOwn. Loose, because it only makes ONE line
+        flicker; it is a backstop against an infinite-edit runaway, nothing more.
+    REACTIONS AND DELETES COUNT AS NEITHER (react / deleteStatus / deleteOwn) — no
+    text, so neither a new line nor an edit of one.
+    NOTHING INBOUND IS COUNTED — that is \`guard\`'s job (below).
 
-    THE STOP PATH IS NEVER THROTTLED — the kill switch cannot queue behind a flood.
+    THE STOP PATH IS NEVER GATED — a send carrying bypassLasso gets out even after a
+    trip, or the node could not announce its own halt.
 
     KEYS:
       messages
-        DEFAULT: 3 — messages allowed per window. 0 or negative = lasso OFF.
+        DEFAULT: 20 — committed messages allowed per window. 0 or negative =
+        lasso OFF (both counters).
       window_ms
-        DEFAULT: 5000 — the sliding window, in ms.
-      max_queue
-        DEFAULT: 20 — how many messages may WAIT at once. Past this the excess is
-        DROPPED (an unbounded delay queue is a memory leak, and a reply delivered
-        minutes late is worse than none). At the defaults the bound is ~33s of
-        backlog; only a genuine runaway ever reaches it.
+        DEFAULT: 5000 — the sliding window, in ms, for both counters.
+      edits
+        DEFAULT: 2000 — edits allowed per window. 0 or negative = the EDIT counter
+        only is off. Large on purpose: edits are counted at the port, ABOVE the
+        limb's 400ms edit debounce, so one streamed reply is already several
+        hundred (one per streamed token delta) and a room fan-out multiplies that.
+        A runaway is unbounded by definition and crosses it in milliseconds anyway.
 
-    VISIBLE ON DISK: every state change is published to EGPT_HOME/state/lasso.json
-    ({ state: idle | throttling | dropping, in_window, queued, delayed_total,
-    dropped_total, limit }), so "why is egpt slow" is answerable with cat. Written
-    on transitions only — the send path never does IO.
+    VISIBLE ON DISK: a trip is published to EGPT_HOME/state/lasso.json ({ state:
+    tripped, limit, messages_in_window, edits_in_window, tripped: { kind, count,
+    limit, window_ms, at, reason } }), so "why did egpt stop" is answerable with
+    cat. Written on the trip only — the send path never does IO.
 
     NOT THE LOOP-BREAKER. \`guard\` (below) bounds a bot↔bot CONVERSATION by counting
     inbound non-human turns at the prompt chokepoint; this bounds the node's EMIT
-    RATE whatever the cause. The 2026-07-25 flood is why both exist: those replies
-    never prompted a brain, so the turn counter never moved.
+    RATE whatever the cause. Since a64b209 the guard finally sees a peer node's
+    turns (ev.fromNode), so bot↔bot loops are ITS job and the lasso is the
+    catastrophic backstop for a runaway that outruns even that — which is why this
+    ceiling is set above ordinary traffic rather than at the incident's rate.
   `,
 
   guard: `
