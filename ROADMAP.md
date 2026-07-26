@@ -257,6 +257,33 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
 
 ## 3. Decided, not yet dispatched
 
+- **⭐ CONFIG RESOLUTION — ONE NAMESPACE, THREE RUNGS (operator ruling 2026-07-26).**
+  `config/config.yaml` (node defaults) < `config/conversations.yaml` (the registry entry)
+  < the entity's own `conversations/<slug>/config.yaml` or `rooms/<name>/config.yaml`.
+  **Nearest the room wins.** Operator: *"the configuration in a rooms/<room name>, or
+  conversations/<slug> is more specific than a general conversations or config file"* and
+  *"yaml keys in conversations.yaml are orthogonal from config.yaml; we only separate into
+  two files for logical convenience."* So ANY key may appear at ANY rung — the split
+  between the two top files is filing, not schema. This is what makes the entity folder
+  file a RUNG of one resolver rather than a second home for the same setting.
+  - **The walk already exists, once**: `heartbeat-loader.collect()` reads node config +
+    every conversation folder + every room folder. Three other readers open
+    `<entity>/config.yaml` lazily and none layers over the node config — warm
+    (`brainpool.mjs:170`), transcription (`transcription-service.mjs:49`), members
+    (`room-core.mjs`). Reuse the walk; do NOT add a second one.
+  - **Combining is NOT uniform** — `heartbeats` UNIONS (every entity contributes an entry),
+    `warm`/`transcription` OVERRIDE, `members` is entity-only. A generic "entity beats node"
+    resolver silently breaks heartbeats.
+  - **Three aggregates at the PROFILE ROOT, not `state/`** (operator: *"state/ hides too
+    much"*): `~/.egpt/{config,conversations,heartbeats}.readonly.yaml`. `heartbeats.readonly
+    .yaml` MOVES out of `state/` — one path constant (`heartbeat-loader.mjs:292`), two
+    readers (`commands.mjs:1053`, `:1304`), plus the docs that name it.
+  - **Provenance per chunk**: every resolved value carries `source:`, the relative path of
+    the file it came from. Already true for heartbeat rows (`heartbeat-loader.mjs:466`).
+  - Hot reload by DELETION, exactly as heartbeats already does (absence = stale).
+  - OPEN: node says `transcription_service:`, entity says `transcription:`. One namespace
+    means one name, but renaming touches live profiles — needs a ruling.
+
 - **conversations.yaml reshape — DONE** (operator 2026-07-02): the registry is SLIM
   now. Each contact entry's `pushedName` rides as the jid-key INLINE COMMENT (not a
   data key); `slug` is dropped (derived from `conversation_path`'s basename); the
