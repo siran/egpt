@@ -46,13 +46,20 @@ afterAll(async () => {
 beforeEach(async () => { await fs.rm(STOP_PATH, { force: true }); });
 
 // --- boot harness: real services, fakes ONLY at the transport + process boundary ---------
-function fakeStart() {
+// `onSend` snapshots the world AT THE MOMENT of a send (has the STOP file been written? has
+// the node exited?) — that is how the ORDER of warn→write→exit is asserted without a clock.
+// `hangSend` makes the POST never resolve: the wedged-bridge case the 3s cap exists for.
+function fakeStart({ onSend = null, hangSend = false } = {}) {
   const spy = { started: false, onIncoming: null, sent: [], streams: [] };
   const start = async (opts) => {
     spy.started = true;                       // ← the "did the bridge dial Beeper" assertion
     spy.onIncoming = opts.onIncoming;
     return {
-      async send(text, o) { spy.sent.push({ text, chatId: o?.chatId }); return { ok: true }; },
+      async send(text, o) {
+        spy.sent.push({ text, chatId: o?.chatId, ...(onSend ? onSend() : {}) });
+        if (hangSend) return new Promise(() => {});     // a POST that never comes back
+        return { ok: true };
+      },
       startStreamMessage(init, o) {
         const h = { finals: [], chatId: o?.chatId, update() {}, async finish(t) { this.finals.push(t); } };
         spy.streams.push(h); return h;
@@ -88,9 +95,12 @@ const CONFIG = {
 };
 const AT = Date.UTC(2026, 6, 25, 21, 40);
 
-async function bootNode() {
-  const { start, spy } = fakeStart();
+async function bootNode({ hangSend = false, setTimeoutFn = globalThis.setTimeout } = {}) {
   const exits = []; const logs = [];
+  const { start, spy } = fakeStart({
+    hangSend,
+    onSend: () => ({ fileAtSend: existsSync(STOP_PATH), exitsAtSend: exits.length }),
+  });
   let state = emptyState();
   const app = await boot({
     readConfig: () => CONFIG,
@@ -103,10 +113,19 @@ async function bootNode() {
     now: () => AT,
     tickMs: 0,
     exit: (code) => exits.push(code),
+    setTimeout: setTimeoutFn,
     log: { line: (s) => logs.push(s) },
   });
   return { app, spy, exits, logs };
 }
+
+// A beeper-surface inbound from the ONE allowed_user (CONFIG above), as beeper.mjs builds it.
+const BEEPER_FROM = {
+  chatId: '!room:beeper.com', chatName: 'fam', network: 'whatsapp',
+  userId: 'u-1', senderName: 'An', authorized: true, msgKey: 'm1',
+};
+// Let every already-scheduled microtask + immediate run, WITHOUT advancing any injected timer.
+const settleMicrotasks = () => new Promise((r) => setImmediate(r));
 
 // A shell-surface inbound, byte-identical to what src/bridges/shell-port.mjs emits into
 // spine.handleInbound (the documented direct-caller seam) — same `from` shape, same fields.
@@ -199,27 +218,92 @@ describe('(c) the chat safe word writes the file, then stops the service', () =>
     app.stop();
   });
 
-  it('an UNAUTHORIZED sender\'s "stop" does NOTHING — no file, no stop', async () => {
+  it('an UNAUTHORIZED sender\'s "stop" does NOTHING — no file, no warning, no stop', async () => {
     const { app, spy, exits } = await bootNode();
     // shell surface, but the frame is not the trusted console
     await app.spine.handleInbound(shellMsg('stop', { authorized: false, senderName: 'stranger' }));
-    // beeper surface, a stranger in the chat
-    await spy.onIncoming('STOP', {
-      chatId: '!room:beeper.com', chatName: 'fam', network: 'whatsapp',
-      userId: 'stranger', senderName: 'Mallory', authorized: false, msgKey: 'm9',
-    });
-    // and the loud variants, which are the same switch
-    await app.spine.handleInbound(shellMsg('STOP ALL', { authorized: false, senderName: 'stranger' }));
+    // beeper surface, a stranger in the chat (NOT in allowed_users, not the account owner)
+    await spy.onIncoming('STOP', { ...BEEPER_FROM, userId: 'stranger', senderName: 'Mallory', authorized: false, msgKey: 'm9' });
 
+    expect(existsSync(STOP_PATH)).toBe(false);
+    expect(exits).toEqual([]);
+    expect(spy.sent.filter((s) => s.text.includes('STOP'))).toHaveLength(0);   // and nothing was announced
+    app.stop();
+  });
+});
+
+// === (A) "STOP ALL" IS UNWIRED (operator 2026-07-26: "unwire 'STOP ALL' i didn't even know
+//     it existed") — not an alias, not a hidden synonym for the kill switch: it stops being a
+//     recognised phrase at all and reads as ordinary text. =====================================
+describe('(A) "STOP ALL" is not a safe word', () => {
+  it('an AUTHORIZED "STOP ALL" writes no file, posts no warning and does not stop the node', async () => {
+    const { app, spy, exits } = await bootNode();
+    await spy.onIncoming('STOP ALL', { ...BEEPER_FROM, msgKey: 'm2' });
+    expect(existsSync(STOP_PATH)).toBe(false);
+    expect(exits).toEqual([]);
+    expect(spy.sent.filter((s) => s.text.includes('egpt is stopping'))).toHaveLength(0);
+    app.stop();
+  });
+
+  it('…and neither does "stopall"', async () => {
+    const { app, spy, exits } = await bootNode();
+    await spy.onIncoming('stopall', { ...BEEPER_FROM, msgKey: 'm3' });
     expect(existsSync(STOP_PATH)).toBe(false);
     expect(exits).toEqual([]);
     app.stop();
   });
 });
 
+// === (B) THE WARNING IN THE CHAT (operator 2026-07-26: "STOP on any chat created the file and
+//     emits warning in the chat that action was taken"). The operator must SEE that it landed —
+//     but the stop must never be hangable by that post, so the send is capped exactly like
+//     boot's announceAndExit going-down line (Promise.race against a 3s timer). ===============
+describe('(B) STOP warns in the chat it came from, and the post can never wedge the stop', () => {
+  it('warns in THAT chat, then writes the file, then exits — in that order', async () => {
+    const { app, spy, exits } = await bootNode();
+    await spy.onIncoming('STOP', { ...BEEPER_FROM });
+
+    const warn = spy.sent.find((s) => s.text.includes('egpt is stopping'));
+    expect(warn, JSON.stringify(spy.sent)).toBeTruthy();
+    expect(warn.chatId).toBe('!room:beeper.com');           // the chat the STOP came from
+    expect(warn.text).toContain('STOP');                    // …what happened
+    expect(warn.text).toContain(`rm ${STOP_PATH}`);         // …and how to undo it
+    // ORDER — the snapshot taken INSIDE the send: nothing had been written, nothing had exited
+    expect(warn.fileAtSend).toBe(false);
+    expect(warn.exitsAtSend).toBe(0);
+    expect(existsSync(STOP_PATH)).toBe(true);               // …and both happened after it
+    expect(exits).toEqual([0]);
+    app.stop();
+  });
+
+  it('a WEDGED post does not hold the node up: the 3s cap fires and it stops anyway', async () => {
+    const timers = [];
+    const { app, spy, exits } = await bootNode({
+      hangSend: true,
+      setTimeoutFn: (fn, ms) => { timers.push({ fn, ms }); return timers.length; },
+    });
+    let settled = false;
+    const p = spy.onIncoming('STOP', { ...BEEPER_FROM }).then(() => { settled = true; });
+    await settleMicrotasks();
+
+    expect(spy.sent).toHaveLength(1);                       // the warning WAS attempted…
+    expect(settled).toBe(false);                            // …and its POST never came back
+    expect(existsSync(STOP_PATH)).toBe(false);
+    expect(exits).toEqual([]);
+    expect(timers.map((t) => t.ms)).toEqual([3000]);        // the stop is riding the CAP, not the send
+
+    timers[0].fn();                                         // drive the injected clock past it
+    await p;
+    expect(settled).toBe(true);
+    expect(existsSync(STOP_PATH)).toBe(true);               // the durable record is still written
+    expect(exits).toEqual([0]);                             // and the service still goes down
+    app.stop();
+  });
+});
+
 // --- the wiring, in isolation: a fake switch proves the two spine call sites -------------
-function buildSpine({ guard = null, stopSwitch = null } = {}) {
-  const bridge = { onMessage() {}, send() {}, stop() {}, wasSentByUs: () => false };
+function buildSpine({ guard = null, stopSwitch = null, wasSentByUs = () => false, mesh = null } = {}) {
+  const bridge = { onMessage() {}, send() {}, stop() {}, wasSentByUs };
   const brain = { calls: [], async turn(b, ev) { this.calls.push({ b, ev }); return { text: 'x' }; } };
   const identity = { build: (msg) => ({ ...msg }) };
   const router = { resolve: () => 'e' };
@@ -232,7 +316,7 @@ function buildSpine({ guard = null, stopSwitch = null } = {}) {
   const sender = { open() { return { activate() {}, update() {}, async finish() {}, fail() {} }; } };
   const spine = createSpine({
     bridge, brain, identity, router, gating, sender, transcript, heartbeats,
-    guard, stopSwitch, clock: { now: () => 1000 },
+    mesh, guard, stopSwitch, clock: { now: () => 1000 },
   });
   return { spine, heartbeats, brain, transcript };
 }
@@ -253,14 +337,27 @@ describe('spine wiring — one switch, two call sites', () => {
     expect(heartbeats.beats).toBe(1);          // a stopping node fires no further beats
   });
 
-  it('STOP and STOP ALL are the SAME switch (bare STOP is never the weaker word)', async () => {
-    for (const word of ['stop', 'STOP ALL', 'stopall', 'Stop.']) {
+  it('the WHOLE recognised vocabulary: STOP pulls it, STOP ALL is ordinary text', async () => {
+    for (const word of ['stop', 'STOP', 'Stop.']) {
       const sw = fakeSwitch();
       const { spine, brain } = buildSpine({ guard: createStopGuard(), stopSwitch: sw });
       await spine.handleInbound({ surface: 'wa', chatId: 'c', chatName: 'fam', senderName: 'An', authorized: true, msgId: 'm', body: word, kind: 'text', raw: {} });
       expect(sw.pulls, word).toHaveLength(1);
       expect(brain.calls, word).toHaveLength(0);   // never routed to a brain
     }
+    for (const word of ['STOP ALL', 'stop all', 'stopall']) {
+      const sw = fakeSwitch();
+      const { spine } = buildSpine({ guard: createStopGuard(), stopSwitch: sw });
+      await spine.handleInbound({ surface: 'wa', chatId: 'c', chatName: 'fam', senderName: 'An', authorized: true, msgId: 'm', body: word, kind: 'text', raw: {} });
+      expect(sw.pulls, word).toHaveLength(0);      // unwired — not an alias, not a synonym
+    }
+  });
+
+  it('the chat the STOP came from rides along, so boot can warn there', async () => {
+    const sw = fakeSwitch();
+    const { spine } = buildSpine({ guard: createStopGuard(), stopSwitch: sw });
+    await spine.handleInbound({ surface: 'wa', chatId: 'c', chatName: 'fam', senderName: 'An', authorized: true, msgId: 'm', body: 'stop', kind: 'text', raw: {} });
+    expect(sw.pulls[0]).toMatchObject({ surface: 'wa', chatId: 'c' });
   });
 
   it('the safe word is recorded like any inbound before the node stops', async () => {
@@ -286,6 +383,57 @@ describe('spine wiring — one switch, two call sites', () => {
     const sw = fakeSwitch();
     const { spine } = buildSpine({ guard: createStopGuard(), stopSwitch: sw });
     await spine.handleInbound({ surface: 'wa', chatId: 'c', chatName: 'fam', senderName: 'Mallory', authorized: false, msgId: 'm', body: 'stop', kind: 'text', raw: {} });
+    expect(sw.pulls).toHaveLength(0);
+  });
+});
+
+// === (C) NO AGENT MAY PULL THE KILL SWITCH ==================================================
+// On a SHARED Beeper account every send from the account — the operator's own, a PEER node's,
+// and this node's — arrives with isSender:true, and beeper.mjs:1356 reads that as AUTHORIZED.
+// So "authorized" alone is not enough to arm a kill switch: the safe word must ALSO be a
+// genuine HUMAN turn by PROVENANCE (isHumanTurn), the same predicate the loop counter uses.
+// Its four signals, each locked below. (What isHumanTurn CANNOT see — a peer node's plain
+// post on the shared account, indistinguishable from the owner typing, beeper.mjs:533-534 —
+// is reported, not faked here.)
+describe('(C) provenance gates the kill switch: only a human turn may pull it', () => {
+  const stopMsg = (over = {}) => ({
+    surface: 'wa', chatId: 'c', chatName: 'fam', senderName: 'An', isSender: true,
+    authorized: true, msgId: 'm7', body: 'stop', kind: 'text', raw: {}, ...over,
+  });
+
+  it('a genuine human STOP still pulls it (the positive lock)', async () => {
+    const sw = fakeSwitch();
+    const { spine } = buildSpine({ guard: createStopGuard(), stopSwitch: sw });
+    await spine.handleInbound(stopMsg());
+    expect(sw.pulls).toHaveLength(1);
+  });
+
+  it('OUR OWN send re-entering (wasSentByUs) never pulls it', async () => {
+    const sw = fakeSwitch();
+    const { spine } = buildSpine({ guard: createStopGuard(), stopSwitch: sw, wasSentByUs: () => true });
+    await spine.handleInbound(stopMsg());
+    expect(sw.pulls).toHaveLength(0);
+  });
+
+  it('a BRAIN MEMBER\'s reply re-entering the room (fromBrain) never pulls it', async () => {
+    const sw = fakeSwitch();
+    const { spine } = buildSpine({ guard: createStopGuard(), stopSwitch: sw });
+    await spine.handleInbound(stopMsg({ fromBrain: 'chatgpt' }));
+    expect(sw.pulls).toHaveLength(0);
+  });
+
+  it('relay/mesh traffic never pulls it', async () => {
+    const sw = fakeSwitch();
+    const mesh = { isEnvelope: () => true, async handle() {} };
+    const { spine } = buildSpine({ guard: createStopGuard(), stopSwitch: sw, mesh });
+    await spine.handleInbound(stopMsg());
+    expect(sw.pulls).toHaveLength(0);
+  });
+
+  it('a woken node\'s BACKLOG replay never pulls it', async () => {
+    const sw = fakeSwitch();
+    const { spine } = buildSpine({ guard: createStopGuard(), stopSwitch: sw });
+    await spine.handleInbound(stopMsg({ backlog: true }));
     expect(sw.pulls).toHaveLength(0);
   });
 });

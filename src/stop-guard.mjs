@@ -6,16 +6,21 @@
 // and a being's own room fan-out. So a pause here is definite: a stopped channel never
 // reaches a brain at all.
 //
+// THE WHOLE RECOGNISED VOCABULARY IS THREE PHRASES:  STOP | RESUME | RESUME ALL.
+//
 // TWO SEPARATE THINGS, deliberately not conflated (operator 2026-07-25):
 //
 //   1. THE SAFE WORD = THE KILL SWITCH. "if i write 'stop' all activity, whatever it is,
 //      must stop" / "stop, stops egpt service point blank" / "if a file named STOP exists
 //      in .egpt it *also* stops ... STOP in a chat writes this file that inoculates
-//      service". So STOP (and STOP ALL — the loud form of the same word can never be the
-//      WEAKER one) writes EGPT_HOME/STOP and takes the SERVICE down. It is no longer a
-//      per-channel pause: `stopAll()`'s old "egpt off without killing the process" meaning
-//      is RETIRED, because a word that sometimes only mutes a channel is exactly the
-//      ambiguity a safe word cannot have.
+//      service". So STOP writes EGPT_HOME/STOP and takes the SERVICE down. It is no longer
+//      a per-channel pause: `stopAll()`'s old "egpt off without killing the process"
+//      meaning is RETIRED, because a word that sometimes only mutes a channel is exactly
+//      the ambiguity a safe word cannot have.
+//      "STOP ALL" IS UNWIRED (operator 2026-07-26: "unwire 'STOP ALL' i didn't even know
+//      it existed"). Not an alias, not a hidden synonym for the kill switch — a phrase the
+//      operator does not know cannot be a second name for the most destructive word on the
+//      node, so it parses as nothing and reads as ordinary text.
 //
 //   2. THE LOOP COUNTER (unchanged) still pauses a CHANNEL on its own: per channel, count
 //      consecutive NON-HUMAN turns with no genuine human turn between them (a "…" silence
@@ -23,7 +28,9 @@
 //      auto-STOP the channel (stopChannel). A human turn resets the count, so normal
 //      human↔bot talk never trips it. RESUME / RESUME ALL clear that pause — which is why
 //      those two words KEEP their old meaning: they are the only way back from an
-//      auto-stop short of a restart.
+//      auto-stop short of a restart. RESUME ALL survives the STOP ALL removal on its own
+//      merits: the counter can auto-stop SEVERAL channels independently, so clearing them
+//      one at a time is not the same job (it never was STOP ALL's counterpart).
 //
 // THE CRUX (what makes turn-counter-ONLY safe, closing the 2026-06-19 hole): "human"
 // is decided by PROVENANCE, not display name (isHumanTurn). A turn resets the counter
@@ -74,9 +81,11 @@ export function writeStopFile({ reason = 'STOP', who = 'unknown', where = 'unkno
 
 // Parse an operator control safe-word out of a message body. Exact, case-
 // insensitive, trailing punctuation tolerated. Returns the control or null.
+// THE COMPLETE SET: 'stop' | 'resume' | 'resume_all'. Anything else — including
+// "STOP ALL", which used to be a second name for the kill switch — is null, i.e.
+// ordinary text that flows on to the normal dispatch.
 export function parseStopWord(text) {
   const t = String(text ?? '').trim().toLowerCase().replace(/[.!\s]+$/, '');
-  if (t === 'stop all' || t === 'stopall') return 'stop_all';
   if (t === 'stop') return 'stop';
   if (t === 'resume all' || t === 'resumeall') return 'resume_all';
   if (t === 'resume') return 'resume';
@@ -159,9 +168,9 @@ export function createStopGuard({ turns = 6, window = -1, now = Date.now, onLog 
     resumeChannel(channel) { stoppedChannels.delete(channel); counts.set(channel, []); onLog(`RESUME ${channel}`); },
     resumeAll() { stoppedChannels.clear(); counts.clear(); onLog('RESUME ALL'); },
 
-    // Apply a parsed control word in a channel context. RESUME only: STOP / STOP ALL are
-    // the KILL SWITCH now (the spine routes them to the STOP file + exit, never here), so
-    // the only per-channel pause left is the loop counter's auto-stop — and these clear it.
+    // Apply a parsed control word in a channel context. RESUME only: STOP is the KILL
+    // SWITCH now (the spine routes it to the STOP file + exit, never here), so the only
+    // per-channel pause left is the loop counter's auto-stop — and these clear it.
     applyControl(word, channel) {
       if (word === 'resume_all') this.resumeAll();
       else if (word === 'resume') this.resumeChannel(channel);

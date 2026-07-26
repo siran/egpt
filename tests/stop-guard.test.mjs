@@ -10,13 +10,20 @@ import { describe, it, expect } from 'vitest';
 import { createStopGuard, parseStopWord } from '../src/stop-guard.mjs';
 
 describe('parseStopWord', () => {
+  // THE WHOLE VOCABULARY: stop | resume | resume all. Nothing else.
   it('parses the safe-words, case- and punctuation-tolerant', () => {
     expect(parseStopWord('STOP')).toBe('stop');
     expect(parseStopWord('stop.')).toBe('stop');
-    expect(parseStopWord('Stop ALL')).toBe('stop_all');
-    expect(parseStopWord('stopall')).toBe('stop_all');
     expect(parseStopWord('RESUME')).toBe('resume');
     expect(parseStopWord('resume all')).toBe('resume_all');
+    expect(parseStopWord('resumeall')).toBe('resume_all');
+  });
+  // UNWIRED (operator 2026-07-26: "unwire 'STOP ALL' i didn't even know it existed"). Not an
+  // alias for the kill switch, not a hidden synonym — it parses as nothing, like any prose.
+  it('"STOP ALL" is not a control word at all', () => {
+    expect(parseStopWord('STOP ALL')).toBeNull();
+    expect(parseStopWord('stop all')).toBeNull();
+    expect(parseStopWord('stopall')).toBeNull();
   });
   it('does not misfire on ordinary text containing the word', () => {
     expect(parseStopWord('please stop the build')).toBeNull();
@@ -61,9 +68,8 @@ describe('createStopGuard — the per-channel pause', () => {
     g.stopChannel('Z');
     g.applyControl(parseStopWord('resume all'), 'A');
     expect(g.blocked('Z')).toBe(false);
-    // STOP/STOP ALL reach the STOP file, not this state machine — applyControl ignores them.
+    // STOP reaches the STOP file, not this state machine — applyControl ignores it.
     g.applyControl(parseStopWord('stop'), 'A');
-    g.applyControl(parseStopWord('stop all'), 'A');
     expect(g.blocked('A')).toBe(false);
     expect(g.blocked('anything')).toBe(false);
   });

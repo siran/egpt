@@ -192,6 +192,7 @@ export async function boot({
   exit = (code) => process.exit(code),// how a lifecycle command leaves (the daemon respawns on 42/43/44)
   setInterval: setIntervalFn = globalThis.setInterval,       // the spine tick-timer seam; injected so a test can observe the effective cadence
   clearInterval: clearIntervalFn = globalThis.clearInterval,
+  setTimeout: setTimeoutFn = globalThis.setTimeout,          // the KILL SWITCH warning's cap seam (below); injected so a test can drive the 3s timer instead of waiting for it
 } = {}) {
   // === THE KILL SWITCH (operator 2026-07-25) — THE FIRST THING boot DOES ===============
   // "if a file named STOP exists in .egpt it *also* stops". Checked before the config is
@@ -212,9 +213,35 @@ export async function boot({
   // operator `touch`ing the file from a terminal, and the chat safe word in classify).
   // Writing is best-effort — a write we cannot do must never PREVENT the stop — but it is
   // never silent: the failure is logged and the node stops regardless.
+  //
+  // ONCE-ONLY: the warning post below is awaited, and the spine's own tick can fire during
+  // that window — without this latch a tick that sees the freshly-written file would pull a
+  // second time (a duplicate warning and a second exit).
+  let stopping = false;
   const stopSwitch = {
     present: () => stopFilePresent(STOP_FILE),
-    pull: (why = {}) => {
+    pull: async (why = {}) => {
+      if (stopping) return;
+      stopping = true;
+      // WARN IN THE CHAT IT CAME FROM (operator 2026-07-26: "STOP on any chat created the
+      // file and emits warning in the chat that action was taken") — the operator must SEE
+      // that it landed instead of wondering whether it registered. Routed through
+      // shellAwareBridge so a STOP typed at the operator console is answered on the console,
+      // not posted to Beeper. Declared far below but only READ here at call time (post-boot,
+      // from the spine) — the same call-time-safe forward reference as readTranscript's
+      // resolveConvDir.
+      //
+      // ⚠ CAPPED, exactly like announceAndExit's going-down line: the send races a 3s timer,
+      // so a slow or wedged POST can never wedge the stop. If it fails or times out the node
+      // still stops — the FILE is the durable record, this line is only courtesy.
+      if (why.chatId) {
+        try {
+          await Promise.race([
+            shellAwareBridge.send(why.chatId, `🛑 STOP received — egpt is stopping (the service will not respawn).\nTo start it again:  rm ${STOP_FILE}`),
+            new Promise((r) => setTimeoutFn(r, 3000)),
+          ]);
+        } catch (e) { log.line?.(`[stop] could not post the warning (${e?.message ?? e}) — stopping anyway`); }
+      }
       try { writeStopFile({ ...why, at: new Date(now()).toISOString() }, STOP_FILE); }
       catch (e) { log.line?.(`[stop] could NOT write ${STOP_FILE} (${e?.message ?? e}) — stopping anyway, but this node will start again`); }
       log.line?.(`[stop] egpt stopping — ${STOP_FILE}. Delete the file to start again:  rm ${STOP_FILE}`);

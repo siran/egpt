@@ -1216,14 +1216,26 @@ export const CONFIG_SCHEMA = {
 
     RESUME / RESUME ALL (from an authorized sender, on any surface) clear a
     channel this counter auto-stopped — the only way back short of a restart.
+    RESUME clears the channel it was typed in; RESUME ALL clears every channel the
+    counter stopped (it can stop several independently).
 
     THE SAFE WORD IS SEPARATE, AND IT IS THE KILL SWITCH (operator 2026-07-25):
-    STOP (or STOP ALL — the loud form is never the weaker one) from an authorized
-    sender on ANY surface writes  EGPT_HOME/STOP  with its reason + provenance and
-    stops the SERVICE (a clean exit 0, which egpt-daemon does not respawn). It
-    does NOT pause a channel. While that file exists the node refuses to boot, and
-    a RUNNING node halts on its next tick — so  touch ~/.egpt/STOP  stops egpt too.
-    Recovery is  rm ~/.egpt/STOP  and nothing else: the file is the whole state.
+    STOP from an authorized sender on ANY surface writes  EGPT_HOME/STOP  with its
+    reason + provenance, posts a one-line warning back into that chat (best-effort,
+    capped — it can never delay the stop) and stops the SERVICE (a clean exit 0,
+    which egpt-daemon does not respawn). It does NOT pause a channel. While that
+    file exists the node refuses to boot, and a RUNNING node halts on its next tick
+    — so  touch ~/.egpt/STOP  stops egpt too. Recovery is  rm ~/.egpt/STOP  and
+    nothing else: the file is the whole state.
+
+    WHO MAY PULL IT: an authorized sender (per-surface allowed_users, or the Beeper
+    account owner) AND a genuine HUMAN turn. On a shared Beeper account every send
+    from the account reads as authorized, so the safe word is additionally gated on
+    the same PROVENANCE predicate this counter uses — our own output, a brain
+    member's re-entered reply, relay envelopes and backlog replay can never pull it.
+
+    THE COMPLETE SAFE-WORD VOCABULARY IS:  STOP | RESUME | RESUME ALL.
+    "STOP ALL" was unwired on 2026-07-26 — it is ordinary text now, not an alias.
   `,
 
   warm: `
