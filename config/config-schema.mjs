@@ -301,8 +301,11 @@ export const CONFIG_SCHEMA = {
         (contacts.<surface>[<id>].<being>.send_to_egpt) and WINS over this
         global.
 
-    Per-chat modes live in each conversation entry
-    (contacts.<surface>[<id>].mode, via /e auto <mode> <chat>).
+    Per-chat modes live in each conversation entry, PER AGENT
+    (contacts.<surface>[<id>].<being>.mode, or the entry's agents.<name>.mode
+    override, via /e auto <mode> <chat>). There is no flat entry-level mode —
+    getBeing() has had no flat fallback since 2026-07-10.
+    Paste-ready reference: config/skeletons/conversations.yaml.
 
     BACK-COMPAT: each of these three reads falls back to its legacy home in the
     whatsapp block — so an un-migrated config is unchanged (src/spine/gating.mjs):

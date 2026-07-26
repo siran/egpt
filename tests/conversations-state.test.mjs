@@ -552,6 +552,22 @@ describe('residentsOf — resident beings vs flat blocks', () => {
     const entry = { slug: 'fam', e: { mode: 'on' }, dora: { mode: 'on', readonly: { model: 'x' } } };
     expect(residentsOf(entry)).toEqual(['e', 'dora']);
   });
+
+  // Regression (2026-07-26): `guard` is object-valued and was NOT in _FLAT_ENTRY_KEYS, so
+  // any conversation carrying the per-conversation loop-breaker override listed a phantom
+  // resident named "guard" — the exact trap `readonly` and `agents` are in that set for.
+  // Found while documenting the option in config/skeletons/conversations.yaml: the skeleton
+  // tells operators to set `guard:`, which armed it.
+  it('an entry with a guard override lists no phantom "guard" resident', () => {
+    const entry = {
+      conversation_path: '.egpt/conversations/whatsapp/g-2606291919',
+      home_dir: '/c/Users/an',
+      posts_back_delay_ms: -1,
+      guard: { turns: -1, window: 30 },
+      egpt: { mode: 'auto', threadId: 'x' },
+    };
+    expect(residentsOf(entry)).toEqual(['egpt']);
+  });
 });
 
 describe('YAML parse / serialize round-trip', () => {
@@ -620,6 +636,57 @@ describe('YAML parse / serialize round-trip', () => {
     expect(parse('')).toEqual(emptyState());
     expect(parse(null)).toEqual(emptyState());
     expect(parse('   ')).toEqual(emptyState());
+  });
+
+  // ── THE COMMENT-SURVIVAL GATE (operator 2026-07-26) ──────────────────────
+  // The ruling asked for every entry to carry the full option list COMMENTED OUT,
+  // so configuring a conversation is a matter of uncommenting a line. That is only
+  // safe if a hand-written comment inside an entry SURVIVES the spine's next write.
+  // IT DOES NOT. serialize() does not round-trip the parsed Document — it builds a
+  // BRAND-NEW `new YAML.Document(slimState)` from the plain JS object parse() handed
+  // back, and a plain JS object carries no comments. The single exception is the
+  // pushedName inline comment on the jid KEY, which survives only because parse()
+  // explicitly re-hydrates it into `entry.pushedName` and serialize() explicitly
+  // re-attaches it as `pair.key.comment`. Everything else is discarded on the first
+  // state write (a mode flip, a new thread, a rename — anything).
+  //
+  // So: seeding a commented option template into registry entries is NOT viable. This
+  // test locks that fact where it is decided. If someone makes serialize() a true
+  // Document round-trip, this test goes red — read this note before "fixing" it, and
+  // then re-open the seeding question, because it becomes possible.
+  //
+  // (Contrast: the per-conversation FOLDER config, conversations/<surface>/<slug>/
+  // config.yaml, IS comment-preserving — Room._setConfigBlock in src/room-core.mjs
+  // does parseDocument → setIn → String(doc). Comments are safe THERE, not here.)
+  it('hand-written comments inside an entry do NOT survive a parse/serialize cycle (only the jid-key pushedName does)', () => {
+    const authored = [
+      'contacts:',
+      '  whatsapp:',
+      '    "26087681749235@lid": # Diego',
+      '      conversation_path: .egpt/conversations/whatsapp/diego-2605200133',
+      '      home_dir: /c/Users/an',
+      '      # --- per-conversation options (uncomment to configure) ---',
+      '      # transcribe: false     # default: true',
+      '      guard:',
+      '        turns: 40             # trailing note on a LIVE key',
+      '',
+    ].join('\n');
+
+    const after = serialize(parse(authored));
+
+    // the data is intact ...
+    expect(parse(after).contacts.whatsapp['26087681749235@lid']).toMatchObject({
+      conversation_path: '.egpt/conversations/whatsapp/diego-2605200133',
+      home_dir: '/c/Users/an',
+      guard: { turns: 40 },
+    });
+    // ... and every authored comment is gone.
+    expect(after).not.toContain('uncomment to configure');
+    expect(after).not.toContain('transcribe');            // the commented-out option line, erased
+    expect(after).not.toContain('default: true');
+    expect(after).not.toContain('trailing note');         // even a note on a live key
+    // The ONE comment that lives: pushedName, re-derived by the slim contract.
+    expect(after).toContain('# Diego');
   });
 });
 

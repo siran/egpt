@@ -1,0 +1,106 @@
+# conversations.yaml - the REGISTRY: one entry per conversation, whole node.
+# Lives at ~/.egpt/config/conversations.yaml. The spine creates it on first
+# contact, so this file is a REFERENCE to read beside the real one.
+# Why each option exists: config/config-schema.mjs.
+#
+# NOT to be confused with the per-conversation FOLDER config
+# ~/.egpt/conversations/<surface>/<slug>/config.yaml - members, warm,
+# transcription, heartbeats. See config/skeletons/conversation-config.yaml.
+# Here: which agent replies and how. There: the conversation as a room.
+#
+# COMMENTS YOU ADD HERE DO NOT SURVIVE. The spine rewrites this file on every
+# state change and rebuilds it from memory (serialize(), src/conversations-
+# state.mjs), erasing them. Only the `# <name>` on the id line persists - the
+# spine re-derives that one. So set real keys here; read this file for what
+# they mean. Locked by tests/conversations-state.test.mjs.
+# Edits are hot (re-read per lookup, no restart), but prefer `/e auto <mode>`
+# and the `/e` wizard where they cover it - a hand edit can race a spine write.
+
+contacts:
+
+  # surface: whatsapp | telegram | shell | signal (KNOWN_SURFACES) - others throw
+  whatsapp:
+
+    # the chat id as the bridge reports it; quote it. `# <name>` is the chat
+    # title, spine-written. shell has ONE seat, id `main`, fixed slug `lobby`.
+    "EXAMPLE_CHAT_ID": # Some Group
+
+      # where the folder is, home-relative; the slug is its basename (not stored)
+      conversation_path: .egpt/conversations/whatsapp/some-group-2606291919
+      # the home conversation_path is relative to, msys-style. Pointer only.
+      home_dir: /c/Users/an
+      # legacy flat thread slot; the live one is per-agent, below
+      threadId: null
+
+      # 👂 voice-note echo delay ms: -1 never echo, 0 immediate, N debounce
+      # default: config.yaml transcription_service.posts_back_delay_ms
+      #posts_back_delay_ms: -1
+
+      # loop-breaker override; node default config.yaml guard: {turns: 6, window: -1}
+      # turns = consecutive non-human turns before pausing (-1/0 off), window = minutes
+      #guard: { turns: -1 }
+
+      # one block per resident agent, keyed by its config.yaml agents: name
+      egpt:
+
+        # how this agent wakes here: on | auto | mute | mention-direct | mention | off
+        # default: config.yaml agents.<name>.mode, then dispatch.auto_default_mode
+        #mode: mention
+
+        # persona only - keep it in context on messages it won't answer: always | mode
+        #send_to_egpt: mode
+
+        # spine-written, don't hand-edit: delete threadId to start fresh (`/e new`)
+        threadId: null
+        #threadCreatedAt: 2026-07-10T16:39:39.948Z
+        #identityInjectedAt: 2026-07-10T16:39:39.948Z
+
+        # spine-written freeze of the agent type this thread was instanced from.
+        # Change it with /e new | /e identity | /e brain, not by hand.
+        #readonly:
+        #  agent: egpt                 # the config.yaml agents: entry
+        #  type: ccode                 # the engine
+        #  model: sonnet               # sonnet | opus | haiku
+        #  effort: high                # high | medium | low
+        #  allowed_tools: [Read, Write, Edit, Glob, Grep, WebSearch, WebFetch, Task]
+        #                              # a LIST confines file tools to the folder;
+        #                              # "all" is rejected and coerced back to this
+
+      # per-conversation overrides, layered field-wise OVER the blocks above.
+      # Pin one agent's mode in one chat without touching its threadId/readonly.
+      #agents:
+      #  egpt: { mode: auto }
+      #  don:  { mode: mention-direct }
+
+    # a second id for the SAME contact - one thread, one folder, one mode.
+    # One level only; an alias pointing at an alias resolves to nothing.
+    #"584122182178@s.whatsapp.net":
+    #  aliasOf: "EXAMPLE_CHAT_ID"
+
+  #telegram:
+  #  "88164392": # An
+  #    conversation_path: .egpt/conversations/telegram/an-2605211200
+  #    home_dir: /c/Users/an
+  #    threadId: null
+
+  #shell:
+  #  main: # console
+  #    conversation_path: .egpt/conversations/shell/lobby
+  #    home_dir: /c/Users/an
+  #    threadId: null
+
+
+# INERT - live registries still carry these; nothing reads them. Don't copy forward.
+#   personality     retired; identity is a property of the agent TYPE
+#   slug            derived from conversation_path's basename, never stored
+#   pushedName      stored as the `# <name>` comment on the id line
+#   firstSeenAt     dropped on write; lives in state/stats/<surface>/
+#   threadCreatedAt   "   (the NESTED per-agent ones above DO persist)
+#   identityInjectedAt "
+#   threadCwd       retired; dropped on write, so it cannot persist
+#   jids            pre-surface-layout multi-jid array; use aliasOf
+#   transcribe      no reader; see `transcription:` in the FOLDER config
+#   mode            flat: no reader - modes are per-agent (nested), always
+#   send_to_egpt    flat: same
+#   readonly        flat: pre-nested legacy slot, no fallback reads it
+#   system_thread   root-level legacy block; round-trips, nothing reads it

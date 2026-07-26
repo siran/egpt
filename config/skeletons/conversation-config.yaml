@@ -1,0 +1,55 @@
+# The per-conversation FOLDER config. Copy to that conversation's own folder as
+# config.yaml: ~/.egpt/conversations/<surface>/<slug>/config.yaml
+# A named room uses the same file at ~/.egpt/rooms/<name>/config.yaml.
+#
+# Everything is optional - absent, empty, or malformed all mean defaults, so
+# add only the block you need. Each block is read by its own service.
+#
+# NOT the REGISTRY (~/.egpt/config/conversations.yaml, one entry per
+# conversation: reply mode, thread, guard). See config/skeletons/conversations
+# .yaml. Here: the conversation as a room. There: which agent replies and how.
+#
+# COMMENTS ARE SAFE HERE. The spine only ever writes `members:`, and it edits
+# through the YAML Document API (Room._setConfigBlock, src/room-core.mjs), so
+# your blocks and comments survive. The registry is the opposite - annotate
+# this file, not that one.
+
+
+# WHO participates and in what state. An explicit list wins; with none, the
+# roster is seeded from the legacy residents_per_chat + per-being auto-mode.
+#   kind   brain | wa-group | tg-group | shell | extension (unknown -> brain)
+#   id     the member's name; for a brain, its config.yaml agents: name
+#   state  muted | mention | mention-direct | active | off | accum
+#          aliases: mute/silent, on/unmute/unmuted/open, direct, accumulate
+#          default muted; unknown -> muted
+# Extra per-member fields (brain, options, emoji, bio, adapter, url, targetId)
+# survive a spine write untouched.
+#members:
+#  - { kind: brain, id: egpt, state: active }
+#  - { kind: brain, id: don,  state: mention-direct }
+
+
+# How long this conversation's session stays hot before idle-eviction.
+# ms number or <qty><unit> (ms|s|m|h); 0 = always warm. Absent = the class TTL.
+#warm:
+#  idle_ttl: 30m
+
+
+# Voice notes here. Both default true; only an explicit false turns one off.
+#   enabled     transcribe at all (HEARD - model + transcript.md get the text)
+#   posts_back  also echo the 👂 transcript into the chat (SPOKEN)
+# For CONVERSATIONS the echo delay and hard mute moved to the registry entry's
+# posts_back_delay_ms, which wins when set; rooms still use this block alone.
+#transcription:
+#  enabled: true
+#  posts_back: true
+
+
+# Beats scoped to this conversation. One trigger (when: | frequency:) and one
+# action (ai_run: | command:) each. Time formats + zones, and the full
+# reference: config/skeletons/heartbeats.yaml
+# Hot reload: delete state/heartbeats.readonly.yaml, re-read within ~30s.
+#heartbeats:
+#  daily-sweep:
+#    frequency: 24h
+#    command: echo swept > last-sweep.txt

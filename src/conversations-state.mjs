@@ -803,6 +803,15 @@ const _FLAT_ENTRY_KEYS = new Set([
   // `agents` is likewise object-valued but a CONTAINER of per-agent overrides (see getBeing),
   // not a resident being — same phantom-resident reason.
   'agents',
+  // `guard` — the per-conversation loop-breaker override `{ turns, window }` (read in
+  // src/spine/boot.mjs guardOverride). Object-valued, so it hit the SAME phantom-resident
+  // trap `readonly` and `agents` are listed for: any entry carrying a guard override made
+  // residentsOf report a resident named "guard" (2026-07-26).
+  'guard',
+  // The relocatable-pointer pair + the per-chat 👂 echo delay. Scalars, so they could never
+  // produce a phantom — listed to keep this set an honest inventory of the contact-level
+  // keys, which is the only way the next object-valued one gets caught by review.
+  'conversation_path', 'home_dir', 'posts_back_delay_ms',
 ]);
 
 // Resolve a resident being's view of a conversation, reading its nested `entry[being]` block
@@ -1496,6 +1505,14 @@ export async function seedIdentityLayers(surface, slug, name, { io = {} } = {}) 
     const layers = await _identityLayers(name);
     const dir = join(slugDir(surface, slug), 'identity.d');
     await mkdirFn(dir, { recursive: true });
+    // …and the conversation's scripts/ folder (operator 2026-07-26: "an *.x.md goes in the
+    // scripts/ folder of a Room, so I can tell E, do yyy and it knows to read the
+    // textecutable"). Created HERE — in the very function that writes the pointers card
+    // that advertises it — so card and folder can never disagree. That is the lesson of the
+    // `./transcripts/` dead-end (2026-07-25): a card naming a directory nothing ever
+    // created sent E to a path that did not exist. Empty by design: the operator (or E)
+    // puts scripts in; an empty folder tells E honestly that there are none yet.
+    await mkdirFn(Room.forChat(surface, slug).scriptsDir, { recursive: true });
     for (const { file, text } of layers) {
       if (!text.trim()) continue;                                  // an empty layer is not a file worth writing
       const fp = join(dir, file);
