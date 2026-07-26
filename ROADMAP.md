@@ -215,12 +215,25 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
     2026-07-25 when `mesh.nodes` was evicted — every route is a relay_channel now, and both
     relay_channel sites resolve.)
 
-- **⚠️ UNREPRODUCED SINCE 2026-07-26 — treat as unproven, not as a standing warning.** A deliberate
-  hunt that day (3 full-suite runs + 3 isolated runs of each suspect file) produced **ZERO failures**:
-  2245/2245 every full run, 122/122 every isolated `beeper-bridge` run, 9/9 every isolated
-  `transcriptor` run. Honest limit: 3 clean full runs cannot exclude a ~30%-per-run flake
-  (P ≈ 0.34), so this is *not observed lately*, not *disproven*. The original characterisation
-  follows; if it fires again, re-date it rather than trusting the 2026-07-25 rate.
+- **⚠️ RE-CHARACTERISED 2026-07-26 (later the same day): THE FLAKE IS THE WHOLE FILE, NOT TWO
+  NAMED TESTS.** An audit that morning ran 3 full + 3 isolated runs, saw zero failures, and
+  concluded "unreproduced". That conclusion was WRONG — it was luck. Four full runs that afternoon
+  (after the dead-module deletion changed the file count 147 → 131 and with it the parallel
+  scheduling) gave **one fully-green run and three failures — a DIFFERENT test each time**, every
+  one in `tests/beeper-bridge.test.mjs`, every one green on isolate-rerun (122/122, repeatedly).
+  Observed so far: the `/v1/accounts` fullName test, the cross-surface `allowed_users` test, and
+  the cursor-pagination termination test.
+  - **What this means:** any test in that file can lose the startup race on the `/v1/accounts`
+    fetch under full parallel load. Do NOT match on a test NAME to decide "this is the known
+    flake" — match on the FILE and confirm with an isolated rerun.
+  - **A deterministic regression cannot produce a fully-green run**, which is what makes this
+    distinguishable from a real break. Use that test.
+  - ⚠️ **One failure fails OPEN:** the cross-surface authorization assertion went
+    `authorized: false → true` under the race. Whether the race can do that in PRODUCTION (rather
+    than only against the test's 5s budget) is NOT established and is worth its own look — an
+    auth check that degrades permissive is a different class of problem from a slow test.
+  - A real fix means the test awaiting the accounts fetch deterministically instead of racing a
+    timeout. The original characterisation follows.
 - **KNOWN TEST FLAKE (characterised 2026-07-25 — do NOT chase it):** `tests/beeper-bridge.test.mjs`
   › *"the owner's OWN send is attributed to the /v1/accounts self-user's fullName…"* intermittently
   fails with `Test timed out in 5000ms` — roughly **1 full-suite run in 3–4**. It is a startup race
