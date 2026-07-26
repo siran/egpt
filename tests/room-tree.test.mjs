@@ -25,17 +25,19 @@ const SURFACE = 'whatsapp';
 const SLUG = 'tree-fixture';
 const ROOM_NAME = 'tree-fixture';
 
-// An io seam that RECORDS mkdir and swallows every write. readFile always misses, so
+// An io seam that RECORDS mkdir and every write (path -> bytes). readFile always misses, so
 // seedIdentityLayers takes its copy-if-missing branch (it would otherwise skip layers) and
 // /room create's stat-probe reports "no such room yet".
 function captureIo() {
   const mkdirs = [];
+  const writes = {};
   const miss = () => { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; };
   return {
     mkdirs,
+    writes,
     io: {
       mkdir: async (p) => { mkdirs.push(p); },
-      writeFile: async () => {},
+      writeFile: async (p, d) => { writes[p] = d; },
       readFile: async () => miss(),
       stat: async () => miss(),
     },
@@ -59,7 +61,7 @@ describe('ONE owner of the Room tree — both creation paths make the SAME tree'
 
     // (b) the conversation path — the turn-boundary seeding
     const conv = captureIo();
-    await seedIdentityLayers(SURFACE, SLUG, 'egpt', { io: conv.io });
+    await seedIdentityLayers(Room.forChat(SURFACE, SLUG), 'egpt', { io: conv.io });
 
     const namedTree = treeOf(named.mkdirs, Room.named(ROOM_NAME));
     const convTree = treeOf(conv.mkdirs, Room.forChat(SURFACE, SLUG));
@@ -78,5 +80,31 @@ describe('ONE owner of the Room tree — both creation paths make the SAME tree'
     await cmds.run({ chatId: '!self', surface: SURFACE, body: `/room create ${ROOM_NAME}` });
     // '' is the base folder; the rest are the dir getters room-core.mjs declares.
     expect(treeOf(named.mkdirs, Room.named(ROOM_NAME))).toEqual(['', 'files', 'identity.d', 'media', 'scripts', 'transcripts']);
+  });
+
+  // REPRODUCE-FIRST (operator 2026-07-26: "why an empty identity.d in namedrooms? fix,
+  // please."): the tree existing is not the same as it being SEEDED. /room create must
+  // populate identity.d/ with the room template's NN-*.md layers, exactly like a
+  // conversation's turn-boundary seeding does — else both pointer cards tell a room's
+  // brain to read ./identity.d/ and find nothing there.
+  it('/room create SEEDS identity.d/ with the room template layers — not just an empty folder', async () => {
+    const named = captureIo();
+    const cmds = createCommands({
+      getConfig: () => ({ whatsapp: { chat_id: '!self' } }),
+      send: async () => {},
+      io: named.io,
+    });
+    await cmds.run({ chatId: '!self', surface: SURFACE, body: `/room create ${ROOM_NAME}` });
+
+    const room = Room.named(ROOM_NAME);
+    const layerNames = Object.keys(named.writes)
+      .map((p) => relative(room.identityDir, p))
+      .filter((rel) => rel && !rel.startsWith('..'))
+      .sort();
+    expect(layerNames).toEqual(['00-identity.md', '10-actions.md', '30-pointers.md', '40-rules.md']);
+    for (const [p, body] of Object.entries(named.writes)) {
+      if (relative(room.identityDir, p).startsWith('..')) continue;
+      expect(body.trim()).not.toBe('');
+    }
   });
 });

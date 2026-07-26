@@ -1590,13 +1590,20 @@ async function _identityLayers(name) {
   return layers;
 }
 
-// Seed the room's identity layers into a conversation's OWN folder (operator 2026-07-25:
-// "they all get to model at the beginning, but should also be copied for local consult,
-// since by default conversation-e has only access to it's folder"). E runs with
-// confineToDirs:[<conv>], so a layer that is never copied there is unreadable to it — and
-// both pointer cards tell it to read ./identity.d/.
+// Seed the room's identity layers into a Room's OWN folder — a conversation or a NamedRoom
+// alike, since a conversation IS a Room with another base_dir (operator 2026-07-25: "they
+// all get to model at the beginning, but should also be copied for local consult, since by
+// default conversation-e has only access to it's folder"). A brain confined to a Room's own
+// tree can't read a layer that was never copied there — and both pointer cards tell it to
+// read ./identity.d/.
 //
-// DESTINATION `<conv>/identity.d/<NN-name>.md`: the path both cards name and the one
+// RE-KEYED ON THE ROOM (operator 2026-07-26: "why an empty identity.d in namedrooms? fix,
+// please.") — this used to take (surface, slug) and could only ever resolve
+// Room.forChat(surface, slug), so it was structurally incapable of targeting rooms/<name>/.
+// The caller now hands in the Room instance it already has (ConversationRoom from the
+// persona turn, NamedRoom from /room create), and every path below reads off IT.
+//
+// DESTINATION `<room>/identity.d/<NN-name>.md`: the path both cards name and the one
 // Room.identityDir already defines ("NN-*.md fed to the room's brain(s)"). ALL layers are
 // copied, 10-actions included — the retired installIdentity deliberately skipped it ("the
 // limbs live only in-context"); the operator's instruction supersedes that.
@@ -1606,24 +1613,27 @@ async function _identityLayers(name) {
 // operator 2026-07-26, "all skeleton files are copied on refresh thread". That is the
 // capabilities refresher — an edited template (10-actions.md learning /ask) could otherwise
 // never reach a conversation that was seeded once, months ago. THE TRADE: a hand-edit to
-// <conv>/identity.d/ is discarded on the next refresh. Intended — these are consult COPIES;
-// the sources are the room template and config/identities/<name>.md.
+// <room>/identity.d/ is discarded on the next refresh. Intended — these are consult COPIES;
+// the sources are the room template and config/identities/<name>.md. /room create passes no
+// overwrite (copy-if-missing): a brand-new room's identity.d is already empty, so there is
+// nothing to refresh — and copy-if-missing is the same never-clobber default every other
+// seed path uses, in case creation is ever retried against a room that already has layers.
 //
-// NEVER throws — a seeding hiccup must not break a turn. Returns the filenames it wrote.
-export async function seedIdentityLayers(surface, slug, name, { io = {}, overwrite = false } = {}) {
+// NEVER throws — a seeding hiccup must not break a turn (or a /room create). Returns the
+// filenames it wrote.
+export async function seedIdentityLayers(room, name, { io = {}, overwrite = false } = {}) {
   const readFileFn = io.readFile ?? readFile;
   const writeFileFn = io.writeFile ?? writeFile;
   const mkdirFn = io.mkdir ?? mkdir;
   const wrote = [];
   try {
     const layers = await _identityLayers(name);
-    const room = Room.forChat(surface, slug);
     const dir = room.identityDir;
-    // The conversation's WHOLE Room tree — identity.d/ AND media/ files/ scripts/ — through
-    // the abstraction's own ensureTree, the SAME call /room create makes (operator
-    // 2026-07-26: "the work is for the Room abstraction, it is then for free in a room or
-    // conversation on any network"). Before this the list was duplicated here and had
-    // drifted from /room create's copy.
+    // The Room's WHOLE tree — identity.d/ AND media/ files/ scripts/ — through the
+    // abstraction's own ensureTree, the SAME call /room create makes (operator 2026-07-26:
+    // "the work is for the Room abstraction, it is then for free in a room or conversation
+    // on any network"). Before this the list was duplicated here and had drifted from /room
+    // create's copy.
     //
     // Created HERE — in the very function that writes the pointers card that advertises
     // ./media/ and ./scripts/ — so card and folders can never disagree. That is the lesson
@@ -1641,7 +1651,7 @@ export async function seedIdentityLayers(surface, slug, name, { io = {}, overwri
       await writeFileFn(fp, text, 'utf8');
       wrote.push(file);
     }
-  } catch (e) { console.error(`!! seedIdentityLayers(${surface}/${slug}): ${e?.message ?? e}`); }
+  } catch (e) { console.error(`!! seedIdentityLayers(${room?.baseDir?.() ?? '?'}): ${e?.message ?? e}`); }
   return wrote;
 }
 

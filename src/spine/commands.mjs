@@ -10,7 +10,7 @@
 // with a short note.
 import { lifecycleExit } from './ingest.mjs';
 import { isAutoMode, AUTO_MODES, DEFAULT_AUTO_MODE } from '../auto-mode.mjs';
-import { patchBeing, getContact, getBeing, slugDir, statsPath, conversationPathOf, listIdentityLayers as defaultListIdentityLayers, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS, READONLY_ALLOWED_TOOLS, KNOWN_SURFACES, LOBBY_SLUG } from '../conversations-state.mjs';
+import { patchBeing, getContact, getBeing, slugDir, statsPath, conversationPathOf, listIdentityLayers as defaultListIdentityLayers, seedIdentityLayers, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS, READONLY_ALLOWED_TOOLS, KNOWN_SURFACES, LOBBY_SLUG } from '../conversations-state.mjs';
 import { stripFrontMatter } from '../transcript-meta.mjs';
 import { initWizard, wizardStep, wizardPrompt } from '../agent-wizard.mjs';
 import { BUILTIN_BRAINS_DIR, PROFILE_AGENTS_DIR } from './brains.mjs';
@@ -86,11 +86,11 @@ const identityLayerFile = (text) => `${String(text).trim()}\n`;
 
 // A fresh NamedRoom's config.yaml — a commented placeholder (like the seeded templates,
 // seed.mjs). Pure comments → parses to null, so the heartbeat/transcription loaders read
-// it as an empty {}. A new room needs NO per-room identity files: its feed layers are the
-// SHARED profile-root skeletons (config/skeletons/room/, seeded once at the profile root),
-// not per-room copies. Members are later work — no roster block yet.
+// it as an empty {}. Members are later work — no roster block yet. (The room's identity.d/
+// layers are a SEPARATE seeding step in roomCreate below, beside ensureTree — the same
+// shared config/skeletons/room/ template a conversation seeds, copied per-room.)
 const roomConfigFile = (name) => `# room ${name} — an operator-created NamedRoom (the folder IS the room).
-# Feed layers come from the shared config/skeletons/room/ template, not per-room copies.
+# Feed layers come from the shared config/skeletons/room/ template, copied into identity.d/ at creation.
 # Add heartbeats:, transcription_service:, or members: blocks here to wire behavior.
 # This file is the NEAREST rung: it beats config/config.yaml for any key it sets.
 `;
@@ -843,6 +843,16 @@ export function createCommands({
     // conversation seeds the identical tree through the same call.
     // No member roster — that's later work.
     await r.ensureTree({ io: { mkdir } });
+    // Seed identity.d/ beside the tree (operator 2026-07-26: "why an empty identity.d in
+    // namedrooms? fix, please.") — the SAME seedIdentityLayers the persona turn calls,
+    // re-keyed on the Room instance it already abstracts both shapes for. 'egpt' (no
+    // per-room personality concept exists yet) is exactly the default a conversation falls
+    // back to (def.personality ?? 'egpt'). No overwrite: a brand-new room's identity.d is
+    // already empty, so copy-if-missing is a plain seed here — and it's the same
+    // never-clobber default every other seed path uses. Never throws by its own contract, so
+    // a seed failure still leaves a created room rather than an error the operator can't act
+    // on — an empty identity.d is a smaller problem than a /room create that fails outright.
+    await seedIdentityLayers(r, 'egpt', { io: { mkdir, readFile, writeFile } });
     await writeFile(r.configPath, roomConfigFile(slug), 'utf8');
     await send?.(ev.chatId, `room ${slug} created at ${rel}`);
   }

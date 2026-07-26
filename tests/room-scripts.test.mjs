@@ -45,7 +45,8 @@ let seeded;
 beforeAll(async () => {
   await fs.mkdir(HOME, { recursive: true });
   const { seedIdentityLayers } = await import('../src/conversations-state.mjs');
-  await seedIdentityLayers(SURFACE, SLUG, 'egpt');
+  const { Room } = await import('../src/room-core.mjs');
+  await seedIdentityLayers(Room.forChat(SURFACE, SLUG), 'egpt');
   seeded = await fs.readFile(join(CONV, 'identity.d', '30-pointers.md'), 'utf8');
 });
 

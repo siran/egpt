@@ -641,7 +641,7 @@ describe('brainpool.turn — the fresh moment', () => {
   it('a refresh re-copies the layers; an ordinary turn keeps copy-if-missing', async () => {
     const fs = fakeIo({});
     const seen = [];
-    const seedLayers = async (surface, slug, name, opts = {}) => { seen.push(opts.overwrite); return []; };
+    const seedLayers = async (room, name, opts = {}) => { seen.push(opts.overwrite); return []; };
     const { brain } = harness([{ text: 'a', sessionId: 'sid-1' }, { text: 'b', sessionId: 'sid-1' }], { io: fs.io, seedLayers });
     await brain.turn('e', ev);    // fresh → a thread is being instanced
     await brain.turn('e', ev);    // resumed on sid-1 → ordinary turn

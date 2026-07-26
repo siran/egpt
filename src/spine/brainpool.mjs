@@ -27,6 +27,7 @@
 // thread persists in a per-being NESTED block (recordThread(..., being)). codex/URL
 // brains + emitted-command stripping (the comm-handler's job, Phase 4) layer in later.
 import { slugDir, getBeing, recordThread, readIdentityFeed, seedIdentityLayers, readAutoModeLayer, patchBeing, appendThreadStat, mutateState, nowIsoString, rollTranscript, stampThreadId, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS } from '../conversations-state.mjs';
+import { Room } from '../room-core.mjs';
 import { isContextOverflowError, isDeadSessionError } from '../brain-errors.mjs';
 import { parseFrequency } from './heartbeat-loader.mjs';
 import { WRITE_TOOLS } from '../claude-args.mjs';
@@ -138,7 +139,7 @@ export function createBrainPool({
   isDeadSession = isDeadSessionError,
   resolveConfig = () => ({}),       // (convDir) -> that conversation's RESOLVED config doc (src/spine/config-resolver.mjs configFor). ONE namespace, three rungs; boot injects the live resolver, tests a canned doc.
   loadFeed = readIdentityFeed,      // (personality) -> identities/<name>/ feed string
-  seedLayers = seedIdentityLayers,  // (surface, slug, personality, {io}) -> copy the fed layers into <conv>/identity.d
+  seedLayers = seedIdentityLayers,  // (room, personality, {io}) -> copy the fed layers into <room>/identity.d
   loadAutoLayer = readAutoModeLayer,// () -> the `mode: auto` operator-role instruction layer (appended to an auto conversation's kickoff)
   loadManifest = null,              // () -> e_identity.md fallback (default below)
   afterTurn = null,                 // ({key, sessionId, model, cwd, allowedTools}) — post-turn hook (auto-compaction)
@@ -372,7 +373,9 @@ export function createBrainPool({
       // Targets convDir, NOT cwd: a def that pins a workspace must not have identity.d
       // written into it. Persona-only — siblings are engineers with no identity feed.
       // Best-effort by contract (seedIdentityLayers never throws) — never breaks a turn.
-      if (!isSibling) await seedLayers(ev.surface, slug, personality, { io, overwrite: fresh });
+      // Room.forChat, not slugDir: seedIdentityLayers is keyed on the Room instance now (a
+      // conversation IS a Room), so its own ensureTree/identityDir resolve off convDir too.
+      if (!isSibling) await seedLayers(Room.forChat(ev.surface, slug), personality, { io, overwrite: fresh });
 
       const key = `${being}:${engine}:${ev.surface}:${slug}`;
       lastKeyByConv.set(`${being}:${ev.surface}:${ev.chatId}`, key);

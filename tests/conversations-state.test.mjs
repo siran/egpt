@@ -10,6 +10,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as YAML from 'yaml';
 import { EGPT_HOME } from '../src/egpt-home.mjs';
+import { Room } from '../src/room-core.mjs';
 import {
   emptyState,
   sanitizeSlug,
@@ -1360,13 +1361,13 @@ describe('seedIdentityLayers — a refresh re-copies the room template layers', 
 
   it('an ordinary turn leaves the existing copies alone', async () => {
     const s = seeded();
-    expect(await seedIdentityLayers(SURFACE, SLUG, 'egpt', { io: s.io })).toEqual([]);
+    expect(await seedIdentityLayers(Room.forChat(SURFACE, SLUG), 'egpt', { io: s.io })).toEqual([]);
     expect(Object.keys(s.wrote)).toEqual([]);
   });
 
   it('a refresh overwrites them with the template\'s current bytes', async () => {
     const s = seeded();
-    const wrote = await seedIdentityLayers(SURFACE, SLUG, 'egpt', { io: s.io, overwrite: true });
+    const wrote = await seedIdentityLayers(Room.forChat(SURFACE, SLUG), 'egpt', { io: s.io, overwrite: true });
     expect(wrote).toContain('10-actions.md');     // the actions card — the one that went stale live
     const actions = Object.entries(s.wrote).find(([p]) => p.endsWith('10-actions.md'))[1];
     expect(actions).not.toBe('AN OLD COPY');
