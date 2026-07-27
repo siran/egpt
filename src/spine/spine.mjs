@@ -19,7 +19,7 @@
 // shell/slash console are layered in after v1, each behind its service seam.
 import { makeSerialByKey } from '../serial-by-key.mjs';
 import { isBrainFailureResult } from '../brain-errors.mjs';
-import { replyLine, contextSinceLastTurn, promptWithRecentContext, bodyForMessageId, promptWithQuotedMessage } from '../transcript-log.mjs';
+import { replyLine, contextSinceLastTurn, promptWithRecentContext, bodyForMessageId, promptWithQuotedMessage, RECENT_CONTEXT_MAX_CHARS } from '../transcript-log.mjs';
 import { isHumanTurn, parseStopWord } from '../stop-guard.mjs';
 import { lifecycleExit } from './ingest.mjs';
 
@@ -758,12 +758,15 @@ export function createSpine({
       // burst (the auto DWELL fire): the whole burst — INCLUDING ev's own line — is already
       // in `pending` (each burst message accumulated at arrival), so prompt with it verbatim
       // and don't re-append ev.line.
-      // RECENT CONTEXT (operator 2026-07-26, the skin-cells incident): this conversation
-      // opted in, so prompt with everything recorded SINCE THIS BEING'S LAST TURN — the
-      // messages a send_to_egpt:'mode' chat never handed it — clearly labelled beside the
-      // triggering line. Read from transcript.md, which already IS that buffer; there is
-      // no second store, and the boundary needs no state because the being's own reply
-      // line is IN the file (transcript-log.contextSinceLastTurn).
+      // MODE: ACCUM (operator 2026-07-26, the skin-cells incident): this being's mode in
+      // this conversation is 'accum', so prompt with everything recorded SINCE ITS LAST
+      // TURN — the messages a send_to_egpt:'mode' chat never handed it — clearly labelled
+      // beside the triggering line. Read from transcript.md, which already IS that buffer;
+      // there is no second store, and the boundary needs no state because the being's own
+      // reply line is IN the file (transcript-log.contextSinceLastTurn). accum gates
+      // replies exactly like 'mention' (auto-mode.mjs), so this changes only WHAT this
+      // turn is prompted with — never WHEN a turn happens. The 8000-char cap is a
+      // CONSTANT, not a knob: the mode is the only switch.
       //
       // It SUPERSEDES the in-memory cycle prepend below rather than adding to it: the
       // cycle is drained at every turn, so its lines are a SUBSET of the same gap, and
@@ -777,14 +780,14 @@ export function createSpine({
       // beeper.mjs ~L1335). So ` re #<id>` reached the model naked and E answered "No veo el
       // contenido de #177210". The content is on the SAME record this reads, one entry up
       // (transcript-log.bodyForMessageId), so it is resolved here and labelled below.
-      // recent_context CANNOT cover this case: its window starts at the being's last turn, and
+      // accum CANNOT cover this case: its window starts at the being's last turn, and
       // a reply to an OLD message is by definition outside it.
       let recent = null, quoted = null;
-      if (readTranscript && (d.recentContextChars > 0 || ev.replyToId != null)) {
+      if (readTranscript && (d.mode === 'accum' || ev.replyToId != null)) {
         try {
           const text = await readTranscript(ev.chatId, { chatName: ev.chatName, network: ev.surface });
-          if (text && d.recentContextChars > 0) {
-            const got = contextSinceLastTurn(text, { being: to, maxChars: d.recentContextChars, exclude: ev.line ?? ev.body });
+          if (text && d.mode === 'accum') {
+            const got = contextSinceLastTurn(text, { being: to, maxChars: RECENT_CONTEXT_MAX_CHARS, exclude: ev.line ?? ev.body });
             if (got.blocks.length) recent = got;
           }
           if (text && ev.replyToId != null) {
@@ -800,7 +803,7 @@ export function createSpine({
         : prepend
           ? (burst && pending.length ? pending : [...pending, base]).join('\n\n')
           : base;
-      // NO DUPLICATE: the quoted message may ALREADY be in the prompt — inside the recent_context
+      // NO DUPLICATE: the quoted message may ALREADY be in the prompt — inside the accum
       // gap, or in the drained cycle. Both are transcript lines, so the SAME walk answers it:
       // an entry carrying that id is already there → add nothing. Appending LAST is what makes
       // that one check enough (it sees everything the prompt already holds), and the block's

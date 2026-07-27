@@ -102,13 +102,16 @@ describe('replyAllowed', () => {
     expect(replyAllowed('auto', M())).toBe(true);
     expect(replyAllowed('auto', M({ atEAnywhere: true }))).toBe(true);
   });
-  it('legacy accum degrades to mention semantics (retired 2026-07-01, unknown→mention)', () => {
-    // 'accum' is no longer a known mode; a value still stored in conversations.yaml
-    // falls through replyAllowed's `default:`, which is identical to 'mention'.
+  it('accum gates EXACTLY like mention — the mode changes the PROMPT, never the gate', () => {
+    // BY DESIGN (operator 2026-07-26), not by degradation: 'accum' is a known mode whose
+    // reply gate IS mention's. What it adds happens in the prompt (spine/spine.mjs
+    // runReplyTurn + transcript-log.contextSinceLastTurn), never here.
     expect(replyAllowed('accum', M({ atEAnywhere: true }))).toBe(true);
     expect(replyAllowed('accum', M({ replyToBot: true }))).toBe(true);
     expect(replyAllowed('accum', M())).toBe(false);
-    // proves it truly routes through default: same output as 'mention' in every case.
+    expect(replyAllowed('accum', M({ atEStart: true }))).toBe(false);   // atEStart alone is not a mention hit
+    // identical to 'mention' in EVERY mention state — see tests/accum-mode.test.mjs for
+    // the exhaustive form.
     expect(replyAllowed('accum', M({ atEAnywhere: true }))).toBe(replyAllowed('mention', M({ atEAnywhere: true })));
     expect(replyAllowed('accum', M())).toBe(replyAllowed('mention', M()));
   });
@@ -135,15 +138,15 @@ describe('replyAllowed', () => {
 
 describe('receives / isAutoMode', () => {
   it('receives is true for everything except off', () => {
-    for (const m of ['on', 'auto', 'mute', 'mention-direct', 'mention']) expect(receives(m)).toBe(true);
+    for (const m of ['on', 'auto', 'mute', 'mention-direct', 'mention', 'accum']) expect(receives(m)).toBe(true);
     expect(receives('off')).toBe(false);
   });
-  it('isAutoMode + default; auto is a known mode, retired accum is not', () => {
+  it('isAutoMode + default; auto and accum are both known modes', () => {
     expect(isAutoMode('mention')).toBe(true);
     expect(isAutoMode('auto')).toBe(true);     // new mode (operator 2026-07-04)
     expect(isAutoMode('nope')).toBe(false);
-    expect(isAutoMode('accum')).toBe(false);   // retired 2026-07-01 → guards fall through to default
-    expect(DEFAULT_AUTO_MODE).toBe('mention'); // auto is opt-in only, never the default
+    expect(isAutoMode('accum')).toBe(true);    // a MODE again (operator 2026-07-26) — gates like mention, prompts with the gap
+    expect(DEFAULT_AUTO_MODE).toBe('mention'); // auto/accum are opt-in only, never the default
   });
 });
 
@@ -246,7 +249,7 @@ describe('mayEmit — outbound backstop', () => {
     expect(mayEmit('mention', { replyAllowed: true })).toBe(true);
     expect(mayEmit('mention', { replyAllowed: false })).toBe(false);
     expect(mayEmit('mention-direct', { replyAllowed: true })).toBe(true);
-    expect(mayEmit('accum', { replyAllowed: true })).toBe(true);   // legacy accum → unknown-mode path, defers like mention
+    expect(mayEmit('accum', { replyAllowed: true })).toBe(true);   // accum defers to the flag exactly like mention
   });
   it('fails CLOSED for mention modes when the flag is absent', () => {
     expect(mayEmit('mention', {})).toBe(false);

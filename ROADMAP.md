@@ -107,7 +107,8 @@ structural (no behavior change) and rides the next `/upgrade`.
 All of the following is LANDED, test-locked, and (where marked) live-verified:
 
 - Core pipe (receive → gate → brain → stream-reply → send), gating modes
-  (accum retired — a REVIVAL is proposed in §4), reply train (persona line, no
+  (`accum` is back as of 2026-07-26 — the mention gate plus the gap in the prompt;
+  the OLD batching accum is still dead, see §4), reply train (persona line, no
   end-marker since the ∎/signature unwiring f300e24, no nonce), flood guard — live-verified
 - Voice chain + per-conversation transcription policy; media per origin surface;
   video Route A
@@ -1035,10 +1036,17 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
   was actively drafting book ideas there; an unwanted user's mention woke the agent). A
   per-conversation DENY overlay on top of the existing networks.<surface>.allowed_users,
   settable by command. Design open.
-- **~~Revive `accum` mode~~ — DONE 2026-07-26 as `recent_context`, and NOT as a mode.**
-  It injects context into a turn that was going to happen anyway, so it changes WHAT a turn
-  is prompted with, never WHEN one happens — a policy field beside `send_to_egpt`.
-  `AUTO_MODES` never regains `accum`; a stored `mode: accum` still degrades to `mention`.
+- **~~Revive `accum` mode~~ — DONE 2026-07-26, as a MODE.** `AUTO_MODES` carries `accum`
+  again. It **gates replies exactly like `mention`** (identical `replyAllowed` for every
+  mention state) and injects context into the turn that was going to happen anyway — so it
+  changes WHAT a turn is prompted with, never WHEN one happens.
+  - ⚠ **The name is reused, the mechanism is NOT.** The ORIGINAL accum (retired 2026-07-01)
+    buffered a chat's bursts and flushed the batch once per heartbeat. This one does not
+    batch, does not touch the heartbeat, and adds no turn. Do not "restore" the old design.
+  - An intermediate commit (`e437672`) shipped this as a separate `recent_context` config
+    key instead of a mode. The operator reversed that: the key is DELETED from every rung
+    (schema, both skeletons, `getBeing`, `_BEING_FIELDS`, `gating.decide`). One concept,
+    one knob. Do not re-add it.
   - The window is NOT a time span (the "~1h" this entry used to propose). It is everything
     **since that being's own last turn**, found by reading `transcript.md` backwards to its
     own reply line. Zero overlap with the warm session by construction, and no clock is
@@ -1051,8 +1059,8 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
     Correctness cannot depend on the model choosing to read.
   - **Adjacent, still true:** the spine's own `cycleBy`/`CYCLE_CAP` accumulator collects
     these same un-mentioned lines and DISCARDS them on an immediate turn. Queued turns and
-    the auto dwell/burst path depend on it, so it stays; `recent_context` supersedes it when
-    on rather than composing.
+    the auto dwell/burst path depend on it, so it stays; `mode: accum` supersedes it on an
+    accum turn rather than composing.
 - **BUG — `/reply` applied post-hoc (2026-07-14):** when the agent replies to a message,
   the bridge POSTS the reply as a plain message, THEN edits it to attach the reply-to,
   THEN strips the `/reply` token — a visible flicker. Make it straight: DETECT/parse

@@ -35,7 +35,13 @@ not answered by the persona. Authorization = the surface's own `chat_id`
 **Reply modes** (`/e auto`): `on` (receive every burst, reply per personality) ·
 `mute` (receive, never reply) · `mention-direct` (reply only when `@e` starts the
 message or it replies to E) · `mention` (reply when `@e` appears anywhere, or a
-reply to E — the default) · `off` (don't receive at all).
+reply to E — the default) · `accum` (the `mention` gate, and each reply is
+prompted with everything said here since E's own last turn) · `off` (don't
+receive at all).
+
+`accum` changes only WHAT a turn is prompted with, never WHEN one happens — it
+does not buffer, batch, or flush on a heartbeat. (The 2026-07-01 accum did; same
+word, different mechanism.)
 
 ### The `/e` wizard
 

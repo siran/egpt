@@ -9,7 +9,7 @@
 //
 // Pure + Node-import-free (so it can't drag node builtins into a bundled limb).
 //
-// The READ side lives here too (recent_context, at the bottom): the shape of a
+// The READ side lives here too (mode:accum's window, at the bottom): the shape of a
 // transcript line is defined in this module, so the one function that reads lines back
 // out of transcript.md keys on THAT definition rather than on a copy of it.
 import { renderFrontMatter, stripFrontMatter } from './transcript-meta.mjs';
@@ -53,6 +53,9 @@ export function replyLine({ being, body, surfaced = true, now = new Date(), time
 // (operator 2026-07-26, the skin-cells incident: an un-@mentioned message never reached
 // E, so the next @mention was answered from twenty-minute-old context.)
 //
+// THE CONTROL IS `mode: accum` (src/auto-mode.mjs) — the ONE switch, no config key beside
+// it. This module is control-agnostic: it only builds the window when the spine asks.
+//
 // send_to_egpt:'mode' means a being only runs a turn on messages it will ANSWER, so
 // everything said between two of its turns is invisible to it. This reads that gap back
 // out of the record — the transcript IS the accumulated buffer, so nothing else is
@@ -74,7 +77,8 @@ export function replyLine({ being, body, surfaced = true, now = new Date(), time
 // SIZE IS THE ONLY BOUND. If the being has not spoken in a chat for days the gap can be
 // enormous, so `maxChars` caps it, keeping the MOST RECENT blocks (the ones nearest the
 // prompt) and reporting `truncated` so the caller can SAY the gap is partial instead of
-// letting the model believe it has all of it.
+// letting the model believe it has all of it. A CONSTANT, deliberately — the mode is the
+// only switch this behaviour has, and it is not getting a config knob beside it.
 export const RECENT_CONTEXT_MAX_CHARS = 8000;
 
 const _escapeBeing = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -188,7 +192,7 @@ export function bodyForMessageId(text, msgId) {
  * Append the quoted message to the prompt, LABELLED as the REFERENT — "esto" is that message,
  * and answering it instead of the prompt is the failure from the other direction. The label
  * names the id rather than a position, because this block is appended LAST: with
- * `recent_context` on it lands under the accumulated context, and the id is what ties it back
+ * `mode: accum` it lands under the accumulated context, and the id is what ties it back
  * to the ` re #<id>` on the triggering line wherever it sits.
  *
  * Nothing resolved → the line is returned UNCHANGED, so an unresolvable quote prompts exactly

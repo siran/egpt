@@ -11,14 +11,14 @@
 // resolves its quoted body out of the SAME transcript the being's context comes from and it
 // is injected — LABELLED, prompt-only — beside the triggering line.
 //
-// It must work with `recent_context` OFF (the live state), and must NOT duplicate when
-// recent_context is ON and the quoted message already falls inside the gap.
+// It must work in plain `mention` mode (the live state), and must NOT duplicate in
+// `accum` mode when the quoted message already falls inside the gap.
 import { describe, it, expect } from 'vitest';
 import { createSpine } from '../src/spine/spine.mjs';
 import { formatDispatchLine } from '../src/dispatch-line.mjs';
-import { replyLine, bodyForMessageId, RECENT_CONTEXT_MAX_CHARS } from '../src/transcript-log.mjs';
+import { replyLine, bodyForMessageId } from '../src/transcript-log.mjs';
 
-// --- the live chat, as fakes (same shape as tests/recent-context.test.mjs) ----
+// --- the live chat, as fakes (same shape as tests/accum-mode.test.mjs) --------
 function fakeTranscript() {
   return {
     text: '',
@@ -56,11 +56,11 @@ const fakeIdentity = {
 };
 const fakeRouter = { resolve: () => 'e' };
 
-function mentionGating(recentContextChars = 0) {
+function gatingIn(mode) {
   return {
     async decide(_being, ev) {
       const mayReply = /@e\b/.test(ev.body);
-      return { mode: 'mention', receives: true, mayReply, sendToEgpt: 'mode', recentContextChars };
+      return { mode, receives: true, mayReply, sendToEgpt: 'mode' };
     },
     surfaces: (d) => d.mayReply,
   };
@@ -73,14 +73,14 @@ const CHAT = { surface: 'whatsapp', node: 'wa', chatId: 'chat-1', chatName: 'gru
 const QUOTED = 'miren esta cancion que encontre, la version de 1974 con la orquesta completa';
 const ASK = '@e ubica esto en yotube o en otra plataforma';
 
-function build({ recentContextChars = 0, readTranscript = null } = {}) {
+function build({ mode = 'mention', readTranscript = null } = {}) {
   const bridge = fakeBridge();
   const brain = fakeBrain();
   const transcript = fakeTranscript();
   const spine = createSpine({
     bridge, brain,
     identity: fakeIdentity, router: fakeRouter,
-    gating: mentionGating(recentContextChars),
+    gating: gatingIn(mode),
     sender: fakeSender(bridge), transcript, heartbeats: fakeHeartbeats(),
     readTranscript: readTranscript ?? (async () => transcript.text),
     clock: { now: () => T + 20 * 60_000 },
@@ -92,7 +92,7 @@ const count = (hay, needle) => hay.split(needle).length - 1;
 
 describe('a reply resolves its QUOTED message into the prompt', () => {
   it('THE LIVE FAILURE: `@e ubica esto` replying to #177210 reaches the brain with #177210\'s BODY', async () => {
-    const { spine, bridge, brain } = build({ recentContextChars: 0 });   // OFF — the live state
+    const { spine, bridge, brain } = build({ mode: 'mention' });   // plain mention — the live state
     spine.start();
     await bridge.emit({ ...CHAT, msgId: '177210', ts: T, body: QUOTED });
     await bridge.emit({ ...CHAT, msgId: '177211', ts: T + 20 * 60_000, body: ASK, replyToId: '177210' });
@@ -107,7 +107,7 @@ describe('a reply resolves its QUOTED message into the prompt', () => {
   });
 
   it('the quoted content is PROMPT-ONLY — never re-entered into the transcript or the outbound', async () => {
-    const { spine, bridge, transcript } = build({ recentContextChars: 0 });
+    const { spine, bridge, transcript } = build({ mode: 'mention' });
     spine.start();
     await bridge.emit({ ...CHAT, msgId: '177210', ts: T, body: QUOTED });
     await bridge.emit({ ...CHAT, msgId: '177211', ts: T + 20 * 60_000, body: ASK, replyToId: '177210' });
@@ -118,7 +118,7 @@ describe('a reply resolves its QUOTED message into the prompt', () => {
   });
 
   it('the quoted id is NOT in the transcript → the prompt is BYTE-IDENTICAL to today (nothing fabricated, no empty block)', async () => {
-    const { spine, bridge, brain, transcript } = build({ recentContextChars: 0 });
+    const { spine, bridge, brain, transcript } = build({ mode: 'mention' });
     spine.start();
     await bridge.emit({ ...CHAT, msgId: '177211', ts: T + 20 * 60_000, body: ASK, replyToId: 'from-last-year' });
 
@@ -128,7 +128,7 @@ describe('a reply resolves its QUOTED message into the prompt', () => {
   });
 
   it('NOT a reply → the prompt is BYTE-IDENTICAL to today', async () => {
-    const { spine, bridge, brain, transcript } = build({ recentContextChars: 0 });
+    const { spine, bridge, brain, transcript } = build({ mode: 'mention' });
     spine.start();
     await bridge.emit({ ...CHAT, msgId: '177210', ts: T, body: QUOTED });
     await bridge.emit({ ...CHAT, msgId: '177212', ts: T + 20 * 60_000, body: '@e que opinas', replyToId: null });
@@ -143,7 +143,7 @@ describe('a reply resolves its QUOTED message into the prompt', () => {
       'Bea@[grupo].wa (21:00) #vn-7: (voice transcription, 8s) el sabado nos vemos en la casa de mi mama',
       '',
     ].join('\n');
-    const { spine, bridge, brain } = build({ recentContextChars: 0, readTranscript: async () => doc });
+    const { spine, bridge, brain } = build({ mode: 'mention', readTranscript: async () => doc });
     spine.start();
     await bridge.emit({ ...CHAT, msgId: 'm9', ts: T, body: '@e a que hora dijo', replyToId: 'vn-7' });
 
@@ -159,7 +159,7 @@ describe('a reply resolves its QUOTED message into the prompt', () => {
       'tercera linea',
       '',
     ].join('\n');
-    const { spine, bridge, brain } = build({ recentContextChars: 0, readTranscript: async () => doc });
+    const { spine, bridge, brain } = build({ mode: 'mention', readTranscript: async () => doc });
     spine.start();
     await bridge.emit({ ...CHAT, msgId: 'm10', ts: T, body: '@e y esto', replyToId: 'ml-1' });
 
@@ -168,7 +168,7 @@ describe('a reply resolves its QUOTED message into the prompt', () => {
   });
 
   it('the transcript cannot be read → today\'s prompt, never throws', async () => {
-    const { spine, bridge, brain, transcript } = build({ recentContextChars: 0, readTranscript: async () => { throw new Error('ENOENT'); } });
+    const { spine, bridge, brain, transcript } = build({ mode: 'mention', readTranscript: async () => { throw new Error('ENOENT'); } });
     spine.start();
     await bridge.emit({ ...CHAT, msgId: '177211', ts: T, body: ASK, replyToId: '177210' });
     const inbound = transcript.entries.filter((e) => e.reply == null);
@@ -176,9 +176,9 @@ describe('a reply resolves its QUOTED message into the prompt', () => {
   });
 });
 
-describe('quoted message + recent_context compose without duplicating', () => {
-  it('ON and the quoted message is INSIDE the gap → it appears ONCE (as context), not twice', async () => {
-    const { spine, bridge, brain } = build({ recentContextChars: RECENT_CONTEXT_MAX_CHARS });
+describe('quoted message + mode:accum compose without duplicating', () => {
+  it('accum and the quoted message is INSIDE the gap → it appears ONCE (as context), not twice', async () => {
+    const { spine, bridge, brain } = build({ mode: 'accum' });
     spine.start();
     await bridge.emit({ ...CHAT, msgId: '177210', ts: T, body: QUOTED });          // in the gap: E never ran a turn on it
     await bridge.emit({ ...CHAT, msgId: '177211', ts: T + 20 * 60_000, body: ASK, replyToId: '177210' });
@@ -188,8 +188,8 @@ describe('quoted message + recent_context compose without duplicating', () => {
     expect(prompt).toContain('ACCUMULATED CONTEXT');
   });
 
-  it('ON but the quoted message is OLDER than the gap → the quoted block supplies it (once)', async () => {
-    const { spine, bridge, brain } = build({ recentContextChars: RECENT_CONTEXT_MAX_CHARS });
+  it('accum but the quoted message is OLDER than the gap → the quoted block supplies it (once)', async () => {
+    const { spine, bridge, brain } = build({ mode: 'accum' });
     spine.start();
     await bridge.emit({ ...CHAT, msgId: '177210', ts: T - 600_000, body: QUOTED });
     await bridge.emit({ ...CHAT, msgId: 'm-mid', ts: T - 300_000, body: '@e hola' });   // E replies → the gap starts HERE
@@ -197,7 +197,7 @@ describe('quoted message + recent_context compose without duplicating', () => {
     await bridge.emit({ ...CHAT, msgId: '177211', ts: T + 20 * 60_000, body: ASK, replyToId: '177210' });
 
     const prompt = brain.calls[1].ev.line;
-    expect(count(prompt, QUOTED)).toBe(1);                 // ← recent_context CANNOT cover this one
+    expect(count(prompt, QUOTED)).toBe(1);                 // ← accum's window CANNOT cover this one
     expect(prompt).toContain('THE MESSAGE THIS REPLIES TO');
     expect(prompt).toContain('algo mas');                  // the gap is still there
   });

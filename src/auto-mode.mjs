@@ -13,28 +13,37 @@
 //   mute           receive every burst; never reply
 //   mention-direct receive; reply only when @e is at the START, or it's a reply to E
 //   mention        receive; reply only when @e appears anywhere, or a reply to E
+//   accum          gates EXACTLY like 'mention' — and the turn it allows is PROMPTED
+//                  with everything recorded since this being's own last turn
 //   off            don't receive at all; never reply (even @e is ignored)
 //
-// RETIRED — 'accum' (operator 2026-07-01), and it stays retired: it buffered a chat's
-// bursts and flushed the batch to E once per heartbeat, replying only if the batch was
-// mentioned. Dead because batching prompts serves nothing — accum was legacy from when
-// EVERY prompt was sent to E even when unmentioned in mention mode.
+// ⚠ 'accum' — THE NAME IS REUSED, THE MECHANISM IS NOT (operator 2026-07-26).
 //
-// ⚠ ONE HALF OF THE RETIREMENT NOTE WAS WRONG (operator 2026-07-26): it said the
-// transcript IS the buffer because "E reads it for back-context when it engages". E has
-// the file, the Read tool, and a pointers card telling it so — and it did not look. Live:
-// an un-@mentioned message about skin cells, then `@e da una opinión bien fundamentada`,
-// answered from the topic of twenty minutes earlier. Correctness cannot depend on the
-// model CHOOSING to read. The fix is NOT a mode: `recent_context` (src/spine/gating.mjs,
-// src/transcript-log.mjs contextSinceLastTurn) prompts a turn that was going to happen
-// anyway with everything recorded since that being's last turn. No new mode value, no
-// buffer, no change to WHEN E replies — so AUTO_MODES must never regain 'accum'.
-// A 'mode: accum' still stored in conversations.yaml (live nodes have them)
-// degrades cleanly: isAutoMode('accum') is now false, so every reader guarding
-// with isAutoMode(...) — createGating.decide() and resolveBeingMode below —
-// falls through to its default ('mention' for E). That fallthrough IS the
-// migration: a legacy accum chat simply behaves as a mention chat.
-export const AUTO_MODES = ['on', 'auto', 'mute', 'mention-direct', 'mention', 'off'];
+// WHAT IT MEANS NOW: a reply gate identical to 'mention' (replyAllowed below returns the
+// same answer for both in every mention state), plus ONE prompt change on the turn that
+// was going to happen anyway — the trigger arrives labelled beside everything the chat
+// recorded since this being's LAST TURN (src/transcript-log.mjs contextSinceLastTurn,
+// injected in spine/spine.mjs runReplyTurn). No buffer, no batch, no heartbeat, no extra
+// turn, no change whatsoever to WHEN a turn runs.
+//
+// WHAT IT MEANT BEFORE — DO NOT RESTORE IT: the ORIGINAL accum (retired 2026-07-01)
+// BUFFERED a chat's bursts and FLUSHED the batch to E once per heartbeat, replying only
+// if the batch was mentioned. That batching is dead and is not coming back; it was legacy
+// from when EVERY prompt was sent to E even when unmentioned in mention mode.
+//
+// WHY THE MODE CAME BACK: the retirement premise — "the transcript IS the buffer, E reads
+// it for back-context when it engages" — was falsified live. E has the file, the Read tool
+// and a pointers card telling it so, and it did not look: an un-@mentioned message about
+// skin cells, then `@e da una opinión bien fundamentada`, answered from the topic of twenty
+// minutes earlier. Correctness cannot depend on the model CHOOSING to read. The context is
+// now handed to it, and the operator's ruling is that ONE knob controls that — this mode.
+// (An intermediate 2026-07-26 commit shipped it as a separate `recent_context` config key
+// instead; that key is deleted. Do not re-add a second knob for this behaviour.)
+//
+// MIGRATION: none. `accum` is a known mode again, so a `mode: accum` on disk means what it
+// says instead of falling through isAutoMode(...) to 'mention' — and since it gates like
+// 'mention', nothing about WHEN those chats reply changes either.
+export const AUTO_MODES = ['on', 'auto', 'mute', 'mention-direct', 'mention', 'accum', 'off'];
 export const DEFAULT_AUTO_MODE = 'mention';
 
 export function isAutoMode(m) { return AUTO_MODES.includes(String(m)); }
@@ -122,9 +131,7 @@ export function mentionStatus(text, wakeWords) {
 
 // Given the chat's mode and the triggering message's mention status
 // ({ atEStart, atEAnywhere, replyToBot }), should E's reply be SENT to the
-// chat? (E may still be invoked for context even when this is false.) A stored
-// legacy 'accum' is no longer a known mode, so it lands on `default:` → mention
-// semantics (exactly its retired reply behavior).
+// chat? (E may still be invoked for context even when this is false.)
 export function replyAllowed(mode, status = {}) {
   const { atEStart = false, atEAnywhere = false, replyToBot = false } = status;
   switch (mode) {
@@ -133,6 +140,7 @@ export function replyAllowed(mode, status = {}) {
     case 'mute':
     case 'off':            return false;
     case 'mention-direct': return atEStart   || replyToBot;
+    case 'accum':                                  // 'accum' gates like 'mention' — it changes the PROMPT, never the gate
     case 'mention':        return atEAnywhere || replyToBot;
     default:               return atEAnywhere || replyToBot;   // unknown → treat as 'mention'
   }

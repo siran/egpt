@@ -66,8 +66,10 @@ answered by the persona:
 /status               compact node health (git sha, pid, uptime, liveness,
                       heartbeats, conversation + this chat's mode)
 /e auto <mode> [chat] set a chat's reply mode. modes: on · mute ·
-                      mention-direct · mention · off. omit <chat> for this chat;
-                      from Self-DM name the target (slug/name fragment or @jid)
+                      mention-direct · mention · accum (mention + the turn is
+                      prompted with what was said since E's last turn) · off.
+                      omit <chat> for this chat; from Self-DM name the target
+                      (slug/name fragment or @jid)
 /e                    arm the re-point WIZARD for this chat (guided: agent
                       type → model → effort, or build a custom type)
 /e <fragment>         arm the wizard for another chat (resolved like /e auto's)

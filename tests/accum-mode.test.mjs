@@ -1,4 +1,4 @@
-// RECENT CONTEXT (operator 2026-07-26) — the live failure this locks:
+// MODE: ACCUM (operator 2026-07-26) — the live failure this locks:
 //
 //   In a real WhatsApp group the operator wrote a long message about skin cells and
 //   sweat (no @e), then asked `@e da una opinión bien fundamentada`. E answered with an
@@ -6,17 +6,23 @@
 //   send_to_egpt:'mode' means E only runs a turn on messages it will ANSWER. The skin
 //   message was in transcript.md but was never handed to E, and E did not go read it.
 //
-// `recent_context` is the per-conversation opt-in that closes that gap: on a turn that
-// was going to happen anyway, everything said SINCE THIS BEING'S LAST TURN is read back
-// out of transcript.md and injected as LABELLED context beside the triggering prompt.
-// That boundary is exactly the set E never saw — its warm session already holds
-// everything up to its own last reply — so there is no overlap and no clock to parse.
-// It is NOT a mode (AUTO_MODES must never regain 'accum'), it adds no buffer, and with
-// the option OFF the prompt is byte-identical to today.
+// `accum` is the mode that closes that gap: it GATES REPLIES EXACTLY LIKE `mention`
+// (this file asserts that for every mention state), and on the turn that was going to
+// happen anyway the prompt carries everything said SINCE THIS BEING'S LAST TURN, read
+// back out of transcript.md and labelled as context beside the trigger. That boundary is
+// exactly the set the being never saw — its warm session already holds everything up to
+// its own last reply — so there is no overlap and no clock to parse.
+//
+// ⚠ THE NAME IS REUSED, THE MECHANISM IS NOT. The ORIGINAL accum (retired 2026-07-01)
+// BUFFERED a chat's bursts and FLUSHED the batch to E once per heartbeat. This one does
+// not batch, does not touch the heartbeat, and does not change WHEN a turn runs — only
+// WHAT it is prompted with. Do not "restore" the old design.
+//
+// In every OTHER mode the prompt is byte-identical to what it was before accum existed.
 import { describe, it, expect } from 'vitest';
 import { createSpine } from '../src/spine/spine.mjs';
 import { formatDispatchLine } from '../src/dispatch-line.mjs';
-import { contextSinceLastTurn, promptWithRecentContext, replyLine, RECENT_CONTEXT_MAX_CHARS } from '../src/transcript-log.mjs';
+import { contextSinceLastTurn, promptWithRecentContext, replyLine } from '../src/transcript-log.mjs';
 import { AUTO_MODES, isAutoMode, replyAllowed } from '../src/auto-mode.mjs';
 import { createGating } from '../src/spine/gating.mjs';
 
@@ -55,13 +61,14 @@ const fakeIdentity = {
 };
 const fakeRouter = { resolve: () => 'e' };
 
-// mention-mode gating, exactly like the live chat: @e anywhere → reply; otherwise the
-// message is recorded only (send_to_egpt: 'mode' — E never runs a turn on it).
-function mentionGating(recentContextChars = 0) {
+// The gate is the SAME in both modes — @e anywhere replies, otherwise the message is
+// recorded only (send_to_egpt: 'mode' — E never runs a turn on it). The mode changes only
+// what the turn is prompted with.
+function gatingIn(mode) {
   return {
     async decide(_being, ev) {
       const mayReply = /@e\b/.test(ev.body);
-      return { mode: 'mention', receives: true, mayReply, sendToEgpt: 'mode', recentContextChars };
+      return { mode, receives: true, mayReply, sendToEgpt: 'mode' };
     },
     surfaces: (d) => d.mayReply,
   };
@@ -74,14 +81,14 @@ const SKIN = 'las celulas de la piel se renuevan y el sudor arrastra sales, pens
 const ASK = '@e da una opinion bien fundamentada';
 const OLD = 'esto se dijo antes del ultimo turno de e';
 
-function build({ recentContextChars = 0, readTranscript = null } = {}) {
+function build({ mode = 'mention', readTranscript = null } = {}) {
   const bridge = fakeBridge();
   const brain = fakeBrain();
   const transcript = fakeTranscript();
   const spine = createSpine({
     bridge, brain,
     identity: fakeIdentity, router: fakeRouter,
-    gating: mentionGating(recentContextChars),
+    gating: gatingIn(mode),
     sender: fakeSender(bridge), transcript, heartbeats: fakeHeartbeats(),
     readTranscript: readTranscript ?? (async () => transcript.text),
     clock: { now: () => T + 20 * 60_000 },
@@ -97,9 +104,9 @@ async function playIncident(bridge) {
   await bridge.emit({ ...CHAT, msgId: 'm3', ts: T + 20 * 60_000, body: ASK });
 }
 
-describe('recent_context — the un-mentioned antecedent reaches the prompt', () => {
-  it('OFF (today): the un-mentioned message NEVER reaches the prompt — the live failure', async () => {
-    const { spine, bridge, brain } = build({ recentContextChars: 0 });
+describe('mode: accum — the un-mentioned antecedent reaches the prompt', () => {
+  it('mention (today): the un-mentioned message NEVER reaches the prompt — the live failure', async () => {
+    const { spine, bridge, brain } = build({ mode: 'mention' });
     spine.start();
     await playIncident(bridge);
 
@@ -109,16 +116,19 @@ describe('recent_context — the un-mentioned antecedent reaches the prompt', ()
     expect(prompt).toContain(ASK);
   });
 
-  it('OFF: the prompt is BYTE-IDENTICAL to the plain dispatch line', async () => {
-    const { spine, bridge, brain, transcript } = build({ recentContextChars: 0 });
-    spine.start();
-    await playIncident(bridge);
-    const inbound = transcript.entries.filter((e) => e.reply == null);
-    expect(brain.calls[0].ev.line).toBe(inbound[2].ev.line);
+  it('every non-accum mode: the prompt is BYTE-IDENTICAL to the plain dispatch line', async () => {
+    for (const mode of ['mention', 'mention-direct', 'on']) {
+      const { spine, bridge, brain, transcript } = build({ mode });
+      spine.start();
+      await playIncident(bridge);
+      const inbound = transcript.entries.filter((e) => e.reply == null);
+      const call = brain.calls[brain.calls.length - 1];
+      expect(call.ev.line, mode).toBe(inbound[inbound.length - 1].ev.line);
+    }
   });
 
-  it('ON: the un-mentioned message arrives as LABELLED context and the mention is THE prompt', async () => {
-    const { spine, bridge, brain } = build({ recentContextChars: RECENT_CONTEXT_MAX_CHARS });
+  it('accum: the un-mentioned message arrives as LABELLED context and the mention is THE prompt', async () => {
+    const { spine, bridge, brain } = build({ mode: 'accum' });
     spine.start();
     await playIncident(bridge);
 
@@ -141,8 +151,8 @@ describe('recent_context — the un-mentioned antecedent reaches the prompt', ()
     expect(prompt.slice(cut)).not.toContain(ASK);
   });
 
-  it("ON: the window stops at E's OWN last reply — E is never re-fed what it already holds", async () => {
-    const { spine, bridge, brain } = build({ recentContextChars: RECENT_CONTEXT_MAX_CHARS });
+  it("accum: the window stops at E's OWN last reply — E is never re-fed what it already holds", async () => {
+    const { spine, bridge, brain } = build({ mode: 'accum' });
     spine.start();
     await bridge.emit({ ...CHAT, msgId: 'm0', ts: T - 120_000, body: OLD });
     // an EARLIER mention → E replies (that reply is the boundary line in transcript.md)
@@ -156,8 +166,8 @@ describe('recent_context — the un-mentioned antecedent reaches the prompt', ()
     expect(prompt).not.toContain(OLD);                   // said BEFORE it → E's session has it
   });
 
-  it('ON: a WITHHELD reply still counts as E\'s turn (it ran, so it saw those messages)', async () => {
-    const { spine, bridge, brain, transcript } = build({ recentContextChars: RECENT_CONTEXT_MAX_CHARS });
+  it('accum: a WITHHELD reply still counts as E\'s turn (it ran, so it saw those messages)', async () => {
+    const { spine, bridge, brain, transcript } = build({ mode: 'accum' });
     spine.start();
     await bridge.emit({ ...CHAT, msgId: 'm0', ts: T - 120_000, body: OLD });
     await bridge.emit({ ...CHAT, msgId: 'm1', ts: T - 60_000, body: `@e y tu que opinas` });
@@ -171,8 +181,8 @@ describe('recent_context — the un-mentioned antecedent reaches the prompt', ()
     expect(prompt).not.toContain(OLD);
   });
 
-  it('ON: nothing accumulated since the last turn → NO context block at all', async () => {
-    const { spine, bridge, brain } = build({ recentContextChars: RECENT_CONTEXT_MAX_CHARS });
+  it('accum: nothing accumulated since the last turn → NO context block at all', async () => {
+    const { spine, bridge, brain } = build({ mode: 'accum' });
     spine.start();
     await bridge.emit({ ...CHAT, msgId: 'm0', ts: T, body: `@e ${RUM}` });
     await bridge.emit({ ...CHAT, msgId: 'm3', ts: T + 60_000, body: ASK });
@@ -182,8 +192,8 @@ describe('recent_context — the un-mentioned antecedent reaches the prompt', ()
     expect(prompt).toContain(ASK);
   });
 
-  it('ON but the transcript cannot be read: falls back to today\'s prompt, never throws', async () => {
-    const { spine, bridge, brain, transcript } = build({ recentContextChars: RECENT_CONTEXT_MAX_CHARS, readTranscript: async () => { throw new Error('ENOENT'); } });
+  it('accum but the transcript cannot be read: falls back to today\'s prompt, never throws', async () => {
+    const { spine, bridge, brain, transcript } = build({ mode: 'accum', readTranscript: async () => { throw new Error('ENOENT'); } });
     spine.start();
     await playIncident(bridge);
     const inbound = transcript.entries.filter((e) => e.reply == null);
@@ -255,42 +265,47 @@ describe('contextSinceLastTurn — the gap read back out of transcript.md', () =
   });
 });
 
-describe('recent_context is an OPTION, not a mode', () => {
-  it("AUTO_MODES still lacks 'accum' and a stored legacy accum still degrades to mention", () => {
-    expect(AUTO_MODES).not.toContain('accum');
+describe('accum is a MODE again, and it gates exactly like mention', () => {
+  it("AUTO_MODES carries 'accum' and it is a known mode", () => {
+    expect(AUTO_MODES).toContain('accum');
     expect(AUTO_MODES).toContain('mention');
-    expect(isAutoMode('accum')).toBe(false);
-    // the graceful degradation at auto-mode.mjs:25-29 — a legacy `mode: accum` gates
-    // exactly like 'mention'
-    expect(replyAllowed('accum', { atEAnywhere: true })).toBe(replyAllowed('mention', { atEAnywhere: true }));
-    expect(replyAllowed('accum', { atEAnywhere: false })).toBe(replyAllowed('mention', { atEAnywhere: false }));
+    expect(isAutoMode('accum')).toBe(true);
   });
 
-  it('resolves per-conversation over the node default, and is OFF when nothing says otherwise', async () => {
+  it('replyAllowed(accum) === replyAllowed(mention) for EVERY mention state', () => {
+    for (const atEStart of [true, false]) {
+      for (const atEAnywhere of [true, false]) {
+        for (const replyToBot of [true, false]) {
+          const status = { atEStart, atEAnywhere, replyToBot };
+          expect(replyAllowed('accum', status), JSON.stringify(status))
+            .toBe(replyAllowed('mention', status));
+        }
+      }
+    }
+  });
+
+  it('resolves per-conversation over the node default, and the node default is settable to accum', async () => {
     const ev = { surface: 'whatsapp', chatId: 'c1', mention: { atEAnywhere: true } };
-    const state = (recent) => ({ contacts: { whatsapp: { c1: { slug: 'g', e: { threadId: null, ...(recent === undefined ? {} : { recent_context: recent }) } } } } });
+    const state = (mode) => ({ contacts: { whatsapp: { c1: { slug: 'g', e: { threadId: null, ...(mode === undefined ? {} : { mode }) } } } } });
 
-    const off = createGating({ getConfig: () => ({}), loadState: async () => state(undefined) });
-    expect((await off.decide('e', ev)).recentContextChars).toBe(0);
+    const bare = createGating({ getConfig: () => ({}), loadState: async () => state(undefined) });
+    expect((await bare.decide('e', ev)).mode).toBe('mention');                       // built-in default
 
-    const nodeWide = createGating({ getConfig: () => ({ dispatch: { recent_context: true } }), loadState: async () => state(undefined) });
-    expect((await nodeWide.decide('e', ev)).recentContextChars).toBe(RECENT_CONTEXT_MAX_CHARS);
+    const nodeWide = createGating({ getConfig: () => ({ dispatch: { auto_default_mode: 'accum' } }), loadState: async () => state(undefined) });
+    expect((await nodeWide.decide('e', ev)).mode).toBe('accum');                     // node-wide
 
-    const perConv = createGating({ getConfig: () => ({ dispatch: { recent_context: true } }), loadState: async () => state(2000) });
-    expect((await perConv.decide('e', ev)).recentContextChars).toBe(2000);
-
-    const vetoed = createGating({ getConfig: () => ({ dispatch: { recent_context: true } }), loadState: async () => state(false) });
-    expect((await vetoed.decide('e', ev)).recentContextChars).toBe(0);
+    const perConv = createGating({ getConfig: () => ({ dispatch: { auto_default_mode: 'accum' } }), loadState: async () => state('mention') });
+    expect((await perConv.decide('e', ev)).mode).toBe('mention');                    // the conversation wins
   });
 
-  it("is the PERSONA's option — a sibling never carries it (it is addressed, not ambient)", async () => {
+  it('the node-wide accum default reaches the PERSONA only — a sibling still defaults to mention', async () => {
     const ev = { surface: 'whatsapp', chatId: 'c1', mention: { atEAnywhere: true } };
     const g = createGating({
-      getConfig: () => ({ dispatch: { recent_context: true } }),
-      loadState: async () => ({ contacts: { whatsapp: { c1: { slug: 'g', e: { threadId: null }, don: { threadId: null, recent_context: true } } } } }),
+      getConfig: () => ({ dispatch: { auto_default_mode: 'accum' } }),
+      loadState: async () => ({ contacts: { whatsapp: { c1: { slug: 'g', e: { threadId: null }, don: { threadId: null } } } } }),
       defaultKey: 'e',
     });
-    expect((await g.decide('e', ev)).recentContextChars).toBe(RECENT_CONTEXT_MAX_CHARS);
-    expect((await g.decide('don', ev)).recentContextChars).toBe(0);
+    expect((await g.decide('e', ev)).mode).toBe('accum');
+    expect((await g.decide('don', ev)).mode).toBe('mention');
   });
 });

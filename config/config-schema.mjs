@@ -302,11 +302,13 @@ export const CONFIG_SCHEMA = {
         The absolute @e-emit kill-switch, toggled by /e auto pause|resume.
         Layered OVER the per-conversation mode gate.
       auto_default_mode
-        ENUM: "on" | "mute" | "mention-direct" | "mention" | "off"
+        ENUM: "on" | "auto" | "mute" | "mention-direct" | "mention" | "accum" | "off"
         DEFAULT: "mention"
         The NODE-WIDE default reply mode: the persona's mode in any chat that
         sets none, and the last rung under the per-agent agents.<name>.mode
         (operator 2026-07-25). Set via /e auto <mode> all.
+        It reaches the PERSONA only — every other agent defaults to "mention" —
+        so setting "accum" here does not make N siblings replay the gap.
       send_to_egpt
         ENUM: "always" | "mode"
         DEFAULT: "mode"
@@ -315,43 +317,6 @@ export const CONFIG_SCHEMA = {
         lives in conversations.yaml
         (contacts.<surface>[<id>].<being>.send_to_egpt) and WINS over this
         global.
-      recent_context
-        false | true | <max characters>.  DEFAULT: false (OFF)
-        The NODE-WIDE default for recent_context; the per-conversation override
-        (contacts.<surface>[<id>].<being>.recent_context, or the entry's
-        agents.<name> block) WINS over it.
-
-        WHAT IT DOES. send_to_egpt:'mode' means the persona only runs a turn on
-        messages it will ANSWER, so everything said in between never reaches it.
-        The 2026-07-26 incident: an un-@mentioned message about skin cells, then
-        "@e da una opinión bien fundamentada" — E answered about the topic from
-        twenty minutes earlier, because that was all it had. With this ON, the
-        turn that was going to happen anyway is prompted with everything
-        recorded SINCE THIS BEING'S LAST TURN, clearly labelled beside the
-        triggering line ("THIS LINE IS THE PROMPT … THE FOLLOWING IS ACCUMULATED
-        CONTEXT").
-
-        NOT A MODE. It changes WHAT a turn is prompted with, never WHEN a turn
-        happens: no extra turn, no buffering, no heartbeat flush. (The retired
-        'accum' MODE is not coming back — AUTO_MODES has no 'accum'.)
-
-        THE WINDOW IS THE GAP, not a time span (operator 2026-07-26: "should the
-        window include what E already has? no"). The being's warm session
-        already holds everything up to its own last reply, so the boundary is
-        that reply LINE in transcript.md — read backwards from the end until it
-        is found. Zero overlap, no clock parsed, no state kept anywhere. A being
-        that has never replied in the chat gets the whole tail. A withheld
-        (not-surfaced) reply still counts: that turn ran and saw those messages.
-
-        SIZE IS THE ONLY BOUND. "true" uses the 8000-character default; a number
-        sets the cap. When the gap is bigger the MOST RECENT part is kept and
-        the block says so, so the model is never misled into thinking it has all
-        of it.
-
-        PERSONA ONLY, like send_to_egpt: a sibling is an engineer that runs when
-        addressed and has no claim on ambient chatter.
-        Source: config/skeletons/conversations.yaml, src/transcript-log.mjs.
-
     Per-chat modes live in each conversation entry, PER AGENT
     (contacts.<surface>[<id>].<being>.mode, or the entry's agents.<name>.mode
     override, via /e auto <mode> <chat>). There is no flat entry-level mode —
@@ -954,7 +919,28 @@ export const CONFIG_SCHEMA = {
         threads / transcripts.
       mode
         OPTIONAL (operator 2026-07-25) — THIS agent's own default reply-mode.
-        ENUM: on | auto | mute | mention-direct | mention | off
+        ENUM: on | auto | mute | mention-direct | mention | accum | off
+
+        'accum' (operator 2026-07-26) GATES EXACTLY LIKE 'mention' — same
+        answer for every mention state — and additionally PROMPTS the turn it
+        allows with everything this conversation recorded SINCE THIS AGENT'S
+        LAST TURN, labelled beside the triggering line ("THIS LINE IS THE
+        PROMPT … THE FOLLOWING IS ACCUMULATED CONTEXT"). Why: send_to_egpt:
+        'mode' means the agent only runs a turn on messages it will ANSWER, so
+        everything in between never reaches it — the 2026-07-26 incident, an
+        un-@mentioned message about skin cells then "@e da una opinión bien
+        fundamentada", answered from the topic of twenty minutes earlier.
+        ⚠ THE NAME IS REUSED, THE MECHANISM IS NOT: the ORIGINAL accum (retired
+        2026-07-01) buffered a chat's bursts and flushed the batch once per
+        heartbeat. This one does NOT batch, does NOT touch the heartbeat and
+        does NOT change WHEN a turn runs — only what it is prompted with.
+        The window is the GAP, not a time span: the boundary is this agent's own
+        reply LINE in transcript.md, read backwards from the end (a withheld
+        reply counts — that turn ran; an agent that never replied here gets the
+        whole tail). No clock parsed, no state kept, no second store. Bounded
+        by an 8000-character CONSTANT that keeps the MOST RECENT part and says
+        so. Source: src/transcript-log.mjs, src/spine/spine.mjs runReplyTurn.
+
         It is the rung between the per-conversation mode and the node-wide
         dispatch.auto_default_mode, so two agents can hold DIFFERENT modes in
         the SAME chat — e.g.  e: {mode: mention}  answers a mid-sentence @e

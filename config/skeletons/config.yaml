@@ -75,12 +75,11 @@ networks:
 # Per-chat modes live in each conversation (set via /e auto <mode> <chat>); these
 # are the node-wide defaults. All commented = defaults shown.
 # dispatch:
-#   auto_default_mode: mention      # reply mode for a chat with no explicit mode (on|mute|mention-direct|mention|off)
+#   auto_default_mode: mention      # reply mode for a chat with no explicit mode (on|auto|mute|mention-direct|mention|accum|off).
+#                                   # accum gates exactly like mention AND prompts each turn with what was said since the
+#                                   # persona's LAST turn, labelled as context. PERSONA only — siblings default to mention.
 #   auto_paused: false              # absolute @e-emit kill-switch (/e auto pause|resume)
 #   send_to_egpt: mode              # global default: keep the persona in context even when it will not reply (always|mode)
-#   recent_context: false           # global default: prompt each persona turn with what was said since its LAST turn,
-#                                   # labelled as context (false | true = 8000 chars | a char cap). Per-conversation
-#                                   # override: conversations.yaml <conv>.<agent>.recent_context
 
 # --- Transcription: a standalone LAN service ---------------------------------
 # By default eGPT launches a whisper-server to transcribe audio notes
