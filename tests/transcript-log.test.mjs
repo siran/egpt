@@ -7,6 +7,10 @@ import { mkdtempSync, existsSync, appendFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { transcriptAppend, replyLine, lastSurfacedBeing } from '../src/transcript-log.mjs';
+// The REAL codec + renderer a co-account peer's reply travels through (persona-wrap appends the
+// invisible frame outbound, identity.build renders it to `<node>` inbound) — so the shape the
+// walk keys on is derived from its writers, never hand-typed.
+import { encodeNodeSignature, renderNodeSignature } from '../src/node-signature.mjs';
 
 describe('transcriptAppend', () => {
   it('a new transcript gets the front matter + the line', () => {
@@ -125,6 +129,57 @@ describe('lastSurfacedBeing', () => {
   it('round-trips replyLine itself, surfaced and withheld', () => {
     expect(lastSurfacedBeing(`${replyLine({ being: 'egpt.kg', body: 'hola' })}\n\n`)).toBe('egpt');
     expect(lastSurfacedBeing(`${replyLine({ being: 'egpt.kg', body: 'hola', surfaced: false })}\n\n`)).toBeNull();
+  });
+
+  // ── CO-ACCOUNT NODES (operator 2026-07-27, LIVE: both nodes answered ONE `r`) ──────────────
+  // A peer's reply is not an agent line HERE — on a shared Beeper account it arrives as an
+  // ordinary INBOUND line (isSender, displayed as the account owner) whose body carries the
+  // peer's structural signature, which identity.build renders to a legible `<node>` before
+  // anything reads it. The line below is that shape, built through the REAL codec + renderer.
+  const PEER = (node, body) => `An@[fam].wa (00:41) #m9: 🐶 ${node}\n`
+    + renderNodeSignature(`${body}${encodeNodeSignature(node)}`);
+
+  it('REPRODUCE-FIRST: the PEER node answered last → null, this node does not claim the `r`', () => {
+    expect(lastSurfacedBeing(REC(
+      '[@egpt.kg (00:41)]: Pescado Rabioso arrancó en 1971', '',
+      PEER('do', "The question's already been answered"),
+    ), { node: 'kg' })).toBeNull();
+  });
+
+  it('REPRODUCE-FIRST (mirror): the peer answered first, WE answered last → our being', () => {
+    expect(lastSurfacedBeing(REC(
+      PEER('do', 'esa ya la contesté yo'), '',
+      '[@egpt.kg (00:42)]: y yo agrego esto',
+    ), { node: 'kg' })).toBe('egpt');
+  });
+
+  // OUR OWN signature is not a peer's. Our reply carries `<kg>` on the wire, so if it ever
+  // re-enters as an inbound line (the bridge's own-send gate is id-based and can miss an
+  // UNCONFIRMED send) the walk must see OUR frame and keep going to our own reply line.
+  it('this node recognises its OWN rendered signature and still answers', () => {
+    expect(lastSurfacedBeing(REC(
+      '[@egpt.kg (00:41)]: lo dije yo', '',
+      PEER('kg', 'lo dije yo'),
+    ), { node: 'kg' })).toBe('egpt');
+  });
+
+  // Case matters no more here than it does on a being-id.
+  it('the node comparison is case-insensitive', () => {
+    expect(lastSurfacedBeing(REC('[@egpt.KG (00:41)]: mío', '', PEER('KG', 'mío')), { node: 'kg' })).toBe('egpt');
+  });
+
+  // No node given (an un-wired caller): ANY signed line is treated as another node's. That is
+  // the SAFE direction — a missed `r` beats two nodes answering one message.
+  it('no node given → any signed line is another node', () => {
+    expect(lastSurfacedBeing(REC('[@egpt.kg (00:41)]: lo dije yo', '', PEER('kg', 'lo dije yo')))).toBeNull();
+  });
+
+  // An UNSIGNED inbound line is a human's and stays irrelevant, whatever it says.
+  it('a human line is never a bot message, even one that mentions a node', () => {
+    expect(lastSurfacedBeing(REC(
+      '[@egpt.kg (00:41)]: mío', '',
+      'An@[fam].wa (00:42) #m9: y el nodo do qué dijo?',
+    ), { node: 'kg' })).toBe('egpt');
   });
 });
 

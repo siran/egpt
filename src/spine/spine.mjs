@@ -120,6 +120,7 @@ export function createSpine({
   readTranscript = null,
   roomRelay = null,                    // optional §Phase-4 room brain-member fan-out (createRoomRelay, boot-wired): delivers a received room message to each brain member per mode, streams the reply back, and RE-ENTERS it as a non-human turn. Null = no web-brain members (byte-identical to before).
   defaultBeing = 'e',                  // the persona: the being an un-addressed message dispatches to, and the turn/cycle owner for a mesh-target message (which is GATED as its own relay agent — see gateAs)
+  node_name = null,                    // THIS node's name (config node_name, boot-asserted non-empty) — the ONE thing the quick-reply lookup needs to tell its own rendered signature on the record from a co-account PEER's. Null (tests) = every signed line reads as a peer's, the safe direction.
   timeZone = null,                     // the node's config default_time_zone (boot-resolved) — the zone the CYCLE's reply lines render in, the same clock identity/transcript use so the accumulated prompt never disagrees with the file. null → UTC, unchanged.
   clock = { now: () => Date.now() },
   log = {},
@@ -524,6 +525,13 @@ export function createSpine({
     // remembered between messages now, so there is no restart hole and no clearing rule — and a
     // human line in between is irrelevant for free.
     //
+    // ON A SHARED ACCOUNT THE LAST BOT MESSAGE MAY NOT BE OURS (operator 2026-07-27, LIVE: both
+    // nodes answered one `r`). A co-account peer's reply is an INBOUND line here carrying that
+    // node's rendered signature, so lastSurfacedBeing weighs it against our own reply lines and
+    // returns null when the peer spoke more recently — `node_name` is what lets it tell the peer's
+    // signature from our own. Null then means exactly what it always meant: nobody is addressed,
+    // `r …` is ordinary text, and the other node answers.
+    //
     // THE SAME readTranscript seam the quoted-message/accum lookup in runReplyTurn uses — one
     // reader, so this can never read a different chat's file — and it runs BEFORE the ingestion
     // append (handleFast logs after classify), so the `r …` line itself is never on the record
@@ -537,7 +545,7 @@ export function createSpine({
     if (readTranscript && router.quickReplyOf?.(ev.body) != null) {
       try {
         const text = await readTranscript(ev.chatId, { chatName: ev.chatName, network: ev.surface });
-        if (text) lastSpeaker = lastSurfacedBeing(text);
+        if (text) lastSpeaker = lastSurfacedBeing(text, { node: node_name });
       } catch (e) { note(`quick-reply lookup ${ev.chatId}: ${e?.message ?? e}`); }
     }
     const routed = router.resolve(ev, lastSpeaker);

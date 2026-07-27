@@ -978,7 +978,7 @@ export async function boot({
     onLog: (m) => log.line?.(`[relay] ${m}`),
   });
 
-  const spine = createSpine({ bridge, brain, ...services, commands, mesh, actions, advice, guard, guardOverride, stopSwitch, isSelfChat, roomRelay, readTranscript, defaultBeing: defaultKey, timeZone: transcriptTimeZone, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
+  const spine = createSpine({ bridge, brain, ...services, commands, mesh, actions, advice, guard, guardOverride, stopSwitch, isSelfChat, roomRelay, readTranscript, defaultBeing: defaultKey, node_name, timeZone: transcriptTimeZone, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
   // Bind the advice service's answer-routing dispatch now that the spine exists: an
   // operator answer in the advice channel re-enters the pipe as a turn in the origin chat.
   advice.useDispatch(spine.handleInbound);

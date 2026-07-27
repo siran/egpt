@@ -15,6 +15,10 @@ import { createSpine } from '../src/spine/spine.mjs';
 import { createGating } from '../src/spine/gating.mjs';
 import { replyAllowed } from '../src/auto-mode.mjs';
 import { transcriptAppend, replyLine } from '../src/transcript-log.mjs';
+// The REAL codec + renderer a peer's reply travels through (persona-wrap appends the invisible
+// frame outbound; identity.build renders it to `<node>` inbound) — so the shape the quick-reply
+// walk keys on is derived here, never hand-typed.
+import { encodeNodeSignature, renderNodeSignature } from '../src/node-signature.mjs';
 
 const ev = (body, extra = {}) => ({
   body,
@@ -215,6 +219,8 @@ function fanoutSpine({ router = arouter, mayReply = true, mode = null, gating = 
     // (a node that just restarted) passes its own.
     readTranscript: readTranscript ?? (async () => transcript.text || null),
     defaultBeing: 'egpt',
+    node_name: 'kg',                     // THIS node — the one whose replies the fake transcript labels `.kg`
+
     // `mode` runs the REAL mode semantics (auto-mode.replyAllowed) over whatever mention each
     // target was handed — the seam that proves the fan-out feeds honest per-agent flags into
     // machinery that already knows what they mean. ONE mode governs every addressed agent here
@@ -535,6 +541,40 @@ describe('QUICK REPLY — `r <body>` answers the last AGENT that spoke here', ()
     const { spine, brain } = fanoutSpine({ readTranscript: async () => { throw new Error('EACCES'); } });
     await spine.handleInbound({ ...MSG, body: 'r hola' });
     expect(brain.calls).toEqual([{ being: 'egpt', body: 'r hola', line: undefined }]);
+  });
+
+  // ── REPRODUCE-FIRST (operator 2026-07-27, LIVE — BOTH NODES ANSWERED ONE `r`): kg replied at
+  //    00:41 (correct) and DOLLY replied at 00:41 too, unprompted. `r` resolves PER NODE against
+  //    THAT node's own transcript, and on a shared Beeper account both nodes receive the `r`: each
+  //    walked its own file, found whichever of ITS OWN agents spoke last, and both claimed the
+  //    message. A peer's reply is NOT an agent line in this file — it arrives as an ordinary
+  //    INBOUND line (isSender on the shared account) whose body carries the peer's structural
+  //    signature, rendered `<do>` by identity.build. So the last BOT message is knowable here, and
+  //    when it is the PEER's this node must stay out of it. This spine is kg (its transcript
+  //    labels replies `.kg`); `do` is the node on the other end. ──
+  const PEER = (node, body) => `An@[fam].wa (00:41) #m9: 🐶 ${node}\n`
+    + renderNodeSignature(`${body}${encodeNodeSignature(node)}`);
+
+  it('REPRODUCE-FIRST: a PEER node answered after us → `r …` is ordinary text, this node stays silent', async () => {
+    const text = REC(
+      '[@egpt.kg (00:41)]: Pescado Rabioso arrancó en 1971 — Spinetta tenía 21', '',
+      PEER('do', "The question's already been answered — kg replied to #20871"),
+    );
+    const { spine, brain, bridge } = fanoutSpine({ mode: 'mention-direct', readTranscript: async () => text });
+    await spine.handleInbound({ ...MSG, msgId: 'm2', body: 'r y en Almendra?', mention: NONE });
+    expect(brain.calls).toHaveLength(0);       // nobody addressed → mention-direct answers nothing
+    expect(bridge.sent).toHaveLength(0);       // …and no reply reaches the surface
+  });
+
+  it('REPRODUCE-FIRST (mirror): the peer answered FIRST and WE answered last → `r …` is still ours', async () => {
+    const text = REC(
+      PEER('do', 'esa ya la contesté yo'), '',
+      '[@egpt.kg (00:42)]: y yo agrego esto',
+    );
+    const { spine, brain } = fanoutSpine({ mode: 'mention-direct', readTranscript: async () => text });
+    await spine.handleInbound({ ...MSG, msgId: 'm2', body: 'r y en Almendra?', mention: NONE });
+    expect(brain.calls.map((c) => c.being)).toEqual(['egpt']);
+    expect(brain.calls[0].body).toBe('y en Almendra?');
   });
 });
 

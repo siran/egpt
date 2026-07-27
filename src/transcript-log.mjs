@@ -14,6 +14,10 @@
 // out of transcript.md keys on THAT definition rather than on a copy of it.
 import { renderFrontMatter, stripFrontMatter } from './transcript-meta.mjs';
 import { hhmm } from './dispatch-line.mjs';
+// WHICH NODE committed a line, read back off the record. The frame is invisible on the wire and
+// identity.build renders it to `<node>` before the transcript is written, so this reader — not
+// decodeNodeSignature — is the one that works on a file. See lastSurfacedBeing below.
+import { decodeRenderedNodeSignature } from './node-signature.mjs';
 
 /**
  * Bytes to append for one transcript line. Prepends the YAML front matter when
@@ -152,31 +156,72 @@ export function promptWithRecentContext(line, { blocks = [], truncated = false }
 // withheld line, because its question is "what has this being already seen" — the opposite test.
 // One line shape, two predicates.
 //
-// THE CONTRACT, stated so it is not re-litigated: "the last bot message in this transcript" is
-// the last LOCAL one. A RELAY agent's reply (`@don`) is mirrored into the chat by the FAR node
-// and this node writes NO agent line for it — src/spine/mesh.mjs never touches the transcript,
-// and the only writers of a `[@being …]:` line are the spine's two transcript.log(ev, reply)
-// calls. So `r` after a `@don` forward answers the last local being. That IS the definition.
+// TWO KINDS OF BOT MESSAGE, BECAUSE TWO NODES SHARE THE ACCOUNT (operator 2026-07-27, LIVE: one
+// `r qué edad en Pescado Rabioso?` and BOTH nodes answered it — kg correctly, DOLLY unprompted,
+// while SAYING that kg had already replied). `r` resolves PER NODE against THAT node's own file,
+// and on a shared Beeper account both nodes receive the `r`. A peer's reply is not an agent line
+// here: the far spine posted it, so this node wrote NO `[@being …]:` line for it — it arrived as
+// an ordinary INBOUND line (isSender, displayed as the account owner). Each node therefore walked
+// back to whichever of ITS OWN agents spoke last, and both claimed the message.
+//
+// So a bot message is EITHER of:
+//   (a) THIS node's own surfaced reply line — the `[@being …]:` shape replyLine writes, or
+//   (b) an INBOUND line carrying a NODE SIGNATURE — another spine committed that text.
+// `r` targets the most recent of the two. When it is (b), ANOTHER NODE'S AGENT HAS THE FLOOR and
+// this node returns null, which is the same nobody-addressed outcome as an empty record: `r …`
+// stays ordinary text. Exactly one node answers, with no coordination, no lock and no race —
+// this is a pure read of what is already written down.
+//
+// (b) IS READABLE because the signature is STRUCTURAL and already decoded: persona-wrap appends an
+// invisible tag-encoded frame to every frame a spine commits (src/node-signature.mjs), and
+// identity.build renders it to a legible `<node>` in ev.body before anything reads it — and the
+// transcript's inbound line IS that rendered body. decodeRenderedNodeSignature (beside the
+// renderer, so the shape has one definition) names the node.
+//
+// OUR OWN SIGNATURE IS NOT A PEER'S. Our replies carry `<this node>` on the wire too, so if one
+// ever re-enters as an inbound line — the bridge's own-send gate is id-based and logs a miss on an
+// UNCONFIRMED send — the walk must recognise it as ours and keep going, landing on our own reply
+// line above it. Hence `node`: THIS node's name (config node_name, boot-asserted non-empty),
+// threaded from the spine. Without it every signed line reads as another node's — the SAFE
+// direction, since a missed `r` beats two nodes answering one message.
+//
+// THE CONTRACT, stated so it is not re-litigated: (a) is the last LOCAL one. A RELAY agent's reply
+// (`@don`) is mirrored into the chat by the FAR node and this node writes NO agent line for it —
+// src/spine/mesh.mjs never touches the transcript, and the only writers of a `[@being …]:` line
+// are the spine's two transcript.log(ev, reply) calls. So `r` after a `@don` forward answers the
+// last local being — unless that mirror carried the far node's signature, in which case it is (b)
+// and the far node owns the follow-up. That IS the definition.
 //
 // The node qualifier is stripped (`e.kg` → `e`): the BEING-ID is what routes, and `.<node>` is
 // provenance the transcript service adds (src/spine/transcript.mjs).
 const _REPLY_HEAD = /^\[@(\S+?)(?:\.[^\s\]]+)?\s\(\d{1,2}:\d{2}\)\]:/;
 
 /**
- * The being-id of the last SURFACED reply line in the transcript, lowercased — or null when no
- * agent has spoken here (a fresh chat, or one where every reply was withheld), which is where
- * `r …` addresses nobody and stays ordinary text.
+ * The being-id of the last SURFACED reply line in the transcript, lowercased — or null when this
+ * node's agents do not own the last bot message: no agent has spoken here (a fresh chat, or one
+ * where every reply was withheld), or a CO-ACCOUNT PEER answered more recently. Both are the same
+ * outcome for the caller — `r …` addresses nobody and stays ordinary text — so the return shape is
+ * unchanged: one reason to be silent is as good as another, and inventing a second one would only
+ * give the spine a branch with nothing to do in it.
  *
  * @param {string} text   transcript.md, front matter included
+ * @param {{node?: string|null}} opts
+ *        node — THIS node's name (config node_name). Null → every signed line reads as a peer's.
  */
-export function lastSurfacedBeing(text) {
+export function lastSurfacedBeing(text, { node = null } = {}) {
+  const me = String(node ?? '').trim().toLowerCase();
   const blocks = stripFrontMatter(String(text ?? '')).split(/\n{2,}/);
   for (let i = blocks.length - 1; i >= 0; i--) {
     const b = blocks[i].trim();
     const m = b.match(_REPLY_HEAD);
-    if (!m) continue;
-    if (b.slice(m[0].length).trimStart().startsWith('(not surfaced)')) continue;   // nobody saw it
-    return m[1].toLowerCase();
+    if (m) {                                                                      // (a) our own reply line
+      if (b.slice(m[0].length).trimStart().startsWith('(not surfaced)')) continue; // nobody saw it
+      return m[1].toLowerCase();
+    }
+    const signer = decodeRenderedNodeSignature(b);                                // (b) a spine committed this
+    if (signer == null) continue;                                                 // an ordinary human line
+    if (me && signer.toLowerCase() === me) continue;                              // ours, echoed back — keep walking
+    return null;                                                                  // a PEER answered last
   }
   return null;
 }
