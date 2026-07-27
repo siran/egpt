@@ -358,14 +358,16 @@ describe('responder — an arriving envelope carrying a node-addressed command',
     body: encodeMesh({ by: 'An', body, from: 'shell', from_node: 'kg', to: 'don.do', post_id: 'post-1' }),
   });
 
-  it('runs the command (NOT the being) and streams the reply home inside the envelope', async () => {
+  it('DEFECT 2 FIX: runs the command (NOT the being) and posts the reply home as ONE plain send — no streaming placeholder for static tubing', async () => {
     const { bridge, brain, spine } = nodeStack({ config: DO() });
     await spine.handleInbound(request('/chrome do'));
     await flush();
     expect(brain.calls).toHaveLength(0);                       // the being never saw it
-    const relayStream = bridge.streams.filter((s) => s.chat === 'egpt-mesh-do-kg');
-    expect(relayStream).toHaveLength(1);
-    const finalFrame = parseMesh(relayStream[0].finals.at(-1));
+    // a static command never opens a streaming placeholder (no AI involved — nothing to stream)
+    expect(bridge.streams.filter((s) => s.chat === 'egpt-mesh-do-kg')).toHaveLength(0);
+    const relayReplies = bridge.sent.filter((s) => s.chat === 'egpt-mesh-do-kg' && parseMesh(s.text)?.done);
+    expect(relayReplies).toHaveLength(1);
+    const finalFrame = parseMesh(relayReplies[0].text);
     expect(finalFrame).toMatchObject({ by: 'don.do', re: 'shell.kg', post_id: 'post-1', done: true });
     expect(finalFrame.body).toContain('attached: 127.0.0.1:9221');
   });
@@ -378,12 +380,13 @@ describe('responder — an arriving envelope carrying a node-addressed command',
     expect(brain.calls).toHaveLength(1);                       // ordinary relayed text, as today
   });
 
-  it('a command addressed at ANOTHER node is not executed here', async () => {
+  it('a command addressed at ANOTHER node is not executed here — and a BRAIN reply still streams (the lock: only commandReply skips the placeholder)', async () => {
     const { brain, spine, bridge } = nodeStack({ config: DO() });
     await spine.handleInbound(request('/chrome kg'));
     await flush();
     expect(brain.calls).toHaveLength(1);                       // not ours → ordinary relayed text
     const relayStream = bridge.streams.filter((s) => s.chat === 'egpt-mesh-do-kg');
+    expect(relayStream).toHaveLength(1);                       // the being path DOES open the placeholder
     expect(parseMesh(relayStream[0].finals.at(-1)).body).toContain('the being answers');
   });
 
@@ -395,8 +398,9 @@ describe('responder — an arriving envelope carrying a node-addressed command',
     await spine.handleInbound(request('/chrome do', { authorized: false, isSender: false }));
     await flush();
     expect(brain.calls).toHaveLength(0);
-    const relayStream = bridge.streams.filter((s) => s.chat === 'egpt-mesh-do-kg');
-    expect(parseMesh(relayStream[0].finals.at(-1)).body).toMatch(/not authorized/i);
+    const relayReplies = bridge.sent.filter((s) => s.chat === 'egpt-mesh-do-kg' && parseMesh(s.text)?.done);
+    expect(relayReplies).toHaveLength(1);
+    expect(parseMesh(relayReplies[0].text).body).toMatch(/not authorized/i);
   });
 
   it('the reply can never itself parse as a command (the flood fix holds over the mesh)', async () => {
@@ -404,10 +408,10 @@ describe('responder — an arriving envelope carrying a node-addressed command',
     // ONE chokepoint that backticks a leading command token, so the body the ORIGIN posts into
     // its chat cannot start with '/'.
     const { bridge, spine } = nodeStack({ config: DO(), cdp: { ...LIVE_CDP, listTabs: async () => { throw new Error('no chrome'); } } });
-    await spine.handleInbound(request('/tabs do'));
+    await spine.handleInbound(request('/tabs=do'));   // current grammar — "/tabs do" (bare positional) is not addressable for /tabs, only /chrome
     await flush();
-    const relayStream = bridge.streams.filter((s) => s.chat === 'egpt-mesh-do-kg');
-    const body = parseMesh(relayStream[0].finals.at(-1)).body;
+    const relayReplies = bridge.sent.filter((s) => s.chat === 'egpt-mesh-do-kg' && parseMesh(s.text)?.done);
+    const body = parseMesh(relayReplies[0].text).body;
     expect(body.trimStart().startsWith('/')).toBe(false);
   });
 });
@@ -511,7 +515,11 @@ describe('dispatch.default_node', () => {
     expect(plain(bridge)[0].text).toContain('node_name: kg');
   });
 
-  it('SET to a peer: a bare /tabs on the shell travels there, exactly like an explicit =<node>', async () => {
+  it('DEFECT 1 FIX: SET to a peer — a bare /tabs on the shell travels there with the node bound EXPLICITLY to the token', async () => {
+    // Live miss (2026-07-27): the ORIGIN resolved default_node but forwarded the ORIGINAL bare
+    // body — the responder's own dispatch.default_node is unset, so its nodeCommandForMe
+    // re-parsed "/tabs" as unaddressed and fell through to the being. Resolution happens ONCE,
+    // here, and must travel explicitly: "/tabs" becomes "/tabs=do" on the wire.
     const config = { ...KG(), dispatch: { default_node: 'do' } };
     const { bridge, spine } = nodeStack({ config });
     await spine.handleInbound({ ...SHELL, body: '/tabs' });
@@ -519,7 +527,31 @@ describe('dispatch.default_node', () => {
     const envs = envelopes(bridge);
     expect(envs).toHaveLength(1);
     expect(envs[0].chat).toBe('egpt-mesh-do-kg');
-    expect(parseMesh(envs[0].text).body).toBe('/tabs');   // forwarded verbatim — no "=<node>" was ever typed
+    expect(parseMesh(envs[0].text).body).toBe('/tabs=do');   // EXPLICIT — not the bare original
+  });
+
+  it('REPRODUCE-FIRST: the explicit wire form the responder receives resolves as a command there too — the being is NEVER reached', async () => {
+    // Full round trip: kg has dispatch.default_node: do; do does NOT (its own default_node is
+    // unset, exactly the live config). Before the fix this reached do's being (CLAUDE Code's own
+    // "/stats" answered instead of egpt); after the fix, do's own nodeCommandForMe accepts the
+    // explicit "/tabs=do" on its own terms, with no knowledge of kg's config required.
+    const kg = nodeStack({ config: { ...KG(), dispatch: { default_node: 'do' } } });
+    await kg.spine.handleInbound({ ...SHELL, body: '/tabs' });
+    await flush();
+    const envs = envelopes(kg.bridge);
+    expect(envs).toHaveLength(1);
+
+    const doNode = nodeStack({ config: DO() });
+    await doNode.spine.handleInbound({
+      surface: 'whatsapp', node: 'wa', chatId: 'egpt-mesh-do-kg', chatName: 'mesh',
+      senderId: 'u-an', senderName: 'An', msgId: 'q1', ts: 3, kind: 'text', raw: {},
+      authorized: true, isSender: true, body: envs[0].text,
+    });
+    await flush();
+    expect(doNode.brain.calls).toHaveLength(0);   // THE assertion: the brain is never called
+    const relayReplies = doNode.bridge.sent.filter((s) => s.chat === 'egpt-mesh-do-kg' && parseMesh(s.text)?.done);
+    expect(relayReplies).toHaveLength(1);
+    expect(parseMesh(relayReplies[0].text).body).toContain('tabs: 1');
   });
 
   it('SET to THIS node\'s own name: identical to local — no envelope, this node answers', async () => {

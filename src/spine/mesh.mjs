@@ -351,12 +351,17 @@ export function createMeshService({
         // echo `via` (the forward trail) home so the origin can show the traceroute path.
         return encodeMesh({ by, body: out, re, post_id, via, done });
       };
-      const stream = bridge.startStream(chat, wrap(''), {});
       let final = '';
+      let stream = null;
       try {
         const cmd = await commandReply(route, prompt);
         if (cmd != null) final = cmd;
         else {
+          // Only the being path ever streams (onPartial below) — open the placeholder HERE, once
+          // the branch is known, so a static command never pays for a "🤔" it never uses plus an
+          // extra outbound edit against the lasso budget (operator 2026-07-27: "no AI involved,
+          // it's static tubing").
+          stream = bridge.startStream(chat, wrap(''), {});
           const r = await brain.turn(being, meshEv(route, prompt), (partial) => { try { stream?.update?.(wrap(textOf(partial))); } catch {} });
           final = textOf(r);
         }
@@ -459,7 +464,13 @@ export function createMeshService({
         await bridge.send(ev.chatId, `⚠️ no agent routes to node "${node}" — add an agent with a relay_channel and "to: <being>.${node}" to reach it.`);
         return false;
       }
-      return api.forward(ev, target);
+      // Resolution happens ONCE, here at the origin, and must travel EXPLICITLY (operator
+      // 2026-07-27 — live miss: a bare command resolved via dispatch.default_node forwarded with
+      // its ORIGINAL body, so the responder's own nodeCommandForMe re-parsed it bare, resolved no
+      // node of its own, and fell through to the being). commands.makeNodeExplicit binds `=<node>`
+      // to the command token; an already-explicit command (`/tabs=do`) comes back unchanged.
+      const body = commands?.makeNodeExplicit?.(ev.body, node) ?? ev.body;
+      return api.forward(body === ev.body ? ev : { ...ev, body }, target);
     },
 
     // A streamed edit in a relay chat mirrors onward (responder edits → origin mirror,

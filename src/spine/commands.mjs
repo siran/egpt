@@ -489,6 +489,25 @@ export function createCommands({
     return !!hit && ownNodeNamesOf(cfg()).has(hit.node);
   }
 
+  // ORIGIN rewrite, used by the mesh forwarder ONLY (operator 2026-07-27, live miss): a command
+  // resolved through THIS node's dispatch.default_node (nodeAddressed's `raw: ''` — nothing was
+  // typed to name the node) must travel with the node bound EXPLICITLY to the command token,
+  // because the RESPONDER re-parses the SAME wire body through its OWN nodeCommandForMe — and its
+  // own default_node may be unset or point elsewhere. Without this, a bare `/tabs` forwarded
+  // verbatim resolved to no node at the responder and fell through to the being (CLAUDE Code's
+  // own `/stats` answered instead of egpt). An ALREADY-explicit command (`/tabs=do`, `/chrome do`)
+  // is returned byte-identical — remoteNode resolved it without consulting default_node, so
+  // nothing about the wire form needs to change. Only the command TOKEN is rewritten; arguments
+  // (a URL's own `=`, `?a=b`) are never touched.
+  function makeNodeExplicit(text, node) {
+    const hit = nodeAddressed(text);
+    if (!hit || hit.raw) return text;                 // not addressable here, or already explicit
+    const m = NODE_ADDRESSABLE.exec(String(text ?? '').trim());
+    if (!m) return text;
+    const rest = (m[3] ?? '').trim();
+    return `/${m[1]}=${node}${rest ? ` ${rest}` : ''}`;
+  }
+
   // Is an un-expired `/e` wizard armed for this chat? Prunes an expired one (so an
   // abandoned wizard never lingers past its 5-min window).
   function wizardActive(ev) {
@@ -1718,5 +1737,5 @@ export function createCommands({
     } catch (e) { onLog(`/e wizard tools ${wm.chatId}: ${e?.message ?? e}`); await send?.(wm.chatId, `/e: failed — ${e?.message ?? e}`); }
   }
 
-  return { isCommand, run, runCaptured, remoteNode, nodeCommandForMe };
+  return { isCommand, run, runCaptured, remoteNode, nodeCommandForMe, makeNodeExplicit };
 }
