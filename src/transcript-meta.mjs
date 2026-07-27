@@ -2,7 +2,9 @@
 //
 // Each transcript opens with a front-matter block identifying WHO the transcript
 // is with, the resumable thread, the persona on it, and operator notes. The
-// block is written once at creation (dispatch.mjs) and is the stable container
+// block is written at creation by the transcript service and RE-STAMPED when a thread id
+// lands (conversations-state stampThreadId) — not write-once, and dispatch.mjs is long
+// deleted. It is the stable container
 // the future "collector" enriches (network / phone / type / participants come
 // from the limb's chat metadata once that's plumbed — see GENOME §5).
 //

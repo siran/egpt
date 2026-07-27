@@ -782,8 +782,9 @@ export async function boot({
     // default (commit 4eaceaf "E is a persistent background agent — never idle-evict
     // conversations", which set conversation: 0 — never-evict under the OLD dialect): a conversation now goes cold 15m
     // after its last turn, and the transcript + `--resume` make the next turn
-    // correct, just colder. system/resident stay 0 (truly persistent). `sibling`
-    // stays 0 — the operator only ruled on conversations, so it is left untouched.
+    // correct, just colder. system/resident stay NEVER-EVICT, and so does `sibling` — the
+    // operator only ruled on conversations. Those three read `-1` since the 2026-07-26 dialect
+    // flip (-1 never, 0 ALWAYS evict); they were written `0` when 0 meant never.
     //
     // `warm.max` is the "keep a number — or, with a high max, all — agents warm"
     // knob the operator likes: the LRU cap bounds how many warm sessions live at
