@@ -19,7 +19,7 @@
 // shell/slash console are layered in after v1, each behind its service seam.
 import { makeSerialByKey } from '../serial-by-key.mjs';
 import { isBrainFailureResult } from '../brain-errors.mjs';
-import { replyLine, contextSinceLastTurn, promptWithRecentContext } from '../transcript-log.mjs';
+import { replyLine, contextSinceLastTurn, promptWithRecentContext, bodyForMessageId, promptWithQuotedMessage } from '../transcript-log.mjs';
 import { isHumanTurn, parseStopWord } from '../stop-guard.mjs';
 import { lifecycleExit } from './ingest.mjs';
 
@@ -771,20 +771,42 @@ export function createSpine({
       // the baseline the next turn's cycle starts from). Anything that goes wrong —
       // no seam, unreadable file, nothing accumulated — falls through to exactly the
       // prompt this chat builds today.
-      let recent = null;
-      if (d.recentContextChars > 0 && readTranscript) {
+      //
+      // THE QUOTED MESSAGE (operator 2026-07-26): this inbound REPLIES to another message, and
+      // the transport carries the quoted message's ID ONLY — never its text (src/bridges/
+      // beeper.mjs ~L1335). So ` re #<id>` reached the model naked and E answered "No veo el
+      // contenido de #177210". The content is on the SAME record this reads, one entry up
+      // (transcript-log.bodyForMessageId), so it is resolved here and labelled below.
+      // recent_context CANNOT cover this case: its window starts at the being's last turn, and
+      // a reply to an OLD message is by definition outside it.
+      let recent = null, quoted = null;
+      if (readTranscript && (d.recentContextChars > 0 || ev.replyToId != null)) {
         try {
           const text = await readTranscript(ev.chatId, { chatName: ev.chatName, network: ev.surface });
-          const got = text ? contextSinceLastTurn(text, { being: to, maxChars: d.recentContextChars, exclude: ev.line ?? ev.body }) : null;
-          if (got?.blocks.length) recent = got;
-        } catch (e) { note(`recent-context ${to}/${ev.chatId}: ${e?.message ?? e}`); }
+          if (text && d.recentContextChars > 0) {
+            const got = contextSinceLastTurn(text, { being: to, maxChars: d.recentContextChars, exclude: ev.line ?? ev.body });
+            if (got.blocks.length) recent = got;
+          }
+          if (text && ev.replyToId != null) {
+            const body = bodyForMessageId(text, ev.replyToId);
+            if (body) quoted = { id: ev.replyToId, body };
+          }
+        } catch (e) { note(`prompt-context ${to}/${ev.chatId}: ${e?.message ?? e}`); }
       }
       const prepend = burst || ((queued || d.mode === 'auto') && pending.length);
-      const promptEv = recent
-        ? { ...ev, line: promptWithRecentContext(ev.line ?? ev.body, recent) }
+      const base = ev.line ?? ev.body;
+      let line = recent
+        ? promptWithRecentContext(base, recent)
         : prepend
-          ? { ...ev, line: (burst && pending.length ? pending : [...pending, ev.line ?? ev.body]).join('\n\n') }
-          : ev;
+          ? (burst && pending.length ? pending : [...pending, base]).join('\n\n')
+          : base;
+      // NO DUPLICATE: the quoted message may ALREADY be in the prompt — inside the recent_context
+      // gap, or in the drained cycle. Both are transcript lines, so the SAME walk answers it:
+      // an entry carrying that id is already there → add nothing. Appending LAST is what makes
+      // that one check enough (it sees everything the prompt already holds), and the block's
+      // label names the id instead of a position for exactly that reason.
+      if (quoted && bodyForMessageId(line, quoted.id) == null) line = promptWithQuotedMessage(line, quoted);
+      const promptEv = line === base ? ev : { ...ev, line };
       // STREAM THE PROSE ONLY (operator 2026-07-15). The raw partial used to go straight to
       // the chat, so E's action tokens RENDERED live — the operator watched `/reply #<id> …`
       // appear and then vanish once the completed text was parsed below. partialProse applies

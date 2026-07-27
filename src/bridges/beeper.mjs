@@ -56,7 +56,7 @@ import { normalizeTokens, similarity } from '../text-similarity.mjs';
 import { makeWrapPersona } from './persona-wrap.mjs';
 import { stripNodeSignature } from '../node-signature.mjs';
 import { reactionAction, editAction, isLiveStreamFrame } from '../dispatch-line.mjs';
-import { stripFrontMatter } from '../transcript-meta.mjs';
+import { bodyForMessageId } from '../transcript-log.mjs';
 import { mentionStatus } from '../auto-mode.mjs';
 import { mediaKind } from '../media-kind.mjs';
 import { shouldDownload } from '../media-save.mjs';
@@ -132,39 +132,21 @@ export function newerMsgId(a, b) {
 //   Sender@[chat].node (HH:MM) #<id>[ re #<rid>]: (voice transcription, Ns) <text…>
 // (dispatch-line.formatDispatchLine + incoming-media.voiceTranscriptBody). The bare-@e
 // reply branch looks THAT text up by the quoted id instead of re-transcribing the audio
-// (which was a wasteful DOUBLE transcription). The <text> MAY span multiple lines until
-// the NEXT entry — another dispatch line, a stage-direction "[ Sender@… ]", or a being
-// reply "[@being (HH:MM)]:" — so we collect continuation lines, not just the first.
-// Front matter is dropped with the shared stripFrontMatter so a `name:`/`---` line can't
-// match. Pure + exported so the parse shape is test-locked. Returns the transcription
-// text, or null when the id has no VOICE-transcription entry (→ the branch falls through
-// to @e→E; it never re-transcribes). The id is compared as a STRING (extracted from the
-// header), so no caller-supplied id is ever spliced into a regex.
-const _TS = String.raw`\(\d{1,2}:\d{2}\)`;
-// An entry header: an inbound dispatch line ("Sender@[chat].node (HH:MM)…", optionally
-// "[ "-wrapped for a stage-direction) OR a being reply ("[@being (HH:MM)]:"). A plain
-// continuation line of a transcript matches NEITHER, so it's kept as body.
-const _ENTRY_HEAD = new RegExp(String.raw`^(?:\[\s*)?[^@\n]+@\[[^\]]*\]\.\S+\s+${_TS}|^\[@\S+\s+${_TS}\]:`);
-const _ID_AFTER_TS = new RegExp(`${_TS}\\s+#([^\\s:]+)`);   // the message-id tag directly after the time
-const _VOICE_MARK = /\(voice transcription(?:,[^)]*)?\)\s*/;
+// (which was a wasteful DOUBLE transcription).
+//
+// THE WALK IS NOT HERE ANY MORE (operator 2026-07-26): reading one recorded entry back by its
+// id is what a REPLY needs too (the quoted message's content, which Beeper never inlines — see
+// ~L1335), so the walk moved to transcript-log.bodyForMessageId, beside the module that defines
+// the shape of a transcript line. It was voice-specific for exactly ONE reason — this marker
+// test — so that is all that stayed behind. Returns the transcription text, or null when the id
+// has no VOICE-transcription entry (→ the branch falls through to @e→E; it never re-transcribes).
+const _VOICE_MARK = /^\(voice transcription(?:,[^)]*)?\)\s*/;
 
 export function transcriptionForNoteId(doc, noteId) {
-  if (!doc || noteId == null) return null;
-  const want = String(noteId);
-  const lines = stripFrontMatter(String(doc)).split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    const head = lines[i];
-    if (!_ENTRY_HEAD.test(head)) continue;                  // only a real entry header
-    const idm = head.match(_ID_AFTER_TS);
-    if (!idm || idm[1] !== want) continue;                  // …for THIS note's id
-    const vm = head.match(_VOICE_MARK);
-    if (!vm) return null;                                    // the id's entry exists but isn't a voice note
-    const parts = [head.slice(vm.index + vm[0].length)];     // text after "(voice transcription…) "
-    for (let j = i + 1; j < lines.length && !_ENTRY_HEAD.test(lines[j]); j++) parts.push(lines[j]);
-    const text = parts.join('\n').trim();
-    return text || null;
-  }
-  return null;
+  const body = bodyForMessageId(doc, noteId);
+  const vm = body?.match(_VOICE_MARK);
+  if (!vm) return null;                                      // no entry, or the entry isn't a voice note
+  return body.slice(vm[0].length).trim() || null;
 }
 
 export async function startBeeperBridge(opts = {}) {

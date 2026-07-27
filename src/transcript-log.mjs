@@ -129,3 +129,76 @@ export function promptWithRecentContext(line, { blocks = [], truncated = false }
     + `THE FOLLOWING IS ACCUMULATED CONTEXT — what was said in this conversation since your last turn, oldest first. `
     + `It is BACKGROUND for the prompt above; do not answer it.${note}\n${blocks.join('\n\n')}`;
 }
+
+// ── THE QUOTED MESSAGE — one recorded entry, read back by its id ──────────────
+// (operator 2026-07-26: someone replied to a message with `@e ubica esto en yotube` and E
+// answered "No veo el contenido de #177210". Beeper carries a reply's quoted message ID ONLY —
+// no inline quoted text/sender, src/bridges/beeper.mjs:1335 — so ` re #<id>` rode the dispatch
+// line and the CONTENT was never resolved anywhere. E was handed a pointer and nothing else.)
+//
+// The content is already on the record: the quoted message is an entry in THIS file. The walk
+// below is the one the voice-note reuse path has used since 2026-07-20 (beeper.mjs
+// transcriptionForNoteId), GENERALISED — it was voice-specific for exactly one reason, a marker
+// test on the matched entry, so that test moved out to the wrapper and one walk now serves both
+// callers. Its home is here, beside contextSinceLastTurn, because this module defines the SHAPE
+// of a transcript line (transcriptAppend/replyLine) and every function that reads a line back
+// out must key on that definition rather than on a copy of it — and because the spine reads it
+// too, which must not mean the spine importing a bridge's parser.
+//
+// An entry header is an inbound dispatch line ("Sender@[chat].node (HH:MM)…", optionally
+// "[ "-wrapped for a stage-direction) OR a being reply ("[@being (HH:MM)]:"). A plain
+// continuation line matches NEITHER, so it is kept as body and a multi-line message stays whole.
+// The id is the tag directly AFTER the time, so a ` re #<id>` reply tag can never be mistaken
+// for an entry's own id. Front matter is dropped with the shared stripFrontMatter so a
+// `name:`/`---` line can't match. The id is compared as a STRING extracted from the header, so
+// no caller-supplied id is ever spliced into a regex.
+const _TS = String.raw`\(\d{1,2}:\d{2}\)`;
+const _ENTRY_HEAD = new RegExp(String.raw`^(?:\[\s*)?[^@\n]+@\[[^\]]*\]\.\S+\s+${_TS}|^\[@\S+\s+${_TS}\]:`);
+const _ID_AFTER_TS = new RegExp(`${_TS}\\s+#([^\\s:]+)`);   // the message-id tag directly after the time
+
+/**
+ * The recorded body of the entry whose OWN message id is `msgId`: the text after the header's
+ * `: ` separator, plus every continuation line up to the next entry.
+ *
+ * NULL when no entry carries that id — a message older than any record, another node's, or one
+ * never logged. The caller must then change nothing: never fabricate, never emit an empty block.
+ *
+ * @param {string} text   transcript.md, front matter included
+ * @param {string|number} msgId
+ */
+export function bodyForMessageId(text, msgId) {
+  if (!text || msgId == null) return null;
+  const want = String(msgId);
+  const lines = stripFrontMatter(String(text)).split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const head = lines[i];
+    if (!_ENTRY_HEAD.test(head)) continue;                            // only a real entry header
+    const idm = head.match(_ID_AFTER_TS);
+    if (!idm || idm[1] !== want) continue;                            // …for THIS id
+    const colon = head.indexOf(':', idm.index + idm[0].length);       // the separator after `#<id>[ re #<rid>]`
+    if (colon < 0) return null;
+    const parts = [head.slice(colon + 1)];
+    for (let j = i + 1; j < lines.length && !_ENTRY_HEAD.test(lines[j]); j++) parts.push(lines[j]);
+    return parts.join('\n').trim() || null;
+  }
+  return null;
+}
+
+/**
+ * Append the quoted message to the prompt, LABELLED as the REFERENT — "esto" is that message,
+ * and answering it instead of the prompt is the failure from the other direction. The label
+ * names the id rather than a position, because this block is appended LAST: with
+ * `recent_context` on it lands under the accumulated context, and the id is what ties it back
+ * to the ` re #<id>` on the triggering line wherever it sits.
+ *
+ * Nothing resolved → the line is returned UNCHANGED, so an unresolvable quote prompts exactly
+ * as it does today. PROMPT ONLY: no caller writes this back to the transcript or the surface —
+ * the quoted message is already further up the record.
+ */
+export function promptWithQuotedMessage(line, { id, body } = {}) {
+  const trigger = String(line ?? '');
+  const text = String(body ?? '').trim();
+  if (!text) return trigger;
+  return `${trigger}\n\nTHE MESSAGE THIS REPLIES TO — #${id}. The prompt is a reply to it: `
+    + `this is WHAT the prompt refers to, not what to answer.\n${text}`;
+}
