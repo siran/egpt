@@ -510,7 +510,7 @@ describe('computeShellHeader — the permanent shell status line', () => {
       nodeName: 'kg', personaName: 'egpt',
       agents: { egpt: { handles: ['e', 'egpt'], default: true } },
     });
-    expect(s).toBe('🟢 egpt lobby — ? for help — kg: @e');
+    expect(s).toBe('🟢 egpt lobby — ? for help · ctrl-d = send — kg: @e');
   });
 
   it('no `to:` → grouped under nodeName (LOCAL); a top-level `to: x.node` → grouped under the part after the last dot', () => {
@@ -521,7 +521,7 @@ describe('computeShellHeader — the permanent shell status line', () => {
         don: { handles: ['d', 'don'], to: 'don.do' },          // top-level `to:` → group 'do'
       },
     });
-    expect(s).toBe('🟢 egpt lobby — ? for help — kg: @e · do: @d');
+    expect(s).toBe('🟢 egpt lobby — ? for help · ctrl-d = send — kg: @e · do: @d');
   });
 
   it('carol-shaped `paths:` list groups by the FIRST entry\'s `to:` node segment', () => {
@@ -538,7 +538,7 @@ describe('computeShellHeader — the permanent shell status line', () => {
         },
       },
     });
-    expect(s).toBe('🟢 egpt lobby — ? for help — kg: @e · do: @carol');
+    expect(s).toBe('🟢 egpt lobby — ? for help · ctrl-d = send — kg: @e · do: @carol');
   });
 
   it('an agent with no `handles:` at all falls back to its map key as the handle', () => {
@@ -546,7 +546,7 @@ describe('computeShellHeader — the permanent shell status line', () => {
       nodeName: 'kg', personaName: 'egpt',
       agents: { egpt: { handles: ['e', 'egpt'], default: true }, wren: { to: 'ed.do' } },
     });
-    expect(s).toBe('🟢 egpt lobby — ? for help — kg: @e · do: @wren');
+    expect(s).toBe('🟢 egpt lobby — ? for help · ctrl-d = send — kg: @e · do: @wren');
   });
 
   it('multiple agents routing to the SAME node segment combine into ONE group, in agent-declaration order (the brief\'s own example shape)', () => {
@@ -560,12 +560,12 @@ describe('computeShellHeader — the permanent shell status line', () => {
         don: { handles: ['don'], to: 'don.do' },
       },
     });
-    expect(s).toBe('🟢 egpt lobby — ? for help — kg: @e · do: @carol @wren @cara @don');
+    expect(s).toBe('🟢 egpt lobby — ? for help · ctrl-d = send — kg: @e · do: @carol @wren @cara @don');
   });
 
   it('an empty/absent `agents:` map does not throw — still returns the persona/help portion, no groups segment', () => {
-    expect(computeShellHeader({ nodeName: 'kg', personaName: 'egpt', agents: {} })).toBe('🟢 egpt lobby — ? for help');
-    expect(computeShellHeader({ nodeName: 'kg', personaName: 'egpt' })).toBe('🟢 egpt lobby — ? for help');
+    expect(computeShellHeader({ nodeName: 'kg', personaName: 'egpt', agents: {} })).toBe('🟢 egpt lobby — ? for help · ctrl-d = send');
+    expect(computeShellHeader({ nodeName: 'kg', personaName: 'egpt' })).toBe('🟢 egpt lobby — ? for help · ctrl-d = send');
     expect(() => computeShellHeader({})).not.toThrow();
   });
 });

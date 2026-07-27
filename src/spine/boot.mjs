@@ -202,7 +202,7 @@ function shellHeaderGroupOf(agent, nodeName) {
 // render within a group in agent-declaration order. SHORT HANDLE = the shortest string in the
 // agent's `handles:` array, else its map key.
 export function computeShellHeader({ nodeName, personaName, agents } = {}) {
-  const base = `🟢 ${personaName} ${LOBBY_SLUG} — ? for help`;
+  const base = `🟢 ${personaName} ${LOBBY_SLUG} — ? for help · ctrl-d = send`;
   const map = (agents && typeof agents === 'object' && !Array.isArray(agents)) ? agents : {};
   const groups = new Map();   // groupKey → [ '@handle', ... ], insertion order = first agent encountered
   for (const [key, a] of Object.entries(map)) {

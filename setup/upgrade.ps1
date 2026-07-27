@@ -13,11 +13,13 @@
 #
 #   powershell -ExecutionPolicy Bypass -File setup\upgrade.ps1
 #   powershell -ExecutionPolicy Bypass -File setup\upgrade.ps1 -EgptHome "$env:USERPROFILE\.egpt2"
+#   powershell -ExecutionPolicy Bypass -File setup\upgrade.ps1 -Peer an@192.168.1.102
 [CmdletBinding()]
 param(
   [string]$EgptHome  = $(if ($env:EGPT_HOME) { $env:EGPT_HOME } else { Join-Path $env:USERPROFILE '.egpt' }),
   [string]$Repo      = (Join-Path $env:USERPROFILE 'bin\egpt'),
-  [int]$TimeoutSec   = 120
+  [int]$TimeoutSec   = 120,
+  [string]$Peer      = ''     # user@host -- deploy THIS node, then run this same script there over ssh
 )
 $ErrorActionPreference = 'Stop'
 
@@ -86,4 +88,15 @@ if ($ok) {
   Write-Host "  prod is at $after. The spine may still be building, or the daemon is wedged."
   Write-Host "  Check the log:  $EgptHome\config\logs\service-stdout.log"
   exit 1
+}
+
+# --- the peer, by running THIS SAME SCRIPT there over ssh: the remote copy does its own
+#     drop + heartbeat proof, so there is one deploy procedure, never a second one that
+#     drifts. %USERPROFILE% expands on the REMOTE shell, so no path is hardcoded here. ---
+if ($Peer) {
+  Write-Host ""
+  Write-Host "Peer $Peer :" -ForegroundColor Cyan
+  $remote = 'powershell -NoProfile -ExecutionPolicy Bypass -File "%USERPROFILE%\bin\egpt\setup\upgrade.ps1"'
+  & ssh -o ConnectTimeout=8 $Peer $remote
+  if ($LASTEXITCODE -ne 0) { Write-Host "PEER DEPLOY FAILED (exit $LASTEXITCODE)" -ForegroundColor Red; exit 1 }
 }
