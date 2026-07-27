@@ -96,7 +96,10 @@ if ($ok) {
 if ($Peer) {
   Write-Host ""
   Write-Host "Peer $Peer :" -ForegroundColor Cyan
-  $remote = 'powershell -NoProfile -ExecutionPolicy Bypass -File "%USERPROFILE%\bin\egpt\setup\upgrade.ps1"'
+  # FORWARD SLASHES, UNQUOTED, on purpose: backslashes are eaten in transit to the remote
+  # shell (a quoted C:\Users\... arrives as C:\Users\anbinegpt...), and quoting to survive
+  # both shells is worse. Windows accepts / in a path, and this one has no spaces.
+  $remote = 'powershell -NoProfile -ExecutionPolicy Bypass -File %USERPROFILE%/bin/egpt/setup/upgrade.ps1'
   & ssh -o ConnectTimeout=8 $Peer $remote
   if ($LASTEXITCODE -ne 0) { Write-Host "PEER DEPLOY FAILED (exit $LASTEXITCODE)" -ForegroundColor Red; exit 1 }
 }
