@@ -285,8 +285,11 @@ export async function startBeeperBridge(opts = {}) {
     // and a wrong guess could pull a DIFFERENT chat's same-numbered note (Beeper ids are
     // per-chat SEQUENCE numbers). So the HOST injects the reader. Default is INERT → the
     // shortcut falls through to @e→E (never re-transcribes, never substitutes a wrong note)
-    // until boot wires it. async (chatID, { chatName, network }) => full transcript text |
-    // null (transcript.md, plus any transcripts/ archive, concatenated).
+    // until boot wires it. async (chatID, { chatName, network }) => transcript.md text | null.
+    // The LIVE transcript only — it does NOT concatenate `transcripts/`, and it is not meant
+    // to: this seam is MACHINE-side (the voice-note reuse, the quoted-message lookup). The
+    // MODEL reaches the archive on its own — Read/Glob/Grep are confined to the conversation
+    // folder and `transcripts/` is inside it, which is what the pointers card sends it to.
     readTranscript = async () => null,
     transcribe = transcribeAudioFile,
     // Whisper binary/model config — now sourced from transcription.whisper (the
