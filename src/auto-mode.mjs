@@ -15,13 +15,20 @@
 //   mention        receive; reply only when @e appears anywhere, or a reply to E
 //   off            don't receive at all; never reply (even @e is ignored)
 //
-// RETIRED — 'accum' (operator 2026-07-01): it buffered a chat's bursts and
-// flushed the batch to E once per heartbeat, replying only if the batch was
-// mentioned. Dead: "there is no need to 'buffer messages' since there's the
-// transcript" — the transcript.md IS the buffer (E reads it for back-context
-// when it engages), and send_to_egpt:'always' keeps E current on a busy chat as
-// per-message context turns. accum was legacy from when EVERY prompt was sent to
-// E even when unmentioned in mention mode; batching prompts serves nothing now.
+// RETIRED — 'accum' (operator 2026-07-01), and it stays retired: it buffered a chat's
+// bursts and flushed the batch to E once per heartbeat, replying only if the batch was
+// mentioned. Dead because batching prompts serves nothing — accum was legacy from when
+// EVERY prompt was sent to E even when unmentioned in mention mode.
+//
+// ⚠ ONE HALF OF THE RETIREMENT NOTE WAS WRONG (operator 2026-07-26): it said the
+// transcript IS the buffer because "E reads it for back-context when it engages". E has
+// the file, the Read tool, and a pointers card telling it so — and it did not look. Live:
+// an un-@mentioned message about skin cells, then `@e da una opinión bien fundamentada`,
+// answered from the topic of twenty minutes earlier. Correctness cannot depend on the
+// model CHOOSING to read. The fix is NOT a mode: `recent_context` (src/spine/gating.mjs,
+// src/transcript-log.mjs contextSinceLastTurn) prompts a turn that was going to happen
+// anyway with everything recorded since that being's last turn. No new mode value, no
+// buffer, no change to WHEN E replies — so AUTO_MODES must never regain 'accum'.
 // A 'mode: accum' still stored in conversations.yaml (live nodes have them)
 // degrades cleanly: isAutoMode('accum') is now false, so every reader guarding
 // with isAutoMode(...) — createGating.decide() and resolveBeingMode below —

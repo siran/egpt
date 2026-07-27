@@ -652,6 +652,25 @@ export async function boot({
   const earOff = earRaw === false || earCfg.every === false || earCfg.every === 0;
   const earTg = (earCfg.telegram && typeof earCfg.telegram === 'object') ? earCfg.telegram : {};
 
+  // TRANSCRIPT READ SEAM (operator 2026-07-20, voice notes; extended 2026-07-26, recent_context).
+  // ONE reader for every consumer that needs a conversation's transcript.md back:
+  //   - the beeper bridge: a bare @e reply to a voice note REUSES the note's already-made
+  //     arrival transcription (unbounded lookback, ZERO re-transcription);
+  //   - the spine: `recent_context` prompts a turn with everything said since the being's own
+  //     last reply (src/transcript-log.mjs contextSinceLastTurn).
+  // Neither can resolve chatID → transcript.md itself, and BOTH must land on the same file, so
+  // this goes through the SAME resolveConvDir the reply-actions / transcript writer use — never
+  // a duplicated/guessed path, which could pull a DIFFERENT chat's file. resolveConvDir is
+  // declared below but only read at message-dispatch time (long post-boot), and neither consumer
+  // invokes this during setup — so the forward reference is call-time safe (no TDZ).
+  // io.readFile ?? readFile keeps it on the same fs seam as the transcript writer (tests
+  // intercept via memIo).
+  const readTranscript = async (chatID, { chatName, network } = {}) => {
+    const dir = await resolveConvDir({ surface: surfaceOf(network), chatId: chatID, chatName });
+    if (!dir) return null;
+    return await (io.readFile ?? readFile)(join(dir, 'transcript.md'), 'utf8').catch(() => null);
+  };
+
   const bridge = lasso.wrap(await createBeeperBridgePort({
     beeperToken,
     userName: cfg.whatsapp?.user_name ?? cfg.user_name ?? null,
@@ -692,20 +711,7 @@ export async function boot({
     echoTimeoutMs,                        // 👂 per-rank promotion step (ms); GENEROUS default so a SLOW rank-1 isn't mistaken for a DOWN one (double-👂 hazard).
     coverageThreshold,                    // 👂 word-token overlap fraction for the on-demand noteCovered query (operator 2026-07-12) — replaced the observed-set + arrival-lag/reconnect scaffold
     echoMaxAgeMs,                         // 👂 only echoes a note within this age of its own timestamp (operator 2026-07-09)
-    // TRANSCRIPT READ SEAM (operator 2026-07-20): a bare @e reply to a voice note REUSES the
-    // note's already-made arrival transcription from transcript.md (unbounded lookback, ZERO
-    // re-transcription — the double-transcribe is gone). The bridge can't resolve chatID →
-    // transcript.md itself, so wire it here through the SAME resolveConvDir the reply-actions /
-    // transcript writer use (contacts.resolve → slugDir) — never a duplicated/guessed path, which
-    // could pull a DIFFERENT chat's same-numbered note. resolveConvDir is declared below but only
-    // read at message-dispatch time (long post-boot), and startBeeperBridge never invokes this
-    // during setup — so the forward reference is call-time safe (no TDZ). io.readFile ?? readFile
-    // keeps it on the same fs seam as the transcript writer (tests intercept via memIo).
-    readTranscript: async (chatID, { chatName, network } = {}) => {
-      const dir = await resolveConvDir({ surface: surfaceOf(network), chatId: chatID, chatName });
-      if (!dir) return null;
-      return await (io.readFile ?? readFile)(join(dir, 'transcript.md'), 'utf8').catch(() => null);
-    },
+    readTranscript,                       // the ONE transcript reader (hoisted above) — voice-note reuse here, recent_context in the spine
     stateDir: join(EGPT_HOME, 'state'),   // beeper-seen.jsonl etc. → this profile's state
     // THE ONE EMIT BELOW THE PORT (the 👂 echo, src/bridges/beeper.mjs): the transcript ack is
     // posted by the LIMB itself, from inside the voice-note path, so wrapping the port here
@@ -972,7 +978,7 @@ export async function boot({
     onLog: (m) => log.line?.(`[relay] ${m}`),
   });
 
-  const spine = createSpine({ bridge, brain, ...services, commands, mesh, actions, advice, guard, guardOverride, stopSwitch, isSelfChat, roomRelay, defaultBeing: defaultKey, timeZone: transcriptTimeZone, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
+  const spine = createSpine({ bridge, brain, ...services, commands, mesh, actions, advice, guard, guardOverride, stopSwitch, isSelfChat, roomRelay, readTranscript, defaultBeing: defaultKey, timeZone: transcriptTimeZone, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
   // Bind the advice service's answer-routing dispatch now that the spine exists: an
   // operator answer in the advice channel re-enters the pipe as a turn in the origin chat.
   advice.useDispatch(spine.handleInbound);

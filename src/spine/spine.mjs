@@ -19,7 +19,7 @@
 // shell/slash console are layered in after v1, each behind its service seam.
 import { makeSerialByKey } from '../serial-by-key.mjs';
 import { isBrainFailureResult } from '../brain-errors.mjs';
-import { replyLine } from '../transcript-log.mjs';
+import { replyLine, contextSinceLastTurn, promptWithRecentContext } from '../transcript-log.mjs';
 import { isHumanTurn, parseStopWord } from '../stop-guard.mjs';
 import { lifecycleExit } from './ingest.mjs';
 
@@ -112,6 +112,12 @@ export function createSpine({
   stopSwitch = null,                   // optional §2c KILL SWITCH (boot-wired): { present(): does EGPT_HOME/STOP exist, async pull(why): warn in why.chatId (capped, best-effort) + write the file + take the SERVICE down }. Two call sites, both on paths that already exist — tick() (the operator touched the file; no chatId, so nothing to warn) and classify() (the chat safe word, which carries its chat). Null = no kill switch (tests).
   isSelfChat = () => false,            // (ev) => is this message in THE SELF CHAT — the operator's own command channel (boot: networks.whatsapp.chat_ids[0]). The ONLY chat the safe word is honoured in (operator 2026-07-26). Default false = FAIL-CLOSED: an un-wired spine has no chat kill switch at all, which is the safe direction for a switch that takes the service down.
   guardOverride = null,                // optional (surface, chatId) => { turns?, window? } | null — the conversation's per-channel guard override (conversations.yaml). Null = node defaults only.
+  // RECENT CONTEXT read seam (operator 2026-07-26) — `(chatId, {chatName, network}) =>
+  // Promise<string|null>`, the conversation's transcript.md. THE SAME function boot
+  // already wires into the beeper bridge for the voice-note reuse path, handed here
+  // rather than re-derived: one resolver, so this can never read a different chat's file.
+  // Null (every existing pipe path) = the option cannot engage — byte-identical to before.
+  readTranscript = null,
   roomRelay = null,                    // optional §Phase-4 room brain-member fan-out (createRoomRelay, boot-wired): delivers a received room message to each brain member per mode, streams the reply back, and RE-ENTERS it as a non-human turn. Null = no web-brain members (byte-identical to before).
   defaultBeing = 'e',                  // the persona: the being an un-addressed message dispatches to, and the turn/cycle owner for a mesh-target message (which is GATED as its own relay agent — see gateAs)
   timeZone = null,                     // the node's config default_time_zone (boot-resolved) — the zone the CYCLE's reply lines render in, the same clock identity/transcript use so the accumulated prompt never disagrees with the file. null → UTC, unchanged.
@@ -752,10 +758,33 @@ export function createSpine({
       // burst (the auto DWELL fire): the whole burst — INCLUDING ev's own line — is already
       // in `pending` (each burst message accumulated at arrival), so prompt with it verbatim
       // and don't re-append ev.line.
+      // RECENT CONTEXT (operator 2026-07-26, the skin-cells incident): this conversation
+      // opted in, so prompt with everything recorded SINCE THIS BEING'S LAST TURN — the
+      // messages a send_to_egpt:'mode' chat never handed it — clearly labelled beside the
+      // triggering line. Read from transcript.md, which already IS that buffer; there is
+      // no second store, and the boundary needs no state because the being's own reply
+      // line is IN the file (transcript-log.contextSinceLastTurn).
+      //
+      // It SUPERSEDES the in-memory cycle prepend below rather than adding to it: the
+      // cycle is drained at every turn, so its lines are a SUBSET of the same gap, and
+      // composing the two would simply duplicate them. The drain still runs (it advances
+      // the baseline the next turn's cycle starts from). Anything that goes wrong —
+      // no seam, unreadable file, nothing accumulated — falls through to exactly the
+      // prompt this chat builds today.
+      let recent = null;
+      if (d.recentContextChars > 0 && readTranscript) {
+        try {
+          const text = await readTranscript(ev.chatId, { chatName: ev.chatName, network: ev.surface });
+          const got = text ? contextSinceLastTurn(text, { being: to, maxChars: d.recentContextChars, exclude: ev.line ?? ev.body }) : null;
+          if (got?.blocks.length) recent = got;
+        } catch (e) { note(`recent-context ${to}/${ev.chatId}: ${e?.message ?? e}`); }
+      }
       const prepend = burst || ((queued || d.mode === 'auto') && pending.length);
-      const promptEv = prepend
-        ? { ...ev, line: (burst && pending.length ? pending : [...pending, ev.line ?? ev.body]).join('\n\n') }
-        : ev;
+      const promptEv = recent
+        ? { ...ev, line: promptWithRecentContext(ev.line ?? ev.body, recent) }
+        : prepend
+          ? { ...ev, line: (burst && pending.length ? pending : [...pending, ev.line ?? ev.body]).join('\n\n') }
+          : ev;
       // STREAM THE PROSE ONLY (operator 2026-07-15). The raw partial used to go straight to
       // the chat, so E's action tokens RENDERED live — the operator watched `/reply #<id> …`
       // appear and then vanish once the completed text was parsed below. partialProse applies

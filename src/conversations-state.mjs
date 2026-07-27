@@ -937,6 +937,7 @@ export function getBeing(state, surface, jid, being) {
     present:            !!b,
     mode:               b?.mode               ?? null,
     send_to_egpt:       b?.send_to_egpt       ?? null,  // per-conv 'always'|'mode' override
+    recent_context:     b?.recent_context     ?? null,  // per-conv opt-in: feed the gap since this being's last turn (true | <max chars> | false)
     threadId:           b?.threadId           ?? null,
     model:              ro.model              ?? null,
     effort:             ro.effort             ?? null,
@@ -952,7 +953,7 @@ export function getBeing(state, surface, jid, being) {
 
 // The being fields — the vocabulary getBeing READS and patchBeing WRITES, and nothing else.
 // A block carrying any one of them is a being's block; that is what residentsOf tests.
-const _BEING_FIELDS = ['mode', 'send_to_egpt', 'threadId', 'threadCreatedAt', 'identityInjectedAt', 'readonly'];
+const _BEING_FIELDS = ['mode', 'send_to_egpt', 'recent_context', 'threadId', 'threadCreatedAt', 'identityInjectedAt', 'readonly'];
 
 // The resident being names configured on an entry: the nested per-being keys, in entry
 // order. PURE — no implicit persona synthesized (operator 2026-07-10: a hardcoded 'e'

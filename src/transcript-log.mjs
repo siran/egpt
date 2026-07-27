@@ -8,7 +8,11 @@
 // and Telegram went unlogged. The IO wrapper lives in egpt-spine.mjs (`_logChatLine`).
 //
 // Pure + Node-import-free (so it can't drag node builtins into a bundled limb).
-import { renderFrontMatter } from './transcript-meta.mjs';
+//
+// The READ side lives here too (recent_context, at the bottom): the shape of a
+// transcript line is defined in this module, so the one function that reads lines back
+// out of transcript.md keys on THAT definition rather than on a copy of it.
+import { renderFrontMatter, stripFrontMatter } from './transcript-meta.mjs';
 import { hhmm } from './dispatch-line.mjs';
 
 /**
@@ -43,4 +47,85 @@ export function replyLine({ being, body, surfaced = true, now = new Date(), time
   const t = hhmm(now, timeZone);
   const tag = surfaced ? '' : '(not surfaced) ';
   return `[@${being} (${t})]: ${tag}${String(body ?? '').trim()}`;
+}
+
+// ── RECENT CONTEXT — reading the gap back out of transcript.md ────────────────
+// (operator 2026-07-26, the skin-cells incident: an un-@mentioned message never reached
+// E, so the next @mention was answered from twenty-minute-old context.)
+//
+// send_to_egpt:'mode' means a being only runs a turn on messages it will ANSWER, so
+// everything said between two of its turns is invisible to it. This reads that gap back
+// out of the record — the transcript IS the accumulated buffer, so nothing else is
+// stored anywhere.
+//
+// THE BOUNDARY IS THIS BEING'S OWN LAST REPLY LINE (operator 2026-07-26: "should the
+// window include what E already has? no"). Its warm session already holds everything up
+// to its last turn, so the gap starts exactly there — no overlap, and no time window,
+// which is also why NO TIMESTAMP IS PARSED here: `(HH:MM)` renders in the node's
+// configured zone and carries no date, so any clock comparison would be both
+// zone-sensitive and ambiguous across midnight. The predicate is the SHAPE `replyLine`
+// (above) writes — `[@<being>[.<node>] (HH:MM)]:` — matched at the head of a block:
+//   - only THIS being's line is the boundary; another agent's reply is part of the gap
+//     (E did not see it either),
+//   - a WITHHELD reply counts: `(not surfaced) ` follows the `]:`, so it matches — and
+//     it SHOULD, because that turn ran and the being saw everything before it,
+//   - a being that has never replied here has no boundary → the whole tail.
+//
+// SIZE IS THE ONLY BOUND. If the being has not spoken in a chat for days the gap can be
+// enormous, so `maxChars` caps it, keeping the MOST RECENT blocks (the ones nearest the
+// prompt) and reporting `truncated` so the caller can SAY the gap is partial instead of
+// letting the model believe it has all of it.
+export const RECENT_CONTEXT_MAX_CHARS = 8000;
+
+const _escapeBeing = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// `[@e (22:05)]:` / `[@e.kg (22:05)]: (not surfaced) …` — replyLine's shape, with the
+// optional `.<node_name>` qualifier the transcript service adds (spine/transcript.mjs).
+function beingReplyRe(being) {
+  return new RegExp(`^\\[@${_escapeBeing(String(being ?? '').toLowerCase())}(?:\\.[^\\s\\]]+)?\\s\\(\\d{1,2}:\\d{2}\\)\\]:`, 'i');
+}
+
+/**
+ * The conversation blocks recorded since `being`'s last reply — oldest first.
+ * A transcript entry is one blank-line-separated block (transcriptAppend/replyLine both
+ * end `\n\n`), so a multi-line body stays whole.
+ *
+ * @param {string} text      transcript.md, front matter included
+ * @param {{being?: string, maxChars?: number, exclude?: string}} opts
+ *        exclude — the TRIGGERING line, which was already appended at ingestion: it is
+ *        THE prompt, so it must never also appear as context.
+ * @returns {{ blocks: string[], truncated: boolean }}
+ */
+export function contextSinceLastTurn(text, { being = null, maxChars = RECENT_CONTEXT_MAX_CHARS, exclude = null } = {}) {
+  const blocks = stripFrontMatter(String(text ?? '')).split(/\n{2,}/).map((b) => b.trim()).filter(Boolean);
+  const mine = being ? beingReplyRe(being) : null;
+  const skip = String(exclude ?? '').trim();
+  const out = [];
+  let used = 0, truncated = false;
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const b = blocks[i];
+    if (mine && mine.test(b)) break;                                  // the boundary — above it is already in the session
+    if (skip && b === skip) continue;                                 // the prompt itself
+    if (used + b.length > maxChars) { truncated = true; break; }      // cap: keep the most recent
+    used += b.length;
+    out.push(b);
+  }
+  out.reverse();
+  return { blocks: out, truncated };
+}
+
+/**
+ * The labelled prompt (ROADMAP §backburner: "this line is THE prompt; the following is
+ * accumulated context"). The trigger comes FIRST under an unmistakable header — without
+ * a hard boundary a model answers the context instead of the question, which is the same
+ * failure from the other direction. An EMPTY gap renders nothing at all: the line is
+ * returned unchanged, so a chat with nothing accumulated prompts exactly as it does with
+ * the option off.
+ */
+export function promptWithRecentContext(line, { blocks = [], truncated = false } = {}) {
+  const trigger = String(line ?? '');
+  if (!blocks.length) return trigger;
+  const note = truncated ? '\n[earlier messages omitted — this is only the most recent part of what you missed]' : '';
+  return `THIS LINE IS THE PROMPT — answer THIS:\n${trigger}\n\n`
+    + `THE FOLLOWING IS ACCUMULATED CONTEXT — what was said in this conversation since your last turn, oldest first. `
+    + `It is BACKGROUND for the prompt above; do not answer it.${note}\n${blocks.join('\n\n')}`;
 }

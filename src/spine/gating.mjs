@@ -22,8 +22,26 @@
 // modes live in the agents registry + conversations.yaml.
 import { getBeing } from '../conversations-state.mjs';
 import { receives, replyAllowed, mayEmitChat, isSilenceReply, isAutoMode, DEFAULT_AUTO_MODE } from '../auto-mode.mjs';
+import { RECENT_CONTEXT_MAX_CHARS } from '../transcript-log.mjs';
 
 const _send = (v) => (v === 'always' || v === 'mode') ? v : null;
+
+// `recent_context` — the per-conversation opt-in that feeds the persona everything said
+// since its own last turn (src/transcript-log.mjs contextSinceLastTurn). NOT a mode: it
+// changes WHAT a turn is prompted with, never WHEN a turn happens, so it resolves beside
+// send_to_egpt rather than through isAutoMode.
+//   false / absent  → OFF (the default: an always-on gap replay is a big prompt every turn)
+//   true            → ON with the default size cap
+//   <number>        → ON, capped at that many CHARACTERS
+// Rungs, mirroring send_to_egpt exactly: conversations.yaml <conv>.<being>.recent_context
+// (or the entry's agents.<name> override — getBeing reads both) < config.yaml
+// dispatch.recent_context < off.
+const _recent = (v) => {
+  if (v === true) return RECENT_CONTEXT_MAX_CHARS;
+  if (v === false) return 0;
+  if (typeof v === 'number' && Number.isFinite(v) && v > 0) return Math.round(v);
+  return null;                                   // absent/garbage → fall to the next rung
+};
 
 export function createGating({ getConfig = () => ({}), loadState = null, defaultKey = 'e' } = {}) {
   const cfg = () => getConfig() ?? {};
@@ -66,7 +84,14 @@ export function createGating({ getConfig = () => ({}), loadState = null, default
     const sendToEgpt = being !== defaultKey
       ? 'mode'
       : (_send(bv?.send_to_egpt) ?? _send(c.dispatch?.send_to_egpt) ?? _send(c.whatsapp?.send_to_egpt) ?? 'mode');
-    return { mode, receives: receives(mode), mayReply, sendToEgpt };
+    // Same persona/sibling split, and for the same reason: the gap since the last turn is
+    // AMBIENT context, and a sibling is an engineer that only ever runs when it was
+    // addressed — it has no claim on what the chat said while nobody was talking to it
+    // (and N siblings each replaying the gap would be N big prompts per message).
+    const recentContextChars = being !== defaultKey
+      ? 0
+      : (_recent(bv?.recent_context) ?? _recent(c.dispatch?.recent_context) ?? 0);
+    return { mode, receives: receives(mode), mayReply, sendToEgpt, recentContextChars };
   }
 
   // POST-brain surfacing: the reply surfaces when mayReply held AND it isn't an

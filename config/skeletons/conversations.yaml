@@ -48,6 +48,15 @@ contacts:
         # persona only - keep it in context on messages it won't answer: always | mode
         #send_to_egpt: mode
 
+        # persona only - prompt each turn with what was said SINCE THIS AGENT'S
+        # LAST TURN (read back out of transcript.md), labelled as context beside
+        # the triggering line. Closes the gap send_to_egpt: mode leaves: an
+        # un-@mentioned message never reaches the agent otherwise.
+        # false (default) | true (8000 char cap) | a number of characters.
+        # Not a mode: it changes WHAT a turn is prompted with, never WHEN.
+        # default: config.yaml dispatch.recent_context
+        #recent_context: true
+
         # spine-written, don't hand-edit. Deleting threadId starts a new session
         # AND re-reads this agent's config (the block above + the pins below).
         threadId: null
@@ -66,9 +75,10 @@ contacts:
         #                              # "all" is rejected and coerced back to this
 
       # per-conversation overrides, layered field-wise OVER the blocks above:
-      # mode, send_to_egpt, and the readonly five FLAT - each pins only itself.
+      # mode, send_to_egpt, recent_context, and the readonly five FLAT - each
+      # pins only itself.
       #agents:
-      #  egpt: { mode: auto, model: opus }
+      #  egpt: { mode: auto, model: opus, recent_context: true }
       #  don:  { mode: mention-direct }
 
     # a second id for the SAME contact - one thread, one folder, one mode.

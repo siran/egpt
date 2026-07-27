@@ -315,6 +315,42 @@ export const CONFIG_SCHEMA = {
         lives in conversations.yaml
         (contacts.<surface>[<id>].<being>.send_to_egpt) and WINS over this
         global.
+      recent_context
+        false | true | <max characters>.  DEFAULT: false (OFF)
+        The NODE-WIDE default for recent_context; the per-conversation override
+        (contacts.<surface>[<id>].<being>.recent_context, or the entry's
+        agents.<name> block) WINS over it.
+
+        WHAT IT DOES. send_to_egpt:'mode' means the persona only runs a turn on
+        messages it will ANSWER, so everything said in between never reaches it.
+        The 2026-07-26 incident: an un-@mentioned message about skin cells, then
+        "@e da una opinión bien fundamentada" — E answered about the topic from
+        twenty minutes earlier, because that was all it had. With this ON, the
+        turn that was going to happen anyway is prompted with everything
+        recorded SINCE THIS BEING'S LAST TURN, clearly labelled beside the
+        triggering line ("THIS LINE IS THE PROMPT … THE FOLLOWING IS ACCUMULATED
+        CONTEXT").
+
+        NOT A MODE. It changes WHAT a turn is prompted with, never WHEN a turn
+        happens: no extra turn, no buffering, no heartbeat flush. (The retired
+        'accum' MODE is not coming back — AUTO_MODES has no 'accum'.)
+
+        THE WINDOW IS THE GAP, not a time span (operator 2026-07-26: "should the
+        window include what E already has? no"). The being's warm session
+        already holds everything up to its own last reply, so the boundary is
+        that reply LINE in transcript.md — read backwards from the end until it
+        is found. Zero overlap, no clock parsed, no state kept anywhere. A being
+        that has never replied in the chat gets the whole tail. A withheld
+        (not-surfaced) reply still counts: that turn ran and saw those messages.
+
+        SIZE IS THE ONLY BOUND. "true" uses the 8000-character default; a number
+        sets the cap. When the gap is bigger the MOST RECENT part is kept and
+        the block says so, so the model is never misled into thinking it has all
+        of it.
+
+        PERSONA ONLY, like send_to_egpt: a sibling is an engineer that runs when
+        addressed and has no claim on ambient chatter.
+        Source: config/skeletons/conversations.yaml, src/transcript-log.mjs.
 
     Per-chat modes live in each conversation entry, PER AGENT
     (contacts.<surface>[<id>].<being>.mode, or the entry's agents.<name>.mode
