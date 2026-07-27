@@ -1097,7 +1097,9 @@ export function createCommands({
     let val = valueRaw;
     try { val = JSON.parse(valueRaw); } catch { /* keep the raw string, exactly like the extension */ }
     await writeConfigKey(configPath, resolved.path, val);
-    return `set ${resolved.path} = ${JSON.stringify(val)} — takes effect on next restart`;
+    // "restart" alone misled the operator once: he relaunched the EDITOR, which reconnects to
+    // the same long-running spine that read its config at boot. Name the command instead.
+    return `set ${resolved.path} = ${JSON.stringify(val)} — run /restart to apply (the spine, not the editor)`;
   }
 
   // /activate <id> — a brain member is ACTIVE while its Chrome tab is open (a live

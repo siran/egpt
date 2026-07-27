@@ -33,7 +33,9 @@ describe('/config set — bare leaf + dotted path resolution, write, redaction',
     await cmds.run({ body: '/config set default_node do', chatId: '!self', authorized: true });
     expect(sent).toHaveLength(1);
     expect(sent[0].text).toMatch(/dispatch\.default_node/);
-    expect(sent[0].text).toMatch(/next restart/);
+    // Names the COMMAND, not just "restart": the operator relaunched the editor and wondered
+    // why nothing changed — the spine is a separate, long-running process.
+    expect(sent[0].text).toMatch(/\/restart/);
     const written = await readFile(configPath, 'utf8');
     expect(written).toMatch(/dispatch:\s*\n\s*default_node: do/);
   });
