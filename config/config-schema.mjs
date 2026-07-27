@@ -328,15 +328,16 @@ export const CONFIG_SCHEMA = {
       default_node
         String — a node_name/node_alias — or unset. DEFAULT: unset.
         The node a BARE node-addressable command targets when it names no node
-        itself: no "node=<name>", and (for /chrome only) no positional node
-        either. Applies to /chrome, /status, /tabs, /members — the only members
-        of the set that can be typed bare at all (/tab, /open, /close always
-        take an argument, so they never reach this fallback).
+        itself: no "=<name>" bound to the command token, and (for /chrome
+        only) no positional node either. Applies to /chrome, /status, /tabs,
+        /members — the only members of the set that can be typed bare at all
+        (/tab, /open, /close always take an argument, so they never reach
+        this fallback).
           unset  today's behaviour exactly, a strict no-op: bare /chrome stays
                  the discovery form, bare /status/tabs/members run on whichever
                  node heard them.
           set    a bare command operates on the named node instead — exactly
-                 as if "node=<name>" had been typed, including travelling the
+                 as if "<cmd>=<name>" had been typed, including travelling the
                  mesh to a node that is neither ours nor a co-account peer.
                  Set to THIS node's own name is identical to local; no
                  separate branch for it.

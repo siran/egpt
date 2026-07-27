@@ -315,26 +315,28 @@ describe('/members <id> mode <disable|mention|all>', () => {
 
 // C3 (HANDOFF 2026-07-26): /members joined the node-addressable set, so a node token is
 // stripped by the ONE shared gate (commands.mjs) before /members' own sub-grammar parses.
-// `node=<name>` (operator ruling 2026-07-27) replaced the old TRAILING-token parse — it may
-// appear anywhere in the arguments. The three things that must hold together: a peer's name
-// silences us, OUR name runs here, and the existing sub-grammar (`add tab <n>`, `<id> mode
-// <m>`, bare) is untouched.
+// `=<name>` bound to the COMMAND TOKEN (operator ruling 2026-07-27, revised same day: the
+// first cut let "node=<name>" float anywhere in the arguments, and that's what let `/tabs=do`
+// fall through to the catch-all live — see commands.mjs's NODE_ADDRESSABLE comment) replaced
+// the old floating parse. The three things that must hold together: a peer's name silences us,
+// OUR name runs here, and the existing sub-grammar (`add tab <n>`, `<id> mode <m>`, bare) is
+// untouched.
 describe('/members <node> — the shared node gate, with the sub-grammar intact', () => {
   const NODES = { node_name: 'kg', account_peers: ['kg', 'do'] };
 
-  it('REPRODUCE-FIRST: /members node=do (a peer, not us) answers NOTHING AT ALL', async () => {
+  it('REPRODUCE-FIRST: /members=do (a peer, not us) answers NOTHING AT ALL', async () => {
     const { cmds, sent } = harness({ config: NODES });
-    await cmds.run({ ...self, body: '/members node=do' });
+    await cmds.run({ ...self, body: '/members=do' });
     expect(sent).toEqual([]);
   });
 
-  it('/members node=kg (OUR node) strips the token and lists, exactly like bare /members', async () => {
+  it('/members=kg (OUR node) strips the token and lists, exactly like bare /members', async () => {
     const cdp = { listTabs: async () => threeTabs };
     const { cmds, sent } = harness({ cdp, config: NODES });
     await cmds.run({ ...self, body: '/members add tab 1' });
     await cmds.run({ ...self, body: '/members' });
     const bare = sent.at(-1).text;
-    await cmds.run({ ...self, body: '/members node=kg' });
+    await cmds.run({ ...self, body: '/members=kg' });
     expect(sent.at(-1).text).toBe(bare);
     expect(sent.at(-1).text).not.toMatch(/usage:/);
   });

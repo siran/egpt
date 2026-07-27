@@ -257,17 +257,22 @@ const quoteLeadingCommand = (text) => String(text ?? '').replace(/^\/([a-z0-9_-]
 // outside, so on a shared Beeper account BOTH co-account nodes answered it — the same
 // double-answer the gate exists to end.
 //
-// NAMING THE NODE (operator ruling 2026-07-27): `node=<name>` may appear ANYWHERE in a
-// command's arguments and is the ONE way to name a node for every member of the set except
-// /chrome — whose whole argument IS the node (never ambiguous), so `/chrome do` keeps its
-// bare positional form AND `/chrome node=do` works too. `node=<name>` is metadata, not part
-// of any command's own grammar: it is stripped (or, for /chrome, normalized to the bare
-// form) before the sub-grammar parses — replacing the old TRAILING-token parse this set used
-// to share, which is gone. dispatch.default_node (config/config-schema.mjs), UNSET by
-// default, is the one exception: a BARE command (no node=, and for /chrome no positional node
+// NAMING THE NODE (operator ruling 2026-07-27, revised same day after a live miss): `=<name>`
+// binds directly to the COMMAND TOKEN ITSELF — `/tabs=do`, `/status=do`, `/members=do add tab
+// 3 cgpt3`, `/open=do https://x.com` — and is the ONE way to name a node for every member of
+// the set except /chrome, whose whole argument IS the node (never ambiguous), so `/chrome do`
+// keeps its bare positional form AND `/chrome=do` works too. The FIRST cut of this ruling let
+// `node=<name>` float anywhere in a command's arguments; typing `/tabs=do` live fell through
+// to the catch-all (a `\b` word boundary matched right before the `=`, so the command token
+// parsed as plain "tabs" and nothing downstream ever saw a node), which is why it was replaced
+// same-day with binding to the token: there is now nowhere for a node marker to float, so
+// there is nothing for a URL's own `=` (a query string, `?a=b`) to collide with either. The
+// bound `=<name>` is stripped (or, for /chrome, normalized to the bare positional form) before
+// the sub-grammar parses. dispatch.default_node (config/config-schema.mjs), UNSET by default,
+// is the one exception: a BARE command (no `=<name>`, and for /chrome no positional node
 // either) operates on that node instead of "wherever it was heard" when the operator has set
 // one; UNSET, every bare form is a strict no-op — today's behaviour, byte for byte.
-const NODE_ADDRESSABLE = /^\/(chrome|status|tabs|tab|open|close|members?)\b\s*(.*)$/i;
+const NODE_ADDRESSABLE = /^\/(chrome|status|tabs|tab|open|close|members?)\b(?:=(\S+))?(?:[ \t]*(.*))?$/i;
 
 // The SHELL is node-local: the spine dials the operator's editor on 127.0.0.1:23375, so no other
 // node ever sees a shell message. Everywhere else this node speaks is a chat on the shared Beeper
@@ -425,18 +430,19 @@ export function createCommands({
 
   // Which NODE does this line address? The ONE parse behind every node reading below — the
   // origin's "must this travel?", the responder's "is this for me?", and the dispatch gate.
-  // Returns { node, cmd, raw } or null. `raw` is the exact substring (within the arguments)
-  // that named the node — run() strips it (or, for /chrome, normalizes it to the bare form)
-  // once the gate has passed, so each handler parses exactly what it always did.
+  // Returns { node, cmd, raw } or null. `raw` is the exact substring (immediately trailing the
+  // command token) that named the node — run() strips it (or, for /chrome, normalizes it to
+  // the bare form) once the gate has passed, so each handler parses exactly what it always did.
   //
-  //   /chrome <node>            — its whole argument IS a node (ruling 2026-07-27: never
-  //                               ambiguous), known or not: an unknown one is a routing error,
-  //                               never silence. `/chrome node=<node>` names the same thing.
-  //   everything else           — `node=<name>` ANYWHERE in the arguments, and ONLY that; a
-  //                               bare word is ordinary argument text now (`/open https://x.com`,
-  //                               `/members chatgpt mode mention` are untouched — no "node="
-  //                               substring, no match).
-  //   a BARE command            — no node=, and (for /chrome) no positional node either —
+  //   /<cmd>=<node>             — bound to the COMMAND TOKEN ITSELF (ruling 2026-07-27): the
+  //                               ONE way to name a node, for every member of the set. A `=` in
+  //                               an ARGUMENT (a URL's query string, `?a=b`) can never be read
+  //                               as a node — it isn't adjacent to the command token, so
+  //                               NODE_ADDRESSABLE's own `(?:=(\S+))?` never sees it.
+  //   /chrome <node>            — its whole argument IS a node too (never ambiguous), known or
+  //                               not: an unknown one is a routing error, never silence.
+  //                               `/chrome=<node>` names the same thing.
+  //   a BARE command            — no `=<node>`, and (for /chrome) no positional node either —
   //                               resolves through dispatch.default_node when the operator has
   //                               set one (`raw: ''`, nothing to strip); UNSET, this is null,
   //                               byte-identical to before.
@@ -444,14 +450,14 @@ export function createCommands({
     const m = NODE_ADDRESSABLE.exec(String(text ?? '').trim());
     if (!m) return null;
     const cmd = m[1].toLowerCase();
-    const rest = m[2].trim();
+    const node = m[2];
+    const rest = (m[3] ?? '').trim();
+    if (node) return { node: node.toLowerCase(), cmd, raw: `=${node}` };
+    if (cmd === 'chrome' && rest) return { node: rest.toLowerCase(), cmd, raw: rest };
     if (!rest) {
       const dn = String(cfg().dispatch?.default_node ?? '').trim().toLowerCase();
       return dn ? { node: dn, cmd, raw: '' } : null;
     }
-    const named = /(?:^|\s)node=(\S+)/i.exec(rest);
-    if (named) return { node: named[1].toLowerCase(), cmd, raw: named[0] };
-    if (cmd === 'chrome') return { node: rest.toLowerCase(), cmd, raw: rest };
     return null;
   }
 
@@ -540,15 +546,17 @@ export function createCommands({
     // and everything outside the set fall through untouched.
     const addressed = nodeAddressed(line);
     if (addressed && !ownNodeNamesOf(cfg()).has(addressed.node)) return;
-    // `node=<name>` (or the bare dispatch.default_node stand-in, raw: '') has done its job —
-    // drop it so each command's own grammar is unchanged (`/tab 3 node=do` parses as `/tab 3`).
-    // /chrome is the one exception (ruling 2026-07-27): its whole argument IS the node, so an
-    // explicit `node=<name>` normalizes to the bare form instead of vanishing, and its own
-    // positional form (raw === the whole argument, no "node=" prefix) needs no stripping at all.
+    // `=<name>` bound to the command token (or the bare dispatch.default_node stand-in, raw:
+    // '') has done its job — drop it so each command's own grammar is unchanged (`/tab=do 3`
+    // parses as `/tab 3`). Bound to the token, stripping is just cutting the `=<name>` back out
+    // of the command word — the arguments after it are never touched. /chrome is the one
+    // exception (ruling 2026-07-27): its whole argument IS the node, so an explicit `=<name>`
+    // normalizes to the bare positional form instead of vanishing, and its own positional form
+    // (raw === the whole argument, no leading "=") needs no stripping at all.
     if (addressed?.raw) {
-      const named = /^node=/i.test(addressed.raw);
-      if (addressed.cmd === 'chrome' && named) line = line.replace(addressed.raw, addressed.node);
-      else if (addressed.cmd !== 'chrome') line = line.replace(addressed.raw, '').replace(/\s+/g, ' ').trim();
+      const named = addressed.raw.startsWith('=');
+      if (addressed.cmd === 'chrome' && named) line = line.replace(addressed.raw, ` ${addressed.node}`);
+      else if (named) line = line.replace(addressed.raw, '');
     }
 
     // /e auto <mode> [<target>] — set a conversation's E reply-mode (modes live in

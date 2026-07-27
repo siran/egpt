@@ -413,11 +413,25 @@ describe('responder — an arriving envelope carrying a node-addressed command',
 });
 
 // ── 6. THE BROWSER FAMILY IS NODE-ADDRESSABLE (and gated by the SAME helper) ───────────────
-// `node=<name>` (operator ruling 2026-07-27) replaced the old trailing-token parse for every
-// member of the set except /chrome, whose whole argument IS the node (kept positional, tested
-// separately above/in spine-commands.test.mjs) — it may appear anywhere in the arguments.
+// `=<name>` bound to the COMMAND TOKEN (operator ruling 2026-07-27, revised same day: the
+// first cut let "node=<name>" float anywhere in the arguments, and `/tabs=do` typed live fell
+// through to the catch-all — see the NODE_ADDRESSABLE comment in commands.mjs) is the ONE way
+// to name a node for every member of the set except /chrome, whose whole argument IS the node
+// (kept positional, tested separately above/in spine-commands.test.mjs).
 describe('the node-addressable set — the browser family + /status + /members', () => {
-  for (const [line, chat] of [['/tabs node=do', 'egpt-mesh-do-kg'], ['/open https://x.com node=do', 'egpt-mesh-do-kg'], ['/tab 1 node=do', 'egpt-mesh-do-kg'], ['/close 1 node=do', 'egpt-mesh-do-kg'], ['/status node=do', 'egpt-mesh-do-kg'], ['/members node=do', 'egpt-mesh-do-kg']]) {
+  // REPRODUCE-FIRST: this is the exact line the operator typed live that fell through to the
+  // unrecognized-command catch-all under the old floating "node=" scheme.
+  it('REPRODUCE-FIRST: /tabs=do on the shell travels to do (not the catch-all)', async () => {
+    const { bridge, spine } = nodeStack({ config: KG() });
+    await spine.handleInbound({ ...SHELL, body: '/tabs=do' });
+    await flush();
+    const envs = envelopes(bridge);
+    expect(envs).toHaveLength(1);
+    expect(envs[0].chat).toBe('egpt-mesh-do-kg');
+    expect(parseMesh(envs[0].text).body).toBe('/tabs=do');
+  });
+
+  for (const [line, chat] of [['/tabs=do', 'egpt-mesh-do-kg'], ['/open=do https://x.com', 'egpt-mesh-do-kg'], ['/tab=do 1', 'egpt-mesh-do-kg'], ['/close=do 1', 'egpt-mesh-do-kg'], ['/status=do', 'egpt-mesh-do-kg'], ['/members=do', 'egpt-mesh-do-kg']]) {
     it(`${line} on the shell travels to do`, async () => {
       const { bridge, spine } = nodeStack({ config: KG() });
       await spine.handleInbound({ ...SHELL, body: line });
@@ -425,9 +439,17 @@ describe('the node-addressable set — the browser family + /status + /members',
       const envs = envelopes(bridge);
       expect(envs).toHaveLength(1);
       expect(envs[0].chat).toBe(chat);
-      expect(parseMesh(envs[0].text).body).toBe(line);   // forwarded VERBATIM — the target strips its own node= locally
+      expect(parseMesh(envs[0].text).body).toBe(line);   // forwarded VERBATIM — the target strips its own =<node> locally
     });
   }
+
+  it('a query string is NEVER read as a node — /open https://x.com/?a=b stays local', async () => {
+    const { bridge, spine } = nodeStack({ config: KG() });
+    await spine.handleInbound({ ...SHELL, body: '/open https://x.com/?a=b' });
+    await flush();
+    expect(envelopes(bridge)).toHaveLength(0);
+    expect(plain(bridge)[0].text).toContain('opened: https://x.com/?a=b');
+  });
 
   it('a trailing token that is NOT a node stays part of the command', async () => {
     const { bridge, spine } = nodeStack({ config: KG() });
@@ -445,17 +467,17 @@ describe('the node-addressable set — the browser family + /status + /members',
     expect(plain(bridge)[0].text).toContain('tabs: 1');
   });
 
-  it('a named node that IS ours runs here — /tabs node=kg', async () => {
+  it('a named node that IS ours runs here — /tabs=kg', async () => {
     const { bridge, spine } = nodeStack({ config: KG() });
-    await spine.handleInbound({ ...SHELL, body: '/tabs node=kg' });
+    await spine.handleInbound({ ...SHELL, body: '/tabs=kg' });
     await flush();
     expect(envelopes(bridge)).toHaveLength(0);
     expect(plain(bridge)[0].text).toContain('tabs: 1');
   });
 
-  it('on a SHARED Beeper chat a named peer silences this node — /tabs node=do', async () => {
+  it('on a SHARED Beeper chat a named peer silences this node — /tabs=do', async () => {
     const { bridge, spine } = nodeStack({ config: KG() });
-    await spine.handleInbound({ ...FAM, body: '/tabs node=do' });
+    await spine.handleInbound({ ...FAM, body: '/tabs=do' });
     await flush();
     expect(bridge.sent).toHaveLength(0);
   });
@@ -463,9 +485,9 @@ describe('the node-addressable set — the browser family + /status + /members',
   // C3 (HANDOFF 2026-07-26): /members was the one operator command outside the set, so on a
   // shared Beeper account BOTH co-account nodes answered it — the very double-answer the gate
   // exists to end. Same gate, same allowlist, no second mechanism.
-  it('REPRODUCE-FIRST: on a SHARED Beeper chat a named peer silences this node — /members node=do', async () => {
+  it('REPRODUCE-FIRST: on a SHARED Beeper chat a named peer silences this node — /members=do', async () => {
     const { bridge, spine } = nodeStack({ config: KG() });
-    await spine.handleInbound({ ...FAM, body: '/members node=do' });
+    await spine.handleInbound({ ...FAM, body: '/members=do' });
     await flush();
     expect(bridge.sent).toHaveLength(0);
   });
@@ -489,7 +511,7 @@ describe('dispatch.default_node', () => {
     expect(plain(bridge)[0].text).toContain('node_name: kg');
   });
 
-  it('SET to a peer: a bare /tabs on the shell travels there, exactly like an explicit node=', async () => {
+  it('SET to a peer: a bare /tabs on the shell travels there, exactly like an explicit =<node>', async () => {
     const config = { ...KG(), dispatch: { default_node: 'do' } };
     const { bridge, spine } = nodeStack({ config });
     await spine.handleInbound({ ...SHELL, body: '/tabs' });
@@ -497,7 +519,7 @@ describe('dispatch.default_node', () => {
     const envs = envelopes(bridge);
     expect(envs).toHaveLength(1);
     expect(envs[0].chat).toBe('egpt-mesh-do-kg');
-    expect(parseMesh(envs[0].text).body).toBe('/tabs');   // forwarded verbatim — no node= was ever typed
+    expect(parseMesh(envs[0].text).body).toBe('/tabs');   // forwarded verbatim — no "=<node>" was ever typed
   });
 
   it('SET to THIS node\'s own name: identical to local — no envelope, this node answers', async () => {
