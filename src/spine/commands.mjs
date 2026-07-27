@@ -22,7 +22,7 @@ import { join, dirname, basename } from 'node:path';
 import * as YAML from 'yaml';
 import { EGPT_HOME } from '../egpt-home.mjs';
 import { shortChatId } from '../bridges/chat-id.mjs';
-import { ownNodeNamesOf, knownNodeNames } from './node-names.mjs';
+import { ownNodeNamesOf } from './node-names.mjs';
 import { Room } from '../room-core.mjs';
 import { sanitizeName } from '../sanitize.mjs';
 import { loadAdapters as defaultLoadAdapters, matchAdapter } from '../adapters/registry.mjs';
@@ -255,9 +255,18 @@ const quoteLeadingCommand = (text) => String(text ?? '').replace(/^\/([a-z0-9_-]
 //
 // `/members` joined the set 2026-07-26 (HANDOFF C3). It was the one operator command left
 // outside, so on a shared Beeper account BOTH co-account nodes answered it — the same
-// double-answer the gate exists to end. Its node token is a TRAILING one (`/members do`), like
-// the browser family's, and is stripped before its own sub-grammar (`add tab <n>`,
-// `<id> mode <m>`, bare) parses — none of whose last tokens is ever a node name.
+// double-answer the gate exists to end.
+//
+// NAMING THE NODE (operator ruling 2026-07-27): `node=<name>` may appear ANYWHERE in a
+// command's arguments and is the ONE way to name a node for every member of the set except
+// /chrome — whose whole argument IS the node (never ambiguous), so `/chrome do` keeps its
+// bare positional form AND `/chrome node=do` works too. `node=<name>` is metadata, not part
+// of any command's own grammar: it is stripped (or, for /chrome, normalized to the bare
+// form) before the sub-grammar parses — replacing the old TRAILING-token parse this set used
+// to share, which is gone. dispatch.default_node (config/config-schema.mjs), UNSET by
+// default, is the one exception: a BARE command (no node=, and for /chrome no positional node
+// either) operates on that node instead of "wherever it was heard" when the operator has set
+// one; UNSET, every bare form is a strict no-op — today's behaviour, byte for byte.
 const NODE_ADDRESSABLE = /^\/(chrome|status|tabs|tab|open|close|members?)\b\s*(.*)$/i;
 
 // The SHELL is node-local: the spine dials the operator's editor on 127.0.0.1:23375, so no other
@@ -416,27 +425,34 @@ export function createCommands({
 
   // Which NODE does this line address? The ONE parse behind every node reading below — the
   // origin's "must this travel?", the responder's "is this for me?", and the dispatch gate.
-  // Returns { node, trailing } or null.
+  // Returns { node, cmd, raw } or null. `raw` is the exact substring (within the arguments)
+  // that named the node — run() strips it (or, for /chrome, normalizes it to the bare form)
+  // once the gate has passed, so each handler parses exactly what it always did.
   //
-  //   /chrome <node>            — its whole argument IS a node (the existing grammar), known or
-  //                               not: an unknown one is a routing error, never silence.
-  //   /status <node|fragment>   — node-FIRST (the existing gate), else an ordinary conversation
-  //                               fragment — so the token counts only when it NAMES a node.
-  //   /tabs|/tab|/open|/close   — the node is an EXTRA trailing token (`/tab 3 do`), and likewise
-  //   /members                    only when it names one, so `/open https://x.com` and
-  //                               `/members chatgpt mode mention` are untouched.
-  //
-  // `trailing` says the token is extra baggage the command's own grammar never had: run() strips
-  // it once the gate has passed, so each handler parses exactly what it always did.
+  //   /chrome <node>            — its whole argument IS a node (ruling 2026-07-27: never
+  //                               ambiguous), known or not: an unknown one is a routing error,
+  //                               never silence. `/chrome node=<node>` names the same thing.
+  //   everything else           — `node=<name>` ANYWHERE in the arguments, and ONLY that; a
+  //                               bare word is ordinary argument text now (`/open https://x.com`,
+  //                               `/members chatgpt mode mention` are untouched — no "node="
+  //                               substring, no match).
+  //   a BARE command            — no node=, and (for /chrome) no positional node either —
+  //                               resolves through dispatch.default_node when the operator has
+  //                               set one (`raw: ''`, nothing to strip); UNSET, this is null,
+  //                               byte-identical to before.
   function nodeAddressed(text) {
     const m = NODE_ADDRESSABLE.exec(String(text ?? '').trim());
     if (!m) return null;
+    const cmd = m[1].toLowerCase();
     const rest = m[2].trim();
-    if (!rest) return null;
-    if (m[1].toLowerCase() === 'chrome') return { node: rest.toLowerCase(), trailing: false };
-    const last = rest.split(/\s+/).pop().toLowerCase();
-    if (!knownNodeNames(cfg()).has(last)) return null;
-    return { node: last, trailing: m[1].toLowerCase() !== 'status' || rest.split(/\s+/).length > 1 };
+    if (!rest) {
+      const dn = String(cfg().dispatch?.default_node ?? '').trim().toLowerCase();
+      return dn ? { node: dn, cmd, raw: '' } : null;
+    }
+    const named = /(?:^|\s)node=(\S+)/i.exec(rest);
+    if (named) return { node: named[1].toLowerCase(), cmd, raw: named[0] };
+    if (cmd === 'chrome') return { node: rest.toLowerCase(), cmd, raw: rest };
+    return null;
   }
 
   // ORIGIN reading: the node this command must TRAVEL to in order to be answered — null when it
@@ -524,9 +540,16 @@ export function createCommands({
     // and everything outside the set fall through untouched.
     const addressed = nodeAddressed(line);
     if (addressed && !ownNodeNamesOf(cfg()).has(addressed.node)) return;
-    // The token has done its job — drop it so each command's own grammar is unchanged
-    // (`/tab 3 do` parses as `/tab 3`). /chrome and /status already consume theirs.
-    if (addressed?.trailing) line = line.slice(0, line.length - addressed.node.length).trimEnd();
+    // `node=<name>` (or the bare dispatch.default_node stand-in, raw: '') has done its job —
+    // drop it so each command's own grammar is unchanged (`/tab 3 node=do` parses as `/tab 3`).
+    // /chrome is the one exception (ruling 2026-07-27): its whole argument IS the node, so an
+    // explicit `node=<name>` normalizes to the bare form instead of vanishing, and its own
+    // positional form (raw === the whole argument, no "node=" prefix) needs no stripping at all.
+    if (addressed?.raw) {
+      const named = /^node=/i.test(addressed.raw);
+      if (addressed.cmd === 'chrome' && named) line = line.replace(addressed.raw, addressed.node);
+      else if (addressed.cmd !== 'chrome') line = line.replace(addressed.raw, '').replace(/\s+/g, ' ').trim();
+    }
 
     // /e auto <mode> [<target>] — set a conversation's E reply-mode (modes live in
     // conversations.yaml now). In a chat: omit <target> to set THIS chat. From the
@@ -585,7 +608,10 @@ export function createCommands({
     // wizard below: /e's match is ANCHORED at ^/(e|egpt), so it can never match /chrome
     // (verified 2026-07-15 — an earlier comment here wrongly called /e "greedy").
     const chromeMatch = /^\/chrome(?:\s+(.+?))?\s*$/i.exec(line);
-    if (chromeMatch) { await chrome(ev, chromeMatch[1]?.trim() || null); return; }
+    // dispatch.default_node resolves a truly bare `/chrome` to a node (addressed.raw === '')
+    // without leaving anything in `line` to capture — fall back to the gate's own resolution
+    // (already verified OURS, above) so the report is sent instead of the discovery hint.
+    if (chromeMatch) { await chrome(ev, chromeMatch[1]?.trim() || addressed?.node || null); return; }
 
     // /tabs, /open <url>, /tab <n>, /close <n> — Phase 1 browser command wrappers, thin
     // dispatch over cdp.mjs's listTabs/openTab/activateTarget/closeTab (no CDP knowledge
@@ -949,8 +975,10 @@ export function createCommands({
     if (!room) { await send?.(ev.chatId, "can't resolve this conversation's room"); return; }
     const label = room.slug ?? 'this conversation';
     if (!rest) { await send?.(ev.chatId, await renderMembers(ev, room, label, lobbyBeings(ev, room))); return; }
-    const add = /^add\s+tab\s+(\d+)$/i.exec(rest);
-    if (add) { await membersAddTab(ev, room, Number(add[1])); return; }
+    // `add tab <n> [alias=<name> | <name>]` — an explicit alias, either form, is ONE optional
+    // trailing token (operator ruling 2026-07-27).
+    const add = /^add\s+tab\s+(\d+)(?:\s+(\S+))?$/i.exec(rest);
+    if (add) { await membersAddTab(ev, room, Number(add[1]), add[2] ?? null); return; }
     const mode = /^(\S+)\s+mode\s+(\S+)$/i.exec(rest);
     if (mode) { await membersSetMode(ev, room, mode[1], mode[2]); return; }
     await send?.(ev.chatId, 'usage: /members | /members add tab <n> | /members <id> mode <disable|mention|all>');
@@ -965,7 +993,7 @@ export function createCommands({
   // genuinely new tab: mint a unique id (base, else base-2, base-3, … lowest free integer) so
   // distinct tabs on the same adapter get distinct @mention-able ids. New members start
   // kind:brain, state:muted (mode:disable — "no chatter reaches it yet").
-  async function membersAddTab(ev, room, n) {
+  async function membersAddTab(ev, room, n, aliasArg) {
     let tabs;
     try { tabs = await cdp.listTabs(); } catch { await send?.(ev.chatId, 'no Chrome to list tabs from — try /chrome first'); return; }
     const tab = tabs[n - 1];
@@ -985,8 +1013,19 @@ export function createCommands({
       return;
     }
     const taken = new Set(existing.map((m) => m.id));
-    let id = base, i = 2;
-    while (taken.has(id)) id = `${base}-${i++}`;
+    // An explicit alias (`alias=<name>` or a bare trailing word — operator ruling 2026-07-27)
+    // REFUSES on collision, no auto-suffix. No alias → the existing lowest-free-integer suffix.
+    let id;
+    if (aliasArg) {
+      const named = /^alias=(.+)$/i.exec(aliasArg);
+      const alias = named ? named[1] : aliasArg;
+      if (taken.has(alias)) { await send?.(ev.chatId, `can't add tab ${n} — alias '${alias}' is already taken in this room`); return; }
+      id = alias;
+    } else {
+      id = base;
+      let i = 2;
+      while (taken.has(id)) id = `${base}-${i++}`;
+    }
     await room.setMember({ kind: 'brain', id, state: 'muted', adapter: adapter.name, url: tab.url, targetId: tab.id, title: tab.title });
     await send?.(ev.chatId, `added '${id}' (tab ${n} · adapter:${base}) — mode:disable (no chatter reaches it yet)`);
   }

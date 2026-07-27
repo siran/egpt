@@ -223,6 +223,58 @@ describe('/members add tab <n> — adapter-matched, added disabled, in the conve
     expect(ms[0].state).toBe('muted');                  // its existing mode preserved
   });
 
+  // Operator ruling 2026-07-27: an explicit alias — `alias=<name>` or a bare trailing word —
+  // names the member id directly instead of the adapter-derived auto-suffix.
+  describe('/members add tab <n> alias=<name> | <name> — an explicit alias', () => {
+    it('alias=cgpt3 names the member "cgpt3" instead of "chatgpt"', async () => {
+      const cdp = { listTabs: async () => threeTabs };
+      const { cmds, sent, resolveConvRoom } = harness({ cdp });
+      await cmds.run({ ...self, body: '/members add tab 1 alias=cgpt3' });
+      expect(sent.at(-1).text).toMatch(/added 'cgpt3'/);
+      const ms = await (await resolveConvRoom(self.surface, self.chatId)).members();
+      expect(ms.map((m) => m.id)).toEqual(['cgpt3']);
+    });
+
+    it('a bare trailing word is the SAME explicit alias, no "alias=" prefix required', async () => {
+      const cdp = { listTabs: async () => threeTabs };
+      const { cmds, sent, resolveConvRoom } = harness({ cdp });
+      await cmds.run({ ...self, body: '/members add tab 1 cgpt3' });
+      expect(sent.at(-1).text).toMatch(/added 'cgpt3'/);
+      const ms = await (await resolveConvRoom(self.surface, self.chatId)).members();
+      expect(ms.map((m) => m.id)).toEqual(['cgpt3']);
+    });
+
+    // REPRODUCE-FIRST: an explicit alias already taken in this room REFUSES — it must NOT
+    // silently fall back to the chatgpt-2 auto-suffix the way a no-alias add would.
+    it('REPRODUCE-FIRST: an explicit alias already taken in this room REFUSES, no auto-suffix', async () => {
+      const cdp = { listTabs: async () => threeTabs };
+      const { cmds, sent, resolveConvRoom } = harness({ cdp });
+      await cmds.run({ ...self, body: '/members add tab 1 alias=cgpt3' });   // takes 'cgpt3'
+      await cmds.run({ ...self, body: '/members add tab 2 alias=cgpt3' });   // claude tab, SAME alias
+      expect(sent.at(-1).text).toMatch(/can't add tab 2/);
+      expect(sent.at(-1).text).toMatch(/'cgpt3'/);
+      expect(sent.at(-1).text).toMatch(/already taken/);
+      const ms = await (await resolveConvRoom(self.surface, self.chatId)).members();
+      expect(ms.map((m) => m.id)).toEqual(['cgpt3']);   // unchanged — no second member, no cgpt3-2
+    });
+
+    // REGRESSION LOCK: with NO alias given, the existing lowest-free-integer auto-suffix is
+    // untouched (covered above at "two DIFFERENT chatgpt.com tabs…", unmodified by this ruling).
+    it('no alias given still auto-suffixes exactly as before', async () => {
+      const twoChatgptTabs = [
+        { id: 'GPT1', title: 'ChatGPT', url: 'https://chatgpt.com/c/aaa' },
+        { id: 'GPT2', title: 'ChatGPT', url: 'https://chatgpt.com/c/bbb' },
+      ];
+      const cdp = { listTabs: async () => twoChatgptTabs };
+      const { cmds, sent, resolveConvRoom } = harness({ cdp });
+      await cmds.run({ ...self, body: '/members add tab 1' });
+      await cmds.run({ ...self, body: '/members add tab 2' });
+      expect(sent.at(-1).text).toMatch(/added 'chatgpt-2'/);
+      const ms = await (await resolveConvRoom(self.surface, self.chatId)).members();
+      expect(ms.map((m) => m.id).sort()).toEqual(['chatgpt', 'chatgpt-2']);
+    });
+  });
+
   it('/member add tab 1 (singular alias) routes to the same members handler', async () => {
     const cdp = { listTabs: async () => threeTabs };
     const { cmds, sent, resolveConvRoom } = harness({ cdp });
@@ -261,27 +313,28 @@ describe('/members <id> mode <disable|mention|all>', () => {
   });
 });
 
-// C3 (HANDOFF 2026-07-26): /members joined the node-addressable set, so a TRAILING node token
-// is stripped by the ONE shared gate (commands.mjs) before /members' own sub-grammar parses.
-// The three things that must hold together: a peer's name silences us, OUR name runs here, and
-// the existing sub-grammar (`add tab <n>`, `<id> mode <m>`, bare) is untouched — its last token
-// is never a node name.
+// C3 (HANDOFF 2026-07-26): /members joined the node-addressable set, so a node token is
+// stripped by the ONE shared gate (commands.mjs) before /members' own sub-grammar parses.
+// `node=<name>` (operator ruling 2026-07-27) replaced the old TRAILING-token parse — it may
+// appear anywhere in the arguments. The three things that must hold together: a peer's name
+// silences us, OUR name runs here, and the existing sub-grammar (`add tab <n>`, `<id> mode
+// <m>`, bare) is untouched.
 describe('/members <node> — the shared node gate, with the sub-grammar intact', () => {
   const NODES = { node_name: 'kg', account_peers: ['kg', 'do'] };
 
-  it('REPRODUCE-FIRST: /members do (a peer, not us) answers NOTHING AT ALL', async () => {
+  it('REPRODUCE-FIRST: /members node=do (a peer, not us) answers NOTHING AT ALL', async () => {
     const { cmds, sent } = harness({ config: NODES });
-    await cmds.run({ ...self, body: '/members do' });
+    await cmds.run({ ...self, body: '/members node=do' });
     expect(sent).toEqual([]);
   });
 
-  it('/members kg (OUR node) strips the token and lists, exactly like bare /members', async () => {
+  it('/members node=kg (OUR node) strips the token and lists, exactly like bare /members', async () => {
     const cdp = { listTabs: async () => threeTabs };
     const { cmds, sent } = harness({ cdp, config: NODES });
     await cmds.run({ ...self, body: '/members add tab 1' });
     await cmds.run({ ...self, body: '/members' });
     const bare = sent.at(-1).text;
-    await cmds.run({ ...self, body: '/members kg' });
+    await cmds.run({ ...self, body: '/members node=kg' });
     expect(sent.at(-1).text).toBe(bare);
     expect(sent.at(-1).text).not.toMatch(/usage:/);
   });
