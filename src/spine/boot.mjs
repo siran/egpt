@@ -24,7 +24,7 @@ import * as cdp from '../tools/cdp.mjs';
 import { Room } from '../room-core.mjs';
 import { loadAdapterModule } from '../adapters/registry.mjs';
 import {
-  CONV_YAML_PATH, parse as parseConvState, serialize as serializeConvState, emptyState, KNOWN_SURFACES, slugDir, getContact,
+  CONV_YAML_PATH, parse as parseConvState, serialize as serializeConvState, emptyState, KNOWN_SURFACES, slugDir, getContact, LOBBY_SLUG,
 } from '../conversations-state.mjs';
 import { createStopGuard, STOP_FILE, stopFilePresent, writeStopFile } from '../stop-guard.mjs';
 import { createLasso } from '../lasso.mjs';
@@ -170,6 +170,52 @@ export function buildNodeIdentity({
   let s = `You are the eGPT persona "${name}" running as ${address} — node "${nodeName}", ${userName}'s account. You answer to ${handleStr}; your reply stamp is ${emoji}.`;
   if (peers.length) s += ` Other nodes on this account: ${peers.join(', ')}.`;
   return s;
+}
+
+// Where does this agent ROUTE? No `to:` anywhere → LOCAL, keyed by this node's own nodeName.
+// A top-level `to: <being>.<node>` → the part after the last dot. carol-shaped agents carry
+// their route inside a `paths:` LIST instead (each entry a single-key wrapper object
+// `{ path1: { relay_channel, network, to } }`) — read the FIRST entry's `to:` the same way.
+// No special-casing an agent whose paths point to two different nodes (documented
+// simplification): only the first path entry is ever consulted.
+function shellHeaderGroupOf(agent, nodeName) {
+  if (typeof agent.to === 'string' && agent.to) return agent.to.split('.').pop();
+  if (Array.isArray(agent.paths) && agent.paths.length) {
+    const wrapper = agent.paths[0];
+    const entry = (wrapper && typeof wrapper === 'object') ? Object.values(wrapper)[0] : null;
+    if (entry && typeof entry === 'object' && typeof entry.to === 'string' && entry.to) return entry.to.split('.').pop();
+  }
+  return nodeName;
+}
+
+// THE PERMANENT SHELL HEADER (operator 2026-07-27): the operator's terminal editor needs a
+// fixed status line — persona + LOBBY_SLUG + a roster of this node's OWN `agents:`, grouped by
+// where each one routes — and a FUTURE browser-extension surface will need the identical
+// string but cannot read config.yaml at all. So the derivation lives HERE, spine-side, pure
+// (mirrors buildNodeIdentity), and boot hands the computed STRING to the shell limb over the
+// frame the two already share (src/bridges/shell-port.mjs `header`) — the editor never reads
+// config. Never a peer node's roster: only this node's own `agents:` map, grouped by route.
+//   personaName = labelOf(defaultKey) — NOT re-derived here (no second scan for default:true).
+//   nodeName    = cfg.node_name — the LOCAL group's key when an agent has no `to:`/`paths:`.
+//   agents      = cfg.agents — absent/empty tolerated (no throw; just no trailing groups segment).
+// Groups render in agents-map insertion order (JS object order already preserves it); handles
+// render within a group in agent-declaration order. SHORT HANDLE = the shortest string in the
+// agent's `handles:` array, else its map key.
+export function computeShellHeader({ nodeName, personaName, agents } = {}) {
+  const base = `🟢 ${personaName} ${LOBBY_SLUG} — ? for help`;
+  const map = (agents && typeof agents === 'object' && !Array.isArray(agents)) ? agents : {};
+  const groups = new Map();   // groupKey → [ '@handle', ... ], insertion order = first agent encountered
+  for (const [key, a] of Object.entries(map)) {
+    if (!a || typeof a !== 'object' || Array.isArray(a)) continue;
+    const handles = (Array.isArray(a.handles) && a.handles.length) ? a.handles : [key];
+    const shortest = handles.reduce((s, h) => (String(h).length < String(s).length ? h : s), handles[0]);
+    const groupKey = shellHeaderGroupOf(a, nodeName);
+    if (!groups.has(groupKey)) groups.set(groupKey, []);
+    groups.get(groupKey).push(`@${shortest}`);
+  }
+  if (groups.size === 0) return base;
+  const seg = [...groups.entries()].map(([g, hs]) => `${g}: ${hs.join(' ')}`).join(' · ');
+  return `${base} — ${seg}`;
 }
 
 export async function boot({
@@ -752,12 +798,16 @@ export async function boot({
   // Wrapped by the SAME lasso as the beeper limb (never a second one): a shell-owned chat
   // routes to this port and would otherwise leave the node unregulated — "any limb", operator
   // 2026-07-26. The wrap is a Proxy precisely so this port's `isConnected` GETTER stays live.
+  // THE PERMANENT SHELL HEADER (operator 2026-07-27, computeShellHeader above): computed HERE,
+  // the ONE place config is read for this feature — the editor never touches config.yaml.
+  const shellHeader = computeShellHeader({ nodeName: node_name, personaName: labelOf(defaultKey), agents: cfg.agents });
   const shellPort = lasso.wrap(createShellPort({
     wakeWords,
     addressWithoutAt,                     // same switch, same route — the shell gate and the beeper gate move together
     bridgeSignatureOpen: cfg.bridge_signature_open ?? '',
     bridgeSignatureClose: cfg.bridge_signature_close ?? '',
     nodeName: node_name,                  // same structural layer — a shell frame is a surface send too
+    header: shellHeader,
     onLog: (m) => log.line?.(`[shell] ${m}`),
   }));
 

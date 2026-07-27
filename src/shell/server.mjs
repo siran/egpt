@@ -58,11 +58,14 @@ export function createShellServer({
     } catch (e) { onLog(`shell: announce failed — ${e?.message ?? e}`); }
   }
 
-  // Spine frame → { text, chatId, streaming[, delete] }. The symmetric read of shell-port's
-  // outbound `JSON.stringify({ text, chatId, streaming })`. `streaming` distinguishes a live,
-  // in-place edit (the ⏳ thinking train — the app replaces its live line) from a committed
-  // final (streaming:false → commit to the transcript); a `delete` frame clears the live line
-  // and commits nothing (a withheld reply). A non-JSON line degrades to a committed bare text.
+  // Spine frame → { text, chatId, streaming[, delete][, header] }. The symmetric read of
+  // shell-port's outbound `JSON.stringify({ text, chatId, streaming })`. `streaming`
+  // distinguishes a live, in-place edit (the ⏳ thinking train — the app replaces its live
+  // line) from a committed final (streaming:false → commit to the transcript); a `delete`
+  // frame clears the live line and commits nothing (a withheld reply). `header` carries the
+  // PERMANENT shell header line (boot's computeShellHeader) on an otherwise-empty frame — a
+  // header-only frame has neither text nor delete, so the connection handler below must not
+  // drop it. A non-JSON line degrades to a committed bare text.
   function parse(raw) {
     const s = (typeof raw === 'string') ? raw : (raw?.toString?.() ?? String(raw));
     try {
@@ -70,6 +73,7 @@ export function createShellServer({
       if (j && typeof j === 'object' && typeof j.text === 'string') {
         const m = { text: j.text, chatId: j.chatId ? String(j.chatId) : 'main', streaming: !!j.streaming };
         if (j.delete) m.delete = true;
+        if (j.header != null) m.header = String(j.header);
         return m;
       }
     } catch { /* not JSON → treat the whole line as the message text */ }
@@ -85,7 +89,7 @@ export function createShellServer({
       wss.on('connection', (ws) => {
         sock = ws;                                   // newest connection is THE console seat
         onLog('shell-editor: spine connected');
-        ws.on('message', (buf) => { const m = parse(buf); if (m.text || m.delete) onMsg?.(m); });
+        ws.on('message', (buf) => { const m = parse(buf); if (m.text || m.delete || m.header != null) onMsg?.(m); });
         ws.on('close', () => { if (sock === ws) sock = null; onLog('shell-editor: spine disconnected'); });
         ws.on('error', (e) => onLog(`shell-editor: socket error — ${e?.message ?? e}`));
       });

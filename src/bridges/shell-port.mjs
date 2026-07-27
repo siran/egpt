@@ -46,6 +46,7 @@ const SHELL_USER = 'operator';
  * @param {string} [opts.bridgeSignatureOpen]  per-NODE outer wrap layer — the SAME value boot hands the beeper bridge, so a shell reply's wrap matches the Beeper wrap. Default ''.
  * @param {string} [opts.bridgeSignatureClose]
  * @param {string} [opts.nodeName]            the STRUCTURAL node id (cfg.node_name), tag-encoded invisibly onto every frame — same value boot hands the beeper bridge. Default ''.
+ * @param {string} [opts.header]              the PERMANENT shell header line (boot's computeShellHeader) — a static string handed in at boot, pushed as a header-only frame on every (re)connect. Default '' → no header frame ever sent.
  * @param {(m: string) => void} [opts.onLog]
  * @param {typeof globalThis.setTimeout} [opts.setTimeout]     reconnect-timer seam (tests inject a fake clock so no real wait blocks)
  * @param {typeof globalThis.clearTimeout} [opts.clearTimeout]
@@ -58,6 +59,7 @@ export function createShellPort({
   bridgeSignatureOpen = '',
   bridgeSignatureClose = '',
   nodeName = '',
+  header = '',
   onLog = () => {},
   setTimeout: setTimeoutFn = globalThis.setTimeout,
   clearTimeout: clearTimeoutFn = globalThis.clearTimeout,
@@ -65,6 +67,11 @@ export function createShellPort({
   // The SAME wrap the beeper limb binds (boot hands both ports the node's bridge_signature_*),
   // so a persona reply rendered to the shell is wrapped identically to one rendered to Beeper.
   const wrapPersona = makeWrapPersona({ bridgeSignatureOpen, bridgeSignatureClose, nodeName });
+  // The PERMANENT header line (boot's computeShellHeader) — static for this task, no
+  // live-update requirement. Pushed on every (re)connect from the ONE ws.on('open') hook
+  // below, so first-connect, every reconnect, AND poke() (all funnel through connect()) are
+  // covered without any separate "is this a reconnect" tracking in boot.mjs.
+  const _header = header;
   // Late-bound inbound handler: the spine registers it AFTER construction (as it does
   // bridge.onMessage), so the message frame reads the ref at call time.
   let onMsg = null;
@@ -92,7 +99,12 @@ export function createShellPort({
     if (_stopped) return;
     try { ws = new WebSocket(url); }
     catch (e) { onLog(`shell: WS connect threw — ${e?.message ?? e}`); scheduleReconnect(); return; }
-    ws.on('open', () => { _wsReady = true; _reconnectMs = RECONNECT_MIN_MS; onLog('shell: WS open'); });
+    ws.on('open', () => {
+      _wsReady = true; _reconnectMs = RECONNECT_MIN_MS; onLog('shell: WS open');
+      // The permanent header, resent on EVERY (re)connect — a header that only ever sends
+      // once would go blank forever after the first reconnect.
+      if (_header) pushFrame(SHELL_CHAT_ID, '', { header: _header });
+    });
     ws.on('message', (buf) => {
       const { text, chatId } = toInbound(buf);
       if (!text) return;
@@ -126,11 +138,14 @@ export function createShellPort({
   // committed final) and, on a withheld reply, `delete` (clear the live line, commit nothing)
   // — the shell's edit-in-place primitive, mirroring the beeper limb's startStreamMessage.
   // Both the plain `send` and the streaming `startStream` render through this single push.
-  function pushFrame(chatId, text, { streaming = false, delete: del = false } = {}) {
+  // `header` is the ONE new optional field (the permanent header line, above): attached only
+  // when non-null, so every other caller's frame shape is byte-identical to before.
+  function pushFrame(chatId, text, { streaming = false, delete: del = false, header = null } = {}) {
     if (!ws || !_wsReady) { onLog('shell: send dropped — editor not connected'); return false; }
     try {
       const frame = { text: String(text), chatId, streaming: !!streaming };
       if (del) frame.delete = true;
+      if (header != null) frame.header = header;
       ws.send(JSON.stringify(frame));
       return true;
     }

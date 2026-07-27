@@ -331,6 +331,52 @@ describe('shell-port limb', () => {
     });
   });
 
+  describe('header — the PERMANENT status line (boot\'s computeShellHeader), pushed on every (re)connect', () => {
+    // THE REGRESSION THIS LOCKS: "a header that only ever sends once is blank forever after
+    // the first reconnect". The header hooks the SAME ws.on('open') handler every connect()
+    // call goes through, so first-connect, a reconnect, AND poke() all resend it — no separate
+    // "is this a reconnect" tracking in boot.mjs.
+    it('on open, pushes a header-only frame (empty text, no delete) — a naive text/delete-only editor handler would not log it', () => {
+      const { WebSocket, sockets } = makeFakeWs();
+      const port = createShellPort({ WebSocket, header: 'test-header' });
+      port.start();
+      sockets[0].fire('open');
+
+      expect(sockets[0].sent).toHaveLength(1);
+      const frame = JSON.parse(sockets[0].sent[0]);
+      expect(frame.header).toBe('test-header');
+      expect(frame.text).toBe('');
+      expect(frame.delete).toBeUndefined();
+    });
+
+    it('a reconnect (close → the queued reconnect timer fires → fresh socket) ALSO resends the header', () => {
+      const { WebSocket, sockets } = makeFakeWs();
+      const clock = makeFakeClock();
+      const port = createShellPort({ WebSocket, header: 'test-header', setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout });
+
+      port.start();
+      sockets[0].fire('open');
+      expect(JSON.parse(sockets[0].sent[0]).header).toBe('test-header');
+
+      sockets[0].fire('close');                 // editor drops → reconnect armed
+      expect(clock.timers).toHaveLength(1);
+      clock.timers[0].fn();                     // the reconnect fires → fresh socket dialed
+      expect(sockets).toHaveLength(2);
+
+      sockets[1].fire('open');                  // the FRESH socket opens
+      expect(sockets[1].sent).toHaveLength(1);
+      expect(JSON.parse(sockets[1].sent[0]).header).toBe('test-header');
+    });
+
+    it('no header option → no header frame ever sent on open', () => {
+      const { WebSocket, sockets } = makeFakeWs();
+      const port = createShellPort({ WebSocket });
+      port.start();
+      sockets[0].fire('open');
+      expect(sockets[0].sent).toHaveLength(0);
+    });
+  });
+
   describe('poke() — the editor announced itself via ingest, connect NOW', () => {
     it('while disconnected with a pending reconnect timer: cancels the timer, resets the backoff, and dials a fresh socket immediately', () => {
       const { WebSocket, sockets } = makeFakeWs();

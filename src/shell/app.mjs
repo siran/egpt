@@ -153,25 +153,22 @@ function App({ server, themes, initialTheme, onError }) {
   const { exit } = useApp();
   const [items, setItems] = useState([]);
   const [live, setLive] = useState(null);   // the in-progress streaming line: { text } or null
+  const [header, setHeader] = useState('');  // the PERMANENT header line (boot's computeShellHeader), spine-sent
   const [themeName, setThemeName] = useState(initialTheme);
   const [T, setT] = useState(loadTheme(initialTheme));
 
   const add = (author, body) => setItems(prev => [...prev, { id: nextId(), ts: Date.now(), author, body: String(body) }]);
 
   useEffect(() => {
-    // One-time launch line so a fresh start isn't ambiguous — a transcript row that scrolls
-    // away as you chat, NOT the persistent status bar. Confirms the editor is up + sets the
-    // model: you type, the spine replies here, faults show loud.
-    // NB the reachable beings are the SPINE's config (agents registry), which this editor
-    // process cannot read — so name only the persona's built-in handle and point at /members
-    // (which does read the registry). The old line advertised @d / @l, which this node does
-    // not configure: an unmatched @token falls through to a gated-out persona and answers
-    // NOTHING, so a wrong name here reads as a broken shell.
-    add('system', 'egpt shell ready — type to reach @e (/members lists this node’s beings); replies and errors appear here');
     // A spine frame is either a LIVE streaming edit (the ⏳ thinking train — replace the live
     // line in place) or a COMMITTED final (streaming:false — clear the live line and append the
     // wrapped reply to the transcript). A `delete` final clears the live line, commits nothing.
+    // `header` (the PERMANENT status line, boot's computeShellHeader) may ride ANY frame,
+    // including a header-only frame with neither text nor streaming nor delete — that shape
+    // must update the header and fall through WITHOUT touching the transcript/live state below.
     server.onSpineMessage(m => {
+      if (m.header != null) setHeader(m.header);
+      if (!m.text && !m.streaming && !m.delete) return;
       if (m.streaming) { setLive({ text: m.text }); return; }
       setLive(null);
       if (m.delete) return;
@@ -204,10 +201,12 @@ function App({ server, themes, initialTheme, onError }) {
     if (!server.send(r.text)) add('error', notDeliveredMessage(wasConnected));
   };
 
-  // No status/connection chrome at all — the editor opens straight to the composer and is
-  // usable immediately. We ASSUME the spine is connected; if a send actually can't be
-  // delivered, submit() surfaces a loud not-delivered error at that moment (see below).
+  // No status/connection chrome at all beyond the permanent header — the editor opens
+  // straight to the composer and is usable immediately. We ASSUME the spine is connected; if
+  // a send actually can't be delivered, submit() surfaces a loud not-delivered error at that
+  // moment (see below).
   return h(Fragment, null,
+    h(Box, { flexDirection: 'column' }, h(Text, { color: T.statusBrand }, header)),
     h(Static, { items: withDaySeparators(items) }, (it) => renderItem(T, it)),
     h(Box, { flexDirection: 'column', marginTop: 1 },
       live ? renderLive(T, live) : null,

@@ -77,6 +77,29 @@ describe('shell editor — WS server (fake spine over a real socket)', () => {
     expect(JSON.parse(buf.toString())).toEqual({ text: 'hi' });
   });
 
+  // THE GATE THIS LOCKS: `if (m.text || m.delete) onMsg?.(m)` used to DROP a header-only frame
+  // (empty text, no delete) — exactly the shape shell-port's header push carries. Widened to
+  // `if (m.text || m.delete || m.header != null)` — this is the single most likely way the
+  // permanent-header feature silently does nothing, so it is verified explicitly here.
+  it('a header-only spine frame ({ text: "", chatId, header }) reaches onSpineMessage — the widened gate, not dropped', async () => {
+    const server = createShellServer({ port: 0, io: fakeIo() });
+    const wss = server.start();
+    cleanups.push(() => server.stop());
+    await once(wss, 'listening');
+    const { port } = wss.address();
+
+    const spine = new WebSocket(`ws://127.0.0.1:${port}`);
+    cleanups.push(() => spine.close());
+    const inbound = [];
+    server.onSpineMessage(m => inbound.push(m));
+    await once(spine, 'open');
+    await waitFor(() => server.isConnected);
+
+    spine.send(JSON.stringify({ text: '', chatId: 'main', header: 'test-header' }));
+    await waitFor(() => inbound.length > 0);
+    expect(inbound[0]).toEqual({ text: '', chatId: 'main', streaming: false, header: 'test-header' });
+  });
+
   it('announces itself into the ingest box once listening — so the spine pokes in immediately (no real ~/.egpt write, io is faked)', async () => {
     const calls = { mkdir: [], writeFile: [], rename: [] };
     const io = {
@@ -174,6 +197,28 @@ describe('shell editor — composer gutter (source guard; app.mjs is TTY-bound, 
     expect(line).toBeTruthy();
     expect(line).toContain("i === 0 ? '> ' : '  '");
     expect(line).not.toContain("'| '");
+  });
+});
+
+// THE PERMANENT SHELL HEADER (operator 2026-07-27; source guard, same rationale as the gutter
+// guard above — app.mjs is TTY-bound and not renderable in vitest). Two things locked:
+//   (a) the old scroll-away greeting line is GONE — the permanent header replaces it.
+//   (b) a Box rendering the header exists ABOVE <Static> in the returned Fragment, so it
+//       never scrolls with the transcript.
+describe('shell editor — permanent header (source guard)', () => {
+  const src = readFileSync(new URL('../src/shell/app.mjs', import.meta.url), 'utf8');
+
+  it('the old scroll-away greeting ("egpt shell ready…") is gone', () => {
+    expect(src).not.toContain('egpt shell ready');
+  });
+
+  it('a header Box renders ABOVE <Static> in the returned Fragment', () => {
+    const returnBlock = src.slice(src.indexOf('return h(Fragment, null,'));
+    const headerIdx = returnBlock.indexOf('T.statusBrand');
+    const staticIdx = returnBlock.indexOf('h(Static,');
+    expect(headerIdx).toBeGreaterThan(-1);
+    expect(staticIdx).toBeGreaterThan(-1);
+    expect(headerIdx).toBeLessThan(staticIdx);
   });
 });
 

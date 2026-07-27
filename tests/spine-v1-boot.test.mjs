@@ -20,9 +20,9 @@ import { echoRank } from '../src/spine/echo-priority.mjs';   // pure (no EGPT_HO
 const tmpHome = join(os.tmpdir(), `egpt-v1-boot-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 process.env.EGPT_HOME = tmpHome;
 
-let boot, emptyState, ensureContact, shouldReapStrayWhisper, whisperPortOf, buildNodeIdentity;
+let boot, emptyState, ensureContact, shouldReapStrayWhisper, whisperPortOf, buildNodeIdentity, computeShellHeader;
 beforeAll(async () => {
-  ({ boot, shouldReapStrayWhisper, whisperPortOf, buildNodeIdentity } = await import('../src/spine/boot.mjs'));
+  ({ boot, shouldReapStrayWhisper, whisperPortOf, buildNodeIdentity, computeShellHeader } = await import('../src/spine/boot.mjs'));
   ({ emptyState, ensureContact } = await import('../src/conversations-state.mjs'));
 });
 afterAll(async () => {
@@ -496,6 +496,77 @@ describe('buildNodeIdentity — the persona node-identity string', () => {
     const s = buildNodeIdentity({ ...sample, accountPeers: ['kg', 'do', 'dolly'], nodeAlias: ['dolly'] });
     expect(s).toMatch(/Other nodes on this account: kg\./);
     expect(s).not.toMatch(/dolly/);                            // an alias of THIS node is not a peer
+  });
+});
+
+// THE PERMANENT SHELL HEADER (operator 2026-07-27): computeShellHeader is the pure derivation
+// boot hands the shell limb — persona/help portion always renders; a trailing groups segment
+// is built from THIS node's own `agents:` map, grouped by where each entry routes. Tested
+// directly here (mirrors buildNodeIdentity / shouldReapStrayWhisper) against directly
+// constructed fixtures — never the live config.yaml.
+describe('computeShellHeader — the permanent shell status line', () => {
+  it('short-handle pick: the SHORTEST string in `handles:` wins (e.g. [e, egpt] → @e)', () => {
+    const s = computeShellHeader({
+      nodeName: 'kg', personaName: 'egpt',
+      agents: { egpt: { handles: ['e', 'egpt'], default: true } },
+    });
+    expect(s).toBe('🟢 egpt lobby — ? for help — kg: @e');
+  });
+
+  it('no `to:` → grouped under nodeName (LOCAL); a top-level `to: x.node` → grouped under the part after the last dot', () => {
+    const s = computeShellHeader({
+      nodeName: 'kg', personaName: 'egpt',
+      agents: {
+        egpt: { handles: ['e', 'egpt'], default: true },       // no `to:` → local, keyed by nodeName
+        don: { handles: ['d', 'don'], to: 'don.do' },          // top-level `to:` → group 'do'
+      },
+    });
+    expect(s).toBe('🟢 egpt lobby — ? for help — kg: @e · do: @d');
+  });
+
+  it('carol-shaped `paths:` list groups by the FIRST entry\'s `to:` node segment', () => {
+    const s = computeShellHeader({
+      nodeName: 'kg', personaName: 'egpt',
+      agents: {
+        egpt: { handles: ['e', 'egpt'], default: true },
+        carol: {
+          handles: ['carol'],
+          paths: [
+            { path1: { relay_channel: 'x', network: 'y', to: 'don.do' } },
+            { path2: { relay_channel: 'x', network: 'y', to: 'someone.other' } },   // first entry wins, not this one
+          ],
+        },
+      },
+    });
+    expect(s).toBe('🟢 egpt lobby — ? for help — kg: @e · do: @carol');
+  });
+
+  it('an agent with no `handles:` at all falls back to its map key as the handle', () => {
+    const s = computeShellHeader({
+      nodeName: 'kg', personaName: 'egpt',
+      agents: { egpt: { handles: ['e', 'egpt'], default: true }, wren: { to: 'ed.do' } },
+    });
+    expect(s).toBe('🟢 egpt lobby — ? for help — kg: @e · do: @wren');
+  });
+
+  it('multiple agents routing to the SAME node segment combine into ONE group, in agent-declaration order (the brief\'s own example shape)', () => {
+    const s = computeShellHeader({
+      nodeName: 'kg', personaName: 'egpt',
+      agents: {
+        egpt: { handles: ['e', 'egpt'], default: true },
+        carol: { handles: ['carol'], paths: [{ path1: { to: 'don.do' } }] },
+        wren: { handles: ['wren'], to: 'ed.do' },
+        cara: { handles: ['cara'], to: 'ed.do' },
+        don: { handles: ['don'], to: 'don.do' },
+      },
+    });
+    expect(s).toBe('🟢 egpt lobby — ? for help — kg: @e · do: @carol @wren @cara @don');
+  });
+
+  it('an empty/absent `agents:` map does not throw — still returns the persona/help portion, no groups segment', () => {
+    expect(computeShellHeader({ nodeName: 'kg', personaName: 'egpt', agents: {} })).toBe('🟢 egpt lobby — ? for help');
+    expect(computeShellHeader({ nodeName: 'kg', personaName: 'egpt' })).toBe('🟢 egpt lobby — ? for help');
+    expect(() => computeShellHeader({})).not.toThrow();
   });
 });
 
