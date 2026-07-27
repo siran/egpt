@@ -216,6 +216,13 @@ export function agentPaths(agent) {
 // envelopes' tails; a planned `opts: show-hops` request flag (ROADMAP) will surface it later.
 const appendVia = (existing, hop) => { const e = String(existing ?? '').trim(); return e ? `${e},${hop}` : String(hop); };
 
+// Origin placeholder vocabulary (operator 2026-07-27: "seems like there's an AI thinking,
+// when it's actually water through pipes" — a relayed COMMAND is structural tubing, a
+// relayed BEING-PROMPT is an AI turn; they must not look alike). ONE place so the operator
+// can change either string in a single edit.
+const THINKING_STATUS = '🤔 thinking…';
+const STRUCTURAL_STATUS = '🔗 relaying…';
+
 export function createMeshRelay({
   node,                              // this spine's node_name (e.g. "kg", "do")
   send,                              // (route, text) => Promise — post into the relay channel
@@ -248,10 +255,13 @@ export function createMeshRelay({
   //     relay-room message wrapped in the mesh tail (by/emoji/re/post_id). The responder's
   //     OWN edits are suppressed locally by the bridge but propagate to the origin.
   //     Null → one-shot runBeing fallback.
-  //   ORIGIN: openOriginStream(returnTo, info{by,emoji,msgId}) → {update,finish}. info.msgId
-  //     is the origin placeholder (post_id) to edit IN PLACE; emoji stamps identity. We
-  //     mirror the responder's first send + every later edit onto it, correlated by the
-  //     relay message's OWN id; the `done` frame finalizes (✅ Done). Null → one-shot.
+  //   ORIGIN: openOriginStream(returnTo, info{by,emoji,msgId,structural}) → {update,finish}.
+  //     info.msgId is the origin placeholder (post_id) to edit IN PLACE; emoji stamps identity.
+  //     info.structural (operator 2026-07-27) carries the flag remembered on `awaiting` from the
+  //     ORIGINAL relayOut call, so the "done" finish can skip the AI-turn theatre ("✅ Done") for
+  //     structural (command) traffic. We mirror the responder's first send + every later edit
+  //     onto it, correlated by the relay message's OWN id; the `done` frame finalizes. Null →
+  //     one-shot.
   relayDispatch = null,
   openOriginStream = null,
   log = () => {},
@@ -295,7 +305,10 @@ export function createMeshRelay({
   // relay agent's `relay_channel`. `to: <being>.<node>` names the next hop (a declarative
   // chain); no `to` = the open-channel path (the owner of `being` on the other end answers,
   // everyone else stays silent) and the label drops the `.node`.
-  async function relayOut({ being, route = null, to: explicitTo = '', body = '', origin = null, sender = '', paths = null } = {}) {
+  // structural (operator 2026-07-27): true when this relay carries a `/command`, not a
+  // being-prompt — the origin already knows this at the call site (forwardCommand gates on
+  // the allowlist), so it rides straight through as a flag rather than being re-derived here.
+  async function relayOut({ being, route = null, to: explicitTo = '', body = '', origin = null, sender = '', paths = null, structural = false } = {}) {
     // MULTIPATH (operator 2026-07-06: multipath is configuration — an agent is a list of paths,
     // every message through every path). `paths` = [{ route, to, label }] (routes already resolved
     // by the caller's canonRoute). Post the placeholder ONCE (one 🤔 / post_id for the human), then
@@ -306,7 +319,7 @@ export function createMeshRelay({
     if (Array.isArray(paths)) {
       const fromName = (origin && origin.name) || '';
       let postId = null;
-      const statusText = '🤔 thinking…';
+      const statusText = structural ? STRUCTURAL_STATUS : THINKING_STATUS;
       if (ackWithPostId) { try { const _raw = await ackWithPostId(origin, statusText); postId = typeof _raw === 'string' ? _raw : null; } catch { /* best-effort */ } }
       else await notify(origin, statusText);
       const viaSeed = `${being}.${node}`;
@@ -322,7 +335,7 @@ export function createMeshRelay({
       }
       if (!anyOk) { await surface(origin, `!! mesh: all paths to ${being} failed`); return false; }
       const awaitKey = postId || fromName;
-      if (awaitKey && origin) awaiting.set(awaitKey, origin);
+      if (awaitKey && origin) awaiting.set(awaitKey, { origin, structural });
       return true;
     }
     const tgt = explicitTo || being;                                     // human-readable label
@@ -333,7 +346,7 @@ export function createMeshRelay({
     // as the stream arrives. The placeholder carries TEXT (not a lone emoji) — a bare
     // emoji renders jumbo-big on WhatsApp/Beeper; it's edited in place into the reply.
     let postId = null;
-    const statusText = '🤔 thinking…';
+    const statusText = structural ? STRUCTURAL_STATUS : THINKING_STATUS;
     if (ackWithPostId) {
       try {
         const _raw = await ackWithPostId(origin, statusText);
@@ -363,7 +376,7 @@ export function createMeshRelay({
     // routes — the first reply home no longer deletes the second's entry and strands it. Fall back
     // to the origin name when no placeholder id was captured (no ackWithPostId → non-streaming path).
     const awaitKey = postId || fromName;
-    if (awaitKey && origin) awaiting.set(awaitKey, origin);
+    if (awaitKey && origin) awaiting.set(awaitKey, { origin, structural });
     return true;
   }
 
@@ -391,7 +404,12 @@ export function createMeshRelay({
       const backKey = (prov.post_id && awaiting.has(prov.post_id)) ? prov.post_id
         : awaiting.has(reChatId) ? reChatId
         : awaiting.has(prov.re) ? prov.re : null;
-      const back = backKey != null ? awaiting.get(backKey) : undefined;
+      // awaiting stores { origin, structural } — structural is remembered from the ORIGINAL
+      // relayOut call so the reply's finish can tell plumbing from an AI turn; `back` (the
+      // thing surface()/openOriginStream() actually address) stays the bare origin object,
+      // unchanged in shape from before this flag existed.
+      const entry = backKey != null ? awaiting.get(backKey) : undefined;
+      const back = entry?.origin;
       // One reply-mirror stage is keyed by the reply message's OWN id: the opening post and
       // every later streamed EDIT arrive under the SAME raw msgId, so an edit finds the mirror.
       const key = msgId != null ? `x:${String(msgId)}` : null;
@@ -402,7 +420,7 @@ export function createMeshRelay({
         let s = streamingIn.get(key);
         if (!s && back && openOriginStream) {
           // ORIGIN: edit the origin placeholder (post_id) in place as the reply streams home.
-          const handle = openOriginStream(back, { by: prov.by, msgId: prov.post_id || null });
+          const handle = openOriginStream(back, { by: prov.by, msgId: prov.post_id || null, structural: !!entry?.structural });
           if (handle) {
             s = { handle }; awaiting.delete(backKey);
             streamingIn.set(key, s);

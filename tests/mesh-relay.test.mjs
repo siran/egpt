@@ -237,6 +237,41 @@ describe('mesh relay — YAML provenance over a shared channel', () => {
     expect(oneShot).toHaveLength(0);                                        // streamed, never one-shot surfaced
   });
 
+  // STRUCTURAL (operator 2026-07-27: "seems like there's an AI thinking, when it's actually
+  // water through pipes" — a relayed COMMAND is plumbing, a relayed BEING-PROMPT is an AI turn;
+  // they must not look alike). The caller (forwardCommand) already knows which is which, so
+  // relayOut is handed the answer as a flag — it is never re-derived from the body here.
+  it('structural:true swaps the origin placeholder for the plumbing indicator, and rides to openOriginStream', async () => {
+    const updates = []; let finished = null; const acked = [];
+    const kg = createMeshRelay({
+      node: 'kg', send: async () => {}, surface: async () => {}, ack: async (_o, t) => acked.push(t),
+      runBeing: async () => '', isLocalBeing: () => false,
+      openOriginStream: (_returnTo, info) => { updates.push({ open: info }); return { update: (b) => updates.push(b), finish: async (b) => { finished = b; } }; },
+    });
+    await kg.relayOut({ being: 'don', route: { room_id: 'C' }, to: 'don.do', body: '/tabs', origin: { surface: 'whatsapp', chat_id: 'X', name: 'HFM' }, sender: 'An', structural: true });
+    expect(acked).toEqual(['🔗 relaying…']);                        // plumbing indicator, not "🤔 thinking…"
+
+    await kg.onRoomMessage({ route: { room_id: 'C' }, text: encodeMesh({ by: 'don.do', body: 'chrome tabs: 3 open', re: 'HFM', done: true }), msgId: 'r1' });
+    expect(updates[0].open).toMatchObject({ by: 'don.do', structural: true });   // the flag rides through
+    expect(finished).toBe('chrome tabs: 3 open');
+  });
+
+  // REGRESSION LOCK: `structural` defaults false, so every existing (pre-2026-07-27) relayOut
+  // call — every @being-prompt — keeps posting the AI "🤔 thinking…" text and passes
+  // structural:false to openOriginStream, byte-identical to before this flag existed.
+  it('REGRESSION: structural defaults false — the AI being-prompt engine path is unchanged', async () => {
+    const updates = []; const acked = [];
+    const kg = createMeshRelay({
+      node: 'kg', send: async () => {}, surface: async () => {}, ack: async (_o, t) => acked.push(t),
+      runBeing: async () => '', isLocalBeing: () => false,
+      openOriginStream: (_returnTo, info) => { updates.push({ open: info }); return { update: () => {}, finish: async () => {} }; },
+    });
+    await kg.relayOut({ being: 'don', route: { room_id: 'C' }, to: 'don.do', body: '@don hola', origin: { surface: 'whatsapp', chat_id: 'X', name: 'HFM' }, sender: 'An' });
+    expect(acked).toEqual(['🤔 thinking…']);
+    await kg.onRoomMessage({ route: { room_id: 'C' }, text: encodeMesh({ by: 'don.do', body: 'hola', re: 'HFM', done: true }), msgId: 'r1' });
+    expect(updates[0].open).toMatchObject({ by: 'don.do', structural: false });
+  });
+
   it('ORIGIN one-shots (surfaces once) when no stream primitive is wired', async () => {
     const surfaced = [];
     const kg = createMeshRelay({

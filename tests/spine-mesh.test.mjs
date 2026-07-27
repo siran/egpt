@@ -310,6 +310,57 @@ describe('mesh service — origin (the reply streams home as a living mirror)', 
   });
 });
 
+// STRUCTURAL vs THINKING (operator 2026-07-27: "seems like there's an AI thinking, when it's
+// actually water through pipes"). forwardCommand is the ORIGIN's ONLY entry point for a
+// node-addressed `/command` (spine.mjs gates on commands.remoteNode before calling it) — it
+// already knows no AI turn is involved, so it must show plumbing, not thinking: a different
+// placeholder AND no "✅ Done" theatre on the reply. mesh.forward (the @being-prompt path) must
+// stay byte-identical.
+describe('mesh service — structural relay (a forwarded /command is plumbing, not an AI turn)', () => {
+  const agents = { don: { configuration: 'egpt', name: 'don', relay_channel: 'RELAY', to: 'don.do' } };
+
+  it('forwardCommand posts the STRUCTURAL placeholder ("🔗 relaying…"), never the AI "🤔 thinking…" one', async () => {
+    const { bridge, mesh } = svc({ node: 'kg', agents });
+    const ev = { surface: 'whatsapp', chatId: 'CHAT', chatName: 'HFM', senderName: 'An', body: '/tabs' };
+    const ok = await mesh.forwardCommand(ev, 'do');
+    expect(ok).toBe(true);
+    expect(bridge.statusPosts).toEqual([{ chat: 'CHAT', text: '🔗 relaying…', id: 'post-1' }]);
+  });
+
+  it('a forwarded command finishes to just the reply body — no "✅ Done" theatre', async () => {
+    const { bridge, mesh } = svc({ node: 'kg', agents });
+    const ev = { surface: 'whatsapp', chatId: 'CHAT', chatName: 'HFM', senderName: 'An', body: '/tabs' };
+    await mesh.forwardCommand(ev, 'do');
+
+    // the responder answers in ONE frame (a static command never streams partials — the
+    // 2026-07-25 fix already stops it opening a placeholder it doesn't use)
+    await mesh.handle({ surface: 'whatsapp', chatId: 'RELAY', msgId: 'r1', body: encodeMesh({ by: 'don.do', body: 'chrome tabs: 3 open', re: 'HFM.kg', post_id: 'post-1', done: true }) });
+
+    const mirror = bridge.streams.find((s) => s.opts.existingMsgId === 'post-1');
+    expect(mirror).toBeTruthy();
+    expect(mirror.opts.showThink).toBe(false);           // structural: the origin never appends "✅ Done"
+    expect(mirror.finals).toContain('chrome tabs: 3 open');
+  });
+
+  // REGRESSION LOCK (operator ruling: "the AI path must be BYTE-IDENTICAL to today"). A
+  // forwarded BEING-PROMPT — every existing mesh.forward call site, structural defaults false —
+  // keeps the exact same thinking placeholder, streaming updates, and "✅ Done" finish.
+  it('REGRESSION: a forwarded being-prompt is unchanged — same "🤔 thinking…", same streaming, same "✅ Done"', async () => {
+    const { bridge, mesh } = svc({ node: 'kg' });
+    const ev = { surface: 'whatsapp', chatId: 'CHAT', chatName: 'HFM', senderName: 'An', body: '@don hola' };
+    await mesh.forward(ev, { being: 'don', route: { room_id: 'RELAY' }, to: 'don.do' });
+    expect(bridge.statusPosts).toEqual([{ chat: 'CHAT', text: '🤔 thinking…', id: 'post-1' }]);
+
+    await mesh.handle({ surface: 'whatsapp', chatId: 'RELAY', msgId: 'r1', body: encodeMesh({ by: 'don.do', body: '🤝 Jaja', re: 'HFM.kg', post_id: 'post-1' }) });
+    await mesh.onEdit({ msgId: 'r1', newText: encodeMesh({ by: 'don.do', body: '🤝 Jaja, aquí', re: 'HFM.kg', post_id: 'post-1', done: true }) });
+
+    const mirror = bridge.streams.find((s) => s.opts.existingMsgId === 'post-1');
+    expect(mirror.opts.showThink).toBe(true);
+    expect(mirror.updates).toContain('🤝 Jaja');
+    expect(mirror.finals).toContain('🤝 Jaja, aquí');
+  });
+});
+
 describe('mesh service — node_alias (one process, several node identities)', () => {
   it('answers an envelope addressed to a self-ALIAS locally, stamping the identity it was ADDRESSED AS', async () => {
     const brain = fakeBrain({ reply: 'aquí' });

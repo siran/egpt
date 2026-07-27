@@ -372,13 +372,17 @@ export function createMeshService({
     },
     // ORIGIN mirror: edit the origin placeholder (post_id) in place as the reply
     // streams home. The body already carries the being's body_emoji (stamped by the
-    // responder), so mirror verbatim. showThink → "✅ Done" on the done frame.
+    // responder), so mirror verbatim. showThink → "✅ Done" on the done frame — but a
+    // structural (command) reply is plumbing, not an AI turn, so it finishes to just the
+    // reply body (operator 2026-07-27: "an AI thinking, when it's actually water through
+    // pipes"). info.structural rides from the ORIGINAL relayOut call via relay.mjs's
+    // `awaiting` map — never re-derived here.
     openOriginStream: (returnTo, info = {}) => {
       const chat = returnTo?.chat_id ?? returnTo?.chatId ?? (typeof returnTo === 'string' ? returnTo : null);
       if (chat == null) return null;
       clearTimeoutFor(chat);                                     // the reply is streaming — the wait is over
       const render = (body) => { const b = String(body ?? '').trim(); return b || PLACEHOLDER; };
-      const stream = bridge.startStream(String(chat), '', { existingMsgId: info.msgId || null, showThink: true });
+      const stream = bridge.startStream(String(chat), '', { existingMsgId: info.msgId || null, showThink: !info.structural });
       if (!stream) return null;
       return {
         update: (body) => stream.update(render(body)),
@@ -416,7 +420,12 @@ export function createMeshService({
     //                                on the other end answers). The reply mirrors home
     //                                through the awaiting/re: machinery either way.
     //   { being, paths:[…] }       — a MULTIPATH relay agent (its `paths:` list); see below.
-    async forward(ev, target) {
+    //
+    // `structural` (operator 2026-07-27): true only when this forward carries a `/command`
+    // (forwardCommand sets it — it already knows, at the allowlist gate, that no AI turn is
+    // involved). Threaded straight through to relay.relayOut, never re-derived here. Default
+    // false leaves every existing `@being` being-prompt call site byte-identical.
+    async forward(ev, target, { structural = false } = {}) {
       const being = target?.being;
       // MULTIPATH (operator 2026-07-06: multipath is configuration — an agent declares a list of
       // paths, every message through every path). The router hands a `paths` array; resolve EACH path's
@@ -429,7 +438,7 @@ export function createMeshService({
         const origin = { surface: ev.surface, chat_id: ev.chatId, name: ev.chatName ?? ev.chatId };
         const sender = ev.senderName ?? 'someone';
         armTimeout(ev.chatId, `${being} (${paths.length} paths)`);
-        const ok = await relay.relayOut({ being, paths, body: ev.body, origin, sender });
+        const ok = await relay.relayOut({ being, paths, body: ev.body, origin, sender, structural });
         if (!ok) clearTimeoutFor(ev.chatId);
         return ok;
       }
@@ -447,7 +456,7 @@ export function createMeshService({
       const sender = ev.senderName ?? 'someone';
       const label = to || `${being} (${chatOf(route)})`;
       armTimeout(ev.chatId, label);
-      const ok = await relay.relayOut({ being, route, to, body: ev.body, origin, sender });
+      const ok = await relay.relayOut({ being, route, to, body: ev.body, origin, sender, structural });
       if (!ok) clearTimeoutFor(ev.chatId);                      // relayOut already surfaced the failure
       return ok;
     },
@@ -457,6 +466,10 @@ export function createMeshService({
     // i can drive it by typing commands on the egpt shell"). It travels as the SAME envelope a
     // `@don` being-prompt travels in, so the reply mirrors home the same way. NEVER silence: a
     // node no agent routes to is reported to the operator, in the chat he typed it in.
+    //
+    // structural: true — forwardCommand is ONLY ever reached for an allowlisted `/command`
+    // (spine.mjs gates on commands.remoteNode before calling it), so the origin's placeholder
+    // and done-marker are the plumbing ("🔗 relaying…" / no "✅ Done"), never the AI-thinking ones.
     async forwardCommand(ev, node) {
       const target = routeToNode(node, ev.surface);
       if (!target) {
@@ -470,7 +483,7 @@ export function createMeshService({
       // node of its own, and fell through to the being). commands.makeNodeExplicit binds `=<node>`
       // to the command token; an already-explicit command (`/tabs=do`) comes back unchanged.
       const body = commands?.makeNodeExplicit?.(ev.body, node) ?? ev.body;
-      return api.forward(body === ev.body ? ev : { ...ev, body }, target);
+      return api.forward(body === ev.body ? ev : { ...ev, body }, target, { structural: true });
     },
 
     // A streamed edit in a relay chat mirrors onward (responder edits → origin mirror,
