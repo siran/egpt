@@ -85,7 +85,9 @@ export class Room {
 
   // ── the identical tree (GENOME §2.5) ──────────────────────────────────────
   get configPath()     { return join(this.baseDir(), 'config.yaml'); }     // members · personality · thread · heartbeat · transcription service
-  get transcriptPath() { return join(this.baseDir(), 'transcript.md'); }   // first-class, rolling window (I3)
+  // First-class (I3). NOT a rolling window — nothing truncates or ages it out. It rotates with
+  // the THREAD: a reset archives it to transcripts/<old-thread-id>.md (2026-07-26).
+  get transcriptPath() { return join(this.baseDir(), 'transcript.md'); }
   get mediaDir()       { return join(this.baseDir(), 'media'); }           // per-room downloads (C2)
   get filesDir()       { return join(this.baseDir(), 'files'); }           // operator /inject — the shared shelf
   get identityDir()    { return join(this.baseDir(), 'identity.d'); }      // NN-*.md fed to the room's brain(s)
