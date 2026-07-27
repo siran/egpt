@@ -139,7 +139,7 @@ export function parseStopWord(text) {
 //                   READ TWO WAYS, because two kinds of caller ask:
 //                     ev.fromNode — the envelope field. THE SPINE'S PATH. identity.build renders
 //                       the invisible frame into a legible `<node>` before ANY guard runs
-//                       (spine.mjs:375 builds the envelope; all four humanTurn call sites are
+//                       (spine.mjs:375 builds the envelope; all three humanTurn call sites are
 //                       below it), so by the time ev.body is readable the frame is gone. The fact
 //                       is lifted off the raw text there and carried here. `!= null`, NOT
 //                       truthiness: '' means "signed, node unnameable" — still a bridge.

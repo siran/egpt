@@ -305,9 +305,10 @@ describe('spine — FAN OUT to every addressed agent', () => {
 //
 //    `r <body>` is an ADDRESSEE, resolved by the same `addressed()` matcher an @token goes
 //    through — so the mode gate, the fan-out and mesh forwarding work unchanged. The SAFETY is
-//    the last-speaker gate: it fires only when an AGENT spoke last in this conversation, so in a
-//    human group chat (where an agent rarely spoke last) `r …` is just text. ──
-describe('QUICK REPLY — `r <body>` answers whoever spoke last, when that was an agent', () => {
+//    the last-speaker gate: it fires only where an AGENT has spoken in this conversation, so in a
+//    chat no agent has ever answered in `r …` is just text. Human lines in between are IRRELEVANT
+//    (operator 2026-07-26) — see the REPRODUCE-FIRST pair below. ──
+describe('QUICK REPLY — `r <body>` answers the last AGENT that spoke here', () => {
   const AT_HEAD = { atEStart: true, atEAnywhere: true, replyToBot: false };
   const NONE    = { atEStart: false, atEAnywhere: false, replyToBot: false };
   const routerWith = (qr) => createRouter({ getAgents: () => AGENTS, defaultBeing: 'egpt', getQuickReply: () => qr });
@@ -349,13 +350,34 @@ describe('QUICK REPLY — `r <body>` answers whoever spoke last, when that was a
     expect(mesh.forwarded[1].ev.body).toBe('ok pero que no sea tan común');   // mesh.forward relays ev.body
   });
 
-  it('a HUMAN spoke last → `r u there` is ordinary text: nobody is quick-addressed', async () => {
-    const { spine, brain, mesh } = fanoutSpine({ mode: 'mention-direct' });
-    await spine.handleInbound({ ...MSG, body: '@e hola', mention: AT_HEAD });          // e speaks…
-    await spine.handleInbound({ ...MSG, msgId: 'm2', body: 'gente, alguien sabe?', mention: NONE });   // …then a human does
-    await spine.handleInbound({ ...MSG, msgId: 'm3', body: 'r u there', mention: NONE });
-    expect(brain.calls.map((c) => c.being)).toEqual(['egpt']);   // only the first message ran a turn
-    expect(mesh.forwarded).toHaveLength(0);
+  // REPRODUCE-FIRST (operator 2026-07-26: "'r' should reply to last bot message, here it was left
+  // unreplied"). LIVE, tonight: E answered at 22:09, Andrés typed `hsjshsj` at 22:10, and at 23:29
+  // `r qué me va a llegar?` did NOTHING. The human line had deleted the channel's last-speaker
+  // entry, so resolve() was handed lastSpeaker:null and never even looked for the token — the
+  // quick reply only worked when the agent had spoken IMMEDIATELY before, which in any group with
+  // a second human is almost never. Intervening human chatter is IRRELEVANT: `r` addresses the
+  // last AGENT that spoke here.
+  it('REPRODUCE-FIRST: a HUMAN spoke in between → `r …` STILL answers the last agent', async () => {
+    const { spine, brain } = fanoutSpine({ mode: 'mention-direct' });
+    await spine.handleInbound({ ...MSG, body: '@e Después le llega a An también?', mention: AT_HEAD });
+    await spine.handleInbound({ ...MSG, msgId: 'm2', body: 'hsjshsj', mention: NONE, senderName: 'Andrés' });
+    await spine.handleInbound({ ...MSG, msgId: 'm3', body: 'r qué me va a llegar?', mention: NONE });
+    expect(brain.calls.map((c) => c.being)).toEqual(['egpt', 'egpt']);   // the human line ran no turn
+    expect(brain.calls[1].body).toBe('qué me va a llegar?');
+  });
+
+  // …and the same for the OTHER noteSpeaker call site: a relay agent's forward (mesh.forward at
+  // spine.mjs:636/728, which never writes a local reply line — see the recommendation in the
+  // 2026-07-26 report: this is why the map, not the transcript, is the source of truth).
+  it('a HUMAN spoke in between → `r …` STILL forwards to the relay agent that spoke last', async () => {
+    const { spine, mesh } = fanoutSpine({ mode: 'mention-direct' });
+    await spine.handleInbound({ ...MSG, body: '@don hola', mention: NONE });
+    expect(mesh.forwarded).toHaveLength(1);
+    await spine.handleInbound({ ...MSG, msgId: 'm2', body: 'gente, alguien sabe?', mention: NONE });
+    await spine.handleInbound({ ...MSG, msgId: 'm3', body: 'r ok', mention: NONE });
+    expect(mesh.forwarded).toHaveLength(2);
+    expect(mesh.forwarded[1].t).toEqual({ being: 'don', route: { room_id: 'egpt-mesh-do-kg' }, to: 'don.do' });
+    expect(mesh.forwarded[1].ev.body).toBe('ok');
   });
 
   it('nothing spoken yet → ordinary text, reaching the default agent with the token INTACT', async () => {

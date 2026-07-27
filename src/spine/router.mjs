@@ -94,10 +94,12 @@ export function wakeTokens(name, agent) {
 // just commenting the config. no need to have or check an enabled key in this case.")
 //
 // A QUICK REPLY (`quickReply` + `lastSpeaker`) is resolved HERE too, and to ONE addressee: the
-// agent that spoke last in this conversation, ATSTART (it was directly addressed, so a
+// last AGENT that spoke in this conversation, ATSTART (it was directly addressed, so a
 // mention-direct chat answers it), carrying the `body` the token was stripped from. The gate is
-// `lastSpeaker` — the caller passes it only when an AGENT spoke last, so after a human line (or
-// in a chat where nothing was said) `r …` matches nobody and stays ordinary text.
+// `lastSpeaker` — null in a conversation where no agent has spoken (yet, or since the last
+// restart: the spine's record is in-memory), and there `r …` matches nobody and stays ordinary
+// text. HUMAN LINES IN BETWEEN ARE IRRELEVANT (operator 2026-07-26: "'r' should reply to last bot
+// message"): the spine no longer clears its record on a human turn — see lastSpeakerBy.
 // lastSpeaker is a BEING-ID (the spine records the agent's map key, never a handle), so it is
 // looked up BY KEY — not through the wake-token map, which since 2026-07-26 need not contain the
 // key at all (DOLLY's persona is keyed `egpt` and wakes on [d, don]).

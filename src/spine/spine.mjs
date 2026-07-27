@@ -220,13 +220,26 @@ export function createSpine({
   function drainCycle(key) { const arr = cycleBy.get(key) ?? []; cycleBy.delete(key); return arr; }
 
   // --- LAST SPEAKER per CONVERSATION (surface + chatId = guardChannel) — the one input the
-  //     router's QUICK REPLY resolution needs: `r <body>` addresses whoever spoke last, and only
-  //     when that was an AGENT. Nothing already answers that question (cycleBy is keyed per BEING
-  //     and drained every turn), so this is new information, deliberately minimal and in-memory:
-  //     set where an agent actually speaks INTO the conversation — a local being's surfaced reply
-  //     and a relay agent's forward (whose reply mirrors in from the far node, never through
-  //     runReplyTurn) — and cleared by a human inbound (handleFast), so `r …` after a human line
-  //     is ordinary text again. Per CONVERSATION, not per being: whoever spoke last wins. ---
+  //     router's QUICK REPLY resolution needs: `r <body>` addresses the last AGENT that spoke
+  //     here. Nothing already answers that question (cycleBy is keyed per BEING and drained every
+  //     turn), so this is new information, deliberately minimal and in-memory: set where an agent
+  //     actually speaks INTO the conversation — a local being's surfaced reply and a relay agent's
+  //     forward (whose reply mirrors in from the far node, never through runReplyTurn). Per
+  //     CONVERSATION, not per being: whichever agent spoke last wins.
+  //
+  //     INTERVENING HUMAN CHATTER DOES NOT CLEAR IT (operator 2026-07-26: "'r' should reply to
+  //     last bot message, here it was left unreplied"). handleFast used to delete the entry on
+  //     every human turn, on the theory that a human line "ends the agents' claim on who spoke
+  //     last" — which made `r` work ONLY when the agent had spoken IMMEDIATELY before. In a group
+  //     with a second human that is almost never, and it is exactly how the live 22:09→23:29
+  //     failure happened: E answered, someone typed `hsjshsj`, and the operator's `r …` an hour
+  //     later routed nowhere. The entry now survives until another agent speaks.
+  //
+  //     IN-MEMORY, so it is EMPTY AFTER A RESTART: `r` is ordinary text in a conversation until an
+  //     agent next speaks there. Deliberate — it stays the ONE definition of "who spoke last".
+  //     The transcript can't be a fallback for it: a relay agent's forward writes NO local reply
+  //     line (mesh.forward doesn't log), and a WITHHELD reply DOES write one although noteSpeaker
+  //     never records it, so a transcript walk would disagree with this map in both directions. ---
   const lastSpeakerBy = new Map();               // `<surface>:<chatId>` -> agent name
   const noteSpeaker = (ev, being) => { if (being) lastSpeakerBy.set(guardChannel(ev), being); };
 
@@ -391,10 +404,6 @@ export function createSpine({
     const channel = guard ? guardChannel(ev) : null;
     const act = await classify(ev, channel);
     if (!act) return;                  // 'off' — not received (C4): not recorded, not processed
-    // A HUMAN line ends the agents' claim on "who spoke last" here (quick reply). AFTER classify,
-    // which just read it to route THIS message, and before the dispatch, which sets it again if
-    // an agent answers.
-    if (humanTurn(ev)) lastSpeakerBy.delete(guardChannel(ev));
     await transcript.log(ev);          // ←── THE INGESTION POINT (C1.2). The only one.
     return act();
   }
