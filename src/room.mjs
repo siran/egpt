@@ -142,7 +142,7 @@ export function resolveRoute(parsed, fullText, ctx) {
   // any "@<name>" in it — so it can tell whether it was addressed.
   if (ctx?.forceTarget) {
     const t = String(ctx.forceTarget).toLowerCase();
-    const personaName = String(ctx.personaName ?? 'e').toLowerCase();
+    const personaName = String(ctx.personaName ?? '').toLowerCase();
     const body = fullText || '?';
     return t === personaName
       ? { kind: 'persona', body }
@@ -192,13 +192,20 @@ export function resolveRoute(parsed, fullText, ctx) {
     const sib = resolveSibling(lower, ctx.siblings);
     if (sib) {
       // Who talks in chat is a ROLE named by a top-level pointer
-      // (ctx.personaName, default 'e'), NOT a class tag on the being
-      // (operator 2026-05-23: "no personality wrappers on the team, we
-      // are all pure and true beings"). The being the pointer names
-      // routes to the persona/chat path; every other being is an
-      // engineer (meta — silent, tool-driven). Same shape as
-      // main_engineer naming @me.
-      const personaName = String(ctx.personaName ?? 'e').toLowerCase();
+      // (ctx.personaName), NOT a class tag on the being (operator
+      // 2026-05-23: "no personality wrappers on the team, we are all
+      // pure and true beings"). The being the pointer names routes to
+      // the persona/chat path; every other being is an engineer (meta —
+      // silent, tool-driven). Same shape as main_engineer naming @me.
+      //
+      // NO implicit 'e' when the pointer is unset (2026-07-10 agent-identity
+      // rule: the persona's being-id is the `default: true` map KEY, and a
+      // hardcoded 'e' fallback is exactly the specialness that was removed —
+      // same reason conversations-state's residentsOf refuses to synthesize
+      // one). A caller that supplies a registry must NAME its persona; if it
+      // doesn't, every being is a plain engineer rather than 'e' being
+      // silently anointed on a node whose persona key is something else.
+      const personaName = String(ctx.personaName ?? '').toLowerCase();
       const kind = sib.name.toLowerCase() === personaName ? 'persona' : 'meta';
       return { kind, body, name: sib.name };
     }

@@ -193,10 +193,32 @@ describe('resolveRoute — persona role follows personaName, no kind tag', () =>
     ['rook', {}],
   ];
 
-  it('defaults to "e" as the persona when personaName is unset', () => {
+  // NO implicit 'e' (2026-07-10 agent-identity rule; de-magicking pass
+  // 2026-07-26): the persona's being-id is the `default: true` map KEY, so an
+  // unset pointer must anoint NOBODY rather than fall back to 'e'. Same
+  // reason conversations-state's residentsOf refuses to synthesize one.
+  it('anoints NOBODY when personaName is unset — no implicit "e"', () => {
     const c = ctx({ siblings: sibs });
-    expect(route('@e hi', c)).toEqual({ kind: 'persona', body: 'hi', name: 'e' });
+    expect(route('@e hi', c)).toEqual({ kind: 'meta', body: 'hi', name: 'e' });
     expect(route('@wren hi', c)).toEqual({ kind: 'meta', body: 'hi', name: 'wren' });
+  });
+
+  it('a node whose persona key is neither "e" nor "egpt" routes its own key to persona', () => {
+    // The fixture the whole refactor was for: key 'assistant', handle 'a'.
+    // Pre-fix this returned kind:'meta' because personaName defaulted to 'e'.
+    const c = ctx({ siblings: [['assistant', { aliases: ['a'] }], ['wren', {}]], personaName: 'assistant' });
+    expect(route('@assistant hola', c)).toEqual({ kind: 'persona', body: 'hola', name: 'assistant' });
+    expect(route('@a hola', c)).toEqual({ kind: 'persona', body: 'hola', name: 'assistant' });
+    expect(route('@wren hola', c)).toEqual({ kind: 'meta', body: 'hola', name: 'wren' });
+  });
+
+  it('forceTarget compares against personaName, not a hardcoded "e"', () => {
+    // Same magic lived on the forceTarget branch. A node keyed 'assistant'
+    // force-dispatching to its own persona must get kind:'persona'.
+    const c = { ...ctx({ personaName: 'assistant' }), forceTarget: 'assistant' };
+    expect(route('hola', c)).toEqual({ kind: 'persona', body: 'hola' });
+    const unnamed = { ...ctx(), forceTarget: 'assistant' };
+    expect(route('hola', unnamed)).toEqual({ kind: 'meta', name: 'assistant', body: 'hola' });
   });
 
   it('repointing personaName moves the chat voice to another being', () => {
@@ -442,7 +464,7 @@ describe('planMirrors — one-hop CDP mirroring', () => {
 //
 // ctx.siblings (when present) replaces the hardcoded egpt/e/me/wren branches.
 // Beings carry NO 'kind' tag — who is the public chat voice is a ROLE named
-// by ctx.personaName (default 'e'), the same way main_engineer names @me. The
+// by ctx.personaName (no implicit default), the same way main_engineer names @me. The
 // being matching personaName routes to kind:'persona'; every other being is
 // kind:'meta'. decision.name lets the caller pick the right session_id.
 
@@ -454,7 +476,8 @@ describe('resolveRoute — siblings registry', () => {
   ];
 
   it('registry hit on persona returns kind:"persona" + name', () => {
-    expect(route('@e hi', ctx({ siblings: REGISTRY }))).toEqual({
+    // personaName must be NAMED — there is no implicit 'e' persona (2026-07-26).
+    expect(route('@e hi', ctx({ siblings: REGISTRY, personaName: 'e' }))).toEqual({
       kind: 'persona', body: 'hi', name: 'e',
     });
   });
