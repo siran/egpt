@@ -270,3 +270,73 @@ describe('addressed() — handles are the wake list, the map key is not (operato
     expect(addressed('@e hola', ag).map((h) => h.name)).toEqual(['egpt']);
   });
 });
+
+// ── A BARE HANDLE AT THE START ADDRESSES (operator 2026-07-27: "the '@' is not necessary at
+//    the beginning … 'e ', 'd ', 'egpt ', 'don ', they are all handles, and it's easy to
+//    write" … "d, must triger, but 'donde' must not" … "note: it work like mention direct --
+//    the message has to start with keyword").
+//
+//    Nothing here is a second matcher: `addressed` still runs THE one scan (auto-mode.mjs
+//    mentionHits) over the node's whole wake vocabulary, and the bare form reuses that
+//    scan's existing _NOT_GLUED boundary. So the agent registry inherits the rule for free,
+//    with every protection the @ form has (code fences, longest-token-first, the glued-token
+//    rule) and the SAME per-agent { atStart, anywhere } flags the modes rest on. ──
+describe('addressed() — a bare handle opening the message (operator 2026-07-27)', () => {
+  const DOLLY = { egpt: { configuration: 'egpt', handles: ['d', 'don'], default: true, name: 'don' } };
+  // kg's REAL live shape (config.yaml agents block): persona [e, egpt] + relay agents
+  // carol / wren / cara / don, the last pinned `surface: shell`.
+  const KG = {
+    egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true, name: 'egpt' },
+    carol: { handles: ['carol'], paths: [{ path1: { relay_channel: 'rodz1', network: 'whatsapp', to: 'don.do' } }] },
+    wren: { handles: ['wren'], relay_channel: 'rodz3', to: 'ed.do' },
+    cara: { handles: ['cara'], relay_channel: 'rodz1', to: 'ed.do' },
+    don: { handles: ['don'], surface: 'shell', to: 'don.do', relay_channel: 'egpt-mesh-do-kg', network: 'whatsapp' },
+  };
+
+  it('REPRODUCE-FIRST: `d hola` addresses DOLLY`s persona, atStart — same as @d hola', () => {
+    expect(addressed('d hola', DOLLY)).toEqual([{ name: 'egpt', agent: DOLLY.egpt, atStart: true, anywhere: true }]);
+    expect(addressed('d hola', DOLLY)).toEqual(addressed('@d hola', DOLLY));
+  });
+  it('REPRODUCE-FIRST: `d, ya vi` addresses it — a comma is a boundary', () => {
+    expect(addressed('d, ya vi', DOLLY).map((h) => h.name)).toEqual(['egpt']);
+  });
+  it('REPRODUCE-FIRST: `donde está el archivo` addresses NOBODY', () => {
+    expect(addressed('donde está el archivo', DOLLY)).toEqual([]);
+  });
+  it('REPRODUCE-FIRST: a bare handle mid-sentence addresses nobody (`vamos d luego`)', () => {
+    expect(addressed('vamos d luego', DOLLY)).toEqual([]);
+  });
+  it('REPRODUCE-FIRST: `@d hola` is unchanged', () => {
+    expect(addressed('@d hola', DOLLY)).toEqual([{ name: 'egpt', agent: DOLLY.egpt, atStart: true, anywhere: true }]);
+  });
+
+  it('longest-token-first across AGENTS: on kg `don ...` picks the don relay, not the persona`s e', () => {
+    expect(addressed('don qué opinás', KG).map((h) => h.name)).toEqual(['don']);
+    expect(addressed('e mirá esto', KG).map((h) => h.name)).toEqual(['egpt']);
+    expect(addressed('egpt mirá esto', KG).map((h) => h.name)).toEqual(['egpt']);
+    expect(addressed('wren ping', KG).map((h) => h.name)).toEqual(['wren']);
+    expect(addressed('carol ping', KG).map((h) => h.name)).toEqual(['carol']);
+  });
+
+  it('a bare handle produces the SAME routing target as the @ form (mention included)', () => {
+    const router = createRouter({ getAgents: () => DOLLY, defaultBeing: 'egpt' });
+    const bare = router.resolve(ev('d hola'));
+    const at = router.resolve(ev('@d hola'));
+    expect(bare.being).toBe('egpt');
+    expect(bare.mention).toEqual(at.mention);
+    expect(bare.targets).toEqual(at.targets);
+  });
+
+  it('a surface-pinned agent still drops out: kg`s `don Pedro…` on beeper falls through to the persona', () => {
+    const router = createRouter({ getAgents: () => KG, defaultBeing: 'egpt' });
+    const beeper = router.resolve({ ...ev('don Pedro me dijo que sí'), surface: 'beeper' });
+    expect(beeper.targets).toEqual([{ being: 'egpt', mention: ev('x').mention }]);   // unmentioned persona → gated silent
+    const shell = router.resolve({ ...ev('don Pedro me dijo que sí'), surface: 'shell' });
+    expect(shell.mesh?.being).toBe('don');
+  });
+
+  it('the QUICK REPLY stays separate: `r ok` is not a bare handle and needs a lastSpeaker', () => {
+    expect(addressed('r ok', DOLLY, { quickReply: 'r', lastSpeaker: null })).toEqual([]);
+    expect(addressed('r ok', DOLLY, { quickReply: 'r', lastSpeaker: 'egpt' }).map((h) => h.body)).toEqual(['ok']);
+  });
+});

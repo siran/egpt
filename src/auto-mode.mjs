@@ -83,22 +83,77 @@ export function receives(mode) { return mode !== 'off'; }
 // which is exactly why `@e and @don you here?` woke only e and an `@agent` mid-sentence was
 // invisible, while the persona had been fence-protected since 47caf19.
 //
-// A hit must be a REAL mention token: preceded by start-or-whitespace and not glued to a word
-// char or a hyphen — so "To @e my assistant" counts, "me@e.com" / "hey@egpt" do NOT, and
+// A hit must be a REAL mention token: preceded by start-or-whitespace and not glued to a letter,
+// a digit, '_' or a hyphen (_NOT_GLUED below, unicode-aware: an accented letter is a LETTER, not
+// a boundary) — so "To @e my assistant" counts, "me@e.com" / "hey@egpt" / "@dónde" do NOT, and
 // "@egpt-bot" is its OWN (unknown) token rather than @egpt + noise, which is what the router's
 // old `@([a-z0-9_-]+)` capture meant by resolving the whole hyphenated token and what
 // tests/room.test.mjs already locks for the room router. A dot IS a boundary, so `@don.do` hits
 // `don` — the qualified form the relay chain uses. Longest-token-first so @egpt matches 'egpt',
 // not 'e'. Code regions are stripped first (stripCode). Every hit, in TEXT ORDER:
 //   [{ token, atStart }]     atStart = this hit opens the message
+//
+// THE '@' IS OPTIONAL WHEN THE TOKEN OPENS THE MESSAGE (operator 2026-07-27: "the '@' is not
+// necessary at the beginning … 'e ', 'd ', 'egpt ', 'don ', they are all handles, and it's easy
+// to write" … "d, must triger, but 'donde' must not" … "note: it work like mention direct -- the
+// message has to start with keyword"). The bare scan is the SAME rule with the '@' dropped: it
+// REUSES the _NOT_GLUED boundary below rather than deriving a second one, which is exactly the
+// operator's requirement — `d,` hits because a comma is not a letter, `donde`/`dónde` do not
+// because `o`/`ó` are, and `d-bot` is its own token for the same reason `@egpt-bot` is.
+//
+// START ONLY, deliberately: a bare handle mid-sentence is not a mention at all (otherwise every
+// `e` in Spanish prose would fire), so there is NO "anywhere" bare form to build. The '@' form
+// keeps its own anywhere behaviour untouched — its regex, its input and its results are unchanged;
+// the bare hit is simply prepended when there is one.
+//
+// A bare hit is at index 0 by construction, so atStart is true — a DIRECT mention, gating
+// IDENTICALLY to a leading `@handle` (mention-direct wakes on both). It also sorts first in TEXT
+// ORDER and can never collide with an '@' hit, because index 0 of an '@' match is '@', not a
+// token char. Everything else this matcher guarantees still applies to it: stripCode runs first,
+// longest-token-first (so `don …` matches 'don', not 'd'), the wake list is the caller's.
+//
+// THE COLLISION, ACCEPTED KNOWINGLY: `don` is a Spanish honorific, so `don Pedro me dijo…` WILL
+// wake `don`. "it's fine if it triggers … very strange to start with don pedro … the agent will
+// reply accordingly, and the real don Pedro will see both, perhaps smile." No word list, no
+// heuristic, no confidence check guards this. Do not add one.
 const _escapeWake = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// THE boundary — ONE predicate, used by BOTH scans below (the '@' form and the bare form), so
+// "glued to a word" has exactly one definition on this node.
+//
+// IT IS UNICODE-AWARE, AND THAT IS THE POINT (operator 2026-07-27: "d, must triger, but 'donde'
+// must not"). It used to be `(?![\w-])`, and JS `\w` is ASCII-only — `[A-Za-z0-9_]` — so every
+// accented letter read as a BOUNDARY. `donde` was silent as ruled, but `dónde` — the CORRECT
+// spelling of the Spanish interrogative — woke `d`, as did `día`, `dólar`, `dígame`, `déjalo`.
+// In a Spanish-language deployment an ASCII boundary does not implement the operator's rule; it
+// implements it for unaccented text only. `\p{L}\p{N}` (with the `u` flag) is that same rule
+// applied to the alphabet actually in use.
+//
+// This CHANGES THE '@' PATH TOO, deliberately and in the same direction: `@dónde hola` used to
+// hit `d` and no longer does. Same rule, both forms, one commit.
+//
+// STILL A BOUNDARY (so these still fire): punctuation, whitespace, emoji, dashes — `d,` `d.`
+// `d:` `d?` `d🙂` `d—` all address `d`, because none of those is a letter or a digit. A trailing
+// emoji is a plausible way to address an agent, so this is wanted, not tolerated.
+//
+// `-` MUST STAY LAST in the class. Under the `u` flag a `-` between two class escapes is a
+// syntax ERROR (`[\p{L}-\p{N}]` throws), and a thrown regex here would break every mention on
+// the node. Trailing `-` is literal and legal; verified, along with _escapeWake — every
+// character it escapes is a SyntaxCharacter, which is exactly the set `u` still permits as an
+// identity escape, so it needed no change.
+const _NOT_GLUED = '(?![\\p{L}\\p{N}_-])';
 export function mentionHits(text, tokens) {
   const t = stripCode(String(text ?? '')).replace(/^\s+/, '');
   const list = [...new Set((Array.isArray(tokens) ? tokens : []).map((w) => String(w).toLowerCase()).filter(Boolean))]
     .sort((a, b) => b.length - a.length);
-  if (!list.length || !t.includes('@')) return [];
-  const re = new RegExp(`(?:^|\\s)@(${list.map(_escapeWake).join('|')})(?![\\w-])`, 'gi');
-  return [...t.matchAll(re)].map((m) => ({ token: m[1].toLowerCase(), atStart: m.index === 0 }));
+  if (!list.length) return [];
+  const alt = list.map(_escapeWake).join('|');
+  // THE BARE FORM (see the '@ is optional at the start' note above): the SAME rule with the
+  // '@' dropped, anchored to ^ and reusing _NOT_GLUED — the one boundary, not a second one.
+  const bare = t.match(new RegExp(`^(${alt})${_NOT_GLUED}`, 'iu'));
+  const hits = bare ? [{ token: bare[1].toLowerCase(), atStart: true }] : [];
+  if (!t.includes('@')) return hits;
+  const re = new RegExp(`(?:^|\\s)@(${alt})${_NOT_GLUED}`, 'giu');
+  return hits.concat([...t.matchAll(re)].map((m) => ({ token: m[1].toLowerCase(), atStart: m.index === 0 })));
 }
 // A fenced or inline CODE region must never contribute a live wake match — e.g.
 // the /status command emits a fenced ```yaml block whose version line quotes a
