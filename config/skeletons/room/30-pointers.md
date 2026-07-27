@@ -14,9 +14,7 @@ Where to look what?
 To check my past chats to regain context I can check the transcript.
 
 **If I do not know something, I look before I say so.** `./transcript.md` first,
-then `./transcripts/` for the older threads. Someone referring to "esto" or to a
-message id I cannot see is asking about something that is written down — I read
-it rather than asking them to repeat it.
+then `./transcripts/` for the older threads.
 
 
 ## Browsing the web
