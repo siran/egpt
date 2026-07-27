@@ -30,6 +30,71 @@
 //   Sub-keys of a nested block are documented inside that block's entry, not
 //   registered as top-level keys of their own.
 
+// resolveConfigKey — /config set's key resolver (src/spine/commands.mjs configCmd). Turns the
+// operator's typed key into a registered dotted path, or a refusal:
+//   { path }                                  resolved
+//   { error: 'unregistered', message }        top segment (dotted) or the bare leaf itself
+//                                              isn't in CONFIG_SCHEMA anywhere
+//   { error: 'ambiguous', message, candidates } a bare leaf matches more than one block's KEYS:
+//
+// A dotted input (has a '.') is accepted AS-IS once its top segment is a registered top-level
+// key — the tail is NOT validated against that block's KEYS: prose (not reliably parseable to
+// arbitrary depth; "used as-is" is the ruling). A bare leaf with no '.' first checks whether it
+// IS itself a top-level key (e.g. node_name); otherwise it is looked up in the leaf index below.
+export function resolveConfigKey(input) {
+  const key = String(input ?? '').trim();
+  if (!key) return { error: 'unregistered', message: `"${key}" is not a registered config key` };
+  if (key.includes('.')) {
+    const top = key.split('.')[0];
+    if (!Object.prototype.hasOwnProperty.call(CONFIG_SCHEMA, top)) {
+      return { error: 'unregistered', message: `"${top}" is not a registered top-level config key` };
+    }
+    return { path: key };
+  }
+  if (Object.prototype.hasOwnProperty.call(CONFIG_SCHEMA, key)) return { path: key };
+  const matches = leafIndex().get(key.toLowerCase()) ?? [];
+  if (matches.length === 1) return { path: matches[0] };
+  if (matches.length > 1) {
+    return { error: 'ambiguous', message: `"${key}" matches more than one config key: ${matches.join(', ')} — use the full dotted path`, candidates: matches };
+  }
+  return { error: 'unregistered', message: `"${key}" is not a registered config key` };
+}
+
+// Lazy, memoized bare-leaf -> [<topKey>.<leaf>, ...] index, built by scanning every block's
+// KEYS: section per the SHAPE convention documented above the file (a KEYS: line, then the
+// indent of its first non-blank line is the base — every subsequent line AT exactly that indent
+// matching a bare identifier is a leaf name; the section ends the moment a non-blank line's
+// indent drops below the base).
+let _leafIndex = null;
+function leafIndex() {
+  if (_leafIndex) return _leafIndex;
+  const index = new Map();
+  for (const [topKey, block] of Object.entries(CONFIG_SCHEMA)) {
+    const lines = block.split('\n');
+    const keysAt = lines.findIndex((l) => l.trim() === 'KEYS:');
+    if (keysAt === -1) continue;
+    let j = keysAt + 1;
+    while (j < lines.length && lines[j].trim() === '') j++;
+    if (j >= lines.length) continue;
+    const baseIndent = lines[j].match(/^(\s*)/)[1].length;
+    for (; j < lines.length; j++) {
+      const line = lines[j];
+      if (line.trim() === '') continue;
+      const indent = line.match(/^(\s*)/)[1].length;
+      if (indent < baseIndent) break;
+      if (indent === baseIndent && /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(line.trim())) {
+        const leaf = line.trim();
+        const dotted = `${topKey}.${leaf}`;
+        const lk = leaf.toLowerCase();
+        if (!index.has(lk)) index.set(lk, []);
+        index.get(lk).push(dotted);
+      }
+    }
+  }
+  _leafIndex = index;
+  return index;
+}
+
 export const CONFIG_SCHEMA = {
   theme: `
     Color theme name (see /themes).

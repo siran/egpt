@@ -30,6 +30,8 @@ import { agentPaths } from '../mesh/relay.mjs';
 import { compactionTargets, dueForCompaction, windowForModel } from '../tools/compact-being.mjs';
 import { compactionRatio } from './compaction.mjs';
 import { NODE_FILE, REGISTRY_FILE } from './config-resolver.mjs';
+import { CONFIG_YAML_PATH, writeConfigKey } from '../tools/config-io.mjs';
+import { resolveConfigKey } from '../../config/config-schema.mjs';
 import { isRunning as cdpIsRunning, listTabs as cdpListTabs, cdpHost as cdpHostOf, openTab as cdpOpenTab, activateTarget as cdpActivateTarget, closeTab as cdpCloseTab } from '../tools/cdp.mjs';
 import { findChromeExecutable, chromeArgs, chromeCommandLine, resolveBrainProfile } from '../tools/chrome-launcher.mjs';
 
@@ -246,7 +248,7 @@ const quoteLeadingCommand = (text) => String(text ?? '').replace(/^\/([a-z0-9_-]
 // A command may name the NODE it is for. THE SET IS AN ALLOWLIST — the browser family that IS
 // the remote control, plus /status and /members:
 //
-//   /chrome  /tabs  /open  /tab  /close  /status  /members
+//   /chrome  /tabs  /open  /tab  /close  /status  /members  /config
 //
 // and nothing outside it is node-addressable, which is the lock: LIFECYCLE (/restart, /upgrade,
 // /rewind) and the STOP safe word are deliberately absent, so no envelope arriving from another
@@ -256,6 +258,10 @@ const quoteLeadingCommand = (text) => String(text ?? '').replace(/^\/([a-z0-9_-]
 // `/members` joined the set 2026-07-26 (HANDOFF C3). It was the one operator command left
 // outside, so on a shared Beeper account BOTH co-account nodes answered it — the same
 // double-answer the gate exists to end.
+//
+// `/config` joined the set 2026-07-27 — a config dump/set is node-scoped exactly like /status,
+// so the same allowlist keeps it from being answered by every co-account peer instead of just
+// the one addressed.
 //
 // NAMING THE NODE (operator ruling 2026-07-27, revised same day after a live miss): `=<name>`
 // binds directly to the COMMAND TOKEN ITSELF — `/tabs=do`, `/status=do`, `/members=do add tab
@@ -272,7 +278,7 @@ const quoteLeadingCommand = (text) => String(text ?? '').replace(/^\/([a-z0-9_-]
 // is the one exception: a BARE command (no `=<name>`, and for /chrome no positional node
 // either) operates on that node instead of "wherever it was heard" when the operator has set
 // one; UNSET, every bare form is a strict no-op — today's behaviour, byte for byte.
-const NODE_ADDRESSABLE = /^\/(chrome|status|tabs|tab|open|close|members?)\b(?:=(\S+))?(?:[ \t]*(.*))?$/i;
+const NODE_ADDRESSABLE = /^\/(chrome|status|tabs|tab|open|close|members?|config)\b(?:=(\S+))?(?:[ \t]*(.*))?$/i;
 
 // The SHELL is node-local: the spine dials the operator's editor on 127.0.0.1:23375, so no other
 // node ever sees a shell message. Everywhere else this node speaks is a chat on the shared Beeper
@@ -293,6 +299,7 @@ export function createCommands({
   listIdentityLayers = defaultListIdentityLayers, // () -> string[] identity-layer names for the custom branch's personality pick
   agentsDir = PROFILE_AGENTS_DIR,        // where the custom branch writes <name>.yaml (injected in tests)
   identitiesDir = PROFILE_IDENTITIES_DIR,// where the custom branch writes a free-text identity layer (injected in tests)
+  configPath = CONFIG_YAML_PATH,         // where /config set writes — the real profile config.yaml by default (injected in tests, so no test ever touches the real profile)
   io = {},                               // { stat, readFile, writeFile, mkdir } — real fs by default; /status probes files + the custom branch authors through here
   // CDP seam for /chrome, /tabs, /open, /tab, /close — the real localhost probe by
   // default; tests inject fakes so the suite never needs a live Chrome or a real socket.
@@ -661,6 +668,13 @@ export function createCommands({
     // (operators type both) — same handler.
     const membersMatch = /^\/members?(?:\s+(.+?))?\s*$/i.exec(line);
     if (membersMatch) { await members(ev, membersMatch[1]?.trim() || null); return; }
+
+    // /config [set <key> <value>] — bare: a redacted dump of the live config. `set <key>
+    // <value>`: resolve <key> through config-schema.mjs (dotted path or bare leaf), parse
+    // <value> like the extension prototype does, write it, and confirm the RESOLVED path.
+    // Pre-catch-all, node-addressable like /status/members (see NODE_ADDRESSABLE above).
+    const configMatch = /^\/config(?:\s+(.+?))?\s*$/i.exec(line);
+    if (configMatch) { await send?.(ev.chatId, await configCmd(configMatch[1]?.trim() || null)); return; }
 
     // /activate <id> — reopen a brain member whose Chrome tab was closed (its saved
     // targetId is no longer live), refreshing its targetId. A no-op when already live.
@@ -1047,6 +1061,43 @@ export function createCommands({
     if (!(await room.members()).some((m) => m.id === id)) { await send?.(ev.chatId, `no member '${id}' in this conversation`); return; }
     await room.setMemberState(id, token);
     await send?.(ev.chatId, `${id} → mode:${w} (${MODE_GLOSS[w]})`);
+  }
+
+  // /config [set <key> <value>] — mirrors the extension prototype's grammar
+  // (extension/src/commands/misc-commands.js config()), ported to the live profile config.yaml
+  // instead of chrome.storage. Bare: a redacted dump. `set <key> <value>`: resolve <key> through
+  // resolveConfigKey (config/config-schema.mjs — a dotted path used as-is, or a bare leaf looked
+  // up in the KEYS: index), JSON.parse <value> falling back to the raw string on a parse
+  // failure (same coercion the extension uses), then write it via writeConfigKey — the
+  // comment-preserving single-key writer, never the whole-file writeConfig. Config is read at
+  // boot, so the reply always says the write takes effect on the NEXT restart; nothing here
+  // triggers one.
+  // Matched against KEY NAMES, recursively. Credentials AND personal identifiers: a dump goes
+  // to whatever surface asked, which is usually a real Beeper chat, permanently. `account` and
+  // `allowed_users` are the operator's email and phone numbers — not secrets, but a config dump
+  // exists to check values like default_node, not to post a contact list into a group.
+  // `account` is ANCHORED so `account_peers` ([kg, do] — not sensitive, and worth seeing) stays.
+  const CONFIG_REDACT_RE = /token|key|secret|password|^account$|allowed_users/i;
+  function redactConfigValue(value) {
+    if (Array.isArray(value)) return value.map(redactConfigValue);
+    if (value && typeof value === 'object') {
+      const out = {};
+      for (const [k, v] of Object.entries(value)) out[k] = CONFIG_REDACT_RE.test(k) ? '<redacted>' : redactConfigValue(v);
+      return out;
+    }
+    return value;
+  }
+  async function configCmd(rest) {
+    if (!rest) return '```json\n' + JSON.stringify(redactConfigValue(cfg()), null, 2) + '\n```';
+    const setMatch = /^set\s+(\S+)\s+(.+)$/i.exec(rest);
+    if (!setMatch) return 'usage: /config | /config set <key> <value>';
+    const [, keyArg, valueRaw] = setMatch;
+    const resolved = resolveConfigKey(keyArg);
+    if (resolved.error) return `/config set: ${resolved.message}`;
+    let val = valueRaw;
+    try { val = JSON.parse(valueRaw); } catch { /* keep the raw string, exactly like the extension */ }
+    await writeConfigKey(configPath, resolved.path, val);
+    return `set ${resolved.path} = ${JSON.stringify(val)} — takes effect on next restart`;
   }
 
   // /activate <id> — a brain member is ACTIVE while its Chrome tab is open (a live

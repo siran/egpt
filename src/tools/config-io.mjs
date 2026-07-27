@@ -37,6 +37,19 @@ export async function writeConfig(cfg) {
   await writeFile(CONFIG_YAML_PATH, YAML.stringify(cfg, { lineWidth: 100 }), 'utf8');
 }
 
+// Persist ONE dotted key into a config.yaml, comment-preserving (parseDocument keeps the
+// operator's densely-annotated config.yaml comments — same reason writeSiblingSessionId exists
+// beside a whole-file YAML.stringify rewrite, which drops every comment). Used by /config set
+// (src/spine/commands.mjs) instead of writeConfig, which stays uncalled for exactly that reason.
+export async function writeConfigKey(path, dottedKey, value) {
+  await mkdir(dirname(path), { recursive: true });
+  let doc;
+  try { doc = YAML.parseDocument(await readFile(path, 'utf8')); }
+  catch (e) { if (e?.code !== 'ENOENT') throw e; doc = new YAML.Document({}); }
+  doc.setIn(dottedKey.split('.'), value);
+  await writeFile(path, doc.toString());
+}
+
 // Per-sibling files live under ~/.egpt/config/agents/<name>.yaml (operator 2026-06-23).
 // Loaded at boot + merged into EGPT_CONFIG.siblings — every reader uses that unchanged.
 export const AGENT_DIR = join(EGPT_HOME, 'config', 'agents');
