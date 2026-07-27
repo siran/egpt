@@ -144,7 +144,7 @@ function MultiLineInput({ onSubmit }) {
       const before = cursor >= 0 ? line.slice(0, cursor) : line;
       const ch = cursor >= 0 ? (line[cursor] || ' ') : '';
       const after = cursor >= 0 ? line.slice(cursor + 1) : '';
-      return h(Text, { key: i }, i === 0 ? '> ' : '| ', before,
+      return h(Text, { key: i }, i === 0 ? '> ' : '  ', before,
         cursor >= 0 ? h(Text, { inverse: true }, ch) : '', after);
     }));
 }

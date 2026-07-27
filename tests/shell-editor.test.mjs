@@ -21,6 +21,7 @@
 //      connected" vs. "send failed while connected" so a dropped send is never silent.
 import { describe, it, expect, afterEach } from 'vitest';
 import { once } from 'node:events';
+import { readFileSync } from 'node:fs';
 import { WebSocket } from 'ws';
 import { createShellServer } from '../src/shell/server.mjs';
 import * as edit from '../src/shell/input.mjs';
@@ -148,6 +149,31 @@ describe('shell editor — commands router', () => {
   it('/status and plain text forward to the spine', () => {
     expect(routeCommand('/status')).toEqual({ action: 'forward', text: '/status' });
     expect(routeCommand('hello')).toEqual({ action: 'forward', text: 'hello' });
+  });
+
+  // Bare help — WHOLE-LINE only. Loose/prefix matching would swallow bare-handle-addressed
+  // messages like "help me write this email" as a help request instead of forwarding them.
+  it('bare h / help / ? (the ENTIRE trimmed line, nothing else) forward as /help', () => {
+    expect(routeCommand('h')).toEqual({ action: 'forward', text: '/help' });
+    expect(routeCommand('help')).toEqual({ action: 'forward', text: '/help' });
+    expect(routeCommand('?')).toEqual({ action: 'forward', text: '/help' });
+    expect(routeCommand('  help  ')).toEqual({ action: 'forward', text: '/help' });   // trims first
+  });
+
+  it('help as anything other than the whole line forwards VERBATIM, not as /help', () => {
+    expect(routeCommand('help me write this email')).toEqual({ action: 'forward', text: 'help me write this email' });
+    expect(routeCommand('h everyone')).toEqual({ action: 'forward', text: 'h everyone' });
+    expect(routeCommand('??')).toEqual({ action: 'forward', text: '??' });
+  });
+});
+
+describe('shell editor — composer gutter (source guard; app.mjs is TTY-bound, not renderable in vitest)', () => {
+  it('continuation lines carry a two-space pad, never a "| " gutter', () => {
+    const src = readFileSync(new URL('../src/shell/app.mjs', import.meta.url), 'utf8');
+    const line = src.split('\n').find((l) => l.includes("i === 0 ? '> '"));
+    expect(line).toBeTruthy();
+    expect(line).toContain("i === 0 ? '> ' : '  '");
+    expect(line).not.toContain("'| '");
   });
 });
 
