@@ -96,11 +96,13 @@ export function wakeTokens(name, agent) {
 // A QUICK REPLY (`quickReply` + `lastSpeaker`) is resolved HERE too, and to ONE addressee: the
 // last AGENT that spoke in this conversation, ATSTART (it was directly addressed, so a
 // mention-direct chat answers it), carrying the `body` the token was stripped from. The gate is
-// `lastSpeaker` — null in a conversation where no agent has spoken (yet, or since the last
-// restart: the spine's record is in-memory), and there `r …` matches nobody and stays ordinary
-// text. HUMAN LINES IN BETWEEN ARE IRRELEVANT (operator 2026-07-26: "'r' should reply to last bot
-// message"): the spine no longer clears its record on a human turn — see lastSpeakerBy.
-// lastSpeaker is a BEING-ID (the spine records the agent's map key, never a handle), so it is
+// `lastSpeaker` — null in a conversation where no agent has spoken, and there `r …` matches
+// nobody and stays ordinary text. It is a STATIC LOOKUP the spine performs on the RECORD
+// (transcript-log.lastSurfacedBeing — operator 2026-07-27: "r is static, it searches the
+// transcript"); nothing here reads a file, and nothing anywhere remembers who spoke. HUMAN LINES
+// IN BETWEEN ARE IRRELEVANT (operator 2026-07-26: "'r' should reply to last bot message") — for
+// free now, since the walk asks for the last AGENT line and skips everything else.
+// lastSpeaker is a BEING-ID (the record labels the agent's map key, never a handle), so it is
 // looked up BY KEY — not through the wake-token map, which since 2026-07-26 need not contain the
 // key at all (DOLLY's persona is keyed `egpt` and wakes on [d, don]).
 //
@@ -220,5 +222,13 @@ export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', getQu
       if (!targets.length) targets.push({ being: defaultBeing, mention: ev?.mention });
       return { ...targets[0], targets, ...(body != null ? { body } : {}) };
     },
+
+    /** Is this text a QUICK REPLY — and if so, what is its body? THE grammar (quickReplyBody
+     *  above) applied to THIS node's configured token, exposed as one function so the spine can
+     *  ask the question without owning a copy of either half. The spine asks it to decide whether
+     *  a message is worth a transcript read at all (resolve() applies it again on the answer):
+     *  `r …` is rare, so ordinary traffic must not pay for a file read.
+     *  @returns {string|null} the body minus the token, or null when this is not a quick reply */
+    quickReplyOf: (text) => quickReplyBody(text, getQuickReply() ?? 'r'),
   };
 }

@@ -134,6 +134,53 @@ export function promptWithRecentContext(line, { blocks = [], truncated = false }
     + `It is BACKGROUND for the prompt above; do not answer it.${note}\n${blocks.join('\n\n')}`;
 }
 
+// ── THE LAST BOT MESSAGE — who `r` addresses ─────────────────────────────────
+// (operator 2026-07-27, verbatim: "nono, r is static, it searches the transcript".)
+//
+// `r <body>` answers the last AGENT that spoke in this conversation, and THE RECORD ANSWERS
+// THAT — the file IS the conversation, so the target is READ BACK OUT of it rather than
+// remembered. It replaced an in-memory Map in the spine, whose whole failure mode was that it
+// was in memory: the live 2026-07-27 hole was E speaking at 23:32, a deploy restarting the node
+// at 23:41, and `r cachifa?` at 00:02 doing nothing at all. The operator deploys several times
+// an evening, so `r` was broken more often than it worked. A static lookup cannot have that
+// hole, needs no clearing rule, and makes "a human spoke in between is irrelevant" free.
+//
+// SURFACED ONLY. replyLine writes a WITHHELD reply too — tagged `(not surfaced) ` immediately
+// after the `]:` — and that turn's text was never posted, so nobody in the chat ever saw it. It
+// is not a bot MESSAGE and `r` must not address it. The tag is therefore the filter here.
+// DO NOT reuse contextSinceLastTurn's boundary predicate for this: it deliberately MATCHES a
+// withheld line, because its question is "what has this being already seen" — the opposite test.
+// One line shape, two predicates.
+//
+// THE CONTRACT, stated so it is not re-litigated: "the last bot message in this transcript" is
+// the last LOCAL one. A RELAY agent's reply (`@don`) is mirrored into the chat by the FAR node
+// and this node writes NO agent line for it — src/spine/mesh.mjs never touches the transcript,
+// and the only writers of a `[@being …]:` line are the spine's two transcript.log(ev, reply)
+// calls. So `r` after a `@don` forward answers the last local being. That IS the definition.
+//
+// The node qualifier is stripped (`e.kg` → `e`): the BEING-ID is what routes, and `.<node>` is
+// provenance the transcript service adds (src/spine/transcript.mjs).
+const _REPLY_HEAD = /^\[@(\S+?)(?:\.[^\s\]]+)?\s\(\d{1,2}:\d{2}\)\]:/;
+
+/**
+ * The being-id of the last SURFACED reply line in the transcript, lowercased — or null when no
+ * agent has spoken here (a fresh chat, or one where every reply was withheld), which is where
+ * `r …` addresses nobody and stays ordinary text.
+ *
+ * @param {string} text   transcript.md, front matter included
+ */
+export function lastSurfacedBeing(text) {
+  const blocks = stripFrontMatter(String(text ?? '')).split(/\n{2,}/);
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const b = blocks[i].trim();
+    const m = b.match(_REPLY_HEAD);
+    if (!m) continue;
+    if (b.slice(m[0].length).trimStart().startsWith('(not surfaced)')) continue;   // nobody saw it
+    return m[1].toLowerCase();
+  }
+  return null;
+}
+
 // ── THE QUOTED MESSAGE — one recorded entry, read back by its id ──────────────
 // (operator 2026-07-26: someone replied to a message with `@e ubica esto en yotube` and E
 // answered "No veo el contenido de #177210". Beeper carries a reply's quoted message ID ONLY —

@@ -19,7 +19,7 @@
 // shell/slash console are layered in after v1, each behind its service seam.
 import { makeSerialByKey } from '../serial-by-key.mjs';
 import { isBrainFailureResult } from '../brain-errors.mjs';
-import { replyLine, contextSinceLastTurn, promptWithRecentContext, bodyForMessageId, promptWithQuotedMessage, RECENT_CONTEXT_MAX_CHARS } from '../transcript-log.mjs';
+import { replyLine, contextSinceLastTurn, promptWithRecentContext, bodyForMessageId, promptWithQuotedMessage, lastSurfacedBeing, RECENT_CONTEXT_MAX_CHARS } from '../transcript-log.mjs';
 import { isHumanTurn, parseStopWord } from '../stop-guard.mjs';
 import { lifecycleExit } from './ingest.mjs';
 
@@ -218,30 +218,6 @@ export function createSpine({
     cycleBy.set(key, arr);
   }
   function drainCycle(key) { const arr = cycleBy.get(key) ?? []; cycleBy.delete(key); return arr; }
-
-  // --- LAST SPEAKER per CONVERSATION (surface + chatId = guardChannel) — the one input the
-  //     router's QUICK REPLY resolution needs: `r <body>` addresses the last AGENT that spoke
-  //     here. Nothing already answers that question (cycleBy is keyed per BEING and drained every
-  //     turn), so this is new information, deliberately minimal and in-memory: set where an agent
-  //     actually speaks INTO the conversation — a local being's surfaced reply and a relay agent's
-  //     forward (whose reply mirrors in from the far node, never through runReplyTurn). Per
-  //     CONVERSATION, not per being: whichever agent spoke last wins.
-  //
-  //     INTERVENING HUMAN CHATTER DOES NOT CLEAR IT (operator 2026-07-26: "'r' should reply to
-  //     last bot message, here it was left unreplied"). handleFast used to delete the entry on
-  //     every human turn, on the theory that a human line "ends the agents' claim on who spoke
-  //     last" — which made `r` work ONLY when the agent had spoken IMMEDIATELY before. In a group
-  //     with a second human that is almost never, and it is exactly how the live 22:09→23:29
-  //     failure happened: E answered, someone typed `hsjshsj`, and the operator's `r …` an hour
-  //     later routed nowhere. The entry now survives until another agent speaks.
-  //
-  //     IN-MEMORY, so it is EMPTY AFTER A RESTART: `r` is ordinary text in a conversation until an
-  //     agent next speaks there. Deliberate — it stays the ONE definition of "who spoke last".
-  //     The transcript can't be a fallback for it: a relay agent's forward writes NO local reply
-  //     line (mesh.forward doesn't log), and a WITHHELD reply DOES write one although noteSpeaker
-  //     never records it, so a transcript walk would disagree with this map in both directions. ---
-  const lastSpeakerBy = new Map();               // `<surface>:<chatId>` -> agent name
-  const noteSpeaker = (ev, being) => { if (being) lastSpeakerBy.set(guardChannel(ev), being); };
 
   // --- AUTO-MODE HUMANIZATION (operator 2026-07-05, "it should take time to answer …
   //     they wander off like a normal person"). AUTO CHATS ONLY — every other mode is
@@ -540,7 +516,31 @@ export function createSpine({
     // pipe below (gate, guard, cycle, turn) exactly as the single result always did, and the REST
     // fan out beside it (fanOutExtras). A bare-string or single `{ being, mention }` return
     // (older/other fakes) normalizes to a one-target list, so those callers are unchanged.
-    const routed = router.resolve(ev, lastSpeakerBy.get(guardChannel(ev)) ?? null);
+    // WHO DOES `r …` ADDRESS? A STATIC LOOKUP ON THE RECORD (operator 2026-07-27: "r is static,
+    // it searches the transcript") — the last SURFACED agent reply line in this conversation's
+    // transcript.md, through transcript-log.lastSurfacedBeing, which owns the shape. It replaced
+    // an in-memory Map whose only real property was that a restart emptied it: E spoke at 23:32,
+    // a deploy bounced the node at 23:41, and `r cachifa?` at 00:02 addressed nobody. Nothing is
+    // remembered between messages now, so there is no restart hole and no clearing rule — and a
+    // human line in between is irrelevant for free.
+    //
+    // THE SAME readTranscript seam the quoted-message/accum lookup in runReplyTurn uses — one
+    // reader, so this can never read a different chat's file — and it runs BEFORE the ingestion
+    // append (handleFast logs after classify), so the `r …` line itself is never on the record
+    // this reads. Unwired seam, unreadable file, or nothing on the record → null → `r …` is
+    // ordinary text, exactly as in a chat where no agent has ever spoken.
+    //
+    // COST: one transcript read per QUICK REPLY, gated on the message actually being one —
+    // router.quickReplyOf is THE grammar plus this node's configured token, so ordinary traffic
+    // reads nothing.
+    let lastSpeaker = null;
+    if (readTranscript && router.quickReplyOf?.(ev.body) != null) {
+      try {
+        const text = await readTranscript(ev.chatId, { chatName: ev.chatName, network: ev.surface });
+        if (text) lastSpeaker = lastSurfacedBeing(text);
+      } catch (e) { note(`quick-reply lookup ${ev.chatId}: ${e?.message ?? e}`); }
+    }
+    const routed = router.resolve(ev, lastSpeaker);
     // QUICK REPLY: the router resolved `r <body>` to the agent that spoke last here, and hands
     // back the body its token was stripped from. That body is what the agent sees — here and in
     // the dispatch line (which ends with it). The RECORD keeps the message as typed: transcript.log
@@ -642,7 +642,7 @@ export function createSpine({
     // the message to the target's node (a visible envelope) and stop — the reply streams
     // back into this chat as a living mirror. A local-being target has meshTarget=null
     // and falls through to the brain below.
-    if (meshTarget && mesh && d.mayReply) { noteSpeaker(ev, meshTarget.being); await mesh.forward(ev, meshTarget); return withRelay(); }
+    if (meshTarget && mesh && d.mayReply) { await mesh.forward(ev, meshTarget); return withRelay(); }
 
     // AUTO DWELL (auto chats only): a person messaging an auto chat doesn't get an instant
     // reply — a human reads the burst and wanders back. The message is already on the record
@@ -734,7 +734,7 @@ export function createSpine({
       try {
         const d = await gating.decide(gateAs(t, being), ev, t.mention ?? ev.mention);
         if (!d.receives || !d.mayReply) return;
-        if (t.mesh) { if (mesh) { noteSpeaker(ev, t.mesh.being); await mesh.forward(ev, t.mesh); } return; }
+        if (t.mesh) { if (mesh) await mesh.forward(ev, t.mesh); return; }
         await openAndRunReply({ to: being, ev, d, turnKey: `${being}:${ev.surface}:${ev.chatId}` });
       } catch (e) { note(`fan-out ${being}/${ev.chatId}: ${e?.message ?? e}`); }
     })).then(() => {});
@@ -858,7 +858,7 @@ export function createSpine({
       // alone: the message itself went on the record at ingestion, so however many agents
       // answer it, each appends exactly one reply line under the one inbound line.
       await transcript.log(ev, { ...reply, surfaced: responded });
-      if (responded) { pushCycle(turnKey, replyLine({ being: to, body: rawText, surfaced: true, now: new Date(), timeZone })); noteSpeaker(ev, to); }
+      if (responded) pushCycle(turnKey, replyLine({ being: to, body: rawText, surfaced: true, now: new Date(), timeZone }));
       await store?.recordThread?.({ ev, reply, being: to });
       // TYPING TIME (auto only): a human takes time to type. Delay the plain post-once send
       // by a typing-speed function of the reply length (capped 90s, outside the turn-timeout

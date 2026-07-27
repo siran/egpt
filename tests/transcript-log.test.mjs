@@ -6,7 +6,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, existsSync, appendFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { transcriptAppend, replyLine } from '../src/transcript-log.mjs';
+import { transcriptAppend, replyLine, lastSurfacedBeing } from '../src/transcript-log.mjs';
 
 describe('transcriptAppend', () => {
   it('a new transcript gets the front matter + the line', () => {
@@ -59,6 +59,72 @@ describe('replyLine', () => {
   });
   it('an invalid zone never throws — it falls back to UTC', () => {
     expect(replyLine({ being: 'egpt.kg', body: 'hi', now: NOW, timeZone: 'Nope/Nope' })).toBe('[@egpt.kg (19:07)]: hi');
+  });
+});
+
+// ── lastSurfacedBeing — who `r` addresses, read back out of the record ────────
+// (operator 2026-07-27: "r is static, it searches the transcript".) The reader keys on the
+// shape replyLine WRITES, which is why it lives in this module beside it.
+describe('lastSurfacedBeing', () => {
+  const REC = (...lines) => ['---', 'name: fam', 'surface: wa', '---', '', ...lines, ''].join('\n');
+
+  it('the LAST agent line wins, and the node qualifier is stripped (`egpt.kg` → `egpt`)', () => {
+    expect(lastSurfacedBeing(REC(
+      '[@wren.kg (23:30)]: primero', '',
+      'An@[fam].wa (23:31) #m1: y tú?', '',
+      '[@egpt.kg (23:32)]: después',
+    ))).toBe('egpt');
+  });
+
+  it('a bare being label (no node qualifier) reads the same', () => {
+    expect(lastSurfacedBeing(REC('[@wren (23:30)]: hola'))).toBe('wren');
+  });
+
+  it('HUMAN LINES IN BETWEEN ARE IRRELEVANT — the walk asks only for agent lines', () => {
+    expect(lastSurfacedBeing(REC(
+      '[@egpt.kg (23:32)]: Ayudo porque quiero', '',
+      'Andrés@[fam].wa (23:35) #m1: hsjshsj', '',
+      'An@[fam].wa (00:02) #m2: y esto?',
+    ))).toBe('egpt');
+  });
+
+  // The tag right after the `]:` is the filter: that turn ran, but nobody in the chat saw it.
+  it('a WITHHELD reply is skipped for the last SURFACED one', () => {
+    expect(lastSurfacedBeing(REC(
+      '[@wren.kg (23:30)]: se dijo', '',
+      '[@egpt.kg (23:32)]: (not surfaced) nadie vio esto',
+    ))).toBe('wren');
+  });
+
+  it('every reply withheld, or none at all → null (there `r …` addresses nobody)', () => {
+    expect(lastSurfacedBeing(REC('[@egpt.kg (23:32)]: (not surfaced) nada'))).toBeNull();
+    expect(lastSurfacedBeing(REC('An@[fam].wa (23:31) #m1: solo humanos'))).toBeNull();
+    expect(lastSurfacedBeing('')).toBeNull();
+    expect(lastSurfacedBeing(null)).toBeNull();
+  });
+
+  // The front matter is dropped with the shared stripFrontMatter, and an INBOUND dispatch line
+  // can never be mistaken for a reply line: the `]:` terminator after the time is what separates
+  // them (an inbound line carries ` #<id>:` there instead).
+  it('an inbound line that starts with `[` is not an agent line', () => {
+    expect(lastSurfacedBeing(REC(
+      '[@wren.kg (23:30)]: hola', '',
+      '[ An@[fam].wa (23:31) #m1: reaccionó 👍 a #m0 ]',
+    ))).toBe('wren');
+  });
+
+  // A multi-line reply stays ONE block (both writers end `\n\n`), so its continuation lines are
+  // never read as entries of their own.
+  it('a multi-line reply is one block — its body lines are not candidates', () => {
+    expect(lastSurfacedBeing(REC(
+      '[@egpt.kg (23:32)]: primera línea\n[@fake (11:11)]: esto es texto, no una entrada',
+    ))).toBe('egpt');
+  });
+
+  // What replyLine actually writes, round-tripped rather than hand-typed.
+  it('round-trips replyLine itself, surfaced and withheld', () => {
+    expect(lastSurfacedBeing(`${replyLine({ being: 'egpt.kg', body: 'hola' })}\n\n`)).toBe('egpt');
+    expect(lastSurfacedBeing(`${replyLine({ being: 'egpt.kg', body: 'hola', surfaced: false })}\n\n`)).toBeNull();
   });
 });
 
