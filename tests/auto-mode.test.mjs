@@ -1,6 +1,7 @@
 // Per-chat auto-mode semantics: standalone @e detection (no email false
 // positives) and the reply gate for each mode.
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { AUTO_MODES, mentionHits, mentionStatus, replyAllowed, receives, isAutoMode, DEFAULT_AUTO_MODE, mayEmit, mayEmitChat, isSilenceReply, fanOutDecision } from '../src/auto-mode.mjs';
 
 describe('mentionStatus', () => {
@@ -237,6 +238,76 @@ describe('a BARE handle at the START addresses, exactly like @handle', () => {
     expect(replyAllowed('mute', gate(bare))).toBe(false);
     expect(replyAllowed('off', gate(bare))).toBe(false);
     expect(replyAllowed('on', gate(bare))).toBe(true);
+  });
+});
+
+// ── THE SWITCH (operator 2026-07-27: "this addressing without the '@' must be an option, easy
+//    to turn on/off globally"). ONE node-wide boolean, `dispatch.address_without_at`, DEFAULT
+//    TRUE — the live behaviour he likes stays on for every node that says nothing.
+//
+//    It is an ARGUMENT, never a config read: mentionHits is a PURE function and stays one (the
+//    import-free lock below). The flag arrives from the CALLERS — the bridges hand it to
+//    mentionStatus beside the wakeWords boot already gives them, the router hands it to
+//    `addressed` beside the agents registry boot already gives it. Same route as the wake list,
+//    on both sides.
+//
+//    OFF must be a RETURN to the pre-39d70a3 matcher, not a third behaviour: only '@' hits, and
+//    the '@' scan byte-for-byte identical in both states — SAME unicode boundary (39d70a3's
+//    other half, which is NOT switchable), same anywhere behaviour, same code stripping. ──
+describe('address_without_at: the bare form is a node-wide SWITCH, default ON', () => {
+  const DOLLY = ['d', 'don'];
+  const OFF = { addressWithoutAt: false };
+  const ON  = { addressWithoutAt: true };
+
+  it('REPRODUCE-FIRST: OFF — `d hola` does NOT address, and the text is untouched', () => {
+    expect(mentionHits('d hola', DOLLY, OFF)).toEqual([]);
+    expect(mentionStatus('d hola', DOLLY, OFF)).toEqual({ atEAnywhere: false, atEStart: false });
+    expect(mentionHits('d, ya vi', DOLLY, OFF)).toEqual([]);
+    expect(mentionHits('don qué opinás', DOLLY, OFF)).toEqual([]);
+  });
+  it('REPRODUCE-FIRST: OFF — `@d hola` still addresses, exactly as it does with the flag on', () => {
+    expect(mentionHits('@d hola', DOLLY, OFF)).toEqual([{ token: 'd', atStart: true }]);
+    expect(mentionStatus('@d hola', DOLLY, OFF)).toEqual({ atEAnywhere: true, atEStart: true });
+  });
+  it('REPRODUCE-FIRST: ON is the DEFAULT — no option at all behaves like `d hola` does live', () => {
+    expect(mentionHits('d hola', DOLLY)).toEqual([{ token: 'd', atStart: true }]);
+    expect(mentionHits('d hola', DOLLY, ON)).toEqual(mentionHits('d hola', DOLLY));
+    expect(mentionHits('d hola', DOLLY, {})).toEqual(mentionHits('d hola', DOLLY));
+    expect(mentionStatus('d hola', DOLLY, ON)).toEqual(mentionStatus('d hola', DOLLY));
+  });
+
+  // The '@' path may not so much as flinch when the switch moves — including 39d70a3's OTHER
+  // half, the unicode boundary, which is not switchable and stays in force in both states.
+  it('the `@` path is IDENTICAL in both states — anywhere, boundary, fences, longest-first', () => {
+    for (const t of ['@d hola', 'oye @d mirá', '@don.do do X', '@dónde hola', '@día hola',
+                     '@d-bot hola', 'me@d.com', 'hey@don', '```\n@d hola\n```', '`@d` hola',
+                     '@DON and @d', '@d', 'nada de nada'])
+      expect([t, mentionHits(t, DOLLY, OFF)]).toEqual([t, mentionHits(t, DOLLY, ON)]);
+  });
+  it('OFF drops ONLY the bare hit from a mixed line — the @ hits stay, in text order', () => {
+    expect(mentionHits('d and @don here', DOLLY, ON))
+      .toEqual([{ token: 'd', atStart: true }, { token: 'don', atStart: false }]);
+    expect(mentionHits('d and @don here', DOLLY, OFF)).toEqual([{ token: 'don', atStart: false }]);
+  });
+  it('OFF gates like an UNMENTIONED message in every mode; ON gates like @d in every mode', () => {
+    const gate = (st) => ({ ...st, replyToBot: false });
+    for (const mode of AUTO_MODES) {
+      expect([mode, replyAllowed(mode, gate(mentionStatus('d hola', DOLLY, OFF)))])
+        .toEqual([mode, replyAllowed(mode, gate(mentionStatus('no me menciona', DOLLY, OFF)))]);
+      expect([mode, replyAllowed(mode, gate(mentionStatus('d hola', DOLLY, ON)))])
+        .toEqual([mode, replyAllowed(mode, gate(mentionStatus('@d hola', DOLLY, ON)))]);
+    }
+  });
+
+  // PURITY LOCK. The flag must never become a config read INSIDE the matcher: auto-mode.mjs is
+  // the one module the bridges, the router, the gate and the room all share, and it has zero
+  // imports by design. If this goes red, someone reached for the config from inside a pure
+  // function — hand the value in from the caller instead.
+  it('mentionHits stays PURE — auto-mode.mjs imports nothing and reads no config/env', () => {
+    const src = readFileSync(new URL('../src/auto-mode.mjs', import.meta.url), 'utf8');
+    const code = src.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+    expect(code).not.toMatch(/^\s*import\s/m);
+    expect(code).not.toMatch(/require\(|process\.env|readConfig|getConfig|EGPT_CONFIG/);
   });
 });
 

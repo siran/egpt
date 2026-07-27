@@ -309,6 +309,22 @@ export const CONFIG_SCHEMA = {
         (operator 2026-07-25). Set via /e auto <mode> all.
         It reaches the PERSONA only — every other agent defaults to "mention" —
         so setting "accum" here does not make N siblings replay the gap.
+      address_without_at
+        Boolean. DEFAULT: true
+        May a BARE handle OPENING a message address its agent — "d hola",
+        "e mirá", no '@' (operator 2026-07-27: "the '@' is not necessary at the
+        beginning … they are all handles, and it's easy to write")?
+          true   "d hola" addresses d, exactly as "@d hola" does
+          false  the '@' is REQUIRED; "d hola" is ordinary text
+        NODE-WIDE and nothing else — there is no per-conversation or per-agent
+        rung, by ruling.
+        It switches ONLY the bare form. The '@' form is untouched in both
+        states, unicode word boundary included; so is the quick reply
+        (quick_reply_string, "r ok"), which resolves by LAST SPEAKER and is not
+        a handle at all.
+        Read once at boot and handed to BOTH callers of the one mention matcher
+        (src/auto-mode.mjs mentionHits): the beeper + shell limbs' persona gate
+        (mentionStatus) and the agent registry (src/spine/router.mjs addressed).
       send_to_egpt
         ENUM: "always" | "mode"
         DEFAULT: "mode"

@@ -42,6 +42,7 @@ const SHELL_USER = 'operator';
  * @param {string} [opts.url]                 the editor's ws endpoint (default ws://127.0.0.1:23375)
  * @param {typeof WS} [opts.WebSocket]        INJECTION SEAM — the `ws` client constructor (default the real import; tests pass a fake editor so NO real socket opens)
  * @param {string[]} [opts.wakeWords]         the persona's wake-word set (its declared handles, else its map key — router.mjs wakeTokens), SAME set boot hands the beeper bridge. Undefined → mentionStatus' built-in e/egpt defaults.
+ * @param {boolean} [opts.addressWithoutAt]   the node's dispatch.address_without_at (DEFAULT true): may a BARE leading handle ("d hola") address, or is the '@' required? Rides beside wakeWords into the SAME mentionStatus call — the same value boot hands the beeper bridge and the router.
  * @param {string} [opts.bridgeSignatureOpen]  per-NODE outer wrap layer — the SAME value boot hands the beeper bridge, so a shell reply's wrap matches the Beeper wrap. Default ''.
  * @param {string} [opts.bridgeSignatureClose]
  * @param {string} [opts.nodeName]            the STRUCTURAL node id (cfg.node_name), tag-encoded invisibly onto every frame — same value boot hands the beeper bridge. Default ''.
@@ -53,6 +54,7 @@ export function createShellPort({
   url = `ws://127.0.0.1:${SHELL_WS_PORT}`,
   WebSocket = WS,
   wakeWords,
+  addressWithoutAt = true,
   bridgeSignatureOpen = '',
   bridgeSignatureClose = '',
   nodeName = '',
@@ -102,7 +104,7 @@ export function createShellPort({
       // a shell `@e` arrived with atEAnywhere unset → identity.build → the mention gate
       // stayed false → E was gated out and never woke. reply-to stays null (no quoting on
       // the shell surface).
-      const st = mentionStatus(text, wakeWords);
+      const st = mentionStatus(text, wakeWords, { addressWithoutAt });
       const from = { chatId, chatName: 'shell', network: 'shell', userId: SHELL_USER, senderName: SHELL_USER, authorized: true, msgKey: null, atEStart: st.atEStart, atEAnywhere: st.atEAnywhere };
       // Fire-and-forget into the spine (the beeper dispatch does the same): a slow turn
       // must not block the socket's read loop, and a handler throw is logged, never fatal.

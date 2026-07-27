@@ -120,9 +120,9 @@ describe('shell-port limb', () => {
     // with the mention gate false → identity.build → E was never woken. The limb now runs the SAME
     // wake matcher (mentionStatus) the beeper bridge does, stamping the flags onto `from`. These
     // lock the `from` shape the shell hands the spine — the smallest surface that reproduces the bug.
-    function fromFor(text, wakeWords) {
+    function fromFor(text, wakeWords, rest = {}) {
       const { WebSocket, sockets } = makeFakeWs();
-      const port = createShellPort({ WebSocket, wakeWords });
+      const port = createShellPort({ WebSocket, wakeWords, ...rest });
       let captured = null;
       port.onMessage(({ from }) => { captured = from; });
       port.start();
@@ -158,6 +158,19 @@ describe('shell-port limb', () => {
     it('a configured handle (@ed) wakes when passed in wakeWords; a bare @e does not (custom handles honored)', () => {
       expect(fromFor('@ed status', ['ed']).atEAnywhere).toBe(true);
       expect(fromFor('@e status', ['ed']).atEAnywhere).toBe(false);
+    });
+
+    // THE SWITCH reaches the persona gate the SAME way the wake list does: boot hands the limb
+    // `addressWithoutAt` in the very options object that already carries `wakeWords`, and the limb
+    // passes it straight into mentionStatus. (The beeper limb takes it identically — one option,
+    // one forward, two limbs.) Default ON: a node that configures nothing keeps today's behaviour.
+    it('REPRODUCE-FIRST: `addressWithoutAt: false` kills the bare handle at the limb; `@d` survives it', () => {
+      const DOLLY = ['d', 'don'];
+      expect(fromFor('d hola', DOLLY).atEStart).toBe(true);                        // default ON — live behaviour
+      const off = fromFor('d hola', DOLLY, { addressWithoutAt: false });
+      expect([off.atEStart, off.atEAnywhere]).toEqual([false, false]);
+      const at = fromFor('@d hola', DOLLY, { addressWithoutAt: false });
+      expect([at.atEStart, at.atEAnywhere]).toEqual([true, true]);
     });
   });
 

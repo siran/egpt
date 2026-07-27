@@ -80,6 +80,8 @@ networks:
 #                                   # persona's LAST turn, labelled as context. PERSONA only — siblings default to mention.
 #   auto_paused: false              # absolute @e-emit kill-switch (/e auto pause|resume)
 #   send_to_egpt: mode              # global default: keep the persona in context even when it will not reply (always|mode)
+#   address_without_at: true        # a BARE handle opening a message addresses its agent ("d hola" = "@d hola").
+#                                   # false = the '@' is required. Node-wide; the '@' form and the quick reply ("r ok") are unaffected.
 
 # --- Transcription: a standalone LAN service ---------------------------------
 # By default eGPT launches a whisper-server to transcribe audio notes

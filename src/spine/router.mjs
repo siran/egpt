@@ -110,7 +110,13 @@ export function wakeTokens(name, agent) {
 // { atStart, anywhere } — real per-agent flags, never a blanket constant, because the auto-modes
 // rest on exactly that distinction (`mention-direct` wakes on atStart, `mention` on anywhere).
 // @returns {{name: string, agent: object, atStart: boolean, anywhere: boolean, body?: string}[]}
-export function addressed(text, agents, { quickReply = '', lastSpeaker = null } = {}) {
+//
+// `addressWithoutAt` (DEFAULT true) is the node's `dispatch.address_without_at` — THE switch for
+// the bare form, handed straight to the matcher. It arrives the SAME way the wake list does:
+// boot → createRouter → here, never read from a config inside this function. It touches ONLY the
+// matcher's bare scan: the '@' path and the QUICK REPLY above are resolved before/around it and
+// are unaffected (`r ok` is not a bare handle — it is the last speaker, looked up by lastSpeaker).
+export function addressed(text, agents, { quickReply = '', lastSpeaker = null, addressWithoutAt = true } = {}) {
   const byToken = new Map();                       // WAKE TOKEN -> { name, agent }; first agent wins a shared handle
   const byBeing = new Map();                       // BEING-ID (the map key) -> { name, agent }
   for (const [name, agent] of Object.entries(agents ?? {})) {
@@ -126,7 +132,7 @@ export function addressed(text, agents, { quickReply = '', lastSpeaker = null } 
   }
   const out = [];
   const seen = new Set();
-  for (const { token, atStart } of mentionHits(text, [...byToken.keys()])) {
+  for (const { token, atStart } of mentionHits(text, [...byToken.keys()], { addressWithoutAt })) {
     const hit = byToken.get(token);
     if (!hit || seen.has(hit.name)) continue;
     seen.add(hit.name);
@@ -136,7 +142,9 @@ export function addressed(text, agents, { quickReply = '', lastSpeaker = null } 
 }
 
 // `getQuickReply` reads config.quick_reply_string (unset → the 'r' default below; '' disables).
-export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', getQuickReply = () => undefined } = {}) {
+// `addressWithoutAt` is the node's dispatch.address_without_at (boot reads it once; DEFAULT true)
+// — the ONE switch for the bare-handle form, forwarded to `addressed` above.
+export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', getQuickReply = () => undefined, addressWithoutAt = true } = {}) {
   // ONE addressed agent → the routing target it resolves to. Per-kind semantics are
   // UNCHANGED; only the caller changed (every hit, not just the first).
   function targetFor({ name, agent, atStart, body }, ev) {
@@ -202,7 +210,7 @@ export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', getQu
       const targets = [];
       let body;
       if (agents && typeof agents === 'object') {
-        for (const hit of addressed(ev?.body ?? '', agents, { quickReply: getQuickReply() ?? 'r', lastSpeaker })) {
+        for (const hit of addressed(ev?.body ?? '', agents, { quickReply: getQuickReply() ?? 'r', lastSpeaker, addressWithoutAt })) {
           // SURFACE PIN (operator 2026-07-25): an agent may carry `surface: <name>` so it is an
           // agent ONLY on that surface; on any OTHER surface the @mention falls through (as if
           // unmatched). Co-account CORRECTNESS, not convenience: `do` and `kg` share ONE Beeper

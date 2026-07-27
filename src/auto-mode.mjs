@@ -141,7 +141,20 @@ const _escapeWake = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 // character it escapes is a SyntaxCharacter, which is exactly the set `u` still permits as an
 // identity escape, so it needed no change.
 const _NOT_GLUED = '(?![\\p{L}\\p{N}_-])';
-export function mentionHits(text, tokens) {
+// `addressWithoutAt` — THE SWITCH for the bare form (operator 2026-07-27: "this addressing
+// without the '@' must be an option, easy to turn on/off globally"). DEFAULT true: the live
+// behaviour stays on for every caller that says nothing. false → this returns '@' hits ONLY,
+// exactly the matcher as it stood before the bare form existed.
+//
+// IT IS AN ARGUMENT, NOT A CONFIG READ, and that is deliberate: this function is PURE and this
+// module imports nothing. The node-wide value is `dispatch.address_without_at`, read ONCE in
+// boot.mjs and handed to the two callers by the SAME route their wake list already travels —
+// the bridges get it beside `wakeWords` (and pass it into mentionStatus), the router gets it
+// beside `getAgents` (and passes it into `addressed`). Do not read config here.
+//
+// The '@' scan below is untouched in BOTH states — same regex, same input, same results,
+// _NOT_GLUED and its unicode boundary included (39d70a3's other half is NOT switchable).
+export function mentionHits(text, tokens, { addressWithoutAt = true } = {}) {
   const t = stripCode(String(text ?? '')).replace(/^\s+/, '');
   const list = [...new Set((Array.isArray(tokens) ? tokens : []).map((w) => String(w).toLowerCase()).filter(Boolean))]
     .sort((a, b) => b.length - a.length);
@@ -149,7 +162,7 @@ export function mentionHits(text, tokens) {
   const alt = list.map(_escapeWake).join('|');
   // THE BARE FORM (see the '@ is optional at the start' note above): the SAME rule with the
   // '@' dropped, anchored to ^ and reusing _NOT_GLUED — the one boundary, not a second one.
-  const bare = t.match(new RegExp(`^(${alt})${_NOT_GLUED}`, 'iu'));
+  const bare = addressWithoutAt ? t.match(new RegExp(`^(${alt})${_NOT_GLUED}`, 'iu')) : null;
   const hits = bare ? [{ token: bare[1].toLowerCase(), atStart: true }] : [];
   if (!t.includes('@')) return hits;
   const re = new RegExp(`(?:^|\\s)@(${alt})${_NOT_GLUED}`, 'giu');
@@ -179,8 +192,10 @@ function stripCode(text) {
 // injected beside it. The bug this fixes: a live `@ed estás?` logged atE=false
 // because the gate was hardcoded to e/egpt and never read the agents config.
 const DEFAULT_WAKE_WORDS = ['egpt', 'e'];
-export function mentionStatus(text, wakeWords) {
-  const hits = mentionHits(text, (Array.isArray(wakeWords) && wakeWords.length) ? wakeWords : DEFAULT_WAKE_WORDS);
+// `opts` is the matcher's option bag, forwarded verbatim — today just { addressWithoutAt },
+// the node's `dispatch.address_without_at`, handed in by the limb that owns the wake list.
+export function mentionStatus(text, wakeWords, opts) {
+  const hits = mentionHits(text, (Array.isArray(wakeWords) && wakeWords.length) ? wakeWords : DEFAULT_WAKE_WORDS, opts);
   return { atEAnywhere: hits.length > 0, atEStart: hits.some((h) => h.atStart) };
 }
 

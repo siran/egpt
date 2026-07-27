@@ -476,6 +476,14 @@ export async function boot({
   // is KEYED `egpt` and DISPLAYS as "don" (handles [d, don]), so one `@egpt` in a group woke BOTH
   // spines and the human got two replies, one stamped `egpt` and one stamped `don`.
   const wakeWords = (() => { const pa = personaAgent(); return [...new Set(wakeTokens(pa.name, pa.agent))]; })();
+  // THE BARE-HANDLE SWITCH (operator 2026-07-27: "this addressing without the '@' must be an
+  // option, easy to turn on/off globally") — dispatch.address_without_at, DEFAULT true, so a node
+  // that configures nothing keeps the live behaviour. Read ONCE here and handed by the SAME route
+  // the wake list travels, to all THREE call sites of the ONE matcher: the beeper limb and the
+  // shell limb (which pass it to mentionStatus beside `wakeWords`, below) and the router (which
+  // passes it to `addressed` beside the agents registry). One value, one rung — the persona gate
+  // and the agent registry can never disagree about whether `d hola` is an address.
+  const addressWithoutAt = cfg.dispatch?.address_without_at !== false;
   // 👂 ECHO AGE BOUND (operator 2026-07-09, Zohykar incident; renamed from transcribe_ack_max_age_ms):
   // never echo a note whose OWN timestamp is older than this — a Beeper resync's ancient backlog
   // notes are still transcribed + logged, just never echoed into the live chat. Default 1h.
@@ -707,6 +715,7 @@ export async function boot({
     transcriptionOpen: cfg.transcription_open ?? '',
     transcriptionClose: cfg.transcription_close ?? '',
     wakeWords,                            // the persona agent's OWN name + handles only — nothing injected (operator 2026-07-09)
+    addressWithoutAt,                     // dispatch.address_without_at (default true): may a BARE leading handle address, or is '@' required? Same value the shell limb + the router get.
     echoPlan,                             // 👂 echo PLAN: (audioHash) => { rank, winner } — PER-NOTE HRW over the co-account peer set, keyed on the note's node-stable audio hash (operator 2026-07-24; revives HRW). rank 1 posts now; rank>1 arms a promotion at (rank-1)*echoTimeoutMs that re-checks coverage at fire; rank 0 (echo:false opt-out) never posts/promotes.
     echoTimeoutMs,                        // 👂 per-rank promotion step (ms); GENEROUS default so a SLOW rank-1 isn't mistaken for a DOWN one (double-👂 hazard).
     coverageThreshold,                    // 👂 word-token overlap fraction for the on-demand noteCovered query (operator 2026-07-12) — replaced the observed-set + arrival-lag/reconnect scaffold
@@ -745,6 +754,7 @@ export async function boot({
   // 2026-07-26. The wrap is a Proxy precisely so this port's `isConnected` GETTER stays live.
   const shellPort = lasso.wrap(createShellPort({
     wakeWords,
+    addressWithoutAt,                     // same switch, same route — the shell gate and the beeper gate move together
     bridgeSignatureOpen: cfg.bridge_signature_open ?? '',
     bridgeSignatureClose: cfg.bridge_signature_close ?? '',
     nodeName: node_name,                  // same structural layer — a shell frame is a surface send too
@@ -811,7 +821,7 @@ export async function boot({
     // relay_channel). defaultBeing = defaultKey: the persona-route + the un-@mentioned
     // fall-through both yield the persona's KEY (operator 2026-07-10 — no hardcoded 'e'/'egpt').
     // quick_reply_string: the token that addresses whoever spoke last (default 'r', '' disables).
-    router: createRouter({ getAgents: () => cfg.agents ?? {}, defaultBeing: defaultKey, getQuickReply: () => cfg.quick_reply_string }),
+    router: createRouter({ getAgents: () => cfg.agents ?? {}, defaultBeing: defaultKey, getQuickReply: () => cfg.quick_reply_string, addressWithoutAt }),
     transcript: createTranscript({ contacts, persona: labelOf(defaultKey), defaultKey, node_name, timeZone: transcriptTimeZone, io, onLog: (m) => log.line?.(`[transcript] ${m}`) }),
     sender: createSender({ bridge: shellAwareBridge, bodyEmojiOf, labelOf, agentSignatureOpenOf, agentSignatureCloseOf, defaultKey }),
     // The real cadence registry the spine's tick() drives. The heartbeat LOADER

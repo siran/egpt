@@ -204,6 +204,12 @@ export async function startBeeperBridge(opts = {}) {
     // configured with handles [ed, egptd] never woke on @ed. Default = e/egpt (unchanged
     // for a node that passes nothing).
     wakeWords = ['e', 'egpt'],
+    // May a BARE leading handle address ("d hola", no '@')? The node's dispatch.address_without_at
+    // (operator 2026-07-27: "this addressing without the '@' must be an option, easy to turn
+    // on/off globally"), DEFAULT true — boot reads it once and hands the SAME value here, to the
+    // shell limb and to the router, so the persona gate and the agent registry switch together.
+    // It rides beside wakeWords into the SAME mentionStatus call below; nothing else consults it.
+    addressWithoutAt = true,
     // 👂 ECHO PLAN (operator 2026-07-11, Phase 3b HRW ordered failover; plans/2607101713-HRW-ECHO-PLAN.md):
     // (noteId) => { rank, winner } — this node's 1-indexed failover RANK for the note. rank 1 = the
     // rendezvous-hash winner, posts now; rank>1 = a lower rank that HOLDS its 👂 and posts only if the
@@ -1316,7 +1322,7 @@ export async function startBeeperBridge(opts = {}) {
     // (wasSentByUs, after waiting out this chat's in-flight sends). The old leading-
     // persona-emoji fallback was removed (operator 2026-07-12): no emoji may reach a
     // decision; nor may any text resemblance (operator 2026-07-15).
-    const st = mentionStatus(text || '', wakeWords);
+    const st = mentionStatus(text || '', wakeWords, { addressWithoutAt });
     // Quoted/replied-to target (operator 2026-07-04). Beeper carries a reply's quoted
     // message id as a BARE `linkedMessageID` (verified live 2026-06-16, MESSAGES-
     // FIRST-CLASS-PLAN — no inline quoted text/sender). We surface it two ways:

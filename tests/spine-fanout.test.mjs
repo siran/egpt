@@ -341,7 +341,7 @@ describe('spine — FAN OUT to every addressed agent', () => {
 describe('QUICK REPLY — `r <body>` answers the last AGENT that spoke here', () => {
   const AT_HEAD = { atEStart: true, atEAnywhere: true, replyToBot: false };
   const NONE    = { atEStart: false, atEAnywhere: false, replyToBot: false };
-  const routerWith = (qr) => createRouter({ getAgents: () => AGENTS, defaultBeing: 'egpt', getQuickReply: () => qr });
+  const routerWith = (qr, rest = {}) => createRouter({ getAgents: () => AGENTS, defaultBeing: 'egpt', getQuickReply: () => qr, ...rest });
 
   // The router owns the grammar AND this node's token; `quickReplyOf` is that pair asked as one
   // question, so the spine can gate its transcript read without a second copy of either half.
@@ -369,6 +369,20 @@ describe('QUICK REPLY — `r <body>` answers the last AGENT that spoke here', ()
     const DOLLY = { egpt: { configuration: 'egpt', handles: ['d', 'don'], default: true, name: 'don' } };
     expect(addressed('r dale', DOLLY, { quickReply: 'r', lastSpeaker: 'egpt' }))
       .toEqual([{ name: 'egpt', agent: DOLLY.egpt, atStart: true, anywhere: true, body: 'dale' }]);
+  });
+
+  // THE BARE-HANDLE SWITCH MUST NOT TOUCH THIS. `r` is not a handle: it is resolved by
+  // lastSpeaker, BEFORE the mention scan the switch gates. If `r` ever rode the bare-handle code
+  // path, `dispatch.address_without_at: false` would silently kill the quick reply on that node —
+  // so the whole dispatch is locked here with the switch OFF, not just the matcher.
+  it('SURVIVES dispatch.address_without_at: false — `r …` still reaches the last agent', async () => {
+    const { spine, brain } = fanoutSpine({ mode: 'mention-direct', router: routerWith('r', { addressWithoutAt: false }) });
+    await spine.handleInbound({ ...MSG, body: '@e hola', mention: AT_HEAD });
+    await spine.handleInbound({ ...MSG, msgId: 'm2', body: 'r ok', mention: NONE,
+      line: 'An@[fam].wa (00:00) #m2: r ok' });
+    expect(brain.calls.map((c) => c.being)).toEqual(['egpt', 'egpt']);
+    expect(brain.calls[1].body).toBe('ok');
+    expect(brain.calls[1].line).toBe('An@[fam].wa (00:00) #m2: ok');
   });
 
   it('REPRODUCE-FIRST: a LOCAL being spoke last → `r …` dispatches to IT, with the token stripped', async () => {
