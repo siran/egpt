@@ -1035,11 +1035,24 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
   was actively drafting book ideas there; an unwanted user's mention woke the agent). A
   per-conversation DENY overlay on top of the existing networks.<surface>.allowed_users,
   settable by command. Design open.
-- **Revive `accum` mode (BACKBURNER):** (accum was retired — see §1.) On the next
-  @mention in a chat, feed the model the ACCUMULATED recent context (~1h window) PLUS the
-  triggering prompt, CLEARLY LABELED — "this line is THE prompt; the following is
-  accumulated context" — so a question that leans on the last hour's messages is
-  answerable. Design open: window size, labelling, per-chat opt-in.
+- **~~Revive `accum` mode~~ — DONE 2026-07-26 as `recent_context`, and NOT as a mode.**
+  It injects context into a turn that was going to happen anyway, so it changes WHAT a turn
+  is prompted with, never WHEN one happens — a policy field beside `send_to_egpt`.
+  `AUTO_MODES` never regains `accum`; a stored `mode: accum` still degrades to `mention`.
+  - The window is NOT a time span (the "~1h" this entry used to propose). It is everything
+    **since that being's own last turn**, found by reading `transcript.md` backwards to its
+    own reply line. Zero overlap with the warm session by construction, and no clock is
+    parsed — which also sidesteps the configured-timezone rendering.
+  - Bounded by CONTENT LENGTH only (8000 chars); keeps the most recent and announces its own
+    truncation. Per-conversation opt-in, default OFF, persona only.
+  - **Why it was needed:** the retirement premise — *"the transcript.md IS the buffer (E
+    reads it for back-context when it engages)"* — was falsified live. E had the file, the
+    tool and a pointers card saying so, was told *"revisa el transcript"*, and did not look.
+    Correctness cannot depend on the model choosing to read.
+  - **Adjacent, still true:** the spine's own `cycleBy`/`CYCLE_CAP` accumulator collects
+    these same un-mentioned lines and DISCARDS them on an immediate turn. Queued turns and
+    the auto dwell/burst path depend on it, so it stays; `recent_context` supersedes it when
+    on rather than composing.
 - **BUG — `/reply` applied post-hoc (2026-07-14):** when the agent replies to a message,
   the bridge POSTS the reply as a plain message, THEN edits it to attach the reply-to,
   THEN strips the `/reply` token — a visible flicker. Make it straight: DETECT/parse
