@@ -91,3 +91,33 @@ Write-Host "  arguments : $($chromeArgs -join ' ')"
 Write-Host "  profile   : $EgptHome"
 Write-Host ""
 Write-Host "The Session-0 spine launches it on demand with:  schtasks /run /tn $TaskName"
+
+# --- status readback: what WINDOWS actually has now, read back fresh -- not the variables above ---
+Write-Host ""
+Write-Host "Current status (read back from Windows):" -ForegroundColor Green
+$task = Get-ScheduledTask -TaskName $TaskName
+Write-Host "  state     : $($task.State)"
+Write-Host "  runs as   : $($task.Principal.UserId)  (LogonType $($task.Principal.LogonType))"
+
+$info = Get-ScheduledTaskInfo -TaskName $TaskName
+if ($info.LastRunTime -and $info.LastRunTime.Year -ge 2000) {
+  Write-Host "  last run  : $($info.LastRunTime)  (result $($info.LastTaskResult))"
+} else {
+  Write-Host "  last run  : never run"
+}
+
+try {
+  $conn = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($conn) {
+    $proc = Get-CimInstance Win32_Process -Filter "ProcessId = $($conn.OwningProcess)"
+    if ($proc.SessionId -eq 0) {
+      Write-Host "  chrome cdp: LISTENING on port $Port (pid $($proc.ProcessId), Session $($proc.SessionId) -- SESSION 0, the invisible-window failure this task exists to avoid!)" -ForegroundColor Yellow
+    } else {
+      Write-Host "  chrome cdp: listening on port $Port (pid $($proc.ProcessId), Session $($proc.SessionId))"
+    }
+  } else {
+    Write-Host "  chrome cdp: not listening on port $Port"
+  }
+} catch {
+  Write-Host "  chrome cdp: could not probe port $Port" -ForegroundColor Yellow
+}
