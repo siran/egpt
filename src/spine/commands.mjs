@@ -449,10 +449,13 @@ export function createCommands({
   //   /chrome <node>            — its whole argument IS a node too (never ambiguous), known or
   //                               not: an unknown one is a routing error, never silence.
   //                               `/chrome=<node>` names the same thing.
-  //   a BARE command            — no `=<node>`, and (for /chrome) no positional node either —
-  //                               resolves through dispatch.default_node when the operator has
-  //                               set one (`raw: ''`, nothing to strip); UNSET, this is null,
-  //                               byte-identical to before.
+  //   no node named on the      — no `=<node>`, and (for /chrome) no positional node either —
+  //   command token itself        resolves through dispatch.default_node when the operator has
+  //                               set one (`raw: ''`, nothing to strip), REGARDLESS of whether the
+  //                               command carries arguments (ruling 2026-07-27: default_node
+  //                               applies to `/open <url>`, `/members <args>`, etc. just as much
+  //                               as to a bare command); UNSET, this is null, byte-identical to
+  //                               before.
   function nodeAddressed(text) {
     const m = NODE_ADDRESSABLE.exec(String(text ?? '').trim());
     if (!m) return null;
@@ -461,11 +464,8 @@ export function createCommands({
     const rest = (m[3] ?? '').trim();
     if (node) return { node: node.toLowerCase(), cmd, raw: `=${node}` };
     if (cmd === 'chrome' && rest) return { node: rest.toLowerCase(), cmd, raw: rest };
-    if (!rest) {
-      const dn = String(cfg().dispatch?.default_node ?? '').trim().toLowerCase();
-      return dn ? { node: dn, cmd, raw: '' } : null;
-    }
-    return null;
+    const dn = String(cfg().dispatch?.default_node ?? '').trim().toLowerCase();
+    return dn ? { node: dn, cmd, raw: '' } : null;
   }
 
   // ORIGIN reading: the node this command must TRAVEL to in order to be answered — null when it
@@ -1108,8 +1108,22 @@ export function createCommands({
   }
   async function configCmd(rest) {
     if (!rest) return '```json\n' + JSON.stringify(redactConfigValue(cfg()), null, 2) + '\n```';
+    const getMatch = /^get\s+(\S+)$/i.exec(rest);
+    if (getMatch) {
+      const [, keyArg] = getMatch;
+      const resolved = resolveConfigKey(keyArg);
+      if (resolved.error) return `/config get: ${resolved.message}`;
+      const segments = resolved.path.split('.');
+      const value = segments.reduce((o, k) => o?.[k], cfg());
+      if (value === undefined) return `${resolved.path} is unset`;
+      // Wrap in the leaf's own key so redactConfigValue's key-name check (which only inspects
+      // an OBJECT's entries) also covers the value AT resolved.path itself, not just its children.
+      const leaf = segments[segments.length - 1];
+      const redacted = redactConfigValue({ [leaf]: value })[leaf];
+      return `${resolved.path} = ${JSON.stringify(redacted)}`;
+    }
     const setMatch = /^set\s+(\S+)\s+(.+)$/i.exec(rest);
-    if (!setMatch) return 'usage: /config | /config set <key> <value>';
+    if (!setMatch) return 'usage: /config | /config get <key> | /config set <key> <value>';
     const [, keyArg, valueRaw] = setMatch;
     const resolved = resolveConfigKey(keyArg);
     if (resolved.error) return `/config set: ${resolved.message}`;

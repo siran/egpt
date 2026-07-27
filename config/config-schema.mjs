@@ -392,19 +392,21 @@ export const CONFIG_SCHEMA = {
         (mentionStatus) and the agent registry (src/spine/router.mjs addressed).
       default_node
         String — a node_name/node_alias — or unset. DEFAULT: unset.
-        The node a BARE node-addressable command targets when it names no node
+        The node a node-addressable command targets when it names no node
         itself: no "=<name>" bound to the command token, and (for /chrome
-        only) no positional node either. Applies to /chrome, /status, /tabs,
-        /members — the only members of the set that can be typed bare at all
-        (/tab, /open, /close always take an argument, so they never reach
-        this fallback).
+        only) no positional node either. Applies to every member of the set —
+        /chrome, /status, /tabs, /members, /tab, /open, /close — regardless of
+        whether the command carries arguments: "/open https://x.com" and
+        "/members add tab 3 cgpt" reach this fallback exactly like a bare
+        "/tabs" does, since none of them name a node of their own.
           unset  today's behaviour exactly, a strict no-op: bare /chrome stays
                  the discovery form, bare /status/tabs/members run on whichever
                  node heard them.
-          set    a bare command operates on the named node instead — exactly
-                 as if "<cmd>=<name>" had been typed, including travelling the
-                 mesh to a node that is neither ours nor a co-account peer.
-                 Set to THIS node's own name is identical to local; no
+          set    a command with no node of its own operates on the named node
+                 instead — exactly as if "<cmd>=<name>" had been typed
+                 (arguments carried along unchanged), including travelling
+                 the mesh to a node that is neither ours nor a co-account
+                 peer. Set to THIS node's own name is identical to local; no
                  separate branch for it.
         See src/spine/commands.mjs nodeAddressed.
       send_to_egpt

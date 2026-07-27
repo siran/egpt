@@ -115,6 +115,61 @@ describe('/config set — bare leaf + dotted path resolution, write, redaction',
   });
 });
 
+describe('/config get <key> — single-key read, mirrors set\'s resolution + redaction', () => {
+  it('REPRODUCE-FIRST: /config get default_node resolves the bare leaf and names dispatch.default_node = "do"', async () => {
+    // node_name matches default_node so the NODE GATE (run() line ~574) resolves this LOCALLY —
+    // an isolated cmds.run() has no mesh to forward through, so a default_node naming ANOTHER
+    // node would silently drop the command here (that forwarding path is covered separately in
+    // tests/remote-command.test.mjs, which runs the full spine+mesh stack).
+    const configPath = await tmpConfigPath();
+    const { cmds, sent } = harness({ config: { node_name: 'do', dispatch: { default_node: 'do' } }, configPath });
+    await cmds.run({ body: '/config get default_node', chatId: '!self', authorized: true });
+    expect(sent).toHaveLength(1);
+    expect(sent[0].text).toMatch(/dispatch\.default_node/);
+    expect(sent[0].text).toMatch(/do/);
+  });
+
+  it('dotted path form (dispatch.default_node) behaves identically to the bare-leaf form', async () => {
+    const configPath = await tmpConfigPath();
+    const { cmds, sent } = harness({ config: { node_name: 'do', dispatch: { default_node: 'do' } }, configPath });
+    await cmds.run({ body: '/config get dispatch.default_node', chatId: '!self', authorized: true });
+    expect(sent[0].text).toMatch(/dispatch\.default_node = "do"/);
+  });
+
+  it('a registered key with no value set replies "is unset", distinct from an unregistered refusal', async () => {
+    const configPath = await tmpConfigPath();
+    const { cmds, sent } = harness({ config: {}, configPath });
+    await cmds.run({ body: '/config get default_node', chatId: '!self', authorized: true });
+    expect(sent[0].text).toMatch(/dispatch\.default_node is unset/);
+  });
+
+  it('token redaction: /config get of a token-ish key never leaks the real value', async () => {
+    const configPath = await tmpConfigPath();
+    const config = {
+      beeper: { use: 'main', main: { account: 'me@example', token: 'SUPER-SECRET-TOKEN-VALUE' } },
+    };
+    const { cmds, sent } = harness({ config, configPath });
+    await cmds.run({ body: '/config get beeper.main.token', chatId: '!self', authorized: true });
+    expect(sent[0].text).not.toContain('SUPER-SECRET-TOKEN-VALUE');
+    expect(sent[0].text).toContain('<redacted>');
+  });
+
+  it('unregistered key refused with the same message /config set uses', async () => {
+    const configPath = await tmpConfigPath();
+    const { cmds, sent } = harness({ config: {}, configPath });
+    await cmds.run({ body: '/config get totallyMadeUpKey', chatId: '!self', authorized: true });
+    expect(sent[0].text).toMatch(/not a registered config key/);
+  });
+
+  it('ambiguous bare leaf refused with candidates listed, same as /config set', async () => {
+    const configPath = await tmpConfigPath();
+    const { cmds, sent } = harness({ config: {}, configPath });
+    await cmds.run({ body: '/config get enabled', chatId: '!self', authorized: true });
+    expect(sent[0].text).toMatch(/matches more than one/);
+    expect(sent[0].text).toMatch(/local_llm\.enabled/);
+  });
+});
+
 describe('/config participates in node addressing (NODE_ADDRESSABLE gate)', () => {
   it('/config=do set default_node do applies LOCALLY on the node named "do", replying with the resolved path', async () => {
     const configPath = await tmpConfigPath();
@@ -136,9 +191,9 @@ describe('/config participates in node addressing (NODE_ADDRESSABLE gate)', () =
 });
 
 describe('LOCK: lifecycle + STOP still not node-addressable after /config joined NODE_ADDRESSABLE', () => {
-  it('/restart do, /upgrade do, /rewind do, and the STOP safe word never resolve to a remote node', async () => {
+  it('/restart do, /upgrade do, /rewind do, and the STOP safe word never resolve to a remote node — even with default_node set', async () => {
     const configPath = await tmpConfigPath();
-    const { cmds } = harness({ config: { node_name: 'kg', account_peers: ['kg', 'do'] }, configPath });
+    const { cmds } = harness({ config: { node_name: 'kg', account_peers: ['kg', 'do'], dispatch: { default_node: 'do' } }, configPath });
     for (const body of ['/restart do', '/upgrade do', '/rewind do', 'stop']) {
       expect(cmds.remoteNode({ body, surface: 'shell', chatId: 'main' })).toBe(null);
     }

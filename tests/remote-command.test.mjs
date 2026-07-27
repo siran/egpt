@@ -571,12 +571,62 @@ describe('dispatch.default_node', () => {
     expect(plain(bridge)[0].text).toContain('attached: 127.0.0.1:9221');
   });
 
-  it('/open <url> is UNTOUCHED even with default_node set — it always carries its own argument', async () => {
+  it('/open <url> travels to default_node too — an ARGUMENT is not a node of its own, so the fallback still applies', async () => {
+    // Was: "UNTOUCHED even with default_node set". Ruling 2026-07-27 corrected this — an
+    // argument-bearing command that names no node of its own still falls through to
+    // dispatch.default_node, exactly like a bare command does.
     const config = { ...KG(), dispatch: { default_node: 'do' } };
     const { bridge, spine } = nodeStack({ config });
     await spine.handleInbound({ ...SHELL, body: '/open https://example.com' });
     await flush();
+    const envs = envelopes(bridge);
+    expect(envs).toHaveLength(1);
+    expect(envs[0].chat).toBe('egpt-mesh-do-kg');
+    expect(parseMesh(envs[0].text).body).toBe('/open=do https://example.com');   // EXPLICIT, argument carried along
+  });
+
+  it('REPRODUCE-FIRST: /members add tab 3 cgpt (arguments present) still resolves through default_node and travels explicitly', async () => {
+    const config = { ...KG(), dispatch: { default_node: 'do' } };
+    const { bridge, spine } = nodeStack({ config });
+    await spine.handleInbound({ ...SHELL, body: '/members add tab 3 cgpt' });
+    await flush();
+    const envs = envelopes(bridge);
+    expect(envs).toHaveLength(1);
+    expect(envs[0].chat).toBe('egpt-mesh-do-kg');
+    expect(parseMesh(envs[0].text).body).toBe('/members=do add tab 3 cgpt');
+  });
+
+  it('UNSET is a strict no-op with arguments present too: /members add tab 3 cgpt stays local', async () => {
+    const { bridge, spine } = nodeStack({ config: KG() });
+    await spine.handleInbound({ ...SHELL, body: '/members add tab 3 cgpt' });
+    await flush();
     expect(envelopes(bridge)).toHaveLength(0);
-    expect(plain(bridge)[0].text).toContain('opened: https://example.com');
+  });
+
+  it('SET to THIS node\'s own name behaves local for a command WITH arguments too', async () => {
+    const config = { ...KG(), dispatch: { default_node: 'kg' } };
+    const { bridge, spine } = nodeStack({ config });
+    await spine.handleInbound({ ...SHELL, body: '/members add tab 3 cgpt' });
+    await flush();
+    expect(envelopes(bridge)).toHaveLength(0);
+  });
+
+  it('an explicit =<node> on a command WITH arguments still wins over default_node', async () => {
+    const config = { ...KG(), dispatch: { default_node: 'do' } };
+    const { bridge, spine } = nodeStack({ config });
+    await spine.handleInbound({ ...SHELL, body: '/members=kg add tab 3 cgpt' });
+    await flush();
+    expect(envelopes(bridge)).toHaveLength(0);   // kg is OUR own node — resolved locally, not forwarded
+  });
+
+  it('/chrome\'s positional-node form still wins over a DIFFERENT default_node', async () => {
+    const config = { ...KG(), dispatch: { default_node: 'other' } };
+    const { bridge, spine } = nodeStack({ config });
+    await spine.handleInbound({ ...SHELL, body: '/chrome do' });
+    await flush();
+    const envs = envelopes(bridge);
+    expect(envs).toHaveLength(1);
+    expect(envs[0].chat).toBe('egpt-mesh-do-kg');
+    expect(parseMesh(envs[0].text).body).toBe('/chrome do');   // unchanged — already explicit, not rewritten
   });
 });
