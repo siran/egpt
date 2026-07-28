@@ -10,13 +10,22 @@
 //
 // Everything here runs the REAL services (commands + mesh + spine) against a fake bridge and
 // a fake brain. No network, no Chrome, no Claude.
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createCommands } from '../src/spine/commands.mjs';
 import { createMeshService } from '../src/spine/mesh.mjs';
 import { createSpine } from '../src/spine/spine.mjs';
 import { encodeMesh, parseMesh } from '../src/mesh/relay.mjs';
+import { createContacts } from '../src/spine/contacts.mjs';
+import { emptyState } from '../src/conversations-state.mjs';
+import { Room } from '../src/room-core.mjs';
 
 const flush = async () => { await new Promise((r) => setTimeout(r, 0)); await new Promise((r) => setTimeout(r, 0)); };
+// Real fs I/O (the room-scoped mesh tests below use a REAL Room, config.yaml and all) takes a
+// few more event-loop turns than the in-memory fakes elsewhere in this file — drain generously.
+const drain = async () => { for (let i = 0; i < 10; i++) await flush(); };
 
 // kg's REAL agent shape (REVE's live config, read 2026-07-26): `don` is the relay to node `do`,
 // SURFACE-PINNED to the shell because on Beeper `do` hears the operator directly; `carol` is an
@@ -74,7 +83,9 @@ const LIVE_CDP = {
 };
 
 // One node's full stack: real commands + real mesh + real spine over fakes.
-function nodeStack({ config, cdp = LIVE_CDP } = {}) {
+// resolveConvRoom/loadAdapters are optional passthroughs (undefined = createCommands' own
+// defaults, unchanged) — the room-scoped mesh tests below inject a real one.
+function nodeStack({ config, cdp = LIVE_CDP, resolveConvRoom, loadAdapters } = {}) {
   const bridge = fakeBridge();
   const exits = [];
   const brain = { calls: [], async turn(being, ev) { this.calls.push({ being, ev }); return { text: 'the being answers' }; } };
@@ -87,6 +98,8 @@ function nodeStack({ config, cdp = LIVE_CDP } = {}) {
     launchChromeTask: () => ({ ok: false }),
     now: () => t,
     sleep: async (ms) => { t += ms; },
+    resolveConvRoom,
+    loadAdapters,
   });
   const mesh = createMeshService({ bridge, brain, commands, getConfig: () => config, setTimer: () => null, clearTimer: () => {} });
   const transcript = { entries: [], async log(ev) { this.entries.push(ev); } };
@@ -413,6 +426,140 @@ describe('responder — an arriving envelope carrying a node-addressed command',
     const relayReplies = bridge.sent.filter((s) => s.chat === 'egpt-mesh-do-kg' && parseMesh(s.text)?.done);
     const body = parseMesh(relayReplies[0].text).body;
     expect(body.trimStart().startsWith('/')).toBe(false);
+  });
+});
+
+// ── 5b. THE RESPONDER'S OWN LOBBY: a room-scoped command over the mesh (bug #23 half A,
+// 2026-07-27 — live failure: "/members add tab 1 c1" reported success, then a following
+// "/members" showed a brand-new, empty "contact-<timestamp>" room). mesh.mjs's commandReply
+// mints a FRESH private chatId (`<chat>#cmd<n>`) for EVERY command — deliberately, so captured
+// replies never cross — but resolving a ROOM through that id, one call at a time, made add and
+// list land in two different throwaway rooms. The fix routes a mesh-marked event's room
+// resolution to the responder's own lobby instead, through the SAME resolveConvRoom seam.
+class TmpRoom extends Room {
+  constructor(dir, slug) { super(); this._dir = dir; this.slug = slug; }
+  baseDir() { return this._dir; }
+}
+const ADAPTERS = [{ name: 'chatgpt-cdp', urlMatch: /chatgpt\.com|chat\.openai\.com/, homeUrl: 'https://chatgpt.com/' }];
+const oneTab = [{ id: 'GPT1', title: 'ChatGPT', url: 'https://chatgpt.com/c/abc' }];
+
+describe("responder — a room-scoped command over the mesh resolves to THIS node's own lobby", () => {
+  let base;
+  beforeEach(() => { base = mkdtempSync(join(tmpdir(), 'egpt-mesh-room-')); });
+  afterEach(() => { rmSync(base, { recursive: true, force: true }); });
+
+  const request = (body, { msgId = 'q1', postId = 'post-1' } = {}) => ({
+    surface: 'whatsapp', node: 'wa', chatId: 'egpt-mesh-do-kg', chatName: 'mesh',
+    senderId: 'u-an', senderName: 'An', msgId, ts: 3, kind: 'text', raw: {},
+    authorized: true, isSender: true,
+    body: encodeMesh({ by: 'An', body, from: 'shell', from_node: 'kg', to: 'don.do', post_id: postId }),
+  });
+
+  // A resolveConvRoom keyed EXACTLY on the (surface, chatId) pair it's called with — same shape
+  // as the real one (contacts.resolve → a slug → a Room), just without the timestamp-suffixed
+  // slug minting, so the test isolates the ONE thing in question: are add and list called with
+  // the SAME pair, or two different ones? Records every call so a test can assert on the pairs.
+  function keyedResolveConvRoom() {
+    const rooms = new Map();
+    const calls = [];
+    const resolve = async (surface, chatId) => {
+      calls.push([surface, chatId]);
+      const key = `${surface}:${chatId}`;
+      if (!rooms.has(key)) rooms.set(key, new TmpRoom(join(base, 'conv', surface, String(chatId)), String(chatId)));
+      return rooms.get(key);
+    };
+    return { resolve, calls };
+  }
+
+  it('REPRODUCE-FIRST: /members=do add tab 1 c1 then /members=do over the mesh AGREE — the add is SEEN by the list', async () => {
+    const { resolve, calls } = keyedResolveConvRoom();
+    const { bridge, spine } = nodeStack({
+      config: DO(), cdp: { ...LIVE_CDP, listTabs: async () => oneTab },
+      resolveConvRoom: resolve, loadAdapters: async () => ADAPTERS,
+    });
+
+    await spine.handleInbound(request('/members=do add tab 1 c1', { msgId: 'q1', postId: 'post-1' }));
+    await drain();
+    await spine.handleInbound(request('/members=do', { msgId: 'q2', postId: 'post-2' }));
+    await drain();
+
+    // both room-scoped commands resolved through the SAME (surface, chatId) pair — never two.
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toEqual(calls[1]);
+
+    const relayReplies = bridge.sent.filter((s) => s.chat === 'egpt-mesh-do-kg' && parseMesh(s.text)?.done);
+    expect(relayReplies).toHaveLength(2);
+    expect(parseMesh(relayReplies[0].text)).toMatchObject({ post_id: 'post-1' });
+    expect(parseMesh(relayReplies[0].text).body).toContain("added 'c1'");
+    expect(parseMesh(relayReplies[1].text)).toMatchObject({ post_id: 'post-2' });   // correlation intact
+    const listBody = parseMesh(relayReplies[1].text).body;
+    expect(listBody).toContain('c1');
+    expect(listBody).not.toContain('no members yet');
+  });
+
+  it('locks: the per-command chatId stays unique (captured replies still key off it) even though room resolution now ignores it', async () => {
+    const { resolve } = keyedResolveConvRoom();
+    const { bridge, spine } = nodeStack({
+      config: DO(), cdp: { ...LIVE_CDP, listTabs: async () => oneTab },
+      resolveConvRoom: resolve, loadAdapters: async () => ADAPTERS,
+    });
+    await spine.handleInbound(request('/members=do add tab 1 c1', { msgId: 'q1', postId: 'post-1' }));
+    await drain();
+    await spine.handleInbound(request('/members=do add tab 1 c2', { msgId: 'q2', postId: 'post-2' }));
+    await drain();
+    // two independent captured runs, two independent post_id-correlated replies — no cross-talk.
+    const relayReplies = bridge.sent.filter((s) => s.chat === 'egpt-mesh-do-kg' && parseMesh(s.text)?.done);
+    expect(relayReplies).toHaveLength(2);
+    expect(parseMesh(relayReplies[0].text)).toMatchObject({ post_id: 'post-1' });
+    expect(parseMesh(relayReplies[1].text)).toMatchObject({ post_id: 'post-2' });
+  });
+
+  it('locks: no contact-<timestamp> room or conversations.yaml entry is minted for the synthetic mesh chat', async () => {
+    // The REAL resolver (contacts + ensureContact + fixedSlugFor), exactly what boot injects —
+    // proves the fix routes room resolution to the lobby WITHOUT ever touching contacts under
+    // the synthetic chat's own (surface, chatId), which is what used to mint contact-<ts>.
+    let state = emptyState();
+    const contacts = createContacts({
+      loadState: async () => state,
+      writeState: async (s) => { state = s; },
+      io: { rename: async () => {}, appendFile: async () => {} },
+    });
+    const rooms = new Map();
+    const resolveConvRoom = async (surface, chatId) => {
+      const slug = await contacts.resolve(surface, chatId);
+      if (!slug) return null;
+      if (!rooms.has(slug)) rooms.set(slug, new TmpRoom(join(base, 'conversations', surface, slug), slug));
+      return rooms.get(slug);
+    };
+    const { bridge, spine } = nodeStack({
+      config: DO(), cdp: { ...LIVE_CDP, listTabs: async () => oneTab },
+      resolveConvRoom, loadAdapters: async () => ADAPTERS,
+    });
+
+    await spine.handleInbound(request('/members=do add tab 1 c1', { msgId: 'q1', postId: 'post-1' }));
+    await drain();
+    await spine.handleInbound(request('/members=do', { msgId: 'q2', postId: 'post-2' }));
+    await drain();
+
+    expect(state.contacts?.whatsapp ?? null).toBeNull();             // never resolved through the synthetic surface/chatId
+    expect(state.contacts?.shell?.main?.slug).toBe('lobby');          // resolved through the lobby instead
+    const relayReplies = bridge.sent.filter((s) => s.chat === 'egpt-mesh-do-kg' && parseMesh(s.text)?.done);
+    expect(parseMesh(relayReplies[1].text).body).toContain('c1');
+  });
+
+  it('a command that arrives on a REAL Beeper chat (not mesh) still resolves to THAT chat\'s own room, unchanged', async () => {
+    const { resolve, calls } = keyedResolveConvRoom();
+    const commands = createCommands({
+      getConfig: () => DO(),
+      send: () => {},
+      cdp: { listTabs: async () => oneTab },
+      loadAdapters: async () => ADAPTERS,
+      resolveConvRoom: resolve,
+    });
+    // No `.mesh` mark — an ordinary inbound event, exactly what a real Beeper chat produces.
+    await commands.run({ chatId: '!fam-chat', surface: 'whatsapp', body: '/members add tab 1 c1', authorized: true });
+    await commands.run({ chatId: '!fam-chat', surface: 'whatsapp', body: '/members', authorized: true });
+    expect(calls).toEqual([['whatsapp', '!fam-chat'], ['whatsapp', '!fam-chat']]);
   });
 });
 

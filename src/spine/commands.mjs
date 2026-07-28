@@ -379,6 +379,15 @@ export function createCommands({
   const surfaceOf = (ev) => ev?.surface ?? 'whatsapp';
   const curRoomName = (ev) => currentRoom.get(surfaceOf(ev)) ?? null;
 
+  // A room-scoped command (/members, /activate) resolves its Room here — the ONE place that
+  // reads the mesh mark (bug #23 half A, 2026-07-27, mesh.mjs commandReply). A mesh-delivered
+  // command's ev.chatId is a private per-command id (`<chat>#cmd<n>`) that is DIFFERENT on every
+  // call — resolving through it mints a fresh contact-<ts> room each time, so an add and a list
+  // land in two different rooms and disagree. ev.mesh routes it to THIS node's own lobby instead
+  // (surface 'shell', jid 'main' — fixedSlugFor's fixed mapping), through the SAME resolveConvRoom
+  // seam every other room resolution uses. An ordinary (non-mesh) command is unchanged.
+  const convRoomOf = (ev) => resolveConvRoom(...(ev?.mesh ? ['shell', 'main'] : [surfaceOf(ev), ev.chatId]));
+
   // The web-brain adapter list, loaded once (dynamic import of config/brains/*-cdp.mjs)
   // and memoized. adapterFor() resolves a tab URL → its adapter, or null (→ can't add).
   let _adapters = null;
@@ -1012,7 +1021,7 @@ export function createCommands({
   // conversation you're in IS the room. (NamedRooms stay a separate explicit construct: /rooms +
   // /room <slug> members inspect/manage them; relay-wiring NamedRooms is a later phase.)
   async function members(ev, rest) {
-    const room = await resolveConvRoom(surfaceOf(ev), ev.chatId);
+    const room = await convRoomOf(ev);
     if (!room) { await send?.(ev.chatId, "can't resolve this conversation's room"); return; }
     const label = room.slug ?? 'this conversation';
     if (!rest) { await send?.(ev.chatId, await renderMembers(ev, room, label, lobbyBeings(ev, room))); return; }
@@ -1140,7 +1149,7 @@ export function createCommands({
   // when the tab is already live. Presence is separate from mode: activating does NOT
   // change the member's mode.
   async function activate(ev, id) {
-    const room = await resolveConvRoom(surfaceOf(ev), ev.chatId);
+    const room = await convRoomOf(ev);
     if (!room) { await send?.(ev.chatId, "can't resolve this conversation's room"); return; }
     const m = (await room.members()).find((x) => x.id === id);
     if (!m) { await send?.(ev.chatId, `no member '${id}' in this conversation`); return; }

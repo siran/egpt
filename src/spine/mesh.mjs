@@ -233,6 +233,11 @@ export function createMeshService({
     const ev = {
       ...meshEv(route, prompt),
       chatId: `${chatOf(route)}#cmd${++cmdSeq}`,   // a private id: the captured replies key off it
+      mesh: true,   // EXPLICIT MARK (bug #23 half A, 2026-07-27): this chatId is a private
+                    // per-command id, never a real room — a room-scoped command (/members,
+                    // /activate) must resolve to THIS node's own lobby instead, so add and
+                    // list agree and no throwaway contact-<ts> room gets minted. Read once,
+                    // in commands.mjs's room-resolution seam.
       senderId: src.senderId ?? null, senderName: src.senderName ?? null,
       authorized: !!src.authorized, isSender: !!src.isSender,
     };
