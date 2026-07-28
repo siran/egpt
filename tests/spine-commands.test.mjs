@@ -959,6 +959,33 @@ describe('/tabs /open /tab /close', () => {
     expect(sent).toHaveLength(4);
     for (const s of sent) expect(s.text).not.toMatch(/recognized/);
   });
+
+  // REGRESSION LOCK (live hang, tools/cdp.mjs fetchJson deadline): a dead Chrome whose
+  // port is still LISTENING (zombie PID) makes fetchJson's HTTP probe hang forever with
+  // no deadline — tabsReport's `catch { return 'no Chrome to list tabs from …' }` can
+  // never fire because a hang is not a rejection. This exercises the REAL cdp.mjs (no
+  // injected `cdp:` override) so the fix at the fetchJson chokepoint is what's under
+  // test, not a stand-in.
+  it('a hung Chrome (port open, never answers) times out — /tabs gets the friendly fallback, not an eternal wait', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn((url, opts) => new Promise((_resolve, reject) => {
+      opts?.signal?.addEventListener('abort', () => {
+        const e = new Error('The operation was aborted');
+        e.name = 'AbortError';
+        reject(e);
+      });
+    })));
+    try {
+      const { cmds, sent } = harness({ config: cfg });   // no cdp override — real cdp.mjs
+      const p = cmds.run({ ...self, body: '/tabs' });
+      await vi.advanceTimersByTimeAsync(3000);
+      await p;
+      expect(sent[0].text).toMatch(/no Chrome to list tabs from — try \/chrome first/);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
 });
 
 // /help — the spine dispatch (src/interpreter.mjs owns the registry + renderer; this is

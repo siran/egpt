@@ -28,16 +28,41 @@ export async function cdpHost() {
   return _hostGetter ? await _hostGetter() : 'localhost:9221';
 }
 
+// Deadline for a CDP HTTP probe. These are loopback calls to Chrome's own
+// debugging port — a live Chrome answers /json in single-digit ms, so 3s is
+// generous slack for scheduler jitter while still short enough that a hung
+// chat command fails fast instead of blocking forever. Without this, a dead
+// Chrome whose port is still LISTENING (held open by the zombie PID) accepts
+// the TCP connect and then never answers — a bare `fetch` with no deadline
+// waits on that forever (Node's fetch has no default timeout).
+const FETCH_TIMEOUT_MS = 3000;
+
 async function fetchJson(path) {
   const host = await cdpHost();
+  // A manual AbortController (rather than AbortSignal.timeout) so the deadline
+  // is driven by setTimeout — fake-timer friendly for tests, and the aborted
+  // flag tells us plainly whether OUR deadline fired vs. some other fetch failure.
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), FETCH_TIMEOUT_MS);
   let res;
-  try { res = await fetch(`http://${host}${path}`); }
+  try { res = await fetch(`http://${host}${path}`, { signal: ac.signal }); }
   catch (e) {
+    // A timeout means the port ANSWERED THE CONNECT but never answered the
+    // request — a zombie (Chrome died, OS hasn't freed the port yet). That's
+    // a different remedy than an unreachable port (nothing listening), so it
+    // gets its own message rather than the misleading "cannot reach".
+    if (ac.signal.aborted) {
+      throw new Error(
+        `Chrome at ${host} accepted the connection but didn't answer within ${FETCH_TIMEOUT_MS}ms — ` +
+        `likely a zombie Chrome (process died, port still held). Close it and run /chrome to relaunch.`
+      );
+    }
     throw new Error(
       `Cannot reach Chrome at ${host}. ` +
       `Run /chrome inside egpt to launch one with the extension, or start Chrome yourself with --remote-debugging-port=${host.split(':')[1]}.`
     );
   }
+  finally { clearTimeout(timer); }
   if (!res.ok) throw new Error(`Chrome ${path} returned ${res.status}`);
   return res.json();
 }

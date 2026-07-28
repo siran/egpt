@@ -14,7 +14,7 @@
 // Each test resets the getter via setCdpHostGetter so they don't
 // pollute each other's state.
 
-import { describe, it, beforeEach, expect } from 'vitest';
+import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
 import * as cdp from '../src/tools/cdp.mjs';
 import * as bus from '../src/tools/bus.mjs';
 
@@ -81,5 +81,71 @@ describe('busUrl()', () => {
   it('handles a host without a token suffix', async () => {
     cdp.setCdpHostGetter(() => 'someplace.local:1234');
     expect(await bus.busUrl()).toBe('http://someplace.local:1234/bus.html');
+  });
+});
+
+// fetchJson's deadline (exercised through isRunning/listTabs — its only callers'
+// public surface) — the live bug this locks: a dead Chrome whose port 9221 is
+// still LISTENING (held by the zombie PID) makes a TCP connect SUCCEED and then
+// never answers the HTTP request. A bare `fetch` with no deadline waits on that
+// forever, so isRunning()'s try/catch never fires (a hang is not a rejection) and
+// every CDP caller (tabsReport, chromeReport, /open, /tab, /close) hangs with it.
+describe('fetchJson deadline — a half-open CDP port must fail fast, not hang', () => {
+  // Mimics real fetch's contract under AbortController: never settles on its own,
+  // rejects with an AbortError once the caller's signal fires — exactly what a
+  // zombie Chrome (port open, no response) looks like from fetchJson's side.
+  const hangingFetch = () => vi.fn((url, opts) => new Promise((_resolve, reject) => {
+    opts?.signal?.addEventListener('abort', () => {
+      const e = new Error('The operation was aborted');
+      e.name = 'AbortError';
+      reject(e);
+    });
+  }));
+
+  beforeEach(() => {
+    cdp.setCdpHostGetter(() => 'localhost:9221');
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it('REPRODUCE-FIRST: a fetch that never settles fails within the deadline instead of hanging forever', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', hangingFetch());
+
+    // Attach the assertions (which register the rejection handler) BEFORE advancing
+    // the fake clock, so the promise is never observably unhandled mid-flight.
+    const runningExpectation = expect(cdp.isRunning()).resolves.toBe(false);       // caught, not hung
+    const tabsExpectation = expect(cdp.listTabs()).rejects.toThrow(/didn't answer within 3000ms/);
+    await vi.advanceTimersByTimeAsync(3000);   // the deadline (FETCH_TIMEOUT_MS in cdp.mjs)
+
+    await runningExpectation;
+    await tabsExpectation;
+  });
+
+  it('a normal response still works', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => [{ id: 'AAA', type: 'page', url: 'https://example.com' }],
+    })));
+    const tabs = await cdp.listTabs();
+    expect(tabs).toEqual([{ id: 'AAA', type: 'page', url: 'https://example.com' }]);
+  });
+
+  it('a closed port (immediate rejection) still gives the existing "Cannot reach Chrome" message', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw Object.assign(new Error('fetch failed'), { name: 'TypeError' });
+    }));
+    await expect(cdp.listTabs()).rejects.toThrow(/Cannot reach Chrome at localhost:9221/);
+  });
+
+  it('a timeout gives a DISTINCT message — the port answered the connect, not the request', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', hangingFetch());
+    const timeoutExpectation = expect(cdp.listTabs()).rejects.toThrow(/accepted the connection but didn't answer within 3000ms/);
+    await vi.advanceTimersByTimeAsync(3000);
+    await timeoutExpectation;
   });
 });
