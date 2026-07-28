@@ -300,7 +300,7 @@ export function createCommands({
   listIdentityLayers = defaultListIdentityLayers, // () -> string[] identity-layer names for the custom branch's personality pick
   agentsDir = PROFILE_AGENTS_DIR,        // where the custom branch writes <name>.yaml (injected in tests)
   identitiesDir = PROFILE_IDENTITIES_DIR,// where the custom branch writes a free-text identity layer (injected in tests)
-  configPath = CONFIG_YAML_PATH,         // where /config set writes — the real profile config.yaml by default (injected in tests, so no test ever touches the real profile)
+  configPath = CONFIG_YAML_PATH,         // where /config <key>=<value> writes — the real profile config.yaml by default (injected in tests, so no test ever touches the real profile)
   io = {},                               // { stat, readFile, writeFile, mkdir } — real fs by default; /status probes files + the custom branch authors through here
   // CDP seam for /chrome, /tabs, /open, /tab, /close — the real localhost probe by
   // default; tests inject fakes so the suite never needs a live Chrome or a real socket.
@@ -698,9 +698,9 @@ export function createCommands({
     const membersMatch = /^\/members?(?:\s+(.+?))?\s*$/i.exec(line);
     if (membersMatch) { await members(ev, membersMatch[1]?.trim() || null); return; }
 
-    // /config [set <key> <value>] — bare: a redacted dump of the live config. `set <key>
-    // <value>`: resolve <key> through config-schema.mjs (dotted path or bare leaf), parse
-    // <value> like the extension prototype does, write it, and confirm the RESOLVED path.
+    // /config [<key>[=<value>]] — bare: a redacted dump of the live config. `<key>` alone: a
+    // GET. `<key>=<value>`: resolve <key> through config-schema.mjs (dotted path or bare leaf),
+    // parse <value> like the extension prototype does, write it, and confirm the RESOLVED path.
     // Pre-catch-all, node-addressable like /status/members (see NODE_ADDRESSABLE above).
     const configMatch = /^\/config(?:\s+(.+?))?\s*$/i.exec(line);
     if (configMatch) { await send?.(ev.chatId, await configCmd(configMatch[1]?.trim() || null)); return; }
@@ -1101,14 +1101,16 @@ export function createCommands({
     await send?.(ev.chatId, `${id} → mode:${w} (${MODE_GLOSS[w]})`);
   }
 
-  // /config [set <key> <value>] — mirrors the extension prototype's grammar
-  // (extension/src/commands/misc-commands.js config()), ported to the live profile config.yaml
-  // instead of chrome.storage. Bare: a redacted dump. `set <key> <value>`: resolve <key> through
-  // resolveConfigKey (config/config-schema.mjs — a dotted path used as-is, or a bare leaf looked
-  // up in the KEYS: index), JSON.parse <value> falling back to the raw string on a parse
-  // failure (same coercion the extension uses), then write it via writeConfigKey — the
-  // comment-preserving single-key writer, never the whole-file writeConfig. Config is read at
-  // boot, so the reply always says the write takes effect on the NEXT restart; nothing here
+  // /config [<key>[=<value>]] — the `=` idiom the node binding already uses (`/config=kg`),
+  // applied to the pair (operator ruling 2026-07-28, replacing the one-day-old `set`/`get`
+  // sub-verbs — no legacy alias kept). Bare: a redacted dump. `<key>` alone: a GET. `<key>=<value>`:
+  // a SET. Both may appear together (`/config=kg default_node=do`) — the node binding is stripped
+  // by the gate before configCmd ever sees `rest`, so this needs no special handling here.
+  // <key> resolves through resolveConfigKey (config/config-schema.mjs — a dotted path used as-is,
+  // or a bare leaf looked up in the KEYS: index); <value> is JSON.parse'd, falling back to the raw
+  // string on a parse failure (same coercion the extension used), then written via writeConfigKey
+  // — the comment-preserving single-key writer, never the whole-file writeConfig. Config is read
+  // at boot, so the reply always says the write takes effect on the NEXT restart; nothing here
   // triggers one.
   // Matched against KEY NAMES, recursively. Credentials AND personal identifiers: a dump goes
   // to whatever surface asked, which is usually a real Beeper chat, permanently. `account` and
@@ -1125,13 +1127,14 @@ export function createCommands({
     }
     return value;
   }
+  const CONFIG_USAGE = 'usage: /config | /config <key> | /config <key>=<value>';
   async function configCmd(rest) {
     if (!rest) return '```json\n' + JSON.stringify(redactConfigValue(cfg()), null, 2) + '\n```';
-    const getMatch = /^get\s+(\S+)$/i.exec(rest);
-    if (getMatch) {
-      const [, keyArg] = getMatch;
-      const resolved = resolveConfigKey(keyArg);
-      if (resolved.error) return `/config get: ${resolved.message}`;
+    const eq = rest.indexOf('=');
+    if (eq === -1) {
+      // GET: a bare key, no '='.
+      const resolved = resolveConfigKey(rest);
+      if (resolved.error) return `/config: ${resolved.message}`;
       const segments = resolved.path.split('.');
       const value = segments.reduce((o, k) => o?.[k], cfg());
       if (value === undefined) return `${resolved.path} is unset`;
@@ -1141,11 +1144,15 @@ export function createCommands({
       const redacted = redactConfigValue({ [leaf]: value })[leaf];
       return `${resolved.path} = ${JSON.stringify(redacted)}`;
     }
-    const setMatch = /^set\s+(\S+)\s+(.+)$/i.exec(rest);
-    if (!setMatch) return 'usage: /config | /config get <key> | /config set <key> <value>';
-    const [, keyArg, valueRaw] = setMatch;
+    // SET: `<key>=<value>`, split on the FIRST '=' only — a value may itself contain one (a
+    // token, a URL's query string) and must arrive intact. Strict: no spaces adjacent to the
+    // '=' (one unambiguous form) — called out explicitly rather than falling through to a
+    // generic "not a registered key" on the mangled key that whitespace would produce.
+    if (rest[eq - 1] === ' ' || rest[eq + 1] === ' ') return `${CONFIG_USAGE} — no spaces around '='`;
+    const keyArg = rest.slice(0, eq);
+    const valueRaw = rest.slice(eq + 1);
     const resolved = resolveConfigKey(keyArg);
-    if (resolved.error) return `/config set: ${resolved.message}`;
+    if (resolved.error) return `/config: ${resolved.message}`;
     let val = valueRaw;
     try { val = JSON.parse(valueRaw); } catch { /* keep the raw string, exactly like the extension */ }
     await writeConfigKey(configPath, resolved.path, val);

@@ -1,7 +1,7 @@
-// tests/config-command.test.mjs — /config [set <key> <value>] (src/spine/commands.mjs
-// configCmd), replacing the unrecognized-command catch-all fallthrough for the operator's
-// live line `/config set default_node do`. Every test injects its OWN temp configPath — never
-// the real ~/.egpt/config/config.yaml.
+// tests/config-command.test.mjs — /config [<key>[=<value>]] (src/spine/commands.mjs
+// configCmd), the `=` grammar (operator ruling 2026-07-28) that replaced the one-day-old
+// `set`/`get` sub-verbs: bare = the redacted dump, `<key>` = GET, `<key>=<value>` = SET.
+// Every test injects its OWN temp configPath — never the real ~/.egpt/config/config.yaml.
 import { describe, it, expect } from 'vitest';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -26,11 +26,11 @@ function harness({ config = {}, configPath }) {
   return { cmds, sent };
 }
 
-describe('/config set — bare leaf + dotted path resolution, write, redaction', () => {
-  it('REPRODUCE-FIRST: /config set default_node do resolves the bare leaf to dispatch.default_node, writes it, and confirms the resolved path', async () => {
+describe('/config <key>=<value> — bare leaf + dotted path resolution, write, redaction', () => {
+  it("REPRODUCE-FIRST: /config=kg default_node=do resolves the bare leaf to dispatch.default_node, writes it, and confirms the resolved path", async () => {
     const configPath = await tmpConfigPath();
     const { cmds, sent } = harness({ config: { node_name: 'kg' }, configPath });
-    await cmds.run({ body: '/config set default_node do', chatId: '!self', authorized: true });
+    await cmds.run({ body: '/config=kg default_node=do', chatId: '!self', authorized: true });
     expect(sent).toHaveLength(1);
     expect(sent[0].text).toMatch(/dispatch\.default_node/);
     // Names the COMMAND, not just "restart": the operator relaunched the editor and wondered
@@ -43,7 +43,7 @@ describe('/config set — bare leaf + dotted path resolution, write, redaction',
   it('dotted path form (dispatch.default_node) behaves identically to the bare-leaf form', async () => {
     const configPath = await tmpConfigPath();
     const { cmds, sent } = harness({ config: {}, configPath });
-    await cmds.run({ body: '/config set dispatch.default_node do', chatId: '!self', authorized: true });
+    await cmds.run({ body: '/config dispatch.default_node=do', chatId: '!self', authorized: true });
     expect(sent[0].text).toMatch(/dispatch\.default_node/);
     const written = await readFile(configPath, 'utf8');
     expect(written).toMatch(/dispatch:\s*\n\s*default_node: do/);
@@ -52,23 +52,50 @@ describe('/config set — bare leaf + dotted path resolution, write, redaction',
   it('value parsing mirrors the extension prototype: JSON.parse, falling back to the raw string', async () => {
     const configPath = await tmpConfigPath();
     const { cmds, sent } = harness({ config: {}, configPath });
-    await cmds.run({ body: '/config set dispatch.auto_paused true', chatId: '!self', authorized: true });
+    await cmds.run({ body: '/config dispatch.auto_paused=true', chatId: '!self', authorized: true });
     expect(sent[0].text).toMatch(/set dispatch\.auto_paused = true/);
     const written = await readFile(configPath, 'utf8');
     expect(written).toMatch(/auto_paused: true/);   // real boolean, not the string "true"
   });
 
-  it('comment-preservation: a config.yaml with comments keeps every comment after a /config set write', async () => {
+  it('a value containing its own "=" (a URL query string) survives whole — only the FIRST "=" is the boundary', async () => {
+    const configPath = await tmpConfigPath();
+    const { cmds, sent } = harness({ config: {}, configPath });
+    await cmds.run({ body: '/config transcription.server.endpoint=https://example.com/hook?a=b&c=d', chatId: '!self', authorized: true });
+    expect(sent[0].text).toContain('https://example.com/hook?a=b&c=d');
+    const written = await readFile(configPath, 'utf8');
+    expect(written).toContain('https://example.com/hook?a=b&c=d');
+  });
+
+  it('"<key>=" with an empty value sets an empty string — the natural way to clear default_node', async () => {
+    const configPath = await tmpConfigPath();
+    const { cmds, sent } = harness({ config: { node_name: 'do', dispatch: { default_node: 'do' } }, configPath });
+    await cmds.run({ body: '/config default_node=', chatId: '!self', authorized: true });
+    expect(sent[0].text).toMatch(/dispatch\.default_node = ""/);
+    const written = await readFile(configPath, 'utf8');
+    expect(written).toMatch(/default_node: ''|default_node: ""/);
+  });
+
+  it('comment-preservation: a config.yaml with comments keeps every comment after a /config <key>=<value> write', async () => {
     const initial = `# operator notes: do not remove this block\nnode_name: kg   # inline note on node_name\n`;
     const configPath = await tmpConfigPath(initial);
     const { cmds } = harness({ config: { node_name: 'kg' }, configPath });
-    await cmds.run({ body: '/config set default_node do', chatId: '!self', authorized: true });
+    await cmds.run({ body: '/config default_node=do', chatId: '!self', authorized: true });
     const after = await readFile(configPath, 'utf8');
     // eslint-disable-next-line no-console
     console.log('--- comment-preservation BEFORE ---\n' + initial + '--- AFTER ---\n' + after);
     expect(after).toContain('# operator notes: do not remove this block');
     expect(after).toContain('# inline note on node_name');
     expect(after).toContain('default_node: do');
+  });
+
+  it('the write is ONE line — full file text, not a parse', async () => {
+    const initial = `node_name: kg\n`;
+    const configPath = await tmpConfigPath(initial);
+    const { cmds } = harness({ config: { node_name: 'kg' }, configPath });
+    await cmds.run({ body: '/config default_node=do', chatId: '!self', authorized: true });
+    const after = await readFile(configPath, 'utf8');
+    expect(after).toBe('node_name: kg\ndispatch:\n  default_node: do\n');
   });
 
   it('token redaction: bare /config dump never leaks a token/secret/key/password-ish value', async () => {
@@ -89,7 +116,7 @@ describe('/config set — bare leaf + dotted path resolution, write, redaction',
   it('unregistered key refused — the config file is not created', async () => {
     const configPath = await tmpConfigPath();
     const { cmds, sent } = harness({ config: {}, configPath });
-    await cmds.run({ body: '/config set totallyMadeUpKey banana', chatId: '!self', authorized: true });
+    await cmds.run({ body: '/config totallyMadeUpKey=banana', chatId: '!self', authorized: true });
     expect(sent[0].text).toMatch(/not a registered config key/);
     await expect(readFile(configPath, 'utf8')).rejects.toThrow();
   });
@@ -97,7 +124,7 @@ describe('/config set — bare leaf + dotted path resolution, write, redaction',
   it('ambiguous bare leaf refused with candidates listed — "enabled" is a KEYS: leaf under 4 top-level blocks', async () => {
     const configPath = await tmpConfigPath();
     const { cmds, sent } = harness({ config: {}, configPath });
-    await cmds.run({ body: '/config set enabled true', chatId: '!self', authorized: true });
+    await cmds.run({ body: '/config enabled=true', chatId: '!self', authorized: true });
     expect(sent[0].text).toMatch(/matches more than one/);
     expect(sent[0].text).toMatch(/local_llm\.enabled/);
     expect(sent[0].text).toMatch(/transcription\.enabled/);
@@ -106,24 +133,25 @@ describe('/config set — bare leaf + dotted path resolution, write, redaction',
     await expect(readFile(configPath, 'utf8')).rejects.toThrow();
   });
 
-  it('usage reply for a bare "set" with missing args — no write', async () => {
+  it('spaces around "=" are rejected with an explicit usage message — the strict, unambiguous form', async () => {
     const configPath = await tmpConfigPath();
     const { cmds, sent } = harness({ config: {}, configPath });
-    await cmds.run({ body: '/config set', chatId: '!self', authorized: true });
+    await cmds.run({ body: '/config default_node = do', chatId: '!self', authorized: true });
     expect(sent[0].text).toMatch(/usage: \/config/);
+    expect(sent[0].text).toMatch(/no spaces around/);
     await expect(readFile(configPath, 'utf8')).rejects.toThrow();
   });
 });
 
-describe('/config get <key> — single-key read, mirrors set\'s resolution + redaction', () => {
-  it('REPRODUCE-FIRST: /config get default_node resolves the bare leaf and names dispatch.default_node = "do"', async () => {
-    // node_name matches default_node so the NODE GATE (run() line ~574) resolves this LOCALLY —
+describe('/config <key> — bare-key GET, mirrors the write path\'s resolution + redaction', () => {
+  it('REPRODUCE-FIRST: /config default_node resolves the bare leaf and names dispatch.default_node = "do"', async () => {
+    // node_name matches default_node so the NODE GATE (run() line ~583) resolves this LOCALLY —
     // an isolated cmds.run() has no mesh to forward through, so a default_node naming ANOTHER
     // node would silently drop the command here (that forwarding path is covered separately in
     // tests/remote-command.test.mjs, which runs the full spine+mesh stack).
     const configPath = await tmpConfigPath();
     const { cmds, sent } = harness({ config: { node_name: 'do', dispatch: { default_node: 'do' } }, configPath });
-    await cmds.run({ body: '/config get default_node', chatId: '!self', authorized: true });
+    await cmds.run({ body: '/config default_node', chatId: '!self', authorized: true });
     expect(sent).toHaveLength(1);
     expect(sent[0].text).toMatch(/dispatch\.default_node/);
     expect(sent[0].text).toMatch(/do/);
@@ -132,59 +160,59 @@ describe('/config get <key> — single-key read, mirrors set\'s resolution + red
   it('dotted path form (dispatch.default_node) behaves identically to the bare-leaf form', async () => {
     const configPath = await tmpConfigPath();
     const { cmds, sent } = harness({ config: { node_name: 'do', dispatch: { default_node: 'do' } }, configPath });
-    await cmds.run({ body: '/config get dispatch.default_node', chatId: '!self', authorized: true });
+    await cmds.run({ body: '/config dispatch.default_node', chatId: '!self', authorized: true });
     expect(sent[0].text).toMatch(/dispatch\.default_node = "do"/);
   });
 
   it('a registered key with no value set replies "is unset", distinct from an unregistered refusal', async () => {
     const configPath = await tmpConfigPath();
     const { cmds, sent } = harness({ config: {}, configPath });
-    await cmds.run({ body: '/config get default_node', chatId: '!self', authorized: true });
+    await cmds.run({ body: '/config default_node', chatId: '!self', authorized: true });
     expect(sent[0].text).toMatch(/dispatch\.default_node is unset/);
   });
 
-  it('token redaction: /config get of a token-ish key never leaks the real value', async () => {
+  it('token redaction: a GET of a token-ish key never leaks the real value', async () => {
     const configPath = await tmpConfigPath();
     const config = {
       beeper: { use: 'main', main: { account: 'me@example', token: 'SUPER-SECRET-TOKEN-VALUE' } },
     };
     const { cmds, sent } = harness({ config, configPath });
-    await cmds.run({ body: '/config get beeper.main.token', chatId: '!self', authorized: true });
+    await cmds.run({ body: '/config beeper.main.token', chatId: '!self', authorized: true });
     expect(sent[0].text).not.toContain('SUPER-SECRET-TOKEN-VALUE');
     expect(sent[0].text).toContain('<redacted>');
   });
 
-  it('unregistered key refused with the same message /config set uses', async () => {
+  it('unregistered key refused with the same message the write path uses', async () => {
     const configPath = await tmpConfigPath();
     const { cmds, sent } = harness({ config: {}, configPath });
-    await cmds.run({ body: '/config get totallyMadeUpKey', chatId: '!self', authorized: true });
+    await cmds.run({ body: '/config totallyMadeUpKey', chatId: '!self', authorized: true });
     expect(sent[0].text).toMatch(/not a registered config key/);
   });
 
-  it('ambiguous bare leaf refused with candidates listed, same as /config set', async () => {
+  it('ambiguous bare leaf refused with candidates listed, same as the write path', async () => {
     const configPath = await tmpConfigPath();
     const { cmds, sent } = harness({ config: {}, configPath });
-    await cmds.run({ body: '/config get enabled', chatId: '!self', authorized: true });
+    await cmds.run({ body: '/config enabled', chatId: '!self', authorized: true });
     expect(sent[0].text).toMatch(/matches more than one/);
     expect(sent[0].text).toMatch(/local_llm\.enabled/);
   });
 });
 
 describe('/config participates in node addressing (NODE_ADDRESSABLE gate)', () => {
-  it('/config=do set default_node do applies LOCALLY on the node named "do", replying with the resolved path', async () => {
+  it('/config=do default_node=do applies LOCALLY on the node named "do", replying with the resolved path', async () => {
     const configPath = await tmpConfigPath();
     const { cmds, sent } = harness({ config: { node_name: 'do', account_peers: ['kg', 'do'] }, configPath });
-    await cmds.run({ body: '/config=do set default_node do', chatId: '!fam', surface: 'whatsapp', authorized: true });
+    await cmds.run({ body: '/config=do default_node=do', chatId: '!fam', surface: 'whatsapp', authorized: true });
     expect(sent).toHaveLength(1);
     expect(sent[0].text).toMatch(/dispatch\.default_node/);
     const written = await readFile(configPath, 'utf8');
     expect(written).toMatch(/default_node: do/);
   });
 
-  it('/config=do set default_node do stays SILENT on a co-account peer node that is NOT named (kg)', async () => {
+  it('/config=do default_node=do stays SILENT on a co-account peer node that is NOT named (kg)', async () => {
     const configPath = await tmpConfigPath();
     const { cmds, sent } = harness({ config: { node_name: 'kg', account_peers: ['kg', 'do'] }, configPath });
-    await cmds.run({ body: '/config=do set default_node do', chatId: '!fam', surface: 'whatsapp', authorized: true });
+    await cmds.run({ body: '/config=do default_node=do', chatId: '!fam', surface: 'whatsapp', authorized: true });
     expect(sent).toHaveLength(0);
     await expect(readFile(configPath, 'utf8')).rejects.toThrow();   // never touched
   });
