@@ -6,6 +6,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createCommands } from '../src/spine/commands.mjs';
 import { createSpine } from '../src/spine/spine.mjs';
+import { COMMANDS } from '../src/interpreter.mjs';
 import { Room } from '../src/room-core.mjs';
 import { emptyState, ensureContact, getBeing, recordThread, patchContact, DEFAULT_ALLOWED_TOOLS, READONLY_ALLOWED_TOOLS } from '../src/conversations-state.mjs';
 
@@ -957,6 +958,137 @@ describe('/tabs /open /tab /close', () => {
     await cmds.run({ ...self, body: '/close 1' });
     expect(sent).toHaveLength(4);
     for (const s of sent) expect(s.text).not.toMatch(/recognized/);
+  });
+});
+
+// /help — the spine dispatch (src/interpreter.mjs owns the registry + renderer; this is
+// just "resolve the surface, call it, send"). Before this was wired, a bare "help" (the
+// editor forwards h/help/? as literal "/help", src/shell/commands.mjs) fell through to
+// the unwired-command catch-all — the exact failure this locks against.
+describe('/help', () => {
+  const self = { chatId: '!self', surface: 'whatsapp' };
+  const cfg = { whatsapp: { chat_id: '!self' } };
+
+  it('replies with real help text, not the unwired catch-all', async () => {
+    const { cmds, sent } = harness({ config: cfg });
+    await cmds.run({ ...self, body: '/help' });
+    expect(sent).toHaveLength(1);
+    // The catch-all's signature phrase (see run()'s final line) — distinct from this
+    // renderer's own "NOT YET WIRED" tail label, which also happens to contain the word
+    // "recognized".
+    expect(sent[0].text).not.toMatch(/wired in v2 so far/);
+    expect(sent[0].text).toMatch(/\/status/);   // a real, wired command shows up
+  });
+
+  it('lists an unwired command only in the labelled tail, never as if it worked', async () => {
+    const { cmds, sent } = harness({ config: cfg });
+    await cmds.run({ ...self, body: '/help' });
+    const text = sent[0].text;
+    const tailIdx = text.indexOf('NOT YET WIRED');
+    const rulesIdx = text.indexOf('/rules');   // registered, but nothing dispatches it
+    expect(tailIdx).toBeGreaterThan(-1);
+    expect(rulesIdx).toBeGreaterThan(tailIdx);
+  });
+
+  it('shows the editor-local commands (theme/exit/clear) even though the spine never dispatches them', async () => {
+    const { cmds, sent } = harness({ config: cfg });
+    await cmds.run({ ...self, body: '/help' });
+    const text = sent[0].text;
+    const tailIdx = text.indexOf('NOT YET WIRED');
+    for (const usage of ['/theme', '/exit', '/clear']) {
+      expect(text.indexOf(usage)).toBeGreaterThan(-1);
+      expect(text.indexOf(usage)).toBeLessThan(tailIdx);
+    }
+  });
+
+  it('is recognized from the Self DM, refused from a random chat (same operator gate as every other command)', () => {
+    const { cmds } = harness({ config: cfg });
+    expect(cmds.isCommand({ body: '/help', chatId: '!self', surface: 'whatsapp' })).toBe(true);
+    expect(cmds.isCommand({ body: '/help', chatId: '!group', surface: 'whatsapp' })).toBe(false);
+  });
+});
+
+// Drift guard: the registry's `wired` marker (src/interpreter.mjs) is a hand-set claim
+// about what src/spine/commands.mjs run() actually dispatches. A hand-maintained claim
+// with no check is exactly how this went stale before (/help forwarded by the shell,
+// never implemented in the spine, and nothing noticed for a release). This reads the
+// THREE real source files as text and cross-checks the marker against them mechanically,
+// rather than trusting a second hand-written list that could drift the same way.
+//
+// What this catches: a command marked wired:true whose dispatch regex is renamed/removed
+// from commands.mjs; a command actually dispatched there but left unmarked; an
+// editor-local marker for a token shell/commands.mjs doesn't actually `case` on.
+//
+// What this can NOT catch (documented, not silently assumed): whether a dispatched
+// command's BEHAVIOR matches its registry `usage`/`desc` text — e.g. /egpt is dispatched
+// (it shares /e's re-point-wizard regex) but arms a wizard using its argument as a target
+// search term, not the status/new/list/brain/rewind sub-verbs its own desc describes.
+// That is a real, pre-existing documentation drift this test cannot see (it would need to
+// execute every branch with every argument shape) — flagged here, not fixed, since fixing
+// it is a rewrite of /egpt's own behavior or its own desc text, outside this change.
+describe('/help "wired" marker matches src/spine/commands.mjs + src/shell/commands.mjs (drift guard)', () => {
+  const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+  const SPINE_SRC = readFileSync(join(ROOT, 'src', 'spine', 'commands.mjs'), 'utf8');
+  const INGEST_SRC = readFileSync(join(ROOT, 'src', 'spine', 'ingest.mjs'), 'utf8');
+  const SHELL_SRC = readFileSync(join(ROOT, 'src', 'shell', 'commands.mjs'), 'utf8');
+
+  // Every single-token dispatch in run() is written as `<name>Match = /^\/word...` — a
+  // regex literal anchored on the command word. Extract the set MECHANICALLY (rather than
+  // hand-copying it) so a renamed/removed dispatch line fails this test instead of the
+  // marker silently going stale next to it.
+  function tokensDispatchedIn(src) {
+    const out = new Set();
+    const re = /=\s*\/\^\\\/([a-z][a-z0-9?-]*)/gi;
+    let m;
+    while ((m = re.exec(src))) out.add(m[1].replace(/\?$/, '').toLowerCase());
+    return out;
+  }
+
+  const spineTokens = tokensDispatchedIn(SPINE_SRC);
+  // /e and /egpt share one alternation regex (`(?:e|egpt)`), which the generic scan above
+  // can't parse (it only matches a single bare word after `^\/`) — detected explicitly.
+  if (SPINE_SRC.includes('(?:e|egpt)')) { spineTokens.add('e'); spineTokens.add('egpt'); }
+  // Lifecycle (/restart, /upgrade, /rewind) dispatches through an IMPORTED function
+  // (lifecycleExit, src/spine/ingest.mjs), not an inline regex in commands.mjs — verified
+  // by requiring BOTH the call site here AND the literal token comparisons there.
+  if (
+    SPINE_SRC.includes('lifecycleExit(line') &&
+    INGEST_SRC.includes("'/restart'") && INGEST_SRC.includes("'/upgrade'") && INGEST_SRC.includes("'/rewind'")
+  ) { spineTokens.add('restart'); spineTokens.add('upgrade'); spineTokens.add('rewind'); }
+
+  it('every entry marked wired:true has a real dispatch in commands.mjs (or ingest.mjs lifecycle)', () => {
+    const offenders = [];
+    for (const e of COMMANDS) {
+      if (e.wired !== true) continue;
+      const tok = e.cmd.replace(/^\//, '').toLowerCase();
+      if (!spineTokens.has(tok)) offenders.push(e.cmd);
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('every token commands.mjs actually dispatches, that ALSO has a registry entry, is marked wired', () => {
+    const offenders = [];
+    for (const e of COMMANDS) {
+      if (!e.cmd) continue;
+      const tok = e.cmd.replace(/^\//, '').toLowerCase();
+      if (spineTokens.has(tok) && e.wired !== true) offenders.push(e.cmd);
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('every entry marked wired:"editor" is a real `case` in src/shell/commands.mjs\'s router', () => {
+    const offenders = [];
+    for (const e of COMMANDS) {
+      if (e.wired !== 'editor') continue;
+      if (!SHELL_SRC.includes(`case '${e.cmd}':`)) offenders.push(e.cmd);
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('sanity: the mechanical scan actually found the known dozen (catches a scan that silently matches nothing)', () => {
+    for (const tok of ['status', 'chrome', 'tabs', 'open', 'room', 'rooms', 'config', 'help', 'egpt', 'restart', 'upgrade', 'rewind']) {
+      expect(spineTokens.has(tok), `expected "${tok}" in the dispatched-token scan`).toBe(true);
+    }
   });
 });
 

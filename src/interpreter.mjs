@@ -32,16 +32,29 @@ export function parseInput(text) {
 //             'shell'      shell only (egpt.mjs)
 //             'extension'  browser extension only (App.jsx)
 //             'both'       both surfaces
-// helpText/helpHtml filter by surface so neither side advertises commands the
-// other implements. If 'surface' is omitted on a section header, the section
-// is shown when any of its commands are visible.
+// 'wired'   is this command actually reachable, right now, on the surface(s) above?
+//             true      — dispatched by src/spine/commands.mjs run() (verified against
+//                          that file's source, not memory — see the drift-guard test in
+//                          tests/spine-commands.test.mjs).
+//             'editor'  — dispatched locally by src/shell/commands.mjs, never reaching
+//                          the spine (verified against THAT file's source the same way).
+//             omitted   — registered vocabulary, nothing dispatches it yet. Typing it
+//                          falls through to the spine's unrecognized-command catch-all.
+// A command missing 'wired' is real vocabulary, not a bug to fix here — /help's job is
+// to say so honestly, not to pretend every registry entry works.
+//
+// helpText(brainTypes) — no surface arg — renders the FULL registry unfiltered (every
+// command, every surface), same as before 'wired' existed. This is the extension's own
+// call (App.jsx formatHelp). helpText(brainTypes, surface) is the spine's /help call:
+// only entries relevant to `surface` are considered, wired ones render inline, unwired
+// ones move to a clearly labelled tail instead of interleaving.
 
 export const COMMANDS = [
   { section: 'ROOM' },
   { cmd: '/rules',          surface: 'shell',     usage: '/rules',                                         desc: 'write room etiquette' },
   { cmd: '/last',           surface: 'shell',     usage: '/last [N]',                                      desc: 'tail N messages (default 10)' },
   { cmd: '/recap',          surface: 'shell',     usage: '/recap [N]',                                     desc: 'chronological one-liner recap across observed chats (default 30); merges every chat\'s recent[] ring by timestamp. Distinct from /last (transcript only) and /channels (per-chat).' },
-  { cmd: '/clear',          surface: 'extension', usage: '/clear',                                         desc: 'clear display' },
+  { cmd: '/clear',          surface: 'both',      usage: '/clear',                                         desc: 'clear display', wired: 'editor' },
   { cmd: '/channels',       surface: 'shell',     usage: '/channels [N] [messages-per-chat]',             desc: 'list the top-N most-active WA chats numbered as @waN, with M recent message lines per chat (default 10 3). Lists via the WhatsApp (beeper) bridge. /channels then @wa<N> <body> to send. Pinned chats (📌) float to the top.' },
   { cmd: '/pin',            surface: 'shell',     usage: '/pin [@waN ...|clear]',                          desc: 'eGPT-side pin for WA chats — surfaces in /channels + logon summary alongside WhatsApp\'s own pin (unlimited; WA caps phone-side at 3). No-arg lists current eGPT pins. /pin clear removes all.' },
   { cmd: '/unpin',          surface: 'shell',     usage: '/unpin @waN [@waM ...]',                         desc: 'remove eGPT pin from one or more chats (resolved against the last /channels listing).' },
@@ -54,18 +67,18 @@ export const COMMANDS = [
   { section: 'PERSONA' },
   { cmd: '/identity',       surface: 'shell',     usage: '/identity [@<session> | show]',                 desc: 'show or (re)install the egpt persona manifest (the conversation-e personality, brains.identity, default ./e_identity.md). "show" prints the current manifest; no arg installs into @e + every active session.' },
   { section: 'SYSTEM' },
-  { cmd: '/status',         surface: 'shell',     usage: '/status',                                        desc: 'room snapshot: sessions, files, config' },
+  { cmd: '/status',         surface: 'shell',     usage: '/status',                                        desc: 'room snapshot: sessions, files, config', wired: true },
   { cmd: '/file',           surface: 'shell',     usage: '/file',                                          desc: 'show conversation file path' },
   { cmd: '/conversations',  surface: 'shell',     usage: '/conversations',                                 desc: 'list available conversation files' },
   { cmd: '/conversation',   surface: 'shell',     usage: '/conversation <name|path>',                      desc: 'switch to a conversation file' },
-  { cmd: '/exit',           surface: 'shell',     usage: '/exit',                                          desc: 'quit egpt' },
+  { cmd: '/exit',           surface: 'shell',     usage: '/exit',                                          desc: 'quit egpt', wired: 'editor' },
   { cmd: '/version',        surface: 'shell',     usage: '/version',                                       desc: 'show current commit, branch, last tag, and dirty state' },
-  { cmd: '/upgrade',        surface: 'shell',     usage: '/upgrade',                                       desc: 'exit with code 42; egpt-daemon pulls + rebuilds + restarts' },
-  { cmd: '/restart',        surface: 'shell',     usage: '/restart',                                       desc: 'exit with code 43; egpt-daemon respawns from current disk (picks up external git pulls)' },
-  { cmd: '/rewind',         surface: 'shell',     usage: '/rewind <ref>',                                  desc: 'exit with code 44; egpt-daemon checks out <ref>, installs, builds, restarts' },
+  { cmd: '/upgrade',        surface: 'shell',     usage: '/upgrade',                                       desc: 'exit with code 42; egpt-daemon pulls + rebuilds + restarts', wired: true },
+  { cmd: '/restart',        surface: 'shell',     usage: '/restart',                                       desc: 'exit with code 43; egpt-daemon respawns from current disk (picks up external git pulls)', wired: true },
+  { cmd: '/rewind',         surface: 'shell',     usage: '/rewind <ref>',                                  desc: 'exit with code 44; egpt-daemon checks out <ref>, installs, builds, restarts', wired: true },
 
   { section: 'SESSIONS' },
-  { cmd: '/open',           surface: 'both',      usage: '/open <brain> [name]',                           desc: 'open a new tab/subprocess and register a session' },
+  { cmd: '/open',           surface: 'both',      usage: '/open <brain> [name]',                           desc: 'open a new tab/subprocess and register a session', wired: true },
   { cmd: '/attach',         surface: 'both',      usage: '/attach [brain|profile] [name] [tab]',           desc: 'attach CDP tab, brain profile, or rescan' },
   { cmd: '/detach',         surface: 'both',      usage: '/detach <name>',                                 desc: 'remove session from room' },
   { cmd: '/use',            surface: 'both',      usage: '/use [<name>[,<name>...]|clear] [incoming|outgoing|both]', desc: 'set the sessions / WA chats that plain-text routes to. For @waN tokens, an optional direction word applies to all of them (see /join). Multiple /use calls accumulate; "clear" empties the list.' },
@@ -80,8 +93,8 @@ export const COMMANDS = [
   { cmd: '/profile',        surface: 'shell',     usage: '/profile <name> <url-or-id>',                    desc: 'quick-create profile from ChatGPT/Claude URL' },
 
   { section: 'BROWSER (CDP)' },
-  { cmd: '/chrome',         surface: 'shell',     usage: '/chrome',                                        desc: 'launch the brain Chrome with the extension loaded' },
-  { cmd: '/tabs',           surface: 'both',      usage: '/tabs [all]',                                    desc: 'list open Chrome pages' },
+  { cmd: '/chrome',         surface: 'shell',     usage: '/chrome',                                        desc: 'launch the brain Chrome with the extension loaded', wired: true },
+  { cmd: '/tabs',           surface: 'both',      usage: '/tabs [all]',                                    desc: 'list open Chrome pages', wired: true },
   { cmd: '/refresh',        surface: 'shell',     usage: '/refresh [@name]',                               desc: 're-poll CDP tab; append full reply' },
   { cmd: '/browse',         surface: 'shell',     usage: '/browse [via=op] [url] [@name] ["instr"]',       desc: 'open URL or delegate to operator' },
   { cmd: '/continue',       surface: 'shell',     usage: '/continue',                                      desc: 'resume after captcha / login pause' },
@@ -101,20 +114,20 @@ export const COMMANDS = [
   { cmd: '/prompts',        surface: 'shell',     usage: '/prompts [on|off]',                              desc: 'show/hide full prompt sent to operators' },
 
   { section: 'ROOMS' },
-  { cmd: '/room',           surface: 'shell',     usage: '/room [name|create <n>|join <n>|leave|delete <n>]', desc: 'show room info, switch, create, or delete' },
-  { cmd: '/rooms',          surface: 'shell',     usage: '/rooms',                                         desc: 'list saved rooms (legacy YAML snapshots, not the live room set)' },
+  { cmd: '/room',           surface: 'shell',     usage: '/room [name|create <n>|join <n>|leave|delete <n>]', desc: 'show room info, switch, create, or delete', wired: true },
+  { cmd: '/rooms',          surface: 'shell',     usage: '/rooms',                                         desc: 'list saved rooms (legacy YAML snapshots, not the live room set)', wired: true },
   { cmd: '/save-room',      surface: 'shell',     usage: '/save-room [name]',                              desc: 'snapshot the current room lineup as YAML' },
 
   { section: 'MISC' },
   { cmd: '/whatsapp',       surface: 'shell',     usage: '/whatsapp [start|pair|disconnect|allow <num>|revoke <num>|allowed]', desc: 'manage whatsapp bridge: start (existing auth), pair (wipe + new QR), disconnect, allow/revoke numbers' },
-  { cmd: '/config',         surface: 'both',      usage: '/config [key [value]]',                          desc: 'read or write config' },
+  { cmd: '/config',         surface: 'both',      usage: '/config [key [value]]',                          desc: 'read or write config', wired: true },
   { cmd: '/themes',         surface: 'shell',     usage: '/themes',                                        desc: 'list available themes' },
-  { cmd: '/theme',          surface: 'shell',     usage: '/theme <name|next|prev>',                        desc: 'switch color theme (live)' },
+  { cmd: '/theme',          surface: 'shell',     usage: '/theme <name|next|prev>',                        desc: 'switch color theme (live)', wired: 'editor' },
   { cmd: '/bus-key',        surface: 'extension', usage: '/bus-key [gen|set <key>|clear]',                 desc: 'manage bus signing key (HMAC); empty prints current, gen makes a new one, paste into shell EGPT_BUS_KEY' },
-  { cmd: '/help',           surface: 'both',      usage: '/help [<term>|all]',                             desc: 'interactive help/config menu (aliases /h, /?). No arg opens the numbered menu (reply numbers/text to navigate, q to quit); <term> fuzzy-lists matching commands + config keys; "all" prints the full flat list.' },
+  { cmd: '/help',           surface: 'both',      usage: '/help',                                          desc: 'list commands wired on this surface; unwired registry entries print in a separate labelled tail', wired: true },
   { cmd: '/log',            surface: 'shell',     usage: '/log [N=30]',                                    desc: 'show last N log entries (telemetry, hints, debug)' },
   { cmd: '/logs',           surface: 'shell',     usage: '/logs [N=30]',                                   desc: 'alias for /log' },
-  { cmd: '/egpt',           surface: 'shell',     usage: '/egpt [status|new|list|brain <type> [<ref>]|rewind [<n>|<ref-prefix>]]', desc: 'manage @egpt persona: status (default), new (fresh thread), list (history), brain (switch to another brain ± ref), rewind (resume a past thread)' },
+  { cmd: '/egpt',           surface: 'shell',     usage: '/egpt [status|new|list|brain <type> [<ref>]|rewind [<n>|<ref-prefix>]]', desc: 'manage @egpt persona: status (default), new (fresh thread), list (history), brain (switch to another brain ± ref), rewind (resume a past thread)', wired: true },
 ];
 
 // All known command tokens (across all surfaces). Used by surfaces to validate
@@ -134,11 +147,18 @@ export function commandSetFor(surface) {
 
 // ── Help renderers ────────────────────────────────────────────────────────────
 //
-// /help is a common block: both surfaces render the FULL registry. Commands
-// that only exist on one surface get a marker — (shell) or (ext) — so users
-// see the whole egpt vocabulary and know which calls work locally vs. need
-// to be routed (today: typed in the other surface; eventually: through the
-// distributed-room CDP-tab bridge).
+// No `surface` arg: render the FULL registry (every command, every surface).
+// Commands that only exist on one surface get a marker — (shell) or (ext) — so
+// readers see the whole egpt vocabulary and know which calls work locally vs.
+// need to be routed. This is App.jsx's own call (formatHelp) — the extension is
+// backburnered, so its output is untouched.
+//
+// A `surface` arg (the spine's /help): only entries relevant to that surface
+// (its own + 'both') are considered, and only the WIRED ones render in the
+// normal list — an unwired entry left inline would send the operator into the
+// unrecognized-command catch-all. Everything unwired instead lands in one
+// clearly labelled tail block, so the vocabulary stays discoverable without
+// being advertised as usable.
 
 const PAD = 44; // usage column width
 
@@ -148,15 +168,37 @@ function surfaceMark(entry) {
   return '';
 }
 
-/** Plain-text help. Same output on every surface. */
-export function helpText(brainTypes = []) {
+function sectionLine(section) {
+  return `── ${section} ${'─'.repeat(Math.max(0, PAD - section.length - 4))}`;
+}
+
+function cmdLine(entry, { mark = true } = {}) {
+  return `${entry.usage.padEnd(PAD)}${entry.desc}${mark ? surfaceMark(entry) : ''}`;
+}
+
+/**
+ * Plain-text help.
+ *   helpText(brainTypes)          — full unfiltered registry (App.jsx).
+ *   helpText(brainTypes, surface) — that surface's wired commands, plus an
+ *                                    unwired tail (the spine's /help).
+ */
+export function helpText(brainTypes = [], surface = null) {
+  const relevant = (e) => !surface || e.surface === 'both' || e.surface === surface;
   const lines = [''];
+  let pendingSection = null;
   for (const entry of COMMANDS) {
-    if (entry.section) {
-      lines.push(`── ${entry.section} ${'─'.repeat(Math.max(0, PAD - entry.section.length - 4))}`);
-      continue;
+    if (entry.section) { pendingSection = entry; continue; }
+    if (!relevant(entry)) continue;
+    if (surface && !entry.wired) continue;   // unwired -> the tail below, not here
+    if (pendingSection) { lines.push(sectionLine(pendingSection.section)); pendingSection = null; }
+    lines.push(cmdLine(entry, { mark: !surface }));
+  }
+  if (surface) {
+    const unwired = COMMANDS.filter((e) => e.cmd && relevant(e) && !e.wired);
+    if (unwired.length) {
+      lines.push('', sectionLine('NOT YET WIRED — recognized, not implemented'));
+      for (const entry of unwired) lines.push(cmdLine(entry, { mark: false }));
     }
-    lines.push(`${entry.usage.padEnd(PAD)}${entry.desc}${surfaceMark(entry)}`);
   }
   if (brainTypes.length) lines.push('', `Brain types: ${brainTypes.join('  ')}`);
   lines.push('─'.repeat(PAD + 20), '');

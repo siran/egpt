@@ -109,16 +109,16 @@ describe('command registry', () => {
 
   it('commandSetFor("shell") includes shell-only and both', () => {
     const set = commandSetFor('shell');
-    expect(set.has('/save')).toBe(true);   // shell-only
-    expect(set.has('/help')).toBe(true);   // both
-    expect(set.has('/clear')).toBe(false); // extension-only
+    expect(set.has('/save')).toBe(true);     // shell-only
+    expect(set.has('/help')).toBe(true);     // both
+    expect(set.has('/bus-key')).toBe(false); // extension-only
   });
 
   it('commandSetFor("extension") includes extension-only and both', () => {
     const set = commandSetFor('extension');
-    expect(set.has('/clear')).toBe(true);  // extension-only
-    expect(set.has('/help')).toBe(true);   // both
-    expect(set.has('/save')).toBe(false);  // shell-only
+    expect(set.has('/bus-key')).toBe(true);  // extension-only
+    expect(set.has('/help')).toBe(true);     // both
+    expect(set.has('/save')).toBe(false);    // shell-only
   });
 
   it('shell ∪ extension equals COMMAND_SET (no surface left "neither")', () => {
@@ -141,7 +141,7 @@ describe('help renderers', () => {
   it('helpText() marks shell-only and ext-only commands; leaves "both" unmarked', () => {
     const out = helpText([]);
     expect(out).toMatch(/\/save\s+.*\(shell\)/);
-    expect(out).toMatch(/\/clear\s+.*\(ext\)/);
+    expect(out).toMatch(/\/bus-key\s+.*\(ext\)/);
     // /help is "both" — should not have a (shell)/(ext) marker on its line.
     const helpLine = out.split('\n').find(l => l.startsWith('/help'));
     expect(helpLine).toBeDefined();
@@ -156,5 +156,53 @@ describe('help renderers', () => {
     const out = helpHtml([]);
     expect(out).toMatch(/<code>\/save/);
     expect(out).toMatch(/<b>ROOM<\/b>/);
+  });
+});
+
+describe('help renderer: surface-filtered (the spine\'s /help)', () => {
+  it('every entry declaring wired is either true or "editor" (no other truthy junk)', () => {
+    for (const e of COMMANDS) {
+      if (!e.cmd || e.wired === undefined) continue;
+      expect([true, 'editor']).toContain(e.wired);
+    }
+  });
+
+  it('helpText(brainTypes, "shell") shows only shell+both entries', () => {
+    const out = helpText([], 'shell');
+    expect(out).not.toMatch(/\/bus-key\b/);   // extension-only — absent, not even in the tail
+  });
+
+  it('a wired shell command renders in the main list, above the tail', () => {
+    const out = helpText([], 'shell');
+    const tailIdx = out.indexOf('NOT YET WIRED');
+    const statusIdx = out.indexOf('/status');
+    expect(statusIdx).toBeGreaterThan(-1);
+    expect(tailIdx).toBeGreaterThan(-1);
+    expect(statusIdx).toBeLessThan(tailIdx);
+  });
+
+  it('an unwired shell command renders ONLY after the "NOT YET WIRED" tail marker', () => {
+    const out = helpText([], 'shell');
+    const tailIdx = out.indexOf('NOT YET WIRED');
+    const rulesIdx = out.indexOf('/rules');
+    expect(rulesIdx).toBeGreaterThan(tailIdx);
+  });
+
+  it('editor-local commands (wired: "editor") still appear in the shell list, not the tail', () => {
+    const out = helpText([], 'shell');
+    const tailIdx = out.indexOf('NOT YET WIRED');
+    for (const usage of ['/theme', '/exit', '/clear']) {
+      const idx = out.indexOf(usage);
+      expect(idx, `${usage} should appear`).toBeGreaterThan(-1);
+      expect(idx, `${usage} should be above the tail`).toBeLessThan(tailIdx);
+    }
+  });
+
+  it('helpText(brainTypes) with no surface is unchanged by the wired field (back-compat for App.jsx)', () => {
+    const out = helpText([]);
+    expect(out).not.toMatch(/NOT YET WIRED/);
+    for (const e of COMMANDS) {
+      if (e.cmd) expect(out).toContain(e.usage);   // every command still present, wired or not
+    }
   });
 });

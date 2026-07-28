@@ -34,6 +34,7 @@ import { CONFIG_YAML_PATH, writeConfigKey } from '../tools/config-io.mjs';
 import { resolveConfigKey } from '../../config/config-schema.mjs';
 import { isRunning as cdpIsRunning, listTabs as cdpListTabs, cdpHost as cdpHostOf, openTab as cdpOpenTab, activateTarget as cdpActivateTarget, closeTab as cdpCloseTab } from '../tools/cdp.mjs';
 import { findChromeExecutable, chromeArgs, chromeCommandLine, resolveBrainProfile } from '../tools/chrome-launcher.mjs';
+import { helpText } from '../interpreter.mjs';
 
 // Where a manually-launched Chrome should keep its profile. v1's shell hardcoded
 // ~/.egpt/chrome/profiles/brain — a usually-BLANK fresh dir. resolveBrainProfile() instead
@@ -703,6 +704,15 @@ export function createCommands({
     // Pre-catch-all, node-addressable like /status/members (see NODE_ADDRESSABLE above).
     const configMatch = /^\/config(?:\s+(.+?))?\s*$/i.exec(line);
     if (configMatch) { await send?.(ev.chatId, await configCmd(configMatch[1]?.trim() || null)); return; }
+
+    // /help — the interpreter's registry + helpText renderer own the command list and its
+    // 'wired' honesty marker (src/interpreter.mjs); this just resolves the surface and
+    // sends it. Every command reaching this node's operator does so through the spine, so
+    // there is only one surface to resolve here: 'shell' — the extension reads the
+    // registry directly (App.jsx), never through this dispatcher. Pre-catch-all, same slot
+    // as /config/status/room.
+    const helpMatch = /^\/help\b/i.exec(line);
+    if (helpMatch) { await send?.(ev.chatId, helpText([], 'shell')); return; }
 
     // /activate <id> — reopen a brain member whose Chrome tab was closed (its saved
     // targetId is no longer live), refreshing its targetId. A no-op when already live.
