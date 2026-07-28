@@ -169,18 +169,25 @@ export function createMeshService({
   // surface "<target> did not answer" home. Cleared the moment the reply opens its
   // origin mirror (openOriginStream) or otherwise surfaces (surface). Keyed by the
   // origin chatId — one in-flight relay per origin chat (matches "one relay per node").
-  const pending = new Map();   // originChatId -> timer handle
-  function armTimeout(chatId, targetLabel) {
-    clearTimeoutFor(chatId);
+  const pending = new Map();   // waitKey -> timer handle
+  // KEYED BY THE PER-RELAY waitKey, not chatId alone (operator 2026-07-28): two concurrent relays
+  // from the SAME chat used to collide on ONE chatId-keyed timer — the second armTimeout cleared
+  // the first's timer before rearming, so a stranded relay never even surfaced "did not answer".
+  // waitKey (relay.mjs's synthPostId/postId, stashed onto `origin.waitKey`) is unique per relay;
+  // falls back to chatId when absent (relayOut never resolved / no waitKey — byte-identical to
+  // the old single-timer behaviour for that case).
+  function armTimeout(waitKey, chatId, targetLabel) {
+    const key = String(waitKey ?? chatId);
+    clearTimeoutFor(key);
     const t = setTimer(() => {
-      pending.delete(String(chatId));
+      pending.delete(key);
       Promise.resolve(bridge.send(String(chatId), `⏱️ ${targetLabel} did not answer`)).catch(() => {});
     }, timeoutMs());
-    pending.set(String(chatId), t);
+    pending.set(key, t);
   }
-  function clearTimeoutFor(chatId) {
-    const t = pending.get(String(chatId));
-    if (t !== undefined) { clearTimer(t); pending.delete(String(chatId)); }
+  function clearTimeoutFor(key) {
+    const t = pending.get(String(key));
+    if (t !== undefined) { clearTimer(t); pending.delete(String(key)); }
   }
 
   // NODE → ROUTE (operator 2026-07-25: "we do agent-base routing"). Every relay path in the
@@ -329,7 +336,7 @@ export function createMeshService({
     // being's identity better than its own node did). Any surface home ends the origin wait.
     surface: async (returnTo, text) => {
       const chat = returnTo?.chat_id ?? returnTo?.chatId ?? (typeof returnTo === 'string' ? returnTo : null);
-      if (chat != null) clearTimeoutFor(chat);
+      if (chat != null) clearTimeoutFor(returnTo?.waitKey ?? chat);
       if (chat != null) await bridge.send(String(chat), text);
     },
     // ORIGIN placeholder: post "🤔 thinking…" and return its confirmed id. That id
@@ -385,7 +392,7 @@ export function createMeshService({
     openOriginStream: (returnTo, info = {}) => {
       const chat = returnTo?.chat_id ?? returnTo?.chatId ?? (typeof returnTo === 'string' ? returnTo : null);
       if (chat == null) return null;
-      clearTimeoutFor(chat);                                     // the reply is streaming — the wait is over
+      clearTimeoutFor(returnTo?.waitKey ?? chat);                 // the reply is streaming — the wait is over
       const render = (body) => { const b = String(body ?? '').trim(); return b || PLACEHOLDER; };
       const stream = bridge.startStream(String(chat), '', { existingMsgId: info.msgId || null, showThink: !info.structural });
       if (!stream) return null;
@@ -442,9 +449,8 @@ export function createMeshService({
         for (const p of target.paths) paths.push({ route: await canonRoute(p.route), to: p.to, label: p.label });
         const origin = { surface: ev.surface, chat_id: ev.chatId, name: ev.chatName ?? ev.chatId };
         const sender = ev.senderName ?? 'someone';
-        armTimeout(ev.chatId, `${being} (${paths.length} paths)`);
         const ok = await relay.relayOut({ being, paths, body: ev.body, origin, sender, structural });
-        if (!ok) clearTimeoutFor(ev.chatId);
+        if (ok) armTimeout(origin.waitKey, ev.chatId, `${being} (${paths.length} paths)`);
         return ok;
       }
       let route = target?.route;                                // the relay agent's channel
@@ -460,9 +466,8 @@ export function createMeshService({
       const origin = { surface: ev.surface, chat_id: ev.chatId, name: ev.chatName ?? ev.chatId };
       const sender = ev.senderName ?? 'someone';
       const label = to || `${being} (${chatOf(route)})`;
-      armTimeout(ev.chatId, label);
       const ok = await relay.relayOut({ being, route, to, body: ev.body, origin, sender, structural });
-      if (!ok) clearTimeoutFor(ev.chatId);                      // relayOut already surfaced the failure
+      if (ok) armTimeout(origin.waitKey, ev.chatId, label);      // relayOut already surfaced a failure
       return ok;
     },
 

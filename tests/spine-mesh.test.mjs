@@ -727,6 +727,54 @@ describe('mesh service — origin-wait timeout', () => {
   });
 });
 
+// ── SHELL-ORIGIN (operator 2026-07-28): shell-port's postStatus resolves — never throws — but
+//    always returns null (the shell has no editable message id, by design). Pre-fix, `pending` was
+//    keyed by `chatId` ALONE: two concurrent relays from the SAME chat collided on ONE timer — the
+//    second armTimeout(ev.chatId,…) cleared the first's timer via clearTimeoutFor(ev.chatId) before
+//    rearming, so a stranded relay didn't even surface "did not answer". The fix keys `pending` by
+//    the per-relay `origin.waitKey` (set by relay.mjs from its own synthetic post_id), armed AFTER
+//    relayOut resolves so the key is populated. ──
+describe('mesh service — shell-origin (postStatus resolves null) concurrent relays get independent timeouts', () => {
+  it('two concurrent forwards from the SAME chat each get their OWN timer AND their OWN reply home', async () => {
+    const timers = fakeTimers();
+    const { bridge, mesh } = svc({ node: 'kg', meshCfg: { timeout_ms: 60000 }, timers });
+    // shell-port.postStatus's exact contract: resolves, never returns a string.
+    bridge.postStatus = async (chat, text) => { bridge.statusPosts.push({ chat, text, id: null }); return null; };
+
+    const ev1 = { surface: 'shell', chatId: 'CHAT', chatName: 'HFM', senderName: 'An', body: '@don /tabs' };
+    const ev2 = { surface: 'shell', chatId: 'CHAT', chatName: 'HFM', senderName: 'An', body: '@wren /tabs' };
+    const ok1 = await mesh.forward(ev1, { being: 'don', route: { room_id: 'R1' }, to: 'don.do' });
+    const ok2 = await mesh.forward(ev2, { being: 'wren', route: { room_id: 'R2' }, to: 'wren.mo' });
+    expect(ok1).toBe(true);
+    expect(ok2).toBe(true);
+
+    // TWO independent timer entries — the second forward did not clear/replace the first's
+    expect(timers.timers).toHaveLength(2);
+    expect(timers.timers.every((t) => !t.cleared)).toBe(true);
+
+    // each request envelope minted its OWN synthetic post_id (no real one — postStatus returned null)
+    const [p1, p2] = bridge.sent.map((s) => parseMesh(s.text).post_id);
+    expect(p1).toMatch(/^noid:/);
+    expect(p2).toMatch(/^noid:/);
+    expect(p1).not.toBe(p2);
+
+    // reply #1 arrives and finds its own way home, clearing ONLY its own timer
+    await mesh.handle({ surface: 'shell', chatId: 'R1', msgId: 'r1', body: encodeMesh({ by: 'don.do', body: 'reply one', re: 'HFM.kg', post_id: p1, done: true }) });
+    expect(timers.timers[0].cleared).toBe(true);
+    expect(timers.timers[1].cleared).toBe(false);              // the second relay's wait is UNTOUCHED (was falsely cleared pre-fix)
+
+    // reply #2 arrives and finds its own way home too — not stranded
+    await mesh.handle({ surface: 'shell', chatId: 'R2', msgId: 'r2', body: encodeMesh({ by: 'wren.mo', body: 'reply two', re: 'HFM.kg', post_id: p2, done: true }) });
+    expect(timers.timers[1].cleared).toBe(true);
+
+    const mirrors = bridge.streams.filter((s) => s.chat === 'CHAT');
+    expect(mirrors.some((s) => s.finals.includes('reply one'))).toBe(true);
+    expect(mirrors.some((s) => s.finals.includes('reply two'))).toBe(true);   // was stranded pre-fix
+    // a synthetic post_id is never handed through as a literal existingMsgId (no shell id to PATCH)
+    expect(mirrors.every((s) => s.opts.existingMsgId == null)).toBe(true);
+  });
+});
+
 // ── the SPINE SEAM: handleInbound routes envelopes + mesh targets to the service,
 //    and leaves ordinary chat untouched (regression lock g). ──
 function seamSpine({ router, mesh, mayReply = true } = {}) {

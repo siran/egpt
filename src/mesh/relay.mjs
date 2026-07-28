@@ -222,6 +222,13 @@ const appendVia = (existing, hop) => { const e = String(existing ?? '').trim(); 
 // can change either string in a single edit.
 const THINKING_STATUS = '🤔 thinking…';
 const STRUCTURAL_STATUS = '🔗 relaying…';
+// LOCAL_KEY_PREFIX (operator 2026-07-28): shell-port's postStatus returns null BY DESIGN (the
+// shell has no editable message id) — so a shell-origin relay had NO postId to key `awaiting`
+// by, fell back to fromName, and TWO concurrent shell relays to the same target collided on
+// ONE awaiting entry (the second evicted the first's, stranding its reply). A synthetic
+// `noid:N` key gives each such relay its own distinct awaiting slot. Must not collide with a
+// real bridge message id.
+const LOCAL_KEY_PREFIX = 'noid:';   // must not collide with a real bridge message id
 
 export function createMeshRelay({
   node,                              // this spine's node_name (e.g. "kg", "do")
@@ -267,6 +274,7 @@ export function createMeshRelay({
   log = () => {},
 } = {}) {
   const awaiting = new Map();   // origin name -> returnTo (so a reply's `re:` surfaces home)
+  let seq = 0;   // synthetic post_id counter (LOCAL_KEY_PREFIX) — one per no-real-id ack
   // ORIGIN-side: relayRoomMsgId -> { handle } for an in-flight relayed reply we're
   // mirroring (the responder edits its relay-room message; we edit ours in the origin
   // chat). Capped; entries cleared on the `done` frame.
@@ -319,23 +327,29 @@ export function createMeshRelay({
     if (Array.isArray(paths)) {
       const fromName = (origin && origin.name) || '';
       let postId = null;
+      let ackSettled = false;                 // did ackWithPostId run to completion (regardless of what it returned)?
       const statusText = structural ? STRUCTURAL_STATUS : THINKING_STATUS;
-      if (ackWithPostId) { try { const _raw = await ackWithPostId(origin, statusText); postId = typeof _raw === 'string' ? _raw : null; } catch { /* best-effort */ } }
-      else await notify(origin, statusText);
+      if (ackWithPostId) {
+        try { const _raw = await ackWithPostId(origin, statusText); postId = typeof _raw === 'string' ? _raw : null; ackSettled = true; }
+        catch { /* best-effort — ackSettled stays false, exactly like today's failure path */ }
+      } else {
+        await notify(origin, statusText);
+      }
+      const synthPostId = postId || (ackSettled ? `${LOCAL_KEY_PREFIX}${++seq}` : '');
       const viaSeed = `${being}.${node}`;
       let anyOk = false;
       for (const p of paths) {
         if (!p?.route) continue;
         const to = String(p?.to ?? '').trim();
         try {
-          const ok = await guardedSend(p.route, encodeMesh({ by: sender || 'someone', body, from: fromName, from_node: String(node), to, post_id: postId || '', via: viaSeed }));
+          const ok = await guardedSend(p.route, encodeMesh({ by: sender || 'someone', body, from: fromName, from_node: String(node), to, post_id: synthPostId, via: viaSeed }));
           if (ok) anyOk = true;
           else log(`mesh: multipath ${being} path ${p.label ?? '?'} — send paused (loop guard)`);
         } catch (e) { log(`mesh: multipath ${being} path ${p.label ?? '?'} failed: ${e?.message ?? e}`); }
       }
       if (!anyOk) { await surface(origin, `!! mesh: all paths to ${being} failed`); return false; }
-      const awaitKey = postId || fromName;
-      if (awaitKey && origin) awaiting.set(awaitKey, { origin, structural });
+      const awaitKey = synthPostId || fromName;
+      if (awaitKey && origin) { origin.waitKey = awaitKey; awaiting.set(awaitKey, { origin, structural }); }
       return true;
     }
     const tgt = explicitTo || being;                                     // human-readable label
@@ -346,15 +360,15 @@ export function createMeshRelay({
     // as the stream arrives. The placeholder carries TEXT (not a lone emoji) — a bare
     // emoji renders jumbo-big on WhatsApp/Beeper; it's edited in place into the reply.
     let postId = null;
+    let ackSettled = false;                 // did ackWithPostId run to completion (regardless of what it returned)?
     const statusText = structural ? STRUCTURAL_STATUS : THINKING_STATUS;
     if (ackWithPostId) {
-      try {
-        const _raw = await ackWithPostId(origin, statusText);
-        postId = typeof _raw === 'string' ? _raw : null;
-      } catch { /* best-effort */ }
+      try { const _raw = await ackWithPostId(origin, statusText); postId = typeof _raw === 'string' ? _raw : null; ackSettled = true; }
+      catch { /* best-effort — ackSettled stays false, exactly like today's failure path */ }
     } else {
       await notify(origin, statusText);
     }
+    const synthPostId = postId || (ackSettled ? `${LOCAL_KEY_PREFIX}${++seq}` : '');
     try {
       // `from_node` lets the responder build `re: ${fromName}.${node}` (e.g. "HFM.kg")
       // so the origin can parse the return-node and look up the right route + awaiting entry.
@@ -367,7 +381,7 @@ export function createMeshRelay({
       // (e.g. carol posting into Rodz1) — seed `via` with its own identity so the traceroute
       // lists every relay agent the request passed through, including the origin's.
       const viaSeed = `${being}.${node}`;
-      const ok = await guardedSend(route, encodeMesh({ by: sender || 'someone', body, from: fromName, from_node: String(node), to, post_id: postId || '', via: viaSeed }));
+      const ok = await guardedSend(route, encodeMesh({ by: sender || 'someone', body, from: fromName, from_node: String(node), to, post_id: synthPostId, via: viaSeed }));
       if (!ok) { await surface(origin, `!! mesh: too many sends to ${tgt}'s channel — paused (loop guard)`); return false; }
     }
     catch (e) { await surface(origin, `!! mesh relay to ${tgt} failed: ${e?.message ?? e}`); return false; }
@@ -375,8 +389,8 @@ export function createMeshRelay({
     // so TWO concurrent relays from the SAME origin chat (identical `re:`) hold DISTINCT return
     // routes — the first reply home no longer deletes the second's entry and strands it. Fall back
     // to the origin name when no placeholder id was captured (no ackWithPostId → non-streaming path).
-    const awaitKey = postId || fromName;
-    if (awaitKey && origin) awaiting.set(awaitKey, { origin, structural });
+    const awaitKey = synthPostId || fromName;
+    if (awaitKey && origin) { origin.waitKey = awaitKey; awaiting.set(awaitKey, { origin, structural }); }
     return true;
   }
 
@@ -419,8 +433,12 @@ export function createMeshRelay({
         if (repliesDone.has(key)) return true;       // this stage finalized → late re-delivery is inert
         let s = streamingIn.get(key);
         if (!s && back && openOriginStream) {
-          // ORIGIN: edit the origin placeholder (post_id) in place as the reply streams home.
-          const handle = openOriginStream(back, { by: prov.by, msgId: prov.post_id || null, structural: !!entry?.structural });
+          // ORIGIN: edit the origin placeholder (post_id) in place as the reply streams home. A
+          // SYNTHETIC post_id (LOCAL_KEY_PREFIX-prefixed — minted for a no-editable-id origin like
+          // the shell) is never a real bridge message id: pass null so a bridge that DOES treat a
+          // truthy msgId as one to PATCH (e.g. Beeper) never mis-edits an id that doesn't exist.
+          const isSynthPost = typeof prov.post_id === 'string' && prov.post_id.startsWith(LOCAL_KEY_PREFIX);
+          const handle = openOriginStream(back, { by: prov.by, msgId: isSynthPost ? null : (prov.post_id || null), structural: !!entry?.structural });
           if (handle) {
             s = { handle }; awaiting.delete(backKey);
             streamingIn.set(key, s);

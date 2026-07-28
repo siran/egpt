@@ -90,7 +90,9 @@ describe('mesh relay — YAML provenance over a shared channel', () => {
     // both observe the reply; kg correlates via re:HFM.kg and surfaces home with the being's identity (by)
     await h.deliver(h.channel[1]);
     expect(h.surfaced.kg).toEqual([
-      { origin: { chat_id: 'HFM-id', name: 'HFM' }, text: 'you said: hi', info: { by: 'don.do' } },
+      // waitKey is the NEW stash relay.mjs stamps onto the caller's own origin object (operator
+      // 2026-07-28) — here, the legacy no-ackWithPostId fallback, so it's the fromName ('HFM').
+      { origin: { chat_id: 'HFM-id', name: 'HFM', waitKey: 'HFM' }, text: 'you said: hi', info: { by: 'don.do' } },
     ]);
     expect(h.surfaced.do).toHaveLength(0);
   });
@@ -499,6 +501,53 @@ describe('mesh relay — multipath (two concurrent relays from one origin chat)'
 
     expect(mirrors['p1']?.finished).toBe('reply one');   // first placeholder answered
     expect(mirrors['p2']?.finished).toBe('reply two');   // second placeholder answered (was stranded pre-fix)
+  });
+});
+
+// ── SHELL-ORIGIN (operator 2026-07-28): shell-port's postStatus resolves — it never throws — but
+//    always returns null (the shell has no editable message id, by design). Pre-fix, `awaitKey`
+//    fell back to `fromName`, so TWO concurrent shell relays from the SAME origin shared ONE
+//    `awaiting` key; the second `awaiting.set` evicted the first's entry, stranding its reply
+//    (confirmed live: typing `/tabs` twice quickly on the shell only ever completed once). A
+//    synthetic `noid:N` post_id (minted whenever ackWithPostId settles without a real string) now
+//    gives each such relay its own distinct awaiting slot. ──
+describe('mesh relay — shell-origin (ackWithPostId settles null, never throws) concurrent relays', () => {
+  it('REPRODUCE-FIRST: two concurrent relays from ONE origin (no real postId) do not strand either reply', async () => {
+    const sent = [];
+    const mirrors = [];
+    const kg = createMeshRelay({
+      node: 'kg', send: async (_r, t) => sent.push(t), surface: async () => {}, log: () => {},
+      isLocalBeing: () => false,
+      ackWithPostId: async () => null,   // shell-port.postStatus's exact contract: resolves, never a string
+      openOriginStream: (returnTo, info) => {
+        const m = { open: info, returnTo, updates: [], finished: null };
+        mirrors.push(m);
+        return { update: (b) => m.updates.push(b), finish: async (b) => { m.finished = b; } };
+      },
+    });
+    const origin = { surface: 'shell', chat_id: 'SHELL-1', name: 'shell' };
+    await kg.relayOut({ being: 'don', route: { room_id: 'R1' }, to: 'don.do', body: '@don a', origin, sender: 'An' });
+    await kg.relayOut({ being: 'wren', route: { room_id: 'R2' }, to: 'wren.mo', body: '@wren b', origin, sender: 'An' });
+
+    expect(sent).toHaveLength(2);
+    const [pid1, pid2] = sent.map((t) => parseMesh(t).post_id);
+    expect(pid1).toMatch(/^noid:/);                       // synthetic key minted (never the empty string of today)
+    expect(pid2).toMatch(/^noid:/);
+    expect(pid1).not.toBe(pid2);                          // THE FIX: two distinct awaiting slots, not one shared fromName key
+
+    // reply #1 (to the FIRST relay) arrives and finishes first …
+    await kg.onRoomMessage({ route: { room_id: 'R1' }, text: encodeMesh({ by: 'don.do', body: 'reply one', re: 'shell.kg', post_id: pid1, done: true }), msgId: 'm1' });
+    // … THEN reply #2 (to the SECOND relay) arrives — it must still find its own return route
+    await kg.onRoomMessage({ route: { room_id: 'R2' }, text: encodeMesh({ by: 'wren.mo', body: 'reply two', re: 'shell.kg', post_id: pid2, done: true }), msgId: 'm2' });
+
+    expect(mirrors).toHaveLength(2);
+    expect(mirrors[0].finished).toBe('reply one');
+    expect(mirrors[1].finished).toBe('reply two');        // was stranded pre-fix (both shared the fromName key)
+    // a SYNTHETIC post_id must never ride through as a literal msgId to edit (the shell has none;
+    // this also guards a future no-editable-id surface on a bridge that DOES treat a truthy msgId
+    // as one to PATCH).
+    expect(mirrors[0].open.msgId).toBeNull();
+    expect(mirrors[1].open.msgId).toBeNull();
   });
 });
 
