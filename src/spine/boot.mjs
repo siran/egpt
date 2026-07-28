@@ -198,11 +198,18 @@ function shellHeaderGroupOf(agent, nodeName) {
 //   personaName = labelOf(defaultKey) — NOT re-derived here (no second scan for default:true).
 //   nodeName    = cfg.node_name — the LOCAL group's key when an agent has no `to:`/`paths:`.
 //   agents      = cfg.agents — absent/empty tolerated (no throw; just no trailing groups segment).
+//   defaultNode = raw `dispatch.default_node` (string|undefined/null; normalized in here, trim+lowercase).
+//                 Renders ` → <default_node>` right after LOBBY_SLUG, UNLESS it's unset/empty OR
+//                 equals nodeName itself (bare commands run locally either way — no arrow implying
+//                 a route that isn't happening).
 // Groups render in agents-map insertion order (JS object order already preserves it); handles
 // render within a group in agent-declaration order. SHORT HANDLE = the shortest string in the
 // agent's `handles:` array, else its map key.
-export function computeShellHeader({ nodeName, personaName, agents } = {}) {
-  const base = `🟢 ${personaName} ${LOBBY_SLUG} — ? for help · ctrl-d = send`;
+export function computeShellHeader({ nodeName, personaName, agents, defaultNode } = {}) {
+  const normDefaultNode = String(defaultNode ?? '').trim().toLowerCase();
+  const normNodeName = String(nodeName ?? '').trim().toLowerCase();
+  const arrow = (normDefaultNode && normDefaultNode !== normNodeName) ? ` → ${normDefaultNode}` : '';
+  const base = `🟢 ${personaName} ${LOBBY_SLUG}${arrow} — ? for help · ctrl-d = send`;
   const map = (agents && typeof agents === 'object' && !Array.isArray(agents)) ? agents : {};
   const groups = new Map();   // groupKey → [ '@handle', ... ], insertion order = first agent encountered
   for (const [key, a] of Object.entries(map)) {
@@ -807,7 +814,7 @@ export async function boot({
   // 2026-07-26. The wrap is a Proxy precisely so this port's `isConnected` GETTER stays live.
   // THE PERMANENT SHELL HEADER (operator 2026-07-27, computeShellHeader above): computed HERE,
   // the ONE place config is read for this feature — the editor never touches config.yaml.
-  const shellHeader = computeShellHeader({ nodeName: node_name, personaName: labelOf(defaultKey), agents: cfg.agents });
+  const shellHeader = computeShellHeader({ nodeName: node_name, personaName: labelOf(defaultKey), agents: cfg.agents, defaultNode: cfg.dispatch?.default_node });
   const shellPort = lasso.wrap(createShellPort({
     wakeWords,
     addressWithoutAt,                     // same switch, same route — the shell gate and the beeper gate move together

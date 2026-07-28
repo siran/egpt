@@ -582,6 +582,25 @@ describe('computeShellHeader — the permanent shell status line', () => {
     expect(computeShellHeader({ nodeName: 'kg', personaName: 'egpt' })).toBe('🟢 egpt lobby — ? for help · ctrl-d = send');
     expect(() => computeShellHeader({})).not.toThrow();
   });
+
+  it('`defaultNode` set to a DIFFERENT node than `nodeName` inserts a " → <default_node>" segment right after LOBBY_SLUG', () => {
+    const s = computeShellHeader({ nodeName: 'kg', personaName: 'egpt', defaultNode: 'do' });
+    expect(s).toBe('🟢 egpt lobby → do — ? for help · ctrl-d = send');
+  });
+
+  it('`defaultNode` naming THIS node itself (case-insensitive) renders with NO arrow — identical to the unset case', () => {
+    expect(computeShellHeader({ nodeName: 'kg', personaName: 'egpt', defaultNode: 'kg' }))
+      .toBe('🟢 egpt lobby — ? for help · ctrl-d = send');
+    expect(computeShellHeader({ nodeName: 'kg', personaName: 'egpt', defaultNode: 'KG' }))
+      .toBe('🟢 egpt lobby — ? for help · ctrl-d = send');
+  });
+
+  it('`defaultNode` absent or empty string renders with NO arrow', () => {
+    expect(computeShellHeader({ nodeName: 'kg', personaName: 'egpt' }))
+      .toBe('🟢 egpt lobby — ? for help · ctrl-d = send');
+    expect(computeShellHeader({ nodeName: 'kg', personaName: 'egpt', defaultNode: '' }))
+      .toBe('🟢 egpt lobby — ? for help · ctrl-d = send');
+  });
 });
 
 // STRAY WHISPER-SERVER REAP (operator 2026-07-10): dropping `local` from a profile's

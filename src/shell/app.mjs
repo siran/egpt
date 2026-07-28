@@ -167,7 +167,18 @@ function App({ server, themes, initialTheme, onError }) {
     // including a header-only frame with neither text nor streaming nor delete — that shape
     // must update the header and fall through WITHOUT touching the transcript/live state below.
     server.onSpineMessage(m => {
-      if (m.header != null) setHeader(m.header);
+      // A header-only frame rides on EVERY (re)connect (shell-port.mjs's ws.on('open')) — the
+      // spine process may have restarted in between, wiping its in-memory `awaiting` map, so
+      // any live streaming line left over from before the restart has nowhere to land and would
+      // otherwise sit stuck forever. Clear it here, in the header branch itself, since that's
+      // the one signal guaranteed to fire on reconnect regardless of what else the frame carries.
+      if (m.header != null) {
+        setHeader(m.header);
+        setLive(prev => {
+          if (prev) add('system', 'spine reconnected — a pending reply was dropped');
+          return null;
+        });
+      }
       if (!m.text && !m.streaming && !m.delete) return;
       if (m.streaming) { setLive({ text: m.text }); return; }
       setLive(null);

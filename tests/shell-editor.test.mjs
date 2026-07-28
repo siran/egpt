@@ -222,6 +222,37 @@ describe('shell editor — permanent header (source guard)', () => {
   });
 });
 
+// A STUCK LIVE LINE after a spine restart (operator 2026-07-28; source guard, same rationale
+// as the guards above). A header-only frame rides on EVERY (re)connect and is the one signal
+// guaranteed to fire when the spine's in-memory `awaiting` map is wiped by a restart, so the
+// live-clearing must live INSIDE (or unconditionally reachable from) the `m.header != null`
+// branch, and BEFORE the early return that a header-only frame (no text/streaming/delete)
+// otherwise trips — else a live line left over from before the restart is never cleared.
+describe('shell editor — reconnect clears a stuck live line (source guard)', () => {
+  const src = readFileSync(new URL('../src/shell/app.mjs', import.meta.url), 'utf8');
+
+  it('the header branch itself calls setLive, clearing any stuck live line', () => {
+    const headerIdx = src.indexOf('if (m.header != null) {');
+    expect(headerIdx).toBeGreaterThan(-1);
+    const earlyReturnIdx = src.indexOf('if (!m.text && !m.streaming && !m.delete) return;');
+    expect(earlyReturnIdx).toBeGreaterThan(-1);
+    const headerBlock = src.slice(headerIdx, earlyReturnIdx);
+    expect(headerBlock).toContain('setLive(prev =>');
+    // the header branch (and its setLive call) must appear BEFORE the early return, since a
+    // header-only frame trips that early return and must not skip the live-clearing above it.
+    expect(headerIdx).toBeLessThan(earlyReturnIdx);
+  });
+
+  it('the dropped-reply system row is gated on a truthy previous live line, not unconditional', () => {
+    const rowIdx = src.indexOf("add('system', 'spine reconnected — a pending reply was dropped')");
+    expect(rowIdx).toBeGreaterThan(-1);
+    const guardIdx = src.lastIndexOf('if (prev)', rowIdx);
+    expect(guardIdx).toBeGreaterThan(-1);
+    // the guard must sit directly before the add() call, not somewhere unrelated earlier in the file.
+    expect(rowIdx - guardIdx).toBeLessThan(40);
+  });
+});
+
 describe('shell editor — history buffer (↑/↓ recall)', () => {
   it('up() with no entries is a no-op (null)', () => {
     expect(hist.up(hist.empty(), 'draft')).toBeNull();
