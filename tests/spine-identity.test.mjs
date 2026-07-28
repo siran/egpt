@@ -2,7 +2,7 @@
 // line (plans/2606291226-SPINE-REWRITE-PLAN.md §3, C7.6). Locks the network→surface/node mapping
 // and the kind/mention classification.
 import { describe, it, expect } from 'vitest';
-import { createIdentity } from '../src/spine/identity.mjs';
+import { createIdentity, surfaceOf } from '../src/spine/identity.mjs';
 
 const identity = createIdentity({ now: () => Date.UTC(2026, 5, 29, 14, 5) }); // 14:05 UTC
 
@@ -45,8 +45,15 @@ describe('identity.build', () => {
   it('maps telegram/signal networks to their node + surface', () => {
     expect(identity.build({ body: 'x', from: { ...FROM, network: 'telegram' } })).toMatchObject({ surface: 'telegram', node: 'tg' });
     expect(identity.build({ body: 'x', from: { ...FROM, network: 'signal' } })).toMatchObject({ surface: 'signal', node: 'sig' });
-    // account-instance id prefix-matches; unknown network falls back to whatsapp surface
+    // account-instance id prefix-folds onto its shared whatsapp surface/config bucket
     expect(identity.build({ body: 'x', from: { ...FROM, network: 'whatsappgo_2' } })).toMatchObject({ surface: 'whatsapp', node: 'wa' });
+  });
+
+  // Surfaces are OPEN (operator ruling): a network with no historical prefix match
+  // becomes its OWN surface instead of being folded into whatsapp — a Google Voice
+  // message arriving via Beeper must not be mislabeled whatsapp.
+  it('an unrecognized network becomes its own surface, not a whatsapp fallback', () => {
+    expect(surfaceOf('googlevoice')).toBe('googlevoice');
   });
 
   // The `node` slot is the ENTRY POINT / TRANSPORT the message arrived through (wa · tg ·

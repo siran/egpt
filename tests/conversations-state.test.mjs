@@ -49,7 +49,6 @@ import {
   serialize,
   nowIsoString,
   isoFromMs,
-  KNOWN_SURFACES,
   DEFAULT_PERSONALITY_TOOLS,
   readPersonality,
   readPersonalityMeta,
@@ -84,11 +83,6 @@ describe('emptyState / sanitizeSlug basics', () => {
     for (const s of ['morgan-2606101622', 'Tío Jesús Palma', '+1 (646) 821-7865', 'a b c d']) {
       expect(sanitizeSlug(s)).toBe(s);
     }
-  });
-  it('KNOWN_SURFACES is the canonical bucket list', () => {
-    expect(KNOWN_SURFACES).toContain('whatsapp');
-    expect(KNOWN_SURFACES).toContain('telegram');
-    expect(KNOWN_SURFACES).toContain('shell');
   });
 });
 
@@ -179,9 +173,16 @@ describe('ensureContact — surface-aware, new contact, multi-JID merge', () => 
     expect(findContactByJid(s, WA, '584122182178@s.whatsapp.net')).toBe(r1.slug);
   });
 
-  it('ensureContact rejects an unknown surface', () => {
-    expect(() => ensureContact(emptyState(), 'martian-radio', '1@lid', {}))
-      .toThrow(/unknown surface/);
+  it('ensureContact accepts a brand-new surface (surfaces are open, no whitelist)', () => {
+    const r = ensureContact(emptyState(), 'martian-radio', '1@lid', { slugHint: 'x' });
+    expect(r.surface).toBe('martian-radio');
+  });
+
+  it('ensureContact rejects a path-unsafe surface', () => {
+    expect(() => ensureContact(emptyState(), '../../evil', '1@lid', {}))
+      .toThrow(/unsafe surface/);
+    expect(() => ensureContact(emptyState(), 'a/b', '1@lid', {}))
+      .toThrow(/unsafe surface/);
   });
 
   it('IGNORES ctx.personality on new contact creation (key retired; signature stays compatible)', () => {
@@ -283,6 +284,29 @@ describe('recentContacts — the /e browser list', () => {
     expect(recentContacts(s, { limit: 2, offset: 0, recencyOf }).map((r) => r.pushedName)).toEqual(['Alice', 'Carol']);
     expect(recentContacts(s, { limit: 2, offset: 2, recencyOf }).map((r) => r.pushedName)).toEqual(['Bob']);
     expect(recentContacts(s, { limit: 2, offset: 4, recencyOf })).toHaveLength(0);
+  });
+
+  it('includes a brand-new surface bucket (surfaces are open, no whitelist)', () => {
+    const s = ensureContact(emptyState(), 'googlevoice', '1@gv', { pushedName: 'Gv' }).state;
+    expect(recentContacts(s, { limit: 10 }).map((r) => r.surface)).toEqual(['googlevoice']);
+  });
+
+  it('skips an unmigrated legacy top-level bucket (a JID key, not a surface)', () => {
+    // pre-migration shape: contacts: { '<jid>@lid': {...} } — not surface-nested.
+    const s = { contacts: { '111@lid': { slug: 'legacy', pushedName: 'Legacy' } } };
+    expect(recentContacts(s, { limit: 10 })).toHaveLength(0);
+  });
+});
+
+describe('surfaces are open — path-segment safety (no whitelist)', () => {
+  it('slugDir accepts a brand-new surface and buckets it under its own name', () => {
+    const dir = slugDir('googlevoice', 'someone-2607271200').replace(/\\/g, '/');
+    expect(dir).toMatch(/\/conversations\/googlevoice\/someone-2607271200$/);
+  });
+
+  it('slugDir throws on a path-unsafe surface and cannot escape EGPT_HOME/conversations/', () => {
+    expect(() => slugDir('../../evil', 'x')).toThrow(/unsafe surface/);
+    expect(() => slugDir('a/b', 'x')).toThrow(/unsafe surface/);
   });
 });
 
@@ -432,9 +456,17 @@ describe('patchContact + recordThread (surface-scoped)', () => {
     expect(s2.contacts[WA].j.personality).toBe('silent');
     expect(s2.contacts[WA].k).toEqual({ aliasOf: 'j' });
   });
-  it('patchContact rejects unknown surface', () => {
-    expect(() => patchContact(baseState(), 'mars', 'j', {}))
-      .toThrow(/unknown surface/);
+  it('patchContact accepts a brand-new surface (surfaces are open, no whitelist)', () => {
+    // 'mars' has no entry under it, so the lookup misses and the state passes through
+    // unchanged (patchContact's documented no-op-on-miss behavior) — but critically it
+    // does NOT throw "unknown surface" the way it used to.
+    expect(patchContact(baseState(), 'mars', 'j', {})).toEqual(baseState());
+  });
+  it('patchContact rejects a path-unsafe surface', () => {
+    expect(() => patchContact(baseState(), '../../evil', 'j', {}))
+      .toThrow(/unsafe surface/);
+    expect(() => patchContact(baseState(), 'a/b', 'j', {}))
+      .toThrow(/unsafe surface/);
   });
   it('recordThread sets threadId + ISO timestamp in the being\'s NESTED block on the primary', () => {
     const s = { contacts: { whatsapp: { 'j': { slug: 'diego', personality: 'default' } } } };

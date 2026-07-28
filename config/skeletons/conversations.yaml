@@ -18,7 +18,8 @@
 
 contacts:
 
-  # surface: whatsapp | telegram | shell | signal (KNOWN_SURFACES) - others throw
+  # surface: whatsapp | telegram | shell | signal | ... - open, any network Beeper
+  # bridges becomes its own surface; only a path-unsafe string throws
   whatsapp:
 
     # the chat id as the bridge reports it; quote it. `# <name>` is the chat

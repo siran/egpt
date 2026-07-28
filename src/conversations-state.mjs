@@ -63,10 +63,19 @@ const SKELETONS_SHIPPED_DIR     = join(_here, '..', 'config', 'skeletons');
 // per-conversation dirs so conversation-e (cwd-locked to its own slug dir) can't read it.
 export const CONV_YAML_PATH = join(EGPT_HOME, 'config', 'conversations.yaml');
 
-// Known surfaces — used as the first dir level under conversations/
-// and the first key level under contacts: in the YAML. Adding a new
-// surface = add it here + wire its bridge in egpt-spine.mjs.
-export const KNOWN_SURFACES = ['whatsapp', 'telegram', 'shell', 'signal'];
+// Surfaces are OPEN (operator ruling): any network Beeper bridges is its own
+// surface — no whitelist, no fixed list here. What DOES need guarding is that a
+// surface string becomes a raw PATH SEGMENT (room-core.mjs ConversationRoom.baseDir
+// joins EGPT_HOME/conversations/<surface>/<slug> — it sanitizes the slug but not
+// the surface), so a hostile surface ('../../etc', 'a/b') must never reach a join()
+// unchecked. sanitizeSlug already rejects/rewrites exactly those characters, so a
+// surface that ISN'T already in its own sanitized form is unsafe — throw rather
+// than silently rewrite it (a legit surface name never needs rewriting).
+function assertPathSafeSurface(surface, fnName) {
+  if (!surface || sanitizeSlug(surface) !== surface) {
+    throw new Error(`${fnName}: unsafe surface "${surface}"`);
+  }
+}
 
 // Per-conversation directory. Each contact gets its own folder; that
 // folder is the only filesystem location conversation-e is given
@@ -84,14 +93,12 @@ export const KNOWN_SURFACES = ['whatsapp', 'telegram', 'shell', 'signal'];
 // layout was a flat conversations/<slug>/ (everything WA) — see
 // migrateToSurfaceLayout() for the one-shot migration.
 export function slugDir(surface, slug) {
-  if (!surface || !KNOWN_SURFACES.includes(surface)) {
-    throw new Error(`slugDir: unknown surface "${surface}" (expected one of ${KNOWN_SURFACES.join('|')})`);
-  }
+  assertPathSafeSurface(surface, 'slugDir');
   // A conversation IS a Room (GENOME §2.5): delegate the path to the
   // ConversationRoom implementation so this root and the rooms root share ONE
   // tree definition. Byte-identical to the legacy formula (Phase 0c). The
   // surface check stays here (the Room API is permissive; slugDir's contract is
-  // to reject unknown surfaces).
+  // to reject path-unsafe surfaces).
   return Room.forChat(surface, slug).baseDir();
 }
 export function slugTranscriptPath(surface, slug) {
@@ -731,15 +738,17 @@ function _isJidKeyed(state) {
   return keys.length > 0 && keys[0].includes('@');
 }
 
-// New shape detection: top-level keys under contacts: are surface names
-// (whatsapp / telegram / shell / signal), not JIDs. The migration
-// migrateToSurfaceLayout() converts JID-keyed → surface-nested. Empty
-// state counts as surface-layout (avoids re-running the migration when
-// nothing's there yet).
+// New shape detection: top-level keys under contacts: are surface names, not
+// JIDs. The migration migrateToSurfaceLayout() converts JID-keyed →
+// surface-nested. Empty state counts as surface-layout (avoids re-running the
+// migration when nothing's there yet). Surfaces are open (no fixed list), so
+// this can't check membership in one — but a surface-bucket key never
+// contains '@' and a legacy JID key always does (same test _isJidKeyed uses,
+// inverted), which is all "is this the new shape" ever needed.
 function _isSurfaceLayout(state) {
   const keys = Object.keys(state?.contacts ?? {});
   if (keys.length === 0) return true;
-  return keys.every(k => KNOWN_SURFACES.includes(k));
+  return keys.every(k => !k.includes('@'));
 }
 
 // ── State shape ─────────────────────────────────────────────────────────────
@@ -999,7 +1008,11 @@ export function residentsOf(entry) {
 export function recentContacts(state, { limit = 10, offset = 0, recencyOf } = {}) {
   const rows = [];
   for (const surface of Object.keys(state?.contacts ?? {})) {
-    if (!KNOWN_SURFACES.includes(surface)) continue;
+    // Surfaces are open (no fixed list): every top-level key IS a legitimate
+    // surface bucket by definition, EXCEPT an unmigrated state whose top-level
+    // keys are still legacy JIDs (_isJidKeyed) — skip those the same way, by
+    // the '@' they always carry, instead of a surface whitelist.
+    if (surface.includes('@')) continue;
     for (const [jid, entry] of Object.entries(state.contacts[surface] ?? {})) {
       if (!entry || entry.aliasOf || !entry.slug) continue;
       const recency = recencyOf ? Number(recencyOf(surface, entry.slug, entry)) || 0 : 0;
@@ -1143,9 +1156,7 @@ export function fixedSlugFor(surface, jid) {
 // { state, jid, slug, entry, surface, isNew, changed } where jid is the
 // PRIMARY jid (alias resolution already applied).
 export function ensureContact(state, surface, jid, ctx = {}) {
-  if (!surface || !KNOWN_SURFACES.includes(surface)) {
-    throw new Error(`ensureContact: unknown surface "${surface}" (expected one of ${KNOWN_SURFACES.join('|')})`);
-  }
+  assertPathSafeSurface(surface, 'ensureContact');
   if (!jid) return { state, surface, jid: null, slug: null, entry: null, isNew: false, changed: false };
 
   // A fixed-slug seat (the shell 'main' → lobby) never derives its slug from a
@@ -1279,9 +1290,7 @@ export function ensureContact(state, surface, jid, ctx = {}) {
 // to one surface. The patch always lands on the primary entry. Returns
 // a new state; if not found, returns the original state unchanged.
 export function patchContact(state, surface, jidOrSlug, patch) {
-  if (!surface || !KNOWN_SURFACES.includes(surface)) {
-    throw new Error(`patchContact: unknown surface "${surface}"`);
-  }
+  assertPathSafeSurface(surface, 'patchContact');
   const prevBucket = state.contacts?.[surface] ?? {};
   // First try JID lookup (preferred for new code).
   const byJid = _resolveByJid(state, surface, jidOrSlug);

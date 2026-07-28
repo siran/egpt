@@ -371,6 +371,20 @@ describe('boot() — config-shape migration', () => {
     app.stop();
   });
 
+  // SURFACES ARE OPEN (operator ruling): a network with no `networks.<surface>` block — e.g. a
+  // brand-new Google Voice surface arriving via Beeper — has no allowed_users to borrow, and
+  // must NOT fall back to whatsapp's list. surfaceCfg resolves an absent block to {} →
+  // allowed_users [] → isAllowedUser denies EVERYONE, fail-closed by default (this is intended,
+  // not a bug: authorizing a new surface is an explicit config step).
+  it('a brand-new surface with no networks.<surface> block denies everyone by default (fail-closed)', async () => {
+    const { opts, app } = await captureBoot({ agents: AG, networks: {
+      whatsapp: { chat_ids: ['self-1'], allowed_users: ['op@wa'] },
+    } });
+    expect(opts.isAllowedUser('op@wa', 'googlevoice')).toBe(false);   // no borrowing whatsapp's list
+    expect(opts.isAllowedUser('anyone', 'googlevoice')).toBe(false);
+    app.stop();
+  });
+
   it('WAKE INJECTION GONE: handles [ed, egptd] → wakeWords excludes bare "e"; a default node keeps "e"', async () => {
     const dolly = await captureBoot({ agents: { egpt: { configuration: 'egpt', handles: ['ed', 'egptd'], default: true } } });
     expect(dolly.opts.wakeWords).not.toContain('e');   // pre-2026-07-09: injected → contained "e" → @e woke it

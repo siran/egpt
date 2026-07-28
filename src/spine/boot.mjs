@@ -24,7 +24,7 @@ import * as cdp from '../tools/cdp.mjs';
 import { Room } from '../room-core.mjs';
 import { loadAdapterModule } from '../adapters/registry.mjs';
 import {
-  CONV_YAML_PATH, parse as parseConvState, serialize as serializeConvState, emptyState, KNOWN_SURFACES, slugDir, getContact, LOBBY_SLUG,
+  CONV_YAML_PATH, parse as parseConvState, serialize as serializeConvState, emptyState, slugDir, getContact, LOBBY_SLUG,
 } from '../conversations-state.mjs';
 import { createStopGuard, STOP_FILE, stopFilePresent, writeStopFile } from '../stop-guard.mjs';
 import { createLasso } from '../lasso.mjs';
@@ -423,7 +423,14 @@ export async function boot({
   async function listEntityDirs() {
     const out = [];
     const convRoot = join(EGPT_HOME, 'conversations');
-    for (const surface of KNOWN_SURFACES) {
+    // Surfaces are OPEN (operator ruling: any network Beeper bridges is its own
+    // surface) — driven by real disk contents, not a fixed list, so a new surface's
+    // folder is walked with zero code change.
+    let surfaces = [];
+    try { surfaces = await readdir(convRoot, { withFileTypes: true }); } catch { surfaces = []; }
+    for (const surfaceEnt of surfaces) {
+      if (!surfaceEnt.isDirectory()) continue;
+      const surface = surfaceEnt.name;
       let ents = [];
       try { ents = await readdir(join(convRoot, surface), { withFileTypes: true }); } catch { continue; }
       for (const ent of ents) if (ent.isDirectory()) out.push({ dir: join(convRoot, surface, ent.name), ns: `${surface}/${ent.name}` });

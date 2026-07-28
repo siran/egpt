@@ -31,7 +31,7 @@ import { transcribeViaEndpoint } from '../tools/transcriptor.mjs';
 import { startWhisperServer, makeWhisperServerTranscriber } from '../tools/whisper-server.mjs';
 import { parseTranscriptionConfig } from '../transcription-service.mjs';
 import { POSTS_BACK_DELAY_MS } from '../incoming-media.mjs';
-import { readState, CONV_YAML_PATH, KNOWN_SURFACES, getContact, slugDir } from '../conversations-state.mjs';
+import { readState, CONV_YAML_PATH, getContact, slugDir } from '../conversations-state.mjs';
 import { DEFAULT_SERVICE } from '../transcription-service.mjs';
 
 export function createTranscription({
@@ -92,10 +92,10 @@ export function createTranscription({
     try {
       const state = await loadState();
       // The bridge's chatID is surface-agnostic here. A Beeper room id is
-      // globally unique across surfaces, so scanning KNOWN_SURFACES and taking
-      // the first hit can't cross-match a different chat — it only finds which
-      // surface bucket registered this room.
-      for (const s of KNOWN_SURFACES) {
+      // globally unique across surfaces, so scanning every registered surface and
+      // taking the first hit can't cross-match a different chat — it only finds
+      // which surface bucket registered this room.
+      for (const s of Object.keys(state?.contacts ?? {})) {
         const c = getContact(state, s, chatId);
         if (c?.slug) { hit = c; surface = s; break; }
       }

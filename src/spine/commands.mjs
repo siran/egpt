@@ -10,7 +10,7 @@
 // with a short note.
 import { lifecycleExit } from './ingest.mjs';
 import { isAutoMode, AUTO_MODES, DEFAULT_AUTO_MODE } from '../auto-mode.mjs';
-import { patchBeing, getContact, getBeing, slugDir, statsPath, conversationPathOf, listIdentityLayers as defaultListIdentityLayers, seedIdentityLayers, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS, READONLY_ALLOWED_TOOLS, KNOWN_SURFACES, LOBBY_SLUG } from '../conversations-state.mjs';
+import { patchBeing, getContact, getBeing, slugDir, statsPath, conversationPathOf, listIdentityLayers as defaultListIdentityLayers, seedIdentityLayers, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS, READONLY_ALLOWED_TOOLS, LOBBY_SLUG } from '../conversations-state.mjs';
 import { stripFrontMatter } from '../transcript-meta.mjs';
 import { initWizard, wizardStep, wizardPrompt } from '../agent-wizard.mjs';
 import { BUILTIN_BRAINS_DIR, PROFILE_AGENTS_DIR } from './brains.mjs';
@@ -206,7 +206,7 @@ function resolveTarget(state, term, surface) {
     // concern; no ambiguity handling needed here).
     const c = getContact(state, surface, term);
     if (c) return { jid: c.jid, name: c.slug, surface };
-    for (const s of KNOWN_SURFACES) {
+    for (const s of Object.keys(state?.contacts ?? {})) {
       if (s === surface) continue;
       const oc = getContact(state, s, term);
       if (oc) return { jid: oc.jid, name: oc.slug, surface: s };
@@ -217,7 +217,7 @@ function resolveTarget(state, term, surface) {
   if (ownHits.length === 1) return { ...ownHits[0], surface };
   if (ownHits.length > 1) return { error: `"${term}" matches ${ownHits.length}: ${ownHits.slice(0, 6).map((h) => h.name).join(', ')} — be more specific` };
   const crossHits = [];
-  for (const s of KNOWN_SURFACES) {
+  for (const s of Object.keys(state?.contacts ?? {})) {
     if (s === surface) continue;
     for (const h of fuzzyHits(state, s, term)) crossHits.push({ ...h, surface: s });
   }

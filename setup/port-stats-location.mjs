@@ -35,7 +35,7 @@ import { join, dirname } from 'node:path';
 import * as YAML from 'yaml';
 import {
   CONV_YAML_PATH, readState, slugDir, sanitizeStatKey, mergeStats,
-  statsDir, unsanitizeStatKey, KNOWN_SURFACES, resolveStatFilename,
+  statsDir, unsanitizeStatKey, resolveStatFilename,
 } from '../src/conversations-state.mjs';
 import { sanitizeSlug } from '../src/sanitize.mjs';
 
@@ -44,6 +44,14 @@ import { sanitizeSlug } from '../src/sanitize.mjs';
 // freshly-ported file already reads like a live one).
 const CHAT_HEADER = '# per-chat stats (spine-written — do not edit)\n';
 const CONTACT_HEADER = '# per-contact cross-chat stats (spine-written — do not edit)\n';
+
+// This is a ONE-SHOT migration (operator 2026-07-04, already run) for the OLD in-cwd stats
+// layout, which existed ONLY under these four surfaces — the whole set of surfaces that could
+// possibly have pre-port data to relocate. It is NOT a live whitelist (conversations-state.mjs
+// no longer has one — surfaces are open) and gates nothing outside this script: a surface added
+// after this port ran never had the old cwd-based stats.yaml layout, so it has nothing here to
+// migrate, rename, or seed.
+const HISTORICAL_STATS_SURFACES = ['whatsapp', 'telegram', 'shell', 'signal'];
 
 // Default resolvers: the REAL frozen (EGPT_HOME-keyed) module locations. OLD stats file =
 // slugDir(...)+/stats.yaml (the only location live code ever used). NEW chat/contact files are
@@ -235,7 +243,7 @@ export async function backfillStatsIds(state, { paths = defaultPaths, io = defau
 
   let chatsStamped = 0, contactsStamped = 0, skipped = 0;
 
-  for (const surface of KNOWN_SURFACES) {
+  for (const surface of HISTORICAL_STATS_SURFACES) {
     const dir = paths.statsSurfaceDir(surface);
     if (!existsSync(dir)) continue;
     const chatIds = new Set(Object.keys(state?.contacts?.[surface] ?? {}));
@@ -274,14 +282,15 @@ export async function backfillStatsIds(state, { paths = defaultPaths, io = defau
 // them), and a member with no named contact file stays nameless until they next speak. Only the
 // members block is touched — no former_names, no other body change — and a chat is rewritten
 // only when at least one member actually gained a name, so a second run is byte-identical.
-// Runs AFTER backfill (the sender_id stamps are what the harvest keys off).
+// Runs AFTER backfill (the sender_id stamps are what the harvest keys off). `state` is unused
+// (the surface dirs are the units) but kept for main()'s uniform (state, opts) call shape.
 export async function seedMemberNames(_state, { paths = defaultPaths, io = defaultIo } = {}) {
   const readFile = io.readFile ?? defaultIo.readFile;
   const writeFile = io.writeFile ?? defaultIo.writeFile;
   const readdirFn = io.readdir ?? defaultIo.readdir;
   const existsSync = io.existsSync ?? defaultIo.existsSync;
   let membersNamed = 0, chatsTouched = 0;
-  for (const surface of KNOWN_SURFACES) {
+  for (const surface of HISTORICAL_STATS_SURFACES) {
     const dir = paths.statsSurfaceDir(surface);
     if (!existsSync(dir)) continue;
     let names;
@@ -374,7 +383,7 @@ export async function renameStatsToNames(_state, { paths = defaultPaths, io = de
   const readdirFn = io.readdir ?? defaultIo.readdir;
   const existsSync = io.existsSync ?? defaultIo.existsSync;
   let renamed = 0, deduped = 0, alreadyCanonical = 0, leftIdBased = 0;
-  for (const surface of KNOWN_SURFACES) {
+  for (const surface of HISTORICAL_STATS_SURFACES) {
     const dir = paths.statsSurfaceDir(surface);
     if (!existsSync(dir)) continue;
     let names;

@@ -31,9 +31,15 @@ import { decodeNodeSignature, hasNodeSignature, renderNodeSignature } from '../n
 
 // Beeper tags each message with its origin NETWORK; map it to the conversation
 // SURFACE (the slugDir bucket) and the dispatch-line NODE (the entry-point tag).
-// Account-instance ids ('whatsappgo_2') prefix-match. slugDir rejects anything
-// not in KNOWN_SURFACES, so an unknown network falls back to 'whatsapp' for v1.
-const KNOWN_SURFACES = ['whatsapp', 'telegram', 'shell', 'signal'];
+// SURFACES ARE OPEN (operator ruling — a Google Voice message arriving via Beeper
+// was mislabeled whatsapp under the old whitelist-fallback): whatever network
+// Beeper reports becomes its own surface, no whitelist, no per-network code. The
+// one exception is INSTANCE_PREFIX_FOLD below — NOT a whitelist, a fold: it only
+// normalizes account-instance ids ('whatsappgo_2') of the four HISTORICAL
+// surfaces onto the one surface/config/allowed_users bucket those instances
+// already share. A genuinely new network (googlevoice, instagram, …) starts with
+// none of these four prefixes, so it passes through unfolded as its own surface.
+const INSTANCE_PREFIX_FOLD = ['whatsapp', 'telegram', 'shell', 'signal'];
 // Every value here is a TRANSPORT tag (the entry point the human used), never a node
 // name: `shell` mapped to 'kg' — THIS machine's node name — so on any other node every
 // shell line read `.kg` and claimed REVE had spoken it. Per-line node provenance is a
@@ -42,7 +48,7 @@ const KNOWN_SURFACES = ['whatsapp', 'telegram', 'shell', 'signal'];
 const NODE_OF = { whatsapp: 'wa', telegram: 'tg', signal: 'sig', shell: 'sh' };
 function netKey(network) {
   const n = String(network ?? 'whatsapp').toLowerCase();
-  for (const k of KNOWN_SURFACES) if (n.startsWith(k)) return k;
+  for (const k of INSTANCE_PREFIX_FOLD) if (n.startsWith(k)) return k;
   return n;
 }
 
@@ -50,12 +56,11 @@ function netKey(network) {
 // media service (media/ folder) can't drift — a Telegram photo must bucket under
 // the SAME surface as the chat's transcript, not silently fall into 'whatsapp'
 // (they did diverge: media hardcoded 'whatsapp', so a TG photo's media/<file> was
-// announced under a path the brain's telegram cwd never had). Returns a
-// KNOWN_SURFACES member; anything unrecognized falls back to 'whatsapp' for v1
-// (slugDir rejects non-members).
+// announced under a path the brain's telegram cwd never had). Returns the
+// (possibly instance-prefix-folded) network key directly — every network is its
+// own surface, no whitelist gate.
 export function surfaceOf(network) {
-  const key = netKey(network);
-  return KNOWN_SURFACES.includes(key) ? key : 'whatsapp';
+  return netKey(network);
 }
 
 // `timeZone`: the node's config default_time_zone (boot-resolved via the heartbeat loader's

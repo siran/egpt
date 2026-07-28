@@ -189,7 +189,7 @@ describe('commands.run', () => {
 // Self DM, "/e auto auto miss" reported "no chat matches" even though a telegram chat
 // "Miss Xinyi" was registered — resolveTarget only ever searched the command's own
 // surface. Own-surface hits still win with no ambiguity check against other surfaces;
-// only a ZERO own-surface hit falls through to every other KNOWN_SURFACES entry.
+// only a ZERO own-surface hit falls through to every other surface registered in state.contacts.
 describe('/e auto <target>: cross-surface resolution', () => {
   it('a TELEGRAM chat targeted by name from the whatsapp Self DM resolves + patches the TELEGRAM entry', async () => {
     const state = ensureContact(emptyState(), 'telegram', '!miss:something', { pushedName: 'Miss Xinyi', slugHint: 'miss-xinyi' }).state;

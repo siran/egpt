@@ -164,3 +164,34 @@ describe('REGRESSION — the auto-dwell burst still records each line once, in o
     expect(brain.calls).toEqual(['Bea@[fam] #a: one\n\nCy@[fam] #b: two\n\nBea@[fam] #c: three']);
   });
 });
+
+// SURFACES ARE OPEN (operator ruling): a network with no historical whitelist entry — e.g. a
+// Google Voice message arriving via Beeper — gets its OWN transcript directory, never folded
+// into whatsapp. transcript.log(ev) never reads ev.authorized (see src/spine/transcript.mjs) —
+// authorization gates REPLIES elsewhere, never the record — so an unauthorized message on the
+// new surface must still be logged.
+describe('LOCK — a brand-new surface gets its own transcript directory, logged regardless of authorization', () => {
+  it('a googlevoice message lands under conversations/googlevoice/, not whatsapp, even when unauthorized', async () => {
+    const files = new Map();
+    const bridge = fakeBridge();
+    const spine = createSpine({
+      bridge, brain: { async turn(being) { return { text: 'ok', being, sessionId: 's1' }; } },
+      identity: fakeIdentity,
+      router: { resolve: () => ({ being: 'e', mention: {} }) },
+      gating: { async decide() { return { mode: 'auto', receives: true, mayReply: true, sendToEgpt: 'mode' }; }, surfaces: () => true },
+      sender: fakeSender(bridge),
+      transcript: createTranscript({ contacts: fakeContacts, io: memIo(files) }),
+      heartbeats, clock: { now: () => 1000 }, turnTimeoutMs: 0,
+    });
+    spine.start();
+    await bridge.emit({ ...MSG, surface: 'googlevoice', authorized: false, senderName: 'Gv', body: 'hi from gv' });
+
+    const hit = [...files.entries()].find(([p]) => p.endsWith('transcript.md'));
+    expect(hit).toBeTruthy();
+    const [path, text] = hit;
+    const normPath = path.replace(/\\/g, '/');
+    expect(normPath).toContain('/conversations/googlevoice/');
+    expect(normPath).not.toContain('/conversations/whatsapp/');
+    expect(text).toContain('Gv@[fam] #m1: hi from gv');   // recorded despite authorized:false
+  });
+});
