@@ -1117,6 +1117,15 @@ describe('/help "wired" marker matches src/spine/commands.mjs + src/shell/comman
       expect(spineTokens.has(tok), `expected "${tok}" in the dispatched-token scan`).toBe(true);
     }
   });
+
+  it('/members has a registry entry, wired true, whose usage covers the same accepted forms as the runtime usage string (no drift)', () => {
+    const entry = COMMANDS.find((e) => e.cmd === '/members');
+    expect(entry).toBeTruthy();
+    expect(entry.wired).toBe(true);
+    for (const word of ['add', 'alias', 'remove', 'mode']) {
+      expect(entry.usage.toLowerCase()).toMatch(new RegExp(word));
+    }
+  });
 });
 
 // Regression lock (Phase 1): browseTab was a dead export (zero callers anywhere outside

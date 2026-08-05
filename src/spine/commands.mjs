@@ -1039,9 +1039,11 @@ export function createCommands({
     // trailing token (operator ruling 2026-07-27).
     const add = /^add\s+tab\s+(\d+)(?:\s+(\S+))?$/i.exec(rest);
     if (add) { await membersAddTab(ev, room, Number(add[1]), add[2] ?? null); return; }
+    const remove = /^remove\s+(\S+)$/i.exec(rest);
+    if (remove) { await membersRemove(ev, room, remove[1]); return; }
     const mode = /^(\S+)\s+mode\s+(\S+)$/i.exec(rest);
     if (mode) { await membersSetMode(ev, room, mode[1], mode[2]); return; }
-    await send?.(ev.chatId, 'usage: /members | /members add tab <n> | /members <id> mode <disable|mention|all>');
+    await send?.(ev.chatId, 'usage: /members | /members add tab <n> [alias=<name>|<name>] | /members remove <id> | /members <id> mode <disable|mention|all>');
   }
 
   // /members add tab <n> — add the nth /tabs tab as a brain member of the conversation's room,
@@ -1066,19 +1068,31 @@ export function createCommands({
     const base = shortAdapterId(adapter.name);
     const existing = await room.members();
     const same = existing.find((m) => m.kind === 'brain' && m.url === tab.url);
+    // An explicit alias (`alias=<name>` or a bare trailing word — operator ruling 2026-07-27)
+    // is resolved once, up front — both the refresh branch (below) and the no-collision branch
+    // (further down) need it.
+    const named = aliasArg ? /^alias=(.+)$/i.exec(aliasArg) : null;
+    const alias = aliasArg ? (named ? named[1] : aliasArg) : null;
     if (same) {
+      // An explicit alias that DISAGREES with the already-existing member's id is a
+      // request to rename it — refused. A member id is @mention-able and appears in
+      // transcript history, so silently renaming it would break existing references
+      // (live bug 2026-07-27: `/members add tab 1 c1` renamed nothing and just said
+      // "refreshed 'chatgpt'", giving zero indication the alias was ignored).
+      if (alias && alias !== same.id) {
+        const modeWord = STATE_TO_MODE[same.state] ?? same.state;
+        await send?.(ev.chatId, `can't add tab ${n} as '${alias}' — tab is already member '${same.id}' (mode:${modeWord}); /members remove ${same.id} first if you want to replace it`);
+        return;
+      }
       await room.setMember({ ...same, targetId: tab.id, title: tab.title });
       const modeWord = STATE_TO_MODE[same.state] ?? same.state;
       await send?.(ev.chatId, `refreshed '${same.id}' (tab ${n}) — mode:${modeWord}`);
       return;
     }
     const taken = new Set(existing.map((m) => m.id));
-    // An explicit alias (`alias=<name>` or a bare trailing word — operator ruling 2026-07-27)
-    // REFUSES on collision, no auto-suffix. No alias → the existing lowest-free-integer suffix.
+    // REFUSES on alias collision, no auto-suffix. No alias → the existing lowest-free-integer suffix.
     let id;
-    if (aliasArg) {
-      const named = /^alias=(.+)$/i.exec(aliasArg);
-      const alias = named ? named[1] : aliasArg;
+    if (alias) {
       if (taken.has(alias)) { await send?.(ev.chatId, `can't add tab ${n} — alias '${alias}' is already taken in this room`); return; }
       id = alias;
     } else {
@@ -1088,6 +1102,16 @@ export function createCommands({
     }
     await room.setMember({ kind: 'brain', id, state: 'muted', adapter: adapter.name, url: tab.url, targetId: tab.id, title: tab.title });
     await send?.(ev.chatId, `added '${id}' (tab ${n} · adapter:${base}) — mode:disable (no chatter reaches it yet)`);
+  }
+
+  // /members remove <id> — drop a member from the roster. room.removeMember owns the
+  // actual removal (a full filter of the members[] array in config.yaml — nothing else
+  // in room-core/commands.mjs is keyed by member id, so this is a complete removal); this
+  // is wiring only.
+  async function membersRemove(ev, room, id) {
+    const removed = await room.removeMember(id);
+    if (!removed) { await send?.(ev.chatId, `no member '${id}' in this conversation`); return; }
+    await send?.(ev.chatId, `removed '${id}'`);
   }
 
   // /members <id> mode <disable|mention|all> — flip a member's mode. The friendly word

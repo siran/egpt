@@ -258,6 +258,33 @@ describe('/members add tab <n> — adapter-matched, added disabled, in the conve
       expect(ms.map((m) => m.id)).toEqual(['cgpt3']);   // unchanged — no second member, no cgpt3-2
     });
 
+    // REPRODUCE-FIRST (live bug 2026-07-27): re-adding the SAME tab url with an explicit
+    // alias that DISAGREES with the existing member's real id must REFUSE, not silently
+    // rename — a member id is @mention-able and appears in transcript history. Before the
+    // fix this said "refreshed 'chatgpt'" with zero indication the alias 'c1' was ignored.
+    it("REPRODUCE-FIRST: re-adding the same tab url with a DIFFERING alias REFUSES, no silent rename", async () => {
+      const cdp = { listTabs: async () => threeTabs };
+      const { cmds, sent, resolveConvRoom } = harness({ cdp });
+      await cmds.run({ ...self, body: '/members add tab 1' });        // chatgpt @ GPT1
+      await cmds.run({ ...self, body: '/members add tab 1 c1' });     // same tab, alias 'c1'
+      expect(sent.at(-1).text).not.toMatch(/refreshed 'chatgpt'/);
+      expect(sent.at(-1).text).toMatch(/'chatgpt'/);                  // names the real existing id
+      expect(sent.at(-1).text).toMatch(/'c1'/);                       // and the rejected alias
+      const ms = await (await resolveConvRoom(self.surface, self.chatId)).members();
+      expect(ms.map((m) => m.id)).toEqual(['chatgpt']);                // unchanged — never renamed to c1
+    });
+
+    // an alias equal to the existing id is a no-op rename — harmless, refreshes as before.
+    it('re-adding the same tab url with an alias EQUAL to the existing id still refreshes exactly as before', async () => {
+      const cdp = { listTabs: async () => threeTabs };
+      const { cmds, sent, resolveConvRoom } = harness({ cdp });
+      await cmds.run({ ...self, body: '/members add tab 1' });          // chatgpt @ GPT1
+      await cmds.run({ ...self, body: '/members add tab 1 chatgpt' });  // same alias as existing id
+      expect(sent.at(-1).text).toMatch(/refreshed 'chatgpt'/);
+      const ms = await (await resolveConvRoom(self.surface, self.chatId)).members();
+      expect(ms.map((m) => m.id)).toEqual(['chatgpt']);
+    });
+
     // REGRESSION LOCK: with NO alias given, the existing lowest-free-integer auto-suffix is
     // untouched (covered above at "two DIFFERENT chatgpt.com tabs…", unmodified by this ruling).
     it('no alias given still auto-suffixes exactly as before', async () => {
@@ -310,6 +337,37 @@ describe('/members <id> mode <disable|mention|all>', () => {
     expect(await (await resolveConvRoom(self.surface, self.chatId)).memberState('chatgpt')).toBe('muted');   // unchanged
     await cmds.run({ ...self, body: '/members ghost mode all' });
     expect(sent.at(-1).text).toMatch(/no member/i);
+  });
+});
+
+describe('/members remove <id>', () => {
+  it('removes an existing member and confirms it', async () => {
+    const cdp = { listTabs: async () => threeTabs };
+    const { cmds, sent, resolveConvRoom } = harness({ cdp });
+    await cmds.run({ ...self, body: '/members add tab 1' });   // chatgpt
+    await cmds.run({ ...self, body: '/members remove chatgpt' });
+    expect(sent.at(-1).text).toMatch(/removed 'chatgpt'/);
+    const ms = await (await resolveConvRoom(self.surface, self.chatId)).members();
+    expect(ms.map((m) => m.id)).toEqual([]);
+  });
+
+  it('an unknown id reports "no member" — mirrors the mode sub-verb\'s wording — and never throws', async () => {
+    const { cmds, sent } = harness({});
+    await expect(cmds.run({ ...self, body: '/members remove ghost' })).resolves.toBeUndefined();
+    expect(sent.at(-1).text).toMatch(/no member 'ghost' in this conversation/);
+  });
+});
+
+describe('/members usage line', () => {
+  it('mentions every accepted form: add, alias, remove, mode', async () => {
+    const { cmds, sent } = harness({});
+    await cmds.run({ ...self, body: '/members bogus' });   // matches none of the sub-grammars
+    const text = sent.at(-1).text;
+    expect(text).toMatch(/usage:/);
+    expect(text).toMatch(/add tab/);
+    expect(text).toMatch(/alias/);
+    expect(text).toMatch(/remove/);
+    expect(text).toMatch(/mode/);
   });
 });
 
