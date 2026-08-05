@@ -143,6 +143,49 @@ export function makeShellAwareBridge(bridge, shellPort) {
   };
 }
 
+// COMMAND REPLIES BELONG IN THE TRANSCRIPT TOO (operator 2026-08-05, live: "transcript.md is not
+// being updated with the command and error back messages from it" — an operator's two typos got
+// usage/error replies and neither left a trace). Every command handler in src/spine/commands.mjs
+// replies with `send?.(ev.chatId, text)`, and commands.mjs's OWN internal chokepoint funnels
+// every one of those (the no-self-parsing guard) through the single `send` function THIS module
+// injects at construction — so wrapping that one function, here, records every command reply by
+// construction. No per-handler change, and no future command added to commands.mjs can forget.
+// This mirrors what spine.mjs already does for a being's turn (transcript.log(ev, {...reply})) —
+// commands just have no `reply` value to hand back, only the side-effecting send() calls.
+//
+// THE MISSING PIECE IS `ev`: a handler only ever has `send?.(ev.chatId, text)` — the chatId, not
+// the InboundEvent transcript.log needs (ev.surface, ev.chatName for the slug resolve). `run`
+// below wraps createCommands's own `run(ev)` to remember ev BY CHAT ID for exactly the span of
+// that call — one in-flight command per chat, the same assumption commands.mjs's own capture-sink
+// Map already relies on (its comment: "concurrent runs never cross") — so `send` can read it back.
+//
+// A MESH-CAPTURED command (mesh.mjs's runCaptured) never reaches this `send` at all: commands.mjs
+// diverts it into a private sink instead (the whole point — that reply rides home INSIDE an
+// envelope). So a relayed command is correctly excluded: it was never posted into a room, and the
+// operator ruling ("everything that is typed or received in a ROOM") only covers what was.
+//
+// LABEL: 'system' — a command reply is the NODE speaking, not a persona (src/shell/app.mjs
+// already uses author 'system' for this identical class of message: spine-generated, not a
+// being's turn). Node-qualified like any other reply — createTranscript renders <being>.<node_name>
+// — so the record shows e.g. `[@system.kg (18:07)]:`.
+//
+// Pure/DI'd so it's testable directly (mirrors the other top-level boot helpers): `send` and
+// `transcript.log` are both injected, nothing here touches fs or config.
+export function wrapCommandsForTranscript({ send, transcript, being = 'system', onLog = () => {} }) {
+  const pendingEv = new Map();   // chatId -> the ev commands.run(ev) is currently processing
+  const wrappedSend = async (chatId, text) => {
+    const result = await send(chatId, text);
+    const ev = pendingEv.get(chatId);
+    if (ev) await transcript.log(ev, { text, being }).catch((e) => onLog(`command reply ${chatId}: ${e?.message ?? e}`));
+    return result;
+  };
+  const wrapRun = (run) => async (ev) => {
+    pendingEv.set(ev.chatId, ev);
+    try { await run(ev); } finally { pendingEv.delete(ev.chatId); }
+  };
+  return { send: wrappedSend, wrapRun };
+}
+
 // READABLE NODE-IDENTITY (operator 2026-07-10): two co-account spines (REVE `kg`, DOLLY `do`)
 // share ONE Beeper account, so on the wire every line looks "from the account owner" and the
 // persona itself couldn't say which node it is. Assemble a concise, FACTUAL who/where-am-I line
@@ -909,14 +952,23 @@ export async function boot({
   // the same exit codes the daemon respawns on. Constructed BEFORE the mesh: a
   // node-addressed command can arrive as an envelope and is executed through THIS
   // service on the far side (operator 2026-07-26 — egpt as a remote control).
-  const commands = createCommands({
-    getConfig,
+  // COMMAND REPLIES → transcript.md too (see wrapCommandsForTranscript above): the send below
+  // is wrapped so every command reply is recorded under the 'system' label, node-qualified like
+  // any other line, and `commands.run` is wrapped right after construction so `send` can find the
+  // ev it doesn't otherwise receive.
+  const commandTranscript = wrapCommandsForTranscript({
     // Surface-routed reply: a command that arrived on the shell surface answers back over
     // the shell socket (shellPort.owns the chat id it saw inbound); everything else is a
     // beeper chat and rides the beeper bridge. This is the one seam that lets `/status`,
     // `/chrome kg`, … round-trip on the shell with ZERO duplicated dispatch — the same
     // commands service, two surfaces.
     send: (chatId, text) => (shellPort.owns(chatId) ? shellPort.send(chatId, text) : bridge.send(chatId, text)),
+    transcript: services.transcript,
+    onLog: (m) => log.line?.(`[transcript] ${m}`),
+  });
+  const commands = createCommands({
+    getConfig,
+    send: commandTranscript.send,
     exit: announceAndExit,
     writeRewindTarget: (ref) => writeFile(join(EGPT_HOME, 'rewind-target.txt'), ref, 'utf8'),
     loadState: _loadState, writeState: _writeState,   // /e auto <mode> + the /e wizard persist into conversations.yaml
@@ -928,6 +980,7 @@ export async function boot({
     shellConnected: () => shellPort.isConnected,       // /status `shell:` field — is the operator's editor dialed in
     onLog: (m) => log.line?.(`[command] ${m}`),
   });
+  commands.run = commandTranscript.wrapRun(commands.run);
 
   // Cross-node being relay (Phase 4b). Supplies the mesh engine's host callbacks from
   // v2 services: bridge (send/postStatus/startStream), brain (the responder's turn),

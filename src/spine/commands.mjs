@@ -1182,7 +1182,14 @@ export function createCommands({
     await writeConfigKey(configPath, resolved.path, val);
     // "restart" alone misled the operator once: he relaunched the EDITOR, which reconnects to
     // the same long-running spine that read its config at boot. Name the command instead.
-    return `set ${resolved.path} = ${JSON.stringify(val)} — run /restart to apply (the spine, not the editor)`;
+    // REDACT THE ECHO, exactly as the dump and GET do. `beeper_token` and
+    // `beeper.<acct>.token` are legitimate resolveConfigKey targets, so a bare echo would
+    // print a live credential — and since every reply is now recorded (operator: "everything
+    // that is typed or received in a room has to be in transcript"), it would land durably in
+    // transcript.md rather than merely flashing past.
+    const echoLeaf = resolved.path.split('.').pop();
+    const shown = redactConfigValue({ [echoLeaf]: val })[echoLeaf];
+    return `set ${resolved.path} = ${JSON.stringify(shown)} — run /restart to apply (the spine, not the editor)`;
   }
 
   // /activate <id> — a brain member is ACTIVE while its Chrome tab is open (a live
