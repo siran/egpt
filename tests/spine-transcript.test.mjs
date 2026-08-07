@@ -6,6 +6,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { createTranscript } from '../src/spine/transcript.mjs';
 import { createIdentity } from '../src/spine/identity.mjs';
 import { editAction } from '../src/dispatch-line.mjs';
+import { Room } from '../src/room-core.mjs';
 
 // The collector is fire-and-forget (not awaited by log()); give its async read-merge-write
 // a beat to land before asserting on the written stats.yaml.
@@ -266,5 +267,55 @@ describe('transcript.log — living-mirror stream frames are not recorded', () =
     expect(await t.log(editEv('176209', '🤝 don ⏳ Thinking…', '🤝 don Buen lugar ⏳'))).toBe(false);
     await settle();
     expect([...files.keys()].some((p) => p.endsWith('.yaml'))).toBe(false);
+  });
+});
+
+// STRUCTURAL EQUALITY (operator 2026-08-07): the transcript path must come from the Room
+// abstraction (room-core.mjs), not a hand-rolled join — a NamedRoom created by `/room create`
+// got a full tree and NO WAY to ever receive a transcript, because the old code asked
+// conversations-state.slugDir + a local join() for the path instead of asking the Room. Routing
+// an inbound message TO a NamedRoom is a separate, not-yet-ruled-on feature (out of scope here)
+// — what this locks down is that the PATH-RESOLUTION code the service now runs is Room-derived,
+// so a ConversationRoom and a NamedRoom are interchangeable the moment routing exists.
+describe('transcript.log — resolves its path through the Room abstraction (structural equality)', () => {
+  const mkIo = (files) => ({
+    appendFile: async (p, d) => { files.set(p, (files.get(p) ?? '') + d); },
+    mkdir: async () => {},
+    existsSync: (p) => files.has(p),
+    readFile: async (p) => { if (!files.has(p)) throw new Error('ENOENT'); return files.get(p); },
+    writeFile: async (p, d) => { files.set(p, d); },
+    readdir: readdirOver(files),
+  });
+
+  it('the ConversationRoom write lands EXACTLY at Room.forChat(surface, slug).transcriptPath', async () => {
+    const files = new Map();
+    const t = createTranscript({ contacts: fakeContacts, io: mkIo(files) });
+    expect(await t.log(ev)).toBe(true);
+    const expected = Room.forChat(ev.surface, 'fam-1234567890').transcriptPath;
+    expect(files.has(expected)).toBe(true);
+  });
+
+  // Today nothing routes an ev to a NamedRoom (that syntax is unruled — out of scope), but the
+  // service's write PRIMITIVE (baseDir()/transcriptPath from Room, mkdir + appendFile through the
+  // same io seam) must already be capable of landing a NamedRoom's transcript at its own root,
+  // structurally identical to a conversation's. This is what "cannot be expressed at all through
+  // the service" meant before this change: the old code only ever knew conversations/<surface>/<slug>/,
+  // never rooms/<name>/, because it asked slugDir instead of the Room.
+  it('a NamedRoom resolves its own baseDir()/transcript.md through the SAME Room getters, distinct from a ConversationRoom', async () => {
+    const files = new Map();
+    const io = mkIo(files);
+    const conv = Room.forChat('whatsapp', 'fam-1234567890');
+    const named = Room.named('acim');
+
+    await io.mkdir(conv.baseDir(), { recursive: true });
+    await io.appendFile(conv.transcriptPath, 'conversation line\n\n', 'utf8');
+    await io.mkdir(named.baseDir(), { recursive: true });
+    await io.appendFile(named.transcriptPath, 'room line\n\n', 'utf8');
+
+    expect(conv.transcriptPath).not.toBe(named.transcriptPath);
+    expect(conv.transcriptPath.endsWith('transcript.md')).toBe(true);
+    expect(named.transcriptPath.endsWith('transcript.md')).toBe(true);
+    expect(files.get(conv.transcriptPath)).toBe('conversation line\n\n');
+    expect(files.get(named.transcriptPath)).toBe('room line\n\n');
   });
 });

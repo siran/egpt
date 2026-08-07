@@ -13,12 +13,12 @@
 // Effectful deps are injected (conv-state load/write via the shared contacts
 // resolver, fs) so the service is testable in-memory; the pure path helpers are
 // imported directly.
-import { slugDir, recordMemberStat, isoFromMs } from '../conversations-state.mjs';
+import { recordMemberStat, isoFromMs } from '../conversations-state.mjs';
+import { Room } from '../room-core.mjs';
 import { transcriptAppend, replyLine } from '../transcript-log.mjs';
 import { isLiveStreamFrame } from '../dispatch-line.mjs';
 import { appendFile as fsAppendFile, mkdir as fsMkdir } from 'node:fs/promises';
 import { existsSync as fsExistsSync } from 'node:fs';
-import { join } from 'node:path';
 
 export function createTranscript({
   contacts,                              // the shared contact-resolver (createContacts) — chatId → slug + rename self-heal
@@ -62,9 +62,12 @@ export function createTranscript({
         if (reply == null && ev.kind === 'edit' && isLiveStreamFrame(ev.body)) return false;
         const slug = await contacts.resolve(ev.surface, ev.chatId, { chatName: ev.chatName });
         if (!slug) return false;
-        const dir = slugDir(ev.surface, slug);
-        await mkdir(dir, { recursive: true });
-        const fpath = join(dir, 'transcript.md');
+        // The path comes from the Room (room-core.mjs), not a hand-rolled join — a
+        // NamedRoom answers baseDir()/transcriptPath with the SAME getters, so this
+        // service is structurally ready for either root (operator 2026-08-07).
+        const room = Room.forChat(ev.surface, slug);
+        await mkdir(room.baseDir(), { recursive: true });
+        const fpath = room.transcriptPath;
         if (reply == null) {
           // §3.1: every received message passes ASYNCHRONOUSLY to the stats collector —
           // fire-and-forget (never awaited, so it can't block or delay the transcript
