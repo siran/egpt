@@ -12,11 +12,12 @@
 // (the conversation room) so nothing touches the live profile. The CDP + adapter seams are faked,
 // so no live Chrome and no dynamic import in these tests.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createCommands } from '../src/spine/commands.mjs';
 import { Room } from '../src/room-core.mjs';
+import { seedIdentityLayers } from '../src/conversations-state.mjs';
 
 class TmpRoom extends Room {
   constructor(dir, slug) { super(); this._dir = dir; this.slug = slug; }
@@ -119,6 +120,85 @@ describe('/rooms — list NamedRooms, mark current', () => {
     const { cmds, sent } = harness({ roomNames: [] });
     await cmds.run({ ...self, body: '/rooms' });
     expect(sent[0].text).toMatch(/no rooms/i);
+  });
+});
+
+// Defect 1 regression lock: an EXISTING room that genuinely has zero members must still
+// render its roster ("<slug> (0 members):") — that is a DIFFERENT case from a room that
+// doesn't exist on disk at all (locked in spine-commands.test.mjs) and must not regress.
+describe('/room <slug> members — a real, genuinely empty room still renders its roster', () => {
+  it('a room whose tree exists but has no members renders "(0 members)", not "no room"', async () => {
+    const { cmds, sent, roomForName } = harness();
+    await roomForName('nobody-yet').ensureTree();
+    await cmds.run({ ...self, body: '/room nobody-yet members' });
+    expect(sent.at(-1).text).toMatch(/nobody-yet \(0 members\)/);
+    expect(sent.at(-1).text).not.toMatch(/no room/);
+  });
+});
+
+// Defect 2 (live incident 2026-08-07): create/join/leave/members was the whole vocabulary —
+// there was no way to remove a NamedRoom short of deleting the folder by hand. /room <slug>
+// delete fills that gap: a room that's STILL JUST the seeded skeleton (the empty tree plus
+// identity.d/'s seeded layers — exactly what /room create + seedIdentityLayers leave behind)
+// is removed outright; a room holding anything more REFUSES and names what's there, requiring
+// an explicit `delete force` to proceed.
+describe('/room <slug> delete — remove a NamedRoom, refusing when it holds real content', () => {
+  // Builds a room exactly the way /room create does: the tree + the seeded identity.d/
+  // layers — so "still just the skeleton" is tested against the SAME shape the creator
+  // produces, not a hand-picked filename list.
+  async function freshRoom(roomForName, slug) {
+    const room = roomForName(slug);
+    await room.ensureTree();
+    await seedIdentityLayers(room, 'egpt');
+    return room;
+  }
+
+  it('a room that is still just the seeded skeleton is deleted outright', async () => {
+    const { cmds, sent, roomForName } = harness();
+    const room = await freshRoom(roomForName, 'scratch');
+    await cmds.run({ ...self, body: '/room scratch delete' });
+    expect(sent.at(-1).text).toMatch(/room scratch deleted/);
+    expect(existsSync(room.baseDir())).toBe(false);
+  });
+
+  it('a room holding a transcript refuses, naming it — "delete force" then removes it', async () => {
+    const { cmds, sent, roomForName } = harness();
+    const room = await freshRoom(roomForName, 'devwork');
+    writeFileSync(room.transcriptPath, '# hi\n', 'utf8');
+    await cmds.run({ ...self, body: '/room devwork delete' });
+    expect(sent.at(-1).text).toMatch(/transcript\.md/);
+    expect(sent.at(-1).text).toMatch(/delete force/);
+    expect(existsSync(room.baseDir())).toBe(true);   // refused — NOT removed
+    await cmds.run({ ...self, body: '/room devwork delete force' });
+    expect(sent.at(-1).text).toMatch(/deleted/);
+    expect(existsSync(room.baseDir())).toBe(false);
+  });
+
+  it('a room holding files in media/ refuses, naming the count', async () => {
+    const { cmds, sent, roomForName } = harness();
+    const room = await freshRoom(roomForName, 'withmedia');
+    writeFileSync(join(room.mediaDir, 'photo.jpg'), 'x');
+    await cmds.run({ ...self, body: '/room withmedia delete' });
+    expect(sent.at(-1).text).toMatch(/1 file in media\//);
+    expect(existsSync(room.baseDir())).toBe(true);
+  });
+
+  it('/room <slug> delete on a room that does not exist reports it (same wording as the "no room" path)', async () => {
+    const { cmds, sent } = harness();
+    await cmds.run({ ...self, body: '/room ghost delete' });
+    expect(sent.at(-1).text).toMatch(/no room 'ghost'/);
+  });
+
+  it('deleting the current room clears currentRoom for that surface (no dangling pointer)', async () => {
+    const { cmds, sent, roomForName } = harness();
+    await freshRoom(roomForName, 'current-one');
+    await cmds.run({ ...self, body: '/room current-one join' });
+    expect(sent.at(-1).text).toMatch(/joined 'current-one'/);
+    await cmds.run({ ...self, body: '/room current-one delete' });
+    expect(sent.at(-1).text).toMatch(/deleted/);
+    // leave now reports "not in" — the pointer was cleared, not left dangling at a deleted room
+    await cmds.run({ ...self, body: '/room current-one leave' });
+    expect(sent.at(-1).text).toMatch(/not in 'current-one'/);
   });
 });
 

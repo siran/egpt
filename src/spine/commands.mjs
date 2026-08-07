@@ -10,12 +10,12 @@
 // with a short note.
 import { lifecycleExit } from './ingest.mjs';
 import { isAutoMode, AUTO_MODES, DEFAULT_AUTO_MODE } from '../auto-mode.mjs';
-import { patchBeing, getContact, getBeing, slugDir, statsPath, conversationPathOf, listIdentityLayers as defaultListIdentityLayers, seedIdentityLayers, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS, READONLY_ALLOWED_TOOLS, LOBBY_SLUG } from '../conversations-state.mjs';
+import { patchBeing, getContact, getBeing, slugDir, statsPath, conversationPathOf, listIdentityLayers as defaultListIdentityLayers, seedIdentityLayers, skeletonIdentityFiles, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS, READONLY_ALLOWED_TOOLS, LOBBY_SLUG } from '../conversations-state.mjs';
 import { stripFrontMatter } from '../transcript-meta.mjs';
 import { initWizard, wizardStep, wizardPrompt } from '../agent-wizard.mjs';
 import { BUILTIN_BRAINS_DIR, PROFILE_AGENTS_DIR } from './brains.mjs';
 import { coerceAllowedTools } from './brainpool.mjs';
-import { stat as fsStat, readFile as fsReadFile, writeFile as fsWriteFile, mkdir as fsMkdir } from 'node:fs/promises';
+import { stat as fsStat, readFile as fsReadFile, writeFile as fsWriteFile, mkdir as fsMkdir, readdir as fsReaddir, rm as fsRm } from 'node:fs/promises';
 import { readdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, dirname, basename } from 'node:path';
@@ -301,7 +301,7 @@ export function createCommands({
   agentsDir = PROFILE_AGENTS_DIR,        // where the custom branch writes <name>.yaml (injected in tests)
   identitiesDir = PROFILE_IDENTITIES_DIR,// where the custom branch writes a free-text identity layer (injected in tests)
   configPath = CONFIG_YAML_PATH,         // where /config <key>=<value> writes — the real profile config.yaml by default (injected in tests, so no test ever touches the real profile)
-  io = {},                               // { stat, readFile, writeFile, mkdir } — real fs by default; /status probes files + the custom branch authors through here
+  io = {},                               // { stat, readFile, writeFile, mkdir, readdir, rm } — real fs by default; /status probes files + the custom branch authors through here
   // CDP seam for /chrome, /tabs, /open, /tab, /close — the real localhost probe by
   // default; tests inject fakes so the suite never needs a live Chrome or a real socket.
   cdp = { isRunning: cdpIsRunning, listTabs: cdpListTabs, cdpHost: cdpHostOf, openTab: cdpOpenTab, activateTarget: cdpActivateTarget, closeTab: cdpCloseTab },
@@ -371,6 +371,8 @@ export function createCommands({
   const readFile = io.readFile ?? fsReadFile;
   const writeFile = io.writeFile ?? fsWriteFile;
   const mkdir = io.mkdir ?? fsMkdir;
+  const readdir = io.readdir ?? fsReaddir;
+  const rm = io.rm ?? fsRm;
 
   // The current NamedRoom, per surface (the shell, a Beeper Self-DM) — NamedRoom NAVIGATION
   // only now: /rooms marks it "(current)", /room <slug> leave clears it. It NO LONGER gates
@@ -890,13 +892,23 @@ export function createCommands({
     catch (e) { return `/close: failed — ${e?.message ?? e}`; }
   }
 
+  const ROOM_USAGE = 'usage: /room create <name> | /room <slug> join|leave|members|delete';
+  // A slug with no folder on disk — the room-default path (sub === 'members') and
+  // /room <slug> delete both need to say this instead of acting as though it exists (bug
+  // fix 2026-08-07: "/room help" rendered "help (0 members)", a roster fabricated for a
+  // room that was never created — 'help' just happened to parse as a slug, like any typo
+  // would).
+  const noRoomMsg = (slug) => `no room '${slug}' — /rooms lists them, /room create ${slug} makes it`;
+
   // ─────────────────────────────────────────────────────────────────────────────
   // /room — the NamedRoom router (Phase 2). Two grammars share the verb: `create <name>`
   // is verb-first (create IS the first token); every OTHER first token is a room SLUG and
-  // the second token is the sub-verb — `/room <slug> join|leave|members`. `/rooms` (list)
-  // and `/rooms <slug> <sub>` (alias) route through here too.
+  // the second token is the sub-verb — `/room <slug> join|leave|members|delete`. `/rooms`
+  // (list) and `/rooms <slug> <sub>` (alias) route through here too. `first === 'help'` is
+  // special-cased to the usage line (not treated as a slug): an operator typing "/room
+  // help" is asking how the command works, not naming a room called "help".
   async function room(ev, first, rest) {
-    if (!first) { await send?.(ev.chatId, 'usage: /room create <name> | /room <slug> join|leave|members'); return; }
+    if (!first || first === 'help') { await send?.(ev.chatId, ROOM_USAGE); return; }
     // Verb-first: `create <name>` keeps its original grammar (create IS the first token).
     if (first === 'create') { await roomCreate(ev, rest); return; }
     // Slug-first: `/room <slug> <sub>` — the first token is a room, the second a verb.
@@ -905,8 +917,23 @@ export function createCommands({
     const sub = (rest || 'members').toLowerCase();
     if (sub === 'join') { await roomJoin(ev, slug); return; }
     if (sub === 'leave') { await roomLeave(ev, slug); return; }
-    if (sub === 'members') { await send?.(ev.chatId, await renderMembers(ev, roomForName(slug), slug)); return; }
-    await send?.(ev.chatId, `/room ${slug}: unknown subcommand "${sub}" — join|leave|members`);
+    if (sub === 'members') {
+      // Render a roster ONLY for a room that actually exists — the fabricated-empty-room
+      // bug this guards against (see noRoomMsg above).
+      if (!(await roomOnDisk(slug))) { await send?.(ev.chatId, noRoomMsg(slug)); return; }
+      await send?.(ev.chatId, await renderMembers(ev, roomForName(slug), slug)); return;
+    }
+    if (sub === 'delete' || sub.startsWith('delete ')) {
+      await roomDelete(ev, slug, sub.slice('delete'.length).trim() === 'force'); return;
+    }
+    await send?.(ev.chatId, `/room ${slug}: unknown subcommand "${sub}" — join|leave|members|delete`);
+  }
+
+  // Whether <slug>'s NamedRoom folder exists on disk — the same stat-probe /room create
+  // uses for its own idempotency check, reused here so "does this room exist" has ONE
+  // answer across create/members/delete.
+  async function roomOnDisk(slug) {
+    try { await stat(roomForName(slug).baseDir()); return true; } catch { return false; }
   }
 
   // /room create <name> — CREATE a NamedRoom. A Room IS a folder (room-core.mjs): making
@@ -972,6 +999,50 @@ export function createCommands({
   async function roomLeave(ev, slug) {
     if (curRoomName(ev) === slug) { currentRoom.delete(surfaceOf(ev)); await send?.(ev.chatId, `left '${slug}' — no current room.`); return; }
     await send?.(ev.chatId, `not in '${slug}' — current room is ${curRoomName(ev) ? `'${curRoomName(ev)}'` : 'none'}`);
+  }
+
+  // /room <slug> delete [force] — remove a NamedRoom folder outright. Irreversible: a room
+  // folder holds transcript.md, media/, files/, identity.d/, scripts/, transcripts/ — real
+  // content an operator (or a brain) put there. A room that is STILL JUST the seeded
+  // skeleton (what /room create + seedIdentityLayers leave behind: the empty tree plus
+  // identity.d/'s seeded layers, nothing else) is removed outright; a room holding anything
+  // more requires the explicit `force` token so the operator has to mean it.
+  async function roomDelete(ev, slug, force) {
+    if (!(await roomOnDisk(slug))) { await send?.(ev.chatId, noRoomMsg(slug)); return; }
+    const room = roomForName(slug);
+    if (!force) {
+      const contents = await roomContents(room);
+      if (contents.length) {
+        await send?.(ev.chatId, `room ${slug} has content — ${contents.join(', ')} — /room ${slug} delete force to remove anyway`);
+        return;
+      }
+    }
+    await rm(room.baseDir(), { recursive: true, force: true });
+    for (const [surface, cur] of currentRoom) if (cur === slug) currentRoom.delete(surface);
+    await send?.(ev.chatId, `room ${slug} deleted`);
+  }
+
+  // What roomDelete refuses to discard silently: everything a Room can hold BEYOND the
+  // seeded skeleton — read through Room's OWN getters (transcriptPath/mediaDir/filesDir/
+  // scriptsDir/transcriptsDir/identityDir), never a filename list re-derived here, so a
+  // room-core change can't drift this out of sync. identity.d/ is ALWAYS non-empty in a
+  // freshly-created room (seedIdentityLayers' copied-in layers) — only names beyond that
+  // seeded set (skeletonIdentityFiles, the SAME source seedIdentityLayers itself reads)
+  // count as content someone added.
+  async function roomContents(room) {
+    const parts = [];
+    try { await stat(room.transcriptPath); parts.push('transcript.md'); } catch { /* none */ }
+    for (const dir of [room.mediaDir, room.filesDir, room.scriptsDir, room.transcriptsDir]) {
+      let names = [];
+      try { names = await readdir(dir); } catch { names = []; }
+      if (names.length) parts.push(`${names.length} file${names.length === 1 ? '' : 's'} in ${basename(dir)}/`);
+    }
+    let idNames = [];
+    try { idNames = await readdir(room.identityDir); } catch { idNames = []; }
+    const skeleton = await skeletonIdentityFiles('egpt');
+    const extra = idNames.filter((n) => !skeleton.has(n));
+    if (extra.length) parts.push(`${extra.length} extra file${extra.length === 1 ? '' : 's'} in identity.d/`);
+    return parts;
   }
 
   // The roster of `room` (a Room object) as a fenced yaml block, labelled by `label`: each

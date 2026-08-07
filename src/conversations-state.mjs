@@ -1664,6 +1664,16 @@ export async function seedIdentityLayers(room, name, { io = {}, overwrite = fals
   return wrote;
 }
 
+// The identity.d/ FILENAMES a fresh seedIdentityLayers(room, name) would write — i.e. what
+// "just the seeded skeleton" means for a room's identity.d/, straight from the same source
+// seedIdentityLayers reads (_identityLayers), never a hand-kept list that could drift from
+// it. Used by /room <slug> delete (spine/commands.mjs) to tell "still just the skeleton"
+// apart from "something was added" without re-deriving the skeleton's contents itself.
+export async function skeletonIdentityFiles(name = 'egpt') {
+  const layers = await _identityLayers(name);
+  return new Set(layers.filter(({ text }) => text.trim()).map(({ file }) => file));
+}
+
 // Read identity <name>'s concatenated kickoff feed — every room layer in numeric order,
 // with the 00-identity slot resolved to the named persona. WITHOUT writing any copies (the
 // copy is seedIdentityLayers' job, called beside this at the turn boundary). Never empty

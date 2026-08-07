@@ -114,7 +114,7 @@ export const COMMANDS = [
   { cmd: '/prompts',        surface: 'shell',     usage: '/prompts [on|off]',                              desc: 'show/hide full prompt sent to operators' },
 
   { section: 'ROOMS' },
-  { cmd: '/room',           surface: 'shell',     usage: '/room [name|create <n>|join <n>|leave|delete <n>]', desc: 'show room info, switch, create, or delete', wired: true },
+  { cmd: '/room',           surface: 'shell',     usage: '/room create <name> | /room <slug> join|leave|members|delete', desc: 'show room info, switch, create, or delete', wired: true },
   { cmd: '/rooms',          surface: 'shell',     usage: '/rooms',                                         desc: 'list saved rooms (legacy YAML snapshots, not the live room set)', wired: true },
   { cmd: '/members',        surface: 'shell',     usage: '/members | /members add tab <n> [alias=<name>|<name>] | /members remove <id> | /members <id> mode <disable|mention|all>', desc: 'manage the CURRENT CONVERSATION\'s room roster: list, add a Chrome tab as a brain member, remove one, or set its contribution mode', wired: true },
   { cmd: '/save-room',      surface: 'shell',     usage: '/save-room [name]',                              desc: 'snapshot the current room lineup as YAML' },

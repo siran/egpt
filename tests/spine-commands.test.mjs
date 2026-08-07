@@ -858,6 +858,50 @@ describe('/room create <name>', () => {
   });
 });
 
+// Defect 1 (live incident 2026-08-07): the slug-first grammar defaults an unrecognized
+// first token's sub-verb to `members`, so `/room help` (or any typo) rendered a fabricated
+// "help (0 members)" roster for a room that was never created — nothing on disk backed it.
+// A room absent on disk must say so instead of answering as though it exists.
+describe('/room <slug> — a nonexistent room says so, never a fabricated roster', () => {
+  const self = { chatId: '!self', surface: 'whatsapp' };
+  const cfg = { whatsapp: { chat_id: '!self' } };
+  const noSuchRoom = { stat: async () => { throw new Error('ENOENT'); } };
+
+  it('/room help prints the usage line, NOT a "help (0 members)" roster (the live incident, verbatim)', async () => {
+    const { cmds, sent } = harness({ config: cfg, io: noSuchRoom });
+    await cmds.run({ ...self, body: '/room help' });
+    expect(sent[0].text).toMatch(/usage/i);
+    expect(sent[0].text).not.toMatch(/members\)/);
+  });
+
+  it('/room <nonexistent-slug> (default sub) reports "no room", not an empty roster', async () => {
+    const { cmds, sent } = harness({ config: cfg, io: noSuchRoom });
+    await cmds.run({ ...self, body: '/room bogus' });
+    expect(sent[0].text).toMatch(/no room 'bogus'/);
+    expect(sent[0].text).toMatch(/\/rooms/);
+    expect(sent[0].text).toMatch(/\/room create bogus/);
+    expect(sent[0].text).not.toMatch(/members\)/);
+  });
+
+  it('/room <nonexistent-slug> members (explicit sub) also reports "no room"', async () => {
+    const { cmds, sent } = harness({ config: cfg, io: noSuchRoom });
+    await cmds.run({ ...self, body: '/room bogus members' });
+    expect(sent[0].text).toMatch(/no room 'bogus'/);
+  });
+
+  it('/room <nonexistent-slug> delete reports "no room" (same wording as the members path)', async () => {
+    const { cmds, sent } = harness({ config: cfg, io: noSuchRoom });
+    await cmds.run({ ...self, body: '/room bogus delete' });
+    expect(sent[0].text).toMatch(/no room 'bogus'/);
+  });
+
+  it('/room <slug> join still works against a not-yet-created slug (unchanged pre-provisioning)', async () => {
+    const { cmds, sent } = harness({ config: cfg, io: noSuchRoom });
+    await cmds.run({ ...self, body: '/room future-room join' });
+    expect(sent[0].text).toMatch(/joined 'future-room'/);
+  });
+});
+
 // Phase 2 dispatch recognition: /rooms, /members, /activate are operator-gated commands
 // wired BEFORE the catch-all, so they never leak to E. (Behavior lives in
 // tests/rooms-members.test.mjs; here we lock only the recognition + non-leak.)
