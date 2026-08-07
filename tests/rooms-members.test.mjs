@@ -106,7 +106,7 @@ describe('/rooms — list NamedRooms, mark current', () => {
     const { cmds, sent, roomForName } = harness({ roomNames: ['devwork', 'scratch'] });
     await roomForName('scratch').setMember({ kind: 'brain', id: 'e', state: 'active' });
     await roomForName('scratch').setMember({ kind: 'brain', id: 'l', state: 'mention' });
-    await cmds.run({ ...self, body: '/rooms devwork join' });   // devwork → current
+    await cmds.run({ ...self, body: '/rooms join devwork' });   // devwork → current
     await cmds.run({ ...self, body: '/rooms' });
     const text = sent.at(-1).text;
     expect(text).toMatch(/devwork/);
@@ -130,7 +130,7 @@ describe('/room <slug> members — a real, genuinely empty room still renders it
   it('a room whose tree exists but has no members renders "(0 members)", not "no room"', async () => {
     const { cmds, sent, roomForName } = harness();
     await roomForName('nobody-yet').ensureTree();
-    await cmds.run({ ...self, body: '/room nobody-yet members' });
+    await cmds.run({ ...self, body: '/room members nobody-yet' });
     expect(sent.at(-1).text).toMatch(/nobody-yet \(0 members\)/);
     expect(sent.at(-1).text).not.toMatch(/no room/);
   });
@@ -156,7 +156,7 @@ describe('/room <slug> delete — remove a NamedRoom, refusing when it holds rea
   it('a room that is still just the seeded skeleton is deleted outright', async () => {
     const { cmds, sent, roomForName } = harness();
     const room = await freshRoom(roomForName, 'scratch');
-    await cmds.run({ ...self, body: '/room scratch delete' });
+    await cmds.run({ ...self, body: '/room delete scratch' });
     expect(sent.at(-1).text).toMatch(/room scratch deleted/);
     expect(existsSync(room.baseDir())).toBe(false);
   });
@@ -165,11 +165,11 @@ describe('/room <slug> delete — remove a NamedRoom, refusing when it holds rea
     const { cmds, sent, roomForName } = harness();
     const room = await freshRoom(roomForName, 'devwork');
     writeFileSync(room.transcriptPath, '# hi\n', 'utf8');
-    await cmds.run({ ...self, body: '/room devwork delete' });
+    await cmds.run({ ...self, body: '/room delete devwork' });
     expect(sent.at(-1).text).toMatch(/transcript\.md/);
     expect(sent.at(-1).text).toMatch(/delete force/);
     expect(existsSync(room.baseDir())).toBe(true);   // refused — NOT removed
-    await cmds.run({ ...self, body: '/room devwork delete force' });
+    await cmds.run({ ...self, body: '/room delete force devwork' });
     expect(sent.at(-1).text).toMatch(/deleted/);
     expect(existsSync(room.baseDir())).toBe(false);
   });
@@ -178,26 +178,26 @@ describe('/room <slug> delete — remove a NamedRoom, refusing when it holds rea
     const { cmds, sent, roomForName } = harness();
     const room = await freshRoom(roomForName, 'withmedia');
     writeFileSync(join(room.mediaDir, 'photo.jpg'), 'x');
-    await cmds.run({ ...self, body: '/room withmedia delete' });
+    await cmds.run({ ...self, body: '/room delete withmedia' });
     expect(sent.at(-1).text).toMatch(/1 file in media\//);
     expect(existsSync(room.baseDir())).toBe(true);
   });
 
   it('/room <slug> delete on a room that does not exist reports it (same wording as the "no room" path)', async () => {
     const { cmds, sent } = harness();
-    await cmds.run({ ...self, body: '/room ghost delete' });
+    await cmds.run({ ...self, body: '/room delete ghost' });
     expect(sent.at(-1).text).toMatch(/no room 'ghost'/);
   });
 
   it('deleting the current room clears currentRoom for that surface (no dangling pointer)', async () => {
     const { cmds, sent, roomForName } = harness();
     await freshRoom(roomForName, 'current-one');
-    await cmds.run({ ...self, body: '/room current-one join' });
+    await cmds.run({ ...self, body: '/room join current-one' });
     expect(sent.at(-1).text).toMatch(/joined 'current-one'/);
-    await cmds.run({ ...self, body: '/room current-one delete' });
+    await cmds.run({ ...self, body: '/room delete current-one' });
     expect(sent.at(-1).text).toMatch(/deleted/);
     // leave now reports "not in" — the pointer was cleared, not left dangling at a deleted room
-    await cmds.run({ ...self, body: '/room current-one leave' });
+    await cmds.run({ ...self, body: '/room leave current-one' });
     expect(sent.at(-1).text).toMatch(/not in 'current-one'/);
   });
 });
@@ -529,7 +529,7 @@ describe('/room <slug> members — NamedRoom inspection (kept, separate from /me
     await roomForName('devwork').setMember({ kind: 'brain', id: 'claude', state: 'mention' });
     // add a member to the CONVERSATION — it must NOT show up under the NamedRoom
     await cmds.run({ ...self, body: '/members add tab 1' });   // chatgpt → conversation room
-    await cmds.run({ ...self, body: '/room devwork members' });
+    await cmds.run({ ...self, body: '/room members devwork' });
     const text = sent.at(-1).text;
     expect(text).toMatch(/devwork/);     // labelled by the NamedRoom
     expect(text).toMatch(/claude/);      // the NamedRoom's own member

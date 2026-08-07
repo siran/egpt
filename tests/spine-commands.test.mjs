@@ -849,12 +849,31 @@ describe('/room create <name>', () => {
     expect(sent[0].text).not.toMatch(/recognized/);
   });
 
-  // Slug-first grammar (Phase 2): `/room <slug> <verb>` — a non-create first token is a
-  // room slug, the second an unknown verb here (join/leave/members are the real ones).
-  it('/room <slug> <bad-verb> reports the unknown subcommand (not "create only")', async () => {
-    const { cmds, sent } = harness({ config: { whatsapp: { chat_id: '!self' } } });
-    await cmds.run({ ...self, body: '/room join fam' });   // slug=join, verb=fam
-    expect(sent[0].text).toMatch(/unknown subcommand/i);
+  // Verb-first grammar (Phase 2): the first token must be one of the fixed verbs
+  // {create, join, leave, members, delete, help}. Reproduce-first regression for the
+  // 2026-08-07 bug fix: an unrecognized first token must NEVER become a room lookup — no
+  // roomOnDisk/stat call, nothing room-shaped touched. Proven here by spying on io.stat.
+  it('/room <unrecognized-verb> <anything> reports the unknown verb and never touches disk', async () => {
+    const statCalls = [];
+    const { cmds, sent } = harness({
+      config: { whatsapp: { chat_id: '!self' } },
+      io: { stat: async (p) => { statCalls.push(p); throw new Error('ENOENT'); } },
+    });
+    await cmds.run({ ...self, body: '/room frobnicate acim' });
+    expect(sent[0].text).toMatch(/unknown verb/i);
+    expect(sent[0].text).toMatch(/frobnicate/);
+    expect(statCalls).toEqual([]);   // no roomOnDisk lookup ever ran
+  });
+
+  // /room delete <room> (verb-first, no force) still reaches the real delete path — proven
+  // via the "no room" wording, which only happens if roomOnDisk/roomDelete actually ran.
+  it('/room delete <room> (no force) reaches roomDelete, not a generic unknown-verb reply', async () => {
+    const { cmds, sent } = harness({
+      config: { whatsapp: { chat_id: '!self' } },
+      io: { stat: async () => { throw new Error('ENOENT'); } },
+    });
+    await cmds.run({ ...self, body: '/room delete acim' });
+    expect(sent[0].text).toMatch(/no room 'acim'/);
   });
 });
 
@@ -874,30 +893,32 @@ describe('/room <slug> — a nonexistent room says so, never a fabricated roster
     expect(sent[0].text).not.toMatch(/members\)/);
   });
 
-  it('/room <nonexistent-slug> (default sub) reports "no room", not an empty roster', async () => {
+  // Under verb-first grammar there is no bare-slug-defaults-to-members case anymore — that
+  // WAS the bug. "/room bogus" has no recognized verb, so it must hit the unknown-verb
+  // path, not an implicit "show me room bogus's members" (noRoomMsg).
+  it('/room <unqualified-token> (no verb) is a bad command, not an implicit members lookup', async () => {
     const { cmds, sent } = harness({ config: cfg, io: noSuchRoom });
     await cmds.run({ ...self, body: '/room bogus' });
-    expect(sent[0].text).toMatch(/no room 'bogus'/);
-    expect(sent[0].text).toMatch(/\/rooms/);
-    expect(sent[0].text).toMatch(/\/room create bogus/);
+    expect(sent[0].text).toMatch(/unknown verb/i);
     expect(sent[0].text).not.toMatch(/members\)/);
+    expect(sent[0].text).not.toMatch(/no room 'bogus'/);
   });
 
-  it('/room <nonexistent-slug> members (explicit sub) also reports "no room"', async () => {
+  it('/room members <nonexistent-room> reports "no room"', async () => {
     const { cmds, sent } = harness({ config: cfg, io: noSuchRoom });
-    await cmds.run({ ...self, body: '/room bogus members' });
+    await cmds.run({ ...self, body: '/room members bogus' });
     expect(sent[0].text).toMatch(/no room 'bogus'/);
   });
 
-  it('/room <nonexistent-slug> delete reports "no room" (same wording as the members path)', async () => {
+  it('/room delete <nonexistent-room> reports "no room" (same wording as the members path)', async () => {
     const { cmds, sent } = harness({ config: cfg, io: noSuchRoom });
-    await cmds.run({ ...self, body: '/room bogus delete' });
+    await cmds.run({ ...self, body: '/room delete bogus' });
     expect(sent[0].text).toMatch(/no room 'bogus'/);
   });
 
-  it('/room <slug> join still works against a not-yet-created slug (unchanged pre-provisioning)', async () => {
+  it('/room join <room> still works against a not-yet-created room (unchanged pre-provisioning)', async () => {
     const { cmds, sent } = harness({ config: cfg, io: noSuchRoom });
-    await cmds.run({ ...self, body: '/room future-room join' });
+    await cmds.run({ ...self, body: '/room join future-room' });
     expect(sent[0].text).toMatch(/joined 'future-room'/);
   });
 });

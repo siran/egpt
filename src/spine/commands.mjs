@@ -674,22 +674,22 @@ export function createCommands({
     const closeMatch = /^\/close\s+(\d+)\s*$/i.exec(line);
     if (closeMatch) { await send?.(ev.chatId, await closeTabCmd(Number(closeMatch[1]))); return; }
 
-    // /rooms — Phase 2: list the saved NamedRooms (bare), or an ALIAS of /room <slug>
-    // <sub> (`/rooms devwork join` == `/room devwork join`). Matched BEFORE /room: the
+    // /rooms — Phase 2: list the saved NamedRooms (bare), or an ALIAS of /room <verb>
+    // <room> (`/rooms join devwork` == `/room join devwork`). Matched BEFORE /room: the
     // /room regex can't match "/rooms" (the trailing 's' is neither whitespace nor end),
     // but keeping /rooms first makes the alias intent explicit. Same pre-catch-all slot.
     const roomsMatch = /^\/rooms(?:\s+(\S+))?(?:\s+(.+?))?\s*$/i.exec(line);
     if (roomsMatch) {
-      const slug = roomsMatch[1]?.toLowerCase() || null;
-      if (!slug) { await send?.(ev.chatId, await roomsList(ev)); return; }
-      await room(ev, slug, roomsMatch[2]?.trim() || null);   // alias: /rooms <slug> <sub>
+      const verb = roomsMatch[1]?.toLowerCase() || null;
+      if (!verb) { await send?.(ev.chatId, await roomsList(ev)); return; }
+      await room(ev, verb, roomsMatch[2]?.trim() || null);   // alias: /rooms <verb> <room>
       return;
     }
 
-    // /room <sub> [<name>] — Phase 2 rooms & members. `create <name>` is the verb-first
-    // create path (unchanged); every OTHER first token is a room SLUG and the second is
-    // the sub-verb: `/room <slug> join|leave|members` (design grammar). Slots in exactly
-    // like /chrome: a dispatch match BEFORE the anchored /e wizard and the catch-all.
+    // /room <verb> [<room>] — Phase 2 rooms & members, verb-first (bug fix 2026-08-07: the
+    // old slug-first grammar let an unrecognized first token default to a room lookup — see
+    // the room() comment below). Slots in exactly like /chrome: a dispatch match BEFORE the
+    // anchored /e wizard and the catch-all.
     const roomMatch = /^\/room(?:\s+(\S+))?(?:\s+(.+?))?\s*$/i.exec(line);
     if (roomMatch) { await room(ev, roomMatch[1]?.toLowerCase() || null, roomMatch[2]?.trim() || null); return; }
 
@@ -892,41 +892,52 @@ export function createCommands({
     catch (e) { return `/close: failed — ${e?.message ?? e}`; }
   }
 
-  const ROOM_USAGE = 'usage: /room create <name> | /room <slug> join|leave|members|delete';
-  // A slug with no folder on disk — the room-default path (sub === 'members') and
-  // /room <slug> delete both need to say this instead of acting as though it exists (bug
-  // fix 2026-08-07: "/room help" rendered "help (0 members)", a roster fabricated for a
-  // room that was never created — 'help' just happened to parse as a slug, like any typo
-  // would).
+  const ROOM_USAGE = 'usage: /room create <name> | /room join|leave|members <room> | /room delete [force] <room>';
+  // A slug with no folder on disk — the members path and the delete path both need to say
+  // this instead of acting as though it exists (bug fix 2026-08-07: "/room help" rendered
+  // "help (0 members)", a roster fabricated for a room that was never created — 'help' just
+  // happened to parse as a slug under the OLD slug-first grammar, like any typo would).
   const noRoomMsg = (slug) => `no room '${slug}' — /rooms lists them, /room create ${slug} makes it`;
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // /room — the NamedRoom router (Phase 2). Two grammars share the verb: `create <name>`
-  // is verb-first (create IS the first token); every OTHER first token is a room SLUG and
-  // the second token is the sub-verb — `/room <slug> join|leave|members|delete`. `/rooms`
-  // (list) and `/rooms <slug> <sub>` (alias) route through here too. `first === 'help'` is
-  // special-cased to the usage line (not treated as a slug): an operator typing "/room
-  // help" is asking how the command works, not naming a room called "help".
+  // /room — the NamedRoom router (Phase 2). VERB-first: the first token is always matched
+  // against the fixed verb set {create, join, leave, members, delete, help} and the room
+  // name comes from `rest`. This replaced a slug-first grammar (first token = room, second
+  // = sub-verb) after a live bug: an unrecognized first token silently defaulted to
+  // sub==='members' and was looked up as a room name, so "/room help" rendered a fabricated
+  // "help (0 members)" roster. Under this grammar an unrecognized first token NEVER touches
+  // a room — it just gets the usage/unknown-verb reply. `/rooms` (list) and `/rooms <verb>
+  // <room>` (alias) route through here too. `first === 'help'` is special-cased to the
+  // usage line, same slot as a falsy first token.
   async function room(ev, first, rest) {
     if (!first || first === 'help') { await send?.(ev.chatId, ROOM_USAGE); return; }
-    // Verb-first: `create <name>` keeps its original grammar (create IS the first token).
     if (first === 'create') { await roomCreate(ev, rest); return; }
-    // Slug-first: `/room <slug> <sub>` — the first token is a room, the second a verb.
-    // Bare `/room <slug>` (no verb) defaults to listing that room's members.
-    const slug = sanitizeName(first);
-    const sub = (rest || 'members').toLowerCase();
-    if (sub === 'join') { await roomJoin(ev, slug); return; }
-    if (sub === 'leave') { await roomLeave(ev, slug); return; }
-    if (sub === 'members') {
+    if (first === 'join') {
+      if (!rest) { await send?.(ev.chatId, ROOM_USAGE); return; }
+      await roomJoin(ev, sanitizeName(rest)); return;
+    }
+    if (first === 'leave') {
+      if (!rest) { await send?.(ev.chatId, ROOM_USAGE); return; }
+      await roomLeave(ev, sanitizeName(rest)); return;
+    }
+    if (first === 'members') {
+      if (!rest) { await send?.(ev.chatId, ROOM_USAGE); return; }
+      const slug = sanitizeName(rest);
       // Render a roster ONLY for a room that actually exists — the fabricated-empty-room
       // bug this guards against (see noRoomMsg above).
       if (!(await roomOnDisk(slug))) { await send?.(ev.chatId, noRoomMsg(slug)); return; }
       await send?.(ev.chatId, await renderMembers(ev, roomForName(slug), slug)); return;
     }
-    if (sub === 'delete' || sub.startsWith('delete ')) {
-      await roomDelete(ev, slug, sub.slice('delete'.length).trim() === 'force'); return;
+    if (first === 'delete') {
+      const forceMatch = /^force\s+(.+)$/i.exec(rest || '');
+      const force = !!forceMatch;
+      const name = forceMatch ? forceMatch[1] : rest;
+      if (!name) { await send?.(ev.chatId, ROOM_USAGE); return; }
+      await roomDelete(ev, sanitizeName(name), force); return;
     }
-    await send?.(ev.chatId, `/room ${slug}: unknown subcommand "${sub}" — join|leave|members|delete`);
+    // Any other first token is an unrecognized verb — NEVER a room lookup (the property the
+    // slug-first bug violated): no roomOnDisk/stat call, nothing room-shaped touched.
+    await send?.(ev.chatId, `/room: unknown verb "${first}" — create|join|leave|members|delete`);
   }
 
   // Whether <slug>'s NamedRoom folder exists on disk — the same stat-probe /room create
