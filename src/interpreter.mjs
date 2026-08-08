@@ -117,7 +117,7 @@ export const COMMANDS = [
   { cmd: '/room',           surface: 'shell',     usage: '/room create <name> | /room join|leave|members <room> | /room delete [force] <room>', desc: 'show room info, switch, create, or delete', wired: true },
   { cmd: '/rooms',          surface: 'shell',     usage: '/rooms',                                         desc: 'list saved rooms (legacy YAML snapshots, not the live room set)', wired: true },
   { cmd: '/members',        surface: 'shell',     usage: '/members | /members add tab <n> [alias=<name>|<name>] | /members remove <id> | /members <id> mode <disable|mention|all>', desc: 'manage the CURRENT CONVERSATION\'s room roster: list, add a Chrome tab as a brain member, remove one, or set its contribution mode', wired: true },
-  { cmd: '/radio',          surface: 'shell',     usage: '/radio | /radio join | /radio leave',            desc: 'which node relays the CURRENT CONVERSATION\'s room to the internet radio station (config + command only — no uploader/HTTP/audio exists yet)', wired: true },
+  { cmd: '/radio',          surface: 'shell',     usage: '/radio | /radio join [<radio>] | /radio leave', desc: 'which radio the CURRENT CONVERSATION\'s room relays to (config + command only — no uploader/HTTP/audio exists yet)', wired: true },
   { cmd: '/save-room',      surface: 'shell',     usage: '/save-room [name]',                              desc: 'snapshot the current room lineup as YAML' },
 
   { section: 'MISC' },

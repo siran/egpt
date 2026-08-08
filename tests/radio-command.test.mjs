@@ -1,8 +1,14 @@
-// tests/radio-command.test.mjs — /radio [join|leave] (src/spine/commands.mjs radio()) and
-// Room.setRadioJoin (src/room-core.mjs). CONFIG + COMMAND ONLY: no uploader, no HTTP, no
-// audio handling — this locks the STATE machine (radio.join names a NODE, not a boolean;
-// radio.hosts is operator-maintained and this command must never write it) and the config
-// surface (radio_service.relay_password redaction lives in config-command.test.mjs).
+// tests/radio-command.test.mjs — /radio [join [<radio>]|leave] (src/spine/commands.mjs
+// radio()) and Room.setRadioJoin (src/room-core.mjs). CONFIG + COMMAND ONLY: no uploader,
+// no HTTP, no audio handling — this locks the STATE machine (radio.join names a RADIO — a
+// key in THIS node's radio_service map — not a node; radio.hosts is operator-maintained
+// and this command must never write it) and the config surface (radio_service.<name>.
+// relay_password redaction lives in config-command.test.mjs).
+//
+// Room configs are PER-NODE, so there is no cross-node ownership to guard: /radio join
+// <radio> refuses only when <radio> is not a key in THIS node's radio_service map — that
+// refusal, naming what IS configured, is the core of the operator's ruling and the first
+// lock below. Joining a room already joined to a DIFFERENT radio just switches it.
 //
 // Harness modeled on tests/rooms-members.test.mjs: a TmpRoom (real fs under a temp dir)
 // injected via resolveConvRoom, so /radio exercises the real room-core round-trip.
@@ -45,24 +51,33 @@ function seed(room, text) {
   writeFileSync(configPath(room), text, 'utf8');
 }
 
-describe('THE LOCK — a room joined by another node must never be reported or overwritten as this node\'s', () => {
-  it('/radio status on kg reports relayed by "do", not "kg"', async () => {
-    const { cmds, sent, room } = harness({ config: { node_name: 'kg' } });
-    seed(room, 'radio:\n  join: do\n');
-    await cmds.run({ ...self, body: '/radio' });
-    expect(sent[0].text).toMatch(/relayed by do/);
-    expect(sent[0].text).not.toMatch(/relayed by kg/);
+describe('THE LOCK — /radio join <radio> checks THIS node\'s own radio_service map only', () => {
+  it("join nosuchradio refuses, names what IS configured, and never touches the room file", async () => {
+    const { cmds, sent, room } = harness({
+      config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: true } } },
+    });
+    await cmds.run({ ...self, body: '/radio join nosuchradio' });
+    expect(sent[0].text).toMatch(/no radio 'nosuchradio' on kg/);
+    expect(sent[0].text).toMatch(/configured: wildnloyal/);
+    expect(existsSync(configPath(room))).toBe(false);
   });
 
-  it('/radio join on kg refuses, names "do", and leaves the file\'s radio.join untouched', async () => {
-    const { cmds, sent, room } = harness({ config: { node_name: 'kg' } });
+  it('refusing a bogus name on an already-joined room leaves radio.join untouched', async () => {
+    const { cmds, sent, room } = harness({
+      config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: true } } },
+    });
     const cfgPath = configPath(room);
-    seed(room, 'radio:\n  join: do\n');
-    await cmds.run({ ...self, body: '/radio join' });
-    expect(sent[0].text).toMatch(/already relayed by do/);
-    expect(sent[0].text).toMatch(/\/radio=do leave first/);
-    const after = readFileSync(cfgPath, 'utf8');
-    expect(after).toMatch(/join:\s*do/);
+    seed(room, 'radio:\n  join: wildnloyal\n');
+    await cmds.run({ ...self, body: '/radio join nosuchradio' });
+    expect(sent[0].text).toMatch(/no radio 'nosuchradio' on kg/);
+    expect(readFileSync(cfgPath, 'utf8')).toMatch(/join:\s*wildnloyal/);
+  });
+
+  it('with nothing configured on this node, names "none"', async () => {
+    const { cmds, sent } = harness({ config: { node_name: 'kg' } });
+    await cmds.run({ ...self, body: '/radio join nosuchradio' });
+    expect(sent[0].text).toMatch(/no radio 'nosuchradio' on kg/);
+    expect(sent[0].text).toMatch(/configured: none/);
   });
 });
 
@@ -72,51 +87,111 @@ describe('/radio status', () => {
     await cmds.run({ ...self, body: '/radio' });
     expect(sent[0].text).toMatch(/not relaying/);
   });
+
+  it('reports the joined radio and the host count', async () => {
+    const { cmds, sent, room } = harness({
+      config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: true } } },
+    });
+    seed(room, 'radio:\n  join: wildnloyal\n  hosts:\n    "16468217865": roger\n');
+    await cmds.run({ ...self, body: '/radio' });
+    expect(sent[0].text).toMatch(/wildnloyal/);
+    expect(sent[0].text).toMatch(/1 host mapped/);
+  });
 });
 
-describe('/radio join', () => {
-  it('on an unjoined room writes THIS node\'s node_name into radio.join', async () => {
-    const { cmds, sent, room } = harness({ config: { node_name: 'kg' } });
+describe('/radio join with no argument', () => {
+  it('exactly one radio configured — picks it', async () => {
+    const { cmds, sent, room } = harness({
+      config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: true } } },
+    });
     await cmds.run({ ...self, body: '/radio join' });
-    expect(sent[0].text).toMatch(/joined by kg/);
+    expect(sent[0].text).toMatch(/wildnloyal/);
     const after = readFileSync(configPath(room), 'utf8');
-    expect(after).toMatch(/radio:\s*\n\s*join:\s*kg/);
+    expect(after).toMatch(/join:\s*wildnloyal/);
+  });
+
+  it('several radios configured — refuses and lists them', async () => {
+    const { cmds, sent, room } = harness({
+      config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: true }, otherstation: { enabled: true } } },
+    });
+    await cmds.run({ ...self, body: '/radio join' });
+    expect(sent[0].text).toMatch(/wildnloyal/);
+    expect(sent[0].text).toMatch(/otherstation/);
+    expect(existsSync(configPath(room))).toBe(false);
+  });
+
+  it('none configured — says so', async () => {
+    const { cmds, sent } = harness({ config: { node_name: 'kg' } });
+    await cmds.run({ ...self, body: '/radio join' });
+    expect(sent[0].text).toMatch(/no radio configured on kg/);
+  });
+});
+
+describe('/radio join <radio>', () => {
+  it('on an unjoined room writes the radio name into radio.join', async () => {
+    const { cmds, sent, room } = harness({
+      config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: true } } },
+    });
+    await cmds.run({ ...self, body: '/radio join wildnloyal' });
+    expect(sent[0].text).toMatch(/wildnloyal/);
+    const after = readFileSync(configPath(room), 'utf8');
+    expect(after).toMatch(/radio:\s*\n\s*join:\s*wildnloyal/);
+  });
+
+  it('switches an existing join and says what it switched from', async () => {
+    const { cmds, sent, room } = harness({
+      config: {
+        node_name: 'kg',
+        radio_service: { wildnloyal: { enabled: true }, otherstation: { enabled: true } },
+      },
+    });
+    seed(room, 'radio:\n  join: wildnloyal\n');
+    await cmds.run({ ...self, body: '/radio join otherstation' });
+    expect(sent[0].text).toMatch(/switched from wildnloyal to otherstation/);
+    const after = readFileSync(configPath(room), 'utf8');
+    expect(after).toMatch(/join:\s*otherstation/);
   });
 
   it('leaves a pre-existing radio.hosts block untouched', async () => {
-    const { cmds, room } = harness({ config: { node_name: 'kg' } });
+    const { cmds, room } = harness({
+      config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: true } } },
+    });
     const cfgPath = configPath(room);
     seed(room, 'radio:\n  hosts:\n    "16468217865": roger\n');
-    await cmds.run({ ...self, body: '/radio join' });
+    await cmds.run({ ...self, body: '/radio join wildnloyal' });
     const after = readFileSync(cfgPath, 'utf8');
     expect(after).toMatch(/hosts:/);
     expect(after).toMatch(/16468217865['"]?:\s*roger/);
-    expect(after).toMatch(/join:\s*kg/);
+    expect(after).toMatch(/join:\s*wildnloyal/);
+  });
+
+  it('hosts survives a switch byte-for-byte', async () => {
+    const { cmds, room } = harness({
+      config: {
+        node_name: 'kg',
+        radio_service: { wildnloyal: { enabled: true }, otherstation: { enabled: true } },
+      },
+    });
+    const cfgPath = configPath(room);
+    seed(room, 'radio:\n  join: wildnloyal\n  hosts:\n    "16468217865": roger\n');
+    await cmds.run({ ...self, body: '/radio join otherstation' });
+    const after = readFileSync(cfgPath, 'utf8');
+    expect(after).toMatch(/hosts:/);
+    expect(after).toMatch(/16468217865['"]?:\s*roger/);
   });
 });
 
 describe('/radio leave', () => {
-  it('when this node owns it, clears join but leaves radio.hosts byte-for-byte present', async () => {
+  it('clears join but leaves radio.hosts byte-for-byte present', async () => {
     const { cmds, sent, room } = harness({ config: { node_name: 'kg' } });
     const cfgPath = configPath(room);
-    seed(room, 'radio:\n  join: kg\n  hosts:\n    "16468217865": roger\n');
+    seed(room, 'radio:\n  join: wildnloyal\n  hosts:\n    "16468217865": roger\n');
     await cmds.run({ ...self, body: '/radio leave' });
-    expect(sent[0].text).toMatch(/left|stopped/);
+    expect(sent[0].text).toMatch(/left wildnloyal/);
     const after = readFileSync(cfgPath, 'utf8');
-    expect(after).not.toMatch(/join:\s*kg/);
+    expect(after).not.toMatch(/join:\s*wildnloyal/);
     expect(after).toMatch(/hosts:/);
     expect(after).toMatch(/16468217865['"]?:\s*roger/);
-  });
-
-  it('when ANOTHER node owns it, refuses, names the owner, and clears nothing', async () => {
-    const { cmds, sent, room } = harness({ config: { node_name: 'kg' } });
-    const cfgPath = configPath(room);
-    seed(room, 'radio:\n  join: do\n');
-    await cmds.run({ ...self, body: '/radio leave' });
-    expect(sent[0].text).toMatch(/do/);
-    expect(sent[0].text).not.toMatch(/left|stopped/);
-    const after = readFileSync(cfgPath, 'utf8');
-    expect(after).toMatch(/join:\s*do/);
   });
 
   it('when nothing is joined, does not crash and does not falsely claim success', async () => {
@@ -138,7 +213,7 @@ describe('/radio unknown verb', () => {
   it('"/radio help" also replies usage and leaves an existing config.yaml unchanged', async () => {
     const { cmds, sent, room } = harness({ config: { node_name: 'kg' } });
     const cfgPath = configPath(room);
-    const before = 'radio:\n  join: do\n';
+    const before = 'radio:\n  join: wildnloyal\n';
     seed(room, before);
     await cmds.run({ ...self, body: '/radio help' });
     expect(sent[0].text).toMatch(/usage: \/radio/);
@@ -149,7 +224,7 @@ describe('/radio unknown verb', () => {
 describe('hosts count surfaced in status, never the map itself', () => {
   it('status reports the host count but never a sender id or speaker name', async () => {
     const { cmds, sent, room } = harness({ config: { node_name: 'kg' } });
-    seed(room, 'radio:\n  join: kg\n  hosts:\n    "16468217865": roger\n    "5551234567": ana\n');
+    seed(room, 'radio:\n  join: wildnloyal\n  hosts:\n    "16468217865": roger\n    "5551234567": ana\n');
     await cmds.run({ ...self, body: '/radio' });
     expect(sent[0].text).toMatch(/2 hosts mapped/);
     expect(sent[0].text).not.toContain('16468217865');
@@ -157,32 +232,40 @@ describe('hosts count surfaced in status, never the map itself', () => {
   });
 });
 
-describe('radio_service.enabled: false — state is real, but replies say relaying is disabled', () => {
-  it('status plainly notes relaying is disabled in config while still reporting real join state', async () => {
-    const { cmds, sent, room } = harness({ config: { node_name: 'kg', radio_service: { enabled: false } } });
-    seed(room, 'radio:\n  join: kg\n');
+describe('radio_service.<name>.enabled — reported per radio', () => {
+  it('status notes the joined radio is disabled while still reporting real join state', async () => {
+    const { cmds, sent, room } = harness({
+      config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: false } } },
+    });
+    seed(room, 'radio:\n  join: wildnloyal\n');
     await cmds.run({ ...self, body: '/radio' });
-    expect(sent[0].text).toMatch(/relayed by kg/);
+    expect(sent[0].text).toMatch(/wildnloyal/);
     expect(sent[0].text).toMatch(/disabled in config/);
   });
 
-  it('join still writes real state for real even though relaying reports as disabled', async () => {
-    const { cmds, sent, room } = harness({ config: { node_name: 'kg', radio_service: { enabled: false } } });
-    await cmds.run({ ...self, body: '/radio join' });
+  it('join still writes real state for real even though the radio reports as disabled', async () => {
+    const { cmds, sent, room } = harness({
+      config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: false } } },
+    });
+    await cmds.run({ ...self, body: '/radio join wildnloyal' });
     expect(sent[0].text).toMatch(/disabled in config/);
     const after = readFileSync(configPath(room), 'utf8');
-    expect(after).toMatch(/join:\s*kg/);
+    expect(after).toMatch(/join:\s*wildnloyal/);
   });
 
-  it('with radio_service.enabled absent entirely (the default), disabled note still appears', async () => {
-    const { cmds, sent } = harness({ config: { node_name: 'kg' } });
+  it('joined radio absent from this node\'s map — reported as not configured here', async () => {
+    const { cmds, sent, room } = harness({ config: { node_name: 'kg', radio_service: {} } });
+    seed(room, 'radio:\n  join: wildnloyal\n');
     await cmds.run({ ...self, body: '/radio' });
-    expect(sent[0].text).toMatch(/disabled in config/);
+    expect(sent[0].text).toMatch(/wildnloyal/);
+    expect(sent[0].text).toMatch(/not configured on this node/);
   });
 
-  it('radio_service.enabled: true drops the disabled note', async () => {
-    const { cmds, sent, room } = harness({ config: { node_name: 'kg', radio_service: { enabled: true } } });
-    seed(room, 'radio:\n  join: kg\n');
+  it('radio_service.<name>.enabled: true drops the disabled note', async () => {
+    const { cmds, sent, room } = harness({
+      config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: true } } },
+    });
+    seed(room, 'radio:\n  join: wildnloyal\n');
     await cmds.run({ ...self, body: '/radio' });
     expect(sent[0].text).not.toMatch(/disabled in config/);
   });

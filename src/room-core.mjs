@@ -217,15 +217,16 @@ export class Room {
   }
 
   // ── radio (WhatsApp-voice-note-to-station relay, config + command only) ────────────
-  // Set (or clear, via a falsy nodeName) the ONE key `/radio` owns: radio.join, the
-  // node relaying THIS room. Preserves every other key in the `radio:` block —
-  // especially `hosts` (sender-id -> station-speaker name), which is operator-maintained
-  // by hand and must NEVER be written by this command. Used for both /radio join
-  // (nodeName = this node) and /radio leave (nodeName = null).
-  async setRadioJoin(nodeName) {
+  // Set (or clear, via a falsy radioName) the ONE key `/radio` owns: radio.join, the
+  // radio (a key in this node's radio_service map, config/config-schema.mjs) THIS room
+  // relays to. Preserves every other key in the `radio:` block — especially `hosts`
+  // (sender-id -> station-speaker name), which is operator-maintained by hand and must
+  // NEVER be written by this command. Used for both /radio join (radioName = the radio
+  // being joined) and /radio leave (radioName = null).
+  async setRadioJoin(radioName) {
     const doc = await this.loadConfig();
     const radio = (doc.radio && typeof doc.radio === 'object') ? { ...doc.radio } : {};
-    if (nodeName) radio.join = nodeName; else delete radio.join;
+    if (radioName) radio.join = radioName; else delete radio.join;
     await this._setConfigBlock('radio', radio);
   }
 

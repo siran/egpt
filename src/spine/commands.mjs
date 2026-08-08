@@ -1214,48 +1214,66 @@ export function createCommands({
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // /radio [join|leave] — WHICH node relays the CURRENT CONVERSATION's room's WhatsApp
-  // voice notes to the internet radio station (config + command only for now — no
-  // uploader, no HTTP, no audio handling exists yet; see radio_service in
-  // config/config-schema.mjs). `radio.join` in the room's config.yaml (beside `members:`)
-  // names the relaying NODE, never a boolean: both co-account nodes receive the same
-  // WhatsApp message, so exactly one of them may own the relay for a room or a note airs
-  // twice. Resolved through convRoomOf — the SAME room /members reads/writes, never a
-  // second room-resolution path. Verb-first (the /room 2026-08-07 lesson): an
-  // unrecognized verb NEVER touches the room, it just gets the usage line.
-  const RADIO_USAGE = 'usage: /radio | /radio join | /radio leave';
+  // /radio [join [<radio>]|leave] — WHICH radio the CURRENT CONVERSATION's room relays
+  // its WhatsApp voice notes to (config + command only for now — no uploader, no HTTP, no
+  // audio handling exists yet; see radio_service in config/config-schema.mjs).
+  // `radio.join` in the room's config.yaml (beside `members:`) names a RADIO — a key in
+  // THIS node's radio_service map — never a node. Room configs are per-node (each machine
+  // has its own conversation config.yaml), so "/radio=<node> join <name>" already
+  // partitions the state: the addressed spine checks its OWN radio_service map and writes
+  // its own room file; the other node never hears about it. There is no cross-node
+  // ownership to guard, so joining a room already joined to a different radio just
+  // switches it — the refusal that matters is a radio this node does NOT have configured.
+  // Resolved through convRoomOf — the SAME room /members reads/writes, never a second
+  // room-resolution path. Verb-first (the /room 2026-08-07 lesson): an unrecognized verb
+  // NEVER touches the room, it just gets the usage line.
+  const RADIO_USAGE = 'usage: /radio | /radio join [<radio>] | /radio leave';
   async function radio(ev, first, rest) {
     if (first && first !== 'join' && first !== 'leave') { await send?.(ev.chatId, RADIO_USAGE); return; }
     const room = await convRoomOf(ev);
     if (!room) { await send?.(ev.chatId, "can't resolve this conversation's room"); return; }
-    const disabledNote = cfg().radio_service?.enabled === true ? '' : ' — relaying disabled in config';
+    const radios = (cfg().radio_service && typeof cfg().radio_service === 'object') ? cfg().radio_service : {};
+    const configuredNames = Object.keys(radios);
+    const thisNode = cfg().node_name;
     const doc = await room.loadConfig();
-    const joinedBy = doc.radio?.join || null;
+    const joinedRadio = doc.radio?.join || null;
     const hosts = doc.radio?.hosts;
     const hostsCount = (hosts && typeof hosts === 'object' && !Array.isArray(hosts)) ? Object.keys(hosts).length : 0;
-    const thisNode = cfg().node_name;
+    const hostsNote = `${hostsCount} host${hostsCount === 1 ? '' : 's'} mapped`;
+    const radioNote = (name) => {
+      const r = radios[name];
+      if (!r) return ' — not configured on this node';
+      return r.enabled === true ? '' : ' — disabled in config';
+    };
 
     if (!first) {
-      const status = joinedBy ? `relayed by ${joinedBy}` : 'not relaying';
-      await send?.(ev.chatId, `${status} — ${hostsCount} host${hostsCount === 1 ? '' : 's'} mapped${disabledNote}`);
+      if (!joinedRadio) { await send?.(ev.chatId, `not relaying — ${hostsNote}`); return; }
+      await send?.(ev.chatId, `relaying to ${joinedRadio} — ${hostsNote}${radioNote(joinedRadio)}`);
       return;
     }
     if (first === 'join') {
-      // Already joined by ANOTHER node → refuse rather than overwrite (the property that
-      // matters most here — see the spec's exact reply shape below).
-      if (joinedBy && joinedBy !== thisNode) {
-        await send?.(ev.chatId, `already relayed by ${joinedBy} — /radio=${joinedBy} leave first`);
+      let target = rest ? rest.toLowerCase() : null;
+      if (!target) {
+        if (configuredNames.length === 0) { await send?.(ev.chatId, `no radio configured on ${thisNode}`); return; }
+        if (configuredNames.length > 1) { await send?.(ev.chatId, `which radio? configured: ${configuredNames.join(', ')}`); return; }
+        [target] = configuredNames;
+      }
+      if (!configuredNames.includes(target)) {
+        await send?.(ev.chatId, `no radio '${target}' on ${thisNode} — configured: ${configuredNames.length ? configuredNames.join(', ') : 'none'}`);
         return;
       }
-      await room.setRadioJoin(thisNode);   // idempotent when joinedBy already === thisNode
-      await send?.(ev.chatId, `relaying — joined by ${thisNode}${disabledNote}`);
+      await room.setRadioJoin(target);
+      if (joinedRadio && joinedRadio !== target) {
+        await send?.(ev.chatId, `switched from ${joinedRadio} to ${target} — ${hostsNote}${radioNote(target)}`);
+      } else {
+        await send?.(ev.chatId, `relaying to ${target} — ${hostsNote}${radioNote(target)}`);
+      }
       return;
     }
     // first === 'leave'
-    if (!joinedBy) { await send?.(ev.chatId, `not relaying — nothing to leave${disabledNote}`); return; }
-    if (joinedBy !== thisNode) { await send?.(ev.chatId, `relayed by ${joinedBy}, not this node — /radio=${joinedBy} leave${disabledNote}`); return; }
+    if (!joinedRadio) { await send?.(ev.chatId, 'not relaying — nothing to leave'); return; }
     await room.setRadioJoin(null);   // hosts: survives untouched — setRadioJoin never writes it
-    await send?.(ev.chatId, `left — relaying stopped${disabledNote}`);
+    await send?.(ev.chatId, `left ${joinedRadio} — relaying stopped`);
   }
 
   // /config [<key>[=<value>]] — the `=` idiom the node binding already uses (`/config=kg`),

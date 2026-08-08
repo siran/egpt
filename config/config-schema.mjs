@@ -630,18 +630,38 @@ export const CONFIG_SCHEMA = {
   `,
 
   radio_service: `
-    Node-level config for relaying WhatsApp voice notes to an internet radio
-    station. CONFIG + COMMAND ONLY for now (2026-08-08): no uploader, no HTTP
+    Node-level config for relaying WhatsApp voice notes to internet radio
+    stations. CONFIG + COMMAND ONLY for now (2026-08-08): no uploader, no HTTP
     client, no audio handling exists yet — this block and the /radio command
-    are inert until that lands. Per-room relay STATE (which node relays a
-    given room, and its sender-id -> speaker-name map) is NOT here — it lives
-    in that room's own config.yaml under "radio:", beside "members:".
+    are inert until that lands. Per-room relay STATE (which radio a given
+    room relays to, and its sender-id -> speaker-name map) is NOT here — it
+    lives in that room's own config.yaml under "radio:", beside "members:".
 
-    KEYS:
+    A MAP of radio name -> per-station settings (operator ruling 2026-08-08:
+    "radio_service can be a list of radios to which you can join"), one block
+    per station, mirroring transcription_service's named profile blocks:
+
+      radio_service:
+        wildnloyal:
+          enabled: true
+          endpoint: https://radio.wildnloyal.org
+          relay_user: egpt
+          relay_password: ""
+          default_speaker: egpt
+
+    Room configs are PER-NODE (each machine has its own conversation
+    config.yaml), so this map is what makes "/radio join <name>" a real check
+    rather than a dead one: /radio join looks up <name> in THIS node's map
+    only, and refuses when it's absent, naming what IS configured here. The
+    addressed spine of "/radio=<node> join <name>" is what decides which
+    node's map gets checked — there is no cross-node lookup.
+
+    KEYS, per <radio-name>:
       enabled
-        DEFAULT: false — off until the station route exists. /radio still
-        reads/writes real per-room state either way; this only gates whether
-        a reply reports relaying as LIVE.
+        DEFAULT: false — off until the station route exists, and set PER
+        STATION so one can go live while another is still being set up.
+        /radio still reads/writes real per-room state either way; this only
+        gates whether a reply reports relaying as LIVE.
       endpoint
         The station's base URL, e.g. https://radio.example.org.
       relay_user
