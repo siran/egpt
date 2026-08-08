@@ -629,6 +629,32 @@ export const CONFIG_SCHEMA = {
     Beeper Desktop > Settings > Developer > Desktop API.
   `,
 
+  radio_service: `
+    Node-level config for relaying WhatsApp voice notes to an internet radio
+    station. CONFIG + COMMAND ONLY for now (2026-08-08): no uploader, no HTTP
+    client, no audio handling exists yet — this block and the /radio command
+    are inert until that lands. Per-room relay STATE (which node relays a
+    given room, and its sender-id -> speaker-name map) is NOT here — it lives
+    in that room's own config.yaml under "radio:", beside "members:".
+
+    KEYS:
+      enabled
+        DEFAULT: false — off until the station route exists. /radio still
+        reads/writes real per-room state either way; this only gates whether
+        a reply reports relaying as LIVE.
+      endpoint
+        The station's base URL, e.g. https://radio.example.org.
+      relay_user
+        Username this node authenticates to the station's (relays) realm as.
+      relay_password
+        The (relays) realm credential — a live secret. Keep it in
+        config.local.json, NOT config.yaml. REDACTED wherever /config prints
+        it (CONFIG_REDACT_RE matches "password").
+      default_speaker
+        Station speaker name used for a sender not found in a room's
+        radio.hosts map.
+  `,
+
   account_peers: `
     Node identities sharing THIS Beeper account, INCLUDING self (operator
     2026-07-09) — a LIST of node names, e.g. [kg, do]. Co-account nodes collapse

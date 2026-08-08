@@ -113,6 +113,19 @@ describe('/config <key>=<value> — bare leaf + dotted path resolution, write, r
     expect(sent[0].text).toContain('node_name');   // an ordinary key is untouched
   });
 
+  it('token redaction: radio_service.relay_password never leaks in a bare /config dump', async () => {
+    const configPath = await tmpConfigPath();
+    const config = {
+      node_name: 'kg',
+      radio_service: { enabled: false, endpoint: 'https://radio.wildnloyal.org', relay_user: 'egpt', relay_password: 'SUPER-SECRET-RELAY-PASSWORD' },
+    };
+    const { cmds, sent } = harness({ config, configPath });
+    await cmds.run({ body: '/config', chatId: '!self', authorized: true });
+    expect(sent[0].text).not.toContain('SUPER-SECRET-RELAY-PASSWORD');
+    expect(sent[0].text).toContain('<redacted>');
+    expect(sent[0].text).toContain('relay_user');   // an ordinary sibling key is untouched
+  });
+
   it('unregistered key refused — the config file is not created', async () => {
     const configPath = await tmpConfigPath();
     const { cmds, sent } = harness({ config: {}, configPath });
@@ -179,6 +192,17 @@ describe('/config <key> — bare-key GET, mirrors the write path\'s resolution +
     const { cmds, sent } = harness({ config, configPath });
     await cmds.run({ body: '/config beeper.main.token', chatId: '!self', authorized: true });
     expect(sent[0].text).not.toContain('SUPER-SECRET-TOKEN-VALUE');
+    expect(sent[0].text).toContain('<redacted>');
+  });
+
+  it('token redaction: a GET of radio_service.relay_password never leaks the real value', async () => {
+    const configPath = await tmpConfigPath();
+    const config = {
+      radio_service: { relay_password: 'SUPER-SECRET-RELAY-PASSWORD' },
+    };
+    const { cmds, sent } = harness({ config, configPath });
+    await cmds.run({ body: '/config radio_service.relay_password', chatId: '!self', authorized: true });
+    expect(sent[0].text).not.toContain('SUPER-SECRET-RELAY-PASSWORD');
     expect(sent[0].text).toContain('<redacted>');
   });
 

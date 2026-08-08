@@ -1,0 +1,202 @@
+// tests/radio-command.test.mjs — /radio [join|leave] (src/spine/commands.mjs radio()) and
+// Room.setRadioJoin (src/room-core.mjs). CONFIG + COMMAND ONLY: no uploader, no HTTP, no
+// audio handling — this locks the STATE machine (radio.join names a NODE, not a boolean;
+// radio.hosts is operator-maintained and this command must never write it) and the config
+// surface (radio_service.relay_password redaction lives in config-command.test.mjs).
+//
+// Harness modeled on tests/rooms-members.test.mjs: a TmpRoom (real fs under a temp dir)
+// injected via resolveConvRoom, so /radio exercises the real room-core round-trip.
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createCommands } from '../src/spine/commands.mjs';
+import { Room } from '../src/room-core.mjs';
+
+class TmpRoom extends Room {
+  constructor(dir, slug) { super(); this._dir = dir; this.slug = slug; }
+  baseDir() { return this._dir; }
+}
+
+const self = { chatId: '!conv-1', surface: 'whatsapp' };
+
+let base;
+beforeEach(() => { base = mkdtempSync(join(tmpdir(), 'egpt-radio-')); });
+afterEach(() => { rmSync(base, { recursive: true, force: true }); });
+
+function harness({ config = {} } = {}) {
+  const sent = [];
+  const room = new TmpRoom(join(base, 'conv'), 'conv-1');
+  const resolveConvRoom = async () => room;
+  const cmds = createCommands({
+    getConfig: () => ({ whatsapp: { chat_id: '!conv-1' }, ...config }),
+    send: async (chatId, text) => sent.push({ chatId, text }),
+    resolveConvRoom,
+  });
+  return { cmds, sent, room };
+}
+
+const configPath = (room) => join(room.baseDir(), 'config.yaml');
+
+// Seed the room's config.yaml with raw YAML text before a command runs (the room folder
+// itself doesn't exist yet after mkdtempSync — only the temp base does).
+function seed(room, text) {
+  mkdirSync(room.baseDir(), { recursive: true });
+  writeFileSync(configPath(room), text, 'utf8');
+}
+
+describe('THE LOCK — a room joined by another node must never be reported or overwritten as this node\'s', () => {
+  it('/radio status on kg reports relayed by "do", not "kg"', async () => {
+    const { cmds, sent, room } = harness({ config: { node_name: 'kg' } });
+    seed(room, 'radio:\n  join: do\n');
+    await cmds.run({ ...self, body: '/radio' });
+    expect(sent[0].text).toMatch(/relayed by do/);
+    expect(sent[0].text).not.toMatch(/relayed by kg/);
+  });
+
+  it('/radio join on kg refuses, names "do", and leaves the file\'s radio.join untouched', async () => {
+    const { cmds, sent, room } = harness({ config: { node_name: 'kg' } });
+    const cfgPath = configPath(room);
+    seed(room, 'radio:\n  join: do\n');
+    await cmds.run({ ...self, body: '/radio join' });
+    expect(sent[0].text).toMatch(/already relayed by do/);
+    expect(sent[0].text).toMatch(/\/radio=do leave first/);
+    const after = readFileSync(cfgPath, 'utf8');
+    expect(after).toMatch(/join:\s*do/);
+  });
+});
+
+describe('/radio status', () => {
+  it('an unjoined room (no radio: block at all) reports not relaying, no crash', async () => {
+    const { cmds, sent } = harness({ config: { node_name: 'kg' } });
+    await cmds.run({ ...self, body: '/radio' });
+    expect(sent[0].text).toMatch(/not relaying/);
+  });
+});
+
+describe('/radio join', () => {
+  it('on an unjoined room writes THIS node\'s node_name into radio.join', async () => {
+    const { cmds, sent, room } = harness({ config: { node_name: 'kg' } });
+    await cmds.run({ ...self, body: '/radio join' });
+    expect(sent[0].text).toMatch(/joined by kg/);
+    const after = readFileSync(configPath(room), 'utf8');
+    expect(after).toMatch(/radio:\s*\n\s*join:\s*kg/);
+  });
+
+  it('leaves a pre-existing radio.hosts block untouched', async () => {
+    const { cmds, room } = harness({ config: { node_name: 'kg' } });
+    const cfgPath = configPath(room);
+    seed(room, 'radio:\n  hosts:\n    "16468217865": roger\n');
+    await cmds.run({ ...self, body: '/radio join' });
+    const after = readFileSync(cfgPath, 'utf8');
+    expect(after).toMatch(/hosts:/);
+    expect(after).toMatch(/16468217865['"]?:\s*roger/);
+    expect(after).toMatch(/join:\s*kg/);
+  });
+});
+
+describe('/radio leave', () => {
+  it('when this node owns it, clears join but leaves radio.hosts byte-for-byte present', async () => {
+    const { cmds, sent, room } = harness({ config: { node_name: 'kg' } });
+    const cfgPath = configPath(room);
+    seed(room, 'radio:\n  join: kg\n  hosts:\n    "16468217865": roger\n');
+    await cmds.run({ ...self, body: '/radio leave' });
+    expect(sent[0].text).toMatch(/left|stopped/);
+    const after = readFileSync(cfgPath, 'utf8');
+    expect(after).not.toMatch(/join:\s*kg/);
+    expect(after).toMatch(/hosts:/);
+    expect(after).toMatch(/16468217865['"]?:\s*roger/);
+  });
+
+  it('when ANOTHER node owns it, refuses, names the owner, and clears nothing', async () => {
+    const { cmds, sent, room } = harness({ config: { node_name: 'kg' } });
+    const cfgPath = configPath(room);
+    seed(room, 'radio:\n  join: do\n');
+    await cmds.run({ ...self, body: '/radio leave' });
+    expect(sent[0].text).toMatch(/do/);
+    expect(sent[0].text).not.toMatch(/left|stopped/);
+    const after = readFileSync(cfgPath, 'utf8');
+    expect(after).toMatch(/join:\s*do/);
+  });
+
+  it('when nothing is joined, does not crash and does not falsely claim success', async () => {
+    const { cmds, sent } = harness({ config: { node_name: 'kg' } });
+    await cmds.run({ ...self, body: '/radio leave' });
+    expect(sent[0].text).not.toMatch(/^left\b/);
+    expect(sent[0].text).toMatch(/nothing to leave/);
+  });
+});
+
+describe('/radio unknown verb', () => {
+  it('replies usage and touches nothing — no file created for a room that never had one', async () => {
+    const { cmds, sent, room } = harness({ config: { node_name: 'kg' } });
+    await cmds.run({ ...self, body: '/radio bogus' });
+    expect(sent[0].text).toMatch(/usage: \/radio/);
+    expect(existsSync(configPath(room))).toBe(false);
+  });
+
+  it('"/radio help" also replies usage and leaves an existing config.yaml unchanged', async () => {
+    const { cmds, sent, room } = harness({ config: { node_name: 'kg' } });
+    const cfgPath = configPath(room);
+    const before = 'radio:\n  join: do\n';
+    seed(room, before);
+    await cmds.run({ ...self, body: '/radio help' });
+    expect(sent[0].text).toMatch(/usage: \/radio/);
+    expect(readFileSync(cfgPath, 'utf8')).toBe(before);
+  });
+});
+
+describe('hosts count surfaced in status, never the map itself', () => {
+  it('status reports the host count but never a sender id or speaker name', async () => {
+    const { cmds, sent, room } = harness({ config: { node_name: 'kg' } });
+    seed(room, 'radio:\n  join: kg\n  hosts:\n    "16468217865": roger\n    "5551234567": ana\n');
+    await cmds.run({ ...self, body: '/radio' });
+    expect(sent[0].text).toMatch(/2 hosts mapped/);
+    expect(sent[0].text).not.toContain('16468217865');
+    expect(sent[0].text).not.toContain('roger');
+  });
+});
+
+describe('radio_service.enabled: false — state is real, but replies say relaying is disabled', () => {
+  it('status plainly notes relaying is disabled in config while still reporting real join state', async () => {
+    const { cmds, sent, room } = harness({ config: { node_name: 'kg', radio_service: { enabled: false } } });
+    seed(room, 'radio:\n  join: kg\n');
+    await cmds.run({ ...self, body: '/radio' });
+    expect(sent[0].text).toMatch(/relayed by kg/);
+    expect(sent[0].text).toMatch(/disabled in config/);
+  });
+
+  it('join still writes real state for real even though relaying reports as disabled', async () => {
+    const { cmds, sent, room } = harness({ config: { node_name: 'kg', radio_service: { enabled: false } } });
+    await cmds.run({ ...self, body: '/radio join' });
+    expect(sent[0].text).toMatch(/disabled in config/);
+    const after = readFileSync(configPath(room), 'utf8');
+    expect(after).toMatch(/join:\s*kg/);
+  });
+
+  it('with radio_service.enabled absent entirely (the default), disabled note still appears', async () => {
+    const { cmds, sent } = harness({ config: { node_name: 'kg' } });
+    await cmds.run({ ...self, body: '/radio' });
+    expect(sent[0].text).toMatch(/disabled in config/);
+  });
+
+  it('radio_service.enabled: true drops the disabled note', async () => {
+    const { cmds, sent, room } = harness({ config: { node_name: 'kg', radio_service: { enabled: true } } });
+    seed(room, 'radio:\n  join: kg\n');
+    await cmds.run({ ...self, body: '/radio' });
+    expect(sent[0].text).not.toMatch(/disabled in config/);
+  });
+});
+
+describe("/radio can't resolve this conversation's room", () => {
+  it('replies the same message /members uses when resolveConvRoom yields null', async () => {
+    const sent = [];
+    const cmds = createCommands({
+      getConfig: () => ({ node_name: 'kg' }),
+      send: async (chatId, text) => sent.push({ chatId, text }),
+      resolveConvRoom: async () => null,
+    });
+    await cmds.run({ ...self, body: '/radio' });
+    expect(sent[0].text).toMatch(/can't resolve this conversation's room/);
+  });
+});

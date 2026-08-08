@@ -279,7 +279,7 @@ const quoteLeadingCommand = (text) => String(text ?? '').replace(/^\/([a-z0-9_-]
 // is the one exception: a BARE command (no `=<name>`, and for /chrome no positional node
 // either) operates on that node instead of "wherever it was heard" when the operator has set
 // one; UNSET, every bare form is a strict no-op — today's behaviour, byte for byte.
-const NODE_ADDRESSABLE = /^\/(chrome|status|tabs|tab|open|close|members?|config)\b(?:=(\S+))?(?:[ \t]*(.*))?$/i;
+const NODE_ADDRESSABLE = /^\/(chrome|status|tabs|tab|open|close|members?|config|radio)\b(?:=(\S+))?(?:[ \t]*(.*))?$/i;
 
 // The SHELL is node-local: the spine dials the operator's editor on 127.0.0.1:23375, so no other
 // node ever sees a shell message. Everywhere else this node speaks is a chat on the shared Beeper
@@ -699,6 +699,12 @@ export function createCommands({
     // (operators type both) — same handler.
     const membersMatch = /^\/members?(?:\s+(.+?))?\s*$/i.exec(line);
     if (membersMatch) { await members(ev, membersMatch[1]?.trim() || null); return; }
+
+    // /radio [join|leave] — WHICH node relays the CURRENT CONVERSATION's room to the
+    // internet radio station (config + command only, see radio() below). Pre-catch-all,
+    // node-addressable like /status/members/config (see NODE_ADDRESSABLE above).
+    const radioMatch = /^\/radio(?:\s+(\S+))?(?:\s+(.+?))?\s*$/i.exec(line);
+    if (radioMatch) { await radio(ev, radioMatch[1]?.toLowerCase() || null, radioMatch[2]?.trim() || null); return; }
 
     // /config [<key>[=<value>]] — bare: a redacted dump of the live config. `<key>` alone: a
     // GET. `<key>=<value>`: resolve <key> through config-schema.mjs (dotted path or bare leaf),
@@ -1205,6 +1211,51 @@ export function createCommands({
     if (!(await room.members()).some((m) => m.id === id)) { await send?.(ev.chatId, `no member '${id}' in this conversation`); return; }
     await room.setMemberState(id, token);
     await send?.(ev.chatId, `${id} → mode:${w} (${MODE_GLOSS[w]})`);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // /radio [join|leave] — WHICH node relays the CURRENT CONVERSATION's room's WhatsApp
+  // voice notes to the internet radio station (config + command only for now — no
+  // uploader, no HTTP, no audio handling exists yet; see radio_service in
+  // config/config-schema.mjs). `radio.join` in the room's config.yaml (beside `members:`)
+  // names the relaying NODE, never a boolean: both co-account nodes receive the same
+  // WhatsApp message, so exactly one of them may own the relay for a room or a note airs
+  // twice. Resolved through convRoomOf — the SAME room /members reads/writes, never a
+  // second room-resolution path. Verb-first (the /room 2026-08-07 lesson): an
+  // unrecognized verb NEVER touches the room, it just gets the usage line.
+  const RADIO_USAGE = 'usage: /radio | /radio join | /radio leave';
+  async function radio(ev, first, rest) {
+    if (first && first !== 'join' && first !== 'leave') { await send?.(ev.chatId, RADIO_USAGE); return; }
+    const room = await convRoomOf(ev);
+    if (!room) { await send?.(ev.chatId, "can't resolve this conversation's room"); return; }
+    const disabledNote = cfg().radio_service?.enabled === true ? '' : ' — relaying disabled in config';
+    const doc = await room.loadConfig();
+    const joinedBy = doc.radio?.join || null;
+    const hosts = doc.radio?.hosts;
+    const hostsCount = (hosts && typeof hosts === 'object' && !Array.isArray(hosts)) ? Object.keys(hosts).length : 0;
+    const thisNode = cfg().node_name;
+
+    if (!first) {
+      const status = joinedBy ? `relayed by ${joinedBy}` : 'not relaying';
+      await send?.(ev.chatId, `${status} — ${hostsCount} host${hostsCount === 1 ? '' : 's'} mapped${disabledNote}`);
+      return;
+    }
+    if (first === 'join') {
+      // Already joined by ANOTHER node → refuse rather than overwrite (the property that
+      // matters most here — see the spec's exact reply shape below).
+      if (joinedBy && joinedBy !== thisNode) {
+        await send?.(ev.chatId, `already relayed by ${joinedBy} — /radio=${joinedBy} leave first`);
+        return;
+      }
+      await room.setRadioJoin(thisNode);   // idempotent when joinedBy already === thisNode
+      await send?.(ev.chatId, `relaying — joined by ${thisNode}${disabledNote}`);
+      return;
+    }
+    // first === 'leave'
+    if (!joinedBy) { await send?.(ev.chatId, `not relaying — nothing to leave${disabledNote}`); return; }
+    if (joinedBy !== thisNode) { await send?.(ev.chatId, `relayed by ${joinedBy}, not this node — /radio=${joinedBy} leave${disabledNote}`); return; }
+    await room.setRadioJoin(null);   // hosts: survives untouched — setRadioJoin never writes it
+    await send?.(ev.chatId, `left — relaying stopped${disabledNote}`);
   }
 
   // /config [<key>[=<value>]] — the `=` idiom the node binding already uses (`/config=kg`),
