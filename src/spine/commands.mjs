@@ -35,6 +35,7 @@ import { resolveConfigKey } from '../../config/config-schema.mjs';
 import { isRunning as cdpIsRunning, listTabs as cdpListTabs, cdpHost as cdpHostOf, openTab as cdpOpenTab, activateTarget as cdpActivateTarget, closeTab as cdpCloseTab } from '../tools/cdp.mjs';
 import { findChromeExecutable, chromeArgs, chromeCommandLine, resolveBrainProfile } from '../tools/chrome-launcher.mjs';
 import { helpText } from '../interpreter.mjs';
+import { uploadNote, radioNoteFilename, pickSpeaker } from '../radio-relay.mjs';
 
 // Where a manually-launched Chrome should keep its profile. v1's shell hardcoded
 // ~/.egpt/chrome/profiles/brain — a usually-BLANK fresh dir. resolveBrainProfile() instead
@@ -350,6 +351,11 @@ export function createCommands({
   // imported, never re-derived, and injected so a test never reads ~/.claude/projects.
   // /status is the only READER: the compacting itself lives in src/spine/compaction.mjs.
   dueFor = dueForCompaction,
+  // /radio say seams — the SAME uploader/gate convention createRadioNoteRelay uses (real
+  // uploader by default; gate defaults to a bare passthrough so a standalone/test
+  // createCommands that doesn't inject the lasso is unaffected — never a second ceiling).
+  uploadNote: uploadNoteFn = uploadNote,
+  gate: gateFn = (fn) => fn(),
   onLog = () => {},
 } = {}) {
   const cfg = () => getConfig() ?? {};
@@ -1227,9 +1233,9 @@ export function createCommands({
   // Resolved through convRoomOf — the SAME room /members reads/writes, never a second
   // room-resolution path. Verb-first (the /room 2026-08-07 lesson): an unrecognized verb
   // NEVER touches the room, it just gets the usage line.
-  const RADIO_USAGE = 'usage: /radio | /radio join [<radio>] | /radio leave';
+  const RADIO_USAGE = 'usage: /radio | /radio join [<radio>] | /radio leave | /radio say <text>';
   async function radio(ev, first, rest) {
-    if (first && first !== 'join' && first !== 'leave') { await send?.(ev.chatId, RADIO_USAGE); return; }
+    if (first && first !== 'join' && first !== 'leave' && first !== 'say') { await send?.(ev.chatId, RADIO_USAGE); return; }
     const room = await convRoomOf(ev);
     if (!room) { await send?.(ev.chatId, "can't resolve this conversation's room"); return; }
     const radios = (cfg().radio_service && typeof cfg().radio_service === 'object') ? cfg().radio_service : {};
@@ -1270,10 +1276,33 @@ export function createCommands({
       }
       return;
     }
-    // first === 'leave'
-    if (!joinedRadio) { await send?.(ev.chatId, 'not relaying — nothing to leave'); return; }
-    await room.setRadioJoin(null);   // hosts: survives untouched — setRadioJoin never writes it
-    await send?.(ev.chatId, `left ${joinedRadio} — relaying stopped`);
+    if (first === 'leave') {
+      if (!joinedRadio) { await send?.(ev.chatId, 'not relaying — nothing to leave'); return; }
+      await room.setRadioJoin(null);   // hosts: survives untouched — setRadioJoin never writes it
+      await send?.(ev.chatId, `left ${joinedRadio} — relaying stopped`);
+      return;
+    }
+    // first === 'say' — upload <text> as a .md note through the SAME uploader/gate the
+    // voice-note relay uses (src/radio-relay.mjs, src/spine/boot.mjs createRadioNoteRelay).
+    if (!rest) { await send?.(ev.chatId, RADIO_USAGE); return; }
+    if (!joinedRadio) { await send?.(ev.chatId, 'not relaying — /radio join <radio> first'); return; }
+    if (!radios[joinedRadio] || radios[joinedRadio].enabled !== true) {
+      await send?.(ev.chatId, `radio '${joinedRadio}' not configured or disabled on ${thisNode}`);
+      return;
+    }
+    const speaker = pickSpeaker(doc.radio?.hosts, ev.senderId, radios[joinedRadio].default_speaker);
+    if (!speaker) { await send?.(ev.chatId, `no speaker for you on ${joinedRadio} — no default_speaker configured either`); return; }
+    const filename = radioNoteFilename(now(), 'md');
+    const bytes = Buffer.from(rest, 'utf8');
+    const result = await gateFn(() => uploadNoteFn({ radio: radios[joinedRadio], speaker, filename, bytes, onLog }));
+    if (result == null) return;   // gate refused — silent, per the lasso ruling
+    if (!result.ok) {
+      await send?.(ev.chatId, `radio say failed — ${result.error}${result.status ? ` (${result.status})` : ''}`);
+      return;
+    }
+    await send?.(ev.chatId, rest.length > 500
+      ? `said as ${speaker} — ${rest.length} chars, will take a while to air`
+      : `said as ${speaker}`);
   }
 
   // /config [<key>[=<value>]] — the `=` idiom the node binding already uses (`/config=kg`),

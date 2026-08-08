@@ -30,16 +30,21 @@ let base;
 beforeEach(() => { base = mkdtempSync(join(tmpdir(), 'egpt-radio-')); });
 afterEach(() => { rmSync(base, { recursive: true, force: true }); });
 
-function harness({ config = {} } = {}) {
+function harness({ config = {}, uploadNote, gate } = {}) {
   const sent = [];
   const room = new TmpRoom(join(base, 'conv'), 'conv-1');
   const resolveConvRoom = async () => room;
+  const uploadCalls = [];
+  const uploadNoteFn = uploadNote || (async (o) => { uploadCalls.push(o); return { ok: true, status: 201 }; });
+  const gateFn = gate || ((fn) => fn());
   const cmds = createCommands({
     getConfig: () => ({ whatsapp: { chat_id: '!conv-1' }, ...config }),
     send: async (chatId, text) => sent.push({ chatId, text }),
     resolveConvRoom,
+    uploadNote: uploadNoteFn,
+    gate: gateFn,
   });
-  return { cmds, sent, room };
+  return { cmds, sent, room, uploadCalls };
 }
 
 const configPath = (room) => join(room.baseDir(), 'config.yaml');
@@ -268,6 +273,149 @@ describe('radio_service.<name>.enabled — reported per radio', () => {
     seed(room, 'radio:\n  join: wildnloyal\n');
     await cmds.run({ ...self, body: '/radio' });
     expect(sent[0].text).not.toMatch(/disabled in config/);
+  });
+});
+
+describe('/radio say <text> — uploads through the SAME uploader/gate the voice-note relay uses', () => {
+  it('joined to an enabled radio with a mapped speaker: uploads a .md note and replies said as <speaker>', async () => {
+    const { cmds, sent, room, uploadCalls } = harness({
+      config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: true, default_speaker: 'egpt' } } },
+    });
+    seed(room, 'radio:\n  join: wildnloyal\n  hosts:\n    "16468217865": roger\n');
+    await cmds.run({ ...self, senderId: '16468217865', body: '/radio say hola' });
+    expect(uploadCalls).toHaveLength(1);
+    expect(uploadCalls[0].filename).toMatch(/\.md$/);
+    expect(uploadCalls[0].bytes.toString('utf8')).toBe('hola');
+    expect(uploadCalls[0].speaker).toBe('roger');
+    expect(sent[0].text).toBe('said as roger');
+  });
+
+  it('not joined — refuses with the exact string, never uploads', async () => {
+    const { cmds, sent, uploadCalls } = harness({
+      config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: true, default_speaker: 'egpt' } } },
+    });
+    await cmds.run({ ...self, senderId: '16468217865', body: '/radio say hola' });
+    expect(sent[0].text).toBe('not relaying — /radio join <radio> first');
+    expect(uploadCalls).toHaveLength(0);
+  });
+
+  it('joined radio absent from this node\'s radio_service — refuses, never uploads', async () => {
+    const { cmds, sent, room, uploadCalls } = harness({
+      config: { node_name: 'kg', radio_service: {} },
+    });
+    seed(room, 'radio:\n  join: wildnloyal\n');
+    await cmds.run({ ...self, senderId: '16468217865', body: '/radio say hola' });
+    expect(sent[0].text).toMatch(/wildnloyal/);
+    expect(sent[0].text).toMatch(/not configured or disabled/);
+    expect(uploadCalls).toHaveLength(0);
+  });
+
+  it('radio configured but disabled — refuses, never uploads', async () => {
+    const { cmds, sent, room, uploadCalls } = harness({
+      config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: false, default_speaker: 'egpt' } } },
+    });
+    seed(room, 'radio:\n  join: wildnloyal\n');
+    await cmds.run({ ...self, senderId: '16468217865', body: '/radio say hola' });
+    expect(sent[0].text).toMatch(/not configured or disabled/);
+    expect(uploadCalls).toHaveLength(0);
+  });
+
+  it('unmapped sender falls back to the radio\'s default_speaker', async () => {
+    const { cmds, sent, room, uploadCalls } = harness({
+      config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: true, default_speaker: 'egpt' } } },
+    });
+    seed(room, 'radio:\n  join: wildnloyal\n  hosts:\n    "16468217865": roger\n');
+    await cmds.run({ ...self, senderId: 'someone-else', body: '/radio say hola' });
+    expect(uploadCalls[0].speaker).toBe('egpt');
+    expect(sent[0].text).toBe('said as egpt');
+  });
+
+  it('mapped sender uses their own mapped speaker, not the default', async () => {
+    const { cmds, sent, room, uploadCalls } = harness({
+      config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: true, default_speaker: 'egpt' } } },
+    });
+    seed(room, 'radio:\n  join: wildnloyal\n  hosts:\n    "16468217865": roger\n');
+    await cmds.run({ ...self, senderId: '16468217865', body: '/radio say hola' });
+    expect(uploadCalls[0].speaker).toBe('roger');
+    expect(sent[0].text).toBe('said as roger');
+  });
+
+  it('no text — usage line, never uploads', async () => {
+    const { cmds, sent, room, uploadCalls } = harness({
+      config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: true, default_speaker: 'egpt' } } },
+    });
+    seed(room, 'radio:\n  join: wildnloyal\n');
+    await cmds.run({ ...self, senderId: '16468217865', body: '/radio say' });
+    expect(sent[0].text).toMatch(/^usage: \/radio/);
+    expect(uploadCalls).toHaveLength(0);
+  });
+
+  it('whitespace-only text — usage line, never uploads', async () => {
+    const { cmds, sent, room, uploadCalls } = harness({
+      config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: true, default_speaker: 'egpt' } } },
+    });
+    seed(room, 'radio:\n  join: wildnloyal\n');
+    await cmds.run({ ...self, senderId: '16468217865', body: '/radio say    ' });
+    expect(sent[0].text).toMatch(/^usage: \/radio/);
+    expect(uploadCalls).toHaveLength(0);
+  });
+
+  it('filename ends in .md and matches the ISO-timestamp shape', async () => {
+    const { cmds, room, uploadCalls } = harness({
+      config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: true, default_speaker: 'egpt' } } },
+    });
+    seed(room, 'radio:\n  join: wildnloyal\n');
+    await cmds.run({ ...self, senderId: '16468217865', body: '/radio say hola' });
+    expect(uploadCalls[0].filename).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-.*\.md$/);
+  });
+
+  it('a tripped gate (returns null) — never uploads, never throws, no failure message', async () => {
+    const trippedGate = async () => null;
+    const { cmds, sent, room, uploadCalls } = harness({
+      config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: true, default_speaker: 'egpt' } } },
+      gate: trippedGate,
+    });
+    seed(room, 'radio:\n  join: wildnloyal\n');
+    await expect(cmds.run({ ...self, senderId: '16468217865', body: '/radio say hola' })).resolves.not.toThrow();
+    expect(uploadCalls).toHaveLength(0);
+    expect(sent).toHaveLength(0);
+  });
+
+  it('a passthrough gate that DOES admit lets the call through normally', async () => {
+    const passthroughGate = (fn) => fn();
+    const { cmds, sent, room, uploadCalls } = harness({
+      config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: true, default_speaker: 'egpt' } } },
+      gate: passthroughGate,
+    });
+    seed(room, 'radio:\n  join: wildnloyal\n');
+    await cmds.run({ ...self, senderId: '16468217865', body: '/radio say hola' });
+    expect(uploadCalls).toHaveLength(1);
+    expect(sent[0].text).toBe('said as egpt');
+  });
+
+  it('text over 500 chars is still uploaded, and the reply explains the length/delay', async () => {
+    const longText = 'x'.repeat(501);
+    const { cmds, sent, room, uploadCalls } = harness({
+      config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: true, default_speaker: 'egpt' } } },
+    });
+    seed(room, 'radio:\n  join: wildnloyal\n');
+    await cmds.run({ ...self, senderId: '16468217865', body: `/radio say ${longText}` });
+    expect(uploadCalls).toHaveLength(1);
+    expect(sent[0].text).toMatch(/said as egpt/);
+    expect(sent[0].text).toMatch(/501/);
+  });
+
+  it('an upload failure is reported distinctly in the reply and does not throw', async () => {
+    const failingUpload = async () => ({ ok: false, error: 'permanent', status: 404 });
+    const { cmds, sent, room, uploadCalls } = harness({
+      config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: true, default_speaker: 'egpt' } } },
+      uploadNote: failingUpload,
+    });
+    seed(room, 'radio:\n  join: wildnloyal\n');
+    await expect(cmds.run({ ...self, senderId: '16468217865', body: '/radio say hola' })).resolves.not.toThrow();
+    expect(sent[0].text).toMatch(/radio say failed/);
+    expect(sent[0].text).toMatch(/permanent/);
+    expect(sent[0].text).toMatch(/404/);
   });
 });
 

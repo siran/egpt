@@ -1072,6 +1072,7 @@ export async function boot({
     evictWarm: (key) => pool.evict(key),              // drop a re-pointed conversation's warm session so it respawns fresh
     warmStats: () => pool.stats(),                    // /status `warm:` field — { size, max, keys }
     shellConnected: () => shellPort.isConnected,       // /status `shell:` field — is the operator's editor dialed in
+    gate: lasso.gate,                                  // /radio say's upload — the SAME node-wide lasso instance the beeper bridge, echo and shell port already spend from (never a second one)
     onLog: (m) => log.line?.(`[command] ${m}`),
   });
   commands.run = commandTranscript.wrapRun(commands.run);
