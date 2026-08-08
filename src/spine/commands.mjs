@@ -29,7 +29,7 @@ import { loadAdapters as defaultLoadAdapters, matchAdapter } from '../adapters/r
 import { agentPaths } from '../mesh/relay.mjs';
 import { compactionTargets, dueForCompaction, windowForModel } from '../tools/compact-being.mjs';
 import { compactionRatio } from './compaction.mjs';
-import { NODE_FILE, REGISTRY_FILE } from './config-resolver.mjs';
+import { NODE_FILE, REGISTRY_FILE, parseEntityConfig } from './config-resolver.mjs';
 import { CONFIG_YAML_PATH, writeConfigKey } from '../tools/config-io.mjs';
 import { resolveConfigKey } from '../../config/config-schema.mjs';
 import { isRunning as cdpIsRunning, listTabs as cdpListTabs, cdpHost as cdpHostOf, openTab as cdpOpenTab, activateTarget as cdpActivateTarget, closeTab as cdpCloseTab } from '../tools/cdp.mjs';
@@ -356,6 +356,13 @@ export function createCommands({
   // createCommands that doesn't inject the lasso is unaffected — never a second ceiling).
   uploadNote: uploadNoteFn = uploadNote,
   gate: gateFn = (fn) => fn(),
+  // Bare /radio's node-wide report seams. listEntityDirs enumerates every conversation/room
+  // entity on this node (THE walk boot.mjs owns, src/spine/boot.mjs ~line 561 — safe no-op
+  // default so a standalone/test createCommands never touches real disk); fetch probes a
+  // station's status-json.xsl for a live listener count (real global fetch by default — no
+  // test may exercise it; tests always inject a fake).
+  listEntityDirs = async () => [],
+  fetch: fetchFn = globalThis.fetch,
   onLog = () => {},
 } = {}) {
   const cfg = () => getConfig() ?? {};
@@ -710,7 +717,7 @@ export function createCommands({
     // internet radio station (config + command only, see radio() below). Pre-catch-all,
     // node-addressable like /status/members/config (see NODE_ADDRESSABLE above).
     const radioMatch = /^\/radio(?:\s+(\S+))?(?:\s+(.+?))?\s*$/i.exec(line);
-    if (radioMatch) { await radio(ev, radioMatch[1]?.toLowerCase() || null, radioMatch[2]?.trim() || null); return; }
+    if (radioMatch) { await radio(ev, radioMatch[1]?.toLowerCase() || null, radioMatch[2]?.trim() || null, addressed); return; }
 
     // /config [<key>[=<value>]] — bare: a redacted dump of the live config. `<key>` alone: a
     // GET. `<key>=<value>`: resolve <key> through config-schema.mjs (dotted path or bare leaf),
@@ -1220,71 +1227,186 @@ export function createCommands({
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // /radio [join [<radio>]|leave] — WHICH radio the CURRENT CONVERSATION's room relays
-  // its WhatsApp voice notes to (config + command only for now — no uploader, no HTTP, no
-  // audio handling exists yet; see radio_service in config/config-schema.mjs).
-  // `radio.join` in the room's config.yaml (beside `members:`) names a RADIO — a key in
-  // THIS node's radio_service map — never a node. Room configs are per-node (each machine
-  // has its own conversation config.yaml), so "/radio=<node> join <name>" already
-  // partitions the state: the addressed spine checks its OWN radio_service map and writes
-  // its own room file; the other node never hears about it. There is no cross-node
-  // ownership to guard, so joining a room already joined to a different radio just
-  // switches it — the refusal that matters is a radio this node does NOT have configured.
-  // Resolved through convRoomOf — the SAME room /members reads/writes, never a second
-  // room-resolution path. Verb-first (the /room 2026-08-07 lesson): an unrecognized verb
-  // NEVER touches the room, it just gets the usage line.
-  const RADIO_USAGE = 'usage: /radio | /radio join [<radio>] | /radio leave | /radio say <text>';
-  async function radio(ev, first, rest) {
+  // /radio [join [<radio>]|leave [all|<slug>]|say <text>] — config + command only for
+  // now (no uploader/HTTP for the note relay path lives here; see radio_service in
+  // config/config-schema.mjs). `radio.join` in a room's config.yaml (beside `members:`)
+  // names a RADIO — a key in THIS node's radio_service map — never a node. Room configs
+  // are per-node (each machine has its own conversation config.yaml), so
+  // "/radio=<node> join <name>" already partitions the state: the addressed spine checks
+  // its OWN radio_service map and writes its own room file; the other node never hears
+  // about it. There is no cross-node ownership to guard, so joining a room already
+  // joined to a different radio just switches it — the refusal that matters is a radio
+  // this node does NOT have configured.
+  //
+  // BARE `/radio` is a NODE-WIDE status report (works from Self or any channel — it
+  // resolves NO current room at all, see radioStatusReport below): one YAML block per
+  // configured radio, its live listener count and every room on this node relaying to it.
+  // The other verbs act on a room: `join`/bare `leave`/`say` on THIS conversation's room
+  // (resolved through convRoomOf, the SAME room /members reads/writes); `leave all` /
+  // `leave <slug>` act on OTHER rooms too, found through the same listEntityDirs
+  // enumeration the status report uses (radioJoinedEntities below) — never a second walk.
+  //
+  // BARE `/radio join` (not `=<node>`, and not a bare command resolved through this
+  // node's own dispatch.default_node) FAILS SILENTLY when it cannot act — an unaddressed
+  // sweep across several nodes should not hear from every node with nothing configured.
+  // `/radio=<node> join` was SPECIFICALLY addressed, so it always replies, success or
+  // refusal (operator ruling 2026-08-08). Scoped to join's three failure branches only —
+  // every other refusal (an unresolvable room, an unrecognized verb, leave/say failures)
+  // always replies, for every verb.
+  //
+  // Verb-first (the /room 2026-08-07 lesson): an unrecognized verb NEVER touches a room,
+  // it just gets the usage line.
+  const RADIO_USAGE = 'usage: /radio | /radio join [<radio>] | /radio leave [all|<slug>] | /radio say <text>';
+
+  // Which radio each entity on THIS node is joined to, per listEntityDirs (THE walk,
+  // owned by boot.mjs — never a second entity enumeration), computed ONCE per /radio
+  // call. `display` is the human name shown in replies — ns's part after the first '/'
+  // ("Reencuentro amigos" for "whatsapp/Reencuentro amigos", "lab" for "room/lab"). Feeds
+  // both the bare status report (grouped by radio) and /radio leave all|<slug> (matched by
+  // display, any radio) — one pass, two readers.
+  async function radioJoinedEntities() {
+    let dirs = [];
+    try { dirs = await listEntityDirs(); } catch { dirs = []; }
+    const out = [];
+    for (const { dir, ns } of dirs) {
+      let doc = {};
+      try { doc = parseEntityConfig(await readFile(join(dir, 'config.yaml'), 'utf8')); } catch { doc = {}; }
+      const joinKey = doc.radio?.join || null;
+      if (!joinKey) continue;
+      out.push({ ns, joinKey, display: ns.slice(ns.indexOf('/') + 1) });
+    }
+    return out;
+  }
+
+  // Reconstruct the Room a listEntityDirs entry names — generalizes roomForName's own
+  // `(name) => Room.named(name)` to also cover conversations, both constructors already
+  // imported/injected; never a second room-resolution path.
+  function roomFromNs(ns) {
+    const i = ns.indexOf('/');
+    const surface = ns.slice(0, i);
+    const rest = ns.slice(i + 1);
+    return surface === 'room' ? roomForName(rest) : Room.forChat(surface, rest);
+  }
+
+  // Bare /radio's report: one fenced yaml reply, one block per configured radio —
+  // `listeners` (a single unauthenticated status-json.xsl probe, no retry; "unknown" on
+  // ANY failure so a station hiccup never blanks the whole reply) and `joined` (every room
+  // on this node relaying to it). No hosts-count, no disabled/not-configured note — those
+  // stay in /radio join's reply only; this report's shape is exactly listeners + joined.
+  async function radioStatusReport() {
+    const radios = (cfg().radio_service && typeof cfg().radio_service === 'object') ? cfg().radio_service : {};
+    const configuredNames = Object.keys(radios);
+    if (!configuredNames.length) return `no radio configured on ${cfg().node_name}`;
+    const joinedByRadio = new Map();
+    for (const e of await radioJoinedEntities()) {
+      if (!joinedByRadio.has(e.joinKey)) joinedByRadio.set(e.joinKey, []);
+      joinedByRadio.get(e.joinKey).push(e.display);
+    }
+    const lines = [];
+    for (const name of configuredNames) {
+      const r = radios[name];
+      const base = r.listen_url || r.endpoint;
+      let listeners = 'unknown';
+      if (base) {
+        try {
+          const res = await fetchFn(`${String(base).replace(/\/+$/, '')}/status-json.xsl`);
+          if (res?.ok) {
+            const body = await res.json();
+            const src = body?.icestats?.source;
+            if (src) {
+              const arr = Array.isArray(src) ? src : [src];
+              listeners = String(arr.reduce((sum, s) => sum + (Number(s?.listeners) || 0), 0));
+            }
+          }
+        } catch { /* stays 'unknown' — a station hiccup must never blank the whole reply */ }
+      }
+      const joined = joinedByRadio.get(name) ?? [];
+      lines.push(`${name}:`);
+      lines.push(`  listeners: ${listeners}`);
+      lines.push(joined.length ? '  joined:' : '  joined: []');
+      for (const j of joined) lines.push(`    - ${j}`);
+    }
+    return '```yaml\n' + lines.join('\n') + '\n```';
+  }
+
+  async function radio(ev, first, rest, addressed) {
     if (first && first !== 'join' && first !== 'leave' && first !== 'say') { await send?.(ev.chatId, RADIO_USAGE); return; }
-    const room = await convRoomOf(ev);
-    if (!room) { await send?.(ev.chatId, "can't resolve this conversation's room"); return; }
+    const explicit = !!addressed?.raw && addressed.raw.startsWith('=');
     const radios = (cfg().radio_service && typeof cfg().radio_service === 'object') ? cfg().radio_service : {};
     const configuredNames = Object.keys(radios);
     const thisNode = cfg().node_name;
-    const doc = await room.loadConfig();
-    const joinedRadio = doc.radio?.join || null;
-    const hosts = doc.radio?.hosts;
-    const hostsCount = (hosts && typeof hosts === 'object' && !Array.isArray(hosts)) ? Object.keys(hosts).length : 0;
-    const hostsNote = `${hostsCount} host${hostsCount === 1 ? '' : 's'} mapped`;
     const radioNote = (name) => {
       const r = radios[name];
       if (!r) return ' — not configured on this node';
       return r.enabled === true ? '' : ' — disabled in config';
     };
 
-    if (!first) {
-      if (!joinedRadio) { await send?.(ev.chatId, `not relaying — ${hostsNote}`); return; }
-      await send?.(ev.chatId, `relaying to ${joinedRadio} — ${hostsNote}${radioNote(joinedRadio)}`);
-      return;
-    }
+    if (!first) { await send?.(ev.chatId, await radioStatusReport()); return; }
+
     if (first === 'join') {
+      const room = await convRoomOf(ev);
+      if (!room) { await send?.(ev.chatId, "can't resolve this conversation's room"); return; }
       let target = rest ? rest.toLowerCase() : null;
       if (!target) {
-        if (configuredNames.length === 0) { await send?.(ev.chatId, `no radio configured on ${thisNode}`); return; }
-        if (configuredNames.length > 1) { await send?.(ev.chatId, `which radio? configured: ${configuredNames.join(', ')}`); return; }
+        if (configuredNames.length === 0) {
+          if (explicit) await send?.(ev.chatId, `no radio configured on ${thisNode}`);
+          return;
+        }
+        if (configuredNames.length > 1) {
+          if (explicit) await send?.(ev.chatId, `which radio? configured: ${configuredNames.join(', ')}`);
+          return;
+        }
         [target] = configuredNames;
       }
       if (!configuredNames.includes(target)) {
-        await send?.(ev.chatId, `no radio '${target}' on ${thisNode} — configured: ${configuredNames.length ? configuredNames.join(', ') : 'none'}`);
+        if (explicit) await send?.(ev.chatId, `no radio '${target}' on ${thisNode} — configured: ${configuredNames.length ? configuredNames.join(', ') : 'none'}`);
         return;
       }
-      await room.setRadioJoin(target);
-      if (joinedRadio && joinedRadio !== target) {
-        await send?.(ev.chatId, `switched from ${joinedRadio} to ${target} — ${hostsNote}${radioNote(target)}`);
-      } else {
-        await send?.(ev.chatId, `relaying to ${target} — ${hostsNote}${radioNote(target)}`);
-      }
+      const doc = await room.loadConfig();
+      const joinedRadio = doc.radio?.join || null;
+      await room.setRadioJoin(target);   // hosts: survives untouched — setRadioJoin never writes it
+      const name = radios[target].name || target;
+      const sentence = radios[target].listen_url
+        ? `relaying to ${name}. you can listen in ${radios[target].listen_url}. voice notes are broadcasted to the radio's listeners.`
+        : `relaying to ${name}. voice notes are broadcasted to the radio's listeners.`;
+      const switchPrefix = (joinedRadio && joinedRadio !== target) ? `switched from ${radios[joinedRadio]?.name || joinedRadio} — ` : '';
+      await send?.(ev.chatId, `${switchPrefix}${sentence}${radioNote(target)}`);
       return;
     }
+
     if (first === 'leave') {
-      if (!joinedRadio) { await send?.(ev.chatId, 'not relaying — nothing to leave'); return; }
-      await room.setRadioJoin(null);   // hosts: survives untouched — setRadioJoin never writes it
-      await send?.(ev.chatId, `left ${joinedRadio} — relaying stopped`);
+      if (!rest) {
+        const room = await convRoomOf(ev);
+        if (!room) { await send?.(ev.chatId, "can't resolve this conversation's room"); return; }
+        const doc = await room.loadConfig();
+        const joinedRadio = doc.radio?.join || null;
+        if (!joinedRadio) { await send?.(ev.chatId, 'not relaying — nothing to leave'); return; }
+        await room.setRadioJoin(null);   // hosts: survives untouched — setRadioJoin never writes it
+        await send?.(ev.chatId, `left ${joinedRadio} — relaying stopped`);
+        return;
+      }
+      if (rest.toLowerCase() === 'all') {
+        const entries = await radioJoinedEntities();
+        if (!entries.length) { await send?.(ev.chatId, 'not relaying anywhere on this node — nothing to leave'); return; }
+        for (const e of entries) await roomFromNs(e.ns).setRadioJoin(null);   // hosts: survives untouched — setRadioJoin never writes it
+        await send?.(ev.chatId, `left ${entries.length} room${entries.length === 1 ? '' : 's'}`);
+        return;
+      }
+      const entries = await radioJoinedEntities();
+      const hit = entries.find((e) => e.display.toLowerCase() === rest.toLowerCase());
+      if (!hit) { await send?.(ev.chatId, `'${rest}' is not joined to a radio on this node`); return; }
+      await roomFromNs(hit.ns).setRadioJoin(null);   // hosts: survives untouched — setRadioJoin never writes it
+      await send?.(ev.chatId, `left ${hit.display}`);
       return;
     }
+
     // first === 'say' — upload <text> as a .md note through the SAME uploader/gate the
     // voice-note relay uses (src/radio-relay.mjs, src/spine/boot.mjs createRadioNoteRelay).
+    const room = await convRoomOf(ev);
+    if (!room) { await send?.(ev.chatId, "can't resolve this conversation's room"); return; }
     if (!rest) { await send?.(ev.chatId, RADIO_USAGE); return; }
+    const doc = await room.loadConfig();
+    const joinedRadio = doc.radio?.join || null;
     if (!joinedRadio) { await send?.(ev.chatId, 'not relaying — /radio join <radio> first'); return; }
     if (!radios[joinedRadio] || radios[joinedRadio].enabled !== true) {
       await send?.(ev.chatId, `radio '${joinedRadio}' not configured or disabled on ${thisNode}`);

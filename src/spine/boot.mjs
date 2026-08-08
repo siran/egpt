@@ -1073,6 +1073,7 @@ export async function boot({
     warmStats: () => pool.stats(),                    // /status `warm:` field — { size, max, keys }
     shellConnected: () => shellPort.isConnected,       // /status `shell:` field — is the operator's editor dialed in
     gate: lasso.gate,                                  // /radio say's upload — the SAME node-wide lasso instance the beeper bridge, echo and shell port already spend from (never a second one)
+    listEntityDirs,                                    // bare /radio's joined-rooms report + /radio leave all|<slug> — THE walk (above), never a second entity enumeration
     onLog: (m) => log.line?.(`[command] ${m}`),
   });
   commands.run = commandTranscript.wrapRun(commands.run);

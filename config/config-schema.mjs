@@ -643,6 +643,8 @@ export const CONFIG_SCHEMA = {
 
       radio_service:
         wildnloyal:
+          name: "Wild n Loyal radio"
+          listen_url: https://radio.wildnloyal.org/
           enabled: true
           endpoint: https://radio.wildnloyal.org
           relay_user: egpt
@@ -657,13 +659,23 @@ export const CONFIG_SCHEMA = {
     node's map gets checked — there is no cross-node lookup.
 
     KEYS, per <radio-name>:
+      name
+        Human-readable station name used in /radio's replies (e.g. "relaying
+        to Wild n Loyal radio…"). Falls back to the config key (the radio's
+        map key, e.g. "wildnloyal") when absent.
+      listen_url
+        Where a HUMAN listens (the public station page), e.g.
+        https://radio.wildnloyal.org/. Included in /radio join's reply when
+        set, omitted entirely when absent — never derived from endpoint, since
+        the API base and the public listen page need not be the same host.
       enabled
         DEFAULT: false — off until the station route exists, and set PER
         STATION so one can go live while another is still being set up.
         /radio still reads/writes real per-room state either way; this only
         gates whether a reply reports relaying as LIVE.
       endpoint
-        The station's base URL, e.g. https://radio.example.org.
+        The station's API base URL, e.g. https://radio.example.org — may
+        differ from listen_url (see above).
       relay_user
         Username this node authenticates to the station's (relays) realm as.
       relay_password
