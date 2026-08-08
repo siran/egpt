@@ -103,6 +103,11 @@ Write-Host "dropped /upgrade into the ingest box -- waiting for the spine to bou
 
 # --- the proof is the HEARTBEAT advancing: only a live spine writes alive.txt. The sha may
 #     legitimately not move (already current), so it is reported, never required. ---
+# A CHANGED HEARTBEAT ALONE IS NOT PROOF, and reading it as proof produced a false FAILURE on
+# 2026-08-08: the OLD spine's 60s beat can fire between the drop and the daemon finishing its
+# pull, so the loop saw "bounced", read the sha while git was still working, and reported the
+# node as stuck on old code -- while the pull was in fact succeeding. So when we know the
+# TARGET, wait for the repo to actually reach it; the heartbeat is the liveness half only.
 $ok = $false
 for ($i = 0; $i -lt $TimeoutSec; $i++) {
   Start-Sleep -Seconds 1
@@ -111,7 +116,11 @@ for ($i = 0; $i -lt $TimeoutSec; $i++) {
     foreach ($ln in (Get-Content $stop)) { Write-Host "  $ln" -ForegroundColor DarkGray }
     exit 1
   }
-  if ((Get-Item $alive).LastWriteTime -ne $beat0) { $ok = $true; break }
+  $beat = (Get-Item $alive).LastWriteTime -ne $beat0
+  if (-not $beat) { continue }
+  # Heartbeat moved. If we know what should have landed, hold out for it.
+  if (-not $target) { $ok = $true; break }
+  if ((Get-ShortHead $git $Repo) -eq $target) { $ok = $true; break }
 }
 
 $after = Get-ShortHead $git $Repo
