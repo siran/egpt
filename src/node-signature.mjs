@@ -105,3 +105,17 @@ const RENDERED = /<([^<>\s]+)>/;
 export function decodeRenderedNodeSignature(text) {
   return String(text ?? '').match(RENDERED)?.[1] ?? null;
 }
+
+/**
+ * Strip a RENDERED `<node>` marker (renderNodeSignature's output) from `text` — the strip
+ * counterpart to decodeRenderedNodeSignature, for a caller reading a TRANSCRIPT rather than the
+ * wire: by the time a line is on the record the frame is already legible (identity.build renders
+ * it before anything writes the file), so stripNodeSignature (raw invisible bytes) finds nothing
+ * there. Anchored to the END of the string on purpose — renderNodeSignature's frame is always
+ * APPENDED last (persona-wrap.mjs), so this only ever removes that trailing tag, never a
+ * coincidental `<word>` the message itself contains earlier on.
+ */
+const RENDERED_TRAILING = /\s*<[^<>\s]+>\s*$/;
+export function stripRenderedNodeSignature(text) {
+  return String(text ?? '').replace(RENDERED_TRAILING, '');
+}

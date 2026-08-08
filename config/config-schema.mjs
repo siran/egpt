@@ -1214,6 +1214,21 @@ export const CONFIG_SCHEMA = {
     and receives the message minus the token (src/spine/router.mjs addressed).
   `,
 
+  radio_quick_reply_string: `
+    Token that reads a QUOTED message aloud on the radio this conversation's room
+    is joined to — reply to any message with just this token (operator
+    2026-08-08). Equivalent to "/radio say <that message's text>": same room/
+    joined/enabled/blocked-sender/speaker checks, same uploader+gate.
+      DEFAULT: "rs"      "" disables the feature
+    The WHOLE message must equal the token (case-insensitive) — unlike
+    quick_reply_string, it takes no trailing argument; the text comes from the
+    reply-to, not from what follows the token. A separate key from
+    quick_reply_string on purpose: "r" addresses whichever agent spoke last (any
+    sender, no operator gate); "rs" triggers a radio upload through the SAME
+    isOperator-gated path /radio say does, so the two must be nameable/
+    disableable independently (src/spine/commands.mjs radioQuickReply).
+  `,
+
   bridge_signature_open: `
     Per-NODE infra WRAP — OPENING line (operator 2026-07-12).
 

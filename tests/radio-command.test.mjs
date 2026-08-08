@@ -21,6 +21,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createCommands } from '../src/spine/commands.mjs';
 import { Room } from '../src/room-core.mjs';
+import { encodeNodeSignature, renderNodeSignature } from '../src/node-signature.mjs';
 
 class TmpRoom extends Room {
   constructor(dir, slug) { super(); this._dir = dir; this.slug = slug; }
@@ -76,6 +77,12 @@ const configPath = (room) => join(room.baseDir(), 'config.yaml');
 function seed(room, text) {
   mkdirSync(room.baseDir(), { recursive: true });
   writeFileSync(configPath(room), text, 'utf8');
+}
+
+// Seed a room's transcript.md with raw entries (rs's bodyForMessageId reads this file).
+function seedTranscript(room, text) {
+  mkdirSync(room.baseDir(), { recursive: true });
+  writeFileSync(room.transcriptPath, text, 'utf8');
 }
 
 // Seed a NamedRoom-shaped entity dir the harness's default roomForName also resolves to
@@ -1045,5 +1052,230 @@ describe('/radio disable — Ruling 2 (operator 2026-08-08)', () => {
     await cmds.run({ ...self, senderId: '16468217865', body: '/radio say hola' });
     expect(uploadCalls).toHaveLength(1);
     expect(sent[0].text).toBe('said as egpt');
+  });
+});
+
+// ── /radio say — MULTILINE payload (operator, live: '/radio say hola\na todos' matched neither
+// the node-gate nor the /radio dispatch regex, and fell through to the catch-all) ────────────
+describe('/radio say — a multi-line payload is not smuggled anywhere and not mangled', () => {
+  it('REPRODUCE-FIRST: a two-line say uploads, and the uploaded bytes contain BOTH lines with the newline intact', async () => {
+    const { cmds, room, uploadCalls } = harness({
+      config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: true, default_speaker: 'egpt' } } },
+    });
+    seed(room, 'radio:\n  join: wildnloyal\n');
+    await cmds.run({ ...self, senderId: '16468217865', body: '/radio say hola\na todos' });
+    expect(uploadCalls).toHaveLength(1);
+    expect(uploadCalls[0].bytes.toString('utf8')).toBe('hola\na todos');
+  });
+
+  it('=<node> still binds on a multi-line say — addressed to THIS node, it uploads', async () => {
+    const { cmds, room, uploadCalls } = harness({
+      config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: true, default_speaker: 'egpt' } } },
+    });
+    seed(room, 'radio:\n  join: wildnloyal\n');
+    await cmds.run({ ...self, senderId: '16468217865', body: '/radio=kg say hola\na todos' });
+    expect(uploadCalls).toHaveLength(1);
+    expect(uploadCalls[0].bytes.toString('utf8')).toBe('hola\na todos');
+  });
+
+  it('=<node> naming a DIFFERENT node on a multi-line say stays silent here (the same node gate every other command uses)', async () => {
+    const { cmds, sent, room, uploadCalls } = harness({
+      config: { node_name: 'kg', account_peers: ['kg', 'do'], radio_service: { wildnloyal: { enabled: true, default_speaker: 'egpt' } } },
+    });
+    seed(room, 'radio:\n  join: wildnloyal\n');
+    await cmds.run({ ...self, senderId: '16468217865', body: '/radio=do say hola\na todos' });
+    expect(sent).toHaveLength(0);
+    expect(uploadCalls).toHaveLength(0);
+  });
+
+  it('remoteNode resolves the multi-line say to the OTHER node, so it travels rather than being silently dropped', () => {
+    const { cmds } = harness({
+      config: { node_name: 'kg', account_peers: ['kg', 'do'], radio_service: { wildnloyal: { enabled: true } } },
+    });
+    expect(cmds.remoteNode({ ...self, surface: 'shell', body: '/radio=do say hola\na todos' })).toBe('do');
+  });
+
+  it("LOCK — the 4004d6f smuggling guard still holds for OTHER commands: '/tabs do\\nand more' is still not node-addressed at all", () => {
+    const { cmds } = harness({ config: { node_name: 'kg', account_peers: ['kg', 'do'] } });
+    expect(cmds.remoteNode({ ...self, surface: 'shell', body: '/tabs do\nand more' })).toBe(null);
+  });
+
+  it("LOCK — '/tabs=do\\nand more' (explicit form) is ALSO still not node-addressed: NODE_ADDRESSABLE is untouched for /tabs", () => {
+    const { cmds } = harness({ config: { node_name: 'kg', account_peers: ['kg', 'do'] } });
+    expect(cmds.remoteNode({ ...self, surface: 'shell', body: '/tabs=do\nand more' })).toBe(null);
+  });
+
+  it('a multi-line /radio join is NOT given the same treatment — join/leave/disable stay single-line only', async () => {
+    const { cmds, sent, room, uploadCalls } = harness({
+      config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: true } } },
+    });
+    await cmds.run({ ...self, senderId: '16468217865', body: '/radio join wildnloyal\nand more' });
+    // Falls through to the generic catch-all — same as any other unmatched multi-line command.
+    expect(sent[0]?.text).toMatch(/recognized/);
+    expect(uploadCalls).toHaveLength(0);
+    expect(existsSync(configPath(room))).toBe(false);
+  });
+});
+
+// ── rs — reply to a message with just this token, and it airs (operator 2026-08-08: "replying
+// to a message with 'rs' should read the message, equivalent to a '/radio say'") ─────────────
+describe('rs — the radio quick reply', () => {
+  it('REPRODUCE-FIRST: rs in reply to a message uploads that message\'s body', async () => {
+    const { cmds, room, uploadCalls } = harness({
+      config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: true, default_speaker: 'egpt' } } },
+    });
+    seed(room, 'radio:\n  join: wildnloyal\n');
+    seedTranscript(room, 'Bob@[chat].wa (10:00) #msg1: read this out loud\n\n');
+    await cmds.run({ ...self, senderId: '16468217865', body: 'rs', replyToId: 'msg1' });
+    expect(uploadCalls).toHaveLength(1);
+    expect(uploadCalls[0].bytes.toString('utf8')).toBe('read this out loud');
+  });
+
+  it('is gated by isCommand exactly like /radio say — an authorized-only chat, self DM: yes; an ordinary chat: no', () => {
+    const { cmds } = harness({ config: { node_name: 'kg' } });
+    expect(cmds.isCommand({ ...self, body: 'rs' })).toBe(true);
+    expect(cmds.isCommand({ chatId: '!other', surface: 'whatsapp', body: 'rs' })).toBe(false);
+    expect(cmds.isCommand({ chatId: '!other', surface: 'whatsapp', body: 'rs', authorized: true })).toBe(true);
+  });
+
+  it('"rs" must be the WHOLE message — "rs please" is ordinary text, not the quick reply', () => {
+    const { cmds } = harness({ config: { node_name: 'kg' } });
+    expect(cmds.isCommand({ ...self, body: 'rs please' })).toBe(false);
+  });
+
+  it('a multi-line quoted body uploads with its newline intact too — the same payload path as /radio say', async () => {
+    const { cmds, room, uploadCalls } = harness({
+      config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: true, default_speaker: 'egpt' } } },
+    });
+    seed(room, 'radio:\n  join: wildnloyal\n');
+    seedTranscript(room, 'Bob@[chat].wa (10:00) #msg1: hola\na todos\n\n');
+    await cmds.run({ ...self, senderId: '16468217865', body: 'rs', replyToId: 'msg1' });
+    expect(uploadCalls[0].bytes.toString('utf8')).toBe('hola\na todos');
+  });
+
+  it('strips the invisible node signature, the visible bridge close, and the persona stamp — none reach the upload', async () => {
+    const { cmds, room, uploadCalls } = harness({
+      config: {
+        node_name: 'kg',
+        radio_service: { wildnloyal: { enabled: true, default_speaker: 'egpt' } },
+        bridge_signature_open: '🌉',
+        bridge_signature_close: '💸',
+        agents: { egpt: { default: true, body_emoji: '🐶', name: 'egpt' } },
+      },
+    });
+    seed(room, 'radio:\n  join: wildnloyal\n');
+    // A peer node's OWN sent reply, round-tripped back as ordinary inbound text on a shared
+    // Beeper account: bridge open, persona stamp, the reply, bridge close, then the (rendered)
+    // node signature the far spine appended.
+    const core = ['🌉', '🐶 egpt', 'hola desde do', '💸'].join('\n') + encodeNodeSignature('do');
+    const wrapped = renderNodeSignature(core);   // identity.build renders it before the transcript is ever written
+    seedTranscript(room, `Someone@[chat].wa (10:00) #msg1: ${wrapped}\n\n`);
+    await cmds.run({ ...self, senderId: '16468217865', body: 'rs', replyToId: 'msg1' });
+    expect(uploadCalls).toHaveLength(1);
+    const said = uploadCalls[0].bytes.toString('utf8');
+    expect(said).not.toMatch(/💸/);
+    expect(said).not.toMatch(/🐶 egpt/);
+    expect(said).not.toMatch(/<do>/);
+    expect(said).toBe('🌉\nhola desde do');   // bridge_signature_OPEN is untouched — only close is stripped
+  });
+
+  it('no reply-to: silent when this node cannot act (no radio joined here)', async () => {
+    const { cmds, sent, uploadCalls } = harness({
+      config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: true, default_speaker: 'egpt' } } },
+    });
+    await cmds.run({ ...self, senderId: '16468217865', body: 'rs' });
+    expect(sent).toHaveLength(0);
+    expect(uploadCalls).toHaveLength(0);
+  });
+
+  it('no reply-to: replies "nothing to read" when this node COULD act (joined + enabled)', async () => {
+    const { cmds, sent, room, uploadCalls } = harness({
+      config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: true, default_speaker: 'egpt' } } },
+    });
+    seed(room, 'radio:\n  join: wildnloyal\n');
+    await cmds.run({ ...self, senderId: '16468217865', body: 'rs' });
+    expect(sent).toEqual([{ chatId: self.chatId, text: 'nothing to read' }]);
+    expect(uploadCalls).toHaveLength(0);
+  });
+
+  it('a quoted message that is empty after stripping does not upload silence', async () => {
+    const { cmds, sent, room, uploadCalls } = harness({
+      config: {
+        node_name: 'kg',
+        radio_service: { wildnloyal: { enabled: true, default_speaker: 'egpt' } },
+        bridge_signature_close: '💸',
+        agents: { egpt: { default: true, body_emoji: '🐶', name: 'egpt' } },
+      },
+    });
+    seed(room, 'radio:\n  join: wildnloyal\n');
+    seedTranscript(room, 'Someone@[chat].wa (10:00) #msg1: 🐶 egpt\n💸\n\n');
+    await cmds.run({ ...self, senderId: '16468217865', body: 'rs', replyToId: 'msg1' });
+    expect(uploadCalls).toHaveLength(0);
+    expect(sent).toEqual([{ chatId: self.chatId, text: 'nothing to read' }]);
+  });
+
+  it('blocked sender — refuses exactly as /radio say does (unconditional reply, never uploads)', async () => {
+    const { cmds, sent, room, uploadCalls, liveConfig } = harness({
+      config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: true, default_speaker: 'egpt' } } },
+    });
+    seed(room, 'radio:\n  join: wildnloyal\n');
+    seedTranscript(room, 'Bob@[chat].wa (10:00) #msg1: read this\n\n');
+    liveConfig.radio_blocked_senders = ['16468217865'];
+    await cmds.run({ ...self, senderId: '16468217865', body: 'rs', replyToId: 'msg1' });
+    expect(uploadCalls).toHaveLength(0);
+    expect(sent[0].text).toMatch(/blocked/i);
+  });
+
+  it('unjoined room — silent, exactly as a BARE /radio say (rs carries no =<node>, so it is always "bare")', async () => {
+    const { cmds, sent, uploadCalls } = harness({
+      config: { node_name: 'kg', radio_service: {} },
+    });
+    await cmds.run({ ...self, senderId: '16468217865', body: 'rs', replyToId: 'msg1' });
+    expect(sent).toHaveLength(0);
+    expect(uploadCalls).toHaveLength(0);
+  });
+
+  it('disabled radio — silent, exactly as a BARE /radio say', async () => {
+    const { cmds, sent, room, uploadCalls } = harness({
+      config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: false, default_speaker: 'egpt' } } },
+    });
+    seed(room, 'radio:\n  join: wildnloyal\n');
+    seedTranscript(room, 'Bob@[chat].wa (10:00) #msg1: read this\n\n');
+    await cmds.run({ ...self, senderId: '16468217865', body: 'rs', replyToId: 'msg1' });
+    expect(sent).toHaveLength(0);
+    expect(uploadCalls).toHaveLength(0);
+  });
+
+  it('the upload goes through the SAME gate /radio say uses — a tripped gate uploads nothing and never throws', async () => {
+    const trippedGate = async () => null;
+    const { cmds, sent, room, uploadCalls } = harness({
+      config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: true, default_speaker: 'egpt' } } },
+      gate: trippedGate,
+    });
+    seed(room, 'radio:\n  join: wildnloyal\n');
+    seedTranscript(room, 'Bob@[chat].wa (10:00) #msg1: read this\n\n');
+    await expect(cmds.run({ ...self, senderId: '16468217865', body: 'rs', replyToId: 'msg1' })).resolves.not.toThrow();
+    expect(uploadCalls).toHaveLength(0);
+    expect(sent).toHaveLength(0);
+  });
+
+  it('radio_quick_reply_string: a custom token replaces "rs"', async () => {
+    const { cmds, room, uploadCalls } = harness({
+      config: {
+        node_name: 'kg',
+        radio_quick_reply_string: 'leelo',
+        radio_service: { wildnloyal: { enabled: true, default_speaker: 'egpt' } },
+      },
+    });
+    seed(room, 'radio:\n  join: wildnloyal\n');
+    seedTranscript(room, 'Bob@[chat].wa (10:00) #msg1: read this\n\n');
+    expect(cmds.isCommand({ ...self, body: 'rs' })).toBe(false);   // the old default no longer fires
+    await cmds.run({ ...self, senderId: '16468217865', body: 'leelo', replyToId: 'msg1' });
+    expect(uploadCalls).toHaveLength(1);
+  });
+
+  it('radio_quick_reply_string: "" disables the feature — "rs" becomes ordinary text', () => {
+    const { cmds } = harness({ config: { node_name: 'kg', radio_quick_reply_string: '' } });
+    expect(cmds.isCommand({ ...self, body: 'rs' })).toBe(false);
   });
 });

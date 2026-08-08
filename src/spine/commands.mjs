@@ -36,6 +36,8 @@ import { isRunning as cdpIsRunning, listTabs as cdpListTabs, cdpHost as cdpHostO
 import { findChromeExecutable, chromeArgs, chromeCommandLine, resolveBrainProfile } from '../tools/chrome-launcher.mjs';
 import { helpText } from '../interpreter.mjs';
 import { uploadNote, radioNoteFilename, pickSpeaker } from '../radio-relay.mjs';
+import { stripNodeSignature, stripRenderedNodeSignature } from '../node-signature.mjs';
+import { bodyForMessageId } from '../transcript-log.mjs';
 
 // Where a manually-launched Chrome should keep its profile. v1's shell hardcoded
 // ~/.egpt/chrome/profiles/brain — a usually-BLANK fresh dir. resolveBrainProfile() instead
@@ -282,6 +284,30 @@ const quoteLeadingCommand = (text) => String(text ?? '').replace(/^\/([a-z0-9_-]
 // one; UNSET, every bare form is a strict no-op — today's behaviour, byte for byte.
 const NODE_ADDRESSABLE = /^\/(chrome|status|tabs|tab|open|close|members?|config|radio)\b(?:=(\S+))?(?:[ \t]*(.*))?$/i;
 
+// /radio say's PAYLOAD ALONE may contain embedded newlines (operator ruling 2026-08-08: the
+// text to read aloud is genuinely free-form prose, unlike every other argument this whole
+// command surface takes). NODE_ADDRESSABLE above stays exactly as it was — `[ \t]*(.*)` still
+// matches ONE line only, so the 4004d6f smuggling guard (`\s*` would have let a second line
+// read as an addressed command's arguments) is untouched for chrome/tabs/tab/open/close/
+// members/config/status, AND for /radio's own join/leave/disable. This is a SEPARATE, narrower
+// pattern that nodeAddressed only tries once NODE_ADDRESSABLE has already failed to match (i.e.
+// only when there IS an embedded newline) — it reads the command token, `=<node>` and the "say"
+// verb from the first line exactly like NODE_ADDRESSABLE does, and never touches what follows.
+const RADIO_SAY_MULTILINE = /^\/radio(?:=(\S+))?[ \t]+say\b[ \t]*([\s\S]*)$/i;
+
+// The ONE parse both nodeAddressed and makeNodeExplicit build on. `token` is the exact matched
+// command word (case preserved, for makeNodeExplicit's wire reconstruction); `cmd` is its
+// lowercased form; `rest` is the trailing text — used only by /chrome's positional node form and
+// by makeNodeExplicit's rebuild. Returns null when neither pattern matches at all.
+function parseNodeAddressable(text) {
+  const raw = String(text ?? '').trim();
+  const m = NODE_ADDRESSABLE.exec(raw);
+  if (m) return { token: m[1], cmd: m[1].toLowerCase(), node: m[2] ?? null, rest: (m[3] ?? '').trim() };
+  const rm = RADIO_SAY_MULTILINE.exec(raw);
+  if (!rm) return null;
+  return { token: 'radio', cmd: 'radio', node: rm[1] ?? null, rest: rm[2] ?? '' };
+}
+
 // The SHELL is node-local: the spine dials the operator's editor on 127.0.0.1:23375, so no other
 // node ever sees a shell message. Everywhere else this node speaks is a chat on the shared Beeper
 // account, where a co-account peer heard the very same message and answers through its own gate —
@@ -482,11 +508,9 @@ export function createCommands({
   //                               as to a bare command); UNSET, this is null, byte-identical to
   //                               before.
   function nodeAddressed(text) {
-    const m = NODE_ADDRESSABLE.exec(String(text ?? '').trim());
-    if (!m) return null;
-    const cmd = m[1].toLowerCase();
-    const node = m[2];
-    const rest = (m[3] ?? '').trim();
+    const hit = parseNodeAddressable(text);
+    if (!hit) return null;
+    const { cmd, node, rest } = hit;
     if (node) return { node: node.toLowerCase(), cmd, raw: `=${node}` };
     if (cmd === 'chrome' && rest) return { node: rest.toLowerCase(), cmd, raw: rest };
     const dn = String(cfg().dispatch?.default_node ?? '').trim().toLowerCase();
@@ -527,10 +551,9 @@ export function createCommands({
   function makeNodeExplicit(text, node) {
     const hit = nodeAddressed(text);
     if (!hit || hit.raw) return text;                 // not addressable here, or already explicit
-    const m = NODE_ADDRESSABLE.exec(String(text ?? '').trim());
-    if (!m) return text;
-    const rest = (m[3] ?? '').trim();
-    return `/${m[1]}=${node}${rest ? ` ${rest}` : ''}`;
+    const parsed = parseNodeAddressable(text);
+    if (!parsed) return text;
+    return `/${parsed.token}=${node}${parsed.rest ? ` ${parsed.rest}` : ''}`;
   }
 
   // Is an un-expired `/e` wizard armed for this chat? Prunes an expired one (so an
@@ -540,6 +563,22 @@ export function createCommands({
     if (!wm) return false;
     if (Date.now() - wm.ts > WIZARD_TTL_MS) { wizards.delete(chatKey(ev)); return false; }
     return true;
+  }
+
+  // rs — the RADIO quick reply (operator 2026-08-08): configured the SAME way `r` is
+  // (quick_reply_string) — a single top-level string, DEFAULT "rs", "" disables — but its OWN
+  // key, not derived from quick_reply_string: `r` addresses whichever AGENT spoke last
+  // (router.mjs, no isOperator gate, any sender may use it); `rs` triggers an upload through the
+  // SAME isOperator-gated path /radio say does (see radioQuickReply below), so the two need to
+  // be nameable/disableable independently.
+  const RADIO_QUICK_REPLY_DEFAULT = 'rs';
+  function radioQuickReplyToken() {
+    const t = cfg().radio_quick_reply_string;
+    return t == null ? RADIO_QUICK_REPLY_DEFAULT : String(t).trim();
+  }
+  function isRadioQuickReply(ev) {
+    const t = radioQuickReplyToken();
+    return !!t && String(ev?.body ?? '').trim().toLowerCase() === t.toLowerCase();
   }
 
   // Same id in any form counts as the Self DM (lid vs phone-form — a /restart
@@ -557,6 +596,7 @@ export function createCommands({
   function isCommand(ev) {
     const body = String(ev?.body ?? '').trim();
     if (isOperator(ev) && wizardActive(ev)) return true;
+    if (isOperator(ev) && isRadioQuickReply(ev)) return true;
     if (!body.startsWith('/')) return false;
     return isOperator(ev);
   }
@@ -573,6 +613,11 @@ export function createCommands({
 
   async function run(ev) {
     let line = String(ev.body ?? '').trim();
+
+    // rs — THE RADIO QUICK REPLY, checked before the wizard's plain-text first refusal below: a
+    // reserved word wins over an armed wizard, same precedent as the STOP safe word (spine.mjs
+    // classify) — an armed `/e` wizard must never swallow it.
+    if (isRadioQuickReply(ev)) { await radioQuickReply(ev); return; }
 
     // Armed `/e` wizard, first refusal: a PLAIN (non-slash) operator message is a
     // numbered/typed answer — step the wizard and stop (never reach E's brain). A
@@ -716,6 +761,13 @@ export function createCommands({
     // /radio [join|leave] — WHICH node relays the CURRENT CONVERSATION's room to the
     // internet radio station (config + command only, see radio() below). Pre-catch-all,
     // node-addressable like /status/members/config (see NODE_ADDRESSABLE above).
+    //
+    // "say" is matched FIRST, separately, with a payload group that spans lines ([\s\S]*) — the
+    // text to read aloud is the one argument in this whole command surface that is genuinely
+    // free-form prose (operator ruling 2026-08-08). join/leave/disable fall through to the
+    // ORIGINAL single-line grammar below, unchanged — their arguments are always one token.
+    const radioSayMatch = /^\/radio\s+say\b[ \t]*([\s\S]*)$/i.exec(line);
+    if (radioSayMatch) { await radio(ev, 'say', radioSayMatch[1]?.trim() || null, addressed); return; }
     const radioMatch = /^\/radio(?:\s+(\S+))?(?:\s+(.+?))?\s*$/i.exec(line);
     if (radioMatch) { await radio(ev, radioMatch[1]?.toLowerCase() || null, radioMatch[2]?.trim() || null, addressed); return; }
 
@@ -1572,6 +1624,87 @@ export function createCommands({
     await send?.(ev.chatId, rest.length > 500
       ? `said as ${speaker} — ${rest.length} chars, will take a while to air`
       : `said as ${speaker}`);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // rs — reply to any message with just this token and it airs, through the SAME /radio say
+  // path above (room must be joined, radio enabled, sender not blocked, speaker resolved,
+  // uploaded through the SAME gate) — never a second uploader. `addressed` is always null here
+  // (rs carries no `=<node>` syntax), so `radio()`'s `explicit` is always false: rs behaves like
+  // a BARE /radio say throughout — silent on an unjoined/disabled room, but a blocked sender and
+  // "can't resolve this conversation's room" still always reply (radio()'s own unconditional
+  // branches, unchanged).
+  //
+  // "nothing to read" (no reply-to, or the quote is empty once stripped) does NOT reuse radio()'s
+  // `!rest` branch — that one always replies (a real `/radio say` with no text is a mistyped
+  // command, always worth a usage line) — rs instead follows the general /radio silence rule
+  // (operator 2026-08-08): reply only if this node COULD have said something, else say nothing.
+  const RS_NOTHING_TO_READ = 'nothing to read';
+
+  // The same room+joined+enabled gate radio()'s say branch checks, standalone, WITHOUT a text
+  // payload — rs's silence rule needs the answer before it has anything to strip. radio() itself
+  // is untouched (still checks the identical three things inline, in its own order) so the
+  // locked /radio say behaviour can never drift from this.
+  async function radioCanActIn(room) {
+    const doc = await room.loadConfig();
+    const joinedRadio = doc.radio?.join || null;
+    if (!joinedRadio) return false;
+    const radios = (cfg().radio_service && typeof cfg().radio_service === 'object') ? cfg().radio_service : {};
+    return radios[joinedRadio]?.enabled === true;
+  }
+
+  // Pop a trailing bridge_signature_close (config, never hardcoded — operator 2026-07-12) off a
+  // quoted body. `close` may itself be multi-line (the config key allows it); only a COMPLETE
+  // match at the very tail is removed — anything else leaves the text untouched rather than risk
+  // mangling real content that happens to share a line with the marker.
+  function stripBridgeClose(text, close) {
+    const closeLines = String(close ?? '').split('\n').map((l) => l.trim()).filter(Boolean);
+    if (!closeLines.length) return text;
+    const lines = String(text).split('\n');
+    let i = lines.length, j = closeLines.length;
+    while (i > 0 && j > 0 && lines[i - 1].trim() === closeLines[j - 1]) { i--; j--; }
+    return j === 0 ? lines.slice(0, i).join('\n') : text;
+  }
+
+  // Remove the persona stamp header line personaStamp (src/bridges/persona-wrap.mjs) prepends —
+  // "<body_emoji> <label>" as its OWN line — by checking against every agent's ACTUAL configured
+  // emoji+label rather than pattern-guessing at "some emoji on the first line". Matches any line
+  // exactly equal to a configured stamp, wherever the earlier strips left it.
+  function stripPersonaStampHeader(text) {
+    const stamps = new Set();
+    for (const [name, agent] of Object.entries(cfg().agents ?? {})) {
+      if (!agent || typeof agent !== 'object') continue;
+      stamps.add(`${agent.body_emoji || '🐶'} ${agent.name || name}`);
+    }
+    if (!stamps.size) return text;
+    return String(text).split('\n').filter((l) => !stamps.has(l)).join('\n');
+  }
+
+  // A quoted message may be the operator's/a human's own words, or it may instead be another
+  // spine's own SENT reply round-tripping back as ordinary inbound text on a shared Beeper
+  // account — that text carries every wrap layer that node's persona-wrap applied, so it must be
+  // read cleanly either way. Strip all three, outermost to innermost: the structural node
+  // signature (raw, then rendered — see stripNodeSignature/stripRenderedNodeSignature), the
+  // visible bridge close, the persona stamp header. Null when nothing legible remains.
+  function cleanQuotedBody(body) {
+    let t = stripNodeSignature(body);
+    t = stripRenderedNodeSignature(t);
+    t = stripBridgeClose(t, cfg().bridge_signature_close);
+    t = stripPersonaStampHeader(t);
+    t = t.trim();
+    return t || null;
+  }
+
+  async function radioQuickReply(ev) {
+    const room = await convRoomOf(ev);
+    const nothingToRead = async () => { if (room && await radioCanActIn(room)) await send?.(ev.chatId, RS_NOTHING_TO_READ); };
+    if (ev.replyToId == null) { await nothingToRead(); return; }
+    let text = null;
+    if (room) { try { text = await readFile(room.transcriptPath, 'utf8'); } catch { text = null; } }
+    const body = text ? bodyForMessageId(text, ev.replyToId) : null;
+    const cleaned = body ? cleanQuotedBody(body) : null;
+    if (!cleaned) { await nothingToRead(); return; }
+    await radio(ev, 'say', cleaned, null);
   }
 
   // /config [<key>[=<value>]] — the `=` idiom the node binding already uses (`/config=kg`),
