@@ -119,6 +119,7 @@ export function createSpine({
   // Null (every existing pipe path) = the option cannot engage — byte-identical to before.
   readTranscript = null,
   roomRelay = null,                    // optional §Phase-4 room brain-member fan-out (createRoomRelay, boot-wired): delivers a received room message to each brain member per mode, streams the reply back, and RE-ENTERS it as a non-human turn. Null = no web-brain members (byte-identical to before).
+  radioRelay = null,                   // optional (ev) => Promise<void> — air a WhatsApp voice note on the internet radio station its room is joined to (createRadioNoteRelay, boot-wired). Called ONLY for ev.isVoice + humanTurn(ev) (below), fire-and-forget with its own catch — a side effect that must never touch the message path. Null = no radio relay (byte-identical to before).
   defaultBeing = 'e',                  // the persona: the being an un-addressed message dispatches to, and the turn/cycle owner for a mesh-target message (which is GATED as its own relay agent — see gateAs)
   node_name = null,                    // THIS node's name (config node_name, boot-asserted non-empty) — the ONE thing the quick-reply lookup needs to tell its own rendered signature on the record from a co-account PEER's. Null (tests) = every signed line reads as a peer's, the safe direction.
   timeZone = null,                     // the node's config default_time_zone (boot-resolved) — the zone the CYCLE's reply lines render in, the same clock identity/transcript use so the accumulated prompt never disagrees with the file. null → UTC, unchanged.
@@ -382,6 +383,15 @@ export function createSpine({
     const act = await classify(ev, channel);
     if (!act) return;                  // 'off' — not received (C4): not recorded, not processed
     await transcript.log(ev);          // ←── THE INGESTION POINT (C1.2). The only one.
+    // Radio relay: a genuine inbound voice note, in a room joined to a radio, airs on the
+    // station (createRadioNoteRelay owns the rest of the gate — joined+enabled, sender→speaker,
+    // dedupe). Fire-and-forget with its own catch, the SAME shape transcript.log uses for its
+    // stats side-effect — never awaited, never allowed to affect this message's dispatch.
+    // humanTurn(ev) is the identical provenance test the loop-counter/kill-switch use (never
+    // re-derived here): NOT this node's own send, NOT a peer node's signed line.
+    if (radioRelay && ev.isVoice && humanTurn(ev)) {
+      radioRelay(ev).catch((e) => note(`radio relay ${ev.surface}/${ev.chatId}: ${e?.message ?? e}`));
+    }
     return act();
   }
 

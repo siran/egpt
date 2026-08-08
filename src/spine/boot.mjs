@@ -50,6 +50,8 @@ import { createReplyActions } from './reply-actions.mjs';
 import { createAdvice } from './advice.mjs';
 import { createMedia } from './media.mjs';
 import { createTranscription } from './transcription.mjs';
+import { uploadNote, radioNoteFilename, pickSpeaker } from '../radio-relay.mjs';
+import { extFromMeta } from '../media-save.mjs';
 import { createTranscriptorWorker } from './transcriptor-worker.mjs';
 import { startWhisperServer } from '../tools/whisper-server.mjs';
 import { startTranscriptorServer } from '../tools/transcriptor.mjs';
@@ -266,6 +268,92 @@ export function computeShellHeader({ nodeName, personaName, agents, defaultNode 
   if (groups.size === 0) return base;
   const seg = [...groups.entries()].map(([g, hs]) => `${g}: ${hs.join(' ')}`).join(' · ');
   return `${base} — ${seg}`;
+}
+
+// RADIO RELAY — the hook that makes radio_service + /radio join|leave (617148a, 48a6ee8) do
+// something: air a WhatsApp voice note on the internet radio station a room is joined to.
+// src/radio-relay.mjs is the uploader (uploadNote/radioNoteFilename/pickSpeaker); this is the
+// orchestration around it.
+//
+// REUSES THE EXISTING AUDIO PATH, no second download: the transcription service already
+// receives every voice note's downloaded bytes via bridge.onMedia (wired below, `noteMedia`).
+// That callback has the bytes but NOT the raw WhatsApp sender id (only a display name) and NOT
+// the human/node-provenance signals isHumanTurn decides on; the spine's ev (built moments later
+// from the SAME message) has both of THOSE but never the bytes. The two are correlated by
+// `${chatId}:${msgId}` — the SAME per-note key beeper.mjs's own 👂 debounce already uses — in a
+// small bounded (FIFO-evicting) in-memory cache. `noteMedia` fires for every persisted
+// attachment; `relay(ev)` fires once per genuine inbound voice note (spine.mjs gates
+// ev.isVoice + humanTurn(ev) BEFORE calling — this function does not re-derive that notion, it
+// is handed only what already passed it).
+//
+// NO DEDUPE-BY-MESSAGE-ID (operator ruling 2026-08-08, reversing an earlier draft of this
+// module that kept one): "it must not relay backlogs, by design." Only the joined node relays,
+// and it relays a genuine human turn once — a replay/edit/backfill of an OLD note arrives with
+// ev.backlog true, which humanTurn(ev) already reads as non-human (stop-guard.mjs), so
+// spine.mjs's gate never calls relay() for it. Refusing the backlog IS the guard against airing
+// an old note twice; a second bookkeeping Set here would be a second, unnecessary path doing
+// the same job.
+//
+// THE UPLOAD IS AN OUTBOUND MESSAGE (operator ruling 2026-08-08): "the event of a note going out
+// MUST BE the same as any message ... it must increase the output counter as any message
+// currently does." So it is routed through `gate` — boot always hands in the SAME node-wide
+// lasso (src/lasso.mjs) every limb's send already goes through (the exact precedent: the shell
+// port and the 👂 echo are both wrapped by "the SAME lasso ... never a second one"). Never a
+// radio-specific throttle on top: one ceiling, node-wide. A busy room can trip it — the node
+// stops, which is the guard working, not a bug.
+export function createRadioNoteRelay({
+  resolveConvRoom,             // (surface, chatId) -> Room|null — the ONE conversation-room resolver
+  cfg,                          // live config object — radio_service map lives at cfg.radio_service
+  uploadNote: uploadNoteFn = uploadNote,
+  readFile: readFileFn = readFile,
+  // THE OUTBOUND CEILING (src/lasso.mjs) — boot always passes lasso.gate, the SAME seam the 👂
+  // echo (an in-limb emit that also isn't a port method) uses. Default is a bare passthrough so
+  // a caller that isn't testing the lasso integration is unaffected — never a second ceiling.
+  gate: gateFn = (fn) => fn(),
+  cacheMax = 200,               // bounded — an unmatched cache entry (e.g. download policy excludes audio) self-evicts, never grows unbounded
+  onLog = () => {},
+} = {}) {
+  const audioCache = new Map();   // `${chatId}:${msgId}` -> { localPath, mime, fileName }
+
+  return {
+    // bridge.onMedia's meta (beeper.mjs persistMedia) — stash only the audio attachment's
+    // already-downloaded local path; every other kind is irrelevant here.
+    noteMedia(meta) {
+      if (!meta || meta.kind !== 'audio' || !meta.localPath || !meta.chatID || meta.msgId == null) return;
+      const key = `${meta.chatID}:${meta.msgId}`;
+      if (!audioCache.has(key) && audioCache.size >= cacheMax) audioCache.delete(audioCache.keys().next().value);
+      audioCache.set(key, { localPath: meta.localPath, mime: meta.mime, fileName: meta.fileName });
+    },
+
+    // The hook itself. Every early return is a silent no-op — side effect only, never
+    // throws; the caller (spine.mjs) also wraps this in .catch as the belt.
+    async relay(ev) {
+      const key = `${ev.chatId}:${ev.msgId}`;
+      const audio = audioCache.get(key);
+      if (!audio) { onLog(`no cached audio for ${key} — download policy may exclude audio, or this wasn't the voice attachment`); return; }
+      audioCache.delete(key);   // one-shot: the ONE call this note will ever get (no replay — see the header)
+      const room = await resolveConvRoom(ev.surface, ev.chatId);
+      if (!room) return;
+      const doc = await room.loadConfig();
+      const radioName = doc.radio?.join;
+      if (!radioName) return;                              // room not joined to a radio
+      const radio = cfg.radio_service?.[radioName];
+      if (!radio || radio.enabled !== true) return;         // not configured on THIS node, or disabled
+      const speaker = pickSpeaker(doc.radio?.hosts, ev.senderId, radio.default_speaker);
+      if (!speaker) { onLog(`no speaker for ${ev.senderId} on ${radioName} — no default_speaker configured either`); return; }
+      const ext = extFromMeta({ fileName: audio.fileName, mime: audio.mime, kind: 'audio' });
+      const filename = radioNoteFilename(ev.ts, ext);
+      let bytes;
+      try { bytes = await readFileFn(audio.localPath); }
+      catch (e) { onLog(`could not read ${audio.localPath}: ${e?.message ?? e}`); return; }
+      // gate() returns null when the ceiling has ALREADY tripped (or trips on this very call) —
+      // that is not a failure to report here: the node is on its way down and explains itself
+      // via the STOP file, exactly as it would for a refused send.
+      const result = await gateFn(() => uploadNoteFn({ radio, speaker, filename, bytes, onLog }));
+      if (result == null) return;
+      onLog(result.ok ? `aired [${radioName}/${speaker}] ${filename}` : `upload FAILED [${radioName}/${speaker}] ${filename}`);
+    },
+  };
 }
 
 export async function boot({
@@ -842,7 +930,13 @@ export async function boot({
   // Persist incoming attachments into the chat's media/ folder + surface them to E.
   // For a video: keyframes (ffmpeg) + audio transcript (via the same chain) — Route A.
   const media = createMedia({ contacts, io, transcribe: tx.transcribe, transcribeCfg: tx.cliCfg, onLog: (m) => log.line?.(`[media] ${m}`) });
-  bridge.onMedia((m) => media.save(m));
+  // radio relay (createRadioNoteRelay, above) piggybacks on the SAME onMedia callback to stash
+  // a voice note's already-downloaded local path — see that function's header for why it needs
+  // both this AND the spine's ev, and how the two are correlated. gate: lasso.gate — the SAME
+  // node-wide outbound ceiling the echo (echoGate, above) and every port send already go
+  // through; a note reaching the station counts as an outbound message, never a second budget.
+  const radioRelay = createRadioNoteRelay({ resolveConvRoom, cfg, gate: lasso.gate, onLog: (m) => log.line?.(`[radio] ${m}`) });
+  bridge.onMedia((m) => { radioRelay.noteMedia(m); return media.save(m); });
 
   // The operator-console LIMB (plans/2607191835-SHELL-LIMB-S1-PLAN.md Phase 1): a second
   // SURFACE dialing OUT to an external editor at ws://127.0.0.1:23375, exactly as the
@@ -1105,7 +1199,7 @@ export async function boot({
     onLog: (m) => log.line?.(`[relay] ${m}`),
   });
 
-  const spine = createSpine({ bridge, brain, ...services, commands, mesh, actions, advice, guard, guardOverride, stopSwitch, isSelfChat, roomRelay, readTranscript, defaultBeing: defaultKey, node_name, timeZone: transcriptTimeZone, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
+  const spine = createSpine({ bridge, brain, ...services, commands, mesh, actions, advice, guard, guardOverride, stopSwitch, isSelfChat, roomRelay, readTranscript, radioRelay: radioRelay.relay, defaultBeing: defaultKey, node_name, timeZone: transcriptTimeZone, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
   // Bind the advice service's answer-routing dispatch now that the spine exists: an
   // operator answer in the advice channel re-enters the pipe as a turn in the origin chat.
   advice.useDispatch(spine.handleInbound);
