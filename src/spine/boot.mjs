@@ -339,6 +339,8 @@ export function createRadioNoteRelay({
       if (!radioName) return;                              // room not joined to a radio
       const radio = cfg.radio_service?.[radioName];
       if (!radio || radio.enabled !== true) return;         // not configured on THIS node, or disabled
+      const blocked = Array.isArray(cfg.radio_blocked_senders) ? cfg.radio_blocked_senders : [];
+      if (blocked.includes(ev.senderId)) { onLog(`radio relay blocked sender ${ev.senderId}`); return; }
       const speaker = pickSpeaker(doc.radio?.hosts, ev.senderId, radio.default_speaker);
       if (!speaker) { onLog(`no speaker for ${ev.senderId} on ${radioName} — no default_speaker configured either`); return; }
       const ext = extFromMeta({ fileName: audio.fileName, mime: audio.mime, kind: 'audio' });

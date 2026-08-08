@@ -106,6 +106,29 @@ describe('createRadioNoteRelay — the joined+enabled gate', () => {
     expect(readFile).toHaveBeenCalledWith('/tmp/note.ogg');
   });
 
+  it('a blocked sender (cfg.radio_blocked_senders) uploads nothing — operator ruling 2026-08-08: "/radio disable <person>"', async () => {
+    const room = new TmpRoom(join(base, 'conv'), 'conv-1');
+    seed(room, 'radio:\n  join: wildnloyal\n');
+    const uploadNote = vi.fn();
+    const cfg = { radio_service: { wildnloyal: { enabled: true, default_speaker: 'egpt' } }, radio_blocked_senders: ['16468217865'] };
+    const { relay, log } = harness({ cfg, room, uploadNote });
+    relay.noteMedia(audioMeta());
+    await relay.relay(voiceEv());
+    expect(uploadNote).not.toHaveBeenCalled();
+    expect(log.some((l) => l.includes('blocked'))).toBe(true);
+  });
+
+  it('a sender NOT on radio_blocked_senders is unaffected by an unrelated block', async () => {
+    const room = new TmpRoom(join(base, 'conv'), 'conv-1');
+    seed(room, 'radio:\n  join: wildnloyal\n');
+    const uploadNote = vi.fn(async () => ({ ok: true, status: 201 }));
+    const cfg = { radio_service: { wildnloyal: { enabled: true, default_speaker: 'egpt' } }, radio_blocked_senders: ['someone-else'] };
+    const { relay } = harness({ cfg, room, uploadNote });
+    relay.noteMedia(audioMeta());
+    await relay.relay(voiceEv());
+    expect(uploadNote).toHaveBeenCalledTimes(1);
+  });
+
   it('an unmapped sender falls back to the radio\'s default_speaker', async () => {
     const room = new TmpRoom(join(base, 'conv'), 'conv-1');
     seed(room, 'radio:\n  join: wildnloyal\n');   // no hosts at all

@@ -687,6 +687,36 @@ export const CONFIG_SCHEMA = {
         radio.hosts map.
   `,
 
+  radio_blocked_senders: `
+    Node-level list of BLOCKED sender ids (operator ruling 2026-08-08: "'/radio disable
+    <slug>' matches my contact names, userid, radioname... blocks that person from
+    relaying"). A blocked sender may not relay to ANY radio on THIS node.
+
+      DEFAULT: [] — nobody blocked.
+
+    Written by "/radio disable <person>" (src/spine/commands.mjs radio()), which resolves
+    <person> in this order: a configured radio name or a known node name first (those
+    disable the RADIO/NODE instead — see radio_service, above); then a room's radio.hosts
+    speaker name; then a contact name resolved through the per-contact stats files under
+    state/stats/<surface>/ (sender_id + name, src/conversations-state.mjs); then, only if
+    nothing else matched and the slug already LOOKS like an id (same shape
+    src/spine/commands.mjs resolveTarget uses for a verbatim jid), the raw id itself.
+
+    Read by BOTH the voice-note relay (src/spine/boot.mjs createRadioNoteRelay.relay,
+    which drops a blocked sender's note silently — logged, never uploaded) and
+    "/radio say" (src/spine/commands.mjs, which replies that relaying is disabled and
+    never uploads either) before every upload attempt.
+
+    Since a bare "/radio disable" is heard by every node on the shared Beeper account
+    independently (see radio_service, above — no mesh broadcast, no propagation), the
+    block lands on every node without any cross-node write.
+
+    LIVE IMMEDIATELY, no restart: the write both persists to config.yaml
+    (tools/config-io.mjs writeConfigKey) and mutates the SAME live config object every
+    reader (getConfig, and the radio relay's own cfg) already holds, so a relay/say
+    attempt made right after "/radio disable <person>" is refused at once.
+  `,
+
   account_peers: `
     Node identities sharing THIS Beeper account, INCLUDING self (operator
     2026-07-09) — a LIST of node names, e.g. [kg, do]. Co-account nodes collapse

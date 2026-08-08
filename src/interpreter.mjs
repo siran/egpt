@@ -117,7 +117,7 @@ export const COMMANDS = [
   { cmd: '/room',           surface: 'shell',     usage: '/room create <name> | /room join|leave|members <room> | /room delete [force] <room>', desc: 'show room info, switch, create, or delete', wired: true },
   { cmd: '/rooms',          surface: 'shell',     usage: '/rooms',                                         desc: 'list saved rooms (legacy YAML snapshots, not the live room set)', wired: true },
   { cmd: '/members',        surface: 'shell',     usage: '/members | /members add tab <n> [alias=<name>|<name>] | /members remove <id> | /members <id> mode <disable|mention|all>', desc: 'manage the CURRENT CONVERSATION\'s room roster: list, add a Chrome tab as a brain member, remove one, or set its contribution mode', wired: true },
-  { cmd: '/radio',          surface: 'shell',     usage: '/radio | /radio join [<radio>] | /radio leave [all|<slug>] | /radio say <text>', desc: 'node-wide radio status (listeners + joined rooms); join/leave a room\'s relay, or /radio say airs text as your voice', wired: true },
+  { cmd: '/radio',          surface: 'shell',     usage: '/radio | /radio join [<radio>] | /radio leave [all|<slug>] | /radio say <text> | /radio disable [<radio>|<node>|<person>]', desc: 'node-wide radio status (listeners + joined rooms); join/leave a room\'s relay, /radio say airs text as your voice, /radio disable turns off a radio/node or blocks a person', wired: true },
   { cmd: '/save-room',      surface: 'shell',     usage: '/save-room [name]',                              desc: 'snapshot the current room lineup as YAML' },
 
   { section: 'MISC' },

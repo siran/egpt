@@ -33,7 +33,7 @@ let base;
 beforeEach(() => { base = mkdtempSync(join(tmpdir(), 'egpt-radio-')); });
 afterEach(() => { rmSync(base, { recursive: true, force: true }); });
 
-function harness({ config = {}, uploadNote, gate, listEntityDirs, fetch } = {}) {
+function harness({ config = {}, uploadNote, gate, listEntityDirs, fetch, io } = {}) {
   const sent = [];
   const room = new TmpRoom(join(base, 'conv'), 'conv-1');
   const resolveConvRoom = async () => room;
@@ -45,17 +45,28 @@ function harness({ config = {}, uploadNote, gate, listEntityDirs, fetch } = {}) 
     if (!namedRooms.has(name)) namedRooms.set(name, new TmpRoom(join(base, 'named', name), name));
     return namedRooms.get(name);
   };
+  // A live, MUTABLE config object (not a fresh literal per call) — real boot.mjs hands
+  // getConfig's closure the SAME object reference every time (`const cfg = readConfig()`),
+  // which is the mechanism /radio disable relies on for taking effect with no restart.
+  // A `getConfig: () => ({...})` returning a FRESH object each call would silently defeat
+  // that and hide a live-mutation bug, so the harness holds one object and returns it.
+  const liveConfig = { whatsapp: { chat_id: '!conv-1' }, ...config };
+  // /radio disable persists via writeConfigKey — route it at a TEMP file, NEVER the real
+  // profile (forbidden: writing under ~/.egpt).
+  const configPath = join(base, 'config.yaml');
   const cmds = createCommands({
-    getConfig: () => ({ whatsapp: { chat_id: '!conv-1' }, ...config }),
+    getConfig: () => liveConfig,
     send: async (chatId, text) => sent.push({ chatId, text }),
     resolveConvRoom,
     roomForName,
     uploadNote: uploadNoteFn,
     gate: gateFn,
+    configPath,
+    ...(io ? { io } : {}),
     ...(listEntityDirs ? { listEntityDirs } : {}),
     ...(fetch ? { fetch } : {}),
   });
-  return { cmds, sent, room, uploadCalls, roomForName };
+  return { cmds, sent, room, uploadCalls, roomForName, liveConfig, configPath };
 }
 
 const configPath = (room) => join(room.baseDir(), 'config.yaml');
@@ -308,9 +319,15 @@ describe('/radio leave (current room, unchanged)', () => {
     expect(after).toMatch(/16468217865['"]?:\s*roger/);
   });
 
-  it('when nothing is joined, does not crash and does not falsely claim success', async () => {
+  it('when nothing is joined, bare stays silent (silence rule, operator ruling 2026-08-08)', async () => {
     const { cmds, sent } = harness({ config: { node_name: 'kg' } });
     await cmds.run({ ...self, body: '/radio leave' });
+    expect(sent).toHaveLength(0);
+  });
+
+  it('the SAME state, addressed explicitly, replies — does not crash and does not falsely claim success', async () => {
+    const { cmds, sent } = harness({ config: { node_name: 'kg' } });
+    await cmds.run({ ...self, body: '/radio=kg leave' });
     expect(sent[0].text).not.toMatch(/^left\b/);
     expect(sent[0].text).toMatch(/nothing to leave/);
   });
@@ -333,9 +350,15 @@ describe('/radio leave all | <slug> — other rooms on this node, via the shared
     expect(readFileSync(join(dirDen, 'config.yaml'), 'utf8')).not.toMatch(/join:\s*otherstation/);
   });
 
-  it('/radio leave all with nothing joined anywhere says so plainly, without falsely claiming success', async () => {
+  it('/radio leave all with nothing joined anywhere, bare, stays silent', async () => {
     const { cmds, sent } = harness({ config: { node_name: 'kg' }, listEntityDirs: async () => [] });
     await cmds.run({ ...self, body: '/radio leave all' });
+    expect(sent).toHaveLength(0);
+  });
+
+  it('the SAME state, addressed explicitly, says so plainly, without falsely claiming success', async () => {
+    const { cmds, sent } = harness({ config: { node_name: 'kg' }, listEntityDirs: async () => [] });
+    await cmds.run({ ...self, body: '/radio=kg leave all' });
     expect(sent[0].text).not.toMatch(/^left\b/);
     expect(sent[0].text).toMatch(/nothing to leave/);
   });
@@ -366,7 +389,7 @@ describe('/radio leave all | <slug> — other rooms on this node, via the shared
     expect(readFileSync(join(dirLab, 'config.yaml'), 'utf8')).not.toMatch(/join:\s*wildnloyal/);
   });
 
-  it('/radio leave <slug> on a room that exists but is not joined says so plainly and touches nothing', async () => {
+  it('/radio leave <slug> on a room that exists but is not joined, bare, stays silent and touches nothing', async () => {
     const dirLab = seedNamed('lab', 'members: []\n');
     const { cmds, sent } = harness({
       config: { node_name: 'kg' },
@@ -374,14 +397,32 @@ describe('/radio leave all | <slug> — other rooms on this node, via the shared
     });
     const before = readFileSync(join(dirLab, 'config.yaml'), 'utf8');
     await cmds.run({ ...self, body: '/radio leave lab' });
+    expect(sent).toHaveLength(0);
+    expect(readFileSync(join(dirLab, 'config.yaml'), 'utf8')).toBe(before);
+  });
+
+  it('the SAME state, addressed explicitly, says so plainly and touches nothing', async () => {
+    const dirLab = seedNamed('lab', 'members: []\n');
+    const { cmds, sent } = harness({
+      config: { node_name: 'kg' },
+      listEntityDirs: async () => [{ dir: dirLab, ns: 'room/lab' }],
+    });
+    const before = readFileSync(join(dirLab, 'config.yaml'), 'utf8');
+    await cmds.run({ ...self, body: '/radio=kg leave lab' });
     expect(sent[0].text).not.toMatch(/^left\b/);
     expect(sent[0].text).toMatch(/not joined/);
     expect(readFileSync(join(dirLab, 'config.yaml'), 'utf8')).toBe(before);
   });
 
-  it('/radio leave <slug> for a nonexistent room says so plainly too (one message covers both)', async () => {
+  it('/radio leave <slug> for a nonexistent room, bare, stays silent too', async () => {
     const { cmds, sent } = harness({ config: { node_name: 'kg' }, listEntityDirs: async () => [] });
     await cmds.run({ ...self, body: '/radio leave nosuchroom' });
+    expect(sent).toHaveLength(0);
+  });
+
+  it('the SAME nonexistent-room case, addressed explicitly, says so plainly (one message covers both)', async () => {
+    const { cmds, sent } = harness({ config: { node_name: 'kg' }, listEntityDirs: async () => [] });
+    await cmds.run({ ...self, body: '/radio=kg leave nosuchroom' });
     expect(sent[0].text).toMatch(/not joined/);
   });
 });
@@ -457,9 +498,15 @@ describe('bare /radio — node-wide YAML status report', () => {
     expect(sent[0].text).toMatch(/wildnloyal:/);
   });
 
-  it('no radio configured at all — a short plain-text line, not an empty yaml fence', async () => {
+  it('no radio configured at all, bare — silence rule: stays silent (operator ruling 2026-08-08)', async () => {
     const { cmds, sent } = harness({ config: { node_name: 'kg' } });
     await cmds.run({ ...self, body: '/radio' });
+    expect(sent).toHaveLength(0);
+  });
+
+  it('the SAME state, addressed explicitly — a short plain-text line, not an empty yaml fence', async () => {
+    const { cmds, sent } = harness({ config: { node_name: 'kg' } });
+    await cmds.run({ ...self, body: '/radio=kg' });
     expect(sent[0].text).toBe('no radio configured on kg');
   });
 
@@ -602,32 +649,61 @@ describe('/radio say <text> — uploads through the SAME uploader/gate the voice
     expect(sent[0].text).toBe('said as roger');
   });
 
-  it('not joined — refuses with the exact string, never uploads', async () => {
+  it('not joined, bare — silence rule: stays silent, never uploads (operator ruling 2026-08-08)', async () => {
     const { cmds, sent, uploadCalls } = harness({
       config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: true, default_speaker: 'egpt' } } },
     });
     await cmds.run({ ...self, senderId: '16468217865', body: '/radio say hola' });
+    expect(sent).toHaveLength(0);
+    expect(uploadCalls).toHaveLength(0);
+  });
+
+  it('the SAME state, addressed explicitly — refuses with the exact string, never uploads', async () => {
+    const { cmds, sent, uploadCalls } = harness({
+      config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: true, default_speaker: 'egpt' } } },
+    });
+    await cmds.run({ ...self, senderId: '16468217865', body: '/radio=kg say hola' });
     expect(sent[0].text).toBe('not relaying — /radio join <radio> first');
     expect(uploadCalls).toHaveLength(0);
   });
 
-  it("joined radio absent from this node's radio_service — refuses, never uploads", async () => {
+  it("joined radio absent from this node's radio_service, bare — stays silent, never uploads", async () => {
     const { cmds, sent, room, uploadCalls } = harness({
       config: { node_name: 'kg', radio_service: {} },
     });
     seed(room, 'radio:\n  join: wildnloyal\n');
     await cmds.run({ ...self, senderId: '16468217865', body: '/radio say hola' });
+    expect(sent).toHaveLength(0);
+    expect(uploadCalls).toHaveLength(0);
+  });
+
+  it("the SAME state, addressed explicitly — refuses, never uploads", async () => {
+    const { cmds, sent, room, uploadCalls } = harness({
+      config: { node_name: 'kg', radio_service: {} },
+    });
+    seed(room, 'radio:\n  join: wildnloyal\n');
+    await cmds.run({ ...self, senderId: '16468217865', body: '/radio=kg say hola' });
     expect(sent[0].text).toMatch(/wildnloyal/);
     expect(sent[0].text).toMatch(/not configured or disabled/);
     expect(uploadCalls).toHaveLength(0);
   });
 
-  it('radio configured but disabled — refuses, never uploads', async () => {
+  it('radio configured but disabled, bare — THE REPRODUCE-FIRST CASE (operator ruling 2026-08-08): stays silent, never uploads', async () => {
     const { cmds, sent, room, uploadCalls } = harness({
       config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: false, default_speaker: 'egpt' } } },
     });
     seed(room, 'radio:\n  join: wildnloyal\n');
     await cmds.run({ ...self, senderId: '16468217865', body: '/radio say hola' });
+    expect(sent).toHaveLength(0);
+    expect(uploadCalls).toHaveLength(0);
+  });
+
+  it('the SAME state, addressed explicitly (/radio=kg say hola) — DOES reply, refuses, never uploads', async () => {
+    const { cmds, sent, room, uploadCalls } = harness({
+      config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: false, default_speaker: 'egpt' } } },
+    });
+    seed(room, 'radio:\n  join: wildnloyal\n');
+    await cmds.run({ ...self, senderId: '16468217865', body: '/radio=kg say hola' });
     expect(sent[0].text).toMatch(/not configured or disabled/);
     expect(uploadCalls).toHaveLength(0);
   });
@@ -741,5 +817,233 @@ describe("/radio join — can't resolve this conversation's room", () => {
     });
     await cmds.run({ ...self, body: '/radio join wildnloyal' });
     expect(sent[0].text).toMatch(/can't resolve this conversation's room/);
+  });
+});
+
+describe("/radio leave / say — can't resolve this conversation's room ALWAYS replies (the one exception, operator ruling 2026-08-08)", () => {
+  it('/radio leave, bare, still replies when the room cannot be resolved', async () => {
+    const sent = [];
+    const cmds = createCommands({
+      getConfig: () => ({ node_name: 'kg' }),
+      send: async (chatId, text) => sent.push({ chatId, text }),
+      resolveConvRoom: async () => null,
+    });
+    await cmds.run({ ...self, body: '/radio leave' });
+    expect(sent[0].text).toMatch(/can't resolve this conversation's room/);
+  });
+
+  it('/radio say, bare, still replies when the room cannot be resolved', async () => {
+    const sent = [];
+    const cmds = createCommands({
+      getConfig: () => ({ node_name: 'kg' }),
+      send: async (chatId, text) => sent.push({ chatId, text }),
+      resolveConvRoom: async () => null,
+    });
+    await cmds.run({ ...self, body: '/radio say hola' });
+    expect(sent[0].text).toMatch(/can't resolve this conversation's room/);
+  });
+});
+
+// Fake state/stats/<surface>/*.yaml tree for /radio disable's "contact name" resolution
+// step — entries: { <surface>: { <filename.yaml>: { sender_id, name } } }.
+function statsIo(entries) {
+  return {
+    readdir: async (dir) => {
+      const last = dir.split(/[\\/]/).pop();
+      return last === 'stats' ? Object.keys(entries) : Object.keys(entries[last] ?? {});
+    },
+    readFile: async (fp) => {
+      const parts = fp.split(/[\\/]/);
+      const file = parts[parts.length - 1];
+      const surface = parts[parts.length - 2];
+      const body = entries[surface]?.[file];
+      if (!body) { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; }
+      return `sender_id: "${body.sender_id}"\nname: "${body.name}"\n`;
+    },
+  };
+}
+
+describe('/radio disable — Ruling 2 (operator 2026-08-08)', () => {
+  it('bare disable disables EVERY radio on this node, live AND persisted, no restart required', async () => {
+    const { cmds, sent, liveConfig, configPath } = harness({
+      config: {
+        node_name: 'kg',
+        radio_service: {
+          wildnloyal: { enabled: true, default_speaker: 'egpt' },
+          otherstation: { enabled: true, default_speaker: 'egpt' },
+        },
+      },
+    });
+    await cmds.run({ ...self, body: '/radio disable' });
+    expect(sent[0].text).toMatch(/disabled 2 radios on kg/);
+    expect(sent[0].text).toMatch(/wildnloyal/);
+    expect(sent[0].text).toMatch(/otherstation/);
+    // LIVE: the same config object createCommands reads from is mutated in place.
+    expect(liveConfig.radio_service.wildnloyal.enabled).toBe(false);
+    expect(liveConfig.radio_service.otherstation.enabled).toBe(false);
+    // PERSISTED: written to config.yaml (comment-preserving writeConfigKey).
+    const onDisk = readFileSync(configPath, 'utf8');
+    expect(onDisk).toMatch(/wildnloyal:\s*\n\s*enabled:\s*false/);
+    expect(onDisk).toMatch(/otherstation:\s*\n\s*enabled:\s*false/);
+  });
+
+  it('THE REPRODUCE-FIRST CASE: a relay attempt made immediately after disable, same session, is refused — no restart', async () => {
+    const { cmds, sent, room, uploadCalls } = harness({
+      config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: true, default_speaker: 'egpt' } } },
+    });
+    seed(room, 'radio:\n  join: wildnloyal\n');
+    await cmds.run({ ...self, body: '/radio disable' });
+    sent.length = 0;   // clear the disable confirmation; only care about the say attempt below
+    await cmds.run({ ...self, senderId: '16468217865', body: '/radio say hola' });
+    expect(uploadCalls).toHaveLength(0);   // bare say, now silent — the radio is disabled
+    expect(sent).toHaveLength(0);
+  });
+
+  it('bare disable with nothing configured on this node stays silent', async () => {
+    const { cmds, sent } = harness({ config: { node_name: 'kg' } });
+    await cmds.run({ ...self, body: '/radio disable' });
+    expect(sent).toHaveLength(0);
+  });
+
+  it('the SAME empty state, addressed explicitly, replies', async () => {
+    const { cmds, sent } = harness({ config: { node_name: 'kg' } });
+    await cmds.run({ ...self, body: '/radio=kg disable' });
+    expect(sent[0].text).toMatch(/no radio configured on kg/);
+  });
+
+  it("disable <radio> — only that ONE radio, the other stays enabled", async () => {
+    const { cmds, sent, liveConfig, configPath } = harness({
+      config: {
+        node_name: 'kg',
+        radio_service: {
+          wildnloyal: { enabled: true, default_speaker: 'egpt' },
+          otherstation: { enabled: true, default_speaker: 'egpt' },
+        },
+      },
+    });
+    await cmds.run({ ...self, body: '/radio disable wildnloyal' });
+    expect(sent[0].text).toBe('disabled wildnloyal on kg');
+    expect(liveConfig.radio_service.wildnloyal.enabled).toBe(false);
+    expect(liveConfig.radio_service.otherstation.enabled).toBe(true);
+    expect(readFileSync(configPath, 'utf8')).toMatch(/wildnloyal:\s*\n\s*enabled:\s*false/);
+  });
+
+  it("disable <node> acts ONLY on the named node and is silent elsewhere", async () => {
+    // On 'kg', naming a DIFFERENT known node ('do', via account_peers) does nothing, silently.
+    const onKg = harness({
+      config: { node_name: 'kg', account_peers: ['kg', 'do'], radio_service: { wildnloyal: { enabled: true } } },
+    });
+    await onKg.cmds.run({ ...self, body: '/radio disable do' });
+    expect(onKg.sent).toHaveLength(0);
+    expect(onKg.liveConfig.radio_service.wildnloyal.enabled).toBe(true);   // untouched
+
+    // On 'do' itself, the SAME bare command (independently heard, no mesh) disables its own radios.
+    const onDo = harness({
+      config: { node_name: 'do', account_peers: ['kg', 'do'], radio_service: { wildnloyal: { enabled: true } } },
+    });
+    await onDo.cmds.run({ ...self, body: '/radio disable do' });
+    expect(onDo.sent[0].text).toMatch(/disabled 1 radio on do/);
+    expect(onDo.liveConfig.radio_service.wildnloyal.enabled).toBe(false);
+  });
+
+  it('/radio=do disable affects ONLY do — the existing node-addressed gate filters every other node before radio() is even reached', async () => {
+    // On 'kg', addressed to 'do': the top-level node gate (run()) returns before radio()
+    // is called at all — total silence, not radio()'s own explicit-refusal wording.
+    const onKg = harness({
+      config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: true } } },
+    });
+    await onKg.cmds.run({ ...self, body: '/radio=do disable' });
+    expect(onKg.sent).toHaveLength(0);
+    expect(onKg.liveConfig.radio_service.wildnloyal.enabled).toBe(true);
+
+    // On 'do' itself, the SAME line is addressed to itself — acts, and replies (explicit).
+    const onDo = harness({
+      config: { node_name: 'do', radio_service: { wildnloyal: { enabled: true } } },
+    });
+    await onDo.cmds.run({ ...self, body: '/radio=do disable' });
+    expect(onDo.sent[0].text).toMatch(/disabled 1 radio on do/);
+    expect(onDo.liveConfig.radio_service.wildnloyal.enabled).toBe(false);
+  });
+
+  it('disable <speaker-name> — resolves via a room\'s radio.hosts map and blocks that sender id', async () => {
+    const dirLab = seedNamed('lab', 'radio:\n  hosts:\n    "16468217865": roger\n');
+    const { cmds, sent, liveConfig, configPath } = harness({
+      config: { node_name: 'kg' },
+      listEntityDirs: async () => [{ dir: dirLab, ns: 'room/lab' }],
+    });
+    await cmds.run({ ...self, body: '/radio disable roger' });
+    expect(sent[0].text).toBe('blocked roger on kg');
+    expect(liveConfig.radio_blocked_senders).toEqual(['16468217865']);
+    expect(readFileSync(configPath, 'utf8')).toMatch(/radio_blocked_senders:\s*\[\s*"?16468217865"?\s*\]/);
+  });
+
+  it('disable <contact-name> — resolves via state/stats/<surface>/<id>.yaml (sender_id + name) and blocks that sender id', async () => {
+    const io = statsIo({ whatsapp: { 'Sam.yaml': { sender_id: 'sam-jid-1', name: 'Sam' } } });
+    const { cmds, sent, liveConfig } = harness({ config: { node_name: 'kg' }, io });
+    await cmds.run({ ...self, body: '/radio disable Sam' });
+    expect(sent[0].text).toBe('blocked Sam on kg');
+    expect(liveConfig.radio_blocked_senders).toEqual(['sam-jid-1']);
+  });
+
+  it('disable <contact-name> matches case-insensitively', async () => {
+    const io = statsIo({ whatsapp: { 'Sam.yaml': { sender_id: 'sam-jid-1', name: 'Sam' } } });
+    const { cmds, sent } = harness({ config: { node_name: 'kg' }, io });
+    await cmds.run({ ...self, body: '/radio disable sam' });
+    expect(sent[0].text).toBe('blocked Sam on kg');
+  });
+
+  it('an ambiguous contact name (2+ candidates) refuses and lists the candidates', async () => {
+    const io = statsIo({
+      whatsapp: { 'Sam.yaml': { sender_id: 'sam-jid-1', name: 'Sam' } },
+      telegram: { 'Sam.yaml': { sender_id: 'sam-jid-2', name: 'Sam' } },
+    });
+    const { cmds, sent, liveConfig } = harness({ config: { node_name: 'kg' }, io });
+    await cmds.run({ ...self, body: '/radio disable Sam' });
+    expect(sent[0].text).toMatch(/'Sam' matches 2:/);
+    expect(sent[0].text).toMatch(/Sam \(whatsapp\)/);
+    expect(sent[0].text).toMatch(/Sam \(telegram\)/);
+    expect(liveConfig.radio_blocked_senders).toBeUndefined();   // refused — nothing blocked
+  });
+
+  it('a raw sender id (already id-shaped) is blocked directly when nothing else matches', async () => {
+    const { cmds, sent, liveConfig } = harness({ config: { node_name: 'kg' } });
+    await cmds.run({ ...self, body: '/radio disable @26087681749235:beeper.local' });
+    expect(sent[0].text).toBe('blocked @26087681749235:beeper.local on kg');
+    expect(liveConfig.radio_blocked_senders).toEqual(['@26087681749235:beeper.local']);
+  });
+
+  it('bare, an unmatched plain word (not id-shaped, no radio/node/speaker/contact hit) stays silent', async () => {
+    const { cmds, sent, liveConfig } = harness({ config: { node_name: 'kg' } });
+    await cmds.run({ ...self, body: '/radio disable nosuchthing' });
+    expect(sent).toHaveLength(0);
+    expect(liveConfig.radio_blocked_senders).toBeUndefined();
+  });
+
+  it('the SAME unmatched word, addressed explicitly, refuses instead of silently doing nothing', async () => {
+    const { cmds, sent } = harness({ config: { node_name: 'kg' } });
+    await cmds.run({ ...self, body: '/radio=kg disable nosuchthing' });
+    expect(sent[0].text).toMatch(/'nosuchthing' doesn't match/);
+  });
+
+  it("a blocked person's /radio say does not upload, and replies (a fully-matched policy refusal, not a mismatch)", async () => {
+    const { cmds, sent, room, uploadCalls, liveConfig } = harness({
+      config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: true, default_speaker: 'egpt' } } },
+    });
+    seed(room, 'radio:\n  join: wildnloyal\n');
+    liveConfig.radio_blocked_senders = ['16468217865'];
+    await cmds.run({ ...self, senderId: '16468217865', body: '/radio say hola' });
+    expect(uploadCalls).toHaveLength(0);
+    expect(sent[0].text).toMatch(/blocked/i);
+  });
+
+  it('an unblocked sender in the SAME state is unaffected', async () => {
+    const { cmds, sent, room, uploadCalls, liveConfig } = harness({
+      config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: true, default_speaker: 'egpt' } } },
+    });
+    seed(room, 'radio:\n  join: wildnloyal\n');
+    liveConfig.radio_blocked_senders = ['someone-else'];
+    await cmds.run({ ...self, senderId: '16468217865', body: '/radio say hola' });
+    expect(uploadCalls).toHaveLength(1);
+    expect(sent[0].text).toBe('said as egpt');
   });
 });
