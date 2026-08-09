@@ -71,7 +71,16 @@ export function coerceAllowedTools(def) {
   return def;
 }
 
+// DANGEROUS (operator 2026-08 meta-engineer): the ONE type-file flag that skips coercion
+// AND confinement entirely — a `dangerous: true` type runs genuinely unconfined (full
+// filesystem, its allowed_tools list passed verbatim, including bare Bash/Agent), exactly
+// like an interactive `claude` session. Every call site below checks it explicitly rather
+// than teaching coerceAllowedTools itself about it, so the function stays what its callers
+// (commands.mjs's /e wizard, the tools-step freeze) already assume: ALWAYS confining.
+// Reachability (who may even address a dangerous agent) is gated upstream, in
+// router.mjs/mesh.mjs — this file only decides how the TURN runs once addressed.
 function confinementFor(def, cwd, onLog) {
+  if (def?.dangerous === true) return {};   // the unconfined tier — no confineToDirs/addDirs/readOnlyDirs, ever
   if (!Array.isArray(def?.allowed_tools)) return {};   // defensive: post-coercion this is always a list
   const addDirs = [], readOnlyDirs = [];
   const paths = (def.allowed_paths && typeof def.allowed_paths === 'object' && !Array.isArray(def.allowed_paths)) ? def.allowed_paths : {};
@@ -230,6 +239,7 @@ export function createBrainPool({
       allowed_paths: def?.allowed_paths ?? undefined,   // carried so a confined agent's extra roots survive
       cwd: def?.cwd ?? undefined,
       system_prompt: def?.system_prompt ?? undefined,
+      dangerous: def?.dangerous === true,   // carried so a sibling's unconfined type file survives shaping
     };
   }
 
@@ -288,7 +298,11 @@ export function createBrainPool({
         // Local agent: def from the agents block (its `configuration` names a type file);
         // never frozen into readonly. Its model/effort stay exactly as configured (may be
         // unset — an engineer, not the persona snapshot).
-        def = coerceAllowedTools(siblingDef(being, convDir));
+        // dangerous:true skips coercion (see confinementFor's comment above) — the type
+        // file's allowed_tools (which may legitimately include bare Bash/Agent) passes
+        // through verbatim rather than being capped to DEFAULT_ALLOWED_TOOLS.
+        const rawSiblingDef = siblingDef(being, convDir);
+        def = rawSiblingDef.dangerous === true ? rawSiblingDef : coerceAllowedTools(rawSiblingDef);
         runModel = def.model; runEffort = def.effort;
       } else {
         // The conversation's brain: its instanced (frozen) brain, or — when there is no
@@ -303,7 +317,8 @@ export function createBrainPool({
         // never-instanced case (a thread with no freeze would otherwise read off null).
         fresh = !sessionId || !instanced;
         def = fresh ? resolveDefaultBrain(convDir) : instanced;
-        def = coerceAllowedTools(def);   // 'all' → explicit list (rejected); the freeze below stores the list
+        // dangerous:true skips coercion — same rule as the sibling branch above.
+        if (def?.dangerous !== true) def = coerceAllowedTools(def);   // 'all' → explicit list (rejected); the freeze below stores the list
         // DETERMINISM (operator 2026-07-02: "don't do 'null means inherit the login default' —
         // make it deterministic"): the frozen snapshot AND the actual run must carry CONCRETE
         // model/effort, never null. A type def that omits either falls back to the module
@@ -333,8 +348,12 @@ export function createBrainPool({
           const view = getBeing(await loadState(), ev.surface, ev.chatId, being);
           if (view?.brainType) {
             // through coerceAllowedTools again: a pin may say 'all', which is REJECTED into the
-            // explicit list exactly like a type file that says it (operator 2026-07-03).
-            def = coerceAllowedTools({ ...def, name: view.brain ?? def.name, type: view.brainType, allowed_tools: view.allowedTools ?? def.allowed_tools });
+            // explicit list exactly like a type file that says it (operator 2026-07-03). Skipped
+            // for dangerous:true — same rule as the two sites above; `dangerous` itself is never
+            // frozen into readonly (see the write below), so this reads it off `def`, carried
+            // through from the type file's own resolution.
+            const rebuilt = { ...def, name: view.brain ?? def.name, type: view.brainType, allowed_tools: view.allowedTools ?? def.allowed_tools };
+            def = rebuilt.dangerous === true ? rebuilt : coerceAllowedTools(rebuilt);
             runModel = view.model ?? runModel;
             runEffort = view.effort ?? runEffort;
           }

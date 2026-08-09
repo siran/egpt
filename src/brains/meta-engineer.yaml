@@ -1,0 +1,38 @@
+# meta-engineer (historical name "wren") — the ONE unconfined AGENT TYPE (operator 2026-08
+# meta-engineer chunk): `dangerous: true` skips BOTH tool coercion and confinement in
+# brainpool.mjs — this type's allowed_tools list runs verbatim, full filesystem, no sandbox,
+# exactly like an interactive `claude` session. It is reachable ONLY by a sender already
+# `allowed_users` on the network they're messaging from (or the account owner) — that gate is
+# router.mjs/mesh.mjs's job (ev.authorized), enforced BEFORE this file's tools ever matter.
+#
+# NOT WIRED LIVE: no `agents:` entry points at this type yet — shipping the type file alone
+# does not make anyone reachable. Override without touching the repo in
+# ~/.egpt2/config/agents/meta-engineer.yaml (profile) or <slug>/brains/meta-engineer.yaml (one
+# conversation) — though a conversation-local override can NEVER flip `dangerous` on/off for
+# the GATE decision itself (router.mjs/mesh.mjs resolve the gate check from the built-in +
+# profile layers only, never a conversation's own brains/).
+dangerous: true        # THE unconfined tier — see brainpool.mjs confinementFor + the three
+                        # coerceAllowedTools call sites in turn(). Absent/false = the normal
+                        # confined contract every other type file gets.
+type: ccode             # engine: ccode | codex | chatgpt-cdp | claude-cdp | llama (only ccode wired in v2)
+model: sonnet           # concrete model the engine runs (PINNED = deterministic per conversation)
+effort: high            # reasoning effort (engine-dependent)
+allowed_tools:          # runs VERBATIM (never coerced/capped) — this IS the full engineer toolset.
+                        # Bash is BARE, not scoped Bash(<bin>:*): the house rule (see egpt.yaml)
+                        # exists to keep a CONFINED agent from getting a shell escape hatch: it
+                        # doesn't apply here — an interactive `claude` session's Bash isn't scoped
+                        # either, and scoping it would contradict the whole point of this tier.
+  - Read
+  - Write
+  - Edit
+  - Glob
+  - Grep
+  - Bash
+  - Agent               # sub-agents under the CLI's current name (Task is the older alias)
+  - WebSearch
+  - WebFetch
+# allowed_paths / confineToDirs are MEANINGLESS here — confinementFor(def, …) returns {} outright
+# for dangerous:true, so this type never gets a conversation-dir root or an allowed_paths grant;
+# it sees the whole filesystem the `claude` process itself can reach.
+# personality: egpt  # identity feed a fresh conversation boots from; absent ⇒ 'egpt' — irrelevant
+                       # unless this type is ever pointed at by the PERSONA agent (not done here).

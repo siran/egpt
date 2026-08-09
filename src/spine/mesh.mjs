@@ -36,10 +36,14 @@ import { personaStamp, makeWrapPersona } from '../bridges/persona-wrap.mjs';
 // an agent with a relay_channel and `to: <being>.<node>` IS the statement that its channel
 // reaches that node. The SAME derivation the command service reads to know what a node name is.
 import { agentRoutes } from './node-names.mjs';
-// THE wake vocabulary (declared `handles:`, else the map key) — the ONE rule the router applies to
-// a typed @token, imported so an envelope's `<being>.<node>` resolves identically. This file used
-// to carry its own copy, which is how the two could drift.
-import { wakeTokens } from './router.mjs';
+// addressed: THE mention matcher (declared `handles:`, else the map key — router.mjs's wake
+// vocabulary), imported so an envelope's `<being>.<node>` resolves identically to a typed @token.
+// findAgentByToken below is a single-already-parsed-token lookup (bare form, addressWithoutAt),
+// not a free-text scan — this file used to carry its own hand-rolled wake-token loop, which is
+// how the two could drift.
+// requiresAuthorization: the ONE dangerous-type-gate predicate (operator 2026-08 meta-engineer),
+// shared with router.mjs's resolve() so the gate cannot exist on one path and not the other.
+import { requiresAuthorization, addressed } from './router.mjs';
 
 const PLACEHOLDER = '🤔 thinking…';
 const textOf = (v) => (typeof v === 'string' ? v : v?.text ?? '');
@@ -55,6 +59,11 @@ export function createMeshService({
   getConfig = () => ({}),
   bodyEmojiOf = () => '',              // (being) => body_emoji — stamps the relayed reply
   getSelfChatId = () => null,          // () => this node's Self chat id — the fallback transport when a relay channel doesn't resolve
+  // Resolve an agent's `configuration` type from the BASE brains-registry layers only (no
+  // conv-local override — see router.mjs's requiresAuthorization doc). Default never resolves
+  // anything dangerous, matching the router's own default (a caller that supplies nothing gets
+  // today's behaviour: no being is ever gated).
+  resolveType = () => null,
   // Timer seams (injected so the origin-wait timeout is testable without real time).
   setTimer = (fn, ms) => { const t = setTimeout(fn, ms); if (t?.unref) t.unref(); return t; },
   clearTimer = (t) => { if (t != null) clearTimeout(t); },
@@ -85,13 +94,14 @@ export function createMeshService({
   const timeoutMs = () => Number(cfg().mesh?.timeout_ms ?? 60_000) || 60_000;
 
   // Find the non-comment agent whose WAKE TOKEN matches `token` → { name, agent }
-  // (name = canonical lowercased key = the BEING-ID that runs) or null. Runs THE wake vocabulary
-  // (router.mjs wakeTokens — declared `handles:`, else the map key), the same rule the router
-  // applies to a direct @mention, so an envelope's `<being>.<node>` and a typed @token can never
-  // disagree about who is addressed. Since 2026-07-26 the map KEY is NOT a token when handles are
-  // declared: an envelope to `egpt.do` no longer wakes DOLLY (keyed `egpt`, handles [d, don]) —
-  // answering it would stamp `by: egpt.do`, exactly what the ruling forbids — while `don.do` still
-  // resolves to the being-id `egpt` and runs.
+  // (name = canonical lowercased key = the BEING-ID that runs) or null. Runs the SAME mention
+  // matcher the router's own @token scan uses (`addressed`, bare-form: the wire token never
+  // carries an '@'), the same rule that applies to a direct @mention, so an envelope's
+  // `<being>.<node>` and a typed @token can never disagree about who is addressed (they now share
+  // ONE implementation, not just one RULE). Since 2026-07-26 the map KEY is NOT a token when
+  // handles are declared: an envelope to `egpt.do` no longer wakes DOLLY (keyed `egpt`, handles
+  // [d, don]) — answering it would stamp `by: egpt.do`, exactly what the ruling forbids — while
+  // `don.do` still resolves to the being-id `egpt` and runs.
   //
   // THE ONE resolution for EVERY `<being>` token this service is handed — the wake gate
   // (isLocalBeing/resolveLocalBeing) AND relay ROUTING (resolveBeingRelay). Routing used to do a
@@ -102,13 +112,32 @@ export function createMeshService({
   // A MULTIPATH agent is included and needs no special case: since 2026-07-26 it is an ordinary
   // map carrying a `paths:` list, so it declares `handles:` like anyone else (and falls back to
   // its key when it doesn't).
+  //
+  // `addressed` returns EVERY hit in text order for a free-text scan; here the "text" is always
+  // exactly one already-extracted token (no surrounding sentence, no possible second hit), so the
+  // first (only) result is the answer — a single-token lookup riding the SAME implementation as
+  // the free-text scanner, not a forced literal substitution of one for the other (operator 2026-08
+  // consolidation: verified byte-identical against every existing mesh test before landing).
   const findAgentByToken = (token) => {
-    const t = String(token ?? '').toLowerCase();
-    for (const [name, agent] of Object.entries(agents())) {
-      if (!agent || typeof agent !== 'object' || name.startsWith('_')) continue;
-      if (wakeTokens(name, agent).includes(t)) return { name: name.toLowerCase(), agent };
-    }
-    return null;
+    const hit = addressed(String(token ?? ''), agents(), { addressWithoutAt: true })[0];
+    return hit ? { name: hit.name, agent: hit.agent } : null;
+  };
+  // DANGEROUS-TYPE GATE (operator 2026-08 meta-engineer), RESPONDER side: is `being` a
+  // `dangerous: true` agent, and is the arriving envelope's OWN authorization (route.ev.authorized
+  // — the same signal commandReply already reads a few lines up) insufficient to reach it? Returns
+  // the denial string to surface, or null when the turn may proceed. Checked in relayDispatch
+  // BEFORE brain.turn ever runs for a local being — never for a relay hop (those don't reach here)
+  // and never for a command (commandReply has its own, separate authorization gate).
+  //
+  // EXPLICIT DENIAL, deliberately unlike router.mjs's silent drop: this file's own convention is
+  // "NEVER silence" (see forwardCommand's docstring above) — the requester here is a DIFFERENT,
+  // already-trusted node peer (it got this far through the mesh), so it gets a reason, the same
+  // way commandReply answers "⚠️ not authorized to run …" instead of going quiet.
+  const dangerousDenial = (being, route) => {
+    const agent = agents()[being] ?? null;
+    if (!requiresAuthorization(agent, { resolveType })) return null;
+    if (route?.ev?.authorized) return null;
+    return `not authorized to reach ${being}.${node}`;
   };
   const chatOf = (route) => {
     const c = route?.room_id ?? route?.chat ?? route;
@@ -369,13 +398,20 @@ export function createMeshService({
         const cmd = await commandReply(route, prompt);
         if (cmd != null) final = cmd;
         else {
-          // Only the being path ever streams (onPartial below) — open the placeholder HERE, once
-          // the branch is known, so a static command never pays for a "🤔" it never uses plus an
-          // extra outbound edit against the lasso budget (operator 2026-07-27: "no AI involved,
-          // it's static tubing").
-          stream = bridge.startStream(chat, wrap(''), {});
-          const r = await brain.turn(being, meshEv(route, prompt), (partial) => { try { stream?.update?.(wrap(textOf(partial))); } catch {} });
-          final = textOf(r);
+          // DANGEROUS-TYPE GATE: checked here, AFTER the command branch (a node-addressed command
+          // is unrelated to which being was nominally addressed) but BEFORE the placeholder stream
+          // opens and BEFORE brain.turn ever runs — an unauthorized envelope never starts a turn.
+          const denial = dangerousDenial(being, route);
+          if (denial) final = denial;
+          else {
+            // Only the being path ever streams (onPartial below) — open the placeholder HERE, once
+            // the branch is known, so a static command never pays for a "🤔" it never uses plus an
+            // extra outbound edit against the lasso budget (operator 2026-07-27: "no AI involved,
+            // it's static tubing").
+            stream = bridge.startStream(chat, wrap(''), {});
+            const r = await brain.turn(being, meshEv(route, prompt), (partial) => { try { stream?.update?.(wrap(textOf(partial))); } catch {} });
+            final = textOf(r);
+          }
         }
       } catch (e) { final = `(${being}.${node} error: ${e?.message ?? e})`; }
       final = String(final ?? '').trim() || '…';

@@ -378,3 +378,66 @@ describe('addressed() — a bare handle opening the message (operator 2026-07-27
     });
   });
 });
+
+// ── DANGEROUS-TYPE GATE (operator 2026-08 meta-engineer): a LOCAL agent whose `configuration`
+//    resolves (through the injected `resolveType`) to a type file carrying `dangerous: true` is
+//    reachable ONLY when ev.authorized is true — the SAME signal the bridge already computes
+//    (isSender, or a configured allowed_user; src/bridges/beeper.mjs). An unauthorized hit is
+//    dropped SILENTLY — same convention as the surface-pin mismatch: it falls through exactly as
+//    if the @token never matched (to another target, the persona, or "nobody addressed"). No
+//    refusal text here (contrast mesh.mjs's explicit denial — a different, already-trusted node
+//    peer there deserves an explicit reason; a local unauthorized sender must see nothing). ──
+describe('router.resolve — dangerous-type gate (operator 2026-08 meta-engineer)', () => {
+  const agents = {
+    egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true },
+    wren: { configuration: 'meta-engineer', handles: ['wren'] },   // dangerous local agent
+    don:  { configuration: 'sonnet-high', handles: ['don'] },      // ordinary local agent — regression neighbor
+  };
+  // A fake registry resolution: only "meta-engineer" resolves to a dangerous type.
+  const resolveType = (name) => (name === 'meta-engineer' ? { dangerous: true } : null);
+
+  it('REPRODUCE-FIRST: an UNAUTHORIZED sender addressing @wren (dangerous) is dropped — falls through exactly like an unmatched @token', () => {
+    const arouter = createRouter({ getAgents: () => agents, defaultBeing: 'egpt', resolveType });
+    const r = arouter.resolve({ ...ev('@wren do X'), authorized: false });
+    expect(r.being).toBe('egpt');                                  // falls through to the persona
+    expect(r.targets).toEqual([{ being: 'egpt', mention: ev('x').mention }]);   // no refusal, no trace of @wren
+  });
+
+  it('an AUTHORIZED sender (ev.authorized true — isSender OR a configured allowed_user, upstream) reaches @wren directly', () => {
+    const arouter = createRouter({ getAgents: () => agents, defaultBeing: 'egpt', resolveType });
+    const r = arouter.resolve({ ...ev('@wren do X'), authorized: true });
+    expect(r.being).toBe('wren');
+    expect(r.mesh).toBeUndefined();
+  });
+
+  it('an ordinary (non-dangerous) local agent stays reachable regardless of authorized — the gate is scoped to dangerous types only', () => {
+    const arouter = createRouter({ getAgents: () => agents, defaultBeing: 'egpt', resolveType });
+    expect(arouter.resolve({ ...ev('@don hi'), authorized: false }).being).toBe('don');
+    expect(arouter.resolve({ ...ev('@don hi'), authorized: true }).being).toBe('don');
+  });
+
+  it('other addressed targets in the SAME message survive: an unauthorized @wren hit is dropped, a co-addressed @don hit is not', () => {
+    const arouter = createRouter({ getAgents: () => agents, defaultBeing: 'egpt', resolveType });
+    const r = arouter.resolve({ ...ev('@wren and @don, both please'), authorized: false });
+    expect(r.targets.map((t) => t.being)).toEqual(['don']);
+  });
+
+  it('no resolveType injected (default) → the gate is a no-op — todays behaviour for a caller that supplies nothing', () => {
+    const bare = createRouter({ getAgents: () => agents, defaultBeing: 'egpt' });
+    expect(bare.resolve({ ...ev('@wren hi'), authorized: false }).being).toBe('wren');
+  });
+
+  // POINT 3 (operator): the gate MUST resolve from the base brains-registry layers only — a
+  // conversation's own brains/<name>.yaml must never be able to flip `dangerous` on or off for
+  // this decision. router.resolve() has no per-hit convDir to thread through in the first place;
+  // this locks that structurally — resolveType is called with the configuration name ALONE, no
+  // second (convDir) argument, so wiring it to `brains.resolve(name)` (boot.mjs) can only ever
+  // reach the built-in + profile layers (brains.mjs: convDir defaults to null).
+  it('resolveType is called with NO convDir — a conversation-local override can never reach the gate decision', () => {
+    const calls = [];
+    const rt = (...args) => { calls.push(args); return { dangerous: true }; };
+    const arouter = createRouter({ getAgents: () => agents, defaultBeing: 'egpt', resolveType: rt });
+    arouter.resolve({ ...ev('@wren hi'), authorized: false });
+    expect(calls).toEqual([['meta-engineer']]);        // ONE argument — no convDir
+  });
+});

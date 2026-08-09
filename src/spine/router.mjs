@@ -141,10 +141,30 @@ export function addressed(text, agents, { quickReply = '', lastSpeaker = null, a
   return out;
 }
 
+// DANGEROUS-TYPE GATE (operator 2026-08 meta-engineer): does reaching this agent require an
+// authorized sender? True ONLY when the agent's `configuration` resolves to a TYPE FILE
+// carrying `dangerous: true` — the one unconfined tier (full filesystem, no sandbox; see
+// brainpool.mjs). `resolveType` is injected (never imported as a live singleton, matching this
+// file's DI style) and MUST resolve from the base layers only — built-in + profile, NEVER a
+// conversation's own brains/ override — so an agent with Write access to its own conv dir can
+// never author a local brains/<name>.yaml that flips `dangerous` on for itself. Both callers
+// (this file's resolve() below, and mesh.mjs's relayDispatch) share this ONE definition so the
+// gate can never exist on one path and not the other. A relay agent's `configuration` is the
+// literal 'relay' (or absent) — it never resolves to a type file, so this is a no-op for every
+// relay/multipath agent; the gate only ever fires for a LOCAL agent's type.
+export function requiresAuthorization(agent, { resolveType = () => null } = {}) {
+  const configuration = agent && typeof agent === 'object' ? agent.configuration : null;
+  if (!configuration) return false;
+  const def = resolveType(String(configuration));
+  return !!def?.dangerous;
+}
+
 // `getQuickReply` reads config.quick_reply_string (unset → the 'r' default below; '' disables).
 // `addressWithoutAt` is the node's dispatch.address_without_at (boot reads it once; DEFAULT true)
 // — the ONE switch for the bare-handle form, forwarded to `addressed` above.
-export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', getQuickReply = () => undefined, addressWithoutAt = true } = {}) {
+// `resolveType` — see requiresAuthorization above; DEFAULT never resolves anything dangerous
+// (a caller that supplies nothing gets today's behaviour: no agent is ever gated).
+export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', getQuickReply = () => undefined, addressWithoutAt = true, resolveType = () => null } = {}) {
   // ONE addressed agent → the routing target it resolves to. Per-kind semantics are
   // UNCHANGED; only the caller changed (every hit, not just the first).
   function targetFor({ name, agent, atStart, body }, ev) {
@@ -221,6 +241,15 @@ export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', getQu
           // agent is an ordinary map since 2026-07-26, so it can be pinned like any other.
           if (hit.agent.surface != null
               && String(hit.agent.surface).toLowerCase() !== String(ev?.surface ?? '').toLowerCase()) continue;
+          // DANGEROUS-TYPE GATE (operator 2026-08 meta-engineer): a hit whose agent resolves to a
+          // `dangerous: true` type is reachable ONLY when ev.authorized (the bridge's existing
+          // isSender/allowed_user signal — no new list). An unauthorized hit is dropped SILENTLY,
+          // the SAME way the surface-pin mismatch above is: it falls through exactly as if the
+          // @token had never matched (to another target, the persona, or "nobody addressed").
+          // Deliberately NO refusal text here — contrast mesh.mjs's explicit denial: there the
+          // requester is a DIFFERENT, already-trusted node peer who deserves an explicit reason;
+          // here an unauthorized LOCAL sender must see nothing different from an unmatched @token.
+          if (!ev?.authorized && requiresAuthorization(hit.agent, { resolveType })) continue;
           if (hit.body != null) body = hit.body;
           targets.push(targetFor(hit, ev));
         }

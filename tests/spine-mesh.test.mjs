@@ -65,7 +65,7 @@ function fakeTimers() {
 const EMOJI = { don: '🤝', wren: '🐦' };
 const bodyEmojiOf = (b) => EMOJI[String(b).toLowerCase()] ?? '';
 
-function svc({ node, aliases = [], agents = {}, meshCfg = {}, brain, timers, logs, chatIds = {}, selfChatId = null, sig = {} } = {}) {
+function svc({ node, aliases = [], agents = {}, meshCfg = {}, brain, timers, logs, chatIds = {}, selfChatId = null, sig = {}, resolveType } = {}) {
   const bridge = fakeBridge({ chatIds });
   const cfg = { node_name: node, node_alias: aliases, agents, mesh: meshCfg, ...sig };   // sig = this node's bridge_signature_* (the keys boot hands the ports)
   const mesh = createMeshService({
@@ -73,6 +73,7 @@ function svc({ node, aliases = [], agents = {}, meshCfg = {}, brain, timers, log
     getConfig: () => cfg, bodyEmojiOf,
     getSelfChatId: () => selfChatId,
     setTimer: timers?.setTimer, clearTimer: timers?.clearTimer,
+    ...(resolveType ? { resolveType } : {}),   // dangerous-type gate (operator 2026-08 meta-engineer) — default: no-op
     onLog: (m) => logs?.push(m),
   });
   return { bridge, mesh, cfg };
@@ -833,5 +834,62 @@ describe('spine seam — handleInbound ↔ mesh', () => {
     expect(mesh.forwarded).toHaveLength(0);
     expect(brain.calls).toHaveLength(1);
     expect(bridge.sent).toEqual([{ chat: 'CHAT', text: '↩ just a normal message' }]);
+  });
+});
+
+// ── DANGEROUS-TYPE GATE (operator 2026-08 meta-engineer), RESPONDER side. A local being whose
+//    agent `configuration` resolves (through the injected `resolveType`) to a type carrying
+//    `dangerous: true` must never run brain.turn for an envelope whose OWN route.ev.authorized is
+//    not true — checked in relayDispatch, BEFORE the placeholder stream opens and BEFORE
+//    brain.turn is ever called. UNLIKE router.mjs's silent drop, this file's own convention is
+//    NEVER SILENCE: the requester here is a different, already-trusted node peer (it reached this
+//    node at all), so it gets an explicit reason — the same pattern commandReply already uses
+//    ("⚠️ not authorized to run …") for its own separate authorization gate. ──
+describe('mesh service — dangerous-type gate (operator 2026-08 meta-engineer)', () => {
+  const agents = { wren: { configuration: 'meta-engineer', name: 'wren' } };
+  const resolveType = (name) => (name === 'meta-engineer' ? { dangerous: true } : null);
+
+  it('REPRODUCE-FIRST: an UNAUTHORIZED envelope to a dangerous local being gets an explicit denial — brain.turn never runs, no placeholder stream opens', async () => {
+    const brain = fakeBrain({ reply: 'should never run' });
+    const { bridge, mesh } = svc({ node: 'do', agents, brain, resolveType });
+    const req = encodeMesh({ by: 'Stranger', body: '@wren do X', from: 'HFM', from_node: 'kg', to: 'wren.do', post_id: 'p1' });
+    // no `authorized` field on the ev handed to mesh.handle → route.ev.authorized is falsy
+    await mesh.handle({ surface: 'whatsapp', chatId: 'RELAY', msgId: 'm1', body: req });
+    await flush();
+    expect(brain.calls).toHaveLength(0);
+    expect(bridge.streams).toHaveLength(0);          // denied before the placeholder stream ever opened
+    const p = parseMesh(bridge.sent[0].text);
+    expect(p).toMatchObject({ by: 'wren.do', done: true });
+    expect(stripNodeSignature(p.body)).toContain('not authorized to reach wren.do');
+  });
+
+  it('an AUTHORIZED envelope to the same dangerous being runs brain.turn normally', async () => {
+    const brain = fakeBrain({ reply: 'ok, working' });
+    const { bridge, mesh } = svc({ node: 'do', agents, brain, resolveType });
+    const req = encodeMesh({ by: 'An', body: '@wren do X', from: 'HFM', from_node: 'kg', to: 'wren.do', post_id: 'p1' });
+    await mesh.handle({ surface: 'whatsapp', chatId: 'RELAY', msgId: 'm1', body: req, authorized: true });
+    await flush();
+    expect(brain.calls).toHaveLength(1);
+    expect(brain.calls[0].being).toBe('wren');
+    expect(bridge.streams).toHaveLength(1);
+    expect(parseMesh(bridge.streams[0].finals.at(-1))).toMatchObject({ by: 'wren.do', done: true });
+  });
+
+  it('an ordinary (non-dangerous) being is unaffected by the gate, unauthorized or not', async () => {
+    const brain = fakeBrain({ reply: 'ok' });
+    const { bridge, mesh } = svc({ node: 'do', agents: { don: { configuration: 'sonnet-high', name: 'don' } }, brain, resolveType });
+    const req = encodeMesh({ by: 'Stranger', body: '@don hi', from: 'HFM', from_node: 'kg', to: 'don.do', post_id: 'p1' });
+    await mesh.handle({ surface: 'whatsapp', chatId: 'RELAY', msgId: 'm1', body: req });
+    await flush();
+    expect(brain.calls).toHaveLength(1);
+  });
+
+  it('no resolveType injected (default) → the gate is a no-op, matching router.mjs\'s same default', async () => {
+    const brain = fakeBrain({ reply: 'ok' });
+    const { bridge, mesh } = svc({ node: 'do', agents, brain });   // no resolveType
+    const req = encodeMesh({ by: 'Stranger', body: '@wren hi', from: 'HFM', from_node: 'kg', to: 'wren.do', post_id: 'p1' });
+    await mesh.handle({ surface: 'whatsapp', chatId: 'RELAY', msgId: 'm1', body: req });
+    await flush();
+    expect(brain.calls).toHaveLength(1);
   });
 });

@@ -1181,6 +1181,13 @@ export const CONFIG_SCHEMA = {
         Accepted but discouraged — TRUSTED/unconfined (full filesystem, no
         prompts) except bare Bash and Agent. Never implicit (operator
         2026-07-03).
+      dangerous: true (on the TYPE FILE, not here) is the ONE exception to
+        this whole confinement model — full filesystem, its allowed_tools
+        list runs verbatim (no coercion, no cap), no sandbox, exactly like an
+        interactive claude-code session (operator 2026-08 meta-engineer).
+        Gated entirely on the sender's ev.authorized (an allowed_user on the
+        network they're messaging from, or the account owner) — no new
+        config list. Nothing in this agents: block wires it live by itself.
       allowed_paths (a type-file map) grants extra roots:
         path:                              empty/null value = full access
                                            (read + write)

@@ -1025,7 +1025,13 @@ export async function boot({
     // relay_channel). defaultBeing = defaultKey: the persona-route + the un-@mentioned
     // fall-through both yield the persona's KEY (operator 2026-07-10 — no hardcoded 'e'/'egpt').
     // quick_reply_string: the token that addresses whoever spoke last (default 'r', '' disables).
-    router: createRouter({ getAgents: () => cfg.agents ?? {}, defaultBeing: defaultKey, getQuickReply: () => cfg.quick_reply_string, addressWithoutAt }),
+    // resolveType (operator 2026-08 meta-engineer): `brains.resolve(name)` — DELIBERATELY no
+    // convDir — is the dangerous-type GATE's resolution (built-in + profile layers only, never a
+    // conversation's own brains/ override). `brains` is declared a few lines below; this closure
+    // only reads it once resolve() actually runs a turn, long after boot() finishes, so the
+    // forward reference is safe. The runtime resolution brainpool.mjs uses for an ALREADY-gated
+    // turn is separate and DOES pass {convDir} — only this gate check is restricted.
+    router: createRouter({ getAgents: () => cfg.agents ?? {}, defaultBeing: defaultKey, getQuickReply: () => cfg.quick_reply_string, addressWithoutAt, resolveType: (name) => brains.resolve(name) }),
     transcript: createTranscript({ contacts, persona: labelOf(defaultKey), defaultKey, node_name, timeZone: transcriptTimeZone, io, onLog: (m) => log.line?.(`[transcript] ${m}`) }),
     sender: createSender({ bridge: shellAwareBridge, bodyEmojiOf, labelOf, agentSignatureOpenOf, agentSignatureCloseOf, defaultKey }),
     // The real cadence registry the spine's tick() drives. The heartbeat LOADER
@@ -1095,7 +1101,9 @@ export async function boot({
   // working link + a notice instead of a silently dropped envelope.
   // commands: a node-addressed command arriving as an envelope is EXECUTED on this node through
   // the command service above, instead of being handed to a being (operator 2026-07-26).
-  const mesh = createMeshService({ bridge: shellAwareBridge, brain, commands, getConfig, bodyEmojiOf, getSelfChatId: selfChatId, onLog: (m) => log.line?.(`[mesh] ${m}`) });
+  // resolveType: the SAME base-layers-only resolution the router uses (point 3 above) — one
+  // definition, threaded to both DI call sites, never re-derived.
+  const mesh = createMeshService({ bridge: shellAwareBridge, brain, commands, getConfig, bodyEmojiOf, getSelfChatId: selfChatId, resolveType: (name) => brains.resolve(name), onLog: (m) => log.line?.(`[mesh] ${m}`) });
   bridge.onEdit((e) => mesh.onEdit({ msgId: e.msgId, newText: e.newText }));
 
   // Conversation-E LIMBS (ROADMAP §3): a reply may carry own-line action commands
