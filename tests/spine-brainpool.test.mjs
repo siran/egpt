@@ -2,11 +2,16 @@
 // context-overflow backstop (reset + retry once fresh), and the identity kickoff
 // (fresh thread → first turn wrapped with the feed; resumed thread → raw).
 // Against a fake warm pool + in-memory conv-state. No claude, no spawn.
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { createBrainPool, parseWarmBlock } from '../src/spine/brainpool.mjs';
 import { createContacts } from '../src/spine/contacts.mjs';
+import { createBrains } from '../src/spine/brains.mjs';
+import { ConversationRoom } from '../src/room-core.mjs';
 import { buildClaudeArgs, DEFAULT_ALLOWED_TOOLS } from '../src/claude-args.mjs';
 import { emptyState, getBeing, getContact, ensureContact, recordThread, patchContact, patchBeing, slugDir } from '../src/conversations-state.mjs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 // A fake warm pool that records run() calls and lets a test script the results.
 function fakePool(scriptedResults) {
@@ -513,6 +518,114 @@ describe('brainpool.turn — confine-by-default (allowed_tools list) + allowed_p
     const args = buildClaudeArgs(opts);
     expect(args).not.toContain('--dangerously-skip-permissions');
     expect(argVals(args, '--add-dir')).toEqual([opts.cwd]);    // confined — the conversation dir is a root
+  });
+});
+
+// ── DANGEROUS:true (operator 2026-08 meta-engineer) — the ONE unconfined tier. Skips BOTH
+//    coerceAllowedTools (an 'all'/list allowed_tools list runs verbatim, incl. bare Bash/Agent)
+//    AND confinementFor (no confineToDirs/addDirs/readOnlyDirs, ever) at every def-resolution
+//    call site in turn() — the persona (fresh-instance) path, the sibling path, and the
+//    freeze-read-back path. A NON-dangerous def must stay bitwise unchanged (regression lock —
+//    every pre-existing test above already re-asserts this unmodified). ──
+describe('brainpool.turn — dangerous:true skips coercion + confinement (operator 2026-08 meta-engineer)', () => {
+  it('PERSONA def dangerous:true → allowedTools pass through verbatim (incl. bare Bash/Agent), NO confineToDirs/addDirs/readOnlyDirs', async () => {
+    const brains = { resolve: () => ({ name: 'meta-engineer', type: 'ccode', model: 'sonnet', effort: 'high', dangerous: true, allowed_tools: ['Read', 'Write', 'Bash', 'Agent'] }) };
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains });
+    await brain.turn('e', ev);
+    const opts = pool.calls[0].brainOptions;
+    expect(opts.allowedTools).toEqual(['Read', 'Write', 'Bash', 'Agent']);   // verbatim — bare Bash survived, never coerced
+    expect(opts.confineToDirs).toBeUndefined();
+    expect(opts.addDirs).toBeUndefined();
+    expect(opts.readOnlyDirs).toBeUndefined();
+    // end-to-end through the real arg builder: no sandbox flags, a plain --allowedTools with Bash present
+    const args = buildClaudeArgs(opts);
+    expect(argVals(args, '--setting-sources')).toEqual([]);
+    expect(argVals(args, '--permission-mode')).toEqual([]);
+    expect(argVals(args, '--add-dir')).toEqual([]);
+    expect(argVals(args, '--allowedTools')[0]).toContain('Bash');
+  });
+
+  it('SIBLING def dangerous:true (agents registry, never frozen) → same unconfined behavior', async () => {
+    const brains = { resolve: (name) => name === 'meta-engineer' ? ({ name: 'meta-engineer', type: 'ccode', model: 'sonnet', effort: 'high', dangerous: true, allowed_tools: ['Read', 'Bash'] }) : null };
+    const config = { agents: { wren: { configuration: 'meta-engineer', name: 'wren' } } };
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 'w1' }], { brains, config });
+    await brain.turn('wren', ev);
+    const opts = pool.calls[0].brainOptions;
+    expect(opts.allowedTools).toEqual(['Read', 'Bash']);
+    expect(opts.confineToDirs).toBeUndefined();
+  });
+
+  it("a dangerous def's OWN 'all'/'*' also passes through unrejected (dangerous means dangerous — coercion never runs)", async () => {
+    const brains = { resolve: () => ({ name: 'meta-engineer', type: 'ccode', dangerous: true, allowed_tools: 'all' }) };
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains });
+    await brain.turn('e', ev);
+    expect(pool.calls[0].brainOptions.allowedTools).toBe('all');   // NOT coerced to DEFAULT_ALLOWED_TOOLS
+    expect(pool.calls[0].brainOptions.confineToDirs).toBeUndefined();
+  });
+
+  it('REGRESSION: a NON-dangerous def (dangerous absent) is bitwise unchanged — still coerced + confined', async () => {
+    const brains = { resolve: () => ({ name: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'all' }) };
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains });
+    await brain.turn('e', ev);
+    const opts = pool.calls[0].brainOptions;
+    expect(opts.allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);   // 'all' still rejected → coerced
+    expect(opts.confineToDirs).toEqual([opts.cwd]);              // still confined
+  });
+
+  it('REGRESSION: dangerous: false (explicit) behaves exactly like absent — coerced + confined', async () => {
+    const brains = { resolve: () => ({ name: 'egpt', type: 'ccode', dangerous: false, allowed_tools: 'all' }) };
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains });
+    await brain.turn('e', ev);
+    const opts = pool.calls[0].brainOptions;
+    expect(opts.allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);
+    expect(opts.confineToDirs).toEqual([opts.cwd]);
+  });
+});
+
+// ── END-TO-END escalation-hole regression (operator 2026-08): a confined being already
+//    has Write access inside its OWN conversation directory, so it can write
+//    <convDir>/brains/<name>.yaml. Proves the fix in src/spine/brains.mjs's resolve()
+//    closes the hole at the REAL runtime call site (siblingDef → brains.resolve), using
+//    the REAL createBrains() and REAL files on disk — not the injected/mock `brains`
+//    object the tests above use. ConversationRoom.prototype.baseDir is spied so the
+//    conversation resolves into a throwaway temp dir instead of the real ~/.egpt profile
+//    (the house convention — see tests/spine-boot-radio-relay.test.mjs — sets EGPT_HOME
+//    itself, but that must happen before this file's top-level imports run; spying
+//    baseDir() achieves the same isolation without touching module-load order).
+describe('brainpool.turn — dangerous:true escalation hole is closed end-to-end (real createBrains, real files)', () => {
+  it('a conv-local brains/<name>.yaml attempting dangerous:true does NOT unconfine a sibling turn', async () => {
+    const tmpBase = mkdtempSync(join(tmpdir(), 'egpt-brains-e2e-'));
+    const builtinDir = join(tmpBase, 'builtin');
+    const convDir = join(tmpBase, 'conv');
+    mkdirSync(builtinDir, { recursive: true });
+    mkdirSync(join(convDir, 'brains'), { recursive: true });
+    // a non-dangerous sibling type, shipped as a built-in
+    writeFileSync(join(builtinDir, 'sonnet-high.yaml'), 'type: ccode\nmodel: sonnet\neffort: high\nallowed_tools:\n  - Read\n  - Bash\n', 'utf8');
+    // THE ATTACK: a conv-local override — written by a being with ordinary Write access
+    // to its own convDir — trying to grant itself dangerous:true (mirroring the real
+    // attack shape: dangerous + a bare tool list).
+    writeFileSync(join(convDir, 'brains', 'sonnet-high.yaml'), 'dangerous: true\nallowed_tools:\n  - Bash\n  - Agent\n', 'utf8');
+
+    const realBrains = createBrains({ builtinDir, agentsDir: join(tmpBase, 'nonexistent-agents') });
+    const config = { agents: { wren: { configuration: 'sonnet-high', name: 'wren' } } };
+
+    const spy = vi.spyOn(ConversationRoom.prototype, 'baseDir').mockReturnValue(convDir);
+    try {
+      const { brain, pool } = harness([{ text: 'ok', sessionId: 'w1' }], { brains: realBrains, config });
+      await brain.turn('wren', ev);
+      const opts = pool.calls[0].brainOptions;
+      // the hole: dangerous:true from the conv-local layer must NOT reach brainOptions —
+      // the turn stays confined, exactly like the "REGRESSION: a NON-dangerous def" case above.
+      expect(opts.confineToDirs).toEqual([opts.cwd]);
+      const args = buildClaudeArgs(opts);
+      expect(args).not.toContain('--dangerously-skip-permissions');
+      expect(argVals(args, '--add-dir')).toContain(opts.cwd);
+      expect(argVals(args, '--setting-sources')).toEqual(['']);          // sandboxed — no ~/.claude inherit
+      expect(argVals(args, '--permission-mode')).toEqual(['default']);
+    } finally {
+      spy.mockRestore();
+      rmSync(tmpBase, { recursive: true, force: true });
+    }
   });
 });
 

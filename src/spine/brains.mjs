@@ -58,13 +58,19 @@ export function createBrains({
       const builtinPath = join(builtinDir, `${name}.yaml`);
       const profilePath = join(agentsDir, `${name}.yaml`);
       const seeded = preferNewer(profilePath, builtinPath, { exists });
-      const paths = [
-        ...(seeded === builtinPath ? [profilePath, builtinPath] : [builtinPath, profilePath]),
-        convDir && join(convDir, 'brains', `${name}.yaml`),
-      ].filter(Boolean);
+      const basePaths = seeded === builtinPath ? [profilePath, builtinPath] : [builtinPath, profilePath];
       let def = null;
-      for (const p of paths) { const layer = loadFrom(p, name); if (layer) def = { ...(def ?? {}), ...layer }; }
-      return def ? { name, ...def } : null;
+      for (const p of basePaths) { const layer = loadFrom(p, name); if (layer) def = { ...(def ?? {}), ...layer }; }
+      // dangerous: true is a BASE-LAYERS-ONLY property (operator 2026-08: the escalation-hole
+      // fix) — read from the built-in/profile merge BEFORE the conv-local layer ever touches it,
+      // so a conversation's own brains/<name>.yaml can neither GRANT it nor REVOKE a base-level
+      // grant. It stays fully immune to the conv-local layer in both directions.
+      const baseDangerous = def?.dangerous === true;
+      const convPath = convDir && join(convDir, 'brains', `${name}.yaml`);
+      if (convPath) { const layer = loadFrom(convPath, name); if (layer) def = { ...(def ?? {}), ...layer }; }
+      if (!def) return null;
+      if (baseDangerous) def.dangerous = true; else delete def.dangerous;
+      return { name, ...def };
     },
   };
 }
