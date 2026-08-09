@@ -30,6 +30,43 @@ describe('lobby slug — the shell console seat is the durable lobby, not an aut
     expect(fixedSlugFor('whatsapp', 'main')).toBe(null);  // other surfaces are unaffected
   });
 
+  // ── the SECOND fixed-slug surface: `room` (operator's ruling 2026-08-09) ──────
+  // An operator-named room is a conversation whose chatId IS the typed name, so its slug is
+  // a pure function of that name — sanitizeName, no -yymmddhhmm tail, no title-driven
+  // re-slug. That is what makes /rooms print a name you can type back, and what lets a READ
+  // verb resolve a room without touching conv-state. Added BESIDE the lobby's own cases: the
+  // shell arm above is untouched and must keep passing verbatim.
+  it('fixedSlugFor makes a room slug the kebab of its name, with no tail', () => {
+    expect(fixedSlugFor('room', 'acim')).toBe('acim');
+    expect(fixedSlugFor('room', 'Foo')).toBe('foo');            // case folds …
+    expect(fixedSlugFor('room', 'My Room')).toBe('my-room');    // … and so does punctuation
+    expect(fixedSlugFor('room', 'acim')).not.toMatch(/-\d{10}$/);
+  });
+
+  it('fixedSlugFor leaves every OTHER surface null — no Beeper conversation loses its tail', () => {
+    expect(fixedSlugFor('whatsapp', 'acim')).toBe(null);
+    expect(fixedSlugFor('whatsapp', '@1234@s.whatsapp.net')).toBe(null);
+    expect(fixedSlugFor('telegram', 'acim')).toBe(null);
+    expect(fixedSlugFor('shell', 'acim')).toBe(null);
+    // and the tail really is still minted for them
+    expect(ensureContact(emptyState(), 'whatsapp', '@x', { pushedName: 'acim' }).slug).toMatch(/^acim-\d{10}$/);
+  });
+
+  it('ensureContact("room","acim") mints the suffix-less slug "acim" at conversations/room/acim', () => {
+    const ens = ensureContact(emptyState(), 'room', 'acim');   // no pushedName — a room has no title
+    expect(ens.slug).toBe('acim');
+    expect(ens.slug).not.toMatch(/-\d{10}$/);
+    expect(ens.slug).not.toMatch(/^contact/);   // the placeholder a title-less mint used to give
+    expect(norm(slugDir('room', ens.slug))).toMatch(/conversations\/room\/acim$/);
+  });
+
+  it('a room is never re-slugged, and a second sighting is a no-op (stable folder)', () => {
+    const first = ensureContact(emptyState(), 'room', 'acim');
+    const again = ensureContact(first.state, 'room', 'acim', { pushedName: 'something else entirely' });
+    expect(again.slug).toBe('acim');       // a title cannot move a room's folder
+    expect(again.renamedFrom ?? null).toBe(null);
+  });
+
   it('ensureContact("shell","main") mints the suffix-less slug "lobby" (no shell-<ts>)', () => {
     const ens = ensureContact(emptyState(), 'shell', 'main', { pushedName: 'shell', slugHint: 'shell' });
     expect(ens.slug).toBe('lobby');

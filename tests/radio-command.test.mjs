@@ -12,15 +12,31 @@
 // replies (operator ruling 2026-08-08). Bare `/radio` itself is a NODE-WIDE status report
 // (listeners + joined rooms per radio) that resolves NO current room at all.
 //
-// Harness modeled on tests/rooms-members.test.mjs: TmpRoom subclasses (real fs under a
-// temp dir) injected via resolveConvRoom (the current conversation) and roomForName
-// (NamedRoom-shaped listEntityDirs entries, for /radio leave all|<slug>).
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+// Harness modeled on tests/rooms-members.test.mjs: a TmpRoom subclass (real fs under a
+// temp dir) injected via resolveConvRoom stands in for the current conversation. The OTHER
+// entities (/radio leave all|<slug>) are reached through roomFromNs, which is now the plain
+// (surface, slug) constructor for every ns including `room/<slug>` — so those are seeded at
+// their real Room.forChat path under the SUITE's isolated EGPT_HOME (never the live
+// profile; see tests/setup-egpt-home.mjs) and removed again in afterEach.
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
+
+// A PRIVATE profile for this file — seedNamed writes real folders under EGPT_HOME (roomFromNs
+// is a pure constructor, not a seam), and the suite's SHARED throwaway profile is written by
+// other files in parallel. egpt-home.mjs freezes EGPT_HOME at module load, so this must run
+// BEFORE the imports below; vi.hoisted is what does that. (os/path are not importable in a
+// hoisted block, so the temp root comes from the env — what os.tmpdir() reads anyway.)
+const TEST_HOME = vi.hoisted(() => {
+  const tmp = process.env.TEMP || process.env.TMP || process.env.TMPDIR || '/tmp';
+  const dir = `${tmp}/egpt-radio-command-home`;
+  process.env.EGPT_HOME = dir;
+  return dir;
+});
 import { createCommands } from '../src/spine/commands.mjs';
 import { Room } from '../src/room-core.mjs';
+import { EGPT_HOME } from '../src/egpt-home.mjs';
 import { encodeNodeSignature, renderNodeSignature } from '../src/node-signature.mjs';
 
 class TmpRoom extends Room {
@@ -31,8 +47,20 @@ class TmpRoom extends Room {
 const self = { chatId: '!conv-1', surface: 'whatsapp' };
 
 let base;
-beforeEach(() => { base = mkdtempSync(join(tmpdir(), 'egpt-radio-')); });
-afterEach(() => { rmSync(base, { recursive: true, force: true }); });
+// Every entity dir seedNamed created, removed again after each test.
+let namedDirs;
+beforeEach(() => {
+  // Tripwire: if vi.hoisted ever stops running before the imports, fail loudly here rather
+  // than writing into the shared profile.
+  expect(join(EGPT_HOME), "EGPT_HOME must be THIS file's private profile — see the vi.hoisted block").toBe(join(TEST_HOME));
+  expect(EGPT_HOME).not.toBe(join(homedir(), '.egpt'));
+  base = mkdtempSync(join(tmpdir(), 'egpt-radio-'));
+  namedDirs = [];
+});
+afterEach(() => {
+  rmSync(base, { recursive: true, force: true });
+  for (const d of namedDirs) rmSync(d, { recursive: true, force: true });
+});
 
 function harness({ config = {}, uploadNote, gate, listEntityDirs, fetch, io } = {}) {
   const sent = [];
@@ -41,11 +69,6 @@ function harness({ config = {}, uploadNote, gate, listEntityDirs, fetch, io } = 
   const uploadCalls = [];
   const uploadNoteFn = uploadNote || (async (o) => { uploadCalls.push(o); return { ok: true, status: 201 }; });
   const gateFn = gate || ((fn) => fn());
-  const namedRooms = new Map();
-  const roomForName = (name) => {
-    if (!namedRooms.has(name)) namedRooms.set(name, new TmpRoom(join(base, 'named', name), name));
-    return namedRooms.get(name);
-  };
   // A live, MUTABLE config object (not a fresh literal per call) — real boot.mjs hands
   // getConfig's closure the SAME object reference every time (`const cfg = readConfig()`),
   // which is the mechanism /radio disable relies on for taking effect with no restart.
@@ -59,7 +82,6 @@ function harness({ config = {}, uploadNote, gate, listEntityDirs, fetch, io } = 
     getConfig: () => liveConfig,
     send: async (chatId, text) => sent.push({ chatId, text }),
     resolveConvRoom,
-    roomForName,
     uploadNote: uploadNoteFn,
     gate: gateFn,
     configPath,
@@ -67,7 +89,7 @@ function harness({ config = {}, uploadNote, gate, listEntityDirs, fetch, io } = 
     ...(listEntityDirs ? { listEntityDirs } : {}),
     ...(fetch ? { fetch } : {}),
   });
-  return { cmds, sent, room, uploadCalls, roomForName, liveConfig, configPath };
+  return { cmds, sent, room, uploadCalls, liveConfig, configPath };
 }
 
 const configPath = (room) => join(room.baseDir(), 'config.yaml');
@@ -85,11 +107,12 @@ function seedTranscript(room, text) {
   writeFileSync(room.transcriptPath, text, 'utf8');
 }
 
-// Seed a NamedRoom-shaped entity dir the harness's default roomForName also resolves to
-// (join(base, 'named', name)) — so a /radio leave all|<slug> test can seed it directly and
-// have roomFromNs land on the SAME file.
+// Seed an operator-named room's entity dir at the path roomFromNs('room/<name>') resolves
+// to — Room.forChat('room', name).baseDir(), under the suite's isolated EGPT_HOME — so a
+// /radio leave all|<slug> test seeds and reads the SAME file the command writes.
 function seedNamed(name, text) {
-  const dir = join(base, 'named', name);
+  const dir = Room.forChat('room', name).baseDir();
+  namedDirs.push(dir);
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'config.yaml'), text, 'utf8');
   return dir;

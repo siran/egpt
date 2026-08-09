@@ -225,10 +225,10 @@ export const CONFIG_SCHEMA = {
 
     ENTITY BEATS:
       Beyond the node block, every conversation
-      (conversations/<surface>/<slug>/config.yaml) and room
-      (rooms/<name>/config.yaml) may carry its own heartbeats: block. Entity
-      beats are namespaced <surface>/<slug>:<name> and room/<name>:<name> so
-      they cannot collide.
+      (conversations/<surface>/<slug>/config.yaml) — including an operator-named
+      room, which is one on surface 'room' (conversations/room/<slug>/config.yaml)
+      — may carry its own heartbeats: block. Entity beats are namespaced
+      <surface>/<slug>:<name> so they cannot collide.
 
     RESOLVED SET:
       At boot the spine materializes the full resolved set to

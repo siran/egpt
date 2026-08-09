@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 import * as YAML from 'yaml';
-import { sanitizeSlug } from './sanitize.mjs';
+import { sanitizeSlug, sanitizeName } from './sanitize.mjs';
 import { parseFrontMatter, renderFrontMatter, stripFrontMatter } from './transcript-meta.mjs';
 import { Room } from './room-core.mjs';
 import { EGPT_HOME } from './egpt-home.mjs';
@@ -1145,7 +1145,18 @@ export function normalizeResidents(val) {
 // through ensureContact, so this ONE deterministic mapping makes the shell open
 // straight into the lobby with the Room machinery it inherits for free.
 export const LOBBY_SLUG = 'lobby';
+// The OTHER fixed-slug surface: `room` (2026-08-09). An operator-named room is a
+// conversation whose chatId IS the name the operator typed, so its slug must be a PURE
+// FUNCTION of that name — no -yymmddhhmm tail (the name is already unique by fiat: /room
+// create refuses an existing one) and no title-driven re-slug (a room has no title). That
+// makes the folder name, the chatId and the typed name ONE string, which is what lets
+// /rooms print a name you can type straight back, and lets a READ verb (/room members,
+// /room delete) find the room without touching conv-state at all.
+// sanitizeName is the SAME kebab normalisation the /room verbs used to apply at five call
+// sites; it lives here now, as one rule, so `/room create Foo` and `/room members foo` are
+// the same room. Every other surface is untouched and keeps its timestamped slug.
 export function fixedSlugFor(surface, jid) {
+  if (surface === 'room') return sanitizeName(jid) || null;
   return (surface === 'shell' && jid === 'main') ? LOBBY_SLUG : null;
 }
 
@@ -1599,8 +1610,8 @@ async function _identityLayers(name) {
   return layers;
 }
 
-// Seed the room's identity layers into a Room's OWN folder — a conversation or a NamedRoom
-// alike, since a conversation IS a Room with another base_dir (operator 2026-07-25: "they
+// Seed the room's identity layers into a Room's OWN folder — a chat conversation or an
+// operator-named room alike, since both ARE Rooms (operator 2026-07-25: "they
 // all get to model at the beginning, but should also be copied for local consult, since by
 // default conversation-e has only access to it's folder"). A brain confined to a Room's own
 // tree can't read a layer that was never copied there — and both pointer cards tell it to
@@ -1609,8 +1620,8 @@ async function _identityLayers(name) {
 // RE-KEYED ON THE ROOM (operator 2026-07-26: "why an empty identity.d in namedrooms? fix,
 // please.") — this used to take (surface, slug) and could only ever resolve
 // Room.forChat(surface, slug), so it was structurally incapable of targeting rooms/<name>/.
-// The caller now hands in the Room instance it already has (ConversationRoom from the
-// persona turn, NamedRoom from /room create), and every path below reads off IT.
+// The caller now hands in the Room instance it already has (from the persona turn, or from
+// /room create), and every path below reads off IT.
 //
 // DESTINATION `<room>/identity.d/<NN-name>.md`: the path both cards name and the one
 // Room.identityDir already defines ("NN-*.md fed to the room's brain(s)"). ALL layers are

@@ -271,12 +271,12 @@ describe('transcript.log — living-mirror stream frames are not recorded', () =
 });
 
 // STRUCTURAL EQUALITY (operator 2026-08-07): the transcript path must come from the Room
-// abstraction (room-core.mjs), not a hand-rolled join — a NamedRoom created by `/room create`
-// got a full tree and NO WAY to ever receive a transcript, because the old code asked
-// conversations-state.slugDir + a local join() for the path instead of asking the Room. Routing
-// an inbound message TO a NamedRoom is a separate, not-yet-ruled-on feature (out of scope here)
-// — what this locks down is that the PATH-RESOLUTION code the service now runs is Room-derived,
-// so a ConversationRoom and a NamedRoom are interchangeable the moment routing exists.
+// abstraction (room-core.mjs), not a hand-rolled join — an operator-named room created by
+// `/room create` got a full tree and NO WAY to ever receive a transcript, because the old code
+// asked conversations-state.slugDir + a local join() for the path instead of asking the Room.
+// Routing an inbound message TO a named room is a separate feature (out of scope here) — what
+// this locks down is that the PATH-RESOLUTION code the service now runs is Room-derived, so a
+// chat room and a named room are interchangeable the moment routing exists.
 describe('transcript.log — resolves its path through the Room abstraction (structural equality)', () => {
   const mkIo = (files) => ({
     appendFile: async (p, d) => { files.set(p, (files.get(p) ?? '') + d); },
@@ -295,17 +295,17 @@ describe('transcript.log — resolves its path through the Room abstraction (str
     expect(files.has(expected)).toBe(true);
   });
 
-  // Today nothing routes an ev to a NamedRoom (that syntax is unruled — out of scope), but the
+  // Today nothing routes an ev to a named room (that syntax is unruled — out of scope), but the
   // service's write PRIMITIVE (baseDir()/transcriptPath from Room, mkdir + appendFile through the
-  // same io seam) must already be capable of landing a NamedRoom's transcript at its own root,
-  // structurally identical to a conversation's. This is what "cannot be expressed at all through
-  // the service" meant before this change: the old code only ever knew conversations/<surface>/<slug>/,
-  // never rooms/<name>/, because it asked slugDir instead of the Room.
-  it('a NamedRoom resolves its own baseDir()/transcript.md through the SAME Room getters, distinct from a ConversationRoom', async () => {
+  // same io seam) must already be capable of landing a named room's transcript at its own root,
+  // structurally identical to a chat conversation's. This is what "cannot be expressed at all
+  // through the service" meant before this change: the old code only ever knew the ONE surface
+  // it was handed, because it asked slugDir instead of the Room.
+  it('a named room resolves its own baseDir()/transcript.md through the SAME Room getters, distinct from a chat room', async () => {
     const files = new Map();
     const io = mkIo(files);
     const conv = Room.forChat('whatsapp', 'fam-1234567890');
-    const named = Room.named('acim');
+    const named = Room.forChat('room', 'acim');
 
     await io.mkdir(conv.baseDir(), { recursive: true });
     await io.appendFile(conv.transcriptPath, 'conversation line\n\n', 'utf8');

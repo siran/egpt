@@ -4,14 +4,14 @@
 // THE DRIFT THIS LOCKS DOWN: the directory list was written out TWICE — once in
 // src/spine/commands.mjs (/room create's mkdir loop) and once in
 // src/conversations-state.mjs (seedIdentityLayers) — and the two copies had already
-// disagreed: /room create made media/ + files/, seeding did not, so a NamedRoom and a
-// conversation were NOT the same Room on disk. A conversation IS a Room with another
-// base_dir; if the two creation paths can produce different trees, the abstraction is a
-// shared helper wearing a class.
+// disagreed: /room create made media/ + files/, seeding did not, so an operator-named room
+// and a chat conversation were NOT the same Room on disk. A conversation IS a Room with
+// another base_dir; if the two creation paths can produce different trees, the abstraction
+// is a shared helper wearing a class.
 //
 // The assertion is deliberately about the RELATIVE dir set (the tree BELOW baseDir), not
-// absolute paths — the two roots differ by design (conversations/<surface>/<slug> vs
-// rooms/<name>); the tree inside them must not.
+// absolute paths — the two bases differ by surface (conversations/room/<slug> vs
+// conversations/<surface>/<slug>); the tree inside them must not.
 //
 // Both paths already take an `io` seam ({ mkdir, readFile, writeFile }), so this runs
 // fully in-memory: no profile is touched, nothing is written to disk.
@@ -48,14 +48,21 @@ function captureIo() {
 // folder itself), deduped + sorted so creation ORDER is not part of the contract.
 const treeOf = (mkdirs, room) => [...new Set(mkdirs.map((p) => relative(room.baseDir(), p)))].sort();
 
+// The shared (surface, chatId) → Room resolver boot injects. `/room create <name>` reaches
+// it as ('room', <name>) — a room is a conversation on surface `room` — and here the slug
+// IS the name, so the created tree is the one ROOM lands at below.
+const resolveConvRoom = async (surface, chatId) => Room.forChat(surface, chatId);
+const ROOM = () => Room.forChat('room', ROOM_NAME);
+
 describe('ONE owner of the Room tree — both creation paths make the SAME tree', () => {
   it('/room create <name> and seeding a conversation produce the identical dir set', async () => {
-    // (a) the NamedRoom path — /room create
+    // (a) the operator-named-room path — /room create
     const named = captureIo();
     const cmds = createCommands({
       getConfig: () => ({ whatsapp: { chat_id: '!self' } }),
       send: async () => {},
       io: named.io,
+      resolveConvRoom,
     });
     await cmds.run({ chatId: '!self', surface: SURFACE, body: `/room create ${ROOM_NAME}` });
 
@@ -63,7 +70,7 @@ describe('ONE owner of the Room tree — both creation paths make the SAME tree'
     const conv = captureIo();
     await seedIdentityLayers(Room.forChat(SURFACE, SLUG), 'egpt', { io: conv.io });
 
-    const namedTree = treeOf(named.mkdirs, Room.named(ROOM_NAME));
+    const namedTree = treeOf(named.mkdirs, ROOM());
     const convTree = treeOf(conv.mkdirs, Room.forChat(SURFACE, SLUG));
 
     expect(namedTree.length).toBeGreaterThan(1);   // the capture worked at all
@@ -76,10 +83,11 @@ describe('ONE owner of the Room tree — both creation paths make the SAME tree'
       getConfig: () => ({ whatsapp: { chat_id: '!self' } }),
       send: async () => {},
       io: named.io,
+      resolveConvRoom,
     });
     await cmds.run({ chatId: '!self', surface: SURFACE, body: `/room create ${ROOM_NAME}` });
     // '' is the base folder; the rest are the dir getters room-core.mjs declares.
-    expect(treeOf(named.mkdirs, Room.named(ROOM_NAME))).toEqual(['', 'files', 'identity.d', 'media', 'scripts', 'transcripts']);
+    expect(treeOf(named.mkdirs, ROOM())).toEqual(['', 'files', 'identity.d', 'media', 'scripts', 'transcripts']);
   });
 
   // REPRODUCE-FIRST (operator 2026-07-26: "why an empty identity.d in namedrooms? fix,
@@ -93,10 +101,11 @@ describe('ONE owner of the Room tree — both creation paths make the SAME tree'
       getConfig: () => ({ whatsapp: { chat_id: '!self' } }),
       send: async () => {},
       io: named.io,
+      resolveConvRoom,
     });
     await cmds.run({ chatId: '!self', surface: SURFACE, body: `/room create ${ROOM_NAME}` });
 
-    const room = Room.named(ROOM_NAME);
+    const room = ROOM();
     const layerNames = Object.keys(named.writes)
       .map((p) => relative(room.identityDir, p))
       .filter((rel) => rel && !rel.startsWith('..'))

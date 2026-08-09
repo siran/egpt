@@ -24,6 +24,8 @@ import { EGPT_HOME } from '../egpt-home.mjs';
 import { shortChatId } from '../bridges/chat-id.mjs';
 import { ownNodeNamesOf, knownNodeNames } from './node-names.mjs';
 import { Room } from '../room-core.mjs';
+// The room slug rule (fixedSlugFor, surface `room`) applied to a READ, which must not mint —
+// see roomOnDisk. NOT for the /room verbs: they pass the operator's raw string through.
 import { sanitizeName } from '../sanitize.mjs';
 import { loadAdapters as defaultLoadAdapters, matchAdapter } from '../adapters/registry.mjs';
 import { agentPaths } from '../mesh/relay.mjs';
@@ -90,12 +92,12 @@ personality: ${personality}
 // into the persona). Matches the default layer's plain-markdown convention.
 const identityLayerFile = (text) => `${String(text).trim()}\n`;
 
-// A fresh NamedRoom's config.yaml — a commented placeholder (like the seeded templates,
+// A fresh room's config.yaml — a commented placeholder (like the seeded templates,
 // seed.mjs). Pure comments → parses to null, so the heartbeat/transcription loaders read
 // it as an empty {}. Members are later work — no roster block yet. (The room's identity.d/
 // layers are a SEPARATE seeding step in roomCreate below, beside ensureTree — the same
 // shared config/skeletons/room/ template a conversation seeds, copied per-room.)
-const roomConfigFile = (name) => `# room ${name} — an operator-created NamedRoom (the folder IS the room).
+const roomConfigFile = (name) => `# room ${name} — an operator-created room (the folder IS the room).
 # Feed layers come from the shared config/skeletons/room/ template, copied into identity.d/ at creation.
 # Add heartbeats:, transcription_service:, or members: blocks here to wire behavior.
 # This file is the NEAREST rung: it beats config/config.yaml for any key it sets.
@@ -116,11 +118,12 @@ const shortAdapterId = (name) => String(name).replace(/-cdp$/i, '');
 // The host of a tab URL for the "no adapter matches <host>" refusal — best-effort.
 const hostOf = (url) => { try { return new URL(String(url)).host; } catch { return String(url ?? ''); } };
 
-// The NamedRooms on disk: the immediate subdirectories of EGPT_HOME/rooms/ (each folder
-// IS a room). Never throws — a missing rooms/ dir yields []. Injected in tests.
+// The rooms on disk: the immediate subdirectories of EGPT_HOME/conversations/room/ (each
+// folder IS a room — a room is a conversation on surface `room`, 2026-08-09). Never throws
+// — a missing dir yields []. Injected in tests.
 function defaultListRoomNames() {
   try {
-    return readdirSync(join(EGPT_HOME, 'rooms'), { withFileTypes: true })
+    return readdirSync(join(EGPT_HOME, 'conversations', 'room'), { withFileTypes: true })
       .filter((e) => e.isDirectory())
       .map((e) => e.name)
       .sort();
@@ -332,12 +335,11 @@ export function createCommands({
   // CDP seam for /chrome, /tabs, /open, /tab, /close — the real localhost probe by
   // default; tests inject fakes so the suite never needs a live Chrome or a real socket.
   cdp = { isRunning: cdpIsRunning, listTabs: cdpListTabs, cdpHost: cdpHostOf, openTab: cdpOpenTab, activateTarget: cdpActivateTarget, closeTab: cdpCloseTab },
-  // Room/member seams (Phase 2). roomForName builds a Room for a NamedRoom by name
-  // (the real EGPT_HOME-rooted one by default); listRoomNames enumerates the saved
-  // rooms; loadAdapters yields the web-brain adapters (config/brains/*-cdp.mjs). All
-  // three are injected in tests so /rooms + /members run against temp-dir rooms and a
-  // fake adapter list — no live profile, no live Chrome, no dynamic import.
-  roomForName = (name) => Room.named(name),
+  // Room/member seams (Phase 2). listRoomNames enumerates the saved rooms; loadAdapters
+  // yields the web-brain adapters (config/brains/*-cdp.mjs). Both are injected in tests so
+  // /rooms + /members run against temp-dir rooms and a fake adapter list — no live profile,
+  // no live Chrome, no dynamic import. (A room by NAME is resolved through resolveConvRoom
+  // below — surface `room`, chatId = the name — not through a seam of its own.)
   listRoomNames = defaultListRoomNames,
   loadAdapters = defaultLoadAdapters,
   // The conversation-room resolver (bug fix 2026-07-23): (surface, chatId) → the SAME Room the
@@ -347,6 +349,9 @@ export function createCommands({
   // reads → an @<brain> on that conversation drives the relay. The default here is a read-only
   // fallback (getContact → the known chat's slug) for standalone construction; boot's injected
   // resolver is authoritative and is what guarantees write-here == read-there.
+  // THIS is also how an operator-named room is CREATED: surface `room`, chatId = the name —
+  // the one room path that mints a contact. Room READS never come here (roomOnDisk resolves
+  // the slug purely instead), so a named room needs nothing added to this seam.
   resolveConvRoom = async (surface, chatId) => {
     if (!loadState) return null;
     try { const slug = getContact(await loadState(), surface, chatId)?.slug; return slug ? Room.forChat(surface, slug) : null; }
@@ -413,7 +418,7 @@ export function createCommands({
   const readdir = io.readdir ?? fsReaddir;
   const rm = io.rm ?? fsRm;
 
-  // The current NamedRoom, per surface (the shell, a Beeper Self-DM) — NamedRoom NAVIGATION
+  // The current named room, per surface (the shell, a Beeper Self-DM) — NAVIGATION
   // only now: /rooms marks it "(current)", /room <slug> leave clears it. It NO LONGER gates
   // /members (bug fix 2026-07-23: /members operates on the CURRENT CONVERSATION's room, the
   // room the relay reads — see resolveConvRoom). Kept in-memory; a fresh boot starts with none.
@@ -732,7 +737,7 @@ export function createCommands({
     const closeMatch = /^\/close\s+(\d+)\s*$/i.exec(line);
     if (closeMatch) { await send?.(ev.chatId, await closeTabCmd(Number(closeMatch[1]))); return; }
 
-    // /rooms — Phase 2: list the saved NamedRooms (bare), or an ALIAS of /room <verb>
+    // /rooms — Phase 2: list the saved rooms (bare), or an ALIAS of /room <verb>
     // <room> (`/rooms join devwork` == `/room join devwork`). Matched BEFORE /room: the
     // /room regex can't match "/rooms" (the trailing 's' is neither whitespace nor end),
     // but keeping /rooms first makes the alias intent explicit. Same pre-catch-all slot.
@@ -971,7 +976,7 @@ export function createCommands({
   const noRoomMsg = (slug) => `no room '${slug}' — /rooms lists them, /room create ${slug} makes it`;
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // /room — the NamedRoom router (Phase 2). VERB-first: the first token is always matched
+  // /room — the named-room router (Phase 2). VERB-first: the first token is always matched
   // against the fixed verb set {create, join, leave, members, delete, help} and the room
   // name comes from `rest`. This replaced a slug-first grammar (first token = room, second
   // = sub-verb) after a live bug: an unrecognized first token silently defaulted to
@@ -985,51 +990,63 @@ export function createCommands({
     if (first === 'create') { await roomCreate(ev, rest); return; }
     if (first === 'join') {
       if (!rest) { await send?.(ev.chatId, ROOM_USAGE); return; }
-      await roomJoin(ev, sanitizeName(rest)); return;
+      await roomJoin(ev, rest); return;
     }
     if (first === 'leave') {
       if (!rest) { await send?.(ev.chatId, ROOM_USAGE); return; }
-      await roomLeave(ev, sanitizeName(rest)); return;
+      await roomLeave(ev, rest); return;
     }
     if (first === 'members') {
       if (!rest) { await send?.(ev.chatId, ROOM_USAGE); return; }
-      const slug = sanitizeName(rest);
       // Render a roster ONLY for a room that actually exists — the fabricated-empty-room
       // bug this guards against (see noRoomMsg above).
-      if (!(await roomOnDisk(slug))) { await send?.(ev.chatId, noRoomMsg(slug)); return; }
-      await send?.(ev.chatId, await renderMembers(ev, roomForName(slug), slug)); return;
+      const room = await roomOnDisk(rest);
+      if (!room) { await send?.(ev.chatId, noRoomMsg(rest)); return; }
+      // Labelled by the room's OWN slug, not the raw token — `/room members FOO` is the
+      // room `foo`, and the roster should say which room it actually read.
+      await send?.(ev.chatId, await renderMembers(ev, room, room.slug)); return;
     }
     if (first === 'delete') {
       const forceMatch = /^force\s+(.+)$/i.exec(rest || '');
       const force = !!forceMatch;
       const name = forceMatch ? forceMatch[1] : rest;
       if (!name) { await send?.(ev.chatId, ROOM_USAGE); return; }
-      await roomDelete(ev, sanitizeName(name), force); return;
+      await roomDelete(ev, name, force); return;
     }
     // Any other first token is an unrecognized verb — NEVER a room lookup (the property the
     // slug-first bug violated): no roomOnDisk/stat call, nothing room-shaped touched.
     await send?.(ev.chatId, `/room: unknown verb "${first}" — create|join|leave|members|delete`);
   }
 
-  // Whether <slug>'s NamedRoom folder exists on disk — the same stat-probe /room create
+  // The room called <name>, iff its folder exists on disk — the same stat-probe /room create
   // uses for its own idempotency check, reused here so "does this room exist" has ONE
-  // answer across create/members/delete.
-  async function roomOnDisk(slug) {
-    try { await stat(roomForName(slug).baseDir()); return true; } catch { return false; }
+  // answer across create/members/delete. Returns the Room, or null.
+  //
+  // A READ NEVER MINTS. A room's slug is a pure function of its name (fixedSlugFor, surface
+  // `room`), so this needs no conv-state at all: it applies that identical rule and stats the
+  // folder. Going through resolveConvRoom here would call ensureContact, so `/room members
+  // <typo>` would leave a contact entry behind for a room that does not exist. Same
+  // constructor roomsList and roomFromNs use for a name that came off disk.
+  async function roomOnDisk(name) {
+    const room = Room.forChat('room', sanitizeName(name));
+    try { await stat(room.baseDir()); return room; } catch { return null; }
   }
 
-  // /room create <name> — CREATE a NamedRoom. A Room IS a folder (room-core.mjs): making
-  // the folder tree at EGPT_HOME/rooms/<name>/ IS creating the room — the heartbeat +
-  // transcription loaders (boot.mjs listEntityDirs) enumerate it from then on. Uses the
-  // Room abstraction for the tree paths and the io seam for fs, so tests capture it
+  // /room create <name> — CREATE a room. A Room IS a folder (room-core.mjs), and a room is
+  // a CONVERSATION on surface `room` whose chatId is the name itself: resolveConvRoom mints
+  // the contact (the SAME ensureContact a first Beeper message goes through — that is the
+  // whole reason a named room is now addressable) and ensureTree makes the folder, which the
+  // heartbeat + transcription loaders (boot.mjs listEntityDirs) enumerate from then on.
+  // This is the ONE room path that mints; every read resolves the slug purely (roomOnDisk).
+  // Tree paths come from the Room abstraction and fs from the io seam, so tests capture it
   // in-memory and it never touches a real profile.
   async function roomCreate(ev, name) {
-    // A room NAME is operator-chosen; reject an empty/punctuation-only one (sanitizeName's
-    // 'room' fallback would otherwise silently create a generic folder) before touching fs.
+    // A room NAME is operator-chosen; reject an empty/punctuation-only one before touching fs.
     if (!name || !/[a-z0-9]/i.test(name)) { await send?.(ev.chatId, 'usage: /room create <name>'); return; }
-    const slug = sanitizeName(name);
-    const r = Room.named(name);
-    const rel = `rooms/${slug}/`;
+    const r = await resolveConvRoom('room', name);
+    if (!r) { await send?.(ev.chatId, `can't resolve room '${name}'`); return; }
+    const slug = r.slug;
+    const rel = `conversations/room/${slug}/`;
     // Idempotent: an existing room folder is NEVER clobbered.
     try { await stat(r.baseDir()); await send?.(ev.chatId, `room ${slug} already exists at ${rel}`); return; }
     catch { /* absent → create below */ }
@@ -1053,9 +1070,12 @@ export function createCommands({
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // /rooms — the saved NamedRooms, each with its member count, the current one marked.
-  // Never throws (a missing rooms/ dir → "no rooms yet"; a per-room count that can't be
-  // read degrades to 0).
+  // /rooms — the saved rooms, each with its member count, the current one marked.
+  // Never throws (a missing conversations/room/ dir → "no rooms yet"; a per-room count that
+  // can't be read degrades to 0). listRoomNames yields FOLDER names (i.e. slugs), so each
+  // one is a Room via the same (surface, slug) constructor resolveConvRoom ends in and
+  // roomFromNs uses for the disk walk — resolving these through resolveConvRoom would treat
+  // a slug as a chatId and mint a contact for every listed room on every /rooms.
   async function roomsList(ev) {
     const names = listRoomNames();
     if (!names.length) return 'no rooms yet — /room create <name> to make one';
@@ -1063,7 +1083,7 @@ export function createCommands({
     const lines = ['rooms:'];
     for (const name of names) {
       let n = 0;
-      try { n = (await roomForName(name).members()).length; } catch { n = 0; }
+      try { n = (await Room.forChat('room', name).members()).length; } catch { n = 0; }
       lines.push(`  · ${name}   ${n} members${name === cur ? '   (current)' : ''}`);
     }
     return lines.join('\n');
@@ -1083,15 +1103,18 @@ export function createCommands({
     await send?.(ev.chatId, `not in '${slug}' — current room is ${curRoomName(ev) ? `'${curRoomName(ev)}'` : 'none'}`);
   }
 
-  // /room <slug> delete [force] — remove a NamedRoom folder outright. Irreversible: a room
+  // /room <slug> delete [force] — remove a room folder outright. Irreversible: a room
   // folder holds transcript.md, media/, files/, identity.d/, scripts/, transcripts/ — real
   // content an operator (or a brain) put there. A room that is STILL JUST the seeded
   // skeleton (what /room create + seedIdentityLayers leave behind: the empty tree plus
   // identity.d/'s seeded layers, nothing else) is removed outright; a room holding anything
   // more requires the explicit `force` token so the operator has to mean it.
   async function roomDelete(ev, slug, force) {
-    if (!(await roomOnDisk(slug))) { await send?.(ev.chatId, noRoomMsg(slug)); return; }
-    const room = roomForName(slug);
+    // The contact ENTRY for this room stays in conv-state (there is no path to remove one,
+    // and a stale entry pointing at a removed tree is exactly what a deleted conversation
+    // folder leaves behind today).
+    const room = await roomOnDisk(slug);
+    if (!room) { await send?.(ev.chatId, noRoomMsg(slug)); return; }
     if (!force) {
       const contents = await roomContents(room);
       if (contents.length) {
@@ -1132,7 +1155,7 @@ export function createCommands({
   // saved targetId is a LIVE tab (from listTabs); a listTabs hiccup degrades every brain to
   // "inactive", never throws. Non-brain members read as "active" (a surface/chat member is
   // present as such). Shared by /members (the conversation room) and /room <slug> members (a
-  // NamedRoom) — the caller passes the Room + its display label.
+  // named room) — the caller passes the Room + its display label.
   // The lobby's DEFAULT members: this node's local beings, read from the agents
   // registry (E = the persona, plus every configured being like @d / @l). DISPLAY
   // ONLY — they're reachable via @e/@d/@l in ANY conversation (router + wake-words),
@@ -1181,8 +1204,9 @@ export function createCommands({
   // `<id> mode <m>`). A conversation IS a room (the model): resolveConvRoom yields the SAME Room
   // the phase-4 relay reads, so a member added here lands in the exact config.yaml resolveMembers
   // reads → an @<brain> on this conversation drives the relay. NO "/room <slug> join" gate — the
-  // conversation you're in IS the room. (NamedRooms stay a separate explicit construct: /rooms +
-  // /room <slug> members inspect/manage them; relay-wiring NamedRooms is a later phase.)
+  // conversation you're in IS the room. (An operator-named room is addressed EXPLICITLY — /rooms
+  // + /room <slug> members inspect/manage it — but it is the same kind of Room on surface `room`,
+  // so the relay reads its roster through the identical resolver.)
   async function members(ev, rest) {
     const room = await convRoomOf(ev);
     if (!room) { await send?.(ev.chatId, "can't resolve this conversation's room"); return; }
@@ -1335,14 +1359,12 @@ export function createCommands({
     return out;
   }
 
-  // Reconstruct the Room a listEntityDirs entry names — generalizes roomForName's own
-  // `(name) => Room.named(name)` to also cover conversations, both constructors already
-  // imported/injected; never a second room-resolution path.
+  // Reconstruct the Room a listEntityDirs entry names. An ns is always <surface>/<slug>
+  // — including `room/<slug>`, since a room is a conversation on surface `room` — so this
+  // is the ONE constructor with no special case; never a second room-resolution path.
   function roomFromNs(ns) {
     const i = ns.indexOf('/');
-    const surface = ns.slice(0, i);
-    const rest = ns.slice(i + 1);
-    return surface === 'room' ? roomForName(rest) : Room.forChat(surface, rest);
+    return Room.forChat(ns.slice(0, i), ns.slice(i + 1));
   }
 
   // Every `radio.hosts` entry (sender-id -> station-speaker name) across every entity on

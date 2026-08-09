@@ -23,6 +23,7 @@ import { createRoomRelay } from '../src/spine/room-relay.mjs';
 import { createStopGuard } from '../src/stop-guard.mjs';
 import { createIdentity } from '../src/spine/identity.mjs';
 import { Room } from '../src/room-core.mjs';
+import { existsSync } from 'node:fs';
 
 class TmpRoom extends Room {
   constructor(dir, slug) { super(); this._dir = dir; this.slug = slug; }
@@ -33,8 +34,8 @@ const ADAPTERS = [{ name: 'chatgpt-cdp', urlMatch: /chatgpt\.com|chat\.openai\.c
 const threeTabs = [{ id: 'GPT1', title: 'ChatGPT', url: 'https://chatgpt.com/c/abc' }];
 
 // A human inbound in the { body, from } shape the REAL identity.build consumes.
-function human(body, { chatId = '!conv-1', msgId = 'm1' } = {}) {
-  return { body, from: { network: 'whatsapp', chatId, chatName: 'devroom', userId: 'u-an', senderName: 'An', authorized: true, msgKey: msgId } };
+function human(body, { chatId = '!conv-1', msgId = 'm1', network = 'whatsapp' } = {}) {
+  return { body, from: { network, chatId, chatName: 'devroom', userId: 'u-an', senderName: 'An', authorized: true, msgKey: msgId } };
 }
 
 let base;
@@ -133,5 +134,45 @@ describe('members → relay integration — the flagship @chatgpt flow end to en
     const { spine, relayCalls } = spineFor(resolveConvRoom);
     await spine.handleInbound(human('@chatgpt hello'));
     expect(relayCalls).toHaveLength(0);   // mode:disable → nothing reaches it
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE POINT OF THE 2026-08-09 MERGE: an OPERATOR-NAMED room is not a second kind. It is a
+// conversation on surface `room` whose chatId is the name itself, so the very same
+// (surface, chatId) machinery — resolver, /members write, relay read — reaches it with no
+// room-specific path anywhere. Before this, `/room create` minted no chatId, so nothing
+// keyed by (surface, chatId) could ever address the room it made.
+describe('an operator-named room is an ordinary conversation — created, addressed, relayed', () => {
+  it('/room create acim → resolveConvRoom("room","acim") is THAT room, and its members are the ones the relay reads', async () => {
+    const resolveConvRoom = makeResolveConvRoom();
+    const { cmds, sent } = commandsFor(resolveConvRoom);
+
+    // 1. CREATE. The name is the chatId; the reply names the conversations/room/ path.
+    await cmds.run({ chatId: '!conv-1', surface: 'whatsapp', body: '/room create acim' });
+    expect(sent.at(-1).text).toMatch(/room acim created at conversations\/room\/acim\//);
+
+    // 2. RESOLVABLE — the whole reason for the change. The same resolver every other path
+    //    uses answers for ('room','acim'), and it is the folder create just made.
+    const room = await resolveConvRoom('room', 'acim');
+    expect(room).toBeTruthy();
+    expect(existsSync(room.baseDir())).toBe(true);
+
+    // 3. The tree is the SAME tree a conversation gets — Room.treeDirs(), no room-only list.
+    for (const dir of room.treeDirs()) expect(existsSync(dir)).toBe(true);
+    expect(existsSync(room.configPath)).toBe(true);
+    expect(existsSync(join(room.identityDir, '00-identity.md'))).toBe(true);
+
+    // 4. WRITE members IN the room (an ordinary /members on that conversation) …
+    await cmds.run({ chatId: 'acim', surface: 'room', body: '/members add tab 1' });
+    expect(sent.at(-1).text).toMatch(/added 'chatgpt'/);
+    await cmds.run({ chatId: 'acim', surface: 'room', body: '/members chatgpt mode mention' });
+
+    // 5. … and READ them the way the relay does: resolveMembers('room','acim').
+    const { spine, relayCalls, posts } = spineFor(resolveConvRoom);
+    await spine.handleInbound(human('@chatgpt what is this room', { chatId: 'acim', network: 'room' }));
+    expect(relayCalls).toHaveLength(1);
+    expect(relayCalls[0].targetId).toBe('GPT1');
+    expect(posts[0].final).toBe('brain-reply-1');
   });
 });

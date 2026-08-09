@@ -19,7 +19,6 @@ import { homedir } from 'node:os';
 import * as YAML from 'yaml';
 import { sanitizeName } from './sanitize.mjs';
 import {
-  Room,
   ROOM_MEMBER_STATES,
   ROOM_MEMBER_KINDS,
   DEFAULT_MEMBER_STATE,
@@ -33,15 +32,6 @@ import {
 export { ROOM_MEMBER_STATES, ROOM_MEMBER_KINDS, DEFAULT_MEMBER_STATE, normalizeMemberState, isMemberStateAlias };
 
 export const ROOMS_CONFIG_PATH = join(homedir(), '.egpt', 'rooms', 'config.yaml');
-// A room's own folder: ~/.egpt/rooms/<name>/. Holds per-room config.yaml +
-// heartbeat.md + heartbeat.state.json (see src/heartbeats.mjs) and the files/
-// subdir below. NOTE the roster lives at rooms/config.yaml (parent); a room's
-// per-room config is rooms/<name>/config.yaml.
-// A room IS a Room (GENOME §2.5): delegate the path to the NamedRoom
-// implementation so this root and the conversations root share ONE tree
-// definition. Byte-identical to the legacy formulas (Phase 0c).
-export const roomDir = (name) => Room.named(name).baseDir();
-export const roomFilesDir = (name) => Room.named(name).filesDir;
 
 // sanitizeName moved VERBATIM to the leaf src/sanitize.mjs (Phase 0a) so the
 // Room abstraction can share it without an import cycle; re-exported here so

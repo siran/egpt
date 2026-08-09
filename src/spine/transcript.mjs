@@ -62,9 +62,9 @@ export function createTranscript({
         if (reply == null && ev.kind === 'edit' && isLiveStreamFrame(ev.body)) return false;
         const slug = await contacts.resolve(ev.surface, ev.chatId, { chatName: ev.chatName });
         if (!slug) return false;
-        // The path comes from the Room (room-core.mjs), not a hand-rolled join — a
-        // NamedRoom answers baseDir()/transcriptPath with the SAME getters, so this
-        // service is structurally ready for either root (operator 2026-08-07).
+        // The path comes from the Room (room-core.mjs), not a hand-rolled join — every
+        // Room answers baseDir()/transcriptPath with the SAME getters, so an
+        // operator-named room (surface `room`) lands here too (operator 2026-08-07).
         const room = Room.forChat(ev.surface, slug);
         await mkdir(room.baseDir(), { recursive: true });
         const fpath = room.transcriptPath;

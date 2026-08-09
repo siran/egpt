@@ -1,8 +1,8 @@
 // sanitize.mjs — leaf module: filesystem-safe name/slug sanitizers.
 //
 // A LEAF on purpose: it imports nothing from the project, so the Room
-// abstraction (src/room-core.mjs) and both entity roots (conversations-state.mjs
-// → slugDir, src/rooms.mjs → roomDir) can all share these without an import
+// abstraction (src/room-core.mjs) and the entity root (conversations-state.mjs
+// → slugDir) can share these without an import
 // cycle. The implementations were extracted VERBATIM from their old homes
 // (conversations-state.sanitizeSlug, rooms.sanitizeName) and those modules now
 // re-export from here, so every existing importer is unaffected (no behavior

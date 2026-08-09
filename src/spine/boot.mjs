@@ -552,10 +552,11 @@ export async function boot({
   });
   const _writeState = writeState ?? (async (s) => { await writeFile(CONV_YAML_PATH, serializeConvState(s), 'utf8'); });
 
-  // Enumerate the entity folders (conversations/<surface>/<slug>/ + rooms/<name>/).
-  // Rooms live at EGPT_HOME/rooms/<name>/ (Room.named → NamedRoom.baseDir, src/
-  // room-core.mjs); the sibling rooms/config.yaml roster FILE is skipped (dirs
-  // only). Missing dirs are tolerated (a fresh profile has none).
+  // Enumerate the entity folders (conversations/<surface>/<slug>/).
+  // An operator-named room is one of THESE, on surface `room` — it lives at
+  // EGPT_HOME/conversations/room/<slug>/ (2026-08-09), so the surfaces loop below
+  // walks it with no branch of its own. Missing dirs are tolerated (a fresh
+  // profile has none).
   //
   // THIS IS THE WALK — the only one. It feeds the config RESOLVER below, which layers
   // the three rungs and serves EVERY per-entity reader (heartbeats, warm, transcription);
@@ -575,9 +576,6 @@ export async function boot({
       try { ents = await readdir(join(convRoot, surface), { withFileTypes: true }); } catch { continue; }
       for (const ent of ents) if (ent.isDirectory()) out.push({ dir: join(convRoot, surface, ent.name), ns: `${surface}/${ent.name}` });
     }
-    let rooms = [];
-    try { rooms = await readdir(join(EGPT_HOME, 'rooms'), { withFileTypes: true }); } catch { rooms = []; }
-    for (const ent of rooms) if (ent.isDirectory()) out.push({ dir: join(EGPT_HOME, 'rooms', ent.name), ns: `room/${ent.name}` });
     return out;
   }
   // An entity's WHOLE config.yaml doc — the resolver picks the blocks apart, so this
@@ -612,6 +610,9 @@ export async function boot({
   // conversations/<surface>/<slug>/config.yaml the relay reads → an @<brain> on that conversation
   // fires the relay. One resolver = write-here and read-there can never diverge (was two: /members
   // wrote a NamedRoom, the relay read the ConversationRoom, so @chatgpt silently no-op'd).
+  // An operator-named room resolves through this SAME function — surface `room`, chatId =
+  // the name — and needs nothing added for it: fixedSlugFor makes a room's slug a pure
+  // function of its name, so ensureContact derives it without a title (2026-08-09).
   const resolveConvRoom = async (surface, chatId) => {
     const slug = await contacts.resolve(surface, chatId);
     return slug ? Room.forChat(surface, slug) : null;

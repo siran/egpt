@@ -4,20 +4,45 @@
 // /members add tab <n>, /members <id> mode <m>, /activate <id>) operates on the CURRENT
 // CONVERSATION's room — the SAME room the phase-4 relay reads its members from — resolved
 // through the injected resolveConvRoom seam. There is NO "/room <slug> join first" gate: the
-// conversation you're in IS the room. NamedRooms (/rooms, /room create|join|leave, /room <slug>
-// members) stay a SEPARATE explicit construct — relay-wiring them is a later phase.
+// conversation you're in IS the room.
+//
+// 2026-08-09: an operator-named room is no longer a second KIND. /rooms + /room
+// create|join|leave|members|delete address a conversation on surface `room` whose chatId is
+// the name itself, resolved through the SAME resolveConvRoom seam — there is no roomForName.
+// It stays a separately ADDRESSED construct (you name it instead of being in it), not a
+// separate implementation.
 //
 // The room store is exercised for real through room-core against temp-dir Room subclasses
-// (round-trip persistence, cleaned up), injected via roomForName (NamedRooms) + resolveConvRoom
-// (the conversation room) so nothing touches the live profile. The CDP + adapter seams are faked,
-// so no live Chrome and no dynamic import in these tests.
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+// (round-trip persistence, cleaned up), injected via resolveConvRoom, so nothing touches the
+// live profile. The CDP + adapter seams are faked, so no live Chrome and no dynamic import in
+// these tests.
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
+
+// A PRIVATE profile for this file. The room READ verbs resolve their slug purely (no seam,
+// by design — a read must not mint), so the rooms below are real folders under EGPT_HOME,
+// and `/room delete`'s skeleton comparison reads the profile's identity layers. The suite's
+// SHARED throwaway profile (tests/setup-egpt-home.mjs) is written by other files IN PARALLEL
+// — seedSkeletons lands config/skeletons/room/* mid-run — so seeding a room and then asking
+// "is it still just the skeleton?" against it raced ~1 in 3. egpt-home.mjs freezes EGPT_HOME
+// at module load, so this must run BEFORE the imports below: vi.hoisted is what does that.
+// Verified by the beforeEach tripwire, which fails loudly rather than racing again.
+// (os/path are not importable here — a hoisted block runs before the imports it precedes —
+// so the temp root comes from the env, which is what os.tmpdir() reads anyway.)
+const TEST_HOME = vi.hoisted(() => {
+  const tmp = process.env.TEMP || process.env.TMP || process.env.TMPDIR || '/tmp';
+  const dir = `${tmp}/egpt-rooms-members-home`;
+  process.env.EGPT_HOME = dir;
+  return dir;
+});
 import { createCommands } from '../src/spine/commands.mjs';
 import { Room } from '../src/room-core.mjs';
-import { seedIdentityLayers } from '../src/conversations-state.mjs';
+import { EGPT_HOME } from '../src/egpt-home.mjs';
+import { sanitizeName } from '../src/sanitize.mjs';
+import { createContacts } from '../src/spine/contacts.mjs';
+import { emptyState, seedIdentityLayers } from '../src/conversations-state.mjs';
 
 class TmpRoom extends Room {
   constructor(dir, slug) { super(); this._dir = dir; this.slug = slug; }
@@ -32,35 +57,59 @@ const ADAPTERS = [
 ];
 
 let base;
-beforeEach(() => { base = mkdtempSync(join(tmpdir(), 'egpt-rmc-')); });
-afterEach(() => { rmSync(base, { recursive: true, force: true }); });
+// Every conversations/room/<slug>/ this file materialised, removed after each test. The room
+// READ verbs (/room members, /room delete) and /rooms resolve the slug PURELY — no seam, by
+// design (a read must not mint a contact) — so those rooms are real folders under the suite's
+// isolated EGPT_HOME. Same tripwire tests/beeper-bridge.test.mjs uses: never the live ~/.egpt.
+let roomDirs;
+beforeEach(() => {
+  // THE TRIPWIRE. If vi.hoisted above ever stops running before the imports, EGPT_HOME is
+  // the shared profile again and these tests race — fail here instead, loudly.
+  expect(join(EGPT_HOME), 'EGPT_HOME must be THIS file\'s private profile — see the vi.hoisted block').toBe(join(TEST_HOME));
+  expect(EGPT_HOME).not.toBe(join(homedir(), '.egpt'));
+  base = mkdtempSync(join(tmpdir(), 'egpt-rmc-'));
+  roomDirs = [];
+});
+afterEach(() => {
+  rmSync(base, { recursive: true, force: true });
+  for (const d of roomDirs) rmSync(d, { recursive: true, force: true });
+});
+
+// The room called <name>, at the path production resolves it to: fixedSlugFor makes a room's
+// slug sanitizeName(<name>), so this is the SAME folder /room create writes and the read verbs
+// stat. Registered for cleanup.
+function roomAt(name) {
+  const room = Room.forChat('room', sanitizeName(name));
+  roomDirs.push(room.baseDir());
+  return room;
+}
 
 function harness({ cdp, adapters = ADAPTERS, roomNames = [], config = {} } = {}) {
   const sent = [];
-  const rooms = new Map();       // NamedRoom name        -> TmpRoom (real fs under base/named)
   const convRooms = new Map();   // `${surface}:${chatId}` -> TmpRoom (real fs under base/conv)
-  const roomForName = (name) => {
-    if (!rooms.has(name)) rooms.set(name, new TmpRoom(join(base, 'named', name), name));
-    return rooms.get(name);
-  };
   // The SHARED conversation-room resolver: the SAME function shape boot injects into BOTH
   // createCommands (write) and the phase-4 relay's resolveMembers (read). A per-(surface,chatId)
   // TmpRoom stands in for conversations/<surface>/<slug>/.
+  // Surface `room` is NOT faked: its slug is a pure function of the name (fixedSlugFor), and
+  // the read verbs stat that real path, so the resolver must agree with them or a create and
+  // a read would land in two different folders — the very split this chunk removed.
   const resolveConvRoom = async (surface, chatId) => {
+    if (surface === 'room') return roomAt(chatId);
     const key = `${surface}:${chatId}`;
     if (!convRooms.has(key)) convRooms.set(key, new TmpRoom(join(base, 'conv', surface, String(chatId)), String(chatId)));
     return convRooms.get(key);
   };
+  // The named room called <name> — the SAME resolution `/room <verb> <name>` performs.
+  const namedRoom = (name) => resolveConvRoom('room', name);
   const cmds = createCommands({
     getConfig: () => ({ whatsapp: { chat_id: '!conv-1' }, ...config }),
     send: async (chatId, text) => sent.push({ chatId, text }),
     ...(cdp ? { cdp } : {}),
     loadAdapters: async () => adapters,
-    roomForName,
     resolveConvRoom,
     listRoomNames: () => roomNames,
   });
-  return { cmds, sent, roomForName, resolveConvRoom };
+  return { cmds, sent, namedRoom, resolveConvRoom };
 }
 
 // A three-tab Chrome: 1 chatgpt (adapter match), 2 claude (adapter match), 3 gmail (none).
@@ -101,11 +150,15 @@ describe('CONNECTION — a member added via /members is found by the relay for t
   });
 });
 
-describe('/rooms — list NamedRooms, mark current', () => {
+// /rooms enumerates FOLDERS (listRoomNames yields slugs under conversations/room/), so each
+// listed name is turned into a Room by the plain (surface, slug) constructor — resolving a
+// folder name as if it were a chatId would mint a contact per room on every /rooms.
+describe('/rooms — list rooms, mark current', () => {
   it('lists the scanned rooms with member counts and marks the current one', async () => {
-    const { cmds, sent, roomForName } = harness({ roomNames: ['devwork', 'scratch'] });
-    await roomForName('scratch').setMember({ kind: 'brain', id: 'e', state: 'active' });
-    await roomForName('scratch').setMember({ kind: 'brain', id: 'l', state: 'mention' });
+    const { cmds, sent } = harness({ roomNames: ['devwork', 'scratch'] });
+    const scratch = roomAt('scratch');
+    await scratch.setMember({ kind: 'brain', id: 'e', state: 'active' });
+    await scratch.setMember({ kind: 'brain', id: 'l', state: 'mention' });
     await cmds.run({ ...self, body: '/rooms join devwork' });   // devwork → current
     await cmds.run({ ...self, body: '/rooms' });
     const text = sent.at(-1).text;
@@ -121,6 +174,100 @@ describe('/rooms — list NamedRooms, mark current', () => {
     await cmds.run({ ...self, body: '/rooms' });
     expect(sent[0].text).toMatch(/no rooms/i);
   });
+
+  // THE ROUND TRIP (operator's ruling 2026-08-09). /rooms prints FOLDER names; a room's
+  // folder name is its typed name (fixedSlugFor, no -yymmddhhmm tail), so the string /rooms
+  // prints must go straight back into /room members. With a tailed slug this fails: /rooms
+  // would print `acim-2608091345` and typing that back answers "no room".
+  it('the name /rooms prints is the name /room members accepts (no tail, typeable round trip)', async () => {
+    const room = roomAt('acim');
+    await room.setMember({ kind: 'brain', id: 'claude', state: 'mention' });
+    const { cmds, sent } = harness({ roomNames: ['acim'] });
+
+    await cmds.run({ ...self, body: '/rooms' });
+    const listed = /·\s+(\S+)/.exec(sent.at(-1).text)?.[1];
+    expect(listed).toBe('acim');                       // the printed name, verbatim
+    expect(listed).not.toMatch(/-\d{10}$/);            // no date tail
+
+    await cmds.run({ ...self, body: `/room members ${listed}` });
+    expect(sent.at(-1).text).toMatch(/acim \(1 members\)/);
+    expect(sent.at(-1).text).toMatch(/claude/);        // it really read THAT room
+    expect(sent.at(-1).text).not.toMatch(/no room/);
+  });
+
+  // …and the (current) marker matches the listed name again: /room join stores the typed
+  // name, /rooms lists the folder name, and after the ruling those are one string.
+  it('/room join acim then /rooms marks acim (current)', async () => {
+    roomAt('acim');
+    const { cmds, sent } = harness({ roomNames: ['acim'] });
+    await cmds.run({ ...self, body: '/room join acim' });
+    await cmds.run({ ...self, body: '/rooms' });
+    expect(sent.at(-1).text).toMatch(/·\s+acim\s+\d+ members\s+\(current\)/);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE MINTING BOUNDARY (operator's ruling 2026-08-09). A room's slug is a PURE FUNCTION of
+// its name (fixedSlugFor, surface `room`), so a READ verb resolves it without conv-state and
+// must leave conv-state untouched — `/room members <typo>` may not deposit a contact for a
+// room that does not exist. `/room create` is the ONE room path that mints, and that is where
+// the entry belongs. Run against the REAL contacts service over in-memory state, wired
+// exactly as src/spine/boot.mjs does, so this exercises ensureContact for real.
+describe('a room READ never mints — /room create is the only room path that writes conv-state', () => {
+  function stateHarness() {
+    let st = emptyState();
+    const writes = [];
+    const contacts = createContacts({ loadState: async () => st, writeState: async (s) => { writes.push(s); st = s; } });
+    // Verbatim boot.mjs's resolveConvRoom.
+    const resolveConvRoom = async (surface, chatId) => {
+      const slug = await contacts.resolve(surface, chatId);
+      return slug ? Room.forChat(surface, slug) : null;
+    };
+    const sent = [];
+    const cmds = createCommands({
+      getConfig: () => ({ whatsapp: { chat_id: '!conv-1' } }),
+      send: async (chatId, text) => sent.push({ chatId, text }),
+      cdp: { listTabs: async () => [] },
+      resolveConvRoom, listRoomNames: () => [],
+    });
+    return { cmds, sent, writes, snapshot: () => JSON.stringify(st), rooms: () => st.contacts?.room ?? {} };
+  }
+
+  for (const verb of ['members', 'delete']) {
+    it(`/room ${verb} <nonexistent> reports "no room" and leaves conv-state byte-identical`, async () => {
+      const { cmds, sent, writes, snapshot } = stateHarness();
+      const before = snapshot();
+      await cmds.run({ ...self, body: `/room ${verb} ghost` });
+      expect(sent.at(-1).text).toMatch(/no room 'ghost'/);
+      expect(snapshot()).toBe(before);   // nothing minted for a room that does not exist
+      expect(writes).toEqual([]);        // and nothing was even written
+    });
+  }
+
+  // THE RULING'S WHOLE PURPOSE: the folder name IS the chatId IS the typed name.
+  it('/room create acim lands at conversations/room/acim/ — no -yymmddhhmm tail', async () => {
+    const { cmds, sent, rooms } = stateHarness();
+    const room = roomAt('acim');   // registers the real dir for cleanup
+    await cmds.run({ ...self, body: '/room create acim' });
+    expect(sent.at(-1).text).toBe('room acim created at conversations/room/acim/');
+    expect(existsSync(room.baseDir())).toBe(true);
+    // the contact was minted, under the typed name, with an untailed slug
+    expect(rooms().acim?.slug).toBe('acim');
+    expect(rooms().acim?.slug).not.toMatch(/-\d{10}$/);
+  });
+
+  // Finding (c), closed by the ruling: sanitizeName is the slug rule now, so case and
+  // punctuation fold to ONE room instead of creating a second one.
+  it('/room create Foo then /room members foo reach the SAME room', async () => {
+    const { cmds, sent, rooms } = stateHarness();
+    roomAt('Foo');
+    await cmds.run({ ...self, body: '/room create Foo' });
+    expect(sent.at(-1).text).toMatch(/room foo created at conversations\/room\/foo\//);
+    await cmds.run({ ...self, body: '/room members foo' });
+    expect(sent.at(-1).text).toMatch(/foo \(0 members\)/);
+    expect(sent.at(-1).text).not.toMatch(/no room/);
+    expect(Object.keys(rooms())).toEqual(['Foo']);   // ONE entry, keyed by the typed chatId
+  });
 });
 
 // Defect 1 regression lock: an EXISTING room that genuinely has zero members must still
@@ -128,8 +275,8 @@ describe('/rooms — list NamedRooms, mark current', () => {
 // doesn't exist on disk at all (locked in spine-commands.test.mjs) and must not regress.
 describe('/room <slug> members — a real, genuinely empty room still renders its roster', () => {
   it('a room whose tree exists but has no members renders "(0 members)", not "no room"', async () => {
-    const { cmds, sent, roomForName } = harness();
-    await roomForName('nobody-yet').ensureTree();
+    const { cmds, sent, namedRoom } = harness();
+    await (await namedRoom('nobody-yet')).ensureTree();
     await cmds.run({ ...self, body: '/room members nobody-yet' });
     expect(sent.at(-1).text).toMatch(/nobody-yet \(0 members\)/);
     expect(sent.at(-1).text).not.toMatch(/no room/);
@@ -142,28 +289,28 @@ describe('/room <slug> members — a real, genuinely empty room still renders it
 // identity.d/'s seeded layers — exactly what /room create + seedIdentityLayers leave behind)
 // is removed outright; a room holding anything more REFUSES and names what's there, requiring
 // an explicit `delete force` to proceed.
-describe('/room <slug> delete — remove a NamedRoom, refusing when it holds real content', () => {
+describe('/room <slug> delete — remove a room, refusing when it holds real content', () => {
   // Builds a room exactly the way /room create does: the tree + the seeded identity.d/
   // layers — so "still just the skeleton" is tested against the SAME shape the creator
   // produces, not a hand-picked filename list.
-  async function freshRoom(roomForName, slug) {
-    const room = roomForName(slug);
+  async function freshRoom(namedRoom, slug) {
+    const room = await namedRoom(slug);
     await room.ensureTree();
     await seedIdentityLayers(room, 'egpt');
     return room;
   }
 
   it('a room that is still just the seeded skeleton is deleted outright', async () => {
-    const { cmds, sent, roomForName } = harness();
-    const room = await freshRoom(roomForName, 'scratch');
+    const { cmds, sent, namedRoom } = harness();
+    const room = await freshRoom(namedRoom, 'scratch');
     await cmds.run({ ...self, body: '/room delete scratch' });
     expect(sent.at(-1).text).toMatch(/room scratch deleted/);
     expect(existsSync(room.baseDir())).toBe(false);
   });
 
   it('a room holding a transcript refuses, naming it — "delete force" then removes it', async () => {
-    const { cmds, sent, roomForName } = harness();
-    const room = await freshRoom(roomForName, 'devwork');
+    const { cmds, sent, namedRoom } = harness();
+    const room = await freshRoom(namedRoom, 'devwork');
     writeFileSync(room.transcriptPath, '# hi\n', 'utf8');
     await cmds.run({ ...self, body: '/room delete devwork' });
     expect(sent.at(-1).text).toMatch(/transcript\.md/);
@@ -175,8 +322,8 @@ describe('/room <slug> delete — remove a NamedRoom, refusing when it holds rea
   });
 
   it('a room holding files in media/ refuses, naming the count', async () => {
-    const { cmds, sent, roomForName } = harness();
-    const room = await freshRoom(roomForName, 'withmedia');
+    const { cmds, sent, namedRoom } = harness();
+    const room = await freshRoom(namedRoom, 'withmedia');
     writeFileSync(join(room.mediaDir, 'photo.jpg'), 'x');
     await cmds.run({ ...self, body: '/room delete withmedia' });
     expect(sent.at(-1).text).toMatch(/1 file in media\//);
@@ -190,8 +337,8 @@ describe('/room <slug> delete — remove a NamedRoom, refusing when it holds rea
   });
 
   it('deleting the current room clears currentRoom for that surface (no dangling pointer)', async () => {
-    const { cmds, sent, roomForName } = harness();
-    await freshRoom(roomForName, 'current-one');
+    const { cmds, sent, namedRoom } = harness();
+    await freshRoom(namedRoom, 'current-one');
     await cmds.run({ ...self, body: '/room join current-one' });
     expect(sent.at(-1).text).toMatch(/joined 'current-one'/);
     await cmds.run({ ...self, body: '/room delete current-one' });
@@ -203,10 +350,10 @@ describe('/room <slug> delete — remove a NamedRoom, refusing when it holds rea
 });
 
 describe('/members — targets the CURRENT CONVERSATION (no /room join gate)', () => {
-  it('/members with no NamedRoom joined lists the conversation members (NOT "no current room")', async () => {
+  it('/members with no named room joined lists the conversation members (NOT "no current room")', async () => {
     const cdp = { listTabs: async () => threeTabs };
     const { cmds, sent } = harness({ cdp });
-    await cmds.run({ ...self, body: '/members' });   // never joined a NamedRoom
+    await cmds.run({ ...self, body: '/members' });   // never joined a named room
     const text = sent.at(-1).text;
     expect(text).not.toMatch(/no current room/i);    // the dropped gate
     expect(text).not.toMatch(/recognized/);          // not the catch-all
@@ -520,20 +667,20 @@ describe('/activate <id> — reopen a closed tab (in the conversation room)', ()
   });
 });
 
-// NamedRooms stay a SEPARATE explicit construct (relay-wiring them is a later phase): /room
-// <slug> members inspects the NamedRoom's OWN roster, decoupled from any conversation.
-describe('/room <slug> members — NamedRoom inspection (kept, separate from /members)', () => {
-  it('lists the NamedRoom roster, not the conversation roster', async () => {
+// An operator-named room stays a SEPARATELY ADDRESSED construct: /room <slug> members
+// inspects THAT room's own roster, decoupled from whatever conversation you type it in.
+describe('/room <slug> members — named-room inspection (kept, separate from /members)', () => {
+  it('lists the named room roster, not the conversation roster', async () => {
     const cdp = { listTabs: async () => threeTabs };
-    const { cmds, sent, roomForName, resolveConvRoom } = harness({ cdp });
-    await roomForName('devwork').setMember({ kind: 'brain', id: 'claude', state: 'mention' });
-    // add a member to the CONVERSATION — it must NOT show up under the NamedRoom
+    const { cmds, sent, namedRoom, resolveConvRoom } = harness({ cdp });
+    await (await namedRoom('devwork')).setMember({ kind: 'brain', id: 'claude', state: 'mention' });
+    // add a member to the CONVERSATION — it must NOT show up under the named room
     await cmds.run({ ...self, body: '/members add tab 1' });   // chatgpt → conversation room
     await cmds.run({ ...self, body: '/room members devwork' });
     const text = sent.at(-1).text;
-    expect(text).toMatch(/devwork/);     // labelled by the NamedRoom
-    expect(text).toMatch(/claude/);      // the NamedRoom's own member
-    expect(text).not.toMatch(/chatgpt/); // the conversation member is NOT in the NamedRoom
+    expect(text).toMatch(/devwork/);     // labelled by the named room
+    expect(text).toMatch(/claude/);      // the named room's own member
+    expect(text).not.toMatch(/chatgpt/); // the conversation member is NOT in the named room
     // and the conversation room really did get chatgpt (the two are separate stores)
     expect((await (await resolveConvRoom(self.surface, self.chatId)).members()).map((m) => m.id)).toEqual(['chatgpt']);
   });

@@ -8,7 +8,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Room, ConversationRoom, NamedRoom, ROOM_MEMBER_STATES } from '../src/room-core.mjs';
+import { Room, ROOM_MEMBER_STATES } from '../src/room-core.mjs';
 // Re-export parity: rooms.mjs must still expose the moved primitives.
 import { normalizeMemberState as nmsFromRooms, ROOM_MEMBER_STATES as statesFromRooms } from '../src/rooms.mjs';
 
@@ -99,8 +99,8 @@ describe('Room base — members round-trip', () => {
 });
 
 describe('downstream-inheritance + re-export parity', () => {
-  it('ConversationRoom AND NamedRoom inherit the member methods', () => {
-    for (const r of [Room.forChat('whatsapp', 'x'), Room.named('y')]) {
+  it('a chat room AND an operator-named room inherit the member methods', () => {
+    for (const r of [Room.forChat('whatsapp', 'x'), Room.forChat('room', 'y')]) {
       for (const m of ['loadConfig', 'members', 'memberState', 'setMember', 'removeMember']) {
         expect(typeof r[m]).toBe('function');
       }

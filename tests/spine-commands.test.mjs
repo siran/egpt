@@ -10,7 +10,7 @@ import { COMMANDS } from '../src/interpreter.mjs';
 import { Room } from '../src/room-core.mjs';
 import { emptyState, ensureContact, getBeing, recordThread, patchContact, DEFAULT_ALLOWED_TOOLS, READONLY_ALLOWED_TOOLS } from '../src/conversations-state.mjs';
 
-function harness({ config = {}, state = null, agentTypes = ['egpt', 'sonnet-high'], brains, identityLayers = ['default'], io = {}, cdp, launch, clock } = {}) {
+function harness({ config = {}, state = null, agentTypes = ['egpt', 'sonnet-high'], brains, identityLayers = ['default'], io = {}, cdp, launch, clock, resolveConvRoom } = {}) {
   const sent = [], exits = [], rewinds = [], writes = [], evicts = [];
   const files = {};   // custom-branch authored files (agent-type yaml + identity layer)
   let st = state;
@@ -35,6 +35,7 @@ function harness({ config = {}, state = null, agentTypes = ['egpt', 'sonnet-high
     evictWarm: (key) => evicts.push(key),
     agentsDir: '/agents', identitiesDir: '/identities',
     io: { writeFile: async (p, c) => { files[p] = c; }, mkdir: async () => {}, ...io },
+    ...(resolveConvRoom ? { resolveConvRoom } : {}),
   });
   return { cmds, sent, exits, rewinds, writes, evicts, files, getState: () => st };
 }
@@ -789,29 +790,34 @@ describe('/chrome <node>', () => {
   });
 });
 
-// /room create <name> — the FIRST wired NamedRoom create path (Phase 2). A Room IS a
+// /room create <name> — the FIRST wired named-room create path (Phase 2). A Room IS a
 // folder: `create` makes the standard tree (baseDir + media/files/identity.d/scripts + a minimal
-// config.yaml) so the heartbeat/transcription loaders enumerate rooms/<name>/. All fs is
-// routed through the commands io seam, so these run fully in-memory (mkdir recorded,
+// config.yaml) so the heartbeat/transcription loaders enumerate conversations/room/<slug>/. All
+// fs is routed through the commands io seam, so these run fully in-memory (mkdir recorded,
 // writeFile captured) and never touch a real profile. No member roster yet (later work).
+//
+// 2026-08-09: the room is minted through resolveConvRoom('room', <name>) — the SAME shared
+// resolver a Beeper chat goes through — so the harness injects it, exactly as boot does.
 describe('/room create <name>', () => {
   const self = { chatId: '!self', surface: 'whatsapp' };
+  const resolveConvRoom = async (surface, chatId) => Room.forChat(surface, chatId);
 
   it('/room create foo makes the room folder tree and confirms the path', async () => {
     const mkdirs = [];
     const { cmds, sent, files } = harness({
       config: { whatsapp: { chat_id: '!self' } },
+      resolveConvRoom,
       io: { mkdir: async (p) => { mkdirs.push(p); }, stat: async () => { throw new Error('ENOENT'); } },
     });
     await cmds.run({ ...self, body: '/room create foo' });
-    const r = Room.named('foo');
+    const r = Room.forChat('room', 'foo');
     // the standard tree dirs were created …
     for (const dir of [r.baseDir(), r.mediaDir, r.filesDir, r.identityDir, r.scriptsDir]) expect(mkdirs).toContain(dir);
     // … and a config.yaml was written into the room folder
     expect(files[r.configPath]).toBeTruthy();
-    // the reply names the EGPT_HOME-relative path
+    // the reply names the EGPT_HOME-relative path — under conversations/, NOT the retired rooms/ root
     expect(sent).toHaveLength(1);
-    expect(sent[0].text).toMatch(/rooms\/foo\//);
+    expect(sent[0].text).toMatch(/conversations\/room\/foo\//);
     expect(sent[0].text).toMatch(/created/);
     expect(sent[0].text).not.toMatch(/recognized/);   // NOT the unwired catch-all
   });
@@ -820,6 +826,7 @@ describe('/room create <name>', () => {
     const mkdirs = [];
     const { cmds, sent, files } = harness({
       config: { whatsapp: { chat_id: '!self' } },
+      resolveConvRoom,
       io: { mkdir: async (p) => { mkdirs.push(p); }, stat: async () => ({ isDirectory: () => true }) },   // folder present
     });
     await cmds.run({ ...self, body: '/room create foo' });
@@ -832,6 +839,7 @@ describe('/room create <name>', () => {
     const mkdirs = [];
     const { cmds, sent, files } = harness({
       config: { whatsapp: { chat_id: '!self' } },
+      resolveConvRoom,
       io: { mkdir: async (p) => { mkdirs.push(p); }, stat: async () => { throw new Error('ENOENT'); } },
     });
     await cmds.run({ ...self, body: '/room create' });

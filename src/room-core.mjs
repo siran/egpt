@@ -2,18 +2,18 @@
 //
 // A Room is a host to members, files, media, and a transcript. A surface chat
 // (1:1 or group) natively fulfils that contract, so a conversation IS a Room —
-// it is NOT a thing a Room points at. `Room` is the ABSTRACTION; the two roots
-// are two IMPLEMENTATIONS — the unifier:
-//   ConversationRoom → conversations/<surface>/<slug>/   (born from a chat, 1 host)
-//   NamedRoom        → rooms/<name>/                      (operator-named, ≥1 hosts)
+// it is NOT a thing a Room points at. There is ONE implementation now:
+//   ConversationRoom → conversations/<surface>/<slug>/
+// An operator-named room is NOT a second kind: `/room create acim` mints a
+// contact on surface `room` (chatId = the name) through the SAME ensureContact
+// every Beeper chat goes through, so it roots at conversations/room/<slug>/ and
+// every path keyed by (surface, chatId) reaches it for free (2026-08-09 — the
+// rooms/<name>/ root and its NamedRoom subclass are gone).
 //
-// The base owns the IDENTICAL folder tree (derived from baseDir()); the two
-// subclasses override ONLY baseDir(). **Anything added to the base flows
-// downstream to both** — that is the whole point of an abstraction over a shared
-// helper. Behavior methods (appendTranscript / saveMedia / members / hosts /
-// confine wiring) land on the base in later phases; Phase 0 introduces the tree
-// + resolvers with NO behavior change, and conversations-state.slugDir /
-// rooms.roomDir DELEGATE here so paths stay byte-identical.
+// The base owns the folder tree (derived from baseDir()); the subclass overrides
+// ONLY baseDir(). **Anything added to the base flows downstream** — that is the
+// whole point of an abstraction over a shared helper. conversations-state.slugDir
+// DELEGATES here so paths stay byte-identical.
 //
 // Depends only on the leaf src/sanitize.mjs (+ node builtins): it imports nothing
 // from conversations-state.mjs or src/rooms.mjs, so those modules can delegate to
@@ -24,7 +24,7 @@ import { join } from 'node:path';
 import { EGPT_HOME } from "./egpt-home.mjs";
 import { homedir } from 'node:os';
 import * as YAML from 'yaml';
-import { sanitizeSlug, sanitizeName } from './sanitize.mjs';
+import { sanitizeSlug } from './sanitize.mjs';
 
 // ── Member model (the Room's contribution gate) ─────────────────────────────
 // A member is { kind, id, state }. `state` is the contribution gate, mirroring
@@ -80,7 +80,7 @@ export function isMemberStateAlias(token) {
 export class Room {
   /** The root folder of this Room. Subclasses MUST implement this. */
   baseDir() {
-    throw new Error('Room is abstract — baseDir() must be implemented by a subclass (ConversationRoom / NamedRoom)');
+    throw new Error('Room is abstract — baseDir() must be implemented by a subclass (ConversationRoom)');
   }
 
   // ── the identical tree (GENOME §2.5) ──────────────────────────────────────
@@ -230,17 +230,16 @@ export class Room {
     await this._setConfigBlock('radio', radio);
   }
 
-  // ── resolvers ─────────────────────────────────────────────────────────────
-  /** Room born from a surface chat (one host). */
+  // ── resolver ──────────────────────────────────────────────────────────────
+  /** THE Room constructor: a Room is always (surface, slug). */
   static forChat(surface, slug) { return new ConversationRoom(surface, slug); }
-  /** Operator-named Room (federates ≥1 hosts). */
-  static named(name) { return new NamedRoom(name); }
 }
 
 /**
  * A conversation: the Room a surface chat IS. Roots at
- * ~/.egpt/conversations/<surface>/<sanitizeSlug(slug)>/. Exactly one host (the
- * chat itself). Path is byte-identical to the legacy conversations-state.slugDir.
+ * ~/.egpt/conversations/<surface>/<sanitizeSlug(slug)>/. Path is byte-identical
+ * to the legacy conversations-state.slugDir. An operator-named room is one of
+ * these on surface `room`.
  */
 export class ConversationRoom extends Room {
   constructor(surface, slug) {
@@ -250,20 +249,5 @@ export class ConversationRoom extends Room {
   }
   baseDir() {
     return join(EGPT_HOME, 'conversations', this.surface, sanitizeSlug(this.slug));
-  }
-}
-
-/**
- * An operator-named Room. Roots at ~/.egpt/rooms/<sanitizeName(name)>/. May
- * federate ≥1 hosts across surfaces. Path is byte-identical to the legacy
- * rooms.roomDir.
- */
-export class NamedRoom extends Room {
-  constructor(name) {
-    super();
-    this.name = name;
-  }
-  baseDir() {
-    return join(EGPT_HOME, 'rooms', sanitizeName(this.name));
   }
 }
