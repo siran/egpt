@@ -16,8 +16,8 @@
 // DELEGATES here so paths stay byte-identical.
 //
 // Depends only on the leaf src/sanitize.mjs (+ node builtins): it imports nothing
-// from conversations-state.mjs or src/rooms.mjs, so those modules can delegate to
-// it without an import cycle (that is why Phase 0a moved the sanitizers).
+// from conversations-state.mjs, so that module can delegate to it without an
+// import cycle (that is why Phase 0a moved the sanitizers).
 
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -31,9 +31,8 @@ import { sanitizeSlug } from './sanitize.mjs';
 // the per-chat auto-mode (GENOME §2.5): muted = nothing it says enters · mention
 // = only @mentioning messages · active = everything. These primitives were moved
 // here from src/rooms.mjs (Phase 1a) because they ARE part of the Room
-// abstraction; rooms.mjs re-exports them so existing importers are unaffected
-// (and so room-core stays cycle-free — rooms.mjs imports room-core, not vice
-// versa).
+// abstraction; that module and its roster-file model are gone (2026-08-09), so
+// this is their ONE home.
 // The member state IS the per-chat auto-mode (GENOME §2.5; operator 2026-06-15
 // "one gate, zero loss"): the full 6-state enum so a brain member (incl. E) can
 // carry its exact reply behavior. Canonical words keep the room vocabulary

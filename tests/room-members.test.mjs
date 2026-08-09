@@ -8,9 +8,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Room, ROOM_MEMBER_STATES } from '../src/room-core.mjs';
-// Re-export parity: rooms.mjs must still expose the moved primitives.
-import { normalizeMemberState as nmsFromRooms, ROOM_MEMBER_STATES as statesFromRooms } from '../src/rooms.mjs';
+import { Room, ROOM_MEMBER_STATES, normalizeMemberState, isMemberStateAlias } from '../src/room-core.mjs';
 
 class TmpRoom extends Room {
   constructor(dir) { super(); this._dir = dir; }
@@ -98,7 +96,7 @@ describe('Room base — members round-trip', () => {
   });
 });
 
-describe('downstream-inheritance + re-export parity', () => {
+describe('downstream-inheritance', () => {
   it('a chat room AND an operator-named room inherit the member methods', () => {
     for (const r of [Room.forChat('whatsapp', 'x'), Room.forChat('room', 'y')]) {
       for (const m of ['loadConfig', 'members', 'memberState', 'setMember', 'removeMember']) {
@@ -106,13 +104,34 @@ describe('downstream-inheritance + re-export parity', () => {
       }
     }
   });
-  it('rooms.mjs still re-exports the moved member primitives', () => {
-    expect(nmsFromRooms('on')).toBe('active');
-    expect(statesFromRooms).toEqual(ROOM_MEMBER_STATES);
-  });
 
   it('member state IS the full 6-state auto-mode (one gate, zero loss)', () => {
     expect(ROOM_MEMBER_STATES).toEqual(['muted', 'mention', 'active', 'mention-direct', 'off', 'accum']);
+  });
+});
+
+describe('normalizeMemberState — operator-friendly aliases', () => {
+  it('maps the canonical words to themselves', () => {
+    expect(normalizeMemberState('muted')).toBe('muted');
+    expect(normalizeMemberState('mention')).toBe('mention');
+    expect(normalizeMemberState('active')).toBe('active');
+  });
+  it('maps active aliases to "active"', () => {
+    for (const a of ['on', 'unmute', 'unmuted', 'open', 'ACTIVE', '  on  '])
+      expect(normalizeMemberState(a)).toBe('active');
+  });
+  it('maps muted aliases to "muted"', () => {
+    for (const a of ['mute', 'silent', 'MUTED'])
+      expect(normalizeMemberState(a)).toBe('muted');
+  });
+  it('returns null for unknown tokens', () => {
+    expect(normalizeMemberState('whatever')).toBe(null);
+    expect(normalizeMemberState('')).toBe(null);
+    expect(normalizeMemberState(null)).toBe(null);
+  });
+  it('isMemberStateAlias is true for known + false for unknown', () => {
+    expect(isMemberStateAlias('on')).toBe(true);
+    expect(isMemberStateAlias('whatever')).toBe(false);
   });
 });
 

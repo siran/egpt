@@ -559,9 +559,13 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
     `default.md`. ("identities replace them" was aspirational, not true.)
   - **`config/themes/`** is read by `src/tools/theme.mjs`.
   - **`config/brains/llama.mjs`** is imported by `src/tools/agent-loop.mjs`.
-  - **`src/rooms.mjs`** survives as a PARITY ORACLE in 3 live tests (room-core, room-members,
-    sanitize): subject live, oracle dead. Removing it needs those tests rewritten — a semantic
-    call, not a sweep.
+  - ~~**`src/rooms.mjs`** survives as a PARITY ORACLE in 3 live tests~~ — **RESOLVED and
+    DELETED 2026-08-09.** The call was made and it was semantic, exactly as this warned. Two
+    parity assertions were dropped as VACUOUS (once there is one copy, "the two copies agree"
+    is `expect(x).toBe(x)`), but `normalizeMemberState`'s 5 alias tests were the ONLY direct
+    coverage of a LIVE function anywhere in the repo and were moved verbatim into
+    room-members.test.mjs. That is the distinction this entry was protecting: a dead oracle is
+    deletable, its coverage of a live subject is not.
   - **`migrateJsonToYaml` STAYS** in conversations-state.mjs (still exercised by its test), as
     does the mid-file `readdirSync` import (load-bearing for listIdentityLayers, now labelled).
   - `config/brains/config-schema.mjs` never existed; TOP-LEVEL `config/config-schema.mjs` is v2-LIVE.

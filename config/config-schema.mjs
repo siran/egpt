@@ -1046,7 +1046,9 @@ export const CONFIG_SCHEMA = {
         a routing loop bug would spam real groups; enable + verify on a test
         room first.
 
-    The room roster lives in ~/.egpt/rooms/config.yaml (managed via /room), not
+    A room's roster lives in the ROOM'S OWN config.yaml — a room is a
+    conversation on surface "room", so that is
+    ~/.egpt/conversations/room/<name>/config.yaml (managed via /members), not
     here.
   `,
   agents: `

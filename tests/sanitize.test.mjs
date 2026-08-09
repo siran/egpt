@@ -5,7 +5,6 @@
 import { describe, it, expect } from 'vitest';
 import { sanitizeSlug, sanitizeName } from '../src/sanitize.mjs';
 import { sanitizeSlug as slugFromConvState } from '../src/conversations-state.mjs';
-import { sanitizeName as nameFromRooms } from '../src/rooms.mjs';
 
 describe('sanitizeSlug — Windows-path-safe, name-preserving (characterization)', () => {
   it('keeps accents, spaces, parens, plus — strips only Windows-illegal chars', () => {
@@ -47,9 +46,5 @@ describe('sanitizeName — kebab room handle (characterization)', () => {
     expect(sanitizeName('  --weird__name--  ')).toBe('weird__name');
     expect(sanitizeName('')).toBe('room');
     expect(sanitizeName(null)).toBe('room');
-  });
-
-  it('rooms re-exports the SAME function', () => {
-    expect(nameFromRooms).toBe(sanitizeName);
   });
 });

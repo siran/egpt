@@ -4,9 +4,10 @@
 // abstraction (src/room-core.mjs) and the entity root (conversations-state.mjs
 // → slugDir) can share these without an import
 // cycle. The implementations were extracted VERBATIM from their old homes
-// (conversations-state.sanitizeSlug, rooms.sanitizeName) and those modules now
-// re-export from here, so every existing importer is unaffected (no behavior
-// change — Phase 0a of the conversations↔rooms merge, GENOME §2.5).
+// (conversations-state.sanitizeSlug, rooms.sanitizeName) and conversations-state
+// still re-exports sanitizeSlug from here, so every existing importer is
+// unaffected (no behavior change — Phase 0a of the conversations↔rooms merge,
+// GENOME §2.5). rooms.mjs is gone (2026-08-09); sanitizeName is only here now.
 
 // ── Slug sanitization (Windows-path-safe) ──────────────────────────────────
 //
