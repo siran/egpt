@@ -24,6 +24,12 @@ describe('cleanForSpeech (@ev voice-out text prep)', () => {
     expect(cleanForSpeech('respuesta\n\nReferences:\nfoo')).toBe('respuesta');
   });
 
+  it('strips trailing/inline emoji — Piper speaks an unknown codepoint by its Unicode NAME otherwise (live bug, 2026-08-10: a trailing dog emoji on a Spanish voice was read as "cara de perro", which then collided with "perro" as a configured spoken wake alias)', () => {
+    expect(cleanForSpeech('Sí, acá estoy. 🐶')).toBe('Sí, acá estoy.');
+    expect(cleanForSpeech('🐶 egpt: hola')).toBe('egpt: hola');
+    expect(cleanForSpeech('todo bien 👍🏽 gracias')).toBe('todo bien  gracias');
+  });
+
   it('is a no-op on plain prose', () => {
     expect(cleanForSpeech('hola mundo, ¿cómo estás?')).toBe('hola mundo, ¿cómo estás?');
   });

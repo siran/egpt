@@ -15,6 +15,21 @@ function dropSourcesSection(s) {
   return m ? s.slice(0, m.index).trimEnd() : s;
 }
 
+// Piper does not silently skip an emoji it can't pronounce — it falls back to
+// speaking the character's Unicode NAME (translated into the synthesis voice's own
+// language). Live bug, 2026-08-10: a reply ending in a trailing persona emoji (E's
+// own flourish, e.g. a dog emoji) came out spoken as "cara de perro" ("dog face")
+// on a Spanish voice — which then collided with "perro" being a configured spoken
+// wake alias, so the self-echo of THAT rendered audio re-woke the persona (compounds
+// with, but is independent of, the own-echo suppression fix in beeper.mjs). Strip
+// every emoji-class codepoint before synthesis; ️/‍ are the variation-
+// selector/ZWJ glue a removed pictograph can leave stranded.
+function stripEmoji(s) {
+  // \p{Extended_Pictographic} covers the emoji themselves but NOT the Fitzpatrick
+  // skin-tone modifiers (U+1F3FB-1F3FF) that can trail one — stripped explicitly.
+  return s.replace(/\p{Extended_Pictographic}/gu, '').replace(/[\u{1F3FB}-\u{1F3FF}]/gu, '').replace(/[️‍]/g, '');
+}
+
 function stripMarkdown(s) {
   let out = s;
   // fenced code blocks → their inner text
@@ -40,13 +55,14 @@ function stripMarkdown(s) {
   return out;
 }
 
-/** Prepare model prose for TTS: drop a trailing Sources/citations section, strip markdown syntax down to spoken words. `null`/`undefined`/`''` → `''`. */
+/** Prepare model prose for TTS: drop a trailing Sources/citations section, strip markdown syntax and emoji down to spoken words. `null`/`undefined`/`''` → `''`. */
 export function cleanForSpeech(text) {
   if (text == null) return '';
   let s = String(text);
   if (!s) return '';
   s = dropSourcesSection(s);
   s = stripMarkdown(s);
+  s = stripEmoji(s);
   s = s.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
   return s;
 }
