@@ -62,11 +62,13 @@ import { mediaKind } from '../media-kind.mjs';
 import { shouldDownload } from '../media-save.mjs';
 import { relMediaPath } from '../media-path.mjs';
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
-import { createHash } from 'node:crypto';
+import { readFile, writeFile, unlink } from 'node:fs/promises';
+import { createHash, randomBytes } from 'node:crypto';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { join, basename } from 'node:path';
 import { EGPT_HOME } from '../egpt-home.mjs';
+import { cleanForSpeech } from '../speech-clean.mjs';
 import { shortChatId, fullChatId } from './chat-id.mjs';
 import { createEarProbe, injectViaTelegram } from '../ear-probe.mjs';
 
@@ -209,6 +211,15 @@ export async function startBeeperBridge(opts = {}) {
     // produces one). Default EMPTY, unlike wakeWords above: silence-by-default, no network-wide or
     // map-key fallback — a node that configures nothing wakes on NO spoken alias.
     voiceWakeWords = [],
+    // BARE-@wakeword-REPLY-TO-TEXT → SPOKEN mirror (operator 2026-08-10) of the voice-note
+    // shortcut below: synthesize/voice reach createSpine (boot's `createSpine({ synthesize:
+    // vx.synthesize, voice: vx.voice, ... })`) but not this limb, which needs its OWN TTS access
+    // for the text-quote branch a few lines down. Same shape as spine.mjs's voice-out options —
+    // (text, voice, log) => Promise<Buffer|null>, and the persona's own voice name. Default null
+    // (mirrors voice_service being unconfigured, e.g. `do`, the GPU/worker node) → that branch
+    // no-ops cleanly, falling through to @e→E like any other miss.
+    synthesize = null,
+    voice = null,
     // May a BARE leading handle address ("d hola", no '@')? The node's dispatch.address_without_at
     // (operator 2026-07-27: "this addressing without the '@' must be an option, easy to turn
     // on/off globally"), DEFAULT true — boot reads it once and hands the SAME value here, to the
@@ -1396,7 +1407,12 @@ export async function startBeeperBridge(opts = {}) {
     // bare wake-word, no voice-transcription entry for the id, a non-owner sender, or a failed
     // edit) falls through UNCHANGED, so a plain @e still wakes E below — and it NEVER re-transcribes.
     const bareReply = (text || '').trim().toLowerCase();
-    if (replyToId && (!!msg.isSender || isAllowedUser(msg.senderID, acct)) && wakeWords.some((w) => bareReply === `@${String(w).toLowerCase()}`)) {
+    // BOTH forms accepted (operator 2026-08-10): '@e'/'@egpt' AND the bare 'e'/'egpt' — unlike
+    // the @ev voice-out override (which needs '@' to avoid matching the word "ev" INSIDE ordinary
+    // prose), this gate already requires the WHOLE reply to be nothing but the wake-word, so a
+    // bare form carries no meaningful false-positive risk of its own.
+    const isReplyWakeWord = (w) => bareReply === `@${String(w).toLowerCase()}` || bareReply === String(w).toLowerCase();
+    if (replyToId && (!!msg.isSender || isAllowedUser(msg.senderID, acct)) && wakeWords.some(isReplyWakeWord)) {
       const doc = await readTranscript(chatID, { chatName: info.title, network: acct });
       const t = transcriptionForNoteId(doc, replyToId);
       if (t) {
@@ -1407,12 +1423,47 @@ export async function startBeeperBridge(opts = {}) {
         }
         onLog(`beeper: 👂 in-place edit FAILED [${info.title}] #${msg.id} ↩${replyToId} — falling through to @e→E`);
       } else {
-        // No transcript entry for the quoted id. Arrival transcription is SYNCHRONOUS (awaited at
-        // ~L1096) and its transcript.md write rides the fire-and-forget onIncoming, so by the time a
-        // human replies @e the line exists in all but a sub-second race. There is no clean seam to
-        // force/await that SAME pending arrival transcription from the bridge WITHOUT re-transcribing
-        // (which this rework exists to remove), so a miss falls through to normal @e→E. FOLLOW-UP: a
-        // transcription store keyed by message id (or awaiting the pending arrival) would close the race.
+        // MIRROR (operator 2026-08-10): the quoted id isn't a VOICE note — before giving up, try
+        // it as ordinary TEXT. bodyForMessageId is the general chokepoint transcriptionForNoteId
+        // itself is built on (its own header says reading one recorded entry back by id is what a
+        // REPLY needs too), so this reuses it rather than re-walking transcript.md. Skip a hit that
+        // IS itself a voice-transcription entry (_VOICE_MARK) — a voice note that missed the branch
+        // above for some OTHER reason (e.g. the edit failing) must never be read aloud as if it were
+        // plain text. synthesize/voice unwired (e.g. `do`, no voice_service configured) → this whole
+        // branch no-ops, same fall-through discipline as every other miss here. Text can't be
+        // rewritten in place the way a voice quote is (no audio was ever there), so on success this
+        // DELETES the bare-@e trigger instead of editing it — mirroring the in-place rewrite above
+        // with the closest equivalent for a message that can't become audio itself.
+        const quotedText = bodyForMessageId(doc, replyToId);
+        if (quotedText && !_VOICE_MARK.test(quotedText) && synthesize && voice) {
+          let audio = null;
+          try { audio = await synthesize(cleanForSpeech(quotedText), voice, onLog); }
+          catch (e) { onLog(`beeper: 🔊 synthesize threw ↩${replyToId} [${info.title}] — ${e?.message ?? e}`); }
+          if (audio) {
+            const tmpPath = join(tmpdir(), `egpt-voice-quote-${randomBytes(8).toString('hex')}.ogg`);
+            let sent = false;
+            try {
+              await writeFile(tmpPath, audio);
+              sent = !!(await sendMedia(chatID, tmpPath, { replyTo: replyToId }));
+            } catch (e) { onLog(`beeper: 🔊 media send failed ↩${replyToId} [${info.title}] — ${e?.message ?? e}`); }
+            finally { try { await unlink(tmpPath); } catch { /* ignore */ } }
+            if (sent) {
+              await deleteMessage(chatID, msg.id);
+              onLog(`beeper: 🔊 quoted text synthesized + sent [${info.title}] #${msg.id} ↩${replyToId} (trigger deleted)`);
+              return;   // substitution replaces the @e→E routing for this message
+            }
+            onLog(`beeper: 🔊 quoted-text audio send FAILED ↩${replyToId} [${info.title}] — falling through to @e→E`);
+          } else {
+            onLog(`beeper: 🔊 quoted-text synthesis declined/failed ↩${replyToId} [${info.title}] — falling through to @e→E`);
+          }
+        }
+        // No transcript entry for the quoted id (voice OR text). Arrival transcription is SYNCHRONOUS
+        // (awaited at ~L1096) and its transcript.md write rides the fire-and-forget onIncoming, so by
+        // the time a human replies @e the line exists in all but a sub-second race. There is no clean
+        // seam to force/await that SAME pending arrival transcription from the bridge WITHOUT
+        // re-transcribing (which this rework exists to remove), so a miss falls through to normal
+        // @e→E. FOLLOW-UP: a transcription store keyed by message id (or awaiting the pending arrival)
+        // would close the race.
         onLog(`beeper: 👂 no voice-transcript entry for ↩${replyToId} [${info.title}] — falling through to @e→E`);
       }
     }

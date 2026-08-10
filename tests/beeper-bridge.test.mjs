@@ -21,6 +21,7 @@ async function startFakeBeeper() {
   const posts = [];   // POSTs to /v1/chats/:id/messages — each records the CONFIRMED id it created
   let confirmedSeq = 1000;   // the per-chat sequence Beeper assigns; NEVER equal to the pending id
   const edits = [];   // PUTs to /v1/chats/:id/messages/:msgId (in-place stream edits)
+  const deletes = [];   // DELETEs to /v1/chats/:id/messages/:msgId (trigger cleanup, e.g. the text→voice mirror)
   const reactions = [];   // POSTs to /v1/chats/:id/messages/:msgId/reactions (E's react limb)
   const uploads = [];     // POSTs to /v1/assets/upload (E's media limb)
   const chats = new Map();   // chatID -> chat info served by GET
@@ -100,6 +101,11 @@ async function startFakeBeeper() {
         res.end('{}');
         return;
       }
+      if (req.method === 'DELETE' && put) {
+        deletes.push({ chatID: decodeURIComponent(put[1]), messageID: decodeURIComponent(put[2]) });
+        res.end('{}');
+        return;
+      }
       // Recent-message list (resolveSentMessageId polls it to confirm a sent id).
       // A FUNCTION value serves dynamically — lets a test model the live upsert
       // race (the just-POSTed message appearing only on a later poll).
@@ -167,7 +173,7 @@ async function startFakeBeeper() {
     ws.send(JSON.stringify({ type: 'ready' }));
   });
   return {
-    port, posts, edits, reactions, uploads, chats, messages, accounts, chatsOpts, serverOpts, telegram,
+    port, posts, edits, deletes, reactions, uploads, chats, messages, accounts, chatsOpts, serverOpts, telegram,
     msgListGets: () => msgListGets,
     accountsGets: () => accountsGets,
     chatListGets: () => chatListGets,
@@ -2153,6 +2159,121 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
     await waitFor(() => incoming.some((i) => i.from.msgKey === 'editfail-6'));
     expect(incoming.find((i) => i.from.msgKey === 'editfail-6').from.atEStart).toBe(true);   // edit failed → fell through to E, not eaten
     expect(fake.edits).toHaveLength(0);                                                       // the rejected PUT recorded no successful edit
+  });
+
+  // BARE @e REPLY TO A TEXT MESSAGE → SPOKEN mirror (operator 2026-08-10). The above branch's
+  // exact counterpart for a quoted TEXT entry instead of a voice one: no model turn, no new
+  // content — the quoted words, verbatim, synthesized and sent as audio. Text can't be rewritten
+  // in place the way a voice quote is, so the bare-@e trigger is DELETED instead of edited.
+  // Counts calls so a test can assert the quoted text reaches synthesize UNCHANGED.
+  const countingSynthesize = (audio = Buffer.from('AUDIO')) => {
+    const f = async (spokenText) => { f.calls++; f.lastText = spokenText; return audio; };
+    f.calls = 0;
+    return f;
+  };
+
+  it('a bare @e reply to a TEXT message synthesizes it VERBATIM, sends it as audio, deletes the trigger, and does NOT wake E', async () => {
+    const synthesize = countingSynthesize();
+    const doc = transcriptDoc(textLine('tn-audio', 'hello there'));
+    const { incoming } = await startBridge({ readTranscript: async () => doc, synthesize, voice: 'ona' });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-txt', text: '@e', isSender: true, linkedMessageID: 'tn-audio' })] });
+    await waitFor(() => fake.uploads.length === 1);
+    expect(synthesize.calls).toBe(1);
+    expect(synthesize.lastText).toBe('hello there');                          // verbatim — no model turn, no new content
+    const mediaPost = fake.posts.find((p) => p.attachment);
+    expect(mediaPost).toBeTruthy();                                           // the synthesized audio, sent as media
+    expect(mediaPost.replyToMessageID).toBe('tn-audio');                      // …as a reply to the ORIGINAL quoted message
+    await waitFor(() => fake.deletes.some((d) => d.messageID === 'reply-txt'));
+    expect(fake.edits).toHaveLength(0);                                       // text can't be rewritten in place — deleted, not edited
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'sentinel-txt', text: 'plain human line' })] });
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'sentinel-txt'));
+    expect(incoming.some((i) => i.from.msgKey === 'reply-txt')).toBe(false);   // the @e reply never reached the persona turn
+  });
+
+  // BARE FORM ACCEPTED TOO (operator 2026-08-10): unlike @ev voice-out (which needs '@' to avoid
+  // matching "ev" inside ordinary prose), this gate already requires the WHOLE reply to be
+  // nothing but the wake-word, so a bare 'e' (no '@') carries the same negligible false-positive
+  // risk as '@e' — accepted on both the voice-note branch and this text-mirror branch.
+  it('a BARE "e" (no @) reply to a TEXT message triggers the mirror exactly like "@e"', async () => {
+    const synthesize = countingSynthesize();
+    const doc = transcriptDoc(textLine('tn-bare', 'hello there'));
+    const { incoming } = await startBridge({ readTranscript: async () => doc, synthesize, voice: 'ona' });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-bare', text: 'e', isSender: true, linkedMessageID: 'tn-bare' })] });
+    await waitFor(() => fake.uploads.length === 1);
+    expect(synthesize.calls).toBe(1);
+    expect(synthesize.lastText).toBe('hello there');
+    await waitFor(() => fake.deletes.some((d) => d.messageID === 'reply-bare'));
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'sentinel-bare', text: 'plain human line' })] });
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'sentinel-bare'));
+    expect(incoming.some((i) => i.from.msgKey === 'reply-bare')).toBe(false);
+  });
+
+  it('a BARE "e" (no @) reply to a VOICE note triggers the in-place transcript edit exactly like "@e"', async () => {
+    const doc = transcriptDoc(voiceLine('vn-bare', 'hola bare'));
+    const { incoming } = await startBridge({ readTranscript: async () => doc });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-vbare', text: 'e', isSender: true, linkedMessageID: 'vn-bare' })] });
+    await waitFor(() => fake.edits.length === 1);
+    expect(fake.edits[0].text).toBe('👂 hola bare');
+    expect(incoming.some((i) => i.from.msgKey === 'reply-vbare')).toBe(false);
+  });
+
+  it('REGRESSION: the existing bare @e reply to a VOICE note is unaffected by the text-mirror branch (still edits in place, never synthesizes)', async () => {
+    const synthesize = countingSynthesize();
+    const doc = transcriptDoc(voiceLine('vn-mirror', 'hola que tal'));
+    const { incoming } = await startBridge({ readTranscript: async () => doc, synthesize, voice: 'ona' });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-vm', text: '@e', isSender: true, linkedMessageID: 'vn-mirror' })] });
+    await waitFor(() => fake.edits.length === 1);
+    expect(fake.edits[0].text).toBe('👂 hola que tal');       // voice branch's own in-place rewrite, untouched
+    expect(synthesize.calls).toBe(0);                         // the text-mirror branch never ran (voice branch returned first)
+    expect(fake.uploads).toHaveLength(0);
+    expect(fake.deletes).toHaveLength(0);
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'sentinel-vm', text: 'plain human line' })] });
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'sentinel-vm'));
+    expect(incoming.some((i) => i.from.msgKey === 'reply-vm')).toBe(false);
+  });
+
+  it('no synthesize/voice wired (e.g. a node with no voice_service) → the text-mirror branch no-ops, falling through to @e→E cleanly', async () => {
+    const doc = transcriptDoc(textLine('tn-nosynth', 'hello there'));
+    const { incoming } = await startBridge({ readTranscript: async () => doc });   // default synthesize/voice = null
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-nosynth', text: '@e', isSender: true, linkedMessageID: 'tn-nosynth' })] });
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'reply-nosynth'));
+    expect(fake.edits).toHaveLength(0);
+    expect(fake.uploads).toHaveLength(0);
+    expect(fake.deletes).toHaveLength(0);
+    expect(incoming.find((i) => i.from.msgKey === 'reply-nosynth').from.atEStart).toBe(true);   // plain @e still wakes E
+  });
+
+  it('bodyForMessageId MISS (not a reply to anything with a transcript entry) → falls through to @e→E, synthesize never called', async () => {
+    const synthesize = countingSynthesize();
+    const doc = transcriptDoc(textLine('some-other-id', 'unrelated'));
+    const { incoming } = await startBridge({ readTranscript: async () => doc, synthesize, voice: 'ona' });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-miss2', text: '@e', isSender: true, linkedMessageID: 'missing-id' })] });
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'reply-miss2'));
+    expect(synthesize.calls).toBe(0);
+    expect(fake.edits).toHaveLength(0);
+    expect(fake.uploads).toHaveLength(0);
+    expect(incoming.find((i) => i.from.msgKey === 'reply-miss2').from.atEStart).toBe(true);
+  });
+
+  it('synthesis FAILURE (synthesize returns null) → falls through to @e→E; no media sent, trigger not deleted', async () => {
+    const synthesize = async () => null;   // declines, e.g. the worker rejected the request
+    const doc = transcriptDoc(textLine('tn-fail', 'hello there'));
+    const { incoming } = await startBridge({ readTranscript: async () => doc, synthesize, voice: 'ona' });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-synthfail', text: '@e', isSender: true, linkedMessageID: 'tn-fail' })] });
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'reply-synthfail'));
+    expect(fake.uploads).toHaveLength(0);
+    expect(fake.deletes).toHaveLength(0);
+    expect(incoming.find((i) => i.from.msgKey === 'reply-synthfail').from.atEStart).toBe(true);   // fell through, not eaten
+  });
+
+  it('synthesis THROWS → falls through to @e→E cleanly (never blocks the normal wake path)', async () => {
+    const synthesize = async () => { throw new Error('tts worker unreachable'); };
+    const doc = transcriptDoc(textLine('tn-throw', 'hello there'));
+    const { incoming } = await startBridge({ readTranscript: async () => doc, synthesize, voice: 'ona' });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-throw', text: '@e', isSender: true, linkedMessageID: 'tn-throw' })] });
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'reply-throw'));
+    expect(fake.uploads).toHaveLength(0);
+    expect(incoming.find((i) => i.from.msgKey === 'reply-throw').from.atEStart).toBe(true);
   });
 });
 

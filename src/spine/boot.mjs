@@ -934,6 +934,8 @@ export async function boot({
     transcriptionClose: cfg.transcription_close ?? '',
     wakeWords,                            // the persona agent's OWN name + handles only — nothing injected (operator 2026-07-09)
     voiceWakeWords,                       // the persona agent's OWN voice_handles only — no map-key fallback, empty by default (operator 2026-08-09)
+    synthesize: vx.synthesize,            // TTS for the bare-@wakeword-reply-to-TEXT mirror (operator 2026-08-10) — same fn createSpine gets below; null on a node with no voice_service (e.g. `do`), where the branch simply no-ops.
+    voice: vx.voice,                      // the persona's own voice name, paired with synthesize above.
     addressWithoutAt,                     // dispatch.address_without_at (default true): may a BARE leading handle address, or is '@' required? Same value the shell limb + the router get.
     echoPlan,                             // 👂 echo PLAN: (audioHash) => { rank, winner } — PER-NOTE HRW over the co-account peer set, keyed on the note's node-stable audio hash (operator 2026-07-24; revives HRW). rank 1 posts now; rank>1 arms a promotion at (rank-1)*echoTimeoutMs that re-checks coverage at fire; rank 0 (echo:false opt-out) never posts/promotes.
     echoTimeoutMs,                        // 👂 per-rank promotion step (ms); GENEROUS default so a SLOW rank-1 isn't mistaken for a DOWN one (double-👂 hazard).
@@ -1056,7 +1058,10 @@ export async function boot({
     // only reads it once resolve() actually runs a turn, long after boot() finishes, so the
     // forward reference is safe. The runtime resolution brainpool.mjs uses for an ALREADY-gated
     // turn is separate and DOES pass {convDir} — only this gate check is restricted.
-    router: createRouter({ getAgents: () => cfg.agents ?? {}, defaultBeing: defaultKey, getQuickReply: () => cfg.quick_reply_string, addressWithoutAt, resolveType: (name) => brains.resolve(name) }),
+    // isSelfChat (operator 2026-08: "disable wren other than in Self") — the SAME Self-chat
+    // predicate defined once above for the "stop" safe word; reused here so the dangerous-type
+    // gate and the kill switch can never disagree about which chat is Self.
+    router: createRouter({ getAgents: () => cfg.agents ?? {}, defaultBeing: defaultKey, getQuickReply: () => cfg.quick_reply_string, addressWithoutAt, resolveType: (name) => brains.resolve(name), isSelfChat }),
     transcript: createTranscript({ contacts, persona: labelOf(defaultKey), defaultKey, node_name, timeZone: transcriptTimeZone, io, onLog: (m) => log.line?.(`[transcript] ${m}`) }),
     sender: createSender({ bridge: shellAwareBridge, bodyEmojiOf, labelOf, agentSignatureOpenOf, agentSignatureCloseOf, defaultKey }),
     // The real cadence registry the spine's tick() drives. The heartbeat LOADER
