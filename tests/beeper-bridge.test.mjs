@@ -79,7 +79,12 @@ async function startFakeBeeper() {
         const cur = messages.get(chatID);
         if (typeof cur !== 'function') {
           const list = cur ?? [];
-          list.push({ id: confirmedID, text: parsed.text ?? '', isSender: true });
+          // Mirrors the live API (verified 2026-08-10): a media POST's listed entry carries
+          // its attachment under `attachments[].fileName` — what a captionless sendMedia
+          // now matches on to resolve its own confirmed id (resolveSentMessageId).
+          const entry = { id: confirmedID, text: parsed.text ?? '', isSender: true };
+          if (parsed.attachment) entry.attachments = [{ fileName: parsed.attachment.fileName }];
+          list.push(entry);
           messages.set(chatID, list);
         }
         res.end(JSON.stringify({ pendingMessageID: `pm-${posts.length}` }));
@@ -1777,6 +1782,17 @@ describe('beeper bridge — E limbs + reply-to-E notification', () => {
     const post = fake.posts[fake.posts.length - 1];
     expect(post.attachment).toMatchObject({ uploadID: 'up-1', type: 'image', mimeType: 'image/png' });
     expect(post.text).toBe('look');
+  });
+
+  it('sendMedia with NO caption still resolves its confirmedId, matching by the uploaded fileName (2026-08-10 self-echo fix)', async () => {
+    const { bridge } = await startBridge();
+    const p = join(stateDir, 'voice-reply.ogg');
+    writeFileSync(p, 'fake-ogg-bytes');
+    const result = await bridge.sendMedia(CHAT('chat-1'), p, {});   // no caption — the voice-reply path's exact call shape
+    expect(result).toMatchObject({ ok: true, chatId: 'chat-1' });
+    // Before this fix, a captionless send always resolved confirmedId to null — its own
+    // id was never rememberSent, so its WS echo could re-enter dispatch as new input.
+    await expect(result.confirmedId).resolves.toEqual(expect.any(String));
   });
 
   it('sendMedia still returns false on every existing failure path (no chat resolved)', async () => {

@@ -746,23 +746,24 @@ export async function startBeeperBridge(opts = {}) {
   // match on. Returns the raw POST response + a promise of the confirmed id (null if
   // it could not be confirmed). The in-flight gate is armed BEFORE the POST so the WS
   // echo — which can beat the HTTP response — is held by dispatch until we know.
-  async function postAndConfirm(chatID, body, matchText) {
+  async function postAndConfirm(chatID, body, matchText, { matchFileName = null } = {}) {
     const settle = _armSend(chatID);
+    const hasMatch = !!matchText || !!matchFileName;
     try {
       // Pre-send id floor (live landmine 2026-07-04, see resolveSentMessageId): snapshot
       // the chat's newest id BEFORE posting so a STALE identical-text message can never
       // be resolved as THIS send. MUST complete before the POST, or our own message
       // would be under the floor and never resolvable.
-      const floor = matchText ? await newestChatMsgId(chatID) : null;
+      const floor = hasMatch ? await newestChatMsgId(chatID) : null;
       const r = await api('POST', `/v1/chats/${encodeURIComponent(fullChatId(chatID))}/messages`, body);
-      if (!matchText) { settle(null); return { r, confirmedId: Promise.resolve(null) }; }
-      const confirmedId = resolveSentMessageId(chatID, String(matchText), { afterId: floor }).then(
+      if (!hasMatch) { settle(null); return { r, confirmedId: Promise.resolve(null) }; }
+      const confirmedId = resolveSentMessageId(chatID, matchText ? String(matchText) : null, { afterId: floor, matchFileName }).then(
         (id) => {
           if (id) rememberSent(id, chatID);
           // LOUD on a miss (never a silent hole, and never a text guess): with no
           // confirmed id this message is invisible to wasSentByUs — its echo can
           // re-enter dispatch, and a reply to it won't read as replyToBot.
-          else onLog(`beeper: SEND ID UNCONFIRMED [${chatID}] — cannot recognize this send as ours (echo may re-enter dispatch; a reply to it won't wake E): ${JSON.stringify(String(matchText).slice(0, 60))}`);
+          else onLog(`beeper: SEND ID UNCONFIRMED [${chatID}] — cannot recognize this send as ours (echo may re-enter dispatch; a reply to it won't wake E): ${matchFileName ?? JSON.stringify(String(matchText).slice(0, 60))}`);
           settle(id);
           return id;
         },
@@ -861,8 +862,12 @@ export async function startBeeperBridge(opts = {}) {
       const body = { attachment: { uploadID: up.uploadID, type: attachmentType(up.mimeType), ...(up.mimeType ? { mimeType: up.mimeType } : {}), ...(up.fileName ? { fileName: up.fileName } : {}) } };
       if (caption) body.text = String(caption);
       // A captioned media send is re-findable by its caption, so it gets the same
-      // CONFIRMED-id treatment as a text send (its echo is then recognized as ours).
-      const { r, confirmedId } = await postAndConfirm(chatID, body, caption ? String(caption) : null);
+      // CONFIRMED-id treatment as a text send. CAPTIONLESS (e.g. every voice-reply
+      // send) has no text to match — fall back to the upload's own fileName so this
+      // ALWAYS resolves and rememberSent always runs; without it, a captionless
+      // send's own WS echo re-enters dispatch as a genuine new incoming message (a
+      // live self-reply loop, observed 2026-08-10).
+      const { r, confirmedId } = await postAndConfirm(chatID, body, caption ? String(caption) : null, { matchFileName: caption ? null : up.fileName });
       onLog(`beeper: media sent [${chatID}] ${basename(filePath)} (${up.mimeType || 'unknown'})`);
       return { ok: true, chatId: chatID, pendingMessageID: r?.pendingMessageID, confirmedId };
     } catch (e) { onLog(`beeper: media send failed [${chatID}/${filePath}] — ${e?.message ?? e}`); return false; }
@@ -890,9 +895,14 @@ export async function startBeeperBridge(opts = {}) {
   const _matchKey = (s) => _normEcho(
     String(s ?? '').replace(/`+/g, ' ').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1'),
   );
-  async function resolveSentMessageId(chatID, text, { tries = 6, delayMs = 500, afterId = null } = {}) {
-    const want = _matchKey(text);
-    if (!chatID || !want) return null;
+  async function resolveSentMessageId(chatID, text, { tries = 6, delayMs = 500, afterId = null, matchFileName = null } = {}) {
+    // A captionless media send has no text to match on — matchFileName switches the
+    // candidate test to the upload's own fileName (live bug, 2026-08-10: without this,
+    // a captionless sendMedia never confirmed its id, so rememberSent below never ran,
+    // and the just-sent voice note re-entered dispatch as a genuine NEW incoming voice
+    // note on its own WS echo — a self-reply loop, observed live in SPOILER).
+    const want = matchFileName ? null : _matchKey(text);
+    if (!chatID || (!want && !matchFileName)) return null;
     for (let i = 0; i < tries; i++) {
       try {
         const r = await api('GET', `/v1/chats/${encodeURIComponent(fullChatId(chatID))}/messages?limit=25`);
@@ -912,7 +922,9 @@ export async function startBeeperBridge(opts = {}) {
           // turns died in a self-perpetuating chain; queued ones — distinct
           // 'Queued (N ahead)' texts, no twin — always delivered.)
           if (afterId != null && newerMsgId(afterId, m.id) === afterId) continue;
-          if (_matchKey(htmlToMarkdown(m.text) || m.text || '') !== want) continue;
+          if (matchFileName) {
+            if (!Array.isArray(m.attachments) || !m.attachments.some((a) => a?.fileName === matchFileName)) continue;
+          } else if (_matchKey(htmlToMarkdown(m.text) || m.text || '') !== want) continue;
           best = newerMsgId(best, m.id);
         }
         if (best != null) return best;
