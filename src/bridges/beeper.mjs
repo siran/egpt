@@ -1434,7 +1434,15 @@ export async function startBeeperBridge(opts = {}) {
         // rewritten in place the way a voice quote is (no audio was ever there), so on success this
         // DELETES the bare-@e trigger instead of editing it — mirroring the in-place rewrite above
         // with the closest equivalent for a message that can't become audio itself.
-        const quotedText = bodyForMessageId(doc, replyToId);
+        // E's OWN reply lines carry NO id in transcript.md — replyLine's format is
+        // `[@being (HH:MM)]: body`, UNCONDITIONALLY (transcript.mjs), a structural fact, not an
+        // occasional miss. So quoting E's own prior message would otherwise always fall through
+        // to a normal @e→E turn instead of reading it back (live bug, 2026-08-10: "e" replying to
+        // E's own message woke E instead of reading it). _seenText (this file's own edit-
+        // detection cache, same msgKeyOf keying, seeded on FIRST SIGHT of any message incl. our
+        // own echoed-back sends — see _maybeEmitEdits above) already holds exactly this text,
+        // keyed by the REAL confirmed id — fall back to it when transcript.md has nothing.
+        const quotedText = bodyForMessageId(doc, replyToId) ?? _seenText.get(msgKeyOf(chatID, replyToId)) ?? null;
         if (quotedText && !_VOICE_MARK.test(quotedText) && synthesize && voice) {
           let audio = null;
           try { audio = await synthesize(cleanForSpeech(quotedText), voice, onLog); }

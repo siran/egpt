@@ -2217,6 +2217,28 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
     expect(incoming.some((i) => i.from.msgKey === 'reply-vbare')).toBe(false);
   });
 
+  // E's OWN reply lines carry NO id in transcript.md (replyLine's format is `[@being
+  // (HH:MM)]: body`, unconditionally) — so quoting E's own PRIOR message must fall back to
+  // _seenText (this file's own edit-detection cache, seeded on first sight of any message
+  // including our own echoed-back sends), not just transcript.md, or the mirror silently
+  // misses and E wakes normally instead of reading itself back (live bug, 2026-08-10).
+  it('a bare "e" reply to a message E ITSELF SENT reads it back — transcript.md has no id for it, falls back to _seenText', async () => {
+    const synthesize = countingSynthesize();
+    const doc = transcriptDoc(textLine('unrelated-id', 'irrelevant'));   // transcript.md has NOTHING for E's own reply
+    const { bridge, incoming } = await startBridge({ readTranscript: async () => doc, synthesize, voice: 'ona' });
+    await sendSettled(bridge, 'this is what E said earlier', { chatId: CHAT('chat-1') });
+    const ownId = fake.posts[0].confirmedID;
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: ownId, text: 'this is what E said earlier' })] });   // E's own echo — seeds _seenText
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-own', text: 'e', isSender: true, linkedMessageID: ownId })] });
+    await waitFor(() => fake.uploads.length === 1);
+    expect(synthesize.calls).toBe(1);
+    expect(synthesize.lastText).toBe('this is what E said earlier');   // found via _seenText, not transcript.md
+    await waitFor(() => fake.deletes.some((d) => d.messageID === 'reply-own'));
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'sentinel-own', text: 'plain human line' })] });
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'sentinel-own'));
+    expect(incoming.some((i) => i.from.msgKey === 'reply-own')).toBe(false);   // E did NOT wake for it
+  });
+
   it('REGRESSION: the existing bare @e reply to a VOICE note is unaffected by the text-mirror branch (still edits in place, never synthesizes)', async () => {
     const synthesize = countingSynthesize();
     const doc = transcriptDoc(voiceLine('vn-mirror', 'hola que tal'));
