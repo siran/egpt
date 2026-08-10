@@ -22,7 +22,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { once } from 'node:events';
 import { readFileSync } from 'node:fs';
-import { WebSocket } from 'ws';
+import { WebSocket, WebSocketServer } from 'ws';
 import { createShellServer } from '../src/shell/server.mjs';
 import * as edit from '../src/shell/input.mjs';
 import { routeCommand } from '../src/shell/commands.mjs';
@@ -119,6 +119,106 @@ describe('shell editor — WS server (fake spine over a real socket)', () => {
     const finalName = calls.rename[0].to.split(/[\\/]/).pop();
     expect(finalName.startsWith('.')).toBe(false);                // ingest sweep skips dotfiles
     expect(finalName.endsWith('.tmp')).toBe(false);                // ...and *.tmp
+  });
+});
+
+// A fake clock for the re-listen backoff — SAME recording-and-manually-firing idiom
+// tests/shell-port.test.mjs's makeFakeClock() uses for its reconnect backoff, so no test
+// waits out a real 3s-60s delay.
+function makeFakeClock() {
+  const timers = [];
+  const cleared = [];
+  const setTimeout = (fn, ms) => { const id = timers.length + 1; timers.push({ id, fn, ms }); return id; };
+  const clearTimeout = (id) => { cleared.push(id); };
+  return { timers, cleared, setTimeout, clearTimeout };
+}
+
+// THE BUG THIS LOCKS (operator, tonight): the wss listener died twice with zero logging and
+// zero recovery — server.mjs registered 'listening'/'connection'/'error' on wss but never
+// 'close', so an unexpectedly-closed listener just sat dead until the process was restarted.
+// These close the underlying wss DIRECTLY (not via server.stop()) to simulate that unexpected
+// death, on a REAL `ws` server/client pair (same style as the describe block above) with an
+// INJECTED fake clock so no test waits out the real 3s-60s backoff.
+describe('shell editor — WS server: unexpected wss close is logged and recovered (not via stop())', () => {
+  const cleanups = [];
+  afterEach(() => { for (const c of cleanups.splice(0)) try { c(); } catch {} });
+
+  it('an unexpected close is logged loudly, then the server re-listens (backoff fired manually) and accepts a fresh connection', async () => {
+    const clock = makeFakeClock();
+    const logs = [];
+    const server = createShellServer({
+      port: 0, io: fakeIo(), onLog: (m) => logs.push(m),
+      setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout,
+    });
+    const wss1 = server.start();
+    cleanups.push(() => server.stop());
+    await once(wss1, 'listening');
+
+    wss1.close();   // simulate the unexpected death — NOT server.stop()
+    await waitFor(() => clock.timers.length > 0);
+    expect(logs.some((m) => /closed/i.test(m))).toBe(true);        // logged loudly, unambiguous wording
+    expect(clock.timers[0].ms).toBe(3_000);                        // RECONNECT_MIN_MS
+
+    clock.timers[0].fn();                                          // fire the fake timer — re-listen attempt
+    const wss2 = server.wss;
+    expect(wss2).not.toBe(wss1);                                   // a fresh WebSocketServer was bound
+    await once(wss2, 'listening');
+    const { port } = wss2.address();
+
+    const spine = new WebSocket(`ws://127.0.0.1:${port}`);
+    cleanups.push(() => spine.close());
+    await once(spine, 'open');
+    await waitFor(() => server.isConnected);
+    expect(server.isConnected).toBe(true);                          // a fresh connection succeeds post-recovery
+  });
+
+  it('server.stop() never triggers a re-listen: the pending timer is cancelled and no second WebSocketServer is built', async () => {
+    let constructCount = 0;
+    class CountingWSS extends WebSocketServer {
+      constructor(opts) { super(opts); constructCount++; }
+    }
+    const clock = makeFakeClock();
+    const server = createShellServer({
+      port: 0, io: fakeIo(), WebSocketServer: CountingWSS,
+      setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout,
+    });
+    const wss1 = server.start();
+    cleanups.push(() => server.stop());
+    await once(wss1, 'listening');
+    expect(constructCount).toBe(1);
+
+    wss1.close();                                                  // unexpected close → schedules a re-listen
+    await waitFor(() => clock.timers.length > 0);
+    expect(clock.timers).toHaveLength(1);
+
+    server.stop();                                                 // deliberate shutdown
+    expect(clock.cleared).toContain(clock.timers[0].id);           // the pending re-listen timer was cancelled
+    expect(clock.timers).toHaveLength(1);                          // stop() itself schedules nothing new
+    expect(constructCount).toBe(1);                                // no re-listen attempt → no second wss built
+  });
+
+  it('repeated unexpected closes back off exponentially: first retry at RECONNECT_MIN_MS, second retry doubles', async () => {
+    const clock = makeFakeClock();
+    const server = createShellServer({
+      port: 0, io: fakeIo(),
+      setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout,
+    });
+    const wss1 = server.start();
+    cleanups.push(() => server.stop());
+    await once(wss1, 'listening');
+
+    wss1.close();
+    await waitFor(() => clock.timers.length === 1);
+    expect(clock.timers[0].ms).toBe(3_000);                        // RECONNECT_MIN_MS
+
+    clock.timers[0].fn();                                          // fires the re-listen attempt synchronously
+    const wss2 = server.wss;
+    expect(wss2).not.toBe(wss1);
+    wss2.close();                                                  // the re-listened server ALSO closes, before
+                                                                    // ever reaching 'listening' (backoff must NOT
+                                                                    // have been reset by this attempt)
+    await waitFor(() => clock.timers.length === 2);
+    expect(clock.timers[1].ms).toBe(6_000);                        // doubled (caps at RECONNECT_MAX_MS = 60_000)
   });
 });
 

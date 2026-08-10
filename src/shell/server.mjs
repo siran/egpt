@@ -22,6 +22,10 @@ import { EGPT_HOME } from '../egpt-home.mjs';
 export const SHELL_WS_PORT = 23375;
 // Content the spine's ingest handle recognizes (src/spine/ingest.mjs isShellConnectMarker).
 const SHELL_CONNECT_MARKER = '/shell-connect';
+// Re-listen backoff (after the wss listener closes unexpectedly) — IDENTICAL shape to
+// shell-port.mjs's reconnect backoff (3s→60s), the client-side mirror of this same problem.
+const RECONNECT_MIN_MS = 3_000;
+const RECONNECT_MAX_MS = 60_000;
 
 /**
  * @param {object} opts
@@ -29,12 +33,16 @@ const SHELL_CONNECT_MARKER = '/shell-connect';
  * @param {typeof WebSocketServer} [opts.WebSocketServer]  INJECTION SEAM — the `ws` server constructor (default the real import)
  * @param {(m: string) => void} [opts.onLog]
  * @param {object} [opts.io]                          fs seam for the ingest announce ({mkdir,writeFile,rename}); real fs by default — tests inject fakes so no real ~/.egpt write happens
+ * @param {typeof globalThis.setTimeout} [opts.setTimeout]     re-listen timer seam (tests inject a fake clock so no real wait blocks)
+ * @param {typeof globalThis.clearTimeout} [opts.clearTimeout]
  */
 export function createShellServer({
   port = SHELL_WS_PORT,
   WebSocketServer: WSS = WebSocketServer,
   onLog = () => {},
   io = {},
+  setTimeout: setTimeoutFn = globalThis.setTimeout,
+  clearTimeout: clearTimeoutFn = globalThis.clearTimeout,
 } = {}) {
   const mkdir = io.mkdir ?? fsMkdir;
   const writeFile = io.writeFile ?? fsWriteFile;
@@ -42,6 +50,11 @@ export function createShellServer({
   let wss = null;
   let sock = null;       // the single connected spine socket (one console → one client)
   let onMsg = null;      // late-bound: the app registers it after construction
+  let stopped = false;   // set by stop() BEFORE closing wss, so its 'close' handler can tell
+                          // a deliberate shutdown from the listener dying out from under us
+  let listening = false; // true only between this wss's 'listening' and its next close/error
+  let reconnectTimer = null;
+  let reconnectMs = RECONNECT_MIN_MS;
 
   // Drop the marker AFTER the server is listening (so the spine's poke has somewhere to
   // dial into). Temp-name then rename so the ingest sweep — which skips dotfiles and
@@ -80,22 +93,57 @@ export function createShellServer({
     return { text: s, chatId: 'main', streaming: false };
   }
 
+  // Bind (or re-bind) the WebSocketServer and wire its handlers. THE ONE place this wiring
+  // exists — start() calls it for the initial bind, and the unexpected-close recovery path
+  // below calls it again for every re-listen attempt, so listening/connection/error/close
+  // are never wired twice in two places.
+  function bind() {
+    listening = false;
+    try {
+      wss = new WSS({ host: '127.0.0.1', port });
+    } catch (e) {
+      onLog(`shell-editor: re-listen attempt threw — ${e?.message ?? e}`);
+      scheduleRelisten();
+      return wss;
+    }
+    wss.on('listening', () => { listening = true; reconnectMs = RECONNECT_MIN_MS; announce(); });
+    wss.on('connection', (ws) => {
+      sock = ws;                                   // newest connection is THE console seat
+      onLog('shell-editor: spine connected');
+      ws.on('message', (buf) => { const m = parse(buf); if (m.text || m.delete || m.header != null) onMsg?.(m); });
+      ws.on('close', () => { if (sock === ws) sock = null; onLog('shell-editor: spine disconnected'); });
+      ws.on('error', (e) => onLog(`shell-editor: socket error — ${e?.message ?? e}`));
+    });
+    wss.on('error', (e) => {
+      onLog(`shell-editor: server error — ${e?.message ?? e}`);
+      // A server-level error before we ever reached 'listening' means this (re-)listen
+      // attempt itself failed (e.g. the port still momentarily held) — back off and retry,
+      // same as an unexpected close. An error once already listening is left as before
+      // (logged only): the listener itself is still up.
+      if (!stopped && !listening) scheduleRelisten();
+    });
+    wss.on('close', () => {
+      sock = null;
+      if (stopped) return;   // deliberate stop() — never recover from our own shutdown
+      onLog(`shell-editor: WS SERVER CLOSED UNEXPECTEDLY — spine cannot reach this console until it re-listens (retrying in ${Math.round(reconnectMs / 1000)}s)`);
+      scheduleRelisten();
+    });
+    return wss;
+  }
+
+  // Exponential backoff, IDENTICAL shape to shell-port.mjs's scheduleReconnect(): schedule
+  // the next re-listen attempt at the current backoff, then double it (capped) for next time;
+  // reset back to MIN happens on a successful 'listening' inside bind() above.
+  function scheduleRelisten() {
+    if (reconnectTimer) return;   // an attempt is already scheduled
+    reconnectTimer = setTimeoutFn(() => { reconnectTimer = null; bind(); }, reconnectMs);
+    reconnectMs = Math.min(reconnectMs * 2, RECONNECT_MAX_MS);
+  }
+
   return {
     // Bind the server. Returns the underlying WebSocketServer so a caller/test can await
     // its 'listening' event and read the bound port (ephemeral when `port: 0`).
-    start() {
-      wss = new WSS({ host: '127.0.0.1', port });
-      wss.on('listening', () => { announce(); });
-      wss.on('connection', (ws) => {
-        sock = ws;                                   // newest connection is THE console seat
-        onLog('shell-editor: spine connected');
-        ws.on('message', (buf) => { const m = parse(buf); if (m.text || m.delete || m.header != null) onMsg?.(m); });
-        ws.on('close', () => { if (sock === ws) sock = null; onLog('shell-editor: spine disconnected'); });
-        ws.on('error', (e) => onLog(`shell-editor: socket error — ${e?.message ?? e}`));
-      });
-      wss.on('error', (e) => onLog(`shell-editor: server error — ${e?.message ?? e}`));
-      return wss;
-    },
+    start() { return bind(); },
     // Register the inbound handler (fires `{ text, chatId }` the spine pushed).
     onSpineMessage(cb) { onMsg = cb; },
     // Push a frame to the connected spine. MVP omits chatId → `{ text }` (shell-port
@@ -107,7 +155,13 @@ export function createShellServer({
       catch (e) { onLog(`shell-editor: send failed — ${e?.message ?? e}`); return false; }
     },
     get isConnected() { return !!sock && sock.readyState === 1; },
+    // The CURRENT underlying WebSocketServer — reassigned on every re-listen, so a caller
+    // that needs the live instance (e.g. a test awaiting a re-listened server's 'listening'
+    // event) always reads the up-to-date one rather than the one start() first returned.
+    get wss() { return wss; },
     stop() {
+      stopped = true;   // BEFORE closing wss, so its 'close' handler sees a deliberate stop
+      if (reconnectTimer) { clearTimeoutFn(reconnectTimer); reconnectTimer = null; }
       try { sock?.close?.(); } catch { /* closing */ }
       try { wss?.close?.(); } catch { /* closing */ }
       sock = null; wss = null;
