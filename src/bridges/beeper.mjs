@@ -143,6 +143,11 @@ export function newerMsgId(a, b) {
 // test — so that is all that stayed behind. Returns the transcription text, or null when the id
 // has no VOICE-transcription entry (→ the branch falls through to @e→E; it never re-transcribes).
 const _VOICE_MARK = /^\(voice transcription(?:,[^)]*)?\)\s*/;
+// MEDIA-ANNOUNCEMENT line (operator 2026-08-10): the exact shape logged by _mediaLines
+// (~L1352) for a saved non-voice attachment — `(image foo.png) [saved: media/...]` — so the
+// bare-@e TEXT-mirror branch below can tell a real quoted PROSE reply apart from a quoted
+// image/video/audio/document announcement (which must never be synthesized to audio verbatim).
+const _MEDIA_MARK = /^\((?:image|video|audio|document)(?: [^)]*)?\) \[saved: /;
 
 export function transcriptionForNoteId(doc, noteId) {
   const body = bodyForMessageId(doc, noteId);
@@ -1450,7 +1455,14 @@ export async function startBeeperBridge(opts = {}) {
         // own echoed-back sends — see _maybeEmitEdits above) already holds exactly this text,
         // keyed by the REAL confirmed id — fall back to it when transcript.md has nothing.
         const quotedText = bodyForMessageId(doc, replyToId) ?? _seenText.get(msgKeyOf(chatID, replyToId)) ?? null;
-        if (quotedText && !_VOICE_MARK.test(quotedText) && synthesize && voice) {
+        if (quotedText && _MEDIA_MARK.test(quotedText)) {
+          // The quoted entry is a MEDIA-ANNOUNCEMENT line (image/video/audio/document), not real
+          // prose — synthesizing it verbatim would read the saved-path bookkeeping aloud as
+          // garbage audio (operator 2026-08-10). Don't touch synthesize/sendMedia; instead swap
+          // the bare wake-word for a vision instruction and fall through to a normal @e→E turn.
+          text = "Describe what you see in the message you're replying to.";
+          onLog(`beeper: 👁 quoted media announcement ↩${replyToId} [${info.title}] — falling through to @e→E with a describe instruction`);
+        } else if (quotedText && !_VOICE_MARK.test(quotedText) && synthesize && voice) {
           const ack = await sendMessage(chatID, '🔊 reading…', { replyToMessageID: replyToId });
           const ackId = ack ? await ack.confirmedId : null;
           if (ackId) {

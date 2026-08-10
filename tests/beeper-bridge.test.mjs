@@ -2205,6 +2205,39 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
     expect(incoming.some((i) => i.from.msgKey === 'reply-txt')).toBe(false);   // the @e reply never reached the persona turn
   });
 
+  // MEDIA-ANNOUNCEMENT GUARD (operator 2026-08-10): a quoted entry logged by _mediaLines for a
+  // saved image/video/audio/document attachment — `(kind file) [saved: media/...]` — is NOT
+  // prose. Synthesizing it verbatim would read the saved-path bookkeeping aloud. Instead the
+  // mirror must fall through to a NORMAL @e→E turn, with the bare wake-word swapped for a
+  // vision instruction so E actually looks at the quoted attachment.
+  it('a bare @e reply to a quoted IMAGE announcement does NOT synthesize — falls through to @e→E with a describe instruction', async () => {
+    const synthesize = countingSynthesize();
+    const doc = transcriptDoc(textLine('img-1', '(image cat.png) [saved: media/20260810-abc-cat.png]'));
+    const { incoming } = await startBridge({ readTranscript: async () => doc, synthesize, voice: 'ona' });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-img', text: '@e', isSender: true, linkedMessageID: 'img-1' })] });
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'reply-img'));
+    expect(synthesize.calls).toBe(0);                                            // never attempted
+    expect(fake.uploads).toHaveLength(0);                                        // no audio sent
+    expect(fake.posts.find((p) => p.text === '🔊 reading…')).toBeFalsy();        // no ack — synthesis path never entered
+    const turn = incoming.find((i) => i.from.msgKey === 'reply-img');
+    expect(turn.text).toBe("Describe what you see in the message you're replying to.");   // substituted, not bare "@e"
+    expect(turn.from.atEAnywhere).toBe(true);                                    // wake still recognized (computed from the ORIGINAL bare text)
+    expect(turn.from.atEStart).toBe(true);
+  });
+
+  it('a bare @e reply to a quoted VIDEO announcement (multi-line: frames + video transcription) does NOT synthesize — falls through with the describe instruction', async () => {
+    const synthesize = countingSynthesize();
+    const doc = transcriptDoc(textLine('vid-1',
+      '(video clip.mp4) [saved: media/20260810-abc-clip.mp4]\nframes (Read these): media/f1.jpg  media/f2.jpg\n(video transcription) someone talking in the clip'));
+    const { incoming } = await startBridge({ readTranscript: async () => doc, synthesize, voice: 'ona' });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-vid', text: '@e', isSender: true, linkedMessageID: 'vid-1' })] });
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'reply-vid'));
+    expect(synthesize.calls).toBe(0);                                            // the multi-line body still matches at line-start
+    expect(fake.uploads).toHaveLength(0);
+    const turn = incoming.find((i) => i.from.msgKey === 'reply-vid');
+    expect(turn.text).toBe("Describe what you see in the message you're replying to.");
+  });
+
   // BARE FORM ACCEPTED TOO (operator 2026-08-10): unlike @ev voice-out (which needs '@' to avoid
   // matching "ev" inside ordinary prose), this gate already requires the WHOLE reply to be
   // nothing but the wake-word, so a bare 'e' (no '@') carries the same negligible false-positive
