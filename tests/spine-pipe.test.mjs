@@ -404,7 +404,7 @@ describe('spine — voice-reply pipeline (chunk 2)', () => {
     return { spine, bridge, brain, transcript, sender };
   }
 
-  it('voice-in (ev.isVoice, no @ev): text-out NOT called; bridge.sendMedia called; placeholder deleted (surface:false)', async () => {
+  it('voice-in (ev.isVoice, no @ev): companion text-out sent (quoting the media, replyTo=confirmedId); placeholder deleted (surface:false)', async () => {
     let synthCalls = 0;
     const synthesize = async () => { synthCalls++; return Buffer.from('AUDIO'); };
     const { spine, bridge, sender } = buildVoice({ synthesize });
@@ -414,7 +414,8 @@ describe('spine — voice-reply pipeline (chunk 2)', () => {
     expect(synthCalls).toBe(1);
     expect(bridge.media).toHaveLength(1);
     expect(bridge.media[0].chat).toBe(MSG.chatId);
-    expect(bridge.sent).toHaveLength(0);                                        // no plain text-out
+    expect(bridge.sent).toHaveLength(1);                                        // voice replies are still readable
+    expect(bridge.sent[0]).toMatchObject({ chat: MSG.chatId, text: '↩ hola', opts: { replyTo: 'conf-1' } });
     expect(sender.finishCalls.at(-1)).toMatchObject({ reply: { text: '' }, opts: { surface: false } });
   });
 
@@ -428,7 +429,7 @@ describe('spine — voice-reply pipeline (chunk 2)', () => {
     expect(bridge.sent).toEqual([{ chat: MSG.chatId, text: '↩ hola', opts: {} }]);
   });
 
-  it('@ev override in a TEXT turn: sendMedia called, THEN bridge.send called with the same proseText + replyTo=confirmedId', async () => {
+  it('@ev override in a TEXT turn: sendMedia called, THEN companion bridge.send called with the same proseText + replyTo=confirmedId', async () => {
     const synthesize = async () => Buffer.from('AUDIO');
     const { spine, bridge } = buildVoice({ synthesize });
     spine.start();

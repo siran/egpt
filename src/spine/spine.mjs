@@ -913,11 +913,14 @@ export function createSpine({
             let sent = null;
             try {
               sent = await bridge.sendMedia(ev.chatId, tmpPath, {});
-              // evOverride ONLY: a separate plain-text send, quoting the just-sent voice
-              // message, carrying the SAME proseText (no re-generation). No bodyEmoji/label
-              // stamping — this send doesn't go through `out` and that stamping isn't
-              // available in this closure; an explicit simplicity-first scope decision.
-              if (sent && sent.ok && evOverride) await bridge.send(ev.chatId, proseText, { replyTo: await sent.confirmedId });
+              // Always a companion plain-text send, quoting the just-sent voice message,
+              // carrying the SAME proseText (no re-generation) — a voice reply is still
+              // useful to read (operator 2026-08-10, was evOverride-only: a plain
+              // voice-triggered reply shipped audio with no readable text at all). No
+              // bodyEmoji/label stamping — this send doesn't go through `out` and that
+              // stamping isn't available in this closure; an explicit simplicity-first
+              // scope decision.
+              if (sent && sent.ok) await bridge.send(ev.chatId, proseText, { replyTo: await sent.confirmedId });
             } catch (e) { note(`voice-send ${to}/${ev.chatId}: ${e?.message ?? e}`); sent = null; }
             if (sent && sent.ok) {
               // The "⏳ Thinking…" placeholder is resolved by DELETING it (surface:false) —
