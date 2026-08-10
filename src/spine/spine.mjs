@@ -27,6 +27,7 @@ import { replyLine, contextSinceLastTurn, promptWithRecentContext, bodyForMessag
 import { isHumanTurn, parseStopWord } from '../stop-guard.mjs';
 import { mentionHits } from '../auto-mode.mjs';
 import { lifecycleExit } from './ingest.mjs';
+import { cleanForSpeech } from '../speech-clean.mjs';
 
 // ---------------------------------------------------------------------------
 // Ports — the interfaces the loop depends on (injected, never global). §2b.
@@ -901,7 +902,10 @@ export function createSpine({
       let voiceDelivered = false;
       if (wantsVoice && synthesize && voice) {
         let audio = null;
-        try { audio = await synthesize(proseText, voice, note); } catch (e) { note(`synthesize ${to}/${ev.chatId}: ${e?.message ?? e}`); audio = null; }
+        // Spoken text is CLEANED (markdown stripped, trailing Sources section
+        // dropped) — proseText itself stays raw for the on-screen quote below.
+        const speechText = cleanForSpeech(proseText);
+        try { audio = await synthesize(speechText, voice, note); } catch (e) { note(`synthesize ${to}/${ev.chatId}: ${e?.message ?? e}`); audio = null; }
         if (audio) {
           const tmpPath = join(tmpdir(), `egpt-voice-reply-${randomBytes(8).toString('hex')}.ogg`);
           try {
