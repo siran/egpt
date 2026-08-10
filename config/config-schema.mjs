@@ -1034,6 +1034,63 @@ export const CONFIG_SCHEMA = {
       token   <- transcription_token
   `,
 
+  synthesizer: `
+    WORKER-spine role block (the GPU box, e.g. DOLLY; REVE must NOT set this) — the
+    text-to-speech counterpart to transcriptor: above. Piper renders the text, ffmpeg
+    transcodes to Opus/ogg.
+
+    KEYS:
+      enabled
+        true = this egpt service answers POST /v1/synthesize for a main spine; it holds
+        NO conversation context and sends NOTHING outbound.
+      port
+        DEFAULT: 23391 — what a remote spine's voice_service endpoint points at.
+      bind
+        DEFAULT: "127.0.0.1" — set "0.0.0.0" or this machine's LAN ip to accept the main
+        spine. NEVER expose to the internet.
+      server
+        token  HMAC auth (same value on the worker + the main spine's voice_service
+               engine block); unsigned/stale requests are rejected and logged.
+      ffmpeg_command
+        ffmpeg path for the WAV->Opus/ogg transcode. DEFAULT: "ffmpeg" (PATH lookup).
+        Deliberately NOT shared with transcription.cli.ffmpeg_command — set it again
+        here if the same binary should serve both.
+
+    The piper binary + voice models are NOT config: pythonPath and voicesDir are derived
+    from the RADIO_PIPER environment variable (venv/Scripts/python.exe and voices/ under
+    it) — machine-local layout, not a portable config value. Missing RADIO_PIPER refuses
+    to start (logged), same as a missing token.
+
+    voice is whitelisted per-request against the .onnx files actually present in
+    voicesDir — an unrecognized voice is a 400, never an attempted file open.
+  `,
+
+  voice_service: `
+    Client-side TTS config — the voice_service.js analog of transcription_service: above
+    (rung-resolved the same way, across config/config.yaml < config/conversations.yaml
+    < <entity>/config.yaml, nearest the room wins), minus the echo/HRW section (that
+    problem is specific to transcription's double-post race and does not apply here —
+    a voice reply is sent by exactly one spine, the one running the turn).
+
+    KEYS:
+      use_config
+        Name of the active profile.
+      <profile-name>
+        fallback_order
+          [<engine-name>...] — tried in order, first successful render wins.
+        <engine-name>
+          type: "piper-server-remote"
+            POST to endpoint + token (HMAC), the same scheme transcription's
+            whisper-server-remote uses.
+              endpoint            e.g. "http://192.168.1.102:23391"
+              token               HMAC auth; SAME value as the worker's synthesizer.server.token
+              connect_timeout_ms  liveness probe — fail fast if the endpoint is down.
+                                  DEFAULT: 3000
+              timeout_ms          render/decode budget. DEFAULT: 20000
+              cooldown_ms         circuit-breaker — a failed/unreachable remote is
+                                  SKIPPED until it elapses. DEFAULT: 30000
+  `,
+
   rooms: `
     Multi-member rooms config.
 

@@ -115,6 +115,27 @@ networks:
 #     language: es
 #     ffmpeg_command: C:\path\ffmpeg.exe
 
+# --- Voice: a standalone LAN TTS service --------------------------------------
+# The text-to-speech counterpart to transcription_service above: piper renders text,
+# ffmpeg transcodes to Opus/ogg. Not launched by default — set voice_service on a main
+# spine to use a remote piper worker.
+#
+# voice_service:
+#   use_config: main
+#   main:
+#     fallback_order: [gpu]
+#     gpu: { type: piper-server-remote, endpoint: "http://192.168.1.102:23391", token: "SHARED_SECRET" }
+#
+# To HOST the server for other nodes (the GPU box - the "synthesizer" worker role):
+# synthesizer:
+#   enabled: true                 # answer POST /v1/synthesize for a main spine (this node's WORKER role)
+#   bind: "0.0.0.0"               # LAN ip / 0.0.0.0 to accept a remote spine; NEVER the internet
+#   port: 23391                   # what a client's voice_service endpoint points at
+#   server: { token: "SHARED_SECRET" }   # HMAC auth; SAME value on the worker and its clients
+#   ffmpeg_command: C:\path\ffmpeg.exe
+# Piper itself is NOT config: set the RADIO_PIPER env var to the piper install root on
+# this machine (must contain venv\Scripts\python.exe and voices\*.onnx).
+
 # --- Transcript echo: who posts the ear ("listened") transcript --------------
 # The echo posts a voice note's transcript back into the chat. Among the echo-capable
 # eGPT nodes present in a room, HRW picks exactly ONE to post each note (rotates per

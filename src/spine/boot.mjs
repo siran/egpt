@@ -55,6 +55,8 @@ import { extFromMeta } from '../media-save.mjs';
 import { createTranscriptorWorker } from './transcriptor-worker.mjs';
 import { startWhisperServer } from '../tools/whisper-server.mjs';
 import { startTranscriptorServer } from '../tools/transcriptor.mjs';
+import { createSynthesizerWorker } from './synthesizer-worker.mjs';
+import { startSynthesizerServer } from '../tools/synthesizer.mjs';
 import { createBrains } from './brains.mjs';
 import { createMeshService } from './mesh.mjs';
 import { createCompaction } from './compaction.mjs';
@@ -378,6 +380,10 @@ export async function boot({
   // transcriptor.enabled NEVER spawns a real whisper-server or binds a real port (see below).
   startWhisperServer: startWhisperServerFn = startWhisperServer,
   startTranscriptorServer: startTranscriptorServerFn = startTranscriptorServer,
+  // synthesizer WORKER-role process-boundary seam — the :23391 endpoint (piper/ffmpeg spawn
+  // per-request inside it) binds through here. Defaults to the real spawner; tests inject a
+  // fake so a boot with synthesizer.enabled NEVER binds a real port (see below).
+  startSynthesizerServer: startSynthesizerServerFn = startSynthesizerServer,
 
   ingest = true,                      // watch EGPT_HOME/state/ingest for /restart, /upgrade, /rewind (tests pass false)
   exit = (code) => process.exit(code),// how a lifecycle command leaves (the daemon respawns on 42/43/44)
@@ -655,6 +661,18 @@ export async function boot({
     onLog: (m) => log.line?.(`[transcriptor] ${m}`),
   });
   if (ingest) transcriptorWorker.start();
+
+  // WORKER ROLE: synthesizer (operator 2026-08-09) — the TTS counterpart to transcriptor
+  // above. A node whose config declares `synthesizer.enabled: true` (e.g. DOLLY) serves the
+  // signed POST /v1/synthesize endpoint for the main spine's voice replies: piper renders
+  // the text, ffmpeg transcodes to Opus/ogg. INGEST-GATED and FIRE-AND-FORGET for the same
+  // reasons as transcriptorWorker above.
+  const synthesizerWorker = createSynthesizerWorker({
+    getConfig,
+    startSynthesizerServer: startSynthesizerServerFn,
+    onLog: (m) => log.line?.(`[synthesizer] ${m}`),
+  });
+  if (ingest) synthesizerWorker.start();
 
   // The persona wake-word set (operator 2026-07-09: SYMMETRIC nodes — each wakes on its OWN
   // configured handles only, NOTHING is injected network-wide). ONE source of truth (the agents
@@ -1286,6 +1304,7 @@ export async function boot({
       ingestWatcher?.stop();
       compaction.stop();
       transcriptorWorker.stop();   // stops BOTH the resident whisper-server + the :23390 endpoint
+      synthesizerWorker.stop();    // stops the :23391 endpoint
       shellPort.stop();            // close the editor socket + cancel any pending reconnect
       spine.stop();
     },
