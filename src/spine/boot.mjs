@@ -50,6 +50,7 @@ import { createReplyActions } from './reply-actions.mjs';
 import { createAdvice } from './advice.mjs';
 import { createMedia } from './media.mjs';
 import { createTranscription } from './transcription.mjs';
+import { createVoiceSynthesis } from './synthesis.mjs';
 import { uploadNote, radioNoteFilename, pickSpeaker } from '../radio-relay.mjs';
 import { extFromMeta } from '../media-save.mjs';
 import { createTranscriptorWorker } from './transcriptor-worker.mjs';
@@ -628,6 +629,7 @@ export async function boot({
   // server → cli), driven by config.transcription_service. One transcriber feeds
   // the bridge (voice notes) and the media service (a video's audio).
   const tx = createTranscription({ getConfig, resolveConfig: configResolver.configFor, onLog: (m) => log.line?.(`[transcribe] ${m}`) });
+  const vx = createVoiceSynthesis({ getConfig, onLog: (m) => log.line?.(`[synthesize] ${m}`) });
 
   // Reap a stray resident whisper-server this node no longer runs (operator 2026-07-10):
   // when `local` was dropped from the active profile's fallback_order, the old chain's
@@ -1235,7 +1237,7 @@ export async function boot({
     onLog: (m) => log.line?.(`[relay] ${m}`),
   });
 
-  const spine = createSpine({ bridge, brain, ...services, commands, mesh, actions, advice, guard, guardOverride, stopSwitch, isSelfChat, roomRelay, readTranscript, radioRelay: radioRelay.relay, defaultBeing: defaultKey, node_name, timeZone: transcriptTimeZone, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
+  const spine = createSpine({ bridge, brain, ...services, commands, mesh, actions, advice, guard, guardOverride, stopSwitch, isSelfChat, roomRelay, readTranscript, radioRelay: radioRelay.relay, synthesize: vx.synthesize, voice: vx.voice, defaultBeing: defaultKey, node_name, timeZone: transcriptTimeZone, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
   // Bind the advice service's answer-routing dispatch now that the spine exists: an
   // operator answer in the advice channel re-enters the pipe as a turn in the origin chat.
   advice.useDispatch(spine.handleInbound);

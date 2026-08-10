@@ -1767,12 +1767,24 @@ describe('beeper bridge — E limbs + reply-to-E notification', () => {
     const { bridge } = await startBridge();
     const p = join(stateDir, 'pic.png');
     writeFileSync(p, 'fake-image-bytes');
-    const ok = await bridge.sendMedia(CHAT('chat-1'), p, { caption: 'look' });
-    expect(ok).toBe(true);
+    const result = await bridge.sendMedia(CHAT('chat-1'), p, { caption: 'look' });
+    // Same success shape sendMessage returns (chunk 2, voice-reply pipeline: sendMedia's
+    // caller needs the confirmed id to quote the media it just sent).
+    expect(result).toMatchObject({ ok: true, chatId: 'chat-1' });
+    expect(result).toHaveProperty('pendingMessageID');
+    await expect(result.confirmedId).resolves.toEqual(expect.any(String));
     expect(fake.uploads).toHaveLength(1);                  // /v1/assets/upload was hit
     const post = fake.posts[fake.posts.length - 1];
     expect(post.attachment).toMatchObject({ uploadID: 'up-1', type: 'image', mimeType: 'image/png' });
     expect(post.text).toBe('look');
+  });
+
+  it('sendMedia still returns false on every existing failure path (no chat resolved)', async () => {
+    const { bridge } = await startBridge();
+    const p = join(stateDir, 'pic.png');
+    writeFileSync(p, 'fake-image-bytes');
+    const result = await bridge.sendMedia('no-such-chat', p, {});
+    expect(result).toBe(false);
   });
 
   // The POST's pendingMessageID is NOT an id anything else in the system ever uses:

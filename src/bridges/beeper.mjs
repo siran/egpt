@@ -846,9 +846,9 @@ export async function startBeeperBridge(opts = {}) {
       if (caption) body.text = String(caption);
       // A captioned media send is re-findable by its caption, so it gets the same
       // CONFIRMED-id treatment as a text send (its echo is then recognized as ours).
-      await postAndConfirm(chatID, body, caption ? String(caption) : null);
+      const { r, confirmedId } = await postAndConfirm(chatID, body, caption ? String(caption) : null);
       onLog(`beeper: media sent [${chatID}] ${basename(filePath)} (${up.mimeType || 'unknown'})`);
-      return true;
+      return { ok: true, chatId: chatID, pendingMessageID: r?.pendingMessageID, confirmedId };
     } catch (e) { onLog(`beeper: media send failed [${chatID}/${filePath}] — ${e?.message ?? e}`); return false; }
   }
   // Resolve the CONFIRMED id of a message we just sent: poll the recent list and

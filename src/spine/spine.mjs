@@ -17,10 +17,15 @@
 // Phase 1 scope (SPINE-REWRITE-PLAN.md §4, §6): the receive → gate → brain →
 // reply → send pipe, proven against fakes. Mesh forwarding, voice/media, and the
 // shell/slash console are layered in after v1, each behind its service seam.
+import { writeFile, unlink } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { makeSerialByKey } from '../serial-by-key.mjs';
 import { isBrainFailureResult } from '../brain-errors.mjs';
 import { replyLine, contextSinceLastTurn, promptWithRecentContext, bodyForMessageId, promptWithQuotedMessage, lastSurfacedBeing, RECENT_CONTEXT_MAX_CHARS } from '../transcript-log.mjs';
 import { isHumanTurn, parseStopWord } from '../stop-guard.mjs';
+import { mentionHits } from '../auto-mode.mjs';
 import { lifecycleExit } from './ingest.mjs';
 
 // ---------------------------------------------------------------------------
@@ -120,6 +125,8 @@ export function createSpine({
   readTranscript = null,
   roomRelay = null,                    // optional §Phase-4 room brain-member fan-out (createRoomRelay, boot-wired): delivers a received room message to each brain member per mode, streams the reply back, and RE-ENTERS it as a non-human turn. Null = no web-brain members (byte-identical to before).
   radioRelay = null,                   // optional (ev) => Promise<void> — air a WhatsApp voice note on the internet radio station its room is joined to (createRadioNoteRelay, boot-wired). Called ONLY for ev.isVoice + humanTurn(ev) (below), fire-and-forget with its own catch — a side effect that must never touch the message path. Null = no radio relay (byte-identical to before).
+  synthesize = null,                   // optional (text, voice, log) => Promise<Buffer|null> — voice-reply TTS (createVoiceSynthesis, boot-wired). Null = no voice pipeline wired (byte-identical to today: every reply is text).
+  voice = null,                        // optional string — the persona's own voice name (voice_service's active profile.voice). Null = voice-out can never render even if synthesize is set (falls back to text).
   defaultBeing = 'e',                  // the persona: the being an un-addressed message dispatches to, and the turn/cycle owner for a mesh-target message (which is GATED as its own relay agent — see gateAs)
   node_name = null,                    // THIS node's name (config node_name, boot-asserted non-empty) — the ONE thing the quick-reply lookup needs to tell its own rendered signature on the record from a co-account PEER's. Null (tests) = every signed line reads as a peer's, the safe direction.
   timeZone = null,                     // the node's config default_time_zone (boot-resolved) — the zone the CYCLE's reply lines render in, the same clock identity/transcript use so the accumulated prompt never disagrees with the file. null → UTC, unchanged.
@@ -883,9 +890,46 @@ export function createSpine({
       // budget). ONLY a deliverable prose reply is delayed — an action-only reply (e.g. /ask
       // consulting the operator) has no prose, so it stays undelayed (consulting fast is fine).
       if (d.mode === 'auto' && deliverable) await sleepTyping(proseText);
+      // VOICE-OUT (chunk 2, operator 2026-08-09): a voice-triggered turn replies with
+      // synthesized voice; an explicit `@ev` text handle FORCES voice-out (with a
+      // quoted-text transcript underneath) — `@` required, the bare `ev` form is too
+      // easy to false-positive on ordinary prose. Only meaningful when there is prose
+      // to speak at all (deliverable); actionOnly/failShaped/non-surfaced turns never
+      // reach here with anything to render as audio.
+      const evOverride = deliverable && mentionHits(ev.body, ['ev'], { addressWithoutAt: false }).length > 0;
+      const wantsVoice = deliverable && (evOverride || ev.isVoice);
+      let voiceDelivered = false;
+      if (wantsVoice && synthesize && voice) {
+        let audio = null;
+        try { audio = await synthesize(proseText, voice, note); } catch (e) { note(`synthesize ${to}/${ev.chatId}: ${e?.message ?? e}`); audio = null; }
+        if (audio) {
+          const tmpPath = join(tmpdir(), `egpt-voice-reply-${randomBytes(8).toString('hex')}.ogg`);
+          try {
+            await writeFile(tmpPath, audio);
+            let sent = null;
+            try {
+              sent = await bridge.sendMedia(ev.chatId, tmpPath, {});
+              // evOverride ONLY: a separate plain-text send, quoting the just-sent voice
+              // message, carrying the SAME proseText (no re-generation). No bodyEmoji/label
+              // stamping — this send doesn't go through `out` and that stamping isn't
+              // available in this closure; an explicit simplicity-first scope decision.
+              if (sent && sent.ok && evOverride) await bridge.send(ev.chatId, proseText, { replyTo: await sent.confirmedId });
+            } catch (e) { note(`voice-send ${to}/${ev.chatId}: ${e?.message ?? e}`); sent = null; }
+            if (sent && sent.ok) {
+              // The "⏳ Thinking…" placeholder is resolved by DELETING it (surface:false) —
+              // the actual content already went out as a fresh media message, not an edit
+              // of the placeholder.
+              await out.finish({ text: '' }, { surface: false });
+              voiceDelivered = true;
+            }
+          } finally { try { await unlink(tmpPath); } catch {} }
+        }
+      }
       // DELIVER the STRIPPED prose. Action-only → surface:false (delete placeholder);
       // failShaped → blanked → no-reply marker; else the prose (or no-reply marker if empty).
-      await out.finish(failShaped ? { text: '' } : { ...reply, text: proseText }, { surface: actionOnly ? false : surfaced });
+      // Also the voice path's fallback: synthesis declined/threw, or sendMedia failed — the
+      // reply is never silently dropped.
+      if (!voiceDelivered) await out.finish(failShaped ? { text: '' } : { ...reply, text: proseText }, { surface: actionOnly ? false : surfaced });
       // EXECUTE the limbs AFTER the reply is recorded + delivered: confined to ev.chatId,
       // errors logged, never crash the turn (the record above already captured everything).
       if (parsed && hadActions) { try { await actions.execute(parsed.run, parsed.stripped, ev, { being: to }); } catch (e) { note(`actions ${to}/${ev.chatId}: ${e?.message ?? e}`); } }

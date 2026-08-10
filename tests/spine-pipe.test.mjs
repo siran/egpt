@@ -352,6 +352,134 @@ describe('spine — mode:auto (operator impersonation)', () => {
   });
 });
 
+// VOICE-REPLY PIPELINE (chunk 2, operator 2026-08-09): a voice-triggered turn replies
+// with synthesized voice (bridge.sendMedia), a text-triggered turn keeps replying with
+// text, and an explicit `@ev` text handle forces voice-out with a quoted-text transcript
+// underneath. Fakes for synthesize/bridge.sendMedia/bridge.send — no real process, no
+// real network, no real port (same DI discipline as the rest of this file).
+describe('spine — voice-reply pipeline (chunk 2)', () => {
+  function fakeVoiceBridge() {
+    let cb = null;
+    return {
+      sent: [], media: [],
+      onMessage(fn) { cb = fn; },
+      send(chat, text, opts = {}) { this.sent.push({ chat, text, opts }); },
+      sendMedia(chat, path, opts = {}) { this.media.push({ chat, path, opts }); return { ok: true, chatId: chat, pendingMessageID: 'pm-1', confirmedId: Promise.resolve('conf-1') }; },
+      emit(msg) { return cb(msg); },
+      stopped: false,
+      stop() { this.stopped = true; },
+    };
+  }
+  // Same shape as fakeSender, but records every finish() call so a test can assert the
+  // placeholder was resolved with { surface: false } (deleted) rather than surfaced text.
+  function fakeSenderRecording(bridge) {
+    const finishCalls = [];
+    return {
+      finishCalls,
+      open(chatId) {
+        return {
+          update() {}, fail() {},
+          async finish(reply, opts = { surface: true }) {
+            finishCalls.push({ reply, opts });
+            const t = typeof reply === 'string' ? reply : reply?.text;
+            if (opts.surface !== false && t) bridge.send(chatId, t);
+          },
+        };
+      },
+    };
+  }
+  function buildVoice({ synthesize, voice = 'es_MX-claude-high' } = {}) {
+    const bridge = fakeVoiceBridge();
+    const brain = { calls: [], async turn(being, ev) { this.calls.push({ being, ev }); return { text: `↩ ${ev.body}`, sessionId: 's1' }; } };
+    const transcript = fakeTranscript();
+    const sender = fakeSenderRecording(bridge);
+    const spine = createSpine({
+      bridge, brain, store: fakeStore(),
+      identity: fakeIdentity, router: fakeRouter,
+      gating: fakeGating({}),
+      sender, transcript, heartbeats: fakeHeartbeats(),
+      clock: { now: () => 1000 },
+      synthesize, voice,
+    });
+    return { spine, bridge, brain, transcript, sender };
+  }
+
+  it('voice-in (ev.isVoice, no @ev): text-out NOT called; bridge.sendMedia called; placeholder deleted (surface:false)', async () => {
+    let synthCalls = 0;
+    const synthesize = async () => { synthCalls++; return Buffer.from('AUDIO'); };
+    const { spine, bridge, sender } = buildVoice({ synthesize });
+    spine.start();
+    await bridge.emit({ ...MSG, isVoice: true });
+
+    expect(synthCalls).toBe(1);
+    expect(bridge.media).toHaveLength(1);
+    expect(bridge.media[0].chat).toBe(MSG.chatId);
+    expect(bridge.sent).toHaveLength(0);                                        // no plain text-out
+    expect(sender.finishCalls.at(-1)).toMatchObject({ reply: { text: '' }, opts: { surface: false } });
+  });
+
+  it('text-in, no @ev: completely unchanged (regression lock) — no synth call, plain text-out', async () => {
+    const synthesize = async () => { throw new Error('must not be called'); };
+    const { spine, bridge } = buildVoice({ synthesize });
+    spine.start();
+    await bridge.emit(MSG);   // isVoice unset, no @ev in body
+
+    expect(bridge.media).toHaveLength(0);
+    expect(bridge.sent).toEqual([{ chat: MSG.chatId, text: '↩ hola', opts: {} }]);
+  });
+
+  it('@ev override in a TEXT turn: sendMedia called, THEN bridge.send called with the same proseText + replyTo=confirmedId', async () => {
+    const synthesize = async () => Buffer.from('AUDIO');
+    const { spine, bridge } = buildVoice({ synthesize });
+    spine.start();
+    await bridge.emit({ ...MSG, isVoice: false, body: '@ev hola' });
+
+    expect(bridge.media).toHaveLength(1);
+    expect(bridge.sent).toHaveLength(1);
+    expect(bridge.sent[0]).toMatchObject({ chat: MSG.chatId, text: '↩ @ev hola', opts: { replyTo: 'conf-1' } });
+  });
+
+  it('synthesis returns null → falls back to the normal text out.finish call, reply never dropped', async () => {
+    const synthesize = async () => null;
+    const { spine, bridge } = buildVoice({ synthesize });
+    spine.start();
+    await bridge.emit({ ...MSG, isVoice: true });
+
+    expect(bridge.media).toHaveLength(0);
+    expect(bridge.sent).toEqual([{ chat: MSG.chatId, text: '↩ hola', opts: {} }]);
+  });
+
+  it('synthesis throws → falls back to the normal text out.finish call', async () => {
+    const synthesize = async () => { throw new Error('boom'); };
+    const { spine, bridge } = buildVoice({ synthesize });
+    spine.start();
+    await bridge.emit({ ...MSG, isVoice: true });
+
+    expect(bridge.media).toHaveLength(0);
+    expect(bridge.sent).toEqual([{ chat: MSG.chatId, text: '↩ hola', opts: {} }]);
+  });
+
+  it('bridge.sendMedia failure (not ok) falls back to the normal text out.finish call', async () => {
+    const synthesize = async () => Buffer.from('AUDIO');
+    const { spine, bridge } = buildVoice({ synthesize });
+    bridge.sendMedia = (chat, path, opts) => { bridge.media.push({ chat, path, opts }); return false; };
+    spine.start();
+    await bridge.emit({ ...MSG, isVoice: true });
+
+    expect(bridge.media).toHaveLength(1);
+    expect(bridge.sent).toEqual([{ chat: MSG.chatId, text: '↩ hola', opts: {} }]);
+  });
+
+  it('no synthesize/voice wired: byte-identical to before — no synth attempted, no media, plain text-out', async () => {
+    const { spine, bridge } = buildVoice({ synthesize: null, voice: null });
+    spine.start();
+    await bridge.emit({ ...MSG, isVoice: true });
+
+    expect(bridge.media).toHaveLength(0);
+    expect(bridge.sent).toEqual([{ chat: MSG.chatId, text: '↩ hola', opts: {} }]);
+  });
+});
+
 // SYMMETRIC NODES (operator 2026-07-09): the sibling-output guard + standby takeover were
 // REMOVED. Each node answers only the agents IT configures and nothing is injected network-wide,
 // so there is no overlap to suppress. A message that merely STARTS with a peer's old reply stamp

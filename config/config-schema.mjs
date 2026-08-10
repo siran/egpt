@@ -1076,6 +1076,10 @@ export const CONFIG_SCHEMA = {
       use_config
         Name of the active profile.
       <profile-name>
+        voice
+          The voice name this profile renders replies as by default (e.g.
+          "es_MX-claude-high") — must match a model file the worker's
+          voicesDir actually contains.
         fallback_order
           [<engine-name>...] — tried in order, first successful render wins.
         <engine-name>
