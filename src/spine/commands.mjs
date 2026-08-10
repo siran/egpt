@@ -998,7 +998,11 @@ export function createCommands({
       await roomJoin(ev, rest); return;
     }
     if (first === 'leave') {
-      if (!rest) { await send?.(ev.chatId, ROOM_USAGE); return; }
+      if (!rest) {
+        const current = curRoomName(ev);
+        if (!current) { await send?.(ev.chatId, 'not in any room'); return; }
+        await roomLeave(ev, current); return;
+      }
       await roomLeave(ev, rest); return;
     }
     if (first === 'members') {

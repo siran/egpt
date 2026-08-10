@@ -149,6 +149,14 @@ export function whisperPortOf(cfg) {
 // instead of pushed back over this socket. Pure aside from that one registration call, so
 // the redirect decision itself is testable directly (mirrors makeShellAwareBridge below).
 export function redirectShellToRoom(msg, { currentRoomOf, claim } = {}) {
+  // Commands (anything slash-prefixed) are never part of the room fan-out — this feature is
+  // "prose fan-out to the current room", not "commands run against the room". Without this
+  // guard, `/room leave acim` itself got redirected before commands.mjs ever saw it, so it
+  // read/wrote currentRoom['room'] instead of currentRoom['shell'] and the shell got wedged
+  // in the room permanently (confirmed live, 2026-08-09). This is the same primitive signal
+  // commands.mjs's isCommand() checks first (body.startsWith('/')) — the full check also
+  // needs a built `ev` (identity.build), which doesn't exist yet at this point in the pipeline.
+  if (String(msg?.body ?? '').trim().startsWith('/')) return msg;
   const room = currentRoomOf?.('shell');
   if (!room || room === 'lobby') return msg;
   claim?.(room);
