@@ -141,6 +141,12 @@ const _escapeWake = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 // character it escapes is a SyntaxCharacter, which is exactly the set `u` still permits as an
 // identity escape, so it needed no change.
 const _NOT_GLUED = '(?![\\p{L}\\p{N}_-])';
+// The SAME boundary, mirrored to the LEFT — derived FROM _NOT_GLUED (not a second predicate)
+// by flipping its lookahead into a lookbehind. mentionHitsAnywhere (below) needs a left-side
+// check too: unlike the `^`-anchored bare form or the `@`-led form above, it has no anchor
+// character to imply one, so without this a token GLUED inside a longer word (e.g. an alias
+// 'perro' inside 'carperro') would still match anywhere in the string.
+const _NOT_GLUED_BEFORE = _NOT_GLUED.replace('(?!', '(?<!');
 // `addressWithoutAt` — THE SWITCH for the bare form (operator 2026-07-27: "this addressing
 // without the '@' must be an option, easy to turn on/off globally"). DEFAULT true: the live
 // behaviour stays on for every caller that says nothing. false → this returns '@' hits ONLY,
@@ -168,6 +174,23 @@ export function mentionHits(text, tokens, { addressWithoutAt = true } = {}) {
   const re = new RegExp(`(?:^|\\s)@(${alt})${_NOT_GLUED}`, 'giu');
   return hits.concat([...t.matchAll(re)].map((m) => ({ token: m[1].toLowerCase(), atStart: m.index === 0 })));
 }
+// THE SPOKEN counterpart to mentionHits — voice_handles' matcher (operator 2026-08-09, wake-on-
+// spoken-alias). A whisper transcript never carries '@', and a spoken alias can land ANYWHERE in
+// the sentence (there's no "start of message" for a wake word buried in prose) — so this is a
+// bare-token-anywhere scan, genuinely new: mentionHits' own header is emphatic that the bare form
+// is START ONLY and deliberately has no anywhere variant — THAT rule is unchanged and is about the
+// existing @handles matcher. This is a SEPARATE, opt-in, voice-only list run through a DIFFERENT
+// mode, reusing the same boundary (_NOT_GLUED / _NOT_GLUED_BEFORE) rather than inventing one.
+// Returns hits in text order, [{ token }] — no `atStart`, it has no meaning for an anywhere scan.
+export function mentionHitsAnywhere(text, tokens) {
+  const t = stripCode(String(text ?? ''));
+  const list = [...new Set((Array.isArray(tokens) ? tokens : []).map((w) => String(w).toLowerCase()).filter(Boolean))]
+    .sort((a, b) => b.length - a.length);
+  if (!list.length) return [];
+  const alt = list.map(_escapeWake).join('|');
+  const re = new RegExp(`${_NOT_GLUED_BEFORE}(${alt})${_NOT_GLUED}`, 'giu');
+  return [...t.matchAll(re)].map((m) => ({ token: m[1].toLowerCase() }));
+}
 // A fenced or inline CODE region must never contribute a live wake match — e.g.
 // the /status command emits a fenced ```yaml block whose version line quotes a
 // git commit SUBJECT ("...@e voice-note transcript..."), a changelog line, not
@@ -192,11 +215,17 @@ function stripCode(text) {
 // injected beside it. The bug this fixes: a live `@ed estás?` logged atE=false
 // because the gate was hardcoded to e/egpt and never read the agents config.
 const DEFAULT_WAKE_WORDS = ['egpt', 'e'];
-// `opts` is the matcher's option bag, forwarded verbatim — today just { addressWithoutAt },
-// the node's `dispatch.address_without_at`, handed in by the limb that owns the wake list.
+// `opts` is the matcher's option bag, forwarded verbatim to mentionHits — today just
+// { addressWithoutAt }, the node's `dispatch.address_without_at`, handed in by the limb that owns
+// the wake list. `opts.alsoAnywhere` is a SEPARATE, optional voice-alias list (voice_handles) —
+// when supplied, its mentionHitsAnywhere hits are OR'd into atEAnywhere only (an anywhere match
+// has no "start", so it never sets atEStart). Absent (every existing caller) → byte-identical to
+// before; this is additive, not a shape change.
 export function mentionStatus(text, wakeWords, opts) {
-  const hits = mentionHits(text, (Array.isArray(wakeWords) && wakeWords.length) ? wakeWords : DEFAULT_WAKE_WORDS, opts);
-  return { atEAnywhere: hits.length > 0, atEStart: hits.some((h) => h.atStart) };
+  const { alsoAnywhere, ...matchOpts } = opts || {};
+  const hits = mentionHits(text, (Array.isArray(wakeWords) && wakeWords.length) ? wakeWords : DEFAULT_WAKE_WORDS, matchOpts);
+  const anywhereHits = mentionHitsAnywhere(text, alsoAnywhere);
+  return { atEAnywhere: hits.length > 0 || anywhereHits.length > 0, atEStart: hits.some((h) => h.atStart) };
 }
 
 // Given the chat's mode and the triggering message's mention status

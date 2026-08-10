@@ -204,6 +204,11 @@ export async function startBeeperBridge(opts = {}) {
     // configured with handles [ed, egptd] never woke on @ed. Default = e/egpt (unchanged
     // for a node that passes nothing).
     wakeWords = ['e', 'egpt'],
+    // The SPOKEN wake-alias set (operator 2026-08-09): the persona agent's `voice_handles`, gating
+    // a voice note's whisper TRANSCRIPT — anywhere in the sentence, never `@` (whisper output never
+    // produces one). Default EMPTY, unlike wakeWords above: silence-by-default, no network-wide or
+    // map-key fallback — a node that configures nothing wakes on NO spoken alias.
+    voiceWakeWords = [],
     // May a BARE leading handle address ("d hola", no '@')? The node's dispatch.address_without_at
     // (operator 2026-07-27: "this addressing without the '@' must be an option, easy to turn
     // on/off globally"), DEFAULT true — boot reads it once and hands the SAME value here, to the
@@ -1322,7 +1327,11 @@ export async function startBeeperBridge(opts = {}) {
     // (wasSentByUs, after waiting out this chat's in-flight sends). The old leading-
     // persona-emoji fallback was removed (operator 2026-07-12): no emoji may reach a
     // decision; nor may any text resemblance (operator 2026-07-15).
-    const st = mentionStatus(text || '', wakeWords, { addressWithoutAt });
+    // VOICE WAKE (operator 2026-08-09): when this message IS a voice note, also scan the
+    // (already isVoice-wrapped) transcript for a spoken alias ANYWHERE — mentionStatus' opt-in
+    // `alsoAnywhere` OR's those hits into atEAnywhere, additively; a text message (isVoice false)
+    // passes no list here, so its atEAnywhere/atEStart are byte-for-byte unchanged.
+    const st = mentionStatus(text || '', wakeWords, { addressWithoutAt, alsoAnywhere: isVoice ? voiceWakeWords : undefined });
     // Quoted/replied-to target (operator 2026-07-04). Beeper carries a reply's quoted
     // message id as a BARE `linkedMessageID` (verified live 2026-06-16, MESSAGES-
     // FIRST-CLASS-PLAN — no inline quoted text/sender). We surface it two ways:

@@ -1705,6 +1705,52 @@ describe('beeper bridge — wake words (own handles only, no injection)', () => 
   });
 });
 
+// SPOKEN wake alias (operator 2026-08-09): voiceWakeWords gates a voice note's whisper
+// TRANSCRIPT via mentionStatus' alsoAnywhere — anywhere in the sentence, never '@', additive to
+// (never a replacement for) the existing wakeWords/atE gate. Default [] → no behaviour change
+// for a node that configures nothing (every OTHER voice test above passes no voiceWakeWords and
+// is untouched).
+describe('beeper bridge — voice wake alias (voice_handles, anywhere in the transcript)', () => {
+  it('a spoken alias ANYWHERE in the transcript wakes atEAnywhere; atEStart stays false', async () => {
+    const { incoming } = await startBridge({
+      voiceWakeWords: ['perrito'],
+      transcribe: async () => 'oye perrito estás ahí',
+      resolveTranscriptionService: async () => ({ enabled: true, postsBack: false }),
+    });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({
+      text: null, type: 'VOICE',
+      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+    })] });
+    await waitFor(() => incoming.length === 1);
+    expect(incoming[0].text).toBe('(voice transcription) oye perrito estás ahí');
+    expect(incoming[0].from.atEAnywhere).toBe(true);
+    expect(incoming[0].from.atEStart).toBe(false);   // mid-transcript, never treated as a leading token
+  });
+
+  it('the SAME words as a TEXT message do NOT wake — voiceWakeWords only runs on isVoice', async () => {
+    const { incoming } = await startBridge({
+      voiceWakeWords: ['perrito'],
+      resolveTranscriptionService: async () => ({ enabled: true, postsBack: false }),
+    });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ isSender: false, senderName: 'Bea', text: 'oye perrito estás ahí' })] });
+    await waitFor(() => incoming.length === 1);
+    expect(incoming[0].from.atEAnywhere).toBe(false);
+  });
+
+  it('no voiceWakeWords configured (default []) → a voice note with the same words does not wake', async () => {
+    const { incoming } = await startBridge({
+      transcribe: async () => 'oye perrito estás ahí',
+      resolveTranscriptionService: async () => ({ enabled: true, postsBack: false }),
+    });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({
+      text: null, type: 'VOICE',
+      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+    })] });
+    await waitFor(() => incoming.length === 1);
+    expect(incoming[0].from.atEAnywhere).toBe(false);
+  });
+});
+
 // Conversation-E LIMBS (ROADMAP §3): the bridge SEND primitives + the inbound
 // replyToBot signal. Reaction/reply-to/media hit the real Beeper endpoints; a reply
 // to a message WE sent is flagged replyToBot so the gate fires without an @e.

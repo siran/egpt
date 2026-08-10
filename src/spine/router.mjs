@@ -81,6 +81,16 @@ export function wakeTokens(name, agent) {
   return hs.map((h) => String(h ?? '').toLowerCase()).filter(Boolean);
 }
 
+// THE SPOKEN counterpart to wakeTokens, above — voice_handles is a SEPARATE, opt-in list (a
+// whisper transcript never carries '@'; it gates auto-mode.mjs's ANYWHERE bare match, not this
+// file's own @token matcher). UNLIKE handles, there is NO map-key fallback: ABSENT or `[]` both
+// mean no spoken alias reaches this agent — silence-by-default, since an unconfigured agent has
+// no business waking on a guessed spoken word the way it inherits its own key as an @handle.
+export function voiceWakeTokens(agent) {
+  const hs = Array.isArray(agent?.voice_handles) ? agent.voice_handles : [];
+  return hs.map((h) => String(h ?? '').toLowerCase()).filter(Boolean);
+}
+
 // Who does this message address? The node's WHOLE addressable set — every agent's WAKE TOKENS
 // (wakeTokens above: its declared `handles:`, else its map KEY) — run through THE mention matcher
 // (auto-mode.mjs `mentionHits`), the same scan the persona's wake words go through. That is the

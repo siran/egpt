@@ -4,7 +4,7 @@
 // agent to the canonical being 'e'. A qualified @being.node reaches another machine (mesh).
 // Everything else falls through to E.
 import { describe, it, expect } from 'vitest';
-import { createRouter, addressed } from '../src/spine/router.mjs';
+import { createRouter, addressed, voiceWakeTokens } from '../src/spine/router.mjs';
 
 const ev = (body, mention) => ({
   body,
@@ -439,5 +439,25 @@ describe('router.resolve — dangerous-type gate (operator 2026-08 meta-engineer
     const arouter = createRouter({ getAgents: () => agents, defaultBeing: 'egpt', resolveType: rt });
     arouter.resolve({ ...ev('@wren hi'), authorized: false });
     expect(calls).toEqual([['meta-engineer']]);        // ONE argument — no convDir
+  });
+});
+
+// voiceWakeTokens — the SPOKEN counterpart to wakeTokens (operator 2026-08-09). UNLIKE
+// wakeTokens, there is NO map-key fallback: an agent with no `voice_handles` (or an explicit
+// empty list) wakes on NO spoken alias — silence-by-default.
+describe('voiceWakeTokens — voice_handles, no map-key fallback (silence-by-default)', () => {
+  it('declared voice_handles are lowercased and returned', () => {
+    expect(voiceWakeTokens({ voice_handles: ['Perrito', 'Perro'] })).toEqual(['perrito', 'perro']);
+  });
+  it('ABSENT voice_handles → empty list — unlike wakeTokens, no map-key fallback', () => {
+    expect(voiceWakeTokens({ handles: ['e', 'egpt'] })).toEqual([]);
+    expect(voiceWakeTokens({})).toEqual([]);
+    expect(voiceWakeTokens(undefined)).toEqual([]);
+  });
+  it('an EXPLICIT empty voice_handles is also silence, same as absent', () => {
+    expect(voiceWakeTokens({ voice_handles: [] })).toEqual([]);
+  });
+  it('blank/falsy entries are filtered, matching wakeTokens\' own behaviour', () => {
+    expect(voiceWakeTokens({ voice_handles: ['perrito', '', null, undefined] })).toEqual(['perrito']);
   });
 });

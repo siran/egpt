@@ -38,7 +38,7 @@ import { createGating } from './gating.mjs';
 // createRouter + THE wake vocabulary. wakeTokens is the ONE rule for "which @tokens address this
 // agent" (declared `handles:`, else the map key) — imported, not re-implemented, so the persona
 // wake set boot hands the ports and the router's own @token scan can never disagree again.
-import { createRouter, wakeTokens } from './router.mjs';
+import { createRouter, wakeTokens, voiceWakeTokens } from './router.mjs';
 import { createTranscript } from './transcript.mjs';
 import { createSender } from './sender.mjs';
 import { createBrainPool } from './brainpool.mjs';
@@ -670,6 +670,10 @@ export async function boot({
   // is KEYED `egpt` and DISPLAYS as "don" (handles [d, don]), so one `@egpt` in a group woke BOTH
   // spines and the human got two replies, one stamped `egpt` and one stamped `don`.
   const wakeWords = (() => { const pa = personaAgent(); return [...new Set(wakeTokens(pa.name, pa.agent))]; })();
+  // THE SPOKEN counterpart (operator 2026-08-09): voice_handles, the persona agent's own list —
+  // NO map-key fallback (voiceWakeTokens, router.mjs), so an unconfigured persona wakes on NO
+  // spoken alias. Gates a voice note's whisper transcript, anywhere in the sentence, never `@`.
+  const voiceWakeWords = (() => { const pa = personaAgent(); return [...new Set(voiceWakeTokens(pa.agent))]; })();
   // THE BARE-HANDLE SWITCH (operator 2026-07-27: "this addressing without the '@' must be an
   // option, easy to turn on/off globally") — dispatch.address_without_at, DEFAULT true, so a node
   // that configures nothing keeps the live behaviour. Read ONCE here and handed by the SAME route
@@ -909,6 +913,7 @@ export async function boot({
     transcriptionOpen: cfg.transcription_open ?? '',
     transcriptionClose: cfg.transcription_close ?? '',
     wakeWords,                            // the persona agent's OWN name + handles only — nothing injected (operator 2026-07-09)
+    voiceWakeWords,                       // the persona agent's OWN voice_handles only — no map-key fallback, empty by default (operator 2026-08-09)
     addressWithoutAt,                     // dispatch.address_without_at (default true): may a BARE leading handle address, or is '@' required? Same value the shell limb + the router get.
     echoPlan,                             // 👂 echo PLAN: (audioHash) => { rank, winner } — PER-NOTE HRW over the co-account peer set, keyed on the note's node-stable audio hash (operator 2026-07-24; revives HRW). rank 1 posts now; rank>1 arms a promotion at (rank-1)*echoTimeoutMs that re-checks coverage at fire; rank 0 (echo:false opt-out) never posts/promotes.
     echoTimeoutMs,                        // 👂 per-rank promotion step (ms); GENEROUS default so a SLOW rank-1 isn't mistaken for a DOWN one (double-👂 hazard).

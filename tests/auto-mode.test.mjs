@@ -2,7 +2,7 @@
 // positives) and the reply gate for each mode.
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { AUTO_MODES, mentionHits, mentionStatus, replyAllowed, receives, isAutoMode, DEFAULT_AUTO_MODE, mayEmit, mayEmitChat, isSilenceReply, fanOutDecision } from '../src/auto-mode.mjs';
+import { AUTO_MODES, mentionHits, mentionHitsAnywhere, mentionStatus, replyAllowed, receives, isAutoMode, DEFAULT_AUTO_MODE, mayEmit, mayEmitChat, isSilenceReply, fanOutDecision } from '../src/auto-mode.mjs';
 
 describe('mentionStatus', () => {
   it('detects @e as a standalone token, anywhere and at start', () => {
@@ -308,6 +308,58 @@ describe('address_without_at: the bare form is a node-wide SWITCH, default ON', 
     const code = src.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
     expect(code).not.toMatch(/^\s*import\s/m);
     expect(code).not.toMatch(/require\(|process\.env|readConfig|getConfig|EGPT_CONFIG/);
+  });
+});
+
+// mentionHitsAnywhere — the SPOKEN (voice_handles) counterpart to the bare/@-forms above: a
+// bare-token scan with NO `^` anchor and NO '@' required, reusing the SAME _NOT_GLUED boundary
+// on both sides (operator 2026-08-09, wake-on-spoken-alias). This does not touch the EXISTING
+// bare-form rule (START ONLY, tested above) — it is a separate, opt-in mode for a separate list.
+describe('mentionHitsAnywhere — the spoken (voice_handles) anywhere-match mode', () => {
+  it('matches a bare token ANYWHERE in the string, no @ required', () => {
+    expect(mentionHitsAnywhere('oye perrito estás ahí', ['perrito'])).toEqual([{ token: 'perrito' }]);
+    expect(mentionHitsAnywhere('estás ahí perrito', ['perrito'])).toEqual([{ token: 'perrito' }]);
+  });
+  it('a token GLUED inside a longer word does NOT match (both sides of the boundary)', () => {
+    expect(mentionHitsAnywhere('el carperrito pasó', ['perrito'])).toEqual([]);   // glued on the left
+    expect(mentionHitsAnywhere('el perritolindo pasó', ['perrito'])).toEqual([]); // glued on the right
+  });
+  it('punctuation/whitespace boundaries still fire, mid-string', () => {
+    expect(mentionHitsAnywhere('hola, perrito, vení', ['perrito'])).toEqual([{ token: 'perrito' }]);
+  });
+  it('no match, no tokens, no text → empty, never throws', () => {
+    expect(mentionHitsAnywhere('nada de nada', ['perrito'])).toEqual([]);
+    expect(mentionHitsAnywhere('perrito', [])).toEqual([]);
+    expect(mentionHitsAnywhere('', ['perrito'])).toEqual([]);
+    expect(mentionHitsAnywhere(null, ['perrito'])).toEqual([]);
+  });
+  it('longest-token-first, case-insensitive, multiple hits in text order', () => {
+    expect(mentionHitsAnywhere('Perrito y luego perro', ['perro', 'perrito']))
+      .toEqual([{ token: 'perrito' }, { token: 'perro' }]);
+  });
+});
+
+// mentionStatus' opt-in `alsoAnywhere` — additive merge of the voice-alias anywhere-match into
+// atEAnywhere ONLY (never atEStart, which has no meaning for an anywhere hit). Every EXISTING
+// caller (no alsoAnywhere) is untouched — locked by the huge test surface above this block,
+// none of which was edited to add this option.
+describe('mentionStatus({ alsoAnywhere }) — voice_handles merges additively into atEAnywhere', () => {
+  it('a voice alias mid-transcript sets atEAnywhere true, atEStart stays false', () => {
+    const st = mentionStatus('(voice transcription, 8s) oye perrito estás ahí', [], { alsoAnywhere: ['perrito'] });
+    expect(st).toEqual({ atEAnywhere: true, atEStart: false });
+  });
+  it('no alsoAnywhere list (undefined/empty) behaves exactly like plain mentionStatus', () => {
+    expect(mentionStatus('hola perrito', [])).toEqual(mentionStatus('hola perrito', [], { alsoAnywhere: [] }));
+    expect(mentionStatus('hola perrito', [])).toEqual(mentionStatus('hola perrito', [], { alsoAnywhere: undefined }));
+  });
+  it('the text @handle path and the voice alsoAnywhere path OR together', () => {
+    const st = mentionStatus('@e y también perrito', ['e', 'egpt'], { alsoAnywhere: ['perrito'] });
+    expect(st).toEqual({ atEAnywhere: true, atEStart: true });   // @e still sets atEStart
+  });
+  it('addressWithoutAt keeps riding alongside alsoAnywhere without interference', () => {
+    const st = mentionStatus('e hola perrito', ['e'], { addressWithoutAt: false, alsoAnywhere: ['perrito'] });
+    // bare 'e' at start does NOT address (addressWithoutAt:false) but the voice alias still does
+    expect(st).toEqual({ atEAnywhere: true, atEStart: false });
   });
 });
 

@@ -1083,6 +1083,17 @@ export const CONFIG_SCHEMA = {
         transcripts) — it simply stopped being an address. This is what lets a
         node keyed "egpt" display and answer as "don" WITHOUT also answering
         @egpt, which is how one message got two replies across the two spines.
+      voice_handles
+        ["perrito","perro",...] — SPOKEN aliases that wake this agent from a
+        voice note's whisper TRANSCRIPT, matched ANYWHERE in the sentence
+        (never \`@\`-prefixed — whisper output never produces one). A sibling
+        list to \`handles\`, not an extension of it: text and voice wake
+        independently.
+
+        DECLARED  = the COMPLETE spoken-alias list.
+        ABSENT    = no spoken alias reaches this agent — unlike \`handles\`,
+                    there is NO map-key fallback.
+        []        = same as absent: no voice wake.
       relay_channel
         Marks a RELAY agent — the chat this agent forwards to: a chat NAME or a
         raw Beeper room id in SHORT form (no "!" / ":beeper.local", operator
