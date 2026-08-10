@@ -51,15 +51,20 @@ export function createSender({ bridge, bodyEmojiOf = () => null, labelOf = () =>
       // way a human types a single message. A withheld ('…' silence, surface:false) or
       // empty reply posts NOTHING — silence is a valid operator move.
       if (auto) {
+        // sendResult (operator 2026-08-10, voice-reply-as-a-reply-to-the-text chunk): the
+        // delivered message's own confirmedId, exposed so a caller can thread a FOLLOW-UP
+        // send (the synthesized voice note) as a reply TO this text once it's out.
+        let sendResult = null;
         return {
           activate() {},
           update() {},
           async finish(reply, { surface = true } = {}) {
             const t = textOf(reply);
             if (!surface || !t.trim()) return;          // withheld / empty → post nothing
-            await bridge.send(chatId, t, { replyTo });   // plain text: no bodyEmoji/label, no end-marker
+            sendResult = await bridge.send(chatId, t, { replyTo });   // plain text: no bodyEmoji/label, no end-marker
           },
           async fail() { /* a human doesn't post a typing/failure scaffold — stay silent */ },
+          get confirmedId() { return sendResult?.confirmedId ?? null; },
         };
       }
       const bodyEmoji = bodyEmojiOf(being);
@@ -73,6 +78,10 @@ export function createSender({ bridge, bodyEmojiOf = () => null, labelOf = () =>
       const tag = { bodyEmoji, label, replyTo, agentSigOpen, agentSigClose };   // the bridge enforces the persona stamp (emoji + label) + wraps the layers from these
       const stream = bridge.startStream?.(chatId, queued ? QUEUED(queuedAhead) : THINKING, { ...tag, persona: being });
       let acc = '';
+      // fallbackResult (operator 2026-08-10, voice-reply-as-a-reply-to-the-text chunk): set
+      // ONLY when the §7 fallback below fires (a FRESH send, not an edit-in-place) — its own
+      // confirmedId then supersedes the stream's, which never delivered.
+      let fallbackResult = null;
       return {
         // A queued placeholder flips from the queue into the live train the instant
         // its turn starts (before the first token), so the user sees it move. No-op
@@ -89,9 +98,9 @@ export function createSender({ bridge, bodyEmojiOf = () => null, labelOf = () =>
           const body = t.trim() ? t : noReplyMark();
           if (stream) {
             await stream.finish?.(body);
-            if (!stream.delivered) await bridge.send(chatId, body, tag);   // §7 fallback
+            if (!stream.delivered) fallbackResult = await bridge.send(chatId, body, tag);   // §7 fallback
           } else {
-            await bridge.send(chatId, body, tag);
+            fallbackResult = await bridge.send(chatId, body, tag);
           }
         },
         async fail() {                                 // visible failure: the message ends with ❌
@@ -100,6 +109,7 @@ export function createSender({ bridge, bodyEmojiOf = () => null, labelOf = () =>
             else await bridge.send(chatId, FAIL_SUFFIX, tag);
           } catch { /* best effort */ }
         },
+        get confirmedId() { return fallbackResult ? (fallbackResult?.confirmedId ?? null) : (stream?.confirmedId ?? null); },
       };
     },
   };

@@ -352,11 +352,13 @@ describe('spine — mode:auto (operator impersonation)', () => {
   });
 });
 
-// VOICE-REPLY PIPELINE (chunk 2, operator 2026-08-09): a voice-triggered turn replies
-// with synthesized voice (bridge.sendMedia), a text-triggered turn keeps replying with
-// text, and an explicit `@ev` text handle forces voice-out with a quoted-text transcript
-// underneath. Fakes for synthesize/bridge.sendMedia/bridge.send — no real process, no
-// real network, no real port (same DI discipline as the rest of this file).
+// VOICE-REPLY PIPELINE (chunk 2, operator 2026-08-09; redesigned 2026-08-10): text is
+// ALWAYS delivered via the normal streaming out.finish() path, unconditionally — the
+// original design (delete the streamed text, post audio-only) looked broken live: an
+// answer would appear then vanish. Now a voice-triggered turn (ev.isVoice) or an explicit
+// `@ev` override ADDITIONALLY attaches synthesized audio as a REPLY TO the text just
+// delivered, once its id is known. Fakes for synthesize/bridge.sendMedia/bridge.send — no
+// real process, no real network, no real port (same DI discipline as the rest of this file).
 describe('spine — voice-reply pipeline (chunk 2)', () => {
   function fakeVoiceBridge() {
     let cb = null;
@@ -370,20 +372,24 @@ describe('spine — voice-reply pipeline (chunk 2)', () => {
       stop() { this.stopped = true; },
     };
   }
-  // Same shape as fakeSender, but records every finish() call so a test can assert the
-  // placeholder was resolved with { surface: false } (deleted) rather than surfaced text.
+  // Same shape as fakeSender, but records every finish() call AND exposes confirmedId
+  // (mirroring sender.mjs's real getter) — 'text-conf-1' once a surfaced finish() actually
+  // sent something, null otherwise (surface:false / empty), so the voice-attach step's
+  // "no confirmedId → skip" branch is exercisable too.
   function fakeSenderRecording(bridge) {
     const finishCalls = [];
     return {
       finishCalls,
       open(chatId) {
+        let confirmedId = null;
         return {
           update() {}, fail() {},
           async finish(reply, opts = { surface: true }) {
             finishCalls.push({ reply, opts });
             const t = typeof reply === 'string' ? reply : reply?.text;
-            if (opts.surface !== false && t) bridge.send(chatId, t);
+            if (opts.surface !== false && t) { bridge.send(chatId, t); confirmedId = 'text-conf-1'; }
           },
+          get confirmedId() { return confirmedId; },
         };
       },
     };
@@ -404,22 +410,24 @@ describe('spine — voice-reply pipeline (chunk 2)', () => {
     return { spine, bridge, brain, transcript, sender };
   }
 
-  it('voice-in (ev.isVoice, no @ev): companion text-out sent (quoting the media, replyTo=confirmedId); placeholder deleted (surface:false)', async () => {
+  it('voice-in (ev.isVoice, no @ev): text delivers normally (kept, not deleted), voice note follows as a reply TO it', async () => {
     let synthCalls = 0;
     const synthesize = async () => { synthCalls++; return Buffer.from('AUDIO'); };
     const { spine, bridge, sender } = buildVoice({ synthesize });
     spine.start();
     await bridge.emit({ ...MSG, isVoice: true });
 
+    // The text delivery is the SAME single surfaced finish() any ordinary reply gets —
+    // no {text:'', surface:false} deletion call, no second finish() call.
+    expect(sender.finishCalls).toHaveLength(1);
+    expect(sender.finishCalls[0]).toMatchObject({ reply: { text: '↩ hola' }, opts: { surface: true } });
+    expect(bridge.sent).toEqual([{ chat: MSG.chatId, text: '↩ hola', opts: {} }]);
     expect(synthCalls).toBe(1);
     expect(bridge.media).toHaveLength(1);
-    expect(bridge.media[0].chat).toBe(MSG.chatId);
-    expect(bridge.sent).toHaveLength(1);                                        // voice replies are still readable
-    expect(bridge.sent[0]).toMatchObject({ chat: MSG.chatId, text: '↩ hola', opts: { replyTo: 'conf-1' } });
-    expect(sender.finishCalls.at(-1)).toMatchObject({ reply: { text: '' }, opts: { surface: false } });
+    expect(bridge.media[0]).toMatchObject({ chat: MSG.chatId, opts: { replyTo: 'text-conf-1' } });   // replies to the TEXT
   });
 
-  it('text-in, no @ev: completely unchanged (regression lock) — no synth call, plain text-out', async () => {
+  it('text-in, no @ev: completely unchanged (regression lock) — no synth call, plain text-out, no media', async () => {
     const synthesize = async () => { throw new Error('must not be called'); };
     const { spine, bridge } = buildVoice({ synthesize });
     spine.start();
@@ -429,18 +437,18 @@ describe('spine — voice-reply pipeline (chunk 2)', () => {
     expect(bridge.sent).toEqual([{ chat: MSG.chatId, text: '↩ hola', opts: {} }]);
   });
 
-  it('@ev override in a TEXT turn: sendMedia called, THEN companion bridge.send called with the same proseText + replyTo=confirmedId', async () => {
+  it('@ev override in a TEXT turn: text delivers normally, voice note follows as a reply TO it', async () => {
     const synthesize = async () => Buffer.from('AUDIO');
     const { spine, bridge } = buildVoice({ synthesize });
     spine.start();
     await bridge.emit({ ...MSG, isVoice: false, body: '@ev hola' });
 
+    expect(bridge.sent).toEqual([{ chat: MSG.chatId, text: '↩ @ev hola', opts: {} }]);
     expect(bridge.media).toHaveLength(1);
-    expect(bridge.sent).toHaveLength(1);
-    expect(bridge.sent[0]).toMatchObject({ chat: MSG.chatId, text: '↩ @ev hola', opts: { replyTo: 'conf-1' } });
+    expect(bridge.media[0]).toMatchObject({ chat: MSG.chatId, opts: { replyTo: 'text-conf-1' } });
   });
 
-  it('synthesis returns null → falls back to the normal text out.finish call, reply never dropped', async () => {
+  it('synthesis returns null → text already delivered either way, no media attempted beyond the declined call', async () => {
     const synthesize = async () => null;
     const { spine, bridge } = buildVoice({ synthesize });
     spine.start();
@@ -450,7 +458,7 @@ describe('spine — voice-reply pipeline (chunk 2)', () => {
     expect(bridge.sent).toEqual([{ chat: MSG.chatId, text: '↩ hola', opts: {} }]);
   });
 
-  it('synthesis throws → falls back to the normal text out.finish call', async () => {
+  it('synthesis throws → text already delivered, error is logged not thrown', async () => {
     const synthesize = async () => { throw new Error('boom'); };
     const { spine, bridge } = buildVoice({ synthesize });
     spine.start();
@@ -460,7 +468,7 @@ describe('spine — voice-reply pipeline (chunk 2)', () => {
     expect(bridge.sent).toEqual([{ chat: MSG.chatId, text: '↩ hola', opts: {} }]);
   });
 
-  it('bridge.sendMedia failure (not ok) falls back to the normal text out.finish call', async () => {
+  it('bridge.sendMedia failure (not ok) does not affect the already-delivered text', async () => {
     const synthesize = async () => Buffer.from('AUDIO');
     const { spine, bridge } = buildVoice({ synthesize });
     bridge.sendMedia = (chat, path, opts) => { bridge.media.push({ chat, path, opts }); return false; };
@@ -478,6 +486,24 @@ describe('spine — voice-reply pipeline (chunk 2)', () => {
 
     expect(bridge.media).toHaveLength(0);
     expect(bridge.sent).toEqual([{ chat: MSG.chatId, text: '↩ hola', opts: {} }]);
+  });
+
+  it('text delivery withheld (no confirmedId, e.g. an edge case where finish() never surfaced) → voice attach is skipped, not crashed', async () => {
+    const synthesize = async () => { throw new Error('must not be called — no confirmedId to reply to'); };
+    const bridge = fakeVoiceBridge();
+    const brain = { async turn() { return { text: '', sessionId: 's1' }; } };   // empty reply → surface:false path
+    const transcript = fakeTranscript();
+    const sender = fakeSenderRecording(bridge);
+    const spine = createSpine({
+      bridge, brain, store: fakeStore(),
+      identity: fakeIdentity, router: fakeRouter, gating: fakeGating({}),
+      sender, transcript, heartbeats: fakeHeartbeats(),
+      clock: { now: () => 1000 }, synthesize, voice: 'es_MX-claude-high',
+    });
+    spine.start();
+    await bridge.emit({ ...MSG, isVoice: true });
+
+    expect(bridge.media).toHaveLength(0);   // no confirmedId → voice-out skipped entirely, no throw
   });
 });
 

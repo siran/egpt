@@ -853,7 +853,7 @@ export async function startBeeperBridge(opts = {}) {
     const t = await res.text();
     return t ? JSON.parse(t) : null;
   }
-  async function sendMedia(chatIDOrName, filePath, { caption = null } = {}) {
+  async function sendMedia(chatIDOrName, filePath, { caption = null, replyTo = null } = {}) {
     const chatID = await resolveChatId(chatIDOrName);
     if (!chatID || !filePath) { onLog(`beeper: media DROPPED — chat=${JSON.stringify(chatIDOrName)} resolved=${chatID} file=${JSON.stringify(filePath)}`); return false; }
     try {
@@ -861,6 +861,7 @@ export async function startBeeperBridge(opts = {}) {
       if (!up?.uploadID) { onLog(`beeper: media upload returned no uploadID [${filePath}]`); return false; }
       const body = { attachment: { uploadID: up.uploadID, type: attachmentType(up.mimeType), ...(up.mimeType ? { mimeType: up.mimeType } : {}), ...(up.fileName ? { fileName: up.fileName } : {}) } };
       if (caption) body.text = String(caption);
+      if (replyTo) body.replyToMessageID = String(replyTo);
       // A captioned media send is re-findable by its caption, so it gets the same
       // CONFIRMED-id treatment as a text send. CAPTIONLESS (e.g. every voice-reply
       // send) has no text to match — fall back to the upload's own fileName so this
@@ -1605,7 +1606,11 @@ export async function startBeeperBridge(opts = {}) {
       let latest = initialText, finished = false, cid = null, realId = null;
       let lastEditAt = 0, editTimer = null, pendingText = null, chain = Promise.resolve();
       const EDIT_MIN_MS = 400;   // debounce live edits (operator 2026-06-29: 1.5s felt sluggish; local Beeper API is fast)
-      const handle = { delivered: false, lastError: null };
+      // confirmedId (operator 2026-08-10, voice-reply-as-a-reply-to-the-text chunk): the
+      // placeholder-turned-final-text message's own id, exposed so a caller can thread a
+      // FOLLOW-UP send (e.g. the synthesized voice note) as a reply TO this delivered text —
+      // a getter, not a snapshot, since realId only settles once `ready` resolves.
+      const handle = { delivered: false, lastError: null, get confirmedId() { return realId; } };
       const serial = (fn) => (chain = chain.then(fn, fn));   // never overlap PUTs (final edit wins)
 
       // Post the placeholder NOW (so it shows immediately) + resolve its CONFIRMED

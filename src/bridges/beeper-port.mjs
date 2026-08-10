@@ -145,6 +145,7 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
         delete: () => h.delete?.(),
         get delivered() { return h.delivered; },
         get lastError() { return h.lastError; },
+        get confirmedId() { return h.confirmedId; },
         fail: (e) => h.fail?.(e),
       };
     },
@@ -175,7 +176,7 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
     // every other outbound (C13, 2026-07-26 — both used to stamp without wrapping).
     sendMedia(chat, filePath, opts = {}) {
       const caption = opts.caption != null ? wrapPersona(opts, opts.caption) : null;
-      return real.sendMedia?.(chat, filePath, { caption });
+      return real.sendMedia?.(chat, filePath, { caption, replyTo: opts.replyTo ?? null });
     },
     editOwn(chat, msgId, text, opts = {}) { return real.editMessage?.(chat, msgId, wrapPersona(opts, text)); },
     deleteOwn(chat, msgId) { return real.deleteMessage?.(chat, msgId); },

@@ -891,52 +891,41 @@ export function createSpine({
       // budget). ONLY a deliverable prose reply is delayed — an action-only reply (e.g. /ask
       // consulting the operator) has no prose, so it stays undelayed (consulting fast is fine).
       if (d.mode === 'auto' && deliverable) await sleepTyping(proseText);
-      // VOICE-OUT (chunk 2, operator 2026-08-09): a voice-triggered turn replies with
-      // synthesized voice; an explicit `@ev` text handle FORCES voice-out (with a
-      // quoted-text transcript underneath) — `@` required, the bare `ev` form is too
-      // easy to false-positive on ordinary prose. Only meaningful when there is prose
-      // to speak at all (deliverable); actionOnly/failShaped/non-surfaced turns never
-      // reach here with anything to render as audio.
-      const evOverride = deliverable && mentionHits(ev.body, ['ev'], { addressWithoutAt: false }).length > 0;
-      const wantsVoice = deliverable && (evOverride || ev.isVoice);
-      let voiceDelivered = false;
-      if (wantsVoice && synthesize && voice) {
-        let audio = null;
-        // Spoken text is CLEANED (markdown stripped, trailing Sources section
-        // dropped) — proseText itself stays raw for the on-screen quote below.
-        const speechText = cleanForSpeech(proseText);
-        try { audio = await synthesize(speechText, voice, note); } catch (e) { note(`synthesize ${to}/${ev.chatId}: ${e?.message ?? e}`); audio = null; }
-        if (audio) {
-          const tmpPath = join(tmpdir(), `egpt-voice-reply-${randomBytes(8).toString('hex')}.ogg`);
-          try {
-            await writeFile(tmpPath, audio);
-            let sent = null;
-            try {
-              sent = await bridge.sendMedia(ev.chatId, tmpPath, {});
-              // Always a companion plain-text send, quoting the just-sent voice message,
-              // carrying the SAME proseText (no re-generation) — a voice reply is still
-              // useful to read (operator 2026-08-10, was evOverride-only: a plain
-              // voice-triggered reply shipped audio with no readable text at all). No
-              // bodyEmoji/label stamping — this send doesn't go through `out` and that
-              // stamping isn't available in this closure; an explicit simplicity-first
-              // scope decision.
-              if (sent && sent.ok) await bridge.send(ev.chatId, proseText, { replyTo: await sent.confirmedId });
-            } catch (e) { note(`voice-send ${to}/${ev.chatId}: ${e?.message ?? e}`); sent = null; }
-            if (sent && sent.ok) {
-              // The "⏳ Thinking…" placeholder is resolved by DELETING it (surface:false) —
-              // the actual content already went out as a fresh media message, not an edit
-              // of the placeholder.
-              await out.finish({ text: '' }, { surface: false });
-              voiceDelivered = true;
-            }
-          } finally { try { await unlink(tmpPath); } catch {} }
-        }
-      }
       // DELIVER the STRIPPED prose. Action-only → surface:false (delete placeholder);
       // failShaped → blanked → no-reply marker; else the prose (or no-reply marker if empty).
-      // Also the voice path's fallback: synthesis declined/threw, or sendMedia failed — the
-      // reply is never silently dropped.
-      if (!voiceDelivered) await out.finish(failShaped ? { text: '' } : { ...reply, text: proseText }, { surface: actionOnly ? false : surfaced });
+      // UNCONDITIONAL — the normal streaming path (placeholder → live edits → final text,
+      // kept) runs exactly as it always did, whether or not voice-out follows below.
+      await out.finish(failShaped ? { text: '' } : { ...reply, text: proseText }, { surface: actionOnly ? false : surfaced });
+      // VOICE-OUT (chunk 2, operator 2026-08-09; redesigned operator 2026-08-10 — the
+      // original delete-the-text-and-post-audio-only shape looked broken: a live-streamed
+      // answer would appear, then vanish, replaced by audio alone). Text is now ALWAYS the
+      // delivery above; a voice-triggered turn (ev.isVoice) or an explicit `@ev` override
+      // (`@` required — bare "ev" false-positives on ordinary prose) ADDITIONALLY attaches
+      // synthesized audio as a REPLY TO the text just delivered, once its id is known.
+      // Every failure mode (no confirmedId, synthesis declines, the send itself fails)
+      // degrades to "text only" — the text already went out above either way.
+      const evOverride = deliverable && mentionHits(ev.body, ['ev'], { addressWithoutAt: false }).length > 0;
+      const wantsVoice = deliverable && (evOverride || ev.isVoice);
+      if (wantsVoice && synthesize && voice) {
+        const textId = await out.confirmedId;
+        if (!textId) {
+          note(`voice-out ${to}/${ev.chatId}: no confirmedId for the delivered text — skipping voice attach`);
+        } else {
+          let audio = null;
+          // Spoken text is CLEANED (markdown stripped, trailing Sources section dropped,
+          // emoji stripped) — proseText itself stays raw in the text already delivered above.
+          const speechText = cleanForSpeech(proseText);
+          try { audio = await synthesize(speechText, voice, note); } catch (e) { note(`synthesize ${to}/${ev.chatId}: ${e?.message ?? e}`); audio = null; }
+          if (audio) {
+            const tmpPath = join(tmpdir(), `egpt-voice-reply-${randomBytes(8).toString('hex')}.ogg`);
+            try {
+              await writeFile(tmpPath, audio);
+              try { await bridge.sendMedia(ev.chatId, tmpPath, { replyTo: textId }); }
+              catch (e) { note(`voice-send ${to}/${ev.chatId}: ${e?.message ?? e}`); }
+            } finally { try { await unlink(tmpPath); } catch {} }
+          }
+        }
+      }
       // EXECUTE the limbs AFTER the reply is recorded + delivered: confined to ev.chatId,
       // errors logged, never crash the turn (the record above already captured everything).
       if (parsed && hadActions) { try { await actions.execute(parsed.run, parsed.stripped, ev, { being: to }); } catch (e) { note(`actions ${to}/${ev.chatId}: ${e?.message ?? e}`); } }
