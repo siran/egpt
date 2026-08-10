@@ -134,6 +134,27 @@ export function whisperPortOf(cfg) {
 // service call to shellPort for shell-owned chat ids and to the real bridge otherwise; every other bridge
 // method passes through unchanged (spread first). Pure so the routing is testable directly
 // (mirrors the other top-level boot helpers). The beeper path for non-shell chats is untouched.
+// Redirect a shell-surface inbound event to its CURRENT joined room, if any — "entering a
+// room is like typing in another chat" (operator): once `/room join acim` sets the shell's
+// current room, a plain or `@e`-addressed message typed at the shell must dispatch as
+// surface 'room' chatId 'acim', not surface 'shell' chatId 'main', so it reaches the SAME
+// (surface, chatId)-keyed resolution/confinement a room-native message already gets (the
+// room refactor's own principle — room-core.mjs). currentRoomOf is commands.mjs's ONE reader
+// onto its ONE currentRoom map (written only by roomJoin/roomLeave) — no second map here.
+// 'lobby' (or no room joined) means the shell's own native identity: there is no room/lobby
+// folder, so the event is left untouched, same as before this redirect existed.
+// A reply goes out to ev.chatId (spine.mjs's sender.open), which is now the room slug — so
+// the redirect also `claim`s it on shellPort (the SAME ownership signal `owns()` already
+// keys outbound routing on for 'main'), or the reply would be handed to the beeper bridge
+// instead of pushed back over this socket. Pure aside from that one registration call, so
+// the redirect decision itself is testable directly (mirrors makeShellAwareBridge below).
+export function redirectShellToRoom(msg, { currentRoomOf, claim } = {}) {
+  const room = currentRoomOf?.('shell');
+  if (!room || room === 'lobby') return msg;
+  claim?.(room);
+  return { ...msg, from: { ...(msg?.from ?? {}), network: 'room', chatId: room } };
+}
+
 export function makeShellAwareBridge(bridge, shellPort) {
   return {
     ...bridge,
@@ -1265,7 +1286,7 @@ export async function boot({
   // gated on the real-node flag like every other real-node side effect (whisper-reap,
   // transcriptor, ingest) so a test's boot() never opens a real editor socket — an absent
   // editor just backs off, never crashing the boot path.
-  shellPort.onMessage((msg) => spine.handleInbound(msg));
+  shellPort.onMessage((msg) => spine.handleInbound(redirectShellToRoom(msg, { currentRoomOf: commands.currentRoomOf, claim: shellPort.claim })));
   if (ingest) shellPort.start();
 
   // Back-up announce: if we respawned from a lifecycle command, tell Self (with

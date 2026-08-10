@@ -169,6 +169,12 @@ export function createShellPort({
     // Does this chat id belong to the shell surface? boot's routed send consults this to
     // push a shell-surface reply back over the socket instead of the beeper bridge.
     owns(chatId) { return _chatIds.has(chatId); },
+    // Register a chat id as shell-owned WITHOUT it having arrived inbound — boot's room
+    // redirect (a shell turn dispatched as room <slug> instead of native (shell, 'main'))
+    // sends its reply to ev.chatId, which is now the room slug, not the id this socket last
+    // saw. owns() must recognize it too, or the reply would be handed to the wrong bridge.
+    // Generic on purpose: this limb still carries zero room logic, only the registry itself.
+    claim(chatId) { _chatIds.add(chatId); },
     // Is the operator's editor currently dialed in? /status's `shell:` field reads this
     // (boot wires shellConnected: () => shellPort.isConnected).
     get isConnected() { return _wsReady; },

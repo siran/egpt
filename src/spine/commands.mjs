@@ -425,6 +425,11 @@ export function createCommands({
   const currentRoom = new Map();   // surface -> room slug
   const surfaceOf = (ev) => ev?.surface ?? 'whatsapp';
   const curRoomName = (ev) => currentRoom.get(surfaceOf(ev)) ?? null;
+  // The ONE reader onto the ONE currentRoom map, keyed by surface directly (not an ev) — so
+  // boot.mjs's shell-limb wiring can ask "is this surface currently in a named room?" before
+  // handing an inbound event to the shared dispatch, without a second current-room map. Still
+  // written ONLY by roomJoin/roomLeave below.
+  const currentRoomOf = (surface) => currentRoom.get(surface) ?? null;
 
   // A room-scoped command (/members, /activate) resolves its Room here — the ONE place that
   // reads the mesh mark (bug #23 half A, 2026-07-27, mesh.mjs commandReply). A mesh-delivered
@@ -2412,5 +2417,5 @@ export function createCommands({
     } catch (e) { onLog(`/e wizard tools ${wm.chatId}: ${e?.message ?? e}`); await send?.(wm.chatId, `/e: failed — ${e?.message ?? e}`); }
   }
 
-  return { isCommand, run, runCaptured, remoteNode, nodeCommandForMe, makeNodeExplicit };
+  return { isCommand, run, runCaptured, remoteNode, nodeCommandForMe, makeNodeExplicit, currentRoomOf };
 }
