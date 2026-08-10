@@ -824,13 +824,29 @@ export async function startBeeperBridge(opts = {}) {
     if (m.startsWith('audio/')) return 'audio';
     return 'file';
   }
+  // Extension -> Content-Type for the multipart upload BELOW (live bug, 2026-08-09: an
+  // untyped Blob left Beeper defaulting every upload to application/octet-stream, so
+  // attachmentType() above — which classifies purely on mimeType — could never see
+  // audio/image/video and every send fell through to a generic 'file' attachment; a
+  // synthesized voice reply landed as a document icon instead of a playable voice note).
+  // Covers exactly the categories attachmentType() already discriminates.
+  const EXT_MIME = {
+    '.ogg': 'audio/ogg', '.opus': 'audio/ogg', '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.m4a': 'audio/mp4',
+    '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.gif': 'image/gif', '.webp': 'image/webp',
+    '.mp4': 'video/mp4', '.mov': 'video/quicktime', '.webm': 'video/webm',
+    '.pdf': 'application/pdf', '.txt': 'text/plain', '.md': 'text/markdown',
+  };
+  function mimeTypeFor(filePath) {
+    const ext = String(filePath).slice(String(filePath).lastIndexOf('.')).toLowerCase();
+    return EXT_MIME[ext] || 'application/octet-stream';
+  }
   // Multipart upload of a LOCAL file → the temp asset descriptor { uploadID, ... }.
   // Uses the global fetch/FormData/Blob (Node 18+) directly, not api() — api() is
   // JSON-only. Throws on a non-2xx so sendMedia logs + fails closed.
   async function uploadAsset(filePath) {
     const buf = await readFile(filePath);
     const form = new FormData();
-    form.append('file', new Blob([buf]), basename(filePath));
+    form.append('file', new Blob([buf], { type: mimeTypeFor(filePath) }), basename(filePath));
     const res = await fetch(baseUrl + '/v1/assets/upload', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: form });
     if (!res.ok) throw new Error(`POST /v1/assets/upload → ${res.status} ${(await res.text()).slice(0, 200)}`);
     const t = await res.text();
