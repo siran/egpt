@@ -94,9 +94,6 @@ async function startFakeBeeper() {
       const put = req.url.match(/^\/v1\/chats\/([^/]+)\/messages\/([^/?]+)$/);
       if (req.method === 'PUT' && put) {
         const messageID = decodeURIComponent(put[2]);
-        // A messageID marked 'editfail' models a PUT the API REJECTS (editMessage → false),
-        // so a test can exercise the edit-failure fallthrough (never silently eat the @e).
-        if (messageID.startsWith('editfail')) { res.statusCode = 500; res.end(JSON.stringify({ error: 'edit rejected' })); return; }
         edits.push({ chatID: decodeURIComponent(put[1]), messageID, ...JSON.parse(body) });
         res.end('{}');
         return;
@@ -2029,10 +2026,12 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
     expect(await bridge.sendAndGetId('status ping', { chatId: chat })).toBe('200');   // pre-fix: '100' (the stale twin)
   });
 
-  // BARE @e REPLY TO A VOICE NOTE → in-place 👂 transcript (operator 2026-07-18, reworked
-  // 2026-07-20). A reply whose WHOLE text is just the wake-word, quoting a voice/audio note, on
-  // one of OUR OWN (isSender → editable in place on this shared account) messages: the bridge
-  // substitutes that reply with '👂 <transcript>' IN PLACE and does NOT wake E — deterministic,
+  // BARE @e REPLY TO A VOICE NOTE → 👂 transcript, sent as a NEW message replying to the ORIGINAL
+  // voice note (operator 2026-07-18, reworked 2026-07-20, reworked again 2026-08-10: the trigger
+  // is NEVER edited/deleted any more — that isn't reliably permitted when the trigger wasn't sent
+  // by our own account, e.g. an allow-listed non-owner sender). A reply whose WHOLE text is just
+  // the wake-word, quoting a voice/audio note, from the owner (isSender or isAllowedUser): the
+  // bridge replies to the quoted note with '👂 <transcript>' and does NOT wake E — deterministic,
   // bridge-only. The transcript is REUSED from transcript.md (the note was already transcribed at
   // arrival), NOT re-made: retrieval is transcriptionForNoteId over the injected readTranscript
   // seam, so the audio is NEVER whisper-ed a second time. Any miss falls through UNCHANGED — a
@@ -2056,9 +2055,11 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
     const doc = transcriptDoc(voiceLine('vn-1', 'hola que tal'));
     const { incoming } = await startBridge({ readTranscript: async () => doc, transcribe });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-1', text: '@e', isSender: true, linkedMessageID: 'vn-1' })] });
-    await waitFor(() => fake.edits.length === 1);
-    expect(fake.edits[0].messageID).toBe('reply-1');            // OUR @e reply, edited in place …
-    expect(fake.edits[0].text).toBe('👂 hola que tal');         // … to the note's ALREADY-MADE transcription (from transcript.md)
+    await waitFor(() => fake.posts.some((p) => p.text === '👂 hola que tal'));
+    expect(fake.edits).toHaveLength(0);                                       // the trigger is NEVER edited …
+    expect(fake.deletes).toHaveLength(0);                                     // … nor deleted
+    const reveal = fake.posts.find((p) => p.text === '👂 hola que tal');
+    expect(reveal.replyToMessageID).toBe('vn-1');                             // …a NEW message, replying to the ORIGINAL voice note (not the trigger)
     expect(transcribe.calls).toBe(0);                           // ← NO double transcription in the @e path
     // E must NOT be woken for this message — the substitution replaces the @e→E routing.
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'sentinel', text: 'plain human line' })] });
@@ -2076,8 +2077,10 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
     );
     const { incoming } = await startBridge({ readTranscript: async () => doc });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-old', text: '@egpt', isSender: true, linkedMessageID: 'old-note' })] });
-    await waitFor(() => fake.edits.length === 1);
-    expect(fake.edits[0].text).toBe('👂 the very first thing said');
+    await waitFor(() => fake.posts.some((p) => p.text === '👂 the very first thing said'));
+    expect(fake.edits).toHaveLength(0);
+    expect(fake.deletes).toHaveLength(0);
+    expect(fake.posts.find((p) => p.text === '👂 the very first thing said').replyToMessageID).toBe('old-note');
     expect(incoming.some((i) => i.from.msgKey === 'reply-old')).toBe(false);
   });
 
@@ -2135,36 +2138,44 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
   // the self-chat" — lines 202-204). The gate uses the SAME owner-signal from.authorized uses
   // (!!isSender || isAllowedUser), so an allow-listed operator whose isSender was mis-tagged STILL
   // triggers the in-place substitution — otherwise the operator's own @e silently misses.
-  it('a bare @e reply to a voice note from an ALLOW-LISTED owner mis-tagged isSender:false STILL substitutes in place', async () => {
+  it('a bare @e reply to a voice note from an ALLOW-LISTED owner mis-tagged isSender:false STILL substitutes', async () => {
     const { incoming } = await startBridge({
       isAllowedUser: (id) => id === 'op@beeper.local',
       readTranscript: async () => transcriptDoc(voiceLine('vn-5b', 'buenos dias')),
     });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-5b', text: '@e', isSender: false, senderID: 'op@beeper.local', linkedMessageID: 'vn-5b' })] });
-    await waitFor(() => fake.edits.length === 1);
-    expect(fake.edits[0].messageID).toBe('reply-5b');                       // the mis-tagged owner's @e, edited in place …
-    expect(fake.edits[0].text).toBe('👂 buenos dias');                      // … despite isSender:false
+    await waitFor(() => fake.posts.some((p) => p.text === '👂 buenos dias'));
+    expect(fake.edits).toHaveLength(0);                                      // the mis-tagged owner's trigger is NEVER edited …
+    expect(fake.deletes).toHaveLength(0);                                    // … nor deleted
+    expect(fake.posts.find((p) => p.text === '👂 buenos dias').replyToMessageID).toBe('vn-5b');   // …despite isSender:false, a NEW message to the ORIGINAL note
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'sentinel-5b', text: 'plain human line' })] });
     await waitFor(() => incoming.some((i) => i.from.msgKey === 'sentinel-5b'));
     expect(incoming.some((i) => i.from.msgKey === 'reply-5b')).toBe(false);   // substituted, not routed to E
   });
 
-  // EDIT-FAILURE FALLTHROUGH (never silently eat the @e): the trigger is met and the transcript is
-  // FOUND, but editMessage FAILS (e.g. an authorized sender whose message isn't actually on our
-  // account → Beeper rejects the PUT). Suppression is guarded on the edit SUCCEEDING, so on failure
-  // we do NOT return — the message falls through and a normal @e still wakes E.
-  it('trigger met + transcript found but editMessage FAILS → the @e is NOT eaten; E is dispatched', async () => {
+  // SEND-CONFIRM FAILURE FALLTHROUGH (never silently eat the @e): the trigger is met and the
+  // transcript is FOUND, but the reveal send's confirmed id never resolves (e.g. Beeper's message
+  // list never surfaces it — the same "SEND ID UNCONFIRMED" miss covered generally by the
+  // own-send-suppression tests above). Suppression is guarded on the send's id ACTUALLY
+  // confirming, so on a miss we do NOT return — the trigger falls through and a normal @e still
+  // wakes E, with no bogus reveal left dangling.
+  it('trigger met + transcript found but the reveal send never confirms → the @e is NOT eaten; E is dispatched', async () => {
+    const chat = CHAT('chat-unconfirmed-reveal');
+    fake.messages.set(chat, () => []);   // our reveal POST never becomes findable → resolveSentMessageId exhausts its polls
     const { incoming } = await startBridge({ readTranscript: async () => transcriptDoc(voiceLine('vn-6', 'hola')) });
-    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'editfail-6', text: '@e', isSender: true, linkedMessageID: 'vn-6' })] });   // fake PUT 500s for an 'editfail' id
-    await waitFor(() => incoming.some((i) => i.from.msgKey === 'editfail-6'));
-    expect(incoming.find((i) => i.from.msgKey === 'editfail-6').from.atEStart).toBe(true);   // edit failed → fell through to E, not eaten
-    expect(fake.edits).toHaveLength(0);                                                       // the rejected PUT recorded no successful edit
-  });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-6', chatID: chat, text: '@e', isSender: true, linkedMessageID: 'vn-6' })] });
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'reply-6'), 8000);
+    expect(incoming.find((i) => i.from.msgKey === 'reply-6').from.atEStart).toBe(true);   // unconfirmed send → fell through to E, not eaten
+    expect(fake.edits).toHaveLength(0);
+    expect(fake.deletes).toHaveLength(0);
+  }, 12000);
 
-  // BARE @e REPLY TO A TEXT MESSAGE → SPOKEN mirror (operator 2026-08-10). The above branch's
-  // exact counterpart for a quoted TEXT entry instead of a voice one: no model turn, no new
-  // content — the quoted words, verbatim, synthesized and sent as audio. Text can't be rewritten
-  // in place the way a voice quote is, so the bare-@e trigger is DELETED instead of edited.
+  // BARE @e REPLY TO A TEXT MESSAGE → SPOKEN mirror (operator 2026-08-10, reworked again
+  // 2026-08-10 to never touch the trigger). The above branch's exact counterpart for a quoted
+  // TEXT entry instead of a voice one: no model turn, no new content — the quoted words,
+  // verbatim, synthesized and sent as audio. Synthesis takes real time, so an immediate ACK
+  // ('🔊 reading…') — OUR OWN message — is posted first and deleted afterward; the trigger
+  // itself is never edited or deleted.
   // Counts calls so a test can assert the quoted text reaches synthesize UNCHANGED.
   const countingSynthesize = (audio = Buffer.from('AUDIO')) => {
     const f = async (spokenText) => { f.calls++; f.lastText = spokenText; return audio; };
@@ -2172,7 +2183,7 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
     return f;
   };
 
-  it('a bare @e reply to a TEXT message synthesizes it VERBATIM, sends it as audio, deletes the trigger, and does NOT wake E', async () => {
+  it('a bare @e reply to a TEXT message synthesizes it VERBATIM, sends it as audio, cleans up its own ack (never the trigger), and does NOT wake E', async () => {
     const synthesize = countingSynthesize();
     const doc = transcriptDoc(textLine('tn-audio', 'hello there'));
     const { incoming } = await startBridge({ readTranscript: async () => doc, synthesize, voice: 'ona' });
@@ -2180,11 +2191,15 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
     await waitFor(() => fake.uploads.length === 1);
     expect(synthesize.calls).toBe(1);
     expect(synthesize.lastText).toBe('hello there');                          // verbatim — no model turn, no new content
+    const ack = fake.posts.find((p) => p.text === '🔊 reading…');
+    expect(ack).toBeTruthy();                                                 // immediate ack, OUR OWN new message …
+    expect(ack.replyToMessageID).toBe('tn-audio');                            // … replying to the ORIGINAL quoted text
     const mediaPost = fake.posts.find((p) => p.attachment);
     expect(mediaPost).toBeTruthy();                                           // the synthesized audio, sent as media
-    expect(mediaPost.replyToMessageID).toBe('tn-audio');                      // …as a reply to the ORIGINAL quoted message
-    await waitFor(() => fake.deletes.some((d) => d.messageID === 'reply-txt'));
-    expect(fake.edits).toHaveLength(0);                                       // text can't be rewritten in place — deleted, not edited
+    expect(mediaPost.replyToMessageID).toBe('tn-audio');                      // …as a reply to the ORIGINAL quoted message (not the ack)
+    await waitFor(() => fake.deletes.some((d) => d.messageID === ack.confirmedID));   // our own ack IS deletable/deleted
+    expect(fake.edits).toHaveLength(0);
+    expect(fake.deletes.some((d) => d.messageID === 'reply-txt')).toBe(false);   // the TRIGGER is never touched
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'sentinel-txt', text: 'plain human line' })] });
     await waitFor(() => incoming.some((i) => i.from.msgKey === 'sentinel-txt'));
     expect(incoming.some((i) => i.from.msgKey === 'reply-txt')).toBe(false);   // the @e reply never reached the persona turn
@@ -2202,18 +2217,22 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
     await waitFor(() => fake.uploads.length === 1);
     expect(synthesize.calls).toBe(1);
     expect(synthesize.lastText).toBe('hello there');
-    await waitFor(() => fake.deletes.some((d) => d.messageID === 'reply-bare'));
+    const ack = fake.posts.find((p) => p.text === '🔊 reading…');
+    await waitFor(() => fake.deletes.some((d) => d.messageID === ack.confirmedID));   // our own ack deleted …
+    expect(fake.deletes.some((d) => d.messageID === 'reply-bare')).toBe(false);       // … the trigger is never touched
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'sentinel-bare', text: 'plain human line' })] });
     await waitFor(() => incoming.some((i) => i.from.msgKey === 'sentinel-bare'));
     expect(incoming.some((i) => i.from.msgKey === 'reply-bare')).toBe(false);
   });
 
-  it('a BARE "e" (no @) reply to a VOICE note triggers the in-place transcript edit exactly like "@e"', async () => {
+  it('a BARE "e" (no @) reply to a VOICE note triggers the transcript reveal exactly like "@e"', async () => {
     const doc = transcriptDoc(voiceLine('vn-bare', 'hola bare'));
     const { incoming } = await startBridge({ readTranscript: async () => doc });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-vbare', text: 'e', isSender: true, linkedMessageID: 'vn-bare' })] });
-    await waitFor(() => fake.edits.length === 1);
-    expect(fake.edits[0].text).toBe('👂 hola bare');
+    await waitFor(() => fake.posts.some((p) => p.text === '👂 hola bare'));
+    expect(fake.edits).toHaveLength(0);
+    expect(fake.deletes).toHaveLength(0);
+    expect(fake.posts.find((p) => p.text === '👂 hola bare').replyToMessageID).toBe('vn-bare');
     expect(incoming.some((i) => i.from.msgKey === 'reply-vbare')).toBe(false);
   });
 
@@ -2233,21 +2252,24 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
     await waitFor(() => fake.uploads.length === 1);
     expect(synthesize.calls).toBe(1);
     expect(synthesize.lastText).toBe('this is what E said earlier');   // found via _seenText, not transcript.md
-    await waitFor(() => fake.deletes.some((d) => d.messageID === 'reply-own'));
+    const ack = fake.posts.find((p) => p.text === '🔊 reading…');
+    await waitFor(() => fake.deletes.some((d) => d.messageID === ack.confirmedID));
+    expect(fake.deletes.some((d) => d.messageID === 'reply-own')).toBe(false);   // the trigger is never touched
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'sentinel-own', text: 'plain human line' })] });
     await waitFor(() => incoming.some((i) => i.from.msgKey === 'sentinel-own'));
     expect(incoming.some((i) => i.from.msgKey === 'reply-own')).toBe(false);   // E did NOT wake for it
   });
 
-  it('REGRESSION: the existing bare @e reply to a VOICE note is unaffected by the text-mirror branch (still edits in place, never synthesizes)', async () => {
+  it('REGRESSION: the existing bare @e reply to a VOICE note is unaffected by the text-mirror branch (still reveals via a new message, never synthesizes)', async () => {
     const synthesize = countingSynthesize();
     const doc = transcriptDoc(voiceLine('vn-mirror', 'hola que tal'));
     const { incoming } = await startBridge({ readTranscript: async () => doc, synthesize, voice: 'ona' });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-vm', text: '@e', isSender: true, linkedMessageID: 'vn-mirror' })] });
-    await waitFor(() => fake.edits.length === 1);
-    expect(fake.edits[0].text).toBe('👂 hola que tal');       // voice branch's own in-place rewrite, untouched
+    await waitFor(() => fake.posts.some((p) => p.text === '👂 hola que tal'));
+    expect(fake.posts.find((p) => p.text === '👂 hola que tal').replyToMessageID).toBe('vn-mirror');   // voice branch's own reveal, untouched
     expect(synthesize.calls).toBe(0);                         // the text-mirror branch never ran (voice branch returned first)
     expect(fake.uploads).toHaveLength(0);
+    expect(fake.edits).toHaveLength(0);
     expect(fake.deletes).toHaveLength(0);
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'sentinel-vm', text: 'plain human line' })] });
     await waitFor(() => incoming.some((i) => i.from.msgKey === 'sentinel-vm'));
@@ -2277,24 +2299,31 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
     expect(incoming.find((i) => i.from.msgKey === 'reply-miss2').from.atEStart).toBe(true);
   });
 
-  it('synthesis FAILURE (synthesize returns null) → falls through to @e→E; no media sent, trigger not deleted', async () => {
+  it('synthesis FAILURE (synthesize returns null) → falls through to @e→E; no media sent, trigger not touched, ack cleaned up', async () => {
     const synthesize = async () => null;   // declines, e.g. the worker rejected the request
     const doc = transcriptDoc(textLine('tn-fail', 'hello there'));
     const { incoming } = await startBridge({ readTranscript: async () => doc, synthesize, voice: 'ona' });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-synthfail', text: '@e', isSender: true, linkedMessageID: 'tn-fail' })] });
     await waitFor(() => incoming.some((i) => i.from.msgKey === 'reply-synthfail'));
     expect(fake.uploads).toHaveLength(0);
-    expect(fake.deletes).toHaveLength(0);
+    const ack = fake.posts.find((p) => p.text === '🔊 reading…');
+    expect(ack).toBeTruthy();                                                       // ack IS posted before synthesis is attempted …
+    expect(fake.deletes.some((d) => d.messageID === ack.confirmedID)).toBe(true);   // … and cleaned up on decline
+    expect(fake.deletes.some((d) => d.messageID === 'reply-synthfail')).toBe(false);   // trigger never touched
     expect(incoming.find((i) => i.from.msgKey === 'reply-synthfail').from.atEStart).toBe(true);   // fell through, not eaten
   });
 
-  it('synthesis THROWS → falls through to @e→E cleanly (never blocks the normal wake path)', async () => {
+  it('synthesis THROWS → falls through to @e→E cleanly (never blocks the normal wake path); ack cleaned up', async () => {
     const synthesize = async () => { throw new Error('tts worker unreachable'); };
     const doc = transcriptDoc(textLine('tn-throw', 'hello there'));
     const { incoming } = await startBridge({ readTranscript: async () => doc, synthesize, voice: 'ona' });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-throw', text: '@e', isSender: true, linkedMessageID: 'tn-throw' })] });
     await waitFor(() => incoming.some((i) => i.from.msgKey === 'reply-throw'));
     expect(fake.uploads).toHaveLength(0);
+    const ack = fake.posts.find((p) => p.text === '🔊 reading…');
+    expect(ack).toBeTruthy();
+    expect(fake.deletes.some((d) => d.messageID === ack.confirmedID)).toBe(true);
+    expect(fake.deletes.some((d) => d.messageID === 'reply-throw')).toBe(false);
     expect(incoming.find((i) => i.from.msgKey === 'reply-throw').from.atEStart).toBe(true);
   });
 });

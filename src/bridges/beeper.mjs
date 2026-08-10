@@ -1385,16 +1385,19 @@ export async function startBeeperBridge(opts = {}) {
     const replyToId = msg.linkedMessageID ?? msg.replyToMessageID ?? msg.quotedMessageID ?? null;
     const replyToBot = !!(replyToId && wasSentByUs(chatID, replyToId));
 
-    // BARE @e REPLY TO A VOICE NOTE → in-place 👂 transcript (operator 2026-07-18, reworked
-    // 2026-07-20). When a reply whose WHOLE text is just the wake-word (@e/@egpt) quotes a
-    // voice/audio note and comes from the OWNER — the same owner-signal `from.authorized` uses
-    // below (!!isSender || isAllowedUser): Beeper mis-tags the owner's OWN sends as
-    // isSender:false "even in the self-chat" (see the isSender caveats above), so isSender alone
-    // would let the operator's own @e silently miss — substitute that reply with '👂 <transcript>'
-    // IN PLACE and DON'T wake E: a deterministic, bridge-only shortcut, no persona involvement.
-    // Editability is confirmed by the edit ACTUALLY succeeding — if editMessage returns false
-    // (e.g. an authorized sender whose message isn't on our account), we do NOT return, so the
-    // @e is never silently eaten.
+    // BARE @e REPLY TO A VOICE NOTE → 👂 transcript, sent as a NEW message replying to the
+    // ORIGINAL voice note (operator 2026-07-18, reworked 2026-07-20, reworked again 2026-08-10:
+    // editing/deleting the TRIGGER message isn't reliably permitted on WhatsApp/Beeper when the
+    // trigger wasn't sent by OUR account — e.g. an allow-listed non-owner sender — so the trigger
+    // is now NEVER touched, in either branch of this gate). When a reply whose WHOLE text is just
+    // the wake-word (@e/@egpt) quotes a voice/audio note and comes from the OWNER — the same
+    // owner-signal `from.authorized` uses below (!!isSender || isAllowedUser): Beeper mis-tags the
+    // owner's OWN sends as isSender:false "even in the self-chat" (see the isSender caveats
+    // above), so isSender alone would let the operator's own @e silently miss — reply to the
+    // quoted voice note with '👂 <transcript>' as a fresh message and DON'T wake E: a
+    // deterministic, bridge-only shortcut, no persona involvement. Success is confirmed by the
+    // send's id ACTUALLY confirming — if it doesn't (sendMessage returns null, or confirmedId
+    // resolves falsy), we do NOT return, so the @e is never silently eaten.
     //
     // RETRIEVAL = REUSE, NOT RE-TRANSCRIBE (operator 2026-07-20): the note was already
     // transcribed ONCE when it arrived (dispatchMessage ~L1096) and written to transcript.md.
@@ -1404,8 +1407,9 @@ export async function startBeeperBridge(opts = {}) {
     // text — so no fetchMessageById / attachmentToLocalPath / transcribeVoiceNote here. This also
     // gives UNBOUNDED lookback: any historical note in the transcript, not just the recent-50 API
     // window the old on-demand fetch was capped at. ANY miss (not a reply, extra text beyond the
-    // bare wake-word, no voice-transcription entry for the id, a non-owner sender, or a failed
-    // edit) falls through UNCHANGED, so a plain @e still wakes E below — and it NEVER re-transcribes.
+    // bare wake-word, no voice-transcription entry for the id, a non-owner sender, or a send that
+    // never confirmed) falls through UNCHANGED, so a plain @e still wakes E below — and it NEVER
+    // re-transcribes.
     const bareReply = (text || '').trim().toLowerCase();
     // BOTH forms accepted (operator 2026-08-10): '@e'/'@egpt' AND the bare 'e'/'egpt' — unlike
     // the @ev voice-out override (which needs '@' to avoid matching the word "ev" INSIDE ordinary
@@ -1416,24 +1420,27 @@ export async function startBeeperBridge(opts = {}) {
       const doc = await readTranscript(chatID, { chatName: info.title, network: acct });
       const t = transcriptionForNoteId(doc, replyToId);
       if (t) {
-        const edited = await editMessage(chatID, msg.id, `${ECHO_MARKER} ${t}`);
-        if (edited) {
-          onLog(`beeper: 👂 in-place transcript [${info.title}] #${msg.id} ↩${replyToId} (reused from transcript.md)`);
+        const sent = await sendMessage(chatID, `${ECHO_MARKER} ${t}`, { replyToMessageID: replyToId });
+        const confirmedId = sent ? await sent.confirmedId : null;
+        if (confirmedId) {
+          onLog(`beeper: 👂 transcript sent [${info.title}] ↩${replyToId} (reused from transcript.md; trigger #${msg.id} untouched)`);
           return;   // substitution replaces the @e→E routing for this message
         }
-        onLog(`beeper: 👂 in-place edit FAILED [${info.title}] #${msg.id} ↩${replyToId} — falling through to @e→E`);
+        onLog(`beeper: 👂 transcript send FAILED to confirm [${info.title}] #${msg.id} ↩${replyToId} — falling through to @e→E`);
       } else {
         // MIRROR (operator 2026-08-10): the quoted id isn't a VOICE note — before giving up, try
         // it as ordinary TEXT. bodyForMessageId is the general chokepoint transcriptionForNoteId
         // itself is built on (its own header says reading one recorded entry back by id is what a
         // REPLY needs too), so this reuses it rather than re-walking transcript.md. Skip a hit that
         // IS itself a voice-transcription entry (_VOICE_MARK) — a voice note that missed the branch
-        // above for some OTHER reason (e.g. the edit failing) must never be read aloud as if it were
+        // above for some OTHER reason (e.g. the send failing) must never be read aloud as if it were
         // plain text. synthesize/voice unwired (e.g. `do`, no voice_service configured) → this whole
-        // branch no-ops, same fall-through discipline as every other miss here. Text can't be
-        // rewritten in place the way a voice quote is (no audio was ever there), so on success this
-        // DELETES the bare-@e trigger instead of editing it — mirroring the in-place rewrite above
-        // with the closest equivalent for a message that can't become audio itself.
+        // branch no-ops, same fall-through discipline as every other miss here. Synthesis takes real
+        // time, so an immediate ACK ('🔊 reading…') is posted FIRST, replying to the ORIGINAL quoted
+        // text — OUR OWN new message, so it's guaranteed deletable regardless of who sent the
+        // trigger (operator 2026-08-10: editing/deleting the TRIGGER isn't reliably permitted when
+        // it wasn't sent by our account). The trigger itself is NEVER touched; the ack is deleted
+        // once the audio reply lands (success) or immediately (failure), so nothing dangles.
         // E's OWN reply lines carry NO id in transcript.md — replyLine's format is
         // `[@being (HH:MM)]: body`, UNCONDITIONALLY (transcript.mjs), a structural fact, not an
         // occasional miss. So quoting E's own prior message would otherwise always fall through
@@ -1444,25 +1451,33 @@ export async function startBeeperBridge(opts = {}) {
         // keyed by the REAL confirmed id — fall back to it when transcript.md has nothing.
         const quotedText = bodyForMessageId(doc, replyToId) ?? _seenText.get(msgKeyOf(chatID, replyToId)) ?? null;
         if (quotedText && !_VOICE_MARK.test(quotedText) && synthesize && voice) {
-          let audio = null;
-          try { audio = await synthesize(cleanForSpeech(quotedText), voice, onLog); }
-          catch (e) { onLog(`beeper: 🔊 synthesize threw ↩${replyToId} [${info.title}] — ${e?.message ?? e}`); }
-          if (audio) {
-            const tmpPath = join(tmpdir(), `egpt-voice-quote-${randomBytes(8).toString('hex')}.ogg`);
-            let sent = false;
-            try {
-              await writeFile(tmpPath, audio);
-              sent = !!(await sendMedia(chatID, tmpPath, { replyTo: replyToId }));
-            } catch (e) { onLog(`beeper: 🔊 media send failed ↩${replyToId} [${info.title}] — ${e?.message ?? e}`); }
-            finally { try { await unlink(tmpPath); } catch { /* ignore */ } }
-            if (sent) {
-              await deleteMessage(chatID, msg.id);
-              onLog(`beeper: 🔊 quoted text synthesized + sent [${info.title}] #${msg.id} ↩${replyToId} (trigger deleted)`);
-              return;   // substitution replaces the @e→E routing for this message
+          const ack = await sendMessage(chatID, '🔊 reading…', { replyToMessageID: replyToId });
+          const ackId = ack ? await ack.confirmedId : null;
+          if (ackId) {
+            let audio = null;
+            try { audio = await synthesize(cleanForSpeech(quotedText), voice, onLog); }
+            catch (e) { onLog(`beeper: 🔊 synthesize threw ↩${replyToId} [${info.title}] — ${e?.message ?? e}`); }
+            if (audio) {
+              const tmpPath = join(tmpdir(), `egpt-voice-quote-${randomBytes(8).toString('hex')}.ogg`);
+              let sent = false;
+              try {
+                await writeFile(tmpPath, audio);
+                sent = !!(await sendMedia(chatID, tmpPath, { replyTo: replyToId }));
+              } catch (e) { onLog(`beeper: 🔊 media send failed ↩${replyToId} [${info.title}] — ${e?.message ?? e}`); }
+              finally { try { await unlink(tmpPath); } catch { /* ignore */ } }
+              if (sent) {
+                await deleteMessage(chatID, ackId);
+                onLog(`beeper: 🔊 quoted text synthesized + sent [${info.title}] #${msg.id} ↩${replyToId} (ack cleaned up; trigger untouched)`);
+                return;   // substitution replaces the @e→E routing for this message
+              }
+              await deleteMessage(chatID, ackId);
+              onLog(`beeper: 🔊 quoted-text audio send FAILED ↩${replyToId} [${info.title}] — ack cleaned up, falling through to @e→E`);
+            } else {
+              await deleteMessage(chatID, ackId);
+              onLog(`beeper: 🔊 quoted-text synthesis declined/failed ↩${replyToId} [${info.title}] — ack cleaned up, falling through to @e→E`);
             }
-            onLog(`beeper: 🔊 quoted-text audio send FAILED ↩${replyToId} [${info.title}] — falling through to @e→E`);
           } else {
-            onLog(`beeper: 🔊 quoted-text synthesis declined/failed ↩${replyToId} [${info.title}] — falling through to @e→E`);
+            onLog(`beeper: 🔊 ack send FAILED to confirm ↩${replyToId} [${info.title}] — falling through to @e→E`);
           }
         }
         // No transcript entry for the quoted id (voice OR text). Arrival transcription is SYNCHRONOUS
