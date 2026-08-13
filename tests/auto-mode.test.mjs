@@ -143,6 +143,14 @@ describe('a BARE handle at the START addresses, exactly like @handle', () => {
   it('the accepted collision ships unguarded: `don Pedro me dijo…` DOES wake don', () => {
     expect(mentionHits('don Pedro me dijo que sí', DOLLY)).toEqual([{ token: 'don', atStart: true }]);
   });
+  it("REPRODUCE-FIRST: an apostrophe suffix is NOT a boundary — `don't`/`don's` do not wake don", () => {
+    expect(mentionHits("don't do that", DOLLY)).toEqual([]);
+    expect(mentionHits("don's afternoon plans", DOLLY)).toEqual([]);
+    expect(mentionStatus("don't do that", DOLLY)).toEqual({ atEAnywhere: false, atEStart: false });
+    // a real boundary right after the apostrophe still wakes — `d' hola` is glued only THROUGH
+    // a following letter, not by the apostrophe itself.
+    expect(mentionHits("d' hola", DOLLY)).toEqual([{ token: 'd', atStart: true }]);
+  });
   it('kg`s own set: `egpt mirá esto` and `e importante` wake; `email` and `egpts` do not', () => {
     expect(mentionHits('egpt mirá esto', KG)).toEqual([{ token: 'egpt', atStart: true }]);
     expect(mentionHits('e importante', KG)).toEqual([{ token: 'e', atStart: true }]);
@@ -336,6 +344,10 @@ describe('mentionHitsAnywhere — the spoken (voice_handles) anywhere-match mode
   it('longest-token-first, case-insensitive, multiple hits in text order', () => {
     expect(mentionHitsAnywhere('Perrito y luego perro', ['perro', 'perrito']))
       .toEqual([{ token: 'perrito' }, { token: 'perro' }]);
+  });
+  it("REPRODUCE-FIRST: an apostrophe suffix is NOT a boundary — a whisper transcript of `I don't know` does not wake don", () => {
+    expect(mentionHitsAnywhere("I don't know", ['don'])).toEqual([]);
+    expect(mentionHitsAnywhere("that's don's dog", ['don'])).toEqual([]);
   });
 });
 

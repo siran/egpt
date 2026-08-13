@@ -140,13 +140,20 @@ const _escapeWake = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 // the node. Trailing `-` is literal and legal; verified, along with _escapeWake — every
 // character it escapes is a SyntaxCharacter, which is exactly the set `u` still permits as an
 // identity escape, so it needed no change.
-const _NOT_GLUED = '(?![\\p{L}\\p{N}_-])';
-// The SAME boundary, mirrored to the LEFT — derived FROM _NOT_GLUED (not a second predicate)
+const _NOT_GLUED_BASE = '(?![\\p{L}\\p{N}_-])';
+// The SAME boundary, mirrored to the LEFT — derived FROM the base predicate (not a second one)
 // by flipping its lookahead into a lookbehind. mentionHitsAnywhere (below) needs a left-side
 // check too: unlike the `^`-anchored bare form or the `@`-led form above, it has no anchor
 // character to imply one, so without this a token GLUED inside a longer word (e.g. an alias
 // 'perro' inside 'carperro') would still match anywhere in the string.
-const _NOT_GLUED_BEFORE = _NOT_GLUED.replace('(?!', '(?<!');
+const _NOT_GLUED_BEFORE = _NOT_GLUED_BASE.replace('(?!', '(?<!');
+// FORWARD boundary only, one extra clause on top of the base: an apostrophe immediately
+// followed by a letter is a contraction/possessive SUFFIX (don't, don's, Al's), not a real
+// boundary — an apostrophe alone satisfies the base predicate (it's not a letter/digit), so
+// without this `don't` reads exactly like `don ` and wakes `don` (operator 2026-08-13: "don't
+// should not trigger don"). Forward-only, deliberately: this is a trailing-suffix rule, so it
+// has no left-side mirror — do not fold it into _NOT_GLUED_BEFORE.
+const _NOT_GLUED = _NOT_GLUED_BASE + "(?!['’][\\p{L}])";
 // `addressWithoutAt` — THE SWITCH for the bare form (operator 2026-07-27: "this addressing
 // without the '@' must be an option, easy to turn on/off globally"). DEFAULT true: the live
 // behaviour stays on for every caller that says nothing. false → this returns '@' hits ONLY,
