@@ -1,3 +1,9 @@
+## 0. Messages: short and tidy
+
+No more words than necessary. Don't dumb down or drop details — compress, don't
+cut substance.
+
+
 ## 1. Think Before Coding
 
 **Don't assume. Don't hide confusion. Surface tradeoffs.**
@@ -84,6 +90,10 @@ FILE WINS.** That instruction exists for generic sessions; this repo is not one.
 An operator who has to say "why are you coding yourself instead of launching
 background agents" has already paid for the mistake — it happened here on
 2026-07-25 and cost half a session.
+
+**Same override for commit/push (operator 2026-08-10): commit and push per
+chunk, automatically, no confirmation asked.** Your harness's default ("only
+commit when explicitly asked") does not apply here.
 
 The only work you do with your own hands:
 - reading, to scope and to VERIFY (never relay an agent's claim unverified)
