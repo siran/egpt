@@ -1,8 +1,9 @@
 import { spawn as nodeSpawn, spawnSync as nodeSpawnSync } from 'node:child_process';
-import { existsSync as nodeExistsSync, readFileSync as nodeReadFileSync, statSync as nodeStatSync, unlinkSync as nodeUnlinkSync } from 'node:fs';
+import { existsSync as nodeExistsSync, readFileSync as nodeReadFileSync, statSync as nodeStatSync, unlinkSync as nodeUnlinkSync, writeFileSync as nodeWriteFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import * as YAML from 'yaml';
 import { liveDaemonPid as defaultLiveDaemonPid } from './daemon-singleton.mjs';
 
 export const RESTART_MIN_MS = 2_000;
@@ -27,6 +28,7 @@ export function createDaemonRuntime(opts = {}) {
   const statSync = opts.statSync ?? nodeStatSync;
   const unlinkSync = opts.unlinkSync ?? nodeUnlinkSync;
   const existsSync = opts.existsSync ?? nodeExistsSync;
+  const writeFileSync = opts.writeFileSync ?? nodeWriteFileSync;
   const liveDaemonPid = opts.liveDaemonPid ?? defaultLiveDaemonPid;
   const processObj = opts.processObj ?? process;
   const stdout = opts.stdout ?? process.stdout;
@@ -40,6 +42,12 @@ export function createDaemonRuntime(opts = {}) {
   const rewindSidecar = opts.rewindSidecar ?? join(egptHome, 'rewind-target.txt');
   const alivePath = opts.alivePath ?? join(egptHome, 'state', 'alive.txt');
   const spinePidPath = opts.spinePidPath ?? join(egptHome, 'state', 'spine.pid');
+  // The SAME sidecar boot.mjs's read-back block reads (join(EGPT_HOME, 'state',
+  // 'restart-announce.json')) — the daemon writes a fallback here ONLY for the two exit
+  // paths where the dying spine never got a chance to write its own (a crash, or a
+  // wedge-kill); the spine's own graceful announceAndExit path is untouched.
+  const restartAnnouncePath = join(egptHome, 'state', 'restart-announce.json');
+  const configYamlPath = join(egptHome, 'config', 'config.yaml');
 
   // Wedge check: the spine beats alive.txt (~60s). If a running child stops
   // beating (alive process, dead loop), restart it. graceMs covers boot before
@@ -109,6 +117,35 @@ export function createDaemonRuntime(opts = {}) {
       return;
     }
     wedgeStreak = 0;   // a fresh beat — heartbeat restored, clear the escalation
+  }
+
+  // A narrow reimplementation of boot.mjs's selfChatId()/surfaceCfg() lookup — the daemon
+  // has no bridge and no resolved config object, so it reads+parses config.yaml directly.
+  // SAME priority as boot.mjs (networks.whatsapp new shape, falling back to top-level
+  // whatsapp old shape; chat_ids[] if present, else chat_id wrapped as a 1-element array),
+  // just narrower (only this one lookup, not the full resolver). Never throws.
+  function resolveSelfChatId() {
+    try {
+      const doc = YAML.parse(readFileSync(configYamlPath, 'utf8')) ?? {};
+      const raw = (doc.networks?.whatsapp && typeof doc.networks.whatsapp === 'object') ? doc.networks.whatsapp
+                : (doc.whatsapp && typeof doc.whatsapp === 'object') ? doc.whatsapp
+                : {};
+      const chat_ids = Array.isArray(raw.chat_ids) ? raw.chat_ids : (raw.chat_id != null ? [raw.chat_id] : []);
+      return chat_ids[0] ?? null;
+    } catch { return null; }
+  }
+
+  // Best-effort fallback sidecar for a crash/wedge exit, so boot.mjs's read-back always
+  // finds SOMETHING to announce from, even when the dying spine never got a chance to
+  // write its own via announceAndExit. Never write over an already-existing sidecar (a
+  // crash/wedge could rarely race with a spine mid-graceful-exit).
+  function writeFallbackAnnounce(kind, pid) {
+    try {
+      if (existsSync(restartAnnouncePath)) return;
+      const chatId = resolveSelfChatId();
+      if (!chatId) return;
+      writeFileSync(restartAnnouncePath, JSON.stringify({ chatId, kind, preSha: gitVersion(root).sha, pid }));
+    } catch { /* best-effort — never block the respawn */ }
   }
 
   function gitVersion(cwd = root) {
@@ -203,6 +240,7 @@ export function createDaemonRuntime(opts = {}) {
     });
 
     child.on('exit', async (code, signal) => {
+      const exitedPid = child?.pid;   // capture before child = null, below
       child = null;
       if (stopping) return;
       log(`shell exited code=${code} signal=${signal ?? '-'}`);
@@ -216,6 +254,7 @@ export function createDaemonRuntime(opts = {}) {
         wedgeStreak += 1;
         const delay = Math.min(RESTART_MIN_MS * 2 ** (wedgeStreak - 1), RESTART_MAX_MS);
         log(`no heartbeat from the spine — respawn #${wedgeStreak} in ${Math.round(delay / 1000)}s (stop the service or restore the heartbeat)`);
+        writeFallbackAnnounce('wedge', exitedPid);
         setTimeoutFn(spawnShell, delay);
         return;
       }
@@ -248,6 +287,7 @@ export function createDaemonRuntime(opts = {}) {
       }
 
       log(`crash — restarting in ${backoff}ms`);
+      writeFallbackAnnounce('crash', exitedPid);
       setTimeoutFn(() => {
         backoff = Math.min(backoff * 2, RESTART_MAX_MS);
         spawnShell();

@@ -1297,18 +1297,30 @@ export async function boot({
   shellPort.onMessage((msg) => spine.handleInbound(redirectShellToRoom(msg, { currentRoomOf: commands.currentRoomOf, claim: shellPort.claim })));
   if (ingest) shellPort.start();
 
-  // Back-up announce: if we respawned from a lifecycle command, tell Self (with
-  // the commit we came up on). Fire-and-forget — a cold boot has no sidecar.
+  // Back-up announce: if we respawned from a lifecycle command (or a crash/wedge the daemon
+  // caught — src/daemon-runtime.mjs writes the same fallback sidecar for those), tell Self
+  // with the commit we came up on. A cold boot with NO sidecar at all (first-ever start, or
+  // either gap the fallback couldn't resolve a chat id for either) still gets a plain
+  // "started" line below — the operator must never be silently in the dark about a restart.
   // Gated on the real-node flag so tests don't read/send through it.
   if (ingest) (async () => {
-    let sc; try { sc = JSON.parse(await readFile(sidecar, 'utf8')); } catch { return; }
-    try { await unlink(sidecar); } catch {}
-    if (!sc?.chatId) return;
+    let sc; try { sc = JSON.parse(await readFile(sidecar, 'utf8')); } catch { sc = null; }
+    if (sc) {
+      try { await unlink(sidecar); } catch {}
+      if (!sc?.chatId) return;
+      const nowSha = shortSha();
+      const head = (sc.preSha && sc.preSha !== nowSha) ? `${sc.preSha} → ${nowSha}` : nowSha;
+      const pids = (sc.pid && sc.pid !== process.pid) ? `pid ${sc.pid} → ${process.pid}` : `pid ${process.pid}`;
+      const subject = gitOut(['log', '-1', '--format=%s']);
+      try { await bridge.send(sc.chatId, `✅ egpt back up! (${head}) ${pids}${subject ? `\n\n${subject}` : ''}`); }
+      catch (e) { log.line?.(`[announce] ${e?.message ?? e}`); }
+      return;
+    }
+    const selfDm = selfChatId();
+    if (!selfDm) return;
     const nowSha = shortSha();
-    const head = (sc.preSha && sc.preSha !== nowSha) ? `${sc.preSha} → ${nowSha}` : nowSha;
-    const pids = (sc.pid && sc.pid !== process.pid) ? `pid ${sc.pid} → ${process.pid}` : `pid ${process.pid}`;
     const subject = gitOut(['log', '-1', '--format=%s']);
-    try { await bridge.send(sc.chatId, `✅ egpt back up! (${head}) ${pids}${subject ? `\n\n${subject}` : ''}`); }
+    try { await bridge.send(selfDm, `✅ egpt started (${nowSha}) pid ${process.pid}${subject ? `\n\n${subject}` : ''}`); }
     catch (e) { log.line?.(`[announce] ${e?.message ?? e}`); }
   })();
 

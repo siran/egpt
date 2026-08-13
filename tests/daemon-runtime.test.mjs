@@ -9,10 +9,13 @@ import {
   createDaemonRuntime,
 } from '../src/daemon-runtime.mjs';
 
+let _nextFakePid = 1000;
+
 class FakeChild {
   constructor() {
     this.handlers = {};
     this.killed = [];
+    this.pid = _nextFakePid++;
   }
   on(event, fn) {
     this.handlers[event] = fn;
@@ -75,6 +78,7 @@ function makeRuntime(extra = {}) {
     statSync: extra.statSync ?? (() => { const e = new Error('missing'); e.code = 'ENOENT'; throw e; }),   // no alive.txt → beat absent (Infinity)
     unlinkSync: extra.unlinkSync ?? (() => {}),
     existsSync: extra.existsSync ?? (() => false),
+    writeFileSync: extra.writeFileSync ?? (() => {}),
     liveDaemonPid: extra.liveDaemonPid ?? (() => null),
     setImmediate: extra.setImmediate ?? ((fn) => fn()),
     setTimeout: extra.setTimeout ?? (() => {}),
@@ -312,5 +316,106 @@ describe('daemon runtime fake-world harness', () => {
     expect(imported).toHaveLength(1);
     expect(imported[0]).toContain('/extension/build.mjs');
     expect(children).toHaveLength(2);
+  });
+
+  // === restart-announce sidecar — the daemon writes a fallback marker for the two exit
+  // paths where the dying spine never got a chance to write its own (announceAndExit's
+  // graceful path is untouched/out of scope): a genuine crash, and a wedge-kill. Same
+  // sidecar shape boot.mjs already reads back: {chatId, kind, preSha, pid}. ===================
+  describe('restart-announce sidecar fallback (crash/wedge exits with no prior sidecar)', () => {
+    const CONFIG_YAML = 'networks:\n  whatsapp:\n    chat_ids:\n      - "!self:beeper.com"\n';
+    const configReadFileSync = (p) => {
+      if (String(p).includes('config.yaml')) return CONFIG_YAML;
+      const e = new Error('missing'); e.code = 'ENOENT'; throw e;
+    };
+
+    it('crash branch writes {chatId, kind: "crash", preSha, pid} when no sidecar exists', async () => {
+      const writes = [];
+      const { runtime, children } = makeRuntime({
+        readFileSync: configReadFileSync,
+        writeFileSync: (p, body) => writes.push({ p: String(p), body: String(body) }),
+      });
+      runtime.spawnShell();
+      const childPid = children[0].child.pid;
+
+      await children[0].child.handlers.exit(1, null);   // an unrecognized code -> crash branch
+
+      expect(writes).toHaveLength(1);
+      expect(writes[0].p.replace(/\\/g, '/')).toMatch(/C:\/home\/\.egpt\/state\/restart-announce\.json$/);
+      expect(JSON.parse(writes[0].body)).toEqual({ chatId: '!self:beeper.com', kind: 'crash', preSha: 'abc123', pid: childPid });
+    });
+
+    it('wedge branch writes {chatId, kind: "wedge", preSha, pid} when no sidecar exists', async () => {
+      let clock = Date.UTC(2026, 5, 18, 12, 0, 0);
+      const writes = [];
+      const { runtime, children } = makeRuntime({
+        now: () => clock,
+        readFileSync: configReadFileSync,
+        statSync: () => ({ mtimeMs: Date.UTC(2026, 5, 18, 11, 0, 0) }),  // ~1h-old beat file -> wedged
+        writeFileSync: (p, body) => writes.push({ p: String(p), body: String(body) }),
+        aliveGraceMs: 1_000, aliveStaleMs: 60_000,
+      });
+      runtime.spawnShell();
+      const childPid = children[0].child.pid;
+      clock += 5_000;
+      runtime.checkLiveness();
+      expect(children[0].child.killed).toEqual(['SIGTERM']);
+
+      await children[0].child.handlers.exit(CLEAN_EXIT_CODE, 'SIGTERM');   // POSIX: trapped SIGTERM -> exit 0
+
+      expect(writes).toHaveLength(1);
+      expect(JSON.parse(writes[0].body)).toEqual({ chatId: '!self:beeper.com', kind: 'wedge', preSha: 'abc123', pid: childPid });
+    });
+
+    it('neither branch clobbers an already-existing sidecar', async () => {
+      const writes = [];
+      let clock = Date.UTC(2026, 5, 18, 12, 0, 0);
+
+      // crash side
+      {
+        const { runtime, children } = makeRuntime({
+          readFileSync: configReadFileSync,
+          existsSync: (p) => String(p).includes('restart-announce.json'),
+          writeFileSync: (p, body) => writes.push({ p: String(p), body: String(body) }),
+        });
+        runtime.spawnShell();
+        await children[0].child.handlers.exit(1, null);
+      }
+      // wedge side
+      {
+        const { runtime, children } = makeRuntime({
+          now: () => clock,
+          readFileSync: configReadFileSync,
+          existsSync: (p) => String(p).includes('restart-announce.json'),
+          statSync: () => ({ mtimeMs: Date.UTC(2026, 5, 18, 11, 0, 0) }),
+          writeFileSync: (p, body) => writes.push({ p: String(p), body: String(body) }),
+          aliveGraceMs: 1_000, aliveStaleMs: 60_000,
+        });
+        runtime.spawnShell();
+        clock += 5_000;
+        runtime.checkLiveness();
+        await children[0].child.handlers.exit(CLEAN_EXIT_CODE, 'SIGTERM');
+      }
+
+      expect(writes.filter((w) => w.p.includes('restart-announce.json'))).toHaveLength(0);
+    });
+
+    it('a chatId-resolution failure (missing/unreadable config.yaml) is swallowed — respawn still proceeds, no sidecar written', async () => {
+      const timers = [];
+      const writes = [];
+      const { runtime, children } = makeRuntime({
+        // default readFileSync throws ENOENT for every path, including config.yaml
+        writeFileSync: (p, body) => writes.push({ p: String(p), body: String(body) }),
+        setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; },
+      });
+      runtime.spawnShell();
+
+      await children[0].child.handlers.exit(1, null);
+
+      expect(writes.filter((w) => w.p.includes('restart-announce.json'))).toHaveLength(0);
+      expect(timers).toHaveLength(1);
+      timers[0].fn();
+      expect(children).toHaveLength(2);   // respawn still proceeds despite the resolution failure
+    });
   });
 });
