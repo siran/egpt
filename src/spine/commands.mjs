@@ -10,12 +10,12 @@
 // with a short note.
 import { lifecycleExit } from './ingest.mjs';
 import { isAutoMode, AUTO_MODES, DEFAULT_AUTO_MODE } from '../auto-mode.mjs';
-import { patchBeing, getContact, getBeing, slugDir, statsPath, conversationPathOf, listIdentityLayers as defaultListIdentityLayers, seedIdentityLayers, skeletonIdentityFiles, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS, READONLY_ALLOWED_TOOLS, LOBBY_SLUG } from '../conversations-state.mjs';
+import { patchBeing, deleteBeing, getContact, getBeing, slugDir, statsPath, conversationPathOf, listIdentityLayers as defaultListIdentityLayers, seedIdentityLayers, skeletonIdentityFiles, slugSuffix, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS, READONLY_ALLOWED_TOOLS, LOBBY_SLUG } from '../conversations-state.mjs';
 import { stripFrontMatter } from '../transcript-meta.mjs';
 import { initWizard, wizardStep, wizardPrompt } from '../agent-wizard.mjs';
 import { BUILTIN_BRAINS_DIR, PROFILE_AGENTS_DIR } from './brains.mjs';
 import { coerceAllowedTools } from './brainpool.mjs';
-import { stat as fsStat, readFile as fsReadFile, writeFile as fsWriteFile, mkdir as fsMkdir, readdir as fsReaddir, rm as fsRm } from 'node:fs/promises';
+import { stat as fsStat, readFile as fsReadFile, writeFile as fsWriteFile, mkdir as fsMkdir, readdir as fsReaddir, rm as fsRm, rename as fsRename } from 'node:fs/promises';
 import { readdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, dirname, basename } from 'node:path';
@@ -417,6 +417,7 @@ export function createCommands({
   const mkdir = io.mkdir ?? fsMkdir;
   const readdir = io.readdir ?? fsReaddir;
   const rm = io.rm ?? fsRm;
+  const rename = io.rename ?? fsRename;
 
   // The current named room, per surface (the shell, a Beeper Self-DM) — NAVIGATION
   // only now: /rooms marks it "(current)", /room <slug> leave clears it. It NO LONGER gates
@@ -691,6 +692,12 @@ export function createCommands({
       } catch (e) { onLog(`/e auto ${ev.chatId}: ${e?.message ?? e}`); await send?.(ev.chatId, `/e auto: failed — ${e?.message ?? e}`); }
       return;
     }
+
+    // /e reset — reset the CURRENT conversation (ev.surface/ev.chatId), bare, no target
+    // argument (self-only — unlike /e auto's <target> form). Must stay BEFORE the eWiz
+    // catch-all below, same slot as /e auto. See eReset() for the steps.
+    const resetMatch = /^\/(?:e|egpt)\s+reset\s*$/i.exec(line);
+    if (resetMatch) { await eReset(ev); return; }
 
     // /status [<target>] — bare: one compact ops line with live node health (unchanged
     // byte-for-byte; BOTH co-account nodes answer, on purpose). `/status <fragment>`
@@ -1025,6 +1032,49 @@ export function createCommands({
     // Any other first token is an unrecognized verb — NEVER a room lookup (the property the
     // slug-first bug violated): no roomOnDisk/stat call, nothing room-shaped touched.
     await send?.(ev.chatId, `/room: unknown verb "${first}" — create|join|leave|members|delete`);
+  }
+
+  // /e reset — restart the CURRENT conversation from scratch: archive its whole folder
+  // aside (never delete), wipe defaultKey's registry state, reseed a pristine tree at the
+  // SAME path. Operator framing: "restarting a conversation needs some steps... like when
+  // creating a conversation from scratch. archive old folder, receive a pristine new (can
+  // be synthetic) message" — and "it works the same for rooms and conversations alike", so
+  // this is the ONE path both a room and an ordinary conversation take, via convRoomOf
+  // (the same resolver /members uses — the mesh-delivered special case is handled
+  // identically). The archived folder sits at `<baseDir>-archived-<slugSuffix>`, OUTSIDE
+  // the slug the registry points at, so the fresh folder can be reseeded at the ORIGINAL
+  // baseDir/slug without the entry's slug/conversation_path/pushedName/home_dir/firstSeenAt
+  // ever needing to change — nothing will resolve to the archived path again through
+  // ensureContact/resolveConvRoom. That is what makes ONE path work for both a fixed-slug
+  // surface (room, shell) and a timestamped-slug surface (whatsapp, telegram): only the
+  // being's block is cleared, never the slug. No synthetic Claude turn is spawned here —
+  // once state is wiped, the next real inbound message gets fresh-thread treatment
+  // automatically (brainpool.mjs: `if (!sessionId) await rollTranscript(...)`).
+  async function eReset(ev) {
+    const room = await convRoomOf(ev);
+    if (!room) { await send?.(ev.chatId, "can't resolve this conversation's room"); return; }
+    if (!loadState || !writeState) { await send?.(ev.chatId, '/e reset: conversation state not wired'); return; }
+    const base = room.baseDir();
+    const archivedDir = `${base}-archived-${slugSuffix()}`;
+    // A contact with no folder ever created (edge case: no turn has run yet) has nothing to
+    // archive — tolerate a missing source and proceed to reseed rather than crash.
+    let archived = true;
+    try { await rename(base, archivedDir); } catch { archived = false; }
+    // Wipe defaultKey's registry state OUTRIGHT (deleteBeing, not a merge) — mode, threadId,
+    // readonly and any agents.<defaultKey> override all gone, so getBeing(...).present reads
+    // back false, matching a never-instanced contact. Another resident being's own override
+    // in this same conversation (e.g. agents.d) is untouched.
+    try {
+      const state = await loadState();
+      await writeState(deleteBeing(state, room.surface, room.slug, defaultKey));
+    } catch (e) { onLog(`/e reset ${ev.chatId}: ${e?.message ?? e}`); }
+    // Reseed a pristine tree at the ORIGINAL path — the same two calls /room create makes
+    // for a brand-new room (below). No config.yaml write: neither call writes one, matching
+    // what a genuinely first-contact conversation has.
+    await room.ensureTree({ io: { mkdir } });
+    await seedIdentityLayers(room, 'egpt', { io: { mkdir, readFile, writeFile } });
+    const archiveNote = archived ? `old content archived to conversations/${room.surface}/${basename(archivedDir)}/ — ` : '';
+    await send?.(ev.chatId, `✅ ${room.slug} reset — ${archiveNote}mode/agent overrides cleared, next message starts fresh.`);
   }
 
   // The room called <name>, iff its folder exists on disk — the same stat-probe /room create

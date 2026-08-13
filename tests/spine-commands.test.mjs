@@ -8,7 +8,7 @@ import { createCommands } from '../src/spine/commands.mjs';
 import { createSpine } from '../src/spine/spine.mjs';
 import { COMMANDS } from '../src/interpreter.mjs';
 import { Room } from '../src/room-core.mjs';
-import { emptyState, ensureContact, getBeing, recordThread, patchContact, DEFAULT_ALLOWED_TOOLS, READONLY_ALLOWED_TOOLS } from '../src/conversations-state.mjs';
+import { emptyState, ensureContact, getBeing, getContact, recordThread, patchContact, DEFAULT_ALLOWED_TOOLS, READONLY_ALLOWED_TOOLS } from '../src/conversations-state.mjs';
 
 function harness({ config = {}, state = null, agentTypes = ['egpt', 'sonnet-high'], brains, identityLayers = ['default'], io = {}, cdp, launch, clock, resolveConvRoom } = {}) {
   const sent = [], exits = [], rewinds = [], writes = [], evicts = [];
@@ -184,6 +184,130 @@ describe('commands.run', () => {
     expect(getBeing(getState(), 'whatsapp', '!hfm:beeper.local', 'e').mode).toBe('mute');
     expect(writes).toHaveLength(1);
     expect(sent[0].text).toMatch(/→ mute/);
+  });
+});
+
+// /e reset — restarts the CURRENT conversation (bare, self-only): archives the whole
+// folder aside (never delete), wipes defaultKey's registry state, reseeds a pristine tree
+// at the ORIGINAL path. "It works the same for rooms and conversations alike" (operator) —
+// ONE shared path, proven here by running the identical assertions against a room-surface
+// slug (fixed, no timestamp) and an ordinary whatsapp slug (timestamped).
+describe('/e reset — archive + registry wipe + reseed, one shared path for rooms and ordinary conversations', () => {
+  const cases = [
+    { label: 'a room-surface conversation (fixed slug)', surface: 'room', jid: 'acim', ctx: {} },
+    { label: 'an ordinary whatsapp conversation (timestamped slug)', surface: 'whatsapp', jid: '1234@s.whatsapp.net', ctx: { pushedName: 'diego', slugHint: 'diego' } },
+  ];
+
+  function seedResetState(surface, jid, ctx) {
+    let state = ensureContact(emptyState(), surface, jid, ctx).state;
+    // E has a prior thread + hand-set mode, pinned harder by an `agents.e` override — and a
+    // SIBLING being (d) has its own override, which must SURVIVE the reset untouched.
+    state = patchContact(state, surface, jid, {
+      e: { mode: 'on', threadId: 'thread-abc', threadCreatedAt: '2026-08-01T00:00:00Z', readonly: { model: 'sonnet' } },
+      agents: { e: { mode: 'mention' }, d: { mode: 'on' } },
+    });
+    return state;
+  }
+
+  for (const { label, surface, jid, ctx } of cases) {
+    it(`archives the old folder (never deletes) and reseeds a pristine tree at the ORIGINAL path — ${label}`, async () => {
+      const state = seedResetState(surface, jid, ctx);
+      const slug = getContact(state, surface, jid).slug;
+      const room = Room.forChat(surface, slug);
+      const renames = [], mkdirs = [];
+      const { cmds, sent, files } = harness({
+        state,
+        io: {
+          rename: async (from, to) => { renames.push([from, to]); },
+          mkdir: async (p) => { mkdirs.push(p); },
+          rm: async () => { throw new Error('/e reset must never delete — rm was called'); },
+        },
+      });
+      await cmds.run({ chatId: jid, surface, body: '/e reset' });
+
+      // the archive rename actually happened: old baseDir -> `<baseDir>-archived-<suffix>`
+      expect(renames).toHaveLength(1);
+      expect(renames[0][0]).toBe(room.baseDir());
+      expect(renames[0][1]).toMatch(new RegExp(`^${room.baseDir().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-archived-\\d{10}$`));
+
+      // the fresh folder gets ensureTree + seedIdentityLayers at the SAME (original) baseDir
+      for (const dir of [room.baseDir(), room.mediaDir, room.filesDir, room.identityDir, room.scriptsDir, room.transcriptsDir]) {
+        expect(mkdirs).toContain(dir);
+      }
+      expect(Object.keys(files).some((p) => p.startsWith(room.identityDir))).toBe(true);
+
+      expect(sent).toHaveLength(1);
+      expect(sent[0].text).toMatch(/reset/);
+      expect(sent[0].text).toMatch(/archived to/);
+      expect(sent[0].text).not.toMatch(/recognized/);
+    });
+
+    it(`wipes E's registry state (threadId/mode/readonly all gone) but leaves a SIBLING being's override untouched — ${label}`, async () => {
+      const state = seedResetState(surface, jid, ctx);
+      const before = getContact(state, surface, jid).entry;
+      const { cmds, getState } = harness({
+        state,
+        io: { rename: async () => {}, mkdir: async () => {} },
+      });
+      await cmds.run({ chatId: jid, surface, body: '/e reset' });
+
+      const reloaded = getState();
+      const eAfter = getBeing(reloaded, surface, jid, 'e');
+      expect(eAfter.present).toBe(false);
+      expect(eAfter.threadId).toBeNull();
+      expect(eAfter.mode).toBeNull();
+      expect(eAfter.model).toBeNull();
+
+      // a sibling being's own override survives, untouched
+      expect(getBeing(reloaded, surface, jid, 'd').mode).toBe('on');
+
+      // the contact-level pointers (slug/conversation_path/pushedName/home_dir) are
+      // untouched — the archived folder sits OUTSIDE this slug, so nothing needs to move
+      const after = getContact(reloaded, surface, jid).entry;
+      expect(after.slug).toBe(before.slug);
+      expect(after.conversation_path).toBe(before.conversation_path);
+      expect(after.pushedName).toBe(before.pushedName);
+      expect(after.home_dir).toBe(before.home_dir);
+    });
+  }
+
+  it('a missing source folder (never created) does not crash — archive is skipped, reset still completes', async () => {
+    const state = seedResetState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
+    const { cmds, sent, getState } = harness({
+      state,
+      io: { rename: async () => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); }, mkdir: async () => {} },
+    });
+    await expect(cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/e reset' })).resolves.toBeUndefined();
+    expect(sent).toHaveLength(1);
+    expect(sent[0].text).toMatch(/reset/);
+    expect(getBeing(getState(), 'whatsapp', '1234@s.whatsapp.net', 'e').present).toBe(false);
+  });
+
+  it('a chat with no known contact resolves gracefully — no crash, no archive, no registry write', async () => {
+    const state = emptyState();
+    const renames = [], mkdirs = [];
+    const { cmds, sent, writes } = harness({
+      state,
+      io: { rename: async (from, to) => { renames.push([from, to]); }, mkdir: async (p) => { mkdirs.push(p); } },
+    });
+    await cmds.run({ chatId: '9999@s.whatsapp.net', surface: 'whatsapp', body: '/e reset' });
+    expect(sent[0].text).toMatch(/can't resolve this conversation's room/);
+    expect(renames).toHaveLength(0);
+    expect(mkdirs).toHaveLength(0);
+    expect(writes).toHaveLength(0);
+  });
+
+  it('/e reset and /egpt reset are recognized case-insensitively, before the eWiz catch-all', async () => {
+    for (const body of ['/e reset', '/E RESET', '/egpt reset', '/EGPT Reset']) {
+      const state = seedResetState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
+      const { cmds, sent } = harness({
+        state,
+        io: { rename: async () => {}, mkdir: async () => {} },
+      });
+      await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body });
+      expect(sent[0].text).toMatch(/reset/i);
+      expect(sent[0].text).not.toMatch(/recognized/);
+    }
   });
 });
 

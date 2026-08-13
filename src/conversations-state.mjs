@@ -1339,6 +1339,28 @@ export function patchBeing(state, surface, jidOrSlug, being, fields) {
   return patchContact(state, surface, jidOrSlug, patch);
 }
 
+// THE delete counterpart to patchBeing — patchBeing/patchContact only ever MERGE
+// ({...entry, ...patch}), so they cannot express "this being has no registry state at
+// all" (a field-wise merge of `undefined`s would leave `entry[being]` as a truthy object
+// full of undefined values, which still reads as present). deleteBeing wipes entry[being]
+// and its entry.agents[being] override OUTRIGHT, so getBeing(...).present reads back
+// false — exactly what a never-instanced contact looks like. Used by /e reset
+// (spine/commands.mjs) to reset one being's state without touching another resident
+// being's overrides in the same conversation. Mirrors patchBeing's own JID-or-slug lookup
+// (_entryByJidOrSlug) and patchContact's no-op-on-not-found contract. `agents` is dropped
+// entirely once its last override is gone, rather than left as a stray `{}`.
+export function deleteBeing(state, surface, jidOrSlug, being) {
+  const entry = _entryByJidOrSlug(state, surface, jidOrSlug);
+  if (!entry) return state;
+  const patch = { [being]: undefined };
+  if (_obj(entry.agents)?.[being] !== undefined) {
+    const nextAgents = { ...entry.agents };
+    delete nextAgents[being];
+    patch.agents = Object.keys(nextAgents).length ? nextAgents : undefined;
+  }
+  return patchContact(state, surface, jidOrSlug, patch);
+}
+
 // Record that a new claude thread was just spawned for a contact's resident being.
 // EVERY being (persona included, operator 2026-07-10) writes a NESTED `<being>` block so
 // its thread persists alongside the others — merged over the block's existing fields
