@@ -8,8 +8,9 @@
 //   conversations.yaml  <conv>.agents.<name>.<field>   per-conversation block (the ONLY one,
 //                                                       phase 1, operator 2026-08-14)
 //   config.yaml         agents.<name>.mode             the agent's own default   ← THE NEW RUNG
-//   config.yaml         dispatch.auto_default_mode     node-wide default (persona; legacy
-//                                                      whatsapp.auto_e_default) / 'mention'
+//   config.yaml         dispatch.auto_default_mode     node-wide default (EVERY being, phase 2 —
+//                                                      operator 2026-08-14: no longer
+//                                                      persona-only; legacy whatsapp.auto_e_default) / 'mention'
 //   built-in            DEFAULT_AUTO_MODE
 //
 // A pre-phase-1 entry — mode/send_to_egpt written directly as `entry[<being>]`, OUTSIDE
@@ -59,8 +60,11 @@ describe('REPRODUCE-FIRST 1 — config.yaml agents.<name>.mode is that agent\'s 
   });
 
   it('an unknown mode value on an agent is ignored (falls through to the node default)', async () => {
+    // phase 2 (operator 2026-08-14): the node default now applies to every being, so an
+    // invalid per-agent mode falls through to dispatch.auto_default_mode, not a sibling-only
+    // 'mention' floor.
     const g = mk({ agents: { wren: { mode: 'bogus' } }, dispatch: { auto_default_mode: 'on' } });
-    expect((await g.decide('wren', ev)).mode).toBe('mention');   // sibling default, not 'bogus'
+    expect((await g.decide('wren', ev)).mode).toBe('on');   // node default, not 'bogus'
   });
 
   it('the agents map is keyed lowercase (boot\'s own convention) — a routed being resolves case-insensitively', async () => {
@@ -113,8 +117,16 @@ describe('REGRESSION — everything below the new rung is unchanged (except the 
     expect((await mk({}).decide('e', ev)).mode).toBe('mention');                                     // built-in
   });
 
-  it('no mode anywhere: a SIBLING still gets the built-in \'mention\' (never the persona\'s node default)', async () => {
-    expect((await mk({ dispatch: { auto_default_mode: 'on' } }).decide('wren', ev)).mode).toBe('mention');
+  // PHASE 2 (operator 2026-08-14, "remove the concept of siblings"): the default-gate
+  // asymmetry (`being === defaultKey ? dispatch.auto_default_mode : 'mention'`) is gone — every
+  // being's un-configured default now resolves the SAME way. Was: a sibling with no mode of its
+  // own always fell back to the built-in 'mention', never the node's auto_default_mode.
+  it('PHASE 2: no mode anywhere — a SIBLING now ALSO gets the node-wide dispatch.auto_default_mode (no longer forced to \'mention\')', async () => {
+    expect((await mk({ dispatch: { auto_default_mode: 'on' } }).decide('wren', ev)).mode).toBe('on');
+  });
+
+  it('REGRESSION: absent dispatch.auto_default_mode too — a sibling still falls back to the built-in \'mention\' (today\'s ultimate fallback, unchanged)', async () => {
+    expect((await mk({}).decide('wren', ev)).mode).toBe('mention');
   });
 
   // REPRODUCE-FIRST (phase 1, operator 2026-08-14): a pre-phase-1 entry — mode/threadId

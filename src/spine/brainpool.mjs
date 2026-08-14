@@ -20,12 +20,14 @@
 //     "unnecessary AND wasteful — the brain accepts being eGPT through the normal
 //     conversation." A resumed thread already holds it, so it isn't re-sent.
 //
-// v1 is the E persona on the ccode engine. LOCAL sibling beings (@wren, @don) also
-// run here: a sibling's brain def comes from the agents registry (agents[<being>]
-// .configuration names a type file resolved through the brains registry, never frozen
-// into readonly), it gets NO identity kickoff (engineers, not the persona), and its
-// thread persists in a per-being NESTED block (recordThread(..., being)). codex/URL
-// brains + emitted-command stripping (the comm-handler's job, Phase 4) layer in later.
+// v1 is the E persona on the ccode engine. LOCAL sibling beings (@wren, @don) run
+// through the SAME resolution path as the persona (phase 2, operator 2026-08-14: "remove
+// the concept of siblings" — every being under agents[<being>], defaultKey included,
+// resolves via resolveBeingDef; .configuration names a type file resolved through the
+// brains registry, never frozen into readonly). A sibling still gets NO identity kickoff
+// (engineers, not the persona — see wrapFresh below) and its thread persists in a
+// per-being NESTED block (recordThread(..., being)). codex/URL brains + emitted-command
+// stripping (the comm-handler's job, Phase 4) layer in later.
 import { slugDir, getBeing, recordThread, readIdentityFeed, seedIdentityLayers, readAutoModeLayer, appendThreadStat, mutateState, nowIsoString, rollTranscript, stampThreadId, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS } from '../conversations-state.mjs';
 import { Room } from '../room-core.mjs';
 import { isContextOverflowError, isDeadSessionError } from '../brain-errors.mjs';
@@ -239,7 +241,7 @@ export function createBrainPool({
       // /e access all|regular (operator 2026-08-14) — applied live, every turn, in turn()
       // below (see the ACCESS-LEVEL OVERRIDE comment). No more `brain` field here (phase 1,
       // 2026-08-14): there is no per-conversation freeze to read any more — turn() always
-      // resolves the persona's engine/model/effort/tools fresh via resolveDefaultBrain.
+      // resolves every being's engine/model/effort/tools fresh via resolveBeingDef.
       accessLevel: b?.accessLevel ?? null,
     };
   }
@@ -262,16 +264,34 @@ export function createBrainPool({
       allowed_paths: def?.allowed_paths ?? undefined,   // carried so a confined agent's extra roots survive
       cwd: def?.cwd ?? undefined,
       system_prompt: def?.system_prompt ?? undefined,
+      // personality (operator 2026-08-14, phase 2 fix): a type file's `personality:` pin, read
+      // by turn()'s `def.personality ?? 'egpt'` — this allowlist previously dropped it because
+      // shapeDef only ever shaped SIBLING defs, which never consulted it (no identity kickoff).
+      // Now that resolveBeingDef shapes the PERSONA's def too, an unshaped personality pin
+      // would silently stop reaching loadFeed — carried through here instead.
+      personality: def?.personality ?? undefined,
       dangerous: def?.dangerous === true,   // carried so a sibling's unconfined type file survives shaping
     };
   }
 
-  // A local (sibling) being's brain def from the agents registry (agents[<being>],
-  // configuration ≠ relay): its `configuration` names an agent-type file resolved through
-  // the registry. Never frozen — the def LIVES in config, nothing per-conversation to
+  // THE ONE being-def resolver (operator 2026-08-14, phase 2: "remove the concept of
+  // siblings" — every being under agents[<being>], defaultKey included, resolves the SAME
+  // way; was `siblingDef`, sibling-only, renamed because it no longer is). Its
+  // `configuration` (configuration ≠ relay) names an agent-type file resolved through the
+  // brains registry. Never frozen — the def LIVES in config, nothing per-conversation to
   // instance. No agent entry / unresolvable configuration → a bare ccode def keyed by the
-  // being name (keeps it runnable).
-  function siblingDef(being, convDir) {
+  // being name (keeps it runnable). NOTE: for defaultKey specifically this bare fallback is
+  // narrower than the old persona-only path it replaces — the old resolveDefaultBrainDef
+  // fallback additionally tried the shipped 'egpt' brain-type FILE (picking up any local
+  // customisation of config/agents/egpt.yaml, e.g. a custom allowed_paths/system_prompt/
+  // personality) before giving up; this bare object skips that file entirely. In today's
+  // config the two converge in practice (DEFAULT_ALLOWED_TOOLS is byte-for-byte the shipped
+  // egpt.yaml list, and DETERMINISTIC_MODEL/EFFORT below already match its model/effort), but
+  // it only converges because those constants happen to mirror the shipped file — this is a
+  // real, if misconfiguration-only, behaviour difference (only reachable when defaultKey's
+  // own agent entry names no resolvable `configuration` at all, which boot does not permit
+  // in the normal case).
+  function resolveBeingDef(being, convDir) {
     const agent = agents()[being];
     if (agent && typeof agent === 'object' && !Array.isArray(agent) && String(agent.configuration ?? '').toLowerCase() !== 'relay') {
       const def = brains?.resolve?.(agent.configuration, { convDir }) ?? null;
@@ -287,12 +307,6 @@ export function createBrainPool({
     };
   }
 
-  // The persona's brain def, resolved fresh — see the module-level resolveDefaultBrainDef
-  // this closes over (getConfig/brains/brainType are the factory's own).
-  function resolveDefaultBrain(convDir) {
-    return resolveDefaultBrainDef({ getConfig, brains, convDir, brainType });
-  }
-
   return {
     /** @returns {Promise<{ text: string, sessionId: string|null, being: string }>} */
     async turn(being, ev, onPartial = () => {}) {
@@ -300,43 +314,37 @@ export function createBrainPool({
       if (!slug) throw new Error(`brainpool: no slug for ${ev.surface}/${ev.chatId}`);
 
       const convDir = slugDir(ev.surface, slug);
-      const isSibling = being !== defaultKey;
-      // 'mode: auto' — E plays the operator's role here (siblings are engineers, never auto).
-      const wantAuto = !isSibling && mode === 'auto';
+      // 'mode: auto' — every being's own conversations.yaml mode is eligible now (phase 2,
+      // operator 2026-08-14: "remove the concept of siblings" — was persona-only; a sibling
+      // hand-configured `mode: auto` now also gets the operator-role kickoff below).
+      const wantAuto = mode === 'auto';
       const autoKey = (tid) => `${ev.surface}:${ev.chatId}:${tid}`;
       // A THREAD IS BEING INSTANCED on this turn (no thread yet) — read by the layer seeding: a
-      // refresh re-copies the room template, an ordinary turn does not. Siblings never instance
-      // a thread here, so it stays false for them.
-      let def, runModel, runEffort, fresh = false;
-      if (isSibling) {
-        // Local agent: def from the agents block (its `configuration` names a type file). Its
-        // model/effort stay exactly as configured (may be unset — an engineer, not the persona).
-        // dangerous:true skips coercion (see confinementFor's comment above) — the type
-        // file's allowed_tools (which may legitimately include bare Bash/Agent) passes
-        // through verbatim rather than being capped to DEFAULT_ALLOWED_TOOLS.
-        const rawSiblingDef = siblingDef(being, convDir);
-        def = rawSiblingDef.dangerous === true ? rawSiblingDef : coerceAllowedTools(rawSiblingDef);
-        runModel = def.model; runEffort = def.effort;
-      } else {
-        // The persona's brain: resolved FRESH from config on EVERY turn (operator 2026-08-14,
-        // phase 1: no more per-conversation freeze). This is the SAME path a never-instanced
-        // conversation always used — now the ONLY path, so a config edit (repointing
-        // agents.<persona>.configuration, or the type file itself) reaches every conversation
-        // on its very next turn. `/e access` overrides only allowed_tools/dangerous, below —
-        // never the engine/model/effort themselves; there is no more per-conversation way to
-        // pin those (the `/e` wizard that used to is retired).
-        //
-        // FRESH IS KEYED ON THE THREAD (operator 2026-07-25: "deleting the thread-id reloads
-        // the config") — a deleted threadId buys both a new claude session AND this turn's
-        // freshly-resolved def (there's nothing stale left to half-work on).
-        fresh = !sessionId;
-        def = resolveDefaultBrain(convDir);
-        // dangerous:true skips coercion — same rule as the sibling branch above.
-        if (def?.dangerous !== true) def = coerceAllowedTools(def);   // 'all' → explicit list (rejected)
+      // refresh re-copies the room template, an ordinary turn does not. Being-agnostic: each
+      // being's own thread (getBeing(..., being).threadId, read by resolveConv above) is
+      // independent of every other resident being's.
+      const fresh = !sessionId;
+      // THE ONE resolution path (phase 2, operator 2026-08-14): every being's def — the
+      // persona included — comes from resolveBeingDef (agents[<being>].configuration names a
+      // type file resolved through the brains registry). This is the SAME path a
+      // never-instanced conversation always used for the persona (phase 1) — now the ONLY
+      // path, for every being, so a config edit (repointing agents.<being>.configuration, or
+      // the type file itself) reaches every conversation on its very next turn.
+      // dangerous:true skips coercion (see confinementFor's comment above) — the type file's
+      // allowed_tools (which may legitimately include bare Bash/Agent) passes through
+      // verbatim rather than being capped to DEFAULT_ALLOWED_TOOLS.
+      const rawDef = resolveBeingDef(being, convDir);
+      let def = rawDef.dangerous === true ? rawDef : coerceAllowedTools(rawDef);   // 'all' → explicit list (rejected)
+      let runModel, runEffort;
+      if (being === defaultKey) {
         // DETERMINISM (operator 2026-07-02: "don't do 'null means inherit the login default' —
-        // make it deterministic"): the RUN must carry CONCRETE model/effort, never null. A type
-        // def that omits either falls back to the module constants — logged so a mis-specified
-        // type is visible.
+        // make it deterministic"): the persona's RUN must carry CONCRETE model/effort, never
+        // null. A type def that omits either falls back to the module constants — logged so a
+        // mis-specified type is visible. NOT extended to every being by phase 2 — the
+        // operator's own enumerated list of asymmetries to collapse was resolution path /
+        // identity-seeding / auto-eligibility / access-override, not this one; a sibling's
+        // model/effort still stay exactly as configured (may be unset — an engineer, not the
+        // persona, may legitimately inherit the CLI login default).
         if (def.model == null || def.effort == null) onLog(`type ${def.name} omits model/effort — using deterministic fallback`);
         runModel = def.model ?? DETERMINISTIC_MODEL;
         runEffort = def.effort ?? DETERMINISTIC_EFFORT;
@@ -345,19 +353,32 @@ export function createBrainPool({
         // threadId, /e reset, a dead session), and it is BEFORE the new thread writes a line.
         // Keyed on the transcript's OWN front matter, so a file that names no thread — a
         // brand-new conversation, or a retry after a turn that threw before recordThread — is
-        // left alone. Never throws by contract.
-        if (!sessionId) await rollTranscript(ev.surface, slug, { io });
+        // left alone. Never throws by contract. PERSONA-ONLY, deliberately NOT generalized by
+        // phase 2 (operator 2026-08-14 investigation): transcript.md is ONE FILE PER
+        // CONVERSATION FOLDER (Room.transcriptPath), shared by every resident being, not
+        // per-being. Rolling it archives (and blanks) that ONE shared file — safe when it is
+        // this conversation's only resident, but a SECOND resident being's own fresh-thread
+        // event (e.g. its first-ever message here, while the persona is mid-thread) would
+        // archive the persona's still-live transcript out from under it: accum-mode's
+        // contextSinceLastTurn gap-fill and the `r` / quoted-message lookups (transcript-
+        // log.mjs) all read this one file, and a resumed CLI session's own history is NOT
+        // what would be lost — the shared file's un-resumed record (what every OTHER being
+        // and every human said since each being's own last turn) is. Left exactly as today.
+        if (fresh) await rollTranscript(ev.surface, slug, { io });
+      } else {
+        runModel = def.model; runEffort = def.effort;
       }
-      // ACCESS-LEVEL OVERRIDE (operator 2026-08-14, /e access all|regular): applied HERE,
-      // every turn, independent of the sibling/persona branching above. Persona-only (the
-      // only path /e access has ever touched; a sibling's def comes from its own
-      // agents.<being>.configuration and is untouched here). Runs AFTER the sibling/persona
-      // branches converge on `def` and BEFORE confinementFor/baseOpts read
-      // def.allowed_tools/def.dangerous below, so it wins regardless of which branch built
-      // `def`. permission-levels.mjs re-reads the file fresh on every call (no caching):
-      // editing config/permissions/<level>.md changes this turn's grant with no
-      // `/e access` re-run needed.
-      if (!isSibling && (accessLevel === 'all' || accessLevel === 'regular')) {
+      // ACCESS-LEVEL OVERRIDE (operator 2026-08-14, /e access all|regular; phase 2, same day:
+      // no longer persona-only — every being's OWN accessLevel, read per-being above via
+      // resolveConv/getBeing, is eligible). Runs AFTER the being-def resolution above and
+      // BEFORE confinementFor/baseOpts read def.allowed_tools/def.dangerous below, so it wins
+      // regardless of which being this turn is for. permission-levels.mjs re-reads the file
+      // fresh on every call (no caching): editing config/permissions/<level>.md changes this
+      // turn's grant with no `/e access` re-run needed. The `/e access` COMMAND itself still
+      // only writes defaultKey's own accessLevel (out of scope for phase 2) — but a sibling
+      // given an accessLevel by hand-editing conversations.yaml now gets the same live
+      // override the persona does.
+      if (accessLevel === 'all' || accessLevel === 'regular') {
         const perm = loadPermission(accessLevel);
         if (perm) def = { ...def, dangerous: perm.dangerous, allowed_tools: perm.allowedTools };
       }
@@ -375,29 +396,29 @@ export function createBrainPool({
       // "they all get to model at the beginning, but should also be copied for local
       // consult, since by default conversation-e has only access to it's folder"). Copy-
       // if-missing, so it costs a stat per layer and self-heals a conversation that was
-      // started before this existed — hence every persona turn, not only the fresh
+      // started before this existed — hence every turn, not only the fresh
       // kickoff (a live conversation resumes forever and would otherwise never get them).
       // ON A REFRESH the copies are OVERWRITTEN (operator 2026-07-26: "all skeleton files are
       // copied on refresh thread") — that is how an edited template (10-actions.md learning
       // /ask) reaches a conversation seeded long ago; copy-if-missing alone never could. A
       // mid-thread turn keeps copy-if-missing so nothing is rewritten under a running E.
       // Targets convDir, NOT cwd: a def that pins a workspace must not have identity.d
-      // written into it. Persona-only — siblings are engineers with no identity feed.
+      // written into it. EVERY being now (phase 2, operator 2026-08-14: no longer
+      // persona-only) — a sibling's identity.d is copied into its own conv folder too, for
+      // local file-tool consult, even though (see wrapFresh below) it is still never force-
+      // fed into a sibling's live prompt — that distinction is unchanged.
       // Best-effort by contract (seedIdentityLayers never throws) — never breaks a turn.
       // Room.forChat, not slugDir: seedIdentityLayers is keyed on the Room instance now (a
       // conversation IS a Room), so its own ensureTree/identityDir resolve off convDir too.
-      if (!isSibling) await seedLayers(Room.forChat(ev.surface, slug), personality, { io, overwrite: fresh });
+      await seedLayers(Room.forChat(ev.surface, slug), personality, { io, overwrite: fresh });
 
       const key = `${being}:${engine}:${ev.surface}:${slug}`;
       lastKeyByConv.set(`${being}:${ev.surface}:${ev.chatId}`, key);
-      // Node-identity addendum (operator 2026-07-10): the PERSONA turn ALWAYS carries the
-      // concise who/where-am-I line so identity survives RESUMES (the first-turn kickoff feed
-      // only lands on a fresh thread). It COMBINES with the def's own system_prompt (both,
-      // blank-line joined) — never replaces it. Siblings are engineers, out of scope: their
-      // system prompt stays exactly the def's.
-      const appendSystemPrompt = isSibling
-        ? def.system_prompt
-        : [def.system_prompt, nodeIdentity].filter(Boolean).join('\n\n');
+      // Node-identity addendum (operator 2026-07-10; phase 2, operator 2026-08-14: no longer
+      // persona-only — EVERY being's turn now carries the concise who/where-am-I line so
+      // identity survives RESUMES, the persona's AND a sibling's alike). It COMBINES with the
+      // def's own system_prompt (both, blank-line joined) — never replaces it.
+      const appendSystemPrompt = [def.system_prompt, nodeIdentity].filter(Boolean).join('\n\n');
       const baseOpts = {
         cwd,
         allowedTools: def.allowed_tools ?? DEFAULT_ALLOWED_TOOLS,
@@ -419,7 +440,10 @@ export function createBrainPool({
       // overflow-reset retry re-wraps because its fresh session needs the identity.
       const line = ev.line ?? ev.body;
       const wrapFresh = async () => {
-        if (isSibling) return line;   // siblings are engineers, not the persona — no identity feed
+        // Siblings are engineers, not the persona — no identity kickoff (unchanged by phase 2:
+        // the operator's enumerated asymmetries to collapse were resolution / seedLayers /
+        // auto-eligibility / access-override, not this live-prompt feed prefix).
+        if (being !== defaultKey) return line;
         let feed = (await loadFeed(personality)) || '';
         if (!feed.trim()) feed = (await _loadManifest()) || '';
         // 'mode: auto': append the operator-role instruction layer to the kickoff feed so

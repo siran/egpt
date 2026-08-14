@@ -298,7 +298,11 @@ describe('accum is a MODE again, and it gates exactly like mention', () => {
     expect((await perConv.decide('e', ev)).mode).toBe('mention');                    // the conversation wins
   });
 
-  it('the node-wide accum default reaches the PERSONA only — a sibling still defaults to mention', async () => {
+  // PHASE 2 (operator 2026-08-14, "remove the concept of siblings"): the default-gate
+  // asymmetry in gating.mjs's defaultMode is gone — every being's un-configured default now
+  // resolves via the SAME dispatch.auto_default_mode/whatsapp.auto_e_default chain. Was: a
+  // sibling with no mode of its own always fell back to 'mention', never the node default.
+  it('PHASE 2: the node-wide accum default now reaches EVERY being — a sibling with no mode of its own gets it too', async () => {
     const ev = { surface: 'whatsapp', chatId: 'c1', mention: { atEAnywhere: true } };
     const g = createGating({
       getConfig: () => ({ dispatch: { auto_default_mode: 'accum' } }),
@@ -306,6 +310,6 @@ describe('accum is a MODE again, and it gates exactly like mention', () => {
       defaultKey: 'e',
     });
     expect((await g.decide('e', ev)).mode).toBe('accum');
-    expect((await g.decide('don', ev)).mode).toBe('mention');
+    expect((await g.decide('don', ev)).mode).toBe('accum');   // phase 2: no longer forced to 'mention'
   });
 });

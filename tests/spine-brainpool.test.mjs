@@ -49,9 +49,18 @@ function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, load
   const pool = fakePool(scriptedResults);
   const loadState = async () => state;
   const writeState = async (s) => { state = s; };
+  // resolveBeingDef (phase 2, operator 2026-08-14: "remove the concept of siblings") needs an
+  // agents()[<being>] ENTRY to exist before it will even attempt brains.resolve — mirroring
+  // boot.mjs's guarantee that defaultKey's own agents() entry always exists (the persona
+  // agent, `default: true`, a fatal boot error otherwise). Most tests below only care what
+  // def the injected `brains` mock resolves to, not the agents-block shape, so a minimal
+  // stand-in `agents.e` entry is synthesized here when the test's own config doesn't declare
+  // one; a test that supplies its OWN config.agents (persona OR sibling) is left exactly as
+  // given.
+  const cfg = config.agents ? config : { ...config, agents: { e: {} } };
   const brain = createBrainPool({
     pool,
-    getConfig: () => config,
+    getConfig: () => cfg,
     contacts: createContacts({ loadState, writeState, io: { mkdir: async () => {} } }),
     loadState,
     writeState,
@@ -156,21 +165,36 @@ describe('brainpool.turn', () => {
   });
 
   it('persona agent type (agents block) supplies E\'s def, resolved through the registry', async () => {
-    // the persona agent points at type "sonnet-high"; the registry resolves that type file
+    // the persona agent's MAP KEY must be the being-id turn() is called with (boot always
+    // derives defaultKey from that same key, phase 2 — see resolveBeingDef's doc comment).
     const brains = { resolve: (name) => name === 'sonnet-high' ? ({ name: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'all' }) : null };
-    const config = { agents: { egpt: { configuration: 'sonnet-high', handles: ['e', 'egpt'], default: true } } };
+    const config = { agents: { e: { configuration: 'sonnet-high', handles: ['e', 'egpt'], default: true } } };
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains, config });
     await brain.turn('e', ev);
     expect(pool.calls[0].key).toMatch(/^e:ccode:whatsapp:SPOILER-\d{10}$/);
     expect(pool.calls[0].brainOptions).toMatchObject({ model: 'sonnet', effort: 'high', allowedTools: DEFAULT_ALLOWED_TOOLS });
   });
 
-  it('persona agent type that does NOT resolve falls through to the shipped "egpt" type', async () => {
+  // PHASE 2 BEHAVIOUR CHANGE (operator 2026-08-14, reported per the phase-2 brief): pre-phase-2,
+  // an unresolvable persona `configuration` fell through to the SHIPPED 'egpt' brain-type FILE
+  // (a second, persona-only fallback tier — resolveDefaultBrainDef tried `brains.resolve('egpt')`
+  // before giving up). resolveBeingDef — now the ONE resolver for every being, siblings included —
+  // has never had that second tier: an unresolvable configuration falls straight to the bare
+  // ccode def (DEFAULT_ALLOWED_TOOLS, model/effort null). For the PERSONA specifically, the being
+  // === defaultKey branch below still fills model/effort with the DETERMINISTIC fallback
+  // (sonnet/high — same values the shipped egpt.yaml happens to carry today), so the practical
+  // difference is narrow (engine defaults to 'ccode', not whatever the shipped file's own `type`
+  // says, and any OTHER custom field on a hand-edited egpt.yaml — allowed_paths, system_prompt,
+  // personality — is no longer picked up by this fallback path). Only reachable when the
+  // persona's own agent entry names an unresolvable `configuration` at all, which boot does not
+  // otherwise permit.
+  it('PHASE 2: persona agent type that does NOT resolve now falls to the bare ccode def (no more shipped-"egpt"-file fallback)', async () => {
     const brains = { resolve: (name) => name === 'egpt' ? ({ name: 'egpt', type: 'codex' }) : null };
-    const config = { agents: { egpt: { configuration: 'ghost-type', handles: ['e', 'egpt'], default: true } } };
+    const config = { agents: { e: { configuration: 'ghost-type', handles: ['e', 'egpt'], default: true } } };
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains, config });
     await brain.turn('e', ev);
-    expect(pool.calls[0].key).toMatch(/:codex:/);   // fell through to the last-resort 'egpt' type (codex)
+    expect(pool.calls[0].key).toMatch(/:ccode:/);                          // bare fallback, not the shipped 'egpt' file's codex
+    expect(pool.calls[0].brainOptions).toMatchObject({ model: 'sonnet', effort: 'high', allowedTools: DEFAULT_ALLOWED_TOOLS });
   });
 
   it('a re-pointed default reaches an already-running conversation on its very next turn (phase 1: no more per-conversation freeze)', async () => {
@@ -189,7 +213,7 @@ describe('brainpool.turn', () => {
   // now just the GENERAL CASE — every turn re-reads config, live thread or brand new one.
   const RE_READ = { resolve: (n) => n === 'sonnet-high'
     ? ({ name: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: ['Read', 'Grep'] }) : null };
-  const RE_READ_CFG = { agents: { egpt: { configuration: 'sonnet-high', handles: ['e', 'egpt'], default: true } } };
+  const RE_READ_CFG = { agents: { e: { configuration: 'sonnet-high', handles: ['e', 'egpt'], default: true } } };
 
   it('threadId deleted → a NEW session starts, and the run reads the CURRENT config', async () => {
     const { brain, pool } = harness([{ text: 'ok', sessionId: 'sid-new' }], {
@@ -389,12 +413,32 @@ describe('brainpool.turn — local sibling beings (agents registry)', () => {
     expect(pool.calls[0].brainOptions.sessionId).toBe(null);   // first turn: fresh
     expect(pool.calls[1].brainOptions.sessionId).toBe('w1');   // second resumes the nested thread
   });
+
+  // REPRODUCE-FIRST (phase 2, operator 2026-08-14): wantAuto used to be `!isSibling && mode
+  // === 'auto'` — a sibling could never be 'auto' eligible no matter its own configured mode.
+  // The gate is REMOVED (not widened): every being's own mode is consulted now. A sibling still
+  // gets NO identity KICKOFF feed (that gate — wrapFresh's `being !== defaultKey` — is
+  // unchanged, out of scope), so the effect only surfaces on a RESUMED thread that flips to
+  // auto (wrapAutoResume, which never gated on being at all).
+  it('PHASE 2: a RESUMED SIBLING thread with mode: auto configured now ALSO gets the one-time operator-role preamble — no longer persona-only eligibility', async () => {
+    const brains = { resolve: (name) => name === 'sonnet-high' ? ({ name: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'Read,Bash' }) : null };
+    const config = { agents: { wren: { configuration: 'sonnet-high', name: 'wren' } } };
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 'w1' }], {
+      brains, config, seedAgents: { wren: { threadId: 'w1', mode: 'auto' } }, loadAutoLayer: async () => 'AUTO-ROLE-LAYER',
+    });
+    await brain.turn('wren', ev);
+    expect(pool.calls[0].brainOptions.sessionId).toBe('w1');        // genuinely resumed
+    expect(pool.calls[0].message).toContain('AUTO-ROLE-LAYER');     // phase 2: the sibling now gets the auto preamble too
+    expect(pool.calls[0].message).toContain(ev.line);
+  });
 });
 
-// READABLE NODE-IDENTITY (operator 2026-07-10): the persona's who/where-am-I addendum is appended
-// to the PERSONA turn's system prompt so it survives RESUMED threads (the first-turn kickoff feed
-// only lands on a fresh thread). It COMBINES with the def's own system_prompt (both), never
-// replaces it. Siblings are engineers — out of scope, their turn never carries it.
+// READABLE NODE-IDENTITY (operator 2026-07-10): the who/where-am-I addendum is appended to the
+// turn's system prompt so it survives RESUMED threads (the first-turn kickoff feed only lands on
+// a fresh thread). It COMBINES with the def's own system_prompt (both), never replaces it.
+// PHASE 2 (operator 2026-08-14, "remove the concept of siblings"): no longer persona-only —
+// EVERY being's turn carries it now, the persona's and a sibling's alike (was gated on
+// `!isSibling`; the gate is REMOVED, not widened).
 describe('brainpool.turn — node-identity system prompt', () => {
   const NODE_ID = 'You are the eGPT persona "Don" running as don.do — node "do".';
 
@@ -413,13 +457,16 @@ describe('brainpool.turn — node-identity system prompt', () => {
     expect(pool.calls[0].brainOptions.appendSystemPrompt).toBe(NODE_ID);
   });
 
-  it('SIBLING turn: appendSystemPrompt does NOT include the nodeIdentity', async () => {
-    const brains = { resolve: (name) => name === 'sonnet-high' ? ({ name: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'Read,Bash' }) : null };
+  // REPRODUCE-FIRST (phase 2): before this change a sibling turn's appendSystemPrompt never
+  // carried nodeIdentity at all — this asserts the NEW, intentionally widened behavior.
+  it('PHASE 2: SIBLING turn now ALSO COMBINES nodeIdentity with the def system_prompt — no longer persona-only', async () => {
+    const brains = { resolve: (name) => name === 'sonnet-high' ? ({ name: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'Read,Bash', system_prompt: 'WREN-PROMPT' }) : null };
     const config = { agents: { wren: { configuration: 'sonnet-high', name: 'wren' } } };
     const { brain, pool } = harness([{ text: 'ok', sessionId: 'w1' }], { brains, config, nodeIdentity: NODE_ID });
     await brain.turn('wren', ev);
     const asp = pool.calls[0].brainOptions.appendSystemPrompt;
-    expect(asp === undefined || !String(asp).includes(NODE_ID)).toBe(true);   // a sibling turn never carries the node identity
+    expect(asp).toContain(NODE_ID);          // phase 2: the sibling now gets it too
+    expect(asp).toContain('WREN-PROMPT');    // combined with its own def system_prompt, not replaced
   });
 });
 
@@ -561,7 +608,11 @@ describe('brainpool.turn — dangerous:true skips coercion + confinement (operat
 
 // ── /e access all|regular — accessLevel OVERRIDE (operator 2026-08-14). Applied live,
 //    every turn, independent of the fresh/frozen instancing above — the whole point vs.
-//    the old freeze-into-readonly shape. Persona-only; a sibling turn is untouched. ──
+//    the old freeze-into-readonly shape. PHASE 2 (operator 2026-08-14, "remove the concept
+//    of siblings"): no longer persona-only — every being's OWN accessLevel (per-being,
+//    read via getBeing) is eligible now. The `/e access` COMMAND itself still only ever
+//    WRITES defaultKey's own accessLevel (out of scope for phase 2) — but if a sibling's
+//    accessLevel is set by hand-editing conversations.yaml, its turn now honors it too. ──
 describe('brainpool.turn — accessLevel override (operator 2026-08-14, /e access)', () => {
   it("accessLevel 'all' overrides dangerous/allowedTools on an ALREADY-LIVE (resumed) thread too — applied fresh every turn", async () => {
     const brains = { resolve: () => ({ name: 'sonnet-high', type: 'ccode', model: 'haiku', effort: 'low', allowed_tools: ['Read'] }) };
@@ -603,11 +654,12 @@ describe('brainpool.turn — accessLevel override (operator 2026-08-14, /e acces
     expect(pool.calls[1].brainOptions.confineToDirs).toEqual([pool.calls[1].brainOptions.cwd]);
   });
 
-  it('a SIBLING turn is never affected by accessLevel — persona-only override', async () => {
+  it('REGRESSION: a sibling with NO accessLevel of its own is unaffected by the PERSONA\'s accessLevel on the same conversation (per-being isolation, unchanged by phase 2)', async () => {
     const brains = { resolve: (name) => name === 'sonnet-high' ? ({ name: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: ['Read', 'Bash'] }) : null };
     const config = { agents: { wren: { configuration: 'sonnet-high', name: 'wren' } } };
     let called = false;
-    // even a persona access_level pin present on the same conversation must not reach the sibling turn
+    // a persona access_level pin present on the same conversation must not reach a sibling
+    // that has no access_level of its OWN — accessLevel is read per-being (getBeing(..., being)).
     const { brain, pool } = harness([{ text: 'ok', sessionId: 'w1' }], {
       brains, config, seedAgents: { e: { access_level: 'all' }, wren: {} },
       loadPermission: () => { called = true; return { dangerous: true, allowedTools: ['Bash'] }; },
@@ -615,6 +667,24 @@ describe('brainpool.turn — accessLevel override (operator 2026-08-14, /e acces
     await brain.turn('wren', ev);
     expect(called).toBe(false);
     expect(pool.calls[0].brainOptions.allowedTools).toEqual(['Read', 'Bash']);   // wren's own def, unmodified
+  });
+
+  // REPRODUCE-FIRST (phase 2): before this change, the accessLevel override was gated on
+  // `!isSibling` and a sibling's OWN access_level was never even read for this purpose — this
+  // asserts the NEW, intentionally widened behavior: a sibling GIVEN its own accessLevel (e.g.
+  // by hand-editing conversations.yaml — `/e access` the COMMAND still only ever targets
+  // defaultKey) now gets the SAME live override the persona does.
+  it('PHASE 2: a SIBLING with its OWN accessLevel now ALSO gets the live override — no longer persona-only', async () => {
+    const brains = { resolve: (name) => name === 'sonnet-high' ? ({ name: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: ['Read'] }) : null };
+    const config = { agents: { wren: { configuration: 'sonnet-high', name: 'wren' } } };
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 'w1' }], {
+      brains, config, seedAgents: { wren: { access_level: 'all' } },
+      loadPermission: (level) => (level === 'all' ? { dangerous: true, allowedTools: ['Read', 'Write', 'Bash', 'Agent'] } : null),
+    });
+    await brain.turn('wren', ev);
+    const opts = pool.calls[0].brainOptions;
+    expect(opts.allowedTools).toEqual(['Read', 'Write', 'Bash', 'Agent']);   // the permissions file's grant, not wren's own ['Read']
+    expect(opts.confineToDirs).toBeUndefined();                             // dangerous:true → unconfined
   });
 
   it('REGRESSION: accessLevel null/unset (the default) never consults loadPermission — byte-identical to current committed behavior', async () => {
@@ -701,7 +771,9 @@ function harnessWithLog(logs, brains) {
   const writeState = async (s) => { state = s; };
   const brain = createBrainPool({
     pool,
-    getConfig: () => ({}),
+    // resolveBeingDef (phase 2) needs an agents()['e'] entry to exist before it will attempt
+    // brains.resolve — see the main harness()'s identical synthesis above.
+    getConfig: () => ({ agents: { e: {} } }),
     contacts: createContacts({ loadState, writeState, io: { mkdir: async () => {} } }),
     loadState, writeState,
     io: { mkdir: async () => {}, readFile: async () => null, writeFile: async () => {} },
@@ -811,6 +883,50 @@ describe('brainpool.turn — the fresh moment', () => {
     await brain.turn('e', ev);    // fresh → a thread is being instanced
     await brain.turn('e', ev);    // resumed on sid-1 → ordinary turn
     expect(seen).toEqual([true, false]);
+  });
+
+  // REPRODUCE-FIRST (phase 2, operator 2026-08-14): seedLayers used to be gated on
+  // `!isSibling` — a sibling turn never copied the identity kickoff layers into its conv
+  // folder at all. The gate is REMOVED (not widened): every being's turn calls seedLayers now.
+  it('PHASE 2: a SIBLING turn now ALSO copies the identity layers into its conv folder — no longer persona-only', async () => {
+    const brains = { resolve: (name) => name === 'sonnet-high' ? ({ name: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'Read,Bash' }) : null };
+    const config = { agents: { wren: { configuration: 'sonnet-high', name: 'wren' } } };
+    const seen = [];
+    const seedLayers = async (room, name, opts = {}) => { seen.push({ overwrite: opts.overwrite }); return []; };
+    const { brain } = harness([{ text: 'ok', sessionId: 'w1' }], { brains, config, seedLayers });
+    await brain.turn('wren', ev);
+    expect(seen).toEqual([{ overwrite: true }]);   // phase 2: called for the sibling's fresh turn too
+  });
+
+  // REPRODUCE-FIRST (phase 2 investigation, operator 2026-08-14): rollTranscript stays
+  // PERSONA-ONLY on purpose — transcript.md is ONE shared file per conversation folder, not
+  // per-being. If a sibling's OWN fresh-thread event also rolled it, a sibling's first-ever
+  // turn in a conversation where the persona is already mid-thread would archive (and blank)
+  // the persona's still-live transcript out from under it. This locks that a sibling's fresh
+  // turn changes nothing about the shared file — the investigation's conclusion, made concrete.
+  it('PHASE 2 (investigated, deliberately unchanged): a SIBLING\'s own fresh-thread turn does NOT roll the shared transcript, even while the persona is mid-thread', async () => {
+    const brains = { resolve: (name) => name === 'sonnet-high' ? ({ name: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'Read,Bash' }) : null };
+    const config = { agents: { wren: { configuration: 'sonnet-high', name: 'wren' } } };
+    const fs = fakeIo({});
+    const { brain, getState } = harness([{ text: 'a', sessionId: 'sid-1' }, { text: 'b', sessionId: 'w1' }], { io: fs.io, brains, config });
+    await brain.turn('e', ev);                                          // persona's own fresh turn: gets thread sid-1
+    const conv = norm(slugDir('whatsapp', getContact(getState(), 'whatsapp', ev.chatId).slug));
+    const before = OLD.replace('THREAD-OLD', 'sid-1');
+    fs.files[`${conv}/transcript.md`] = before;                         // the persona's active, stamped transcript
+
+    await brain.turn('wren', ev);                                       // wren's OWN first-ever turn — fresh, no threadId
+
+    // NOTHING ARCHIVED — the roll itself stayed persona-only, so the shared file was never
+    // renamed out to transcripts/<id>.md.
+    expect(Object.keys(fs.files).filter((p) => p.includes('/transcripts/'))).toEqual([]);
+    // The persona's recorded conversation BODY survives untouched (this is what the roll
+    // would have wiped had it fired). stampThreadId — a SEPARATE, pre-existing, being-agnostic
+    // mechanism unrelated to phase 2 (it already ran for every being before this change) — DOES
+    // re-stamp the shared front matter's `thread_id` to wren's own freshly-minted session; that
+    // is expected and orthogonal to what this test locks.
+    const after = fs.files[`${conv}/transcript.md`];
+    expect(after).toContain('hola');
+    expect(after).toContain('[@e (14:05)]: hey');
   });
 });
 

@@ -33,13 +33,16 @@ export function createGating({ getConfig = () => ({}), loadState = null, default
   // agent may declare its own default as `agents.<name>.mode` in the SAME registry entry that
   // already carries its configuration/handles/relay_channel — that is what lets @don be
   // mention-direct while @e is mention in the very same chat. Keyed lowercase, boot's own
-  // convention for that map. Below it, unchanged: the persona (being === defaultKey, injected
-  // by boot from the single `default:true` agent) follows the node's auto_default_mode; every
-  // other being falls back to 'mention'.
+  // convention for that map. Below it (phase 2, operator 2026-08-14: "remove the concept of
+  // siblings" — every being's un-configured default gate resolves the SAME way now, no more
+  // being === defaultKey branch): the node's dispatch.auto_default_mode (legacy
+  // whatsapp.auto_e_default), falling back to DEFAULT_AUTO_MODE ('mention') when that's also
+  // unset — which is today's ultimate fallback for every being anyway, so this is a no-op for
+  // a node that never configured auto_default_mode.
   function defaultMode(being, c) {
     const own = c.agents?.[String(being ?? '').toLowerCase()]?.mode;
     if (isAutoMode(own)) return own;
-    const def = being === defaultKey ? (c.dispatch?.auto_default_mode ?? c.whatsapp?.auto_e_default) : 'mention';
+    const def = c.dispatch?.auto_default_mode ?? c.whatsapp?.auto_e_default;
     return isAutoMode(def) ? def : DEFAULT_AUTO_MODE;
   }
 

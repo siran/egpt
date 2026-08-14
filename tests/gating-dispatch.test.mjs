@@ -54,6 +54,22 @@ describe('gating dispatch: — send_to_egpt global default (canonical) with what
     expect((await g.decide('e', ev)).sendToEgpt).toBe('mode');
   });
 
+  // PHASE 2 (operator 2026-08-14, "remove the concept of siblings"): the default-gate
+  // asymmetry (`being === defaultKey ? ... : 'mention'`) is gone from defaultMode — every
+  // being's un-configured default now resolves the SAME way.
+  it('PHASE 2: a non-default being with no per-agent mode now ALSO follows dispatch.auto_default_mode (not forced to \'mention\')', async () => {
+    expect((await mkGating({ dispatch: { auto_default_mode: 'on' } }).decide('wren', ev)).mode).toBe('on');
+  });
+
+  it('REGRESSION: the persona itself is unchanged — same node default applies as before phase 2', async () => {
+    expect((await mkGating({ dispatch: { auto_default_mode: 'on' } }).decide('e', ev)).mode).toBe('on');
+  });
+
+  it('REGRESSION: absent dispatch/whatsapp default → every being still falls back to \'mention\' (today\'s ultimate fallback, unchanged)', async () => {
+    expect((await mkGating({}).decide('wren', ev)).mode).toBe('mention');
+    expect((await mkGating({}).decide('e', ev)).mode).toBe('mention');
+  });
+
   it('the PER-CONVERSATION override still beats the dispatch global (precedence unchanged)', async () => {
     let state = emptyState();
     state = ensureContact(state, 'whatsapp', '!room:beeper.com', { pushedName: 'fam', slugHint: 'fam' }).state;
