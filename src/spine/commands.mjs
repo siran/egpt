@@ -699,6 +699,21 @@ export function createCommands({
     const resetMatch = /^\/(?:e|egpt)\s+reset\s*$/i.exec(line);
     if (resetMatch) { await eReset(ev); return; }
 
+    // /e access all|regular — flip the CURRENT conversation (ev.surface/ev.chatId), bare,
+    // no target argument (self-only — same calling convention as /e reset), between the
+    // unconfined meta-engineer tier and this node's regular persona default. A PLAIN
+    // TOGGLE (operator: same trust model as /room delete force) — no extra reachability
+    // gate; the operator's own judgment about which conversation gets this is the only
+    // guard. Must stay BEFORE the eWiz catch-all, same slot as /e reset. The strict
+    // all|regular match is checked first; a bare `/e access` or an unrecognized third
+    // word falls to the looser match right after, so malformed input gets a usage reply
+    // instead of silently reaching the wizard catch-all (which would otherwise treat
+    // "access foo" as a wizard target term). See eAccess().
+    const accessMatch = /^\/(?:e|egpt)\s+access\s+(all|regular)\s*$/i.exec(line);
+    if (accessMatch) { await eAccess(ev, accessMatch[1].toLowerCase()); return; }
+    const accessUsageMatch = /^\/(?:e|egpt)\s+access\b/i.exec(line);
+    if (accessUsageMatch) { await send?.(ev.chatId, 'usage: /e access all|regular'); return; }
+
     // /status [<target>] — bare: one compact ops line with live node health (unchanged
     // byte-for-byte; BOTH co-account nodes answer, on purpose). `/status <fragment>`
     // targets a SPECIFIC conversation instead — resolved EXACTLY like `/e auto <mode>
@@ -1075,6 +1090,66 @@ export function createCommands({
     await seedIdentityLayers(room, 'egpt', { io: { mkdir, readFile, writeFile } });
     const archiveNote = archived ? `old content archived to conversations/${room.surface}/${basename(archivedDir)}/ — ` : '';
     await send?.(ev.chatId, `✅ ${room.slug} reset — ${archiveNote}mode/agent overrides cleared, next message starts fresh.`);
+  }
+
+  // What a BRAND-NEW conversation instances from: the persona agent's `configuration`
+  // (the single `agents:` entry with `default: true`), or null when none is configured.
+  // This is brainpool.mjs's private personaAgentConfiguration() (~line 222-228, feeding
+  // resolveDefaultBrain ~line 272-279), replicated here verbatim because createBrainPool
+  // exports only { turn, evict } — neither function reaches commands.mjs. /status's own
+  // preview (~line 2166-2181) accepts hardcoding the shipped 'egpt' type instead, because
+  // that call site is READ-ONLY DISPLAY (a stale preview is cosmetic); eAccess's "regular"
+  // direction is a STATE-MUTATING freeze, so silently hardcoding 'egpt' would actively
+  // mis-freeze any operator who repointed their persona's default configuration. cfg() here
+  // reads the identical `(getConfig() ?? {}).agents` object brainpool.mjs's agents() reads —
+  // same source, different closure — so this is the exact existing algorithm, not a new one.
+  function personaConfiguration() {
+    for (const [, a] of Object.entries(cfg().agents ?? {})) {
+      if (!a || typeof a !== 'object' || Array.isArray(a)) continue;
+      if (a.default === true) return a.configuration ?? null;
+    }
+    return null;
+  }
+
+  // /e access all|regular — flip the CURRENT conversation's frozen agent-type between the
+  // unconfined meta-engineer tier and this node's regular persona default. Reuses the
+  // EXACT freeze shape applyWizard's "pick an existing type" branch already writes
+  // (brains.resolve → coerceAllowedTools → patchBeing's readonly block), just narrower: unlike
+  // /e reset (deleteBeing, wipes everything), this ONLY touches readonly — patchBeing's
+  // field-wise merge leaves threadId/mode/every other sibling field untouched.
+  async function eAccess(ev, target) {
+    const room = await convRoomOf(ev);
+    if (!room) { await send?.(ev.chatId, "can't resolve this conversation's room"); return; }
+    if (!loadState || !writeState) { await send?.(ev.chatId, '/e access: conversation state not wired'); return; }
+    const configuration = target === 'all' ? 'meta-engineer' : (personaConfiguration() ?? 'egpt');
+    let convDir = null;
+    try { convDir = slugDir(room.surface, room.slug); } catch { /* non-default surface */ }
+    // coerceAllowedTools is a no-op for meta-engineer (its allowed_tools is already an
+    // explicit array, not the string 'all') — called anyway for symmetry with applyWizard,
+    // since this IS applyWizard's def shape.
+    const def = coerceAllowedTools(brains?.resolve?.(configuration, { convDir }));
+    if (!def) { await send?.(ev.chatId, `/e access: agent type "${configuration}" not found`); return; }
+    const engine = def.type ?? CCODE;
+    const model = def.model ?? DETERMINISTIC_MODEL;
+    const effort = def.effort ?? DETERMINISTIC_EFFORT;
+    try {
+      const state = await loadState();
+      // The engine the LIVE warm session runs under, before this freeze overwrites it —
+      // mirrors applyWizard's wm.oldEngine, captured here instead since there is no wizard
+      // state to carry it.
+      const oldEngine = getBeing(state, room.surface, room.slug, defaultKey)?.brainType;
+      await writeState(patchBeing(state, room.surface, room.slug, defaultKey, {
+        readonly: { agent: def.name ?? configuration, type: engine, model, effort, allowed_tools: def.allowed_tools ?? DEFAULT_ALLOWED_TOOLS },
+      }));
+      // Evict the warm session so the new tools/engine actually take effect on the NEXT
+      // turn rather than continuing under a stale warm process (same reasoning applyWizard
+      // documents inline).
+      evictWarm(`${defaultKey}:${oldEngine ?? engine}:${room.surface}:${room.slug}`);
+    } catch (e) { onLog(`/e access ${ev.chatId}: ${e?.message ?? e}`); await send?.(ev.chatId, `/e access: failed — ${e?.message ?? e}`); return; }
+    const msg = target === 'all'
+      ? `✅ ${room.slug} access → all (unconfined: full filesystem, bare Bash — anyone who can @e here now has it)`
+      : `✅ ${room.slug} access → regular (back to confined default tools)`;
+    await send?.(ev.chatId, msg);
   }
 
   // The room called <name>, iff its folder exists on disk — the same stat-probe /room create

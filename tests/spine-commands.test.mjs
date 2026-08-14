@@ -311,6 +311,110 @@ describe('/e reset — archive + registry wipe + reseed, one shared path for roo
   });
 });
 
+// /e access all|regular — a PLAIN TOGGLE (operator: same trust model as /room delete
+// force, no extra reachability gate) between the unconfined meta-engineer tier and this
+// node's regular persona default, for the CURRENT conversation (bare, self-only — same
+// calling convention as /e reset). Unlike /e reset, it must touch ONLY the readonly
+// block: threadId/mode survive, which is the key contrast proven below.
+describe('/e access all|regular — freeze readonly to meta-engineer or the persona default, one shared path for rooms and ordinary conversations', () => {
+  const cases = [
+    { label: 'a room-surface conversation', surface: 'room', jid: 'acim', ctx: {} },
+    { label: 'an ordinary whatsapp conversation', surface: 'whatsapp', jid: '1234@s.whatsapp.net', ctx: { pushedName: 'diego', slugHint: 'diego' } },
+  ];
+
+  const metaEngineerDef = { name: 'meta-engineer', type: 'ccode', model: 'sonnet', effort: 'high', dangerous: true, allowed_tools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'Agent', 'WebSearch', 'WebFetch'] };
+  const sonnetHighDef = { name: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: ['Read', 'Edit'] };
+  const egptDef = { name: 'egpt', type: 'ccode', model: 'haiku', effort: 'low', allowed_tools: ['Read'] };
+  function makeBrains() {
+    return {
+      resolve: (name) => {
+        if (name === 'meta-engineer') return metaEngineerDef;
+        if (name === 'sonnet-high') return sonnetHighDef;
+        if (name === 'egpt') return egptDef;
+        return null;
+      },
+    };
+  }
+
+  function seedAccessState(surface, jid, ctx) {
+    let state = ensureContact(emptyState(), surface, jid, ctx).state;
+    // A prior thread + hand-set mode must SURVIVE both directions — the contrast with
+    // /e reset, which wipes this outright.
+    return patchContact(state, surface, jid, {
+      e: { mode: 'on', threadId: 'thread-abc', threadCreatedAt: '2026-08-01T00:00:00Z' },
+    });
+  }
+
+  for (const { label, surface, jid, ctx } of cases) {
+    it(`/e access all freezes readonly to the meta-engineer def — bare Bash, not coerced away — ${label}`, async () => {
+      const state = seedAccessState(surface, jid, ctx);
+      const { cmds, sent, getState } = harness({ state, brains: makeBrains() });
+      await cmds.run({ chatId: jid, surface, body: '/e access all' });
+      const being = getBeing(getState(), surface, jid, 'e');
+      expect(being.agent).toBe('meta-engineer');
+      expect(being.allowedTools).toContain('Bash');
+      expect(being.allowedTools).not.toEqual(DEFAULT_ALLOWED_TOOLS);
+      expect(sent[0].text).toMatch(new RegExp(`${jid === 'acim' ? 'acim' : 'diego'}.*access.*all`));
+    });
+
+    it(`/e access regular freezes readonly back to the resolved persona default (NOT hardcoded egpt) — ${label}`, async () => {
+      const state = seedAccessState(surface, jid, ctx);
+      const config = { agents: { e: { default: true, configuration: 'sonnet-high' } } };
+      const { cmds, sent, getState } = harness({ state, config, brains: makeBrains() });
+      await cmds.run({ chatId: jid, surface, body: '/e access regular' });
+      const being = getBeing(getState(), surface, jid, 'e');
+      expect(being.agent).toBe('sonnet-high');
+      expect(being.allowedTools).toEqual(sonnetHighDef.allowed_tools);
+      expect(sent[0].text).toMatch(/access.*regular/);
+    });
+
+    it(`threadId/mode survive both /e access all and /e access regular — ${label}`, async () => {
+      const stateAll = seedAccessState(surface, jid, ctx);
+      const { cmds: cmdsAll, getState: getStateAll } = harness({ state: stateAll, brains: makeBrains() });
+      await cmdsAll.run({ chatId: jid, surface, body: '/e access all' });
+      const afterAll = getBeing(getStateAll(), surface, jid, 'e');
+      expect(afterAll.threadId).toBe('thread-abc');
+      expect(afterAll.mode).toBe('on');
+
+      const stateRegular = seedAccessState(surface, jid, ctx);
+      const { cmds: cmdsRegular, getState: getStateRegular } = harness({ state: stateRegular, brains: makeBrains() });
+      await cmdsRegular.run({ chatId: jid, surface, body: '/e access regular' });
+      const afterRegular = getBeing(getStateRegular(), surface, jid, 'e');
+      expect(afterRegular.threadId).toBe('thread-abc');
+      expect(afterRegular.mode).toBe('on');
+    });
+  }
+
+  it('/e access regular falls back to "egpt" when no persona default agent is configured', async () => {
+    const state = seedAccessState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
+    const { cmds, getState } = harness({ state, brains: makeBrains() });
+    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/e access regular' });
+    const being = getBeing(getState(), 'whatsapp', '1234@s.whatsapp.net', 'e');
+    expect(being.agent).toBe('egpt');
+    expect(being.allowedTools).toEqual(egptDef.allowed_tools);
+  });
+
+  it('/e access <bad> and bare /e access get the usage reply — not silence, not the wizard fallthrough', async () => {
+    for (const body of ['/e access foo', '/e access']) {
+      const state = seedAccessState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
+      const { cmds, sent } = harness({ state, brains: makeBrains() });
+      await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body });
+      expect(sent[0].text).toBe('usage: /e access all|regular');
+      expect(sent[0].text).not.toMatch(/recognized/);
+    }
+  });
+
+  it('/e access and /egpt access are recognized case-insensitively, before the eWiz catch-all', async () => {
+    for (const body of ['/e access all', '/E ACCESS ALL', '/egpt access regular', '/EGPT Access Regular']) {
+      const state = seedAccessState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
+      const { cmds, sent } = harness({ state, brains: makeBrains() });
+      await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body });
+      expect(sent[0].text).toMatch(/access/i);
+      expect(sent[0].text).not.toMatch(/recognized/);
+    }
+  });
+});
+
 // resolveTarget cross-surface fallback (operator 2026-07-05 live bug): from the whatsapp
 // Self DM, "/e auto auto miss" reported "no chat matches" even though a telegram chat
 // "Miss Xinyi" was registered — resolveTarget only ever searched the command's own
