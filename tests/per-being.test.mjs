@@ -177,3 +177,61 @@ describe('per-being: patchBeing lands each field where getBeing resolves it', ()
     expect(getBeing(parse(serialize(s)), 'whatsapp', '!ovr:beeper.local', 'e').mode).toBe('mention');
   });
 });
+
+// access_level (operator 2026-08-14, /e access all|regular) is an ALWAYS-OVERRIDE field:
+// it must land in the agents.<being> block on EVERY write, first write included — unlike
+// every other field above, which only routes there once the override block already
+// defines it (a first-time write otherwise lands in the spine's own entry[being] snapshot,
+// which is the wrong home: access_level is never spine machine-state). Regression-locks
+// that this special-case did NOT change how any OTHER field routes.
+describe('per-being: access_level always routes to the agents: override block, first write included', () => {
+  it('getBeing reads access_level back from the override block', () => {
+    const state = { contacts: { whatsapp: { '!ovr:beeper.local': {
+      slug: 'ovr', e: { mode: 'on' }, agents: { e: { access_level: 'all' } },
+    } } } };
+    expect(getBeing(state, 'whatsapp', '!ovr:beeper.local', 'e').accessLevel).toBe('all');
+  });
+
+  it('a being with no access_level ever written resolves accessLevel: null', () => {
+    const state = { contacts: { whatsapp: { '!plain:beeper.local': { slug: 'plain', e: { mode: 'on' } } } } };
+    expect(getBeing(state, 'whatsapp', '!plain:beeper.local', 'e').accessLevel).toBe(null);
+  });
+
+  it('a FIRST-TIME access_level write on a being with NO agents: block at all lands in entry.agents.<being>, not entry[<being>]', () => {
+    const state = { contacts: { whatsapp: { '!fresh:beeper.local': { slug: 'fresh', e: { mode: 'on', threadId: 'T1' } } } } };
+    const s = patchBeing(state, 'whatsapp', '!fresh:beeper.local', 'e', { access_level: 'all' });
+    const entry = s.contacts.whatsapp['!fresh:beeper.local'];
+    expect(entry.agents).toEqual({ e: { access_level: 'all' } });
+    expect(entry.e).toEqual({ mode: 'on', threadId: 'T1' });   // the spine's block untouched
+    expect(getBeing(s, 'whatsapp', '!fresh:beeper.local', 'e').accessLevel).toBe('all');
+  });
+
+  it('a second access_level write updates the existing pin; an unrelated field in the SAME patch still routes by the normal rule', () => {
+    const seeded = { contacts: { whatsapp: { '!ovr:beeper.local': {
+      slug: 'ovr', e: { mode: 'on', threadId: 'T9' }, agents: { e: { access_level: 'all' } },
+    } } } };
+    const s = patchBeing(seeded, 'whatsapp', '!ovr:beeper.local', 'e', { access_level: 'regular', threadId: 'T-NEW' });
+    expect(getBeing(s, 'whatsapp', '!ovr:beeper.local', 'e').accessLevel).toBe('regular');
+    const entry = s.contacts.whatsapp['!ovr:beeper.local'];
+    expect(entry.agents.e.access_level).toBe('regular');
+    expect(entry.e.threadId).toBe('T-NEW');   // threadId is not agents:-pinned here, so it still goes to entry[being]
+  });
+
+  it('access_level survives the YAML round-trip', () => {
+    const state = { contacts: { whatsapp: { '!fresh:beeper.local': { slug: 'fresh', e: { mode: 'on' } } } } };
+    const s = patchBeing(state, 'whatsapp', '!fresh:beeper.local', 'e', { access_level: 'all' });
+    expect(getBeing(parse(serialize(s)), 'whatsapp', '!fresh:beeper.local', 'e').accessLevel).toBe('all');
+  });
+
+  it('regression: mode/threadId still route by the pre-existing k-in-ovr rule, unaffected by the access_level special-case', () => {
+    const seeded = { contacts: { whatsapp: { '!ovr:beeper.local': {
+      slug: 'ovr',
+      e: { mode: 'on', threadId: 'T9', readonly: { model: 'opus' } },
+      agents: { e: { mode: 'mute' }, don: { mode: 'mention-direct' } },
+    } } } };
+    const s = patchBeing(seeded, 'whatsapp', '!ovr:beeper.local', 'e', { mode: 'mention' });
+    const entry = s.contacts.whatsapp['!ovr:beeper.local'];
+    expect(entry.agents.e.mode).toBe('mention');   // agents.e already pinned mode → still routes there
+    expect(entry.e.threadId).toBe('T9');           // threadId (unpinned) still goes to entry[being]
+  });
+});

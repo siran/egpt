@@ -312,72 +312,76 @@ describe('/e reset — archive + registry wipe + reseed, one shared path for roo
 });
 
 // /e access all|regular — a PLAIN TOGGLE (operator: same trust model as /room delete
-// force, no extra reachability gate) between the unconfined meta-engineer tier and this
-// node's regular persona default, for the CURRENT conversation (bare, self-only — same
-// calling convention as /e reset). Unlike /e reset, it must touch ONLY the readonly
-// block: threadId/mode survive, which is the key contrast proven below.
-describe('/e access all|regular — freeze readonly to meta-engineer or the persona default, one shared path for rooms and ordinary conversations', () => {
+// force, no extra reachability gate) that points the CURRENT conversation's
+// `access_level` at config/permissions/all.md or config/permissions/regular.md (bare,
+// self-only — same calling convention as /e reset). NOT a freeze (operator 2026-08-14):
+// unlike the old code, this must NOT touch agent/type/model/effort/allowedTools at all —
+// those stay exactly whatever they were before the command ran. brainpool.mjs applies the
+// permissions file live, every turn; that live-application is covered in
+// tests/spine-brainpool.test.mjs, not here — this file only proves the command writes the
+// right field to the right place and leaves everything else alone.
+describe('/e access all|regular — points access_level at a permissions file, no freeze, one shared path for rooms and ordinary conversations', () => {
   const cases = [
     { label: 'a room-surface conversation', surface: 'room', jid: 'acim', ctx: {} },
     { label: 'an ordinary whatsapp conversation', surface: 'whatsapp', jid: '1234@s.whatsapp.net', ctx: { pushedName: 'diego', slugHint: 'diego' } },
   ];
 
-  const metaEngineerDef = { name: 'meta-engineer', type: 'ccode', model: 'sonnet', effort: 'high', dangerous: true, allowed_tools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'Agent', 'WebSearch', 'WebFetch'] };
-  const sonnetHighDef = { name: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: ['Read', 'Edit'] };
-  const egptDef = { name: 'egpt', type: 'ccode', model: 'haiku', effort: 'low', allowed_tools: ['Read'] };
-  function makeBrains() {
-    return {
-      resolve: (name) => {
-        if (name === 'meta-engineer') return metaEngineerDef;
-        if (name === 'sonnet-high') return sonnetHighDef;
-        if (name === 'egpt') return egptDef;
-        return null;
-      },
-    };
-  }
-
   function seedAccessState(surface, jid, ctx) {
     let state = ensureContact(emptyState(), surface, jid, ctx).state;
-    // A prior thread + hand-set mode must SURVIVE both directions — the contrast with
-    // /e reset, which wipes this outright.
+    // A prior thread + hand-set mode + an already-instanced readonly freeze must ALL
+    // SURVIVE — the contrast with /e reset (deleteBeing, wipes everything), and proof
+    // that /e access no longer touches agent/type/model/effort/allowedTools at all.
     return patchContact(state, surface, jid, {
-      e: { mode: 'on', threadId: 'thread-abc', threadCreatedAt: '2026-08-01T00:00:00Z' },
+      e: {
+        mode: 'on', threadId: 'thread-abc', threadCreatedAt: '2026-08-01T00:00:00Z',
+        readonly: { agent: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: ['Read', 'Edit'] },
+      },
     });
   }
 
   for (const { label, surface, jid, ctx } of cases) {
-    it(`/e access all freezes readonly to the meta-engineer def — bare Bash, not coerced away — ${label}`, async () => {
+    it(`/e access all sets accessLevel: 'all' and leaves agent/type/model/effort/allowedTools untouched — ${label}`, async () => {
       const state = seedAccessState(surface, jid, ctx);
-      const { cmds, sent, getState } = harness({ state, brains: makeBrains() });
+      const before = getBeing(state, surface, jid, 'e');
+      const { cmds, sent, getState } = harness({ state });
       await cmds.run({ chatId: jid, surface, body: '/e access all' });
       const being = getBeing(getState(), surface, jid, 'e');
-      expect(being.agent).toBe('meta-engineer');
-      expect(being.allowedTools).toContain('Bash');
-      expect(being.allowedTools).not.toEqual(DEFAULT_ALLOWED_TOOLS);
+      expect(being.accessLevel).toBe('all');
+      expect(being.agent).toBe(before.agent);
+      expect(being.brainType).toBe(before.brainType);
+      expect(being.model).toBe(before.model);
+      expect(being.effort).toBe(before.effort);
+      expect(being.allowedTools).toEqual(before.allowedTools);
       expect(sent[0].text).toMatch(new RegExp(`${jid === 'acim' ? 'acim' : 'diego'}.*access.*all`));
+      expect(sent[0].text).toMatch(/unconfined/);
     });
 
-    it(`/e access regular freezes readonly back to the resolved persona default (NOT hardcoded egpt) — ${label}`, async () => {
+    it(`/e access regular sets accessLevel: 'regular' and leaves agent/type/model/effort/allowedTools untouched — ${label}`, async () => {
       const state = seedAccessState(surface, jid, ctx);
-      const config = { agents: { e: { default: true, configuration: 'sonnet-high' } } };
-      const { cmds, sent, getState } = harness({ state, config, brains: makeBrains() });
+      const before = getBeing(state, surface, jid, 'e');
+      const { cmds, sent, getState } = harness({ state });
       await cmds.run({ chatId: jid, surface, body: '/e access regular' });
       const being = getBeing(getState(), surface, jid, 'e');
-      expect(being.agent).toBe('sonnet-high');
-      expect(being.allowedTools).toEqual(sonnetHighDef.allowed_tools);
+      expect(being.accessLevel).toBe('regular');
+      expect(being.agent).toBe(before.agent);
+      expect(being.brainType).toBe(before.brainType);
+      expect(being.model).toBe(before.model);
+      expect(being.effort).toBe(before.effort);
+      expect(being.allowedTools).toEqual(before.allowedTools);
       expect(sent[0].text).toMatch(/access.*regular/);
+      expect(sent[0].text).toMatch(/confined default tools/);
     });
 
     it(`threadId/mode survive both /e access all and /e access regular — ${label}`, async () => {
       const stateAll = seedAccessState(surface, jid, ctx);
-      const { cmds: cmdsAll, getState: getStateAll } = harness({ state: stateAll, brains: makeBrains() });
+      const { cmds: cmdsAll, getState: getStateAll } = harness({ state: stateAll });
       await cmdsAll.run({ chatId: jid, surface, body: '/e access all' });
       const afterAll = getBeing(getStateAll(), surface, jid, 'e');
       expect(afterAll.threadId).toBe('thread-abc');
       expect(afterAll.mode).toBe('on');
 
       const stateRegular = seedAccessState(surface, jid, ctx);
-      const { cmds: cmdsRegular, getState: getStateRegular } = harness({ state: stateRegular, brains: makeBrains() });
+      const { cmds: cmdsRegular, getState: getStateRegular } = harness({ state: stateRegular });
       await cmdsRegular.run({ chatId: jid, surface, body: '/e access regular' });
       const afterRegular = getBeing(getStateRegular(), surface, jid, 'e');
       expect(afterRegular.threadId).toBe('thread-abc');
@@ -385,19 +389,18 @@ describe('/e access all|regular — freeze readonly to meta-engineer or the pers
     });
   }
 
-  it('/e access regular falls back to "egpt" when no persona default agent is configured', async () => {
+  it('/e access evicts the warm session keyed on the CURRENTLY-INSTANCED engine (not a re-resolved one)', async () => {
     const state = seedAccessState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
-    const { cmds, getState } = harness({ state, brains: makeBrains() });
-    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/e access regular' });
-    const being = getBeing(getState(), 'whatsapp', '1234@s.whatsapp.net', 'e');
-    expect(being.agent).toBe('egpt');
-    expect(being.allowedTools).toEqual(egptDef.allowed_tools);
+    const { cmds, evicts, getState } = harness({ state });
+    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/e access all' });
+    const slug = getContact(getState(), 'whatsapp', '1234@s.whatsapp.net').slug;
+    expect(evicts).toEqual([`e:ccode:whatsapp:${slug}`]);
   });
 
   it('/e access <bad> and bare /e access get the usage reply — not silence, not the wizard fallthrough', async () => {
     for (const body of ['/e access foo', '/e access']) {
       const state = seedAccessState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
-      const { cmds, sent } = harness({ state, brains: makeBrains() });
+      const { cmds, sent } = harness({ state });
       await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body });
       expect(sent[0].text).toBe('usage: /e access all|regular');
       expect(sent[0].text).not.toMatch(/recognized/);
@@ -407,7 +410,7 @@ describe('/e access all|regular — freeze readonly to meta-engineer or the pers
   it('/e access and /egpt access are recognized case-insensitively, before the eWiz catch-all', async () => {
     for (const body of ['/e access all', '/E ACCESS ALL', '/egpt access regular', '/EGPT Access Regular']) {
       const state = seedAccessState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
-      const { cmds, sent } = harness({ state, brains: makeBrains() });
+      const { cmds, sent } = harness({ state });
       await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body });
       expect(sent[0].text).toMatch(/access/i);
       expect(sent[0].text).not.toMatch(/recognized/);

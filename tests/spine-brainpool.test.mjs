@@ -30,7 +30,7 @@ function fakePool(scriptedResults) {
 
 const ev = { surface: 'whatsapp', chatId: '!room:beeper.com', chatName: 'SPOILER', line: 'An@[SPOILER].wa (14:05) #m1: hola', body: 'hola' };
 
-function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, loadFeed, loadManifest, loadAutoLayer, seedSession, seedMode, seedReadonly, seedAgents, brains, afterTurn, io, nodeIdentity, seedLayers, resolveConfig } = {}) {
+function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, loadFeed, loadManifest, loadAutoLayer, seedSession, seedMode, seedReadonly, seedAgents, brains, afterTurn, io, nodeIdentity, seedLayers, resolveConfig, loadPermission } = {}) {
   let state = emptyState();
   if (seedSession || seedMode || seedReadonly || seedAgents) {   // pre-register the contact (WITH a stored thread, an E mode, a freeze and/or an operator pin)
     const ens = ensureContact(state, ev.surface, ev.chatId, { pushedName: ev.chatName, slugHint: ev.chatName });
@@ -72,6 +72,7 @@ function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, load
     ...(afterTurn ? { afterTurn } : {}),
     ...(isOverflow ? { isOverflow } : {}),
     ...(isDeadSession ? { isDeadSession } : {}),
+    ...(loadPermission ? { loadPermission } : {}),
   });
   return { brain, pool, getState: () => state, setState: (s) => { state = s; } };
 }
@@ -579,6 +580,95 @@ describe('brainpool.turn — dangerous:true skips coercion + confinement (operat
     const opts = pool.calls[0].brainOptions;
     expect(opts.allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);
     expect(opts.confineToDirs).toEqual([opts.cwd]);
+  });
+});
+
+// ── /e access all|regular — accessLevel OVERRIDE (operator 2026-08-14). Applied live,
+//    every turn, independent of the fresh/frozen instancing above — the whole point vs.
+//    the old freeze-into-readonly shape. Persona-only; a sibling turn is untouched. ──
+describe('brainpool.turn — accessLevel override (operator 2026-08-14, /e access)', () => {
+  it("accessLevel 'all' overrides dangerous/allowedTools even on an ALREADY-FROZEN (instanced) thread — no re-freeze needed", async () => {
+    const STALE_RO = { agent: 'sonnet-high', type: 'ccode', model: 'haiku', effort: 'low', allowed_tools: ['Read'] };
+    const { brain, pool, getState } = harness([{ text: 'ok', sessionId: 'sid-live' }], {
+      seedSession: 'sid-live', seedReadonly: STALE_RO, seedAgents: { e: { access_level: 'all' } },
+      loadPermission: (level) => (level === 'all' ? { dangerous: true, allowedTools: ['Read', 'Write', 'Bash', 'Agent'] } : null),
+    });
+    await brain.turn('e', ev);
+    const opts = pool.calls[0].brainOptions;
+    expect(opts.allowedTools).toEqual(['Read', 'Write', 'Bash', 'Agent']);   // the permissions file's grant, not the stale freeze's ['Read']
+    expect(opts.confineToDirs).toBeUndefined();                             // dangerous:true → unconfined
+    expect(opts.sessionId).toBe('sid-live');                                // genuinely resumed — this was NOT a fresh/re-instance turn
+    // the readonly freeze itself is UNCHANGED — proves this is a live override, not a re-freeze
+    expect(getState().contacts.whatsapp['!room:beeper.com'].e.readonly).toEqual(STALE_RO);
+  });
+
+  it("accessLevel 'regular' overrides dangerous/allowedTools to a confined grant on a fresh (never-instanced) turn too", async () => {
+    const brains = { resolve: () => ({ name: 'meta-engineer', type: 'ccode', model: 'sonnet', effort: 'high', dangerous: true, allowed_tools: ['Read', 'Bash'] }) };
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
+      brains, seedAgents: { e: { access_level: 'regular' } },
+      loadPermission: (level) => (level === 'regular' ? { dangerous: false, allowedTools: DEFAULT_ALLOWED_TOOLS } : null),
+    });
+    await brain.turn('e', ev);
+    const opts = pool.calls[0].brainOptions;
+    expect(opts.allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);   // overrides the instanced dangerous:true def entirely
+    expect(opts.confineToDirs).toEqual([opts.cwd]);             // confined, not the def's own unconfined tier
+  });
+
+  it('editing the permissions-file RESULT between two turns of the SAME conversation changes the SECOND turn — no /e access re-run, proves live re-read (no caching)', async () => {
+    let grant = { dangerous: true, allowedTools: ['Read', 'Bash'] };
+    const { brain, pool } = harness([{ text: 'a', sessionId: 'sid' }, { text: 'b', sessionId: 'sid' }], {
+      seedAgents: { e: { access_level: 'all' } },
+      loadPermission: () => grant,
+    });
+    await brain.turn('e', ev);                                             // turn 1: sees the first grant
+    grant = { dangerous: false, allowedTools: ['Read', 'Grep'] };           // "editing the file" — same access_level, different content
+    await brain.turn('e', ev);                                             // turn 2: no command re-run
+    expect(pool.calls[0].brainOptions.allowedTools).toEqual(['Read', 'Bash']);
+    expect(pool.calls[0].brainOptions.confineToDirs).toBeUndefined();
+    expect(pool.calls[1].brainOptions.allowedTools).toEqual(['Read', 'Grep']);
+    expect(pool.calls[1].brainOptions.confineToDirs).toEqual([pool.calls[1].brainOptions.cwd]);
+  });
+
+  it('a SIBLING turn is never affected by accessLevel — persona-only override', async () => {
+    const brains = { resolve: (name) => name === 'sonnet-high' ? ({ name: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: ['Read', 'Bash'] }) : null };
+    const config = { agents: { wren: { configuration: 'sonnet-high', name: 'wren' } } };
+    let called = false;
+    // even a persona access_level pin present on the same conversation must not reach the sibling turn
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 'w1' }], {
+      brains, config, seedAgents: { e: { access_level: 'all' }, wren: {} },
+      loadPermission: () => { called = true; return { dangerous: true, allowedTools: ['Bash'] }; },
+    });
+    await brain.turn('wren', ev);
+    expect(called).toBe(false);
+    expect(pool.calls[0].brainOptions.allowedTools).toEqual(['Read', 'Bash']);   // wren's own def, unmodified
+  });
+
+  it('REGRESSION: accessLevel null/unset (the default) never consults loadPermission — byte-identical to current committed behavior', async () => {
+    const brains = { resolve: () => ({ name: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'all' }) };
+    let called = false;
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
+      brains, loadPermission: () => { called = true; return { dangerous: true, allowedTools: ['Bash'] }; },
+    });
+    await brain.turn('e', ev);
+    expect(called).toBe(false);
+    const opts = pool.calls[0].brainOptions;
+    expect(opts.allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);   // 'all' still rejected → coerced, exactly as before this feature
+    expect(opts.confineToDirs).toEqual([opts.cwd]);
+  });
+
+  it('end-to-end with the REAL config/permissions/*.md files (no injected loadPermission): all → dangerous + bare Bash/Agent, regular → confined DEFAULT_ALLOWED_TOOLS', async () => {
+    const brains = { resolve: () => ({ name: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: ['Read'] }) };
+    const all = harness([{ text: 'ok', sessionId: 's' }], { brains, seedAgents: { e: { access_level: 'all' } } });
+    await all.brain.turn('e', ev);
+    const optsAll = all.pool.calls[0].brainOptions;
+    expect(optsAll.allowedTools).toEqual(expect.arrayContaining(['Bash', 'Agent']));
+    expect(optsAll.confineToDirs).toBeUndefined();
+
+    const regular = harness([{ text: 'ok', sessionId: 's' }], { brains, seedAgents: { e: { access_level: 'regular' } } });
+    await regular.brain.turn('e', ev);
+    const optsRegular = regular.pool.calls[0].brainOptions;
+    expect(optsRegular.allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);
+    expect(optsRegular.confineToDirs).toEqual([optsRegular.cwd]);
   });
 });
 

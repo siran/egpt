@@ -31,6 +31,7 @@ import { Room } from '../room-core.mjs';
 import { isContextOverflowError, isDeadSessionError } from '../brain-errors.mjs';
 import { parseFrequency } from './heartbeat-loader.mjs';
 import { WRITE_TOOLS } from '../claude-args.mjs';
+import { loadPermissionLevel } from './permission-levels.mjs';
 import { mkdir as fsMkdir, readFile as fsReadFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import * as YAML from 'yaml';
@@ -152,6 +153,7 @@ export function createBrainPool({
   loadAutoLayer = readAutoModeLayer,// () -> the `mode: auto` operator-role instruction layer (appended to an auto conversation's kickoff)
   loadManifest = null,              // () -> e_identity.md fallback (default below)
   afterTurn = null,                 // ({key, sessionId, model, cwd, allowedTools}) — post-turn hook (auto-compaction)
+  loadPermission = loadPermissionLevel,  // (level) -> {dangerous, allowedTools}|null — config/permissions/<level>.md for /e access; injectable (tests), NO caching in the real implementation (see permission-levels.mjs)
   onLog = () => {},
 } = {}) {
   if (!pool || typeof pool.run !== 'function') throw new Error('createBrainPool: pool (createWarmPool) is required');
@@ -207,6 +209,9 @@ export function createBrainPool({
       // The conversation's INSTANCED brain (frozen in readonly), or null on a fresh
       // conversation that hasn't been instanced from the default yet.
       brain: b?.brainType ? { name: b.brain, type: b.brainType, model: b.model, effort: b.effort, allowed_tools: b.allowedTools } : null,
+      // /e access all|regular (operator 2026-08-14) — NOT part of the freeze above;
+      // applied live, every turn, in turn() below (see the ACCESS-LEVEL OVERRIDE comment).
+      accessLevel: b?.accessLevel ?? null,
     };
   }
 
@@ -282,7 +287,7 @@ export function createBrainPool({
   return {
     /** @returns {Promise<{ text: string, sessionId: string|null, being: string }>} */
     async turn(being, ev, onPartial = () => {}) {
-      const { slug, sessionId, brain: instanced, mode } = await resolveConv(ev, being);
+      const { slug, sessionId, brain: instanced, mode, accessLevel } = await resolveConv(ev, being);
       if (!slug) throw new Error(`brainpool: no slug for ${ev.surface}/${ev.chatId}`);
 
       const convDir = slugDir(ev.surface, slug);
@@ -367,6 +372,21 @@ export function createBrainPool({
           // alone. Never throws by contract.
           if (!sessionId) await rollTranscript(ev.surface, slug, { io });
         }
+      }
+      // ACCESS-LEVEL OVERRIDE (operator 2026-08-14, /e access all|regular): applied HERE,
+      // every turn, independent of the fresh/frozen branching above — the whole point of
+      // this shape vs. the old copy-the-def-into-readonly freeze. Persona-only (the only
+      // path /e access has ever touched; a sibling's def comes from its own
+      // agents.<being>.configuration and is untouched here). Runs AFTER the sibling/persona
+      // branches converge on `def` and BEFORE confinementFor/baseOpts read
+      // def.allowed_tools/def.dangerous below, so it wins regardless of which branch built
+      // `def` — and it must NOT run before the freeze above, which snapshots the
+      // INSTANCED type, not this live override. permission-levels.mjs re-reads the file
+      // fresh on every call (no caching): editing config/permissions/<level>.md changes
+      // this turn's grant with no `/e access` re-run and no re-freeze.
+      if (!isSibling && (accessLevel === 'all' || accessLevel === 'regular')) {
+        const perm = loadPermission(accessLevel);
+        if (perm) def = { ...def, dangerous: perm.dangerous, allowed_tools: perm.allowedTools };
       }
       const engine = def.type ?? brainType;
       // The identity-feed selector (operator 2026-07-02): a property of the resolved

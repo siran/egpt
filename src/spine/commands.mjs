@@ -15,6 +15,7 @@ import { stripFrontMatter } from '../transcript-meta.mjs';
 import { initWizard, wizardStep, wizardPrompt } from '../agent-wizard.mjs';
 import { BUILTIN_BRAINS_DIR, PROFILE_AGENTS_DIR } from './brains.mjs';
 import { coerceAllowedTools } from './brainpool.mjs';
+import { loadPermissionLevel } from './permission-levels.mjs';
 import { stat as fsStat, readFile as fsReadFile, writeFile as fsWriteFile, mkdir as fsMkdir, readdir as fsReaddir, rm as fsRm, rename as fsRename } from 'node:fs/promises';
 import { readdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -1092,63 +1093,43 @@ export function createCommands({
     await send?.(ev.chatId, `✅ ${room.slug} reset — ${archiveNote}mode/agent overrides cleared, next message starts fresh.`);
   }
 
-  // What a BRAND-NEW conversation instances from: the persona agent's `configuration`
-  // (the single `agents:` entry with `default: true`), or null when none is configured.
-  // This is brainpool.mjs's private personaAgentConfiguration() (~line 222-228, feeding
-  // resolveDefaultBrain ~line 272-279), replicated here verbatim because createBrainPool
-  // exports only { turn, evict } — neither function reaches commands.mjs. /status's own
-  // preview (~line 2166-2181) accepts hardcoding the shipped 'egpt' type instead, because
-  // that call site is READ-ONLY DISPLAY (a stale preview is cosmetic); eAccess's "regular"
-  // direction is a STATE-MUTATING freeze, so silently hardcoding 'egpt' would actively
-  // mis-freeze any operator who repointed their persona's default configuration. cfg() here
-  // reads the identical `(getConfig() ?? {}).agents` object brainpool.mjs's agents() reads —
-  // same source, different closure — so this is the exact existing algorithm, not a new one.
-  function personaConfiguration() {
-    for (const [, a] of Object.entries(cfg().agents ?? {})) {
-      if (!a || typeof a !== 'object' || Array.isArray(a)) continue;
-      if (a.default === true) return a.configuration ?? null;
-    }
-    return null;
-  }
-
-  // /e access all|regular — flip the CURRENT conversation's frozen agent-type between the
-  // unconfined meta-engineer tier and this node's regular persona default. Reuses the
-  // EXACT freeze shape applyWizard's "pick an existing type" branch already writes
-  // (brains.resolve → coerceAllowedTools → patchBeing's readonly block), just narrower: unlike
-  // /e reset (deleteBeing, wipes everything), this ONLY touches readonly — patchBeing's
-  // field-wise merge leaves threadId/mode/every other sibling field untouched.
+  // /e access all|regular — point the CURRENT conversation's `access_level` at
+  // config/permissions/all.md or config/permissions/regular.md (operator 2026-08-14).
+  // NOT a freeze: unlike applyWizard's "pick an existing type" branch (which resolves a
+  // full agent-type def and COPIES agent/type/model/effort/allowed_tools into readonly),
+  // this writes ONLY `access_level: target` into the override block — patchBeing routes it
+  // there UNCONDITIONALLY, first write included (conversations-state.mjs's
+  // _ALWAYS_OVERRIDE_FIELDS). brainpool.mjs's turn() reads the matching permissions file
+  // FRESH every turn (permission-levels.mjs — no caching, no freeze) and overrides that
+  // turn's allowed_tools/dangerous, so editing either file changes behavior immediately for
+  // every conversation pointing at that level, with no `/e access` re-run. Agent/model/
+  // effort/engine are never touched. Still touches ONLY that one field — threadId/mode/
+  // every other sibling field survive untouched, same contrast with /e reset (deleteBeing,
+  // wipes everything) the old code drew.
   async function eAccess(ev, target) {
     const room = await convRoomOf(ev);
     if (!room) { await send?.(ev.chatId, "can't resolve this conversation's room"); return; }
     if (!loadState || !writeState) { await send?.(ev.chatId, '/e access: conversation state not wired'); return; }
-    const configuration = target === 'all' ? 'meta-engineer' : (personaConfiguration() ?? 'egpt');
-    let convDir = null;
-    try { convDir = slugDir(room.surface, room.slug); } catch { /* non-default surface */ }
-    // coerceAllowedTools is a no-op for meta-engineer (its allowed_tools is already an
-    // explicit array, not the string 'all') — called anyway for symmetry with applyWizard,
-    // since this IS applyWizard's def shape.
-    const def = coerceAllowedTools(brains?.resolve?.(configuration, { convDir }));
-    if (!def) { await send?.(ev.chatId, `/e access: agent type "${configuration}" not found`); return; }
-    const engine = def.type ?? CCODE;
-    const model = def.model ?? DETERMINISTIC_MODEL;
-    const effort = def.effort ?? DETERMINISTIC_EFFORT;
+    const perm = loadPermissionLevel(target);
+    if (!perm) { await send?.(ev.chatId, `/e access: permissions file for "${target}" not found or unparseable`); return; }
     try {
       const state = await loadState();
-      // The engine the LIVE warm session runs under, before this freeze overwrites it —
-      // mirrors applyWizard's wm.oldEngine, captured here instead since there is no wizard
-      // state to carry it.
-      const oldEngine = getBeing(state, room.surface, room.slug, defaultKey)?.brainType;
-      await writeState(patchBeing(state, room.surface, room.slug, defaultKey, {
-        readonly: { agent: def.name ?? configuration, type: engine, model, effort, allowed_tools: def.allowed_tools ?? DEFAULT_ALLOWED_TOOLS },
-      }));
-      // Evict the warm session so the new tools/engine actually take effect on the NEXT
-      // turn rather than continuing under a stale warm process (same reasoning applyWizard
-      // documents inline).
-      evictWarm(`${defaultKey}:${oldEngine ?? engine}:${room.surface}:${room.slug}`);
+      // The engine the LIVE warm session is keyed under. access_level never changes
+      // def.type (only allowed_tools/dangerous), so this is just whatever engine the
+      // conversation is already instanced on (or the ccode fallback pre-instancing).
+      const engine = getBeing(state, room.surface, room.slug, defaultKey)?.brainType ?? CCODE;
+      await writeState(patchBeing(state, room.surface, room.slug, defaultKey, { access_level: target }));
+      // Evict the warm session: a warm `claude` process bakes its allowedTools/confinement
+      // into its spawn args ONCE, at open (warm-cli-session.mjs's spawnProc), and never
+      // re-reads brainOptions on later turns of the same warm session — so a live warm
+      // session must be closed for the new access_level to actually take effect on the
+      // NEXT turn, even though nothing here is frozen (same reasoning the old freeze-based
+      // code used for this same call, still true).
+      evictWarm(`${defaultKey}:${engine}:${room.surface}:${room.slug}`);
     } catch (e) { onLog(`/e access ${ev.chatId}: ${e?.message ?? e}`); await send?.(ev.chatId, `/e access: failed — ${e?.message ?? e}`); return; }
     const msg = target === 'all'
       ? `✅ ${room.slug} access → all (unconfined: full filesystem, bare Bash — anyone who can @e here now has it)`
-      : `✅ ${room.slug} access → regular (back to confined default tools)`;
+      : `✅ ${room.slug} access → regular (confined default tools)`;
     await send?.(ev.chatId, msg);
   }
 

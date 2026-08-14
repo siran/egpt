@@ -956,6 +956,11 @@ export function getBeing(state, surface, jid, being) {
     agent:              ro.agent              ?? null,
     brainType:          ro.type               ?? null,   // the engine (frozen); null = not instanced yet
     allowedTools:       ro.allowed_tools      ?? null,
+    // /e access all|regular (operator 2026-08-14): points this being at a
+    // config/permissions/<level>.md file, read fresh every turn by
+    // spine/brainpool.mjs — NOT a freeze, unlike the five readonly.* fields
+    // above. null = never touched (this node's ordinary instanced behavior).
+    accessLevel:        b?.access_level        ?? null,
   };
 }
 
@@ -1326,12 +1331,20 @@ export function patchContact(state, surface, jidOrSlug, patch) {
 // spine's machine state (threadId, readonly) never migrates into the operator's
 // hand-authored block and a conversation that has never used the new shape never grows one.
 // `fields` is merged over the block's existing fields (siblings survive), like patchContact.
+//
+// ALWAYS-OVERRIDE FIELDS (operator 2026-08-14, /e access): a few fields must land in the
+// `agents.<being>` override block on EVERY write, first write included — unlike every other
+// field here, which only routes there once the override block already defines it (a
+// first-time write instead lands in the spine's own `entry[being]` snapshot). access_level
+// is one such field: it is ALWAYS an operator override, never spine machine-state, so
+// `entry[being]` would be the wrong home even on its very first write.
+const _ALWAYS_OVERRIDE_FIELDS = new Set(['access_level']);
 export function patchBeing(state, surface, jidOrSlug, being, fields) {
   const entry = _entryByJidOrSlug(state, surface, jidOrSlug) ?? {};
   const ovr = _obj(_obj(entry.agents)?.[being]);
   const ownFields = {}, ovrFields = {};
   for (const [k, v] of Object.entries(fields)) {
-    if (ovr && k in ovr) ovrFields[k] = v; else ownFields[k] = v;
+    if ((ovr && k in ovr) || _ALWAYS_OVERRIDE_FIELDS.has(k)) ovrFields[k] = v; else ownFields[k] = v;
   }
   const patch = {};
   if (Object.keys(ownFields).length) patch[being] = { ..._obj(entry[being]), ...ownFields };
