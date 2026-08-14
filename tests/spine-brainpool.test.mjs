@@ -8,7 +8,7 @@ import { createContacts } from '../src/spine/contacts.mjs';
 import { createBrains } from '../src/spine/brains.mjs';
 import { ConversationRoom } from '../src/room-core.mjs';
 import { buildClaudeArgs, DEFAULT_ALLOWED_TOOLS } from '../src/claude-args.mjs';
-import { emptyState, getBeing, getContact, ensureContact, recordThread, patchContact, patchBeing, slugDir } from '../src/conversations-state.mjs';
+import { emptyState, getBeing, getContact, ensureContact, recordThread, patchBeing, slugDir } from '../src/conversations-state.mjs';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -30,23 +30,21 @@ function fakePool(scriptedResults) {
 
 const ev = { surface: 'whatsapp', chatId: '!room:beeper.com', chatName: 'SPOILER', line: 'An@[SPOILER].wa (14:05) #m1: hola', body: 'hola' };
 
-function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, loadFeed, loadManifest, loadAutoLayer, seedSession, seedMode, seedReadonly, seedAgents, brains, afterTurn, io, nodeIdentity, seedLayers, resolveConfig, loadPermission } = {}) {
+function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, loadFeed, loadManifest, loadAutoLayer, seedSession, seedMode, seedAgents, brains, afterTurn, io, nodeIdentity, seedLayers, resolveConfig, loadPermission } = {}) {
   let state = emptyState();
-  if (seedSession || seedMode || seedReadonly || seedAgents) {   // pre-register the contact (WITH a stored thread, an E mode, a freeze and/or an operator pin)
+  if (seedSession || seedMode || seedAgents) {   // pre-register the contact (WITH a stored thread, an E mode, and/or per-being pins)
     const ens = ensureContact(state, ev.surface, ev.chatId, { pushedName: ev.chatName, slugHint: ev.chatName });
     state = ens.state;
-    // Seed the persona under its NESTED 'e' block (operator 2026-07-10: the persona is a normal
-    // nested being; the brainpool defaults defaultKey to 'e', so 'e' is the persona here).
+    // Seed the persona's `agents.e` block (phase 1, operator 2026-08-14: the ONE per-being
+    // home — the brainpool defaults defaultKey to 'e', so 'e' is the persona here). There is
+    // no more `readonly` to seed: engine/model/effort/tools always resolve fresh from config.
     if (seedSession) state = recordThread(state, ev.surface, ev.chatId, seedSession, undefined, 'e');
-    if (seedMode) {
-      const prior = getContact(state, ev.surface, ev.chatId)?.entry?.e ?? {};
-      state = patchContact(state, ev.surface, ev.chatId, { e: { ...prior, mode: seedMode } });   // e.g. 'auto'
+    if (seedMode) state = patchBeing(state, ev.surface, ev.chatId, 'e', { mode: seedMode });   // e.g. 'auto'
+    // seedAgents: { <being>: {<fields>}, ... } — one or more beings' agents.<being> blocks,
+    // merged field-wise over anything seedSession/seedMode already wrote.
+    if (seedAgents) {
+      for (const [being, fields] of Object.entries(seedAgents)) state = patchBeing(state, ev.surface, ev.chatId, being, fields);
     }
-    if (seedReadonly) {   // a PREVIOUS instancing left frozen in entry.e.readonly
-      const prior = getContact(state, ev.surface, ev.chatId)?.entry?.e ?? {};
-      state = patchContact(state, ev.surface, ev.chatId, { e: { ...prior, readonly: seedReadonly } });
-    }
-    if (seedAgents) state = patchContact(state, ev.surface, ev.chatId, { agents: seedAgents });   // the operator's per-conversation pin
   }
   const pool = fakePool(scriptedResults);
   const loadState = async () => state;
@@ -108,39 +106,29 @@ describe('brainpool.turn', () => {
     expect(pool.calls[1].brainOptions.sessionId).toBe('sid-1'); // second turn resumes it (arms the re-pin guard)
   });
 
-  // --- brain registry: instance-on-first-turn + freeze ---
-  it('instances the default brain from the registry into readonly, keys by its engine', async () => {
+  // --- brain registry: resolved FRESH every turn (phase 1, operator 2026-08-14 — no more
+  //     per-conversation freeze). The def is never written back into the registry any more;
+  //     these lock what the RUN itself carries. ---
+  it('resolves the default brain from the registry, keys the warm entry by its engine', async () => {
     const brains = { resolve: () => ({ name: 'default', type: 'codex', model: 'gpt-5.4-mini', allowed_tools: 'all' }) };
-    const { brain, pool, getState } = harness([{ text: 'ok', sessionId: 's' }], { brains });
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains });
     await brain.turn('e', ev);
     expect(pool.calls[0].key).toMatch(/^e:codex:whatsapp:SPOILER-\d{10}$/);       // engine from the brain, not hardcoded ccode
     expect(pool.calls[0].brainOptions).toMatchObject({ model: 'gpt-5.4-mini', allowedTools: DEFAULT_ALLOWED_TOOLS });
-    const view = getBeing(getState(), 'whatsapp', '!room:beeper.com', 'e');
-    expect(view.brain).toBe('default');
-    expect(view.brainType).toBe('codex');                                        // frozen into readonly
   });
 
-  it('instancing freezes the def under readonly.agent with CONCRETE model/effort (no null, no brain/personality)', async () => {
-    // def omits effort and has model:null → the snapshot must be deterministic, never null
-    // (operator 2026-07-02: "make it deterministic").
+  it('DETERMINISM: a def with model:null/effort omitted runs on the deterministic fallback, never null (operator 2026-07-02)', async () => {
     const brains = { resolve: () => ({ name: 'default', type: 'ccode', model: null, allowed_tools: 'all' }) };
-    const { brain, getState } = harness([{ text: 'ok', sessionId: 's' }], { brains });
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains });
     await brain.turn('e', ev);
-    const ro = getState().contacts.whatsapp['!room:beeper.com'].e.readonly;   // nested under the persona being (operator 2026-07-10)
-    expect(ro.agent).toBe('default');            // the new key
-    expect('brain' in ro).toBe(false);           // the legacy key is NOT written going forward
-    expect('personality' in ro).toBe(false);     // the retired personality key is NOT written either
-    expect(ro.model).toBe('sonnet');             // deterministic fallback (def.model was null)
-    expect(ro.effort).toBe('high');              // deterministic fallback (def.effort absent)
+    expect(pool.calls[0].brainOptions.model).toBe('sonnet');    // deterministic fallback (def.model was null)
+    expect(pool.calls[0].brainOptions.effort).toBe('high');     // deterministic fallback (def.effort absent)
   });
 
-  it('a type def with concrete model/effort freezes those exact values (fallback only fills the gaps)', async () => {
+  it('a type def with concrete model/effort runs on those exact values (fallback only fills the gaps)', async () => {
     const brains = { resolve: () => ({ name: 'sonnet-high', type: 'ccode', model: 'opus', effort: 'low', allowed_tools: 'all' }) };
-    const { brain, pool, getState } = harness([{ text: 'ok', sessionId: 's' }], { brains });
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains });
     await brain.turn('e', ev);
-    const ro = getState().contacts.whatsapp['!room:beeper.com'].e.readonly;   // nested under the persona being (operator 2026-07-10)
-    expect(ro).toMatchObject({ agent: 'sonnet-high', type: 'ccode', model: 'opus', effort: 'low' });
-    // the SAME resolved values reach the run (snapshot and run always agree)
     expect(pool.calls[0].brainOptions).toMatchObject({ model: 'opus', effort: 'low' });
   });
 
@@ -167,16 +155,14 @@ describe('brainpool.turn', () => {
     expect(seen).toEqual(['custom']);            // the agent-type def's personality, not 'default'
   });
 
-  it('persona agent type (agents block) supplies E\'s fresh-conversation def, resolved through the registry', async () => {
+  it('persona agent type (agents block) supplies E\'s def, resolved through the registry', async () => {
     // the persona agent points at type "sonnet-high"; the registry resolves that type file
     const brains = { resolve: (name) => name === 'sonnet-high' ? ({ name: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'all' }) : null };
     const config = { agents: { egpt: { configuration: 'sonnet-high', handles: ['e', 'egpt'], default: true } } };
-    const { brain, pool, getState } = harness([{ text: 'ok', sessionId: 's' }], { brains, config });
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains, config });
     await brain.turn('e', ev);
     expect(pool.calls[0].key).toMatch(/^e:ccode:whatsapp:SPOILER-\d{10}$/);
     expect(pool.calls[0].brainOptions).toMatchObject({ model: 'sonnet', effort: 'high', allowedTools: DEFAULT_ALLOWED_TOOLS });
-    const view = getBeing(getState(), 'whatsapp', '!room:beeper.com', 'e');
-    expect(view.brain).toBe('sonnet-high');    // instanced from the persona agent configuration
   });
 
   it('persona agent type that does NOT resolve falls through to the shipped "egpt" type', async () => {
@@ -187,57 +173,47 @@ describe('brainpool.turn', () => {
     expect(pool.calls[0].key).toMatch(/:codex:/);   // fell through to the last-resort 'egpt' type (codex)
   });
 
-  it('a re-pointed default does NOT retro-alter an already-instanced conversation', async () => {
+  it('a re-pointed default reaches an already-running conversation on its very next turn (phase 1: no more per-conversation freeze)', async () => {
     let type = 'ccode';
     const brains = { resolve: () => ({ name: 'default', type }) };
     const { brain, pool } = harness([{ text: 'a', sessionId: 's' }, { text: 'b', sessionId: 's' }], { brains });
-    await brain.turn('e', ev);            // instances ccode
+    await brain.turn('e', ev);            // first turn on ccode
     type = 'codex';                       // operator re-points the default
-    await brain.turn('e', ev);            // …but this conv stays frozen on ccode
-    expect(pool.calls[1].key).toMatch(/:ccode:/);
+    await brain.turn('e', ev);            // this SAME live conversation follows — no freeze to retro-alter
+    expect(pool.calls[0].key).toMatch(/:ccode:/);
+    expect(pool.calls[1].key).toMatch(/:codex:/);
   });
 
-  // THREAD-KEYED FRESHNESS (operator 2026-07-25: "deleting the thread-id reloads the config").
-  // `fresh` used to key on the FREEZE, so deleting threadId bought a new claude session running
-  // on the SAME stale frozen model/effort/tools — the gesture half-worked. It keys on the THREAD
-  // now: no thread → re-read the config, re-freeze, and RUN on the re-read values.
+  // ALWAYS FRESH (phase 1, operator 2026-08-14: "engine/model/effort/tools resolve fresh from
+  // config every turn"). The pre-phase-1 "deleting the thread-id reloads the config" ruling is
+  // now just the GENERAL CASE — every turn re-reads config, live thread or brand new one.
   const RE_READ = { resolve: (n) => n === 'sonnet-high'
     ? ({ name: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: ['Read', 'Grep'] }) : null };
   const RE_READ_CFG = { agents: { egpt: { configuration: 'sonnet-high', handles: ['e', 'egpt'], default: true } } };
-  const STALE = { agent: 'stale', type: 'ccode', model: 'haiku', effort: 'low', allowed_tools: ['Read'] };
 
-  it('threadId deleted with the freeze still on disk → the RUN uses the re-read config, and re-freezes', async () => {
-    const { brain, pool, getState } = harness([{ text: 'ok', sessionId: 'sid-new' }], {
-      brains: RE_READ, config: RE_READ_CFG, seedReadonly: STALE, loadFeed: async () => 'I am eGPT.',
+  it('threadId deleted → a NEW session starts, and the run reads the CURRENT config', async () => {
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 'sid-new' }], {
+      brains: RE_READ, config: RE_READ_CFG, loadFeed: async () => 'I am eGPT.',
     });
     await brain.turn('e', ev);
-    // the RUN itself — not just the stored snapshot
     expect(pool.calls[0].brainOptions).toMatchObject({ model: 'sonnet', effort: 'high', allowedTools: ['Read', 'Grep'] });
-    expect(pool.calls[0].brainOptions.sessionId).toBe(null);          // a new claude session, as before
-    // …and the freeze was rewritten from config (the stale one is gone)
-    expect(getState().contacts.whatsapp['!room:beeper.com'].e.readonly)
-      .toMatchObject({ agent: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high' });
-    // the identity kickoff re-injects on this path (it was ALREADY thread-keyed: `if (!sessionId)`)
-    expect(pool.calls[0].message).toContain('I am eGPT.');
+    expect(pool.calls[0].brainOptions.sessionId).toBe(null);          // a new claude session
+    expect(pool.calls[0].message).toContain('I am eGPT.');            // fresh thread → identity kickoff
   });
 
-  it('…and the conversation\'s own agents.<name> pin beats the re-read default on that run', async () => {
-    const { brain, pool, getState } = harness([{ text: 'ok', sessionId: 'sid-new' }], {
-      brains: RE_READ, config: RE_READ_CFG, seedReadonly: STALE, seedAgents: { e: { model: 'opus' } },
+  it('a LIVE (resumed) thread ALSO reads the CURRENT config on every turn — a re-point reaches it immediately, no re-instancing needed', async () => {
+    let model = 'haiku';
+    const brains = { resolve: () => ({ name: 'x', type: 'ccode', model, effort: 'low', allowed_tools: ['Read'] }) };
+    const { brain, pool } = harness([{ text: 'a', sessionId: 'sid' }, { text: 'b', sessionId: 'sid' }], {
+      brains, seedSession: 'sid',
     });
     await brain.turn('e', ev);
-    expect(pool.calls[0].brainOptions).toMatchObject({ model: 'opus', effort: 'high' });   // pin wins on model, config supplies the rest
-    const entry = getState().contacts.whatsapp['!room:beeper.com'];
-    expect(entry.e.readonly).toMatchObject({ agent: 'sonnet-high', model: 'sonnet' });     // the freeze records what CONFIG said
-    expect(entry.agents.e).toEqual({ model: 'opus' });                                     // the operator's block is not machine state
-  });
-
-  it('a LIVE thread still runs on its freeze — a config re-point does NOT retro-alter it', async () => {
-    const { brain, pool } = harness([{ text: 'ok', sessionId: 'sid' }], {
-      brains: RE_READ, config: RE_READ_CFG, seedSession: 'sid', seedReadonly: STALE,
-    });
+    expect(pool.calls[0].brainOptions.model).toBe('haiku');
+    expect(pool.calls[0].brainOptions.sessionId).toBe('sid');   // genuinely resumed, not fresh
+    model = 'opus';                                             // operator edits config.yaml
     await brain.turn('e', ev);
-    expect(pool.calls[0].brainOptions).toMatchObject({ model: 'haiku', effort: 'low' });   // frozen, untouched
+    expect(pool.calls[1].brainOptions.model).toBe('opus');      // the SAME live thread follows the re-point immediately
+    expect(pool.calls[1].brainOptions.sessionId).toBe('sid');   // still the same resumed thread
   });
 
   it('fires the afterTurn hook with the key + final session (auto-compaction trigger)', async () => {
@@ -587,19 +563,17 @@ describe('brainpool.turn — dangerous:true skips coercion + confinement (operat
 //    every turn, independent of the fresh/frozen instancing above — the whole point vs.
 //    the old freeze-into-readonly shape. Persona-only; a sibling turn is untouched. ──
 describe('brainpool.turn — accessLevel override (operator 2026-08-14, /e access)', () => {
-  it("accessLevel 'all' overrides dangerous/allowedTools even on an ALREADY-FROZEN (instanced) thread — no re-freeze needed", async () => {
-    const STALE_RO = { agent: 'sonnet-high', type: 'ccode', model: 'haiku', effort: 'low', allowed_tools: ['Read'] };
-    const { brain, pool, getState } = harness([{ text: 'ok', sessionId: 'sid-live' }], {
-      seedSession: 'sid-live', seedReadonly: STALE_RO, seedAgents: { e: { access_level: 'all' } },
+  it("accessLevel 'all' overrides dangerous/allowedTools on an ALREADY-LIVE (resumed) thread too — applied fresh every turn", async () => {
+    const brains = { resolve: () => ({ name: 'sonnet-high', type: 'ccode', model: 'haiku', effort: 'low', allowed_tools: ['Read'] }) };
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 'sid-live' }], {
+      brains, seedSession: 'sid-live', seedAgents: { e: { access_level: 'all' } },
       loadPermission: (level) => (level === 'all' ? { dangerous: true, allowedTools: ['Read', 'Write', 'Bash', 'Agent'] } : null),
     });
     await brain.turn('e', ev);
     const opts = pool.calls[0].brainOptions;
-    expect(opts.allowedTools).toEqual(['Read', 'Write', 'Bash', 'Agent']);   // the permissions file's grant, not the stale freeze's ['Read']
+    expect(opts.allowedTools).toEqual(['Read', 'Write', 'Bash', 'Agent']);   // the permissions file's grant, not the def's own ['Read']
     expect(opts.confineToDirs).toBeUndefined();                             // dangerous:true → unconfined
-    expect(opts.sessionId).toBe('sid-live');                                // genuinely resumed — this was NOT a fresh/re-instance turn
-    // the readonly freeze itself is UNCHANGED — proves this is a live override, not a re-freeze
-    expect(getState().contacts.whatsapp['!room:beeper.com'].e.readonly).toEqual(STALE_RO);
+    expect(opts.sessionId).toBe('sid-live');                                // genuinely resumed, not a fresh turn
   });
 
   it("accessLevel 'regular' overrides dangerous/allowedTools to a confined grant on a fresh (never-instanced) turn too", async () => {
@@ -737,18 +711,6 @@ function harnessWithLog(logs, brains) {
   });
   return { brain, pool };
 }
-
-describe('getBeing — readonly.agent read (new-config-only)', () => {
-  // readonly lives in the being's NESTED block now (operator 2026-07-10 — the persona 'e' is a
-  // normal nested being; no flat readonly fallback).
-  const mk = (ro) => ({ contacts: { whatsapp: { '!r:beeper.local': { slug: 'x', e: { readonly: ro } } } } });
-  it('resolves the def name from a readonly.agent entry', () => {
-    const v = getBeing(mk({ agent: 'sonnet-high', type: 'ccode' }), 'whatsapp', '!r:beeper.local', 'e');
-    expect(v.brain).toBe('sonnet-high');   // `brain` stays the returned property
-    expect(v.agent).toBe('sonnet-high');   // `agent` is the alias
-    expect(v.brainType).toBe('ccode');
-  });
-});
 
 // THE FRESH MOMENT — what happens when a thread is (re-)instanced, i.e. the operator deleted
 // threadId, /e new ran, or the session died. Two things the brainpool owes that moment:

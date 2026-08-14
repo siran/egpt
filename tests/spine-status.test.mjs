@@ -147,7 +147,7 @@ describe('/status', () => {
 
   it('includes this chat\'s E mode when the contact has one set', async () => {
     let st = ensureContact(emptyState(), 'whatsapp', '!fam:beeper.local', { pushedName: 'fam', slugHint: 'fam' }).state;
-    st = { ...st, contacts: { whatsapp: { '!fam:beeper.local': { ...st.contacts.whatsapp['!fam:beeper.local'], e: { mode: 'mute' } } } } };   // persona mode is nested now (operator 2026-07-10)
+    st = { ...st, contacts: { whatsapp: { '!fam:beeper.local': { ...st.contacts.whatsapp['!fam:beeper.local'], agents: { e: { mode: 'mute' } } } } } };   // persona mode lives in agents.e now (phase 1, 2026-08-14)
     const { cmds, sent } = harness({
       io: { stat: async () => ({ mtimeMs: Date.now() }), readFile: async () => READONLY_YAML },
       gitOut: (args) => (args.includes('--short') ? 'abc1234' : 's'),
@@ -192,7 +192,7 @@ describe('/status <target>', () => {
     expect(sent[0].text).toMatch(/^`\/status`: no chat matches "zzz"/);
   });
 
-  it('a NEVER-STARTED conversation with NO brains registry: default preview falls back to the deterministic constants, marked `instanced: false`', async () => {
+  it('a NEVER-STARTED conversation with NO brains registry: the live def falls back to the deterministic constants', async () => {
     const { state: created } = ensureContact(emptyState(), 'whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' });
     const { cmds, sent } = harness({
       loadState: async () => created,
@@ -207,7 +207,6 @@ describe('/status <target>', () => {
     expect(text).toMatch(/slug: HFM-\d{10}/);
     expect(text).toMatch(/conversation_path: .*conversations\/whatsapp\/HFM-\d{10}/);
     expect(text).toMatch(/mode: mention \(default\)/);   // no per-conv mode set → global default, marked
-    expect(text).toMatch(/instanced: false/);
     expect(text).toMatch(/agent: egpt/);
     expect(text).toMatch(/engine: ccode/);
     expect(text).toMatch(/model: sonnet/);               // DETERMINISTIC_MODEL fallback (no brains registry)
@@ -219,7 +218,7 @@ describe('/status <target>', () => {
     expect(text).not.toMatch(/heartbeats:/);              // omitted, not '?' — matches bare /status's optional `mode` pattern
   });
 
-  it('a NEVER-STARTED conversation WITH a brains registry: previews the resolved default type\'s model/effort/tools/personality', async () => {
+  it('a NEVER-STARTED conversation WITH a brains registry: shows the resolved default type\'s model/effort/tools/personality', async () => {
     const { state: created } = ensureContact(emptyState(), 'whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' });
     const brains = { resolve: (name) => (name === 'egpt' ? { name: 'egpt', type: 'ccode', model: 'opus', effort: 'low', allowed_tools: ['Read'], personality: 'poet' } : null) };
     const { cmds, sent } = harness({
@@ -230,7 +229,6 @@ describe('/status <target>', () => {
 
     await cmds.run({ body: '/status hfm', chatId: '!self', surface: 'whatsapp' });
     const { text } = sent[0];
-    expect(text).toMatch(/instanced: false/);
     expect(text).toMatch(/agent: egpt/);
     expect(text).toMatch(/engine: ccode/);
     expect(text).toMatch(/model: opus/);
@@ -240,13 +238,14 @@ describe('/status <target>', () => {
     expect(text).toMatch(/thread_id: not started/);
   });
 
-  it('an INSTANCED conversation: frozen agent/model/effort/allowed_tools, personality resolved via the brains registry, thread id, and members from the transcript tail', async () => {
+  // PHASE 1 (operator 2026-08-14): there is no more freeze — a conversation with a live
+  // thread shows the SAME live-resolved agent/model/effort/tools/personality a never-started
+  // one does (resolveDefaultBrainDef, the exact function brainpool.mjs's turn() itself calls).
+  // Only thread_id/mode/members reflect this conversation's own history.
+  it('a conversation WITH a thread: real thread_id/mode/members, but agent/model/effort/tools/personality are the LIVE resolved def (no more freeze)', async () => {
     const first = ensureContact(emptyState(), 'whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' });
     const slug = first.slug;
-    // instanced brain + mode + thread in the persona's NESTED block (operator 2026-07-10)
-    let state = patchContact(first.state, 'whatsapp', '!hfm:beeper.local', {
-      e: { mode: 'on', readonly: { agent: 'sonnet-high', type: 'ccode', model: 'opus', effort: 'high', allowed_tools: ['Read'] } },
-    });
+    let state = patchContact(first.state, 'whatsapp', '!hfm:beeper.local', { agents: { e: { mode: 'on' } } });
     state = recordThread(state, 'whatsapp', '!hfm:beeper.local', 'THREAD-1', undefined, 'e');
     const transcript = [
       'An@[HFM].wa (10:00): hola',
@@ -256,11 +255,12 @@ describe('/status <target>', () => {
       'Ron@[HFM].wa (10:02): que tal',
       '',
     ].join('\n');
-    const brains = { resolve: (name) => (name === 'sonnet-high' ? { name, type: 'ccode', model: 'opus', effort: 'high', personality: 'poet' } : null) };
+    const brains = { resolve: (name) => (name === 'sonnet-high' ? { name, type: 'ccode', model: 'opus', effort: 'high', allowed_tools: ['Read'], personality: 'poet' } : null) };
+    const getConfig = () => ({ whatsapp: { chat_id: '!self' }, agents: { egpt: { configuration: 'sonnet-high', handles: ['e', 'egpt'], default: true } } });
 
     const { cmds, sent } = harness({
       loadState: async () => state,
-      brains,
+      brains, getConfig,
       io: { readFile: readFileBySuffix({ 'transcript.md': transcript, 'heartbeats.readonly.yaml': NO_HEARTBEATS }) },
     });
 
@@ -278,21 +278,18 @@ describe('/status <target>', () => {
     expect(text).toMatch(/members: An, @e, Ron/);   // distinct, first-seen order
   });
 
-  it('a resolved type file that omits `personality:` falls back to \'egpt\' (same fallback the brainpool applies)', async () => {
+  it('a resolved type file that omits `personality:` falls back to \'egpt\'; a literal \'all\' is coerced to the explicit list (same as brainpool)', async () => {
     const first = ensureContact(emptyState(), 'whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' });
-    let state = patchContact(first.state, 'whatsapp', '!hfm:beeper.local', {
-      e: { readonly: { agent: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'all' } },
-    });
-    const brains = { resolve: (name) => (name === 'egpt' ? { name, type: 'ccode', model: 'sonnet', effort: 'high' } : null) };   // no personality field
+    const brains = { resolve: (name) => (name === 'egpt' ? { name, type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'all' } : null) };   // no personality field
     const { cmds, sent } = harness({
-      loadState: async () => state,
+      loadState: async () => first.state,
       brains,
       io: { readFile: readFileBySuffix({ 'transcript.md': NO_TRANSCRIPT, 'heartbeats.readonly.yaml': NO_HEARTBEATS }) },
     });
 
     await cmds.run({ body: '/status hfm', chatId: '!self', surface: 'whatsapp' });
     expect(sent[0].text).toMatch(/personality: egpt/);
-    expect(sent[0].text).toMatch(/allowed_tools: all/);
+    expect(sent[0].text).toMatch(/allowed_tools: \[Read, Write, Edit, Glob, Grep, WebSearch, WebFetch, Task\]/);
   });
 
   // `source` is the profile-relative RUNG FILE now (operator ruling 2026-07-26 — every

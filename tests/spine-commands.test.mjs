@@ -8,11 +8,11 @@ import { createCommands } from '../src/spine/commands.mjs';
 import { createSpine } from '../src/spine/spine.mjs';
 import { COMMANDS } from '../src/interpreter.mjs';
 import { Room } from '../src/room-core.mjs';
-import { emptyState, ensureContact, getBeing, getContact, recordThread, patchContact, DEFAULT_ALLOWED_TOOLS, READONLY_ALLOWED_TOOLS } from '../src/conversations-state.mjs';
+import { emptyState, ensureContact, getBeing, getContact, patchContact } from '../src/conversations-state.mjs';
 
-function harness({ config = {}, state = null, agentTypes = ['egpt', 'sonnet-high'], brains, identityLayers = ['default'], io = {}, cdp, launch, clock, resolveConvRoom } = {}) {
+function harness({ config = {}, state = null, brains, io = {}, cdp, launch, clock, resolveConvRoom } = {}) {
   const sent = [], exits = [], rewinds = [], writes = [], evicts = [];
-  const files = {};   // custom-branch authored files (agent-type yaml + identity layer)
+  const files = {};   // any command-authored files (e.g. /room create's config.yaml)
   let st = state;
   // /chrome launch + clock seams: default to a fake that reports "task not registered"
   // and an advancing fake clock, so NO command test ever runs real schtasks or waits real
@@ -29,11 +29,8 @@ function harness({ config = {}, state = null, agentTypes = ['egpt', 'sonnet-high
     writeRewindTarget: (ref) => rewinds.push(ref),
     loadState: state ? async () => st : null,
     writeState: state ? async (s) => { writes.push(s); st = s; } : null,
-    listAgentTypes: () => agentTypes,
-    listIdentityLayers: () => identityLayers,
     brains: brains ?? { resolve: (name) => ({ name, type: 'ccode', allowed_tools: 'all' }) },
     evictWarm: (key) => evicts.push(key),
-    agentsDir: '/agents', identitiesDir: '/identities',
     io: { writeFile: async (p, c) => { files[p] = c; }, mkdir: async () => {}, ...io },
     ...(resolveConvRoom ? { resolveConvRoom } : {}),
   });
@@ -116,15 +113,15 @@ describe('commands.run', () => {
     expect(sent[0].text).toMatch(/E mode here → on/);
   });
 
-  // The other half: a conversation that has never used the new shape keeps writing the old
-  // block, and no `agents:` key is invented for it (nothing migrates).
-  it('/e auto <mode> on an old-shape conversation still writes entry[<being>] — no agents: block invented', async () => {
+  // Phase 1 (operator 2026-08-14): there is only ONE destination now — every write lands in
+  // agents.<being>, first write included, whether or not the conversation ever used it before.
+  it('/e auto <mode> on a never-before-touched conversation writes into agents.<being> — the only destination now', async () => {
     const state = ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state;
     const { cmds, getState } = harness({ state });
     await cmds.run({ body: '/e auto on', chatId: '!room', surface: 'whatsapp' });
     const entry = getState().contacts.whatsapp['!room'];
-    expect(entry.e.mode).toBe('on');
-    expect(entry.agents).toBeUndefined();
+    expect(entry.agents.e.mode).toBe('on');
+    expect(entry.e).toBeUndefined();   // no pre-phase-1 entry[<being>] block is ever written
   });
 
   it('/e auto <bad> is rejected and leaves the mode unchanged', async () => {
@@ -200,11 +197,13 @@ describe('/e reset — archive + registry wipe + reseed, one shared path for roo
 
   function seedResetState(surface, jid, ctx) {
     let state = ensureContact(emptyState(), surface, jid, ctx).state;
-    // E has a prior thread + hand-set mode, pinned harder by an `agents.e` override — and a
-    // SIBLING being (d) has its own override, which must SURVIVE the reset untouched.
+    // E has a prior thread + hand-set mode + an access_level pin — and a SIBLING being (d)
+    // has its own block, which must SURVIVE the reset untouched.
     state = patchContact(state, surface, jid, {
-      e: { mode: 'on', threadId: 'thread-abc', threadCreatedAt: '2026-08-01T00:00:00Z', readonly: { model: 'sonnet' } },
-      agents: { e: { mode: 'mention' }, d: { mode: 'on' } },
+      agents: {
+        e: { mode: 'mention', threadId: 'thread-abc', threadCreatedAt: '2026-08-01T00:00:00Z', access_level: 'all' },
+        d: { mode: 'on' },
+      },
     });
     return state;
   }
@@ -242,7 +241,7 @@ describe('/e reset — archive + registry wipe + reseed, one shared path for roo
       expect(sent[0].text).not.toMatch(/recognized/);
     });
 
-    it(`wipes E's registry state (threadId/mode/readonly all gone) but leaves a SIBLING being's override untouched — ${label}`, async () => {
+    it(`wipes E's registry state (threadId/mode/access_level all gone) but leaves a SIBLING being's block untouched — ${label}`, async () => {
       const state = seedResetState(surface, jid, ctx);
       const before = getContact(state, surface, jid).entry;
       const { cmds, getState } = harness({
@@ -256,9 +255,9 @@ describe('/e reset — archive + registry wipe + reseed, one shared path for roo
       expect(eAfter.present).toBe(false);
       expect(eAfter.threadId).toBeNull();
       expect(eAfter.mode).toBeNull();
-      expect(eAfter.model).toBeNull();
+      expect(eAfter.accessLevel).toBeNull();
 
-      // a sibling being's own override survives, untouched
+      // a sibling being's own block survives, untouched
       expect(getBeing(reloaded, surface, jid, 'd').mode).toBe('on');
 
       // the contact-level pointers (slug/conversation_path/pushedName/home_dir) are
@@ -297,7 +296,7 @@ describe('/e reset — archive + registry wipe + reseed, one shared path for roo
     expect(writes).toHaveLength(0);
   });
 
-  it('/e reset and /egpt reset are recognized case-insensitively, before the eWiz catch-all', async () => {
+  it('/e reset and /egpt reset are recognized case-insensitively, before the bare-/e usage catch-all', async () => {
     for (const body of ['/e reset', '/E RESET', '/egpt reset', '/EGPT Reset']) {
       const state = seedResetState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
       const { cmds, sent } = harness({
@@ -315,11 +314,12 @@ describe('/e reset — archive + registry wipe + reseed, one shared path for roo
 // force, no extra reachability gate) that points the CURRENT conversation's
 // `access_level` at config/permissions/all.md or config/permissions/regular.md (bare,
 // self-only — same calling convention as /e reset). NOT a freeze (operator 2026-08-14):
-// unlike the old code, this must NOT touch agent/type/model/effort/allowedTools at all —
-// those stay exactly whatever they were before the command ran. brainpool.mjs applies the
+// it writes ONLY the access_level field, merged over the being's existing agents.<being>
+// block — mode/threadId survive untouched. Agent/type/model/effort/allowed_tools are no
+// longer readable off a being AT ALL (phase 1: no more freeze) — brainpool.mjs applies the
 // permissions file live, every turn; that live-application is covered in
 // tests/spine-brainpool.test.mjs, not here — this file only proves the command writes the
-// right field to the right place and leaves everything else alone.
+// right field to the right place and leaves mode/threadId alone.
 describe('/e access all|regular — points access_level at a permissions file, no freeze, one shared path for rooms and ordinary conversations', () => {
   const cases = [
     { label: 'a room-surface conversation', surface: 'room', jid: 'acim', ctx: {} },
@@ -328,46 +328,34 @@ describe('/e access all|regular — points access_level at a permissions file, n
 
   function seedAccessState(surface, jid, ctx) {
     let state = ensureContact(emptyState(), surface, jid, ctx).state;
-    // A prior thread + hand-set mode + an already-instanced readonly freeze must ALL
-    // SURVIVE — the contrast with /e reset (deleteBeing, wipes everything), and proof
-    // that /e access no longer touches agent/type/model/effort/allowedTools at all.
+    // A prior thread + hand-set mode must SURVIVE — the contrast with /e reset (deleteBeing,
+    // wipes everything), and proof that /e access touches ONLY access_level.
     return patchContact(state, surface, jid, {
-      e: {
-        mode: 'on', threadId: 'thread-abc', threadCreatedAt: '2026-08-01T00:00:00Z',
-        readonly: { agent: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: ['Read', 'Edit'] },
-      },
+      agents: { e: { mode: 'on', threadId: 'thread-abc', threadCreatedAt: '2026-08-01T00:00:00Z' } },
     });
   }
 
   for (const { label, surface, jid, ctx } of cases) {
-    it(`/e access all sets accessLevel: 'all' and leaves agent/type/model/effort/allowedTools untouched — ${label}`, async () => {
+    it(`/e access all sets accessLevel: 'all' and leaves mode/threadId untouched — ${label}`, async () => {
       const state = seedAccessState(surface, jid, ctx);
-      const before = getBeing(state, surface, jid, 'e');
       const { cmds, sent, getState } = harness({ state });
       await cmds.run({ chatId: jid, surface, body: '/e access all' });
       const being = getBeing(getState(), surface, jid, 'e');
       expect(being.accessLevel).toBe('all');
-      expect(being.agent).toBe(before.agent);
-      expect(being.brainType).toBe(before.brainType);
-      expect(being.model).toBe(before.model);
-      expect(being.effort).toBe(before.effort);
-      expect(being.allowedTools).toEqual(before.allowedTools);
+      expect(being.mode).toBe('on');
+      expect(being.threadId).toBe('thread-abc');
       expect(sent[0].text).toMatch(new RegExp(`${jid === 'acim' ? 'acim' : 'diego'}.*access.*all`));
       expect(sent[0].text).toMatch(/unconfined/);
     });
 
-    it(`/e access regular sets accessLevel: 'regular' and leaves agent/type/model/effort/allowedTools untouched — ${label}`, async () => {
+    it(`/e access regular sets accessLevel: 'regular' and leaves mode/threadId untouched — ${label}`, async () => {
       const state = seedAccessState(surface, jid, ctx);
-      const before = getBeing(state, surface, jid, 'e');
       const { cmds, sent, getState } = harness({ state });
       await cmds.run({ chatId: jid, surface, body: '/e access regular' });
       const being = getBeing(getState(), surface, jid, 'e');
       expect(being.accessLevel).toBe('regular');
-      expect(being.agent).toBe(before.agent);
-      expect(being.brainType).toBe(before.brainType);
-      expect(being.model).toBe(before.model);
-      expect(being.effort).toBe(before.effort);
-      expect(being.allowedTools).toEqual(before.allowedTools);
+      expect(being.mode).toBe('on');
+      expect(being.threadId).toBe('thread-abc');
       expect(sent[0].text).toMatch(/access.*regular/);
       expect(sent[0].text).toMatch(/confined default tools/);
     });
@@ -389,7 +377,7 @@ describe('/e access all|regular — points access_level at a permissions file, n
     });
   }
 
-  it('/e access evicts the warm session keyed on the CURRENTLY-INSTANCED engine (not a re-resolved one)', async () => {
+  it('/e access evicts the warm session keyed on the FRESH-resolved engine (resolveDefaultBrainDef, same function turn() calls)', async () => {
     const state = seedAccessState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
     const { cmds, evicts, getState } = harness({ state });
     await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/e access all' });
@@ -397,7 +385,7 @@ describe('/e access all|regular — points access_level at a permissions file, n
     expect(evicts).toEqual([`e:ccode:whatsapp:${slug}`]);
   });
 
-  it('/e access <bad> and bare /e access get the usage reply — not silence, not the wizard fallthrough', async () => {
+  it('/e access <bad> and bare /e access get the usage reply — not silence, not a wizard fallthrough', async () => {
     for (const body of ['/e access foo', '/e access']) {
       const state = seedAccessState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
       const { cmds, sent } = harness({ state });
@@ -407,7 +395,7 @@ describe('/e access all|regular — points access_level at a permissions file, n
     }
   });
 
-  it('/e access and /egpt access are recognized case-insensitively, before the eWiz catch-all', async () => {
+  it('/e access and /egpt access are recognized case-insensitively, before the bare-/e usage catch-all', async () => {
     for (const body of ['/e access all', '/E ACCESS ALL', '/egpt access regular', '/EGPT Access Regular']) {
       const state = seedAccessState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
       const { cmds, sent } = harness({ state });
@@ -495,330 +483,41 @@ describe('loop intercept', () => {
   });
 });
 
-describe('/e wizard', () => {
+// The re-point WIZARD that used to arm on bare `/e`/`/e <fragment>` is retired (operator
+// 2026-08-14, phase 1): there is no more per-conversation freeze for it to configure —
+// engine/model/effort/tools now always resolve fresh from config.yaml every turn
+// (brainpool.mjs's resolveDefaultBrainDef). Bare `/e`/`/egpt`, or either followed by anything
+// that isn't `auto`/`reset`/`access`, now gets a plain usage reply instead of arming anything.
+describe('bare /e — usage reply, no wizard to arm', () => {
   const contact = () => ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state;
 
-  it('/e (bare) arms the wizard here and posts the first (agent-type) prompt', async () => {
-    const { cmds, sent } = harness({ state: contact() });
-    const ev = { chatId: '!room', surface: 'whatsapp', authorized: true };
-    await cmds.run({ ...ev, body: '/e' });
-    expect(sent[0].text).toMatch(/reconfigure «fam»/);
-    expect(sent[0].text).toMatch(/1\/1  agent type\?/);   // existing pick = 1 step
-    expect(sent[0].text).toMatch(/1\) egpt/);
-    // armed → a plain pick from the operator now gets first refusal…
-    expect(cmds.isCommand({ ...ev, body: '1' })).toBe(true);
-    // …but a non-operator's message in the same chat never routes to it.
-    expect(cmds.isCommand({ chatId: '!room', surface: 'whatsapp', body: '1' })).toBe(false);
-  });
-
-  it('picking an existing type applies IMMEDIATELY with its pinned model/effort, freezes readonly (threadId preserved), evicts warm', async () => {
-    let state = contact();
-    // existing context, seeded in the persona's NESTED block (operator 2026-07-10): readonly
-    // first, then recordThread MERGES the thread in so both survive.
-    state = patchContact(state, 'whatsapp', '!room', { e: { readonly: { agent: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'all' } } });
-    state = recordThread(state, 'whatsapp', '!room', 'THREAD-1', undefined, 'e');
-    const brains = { resolve: (name) => ({ name, type: 'ccode', model: 'opus', effort: 'high', allowed_tools: ['Read'] }) };
-    const { cmds, sent, evicts, getState } = harness({ state, brains });
-    const ev = { chatId: '!room', surface: 'whatsapp', authorized: true };
-    await cmds.run({ ...ev, body: '/e' });   // arm
-    await cmds.run({ ...ev, body: '2' });    // type → sonnet-high → applies immediately (pinned opus/high)
-    const b = getBeing(getState(), 'whatsapp', '!room', 'e');
-    expect(b).toMatchObject({ agent: 'sonnet-high', brainType: 'ccode', model: 'opus', effort: 'high' });
-    expect(b.allowedTools).toEqual(['Read']);
-    expect(b.threadId).toBe('THREAD-1');                       // re-point keeps the thread
-    expect(evicts).toEqual([`e:ccode:whatsapp:${b.slug}`]);    // old-engine-keyed warm entry dropped
-    expect(sent.at(-1).text).toMatch(/«fam» → sonnet-high · opus\/high/);   // pushedName, not the slug
-  });
-
-  it('picking a type that omits model/effort applies the deterministic floor (sonnet/high)', async () => {
-    const brains = { resolve: (name) => ({ name, type: 'ccode', allowed_tools: 'all' }) };   // no model/effort pinned
-    const { cmds, sent, getState } = harness({ state: contact(), brains });
-    const ev = { chatId: '!room', surface: 'whatsapp', authorized: true };
-    await cmds.run({ ...ev, body: '/e' });   // arm
-    await cmds.run({ ...ev, body: '1' });    // type → egpt → applies immediately (floor)
-    expect(getBeing(getState(), 'whatsapp', '!room', 'e')).toMatchObject({ agent: 'egpt', model: 'sonnet', effort: 'high' });
-    expect(sent.at(-1).text).toMatch(/«fam» → egpt · sonnet\/high/);
-  });
-
-  it('a picked type file that says allowed_tools: all is coerced to the explicit default list before freezing, never written as \'all\'', async () => {
-    const brains = { resolve: (name) => ({ name, type: 'ccode', allowed_tools: 'all' }) };
-    const { cmds, getState } = harness({ state: contact(), brains });
-    const ev = { chatId: '!room', surface: 'whatsapp', authorized: true };
-    await cmds.run({ ...ev, body: '/e' });
-    await cmds.run({ ...ev, body: '1' });
-    expect(getBeing(getState(), 'whatsapp', '!room', 'e').allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);
-  });
-
-  it('/e <fragment> resolves the target chat (like /e auto) and writes THERE, not the Self DM', async () => {
-    const state = ensureContact(emptyState(), 'whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' }).state;
-    const { cmds, sent, getState } = harness({ state, config: { whatsapp: { chat_id: '!self' } } });
-    const ev = { chatId: '!self', surface: 'whatsapp' };   // typed in the Self DM
-    await cmds.run({ ...ev, body: '/e hfm' });
-    expect(sent[0].text).toMatch(/reconfigure «HFM»/i);
-    await cmds.run({ ...ev, body: '1' });   // type → egpt → applies immediately (deterministic floor)
-    expect(getBeing(getState(), 'whatsapp', '!hfm:beeper.local', 'e')).toMatchObject({ agent: 'egpt', model: 'sonnet', effort: 'high' });
-    expect(getBeing(getState(), 'whatsapp', '!self', 'e')).toBe(null);   // Self DM untouched
-  });
-
-  it('/e <cross-surface target> arms + applies to the TELEGRAM conversation (initWizard/buildResult surface threading)', async () => {
-    const state = ensureContact(emptyState(), 'telegram', '!miss:something', { pushedName: 'Miss Xinyi', slugHint: 'miss-xinyi' }).state;
-    const { cmds, sent, getState } = harness({ state, config: { whatsapp: { chat_id: '!self' } } });
-    const ev = { chatId: '!self', surface: 'whatsapp' };   // typed in the whatsapp Self DM
-    await cmds.run({ ...ev, body: '/e miss' });            // arm — target resolved cross-surface onto telegram
-    expect(sent[0].text).toMatch(/reconfigure «Miss Xinyi»/i);
-    await cmds.run({ ...ev, body: '1' });                  // type → egpt → applies immediately (deterministic floor)
-    expect(getBeing(getState(), 'telegram', '!miss:something', 'e')).toMatchObject({ agent: 'egpt', model: 'sonnet', effort: 'high' });
-    expect(getBeing(getState(), 'whatsapp', '!self', 'e')).toBe(null);   // Self DM (operator chat) untouched
-  });
-
-  it('x cancels an armed wizard (nothing written, no longer armed)', async () => {
+  it('/e (bare) replies with usage — nothing armed, nothing written', async () => {
     const { cmds, sent, writes } = harness({ state: contact() });
     const ev = { chatId: '!room', surface: 'whatsapp', authorized: true };
     await cmds.run({ ...ev, body: '/e' });
-    await cmds.run({ ...ev, body: 'x' });
-    expect(sent.at(-1).text).toMatch(/cancelled/);
+    expect(sent[0].text).toBe('usage: /e auto <mode> [chat] | /e reset | /e access all|regular');
     expect(writes).toHaveLength(0);
-    expect(cmds.isCommand({ ...ev, body: '1' })).toBe(false);
+    // a plain follow-up message is NOT claimed as a command (nothing was armed)
+    expect(cmds.isCommand({ chatId: '!room', surface: 'whatsapp', body: '1', authorized: true })).toBe(false);
   });
 
-  it('b steps back to the previous question (in the custom branch, the only multi-step path)', async () => {
-    const { cmds, sent } = harness({ state: contact() });   // agentTypes [egpt, sonnet-high] → tools = 3, custom = option 4
+  it('/e <fragment> and /egpt <fragment> get the same usage reply, not a target-resolution wizard', async () => {
+    const { cmds, sent } = harness({ state: contact() });
     const ev = { chatId: '!room', surface: 'whatsapp', authorized: true };
-    await cmds.run({ ...ev, body: '/e' });   // step 1 (type) — "1/1"
-    await cmds.run({ ...ev, body: '4' });    // custom → step 2 (model) "2/5"
-    expect(sent.at(-1).text).toMatch(/2\/5  model\?/);
-    await cmds.run({ ...ev, body: 'b' });    // back → step 1 type (mode still custom → "1/5")
-    expect(sent.at(-1).text).toMatch(/1\/5  agent type\?/);
+    await cmds.run({ ...ev, body: '/e hfm' });
+    expect(sent[0].text).toBe('usage: /e auto <mode> [chat] | /e reset | /e access all|regular');
+    await cmds.run({ ...ev, body: '/egpt whatever' });
+    expect(sent[1].text).toBe('usage: /e auto <mode> [chat] | /e reset | /e access all|regular');
   });
 
-  it('an armed wizard expires after its 5-min TTL (inert, not stepped)', async () => {
-    const { cmds, writes } = harness({ state: contact() });
-    const ev = { chatId: '!room', surface: 'whatsapp', authorized: true };
-    vi.useFakeTimers();
-    try {
-      vi.setSystemTime(new Date('2026-07-03T00:00:00Z'));
-      await cmds.run({ ...ev, body: '/e' });                     // armed at T0
-      vi.setSystemTime(new Date('2026-07-03T00:06:00Z'));        // +6 min > 5-min TTL
-      expect(cmds.isCommand({ ...ev, body: '1' })).toBe(false);  // expired → not a command
-      await cmds.run({ ...ev, body: '1' });                      // stepping does nothing
-      expect(writes).toHaveLength(0);
-    } finally { vi.useRealTimers(); }
-  });
-
-  it('a non-operator message never steps or cancels an armed wizard', async () => {
-    const { cmds } = harness({ state: contact() });
-    const op = { chatId: '!room', surface: 'whatsapp', authorized: true };
-    await cmds.run({ ...op, body: '/e' });   // armed
-    const stranger = { chatId: '!room', surface: 'whatsapp' };
-    expect(cmds.isCommand({ ...stranger, body: '2' })).toBe(false);
-    expect(cmds.isCommand({ ...stranger, body: 'x' })).toBe(false);
-    expect(cmds.isCommand({ ...op, body: '2' })).toBe(true);   // still armed for the operator
-  });
-
-  it('lists only agent types that resolve (an all-comments/unknown type is dropped)', async () => {
-    const brains = { resolve: (name) => (name === 'egpt' ? { name, type: 'ccode', allowed_tools: 'all' } : null) };
-    const { cmds, sent } = harness({ state: contact(), agentTypes: ['egpt', 'sonnet-high'], brains });
-    await cmds.run({ body: '/e', chatId: '!room', surface: 'whatsapp', authorized: true });
-    expect(sent[0].text).toMatch(/1\) egpt/);
-    expect(sent[0].text).not.toMatch(/sonnet-high/);   // unresolvable → not offered
-  });
-
-  it('/e auto is NOT intercepted by the wizard arming', async () => {
+  it('/e auto, /e reset, and /e access are NOT swallowed by the bare-/e catch-all', async () => {
     const { cmds, sent, getState } = harness({ state: contact() });
     await cmds.run({ body: '/e auto on', chatId: '!room', surface: 'whatsapp' });
     expect(getBeing(getState(), 'whatsapp', '!room', 'e').mode).toBe('on');
     expect(sent[0].text).toMatch(/E mode here → on/);
-    expect(sent[0].text).not.toMatch(/reconfigure/);
+    expect(sent[0].text).not.toMatch(/usage:/);
   });
 });
-
-describe('/e wizard: structured-yaml view + custom branch', () => {
-  const contact = () => ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state;
-  const ev = { chatId: '!room', surface: 'whatsapp', authorized: true };
-
-  it('step 1 renders each type\'s composition inline and offers custom last', async () => {
-    const brains = { resolve: (name) => (name === 'egpt' ? { name, type: 'ccode', model: 'sonnet', effort: 'high', personality: 'default' } : null) };
-    const { cmds, sent } = harness({ state: contact(), agentTypes: ['egpt', 'sonnet-high'], brains });
-    await cmds.run({ ...ev, body: '/e' });
-    const p = sent[0].text;
-    expect(p).toMatch(/1\) egpt:/);
-    expect(p).toMatch(/model: sonnet/);
-    expect(p).toMatch(/effort: high/);
-    expect(p).toMatch(/personality: default/);
-    expect(p).not.toMatch(/sonnet-high/);    // unresolvable → dropped
-    expect(p).toMatch(/2\) tools:/);         // tools before custom
-    expect(p).toMatch(/3\) custom:/);        // custom last (only egpt resolved)
-  });
-
-  it('custom branch (free-text personality): writes the type file + identity layer, freezes readonly, evicts', async () => {
-    let state = contact();
-    state = recordThread(state, 'whatsapp', '!room', 'THREAD-1', undefined, 'e');   // existing context to preserve (nested persona thread)
-    const { cmds, sent, evicts, writes, files, getState } = harness({ state, agentTypes: ['egpt'], identityLayers: ['default', 'secretary'] });
-    await cmds.run({ ...ev, body: '/e' });          // arm — configs [egpt] + tools = option 2, custom = option 3
-    await cmds.run({ ...ev, body: '3' });           // custom → model step
-    await cmds.run({ ...ev, body: '2' });           // model → sonnet
-    await cmds.run({ ...ev, body: '3' });           // effort → high
-    // personality step: [default, secretary] + describe it = option 3
-    await cmds.run({ ...ev, body: '3' });           // describe it → free capture
-    await cmds.run({ ...ev, body: 'You are a terse ops bot.' });   // free text → name step
-    await cmds.run({ ...ev, body: 'Ops Bot' });     // name (sanitized → ops-bot) → done
-
-    // type file written with the right shape
-    const typeFile = files[join('/agents', 'ops-bot.yaml')];
-    expect(typeFile).toBeTruthy();
-    expect(typeFile).toMatch(/type: ccode/);
-    expect(typeFile).toMatch(/model: sonnet/);
-    expect(typeFile).toMatch(/effort: high/);
-    expect(typeFile).toMatch(/personality: ops-bot/);   // free text → layer named after the type
-    // identity layer written as a FLAT file (JUST the instructions, no comment header)
-    const layer = files[join('/identities', 'ops-bot.md')];
-    expect(layer).toBe('You are a terse ops bot.\n');
-    // applied to the conversation exactly like an existing-type pick
-    const b = getBeing(getState(), 'whatsapp', '!room', 'e');
-    expect(b).toMatchObject({ agent: 'ops-bot', brainType: 'ccode', model: 'sonnet', effort: 'high' });
-    expect(b.allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);
-    expect(b.threadId).toBe('THREAD-1');            // re-point keeps the thread
-    expect(evicts).toEqual([`e:ccode:whatsapp:${b.slug}`]);
-    expect(writes.length).toBe(1);
-    expect(sent.at(-1).text).toMatch(/new type created/);
-    expect(sent.at(-1).text).toMatch(/ops-bot · sonnet\/high/);
-  });
-
-  it('custom branch (existing personality layer): no identity file, type file names the picked layer', async () => {
-    const { cmds, files } = harness({ state: contact(), agentTypes: ['egpt'], identityLayers: ['default', 'poet'] });
-    await cmds.run({ ...ev, body: '/e' });
-    await cmds.run({ ...ev, body: '3' });   // custom
-    await cmds.run({ ...ev, body: '1' });   // model → haiku
-    await cmds.run({ ...ev, body: '1' });   // effort → low
-    await cmds.run({ ...ev, body: '2' });   // personality → poet (option 2, not free text)
-    await cmds.run({ ...ev, body: 'bard' }); // name → done
-    expect(files[join('/agents', 'bard.yaml')]).toMatch(/personality: poet/);
-    expect(files[join('/identities', 'bard.md')]).toBeUndefined();   // no free-text layer authored
-  });
-
-  it('custom branch: the personality step lists the seeded layers + a free-text option', async () => {
-    const { cmds, sent } = harness({ state: contact(), agentTypes: ['egpt'], identityLayers: ['default', 'secretary', 'poet'] });
-    await cmds.run({ ...ev, body: '/e' });
-    await cmds.run({ ...ev, body: '3' });   // custom
-    await cmds.run({ ...ev, body: '1' });   // model
-    await cmds.run({ ...ev, body: '1' });   // effort → personality step
-    const p = sent.at(-1).text;
-    expect(p).toMatch(/personality\?/);
-    expect(p).toMatch(/default/);
-    expect(p).toMatch(/secretary/);
-    expect(p).toMatch(/poet/);
-    expect(p).toMatch(/describe it \(free text\)/);
-  });
-
-  it('custom branch: a name colliding with an existing type re-prompts, then accepts a fresh one', async () => {
-    const { cmds, sent, files } = harness({ state: contact(), agentTypes: ['egpt', 'sonnet-high'], identityLayers: ['default'] });
-    await cmds.run({ ...ev, body: '/e' });
-    await cmds.run({ ...ev, body: '4' });   // custom (2 types + tools + custom = option 4)
-    await cmds.run({ ...ev, body: '2' });   // model
-    await cmds.run({ ...ev, body: '3' });   // effort
-    await cmds.run({ ...ev, body: '1' });   // personality → default
-    await cmds.run({ ...ev, body: 'egpt' }); // name taken
-    expect(sent.at(-1).text).toMatch(/name taken/);
-    expect(files[join('/agents', 'egpt.yaml')]).toBeUndefined();   // nothing written on collision
-    await cmds.run({ ...ev, body: 'fresh-type' });         // ok → done
-    expect(files[join('/agents', 'fresh-type.yaml')]).toMatch(/type: ccode/);
-    expect(sent.at(-1).text).toMatch(/new type created/);
-  });
-});
-
-describe('/e wizard: tools branch', () => {
-  const ev = { chatId: '!room', surface: 'whatsapp', authorized: true };
-  const instanced = (tools) => {
-    let state = ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state;
-    // instanced brain + thread in the persona's NESTED block (operator 2026-07-10): readonly
-    // first, then recordThread MERGES the thread so both survive.
-    state = patchContact(state, 'whatsapp', '!room', { e: { readonly: { agent: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: tools } } });
-    return recordThread(state, 'whatsapp', '!room', 'THREAD-1', undefined, 'e');
-  };
-
-  it('the CFG_STEP menu offers "tools" (never "all") and arming reaches it via bare /e', async () => {
-    const { cmds, sent } = harness({ state: instanced(['Read']), agentTypes: ['egpt'] });
-    await cmds.run({ ...ev, body: '/e' });
-    expect(sent[0].text).toMatch(/2\) tools:/);
-    expect(sent[0].text).not.toMatch(/\ball\b/i);
-  });
-
-  it('/e <fragment> also reaches the tools branch', async () => {
-    const state = ensureContact(instanced(['Read']), 'whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' }).state;
-    const { cmds, sent } = harness({ state, agentTypes: ['egpt'], config: { whatsapp: { chat_id: '!self' } } });
-    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/e hfm' });
-    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '2' });   // tools
-    expect(sent.at(-1).text).toMatch(/2\/2  tools\?/);
-  });
-
-  it('"default" (1) freezes DEFAULT_ALLOWED_TOOLS, keeps agent/model/effort + threadId, evicts warm', async () => {
-    const { cmds, sent, evicts, getState } = harness({ state: instanced(['Read']), agentTypes: ['egpt'] });
-    await cmds.run({ ...ev, body: '/e' });
-    await cmds.run({ ...ev, body: '2' });   // tools
-    await cmds.run({ ...ev, body: '1' });   // default
-    const b = getBeing(getState(), 'whatsapp', '!room', 'e');
-    expect(b).toMatchObject({ agent: 'egpt', brainType: 'ccode', model: 'sonnet', effort: 'high', threadId: 'THREAD-1' });
-    expect(b.allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);
-    expect(evicts).toEqual([`e:ccode:whatsapp:${b.slug}`]);
-    expect(sent.at(-1).text).toMatch(/«fam» tools → \[Read, Write, Edit, Glob, Grep, WebSearch, WebFetch, Task\]/);
-  });
-
-  it('"read-only" (2) freezes READONLY_ALLOWED_TOOLS', async () => {
-    const { cmds, getState } = harness({ state: instanced(['Read']), agentTypes: ['egpt'] });
-    await cmds.run({ ...ev, body: '/e' });
-    await cmds.run({ ...ev, body: '2' });   // tools
-    await cmds.run({ ...ev, body: '2' });   // read-only
-    expect(getBeing(getState(), 'whatsapp', '!room', 'e').allowedTools).toEqual(READONLY_ALLOWED_TOOLS);
-  });
-
-  it('"keep current" (3) preserves the exact live list untouched', async () => {
-    const { cmds, getState } = harness({ state: instanced(['Read', 'Bash(git:*)']), agentTypes: ['egpt'] });
-    await cmds.run({ ...ev, body: '/e' });
-    await cmds.run({ ...ev, body: '2' });   // tools
-    await cmds.run({ ...ev, body: '3' });   // keep current
-    expect(getBeing(getState(), 'whatsapp', '!room', 'e').allowedTools).toEqual(['Read', 'Bash(git:*)']);
-  });
-
-  it('"keep current" on a legacy allowed_tools: all self-heals to the explicit default — never re-freezes \'all\'', async () => {
-    const { cmds, getState } = harness({ state: instanced('all'), agentTypes: ['egpt'] });
-    await cmds.run({ ...ev, body: '/e' });
-    await cmds.run({ ...ev, body: '2' });   // tools
-    await cmds.run({ ...ev, body: '3' });   // keep current
-    expect(getBeing(getState(), 'whatsapp', '!room', 'e').allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);
-  });
-
-  it('custom (4) free text freezes exactly the validated list typed', async () => {
-    const { cmds, getState } = harness({ state: instanced(['Read']), agentTypes: ['egpt'] });
-    await cmds.run({ ...ev, body: '/e' });
-    await cmds.run({ ...ev, body: '2' });   // tools
-    await cmds.run({ ...ev, body: '4' });   // custom
-    await cmds.run({ ...ev, body: 'Read Grep WebFetch Bash(yt-dlp:*)' });
-    expect(getBeing(getState(), 'whatsapp', '!room', 'e').allowedTools).toEqual(['Read', 'Grep', 'WebFetch', 'Bash(yt-dlp:*)']);
-  });
-
-  it('custom free text rejects a bare Bash — re-prompts, wizard stays armed, nothing written', async () => {
-    const { cmds, sent, writes } = harness({ state: instanced(['Read']), agentTypes: ['egpt'] });
-    await cmds.run({ ...ev, body: '/e' });
-    await cmds.run({ ...ev, body: '2' });   // tools
-    await cmds.run({ ...ev, body: '4' });   // custom
-    await cmds.run({ ...ev, body: 'Read Bash' });
-    expect(sent.at(-1).text).toMatch(/bare "Bash" isn't allowed/);
-    expect(writes).toHaveLength(0);
-    expect(cmds.isCommand({ ...ev, body: '1' })).toBe(true);   // still armed
-  });
-
-  it('a never-instanced conversation picking tools + default falls back to the deterministic floor', async () => {
-    const { cmds, getState } = harness({ state: contact(), agentTypes: ['egpt'] });
-    await cmds.run({ ...ev, body: '/e' });
-    await cmds.run({ ...ev, body: '2' });   // tools
-    await cmds.run({ ...ev, body: '1' });   // default
-    expect(getBeing(getState(), 'whatsapp', '!room', 'e')).toMatchObject({ agent: 'egpt', model: 'sonnet', effort: 'high' });
-  });
-});
-
-function contact() {
-  return ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state;
-}
 
 // /chrome <node> — ATTACH-ONLY Chrome status, answered ONLY by the addressed node.
 // The CDP seam is injected everywhere here: these tests never reach a real Chrome

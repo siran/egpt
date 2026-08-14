@@ -57,7 +57,7 @@ describe('gating dispatch: — send_to_egpt global default (canonical) with what
   it('the PER-CONVERSATION override still beats the dispatch global (precedence unchanged)', async () => {
     let state = emptyState();
     state = ensureContact(state, 'whatsapp', '!room:beeper.com', { pushedName: 'fam', slugHint: 'fam' }).state;
-    state.contacts.whatsapp['!room:beeper.com'].e = { mode: 'on', send_to_egpt: 'always' };
+    state.contacts.whatsapp['!room:beeper.com'].agents = { e: { mode: 'on', send_to_egpt: 'always' } };
     const g = createGating({
       getConfig: () => ({ dispatch: { send_to_egpt: 'mode', auto_default_mode: 'on' } }),
       loadState: async () => state,

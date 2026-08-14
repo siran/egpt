@@ -420,10 +420,12 @@ export function createSpine({
     //
     // FIRST of all the dispatch branches (moved above the command intercept 2026-07-25): the
     // safe-word is the operator's RECOVERY path and must always land. An armed `/e` wizard
-    // makes isCommand true for ANY operator line (a plain numbered answer), so a bare STOP
-    // typed while a wizard happened to be armed was swallowed by the wizard — leaving kill-
-    // the-service as the only way out of a flood. STOP/RESUME are reserved words, never
-    // wizard answers.
+    // used to make isCommand true for ANY operator line (a plain numbered answer), so a bare
+    // STOP typed while a wizard happened to be armed was swallowed by the wizard — leaving
+    // kill-the-service as the only way out of a flood. The wizard itself is retired
+    // (2026-08-14), but STOP must still lead every other dispatch branch regardless of what
+    // else might one day claim isCommand true for a plain line. STOP/RESUME are reserved
+    // words, never swallowed by a command handler.
     if (ev.authorized) {
       const word = parseStopWord(ev.body);
       // STOP — THE KILL SWITCH (operator 2026-07-25: "if i write 'stop' all activity,

@@ -212,10 +212,9 @@ export function conversationPathOf(surface, slug) {
 }
 
 // Deterministic engine defaults (operator 2026-07-02: "don't do 'null means inherit the
-// login default' — make it deterministic"). A type def that omits model/effort snapshots
-// these CONCRETE values into `readonly` (brainpool), and the vocabulary migration backfills
-// existing null snapshots to them — ONE source so the frozen snapshot and the actual run
-// always agree.
+// login default' — make it deterministic"). A type def that omits model/effort resolves to
+// these CONCRETE values instead (brainpool.mjs), every turn — ONE source so a mis-specified
+// type still runs something deterministic rather than "whatever the login default is today".
 export const DETERMINISTIC_MODEL = 'sonnet';
 export const DETERMINISTIC_EFFORT = 'high';
 
@@ -457,7 +456,7 @@ function serializeStatsWrite(key, task) {
 
 // mutateState(writeState, task): serializes conversations.yaml's read-modify-write
 // critical sections so two concurrent first-turn-style mutations (contacts.resolve's
-// ensureContact, brainpool's readonly-freeze + recordThread) can't interleave and lose
+// ensureContact, brainpool's recordThread) can't interleave and lose
 // one write. `task` is the caller's WHOLE load→mutate→write closure — wrapping only the
 // write would still lose updates, since both racers would already have read the same
 // stale state before either writes. Keyed by the `writeState` FUNCTION REFERENCE (not the
@@ -866,144 +865,100 @@ export function getContact(state, surface, jid) {
   return r ? { jid: r.primaryJid, slug: r.entry.slug, entry: r.entry, surface } : null;
 }
 
-// ── per-being view (#2: per-resident conversation shape) ────────────────────
-// A conversation can host several resident beings (the persona + custom agents), each
-// its own sub-block: `<being>: { mode, readonly: { model, effort, personality }, threadId,
-// threadCreatedAt, identityInjectedAt }`. `mode` is the hot reply-gate; `readonly` is
-// how the thread was started (changing it reloads the agent via /e new|identity|brain).
+// ── per-being view (phase 1, operator 2026-08-14: ONE block per being) ──────
+// A conversation can host several resident beings (the persona + custom agents). EVERY
+// field a being has — mode, send_to_egpt, threadId, threadCreatedAt, identityInjectedAt,
+// access_level — lives FLAT under `entry.agents.<being>`, spine writes and operator pins
+// alike. There is exactly ONE place per being now:
 //
-// KEY-AS-BEING (operator 2026-07-10, agent-identity refactor): the persona is a NORMAL
-// nested being keyed by its agents-map key (resolved from `default: true`, injected as the
-// spine's defaultKey), with NO special flat fallback for its being-level fields — that
-// fallback is precisely what made 'e' special. Being-level fields (threadId, mode,
-// send_to_egpt, readonly, …) live in `entry[being]`; only CONTACT-level fields (slug,
-// pushedName, jids, aliasOf, …) stay flat. Consequence (accepted, one-time on deploy): a
-// legacy conversation's flat persona thread/mode/instanced-brain is abandoned — the
-// persona resets to a fresh nested block; transcript.md history stays on disk.
+//   agents:
+//     egpt:
+//       access_level: all
+//       threadId: 3755ae10-…
+//       threadCreatedAt: 2026-07-28T10:21:20.313Z
+//       identityInjectedAt: 2026-07-28T10:21:20.313Z
 //
-// THE SET IS THE CONTACT-LEVEL KEYS, nothing else (2026-07-26). It used to double as an
-// inventory of the DEAD flat slots too — personality, threadId, threadCreatedAt,
-// identityInjectedAt, threadCwd, mode, send_to_egpt, transcribe and the pre-nested flat
-// `readonly` — every one of which lost its last reader as the per-being shape landed. They
-// are gone from here (operator 2026-07-26: "do not keep maintaining legacy behavior", "do
-// not concern about live profiles"); the flat `readonly` block is additionally purged from
-// disk on the entry's next write by `_SLIM_DROP` (below).
+// RETIRED (phase 1): the OLD spine-only `entry[being]` block (mode/threadId/readonly, written
+// directly on the entry) AND `entry.agents.<being>` as a SEPARATE operator-override layer over
+// it are BOTH gone. So is `readonly` itself — agent/type/model/effort/allowed_tools are never
+// frozen per-conversation any more; brainpool.mjs resolves them FRESH from config every turn
+// (see its resolveDefaultBrain). getBeing therefore no longer returns brain/brainType/model/
+// effort/allowedTools at all — those five only ever came from the freeze.
+//
+// OLD-SHAPE DEGRADE (operator decision, phase 1): an entry still carrying the pre-phase-1
+// `entry[<being>]` block (real, on both live nodes at the time of this change) is NOT
+// migrated and NOT actively rewritten — getBeing simply never reads it, so such a being
+// reads back exactly like a never-instanced one (`present: false`, every field null) until
+// its NEXT turn writes the new `agents.<being>` block. Chosen over an active migration
+// because there is no `readonly` left to go stale, and every consumer (ensureContact,
+// resolveDefaultBrain, brainpool's `!sessionId` fresh-thread path) already handles
+// "never instanced" cleanly — a silent degrade costs nothing a real migration would save.
+// residentsOf (below) still RECOGNIZES the leftover legacy block, so config-resolver's
+// registry rung doesn't mistake it for arbitrary config, and serialize() purges it from disk
+// on the entry's next write (the same "drop the corpse" precedent `_SLIM_DROP` already set
+// for the pre-nested flat slots).
+//
 // The registry's OWN record of the conversation — identity + relocatable pointers. Never
 // configuration, never a resident being, so the config resolver's REGISTRY rung
 // (src/spine/config-resolver.mjs) skips these outright. `agents` is object-valued but a
-// CONTAINER of per-agent overrides (see getBeing), and it must NOT be contributed as config
-// — the node rung's `agents:` is the unrelated agent REGISTRY and layering one over the
-// other would corrupt it (a genuine collision between two namespaces, older than the
-// resolver).
+// CONTAINER of per-being blocks (see getBeing), and it must NOT be contributed as config —
+// the node rung's `agents:` is the unrelated agent REGISTRY and layering one over the other
+// would corrupt it (a genuine collision between two namespaces, older than the resolver).
 export const CONTACT_BOOKKEEPING_KEYS = new Set([
   'slug', 'pushedName', 'firstSeenAt', 'aliasOf', 'jids', 'agents',
   'conversation_path', 'home_dir',
 ]);
 
-// Resolve a resident being's view of a conversation, reading its nested `entry[being]` block
-// (no flat fallback — the persona is a normal nested being now). Returns null when there's no
-// contact. `being` is REQUIRED (callers pass the resolved key explicitly).
-//
-// AGENTS BLOCK (operator 2026-07-25: "better to have in config.yaml the configuration per agent
-// on its mode. overridable in conversations.yaml with an agents block"). The per-conversation
-// OVERRIDE home is `entry.agents.<name>` — the same fields, one level in — layered OVER the
-// being's own block field-by-field. So an operator can hand-pin one agent's mode in one chat
-// without disturbing the threadId/readonly the spine writes into `entry[<name>]`, and every
-// entry already on disk in the current shape keeps resolving exactly as before. BOTH shapes are
-// READ; nothing is migrated. Writes go through patchBeing, which lands each field in whichever
-// of the two blocks this reader resolves it from (operator 2026-07-25: "so fix /e auto to the
-// new config") — otherwise a `/e auto <mode>` into `entry[<name>].mode` is silently shadowed and
-// the command answers ✅ for a change nobody can observe.
-//
-// THE INSTANCING FIELDS (operator 2026-07-25: "in conversations.yaml i can override an agent's
-// config for the conversation"). getBeing reads agent/type/model/effort/allowed_tools out of
-// `readonly` — the spine's freeze. A SHALLOW merge meant the only way to pin one of them was to
-// write a whole `readonly:` block inside `agents.<name>`: it wore the name of the spine's own
-// snapshot key AND clobbered the other four. So those five may be written FLAT in the override
-// block and layer FIELD-WISE over the freeze. An `agents.<name>.readonly` already on disk is
-// still read (nothing is migrated), with the flat fields winning over it.
-const _RO_FIELDS = ['agent', 'type', 'model', 'effort', 'allowed_tools'];
 const _obj = (v) => (v && typeof v === 'object' && !Array.isArray(v)) ? v : null;
-const _beingBlock = (entry, being) => {
-  const own = _obj(entry[being]);
-  const ovr = _obj(_obj(entry.agents)?.[being]);
-  if (!ovr) return own;
-  const block = { ...own, ...ovr };
-  const ro = { ..._obj(own?.readonly), ..._obj(ovr.readonly) };
-  for (const k of _RO_FIELDS) if (k in ovr) ro[k] = ovr[k];
-  if (Object.keys(ro).length) block.readonly = ro;
-  return block;
-};
+
+// Resolve a resident being's view of a conversation, reading its ONLY block —
+// `entry.agents.<being>` — flat, no merge (see the module note above). A pre-phase-1
+// `entry[<being>]` block, if still on disk, is never consulted here (the chosen degrade).
+const _beingBlock = (entry, being) => _obj(_obj(entry.agents)?.[being]);
 
 export function getBeing(state, surface, jid, being) {
   const c = getContact(state, surface, jid);
   if (!c) return null;
   const e = c.entry ?? {};
   const b = _beingBlock(e, being);
-  const ro = b?.readonly ?? {};
   return {
     jid: c.jid, slug: c.slug, surface, being,
     present:            !!b,
     mode:               b?.mode               ?? null,
     send_to_egpt:       b?.send_to_egpt       ?? null,  // per-conv 'always'|'mode' override
     threadId:           b?.threadId           ?? null,
-    model:              ro.model              ?? null,
-    effort:             ro.effort             ?? null,
-    // The def name this thread was instanced from (operator 2026-07-02: new-config-only —
-    // readonly.agent, no readonly.brain back-read). `brain` stays the returned property
-    // (callers/tests consume it); `agent` is a cheap alias.
-    brain:              ro.agent              ?? null,
-    agent:              ro.agent              ?? null,
-    brainType:          ro.type               ?? null,   // the engine (frozen); null = not instanced yet
-    allowedTools:       ro.allowed_tools      ?? null,
     // /e access all|regular (operator 2026-08-14): points this being at a
     // config/permissions/<level>.md file, read fresh every turn by
-    // spine/brainpool.mjs — NOT a freeze, unlike the five readonly.* fields
-    // above. null = never touched (this node's ordinary instanced behavior).
+    // spine/brainpool.mjs — NOT a freeze. null = never touched (this node's
+    // ordinary default behavior). agent/type/model/effort/allowed_tools are NOT
+    // returned here any more (phase 1: no more per-conversation freeze to read —
+    // brainpool.mjs resolves them fresh from config on every turn instead).
     accessLevel:        b?.access_level        ?? null,
   };
 }
 
-// The being fields — the vocabulary getBeing READS and patchBeing WRITES, and nothing else.
-// A block carrying any one of them is a being's block; that is what residentsOf tests.
-const _BEING_FIELDS = ['mode', 'send_to_egpt', 'threadId', 'threadCreatedAt', 'identityInjectedAt', 'readonly'];
+// Legacy per-being FIELDS (pre-phase-1, retired 2026-08-14): the OLD `entry[<being>]` block's
+// own keys. Kept ONLY to recognize an un-migrated block still on disk — never read for being
+// STATE any more (getBeing only reads `entry.agents.<being>`, see its degrade-to-fresh note
+// above) — so residentsOf/serialize below can still (a) keep config-resolver from mistaking a
+// leftover legacy block for arbitrary config and (b) purge it permanently on the entry's next
+// write, the same "drop the corpse" precedent `_SLIM_DROP` set for the pre-nested flat slots.
+const _LEGACY_BEING_FIELDS = ['mode', 'send_to_egpt', 'threadId', 'threadCreatedAt', 'identityInjectedAt', 'readonly'];
+const _isLegacyBeingBlock = (v) => { const o = _obj(v); return !!o && _LEGACY_BEING_FIELDS.some((f) => f in o); };
 
-// The resident being names configured on an entry: the nested per-being keys, in entry
-// order. PURE — no implicit persona synthesized (operator 2026-07-10: a hardcoded 'e'
-// return is exactly the specialness we removed). A caller that needs "the default resident
-// when none are named" threads the config-resolved default key at its own call site.
-//
-// A POSITIVE TEST (2026-07-26). This used to be exclusion-by-list: every object-valued key
-// NOT on a hand-kept set was a resident. That set was patched reactively three times — after
-// `readonly`, after `agents`, after `guard` each produced a phantom resident — and it became
-// unmaintainable by ruling: config is ONE NAMESPACE over THREE RUNGS and "any key may appear
-// at any rung", so the entry can grow object-valued CONFIG keys nobody will remember to
-// exclude. An open set cannot be enumerated. The being vocabulary can: it is CLOSED, this
-// module owns it, and the two functions that define it sit right above.
-//
-// So a key is a resident because of what its block HAS. Consequences that must hold:
-//   - the legacy flat `readonly` freeze ({agent,type,model,effort,allowed_tools}) carries no
-//     being field → not a resident. It is the live-registry phantom this replaced.
-//   - `agents` is a CONTAINER whose children are being NAMES, not being fields → not a
-//     resident, and the test never recurses into it (one level, own keys only).
-//   - a resident that has NEVER had a turn survives: `threadId: null` alone is enough, since
-//     this tests for the KEY, not a value. That is the exact shape the registry skeleton
-//     teaches and the shape the spine writes before the first reply.
-//
-// THE COLLISION SURFACE, stated so the next person can check it: a config block at this rung
-// is misread as a resident only if it has a DIRECT CHILD named one of the six. The blocks that
-// actually appear here do not — guard{turns,window}, warm{idle_ttl}, heartbeats{<beat>},
-// transcription_service{enabled,posts_back,posts_back_delay_ms,use_config,<profile>,echo}. The
-// one realistic collision is `dispatch:{send_to_egpt,…}` written at the ENTRY rung; it is
-// honored by nothing today (boot hands createGating the NODE config accessor, so gating reads
-// dispatch from config.yaml only), so nothing working breaks — but if dispatch ever becomes
-// rung-resolved, this is the line to revisit.
+// The resident being names configured on an entry: every `agents.<name>` block (the ONLY
+// per-being home now) PLUS any un-migrated legacy `entry[<being>]` block still on disk
+// (recognized, never read — see the legacy note above). PURE — no implicit persona synthesized
+// (operator 2026-07-10: a hardcoded 'e' return is exactly the specialness we removed). A caller
+// that needs "the default resident when none are named" threads the config-resolved default
+// key at its own call site.
 export function residentsOf(entry) {
   if (!entry || typeof entry !== 'object') return [];
-  return Object.keys(entry).filter((k) => {
-    const block = _obj(entry[k]);
-    return !!block && _BEING_FIELDS.some((f) => f in block);
-  });
+  const out = new Set(Object.keys(_obj(entry.agents) ?? {}));
+  for (const [k, v] of Object.entries(entry)) {
+    if (k !== 'agents' && _isLegacyBeingBlock(v)) out.add(k);
+  }
+  return [...out];
 }
 
 // Top-N primary contacts across surfaces, newest first — the `/e` / `/egpt` browser.
@@ -1323,61 +1278,41 @@ export function patchContact(state, surface, jidOrSlug, patch) {
   return state;
 }
 
-// THE write side of _beingBlock — every per-being field write (mode, readonly, threadId, …)
-// goes through here so the invariant holds: getBeing reads back exactly what was written.
-// The reader's merge is FIELD-WISE, so the write is too. A field the `agents:` override
-// already defines is written THERE (writing it to `entry[being]` would be shadowed — the
-// silent no-op `/e auto` had); every other field keeps going to `entry[being]`, so the
-// spine's machine state (threadId, readonly) never migrates into the operator's
-// hand-authored block and a conversation that has never used the new shape never grows one.
-// `fields` is merged over the block's existing fields (siblings survive), like patchContact.
-//
-// ALWAYS-OVERRIDE FIELDS (operator 2026-08-14, /e access): a few fields must land in the
-// `agents.<being>` override block on EVERY write, first write included — unlike every other
-// field here, which only routes there once the override block already defines it (a
-// first-time write instead lands in the spine's own `entry[being]` snapshot). access_level
-// is one such field: it is ALWAYS an operator override, never spine machine-state, so
-// `entry[being]` would be the wrong home even on its very first write.
-const _ALWAYS_OVERRIDE_FIELDS = new Set(['access_level']);
+// THE write side of _beingBlock — every per-being field write (mode, threadId, access_level,
+// …) lands in the ONE place getBeing reads: `entry.agents.<being>`, merged over the block's
+// existing fields (siblings survive), like patchContact. Phase 1 (operator 2026-08-14): there
+// is no more second "spine's own `entry[being]` snapshot" destination to split fields between
+// — every field always goes here, first write included.
 export function patchBeing(state, surface, jidOrSlug, being, fields) {
   const entry = _entryByJidOrSlug(state, surface, jidOrSlug) ?? {};
   const ovr = _obj(_obj(entry.agents)?.[being]);
-  const ownFields = {}, ovrFields = {};
-  for (const [k, v] of Object.entries(fields)) {
-    if ((ovr && k in ovr) || _ALWAYS_OVERRIDE_FIELDS.has(k)) ovrFields[k] = v; else ownFields[k] = v;
-  }
-  const patch = {};
-  if (Object.keys(ownFields).length) patch[being] = { ..._obj(entry[being]), ...ownFields };
-  if (Object.keys(ovrFields).length) patch.agents = { ...entry.agents, [being]: { ...ovr, ...ovrFields } };
+  const patch = { agents: { ...entry.agents, [being]: { ...ovr, ...fields } } };
   return patchContact(state, surface, jidOrSlug, patch);
 }
 
 // THE delete counterpart to patchBeing — patchBeing/patchContact only ever MERGE
 // ({...entry, ...patch}), so they cannot express "this being has no registry state at
-// all" (a field-wise merge of `undefined`s would leave `entry[being]` as a truthy object
-// full of undefined values, which still reads as present). deleteBeing wipes entry[being]
-// and its entry.agents[being] override OUTRIGHT, so getBeing(...).present reads back
-// false — exactly what a never-instanced contact looks like. Used by /e reset
-// (spine/commands.mjs) to reset one being's state without touching another resident
-// being's overrides in the same conversation. Mirrors patchBeing's own JID-or-slug lookup
-// (_entryByJidOrSlug) and patchContact's no-op-on-not-found contract. `agents` is dropped
-// entirely once its last override is gone, rather than left as a stray `{}`.
+// all" (a field-wise merge of `undefined`s would leave the block as a truthy object full of
+// undefined values, which still reads as present). deleteBeing wipes `entry.agents.<being>`
+// OUTRIGHT, so getBeing(...).present reads back false — exactly what a never-instanced
+// contact looks like. Used by /e reset (spine/commands.mjs) to reset one being's state
+// without touching another resident being's block in the same conversation. Mirrors
+// patchBeing's own JID-or-slug lookup (_entryByJidOrSlug) and patchContact's no-op-on-
+// not-found contract. `agents` is dropped entirely once its last being is gone, rather than
+// left as a stray `{}`.
 export function deleteBeing(state, surface, jidOrSlug, being) {
   const entry = _entryByJidOrSlug(state, surface, jidOrSlug);
   if (!entry) return state;
-  const patch = { [being]: undefined };
-  if (_obj(entry.agents)?.[being] !== undefined) {
-    const nextAgents = { ...entry.agents };
-    delete nextAgents[being];
-    patch.agents = Object.keys(nextAgents).length ? nextAgents : undefined;
-  }
+  const nextAgents = { ...entry.agents };
+  delete nextAgents[being];
+  const patch = { agents: Object.keys(nextAgents).length ? nextAgents : undefined };
   return patchContact(state, surface, jidOrSlug, patch);
 }
 
 // Record that a new claude thread was just spawned for a contact's resident being.
-// EVERY being (persona included, operator 2026-07-10) writes a NESTED `<being>` block so
-// its thread persists alongside the others — merged over the block's existing fields
-// (mode/readonly survive), and it then shows up as a resident (residentsOf), the intended
+// EVERY being (persona included, operator 2026-07-10) writes into its `agents.<being>`
+// block so its thread persists alongside the others — merged over the block's existing
+// fields (mode survives), and it then shows up as a resident (residentsOf), the intended
 // per-being conversation shape. `being` is REQUIRED (callers pass the resolved key).
 export function recordThread(state, surface, jidOrSlug, threadId, nowIso = nowIsoString(), being) {
   return patchBeing(state, surface, jidOrSlug, being, { threadId, threadCreatedAt: nowIso, identityInjectedAt: nowIso });
@@ -1803,8 +1738,16 @@ export function buildRebootAnnouncement(personalityName, bundle) {
 //             governs — the same "wrong value at the top, real one 30 lines down" trap threadId
 //             set.
 // All three are TOP-LEVEL-only drops — the loop below reads `Object.entries(entry)`, one level
-// deep, so the LIVE per-being `entry[<being>].readonly` / `.threadId` / `.mode` are untouched
-// (the being block is copied across whole, by reference, never walked).
+// deep, so a resident's own block (now `entry.agents.<being>`) is untouched (copied across
+// whole, by reference, never walked).
+//
+// PHASE 1 (operator 2026-08-14): the per-being shape itself collapsed to ONE block,
+// `entry.agents.<being>` — the `readonly` sub-object is retired everywhere, and the OLD
+// `entry[<being>]` block (mode/threadId/readonly, written directly on the entry) is now the
+// SAME kind of corpse threadId/mode/readonly were above. It is dropped the same way: never
+// re-hydrated, purged on the entry's next write, recognized by `_isLegacyBeingBlock` (an
+// object carrying any of `_LEGACY_BEING_FIELDS`) rather than by a fixed key name, since the
+// key IS the being's name and isn't known in advance.
 const _SLIM_DROP = new Set(['slug', 'pushedName', 'firstSeenAt', 'threadCreatedAt', 'identityInjectedAt', 'threadCwd', 'readonly', 'threadId', 'mode']);
 const _pathBasename = (p) => String(p ?? '').split(/[\\/]/).filter(Boolean).pop() ?? '';
 
@@ -1820,7 +1763,11 @@ export function serialize(state) {
     for (const [jid, entry] of Object.entries(bucket)) {
       if (!entry || typeof entry !== 'object' || Array.isArray(entry) || entry.aliasOf) { outBucket[jid] = entry; continue; }
       const slim = {};
-      for (const [k, v] of Object.entries(entry)) { if (!_SLIM_DROP.has(k)) slim[k] = v; }
+      for (const [k, v] of Object.entries(entry)) {
+        if (_SLIM_DROP.has(k)) continue;
+        if (k !== 'agents' && _isLegacyBeingBlock(v)) continue;   // dead entry[<being>] corpse (phase 1) — see the note above
+        slim[k] = v;
+      }
       // Always emit the relocatable pointer: home_dir + a (home-relative) conversation_path
       // — computed from the slug when absent so the derived slug survives the round-trip.
       if (slim.conversation_path == null) slim.conversation_path = conversationPathOf(surface, entry.slug);

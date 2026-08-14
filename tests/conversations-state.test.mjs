@@ -350,7 +350,7 @@ describe('ensureContact — self-heals a placeholder slug when the title resolve
     // the registry entry moved to the new slug; the nested thread SURVIVES the
     // rename (operator ruling: a rename is the SAME conversation under a new name).
     expect(r.state.contacts[WA][ROOM].slug).toBe(`morgan-${suffix}`);
-    expect(r.state.contacts[WA][ROOM].e.threadId).toBe('thread-abc');
+    expect(r.state.contacts[WA][ROOM].agents.e.threadId).toBe('thread-abc');
   });
 
   it('does NOT re-slug a contact that already has a real name', () => {
@@ -391,7 +391,7 @@ describe('ensureContact — self-heals a placeholder slug when the title resolve
     expect(r.renamedFrom).toBe(before);
     expect(r.renamedTo).toBe(`Mauricio-${suffix}`);      // keeps the firstSeen suffix
     expect(r.entry.pushedName).toBe('Mauricio');
-    expect(r.state.contacts[WA][ROOM].e.threadId).toBe('thread-xyz');   // nested thread SURVIVES the rename (operator ruling)
+    expect(r.state.contacts[WA][ROOM].agents.e.threadId).toBe('thread-xyz');   // the being's thread SURVIVES the rename (operator ruling)
   });
 
   it('no rename when the name is unchanged (anti-flap / idempotent)', () => {
@@ -468,47 +468,50 @@ describe('patchContact + recordThread (surface-scoped)', () => {
     expect(() => patchContact(baseState(), 'a/b', 'j', {}))
       .toThrow(/unsafe surface/);
   });
-  it('recordThread sets threadId + ISO timestamp in the being\'s NESTED block on the primary', () => {
+  it('recordThread sets threadId + ISO timestamp in the being\'s agents block on the primary', () => {
     const s = { contacts: { whatsapp: { 'j': { slug: 'diego', personality: 'default' } } } };
     const s2 = recordThread(s, WA, 'j', 'thr-abc', '2026-05-19T18:34:00.000Z', 'e');
-    expect(s2.contacts[WA].j.e.threadId).toBe('thr-abc');
-    expect(s2.contacts[WA].j.e.threadCreatedAt).toBe('2026-05-19T18:34:00.000Z');
-    expect(s2.contacts[WA].j.e.identityInjectedAt).toBe('2026-05-19T18:34:00.000Z');
-    expect(s2.contacts[WA].j.threadId).toBeUndefined();   // NO flat write (operator 2026-07-10: persona is a nested being)
+    expect(s2.contacts[WA].j.agents.e.threadId).toBe('thr-abc');
+    expect(s2.contacts[WA].j.agents.e.threadCreatedAt).toBe('2026-05-19T18:34:00.000Z');
+    expect(s2.contacts[WA].j.agents.e.identityInjectedAt).toBe('2026-05-19T18:34:00.000Z');
+    expect(s2.contacts[WA].j.threadId).toBeUndefined();   // NO flat write
+    expect(s2.contacts[WA].j.e).toBeUndefined();          // NO pre-phase-1 entry[<being>] write either
   });
 
-  // being-aware recordThread: EVERY being (persona included, operator 2026-07-10) writes a
-  // NESTED per-being block; nothing is written flat anymore.
+  // being-aware recordThread: EVERY being (persona included, operator 2026-07-10) writes into
+  // its OWN `agents.<being>` block (phase 1, 2026-08-14) — nothing is written flat, and nothing
+  // is written directly on the entry outside agents: any more.
   const nestBase = () => ({ contacts: { whatsapp: { 'j': { slug: 'diego', personality: 'default', pushedName: 'D' } } } });
-  it("the persona 'e' writes a NESTED block (no flat thread fields)", () => {
+  it("the persona 'e' writes into agents.e (no flat thread fields, no legacy entry.e)", () => {
     const s = recordThread(nestBase(), WA, 'j', 'thr-e', '2026-05-19T18:34:00.000Z', 'e');
-    expect(s.contacts[WA].j.e.threadId).toBe('thr-e');
+    expect(s.contacts[WA].j.agents.e.threadId).toBe('thr-e');
     expect(s.contacts[WA].j.threadId).toBeUndefined();
-    expect(s.contacts[WA].j.wren).toBeUndefined();
+    expect(s.contacts[WA].j.e).toBeUndefined();
+    expect(s.contacts[WA].j.agents.wren).toBeUndefined();
   });
-  it('two beings each write their OWN nested block, side by side', () => {
-    let s = recordThread(nestBase(), WA, 'j', 'thr-e', '2026-05-19T18:34:00.000Z', 'e');       // persona nested
-    s = recordThread(s, WA, 'j', 'thr-wren', '2026-05-20T10:00:00.000Z', 'wren');              // wren nested
-    expect(s.contacts[WA].j.e.threadId).toBe('thr-e');                                         // persona intact
-    expect(s.contacts[WA].j.wren).toEqual({
+  it('two beings each write their OWN agents block, side by side', () => {
+    let s = recordThread(nestBase(), WA, 'j', 'thr-e', '2026-05-19T18:34:00.000Z', 'e');       // persona
+    s = recordThread(s, WA, 'j', 'thr-wren', '2026-05-20T10:00:00.000Z', 'wren');              // wren
+    expect(s.contacts[WA].j.agents.e.threadId).toBe('thr-e');                                  // persona intact
+    expect(s.contacts[WA].j.agents.wren).toEqual({
       threadId: 'thr-wren', threadCreatedAt: '2026-05-20T10:00:00.000Z', identityInjectedAt: '2026-05-20T10:00:00.000Z',
     });
   });
-  it('merges over an existing nested block (a stored mode survives a thread record)', () => {
-    const s0 = { contacts: { whatsapp: { 'j': { slug: 'diego', wren: { mode: 'mention' } } } } };
+  it('merges over an existing agents block (a stored mode survives a thread record)', () => {
+    const s0 = { contacts: { whatsapp: { 'j': { slug: 'diego', agents: { wren: { mode: 'mention' } } } } } };
     const s = recordThread(s0, WA, 'j', 'thr-wren', '2026-05-20T10:00:00.000Z', 'wren');
-    expect(s.contacts[WA].j.wren).toEqual({
+    expect(s.contacts[WA].j.agents.wren).toEqual({
       mode: 'mention', threadId: 'thr-wren', threadCreatedAt: '2026-05-20T10:00:00.000Z', identityInjectedAt: '2026-05-20T10:00:00.000Z',
     });
   });
-  it('residentsOf lists the sibling after a nested thread record', () => {
+  it('residentsOf lists the sibling after an agents-block thread record', () => {
     let s = recordThread(nestBase(), WA, 'j', 'thr-e', '2026-05-19T18:34:00.000Z', 'e');
     s = recordThread(s, WA, 'j', 'thr-wren', '2026-05-20T10:00:00.000Z', 'wren');
     expect(residentsOf(s.contacts[WA].j)).toEqual(['e', 'wren']);
   });
   it('being-aware recordThread accepts a slug key too', () => {
     const s = recordThread(nestBase(), WA, 'diego', 'thr-wren', '2026-05-20T10:00:00.000Z', 'wren');
-    expect(s.contacts[WA].j.wren.threadId).toBe('thr-wren');
+    expect(s.contacts[WA].j.agents.wren.threadId).toBe('thr-wren');
   });
 
   // Regression: root fields (system_thread, etc.) must survive contact
@@ -653,9 +656,9 @@ describe('YAML parse / serialize round-trip', () => {
     // The on-disk shape is slim: pushedName rides as the jid-key inline comment, slug is derived
     // from conversation_path's basename, home_dir + conversation_path are stored. In-memory the
     // fields are all present (this is exactly what parse() re-hydrates).
-    // A thread lives in the NESTED per-being block; there is no flat `threadId` in the shape any
-    // more (ensureContact stopped writing it 2026-07-26, _SLIM_DROP retires the ones on disk), so
-    // the round-trip is stated on the nested one — the id that is actually live.
+    // A thread lives in the being's `agents.<name>` block (phase 1, operator 2026-08-14) — there
+    // is no flat `threadId`, and no `entry[<being>]` block either any more, in the shape a
+    // round-trip is stated on.
     const mk = (surface, slug, extra = {}) => ({
       slug,
       conversation_path: conversationPathOf(surface, slug),
@@ -668,7 +671,7 @@ describe('YAML parse / serialize round-trip', () => {
       contacts: {
         whatsapp: {
           '26087681749235@lid': mk(WA, 'diego-2605200133', {
-            egpt: { threadId: 'abc', mode: 'auto' },
+            agents: { egpt: { threadId: 'abc', mode: 'auto' } },
             pushedName: 'Diego Pérez (Koma) 😀 "koma": #1',
           }),
           '584122182178@s.whatsapp.net': { aliasOf: '26087681749235@lid' },
@@ -683,56 +686,58 @@ describe('YAML parse / serialize round-trip', () => {
     expect(serialize(s)).toContain('# Diego Pérez (Koma) 😀 "koma": #1');
   });
 
-  // Reproduce (2026-07-26): the same corpse class as the flat `readonly` below, and the one
-  // that made the operator distrust the registry. `_SLIM_DROP` listed `readonly` but not
-  // `threadId`, so every entry written before the write was removed from ensureContact kept
-  // its dead flat slot. Measured on the live file: 106 primary entries, 92 with `threadId:
-  // null`, 14 with a real UUID that NOTHING reads — sitting directly above the nested
-  // `entry[<being>].threadId` that is live, with a DIFFERENT id. Opening an entry showed the
-  // wrong thread at the top and the real one 30 lines down.
-  it('serialize purges a legacy flat `threadId` but leaves the nested <being>.threadId byte-intact', () => {
+  // Reproduce (2026-07-26, extended phase 1 2026-08-14): the same corpse class as the flat
+  // `readonly` below, and the one that made the operator distrust the registry. `_SLIM_DROP`
+  // listed `readonly` but not `threadId`, so every entry written before the write was removed
+  // from ensureContact kept its dead flat slot. Measured on the live file: 106 primary entries,
+  // 92 with `threadId: null`, 14 with a real UUID that NOTHING reads. Phase 1 retires the
+  // SECOND corpse class this same bug produced: the pre-phase-1 `entry[<being>]` block itself
+  // (e.g. `entry.egpt`) is now equally dead — only `entry.agents.<being>` is read or kept.
+  it('serialize purges a legacy flat `threadId`, AND a legacy entry[<being>] block — only agents.<being>.threadId survives', () => {
     const s = {
       contacts: { whatsapp: { j: {
         slug: 'fam-2605200133',
         conversation_path: conversationPathOf(WA, 'fam-2605200133'),
         home_dir: homeDirMsys(),
         pushedName: 'fam',
-        threadId: 'DEAD-c0ffee-flat-id',                       // the corpse: read by nothing
-        egpt: { mode: 'auto', threadId: 'LIVE-1ef3663e-6ad9' },  // the id that is actually live
+        threadId: 'DEAD-c0ffee-flat-id',                          // pre-nested corpse: read by nothing
+        egpt: { mode: 'auto', threadId: 'DEAD-legacy-nested-id' },  // pre-phase-1 corpse: also read by nothing now
+        agents: { egpt: { threadId: 'LIVE-1ef3663e-6ad9' } },      // the id that is actually live
       } } },
     };
     const text = serialize(s);
     expect(text).not.toContain('DEAD-c0ffee-flat-id');            // gone from disk
-    expect((text.match(/threadId:/g) || []).length).toBe(1);      // only the nested line remains
+    expect(text).not.toContain('DEAD-legacy-nested-id');          // gone from disk
+    expect((text.match(/threadId:/g) || []).length).toBe(1);      // only the agents.egpt line remains
     const back = parse(text).contacts.whatsapp.j;
     expect('threadId' in back).toBe(false);                       // dropped for good — parse never re-hydrates it
-    expect(back.egpt.threadId).toBe('LIVE-1ef3663e-6ad9');        // the live thread survives untouched
+    expect(back.egpt).toBeUndefined();                            // the legacy entry[<being>] block is gone for good too
+    expect(back.agents.egpt.threadId).toBe('LIVE-1ef3663e-6ad9');  // the live thread survives untouched
     expect(residentsOf(back)).toEqual(['egpt']);
   });
 
-  // Reproduce (2026-07-26): the third corpse of the same class. MEASURED on the live registry:
-  // of 106 entries, 10 carry a flat `mode`, and NOTHING reads it — gating.mjs resolves a mode off
-  // the per-being view (getBeing → entry[<being>].mode / entry.agents.<name>.mode), never the flat
-  // key. Now that residentsOf is a POSITIVE test (09d1fad) a string-valued flat `mode` can no
-  // longer fake a resident, but it IS still contributed as registry-rung config and surfaces in
-  // conversations.readonly.yaml, so it keeps misinforming whoever opens the entry.
-  it('serialize purges a legacy flat `mode` but leaves the nested <being>.mode byte-intact', () => {
+  // Reproduce (2026-07-26, extended phase 1 2026-08-14): the third corpse of the same class.
+  // MEASURED on the live registry: of 106 entries, 10 carry a flat `mode`, and NOTHING reads
+  // it. Phase 1 retires the pre-phase-1 `entry[<being>]` block (e.g. `entry.egpt`) the same way.
+  it('serialize purges a legacy flat `mode`, AND a legacy entry[<being>] block — only agents.<being>.mode survives', () => {
     const s = {
       contacts: { whatsapp: { j: {
         slug: 'fam-2605200133',
         conversation_path: conversationPathOf(WA, 'fam-2605200133'),
         home_dir: homeDirMsys(),
         pushedName: 'fam',
-        mode: 'mention-direct',                                   // the corpse: read by nothing
-        egpt: { mode: 'auto', threadId: 'LIVE-1ef3663e-6ad9' },   // the mode that is actually live
+        mode: 'mention-direct',                                    // pre-nested corpse: read by nothing
+        egpt: { mode: 'off', threadId: 'DEAD-legacy-nested-id' },   // pre-phase-1 corpse: also read by nothing now
+        agents: { egpt: { mode: 'auto', threadId: 'LIVE-1ef3663e-6ad9' } },  // the mode that is actually live
       } } },
     };
     const text = serialize(s);
     expect(text).not.toContain('mention-direct');                 // gone from disk
-    expect((text.match(/mode:/g) || []).length).toBe(1);          // only the nested line remains
+    expect((text.match(/mode:/g) || []).length).toBe(1);          // only the agents.egpt line remains
     const back = parse(text).contacts.whatsapp.j;
     expect('mode' in back).toBe(false);                           // dropped for good — parse never re-hydrates it
-    expect(back.egpt.mode).toBe('auto');                          // the live per-being mode survives
+    expect(back.egpt).toBeUndefined();                            // the legacy entry[<being>] block is gone for good too
+    expect(back.agents.egpt.mode).toBe('auto');                   // the live per-being mode survives
     expect(residentsOf(back)).toEqual(['egpt']);
   });
 
@@ -760,33 +765,36 @@ describe('YAML parse / serialize round-trip', () => {
     expect(back.pushedName).toBe('Diego');        // recovered from the key comment
     expect('firstSeenAt' in back).toBe(false);    // dropped for good (now a stats.yaml fact)
   });
-  // Reproduce (2026-07-26): 50d7f40 removed the pre-nested flat `readonly` from
-  // _FLAT_ENTRY_KEYS, correctly — but that block is OBJECT-VALUED and nothing purges it
-  // from disk, so a registry entry still carrying it reports a phantom "readonly" resident
-  // forever. The fix is at the SOURCE: _SLIM_DROP (the mechanism that already retires
-  // threadCwd the same way) strips the flat block on every write, while the LIVE per-being
-  // freeze at `entry[<being>].readonly` — a sibling key one level deeper — must survive
-  // untouched, since `_SLIM_DROP` only walks an entry's own top-level keys.
-  it('serialize purges a legacy flat `readonly` block but leaves a nested <being>.readonly byte-intact', () => {
-    const nestedReadonly = { agent: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: ['Read', 'Write'] };
+  // Reproduce (2026-07-26, RETIRED further by phase 1, operator 2026-08-14): 50d7f40 removed
+  // the pre-nested flat `readonly` from _FLAT_ENTRY_KEYS, correctly, and _SLIM_DROP purges it
+  // from disk on every write. Phase 1 goes further: `readonly` is gone EVERYWHERE, not just at
+  // the flat pre-nested slot — nothing ever freezes agent/type/model/effort/allowed_tools per
+  // conversation any more, so the pre-phase-1 `entry[<being>].readonly` (one level deeper) is
+  // now an equally dead corpse, purged along with the whole legacy `entry[<being>]` block.
+  it('serialize purges a legacy flat `readonly` block, AND a legacy entry[<being>].readonly — nothing writes readonly any more', () => {
     const s = {
       contacts: { whatsapp: { j: {
         slug: 'fam-2605200133',
         conversation_path: conversationPathOf(WA, 'fam-2605200133'),
         home_dir: homeDirMsys(),
         pushedName: 'fam',
-        // The pre-nested flat freeze — dead data, no reader left (see _FLAT_ENTRY_KEYS).
+        // The pre-nested flat freeze — dead data, no reader left.
         readonly: { brain: 'default', type: 'claude', model: null, effort: null, allowed_tools: 'all', personality: 'default' },
-        // A LIVE per-being freeze, one level deeper — must survive the write untouched.
-        e: { mode: 'on', threadId: 'abc', readonly: nestedReadonly },
+        // The pre-phase-1 nested freeze, one level deeper — ALSO dead now: the whole
+        // entry.e block is a legacy corpse and is purged along with it.
+        e: { mode: 'on', threadId: 'DEAD-abc', readonly: { agent: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: ['Read', 'Write'] } },
+        // The ONLY surviving shape: agents.<being>, flat, carrying no readonly at all.
+        agents: { e: { mode: 'on', threadId: 'LIVE-abc' } },
       } } },
     };
     const text = serialize(s);
-    expect((text.match(/readonly:/g) || []).length).toBe(1);   // only the nested e.readonly line remains
+    expect(text).not.toContain('readonly');    // dropped everywhere — nothing writes it any more
+    expect(text).not.toContain('DEAD-abc');
     const back = parse(text).contacts.whatsapp.j;
-    expect('readonly' in back).toBe(false);                    // flat block gone, in memory too
-    expect(back.e.readonly).toEqual(nestedReadonly);            // nested freeze byte-intact
-    expect(residentsOf(back)).toEqual(['e']);                   // no phantom — 'readonly' isn't a key anymore
+    expect('readonly' in back).toBe(false);
+    expect(back.e).toBeUndefined();            // the legacy entry[<being>] block is gone for good
+    expect(back.agents.e).toEqual({ mode: 'on', threadId: 'LIVE-abc' });
+    expect(residentsOf(back)).toEqual(['e']);
   });
 
   it('parse() of empty / garbage returns emptyState', () => {

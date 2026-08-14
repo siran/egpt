@@ -1,38 +1,64 @@
 import { describe, it, expect } from 'vitest';
-import { getBeing, residentsOf, patchBeing, recordThread, serialize, parse } from '../src/conversations-state.mjs';
+import { getBeing, residentsOf, patchBeing, deleteBeing, recordThread, serialize, parse } from '../src/conversations-state.mjs';
 
-// A flat (un-migrated) conversation and a nested (per-being) one in the same state.
+// PHASE 1 (operator 2026-08-14): ONE block per being — `entry.agents.<being>` — flat, carrying
+// every field the being has (mode, send_to_egpt, threadId, threadCreatedAt, identityInjectedAt,
+// access_level). There is no more separate spine-written `entry[<being>]` snapshot AND no more
+// `readonly` sub-object anywhere: agent/type/model/effort/allowed_tools are never frozen per
+// conversation — brainpool.mjs resolves them fresh from config every turn instead, so getBeing
+// no longer returns them at all.
+//
+// A pre-phase-1 entry — mode/threadId/readonly written directly as `entry[<being>]`, OUTSIDE
+// agents: — is NOT migrated and NOT read by getBeing (the chosen degrade: it reads back exactly
+// like a never-instanced being, silently, until its next turn writes the new shape). residentsOf
+// still RECOGNIZES such a legacy block (so config-resolver doesn't mistake it for arbitrary
+// config) even though getBeing ignores its contents entirely — that split is locked below.
 const state = { contacts: { whatsapp: {
-  '!flat:beeper.local':   { slug: 'flat', mode: 'mention', personality: 'banter', threadId: 'T1', threadCreatedAt: 'C1', identityInjectedAt: 'I1' },
-  '!nested:beeper.local': { slug: 'nested',
-    e:    { mode: 'on',      readonly: { model: 'opus',  effort: 'high',   personality: 'default' }, threadId: 'T2', threadCreatedAt: 'C2', identityInjectedAt: 'I2' },
-    wren: { mode: 'mention', readonly: { model: 'haiku', effort: 'medium', personality: 'banter'  }, threadId: 'T3' },
+  '!legacy:beeper.local': { slug: 'legacy', mode: 'mention', personality: 'banter', threadId: 'T1', threadCreatedAt: 'C1', identityInjectedAt: 'I1' },
+  '!pre-phase1:beeper.local': { slug: 'prephase1',
+    // The pre-phase-1 shape: entry[<being>], no agents: block at all.
+    e:    { mode: 'on', threadId: 'T2', threadCreatedAt: 'C2', identityInjectedAt: 'I2' },
+    wren: { mode: 'mention', threadId: 'T3' },
+  },
+  '!current:beeper.local': { slug: 'current',
+    agents: {
+      e:    { mode: 'on', threadId: 'T4', threadCreatedAt: 'C4', identityInjectedAt: 'I4' },
+      wren: { mode: 'mention', threadId: 'T5' },
+    },
   },
 } } };
 
-describe('per-being reader convergence (#2)', () => {
-  it('a legacy FLAT entry no longer resolves the persona from flat fields — present:false (operator 2026-07-10: one-time reset, persona is a nested being now)', () => {
-    const v = getBeing(state, 'whatsapp', '!flat:beeper.local', 'e');
-    expect(v.present).toBe(false);          // no nested `e` block → the flat mode/thread are abandoned
+describe('getBeing — reads ONLY entry.agents.<being> (phase 1)', () => {
+  it('a legacy top-level FLAT entry (pre-2026-07-10) never resolves the persona — present:false', () => {
+    const v = getBeing(state, 'whatsapp', '!legacy:beeper.local', 'e');
+    expect(v.present).toBe(false);
     expect(v.mode).toBe(null);
     expect(v.threadId).toBe(null);
-    expect(v.slug).toBe('flat');            // contact-level fields (slug) still resolve
+    expect(v.slug).toBe('legacy');   // contact-level fields (slug) still resolve
   });
 
-  it('nested entry resolves e through the e: block', () => {
-    expect(getBeing(state, 'whatsapp', '!nested:beeper.local', 'e')).toMatchObject({
-      present: true, mode: 'on', threadId: 'T2', model: 'opus', effort: 'high',
+  it('a pre-phase-1 entry[<being>] block (mode/thread written OUTSIDE agents:) is NOT read — degrades to present:false, exactly like never-instanced', () => {
+    const v = getBeing(state, 'whatsapp', '!pre-phase1:beeper.local', 'e');
+    expect(v.present).toBe(false);
+    expect(v.mode).toBe(null);
+    expect(v.threadId).toBe(null);
+    expect(v.slug).toBe('prephase1');
+  });
+
+  it('the CURRENT shape resolves the persona through agents.e', () => {
+    expect(getBeing(state, 'whatsapp', '!current:beeper.local', 'e')).toMatchObject({
+      present: true, mode: 'on', threadId: 'T4',
     });
   });
 
-  it('a named resident resolves through its own block', () => {
-    expect(getBeing(state, 'whatsapp', '!nested:beeper.local', 'wren')).toMatchObject({
-      present: true, being: 'wren', mode: 'mention', threadId: 'T3', model: 'haiku',
+  it('a named sibling resolves through its own agents.<name> block', () => {
+    expect(getBeing(state, 'whatsapp', '!current:beeper.local', 'wren')).toMatchObject({
+      present: true, being: 'wren', mode: 'mention', threadId: 'T5',
     });
   });
 
-  it('a being with no block (and not e) is absent — no flat-field leak', () => {
-    const w = getBeing(state, 'whatsapp', '!flat:beeper.local', 'wren');
+  it('a being with no agents block at all is absent — no leak from a sibling key', () => {
+    const w = getBeing(state, 'whatsapp', '!legacy:beeper.local', 'wren');
     expect(w.present).toBe(false);
     expect(w.mode).toBe(null);
     expect(w.threadId).toBe(null);
@@ -42,196 +68,107 @@ describe('per-being reader convergence (#2)', () => {
     expect(getBeing(state, 'whatsapp', '!nope:beeper.local', 'e')).toBe(null);
   });
 
-  it('residentsOf: flat → []; nested → [e, wren] (operator 2026-07-10: no implicit "e")', () => {
-    expect(residentsOf(state.contacts.whatsapp['!flat:beeper.local'])).toEqual([]);
-    expect(residentsOf(state.contacts.whatsapp['!nested:beeper.local'])).toEqual(['e', 'wren']);
+  it('no more readonly-derived fields: model/effort/brain/brainType/allowedTools are gone from the view', () => {
+    const v = getBeing(state, 'whatsapp', '!current:beeper.local', 'e');
+    expect(v.model).toBeUndefined();
+    expect(v.effort).toBeUndefined();
+    expect(v.brain).toBeUndefined();
+    expect(v.brainType).toBeUndefined();
+    expect(v.allowedTools).toBeUndefined();
   });
 });
 
-// The `agents:` block (operator 2026-07-25: "overridable in conversations.yaml with an agents
-// block") — the per-conversation OVERRIDE home. It layers OVER the being's existing block
-// field-by-field, so an operator can pin one agent's mode in one chat without disturbing the
-// threadId/readonly the spine writes there, and every entry already on disk keeps working.
-describe('per-being: the conversations.yaml `agents:` override block', () => {
-  const withAgents = { contacts: { whatsapp: {
-    '!ovr:beeper.local': { slug: 'ovr',
-      e:      { mode: 'on', send_to_egpt: 'always', threadId: 'T9', readonly: { model: 'opus', agent: 'sonnet-high' } },
-      agents: { e: { mode: 'mute' }, don: { mode: 'mention-direct' } },
-    },
-  } } };
-
-  it('an agents: entry OVERRIDES the same-named field and leaves the rest of the block intact', () => {
-    expect(getBeing(withAgents, 'whatsapp', '!ovr:beeper.local', 'e')).toMatchObject({
-      present: true, mode: 'mute', send_to_egpt: 'always', threadId: 'T9', model: 'opus', agent: 'sonnet-high',
-    });
+describe('residentsOf — agents.<name> keys, PLUS a recognized-but-inert legacy entry[<being>] block', () => {
+  it('a legacy flat entry (no object-valued being block at all) has no residents', () => {
+    expect(residentsOf(state.contacts.whatsapp['!legacy:beeper.local'])).toEqual([]);
   });
 
-  it('an agent that exists ONLY in the agents: block resolves from it (present, no legacy block needed)', () => {
-    expect(getBeing(withAgents, 'whatsapp', '!ovr:beeper.local', 'don')).toMatchObject({
-      present: true, being: 'don', mode: 'mention-direct', threadId: null,
-    });
+  it('a pre-phase-1 entry — RECOGNIZED as residents (config-resolver exclusion) even though getBeing never reads them', () => {
+    expect(residentsOf(state.contacts.whatsapp['!pre-phase1:beeper.local']).sort()).toEqual(['e', 'wren']);
   });
 
-  it('`agents` is a CONTAINER, never a resident — residentsOf must not list it', () => {
-    expect(residentsOf(withAgents.contacts.whatsapp['!ovr:beeper.local'])).toEqual(['e']);
+  it('the current shape — agents.<name> keys are the residents', () => {
+    expect(residentsOf(state.contacts.whatsapp['!current:beeper.local']).sort()).toEqual(['e', 'wren']);
+  });
+
+  it('a contact-level block that merely resembles a being (no being-vocabulary field) is NOT a resident', () => {
+    const entry = { slug: 'x', agents: { e: { mode: 'on' } }, guard: { turns: 3, window: 60 } };
+    expect(residentsOf(entry)).toEqual(['e']);
   });
 });
 
-// THE INSTANCING FIELDS through the same block (operator 2026-07-25: "in conversations.yaml i
-// can override an agent's config for the conversation"). The five frozen fields — agent, type,
-// model, effort, allowed_tools — may be written FLAT in `agents.<name>` (no `readonly:` wrapper)
-// and layer FIELD-WISE over the spine's frozen `entry[<name>].readonly`. Before this, pinning a
-// model per-conversation meant re-authoring a whole `readonly:` block under the operator's own
-// key: it wore the name of the spine's snapshot AND clobbered the other four frozen fields.
-describe('per-being: the agents: override reaches the INSTANCING fields', () => {
-  const frozen = { agent: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: ['Read', 'Grep'] };
-  const withPin = () => ({ contacts: { whatsapp: {
-    '!pin:beeper.local': { slug: 'pin',
-      egpt:   { mode: 'on', threadId: 'T1', readonly: { ...frozen } },
-      agents: { egpt: { mode: 'auto', model: 'opus' } },
-    },
-  } } });
-
-  it('a FLAT model pins the model — agent/type/effort/allowed_tools STILL come from the freeze', () => {
-    expect(getBeing(withPin(), 'whatsapp', '!pin:beeper.local', 'egpt')).toMatchObject({
-      model: 'opus',                       // ← the pin
-      mode: 'auto',                        // the block-level override still works
-      agent: 'egpt', brain: 'egpt', brainType: 'ccode', effort: 'high', allowedTools: ['Read', 'Grep'],
-      threadId: 'T1',                      // the spine's own block is untouched
-    });
-  });
-
-  it('an agents.<name>.readonly already on disk still reads — but a FLAT field beats it', () => {
-    const s = { contacts: { whatsapp: {
-      '!ro:beeper.local': { slug: 'ro',
-        egpt:   { readonly: { ...frozen } },
-        agents: { egpt: { readonly: { model: 'haiku', effort: 'low' }, model: 'opus' } },
-      },
-    } } };
-    expect(getBeing(s, 'whatsapp', '!ro:beeper.local', 'egpt')).toMatchObject({
-      model: 'opus',        // flat wins over the override's own readonly…
-      effort: 'low',        // …which still layers where no flat field speaks…
-      agent: 'egpt', brainType: 'ccode', allowedTools: ['Read', 'Grep'],   // …over the freeze
-    });
-  });
-
-  it('a conversation with NO pin resolves exactly the freeze (nothing invented)', () => {
-    const s = { contacts: { whatsapp: { '!plain:beeper.local': { slug: 'p', egpt: { readonly: { ...frozen } } } } } };
-    expect(getBeing(s, 'whatsapp', '!plain:beeper.local', 'egpt')).toMatchObject({
-      model: 'sonnet', effort: 'high', agent: 'egpt', brainType: 'ccode', allowedTools: ['Read', 'Grep'],
-    });
-  });
-
-  it('the pin adds NO phantom resident (the _FLAT_ENTRY_KEYS trap)', () => {
-    expect(residentsOf(withPin().contacts.whatsapp['!pin:beeper.local'])).toEqual(['egpt']);
-  });
-});
-
-// patchBeing is the WRITE side of that merge (operator 2026-07-25: "so fix /e auto to the new
-// config"). The invariant it exists to hold: getBeing reads back exactly what was written, no
-// matter which of the two blocks the field currently resolves from.
-describe('per-being: patchBeing lands each field where getBeing resolves it', () => {
+describe('patchBeing — every field lands in entry.agents.<being> (phase 1: one destination, not a split)', () => {
   const base = () => ({ contacts: { whatsapp: {
-    '!ovr:beeper.local': { slug: 'ovr',
-      e:      { mode: 'on', threadId: 'T9', readonly: { model: 'opus' } },
-      agents: { e: { mode: 'mute' }, don: { mode: 'mention-direct' } },
-    },
-    '!old:beeper.local': { slug: 'old', e: { mode: 'on', threadId: 'T1' } },
+    '!ovr:beeper.local': { slug: 'ovr', agents: { e: { mode: 'on', threadId: 'T9' }, don: { mode: 'mention-direct' } } },
+    '!old:beeper.local': { slug: 'old', e: { mode: 'on', threadId: 'T1' } },   // pre-phase-1 leftover, never touched by writes
   } } });
 
-  it('a field the agents: block pins is written THERE — the effective value changes', () => {
+  it('a field write merges over the being\'s existing agents.<being> block — siblings survive', () => {
     const s = patchBeing(base(), 'whatsapp', '!ovr:beeper.local', 'e', { mode: 'mention' });
     expect(getBeing(s, 'whatsapp', '!ovr:beeper.local', 'e').mode).toBe('mention');
     const entry = s.contacts.whatsapp['!ovr:beeper.local'];
-    expect(entry.agents.e.mode).toBe('mention');
-    expect(entry.agents.don).toEqual({ mode: 'mention-direct' });   // another agent's pin untouched
-    expect(entry.e.threadId).toBe('T9');                            // the spine's block untouched
+    expect(entry.agents.e).toEqual({ mode: 'mention', threadId: 'T9' });   // threadId survives the merge
+    expect(entry.agents.don).toEqual({ mode: 'mention-direct' });          // another being's block untouched
   });
 
-  it('a field the agents: block does NOT pin keeps going to entry[being] — no machine state in the operator block', () => {
+  it('recordThread writes threadId/threadCreatedAt/identityInjectedAt into agents.<being>, merged over an existing mode', () => {
     const s = recordThread(base(), 'whatsapp', '!ovr:beeper.local', 'T-NEW', '2026-07-25T00:00:00Z', 'e');
+    const entry = s.contacts.whatsapp['!ovr:beeper.local'];
+    expect(entry.agents.e).toMatchObject({ mode: 'on', threadId: 'T-NEW', threadCreatedAt: '2026-07-25T00:00:00Z', identityInjectedAt: '2026-07-25T00:00:00Z' });
     expect(getBeing(s, 'whatsapp', '!ovr:beeper.local', 'e').threadId).toBe('T-NEW');
-    const entry = s.contacts.whatsapp['!ovr:beeper.local'];
-    expect(entry.e.threadId).toBe('T-NEW');
-    expect(entry.agents.e).toEqual({ mode: 'mute' });   // the pin is not where threads get recorded
-    expect(getBeing(s, 'whatsapp', '!ovr:beeper.local', 'e').mode).toBe('mute');   // …and it still wins
   });
 
-  it('an agents-only being: writing a pinned field updates the pin, an unpinned one opens its own block', () => {
-    const s = patchBeing(base(), 'whatsapp', '!ovr:beeper.local', 'don', { mode: 'off', threadId: 'T-DON' });
-    expect(getBeing(s, 'whatsapp', '!ovr:beeper.local', 'don')).toMatchObject({ mode: 'off', threadId: 'T-DON' });
+  it('a being with no agents.<name> block yet OPENS one — first write, same destination as every later write', () => {
+    const s = patchBeing(base(), 'whatsapp', '!ovr:beeper.local', 'scribe', { mode: 'off', threadId: 'T-SCRIBE' });
+    expect(getBeing(s, 'whatsapp', '!ovr:beeper.local', 'scribe')).toMatchObject({ mode: 'off', threadId: 'T-SCRIBE' });
     const entry = s.contacts.whatsapp['!ovr:beeper.local'];
-    expect(entry.agents.don).toEqual({ mode: 'off' });
-    expect(entry.don).toEqual({ threadId: 'T-DON' });
+    expect(entry.agents.scribe).toEqual({ mode: 'off', threadId: 'T-SCRIBE' });
   });
 
-  it('a conversation with no agents: block never grows one (nothing migrates)', () => {
+  it('a pre-phase-1 entry[<being>] block is left completely untouched by a write — it never becomes the write target', () => {
     const s = patchBeing(base(), 'whatsapp', '!old:beeper.local', 'e', { mode: 'mute' });
     const entry = s.contacts.whatsapp['!old:beeper.local'];
-    expect(entry).toEqual({ slug: 'old', e: { mode: 'mute', threadId: 'T1' } });
-    expect(getBeing(s, 'whatsapp', '!old:beeper.local', 'e').mode).toBe('mute');
+    expect(entry.e).toEqual({ mode: 'on', threadId: 'T1' });   // untouched — writes never land here any more
+    expect(entry.agents).toEqual({ e: { mode: 'mute' } });     // the write opened the ONE current-shape block instead
+    expect(getBeing(s, 'whatsapp', '!old:beeper.local', 'e').mode).toBe('mute');   // and getBeing reads it back
   });
 
-  it('the written override survives the YAML round-trip (it is read back off disk, not just in memory)', () => {
-    const s = patchBeing(base(), 'whatsapp', '!ovr:beeper.local', 'e', { mode: 'mention' });
-    expect(getBeing(parse(serialize(s)), 'whatsapp', '!ovr:beeper.local', 'e').mode).toBe('mention');
+  it('access_level writes exactly like any other field now — no special-cased destination', () => {
+    const s = patchBeing(base(), 'whatsapp', '!ovr:beeper.local', 'e', { access_level: 'all' });
+    expect(getBeing(s, 'whatsapp', '!ovr:beeper.local', 'e').accessLevel).toBe('all');
+    expect(s.contacts.whatsapp['!ovr:beeper.local'].agents.e).toMatchObject({ mode: 'on', threadId: 'T9', access_level: 'all' });
+  });
+
+  it('the written block survives the YAML round-trip (read back off disk, not just in memory)', () => {
+    const s = patchBeing(base(), 'whatsapp', '!ovr:beeper.local', 'e', { mode: 'mention', access_level: 'regular' });
+    const back = getBeing(parse(serialize(s)), 'whatsapp', '!ovr:beeper.local', 'e');
+    expect(back.mode).toBe('mention');
+    expect(back.accessLevel).toBe('regular');
   });
 });
 
-// access_level (operator 2026-08-14, /e access all|regular) is an ALWAYS-OVERRIDE field:
-// it must land in the agents.<being> block on EVERY write, first write included — unlike
-// every other field above, which only routes there once the override block already
-// defines it (a first-time write otherwise lands in the spine's own entry[being] snapshot,
-// which is the wrong home: access_level is never spine machine-state). Regression-locks
-// that this special-case did NOT change how any OTHER field routes.
-describe('per-being: access_level always routes to the agents: override block, first write included', () => {
-  it('getBeing reads access_level back from the override block', () => {
-    const state = { contacts: { whatsapp: { '!ovr:beeper.local': {
-      slug: 'ovr', e: { mode: 'on' }, agents: { e: { access_level: 'all' } },
+describe('deleteBeing — wipes the WHOLE agents.<being> block outright', () => {
+  it('present reads back false after delete; a sibling being in the same conversation is untouched', () => {
+    const seeded = { contacts: { whatsapp: { '!ovr:beeper.local': { slug: 'ovr',
+      agents: { e: { mode: 'on', threadId: 'T9', access_level: 'all' }, don: { mode: 'mention-direct' } },
     } } } };
-    expect(getBeing(state, 'whatsapp', '!ovr:beeper.local', 'e').accessLevel).toBe('all');
+    const s = deleteBeing(seeded, 'whatsapp', '!ovr:beeper.local', 'e');
+    expect(getBeing(s, 'whatsapp', '!ovr:beeper.local', 'e').present).toBe(false);
+    expect(getBeing(s, 'whatsapp', '!ovr:beeper.local', 'don').present).toBe(true);
+    expect(getBeing(s, 'whatsapp', '!ovr:beeper.local', 'don').mode).toBe('mention-direct');
   });
 
-  it('a being with no access_level ever written resolves accessLevel: null', () => {
-    const state = { contacts: { whatsapp: { '!plain:beeper.local': { slug: 'plain', e: { mode: 'on' } } } } };
-    expect(getBeing(state, 'whatsapp', '!plain:beeper.local', 'e').accessLevel).toBe(null);
+  it('deleting the LAST being drops the now-empty agents: container entirely, not a stray {}', () => {
+    const seeded = { contacts: { whatsapp: { '!solo:beeper.local': { slug: 'solo', agents: { e: { mode: 'on' } } } } } };
+    const s = deleteBeing(seeded, 'whatsapp', '!solo:beeper.local', 'e');
+    const entry = s.contacts.whatsapp['!solo:beeper.local'];
+    expect(entry.agents).toBeUndefined();
   });
 
-  it('a FIRST-TIME access_level write on a being with NO agents: block at all lands in entry.agents.<being>, not entry[<being>]', () => {
-    const state = { contacts: { whatsapp: { '!fresh:beeper.local': { slug: 'fresh', e: { mode: 'on', threadId: 'T1' } } } } };
-    const s = patchBeing(state, 'whatsapp', '!fresh:beeper.local', 'e', { access_level: 'all' });
-    const entry = s.contacts.whatsapp['!fresh:beeper.local'];
-    expect(entry.agents).toEqual({ e: { access_level: 'all' } });
-    expect(entry.e).toEqual({ mode: 'on', threadId: 'T1' });   // the spine's block untouched
-    expect(getBeing(s, 'whatsapp', '!fresh:beeper.local', 'e').accessLevel).toBe('all');
-  });
-
-  it('a second access_level write updates the existing pin; an unrelated field in the SAME patch still routes by the normal rule', () => {
-    const seeded = { contacts: { whatsapp: { '!ovr:beeper.local': {
-      slug: 'ovr', e: { mode: 'on', threadId: 'T9' }, agents: { e: { access_level: 'all' } },
-    } } } };
-    const s = patchBeing(seeded, 'whatsapp', '!ovr:beeper.local', 'e', { access_level: 'regular', threadId: 'T-NEW' });
-    expect(getBeing(s, 'whatsapp', '!ovr:beeper.local', 'e').accessLevel).toBe('regular');
-    const entry = s.contacts.whatsapp['!ovr:beeper.local'];
-    expect(entry.agents.e.access_level).toBe('regular');
-    expect(entry.e.threadId).toBe('T-NEW');   // threadId is not agents:-pinned here, so it still goes to entry[being]
-  });
-
-  it('access_level survives the YAML round-trip', () => {
-    const state = { contacts: { whatsapp: { '!fresh:beeper.local': { slug: 'fresh', e: { mode: 'on' } } } } };
-    const s = patchBeing(state, 'whatsapp', '!fresh:beeper.local', 'e', { access_level: 'all' });
-    expect(getBeing(parse(serialize(s)), 'whatsapp', '!fresh:beeper.local', 'e').accessLevel).toBe('all');
-  });
-
-  it('regression: mode/threadId still route by the pre-existing k-in-ovr rule, unaffected by the access_level special-case', () => {
-    const seeded = { contacts: { whatsapp: { '!ovr:beeper.local': {
-      slug: 'ovr',
-      e: { mode: 'on', threadId: 'T9', readonly: { model: 'opus' } },
-      agents: { e: { mode: 'mute' }, don: { mode: 'mention-direct' } },
-    } } } };
-    const s = patchBeing(seeded, 'whatsapp', '!ovr:beeper.local', 'e', { mode: 'mention' });
-    const entry = s.contacts.whatsapp['!ovr:beeper.local'];
-    expect(entry.agents.e.mode).toBe('mention');   // agents.e already pinned mode → still routes there
-    expect(entry.e.threadId).toBe('T9');           // threadId (unpinned) still goes to entry[being]
+  it('a pre-phase-1 entry[<being>] block is left alone by deleteBeing too (it never touches that key)', () => {
+    const seeded = { contacts: { whatsapp: { '!old:beeper.local': { slug: 'old', e: { mode: 'on', threadId: 'T1' }, agents: { e: { access_level: 'all' } } } } } };
+    const s = deleteBeing(seeded, 'whatsapp', '!old:beeper.local', 'e');
+    expect(s.contacts.whatsapp['!old:beeper.local'].e).toEqual({ mode: 'on', threadId: 'T1' });   // untouched
+    expect(getBeing(s, 'whatsapp', '!old:beeper.local', 'e').present).toBe(false);                 // but reads back gone
   });
 });

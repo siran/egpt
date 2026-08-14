@@ -72,7 +72,7 @@ describe('contacts.resolve', () => {
     // state: slug moved, nested thread intact (a rename does not reset the thread)
     const c = getContact(getState(), SURFACE, CHAT);
     expect(c.slug).toBe(newSlug);
-    expect(c.entry.e.threadId).toBe('sess-old');
+    expect(c.entry.agents.e.threadId).toBe('sess-old');
   });
 
   it('title change where io.rename throws ENOENT: still succeeds (slug updated, no throw, no renames.log)', async () => {

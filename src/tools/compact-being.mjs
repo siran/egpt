@@ -110,14 +110,15 @@ export function compactableBeings(config) {
 //    thin alongside the beings (An 2026-06-19: "not only the being, the active conversations").
 //
 //    ONE TARGET PER RESIDENT BEING (fix 2026-07-26, HANDOFF C4). A conversation hosts residents,
-//    each with its OWN thread in the nested `entry[<being>]` block; the FLAT `entry.threadId`
-//    this used to read is the pre-2026-07-10 slot, ABANDONED by the agent-identity refactor
-//    (see the KEY-AS-BEING note in conversations-state.mjs). Reading it enumerated only the
-//    conversations that were already dead and missed every live one — measured on the live
-//    registry: 14 stale flat targets, 12 live nested threads, and the two sets barely overlap.
-//    `engine` is the being's FROZEN brain type (null until it is instanced) — the caller needs
-//    it for the warm key. `threadCwd` is retired, so no cwd travels here: the caller resolves
-//    the slug-dir, which is the cwd the daemon actually resumes with. ──
+//    each with its OWN thread in its `agents.<being>` block (phase 1, operator 2026-08-14 — was
+//    `entry[<being>]` before); a pre-phase-1 `entry.threadId` or `entry[<being>]` block is a dead
+//    slot getBeing no longer reads (see conversations-state.mjs's getBeing doc comment) — so it
+//    contributes nothing here either, by the same degrade. `engine` is ALWAYS null now (phase 1:
+//    there is no more per-conversation freeze of the brain type to read) — the caller
+//    (compactionTargets) falls back to its own `convBrainType` default for the warm key, exactly
+//    as it already did for a never-instanced conversation. `threadCwd` is retired, so no cwd
+//    travels here: the caller resolves the slug-dir, which is the cwd the daemon actually
+//    resumes with. ──
 export function compactableConversations(state, model = 'haiku') {
   const out = [];
   const contacts = state?.contacts ?? {};
@@ -129,7 +130,7 @@ export function compactableConversations(state, model = 'haiku') {
       for (const being of residentsOf(e)) {
         const b = getBeing(state, surface, jid, being);
         if (typeof b?.threadId !== 'string' || !b.threadId) continue;   // no live thread → nothing to compact
-        out.push({ name: `${surface}/${slug}#${being}`, surface, slug, being, sessionId: b.threadId, engine: b.brainType, model, window: windowForModel(model) });
+        out.push({ name: `${surface}/${slug}#${being}`, surface, slug, being, sessionId: b.threadId, engine: null, model, window: windowForModel(model) });
       }
     }
   }

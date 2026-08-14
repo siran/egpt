@@ -14,7 +14,7 @@
 # spine re-derives that one. So set real keys here; read this file for what
 # they mean. Locked by tests/conversations-state.test.mjs.
 # Edits are hot (re-read per lookup, no restart), but prefer `/e auto <mode>`
-# and the `/e` wizard where they cover it - a hand edit can race a spine write.
+# and `/e access all|regular` where they cover it - a hand edit can race a spine write.
 
 contacts:
 
@@ -39,45 +39,41 @@ contacts:
       # turns = consecutive non-human turns before pausing (-1/0 off), window = minutes
       #guard: { turns: -1 }
 
-      # one block per resident agent, keyed by its config.yaml agents: name
-      egpt:
+      # one block per resident agent, keyed by its config.yaml agents: name.
+      # EVERY field a being has lives HERE, flat (operator 2026-08-14: one block
+      # per being - no separate spine-written/operator-override split any more).
+      agents:
+        egpt:
 
-        # how this agent wakes here: on | auto | mute | mention-direct | mention | accum | off
-        # default: config.yaml agents.<name>.mode, then dispatch.auto_default_mode
-        # accum = the mention gate, PLUS every turn is prompted with what was
-        # said here SINCE THIS AGENT'S LAST TURN (read back out of transcript.md,
-        # labelled as context beside the trigger, 8000 chars max). It closes the
-        # gap send_to_egpt: mode leaves - an un-@mentioned message otherwise
-        # never reaches the agent. It changes WHAT a turn is prompted with, never
-        # WHEN one happens: no buffering, no batch, no heartbeat flush (that was
-        # the OLD accum, retired 2026-07-01 - same word, different mechanism).
-        #mode: mention
+          # how this agent wakes here: on | auto | mute | mention-direct | mention | accum | off
+          # default: config.yaml agents.<name>.mode, then dispatch.auto_default_mode
+          # accum = the mention gate, PLUS every turn is prompted with what was
+          # said here SINCE THIS AGENT'S LAST TURN (read back out of transcript.md,
+          # labelled as context beside the trigger, 8000 chars max). It closes the
+          # gap send_to_egpt: mode leaves - an un-@mentioned message otherwise
+          # never reaches the agent. It changes WHAT a turn is prompted with, never
+          # WHEN one happens: no buffering, no batch, no heartbeat flush (that was
+          # the OLD accum, retired 2026-07-01 - same word, different mechanism).
+          #mode: mention
 
-        # persona only - keep it in context on messages it won't answer: always | mode
-        #send_to_egpt: mode
+          # persona only - keep it in context on messages it won't answer: always | mode
+          #send_to_egpt: mode
 
-        # spine-written, don't hand-edit. Deleting threadId starts a new session
-        # AND re-reads this agent's config (the block above + the pins below).
-        threadId: null
-        #threadCreatedAt: 2026-07-10T16:39:39.948Z
-        #identityInjectedAt: 2026-07-10T16:39:39.948Z
+          # /e access all|regular - points this agent at config/permissions/<level>.md,
+          # read fresh every turn (NOT a freeze). Unset = this node's ordinary default.
+          #access_level: all
 
-        # spine-written freeze of the agent type this thread was instanced from.
-        # Change it with /e new | /e identity | /e brain, not by hand.
-        #readonly:
-        #  agent: egpt                 # the config.yaml agents: entry
-        #  type: ccode                 # the engine
-        #  model: sonnet               # sonnet | opus | haiku
-        #  effort: high                # high | medium | low
-        #  allowed_tools: [Read, Write, Edit, Glob, Grep, WebSearch, WebFetch, Task]
-        #                              # a LIST confines file tools to the folder;
-        #                              # "all" is rejected and coerced back to this
+          # spine-written, don't hand-edit. Deleting threadId starts a new session
+          # AND re-resolves this agent's engine/model/effort/tools fresh from
+          # config.yaml (agents.<name>.configuration) - there is no per-conversation
+          # freeze any more; every turn resolves the SAME way a first turn does.
+          threadId: null
+          #threadCreatedAt: 2026-07-10T16:39:39.948Z
+          #identityInjectedAt: 2026-07-10T16:39:39.948Z
 
-      # per-conversation overrides, layered field-wise OVER the blocks above:
-      # mode, send_to_egpt, and the readonly five FLAT - each pins only itself.
-      #agents:
-      #  egpt: { mode: accum, model: opus }
-      #  don:  { mode: mention-direct }
+        # another resident being (a sibling like @don): its OWN key under agents:,
+        # same shape as egpt above - no separate override layer any more.
+        #don: { mode: mention-direct }
 
     # a second id for the SAME contact - one thread, one folder, one mode.
     # One level only; an alias pointing at an alias resolves to nothing.
@@ -98,5 +94,8 @@ contacts:
 # INERT - `system_thread:` at the root: round-trips, nothing reads it. Don't copy
 # forward. (The legacy FLAT entry keys that used to be listed here - threadId, mode,
 # send_to_egpt, readonly, personality, transcribe, threadCwd, firstSeenAt and the two
-# thread timestamps - were deleted from the code on 2026-07-26. An entry on disk may
-# still carry them; they are inert data, and nothing here documents them any more.)
+# thread timestamps - were deleted from the code on 2026-07-26; the per-being
+# `<agent-name>:` block directly on the entry - mode/threadId/readonly written OUTSIDE
+# agents: - was retired 2026-08-14 in favor of the single `agents.<name>` block above.
+# An entry on disk may still carry any of these; they are inert data, and nothing here
+# documents them any more.)

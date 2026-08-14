@@ -10,16 +10,14 @@
 // with a short note.
 import { lifecycleExit } from './ingest.mjs';
 import { isAutoMode, AUTO_MODES, DEFAULT_AUTO_MODE } from '../auto-mode.mjs';
-import { patchBeing, deleteBeing, getContact, getBeing, slugDir, statsPath, conversationPathOf, listIdentityLayers as defaultListIdentityLayers, seedIdentityLayers, skeletonIdentityFiles, slugSuffix, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS, READONLY_ALLOWED_TOOLS, LOBBY_SLUG } from '../conversations-state.mjs';
+import { patchBeing, deleteBeing, getContact, getBeing, slugDir, statsPath, conversationPathOf, seedIdentityLayers, skeletonIdentityFiles, slugSuffix, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS, LOBBY_SLUG } from '../conversations-state.mjs';
 import { stripFrontMatter } from '../transcript-meta.mjs';
-import { initWizard, wizardStep, wizardPrompt } from '../agent-wizard.mjs';
-import { BUILTIN_BRAINS_DIR, PROFILE_AGENTS_DIR } from './brains.mjs';
-import { coerceAllowedTools } from './brainpool.mjs';
+import { coerceAllowedTools, resolveDefaultBrainDef } from './brainpool.mjs';
 import { loadPermissionLevel } from './permission-levels.mjs';
 import { stat as fsStat, readFile as fsReadFile, writeFile as fsWriteFile, mkdir as fsMkdir, readdir as fsReaddir, rm as fsRm, rename as fsRename } from 'node:fs/promises';
 import { readdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { join, dirname, basename } from 'node:path';
+import { join, basename } from 'node:path';
 import * as YAML from 'yaml';
 import { EGPT_HOME } from '../egpt-home.mjs';
 import { shortChatId } from '../bridges/chat-id.mjs';
@@ -67,32 +65,6 @@ function defaultLaunchChromeTask() {
   } catch { return { ok: false }; }
 }
 
-// Where the `custom` wizard branch AUTHORS its new files (injectable in tests): the
-// agent-type YAML lands in config/agents/, a free-text identity layer as a FLAT
-// config/identities/<name>.md file (operator 2026-07-03).
-export const PROFILE_IDENTITIES_DIR = join(EGPT_HOME, 'config', 'identities');
-
-// The new agent-type file (house comment style, brief). Writes the explicit
-// DEFAULT_ALLOWED_TOOLS list (a LIST = CONFINED; the readonly freeze below matches).
-// `personality` names the identity layer a fresh conversation of this type boots from.
-function customTypeFile(name, model, effort, personality) {
-  const toolLines = DEFAULT_ALLOWED_TOOLS.map((t) => `  - ${t}`).join('\n');
-  return `# ${name} — custom agent type created via the /e wizard. A brain def (engine config);
-# edit freely. Resolution layers (most-specific wins): src/brains < config/agents < <slug>/brains.
-type: ${CCODE}
-model: ${model}
-effort: ${effort}
-allowed_tools:        # list tools explicitly (CONFINED); 'all' is accepted but discouraged (never grants bare Bash/Agent)
-${toolLines}
-personality: ${personality}
-`;
-}
-
-// A free-text identity layer: JUST the operator's instructions (no comment header — the
-// whole file is concatenated into the kickoff feed, so a housekeeping comment would leak
-// into the persona). Matches the default layer's plain-markdown convention.
-const identityLayerFile = (text) => `${String(text).trim()}\n`;
-
 // A fresh room's config.yaml — a commented placeholder (like the seeded templates,
 // seed.mjs). Pure comments → parses to null, so the heartbeat/transcription loaders read
 // it as an empty {}. Members are later work — no roster block yet. (The room's identity.d/
@@ -131,37 +103,7 @@ function defaultListRoomNames() {
   } catch { return []; }
 }
 
-// The `/e` wizard's model/effort menus (operator 2026-07-02: v1's `/e` supplied
-// these same fixed lists — there is no canonical model/effort registry in v2, and
-// the agent TYPE file pins concrete values anyway). The agent-type list (step 1) is
-// discovered from disk. TTL matches v1's armed-wizard window.
-const WIZARD_MODELS = ['haiku', 'sonnet', 'opus', 'fable'];
-const WIZARD_EFFORTS = ['low', 'medium', 'high'];
-const WIZARD_TTL_MS = 5 * 60 * 1000;
 const CCODE = 'ccode';
-
-// Agent-type names for the wizard's first pick: the built-in defs (src/brains/*.yaml)
-// plus the profile's own type files (EGPT_HOME/config/agents/*.yaml), deduped
-// (case-insensitively; a profile override of a built-in shows once) and sorted. Same
-// two layers the brain registry resolves against — a conversation-only brains/ layer
-// is not offered (it's not a reusable type). Never throws (a missing dir is skipped).
-function defaultListAgentTypes() {
-  const seen = new Set();
-  const out = [];
-  for (const dir of [BUILTIN_BRAINS_DIR, PROFILE_AGENTS_DIR]) {
-    let ents = [];
-    try { ents = readdirSync(dir); } catch { continue; }
-    for (const f of ents) {
-      if (!f.endsWith('.yaml')) continue;
-      const name = f.slice(0, -5);
-      const k = name.toLowerCase();
-      if (seen.has(k)) continue;
-      seen.add(k);
-      out.push(name);
-    }
-  }
-  return out.sort();
-}
 
 // How many of Chrome's tabs /chrome lists before it collapses the rest into a
 // "+N more" — this report lands in a chat window, not a terminal.
@@ -324,13 +266,9 @@ export function createCommands({
   exit = (code) => process.exit(code),
   writeRewindTarget,
   loadState = null, writeState = null,   // conv-state IO — lets /e auto persist a mode
-  brains = null,                         // the brain registry (createBrains) — the /e wizard resolves a picked agent type through it
-  defaultKey = 'e',                      // the persona being-id (its map key), injected by boot from the single `default:true` agent — the persona's per-conversation mode/readonly reads+writes and its warm-key prefix all key off this, never a hardcoded 'e' (operator 2026-07-10)
-  evictWarm = () => {},                  // (warmKey) -> drop that conversation's warm session so a re-point respawns fresh
-  listAgentTypes = defaultListAgentTypes,// () -> string[] agent-type names for the wizard's first pick (injected in tests)
-  listIdentityLayers = defaultListIdentityLayers, // () -> string[] identity-layer names for the custom branch's personality pick
-  agentsDir = PROFILE_AGENTS_DIR,        // where the custom branch writes <name>.yaml (injected in tests)
-  identitiesDir = PROFILE_IDENTITIES_DIR,// where the custom branch writes a free-text identity layer (injected in tests)
+  brains = null,                         // the brain registry (createBrains) — /e access + /status resolve the persona's live def through it (brainpool.mjs's resolveDefaultBrainDef)
+  defaultKey = 'e',                      // the persona being-id (its map key), injected by boot from the single `default:true` agent — the persona's per-conversation mode/state reads+writes and its warm-key prefix all key off this, never a hardcoded 'e' (operator 2026-07-10)
+  evictWarm = () => {},                  // (warmKey) -> drop that conversation's warm session so /e access's re-point respawns fresh
   configPath = CONFIG_YAML_PATH,         // where /config <key>=<value> writes — the real profile config.yaml by default (injected in tests, so no test ever touches the real profile)
   io = {},                               // { stat, readFile, writeFile, mkdir, readdir, rm } — real fs by default; /status probes files + the custom branch authors through here
   // CDP seam for /chrome, /tabs, /open, /tab, /close — the real localhost probe by
@@ -470,13 +408,6 @@ export function createCommands({
     return out;
   })();
 
-  // Armed `/e` wizards, keyed by the OPERATOR's chat (where they type the answers) —
-  // NOT the target chat (bare `/e` targets here; `/e <slug>` targets elsewhere). Each
-  // entry carries the resolved target + the engine its live warm session runs under
-  // (for eviction on done) + the arming timestamp (TTL). See armWizard/stepWizard.
-  const wizards = new Map();   // chatKey -> { state, surface, chatId, oldEngine, ts }
-  const chatKey = (ev) => `${ev?.surface ?? 'whatsapp'}:${ev?.chatId}`;
-
   // Per-surface self-DM command channels (operator 2026-07-09): the NEW shape lists them under
   // networks:.<surface>.chat_ids (plural); the OLD shape has <surface>.chat_id (singular). Read
   // BOTH, preferring networks:, always yielding a LIST — a command typed in ANY of the surface's
@@ -487,7 +418,7 @@ export function createCommands({
               : (c[surface] && typeof c[surface] === 'object') ? c[surface] : {};
     return Array.isArray(raw.chat_ids) ? raw.chat_ids : (raw.chat_id != null ? [raw.chat_id] : []);
   }
-  // The operator gate — reused by isCommand AND the wizard's first-refusal. Same
+  // The operator gate — reused by isCommand and every command handler. Same
   // authorization every slash command uses: the origin surface's own Self DM (ids
   // are per-surface namespaces), an authorized sender, or the account owner (isSender).
   function isOperator(ev) {
@@ -568,15 +499,6 @@ export function createCommands({
     return `/${parsed.token}=${node}${parsed.rest ? ` ${parsed.rest}` : ''}`;
   }
 
-  // Is an un-expired `/e` wizard armed for this chat? Prunes an expired one (so an
-  // abandoned wizard never lingers past its 5-min window).
-  function wizardActive(ev) {
-    const wm = wizards.get(chatKey(ev));
-    if (!wm) return false;
-    if (Date.now() - wm.ts > WIZARD_TTL_MS) { wizards.delete(chatKey(ev)); return false; }
-    return true;
-  }
-
   // rs — the RADIO quick reply (operator 2026-08-08): configured the SAME way `r` is
   // (quick_reply_string) — a single top-level string, DEFAULT "rs", "" disables — but its OWN
   // key, not derived from quick_reply_string: `r` addresses whichever AGENT spoke last
@@ -599,15 +521,8 @@ export function createCommands({
   // against cfg.telegram.chat_id, not whatsapp's — ids are per-surface namespaces.
   // Fall back to the whatsapp block when ev.surface is absent (safety). Authorized
   // senders (per-surface allowed_users / isSender) can command from anywhere.
-  //
-  // An ARMED `/e` wizard gets FIRST REFUSAL on the operator's next message (even a
-  // plain, non-slash one — a numbered pick), so it doesn't fall through to E's brain
-  // turn. A non-operator message never counts (it routes normally, never touching
-  // the wizard). Slash commands while armed still count as commands and route through
-  // run() (v1 lets a slash bypass the wizard without cancelling it — matched below).
   function isCommand(ev) {
     const body = String(ev?.body ?? '').trim();
-    if (isOperator(ev) && wizardActive(ev)) return true;
     if (isOperator(ev) && isRadioQuickReply(ev)) return true;
     if (!body.startsWith('/')) return false;
     return isOperator(ev);
@@ -626,17 +541,9 @@ export function createCommands({
   async function run(ev) {
     let line = String(ev.body ?? '').trim();
 
-    // rs — THE RADIO QUICK REPLY, checked before the wizard's plain-text first refusal below: a
-    // reserved word wins over an armed wizard, same precedent as the STOP safe word (spine.mjs
-    // classify) — an armed `/e` wizard must never swallow it.
+    // rs — THE RADIO QUICK REPLY: the one non-slash message isCommand ever routes here for
+    // (see isCommand above) — every other non-slash line never reaches run() at all.
     if (isRadioQuickReply(ev)) { await radioQuickReply(ev); return; }
-
-    // Armed `/e` wizard, first refusal: a PLAIN (non-slash) operator message is a
-    // numbered/typed answer — step the wizard and stop (never reach E's brain). A
-    // slash command falls through to normal dispatch (v1 bypass: the wizard stays
-    // armed until answered, cancelled, or TTL-expired). isCommand only routes a plain
-    // message here when a wizard is armed, so a bare return after stepping is safe.
-    if (!line.startsWith('/')) { await stepWizard(ev, line); return; }
 
     const code = lifecycleExit(line, { writeRewindTarget });
     if (code != null) {
@@ -684,10 +591,9 @@ export function createCommands({
           if (r.error) { await send?.(ev.chatId, `/e auto: ${r.error}`); return; }
           jid = r.jid; where = `for ${r.name}`; targetSurface = r.surface;
         }
-        // The persona is a NESTED being keyed by defaultKey now (operator 2026-07-10) — write
-        // its mode into that block (merged over the existing one), NOT a flat entry.mode, so
-        // gating reads it back via getBeing(defaultKey). patchBeing picks WHICH block that is
-        // (the `agents:` override when one pins this field), so the write is never shadowed.
+        // The persona is a being keyed by defaultKey (operator 2026-07-10) — write its mode
+        // into `agents.<defaultKey>` (merged over the existing block), so gating reads it
+        // back via getBeing(defaultKey).
         await writeState(patchBeing(state, targetSurface, jid, defaultKey, { mode }));
         await send?.(ev.chatId, `✅ E mode ${where} → ${mode}`);
       } catch (e) { onLog(`/e auto ${ev.chatId}: ${e?.message ?? e}`); await send?.(ev.chatId, `/e auto: failed — ${e?.message ?? e}`); }
@@ -695,8 +601,8 @@ export function createCommands({
     }
 
     // /e reset — reset the CURRENT conversation (ev.surface/ev.chatId), bare, no target
-    // argument (self-only — unlike /e auto's <target> form). Must stay BEFORE the eWiz
-    // catch-all below, same slot as /e auto. See eReset() for the steps.
+    // argument (self-only — unlike /e auto's <target> form). Must stay BEFORE the bare-/e
+    // usage catch-all below, same slot as /e auto. See eReset() for the steps.
     const resetMatch = /^\/(?:e|egpt)\s+reset\s*$/i.exec(line);
     if (resetMatch) { await eReset(ev); return; }
 
@@ -705,11 +611,10 @@ export function createCommands({
     // unconfined meta-engineer tier and this node's regular persona default. A PLAIN
     // TOGGLE (operator: same trust model as /room delete force) — no extra reachability
     // gate; the operator's own judgment about which conversation gets this is the only
-    // guard. Must stay BEFORE the eWiz catch-all, same slot as /e reset. The strict
+    // guard. Must stay BEFORE the bare-/e usage catch-all, same slot as /e reset. The strict
     // all|regular match is checked first; a bare `/e access` or an unrecognized third
     // word falls to the looser match right after, so malformed input gets a usage reply
-    // instead of silently reaching the wizard catch-all (which would otherwise treat
-    // "access foo" as a wizard target term). See eAccess().
+    // instead of falling through to the bare-/e catch-all's generic usage line. See eAccess().
     const accessMatch = /^\/(?:e|egpt)\s+access\s+(all|regular)\s*$/i.exec(line);
     if (accessMatch) { await eAccess(ev, accessMatch[1].toLowerCase()); return; }
     const accessUsageMatch = /^\/(?:e|egpt)\s+access\b/i.exec(line);
@@ -741,8 +646,8 @@ export function createCommands({
     // addressed node. Must stay BEFORE the catch-all at the end of this dispatch (it
     // answers ANY /token, so a fall-through would silently swallow /chrome) — that
     // ordering IS test-enforced: the /chrome tests assert its real reply, and they fail
-    // the moment it reaches the catch-all instead. It does NOT interact with the /e
-    // wizard below: /e's match is ANCHORED at ^/(e|egpt), so it can never match /chrome
+    // the moment it reaches the catch-all instead. It does NOT interact with the bare-/e
+    // usage reply below: /e's match is ANCHORED at ^/(e|egpt), so it can never match /chrome
     // (verified 2026-07-15 — an earlier comment here wrongly called /e "greedy").
     const chromeMatch = /^\/chrome(?:\s+(.+?))?\s*$/i.exec(line);
     // dispatch.default_node resolves a truly bare `/chrome` to a node (addressed.raw === '')
@@ -780,7 +685,7 @@ export function createCommands({
     // /room <verb> [<room>] — Phase 2 rooms & members, verb-first (bug fix 2026-08-07: the
     // old slug-first grammar let an unrecognized first token default to a room lookup — see
     // the room() comment below). Slots in exactly like /chrome: a dispatch match BEFORE the
-    // anchored /e wizard and the catch-all.
+    // anchored bare-/e usage reply and the catch-all.
     const roomMatch = /^\/room(?:\s+(\S+))?(?:\s+(.+?))?\s*$/i.exec(line);
     if (roomMatch) { await room(ev, roomMatch[1]?.toLowerCase() || null, roomMatch[2]?.trim() || null); return; }
 
@@ -825,12 +730,14 @@ export function createCommands({
     const activateMatch = /^\/activate\s+(\S+)\s*$/i.exec(line);
     if (activateMatch) { await activate(ev, activateMatch[1]); return; }
 
-    // /e (bare) or /e <fragment> — ARM the re-point wizard (v1 parity: a guided
-    // agent-type/model/effort pick, not a flag command). Bare targets THIS chat; a
-    // fragment resolves the target like /e auto does. `/e auto …` is matched above, so
-    // it never reaches here. Must stay AFTER /e auto + /status in the dispatch order.
-    const eWiz = /^\/(?:e|egpt)(?:\s+(.+?))?\s*$/i.exec(line);
-    if (eWiz) { await armWizard(ev, eWiz[1]?.trim() || null); return; }
+    // /e (bare) or /e <anything else> — the re-point WIZARD that used to arm here is
+    // retired (operator 2026-08-14, phase 1: there is no more per-conversation freeze for
+    // it to configure — engine/model/effort/tools now always resolve fresh from
+    // config.yaml). `/e auto`, `/e reset`, and `/e access all|regular` are matched above and
+    // never reach here; anything else under `/e`/`/egpt` gets a plain usage reply instead of
+    // silently arming a wizard that no longer exists.
+    const eBareMatch = /^\/(?:e|egpt)\b/i.exec(line);
+    if (eBareMatch) { await send?.(ev.chatId, 'usage: /e auto <mode> [chat] | /e reset | /e access all|regular'); return; }
 
     const tok = line.split(/\s+/)[0];
     await send?.(ev.chatId, `${tok}: recognized — lifecycle (/restart, /upgrade, /rewind) + /e auto <mode> + /status are wired in v2 so far.`);
@@ -1076,10 +983,10 @@ export function createCommands({
     // archive — tolerate a missing source and proceed to reseed rather than crash.
     let archived = true;
     try { await rename(base, archivedDir); } catch { archived = false; }
-    // Wipe defaultKey's registry state OUTRIGHT (deleteBeing, not a merge) — mode, threadId,
-    // readonly and any agents.<defaultKey> override all gone, so getBeing(...).present reads
-    // back false, matching a never-instanced contact. Another resident being's own override
-    // in this same conversation (e.g. agents.d) is untouched.
+    // Wipe defaultKey's registry state OUTRIGHT (deleteBeing, not a merge) — the WHOLE
+    // `agents.<defaultKey>` block (mode, threadId, access_level, …) is gone, so
+    // getBeing(...).present reads back false, matching a never-instanced contact. Another
+    // resident being's own block in this same conversation (e.g. agents.d) is untouched.
     try {
       const state = await loadState();
       await writeState(deleteBeing(state, room.surface, room.slug, defaultKey));
@@ -1095,17 +1002,14 @@ export function createCommands({
 
   // /e access all|regular — point the CURRENT conversation's `access_level` at
   // config/permissions/all.md or config/permissions/regular.md (operator 2026-08-14).
-  // NOT a freeze: unlike applyWizard's "pick an existing type" branch (which resolves a
-  // full agent-type def and COPIES agent/type/model/effort/allowed_tools into readonly),
-  // this writes ONLY `access_level: target` into the override block — patchBeing routes it
-  // there UNCONDITIONALLY, first write included (conversations-state.mjs's
-  // _ALWAYS_OVERRIDE_FIELDS). brainpool.mjs's turn() reads the matching permissions file
-  // FRESH every turn (permission-levels.mjs — no caching, no freeze) and overrides that
-  // turn's allowed_tools/dangerous, so editing either file changes behavior immediately for
-  // every conversation pointing at that level, with no `/e access` re-run. Agent/model/
+  // NOT a freeze: this writes ONLY `access_level: target` into the being's block, merged
+  // over its existing fields (patchBeing). brainpool.mjs's turn() reads the matching
+  // permissions file FRESH every turn (permission-levels.mjs — no caching) and overrides
+  // that turn's allowed_tools/dangerous, so editing either file changes behavior immediately
+  // for every conversation pointing at that level, with no `/e access` re-run. Agent/model/
   // effort/engine are never touched. Still touches ONLY that one field — threadId/mode/
-  // every other sibling field survive untouched, same contrast with /e reset (deleteBeing,
-  // wipes everything) the old code drew.
+  // every other sibling field survive untouched, in contrast with /e reset (deleteBeing,
+  // wipes everything).
   async function eAccess(ev, target) {
     const room = await convRoomOf(ev);
     if (!room) { await send?.(ev.chatId, "can't resolve this conversation's room"); return; }
@@ -1114,10 +1018,13 @@ export function createCommands({
     if (!perm) { await send?.(ev.chatId, `/e access: permissions file for "${target}" not found or unparseable`); return; }
     try {
       const state = await loadState();
-      // The engine the LIVE warm session is keyed under. access_level never changes
-      // def.type (only allowed_tools/dangerous), so this is just whatever engine the
-      // conversation is already instanced on (or the ccode fallback pre-instancing).
-      const engine = getBeing(state, room.surface, room.slug, defaultKey)?.brainType ?? CCODE;
+      // The engine the LIVE warm session is keyed under. access_level never changes the
+      // engine (only allowed_tools/dangerous), so this is exactly what the persona's NEXT
+      // turn will resolve too (phase 1: engine/model/effort always resolve fresh from
+      // config — resolveDefaultBrainDef is the SAME function turn() itself calls).
+      let convDir = null;
+      try { convDir = slugDir(room.surface, room.slug); } catch { /* non-default surface */ }
+      const engine = resolveDefaultBrainDef({ getConfig: cfg, brains, convDir, brainType: CCODE })?.type ?? CCODE;
       await writeState(patchBeing(state, room.surface, room.slug, defaultKey, { access_level: target }));
       // Evict the warm session: a warm `claude` process bakes its allowedTools/confinement
       // into its spawn args ONCE, at open (warm-cli-session.mjs's spawnProc), and never
@@ -2219,33 +2126,20 @@ export function createCommands({
     const b = getBeing(state, r.surface, r.jid, defaultKey);
     const mode = b?.mode ?? `${DEFAULT_AUTO_MODE} (default)`;
 
-    // Instanced = this being took a first turn and froze a readonly brain (getBeing's
-    // brainType is null until then, matching brainpool's own instanced check). Uninstanced:
-    // preview what a first turn would actually pin, composed the same way brainpool's
-    // fresh-turn path does — brains.resolve('egpt', …) + coerceAllowedTools + the
-    // DETERMINISTIC_MODEL/EFFORT fallbacks — reusing exactly the exports commands.mjs
-    // already reaches (brains, coerceAllowedTools, DETERMINISTIC_MODEL/EFFORT,
-    // DEFAULT_ALLOWED_TOOLS). This does NOT replicate brainpool's private
-    // persona-agent-configuration override lookup (agents.<e/egpt>.configuration is not
-    // exported) — it previews the shipped 'egpt' type, which matches the skeleton default
-    // and any profile that hasn't repointed the persona; an operator who HAS repointed it
-    // sees the shipped default here until the first turn actually pins their override.
-    const instanced = !!b?.brainType;
+    // The persona's LIVE brain def (phase 1, operator 2026-08-14): there is no more
+    // per-conversation freeze to read — every conversation's engine/model/effort/tools
+    // resolve fresh from config every turn, so /status previews the SAME def brainpool.mjs's
+    // turn() would actually run, via the SAME function (resolveDefaultBrainDef —
+    // name-the-existing-thing, not a second derivation).
     let previewDef = null;
-    if (!instanced) {
-      try { previewDef = coerceAllowedTools(brains?.resolve?.('egpt', { convDir })); } catch { previewDef = null; }
-    }
+    try {
+      const raw = resolveDefaultBrainDef({ getConfig: cfg, brains, convDir, brainType: CCODE });
+      previewDef = raw?.dangerous === true ? raw : coerceAllowedTools(raw);
+    } catch { previewDef = null; }
 
-    // Personality: resolved the way the brainpool does — the agent TYPE file's
-    // `personality:` field, else 'egpt' (brains registry, same layered resolution the
-    // /e wizard's preview uses). Uninstanced: resolved from the same default preview above.
-    let personality = '?';
-    if (b?.agent) {
-      try { const def = brains?.resolve?.(b.agent, { convDir }); personality = def ? (def.personality ?? 'egpt') : '?'; }
-      catch { personality = '?'; }
-    } else if (!instanced) {
-      personality = previewDef?.personality ?? 'egpt';
-    }
+    // Personality: the resolved type file's `personality:` field, else 'egpt' (the shipped
+    // default) — exactly what brainpool.mjs's turn() feeds a fresh thread's kickoff.
+    const personality = previewDef?.personality ?? 'egpt';
 
     let members = 'unknown';
     if (convDir) {
@@ -2275,7 +2169,7 @@ export function createCommands({
     }
 
     // Optional: this conversation's own heartbeat count (source/cwd pinned to convDir),
-    // omitted when the readonly view is absent (matches bare /status's optional `mode`).
+    // omitted when it can't be resolved (matches bare /status's optional `mode`).
     let hb = null;
     try {
       const doc = YAML.parse(await readFile(join(EGPT_HOME, 'heartbeats.readonly.yaml'), 'utf8'));
@@ -2292,7 +2186,7 @@ export function createCommands({
     let context = null;
     if (b?.threadId) {
       try {
-        const model = b.model ?? cfg().default_brain?.model ?? 'haiku';
+        const model = previewDef?.model ?? cfg().default_brain?.model ?? 'haiku';
         const ratio = compactionRatio(cfg());
         const { tokens, threshold } = dueFor({ sessionId: b.threadId, model, window: windowForModel(model) }, { ratio });
         const limit = threshold ?? Math.round(windowForModel(model) * ratio);
@@ -2300,14 +2194,13 @@ export function createCommands({
       } catch { context = null; }
     }
 
-    // Uninstanced fields fall back to the default preview computed above; instanced
-    // fields are the exact expressions this rendered before (regression-lock: an
-    // instanced conversation's output is unchanged byte-for-byte).
-    const agentVal = instanced ? (b?.agent ?? '?') : (previewDef?.name ?? 'egpt');
-    const engineVal = instanced ? (b?.brainType ?? '?') : (previewDef?.type ?? CCODE);
-    const modelVal = instanced ? (b?.model ?? '?') : (previewDef?.model ?? DETERMINISTIC_MODEL);
-    const effortVal = instanced ? (b?.effort ?? '?') : (previewDef?.effort ?? DETERMINISTIC_EFFORT);
-    const toolsRaw = instanced ? b?.allowedTools : (previewDef?.allowed_tools ?? DEFAULT_ALLOWED_TOOLS);
+    // Always the LIVE resolved def now (phase 1) — the same fields every turn actually runs
+    // with, not a frozen snapshot.
+    const agentVal = previewDef?.name ?? 'egpt';
+    const engineVal = previewDef?.type ?? CCODE;
+    const modelVal = previewDef?.model ?? DETERMINISTIC_MODEL;
+    const effortVal = previewDef?.effort ?? DETERMINISTIC_EFFORT;
+    const toolsRaw = previewDef?.allowed_tools ?? DEFAULT_ALLOWED_TOOLS;
     const toolsVal = Array.isArray(toolsRaw) ? `[${toolsRaw.join(', ')}]` : (toolsRaw ?? '?');
 
     const lines = [
@@ -2316,9 +2209,6 @@ export function createCommands({
       `slug: ${slug}`,
       `conversation_path: ${convPath}`,
       `mode: ${mode}`,
-      // Marker: a single line rather than suffixing all six fields below — reads cleaner
-      // in the fenced yaml and stays machine-checkable. Omitted when instanced (regression-lock).
-      ...(instanced ? [] : ['instanced: false']),
       `agent: ${agentVal}`,
       `engine: ${engineVal}`,
       `model: ${modelVal}`,
@@ -2345,187 +2235,14 @@ export function createCommands({
     return '```yaml\n' + lines.join('\n') + '\n```';
   }
 
-  // Arm the `/e` re-point wizard for the operator's chat. `targetTerm` null = THIS
-  // chat; otherwise resolve it like /e auto's target (fuzzy slug/name, or a verbatim
-  // @jid). Records the target's slug/jid + the engine its live warm session runs
-  // under (so `done` can evict exactly that entry). Posts the first numbered prompt.
-  async function armWizard(ev, targetTerm) {
-    if (!loadState || !writeState) { await send?.(ev.chatId, '/e: conversation state not wired'); return; }
-    const surface = ev.surface ?? 'whatsapp';   // search origin only; targetSurface (below) is the resolved TARGET (may differ, 2026-07-05)
-    let state, jid, slug, displayName, targetSurface = surface;
-    try {
-      state = await loadState();
-      if (targetTerm) {
-        const r = resolveTarget(state, targetTerm, surface);
-        if (r.error) { await send?.(ev.chatId, `/e: ${r.error}`); return; }
-        jid = r.jid; targetSurface = r.surface;
-      } else {
-        jid = ev.chatId;
-      }
-      const c = getContact(state, targetSurface, jid);
-      if (!c) { await send?.(ev.chatId, `/e: no chat matches "${targetTerm ?? 'this chat'}" — send a message there first`); return; }
-      slug = c.slug; jid = c.jid;
-      displayName = c.entry?.pushedName ?? slug;   // operator-facing label (slug carries a date suffix)
-    } catch (e) { onLog(`/e arm ${ev.chatId}: ${e?.message ?? e}`); await send?.(ev.chatId, `/e: failed — ${e?.message ?? e}`); return; }
-
-    // Offer only agent types that actually RESOLVE, each carrying its COMPOSITION
-    // (model/effort/personality) so step 1 renders a structured-yaml preview. The
-    // seeded example file (config/agents/sonnet-high.yaml) is all-comments → parses to
-    // null, and a pickable option that then errors on `done` is a poor UX. Keep the raw
-    // names only if resolution surprisingly drops everything (misconfig) so the operator
-    // isn't stuck.
-    let convDir = null; try { convDir = slugDir(targetSurface, slug); } catch { /* non-default surface */ }
-    const names = listAgentTypes();
-    let configurations = names.map((n) => ({ name: n }));   // fallback: bare names, no preview
-    if (brains?.resolve) {
-      const resolved = [];
-      for (const n of names) {
-        let def = null; try { def = brains.resolve(n, { convDir }); } catch { def = null; }
-        if (def) resolved.push({ name: n, model: def.model ?? null, effort: def.effort ?? null, personality: def.personality ?? null });
-      }
-      if (resolved.length) configurations = resolved;
-    }
-    if (!configurations.length) { await send?.(ev.chatId, '/e: no agent types found (config/agents or src/brains)'); return; }
-    // The custom branch's personality pick lists every identity layer (profile + repo);
-    // a name colliding with any existing agent type re-prompts (takenNames).
-    let personalities = [];
-    try { personalities = listIdentityLayers(); } catch { personalities = []; }
-    const takenNames = names.map((n) => String(n).toLowerCase());
-    // The conversation's CURRENT instanced def marks the matching option `(current)`
-    // and its frozen engine keys the warm entry to evict on done (null = never
-    // instanced → fall back to the new def's engine at apply time).
-    const cur = getBeing(state, targetSurface, jid, defaultKey);
-    // The tools-branch "keep current" display: the live frozen list, coerced (a legacy
-    // 'all' shows — and later freezes — as the explicit list, never perpetuated).
-    const curTools = coerceAllowedTools({ allowed_tools: cur?.allowedTools ?? null })?.allowed_tools ?? null;
-    const options = { configurations, models: WIZARD_MODELS, efforts: WIZARD_EFFORTS, personalities, takenNames };
-    const current = { configurations: cur?.agent ?? null, models: cur?.model ?? null, efforts: cur?.effort ?? null, tools: curTools };
-    const wstate = initWizard({ slug, jid, surface: targetSurface, options, current });
-    wizards.set(chatKey(ev), { state: wstate, surface: targetSurface, chatId: ev.chatId, oldEngine: cur?.brainType ?? null, ts: Date.now() });
-    await send?.(ev.chatId, `🧩 reconfigure «${displayName}»\n${wizardPrompt(wstate)}`);
-  }
-
-  // Feed a plain operator message into the armed wizard. Returns true when consumed
-  // (cancel/back/step/done), false when nothing was armed (or it just expired). Only
-  // reached for a non-slash operator message that isCommand already gated on.
-  async function stepWizard(ev, text) {
-    const key = chatKey(ev);
-    const wm = wizards.get(key);
-    if (!wm) return false;
-    if (Date.now() - wm.ts > WIZARD_TTL_MS) { wizards.delete(key); return false; }
-    const r = wizardStep(wm.state, text);
-    if (r.cancelled) { wizards.delete(key); await send?.(ev.chatId, '(wizard cancelled)'); return true; }
-    if (r.done) { wizards.delete(key); await applyWizard(wm, r.result); return true; }
-    wm.state = r.state; wm.ts = Date.now();
-    await send?.(ev.chatId, r.prompt);
-    return true;
-  }
-
-  // On done: freeze the picked agent type/model/effort into the TARGET conversation's
-  // readonly block (same shape the brainpool instances — keeps the existing threadId,
-  // so context survives the re-point), then evict its warm session so the next turn
-  // respawns with the new def. Reply terse + factual, /status house style. The `custom`
-  // branch first AUTHORS the new type (+ any free-text identity layer), then applies it.
-  async function applyWizard(wm, result) {
-    if (result.custom) return applyCustomWizard(wm, result);
-    if (result.toolsOnly) return applyToolsWizard(wm, result);
-    const { surface, jid } = result;
-    try {
-      const state = await loadState();
-      const c = getContact(state, surface, jid);
-      const slug = c?.slug ?? result.slug;
-      const displayName = c?.entry?.pushedName ?? slug;
-      let convDir = null;
-      try { convDir = slugDir(surface, slug); } catch { /* non-default surface — resolve without a conv layer */ }
-      // 'all'/'*' is REJECTED (operator 2026-07-03) — a hand-written type file that
-      // still says it is coerced to the explicit default list before freezing, same as
-      // the brainpool's own turn (never a duplicate check — the one chokepoint).
-      const def = coerceAllowedTools(brains?.resolve?.(result.configuration, { convDir }));
-      if (!def) { await send?.(wm.chatId, `/e: agent type "${result.configuration}" not found`); return; }
-      const engine = def.type ?? CCODE;
-      // Picking an existing type IS the answer (operator 2026-07-03): apply with the type's
-      // PINNED model/effort — no separate model/effort steps — falling back to the
-      // deterministic floor when the type omits them (matching the brainpool's freeze).
-      const model = result.model ?? def.model ?? DETERMINISTIC_MODEL;
-      const effort = result.effort ?? def.effort ?? DETERMINISTIC_EFFORT;
-      // Freeze into the persona's NESTED block (operator 2026-07-10 — keyed by defaultKey,
-      // merged over the existing block so threadId/mode survive the re-point).
-      await writeState(patchBeing(state, surface, jid, defaultKey, {
-        readonly: { agent: def.name ?? result.configuration, type: engine, model, effort, allowed_tools: def.allowed_tools ?? DEFAULT_ALLOWED_TOOLS },
-      }));
-      // The live warm session runs under the OLD engine (or the new one on a never-instanced
-      // conversation); the pool keys it `<defaultKey>:<engine>:<surface>:<slug>`.
-      evictWarm(`${defaultKey}:${wm.oldEngine ?? engine}:${surface}:${slug}`);
-      await send?.(wm.chatId, `✅ «${displayName}» → ${def.name ?? result.configuration} · ${model}/${effort} (respawns next turn)`);
-    } catch (e) { onLog(`/e wizard ${wm.chatId}: ${e?.message ?? e}`); await send?.(wm.chatId, `/e: failed — ${e?.message ?? e}`); }
-  }
-
-  // The `custom` branch: BUILD a new agent type. Write a free-text identity layer (when
-  // the operator described one — named after the type), then the agent-type file, then
-  // apply it to the conversation EXACTLY like an existing-type pick (freeze readonly,
-  // keep threadId, evict warm). result.name is already sanitized by the wizard.
-  async function applyCustomWizard(wm, result) {
-    const { surface, jid } = result;
-    try {
-      const name = result.name;
-      if (!name) { await send?.(wm.chatId, '/e: invalid type name'); return; }
-      // Personality: a chosen existing layer, or a new layer authored from free text
-      // (named after the type so it travels with it).
-      let personality = result.personalityLayer || 'egpt';
-      if (result.personalityText) {
-        personality = name;
-        const layerFile = join(identitiesDir, `${name}.md`);   // FLAT identity file (operator 2026-07-03)
-        await mkdir(dirname(layerFile), { recursive: true });
-        await writeFile(layerFile, identityLayerFile(result.personalityText), 'utf8');
-      }
-      const typeFile = join(agentsDir, `${name}.yaml`);
-      await mkdir(dirname(typeFile), { recursive: true });
-      await writeFile(typeFile, customTypeFile(name, result.model, result.effort, personality), 'utf8');
-
-      const state = await loadState();
-      const c = getContact(state, surface, jid);
-      const slug = c?.slug ?? result.slug;
-      const displayName = c?.entry?.pushedName ?? slug;
-      await writeState(patchBeing(state, surface, jid, defaultKey, {
-        readonly: { agent: name, type: CCODE, model: result.model, effort: result.effort, allowed_tools: DEFAULT_ALLOWED_TOOLS },
-      }));
-      evictWarm(`${defaultKey}:${wm.oldEngine ?? CCODE}:${surface}:${slug}`);
-      await send?.(wm.chatId, `✅ «${displayName}» → ${name} · ${result.model}/${result.effort} (new type created, respawns next turn)`);
-    } catch (e) { onLog(`/e wizard custom ${wm.chatId}: ${e?.message ?? e}`); await send?.(wm.chatId, `/e: failed — ${e?.message ?? e}`); }
-  }
-
-  // The `tools` branch: edit ONLY allowed_tools, keeping the conversation's current
-  // agent/type/model/effort exactly as they are (readonly is written WHOLE — patchBeing
-  // replaces the key — so every other field is re-read fresh here, not the arm-time
-  // snapshot, and carried forward unchanged). 'current' is resolved fresh + coerced, so a
-  // legacy frozen 'all' is never re-frozen — it self-heals to the explicit list here too.
-  async function applyToolsWizard(wm, result) {
-    const { surface, jid } = result;
-    try {
-      const state = await loadState();
-      const c = getContact(state, surface, jid);
-      const slug = c?.slug ?? result.slug;
-      const displayName = c?.entry?.pushedName ?? slug;
-      const cur = getBeing(state, surface, jid, defaultKey);
-      let tools;
-      if (result.tools === 'default') tools = DEFAULT_ALLOWED_TOOLS;
-      else if (result.tools === 'readonly') tools = READONLY_ALLOWED_TOOLS;
-      else if (result.tools === 'custom') tools = result.toolsCustom?.length ? result.toolsCustom : DEFAULT_ALLOWED_TOOLS;
-      else tools = coerceAllowedTools({ allowed_tools: cur?.allowedTools ?? null })?.allowed_tools ?? DEFAULT_ALLOWED_TOOLS;   // 'current'
-      const engine = cur?.brainType ?? wm.oldEngine ?? CCODE;
-      await writeState(patchBeing(state, surface, jid, defaultKey, {
-        readonly: {
-          agent: cur?.agent ?? 'egpt',
-          type: engine,
-          model: cur?.model ?? DETERMINISTIC_MODEL,
-          effort: cur?.effort ?? DETERMINISTIC_EFFORT,
-          allowed_tools: tools,
-        },
-      }));
-      evictWarm(`${defaultKey}:${wm.oldEngine ?? engine}:${surface}:${slug}`);
-      await send?.(wm.chatId, `✅ «${displayName}» tools → [${tools.join(', ')}] (respawns next turn)`);
-    } catch (e) { onLog(`/e wizard tools ${wm.chatId}: ${e?.message ?? e}`); await send?.(wm.chatId, `/e: failed — ${e?.message ?? e}`); }
-  }
+  // RETIRED (operator 2026-08-14, phase 1): armWizard/stepWizard/applyWizard/
+  // applyCustomWizard/applyToolsWizard used to freeze a picked agent-type/model/effort/
+  // tools into the target conversation's `readonly` block. There is no more `readonly` to
+  // freeze — engine/model/effort/tools now always resolve fresh from config.yaml every
+  // turn (brainpool.mjs's resolveDefaultBrainDef) — so the whole mechanism had nothing
+  // left to do and is deleted, not left inert. `/e` bare/fragment now gets a plain usage
+  // reply (see the eBareMatch dispatch above); `/e auto`, `/e reset`, `/e access
+  // all|regular` are unaffected.
 
   return { isCommand, run, runCaptured, remoteNode, nodeCommandForMe, makeNodeExplicit, currentRoomOf };
 }

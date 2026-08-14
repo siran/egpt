@@ -127,12 +127,15 @@ beforeAll(async () => {
           slug: SLUG,
           conversation_path: `.egpt-boot-contract/conversations/whatsapp/${SLUG}`,
           home_dir: '/c/Users/fixture',
-          // The persona is a NESTED being keyed by the default agent's KEY 'egpt' (operator
-          // 2026-07-10) — mode/thread/readonly live here, not flat on the contact.
-          egpt: {
-            mode: 'on',
-            threadId: THREAD_ID,
-            readonly: { agent: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'all' },
+          // The persona is a being keyed by the default agent's KEY 'egpt' (operator
+          // 2026-07-10) — mode/thread live under agents.egpt (phase 1, 2026-08-14: ONE
+          // block per being, no more readonly freeze — engine/model/effort/tools resolve
+          // fresh from config.yaml every turn instead).
+          agents: {
+            egpt: {
+              mode: 'on',
+              threadId: THREAD_ID,
+            },
           },
         },
       },

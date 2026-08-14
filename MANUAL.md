@@ -24,9 +24,11 @@ not answered by the persona. Authorization = the surface's own `chat_id`
 /e auto <mode> [chat]   set a chat's E reply mode. omit <chat> = this chat;
                         from the Self-DM name a target (slug/name fragment, or
                         a verbatim @jid / room-id)
-/e                      arm the re-point WIZARD for this chat
-/e <fragment>           arm the wizard for another chat (target resolved like
-                        /e auto's)
+/e reset                reset THIS chat's E: archive its folder, wipe its
+                        registry state, reseed pristine — next message starts
+                        fresh
+/e access all|regular   flip THIS chat's E between the unconfined tier and
+                        this node's regular default (see below)
 /restart                bounce the node (daemon respawns the current checkout)
 /upgrade                git pull + npm install + rebuild, then respawn
 /rewind <ref>           git checkout <ref>, reinstall, respawn
@@ -43,26 +45,26 @@ receive at all).
 does not buffer, batch, or flush on a heartbeat. (The 2026-07-01 accum did; same
 word, different mechanism.)
 
-### The `/e` wizard
+### `/e access` — the unconfined tier
 
-Bare `/e` (this chat) or `/e <fragment>` (another chat) arms a guided re-point.
-Operator-only, 5-minute TTL; answer with the numbered picks, `b`/`back`,
-`x`/`cancel`. While armed, your next plain message is treated as a wizard answer
-(it never falls through to the persona); a slash command still runs and leaves
-the wizard armed.
+`/e access all` points THIS chat's persona at `config/permissions/all.md` —
+full filesystem, bare Bash — read fresh every turn (not a freeze; editing that
+file changes behavior for every conversation pointed at it immediately, no
+`/e access` re-run needed). `/e access regular` points it back at the node's
+regular confined default. It touches ONLY tool access — agent/model/effort/
+engine are untouched either way, and are never pinned per-conversation any
+more: a conversation always resolves its engine/model/effort/tools FRESH from
+config.yaml's `agents:` block, every turn (point `agents.<persona>.configuration`
+at whichever type file conversations should run on). The warm session is
+evicted so the change takes effect on the very next turn — no `/restart`
+needed.
 
-1. **Agent type** — the list is discovered from `src/brains` + your
-   `config/agents/*.yaml`, filtered to types that resolve, each shown with its
-   composition (model/effort/personality); the current one is marked. **Picking
-   an existing type applies immediately** with that type's pinned model/effort.
-2. **`custom`** — the final option builds a NEW type: model → effort →
-   personality → name (named last; a collision re-prompts). It writes
-   `config/agents/<name>.yaml` (and, for free-text personality, a flat
-   `config/identities/<name>.md`), then applies it.
+### `/e reset` — start a chat over
 
-On done the target conversation's `readonly` is frozen (keeping its `threadId`,
-so context survives the re-point) and its warm session is evicted (it respawns on
-the next turn — no `/restart` needed).
+Archives the conversation's whole folder aside
+(`conversations/<surface>/<slug>-archived-<suffix>/`, never deleted), wipes its
+registry state (mode, access_level, thread), and reseeds a pristine tree at the
+same path. The next message starts a fresh thread.
 
 ### Lifecycle without a chat (the ingest box)
 
@@ -98,7 +100,9 @@ Agent types are resolved across layers, most-specific winning: `src/brains`
 (built-in) < `config/agents` < a conversation's own `brains/`. A type's
 `allowed_tools` LIST confines its file tools to the conversation dir +
 `allowed_paths`; `allowed_tools: all` makes it trusted/unconfined. Point
-`agents.egpt.configuration` at whichever type new conversations should start on.
+`agents.egpt.configuration` at whichever type conversations run on — every
+conversation resolves it FRESH every turn, so a repoint reaches all of them on
+their very next turn (there is no per-conversation freeze).
 
 ---
 

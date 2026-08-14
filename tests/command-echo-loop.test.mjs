@@ -88,8 +88,8 @@ describe('(A) a command reply never parses as a command', () => {
       '/status zzz',                // /status target: no match
       '/e auto loud',               // /e auto: unknown mode
       '/e auto on zzz',             // /e auto: unresolvable target
-      '/e do',                      // /e wizard: ambiguous target
-      '/e zzz',                     // /e wizard: no match
+      '/e do',                      // bare-/e usage reply (no more wizard to arm)
+      '/e zzz',                     // bare-/e usage reply (no more wizard to arm)
       '/chrome',                    // /chrome usage line
       '/room x badverb',            // /room: unknown subcommand
       '/unmapped-command',          // the catch-all

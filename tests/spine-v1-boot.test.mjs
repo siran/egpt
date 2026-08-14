@@ -31,13 +31,14 @@ afterAll(async () => {
 });
 
 // Pre-seed a conversation's persona mode in the shared state (modes live in
-// conversations.yaml now, not config.auto_modes). The persona is a NESTED being keyed by its
-// map key — 'egpt' in these configs (operator 2026-07-10) — so the mode goes under
-// entry.egpt, where gating reads it via getBeing(defaultKey). No threadId → still "fresh".
+// conversations.yaml now, not config.auto_modes). The persona is a being keyed by its map
+// key — 'egpt' in these configs (operator 2026-07-10) — so the mode goes under
+// entry.agents.egpt (phase 1, 2026-08-14), where gating reads it via getBeing(defaultKey).
+// No threadId → still "fresh".
 function seedMode(state, mode, chatId = '!room:beeper.com', name = 'fam') {
   const ens = ensureContact(state, 'whatsapp', chatId, { pushedName: name, slugHint: name });
   const entry = ens.state.contacts.whatsapp[chatId];
-  entry.egpt = { ...(entry.egpt ?? {}), mode };
+  entry.agents = { ...(entry.agents ?? {}), egpt: { ...(entry.agents?.egpt ?? {}), mode } };
   return ens.state;
 }
 
@@ -131,11 +132,11 @@ describe('boot()', () => {
     expect(spy.streams[0].chatId).toBe('!room:beeper.com');
     expect(spy.sent).toHaveLength(0);   // stream delivered → no fallback send
 
-    // the conversation's claude session was persisted onto the contact — NESTED under the
-    // persona being 'egpt' now (operator 2026-07-10), not a flat threadId
+    // the conversation's claude session was persisted onto the contact — under
+    // agents.egpt now (phase 1, 2026-08-14), not a flat threadId
     const c = state.contacts?.whatsapp ?? {};
     const entry = Object.values(c)[0];
-    expect(entry.egpt.threadId).toBe('sess-1');
+    expect(entry.agents.egpt.threadId).toBe('sess-1');
 
     const stats = [...io.files.entries()].find(([path]) => path.endsWith(join('whatsapp', 'fam.yaml')))?.[1];
     expect(stats).toContain('chat_id: "!room:beeper.com"');

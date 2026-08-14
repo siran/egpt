@@ -1,7 +1,9 @@
 // brains.mjs — the brain-definition registry (operator 2026-06-30). A brain is a
 // YAML file (<name>.yaml) describing an ENGINE config: { type, model, effort,
-// allowed_tools }. A conversation is INSTANCED from one on its first turn (frozen
-// into conversations.yaml `readonly`); the `/e` wizard re-points it later.
+// allowed_tools }. A conversation resolves its def FRESH from this registry on
+// EVERY turn (spine/brainpool.mjs's resolveDefaultBrainDef, operator 2026-08-14,
+// phase 1: no more per-conversation freeze) — repoint an agent's `configuration`
+// in config.yaml and every conversation follows on its next turn.
 //
 // VOCABULARY SHIFT (operator 2026-07-02): a "brain def" IS an agent TYPE. The
 // `agents:` config block points each agent at a TYPE by name (agents.<name>.type),

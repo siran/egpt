@@ -286,7 +286,7 @@ describe('accum is a MODE again, and it gates exactly like mention', () => {
 
   it('resolves per-conversation over the node default, and the node default is settable to accum', async () => {
     const ev = { surface: 'whatsapp', chatId: 'c1', mention: { atEAnywhere: true } };
-    const state = (mode) => ({ contacts: { whatsapp: { c1: { slug: 'g', e: { threadId: null, ...(mode === undefined ? {} : { mode }) } } } } });
+    const state = (mode) => ({ contacts: { whatsapp: { c1: { slug: 'g', agents: { e: { threadId: null, ...(mode === undefined ? {} : { mode }) } } } } } });
 
     const bare = createGating({ getConfig: () => ({}), loadState: async () => state(undefined) });
     expect((await bare.decide('e', ev)).mode).toBe('mention');                       // built-in default

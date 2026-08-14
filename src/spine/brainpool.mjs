@@ -26,7 +26,7 @@
 // into readonly), it gets NO identity kickoff (engineers, not the persona), and its
 // thread persists in a per-being NESTED block (recordThread(..., being)). codex/URL
 // brains + emitted-command stripping (the comm-handler's job, Phase 4) layer in later.
-import { slugDir, getBeing, recordThread, readIdentityFeed, seedIdentityLayers, readAutoModeLayer, patchBeing, appendThreadStat, mutateState, nowIsoString, rollTranscript, stampThreadId, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS } from '../conversations-state.mjs';
+import { slugDir, getBeing, recordThread, readIdentityFeed, seedIdentityLayers, readAutoModeLayer, appendThreadStat, mutateState, nowIsoString, rollTranscript, stampThreadId, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS } from '../conversations-state.mjs';
 import { Room } from '../room-core.mjs';
 import { isContextOverflowError, isDeadSessionError } from '../brain-errors.mjs';
 import { parseFrequency } from './heartbeat-loader.mjs';
@@ -57,14 +57,12 @@ function normalizeCwd(p) {
 //     { allowed_tools: [list-WITH-write-tools]   } → full access + one log line (per-path
 //         tool granularity beyond read-only isn't native — honest approximation)
 // ONLY the literal 'all'/'*' is REJECTED (operator 2026-07-03: "better to reject 'all'")
-// — coerced to the explicit DEFAULT list, so a type file (or a legacy frozen readonly)
-// that says 'all' is treated IDENTICALLY to the default vertical list: an Array →
-// confined to its conversation dir, explicit tools, no bypass. Any OTHER value passes
-// through untouched — an Array list (confined), a space/comma string list (explicit),
-// or absent (downstream default). Bonus: the freeze below now stores the list, so each
-// legacy 'all' entry self-heals to the explicit list on its next turn.
-// Exported (operator 2026-07-03: the `/e` wizard's existing-pick + tools-step freezes
-// reuse this exact coercion — one chokepoint, not a duplicate 'all'/'*' check).
+// — coerced to the explicit DEFAULT list, so a type file that says 'all' is treated
+// IDENTICALLY to the default vertical list: an Array → confined to its conversation dir,
+// explicit tools, no bypass. Any OTHER value passes through untouched — an Array list
+// (confined), a space/comma string list (explicit), or absent (downstream default).
+// Exported so every caller that resolves a def — turn() below, /e access's live override —
+// runs it through this one chokepoint, not a duplicate 'all'/'*' check.
 export function coerceAllowedTools(def) {
   if (def && (def.allowed_tools === 'all' || def.allowed_tools === '*')) {
     return { ...def, allowed_tools: DEFAULT_ALLOWED_TOOLS };
@@ -77,9 +75,9 @@ export function coerceAllowedTools(def) {
 // filesystem, its allowed_tools list passed verbatim, including bare Bash/Agent), exactly
 // like an interactive `claude` session. Every call site below checks it explicitly rather
 // than teaching coerceAllowedTools itself about it, so the function stays what its callers
-// (commands.mjs's /e wizard, the tools-step freeze) already assume: ALWAYS confining.
-// Reachability (who may even address a dangerous agent) is gated upstream, in
-// router.mjs/mesh.mjs — this file only decides how the TURN runs once addressed.
+// already assume: ALWAYS confining. Reachability (who may even address a dangerous agent) is
+// gated upstream, in router.mjs/mesh.mjs — this file only decides how the TURN runs once
+// addressed.
 function confinementFor(def, cwd, onLog) {
   if (def?.dangerous === true) return {};   // the unconfined tier — no confineToDirs/addDirs/readOnlyDirs, ever
   if (!Array.isArray(def?.allowed_tools)) return {};   // defensive: post-coercion this is always a list
@@ -135,6 +133,38 @@ async function defaultLoadManifest(getConfig) {
   } catch { return ''; }
 }
 
+// The persona agent's `configuration` (config.yaml's `agents:` block) — the agent-type file a
+// persona conversation runs on — or null when no default agent is declared. The persona is the
+// single `default: true` agent (operator 2026-07-10 — no e/egpt handle test); new-config-only
+// (operator 2026-07-02): reads `configuration`, never the retired `type` back-read. Pure, given
+// getConfig.
+function personaAgentConfigurationFrom(getConfig) {
+  const agents = (getConfig?.() ?? {}).agents ?? {};
+  for (const [, a] of Object.entries(agents)) {
+    if (!a || typeof a !== 'object' || Array.isArray(a)) continue;
+    if (a.default === true) return a.configuration ?? null;
+  }
+  return null;
+}
+
+// THE persona brain def, resolved FRESH from config (operator 2026-08-14, phase 1: no more
+// per-conversation freeze — this is the ONLY path now, used on EVERY turn, not just a never-
+// instanced conversation's first one). The persona agent's `configuration` resolved through the
+// brains registry, else the shipped 'egpt' type (a bare ccode def if even that is absent).
+// New-config-only (operator 2026-07-02): NO config.default_brain fallback and NO
+// 'default'→'egpt' alias. Exported so every caller that needs the persona's live def — turn()
+// below, and commands.mjs's /e access + /status preview — resolves it the SAME way instead of
+// re-deriving a second one (name-the-existing-thing).
+export function resolveDefaultBrainDef({ getConfig = () => ({}), brains = null, convDir, brainType = 'ccode' } = {}) {
+  const configuration = personaAgentConfigurationFrom(getConfig);
+  if (configuration) {
+    const def = brains?.resolve?.(configuration, { convDir });
+    if (def) return def;                                     // persona configuration wins
+    // named but unresolvable → fall through to the shipped 'egpt' type
+  }
+  return brains?.resolve?.('egpt', { convDir }) ?? { name: 'egpt', type: brainType };
+}
+
 export function createBrainPool({
   pool,                              // a createWarmPool instance ({ run, evict })
   getConfig = () => ({}),
@@ -186,7 +216,7 @@ export function createBrainPool({
     return parseWarmBlock(resolveConfig(convDir)).idleTtlMs;
   }
 
-  // chatId → { slug, sessionId, brain }. The shared resolver registers the
+  // chatId → { slug, sessionId, mode, accessLevel }. The shared resolver registers the
   // contact on first sight AND re-arms the name-tracking rename; the slug it
   // returns is the CURRENT one. When a rename fired, the warm-pool key below embeds
   // that new slug, so the conversation naturally re-keys onto a fresh warm entry —
@@ -206,11 +236,10 @@ export function createBrainPool({
       // The conversation's stored E mode — 'auto' arms the operator-role kickoff layer
       // (read raw, not gating-resolved: auto is an explicit per-conversation opt-in).
       mode: b?.mode ?? null,
-      // The conversation's INSTANCED brain (frozen in readonly), or null on a fresh
-      // conversation that hasn't been instanced from the default yet.
-      brain: b?.brainType ? { name: b.brain, type: b.brainType, model: b.model, effort: b.effort, allowed_tools: b.allowedTools } : null,
-      // /e access all|regular (operator 2026-08-14) — NOT part of the freeze above;
-      // applied live, every turn, in turn() below (see the ACCESS-LEVEL OVERRIDE comment).
+      // /e access all|regular (operator 2026-08-14) — applied live, every turn, in turn()
+      // below (see the ACCESS-LEVEL OVERRIDE comment). No more `brain` field here (phase 1,
+      // 2026-08-14): there is no per-conversation freeze to read any more — turn() always
+      // resolves the persona's engine/model/effort/tools fresh via resolveDefaultBrain.
       accessLevel: b?.accessLevel ?? null,
     };
   }
@@ -220,17 +249,6 @@ export function createBrainPool({
   // being name supplies that being's CONFIGURATION, resolved through the brains registry
   // (config/agents layer). The PERSONA agent (handles include e/egpt) supplies E's default.
   const agents = () => (getConfig() ?? {}).agents ?? {};
-  // The persona agent's `configuration` (agents block) — the agent-type file a fresh persona
-  // conversation is instanced from — or null when no default agent is declared. The persona is
-  // the single `default: true` agent (operator 2026-07-10 — no e/egpt handle test); new-config-
-  // only (operator 2026-07-02): reads `configuration`, never the retired `type` back-read.
-  function personaAgentConfiguration() {
-    for (const [, a] of Object.entries(agents())) {
-      if (!a || typeof a !== 'object' || Array.isArray(a)) continue;
-      if (a.default === true) return a.configuration ?? null;
-    }
-    return null;
-  }
   // Shape a resolved registry def into the brainpool's def contract, letting the agent
   // entry override the display name. `claude-code` normalizes to the `ccode` token.
   function shapeDef(name, def, agent = {}) {
@@ -250,8 +268,8 @@ export function createBrainPool({
 
   // A local (sibling) being's brain def from the agents registry (agents[<being>],
   // configuration ≠ relay): its `configuration` names an agent-type file resolved through
-  // the registry. NOT frozen into readonly (the def LIVES in config, nothing per-conversation
-  // to instance). No agent entry / unresolvable configuration → a bare ccode def keyed by the
+  // the registry. Never frozen — the def LIVES in config, nothing per-conversation to
+  // instance. No agent entry / unresolvable configuration → a bare ccode def keyed by the
   // being name (keeps it runnable).
   function siblingDef(being, convDir) {
     const agent = agents()[being];
@@ -269,25 +287,16 @@ export function createBrainPool({
     };
   }
 
-  // The DEFAULT brain a fresh conversation is instanced from: the PERSONA agent's
-  // `configuration` (agents block) resolved through the registry, else the shipped 'egpt'
-  // type (a bare ccode def if even that is absent). New-config-only (operator 2026-07-02):
-  // NO config.default_brain fallback and NO 'default'→'egpt' alias — the type is named
-  // 'egpt' and stored records were ported, never aliased.
+  // The persona's brain def, resolved fresh — see the module-level resolveDefaultBrainDef
+  // this closes over (getConfig/brains/brainType are the factory's own).
   function resolveDefaultBrain(convDir) {
-    const configuration = personaAgentConfiguration();
-    if (configuration) {
-      const def = brains?.resolve?.(configuration, { convDir });
-      if (def) return def;                                     // persona configuration wins
-      // named but unresolvable → fall through to the shipped 'egpt' type
-    }
-    return brains?.resolve?.('egpt', { convDir }) ?? { name: 'egpt', type: brainType };
+    return resolveDefaultBrainDef({ getConfig, brains, convDir, brainType });
   }
 
   return {
     /** @returns {Promise<{ text: string, sessionId: string|null, being: string }>} */
     async turn(being, ev, onPartial = () => {}) {
-      const { slug, sessionId, brain: instanced, mode, accessLevel } = await resolveConv(ev, being);
+      const { slug, sessionId, mode, accessLevel } = await resolveConv(ev, being);
       if (!slug) throw new Error(`brainpool: no slug for ${ev.surface}/${ev.chatId}`);
 
       const convDir = slugDir(ev.surface, slug);
@@ -295,14 +304,13 @@ export function createBrainPool({
       // 'mode: auto' — E plays the operator's role here (siblings are engineers, never auto).
       const wantAuto = !isSibling && mode === 'auto';
       const autoKey = (tid) => `${ev.surface}:${ev.chatId}:${tid}`;
-      // A THREAD IS BEING INSTANCED on this turn (the persona's no-thread branch below). Read
-      // after it by the layer seeding: a refresh re-copies the room template, an ordinary turn
-      // does not. Siblings never instance a thread here, so it stays false for them.
+      // A THREAD IS BEING INSTANCED on this turn (no thread yet) — read by the layer seeding: a
+      // refresh re-copies the room template, an ordinary turn does not. Siblings never instance
+      // a thread here, so it stays false for them.
       let def, runModel, runEffort, fresh = false;
       if (isSibling) {
-        // Local agent: def from the agents block (its `configuration` names a type file);
-        // never frozen into readonly. Its model/effort stay exactly as configured (may be
-        // unset — an engineer, not the persona snapshot).
+        // Local agent: def from the agents block (its `configuration` names a type file). Its
+        // model/effort stay exactly as configured (may be unset — an engineer, not the persona).
         // dangerous:true skips coercion (see confinementFor's comment above) — the type
         // file's allowed_tools (which may legitimately include bare Bash/Agent) passes
         // through verbatim rather than being capped to DEFAULT_ALLOWED_TOOLS.
@@ -310,80 +318,45 @@ export function createBrainPool({
         def = rawSiblingDef.dangerous === true ? rawSiblingDef : coerceAllowedTools(rawSiblingDef);
         runModel = def.model; runEffort = def.effort;
       } else {
-        // The conversation's brain: its instanced (frozen) brain, or — when there is no
-        // THREAD — the default, which we instance into conversations.yaml `readonly` now
-        // so a later change to the default can't retro-alter this thread (and `/e` can
-        // re-point it per-conversation).
+        // The persona's brain: resolved FRESH from config on EVERY turn (operator 2026-08-14,
+        // phase 1: no more per-conversation freeze). This is the SAME path a never-instanced
+        // conversation always used — now the ONLY path, so a config edit (repointing
+        // agents.<persona>.configuration, or the type file itself) reaches every conversation
+        // on its very next turn. `/e access` overrides only allowed_tools/dangerous, below —
+        // never the engine/model/effort themselves; there is no more per-conversation way to
+        // pin those (the `/e` wizard that used to is retired).
         //
         // FRESH IS KEYED ON THE THREAD (operator 2026-07-25: "deleting the thread-id reloads
-        // the config"). It used to be `!def` — keyed on the FREEZE — so deleting threadId
-        // bought a new claude session running on the SAME stale frozen model/effort/tools:
-        // the operator's one gesture half-worked. `|| !def` stays as the pre-existing
-        // never-instanced case (a thread with no freeze would otherwise read off null).
-        fresh = !sessionId || !instanced;
-        def = fresh ? resolveDefaultBrain(convDir) : instanced;
+        // the config") — a deleted threadId buys both a new claude session AND this turn's
+        // freshly-resolved def (there's nothing stale left to half-work on).
+        fresh = !sessionId;
+        def = resolveDefaultBrain(convDir);
         // dangerous:true skips coercion — same rule as the sibling branch above.
-        if (def?.dangerous !== true) def = coerceAllowedTools(def);   // 'all' → explicit list (rejected); the freeze below stores the list
+        if (def?.dangerous !== true) def = coerceAllowedTools(def);   // 'all' → explicit list (rejected)
         // DETERMINISM (operator 2026-07-02: "don't do 'null means inherit the login default' —
-        // make it deterministic"): the frozen snapshot AND the actual run must carry CONCRETE
-        // model/effort, never null. A type def that omits either falls back to the module
-        // constants — logged so a mis-specified type is visible.
-        if (def.model == null || def.effort == null) onLog(`type ${def.name} omits model/effort — snapshotting deterministic fallback`);
+        // make it deterministic"): the RUN must carry CONCRETE model/effort, never null. A type
+        // def that omits either falls back to the module constants — logged so a mis-specified
+        // type is visible.
+        if (def.model == null || def.effort == null) onLog(`type ${def.name} omits model/effort — using deterministic fallback`);
         runModel = def.model ?? DETERMINISTIC_MODEL;
         runEffort = def.effort ?? DETERMINISTIC_EFFORT;
-        if (fresh) {
-          // Freeze the instanced def under the persona's NESTED `<being>` block as readonly.agent
-          // with the RESOLVED concrete model/effort (operator 2026-07-02: new-config-only — the
-          // vocabulary is `agent`; getBeing reads readonly.agent). NESTED, not flat (operator
-          // 2026-07-10 — the persona is a normal nested being keyed by defaultKey; getBeing reads
-          // entry[being].readonly with no flat fallback). Merge over the existing block so a
-          // pre-set mode survives the freeze. NO `personality` is written — that key is RETIRED;
-          // the identity feed is a property of the agent type (def.personality), read at kickoff.
-          await mutateState(writeState, async () => {
-            const s = await loadState();
-            await writeState(patchBeing(s, ev.surface, ev.chatId, being, {
-              readonly: { agent: def.name, type: def.type ?? brainType, model: runModel, effort: runEffort, allowed_tools: def.allowed_tools ?? DEFAULT_ALLOWED_TOOLS },
-            }));
-          });
-          // Read the freeze back through getBeing — THE reader — so the conversation's own
-          // `agents.<being>` pin layers over what config just said, exactly as it will on every
-          // later turn. Without this the pin would only take effect on the turn AFTER the one
-          // that re-instanced. The def's non-frozen fields (personality, cwd, allowed_paths,
-          // system_prompt) stay as the type file has them.
-          const view = getBeing(await loadState(), ev.surface, ev.chatId, being);
-          if (view?.brainType) {
-            // through coerceAllowedTools again: a pin may say 'all', which is REJECTED into the
-            // explicit list exactly like a type file that says it (operator 2026-07-03). Skipped
-            // for dangerous:true — same rule as the two sites above; `dangerous` itself is never
-            // frozen into readonly (see the write below), so this reads it off `def`, carried
-            // through from the type file's own resolution.
-            const rebuilt = { ...def, name: view.brain ?? def.name, type: view.brainType, allowed_tools: view.allowedTools ?? def.allowed_tools };
-            def = rebuilt.dangerous === true ? rebuilt : coerceAllowedTools(rebuilt);
-            runModel = view.model ?? runModel;
-            runEffort = view.effort ?? runEffort;
-          }
-          // THE ROLL (operator 2026-07-25: "there must be a new transcript if thread-id
-          // changes"). Here, and only here: this is the moment the thread changes, whatever
-          // changed it (a deleted threadId, /e new, a dead session), and it is BEFORE the new
-          // thread writes a line. On `!sessionId` only — `fresh` also covers a thread that
-          // still resumes but carries no freeze, and nothing retires on that turn. Keyed on
-          // the transcript's OWN front matter, so a file that names no thread — a brand-new
-          // conversation, or a retry after a turn that threw before recordThread — is left
-          // alone. Never throws by contract.
-          if (!sessionId) await rollTranscript(ev.surface, slug, { io });
-        }
+        // THE ROLL (operator 2026-07-25: "there must be a new transcript if thread-id
+        // changes"). This is the moment the thread changes, whatever changed it (a deleted
+        // threadId, /e reset, a dead session), and it is BEFORE the new thread writes a line.
+        // Keyed on the transcript's OWN front matter, so a file that names no thread — a
+        // brand-new conversation, or a retry after a turn that threw before recordThread — is
+        // left alone. Never throws by contract.
+        if (!sessionId) await rollTranscript(ev.surface, slug, { io });
       }
       // ACCESS-LEVEL OVERRIDE (operator 2026-08-14, /e access all|regular): applied HERE,
-      // every turn, independent of the fresh/frozen branching above — the whole point of
-      // this shape vs. the old copy-the-def-into-readonly freeze. Persona-only (the only
-      // path /e access has ever touched; a sibling's def comes from its own
+      // every turn, independent of the sibling/persona branching above. Persona-only (the
+      // only path /e access has ever touched; a sibling's def comes from its own
       // agents.<being>.configuration and is untouched here). Runs AFTER the sibling/persona
       // branches converge on `def` and BEFORE confinementFor/baseOpts read
       // def.allowed_tools/def.dangerous below, so it wins regardless of which branch built
-      // `def` — and it must NOT run before the freeze above, which snapshots the
-      // INSTANCED type, not this live override. permission-levels.mjs re-reads the file
-      // fresh on every call (no caching): editing config/permissions/<level>.md changes
-      // this turn's grant with no `/e access` re-run and no re-freeze.
+      // `def`. permission-levels.mjs re-reads the file fresh on every call (no caching):
+      // editing config/permissions/<level>.md changes this turn's grant with no
+      // `/e access` re-run needed.
       if (!isSibling && (accessLevel === 'all' || accessLevel === 'regular')) {
         const perm = loadPermission(accessLevel);
         if (perm) def = { ...def, dangerous: perm.dangerous, allowed_tools: perm.allowedTools };
@@ -391,8 +364,7 @@ export function createBrainPool({
       const engine = def.type ?? brainType;
       // The identity-feed selector (operator 2026-07-02): a property of the resolved
       // agent-type def, NOT the conversation. A type file may pin `personality: <name>`;
-      // the shipped default implies 'egpt'. An already-instanced def carries none →
-      // 'egpt' (the frozen readonly no longer stores it).
+      // absent, it's 'egpt' (the shipped default).
       const personality = def.personality ?? 'egpt';
       // E works inside the conversation's own folder unless the brain pins a
       // workspace. The dir must exist before the CLI spawns (warm-cli throws on a
