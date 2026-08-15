@@ -718,6 +718,58 @@ describe('brainpool.turn — accessLevel override (operator 2026-08-14, was /e a
   });
 });
 
+// ── accessLevel GLOBAL-DEFAULT TIER (operator 2026-08-15): access_level used to ONLY have a
+//    per-conversation override (getBeing(...).accessLevel) — no node-level default at all. Now
+//    config.yaml's agents.<being>.conversation_defaults.access_level is a fallback, read via
+//    getConfig() (resolveConv), consulted ONLY when the per-conversation value is null. The
+//    NESTING under conversation_defaults (not a flat sibling of handles/configuration) is the
+//    allowlist of which agent fields get this two-tier treatment — mirrors router.mjs's
+//    allowed_users global tier exactly. ──
+describe('brainpool.turn — accessLevel GLOBAL-DEFAULT tier (operator 2026-08-15, conversation_defaults)', () => {
+  it("REPRODUCE-FIRST: access_level set ONLY at config.yaml's agents.<being>.conversation_defaults.access_level (no per-conversation override) still applies on the being's next turn", async () => {
+    const brains = { resolve: () => ({ name: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: ['Read'] }) };
+    const config = { agents: { e: { conversation_defaults: { access_level: 'all' } } } };
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
+      brains, config,
+      loadPermission: (level) => (level === 'all' ? { dangerous: true, allowedTools: ['Read', 'Write', 'Bash', 'Agent'] } : null),
+    });
+    await brain.turn('e', ev);
+    const opts = pool.calls[0].brainOptions;
+    expect(opts.allowedTools).toEqual(['Read', 'Write', 'Bash', 'Agent']);   // the global default's permissions grant applied
+    expect(opts.confineToDirs).toBeUndefined();                             // dangerous:true → unconfined
+  });
+
+  it('REGRESSION: a per-conversation accessLevel override still WINS over the node global conversation_defaults.access_level default', async () => {
+    const brains = { resolve: () => ({ name: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: ['Read'] }) };
+    const config = { agents: { e: { conversation_defaults: { access_level: 'all' } } } };
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
+      brains, config, seedAgents: { e: { access_level: 'regular' } },
+      loadPermission: (level) => {
+        if (level === 'all') return { dangerous: true, allowedTools: ['Bash'] };
+        if (level === 'regular') return { dangerous: false, allowedTools: DEFAULT_ALLOWED_TOOLS };
+        return null;
+      },
+    });
+    await brain.turn('e', ev);
+    const opts = pool.calls[0].brainOptions;
+    expect(opts.allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);   // per-conversation 'regular' wins, NOT the global 'all'
+    expect(opts.confineToDirs).toEqual([opts.cwd]);             // confined, not the global tier's unconfined grant
+  });
+
+  it('REGRESSION: neither tier set → no override, byte-identical to today (loadPermission never consulted)', async () => {
+    const brains = { resolve: () => ({ name: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'all' }) };
+    let called = false;
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
+      brains, loadPermission: () => { called = true; return { dangerous: true, allowedTools: ['Bash'] }; },
+    });
+    await brain.turn('e', ev);
+    expect(called).toBe(false);
+    const opts = pool.calls[0].brainOptions;
+    expect(opts.allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);
+    expect(opts.confineToDirs).toEqual([opts.cwd]);
+  });
+});
+
 // ── END-TO-END escalation-hole regression (operator 2026-08): a confined being already
 //    has Write access inside its OWN conversation directory, so it can write
 //    <convDir>/brains/<name>.yaml. Proves the fix in src/spine/brains.mjs's resolve()

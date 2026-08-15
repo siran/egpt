@@ -936,6 +936,11 @@ export function getBeing(state, surface, jid, being) {
     // returned here any more (phase 1: no more per-conversation freeze to read —
     // brainpool.mjs resolves them fresh from config on every turn instead).
     accessLevel:        b?.access_level        ?? null,
+    // Per-conversation allowed_users OVERRIDE (operator 2026-08-15) — router.mjs's being-
+    // reachability gate. Same override home/shape as access_level above: set here REPLACES
+    // (never merges with) the node's global agents.<being>.allowed_users default in config.yaml;
+    // null = this conversation states no override, fall to the global tier.
+    allowedUsers:       b?.allowed_users        ?? null,
   };
 }
 

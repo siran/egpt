@@ -579,7 +579,7 @@ export function createSpine({
         if (text) lastSpeaker = lastSurfacedBeing(text, { node: node_name });
       } catch (e) { note(`quick-reply lookup ${ev.chatId}: ${e?.message ?? e}`); }
     }
-    const routed = router.resolve(ev, lastSpeaker);
+    const routed = await router.resolve(ev, lastSpeaker);
     // QUICK REPLY: the router resolved `r <body>` to the agent that spoke last here, and hands
     // back the body its token was stripped from. That body is what the agent sees — here and in
     // the dispatch line (which ends with it). The RECORD keeps the message as typed: transcript.log

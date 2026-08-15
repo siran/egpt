@@ -311,7 +311,14 @@ export function createBrainPool({
       // below (see the ACCESS-LEVEL OVERRIDE comment). No more `brain` field here (phase 1,
       // 2026-08-14): there is no per-conversation freeze to read any more — turn() always
       // resolves every being's engine/model/effort/tools fresh via resolveBeingDef.
-      accessLevel: b?.accessLevel ?? null,
+      // GLOBAL-DEFAULT TIER (operator 2026-08-15, same two-tier pattern allowed_users uses):
+      // the per-conversation override (above) wins when set; else fall to this node's
+      // agents.<being>.conversation_defaults.access_level default (config.yaml, via getConfig
+      // — no per-conversation freeze, read fresh every turn like everything else here); else
+      // null = no override at either tier (today's ordinary default). conversation_defaults
+      // (not a flat sibling of handles/configuration) is the allowlist of which agent fields
+      // get this two-tier treatment — see router.mjs's allowed_users read for the twin of this.
+      accessLevel: b?.accessLevel ?? getConfig()?.agents?.[being]?.conversation_defaults?.access_level ?? null,
     };
   }
 

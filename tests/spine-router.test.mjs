@@ -26,42 +26,42 @@ describe('router.resolve — agents registry (operator 2026-07-02)', () => {
   // its own key now (operator 2026-07-10 — no hardcoded 'e').
   const arouter = createRouter({ getAgents: () => agents, defaultBeing: 'egpt' });
 
-  it('@e (persona handle) → the persona KEY "egpt", ev.mention preserved', () => {
+  it('@e (persona handle) → the persona KEY "egpt", ev.mention preserved', async () => {
     const m = { atEStart: true, atEAnywhere: true, replyToBot: false };
-    const r = arouter.resolve(ev('@e hola', m));
+    const r = await arouter.resolve(ev('@e hola', m));
     expect(r.being).toBe('egpt');    // the persona being-id IS its map key
     expect(r.mesh).toBeUndefined();
     expect(r.mention).toBe(m);       // persona keeps the bridge-computed mention
   });
 
-  it('@egpt (persona name key) also → being "egpt"', () => {
-    expect(arouter.resolve(ev('@egpt yo')).being).toBe('egpt');
+  it('@egpt (persona name key) also → being "egpt"', async () => {
+    expect((await arouter.resolve(ev('@egpt yo'))).being).toBe('egpt');
   });
 
-  it('a LOCAL agent @don-local → being "don-local" with a synthetic mention', () => {
-    const r = arouter.resolve(ev('@don-local do X'));
+  it('a LOCAL agent @don-local → being "don-local" with a synthetic mention', async () => {
+    const r = await arouter.resolve(ev('@don-local do X'));
     expect(r.being).toBe('don-local');
     expect(r.mesh).toBeUndefined();
     expect(r.mention).toEqual({ atEStart: true, atEAnywhere: true, replyToBot: false });   // a direct @name synthesizes an addressed mention
   });
 
-  it('a RELAY agent @don → a mesh target routed by relay_channel (route-direct), no local being', () => {
-    const r = arouter.resolve(ev('@don ping'));
+  it('a RELAY agent @don → a mesh target routed by relay_channel (route-direct), no local being', async () => {
+    const r = await arouter.resolve(ev('@don ping'));
     expect(r.being).toBeNull();
     expect(r.mesh).toEqual({ being: 'don', route: { room_id: 'Rodz' } });
     expect(r.mention).toMatchObject({ atEStart: true });
   });
 
-  it('a RELAY agent with a network pin carries lowercased network on the mesh route (operator 2026-07-06: same name on two networks)', () => {
-    const r = arouter.resolve(ev('@don-tg ping'));
+  it('a RELAY agent with a network pin carries lowercased network on the mesh route (operator 2026-07-06: same name on two networks)', async () => {
+    const r = await arouter.resolve(ev('@don-tg ping'));
     expect(r.being).toBeNull();
     expect(r.mesh).toEqual({ being: 'don-tg', route: { room_id: 'Rodz', network: 'telegram' } });
     // regression: an UNPINNED relay agent's route carries NO network key (asserted above via toEqual on @don)
   });
 
-  it('case-insensitive on handles and names: @Don-Local → don-local, @DON → relay target', () => {
-    expect(arouter.resolve(ev('@Don-Local hi')).being).toBe('don-local');
-    expect(arouter.resolve(ev('@DON hi')).mesh).toEqual({ being: 'don', route: { room_id: 'Rodz' } });
+  it('case-insensitive on handles and names: @Don-Local → don-local, @DON → relay target', async () => {
+    expect((await arouter.resolve(ev('@Don-Local hi'))).being).toBe('don-local');
+    expect((await arouter.resolve(ev('@DON hi'))).mesh).toEqual({ being: 'don', route: { room_id: 'Rodz' } });
   });
 
   // Operator 2026-07-26: "disabling is just commenting the config. no need to have or check an
@@ -69,18 +69,18 @@ describe('router.resolve — agents registry (operator 2026-07-02)', () => {
   // agent ever carried the key — so an entry that does carry it is an ordinary agent. The REAL
   // disable mechanisms are still locked below: a `_`-prefixed comment key, and commenting the
   // agent out entirely (an absent key routes nowhere).
-  it('an `enabled: false` key is INERT — the agent routes like any other; a _note key never routes', () => {
-    expect(arouter.resolve(ev('@off hi')).being).toBe('off');
-    expect(arouter.resolve(ev('@_note hi')).being).toBe('egpt');
+  it('an `enabled: false` key is INERT — the agent routes like any other; a _note key never routes', async () => {
+    expect((await arouter.resolve(ev('@off hi'))).being).toBe('off');
+    expect((await arouter.resolve(ev('@_note hi'))).being).toBe('egpt');
   });
 
-  it('an unknown @token falls through to the persona (defaultBeing)', () => {
-    expect(arouter.resolve(ev('@nobody hi')).being).toBe('egpt');
+  it('an unknown @token falls through to the persona (defaultBeing)', async () => {
+    expect((await arouter.resolve(ev('@nobody hi'))).being).toBe('egpt');
   });
 
-  it('no agents block → always defaultBeing (no local beings without a registry)', () => {
+  it('no agents block → always defaultBeing (no local beings without a registry)', async () => {
     const bare = createRouter({ defaultBeing: 'egpt' });
-    expect(bare.resolve(ev('@wren do X')).being).toBe('egpt');
+    expect((await bare.resolve(ev('@wren do X'))).being).toBe('egpt');
   });
 
   // KEY-AS-BEING (operator 2026-07-10): the resolved persona being IS the default agent's
@@ -93,13 +93,13 @@ describe('router.resolve — agents registry (operator 2026-07-02)', () => {
   // `addressed` (which sees the real miss) rather than on resolve(), where an unmatched @token
   // falls through to the persona and would make the assertion vacuous. The key is still the
   // BEING-ID every hit resolves TO.
-  it('persona resolution follows `default: true`, not e/egpt: key "assistant" (handles [a]) → being "assistant"', () => {
+  it('persona resolution follows `default: true`, not e/egpt: key "assistant" (handles [a]) → being "assistant"', async () => {
     const ag = { assistant: { configuration: 'sonnet-high', handles: ['a'], default: true }, don: { configuration: 'relay', relay_channel: 'Rodz' } };
     const r = createRouter({ getAgents: () => ag, defaultBeing: 'assistant' });
-    expect(r.resolve(ev('@a hola')).being).toBe('assistant');          // matched via handle → its key (the being-id)
+    expect((await r.resolve(ev('@a hola'))).being).toBe('assistant');          // matched via handle → its key (the being-id)
     expect(addressed('@assistant hola', ag)).toEqual([]);              // the KEY is not a wake token (handles declared)
-    expect(r.resolve(ev('@nobody hi')).being).toBe('assistant');       // fall-through → the persona key
-    expect(r.resolve(ev('@don ping')).mesh).toEqual({ being: 'don', route: { room_id: 'Rodz' } });  // a non-default agent still routes normally
+    expect((await r.resolve(ev('@nobody hi'))).being).toBe('assistant');       // fall-through → the persona key
+    expect((await r.resolve(ev('@don ping'))).mesh).toEqual({ being: 'don', route: { room_id: 'Rodz' } });  // a non-default agent still routes normally
   });
 });
 
@@ -120,8 +120,8 @@ describe('router.resolve — multi-path relay agent (operator 2026-07-06)', () =
   };
   const arouter = createRouter({ getAgents: () => agents });
 
-  it('@carol → a mesh target carrying EVERY path (route+network pin+to+label), no local being', () => {
-    const r = arouter.resolve(ev('@carol hola'));
+  it('@carol → a mesh target carrying EVERY path (route+network pin+to+label), no local being', async () => {
+    const r = await arouter.resolve(ev('@carol hola'));
     expect(r.being).toBeNull();
     expect(r.mesh).toEqual({
       being: 'carol',
@@ -133,12 +133,12 @@ describe('router.resolve — multi-path relay agent (operator 2026-07-06)', () =
     expect(r.mention).toMatchObject({ atEStart: true });
   });
 
-  it('REGRESSION: the scalar relay @don is UNCHANGED (no paths key, single route)', () => {
-    expect(arouter.resolve(ev('@don ping')).mesh).toEqual({ being: 'don', route: { room_id: 'Rodz' } });
+  it('REGRESSION: the scalar relay @don is UNCHANGED (no paths key, single route)', async () => {
+    expect((await arouter.resolve(ev('@don ping'))).mesh).toEqual({ being: 'don', route: { room_id: 'Rodz' } });
   });
 
-  it('case-insensitive on a multipath agent name: @CAROL still fans out', () => {
-    expect(arouter.resolve(ev('@CAROL hi')).mesh.being).toBe('carol');
+  it('case-insensitive on a multipath agent name: @CAROL still fans out', async () => {
+    expect((await arouter.resolve(ev('@CAROL hi'))).mesh.being).toBe('carol');
   });
 });
 
@@ -156,26 +156,26 @@ describe('router.resolve — surface-pinned relay agent (operator 2026-07-25)', 
   const arouter = createRouter({ getAgents: () => agents, defaultBeing: 'egpt' });
   const evS = (body, surface) => ({ ...ev(body), surface });
 
-  it('@don on the SHELL surface → the mesh relay (its pinned surface matches)', () => {
-    const r = arouter.resolve(evS('@don ping', 'shell'));
+  it('@don on the SHELL surface → the mesh relay (its pinned surface matches)', async () => {
+    const r = await arouter.resolve(evS('@don ping', 'shell'));
     expect(r.being).toBeNull();
     expect(r.mesh).toEqual({ being: 'don', route: { room_id: 'egpt-mesh-do-kg' }, to: 'don.do' });
     expect(r.mention).toMatchObject({ atEStart: true });
   });
 
-  it('REPRODUCE-FIRST: @don on the WHATSAPP surface does NOT relay (surface mismatch → falls through to the persona)', () => {
+  it('REPRODUCE-FIRST: @don on the WHATSAPP surface does NOT relay (surface mismatch → falls through to the persona)', async () => {
     // On CURRENT (pre-fix) code the agent matches regardless of surface → wrongly relays on Beeper,
     // double-answering the message `do` already heard directly. After the surface gate: falls through.
-    const r = arouter.resolve(evS('@don ping', 'whatsapp'));
+    const r = await arouter.resolve(evS('@don ping', 'whatsapp'));
     expect(r.mesh).toBeUndefined();     // NOT relayed on Beeper — `do` answers @don directly
     expect(r.being).toBe('egpt');       // falls through to the persona (defaultBeing)
   });
 
-  it('an UNPINNED relay agent is surface-agnostic (regression: no surface key → matches on any surface)', () => {
+  it('an UNPINNED relay agent is surface-agnostic (regression: no surface key → matches on any surface)', async () => {
     const ag = { egpt: { handles: ['e'], default: true }, don: { configuration: 'relay', relay_channel: 'Rodz' } };
     const r = createRouter({ getAgents: () => ag, defaultBeing: 'egpt' });
-    expect(r.resolve({ ...ev('@don ping'), surface: 'whatsapp' }).mesh).toEqual({ being: 'don', route: { room_id: 'Rodz' } });
-    expect(r.resolve({ ...ev('@don ping'), surface: 'shell' }).mesh).toEqual({ being: 'don', route: { room_id: 'Rodz' } });
+    expect((await r.resolve({ ...ev('@don ping'), surface: 'whatsapp' })).mesh).toEqual({ being: 'don', route: { room_id: 'Rodz' } });
+    expect((await r.resolve({ ...ev('@don ping'), surface: 'shell' })).mesh).toEqual({ being: 'don', route: { room_id: 'Rodz' } });
   });
 });
 
@@ -185,21 +185,21 @@ describe('router.resolve — surface-pinned relay agent (operator 2026-07-25)', 
 //    agent's relay_channel IS the route. `@don.do` still works when `don` is a relay agent,
 //    because the leading-@token match stops at the dot. ──
 describe('router.resolve — @being.node addressing (mesh.nodes evicted)', () => {
-  it('an unmatched qualified @being.node mints NO mesh target — it falls through to the persona', () => {
-    const r = createRouter({ getAgents: () => ({}) }).resolve(ev('@don.do do X'));
+  it('an unmatched qualified @being.node mints NO mesh target — it falls through to the persona', async () => {
+    const r = await createRouter({ getAgents: () => ({}) }).resolve(ev('@don.do do X'));
     expect(r.mesh).toBeUndefined();
     expect(r.being).toBe('e');
   });
 
-  it('a bare unknown @token → e (no mesh, no phantom)', () => {
-    const r = createRouter({ getAgents: () => ({}) }).resolve(ev('@ghost do X'));
+  it('a bare unknown @token → e (no mesh, no phantom)', async () => {
+    const r = await createRouter({ getAgents: () => ({}) }).resolve(ev('@ghost do X'));
     expect(r.mesh).toBeUndefined();
     expect(r.being).toBe('e');
   });
 
-  it('SURVIVES: @<relay-agent>.<node> routes route-direct through the agent (the @token stops at the dot)', () => {
+  it('SURVIVES: @<relay-agent>.<node> routes route-direct through the agent (the @token stops at the dot)', async () => {
     const ag = { egpt: { handles: ['e'], default: true }, don: { relay_channel: 'Rodz', to: 'don.do' } };
-    const r = createRouter({ getAgents: () => ag, defaultBeing: 'egpt' }).resolve(ev('@don.do do X'));
+    const r = await createRouter({ getAgents: () => ag, defaultBeing: 'egpt' }).resolve(ev('@don.do do X'));
     expect(r.being).toBeNull();
     expect(r.mesh).toEqual({ being: 'don', route: { room_id: 'Rodz' }, to: 'don.do' });
     expect(r.mention).toMatchObject({ atEStart: true });     // it IS addressed → gates as a mention
@@ -318,20 +318,20 @@ describe('addressed() — a bare handle opening the message (operator 2026-07-27
     expect(addressed('carol ping', KG).map((h) => h.name)).toEqual(['carol']);
   });
 
-  it('a bare handle produces the SAME routing target as the @ form (mention included)', () => {
+  it('a bare handle produces the SAME routing target as the @ form (mention included)', async () => {
     const router = createRouter({ getAgents: () => DOLLY, defaultBeing: 'egpt' });
-    const bare = router.resolve(ev('d hola'));
-    const at = router.resolve(ev('@d hola'));
+    const bare = await router.resolve(ev('d hola'));
+    const at = await router.resolve(ev('@d hola'));
     expect(bare.being).toBe('egpt');
     expect(bare.mention).toEqual(at.mention);
     expect(bare.targets).toEqual(at.targets);
   });
 
-  it('a surface-pinned agent still drops out: kg`s `don Pedro…` on beeper falls through to the persona', () => {
+  it('a surface-pinned agent still drops out: kg`s `don Pedro…` on beeper falls through to the persona', async () => {
     const router = createRouter({ getAgents: () => KG, defaultBeing: 'egpt' });
-    const beeper = router.resolve({ ...ev('don Pedro me dijo que sí'), surface: 'beeper' });
+    const beeper = await router.resolve({ ...ev('don Pedro me dijo que sí'), surface: 'beeper' });
     expect(beeper.targets).toEqual([{ being: 'egpt', mention: ev('x').mention }]);   // unmentioned persona → gated silent
-    const shell = router.resolve({ ...ev('don Pedro me dijo que sí'), surface: 'shell' });
+    const shell = await router.resolve({ ...ev('don Pedro me dijo que sí'), surface: 'shell' });
     expect(shell.mesh?.being).toBe('don');
   });
 
@@ -357,88 +357,93 @@ describe('addressed() — a bare handle opening the message (operator 2026-07-27
         .toEqual([{ name: 'egpt', agent: DOLLY.egpt, atStart: true, anywhere: true }]);
       expect(addressed('@d hola', DOLLY, OFF)).toEqual(addressed('@d hola', DOLLY));
     });
-    it('REPRODUCE-FIRST: the ROUTER carries it — `wren ping` falls through to the persona, `@wren ping` does not', () => {
+    it('REPRODUCE-FIRST: the ROUTER carries it — `wren ping` falls through to the persona, `@wren ping` does not', async () => {
       const off = createRouter({ getAgents: () => KG, defaultBeing: 'egpt', addressWithoutAt: false });
-      expect(off.resolve(ev('wren ping')).targets).toEqual([{ being: 'egpt', mention: ev('x').mention }]);
-      expect(off.resolve(ev('@wren ping')).mesh?.being).toBe('wren');
+      expect((await off.resolve(ev('wren ping'))).targets).toEqual([{ being: 'egpt', mention: ev('x').mention }]);
+      expect((await off.resolve(ev('@wren ping'))).mesh?.being).toBe('wren');
       // …and ON (the default) is untouched: no option = today's live behaviour.
       const on = createRouter({ getAgents: () => KG, defaultBeing: 'egpt' });
-      expect(on.resolve(ev('wren ping')).mesh?.being).toBe('wren');
+      expect((await on.resolve(ev('wren ping'))).mesh?.being).toBe('wren');
     });
-    it('REPRODUCE-FIRST: `r ok` STILL reaches the last agent with the flag OFF — the quick reply is not a bare handle', () => {
+    it('REPRODUCE-FIRST: `r ok` STILL reaches the last agent with the flag OFF — the quick reply is not a bare handle', async () => {
       expect(addressed('r ok', DOLLY, { quickReply: 'r', lastSpeaker: 'egpt', ...OFF }).map((h) => h.body)).toEqual(['ok']);
       expect(addressed('r ok', DOLLY, { quickReply: 'r', lastSpeaker: 'egpt', ...OFF }))
         .toEqual(addressed('r ok', DOLLY, { quickReply: 'r', lastSpeaker: 'egpt' }));
       const off = createRouter({ getAgents: () => DOLLY, defaultBeing: 'egpt', getQuickReply: () => 'r', addressWithoutAt: false });
       expect(off.quickReplyOf('r ok')).toBe('ok');                     // the grammar is untouched by the flag
-      const r = off.resolve(ev('r ok'), 'egpt');
+      const r = await off.resolve(ev('r ok'), 'egpt');
       expect([r.being, r.body]).toEqual(['egpt', 'ok']);
       expect(r.mention).toEqual({ atEStart: true, atEAnywhere: true, replyToBot: false });
-      expect(off.resolve(ev('r ok'), null).targets).toEqual([{ being: 'egpt', mention: ev('x').mention }]);  // no last speaker → ordinary text, unchanged
+      expect((await off.resolve(ev('r ok'), null)).targets).toEqual([{ being: 'egpt', mention: ev('x').mention }]);  // no last speaker → ordinary text, unchanged
     });
   });
 });
 
-// ── DANGEROUS-TYPE GATE (operator 2026-08 meta-engineer): a LOCAL agent whose `configuration`
-//    resolves (through the injected `resolveType`) to a type file carrying `dangerous: true` is
-//    reachable ONLY when ev.authorized is true — the SAME signal the bridge already computes
-//    (isSender, or a configured allowed_user; src/bridges/beeper.mjs). An unauthorized hit is
-//    dropped SILENTLY — same convention as the surface-pin mismatch: it falls through exactly as
-//    if the @token never matched (to another target, the persona, or "nobody addressed"). No
-//    refusal text here (contrast mesh.mjs's explicit denial — a different, already-trusted node
-//    peer there deserves an explicit reason; a local unauthorized sender must see nothing). ──
-describe('router.resolve — dangerous-type gate (operator 2026-08 meta-engineer)', () => {
+// ── ALLOWED_USERS GATE (operator 2026-08-15): a being's OWN reachability allow-list — replaces
+//    the evicted TYPE-FILE `dangerous:true` reachability mechanism (meta-engineer.yaml, gone; see
+//    brainpool.mjs's confinementFor for what `dangerous` still means — a CAPABILITY tier only,
+//    never a reachability gate any more). Two-tier: a GLOBAL default lives NESTED under
+//    agents.<handle>.conversation_defaults.allowed_users in config.yaml (already sitting on
+//    hit.agent — no extra wiring); a PER-CONVERSATION override lives FLAT under conversations.yaml
+//    agents.<being>.allowed_users (read via getBeing off an injected `loadState`, mirroring
+//    gating.mjs) and REPLACES — never merges with — the global default when set. UNSET at both
+//    tiers = no restriction (today's default, an ordinary agent reachable by anyone). Independent
+//    of ev.authorized (the existing, different, network-level allowed_users/isSender concept). No
+//    refusal text on a failed match — same silent-fallthrough convention the surface pin uses. ──
+describe('router.resolve — allowed_users gate (operator 2026-08-15)', () => {
   const agents = {
     egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true },
-    wren: { configuration: 'meta-engineer', handles: ['wren'] },   // dangerous local agent
+    wren: { configuration: 'egpt', handles: ['wren'], conversation_defaults: { allowed_users: ['boss'] } },   // global allow-list
     don:  { configuration: 'sonnet-high', handles: ['don'] },      // ordinary local agent — regression neighbor
   };
-  // A fake registry resolution: only "meta-engineer" resolves to a dangerous type.
-  const resolveType = (name) => (name === 'meta-engineer' ? { dangerous: true } : null);
 
-  it('REPRODUCE-FIRST: an UNAUTHORIZED sender addressing @wren (dangerous) is dropped — falls through exactly like an unmatched @token', () => {
-    const arouter = createRouter({ getAgents: () => agents, defaultBeing: 'egpt', resolveType });
-    const r = arouter.resolve({ ...ev('@wren do X'), authorized: false });
+  it('REPRODUCE-FIRST: a sender NOT on the GLOBAL allowed_users is dropped — falls through exactly like an unmatched @token', async () => {
+    const arouter = createRouter({ getAgents: () => agents, defaultBeing: 'egpt' });
+    const r = await arouter.resolve({ ...ev('@wren do X'), senderId: 'stranger' });
     expect(r.being).toBe('egpt');                                  // falls through to the persona
     expect(r.targets).toEqual([{ being: 'egpt', mention: ev('x').mention }]);   // no refusal, no trace of @wren
   });
 
-  it('an AUTHORIZED sender (ev.authorized true — isSender OR a configured allowed_user, upstream) reaches @wren directly', () => {
-    const arouter = createRouter({ getAgents: () => agents, defaultBeing: 'egpt', resolveType });
-    const r = arouter.resolve({ ...ev('@wren do X'), authorized: true });
+  it('a sender ON the GLOBAL allowed_users reaches the being directly', async () => {
+    const arouter = createRouter({ getAgents: () => agents, defaultBeing: 'egpt' });
+    const r = await arouter.resolve({ ...ev('@wren do X'), senderId: 'boss' });
     expect(r.being).toBe('wren');
     expect(r.mesh).toBeUndefined();
   });
 
-  it('an ordinary (non-dangerous) local agent stays reachable regardless of authorized — the gate is scoped to dangerous types only', () => {
-    const arouter = createRouter({ getAgents: () => agents, defaultBeing: 'egpt', resolveType });
-    expect(arouter.resolve({ ...ev('@don hi'), authorized: false }).being).toBe('don');
-    expect(arouter.resolve({ ...ev('@don hi'), authorized: true }).being).toBe('don');
+  it('shortChatId normalizes both sides: a legacy full-form config entry matches a short delivered sender id', async () => {
+    const ag = { egpt: agents.egpt, wren: { configuration: 'egpt', handles: ['wren'], conversation_defaults: { allowed_users: ['!abc:beeper.local'] } } };
+    const arouter = createRouter({ getAgents: () => ag, defaultBeing: 'egpt' });
+    expect((await arouter.resolve({ ...ev('@wren hi'), senderId: 'abc' })).being).toBe('wren');
+    expect((await arouter.resolve({ ...ev('@wren hi'), senderId: 'someone-else' })).being).toBe('egpt');
   });
 
-  it('other addressed targets in the SAME message survive: an unauthorized @wren hit is dropped, a co-addressed @don hit is not', () => {
-    const arouter = createRouter({ getAgents: () => agents, defaultBeing: 'egpt', resolveType });
-    const r = arouter.resolve({ ...ev('@wren and @don, both please'), authorized: false });
+  it('REGRESSION: a being with NEITHER tier set is reachable by anyone — today\'s ordinary default', async () => {
+    const arouter = createRouter({ getAgents: () => agents, defaultBeing: 'egpt' });
+    expect((await arouter.resolve({ ...ev('@don hi'), senderId: 'nobody-in-particular' })).being).toBe('don');
+    expect((await arouter.resolve({ ...ev('@don hi'), senderId: null })).being).toBe('don');
+  });
+
+  it('a PER-CONVERSATION allowed_users override REPLACES (never merges with) the global default and wins', async () => {
+    const state = { contacts: { whatsapp: { CHAT: { slug: 'chat', agents: { wren: { allowed_users: ['other'] } } } } } };
+    const arouter = createRouter({ getAgents: () => agents, defaultBeing: 'egpt', loadState: async () => state });
+    const base = { ...ev('@wren hi'), surface: 'whatsapp', chatId: 'CHAT' };
+    // 'boss' is on the GLOBAL list, but this conversation's override REPLACED it — not merged.
+    expect((await arouter.resolve({ ...base, senderId: 'boss' })).being).toBe('egpt');
+    // 'other' is on the per-conversation override list.
+    expect((await arouter.resolve({ ...base, senderId: 'other' })).being).toBe('wren');
+  });
+
+  it('other addressed targets in the SAME message survive: a dropped @wren hit does not affect a co-addressed @don hit', async () => {
+    const arouter = createRouter({ getAgents: () => agents, defaultBeing: 'egpt' });
+    const r = await arouter.resolve({ ...ev('@wren and @don, both please'), senderId: 'stranger' });
     expect(r.targets.map((t) => t.being)).toEqual(['don']);
   });
 
-  it('no resolveType injected (default) → the gate is a no-op — todays behaviour for a caller that supplies nothing', () => {
+  it('no loadState injected (default) → per-conversation overrides are never consulted, only the global tier — today\'s behaviour for a caller that supplies nothing', async () => {
     const bare = createRouter({ getAgents: () => agents, defaultBeing: 'egpt' });
-    expect(bare.resolve({ ...ev('@wren hi'), authorized: false }).being).toBe('wren');
-  });
-
-  // POINT 3 (operator): the gate MUST resolve from the base brains-registry layers only — a
-  // conversation's own brains/<name>.yaml must never be able to flip `dangerous` on or off for
-  // this decision. router.resolve() has no per-hit convDir to thread through in the first place;
-  // this locks that structurally — resolveType is called with the configuration name ALONE, no
-  // second (convDir) argument, so wiring it to `brains.resolve(name)` (boot.mjs) can only ever
-  // reach the built-in + profile layers (brains.mjs: convDir defaults to null).
-  it('resolveType is called with NO convDir — a conversation-local override can never reach the gate decision', () => {
-    const calls = [];
-    const rt = (...args) => { calls.push(args); return { dangerous: true }; };
-    const arouter = createRouter({ getAgents: () => agents, defaultBeing: 'egpt', resolveType: rt });
-    arouter.resolve({ ...ev('@wren hi'), authorized: false });
-    expect(calls).toEqual([['meta-engineer']]);        // ONE argument — no convDir
+    expect((await bare.resolve({ ...ev('@wren hi'), senderId: 'boss' })).being).toBe('wren');
+    expect((await bare.resolve({ ...ev('@wren hi'), senderId: 'stranger' })).being).toBe('egpt');
   });
 });
 

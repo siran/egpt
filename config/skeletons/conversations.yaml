@@ -60,8 +60,17 @@ contacts:
           #send_to_egpt: mode
 
           # /e access all|regular - points this agent at config/permissions/<level>.md,
-          # read fresh every turn (NOT a freeze). Unset = this node's ordinary default.
+          # read fresh every turn (NOT a freeze). REPLACES (does not merge with) this
+          # agent's global config.yaml agents.<name>.access_level default when set; unset
+          # here falls to that global default, then to this node's ordinary default.
           #access_level: all
+
+          # this agent's reachability allow-list for THIS conversation only - a list of
+          # sender ids (same shape as config.yaml networks.*.allowed_users). REPLACES
+          # (does not merge with) this agent's global config.yaml
+          # agents.<name>.allowed_users default when set; unset here falls to that
+          # global default, then to "reachable by anyone" (today's ordinary default).
+          #allowed_users: []
 
           # spine-written, don't hand-edit. Deleting threadId starts a new session
           # AND re-resolves this agent's engine/model/effort/tools fresh from

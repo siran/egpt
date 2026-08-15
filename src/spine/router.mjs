@@ -28,6 +28,8 @@
 // the @token match below stops at the dot and finds the agent.
 import { agentPaths } from '../mesh/relay.mjs';
 import { mentionHits } from '../auto-mode.mjs';
+import { getBeing } from '../conversations-state.mjs';
+import { shortChatId } from '../bridges/chat-id.mjs';
 
 // QUICK REPLY (operator 2026-07-25: "a lo mejor empezar la respuesta con 'r', tipo 'r ok pero que
 // no sea tan común' … si el ultimo mensaje fue de don o de E, el bridge routes and dispatches" —
@@ -151,30 +153,16 @@ export function addressed(text, agents, { quickReply = '', lastSpeaker = null, a
   return out;
 }
 
-// DANGEROUS-TYPE GATE (operator 2026-08 meta-engineer): does reaching this agent require an
-// authorized sender? True ONLY when the agent's `configuration` resolves to a TYPE FILE
-// carrying `dangerous: true` — the one unconfined tier (full filesystem, no sandbox; see
-// brainpool.mjs). `resolveType` is injected (never imported as a live singleton, matching this
-// file's DI style) and MUST resolve from the base layers only — built-in + profile, NEVER a
-// conversation's own brains/ override — so an agent with Write access to its own conv dir can
-// never author a local brains/<name>.yaml that flips `dangerous` on for itself. Both callers
-// (this file's resolve() below, and mesh.mjs's relayDispatch) share this ONE definition so the
-// gate can never exist on one path and not the other. A relay agent's `configuration` is the
-// literal 'relay' (or absent) — it never resolves to a type file, so this is a no-op for every
-// relay/multipath agent; the gate only ever fires for a LOCAL agent's type.
-export function requiresAuthorization(agent, { resolveType = () => null } = {}) {
-  const configuration = agent && typeof agent === 'object' ? agent.configuration : null;
-  if (!configuration) return false;
-  const def = resolveType(String(configuration));
-  return !!def?.dangerous;
-}
-
 // `getQuickReply` reads config.quick_reply_string (unset → the 'r' default below; '' disables).
 // `addressWithoutAt` is the node's dispatch.address_without_at (boot reads it once; DEFAULT true)
 // — the ONE switch for the bare-handle form, forwarded to `addressed` above.
-// `resolveType` — see requiresAuthorization above; DEFAULT never resolves anything dangerous
-// (a caller that supplies nothing gets today's behaviour: no agent is ever gated).
-export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', getQuickReply = () => undefined, addressWithoutAt = true, resolveType = () => null } = {}) {
+// `loadState` (operator 2026-08-15, allowed_users) — () => Promise<conv state>, the SAME
+// conversations-state IO gating.mjs's createGating takes, injected the same way (mirrored, not
+// duplicated). Absent (tests, a caller that doesn't need per-conversation overrides) → resolve()
+// simply never reads any per-conversation allowed_users, and every being's reachability falls
+// straight to its global `agents:` default (or unrestricted, when neither is set) — today's
+// behaviour for a caller that supplies nothing.
+export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', getQuickReply = () => undefined, addressWithoutAt = true, loadState = null } = {}) {
   // ONE addressed agent → the routing target it resolves to. Per-kind semantics are
   // UNCHANGED; only the caller changed (every hit, not just the first).
   function targetFor({ name, agent, atStart, body }, ev) {
@@ -230,15 +218,22 @@ export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', getQu
      *  @param {string|null} lastSpeaker  the AGENT that spoke last in this conversation (the
      *    spine's per-(surface,chatId) record), or null when a human did / nobody has — the
      *    quick-reply gate.
-     *  @returns {{ being: string|null, mesh?: object, mention: object|undefined, targets: object[], body?: string }}
+     *  @returns {Promise<{ being: string|null, mesh?: object, mention: object|undefined, targets: object[], body?: string }>}
      *  `targets` is EVERY addressed agent in text order (the spine fans out over it); the
      *  first target's fields are mirrored at the top level so a single-target caller reads
      *  exactly what resolve() always returned. `body` is present ONLY for a quick reply: the
-     *  message minus its token, what the agent should be handed. */
-    resolve(ev, lastSpeaker = null) {
+     *  message minus its token, what the agent should be handed.
+     *  ASYNC (operator 2026-08-15, allowed_users): a per-conversation allowed_users override
+     *  lives in conversations.yaml, which nothing caches (re-read per lookup) — resolving it
+     *  needs one state read, done ONCE here, not once per hit. */
+    async resolve(ev, lastSpeaker = null) {
       const agents = getAgents() ?? {};
       const targets = [];
       let body;
+      // ONE conv-state read for the whole call (never per-hit) — mirrors gating.mjs's own
+      // beingView seam/failure mode: no loadState injected, or a read that throws → null, and
+      // every hit below falls straight to its GLOBAL allowed_users (or unrestricted).
+      const state = loadState ? await loadState().catch(() => null) : null;
       if (agents && typeof agents === 'object') {
         for (const hit of addressed(ev?.body ?? '', agents, { quickReply: getQuickReply() ?? 'r', lastSpeaker, addressWithoutAt })) {
           // SURFACE PIN (operator 2026-07-25): an agent may carry `surface: <name>` so it is an
@@ -251,21 +246,41 @@ export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', getQu
           // agent is an ordinary map since 2026-07-26, so it can be pinned like any other.
           if (hit.agent.surface != null
               && String(hit.agent.surface).toLowerCase() !== String(ev?.surface ?? '').toLowerCase()) continue;
-          // DANGEROUS-TYPE GATE (operator 2026-08 meta-engineer): a hit whose agent resolves to a
-          // `dangerous: true` type is reachable ONLY when ev.authorized (the bridge's existing
-          // isSender/allowed_user signal — no new list). An unauthorized hit is dropped SILENTLY,
-          // the SAME way the surface-pin mismatch above is: it falls through exactly as if the
-          // @token had never matched (to another target, the persona, or "nobody addressed").
-          // Deliberately NO refusal text here — contrast mesh.mjs's explicit denial: there the
-          // requester is a DIFFERENT, already-trusted node peer who deserves an explicit reason;
-          // here an unauthorized LOCAL sender must see nothing different from an unmatched @token.
-          if (!ev?.authorized && requiresAuthorization(hit.agent, { resolveType })) continue;
+          // ALLOWED_USERS GATE (operator 2026-08-15): "we should control by access_level and who
+          // is able to trigger the agent … i think the 'dangerous' key is mistake" — replaces the
+          // evicted TYPE-FILE `dangerous:true` reachability mechanism (meta-engineer.yaml, gone;
+          // see brainpool.mjs's confinementFor for what `dangerous` still means — a CAPABILITY
+          // tier only, never a reachability gate any more). Two-tier, the SAME override pattern
+          // access_level already uses: a per-conversation `allowedUsers` (conversations.yaml
+          // agents.<being>.allowed_users, read via getBeing off the ONE state read above,
+          // FLAT — that block is already scoped to one being in one conversation) REPLACES —
+          // never merges with — the node's global default, which lives NESTED under
+          // agents.<handle>.conversation_defaults.allowed_users in config.yaml: the nesting IS
+          // the allowlist of which agent fields get this two-tier treatment (a registry/
+          // structural field like handles/configuration/relay_channel, sitting as a direct
+          // sibling, is never eligible — no code-side allowlist to keep in sync). UNSET at both
+          // tiers = no restriction, today's default (reachable by anyone who could normally
+          // address this being). When the resolved list is non-empty, gate on the SENDER's id:
+          // shortChatId on both sides (src/bridges/chat-id.mjs) — the SAME normalizer boot.mjs's
+          // OWN (separate, network-level) allowed_users check uses — so a short OR legacy
+          // full-form entry matches either way. Deliberately INDEPENDENT of ev.authorized/
+          // ev.isSender (the existing NETWORK-level allowed_users/isSender concept) — a being's
+          // own allowed_users is a narrower, different check and never reuses that field. A hit
+          // failing it is dropped SILENTLY, same convention as the surface-pin mismatch above: it
+          // falls through exactly as if the @token had never matched (to another target, the
+          // persona, or "nobody addressed").
+          const conv = state ? (() => { try { return getBeing(state, ev.surface, ev.chatId, hit.name); } catch { return null; } })() : null;
+          const convAllowed = Array.isArray(conv?.allowedUsers) ? conv.allowedUsers : null;
+          const globalAllowed = Array.isArray(hit.agent.conversation_defaults?.allowed_users) ? hit.agent.conversation_defaults.allowed_users : null;
+          const allowedUsers = convAllowed ?? globalAllowed;
+          if (Array.isArray(allowedUsers) && allowedUsers.length
+              && !allowedUsers.map(shortChatId).includes(shortChatId(ev?.senderId))) continue;
           if (hit.body != null) body = hit.body;
           targets.push(targetFor(hit, ev));
         }
       }
-      // Nobody addressed (or every hit was surface-pinned away): an @token that matched no
-      // agent is the persona's, and so is a bare message.
+      // Nobody addressed (or every hit was surface-pinned/allowed-users away): an @token that
+      // matched no agent is the persona's, and so is a bare message.
       if (!targets.length) targets.push({ being: defaultBeing, mention: ev?.mention });
       return { ...targets[0], targets, ...(body != null ? { body } : {}) };
     },

@@ -1223,6 +1223,51 @@ export const CONFIG_SCHEMA = {
         ordinary map, so it carries handles:/surface:/mode: like any other
         (operator 2026-07-26). Multipath used to be the agent VALUE itself
         being that list, which left it addressable only by its map key.
+      conversation_defaults
+        OPTIONAL (operator 2026-08-15) - a sub-block of this agent's GLOBAL
+        defaults for the fields below, each overridable per conversation. The
+        NESTING is deliberate and IS the allowlist: only a field living inside
+        conversation_defaults ever gets the two-tier "global default,
+        per-conversation override" treatment; a REGISTRY/structural field
+        sitting as this agent's direct sibling (handles, configuration,
+        relay_channel, default, name, body_emoji, …) never does, by
+        construction - no code-side allowlist to keep in sync as fields are
+        added. A third two-tier field needs no code change to become one:
+        just nest it here and read it the same generic way.
+          allowed_users
+            A list of sender ids (same shape/normalization as
+            networks.*.allowed_users - matched via shortChatId, so a short or
+            legacy full-form id both work). UNSET = reachable by anyone who
+            could normally address this agent (today's ordinary default for a
+            plain agent). Set = ONLY a sender whose id is in the list can
+            reach it; every other sender's @mention falls through exactly as
+            if it never matched (silent, same convention as the surface pin).
+
+            Replaces the retired TYPE-FILE dangerous: true reachability
+            mechanism (meta-engineer.yaml, evicted 2026-08-15 - "i think the
+            'dangerous' key is mistake"). dangerous: true on a type file is
+            STILL a real, meaningful flag - see CONFINEMENT below - it is just
+            no longer a reachability gate; who may trigger an agent is
+            controlled here and by access_level instead. Independent of
+            ev.authorized/isSender (the existing per-NETWORK allowed_users/
+            account-owner concept, networks.*.allowed_users) - this is a
+            narrower, per-being gate and never reuses that signal.
+          access_level
+            all | regular, the SAME values /agents <handle>|all access_level
+            all|regular writes per-conversation. Points this agent at
+            config/permissions/<level>.md (src/spine/permission-levels.mjs),
+            resolved fresh every turn (brainpool.mjs) - never a freeze. UNSET
+            = this node's ordinary default (the type file's own grant,
+            unmodified).
+
+        OVERRIDDEN PER CONVERSATION in conversations.yaml under the entry's
+        agents: block - contacts.<surface>[<id>].agents.<name>.allowed_users /
+        .access_level - FLAT there (no conversation_defaults wrapper: that
+        block is already scoped to one being in one conversation, so there is
+        no registry-field ambiguity to guard against). When set, the
+        per-conversation value REPLACES this global default for that one
+        conversation (never merged/unioned with it); unset there falls back to
+        this global default, then to "no override" (today's behavior).
 
     RESOLUTION of a leading @<token> (router.mjs):
       The token matches an agent's name or any handle (case-insensitive).
@@ -1256,10 +1301,12 @@ export const CONFIG_SCHEMA = {
       dangerous: true (on the TYPE FILE, not here) is the ONE exception to
         this whole confinement model — full filesystem, its allowed_tools
         list runs verbatim (no coercion, no cap), no sandbox, exactly like an
-        interactive claude-code session (operator 2026-08 meta-engineer).
-        Gated entirely on the sender's ev.authorized (an allowed_user on the
-        network they're messaging from, or the account owner) — no new
-        config list. Nothing in this agents: block wires it live by itself.
+        interactive claude-code session. A pure CAPABILITY declaration (what
+        the type CAN do) — it grants no reachability by itself; WHO may
+        trigger an agent carrying it is controlled by this agent's own
+        conversation_defaults.allowed_users / .access_level fields above
+        (operator 2026-08-15 — the type-file "dangerous" flag used to ALSO
+        gate reachability; that conflation was retired as a mistake).
       allowed_paths (a type-file map) grants extra roots:
         path:                              empty/null value = full access
                                            (read + write)

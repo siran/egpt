@@ -54,6 +54,17 @@ agents:
     # name: "egpt"                # display label the bridge stamps ("<emoji> <name>: <reply>"); defaults to the key.
     # body_emoji: "<emoji>"       # reply stamp the bridge enforces; default is the dog.
     #                             # A 2nd node sets its OWN so humans see which node spoke.
+    # conversation_defaults:      # THIS AGENT'S global defaults for fields conversations.yaml can
+    #                             # override per-conversation - the nesting IS the allowlist (only
+    #                             # fields living here get a per-conversation override at all).
+    #   allowed_users: []         # reachability default (id list, same shape as networks.*.allowed_users
+    #                             # below) - unset = reachable by anyone who could normally address it.
+    #                             # Overridable per-conversation (conversations.yaml
+    #                             # agents.<name>.allowed_users) - the override REPLACES this list
+    #                             # there, it does not merge with it.
+    #   access_level: regular     # access_level default (all|regular) - points at
+    #                             # config/permissions/<level>.md. Overridable per-conversation
+    #                             # (conversations.yaml agents.<name>.access_level, same replace-not-merge rule).
 
 # Relay agents (optional - foreign-mesh across SEPARATE accounts). A relay
 # forwards a mention into another chat; `to:` chains hops. Not needed within one account.

@@ -41,8 +41,8 @@ const AGENTS = {
 const arouter = createRouter({ getAgents: () => AGENTS, defaultBeing: 'egpt' });
 
 describe('REPRODUCE-FIRST — the two live failures', () => {
-  it('`@e and @don you here?` addresses BOTH — a local being AND a mesh target from one message', () => {
-    const r = arouter.resolve(ev('@e and @don you here?'));
+  it('`@e and @don you here?` addresses BOTH — a local being AND a mesh target from one message', async () => {
+    const r = await arouter.resolve(ev('@e and @don you here?'));
     expect(r.targets).toHaveLength(2);
     expect(r.targets[0]).toMatchObject({ being: 'egpt' });          // the persona takes its turn
     expect(r.targets[0].mesh).toBeUndefined();
@@ -50,20 +50,20 @@ describe('REPRODUCE-FIRST — the two live failures', () => {
     expect(r.targets[1].mesh).toEqual({ being: 'don', route: { room_id: 'egpt-mesh-do-kg' }, to: 'don.do' });
   });
 
-  it('an @agent MID-SENTENCE is addressed (only a LEADING token was, before)', () => {
-    const r = arouter.resolve(ev('oye @don, ¿estás?'));
+  it('an @agent MID-SENTENCE is addressed (only a LEADING token was, before)', async () => {
+    const r = await arouter.resolve(ev('oye @don, ¿estás?'));
     expect(r.targets.map((t) => t.mesh?.being)).toEqual(['don']);
     expect(r.being).toBeNull();
     expect(r.mesh).toEqual({ being: 'don', route: { room_id: 'egpt-mesh-do-kg' }, to: 'don.do' });
   });
 
-  it('an @agent inside a CODE FENCE addresses NOBODY (the protection 47caf19 gave the persona)', () => {
-    const fenced = arouter.resolve(ev('mira:\n```yaml\nagents: { don: relay }   # @don is the relay\n```\n'));
+  it('an @agent inside a CODE FENCE addresses NOBODY (the protection 47caf19 gave the persona)', async () => {
+    const fenced = await arouter.resolve(ev('mira:\n```yaml\nagents: { don: relay }   # @don is the relay\n```\n'));
     expect(fenced.targets).toHaveLength(1);
     expect(fenced.being).toBe('egpt');      // falls through to the default agent
     expect(fenced.mesh).toBeUndefined();
     // …and an inline code span too
-    const inline = arouter.resolve(ev('`@don` is how you reach him'));
+    const inline = await arouter.resolve(ev('`@don` is how you reach him'));
     expect(inline.mesh).toBeUndefined();
     expect(inline.being).toBe('egpt');
   });
@@ -113,18 +113,18 @@ describe('addressed() — ONE matcher over the whole addressable set', () => {
 });
 
 describe('LOCKS — every current resolve() semantic survives the fan-out', () => {
-  it('a bare message with no @mention still reaches the default agent, ev.mention untouched', () => {
+  it('a bare message with no @mention still reaches the default agent, ev.mention untouched', async () => {
     const m = { atEStart: false, atEAnywhere: false, replyToBot: true };
-    const r = arouter.resolve(ev('hola que tal', { mention: m }));
+    const r = await arouter.resolve(ev('hola que tal', { mention: m }));
     expect(r.being).toBe('egpt');
     expect(r.mesh).toBeUndefined();
     expect(r.mention).toBe(m);
     expect(r.targets).toHaveLength(1);
   });
 
-  it('the DEFAULT agent keeps ev.mention; every other addressed agent carries its OWN REAL flags', () => {
+  it('the DEFAULT agent keeps ev.mention; every other addressed agent carries its OWN REAL flags', async () => {
     const m = { atEStart: true, atEAnywhere: true, replyToBot: false };
-    const r = arouter.resolve(ev('@e and @wren and @don', { mention: m }));
+    const r = await arouter.resolve(ev('@e and @wren and @don', { mention: m }));
     expect(r.targets.map((t) => t.being)).toEqual(['egpt', 'wren', null]);
     expect(r.targets[0].mention).toBe(m);                                                    // persona: bridge-computed, untouched
     // NOT a blanket constant (operator 2026-07-25: "respect the mode, if it's mention-direct not
@@ -133,10 +133,10 @@ describe('LOCKS — every current resolve() semantic survives the fan-out', () =
     expect(r.targets[2].mention).toEqual({ atEStart: false, atEAnywhere: true, replyToBot: false });
   });
 
-  it('a LEADING @name still yields exactly the old flags ({ atEStart: true, atEAnywhere: true })', () => {
-    expect(arouter.resolve(ev('@don ping')).mention).toEqual({ atEStart: true, atEAnywhere: true, replyToBot: false });
-    expect(arouter.resolve(ev('@wren ping')).mention).toEqual({ atEStart: true, atEAnywhere: true, replyToBot: false });
-    expect(arouter.resolve(ev('@maria ping')).mention).toEqual({ atEStart: true, atEAnywhere: true, replyToBot: false });
+  it('a LEADING @name still yields exactly the old flags ({ atEStart: true, atEAnywhere: true })', async () => {
+    expect((await arouter.resolve(ev('@don ping'))).mention).toEqual({ atEStart: true, atEAnywhere: true, replyToBot: false });
+    expect((await arouter.resolve(ev('@wren ping'))).mention).toEqual({ atEStart: true, atEAnywhere: true, replyToBot: false });
+    expect((await arouter.resolve(ev('@maria ping'))).mention).toEqual({ atEStart: true, atEAnywhere: true, replyToBot: false });
   });
 
   // REPRODUCE-FIRST (operator 2026-07-26: "i mean you can make it work with handles differing from
@@ -145,8 +145,8 @@ describe('LOCKS — every current resolve() semantic survives the fan-out', () =
   // moved one level down under `paths:`, making a multipath agent an ordinary map, and the wake
   // vocabulary then applies to it unchanged: declared handles are the COMPLETE list, and the KEY
   // is not one of them.
-  it('a MULTIPATH agent is addressed by its HANDLE and resolves to ALL its paths', () => {
-    const r = arouter.resolve(ev('@maria hola'));
+  it('a MULTIPATH agent is addressed by its HANDLE and resolves to ALL its paths', async () => {
+    const r = await arouter.resolve(ev('@maria hola'));
     expect(r.mesh).toEqual({
       being: 'carol',                                   // the being-id is still the map key
       paths: [
@@ -156,27 +156,27 @@ describe('LOCKS — every current resolve() semantic survives the fan-out', () =
     });
   });
 
-  it('…and by its map KEY it routes NOTHING — declared handles are the complete wake list', () => {
-    const r = arouter.resolve(ev('@carol hola'));
+  it('…and by its map KEY it routes NOTHING — declared handles are the complete wake list', async () => {
+    const r = await arouter.resolve(ev('@carol hola'));
     expect(r.mesh).toBeUndefined();
     expect(r.being).toBe('egpt');                        // falls through to the persona
     expect(r.targets).toHaveLength(1);
   });
 
-  it('a surface-PINNED agent is addressed only on its pinned surface — off it, it is not a target at all', () => {
-    expect(arouter.resolve(ev('@pinned hi', { surface: 'shell' })).mesh).toEqual({ being: 'pinned', route: { room_id: 'shell-only' } });
-    const off = arouter.resolve(ev('@pinned hi', { surface: 'whatsapp' }));
+  it('a surface-PINNED agent is addressed only on its pinned surface — off it, it is not a target at all', async () => {
+    expect((await arouter.resolve(ev('@pinned hi', { surface: 'shell' }))).mesh).toEqual({ being: 'pinned', route: { room_id: 'shell-only' } });
+    const off = await arouter.resolve(ev('@pinned hi', { surface: 'whatsapp' }));
     expect(off.mesh).toBeUndefined();
     expect(off.being).toBe('egpt');
     expect(off.targets).toHaveLength(1);
     // and it does not swallow the OTHER agents addressed in the same message
-    const mixed = arouter.resolve(ev('@pinned and @don', { surface: 'whatsapp' }));
+    const mixed = await arouter.resolve(ev('@pinned and @don', { surface: 'whatsapp' }));
     expect(mixed.targets.map((t) => t.mesh?.being)).toEqual(['don']);
   });
 
-  it('an unknown @token alone still falls through to the default agent', () => {
-    expect(arouter.resolve(ev('@nobody hi')).being).toBe('egpt');
-    expect(arouter.resolve(ev('@_note hi')).being).toBe('egpt');
+  it('an unknown @token alone still falls through to the default agent', async () => {
+    expect((await arouter.resolve(ev('@nobody hi'))).being).toBe('egpt');
+    expect((await arouter.resolve(ev('@_note hi'))).being).toBe('egpt');
   });
 });
 
