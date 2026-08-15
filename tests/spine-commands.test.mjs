@@ -459,6 +459,171 @@ describe('/agents <handle>|all reset — archive + registry wipe + reseed, one s
   });
 });
 
+// /agents <handle>|all restart — the NARROWER sibling of reset (operator 2026-08-15,
+// decided directly against reset's archive-and-wipe): clears ONLY the target being(s)'
+// threadId via patchBeing (a merge, never deleteBeing) — mode/access_level and every other
+// field on the block survive, and the conversation folder (transcript.md, media/, files/,
+// identity.d/) is never archived or otherwise touched. Matches exactly what already happens
+// today when an operator manually clears threadId by hand. Transcript rolling + identity
+// reseeding are NOT triggered synchronously here — they already happen lazily, on the
+// being's NEXT real turn, via brainpool.mjs's own `fresh = !sessionId` gate. No evictWarm()
+// call either: warm-sessions.mjs's run() carries its own SESSION-IDENTITY GUARD (its comment
+// names this exact "handle reset nulling the thread" case) that self-evicts + reopens once
+// the next turn passes `sessionId: null` for this being — nulling threadId here is what arms
+// that guard, so restart needs no eviction call of its own.
+describe('/agents <handle>|all restart — clears ONLY threadId, mode/access_level/folder untouched', () => {
+  const cases = [
+    { label: 'a room-surface conversation', surface: 'room', jid: 'acim', ctx: {} },
+    { label: 'an ordinary whatsapp conversation', surface: 'whatsapp', jid: '1234@s.whatsapp.net', ctx: { pushedName: 'diego', slugHint: 'diego' } },
+  ];
+
+  // Same shape as reset's own seedResetState above (E has a prior thread + hand-set mode +
+  // an access_level pin, plus a sibling being `d`) — deliberately identical so the
+  // reset-vs-restart contrast below is a true apples-to-apples comparison.
+  function seedRestartState(surface, jid, ctx) {
+    let state = ensureContact(emptyState(), surface, jid, ctx).state;
+    state = patchContact(state, surface, jid, {
+      agents: {
+        e: { mode: 'mention', threadId: 'thread-abc', threadCreatedAt: '2026-08-01T00:00:00Z', access_level: 'all' },
+        d: { mode: 'on' },
+      },
+    });
+    return state;
+  }
+
+  for (const { label, surface, jid, ctx } of cases) {
+    it(`/agents e restart clears ONLY threadId — mode/access_level survive, being stays present — ${label}`, async () => {
+      const state = seedRestartState(surface, jid, ctx);
+      const { cmds, getState } = harness({ state, io: { rename: async () => {}, mkdir: async () => {} } });
+      await cmds.run({ chatId: jid, surface, body: '/agents e restart' });
+
+      const eAfter = getBeing(getState(), surface, jid, 'e');
+      expect(eAfter.present).toBe(true);
+      expect(eAfter.threadId).toBeNull();
+      expect(eAfter.mode).toBe('mention');
+      expect(eAfter.accessLevel).toBe('all');
+    });
+  }
+
+  // THE CONTRAST PAIR (operator-mandated): the SAME seeded being, reset wipes mode too
+  // (regression lock on reset's existing, unchanged behavior) — restart does not. Run back
+  // to back so the distinction is provable at a glance, not just asserted in isolation.
+  it('CONTRAST — /agents e reset wipes mode (regression lock, unchanged) vs /agents e restart leaves mode/access_level intact — same seed, side by side', async () => {
+    const resetState = seedRestartState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
+    const { cmds: resetCmds, getState: getResetState } = harness({ state: resetState, io: { rename: async () => {}, mkdir: async () => {} } });
+    await resetCmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents e reset' });
+    const eAfterReset = getBeing(getResetState(), 'whatsapp', '1234@s.whatsapp.net', 'e');
+    expect(eAfterReset.present).toBe(false);
+    expect(eAfterReset.mode).toBeNull();
+    expect(eAfterReset.accessLevel).toBeNull();
+    expect(eAfterReset.threadId).toBeNull();
+
+    const restartState = seedRestartState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
+    const { cmds: restartCmds, getState: getRestartState } = harness({ state: restartState, io: { rename: async () => {}, mkdir: async () => {} } });
+    await restartCmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents e restart' });
+    const eAfterRestart = getBeing(getRestartState(), 'whatsapp', '1234@s.whatsapp.net', 'e');
+    expect(eAfterRestart.present).toBe(true);
+    expect(eAfterRestart.mode).toBe('mention');
+    expect(eAfterRestart.accessLevel).toBe('all');
+    expect(eAfterRestart.threadId).toBeNull();   // the ONE field restart does change
+  });
+
+  // Sibling scoping (mirrors reset's own "wren reset leaves e untouched" regression lock
+  // above): restart must NAME the being it clears, never assume defaultKey or spill onto a
+  // resident sibling that wasn't targeted.
+  it("/agents wren restart clears ONLY wren's threadId — sibling e (also resident here) is untouched byte-for-byte", async () => {
+    let state = ensureContact(emptyState(), 'whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' }).state;
+    state = patchContact(state, 'whatsapp', '1234@s.whatsapp.net', {
+      agents: {
+        e: { mode: 'on', threadId: 'e-thread-abc', access_level: 'all' },
+        wren: { mode: 'mention', threadId: 'wren-thread-xyz' },
+      },
+    });
+    const before = getContact(state, 'whatsapp', '1234@s.whatsapp.net').entry.agents.e;
+    const { cmds, getState } = harness({ state });
+    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents wren restart' });
+
+    const reloaded = getState();
+    const wrenAfter = getBeing(reloaded, 'whatsapp', '1234@s.whatsapp.net', 'wren');
+    expect(wrenAfter.present).toBe(true);
+    expect(wrenAfter.threadId).toBeNull();
+    expect(wrenAfter.mode).toBe('mention');
+
+    const eAfter = getContact(reloaded, 'whatsapp', '1234@s.whatsapp.net').entry.agents.e;
+    expect(eAfter).toEqual(before);   // byte-for-byte untouched
+  });
+
+  // Contrast with reset's own "archives the old folder" test above, which asserts rename/
+  // mkdir DO fire: restart must never touch the conversation folder at all.
+  it('/agents e restart never touches the conversation folder — rename/mkdir are NEVER called (contrast: reset always calls both)', async () => {
+    const state = seedRestartState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
+    const renames = [], mkdirs = [];
+    const { cmds } = harness({
+      state,
+      io: {
+        rename: async (from, to) => { renames.push([from, to]); },
+        mkdir: async (p) => { mkdirs.push(p); },
+      },
+    });
+    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents e restart' });
+    expect(renames).toHaveLength(0);
+    expect(mkdirs).toHaveLength(0);
+  });
+
+  it('/agents all restart clears threadId for EVERY resident being, leaving each one\'s own mode intact', async () => {
+    let state = ensureContact(emptyState(), 'whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' }).state;
+    state = patchContact(state, 'whatsapp', '1234@s.whatsapp.net', {
+      agents: { e: { mode: 'on', threadId: 'e-t' }, wren: { mode: 'mention', threadId: 'wren-t' }, d: { mode: 'accum', threadId: 'd-t' } },
+    });
+    const { cmds, getState } = harness({ state });
+    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents all restart' });
+    const reloaded = getState();
+    for (const h of ['e', 'wren', 'd']) {
+      const b = getBeing(reloaded, 'whatsapp', '1234@s.whatsapp.net', h);
+      expect(b.present).toBe(true);
+      expect(b.threadId).toBeNull();
+    }
+    expect(getBeing(reloaded, 'whatsapp', '1234@s.whatsapp.net', 'e').mode).toBe('on');
+    expect(getBeing(reloaded, 'whatsapp', '1234@s.whatsapp.net', 'wren').mode).toBe('mention');
+    expect(getBeing(reloaded, 'whatsapp', '1234@s.whatsapp.net', 'd').mode).toBe('accum');
+  });
+
+  // `=<slug>` target form (mirrors reset's own /agents=hfm e reset test above): from Self,
+  // name a DIFFERENT known chat instead of the conversation the command was typed in.
+  it('/agents=hfm e restart clears threadId on the NAMED chat while the operator types from Self — Self itself is never touched', async () => {
+    const state = seedRestartState('whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' });
+    const { cmds, sent, getState } = harness({ state });
+    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/agents=hfm e restart' });
+
+    const eAfter = getBeing(getState(), 'whatsapp', '!hfm:beeper.local', 'e');
+    expect(eAfter.threadId).toBeNull();
+    expect(eAfter.mode).toBe('mention');
+    expect(getBeing(getState(), 'whatsapp', '!self', 'e')).toBe(null);   // Self untouched
+    expect(sent[0].text).toMatch(/for HFM/);
+  });
+
+  // Locks in the investigation's conclusion (see the describe-block comment above): restart
+  // relies on warm-sessions.mjs's own session-identity guard to evict a stale warm process
+  // once threadId goes null on the next turn — it must NOT call evictWarm itself (that would
+  // duplicate access_level's own, different, reason for evicting).
+  it('/agents e restart does NOT call evictWarm — the warm pool\'s own session-identity guard self-evicts once threadId is nulled', async () => {
+    const state = seedRestartState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
+    const { cmds, evicts } = harness({ state });
+    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents e restart' });
+    expect(evicts).toEqual([]);
+  });
+
+  it('/agents e restart is recognized case-insensitively on the command token + subcommand', async () => {
+    for (const body of ['/agents e restart', '/AGENTS e RESTART', '/Agents e Restart']) {
+      const state = seedRestartState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
+      const { cmds, sent } = harness({ state });
+      await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body });
+      expect(sent[0].text).toMatch(/restart/i);
+      expect(sent[0].text).not.toMatch(/recognized/);
+    }
+  });
+});
+
 // /agents <handle>|all access_level all|regular — a PLAIN TOGGLE (operator: same trust
 // model as /room delete force, no extra reachability gate) that points the TARGET being's
 // `access_level` at config/permissions/all.md or config/permissions/regular.md. NOT a
@@ -663,7 +828,7 @@ describe('/agents <handle>|all — bare status view, usage, and /e/egpt retireme
     const { cmds, sent, writes } = harness({ state: contact() });
     const ev = { chatId: '!room', surface: 'whatsapp', authorized: true };
     await cmds.run({ ...ev, body: '/agents' });
-    expect(sent[0].text).toBe('usage: /agents[=<slug>] <handle>|all [reset|auto <mode>|access_level <all|regular>]');
+    expect(sent[0].text).toBe('usage: /agents[=<slug>] <handle>|all [reset|restart|auto <mode>|access_level <all|regular>]');
     expect(writes).toHaveLength(0);
     // a plain follow-up message is NOT claimed as a command (nothing was armed)
     expect(cmds.isCommand({ chatId: '!room', surface: 'whatsapp', body: '1', authorized: true })).toBe(false);

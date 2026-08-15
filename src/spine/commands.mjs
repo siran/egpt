@@ -576,8 +576,8 @@ export function createCommands({
       else if (named) line = line.replace(addressed.raw, '');
     }
 
-    // /agents[=<slug>] <handle>|all [reset|auto <mode>|access_level <all|regular>] — the
-    // general per-being command surface (operator 2026-08-15, retires /e + /egpt entirely).
+    // /agents[=<slug>] <handle>|all [reset|restart|auto <mode>|access_level <all|regular>] —
+    // the general per-being command surface (operator 2026-08-15, retires /e + /egpt entirely).
     // /e's whole family was hardcoded to defaultKey (the persona's own map key) — "a failure
     // in design" now that every resident being (the persona AND a sibling like wren) is
     // configured identically under agents.<being> with no per-conversation freeze (phase 1/2):
@@ -587,6 +587,7 @@ export function createCommands({
     //
     //   /agents[=<slug>] <handle>|all                        → status (bare, see agentsStatus)
     //   /agents[=<slug>] <handle>|all reset                  → archive + wipe + reseed
+    //   /agents[=<slug>] <handle>|all restart                → clear ONLY threadId, everything else survives
     //   /agents[=<slug>] <handle>|all auto <mode>             → was /e auto <mode>
     //   /agents[=<slug>] <handle>|all access_level <all|regular>  → was /e access all|regular
     //
@@ -940,7 +941,7 @@ export function createCommands({
     await send?.(ev.chatId, `/room: unknown verb "${first}" — create|join|leave|members|delete`);
   }
 
-  // /agents[=<slug>] <handle>|all [reset|auto <mode>|access_level <all|regular>] — THE
+  // /agents[=<slug>] <handle>|all [reset|restart|auto <mode>|access_level <all|regular>] — THE
   // dispatcher (operator 2026-08-15, retires the whole /e/egpt family — see its own comment
   // at the dispatch site above for the "failure in design" this closes). Parses the already-
   // tokenized args ([handle-or-'all', subcommand?, value?] — the regex above split them),
@@ -952,11 +953,11 @@ export function createCommands({
   // (surface, jid, where, handles[, state]) — none of them re-parse or re-resolve.
   async function agentsCmd(ev, slugArg, args) {
     const [handleArg, subRaw, valueRaw] = args;
-    if (!handleArg) { await send?.(ev.chatId, 'usage: /agents[=<slug>] <handle>|all [reset|auto <mode>|access_level <all|regular>]'); return; }
+    if (!handleArg) { await send?.(ev.chatId, 'usage: /agents[=<slug>] <handle>|all [reset|restart|auto <mode>|access_level <all|regular>]'); return; }
     if (!loadState || !writeState) { await send?.(ev.chatId, '/agents: conversation state not wired'); return; }
     const sub = subRaw?.toLowerCase() || null;
-    if (sub && !['reset', 'auto', 'access_level'].includes(sub)) {
-      await send?.(ev.chatId, `/agents: unknown subcommand "${subRaw}" — reset|auto <mode>|access_level <all|regular>`);
+    if (sub && !['reset', 'restart', 'auto', 'access_level'].includes(sub)) {
+      await send?.(ev.chatId, `/agents: unknown subcommand "${subRaw}" — reset|restart|auto <mode>|access_level <all|regular>`);
       return;
     }
     if (sub === 'auto') {
@@ -999,6 +1000,7 @@ export function createCommands({
     }
 
     if (sub === 'reset') { await agentsReset(ev, surface, jid, where, handles, state); return; }
+    if (sub === 'restart') { await agentsRestart(ev, surface, jid, where, handles, state); return; }
     if (sub === 'auto') { await agentsAuto(ev, surface, jid, where, handles, valueRaw.toLowerCase(), state); return; }
     if (sub === 'access_level') { await agentsAccessLevel(ev, surface, jid, where, handles, valueRaw.toLowerCase(), state); return; }
     await send?.(ev.chatId, agentsStatus(surface, jid, handles, state));
@@ -1062,6 +1064,38 @@ export function createCommands({
     // (dropped the old `archiveNote`/`archived` plumbing that used to build a path string
     // into this reply).
     await send?.(ev.chatId, `✅ ${room.slug} reset ${where === 'here' ? '' : where + ' '}— ${handles.join(', ')} overrides cleared, next message starts fresh.`);
+  }
+
+  // /agents[=<slug>] <handle>|all restart — NARROWER than reset (operator 2026-08-15 ruling,
+  // decided directly against `reset`'s big archive-and-wipe): clears ONLY the target
+  // being(s)' `threadId` via patchBeing (a merge, NOT deleteBeing) — `mode`, `access_level`,
+  // and every other field on the being's block survive byte-for-byte. The conversation
+  // folder (transcript.md, media/, files/, identity.d/) is never archived or otherwise
+  // touched — no rename, no mkdir, no folder IO at all. This matches exactly what already
+  // happens today when an operator manually clears `threadId` by hand.
+  //
+  // Nothing else is done synchronously: transcript rolling and identity reseeding are NOT
+  // triggered here. They already happen automatically, lazily, on the NEXT real inbound
+  // message via brainpool.mjs's own `fresh = !sessionId` gate (`if (fresh) await
+  // rollTranscript(...)`, `seedLayers(..., { overwrite: fresh })` — see turn()) — duplicating
+  // that here would just race the proven path.
+  //
+  // No evictWarm() call either (unlike access_level, which needs one): warm-sessions.mjs's
+  // run() already carries a SESSION-IDENTITY GUARD (its own comment names this exact case —
+  // "`/agents <handle> reset` nulling the thread ... would otherwise be silently ignored")
+  // that compares the `sessionId` brainpool.mjs passes every turn (`sessionId: threadId ??
+  // null`, always an explicit key so the guard's hasOwnProperty check fires) against the warm
+  // entry's own bound session id, and self-evicts + reopens fresh on a mismatch. Nulling
+  // `threadId` here is exactly what ARMS that guard on the next turn — the same mechanism
+  // that already makes `reset` work with no explicit evict, despite `reset` never calling
+  // evictWarm either.
+  async function agentsRestart(ev, surface, jid, where, handles, state) {
+    try {
+      let next = state;
+      for (const h of handles) next = patchBeing(next, surface, jid, h, { threadId: null });
+      await writeState(next);
+      await send?.(ev.chatId, `✅ ${handles.join(', ')} restart ${where} — threadId cleared, next message starts a fresh session (mode/access_level unchanged; transcript + identity refresh happen automatically on that next message).`);
+    } catch (e) { onLog(`/agents restart ${ev.chatId}: ${e?.message ?? e}`); await send?.(ev.chatId, `/agents: restart failed — ${e?.message ?? e}`); }
   }
 
   // /agents[=<slug>] <handle>|all auto <mode> — was /e auto <mode> [<target>], generalized:

@@ -74,9 +74,21 @@ answered by the persona:
                               omit `=<slug>` for this chat; from Self-DM name the
                               target (slug/name fragment or @jid)
 /agents[=<slug>] <handle>|all reset
-                              archive this being's conversation folder aside, wipe
-                              ITS registry state (a sibling's own state survives
-                              untouched), reseed a pristine tree at the same path
+                              BIG: archive this being's whole conversation folder
+                              aside (transcript.md, media/, files/, identity.d/ —
+                              everything), wipe ITS entire registry block (mode,
+                              access_level, threadId, all of it — a sibling's own
+                              state survives untouched), reseed a pristine tree at
+                              the same path
+/agents[=<slug>] <handle>|all restart
+                              NARROW: clear ONLY this being's threadId (mode,
+                              access_level, and every other field survive
+                              untouched) — the conversation folder is never
+                              archived or touched. This is exactly what already
+                              happens when threadId alone is cleared by hand;
+                              transcript rolling + identity refresh happen
+                              automatically on the being's next message, not as
+                              part of this command
 /agents[=<slug>] <handle>|all auto <mode>
                               set a chat's reply mode. modes: on · mute ·
                               mention-direct · mention · accum (mention + the turn

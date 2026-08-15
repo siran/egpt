@@ -31,12 +31,20 @@ not answered by the persona. Authorization = the surface's own `chat_id`
                                                the Self-DM name a target
                                                (slug/name fragment, or a verbatim
                                                @jid / room-id)
-/agents[=<slug>] <handle>|all reset            reset THIS being on THIS chat:
-                                               archive the chat's folder, wipe
-                                               ONLY this being's registry state
-                                               (a sibling's own state survives),
-                                               reseed pristine — next message
-                                               starts fresh
+/agents[=<slug>] <handle>|all reset            BIG: reset THIS being on THIS chat:
+                                               archive the chat's WHOLE folder aside,
+                                               wipe this being's ENTIRE registry
+                                               block (mode, access_level, threadId,
+                                               all of it — a sibling's own state
+                                               survives), reseed pristine — next
+                                               message starts fresh
+/agents[=<slug>] <handle>|all restart          NARROW: clear only this being's
+                                               threadId (mode, access_level, every
+                                               other field survive) — the chat's
+                                               folder is never touched. Next
+                                               message starts a fresh thread; see
+                                               below for how this differs from
+                                               reset
 /agents[=<slug>] <handle>|all auto <mode>      set a being's reply mode
 /agents[=<slug>] <handle>|all access_level <all|regular>
                                                flip a being between the
@@ -88,6 +96,32 @@ one call.
 Was `/e reset`/`/e auto`/`/e access` (retired 2026-08-15): hardcoded to the
 persona's own map key, so it could never reach a sibling being on the same
 conversation — `/agents` fixes that by taking the being explicitly.
+
+### `/agents … restart` — clear only the thread
+
+Narrower than `reset`, on purpose. `/agents <handle>|all restart` clears
+**only** that being's `threadId` (a merge, not a wipe) — `mode`,
+`access_level`, and every other field on the being's registry block are left
+exactly as they were. The conversation folder itself (`transcript.md`,
+`media/`, `files/`, `identity.d/`) is **never** archived or touched — this is
+the same thing that already happens today if you clear `threadId` by hand.
+
+The command's own job stops there: it does not roll the transcript or reseed
+identity layers itself. Both already happen automatically and lazily, the
+moment the being's next real message arrives (the same `fresh = !sessionId`
+path a never-before-seen thread always takes) — so a warm CLI session left
+over from before the restart is also handled automatically: the pool's own
+session-identity guard notices the next turn asks for a null session and
+reopens fresh, with no separate eviction step needed here.
+
+**`reset` vs. `restart`, side by side:**
+
+| | `reset` | `restart` |
+|---|---|---|
+| Conversation folder | archived aside, reseeded pristine | untouched |
+| Registry block | wiped entirely (mode, access_level, threadId, …) | only `threadId` cleared |
+| Sibling beings not named | untouched | untouched |
+| Use it when | you want a clean slate — wrong mode, stale access_level, or the history itself is the problem | you just want the NEXT message to start a fresh Claude thread, keeping this chat's mode/access_level exactly as configured |
 
 ### Lifecycle without a chat (the ingest box)
 
