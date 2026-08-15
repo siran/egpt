@@ -195,3 +195,55 @@ describe('LOCK — a brand-new surface gets its own transcript directory, logged
     expect(text).toContain('Gv@[fam] #m1: hi from gv');   // recorded despite authorized:false
   });
 });
+
+// CONFIG REFRESH ON MESSAGE ARRIVAL (2026-08, replacing the old tick-based hot reload —
+// src/spine/config-resolver.mjs / heartbeat-loader.mjs): handleFast — the single ingestion
+// path above — awaits the injected refreshConfig at its very top, before transcript.log and
+// before dispatch. No tick, no timer, no fake-clock advance is involved in picking up a
+// config change: it rides the real inbound message.
+describe('REPRODUCE-FIRST — config refresh fires on message arrival, no tick/timer involved', () => {
+  it('refreshConfig runs exactly once per inbound message, BEFORE the turn dispatches, with zero advanceTimers', async () => {
+    const files = new Map();
+    const bridge = fakeBridge();
+    const order = [];
+    const refreshConfig = async () => { order.push('refresh'); };
+    const brain = { async turn(being) { order.push('turn'); return { text: `${being} says hi`, being, sessionId: 's1' }; } };
+    const spine = createSpine({
+      bridge, brain, identity: fakeIdentity,
+      router: { resolve: () => ({ targets: [{ being: 'e', mention: {} }] }) },
+      gating: { async decide() { return { mode: 'on', receives: true, mayReply: true, sendToEgpt: 'mode' }; }, surfaces: () => true },
+      sender: fakeSender(bridge),
+      transcript: createTranscript({ contacts: fakeContacts, io: memIo(files) }),
+      heartbeats, clock: { now: () => 1000 }, turnTimeoutMs: 0,
+      refreshConfig,
+    });
+    spine.start();
+
+    await bridge.emit({ ...MSG, body: '@e you there?' });
+    expect(order).toEqual(['refresh', 'turn']);   // refreshed BEFORE this message's turn — no tick needed
+
+    await bridge.emit({ ...MSG, msgId: 'm2', body: '@e again' });
+    expect(order.filter((x) => x === 'refresh')).toHaveLength(2);   // fires again on the NEXT message too — no throttle
+    expect(order.filter((x) => x === 'turn')).toHaveLength(2);
+  });
+
+  it('a null refreshConfig (every existing pipe path / test) is byte-identical — the pipe runs fine with no call', async () => {
+    const files = new Map();
+    const bridge = fakeBridge();
+    const brain = { calls: 0, async turn(being) { this.calls++; return { text: 'ok', being, sessionId: 's1' }; } };
+    const spine = createSpine({
+      bridge, brain, identity: fakeIdentity,
+      router: { resolve: () => ({ targets: [{ being: 'e', mention: {} }] }) },
+      gating: { async decide() { return { mode: 'on', receives: true, mayReply: true, sendToEgpt: 'mode' }; }, surfaces: () => true },
+      sender: fakeSender(bridge),
+      transcript: createTranscript({ contacts: fakeContacts, io: memIo(files) }),
+      heartbeats, clock: { now: () => 1000 }, turnTimeoutMs: 0,
+      // refreshConfig omitted — null default
+    });
+    spine.start();
+    await bridge.emit({ ...MSG, body: '@e hi' });
+
+    expect(brain.calls).toBe(1);
+    expect([...files.entries()].some(([p]) => p.endsWith('transcript.md'))).toBe(true);
+  });
+});

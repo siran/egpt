@@ -22,7 +22,7 @@ const ROOM_DIR = join(HOME, 'rooms', 'lab');
 const CONV_FILE = 'conversations/whatsapp/hfm-2606201530/config.yaml';
 const ROOM_FILE = 'rooms/lab/config.yaml';
 
-function makeResolver({ node = {}, registry = {}, folders = {}, dirs = null, io, existsSync } = {}) {
+function makeResolver({ node = {}, registry = {}, folders = {}, dirs = null, io } = {}) {
   return createConfigResolver({
     getConfig: () => node,
     loadRegistry: async () => registry,
@@ -33,7 +33,6 @@ function makeResolver({ node = {}, registry = {}, folders = {}, dirs = null, io,
     readEntityConfig: async (dir) => folders[dir] ?? {},
     egptHome: HOME,
     io: io ?? { writeFile: async () => {}, mkdir: async () => {} },
-    existsSync: existsSync ?? (() => true),
   });
 }
 
@@ -270,16 +269,10 @@ describe('the three aggregates live at the PROFILE ROOT (state/ hides too much)'
   });
 });
 
-// ── hot reload by DELETION ──────────────────────────────────────────────────
-describe('hot reload — absence of ANY aggregate means the in-memory set is stale', () => {
-  it('stale() is false when all three are present, true when any one is missing', async () => {
-    for (const missing of ['config', 'conversations', 'heartbeats']) {
-      const r = makeResolver({ existsSync: (p) => p !== join(HOME, `${missing}.readonly.yaml`) });
-      expect(r.stale(), `${missing} missing`).toBe(true);
-    }
-    expect(makeResolver({ existsSync: () => true }).stale()).toBe(false);
-  });
-
+// ── re-collect picks up changes (the config-refresh-on-message-arrival trigger calls
+//    collect() again via heartbeat-loader's reload() — see tests/spine-heartbeat-loader.test.mjs
+//    and tests/spine-v1-boot.test.mjs for the end-to-end message-arrival proof) ──────────
+describe('collect() re-run picks up changes since the last one', () => {
   it('a re-collect picks up a folder edited (and a folder ADDED) since the last one', async () => {
     let dirs = [{ dir: CONV_DIR, ns: 'whatsapp/hfm-2606201530' }];
     const folders = { [CONV_DIR]: { warm: { idle_ttl: '5m' } } };
@@ -287,7 +280,7 @@ describe('hot reload — absence of ANY aggregate means the in-memory set is sta
       getConfig: () => ({}), loadRegistry: async () => registryWith({}),
       listEntityDirs: async () => dirs,
       readEntityConfig: async (dir) => folders[dir] ?? {},
-      egptHome: HOME, io: { writeFile: async () => {}, mkdir: async () => {} }, existsSync: () => true,
+      egptHome: HOME, io: { writeFile: async () => {}, mkdir: async () => {} },
     });
     await r.collect();
     expect(r.configFor(CONV_DIR).warm.idle_ttl).toBe('5m');

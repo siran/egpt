@@ -240,9 +240,9 @@ export const CONFIG_SCHEMA = {
       auto-tightens to the finest cadence, floored at 500ms.
       heartbeats is the config resolver's one UNION block: an entity declaring a
       beat CONTRIBUTES one, it never replaces the node's.
-      HOT RELOAD: delete ANY of the three ~/.egpt/*.readonly.yaml aggregates and
-      the spine re-scans every config rung within ~30s — no restart, and new chat
-      folders / edited entity config.yaml are picked up.
+      CONFIG REFRESH: a config.yaml (or entity config.yaml) edit takes effect
+      automatically on the next inbound message — no restart, no file to delete.
+      New chat folders / edited entity config.yaml are picked up the same way.
 
     Paste-ready templates live in config/skeletons/ (script.x.md,
     heartbeats.yaml).

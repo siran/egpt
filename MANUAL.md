@@ -120,12 +120,13 @@ room's own `config.yaml`.
 
 The spine materializes the resolved set to `~/.egpt/heartbeats.readonly.yaml` —
 at the profile root, beside `config.readonly.yaml` and
-`conversations.readonly.yaml` (spine-written — don't edit them; edit the rung file
-+ `/restart`). Every row names its `source:`, the file it was read from.
+`conversations.readonly.yaml` (spine-written — don't edit them; edit the rung
+file instead). Every row names its `source:`, the file it was read from.
 `heartbeats` is the config resolver's one UNION block: an entity declaring a beat
-CONTRIBUTES one, it never replaces the node's. **Hot reload:** delete any of the
-three aggregates and the spine re-scans every config rung within ~30 s (new chat
-folders picked up too). Paste-ready template: `config/skeletons/heartbeats.yaml`.
+CONTRIBUTES one, it never replaces the node's. **Config refresh:** a rung-file
+edit takes effect automatically on the next inbound message (or at boot/restart)
+— no action needed, no file to delete (new chat folders picked up the same way).
+Paste-ready template: `config/skeletons/heartbeats.yaml`.
 
 A **textecutable** is a `*.x.md` file whose interpreter is one fresh `claude`
 turn with tools — the file IS the program (numbered steps, run in the file's own

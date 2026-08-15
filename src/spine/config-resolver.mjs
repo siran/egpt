@@ -52,15 +52,16 @@
 // TOUCH: the node rung is already dumped once in config.readonly.yaml, and repeating a
 // whole config.yaml under each of forty conversations is a wall, not a report.
 //
-// HOT RELOAD BY DELETION, exactly as heartbeats already did: the ABSENCE of any one of the
-// three files means the in-memory set is stale. The loop's own tick is the trigger (see
-// heartbeat-loader.wrapRegistry) — no restart, no self-checking beat.
+// CONFIG REFRESH ON MESSAGE ARRIVAL (2026-08): config changes are picked up automatically on
+// the next inbound message — spine.mjs's handleFast calls the injected refreshConfig before
+// dispatching, which re-runs collect() (see boot.mjs) — or at boot/restart. No file deletion,
+// no periodic timer, no manual action needed. These three files are PURE diagnostic output;
+// they carry zero control role.
 //
 // Nothing here is fatal: a missing dir, an unreadable registry, a malformed entity config —
 // all log and degrade to the rung above.
 
 import { writeFile as fsWriteFile, mkdir as fsMkdir } from 'node:fs/promises';
-import { existsSync as fsExistsSync } from 'node:fs';
 import { join, dirname, relative, sep } from 'node:path';
 import * as YAML from 'yaml';
 import { EGPT_HOME } from '../egpt-home.mjs';
@@ -131,7 +132,6 @@ function _rel(egptHome, abs) {
  * @param {(dir:string) => Promise<object>} deps.readEntityConfig     a folder's WHOLE config.yaml doc ({} when absent/malformed)
  * @param {string} [deps.egptHome]
  * @param {{writeFile?:Function, mkdir?:Function}} [deps.io]
- * @param {(p:string) => boolean} [deps.existsSync]                   staleness probe (injectable)
  * @param {(m:string) => void} [deps.onLog]
  */
 export function createConfigResolver({
@@ -141,7 +141,6 @@ export function createConfigResolver({
   readEntityConfig = async () => ({}),
   egptHome = EGPT_HOME,
   io = {},
-  existsSync = fsExistsSync,
   onLog = () => {},
 } = {}) {
   const writeFile = io.writeFile ?? fsWriteFile;
@@ -272,12 +271,6 @@ export function createConfigResolver({
   /** The in-memory set (null before the first collect). */
   function snapshot() { return _set; }
 
-  /** Absence of ANY aggregate means the in-memory set is stale. */
-  function stale() {
-    for (const p of Object.values(paths)) if (!existsSync(p)) return true;
-    return false;
-  }
-
   async function _write(path, text) {
     try {
       await mkdir(dirname(path), { recursive: true });
@@ -301,9 +294,10 @@ export function createConfigResolver({
     const set = _set ?? (await collect());
     await _write(paths.config,
       '# config.readonly.yaml — spine-written. DO NOT EDIT.\n' +
-      '# The NODE rung of the config resolver, as loaded into memory. Edit config/config.yaml\n' +
-      '# and /restart. DELETE this file to make the spine re-scan every rung within ~30s\n' +
-      '# (one tick, no restart). Regenerated on every boot + reload, overwriting.\n\n' +
+      '# The NODE rung of the config resolver, as loaded into memory. Edit config/config.yaml —\n' +
+      '# the change takes effect automatically on the next inbound message (or at boot/restart).\n' +
+      '# This file is purely informational: deleting or editing it does nothing special, and it\n' +
+      '# is regenerated on every boot + refresh, overwriting.\n\n' +
       YAML.stringify({ source: NODE_FILE, config: set.node.config }, { lineWidth: 0 }));
 
     const entities = {};
@@ -313,10 +307,11 @@ export function createConfigResolver({
       '# Every conversation + room the spine walked, and the values ITS OWN rungs supplied:\n' +
       '#   config/conversations.yaml (the entry)  <  <entity>/config.yaml   — nearest wins.\n' +
       '# `source:` names the file each value was read from. Keys resolved purely from the\n' +
-      '# node rung are NOT repeated here — they are in config.readonly.yaml. DELETE this file\n' +
-      '# to re-scan every rung within ~30s (one tick, no restart).\n\n' +
+      '# node rung are NOT repeated here — they are in config.readonly.yaml. A change takes\n' +
+      '# effect automatically on the next inbound message (or at boot/restart); this file is\n' +
+      '# purely informational, regenerated then — deleting or editing it does nothing special.\n\n' +
       YAML.stringify({ entities }, { lineWidth: 0 }));
   }
 
-  return { collect, configFor, sourceFor, entityFor, snapshot, stale, writeReadonly, paths };
+  return { collect, configFor, sourceFor, entityFor, snapshot, writeReadonly, paths };
 }

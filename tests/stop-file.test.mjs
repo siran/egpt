@@ -133,8 +133,6 @@ const BEEPER_FROM = {
 // …and this one lands in SELF — the operator's own command channel, the only chat the
 // safe word is honoured in.
 const SELF_FROM = { ...BEEPER_FROM, chatId: SELF_CHAT, chatName: 'Self' };
-// Let every already-scheduled microtask + immediate run, WITHOUT advancing any injected timer.
-const settleMicrotasks = () => new Promise((r) => setImmediate(r));
 
 // A shell-surface inbound, byte-identical to what src/bridges/shell-port.mjs emits into
 // spine.handleInbound (the documented direct-caller seam) — same `from` shape, same fields.
@@ -365,7 +363,12 @@ describe('(B) STOP warns in the chat it came from, and the post can never wedge 
     });
     let settled = false;
     const p = spy.onIncoming('STOP', { ...SELF_FROM }).then(() => { settled = true; });
-    await settleMicrotasks();
+    // The warn-send is now preceded by a config refresh at the top of handleFast
+    // (refreshConfig, wired from boot.mjs's heartbeatLoader.reload — real disk I/O: readdir +
+    // readFile/writeFile, not pure microtasks), so a single microtask/immediate flush is no
+    // longer guaranteed to reach it. Poll on the REAL clock (not the injected fake, which never
+    // auto-fires) until the warn attempt lands — well under the 3s cap this test is about.
+    for (let i = 0; i < 50 && spy.sent.length === 0; i++) await new Promise((r) => setTimeout(r, 10));
 
     expect(spy.sent).toHaveLength(1);                       // the warning WAS attempted…
     expect(settled).toBe(false);                            // …and its POST never came back

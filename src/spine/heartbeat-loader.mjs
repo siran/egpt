@@ -36,29 +36,28 @@
 // `heartbeats` is the resolver's one UNION block precisely so an entity declaring a
 // beat CONTRIBUTES rather than replacing the node's (see its header).
 //
-// HOT RELOAD (operator 2026-07-02): the reload TRIGGER rides the loop's own tick.
-// The loader DECORATES the cadence registry (wrapRegistry) so that every runDue —
-// the moment the loop consults the in-memory heartbeat set — first asks the resolver
-// whether the set is stale. Staleness is the ABSENCE of any of the three aggregates
-// ("when the spine is looping and thus needs to check the in-memory
-// heartbeat configuration, it checks whether the file is present. If the file is
-// not present, the in-memory heartbeat is stale, so regenerate the readonly file
-// and load it into memory" — operator 2026-07-02): re-collect everything (node
-// config once-at-boot, but entity folders re-enumerated fresh — so NEW
-// conversations/rooms + edited entity config.yaml ARE picked up), re-register,
-// rewrite all three files. No restart, and no self-checking beat — the check belongs
-// to consulting the set, not to a task listed inside it.
+// CONFIG REFRESH ON MESSAGE ARRIVAL (2026-08, replacing the 2026-07-02 tick-based hot
+// reload): the reload TRIGGER is no longer the loop's own tick. spine.mjs's handleFast —
+// the single ingestion path, before it dispatches a turn — calls an injected refreshConfig
+// (wired in boot.mjs), which drives this loader's reload(): re-collect everything (node
+// config once-at-boot, but entity folders re-enumerated fresh — so NEW conversations/rooms
+// + edited entity config.yaml ARE picked up), re-register, rewrite all three files. No
+// restart, no periodic timer, no self-checking beat — the trigger belongs to a real message
+// arriving, not to a tick or to a task listed inside the set being reloaded.
 //
 // Three seams, one module, because of a boot ordering constraint (see boot.mjs):
 //   collect()      — pure-ish: take the resolver's scan, parse cadences →
 //                    { entries, finestMs }. Runs BEFORE createSpine so boot can
 //                    size the tick to the finest cadence.
-//   wrapRegistry() — decorate the real registry into the heartbeats object the
-//                    spine ticks (inert pass-through until activate). Wired into
-//                    services BEFORE createSpine.
+//   wrapRegistry() — capture the real cadence registry the spine ticks (heartbeats.mjs).
+//                    Wired into services BEFORE createSpine.
 //   activate()     — bind each entry's command ACTION (the beat reads spine.stats()
-//                    for the pump env), register them, arm the reload check, write
-//                    the readonly.yaml. Runs AFTER createSpine.
+//                    for the pump env), register them, write the readonly.yaml. Runs
+//                    AFTER createSpine.
+//   reload()       — rebuild the whole set on demand (called from boot.mjs's
+//                    refreshConfig, itself called from spine.mjs on message arrival).
+//                    Reentrancy-guarded so a burst of messages can't pile up concurrent
+//                    reloads.
 //
 // Every effectful edge is injected (the resolver / spawn / io.writeFile / io.mkdir
 // / now) so the whole loader is unit-testable
@@ -291,7 +290,7 @@ export function createHeartbeatLoader({
   let _stats = null;      // bound in activate() — the pump-stats source for command env
   let _bootTickMs = 0;    // bound in activate() — the fixed boot tick, for the finer-cadence warning
   let _reloading = false; // reentrancy guard: a reload in flight blocks another
-  let _activated = false; // flipped by activate() — before it, the decorated runDue is a pass-through
+  let _activated = false; // flipped by activate() — before it, reload() is a no-op (nothing loaded yet)
 
   // finestMs is the min RECURRING cadence — `when:` one-shots ride the tick and
   // must not tighten it (a 30s tick fires them within 30s of the time, which is fine).
@@ -403,13 +402,13 @@ export function createHeartbeatLoader({
     }
   }
 
-  // ── hot reload: rebuild the whole set when the readonly file is deleted ────
-  async function _reloadCheck() {
-    if (_reloading) return;                    // reentrancy guard — a reload in flight blocks another
-    if (!resolver.stale()) return;             // all three aggregates present → nothing to do
+  // ── reload: rebuild the whole set on demand (called from boot.mjs's refreshConfig,
+  //    itself invoked from spine.mjs's handleFast on every inbound message) ────
+  async function reload() {
+    if (!_activated) return;                    // before activate() there are no beats loaded yet — nothing to reload
+    if (_reloading) return;                     // reentrancy guard — a reload in flight blocks another
     _reloading = true;
     try {
-      onLog('a readonly aggregate was deleted — re-scanning every config rung');
       const { entries, finestMs } = await collect();   // collect() re-runs the resolver's walk
       _registry.clear();   // drop the whole old set — the fresh collect() rebuilds it
       for (const entry of entries) _registerBeat(entry);
@@ -417,36 +416,21 @@ export function createHeartbeatLoader({
         onLog(`reloaded cadence ${finestMs}ms finer than the boot tick ${_bootTickMs}ms — restart to honor it`);
       }
       await _writeReadonly(entries);
-      await resolver.writeReadonly();   // ALL THREE come back together — one deletion re-scans everything
+      await resolver.writeReadonly();   // all three land together, on every reload
     } catch (e) {
-      onLog(`reload failed: ${e?.message ?? e}`);   // never let a reload error kill the tick
+      onLog(`reload failed: ${e?.message ?? e}`);   // never let a reload error break the message path
     } finally {
       _reloading = false;
     }
   }
 
-  // ── the decoration seam: turn the real cadence registry into the heartbeats
-  //    object the spine ticks. runDue is where the loop CONSULTS the in-memory set,
-  //    so that is where the staleness check belongs: the readonly file's absence
-  //    means the set is stale, so kick a reload. Inert (pure pass-through) until
-  //    activate() flips it live — before the beats are loaded + the file written,
-  //    there is nothing to reload. Wired into services BEFORE createSpine; keeping
-  //    _registry here (not in activate) means the reload has the real registry the
-  //    whole time. Spread the registry so the object is a full drop-in and only
-  //    runDue is decorated. ──
+  // ── the capture seam: hand the loader the real cadence registry the spine ticks
+  //    (heartbeats.mjs), so _registerBeat/reload can register/clear onto it. No decoration
+  //    needed any more — runDue is untouched now that the reload trigger lives on message
+  //    arrival, not on the tick. Wired into services BEFORE createSpine. ──
   function wrapRegistry(registry) {
     _registry = registry;
-    return {
-      ...registry,
-      runDue: (now) => {
-        // Three existsSync per tick (~30s), cost nil. Any aggregate missing + no reload
-        // in flight → kick the reentrancy-guarded reload FIRE-AND-FORGET: THIS tick still
-        // runs the OLD set (registry.runDue below); the reload swaps entries so the NEXT
-        // tick runs the fresh one.
-        if (_activated && !_reloading && resolver.stale()) _reloadCheck();
-        return registry.runDue(now);
-      },
-    };
+    return registry;
   }
 
   // ── phase 2: bind command actions + register + materialize the readonly view ──
@@ -456,8 +440,8 @@ export function createHeartbeatLoader({
     _bootTickMs = tickMs;
     for (const entry of entries) _registerBeat(entry);
     await _writeReadonly(entries);
-    await resolver.writeReadonly();   // the other two aggregates land with this one — all three or the set reads stale
-    _activated = true;   // arm the decorated runDue's staleness check (see wrapRegistry)
+    await resolver.writeReadonly();   // the other two aggregates land with this one
+    _activated = true;
     return { entries, finestMs: _finestMs(entries) };
   }
 
@@ -479,8 +463,9 @@ export function createHeartbeatLoader({
       '# A read-only snapshot of every heartbeat the spine loaded: the node\n' +
       '# config.yaml heartbeats: block + each conversation/room config.yaml\n' +
       '# heartbeats: block. To change one, edit config.yaml (or the entity\'s own\n' +
-      '# config.yaml) and /restart. DELETE this file to hot-reload every heartbeat\n' +
-      '# within ~30s (one tick, no restart). Regenerated on every boot + reload, overwriting.\n\n';
+      '# config.yaml) — the change takes effect automatically on the next inbound\n' +
+      '# message (or at boot/restart). This file is purely informational: deleting or\n' +
+      '# editing it does nothing special, and it is regenerated on every boot + refresh.\n\n';
     const list = entries.map(_readonlyRow);
     try {
       await mkdir(dirname(readonlyPath), { recursive: true });
@@ -488,5 +473,5 @@ export function createHeartbeatLoader({
     } catch (e) { onLog(`readonly write: ${e?.message ?? e}`); }
   }
 
-  return { collect, wrapRegistry, activate };
+  return { collect, wrapRegistry, activate, reload };
 }

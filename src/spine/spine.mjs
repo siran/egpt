@@ -124,6 +124,14 @@ export function createSpine({
   // rather than re-derived: one resolver, so this can never read a different chat's file.
   // Null (every existing pipe path) = the option cannot engage — byte-identical to before.
   readTranscript = null,
+  // CONFIG REFRESH ON MESSAGE ARRIVAL (2026-08, replacing the old tick-based hot reload):
+  // optional () => Promise<void>, called at the top of handleFast for every inbound message —
+  // boot.mjs wires it to re-scan the config resolver + reload the heartbeat set (see
+  // heartbeat-loader.mjs's reload()). Awaited: config reads for THIS message (brainpool,
+  // transcription) must see the fresh result, and the resolver's own scan is cheap (a handful
+  // of small file reads) relative to the turn-dispatch machinery around it. Null (every
+  // existing pipe path / test) = the option cannot engage — byte-identical to before.
+  refreshConfig = null,
   roomRelay = null,                    // optional §Phase-4 room brain-member fan-out (createRoomRelay, boot-wired): delivers a received room message to each brain member per mode, streams the reply back, and RE-ENTERS it as a non-human turn. Null = no web-brain members (byte-identical to before).
   radioRelay = null,                   // optional (ev) => Promise<void> — air a WhatsApp voice note on the internet radio station its room is joined to (createRadioNoteRelay, boot-wired). Called ONLY for ev.isVoice + humanTurn(ev) (below), fire-and-forget with its own catch — a side effect that must never touch the message path. Null = no radio relay (byte-identical to before).
   synthesize = null,                   // optional (text, voice, log) => Promise<Buffer|null> — voice-reply TTS (createVoiceSynthesis, boot-wired). Null = no voice pipeline wired (byte-identical to today: every reply is text).
@@ -384,6 +392,9 @@ export function createSpine({
   //     does NOT await it (a bare `return turnBy(...)` from this async fn would ADOPT the
   //     promise and re-serialize every turn globally) — or undefined when no turn runs. ---
   async function handleFast(msg) {
+    // CONFIG REFRESH ON MESSAGE ARRIVAL: before anything else, so every config-dependent
+    // read for this message (gating, brainpool, transcription) sees the freshest scan.
+    await refreshConfig?.();
     const ev = identity.build(msg);
     // GUARD (C7.7): the channel is the conversation (surface + chatId). Resolved once here
     // for the safe-word + the loop counter inside classify; null when no guard is wired.

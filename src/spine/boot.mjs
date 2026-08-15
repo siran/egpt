@@ -1096,8 +1096,8 @@ export async function boot({
     // The real cadence registry the spine's tick() drives. The heartbeat LOADER
     // (below) collects every declarative heartbeat and registers it here, so each
     // beat rides the loop's own tick instead of a side timer (operator 2026-07-01).
-    // Boot then REPLACES this slot with the loader's decorated wrapper (wrapRegistry)
-    // so the reload staleness check rides runDue — see below.
+    // Boot then hands this same registry to the loader (wrapRegistry) so its reload()
+    // — driven by refreshConfig on message arrival, see below — can register/clear onto it.
     heartbeats: createHeartbeats({ onLog: (m) => log.line?.(`[heartbeat] ${m}`) }),
   };
   // Brain registry: resolves the agent-type file (YAML defs in src/brains ← ~/.egpt2/config
@@ -1209,15 +1209,11 @@ export async function boot({
     onLog: (m) => log.line?.(`[heartbeat] ${m}`),
   });
 
-  // Decorate the real registry into the heartbeats object the spine ticks. The
-  // decoration puts the hot-reload TRIGGER on runDue itself: when the loop consults
-  // the in-memory heartbeat set, it first asks the resolver whether any of the three
-  // *.readonly.yaml aggregates is missing — an ABSENCE means that set is stale (operator 2026-07-02:
-  // "if the file is not present, the in-memory heartbeat is stale, so regenerate the
-  // readonly file and load it into memory"). The check belongs to CONSULTING the
-  // set, not to a beat listed inside it. Wired here (before createSpine) but inert
-  // until activate() flips it live. Spine.mjs stays untouched — it just gets a
-  // heartbeats object with the same shape.
+  // Hand the loader the real registry the spine ticks, so its reload() (called via
+  // refreshConfig below, from spine.mjs's handleFast on every inbound message) can
+  // register/clear beats onto it. No decoration of runDue any more — the reload TRIGGER
+  // is message arrival now, not the tick (2026-08, replacing the 2026-07-02 tick-based
+  // hot reload). services.heartbeats keeps the exact same shape.
   services.heartbeats = heartbeatLoader.wrapRegistry(services.heartbeats);
 
   // PHASE 1 — collect + parse BEFORE createSpine so the tick can be sized to the
@@ -1271,7 +1267,7 @@ export async function boot({
     onLog: (m) => log.line?.(`[relay] ${m}`),
   });
 
-  const spine = createSpine({ bridge, brain, ...services, commands, mesh, actions, advice, guard, guardOverride, stopSwitch, isSelfChat, roomRelay, readTranscript, radioRelay: radioRelay.relay, synthesize: vx.synthesize, voice: vx.voice, defaultBeing: defaultKey, node_name, timeZone: transcriptTimeZone, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
+  const spine = createSpine({ bridge, brain, ...services, commands, mesh, actions, advice, guard, guardOverride, stopSwitch, isSelfChat, roomRelay, readTranscript, refreshConfig: heartbeatLoader.reload, radioRelay: radioRelay.relay, synthesize: vx.synthesize, voice: vx.voice, defaultBeing: defaultKey, node_name, timeZone: transcriptTimeZone, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
   // Bind the advice service's answer-routing dispatch now that the spine exists: an
   // operator answer in the advice channel re-enters the pipe as a turn in the origin chat.
   advice.useDispatch(spine.handleInbound);

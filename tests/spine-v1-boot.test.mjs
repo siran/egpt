@@ -285,8 +285,8 @@ describe('boot()', () => {
     app.stop();
   });
 
-  it('the readonly view has NO internal row; deleting the file and ticking hot-reloads it', async () => {
-    const { start } = fakeStart();
+  it('the readonly view has NO internal row; a NEW entity heartbeat is picked up on the VERY NEXT inbound message — no tick, no timer', async () => {
+    const { start, spy } = fakeStart();
     let state = seedMode(emptyState(), 'on');
     const config = { whatsapp: {}, node_name: 'kg', agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true } } };
     const fakeSpawn = () => ({ on(ev, cb) { if (ev === 'exit') cb(0); return this; } });
@@ -302,19 +302,24 @@ describe('boot()', () => {
 
     const readonlyPath = join(tmpHome, 'heartbeats.readonly.yaml');
     const before = await fs.readFile(readonlyPath, 'utf8');
-    // the reload trigger rides runDue now — there is no internal beat and no internal row
+    // config refresh rides handleFast now (spine.mjs, on message arrival) — there is still no
+    // internal beat and no internal row
     expect(before).not.toContain('heartbeats-reload');
     expect(before).not.toContain('spine (internal)');
     expect(before).toContain('name: alive');
+    expect(before).not.toContain('whatsapp/new-chat:ping');
 
-    // delete the file → the next tick notices its absence + hot-reloads (regenerates it)
-    await fs.rm(readonlyPath);
-    app.spine.tick();
-    const exists = async () => { try { await fs.access(readonlyPath); return true; } catch { return false; } };
-    let back = false;
-    for (let i = 0; i < 100 && !back; i++) { back = await exists(); if (!back) await new Promise((r) => setTimeout(r, 10)); }
-    expect(back).toBe(true);   // the fire-and-forget reload rewrote the file
-    expect(await fs.readFile(readonlyPath, 'utf8')).toContain('name: alive');
+    // a NEW conversation folder with its own heartbeat appears on disk after boot — nothing
+    // deleted, no tick fired
+    const newDir = join(tmpHome, 'conversations', 'whatsapp', 'new-chat');
+    await fs.mkdir(newDir, { recursive: true });
+    await fs.writeFile(join(newDir, 'config.yaml'), 'heartbeats:\n  ping:\n    frequency: 30s\n    command: node ping.js\n', 'utf8');
+
+    // ONE inbound message picks it up — the refresh is awaited inside handleFast, before this
+    // resolves, so by the time onIncoming settles the readonly view is already rewritten
+    await spy.onIncoming('hola', { chatId: '!room:beeper.com', chatName: 'fam', network: 'whatsapp', userId: 'u-1', senderName: 'An', msgKey: 'm2' });
+
+    expect(await fs.readFile(readonlyPath, 'utf8')).toContain('whatsapp/new-chat:ping');
 
     app.stop();
   });
