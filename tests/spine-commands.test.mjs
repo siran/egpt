@@ -308,6 +308,87 @@ describe('/e reset — archive + registry wipe + reseed, one shared path for roo
       expect(sent[0].text).not.toMatch(/recognized/);
     }
   });
+
+  // Regression lock (operator 2026-08-15): /e reset's bare (no-target) path must stay
+  // BYTE-IDENTICAL to before <target> was added — no "for …" where-clause leaking in, same
+  // confirmation shape. Pins the whole string (modulo the timestamped archive suffix,
+  // which is real-clock-derived and not a harness seam — same tolerance the existing
+  // archive-suffix assertion above uses).
+  it('the bare (no-target) confirmation text keeps its exact shape — regression lock', async () => {
+    const state = seedResetState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
+    const slug = getContact(state, 'whatsapp', '1234@s.whatsapp.net').slug;
+    const { cmds, sent } = harness({
+      state,
+      io: { rename: async () => {}, mkdir: async () => {} },
+    });
+    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/e reset' });
+    expect(sent[0].text).toMatch(new RegExp(`^✅ ${slug} reset — old content archived to conversations/whatsapp/${slug}-archived-\\d{10}/ — mode/agent overrides cleared, next message starts fresh\\.$`));
+    expect(sent[0].text).not.toMatch(/\bfor\b/);
+  });
+
+  // /e reset <target> (operator 2026-08-15, mirrors /e auto's own <target> form): from Self,
+  // name a DIFFERENT known chat to reset it instead of the conversation the command was typed
+  // in. resolveTarget (the SAME fuzzy resolver /e auto uses) does the lookup — these three
+  // tests exercise its three outcomes (unique hit / ambiguous / no match) through /e reset.
+  it('/e reset <target> resets the NAMED chat while the operator types from Self — Self itself is never touched', async () => {
+    const state = seedResetState('whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' });
+    const slug = getContact(state, 'whatsapp', '!hfm:beeper.local').slug;
+    const room = Room.forChat('whatsapp', slug);
+    const renames = [], mkdirs = [];
+    const { cmds, sent, getState } = harness({
+      state,
+      io: {
+        rename: async (from, to) => { renames.push([from, to]); },
+        mkdir: async (p) => { mkdirs.push(p); },
+      },
+    });
+    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/e reset hfm' });
+
+    // the NAMED chat got archived + reseeded + registry-wiped, exactly like the bare-case tests
+    expect(renames).toHaveLength(1);
+    expect(renames[0][0]).toBe(room.baseDir());
+    expect(mkdirs).toContain(room.baseDir());
+    const reloaded = getState();
+    const eAfter = getBeing(reloaded, 'whatsapp', '!hfm:beeper.local', 'e');
+    expect(eAfter.present).toBe(false);
+    expect(eAfter.threadId).toBeNull();
+
+    // Self DM (where the command was actually typed) is untouched — no contact minted for it
+    expect(getBeing(reloaded, 'whatsapp', '!self', 'e')).toBe(null);
+
+    // the confirmation names WHICH conversation just got wiped (destructive — operator must
+    // never be left guessing)
+    expect(sent[0].text).toMatch(/for HFM/);
+  });
+
+  it('/e reset <ambiguous target> reports the same disambiguation error /e auto uses — no archive, no write', async () => {
+    let state = ensureContact(emptyState(), 'whatsapp', '!a1', { pushedName: 'work-alpha', slugHint: 'work-alpha' }).state;
+    state = ensureContact(state, 'whatsapp', '!a2', { pushedName: 'work-beta', slugHint: 'work-beta' }).state;
+    const renames = [], mkdirs = [];
+    const { cmds, sent, writes } = harness({
+      state,
+      io: { rename: async (from, to) => { renames.push([from, to]); }, mkdir: async (p) => { mkdirs.push(p); } },
+    });
+    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/e reset work' });
+    expect(sent[0].text).toMatch(/matches 2:/);
+    expect(renames).toHaveLength(0);
+    expect(mkdirs).toHaveLength(0);
+    expect(writes).toHaveLength(0);
+  });
+
+  it('/e reset <unknown target> reports no match — no archive, no write', async () => {
+    const state = seedResetState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
+    const renames = [], mkdirs = [];
+    const { cmds, sent, writes } = harness({
+      state,
+      io: { rename: async (from, to) => { renames.push([from, to]); }, mkdir: async (p) => { mkdirs.push(p); } },
+    });
+    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/e reset zzz' });
+    expect(sent[0].text).toMatch(/no chat matches/);
+    expect(renames).toHaveLength(0);
+    expect(mkdirs).toHaveLength(0);
+    expect(writes).toHaveLength(0);
+  });
 });
 
 // /e access all|regular — a PLAIN TOGGLE (operator: same trust model as /room delete

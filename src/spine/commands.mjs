@@ -600,11 +600,15 @@ export function createCommands({
       return;
     }
 
-    // /e reset — reset the CURRENT conversation (ev.surface/ev.chatId), bare, no target
-    // argument (self-only — unlike /e auto's <target> form). Must stay BEFORE the bare-/e
-    // usage catch-all below, same slot as /e auto. See eReset() for the steps.
-    const resetMatch = /^\/(?:e|egpt)\s+reset\s*$/i.exec(line);
-    if (resetMatch) { await eReset(ev); return; }
+    // /e reset [<target>] — reset a conversation (archive + registry wipe + reseed). Bare:
+    // resets the CURRENT conversation (ev.surface/ev.chatId). From the Self DM, name a
+    // <target> chat (slug/name fragment, or its @jid / room-id) to reset a DIFFERENT
+    // conversation instead — same <target> resolution as /e auto's (operator 2026-08-15: an
+    // operator resetting from Self needed the same reach /e auto already has). Must stay
+    // BEFORE the bare-/e usage catch-all below, same slot as /e auto. See eReset() for the
+    // steps.
+    const resetMatch = /^\/(?:e|egpt)\s+reset(?:\s+(.+?))?\s*$/i.exec(line);
+    if (resetMatch) { await eReset(ev, resetMatch[1]?.trim() || null); return; }
 
     // /e access all|regular — flip the CURRENT conversation (ev.surface/ev.chatId), bare,
     // no target argument (self-only — same calling convention as /e reset), between the
@@ -957,26 +961,44 @@ export function createCommands({
     await send?.(ev.chatId, `/room: unknown verb "${first}" — create|join|leave|members|delete`);
   }
 
-  // /e reset — restart the CURRENT conversation from scratch: archive its whole folder
-  // aside (never delete), wipe defaultKey's registry state, reseed a pristine tree at the
-  // SAME path. Operator framing: "restarting a conversation needs some steps... like when
-  // creating a conversation from scratch. archive old folder, receive a pristine new (can
-  // be synthetic) message" — and "it works the same for rooms and conversations alike", so
-  // this is the ONE path both a room and an ordinary conversation take, via convRoomOf
-  // (the same resolver /members uses — the mesh-delivered special case is handled
-  // identically). The archived folder sits at `<baseDir>-archived-<slugSuffix>`, OUTSIDE
-  // the slug the registry points at, so the fresh folder can be reseeded at the ORIGINAL
-  // baseDir/slug without the entry's slug/conversation_path/pushedName/home_dir/firstSeenAt
-  // ever needing to change — nothing will resolve to the archived path again through
-  // ensureContact/resolveConvRoom. That is what makes ONE path work for both a fixed-slug
-  // surface (room, shell) and a timestamped-slug surface (whatsapp, telegram): only the
-  // being's block is cleared, never the slug. No synthetic Claude turn is spawned here —
-  // once state is wiped, the next real inbound message gets fresh-thread treatment
-  // automatically (brainpool.mjs: `if (!sessionId) await rollTranscript(...)`).
-  async function eReset(ev) {
-    const room = await convRoomOf(ev);
-    if (!room) { await send?.(ev.chatId, "can't resolve this conversation's room"); return; }
+  // /e reset — restart a conversation from scratch: archive its whole folder aside (never
+  // delete), wipe defaultKey's registry state, reseed a pristine tree at the SAME path.
+  // Operator framing: "restarting a conversation needs some steps... like when creating a
+  // conversation from scratch. archive old folder, receive a pristine new (can be
+  // synthetic) message" — and "it works the same for rooms and conversations alike", so
+  // this is the ONE path both a room and an ordinary conversation take, via convRoomOf for
+  // the bare (CURRENT-conversation) case, or resolveConvRoom(r.surface, r.jid) once a
+  // <target> has been resolved (the same resolver /members uses — the mesh-delivered
+  // special case is handled identically). The archived folder sits at
+  // `<baseDir>-archived-<slugSuffix>`, OUTSIDE the slug the registry points at, so the
+  // fresh folder can be reseeded at the ORIGINAL baseDir/slug without the entry's
+  // slug/conversation_path/pushedName/home_dir/firstSeenAt ever needing to change —
+  // nothing will resolve to the archived path again through ensureContact/resolveConvRoom.
+  // That is what makes ONE path work for both a fixed-slug surface (room, shell) and a
+  // timestamped-slug surface (whatsapp, telegram): only the being's block is cleared,
+  // never the slug. No synthetic Claude turn is spawned here — once state is wiped, the
+  // next real inbound message gets fresh-thread treatment automatically (brainpool.mjs:
+  // `if (!sessionId) await rollTranscript(...)`).
+  //
+  // targetTerm (operator 2026-08-15, mirrors /e auto's <target>): null resets the CURRENT
+  // conversation (ev.surface/ev.chatId), same as before. A resolved term names a DIFFERENT
+  // known chat instead — resolveTarget's error/ambiguity handling is identical to /e auto's.
+  // Destructive (archive + state wipe), so the confirmation always folds `where` in — unlike
+  // /e auto, an operator here must never be left guessing which conversation just got wiped.
+  async function eReset(ev, targetTerm = null) {
     if (!loadState || !writeState) { await send?.(ev.chatId, '/e reset: conversation state not wired'); return; }
+    const state = await loadState();
+    let room, where = 'here';
+    if (targetTerm) {
+      const r = resolveTarget(state, targetTerm, ev.surface);
+      if (r.error) { await send?.(ev.chatId, `/e reset: ${r.error}`); return; }
+      where = `for ${r.name}`;
+      room = await resolveConvRoom(r.surface, r.jid);
+      if (!room) { await send?.(ev.chatId, `can't resolve ${r.name}'s room`); return; }
+    } else {
+      room = await convRoomOf(ev);
+      if (!room) { await send?.(ev.chatId, "can't resolve this conversation's room"); return; }
+    }
     const base = room.baseDir();
     const archivedDir = `${base}-archived-${slugSuffix()}`;
     // A contact with no folder ever created (edge case: no turn has run yet) has nothing to
@@ -988,7 +1010,6 @@ export function createCommands({
     // getBeing(...).present reads back false, matching a never-instanced contact. Another
     // resident being's own block in this same conversation (e.g. agents.d) is untouched.
     try {
-      const state = await loadState();
       await writeState(deleteBeing(state, room.surface, room.slug, defaultKey));
     } catch (e) { onLog(`/e reset ${ev.chatId}: ${e?.message ?? e}`); }
     // Reseed a pristine tree at the ORIGINAL path — the same two calls /room create makes
@@ -997,7 +1018,7 @@ export function createCommands({
     await room.ensureTree({ io: { mkdir } });
     await seedIdentityLayers(room, 'egpt', { io: { mkdir, readFile, writeFile } });
     const archiveNote = archived ? `old content archived to conversations/${room.surface}/${basename(archivedDir)}/ — ` : '';
-    await send?.(ev.chatId, `✅ ${room.slug} reset — ${archiveNote}mode/agent overrides cleared, next message starts fresh.`);
+    await send?.(ev.chatId, `✅ ${room.slug} reset ${where === 'here' ? '' : where + ' '}— ${archiveNote}mode/agent overrides cleared, next message starts fresh.`);
   }
 
   // /e access all|regular — point the CURRENT conversation's `access_level` at
