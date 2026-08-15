@@ -225,8 +225,8 @@ describe('warm-session pool', () => {
   });
 
   // CONTRACT (operator 2026-06-21): the conversation/E warm key omits the
-  // session id, so a re-pin on the same key (e.g. `/e new` nulling the thread,
-  // or the compactor reseeding to a new session) must EVICT the stale open
+  // session id, so a re-pin on the same key (e.g. `/agents <handle> reset` nulling the
+  // thread, or the compactor reseeding to a new session) must EVICT the stale open
   // session instead of silently resuming it (the SPOILER bug). A session that
   // reports a `sessionId` is compared against what the caller now requests.
   function sessionIdFactory() {
@@ -255,7 +255,7 @@ describe('warm-session pool', () => {
     expect(made[1].opts.sessionId).toBe('NEW67890');
   });
 
-  it('evicts + reopens FRESH when the thread is reset to null (/e new)', async () => {
+  it('evicts + reopens FRESH when the thread is reset to null (/agents <handle> reset)', async () => {
     const { makeSession, made } = sessionIdFactory();
     const pool = createWarmPool({ makeSession });
     await pool.run('e:ccode:wa:slug', 'a', () => {}, { brainOptions: { sessionId: 'OLD12345' } });

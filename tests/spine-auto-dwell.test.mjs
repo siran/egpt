@@ -160,7 +160,7 @@ describe('auto typing — the send is delayed by a typing-speed function of the 
   });
 });
 
-describe('auto dwell — a mid-dwell /e flip AWAY from auto cancels the pending dwell cleanly', () => {
+describe('auto dwell — a mid-dwell /agents auto flip AWAY from auto cancels the pending dwell cleanly', () => {
   it('the dwell fires but dispatches no turn once the mode is no longer auto', async () => {
     // gating starts 'auto', then flips to 'mention' (no @e in the trigger → mayReply false)
     let mode = 'auto';
@@ -174,7 +174,7 @@ describe('auto dwell — a mid-dwell /e flip AWAY from auto cancels the pending 
     const { bridge, brain, timers } = build({ gating });
     await bridge.emit(other({ body: 'hey' }));   // arms the dwell (auto)
     expect(timers.size()).toBe(1);
-    mode = 'mention';                            // operator does /e auto mention <chat> mid-dwell
+    mode = 'mention';                            // operator does /agents e auto mention mid-dwell
     await settle(timers);                        // dwell fires → re-decides → not auto → drops
     expect(brain.calls).toHaveLength(0);         // NO turn fired
     expect(bridge.sent).toHaveLength(0);         // nothing sent — cancelled cleanly

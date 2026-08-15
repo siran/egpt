@@ -63,19 +63,31 @@ authorized sender). Slash commands typed there are intercepted by the node, not
 answered by the persona:
 
 ```text
-/status               compact node health (git sha, pid, uptime, liveness,
-                      heartbeats, conversation + this chat's mode)
-/e auto <mode> [chat] set a chat's reply mode. modes: on · mute ·
-                      mention-direct · mention · accum (mention + the turn is
-                      prompted with what was said since E's last turn) · off.
-                      omit <chat> for this chat; from Self-DM name the target
-                      (slug/name fragment or @jid)
-/e                    arm the re-point WIZARD for this chat (guided: agent
-                      type → model → effort, or build a custom type)
-/e <fragment>         arm the wizard for another chat (resolved like /e auto's)
-/restart              bounce the node (daemon respawns the current checkout)
-/upgrade              git pull + npm install + rebuild, then respawn
-/rewind <ref>         check out <ref>, reinstall, respawn
+/status                       compact node health (git sha, pid, uptime, liveness,
+                              heartbeats, conversation + this chat's mode)
+/agents[=<slug>] <handle>|all
+                              manage ANY resident being (the persona, or a sibling
+                              like wren) on any conversation. Bare: live status
+                              (fenced yaml — engine/model/effort/allowed_tools,
+                              resolved fresh from config, never a stale snapshot).
+                              `all` applies to every resident being on the entry.
+                              omit `=<slug>` for this chat; from Self-DM name the
+                              target (slug/name fragment or @jid)
+/agents[=<slug>] <handle>|all reset
+                              archive this being's conversation folder aside, wipe
+                              ITS registry state (a sibling's own state survives
+                              untouched), reseed a pristine tree at the same path
+/agents[=<slug>] <handle>|all auto <mode>
+                              set a chat's reply mode. modes: on · mute ·
+                              mention-direct · mention · accum (mention + the turn
+                              is prompted with what was said since the being's
+                              last turn) · off
+/agents[=<slug>] <handle>|all access_level <all|regular>
+                              flip between the unconfined tier and the node's
+                              regular confined default
+/restart                      bounce the node (daemon respawns the current checkout)
+/upgrade                      git pull + npm install + rebuild, then respawn
+/rewind <ref>                 check out <ref>, reinstall, respawn
 ```
 
 Restarts also work headlessly via the **ingest box**: drop a file whose content

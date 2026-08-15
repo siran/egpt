@@ -1,6 +1,7 @@
 // permission-levels.mjs — parses config/permissions/<level>.md, the file
-// `access_level: 'all'|'regular'` (set by /e access, see spine/commands.mjs
-// eAccess) points a conversation at. Sibling module to brains.mjs (the agent-
+// `access_level: 'all'|'regular'` (set by /agents <handle>|all access_level
+// all|regular, see spine/commands.mjs agentsAccessLevel; was /e access) points a
+// being at. Sibling module to brains.mjs (the agent-
 // TYPE resolver) but a deliberately different shape: brains.mjs resolves a def
 // ONCE per conversation and it gets frozen into `readonly` (see its own header);
 // this module is read FRESH, on every call, no caching, ever. That is

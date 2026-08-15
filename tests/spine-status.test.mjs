@@ -172,8 +172,8 @@ describe('/status', () => {
 });
 
 // /status <fragment> — operator's per-conversation minimum (2026-07-03): target
-// resolved exactly like /e auto's (same resolveTarget), one fenced yaml block with
-// name/surface/slug/conversation_path/mode/agent/personality/thread/members.
+// resolved through resolveTarget (the same resolver /agents' `=<slug>` binding uses), one
+// fenced yaml block with name/surface/slug/conversation_path/mode/agent/personality/thread/members.
 describe('/status <target>', () => {
   const NO_HEARTBEATS = new Error('no readonly file');
   const NO_TRANSCRIPT = new Error('ENOENT');
@@ -184,7 +184,7 @@ describe('/status <target>', () => {
     expect(sent[0].text).toMatch(/conversation state not wired/);
   });
 
-  it('reports no match exactly like /e auto (resolveTarget) — no state read failure either', async () => {
+  it('reports no match exactly like /agents=<slug> (resolveTarget) — no state read failure either', async () => {
     const { cmds, sent } = harness({ loadState: async () => emptyState() });
     await cmds.run({ body: '/status zzz', chatId: '!self', surface: 'whatsapp' });
     // Token QUOTED (2026-07-25 incident): this reply used to open with a bare "/status:",

@@ -307,7 +307,7 @@ export function createSpine({
     const cur = dwellBy.get(turnKey);
     if (cur) armDwell(turnKey, { to: cur.to, ev: cur.ev, mention: cur.mention });
   }
-  // The dwell expired: re-read the gate (a mid-dwell /e flip AWAY from auto cancels the
+  // The dwell expired: re-read the gate (a mid-dwell /agents auto flip AWAY from auto cancels the
   // pending dwell cleanly — the timer fires but dispatches NO turn; the accumulated cycle
   // stays for whenever a turn next runs). Robust to any mode change without cross-service
   // wiring. Still auto → dispatch ONE reply turn onto the per-conversation FIFO, draining

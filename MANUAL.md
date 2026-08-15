@@ -18,53 +18,76 @@ not answered by the persona. Authorization = the surface's own `chat_id`
 (Self-DM), an entry in that surface's `allowed_users`, or the account owner.
 
 ```text
-/status                 compact node health (fenced yaml): git sha + subject,
-                        pid, uptime, last alive-beat age, heartbeat count,
-                        conversation count, this chat's E mode
-/e auto <mode> [chat]   set a chat's E reply mode. omit <chat> = this chat;
-                        from the Self-DM name a target (slug/name fragment, or
-                        a verbatim @jid / room-id)
-/e reset                reset THIS chat's E: archive its folder, wipe its
-                        registry state, reseed pristine — next message starts
-                        fresh
-/e access all|regular   flip THIS chat's E between the unconfined tier and
-                        this node's regular default (see below)
-/restart                bounce the node (daemon respawns the current checkout)
-/upgrade                git pull + npm install + rebuild, then respawn
-/rewind <ref>           git checkout <ref>, reinstall, respawn
+/status                                        compact node health (fenced yaml):
+                                               git sha + subject, pid, uptime,
+                                               last alive-beat age, heartbeat
+                                               count, conversation count, this
+                                               chat's E mode
+/agents[=<slug>] <handle>|all                  live status of a resident being
+                                               (fenced yaml, resolved fresh from
+                                               config — never a stale snapshot).
+                                               `all` covers every resident being.
+                                               omit `=<slug>` for this chat; from
+                                               the Self-DM name a target
+                                               (slug/name fragment, or a verbatim
+                                               @jid / room-id)
+/agents[=<slug>] <handle>|all reset            reset THIS being on THIS chat:
+                                               archive the chat's folder, wipe
+                                               ONLY this being's registry state
+                                               (a sibling's own state survives),
+                                               reseed pristine — next message
+                                               starts fresh
+/agents[=<slug>] <handle>|all auto <mode>      set a being's reply mode
+/agents[=<slug>] <handle>|all access_level <all|regular>
+                                               flip a being between the
+                                               unconfined tier and this node's
+                                               regular default (see below)
+/restart                                       bounce the node (daemon respawns
+                                               the current checkout)
+/upgrade                                       git pull + npm install + rebuild,
+                                               then respawn
+/rewind <ref>                                  git checkout <ref>, reinstall,
+                                               respawn
 ```
 
-**Reply modes** (`/e auto`): `on` (receive every burst, reply per personality) ·
-`mute` (receive, never reply) · `mention-direct` (reply only when `@e` starts the
-message or it replies to E) · `mention` (reply when `@e` appears anywhere, or a
-reply to E — the default) · `accum` (the `mention` gate, and each reply is
-prompted with everything said here since E's own last turn) · `off` (don't
-receive at all).
+**Reply modes** (`/agents … auto <mode>`): `on` (receive every burst, reply per
+personality) · `mute` (receive, never reply) · `mention-direct` (reply only when
+`@e` starts the message or it replies to E) · `mention` (reply when `@e` appears
+anywhere, or a reply to E — the default) · `accum` (the `mention` gate, and each
+reply is prompted with everything said here since the being's own last turn) ·
+`off` (don't receive at all).
 
 `accum` changes only WHAT a turn is prompted with, never WHEN one happens — it
 does not buffer, batch, or flush on a heartbeat. (The 2026-07-01 accum did; same
 word, different mechanism.)
 
-### `/e access` — the unconfined tier
+### `/agents … access_level` — the unconfined tier
 
-`/e access all` points THIS chat's persona at `config/permissions/all.md` —
-full filesystem, bare Bash — read fresh every turn (not a freeze; editing that
-file changes behavior for every conversation pointed at it immediately, no
-`/e access` re-run needed). `/e access regular` points it back at the node's
-regular confined default. It touches ONLY tool access — agent/model/effort/
-engine are untouched either way, and are never pinned per-conversation any
-more: a conversation always resolves its engine/model/effort/tools FRESH from
-config.yaml's `agents:` block, every turn (point `agents.<persona>.configuration`
-at whichever type file conversations should run on). The warm session is
-evicted so the change takes effect on the very next turn — no `/restart`
-needed.
+`/agents <handle>|all access_level all` points the being at
+`config/permissions/all.md` — full filesystem, bare Bash — read fresh every turn
+(not a freeze; editing that file changes behavior for every conversation pointed
+at it immediately, no re-run needed). `/agents <handle>|all access_level
+regular` points it back at the node's regular confined default. It touches ONLY
+tool access — agent/model/effort/engine are untouched either way, and are never
+pinned per-conversation any more: a conversation always resolves its
+engine/model/effort/tools FRESH from config.yaml's `agents:` block, every turn
+(point `agents.<being>.configuration` at whichever type file conversations
+should run on). The warm session is evicted so the change takes effect on the
+very next turn — no `/restart` needed.
 
-### `/e reset` — start a chat over
+### `/agents … reset` — start a being over
 
 Archives the conversation's whole folder aside
-(`conversations/<surface>/<slug>-archived-<suffix>/`, never deleted), wipes its
-registry state (mode, access_level, thread), and reseeds a pristine tree at the
-same path. The next message starts a fresh thread.
+(`conversations/archive/<slug>-archived-<suffix>/`, never deleted), wipes the
+TARGET being's registry state (mode, access_level, thread) — a sibling being
+resident on the same conversation, if not also named, is untouched — and
+reseeds a pristine tree at the same path. The next message starts a fresh
+thread. `/agents all reset` wipes every resident being on the conversation in
+one call.
+
+Was `/e reset`/`/e auto`/`/e access` (retired 2026-08-15): hardcoded to the
+persona's own map key, so it could never reach a sibling being on the same
+conversation — `/agents` fixes that by taking the being explicitly.
 
 ### Lifecycle without a chat (the ingest box)
 

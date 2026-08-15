@@ -15,7 +15,7 @@ describe('resolveBeingMode', () => {
     expect(resolveBeingMode({ autoModes, chatId: CHAT, being: 'e' })).toBe('mention');
   });
 
-  it("the per-chat '*' wildcard covers any being without an explicit entry (the /e auto … all form)", () => {
+  it("the per-chat '*' wildcard covers any being without an explicit entry", () => {
     const autoModes = { [CHAT]: { '*': 'on', don: 'mention' } };
     expect(resolveBeingMode({ autoModes, chatId: CHAT, being: 'wren' })).toBe('on');   // via *
     expect(resolveBeingMode({ autoModes, chatId: CHAT, being: 'don' })).toBe('mention'); // explicit beats *

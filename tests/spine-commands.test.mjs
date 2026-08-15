@@ -8,6 +8,7 @@ import { createCommands } from '../src/spine/commands.mjs';
 import { createSpine } from '../src/spine/spine.mjs';
 import { COMMANDS } from '../src/interpreter.mjs';
 import { Room } from '../src/room-core.mjs';
+import { EGPT_HOME } from '../src/egpt-home.mjs';
 import { emptyState, ensureContact, getBeing, getContact, patchContact } from '../src/conversations-state.mjs';
 
 function harness({ config = {}, state = null, brains, io = {}, cdp, launch, clock, resolveConvRoom } = {}) {
@@ -93,103 +94,108 @@ describe('commands.run', () => {
     expect(sent[0].text.startsWith('/')).toBe(false);
   });
 
-  it('/e auto <mode> persists the conversation mode into conversations.yaml', async () => {
+  it('/agents e auto <mode> persists the conversation mode into conversations.yaml', async () => {
     const state = ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state;
     const { cmds, sent, getState } = harness({ state });
-    await cmds.run({ body: '/e auto on', chatId: '!room', surface: 'whatsapp' });
+    await cmds.run({ body: '/agents e auto on', chatId: '!room', surface: 'whatsapp' });
     expect(getBeing(getState(), 'whatsapp', '!room', 'e').mode).toBe('on');
-    expect(sent[0].text).toMatch(/E mode here → on/);
+    expect(sent[0].text).toMatch(/e mode here → on/);
   });
 
   // The `agents:` override block WINS getBeing's field-wise merge (operator 2026-07-25), so a
-  // /e auto write into entry[e].mode was invisible — the command answered "✅ … → on" while the
+  // write into entry[e].mode was invisible — the command answered "✅ … → on" while the
   // effective mode stayed pinned. The write must land where the READ resolves it.
-  it('/e auto <mode> changes the effective mode even when an agents: block pins it', async () => {
+  it('/agents e auto <mode> changes the effective mode even when an agents: block pins it', async () => {
     const state = ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state;
     state.contacts.whatsapp['!room'].agents = { e: { mode: 'mention' } };
     const { cmds, sent, getState } = harness({ state });
-    await cmds.run({ body: '/e auto on', chatId: '!room', surface: 'whatsapp' });
+    await cmds.run({ body: '/agents e auto on', chatId: '!room', surface: 'whatsapp' });
     expect(getBeing(getState(), 'whatsapp', '!room', 'e').mode).toBe('on');
-    expect(sent[0].text).toMatch(/E mode here → on/);
+    expect(sent[0].text).toMatch(/e mode here → on/);
   });
 
   // Phase 1 (operator 2026-08-14): there is only ONE destination now — every write lands in
   // agents.<being>, first write included, whether or not the conversation ever used it before.
-  it('/e auto <mode> on a never-before-touched conversation writes into agents.<being> — the only destination now', async () => {
+  it('/agents e auto <mode> on a never-before-touched conversation writes into agents.<being> — the only destination now', async () => {
     const state = ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state;
     const { cmds, getState } = harness({ state });
-    await cmds.run({ body: '/e auto on', chatId: '!room', surface: 'whatsapp' });
+    await cmds.run({ body: '/agents e auto on', chatId: '!room', surface: 'whatsapp' });
     const entry = getState().contacts.whatsapp['!room'];
     expect(entry.agents.e.mode).toBe('on');
     expect(entry.e).toBeUndefined();   // no pre-phase-1 entry[<being>] block is ever written
   });
 
-  it('/e auto <bad> is rejected and leaves the mode unchanged', async () => {
+  it('/agents e auto <bad> is rejected and leaves the mode unchanged', async () => {
     const state = ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state;
     const { cmds, sent, getState } = harness({ state });
-    await cmds.run({ body: '/e auto loud', chatId: '!room', surface: 'whatsapp' });
+    await cmds.run({ body: '/agents e auto loud', chatId: '!room', surface: 'whatsapp' });
     expect(getBeing(getState(), 'whatsapp', '!room', 'e').mode).toBe(null);
     expect(sent[0].text).toMatch(/unknown mode/);
   });
 
-  it('/e auto accum is accepted and persisted (accum is a mode again, operator 2026-07-26)', async () => {
+  it('/agents e auto accum is accepted and persisted (accum is a mode again, operator 2026-07-26)', async () => {
     const state = ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state;
     const { cmds, sent, getState } = harness({ state });
-    await cmds.run({ body: '/e auto accum', chatId: '!room', surface: 'whatsapp' });
+    await cmds.run({ body: '/agents e auto accum', chatId: '!room', surface: 'whatsapp' });
     expect(getBeing(getState(), 'whatsapp', '!room', 'e').mode).toBe('accum');
-    expect(sent[0].text).toMatch(/E mode here → accum/);
+    expect(sent[0].text).toMatch(/e mode here → accum/);
   });
 
   it('the unknown-mode error offers the WHOLE enum, accum included', async () => {
     const state = ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state;
     const { cmds, sent } = harness({ state });
-    await cmds.run({ body: '/e auto batch', chatId: '!room', surface: 'whatsapp' });
+    await cmds.run({ body: '/agents e auto batch', chatId: '!room', surface: 'whatsapp' });
     expect(sent[0].text).toMatch(/unknown mode "batch"/);
     expect(sent[0].text).toMatch(/on, auto, mute, mention-direct, mention, accum, off/);
   });
 
-  it('/e auto <mode> <target> from Self sets the NAMED chat (not the Self DM)', async () => {
+  it('/agents=hfm e auto <mode> from Self sets the NAMED chat (not the Self DM)', async () => {
     const state = ensureContact(emptyState(), 'whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' }).state;
     const { cmds, sent, getState } = harness({ state });
-    await cmds.run({ body: '/e auto on hfm', chatId: '!self', surface: 'whatsapp' });
+    await cmds.run({ body: '/agents=hfm e auto on', chatId: '!self', surface: 'whatsapp' });
     expect(getBeing(getState(), 'whatsapp', '!hfm:beeper.local', 'e').mode).toBe('on');   // the NAMED chat
     expect(getBeing(getState(), 'whatsapp', '!self', 'e')).toBe(null);                     // Self DM untouched (not even a contact)
     expect(sent[0].text).toMatch(/HFM.*→ on/);
   });
 
-  it('/e auto <mode> <unknown> reports no match', async () => {
+  it('/agents=<unknown> e auto <mode> reports no match', async () => {
     const state = ensureContact(emptyState(), 'whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' }).state;
     const { cmds, sent } = harness({ state });
-    await cmds.run({ body: '/e auto on zzz', chatId: '!self', surface: 'whatsapp' });
+    await cmds.run({ body: '/agents=zzz e auto on', chatId: '!self', surface: 'whatsapp' });
     expect(sent[0].text).toMatch(/no chat matches/);
   });
 
-  it('/e auto <mode> <unknown-jid> errors and does NOT write state (no false ✅)', async () => {
+  it('/agents=<unknown-jid> e auto <mode> errors and does NOT write state (no false ✅)', async () => {
     const state = ensureContact(emptyState(), 'whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' }).state;
     const { cmds, sent, writes } = harness({ state });
     // A verbatim jid E has never seen: patchContact would silently no-op, so the
     // old code replied "✅" for a chat it never touched. Now it must fail loudly.
-    await cmds.run({ body: '/e auto mute !nope:beeper.local', chatId: '!self', surface: 'whatsapp' });
+    await cmds.run({ body: '/agents=!nope:beeper.local e auto mute', chatId: '!self', surface: 'whatsapp' });
     expect(sent[0].text).toMatch(/no chat matches/);
     expect(writes).toHaveLength(0);
   });
 
-  it('/e auto <mode> <known-jid> succeeds and writes state', async () => {
+  it('/agents=<known-jid> e auto <mode> succeeds and writes state', async () => {
     const state = ensureContact(emptyState(), 'whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' }).state;
     const { cmds, sent, writes, getState } = harness({ state });
-    await cmds.run({ body: '/e auto mute !hfm:beeper.local', chatId: '!self', surface: 'whatsapp' });
+    await cmds.run({ body: '/agents=!hfm:beeper.local e auto mute', chatId: '!self', surface: 'whatsapp' });
     expect(getBeing(getState(), 'whatsapp', '!hfm:beeper.local', 'e').mode).toBe('mute');
     expect(writes).toHaveLength(1);
     expect(sent[0].text).toMatch(/→ mute/);
   });
 });
 
-// /e reset — restarts the CURRENT conversation (bare, self-only): archives the whole
-// folder aside (never delete), wipes defaultKey's registry state, reseeds a pristine tree
-// at the ORIGINAL path. "It works the same for rooms and conversations alike" (operator) —
-// ONE shared path, proven here by running the identical assertions against a room-surface
-// slug (fixed, no timestamp) and an ordinary whatsapp slug (timestamped).
-describe('/e reset — archive + registry wipe + reseed, one shared path for rooms and ordinary conversations', () => {
+// /agents <handle>|all reset — restarts the CURRENT conversation (bare, self-only, unless
+// `=<slug>` names a different one): archives the whole folder aside (never delete), wipes
+// the TARGET being(s)' registry state, reseeds a pristine tree at the ORIGINAL path. "It
+// works the same for rooms and conversations alike" (operator) — ONE shared path, proven
+// here by running the identical assertions against a room-surface slug (fixed, no
+// timestamp) and an ordinary whatsapp slug (timestamped). Was /e reset, hardcoded to
+// defaultKey — "a failure in design" (operator 2026-08-15) once every being resolves
+// identically: a sibling resident on the SAME conversation survived a reset meant to cover
+// "this conversation" untouched, simply because /e reset could never even NAME it. The
+// sibling-survives-reset tests below are the regression lock for exactly that bug.
+describe('/agents <handle>|all reset — archive + registry wipe + reseed, one shared path for rooms and ordinary conversations', () => {
   const cases = [
     { label: 'a room-surface conversation (fixed slug)', surface: 'room', jid: 'acim', ctx: {} },
     { label: 'an ordinary whatsapp conversation (timestamped slug)', surface: 'whatsapp', jid: '1234@s.whatsapp.net', ctx: { pushedName: 'diego', slugHint: 'diego' } },
@@ -208,8 +214,10 @@ describe('/e reset — archive + registry wipe + reseed, one shared path for roo
     return state;
   }
 
+  const archiveRoot = join(EGPT_HOME, 'conversations', 'archive');
+
   for (const { label, surface, jid, ctx } of cases) {
-    it(`archives the old folder (never deletes) and reseeds a pristine tree at the ORIGINAL path — ${label}`, async () => {
+    it(`archives the old folder (never deletes) into the FLAT conversations/archive/ subtree and reseeds a pristine tree at the ORIGINAL path — ${label}`, async () => {
       const state = seedResetState(surface, jid, ctx);
       const slug = getContact(state, surface, jid).slug;
       const room = Room.forChat(surface, slug);
@@ -219,15 +227,19 @@ describe('/e reset — archive + registry wipe + reseed, one shared path for roo
         io: {
           rename: async (from, to) => { renames.push([from, to]); },
           mkdir: async (p) => { mkdirs.push(p); },
-          rm: async () => { throw new Error('/e reset must never delete — rm was called'); },
+          rm: async () => { throw new Error('/agents reset must never delete — rm was called'); },
         },
       });
-      await cmds.run({ chatId: jid, surface, body: '/e reset' });
+      await cmds.run({ chatId: jid, surface, body: '/agents e reset' });
 
-      // the archive rename actually happened: old baseDir -> `<baseDir>-archived-<suffix>`
+      // the archive rename actually happened: old baseDir -> conversations/archive/<slug>-archived-<suffix>,
+      // NOT `<baseDir>-archived-<suffix>` (the old sibling-of-baseDir location)
       expect(renames).toHaveLength(1);
       expect(renames[0][0]).toBe(room.baseDir());
-      expect(renames[0][1]).toMatch(new RegExp(`^${room.baseDir().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-archived-\\d{10}$`));
+      const prefix = join(archiveRoot, `${slug}-archived-`);
+      expect(renames[0][1].startsWith(prefix)).toBe(true);
+      expect(renames[0][1].slice(prefix.length)).toMatch(/^\d{10}$/);
+      expect(mkdirs).toContain(archiveRoot);   // the flat archive/ root is mkdir'd before the rename
 
       // the fresh folder gets ensureTree + seedIdentityLayers at the SAME (original) baseDir
       for (const dir of [room.baseDir(), room.mediaDir, room.filesDir, room.identityDir, room.scriptsDir, room.transcriptsDir]) {
@@ -237,18 +249,19 @@ describe('/e reset — archive + registry wipe + reseed, one shared path for roo
 
       expect(sent).toHaveLength(1);
       expect(sent[0].text).toMatch(/reset/);
-      expect(sent[0].text).toMatch(/archived to/);
+      // operator ruling (2026-08-15): success/failure only — never the archive destination
+      expect(sent[0].text).not.toMatch(/archiv/i);
       expect(sent[0].text).not.toMatch(/recognized/);
     });
 
-    it(`wipes E's registry state (threadId/mode/access_level all gone) but leaves a SIBLING being's block untouched — ${label}`, async () => {
+    it(`wipes e's registry state (threadId/mode/access_level all gone) but leaves a SIBLING being's block untouched — ${label}`, async () => {
       const state = seedResetState(surface, jid, ctx);
       const before = getContact(state, surface, jid).entry;
       const { cmds, getState } = harness({
         state,
         io: { rename: async () => {}, mkdir: async () => {} },
       });
-      await cmds.run({ chatId: jid, surface, body: '/e reset' });
+      await cmds.run({ chatId: jid, surface, body: '/agents e reset' });
 
       const reloaded = getState();
       const eAfter = getBeing(reloaded, surface, jid, 'e');
@@ -270,13 +283,52 @@ describe('/e reset — archive + registry wipe + reseed, one shared path for roo
     });
   }
 
+  // THE regression lock for the exact design bug this command retires /e reset to fix: /e
+  // reset was HARDCODED to defaultKey ('e') and could never even NAME a different being.
+  // This is the mirror image of the "wipes e's ... leaves a SIBLING untouched" test above —
+  // here the being actually being reset is the NON-default one, proving the scoping fix
+  // wipes whichever handle it's told to, not defaultKey unconditionally.
+  it("/agents wren reset wipes ONLY wren's registry block — the persona (e), also resident here, is untouched byte-for-byte", async () => {
+    let state = ensureContact(emptyState(), 'whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' }).state;
+    state = patchContact(state, 'whatsapp', '1234@s.whatsapp.net', {
+      agents: {
+        e: { mode: 'on', threadId: 'e-thread-abc', access_level: 'all' },
+        wren: { mode: 'mention', threadId: 'wren-thread-xyz' },
+      },
+    });
+    const before = getContact(state, 'whatsapp', '1234@s.whatsapp.net').entry.agents.e;
+    const { cmds, getState } = harness({ state, io: { rename: async () => {}, mkdir: async () => {} } });
+    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents wren reset' });
+
+    const reloaded = getState();
+    const wrenAfter = getBeing(reloaded, 'whatsapp', '1234@s.whatsapp.net', 'wren');
+    expect(wrenAfter.present).toBe(false);
+    expect(wrenAfter.threadId).toBeNull();
+
+    const eAfter = getContact(reloaded, 'whatsapp', '1234@s.whatsapp.net').entry.agents.e;
+    expect(eAfter).toEqual(before);   // byte-for-byte untouched
+  });
+
+  it('/agents all reset wipes EVERY resident being on the entry', async () => {
+    let state = ensureContact(emptyState(), 'whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' }).state;
+    state = patchContact(state, 'whatsapp', '1234@s.whatsapp.net', {
+      agents: { e: { mode: 'on' }, wren: { mode: 'mention' }, d: { mode: 'accum' } },
+    });
+    const { cmds, getState } = harness({ state, io: { rename: async () => {}, mkdir: async () => {} } });
+    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents all reset' });
+    const reloaded = getState();
+    for (const h of ['e', 'wren', 'd']) {
+      expect(getBeing(reloaded, 'whatsapp', '1234@s.whatsapp.net', h).present).toBe(false);
+    }
+  });
+
   it('a missing source folder (never created) does not crash — archive is skipped, reset still completes', async () => {
     const state = seedResetState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
     const { cmds, sent, getState } = harness({
       state,
       io: { rename: async () => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); }, mkdir: async () => {} },
     });
-    await expect(cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/e reset' })).resolves.toBeUndefined();
+    await expect(cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents e reset' })).resolves.toBeUndefined();
     expect(sent).toHaveLength(1);
     expect(sent[0].text).toMatch(/reset/);
     expect(getBeing(getState(), 'whatsapp', '1234@s.whatsapp.net', 'e').present).toBe(false);
@@ -289,15 +341,15 @@ describe('/e reset — archive + registry wipe + reseed, one shared path for roo
       state,
       io: { rename: async (from, to) => { renames.push([from, to]); }, mkdir: async (p) => { mkdirs.push(p); } },
     });
-    await cmds.run({ chatId: '9999@s.whatsapp.net', surface: 'whatsapp', body: '/e reset' });
+    await cmds.run({ chatId: '9999@s.whatsapp.net', surface: 'whatsapp', body: '/agents e reset' });
     expect(sent[0].text).toMatch(/can't resolve this conversation's room/);
     expect(renames).toHaveLength(0);
     expect(mkdirs).toHaveLength(0);
     expect(writes).toHaveLength(0);
   });
 
-  it('/e reset and /egpt reset are recognized case-insensitively, before the bare-/e usage catch-all', async () => {
-    for (const body of ['/e reset', '/E RESET', '/egpt reset', '/EGPT Reset']) {
+  it('/agents e reset is recognized case-insensitively on the command token + subcommand', async () => {
+    for (const body of ['/agents e reset', '/AGENTS e RESET', '/Agents e Reset']) {
       const state = seedResetState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
       const { cmds, sent } = harness({
         state,
@@ -309,28 +361,27 @@ describe('/e reset — archive + registry wipe + reseed, one shared path for roo
     }
   });
 
-  // Regression lock (operator 2026-08-15): /e reset's bare (no-target) path must stay
-  // BYTE-IDENTICAL to before <target> was added — no "for …" where-clause leaking in, same
-  // confirmation shape. Pins the whole string (modulo the timestamped archive suffix,
-  // which is real-clock-derived and not a harness seam — same tolerance the existing
-  // archive-suffix assertion above uses).
-  it('the bare (no-target) confirmation text keeps its exact shape — regression lock', async () => {
+  // Regression lock (operator 2026-08-15): the bare (no-slug) confirmation's exact shape —
+  // pins the whole string (modulo the timestamped archive suffix, which is real-clock-
+  // derived and not a harness seam — same tolerance the archive-suffix assertion above
+  // uses). Also the "never echo the archive destination" ruling in one exact-string test.
+  it('the bare (no-slug) confirmation text keeps its exact shape — regression lock', async () => {
     const state = seedResetState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
     const slug = getContact(state, 'whatsapp', '1234@s.whatsapp.net').slug;
     const { cmds, sent } = harness({
       state,
       io: { rename: async () => {}, mkdir: async () => {} },
     });
-    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/e reset' });
-    expect(sent[0].text).toMatch(new RegExp(`^✅ ${slug} reset — old content archived to conversations/whatsapp/${slug}-archived-\\d{10}/ — mode/agent overrides cleared, next message starts fresh\\.$`));
+    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents e reset' });
+    expect(sent[0].text).toBe(`✅ ${slug} reset — e overrides cleared, next message starts fresh.`);
     expect(sent[0].text).not.toMatch(/\bfor\b/);
   });
 
-  // /e reset <target> (operator 2026-08-15, mirrors /e auto's own <target> form): from Self,
-  // name a DIFFERENT known chat to reset it instead of the conversation the command was typed
-  // in. resolveTarget (the SAME fuzzy resolver /e auto uses) does the lookup — these three
-  // tests exercise its three outcomes (unique hit / ambiguous / no match) through /e reset.
-  it('/e reset <target> resets the NAMED chat while the operator types from Self — Self itself is never touched', async () => {
+  // `=<slug>` (operator 2026-08-15, mirrors /agents auto's own binding): from Self, name a
+  // DIFFERENT known chat to reset it instead of the conversation the command was typed in.
+  // resolveTarget (the SAME fuzzy resolver /agents auto uses) does the lookup — these three
+  // tests exercise its three outcomes (unique hit / ambiguous / no match).
+  it('/agents=hfm e reset resets the NAMED chat while the operator types from Self — Self itself is never touched', async () => {
     const state = seedResetState('whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' });
     const slug = getContact(state, 'whatsapp', '!hfm:beeper.local').slug;
     const room = Room.forChat('whatsapp', slug);
@@ -342,7 +393,7 @@ describe('/e reset — archive + registry wipe + reseed, one shared path for roo
         mkdir: async (p) => { mkdirs.push(p); },
       },
     });
-    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/e reset hfm' });
+    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/agents=hfm e reset' });
 
     // the NAMED chat got archived + reseeded + registry-wiped, exactly like the bare-case tests
     expect(renames).toHaveLength(1);
@@ -361,7 +412,7 @@ describe('/e reset — archive + registry wipe + reseed, one shared path for roo
     expect(sent[0].text).toMatch(/for HFM/);
   });
 
-  it('/e reset <ambiguous target> reports the same disambiguation error /e auto uses — no archive, no write', async () => {
+  it('/agents=work e reset (ambiguous) reports the same disambiguation error resolveTarget uses — no archive, no write', async () => {
     let state = ensureContact(emptyState(), 'whatsapp', '!a1', { pushedName: 'work-alpha', slugHint: 'work-alpha' }).state;
     state = ensureContact(state, 'whatsapp', '!a2', { pushedName: 'work-beta', slugHint: 'work-beta' }).state;
     const renames = [], mkdirs = [];
@@ -369,39 +420,57 @@ describe('/e reset — archive + registry wipe + reseed, one shared path for roo
       state,
       io: { rename: async (from, to) => { renames.push([from, to]); }, mkdir: async (p) => { mkdirs.push(p); } },
     });
-    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/e reset work' });
+    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/agents=work e reset' });
     expect(sent[0].text).toMatch(/matches 2:/);
     expect(renames).toHaveLength(0);
     expect(mkdirs).toHaveLength(0);
     expect(writes).toHaveLength(0);
   });
 
-  it('/e reset <unknown target> reports no match — no archive, no write', async () => {
+  it('/agents=zzz e reset (unknown) reports no match — no archive, no write', async () => {
     const state = seedResetState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
     const renames = [], mkdirs = [];
     const { cmds, sent, writes } = harness({
       state,
       io: { rename: async (from, to) => { renames.push([from, to]); }, mkdir: async (p) => { mkdirs.push(p); } },
     });
-    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/e reset zzz' });
+    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/agents=zzz e reset' });
     expect(sent[0].text).toMatch(/no chat matches/);
     expect(renames).toHaveLength(0);
     expect(mkdirs).toHaveLength(0);
     expect(writes).toHaveLength(0);
   });
+
+  it('archives room and whatsapp conversations into the SAME flat directory — not archive/room/... vs archive/whatsapp/...', async () => {
+    const roomState = seedResetState('room', 'acim', {});
+    const renames1 = [];
+    const { cmds: cmds1 } = harness({ state: roomState, io: { rename: async (from, to) => { renames1.push([from, to]); }, mkdir: async () => {} } });
+    await cmds1.run({ chatId: 'acim', surface: 'room', body: '/agents e reset' });
+
+    const waState = seedResetState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
+    const renames2 = [];
+    const { cmds: cmds2 } = harness({ state: waState, io: { rename: async (from, to) => { renames2.push([from, to]); }, mkdir: async () => {} } });
+    await cmds2.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents e reset' });
+
+    expect(renames1[0][1].startsWith(archiveRoot)).toBe(true);
+    expect(renames2[0][1].startsWith(archiveRoot)).toBe(true);
+    expect(renames1[0][1]).not.toMatch(/archive[\\/]room[\\/]/);
+    expect(renames2[0][1]).not.toMatch(/archive[\\/]whatsapp[\\/]/);
+  });
 });
 
-// /e access all|regular — a PLAIN TOGGLE (operator: same trust model as /room delete
-// force, no extra reachability gate) that points the CURRENT conversation's
-// `access_level` at config/permissions/all.md or config/permissions/regular.md (bare,
-// self-only — same calling convention as /e reset). NOT a freeze (operator 2026-08-14):
-// it writes ONLY the access_level field, merged over the being's existing agents.<being>
-// block — mode/threadId survive untouched. Agent/type/model/effort/allowed_tools are no
-// longer readable off a being AT ALL (phase 1: no more freeze) — brainpool.mjs applies the
-// permissions file live, every turn; that live-application is covered in
-// tests/spine-brainpool.test.mjs, not here — this file only proves the command writes the
-// right field to the right place and leaves mode/threadId alone.
-describe('/e access all|regular — points access_level at a permissions file, no freeze, one shared path for rooms and ordinary conversations', () => {
+// /agents <handle>|all access_level all|regular — a PLAIN TOGGLE (operator: same trust
+// model as /room delete force, no extra reachability gate) that points the TARGET being's
+// `access_level` at config/permissions/all.md or config/permissions/regular.md. NOT a
+// freeze (operator 2026-08-14): it writes ONLY the access_level field, merged over the
+// being's existing agents.<being> block — mode/threadId survive untouched.
+// Agent/type/model/effort/allowed_tools are no longer readable off a being AT ALL (phase 1:
+// no more freeze) — brainpool.mjs applies the permissions file live, every turn; that
+// live-application is covered in tests/spine-brainpool.test.mjs, not here — this file only
+// proves the command writes the right field to the right place and leaves mode/threadId
+// alone. Was /e access all|regular, hardcoded to defaultKey; the subcommand keyword is also
+// renamed access_level (operator's own example: `/agents wren access_level all`).
+describe('/agents <handle>|all access_level all|regular — points access_level at a permissions file, no freeze, one shared path for rooms and ordinary conversations', () => {
   const cases = [
     { label: 'a room-surface conversation', surface: 'room', jid: 'acim', ctx: {} },
     { label: 'an ordinary whatsapp conversation', surface: 'whatsapp', jid: '1234@s.whatsapp.net', ctx: { pushedName: 'diego', slugHint: 'diego' } },
@@ -409,94 +478,109 @@ describe('/e access all|regular — points access_level at a permissions file, n
 
   function seedAccessState(surface, jid, ctx) {
     let state = ensureContact(emptyState(), surface, jid, ctx).state;
-    // A prior thread + hand-set mode must SURVIVE — the contrast with /e reset (deleteBeing,
-    // wipes everything), and proof that /e access touches ONLY access_level.
+    // A prior thread + hand-set mode must SURVIVE — the contrast with /agents reset
+    // (deleteBeing, wipes everything), and proof that access_level touches ONLY that field.
     return patchContact(state, surface, jid, {
       agents: { e: { mode: 'on', threadId: 'thread-abc', threadCreatedAt: '2026-08-01T00:00:00Z' } },
     });
   }
 
   for (const { label, surface, jid, ctx } of cases) {
-    it(`/e access all sets accessLevel: 'all' and leaves mode/threadId untouched — ${label}`, async () => {
+    it(`/agents e access_level all sets accessLevel: 'all' and leaves mode/threadId untouched — ${label}`, async () => {
       const state = seedAccessState(surface, jid, ctx);
       const { cmds, sent, getState } = harness({ state });
-      await cmds.run({ chatId: jid, surface, body: '/e access all' });
+      await cmds.run({ chatId: jid, surface, body: '/agents e access_level all' });
       const being = getBeing(getState(), surface, jid, 'e');
       expect(being.accessLevel).toBe('all');
       expect(being.mode).toBe('on');
       expect(being.threadId).toBe('thread-abc');
-      expect(sent[0].text).toMatch(new RegExp(`${jid === 'acim' ? 'acim' : 'diego'}.*access.*all`));
+      expect(sent[0].text).toMatch(/e access here → all/);
       expect(sent[0].text).toMatch(/unconfined/);
     });
 
-    it(`/e access regular sets accessLevel: 'regular' and leaves mode/threadId untouched — ${label}`, async () => {
+    it(`/agents e access_level regular sets accessLevel: 'regular' and leaves mode/threadId untouched — ${label}`, async () => {
       const state = seedAccessState(surface, jid, ctx);
       const { cmds, sent, getState } = harness({ state });
-      await cmds.run({ chatId: jid, surface, body: '/e access regular' });
+      await cmds.run({ chatId: jid, surface, body: '/agents e access_level regular' });
       const being = getBeing(getState(), surface, jid, 'e');
       expect(being.accessLevel).toBe('regular');
       expect(being.mode).toBe('on');
       expect(being.threadId).toBe('thread-abc');
-      expect(sent[0].text).toMatch(/access.*regular/);
+      expect(sent[0].text).toMatch(/e access here → regular/);
       expect(sent[0].text).toMatch(/confined default tools/);
     });
 
-    it(`threadId/mode survive both /e access all and /e access regular — ${label}`, async () => {
+    it(`threadId/mode survive both access_level all and access_level regular — ${label}`, async () => {
       const stateAll = seedAccessState(surface, jid, ctx);
       const { cmds: cmdsAll, getState: getStateAll } = harness({ state: stateAll });
-      await cmdsAll.run({ chatId: jid, surface, body: '/e access all' });
+      await cmdsAll.run({ chatId: jid, surface, body: '/agents e access_level all' });
       const afterAll = getBeing(getStateAll(), surface, jid, 'e');
       expect(afterAll.threadId).toBe('thread-abc');
       expect(afterAll.mode).toBe('on');
 
       const stateRegular = seedAccessState(surface, jid, ctx);
       const { cmds: cmdsRegular, getState: getStateRegular } = harness({ state: stateRegular });
-      await cmdsRegular.run({ chatId: jid, surface, body: '/e access regular' });
+      await cmdsRegular.run({ chatId: jid, surface, body: '/agents e access_level regular' });
       const afterRegular = getBeing(getStateRegular(), surface, jid, 'e');
       expect(afterRegular.threadId).toBe('thread-abc');
       expect(afterRegular.mode).toBe('on');
     });
   }
 
-  it('/e access evicts the warm session keyed on the FRESH-resolved engine (resolveDefaultBrainDef, same function turn() calls)', async () => {
+  it('/agents e access_level evicts the warm session keyed on the FRESH-resolved engine (resolveBeingDef, same function turn() calls)', async () => {
     const state = seedAccessState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
     const { cmds, evicts, getState } = harness({ state });
-    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/e access all' });
+    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents e access_level all' });
     const slug = getContact(getState(), 'whatsapp', '1234@s.whatsapp.net').slug;
     expect(evicts).toEqual([`e:ccode:whatsapp:${slug}`]);
   });
 
-  it('/e access <bad> and bare /e access get the usage reply — not silence, not a wizard fallthrough', async () => {
-    for (const body of ['/e access foo', '/e access']) {
+  // THE scoping generalization: access_level is no longer defaultKey-only — `all` writes
+  // EVERY resident being's own access_level and evicts EACH being's own warm key.
+  it("/agents all access_level regular sets EVERY resident being's accessLevel and evicts each one's own warm key", async () => {
+    let state = ensureContact(emptyState(), 'whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' }).state;
+    state = patchContact(state, 'whatsapp', '1234@s.whatsapp.net', {
+      agents: { e: { mode: 'on' }, wren: { mode: 'mention' } },
+    });
+    const { cmds, evicts, getState } = harness({ state });
+    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents all access_level regular' });
+    const slug = getContact(getState(), 'whatsapp', '1234@s.whatsapp.net').slug;
+    expect(evicts).toEqual(expect.arrayContaining([`e:ccode:whatsapp:${slug}`, `wren:ccode:whatsapp:${slug}`]));
+    expect(getBeing(getState(), 'whatsapp', '1234@s.whatsapp.net', 'e').accessLevel).toBe('regular');
+    expect(getBeing(getState(), 'whatsapp', '1234@s.whatsapp.net', 'wren').accessLevel).toBe('regular');
+  });
+
+  it('/agents e access_level <bad> and bare access_level get the usage reply — not silence, not a fallthrough', async () => {
+    for (const body of ['/agents e access_level foo', '/agents e access_level']) {
       const state = seedAccessState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
       const { cmds, sent } = harness({ state });
       await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body });
-      expect(sent[0].text).toBe('usage: /e access all|regular');
+      expect(sent[0].text).toBe('usage: /agents <handle>|all access_level all|regular');
       expect(sent[0].text).not.toMatch(/recognized/);
     }
   });
 
-  it('/e access and /egpt access are recognized case-insensitively, before the bare-/e usage catch-all', async () => {
-    for (const body of ['/e access all', '/E ACCESS ALL', '/egpt access regular', '/EGPT Access Regular']) {
+  it('/agents e access_level all is recognized case-insensitively on the command token + subcommand (the all|regular value stays case-insensitive too)', async () => {
+    for (const body of ['/agents e access_level all', '/AGENTS e ACCESS_LEVEL all', '/Agents e Access_Level ALL']) {
       const state = seedAccessState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
       const { cmds, sent } = harness({ state });
       await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body });
-      expect(sent[0].text).toMatch(/access/i);
+      expect(sent[0].text).toMatch(/access.*all/i);
       expect(sent[0].text).not.toMatch(/recognized/);
     }
   });
 });
 
 // resolveTarget cross-surface fallback (operator 2026-07-05 live bug): from the whatsapp
-// Self DM, "/e auto auto miss" reported "no chat matches" even though a telegram chat
+// Self DM, "/agents e auto on miss" reported "no chat matches" even though a telegram chat
 // "Miss Xinyi" was registered — resolveTarget only ever searched the command's own
 // surface. Own-surface hits still win with no ambiguity check against other surfaces;
 // only a ZERO own-surface hit falls through to every other surface registered in state.contacts.
-describe('/e auto <target>: cross-surface resolution', () => {
+describe('/agents=<slug> …: cross-surface resolution', () => {
   it('a TELEGRAM chat targeted by name from the whatsapp Self DM resolves + patches the TELEGRAM entry', async () => {
     const state = ensureContact(emptyState(), 'telegram', '!miss:something', { pushedName: 'Miss Xinyi', slugHint: 'miss-xinyi' }).state;
     const { cmds, sent, getState } = harness({ state });
-    await cmds.run({ body: '/e auto on miss', chatId: '!self', surface: 'whatsapp' });
+    await cmds.run({ body: '/agents=miss e auto on', chatId: '!self', surface: 'whatsapp' });
     expect(getBeing(getState(), 'telegram', '!miss:something', 'e').mode).toBe('on');   // the TELEGRAM entry
     expect(getBeing(getState(), 'whatsapp', '!miss:something', 'e')).toBe(null);         // whatsapp has no such being
     expect(sent[0].text).toMatch(/Miss Xinyi.*→ on/);
@@ -506,7 +590,7 @@ describe('/e auto <target>: cross-surface resolution', () => {
     let state = ensureContact(emptyState(), 'whatsapp', '!miss-wa:beeper.local', { pushedName: 'Miss Wa', slugHint: 'miss-wa' }).state;
     state = ensureContact(state, 'telegram', '!miss-tg:something', { pushedName: 'Miss Tg', slugHint: 'miss-tg' }).state;
     const { cmds, sent, getState } = harness({ state });
-    await cmds.run({ body: '/e auto on miss', chatId: '!self', surface: 'whatsapp' });
+    await cmds.run({ body: '/agents=miss e auto on', chatId: '!self', surface: 'whatsapp' });
     expect(getBeing(getState(), 'whatsapp', '!miss-wa:beeper.local', 'e').mode).toBe('on');   // the OWN-surface hit
     expect(getBeing(getState(), 'telegram', '!miss-tg:something', 'e').mode).toBe(null);       // telegram untouched, no ambiguity check
     expect(sent[0].text).not.toMatch(/be more specific/);
@@ -516,7 +600,7 @@ describe('/e auto <target>: cross-surface resolution', () => {
     let state = ensureContact(emptyState(), 'telegram', '!miss-tg:something', { pushedName: 'Miss Tg', slugHint: 'miss-tg' }).state;
     state = ensureContact(state, 'signal', '!miss-sig:something', { pushedName: 'Miss Sig', slugHint: 'miss-sig' }).state;
     const { cmds, sent, writes } = harness({ state });
-    await cmds.run({ body: '/e auto on miss', chatId: '!self', surface: 'whatsapp' });
+    await cmds.run({ body: '/agents=miss e auto on', chatId: '!self', surface: 'whatsapp' });
     expect(sent[0].text).toMatch(/matches 2/);
     expect(sent[0].text).toMatch(/Miss Tg \(telegram\)/);
     expect(sent[0].text).toMatch(/Miss Sig \(signal\)/);
@@ -564,39 +648,88 @@ describe('loop intercept', () => {
   });
 });
 
-// The re-point WIZARD that used to arm on bare `/e`/`/e <fragment>` is retired (operator
-// 2026-08-14, phase 1): there is no more per-conversation freeze for it to configure —
-// engine/model/effort/tools now always resolve fresh from config.yaml every turn
-// (brainpool.mjs's resolveDefaultBrainDef). Bare `/e`/`/egpt`, or either followed by anything
-// that isn't `auto`/`reset`/`access`, now gets a plain usage reply instead of arming anything.
-describe('bare /e — usage reply, no wizard to arm', () => {
+// The re-point WIZARD that used to arm on bare `/e`/`/e <fragment>` was retired (operator
+// 2026-08-14, phase 1): there was no more per-conversation freeze for it to configure —
+// engine/model/effort/tools always resolve fresh from config.yaml every turn (brainpool.mjs's
+// resolveDefaultBrainDef). The ENTIRE /e/egpt command family was retired next (operator
+// 2026-08-15, phase 2) and replaced with /agents, which reaches any resident being in any
+// conversation instead of only defaultKey. `/e`/`/egpt` now carry no special meaning at all —
+// every form falls straight through to the generic unrecognized-command catch-all, exactly
+// like any other unwired token.
+describe('/agents <handle>|all — bare status view, usage, and /e/egpt retirement', () => {
   const contact = () => ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state;
 
-  it('/e (bare) replies with usage — nothing armed, nothing written', async () => {
+  it('/agents (bare, no handle) replies with usage — nothing written', async () => {
     const { cmds, sent, writes } = harness({ state: contact() });
     const ev = { chatId: '!room', surface: 'whatsapp', authorized: true };
-    await cmds.run({ ...ev, body: '/e' });
-    expect(sent[0].text).toBe('usage: /e auto <mode> [chat] | /e reset | /e access all|regular');
+    await cmds.run({ ...ev, body: '/agents' });
+    expect(sent[0].text).toBe('usage: /agents[=<slug>] <handle>|all [reset|auto <mode>|access_level <all|regular>]');
     expect(writes).toHaveLength(0);
     // a plain follow-up message is NOT claimed as a command (nothing was armed)
     expect(cmds.isCommand({ chatId: '!room', surface: 'whatsapp', body: '1', authorized: true })).toBe(false);
   });
 
-  it('/e <fragment> and /egpt <fragment> get the same usage reply, not a target-resolution wizard', async () => {
+  it('/agents <handle> <unknown-subcommand> gets a usage-shaped reply, not a fallthrough', async () => {
     const { cmds, sent } = harness({ state: contact() });
-    const ev = { chatId: '!room', surface: 'whatsapp', authorized: true };
-    await cmds.run({ ...ev, body: '/e hfm' });
-    expect(sent[0].text).toBe('usage: /e auto <mode> [chat] | /e reset | /e access all|regular');
-    await cmds.run({ ...ev, body: '/egpt whatever' });
-    expect(sent[1].text).toBe('usage: /e auto <mode> [chat] | /e reset | /e access all|regular');
+    await cmds.run({ chatId: '!room', surface: 'whatsapp', body: '/agents e frobnicate' });
+    expect(sent[0].text).toMatch(/unknown subcommand "frobnicate"/);
+    expect(sent[0].text).not.toMatch(/recognized/);
   });
 
-  it('/e auto, /e reset, and /e access are NOT swallowed by the bare-/e catch-all', async () => {
-    const { cmds, sent, getState } = harness({ state: contact() });
-    await cmds.run({ body: '/e auto on', chatId: '!room', surface: 'whatsapp' });
-    expect(getBeing(getState(), 'whatsapp', '!room', 'e').mode).toBe('on');
-    expect(sent[0].text).toMatch(/E mode here → on/);
-    expect(sent[0].text).not.toMatch(/usage:/);
+  it('/agents e (bare handle) returns a fenced-yaml status block, not a wizard', async () => {
+    const state = ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state;
+    const { cmds, sent } = harness({ state });
+    await cmds.run({ chatId: '!room', surface: 'whatsapp', body: '/agents e' });
+    expect(sent[0].text).toMatch(/^```yaml\n/);
+    expect(sent[0].text).toMatch(/being: e/);
+    expect(sent[0].text).toMatch(/```$/);
+  });
+
+  // The LIVENESS proof: /agents' status view resolves resolveBeingDef fresh on EVERY call
+  // (no per-conversation freeze, no caching anywhere in the chain) — changing what a fake
+  // brains registry resolves between two calls, with NOTHING evicted/reset in between,
+  // changes the SECOND call's reported tools. A stale/frozen preview could not do this.
+  it("/agents e status is LIVE-resolved — editing config between two calls changes the second call's tools, with nothing evicted in between", async () => {
+    const state = ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state;
+    let toolSet = ['Read'];
+    const brains = { resolve: (name) => ({ name, type: 'ccode', allowed_tools: toolSet }) };
+    const config = { agents: { e: { configuration: 'mytype' } } };
+    const { cmds, sent } = harness({ state, config, brains });
+    await cmds.run({ chatId: '!room', surface: 'whatsapp', body: '/agents e' });
+    expect(sent[0].text).toMatch(/allowed_tools: \[Read\]/);
+    toolSet = ['Read', 'Write', 'Bash'];   // simulates a config edit between two calls
+    await cmds.run({ chatId: '!room', surface: 'whatsapp', body: '/agents e' });
+    expect(sent[1].text).toMatch(/allowed_tools: \[Read, Write, Bash\]/);
+  });
+
+  it('/agents all (bare) returns ONE fenced-yaml block per resident being, defaultKey first', async () => {
+    let state = ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state;
+    // inserted wren BEFORE e, to prove the ordering is defaultKey-first by RULE, not by
+    // accident of insertion order
+    state = patchContact(state, 'whatsapp', '!room', { agents: { wren: { mode: 'mention' }, e: { mode: 'on' } } });
+    const { cmds, sent } = harness({ state });
+    await cmds.run({ chatId: '!room', surface: 'whatsapp', body: '/agents all' });
+    expect(sent[0].text).toMatch(/being: e[\s\S]*\n---\n[\s\S]*being: wren/);
+  });
+
+  it('/agents all (bare) with no resident beings reports so, rather than an empty fenced block', async () => {
+    const state = ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state;
+    const { cmds, sent } = harness({ state });
+    await cmds.run({ chatId: '!room', surface: 'whatsapp', body: '/agents all' });
+    expect(sent[0].text).toMatch(/no resident beings/);
+  });
+
+  it('/e and /egpt carry no special meaning any more — every form falls through to the generic catch-all', async () => {
+    const { cmds, sent } = harness({ state: contact() });
+    const ev = { chatId: '!room', surface: 'whatsapp', authorized: true };
+    for (const body of ['/e', '/e hfm', '/e auto on', '/e reset', '/e access all', '/egpt', '/egpt whatever']) {
+      await cmds.run({ ...ev, body });
+    }
+    expect(sent).toHaveLength(7);
+    for (const s of sent) {
+      expect(s.text).toMatch(/recognized/);
+      expect(s.text).not.toMatch(/^usage: \/e/);
+    }
   });
 });
 
@@ -1131,12 +1264,10 @@ describe('/help', () => {
 // editor-local marker for a token shell/commands.mjs doesn't actually `case` on.
 //
 // What this can NOT catch (documented, not silently assumed): whether a dispatched
-// command's BEHAVIOR matches its registry `usage`/`desc` text — e.g. /egpt is dispatched
-// (it shares /e's re-point-wizard regex) but arms a wizard using its argument as a target
-// search term, not the status/new/list/brain/rewind sub-verbs its own desc describes.
-// That is a real, pre-existing documentation drift this test cannot see (it would need to
-// execute every branch with every argument shape) — flagged here, not fixed, since fixing
-// it is a rewrite of /egpt's own behavior or its own desc text, outside this change.
+// command's BEHAVIOR matches its registry `usage`/`desc` text — it would need to execute
+// every branch with every argument shape. (The /egpt drift this comment used to flag is
+// moot as of 2026-08-15: /e/egpt no longer dispatch anything at all — see the /agents
+// retirement — so there is no /egpt registry entry left to drift.)
 describe('/help "wired" marker matches src/spine/commands.mjs + src/shell/commands.mjs (drift guard)', () => {
   const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
   const SPINE_SRC = readFileSync(join(ROOT, 'src', 'spine', 'commands.mjs'), 'utf8');
@@ -1156,9 +1287,6 @@ describe('/help "wired" marker matches src/spine/commands.mjs + src/shell/comman
   }
 
   const spineTokens = tokensDispatchedIn(SPINE_SRC);
-  // /e and /egpt share one alternation regex (`(?:e|egpt)`), which the generic scan above
-  // can't parse (it only matches a single bare word after `^\/`) — detected explicitly.
-  if (SPINE_SRC.includes('(?:e|egpt)')) { spineTokens.add('e'); spineTokens.add('egpt'); }
   // Lifecycle (/restart, /upgrade, /rewind) dispatches through an IMPORTED function
   // (lifecycleExit, src/spine/ingest.mjs), not an inline regex in commands.mjs — verified
   // by requiring BOTH the call site here AND the literal token comparisons there.
@@ -1197,7 +1325,7 @@ describe('/help "wired" marker matches src/spine/commands.mjs + src/shell/comman
   });
 
   it('sanity: the mechanical scan actually found the known dozen (catches a scan that silently matches nothing)', () => {
-    for (const tok of ['status', 'chrome', 'tabs', 'open', 'room', 'rooms', 'config', 'help', 'egpt', 'restart', 'upgrade', 'rewind']) {
+    for (const tok of ['status', 'chrome', 'tabs', 'open', 'room', 'rooms', 'config', 'help', 'agents', 'restart', 'upgrade', 'rewind']) {
       expect(spineTokens.has(tok), `expected "${tok}" in the dispatched-token scan`).toBe(true);
     }
   });

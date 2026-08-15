@@ -364,14 +364,14 @@ export const CONFIG_SCHEMA = {
     KEYS:
       auto_paused
         Boolean. DEFAULT: false
-        The absolute @e-emit kill-switch, toggled by /e auto pause|resume.
+        The absolute @e-emit kill-switch, toggled by /agents <handle> auto pause|resume.
         Layered OVER the per-conversation mode gate.
       auto_default_mode
         ENUM: "on" | "auto" | "mute" | "mention-direct" | "mention" | "accum" | "off"
         DEFAULT: "mention"
         The NODE-WIDE default reply mode: the persona's mode in any chat that
         sets none, and the last rung under the per-agent agents.<name>.mode
-        (operator 2026-07-25). Set via /e auto <mode> all.
+        (operator 2026-07-25). Set via /agents <handle> auto <mode>.
         It reaches the PERSONA only — every other agent defaults to "mention" —
         so setting "accum" here does not make N siblings replay the gap.
       address_without_at
@@ -419,7 +419,7 @@ export const CONFIG_SCHEMA = {
         global.
     Per-chat modes live in each conversation entry, PER AGENT
     (contacts.<surface>[<id>].<being>.mode, or the entry's agents.<name>.mode
-    override, via /e auto <mode> <chat>). There is no flat entry-level mode —
+    override, via /agents[=<slug>] <handle> auto <mode>). There is no flat entry-level mode —
     getBeing() has had no flat fallback since 2026-07-10.
     Paste-ready reference: config/skeletons/conversations.yaml.
 
@@ -475,10 +475,10 @@ export const CONFIG_SCHEMA = {
         LEGACY write-whitelist only (bridge-bypass + busy-queue gate).
         Per-chat E modes + residents MIGRATED 2026-06-24 into each
         conversation's config.yaml: contacts.whatsapp[<jid>].mode (set via
-        /e auto <mode> <chat>) plus the Room members[] store (set via
-        /e residents). The global default + pause MOVED 2026-06-25 to
-        dispatch.auto_default_mode / dispatch.auto_paused
-        (/e auto <mode> all | pause | resume).
+        /agents[=<slug>] <handle> auto <mode>, was /e auto <mode> <chat>) plus
+        the Room members[] store (set via /e residents). The global default +
+        pause MOVED 2026-06-25 to dispatch.auto_default_mode / dispatch.auto_paused
+        (was /e auto <mode> all | pause | resume).
       e_commands
         Command names conversation-e may EXECUTE when it emits an own-line slash
         command in a reply.
@@ -740,7 +740,7 @@ export const CONFIG_SCHEMA = {
     SHAPE:
       whatsapp | telegram | signal:
         chat_ids
-          STABLE command-channel ids — chats that accept /egpt, /restart, … ; a
+          STABLE command-channel ids — chats that accept /agents, /restart, … ; a
           LIST; a node may own several.
         allowed_users
           STABLE sender ids that may command this node on THIS surface — jids /
@@ -1813,7 +1813,7 @@ export const CONFIG_SCHEMA = {
     (src/spine/advice.mjs).
 
     Per-conversation opt-in only (a chat is auto iff its mode is set to auto via
-    /e auto auto <chat>); the turn-counter guard bounds runaway unchanged.
+    /agents[=<slug>] <handle> auto auto); the turn-counter guard bounds runaway unchanged.
   `,
 
   aliases: `

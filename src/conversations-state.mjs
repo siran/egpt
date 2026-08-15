@@ -108,7 +108,8 @@ export function slugTranscriptPath(surface, slug) {
 // Archive the FINISHED thread's transcript so the new one starts empty (operator 2026-07-25:
 // "there must be a new transcript if thread-id changes"). Its home is the fresh moment — the
 // brainpool's no-thread branch, BEFORE the new thread writes anything — because that is when
-// the thread changes, whatever changed it (a deleted threadId, /e new, a dead session).
+// the thread changes, whatever changed it (a deleted threadId, /agents <handle> reset, a
+// dead session).
 //
 // WHICH id: the one the file itself names in its front matter (transcript-meta.parseFrontMatter),
 // not the registry's — the registry's is exactly what was just removed. Destination is the
@@ -927,7 +928,8 @@ export function getBeing(state, surface, jid, being) {
     mode:               b?.mode               ?? null,
     send_to_egpt:       b?.send_to_egpt       ?? null,  // per-conv 'always'|'mode' override
     threadId:           b?.threadId           ?? null,
-    // /e access all|regular (operator 2026-08-14): points this being at a
+    // /agents <handle>|all access_level all|regular (operator 2026-08-14, was /e access
+    // all|regular): points this being at a
     // config/permissions/<level>.md file, read fresh every turn by
     // spine/brainpool.mjs — NOT a freeze. null = never touched (this node's
     // ordinary default behavior). agent/type/model/effort/allowed_tools are NOT
@@ -961,7 +963,10 @@ export function residentsOf(entry) {
   return [...out];
 }
 
-// Top-N primary contacts across surfaces, newest first — the `/e` / `/egpt` browser.
+// Top-N primary contacts across surfaces, newest first — was the `/e` / `/egpt` re-point
+// wizard's browser (both retired: the wizard in phase 1, 2026-08-14; the whole /e/egpt
+// command family in phase 2, 2026-08-15). No current caller — kept as pre-existing,
+// unrelated dead code (not orphaned by this change, so not removed here).
 // `recencyOf(surface, slug, entry) → ms` is supplied by the caller (the spine uses the
 // transcript.md mtime, falling back to firstSeenAt) so this stays pure + testable. Skips
 // aliases and slug-less entries.
@@ -1237,7 +1242,7 @@ export function ensureContact(state, surface, jid, ctx = {}) {
   }
 
   // 3. Brand-new contact — the SLIM shape (operator 2026-07-02). `firstSeen` still drives
-  //    the slug-suffix (never overwritten on /e new), but is no longer stored as a key: the
+  //    the slug-suffix (never overwritten on an /agents reset), but is no longer stored as a key: the
   //    lifecycle timestamps (firstSeenAt/threadCreatedAt/identityInjectedAt) live in the
   //    conversation's own stats.yaml now, and the slug's -yymmddhhmm suffix already encodes
   //    firstSeen for the rename logic. We store `home_dir` + the (home-relative) re-based
@@ -1295,8 +1300,9 @@ export function patchBeing(state, surface, jidOrSlug, being, fields) {
 // all" (a field-wise merge of `undefined`s would leave the block as a truthy object full of
 // undefined values, which still reads as present). deleteBeing wipes `entry.agents.<being>`
 // OUTRIGHT, so getBeing(...).present reads back false — exactly what a never-instanced
-// contact looks like. Used by /e reset (spine/commands.mjs) to reset one being's state
-// without touching another resident being's block in the same conversation. Mirrors
+// contact looks like. Used by /agents <handle>|all reset (spine/commands.mjs's agentsReset,
+// was eReset) to reset one or more beings' state without touching another resident being's
+// block in the same conversation, when it isn't named. Mirrors
 // patchBeing's own JID-or-slug lookup (_entryByJidOrSlug) and patchContact's no-op-on-
 // not-found contract. `agents` is dropped entirely once its last being is gone, rather than
 // left as a stray `{}`.

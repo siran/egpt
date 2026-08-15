@@ -129,7 +129,7 @@ export const COMMANDS = [
   { cmd: '/help',           surface: 'both',      usage: '/help',                                          desc: 'list commands wired on this surface; unwired registry entries print in a separate labelled tail', wired: true },
   { cmd: '/log',            surface: 'shell',     usage: '/log [N=30]',                                    desc: 'show last N log entries (telemetry, hints, debug)' },
   { cmd: '/logs',           surface: 'shell',     usage: '/logs [N=30]',                                   desc: 'alias for /log' },
-  { cmd: '/egpt',           surface: 'shell',     usage: '/egpt [status|new|list|brain <type> [<ref>]|rewind [<n>|<ref-prefix>]]', desc: 'manage @egpt persona: status (default), new (fresh thread), list (history), brain (switch to another brain ± ref), rewind (resume a past thread)', wired: true },
+  { cmd: '/agents',         surface: 'shell',     usage: '/agents[=<slug>] <handle>|all [reset|auto <mode>|access_level <all|regular>]', desc: 'manage ANY resident being (persona or sibling) on any conversation: bare = live status, reset = archive+wipe+reseed, auto <mode> = set reply mode, access_level all|regular = confinement toggle. `all` applies to every resident being. Was /e /egpt (retired 2026-08-15).', wired: true },
 ];
 
 // All known command tokens (across all surfaces). Used by surfaces to validate

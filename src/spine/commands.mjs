@@ -10,9 +10,9 @@
 // with a short note.
 import { lifecycleExit } from './ingest.mjs';
 import { isAutoMode, AUTO_MODES, DEFAULT_AUTO_MODE } from '../auto-mode.mjs';
-import { patchBeing, deleteBeing, getContact, getBeing, slugDir, statsPath, conversationPathOf, seedIdentityLayers, skeletonIdentityFiles, slugSuffix, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS, LOBBY_SLUG } from '../conversations-state.mjs';
+import { patchBeing, deleteBeing, getContact, getBeing, residentsOf, slugDir, statsPath, conversationPathOf, seedIdentityLayers, skeletonIdentityFiles, slugSuffix, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS, LOBBY_SLUG } from '../conversations-state.mjs';
 import { stripFrontMatter } from '../transcript-meta.mjs';
-import { coerceAllowedTools, resolveDefaultBrainDef } from './brainpool.mjs';
+import { coerceAllowedTools, resolveDefaultBrainDef, resolveBeingDef } from './brainpool.mjs';
 import { loadPermissionLevel } from './permission-levels.mjs';
 import { stat as fsStat, readFile as fsReadFile, writeFile as fsWriteFile, mkdir as fsMkdir, readdir as fsReaddir, rm as fsRm, rename as fsRename } from 'node:fs/promises';
 import { readdirSync } from 'node:fs';
@@ -122,8 +122,10 @@ function humanizeUptime(sec) {
   return `${s}s`;
 }
 
-// Resolve a target chat for `/e auto <mode> <target>` (so the operator can set a
-// remote chat's mode from the Self DM). A verbatim @jid / room-id is used as-is;
+// Resolve a target chat for `/agents=<slug> …`/`/status <fragment>` (so the operator can name
+// a remote chat from the Self DM — was /e auto <mode> <target>'s resolver before /e's whole
+// family retired 2026-08-15; /agents' `=<slug>` binding reuses this SAME function verbatim).
+// A verbatim @jid / room-id is used as-is;
 // otherwise a fuzzy slug/name fragment is matched against contacts. The command's
 // OWN surface is searched first (unchanged behavior on a hit there — same-surface
 // always wins, even when other surfaces also match); only when the own surface has
@@ -265,10 +267,10 @@ export function createCommands({
   send: rawSend,                         // (chatId, text) -> deliver a plain system reply
   exit = (code) => process.exit(code),
   writeRewindTarget,
-  loadState = null, writeState = null,   // conv-state IO — lets /e auto persist a mode
-  brains = null,                         // the brain registry (createBrains) — /e access + /status resolve the persona's live def through it (brainpool.mjs's resolveDefaultBrainDef)
+  loadState = null, writeState = null,   // conv-state IO — lets /agents auto persist a mode
+  brains = null,                         // the brain registry (createBrains) — /agents' status + access_level, and /status's own preview, resolve a being's live def through it (brainpool.mjs's resolveBeingDef / resolveDefaultBrainDef)
   defaultKey = 'e',                      // the persona being-id (its map key), injected by boot from the single `default:true` agent — the persona's per-conversation mode/state reads+writes and its warm-key prefix all key off this, never a hardcoded 'e' (operator 2026-07-10)
-  evictWarm = () => {},                  // (warmKey) -> drop that conversation's warm session so /e access's re-point respawns fresh
+  evictWarm = () => {},                  // (warmKey) -> drop that conversation's warm session so /agents access_level's re-point respawns fresh
   configPath = CONFIG_YAML_PATH,         // where /config <key>=<value> writes — the real profile config.yaml by default (injected in tests, so no test ever touches the real profile)
   io = {},                               // { stat, readFile, writeFile, mkdir, readdir, rm } — real fs by default; /status probes files + the custom branch authors through here
   // CDP seam for /chrome, /tabs, /open, /tab, /close — the real localhost probe by
@@ -574,60 +576,43 @@ export function createCommands({
       else if (named) line = line.replace(addressed.raw, '');
     }
 
-    // /e auto <mode> [<target>] — set a conversation's E reply-mode (modes live in
-    // conversations.yaml now). In a chat: omit <target> to set THIS chat. From the
-    // Self DM: name the target chat (slug/name fragment, or its @jid / room-id).
-    const auto = /^\/(?:e|egpt)\s+auto\s+(\S+)(?:\s+(.+?))?\s*$/i.exec(line);
-    if (auto) {
-      const mode = auto[1].toLowerCase();
-      const targetTerm = auto[2]?.trim() || null;
-      if (!isAutoMode(mode)) { await send?.(ev.chatId, `/e auto: unknown mode "${mode}" — use one of: ${AUTO_MODES.join(', ')}`); return; }
-      if (!loadState || !writeState) { await send?.(ev.chatId, '/e auto: conversation state not wired'); return; }
-      try {
-        const state = await loadState();
-        let jid = ev.chatId, where = 'here', targetSurface = ev.surface;
-        if (targetTerm) {
-          const r = resolveTarget(state, targetTerm, ev.surface);
-          if (r.error) { await send?.(ev.chatId, `/e auto: ${r.error}`); return; }
-          jid = r.jid; where = `for ${r.name}`; targetSurface = r.surface;
-        }
-        // The persona is a being keyed by defaultKey (operator 2026-07-10) — write its mode
-        // into `agents.<defaultKey>` (merged over the existing block), so gating reads it
-        // back via getBeing(defaultKey).
-        await writeState(patchBeing(state, targetSurface, jid, defaultKey, { mode }));
-        await send?.(ev.chatId, `✅ E mode ${where} → ${mode}`);
-      } catch (e) { onLog(`/e auto ${ev.chatId}: ${e?.message ?? e}`); await send?.(ev.chatId, `/e auto: failed — ${e?.message ?? e}`); }
+    // /agents[=<slug>] <handle>|all [reset|auto <mode>|access_level <all|regular>] — the
+    // general per-being command surface (operator 2026-08-15, retires /e + /egpt entirely).
+    // /e's whole family was hardcoded to defaultKey (the persona's own map key) — "a failure
+    // in design" now that every resident being (the persona AND a sibling like wren) is
+    // configured identically under agents.<being> with no per-conversation freeze (phase 1/2):
+    // `/e reset` wiped ONLY agents.<defaultKey>, so a sibling resident on the very same
+    // conversation survived untouched by a reset meant to cover "this conversation". /agents
+    // fixes that by taking the being explicitly, never assuming defaultKey.
+    //
+    //   /agents[=<slug>] <handle>|all                        → status (bare, see agentsStatus)
+    //   /agents[=<slug>] <handle>|all reset                  → archive + wipe + reseed
+    //   /agents[=<slug>] <handle>|all auto <mode>             → was /e auto <mode>
+    //   /agents[=<slug>] <handle>|all access_level <all|regular>  → was /e access all|regular
+    //
+    // `=<slug>` is a PRIVATE convention parsed by THIS regex alone — it is bound directly to
+    // the command token exactly like NODE_ADDRESSABLE's `=<name>` (`/chrome=kg`, `/tab=do 3`,
+    // see the § NODE-ADDRESSED COMMANDS block above), which is what it's modeled on, but it is
+    // NOT that system: NODE_ADDRESSABLE's allowlist (chrome|status|tabs|tab|open|close|
+    // members?|config|radio) deliberately excludes /agents, so nodeAddressed(line) returns
+    // null for any `/agents...` line and never touches it — no interference either way.
+    // Omitted = the CURRENT conversation (ev.surface/ev.chatId), exactly like today's bare
+    // /e reset/auto/access. Given = resolved through resolveTarget — the SAME fuzzy/jid
+    // resolver /e auto <mode> <target> and /e reset <target> already used, reused verbatim
+    // (same error/ambiguity semantics). `<handle>` is a being's agents.<being> map key
+    // (`e`, `wren`, …); `all` applies the subcommand to every being residentsOf() finds on
+    // that conversation's entry. See agentsCmd() for the full dispatch.
+    const agentsMatch = /^\/agents(?:=(\S+))?(?:\s+(.+?))?\s*$/i.exec(line);
+    if (agentsMatch) {
+      const args = (agentsMatch[2] ?? '').trim().split(/\s+/).filter(Boolean);
+      await agentsCmd(ev, agentsMatch[1] || null, args);
       return;
     }
 
-    // /e reset [<target>] — reset a conversation (archive + registry wipe + reseed). Bare:
-    // resets the CURRENT conversation (ev.surface/ev.chatId). From the Self DM, name a
-    // <target> chat (slug/name fragment, or its @jid / room-id) to reset a DIFFERENT
-    // conversation instead — same <target> resolution as /e auto's (operator 2026-08-15: an
-    // operator resetting from Self needed the same reach /e auto already has). Must stay
-    // BEFORE the bare-/e usage catch-all below, same slot as /e auto. See eReset() for the
-    // steps.
-    const resetMatch = /^\/(?:e|egpt)\s+reset(?:\s+(.+?))?\s*$/i.exec(line);
-    if (resetMatch) { await eReset(ev, resetMatch[1]?.trim() || null); return; }
-
-    // /e access all|regular — flip the CURRENT conversation (ev.surface/ev.chatId), bare,
-    // no target argument (self-only — same calling convention as /e reset), between the
-    // unconfined meta-engineer tier and this node's regular persona default. A PLAIN
-    // TOGGLE (operator: same trust model as /room delete force) — no extra reachability
-    // gate; the operator's own judgment about which conversation gets this is the only
-    // guard. Must stay BEFORE the bare-/e usage catch-all, same slot as /e reset. The strict
-    // all|regular match is checked first; a bare `/e access` or an unrecognized third
-    // word falls to the looser match right after, so malformed input gets a usage reply
-    // instead of falling through to the bare-/e catch-all's generic usage line. See eAccess().
-    const accessMatch = /^\/(?:e|egpt)\s+access\s+(all|regular)\s*$/i.exec(line);
-    if (accessMatch) { await eAccess(ev, accessMatch[1].toLowerCase()); return; }
-    const accessUsageMatch = /^\/(?:e|egpt)\s+access\b/i.exec(line);
-    if (accessUsageMatch) { await send?.(ev.chatId, 'usage: /e access all|regular'); return; }
-
     // /status [<target>] — bare: one compact ops line with live node health (unchanged
     // byte-for-byte; BOTH co-account nodes answer, on purpose). `/status <fragment>`
-    // targets a SPECIFIC conversation instead — resolved EXACTLY like `/e auto <mode>
-    // <target>` (same resolveTarget) — and reports that conversation's operator-facing
+    // targets a SPECIFIC conversation instead — resolved through the same resolveTarget
+    // /agents' `=<slug>` binding uses — and reports that conversation's operator-facing
     // facts (§ statusTarget). Every probe in both forms is wrapped: any failure degrades
     // to '?' so /status NEVER throws.
     //
@@ -650,9 +635,8 @@ export function createCommands({
     // addressed node. Must stay BEFORE the catch-all at the end of this dispatch (it
     // answers ANY /token, so a fall-through would silently swallow /chrome) — that
     // ordering IS test-enforced: the /chrome tests assert its real reply, and they fail
-    // the moment it reaches the catch-all instead. It does NOT interact with the bare-/e
-    // usage reply below: /e's match is ANCHORED at ^/(e|egpt), so it can never match /chrome
-    // (verified 2026-07-15 — an earlier comment here wrongly called /e "greedy").
+    // the moment it reaches the catch-all instead. It does NOT interact with /agents' own
+    // dispatch above: /agents' match is ANCHORED at ^/agents, so it can never match /chrome.
     const chromeMatch = /^\/chrome(?:\s+(.+?))?\s*$/i.exec(line);
     // dispatch.default_node resolves a truly bare `/chrome` to a node (addressed.raw === '')
     // without leaving anything in `line` to capture — fall back to the gate's own resolution
@@ -689,7 +673,7 @@ export function createCommands({
     // /room <verb> [<room>] — Phase 2 rooms & members, verb-first (bug fix 2026-08-07: the
     // old slug-first grammar let an unrecognized first token default to a room lookup — see
     // the room() comment below). Slots in exactly like /chrome: a dispatch match BEFORE the
-    // anchored bare-/e usage reply and the catch-all.
+    // final generic catch-all.
     const roomMatch = /^\/room(?:\s+(\S+))?(?:\s+(.+?))?\s*$/i.exec(line);
     if (roomMatch) { await room(ev, roomMatch[1]?.toLowerCase() || null, roomMatch[2]?.trim() || null); return; }
 
@@ -734,17 +718,12 @@ export function createCommands({
     const activateMatch = /^\/activate\s+(\S+)\s*$/i.exec(line);
     if (activateMatch) { await activate(ev, activateMatch[1]); return; }
 
-    // /e (bare) or /e <anything else> — the re-point WIZARD that used to arm here is
-    // retired (operator 2026-08-14, phase 1: there is no more per-conversation freeze for
-    // it to configure — engine/model/effort/tools now always resolve fresh from
-    // config.yaml). `/e auto`, `/e reset`, and `/e access all|regular` are matched above and
-    // never reach here; anything else under `/e`/`/egpt` gets a plain usage reply instead of
-    // silently arming a wizard that no longer exists.
-    const eBareMatch = /^\/(?:e|egpt)\b/i.exec(line);
-    if (eBareMatch) { await send?.(ev.chatId, 'usage: /e auto <mode> [chat] | /e reset | /e access all|regular'); return; }
-
+    // /e and /egpt carry NO special meaning any more (retired 2026-08-15 — see § /agents
+    // above, which replaces the whole family). A bare `/e` or `/e <anything>` no longer gets
+    // its own usage reply; it falls straight through to the generic catch-all below, exactly
+    // like any other unrecognized token.
     const tok = line.split(/\s+/)[0];
-    await send?.(ev.chatId, `${tok}: recognized — lifecycle (/restart, /upgrade, /rewind) + /e auto <mode> + /status are wired in v2 so far.`);
+    await send?.(ev.chatId, `${tok}: recognized — lifecycle (/restart, /upgrade, /rewind) + /agents + /status are wired in v2 so far.`);
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -961,104 +940,246 @@ export function createCommands({
     await send?.(ev.chatId, `/room: unknown verb "${first}" — create|join|leave|members|delete`);
   }
 
-  // /e reset — restart a conversation from scratch: archive its whole folder aside (never
-  // delete), wipe defaultKey's registry state, reseed a pristine tree at the SAME path.
-  // Operator framing: "restarting a conversation needs some steps... like when creating a
-  // conversation from scratch. archive old folder, receive a pristine new (can be
-  // synthetic) message" — and "it works the same for rooms and conversations alike", so
-  // this is the ONE path both a room and an ordinary conversation take, via convRoomOf for
-  // the bare (CURRENT-conversation) case, or resolveConvRoom(r.surface, r.jid) once a
-  // <target> has been resolved (the same resolver /members uses — the mesh-delivered
-  // special case is handled identically). The archived folder sits at
-  // `<baseDir>-archived-<slugSuffix>`, OUTSIDE the slug the registry points at, so the
-  // fresh folder can be reseeded at the ORIGINAL baseDir/slug without the entry's
-  // slug/conversation_path/pushedName/home_dir/firstSeenAt ever needing to change —
-  // nothing will resolve to the archived path again through ensureContact/resolveConvRoom.
-  // That is what makes ONE path work for both a fixed-slug surface (room, shell) and a
-  // timestamped-slug surface (whatsapp, telegram): only the being's block is cleared,
-  // never the slug. No synthetic Claude turn is spawned here — once state is wiped, the
-  // next real inbound message gets fresh-thread treatment automatically (brainpool.mjs:
-  // `if (!sessionId) await rollTranscript(...)`).
-  //
-  // targetTerm (operator 2026-08-15, mirrors /e auto's <target>): null resets the CURRENT
-  // conversation (ev.surface/ev.chatId), same as before. A resolved term names a DIFFERENT
-  // known chat instead — resolveTarget's error/ambiguity handling is identical to /e auto's.
-  // Destructive (archive + state wipe), so the confirmation always folds `where` in — unlike
-  // /e auto, an operator here must never be left guessing which conversation just got wiped.
-  async function eReset(ev, targetTerm = null) {
-    if (!loadState || !writeState) { await send?.(ev.chatId, '/e reset: conversation state not wired'); return; }
-    const state = await loadState();
-    let room, where = 'here';
-    if (targetTerm) {
-      const r = resolveTarget(state, targetTerm, ev.surface);
-      if (r.error) { await send?.(ev.chatId, `/e reset: ${r.error}`); return; }
-      where = `for ${r.name}`;
-      room = await resolveConvRoom(r.surface, r.jid);
-      if (!room) { await send?.(ev.chatId, `can't resolve ${r.name}'s room`); return; }
-    } else {
-      room = await convRoomOf(ev);
-      if (!room) { await send?.(ev.chatId, "can't resolve this conversation's room"); return; }
+  // /agents[=<slug>] <handle>|all [reset|auto <mode>|access_level <all|regular>] — THE
+  // dispatcher (operator 2026-08-15, retires the whole /e/egpt family — see its own comment
+  // at the dispatch site above for the "failure in design" this closes). Parses the already-
+  // tokenized args ([handle-or-'all', subcommand?, value?] — the regex above split them),
+  // validates the subcommand + its value up front, resolves the target conversation through
+  // slugArg (bare = HERE, given = resolveTarget — identical to /e auto/reset's <target>), then
+  // resolves the handle set (a single being, or every residentsOf() entry for `all`, ordered
+  // defaultKey-first when resident so the persona reads first in a multi-being reply/status),
+  // and routes to the per-subcommand handler. Every handler below takes the ALREADY-resolved
+  // (surface, jid, where, handles[, state]) — none of them re-parse or re-resolve.
+  async function agentsCmd(ev, slugArg, args) {
+    const [handleArg, subRaw, valueRaw] = args;
+    if (!handleArg) { await send?.(ev.chatId, 'usage: /agents[=<slug>] <handle>|all [reset|auto <mode>|access_level <all|regular>]'); return; }
+    if (!loadState || !writeState) { await send?.(ev.chatId, '/agents: conversation state not wired'); return; }
+    const sub = subRaw?.toLowerCase() || null;
+    if (sub && !['reset', 'auto', 'access_level'].includes(sub)) {
+      await send?.(ev.chatId, `/agents: unknown subcommand "${subRaw}" — reset|auto <mode>|access_level <all|regular>`);
+      return;
     }
-    const base = room.baseDir();
-    const archivedDir = `${base}-archived-${slugSuffix()}`;
-    // A contact with no folder ever created (edge case: no turn has run yet) has nothing to
-    // archive — tolerate a missing source and proceed to reseed rather than crash.
-    let archived = true;
-    try { await rename(base, archivedDir); } catch { archived = false; }
-    // Wipe defaultKey's registry state OUTRIGHT (deleteBeing, not a merge) — the WHOLE
-    // `agents.<defaultKey>` block (mode, threadId, access_level, …) is gone, so
-    // getBeing(...).present reads back false, matching a never-instanced contact. Another
-    // resident being's own block in this same conversation (e.g. agents.d) is untouched.
-    try {
-      await writeState(deleteBeing(state, room.surface, room.slug, defaultKey));
-    } catch (e) { onLog(`/e reset ${ev.chatId}: ${e?.message ?? e}`); }
-    // Reseed a pristine tree at the ORIGINAL path — the same two calls /room create makes
-    // for a brand-new room (below). No config.yaml write: neither call writes one, matching
-    // what a genuinely first-contact conversation has.
-    await room.ensureTree({ io: { mkdir } });
-    await seedIdentityLayers(room, 'egpt', { io: { mkdir, readFile, writeFile } });
-    const archiveNote = archived ? `old content archived to conversations/${room.surface}/${basename(archivedDir)}/ — ` : '';
-    await send?.(ev.chatId, `✅ ${room.slug} reset ${where === 'here' ? '' : where + ' '}— ${archiveNote}mode/agent overrides cleared, next message starts fresh.`);
+    if (sub === 'auto') {
+      const mode = valueRaw?.toLowerCase() || null;
+      if (!mode) { await send?.(ev.chatId, `/agents: auto needs a mode — one of: ${AUTO_MODES.join(', ')}`); return; }
+      if (!isAutoMode(mode)) { await send?.(ev.chatId, `/agents: unknown mode "${mode}" — use one of: ${AUTO_MODES.join(', ')}`); return; }
+    }
+    if (sub === 'access_level' && valueRaw?.toLowerCase() !== 'all' && valueRaw?.toLowerCase() !== 'regular') {
+      await send?.(ev.chatId, 'usage: /agents <handle>|all access_level all|regular');
+      return;
+    }
+
+    let state;
+    try { state = await loadState(); } catch (e) { await send?.(ev.chatId, `/agents: failed — ${e?.message ?? e}`); return; }
+
+    // `=<slug>` resolution (see the dispatch-site comment for why this is NOT
+    // NODE_ADDRESSABLE): bare = the CURRENT conversation, given = resolveTarget, byte-for-byte
+    // the same fuzzy/jid resolver + error/ambiguity shapes /e auto <mode> <target> and /e
+    // reset <target> already used.
+    let surface = ev.surface, jid = ev.chatId, where = 'here';
+    if (slugArg) {
+      const r = resolveTarget(state, slugArg, ev.surface);
+      if (r.error) { await send?.(ev.chatId, `/agents: ${r.error}`); return; }
+      surface = r.surface; jid = r.jid; where = `for ${r.name}`;
+    }
+
+    // `all` = every being residentsOf() finds on that conversation's entry — the exact
+    // registry-block owner /room's members roster is silent on (residentsOf reads
+    // entry.agents.<being> blocks, conversations-state.mjs). Ordered defaultKey-first (when
+    // resident) so the persona is always the first block/reply in a multi-being result; the
+    // rest keep residentsOf()'s own order.
+    let handles;
+    if (handleArg === 'all') {
+      const entry = getContact(state, surface, jid)?.entry;
+      handles = residentsOf(entry);
+      if (handles.includes(defaultKey)) handles = [defaultKey, ...handles.filter((h) => h !== defaultKey)];
+      if (!handles.length) { await send?.(ev.chatId, `/agents: no resident beings ${where}`); return; }
+    } else {
+      handles = [handleArg];
+    }
+
+    if (sub === 'reset') { await agentsReset(ev, surface, jid, where, handles, state); return; }
+    if (sub === 'auto') { await agentsAuto(ev, surface, jid, where, handles, valueRaw.toLowerCase(), state); return; }
+    if (sub === 'access_level') { await agentsAccessLevel(ev, surface, jid, where, handles, valueRaw.toLowerCase(), state); return; }
+    await send?.(ev.chatId, agentsStatus(surface, jid, handles, state));
   }
 
-  // /e access all|regular — point the CURRENT conversation's `access_level` at
-  // config/permissions/all.md or config/permissions/regular.md (operator 2026-08-14).
-  // NOT a freeze: this writes ONLY `access_level: target` into the being's block, merged
-  // over its existing fields (patchBeing). brainpool.mjs's turn() reads the matching
-  // permissions file FRESH every turn (permission-levels.mjs — no caching) and overrides
-  // that turn's allowed_tools/dangerous, so editing either file changes behavior immediately
-  // for every conversation pointing at that level, with no `/e access` re-run. Agent/model/
-  // effort/engine are never touched. Still touches ONLY that one field — threadId/mode/
-  // every other sibling field survive untouched, in contrast with /e reset (deleteBeing,
-  // wipes everything).
-  async function eAccess(ev, target) {
-    const room = await convRoomOf(ev);
+  // /agents[=<slug>] <handle>|all reset — was /e reset, generalized to any being (or every
+  // resident): restart a conversation from scratch — archive its whole folder aside (never
+  // delete), wipe the TARGET being(s)' registry state, reseed a pristine tree at the SAME
+  // path. Operator framing (unchanged from /e reset): "restarting a conversation needs some
+  // steps... like when creating a conversation from scratch. archive old folder, receive a
+  // pristine new (can be synthetic) message" — and "it works the same for rooms and
+  // conversations alike", so this is still the ONE path both a room and an ordinary
+  // conversation take, via convRoomOf for the bare (HERE) case or resolveConvRoom(surface,
+  // jid) once a <slug> has been resolved (the same resolver /members uses). No synthetic
+  // Claude turn is spawned here — once state is wiped, the next real inbound message gets
+  // fresh-thread treatment automatically (brainpool.mjs: `if (!sessionId) await
+  // rollTranscript(...)`).
+  //
+  // THE SCOPING FIX (operator 2026-08-15, "a failure in design"): /e reset always wiped ONLY
+  // `agents.<defaultKey>`, so a sibling being (e.g. wren) resident on the very same
+  // conversation survived untouched by a reset the operator meant to cover "this
+  // conversation". deleteBeing is looped over the CALLER-resolved `handles` (one handle, or
+  // every residentsOf() entry for `all`) instead of a hardcoded defaultKey — a being NOT
+  // named by this call keeps its own agents.<sibling> block byte-for-byte untouched.
+  async function agentsReset(ev, surface, jid, where, handles, state) {
+    const room = (where === 'here') ? await convRoomOf(ev) : await resolveConvRoom(surface, jid);
     if (!room) { await send?.(ev.chatId, "can't resolve this conversation's room"); return; }
-    if (!loadState || !writeState) { await send?.(ev.chatId, '/e access: conversation state not wired'); return; }
-    const perm = loadPermissionLevel(target);
-    if (!perm) { await send?.(ev.chatId, `/e access: permissions file for "${target}" not found or unparseable`); return; }
+
+    // Archive location (operator 2026-08-15 ruling): a FLAT conversations/archive/ subtree
+    // directly under EGPT_HOME — `conversations/archive/<slug>-archived-<slugSuffix>/` — NOT
+    // nested under the surface (a room's and a whatsapp conversation's archived folders land
+    // in the same flat directory, not archive/room/... vs archive/whatsapp/...). Was
+    // `<baseDir>-archived-<slugSuffix>` (sibling of the live folder, same parent) — moved so
+    // an operator browsing conversations/<surface>/ never sees a dead reset folder mixed in
+    // with live ones. mkdir the archive root first: rename() needs its destination's parent
+    // to already exist, and this is the first path under conversations/ that needs one made
+    // on demand.
+    const archiveRoot = join(EGPT_HOME, 'conversations', 'archive');
+    const archivedDir = join(archiveRoot, `${room.slug}-archived-${slugSuffix()}`);
+    const base = room.baseDir();
+    // A contact with no folder ever created (edge case: no turn has run yet) has nothing to
+    // archive — tolerate a missing source and proceed to reseed rather than crash.
+    try { await mkdir(archiveRoot, { recursive: true }); await rename(base, archivedDir); } catch { /* nothing to archive yet */ }
+
+    // Wipe EACH target being's registry state OUTRIGHT (deleteBeing, not a merge) — the WHOLE
+    // `agents.<handle>` block (mode, threadId, access_level, …) is gone per handle, so
+    // getBeing(...).present reads back false for it, matching a never-instanced contact. A
+    // resident being NOT in `handles` is untouched (see the scoping-fix comment above).
+    let next = state;
+    for (const h of handles) next = deleteBeing(next, room.surface, room.slug, h);
+    try { await writeState(next); } catch (e) { onLog(`/agents reset ${ev.chatId}: ${e?.message ?? e}`); }
+
+    // Reseed a pristine tree at the ORIGINAL path — the same two calls /room create makes
+    // for a brand-new room. No config.yaml write: neither call writes one, matching what a
+    // genuinely first-contact conversation has.
+    await room.ensureTree({ io: { mkdir } });
+    await seedIdentityLayers(room, 'egpt', { io: { mkdir, readFile, writeFile } });
+
+    // Operator ruling (2026-08-15): "if you moved the folder the operation was successful or
+    // not" — the confirmation reports success/failure ONLY, never the archive destination
+    // (dropped the old `archiveNote`/`archived` plumbing that used to build a path string
+    // into this reply).
+    await send?.(ev.chatId, `✅ ${room.slug} reset ${where === 'here' ? '' : where + ' '}— ${handles.join(', ')} overrides cleared, next message starts fresh.`);
+  }
+
+  // /agents[=<slug>] <handle>|all auto <mode> — was /e auto <mode> [<target>], generalized:
+  // sets EACH target being's own conversation mode (modes live in conversations.yaml,
+  // `agents.<being>.mode`, merged over the block's existing fields via patchBeing — siblings
+  // survive). Bare (`where === 'here'`): this chat. `=<slug>`-resolved: a DIFFERENT known
+  // chat, same resolveTarget reach /e auto's <target> already had.
+  async function agentsAuto(ev, surface, jid, where, handles, mode, state) {
     try {
-      const state = await loadState();
-      // The engine the LIVE warm session is keyed under. access_level never changes the
-      // engine (only allowed_tools/dangerous), so this is exactly what the persona's NEXT
-      // turn will resolve too (phase 1: engine/model/effort always resolve fresh from
-      // config — resolveDefaultBrainDef is the SAME function turn() itself calls).
+      let next = state;
+      for (const h of handles) next = patchBeing(next, surface, jid, h, { mode });
+      await writeState(next);
+      await send?.(ev.chatId, `✅ ${handles.join(', ')} mode ${where} → ${mode}`);
+    } catch (e) { onLog(`/agents auto ${ev.chatId}: ${e?.message ?? e}`); await send?.(ev.chatId, `/agents: auto failed — ${e?.message ?? e}`); }
+  }
+
+  // /agents[=<slug>] <handle>|all access_level <all|regular> — was /e access all|regular
+  // (renamed subcommand keyword, operator's own example: `/agents wren access_level all`),
+  // generalized to any being (or every resident). Points EACH target being's own
+  // `access_level` at config/permissions/all.md or regular.md. NOT a freeze: writes ONLY
+  // `access_level: target` into the being's block, merged over its existing fields
+  // (patchBeing) — brainpool.mjs's turn() reads the matching permissions file FRESH every
+  // turn (permission-levels.mjs — no caching) and overrides that turn's allowed_tools/
+  // dangerous, so editing either file changes behavior immediately with no re-run needed.
+  // Agent/model/effort/engine are never touched.
+  async function agentsAccessLevel(ev, surface, jid, where, handles, target, state) {
+    const perm = loadPermissionLevel(target);
+    if (!perm) { await send?.(ev.chatId, `/agents: permissions file for "${target}" not found or unparseable`); return; }
+    try {
+      let next = state;
+      const slug = getContact(next, surface, jid)?.slug ?? jid;
       let convDir = null;
-      try { convDir = slugDir(room.surface, room.slug); } catch { /* non-default surface */ }
-      const engine = resolveDefaultBrainDef({ getConfig: cfg, brains, convDir, brainType: CCODE })?.type ?? CCODE;
-      await writeState(patchBeing(state, room.surface, room.slug, defaultKey, { access_level: target }));
-      // Evict the warm session: a warm `claude` process bakes its allowedTools/confinement
-      // into its spawn args ONCE, at open (warm-cli-session.mjs's spawnProc), and never
-      // re-reads brainOptions on later turns of the same warm session — so a live warm
-      // session must be closed for the new access_level to actually take effect on the
-      // NEXT turn, even though nothing here is frozen (same reasoning the old freeze-based
-      // code used for this same call, still true).
-      evictWarm(`${defaultKey}:${engine}:${room.surface}:${room.slug}`);
-    } catch (e) { onLog(`/e access ${ev.chatId}: ${e?.message ?? e}`); await send?.(ev.chatId, `/e access: failed — ${e?.message ?? e}`); return; }
+      try { convDir = slugDir(surface, slug); } catch { /* non-default surface */ }
+      for (const h of handles) {
+        next = patchBeing(next, surface, jid, h, { access_level: target });
+        // The engine the LIVE warm session is keyed under, PER HANDLE (a sibling can run a
+        // different engine than the persona) — resolveBeingDef is the SAME resolver
+        // brainpool.mjs's turn() itself calls for this being (name-the-existing-thing).
+        const engine = resolveBeingDef(h, convDir, { getConfig: cfg, brains, brainType: CCODE })?.type ?? CCODE;
+        // Evict the warm session: a warm `claude` process bakes its allowedTools/confinement
+        // into its spawn args ONCE, at open, and never re-reads brainOptions on later turns of
+        // the same warm session — so a live warm session must be closed for the new
+        // access_level to actually take effect on the NEXT turn, even though nothing here is
+        // frozen.
+        evictWarm(`${h}:${engine}:${surface}:${slug}`);
+      }
+      await writeState(next);
+    } catch (e) { onLog(`/agents access_level ${ev.chatId}: ${e?.message ?? e}`); await send?.(ev.chatId, `/agents: access_level failed — ${e?.message ?? e}`); return; }
     const msg = target === 'all'
-      ? `✅ ${room.slug} access → all (unconfined: full filesystem, bare Bash — anyone who can @e here now has it)`
-      : `✅ ${room.slug} access → regular (confined default tools)`;
+      ? `✅ ${handles.join(', ')} access ${where} → all (unconfined: full filesystem, bare Bash)`
+      : `✅ ${handles.join(', ')} access ${where} → regular (confined default tools)`;
     await send?.(ev.chatId, msg);
+  }
+
+  // /agents[=<slug>] <handle>|all (bare) — the LIVE status view (never a stale snapshot; see
+  // agentsBeingBlock). Fenced-yaml, one block per handle, joined with a `---` document
+  // separator when `all` covers more than one resident being. Never throws (every probe
+  // degrades to '?'/'unknown', matching statusTarget's own convention).
+  function agentsStatus(surface, jid, handles, state) {
+    const blocks = handles.map((h) => agentsBeingBlock(surface, jid, h, state));
+    return '```yaml\n' + blocks.join('\n---\n') + '\n```';
+  }
+
+  // ONE being's status block — statusTarget's own preview is PERSONA-ONLY (resolveDefaultBrainDef,
+  // which reads the single `default: true` agent); this generalizes it to ANY being via
+  // resolveBeingDef(handle, convDir, …) — the SAME resolver brainpool.mjs's turn() itself
+  // calls for this being on its NEXT turn (name-the-existing-thing, not a second derivation)
+  // — PLUS the ACCESS-LEVEL OVERRIDE block turn() applies right after it (loadPermissionLevel,
+  // when the being's own accessLevel is 'all'/'regular' — a live override statusTarget's own
+  // preview never applied, a real gap this closes for the new command) PLUS the
+  // `dangerous ? raw : coerceAllowedTools(raw)` coercion statusTarget already applies to its
+  // own preview. Resolved FRESH on every call (no caching anywhere in this chain), so editing
+  // config between two calls changes the NEXT call's tools/model/effort with nothing to evict.
+  function agentsBeingBlock(surface, jid, handle, state) {
+    try {
+      const c = getContact(state, surface, jid);
+      const slug = c?.slug ?? jid;
+      let convDir = null;
+      try { convDir = slugDir(surface, slug); } catch { /* non-default surface */ }
+
+      const b = getBeing(state, surface, jid, handle);
+
+      let def = null;
+      try { def = resolveBeingDef(handle, convDir, { getConfig: cfg, brains, brainType: CCODE }); } catch { def = null; }
+      if (def && (b?.accessLevel === 'all' || b?.accessLevel === 'regular')) {
+        const perm = loadPermissionLevel(b.accessLevel);
+        if (perm) def = { ...def, dangerous: perm.dangerous, allowed_tools: perm.allowedTools };
+      }
+      const previewDef = def ? (def.dangerous === true ? def : coerceAllowedTools(def)) : null;
+
+      // Determinism parity with turn(): the PERSONA's run always carries a concrete
+      // model/effort (DETERMINISTIC_MODEL/EFFORT fallback); a sibling may legitimately have
+      // neither set (inherits the CLI login default) — reported as such rather than a
+      // fabricated persona default.
+      const isDefault = handle === defaultKey;
+      const modelVal = previewDef?.model ?? (isDefault ? DETERMINISTIC_MODEL : null);
+      const effortVal = previewDef?.effort ?? (isDefault ? DETERMINISTIC_EFFORT : null);
+      const toolsRaw = previewDef?.allowed_tools ?? DEFAULT_ALLOWED_TOOLS;
+      const toolsVal = Array.isArray(toolsRaw) ? `[${toolsRaw.join(', ')}]` : (toolsRaw ?? '?');
+      // def.cwd ?? convDir — the SAME derivation turn() uses for the being's actual run cwd.
+      const homeDir = previewDef?.cwd ?? convDir ?? '?';
+
+      return [
+        `being: ${handle}`,
+        `name: ${previewDef?.name ?? handle}`,
+        `surface: ${surface}`,
+        `slug: ${slug}`,
+        `mode: ${b?.mode ?? 'default'}`,
+        `access_level: ${b?.accessLevel ?? 'unset'}`,
+        `engine: ${previewDef?.type ?? CCODE}`,
+        `model: ${modelVal ?? 'inherit (CLI default)'}`,
+        `effort: ${effortVal ?? 'inherit (CLI default)'}`,
+        `allowed_tools: ${toolsVal}`,
+        `thread_id: ${b?.threadId ?? 'not started'}`,
+        `conversation_dir: ${convDir ?? '?'}`,
+        `home_dir: ${homeDir}`,
+      ].join('\n');
+    } catch (e) { return `being: ${handle}\nerror: ${e?.message ?? e}`; }
   }
 
   // The room called <name>, iff its folder exists on disk — the same stat-probe /room create
@@ -2120,8 +2241,9 @@ export function createCommands({
   }
 
   // /status <fragment> — the operator's per-conversation minimum: target resolved
-  // exactly like /e auto's (resolveTarget), one fenced yaml block reporting that
-  // conversation's name/path/mode/agent/personality/thread/members. Every probe is
+  // through resolveTarget (the same resolver /agents' `=<slug>` binding uses), one fenced
+  // yaml block reporting that conversation's name/path/mode/agent/personality/thread/members.
+  // Every probe is
   // independently guarded; a degraded probe shows '?' (or 'unknown'/'not started'
   // where that reads clearer) — this never throws, matching bare /status.
   async function statusTarget(ev, term) {
@@ -2261,9 +2383,14 @@ export function createCommands({
   // tools into the target conversation's `readonly` block. There is no more `readonly` to
   // freeze — engine/model/effort/tools now always resolve fresh from config.yaml every
   // turn (brainpool.mjs's resolveDefaultBrainDef) — so the whole mechanism had nothing
-  // left to do and is deleted, not left inert. `/e` bare/fragment now gets a plain usage
-  // reply (see the eBareMatch dispatch above); `/e auto`, `/e reset`, `/e access
-  // all|regular` are unaffected.
+  // left to do and was deleted, not left inert.
+  //
+  // RETIRED AGAIN (operator 2026-08-15): the ENTIRE /e / /egpt command family (auto/reset/
+  // access, and the bare-/e usage reply that followed) is gone too — replaced by /agents,
+  // which reaches any resident being in any conversation instead of only defaultKey (see the
+  // § /agents dispatch + agentsCmd/agentsReset/agentsAuto/agentsAccessLevel/agentsStatus
+  // above). `/e`/`/egpt` now carry no special meaning at all and fall through to the generic
+  // catch-all like any other unrecognized token.
 
   return { isCommand, run, runCaptured, remoteNode, nodeCommandForMe, makeNodeExplicit, currentRoomOf };
 }

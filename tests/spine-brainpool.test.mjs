@@ -606,14 +606,16 @@ describe('brainpool.turn — dangerous:true skips coercion + confinement (operat
   });
 });
 
-// ── /e access all|regular — accessLevel OVERRIDE (operator 2026-08-14). Applied live,
-//    every turn, independent of the fresh/frozen instancing above — the whole point vs.
-//    the old freeze-into-readonly shape. PHASE 2 (operator 2026-08-14, "remove the concept
-//    of siblings"): no longer persona-only — every being's OWN accessLevel (per-being,
-//    read via getBeing) is eligible now. The `/e access` COMMAND itself still only ever
-//    WRITES defaultKey's own accessLevel (out of scope for phase 2) — but if a sibling's
-//    accessLevel is set by hand-editing conversations.yaml, its turn now honors it too. ──
-describe('brainpool.turn — accessLevel override (operator 2026-08-14, /e access)', () => {
+// ── accessLevel OVERRIDE (operator 2026-08-14, was /e access all|regular; the command is
+//    now /agents <handle>|all access_level all|regular, 2026-08-15). Applied live, every
+//    turn, independent of the fresh/frozen instancing above — the whole point vs. the old
+//    freeze-into-readonly shape. PHASE 2 (operator 2026-08-14, "remove the concept of
+//    siblings"): no longer persona-only — every being's OWN accessLevel (per-being, read via
+//    getBeing) is eligible now. /agents' access_level subcommand can WRITE any being's
+//    accessLevel (not just defaultKey's, 2026-08-15) — but a sibling's accessLevel set by
+//    hand-editing conversations.yaml has always been honored here too, regardless of how it
+//    got written. ──
+describe('brainpool.turn — accessLevel override (operator 2026-08-14, was /e access, now /agents … access_level)', () => {
   it("accessLevel 'all' overrides dangerous/allowedTools on an ALREADY-LIVE (resumed) thread too — applied fresh every turn", async () => {
     const brains = { resolve: () => ({ name: 'sonnet-high', type: 'ccode', model: 'haiku', effort: 'low', allowed_tools: ['Read'] }) };
     const { brain, pool } = harness([{ text: 'ok', sessionId: 'sid-live' }], {
@@ -672,8 +674,8 @@ describe('brainpool.turn — accessLevel override (operator 2026-08-14, /e acces
   // REPRODUCE-FIRST (phase 2): before this change, the accessLevel override was gated on
   // `!isSibling` and a sibling's OWN access_level was never even read for this purpose — this
   // asserts the NEW, intentionally widened behavior: a sibling GIVEN its own accessLevel (e.g.
-  // by hand-editing conversations.yaml — `/e access` the COMMAND still only ever targets
-  // defaultKey) now gets the SAME live override the persona does.
+  // by hand-editing conversations.yaml, or — since 2026-08-15 — via
+  // `/agents wren access_level all`) now gets the SAME live override the persona does.
   it('PHASE 2: a SIBLING with its OWN accessLevel now ALSO gets the live override — no longer persona-only', async () => {
     const brains = { resolve: (name) => name === 'sonnet-high' ? ({ name: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: ['Read'] }) : null };
     const config = { agents: { wren: { configuration: 'sonnet-high', name: 'wren' } } };
@@ -785,7 +787,7 @@ function harnessWithLog(logs, brains) {
 }
 
 // THE FRESH MOMENT — what happens when a thread is (re-)instanced, i.e. the operator deleted
-// threadId, /e new ran, or the session died. Two things the brainpool owes that moment:
+// threadId, /agents <handle> reset ran, or the session died. Two things the brainpool owes that moment:
 // the retiring thread's transcript is archived under its own id and the new one is stamped
 // (operator 2026-07-25: "there must be a new transcript if thread-id changes"), and the room
 // template's layers are RE-COPIED (operator 2026-07-26: "all skeleton files are copied on

@@ -155,8 +155,10 @@ function personaAgentConfigurationFrom(getConfig) {
 // brains registry, else the shipped 'egpt' type (a bare ccode def if even that is absent).
 // New-config-only (operator 2026-07-02): NO config.default_brain fallback and NO
 // 'default'→'egpt' alias. Exported so every caller that needs the persona's live def — turn()
-// below, and commands.mjs's /e access + /status preview — resolves it the SAME way instead of
-// re-deriving a second one (name-the-existing-thing).
+// below, and commands.mjs's bare `/status <target>` preview (statusTarget) — resolves it the
+// SAME way instead of re-deriving a second one (name-the-existing-thing). /e access is
+// retired (2026-08-15) — /agents' own status/access_level views resolve through
+// resolveBeingDef instead, since they must cover any being, not just the persona.
 export function resolveDefaultBrainDef({ getConfig = () => ({}), brains = null, convDir, brainType = 'ccode' } = {}) {
   const configuration = personaAgentConfigurationFrom(getConfig);
   if (configuration) {
@@ -165,6 +167,73 @@ export function resolveDefaultBrainDef({ getConfig = () => ({}), brains = null, 
     // named but unresolvable → fall through to the shipped 'egpt' type
   }
   return brains?.resolve?.('egpt', { convDir }) ?? { name: 'egpt', type: brainType };
+}
+
+// Shape a resolved registry def into the brainpool's def contract, letting the agent
+// entry override the display name. `claude-code` normalizes to the `ccode` token. Module
+// scope (moved out of createBrainPool alongside resolveBeingDef, 2026-08-15, retiring /e's
+// defaultKey-only command surface for /agents) — only resolveBeingDef calls this; brainType
+// is passed as a param here instead of closed over.
+function shapeDef(name, def, agent = {}, brainType = 'ccode') {
+  const type = String(def?.type ?? '').toLowerCase() === 'claude-code' ? 'ccode' : (def?.type ?? brainType);
+  return {
+    name: agent.name ?? def?.name ?? name,
+    type,
+    model: def?.model ?? null,
+    effort: def?.effort ?? null,
+    allowed_tools: def?.allowed_tools ?? DEFAULT_ALLOWED_TOOLS,
+    allowed_paths: def?.allowed_paths ?? undefined,   // carried so a confined agent's extra roots survive
+    cwd: def?.cwd ?? undefined,
+    system_prompt: def?.system_prompt ?? undefined,
+    // personality (operator 2026-08-14, phase 2 fix): a type file's `personality:` pin, read
+    // by turn()'s `def.personality ?? 'egpt'` — this allowlist previously dropped it because
+    // shapeDef only ever shaped SIBLING defs, which never consulted it (no identity kickoff).
+    // Now that resolveBeingDef shapes the PERSONA's def too, an unshaped personality pin
+    // would silently stop reaching loadFeed — carried through here instead.
+    personality: def?.personality ?? undefined,
+    dangerous: def?.dangerous === true,   // carried so a sibling's unconfined type file survives shaping
+  };
+}
+
+// THE ONE being-def resolver (operator 2026-08-14, phase 2: "remove the concept of
+// siblings" — every being under agents[<being>], defaultKey included, resolves the SAME
+// way; was `siblingDef`, sibling-only, renamed because it no longer is). Its
+// `configuration` (configuration ≠ relay) names an agent-type file resolved through the
+// brains registry. Never frozen — the def LIVES in config, nothing per-conversation to
+// instance. No agent entry / unresolvable configuration → a bare ccode def keyed by the
+// being name (keeps it runnable). NOTE: for defaultKey specifically this bare fallback is
+// narrower than the old persona-only path it replaces — the old resolveDefaultBrainDef
+// fallback additionally tried the shipped 'egpt' brain-type FILE (picking up any local
+// customisation of config/agents/egpt.yaml, e.g. a custom allowed_paths/system_prompt/
+// personality) before giving up; this bare object skips that file entirely. In today's
+// config the two converge in practice (DEFAULT_ALLOWED_TOOLS is byte-for-byte the shipped
+// egpt.yaml list, and DETERMINISTIC_MODEL/EFFORT below already match its model/effort), but
+// it only converges because those constants happen to mirror the shipped file — this is a
+// real, if misconfiguration-only, behaviour difference (only reachable when defaultKey's
+// own agent entry names no resolvable `configuration` at all, which boot does not permit
+// in the normal case).
+//
+// PROMOTED TO MODULE SCOPE (operator 2026-08-15, retiring /e's defaultKey-only command
+// surface for /agents, which must resolve ANY being in ANY conversation, not just the being
+// createBrainPool's own turn() is mid-running for): exported with the same parameter-bag
+// convention resolveDefaultBrainDef already uses just above, so commands.mjs's /agents status
+// view calls this SAME resolver instead of re-deriving the algorithm a second time
+// (name-the-existing-thing). createBrainPool's turn() below now calls this exported version,
+// passing its own closure vars, in place of the private closure this used to be.
+export function resolveBeingDef(being, convDir, { getConfig = () => ({}), brains = null, brainType = 'ccode' } = {}) {
+  const agent = ((getConfig() ?? {}).agents ?? {})[being];
+  if (agent && typeof agent === 'object' && !Array.isArray(agent) && String(agent.configuration ?? '').toLowerCase() !== 'relay') {
+    const def = brains?.resolve?.(agent.configuration, { convDir }) ?? null;
+    if (def) return shapeDef(being, def, agent, brainType);
+    // configuration named but no file → fall through to the bare def (keeps the being runnable)
+  }
+  return {
+    name: (agent && typeof agent === 'object' ? agent.name : null) ?? being,
+    type: brainType,
+    model: null,
+    effort: null,
+    allowed_tools: DEFAULT_ALLOWED_TOOLS,
+  };
 }
 
 export function createBrainPool({
@@ -185,7 +254,7 @@ export function createBrainPool({
   loadAutoLayer = readAutoModeLayer,// () -> the `mode: auto` operator-role instruction layer (appended to an auto conversation's kickoff)
   loadManifest = null,              // () -> e_identity.md fallback (default below)
   afterTurn = null,                 // ({key, sessionId, model, cwd, allowedTools}) — post-turn hook (auto-compaction)
-  loadPermission = loadPermissionLevel,  // (level) -> {dangerous, allowedTools}|null — config/permissions/<level>.md for /e access; injectable (tests), NO caching in the real implementation (see permission-levels.mjs)
+  loadPermission = loadPermissionLevel,  // (level) -> {dangerous, allowedTools}|null — config/permissions/<level>.md for /agents ... access_level; injectable (tests), NO caching in the real implementation (see permission-levels.mjs)
   onLog = () => {},
 } = {}) {
   if (!pool || typeof pool.run !== 'function') throw new Error('createBrainPool: pool (createWarmPool) is required');
@@ -246,67 +315,6 @@ export function createBrainPool({
     };
   }
 
-  // The `agents:` block (operator 2026-07-02): the unified registry. Read lazily so a
-  // config edit takes effect next turn. A LOCAL agent (configuration ≠ 'relay') keyed by
-  // being name supplies that being's CONFIGURATION, resolved through the brains registry
-  // (config/agents layer). The PERSONA agent (handles include e/egpt) supplies E's default.
-  const agents = () => (getConfig() ?? {}).agents ?? {};
-  // Shape a resolved registry def into the brainpool's def contract, letting the agent
-  // entry override the display name. `claude-code` normalizes to the `ccode` token.
-  function shapeDef(name, def, agent = {}) {
-    const type = String(def?.type ?? '').toLowerCase() === 'claude-code' ? 'ccode' : (def?.type ?? brainType);
-    return {
-      name: agent.name ?? def?.name ?? name,
-      type,
-      model: def?.model ?? null,
-      effort: def?.effort ?? null,
-      allowed_tools: def?.allowed_tools ?? DEFAULT_ALLOWED_TOOLS,
-      allowed_paths: def?.allowed_paths ?? undefined,   // carried so a confined agent's extra roots survive
-      cwd: def?.cwd ?? undefined,
-      system_prompt: def?.system_prompt ?? undefined,
-      // personality (operator 2026-08-14, phase 2 fix): a type file's `personality:` pin, read
-      // by turn()'s `def.personality ?? 'egpt'` — this allowlist previously dropped it because
-      // shapeDef only ever shaped SIBLING defs, which never consulted it (no identity kickoff).
-      // Now that resolveBeingDef shapes the PERSONA's def too, an unshaped personality pin
-      // would silently stop reaching loadFeed — carried through here instead.
-      personality: def?.personality ?? undefined,
-      dangerous: def?.dangerous === true,   // carried so a sibling's unconfined type file survives shaping
-    };
-  }
-
-  // THE ONE being-def resolver (operator 2026-08-14, phase 2: "remove the concept of
-  // siblings" — every being under agents[<being>], defaultKey included, resolves the SAME
-  // way; was `siblingDef`, sibling-only, renamed because it no longer is). Its
-  // `configuration` (configuration ≠ relay) names an agent-type file resolved through the
-  // brains registry. Never frozen — the def LIVES in config, nothing per-conversation to
-  // instance. No agent entry / unresolvable configuration → a bare ccode def keyed by the
-  // being name (keeps it runnable). NOTE: for defaultKey specifically this bare fallback is
-  // narrower than the old persona-only path it replaces — the old resolveDefaultBrainDef
-  // fallback additionally tried the shipped 'egpt' brain-type FILE (picking up any local
-  // customisation of config/agents/egpt.yaml, e.g. a custom allowed_paths/system_prompt/
-  // personality) before giving up; this bare object skips that file entirely. In today's
-  // config the two converge in practice (DEFAULT_ALLOWED_TOOLS is byte-for-byte the shipped
-  // egpt.yaml list, and DETERMINISTIC_MODEL/EFFORT below already match its model/effort), but
-  // it only converges because those constants happen to mirror the shipped file — this is a
-  // real, if misconfiguration-only, behaviour difference (only reachable when defaultKey's
-  // own agent entry names no resolvable `configuration` at all, which boot does not permit
-  // in the normal case).
-  function resolveBeingDef(being, convDir) {
-    const agent = agents()[being];
-    if (agent && typeof agent === 'object' && !Array.isArray(agent) && String(agent.configuration ?? '').toLowerCase() !== 'relay') {
-      const def = brains?.resolve?.(agent.configuration, { convDir }) ?? null;
-      if (def) return shapeDef(being, def, agent);
-      // configuration named but no file → fall through to the bare def (keeps the being runnable)
-    }
-    return {
-      name: (agent && typeof agent === 'object' ? agent.name : null) ?? being,
-      type: brainType,
-      model: null,
-      effort: null,
-      allowed_tools: DEFAULT_ALLOWED_TOOLS,
-    };
-  }
-
   return {
     /** @returns {Promise<{ text: string, sessionId: string|null, being: string }>} */
     async turn(being, ev, onPartial = () => {}) {
@@ -333,7 +341,7 @@ export function createBrainPool({
       // dangerous:true skips coercion (see confinementFor's comment above) — the type file's
       // allowed_tools (which may legitimately include bare Bash/Agent) passes through
       // verbatim rather than being capped to DEFAULT_ALLOWED_TOOLS.
-      const rawDef = resolveBeingDef(being, convDir);
+      const rawDef = resolveBeingDef(being, convDir, { getConfig, brains, brainType });
       let def = rawDef.dangerous === true ? rawDef : coerceAllowedTools(rawDef);   // 'all' → explicit list (rejected)
       let runModel, runEffort;
       if (being === defaultKey) {
@@ -368,16 +376,17 @@ export function createBrainPool({
       } else {
         runModel = def.model; runEffort = def.effort;
       }
-      // ACCESS-LEVEL OVERRIDE (operator 2026-08-14, /e access all|regular; phase 2, same day:
-      // no longer persona-only — every being's OWN accessLevel, read per-being above via
+      // ACCESS-LEVEL OVERRIDE (operator 2026-08-14, was /e access all|regular; phase 2, same
+      // day: no longer persona-only — every being's OWN accessLevel, read per-being above via
       // resolveConv/getBeing, is eligible). Runs AFTER the being-def resolution above and
       // BEFORE confinementFor/baseOpts read def.allowed_tools/def.dangerous below, so it wins
       // regardless of which being this turn is for. permission-levels.mjs re-reads the file
       // fresh on every call (no caching): editing config/permissions/<level>.md changes this
-      // turn's grant with no `/e access` re-run needed. The `/e access` COMMAND itself still
-      // only writes defaultKey's own accessLevel (out of scope for phase 2) — but a sibling
-      // given an accessLevel by hand-editing conversations.yaml now gets the same live
-      // override the persona does.
+      // turn's grant with no command re-run needed. /agents <handle>|all access_level
+      // all|regular (retired /e access's replacement, 2026-08-15) can write ANY being's
+      // accessLevel now, not just defaultKey's — closing the asymmetry this comment used to
+      // note; a sibling given an accessLevel by hand-editing conversations.yaml has always
+      // gotten the same live override the persona does.
       if (accessLevel === 'all' || accessLevel === 'regular') {
         const perm = loadPermission(accessLevel);
         if (perm) def = { ...def, dangerous: perm.dangerous, allowed_tools: perm.allowedTools };
