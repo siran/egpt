@@ -44,10 +44,9 @@ import { agentRoutes } from './node-names.mjs';
 import { addressed } from './router.mjs';
 // ALLOWED_USERS GATE (operator 2026-08-15) — the RESPONDER-side half of router.mjs's own
 // two-tier reachability rule (see its ALLOWED_USERS GATE comment in resolve()): getBeing reads
-// the per-conversation override, shortChatId normalizes both sides of the sender-id comparison.
-// Same two imports router.mjs added, for the same reason.
-import { getBeing } from '../conversations-state.mjs';
-import { shortChatId } from '../bridges/chat-id.mjs';
+// the per-conversation override, allowedUsersPermits (shared with router.mjs, operator
+// 2026-08-16) does the sender-id match, including the "*" wildcard.
+import { getBeing, allowedUsersPermits } from '../conversations-state.mjs';
 
 const PLACEHOLDER = '🤔 thinking…';
 const textOf = (v) => (typeof v === 'string' ? v : v?.text ?? '');
@@ -146,15 +145,16 @@ export function createMeshService({
   // EXPLICIT DENIAL, deliberately unlike router.mjs's silent drop: this file's own convention is
   // "NEVER silence" (see forwardCommand's docstring above) — the requester here is a DIFFERENT,
   // already-trusted node peer (it got this far through the mesh), so it gets a reason, the same
-  // way commandReply answers "⚠️ not authorized to run …" instead of going quiet.
+  // way commandReply answers "⚠️ not authorized to run …" instead of going quiet. The sender-id
+  // match itself (including the "*" wildcard) is the shared allowedUsersPermits predicate
+  // (conversations-state.mjs, operator 2026-08-16) — the same one router.mjs's resolve() uses.
   const allowedUsersDenial = async (being, route, surface, chatId) => {
     const state = loadState ? await loadState().catch(() => null) : null;
     const conv = state ? (() => { try { return getBeing(state, surface, chatId, being); } catch { return null; } })() : null;
     const convAllowed = Array.isArray(conv?.allowedUsers) ? conv.allowedUsers : null;
     const globalAllowed = Array.isArray(agents()[being]?.conversation_defaults?.allowed_users) ? agents()[being].conversation_defaults.allowed_users : null;
     const allowedUsers = convAllowed ?? globalAllowed;
-    if (Array.isArray(allowedUsers) && allowedUsers.length
-        && !allowedUsers.map(shortChatId).includes(shortChatId(route?.ev?.senderId))) return `not authorized to reach ${being}.${node}`;
+    if (!allowedUsersPermits(allowedUsers, route?.ev?.senderId)) return `not authorized to reach ${being}.${node}`;
     return null;
   };
   const chatOf = (route) => {

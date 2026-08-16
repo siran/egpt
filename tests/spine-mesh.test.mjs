@@ -878,6 +878,21 @@ describe('mesh service — allowed_users gate (operator 2026-08-15)', () => {
     expect(parseMesh(bridge.streams[0].finals.at(-1))).toMatchObject({ by: 'wren.do', done: true });
   });
 
+  // WILDCARD (operator 2026-08-16): the literal "*" entry is an explicit "reachable by anyone"
+  // escape hatch (the pairing an access_level:'all' being needs) — shares its implementation
+  // (conversations-state.mjs's allowedUsersPermits) with router.mjs's own wildcard test. Without
+  // it, "*" would just be an entry no real sender id ever equals, denying everyone.
+  it('REPRODUCE-FIRST: allowed_users: ["*"] is a wildcard — ANY mesh requester reaches the being', async () => {
+    const wildAgents = { wren: { configuration: 'sonnet-high', name: 'wren', conversation_defaults: { allowed_users: ['*'] } } };
+    const brain = fakeBrain({ reply: 'ok, working' });
+    const { bridge, mesh } = svc({ node: 'do', agents: wildAgents, brain });
+    const req = encodeMesh({ by: 'Anyone', body: '@wren do X', from: 'HFM', from_node: 'kg', to: 'wren.do', post_id: 'p1' });
+    await mesh.handle({ surface: 'whatsapp', chatId: 'RELAY', msgId: 'm1', body: req, senderId: 'totally-unlisted' });
+    await flush();
+    expect(brain.calls).toHaveLength(1);
+    expect(brain.calls[0].being).toBe('wren');
+  });
+
   it('REGRESSION: a being with allowed_users set at NEITHER tier is reachable by any mesh requester', async () => {
     const brain = fakeBrain({ reply: 'ok' });
     const { bridge, mesh } = svc({ node: 'do', agents: { don: { configuration: 'sonnet-high', name: 'don' } }, brain });

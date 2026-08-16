@@ -98,7 +98,10 @@ describe('boot()', () => {
   it("assembles the v1 pipe and round-trips an 'on'-mode message bridge→brain→bridge", async () => {
     const { start, spy } = fakeStart();
     let state = seedMode(emptyState(), 'on');
-    const config = { whatsapp: {}, node_name: 'kg', agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true } } };
+    // access_level: 'regular' (operator 2026-08-16 structural gate) — brainpool.turn() now
+    // refuses to run any being with no accessLevel at either tier; this test drives a real
+    // reply turn through the real spine, so it needs one, same as a real config.yaml would.
+    const config = { whatsapp: {}, node_name: 'kg', agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true, conversation_defaults: { access_level: 'regular' } } } };
 
     const io = memIo();
     const app = await boot({

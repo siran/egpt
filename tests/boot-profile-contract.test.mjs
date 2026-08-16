@@ -116,7 +116,10 @@ beforeAll(async () => {
     // auto_e_default 'mute' → an UNKNOWN chat (the empty-registry regression) stays
     // silent; our KNOWN chat's own mode 'on' is the only thing that can produce a reply.
     whatsapp: { chat_id: 'self@fixture', allowed_users: ['u-1'], auto_e_chats: [], auto_e_default: 'mute' },
-    agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true } },
+    // access_level: 'regular' (operator 2026-08-16 structural gate) — brainpool.turn() now
+    // refuses to run any being with no accessLevel at either tier, so this real boot fixture
+    // needs one explicitly, same as a real config.yaml would.
+    agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true, conversation_defaults: { access_level: 'regular' } } },
   };
   await fs.writeFile(P.config, YAML.stringify(config), 'utf8');
 

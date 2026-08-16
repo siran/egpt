@@ -411,6 +411,26 @@ describe('router.resolve — allowed_users gate (operator 2026-08-15)', () => {
     expect(r.mesh).toBeUndefined();
   });
 
+  // WILDCARD (operator 2026-08-16): the literal "*" entry is an explicit "reachable by anyone"
+  // escape hatch — the pairing an access_level:'all' being needs (see brainpool.mjs's
+  // ACCESS-LEVEL/ALLOWED-USERS gate). Without this, "*" would just be an entry no real sender id
+  // ever equals, denying EVERYONE — the opposite of the intent (the bug this fix closes).
+  it('REPRODUCE-FIRST: allowed_users: ["*"] is a wildcard — ANY sender reaches the being', async () => {
+    const ag = { egpt: agents.egpt, wren: { configuration: 'egpt', handles: ['wren'], conversation_defaults: { allowed_users: ['*'] } } };
+    const arouter = createRouter({ getAgents: () => ag, defaultBeing: 'egpt' });
+    expect((await arouter.resolve({ ...ev('@wren hi'), senderId: 'anyone-at-all' })).being).toBe('wren');
+    expect((await arouter.resolve({ ...ev('@wren hi'), senderId: null })).being).toBe('wren');
+  });
+
+  // REGRESSION: an ordinary, non-wildcard list still gates exactly as before — only 'boss'
+  // reaches wren, everyone else falls through to the persona (same shape as the wildcard test
+  // above, proving the "*" branch didn't loosen the plain-list case).
+  it('REGRESSION: allowed_users: ["boss"] (no wildcard) still gates on the exact entry — others are denied', async () => {
+    const arouter = createRouter({ getAgents: () => agents, defaultBeing: 'egpt' });
+    expect((await arouter.resolve({ ...ev('@wren hi'), senderId: 'boss' })).being).toBe('wren');
+    expect((await arouter.resolve({ ...ev('@wren hi'), senderId: 'someone-else' })).being).toBe('egpt');
+  });
+
   it('shortChatId normalizes both sides: a legacy full-form config entry matches a short delivered sender id', async () => {
     const ag = { egpt: agents.egpt, wren: { configuration: 'egpt', handles: ['wren'], conversation_defaults: { allowed_users: ['!abc:beeper.local'] } } };
     const arouter = createRouter({ getAgents: () => ag, defaultBeing: 'egpt' });

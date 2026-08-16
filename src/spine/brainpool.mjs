@@ -319,14 +319,41 @@ export function createBrainPool({
       // (not a flat sibling of handles/configuration) is the allowlist of which agent fields
       // get this two-tier treatment — see router.mjs's allowed_users read for the twin of this.
       accessLevel: b?.accessLevel ?? getConfig()?.agents?.[being]?.conversation_defaults?.access_level ?? null,
+      // ALLOWED_USERS, same two-tier resolution as accessLevel just above (operator 2026-08-16) —
+      // needed here (not just at router.mjs/mesh.mjs's reachability gates) so turn() can refuse to
+      // run an accessLevel:'all' being that has no allowed_users set at either tier: unconfined
+      // capability + unrestricted reachability is an unsafe combination the operator wants caught
+      // structurally (see the STRUCTURAL SAFETY GATES block below).
+      allowedUsers: b?.allowedUsers ?? getConfig()?.agents?.[being]?.conversation_defaults?.allowed_users ?? null,
     };
   }
 
   return {
     /** @returns {Promise<{ text: string, sessionId: string|null, being: string }>} */
     async turn(being, ev, onPartial = () => {}) {
-      const { slug, sessionId, mode, accessLevel } = await resolveConv(ev, being);
+      const { slug, sessionId, mode, accessLevel, allowedUsers } = await resolveConv(ev, being);
       if (!slug) throw new Error(`brainpool: no slug for ${ev.surface}/${ev.chatId}`);
+
+      // STRUCTURAL SAFETY GATES (operator 2026-08-16). Both refuse the ENTIRE turn — no
+      // engine/LLM invocation, no tool grant of any kind, not even the type file's own baseline
+      // allowed_tools — so they run before any being-def resolution below.
+      //
+      // 1) accessLevel must be STRUCTURALLY defined ('all' or 'regular', per-conversation or
+      //    conversation_defaults) or the being does not run at all. Previously, an unset
+      //    accessLevel silently skipped the ACCESS-LEVEL OVERRIDE block further down and fell
+      //    through to whatever the type file's own allowed_tools/dangerous declared — an
+      //    implicit, not structural, safety boundary.
+      if (accessLevel !== 'all' && accessLevel !== 'regular') {
+        throw new Error(`brainpool: ${being} has no access_level set (neither per-conversation nor conversation_defaults) — refusing to run`);
+      }
+      // 2) accessLevel:'all' (unconfined) must never be paired with an empty/unset allowed_users
+      //    (unrestricted reachability) — that combination is caught here, structurally, rather
+      //    than left to "unrestricted by default". The escape hatch is the SAME literal "*"
+      //    wildcard router.mjs/mesh.mjs's allowedUsersPermits recognizes: an explicit ['*'] is a
+      //    non-empty array, so it already satisfies this check.
+      if (accessLevel === 'all' && !(Array.isArray(allowedUsers) && allowedUsers.length)) {
+        throw new Error(`brainpool: ${being} has access_level 'all' but no allowed_users set — refusing to run (set allowed_users, or ['*'] to explicitly allow anyone)`);
+      }
 
       const convDir = slugDir(ev.surface, slug);
       // 'mode: auto' — every being's own conversations.yaml mode is eligible now (phase 2,

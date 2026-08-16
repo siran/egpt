@@ -28,6 +28,7 @@ import { Room } from './room-core.mjs';
 import { EGPT_HOME } from './egpt-home.mjs';
 import { makeSerialByKey } from './serial-by-key.mjs';
 import { preferNewer } from './prefer-newer.mjs';
+import { shortChatId } from './bridges/chat-id.mjs';
 
 // This module lives in src/, but the SHIPPED asset dirs (config/skeletons,
 // config/personalities) sit at the PACKAGE ROOT — hence the '..' below. Holds for
@@ -942,6 +943,21 @@ export function getBeing(state, surface, jid, being) {
     // null = this conversation states no override, fall to the global tier.
     allowedUsers:       b?.allowed_users        ?? null,
   };
+}
+
+// SENDER MATCH (operator 2026-08-16): the shared allowed_users sender-match predicate
+// router.mjs's resolve() and mesh.mjs's allowedUsersDenial() both need — collapsed into ONE
+// implementation here since this module already owns and documents the two-tier allowedUsers
+// shape (getBeing above). UNSET/EMPTY list = unrestricted (today's convention, unchanged). The
+// literal "*" entry is an explicit wildcard — "reachable by anyone" — the escape hatch an
+// access_level:'all' being needs (see brainpool.mjs's ACCESS-LEVEL/ALLOWED-USERS gate): without
+// it, "*" would just be an entry no real sender id ever equals, denying everyone. shortChatId
+// normalizes both sides (src/bridges/chat-id.mjs) so a short OR legacy full-form config entry
+// matches either way.
+export function allowedUsersPermits(allowedUsers, senderId) {
+  if (!Array.isArray(allowedUsers) || !allowedUsers.length) return true;
+  if (allowedUsers.includes('*')) return true;
+  return allowedUsers.map(shortChatId).includes(shortChatId(senderId));
 }
 
 // Legacy per-being FIELDS (pre-phase-1, retired 2026-08-14): the OLD `entry[<being>]` block's

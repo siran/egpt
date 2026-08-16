@@ -28,8 +28,7 @@
 // the @token match below stops at the dot and finds the agent.
 import { agentPaths } from '../mesh/relay.mjs';
 import { mentionHits } from '../auto-mode.mjs';
-import { getBeing } from '../conversations-state.mjs';
-import { shortChatId } from '../bridges/chat-id.mjs';
+import { getBeing, allowedUsersPermits } from '../conversations-state.mjs';
 
 // QUICK REPLY (operator 2026-07-25: "a lo mejor empezar la respuesta con 'r', tipo 'r ok pero que
 // no sea tan común' … si el ultimo mensaje fue de don o de E, el bridge routes and dispatches" —
@@ -260,21 +259,22 @@ export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', getQu
           // structural field like handles/configuration/relay_channel, sitting as a direct
           // sibling, is never eligible — no code-side allowlist to keep in sync). UNSET at both
           // tiers = no restriction, today's default (reachable by anyone who could normally
-          // address this being). When the resolved list is non-empty, gate on the SENDER's id:
-          // shortChatId on both sides (src/bridges/chat-id.mjs) — the SAME normalizer boot.mjs's
-          // OWN (separate, network-level) allowed_users check uses — so a short OR legacy
-          // full-form entry matches either way. Deliberately INDEPENDENT of ev.authorized/
-          // ev.isSender (the existing NETWORK-level allowed_users/isSender concept) — a being's
-          // own allowed_users is a narrower, different check and never reuses that field. A hit
-          // failing it is dropped SILENTLY, same convention as the surface-pin mismatch above: it
-          // falls through exactly as if the @token had never matched (to another target, the
-          // persona, or "nobody addressed").
+          // address this being). When the resolved list is non-empty, gate on the SENDER's id via
+          // the shared allowedUsersPermits predicate (conversations-state.mjs, alongside getBeing
+          // — the SAME two-tier shape it documents) — a literal "*" entry permits any sender
+          // (operator 2026-08-16), otherwise shortChatId normalizes both sides (src/bridges/
+          // chat-id.mjs) — the SAME normalizer boot.mjs's OWN (separate, network-level)
+          // allowed_users check uses — so a short OR legacy full-form entry matches either way.
+          // Deliberately INDEPENDENT of ev.authorized/ev.isSender (the existing NETWORK-level
+          // allowed_users/isSender concept) — a being's own allowed_users is a narrower, different
+          // check and never reuses that field. A hit failing it is dropped SILENTLY, same
+          // convention as the surface-pin mismatch above: it falls through exactly as if the
+          // @token had never matched (to another target, the persona, or "nobody addressed").
           const conv = state ? (() => { try { return getBeing(state, ev.surface, ev.chatId, hit.name); } catch { return null; } })() : null;
           const convAllowed = Array.isArray(conv?.allowedUsers) ? conv.allowedUsers : null;
           const globalAllowed = Array.isArray(hit.agent.conversation_defaults?.allowed_users) ? hit.agent.conversation_defaults.allowed_users : null;
           const allowedUsers = convAllowed ?? globalAllowed;
-          if (Array.isArray(allowedUsers) && allowedUsers.length
-              && !allowedUsers.map(shortChatId).includes(shortChatId(ev?.senderId))) continue;
+          if (!allowedUsersPermits(allowedUsers, ev?.senderId)) continue;
           if (hit.body != null) body = hit.body;
           targets.push(targetFor(hit, ev));
         }
