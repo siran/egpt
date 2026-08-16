@@ -352,9 +352,33 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
     readers (`commands.mjs:1053`, `:1304`), plus the docs that name it.
   - **Provenance per chunk**: every resolved value carries `source:`, the relative path of
     the file it came from. Already true for heartbeat rows (`heartbeat-loader.mjs:466`).
-  - Hot reload by DELETION, exactly as heartbeats already does (absence = stale).
+  - Hot reload by DELETION, exactly as heartbeats already does (absence = stale). SUPERSEDED
+    2026-08-15: hot reload is now triggered on message arrival (`spine.mjs` `handleFast`
+    awaits an injected `refreshConfig` before dispatch — `heartbeat-loader.mjs`'s `reload()`),
+    not by a deleted file. The three `*.readonly.yaml` aggregates are now pure diagnostic
+    output with zero control role — deleting/editing one does nothing special any more.
   - OPEN: node says `transcription_service:`, entity says `transcription:`. One namespace
     means one name, but renaming touches live profiles — needs a ruling.
+
+- **PARKED (operator 2026-08-16): `conversations.modules.<name>` as the home for NEW
+  toggleable per-conversation features.** `access_level`/`allowed_users` (2026-08-15) already
+  established the pattern — global default nested under `config.yaml`'s
+  `agents.<handle>.conversation_defaults`, per-conversation override flat in
+  `conversations.yaml`'s `agents.<being>` (replace, never merge). Operator: extend that same
+  shape to a proper `conversations.modules.<name>.{...}` namespace for features that aren't
+  per-being at all — starting with `modules.renames.{enabled: on|off, track_max_count:
+  -1|0|N}` (generalizes the existing `renames.log` slug-rename tracking into a real
+  title/metadata-diff history, bounded or infinite) and `modules.stats.{...}` (the
+  fetchable-from-surface properties `recordMemberStat` already collects,
+  `conversations-state.mjs:551-598`).
+  - **Do NOT retroactively fold the EXISTING top-level blocks** (`heartbeats`, `warm`,
+    `compaction`, `transcription_service`, `radio_service`, `voice_service`) into
+    `modules.*` in the same pass — they don't share one merge semantics. `heartbeats` is a
+    UNION across rungs on purpose (see the CONFIG RESOLUTION entry above — "a generic
+    'entity beats node' resolver silently breaks heartbeats," an already-learned lesson,
+    not a hypothetical); `modules.*`'s established pattern is REPLACE, not merge. Migrating
+    the existing blocks is real, separate, deliberate work for later — decide it on its own,
+    not by momentum.
 
 - **WHICH NODES ARE REAL (operator 2026-07-26).** *"'mo' as a node doesn't exist… it is a way of
   referring to a hypothetical 3rd node. of course 'do' exists! that is where don lives, on
