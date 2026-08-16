@@ -1,8 +1,8 @@
 // tools/browser-tools.mjs — CDP control library for operator brains
 //
 // Import this from an operator script to drive the live Chrome session
-// that egpt manages. Chrome must be running with --remote-debugging-port=9222
-// (or $EGPT_CDP_HOST must be set).
+// that egpt manages. Chrome must be running with --remote-debugging-port=9221
+// (cdp.mjs's real default — or $EGPT_CDP_HOST must be set).
 //
 // Pause / resume mechanism:
 //   await browser.waitForHuman('message')
