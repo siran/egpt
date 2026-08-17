@@ -667,6 +667,68 @@ describe('/activate <id> — reopen a closed tab (in the conversation room)', ()
   });
 });
 
+// convRoomOf's joined-room default (operator 2026-08-17): "this conversation" now means the
+// room currently /room join'd on this surface, when one is joined — the SAME default
+// redirectShellToRoom already applies to prose and /agents already applied to itself
+// (2026-08-16), generalized to the ONE shared resolver every room-scoped command (/members,
+// /activate, /radio join|leave|say, the r-quickreply) funnels through. No room joined →
+// unchanged native-chat behavior.
+describe("/members and /activate default to the CURRENTLY JOINED room (convRoomOf generalization)", () => {
+  it('/room join <slug> then a bare /members add tab lands in the JOINED room, not the caller\'s own native chat', async () => {
+    const cdp = { listTabs: async () => threeTabs };
+    const { cmds, sent, resolveConvRoom } = harness({ cdp });
+    await cmds.run({ ...self, body: '/room join devwork' });
+    await cmds.run({ ...self, body: '/members add tab 1' });
+    expect(sent.at(-1).text).toMatch(/added 'chatgpt'/);
+
+    const joined = await resolveConvRoom('room', 'devwork');
+    expect((await joined.members()).find((m) => m.id === 'chatgpt')).toBeTruthy();
+
+    const native = await resolveConvRoom(self.surface, self.chatId);
+    expect((await native.members()).find((m) => m.id === 'chatgpt')).toBeFalsy();
+  });
+
+  it("regression: no room joined — /members still targets the caller's own native chat (unchanged)", async () => {
+    const cdp = { listTabs: async () => threeTabs };
+    const { cmds, sent, resolveConvRoom } = harness({ cdp });
+    await cmds.run({ ...self, body: '/members add tab 1' });
+    expect(sent.at(-1).text).toMatch(/added 'chatgpt'/);
+    const native = await resolveConvRoom(self.surface, self.chatId);
+    expect((await native.members()).find((m) => m.id === 'chatgpt')).toBeTruthy();
+  });
+
+  it('/room join <slug> then /activate reopens the JOINED room\'s member, not one in the native chat', async () => {
+    const opened = [];
+    const cdp = {
+      listTabs: async () => threeTabs,   // add-time: GPT1 present
+      openTab: async (url) => { opened.push(url); return 'GPT-NEW'; },
+    };
+    const { cmds, sent, resolveConvRoom } = harness({ cdp });
+    await cmds.run({ ...self, body: '/room join devwork' });
+    await cmds.run({ ...self, body: '/members add tab 1' });   // added into 'devwork', not !conv-1
+    cdp.listTabs = async () => ([{ id: 'OTHER', title: 'x', url: 'https://x' }]);   // GPT1 closed
+    await cmds.run({ ...self, body: '/activate chatgpt' });
+    expect(opened).toEqual(['https://chatgpt.com/c/abc']);
+    expect(sent.at(-1).text).toMatch(/active/i);
+    const joined = await resolveConvRoom('room', 'devwork');
+    expect((await joined.members()).find((m) => m.id === 'chatgpt').targetId).toBe('GPT-NEW');
+  });
+
+  it("regression: no room joined — /activate still targets the caller's own native chat (unchanged)", async () => {
+    const opened = [];
+    const cdp = {
+      listTabs: async () => threeTabs,
+      openTab: async (url) => { opened.push(url); return 'GPT-NEW'; },
+    };
+    const { cmds, sent } = harness({ cdp });
+    await cmds.run({ ...self, body: '/members add tab 1' });
+    cdp.listTabs = async () => ([{ id: 'OTHER', title: 'x', url: 'https://x' }]);
+    await cmds.run({ ...self, body: '/activate chatgpt' });
+    expect(opened).toEqual(['https://chatgpt.com/c/abc']);
+    expect(sent.at(-1).text).toMatch(/active/i);
+  });
+});
+
 // An operator-named room stays a SEPARATELY ADDRESSED construct: /room <slug> members
 // inspects THAT room's own roster, decoupled from whatever conversation you type it in.
 describe('/room <slug> members — named-room inspection (kept, separate from /members)', () => {

@@ -379,14 +379,30 @@ export function createCommands({
   // written ONLY by roomJoin/roomLeave below.
   const currentRoomOf = (surface) => currentRoom.get(surface) ?? null;
 
-  // A room-scoped command (/members, /activate) resolves its Room here — the ONE place that
-  // reads the mesh mark (bug #23 half A, 2026-07-27, mesh.mjs commandReply). A mesh-delivered
-  // command's ev.chatId is a private per-command id (`<chat>#cmd<n>`) that is DIFFERENT on every
-  // call — resolving through it mints a fresh contact-<ts> room each time, so an add and a list
-  // land in two different rooms and disagree. ev.mesh routes it to THIS node's own lobby instead
-  // (surface 'shell', jid 'main' — fixedSlugFor's fixed mapping), through the SAME resolveConvRoom
-  // seam every other room resolution uses. An ordinary (non-mesh) command is unchanged.
-  const convRoomOf = (ev) => resolveConvRoom(...(ev?.mesh ? ['shell', 'main'] : [surfaceOf(ev), ev.chatId]));
+  // A room-scoped command (/members, /activate, /radio join|leave|say, the r-quickreply) resolves
+  // its Room here — the ONE place that reads the mesh mark (bug #23 half A, 2026-07-27,
+  // mesh.mjs commandReply). A mesh-delivered command's ev.chatId is a private per-command id
+  // (`<chat>#cmd<n>`) that is DIFFERENT on every call — resolving through it mints a fresh
+  // contact-<ts> room each time, so an add and a list land in two different rooms and disagree.
+  // ev.mesh routes it to THIS node's own lobby instead (surface 'shell', jid 'main' —
+  // fixedSlugFor's fixed mapping), through the SAME resolveConvRoom seam every other room
+  // resolution uses. Mesh is unconditional and unaffected by anything below.
+  //
+  // The JOINED-ROOM default (operator 2026-08-17, generalizing the 2026-08-16 /agents-only fix):
+  // "this conversation" means the room currently /room join'd on this surface, when one is
+  // joined — exactly what redirectShellToRoom (boot.mjs) does for PROSE fan-out and what
+  // /agents' own bare-target resolution already did for itself. currentRoomOf's stored value is
+  // always a room SLUG (roomJoin: `currentRoom.set(surfaceOf(ev), slug)`, the same slug
+  // /room create/join addresses on surface 'room' — see redirectShellToRoom's `network: 'room',
+  // chatId: room`), so the fallback resolves it there, never through the caller's own surface.
+  // No room joined → currentRoomOf returns null → falls through to today's behavior
+  // (surfaceOf(ev), ev.chatId) byte-for-byte, unchanged. This is the ONE choke point every
+  // room-scoped command funnels through, so fixing it here fixes all of them at once.
+  const convRoomOf = (ev) => {
+    if (ev?.mesh) return resolveConvRoom('shell', 'main');
+    const joined = currentRoomOf(surfaceOf(ev));
+    return resolveConvRoom(joined ? 'room' : surfaceOf(ev), joined ?? ev.chatId);
+  };
 
   // The web-brain adapter list, loaded once (dynamic import of config/brains/*-cdp.mjs)
   // and memoized. adapterFor() resolves a tab URL → its adapter, or null (→ can't add).
@@ -1335,7 +1351,7 @@ export function createCommands({
   async function roomJoin(ev, slug) {
     currentRoom.set(surfaceOf(ev), slug);
     onRoomChange(surfaceOf(ev), slug);
-    await send?.(ev.chatId, `joined '${slug}' — now current (prose and /agents default here; other commands still use your own room).`);
+    await send?.(ev.chatId, `joined '${slug}' — now current.`);
   }
 
   // /room <slug> leave — clear the current room for this surface iff it IS <slug>.
