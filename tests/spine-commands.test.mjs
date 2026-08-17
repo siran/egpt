@@ -736,6 +736,40 @@ describe('/agents <handle>|all access_level all|regular — points access_level 
   });
 });
 
+// /agents bare-target default honoring a joined /room (operator 2026-08-16 fix): /room join
+// already made the joined room the natural default target for roomLeave's own bare form, but
+// /agents's own bare-target resolution never read currentRoom at all — an operator who joined
+// a room and then ran a bare /agents (no explicit `=<slug>`) silently kept writing to their
+// own native chat instead of the room. The fix reuses the SAME resolveTarget the explicit
+// `=<slug>` branch already used (see the resolution block at the top of agentsCmd).
+describe('/agents bare-target default honors a joined /room (operator 2026-08-16 fix)', () => {
+  it("/room join <slug> then a BARE /agents ... access_level writes to the JOINED ROOM, not the caller's own chat", async () => {
+    const state = ensureContact(emptyState(), 'room', 'acim', {}).state;
+    const { cmds, getState } = harness({ state });
+    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/room join acim' });
+    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/agents e access_level all' });
+    expect(getBeing(getState(), 'room', 'acim', 'e').accessLevel).toBe('all');
+    expect(getBeing(getState(), 'whatsapp', '!self', 'e')).toBe(null);
+  });
+
+  it("regression: no room joined — bare /agents still targets the caller's own native chat (unchanged)", async () => {
+    const state = ensureContact(emptyState(), 'whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' }).state;
+    const { cmds, getState } = harness({ state });
+    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents e access_level all' });
+    expect(getBeing(getState(), 'whatsapp', '1234@s.whatsapp.net', 'e').accessLevel).toBe('all');
+  });
+
+  it('regression: a room IS joined, but an explicit /agents=<slug> wins — the joined-room default does not leak into the explicit branch', async () => {
+    let state = ensureContact(emptyState(), 'room', 'acim', {}).state;
+    state = ensureContact(state, 'whatsapp', '!other:beeper.local', { pushedName: 'Other', slugHint: 'other' }).state;
+    const { cmds, getState } = harness({ state });
+    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/room join acim' });
+    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/agents=other e access_level all' });
+    expect(getBeing(getState(), 'whatsapp', '!other:beeper.local', 'e').accessLevel).toBe('all');
+    expect(getBeing(getState(), 'room', 'acim', 'e').accessLevel).toBeNull();
+  });
+});
+
 // resolveTarget cross-surface fallback (operator 2026-07-05 live bug): from the whatsapp
 // Self DM, "/agents e auto on miss" reported "no chat matches" even though a telegram chat
 // "Miss Xinyi" was registered — resolveTarget only ever searched the command's own

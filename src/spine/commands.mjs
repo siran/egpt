@@ -977,11 +977,25 @@ export function createCommands({
     // NODE_ADDRESSABLE): bare = the CURRENT conversation, given = resolveTarget, byte-for-byte
     // the same fuzzy/jid resolver + error/ambiguity shapes /e auto <mode> <target> and /e
     // reset <target> already used.
+    //
+    // Bug fix (operator 2026-08-16): a bare invocation used to mean "this chat" even when the
+    // operator had /room join'd a room — silently writing to the shell's own lobby instead of
+    // the joined room. roomLeave already treats currentRoom as the natural bare-invocation
+    // default; /agents now follows the same precedent, resolving the joined room through the
+    // SAME resolveTarget the explicit `=<slug>` branch uses above, so an explicit slug still
+    // wins outright and only the no-slug case picks up the room default.
     let surface = ev.surface, jid = ev.chatId, where = 'here';
     if (slugArg) {
       const r = resolveTarget(state, slugArg, ev.surface);
       if (r.error) { await send?.(ev.chatId, `/agents: ${r.error}`); return; }
       surface = r.surface; jid = r.jid; where = `for ${r.name}`;
+    } else {
+      const room = currentRoomOf(ev.surface);
+      if (room) {
+        const r = resolveTarget(state, room, ev.surface);
+        if (r.error) { await send?.(ev.chatId, `/agents: ${r.error}`); return; }
+        surface = r.surface; jid = r.jid; where = `for ${r.name}`;
+      }
     }
 
     // `all` = every being residentsOf() finds on that conversation's entry — the exact
@@ -1292,7 +1306,7 @@ export function createCommands({
   // added (setMember mkdir's it) or via /room create.
   async function roomJoin(ev, slug) {
     currentRoom.set(surfaceOf(ev), slug);
-    await send?.(ev.chatId, `joined '${slug}' — now current.`);
+    await send?.(ev.chatId, `joined '${slug}' — now current (prose and /agents default here; other commands still use your own room).`);
   }
 
   // /room <slug> leave — clear the current room for this surface iff it IS <slug>.

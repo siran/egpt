@@ -114,7 +114,7 @@ describe('the live gap, reproduced end to end: /room join acim → currentRoomOf
       send: async (chatId, text) => sent.push({ chatId, text }),
     });
     await commands.run({ chatId: 'main', surface: 'shell', body: '/room join acim', authorized: true });
-    expect(sent[0].text).toBe("joined 'acim' — now current.");
+    expect(sent[0].text).toBe("joined 'acim' — now current (prose and /agents default here; other commands still use your own room).");
     expect(commands.currentRoomOf('shell')).toBe('acim');
 
     const identity = createIdentity();
