@@ -588,10 +588,13 @@ describe('brainpool.turn — dangerous:true skips coercion + confinement (operat
     expect(opts.confineToDirs).toBeUndefined();
     expect(opts.addDirs).toBeUndefined();
     expect(opts.readOnlyDirs).toBeUndefined();
-    // end-to-end through the real arg builder: no sandbox flags, a plain --allowedTools with Bash present
+    expect(opts.dangerous).toBe(true);   // operator 2026-08-17: the explicit field buildClaudeArgs acts on
+    // end-to-end through the real arg builder: no sandbox flags, the real bypass flags (2026-08-17),
+    // a plain --allowedTools with Bash present
     const args = buildClaudeArgs(opts);
     expect(argVals(args, '--setting-sources')).toEqual([]);
-    expect(argVals(args, '--permission-mode')).toEqual([]);
+    expect(args).toContain('--dangerously-skip-permissions');
+    expect(argVals(args, '--permission-mode')).toEqual(['bypassPermissions']);
     expect(argVals(args, '--add-dir')).toEqual([]);
     expect(argVals(args, '--allowedTools')[0]).toContain('Bash');
   });
@@ -653,6 +656,7 @@ describe('brainpool.turn — accessLevel override (operator 2026-08-14, was /e a
     const opts = pool.calls[0].brainOptions;
     expect(opts.allowedTools).toEqual(['Read', 'Write', 'Bash', 'Agent']);   // the permissions file's grant, not the def's own ['Read']
     expect(opts.confineToDirs).toBeUndefined();                             // dangerous:true → unconfined
+    expect(opts.dangerous).toBe(true);                                      // the explicit field buildClaudeArgs acts on
     expect(opts.sessionId).toBe('sid-live');                                // genuinely resumed, not a fresh turn
   });
 
@@ -666,6 +670,7 @@ describe('brainpool.turn — accessLevel override (operator 2026-08-14, was /e a
     const opts = pool.calls[0].brainOptions;
     expect(opts.allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);   // overrides the instanced dangerous:true def entirely
     expect(opts.confineToDirs).toEqual([opts.cwd]);             // confined, not the def's own unconfined tier
+    expect(opts.dangerous).toBe(false);                         // the override's dangerous:false wins, not the def's own true
   });
 
   it('editing the permissions-file RESULT between two turns of the SAME conversation changes the SECOND turn — no /e access re-run, proves live re-read (no caching)', async () => {
@@ -750,12 +755,16 @@ describe('brainpool.turn — accessLevel override (operator 2026-08-14, was /e a
     const optsAll = all.pool.calls[0].brainOptions;
     expect(optsAll.allowedTools).toEqual(expect.arrayContaining(['Bash', 'Agent']));
     expect(optsAll.confineToDirs).toBeUndefined();
+    expect(optsAll.dangerous).toBe(true);                       // all.md's dangerous: true reaches brainOptions verbatim
+    expect(buildClaudeArgs(optsAll)).toContain('--dangerously-skip-permissions');
 
     const regular = harness([{ text: 'ok', sessionId: 's' }], { brains, seedAgents: { e: { access_level: 'regular' } }, loadPermission: loadPermissionLevel });
     await regular.brain.turn('e', ev);
     const optsRegular = regular.pool.calls[0].brainOptions;
     expect(optsRegular.allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);
     expect(optsRegular.confineToDirs).toEqual([optsRegular.cwd]);
+    expect(optsRegular.dangerous).toBe(false);                  // regular.md's dangerous: false
+    expect(buildClaudeArgs(optsRegular)).not.toContain('--dangerously-skip-permissions');
   });
 });
 
@@ -795,6 +804,7 @@ describe('brainpool.turn — STRUCTURAL SAFETY GATES (operator 2026-08-16)', () 
     await brain.turn('e', ev);
     expect(pool.calls).toHaveLength(1);
     expect(pool.calls[0].brainOptions.allowedTools).toEqual(['Bash']);
+    expect(pool.calls[0].brainOptions.dangerous).toBe(true);
   });
 
   it("accessLevel 'all' with allowed_users: ['123'] (an ordinary non-empty list) → proceeds normally", async () => {
@@ -806,6 +816,7 @@ describe('brainpool.turn — STRUCTURAL SAFETY GATES (operator 2026-08-16)', () 
     await brain.turn('e', ev);
     expect(pool.calls).toHaveLength(1);
     expect(pool.calls[0].brainOptions.allowedTools).toEqual(['Bash']);
+    expect(pool.calls[0].brainOptions.dangerous).toBe(true);
   });
 
   it("accessLevel 'regular' (no allowed_users involved) → proceeds normally, unaffected by rule 2", async () => {
@@ -817,6 +828,7 @@ describe('brainpool.turn — STRUCTURAL SAFETY GATES (operator 2026-08-16)', () 
     await brain.turn('e', ev);
     expect(pool.calls).toHaveLength(1);
     expect(pool.calls[0].brainOptions.allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);
+    expect(pool.calls[0].brainOptions.dangerous).toBe(false);
   });
 });
 

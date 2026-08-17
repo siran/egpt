@@ -17,6 +17,24 @@
 //                                     list path — NO bypass tier, no bare Bash/Agent.
 //   allowedTools list               → --allowedTools "<list>" (confined path when
 //                                     confineToDirs is set)
+//   dangerous: true                 → --dangerously-skip-permissions +
+//                                     --permission-mode bypassPermissions, IN ADDITION
+//                                     to the --allowedTools push above (operator
+//                                     2026-08-17: "make access_level: all finally mean
+//                                     what it says"). Mirrors the flag pair
+//                                     src/tools/butler.mjs already uses for its own
+//                                     full-access mode. Safe because the ONLY caller,
+//                                     brainpool.mjs's turn(), sets `dangerous` from a
+//                                     def that is either a trusted base-layer type-file
+//                                     grant (conv-local layers can never set/clear it —
+//                                     see brains.mjs resolve()) or the access-level
+//                                     override (config/permissions/all.md), which is
+//                                     itself only reachable once a turn has already
+//                                     passed brainpool's STRUCTURAL SAFETY GATES
+//                                     (access_level structurally set + allowed_users
+//                                     non-empty + sender matched upstream in
+//                                     router.mjs/mesh.mjs). `dangerous` absent/false is
+//                                     the ordinary path — no bypass, unchanged.
 //   readOnlyDirs (write-deny)       → NATIVE permission deny rules via --settings:
 //                                     permissions.deny ["Edit(<dir>/**)","Write(...)",
 //                                     "MultiEdit(...)","NotebookEdit(...)"] — Claude's
@@ -72,15 +90,25 @@ export function buildClaudeArgs(options = {}) {
   const confineRoots = _cleanList(options.confineToDirs);
   const confined = confineRoots.length > 0;
 
+  // dangerous:true (see the header mapping above) — the actual bypass, IN ADDITION to
+  // whatever --allowedTools push happens below. Only ever set true by brainpool.mjs's
+  // turn(), after its own structural gates have already run — see the header comment.
+  if (options.dangerous === true) {
+    args.push('--dangerously-skip-permissions');
+    args.push('--permission-mode', 'bypassPermissions');
+  }
+
   // ── tool permission + confinement (mirror buildSdkOptions) ──
   if (options.allowedTools) {
     // 'all'/'*' is REJECTED (operator 2026-07-03: "better to reject 'all'"). It
-    // never buys full/bypass access — it is coerced to the explicit default tool
-    // list and routed through the normal path. egpt never WRITES 'all'; a
-    // hand-written type file that does gets the safe list, nothing more. There is
-    // no --dangerously-skip-permissions / bypassPermissions path anymore, and bare
-    // Bash/Agent are never implicit (they are simply not in the list). A scoped
-    // Bash(<bin>:*) is grantable only by listing it explicitly.
+    // never buys full/bypass access on its OWN — it is coerced to the explicit
+    // default tool list and routed through the normal path. egpt never WRITES
+    // 'all'; a hand-written type file that does gets the safe list, nothing more.
+    // Bare Bash/Agent are never implicit (they are simply not in the list). A
+    // scoped Bash(<bin>:*) is grantable only by listing it explicitly. The ONLY
+    // bypass path is the explicit `dangerous: true` flag above, gated well
+    // upstream of this function (see the header comment) — 'all'/'*' alone never
+    // reaches it.
     const at = (options.allowedTools === 'all' || options.allowedTools === '*')
       ? DEFAULT_ALLOWED_TOOLS
       : options.allowedTools;

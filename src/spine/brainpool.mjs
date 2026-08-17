@@ -476,6 +476,15 @@ export function createBrainPool({
         // Confine-by-default: a LIST allowed_tools sandboxes file tools to the conversation
         // dir (cwd) + the def's allowed_paths; 'all' stays trusted/unconfined ({} spread).
         ...confinementFor(def, cwd, onLog),
+        // EXPLICIT field (operator 2026-08-17, "make access_level: all finally mean what it
+        // says"): buildClaudeArgs reads this to add the actual bypass flags. Named explicitly
+        // rather than inferred from the absence of confineToDirs (an existing but ambiguous
+        // proxy) — by this point def.dangerous is EITHER the type file's own trusted base-layer
+        // grant (brains.mjs resolve(): conv-local layers can never set or clear it) OR the
+        // ACCESS-LEVEL OVERRIDE above (config/permissions/<level>.md, itself only reachable via
+        // the STRUCTURAL SAFETY GATES: accessLevel structurally set + allowed_users non-empty +
+        // sender matched before this turn ever ran) — never attacker-writable.
+        dangerous: def.dangerous === true,
       };
 
       // Identity kickoff: prefix the first turn of a fresh thread with the feed,

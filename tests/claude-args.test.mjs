@@ -54,6 +54,22 @@ describe('tool limitation + trusted access', () => {
   });
 });
 
+describe('dangerous:true — the actual bypass (operator 2026-08-17: "make access_level: all finally mean what it says")', () => {
+  it('options.dangerous === true → BOTH --dangerously-skip-permissions and --permission-mode bypassPermissions, alongside the unconfined --allowedTools push (unchanged)', () => {
+    const a = buildClaudeArgs({ dangerous: true, allowedTools: ['Read', 'Write', 'Bash', 'Agent'] });
+    expect(has(a, '--dangerously-skip-permissions')).toBe(true);
+    expect(valsOf(a, '--permission-mode')).toEqual(['bypassPermissions']);
+    expect(valsOf(a, '--allowedTools')).toEqual(['Read Write Bash Agent']);   // unchanged: verbatim, in addition to the bypass
+  });
+  it('options.dangerous absent/false → neither flag, for every case this file already covers (regression)', () => {
+    for (const opts of [{}, { dangerous: false }, { dangerous: false, allowedTools: ['Read'] }, { allowedTools: 'all' }]) {
+      const a = buildClaudeArgs(opts);
+      expect(has(a, '--dangerously-skip-permissions')).toBe(false);
+      expect(valsOf(a, '--permission-mode')).not.toContain('bypassPermissions');
+    }
+  });
+});
+
 describe('sandbox (confineToDirs) — directory access control + settings isolation', () => {
   const a = buildClaudeArgs({
     allowedTools: ['Read', 'Grep', 'WebFetch', 'Bash'],
