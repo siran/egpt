@@ -319,3 +319,88 @@ describe('transcript.log — resolves its path through the Room abstraction (str
     expect(files.get(named.transcriptPath)).toBe('room line\n\n');
   });
 });
+
+// ROOM-JOIN RECORD-KEEPING (operator, room-join transcript-routing fix): a joined room wins over
+// ev's own native (surface, chatId) for WHERE a write lands — the redirect decision lives HERE,
+// inside createTranscript (the service's ONE ingestion point), not at either call site (spine.mjs's
+// handleFast, boot.mjs's wrapCommandsForTranscript both just call plain `transcript.log(ev, ...)`
+// — see tests/spine-ingestion.test.mjs / tests/command-transcript.test.mjs for the thin wiring
+// checks that those callers still get the redirect for free). `currentRoomOf` mirrors
+// commands.mjs's own currentRoomOf(surface) -> slug|null exactly (a fake here, no createCommands
+// wiring needed to pin the contract at this boundary).
+describe('transcript.log — currentRoomOf redirects WHERE a write lands, ev itself never touched', () => {
+  const mkIo = (files) => ({
+    appendFile: async (p, d) => { files.set(p, (files.get(p) ?? '') + d); },
+    mkdir: async () => {},
+    existsSync: (p) => files.has(p),
+    readFile: async (p) => { if (!files.has(p)) throw new Error('ENOENT'); return files.get(p); },
+    writeFile: async (p, d) => { files.set(p, d); },
+    readdir: readdirOver(files),
+  });
+  // Discriminates the write by SURFACE (room vs native), same shape as the two callers' own thin
+  // wiring tests: fakeContacts ignores its arguments, so the redirect is visible only through
+  // which surface segment (conversations/room/… vs conversations/<native>/…) the path lands under.
+  const contacts = { resolve: async () => 'fam-1' };
+  const transcriptText = (files, seg) => [...files.entries()].find(([p]) => p.replace(/\\/g, '/').includes(`/conversations/${seg}/`) && p.endsWith('transcript.md'))?.[1] ?? '';
+
+  it('room joined on ev.surface → the inbound line lands in the ROOM\'s transcript, not the native chat\'s', async () => {
+    const files = new Map();
+    // Frozen: log() must never assign onto ev — only its own local target vars change.
+    const inEv = Object.freeze({ ...ev, surface: 'whatsapp', chatId: '!room:beeper.com' });
+    const t = createTranscript({ contacts, io: mkIo(files), currentRoomOf: (surface) => (surface === 'whatsapp' ? 'acim' : null) });
+    expect(await t.log(inEv)).toBe(true);
+    expect(transcriptText(files, 'room')).toContain('hola');
+    expect(transcriptText(files, 'whatsapp')).toBe('');
+    // ev is provably untouched: frozen, so any attempted write would have thrown inside log().
+    expect(inEv.surface).toBe('whatsapp');
+    expect(inEv.chatId).toBe('!room:beeper.com');
+  });
+
+  it('a reply write (log(ev, reply)) redirects the same way as an inbound write', async () => {
+    const files = new Map();
+    const inEv = Object.freeze({ ...ev, surface: 'shell', chatId: 'main' });
+    const t = createTranscript({ contacts, io: mkIo(files), node_name: 'kg', currentRoomOf: (surface) => (surface === 'shell' ? 'acim' : null) });
+    expect(await t.log(inEv, { text: 'reset done', being: 'system' })).toBe(true);
+    expect(transcriptText(files, 'room')).toContain('reset done');
+    expect(transcriptText(files, 'shell')).toBe('');
+  });
+
+  it('no room joined (currentRoomOf → null) → the write lands in the native chat\'s transcript exactly as before', async () => {
+    const files = new Map();
+    const t = createTranscript({ contacts, io: mkIo(files), currentRoomOf: () => null });
+    expect(await t.log(ev)).toBe(true);
+    expect(transcriptText(files, 'whatsapp')).toContain('hola');
+    expect([...files.keys()].some((p) => p.replace(/\\/g, '/').includes('/conversations/room/'))).toBe(false);
+  });
+
+  it('currentRoomOf omitted entirely (default) — byte-identical to before this option existed', async () => {
+    const files = new Map();
+    const t = createTranscript({ contacts, io: mkIo(files) });   // no currentRoomOf at all
+    expect(await t.log(ev)).toBe(true);
+    expect(transcriptText(files, 'whatsapp')).toContain('hola');
+  });
+
+  it("'lobby' means no room (sugar for the surface's own native identity) — no redirect", async () => {
+    const files = new Map();
+    const t = createTranscript({ contacts, io: mkIo(files), currentRoomOf: () => 'lobby' });
+    expect(await t.log(ev)).toBe(true);
+    expect(transcriptText(files, 'whatsapp')).toContain('hola');
+    expect([...files.keys()].some((p) => p.replace(/\\/g, '/').includes('/conversations/room/'))).toBe(false);
+  });
+
+  // The regression most likely to silently break: PROSE while a room is joined already arrives
+  // with ev.surface === 'room' (redirectShellToRoom rewrote it upstream, boot.mjs — out of scope,
+  // untouched). currentRoomOf('room') must be a no-op (currentRoom is keyed by 'shell', never
+  // 'room'), so this must not re-target an already-redirected ev a second time or double-write it.
+  it("already-redirected prose (ev.surface === 'room') is not re-targeted — currentRoomOf('room') no-ops, logs exactly once", async () => {
+    const files = new Map();
+    const proseEv = { ...ev, surface: 'room', chatId: 'acim' };
+    // Even with a (misleading, hypothetical) currentRoomOf keyed by 'shell' still wired, a
+    // surface-'room' ev must never consult it under its OWN surface key.
+    const t = createTranscript({ contacts, io: mkIo(files), currentRoomOf: (surface) => (surface === 'shell' ? 'acim' : null) });
+    expect(await t.log(proseEv)).toBe(true);
+    const text = transcriptText(files, 'room');
+    expect(text).toContain('hola');
+    expect((text.match(/hola/g) ?? []).length).toBe(1);   // exactly once — no double record
+  });
+});

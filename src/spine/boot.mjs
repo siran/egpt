@@ -1098,7 +1098,13 @@ export async function boot({
     // gating.mjs's createGating takes (`_loadState`, declared above) — resolve()'s per-
     // conversation allowed_users override reads through it, one state load per resolve() call.
     router: createRouter({ getAgents: () => cfg.agents ?? {}, defaultBeing: defaultKey, getQuickReply: () => cfg.quick_reply_string, addressWithoutAt, loadState: _loadState }),
-    transcript: createTranscript({ contacts, persona: labelOf(defaultKey), defaultKey, node_name, timeZone: transcriptTimeZone, io, onLog: (m) => log.line?.(`[transcript] ${m}`) }),
+    // currentRoomOf: a lazy thunk, not `commands.currentRoomOf` directly — `commands` (below)
+    // isn't constructed until after `services` (it takes `services.transcript` itself as one of
+    // its own options, via commandTranscript below), so a direct reference would be undefined
+    // here. Safe forward reference: this callback only ever fires later, on an actual write,
+    // by which time `commands` is assigned (mirrors createSpine's own construction site further
+    // down, which passes commands.currentRoomOf directly because by THAT point commands exists).
+    transcript: createTranscript({ contacts, persona: labelOf(defaultKey), defaultKey, node_name, timeZone: transcriptTimeZone, io, currentRoomOf: (surface) => commands.currentRoomOf(surface), onLog: (m) => log.line?.(`[transcript] ${m}`) }),
     sender: createSender({ bridge: shellAwareBridge, bodyEmojiOf, labelOf, agentSignatureOpenOf, agentSignatureCloseOf, defaultKey }),
     // The real cadence registry the spine's tick() drives. The heartbeat LOADER
     // (below) collects every declarative heartbeat and registers it here, so each

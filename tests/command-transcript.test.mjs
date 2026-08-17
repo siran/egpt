@@ -122,9 +122,9 @@ describe('command replies land in transcript.md (real createCommands + real crea
   }
   const transcriptText = (files) => [...files.entries()].find(([p]) => p.endsWith('transcript.md'))?.[1] ?? '';
 
-  function buildWiredCommands({ node_name = 'kg' } = {}) {
+  function buildWiredCommands({ node_name = 'kg', currentRoomOf } = {}) {
     const files = new Map();
-    const transcript = createTranscript({ contacts: fakeContacts, io: mkIo(files), node_name });
+    const transcript = createTranscript({ contacts: fakeContacts, io: mkIo(files), node_name, currentRoomOf });
     const sent = [];
     const commandTranscript = wrapCommandsForTranscript({
       send: async (chatId, text) => { sent.push({ chatId, text }); },
@@ -181,5 +181,25 @@ describe('command replies land in transcript.md (real createCommands + real crea
     const text = transcriptText(files);
     expect(text).toContain('/foo');
     expect(text).not.toContain('[@system');   // inbound line only — no reply line synthesized
+  });
+
+  // ── ROOM-JOIN RECORD-KEEPING (operator, room-join transcript-routing fix) — a THIN integration
+  // check only: the redirect/resolution logic itself (currentRoomOf, the 'lobby' rule, the
+  // already-redirected-prose no-op) is createTranscript's own responsibility, proven directly in
+  // tests/spine-transcript.test.mjs. This just confirms the wiring holds end-to-end through this
+  // module's real wrapCommandsForTranscript + createCommands: a command's DISPATCH keeps running
+  // against its native (whatsapp, !self) identity — wrapCommandsForTranscript never sees rooms,
+  // it still just calls plain `transcript.log(ev, {...})` (see the reverted call above) — but the
+  // REPLY still lands in the ROOM's transcript, because createTranscript itself is room-wired.
+  it('a room joined on the command\'s surface → the reply lands in the ROOM\'s transcript, not the native chat\'s', async () => {
+    const { commands, files, sent } = buildWiredCommands({ currentRoomOf: (surface) => (surface === 'whatsapp' ? 'acim' : null) });
+    await commands.run(ev);
+    expect(sent).toHaveLength(1);
+    expect(sent[0].chatId).toBe('!self');   // dispatch still targets the REAL chat id, untouched
+    const normPath = (p) => p.replace(/\\/g, '/');
+    const roomText = [...files.entries()].find(([p]) => normPath(p).includes('/conversations/room/') && p.endsWith('transcript.md'))?.[1] ?? '';
+    const nativeText = [...files.entries()].find(([p]) => normPath(p).includes('/conversations/whatsapp/') && p.endsWith('transcript.md'))?.[1] ?? '';
+    expect(roomText).toContain(sent[0].text);   // the RECORD landed in the joined room
+    expect(nativeText).toBe('');                // no native-chat transcript file was ever written
   });
 });

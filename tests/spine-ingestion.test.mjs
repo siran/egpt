@@ -247,3 +247,61 @@ describe('REPRODUCE-FIRST — config refresh fires on message arrival, no tick/t
     expect([...files.entries()].some(([p]) => p.endsWith('transcript.md'))).toBe(true);
   });
 });
+
+// ROOM-JOIN RECORD-KEEPING (operator, room-join transcript-routing fix): the redirect decision
+// itself (currentRoomOf, the 'lobby' rule, the already-redirected-prose no-op) is now resolved
+// INSIDE createTranscript — the service's ONE ingestion point (see transcript.mjs, and its own
+// dedicated coverage in tests/spine-transcript.test.mjs). spine.mjs's handleFast is unaware rooms
+// exist at all: it just calls `transcript.log(ev)`, exactly as before this feature (see the
+// createSpine call below — no currentRoomOf option). This is therefore a THIN integration check,
+// through the real spine + a room-wired transcript, that a joined-room command/inbound message
+// ends up in the room's file and ev itself (what dispatch sees) stays untouched — not a re-test
+// of the resolution logic, which lives with createTranscript's own tests.
+describe('a room-joined inbound message lands in the room\'s transcript, ev used for dispatch untouched', () => {
+  const SHELL_MSG = { ...MSG, surface: 'shell', chatId: 'main', chatName: 'shell', senderName: 'operator', body: '/agents egpt reset' };
+
+  it('handleFast\'s plain transcript.log(ev) call still redirects, because createTranscript itself is room-wired', async () => {
+    const files = new Map();
+    const bridge = fakeBridge();
+    const seenEv = [];
+    const spine = createSpine({
+      bridge, brain: { async turn(being, ev) { seenEv.push({ surface: ev.surface, chatId: ev.chatId }); return { text: `${being} ok`, being, sessionId: 's1' }; } },
+      identity: fakeIdentity,
+      router: { resolve: () => ({ being: 'e', mention: {} }) },
+      gating: { async decide() { return { mode: 'on', receives: true, mayReply: true, sendToEgpt: 'mode' }; }, surfaces: () => true },
+      sender: fakeSender(bridge),
+      transcript: createTranscript({ contacts: fakeContacts, io: memIo(files), currentRoomOf: (surface) => (surface === 'shell' ? 'acim' : null) }),
+      heartbeats, clock: { now: () => 1000 }, turnTimeoutMs: 0,
+    });
+    spine.start();
+    await bridge.emit(SHELL_MSG);
+
+    // DISPATCH untouched: the turn ran with the ORIGINAL native ev, not a room-redirected one.
+    expect(seenEv).toEqual([{ surface: 'shell', chatId: 'main' }]);
+
+    const roomText = [...files.entries()].find(([p]) => p.replace(/\\/g, '/').includes('/conversations/room/') && p.endsWith('transcript.md'))?.[1];
+    const nativeText = [...files.entries()].find(([p]) => p.replace(/\\/g, '/').includes('/conversations/shell/') && p.endsWith('transcript.md'))?.[1];
+    expect(roomText).toContain('/agents egpt reset');       // the RECORD landed in the joined room
+    expect(nativeText ?? '').not.toContain('/agents egpt reset');   // NOT in the native chat's transcript
+  });
+
+  it('no currentRoomOf wired on the transcript (every existing pipe path / test) — byte-identical, logs to the native chat', async () => {
+    const files = new Map();
+    const bridge = fakeBridge();
+    const spine = createSpine({
+      bridge, brain: { async turn(being) { return { text: 'ok', being, sessionId: 's1' }; } },
+      identity: fakeIdentity,
+      router: { resolve: () => ({ being: 'e', mention: {} }) },
+      gating: { async decide() { return { mode: 'on', receives: true, mayReply: true, sendToEgpt: 'mode' }; }, surfaces: () => true },
+      sender: fakeSender(bridge),
+      transcript: createTranscript({ contacts: fakeContacts, io: memIo(files) }),   // currentRoomOf omitted — null default
+      heartbeats, clock: { now: () => 1000 }, turnTimeoutMs: 0,
+    });
+    spine.start();
+    await bridge.emit(SHELL_MSG);
+
+    const nativeText = [...files.entries()].find(([p]) => p.replace(/\\/g, '/').includes('/conversations/shell/') && p.endsWith('transcript.md'))?.[1];
+    expect(nativeText).toContain('/agents egpt reset');
+    expect([...files.keys()].some((p) => p.replace(/\\/g, '/').includes('/conversations/room/'))).toBe(false);
+  });
+});
