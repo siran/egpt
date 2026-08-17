@@ -335,6 +335,12 @@ export function createCommands({
   // test may exercise it; tests always inject a fake).
   listEntityDirs = async () => [],
   fetch: fetchFn = globalThis.fetch,
+  // Live status-line room reflection (operator 2026-08-16): fired (surface, slug|null) any
+  // time currentRoom changes — roomJoin, roomLeave, and roomDelete's bulk clear below. `null`
+  // means "no current room" (roomLeave / roomDelete's clear); a slug means "now current"
+  // (roomJoin). Safe no-op default so a standalone/test createCommands never needs it — boot
+  // injects the real one (recompute computeShellHeader → shellPort.setHeader) for surface 'shell' only.
+  onRoomChange = () => {},
   onLog = () => {},
 } = {}) {
   const cfg = () => getConfig() ?? {};
@@ -1306,12 +1312,13 @@ export function createCommands({
   // added (setMember mkdir's it) or via /room create.
   async function roomJoin(ev, slug) {
     currentRoom.set(surfaceOf(ev), slug);
+    onRoomChange(surfaceOf(ev), slug);
     await send?.(ev.chatId, `joined '${slug}' — now current (prose and /agents default here; other commands still use your own room).`);
   }
 
   // /room <slug> leave — clear the current room for this surface iff it IS <slug>.
   async function roomLeave(ev, slug) {
-    if (curRoomName(ev) === slug) { currentRoom.delete(surfaceOf(ev)); await send?.(ev.chatId, `left '${slug}' — no current room.`); return; }
+    if (curRoomName(ev) === slug) { currentRoom.delete(surfaceOf(ev)); onRoomChange(surfaceOf(ev), null); await send?.(ev.chatId, `left '${slug}' — no current room.`); return; }
     await send?.(ev.chatId, `not in '${slug}' — current room is ${curRoomName(ev) ? `'${curRoomName(ev)}'` : 'none'}`);
   }
 
@@ -1335,7 +1342,7 @@ export function createCommands({
       }
     }
     await rm(room.baseDir(), { recursive: true, force: true });
-    for (const [surface, cur] of currentRoom) if (cur === slug) currentRoom.delete(surface);
+    for (const [surface, cur] of currentRoom) if (cur === slug) { currentRoom.delete(surface); onRoomChange(surface, null); }
     await send?.(ev.chatId, `room ${slug} deleted`);
   }
 

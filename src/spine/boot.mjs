@@ -279,14 +279,21 @@ function shellHeaderGroupOf(agent, nodeName) {
 //                 Renders ` → <default_node>` right after LOBBY_SLUG, UNLESS it's unset/empty OR
 //                 equals nodeName itself (bare commands run locally either way — no arrow implying
 //                 a route that isn't happening).
+//   currentRoom = commands.mjs's currentRoomOf('shell') (operator 2026-08-16: live status-line
+//                 join reflection) — renders its OWN ` → <currentRoom>` right after LOBBY_SLUG,
+//                 UNLESS unset/empty OR equal to LOBBY_SLUG itself (redirectShellToRoom's own
+//                 rule: 'lobby' means "no room joined", never a real room/lobby folder). Chains
+//                 before the defaultNode arrow if both are present.
 // Groups render in agents-map insertion order (JS object order already preserves it); handles
 // render within a group in agent-declaration order. SHORT HANDLE = the shortest string in the
 // agent's `handles:` array, else its map key.
-export function computeShellHeader({ nodeName, personaName, agents, defaultNode } = {}) {
+export function computeShellHeader({ nodeName, personaName, agents, defaultNode, currentRoom } = {}) {
   const normDefaultNode = String(defaultNode ?? '').trim().toLowerCase();
   const normNodeName = String(nodeName ?? '').trim().toLowerCase();
   const arrow = (normDefaultNode && normDefaultNode !== normNodeName) ? ` → ${normDefaultNode}` : '';
-  const base = `🟢 ${personaName} ${LOBBY_SLUG}${arrow} — ? for help · ctrl-d = send`;
+  const room = String(currentRoom ?? '').trim();
+  const roomArrow = (room && room !== LOBBY_SLUG) ? ` → ${room}` : '';
+  const base = `🟢 ${personaName} ${LOBBY_SLUG}${roomArrow}${arrow} — ? for help · ctrl-d = send`;
   const map = (agents && typeof agents === 'object' && !Array.isArray(agents)) ? agents : {};
   const groups = new Map();   // groupKey → [ '@handle', ... ], insertion order = first agent encountered
   for (const [key, a] of Object.entries(map)) {
@@ -1136,6 +1143,15 @@ export async function boot({
     shellConnected: () => shellPort.isConnected,       // /status `shell:` field — is the operator's editor dialed in
     gate: lasso.gate,                                  // /radio say's upload — the SAME node-wide lasso instance the beeper bridge, echo and shell port already spend from (never a second one)
     listEntityDirs,                                    // bare /radio's joined-rooms report + /radio leave all|<slug> — THE walk (above), never a second entity enumeration
+    // Live status-line room reflection (operator 2026-08-16): /room join|leave (or any other
+    // currentRoom clear) on the shell surface recomputes the SAME computeShellHeader (above)
+    // with the new currentRoom and pushes it down the shell-port limb — the ONE other caller
+    // of computeShellHeader besides this file's own initial boot-time push (shellHeader,
+    // above). Every other surface is a no-op: only the shell has a status line to update.
+    onRoomChange: (surface, slug) => {
+      if (surface !== 'shell') return;
+      shellPort.setHeader(computeShellHeader({ nodeName: node_name, personaName: labelOf(defaultKey), agents: cfg.agents, defaultNode: cfg.dispatch?.default_node, currentRoom: slug }));
+    },
     onLog: (m) => log.line?.(`[command] ${m}`),
   });
   commands.run = commandTranscript.wrapRun(commands.run);

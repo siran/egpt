@@ -377,6 +377,61 @@ describe('shell-port limb', () => {
     });
   });
 
+  describe('setHeader() — live header update (operator 2026-08-16: /room join reflection)', () => {
+    // REPRODUCE-FIRST: before setHeader existed, _header was a `const` captured once at
+    // construction — there was no way for boot.mjs's onRoomChange to push an updated header
+    // after boot, and no way for a LATER reconnect to carry anything but the original line.
+    it('while connected: pushes a header-only frame immediately with the NEW header', () => {
+      const { WebSocket, sockets } = makeFakeWs();
+      const port = createShellPort({ WebSocket, header: 'lobby' });
+      port.start();
+      sockets[0].fire('open');
+      expect(sockets[0].sent).toHaveLength(1);   // the initial header, on open
+
+      port.setHeader('lobby → acim');
+      expect(sockets[0].sent).toHaveLength(2);
+      const frame = JSON.parse(sockets[0].sent[1]);
+      expect(frame.header).toBe('lobby → acim');
+      expect(frame.text).toBe('');
+    });
+
+    it('a LATER reconnect resends the UPDATED header, not the one captured at construction', () => {
+      const { WebSocket, sockets } = makeFakeWs();
+      const clock = makeFakeClock();
+      const port = createShellPort({ WebSocket, header: 'lobby', setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout });
+      port.start();
+      sockets[0].fire('open');
+      port.setHeader('lobby → acim');
+
+      sockets[0].fire('close');                 // editor drops → reconnect armed
+      clock.timers[0].fn();                     // reconnect fires → fresh socket
+      sockets[1].fire('open');
+
+      expect(sockets[1].sent).toHaveLength(1);
+      expect(JSON.parse(sockets[1].sent[0]).header).toBe('lobby → acim');   // NOT the original 'lobby'
+    });
+
+    it('while disconnected: drops (never throws), same as any other push — the editor just missed a frame', () => {
+      const { WebSocket, sockets } = makeFakeWs();
+      const port = createShellPort({ WebSocket, header: 'lobby' });
+      port.start();   // dialed, never opened
+      expect(() => port.setHeader('lobby → acim')).not.toThrow();
+      expect(sockets[0].sent).toHaveLength(0);
+    });
+
+    it('works even when no initial header option was given', () => {
+      const { WebSocket, sockets } = makeFakeWs();
+      const port = createShellPort({ WebSocket });
+      port.start();
+      sockets[0].fire('open');
+      expect(sockets[0].sent).toHaveLength(0);   // no initial header → nothing on open
+
+      port.setHeader('lobby → acim');
+      expect(sockets[0].sent).toHaveLength(1);
+      expect(JSON.parse(sockets[0].sent[0]).header).toBe('lobby → acim');
+    });
+  });
+
   describe('poke() — the editor announced itself via ingest, connect NOW', () => {
     it('while disconnected with a pending reconnect timer: cancels the timer, resets the backoff, and dials a fresh socket immediately', () => {
       const { WebSocket, sockets } = makeFakeWs();

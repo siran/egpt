@@ -610,6 +610,42 @@ describe('computeShellHeader — the permanent shell status line', () => {
     expect(computeShellHeader({ nodeName: 'kg', personaName: 'egpt', defaultNode: '' }))
       .toBe('🟢 egpt lobby — ? for help · ctrl-d = send');
   });
+
+  // Live status-line room reflection (operator 2026-08-16): /room join <slug> should show up
+  // in the SAME header string boot pushes to the shell — currentRoom is the seam.
+  describe('`currentRoom` — the /room join reflection', () => {
+    it('a joined room inserts a " → <currentRoom>" segment right after LOBBY_SLUG', () => {
+      expect(computeShellHeader({ nodeName: 'kg', personaName: 'egpt', currentRoom: 'acim' }))
+        .toBe('🟢 egpt lobby → acim — ? for help · ctrl-d = send');
+    });
+
+    it('currentRoom absent, empty, or null renders with NO room arrow (baseline unchanged)', () => {
+      expect(computeShellHeader({ nodeName: 'kg', personaName: 'egpt' }))
+        .toBe('🟢 egpt lobby — ? for help · ctrl-d = send');
+      expect(computeShellHeader({ nodeName: 'kg', personaName: 'egpt', currentRoom: '' }))
+        .toBe('🟢 egpt lobby — ? for help · ctrl-d = send');
+      expect(computeShellHeader({ nodeName: 'kg', personaName: 'egpt', currentRoom: null }))
+        .toBe('🟢 egpt lobby — ? for help · ctrl-d = send');
+    });
+
+    it("currentRoom === 'lobby' renders with NO room arrow — 'lobby' means no room joined, never a real room/lobby folder (same rule as redirectShellToRoom)", () => {
+      expect(computeShellHeader({ nodeName: 'kg', personaName: 'egpt', currentRoom: 'lobby' }))
+        .toBe('🟢 egpt lobby — ? for help · ctrl-d = send');
+    });
+
+    it('a joined room AND a routed defaultNode chain: room arrow first, then the defaultNode arrow', () => {
+      expect(computeShellHeader({ nodeName: 'kg', personaName: 'egpt', currentRoom: 'acim', defaultNode: 'do' }))
+        .toBe('🟢 egpt lobby → acim → do — ? for help · ctrl-d = send');
+    });
+
+    it('a joined room still combines with the agents/groups trailing segment', () => {
+      const s = computeShellHeader({
+        nodeName: 'kg', personaName: 'egpt', currentRoom: 'acim',
+        agents: { egpt: { handles: ['e', 'egpt'], default: true } },
+      });
+      expect(s).toBe('🟢 egpt lobby → acim — ? for help · ctrl-d = send — kg: @e');
+    });
+  });
 });
 
 // STRAY WHISPER-SERVER REAP (operator 2026-07-10): dropping `local` from a profile's

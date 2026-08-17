@@ -11,8 +11,8 @@ import { Room } from '../src/room-core.mjs';
 import { EGPT_HOME } from '../src/egpt-home.mjs';
 import { emptyState, ensureContact, getBeing, getContact, patchContact } from '../src/conversations-state.mjs';
 
-function harness({ config = {}, state = null, brains, io = {}, cdp, launch, clock, resolveConvRoom } = {}) {
-  const sent = [], exits = [], rewinds = [], writes = [], evicts = [];
+function harness({ config = {}, state = null, brains, io = {}, cdp, launch, clock, resolveConvRoom, onRoomChange } = {}) {
+  const sent = [], exits = [], rewinds = [], writes = [], evicts = [], roomChanges = [];
   const files = {};   // any command-authored files (e.g. /room create's config.yaml)
   let st = state;
   // /chrome launch + clock seams: default to a fake that reports "task not registered"
@@ -34,8 +34,9 @@ function harness({ config = {}, state = null, brains, io = {}, cdp, launch, cloc
     evictWarm: (key) => evicts.push(key),
     io: { writeFile: async (p, c) => { files[p] = c; }, mkdir: async () => {}, ...io },
     ...(resolveConvRoom ? { resolveConvRoom } : {}),
+    onRoomChange: (surface, slug) => { roomChanges.push({ surface, slug }); onRoomChange?.(surface, slug); },
   });
-  return { cmds, sent, exits, rewinds, writes, evicts, files, getState: () => st };
+  return { cmds, sent, exits, rewinds, writes, evicts, files, roomChanges, getState: () => st };
 }
 
 describe('commands.isCommand', () => {
@@ -767,6 +768,61 @@ describe('/agents bare-target default honors a joined /room (operator 2026-08-16
     await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/agents=other e access_level all' });
     expect(getBeing(getState(), 'whatsapp', '!other:beeper.local', 'e').accessLevel).toBe('all');
     expect(getBeing(getState(), 'room', 'acim', 'e').accessLevel).toBeNull();
+  });
+});
+
+// onRoomChange — the hook boot.mjs uses to keep the shell status line live (operator
+// 2026-08-16). REPRODUCE-FIRST: before this seam existed, roomJoin/roomLeave/roomDelete only
+// ever mutated the in-memory currentRoom map and replied with text — nothing observable told
+// a caller the room actually changed, so boot had no way to recompute+push a header. These
+// assert the hook fires with the right (surface, slug|null) at every currentRoom mutation site.
+describe('onRoomChange — fires at every currentRoom mutation site (roomJoin/roomLeave/roomDelete)', () => {
+  it('/room join <slug> fires onRoomChange(surface, slug)', async () => {
+    const { cmds, roomChanges } = harness();
+    await cmds.run({ chatId: 'main', surface: 'shell', body: '/room join acim' });
+    expect(roomChanges).toEqual([{ surface: 'shell', slug: 'acim' }]);
+  });
+
+  it('/room leave <slug> (room IS current) fires onRoomChange(surface, null)', async () => {
+    const { cmds, roomChanges } = harness();
+    await cmds.run({ chatId: 'main', surface: 'shell', body: '/room join acim' });
+    await cmds.run({ chatId: 'main', surface: 'shell', body: '/room leave acim' });
+    expect(roomChanges).toEqual([{ surface: 'shell', slug: 'acim' }, { surface: 'shell', slug: null }]);
+  });
+
+  it('/room leave <slug> when NOT current does NOT fire onRoomChange (nothing changed)', async () => {
+    const { cmds, roomChanges } = harness();
+    await cmds.run({ chatId: 'main', surface: 'shell', body: '/room leave acim' });
+    expect(roomChanges).toEqual([]);
+  });
+
+  it('bare /room leave (current room implied) fires onRoomChange(surface, null)', async () => {
+    const { cmds, roomChanges } = harness();
+    await cmds.run({ chatId: 'main', surface: 'shell', body: '/room join acim' });
+    await cmds.run({ chatId: 'main', surface: 'shell', body: '/room leave' });
+    expect(roomChanges).toEqual([{ surface: 'shell', slug: 'acim' }, { surface: 'shell', slug: null }]);
+  });
+
+  it('a non-shell surface joining/leaving still fires onRoomChange — boot.mjs is what filters to shell, not this seam', async () => {
+    const { cmds, roomChanges } = harness();
+    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/room join acim' });
+    expect(roomChanges).toEqual([{ surface: 'whatsapp', slug: 'acim' }]);
+  });
+
+  it('/room delete force on a JOINED room clears currentRoom AND fires onRoomChange(surface, null) too', async () => {
+    const room = Room.forChat('room', 'acim');
+    const { cmds, roomChanges, sent } = harness({
+      config: { whatsapp: { chat_id: '!self' } },
+      io: {
+        stat: async (p) => { if (p === room.baseDir()) return {}; throw new Error('ENOENT'); },
+        readdir: async () => { throw new Error('ENOENT'); },
+        rm: async () => {},
+      },
+    });
+    await cmds.run({ chatId: 'main', surface: 'shell', body: '/room join acim' });
+    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/room delete force acim' });
+    expect(sent[sent.length - 1].text).toMatch(/room acim deleted/);
+    expect(roomChanges).toEqual([{ surface: 'shell', slug: 'acim' }, { surface: 'shell', slug: null }]);
   });
 });
 

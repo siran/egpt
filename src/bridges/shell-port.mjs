@@ -46,7 +46,7 @@ const SHELL_USER = 'operator';
  * @param {string} [opts.bridgeSignatureOpen]  per-NODE outer wrap layer — the SAME value boot hands the beeper bridge, so a shell reply's wrap matches the Beeper wrap. Default ''.
  * @param {string} [opts.bridgeSignatureClose]
  * @param {string} [opts.nodeName]            the STRUCTURAL node id (cfg.node_name), tag-encoded invisibly onto every frame — same value boot hands the beeper bridge. Default ''.
- * @param {string} [opts.header]              the PERMANENT shell header line (boot's computeShellHeader) — a static string handed in at boot, pushed as a header-only frame on every (re)connect. Default '' → no header frame ever sent.
+ * @param {string} [opts.header]              the shell status-line header (boot's computeShellHeader) — the initial value handed in at boot, pushed as a header-only frame on every (re)connect. Updatable later via setHeader() (e.g. /room join|leave). Default '' → no header frame sent until setHeader() is called.
  * @param {(m: string) => void} [opts.onLog]
  * @param {typeof globalThis.setTimeout} [opts.setTimeout]     reconnect-timer seam (tests inject a fake clock so no real wait blocks)
  * @param {typeof globalThis.clearTimeout} [opts.clearTimeout]
@@ -67,11 +67,13 @@ export function createShellPort({
   // The SAME wrap the beeper limb binds (boot hands both ports the node's bridge_signature_*),
   // so a persona reply rendered to the shell is wrapped identically to one rendered to Beeper.
   const wrapPersona = makeWrapPersona({ bridgeSignatureOpen, bridgeSignatureClose, nodeName });
-  // The PERMANENT header line (boot's computeShellHeader) — static for this task, no
-  // live-update requirement. Pushed on every (re)connect from the ONE ws.on('open') hook
-  // below, so first-connect, every reconnect, AND poke() (all funnel through connect()) are
-  // covered without any separate "is this a reconnect" tracking in boot.mjs.
-  const _header = header;
+  // The PERMANENT header line (boot's computeShellHeader). Pushed on every (re)connect from
+  // the ONE ws.on('open') hook below, so first-connect, every reconnect, AND poke() (all
+  // funnel through connect()) are covered without any separate "is this a reconnect" tracking
+  // in boot.mjs. `let`, not `const` (operator 2026-08-16: live status-line room reflection) —
+  // setHeader() below reassigns it so a LATER reconnect also carries the latest header, not
+  // just the one boot computed at construction time.
+  let _header = header;
   // Late-bound inbound handler: the spine registers it AFTER construction (as it does
   // bridge.onMessage), so the message frame reads the ref at call time.
   let onMsg = null;
@@ -175,6 +177,13 @@ export function createShellPort({
     // saw. owns() must recognize it too, or the reply would be handed to the wrong bridge.
     // Generic on purpose: this limb still carries zero room logic, only the registry itself.
     claim(chatId) { _chatIds.add(chatId); },
+    // Push an UPDATED header line now (operator 2026-08-16: live status-line room reflection,
+    // e.g. after /room join|leave) — boot.mjs's onRoomChange calls this with a freshly
+    // recomputed computeShellHeader(). Reassigns _header so a LATER reconnect resends the
+    // NEW line too, not the one captured at construction. Drops (never throws) when the
+    // editor isn't connected right now, same as any other push — the next (re)connect's
+    // ws.on('open') hook still carries the latest _header.
+    setHeader(newHeader) { _header = newHeader ?? ''; return pushFrame(SHELL_CHAT_ID, '', { header: _header }); },
     // Is the operator's editor currently dialed in? /status's `shell:` field reads this
     // (boot wires shellConnected: () => shellPort.isConnected).
     get isConnected() { return _wsReady; },
