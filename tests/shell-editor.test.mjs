@@ -77,6 +77,31 @@ describe('shell editor — WS server (fake spine over a real socket)', () => {
     expect(JSON.parse(buf.toString())).toEqual({ text: 'hi' });
   });
 
+  // Reproduce-first (operator 2026-08-17): a stale prior `node egpt.mjs` still holding :23375
+  // used to make a fresh instance EADDRINUSE-loop forever with no self-healing. start() now
+  // reaps the configured port FIRST via an injected seam (mirrors reapPortFn in boot.mjs) —
+  // this proves the call happens, with the right port, BEFORE the WebSocketServer binds.
+  it('start() reaps the configured port before binding — real port passed through, called before the WSS is constructed', async () => {
+    const reapCalls = [];
+    let constructedAfterReap = false;
+    class TrackingWSS extends WebSocketServer {
+      constructor(opts) {
+        super({ ...opts, port: 0 });   // never actually bind the "real" port under test
+        constructedAfterReap = reapCalls.length === 1;
+      }
+    }
+    const fakeReapPort = (port, log) => { reapCalls.push(port); log?.(`reap-port: killing stale pid 1234 on :${port}`); return 1; };
+    const server = createShellServer({
+      port: 23375, io: fakeIo(), WebSocketServer: TrackingWSS, reapPort: fakeReapPort,
+    });
+    const wss = server.start();
+    cleanups.push(() => server.stop());
+    await once(wss, 'listening');
+
+    expect(reapCalls).toEqual([23375]);        // reaped exactly the configured (real) port, not the rebound 0
+    expect(constructedAfterReap).toBe(true);   // reap ran BEFORE the WebSocketServer was constructed
+  });
+
   // THE GATE THIS LOCKS: `if (m.text || m.delete) onMsg?.(m)` used to DROP a header-only frame
   // (empty text, no delete) — exactly the shape shell-port's header push carries. Widened to
   // `if (m.text || m.delete || m.header != null)` — this is the single most likely way the
@@ -195,6 +220,28 @@ describe('shell editor — WS server: unexpected wss close is logged and recover
     expect(clock.cleared).toContain(clock.timers[0].id);           // the pending re-listen timer was cancelled
     expect(clock.timers).toHaveLength(1);                          // stop() itself schedules nothing new
     expect(constructCount).toBe(1);                                // no re-listen attempt → no second wss built
+  });
+
+  it('a re-listen retry does NOT re-reap: the port-kill only ever runs once, before the FIRST bind', async () => {
+    const reapCalls = [];
+    const fakeReapPort = (port) => { reapCalls.push(port); return 0; };
+    const clock = makeFakeClock();
+    const server = createShellServer({
+      port: 0, io: fakeIo(), reapPort: fakeReapPort,
+      setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout,
+    });
+    const wss1 = server.start();
+    cleanups.push(() => server.stop());
+    await once(wss1, 'listening');
+    expect(reapCalls).toHaveLength(1);         // reaped once, ahead of the first bind
+
+    wss1.close();                              // unexpected close → schedules a re-listen (bind() again)
+    await waitFor(() => clock.timers.length > 0);
+    clock.timers[0].fn();                      // fire the re-listen attempt
+    const wss2 = server.wss;
+    await once(wss2, 'listening');
+
+    expect(reapCalls).toHaveLength(1);         // the retry rebinds WITHOUT calling reapPortFn again
   });
 
   it('repeated unexpected closes back off exponentially: first retry at RECONNECT_MIN_MS, second retry doubles', async () => {

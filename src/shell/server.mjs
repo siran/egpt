@@ -17,6 +17,7 @@ import { WebSocketServer } from 'ws';
 import { mkdir as fsMkdir, writeFile as fsWriteFile, rename as fsRename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { EGPT_HOME } from '../egpt-home.mjs';
+import { reapPort } from '../tools/reap-port.mjs';
 
 // The fixed port the editor serves; the spine dials out to it (shell-port SHELL_WS_PORT).
 export const SHELL_WS_PORT = 23375;
@@ -35,6 +36,7 @@ const RECONNECT_MAX_MS = 60_000;
  * @param {object} [opts.io]                          fs seam for the ingest announce ({mkdir,writeFile,rename}); real fs by default — tests inject fakes so no real ~/.egpt write happens
  * @param {typeof globalThis.setTimeout} [opts.setTimeout]     re-listen timer seam (tests inject a fake clock so no real wait blocks)
  * @param {typeof globalThis.clearTimeout} [opts.clearTimeout]
+ * @param {typeof reapPort} [opts.reapPort]            port-killer seam (see start()) — real reapPort by default; tests inject a fake so no real netstat/taskkill runs
  */
 export function createShellServer({
   port = SHELL_WS_PORT,
@@ -43,6 +45,7 @@ export function createShellServer({
   io = {},
   setTimeout: setTimeoutFn = globalThis.setTimeout,
   clearTimeout: clearTimeoutFn = globalThis.clearTimeout,
+  reapPort: reapPortFn = reapPort,
 } = {}) {
   const mkdir = io.mkdir ?? fsMkdir;
   const writeFile = io.writeFile ?? fsWriteFile;
@@ -141,9 +144,17 @@ export function createShellServer({
   }
 
   return {
-    // Bind the server. Returns the underlying WebSocketServer so a caller/test can await
-    // its 'listening' event and read the bound port (ephemeral when `port: 0`).
-    start() { return bind(); },
+    // Bind the server. Reaps whatever already holds `port` FIRST — a stale prior editor
+    // process (e.g. a forgotten `node egpt.mjs` from an earlier terminal) orphans this exact
+    // port on Windows, and the fresh instance would otherwise EADDRINUSE-loop forever with no
+    // self-healing (operator 2026-08-17). Runs once, before the FIRST bind attempt only — the
+    // kill is synchronous (reapPort spawnSync's taskkill/lsof+kill), so by the time `bind()`
+    // constructs the WebSocketServer the port is already free; the re-listen backoff in bind()
+    // above handles any OTHER reason a later attempt fails and needn't re-reap. reapPortFn's
+    // own port===0 guard (reap-port.mjs) makes this a no-op for tests' ephemeral `port: 0`.
+    // Returns the underlying WebSocketServer so a caller/test can await its 'listening' event
+    // and read the bound port (ephemeral when `port: 0`).
+    start() { reapPortFn(port, onLog); return bind(); },
     // Register the inbound handler (fires `{ text, chatId }` the spine pushed).
     onSpineMessage(cb) { onMsg = cb; },
     // Push a frame to the connected spine. MVP omits chatId → `{ text }` (shell-port
