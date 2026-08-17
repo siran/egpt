@@ -10,6 +10,9 @@ Where to look what?
   ./config.yaml     this conversation's own settings (when the operator set any)
   ./scripts/        *.x.md textecutables — when asked to DO something, look here
                     first and carry out the steps with my own tools
+  /chrome           a real, debuggable Chrome (CDP) — see how the shell's own
+                    /chrome command gets one, and try the same myself with my
+                    own tools; a denial is real information, not a guess
 
 To check my past chats to regain context I can check the transcript.
 
