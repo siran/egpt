@@ -33,11 +33,13 @@ not answered by the persona. Authorization = the surface's own `chat_id`
                                                @jid / room-id)
 /agents[=<slug>] <handle>|all reset            BIG: reset THIS being on THIS chat:
                                                archive the chat's WHOLE folder aside,
-                                               wipe this being's ENTIRE registry
-                                               block (mode, access_level, threadId,
-                                               all of it — a sibling's own state
-                                               survives), reseed pristine — next
-                                               message starts fresh
+                                               wipe this being's registry block
+                                               (mode, threadId, all of it — a
+                                               sibling's own state survives) EXCEPT
+                                               access_level/allowed_users, durable
+                                               grants that survive the reset,
+                                               reseed pristine — next message
+                                               starts fresh
 /agents[=<slug>] <handle>|all restart          NARROW: clear only this being's
                                                threadId (mode, access_level, every
                                                other field survive) — the chat's
@@ -87,11 +89,16 @@ very next turn — no `/restart` needed.
 
 Archives the conversation's whole folder aside
 (`conversations/archive/<slug>-archived-<suffix>/`, never deleted), wipes the
-TARGET being's registry state (mode, access_level, thread) — a sibling being
-resident on the same conversation, if not also named, is untouched — and
-reseeds a pristine tree at the same path. The next message starts a fresh
-thread. `/agents all reset` wipes every resident being on the conversation in
-one call.
+TARGET being's registry state (mode, thread) — a sibling being resident on the
+same conversation, if not also named, is untouched — and reseeds a pristine
+tree at the same path. The next message starts a fresh thread. `/agents all
+reset` wipes every resident being on the conversation in one call.
+
+`access_level` and `allowed_users` are durable operator-set grants, not
+session state — `reset` preserves them (captured before the wipe, reapplied
+after the reseed) rather than silently dropping a being back to the node's
+global default. A being with neither set behaves exactly as before: fully
+wiped.
 
 Was `/e reset`/`/e auto`/`/e access` (retired 2026-08-15): hardcoded to the
 persona's own map key, so it could never reach a sibling being on the same
@@ -119,9 +126,9 @@ reopens fresh, with no separate eviction step needed here.
 | | `reset` | `restart` |
 |---|---|---|
 | Conversation folder | archived aside, reseeded pristine | untouched |
-| Registry block | wiped entirely (mode, access_level, threadId, …) | only `threadId` cleared |
+| Registry block | wiped (mode, threadId, …) except `access_level`/`allowed_users`, which survive | only `threadId` cleared |
 | Sibling beings not named | untouched | untouched |
-| Use it when | you want a clean slate — wrong mode, stale access_level, or the history itself is the problem | you just want the NEXT message to start a fresh Claude thread, keeping this chat's mode/access_level exactly as configured |
+| Use it when | you want a clean slate — wrong mode, stale thread, or the history itself is the problem | you just want the NEXT message to start a fresh Claude thread, keeping this chat's mode/access_level exactly as configured |
 
 ### Lifecycle without a chat (the ingest box)
 

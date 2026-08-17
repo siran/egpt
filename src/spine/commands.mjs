@@ -1045,6 +1045,12 @@ export function createCommands({
   // conversation". deleteBeing is looped over the CALLER-resolved `handles` (one handle, or
   // every residentsOf() entry for `all`) instead of a hardcoded defaultKey — a being NOT
   // named by this call keeps its own agents.<sibling> block byte-for-byte untouched.
+  //
+  // access_level/allowed_users SURVIVE (operator ruling 2026-08-17): they are durable
+  // operator-set GRANTS, not session state — "reset should reset the thread-id, transcript,
+  // etc, not the access_level, nor allowed_users". Captured per handle via getBeing BEFORE the
+  // wipe, reapplied via patchBeing AFTER deleteBeing + reseed. A being with neither set has
+  // nothing to reapply and is wiped exactly as before.
   async function agentsReset(ev, surface, jid, where, handles, state) {
     const room = (where === 'here') ? await convRoomOf(ev) : await resolveConvRoom(surface, jid);
     if (!room) { await send?.(ev.chatId, "can't resolve this conversation's room"); return; }
@@ -1066,11 +1072,27 @@ export function createCommands({
     try { await mkdir(archiveRoot, { recursive: true }); await rename(base, archivedDir); } catch { /* nothing to archive yet */ }
 
     // Wipe EACH target being's registry state OUTRIGHT (deleteBeing, not a merge) — the WHOLE
-    // `agents.<handle>` block (mode, threadId, access_level, …) is gone per handle, so
-    // getBeing(...).present reads back false for it, matching a never-instanced contact. A
-    // resident being NOT in `handles` is untouched (see the scoping-fix comment above).
+    // `agents.<handle>` block (mode, threadId, threadCreatedAt, identityInjectedAt,
+    // send_to_egpt, …) is gone per handle, so getBeing(...).present reads back false for it,
+    // matching a never-instanced contact — EXCEPT access_level/allowed_users, which are
+    // preserved-then-reapplied below (operator ruling 2026-08-17: "reset should reset the
+    // thread-id, transcript, etc, not the access_level, nor allowed_users" — durable
+    // operator-set GRANTS, not session state; access_level in particular is now mandatory for
+    // brainpool.mjs's turn() to run a being at all, so silently downgrading it here previously
+    // could strand a being with no access). A resident being NOT in `handles` is untouched
+    // (see the scoping-fix comment above).
+    const preserved = handles.map((h) => {
+      const b = getBeing(state, surface, jid, h);
+      const fields = {};
+      if (b?.accessLevel != null) fields.access_level = b.accessLevel;
+      if (b?.allowedUsers != null) fields.allowed_users = b.allowedUsers;
+      return [h, fields];
+    });
     let next = state;
     for (const h of handles) next = deleteBeing(next, room.surface, room.slug, h);
+    for (const [h, fields] of preserved) {
+      if (Object.keys(fields).length) next = patchBeing(next, surface, jid, h, fields);
+    }
     try { await writeState(next); } catch (e) { onLog(`/agents reset ${ev.chatId}: ${e?.message ?? e}`); }
 
     // Reseed a pristine tree at the ORIGINAL path — the same two calls /room create makes
@@ -1083,7 +1105,7 @@ export function createCommands({
     // not" — the confirmation reports success/failure ONLY, never the archive destination
     // (dropped the old `archiveNote`/`archived` plumbing that used to build a path string
     // into this reply).
-    await send?.(ev.chatId, `✅ ${room.slug} reset ${where === 'here' ? '' : where + ' '}— ${handles.join(', ')} overrides cleared, next message starts fresh.`);
+    await send?.(ev.chatId, `✅ ${room.slug} reset ${where === 'here' ? '' : where + ' '}— ${handles.join(', ')} state cleared (access_level/allowed_users preserved), next message starts fresh.`);
   }
 
   // /agents[=<slug>] <handle>|all restart — NARROWER than reset (operator 2026-08-15 ruling,

@@ -76,10 +76,12 @@ answered by the persona:
 /agents[=<slug>] <handle>|all reset
                               BIG: archive this being's whole conversation folder
                               aside (transcript.md, media/, files/, identity.d/ —
-                              everything), wipe ITS entire registry block (mode,
-                              access_level, threadId, all of it — a sibling's own
-                              state survives untouched), reseed a pristine tree at
-                              the same path
+                              everything), wipe ITS registry block (mode,
+                              threadId, all of it — a sibling's own state
+                              survives untouched) EXCEPT access_level and
+                              allowed_users, which are durable operator grants and
+                              survive the reset, reseed a pristine tree at the
+                              same path
 /agents[=<slug>] <handle>|all restart
                               NARROW: clear ONLY this being's threadId (mode,
                               access_level, and every other field survive

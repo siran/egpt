@@ -255,7 +255,7 @@ describe('/agents <handle>|all reset — archive + registry wipe + reseed, one s
       expect(sent[0].text).not.toMatch(/recognized/);
     });
 
-    it(`wipes e's registry state (threadId/mode/access_level all gone) but leaves a SIBLING being's block untouched — ${label}`, async () => {
+    it(`wipes e's registry state (threadId/mode gone) but PRESERVES access_level (operator grant) and leaves a SIBLING being's block untouched — ${label}`, async () => {
       const state = seedResetState(surface, jid, ctx);
       const before = getContact(state, surface, jid).entry;
       const { cmds, getState } = harness({
@@ -266,10 +266,14 @@ describe('/agents <handle>|all reset — archive + registry wipe + reseed, one s
 
       const reloaded = getState();
       const eAfter = getBeing(reloaded, surface, jid, 'e');
-      expect(eAfter.present).toBe(false);
+      // present is true again: access_level survives the wipe and is reapplied via patchBeing
+      expect(eAfter.present).toBe(true);
       expect(eAfter.threadId).toBeNull();
       expect(eAfter.mode).toBeNull();
-      expect(eAfter.accessLevel).toBeNull();
+      // durable operator grant (operator ruling 2026-08-17): survives reset
+      expect(eAfter.accessLevel).toBe('all');
+      // allowed_users was never set on this seed — nothing to reapply, stays unset
+      expect(eAfter.allowedUsers).toBeNull();
 
       // a sibling being's own block survives, untouched
       expect(getBeing(reloaded, surface, jid, 'd').mode).toBe('on');
@@ -283,6 +287,85 @@ describe('/agents <handle>|all reset — archive + registry wipe + reseed, one s
       expect(after.home_dir).toBe(before.home_dir);
     });
   }
+
+  // REPRODUCE-FIRST (operator ruling 2026-08-17, live incident in room `acim`): reset used to
+  // wipe access_level/allowed_users along with everything else, silently dropping a being back
+  // to the node's global access_level default (or refusing it outright, per the STRUCTURAL
+  // SAFETY GATES mandatory-access_level work). access_level and allowed_users are durable
+  // operator-set GRANTS, not session state, and must survive — everything else (threadId,
+  // mode, threadCreatedAt, identityInjectedAt) is wiped exactly as before.
+  it('a being with BOTH access_level and allowed_users set survives reset with both intact — threadId/mode/threadCreatedAt/identityInjectedAt still wiped', async () => {
+    let state = ensureContact(emptyState(), 'whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' }).state;
+    state = patchContact(state, 'whatsapp', '1234@s.whatsapp.net', {
+      agents: {
+        e: {
+          mode: 'mention', threadId: 'thread-abc',
+          threadCreatedAt: '2026-08-01T00:00:00Z', identityInjectedAt: '2026-08-01T00:00:00Z',
+          access_level: 'all', allowed_users: ['123'],
+        },
+      },
+    });
+    const { cmds, getState } = harness({ state, io: { rename: async () => {}, mkdir: async () => {} } });
+    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents e reset' });
+
+    const reloaded = getState();
+    const eAfter = getBeing(reloaded, 'whatsapp', '1234@s.whatsapp.net', 'e');
+    expect(eAfter.threadId).toBeNull();
+    expect(eAfter.mode).toBeNull();
+    expect(eAfter.accessLevel).toBe('all');
+    expect(eAfter.allowedUsers).toEqual(['123']);
+
+    // threadCreatedAt/identityInjectedAt aren't surfaced by getBeing — check the raw block
+    const rawAfter = getContact(reloaded, 'whatsapp', '1234@s.whatsapp.net').entry.agents.e;
+    expect(rawAfter.threadCreatedAt).toBeUndefined();
+    expect(rawAfter.identityInjectedAt).toBeUndefined();
+    expect(rawAfter.threadId).toBeUndefined();
+    expect(rawAfter.mode).toBeUndefined();
+  });
+
+  it('a being with access_level set but NOT allowed_users survives reset with ONLY access_level restored — allowed_users stays unset, not invented', async () => {
+    let state = ensureContact(emptyState(), 'whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' }).state;
+    state = patchContact(state, 'whatsapp', '1234@s.whatsapp.net', {
+      agents: { e: { mode: 'on', threadId: 'thread-abc', access_level: 'regular' } },
+    });
+    const { cmds, getState } = harness({ state, io: { rename: async () => {}, mkdir: async () => {} } });
+    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents e reset' });
+
+    const eAfter = getBeing(getState(), 'whatsapp', '1234@s.whatsapp.net', 'e');
+    expect(eAfter.accessLevel).toBe('regular');
+    expect(eAfter.allowedUsers).toBeNull();
+    expect(eAfter.threadId).toBeNull();
+  });
+
+  it('a being with allowed_users set but NOT access_level survives reset with ONLY allowed_users restored — access_level stays unset, not invented', async () => {
+    let state = ensureContact(emptyState(), 'whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' }).state;
+    state = patchContact(state, 'whatsapp', '1234@s.whatsapp.net', {
+      agents: { e: { mode: 'on', threadId: 'thread-abc', allowed_users: ['999'] } },
+    });
+    const { cmds, getState } = harness({ state, io: { rename: async () => {}, mkdir: async () => {} } });
+    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents e reset' });
+
+    const eAfter = getBeing(getState(), 'whatsapp', '1234@s.whatsapp.net', 'e');
+    expect(eAfter.allowedUsers).toEqual(['999']);
+    expect(eAfter.accessLevel).toBeNull();
+    expect(eAfter.threadId).toBeNull();
+  });
+
+  it('a being with NEITHER access_level nor allowed_users set is fully wiped by reset — no behavior change from before this fix', async () => {
+    let state = ensureContact(emptyState(), 'whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' }).state;
+    state = patchContact(state, 'whatsapp', '1234@s.whatsapp.net', {
+      agents: { e: { mode: 'on', threadId: 'thread-abc' } },
+    });
+    const { cmds, getState } = harness({ state, io: { rename: async () => {}, mkdir: async () => {} } });
+    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents e reset' });
+
+    const eAfter = getBeing(getState(), 'whatsapp', '1234@s.whatsapp.net', 'e');
+    expect(eAfter.present).toBe(false);
+    expect(eAfter.threadId).toBeNull();
+    expect(eAfter.mode).toBeNull();
+    expect(eAfter.accessLevel).toBeNull();
+    expect(eAfter.allowedUsers).toBeNull();
+  });
 
   // THE regression lock for the exact design bug this command retires /e reset to fix: /e
   // reset was HARDCODED to defaultKey ('e') and could never even NAME a different being.
@@ -332,7 +415,9 @@ describe('/agents <handle>|all reset — archive + registry wipe + reseed, one s
     await expect(cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents e reset' })).resolves.toBeUndefined();
     expect(sent).toHaveLength(1);
     expect(sent[0].text).toMatch(/reset/);
-    expect(getBeing(getState(), 'whatsapp', '1234@s.whatsapp.net', 'e').present).toBe(false);
+    // seedResetState pins access_level: 'all' on e, which now survives reset (present stays
+    // true) — threadId is the field this test actually cares about: the wipe still ran.
+    expect(getBeing(getState(), 'whatsapp', '1234@s.whatsapp.net', 'e').threadId).toBeNull();
   });
 
   it('a chat with no known contact resolves gracefully — no crash, no archive, no registry write', async () => {
@@ -374,7 +459,7 @@ describe('/agents <handle>|all reset — archive + registry wipe + reseed, one s
       io: { rename: async () => {}, mkdir: async () => {} },
     });
     await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents e reset' });
-    expect(sent[0].text).toBe(`✅ ${slug} reset — e overrides cleared, next message starts fresh.`);
+    expect(sent[0].text).toBe(`✅ ${slug} reset — e state cleared (access_level/allowed_users preserved), next message starts fresh.`);
     expect(sent[0].text).not.toMatch(/\bfor\b/);
   });
 
@@ -402,7 +487,9 @@ describe('/agents <handle>|all reset — archive + registry wipe + reseed, one s
     expect(mkdirs).toContain(room.baseDir());
     const reloaded = getState();
     const eAfter = getBeing(reloaded, 'whatsapp', '!hfm:beeper.local', 'e');
-    expect(eAfter.present).toBe(false);
+    // seedResetState pins access_level: 'all' on e, which survives reset (present stays true)
+    expect(eAfter.present).toBe(true);
+    expect(eAfter.accessLevel).toBe('all');
     expect(eAfter.threadId).toBeNull();
 
     // Self DM (where the command was actually typed) is untouched — no contact minted for it
@@ -509,14 +596,17 @@ describe('/agents <handle>|all restart — clears ONLY threadId, mode/access_lev
   // THE CONTRAST PAIR (operator-mandated): the SAME seeded being, reset wipes mode too
   // (regression lock on reset's existing, unchanged behavior) — restart does not. Run back
   // to back so the distinction is provable at a glance, not just asserted in isolation.
-  it('CONTRAST — /agents e reset wipes mode (regression lock, unchanged) vs /agents e restart leaves mode/access_level intact — same seed, side by side', async () => {
+  // access_level is now a shared column, not a contrast point (operator ruling 2026-08-17):
+  // both reset and restart preserve it, for different reasons — reset because it's a durable
+  // grant reapplied after the wipe, restart because it never wipes anything.
+  it('CONTRAST — /agents e reset wipes mode (regression lock, unchanged) but PRESERVES access_level, vs /agents e restart leaves mode/access_level intact — same seed, side by side', async () => {
     const resetState = seedRestartState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
     const { cmds: resetCmds, getState: getResetState } = harness({ state: resetState, io: { rename: async () => {}, mkdir: async () => {} } });
     await resetCmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents e reset' });
     const eAfterReset = getBeing(getResetState(), 'whatsapp', '1234@s.whatsapp.net', 'e');
-    expect(eAfterReset.present).toBe(false);
+    expect(eAfterReset.present).toBe(true);   // access_level survives, so the block is not fully gone
     expect(eAfterReset.mode).toBeNull();
-    expect(eAfterReset.accessLevel).toBeNull();
+    expect(eAfterReset.accessLevel).toBe('all');
     expect(eAfterReset.threadId).toBeNull();
 
     const restartState = seedRestartState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
