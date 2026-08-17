@@ -523,33 +523,33 @@ describe('buildNodeIdentity — the persona node-identity string', () => {
 });
 
 // THE PERMANENT SHELL HEADER (operator 2026-07-27): computeShellHeader is the pure derivation
-// boot hands the shell limb — persona/help portion always renders; a trailing groups segment
+// boot hands the shell limb — the room/help portion always renders; a trailing groups segment
 // is built from THIS node's own `agents:` map, grouped by where each entry routes. Tested
 // directly here (mirrors buildNodeIdentity / shouldReapStrayWhisper) against directly
 // constructed fixtures — never the live config.yaml.
 describe('computeShellHeader — the permanent shell status line', () => {
   it('short-handle pick: the SHORTEST string in `handles:` wins (e.g. [e, egpt] → @e)', () => {
     const s = computeShellHeader({
-      nodeName: 'kg', personaName: 'egpt',
+      nodeName: 'kg',
       agents: { egpt: { handles: ['e', 'egpt'], default: true } },
     });
-    expect(s).toBe('🟢 egpt — room: lobby — ? for help · ctrl-d = send — kg: @e');
+    expect(s).toBe('🟢 room: lobby — ? for help · ctrl-d = send — kg: @e');
   });
 
   it('no `to:` → grouped under nodeName (LOCAL); a top-level `to: x.node` → grouped under the part after the last dot', () => {
     const s = computeShellHeader({
-      nodeName: 'kg', personaName: 'egpt',
+      nodeName: 'kg',
       agents: {
         egpt: { handles: ['e', 'egpt'], default: true },       // no `to:` → local, keyed by nodeName
         don: { handles: ['d', 'don'], to: 'don.do' },          // top-level `to:` → group 'do'
       },
     });
-    expect(s).toBe('🟢 egpt — room: lobby — ? for help · ctrl-d = send — kg: @e · do: @d');
+    expect(s).toBe('🟢 room: lobby — ? for help · ctrl-d = send — kg: @e · do: @d');
   });
 
   it('carol-shaped `paths:` list groups by the FIRST entry\'s `to:` node segment', () => {
     const s = computeShellHeader({
-      nodeName: 'kg', personaName: 'egpt',
+      nodeName: 'kg',
       agents: {
         egpt: { handles: ['e', 'egpt'], default: true },
         carol: {
@@ -561,20 +561,20 @@ describe('computeShellHeader — the permanent shell status line', () => {
         },
       },
     });
-    expect(s).toBe('🟢 egpt — room: lobby — ? for help · ctrl-d = send — kg: @e · do: @carol');
+    expect(s).toBe('🟢 room: lobby — ? for help · ctrl-d = send — kg: @e · do: @carol');
   });
 
   it('an agent with no `handles:` at all falls back to its map key as the handle', () => {
     const s = computeShellHeader({
-      nodeName: 'kg', personaName: 'egpt',
+      nodeName: 'kg',
       agents: { egpt: { handles: ['e', 'egpt'], default: true }, wren: { to: 'ed.do' } },
     });
-    expect(s).toBe('🟢 egpt — room: lobby — ? for help · ctrl-d = send — kg: @e · do: @wren');
+    expect(s).toBe('🟢 room: lobby — ? for help · ctrl-d = send — kg: @e · do: @wren');
   });
 
   it('multiple agents routing to the SAME node segment combine into ONE group, in agent-declaration order (the brief\'s own example shape)', () => {
     const s = computeShellHeader({
-      nodeName: 'kg', personaName: 'egpt',
+      nodeName: 'kg',
       agents: {
         egpt: { handles: ['e', 'egpt'], default: true },
         carol: { handles: ['carol'], paths: [{ path1: { to: 'don.do' } }] },
@@ -583,32 +583,32 @@ describe('computeShellHeader — the permanent shell status line', () => {
         don: { handles: ['don'], to: 'don.do' },
       },
     });
-    expect(s).toBe('🟢 egpt — room: lobby — ? for help · ctrl-d = send — kg: @e · do: @carol @wren @cara @don');
+    expect(s).toBe('🟢 room: lobby — ? for help · ctrl-d = send — kg: @e · do: @carol @wren @cara @don');
   });
 
   it('an empty/absent `agents:` map does not throw — still returns the persona/help portion, no groups segment', () => {
-    expect(computeShellHeader({ nodeName: 'kg', personaName: 'egpt', agents: {} })).toBe('🟢 egpt — room: lobby — ? for help · ctrl-d = send');
-    expect(computeShellHeader({ nodeName: 'kg', personaName: 'egpt' })).toBe('🟢 egpt — room: lobby — ? for help · ctrl-d = send');
+    expect(computeShellHeader({ nodeName: 'kg', agents: {} })).toBe('🟢 room: lobby — ? for help · ctrl-d = send');
+    expect(computeShellHeader({ nodeName: 'kg' })).toBe('🟢 room: lobby — ? for help · ctrl-d = send');
     expect(() => computeShellHeader({})).not.toThrow();
   });
 
   it('`defaultNode` set to a DIFFERENT node than `nodeName` inserts a " → <default_node>" segment right after the room segment\'s value', () => {
-    const s = computeShellHeader({ nodeName: 'kg', personaName: 'egpt', defaultNode: 'do' });
-    expect(s).toBe('🟢 egpt — room: lobby → do — ? for help · ctrl-d = send');
+    const s = computeShellHeader({ nodeName: 'kg', defaultNode: 'do' });
+    expect(s).toBe('🟢 room: lobby → do — ? for help · ctrl-d = send');
   });
 
   it('`defaultNode` naming THIS node itself (case-insensitive) renders with NO arrow — identical to the unset case', () => {
-    expect(computeShellHeader({ nodeName: 'kg', personaName: 'egpt', defaultNode: 'kg' }))
-      .toBe('🟢 egpt — room: lobby — ? for help · ctrl-d = send');
-    expect(computeShellHeader({ nodeName: 'kg', personaName: 'egpt', defaultNode: 'KG' }))
-      .toBe('🟢 egpt — room: lobby — ? for help · ctrl-d = send');
+    expect(computeShellHeader({ nodeName: 'kg', defaultNode: 'kg' }))
+      .toBe('🟢 room: lobby — ? for help · ctrl-d = send');
+    expect(computeShellHeader({ nodeName: 'kg', defaultNode: 'KG' }))
+      .toBe('🟢 room: lobby — ? for help · ctrl-d = send');
   });
 
   it('`defaultNode` absent or empty string renders with NO arrow', () => {
-    expect(computeShellHeader({ nodeName: 'kg', personaName: 'egpt' }))
-      .toBe('🟢 egpt — room: lobby — ? for help · ctrl-d = send');
-    expect(computeShellHeader({ nodeName: 'kg', personaName: 'egpt', defaultNode: '' }))
-      .toBe('🟢 egpt — room: lobby — ? for help · ctrl-d = send');
+    expect(computeShellHeader({ nodeName: 'kg' }))
+      .toBe('🟢 room: lobby — ? for help · ctrl-d = send');
+    expect(computeShellHeader({ nodeName: 'kg', defaultNode: '' }))
+      .toBe('🟢 room: lobby — ? for help · ctrl-d = send');
   });
 
   // Live status-line room reflection (operator 2026-08-16, reworded 2026-08-17): /room join
@@ -617,35 +617,35 @@ describe('computeShellHeader — the permanent shell status line', () => {
   // routing, a different concept — see the defaultNode arrow below).
   describe('`currentRoom` — the /room join reflection', () => {
     it('a joined room renders as "room: <currentRoom>"', () => {
-      expect(computeShellHeader({ nodeName: 'kg', personaName: 'egpt', currentRoom: 'acim' }))
-        .toBe('🟢 egpt — room: acim — ? for help · ctrl-d = send');
+      expect(computeShellHeader({ nodeName: 'kg', currentRoom: 'acim' }))
+        .toBe('🟢 room: acim — ? for help · ctrl-d = send');
     });
 
     it('currentRoom absent, empty, or null renders "room: lobby" (baseline unchanged)', () => {
-      expect(computeShellHeader({ nodeName: 'kg', personaName: 'egpt' }))
-        .toBe('🟢 egpt — room: lobby — ? for help · ctrl-d = send');
-      expect(computeShellHeader({ nodeName: 'kg', personaName: 'egpt', currentRoom: '' }))
-        .toBe('🟢 egpt — room: lobby — ? for help · ctrl-d = send');
-      expect(computeShellHeader({ nodeName: 'kg', personaName: 'egpt', currentRoom: null }))
-        .toBe('🟢 egpt — room: lobby — ? for help · ctrl-d = send');
+      expect(computeShellHeader({ nodeName: 'kg' }))
+        .toBe('🟢 room: lobby — ? for help · ctrl-d = send');
+      expect(computeShellHeader({ nodeName: 'kg', currentRoom: '' }))
+        .toBe('🟢 room: lobby — ? for help · ctrl-d = send');
+      expect(computeShellHeader({ nodeName: 'kg', currentRoom: null }))
+        .toBe('🟢 room: lobby — ? for help · ctrl-d = send');
     });
 
     it("currentRoom === 'lobby' renders \"room: lobby\" — 'lobby' means no room joined, never a real room/lobby folder (same rule as redirectShellToRoom)", () => {
-      expect(computeShellHeader({ nodeName: 'kg', personaName: 'egpt', currentRoom: 'lobby' }))
-        .toBe('🟢 egpt — room: lobby — ? for help · ctrl-d = send');
+      expect(computeShellHeader({ nodeName: 'kg', currentRoom: 'lobby' }))
+        .toBe('🟢 room: lobby — ? for help · ctrl-d = send');
     });
 
     it('a joined room AND a routed defaultNode: the defaultNode arrow chains after the room value ("room: acim → do")', () => {
-      expect(computeShellHeader({ nodeName: 'kg', personaName: 'egpt', currentRoom: 'acim', defaultNode: 'do' }))
-        .toBe('🟢 egpt — room: acim → do — ? for help · ctrl-d = send');
+      expect(computeShellHeader({ nodeName: 'kg', currentRoom: 'acim', defaultNode: 'do' }))
+        .toBe('🟢 room: acim → do — ? for help · ctrl-d = send');
     });
 
     it('a joined room still combines with the agents/groups trailing segment', () => {
       const s = computeShellHeader({
-        nodeName: 'kg', personaName: 'egpt', currentRoom: 'acim',
+        nodeName: 'kg', currentRoom: 'acim',
         agents: { egpt: { handles: ['e', 'egpt'], default: true } },
       });
-      expect(s).toBe('🟢 egpt — room: acim — ? for help · ctrl-d = send — kg: @e');
+      expect(s).toBe('🟢 room: acim — ? for help · ctrl-d = send — kg: @e');
     });
   });
 });

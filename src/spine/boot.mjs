@@ -266,13 +266,17 @@ function shellHeaderGroupOf(agent, nodeName) {
 }
 
 // THE PERMANENT SHELL HEADER (operator 2026-07-27): the operator's terminal editor needs a
-// fixed status line — persona + a `room:` segment + a roster of this node's OWN `agents:`,
-// grouped by where each one routes — and a FUTURE browser-extension surface will need the
-// identical string but cannot read config.yaml at all. So the derivation lives HERE, spine-side,
-// pure (mirrors buildNodeIdentity), and boot hands the computed STRING to the shell limb over the
+// fixed status line — a `room:` segment + a roster of this node's OWN `agents:`, grouped by
+// where each one routes — and a FUTURE browser-extension surface will need the identical
+// string but cannot read config.yaml at all. So the derivation lives HERE, spine-side, pure
+// (mirrors buildNodeIdentity), and boot hands the computed STRING to the shell limb over the
 // frame the two already share (src/bridges/shell-port.mjs `header`) — the editor never reads
 // config. Never a peer node's roster: only this node's own `agents:` map, grouped by route.
-//   personaName = labelOf(defaultKey) — NOT re-derived here (no second scan for default:true).
+//   No standalone persona label (operator 2026-08-17, dropped): the default persona is already
+//   IN the groups segment below (its own shortest handle, e.g. `@e`) — reachability is a
+//   per-conversation property (config.yaml + conversations.yaml overrides), not one being with
+//   special billing, so singling it out up front was redundant and implied a status it doesn't
+//   have.
 //   nodeName    = cfg.node_name — the LOCAL group's key when an agent has no `to:`/`paths:`.
 //   agents      = cfg.agents — absent/empty tolerated (no throw; just no trailing groups segment).
 //   currentRoom = commands.mjs's currentRoomOf('shell') (operator 2026-08-16: live status-line
@@ -289,13 +293,13 @@ function shellHeaderGroupOf(agent, nodeName) {
 // Groups render in agents-map insertion order (JS object order already preserves it); handles
 // render within a group in agent-declaration order. SHORT HANDLE = the shortest string in the
 // agent's `handles:` array, else its map key.
-export function computeShellHeader({ nodeName, personaName, agents, defaultNode, currentRoom } = {}) {
+export function computeShellHeader({ nodeName, agents, defaultNode, currentRoom } = {}) {
   const normDefaultNode = String(defaultNode ?? '').trim().toLowerCase();
   const normNodeName = String(nodeName ?? '').trim().toLowerCase();
   const arrow = (normDefaultNode && normDefaultNode !== normNodeName) ? ` → ${normDefaultNode}` : '';
   const room = String(currentRoom ?? '').trim();
   const roomLabel = (room && room !== LOBBY_SLUG) ? room : LOBBY_SLUG;
-  const base = `🟢 ${personaName} — room: ${roomLabel}${arrow} — ? for help · ctrl-d = send`;
+  const base = `🟢 room: ${roomLabel}${arrow} — ? for help · ctrl-d = send`;
   const map = (agents && typeof agents === 'object' && !Array.isArray(agents)) ? agents : {};
   const groups = new Map();   // groupKey → [ '@handle', ... ], insertion order = first agent encountered
   for (const [key, a] of Object.entries(map)) {
@@ -1019,7 +1023,7 @@ export async function boot({
   // 2026-07-26. The wrap is a Proxy precisely so this port's `isConnected` GETTER stays live.
   // THE PERMANENT SHELL HEADER (operator 2026-07-27, computeShellHeader above): computed HERE,
   // the ONE place config is read for this feature — the editor never touches config.yaml.
-  const shellHeader = computeShellHeader({ nodeName: node_name, personaName: labelOf(defaultKey), agents: cfg.agents, defaultNode: cfg.dispatch?.default_node });
+  const shellHeader = computeShellHeader({ nodeName: node_name, agents: cfg.agents, defaultNode: cfg.dispatch?.default_node });
   const shellPort = lasso.wrap(createShellPort({
     wakeWords,
     addressWithoutAt,                     // same switch, same route — the shell gate and the beeper gate move together
@@ -1152,7 +1156,7 @@ export async function boot({
     // above). Every other surface is a no-op: only the shell has a status line to update.
     onRoomChange: (surface, slug) => {
       if (surface !== 'shell') return;
-      shellPort.setHeader(computeShellHeader({ nodeName: node_name, personaName: labelOf(defaultKey), agents: cfg.agents, defaultNode: cfg.dispatch?.default_node, currentRoom: slug }));
+      shellPort.setHeader(computeShellHeader({ nodeName: node_name, agents: cfg.agents, defaultNode: cfg.dispatch?.default_node, currentRoom: slug }));
     },
     onLog: (m) => log.line?.(`[command] ${m}`),
   });
