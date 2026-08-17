@@ -266,24 +266,26 @@ function shellHeaderGroupOf(agent, nodeName) {
 }
 
 // THE PERMANENT SHELL HEADER (operator 2026-07-27): the operator's terminal editor needs a
-// fixed status line — persona + LOBBY_SLUG + a roster of this node's OWN `agents:`, grouped by
-// where each one routes — and a FUTURE browser-extension surface will need the identical
-// string but cannot read config.yaml at all. So the derivation lives HERE, spine-side, pure
-// (mirrors buildNodeIdentity), and boot hands the computed STRING to the shell limb over the
+// fixed status line — persona + a `room:` segment + a roster of this node's OWN `agents:`,
+// grouped by where each one routes — and a FUTURE browser-extension surface will need the
+// identical string but cannot read config.yaml at all. So the derivation lives HERE, spine-side,
+// pure (mirrors buildNodeIdentity), and boot hands the computed STRING to the shell limb over the
 // frame the two already share (src/bridges/shell-port.mjs `header`) — the editor never reads
 // config. Never a peer node's roster: only this node's own `agents:` map, grouped by route.
 //   personaName = labelOf(defaultKey) — NOT re-derived here (no second scan for default:true).
 //   nodeName    = cfg.node_name — the LOCAL group's key when an agent has no `to:`/`paths:`.
 //   agents      = cfg.agents — absent/empty tolerated (no throw; just no trailing groups segment).
-//   defaultNode = raw `dispatch.default_node` (string|undefined/null; normalized in here, trim+lowercase).
-//                 Renders ` → <default_node>` right after LOBBY_SLUG, UNLESS it's unset/empty OR
-//                 equals nodeName itself (bare commands run locally either way — no arrow implying
-//                 a route that isn't happening).
 //   currentRoom = commands.mjs's currentRoomOf('shell') (operator 2026-08-16: live status-line
-//                 join reflection) — renders its OWN ` → <currentRoom>` right after LOBBY_SLUG,
-//                 UNLESS unset/empty OR equal to LOBBY_SLUG itself (redirectShellToRoom's own
-//                 rule: 'lobby' means "no room joined", never a real room/lobby folder). Chains
-//                 before the defaultNode arrow if both are present.
+//                 join reflection; operator 2026-08-17: rendered as `room: <slug>`, not a
+//                 `lobby → X` arrow — the shell's fixed home conversation is LOBBY_SLUG itself,
+//                 so with nothing joined the segment reads `room: lobby` (honest, not "→ nothing"),
+//                 and with a room joined it reads `room: <that room>`).
+//   defaultNode = raw `dispatch.default_node` (string|undefined/null; normalized in here, trim+lowercase).
+//                 Renders ` → <default_node>` right after the room segment's value, UNLESS it's
+//                 unset/empty OR equals nodeName itself (bare commands run locally either way —
+//                 no arrow implying a route that isn't happening). Kept as the ONLY arrow in the
+//                 string now that room-join no longer uses one, so `room: acim → do` reads
+//                 unambiguously as "cross-node default routing", not room-to-room navigation.
 // Groups render in agents-map insertion order (JS object order already preserves it); handles
 // render within a group in agent-declaration order. SHORT HANDLE = the shortest string in the
 // agent's `handles:` array, else its map key.
@@ -292,8 +294,8 @@ export function computeShellHeader({ nodeName, personaName, agents, defaultNode,
   const normNodeName = String(nodeName ?? '').trim().toLowerCase();
   const arrow = (normDefaultNode && normDefaultNode !== normNodeName) ? ` → ${normDefaultNode}` : '';
   const room = String(currentRoom ?? '').trim();
-  const roomArrow = (room && room !== LOBBY_SLUG) ? ` → ${room}` : '';
-  const base = `🟢 ${personaName} ${LOBBY_SLUG}${roomArrow}${arrow} — ? for help · ctrl-d = send`;
+  const roomLabel = (room && room !== LOBBY_SLUG) ? room : LOBBY_SLUG;
+  const base = `🟢 ${personaName} — room: ${roomLabel}${arrow} — ? for help · ctrl-d = send`;
   const map = (agents && typeof agents === 'object' && !Array.isArray(agents)) ? agents : {};
   const groups = new Map();   // groupKey → [ '@handle', ... ], insertion order = first agent encountered
   for (const [key, a] of Object.entries(map)) {
