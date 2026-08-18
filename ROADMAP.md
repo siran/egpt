@@ -371,6 +371,24 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
   title/metadata-diff history, bounded or infinite) and `modules.stats.{...}` (the
   fetchable-from-surface properties `recordMemberStat` already collects,
   `conversations-state.mjs:551-598`).
+  - **A THIRD future member (operator 2026-08-17): `modules.security.{access_level,
+    allowed_users, allowed_directories, tool_overrides, ...}`** — one namespace for
+    everything that gates what a being may DO and WHO may reach it, consolidating what's
+    currently three separate concerns living in three separate places: `access_level` and
+    `allowed_users` (already the two-tier `conversation_defaults`/per-conversation pattern,
+    2026-08-15/17 — see brainpool.mjs's STRUCTURAL SAFETY GATES and router.mjs/mesh.mjs's
+    `allowedUsersPermits`), plus two NOT YET BUILT: **allowed directories** (today only exists
+    as a TYPE FILE's own static `allowed_paths:`, config/agents/*.yaml — never
+    conversation-overridable) and **specific tool overrides** (today only the coarse
+    all-or-`regular`-tool-list split via `config/permissions/*.md` — no per-conversation
+    "grant exactly Bash(git:*), nothing else" mechanism exists). UNLIKE `renames`/`stats`,
+    this is NOT a new feature to build fresh — it's a REFACTOR of the most safety-sensitive
+    code in the repo (the same chain that took most of 2026-08-16/17 to get right: access_level
+    mandatory + fail-closed, `all` requires non-empty `allowed_users`, `dangerous:true`'s
+    actual permission-bypass gated on that whole chain). Moving these fields under
+    `modules.security.*` must preserve every one of those invariants byte-for-byte — this is
+    a namespace move to do CAREFULLY, verified against the existing structural-safety-gate
+    test suites, not a "while we're in there" opportunity to also change what they gate.
   - **Do NOT retroactively fold the EXISTING top-level blocks** (`heartbeats`, `warm`,
     `compaction`, `transcription_service`, `radio_service`, `voice_service`) into
     `modules.*` in the same pass — they don't share one merge semantics. `heartbeats` is a
