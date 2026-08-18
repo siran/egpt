@@ -24,9 +24,19 @@ $ErrorActionPreference = 'Stop'
 
 $watchdogScript = Join-Path $Repo 'setup\watchdog-daemon.ps1'
 if (-not (Test-Path $watchdogScript)) { throw "watchdog script not found: $watchdogScript" }
+$vbsWrapper = Join-Path $Repo 'setup\run-hidden.vbs'
+if (-not (Test-Path $vbsWrapper)) { throw "vbs wrapper not found: $vbsWrapper" }
 
-$action = New-ScheduledTaskAction -Execute 'powershell.exe' `
-  -Argument "-WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File `"$watchdogScript`" -EgptHome `"$EgptHome`"" `
+# wscript.exe, not `powershell.exe -WindowStyle Hidden` (operator 2026-08-17, live: "i still
+# see flashing ... it switches focus and disappears" -- this runs every 2 minutes, so it was
+# the main source of it). See run-hidden.vbs's own header for why wscript.exe never flashes
+# at all (a GUI-subsystem host, no console window ever allocated) where powershell.exe can.
+$q = [char]34
+$qEsc = '\' + $q   # literal backslash+quote -- Win32 command-line escaping for a " embedded
+                    # inside an already-quoted argument, not a PowerShell escape sequence
+$innerCmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File $qEsc$watchdogScript$qEsc -EgptHome $qEsc$EgptHome$qEsc"
+$action = New-ScheduledTaskAction -Execute 'wscript.exe' `
+  -Argument "//B //NoLogo $q$vbsWrapper$q $q$innerCmd$q" `
   -WorkingDirectory $Repo
 $userId = "$env:COMPUTERNAME\$env:USERNAME"
 $principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -RunLevel Limited

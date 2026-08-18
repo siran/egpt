@@ -64,18 +64,30 @@ if (-not (Test-Path $nodeExe)) { throw "node.exe not found: $nodeExe" }
 # to exist for Chrome, never for the daemon itself). Launching node.exe DIRECTLY as the
 # task's own action always shows its console under Interactive logon -- no cmdlet flag
 # suppresses that for the task's own action process. Fix: run a real SCRIPT FILE
-# (run-daemon-hidden.ps1, next to this one) under `powershell.exe -WindowStyle Hidden -File`
-# -- three straight rounds of nested-quote collisions in a -Command one-liner (outer wrapper
-# vs inner path literals, then vs an inner 'Continue' literal) proved that shape too fragile;
-# a -File action needs zero command-line escaping. See that script's own header for why it
-# blocks (so Task Scheduler's RestartCount/RestartInterval can see the daemon die) and why
-# $ErrorActionPreference='Continue' is required there (node's own children write ordinary
-# INFO lines to stderr, which throws under 'Stop' -- confirmed live: the daemon was running
-# fine underneath even while the wrapper died from exactly this).
+# (run-daemon-hidden.ps1, next to this one) -- three straight rounds of nested-quote
+# collisions in a -Command one-liner (outer wrapper vs inner path literals, then vs an
+# inner 'Continue' literal) proved that shape too fragile; a -File action needs zero
+# command-line escaping. See that script's own header for why it blocks and why
+# $ErrorActionPreference='Continue' is required there.
+#
+# `powershell.exe -WindowStyle Hidden` ALONE still isn't enough (operator 2026-08-17, live:
+# "i still see flashing ... it switches focus and disappears") -- Windows allocates the
+# console window as part of process creation, before powershell.exe's own code runs to
+# apply -WindowStyle, so it can flash/steal focus for an instant regardless. wscript.exe
+# (run-hidden.vbs, next to this one) is a GUI-subsystem host, not console-subsystem -- it
+# never allocates a console window at all, so there is nothing to flash. See that script's
+# own header for the Run(cmd, 0, True) mechanics.
 $wrapperScript = Join-Path $PSScriptRoot 'run-daemon-hidden.ps1'
 if (-not (Test-Path $wrapperScript)) { throw "wrapper script not found: $wrapperScript" }
-$action = New-ScheduledTaskAction -Execute 'powershell.exe' `
-  -Argument "-WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File `"$wrapperScript`" -Repo `"$Repo`" -EgptHome `"$EgptHome`"" `
+$vbsWrapper = Join-Path $PSScriptRoot 'run-hidden.vbs'
+if (-not (Test-Path $vbsWrapper)) { throw "vbs wrapper not found: $vbsWrapper" }
+$q = [char]34
+$qEsc = '\' + $q   # a literal backslash+quote pair -- how an embedded " survives INSIDE
+                    # an already-quoted Win32 command-line argument (standard
+                    # CommandLineToArgvW escaping, not a PowerShell escape sequence)
+$innerCmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File $qEsc$wrapperScript$qEsc -Repo $qEsc$Repo$qEsc -EgptHome $qEsc$EgptHome$qEsc"
+$action = New-ScheduledTaskAction -Execute 'wscript.exe' `
+  -Argument "//B //NoLogo $q$vbsWrapper$q $q$innerCmd$q" `
   -WorkingDirectory $Repo
 # fully-qualified <COMPUTER>\<user> — a bare user is rejected as malformed XML
 $userId = "$env:COMPUTERNAME\$env:USERNAME"
