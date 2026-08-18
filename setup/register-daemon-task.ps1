@@ -37,6 +37,7 @@
 
 param(
   [string]$Repo      = (Join-Path $env:USERPROFILE 'bin\egpt'),
+  [string]$EgptHome  = $(if ($env:EGPT_HOME) { $env:EGPT_HOME } else { Join-Path $env:USERPROFILE '.egpt' }),
   [string]$TaskName  = 'egpt-daemon-session1',
   [int]$RestartCount = 999,
   [int]$RestartIntervalMinutes = 1
@@ -58,7 +59,24 @@ if (-not (Test-Path $nodeExe)) { throw "node.exe not found: $nodeExe" }
 # Task action has no clean per-task environment-variable slot the way NSSM's
 # AppEnvironmentExtra did; the default already matches, so nothing to inject.
 
-$action = New-ScheduledTaskAction -Execute $nodeExe -Argument "`"$daemonScript`"" -WorkingDirectory $Repo
+# HIDDEN, but Task Scheduler must still track the daemon's actual lifetime (operator
+# 2026-08-17, live: "why not run that tab headless" -- the console window only ever needed
+# to exist for Chrome, never for the daemon itself). Launching node.exe DIRECTLY as the
+# task's own action always shows its console under Interactive logon -- no cmdlet flag
+# suppresses that for the task's own action process. Fix: run a real SCRIPT FILE
+# (run-daemon-hidden.ps1, next to this one) under `powershell.exe -WindowStyle Hidden -File`
+# -- three straight rounds of nested-quote collisions in a -Command one-liner (outer wrapper
+# vs inner path literals, then vs an inner 'Continue' literal) proved that shape too fragile;
+# a -File action needs zero command-line escaping. See that script's own header for why it
+# blocks (so Task Scheduler's RestartCount/RestartInterval can see the daemon die) and why
+# $ErrorActionPreference='Continue' is required there (node's own children write ordinary
+# INFO lines to stderr, which throws under 'Stop' -- confirmed live: the daemon was running
+# fine underneath even while the wrapper died from exactly this).
+$wrapperScript = Join-Path $PSScriptRoot 'run-daemon-hidden.ps1'
+if (-not (Test-Path $wrapperScript)) { throw "wrapper script not found: $wrapperScript" }
+$action = New-ScheduledTaskAction -Execute 'powershell.exe' `
+  -Argument "-WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File `"$wrapperScript`" -Repo `"$Repo`" -EgptHome `"$EgptHome`"" `
+  -WorkingDirectory $Repo
 # fully-qualified <COMPUTER>\<user> — a bare user is rejected as malformed XML
 $userId = "$env:COMPUTERNAME\$env:USERNAME"
 $principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -RunLevel Limited
