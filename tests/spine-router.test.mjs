@@ -381,8 +381,8 @@ describe('addressed() — a bare handle opening the message (operator 2026-07-27
 
 // ── ALLOWED_USERS GATE (operator 2026-08-15): a being's OWN reachability allow-list — replaces
 //    the evicted TYPE-FILE `dangerous:true` reachability mechanism (meta-engineer.yaml, gone; see
-//    brainpool.mjs's confinementFor for what `dangerous` still means — a CAPABILITY tier only,
-//    never a reachability gate any more). Two-tier: a GLOBAL default lives NESTED under
+//    brainpool.mjs's confinementFor for what `dangerously_skip_permissions` still means — a
+//    CAPABILITY tier only, never a reachability gate any more). Two-tier: a GLOBAL default lives NESTED under
 //    agents.<handle>.conversation_defaults.allowed_users in config.yaml (already sitting on
 //    hit.agent — no extra wiring); a PER-CONVERSATION override lives FLAT under conversations.yaml
 //    agents.<being>.allowed_users (read via getBeing off an injected `loadState`, mirroring

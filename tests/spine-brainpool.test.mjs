@@ -64,7 +64,7 @@ function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, load
   // STRUCTURAL SAFETY GATES block in brainpool.mjs. Almost every test in this file exercises
   // UNRELATED behavior and never meant to set one, so default every agents.<being> entry's
   // conversation_defaults.access_level to 'regular' (the confined tier — never touches
-  // dangerous/allowed_tools semantics on its own) unless the test's OWN config already pins a
+  // dangerously_skip_permissions/allowed_tools semantics on its own) unless the test's OWN config already pins a
   // global access_level for that being, or seedAgents already pins a PER-CONVERSATION one (which
   // would win anyway). A test that exercises accessLevel/allowed_users semantics ITSELF passes
   // skipAccessLevelDefault to opt out and sets its own.
@@ -572,15 +572,15 @@ describe('brainpool.turn — confine-by-default (allowed_tools list) + allowed_p
   });
 });
 
-// ── DANGEROUS:true (operator 2026-08 meta-engineer) — the ONE unconfined tier. Skips BOTH
-//    coerceAllowedTools (an 'all'/list allowed_tools list runs verbatim, incl. bare Bash/Agent)
-//    AND confinementFor (no confineToDirs/addDirs/readOnlyDirs, ever) at every def-resolution
-//    call site in turn() — the persona (fresh-instance) path, the sibling path, and the
-//    freeze-read-back path. A NON-dangerous def must stay bitwise unchanged (regression lock —
-//    every pre-existing test above already re-asserts this unmodified). ──
-describe('brainpool.turn — dangerous:true skips coercion + confinement (operator 2026-08 meta-engineer)', () => {
-  it('PERSONA def dangerous:true → allowedTools pass through verbatim (incl. bare Bash/Agent), NO confineToDirs/addDirs/readOnlyDirs', async () => {
-    const brains = { resolve: () => ({ name: 'meta-engineer', type: 'ccode', model: 'sonnet', effort: 'high', dangerous: true, allowed_tools: ['Read', 'Write', 'Bash', 'Agent'] }) };
+// ── DANGEROUSLY_SKIP_PERMISSIONS:true (operator 2026-08 meta-engineer) — the ONE unconfined
+//    tier. Skips BOTH coerceAllowedTools (an 'all'/list allowed_tools list runs verbatim, incl.
+//    bare Bash/Agent) AND confinementFor (no confineToDirs/addDirs/readOnlyDirs, ever) at every
+//    def-resolution call site in turn() — the persona (fresh-instance) path, the sibling path,
+//    and the freeze-read-back path. A def with the flag unset must stay bitwise unchanged
+//    (regression lock — every pre-existing test above already re-asserts this unmodified). ──
+describe('brainpool.turn — dangerously_skip_permissions:true skips coercion + confinement (operator 2026-08 meta-engineer)', () => {
+  it('PERSONA def dangerously_skip_permissions:true → allowedTools pass through verbatim (incl. bare Bash/Agent), NO confineToDirs/addDirs/readOnlyDirs', async () => {
+    const brains = { resolve: () => ({ name: 'meta-engineer', type: 'ccode', model: 'sonnet', effort: 'high', dangerously_skip_permissions: true, allowed_tools: ['Read', 'Write', 'Bash', 'Agent'] }) };
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains });
     await brain.turn('e', ev);
     const opts = pool.calls[0].brainOptions;
@@ -588,7 +588,7 @@ describe('brainpool.turn — dangerous:true skips coercion + confinement (operat
     expect(opts.confineToDirs).toBeUndefined();
     expect(opts.addDirs).toBeUndefined();
     expect(opts.readOnlyDirs).toBeUndefined();
-    expect(opts.dangerous).toBe(true);   // operator 2026-08-17: the explicit field buildClaudeArgs acts on
+    expect(opts.dangerouslySkipPermissions).toBe(true);   // operator 2026-08-17: the explicit field buildClaudeArgs acts on
     // end-to-end through the real arg builder: no sandbox flags, the real bypass flags (2026-08-17),
     // a plain --allowedTools with Bash present
     const args = buildClaudeArgs(opts);
@@ -599,8 +599,8 @@ describe('brainpool.turn — dangerous:true skips coercion + confinement (operat
     expect(argVals(args, '--allowedTools')[0]).toContain('Bash');
   });
 
-  it('SIBLING def dangerous:true (agents registry, never frozen) → same unconfined behavior', async () => {
-    const brains = { resolve: (name) => name === 'meta-engineer' ? ({ name: 'meta-engineer', type: 'ccode', model: 'sonnet', effort: 'high', dangerous: true, allowed_tools: ['Read', 'Bash'] }) : null };
+  it('SIBLING def dangerously_skip_permissions:true (agents registry, never frozen) → same unconfined behavior', async () => {
+    const brains = { resolve: (name) => name === 'meta-engineer' ? ({ name: 'meta-engineer', type: 'ccode', model: 'sonnet', effort: 'high', dangerously_skip_permissions: true, allowed_tools: ['Read', 'Bash'] }) : null };
     const config = { agents: { wren: { configuration: 'meta-engineer', name: 'wren' } } };
     const { brain, pool } = harness([{ text: 'ok', sessionId: 'w1' }], { brains, config });
     await brain.turn('wren', ev);
@@ -609,15 +609,15 @@ describe('brainpool.turn — dangerous:true skips coercion + confinement (operat
     expect(opts.confineToDirs).toBeUndefined();
   });
 
-  it("a dangerous def's OWN 'all'/'*' also passes through unrejected (dangerous means dangerous — coercion never runs)", async () => {
-    const brains = { resolve: () => ({ name: 'meta-engineer', type: 'ccode', dangerous: true, allowed_tools: 'all' }) };
+  it("a dangerously_skip_permissions def's OWN 'all'/'*' also passes through unrejected (dangerously_skip_permissions means dangerously_skip_permissions — coercion never runs)", async () => {
+    const brains = { resolve: () => ({ name: 'meta-engineer', type: 'ccode', dangerously_skip_permissions: true, allowed_tools: 'all' }) };
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains });
     await brain.turn('e', ev);
     expect(pool.calls[0].brainOptions.allowedTools).toBe('all');   // NOT coerced to DEFAULT_ALLOWED_TOOLS
     expect(pool.calls[0].brainOptions.confineToDirs).toBeUndefined();
   });
 
-  it('REGRESSION: a NON-dangerous def (dangerous absent) is bitwise unchanged — still coerced + confined', async () => {
+  it('REGRESSION: a def with dangerously_skip_permissions absent is bitwise unchanged — still coerced + confined', async () => {
     const brains = { resolve: () => ({ name: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'all' }) };
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains });
     await brain.turn('e', ev);
@@ -626,8 +626,8 @@ describe('brainpool.turn — dangerous:true skips coercion + confinement (operat
     expect(opts.confineToDirs).toEqual([opts.cwd]);              // still confined
   });
 
-  it('REGRESSION: dangerous: false (explicit) behaves exactly like absent — coerced + confined', async () => {
-    const brains = { resolve: () => ({ name: 'egpt', type: 'ccode', dangerous: false, allowed_tools: 'all' }) };
+  it('REGRESSION: dangerously_skip_permissions: false (explicit) behaves exactly like absent — coerced + confined', async () => {
+    const brains = { resolve: () => ({ name: 'egpt', type: 'ccode', dangerously_skip_permissions: false, allowed_tools: 'all' }) };
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains });
     await brain.turn('e', ev);
     const opts = pool.calls[0].brainOptions;
@@ -646,41 +646,41 @@ describe('brainpool.turn — dangerous:true skips coercion + confinement (operat
 //    hand-editing conversations.yaml has always been honored here too, regardless of how it
 //    got written. ──
 describe('brainpool.turn — accessLevel override (operator 2026-08-14, was /e access, now /agents … access_level)', () => {
-  it("accessLevel 'all' overrides dangerous/allowedTools on an ALREADY-LIVE (resumed) thread too — applied fresh every turn", async () => {
+  it("accessLevel 'all' overrides dangerously_skip_permissions/allowedTools on an ALREADY-LIVE (resumed) thread too — applied fresh every turn", async () => {
     const brains = { resolve: () => ({ name: 'sonnet-high', type: 'ccode', model: 'haiku', effort: 'low', allowed_tools: ['Read'] }) };
     const { brain, pool } = harness([{ text: 'ok', sessionId: 'sid-live' }], {
       brains, seedSession: 'sid-live', seedAgents: { e: { access_level: 'all', allowed_users: ['123'] } },
-      loadPermission: (level) => (level === 'all' ? { dangerous: true, allowedTools: ['Read', 'Write', 'Bash', 'Agent'] } : null),
+      loadPermission: (level) => (level === 'all' ? { dangerouslySkipPermissions: true, allowedTools: ['Read', 'Write', 'Bash', 'Agent'] } : null),
     });
     await brain.turn('e', ev);
     const opts = pool.calls[0].brainOptions;
     expect(opts.allowedTools).toEqual(['Read', 'Write', 'Bash', 'Agent']);   // the permissions file's grant, not the def's own ['Read']
-    expect(opts.confineToDirs).toBeUndefined();                             // dangerous:true → unconfined
-    expect(opts.dangerous).toBe(true);                                      // the explicit field buildClaudeArgs acts on
+    expect(opts.confineToDirs).toBeUndefined();                             // dangerously_skip_permissions:true → unconfined
+    expect(opts.dangerouslySkipPermissions).toBe(true);                     // the explicit field buildClaudeArgs acts on
     expect(opts.sessionId).toBe('sid-live');                                // genuinely resumed, not a fresh turn
   });
 
-  it("accessLevel 'regular' overrides dangerous/allowedTools to a confined grant on a fresh (never-instanced) turn too", async () => {
-    const brains = { resolve: () => ({ name: 'meta-engineer', type: 'ccode', model: 'sonnet', effort: 'high', dangerous: true, allowed_tools: ['Read', 'Bash'] }) };
+  it("accessLevel 'regular' overrides dangerously_skip_permissions/allowedTools to a confined grant on a fresh (never-instanced) turn too", async () => {
+    const brains = { resolve: () => ({ name: 'meta-engineer', type: 'ccode', model: 'sonnet', effort: 'high', dangerously_skip_permissions: true, allowed_tools: ['Read', 'Bash'] }) };
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
       brains, seedAgents: { e: { access_level: 'regular' } },
-      loadPermission: (level) => (level === 'regular' ? { dangerous: false, allowedTools: DEFAULT_ALLOWED_TOOLS } : null),
+      loadPermission: (level) => (level === 'regular' ? { dangerouslySkipPermissions: false, allowedTools: DEFAULT_ALLOWED_TOOLS } : null),
     });
     await brain.turn('e', ev);
     const opts = pool.calls[0].brainOptions;
-    expect(opts.allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);   // overrides the instanced dangerous:true def entirely
+    expect(opts.allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);   // overrides the instanced dangerously_skip_permissions:true def entirely
     expect(opts.confineToDirs).toEqual([opts.cwd]);             // confined, not the def's own unconfined tier
-    expect(opts.dangerous).toBe(false);                         // the override's dangerous:false wins, not the def's own true
+    expect(opts.dangerouslySkipPermissions).toBe(false);        // the override's dangerouslySkipPermissions:false wins, not the def's own true
   });
 
   it('editing the permissions-file RESULT between two turns of the SAME conversation changes the SECOND turn — no /e access re-run, proves live re-read (no caching)', async () => {
-    let grant = { dangerous: true, allowedTools: ['Read', 'Bash'] };
+    let grant = { dangerouslySkipPermissions: true, allowedTools: ['Read', 'Bash'] };
     const { brain, pool } = harness([{ text: 'a', sessionId: 'sid' }, { text: 'b', sessionId: 'sid' }], {
       seedAgents: { e: { access_level: 'all', allowed_users: ['123'] } },
       loadPermission: () => grant,
     });
     await brain.turn('e', ev);                                             // turn 1: sees the first grant
-    grant = { dangerous: false, allowedTools: ['Read', 'Grep'] };           // "editing the file" — same access_level, different content
+    grant = { dangerouslySkipPermissions: false, allowedTools: ['Read', 'Grep'] };   // "editing the file" — same access_level, different content
     await brain.turn('e', ev);                                             // turn 2: no command re-run
     expect(pool.calls[0].brainOptions.allowedTools).toEqual(['Read', 'Bash']);
     expect(pool.calls[0].brainOptions.confineToDirs).toBeUndefined();
@@ -700,7 +700,7 @@ describe('brainpool.turn — accessLevel override (operator 2026-08-14, was /e a
     const config = { agents: { wren: { configuration: 'sonnet-high', name: 'wren' } } };
     const { brain, pool } = harness([{ text: 'ok', sessionId: 'w1' }], {
       brains, config, seedAgents: { e: { access_level: 'all', allowed_users: ['123'] }, wren: { access_level: 'regular' } },
-      loadPermission: (level) => (level === 'all' ? { dangerous: true, allowedTools: ['Bash'] } : { dangerous: false, allowedTools: ['Read', 'Grep'] }),
+      loadPermission: (level) => (level === 'all' ? { dangerouslySkipPermissions: true, allowedTools: ['Bash'] } : { dangerouslySkipPermissions: false, allowedTools: ['Read', 'Grep'] }),
     });
     await brain.turn('wren', ev);
     const opts = pool.calls[0].brainOptions;
@@ -718,12 +718,12 @@ describe('brainpool.turn — accessLevel override (operator 2026-08-14, was /e a
     const config = { agents: { wren: { configuration: 'sonnet-high', name: 'wren' } } };
     const { brain, pool } = harness([{ text: 'ok', sessionId: 'w1' }], {
       brains, config, seedAgents: { wren: { access_level: 'all', allowed_users: ['123'] } },
-      loadPermission: (level) => (level === 'all' ? { dangerous: true, allowedTools: ['Read', 'Write', 'Bash', 'Agent'] } : null),
+      loadPermission: (level) => (level === 'all' ? { dangerouslySkipPermissions: true, allowedTools: ['Read', 'Write', 'Bash', 'Agent'] } : null),
     });
     await brain.turn('wren', ev);
     const opts = pool.calls[0].brainOptions;
     expect(opts.allowedTools).toEqual(['Read', 'Write', 'Bash', 'Agent']);   // the permissions file's grant, not wren's own ['Read']
-    expect(opts.confineToDirs).toBeUndefined();                             // dangerous:true → unconfined
+    expect(opts.confineToDirs).toBeUndefined();                             // dangerously_skip_permissions:true → unconfined
   });
 
   // STRUCTURAL SAFETY GATE (operator 2026-08-16): accessLevel is now MANDATORY — an unset
@@ -738,14 +738,14 @@ describe('brainpool.turn — accessLevel override (operator 2026-08-14, was /e a
     let called = false;
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
       brains, skipAccessLevelDefault: true,
-      loadPermission: () => { called = true; return { dangerous: true, allowedTools: ['Bash'] }; },
+      loadPermission: () => { called = true; return { dangerouslySkipPermissions: true, allowedTools: ['Bash'] }; },
     });
     await expect(brain.turn('e', ev)).rejects.toThrow(/access_level/);
     expect(called).toBe(false);        // never even reaches the override block
     expect(pool.calls).toHaveLength(0);   // never even reaches the engine
   });
 
-  it('end-to-end with the REAL config/permissions/*.md files (no injected loadPermission): all → dangerous + bare Bash/Agent, regular → confined DEFAULT_ALLOWED_TOOLS', async () => {
+  it('end-to-end with the REAL config/permissions/*.md files (no injected loadPermission): all → dangerously_skip_permissions + bare Bash/Agent, regular → confined DEFAULT_ALLOWED_TOOLS', async () => {
     const brains = { resolve: () => ({ name: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: ['Read'] }) };
     // loadPermission: loadPermissionLevel — the REAL config/permissions/*.md reader; the harness's
     // own default is a no-op (operator 2026-08-16, see harness()'s comment) so this end-to-end
@@ -755,7 +755,7 @@ describe('brainpool.turn — accessLevel override (operator 2026-08-14, was /e a
     const optsAll = all.pool.calls[0].brainOptions;
     expect(optsAll.allowedTools).toEqual(expect.arrayContaining(['Bash', 'Agent']));
     expect(optsAll.confineToDirs).toBeUndefined();
-    expect(optsAll.dangerous).toBe(true);                       // all.md's dangerous: true reaches brainOptions verbatim
+    expect(optsAll.dangerouslySkipPermissions).toBe(true);      // all.md's dangerously_skip_permissions: true reaches brainOptions verbatim
     expect(buildClaudeArgs(optsAll)).toContain('--dangerously-skip-permissions');
 
     const regular = harness([{ text: 'ok', sessionId: 's' }], { brains, seedAgents: { e: { access_level: 'regular' } }, loadPermission: loadPermissionLevel });
@@ -763,7 +763,7 @@ describe('brainpool.turn — accessLevel override (operator 2026-08-14, was /e a
     const optsRegular = regular.pool.calls[0].brainOptions;
     expect(optsRegular.allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);
     expect(optsRegular.confineToDirs).toEqual([optsRegular.cwd]);
-    expect(optsRegular.dangerous).toBe(false);                  // regular.md's dangerous: false
+    expect(optsRegular.dangerouslySkipPermissions).toBe(false); // regular.md's dangerously_skip_permissions: false
     expect(buildClaudeArgs(optsRegular)).not.toContain('--dangerously-skip-permissions');
   });
 });
@@ -773,7 +773,7 @@ describe('brainpool.turn — accessLevel override (operator 2026-08-14, was /e a
 //    file's own baseline allowed_tools:
 //      1) accessLevel must resolve to 'all' or 'regular' at either tier, or the being does not
 //         run at all (previously an unset accessLevel silently fell through to the type file's
-//         own allowed_tools/dangerous — an implicit, not structural, boundary).
+//         own allowed_tools/dangerously_skip_permissions — an implicit, not structural, boundary).
 //      2) accessLevel:'all' (unconfined) must never be paired with an empty/unset allowed_users
 //         (unrestricted reachability) — the escape hatch is the literal "*" wildcard entry
 //         (allowedUsersPermits' twin in conversations-state.mjs recognizes the same literal for
@@ -799,36 +799,36 @@ describe('brainpool.turn — STRUCTURAL SAFETY GATES (operator 2026-08-16)', () 
     const brains = { resolve: () => ({ name: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: ['Read'] }) };
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
       brains, skipAccessLevelDefault: true, seedAgents: { e: { access_level: 'all', allowed_users: ['*'] } },
-      loadPermission: (level) => (level === 'all' ? { dangerous: true, allowedTools: ['Bash'] } : null),
+      loadPermission: (level) => (level === 'all' ? { dangerouslySkipPermissions: true, allowedTools: ['Bash'] } : null),
     });
     await brain.turn('e', ev);
     expect(pool.calls).toHaveLength(1);
     expect(pool.calls[0].brainOptions.allowedTools).toEqual(['Bash']);
-    expect(pool.calls[0].brainOptions.dangerous).toBe(true);
+    expect(pool.calls[0].brainOptions.dangerouslySkipPermissions).toBe(true);
   });
 
   it("accessLevel 'all' with allowed_users: ['123'] (an ordinary non-empty list) → proceeds normally", async () => {
     const brains = { resolve: () => ({ name: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: ['Read'] }) };
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
       brains, skipAccessLevelDefault: true, seedAgents: { e: { access_level: 'all', allowed_users: ['123'] } },
-      loadPermission: (level) => (level === 'all' ? { dangerous: true, allowedTools: ['Bash'] } : null),
+      loadPermission: (level) => (level === 'all' ? { dangerouslySkipPermissions: true, allowedTools: ['Bash'] } : null),
     });
     await brain.turn('e', ev);
     expect(pool.calls).toHaveLength(1);
     expect(pool.calls[0].brainOptions.allowedTools).toEqual(['Bash']);
-    expect(pool.calls[0].brainOptions.dangerous).toBe(true);
+    expect(pool.calls[0].brainOptions.dangerouslySkipPermissions).toBe(true);
   });
 
   it("accessLevel 'regular' (no allowed_users involved) → proceeds normally, unaffected by rule 2", async () => {
     const brains = { resolve: () => ({ name: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: ['Read'] }) };
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
       brains, skipAccessLevelDefault: true, seedAgents: { e: { access_level: 'regular' } },
-      loadPermission: (level) => (level === 'regular' ? { dangerous: false, allowedTools: DEFAULT_ALLOWED_TOOLS } : null),
+      loadPermission: (level) => (level === 'regular' ? { dangerouslySkipPermissions: false, allowedTools: DEFAULT_ALLOWED_TOOLS } : null),
     });
     await brain.turn('e', ev);
     expect(pool.calls).toHaveLength(1);
     expect(pool.calls[0].brainOptions.allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);
-    expect(pool.calls[0].brainOptions.dangerous).toBe(false);
+    expect(pool.calls[0].brainOptions.dangerouslySkipPermissions).toBe(false);
   });
 });
 
@@ -845,12 +845,12 @@ describe('brainpool.turn — accessLevel GLOBAL-DEFAULT tier (operator 2026-08-1
     const config = { agents: { e: { conversation_defaults: { access_level: 'all', allowed_users: ['123'] } } } };
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
       brains, config,
-      loadPermission: (level) => (level === 'all' ? { dangerous: true, allowedTools: ['Read', 'Write', 'Bash', 'Agent'] } : null),
+      loadPermission: (level) => (level === 'all' ? { dangerouslySkipPermissions: true, allowedTools: ['Read', 'Write', 'Bash', 'Agent'] } : null),
     });
     await brain.turn('e', ev);
     const opts = pool.calls[0].brainOptions;
     expect(opts.allowedTools).toEqual(['Read', 'Write', 'Bash', 'Agent']);   // the global default's permissions grant applied
-    expect(opts.confineToDirs).toBeUndefined();                             // dangerous:true → unconfined
+    expect(opts.confineToDirs).toBeUndefined();                             // dangerously_skip_permissions:true → unconfined
   });
 
   it('REGRESSION: a per-conversation accessLevel override still WINS over the node global conversation_defaults.access_level default', async () => {
@@ -859,8 +859,8 @@ describe('brainpool.turn — accessLevel GLOBAL-DEFAULT tier (operator 2026-08-1
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
       brains, config, seedAgents: { e: { access_level: 'regular' } },
       loadPermission: (level) => {
-        if (level === 'all') return { dangerous: true, allowedTools: ['Bash'] };
-        if (level === 'regular') return { dangerous: false, allowedTools: DEFAULT_ALLOWED_TOOLS };
+        if (level === 'all') return { dangerouslySkipPermissions: true, allowedTools: ['Bash'] };
+        if (level === 'regular') return { dangerouslySkipPermissions: false, allowedTools: DEFAULT_ALLOWED_TOOLS };
         return null;
       },
     });
@@ -878,7 +878,7 @@ describe('brainpool.turn — accessLevel GLOBAL-DEFAULT tier (operator 2026-08-1
     let called = false;
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
       brains, skipAccessLevelDefault: true,
-      loadPermission: () => { called = true; return { dangerous: true, allowedTools: ['Bash'] }; },
+      loadPermission: () => { called = true; return { dangerouslySkipPermissions: true, allowedTools: ['Bash'] }; },
     });
     await expect(brain.turn('e', ev)).rejects.toThrow(/access_level/);
     expect(called).toBe(false);
@@ -896,19 +896,19 @@ describe('brainpool.turn — accessLevel GLOBAL-DEFAULT tier (operator 2026-08-1
 //    (the house convention — see tests/spine-boot-radio-relay.test.mjs — sets EGPT_HOME
 //    itself, but that must happen before this file's top-level imports run; spying
 //    baseDir() achieves the same isolation without touching module-load order).
-describe('brainpool.turn — dangerous:true escalation hole is closed end-to-end (real createBrains, real files)', () => {
-  it('a conv-local brains/<name>.yaml attempting dangerous:true does NOT unconfine a sibling turn', async () => {
+describe('brainpool.turn — dangerously_skip_permissions:true escalation hole is closed end-to-end (real createBrains, real files)', () => {
+  it('a conv-local brains/<name>.yaml attempting dangerously_skip_permissions:true does NOT unconfine a sibling turn', async () => {
     const tmpBase = mkdtempSync(join(tmpdir(), 'egpt-brains-e2e-'));
     const builtinDir = join(tmpBase, 'builtin');
     const convDir = join(tmpBase, 'conv');
     mkdirSync(builtinDir, { recursive: true });
     mkdirSync(join(convDir, 'brains'), { recursive: true });
-    // a non-dangerous sibling type, shipped as a built-in
+    // a non-unconfined sibling type, shipped as a built-in
     writeFileSync(join(builtinDir, 'sonnet-high.yaml'), 'type: ccode\nmodel: sonnet\neffort: high\nallowed_tools:\n  - Read\n  - Bash\n', 'utf8');
     // THE ATTACK: a conv-local override — written by a being with ordinary Write access
-    // to its own convDir — trying to grant itself dangerous:true (mirroring the real
-    // attack shape: dangerous + a bare tool list).
-    writeFileSync(join(convDir, 'brains', 'sonnet-high.yaml'), 'dangerous: true\nallowed_tools:\n  - Bash\n  - Agent\n', 'utf8');
+    // to its own convDir — trying to grant itself dangerously_skip_permissions:true (mirroring
+    // the real attack shape: dangerously_skip_permissions + a bare tool list).
+    writeFileSync(join(convDir, 'brains', 'sonnet-high.yaml'), 'dangerously_skip_permissions: true\nallowed_tools:\n  - Bash\n  - Agent\n', 'utf8');
 
     const realBrains = createBrains({ builtinDir, agentsDir: join(tmpBase, 'nonexistent-agents') });
     const config = { agents: { wren: { configuration: 'sonnet-high', name: 'wren' } } };
@@ -918,8 +918,9 @@ describe('brainpool.turn — dangerous:true escalation hole is closed end-to-end
       const { brain, pool } = harness([{ text: 'ok', sessionId: 'w1' }], { brains: realBrains, config });
       await brain.turn('wren', ev);
       const opts = pool.calls[0].brainOptions;
-      // the hole: dangerous:true from the conv-local layer must NOT reach brainOptions —
-      // the turn stays confined, exactly like the "REGRESSION: a NON-dangerous def" case above.
+      // the hole: dangerously_skip_permissions:true from the conv-local layer must NOT reach
+      // brainOptions — the turn stays confined, exactly like the "REGRESSION: a def with
+      // dangerously_skip_permissions absent" case above.
       expect(opts.confineToDirs).toEqual([opts.cwd]);
       const args = buildClaudeArgs(opts);
       expect(args).not.toContain('--dangerously-skip-permissions');

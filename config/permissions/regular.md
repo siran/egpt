@@ -1,4 +1,4 @@
-dangerous: false
+dangerously_skip_permissions: false
 
 # config/permissions/regular.md — this node's regular confined default,
 # `/agents <handle>|all access_level regular` points a being back at (was

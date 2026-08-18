@@ -63,15 +63,16 @@ export function createBrains({
       const basePaths = seeded === builtinPath ? [profilePath, builtinPath] : [builtinPath, profilePath];
       let def = null;
       for (const p of basePaths) { const layer = loadFrom(p, name); if (layer) def = { ...(def ?? {}), ...layer }; }
-      // dangerous: true is a BASE-LAYERS-ONLY property (operator 2026-08: the escalation-hole
-      // fix) — read from the built-in/profile merge BEFORE the conv-local layer ever touches it,
-      // so a conversation's own brains/<name>.yaml can neither GRANT it nor REVOKE a base-level
-      // grant. It stays fully immune to the conv-local layer in both directions.
-      const baseDangerous = def?.dangerous === true;
+      // dangerously_skip_permissions: true is a BASE-LAYERS-ONLY property (operator 2026-08:
+      // the escalation-hole fix) — read from the built-in/profile merge BEFORE the conv-local
+      // layer ever touches it, so a conversation's own brains/<name>.yaml can neither GRANT it
+      // nor REVOKE a base-level grant. It stays fully immune to the conv-local layer in both
+      // directions.
+      const baseDangerouslySkipPermissions = def?.dangerously_skip_permissions === true;
       const convPath = convDir && join(convDir, 'brains', `${name}.yaml`);
       if (convPath) { const layer = loadFrom(convPath, name); if (layer) def = { ...(def ?? {}), ...layer }; }
       if (!def) return null;
-      if (baseDangerous) def.dangerous = true; else delete def.dangerous;
+      if (baseDangerouslySkipPermissions) def.dangerously_skip_permissions = true; else delete def.dangerously_skip_permissions;
       return { name, ...def };
     },
   };

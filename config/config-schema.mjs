@@ -1245,9 +1245,9 @@ export const CONFIG_SCHEMA = {
 
             Replaces the retired TYPE-FILE dangerous: true reachability
             mechanism (meta-engineer.yaml, evicted 2026-08-15 - "i think the
-            'dangerous' key is mistake"). dangerous: true on a type file is
-            STILL a real, meaningful flag - see CONFINEMENT below - it is just
-            no longer a reachability gate; who may trigger an agent is
+            'dangerous' key is mistake"). dangerously_skip_permissions: true on
+            a type file is STILL a real, meaningful flag - see CONFINEMENT
+            below - it is just no longer a reachability gate; who may trigger an agent is
             controlled here and by access_level instead. Independent of
             ev.authorized/isSender (the existing per-NETWORK allowed_users/
             account-owner concept, networks.*.allowed_users) - this is a
@@ -1298,7 +1298,7 @@ export const CONFIG_SCHEMA = {
         Accepted but discouraged — TRUSTED/unconfined (full filesystem, no
         prompts) except bare Bash and Agent. Never implicit (operator
         2026-07-03).
-      dangerous: true (on the TYPE FILE, not here) is the ONE exception to
+      dangerously_skip_permissions: true (on the TYPE FILE, not here) is the ONE exception to
         this whole confinement model — full filesystem, its allowed_tools
         list runs verbatim (no coercion, no cap), no sandbox, exactly like an
         interactive claude-code session. A pure CAPABILITY declaration (what

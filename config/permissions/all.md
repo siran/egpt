@@ -1,4 +1,4 @@
-dangerous: true
+dangerously_skip_permissions: true
 
 # config/permissions/all.md — the unconfined access level `/agents <handle>|all
 # access_level all` points a being at (was `/e access all`, retired 2026-08-15).
@@ -8,7 +8,7 @@ dangerous: true
 # agentsAccessLevel only ever writes `access_level: 'all'` into the target being's
 # override block; it never copies this file's contents anywhere.
 #
-# Mirrors the tier src/brains/meta-engineer.yaml ships: `dangerous: true` skips
+# Mirrors the tier src/brains/meta-engineer.yaml ships: `dangerously_skip_permissions: true` skips
 # BOTH tool coercion and confinement in brainpool.mjs (coerceAllowedTools +
 # confinementFor) — the tool list below runs VERBATIM, full filesystem, no
 # sandbox, exactly like an interactive `claude` session. Reachability — who may

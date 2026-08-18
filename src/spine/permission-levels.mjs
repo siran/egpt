@@ -11,8 +11,8 @@
 // pointing at that level, with no command re-run (see brainpool.mjs's turn(),
 // which calls loadPermissionLevel every turn, freeze or no freeze).
 //
-// File format: the first non-blank line MUST be exactly `dangerous: true` or
-// `dangerous: false`; every `- ToolName` bullet anywhere after that (optionally
+// File format: the first non-blank line MUST be exactly `dangerously_skip_permissions: true` or
+// `dangerously_skip_permissions: false`; every `- ToolName` bullet anywhere after that (optionally
 // followed by a `#`-prefixed comment) is a tool grant. Everything else — prose,
 // headers, blank lines — is ignored, so the file can carry real commentary and
 // still parse cleanly.
@@ -22,26 +22,26 @@ import { join } from 'node:path';
 
 export const PERMISSIONS_DIR = fileURLToPath(new URL('../../config/permissions/', import.meta.url));
 
-// Pure parse: text -> { dangerous, allowedTools } or null when the file doesn't
-// open with the required `dangerous:` line.
+// Pure parse: text -> { dangerouslySkipPermissions, allowedTools } or null when the file
+// doesn't open with the required `dangerously_skip_permissions:` line.
 export function parsePermissionsDoc(text) {
   const lines = String(text ?? '').split(/\r?\n/);
-  let dangerous = null;
+  let dangerouslySkipPermissions = null;
   const allowedTools = [];
   for (const raw of lines) {
     const line = raw.trim();
     if (!line) continue;
-    if (dangerous === null) {
-      const m = /^dangerous:\s*(true|false)\s*$/i.exec(line);
-      if (!m) return null;   // the first non-blank line must be the dangerous flag
-      dangerous = m[1].toLowerCase() === 'true';
+    if (dangerouslySkipPermissions === null) {
+      const m = /^dangerously_skip_permissions:\s*(true|false)\s*$/i.exec(line);
+      if (!m) return null;   // the first non-blank line must be the dangerously_skip_permissions flag
+      dangerouslySkipPermissions = m[1].toLowerCase() === 'true';
       continue;
     }
     const bullet = /^-\s*(\S+)/.exec(line);
     if (bullet) allowedTools.push(bullet[1]);
   }
-  if (dangerous === null) return null;
-  return { dangerous, allowedTools };
+  if (dangerouslySkipPermissions === null) return null;
+  return { dangerouslySkipPermissions, allowedTools };
 }
 
 // Resolve + read + parse config/permissions/<level>.md. NO caching (see header)

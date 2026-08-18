@@ -82,37 +82,38 @@ describe('brain registry', () => {
     expect(withDefault.resolve('default')).toMatchObject({ name: 'default', type: 'codex', model: 'gpt' });
   });
 
-  // ── dangerous: true — BASE-LAYERS-ONLY (operator 2026-08: the escalation-hole fix). A
-  // conv-local brains/<name>.yaml override must never be able to GRANT dangerous:true, nor
-  // REVOKE a base-level grant. See src/spine/brainpool.mjs's confinementFor: dangerous:true
-  // skips ALL confinement, so this key must be immune to the one layer a confined being can
-  // write to itself (its own conversation directory).
-  it('conv-local CANNOT grant dangerous:true when the base layers never set it (the escalation reproduction)', () => {
+  // ── dangerously_skip_permissions: true — BASE-LAYERS-ONLY (operator 2026-08: the
+  // escalation-hole fix). A conv-local brains/<name>.yaml override must never be able to GRANT
+  // dangerously_skip_permissions:true, nor REVOKE a base-level grant. See
+  // src/spine/brainpool.mjs's confinementFor: dangerously_skip_permissions:true skips ALL
+  // confinement, so this key must be immune to the one layer a confined being can write to
+  // itself (its own conversation directory).
+  it('conv-local CANNOT grant dangerously_skip_permissions:true when the base layers never set it (the escalation reproduction)', () => {
     const brains = harness({
       [join(BUILTIN, 'sonnet-high.yaml')]: 'type: ccode\nmodel: sonnet\nallowed_tools:\n  - Read\n',
-      [join('/conv/slug', 'brains', 'sonnet-high.yaml')]: 'dangerous: true\nallowed_tools:\n  - Bash\n',
+      [join('/conv/slug', 'brains', 'sonnet-high.yaml')]: 'dangerously_skip_permissions: true\nallowed_tools:\n  - Bash\n',
     });
     const def = brains.resolve('sonnet-high', { convDir: '/conv/slug' });
-    expect(def.dangerous).not.toBe(true);
-    // the rest of the conv-local override still applies normally (only dangerous is special)
+    expect(def.dangerously_skip_permissions).not.toBe(true);
+    // the rest of the conv-local override still applies normally (only dangerously_skip_permissions is special)
     expect(def.allowed_tools).toEqual(['Bash']);
   });
 
-  it('a base-level dangerous:true is STICKY — conv-local cannot revoke it', () => {
+  it('a base-level dangerously_skip_permissions:true is STICKY — conv-local cannot revoke it', () => {
     const brains = harness({
-      [join(BUILTIN, 'meta-engineer.yaml')]: 'type: ccode\nmodel: sonnet\ndangerous: true\n',
+      [join(BUILTIN, 'meta-engineer.yaml')]: 'type: ccode\nmodel: sonnet\ndangerously_skip_permissions: true\n',
     });
-    // conv-local says nothing about dangerous → still true
-    expect(brains.resolve('meta-engineer', { convDir: '/conv/slug' }).dangerous).toBe(true);
+    // conv-local says nothing about dangerously_skip_permissions → still true
+    expect(brains.resolve('meta-engineer', { convDir: '/conv/slug' }).dangerously_skip_permissions).toBe(true);
     // conv-local EXPLICITLY tries to revoke it → still true (immune in both directions)
     const brainsRevoke = harness({
-      [join(BUILTIN, 'meta-engineer.yaml')]: 'type: ccode\nmodel: sonnet\ndangerous: true\n',
-      [join('/conv/slug', 'brains', 'meta-engineer.yaml')]: 'dangerous: false\n',
+      [join(BUILTIN, 'meta-engineer.yaml')]: 'type: ccode\nmodel: sonnet\ndangerously_skip_permissions: true\n',
+      [join('/conv/slug', 'brains', 'meta-engineer.yaml')]: 'dangerously_skip_permissions: false\n',
     });
-    expect(brainsRevoke.resolve('meta-engineer', { convDir: '/conv/slug' }).dangerous).toBe(true);
+    expect(brainsRevoke.resolve('meta-engineer', { convDir: '/conv/slug' }).dangerously_skip_permissions).toBe(true);
   });
 
-  it('regression: every OTHER field still layers normally across all three tiers with convDir (dangerous fix touched nothing else)', () => {
+  it('regression: every OTHER field still layers normally across all three tiers with convDir (dangerously_skip_permissions fix touched nothing else)', () => {
     const brains = harness({
       [join(BUILTIN, 'sonnet-high.yaml')]: 'type: ccode\nmodel: null\neffort: low\nallowed_tools: all\n',
       [join(AGENTS,  'sonnet-high.yaml')]: 'model: opus\n',

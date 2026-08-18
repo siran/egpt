@@ -1177,7 +1177,8 @@ export function createCommands({
   // `access_level: target` into the being's block, merged over its existing fields
   // (patchBeing) — brainpool.mjs's turn() reads the matching permissions file FRESH every
   // turn (permission-levels.mjs — no caching) and overrides that turn's allowed_tools/
-  // dangerous, so editing either file changes behavior immediately with no re-run needed.
+  // dangerously_skip_permissions, so editing either file changes behavior immediately with
+  // no re-run needed.
   // Agent/model/effort/engine are never touched.
   async function agentsAccessLevel(ev, surface, jid, where, handles, target, state) {
     const perm = loadPermissionLevel(target);
@@ -1224,8 +1225,8 @@ export function createCommands({
   // — PLUS the ACCESS-LEVEL OVERRIDE block turn() applies right after it (loadPermissionLevel,
   // when the being's own accessLevel is 'all'/'regular' — a live override statusTarget's own
   // preview never applied, a real gap this closes for the new command) PLUS the
-  // `dangerous ? raw : coerceAllowedTools(raw)` coercion statusTarget already applies to its
-  // own preview. Resolved FRESH on every call (no caching anywhere in this chain), so editing
+  // `dangerouslySkipPermissions ? raw : coerceAllowedTools(raw)` coercion statusTarget already
+  // applies to its own preview. Resolved FRESH on every call (no caching anywhere in this chain), so editing
   // config between two calls changes the NEXT call's tools/model/effort with nothing to evict.
   function agentsBeingBlock(surface, jid, handle, state) {
     try {
@@ -1240,9 +1241,9 @@ export function createCommands({
       try { def = resolveBeingDef(handle, convDir, { getConfig: cfg, brains, brainType: CCODE }); } catch { def = null; }
       if (def && (b?.accessLevel === 'all' || b?.accessLevel === 'regular')) {
         const perm = loadPermissionLevel(b.accessLevel);
-        if (perm) def = { ...def, dangerous: perm.dangerous, allowed_tools: perm.allowedTools };
+        if (perm) def = { ...def, dangerously_skip_permissions: perm.dangerouslySkipPermissions, allowed_tools: perm.allowedTools };
       }
-      const previewDef = def ? (def.dangerous === true ? def : coerceAllowedTools(def)) : null;
+      const previewDef = def ? (def.dangerously_skip_permissions === true ? def : coerceAllowedTools(def)) : null;
 
       // Determinism parity with turn(): the PERSONA's run always carries a concrete
       // model/effort (DETERMINISTIC_MODEL/EFFORT fallback); a sibling may legitimately have
@@ -2370,7 +2371,7 @@ export function createCommands({
     let previewDef = null;
     try {
       const raw = resolveDefaultBrainDef({ getConfig: cfg, brains, convDir, brainType: CCODE });
-      previewDef = raw?.dangerous === true ? raw : coerceAllowedTools(raw);
+      previewDef = raw?.dangerously_skip_permissions === true ? raw : coerceAllowedTools(raw);
     } catch { previewDef = null; }
 
     // Personality: the resolved type file's `personality:` field, else 'egpt' (the shipped

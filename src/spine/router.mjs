@@ -248,8 +248,8 @@ export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', getQu
           // ALLOWED_USERS GATE (operator 2026-08-15): "we should control by access_level and who
           // is able to trigger the agent … i think the 'dangerous' key is mistake" — replaces the
           // evicted TYPE-FILE `dangerous:true` reachability mechanism (meta-engineer.yaml, gone;
-          // see brainpool.mjs's confinementFor for what `dangerous` still means — a CAPABILITY
-          // tier only, never a reachability gate any more). Two-tier, the SAME override pattern
+          // see brainpool.mjs's confinementFor for what `dangerously_skip_permissions` still
+          // means — a CAPABILITY tier only, never a reachability gate any more). Two-tier, the SAME override pattern
           // access_level already uses: a per-conversation `allowedUsers` (conversations.yaml
           // agents.<being>.allowed_users, read via getBeing off the ONE state read above,
           // FLAT — that block is already scoped to one being in one conversation) REPLACES —

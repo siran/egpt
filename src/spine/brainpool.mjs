@@ -72,16 +72,16 @@ export function coerceAllowedTools(def) {
   return def;
 }
 
-// DANGEROUS (operator 2026-08 meta-engineer): the ONE type-file flag that skips coercion
-// AND confinement entirely — a `dangerous: true` type runs genuinely unconfined (full
-// filesystem, its allowed_tools list passed verbatim, including bare Bash/Agent), exactly
-// like an interactive `claude` session. Every call site below checks it explicitly rather
-// than teaching coerceAllowedTools itself about it, so the function stays what its callers
-// already assume: ALWAYS confining. Reachability (who may even address a dangerous agent) is
-// gated upstream, in router.mjs/mesh.mjs — this file only decides how the TURN runs once
-// addressed.
+// DANGEROUSLY_SKIP_PERMISSIONS (operator 2026-08 meta-engineer): the ONE type-file flag
+// that skips coercion AND confinement entirely — a `dangerously_skip_permissions: true`
+// type runs genuinely unconfined (full filesystem, its allowed_tools list passed verbatim,
+// including bare Bash/Agent), exactly like an interactive `claude` session. Every call site
+// below checks it explicitly rather than teaching coerceAllowedTools itself about it, so
+// the function stays what its callers already assume: ALWAYS confining. Reachability (who
+// may even address an unconfined agent) is gated upstream, in router.mjs/mesh.mjs — this
+// file only decides how the TURN runs once addressed.
 function confinementFor(def, cwd, onLog) {
-  if (def?.dangerous === true) return {};   // the unconfined tier — no confineToDirs/addDirs/readOnlyDirs, ever
+  if (def?.dangerously_skip_permissions === true) return {};   // the unconfined tier — no confineToDirs/addDirs/readOnlyDirs, ever
   if (!Array.isArray(def?.allowed_tools)) return {};   // defensive: post-coercion this is always a list
   const addDirs = [], readOnlyDirs = [];
   const paths = (def.allowed_paths && typeof def.allowed_paths === 'object' && !Array.isArray(def.allowed_paths)) ? def.allowed_paths : {};
@@ -191,7 +191,7 @@ function shapeDef(name, def, agent = {}, brainType = 'ccode') {
     // Now that resolveBeingDef shapes the PERSONA's def too, an unshaped personality pin
     // would silently stop reaching loadFeed — carried through here instead.
     personality: def?.personality ?? undefined,
-    dangerous: def?.dangerous === true,   // carried so a sibling's unconfined type file survives shaping
+    dangerously_skip_permissions: def?.dangerously_skip_permissions === true,   // carried so a sibling's unconfined type file survives shaping
   };
 }
 
@@ -254,7 +254,7 @@ export function createBrainPool({
   loadAutoLayer = readAutoModeLayer,// () -> the `mode: auto` operator-role instruction layer (appended to an auto conversation's kickoff)
   loadManifest = null,              // () -> e_identity.md fallback (default below)
   afterTurn = null,                 // ({key, sessionId, model, cwd, allowedTools}) — post-turn hook (auto-compaction)
-  loadPermission = loadPermissionLevel,  // (level) -> {dangerous, allowedTools}|null — config/permissions/<level>.md for /agents ... access_level; injectable (tests), NO caching in the real implementation (see permission-levels.mjs)
+  loadPermission = loadPermissionLevel,  // (level) -> {dangerouslySkipPermissions, allowedTools}|null — config/permissions/<level>.md for /agents ... access_level; injectable (tests), NO caching in the real implementation (see permission-levels.mjs)
   onLog = () => {},
 } = {}) {
   if (!pool || typeof pool.run !== 'function') throw new Error('createBrainPool: pool (createWarmPool) is required');
@@ -341,8 +341,8 @@ export function createBrainPool({
       // 1) accessLevel must be STRUCTURALLY defined ('all' or 'regular', per-conversation or
       //    conversation_defaults) or the being does not run at all. Previously, an unset
       //    accessLevel silently skipped the ACCESS-LEVEL OVERRIDE block further down and fell
-      //    through to whatever the type file's own allowed_tools/dangerous declared — an
-      //    implicit, not structural, safety boundary.
+      //    through to whatever the type file's own allowed_tools/dangerously_skip_permissions
+      //    declared — an implicit, not structural, safety boundary.
       if (accessLevel !== 'all' && accessLevel !== 'regular') {
         throw new Error(`brainpool: ${being} has no access_level set (neither per-conversation nor conversation_defaults) — refusing to run`);
       }
@@ -372,11 +372,11 @@ export function createBrainPool({
       // never-instanced conversation always used for the persona (phase 1) — now the ONLY
       // path, for every being, so a config edit (repointing agents.<being>.configuration, or
       // the type file itself) reaches every conversation on its very next turn.
-      // dangerous:true skips coercion (see confinementFor's comment above) — the type file's
-      // allowed_tools (which may legitimately include bare Bash/Agent) passes through
-      // verbatim rather than being capped to DEFAULT_ALLOWED_TOOLS.
+      // dangerously_skip_permissions:true skips coercion (see confinementFor's comment above) —
+      // the type file's allowed_tools (which may legitimately include bare Bash/Agent) passes
+      // through verbatim rather than being capped to DEFAULT_ALLOWED_TOOLS.
       const rawDef = resolveBeingDef(being, convDir, { getConfig, brains, brainType });
-      let def = rawDef.dangerous === true ? rawDef : coerceAllowedTools(rawDef);   // 'all' → explicit list (rejected)
+      let def = rawDef.dangerously_skip_permissions === true ? rawDef : coerceAllowedTools(rawDef);   // 'all' → explicit list (rejected)
       let runModel, runEffort;
       if (being === defaultKey) {
         // DETERMINISM (operator 2026-07-02: "don't do 'null means inherit the login default' —
@@ -413,17 +413,17 @@ export function createBrainPool({
       // ACCESS-LEVEL OVERRIDE (operator 2026-08-14, was /e access all|regular; phase 2, same
       // day: no longer persona-only — every being's OWN accessLevel, read per-being above via
       // resolveConv/getBeing, is eligible). Runs AFTER the being-def resolution above and
-      // BEFORE confinementFor/baseOpts read def.allowed_tools/def.dangerous below, so it wins
-      // regardless of which being this turn is for. permission-levels.mjs re-reads the file
-      // fresh on every call (no caching): editing config/permissions/<level>.md changes this
-      // turn's grant with no command re-run needed. /agents <handle>|all access_level
+      // BEFORE confinementFor/baseOpts read def.allowed_tools/def.dangerously_skip_permissions
+      // below, so it wins regardless of which being this turn is for. permission-levels.mjs
+      // re-reads the file fresh on every call (no caching): editing config/permissions/<level>.md
+      // changes this turn's grant with no command re-run needed. /agents <handle>|all access_level
       // all|regular (retired /e access's replacement, 2026-08-15) can write ANY being's
       // accessLevel now, not just defaultKey's — closing the asymmetry this comment used to
       // note; a sibling given an accessLevel by hand-editing conversations.yaml has always
       // gotten the same live override the persona does.
       if (accessLevel === 'all' || accessLevel === 'regular') {
         const perm = loadPermission(accessLevel);
-        if (perm) def = { ...def, dangerous: perm.dangerous, allowed_tools: perm.allowedTools };
+        if (perm) def = { ...def, dangerously_skip_permissions: perm.dangerouslySkipPermissions, allowed_tools: perm.allowedTools };
       }
       const engine = def.type ?? brainType;
       // The identity-feed selector (operator 2026-07-02): a property of the resolved
@@ -479,12 +479,13 @@ export function createBrainPool({
         // EXPLICIT field (operator 2026-08-17, "make access_level: all finally mean what it
         // says"): buildClaudeArgs reads this to add the actual bypass flags. Named explicitly
         // rather than inferred from the absence of confineToDirs (an existing but ambiguous
-        // proxy) — by this point def.dangerous is EITHER the type file's own trusted base-layer
-        // grant (brains.mjs resolve(): conv-local layers can never set or clear it) OR the
-        // ACCESS-LEVEL OVERRIDE above (config/permissions/<level>.md, itself only reachable via
-        // the STRUCTURAL SAFETY GATES: accessLevel structurally set + allowed_users non-empty +
-        // sender matched before this turn ever ran) — never attacker-writable.
-        dangerous: def.dangerous === true,
+        // proxy) — by this point def.dangerously_skip_permissions is EITHER the type file's own
+        // trusted base-layer grant (brains.mjs resolve(): conv-local layers can never set or
+        // clear it) OR the ACCESS-LEVEL OVERRIDE above (config/permissions/<level>.md, itself
+        // only reachable via the STRUCTURAL SAFETY GATES: accessLevel structurally set +
+        // allowed_users non-empty + sender matched before this turn ever ran) — never
+        // attacker-writable.
+        dangerouslySkipPermissions: def.dangerously_skip_permissions === true,
       };
 
       // Identity kickoff: prefix the first turn of a fresh thread with the feed,
