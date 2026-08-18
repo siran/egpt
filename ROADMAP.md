@@ -380,6 +380,56 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
     the existing blocks is real, separate, deliberate work for later — decide it on its own,
     not by momentum.
 
+- **PARKED (operator 2026-08-17): `conversations.modules.verbosity.{chat, terminal,
+  transcript}` — a second `modules.*` member, born from tonight's textecutables session.**
+  Live finding that motivates it: `src/warm-cli-session.mjs`'s stdout parser (`onStdout`,
+  ~line 84-113) only ever looks at `content_block_delta` events of type `text_delta` — it
+  silently ignores `thinking_delta` (Claude's own extended-thinking stream) and `tool_use`
+  content-block-start events entirely. Neither ever reaches `onPartial`, the shell's live
+  "⏳ thinking train," or the transcript. The operator, live: *"a final answer... must never
+  replace interim thought. and even if it's replaced for some reason — a bug most
+  certainly — all output from model has to be transcribed... the first line like
+  Bash(this and that) or WebSearch(the other) is very interesting to see... please add to
+  the thinking train."*
+  - **Prerequisite, not part of the module itself**: teach `onStdout` to also capture
+    `thinking_delta` (accumulate, like text, but as its own labeled segment — never merged
+    into the plain-text accumulator) and `tool_use` block-starts (tool name + a CONCISE
+    one-line input summary, e.g. `` `Bash(curl -s ...)` `` — operator: wrap in backticks,
+    "makes it look more cool"/"has to be visually appealing" — never the full input or the
+    tool_result). This ALSO fixes a second live finding, independently: `spine.mjs`'s
+    `runTurnWithTimeout` (~line 720-740) races the whole turn against one flat 10-minute
+    timer with no activity awareness — resetting it on `onPartial` alone is WRONG (onPartial
+    is text-only, so a tool-use-heavy turn like tonight's would look "idle" and get killed
+    mid-work); it needs the SAME broader thinking+tool-use+text activity signal this
+    prerequisite produces, as a genuine idle-timeout (no activity of ANY kind for N minutes),
+    not a flat-duration one. Land this once, use it for both.
+  - **The module's shape**: per destination (`chat` = the actual reply sent to the room;
+    `terminal` = the shell's live train; `transcript` = the persisted record), independently
+    control which of `{tool_use, thinking}` also show, beyond the final conclusion text
+    (operator: "independent flags," not an ordered all⊃thinking⊃tool_use⊃only-conclusion
+    scale). Recommended simplification to resolve before building — NOT yet decided,
+    flag for the implementer: two booleans per destination (`tool_use`, `thinking`) may be
+    enough; "only-conclusion" is just the baseline (both false) and "all" is just both true,
+    so those two names may not need to be real config values at all, only documentation
+    words for the boolean combinations. Confirm this simplification (or the operator's
+    original 4-way enum, if there is a reason those two need to be independently addressable
+    states rather than derived ones) before writing the schema.
+  - **The live train becomes an append-only log of segments** (thinking → tool-use line →
+    more thinking → final text, in arrival order) — never overwritten in place; only cleared
+    and committed once the turn fully settles. A dropped segment from the LIVE view is a
+    display bug, independent from persistence.
+  - **Transcript**: each discrete thinking segment and tool-use line gets its own persisted
+    entry, in addition to the final settled text — extends (does not reverse) the existing
+    "a living-mirror stream frame is not history" rule: that rule is about NOT logging every
+    token-level rewrite of the SAME growing text (which would flood the file with
+    near-duplicates); discrete thinking/tool-use events are each logged ONCE, when they
+    complete, so this doesn't reopen that problem.
+  - Touches, in dependency order: `warm-cli-session.mjs` (capture) → `brainpool.mjs`/
+    `spine.mjs` (thread the richer signal, idle-timeout) → shell (`shell-port.mjs` protocol +
+    `shell/app.mjs` append-only rendering) → `transcript.mjs` (persist). Config schema
+    (`config-schema.mjs`, `config/skeletons/conversations.yaml`) is the last piece, once the
+    plumbing above actually produces something to gate.
+
 - **WHICH NODES ARE REAL (operator 2026-07-26).** *"'mo' as a node doesn't exist… it is a way of
   referring to a hypothetical 3rd node. of course 'do' exists! that is where don lives, on
   Dolly!"* So:
