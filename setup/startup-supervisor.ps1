@@ -20,8 +20,21 @@
 # failure modes egpt-daemon-session1's RestartCount and egpt-daemon-watchdog covered
 # separately -- now one script, one loop, no Task Scheduler dependency for either).
 #
+# HIDING, taken directly this time (operator live, 2026-08-19: "bummer" -- a whole evening
+# lost to wscript.exe/VBS quoting through THREE different attempts, each breaking a
+# different way: a -Command one-liner needing its own outer delimiter, Start-Process's
+# single-string -ArgumentList re-tokenizing the nested "vbs" "innerCmd" shape, then its
+# ARRAY form not auto-quoting multi-word elements). None of that indirection is needed:
+# .NET's ProcessStartInfo.CreateNoWindow (with UseShellExecute=$false) tells Windows to
+# never ALLOCATE a console for the child in the first place -- not "create it then hide
+# it" (which is what -WindowStyle Hidden actually does, and why it flashes), a real
+# CreateProcess-level flag with no window-creation step to flash. No VBS, no wscript.exe,
+# no nested command-line escaping at all for the daemon launch.
+#
 # Installed by register-startup.ps1 (drops a tiny .vbs launcher into shell:startup that
-# runs THIS script hidden). Never run this directly outside that -- it loops forever.
+# runs THIS script hidden -- that OUTER layer, VBScript's own native Run(), is unrelated to
+# the Start-Process bugs above and stays as the proven, simple way to get the supervisor
+# ITSELF started invisibly). Never run this directly outside that -- it loops forever.
 
 param(
   [string]$Repo                 = (Join-Path $env:USERPROFILE 'bin\egpt'),
@@ -32,36 +45,50 @@ param(
 
 $ErrorActionPreference = 'Continue'
 
-$nodeCmd = Get-Command node.exe -ErrorAction SilentlyContinue
-$nodeExe = if ($nodeCmd) { $nodeCmd.Source } else { 'C:\Program Files\nodejs\node.exe' }
-$daemonScript = Join-Path $Repo 'egpt-daemon.mjs'
-$vbsWrapper = Join-Path $Repo 'setup\run-hidden.vbs'
 $aliveFile = Join-Path $EgptHome 'state\alive.txt'
-
 $logDir = Join-Path $EgptHome 'config\logs'
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
-$daemonStdout = Join-Path $logDir 'daemon-startup.log'
-$daemonStderr = Join-Path $logDir 'daemon-startup-err.log'
 $supervisorLog = Join-Path $logDir 'supervisor.log'
+$daemonStdoutLog = Join-Path $logDir 'daemon-startup.log'
+$daemonStderrLog = Join-Path $logDir 'daemon-startup-err.log'
 
 function Log($msg) {
   Add-Content -Path $supervisorLog -Value "[supervisor $(Get-Date -Format 'yyyy-MM-ddTHH:mm:ss.fffZ')] $msg"
 }
 
-# Launches the daemon HIDDEN via the same wscript.exe/run-hidden.vbs trick
-# register-daemon-task.ps1 used (powershell.exe -WindowStyle Hidden alone still flashes on
-# window creation -- confirmed live, 2026-08-17; wscript.exe is a GUI-subsystem host, never
-# allocates a console at all). Returns the wscript.exe process -- it's what's tracked as
-# "the daemon is alive", since run-hidden.vbs's Run(cmd, 0, True) blocks wscript.exe for
-# exactly as long as the real node.exe child runs (True = wait), so wscript.exe's own
-# lifetime mirrors the daemon's.
+# Launches the daemon with CreateNoWindow -- see the file header for why this replaces the
+# earlier wscript.exe/VBS attempts entirely. Async output draining via Register-ObjectEvent
+# (not just RedirectStandardOutput=$true with nobody reading it) is deliberate: an
+# unconsumed redirected stream can fill its OS pipe buffer and DEADLOCK the child once full
+# -- a real, well-documented .NET gotcha, not a hypothetical one, and daemon-runtime.mjs's
+# own npm-install-on-upgrade step alone is chatty enough to hit it.
 function Start-Daemon {
   Log "starting daemon"
-  $q = [char]34
-  $qEsc = '\' + $q
-  $innerCmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command " + $qEsc + "& " + $qEsc + $nodeExe + $qEsc + " " + $qEsc + $daemonScript + $qEsc + " 1>> " + $qEsc + $daemonStdout + $qEsc + " 2>> " + $qEsc + $daemonStderr + $qEsc + $qEsc
-  $vbsArgs = "//B //NoLogo `"$vbsWrapper`" `"$innerCmd`""
-  Start-Process -FilePath 'wscript.exe' -ArgumentList $vbsArgs -WorkingDirectory $Repo -PassThru
+  $nodeCmd = Get-Command node.exe -ErrorAction SilentlyContinue
+  $nodeExe = if ($nodeCmd) { $nodeCmd.Source } else { 'C:\Program Files\nodejs\node.exe' }
+  $daemonScript = Join-Path $Repo 'egpt-daemon.mjs'
+
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = $nodeExe
+  $psi.Arguments = "`"$daemonScript`""
+  $psi.WorkingDirectory = $Repo
+  $psi.UseShellExecute = $false
+  $psi.CreateNoWindow = $true
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+
+  $proc = New-Object System.Diagnostics.Process
+  $proc.StartInfo = $psi
+  $proc.EnableRaisingEvents = $true
+
+  $outHandler = { if ($EventArgs.Data) { Add-Content -Path $Event.MessageData -Value $EventArgs.Data } }
+  Register-ObjectEvent -InputObject $proc -EventName OutputDataReceived -Action $outHandler -MessageData $daemonStdoutLog | Out-Null
+  Register-ObjectEvent -InputObject $proc -EventName ErrorDataReceived  -Action $outHandler -MessageData $daemonStderrLog | Out-Null
+
+  $proc.Start() | Out-Null
+  $proc.BeginOutputReadLine()
+  $proc.BeginErrorReadLine()
+  return $proc
 }
 
 Log "=== supervisor starting (repo=$Repo egpthome=$EgptHome) ==="
@@ -91,6 +118,7 @@ while ($true) {
   # above already catches an instant-crash-before-first-heartbeat case.
 
   if ($restart) {
+    Get-EventSubscriber | Where-Object { $_.SourceObject -eq $proc } | Unregister-Event
     Start-Sleep -Seconds 2
     $proc = Start-Daemon
   }
