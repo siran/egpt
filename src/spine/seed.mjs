@@ -104,26 +104,6 @@ allowed_paths:
                         # a property of the TYPE, not the conversation. Absent ⇒ 'egpt'.
 `;
 
-// The optional Codex mirror is a separate type and never changes egpt's ccode
-// default. C uses Codex app-server as a resident warm process while retained by
-// the ordinary warm pool, and resumes its recorded thread after eviction.
-export const EGPTC_TYPE_FILE = `# egptc — eGPT identity on the resident Codex CLI engine.
-# This is a sibling type; it does not replace egpt/ccode or its defaults.
-type: codex
-model: gpt-5.6-luna
-effort: low
-personality: egpt
-allowed_tools:
-  - Read
-  - Write
-  - Edit
-  - Glob
-  - Grep
-  - WebSearch
-  - WebFetch
-  - Task
-`;
-
 // PRESET personality identity LAYERS (operator 2026-07-03). Each is a single plain-
 // markdown instruction file (config/identities/<name>.md, the flat identity-file
 // convention) — a short, operator-EDITABLE starting point for a flavor of agent. They
@@ -279,7 +259,6 @@ export function seedSkeletons({
   //    resolves from the profile the operator can open; copy-if-missing keeps edits sacred.
   //    (The old default.yaml was renamed to egpt.yaml 2026-07-02 — we do NOT recreate it.)
   copyIfMissing(join(agentsDir, 'egpt.yaml'), () => EGPT_TYPE_FILE);
-  copyIfMissing(join(agentsDir, 'egptc.yaml'), () => EGPTC_TYPE_FILE);
 
   // 4. the PRESET personality identity layers → config/identities/<name>.md (FLAT, operator
   //    2026-07-03). Seeded copy-if-missing so an operator's own edits are sacred; the /e

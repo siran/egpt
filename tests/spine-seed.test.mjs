@@ -6,7 +6,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join, dirname } from 'node:path';
-import { seedSkeletons, EXAMPLE_TYPE_FILE, EGPT_TYPE_FILE, EGPTC_TYPE_FILE, PRESET_IDENTITIES } from '../src/spine/seed.mjs';
+import { seedSkeletons, EXAMPLE_TYPE_FILE, EGPT_TYPE_FILE, PRESET_IDENTITIES } from '../src/spine/seed.mjs';
 
 // Built with join so keys + the dirs passed to seedSkeletons share the platform separator.
 const REPO = join('/repo', 'skeletons'), SKEL = join('/prof', 'config', 'skeletons'), AGENTS = join('/prof', 'config', 'agents'), IDS = join('/prof', 'config', 'identities');
@@ -55,16 +55,6 @@ describe('seedSkeletons', () => {
     const files = run({ [join(REPO, 'config.yaml')]: 'A' });
     expect(files[join(AGENTS, 'egpt.yaml')]).toBe(EGPT_TYPE_FILE);
     expect(files[join(AGENTS, 'default.yaml')]).toBeUndefined();   // renamed 2026-07-02 — never recreated
-  });
-
-  it('seeds egptc as a separate Codex mirror without changing egpt', async () => {
-    const files = run({ [join(REPO, 'config.yaml')]: 'A' });
-    expect(files[join(AGENTS, 'egptc.yaml')]).toBe(EGPTC_TYPE_FILE);
-    const YAML = await import('yaml');
-    expect(YAML.parse(files[join(AGENTS, 'egptc.yaml')])).toMatchObject({
-      type: 'codex', model: 'gpt-5.6-luna', effort: 'low', personality: 'egpt',
-    });
-    expect(YAML.parse(files[join(AGENTS, 'egpt.yaml')]).type).toBe('ccode');
   });
 
   it('NEVER touches an existing file (operator edits are sacred)', () => {
