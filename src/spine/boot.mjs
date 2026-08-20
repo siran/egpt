@@ -17,7 +17,7 @@ import { EGPT_HOME } from '../egpt-home.mjs';
 import { createBeeperBridgePort } from '../bridges/beeper-port.mjs';
 import { createShellPort } from '../bridges/shell-port.mjs';
 import { createWarmPool } from '../warm-sessions.mjs';
-import { createWarmCliSession } from '../warm-cli-session.mjs';
+import { createBrainSession } from '../brain-session.mjs';
 import { readConfigSync } from '../tools/config-io.mjs';
 import { reapPort } from '../tools/reap-port.mjs';
 import * as cdp from '../tools/cdp.mjs';
@@ -406,7 +406,7 @@ export function createRadioNoteRelay({
 export async function boot({
   readConfig = readConfigSync,
   startBridge = null,                 // createBeeperBridgePort's `start` seam (null = real beeper)
-  makeSession = createWarmCliSession, // the warm-session factory (null-safe for tests)
+  makeSession = createBrainSession,   // engine-dispatching session factory (ccode remains default)
   loadState = null, writeState = null,// conv-state IO (null = real CONV_YAML_PATH)
   io = {},                            // fs seam for transcript + brainpool + contacts ({appendFile,mkdir,existsSync,rename}); real fs by default. Tests inject in-memory so they never touch the profile.
   log = { line: (s) => { try { console.error(s); } catch {} } },

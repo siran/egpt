@@ -1,0 +1,16 @@
+# egptc — the eGPT identity on the resident Codex CLI engine. This is a sibling
+# type; it does not replace the shipped egpt/ccode persona or its defaults.
+type: codex
+model: gpt-5.6-luna
+effort: low
+personality: egpt
+allowed_tools:
+  - Read
+  - Write
+  - Edit
+  - Glob
+  - Grep
+  - WebSearch
+  - WebFetch
+  - Task
+

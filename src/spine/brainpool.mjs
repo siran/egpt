@@ -463,6 +463,7 @@ export function createBrainPool({
       // def's own system_prompt (both, blank-line joined) — never replaces it.
       const appendSystemPrompt = [def.system_prompt, nodeIdentity].filter(Boolean).join('\n\n');
       const baseOpts = {
+        engine,
         cwd,
         allowedTools: def.allowed_tools ?? DEFAULT_ALLOWED_TOOLS,
         ...(runModel ? { model: runModel } : {}),
