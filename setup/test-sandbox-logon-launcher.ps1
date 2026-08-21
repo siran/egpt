@@ -42,8 +42,12 @@ function Invoke-Session([string]$OwnFolder, [string]$OtherMarkerPath) {
   $prevEAP = $ErrorActionPreference
   $ErrorActionPreference = 'Continue'
   try {
+    # InnerBin must be an absolute path (operator 2026-08-21): the launcher now
+    # passes it as CreateProcessWithTokenW's lpApplicationName, which does not
+    # search PATH the way a bare name relying on lpCommandLine parsing would.
+    $psExe = Join-Path $PSHOME 'powershell.exe'
     $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $launcher `
-      -TargetFolder $OwnFolder -InnerBin 'powershell.exe' `
+      -TargetFolder $OwnFolder -InnerBin $psExe `
       -NoProfile -NonInteractive -Command $inner 2>&1
   } finally {
     $ErrorActionPreference = $prevEAP

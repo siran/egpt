@@ -322,9 +322,16 @@ try {
 
   $pi = New-Object SandboxLogon+PROCESS_INFORMATION
   Log "launching under ${leasedName}: $InnerBin (+$($InnerArgs.Count) args), cwd=$TargetFolder"
+  # lpApplicationName MUST be the resolved path, not $null (operator 2026-08-21):
+  # leaving it null relies on the target token's own (unpredictable) PATH search
+  # to resolve the first token of lpCommandLine, and empirically that path (not
+  # a permissions issue) is what CreateProcessWithTokenW's ERROR_PATH_NOT_FOUND
+  # was about. InnerBin must therefore always be a fully-resolved absolute path
+  # by the time it reaches this script -- callers (sandbox-cli-session.mjs) are
+  # responsible for that, same as any other CreateProcess-family caller.
   $ok = [SandboxLogon]::CreateProcessWithTokenW(
     $hToken, [SandboxLogon]::LOGON_WITH_PROFILE,
-    $null, $cmdLine, [SandboxLogon]::CREATE_NO_WINDOW,
+    $InnerBin, $cmdLine, [SandboxLogon]::CREATE_NO_WINDOW,
     [IntPtr]::Zero, $TargetFolder, [ref]$si, [ref]$pi)
   if (-not $ok) {
     $werr = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
@@ -343,7 +350,12 @@ try {
   [SandboxLogon]::GetExitCodeProcess($pi.hProcess, [ref]$exitCode) | Out-Null
   [SandboxLogon]::CloseHandle($pi.hProcess) | Out-Null
   Log "inner process exited $exitCode"
-  $finalExit = [int]$exitCode
+  # A crashed process's exit code is often a raw NTSTATUS (e.g. 0xC0000142)
+  # reported through GetExitCodeProcess as a uint32 -- a CHECKED [int] cast
+  # throws on anything past Int32.MaxValue instead of exiting with it. Bit-
+  # reinterpret instead (same bytes, signed), matching how exit codes are
+  # conventionally represented everywhere else (Node's child_process included).
+  $finalExit = [BitConverter]::ToInt32([BitConverter]::GetBytes($exitCode), 0)
 } finally {
   if ($plainPwd) { $plainPwd = $null }
   if ($hToken -ne [IntPtr]::Zero) { [SandboxLogon]::CloseHandle($hToken) | Out-Null }
