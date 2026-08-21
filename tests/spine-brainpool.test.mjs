@@ -726,23 +726,24 @@ describe('brainpool.turn — accessLevel override (operator 2026-08-14, was /e a
     expect(opts.confineToDirs).toBeUndefined();                             // dangerously_skip_permissions:true → unconfined
   });
 
-  // STRUCTURAL SAFETY GATE (operator 2026-08-16): accessLevel is now MANDATORY — an unset
-  // accessLevel no longer falls through to the type file's own tools, it refuses the turn
-  // entirely (see the dedicated 'STRUCTURAL SAFETY GATES' describe block below for the
-  // reproduce-first coverage of the throw itself). This regression is REWRITTEN, not just
-  // re-fixtured: its old premise ("no override → loadPermission never consulted, def's own
-  // tools survive") is categorically impossible now — every successful turn has SOME accessLevel
-  // and therefore ALWAYS goes through the ACCESS-LEVEL OVERRIDE block.
-  it('REGRESSION: accessLevel null/unset now REFUSES the turn (superseded — was "never consults loadPermission")', async () => {
+  // REWRITTEN (operator 2026-08-20): accessLevel null/unset used to REFUSE the turn (the
+  // 2026-08-16 structural gate). Refined the same day: resolveConv's own fallback now resolves
+  // an unset accessLevel to the explicit 'regular' instead of null, so the turn proceeds
+  // CONFINED rather than refusing — loadPermission('regular') IS consulted (this is no longer
+  // the "no override" case; it is now the ordinary 'regular' override path, just reached via
+  // the default instead of an explicit setting).
+  it("accessLevel null/unset at both tiers now resolves to 'regular' and runs CONFINED, instead of refusing (operator 2026-08-20 refinement)", async () => {
     const brains = { resolve: () => ({ name: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'all' }) };
-    let called = false;
+    let seenLevel = null;
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
       brains, skipAccessLevelDefault: true,
-      loadPermission: () => { called = true; return { dangerouslySkipPermissions: true, allowedTools: ['Bash'] }; },
+      loadPermission: (level) => { seenLevel = level; return { dangerouslySkipPermissions: false, allowedTools: DEFAULT_ALLOWED_TOOLS }; },
     });
-    await expect(brain.turn('e', ev)).rejects.toThrow(/access_level/);
-    expect(called).toBe(false);        // never even reaches the override block
-    expect(pool.calls).toHaveLength(0);   // never even reaches the engine
+    await brain.turn('e', ev);
+    expect(seenLevel).toBe('regular');     // the override block DOES run now, on the resolved default
+    expect(pool.calls).toHaveLength(1);    // the turn reaches the engine
+    expect(pool.calls[0].brainOptions.allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);
+    expect(pool.calls[0].brainOptions.confineToDirs).toEqual([pool.calls[0].brainOptions.cwd]);   // confined
   });
 
   it('end-to-end with the REAL config/permissions/*.md files (no injected loadPermission): all → dangerously_skip_permissions + bare Bash/Agent, regular → confined DEFAULT_ALLOWED_TOOLS', async () => {
@@ -768,22 +769,30 @@ describe('brainpool.turn — accessLevel override (operator 2026-08-14, was /e a
   });
 });
 
-// ── STRUCTURAL SAFETY GATES (operator 2026-08-16). Two rules, both checked at the very top of
-//    turn() — BEFORE any being-def resolution, so a refusal grants NOTHING, not even the type
-//    file's own baseline allowed_tools:
-//      1) accessLevel must resolve to 'all' or 'regular' at either tier, or the being does not
-//         run at all (previously an unset accessLevel silently fell through to the type file's
-//         own allowed_tools/dangerously_skip_permissions — an implicit, not structural, boundary).
-//      2) accessLevel:'all' (unconfined) must never be paired with an empty/unset allowed_users
-//         (unrestricted reachability) — the escape hatch is the literal "*" wildcard entry
-//         (allowedUsersPermits' twin in conversations-state.mjs recognizes the same literal for
-//         router.mjs/mesh.mjs's sender-match). ──
-describe('brainpool.turn — STRUCTURAL SAFETY GATES (operator 2026-08-16)', () => {
-  it('REPRODUCE-FIRST: accessLevel resolving to null at BOTH tiers → turn() refuses BEFORE any engine call', async () => {
+// ── STRUCTURAL SAFETY GATE (operator 2026-08-16; refined 2026-08-20). Checked at the very top
+//    of turn() — BEFORE any being-def resolution, so a refusal grants NOTHING, not even the
+//    type file's own baseline allowed_tools:
+//      accessLevel:'all' (unconfined) must never be paired with an empty/unset allowed_users
+//      (unrestricted reachability) — the escape hatch is the literal "*" wildcard entry
+//      (allowedUsersPermits' twin in conversations-state.mjs recognizes the same literal for
+//      router.mjs/mesh.mjs's sender-match).
+//    The former rule 1 here ("accessLevel must resolve to 'all' or 'regular' at either tier, or
+//    the being does not run at all") is GONE (operator 2026-08-20): resolveConv's own fallback
+//    now resolves an unset accessLevel to the explicit 'regular' instead of null, so an unset
+//    being now runs CONFINED rather than refusing — see the REPRODUCE-FIRST test just below,
+//    which proves this on CURRENT code (it used to throw; the 2026-08-16 gate test asserted
+//    exactly that — see git history / this file's diff for the before/after). ──
+describe('brainpool.turn — STRUCTURAL SAFETY GATE (operator 2026-08-16, refined 2026-08-20)', () => {
+  it("REPRODUCE-FIRST (before/after, operator 2026-08-20): accessLevel null at BOTH tiers used to refuse the turn (2026-08-16 gate) — now resolves to 'regular' and runs CONFINED, before any allowed_users concern even applies", async () => {
     const brains = { resolve: () => ({ name: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'all' }) };
-    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains, skipAccessLevelDefault: true });
-    await expect(brain.turn('e', ev)).rejects.toThrow(/access_level/);
-    expect(pool.calls).toHaveLength(0);   // the engine (pool.run) was never invoked
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
+      brains, skipAccessLevelDefault: true,
+      loadPermission: (level) => (level === 'regular' ? { dangerouslySkipPermissions: false, allowedTools: DEFAULT_ALLOWED_TOOLS } : null),
+    });
+    const out = await brain.turn('e', ev);   // AFTER: no longer throws
+    expect(out.text).toBe('ok');
+    expect(pool.calls).toHaveLength(1);      // the engine WAS invoked, confined as 'regular'
+    expect(pool.calls[0].brainOptions.confineToDirs).toEqual([pool.calls[0].brainOptions.cwd]);
   });
 
   it("accessLevel 'all' with NO allowed_users at either tier → refuses", async () => {
@@ -832,6 +841,50 @@ describe('brainpool.turn — STRUCTURAL SAFETY GATES (operator 2026-08-16)', () 
   });
 });
 
+// ── SANDBOXED default-on (operator 2026-08-20): same two-tier resolution (per-conversation,
+//    then agents.<being>.conversation_defaults) as accessLevel/allowedUsers, but the FALLBACK
+//    when unset at both tiers is now `true` (was `null`) — OS-level isolation applies to every
+//    being unless a tier explicitly opts out with `sandboxed: false`. `??` only falls through on
+//    null/undefined, so an explicit `false` at either tier still wins over the default. ──
+describe('brainpool.turn — sandboxed default-on (operator 2026-08-20)', () => {
+  it('unset at both tiers → resolves to true (brainOptions.sandboxed reaches boot.mjs\'s makeSession dispatch)', async () => {
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }]);   // no seedAgents.e.sandboxed, no config default
+    await brain.turn('e', ev);
+    expect(pool.calls[0].brainOptions.sandboxed).toBe(true);
+  });
+
+  it('conversation_defaults.sandboxed unset (agents block present but no sandboxed key) → still resolves to true', async () => {
+    const config = { agents: { e: { conversation_defaults: { access_level: 'regular' } } } };
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { config });
+    await brain.turn('e', ev);
+    expect(pool.calls[0].brainOptions.sandboxed).toBe(true);
+  });
+
+  it('REGRESSION: explicit per-conversation sandboxed:false overrides the true default (opt-out survives)', async () => {
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
+      seedAgents: { e: { sandboxed: false } },
+    });
+    await brain.turn('e', ev);
+    expect(pool.calls[0].brainOptions.sandboxed).toBe(false);
+  });
+
+  it('REGRESSION: explicit conversation_defaults.sandboxed:false overrides the true default when no per-conversation value is set', async () => {
+    const config = { agents: { e: { conversation_defaults: { access_level: 'regular', sandboxed: false } } } };
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { config });
+    await brain.turn('e', ev);
+    expect(pool.calls[0].brainOptions.sandboxed).toBe(false);
+  });
+
+  it('a per-conversation sandboxed:true wins over an explicit conversation_defaults.sandboxed:false', async () => {
+    const config = { agents: { e: { conversation_defaults: { access_level: 'regular', sandboxed: false } } } };
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
+      config, seedAgents: { e: { sandboxed: true } },
+    });
+    await brain.turn('e', ev);
+    expect(pool.calls[0].brainOptions.sandboxed).toBe(true);
+  });
+});
+
 // ── accessLevel GLOBAL-DEFAULT TIER (operator 2026-08-15): access_level used to ONLY have a
 //    per-conversation override (getBeing(...).accessLevel) — no node-level default at all. Now
 //    config.yaml's agents.<being>.conversation_defaults.access_level is a fallback, read via
@@ -870,19 +923,19 @@ describe('brainpool.turn — accessLevel GLOBAL-DEFAULT tier (operator 2026-08-1
     expect(opts.confineToDirs).toEqual([opts.cwd]);             // confined, not the global tier's unconfined grant
   });
 
-  // STRUCTURAL SAFETY GATE (operator 2026-08-16): REWRITTEN, not just re-fixtured — see the
-  // identical note on its twin in the 'accessLevel override' describe block above. "Neither tier
-  // set" now means turn() refuses outright, not "falls through to the type file's own tools".
-  it('REGRESSION: neither tier set → turn() REFUSES (superseded — was "no override, loadPermission never consulted")', async () => {
+  // REWRITTEN (operator 2026-08-20): "neither tier set" used to REFUSE outright (the 2026-08-16
+  // gate). Refined the same day — see the identical note on its twin above: an unset accessLevel
+  // now resolves to 'regular' and the turn runs CONFINED, loadPermission('regular') included.
+  it("neither tier set → resolves to 'regular', runs CONFINED (superseded — was \"turn() REFUSES\")", async () => {
     const brains = { resolve: () => ({ name: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'all' }) };
-    let called = false;
+    let seenLevel = null;
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
       brains, skipAccessLevelDefault: true,
-      loadPermission: () => { called = true; return { dangerouslySkipPermissions: true, allowedTools: ['Bash'] }; },
+      loadPermission: (level) => { seenLevel = level; return { dangerouslySkipPermissions: false, allowedTools: DEFAULT_ALLOWED_TOOLS }; },
     });
-    await expect(brain.turn('e', ev)).rejects.toThrow(/access_level/);
-    expect(called).toBe(false);
-    expect(pool.calls).toHaveLength(0);
+    await brain.turn('e', ev);
+    expect(seenLevel).toBe('regular');
+    expect(pool.calls).toHaveLength(1);
   });
 });
 

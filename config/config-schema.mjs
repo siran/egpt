@@ -1260,14 +1260,31 @@ export const CONFIG_SCHEMA = {
             = this node's ordinary default (the type file's own grant,
             unmodified).
 
+          sandboxed
+            boolean (operator 2026-08-20). UNSET/false = this node's ordinary
+            default - the being's warm CLI process runs like any other,
+            confined only by whatever access_level/allowed_tools already
+            apply. true (meaningful only when access_level is 'all'): the
+            being's warm CLI process is launched under a dedicated Windows
+            logon session - LogonUser against the one shared local
+            'egpt-sandbox' account (a fresh, unique logon SID every warm
+            session) + a read/write ACE scoped to exactly that conversation's
+            own folder - via setup/sandbox-logon-launcher.ps1. This is OS-
+            level confinement, layered UNDERNEATH access_level:'all', which
+            already grants unconfined Bash / no path confinement at the
+            CLI-flag level (dangerously_skip_permissions) - sandboxed:true
+            does not change that CLI-flag grant, it bounds what the OS itself
+            will let the process touch on disk regardless of it.
+
         OVERRIDDEN PER CONVERSATION in conversations.yaml under the entry's
         agents: block - contacts.<surface>[<id>].agents.<name>.allowed_users /
-        .access_level - FLAT there (no conversation_defaults wrapper: that
-        block is already scoped to one being in one conversation, so there is
-        no registry-field ambiguity to guard against). When set, the
-        per-conversation value REPLACES this global default for that one
-        conversation (never merged/unioned with it); unset there falls back to
-        this global default, then to "no override" (today's behavior).
+        .access_level / .sandboxed - FLAT there (no conversation_defaults
+        wrapper: that block is already scoped to one being in one
+        conversation, so there is no registry-field ambiguity to guard
+        against). When set, the per-conversation value REPLACES this global
+        default for that one conversation (never merged/unioned with it);
+        unset there falls back to this global default, then to "no override"
+        (today's behavior).
 
     RESOLUTION of a leading @<token> (router.mjs):
       The token matches an agent's name or any handle (case-insensitive).

@@ -942,6 +942,11 @@ export function getBeing(state, surface, jid, being) {
     // (never merges with) the node's global agents.<being>.allowed_users default in config.yaml;
     // null = this conversation states no override, fall to the global tier.
     allowedUsers:       b?.allowed_users        ?? null,
+    // OS-level process isolation on top of access_level:'all' (operator 2026-08-20) — per-
+    // conversation override, same shape/tier as accessLevel/allowedUsers above. null = no
+    // override at this tier, fall to the global conversation_defaults tier (brainpool.mjs's
+    // resolveConv). See setup/sandbox-logon-launcher.ps1 for the mechanism.
+    sandboxed:          b?.sandboxed            ?? null,
   };
 }
 

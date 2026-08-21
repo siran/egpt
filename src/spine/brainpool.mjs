@@ -318,39 +318,50 @@ export function createBrainPool({
       // null = no override at either tier (today's ordinary default). conversation_defaults
       // (not a flat sibling of handles/configuration) is the allowlist of which agent fields
       // get this two-tier treatment — see router.mjs's allowed_users read for the twin of this.
-      accessLevel: b?.accessLevel ?? getConfig()?.agents?.[being]?.conversation_defaults?.access_level ?? null,
+      // UNSET RESOLVES TO 'regular' (operator 2026-08-20, refinement of the 2026-08-16
+      // structural gate): accessLevel can now only ever be 'all' or 'regular' — an unset
+      // value at both tiers is no longer a distinct "undeclared" state that refuses the
+      // turn, it explicitly resolves to the confined tier. Gate #1 below (which used to
+      // catch the null case) is now unreachable and has been removed accordingly.
+      accessLevel: b?.accessLevel ?? getConfig()?.agents?.[being]?.conversation_defaults?.access_level ?? 'regular',
       // ALLOWED_USERS, same two-tier resolution as accessLevel just above (operator 2026-08-16) —
       // needed here (not just at router.mjs/mesh.mjs's reachability gates) so turn() can refuse to
       // run an accessLevel:'all' being that has no allowed_users set at either tier: unconfined
       // capability + unrestricted reachability is an unsafe combination the operator wants caught
       // structurally (see the STRUCTURAL SAFETY GATES block below).
       allowedUsers: b?.allowedUsers ?? getConfig()?.agents?.[being]?.conversation_defaults?.allowed_users ?? null,
+      // SANDBOXED, same two-tier resolution as accessLevel/allowedUsers above (operator
+      // 2026-08-20) — OS-level process isolation (setup/sandbox-logon-launcher.ps1) layered
+      // on top of accessLevel:'all''s existing CLI-flag-level unconfinement. DEFAULT-ON
+      // (operator 2026-08-20, same day): unset at both tiers now resolves to true, not null
+      // — every being runs OS-sandboxed unless a tier explicitly opts out with `false`. `??`
+      // only falls through on null/undefined, so an explicit `sandboxed: false` at either
+      // tier still short-circuits before reaching this fallback.
+      sandboxed: b?.sandboxed ?? getConfig()?.agents?.[being]?.conversation_defaults?.sandboxed ?? true,
     };
   }
 
   return {
     /** @returns {Promise<{ text: string, sessionId: string|null, being: string }>} */
     async turn(being, ev, onPartial = () => {}) {
-      const { slug, sessionId, mode, accessLevel, allowedUsers } = await resolveConv(ev, being);
+      const { slug, sessionId, mode, accessLevel, allowedUsers, sandboxed } = await resolveConv(ev, being);
       if (!slug) throw new Error(`brainpool: no slug for ${ev.surface}/${ev.chatId}`);
 
-      // STRUCTURAL SAFETY GATES (operator 2026-08-16). Both refuse the ENTIRE turn — no
-      // engine/LLM invocation, no tool grant of any kind, not even the type file's own baseline
-      // allowed_tools — so they run before any being-def resolution below.
+      // STRUCTURAL SAFETY GATE (operator 2026-08-16; refined 2026-08-20). Refuses the ENTIRE
+      // turn — no engine/LLM invocation, no tool grant of any kind, not even the type file's
+      // own baseline allowed_tools — before any being-def resolution below.
       //
-      // 1) accessLevel must be STRUCTURALLY defined ('all' or 'regular', per-conversation or
-      //    conversation_defaults) or the being does not run at all. Previously, an unset
-      //    accessLevel silently skipped the ACCESS-LEVEL OVERRIDE block further down and fell
-      //    through to whatever the type file's own allowed_tools/dangerously_skip_permissions
-      //    declared — an implicit, not structural, safety boundary.
-      if (accessLevel !== 'all' && accessLevel !== 'regular') {
-        throw new Error(`brainpool: ${being} has no access_level set (neither per-conversation nor conversation_defaults) — refusing to run`);
-      }
-      // 2) accessLevel:'all' (unconfined) must never be paired with an empty/unset allowed_users
-      //    (unrestricted reachability) — that combination is caught here, structurally, rather
-      //    than left to "unrestricted by default". The escape hatch is the SAME literal "*"
-      //    wildcard router.mjs/mesh.mjs's allowedUsersPermits recognizes: an explicit ['*'] is a
-      //    non-empty array, so it already satisfies this check.
+      // accessLevel:'all' (unconfined) must never be paired with an empty/unset allowed_users
+      // (unrestricted reachability) — that combination is caught here, structurally, rather
+      // than left to "unrestricted by default". The escape hatch is the SAME literal "*"
+      // wildcard router.mjs/mesh.mjs's allowedUsersPermits recognizes: an explicit ['*'] is a
+      // non-empty array, so it already satisfies this check.
+      //
+      // The former gate #1 here ("accessLevel must be structurally 'all' or 'regular', or the
+      // turn refuses") is REMOVED, not left as unreachable dead code: resolveConv's own
+      // accessLevel fallback now resolves an unset value to the explicit 'regular' (operator
+      // 2026-08-20) rather than null, so accessLevel can only ever be 'all' or 'regular' by the
+      // time turn() reads it — that throw could no longer fire.
       if (accessLevel === 'all' && !(Array.isArray(allowedUsers) && allowedUsers.length)) {
         throw new Error(`brainpool: ${being} has access_level 'all' but no allowed_users set — refusing to run (set allowed_users, or ['*'] to explicitly allow anyone)`);
       }
@@ -487,6 +498,11 @@ export function createBrainPool({
         // allowed_users non-empty + sender matched before this turn ever ran) — never
         // attacker-writable.
         dangerouslySkipPermissions: def.dangerously_skip_permissions === true,
+        // Plain passthrough (operator 2026-08-20) — boot.mjs's makeSession reads this to pick
+        // createSandboxCliSession over createBrainSession. No structural gating beyond this:
+        // the STRUCTURAL SAFETY GATES above already refuse the whole turn when accessLevel
+        // isn't set, so a sandboxed being still needs its own access_level/allowed_users.
+        sandboxed: sandboxed === true,
       };
 
       // Identity kickoff: prefix the first turn of a fresh thread with the feed,
