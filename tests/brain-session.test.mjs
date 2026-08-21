@@ -13,6 +13,10 @@ describe('brain session engine dispatch', () => {
     expect(s.sessionId).toBeNull();
   });
 
+  it('accepts pi — a full harness driving the local model', () => {
+    expect(createBrainSession({ engine: 'pi', spawn: () => {} })).toHaveProperty('turn');
+  });
+
   it('refuses an engine with no implementation', () => {
     expect(() => createBrainSession({ engine: 'nope' })).toThrow(/unsupported local brain engine/);
   });

@@ -5,6 +5,7 @@
 import { createWarmCliSession } from './warm-cli-session.mjs';
 import { createCodexCliSession } from './codex-cli-session.mjs';
 import { createLlamaHttpSession } from './llama-http-session.mjs';
+import { createPiCliSession } from './pi-cli-session.mjs';
 
 export function createBrainSession(options = {}) {
   const engine = String(options.engine ?? 'ccode').toLowerCase();
@@ -12,5 +13,8 @@ export function createBrainSession(options = {}) {
   if (engine === 'codex') return createCodexCliSession(options);
   // HTTP, not a CLI: local llama-server, sessionless (see llama-http-session.mjs).
   if (engine === 'llama') return createLlamaHttpSession(options);
+  // A FULL harness (read/bash/edit/write) driving the same local model —
+  // `pi --mode rpc`, JSONL over stdio. See pi-cli-session.mjs.
+  if (engine === 'pi') return createPiCliSession(options);
   throw new Error(`unsupported local brain engine: ${engine}`);
 }
