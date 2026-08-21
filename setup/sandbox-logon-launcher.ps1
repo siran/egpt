@@ -606,6 +606,17 @@ $leasedSid = $null
 $hToken = [IntPtr]::Zero
 $hSandboxDesk = [IntPtr]::Zero
 try {
+  # ---- (a2) wipe this account's Windows user profile. Pool accounts are reused
+  # across DIFFERENT conversations and step (f)'s LOGON_WITH_PROFILE recreates
+  # C:\Users\<account>\ at logon, so whatever the previous turn's CLI left under
+  # %APPDATA% / %LOCALAPPDATA% would otherwise be readable by the next
+  # conversation to lease this name. ON ACQUIRE, deliberately: after LogonUser
+  # the profile is already materialised so wiping would be useless, and wiping
+  # on RELEASE would be skipped entirely whenever a turn crashes or is killed  -
+  # which is why there is no wipe in the finally block. Wipe-on-acquire is a
+  # clean start regardless of how the previous turn ended. ----
+  Clear-SandboxAccountProfile -AccountName $leasedName
+
   # ---- (b) get this account's stored credential  - self-heals if somehow
   # missing, but under normal operation the pool was already provisioned by
   # provision-sandbox-account.ps1, so this just reads the existing file. ----

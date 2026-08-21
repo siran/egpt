@@ -137,3 +137,85 @@ function Grant-SandboxPoolAccess {
   Set-Acl -LiteralPath $Path -AclObject $acl
   Log "granted ReadAndExecute to $SandboxPoolGroup on $Path"
 }
+
+# Wipe ONE pool account's Windows user profile. Called by
+# sandbox-logon-launcher.ps1 on LEASE ACQUIRE, before LogonUser.
+#
+# WHY (operator ruling 2026-08-21: the account profile is SCRATCH, the
+# conversation folder is the only durable storage): pool accounts are REUSED
+# across DIFFERENT conversations, and LOGON_WITH_PROFILE materialises
+# C:\Users\<account>\. Anything the inner CLI writes under %USERPROFILE% /
+# %APPDATA% / %LOCALAPPDATA%  - browser profiles, caches, tokens, app config  -
+# survives there and is visible to whichever DIFFERENT conversation leases that
+# account next. That is a cross-conversation information leak the per-turn
+# folder ACE cannot catch, because it is not a permissions failure at all; it
+# can only be fixed by wiping.
+#
+# WHY Win32_UserProfile AND NOT Remove-Item: deleting only the directory leaves
+# the profile's ProfileList registry entry behind, and the next logon then
+# creates egpt-sbx-07.REVE, then .REVE.000, accumulating forever while the wipe
+# silently stops working. Remove-CimInstance drops the registry hive entry and
+# the directory together. Do NOT add a Remove-Item -Recurse fallback.
+#
+# SAFETY: this function DELETES USER PROFILES, so a targeting bug could destroy
+# the operator's own. Every guard below is belt-and-braces and REFUSES (throws)
+# rather than proceeding.
+function Clear-SandboxAccountProfile {
+  param(
+    [Parameter(Mandatory = $true)][string]$AccountName
+  )
+  # ---- GUARD 1 (pool prefix): checked FIRST, before a SID is even resolved, so
+  # that no code path in this function can target 'an', 'Administrator' or any
+  # other non-pool account even if it is called wrongly.
+  if (-not $AccountName.StartsWith($SandboxPoolPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "sandbox-logon-launcher: refusing to wipe the profile of '$AccountName'  - it is not a sandbox pool account (its name must start with '$SandboxPoolPrefix')"
+  }
+
+  # Resolve the NAME to a SID and select the profile BY SID  - never by matching
+  # path strings, which a lookalike directory name could fool.
+  try {
+    $sid = (New-Object System.Security.Principal.NTAccount($AccountName)).Translate([System.Security.Principal.SecurityIdentifier])
+  } catch {
+    # The account does not exist yet (first-ever use on this node  - the pool is
+    # created lazily by Get-SandboxCredential later in the launcher's flow). No
+    # account means no profile: nothing to wipe, and nothing was deleted.
+    Log "no profile to wipe for '$AccountName'  - the account does not resolve to a SID ($($_.Exception.Message))"
+    return
+  }
+
+  $found = @(Get-CimInstance -ClassName Win32_UserProfile -ErrorAction Stop |
+    Where-Object { $_.SID -eq $sid.Value })
+
+  # NORMAL CASE, not an error: first-ever use of this account, or already wiped.
+  if ($found.Count -eq 0) { return }
+  # ---- GUARD 2 (exactly one match): a SID matching several profiles means
+  # something is wrong that this function is not equipped to reason about.
+  if ($found.Count -gt 1) {
+    throw "sandbox-logon-launcher: refusing to wipe the profile of '$AccountName'  - $($found.Count) Win32_UserProfile entries match SID $($sid.Value)"
+  }
+  $candidate = $found[0]
+  # ---- GUARD 3 (not a system profile).
+  if ($candidate.Special) {
+    throw "sandbox-logon-launcher: refusing to wipe the profile of '$AccountName' (SID $($sid.Value))  - it is flagged Special, i.e. a system profile"
+  }
+  # ---- GUARD 4 (independent path check): the SID lookup above and this leaf
+  # comparison must AGREE. Deliberately redundant with GUARD 1.
+  if ([string]::IsNullOrWhiteSpace($candidate.LocalPath)) {
+    throw "sandbox-logon-launcher: refusing to wipe the profile of '$AccountName' (SID $($sid.Value))  - its Win32_UserProfile entry has no LocalPath"
+  }
+  $leaf = Split-Path -Path $candidate.LocalPath -Leaf
+  if ($leaf -ne $AccountName) {
+    throw "sandbox-logon-launcher: refusing to wipe the profile of '$AccountName' (SID $($sid.Value))  - it lives at '$($candidate.LocalPath)', whose leaf '$leaf' is not the account name"
+  }
+
+  # NON-FATAL: the wipe is a HYGIENE step, not a security gate. The usual
+  # failure is the profile still being loaded because a previous turn's process
+  # has not fully exited  - warn on stderr (stdout is the inner process's own
+  # stream-json pipe, see Log's comment) and let the turn proceed.
+  try {
+    Remove-CimInstance -InputObject $candidate -ErrorAction Stop
+    Log "wiped scratch profile for '$AccountName' ($($candidate.LocalPath))"
+  } catch {
+    Log "WARNING: could not wipe the scratch profile for '$AccountName' at $($candidate.LocalPath)  - $($_.Exception.Message) (continuing anyway: hygiene step, not a security gate)"
+  }
+}
