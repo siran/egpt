@@ -23,10 +23,18 @@
 // The pool owns lazy-warm, idle-evict, LRU and per-key serialization, so this
 // primitive only guards that ONE turn runs at a time.
 import { stream as llamaStream } from '../config/brains/llama.mjs';
+import { runAgentLoop } from './tools/agent-loop.mjs';
 
 export function createLlamaHttpSession(options = {}) {
   const onLog = typeof options.onLog === 'function' ? options.onLog : () => {};
-  const stream = options.stream || llamaStream;   // injectable for tests
+  const stream = options.stream || llamaStream;        // injectable for tests
+  const agentLoop = options.agentLoop || runAgentLoop;  // injectable for tests
+  // AGENTIC (config local_llm.agentic): run eGPT's ReAct loop against the
+  // permission-gated tool registry instead of a plain chat turn. OFF keeps @l
+  // a pure chatter — which is the shipped default, because an unleashed local
+  // model will not self-refuse a destructive call (see tools/agent-tools.mjs).
+  // NOTE: the loop does not stream, so onUpdate never fires in this mode.
+  const agentic = options.agentic === true;
   let closed = false;
   let inFlight = false;
 
@@ -36,6 +44,21 @@ export function createLlamaHttpSession(options = {}) {
       if (inFlight) throw new Error('llama-http: a turn is already in flight (the pool must serialize per key)');
       inFlight = true;
       try {
+        if (agentic) {
+          const text = await agentLoop({
+            systemPrompt: options.appendSystemPrompt,
+            userText: String(message ?? ''),
+            toolsCfg: options.toolsCfg,
+            sandboxRoot: options.sandboxRoot,
+            sendMessage: options.sendMessage,
+            confirm: options.confirm,
+            url: options.url,
+            model: options.model,
+            maxIters: options.agenticMaxIters,
+            onLog,
+          });
+          return { text: String(text ?? ''), sessionId: null };
+        }
         const text = await stream(
           { history: options.history ?? [], message: String(message ?? '') },
           onUpdate,

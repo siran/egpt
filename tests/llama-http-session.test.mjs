@@ -60,3 +60,42 @@ describe('llama http session', () => {
     await expect(s.turn('again')).resolves.toEqual({ text: 'recovered', sessionId: null });
   });
 });
+
+// AGENTIC mode: @l stops being a chatter and runs eGPT's own ReAct loop
+// (src/tools/agent-loop.mjs) against the permission-gated tool registry.
+// Gated by config local_llm.agentic; OFF keeps it a pure chatter.
+describe('llama http session — agentic mode', () => {
+  it('uses the chat stream when agentic is off', async () => {
+    const stream = vi.fn(async () => 'chatted');
+    const agentLoop = vi.fn(async () => 'looped');
+    const s = createLlamaHttpSession({ stream, agentLoop, agentic: false });
+    expect(await s.turn('hi')).toEqual({ text: 'chatted', sessionId: null });
+    expect(agentLoop).not.toHaveBeenCalled();
+  });
+
+  it('routes through the agent loop when agentic is on', async () => {
+    const stream = vi.fn(async () => 'chatted');
+    const agentLoop = vi.fn(async () => 'looped');
+    const s = createLlamaHttpSession({
+      stream, agentLoop, agentic: true,
+      toolsCfg: { read_file: 'allow' }, sandboxRoot: '/tmp/sbx',
+      url: 'http://127.0.0.1:8080', model: 'gemma', agenticMaxIters: 5,
+    });
+    expect(await s.turn('read a file')).toEqual({ text: 'looped', sessionId: null });
+    expect(stream).not.toHaveBeenCalled();
+    const [args] = agentLoop.mock.calls[0];
+    expect(args.userText).toBe('read a file');
+    expect(args.toolsCfg).toEqual({ read_file: 'allow' });
+    expect(args.sandboxRoot).toBe('/tmp/sbx');
+    expect(args.url).toBe('http://127.0.0.1:8080');
+    expect(args.model).toBe('gemma');
+    expect(args.maxIters).toBe(5);
+  });
+
+  it('keeps the in-flight and closed guards in agentic mode', async () => {
+    const agentLoop = vi.fn(async () => 'ok');
+    const s = createLlamaHttpSession({ agentLoop, agentic: true });
+    s.close();
+    await expect(s.turn('hi')).rejects.toThrow(/closed/);
+  });
+});
