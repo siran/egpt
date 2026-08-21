@@ -24,11 +24,34 @@
 // Pi owns its own session persistence (--session-id), so sessionId here is null
 // unless the caller pins one.
 import { spawn as nodeSpawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+
+// The Windows npm launcher for pi is pi.cmd — a SHIM, not a PE image. Two
+// independent reasons a bare 'pi' cannot work under the sandbox: the launcher
+// hands InnerBin to CreateProcessWithLogonW as lpApplicationName, which does
+// NOT search PATH, and cannot start a .cmd even given an absolute path. A
+// Windows SERVICE also inherits a minimal PATH, so bare names are unreliable
+// even unsandboxed. Resolve to node.exe + the package's own dist/cli.js, the
+// same shape codex-cli-session.mjs's resolveCodexCommand() uses.
+const PI_PKG = ['@earendil-works', 'pi-coding-agent', 'dist', 'cli.js'];
+function resolvePiCommand(explicit) {
+  if (explicit) return { bin: explicit, prefix: [] };
+  if (process.env.EGPT_PI_BIN) return { bin: process.env.EGPT_PI_BIN, prefix: [] };
+  if (process.platform === 'win32' && process.env.APPDATA) {
+    const js = join(process.env.APPDATA, 'npm', 'node_modules', ...PI_PKG);
+    try { if (existsSync(js)) return { bin: process.execPath, prefix: [js] }; } catch { /* PATH fallback */ }
+  }
+  const unixJs = join(homedir(), '.npm-global', 'lib', 'node_modules', ...PI_PKG);
+  try { if (existsSync(unixJs)) return { bin: process.execPath, prefix: [unixJs] }; } catch { /* PATH fallback */ }
+  return { bin: 'pi', prefix: [] };
+}
 
 export function createPiCliSession(options = {}) {
   const onLog = typeof options.onLog === 'function' ? options.onLog : () => {};
   const _spawn = options.spawn || nodeSpawn;   // injectable for tests
-  const bin = options.bin || process.env.EGPT_PI_BIN || 'pi';
+  const { bin, prefix } = resolvePiCommand(options.bin);
 
   let proc = null;
   let stdoutBuf = '';
@@ -78,7 +101,7 @@ export function createPiCliSession(options = {}) {
   }
 
   function spawnProc() {
-    const args = ['--mode', 'rpc', '--offline'];
+    const args = [...prefix, '--mode', 'rpc', '--offline'];
     if (options.provider) args.push('--provider', options.provider);
     if (options.model) args.push('--model', options.model);
     if (options.sessionId) args.push('--session-id', String(options.sessionId));

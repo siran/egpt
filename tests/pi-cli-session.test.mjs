@@ -150,6 +150,30 @@ describe('pi cli session (rpc mode)', () => {
     expect((await t2).text).toBe('BBB');
   });
 
+  // The Windows npm launcher is pi.cmd — a SHIM, not a PE image. The sandbox
+  // launcher hands InnerBin to CreateProcessWithLogonW as lpApplicationName,
+  // which neither searches PATH nor can start a .cmd. So resolve to node.exe +
+  // the package's dist/cli.js, exactly as codex-cli-session.mjs does.
+  it('resolves an ABSOLUTE node.exe + cli.js, never a bare "pi"', () => {
+    const proc = fakePi();
+    const spawn = spawnFake(proc);
+    createPiCliSession({ spawn }).turn('x');
+    const [bin, args] = spawn.mock.calls[0];
+    expect(bin).not.toBe('pi');
+    expect(bin.toLowerCase()).toContain('node');
+    expect(args[0]).toMatch(/cli\.js$/i);
+    expect(args.slice(1)).toEqual(expect.arrayContaining(['--mode', 'rpc']));
+  });
+
+  it('an explicit bin still wins, with no prefix', () => {
+    const proc = fakePi();
+    const spawn = spawnFake(proc);
+    createPiCliSession({ spawn, bin: 'C:/custom/pi.exe' }).turn('x');
+    const [bin, args] = spawn.mock.calls[0];
+    expect(bin).toBe('C:/custom/pi.exe');
+    expect(args[0]).toBe('--mode');
+  });
+
   it('passes provider and model through to the spawn', () => {
     const proc = fakePi();
     const spawn = spawnFake(proc);
