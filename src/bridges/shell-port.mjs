@@ -21,6 +21,12 @@ import { mentionStatus } from '../auto-mode.mjs';
 // thinking train, its persona stamp, and the agent/bridge signatures on EVERY frame,
 // identical to Beeper — because it runs the identical machinery, not a shell-specific copy.
 import { makeWrapPersona } from './persona-wrap.mjs';
+// The shell socket's ONE authentication definition (src/shell/auth.mjs — header there for the
+// vulnerability this closes). Loopback is NOT an authenticator: the sandboxed CLI accounts can
+// bind 127.0.0.1:23375 while the editor is shut and impersonate the operator. The peer that
+// answers this port must PROVE it holds the node's shell token before this limb trusts a byte
+// of it. The algorithm is imported, never re-implemented — the editor end runs the same module.
+import { newNonce, challengeFrame, parseAuthFrame, authMac, macMatches, SHELL_TOKEN_HELP } from '../shell/auth.mjs';
 
 // The editor serves this fixed port; the spine dials out (like Beeper's fixed 23373).
 // Exported so boot + tests share the one number (plan §3, §9 — fixed port, not discovery).
@@ -33,7 +39,8 @@ const RECONNECT_MAX_MS = 60_000;
 // so a frame that omits `chatId` lands on this seat; the operator at the shell is a
 // PARTICIPANT (authorized), symmetric with a WhatsApp sender — NOT an admin at a special
 // console (plan §2). It is the outbound-routing key too (boot routes a shell-surface chat
-// back to this socket).
+// back to this socket). That `authorized: true` is EARNED, not assumed: it is stamped only
+// on frames from a peer that already passed the auth handshake below (src/shell/auth.mjs).
 const SHELL_CHAT_ID = 'main';
 const SHELL_USER = 'operator';
 
@@ -45,6 +52,7 @@ const SHELL_USER = 'operator';
  * @param {boolean} [opts.addressWithoutAt]   the node's dispatch.address_without_at (DEFAULT true): may a BARE leading handle ("d hola") address, or is the '@' required? Rides beside wakeWords into the SAME mentionStatus call — the same value boot hands the beeper bridge and the router.
  * @param {string} [opts.bridgeSignatureOpen]  per-NODE outer wrap layer — the SAME value boot hands the beeper bridge, so a shell reply's wrap matches the Beeper wrap. Default ''.
  * @param {string} [opts.bridgeSignatureClose]
+ * @param {string} [opts.token]               the node's SHELL TOKEN (cfg.shell.token, handed in by boot exactly like bridgeSignatureOpen/nodeName — this limb never reads config itself). The peer holding 127.0.0.1:23375 must prove it knows this secret before a single frame is sent to it or accepted from it. UNSET → the limb FAILS CLOSED: it does not dial at all and logs what to add to config. No default, no auto-generation, no unauthenticated mode.
  * @param {string} [opts.nodeName]            the STRUCTURAL node id (cfg.node_name), tag-encoded invisibly onto every frame — same value boot hands the beeper bridge. Default ''.
  * @param {string} [opts.header]              the shell status-line header (boot's computeShellHeader) — the initial value handed in at boot, pushed as a header-only frame on every (re)connect. Updatable later via setHeader() (e.g. /room join|leave). Default '' → no header frame sent until setHeader() is called.
  * @param {(m: string) => void} [opts.onLog]
@@ -58,6 +66,7 @@ export function createShellPort({
   addressWithoutAt = true,
   bridgeSignatureOpen = '',
   bridgeSignatureClose = '',
+  token = '',
   nodeName = '',
   header = '',
   onLog = () => {},
@@ -77,6 +86,13 @@ export function createShellPort({
   // Late-bound inbound handler: the spine registers it AFTER construction (as it does
   // bridge.onMessage), so the message frame reads the ref at call time.
   let onMsg = null;
+  // The shared secret this limb challenges the editor with. Empty → the limb is DISABLED
+  // (fail closed): see start() below.
+  const _token = String(token ?? '');
+  // _wsReady means AUTHENTICATED-and-ready, not merely "socket open" — it flips only after the
+  // peer answers the challenge correctly, so every existing reader of it (pushFrame's drop
+  // guard, isConnected/isAlive, poke's already-connected check) refuses to touch an unverified
+  // peer without a single extra branch of its own.
   let ws = null, _stopped = false, _wsReady = false, _reconnectTimer = null;
   let _reconnectMs = RECONNECT_MIN_MS;   // backs off to RECONNECT_MAX_MS while the editor is down
   // Chat ids seen inbound — the outbound-routing signal boot uses to send a shell-surface
@@ -97,23 +113,57 @@ export function createShellPort({
     return { text, chatId };
   }
 
+  // THE HANDSHAKE, spine side. Called for every frame that arrives before the peer is trusted;
+  // returns true the moment it is. A frame that is not the answer to OUR nonce is DISCARDED —
+  // never queued, never replayed once authentication later succeeds, so an impostor cannot
+  // front-load a `/upgrade` and have it delivered the instant a genuine editor takes the port.
+  // A WRONG answer is fatal for this socket: close it and fall into the EXISTING reconnect
+  // backoff (the 'close' handler below), never a second retry mechanism.
+  function verifyPeer(raw, nonce, sock) {
+    const f = parseAuthFrame(raw);
+    if (!f || f.auth !== 'response') return false;               // pre-auth noise → dropped on the floor
+    if (!macMatches(f.mac, authMac(_token, nonce))) {
+      onLog('shell: EDITOR FAILED THE AUTH CHALLENGE — refusing to trust whatever holds 127.0.0.1:23375. '
+        + 'Most likely an IMPOSTOR bound the port while the editor was closed (a sandboxed account can); '
+        + 'otherwise the editor is running with a different shell.token. Dropping the socket.');
+      try { sock?.close?.(); } catch { /* closing */ }
+      return false;
+    }
+    // Trusted from here on: NOW the limb may speak. The header push (the first frame this limb
+    // ever sends) is deliberately deferred to this point — before it, the peer is a stranger.
+    _wsReady = true; _reconnectMs = RECONNECT_MIN_MS;
+    onLog('shell: WS open — editor authenticated');
+    // The permanent header, resent on EVERY (re)connect — a header that only ever sends
+    // once would go blank forever after the first reconnect.
+    if (_header) pushFrame(SHELL_CHAT_ID, '', { header: _header });
+    return true;
+  }
+
   function connect() {
-    if (_stopped) return;
+    if (_stopped || !_token) return;                              // no secret → never dial (fail closed)
     try { ws = new WebSocket(url); }
     catch (e) { onLog(`shell: WS connect threw — ${e?.message ?? e}`); scheduleReconnect(); return; }
+    // Per-SOCKET handshake state: a fresh nonce every connection (so a recorded answer is
+    // useless on the next one) and a trust flag that starts false on every reconnect.
+    const nonce = newNonce();
+    let authed = false;
+    const sock = ws;
     ws.on('open', () => {
-      _wsReady = true; _reconnectMs = RECONNECT_MIN_MS; onLog('shell: WS open');
-      // The permanent header, resent on EVERY (re)connect — a header that only ever sends
-      // once would go blank forever after the first reconnect.
-      if (_header) pushFrame(SHELL_CHAT_ID, '', { header: _header });
+      // NOT ready yet — the socket being open says nothing about WHO answered. Send the
+      // challenge and nothing else; _wsReady stays false, so every send drops meanwhile.
+      onLog('shell: WS open — challenging the editor');
+      try { sock.send(challengeFrame(nonce)); }
+      catch (e) { onLog(`shell: challenge send failed — ${e?.message ?? e}`); try { sock.close(); } catch { /* closing */ } }
     });
     ws.on('message', (buf) => {
+      if (!authed) { authed = verifyPeer(buf, nonce, sock); return; }
       const { text, chatId } = toInbound(buf);
       if (!text) return;
       _chatIds.add(chatId);
       // The `from` the identity service consumes: network 'shell' → the shell SURFACE +
       // the 'sh' transport tag; authorized so an operator slash command (`/status`, `/chrome kg`) is
-      // recognized (the shell is the operator's own trusted local console). MENTION FLAGS
+      // recognized (the shell is the operator's own local console — PROVEN so by the handshake
+      // above, not assumed from the loopback address). MENTION FLAGS
       // computed here (mirrors beeper.mjs' `mentionStatus(text, wakeWords)`): without them
       // a shell `@e` arrived with atEAnywhere unset → identity.build → the mention gate
       // stayed false → E was gated out and never woke. reply-to stays null (no quoting on
@@ -157,12 +207,18 @@ export function createShellPort({
   return {
     // Dial out to the editor (idempotent-enough for boot: called once). If the editor
     // never answers, the error/close handlers just re-arm the backoff — start() never throws.
-    start() { connect(); },
+    // FAIL CLOSED with no token: the limb does not dial AT ALL and says exactly what to add.
+    // Deliberately not an auto-generated secret and not a warn-and-continue — an unauthenticated
+    // shell socket is a sandbox escape (src/shell/auth.mjs header), so "off" is the safe state.
+    start() {
+      if (!_token) { onLog(`shell: DISABLED — no shell token configured, so the operator console cannot be authenticated (an unauthenticated 127.0.0.1:23375 is impersonable by any local account). To enable it, ${SHELL_TOKEN_HELP}.`); return; }
+      connect();
+    },
     // The operator's editor just announced itself (ingest marker, right after its WS
     // server started listening) — connect NOW instead of riding out the reconnect backoff
     // (up to 60s). No-op if already connected or stopped.
     poke() {
-      if (_stopped || _wsReady) return;
+      if (_stopped || _wsReady || !_token) return;   // no secret → stays disabled, an announce cannot re-enable it
       if (_reconnectTimer) { clearTimeoutFn(_reconnectTimer); _reconnectTimer = null; }
       _reconnectMs = RECONNECT_MIN_MS;
       connect();

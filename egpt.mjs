@@ -14,6 +14,8 @@
 //   Usage: node egpt.mjs [--port 23375] [--theme catppuccin]
 import process from 'node:process';
 import { createShellServer, SHELL_WS_PORT } from './src/shell/server.mjs';
+import { shellTokenFrom } from './src/shell/auth.mjs';
+import { readConfigSync } from './src/tools/config-io.mjs';
 import { listThemes } from './src/tools/theme.mjs';
 import { runApp } from './src/shell/app.mjs';
 
@@ -40,8 +42,14 @@ if (!process.stdout.isTTY) {
 // the plain connect/disconnect/announce info lines the app already tracks by polling stay
 // quiet) to the app, which renders them as loud `error` transcript rows.
 const errorListeners = [];
+// THE SHARED SECRET the spine challenges this editor with (src/shell/auth.mjs). Read from the
+// operator's own config — this process runs as the operator, so it can read the same
+// ~/.egpt/config/config.yaml the spine reads; the sandboxed accounts that could otherwise
+// impersonate this editor cannot. Read-only, and the ONE place the editor touches config.
+// Missing → the handshake goes unanswered and the spine refuses this editor, loudly (fail closed).
 const server = createShellServer({
   port: args.port,
+  token: shellTokenFrom(readConfigSync()),
   onLog: (m) => { if (/fail|error/i.test(m)) for (const fn of errorListeners) fn(m); },
 });
 server.start();

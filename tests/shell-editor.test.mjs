@@ -24,6 +24,8 @@ import { once } from 'node:events';
 import { readFileSync } from 'node:fs';
 import { WebSocket, WebSocketServer } from 'ws';
 import { createShellServer } from '../src/shell/server.mjs';
+import { challengeFrame, parseAuthFrame, authMac, newNonce } from '../src/shell/auth.mjs';
+import { createShellPort } from '../src/bridges/shell-port.mjs';
 import * as edit from '../src/shell/input.mjs';
 import { routeCommand } from '../src/shell/commands.mjs';
 import * as hist from '../src/shell/history.mjs';
@@ -144,6 +146,135 @@ describe('shell editor — WS server (fake spine over a real socket)', () => {
     const finalName = calls.rename[0].to.split(/[\\/]/).pop();
     expect(finalName.startsWith('.')).toBe(false);                // ingest sweep skips dotfiles
     expect(finalName.endsWith('.tmp')).toBe(false);                // ...and *.tmp
+  });
+});
+
+// ── THE EDITOR'S HALF OF THE HANDSHAKE (operator 2026-08-21) ────────────────────────────────
+// The spine no longer trusts whatever answers 127.0.0.1:23375 — loopback is bindable by the
+// sandboxed CLI accounts, and the port sits unbound whenever the editor is closed. So the
+// editor must PROVE it holds the node's shell token: the spine sends a nonce, this server
+// answers HMAC-SHA256(token, nonce) (src/shell/auth.mjs, the same module the limb runs).
+// Same style as the block above: a REAL `ws` client as the fake spine against a REAL server on
+// an ephemeral port.
+describe('shell editor — WS server answers the spine auth challenge', () => {
+  const cleanups = [];
+  afterEach(() => { for (const c of cleanups.splice(0)) try { c(); } catch {} });
+
+  async function connected(opts = {}) {
+    const logs = [];
+    const server = createShellServer({ port: 0, io: fakeIo(), onLog: (m) => logs.push(m), ...opts });
+    const wss = server.start();
+    cleanups.push(() => server.stop());
+    await once(wss, 'listening');
+    const spine = new WebSocket(`ws://127.0.0.1:${wss.address().port}`);
+    cleanups.push(() => spine.close());
+    const inbound = [];
+    server.onSpineMessage(m => inbound.push(m));
+    await once(spine, 'open');
+    await waitFor(() => server.isConnected);
+    return { server, spine, inbound, logs };
+  }
+
+  it('REPRODUCE-FIRST: a challenge is answered with the right MAC — and is NEVER surfaced as a transcript line', async () => {
+    const TOKEN = 'test-shell-token';
+    const { spine, inbound } = await connected({ token: TOKEN });
+    const nonce = newNonce();
+
+    const answered = once(spine, 'message');
+    spine.send(challengeFrame(nonce));
+    const [buf] = await answered;
+
+    // The proof, computed independently here — and the token itself never rode the wire.
+    expect(parseAuthFrame(buf)).toEqual({ auth: 'response', nonce: '', mac: authMac(TOKEN, nonce) });
+    expect(buf.toString()).not.toContain(TOKEN);
+
+    // Pre-fix, the challenge fell through parse() and reached the app as a bare text row —
+    // the operator would have seen raw handshake JSON printed in the transcript.
+    expect(inbound).toHaveLength(0);
+
+    // …and ordinary traffic still flows exactly as before.
+    spine.send(JSON.stringify({ text: 'from-spine', chatId: 'main' }));
+    await waitFor(() => inbound.length > 0);
+    expect(inbound[0]).toEqual({ text: 'from-spine', chatId: 'main', streaming: false });
+  });
+
+  it('FAIL CLOSED with no token: the challenge goes unanswered and the log says exactly what to add', async () => {
+    const { spine, logs, inbound } = await connected();          // no token configured
+    let answer = null;
+    spine.on('message', (b) => { if (parseAuthFrame(b)) answer = b; });
+
+    spine.send(challengeFrame(newNonce()));
+    await waitFor(() => logs.length > 0);
+    await new Promise((r) => setTimeout(r, 25));                  // give any (wrong) answer time to land
+
+    expect(answer).toBeNull();                                    // nothing to authenticate with → nothing sent
+    expect(inbound).toHaveLength(0);                              // and still never a transcript row
+    const log = logs.join('\n');
+    expect(log).toMatch(/FAIL/);                                  // worded so egpt.mjs's fault filter surfaces it
+    expect(log).toMatch(/shell:/);
+    expect(log).toMatch(/token:/);
+    expect(log).toMatch(/config\.yaml/);
+  });
+});
+
+// END TO END over a REAL loopback socket: the real editor server and the real spine limb, the
+// pair that actually runs in production. The unit tests either fake the limb's socket or use a
+// raw client as the fake spine; only this one proves the two halves agree on the wire.
+describe('shell editor ↔ spine limb — the real pair over a real socket', () => {
+  const cleanups = [];
+  afterEach(() => { for (const c of cleanups.splice(0)) try { c(); } catch {} });
+
+  it('matching tokens: the limb authenticates, then frames flow both ways', async () => {
+    const TOKEN = 'test-shell-token';
+    const server = createShellServer({ port: 0, token: TOKEN, io: fakeIo() });
+    const wss = server.start();
+    cleanups.push(() => server.stop());
+    await once(wss, 'listening');
+
+    const inbound = [];
+    const port = createShellPort({ url: `ws://127.0.0.1:${wss.address().port}`, token: TOKEN, header: 'test-header' });
+    cleanups.push(() => port.stop());
+    server.onSpineMessage((m) => inbound.push(m));
+    port.onMessage((msg) => { inbound.push(msg); });
+    port.start();
+
+    await waitFor(() => port.isConnected);                        // ← the handshake completed
+    await waitFor(() => inbound.some((m) => m.header === 'test-header'));   // the deferred header landed
+    expect(server.send('hola')).toBe(true);
+    await waitFor(() => inbound.some((m) => m.body === 'hola'));   // editor → spine
+    expect(port.send('main', 'reply')).toBe(true);                 // spine → editor
+    await waitFor(() => inbound.some((m) => m.text === 'reply'));
+  });
+
+  it('REPRODUCE-FIRST: an IMPOSTOR server that does not know the token gets NOTHING through — its frames never reach the spine', async () => {
+    // Exactly the sandbox-escape shape: a process that is not the editor squats the port while
+    // the editor is closed, and pushes a lifecycle command at the spine the moment it dials in.
+    const impostor = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+    cleanups.push(() => impostor.close());
+    await once(impostor, 'listening');
+    const attempts = [];
+    impostor.on('connection', (ws) => {
+      ws.on('message', (b) => attempts.push(b.toString()));
+      ws.send(JSON.stringify({ text: '/upgrade', chatId: 'main' }));      // unsolicited, pre-auth
+      ws.send(JSON.stringify({ auth: 'response', mac: 'f'.repeat(64) })); // …and a guessed answer
+    });
+
+    const delivered = [];
+    const logs = [];
+    const port = createShellPort({
+      url: `ws://127.0.0.1:${impostor.address().port}`, token: 'test-shell-token',
+      onLog: (m) => logs.push(m), setTimeout: () => 0, clearTimeout: () => {},   // no real reconnect wait
+    });
+    cleanups.push(() => port.stop());
+    port.onMessage((msg) => { delivered.push(msg); });
+    port.start();
+
+    await waitFor(() => logs.some((m) => /FAILED THE AUTH CHALLENGE/.test(m)));
+    expect(delivered).toHaveLength(0);            // `/upgrade` never reached the spine
+    expect(port.isConnected).toBe(false);
+    // The impostor only ever saw the challenge — no header, no reply, no token.
+    expect(attempts.every((a) => JSON.parse(a).auth === 'challenge')).toBe(true);
+    expect(attempts.join('')).not.toContain('test-shell-token');
   });
 });
 

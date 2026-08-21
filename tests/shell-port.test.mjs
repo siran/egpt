@@ -13,8 +13,13 @@
 //   3. idle-when-absent: start() against an editor that never answers never crashes.
 import { describe, it, expect } from 'vitest';
 import { createShellPort, SHELL_WS_PORT } from '../src/bridges/shell-port.mjs';
+import { responseFrame, authMac } from '../src/shell/auth.mjs';
 import { createIdentity } from '../src/spine/identity.mjs';
 import { createCommands } from '../src/spine/commands.mjs';
+
+// The node's shell token in these tests. EVERY started port needs one now: with no token the
+// limb fails closed and never dials at all (see the AUTHENTICATION block at the bottom).
+const TOKEN = 'test-shell-token';
 
 // A fake `ws` client: the injection seam the shell-port dials out with. Each `new
 // WebSocket(url)` is captured so a test can drive its lifecycle (open/message/close/
@@ -22,13 +27,24 @@ import { createCommands } from '../src/spine/commands.mjs';
 function makeFakeWs() {
   const sockets = [];
   class FakeWS {
-    constructor(url, opts) { this.url = url; this.opts = opts; this.sent = []; this._h = {}; sockets.push(this); }
+    constructor(url, opts) { this.url = url; this.opts = opts; this.sent = []; this._h = {}; this.closed = false; sockets.push(this); }
     on(ev, cb) { (this._h[ev] ||= []).push(cb); return this; }
     fire(ev, ...a) { for (const cb of (this._h[ev] || [])) cb(...a); }
     send(data) { this.sent.push(data); }
-    close() { this.fire('close'); }
+    close() { this.closed = true; this.fire('close'); }
   }
   return { WebSocket: FakeWS, sockets };
+}
+
+// Open a fake editor socket AND pass the auth handshake on it — the editor's half of
+// src/shell/auth.mjs, which is exactly what src/shell/server.mjs does for real. Returns the
+// challenge the limb issued. The challenge frame is SHIFTED off `sock.sent`, so every existing
+// assertion about what the limb pushed keeps counting from the first real frame.
+function openAuthed(sock, token = TOKEN) {
+  sock.fire('open');
+  const challenge = JSON.parse(sock.sent.shift());
+  sock.fire('message', Buffer.from(responseFrame(token, challenge.nonce)));
+  return challenge;
 }
 
 // A fake clock for the reconnect backoff — records armed timers so a test can assert
@@ -49,7 +65,7 @@ describe('shell-port limb', () => {
 
   it('a `/status` frame from the editor reaches the REAL command dispatch → reply pushed back over the socket', async () => {
     const { WebSocket, sockets } = makeFakeWs();
-    const port = createShellPort({ WebSocket });
+    const port = createShellPort({ WebSocket, token: TOKEN });
 
     // Wire the shell surface into the SAME dispatch the spine runs: identity builds the
     // event, commands intercepts the slash command, and its `send` is the limb's own
@@ -73,7 +89,7 @@ describe('shell-port limb', () => {
 
     port.start();
     const sock = sockets[0];
-    sock.fire('open');                                             // editor connected
+    openAuthed(sock);                                             // editor connected
     sock.fire('message', Buffer.from(JSON.stringify({ text: '/status' })));
     await pending;
 
@@ -86,14 +102,14 @@ describe('shell-port limb', () => {
   it('decouples from the editor: a socket close does NOT throw and arms a reconnect that dials a fresh socket', () => {
     const { WebSocket, sockets } = makeFakeWs();
     const clock = makeFakeClock();
-    const port = createShellPort({ WebSocket, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout });
+    const port = createShellPort({ WebSocket, token: TOKEN, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout });
 
     // A message that would blow up if the limb ever routed a spine event on a dead editor —
     // proves the close path is inert toward the spine (no error propagated).
     port.onMessage(() => { throw new Error('spine must not be touched by a close'); });
 
     port.start();
-    sockets[0].fire('open');
+    openAuthed(sockets[0]);
     expect(() => sockets[0].fire('close')).not.toThrow();         // editor quit → no crash
     expect(clock.timers).toHaveLength(1);                         // a reconnect was armed
     expect(clock.timers[0].ms).toBeGreaterThan(0);
@@ -105,7 +121,7 @@ describe('shell-port limb', () => {
   it('idle-when-absent: start() against an editor that never answers never crashes the boot path', () => {
     const { WebSocket, sockets } = makeFakeWs();
     const clock = makeFakeClock();
-    const port = createShellPort({ WebSocket, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout });
+    const port = createShellPort({ WebSocket, token: TOKEN, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout });
 
     expect(() => port.start()).not.toThrow();                    // dialed out, editor silent
     // The editor refuses the connection (never opens): error then close must stay inert
@@ -122,11 +138,11 @@ describe('shell-port limb', () => {
     // lock the `from` shape the shell hands the spine — the smallest surface that reproduces the bug.
     function fromFor(text, wakeWords, rest = {}) {
       const { WebSocket, sockets } = makeFakeWs();
-      const port = createShellPort({ WebSocket, wakeWords, ...rest });
+      const port = createShellPort({ WebSocket, token: TOKEN, wakeWords, ...rest });
       let captured = null;
       port.onMessage(({ from }) => { captured = from; });
       port.start();
-      sockets[0].fire('open');
+      openAuthed(sockets[0]);
       sockets[0].fire('message', Buffer.from(text));
       return captured;
     }
@@ -182,9 +198,9 @@ describe('shell-port limb', () => {
     // final (streaming:false). On the OLD no-op update/finish-only code these assertions FAIL.
     function connected(opts = {}) {
       const { WebSocket, sockets } = makeFakeWs();
-      const port = createShellPort({ WebSocket, ...opts });
+      const port = createShellPort({ WebSocket, token: TOKEN, ...opts });
       port.start();
-      sockets[0].fire('open');
+      openAuthed(sockets[0]);
       return { port, sock: sockets[0] };
     }
     const frames = (sock) => sock.sent.map((s) => JSON.parse(s));
@@ -263,7 +279,7 @@ describe('shell-port limb', () => {
 
     it('editor not connected: finish delivers nothing and delivered stays false (sender falls back), never throws', () => {
       const { WebSocket, sockets } = makeFakeWs();
-      const port = createShellPort({ WebSocket });
+      const port = createShellPort({ WebSocket, token: TOKEN });
       port.start();                                               // dialed, never opened
       const stream = port.startStream('main', '⏳', { bodyEmoji: '🐶', label: 'egpt' });
       expect(() => stream.finish('x')).not.toThrow();
@@ -302,9 +318,9 @@ describe('shell-port limb', () => {
     // live frame REPLACES it in place instead of stacking a second one on top.
     it('REPRODUCE-FIRST: postStatus pushes a LIVE (streaming:true) frame and still returns null (no editable shell msg id)', () => {
       const { WebSocket, sockets } = makeFakeWs();
-      const port = createShellPort({ WebSocket });
+      const port = createShellPort({ WebSocket, token: TOKEN });
       port.start();
-      sockets[0].fire('open');
+      openAuthed(sockets[0]);
       const sock = sockets[0];
 
       const id = port.postStatus('main', '🤔 thinking…');
@@ -322,9 +338,9 @@ describe('shell-port limb', () => {
     // streaming:true primitive on the SAME surface. One rule for every frame.
     it('is SIGNED when the node configures a signature — the same live-frame rule as the ⏳ placeholder', () => {
       const { WebSocket, sockets } = makeFakeWs();
-      const port = createShellPort({ WebSocket, bridgeSignatureOpen: '🌉kg', bridgeSignatureClose: '💸' });
+      const port = createShellPort({ WebSocket, token: TOKEN, bridgeSignatureOpen: '🌉kg', bridgeSignatureClose: '💸' });
       port.start();
-      sockets[0].fire('open');
+      openAuthed(sockets[0]);
       port.postStatus('main', '🤔 thinking…');
       const frame = JSON.parse(sockets[0].sent[0]);
       expect(frame).toMatchObject({ streaming: true, text: '🌉kg\n🤔 thinking…\n💸' });
@@ -338,9 +354,9 @@ describe('shell-port limb', () => {
     // "is this a reconnect" tracking in boot.mjs.
     it('on open, pushes a header-only frame (empty text, no delete) — a naive text/delete-only editor handler would not log it', () => {
       const { WebSocket, sockets } = makeFakeWs();
-      const port = createShellPort({ WebSocket, header: 'test-header' });
+      const port = createShellPort({ WebSocket, token: TOKEN, header: 'test-header' });
       port.start();
-      sockets[0].fire('open');
+      openAuthed(sockets[0]);
 
       expect(sockets[0].sent).toHaveLength(1);
       const frame = JSON.parse(sockets[0].sent[0]);
@@ -352,10 +368,10 @@ describe('shell-port limb', () => {
     it('a reconnect (close → the queued reconnect timer fires → fresh socket) ALSO resends the header', () => {
       const { WebSocket, sockets } = makeFakeWs();
       const clock = makeFakeClock();
-      const port = createShellPort({ WebSocket, header: 'test-header', setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout });
+      const port = createShellPort({ WebSocket, token: TOKEN, header: 'test-header', setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout });
 
       port.start();
-      sockets[0].fire('open');
+      openAuthed(sockets[0]);
       expect(JSON.parse(sockets[0].sent[0]).header).toBe('test-header');
 
       sockets[0].fire('close');                 // editor drops → reconnect armed
@@ -363,16 +379,16 @@ describe('shell-port limb', () => {
       clock.timers[0].fn();                     // the reconnect fires → fresh socket dialed
       expect(sockets).toHaveLength(2);
 
-      sockets[1].fire('open');                  // the FRESH socket opens
+      openAuthed(sockets[1]);                  // the FRESH socket opens
       expect(sockets[1].sent).toHaveLength(1);
       expect(JSON.parse(sockets[1].sent[0]).header).toBe('test-header');
     });
 
     it('no header option → no header frame ever sent on open', () => {
       const { WebSocket, sockets } = makeFakeWs();
-      const port = createShellPort({ WebSocket });
+      const port = createShellPort({ WebSocket, token: TOKEN });
       port.start();
-      sockets[0].fire('open');
+      openAuthed(sockets[0]);
       expect(sockets[0].sent).toHaveLength(0);
     });
   });
@@ -383,9 +399,9 @@ describe('shell-port limb', () => {
     // after boot, and no way for a LATER reconnect to carry anything but the original line.
     it('while connected: pushes a header-only frame immediately with the NEW header', () => {
       const { WebSocket, sockets } = makeFakeWs();
-      const port = createShellPort({ WebSocket, header: 'lobby' });
+      const port = createShellPort({ WebSocket, token: TOKEN, header: 'lobby' });
       port.start();
-      sockets[0].fire('open');
+      openAuthed(sockets[0]);
       expect(sockets[0].sent).toHaveLength(1);   // the initial header, on open
 
       port.setHeader('lobby → acim');
@@ -398,14 +414,14 @@ describe('shell-port limb', () => {
     it('a LATER reconnect resends the UPDATED header, not the one captured at construction', () => {
       const { WebSocket, sockets } = makeFakeWs();
       const clock = makeFakeClock();
-      const port = createShellPort({ WebSocket, header: 'lobby', setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout });
+      const port = createShellPort({ WebSocket, token: TOKEN, header: 'lobby', setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout });
       port.start();
-      sockets[0].fire('open');
+      openAuthed(sockets[0]);
       port.setHeader('lobby → acim');
 
       sockets[0].fire('close');                 // editor drops → reconnect armed
       clock.timers[0].fn();                     // reconnect fires → fresh socket
-      sockets[1].fire('open');
+      openAuthed(sockets[1]);
 
       expect(sockets[1].sent).toHaveLength(1);
       expect(JSON.parse(sockets[1].sent[0]).header).toBe('lobby → acim');   // NOT the original 'lobby'
@@ -413,7 +429,7 @@ describe('shell-port limb', () => {
 
     it('while disconnected: drops (never throws), same as any other push — the editor just missed a frame', () => {
       const { WebSocket, sockets } = makeFakeWs();
-      const port = createShellPort({ WebSocket, header: 'lobby' });
+      const port = createShellPort({ WebSocket, token: TOKEN, header: 'lobby' });
       port.start();   // dialed, never opened
       expect(() => port.setHeader('lobby → acim')).not.toThrow();
       expect(sockets[0].sent).toHaveLength(0);
@@ -421,9 +437,9 @@ describe('shell-port limb', () => {
 
     it('works even when no initial header option was given', () => {
       const { WebSocket, sockets } = makeFakeWs();
-      const port = createShellPort({ WebSocket });
+      const port = createShellPort({ WebSocket, token: TOKEN });
       port.start();
-      sockets[0].fire('open');
+      openAuthed(sockets[0]);
       expect(sockets[0].sent).toHaveLength(0);   // no initial header → nothing on open
 
       port.setHeader('lobby → acim');
@@ -436,10 +452,10 @@ describe('shell-port limb', () => {
     it('while disconnected with a pending reconnect timer: cancels the timer, resets the backoff, and dials a fresh socket immediately', () => {
       const { WebSocket, sockets } = makeFakeWs();
       const clock = makeFakeClock();
-      const port = createShellPort({ WebSocket, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout });
+      const port = createShellPort({ WebSocket, token: TOKEN, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout });
 
       port.start();
-      sockets[0].fire('open');
+      openAuthed(sockets[0]);
       sockets[0].fire('close');                                   // editor drops → reconnect armed
       expect(clock.timers).toHaveLength(1);
       expect(clock.timers[0].ms).toBe(3_000);                     // RECONNECT_MIN_MS
@@ -458,10 +474,10 @@ describe('shell-port limb', () => {
     it('while already connected: a no-op — no second socket dialed', () => {
       const { WebSocket, sockets } = makeFakeWs();
       const clock = makeFakeClock();
-      const port = createShellPort({ WebSocket, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout });
+      const port = createShellPort({ WebSocket, token: TOKEN, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout });
 
       port.start();
-      sockets[0].fire('open');                                    // now connected
+      openAuthed(sockets[0]);                                    // now connected
       port.poke();
       expect(sockets).toHaveLength(1);                            // no second socket
       expect(clock.timers).toHaveLength(0);                       // no reconnect ever touched
@@ -470,13 +486,174 @@ describe('shell-port limb', () => {
     it('after stop(): a no-op — the limb stays stopped, never reopens', () => {
       const { WebSocket, sockets } = makeFakeWs();
       const clock = makeFakeClock();
-      const port = createShellPort({ WebSocket, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout });
+      const port = createShellPort({ WebSocket, token: TOKEN, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout });
 
       port.start();
-      sockets[0].fire('open');
+      openAuthed(sockets[0]);
       port.stop();
       port.poke();
       expect(sockets).toHaveLength(1);                            // stop() closed it; poke must not reopen
     });
+  });
+});
+
+// ── THE SANDBOX-ESCAPE HOLE THIS CLOSES (operator 2026-08-21) ────────────────────────────────
+// The limb used to trust the LOOPBACK: whatever answered ws://127.0.0.1:23375 was handed to the
+// spine as `authorized: true` operator input — `/upgrade` (git pull + npm install, in the
+// UNSANDBOXED spine) included. Windows has no per-user loopback namespace and does not filter
+// loopback, and 23375 is usually UNBOUND (the editor is normally closed — that is the
+// ECONNREFUSED reconnect loop in the daemon log), so a sandboxed CLI account (egpt-sbx-NN) could
+// bind the port, wait for the spine to dial OUT to it, and speak as the operator.
+//
+// These are the reproduce-first gates. On the pre-fix code the first one FAILS: the impostor's
+// frame reached onMsg with authorized:true, because there was no handshake at all.
+describe('shell-port AUTHENTICATION — the peer must prove it holds shell.token before the spine trusts it', () => {
+  const impostorFrame = JSON.stringify({ text: '/upgrade', chatId: 'main' });
+
+  it('REPRODUCE-FIRST: an IMPOSTOR holding :23375 with the WRONG secret never reaches the spine — frames ignored, socket dropped, existing backoff re-armed', () => {
+    const { WebSocket, sockets } = makeFakeWs();
+    const clock = makeFakeClock();
+    const seen = [];
+    const logs = [];
+    const port = createShellPort({ WebSocket, token: TOKEN, onLog: (m) => logs.push(m), setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout });
+    port.onMessage((msg) => { seen.push(msg); });
+
+    port.start();
+    const sock = sockets[0];
+    sock.fire('open');
+    // THE LIVE ATTACK, in the order it would actually happen: the process squatting the port
+    // pushes a lifecycle command straight at the spine. Pre-fix this line alone dispatched
+    // `/upgrade` as the authorized operator — this assertion is the reproduction.
+    sock.fire('message', Buffer.from(impostorFrame));
+    expect(seen).toHaveLength(0);
+
+    // It then tries the handshake with a secret it guessed, and keeps pushing.
+    const challenge = JSON.parse(sock.sent[0]);
+    sock.fire('message', Buffer.from(responseFrame('not-the-real-token', challenge.nonce)));
+    sock.fire('message', Buffer.from(impostorFrame));
+
+    expect(seen).toHaveLength(0);                                  // NOTHING reached the spine
+    expect(port.isConnected).toBe(false);                          // never counted as a live console
+    expect(sock.closed).toBe(true);                                // the socket was dropped
+    expect(logs.join('\n')).toMatch(/FAILED THE AUTH CHALLENGE/);  // named, and named the likely cause
+    expect(logs.join('\n')).toMatch(/IMPOSTOR/i);
+    expect(clock.timers).toHaveLength(1);                          // fell into the EXISTING reconnect backoff
+    expect(clock.timers[0].ms).toBe(3_000);                        // …at its normal first step, not a new mechanism
+  });
+
+  it('an impostor that answers NOTHING gets its frames DISCARDED, never queued — a later genuine handshake does not replay them', () => {
+    const { WebSocket, sockets } = makeFakeWs();
+    const seen = [];
+    const port = createShellPort({ WebSocket, token: TOKEN });
+    port.onMessage((msg) => { seen.push(msg); });
+
+    port.start();
+    const sock = sockets[0];
+    sock.fire('open');
+    sock.fire('message', Buffer.from(impostorFrame));               // pre-auth → dropped on the floor
+    sock.fire('message', Buffer.from('bare text line'));            // …whatever the shape
+    expect(seen).toHaveLength(0);
+
+    // It then produces a VALID answer (i.e. the genuine editor finally speaks). The earlier
+    // frames must be gone, not replayed into the spine now that the socket is trusted.
+    const challenge = JSON.parse(sock.sent[0]);
+    sock.fire('message', Buffer.from(responseFrame(TOKEN, challenge.nonce)));
+    expect(seen).toHaveLength(0);
+    sock.fire('message', Buffer.from(JSON.stringify({ text: 'hola', chatId: 'main' })));
+    expect(seen).toHaveLength(1);                                  // only what arrived AFTER the handshake
+    expect(seen[0].body).toBe('hola');
+  });
+
+  it('sends NOTHING but the challenge before the peer authenticates — the header frame is deferred, and every push drops', () => {
+    const { WebSocket, sockets } = makeFakeWs();
+    const port = createShellPort({ WebSocket, token: TOKEN, header: 'test-header' });
+    port.start();
+    const sock = sockets[0];
+    sock.fire('open');
+
+    expect(sock.sent).toHaveLength(1);                             // exactly one frame: the challenge
+    const challenge = JSON.parse(sock.sent[0]);
+    expect(challenge).toMatchObject({ auth: 'challenge' });
+    expect(challenge.nonce).toMatch(/^[0-9a-f]{64}$/);             // 32 random bytes, hex
+    expect(challenge.header).toBeUndefined();                      // the header did NOT ride along
+
+    // A reply routed here before the peer is trusted drops (never throws) — same as a down editor.
+    expect(port.send('main', 'secret reply')).toBe(false);
+    expect(port.setHeader('lobby → acim')).toBe(false);
+    expect(sock.sent).toHaveLength(1);                             // still just the challenge
+
+    // Only once the handshake lands does the header (the limb's first real frame) go out.
+    sock.fire('message', Buffer.from(responseFrame(TOKEN, challenge.nonce)));
+    expect(sock.sent).toHaveLength(2);
+    expect(JSON.parse(sock.sent[1])).toMatchObject({ header: 'lobby → acim', text: '' });
+    expect(port.isConnected).toBe(true);
+  });
+
+  it('FAIL CLOSED with no token configured: start() dials NOTHING and logs the one line saying what to add', () => {
+    const { WebSocket, sockets } = makeFakeWs();
+    const clock = makeFakeClock();
+    const logs = [];
+    const port = createShellPort({ WebSocket, onLog: (m) => logs.push(m), setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout });
+
+    expect(() => port.start()).not.toThrow();
+    expect(sockets).toHaveLength(0);                               // no socket AT ALL — not even an unauthenticated one
+    expect(clock.timers).toHaveLength(0);                          // and no reconnect loop spinning either
+    expect(port.isConnected).toBe(false);
+    const log = logs.join('\n');
+    expect(log).toMatch(/DISABLED/);
+    expect(log).toMatch(/shell:/);                                 // the config key…
+    expect(log).toMatch(/token:/);                                 // …and the leaf, so the operator can paste it
+    expect(log).toMatch(/config\.yaml/);
+
+    // An editor announcing itself over ingest must NOT be able to switch the limb on either.
+    port.poke();
+    expect(sockets).toHaveLength(0);
+  });
+
+  it('a CORRECT handshake delivers frames normally — the authorized operator event the spine already expects', () => {
+    const { WebSocket, sockets } = makeFakeWs();
+    const seen = [];
+    const port = createShellPort({ WebSocket, token: TOKEN });
+    port.onMessage((msg) => { seen.push(msg); });
+
+    port.start();
+    const sock = sockets[0];
+    const challenge = openAuthed(sock);
+    expect(port.isConnected).toBe(true);
+
+    sock.fire('message', Buffer.from(JSON.stringify({ text: '/status', chatId: 'main' })));
+    expect(seen).toHaveLength(1);
+    expect(seen[0].body).toBe('/status');
+    expect(seen[0].from).toMatchObject({ network: 'shell', userId: 'operator', authorized: true });
+    expect(port.send('main', 'reply')).toBe(true);
+
+    // The MAC is over the nonce under the shared secret — an answer computed the same way
+    // matches, and the token itself never rode the wire.
+    expect(sock.sent.every((f) => !String(f).includes(TOKEN))).toBe(true);
+    expect(authMac(TOKEN, challenge.nonce)).toHaveLength(64);
+  });
+
+  it('a REPLAYED answer from an earlier connection does not authenticate the next one (fresh nonce per socket)', () => {
+    const { WebSocket, sockets } = makeFakeWs();
+    const clock = makeFakeClock();
+    const seen = [];
+    const port = createShellPort({ WebSocket, token: TOKEN, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout });
+    port.onMessage((msg) => { seen.push(msg); });
+
+    port.start();
+    sockets[0].fire('open');
+    const first = JSON.parse(sockets[0].sent[0]);                  // the nonce an eavesdropper saw
+    sockets[0].fire('close');
+    clock.timers[0].fn();                                          // reconnect → a FRESH socket, a FRESH nonce
+    const sock = sockets[1];
+    sock.fire('open');
+    const second = JSON.parse(sock.sent[0]);
+    expect(second.nonce).not.toBe(first.nonce);
+
+    sock.fire('message', Buffer.from(responseFrame(TOKEN, first.nonce)));      // replay of the OLD answer
+    sock.fire('message', Buffer.from(impostorFrame));
+    expect(seen).toHaveLength(0);
+    expect(port.isConnected).toBe(false);
+    expect(sock.closed).toBe(true);
   });
 });

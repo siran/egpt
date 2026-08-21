@@ -16,6 +16,7 @@ import { createSpine } from './spine.mjs';
 import { EGPT_HOME } from '../egpt-home.mjs';
 import { createBeeperBridgePort } from '../bridges/beeper-port.mjs';
 import { createShellPort } from '../bridges/shell-port.mjs';
+import { shellTokenFrom } from '../shell/auth.mjs';
 import { createWarmPool } from '../warm-sessions.mjs';
 import { createBrainSession } from '../brain-session.mjs';
 import { createSandboxCliSession } from '../sandbox-cli-session.mjs';
@@ -1031,6 +1032,12 @@ export async function boot({
     bridgeSignatureOpen: cfg.bridge_signature_open ?? '',
     bridgeSignatureClose: cfg.bridge_signature_close ?? '',
     nodeName: node_name,                  // same structural layer — a shell frame is a surface send too
+    // The SHELL TOKEN (config `shell.token`), read HERE like every other config-fed option and
+    // handed in — the limb never reads config itself. Without it the limb refuses to dial at all:
+    // an unauthenticated 127.0.0.1:23375 is bindable by any local account (the sandboxed CLI
+    // accounts included) and a frame from it would be dispatched as the AUTHORIZED operator —
+    // `/upgrade` and all (src/shell/auth.mjs). Fail closed, never auto-generate.
+    token: shellTokenFrom(cfg),
     header: shellHeader,
     onLog: (m) => log.line?.(`[shell] ${m}`),
   }));

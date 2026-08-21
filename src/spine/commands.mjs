@@ -257,7 +257,11 @@ function parseNodeAddressable(text) {
 }
 
 // The SHELL is node-local: the spine dials the operator's editor on 127.0.0.1:23375, so no other
-// node ever sees a shell message. Everywhere else this node speaks is a chat on the shared Beeper
+// node ever sees a shell message. NOTE what that does and does not buy (corrected 2026-08-21):
+// node-locality is a ROUTING fact, not a security one — loopback is bindable by any local
+// account, so the limb AUTHENTICATES the editor (a nonce/HMAC handshake under the node's
+// shell.token, src/shell/auth.mjs) before treating its frames as the operator's. What matters
+// here is only the routing half. Everywhere else this node speaks is a chat on the shared Beeper
 // account, where a co-account peer heard the very same message and answers through its own gate —
 // which is exactly why a peer addressed THERE must not also be sent an envelope.
 const NODE_LOCAL_SURFACES = new Set(['shell']);

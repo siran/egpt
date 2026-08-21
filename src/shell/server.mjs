@@ -18,6 +18,12 @@ import { mkdir as fsMkdir, writeFile as fsWriteFile, rename as fsRename } from '
 import { join } from 'node:path';
 import { EGPT_HOME } from '../egpt-home.mjs';
 import { reapPort } from '../tools/reap-port.mjs';
+// The editor's half of the shell handshake — the SAME module the spine's limb runs (auth.mjs
+// header: loopback is not an authenticator now that sandboxed local accounts exist). The spine
+// challenges with a nonce; this server proves it holds the operator's shell token by answering
+// with the HMAC. It cannot answer without the token, and an editor that cannot answer is not
+// trusted — by design.
+import { parseAuthFrame, responseFrame, SHELL_TOKEN_HELP } from './auth.mjs';
 
 // The fixed port the editor serves; the spine dials out to it (shell-port SHELL_WS_PORT).
 export const SHELL_WS_PORT = 23375;
@@ -31,6 +37,7 @@ const RECONNECT_MAX_MS = 60_000;
 /**
  * @param {object} opts
  * @param {number} [opts.port]                        the port to serve (default 23375; pass 0 for an ephemeral test port)
+ * @param {string} [opts.token]                       the node's SHELL TOKEN (cfg.shell.token) — the shared secret this editor answers the spine's auth challenge with. UNSET → the challenge goes unanswered and the spine refuses this editor (fail closed); the log line says what to add.
  * @param {typeof WebSocketServer} [opts.WebSocketServer]  INJECTION SEAM — the `ws` server constructor (default the real import)
  * @param {(m: string) => void} [opts.onLog]
  * @param {object} [opts.io]                          fs seam for the ingest announce ({mkdir,writeFile,rename}); real fs by default — tests inject fakes so no real ~/.egpt write happens
@@ -40,6 +47,7 @@ const RECONNECT_MAX_MS = 60_000;
  */
 export function createShellServer({
   port = SHELL_WS_PORT,
+  token = '',
   WebSocketServer: WSS = WebSocketServer,
   onLog = () => {},
   io = {},
@@ -96,6 +104,22 @@ export function createShellServer({
     return { text: s, chatId: 'main', streaming: false };
   }
 
+  // Answer the spine's auth challenge (src/shell/auth.mjs): HMAC the nonce under the shared
+  // token. This is the whole editor side of the handshake — the secret itself never rides the
+  // wire, and a nonce is good for exactly the one connection that issued it. With no token
+  // configured we answer NOTHING: the spine then refuses this editor, which is the correct
+  // outcome (an editor nobody can verify is indistinguishable from an impostor). The message
+  // says FAIL so egpt.mjs's fault filter surfaces it in the transcript instead of swallowing it.
+  function answerChallenge(ws, frame) {
+    if (frame.auth !== 'challenge' || !frame.nonce) return;
+    if (!token) {
+      onLog(`shell-editor: auth handshake will FAIL — no shell token configured, so the spine cannot verify this editor and will refuse it. To fix, ${SHELL_TOKEN_HELP}.`);
+      return;
+    }
+    try { ws.send(responseFrame(token, frame.nonce)); }
+    catch (e) { onLog(`shell-editor: auth response send failed — ${e?.message ?? e}`); }
+  }
+
   // Bind (or re-bind) the WebSocketServer and wire its handlers. THE ONE place this wiring
   // exists — start() calls it for the initial bind, and the unexpected-close recovery path
   // below calls it again for every re-listen attempt, so listening/connection/error/close
@@ -113,7 +137,14 @@ export function createShellServer({
     wss.on('connection', (ws) => {
       sock = ws;                                   // newest connection is THE console seat
       onLog('shell-editor: spine connected');
-      ws.on('message', (buf) => { const m = parse(buf); if (m.text || m.delete || m.header != null) onMsg?.(m); });
+      // An AUTH frame is TRANSPORT, never transcript: it is intercepted here, before parse(),
+      // so the spine's challenge is answered rather than rendered as a line of chat text
+      // (parse() would degrade the unrecognized JSON to a bare message and print it).
+      ws.on('message', (buf) => {
+        const auth = parseAuthFrame(buf);
+        if (auth) { answerChallenge(ws, auth); return; }
+        const m = parse(buf); if (m.text || m.delete || m.header != null) onMsg?.(m);
+      });
       ws.on('close', () => { if (sock === ws) sock = null; onLog('shell-editor: spine disconnected'); });
       ws.on('error', (e) => onLog(`shell-editor: socket error — ${e?.message ?? e}`));
     });
