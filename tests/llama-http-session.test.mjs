@@ -6,7 +6,13 @@ import { createLlamaHttpSession } from '../src/llama-http-session.mjs';
 // thread id. What it must still honour is the pool's contract —
 // turn(message, onUpdate) -> { text, sessionId } · close() · sessionId.
 
-const okStream = (text) => vi.fn(async (_payload, onUpdate) => { onUpdate?.(text); return text; });
+// config/brains/llama.mjs resolves { text, optionsPatch } — NOT a bare string.
+// An earlier double here returned a string, so String(result) silently produced
+// "[object Object]" in the live node while every test stayed green.
+const okStream = (text) => vi.fn(async (_payload, onUpdate) => {
+  onUpdate?.(text);
+  return { text, optionsPatch: null };
+});
 
 describe('llama http session', () => {
   it('satisfies the pool contract', () => {
@@ -33,10 +39,22 @@ describe('llama http session', () => {
     expect(opts.model).toBe('gemma');
   });
 
+  it('leaves history UNDEFINED when unset, so the brain falls back to message', async () => {
+    // Regression lock: `history: []` is not nullish, so the brain's
+    // `String(history ?? message)` yielded '' and every prompt went out empty.
+    const stream = okStream('ok');
+    const s = createLlamaHttpSession({ stream });
+    await s.turn('the actual question');
+    const [payload] = stream.mock.calls[0];
+    expect(payload.history).toBeUndefined();
+    expect(payload.message).toBe('the actual question');
+  });
+
   it('refuses a second concurrent turn — the pool serializes per key', async () => {
     let release;
-    const pending = new Promise((r) => { release = () => r('done'); });
-    const stream = vi.fn().mockReturnValueOnce(pending).mockResolvedValue('later');
+    const pending = new Promise((r) => { release = () => r({ text: 'done', optionsPatch: null }); });
+    const stream = vi.fn().mockReturnValueOnce(pending)
+                          .mockResolvedValue({ text: 'later', optionsPatch: null });
     const s = createLlamaHttpSession({ stream });
     const first = s.turn('one');
     await expect(s.turn('two')).rejects.toThrow(/already in flight/);
@@ -54,7 +72,7 @@ describe('llama http session', () => {
 
   it('releases the in-flight guard when the brain throws', async () => {
     const stream = vi.fn().mockRejectedValueOnce(new Error('llama-server HTTP 500'))
-                          .mockResolvedValueOnce('recovered');
+                          .mockResolvedValueOnce({ text: 'recovered', optionsPatch: null });
     const s = createLlamaHttpSession({ stream });
     await expect(s.turn('boom')).rejects.toThrow(/HTTP 500/);
     await expect(s.turn('again')).resolves.toEqual({ text: 'recovered', sessionId: null });
@@ -66,15 +84,15 @@ describe('llama http session', () => {
 // Gated by config local_llm.agentic; OFF keeps it a pure chatter.
 describe('llama http session — agentic mode', () => {
   it('uses the chat stream when agentic is off', async () => {
-    const stream = vi.fn(async () => 'chatted');
-    const agentLoop = vi.fn(async () => 'looped');
+    const stream = vi.fn(async () => ({ text: 'chatted', optionsPatch: null }));
+    const agentLoop = vi.fn(async () => 'looped');   // the LOOP returns a plain string
     const s = createLlamaHttpSession({ stream, agentLoop, agentic: false });
     expect(await s.turn('hi')).toEqual({ text: 'chatted', sessionId: null });
     expect(agentLoop).not.toHaveBeenCalled();
   });
 
   it('routes through the agent loop when agentic is on', async () => {
-    const stream = vi.fn(async () => 'chatted');
+    const stream = vi.fn(async () => ({ text: 'chatted', optionsPatch: null }));
     const agentLoop = vi.fn(async () => 'looped');
     const s = createLlamaHttpSession({
       stream, agentLoop, agentic: true,

@@ -59,8 +59,15 @@ export function createLlamaHttpSession(options = {}) {
           });
           return { text: String(text ?? ''), sessionId: null };
         }
-        const text = await stream(
-          { history: options.history ?? [], message: String(message ?? '') },
+        // The brain resolves { text, optionsPatch } — NOT a bare string. Reading
+        // it as one stringifies the object to "[object Object]" and posts THAT
+        // to the chat (live bug, 2026-08-20).
+        const result = await stream(
+          // history stays UNDEFINED when unset — NOT []. The brain does
+          // `String(history ?? message ?? '')` on the no-history path, and an
+          // empty array is not nullish, so `?? []` made every prompt EMPTY
+          // (live bug, 2026-08-20: the model answered nothing at all).
+          { history: options.history, message: String(message ?? '') },
           onUpdate,
           {
             url: options.url,
@@ -69,7 +76,7 @@ export function createLlamaHttpSession(options = {}) {
             onLog,
           },
         );
-        return { text: String(text ?? ''), sessionId: null };
+        return { text: String(result?.text ?? ''), sessionId: null };
       } finally {
         inFlight = false;   // release even when the brain throws, so the next turn can run
       }
