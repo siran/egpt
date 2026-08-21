@@ -117,6 +117,39 @@ describe('pi cli session (rpc mode)', () => {
     await expect(p).rejects.toThrow(/pi-cli/);
   });
 
+  it('is WARM: one resident process serves many turns', async () => {
+    const proc = fakePi();
+    const spawn = spawnFake(proc);
+    const s = createPiCliSession({ spawn });
+
+    const t1 = s.turn('first');
+    proc.textDelta('one'); proc.emitEvent({ type: 'agent_settled' });
+    expect((await t1).text).toBe('one');
+
+    const t2 = s.turn('second');
+    proc.textDelta('two'); proc.emitEvent({ type: 'agent_settled' });
+    expect((await t2).text).toBe('two');
+
+    // ONE spawn for both turns — the process, and with it pi's conversation
+    // state and llama-server's prompt prefix, stay warm between turns.
+    expect(spawn).toHaveBeenCalledTimes(1);
+    // Both prompts went down the same stdin, with distinct correlation ids.
+    const cmds = proc.sent.map((l) => JSON.parse(l.trim()));
+    expect(cmds.map((c) => c.message)).toEqual(['first', 'second']);
+    expect(new Set(cmds.map((c) => c.id)).size).toBe(2);
+  });
+
+  it('accumulator resets between turns — no bleed from the previous reply', async () => {
+    const proc = fakePi();
+    const s = createPiCliSession({ spawn: spawnFake(proc) });
+    const t1 = s.turn('a');
+    proc.textDelta('AAA'); proc.emitEvent({ type: 'agent_settled' });
+    await t1;
+    const t2 = s.turn('b');
+    proc.textDelta('BBB'); proc.emitEvent({ type: 'agent_settled' });
+    expect((await t2).text).toBe('BBB');
+  });
+
   it('passes provider and model through to the spawn', () => {
     const proc = fakePi();
     const spawn = spawnFake(proc);
