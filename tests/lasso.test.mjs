@@ -20,6 +20,9 @@ import { join } from 'node:path';
 import os from 'node:os';
 import { createLasso } from '../src/lasso.mjs';
 import { createShellPort } from '../src/bridges/shell-port.mjs';
+import { responseFrame } from '../src/shell/auth.mjs';
+// The shell token the fake editor below authenticates with — the limb refuses to dial without one.
+const SHELL_TOKEN = 'test-shell-token';
 // boot.mjs is imported DYNAMICALLY below (never statically): egpt-home.mjs reads EGPT_HOME
 // once at module load, and a static import would bind the PRODUCTION profile before this file
 // points it at a throwaway one.
@@ -205,14 +208,21 @@ describe('lasso — the outbound ceiling', () => {
     const beeper = fakePort(clock);
     const lasso = createLasso({ messages: 3, windowMs: 5000, now: clock.now, onTrip: (t) => trips.push(t) });
 
-    // The real shell port, over a fake editor socket.
+    // The real shell port, over a fake editor socket. The fake editor also ANSWERS THE AUTH
+    // CHALLENGE (src/shell/auth.mjs): the limb sends nothing and trusts nothing until the peer
+    // proves it holds the shell token, so a fake that only opens would never go ready.
     const frames = [];
     class FakeWS {
-      on(ev, cb) { if (ev === 'open') queueMicrotask(cb); }
-      send(f) { frames.push(JSON.parse(f)); }
+      constructor() { this._h = {}; }
+      on(ev, cb) { (this._h[ev] ||= []).push(cb); if (ev === 'open') queueMicrotask(cb); }
+      send(f) {
+        const j = JSON.parse(f);
+        if (j.auth === 'challenge') { for (const cb of (this._h.message || [])) cb(Buffer.from(responseFrame(SHELL_TOKEN, j.nonce))); return; }
+        frames.push(j);
+      }
       close() {}
     }
-    const shell = lasso.wrap(createShellPort({ WebSocket: FakeWS }));
+    const shell = lasso.wrap(createShellPort({ WebSocket: FakeWS, token: SHELL_TOKEN }));
     shell.start();
     await flush();
 

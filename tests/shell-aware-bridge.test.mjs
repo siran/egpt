@@ -16,6 +16,7 @@ import { createShellPort } from '../src/bridges/shell-port.mjs';
 import { createSender } from '../src/spine/sender.mjs';
 import { createMeshService } from '../src/spine/mesh.mjs';
 import { encodeMesh, parseMesh } from '../src/mesh/relay.mjs';
+import { responseFrame } from '../src/shell/auth.mjs';
 
 // The same fake `ws` seam the shell-port tests use — no real socket, ever.
 function makeFakeWs() {
@@ -28,6 +29,17 @@ function makeFakeWs() {
     close() { this.fire('close'); }
   }
   return { WebSocket: FakeWS, sockets };
+}
+
+// The node's shell token + the editor's half of the auth handshake (src/shell/auth.mjs): the
+// limb sends/accepts nothing until the peer proves it holds the secret, so every fake editor
+// here has to answer the challenge — same helper as tests/shell-port.test.mjs. The challenge
+// frame is shifted off `sent` so the frame assertions below still count from the first reply.
+const TOKEN = 'test-shell-token';
+function openAuthed(sock) {
+  sock.fire('open');
+  const challenge = JSON.parse(sock.sent.shift());
+  sock.fire('message', Buffer.from(responseFrame(TOKEN, challenge.nonce)));
 }
 
 describe('makeShellAwareBridge — streaming sends route to the shell for shell-owned chats, to beeper otherwise', () => {
@@ -101,11 +113,11 @@ describe('a brain-member relay reply on a shell-owned chat renders through the s
     // A REAL shell port with a fake editor socket; mark 'main' owned by delivering an inbound frame
     // (owns() reads the chat ids it saw inbound — exactly boot's outbound-routing signal).
     const { WebSocket, sockets } = makeFakeWs();
-    const shellPort = createShellPort({ WebSocket });
+    const shellPort = createShellPort({ WebSocket, token: TOKEN });
     shellPort.onMessage(() => {});
     shellPort.start();
     const sock = sockets[0];
-    sock.fire('open');
+    openAuthed(sock);
     sock.fire('message', Buffer.from(JSON.stringify({ text: '@chatgpt run it', chatId: 'main' })));
     expect(shellPort.owns('main')).toBe(true);
 
@@ -143,11 +155,11 @@ describe('a shell-origin mesh relay reply streams back into the shell, not Beepe
   it('REPRODUCE-FIRST: @don from the shell → placeholder + reply land on the editor socket; only the request envelope hits Beeper', async () => {
     // REAL shell port with a fake editor socket; mark 'main' owned by an inbound frame.
     const { WebSocket, sockets } = makeFakeWs();
-    const shellPort = createShellPort({ WebSocket });
+    const shellPort = createShellPort({ WebSocket, token: TOKEN });
     shellPort.onMessage(() => {});
     shellPort.start();
     const sock = sockets[0];
-    sock.fire('open');
+    openAuthed(sock);
     sock.fire('message', Buffer.from(JSON.stringify({ text: '@don hola', chatId: 'main' })));
     expect(shellPort.owns('main')).toBe(true);
 
@@ -203,11 +215,11 @@ describe('a shell-origin mesh relay reply streams back into the shell, not Beepe
   // a streamed reply. On the pre-fix code this FAILS with two committed frames.
   it('REPRODUCE-FIRST: the origin placeholder is live, not committed — after the reply commits there is exactly ONE committed frame (no lingering "thinking" line)', async () => {
     const { WebSocket, sockets } = makeFakeWs();
-    const shellPort = createShellPort({ WebSocket });
+    const shellPort = createShellPort({ WebSocket, token: TOKEN });
     shellPort.onMessage(() => {});
     shellPort.start();
     const sock = sockets[0];
-    sock.fire('open');
+    openAuthed(sock);
     sock.fire('message', Buffer.from(JSON.stringify({ text: '@don hola', chatId: 'main' })));
 
     const beeper = {
@@ -264,11 +276,11 @@ describe('the ORIGIN node signs the relayed reply it posts home (shell surface)'
   // stay on the bridge layer alone (the responder already stamped the body it sent).
   async function shellOriginRelay() {
     const { WebSocket, sockets } = makeFakeWs();
-    const shellPort = createShellPort({ WebSocket, bridgeSignatureOpen: '🌉kg', bridgeSignatureClose: '🌉' });
+    const shellPort = createShellPort({ WebSocket, token: TOKEN, bridgeSignatureOpen: '🌉kg', bridgeSignatureClose: '🌉' });
     shellPort.onMessage(() => {});
     shellPort.start();
     const sock = sockets[0];
-    sock.fire('open');
+    openAuthed(sock);
     sock.fire('message', Buffer.from(JSON.stringify({ text: '@don ya there?', chatId: 'main' })));
 
     const beeper = {
