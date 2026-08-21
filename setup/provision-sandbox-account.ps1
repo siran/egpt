@@ -28,13 +28,27 @@ if (-not $isElevated) {
 try {
   $result = Ensure-SandboxPool
   Ensure-SandboxPoolGroup
+  # ccode: claude.exe (warm-cli-session's resolveClaudeBin prefers ~/.local/bin).
   $claudeBinDir = Join-Path $env:USERPROFILE '.local\bin'
   Grant-SandboxPoolAccess -Path $claudeBinDir
+  # pi AND codex: both are npm globals, and neither is launched as its own .exe --
+  # the .cmd shims are not PE images, so the launcher runs node.exe against the
+  # package's JS entry (codex-cli-session's resolveCodexCommand already does
+  # exactly this). node.exe itself lives in Program Files and is world-readable;
+  # the JS does NOT -- it sits under the operator's profile, which denies Users.
+  # One grant on the npm root therefore covers both engines. Global npm packages
+  # are public code; no credential lives here (pi's auth.json is in ~/.pi).
+  $npmGlobalDir = Join-Path $env:APPDATA 'npm'
+  if (Test-Path -LiteralPath $npmGlobalDir) {
+    Grant-SandboxPoolAccess -Path $npmGlobalDir
+  } else {
+    Write-Host "note: $npmGlobalDir not present  - skipping the pi/codex grant on this node"
+  }
   # Must come AFTER Ensure-SandboxPool: that is what creates the credential
   # files this locks down. Needs admin, which is exactly why it lives here and
   # not in the (unelevated) launcher.
   Protect-SandboxCredDir
-  Write-Host "OK: sandbox pool ready  - created $($result.Created), already existed $($result.Existed). Group '$SandboxPoolGroup' granted ReadAndExecute on $claudeBinDir. Credential dir $CredDir hardened (no BUILTIN\Users access)."
+  Write-Host "OK: sandbox pool ready  - created $($result.Created), already existed $($result.Existed). Group '$SandboxPoolGroup' granted ReadAndExecute on $claudeBinDir and $npmGlobalDir. Credential dir $CredDir hardened (no BUILTIN\Users access)."
 } catch {
   Write-Host "FAILED: $($_.Exception.Message)"
   exit 1
