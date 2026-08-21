@@ -138,6 +138,38 @@ function Grant-SandboxPoolAccess {
   Log "granted ReadAndExecute to $SandboxPoolGroup on $Path"
 }
 
+# Explicit DENY for the pool on ONE file, layered under a broader grant.
+# Windows evaluates explicit Deny before Allow, so this carves a hole in an
+# inherited ReadAndExecute without widening or removing it.
+#
+# Used for pi's ~/.pi/agent/auth.json: the pool needs the CONFIG dir (models.json
+# is how `--model reve/local` resolves its baseUrl), but auth.json holds provider
+# credentials and must stay unreadable. pi's config dir cannot be relocated for
+# the sandboxed process -- PI_CODING_AGENT_DIR would do it, but the launcher
+# passes lpEnvironment = NULL, so the inner process gets the LEASED ACCOUNT's
+# environment, not ours.
+#
+# The file is created empty if absent, deliberately: a file that appears later
+# would inherit the directory's grant, and there would be no deny on it.
+# CAVEAT: an editor that replaces auth.json by delete+recreate drops this ACE.
+# Re-run this provisioner after any `pi auth` / `/login` that writes credentials.
+function Deny-SandboxPoolOnFile {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path
+  )
+  if (-not (Test-Path -LiteralPath $Path)) {
+    New-Item -ItemType File -Path $Path -Force -ErrorAction Stop | Out-Null
+    Log "created empty $Path so the deny ACE exists before any credential does"
+  }
+  $groupSid = (New-Object System.Security.Principal.NTAccount($SandboxPoolGroup)).Translate([System.Security.Principal.SecurityIdentifier])
+  $acl = Get-Acl -LiteralPath $Path
+  $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+    $groupSid, 'FullControl', 'None', 'None', 'Deny')
+  $acl.AddAccessRule($rule)
+  Set-Acl -LiteralPath $Path -AclObject $acl
+  Log "DENIED $SandboxPoolGroup on $Path"
+}
+
 # Lock down $CredDir  - C:\ProgramData\egpt, which holds one DPAPI-encrypted
 # password file per pool account plus the sandbox-pool-locks lease directory.
 #

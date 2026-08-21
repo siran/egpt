@@ -44,6 +44,25 @@ try {
   } else {
     Write-Host "note: $npmGlobalDir not present  - skipping the pi/codex grant on this node"
   }
+  # pi (@p): the engine resolves `--model reve/local` by reading ~/.pi/agent/
+  # models.json, which carries the provider's baseUrl (127.0.0.1:8080). That dir
+  # sits under the operator's profile and denies Users, so a sandboxed turn
+  # cannot resolve its model without this grant -- the binary grant above is
+  # necessary but NOT sufficient.
+  #
+  # ~/.pi ALSO holds auth.json (provider credentials), which is exactly why the
+  # npm-root comment above says no credential lives there. So: grant the dir,
+  # then punch an explicit DENY through it on auth.json alone. Relocating pi's
+  # config for the sandboxed process is not an option -- PI_CODING_AGENT_DIR
+  # would do it, but sandbox-logon-launcher passes lpEnvironment = NULL, so the
+  # inner process inherits the LEASED ACCOUNT's environment, not ours.
+  $piDir = Join-Path $env:USERPROFILE '.pi'
+  if (Test-Path -LiteralPath $piDir) {
+    Grant-SandboxPoolAccess -Path $piDir
+    Deny-SandboxPoolOnFile -Path (Join-Path (Join-Path $piDir 'agent') 'auth.json')
+  } else {
+    Write-Host "note: $piDir not present  - skipping the pi config grant on this node"
+  }
   # Must come AFTER Ensure-SandboxPool: that is what creates the credential
   # files this locks down. Needs admin, which is exactly why it lives here and
   # not in the (unelevated) launcher.
