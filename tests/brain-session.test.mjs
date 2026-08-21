@@ -7,7 +7,13 @@ describe('brain session engine dispatch', () => {
     expect(createBrainSession({ engine: 'codex', spawn: () => {}, bin: 'codex-test' })).toHaveProperty('turn');
   });
 
+  it('accepts llama — the local llama-server engine (HTTP, sessionless)', () => {
+    const s = createBrainSession({ engine: 'llama', stream: async () => 'ok' });
+    expect(s).toHaveProperty('turn');
+    expect(s.sessionId).toBeNull();
+  });
+
   it('refuses an engine with no implementation', () => {
-    expect(() => createBrainSession({ engine: 'llama' })).toThrow(/unsupported local brain engine/);
+    expect(() => createBrainSession({ engine: 'nope' })).toThrow(/unsupported local brain engine/);
   });
 });
