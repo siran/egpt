@@ -39,14 +39,16 @@ describe('llama http session', () => {
     expect(opts.model).toBe('gemma');
   });
 
-  it('leaves history UNDEFINED when unset, so the brain falls back to message', async () => {
-    // Regression lock: `history: []` is not nullish, so the brain's
-    // `String(history ?? message)` yielded '' and every prompt went out empty.
+  it('always carries the current turn INSIDE history', async () => {
+    // The brain drops `message` when history already holds a user turn, so the
+    // current turn must be appended to the array, never passed only alongside.
+    // (Earlier bug: history was `?? []`, which is not nullish, so the brain's
+    // String(history ?? message) yielded '' and every prompt went out empty.)
     const stream = okStream('ok');
     const s = createLlamaHttpSession({ stream });
     await s.turn('the actual question');
     const [payload] = stream.mock.calls[0];
-    expect(payload.history).toBeUndefined();
+    expect(payload.history).toEqual([{ role: 'user', content: 'the actual question' }]);
     expect(payload.message).toBe('the actual question');
   });
 
@@ -115,5 +117,65 @@ describe('llama http session — agentic mode', () => {
     const s = createLlamaHttpSession({ agentLoop, agentic: true });
     s.close();
     await expect(s.turn('hi')).rejects.toThrow(/closed/);
+  });
+});
+
+// MEMORY. llama-server is a stateless completion API — there is no server-side
+// thread to resume, so the SESSION OBJECT is the session: the warm pool keeps
+// one per being per chat, and it accumulates the turns itself.
+describe('llama http session — in-memory conversation', () => {
+  const reply = (t) => ({ text: t, optionsPatch: null });
+
+  it('remembers earlier turns', async () => {
+    const stream = vi.fn()
+      .mockResolvedValueOnce(reply('Noted: 5'))
+      .mockResolvedValueOnce(reply('It was 5'));
+    const s = createLlamaHttpSession({ stream });
+    await s.turn('remember this number: 5');
+    await s.turn('what number did I say?');
+    const [payload] = stream.mock.calls[1];
+    expect(payload.history).toEqual([
+      { role: 'user', content: 'remember this number: 5' },
+      { role: 'assistant', content: 'Noted: 5' },
+      { role: 'user', content: 'what number did I say?' },
+    ]);
+  });
+
+  it('does NOT record a failed turn — no half exchange in memory', async () => {
+    const stream = vi.fn()
+      .mockRejectedValueOnce(new Error('llama-server HTTP 500'))
+      .mockResolvedValueOnce(reply('ok'));
+    const s = createLlamaHttpSession({ stream });
+    await expect(s.turn('boom')).rejects.toThrow(/HTTP 500/);
+    await s.turn('after');
+    const [payload] = stream.mock.calls[1];
+    expect(payload.history).toEqual([{ role: 'user', content: 'after' }]);
+  });
+
+  it('rolls the OLDEST turns off past historyChars, keeping the tail', async () => {
+    const stream = vi.fn().mockResolvedValue(reply('r'));
+    const s = createLlamaHttpSession({ stream, historyChars: 40 });
+    await s.turn('aaaaaaaaaa');   // 10
+    await s.turn('bbbbbbbbbb');
+    await s.turn('cccccccccc');
+    await s.turn('dddddddddd');
+    const [payload] = stream.mock.calls[3];
+    const joined = payload.history.map((m) => m.content).join('');
+    expect(joined.length).toBeLessThanOrEqual(40);
+    expect(payload.history.at(-1)).toEqual({ role: 'user', content: 'dddddddddd' });
+    expect(joined).not.toContain('aaaaaaaaaa');   // oldest dropped first
+  });
+
+  it('agentic mode records the exchange too', async () => {
+    const agentLoop = vi.fn().mockResolvedValueOnce('did it').mockResolvedValueOnce('again');
+    const s = createLlamaHttpSession({ agentLoop, agentic: true });
+    await s.turn('do a thing');
+    await s.turn('and another');
+    const [args] = agentLoop.mock.calls[1];
+    expect(args.history).toEqual([
+      { role: 'user', content: 'do a thing' },
+      { role: 'assistant', content: 'did it' },
+      { role: 'user', content: 'and another' },
+    ]);
   });
 });
