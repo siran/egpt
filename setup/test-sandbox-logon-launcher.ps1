@@ -30,7 +30,15 @@ function Invoke-Session([string]$OwnFolder, [string]$OtherMarkerPath) {
   # the OTHER session's marker (must be denied). Both results are printed on
   # one line so a single launcher invocation (one logon session, one ACE)
   # gives us both readings in one shot.
-  $inner = "`$own = Get-Content -LiteralPath 'marker.txt' -ErrorAction Stop; " +
+  # Own marker is read by ABSOLUTE path: this test asserts the ACL boundary
+  # (can it read its own folder / is it denied the other's), and a relative
+  # path would silently conflate that with how the inner shell resolves its
+  # working directory. CWD is asserted separately, on its own line, because
+  # production confinement DOES depend on lpCurrentDirectory being honoured
+  # (warm-cli-session spawns the CLI with cwd = the conversation folder).
+  $ownMarkerPath = Join-Path $OwnFolder 'marker.txt'
+  $inner = "Write-Output ('CWD=' + (Get-Location).Path); " +
+           "`$own = Get-Content -LiteralPath '$ownMarkerPath' -ErrorAction Stop; " +
            "try { `$other = Get-Content -LiteralPath '$OtherMarkerPath' -ErrorAction Stop; `$otherResult = 'READ:' + `$other } " +
            "catch { `$otherResult = 'DENIED:' + `$_.Exception.GetType().Name } " +
            "Write-Output ('OWN=' + `$own); Write-Output ('OTHER=' + `$otherResult)"
@@ -63,20 +71,25 @@ Write-Host "=== session for folder-b ==="
 $outB = Invoke-Session -OwnFolder $dirB -OtherMarkerPath (Join-Path $dirA 'marker.txt')
 $outB | ForEach-Object { Write-Host "  $_" }
 
-function Test-Result([string[]]$Out, [string]$ExpectOwn, [string]$Label) {
+function Test-Result([string[]]$Out, [string]$ExpectOwn, [string]$ExpectCwd, [string]$Label) {
   $ownLine = $Out | Where-Object { $_ -match '^OWN=' } | Select-Object -First 1
   $otherLine = $Out | Where-Object { $_ -match '^OTHER=' } | Select-Object -First 1
+  $cwdLine = $Out | Where-Object { $_ -match '^CWD=' } | Select-Object -First 1
   $ownOk = $ownLine -eq "OWN=$ExpectOwn"
   $otherOk = $otherLine -match '^OTHER=DENIED:'
+  # lpCurrentDirectory must actually land the child in its own folder: production
+  # confinement is scoped to the conversation dir the CLI is spawned in.
+  $cwdOk = $cwdLine -eq "CWD=$ExpectCwd"
   Write-Host ""
   Write-Host "--- $Label ---"
   Write-Host "  own marker read:      $(if ($ownOk) {'PASS'} else {'FAIL'})  ($ownLine)"
   Write-Host "  other marker denied:  $(if ($otherOk) {'PASS'} else {'FAIL'})  ($otherLine)"
-  return ($ownOk -and $otherOk)
+  Write-Host "  cwd is own folder:    $(if ($cwdOk) {'PASS'} else {'FAIL'})  ($cwdLine)"
+  return ($ownOk -and $otherOk -and $cwdOk)
 }
 
-$passA = Test-Result -Out $outA -ExpectOwn 'MARKER-A-CONTENT' -Label 'folder-a session'
-$passB = Test-Result -Out $outB -ExpectOwn 'MARKER-B-CONTENT' -Label 'folder-b session'
+$passA = Test-Result -Out $outA -ExpectOwn 'MARKER-A-CONTENT' -ExpectCwd $dirA -Label 'folder-a session'
+$passB = Test-Result -Out $outB -ExpectOwn 'MARKER-B-CONTENT' -ExpectCwd $dirB -Label 'folder-b session'
 
 Write-Host ""
 if ($passA -and $passB) {

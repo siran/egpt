@@ -27,7 +27,10 @@ if (-not $isElevated) {
 
 try {
   $result = Ensure-SandboxPool
-  Write-Host "OK: sandbox pool ready  - created $($result.Created), already existed $($result.Existed)."
+  Ensure-SandboxPoolGroup
+  $claudeBinDir = Join-Path $env:USERPROFILE '.local\bin'
+  Grant-SandboxPoolAccess -Path $claudeBinDir
+  Write-Host "OK: sandbox pool ready  - created $($result.Created), already existed $($result.Existed). Group '$SandboxPoolGroup' granted ReadAndExecute on $claudeBinDir."
 } catch {
   Write-Host "FAILED: $($_.Exception.Message)"
   exit 1

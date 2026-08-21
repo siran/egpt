@@ -8,6 +8,13 @@
 # Pool size: headroom over config.yaml's warm.max: 10 concurrent sessions.
 $SandboxPoolSize = 16
 $SandboxPoolPrefix = 'egpt-sbx-'
+# One local group all pool accounts belong to (operator 2026-08-21): the CLI
+# binaries a sandboxed turn launches (e.g. claude.exe under the operator's own
+# profile, ~/.local/bin) are NOT readable by an arbitrary low-privilege
+# account by default -- CreateProcessWithTokenW fails with ERROR_ACCESS_DENIED
+# otherwise. Granting ReadAndExecute to this ONE group, once, is simpler than
+# granting each of the 16 pool accounts individually.
+$SandboxPoolGroup = 'egpt-sandbox-pool'
 # DPAPI (Export-Clixml's SecureString protection) is scoped to the Windows
 # account that encrypts it  - only decryptable by that same account. Fine
 # here: this daemon always runs under one fixed operator account (Startup-
@@ -90,4 +97,43 @@ function Ensure-SandboxPool {
     if ($existedBefore) { $existed++ } else { $created++ }
   }
   [PSCustomObject]@{ Created = $created; Existed = $existed }
+}
+
+# Ensure the shared pool group exists and every pool account is a member  -
+# idempotent (checks membership before adding, not exception-message
+# matching). This group is what Grant-SandboxPoolAccess below grants
+# ReadAndExecute to, once, instead of granting each account individually.
+function Ensure-SandboxPoolGroup {
+  if (-not (Get-LocalGroup -Name $SandboxPoolGroup -ErrorAction SilentlyContinue)) {
+    Log "creating local group '$SandboxPoolGroup'"
+    New-LocalGroup -Name $SandboxPoolGroup -Description 'egpt sandbox pool accounts (managed)' -ErrorAction Stop | Out-Null
+  }
+  $existingMembers = @((Get-LocalGroupMember -Group $SandboxPoolGroup -ErrorAction SilentlyContinue) | ForEach-Object { $_.Name -replace '^.*\\', '' })
+  foreach ($name in (Get-SandboxPoolAccountNames)) {
+    if ($existingMembers -notcontains $name) {
+      Log "adding '$name' to group '$SandboxPoolGroup'"
+      Add-LocalGroupMember -Group $SandboxPoolGroup -Member $name -ErrorAction Stop
+    }
+  }
+}
+
+# Grant the pool group ReadAndExecute on a CLI binary's directory (recurses to
+# files/subdirs via inheritance) so a leased account can actually launch it --
+# CreateProcessWithTokenW otherwise fails with ERROR_ACCESS_DENIED against a
+# path only the operator's own account can read (e.g. ~/.local/bin). Additive
+# only: never removes or replaces existing ACEs.
+function Grant-SandboxPoolAccess {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path
+  )
+  if (-not (Test-Path -LiteralPath $Path)) {
+    throw "sandbox-logon-launcher: cannot grant pool access -- path does not exist: $Path"
+  }
+  $groupSid = (New-Object System.Security.Principal.NTAccount($SandboxPoolGroup)).Translate([System.Security.Principal.SecurityIdentifier])
+  $acl = Get-Acl -LiteralPath $Path
+  $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+    $groupSid, 'ReadAndExecute', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+  $acl.AddAccessRule($rule)
+  Set-Acl -LiteralPath $Path -AclObject $acl
+  Log "granted ReadAndExecute to $SandboxPoolGroup on $Path"
 }

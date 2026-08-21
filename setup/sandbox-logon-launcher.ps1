@@ -110,7 +110,94 @@ public static class SandboxLogon {
     public const uint SE_PRIVILEGE_ENABLED = 0x00000002;
     public const uint INFINITE = 0xFFFFFFFF;
 
-    [StructLayout(LayoutKind.Sequential)]
+    // ---- window station / desktop security (see New-SandboxDesktop) ----
+    public const uint READ_CONTROL = 0x00020000;
+    public const uint WRITE_DAC    = 0x00040000;
+    // What we must open the winsta/desktop WITH in order to read and rewrite
+    // its DACL. Deliberately not WRITE_OWNER/DELETE - we only edit the DACL.
+    public const uint SD_EDIT_ACCESS = READ_CONTROL | WRITE_DAC;
+    public const uint DACL_SECURITY_INFORMATION = 0x00000004;
+    public const int  UOI_NAME = 2;
+
+    // Window-station object-specific rights (winuser.h).
+    public const int WINSTA_ENUMDESKTOPS      = 0x0001;
+    public const int WINSTA_READATTRIBUTES    = 0x0002;
+    public const int WINSTA_ACCESSCLIPBOARD   = 0x0004;
+    public const int WINSTA_CREATEDESKTOP     = 0x0008;
+    public const int WINSTA_WRITEATTRIBUTES   = 0x0010;
+    public const int WINSTA_ACCESSGLOBALATOMS = 0x0020;
+    public const int WINSTA_EXITWINDOWS       = 0x0040;
+    public const int WINSTA_ENUMERATE         = 0x0100;
+    public const int WINSTA_READSCREEN        = 0x0200;
+    public const int WINSTA_ALL_ACCESS = WINSTA_ENUMDESKTOPS | WINSTA_READATTRIBUTES
+        | WINSTA_ACCESSCLIPBOARD | WINSTA_CREATEDESKTOP | WINSTA_WRITEATTRIBUTES
+        | WINSTA_ACCESSGLOBALATOMS | WINSTA_EXITWINDOWS | WINSTA_ENUMERATE
+        | WINSTA_READSCREEN;   // == 0x37F
+
+    // Desktop object-specific rights (winuser.h).
+    public const int DESKTOP_READOBJECTS     = 0x0001;
+    public const int DESKTOP_CREATEWINDOW    = 0x0002;
+    public const int DESKTOP_CREATEMENU      = 0x0004;
+    public const int DESKTOP_HOOKCONTROL     = 0x0008;
+    public const int DESKTOP_JOURNALRECORD   = 0x0010;
+    public const int DESKTOP_JOURNALPLAYBACK = 0x0020;
+    public const int DESKTOP_ENUMERATE       = 0x0040;
+    public const int DESKTOP_WRITEOBJECTS    = 0x0080;
+    public const int DESKTOP_SWITCHDESKTOP   = 0x0100;
+    public const int DESKTOP_ALL_ACCESS = DESKTOP_READOBJECTS | DESKTOP_CREATEWINDOW
+        | DESKTOP_CREATEMENU | DESKTOP_HOOKCONTROL | DESKTOP_JOURNALRECORD
+        | DESKTOP_JOURNALPLAYBACK | DESKTOP_ENUMERATE | DESKTOP_WRITEOBJECTS
+        | DESKTOP_SWITCHDESKTOP;   // == 0x1FF
+
+    // The mask we actually GRANT on the WINDOW STATION. WinSta0 is SHARED with
+    // the operator's own live session (unlike the per-turn desktop below), so
+    // this is deliberately NOT WINSTA_ALL_ACCESS - it is the empirically
+    // determined MINIMUM that lets USER32.dll's DllMain find a station and
+    // reach a desktop under it. Established by bisection against real binaries
+    // (powershell.exe and claude.exe, both USER32 importers) on 2026-08-21;
+    // each line below is a TEST RESULT, not a guess:
+    //   WINSTA_ACCESSCLIPBOARD  EXCLUDED - verified not needed. Would other-
+    //                           wise read/write the OPERATOR'S clipboard: the
+    //                           clipboard belongs to the window STATION, so a
+    //                           private desktop does NOT contain it.
+    //   WINSTA_READSCREEN       EXCLUDED - verified not needed.
+    //   WINSTA_EXITWINDOWS      REQUIRED - counterintuitive, but removing it
+    //                           makes both binaries die at 0xC0000142. Grants
+    //                           ExitWindowsEx (logoff/shutdown), i.e. a DoS the
+    //                           sandbox can inflict. Accepted as unavoidable;
+    //                           do not "clean it up" without re-testing.
+    // Also NOT WRITE_DAC / WRITE_OWNER / DELETE: a sandboxed account must not
+    // be able to re-ACL or destroy the station.
+    // If a future InnerBin fails USER32 init with this set, WIDEN one flag at a
+    // time and record which one was required - never jump to WINSTA_ALL_ACCESS.
+    public const int WINSTA_GRANT = WINSTA_ENUMDESKTOPS | WINSTA_READATTRIBUTES
+        | WINSTA_CREATEDESKTOP | WINSTA_WRITEATTRIBUTES | WINSTA_ACCESSGLOBALATOMS
+        | WINSTA_EXITWINDOWS | WINSTA_ENUMERATE
+        | (int)READ_CONTROL;
+
+    // The mask we grant on the turn's OWN, PRIVATE desktop (created per lease -
+    // see New-SandboxDesktop): everything. The desktop rights that are
+    // catastrophic on WinSta0\Default - DESKTOP_JOURNALRECORD (system-wide
+    // keylogging), DESKTOP_JOURNALPLAYBACK (synthetic input injection / shatter
+    // attacks), DESKTOP_HOOKCONTROL, DESKTOP_SWITCHDESKTOP - reach NOTHING from
+    // here: this desktop holds only the sandboxed process's own windows, it is
+    // never the operator's, and it is destroyed when the turn ends. Full freedom
+    // on its own desktop is the entire point of creating one. Still NOT
+    // WRITE_DAC / WRITE_OWNER / DELETE: the account may USE its desktop, not
+    // re-ACL it (which would let it open the door for other pool accounts).
+    public const int DESKTOP_GRANT = DESKTOP_ALL_ACCESS | (int)READ_CONTROL;
+
+    // What THIS process opens the per-turn desktop with: the same rights, plus
+    // the right to read and rewrite its DACL, since we add the ACE immediately.
+    public const int DESKTOP_CREATE_ACCESS = DESKTOP_ALL_ACCESS | (int)SD_EDIT_ACCESS;
+
+    // CharSet.Unicode is LOAD-BEARING, not decoration: StructLayout defaults to
+    // CharSet.Ansi, which marshals the string fields below as char* - and
+    // CreateProcessWithTokenW reads them as STARTUPINFOW's WCHAR*. That mismatch
+    // was harmless only while every string field stayed null; lpDesktop is
+    // assigned now, so without this the child would be handed a garbage desktop
+    // name.
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     public struct STARTUPINFO {
         public int cb;
         public string lpReserved;
@@ -173,6 +260,43 @@ public static class SandboxLogon {
 
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern bool GetExitCodeProcess(IntPtr hProcess, out uint lpExitCode);
+
+    // ---- window station / desktop creation and DACL editing ----
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr GetProcessWindowStation();
+
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "OpenWindowStationW")]
+    public static extern IntPtr OpenWindowStation(string lpszWinSta, bool fInherit, uint dwDesiredAccess);
+
+    // Creates (or, if one of that name already exists, OPENS) a desktop under
+    // the CALLING PROCESS's window station. lpszDevice and pDevmode MUST be
+    // NULL - MSDN, not an optimisation. dwFlags is passed 0, i.e. deliberately
+    // NOT DF_ALLOWOTHERACCOUNTHOOK (0x0001), which would let processes of other
+    // accounts set hooks on this desktop. lpsa NULL means the new desktop gets
+    // this process's default DACL (operator + SYSTEM, nobody else); the leased
+    // account's access is then added explicitly rather than inherited.
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "CreateDesktopW")]
+    public static extern IntPtr CreateDesktop(string lpszDesktop, IntPtr lpszDevice, IntPtr pDevmode,
+        uint dwFlags, uint dwDesiredAccess, IntPtr lpsa);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool CloseWindowStation(IntPtr hWinSta);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool CloseDesktop(IntPtr hDesktop);
+
+    // nLength / lpnLengthNeeded are BYTE counts, not character counts.
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "GetUserObjectInformationW")]
+    public static extern bool GetUserObjectInformation(IntPtr hObj, int nIndex,
+        StringBuilder pvInfo, uint nLength, out uint lpnLengthNeeded);
+
+    // pSIRequested is a POINTER to a SECURITY_INFORMATION (DWORD), hence `ref`.
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool GetUserObjectSecurity(IntPtr hObj, ref uint pSIRequested,
+        IntPtr pSid, uint nLength, out uint lpnLengthNeeded);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool SetUserObjectSecurity(IntPtr hObj, ref uint pSIRequested, IntPtr pSid);
 }
 '@
 Add-Type -TypeDefinition $sig -ErrorAction Stop
@@ -208,6 +332,208 @@ function Enable-SeImpersonatePrivilege {
   } finally {
     [SandboxLogon]::CloseHandle($hTok) | Out-Null
   }
+}
+
+function Get-UserObjectName {
+  param(
+    [Parameter(Mandatory = $true)][IntPtr]$Handle,
+    [Parameter(Mandatory = $true)][string]$Label
+  )
+  $sb = New-Object System.Text.StringBuilder 256
+  [uint32]$needed = 0
+  if (-not [SandboxLogon]::GetUserObjectInformation($Handle, [SandboxLogon]::UOI_NAME, $sb, 512, [ref]$needed)) {
+    throw "sandbox-logon-launcher: GetUserObjectInformation(UOI_NAME) on the current $Label failed, Win32 error $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+  }
+  return $sb.ToString()
+}
+
+function Add-UserObjectAce {
+  # Read-modify-write ONE user object's (window station or desktop) DACL.
+  # Strictly ADDITIVE: the existing DACL is read back, ACEs are appended to it,
+  # and nothing already there is replaced, reordered or removed. Idempotent:
+  # an ACE whose SID+flags already carry the requested mask is skipped, so
+  # re-running never accumulates duplicates.
+  #   $Aces: array of @{ Flags = <AceFlags>; Mask = <int> }
+  param(
+    [Parameter(Mandatory = $true)][IntPtr]$Handle,
+    [Parameter(Mandatory = $true)][string]$Label,
+    [Parameter(Mandatory = $true)][System.Security.Principal.SecurityIdentifier]$Sid,
+    [Parameter(Mandatory = $true)][hashtable[]]$Aces
+  )
+  [uint32]$si = [SandboxLogon]::DACL_SECURITY_INFORMATION
+
+  # ---- read the current DACL as a self-relative SD ----
+  [uint32]$len = 4096
+  $bytes = $null
+  for ($try = 0; $try -lt 2 -and $null -eq $bytes; $try++) {
+    $buf = [Runtime.InteropServices.Marshal]::AllocHGlobal([int]$len)
+    try {
+      [uint32]$needed = 0
+      if ([SandboxLogon]::GetUserObjectSecurity($Handle, [ref]$si, $buf, $len, [ref]$needed)) {
+        $bytes = New-Object byte[] ([int]$len)
+        [Runtime.InteropServices.Marshal]::Copy($buf, $bytes, 0, [int]$len)
+      } else {
+        $werr = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        if ($werr -ne 122) {   # 122 = ERROR_INSUFFICIENT_BUFFER
+          throw "sandbox-logon-launcher: GetUserObjectSecurity on $Label failed, Win32 error $werr"
+        }
+        $len = $needed
+      }
+    } finally {
+      [Runtime.InteropServices.Marshal]::FreeHGlobal($buf)
+    }
+  }
+  if ($null -eq $bytes) {
+    throw "sandbox-logon-launcher: GetUserObjectSecurity on $Label kept reporting ERROR_INSUFFICIENT_BUFFER"
+  }
+
+  $sd = New-Object System.Security.AccessControl.RawSecurityDescriptor($bytes, 0)
+  if ($null -eq $sd.DiscretionaryAcl) {
+    # A NULL DACL means unrestricted access. Synthesizing one here would REPLACE
+    # that with a restrictive ACL and could lock the interactive session out of
+    # its own window station  - refuse rather than "fix" it.
+    throw "sandbox-logon-launcher: $Label has a NULL DACL  - refusing to synthesize one"
+  }
+  $acl = $sd.DiscretionaryAcl
+
+  $added = 0
+  foreach ($spec in $Aces) {
+    $flags = [System.Security.AccessControl.AceFlags]$spec.Flags
+    $mask = [int]$spec.Mask
+    $dup = $false
+    foreach ($existing in $acl) {
+      if (($existing -is [System.Security.AccessControl.CommonAce]) -and
+          ($existing.AceType -eq [System.Security.AccessControl.AceType]::AccessAllowed) -and
+          ($existing.SecurityIdentifier -eq $Sid) -and
+          ($existing.AceFlags -eq $flags) -and
+          (($existing.AccessMask -band $mask) -eq $mask)) {
+        $dup = $true
+        break
+      }
+    }
+    if ($dup) { continue }
+    $ace = New-Object System.Security.AccessControl.CommonAce(
+      $flags, [System.Security.AccessControl.AceQualifier]::AccessAllowed, $mask, $Sid, $false, $null)
+    # Append: allow-ACEs go after any existing deny-ACEs, and appending is what
+    # the Win32 reference implementation (AddAceToWindowStation) does too.
+    $acl.InsertAce($acl.Count, $ace)
+    $added++
+  }
+  if ($added -eq 0) {
+    Log "$Label already grants $($Sid.Value)  - no ACE added"
+    return
+  }
+
+  # ---- write the modified DACL back ----
+  $out = New-Object byte[] ($sd.BinaryLength)
+  $sd.GetBinaryForm($out, 0)
+  $wbuf = [Runtime.InteropServices.Marshal]::AllocHGlobal($out.Length)
+  try {
+    [Runtime.InteropServices.Marshal]::Copy($out, 0, $wbuf, $out.Length)
+    if (-not [SandboxLogon]::SetUserObjectSecurity($Handle, [ref]$si, $wbuf)) {
+      throw "sandbox-logon-launcher: SetUserObjectSecurity on $Label failed, Win32 error $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+    }
+  } finally {
+    [Runtime.InteropServices.Marshal]::FreeHGlobal($wbuf)
+  }
+  Log "granted $($Sid.Value) $added ACE(s) on $Label"
+}
+
+function New-SandboxDesktop {
+  # WHY A DESKTOP AT ALL (root cause, established empirically 2026-08-21): the
+  # leased account's token has no access to any window station / desktop of this
+  # logon session, so USER32.dll's DllMain  - which attaches the process to a
+  # window station and desktop  - fails, and the child dies at 0xC0000142
+  # (STATUS_DLL_INIT_FAILED) before its entry point ever runs. Confirmed by
+  # launching three binaries through this exact code path: cmd.exe (no USER32
+  # import) launches fine; powershell.exe and claude.exe (both import USER32)
+  # both die at 0xC0000142.
+  #
+  # MSDN's "the function adds permission for the specified user account to the
+  # inherited window station and desktop" applies to CreateProcessAsUser, NOT
+  # to CreateProcessWithTokenW  - that one is brokered by the seclogon service
+  # and does NOT fix up the winsta/desktop DACLs  - so we must do it ourselves.
+  #
+  # WHY A PRIVATE ONE (operator 2026-08-21): the earlier shape granted the pool
+  # group rights on WinSta0\Default  - the OPERATOR'S OWN LIVE DESKTOP  - and the
+  # only masks that actually carried USER32 through init there were wide ones
+  # (screen read, clipboard, hooks, input injection). Those reach out of the
+  # sandbox onto the operator's session; that is a sandbox escape by design, not
+  # an accident. So instead of widening the mask on a shared desktop, each turn
+  # gets its OWN desktop: full freedom on it, and NOTHING on WinSta0\Default.
+  # Same shape as the per-turn folder ACE, one layer up. Naming it after the
+  # leased account  - already the per-turn isolation unit  - also keeps
+  # concurrent sandboxed turns from seeing each other's windows.
+  #
+  # WHY here and not in provision-sandbox-account.ps1: unlike file ACLs,
+  # window-station and desktop DACLs are NOT persistent  - the objects are
+  # recreated per logon session, so this has to happen at runtime.
+  #
+  # Returns @{ Handle; LpDesktop }. The CALLER owns Handle and must CloseDesktop
+  # it (see the finally block) - that close is what destroys the desktop.
+  param(
+    [Parameter(Mandatory = $true)][string]$DesktopName,
+    [Parameter(Mandatory = $true)][System.Security.Principal.SecurityIdentifier]$LeasedSid,
+    [Parameter(Mandatory = $true)][System.Security.Principal.SecurityIdentifier]$PoolGroupSid
+  )
+
+  $hWinStaCur = [SandboxLogon]::GetProcessWindowStation()
+  if ($hWinStaCur -eq [IntPtr]::Zero) {
+    throw "sandbox-logon-launcher: GetProcessWindowStation failed, Win32 error $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+  }
+  $winStaName = Get-UserObjectName -Handle $hWinStaCur -Label 'window station'
+
+  # ---- 1. the SHARED window station. Only enough for the pool group to locate
+  # a station and reach a desktop under it (WINSTA_GRANT)  - the station is
+  # WinSta0, the operator's own, so nothing more.
+  # ONE ACE, NO_PROPAGATE_INHERIT, applying to the station object itself. The
+  # standard Win32 sample also adds an INHERIT_ONLY|CONTAINER_INHERIT|
+  # OBJECT_INHERIT ACE so desktops created later inherit rights; that is exactly
+  # what must NOT happen here  - it would hand the whole pool group access to
+  # every per-turn desktop created afterwards and defeat the per-account
+  # isolation set up in step 2.
+  # The INHERITED handle above carries whatever rights it was opened with, which
+  # need not include WRITE_DAC. Re-open BY NAME with exactly READ_CONTROL|
+  # WRITE_DAC so a missing right fails loudly here rather than deep inside
+  # GetUserObjectSecurity/SetUserObjectSecurity.
+  $hWinSta = [SandboxLogon]::OpenWindowStation($winStaName, $false, [SandboxLogon]::SD_EDIT_ACCESS)
+  if ($hWinSta -eq [IntPtr]::Zero) {
+    throw "sandbox-logon-launcher: OpenWindowStation('$winStaName', READ_CONTROL|WRITE_DAC) failed, Win32 error $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+  }
+  try {
+    Add-UserObjectAce -Handle $hWinSta -Label "window station '$winStaName'" -Sid $PoolGroupSid -Aces @(
+      @{ Flags = [System.Security.AccessControl.AceFlags]::NoPropagateInherit; Mask = [SandboxLogon]::WINSTA_GRANT }
+    )
+  } finally {
+    # Only the handle WE opened gets closed. $hWinStaCur is the process's own
+    # station  - closing that would detach this process from it.
+    [SandboxLogon]::CloseWindowStation($hWinSta) | Out-Null
+  }
+
+  # ---- 2. this turn's OWN desktop, under that same station. NOTE: CreateDesktop
+  # OPENS an existing desktop of the same name instead of failing, so a desktop
+  # left behind by a crashed turn is silently reused. Acceptable: the lease lock
+  # already serialises turns per account name, the ACE add below is idempotent,
+  # and the reused desktop is granted to the same single account.
+  $hDesk = [SandboxLogon]::CreateDesktop($DesktopName, [IntPtr]::Zero, [IntPtr]::Zero,
+    0, [uint32][SandboxLogon]::DESKTOP_CREATE_ACCESS, [IntPtr]::Zero)
+  if ($hDesk -eq [IntPtr]::Zero) {
+    throw "sandbox-logon-launcher: CreateDesktop('$DesktopName') under '$winStaName' failed, Win32 error $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+  }
+  try {
+    # The LEASED ACCOUNT's own SID, NOT the pool group's: tighter, and it keeps
+    # concurrent sandboxed turns isolated from one another's desktops.
+    Add-UserObjectAce -Handle $hDesk -Label "desktop '$winStaName\$DesktopName'" -Sid $LeasedSid -Aces @(
+      @{ Flags = [System.Security.AccessControl.AceFlags]::None; Mask = [SandboxLogon]::DESKTOP_GRANT }
+    )
+  } catch {
+    # Not yet handed to the caller, so nothing else would ever close it.
+    [SandboxLogon]::CloseDesktop($hDesk) | Out-Null
+    throw
+  }
+
+  Log "created per-turn desktop '$winStaName\$DesktopName' (SwitchDesktop there to watch this turn)"
+  [PSCustomObject]@{ Handle = $hDesk; LpDesktop = "$winStaName\$DesktopName" }
 }
 
 function Format-Win32Arg([string]$Arg) {
@@ -278,6 +604,7 @@ $plainPwd = $null
 $aceGranted = $false
 $leasedSid = $null
 $hToken = [IntPtr]::Zero
+$hSandboxDesk = [IntPtr]::Zero
 try {
   # ---- (b) get this account's stored credential  - self-heals if somehow
   # missing, but under normal operation the pool was already provisioned by
@@ -298,6 +625,18 @@ try {
   $aceGranted = $true
   Log "granted Modify to $($leasedSid.Value) ($leasedName) on $TargetFolder"
 
+  # ---- (d2) give this turn its own desktop and the window-station access to
+  # reach it, or every USER32-importing InnerBin dies at 0xC0000142 before its
+  # entry point (see the long WHY on New-SandboxDesktop). Two different
+  # principals, deliberately: the WINDOW STATION is shared by every concurrent
+  # turn, so its narrow ACE goes to the POOL GROUP (all 16 accounts are members;
+  # one group ACE beats 16 identical ones); the DESKTOP belongs to this turn
+  # alone, so its ACE goes to the LEASED ACCOUNT's SID only. Nothing whatsoever
+  # is granted on WinSta0\Default, the operator's own desktop. ----
+  $poolGroupSid = (New-Object System.Security.Principal.NTAccount($SandboxPoolGroup)).Translate([System.Security.Principal.SecurityIdentifier])
+  $sandboxDesk = New-SandboxDesktop -DesktopName $leasedName -LeasedSid $leasedSid -PoolGroupSid $poolGroupSid
+  $hSandboxDesk = $sandboxDesk.Handle
+
   # ---- (e) LogonUser: a fresh logon session for this leased account ----
   if (-not [SandboxLogon]::LogonUser($leasedName, '.', $plainPwd, [SandboxLogon]::LOGON32_LOGON_INTERACTIVE, [SandboxLogon]::LOGON32_PROVIDER_DEFAULT, [ref]$hToken)) {
     $werr = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
@@ -314,6 +653,11 @@ try {
 
   $si = New-Object SandboxLogon+STARTUPINFO
   $si.cb = [Runtime.InteropServices.Marshal]::SizeOf([type]([SandboxLogon+STARTUPINFO]))
+  # Land the child on ITS OWN desktop rather than letting it inherit this
+  # launcher's. "<winsta>\<desktop>"  - the backslash is what tells Win32 the
+  # string names both. Without this the child would inherit WinSta0\Default,
+  # which it now (deliberately) has no rights on at all, and die at 0xC0000142.
+  $si.lpDesktop = $sandboxDesk.LpDesktop
   $si.dwFlags = [SandboxLogon]::STARTF_USESTDHANDLES -bor [SandboxLogon]::STARTF_USESHOWWINDOW
   $si.wShowWindow = 0   # SW_HIDE
   $si.hStdInput = [SandboxLogon]::GetStdHandle([SandboxLogon]::STD_INPUT_HANDLE)
@@ -359,6 +703,19 @@ try {
 } finally {
   if ($plainPwd) { $plainPwd = $null }
   if ($hToken -ne [IntPtr]::Zero) { [SandboxLogon]::CloseHandle($hToken) | Out-Null }
+  # A desktop dies once its last handle closes and no threads remain attached  -
+  # and the inner process has already exited by now, so this close DESTROYS the
+  # desktop. That is deliberate: the desktop is ephemeral by construction, which
+  # is why there is no "revoke the desktop ACE" step anywhere in this script  -
+  # the whole object, its DACL included, simply ceases to exist. Done BEFORE the
+  # lease is released below, so no other turn can lease this account name while
+  # a desktop named after it from THIS turn is still alive.
+  if ($hSandboxDesk -ne [IntPtr]::Zero) { [SandboxLogon]::CloseDesktop($hSandboxDesk) | Out-Null }
+  # NOTE: of the ACEs, only the per-turn FOLDER one is revoked here. The WINDOW
+  # STATION ACE from step (d2) is deliberately LEFT IN PLACE: it is granted to
+  # the pool GROUP (not per-turn, not per-account) and is shared by every
+  # concurrent turn, so revoking it here would race sessions still running. It
+  # is volatile anyway  - winsta DACLs die with the logon session.
   # ---- (g, part 2) best-effort revoke the ACE  - never let cleanup failure
   # mask the inner process's own result. ----
   if ($aceGranted -and $leasedSid) {
