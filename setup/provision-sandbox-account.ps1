@@ -1,5 +1,5 @@
 # provision-sandbox-account.ps1  - operator-run, one-time (idempotent)
-# provisioning of the shared egpt-sandbox local account used by
+# provisioning of the POOL of disposable local accounts used by
 # sandbox-logon-launcher.ps1. New-LocalUser/Set-LocalUser need local-
 # Administrator rights, which the launcher's own daemon process does NOT run
 # with (by design  - keeps the daemon unelevated). This script self-elevates
@@ -25,15 +25,9 @@ if (-not $isElevated) {
 
 . (Join-Path $PSScriptRoot 'sandbox-account.ps1')
 
-$existedBefore = [bool](Get-LocalUser -Name $SandboxUser -ErrorAction SilentlyContinue)
-
 try {
-  Get-SandboxCredential | Out-Null
-  if ($existedBefore) {
-    Write-Host "OK: account '$SandboxUser' already existed (credential verified/self-healed)."
-  } else {
-    Write-Host "OK: account '$SandboxUser' created."
-  }
+  $result = Ensure-SandboxPool
+  Write-Host "OK: sandbox pool ready  - created $($result.Created), already existed $($result.Existed)."
 } catch {
   Write-Host "FAILED: $($_.Exception.Message)"
   exit 1

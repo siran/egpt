@@ -1,27 +1,36 @@
 # sandbox-logon-launcher.ps1  - per-warm-session OS-level isolation for a
 # `sandboxed: true` conversation. Run elevated (local admin) at least once so
-# it can create the shared unprivileged account; every later invocation just
+# it can create the pool of unprivileged accounts; every later invocation just
 # needs LogonUser + folder-ACE + CreateProcessWithTokenW rights, which the
 # elevated Administrator this daemon runs under already carries by default.
 #
 # MECHANISM (decided, see HANDOFF/ROADMAP; do not redesign):
-# Windows LogonUser mints a FRESH, unique logon SID every call, even against
-# the same account's credentials. So: ONE shared local account (egpt-sandbox),
-# created once (idempotent) [step a]. Per invocation (= per warm session):
-#   b) LogonUser the shared account -> a token for a brand-new logon session.
-#   c) pull that session's logon SID off the token (S-1-5-5-<luid> group -
-#      exactly the group GetTokenInformation(TokenGroups) would flag
-#      SE_GROUP_LOGON_ID for; WindowsIdentity.Groups is the .NET wrapper over
-#      that same GetTokenInformation(TokenGroups) call, used here instead of
-#      hand-marshaling the variable-length SID_AND_ATTRIBUTES array).
-#   d) grant that ONE SID a read/write (Modify) ACE on exactly TargetFolder -
+# Windows LogonUser mints a FRESH, unique logon SID every call - but on this
+# machine that logon SID never surfaces in the resulting token's TokenGroups
+# (empirically confirmed by full token-group enumeration; do not re-attempt
+# this via a different logon type or provider constant), so there is no
+# per-call SID to ACL against. Replacement: a POOL of disposable local
+# accounts (egpt-sbx-00..NN, provisioned once, elevated, by
+# provision-sandbox-account.ps1 via sandbox-account.ps1's Ensure-SandboxPool).
+# Per invocation (= per warm session):
+#   a) lease one pool account via an atomic per-account lock file (first
+#      caller to successfully create the lock file with FileMode.CreateNew
+#      owns the lease; the lock stays open, via $lockStream, for the whole
+#      turn - that open handle IS the lease).
+#   b) get that account's stored credential.
+#   c) resolve that account's own fixed user SID - always present in its own
+#      token, unlike the broken per-call logon-session SID.
+#   d) grant that SID a read/write (Modify) ACE on exactly TargetFolder -
 #      never Everyone, never a parent dir.
-#   e) CreateProcessWithTokenW launches InnerBin under that token, with the
+#   e) LogonUser the leased account -> a token for a fresh logon session.
+#   f) CreateProcessWithTokenW launches InnerBin under that token, with the
 #      launcher's OWN stdio handles passed straight through (STARTF_USESTDHANDLES)
 #      so the inner process's stdin/stdout/stderr ARE the same pipes Node's
 #      child_process.spawn of THIS script sees.
-#   f) wait for the inner process, best-effort revoke the ACE, exit with the
-#      inner process's own exit code.
+#   g) wait for the inner process, best-effort revoke the ACE, THEN release
+#      the lease (ACE revoke before lock release, so no other turn can claim
+#      this account while its ACE from THIS turn might still be getting
+#      cleaned up), exit with the inner process's own exit code.
 #
 # WHY CreateProcessWithTokenW, not CreateProcessAsUser (both were offered):
 # CreateProcessAsUser needs SeAssignPrimaryTokenPrivilege in the CALLER's own
@@ -38,13 +47,13 @@
 # by the Secondary Logon (seclogon) SYSTEM service via RPC, a different
 # process than this one. Whether its STARTF_USESTDHANDLES handle values
 # survive that RPC hop intact (so the inner process's stdio really is the
-# SAME pipe, not silently detached) is the one part of step (e) that could
-# not be confirmed without local-admin rights to create the shared account.
+# SAME pipe, not silently detached) is the one part of step (f) that could
+# not be confirmed without local-admin rights to create the pool accounts.
 # If the smoke test shows stdio does NOT come through: the fix is granting
 # the operator's account "Replace a process level token" and switching this
 # script to LogonUser -> DuplicateTokenEx(..., TokenPrimary) -> CreateProcessAsUser
 # instead - do not fall back to anything broader (no Everyone ACL, no
-# skipping per-session SID scoping) to paper over it.
+# skipping per-account SID scoping) to paper over it.
 #
 # PARAMS: InnerArgs is declared ValueFromRemainingArguments (see below), NOT
 # a named -InnerArgs flag one would join and re-parse. Verified empirically
@@ -67,8 +76,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# Account-provisioning constants/functions ($SandboxUser, $CredDir, $CredPath,
-# Log, New-RandomPassword, Get-SandboxCredential) live in sandbox-account.ps1,
+# Account-provisioning constants/functions ($SandboxPoolSize,
+# $SandboxPoolPrefix, $CredDir, Log, New-RandomPassword, Get-SandboxCredential,
+# Get-SandboxPoolAccountNames, Ensure-SandboxPool) live in sandbox-account.ps1,
 # shared with provision-sandbox-account.ps1's self-elevating one-time setup.
 . (Join-Path $PSScriptRoot 'sandbox-account.ps1')
 
@@ -229,49 +239,74 @@ function Format-Win32Arg([string]$Arg) {
   return $sb.ToString()
 }
 
-# ---- (a) ensure the shared account ----
-$cred = Get-SandboxCredential
-$plainPwd = [Runtime.InteropServices.Marshal]::PtrToStringUni([Runtime.InteropServices.Marshal]::SecureStringToGlobalAllocUnicode($cred.Password))
+# ---- (a) lease one pool account. An atomic per-account lock file - the
+# first caller to successfully create it with FileMode.CreateNew (atomic on
+# NTFS) owns the lease. Every other concurrent caller gets an IOException
+# (file already exists) and moves on to the next pool name. The open
+# FileStream handle IS the lease; it stays open for the whole turn. ----
+$locksDir = Join-Path (Join-Path $env:ProgramData 'egpt') 'sandbox-pool-locks'
+New-Item -ItemType Directory -Path $locksDir -Force -ErrorAction Stop | Out-Null
+
+$poolNames = Get-SandboxPoolAccountNames
+$leasedName = $null
+$lockStream = $null
+$lockPath = $null
+$maxLeaseAttempts = 40   # ~10s total at 250ms between full-pool sweeps
+for ($attempt = 1; $attempt -le $maxLeaseAttempts -and -not $leasedName; $attempt++) {
+  $shuffled = Get-Random -InputObject $poolNames -Count $poolNames.Count
+  foreach ($name in $shuffled) {
+    $candidatePath = Join-Path $locksDir "$name.lock"
+    try {
+      $lockStream = [System.IO.File]::Open($candidatePath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write)
+      $leasedName = $name
+      $lockPath = $candidatePath
+      break
+    } catch [System.IO.IOException] {
+      # already leased by another concurrent turn  - try the next pool name
+    }
+  }
+  if (-not $leasedName -and $attempt -lt $maxLeaseAttempts) {
+    Start-Sleep -Milliseconds 250
+  }
+}
+if (-not $leasedName) {
+  throw "sandbox-logon-launcher: sandbox pool exhausted ($($poolNames.Count) accounts all in use)"
+}
+Log "leased pool account '$leasedName'"
+
+$plainPwd = $null
 $aceGranted = $false
-$logonSid = $null
+$leasedSid = $null
 $hToken = [IntPtr]::Zero
 try {
-  # ---- (b) LogonUser: a fresh, unique logon session every call, even for
-  # the same account credentials  - this IS the per-session isolation unit. ----
-  if (-not [SandboxLogon]::LogonUser($SandboxUser, '.', $plainPwd, [SandboxLogon]::LOGON32_LOGON_INTERACTIVE, [SandboxLogon]::LOGON32_PROVIDER_DEFAULT, [ref]$hToken)) {
-    $werr = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
-    throw "sandbox-logon-launcher: LogonUser('$SandboxUser') failed, Win32 error $werr"
-  }
+  # ---- (b) get this account's stored credential  - self-heals if somehow
+  # missing, but under normal operation the pool was already provisioned by
+  # provision-sandbox-account.ps1, so this just reads the existing file. ----
+  $cred = Get-SandboxCredential -AccountName $leasedName
+  $plainPwd = [Runtime.InteropServices.Marshal]::PtrToStringUni([Runtime.InteropServices.Marshal]::SecureStringToGlobalAllocUnicode($cred.Password))
 
-  # ---- (c) pull this session's logon SID off the fresh token. A logon SID
-  # is always S-1-5-5-<high>-<low> (NT_AUTHORITY, SECURITY_LOGON_IDS_RID)  -
-  # exactly the group GetTokenInformation(TokenGroups) would report with the
-  # SE_GROUP_LOGON_ID attribute; WindowsIdentity.Groups is the BCL's own
-  # wrapper over that same token query, used here instead of hand-marshaling
-  # a variable-length SID_AND_ATTRIBUTES array. ----
-  $identity = New-Object System.Security.Principal.WindowsIdentity($hToken)
-  try {
-    $logonSid = $identity.Groups | Where-Object { $_.Value -match '^S-1-5-5-' } | Select-Object -First 1
-  } finally {
-    $identity.Dispose()
-  }
-  if (-not $logonSid) {
-    throw "sandbox-logon-launcher: could not find a logon SID (S-1-5-5-*) among the fresh token's groups  - cannot scope the folder ACE to this session"
-  }
-  Log "logon SID for this session: $($logonSid.Value)"
+  # ---- (c) resolve this account's own fixed user SID  - always present in
+  # its own token, unlike the broken per-call logon-session SID. ----
+  $leasedSid = (New-Object System.Security.Principal.NTAccount($leasedName)).Translate([System.Security.Principal.SecurityIdentifier])
 
   # ---- (d) grant read/write on exactly TargetFolder  - never broader ----
   $acl = Get-Acl -LiteralPath $TargetFolder
   $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-    $logonSid, 'Modify', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+    $leasedSid, 'Modify', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
   $acl.AddAccessRule($rule)
   Set-Acl -LiteralPath $TargetFolder -AclObject $acl
   $aceGranted = $true
-  Log "granted Modify to $($logonSid.Value) on $TargetFolder"
+  Log "granted Modify to $($leasedSid.Value) ($leasedName) on $TargetFolder"
+
+  # ---- (e) LogonUser: a fresh logon session for this leased account ----
+  if (-not [SandboxLogon]::LogonUser($leasedName, '.', $plainPwd, [SandboxLogon]::LOGON32_LOGON_INTERACTIVE, [SandboxLogon]::LOGON32_PROVIDER_DEFAULT, [ref]$hToken)) {
+    $werr = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    throw "sandbox-logon-launcher: LogonUser('$leasedName') failed, Win32 error $werr"
+  }
 
   Enable-SeImpersonatePrivilege
 
-  # ---- (e) launch InnerBin under this token, stdio proxied straight through ----
+  # ---- (f) launch InnerBin under this token, stdio proxied straight through ----
   $cmdParts = New-Object System.Collections.Generic.List[string]
   [void]$cmdParts.Add((Format-Win32Arg $InnerBin))
   foreach ($a in $InnerArgs) { [void]$cmdParts.Add((Format-Win32Arg $a)) }
@@ -286,7 +321,7 @@ try {
   $si.hStdError = [SandboxLogon]::GetStdHandle([SandboxLogon]::STD_ERROR_HANDLE)
 
   $pi = New-Object SandboxLogon+PROCESS_INFORMATION
-  Log "launching under egpt-sandbox: $InnerBin (+$($InnerArgs.Count) args), cwd=$TargetFolder"
+  Log "launching under ${leasedName}: $InnerBin (+$($InnerArgs.Count) args), cwd=$TargetFolder"
   $ok = [SandboxLogon]::CreateProcessWithTokenW(
     $hToken, [SandboxLogon]::LOGON_WITH_PROFILE,
     $null, $cmdLine, [SandboxLogon]::CREATE_NO_WINDOW,
@@ -302,7 +337,7 @@ try {
   $hToken = [IntPtr]::Zero
 
   [SandboxLogon]::CloseHandle($pi.hThread) | Out-Null
-  # ---- (f, part 1) wait for the inner process, capture its real exit code ----
+  # ---- (g, part 1) wait for the inner process, capture its real exit code ----
   [SandboxLogon]::WaitForSingleObject($pi.hProcess, [SandboxLogon]::INFINITE) | Out-Null
   [uint32]$exitCode = 0
   [SandboxLogon]::GetExitCodeProcess($pi.hProcess, [ref]$exitCode) | Out-Null
@@ -312,16 +347,31 @@ try {
 } finally {
   if ($plainPwd) { $plainPwd = $null }
   if ($hToken -ne [IntPtr]::Zero) { [SandboxLogon]::CloseHandle($hToken) | Out-Null }
-  # ---- (f, part 2) best-effort revoke the ACE  - never let cleanup failure
+  # ---- (g, part 2) best-effort revoke the ACE  - never let cleanup failure
   # mask the inner process's own result. ----
-  if ($aceGranted -and $logonSid) {
+  if ($aceGranted -and $leasedSid) {
     try {
       $acl2 = Get-Acl -LiteralPath $TargetFolder
-      $acl2.PurgeAccessRules($logonSid)
+      $acl2.PurgeAccessRules($leasedSid)
       Set-Acl -LiteralPath $TargetFolder -AclObject $acl2
-      Log "revoked ACE for $($logonSid.Value) on $TargetFolder"
+      Log "revoked ACE for $($leasedSid.Value) ($leasedName) on $TargetFolder"
     } catch {
-      Log "WARNING: could not revoke the ACE for $($logonSid.Value) on $TargetFolder  - $($_.Exception.Message)"
+      Log "WARNING: could not revoke the ACE for $($leasedSid.Value) ($leasedName) on $TargetFolder  - $($_.Exception.Message)"
+    }
+  }
+  # ---- (g, part 3) release the lease  - ACE revoke happens first (above),
+  # so no other turn can claim this account while its ACE from THIS turn
+  # might still be getting cleaned up. ----
+  if ($lockStream) {
+    try {
+      $lockStream.Close()
+    } catch {
+      Log "WARNING: could not close lease lock stream for '$leasedName'  - $($_.Exception.Message)"
+    }
+    try {
+      Remove-Item -LiteralPath $lockPath -Force -ErrorAction Stop
+    } catch {
+      Log "WARNING: could not remove lease lock file $lockPath for '$leasedName'  - $($_.Exception.Message)"
     }
   }
 }

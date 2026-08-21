@@ -1,15 +1,18 @@
 # test-sandbox-logon-launcher.ps1 — MANUAL smoke test for
 # sandbox-logon-launcher.ps1's OS-level isolation. NOT part of vitest / any
 # test runner. Run this yourself, ELEVATED (local admin — the first call
-# creates the shared egpt-sandbox account).
+# self-heals/creates whichever pool account it happens to lease, same as the
+# old single-account flow; the pool does not need to be pre-provisioned by
+# provision-sandbox-account.ps1 for this test specifically, though normal
+# operation expects it to be).
 #
 # Sets up two temp folders, each with its own marker file, then runs the
-# launcher twice — once per folder, i.e. two SEPARATE logon sessions under
-# the one shared egpt-sandbox account — with a trivial inner command
+# launcher twice — once per folder, i.e. two SEPARATE logon sessions, each
+# under a leased pool account (egpt-sbx-NN) — with a trivial inner command
 # (powershell.exe reading marker.txt). Asserts each session's process can
 # read its OWN folder's marker but is denied the OTHER folder's marker —
-# proving the per-session logon-SID ACE actually confines file access, not
-# just that the process ran as a different account.
+# proving the per-account ACE actually confines file access, not just that
+# the process ran as a different account.
 $ErrorActionPreference = 'Stop'
 
 $root = Join-Path $env:TEMP ("egpt-sandbox-smoketest-" + [Guid]::NewGuid().ToString('N').Substring(0, 8))
