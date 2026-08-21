@@ -30,7 +30,11 @@ try {
   Ensure-SandboxPoolGroup
   $claudeBinDir = Join-Path $env:USERPROFILE '.local\bin'
   Grant-SandboxPoolAccess -Path $claudeBinDir
-  Write-Host "OK: sandbox pool ready  - created $($result.Created), already existed $($result.Existed). Group '$SandboxPoolGroup' granted ReadAndExecute on $claudeBinDir."
+  # Must come AFTER Ensure-SandboxPool: that is what creates the credential
+  # files this locks down. Needs admin, which is exactly why it lives here and
+  # not in the (unelevated) launcher.
+  Protect-SandboxCredDir
+  Write-Host "OK: sandbox pool ready  - created $($result.Created), already existed $($result.Existed). Group '$SandboxPoolGroup' granted ReadAndExecute on $claudeBinDir. Credential dir $CredDir hardened (no BUILTIN\Users access)."
 } catch {
   Write-Host "FAILED: $($_.Exception.Message)"
   exit 1

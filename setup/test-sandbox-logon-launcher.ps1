@@ -1,10 +1,21 @@
 # test-sandbox-logon-launcher.ps1 — MANUAL smoke test for
 # sandbox-logon-launcher.ps1's OS-level isolation. NOT part of vitest / any
-# test runner. Run this yourself, ELEVATED (local admin — the first call
-# self-heals/creates whichever pool account it happens to lease, same as the
-# old single-account flow; the pool does not need to be pre-provisioned by
-# provision-sandbox-account.ps1 for this test specifically, though normal
-# operation expects it to be).
+# test runner. Run this yourself, UNELEVATED — deliberately: that is the whole
+# point of the CreateProcessWithLogonW launch path, and running it elevated
+# would test a privilege level production never has. Requires the pool to be
+# pre-provisioned (setup/provision-sandbox-account.ps1, one-time, self-
+# elevating); unelevated the launcher cannot self-heal a missing account.
+#
+# Run it from a temp dir the sandbox accounts CANNOT already read. $env:TEMP
+# under the operator's profile is right; a world-readable location (e.g. an
+# msys2 C:\msys64\tmp, which inherits BUILTIN\Users:ReadAndExecute from C:\)
+# makes "other marker denied" FAIL for reasons that have nothing to do with
+# the launcher.
+#
+# KNOWN, ACCEPTED FAILURE: "cwd is own folder" reports FAIL — the child lands
+# on C:\ instead of TargetFolder, because seclogon does not apply
+# lpCurrentDirectory to a directory whose ANCESTORS the leased account cannot
+# traverse (the per-turn ACE covers the leaf only). Do not "fix" it here.
 #
 # Sets up two temp folders, each with its own marker file, then runs the
 # launcher twice — once per folder, i.e. two SEPARATE logon sessions, each
@@ -51,7 +62,7 @@ function Invoke-Session([string]$OwnFolder, [string]$OtherMarkerPath) {
   $ErrorActionPreference = 'Continue'
   try {
     # InnerBin must be an absolute path (operator 2026-08-21): the launcher now
-    # passes it as CreateProcessWithTokenW's lpApplicationName, which does not
+    # passes it as CreateProcessWithLogonW's lpApplicationName, which does not
     # search PATH the way a bare name relying on lpCommandLine parsing would.
     $psExe = Join-Path $PSHOME 'powershell.exe'
     $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $launcher `

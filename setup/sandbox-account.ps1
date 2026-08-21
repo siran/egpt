@@ -11,7 +11,7 @@ $SandboxPoolPrefix = 'egpt-sbx-'
 # One local group all pool accounts belong to (operator 2026-08-21): the CLI
 # binaries a sandboxed turn launches (e.g. claude.exe under the operator's own
 # profile, ~/.local/bin) are NOT readable by an arbitrary low-privilege
-# account by default -- CreateProcessWithTokenW fails with ERROR_ACCESS_DENIED
+# account by default -- CreateProcessWithLogonW fails with ERROR_ACCESS_DENIED
 # otherwise. Granting ReadAndExecute to this ONE group, once, is simpler than
 # granting each of the 16 pool accounts individually.
 $SandboxPoolGroup = 'egpt-sandbox-pool'
@@ -22,7 +22,7 @@ $SandboxPoolGroup = 'egpt-sandbox-pool'
 $CredDir = Join-Path $env:ProgramData 'egpt'
 
 # Every diagnostic goes to STDERR ONLY. The inner process's stdout is wired
-# straight through to THIS script's own stdout handle (step e)  - anything
+# straight through to THIS script's own stdout handle (step f)  - anything
 # this script itself wrote to stdout would land in the same pipe Node is
 # parsing as claude's stream-json output and could corrupt it.
 function Log([string]$msg) { [Console]::Error.WriteLine("sandbox-logon-launcher: $msg") }
@@ -67,7 +67,7 @@ function Get-SandboxCredential {
       throw "sandbox-logon-launcher: failed to create local account '$AccountName'  - $($_.Exception.Message) (this must run as a local Administrator)"
     }
   } else {
-    # Account exists but the credential file we'd need to LogonUser it is
+    # Account exists but the credential file we'd need to log it on with is
     # gone (deleted, moved node, etc.)  - self-heal by resetting its password
     # to a freshly generated one we DO have, rather than getting stuck.
     Log "account '$AccountName' exists but its credential file is missing  - resetting its password to restore a known credential"
@@ -119,7 +119,7 @@ function Ensure-SandboxPoolGroup {
 
 # Grant the pool group ReadAndExecute on a CLI binary's directory (recurses to
 # files/subdirs via inheritance) so a leased account can actually launch it --
-# CreateProcessWithTokenW otherwise fails with ERROR_ACCESS_DENIED against a
+# CreateProcessWithLogonW otherwise fails with ERROR_ACCESS_DENIED against a
 # path only the operator's own account can read (e.g. ~/.local/bin). Additive
 # only: never removes or replaces existing ACEs.
 function Grant-SandboxPoolAccess {
@@ -138,8 +138,67 @@ function Grant-SandboxPoolAccess {
   Log "granted ReadAndExecute to $SandboxPoolGroup on $Path"
 }
 
+# Lock down $CredDir  - C:\ProgramData\egpt, which holds one DPAPI-encrypted
+# password file per pool account plus the sandbox-pool-locks lease directory.
+#
+# WHY (operator 2026-08-21): that directory INHERITS BUILTIN\Users
+# ReadAndExecute *and* Write from C:\ProgramData, and every pool account is in
+# Users. So a sandboxed being could read every credential blob and create files
+# in there. The blobs are user-scoped DPAPI (only the operator's account can
+# decrypt them), so reading them is not currently exploitable -- but the file
+# permission layer was contributing nothing, and the inherited Write also let a
+# sandboxed process plant lock files in sandbox-pool-locks and starve the pool.
+#
+# LOAD-BEARING: the operator's own FullControl. The LAUNCHER runs UNELEVATED, as
+# the operator, and must keep being able to read the credential files and
+# create/delete lease locks -- so the account running this provisioner is
+# granted explicitly alongside SYSTEM and Administrators. (Caveat: that is
+# WindowsIdentity::GetCurrent(), i.e. whoever approved the UAC prompt. If this
+# is ever elevated with a DIFFERENT admin's credentials than the account the
+# daemon runs as, the daemon loses access -- run it as the operator.)
+#
+# Idempotent: inheritance is disabled, every pre-existing rule is dropped, and
+# exactly these three are written, so re-running converges rather than
+# accumulating. Existing credential files and sandbox-pool-locks are covered by
+# ContainerInherit,ObjectInherit -- they inherit, so they pick the new set up.
+#
+# NOT Get-Acl/Set-Acl, deliberately (measured 2026-08-21, do not "simplify" it
+# back): Set-Acl persists the SACL as well, so the SECOND run against an
+# already-protected directory dies with PrivilegeNotHeldException
+# ('SeSecurityPrivilege'). Going through DirectoryInfo with an explicit
+# AccessControlSections::Access on BOTH the read and the write touches only the
+# DACL, needs no privilege beyond WRITE_DAC, and re-runs cleanly - verified by
+# running it three times in a row against a throwaway directory.
+function Protect-SandboxCredDir {
+  New-Item -ItemType Directory -Path $CredDir -Force -ErrorAction Stop | Out-Null
+  $dir = New-Object System.IO.DirectoryInfo($CredDir)
+  $acl = $dir.GetAccessControl([System.Security.AccessControl.AccessControlSections]::Access)
+  # $true = protect from inheritance, $false = do NOT copy the inherited rules
+  # in as explicit ones (copying them would keep the very Users grants this
+  # function exists to remove).
+  $acl.SetAccessRuleProtection($true, $false)
+  # Any EXPLICIT rules that survive go too, so the result is exactly the three
+  # added below whatever state the directory was in. Enumerated by SID, not by
+  # NTAccount: an orphaned SID that no longer resolves to a name must still be
+  # removable, not throw IdentityNotMappedException.
+  foreach ($rule in @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))) {
+    $acl.RemoveAccessRuleAll($rule)
+  }
+  $principals = @(
+    (New-Object System.Security.Principal.SecurityIdentifier([System.Security.Principal.WellKnownSidType]::LocalSystemSid, $null)),
+    (New-Object System.Security.Principal.SecurityIdentifier([System.Security.Principal.WellKnownSidType]::BuiltinAdministratorsSid, $null)),
+    ([System.Security.Principal.WindowsIdentity]::GetCurrent()).User
+  )
+  foreach ($sid in $principals) {
+    $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+      $sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))
+  }
+  $dir.SetAccessControl($acl)
+  Log "hardened $CredDir  - inheritance off, FullControl for SYSTEM, Administrators and $($principals[2].Translate([System.Security.Principal.NTAccount]).Value) only"
+}
+
 # Wipe ONE pool account's Windows user profile. Called by
-# sandbox-logon-launcher.ps1 on LEASE ACQUIRE, before LogonUser.
+# sandbox-logon-launcher.ps1 on LEASE ACQUIRE, before the account is logged on.
 #
 # WHY (operator ruling 2026-08-21: the account profile is SCRATCH, the
 # conversation folder is the only durable storage): pool accounts are REUSED

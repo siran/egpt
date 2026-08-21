@@ -1,59 +1,72 @@
 # sandbox-logon-launcher.ps1  - per-warm-session OS-level isolation for a
-# `sandboxed: true` conversation. Run elevated (local admin) at least once so
-# it can create the pool of unprivileged accounts; every later invocation just
-# needs LogonUser + folder-ACE + CreateProcessWithTokenW rights, which the
-# elevated Administrator this daemon runs under already carries by default.
+# `sandboxed: true` conversation. NEEDS NO PRIVILEGE AT RUNTIME: it runs as the
+# ordinary, unelevated account the egpt daemon runs as. Elevation is SETUP-ONLY
+# and one-time  - creating the pool accounts and their group, and granting that
+# group ReadAndExecute on the CLI bin dir (~/.local/bin)  - all done by
+# provision-sandbox-account.ps1, which self-elevates via UAC and then exits.
 #
 # MECHANISM (decided, see HANDOFF/ROADMAP; do not redesign):
 # Windows LogonUser mints a FRESH, unique logon SID every call - but on this
 # machine that logon SID never surfaces in the resulting token's TokenGroups
 # (empirically confirmed by full token-group enumeration; do not re-attempt
 # this via a different logon type or provider constant), so there is no
-# per-call SID to ACL against. Replacement: a POOL of disposable local
-# accounts (egpt-sbx-00..NN, provisioned once, elevated, by
-# provision-sandbox-account.ps1 via sandbox-account.ps1's Ensure-SandboxPool).
+# per-call SID to ACL against. THAT is why the pool exists: a set of disposable
+# local accounts (egpt-sbx-00..NN, provisioned once, elevated, by
+# provision-sandbox-account.ps1 via sandbox-account.ps1's Ensure-SandboxPool),
+# each with a FIXED user SID that can actually be ACL'd.
 # Per invocation (= per warm session):
 #   a) lease one pool account via an atomic per-account lock file (first
 #      caller to successfully create the lock file with FileMode.CreateNew
 #      owns the lease; the lock stays open, via $lockStream, for the whole
-#      turn - that open handle IS the lease).
-#   b) get that account's stored credential.
+#      turn - that open handle IS the lease), and wipe its scratch profile.
+#   b) get that account's stored credential (DPAPI, operator-scoped).
 #   c) resolve that account's own fixed user SID - always present in its own
 #      token, unlike the broken per-call logon-session SID.
 #   d) grant that SID a read/write (Modify) ACE on exactly TargetFolder -
 #      never Everyone, never a parent dir.
-#   e) LogonUser the leased account -> a token for a fresh logon session.
-#   f) CreateProcessWithTokenW launches InnerBin under that token, with the
+#   e) create a PRIVATE per-turn desktop and grant that SID access to it (see
+#      New-SandboxDesktop) - nothing on the operator's own WinSta0\Default.
+#   f) CreateProcessWithLogonW launches InnerBin AS that account, with the
 #      launcher's OWN stdio handles passed straight through (STARTF_USESTDHANDLES)
 #      so the inner process's stdin/stdout/stderr ARE the same pipes Node's
 #      child_process.spawn of THIS script sees.
-#   g) wait for the inner process, best-effort revoke the ACE, THEN release
-#      the lease (ACE revoke before lock release, so no other turn can claim
-#      this account while its ACE from THIS turn might still be getting
-#      cleaned up), exit with the inner process's own exit code.
+#   g) wait for the inner process, destroy the desktop, best-effort revoke the
+#      ACE, THEN release the lease (ACE revoke before lock release, so no other
+#      turn can claim this account while its ACE from THIS turn might still be
+#      getting cleaned up), exit with the inner process's own exit code.
 #
-# WHY CreateProcessWithTokenW, not CreateProcessAsUser (both were offered):
-# CreateProcessAsUser needs SeAssignPrimaryTokenPrivilege in the CALLER's own
-# token. Default Windows policy grants that right only to LOCAL SERVICE /
-# NETWORK SERVICE / SYSTEM - NOT to Administrators (verify: secpol.msc ->
-# User Rights Assignment -> "Replace a process level token"). This daemon
-# runs interactively under the operator's own elevated account (Startup-
-# folder supervisor, not a SYSTEM service), so CreateProcessAsUser would fail
-# with ERROR_PRIVILEGE_NOT_HELD out of the box. CreateProcessWithTokenW only
-# needs SeImpersonatePrivilege, which Administrators DO hold by default - so
-# it is the one that actually works for this deployment shape.
-# UNVERIFIED (needs the elevated smoke test, setup/test-sandbox-logon-launcher.ps1,
-# which this file's author did not run): CreateProcessWithTokenW is serviced
-# by the Secondary Logon (seclogon) SYSTEM service via RPC, a different
-# process than this one. Whether its STARTF_USESTDHANDLES handle values
-# survive that RPC hop intact (so the inner process's stdio really is the
-# SAME pipe, not silently detached) is the one part of step (f) that could
-# not be confirmed without local-admin rights to create the pool accounts.
-# If the smoke test shows stdio does NOT come through: the fix is granting
-# the operator's account "Replace a process level token" and switching this
-# script to LogonUser -> DuplicateTokenEx(..., TokenPrimary) -> CreateProcessAsUser
-# instead - do not fall back to anything broader (no Everyone ACL, no
-# skipping per-account SID scoping) to paper over it.
+# WHY CreateProcessWithLogonW, and not either token-based API (all three were
+# tried; this is the only one that works from where this script actually runs):
+#  - CreateProcessAsUser needs SeAssignPrimaryTokenPrivilege in the CALLER's own
+#    token. Default Windows policy grants that right only to LOCAL SERVICE /
+#    NETWORK SERVICE / SYSTEM - NOT to Administrators (verify: secpol.msc ->
+#    User Rights Assignment -> "Replace a process level token"). Fails with
+#    ERROR_PRIVILEGE_NOT_HELD out of the box.
+#  - CreateProcessWithTokenW (LogonUser + this pair was the previous shape here)
+#    needs SeImpersonatePrivilege. An ELEVATED Administrator holds it - but the
+#    egpt daemon is deliberately UNELEVATED, and UAC token filtering strips that
+#    privilege from the filtered token even for an account that IS in
+#    Administrators (verified with `whoami /priv` on the unelevated token: only
+#    the five standard-user privileges survive). So it worked only in a manually
+#    elevated shell and could never have worked in production.
+#  - CreateProcessWithLogonW (the API behind `runas`) authenticates from the
+#    username + password directly instead of impersonating, and requires NO
+#    privilege in the caller at all. That is why the password is STORED (DPAPI,
+#    decryptable only by the operator account) rather than a token being minted.
+# CAVEAT if anyone moves this: CreateProcessWithLogonW cannot be called from
+# LocalSystem - it fails there by design. Irrelevant today (the daemon runs
+# interactively as the operator, from the Startup folder), but re-hosting it in
+# a SYSTEM service would break this and would have to go back to
+# CreateProcessAsUser plus the "Replace a process level token" grant. Do not
+# fall back to anything broader (no Everyone ACL, no skipping per-account SID
+# scoping) to paper over that.
+#
+# Both CreateProcessWith*W calls are brokered by the Secondary Logon (seclogon)
+# SYSTEM service over RPC, a different process than this one, so whether the
+# STARTF_USESTDHANDLES handle values survive that hop is not a given. VERIFIED
+# 2026-08-21 by running setup/test-sandbox-logon-launcher.ps1 UNELEVATED: they
+# do - the inner process's stdout came back through the launcher's own pipe -
+# and lpDesktop does land the child on its private desktop.
 #
 # PARAMS: InnerArgs is declared ValueFromRemainingArguments (see below), NOT
 # a named -InnerArgs flag one would join and re-parse. Verified empirically
@@ -96,8 +109,6 @@ using System.Runtime.InteropServices;
 using System.Text;
 
 public static class SandboxLogon {
-    public const int LOGON32_LOGON_INTERACTIVE = 2;
-    public const int LOGON32_PROVIDER_DEFAULT = 0;
     public const int LOGON_WITH_PROFILE = 1;
     public const int CREATE_NO_WINDOW = 0x08000000;
     public const int STARTF_USESTDHANDLES = 0x00000100;
@@ -105,9 +116,6 @@ public static class SandboxLogon {
     public const int STD_INPUT_HANDLE = -10;
     public const int STD_OUTPUT_HANDLE = -11;
     public const int STD_ERROR_HANDLE = -12;
-    public const uint TOKEN_QUERY = 0x0008;
-    public const uint TOKEN_ADJUST_PRIVILEGES = 0x0020;
-    public const uint SE_PRIVILEGE_ENABLED = 0x00000002;
     public const uint INFINITE = 0xFFFFFFFF;
 
     // ---- window station / desktop security (see New-SandboxDesktop) ----
@@ -193,7 +201,7 @@ public static class SandboxLogon {
 
     // CharSet.Unicode is LOAD-BEARING, not decoration: StructLayout defaults to
     // CharSet.Ansi, which marshals the string fields below as char* - and
-    // CreateProcessWithTokenW reads them as STARTUPINFOW's WCHAR*. That mismatch
+    // CreateProcessWithLogonW reads them as STARTUPINFOW's WCHAR*. That mismatch
     // was harmless only while every string field stayed null; lpDesktop is
     // assigned now, so without this the child would be handed a garbage desktop
     // name.
@@ -217,37 +225,15 @@ public static class SandboxLogon {
         public int dwProcessId; public int dwThreadId;
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    public struct LUID { public uint LowPart; public int HighPart; }
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct LUID_AND_ATTRIBUTES { public LUID Luid; public uint Attributes; }
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct TOKEN_PRIVILEGES { public uint PrivilegeCount; public LUID Luid; public uint Attributes; }
-
+    // The launch API. Takes the account's name and password directly and needs
+    // NO privilege in the calling process - see the WHY at the top of the file.
+    // CharSet.Unicode: this is the *W entry point and every string here is a
+    // WCHAR*, exactly as with STARTUPINFO above.
     [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    public static extern bool LogonUser(string lpszUsername, string lpszDomain, string lpszPassword,
-        int dwLogonType, int dwLogonProvider, out IntPtr phToken);
-
-    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    public static extern bool CreateProcessWithTokenW(IntPtr hToken, int dwLogonFlags,
-        string lpApplicationName, StringBuilder lpCommandLine, int dwCreationFlags,
+    public static extern bool CreateProcessWithLogonW(string lpUsername, string lpDomain, string lpPassword,
+        int dwLogonFlags, string lpApplicationName, StringBuilder lpCommandLine, int dwCreationFlags,
         IntPtr lpEnvironment, string lpCurrentDirectory,
         ref STARTUPINFO lpStartupInfo, out PROCESS_INFORMATION lpProcessInformation);
-
-    [DllImport("advapi32.dll", SetLastError = true)]
-    public static extern bool LookupPrivilegeValue(string lpSystemName, string lpName, out LUID lpLuid);
-
-    [DllImport("advapi32.dll", SetLastError = true)]
-    public static extern bool AdjustTokenPrivileges(IntPtr TokenHandle, bool DisableAllPrivileges,
-        ref TOKEN_PRIVILEGES NewState, int BufferLength, IntPtr PreviousState, IntPtr ReturnLength);
-
-    [DllImport("advapi32.dll", SetLastError = true)]
-    public static extern bool OpenProcessToken(IntPtr ProcessHandle, uint DesiredAccess, out IntPtr TokenHandle);
-
-    [DllImport("kernel32.dll")]
-    public static extern IntPtr GetCurrentProcess();
 
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern IntPtr GetStdHandle(int nStdHandle);
@@ -300,39 +286,6 @@ public static class SandboxLogon {
 }
 '@
 Add-Type -TypeDefinition $sig -ErrorAction Stop
-
-function Enable-SeImpersonatePrivilege {
-  # CreateProcessWithTokenW requires SE_IMPERSONATE_NAME ENABLED (not just
-  # present) in the caller's own token  - an elevated Administrator token
-  # carries it but typically disabled-by-default, same as SeDebugPrivilege.
-  [IntPtr]$hProc = [SandboxLogon]::GetCurrentProcess()
-  [IntPtr]$hTok = [IntPtr]::Zero
-  if (-not [SandboxLogon]::OpenProcessToken($hProc, [SandboxLogon]::TOKEN_QUERY -bor [SandboxLogon]::TOKEN_ADJUST_PRIVILEGES, [ref]$hTok)) {
-    throw "sandbox-logon-launcher: OpenProcessToken (self) failed, Win32 error $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
-  }
-  try {
-    $luid = New-Object SandboxLogon+LUID
-    if (-not [SandboxLogon]::LookupPrivilegeValue($null, 'SeImpersonatePrivilege', [ref]$luid)) {
-      throw "sandbox-logon-launcher: LookupPrivilegeValue(SeImpersonatePrivilege) failed, Win32 error $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
-    }
-    $tp = New-Object SandboxLogon+TOKEN_PRIVILEGES
-    $tp.PrivilegeCount = 1
-    $tp.Luid = $luid
-    $tp.Attributes = [SandboxLogon]::SE_PRIVILEGE_ENABLED
-    if (-not [SandboxLogon]::AdjustTokenPrivileges($hTok, $false, [ref]$tp, 0, [IntPtr]::Zero, [IntPtr]::Zero)) {
-      throw "sandbox-logon-launcher: AdjustTokenPrivileges(SeImpersonatePrivilege) failed, Win32 error $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
-    }
-    # AdjustTokenPrivileges can return TRUE but leave nothing actually
-    # changed (ERROR_NOT_ALL_ASSIGNED) when the privilege isn't held at all  -
-    # that means this process is not really running as a local Administrator.
-    $err = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
-    if ($err -eq 1300) {
-      throw "sandbox-logon-launcher: this process does not hold SeImpersonatePrivilege (ERROR_NOT_ALL_ASSIGNED)  - must run as a local Administrator"
-    }
-  } finally {
-    [SandboxLogon]::CloseHandle($hTok) | Out-Null
-  }
-}
 
 function Get-UserObjectName {
   param(
@@ -451,8 +404,8 @@ function New-SandboxDesktop {
   #
   # MSDN's "the function adds permission for the specified user account to the
   # inherited window station and desktop" applies to CreateProcessAsUser, NOT
-  # to CreateProcessWithTokenW  - that one is brokered by the seclogon service
-  # and does NOT fix up the winsta/desktop DACLs  - so we must do it ourselves.
+  # to the CreateProcessWith*W pair  - those are brokered by the seclogon
+  # service and do NOT fix up the winsta/desktop DACLs  - so we do it ourselves.
   #
   # WHY A PRIVATE ONE (operator 2026-08-21): the earlier shape granted the pool
   # group rights on WinSta0\Default  - the OPERATOR'S OWN LIVE DESKTOP  - and the
@@ -539,7 +492,7 @@ function New-SandboxDesktop {
 function Format-Win32Arg([string]$Arg) {
   # Standard MSVCRT/CommandLineToArgvW quoting so InnerBin/InnerArgs survive
   # the one unavoidable re-serialization into a Win32 lpCommandLine string
-  # (CreateProcessWithTokenW has no argv-array form).
+  # (CreateProcessWithLogonW has no argv-array form).
   if ($null -eq $Arg) { $Arg = '' }
   if ($Arg.Length -gt 0 -and $Arg -notmatch '[\s"]') { return $Arg }
   $sb = New-Object System.Text.StringBuilder
@@ -603,15 +556,14 @@ Log "leased pool account '$leasedName'"
 $plainPwd = $null
 $aceGranted = $false
 $leasedSid = $null
-$hToken = [IntPtr]::Zero
 $hSandboxDesk = [IntPtr]::Zero
 try {
   # ---- (a2) wipe this account's Windows user profile. Pool accounts are reused
   # across DIFFERENT conversations and step (f)'s LOGON_WITH_PROFILE recreates
   # C:\Users\<account>\ at logon, so whatever the previous turn's CLI left under
   # %APPDATA% / %LOCALAPPDATA% would otherwise be readable by the next
-  # conversation to lease this name. ON ACQUIRE, deliberately: after LogonUser
-  # the profile is already materialised so wiping would be useless, and wiping
+  # conversation to lease this name. ON ACQUIRE, deliberately: once the account
+  # is logged on the profile already exists so wiping would be useless, and wiping
   # on RELEASE would be skipped entirely whenever a turn crashes or is killed  -
   # which is why there is no wipe in the finally block. Wipe-on-acquire is a
   # clean start regardless of how the previous turn ended. ----
@@ -636,7 +588,7 @@ try {
   $aceGranted = $true
   Log "granted Modify to $($leasedSid.Value) ($leasedName) on $TargetFolder"
 
-  # ---- (d2) give this turn its own desktop and the window-station access to
+  # ---- (e) give this turn its own desktop and the window-station access to
   # reach it, or every USER32-importing InnerBin dies at 0xC0000142 before its
   # entry point (see the long WHY on New-SandboxDesktop). Two different
   # principals, deliberately: the WINDOW STATION is shared by every concurrent
@@ -648,15 +600,10 @@ try {
   $sandboxDesk = New-SandboxDesktop -DesktopName $leasedName -LeasedSid $leasedSid -PoolGroupSid $poolGroupSid
   $hSandboxDesk = $sandboxDesk.Handle
 
-  # ---- (e) LogonUser: a fresh logon session for this leased account ----
-  if (-not [SandboxLogon]::LogonUser($leasedName, '.', $plainPwd, [SandboxLogon]::LOGON32_LOGON_INTERACTIVE, [SandboxLogon]::LOGON32_PROVIDER_DEFAULT, [ref]$hToken)) {
-    $werr = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
-    throw "sandbox-logon-launcher: LogonUser('$leasedName') failed, Win32 error $werr"
-  }
-
-  Enable-SeImpersonatePrivilege
-
-  # ---- (f) launch InnerBin under this token, stdio proxied straight through ----
+  # ---- (f) launch InnerBin AS the leased account, stdio proxied straight
+  # through. CreateProcessWithLogonW does the logon itself from the name +
+  # password, so there is no separate LogonUser step and no token handle to
+  # own: it needs no privilege in THIS process (see the WHY at the top). ----
   $cmdParts = New-Object System.Collections.Generic.List[string]
   [void]$cmdParts.Add((Format-Win32Arg $InnerBin))
   foreach ($a in $InnerArgs) { [void]$cmdParts.Add((Format-Win32Arg $a)) }
@@ -678,25 +625,22 @@ try {
   $pi = New-Object SandboxLogon+PROCESS_INFORMATION
   Log "launching under ${leasedName}: $InnerBin (+$($InnerArgs.Count) args), cwd=$TargetFolder"
   # lpApplicationName MUST be the resolved path, not $null (operator 2026-08-21):
-  # leaving it null relies on the target token's own (unpredictable) PATH search
-  # to resolve the first token of lpCommandLine, and empirically that path (not
-  # a permissions issue) is what CreateProcessWithTokenW's ERROR_PATH_NOT_FOUND
-  # was about. InnerBin must therefore always be a fully-resolved absolute path
-  # by the time it reaches this script -- callers (sandbox-cli-session.mjs) are
-  # responsible for that, same as any other CreateProcess-family caller.
-  $ok = [SandboxLogon]::CreateProcessWithTokenW(
-    $hToken, [SandboxLogon]::LOGON_WITH_PROFILE,
+  # leaving it null relies on the target account's own (unpredictable) PATH
+  # search to resolve the first token of lpCommandLine, and empirically that
+  # path (not a permissions issue) is what the ERROR_PATH_NOT_FOUND was about.
+  # InnerBin must therefore always be a fully-resolved absolute path by the time
+  # it reaches this script -- callers (sandbox-cli-session.mjs) are responsible
+  # for that, same as any other CreateProcess-family caller.
+  # Domain '.' = this machine's local account database; the pool accounts are
+  # local, never domain.
+  $ok = [SandboxLogon]::CreateProcessWithLogonW(
+    $leasedName, '.', $plainPwd, [SandboxLogon]::LOGON_WITH_PROFILE,
     $InnerBin, $cmdLine, [SandboxLogon]::CREATE_NO_WINDOW,
     [IntPtr]::Zero, $TargetFolder, [ref]$si, [ref]$pi)
   if (-not $ok) {
     $werr = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
-    throw "sandbox-logon-launcher: CreateProcessWithTokenW failed, Win32 error $werr"
+    throw "sandbox-logon-launcher: CreateProcessWithLogonW('$leasedName') failed, Win32 error $werr"
   }
-
-  # hToken is no longer needed once the process is created (it got its own
-  # copy)  - close it now rather than holding it for the process's lifetime.
-  [SandboxLogon]::CloseHandle($hToken) | Out-Null
-  $hToken = [IntPtr]::Zero
 
   [SandboxLogon]::CloseHandle($pi.hThread) | Out-Null
   # ---- (g, part 1) wait for the inner process, capture its real exit code ----
@@ -713,7 +657,6 @@ try {
   $finalExit = [BitConverter]::ToInt32([BitConverter]::GetBytes($exitCode), 0)
 } finally {
   if ($plainPwd) { $plainPwd = $null }
-  if ($hToken -ne [IntPtr]::Zero) { [SandboxLogon]::CloseHandle($hToken) | Out-Null }
   # A desktop dies once its last handle closes and no threads remain attached  -
   # and the inner process has already exited by now, so this close DESTROYS the
   # desktop. That is deliberate: the desktop is ephemeral by construction, which
@@ -723,7 +666,7 @@ try {
   # a desktop named after it from THIS turn is still alive.
   if ($hSandboxDesk -ne [IntPtr]::Zero) { [SandboxLogon]::CloseDesktop($hSandboxDesk) | Out-Null }
   # NOTE: of the ACEs, only the per-turn FOLDER one is revoked here. The WINDOW
-  # STATION ACE from step (d2) is deliberately LEFT IN PLACE: it is granted to
+  # STATION ACE from step (e) is deliberately LEFT IN PLACE: it is granted to
   # the pool GROUP (not per-turn, not per-account) and is shared by every
   # concurrent turn, so revoking it here would race sessions still running. It
   # is volatile anyway  - winsta DACLs die with the logon session.
