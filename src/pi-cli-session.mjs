@@ -36,15 +36,24 @@ import { join } from 'node:path';
 // even unsandboxed. Resolve to node.exe + the package's own dist/cli.js, the
 // same shape codex-cli-session.mjs's resolveCodexCommand() uses.
 const PI_PKG = ['@earendil-works', 'pi-coding-agent', 'dist', 'cli.js'];
+// Node realpath()s what it resolves, and realpathSync lstat()s EVERY ancestor
+// directory. Under the sandbox the leased account holds rights on the granted
+// leaves only, so resolution died with:
+//   EPERM: operation not permitted, lstat 'C:\Users\an\AppData'
+// --preserve-symlinks-main covers the CJS entry; the ESM resolver
+// (finalizeResolution) needs the broader --preserve-symlinks. BOTH are required
+// -- with only -main the failure simply moved from resolveMainPath into the ESM
+// loader. Verified through sandbox-logon-launcher.ps1 on reve.
+const NODE_FLAGS = ['--preserve-symlinks', '--preserve-symlinks-main'];
 function resolvePiCommand(explicit) {
   if (explicit) return { bin: explicit, prefix: [] };
   if (process.env.EGPT_PI_BIN) return { bin: process.env.EGPT_PI_BIN, prefix: [] };
   if (process.platform === 'win32' && process.env.APPDATA) {
     const js = join(process.env.APPDATA, 'npm', 'node_modules', ...PI_PKG);
-    try { if (existsSync(js)) return { bin: process.execPath, prefix: [js] }; } catch { /* PATH fallback */ }
+    try { if (existsSync(js)) return { bin: process.execPath, prefix: [...NODE_FLAGS, js] }; } catch { /* PATH fallback */ }
   }
   const unixJs = join(homedir(), '.npm-global', 'lib', 'node_modules', ...PI_PKG);
-  try { if (existsSync(unixJs)) return { bin: process.execPath, prefix: [unixJs] }; } catch { /* PATH fallback */ }
+  try { if (existsSync(unixJs)) return { bin: process.execPath, prefix: [...NODE_FLAGS, unixJs] }; } catch { /* PATH fallback */ }
   return { bin: 'pi', prefix: [] };
 }
 
@@ -101,7 +110,14 @@ export function createPiCliSession(options = {}) {
   }
 
   function spawnProc() {
+    // Sessions must land somewhere the SANDBOX can write. pi defaults to its
+    // config dir (~/.pi/agent/sessions), which the pool has ReadAndExecute on by
+    // design -- a sandboxed turn must not write into the operator's config. The
+    // conversation folder is the one place it holds Modify, so point pi there.
+    // Without this: EPERM mkdir on .../agent/sessions/... and pi exits 1.
     const args = [...prefix, '--mode', 'rpc', '--offline'];
+    const sessionDir = options.sessionDir || (options.cwd ? join(options.cwd, 'pi-sessions') : null);
+    if (sessionDir) args.push('--session-dir', sessionDir);
     if (options.provider) args.push('--provider', options.provider);
     if (options.model) args.push('--model', options.model);
     if (options.sessionId) args.push('--session-id', String(options.sessionId));

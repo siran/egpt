@@ -63,6 +63,21 @@ try {
   } else {
     Write-Host "note: $piDir not present  - skipping the pi config grant on this node"
   }
+  # pi resolves its config dir from PI_CODING_AGENT_DIR, defaulting to
+  # ~/.pi/agent. A sandboxed turn runs as a POOL account whose USERPROFILE is
+  # C:\Users\egpt-sbx-NN (LOGON_WITH_PROFILE gives it its own profile, verified),
+  # so pi looked for models.json in a profile that has none and died with
+  # 'Model "reve/local" not found'. The grant above is what makes the operator's
+  # copy READABLE; this is what makes pi actually LOOK there.
+  #
+  # It has to be MACHINE scope: sandbox-logon-launcher passes lpEnvironment =
+  # NULL, so the inner process inherits the leased logon's environment, never the
+  # caller's -- the value cannot be handed over per-spawn. Harmless for the
+  # operator: it names the very path their own pi already defaults to.
+  $piAgentDir = Join-Path (Join-Path $env:USERPROFILE '.pi') 'agent'
+  [Environment]::SetEnvironmentVariable('PI_CODING_AGENT_DIR', $piAgentDir, 'Machine')
+  Write-Host "set machine PI_CODING_AGENT_DIR = $piAgentDir (pool accounts have their own profiles)"
+
   # Must come AFTER Ensure-SandboxPool: that is what creates the credential
   # files this locks down. Needs admin, which is exactly why it lives here and
   # not in the (unelevated) launcher.

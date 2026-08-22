@@ -161,8 +161,24 @@ describe('pi cli session (rpc mode)', () => {
     const [bin, args] = spawn.mock.calls[0];
     expect(bin).not.toBe('pi');
     expect(bin.toLowerCase()).toContain('node');
-    expect(args[0]).toMatch(/cli\.js$/i);
-    expect(args.slice(1)).toEqual(expect.arrayContaining(['--mode', 'rpc']));
+    // node flags must precede the script path, and BOTH are required: the CJS
+    // entry needs -main, the ESM resolver needs the broader flag.
+    expect(args[0]).toBe('--preserve-symlinks');
+    expect(args[1]).toBe('--preserve-symlinks-main');
+    expect(args[2]).toMatch(/cli\.js$/i);
+    expect(args.slice(3)).toEqual(expect.arrayContaining(['--mode', 'rpc']));
+  });
+
+  it('writes sessions into the conversation folder, not pi config', () => {
+    // The pool has Modify on the conversation dir and ReadAndExecute on
+    // ~/.pi/agent -- pi's default session dir is inside the latter.
+    const proc = fakePi();
+    const spawn = spawnFake(proc);
+    createPiCliSession({ spawn, cwd: 'C:/conv/here' }).turn('x');
+    const [, args] = spawn.mock.calls[0];
+    const i = args.indexOf('--session-dir');
+    expect(i).toBeGreaterThan(-1);
+    expect(args[i + 1]).toMatch(/conv/);
   });
 
   it('an explicit bin still wins, with no prefix', () => {
