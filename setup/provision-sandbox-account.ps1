@@ -44,39 +44,41 @@ try {
   } else {
     Write-Host "note: $npmGlobalDir not present  - skipping the pi/codex grant on this node"
   }
-  # pi (@p): the engine resolves `--model reve/local` by reading ~/.pi/agent/
-  # models.json, which carries the provider's baseUrl (127.0.0.1:8080). That dir
-  # sits under the operator's profile and denies Users, so a sandboxed turn
-  # cannot resolve its model without this grant -- the binary grant above is
-  # necessary but NOT sufficient.
+  # pi (@p): the engine resolves `--model reve/local` from models.json in its
+  # config dir, and it WRITES there too (settings lock, runtime creation). A
+  # sandboxed turn runs as a pool account whose USERPROFILE is C:\Users\egpt-sbx-NN
+  # (LOGON_WITH_PROFILE, verified by probe), so it would look in a profile that
+  # has no config at all.
   #
-  # ~/.pi ALSO holds auth.json (provider credentials), which is exactly why the
-  # npm-root comment above says no credential lives there. So: grant the dir,
-  # then punch an explicit DENY through it on auth.json alone. Relocating pi's
-  # config for the sandboxed process is not an option -- PI_CODING_AGENT_DIR
-  # would do it, but sandbox-logon-launcher passes lpEnvironment = NULL, so the
-  # inner process inherits the LEASED ACCOUNT's environment, not ours.
-  $piDir = Join-Path $env:USERPROFILE '.pi'
-  if (Test-Path -LiteralPath $piDir) {
-    Grant-SandboxPoolAccess -Path $piDir
-    Deny-SandboxPoolOnFile -Path (Join-Path (Join-Path $piDir 'agent') 'auth.json')
-  } else {
-    Write-Host "note: $piDir not present  - skipping the pi config grant on this node"
+  # Give the pool its OWN config dir rather than opening the operator's ~/.pi.
+  # An earlier attempt granted ~/.pi and denied auth.json through it; that DENY
+  # silently wedged pi -- it accepted the RPC prompt (response success:true) and
+  # then never emitted agent_start, because an EPERM reading auth.json is not
+  # handled the way a MISSING auth.json is. This shape has no deny to trip over,
+  # and the operator's credentials are never reachable at all.
+  #
+  # MACHINE scope is forced: sandbox-logon-launcher passes lpEnvironment = NULL,
+  # so the value cannot be handed over per-spawn. The operator's own pi picks up
+  # the same dir, which is why models.json is seeded across.
+  $piPoolDir = Join-Path (Join-Path $env:ProgramData 'egpt') 'pi-agent'
+  New-Item -ItemType Directory -Path $piPoolDir -Force | Out-Null
+  $srcModels = Join-Path (Join-Path $env:USERPROFILE '.pi') 'agent\models.json'
+  $dstModels = Join-Path $piPoolDir 'models.json'
+  if ((Test-Path -LiteralPath $srcModels) -and -not (Test-Path -LiteralPath $dstModels)) {
+    Copy-Item -LiteralPath $srcModels -Destination $dstModels
+    Write-Host "seeded models.json into $piPoolDir"
   }
-  # pi resolves its config dir from PI_CODING_AGENT_DIR, defaulting to
-  # ~/.pi/agent. A sandboxed turn runs as a POOL account whose USERPROFILE is
-  # C:\Users\egpt-sbx-NN (LOGON_WITH_PROFILE gives it its own profile, verified),
-  # so pi looked for models.json in a profile that has none and died with
-  # 'Model "reve/local" not found'. The grant above is what makes the operator's
-  # copy READABLE; this is what makes pi actually LOOK there.
-  #
-  # It has to be MACHINE scope: sandbox-logon-launcher passes lpEnvironment =
-  # NULL, so the inner process inherits the leased logon's environment, never the
-  # caller's -- the value cannot be handed over per-spawn. Harmless for the
-  # operator: it names the very path their own pi already defaults to.
-  $piAgentDir = Join-Path (Join-Path $env:USERPROFILE '.pi') 'agent'
-  [Environment]::SetEnvironmentVariable('PI_CODING_AGENT_DIR', $piAgentDir, 'Machine')
-  Write-Host "set machine PI_CODING_AGENT_DIR = $piAgentDir (pool accounts have their own profiles)"
+  # Present and EMPTY on purpose: pi reads auth.json during provider resolution,
+  # and it must find a readable file, not a permission error.
+  $dstAuth = Join-Path $piPoolDir 'auth.json'
+  # WriteAllText, NOT Set-Content -Encoding utf8: PowerShell 5.1 writes a UTF-8
+  # BOM (ef bb bf) plus CRLF, and pi's JSON.parse throws on the BOM. That failure
+  # is INVISIBLE -- pi accepts the RPC prompt and then never emits agent_start,
+  # exactly like the EPERM case. Verified by hexdump: 7 bytes vs the 2 it needs.
+  if (-not (Test-Path -LiteralPath $dstAuth)) { [System.IO.File]::WriteAllText($dstAuth, '{}') }
+  Grant-SandboxPoolModify -Path $piPoolDir
+  [Environment]::SetEnvironmentVariable('PI_CODING_AGENT_DIR', $piPoolDir, 'Machine')
+  Write-Host "set machine PI_CODING_AGENT_DIR = $piPoolDir"
 
   # Must come AFTER Ensure-SandboxPool: that is what creates the credential
   # files this locks down. Needs admin, which is exactly why it lives here and
