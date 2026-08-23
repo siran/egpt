@@ -122,6 +122,16 @@ export function createPiCliSession(options = {}) {
     if (options.model) args.push('--model', options.model);
     if (options.sessionId) args.push('--session-id', String(options.sessionId));
     if (options.thinking) args.push('--thinking', String(options.thinking));
+    // eGPT's persona + node identity + the ACTION vocabulary from identity.d
+    // (/media, /react, /reply ...). Without this pi runs on its stock coding
+    // prompt with no idea it is in a chat at all -- asked to send an image it
+    // INVENTED an `upload_image` API and narrated calling it, because nothing
+    // had told it /media exists (observed live 2026-08-22).
+    // Passed as TEXT, like codex-cli-session's developer_instructions: verified
+    // that --append-system-prompt does NOT read a path as file contents.
+    if (options.appendSystemPrompt) {
+      args.push('--append-system-prompt', String(options.appendSystemPrompt));
+    }
     onLog(`pi-cli: spawn ${bin} ${args.join(' ')}`);
     const p = _spawn(bin, args, { cwd: options.cwd, stdio: ['pipe', 'pipe', 'pipe'] });
     p.stdout?.on('data', onStdout);

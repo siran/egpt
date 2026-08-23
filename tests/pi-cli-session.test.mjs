@@ -181,6 +181,18 @@ describe('pi cli session (rpc mode)', () => {
     expect(args[i + 1]).toMatch(/conv/);
   });
 
+  it('forwards eGPT persona + action vocabulary as the system prompt', () => {
+    // Without it pi has no idea it is in a chat: it invented an upload_image
+    // API rather than using identity.d's /media action.
+    const proc = fakePi();
+    const spawn = spawnFake(proc);
+    createPiCliSession({ spawn, appendSystemPrompt: 'I am eGPT. /media <path> sends a file.' }).turn('x');
+    const [, args] = spawn.mock.calls[0];
+    const i = args.indexOf('--append-system-prompt');
+    expect(i).toBeGreaterThan(-1);
+    expect(args[i + 1]).toContain('/media');
+  });
+
   it('an explicit bin still wins, with no prefix', () => {
     const proc = fakePi();
     const spawn = spawnFake(proc);
