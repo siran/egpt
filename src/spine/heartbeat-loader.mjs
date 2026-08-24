@@ -27,6 +27,22 @@
 // <script.x.md>`; both set → invalid, skipped + logged). Timezone-less `when:`
 // times resolve in config `default_time_zone` (else the machine's local zone).
 //
+// WHO RUNS AN ai_run (operator 2026-08-22): a bare `ai_run:` spawns textecute.mjs, which
+// opens its OWN CLI session — a turn that runs outside the being system entirely: no
+// persona, no transcript, and (the reason this exists) no access_level, no allowed_users,
+// no sandboxed. An entry may instead NAME the being that runs it — `agent: <being-id>`, a
+// KEY of config.yaml's `agents:` map, never a handle — and then the loader dispatches a
+// TURN for that being through the ONE turn path (brainpool.turn, injected as
+// `dispatchTurn` by boot) in the entity the beat was declared in, so every confinement
+// gate that guards an ordinary message turn guards this one too. The PROMPT is identical
+// either way: textecute's own framePrompt, imported, never re-spelled. `agent:` +
+// `command:` is invalid (a shell line has no being), `agent:` without `ai_run:` is
+// invalid, `agent:` naming a being config.yaml does not declare is invalid, `agent:` on a
+// NODE-level beat is invalid (it names no entity to run in) — each skipped + logged like
+// every other malformed entry. A turn beat is NOT an inbound message: it never touches
+// gating.mjs, so a `mode: mention` being runs it without that also making the being answer
+// un-addressed messages.
+//
 // THE WALK IS NOT HERE ANY MORE (2026-07-26). Reading the node config + every
 // conversation folder + every room folder is ONE walk serving FOUR concerns
 // (heartbeats, warm, transcription, members), so it moved to the config RESOLVER
@@ -66,12 +82,16 @@
 // command exit, a reload error — all log and carry on. A heartbeat is a deadman
 // switch; one broken entry must never take the boot (or its siblings) down.
 
-import { writeFile as fsWriteFile, mkdir as fsMkdir } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { writeFile as fsWriteFile, mkdir as fsMkdir, readFile as fsReadFile } from 'node:fs/promises';
+import { basename, dirname, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as YAML from 'yaml';
 import { EGPT_HOME } from '../egpt-home.mjs';
 import { NODE_FILE } from './config-resolver.mjs';
+// The ai_run PROMPT CONTRACT and the .x.md consent rule both belong to textecute.mjs — the
+// `agent:` turn path reuses them from there rather than owning a second copy (operator
+// 2026-08-22: an .x.md script must read identically whichever surface interprets it).
+import { framePrompt, isTextecutable } from '../tools/textecute.mjs';
 
 // The loader owns the ai_run sugar, so it resolves textecute.mjs itself (relative
 // to this file: src/spine/ → src/tools/). Absolute path, so the expanded command
@@ -205,13 +225,31 @@ export function parseWhen(str, { timeZone } = {}) {
 // mistaken for "no action") — the entry is invalid and skipped.
 const _INVALID_ACTION = Symbol('invalid-action');
 
-// Resolve the ACTION for a raw entry: `command:` (verbatim shell line) or `ai_run:`
-// (expanded to `node "<textecute.mjs>" "<script>"`, script relative → the entry cwd).
-// Mutually exclusive. `alive` with no explicit action falls back to aliveCommand.
-function _resolveAction({ name, raw, isAlive, aliveCommand, cwd, aliveCwd, onLog }) {
+// Resolve the ACTION for a raw entry: `command:` (verbatim shell line), `ai_run:`
+// (expanded to `node "<textecute.mjs>" "<script>"`, script relative → the entry cwd), or
+// `agent:` + `ai_run:` (a TURN for that being, dispatched through brainpool — see the
+// header). Mutually exclusive. `alive` with no explicit action falls back to aliveCommand.
+// `ns` is the entity namespace (`<surface>/<slug>`), absent for a node-level entry; `agents`
+// is config.yaml's `agents:` map, the ONE registry an `agent:` value must be a key of.
+function _resolveAction({ name, raw, isAlive, aliveCommand, cwd, aliveCwd, ns, agents = {}, onLog }) {
   const hasCommand = typeof raw?.command === 'string' && raw.command.trim();
   const hasAiRun = typeof raw?.ai_run === 'string' && raw.ai_run.trim();
+  const hasAgent = typeof raw?.agent === 'string' && raw.agent.trim();
+  // A DECLARED-BUT-UNUSABLE agent: is invalid, never a silent fall-through — dropping to the
+  // bare ai_run path here would run the very script the operator confined to a being through
+  // textecute's unconfined session instead, which is exactly the failure this key exists to fix.
+  if (raw?.agent != null && !hasAgent) { onLog(`${name}: agent ${JSON.stringify(raw.agent)} is not a being-id — skipped`); return _INVALID_ACTION; }
   if (hasCommand && hasAiRun) { onLog(`${name}: both command and ai_run set — skipped (use one action)`); return _INVALID_ACTION; }
+  if (hasAgent && hasCommand) { onLog(`${name}: both agent and command set — skipped (a shell line has no being; agent: runs an ai_run script)`); return _INVALID_ACTION; }
+  if (hasAgent) {
+    const being = raw.agent.trim().toLowerCase();
+    if (!hasAiRun) { onLog(`${name}: agent ${JSON.stringify(raw.agent)} without ai_run — skipped (agent: names WHO runs the ai_run script)`); return _INVALID_ACTION; }
+    if (!ns) { onLog(`${name}: agent ${JSON.stringify(raw.agent)} on a node-level beat — skipped (a turn runs in a conversation/room; declare the beat in that entity's config.yaml)`); return _INVALID_ACTION; }
+    if (!Object.prototype.hasOwnProperty.call(agents, being)) { onLog(`${name}: unknown agent ${JSON.stringify(raw.agent)} — skipped (agent: is a KEY of config.yaml agents:, not a handle)`); return _INVALID_ACTION; }
+    const script = raw.ai_run.trim();
+    if (!isTextecutable(script)) { onLog(`${name}: ai_run ${JSON.stringify(script)} is not a textecutable — skipped (must end in .x.md)`); return _INVALID_ACTION; }
+    return { kind: 'turn', being, script, cwd, ns, aiRun: script };
+  }
   if (hasAiRun) {
     const script = raw.ai_run.trim();
     return { kind: 'command', command: `node "${TEXTECUTE_PATH}" "${script}"`, cwd, aiRun: script };
@@ -226,12 +264,12 @@ function _resolveAction({ name, raw, isAlive, aliveCommand, cwd, aliveCwd, onLog
 // Normalize one raw declaration into a registered entry, or null (skipped + logged)
 // when a trigger/action is missing, unparseable, or the two triggers/actions
 // collide. `isAlive` gives the deadman its defaults (aliveFallbackMs + aliveCommand).
-function _normalizeEntry({ name, source, cwd, raw, isAlive, aliveFallbackMs, aliveCommand, aliveCwd, timeZone, nowMs, onLog }) {
+function _normalizeEntry({ name, source, cwd, raw, isAlive, aliveFallbackMs, aliveCommand, aliveCwd, ns, agents, timeZone, nowMs, onLog }) {
   const hasFrequency = raw?.frequency != null;
   const hasWhen = raw?.when != null;
   if (hasFrequency && hasWhen) { onLog(`${name}: both frequency and when set — skipped (use one trigger)`); return null; }
 
-  const action = _resolveAction({ name, raw, isAlive, aliveCommand, cwd, aliveCwd, onLog });
+  const action = _resolveAction({ name, raw, isAlive, aliveCommand, cwd, aliveCwd, ns, agents, onLog });
   if (action === _INVALID_ACTION) return null;
 
   // ── when: a one-shot at a wall-clock time ──
@@ -258,6 +296,7 @@ function _normalizeEntry({ name, source, cwd, raw, isAlive, aliveFallbackMs, ali
  * @param {string} [deps.aliveCommand]                  the default alive command boot passes in: the one-liner `echo beat > state/alive.txt` (run with cwd = egptHome so the relative state/ resolves into the profile)
  * @param {() => number} [deps.now]                     clock for the stale-`when` check at load time
  * @param {(cmd:string, opts:object) => any} deps.spawn                        child_process.spawn seam (shell:true)
+ * @param {(t:{being:string, ns:string, prompt:string, name:string}) => Promise<any>} [deps.dispatchTurn]   an `agent:` beat's TURN, injected by boot (ns → the conversation, then brainpool.turn). The loader never imports the brain: it hands over the being, the entity and the framed prompt and lets boot run it through the ONE turn path.
  * @param {object} [deps.env]                           base env commands inherit (boot: process.env)
  * @param {string} [deps.egptHome]                      EGPT_HOME (spawn env + the alive beat's cwd)
  * @param {string} [deps.procCwd]                       cwd for node-level command heartbeats (the checkout)
@@ -270,6 +309,7 @@ export function createHeartbeatLoader({
   aliveCommand = '',
   now = () => Date.now(),
   spawn,
+  dispatchTurn = null,
   env = {},
   egptHome = EGPT_HOME,
   procCwd = process.cwd(),
@@ -278,6 +318,7 @@ export function createHeartbeatLoader({
 } = {}) {
   const writeFile = io.writeFile ?? fsWriteFile;
   const mkdir = io.mkdir ?? fsMkdir;
+  const readFile = io.readFile ?? fsReadFile;
   const aliveFallbackMs = aliveMs > 0 ? aliveMs : 60_000;
   // The default alive one-liner writes state/alive.txt RELATIVE to the profile,
   // so it must run with cwd = EGPT_HOME (not procCwd). Other node-level beats keep
@@ -310,6 +351,10 @@ export function createHeartbeatLoader({
     const entries = [];
     const nodeBlock = nodeConfig.heartbeats;
     const node = (nodeBlock && typeof nodeBlock === 'object' && !Array.isArray(nodeBlock)) ? nodeBlock : {};
+    // THE agents REGISTRY, straight off the node rung the resolver just handed back — an
+    // `agent:` value must be a key of it. No new injection: this is the same config object
+    // boot reads, arriving through the seam that already carries it.
+    const agentsMap = (nodeConfig.agents && typeof nodeConfig.agents === 'object' && !Array.isArray(nodeConfig.agents)) ? nodeConfig.agents : {};
 
     // 1. Node-level entries (config.heartbeats). `alive` is the default beat's
     //    name: a present `alive` block WINS entirely — its frequency + optional
@@ -325,7 +370,7 @@ export function createHeartbeatLoader({
         if (raw === false) { onLog('alive disabled (heartbeats.alive: false) — the supervisor will respawn-loop with backoff until restored'); continue; }
       }
       if (!raw || typeof raw !== 'object') { onLog(`${name}: not a heartbeat block — skipped`); continue; }
-      const e = _normalizeEntry({ name, source: NODE_FILE, cwd: procCwd, raw, isAlive, aliveFallbackMs, aliveCommand, aliveCwd, timeZone, nowMs, onLog });
+      const e = _normalizeEntry({ name, source: NODE_FILE, cwd: procCwd, raw, isAlive, aliveFallbackMs, aliveCommand, aliveCwd, ns: null, agents: agentsMap, timeZone, nowMs, onLog });
       if (e) entries.push(e);
     }
 
@@ -348,7 +393,7 @@ export function createHeartbeatLoader({
     for (const { dir, ns, heartbeats, heartbeatSource } of set.entities.values()) {
       for (const [name, raw] of Object.entries(heartbeats)) {
         if (!raw || typeof raw !== 'object') { onLog(`${ns}:${name}: not a heartbeat block — skipped`); continue; }
-        const e = _normalizeEntry({ name: `${ns}:${name}`, source: heartbeatSource[name], cwd: dir, raw, isAlive: false, aliveFallbackMs, aliveCommand, aliveCwd, timeZone, nowMs, onLog });
+        const e = _normalizeEntry({ name: `${ns}:${name}`, source: heartbeatSource[name], cwd: dir, raw, isAlive: false, aliveFallbackMs, aliveCommand, aliveCwd, ns, agents: agentsMap, timeZone, nowMs, onLog });
         if (e) entries.push(e);
       }
     }
@@ -369,26 +414,53 @@ export function createHeartbeatLoader({
     child?.on?.('exit', (code) => { if (code) onLog(`${entry.name}: exited ${code}`); onSettle?.(); });
   }
 
-  // A recurring command action: on each due tick spawn the shell line. OVERLAP
-  // GUARD — a still-running previous spawn skips this tick + logs, so a slow
-  // command never piles up. Non-zero exit only logs.
-  function _makeCommandBeat(entry, stats) {
+  // An `agent:` action: read the script FRESH (an edited *.x.md takes effect on the next
+  // beat, exactly as it does for the spawned textecute), frame it with textecute's OWN
+  // framing, and hand being + entity + prompt to boot's injected dispatcher, which runs it
+  // through brainpool.turn. Never throws — a failure logs like a non-zero command exit, and
+  // onSettle ALWAYS runs, so the overlap guard below cannot get stuck closed.
+  async function _dispatchTurn(entry, onSettle) {
+    const { being, script, cwd, ns } = entry.action;
+    try {
+      if (typeof dispatchTurn !== 'function') throw new Error('no turn dispatcher wired — boot injects dispatchTurn');
+      const path = resolvePath(cwd, script);
+      const content = await readFile(path, 'utf8');
+      await dispatchTurn({ being, ns, name: entry.name, prompt: framePrompt(basename(path), content) });
+    } catch (e) {
+      onLog(`${entry.name}: ${e?.message ?? e}`);
+    } finally {
+      onSettle?.();
+    }
+  }
+
+  // Run an entry's action, whichever kind it is. ONE fire path, so the overlap guard and
+  // the one-shot latch below cover a turn exactly as they cover a spawn.
+  function _fire(entry, stats, onSettle) {
+    if (entry.action.kind === 'turn') { _dispatchTurn(entry, onSettle); return; }
+    _spawnAction(entry, stats, onSettle);
+  }
+
+  // A recurring action: on each due tick spawn the shell line / dispatch the turn. OVERLAP
+  // GUARD — a still-running previous run skips this tick + logs, so a slow command (or a
+  // slow being turn: onSettle fires only when the turn resolves) never piles up. Non-zero
+  // exit only logs.
+  function _makeRecurringBeat(entry, stats) {
     let running = false;
     return () => {
       if (running) { onLog(`${entry.name}: previous run still active — skipping`); return; }
       running = true;
-      _spawnAction(entry, stats, () => { running = false; });
+      _fire(entry, stats, () => { running = false; });
     };
   }
 
   // A one-shot action: fires exactly once, at/after entry.whenMs. `fired` is set
-  // BEFORE the spawn so a re-entrant tick can never double-fire it.
+  // BEFORE the fire so a re-entrant tick can never double-fire it.
   function _makeWhenBeat(entry, stats) {
     return (nowTick) => {
       if (entry.fired) return;
       if (nowTick < entry.whenMs) return;
       entry.fired = true;
-      _spawnAction(entry, stats);
+      _fire(entry, stats);
     };
   }
 
@@ -398,7 +470,7 @@ export function createHeartbeatLoader({
       // gates on now >= whenMs && !fired, so it cannot tighten the boot tick.
       _registry.register(entry.name, 0, _makeWhenBeat(entry, _stats));
     } else {
-      _registry.register(entry.name, entry.everyMs, _makeCommandBeat(entry, _stats));
+      _registry.register(entry.name, entry.everyMs, _makeRecurringBeat(entry, _stats));
     }
   }
 
@@ -451,7 +523,10 @@ export function createHeartbeatLoader({
     else { row.frequency = e.rawFrequency; row.frequency_ms = e.everyMs; }
     // An ai_run entry shows BOTH the sugar and the resolved command; a plain
     // command shows just the command. Neither hides anything behind a label.
-    if (e.action.aiRun) { row.action = `ai_run: ${e.action.aiRun}`; row.command = e.action.command; }
+    // An `agent:` entry has no command at all — it shows the sugar and WHO runs it, which
+    // is the whole of what happens (a turn for that being in this entity).
+    if (e.action.kind === 'turn') { row.action = `ai_run: ${e.action.aiRun}`; row.agent = e.action.being; }
+    else if (e.action.aiRun) { row.action = `ai_run: ${e.action.aiRun}`; row.command = e.action.command; }
     else row.action = `command: ${e.action.command}`;
     row.cwd = e.action.cwd;
     return row;

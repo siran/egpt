@@ -37,8 +37,19 @@ import { fileURLToPath } from 'node:url';
 import { createWarmCliSession } from '../warm-cli-session.mjs';
 
 // The interpreter framing — lean, no ceremony. Prepended to the verbatim script.
-function framePrompt(base, content) {
+// EXPORTED (operator 2026-08-22) because a heartbeat's `agent:` entry runs the SAME
+// script through a BEING's turn (src/spine/heartbeat-loader.mjs) instead of through this
+// module's own fresh CLI session, and the prompt contract must be one string in one place —
+// a *.x.md script must read identically whichever surface interprets it.
+export function framePrompt(base, content) {
   return `This file is a TEXTECUTABLE — a script written in plain text. You are its interpreter: EXECUTE its steps in order using your tools, don't discuss them. Work from this directory. If a step fails, say which and why, then stop.\n\n--- ${base} ---\n${content}`;
+}
+
+// THE .x.md EXTENSION IS CONSENT (see the header) — the ONE predicate, exported for the
+// same reason framePrompt is: the heartbeat turn path must refuse a plain .md exactly the
+// way textecute() does below, not with a second copy of the rule.
+export function isTextecutable(path) {
+  return /\.x\.md$/i.test(String(path ?? ''));
 }
 
 /**
@@ -61,7 +72,7 @@ export async function textecute(scriptPath, opts = {}) {
 
   // Extension-as-consent: refuse anything that isn't a self-declared `*.x.md`,
   // BEFORE reading or spawning.
-  if (!/\.x\.md$/i.test(String(scriptPath ?? ''))) {
+  if (!isTextecutable(scriptPath)) {
     return { ok: false, error: `textecute: not a textecutable (must end in .x.md): ${scriptPath}` };
   }
 

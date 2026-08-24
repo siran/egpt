@@ -26,7 +26,7 @@ import * as cdp from '../tools/cdp.mjs';
 import { Room } from '../room-core.mjs';
 import { loadAdapterModule } from '../adapters/registry.mjs';
 import {
-  CONV_YAML_PATH, parse as parseConvState, serialize as serializeConvState, emptyState, slugDir, getContact, LOBBY_SLUG,
+  CONV_YAML_PATH, parse as parseConvState, serialize as serializeConvState, emptyState, slugDir, getContact, LOBBY_SLUG, fixedSlugFor,
 } from '../conversations-state.mjs';
 import { createStopGuard, STOP_FILE, stopFilePresent, writeStopFile } from '../stop-guard.mjs';
 import { createLasso } from '../lasso.mjs';
@@ -249,6 +249,28 @@ export function buildNodeIdentity({
   let s = `You are the eGPT persona "${name}" running as ${address} — node "${nodeName}", ${userName}'s account. You answer to ${handleStr}; your reply stamp is ${emoji}.`;
   if (peers.length) s += ` Other nodes on this account: ${peers.join(', ')}.`;
   return s;
+}
+
+// A heartbeat entity's NAMESPACE (`<surface>/<slug>` — what the config resolver's walk hands
+// the loader) → the (surface, chatId) a turn dispatches on, which is what brainpool.turn and
+// every gate under it are keyed by. The registry is JID-keyed and the walk is SLUG-keyed, so
+// this is the one reverse lookup: find the surface's non-alias entry whose slug matches.
+// A fixed-slug surface needs no registry at all — a room's chatId IS its name (fixedSlugFor,
+// 2026-08-09), so a room folder the registry has not seen yet still resolves, and
+// contacts.resolve registers it on the turn. Unknown → null (the beat logs and fires nothing).
+// Pure so the mapping is testable directly (mirrors the other top-level boot helpers).
+export function chatIdForEntity(state, ns) {
+  const i = String(ns ?? '').indexOf('/');
+  if (i < 0) return null;
+  const surface = String(ns).slice(0, i);
+  const slug = String(ns).slice(i + 1);
+  if (!surface || !slug) return null;
+  for (const [jid, entry] of Object.entries(state?.contacts?.[surface] ?? {})) {
+    if (!entry || entry.aliasOf || entry.slug !== slug) continue;
+    return { surface, chatId: jid };
+  }
+  if (fixedSlugFor(surface, slug) === slug) return { surface, chatId: slug };
+  return null;
 }
 
 // Where does this agent ROUTE? No `to:` anywhere → LOCAL, keyed by this node's own nodeName.
@@ -1229,14 +1251,32 @@ export async function boot({
   // in the profile. Verified on Windows cmd + POSIX sh (spawn shell:true).
   const aliveCommand = 'echo beat > state/alive.txt';
 
+  // AN `agent:` HEARTBEAT RUNS AS A BEING (operator 2026-08-22). A bare `ai_run:` spawns
+  // textecute.mjs, whose own CLI session sits OUTSIDE the being system — no persona, no
+  // transcript, and no access_level / allowed_users / sandboxed, so a scheduled agent ran
+  // unconfined however config.yaml confined it. An entry that names `agent: <being-id>`
+  // dispatches through THE turn path instead — brainpool.turn, the same one an inbound
+  // message runs — so every one of those gates applies unchanged. The loader hands over the
+  // being, the entity ns and the framed prompt; this closure does the ns → conversation
+  // lookup and nothing else. Deliberately NOT routed through spine.handleInbound: a beat is
+  // not an inbound message, and gating.mjs (mode: mention et al) decides who may answer
+  // MESSAGES — a scheduled turn has no sender to be addressed by and never touches it.
+  // The reply is logged, not posted: the script says what to do with its own output.
+  const dispatchHeartbeatTurn = async ({ being, ns, prompt, name }) => {
+    const target = chatIdForEntity(await _loadState(), ns);
+    if (!target) throw new Error(`no conversation for ${ns} — not registered in conversations.yaml`);
+    const { text } = await brain.turn(being, { surface: target.surface, chatId: target.chatId, line: prompt, body: prompt });
+    log.line?.(`[heartbeat] ${name}: ${being} ran in ${target.surface}/${target.chatId} — ${String(text ?? '').trim().slice(0, 200)}`);
+  };
+
   const heartbeatLoader = createHeartbeatLoader({
-    resolver: configResolver, aliveMs, aliveCommand, now,
+    resolver: configResolver, aliveMs, aliveCommand, now, dispatchTurn: dispatchHeartbeatTurn,
     // Command beats inherit process.env + EGPT_HOME + the queue-stats vars (the
     // loader adds those). The spine pid is no longer an env var — identity lives in
     // state/spine.pid now, and liveness is the alive.txt mtime, so a custom beat
     // needs neither to arm the deadman.
     spawn: spawnFn, env: process.env, egptHome: EGPT_HOME, procCwd: process.cwd(),
-    io: { writeFile, mkdir },
+    io: { writeFile, mkdir, readFile },   // readFile: an `agent:` beat reads its own *.x.md fresh on each run
     onLog: (m) => log.line?.(`[heartbeat] ${m}`),
   });
 

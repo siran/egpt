@@ -8,6 +8,7 @@ import { describe, it, expect } from 'vitest';
 import { join } from 'node:path';
 import { createHeartbeatLoader, parseFrequency, parseWhen, resolveTimeZone, zonedWallClockToEpoch } from '../src/spine/heartbeat-loader.mjs';
 import { createConfigResolver, parseEntityConfig, NODE_FILE } from '../src/spine/config-resolver.mjs';
+import { framePrompt } from '../src/tools/textecute.mjs';
 
 // ── fakes ───────────────────────────────────────────────────────────────────
 function makeFakeChild() {
@@ -399,6 +400,181 @@ describe('createHeartbeatLoader — ai_run:', () => {
     });
     expect((await loader.collect()).entries).toEqual([]);
     expect(logs.some((l) => l.includes('both command and ai_run'))).toBe(true);
+  });
+});
+
+// ── agent: — an ai_run that runs as a BEING (operator 2026-08-22) ───────────
+// A bare ai_run spawns textecute.mjs, whose own CLI session bypasses the being system
+// entirely (no access_level, no allowed_users, no sandboxed). `agent: <being-id>` dispatches
+// the SAME framed prompt as a TURN through boot's injected dispatcher (brainpool.turn), so
+// every confinement gate applies. All fakes here — no session opens, no process spawns.
+describe('createHeartbeatLoader — agent: (a heartbeat that runs as a being)', () => {
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+  const CONFIG = { agents: { egpt: { default: true }, pi: { mode: 'mention' } } };
+
+  // One room entity, one beat, everything injectable. `raw` is the beat's declaration.
+  function build(raw, { dispatchTurn, script = 'This is the DJ script.\n' } = {}) {
+    const logs = [];
+    const turns = [];
+    const { spawn, calls } = makeSpawn();
+    const registry = makeRegistry();
+    const reads = [];
+    const loader = makeLoader({
+      getConfig: () => CONFIG,
+      aliveMs: 0, procCwd: '/checkout', egptHome: '/home', spawn,
+      listEntityDirs: async () => [{ dir: '/home/conversations/room/dj-son', ns: 'room/dj-son' }],
+      readEntityConfig: async () => ({ heartbeats: { dj: raw } }),
+      dispatchTurn: dispatchTurn ?? (async (t) => { turns.push(t); }),
+      io: { writeFile: async () => {}, mkdir: async () => {}, readFile: async (p) => { reads.push(p); return script; } },
+      onLog: (m) => logs.push(m),
+    });
+    return { loader, registry, logs, turns, calls, reads };
+  }
+
+  it('dispatches a brainpool TURN for the named being with textecute\'s framed prompt — and spawns NOTHING', async () => {
+    const { loader, registry, turns, calls, reads } = build({ frequency: '30m', agent: 'pi', ai_run: 'dj.x.md' });
+    const { entries } = await loader.collect();
+    const e = entries.find((x) => x.name === 'room/dj-son:dj');
+    expect(e.action).toMatchObject({ kind: 'turn', being: 'pi', script: 'dj.x.md', ns: 'room/dj-son', cwd: '/home/conversations/room/dj-son' });
+    expect(e.action.command).toBeUndefined();   // no shell line was built at all
+
+    loader.wrapRegistry(registry);
+    await loader.activate({ stats: () => ({}) });
+    beatsOf(registry).find((r) => r.name === 'room/dj-son:dj').fn();
+    await flush();
+
+    expect(calls).toHaveLength(0);                      // no process, ever
+    expect(reads[0]).toContain('dj.x.md');              // the script is read FRESH, at the entity cwd
+    expect(turns).toHaveLength(1);
+    expect(turns[0]).toMatchObject({ being: 'pi', ns: 'room/dj-son', name: 'room/dj-son:dj' });
+    // the prompt contract is textecute's own, byte for byte
+    expect(turns[0].prompt).toBe(framePrompt('dj.x.md', 'This is the DJ script.\n'));
+  });
+
+  it('the SAME entry WITHOUT agent: still expands to the textecute shell command (regression lock)', async () => {
+    const { loader, registry, turns, calls } = build({ frequency: '30m', ai_run: 'dj.x.md' });
+    const { entries } = await loader.collect();
+    const e = entries.find((x) => x.name === 'room/dj-son:dj');
+    expect(e.action.kind).toBe('command');
+    expect(e.action.command).toContain('textecute.mjs');
+    expect(e.action.command).toContain('dj.x.md');
+
+    loader.wrapRegistry(registry);
+    await loader.activate({ stats: () => ({}) });
+    beatsOf(registry).find((r) => r.name === 'room/dj-son:dj').fn();
+    await flush();
+
+    expect(calls).toHaveLength(1);                      // the shell line, exactly as before
+    expect(calls[0].opts).toMatchObject({ shell: true, cwd: '/home/conversations/room/dj-son' });
+    expect(turns).toHaveLength(0);                      // no turn dispatched
+  });
+
+  it('an unknown agent is skipped + logged — nothing registered, nothing fired', async () => {
+    const { loader, registry, logs, turns, calls } = build({ frequency: '30m', agent: 'nobody', ai_run: 'dj.x.md' });
+    expect((await loader.collect()).entries).toEqual([]);
+    expect(logs.some((l) => l.includes('unknown agent') && l.includes('nobody'))).toBe(true);
+    loader.wrapRegistry(registry);
+    await loader.activate({ stats: () => ({}) });
+    expect(beatsOf(registry)).toHaveLength(0);
+    await flush();
+    expect(turns).toHaveLength(0);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('a HANDLE is not a being-id: agent: "@p" is unknown, skipped + logged', async () => {
+    const { loader, logs } = build({ frequency: '30m', agent: '@p', ai_run: 'dj.x.md' });
+    expect((await loader.collect()).entries).toEqual([]);
+    expect(logs.some((l) => l.includes('unknown agent'))).toBe(true);
+  });
+
+  it('a declared-but-unusable agent: (empty, or not a string) is invalid — it NEVER falls through to the unconfined textecute spawn', async () => {
+    for (const bad of ['', '   ', 42, true, ['pi'], { name: 'pi' }]) {
+      const { loader, logs, calls } = build({ frequency: '30m', agent: bad, ai_run: 'dj.x.md' });
+      expect((await loader.collect()).entries, JSON.stringify(bad)).toEqual([]);
+      expect(logs.some((l) => l.includes('not a being-id')), JSON.stringify(bad)).toBe(true);
+      expect(calls).toHaveLength(0);
+    }
+  });
+
+  it('agent: + command: is invalid — skipped + logged (a shell line has no being)', async () => {
+    const { loader, logs } = build({ frequency: '30m', agent: 'pi', command: 'node dj.js' });
+    expect((await loader.collect()).entries).toEqual([]);
+    expect(logs.some((l) => l.includes('both agent and command'))).toBe(true);
+  });
+
+  it('agent: without ai_run:, a non-.x.md ai_run, and agent: on a NODE-level beat are all invalid', async () => {
+    const noScript = build({ frequency: '30m', agent: 'pi' });
+    expect((await noScript.loader.collect()).entries).toEqual([]);
+    expect(noScript.logs.some((l) => l.includes('without ai_run'))).toBe(true);
+
+    const plainMd = build({ frequency: '30m', agent: 'pi', ai_run: 'dj.md' });
+    expect((await plainMd.loader.collect()).entries).toEqual([]);
+    expect(plainMd.logs.some((l) => l.includes('not a textecutable'))).toBe(true);
+
+    const logs = [];
+    const nodeLevel = makeLoader({
+      getConfig: () => ({ ...CONFIG, heartbeats: { dj: { frequency: '30m', agent: 'pi', ai_run: 'dj.x.md' } } }),
+      aliveMs: 0, io: noopIo(), onLog: (m) => logs.push(m),
+    });
+    expect((await nodeLevel.collect()).entries).toEqual([]);
+    expect(logs.some((l) => l.includes('node-level beat'))).toBe(true);
+  });
+
+  it('the overlap guard holds for a turn: a still-running turn skips the tick, and the next one runs once it settles', async () => {
+    let release;
+    const turns = [];
+    const inflight = async (t) => { turns.push(t); await new Promise((r) => { release = r; }); };
+    const { loader, registry, logs } = build({ frequency: '30m', agent: 'pi', ai_run: 'dj.x.md' }, { dispatchTurn: inflight });
+    loader.wrapRegistry(registry);
+    await loader.collect();
+    await loader.activate({ stats: () => ({}) });
+    const beat = beatsOf(registry).find((r) => r.name === 'room/dj-son:dj').fn;
+
+    beat(); await flush();
+    expect(turns).toHaveLength(1);
+    beat(); await flush();
+    expect(turns).toHaveLength(1);                       // still running → skipped
+    expect(logs.some((l) => l.includes('still active'))).toBe(true);
+
+    release(); await flush();
+    beat(); await flush();
+    expect(turns).toHaveLength(2);                       // settled → free again
+  });
+
+  it('a failing turn logs and RELEASES the guard (a broken beat never wedges its own cadence)', async () => {
+    const { loader, registry, logs, turns } = build(
+      { frequency: '30m', agent: 'pi', ai_run: 'dj.x.md' },
+      { dispatchTurn: async () => { throw new Error('no conversation for room/dj-son'); } },
+    );
+    loader.wrapRegistry(registry);
+    await loader.collect();
+    await loader.activate({ stats: () => ({}) });
+    const beat = beatsOf(registry).find((r) => r.name === 'room/dj-son:dj').fn;
+
+    beat(); await flush();
+    expect(logs.some((l) => l.includes('room/dj-son:dj') && l.includes('no conversation'))).toBe(true);
+    beat(); await flush();                               // not wedged: it tries again
+    expect(logs.filter((l) => l.includes('no conversation'))).toHaveLength(2);
+    expect(turns).toHaveLength(0);
+  });
+
+  it('the readonly view shows the sugar AND who runs it — and no command line', async () => {
+    const writes = [];
+    const registry = makeRegistry();
+    const loader = makeLoader({
+      getConfig: () => CONFIG, aliveMs: 0, egptHome: '/home',
+      listEntityDirs: async () => [{ dir: '/home/conversations/room/dj-son', ns: 'room/dj-son' }],
+      readEntityConfig: async () => ({ heartbeats: { dj: { frequency: '30m', agent: 'pi', ai_run: 'dj.x.md' } } }),
+      dispatchTurn: async () => {},
+      io: { writeFile: async (p, c) => writes.push({ p, c }), mkdir: async () => {} },
+    });
+    loader.wrapRegistry(registry);
+    await loader.collect();
+    await loader.activate({ stats: () => ({}) });
+    const readonly = writes.at(-1).c;
+    expect(readonly).toContain('ai_run: dj.x.md');
+    expect(readonly).toContain('agent: pi');
+    expect(readonly).not.toContain('textecute.mjs');
   });
 });
 

@@ -20,9 +20,9 @@ import { echoRank } from '../src/spine/echo-priority.mjs';   // pure (no EGPT_HO
 const tmpHome = join(os.tmpdir(), `egpt-v1-boot-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 process.env.EGPT_HOME = tmpHome;
 
-let boot, emptyState, ensureContact, shouldReapStrayWhisper, whisperPortOf, buildNodeIdentity, computeShellHeader;
+let boot, emptyState, ensureContact, shouldReapStrayWhisper, whisperPortOf, buildNodeIdentity, computeShellHeader, chatIdForEntity;
 beforeAll(async () => {
-  ({ boot, shouldReapStrayWhisper, whisperPortOf, buildNodeIdentity, computeShellHeader } = await import('../src/spine/boot.mjs'));
+  ({ boot, shouldReapStrayWhisper, whisperPortOf, buildNodeIdentity, computeShellHeader, chatIdForEntity } = await import('../src/spine/boot.mjs'));
   ({ emptyState, ensureContact } = await import('../src/conversations-state.mjs'));
 });
 afterAll(async () => {
@@ -647,6 +647,38 @@ describe('computeShellHeader — the permanent shell status line', () => {
       });
       expect(s).toBe('🟢 room: acim — ? for help · ctrl-d = send — kg: @e');
     });
+  });
+});
+
+// AN `agent:` HEARTBEAT'S ENTITY (operator 2026-08-22): the heartbeat loader knows an entity
+// by the walk's namespace (`<surface>/<slug>`); brainpool.turn is keyed by (surface, chatId).
+// chatIdForEntity is the pure reverse lookup boot injects between them — tested directly here
+// (mirrors buildNodeIdentity / computeShellHeader), never against the live conversations.yaml.
+describe('chatIdForEntity — a heartbeat entity namespace → the conversation a turn runs in', () => {
+  const state = { contacts: {
+    whatsapp: {
+      '!fam:beeper.com': { slug: 'fam-2607201416' },
+      '!alias:beeper.com': { aliasOf: '!fam:beeper.com', slug: 'fam-2607201416' },   // aliases never win
+    },
+    shell: { main: { slug: 'lobby' } },
+  } };
+
+  it('a registered conversation resolves to its JID', () => {
+    expect(chatIdForEntity(state, 'whatsapp/fam-2607201416')).toEqual({ surface: 'whatsapp', chatId: '!fam:beeper.com' });
+    expect(chatIdForEntity(state, 'shell/lobby')).toEqual({ surface: 'shell', chatId: 'main' });
+  });
+
+  it("a room needs no registry entry at all — a room's chatId IS its name (fixedSlugFor)", () => {
+    expect(chatIdForEntity(state, 'room/dj-son')).toEqual({ surface: 'room', chatId: 'dj-son' });
+    expect(chatIdForEntity({}, 'room/dj-son')).toEqual({ surface: 'room', chatId: 'dj-son' });
+  });
+
+  it('an unknown conversation, a malformed ns, or an empty half → null (the beat logs and fires nothing)', () => {
+    expect(chatIdForEntity(state, 'whatsapp/never-seen')).toBeNull();
+    expect(chatIdForEntity(state, 'no-slash')).toBeNull();
+    expect(chatIdForEntity(state, '/lobby')).toBeNull();
+    expect(chatIdForEntity(state, 'shell/')).toBeNull();
+    expect(chatIdForEntity(state, null)).toBeNull();
   });
 });
 

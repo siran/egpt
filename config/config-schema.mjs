@@ -206,6 +206,35 @@ export const CONFIG_SCHEMA = {
       to  node <src/tools/textecute.mjs> <script>  to run a TEXTECUTABLE. Both
       command + ai_run set → invalid, skipped.
 
+    WHO RUNS IT (operator 2026-08-22):
+      agent: <being-id>   alongside ai_run: — the beat runs as that BEING instead
+      of as a bare textecute session.
+        VALUE: a KEY of the  agents:  map above (egpt, pi, wren, …) — a being-id,
+        NEVER a handle (@p).
+      WHY: a bare ai_run spawns textecute.mjs, which opens its own CLI session
+      OUTSIDE the being system — no persona, no transcript, and no access_level,
+      allowed_users or sandboxed. With agent: the loader dispatches a TURN
+      through the same path an inbound message takes (src/spine/brainpool.mjs),
+      in the conversation/room the beat was declared in, so every confinement
+      gate that guards a message turn guards this one.
+      The PROMPT is identical either way (textecute's own framing + the script),
+      so a *.x.md script behaves the same whichever runs it. The reply is
+      logged, not posted — the script itself says what to do with its output.
+      A turn beat is NOT an inbound message: it never touches gating, so a
+      being with  mode: mention  runs its own beat without that making it answer
+      un-addressed messages.
+      INVALID (skipped + logged, like every other malformed entry):
+        agent: + command:            a shell line has no being
+        agent: without ai_run:       agent: names WHO runs the ai_run script
+        agent: naming an unknown being
+        agent: on a NODE-level beat  a turn needs an entity to run in — declare
+                                     the beat in that conversation/room's own
+                                     config.yaml
+        an ai_run that is not a *.x.md (the extension is consent, as for
+                                     textecute itself)
+      OVERLAP GUARD: unchanged — a still-running previous turn skips the tick and
+      logs, so a slow being never stacks beats.
+
     THE DEFAULT BEAT is alive:
       When this block declares no alive, the spine injects one at boot's aliveMs
       (DEFAULT 60000) as  command: echo beat > state/alive.txt  — run with
