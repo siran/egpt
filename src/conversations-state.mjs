@@ -1691,8 +1691,28 @@ export async function skeletonIdentityFiles(name = 'egpt') {
 // with the 00-identity slot resolved to the named persona. WITHOUT writing any copies (the
 // copy is seedIdentityLayers' job, called beside this at the turn boundary). Never empty
 // for a resolvable persona (eGPT is the default).
-export async function readIdentityFeed(name) {
-  return (await _identityLayers(name)).map(({ text }) => text.trim()).filter(Boolean).join('\n\n');
+// Cards may quote CONFIG values with {{dotted.key}} — the pointers card names
+// chrome.bin / chrome.profile_dir that way, so a being is TOLD where Chrome and
+// its CDP profile live instead of guessing (operator 2026-08-24: "both the path
+// to the chrome browser and the profile path need to be told in pointers, and
+// configured in config.yaml"). Config stays the single source; the card quotes
+// it. A placeholder that resolves to nothing removes its WHOLE line, so a card
+// never advertises a path this node has not configured.
+const PLACEHOLDER = /\{\{([\w.]+)\}\}/g;
+export function fillCardPlaceholders(text, config = {}) {
+  const lookup = (k) => k.split('.').reduce((o, part) => (o == null ? o : o[part]), config);
+  const resolves = (line) => [...line.matchAll(PLACEHOLDER)]
+    .every((m) => { const v = lookup(m[1]); return v != null && String(v).trim() !== ''; });
+  return String(text ?? '')
+    .split('\n')
+    .filter((line) => !PLACEHOLDER.test(line) ? true : (PLACEHOLDER.lastIndex = 0, resolves(line)))
+    .map((line) => line.replace(PLACEHOLDER, (_, k) => String(lookup(k))))
+    .join('\n');
+}
+
+export async function readIdentityFeed(name, config = {}) {
+  const raw = (await _identityLayers(name)).map(({ text }) => text.trim()).filter(Boolean).join('\n\n');
+  return fillCardPlaceholders(raw, config);
 }
 
 // The `mode: auto` operator-role instruction layer (config/skeletons/auto-mode.md). A

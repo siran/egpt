@@ -1607,8 +1607,19 @@ export const CONFIG_SCHEMA = {
     Chrome control.
 
     KEYS:
+      bin
+        Path to the Chrome executable. UNSET = the platform default lookup.
+        A being is TOLD this path (30-pointers.md) so it can launch Chrome with
+        its own tools instead of guessing where Chrome lives.
+      profile_dir
+        Path to the --user-data-dir a being should use for CDP.
+        Chrome refuses CDP on its own DEFAULT profile (an anti-hijack guardrail,
+        not a permissions problem), and a blank profile launches fine but is
+        logged in to nothing. So this names a REAL, already-logged-in profile
+        kept for the purpose. UNSET = no CDP profile is advertised and the
+        pointers card omits it, rather than naming a path that does not exist.
       focus_on_dispatch
-        ENUM: "on" (DEFAULT) | "off"
+        ENUM: "on" (DEFAULT) | "off\"
         Bring the brain Chrome window to the foreground before each brain
         dispatch. CDP Target.activateTarget + Page.bringToFront fire regardless;
         this knob controls the OS-level fallback that breaks past Windows

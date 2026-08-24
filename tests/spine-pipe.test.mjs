@@ -696,7 +696,7 @@ describe('spine — /reply handled BEFORE posting (no visible token, no delete+r
     await bridge.emit(MSG);
 
     expect(bridge.streams[0].deleted).toBe(false);                    // nothing is ever deleted
-    expect(bridge.streams[0].finals).toEqual(['…']);              // action-only → placeholder resolves to the silence mark
+    expect(bridge.streams[0].finals).toEqual(['<received silence (error?)>']);              // action-only → placeholder resolves to the silence mark
     expect(bridge.sent).toHaveLength(1);
     expect(bridge.sent[0]).toMatchObject({ chat: MSG.chatId, text: 'sounds good', opts: { replyTo: '157204' } });
   });
@@ -752,7 +752,7 @@ describe('spine — /reply handled BEFORE posting (no visible token, no delete+r
 
     expect(bridge.streams[0].init).toBe('⏳ Thinking…');
     expect(bridge.streams[0].frames).toEqual([]);      // no half-typed token ever rendered
-    expect(bridge.streams[0].finals).toEqual(['…']);   // resolved to the silence mark, never deleted — the limb IS the response
+    expect(bridge.streams[0].finals).toEqual(['<received silence (error?)>']);   // resolved to the silence mark, never deleted — the limb IS the response
     expect(bridge.sent).toHaveLength(0);
   });
 });

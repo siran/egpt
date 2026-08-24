@@ -514,7 +514,8 @@ export function createBrainPool({
         // the operator's enumerated asymmetries to collapse were resolution / seedLayers /
         // auto-eligibility / access-override, not this live-prompt feed prefix).
         if (being !== defaultKey) return line;
-        let feed = (await loadFeed(personality)) || '';
+        // config passed so the cards can quote it ({{chrome.bin}} etc.)
+        let feed = (await loadFeed(personality, getConfig() ?? {})) || '';
         if (!feed.trim()) feed = (await _loadManifest()) || '';
         // 'mode: auto': append the operator-role instruction layer to the kickoff feed so
         // a fresh auto thread learns the stance up front. Best-effort (a missing layer just

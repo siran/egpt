@@ -28,7 +28,10 @@ const FAIL_SUFFIX = '… ❌ Sending failed.';
 // port's wrapPersona, so a configured agent_signature_close layer still appends — the
 // marker no longer carries a signature itself.
 const noReplyMark = () => `⚠️ no reply (turn failed/empty)`;
-const SILENCE = '…';   // the polite silence of 40-rules.md — never a deletion
+// '…' is the MODEL's word (40-rules.md). The bridge must never fabricate it:
+// a silence the bridge invented is indistinguishable from one the being chose.
+// When the bridge has nothing from the model, it says so in its OWN voice.
+const BRIDGE_SILENCE = '<received silence (error?)>';
 const THINKING = `${LIVE_FRAME_MARK} Thinking…`;   // NOT a lone emoji (renders oversized in some clients)
 // A mention that arrives while THIS conversation's train is still running gets its
 // OWN placeholder immediately (the operator's per-message ack), opened in the QUEUED
@@ -96,7 +99,12 @@ export function createSender({ bridge, bodyEmojiOf = () => null, labelOf = () =>
           // silence mark instead of vanishing. 40-rules.md already names it —
           // "A polite silence is '...' or '…'" — so the withheld turn reads as
           // a deliberate silence rather than a message that disappeared.
-          if (!surface) { if (stream) await stream.finish?.(SILENCE); return; }
+          if (!surface) {
+            // The model's own words if it produced any (its '…' is ITS silence);
+            // otherwise the bridge says, in its own voice, that nothing arrived.
+            if (stream) await stream.finish?.(t.trim() ? t : BRIDGE_SILENCE);
+            return;
+          }
           // Surfaced: deliver the reply, OR — when it came back empty — the no-reply
           // marker (a turn meant to reply that produced nothing is resolved VISIBLY,
           // not silently deleted / left stuck).
