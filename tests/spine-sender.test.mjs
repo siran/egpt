@@ -40,12 +40,15 @@ describe('sender — single-message reply train', () => {
     expect(bridge.sent).toHaveLength(0);                             // delivered in place — no fallback
   });
 
-  it("not surfaced (on-mode '...'): deletes the message, posts nothing", async () => {
+  it("not surfaced (on-mode silence): resolves to the silence mark, never deletes", async () => {
+    // operator 2026-08-24: nothing is ever deleted. A withheld turn reads as a
+    // deliberate silence -- 40-rules.md's "polite silence" -- not a message
+    // that disappeared.
     const bridge = fakeBridge();
-    const out = createSender({ bridge }).open('!c', { being: 'e' });
-    out.update('...');
+    const out = createSender({ bridge, bodyEmojiOf: () => '🐶' }).open('!c', { being: 'e' });
     await out.finish({ text: '...' }, { surface: false });
-    expect(bridge.streams[0].deleted).toBe(true);
+    expect(bridge.streams[0].deleted).toBe(false);
+    expect(bridge.streams[0].finals).toEqual(['…']);
     expect(bridge.sent).toHaveLength(0);
   });
 

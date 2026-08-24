@@ -121,10 +121,10 @@ describe('parseReplyActions — the pure split', () => {
       .toMatchObject({ type: 'media', path: 'my photo.png', caption: 'look' });
   });
 
-  it('edit / delete parse (ownership is enforced at execute, not here)', () => {
+  it('edit parses; /delete is NOT a verb at all (operator 2026-08-24: no delete limb)', () => {
     expect(parseReplyActions('/edit #12 fixed typo', EV).run[0]).toEqual({ type: 'edit', chatId: EV.chatId, targetId: '12', text: 'fixed typo' });
-    expect(parseReplyActions('/delete #12', EV).run[0]).toEqual({ type: 'delete', chatId: EV.chatId, targetId: '12' });
-    expect(parseReplyActions('/delete nope', EV).stripped).toHaveLength(1);
+    // Not an action verb any more: it stays PROSE rather than becoming a limb.
+    expect(parseReplyActions('/delete #12', EV).run).toHaveLength(0);
   });
 
   it('prose + action mixed: prose surfaces, action runs', () => {
@@ -156,11 +156,10 @@ describe('parseReplyActions — the pure split', () => {
       '/reply #<id> <text>        quote-reply to a specific message',
       '/media <path> [caption]    send a file from this folder',
       '/edit #<id> <text>         edit one of my own messages',
-      '/delete #<id>              delete one of my own messages',
     ].join('\n');
     const { run, stripped } = parseReplyActions(help, EV);
     expect(run).toEqual([]);            // NOTHING executes
-    expect(stripped).toHaveLength(5);   // all recognized as malformed action attempts, logged
+    expect(stripped).toHaveLength(4);   // all recognized as malformed (no /delete verb) action attempts, logged
   });
 
   it('react with extra words (not a single emoji) is malformed', () => {
@@ -245,7 +244,6 @@ function fakeBridge(over = {}) {
     send: (chat, text, opts) => { calls.send.push({ chat, text, opts }); return { ok: true }; },
     sendMedia: (chat, path, opts) => { calls.media.push({ chat, path, opts }); return true; },
     editOwn: (chat, id, text, opts) => { calls.edit.push({ chat, id, text, opts }); return true; },
-    deleteOwn: (chat, id) => { calls.del.push({ chat, id }); return true; },
     wasSentByUs: () => false,
     ...over,
   };
@@ -283,15 +281,13 @@ describe('createReplyActions.execute — confined + fail-closed', () => {
     expect(b.calls.send[0].chat).toBe(EV.chatId);
   });
 
-  it('edit/delete are refused unless the message is one WE sent (wasSentByUs)', async () => {
+  it('edit is refused unless the message is one WE sent (wasSentByUs)', async () => {
     const logs = [];
     const b = fakeBridge({ wasSentByUs: (_c, id) => id === '5' });   // only #5 is ours
     const a = mk(b, { onLog: (m) => logs.push(m) });
     await a.execute(a.parse('/edit #9 nope', EV).run, [], EV, { being: 'e' });   // not ours
-    await a.execute(a.parse('/delete #9', EV).run, [], EV, { being: 'e' });      // not ours
     expect(b.calls.edit).toEqual([]);
-    expect(b.calls.del).toEqual([]);
-    expect(logs.filter((l) => /not one of our/.test(l))).toHaveLength(2);
+    expect(logs.filter((l) => /not one of our/.test(l))).toHaveLength(1);   // edit only — no delete limb
     // …but our own #5 goes through
     await a.execute(a.parse('/edit #5 fixed', EV).run, [], EV, { being: 'e' });
     expect(b.calls.edit[0]).toMatchObject({ chat: EV.chatId, id: '5', text: 'fixed' });

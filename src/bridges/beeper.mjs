@@ -1755,15 +1755,14 @@ export async function startBeeperBridge(opts = {}) {
           const ok = await applyEdit(showThink ? `${latest}\n\n✅ Done` : latest);
           if (ok) handle.delivered = true; else handle.lastError = handle.lastError || 'final edit failed';
         }
-        // Couldn't edit in place → drop the dangling placeholder so the spine's
-        // fallback can send the reply fresh (delivered stays false).
-        if (!handle.delivered && cid && realId) { await deleteMessage(cid, realId).catch(() => {}); }
-      };
-      handle.delete = async () => {
-        finished = true;
-        if (editTimer) { clearTimeout(editTimer); editTimer = null; }
-        await ready;
-        if (cid && realId) await deleteMessage(cid, realId).catch(() => {});
+        // Couldn't edit in place. NOTHING IS EVER DELETED (operator 2026-08-24):
+        // a vanishing message is indistinguishable from a lost one, and reading
+        // back an empty chat teaches nobody what went wrong. Say so in place
+        // instead, and leave `delivered` false so the spine's fallback can still
+        // send the reply fresh.
+        if (!handle.delivered && cid && realId) {
+          await applyEdit(`⚠️ could not deliver this reply${handle.lastError ? ` — ${handle.lastError}` : ''}`).catch(() => {});
+        }
       };
       handle.fail = (e) => { finished = true; handle.lastError = e?.message ?? String(e); onLog(`beeper: stream fail — ${e?.message ?? e}`); };
       return handle;

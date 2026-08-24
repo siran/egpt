@@ -142,7 +142,6 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
       return {
         update: (t) => h.update(frame(t)),
         finish: (t) => h.finish(frame(t)),
-        delete: () => h.delete?.(),
         get delivered() { return h.delivered; },
         get lastError() { return h.lastError; },
         get confirmedId() { return h.confirmedId; },
@@ -166,9 +165,10 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
     editStatus(chat, msgId, text) { return real.editMessage?.(chat, msgId, wrapPersona({}, text)); },
     deleteStatus(chat, msgId) { return real.deleteMessage?.(chat, msgId); },
 
-    // Conversation-E LIMBS (ROADMAP §3). react/sendMedia are OUTBOUND sends; editOwn/deleteOwn
+    // Conversation-E LIMBS (ROADMAP §3). react/sendMedia are OUTBOUND sends; editOwn
     // mutate an existing message (no new send). A media caption + an edit are E speaking →
-    // persona-stamped, exactly like send(). react/delete carry no persona text.
+    // persona-stamped, exactly like send(). react carries no persona text.
+    // No deleteOwn: there is no delete limb (operator 2026-08-24).
     react(chat, msgId, emoji) {
       return real.sendReaction?.(chat, msgId, emoji);
     },
@@ -179,7 +179,6 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
       return real.sendMedia?.(chat, filePath, { caption, replyTo: opts.replyTo ?? null });
     },
     editOwn(chat, msgId, text, opts = {}) { return real.editMessage?.(chat, msgId, wrapPersona(opts, text)); },
-    deleteOwn(chat, msgId) { return real.deleteMessage?.(chat, msgId); },
     wasSentByUs(chat, msgId) { return real.wasSentByUs?.(chat, msgId); },
 
     isAlive: () => real.isAlive(),

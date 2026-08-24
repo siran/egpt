@@ -22,7 +22,9 @@
 //     prose (2026-07-15): redundant is not malformed, and discarding content is a bug;
 //   - a /media path must resolve INSIDE the conversation dir (E's confined cwd) —
 //     traversal / absolute paths are rejected at parse AND re-checked at execute;
-//   - /edit and /delete only touch a message the bridge itself SENT (wasSentByUs);
+//   - /edit only touches a message the bridge itself SENT (wasSentByUs);
+//   - there is NO delete limb: a being never removes a message. If something
+//     cannot be sent, or there is nothing to say, it SAYS so (operator 2026-08-24).
 //   - an execution error is logged, never crashes the turn.
 //
 // EMIT SYNTAX (documented for E in config/skeletons/room/10-actions.md — a SPINE
@@ -31,7 +33,6 @@
 //   /reply #<id> <text>        quote-reply to message #<id>
 //   /media <path> [caption]    send a file from this conversation's folder (relative path)
 //   /edit #<id> <text>         edit one of your OWN earlier messages
-//   /delete #<id>              delete one of your OWN earlier messages
 //   /ask <question>            (mode: auto) consult the operator in the advice channel
 import { resolve as resolvePath, relative as relPath, isAbsolute } from 'node:path';
 import { existsSync } from 'node:fs';
@@ -39,7 +40,7 @@ import { existsSync } from 'node:fs';
 // The reserved action verbs. A line is an ACTION-family line iff (trimmed) it starts
 // with '/' + one of these + whitespace-or-EOL — nothing else is ever touched, so
 // ordinary prose (even prose that mentions "/react") passes through untouched.
-const ACTION_VERBS = new Set(['react', 'reply', 'media', 'edit', 'delete', 'ask']);
+const ACTION_VERBS = new Set(['react', 'reply', 'media', 'edit', 'ask']);
 const ACTION_LINE = /^\/([a-z]+)(?:\s+([\s\S]*))?$/i;
 
 // A tiny word→emoji alias table so `/react like` works as well as `/react 👍`.
@@ -132,12 +133,6 @@ function parseOne(verb, args, ev, opts = {}) {
       const m = ID_TEXT_RE.exec(raw);
       if (!m) return { ok: false, reason: 'edit: expected "#<id> <text>"' };
       return { ok: true, action: { type: 'edit', chatId, targetId: m[1], text: m[2].trim() } };
-    }
-    case 'delete': {
-      // #<id> — an own-message delete (ownership enforced at execute).
-      const m = ID_RE.exec(raw);
-      if (!m) return { ok: false, reason: 'delete: expected "#<id>"' };
-      return { ok: true, action: { type: 'delete', chatId, targetId: m[1] } };
     }
     case 'ask': {
       // <question> — the WHOLE line is the question. The ONE sanctioned cross-chat emit:
@@ -304,12 +299,6 @@ export function createReplyActions({ bridge, bodyEmojiOf = () => null, labelOf =
         if (!(await bridge.wasSentByUs?.(ev.chatId, a.targetId))) { onLog(`edit: #${a.targetId} is not one of our messages — rejected (fail-closed)`); return; }
         const ok = await bridge.editOwn?.(ev.chatId, a.targetId, a.text, { bodyEmoji: bodyEmojiOf(being), label: labelOf(being) });
         if (!ok) onLog(`edit: #${a.targetId} failed`);
-        return;
-      }
-      case 'delete': {
-        if (!(await bridge.wasSentByUs?.(ev.chatId, a.targetId))) { onLog(`delete: #${a.targetId} is not one of our messages — rejected (fail-closed)`); return; }
-        const ok = await bridge.deleteOwn?.(ev.chatId, a.targetId);
-        if (!ok) onLog(`delete: #${a.targetId} failed`);
         return;
       }
       default: onLog(`action: unknown type ${a?.type}`);

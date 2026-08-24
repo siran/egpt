@@ -28,6 +28,7 @@ const FAIL_SUFFIX = '… ❌ Sending failed.';
 // port's wrapPersona, so a configured agent_signature_close layer still appends — the
 // marker no longer carries a signature itself.
 const noReplyMark = () => `⚠️ no reply (turn failed/empty)`;
+const SILENCE = '…';   // the polite silence of 40-rules.md — never a deletion
 const THINKING = `${LIVE_FRAME_MARK} Thinking…`;   // NOT a lone emoji (renders oversized in some clients)
 // A mention that arrives while THIS conversation's train is still running gets its
 // OWN placeholder immediately (the operator's per-message ack), opened in the QUEUED
@@ -90,8 +91,12 @@ export function createSender({ bridge, bodyEmojiOf = () => null, labelOf = () =>
         update(partial) { const t = textOf(partial); if (!t) return; acc = t; stream?.update?.(`${t} ${LIVE_FRAME_MARK}`); },
         async finish(reply, { surface = true } = {}) {
           const t = textOf(reply);
-          // Gate-withheld ('on'-mode '...' silence / not surfaced): delete, post nothing.
-          if (!surface) { if (stream) await stream.delete?.(); return; }
+          // Gate-withheld ('on'-mode silence / not surfaced). NOTHING IS EVER
+          // DELETED (operator 2026-08-24): the placeholder resolves to the
+          // silence mark instead of vanishing. 40-rules.md already names it —
+          // "A polite silence is '...' or '…'" — so the withheld turn reads as
+          // a deliberate silence rather than a message that disappeared.
+          if (!surface) { if (stream) await stream.finish?.(SILENCE); return; }
           // Surfaced: deliver the reply, OR — when it came back empty — the no-reply
           // marker (a turn meant to reply that produced nothing is resolved VISIBLY,
           // not silently deleted / left stuck).

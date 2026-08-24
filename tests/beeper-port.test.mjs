@@ -96,12 +96,13 @@ describe('beeper-port adapter', () => {
     expect(h.finals).toEqual(['🐶 egpt\nAquí estoy bien']);
   });
 
-  it('stream.delete proxies to the real handle (tearing down a withheld reply)', async () => {
+  it('exposes NO delete limb — a being never removes a message', async () => {
+    // operator 2026-08-24: there is no use case for deletion.
     const { start, spy } = fakeStart();
     const port = await createBeeperBridgePort({}, { start });
-    const s = port.startStream('!room', '⏳');
-    await s.delete();
-    expect(spy.streams[0].deleted).toBe(true);
+    const s2 = port.startStream('!room', '⏳', { persona: 'e', bodyEmoji: '🐶', label: 'egpt' });
+    expect(s2.delete).toBeUndefined();
+    expect(spy.streams[0].deleted).toBe(false);
   });
 
   it('A status: postStatus posts + returns id; editStatus edits; deleteStatus deletes', async () => {

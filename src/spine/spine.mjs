@@ -904,7 +904,8 @@ export function createSpine({
       // budget). ONLY a deliverable prose reply is delayed — an action-only reply (e.g. /ask
       // consulting the operator) has no prose, so it stays undelayed (consulting fast is fine).
       if (d.mode === 'auto' && deliverable) await sleepTyping(proseText);
-      // DELIVER the STRIPPED prose. Action-only → surface:false (delete placeholder);
+      // DELIVER the STRIPPED prose. Action-only → surface:false, which resolves the
+      // placeholder to the silence mark '…' (operator 2026-08-24: nothing is ever deleted);
       // failShaped → blanked → no-reply marker; else the prose (or no-reply marker if empty).
       // UNCONDITIONAL — the normal streaming path (placeholder → live edits → final text,
       // kept) runs exactly as it always did, whether or not voice-out follows below.
