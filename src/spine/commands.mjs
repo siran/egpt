@@ -39,6 +39,7 @@ import { helpText } from '../interpreter.mjs';
 import { uploadNote, radioNoteFilename, pickSpeaker } from '../radio-relay.mjs';
 import { stripNodeSignature, stripRenderedNodeSignature } from '../node-signature.mjs';
 import { bodyForMessageId } from '../transcript-log.mjs';
+import { readRoomConfig } from '../rooms-file.mjs';
 
 // Where a manually-launched Chrome should keep its profile. v1's shell hardcoded
 // ~/.egpt/chrome/profiles/brain — a usually-BLANK fresh dir. resolveBrainProfile() instead
@@ -70,11 +71,9 @@ function defaultLaunchChromeTask() {
 // it as an empty {}. Members are later work — no roster block yet. (The room's identity.d/
 // layers are a SEPARATE seeding step in roomCreate below, beside ensureTree — the same
 // shared config/skeletons/room/ template a conversation seeds, copied per-room.)
-const roomConfigFile = (name) => `# room ${name} — an operator-created room (the folder IS the room).
-# Feed layers come from the shared config/skeletons/room/ template, copied into identity.d/ at creation.
-# Add heartbeats:, transcription_service:, or members: blocks here to wire behavior.
-# This file is the NEAREST rung: it beats config/config.yaml for any key it sets.
-`;
+// A created room gets NO config file of its own: the ROOM RUNG lives in
+// config/rooms.yaml, keyed `<surface>/<slug>`, and a room with no row simply
+// resolves to {} (operator 2026-08-24 — a conversation folder is the being's).
 
 // The friendly member-mode words (the command surface) ↔ the existing room-core state
 // tokens (what's stored). The design speaks disable/mention/all; room-core stores the
@@ -1326,7 +1325,6 @@ export function createCommands({
     // a seed failure still leaves a created room rather than an error the operator can't act
     // on — an empty identity.d is a smaller problem than a /room create that fails outright.
     await seedIdentityLayers(r, 'egpt', { io: { mkdir, readFile, writeFile } });
-    await writeFile(r.configPath, roomConfigFile(slug), 'utf8');
     await send?.(ev.chatId, `room ${slug} created at ${rel}`);
   }
 
@@ -1613,7 +1611,7 @@ export function createCommands({
     const out = [];
     for (const { dir, ns } of dirs) {
       let doc = {};
-      try { doc = parseEntityConfig(await readFile(join(dir, 'config.yaml'), 'utf8')); } catch { doc = {}; }
+      try { doc = await readRoomConfig(ns); } catch { doc = {}; }
       const joinKey = doc.radio?.join || null;
       if (!joinKey) continue;
       out.push({ ns, joinKey, display: ns.slice(ns.indexOf('/') + 1) });
@@ -1637,9 +1635,9 @@ export function createCommands({
     let dirs = [];
     try { dirs = await listEntityDirs(); } catch { dirs = []; }
     const out = [];
-    for (const { dir } of dirs) {
+    for (const { ns } of dirs) {
       let doc = {};
-      try { doc = parseEntityConfig(await readFile(join(dir, 'config.yaml'), 'utf8')); } catch { doc = {}; }
+      try { doc = await readRoomConfig(ns); } catch { doc = {}; }
       const hosts = (doc.radio?.hosts && typeof doc.radio.hosts === 'object') ? doc.radio.hosts : {};
       for (const [senderId, speakerName] of Object.entries(hosts)) out.push({ senderId, speakerName: String(speakerName ?? '') });
     }

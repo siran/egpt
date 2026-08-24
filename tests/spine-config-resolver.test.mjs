@@ -19,8 +19,8 @@ import {
 const HOME = '/profile';
 const CONV_DIR = join(HOME, 'conversations', 'whatsapp', 'hfm-2606201530');
 const ROOM_DIR = join(HOME, 'rooms', 'lab');
-const CONV_FILE = 'conversations/whatsapp/hfm-2606201530/config.yaml';
-const ROOM_FILE = 'rooms/lab/config.yaml';
+const CONV_FILE = 'config/rooms.yaml';
+const ROOM_FILE = 'config/rooms.yaml';
 
 function makeResolver({ node = {}, registry = {}, folders = {}, dirs = null, io } = {}) {
   return createConfigResolver({
@@ -77,7 +77,7 @@ describe('config-resolver pure helpers', () => {
 // ── THREE RUNGS, one key ────────────────────────────────────────────────────
 describe('three rungs — node < registry entry < entity folder, nearest wins', () => {
   const KEY = 'transcription_service';
-  it('the entity folder wins over both, and source names ITS file', async () => {
+  it('the room rung wins over both, and source names config/rooms.yaml', async () => {
     const r = makeResolver({
       node: { [KEY]: { posts_back_delay_ms: 1000 } },
       registry: registryWith({ [KEY]: { posts_back_delay_ms: 2000 } }),
@@ -120,7 +120,7 @@ describe('three rungs — node < registry entry < entity folder, nearest wins', 
     expect(src.reve.fallback_order).toBe(NODE_FILE);
   });
 
-  it('a room has two rungs (node < its own folder) — no registry entry exists for it', async () => {
+  it('a room has two rungs (node < its rooms.yaml row) — no registry entry exists for it', async () => {
     const r = makeResolver({
       node: { warm: { idle_ttl: '1h' } },
       registry: registryWith({ warm: { idle_ttl: '5m' } }),
@@ -169,7 +169,7 @@ describe('combining rule — heartbeats UNION (every rung contributes)', () => {
 
 // ── COMBINING RULE: members is entity-only ──────────────────────────────────
 describe('combining rule — members is ENTITY-ONLY', () => {
-  it('the folder roster resolves verbatim and its source is the folder file', async () => {
+  it('the roster resolves verbatim and its source is config/rooms.yaml', async () => {
     const members = [{ kind: 'brain', id: 'egpt', state: 'active' }];
     const r = makeResolver({ node: {}, registry: registryWith({}), folders: { [CONV_DIR]: { members } } });
     await r.collect();

@@ -2,7 +2,18 @@
 // HTTP + WS). Covers the hardening contract: room-service 👂 gating (posts_back),
 // backlog gate, persisted dedup, fail-closed network scope, echo
 // suppression.
-import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach , vi } from 'vitest';
+// A PRIVATE profile for this file. The ROOM RUNG is now ONE shared file
+// (config/rooms.yaml), so files running in parallel against the suite's shared
+// throwaway profile would race on it. egpt-home.mjs freezes EGPT_HOME at module
+// load, so this must run BEFORE the imports — vi.hoisted is what does that.
+const _PRIVATE_HOME = vi.hoisted(() => {
+  const tmp = process.env.TEMP || process.env.TMP || process.env.TMPDIR || '/tmp';
+  const dir = `${tmp}/egpt-beeper-bridge-home`;
+  process.env.EGPT_HOME = dir;
+  return dir;
+});
+
 import { createServer } from 'node:http';
 import { WebSocketServer } from 'ws';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';

@@ -9,9 +9,24 @@
 // load) — same discipline tests/spine-v1-boot.test.mjs uses — even though every fs touch
 // here goes through a TmpRoom whose baseDir() is overridden, never the real profile.
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+// A PRIVATE profile for this file. The ROOM RUNG is now ONE shared file
+// (config/rooms.yaml), so files running in parallel against the suite's shared
+// throwaway profile would race on it. egpt-home.mjs freezes EGPT_HOME at module
+// load, so this must run BEFORE the imports — vi.hoisted is what does that.
+const _PRIVATE_HOME = vi.hoisted(() => {
+  const tmp = process.env.TEMP || process.env.TMP || process.env.TMPDIR || '/tmp';
+  const dir = `${tmp}/egpt-spine-boot-radio-relay-home`;
+  process.env.EGPT_HOME = dir;
+  return dir;
+});
+
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { ROOMS_FILE } from '../src/rooms-file.mjs';
+import { rmSync as _rmRooms } from 'node:fs';
+import * as YAML from 'yaml';
+import { roomsFilePath } from '../src/rooms-file.mjs';
 
 const tmpHome = join(tmpdir(), `egpt-radio-relay-boot-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 process.env.EGPT_HOME = tmpHome;
@@ -33,7 +48,13 @@ afterEach(() => { rmSync(base, { recursive: true, force: true }); });
 
 function seed(room, text) {
   mkdirSync(room.baseDir(), { recursive: true });
-  writeFileSync(join(room.baseDir(), 'config.yaml'), text, 'utf8');
+  // The ROOM RUNG is config/rooms.yaml keyed by ns (operator 2026-08-24).
+  mkdirSync(dirname(roomsFilePath()), { recursive: true });
+  let _txt = ''; try { _txt = readFileSync(roomsFilePath(), 'utf8'); } catch { /* new file */ }
+  const _doc = YAML.parseDocument(_txt);
+  if (_doc.get('rooms') == null) _doc.set('rooms', _doc.createNode({}));
+  for (const [k, v] of Object.entries(YAML.parse(text) ?? {})) _doc.setIn(['rooms', room.ns(), k], _doc.createNode(v));
+  writeFileSync(roomsFilePath(), String(_doc), 'utf8');
 }
 
 // The station's audio meta as bridge.onMedia hands it (beeper.mjs persistMedia) — only the

@@ -146,10 +146,10 @@ describe('createHeartbeatLoader.collect', () => {
     });
     const { entries } = await loader.collect();
     expect(entries.find((e) => e.name === 'whatsapp/diego-123:reminder')).toMatchObject({
-      source: 'conversations/whatsapp/diego-123/config.yaml', everyMs: 600000,
+      source: 'config/rooms.yaml', everyMs: 600000,
       action: { kind: 'command', command: 'node remind.js', cwd: '/home/conversations/whatsapp/diego-123' },
     });
-    expect(entries.find((e) => e.name === 'room/standup:sweep')).toMatchObject({ source: 'rooms/standup/config.yaml', everyMs: 3600000 });
+    expect(entries.find((e) => e.name === 'room/standup:sweep')).toMatchObject({ source: 'config/rooms.yaml', everyMs: 3600000 });
   });
 
   it('skips a non-alive entry with an invalid frequency (logged, never fatal)', async () => {

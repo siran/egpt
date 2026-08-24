@@ -20,11 +20,12 @@
 // import cycle (that is why Phase 0a moved the sanitizers).
 
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import { EGPT_HOME } from "./egpt-home.mjs";
 import { homedir } from 'node:os';
 import * as YAML from 'yaml';
 import { sanitizeSlug } from './sanitize.mjs';
+import { readRoomConfig, setRoomConfigBlock } from './rooms-file.mjs';
 
 // ── Member model (the Room's contribution gate) ─────────────────────────────
 // A member is { kind, id, state }. `state` is the contribution gate, mirroring
@@ -83,7 +84,12 @@ export class Room {
   }
 
   // ── the identical tree (GENOME §2.5) ──────────────────────────────────────
-  get configPath()     { return join(this.baseDir(), 'config.yaml'); }     // members · personality · thread · heartbeat · transcription service
+  // The ROOM RUNG's key in config/rooms.yaml — `<surface>/<slug>`, the same
+  // namespace listEntityDirs and the resolver already compute. DERIVED from
+  // baseDir(), so every subclass (including a test's own) has one for free.
+  // Operator 2026-08-24: a conversation folder belongs to the BEING and carries
+  // no operator config; the rung moved to a registry file the operator owns.
+  ns() { return relative(join(EGPT_HOME, 'conversations'), this.baseDir()).split(sep).join('/'); }
   // First-class (I3). NOT a rolling window — nothing truncates or ages it out. It rotates with
   // the THREAD: a reset archives it to transcripts/<old-thread-id>.md (2026-07-26).
   get transcriptPath() { return join(this.baseDir(), 'transcript.md'); }
@@ -134,23 +140,17 @@ export class Room {
   // no rung above it, which is why this reader still opens the file directly — there is
   // nothing to layer, and reading through the resolver's cached set would only add
   // staleness between a /members write and the next read.
-  async loadConfig() {
-    try {
-      const doc = YAML.parse(await readFile(this.configPath, 'utf8'));
-      return (doc && typeof doc === 'object') ? doc : {};
-    } catch { return {}; }
-  }
+  async loadConfig() { return readRoomConfig(this.ns()); }
 
   // Write a single top-level block WITHOUT clobbering the operator's other blocks
   // or their comments: edit via the YAML Document API (comment-preserving) and
   // round-trip. mkdir the room folder first so a never-seen room can be written.
   async _setConfigBlock(key, value) {
+    // The FOLDER still IS the room — /room members and friends test existence
+    // with stat(baseDir()). Writing the rung no longer touches the folder, so
+    // materialize it here as the config write used to.
     await mkdir(this.baseDir(), { recursive: true });
-    let text = '';
-    try { text = await readFile(this.configPath, 'utf8'); } catch { /* new file */ }
-    const doc = YAML.parseDocument(text || '');
-    doc.setIn([key], value);
-    await writeFile(this.configPath, String(doc), 'utf8');
+    await setRoomConfigBlock(this.ns(), key, value);
   }
 
   // ── members (the Room's contribution roster) ───────────────────────────────
@@ -249,4 +249,8 @@ export class ConversationRoom extends Room {
   baseDir() {
     return join(EGPT_HOME, 'conversations', this.surface, sanitizeSlug(this.slug));
   }
+  // From (surface, slug) DIRECTLY, never derived from baseDir(): a Room whose
+  // folder is not under EGPT_HOME (a test fixture in a temp dir) would otherwise
+  // relativize to `../../tmp-xxxx/conv` and write junk rows into rooms.yaml.
+  ns() { return `${this.surface}/${sanitizeSlug(this.slug)}`; }
 }

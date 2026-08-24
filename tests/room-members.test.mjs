@@ -4,11 +4,24 @@
 // methods use baseDir(), so they're exercised here via a temp-dir Room subclass
 // (no ~/.egpt pollution); the two real impls are checked for inheritance.
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
+import { describe, it, expect, beforeEach, afterEach , vi } from 'vitest';
+// A PRIVATE profile for this file. The ROOM RUNG is now ONE shared file
+// (config/rooms.yaml), so files running in parallel against the suite's shared
+// throwaway profile would race on it. egpt-home.mjs freezes EGPT_HOME at module
+// load, so this must run BEFORE the imports — vi.hoisted is what does that.
+const _PRIVATE_HOME = vi.hoisted(() => {
+  const tmp = process.env.TEMP || process.env.TMP || process.env.TMPDIR || '/tmp';
+  const dir = `${tmp}/egpt-room-members-home`;
+  process.env.EGPT_HOME = dir;
+  return dir;
+});
+
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { Room, ROOM_MEMBER_STATES, normalizeMemberState, isMemberStateAlias } from '../src/room-core.mjs';
+import { ROOMS_FILE } from '../src/rooms-file.mjs';
+import { rmSync as _rmRooms } from 'node:fs';
 
 class TmpRoom extends Room {
   constructor(dir) { super(); this._dir = dir; }
@@ -78,13 +91,22 @@ describe('Room base — members round-trip', () => {
   });
 
   it('preserves a sibling config block AND its comments on write', async () => {
-    writeFileSync(room.configPath, '# operator notes\nheartbeat:\n  enabled: true   # keep me\n  interval_min: 30\n');
+    // The rung is config/rooms.yaml now, keyed by ns — a member write must not
+    // disturb the operator's other blocks in that room's row, nor their comments.
+    mkdirSync(dirname(ROOMS_FILE), { recursive: true });
+    writeFileSync(ROOMS_FILE,
+      `# operator notes
+rooms:
+  ${room.ns()}:
+    heartbeat:
+      enabled: true   # keep me
+      interval_min: 30
+`);
     await room.setMember({ id: 'e', state: 'active' });
-    const text = readFileSync(room.configPath, 'utf8');
+    const text = readFileSync(ROOMS_FILE, 'utf8');
     expect(text).toContain('# operator notes');
     expect(text).toContain('# keep me');
     expect(text).toContain('interval_min: 30');
-    // and the heartbeat block is still parseable + intact alongside members
     const cfg = await room.loadConfig();
     expect(cfg.heartbeat).toMatchObject({ enabled: true, interval_min: 30 });
     expect(cfg.members).toEqual([{ kind: 'brain', id: 'e', state: 'active' }]);

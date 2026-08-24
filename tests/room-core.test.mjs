@@ -70,7 +70,6 @@ describe('an operator-named room roots at conversations/room/<slug> — ONE kind
 
 describe('the ONE identical tree (GENOME §2.5)', () => {
   const tree = {
-    configPath: 'config.yaml',
     transcriptPath: 'transcript.md',
     mediaDir: 'media',
     filesDir: 'files',

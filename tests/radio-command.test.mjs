@@ -37,6 +37,8 @@ const TEST_HOME = vi.hoisted(() => {
 import { createCommands } from '../src/spine/commands.mjs';
 import { Room } from '../src/room-core.mjs';
 import { EGPT_HOME } from '../src/egpt-home.mjs';
+import * as YAML from 'yaml';
+import { ROOMS_FILE } from '../src/rooms-file.mjs';
 import { encodeNodeSignature, renderNodeSignature } from '../src/node-signature.mjs';
 
 class TmpRoom extends Room {
@@ -54,6 +56,7 @@ beforeEach(() => {
   // than writing into the shared profile.
   expect(join(EGPT_HOME), "EGPT_HOME must be THIS file's private profile — see the vi.hoisted block").toBe(join(TEST_HOME));
   expect(EGPT_HOME).not.toBe(join(homedir(), '.egpt'));
+  try { rmSync(ROOMS_FILE, { force: true }); } catch { /* none yet */ }
   base = mkdtempSync(join(tmpdir(), 'egpt-radio-'));
   namedDirs = [];
 });
@@ -92,13 +95,29 @@ function harness({ config = {}, uploadNote, gate, listEntityDirs, fetch, io } = 
   return { cmds, sent, room, uploadCalls, liveConfig, configPath };
 }
 
-const configPath = (room) => join(room.baseDir(), 'config.yaml');
+// The ROOM RUNG is config/rooms.yaml keyed `<surface>/<slug>` (operator
+// 2026-08-24) — no room keeps a config.yaml of its own any more, so seeding and
+// reading both go through that one file.
+function seedRow(ns, text) {
+  mkdirSync(join(EGPT_HOME, 'config'), { recursive: true });
+  let existing = ''; try { existing = readFileSync(ROOMS_FILE, 'utf8'); } catch { /* new */ }
+  const doc = YAML.parseDocument(existing || 'rooms:\n');
+  if (doc.get('rooms') == null) doc.set('rooms', doc.createNode({}));
+  const parsed = YAML.parse(text) ?? {};
+  for (const [k, v] of Object.entries(parsed)) doc.setIn(['rooms', ns, k], doc.createNode(v));
+  writeFileSync(ROOMS_FILE, String(doc), 'utf8');
+}
+const nsByDir = new Map();
+const nsOf = (dir) => nsByDir.get(dir) ?? dir;
+const rowText = (ns) => {
+  let t = ''; try { t = readFileSync(ROOMS_FILE, 'utf8'); } catch { return ''; }
+  const row = (YAML.parse(t) ?? {}).rooms?.[ns];
+  return row ? YAML.stringify(row) : '';
+};
 
-// Seed a room's config.yaml with raw YAML text before a command runs (the room folder
-// itself doesn't exist yet after mkdtempSync — only the temp base does).
 function seed(room, text) {
   mkdirSync(room.baseDir(), { recursive: true });
-  writeFileSync(configPath(room), text, 'utf8');
+  seedRow(room.ns(), text);
 }
 
 // Seed a room's transcript.md with raw entries (rs's bodyForMessageId reads this file).
@@ -111,10 +130,12 @@ function seedTranscript(room, text) {
 // to — Room.forChat('room', name).baseDir(), under the suite's isolated EGPT_HOME — so a
 // /radio leave all|<slug> test seeds and reads the SAME file the command writes.
 function seedNamed(name, text) {
-  const dir = Room.forChat('room', name).baseDir();
+  const room = Room.forChat('room', name);
+  const dir = room.baseDir();
+  nsByDir.set(dir, room.ns());
   namedDirs.push(dir);
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, 'config.yaml'), text, 'utf8');
+  seedRow(room.ns(), text);
   return dir;
 }
 
@@ -126,18 +147,18 @@ describe("THE LOCK — /radio=<node> join <radio> checks THIS node's own radio_s
     await cmds.run({ ...self, body: '/radio=kg join nosuchradio' });
     expect(sent[0].text).toMatch(/no radio 'nosuchradio' on kg/);
     expect(sent[0].text).toMatch(/configured: wildnloyal/);
-    expect(existsSync(configPath(room))).toBe(false);
+    expect(rowText(room.ns())).toBe('');   // no row written
   });
 
   it('refusing a bogus name on an already-joined room leaves radio.join untouched', async () => {
     const { cmds, sent, room } = harness({
       config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: true } } },
     });
-    const cfgPath = configPath(room);
+    const cfgNs = room.ns();
     seed(room, 'radio:\n  join: wildnloyal\n');
     await cmds.run({ ...self, body: '/radio=kg join nosuchradio' });
     expect(sent[0].text).toMatch(/no radio 'nosuchradio' on kg/);
-    expect(readFileSync(cfgPath, 'utf8')).toMatch(/join:\s*wildnloyal/);
+    expect(rowText(cfgNs)).toMatch(/join:\s*wildnloyal/);
   });
 
   it('with nothing configured on this node, names "none"', async () => {
@@ -193,7 +214,7 @@ describe('bare /radio join silence — reproduce-first (operator ruling 2026-08-
     await cmds.run({ ...self, body: '/radio join wildnloyal' });
     expect(sent).toHaveLength(1);
     expect(sent[0].text).toMatch(/^relaying to wildnloyal\./);
-    expect(readFileSync(configPath(room), 'utf8')).toMatch(/join:\s*wildnloyal/);
+    expect(rowText(room.ns())).toMatch(/join:\s*wildnloyal/);
   });
 });
 
@@ -204,7 +225,7 @@ describe('/radio=<node> join with no argument', () => {
     });
     await cmds.run({ ...self, body: '/radio join' });
     expect(sent[0].text).toMatch(/^relaying to wildnloyal\./);
-    const after = readFileSync(configPath(room), 'utf8');
+    const after = rowText(room.ns());
     expect(after).toMatch(/join:\s*wildnloyal/);
   });
 
@@ -215,7 +236,7 @@ describe('/radio=<node> join with no argument', () => {
     await cmds.run({ ...self, body: '/radio=kg join' });
     expect(sent[0].text).toMatch(/wildnloyal/);
     expect(sent[0].text).toMatch(/otherstation/);
-    expect(existsSync(configPath(room))).toBe(false);
+    expect(rowText(room.ns())).toBe('');   // no row written
   });
 
   it('none configured, addressed explicitly — says so', async () => {
@@ -235,7 +256,7 @@ describe("/radio join <radio> — success wording (operator's exact sentence)", 
     });
     await cmds.run({ ...self, body: '/radio join wildnloyal' });
     expect(sent[0].text).toBe("relaying to Wild n Loyal radio. you can listen in https://radio.wildnloyal.org/. voice notes are broadcasted to the radio's listeners.");
-    expect(readFileSync(configPath(room), 'utf8')).toMatch(/join:\s*wildnloyal/);
+    expect(rowText(room.ns())).toMatch(/join:\s*wildnloyal/);
   });
 
   it('falls back to the config key when name is absent', async () => {
@@ -289,7 +310,7 @@ describe('/radio join <radio>', () => {
     });
     await cmds.run({ ...self, body: '/radio join wildnloyal' });
     expect(sent[0].text).toMatch(/relaying to wildnloyal/);
-    const after = readFileSync(configPath(room), 'utf8');
+    const after = rowText(room.ns());
     expect(after).toMatch(/radio:\s*\n\s*join:\s*wildnloyal/);
   });
 
@@ -303,7 +324,7 @@ describe('/radio join <radio>', () => {
     seed(room, 'radio:\n  join: wildnloyal\n');
     await cmds.run({ ...self, body: '/radio join otherstation' });
     expect(sent[0].text).toMatch(/^switched from wildnloyal — relaying to otherstation\./);
-    const after = readFileSync(configPath(room), 'utf8');
+    const after = rowText(room.ns());
     expect(after).toMatch(/join:\s*otherstation/);
   });
 
@@ -311,10 +332,10 @@ describe('/radio join <radio>', () => {
     const { cmds, room } = harness({
       config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: true } } },
     });
-    const cfgPath = configPath(room);
+    const cfgNs = room.ns();
     seed(room, 'radio:\n  hosts:\n    "16468217865": roger\n');
     await cmds.run({ ...self, body: '/radio join wildnloyal' });
-    const after = readFileSync(cfgPath, 'utf8');
+    const after = rowText(cfgNs);
     expect(after).toMatch(/hosts:/);
     expect(after).toMatch(/16468217865['"]?:\s*roger/);
     expect(after).toMatch(/join:\s*wildnloyal/);
@@ -327,10 +348,10 @@ describe('/radio join <radio>', () => {
         radio_service: { wildnloyal: { enabled: true }, otherstation: { enabled: true } },
       },
     });
-    const cfgPath = configPath(room);
+    const cfgNs = room.ns();
     seed(room, 'radio:\n  join: wildnloyal\n  hosts:\n    "16468217865": roger\n');
     await cmds.run({ ...self, body: '/radio join otherstation' });
-    const after = readFileSync(cfgPath, 'utf8');
+    const after = rowText(cfgNs);
     expect(after).toMatch(/hosts:/);
     expect(after).toMatch(/16468217865['"]?:\s*roger/);
   });
@@ -339,11 +360,11 @@ describe('/radio join <radio>', () => {
 describe('/radio leave (current room, unchanged)', () => {
   it('clears join but leaves radio.hosts byte-for-byte present', async () => {
     const { cmds, sent, room } = harness({ config: { node_name: 'kg' } });
-    const cfgPath = configPath(room);
+    const cfgNs = room.ns();
     seed(room, 'radio:\n  join: wildnloyal\n  hosts:\n    "16468217865": roger\n');
     await cmds.run({ ...self, body: '/radio leave' });
     expect(sent[0].text).toMatch(/left wildnloyal/);
-    const after = readFileSync(cfgPath, 'utf8');
+    const after = rowText(cfgNs);
     expect(after).not.toMatch(/join:\s*wildnloyal/);
     expect(after).toMatch(/hosts:/);
     expect(after).toMatch(/16468217865['"]?:\s*roger/);
@@ -376,8 +397,8 @@ describe('/radio leave all | <slug> — other rooms on this node, via the shared
     });
     await cmds.run({ ...self, body: '/radio leave all' });
     expect(sent[0].text).toMatch(/left 2 rooms/);
-    expect(readFileSync(join(dirLab, 'config.yaml'), 'utf8')).not.toMatch(/join:\s*wildnloyal/);
-    expect(readFileSync(join(dirDen, 'config.yaml'), 'utf8')).not.toMatch(/join:\s*otherstation/);
+    expect(rowText(nsOf(dirLab))).not.toMatch(/join:\s*wildnloyal/);
+    expect(rowText(nsOf(dirDen))).not.toMatch(/join:\s*otherstation/);
   });
 
   it('/radio leave all with nothing joined anywhere, bare, stays silent', async () => {
@@ -404,8 +425,8 @@ describe('/radio leave all | <slug> — other rooms on this node, via the shared
     seed(currentRoom, 'radio:\n  join: otherstation\n');
     await cmds.run({ ...self, body: '/radio leave lab' });
     expect(sent[0].text).toMatch(/left lab/);
-    expect(readFileSync(join(dirLab, 'config.yaml'), 'utf8')).not.toMatch(/join:\s*wildnloyal/);
-    expect(readFileSync(configPath(currentRoom), 'utf8')).toMatch(/join:\s*otherstation/);
+    expect(rowText(nsOf(dirLab))).not.toMatch(/join:\s*wildnloyal/);
+    expect(rowText(currentRoom.ns())).toMatch(/join:\s*otherstation/);
   });
 
   it('/radio leave <slug> matches case-insensitively', async () => {
@@ -416,7 +437,7 @@ describe('/radio leave all | <slug> — other rooms on this node, via the shared
     });
     await cmds.run({ ...self, body: '/radio leave LAB' });
     expect(sent[0].text).toMatch(/left lab/);
-    expect(readFileSync(join(dirLab, 'config.yaml'), 'utf8')).not.toMatch(/join:\s*wildnloyal/);
+    expect(rowText(nsOf(dirLab))).not.toMatch(/join:\s*wildnloyal/);
   });
 
   it('/radio leave <slug> on a room that exists but is not joined, bare, stays silent and touches nothing', async () => {
@@ -425,10 +446,10 @@ describe('/radio leave all | <slug> — other rooms on this node, via the shared
       config: { node_name: 'kg' },
       listEntityDirs: async () => [{ dir: dirLab, ns: 'room/lab' }],
     });
-    const before = readFileSync(join(dirLab, 'config.yaml'), 'utf8');
+    const before = rowText(nsOf(dirLab));
     await cmds.run({ ...self, body: '/radio leave lab' });
     expect(sent).toHaveLength(0);
-    expect(readFileSync(join(dirLab, 'config.yaml'), 'utf8')).toBe(before);
+    expect(rowText(nsOf(dirLab))).toBe(before);
   });
 
   it('the SAME state, addressed explicitly, says so plainly and touches nothing', async () => {
@@ -437,11 +458,11 @@ describe('/radio leave all | <slug> — other rooms on this node, via the shared
       config: { node_name: 'kg' },
       listEntityDirs: async () => [{ dir: dirLab, ns: 'room/lab' }],
     });
-    const before = readFileSync(join(dirLab, 'config.yaml'), 'utf8');
+    const before = rowText(nsOf(dirLab));
     await cmds.run({ ...self, body: '/radio=kg leave lab' });
     expect(sent[0].text).not.toMatch(/^left\b/);
     expect(sent[0].text).toMatch(/not joined/);
-    expect(readFileSync(join(dirLab, 'config.yaml'), 'utf8')).toBe(before);
+    expect(rowText(nsOf(dirLab))).toBe(before);
   });
 
   it('/radio leave <slug> for a nonexistent room, bare, stays silent too', async () => {
@@ -460,10 +481,10 @@ describe('/radio leave all | <slug> — other rooms on this node, via the shared
 describe('hosts survives every /radio leave path byte-for-byte', () => {
   it('leave (current room)', async () => {
     const { cmds, room } = harness({ config: { node_name: 'kg' } });
-    const cfgPath = configPath(room);
+    const cfgNs = room.ns();
     seed(room, 'radio:\n  join: wildnloyal\n  hosts:\n    "16468217865": roger\n');
     await cmds.run({ ...self, body: '/radio leave' });
-    const after = readFileSync(cfgPath, 'utf8');
+    const after = rowText(cfgNs);
     expect(after).toMatch(/hosts:/);
     expect(after).toMatch(/16468217865['"]?:\s*roger/);
   });
@@ -475,7 +496,7 @@ describe('hosts survives every /radio leave path byte-for-byte', () => {
       listEntityDirs: async () => [{ dir: dirLab, ns: 'room/lab' }],
     });
     await cmds.run({ ...self, body: '/radio leave all' });
-    const after = readFileSync(join(dirLab, 'config.yaml'), 'utf8');
+    const after = rowText(nsOf(dirLab));
     expect(after).toMatch(/hosts:/);
     expect(after).toMatch(/16468217865['"]?:\s*roger/);
   });
@@ -487,7 +508,7 @@ describe('hosts survives every /radio leave path byte-for-byte', () => {
       listEntityDirs: async () => [{ dir: dirLab, ns: 'room/lab' }],
     });
     await cmds.run({ ...self, body: '/radio leave lab' });
-    const after = readFileSync(join(dirLab, 'config.yaml'), 'utf8');
+    const after = rowText(nsOf(dirLab));
     expect(after).toMatch(/hosts:/);
     expect(after).toMatch(/16468217865['"]?:\s*roger/);
   });
@@ -498,17 +519,17 @@ describe('/radio unknown verb', () => {
     const { cmds, sent, room } = harness({ config: { node_name: 'kg' } });
     await cmds.run({ ...self, body: '/radio bogus' });
     expect(sent[0].text).toMatch(/usage: \/radio/);
-    expect(existsSync(configPath(room))).toBe(false);
+    expect(rowText(room.ns())).toBe('');   // no row written
   });
 
   it('"/radio help" also replies usage and leaves an existing config.yaml unchanged', async () => {
     const { cmds, sent, room } = harness({ config: { node_name: 'kg' } });
-    const cfgPath = configPath(room);
+    const cfgNs = room.ns();
     const before = 'radio:\n  join: wildnloyal\n';
     seed(room, before);
     await cmds.run({ ...self, body: '/radio help' });
     expect(sent[0].text).toMatch(/usage: \/radio/);
-    expect(readFileSync(cfgPath, 'utf8')).toBe(before);
+    expect(rowText(cfgNs)).toBe(before);
   });
 });
 
@@ -544,9 +565,9 @@ describe('bare /radio — node-wide YAML status report', () => {
     const dirA = join(base, 'ent', 'a');
     const dirB = join(base, 'ent', 'b');
     const dirC = join(base, 'ent', 'c');
-    mkdirSync(dirA, { recursive: true }); writeFileSync(join(dirA, 'config.yaml'), 'radio:\n  join: wildnloyal\n', 'utf8');
-    mkdirSync(dirB, { recursive: true }); writeFileSync(join(dirB, 'config.yaml'), 'radio:\n  join: wildnloyal\n', 'utf8');
-    mkdirSync(dirC, { recursive: true }); writeFileSync(join(dirC, 'config.yaml'), 'radio:\n  join: otherstation\n', 'utf8');
+    mkdirSync(dirA, { recursive: true }); seedRow('whatsapp/Reencuentro amigos', 'radio:\n  join: wildnloyal\n');
+    mkdirSync(dirB, { recursive: true }); seedRow('whatsapp/Note to self', 'radio:\n  join: wildnloyal\n');
+    mkdirSync(dirC, { recursive: true }); seedRow('room/lab', 'radio:\n  join: otherstation\n');
     const { cmds, sent } = harness({
       config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: true }, otherstation: { enabled: true } } },
       listEntityDirs: async () => [
@@ -1136,7 +1157,7 @@ describe('/radio say — a multi-line payload is not smuggled anywhere and not m
     // Falls through to the generic catch-all — same as any other unmatched multi-line command.
     expect(sent[0]?.text).toMatch(/recognized/);
     expect(uploadCalls).toHaveLength(0);
-    expect(existsSync(configPath(room))).toBe(false);
+    expect(rowText(room.ns())).toBe('');   // no row written
   });
 });
 

@@ -67,6 +67,7 @@ import { createHeartbeats } from './heartbeats.mjs';
 import { createHeartbeatLoader, parseFrequency, resolveTimeZone } from './heartbeat-loader.mjs';
 import { createConfigResolver, parseEntityConfig } from './config-resolver.mjs';
 import { seedSkeletons } from './seed.mjs';
+import { readRoomConfig } from '../rooms-file.mjs';
 
 // STRAY WHISPER-SERVER REAP (operator 2026-07-10): dropping `local` from a
 // transcription profile's fallback_order (e.g. → [remote, cli] so this node leans on
@@ -654,9 +655,11 @@ export async function boot({
   // An entity's WHOLE config.yaml doc — the resolver picks the blocks apart, so this
   // reads the file ONCE for every concern that used to open it separately (heartbeats,
   // warm, transcription). Tolerant: absent / unreadable / malformed → {}.
-  const readEntityConfig = async (dir) => {
-    try { return parseEntityConfig(await readFile(join(dir, 'config.yaml'), 'utf8')); }
-    catch { return {}; }
+  // The ROOM RUNG lives in config/rooms.yaml keyed by `<surface>/<slug>`, not in
+  // the room's own folder (operator 2026-08-24). The resolver hands us the ns it
+  // already computed; same one-read-per-entity contract as before.
+  const readEntityConfig = async (_dir, ns) => {
+    try { return (await readRoomConfig(ns)) ?? {}; } catch { return {}; }
   };
 
   // THE config resolver — ONE namespace, THREE rungs, nearest the room wins

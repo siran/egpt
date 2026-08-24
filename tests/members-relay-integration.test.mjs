@@ -13,7 +13,18 @@
 //
 // Fakes only at the edges: CDP tab list (commands), streamFromTab + adapter driver + member
 // sender (relay). The room store is real (room-core writes config.yaml under a temp dir).
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach , vi } from 'vitest';
+// A PRIVATE profile for this file. The ROOM RUNG is now ONE shared file
+// (config/rooms.yaml), so files running in parallel against the suite's shared
+// throwaway profile would race on it. egpt-home.mjs freezes EGPT_HOME at module
+// load, so this must run BEFORE the imports — vi.hoisted is what does that.
+const _PRIVATE_HOME = vi.hoisted(() => {
+  const tmp = process.env.TEMP || process.env.TMP || process.env.TMPDIR || '/tmp';
+  const dir = `${tmp}/egpt-members-relay-integration-home`;
+  process.env.EGPT_HOME = dir;
+  return dir;
+});
+
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -24,6 +35,8 @@ import { createStopGuard } from '../src/stop-guard.mjs';
 import { createIdentity } from '../src/spine/identity.mjs';
 import { Room } from '../src/room-core.mjs';
 import { existsSync } from 'node:fs';
+import { ROOMS_FILE } from '../src/rooms-file.mjs';
+import { rmSync as _rmRooms } from 'node:fs';
 
 class TmpRoom extends Room {
   constructor(dir, slug) { super(); this._dir = dir; this.slug = slug; }
@@ -160,7 +173,7 @@ describe('an operator-named room is an ordinary conversation — created, addres
 
     // 3. The tree is the SAME tree a conversation gets — Room.treeDirs(), no room-only list.
     for (const dir of room.treeDirs()) expect(existsSync(dir)).toBe(true);
-    expect(existsSync(room.configPath)).toBe(true);
+    expect(existsSync(room.baseDir())).toBe(true);   // the folder IS the room; its rung lives in config/rooms.yaml
     expect(existsSync(join(room.identityDir, '00-identity.md'))).toBe(true);
 
     // 4. WRITE members IN the room (an ordinary /members on that conversation) …

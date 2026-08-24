@@ -3,7 +3,7 @@
 //
 //   config/config.yaml            the node rung (defaults for every entity)
 //     < config/conversations.yaml   the REGISTRY rung (that conversation's entry)
-//       < <entity>/config.yaml      the ENTITY rung (conversations/<slug>/ or rooms/<name>/)
+//       < config/rooms.yaml         the ROOM rung (that room's `<surface>/<slug>` row)
 //
 // Operator: *"the configuration in a rooms/<room name>, or conversations/<slug> is more
 // specific than a general conversations or config file"* and *"yaml keys in
@@ -210,12 +210,14 @@ export function createConfigResolver({
     const entities = new Map();
     for (const { dir, ns } of dirs) {
       let folder = {};
-      try { folder = (await readEntityConfig(dir)) ?? {}; }
+      try { folder = (await readEntityConfig(dir, ns)) ?? {}; }
       catch (e) { onLog(`${ns}: ${e?.message ?? e}`); folder = {}; }
       if (!isPlainObject(folder)) folder = {};
 
       const entryRung = _registryConfig(index.get(ns));
-      const folderFile = _rel(egptHome, join(dir, 'config.yaml'));
+      // The room rung's provenance is the shared registry file now, not a
+      // per-room config.yaml (operator 2026-08-24).
+      const folderFile = 'config/rooms.yaml';
 
       const config = { ...node.baseConfig };
       const source = { ...node.baseSource };

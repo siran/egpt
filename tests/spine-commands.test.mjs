@@ -1302,8 +1302,9 @@ describe('/room create <name>', () => {
     const r = Room.forChat('room', 'foo');
     // the standard tree dirs were created …
     for (const dir of [r.baseDir(), r.mediaDir, r.filesDir, r.identityDir, r.scriptsDir]) expect(mkdirs).toContain(dir);
-    // … and a config.yaml was written into the room folder
-    expect(files[r.configPath]).toBeTruthy();
+    // … and NO config file is written into the room folder: the room rung lives
+    // in config/rooms.yaml now, and a room with no row resolves to {}.
+    expect(Object.keys(files).some((f) => f.endsWith('config.yaml'))).toBe(false);
     // the reply names the EGPT_HOME-relative path — under conversations/, NOT the retired rooms/ root
     expect(sent).toHaveLength(1);
     expect(sent[0].text).toMatch(/conversations\/room\/foo\//);

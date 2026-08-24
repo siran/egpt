@@ -11,7 +11,18 @@
 // the heartbeat tests observe it via an injected fake spawn (no real alive.txt).
 // egpt-home.mjs reads EGPT_HOME once at module load, so it's set BEFORE boot
 // (which imports it) is dynamically imported below.
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll , vi } from 'vitest';
+// A PRIVATE profile for this file. The ROOM RUNG is now ONE shared file
+// (config/rooms.yaml), so files running in parallel against the suite's shared
+// throwaway profile would race on it. egpt-home.mjs freezes EGPT_HOME at module
+// load, so this must run BEFORE the imports — vi.hoisted is what does that.
+const _PRIVATE_HOME = vi.hoisted(() => {
+  const tmp = process.env.TEMP || process.env.TMP || process.env.TMPDIR || '/tmp';
+  const dir = `${tmp}/egpt-spine-v1-boot-home`;
+  process.env.EGPT_HOME = dir;
+  return dir;
+});
+
 import { promises as fs } from 'node:fs';
 import { dirname, join } from 'node:path';
 import os from 'node:os';
@@ -316,7 +327,12 @@ describe('boot()', () => {
     // deleted, no tick fired
     const newDir = join(tmpHome, 'conversations', 'whatsapp', 'new-chat');
     await fs.mkdir(newDir, { recursive: true });
-    await fs.writeFile(join(newDir, 'config.yaml'), 'heartbeats:\n  ping:\n    frequency: 30s\n    command: node ping.js\n', 'utf8');
+    // Its heartbeat lives in the ROOM RUNG (config/rooms.yaml, keyed by ns), not
+    // in the folder — the folder appearing is what makes it a new entity.
+    await fs.mkdir(join(tmpHome, 'config'), { recursive: true });
+    await fs.writeFile(join(tmpHome, 'config', 'rooms.yaml'),
+      ['rooms:', '  whatsapp/new-chat:', '    heartbeats:', '      ping:',
+       '        frequency: 30s', '        command: node ping.js', ''].join(String.fromCharCode(10)), 'utf8');
 
     // ONE inbound message picks it up — the refresh is awaited inside handleFast, before this
     // resolves, so by the time onIncoming settles the readonly view is already rewritten

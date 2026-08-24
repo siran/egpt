@@ -43,6 +43,8 @@ import { EGPT_HOME } from '../src/egpt-home.mjs';
 import { sanitizeName } from '../src/sanitize.mjs';
 import { createContacts } from '../src/spine/contacts.mjs';
 import { emptyState, seedIdentityLayers } from '../src/conversations-state.mjs';
+import { ROOMS_FILE } from '../src/rooms-file.mjs';
+import { rmSync as _rmRooms } from 'node:fs';
 
 class TmpRoom extends Room {
   constructor(dir, slug) { super(); this._dir = dir; this.slug = slug; }
@@ -63,6 +65,8 @@ let base;
 // isolated EGPT_HOME. Same tripwire tests/beeper-bridge.test.mjs uses: never the live ~/.egpt.
 let roomDirs;
 beforeEach(() => {
+  // The ROOM RUNG is now ONE shared file — wipe it so rows never leak between cases.
+  try { _rmRooms(ROOMS_FILE, { force: true }); } catch { /* none yet */ }
   // THE TRIPWIRE. If vi.hoisted above ever stops running before the imports, EGPT_HOME is
   // the shared profile again and these tests race — fail here instead, loudly.
   expect(join(EGPT_HOME), 'EGPT_HOME must be THIS file\'s private profile — see the vi.hoisted block').toBe(join(TEST_HOME));

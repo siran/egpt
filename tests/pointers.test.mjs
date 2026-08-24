@@ -23,7 +23,7 @@ const CARD = readFileSync(fileURLToPath(new URL('../config/skeletons/room/30-poi
 const CONV = Room.forChat('whatsapp', 'x');
 const REAL_PATHS = new Set([
   ...CONV.treeDirs().slice(1).map((d) => `./${basename(d)}/`),   // slice(1): baseDir itself is not a './' pointer
-  `./${basename(CONV.transcriptPath)}`, `./${basename(CONV.configPath)}`,
+  `./${basename(CONV.transcriptPath)}`,   // no configPath: the room rung moved to config/rooms.yaml
 ]);
 
 describe('the pointers card (config/skeletons/room/30-pointers.md)', () => {
