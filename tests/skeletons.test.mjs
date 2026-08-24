@@ -1,6 +1,6 @@
 // tests/skeletons.test.mjs — the shipped paste-ready templates in config/skeletons/
 // must never rot: config/skeletons/heartbeats.yaml has to parse as YAML AND every
-// entry has to pass the heartbeat loader's OWN parse (frequency/when + command/ai_run),
+// entry has to pass the heartbeat loader's OWN parse (frequency/when + command/script_path),
 // so a skeleton the operator copies always loads. Runs the real loader collect()
 // against the parsed block (no profile touched — all fakes).
 import { describe, it, expect } from 'vitest';
@@ -32,7 +32,7 @@ describe('config/skeletons/heartbeats.yaml', () => {
     expect(Object.keys(block).length).toBeGreaterThan(0);
   });
 
-  it('every entry passes the loader parse: the when one-shot arms, the recurring one has a cadence, ai_run expands', async () => {
+  it('every entry passes the loader parse: the when one-shot arms, the recurring one has a cadence, script_path expands', async () => {
     const block = parseEntityConfig(text).heartbeats;
     const loader = createHeartbeatLoader({
       resolver: createConfigResolver({
@@ -56,8 +56,8 @@ describe('config/skeletons/heartbeats.yaml', () => {
     expect(freq, 'skeleton should demo a frequency: recurring entry').toBeTruthy();
     expect(freq.everyMs).toBeGreaterThan(0);
 
-    // the one-shot demoes ai_run → expanded to a textecute command
-    expect(when.action.aiRun).toBeTruthy();
+    // the one-shot demoes script_path → expanded to a textecute command
+    expect(when.action.scriptPath).toBeTruthy();
     expect(when.action.command).toContain('textecute.mjs');
   });
 });

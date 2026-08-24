@@ -23,12 +23,27 @@
 // TRIGGERS (operator 2026-07-02): an entry declares EITHER `frequency:` (recurring)
 // OR `when:` (a ONE-SHOT wall-clock time — fires once at/after it, then never
 // again; both set → invalid, skipped + logged). ACTIONS: EITHER `command:` (a
-// shell line) OR `ai_run:` (sugar the loader expands to `node <textecute.mjs>
+// shell line) OR `script_path:` (sugar the loader expands to `node <textecute.mjs>
 // <script.x.md>`; both set → invalid, skipped + logged). Timezone-less `when:`
 // times resolve in config `default_time_zone` (else the machine's local zone).
 //
-// WHO RUNS AN ai_run (operator 2026-08-22): a bare `ai_run:` spawns textecute.mjs, which
-// opens its OWN CLI session — a turn that runs outside the being system entirely: no
+// THE KEY WAS `ai_run:` UNTIL 2026-08-22. It named neither a path nor its type, while
+// house style names paths explicitly (model_path, conversation_path, home_dir) — and now
+// that `agent:` carries the "an AI runs this" meaning by naming WHO, the other key only
+// has to name WHAT: `command:` is a shell line, `script_path:` is a script file. HARD
+// rename, no alias: an entry still carrying `ai_run` is INVALID (skipped + logged naming
+// the replacement), never silently actionless — a working beat must not degrade into a
+// no-op.
+//
+// WHERE script_path RESOLVES FROM: the beat's cwd, which is the folder the beat was
+// DECLARED in — the entity folder (~/.egpt/conversations/<surface>/<slug>/, a room being
+// surface `room`) for an entity beat, the CHECKOUT (procCwd) for a node-level one. NOT a
+// scripts/ subfolder: a bare `dj.x.md` is <that folder>/dj.x.md, and a script kept in a
+// subfolder must say so (`scripts/dj.x.md`). Both action kinds use that same root — the
+// spawned command inherits it as cwd, the turn path resolves against it explicitly.
+//
+// WHO RUNS A script_path (operator 2026-08-22): a bare `script_path:` spawns textecute.mjs,
+// which opens its OWN CLI session — a turn that runs outside the being system entirely: no
 // persona, no transcript, and (the reason this exists) no access_level, no allowed_users,
 // no sandboxed. An entry may instead NAME the being that runs it — `agent: <being-id>`, a
 // KEY of config.yaml's `agents:` map, never a handle — and then the loader dispatches a
@@ -36,7 +51,7 @@
 // `dispatchTurn` by boot) in the entity the beat was declared in, so every confinement
 // gate that guards an ordinary message turn guards this one too. The PROMPT is identical
 // either way: textecute's own framePrompt, imported, never re-spelled. `agent:` +
-// `command:` is invalid (a shell line has no being), `agent:` without `ai_run:` is
+// `command:` is invalid (a shell line has no being), `agent:` without `script_path:` is
 // invalid, `agent:` naming a being config.yaml does not declare is invalid, `agent:` on a
 // NODE-level beat is invalid (it names no entity to run in) — each skipped + logged like
 // every other malformed entry. A turn beat is NOT an inbound message: it never touches
@@ -88,12 +103,12 @@ import { fileURLToPath } from 'node:url';
 import * as YAML from 'yaml';
 import { EGPT_HOME } from '../egpt-home.mjs';
 import { NODE_FILE } from './config-resolver.mjs';
-// The ai_run PROMPT CONTRACT and the .x.md consent rule both belong to textecute.mjs — the
-// `agent:` turn path reuses them from there rather than owning a second copy (operator
+// The script_path PROMPT CONTRACT and the .x.md consent rule both belong to textecute.mjs —
+// the `agent:` turn path reuses them from there rather than owning a second copy (operator
 // 2026-08-22: an .x.md script must read identically whichever surface interprets it).
 import { framePrompt, isTextecutable } from '../tools/textecute.mjs';
 
-// The loader owns the ai_run sugar, so it resolves textecute.mjs itself (relative
+// The loader owns the script_path sugar, so it resolves textecute.mjs itself (relative
 // to this file: src/spine/ → src/tools/). Absolute path, so the expanded command
 // runs from any entity cwd.
 const TEXTECUTE_PATH = fileURLToPath(new URL('../tools/textecute.mjs', import.meta.url));
@@ -221,38 +236,42 @@ export function parseWhen(str, { timeZone } = {}) {
 // hands this loader the block already layered across the rungs, so the block-specific
 // text parser had no callers left.)
 
-// A both-command-and-ai_run collision returns this sentinel (truthy, so it isn't
+// A both-command-and-script_path collision returns this sentinel (truthy, so it isn't
 // mistaken for "no action") — the entry is invalid and skipped.
 const _INVALID_ACTION = Symbol('invalid-action');
 
-// Resolve the ACTION for a raw entry: `command:` (verbatim shell line), `ai_run:`
+// Resolve the ACTION for a raw entry: `command:` (verbatim shell line), `script_path:`
 // (expanded to `node "<textecute.mjs>" "<script>"`, script relative → the entry cwd), or
-// `agent:` + `ai_run:` (a TURN for that being, dispatched through brainpool — see the
+// `agent:` + `script_path:` (a TURN for that being, dispatched through brainpool — see the
 // header). Mutually exclusive. `alive` with no explicit action falls back to aliveCommand.
 // `ns` is the entity namespace (`<surface>/<slug>`), absent for a node-level entry; `agents`
 // is config.yaml's `agents:` map, the ONE registry an `agent:` value must be a key of.
 function _resolveAction({ name, raw, isAlive, aliveCommand, cwd, aliveCwd, ns, agents = {}, onLog }) {
   const hasCommand = typeof raw?.command === 'string' && raw.command.trim();
-  const hasAiRun = typeof raw?.ai_run === 'string' && raw.ai_run.trim();
+  const hasScriptPath = typeof raw?.script_path === 'string' && raw.script_path.trim();
   const hasAgent = typeof raw?.agent === 'string' && raw.agent.trim();
+  // The OLD key (2026-08-22 rename) is INVALID, not ignored: falling through would leave a
+  // beat that used to run a script with no action at all — a silent no-op on a cadence the
+  // operator still sees armed. The message carries the fix.
+  if (raw && Object.prototype.hasOwnProperty.call(raw, 'ai_run')) { onLog(`${name}: ai_run: was renamed to script_path: — skipped`); return _INVALID_ACTION; }
   // A DECLARED-BUT-UNUSABLE agent: is invalid, never a silent fall-through — dropping to the
-  // bare ai_run path here would run the very script the operator confined to a being through
-  // textecute's unconfined session instead, which is exactly the failure this key exists to fix.
+  // bare script_path branch here would run the very script the operator confined to a being
+  // through textecute's unconfined session instead, exactly the failure this key exists to fix.
   if (raw?.agent != null && !hasAgent) { onLog(`${name}: agent ${JSON.stringify(raw.agent)} is not a being-id — skipped`); return _INVALID_ACTION; }
-  if (hasCommand && hasAiRun) { onLog(`${name}: both command and ai_run set — skipped (use one action)`); return _INVALID_ACTION; }
-  if (hasAgent && hasCommand) { onLog(`${name}: both agent and command set — skipped (a shell line has no being; agent: runs an ai_run script)`); return _INVALID_ACTION; }
+  if (hasCommand && hasScriptPath) { onLog(`${name}: both command and script_path set — skipped (use one action)`); return _INVALID_ACTION; }
+  if (hasAgent && hasCommand) { onLog(`${name}: both agent and command set — skipped (a shell line has no being; agent: runs a script_path script)`); return _INVALID_ACTION; }
   if (hasAgent) {
     const being = raw.agent.trim().toLowerCase();
-    if (!hasAiRun) { onLog(`${name}: agent ${JSON.stringify(raw.agent)} without ai_run — skipped (agent: names WHO runs the ai_run script)`); return _INVALID_ACTION; }
+    if (!hasScriptPath) { onLog(`${name}: agent ${JSON.stringify(raw.agent)} without script_path — skipped (agent: names WHO runs the script_path script)`); return _INVALID_ACTION; }
     if (!ns) { onLog(`${name}: agent ${JSON.stringify(raw.agent)} on a node-level beat — skipped (a turn runs in a conversation/room; declare the beat in that entity's config.yaml)`); return _INVALID_ACTION; }
     if (!Object.prototype.hasOwnProperty.call(agents, being)) { onLog(`${name}: unknown agent ${JSON.stringify(raw.agent)} — skipped (agent: is a KEY of config.yaml agents:, not a handle)`); return _INVALID_ACTION; }
-    const script = raw.ai_run.trim();
-    if (!isTextecutable(script)) { onLog(`${name}: ai_run ${JSON.stringify(script)} is not a textecutable — skipped (must end in .x.md)`); return _INVALID_ACTION; }
-    return { kind: 'turn', being, script, cwd, ns, aiRun: script };
+    const script = raw.script_path.trim();
+    if (!isTextecutable(script)) { onLog(`${name}: script_path ${JSON.stringify(script)} is not a textecutable — skipped (must end in .x.md)`); return _INVALID_ACTION; }
+    return { kind: 'turn', being, script, cwd, ns, scriptPath: script };
   }
-  if (hasAiRun) {
-    const script = raw.ai_run.trim();
-    return { kind: 'command', command: `node "${TEXTECUTE_PATH}" "${script}"`, cwd, aiRun: script };
+  if (hasScriptPath) {
+    const script = raw.script_path.trim();
+    return { kind: 'command', command: `node "${TEXTECUTE_PATH}" "${script}"`, cwd, scriptPath: script };
   }
   if (hasCommand) return { kind: 'command', command: raw.command, cwd };
   // The DEFAULT alive one-liner writes state/alive.txt relative to the profile,
@@ -274,7 +293,7 @@ function _normalizeEntry({ name, source, cwd, raw, isAlive, aliveFallbackMs, ali
 
   // ── when: a one-shot at a wall-clock time ──
   if (hasWhen) {
-    if (!action) { onLog(`${name}: no command or ai_run — skipped`); return null; }
+    if (!action) { onLog(`${name}: no command or script_path — skipped`); return null; }
     const whenMs = parseWhen(String(raw.when), { timeZone });
     if (whenMs == null) { onLog(`${name}: invalid when ${JSON.stringify(raw.when)} — skipped`); return null; }
     if (nowMs - whenMs > _WHEN_GRACE_MS) { onLog(`${name}: stale when (${raw.when}) — not refiring`); return null; }
@@ -521,12 +540,12 @@ export function createHeartbeatLoader({
     const row = { name: e.name, source: e.source };
     if (e.whenMs != null) row.when = e.rawWhen;
     else { row.frequency = e.rawFrequency; row.frequency_ms = e.everyMs; }
-    // An ai_run entry shows BOTH the sugar and the resolved command; a plain
+    // A script_path entry shows BOTH the sugar and the resolved command; a plain
     // command shows just the command. Neither hides anything behind a label.
     // An `agent:` entry has no command at all — it shows the sugar and WHO runs it, which
     // is the whole of what happens (a turn for that being in this entity).
-    if (e.action.kind === 'turn') { row.action = `ai_run: ${e.action.aiRun}`; row.agent = e.action.being; }
-    else if (e.action.aiRun) { row.action = `ai_run: ${e.action.aiRun}`; row.command = e.action.command; }
+    if (e.action.kind === 'turn') { row.action = `script_path: ${e.action.scriptPath}`; row.agent = e.action.being; }
+    else if (e.action.scriptPath) { row.action = `script_path: ${e.action.scriptPath}`; row.command = e.action.command; }
     else row.action = `command: ${e.action.command}`;
     row.cwd = e.action.cwd;
     return row;

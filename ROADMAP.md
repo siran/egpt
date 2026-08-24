@@ -124,7 +124,7 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
 - Auto-compaction (native /compact, 20%, 2-min cooling)
 - Heartbeats: declarative (config + every conversation/room config.yaml),
   `frequency:` + `when:` one-shots (default_time_zone-aware), `command:` +
-  `ai_run:` (textecutables), hot reload = DELETE state/heartbeats.readonly.yaml
+  `script_path:` (textecutables, renamed from `ai_run:` 2026-08-22), hot reload = DELETE state/heartbeats.readonly.yaml
   (staleness check rides runDue — no reload heartbeat), alive beat =
   `echo beat > state/alive.txt`, liveness = file MTIME, pid in state/spine.pid
 - Daemon: mtime deadman, calm wedge backoff, singleton via spine.pid — live-verified
@@ -144,7 +144,7 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
   PROFILE's config/agents/; skeletons seed to the profile's config/skeletons
   (copy-if-missing, operator edits sacred)
 - Textecutables: `*.x.md` = plain-text script, one fresh claude turn executes it
-  (CLI / heartbeat `ai_run:` / ask E — NO /x command, ever)
+  (CLI / heartbeat `script_path:` / ask E — NO /x command, ever)
 - Commands: /restart /upgrade /rewind, /e auto <mode> [target], /status (fenced yaml)
 - **/e wizard landed** — bare `/e` (this chat) / `/e <fragment>` (target resolved like
   /e auto's) ARM a guided re-point. Operator-only, 5-min TTL, b/back · x/cancel; while armed

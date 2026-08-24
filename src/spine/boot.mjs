@@ -1251,7 +1251,7 @@ export async function boot({
   // in the profile. Verified on Windows cmd + POSIX sh (spawn shell:true).
   const aliveCommand = 'echo beat > state/alive.txt';
 
-  // AN `agent:` HEARTBEAT RUNS AS A BEING (operator 2026-08-22). A bare `ai_run:` spawns
+  // AN `agent:` HEARTBEAT RUNS AS A BEING (operator 2026-08-22). A bare `script_path:` spawns
   // textecute.mjs, whose own CLI session sits OUTSIDE the being system — no persona, no
   // transcript, and no access_level / allowed_users / sandboxed, so a scheduled agent ran
   // unconfined however config.yaml confined it. An entry that names `agent: <being-id>`

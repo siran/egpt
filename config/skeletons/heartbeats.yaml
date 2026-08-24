@@ -5,7 +5,12 @@
 #
 # Each entry has ONE trigger and ONE action:
 #   trigger — `when:` (a one-shot wall-clock time) OR `frequency:` (recurring)
-#   action  — `ai_run:` (a *.x.md textecutable) OR `command:` (a shell line)
+#   action  — `script_path:` (a *.x.md textecutable) OR `command:` (a shell line)
+#
+# `script_path:` is relative to THE FOLDER THIS BLOCK LIVES IN (the chat/room
+# folder; the checkout for a node-level beat) — not to a scripts/ subfolder. A
+# bare `script.x.md` sits beside config.yaml; a script in a subfolder must say
+# so (`scripts/script.x.md`). A wrong path is ENOENT on every tick.
 #
 # `when:` times are wall-clock in the zone from config `default_time_zone`
 # (e.g. America/New_York, or an alias like "New York" / "ET"); with no config
@@ -21,7 +26,7 @@ heartbeats:
   # one-shot: run a textecutable once, at/after the given time, then never again
   morning-report:
     when: 7/2/2026 8:20a
-    ai_run: script.x.md
+    script_path: script.x.md
 
   # recurring: run a shell command on a fixed cadence (ms/s/m/h)
   daily-sweep:

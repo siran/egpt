@@ -56,7 +56,8 @@
 
 
 # Beats scoped to this conversation. One trigger (when: | frequency:) and one
-# action (ai_run: | command:) each. Time formats + zones, and the full
+# action (script_path: | command:) each. A script_path: is relative to THIS
+# folder, not to a scripts/ subfolder. Time formats + zones, and the full
 # reference: config/skeletons/heartbeats.yaml
 # heartbeats is the one block that UNIONS across rungs: declaring one here adds
 # to the node's, it never replaces them.

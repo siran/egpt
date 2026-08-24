@@ -202,16 +202,26 @@ export const CONFIG_SCHEMA = {
       frequency + when set → invalid, skipped.
 
     ACTION:
-      ai_run: <script.x.md>  may replace  command:  — sugar the loader expands
-      to  node <src/tools/textecute.mjs> <script>  to run a TEXTECUTABLE. Both
-      command + ai_run set → invalid, skipped.
+      script_path: <script.x.md>  may replace  command:  — sugar the loader
+      expands to  node <src/tools/textecute.mjs> <script>  to run a
+      TEXTECUTABLE. Both command + script_path set → invalid, skipped.
+      WHAT THE PATH IS RELATIVE TO: the folder the beat was DECLARED in — the
+      entity folder (~/.egpt/conversations/<surface>/<slug>/, a room being
+      surface 'room') for an entity beat, the CHECKOUT for a node-level one.
+      NOT a scripts/ subfolder: a bare  dj.x.md  means <that folder>/dj.x.md,
+      and a script kept in a subfolder must say so (scripts/dj.x.md). Same root
+      whichever action kind runs it. A wrong path is ENOENT on every tick — the
+      beat dies before it does anything, and only the log says so.
+      RENAMED (operator 2026-08-22): this key was  ai_run:  . An entry still
+      carrying  ai_run:  is INVALID — skipped + logged naming the replacement,
+      never silently actionless.
 
     WHO RUNS IT (operator 2026-08-22):
-      agent: <being-id>   alongside ai_run: — the beat runs as that BEING instead
-      of as a bare textecute session.
+      agent: <being-id>   alongside script_path: — the beat runs as that BEING
+      instead of as a bare textecute session.
         VALUE: a KEY of the  agents:  map above (egpt, pi, wren, …) — a being-id,
         NEVER a handle (@p).
-      WHY: a bare ai_run spawns textecute.mjs, which opens its own CLI session
+      WHY: a bare script_path spawns textecute.mjs, which opens its own CLI session
       OUTSIDE the being system — no persona, no transcript, and no access_level,
       allowed_users or sandboxed. With agent: the loader dispatches a TURN
       through the same path an inbound message takes (src/spine/brainpool.mjs),
@@ -225,12 +235,12 @@ export const CONFIG_SCHEMA = {
       un-addressed messages.
       INVALID (skipped + logged, like every other malformed entry):
         agent: + command:            a shell line has no being
-        agent: without ai_run:       agent: names WHO runs the ai_run script
+        agent: without script_path:  agent: names WHO runs the script_path script
         agent: naming an unknown being
         agent: on a NODE-level beat  a turn needs an entity to run in — declare
                                      the beat in that conversation/room's own
                                      config.yaml
-        an ai_run that is not a *.x.md (the extension is consent, as for
+        a script_path that is not a *.x.md (the extension is consent, as for
                                      textecute itself)
       OVERLAP GUARD: unchanged — a still-running previous turn skips the tick and
       logs, so a slow being never stacks beats.

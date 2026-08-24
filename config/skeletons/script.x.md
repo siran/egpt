@@ -11,7 +11,8 @@
 
   How to use it: save this in a conversation folder (a chat's slug dir under
   ~/.egpt/conversations/<surface>/<slug>/, or a room under ~/.egpt/rooms/<name>/),
-  then point a heartbeat at it with `ai_run: script.x.md` — see heartbeats.yaml.
+  then point a heartbeat at it with `script_path: script.x.md` — the path is
+  relative to that folder, not to a scripts/ subfolder. See heartbeats.yaml.
 
   Everything below this comment is the script body — edit it to your task.
 -->

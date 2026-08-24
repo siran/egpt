@@ -367,19 +367,19 @@ describe('createHeartbeatLoader — when: one-shots', () => {
   });
 });
 
-// ── ai_run: textecutable sugar ──────────────────────────────────────────────
-describe('createHeartbeatLoader — ai_run:', () => {
-  it('expands ai_run to a node textecute.mjs command (script relative → entry cwd); readonly shows BOTH forms', async () => {
+// ── script_path: textecutable sugar ──────────────────────────────────────────────
+describe('createHeartbeatLoader — script_path:', () => {
+  it('expands script_path to a node textecute.mjs command (script relative → entry cwd); readonly shows BOTH forms', async () => {
     const writes = [];
     const registry = makeRegistry();
     const loader = makeLoader({
-      getConfig: () => ({ heartbeats: { daily: { frequency: '24h', ai_run: 'reports/daily.x.md' } } }),
+      getConfig: () => ({ heartbeats: { daily: { frequency: '24h', script_path: 'reports/daily.x.md' } } }),
       aliveMs: 0, procCwd: '/checkout', egptHome: '/home',
       io: { writeFile: async (p, c) => writes.push({ p, c }), mkdir: async () => {} },
     });
     const { entries } = await loader.collect();
     const e = entries.find((x) => x.name === 'daily');
-    expect(e.action.aiRun).toBe('reports/daily.x.md');
+    expect(e.action.scriptPath).toBe('reports/daily.x.md');
     expect(e.action.command).toContain('textecute.mjs');
     expect(e.action.command).toContain('reports/daily.x.md');
     expect(e.action.cwd).toBe('/checkout');            // relative script resolves against this cwd
@@ -387,24 +387,57 @@ describe('createHeartbeatLoader — ai_run:', () => {
     loader.wrapRegistry(registry);
     await loader.activate({ stats: () => ({}) });
     const readonly = writes.at(-1).c;
-    expect(readonly).toContain('ai_run: reports/daily.x.md');   // the sugar
+    expect(readonly).toContain('script_path: reports/daily.x.md');   // the sugar
     expect(readonly).toContain('textecute.mjs');                // AND the resolved command
     expect(readonly).toContain('command:');
   });
 
-  it('an entry with BOTH command and ai_run is invalid — skipped + logged', async () => {
+  it('an entry with BOTH command and script_path is invalid — skipped + logged', async () => {
     const logs = [];
     const loader = makeLoader({
-      getConfig: () => ({ heartbeats: { dbl: { frequency: '5m', command: 'x', ai_run: 'y.x.md' } } }),
+      getConfig: () => ({ heartbeats: { dbl: { frequency: '5m', command: 'x', script_path: 'y.x.md' } } }),
       aliveMs: 0, io: noopIo(), onLog: (m) => logs.push(m),
     });
     expect((await loader.collect()).entries).toEqual([]);
-    expect(logs.some((l) => l.includes('both command and ai_run'))).toBe(true);
+    expect(logs.some((l) => l.includes('both command and script_path'))).toBe(true);
+  });
+
+  // The 2026-08-22 rename is HARD — no alias, no deprecation window. The point of making the
+  // old key INVALID rather than merely unknown: an entry still carrying ai_run: would
+  // otherwise fall through to "no action" and become a silent no-op on a cadence the
+  // operator still sees armed. It is skipped like any malformed entry, and the log carries
+  // the fix.
+  it('the OLD ai_run: key is invalid — skipped + logged naming script_path:, and fires NOTHING', async () => {
+    const flush = () => new Promise((r) => setTimeout(r, 0));
+    for (const raw of [
+      { frequency: '5m', ai_run: 'y.x.md' },
+      { frequency: '5m', agent: 'pi', ai_run: 'y.x.md' },
+      { when: '7/2/2026 08:20', ai_run: 'y.x.md' },
+    ]) {
+      const logs = [];
+      const turns = [];
+      const { spawn, calls } = makeSpawn();
+      const registry = makeRegistry();
+      const loader = makeLoader({
+        getConfig: () => ({ default_time_zone: 'UTC', agents: { pi: {} }, heartbeats: { legacy: raw } }),
+        aliveMs: 0, spawn, dispatchTurn: async (t) => { turns.push(t); },
+        io: noopIo(), onLog: (m) => logs.push(m), now: () => Date.UTC(2026, 6, 2, 8, 19),
+      });
+      loader.wrapRegistry(registry);
+      expect((await loader.collect()).entries, JSON.stringify(raw)).toEqual([]);
+      expect(logs.some((l) => l.includes('legacy') && l.includes('ai_run: was renamed to script_path:')), JSON.stringify(raw)).toBe(true);
+
+      await loader.activate({ stats: () => ({}) });
+      expect(beatsOf(registry)).toHaveLength(0);   // nothing registered → nothing can ever fire
+      await flush();
+      expect(calls).toHaveLength(0);               // no textecute spawn
+      expect(turns).toHaveLength(0);               // no being turn either
+    }
   });
 });
 
-// ── agent: — an ai_run that runs as a BEING (operator 2026-08-22) ───────────
-// A bare ai_run spawns textecute.mjs, whose own CLI session bypasses the being system
+// ── agent: — a script_path that runs as a BEING (operator 2026-08-22) ───────────
+// A bare script_path spawns textecute.mjs, whose own CLI session bypasses the being system
 // entirely (no access_level, no allowed_users, no sandboxed). `agent: <being-id>` dispatches
 // the SAME framed prompt as a TURN through boot's injected dispatcher (brainpool.turn), so
 // every confinement gate applies. All fakes here — no session opens, no process spawns.
@@ -432,7 +465,7 @@ describe('createHeartbeatLoader — agent: (a heartbeat that runs as a being)', 
   }
 
   it('dispatches a brainpool TURN for the named being with textecute\'s framed prompt — and spawns NOTHING', async () => {
-    const { loader, registry, turns, calls, reads } = build({ frequency: '30m', agent: 'pi', ai_run: 'dj.x.md' });
+    const { loader, registry, turns, calls, reads } = build({ frequency: '30m', agent: 'pi', script_path: 'dj.x.md' });
     const { entries } = await loader.collect();
     const e = entries.find((x) => x.name === 'room/dj-son:dj');
     expect(e.action).toMatchObject({ kind: 'turn', being: 'pi', script: 'dj.x.md', ns: 'room/dj-son', cwd: '/home/conversations/room/dj-son' });
@@ -452,7 +485,7 @@ describe('createHeartbeatLoader — agent: (a heartbeat that runs as a being)', 
   });
 
   it('the SAME entry WITHOUT agent: still expands to the textecute shell command (regression lock)', async () => {
-    const { loader, registry, turns, calls } = build({ frequency: '30m', ai_run: 'dj.x.md' });
+    const { loader, registry, turns, calls } = build({ frequency: '30m', script_path: 'dj.x.md' });
     const { entries } = await loader.collect();
     const e = entries.find((x) => x.name === 'room/dj-son:dj');
     expect(e.action.kind).toBe('command');
@@ -470,7 +503,7 @@ describe('createHeartbeatLoader — agent: (a heartbeat that runs as a being)', 
   });
 
   it('an unknown agent is skipped + logged — nothing registered, nothing fired', async () => {
-    const { loader, registry, logs, turns, calls } = build({ frequency: '30m', agent: 'nobody', ai_run: 'dj.x.md' });
+    const { loader, registry, logs, turns, calls } = build({ frequency: '30m', agent: 'nobody', script_path: 'dj.x.md' });
     expect((await loader.collect()).entries).toEqual([]);
     expect(logs.some((l) => l.includes('unknown agent') && l.includes('nobody'))).toBe(true);
     loader.wrapRegistry(registry);
@@ -482,14 +515,14 @@ describe('createHeartbeatLoader — agent: (a heartbeat that runs as a being)', 
   });
 
   it('a HANDLE is not a being-id: agent: "@p" is unknown, skipped + logged', async () => {
-    const { loader, logs } = build({ frequency: '30m', agent: '@p', ai_run: 'dj.x.md' });
+    const { loader, logs } = build({ frequency: '30m', agent: '@p', script_path: 'dj.x.md' });
     expect((await loader.collect()).entries).toEqual([]);
     expect(logs.some((l) => l.includes('unknown agent'))).toBe(true);
   });
 
   it('a declared-but-unusable agent: (empty, or not a string) is invalid — it NEVER falls through to the unconfined textecute spawn', async () => {
     for (const bad of ['', '   ', 42, true, ['pi'], { name: 'pi' }]) {
-      const { loader, logs, calls } = build({ frequency: '30m', agent: bad, ai_run: 'dj.x.md' });
+      const { loader, logs, calls } = build({ frequency: '30m', agent: bad, script_path: 'dj.x.md' });
       expect((await loader.collect()).entries, JSON.stringify(bad)).toEqual([]);
       expect(logs.some((l) => l.includes('not a being-id')), JSON.stringify(bad)).toBe(true);
       expect(calls).toHaveLength(0);
@@ -502,18 +535,18 @@ describe('createHeartbeatLoader — agent: (a heartbeat that runs as a being)', 
     expect(logs.some((l) => l.includes('both agent and command'))).toBe(true);
   });
 
-  it('agent: without ai_run:, a non-.x.md ai_run, and agent: on a NODE-level beat are all invalid', async () => {
+  it('agent: without script_path:, a non-.x.md script_path, and agent: on a NODE-level beat are all invalid', async () => {
     const noScript = build({ frequency: '30m', agent: 'pi' });
     expect((await noScript.loader.collect()).entries).toEqual([]);
-    expect(noScript.logs.some((l) => l.includes('without ai_run'))).toBe(true);
+    expect(noScript.logs.some((l) => l.includes('without script_path'))).toBe(true);
 
-    const plainMd = build({ frequency: '30m', agent: 'pi', ai_run: 'dj.md' });
+    const plainMd = build({ frequency: '30m', agent: 'pi', script_path: 'dj.md' });
     expect((await plainMd.loader.collect()).entries).toEqual([]);
     expect(plainMd.logs.some((l) => l.includes('not a textecutable'))).toBe(true);
 
     const logs = [];
     const nodeLevel = makeLoader({
-      getConfig: () => ({ ...CONFIG, heartbeats: { dj: { frequency: '30m', agent: 'pi', ai_run: 'dj.x.md' } } }),
+      getConfig: () => ({ ...CONFIG, heartbeats: { dj: { frequency: '30m', agent: 'pi', script_path: 'dj.x.md' } } }),
       aliveMs: 0, io: noopIo(), onLog: (m) => logs.push(m),
     });
     expect((await nodeLevel.collect()).entries).toEqual([]);
@@ -524,7 +557,7 @@ describe('createHeartbeatLoader — agent: (a heartbeat that runs as a being)', 
     let release;
     const turns = [];
     const inflight = async (t) => { turns.push(t); await new Promise((r) => { release = r; }); };
-    const { loader, registry, logs } = build({ frequency: '30m', agent: 'pi', ai_run: 'dj.x.md' }, { dispatchTurn: inflight });
+    const { loader, registry, logs } = build({ frequency: '30m', agent: 'pi', script_path: 'dj.x.md' }, { dispatchTurn: inflight });
     loader.wrapRegistry(registry);
     await loader.collect();
     await loader.activate({ stats: () => ({}) });
@@ -543,7 +576,7 @@ describe('createHeartbeatLoader — agent: (a heartbeat that runs as a being)', 
 
   it('a failing turn logs and RELEASES the guard (a broken beat never wedges its own cadence)', async () => {
     const { loader, registry, logs, turns } = build(
-      { frequency: '30m', agent: 'pi', ai_run: 'dj.x.md' },
+      { frequency: '30m', agent: 'pi', script_path: 'dj.x.md' },
       { dispatchTurn: async () => { throw new Error('no conversation for room/dj-son'); } },
     );
     loader.wrapRegistry(registry);
@@ -564,7 +597,7 @@ describe('createHeartbeatLoader — agent: (a heartbeat that runs as a being)', 
     const loader = makeLoader({
       getConfig: () => CONFIG, aliveMs: 0, egptHome: '/home',
       listEntityDirs: async () => [{ dir: '/home/conversations/room/dj-son', ns: 'room/dj-son' }],
-      readEntityConfig: async () => ({ heartbeats: { dj: { frequency: '30m', agent: 'pi', ai_run: 'dj.x.md' } } }),
+      readEntityConfig: async () => ({ heartbeats: { dj: { frequency: '30m', agent: 'pi', script_path: 'dj.x.md' } } }),
       dispatchTurn: async () => {},
       io: { writeFile: async (p, c) => writes.push({ p, c }), mkdir: async () => {} },
     });
@@ -572,7 +605,7 @@ describe('createHeartbeatLoader — agent: (a heartbeat that runs as a being)', 
     await loader.collect();
     await loader.activate({ stats: () => ({}) });
     const readonly = writes.at(-1).c;
-    expect(readonly).toContain('ai_run: dj.x.md');
+    expect(readonly).toContain('script_path: dj.x.md');
     expect(readonly).toContain('agent: pi');
     expect(readonly).not.toContain('textecute.mjs');
   });
