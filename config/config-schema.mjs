@@ -1376,6 +1376,19 @@ export const CONFIG_SCHEMA = {
 
     CONFINEMENT (2026-07-02): a type file's allowed_tools value sets the honest
     contract — the norm is to list tools explicitly.
+
+    ENGINE-SPECIFIC TOOL NAMES (operator 2026-08-25). allowed_tools is a list of
+    THIS ENGINE's tool names, and they are not shared across engines:
+      ccode / codex  Read, Write, Edit, Glob, Grep, WebSearch, WebFetch, Task
+      pi             read, bash, edit, write, grep, find, ls   (lowercase)
+      llama          none — the llama brain is a chatter, its tool loop is the
+                     separate local_llm.agentic switch
+    pi-cli-session reads the list ALL-OR-NOTHING: a list naming any non-pi tool
+    is ignored and pi's own defaults (all seven) stay on. That is deliberate —
+    a ccode list lowercases `Read` onto pi's `read`, and honouring that partial
+    overlap would silently leave the being READ-ONLY, which is worse than
+    ignoring the list. Note `bash` is in pi's default set: a pi-engined being
+    can run commands unless the type file says otherwise.
       a LIST (a YAML vertical list of tool names)
         = CONFINED: its file tools are path-limited to the conversation
         directory (the one listed in conversations.yaml) plus any allowed_paths.
