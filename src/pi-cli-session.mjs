@@ -24,6 +24,7 @@
 // Pi owns its own session persistence (--session-id), so sessionId here is null
 // unless the caller pins one.
 import { spawn as nodeSpawn } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -35,6 +36,40 @@ import { join } from 'node:path';
 // Windows SERVICE also inherits a minimal PATH, so bare names are unreliable
 // even unsandboxed. Resolve to node.exe + the package's own dist/cli.js, the
 // same shape codex-cli-session.mjs's resolveCodexCommand() uses.
+// The bridge writes a saved attachment into the message body as
+//   (image foo.png) [saved: media/20260821-...-foo.png]
+// (beeper.mjs ~L1357). The path is relative to the conversation folder, which is
+// this session's cwd — so a turn can pick its own images up without any new
+// plumbing through the spine.
+const SAVED_MEDIA = /\[saved:\s*([^\]]+)\]/g;
+const IMAGE_EXT = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp' };
+// Pi's built-ins (docs/usage.md). Deliberately NOT Claude's names: an agent
+// type written for @e lists Read/Write/Glob/Task, which mean nothing here, and
+// passing them to --tools would leave @p with NOTHING enabled. So allowed_tools
+// is honoured only when it actually names pi tools; anything else leaves pi's
+// own defaults, which is all seven.
+const PI_TOOLS = new Set(['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls']);
+const MAX_IMAGES = 3;             // a turn is a chat message, not an album
+const MAX_IMAGE_BYTES = 6_000_000;
+
+export function imagesFromMessage(message, cwd, { read = readFileSync, log = () => {} } = {}) {
+  if (!cwd) return [];
+  const out = [];
+  for (const m of String(message ?? '').matchAll(SAVED_MEDIA)) {
+    if (out.length >= MAX_IMAGES) break;
+    const rel = m[1].trim();
+    const dot = rel.lastIndexOf('.');
+    const mimeType = dot < 0 ? null : IMAGE_EXT[rel.slice(dot).toLowerCase()];
+    if (!mimeType) continue;                                  // video/audio/docs: not for the vision head
+    try {
+      const buf = read(join(cwd, rel));
+      if (buf.length > MAX_IMAGE_BYTES) { log(`pi-cli: image too large, skipped: ${rel}`); continue; }
+      out.push({ type: 'image', data: buf.toString('base64'), mimeType });
+    } catch (e) { log(`pi-cli: image unreadable, skipped: ${rel} — ${e?.message ?? e}`); }
+  }
+  return out;
+}
+
 const PI_PKG = ['@earendil-works', 'pi-coding-agent', 'dist', 'cli.js'];
 // Node realpath()s what it resolves, and realpathSync lstat()s EVERY ancestor
 // directory. Under the sandbox the leased account holds rights on the granted
@@ -76,7 +111,28 @@ export function createPiCliSession(options = {}) {
     reject(err);
   }
 
+  // Pi BLOCKS on a dialog until the client answers: docs/rpc.md — "emit an
+  // extension_ui_request on stdout and block until the client sends back an
+  // extension_ui_response on stdin with the matching id". Ignoring these is
+  // why a tool-using turn could hang forever with no output at all.
+  //
+  // We answer AUTOMATICALLY. The gate for @p is not a dialog nobody can see: it
+  // is the OS sandbox (sandbox-logon-launcher confines the turn to its own
+  // conversation folder under a throwaway account) plus access_level /
+  // allowed_users. A confirm reaching here has no human behind it, so leaving
+  // it unanswered only produces a silent hang.
+  function answerDialog(ev) {
+    const id = ev?.id;
+    if (id == null) return;
+    const reply = ev.method === 'confirm'
+      ? { type: 'extension_ui_response', id, confirmed: options.autoApprove !== false }
+      : { type: 'extension_ui_response', id, cancelled: true };   // select/input/editor: no human to ask
+    onLog(`pi-cli: dialog ${ev.method} -> ${JSON.stringify(reply)}`);
+    try { proc?.stdin?.write(JSON.stringify(reply) + '\n'); } catch (e) { onLog(`pi-cli: dialog reply failed: ${e?.message ?? e}`); }
+  }
+
   function handleEvent(ev) {
+    if (ev.type === 'extension_ui_request') { answerDialog(ev); return; }
     if (!pending) return;
     if (ev.type === 'message_update') {
       const d = ev.assistantMessageEvent;
@@ -122,6 +178,15 @@ export function createPiCliSession(options = {}) {
     if (options.model) args.push('--model', options.model);
     if (options.sessionId) args.push('--session-id', String(options.sessionId));
     if (options.thinking) args.push('--thinking', String(options.thinking));
+    // ALL-OR-NOTHING on purpose. A Claude list like [Read, Glob, Task] lowercases
+    // to a set where only `read` matches, and honouring that partial overlap would
+    // silently leave @p read-only — strictly worse than ignoring the list. So the
+    // list is used only when EVERY entry names a pi tool.
+    const asked = (options.allowedTools ?? []).map((t) => String(t).toLowerCase());
+    if (asked.length && asked.every((t) => PI_TOOLS.has(t))) args.push('--tools', asked.join(','));
+    else if (asked.length) {
+      onLog(`pi-cli: allowed_tools is not a pi tool list (${options.allowedTools.join(',')}) — leaving pi's defaults enabled`);
+    }
     // eGPT's persona + node identity + the ACTION vocabulary from identity.d
     // (/media, /react, /reply ...). Without this pi runs on its stock coding
     // prompt with no idea it is in a chat at all -- asked to send an image it
@@ -152,7 +217,14 @@ export function createPiCliSession(options = {}) {
       return new Promise((resolve, reject) => {
         pending = { resolve, reject, onUpdate, acc: '' };
         try {
-          proc.stdin.write(JSON.stringify({ id: nextId++, type: 'prompt', message: String(message ?? '') }) + '\n');
+          // images: [{ type:'image', data:<base64>, mimeType }] ride alongside the
+          // text on the same prompt command (docs/rpc.md).
+          const cmd = { id: nextId++, type: 'prompt', message: String(message ?? '') };
+          const imgs = Array.isArray(options.images) && options.images.length
+            ? options.images
+            : imagesFromMessage(message, options.cwd, { log: onLog });
+          if (imgs.length) cmd.images = imgs;
+          proc.stdin.write(JSON.stringify(cmd) + String.fromCharCode(10));
         } catch (e) {
           failPending(new Error(`pi-cli: write failed: ${e?.message ?? e}`));
         }

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { createPiCliSession } from '../src/pi-cli-session.mjs';
+import { createPiCliSession, imagesFromMessage } from '../src/pi-cli-session.mjs';
 
 // A fake `pi --mode rpc` process: JSONL commands in on stdin, JSONL events out.
 function fakePi() {
@@ -193,6 +193,22 @@ describe('pi cli session (rpc mode)', () => {
     expect(args[i + 1]).toContain('/media');
   });
 
+  it('honours allowed_tools when it names PI tools', () => {
+    const proc = fakePi();
+    const spawn = spawnFake(proc);
+    createPiCliSession({ spawn, allowedTools: ['read', 'bash'] }).turn('x');
+    const [, args] = spawn.mock.calls[0];
+    expect(args[args.indexOf('--tools') + 1]).toBe('read,bash');
+  });
+
+  it("ignores CLAUDE tool names — passing them would leave @p with nothing enabled", () => {
+    const proc = fakePi();
+    const spawn = spawnFake(proc);
+    createPiCliSession({ spawn, allowedTools: ['Read', 'Glob', 'Task'] }).turn('x');
+    const [, args] = spawn.mock.calls[0];
+    expect(args).not.toContain('--tools');   // pi's own defaults stay on: all seven
+  });
+
   it('an explicit bin still wins, with no prefix', () => {
     const proc = fakePi();
     const spawn = spawnFake(proc);
@@ -209,5 +225,95 @@ describe('pi cli session (rpc mode)', () => {
     const [bin, args] = spawn.mock.calls[0];
     expect(bin).toBe('pi-test');
     expect(args).toEqual(expect.arrayContaining(['--mode', 'rpc', '--provider', 'reve', '--model', 'local']));
+  });
+
+  // Pi BLOCKS on a dialog until the client answers (docs/rpc.md). Ignoring one
+  // hangs the turn forever with no output — which is exactly what @p did.
+  it('ANSWERS a blocking confirm dialog instead of hanging', async () => {
+    const proc = fakePi();
+    const s2 = createPiCliSession({ spawn: spawnFake(proc) });
+    const p = s2.turn('do a thing');
+    proc.emitEvent({ type: 'extension_ui_request', id: 'u1', method: 'confirm', title: 'Run bash?' });
+    const reply = JSON.parse(proc.sent.at(-1).trim());
+    expect(reply).toEqual({ type: 'extension_ui_response', id: 'u1', confirmed: true });
+    proc.textDelta('done'); proc.emitEvent({ type: 'agent_settled' });
+    expect((await p).text).toBe('done');
+  });
+
+  it('autoApprove:false answers the confirm with a NO — still answers, never hangs', async () => {
+    const proc = fakePi();
+    const s2 = createPiCliSession({ spawn: spawnFake(proc), autoApprove: false });
+    const p = s2.turn('x');
+    proc.emitEvent({ type: 'extension_ui_request', id: 'u2', method: 'confirm' });
+    expect(JSON.parse(proc.sent.at(-1).trim()).confirmed).toBe(false);
+    proc.emitEvent({ type: 'agent_settled' });
+    await p;
+  });
+
+  it('cancels dialogs that need a human answer (select/input/editor)', async () => {
+    const proc = fakePi();
+    const s2 = createPiCliSession({ spawn: spawnFake(proc) });
+    const p = s2.turn('x');
+    proc.emitEvent({ type: 'extension_ui_request', id: 'u3', method: 'select', options: ['a', 'b'] });
+    expect(JSON.parse(proc.sent.at(-1).trim())).toEqual({ type: 'extension_ui_response', id: 'u3', cancelled: true });
+    proc.emitEvent({ type: 'agent_settled' });
+    await p;
+  });
+
+  it('forwards images on the prompt command when given', async () => {
+    const proc = fakePi();
+    const img = { type: 'image', data: 'aGk=', mimeType: 'image/png' };
+    const s2 = createPiCliSession({ spawn: spawnFake(proc), images: [img] });
+    s2.turn('what is this?');
+    const cmd = JSON.parse(proc.sent[0].trim());
+    expect(cmd.images).toEqual([img]);
+    expect(cmd.message).toBe('what is this?');
+  });
+
+  it('omits images entirely when there are none', async () => {
+    const proc = fakePi();
+    createPiCliSession({ spawn: spawnFake(proc) }).turn('hi');
+    expect(JSON.parse(proc.sent[0].trim())).not.toHaveProperty('images');
+  });
+
+});
+
+// The bridge writes a saved attachment into the body as
+//   (image foo.png) [saved: media/...png]
+// and cwd IS the conversation folder, so a turn picks its own images up.
+describe('pi cli session — images from the chat', () => {
+  const fakeRead = (bytes = 4) => () => Buffer.alloc(bytes, 1);
+
+  it('reads a saved image and base64s it', () => {
+    const out = imagesFromMessage('look (image a.png) [saved: media/a.png]', 'C:/conv', { read: fakeRead(3) });
+    expect(out).toEqual([{ type: 'image', data: Buffer.alloc(3, 1).toString('base64'), mimeType: 'image/png' }]);
+  });
+
+  it('ignores non-image attachments — video/audio never reach the vision head', () => {
+    expect(imagesFromMessage('(video v.mp4) [saved: media/v.mp4]', 'C:/conv', { read: fakeRead() })).toEqual([]);
+    expect(imagesFromMessage('(document d.pdf) [saved: media/d.pdf]', 'C:/conv', { read: fakeRead() })).toEqual([]);
+  });
+
+  it('caps at three — a turn is a message, not an album', () => {
+    const body = ['a', 'b', 'c', 'd'].map((n) => `[saved: media/${n}.jpg]`).join(' ');
+    expect(imagesFromMessage(body, 'C:/conv', { read: fakeRead() })).toHaveLength(3);
+  });
+
+  it('skips an oversized image rather than blowing the context', () => {
+    const logs = [];
+    const out = imagesFromMessage('[saved: media/huge.png]', 'C:/conv',
+      { read: () => Buffer.alloc(7_000_000), log: (m) => logs.push(m) });
+    expect(out).toEqual([]);
+    expect(logs.join()).toMatch(/too large/);
+  });
+
+  it('skips an unreadable file without failing the turn', () => {
+    const out = imagesFromMessage('[saved: media/gone.png]', 'C:/conv',
+      { read: () => { throw new Error('ENOENT'); } });
+    expect(out).toEqual([]);
+  });
+
+  it('no cwd, no images — nothing to resolve against', () => {
+    expect(imagesFromMessage('[saved: media/a.png]', null, { read: fakeRead() })).toEqual([]);
   });
 });
