@@ -1385,9 +1385,9 @@ export const CONFIG_SCHEMA = {
                      separate local_llm.agentic switch
     pi-cli-session reads the list ALL-OR-NOTHING: a list naming any non-pi tool
     is ignored and pi's own defaults (all seven) stay on. That is deliberate —
-    a ccode list lowercases `Read` onto pi's `read`, and honouring that partial
+    a ccode list lowercases 'Read' onto pi's 'read', and honouring that partial
     overlap would silently leave the being READ-ONLY, which is worse than
-    ignoring the list. Note `bash` is in pi's default set: a pi-engined being
+    ignoring the list. Note 'bash' is in pi's default set: a pi-engined being
     can run commands unless the type file says otherwise.
       a LIST (a YAML vertical list of tool names)
         = CONFINED: its file tools are path-limited to the conversation
