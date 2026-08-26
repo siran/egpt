@@ -25,6 +25,7 @@ import * as YAML from 'yaml';
 import { sanitizeSlug, sanitizeName } from './sanitize.mjs';
 import { parseFrontMatter, renderFrontMatter, stripFrontMatter } from './transcript-meta.mjs';
 import { Room } from './room-core.mjs';
+import { mergeRoomBeings, persistRoomBeings, roomsPathBeside } from './rooms-file.mjs';
 import { EGPT_HOME } from './egpt-home.mjs';
 import { makeSerialByKey } from './serial-by-key.mjs';
 import { preferNewer } from './prefer-newer.mjs';
@@ -1887,10 +1888,18 @@ export function parse(text) {
 
 // ── Disk I/O helpers ───────────────────────────────────────────────────────
 
+// THE surface routing decision, read half (operator 2026-08-26): a `room` is a
+// conversation with a different base dir, so its per-being state is backed by
+// config/rooms.yaml, not this file. mergeRoomBeings hydrates each room entry's
+// `agents:` block from the sibling rooms.yaml — read-through, so a room whose block is
+// still only in conversations.yaml keeps it (and its thread) until the next write moves
+// it. Everything above this line (getBeing, patchBeing, recordThread, brainpool) sees
+// ONE state object and never learns which file backed it.
 export async function readState(yamlPath) {
+  let state;
   try {
     const text = await readFile(yamlPath, 'utf8');
-    return parse(text);
+    state = parse(text);
   } catch (e) {
     // ENOENT on first daemon run is legitimate (empty registry).
     // Anything else (parse error, permission, IO) must surface so
@@ -1899,8 +1908,9 @@ export async function readState(yamlPath) {
     if (e?.code !== 'ENOENT') {
       console.error(`!! readState(${yamlPath}): ${e?.stack ?? e?.message ?? e}`);
     }
-    return emptyState();
+    state = emptyState();
   }
+  return mergeRoomBeings(state, { path: roomsPathBeside(yamlPath) });
 }
 
 // Atomic write: serialize → temp file → rename to final. Protects against
@@ -1909,9 +1919,13 @@ export async function readState(yamlPath) {
 // both POSIX and Windows NTFS (within the same volume). Codex review
 // 2026-05-21: parse failures returning emptyState made the next write
 // dangerous — atomicity removes the partial-write class of failures.
+// …and the write half of that ONE decision: a room's `agents:` block is persisted into
+// the sibling rooms.yaml and STRIPPED from what this file serializes, so the two never
+// hold the same key twice. persistRoomBeings only writes when the row actually differs.
 export async function writeState(yamlPath, state) {
+  const routed = await persistRoomBeings(state, { path: roomsPathBeside(yamlPath) });
   await mkdir(dirname(yamlPath), { recursive: true });
-  const body = serialize(state);
+  const body = serialize(routed);
   const tmp = yamlPath + '.tmp-' + process.pid + '-' + Date.now();
   await writeFile(tmp, body, 'utf8');
   await rename(tmp, yamlPath);

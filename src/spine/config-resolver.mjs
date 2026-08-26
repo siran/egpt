@@ -170,6 +170,12 @@ export function createConfigResolver({
   // pointers), the resident beings' blocks, and — as the middle rung — configuration. Only
   // the last is contributed. Both exclusions come from conversations-state, which owns that
   // vocabulary; nothing is re-spelled here.
+  //
+  // The ROOM rung is now the SAME mixed bag (operator 2026-08-26): a room's per-being
+  // state lives in its config/rooms.yaml row as `agents: { <being>: … }`, so this filter
+  // runs over that rung too. Without it the room's per-being CONTAINER would layer over
+  // the node rung's `agents:` — the unrelated agent REGISTRY — which is exactly the
+  // namespace collision CONTACT_BOOKKEEPING_KEYS was written to prevent.
   function _registryConfig(entry) {
     if (!isPlainObject(entry)) return {};
     const residents = new Set(residentsOf(entry));
@@ -213,6 +219,7 @@ export function createConfigResolver({
       try { folder = (await readEntityConfig(dir, ns)) ?? {}; }
       catch (e) { onLog(`${ns}: ${e?.message ?? e}`); folder = {}; }
       if (!isPlainObject(folder)) folder = {};
+      folder = _registryConfig(folder);   // the room rung carries per-being state now — see _registryConfig
 
       const entryRung = _registryConfig(index.get(ns));
       // The room rung's provenance is the shared registry file now, not a

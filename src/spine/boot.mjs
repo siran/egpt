@@ -26,7 +26,7 @@ import * as cdp from '../tools/cdp.mjs';
 import { Room } from '../room-core.mjs';
 import { loadAdapterModule } from '../adapters/registry.mjs';
 import {
-  CONV_YAML_PATH, parse as parseConvState, serialize as serializeConvState, emptyState, slugDir, getContact, LOBBY_SLUG, fixedSlugFor,
+  CONV_YAML_PATH, readState as readConvState, writeState as writeConvState, slugDir, getContact, LOBBY_SLUG, fixedSlugFor,
 } from '../conversations-state.mjs';
 import { createStopGuard, STOP_FILE, stopFilePresent, writeStopFile } from '../stop-guard.mjs';
 import { createLasso } from '../lasso.mjs';
@@ -620,11 +620,13 @@ export async function boot({
   };
 
   // conv-state YAML IO — default to the real file, missing = empty state.
-  const _loadState = loadState ?? (async () => {
-    try { return parseConvState(await readFile(CONV_YAML_PATH, 'utf8')); }
-    catch { return emptyState(); }
-  });
-  const _writeState = writeState ?? (async (s) => { await writeFile(CONV_YAML_PATH, serializeConvState(s), 'utf8'); });
+  // Routed through conversations-state's OWN readState/writeState (was an inline
+  // parse/serialize pair here): those are where the surface routing lives — a `room`'s
+  // per-being `agents:` block is backed by config/rooms.yaml, every other surface by
+  // config/conversations.yaml (operator 2026-08-26). This is the ONE pair every service
+  // below is handed, so the decision is made once, here, and nowhere else.
+  const _loadState = loadState ?? (() => readConvState(CONV_YAML_PATH));
+  const _writeState = writeState ?? ((s) => writeConvState(CONV_YAML_PATH, s));
 
   // Enumerate the entity folders (conversations/<surface>/<slug>/).
   // An operator-named room is one of THESE, on surface `room` — it lives at
@@ -1037,11 +1039,12 @@ export async function boot({
   const radioRelay = createRadioNoteRelay({ resolveConvRoom, cfg, gate: lasso.gate, onLog: (m) => log.line?.(`[radio] ${m}`) });
   bridge.onMedia((m) => { radioRelay.noteMedia(m); return media.save(m); });
 
-  // The operator-console LIMB (plans/2607191835-SHELL-LIMB-S1-PLAN.md Phase 1): a second
-  // SURFACE dialing OUT to an external editor at ws://127.0.0.1:23375, exactly as the
-  // beeper limb dials Beeper Desktop. Its inbound feeds the SAME pipeline (wired below,
-  // after the spine exists) and its command replies route back over its own socket (see
-  // the routed `send` handed to createCommands). A dumb pipe — no command logic here.
+  // The operator-console LIMB (plans/2607191835-SHELL-LIMB-S1-PLAN.md Phase 1, direction
+  // inverted 2026-08-26): a second SURFACE, SERVING ws://127.0.0.1:23375 and holding it from
+  // boot, into which the external editor dials as a client. Its inbound feeds the SAME pipeline
+  // (wired below, after the spine exists) and its command replies route back over the seated
+  // editor's socket (see the routed `send` handed to createCommands). A dumb pipe — no command
+  // logic here.
   // The SAME per-NODE bridge-signature layers the beeper bridge received (above) — so a persona
   // reply rendered to the operator console is wrapped byte-identically to one rendered to Beeper
   // (ONE path, operator 2026-07-25). Default '' → nothing added, exactly like the beeper side.
@@ -1058,10 +1061,10 @@ export async function boot({
     bridgeSignatureClose: cfg.bridge_signature_close ?? '',
     nodeName: node_name,                  // same structural layer — a shell frame is a surface send too
     // The SHELL TOKEN (config `shell.token`), read HERE like every other config-fed option and
-    // handed in — the limb never reads config itself. Without it the limb refuses to dial at all:
-    // an unauthenticated 127.0.0.1:23375 is bindable by any local account (the sandboxed CLI
-    // accounts included) and a frame from it would be dispatched as the AUTHORIZED operator —
-    // `/upgrade` and all (src/shell/auth.mjs). Fail closed, never auto-generate.
+    // handed in — the limb never reads config itself. Without it the limb refuses to SERVE at
+    // all: an unauthenticated 127.0.0.1:23375 is dialable by any local account (the sandboxed
+    // CLI accounts included) and a frame from it would be dispatched as the AUTHORIZED operator
+    // — `/upgrade` and all (src/shell/auth.mjs). Fail closed, never auto-generate.
     token: shellTokenFrom(cfg),
     header: shellHeader,
     onLog: (m) => log.line?.(`[shell] ${m}`),
@@ -1360,10 +1363,11 @@ export async function boot({
 
   // Feed the shell surface into the SAME dispatch (handleInbound is the spine's documented
   // direct-caller seam — the identical path bridge.onMessage/enqueue runs). Registered
-  // before start() so an editor already up on boot is caught. start() dials out; it is
+  // before start() so an editor that dials in immediately is caught. start() BINDS the console
+  // port (and holds it, which is the whole point — an unbound 23375 is squattable); it is
   // gated on the real-node flag like every other real-node side effect (whisper-reap,
-  // transcriptor, ingest) so a test's boot() never opens a real editor socket — an absent
-  // editor just backs off, never crashing the boot path.
+  // transcriptor, ingest) so a test's boot() never binds a real port — an absent editor just
+  // means the listener sits with no client, never crashing the boot path.
   shellPort.onMessage((msg) => spine.handleInbound(redirectShellToRoom(msg, { currentRoomOf: commands.currentRoomOf, claim: shellPort.claim })));
   if (ingest) shellPort.start();
 
@@ -1403,8 +1407,10 @@ export async function boot({
       io,
       onLog: (m) => log.line?.(`[ingest] ${m}`),
       handle: async (line) => {
-        // The shell editor's self-announce — poke the shell-port limb to dial in NOW
-        // instead of waiting out its reconnect backoff. Not a lifecycle command.
+        // The shell editor's self-announce — poke the shell-port limb. Normally a no-op (the
+        // limb has held the console port since boot); it matters when the BIND failed and the
+        // limb is backing off, where this makes it re-listen NOW so the editor has something
+        // to dial. Not a lifecycle command.
         if (isShellConnectMarker(line)) { shellPort.poke(); return; }
         const code = lifecycleExit(line, { writeRewindTarget: (ref) => writeFile(join(EGPT_HOME, 'rewind-target.txt'), ref, 'utf8') });
         if (code != null) { log.line?.(`[ingest] ${line} -> exit ${code}`); await announceAndExit(code); }
@@ -1423,7 +1429,7 @@ export async function boot({
       compaction.stop();
       transcriptorWorker.stop();   // stops BOTH the resident whisper-server + the :23390 endpoint
       synthesizerWorker.stop();    // stops the :23391 endpoint
-      shellPort.stop();            // close the editor socket + cancel any pending reconnect
+      shellPort.stop();            // close the console listener + the seated editor's socket
       spine.stop();
     },
   };
