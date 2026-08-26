@@ -306,6 +306,10 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
   - Entry points renamed: `egpt.mjs` = the operator SHELL EDITOR (Ink, serves
     ws://127.0.0.1:23375; the spine's shell-port limb dials IN); `egpt-spine.mjs` = the spine
     (so launching the shell never boots a whole spine by accident).
+    <!-- SUPERSEDED 2026-08-26 (af5fde2): that direction is INVERTED now. The SPINE serves
+    23375 and holds it; egpt.mjs DIALS IN (src/shell/spine-link.mjs, renamed from
+    shell/server.mjs). Left as written -- this is a landed-history entry; see the AMENDMENT
+    block in plans/2607191835-SHELL-LIMB-S1-PLAN.md. -->
   - Browser wrappers (/chrome, /tabs, /open, /tab, /close); rooms + /members (add tab, modes);
     provenance guard; chatgpt relay (design B — a brain reply re-enters via handleInbound as a
     synthetic fromBrain event, counted once at the chokepoint); the LOBBY (shell's default Room
