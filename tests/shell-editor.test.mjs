@@ -1,35 +1,41 @@
-// shell-editor.test.mjs — the operator SHELL EDITOR's testable logic layers (server /
+// shell-editor.test.mjs — the operator SHELL EDITOR's testable logic layers (spine link /
 // input / commands / history / delivery). The Ink view (src/shell/app.mjs) is TTY-bound and
 // NOT unit-tested; these pure/near-pure modules carry all the logic it delegates to.
 //
-// The editor is the WS SERVER on 23375; the spine's shell-port limb dials INTO it as a
-// client. So the server test uses a REAL `ws` client as the FAKE SPINE against a REAL
-// server on an EPHEMERAL port — the most faithful check of the frame protocol
+// DIRECTION (operator ruling 2026-08-26): the SPINE serves 23375 and holds it from boot; this
+// EDITOR is the CLIENT that dials in and authenticates. So the transport tests use a REAL `ws`
+// SERVER as the FAKE SPINE on an EPHEMERAL port — the most faithful check of the frame protocol
 // (src/bridges/shell-port.mjs): editor→spine `{ text }`, spine→editor `{ text, chatId }`.
 //
-// Reproduce-first gates (written to FAIL before the modules exist, then pass):
-//   1. server: a fake spine connects → onSpineMessage fires with parsed {text, chatId};
-//      send('hi') pushes {text:'hi'} to the client; send with no client drops (false, no throw).
-//   2. input reducer: the d53a947 cursor-advance fix (insert advances col+chunk, not to
+// Reproduce-first gates for the inversion (these FAIL on the serve-the-port code):
+//   1. start() DIALS a spine — it binds nothing, and it announces itself over ingest so a spine
+//      whose bind failed re-listens.
+//   2. send() drops until the challenge has been ANSWERED — the spine discards a pre-auth
+//      frame, so an "open but unauthenticated" socket must not look deliverable.
+//   3. a spine that goes away arms a RECONNECT (the client-side backoff), not a re-listen.
+// The other gates are unchanged:
+//   4. input reducer: the d53a947 cursor-advance fix (insert advances col+chunk, not to
 //      chunk length); multi-line paste splices + lands the cursor at the last line's end;
 //      Ctrl+A/E move to line bounds; backspace joins lines.
-//   3. commands router: /theme|/clear|/exit are editor-local actions; everything else forwards.
-//   4. history buffer: ↑ walks back through submitted entries oldest-ward, ↓ walks forward
+//   5. commands router: /theme|/clear|/exit are editor-local actions; everything else forwards.
+//   6. history buffer: ↑ walks back through submitted entries oldest-ward, ↓ walks forward
 //      and restores the pre-navigation draft past the newest entry; both no-op (return null)
 //      past their respective ends instead of wrapping or throwing.
-//   5. delivery: notDeliveredMessage() renders a distinct, non-empty line for "never
+//   7. delivery: notDeliveredMessage() renders a distinct, non-empty line for "never
 //      connected" vs. "send failed while connected" so a dropped send is never silent.
 import { describe, it, expect, afterEach } from 'vitest';
 import { once } from 'node:events';
 import { readFileSync } from 'node:fs';
 import { WebSocket, WebSocketServer } from 'ws';
-import { createShellServer } from '../src/shell/server.mjs';
+import { createSpineLink } from '../src/shell/spine-link.mjs';
 import { challengeFrame, parseAuthFrame, authMac, newNonce } from '../src/shell/auth.mjs';
 import { createShellPort } from '../src/bridges/shell-port.mjs';
 import * as edit from '../src/shell/input.mjs';
 import { routeCommand } from '../src/shell/commands.mjs';
 import * as hist from '../src/shell/history.mjs';
 import { notDeliveredMessage } from '../src/shell/delivery.mjs';
+
+const TOKEN = 'test-shell-token';
 
 async function waitFor(pred, ms = 1000) {
   const t0 = Date.now();
@@ -40,68 +46,89 @@ async function waitFor(pred, ms = 1000) {
 }
 
 // A no-op fs seam for the ingest announce — keeps every test hermetic (no real ~/.egpt
-// write), since createShellServer now drops a marker on 'listening' by default.
+// write), since createSpineLink drops a marker on start() by default.
 function fakeIo() { return { mkdir: async () => {}, writeFile: async () => {}, rename: async () => {} }; }
 
-describe('shell editor — WS server (fake spine over a real socket)', () => {
+// A fake clock for the RECONNECT backoff — SAME recording-and-manually-firing idiom
+// tests/shell-port.test.mjs's makeFakeClock() uses, so no test waits out a real 3s-60s delay.
+function makeFakeClock() {
+  const timers = [];
+  const cleared = [];
+  const setTimeout = (fn, ms) => { const id = timers.length + 1; timers.push({ id, fn, ms }); return id; };
+  const clearTimeout = (id) => { cleared.push(id); };
+  return { timers, cleared, setTimeout, clearTimeout };
+}
+
+// A REAL `ws` server standing in for the spine: it challenges every client exactly as
+// src/bridges/shell-port.mjs does, and records what the editor pushed back. `challenge: false`
+// models a spine that accepted the socket but has not (yet) challenged — the window in which
+// the editor is open but NOT trusted, and everything it pushes would be discarded.
+function fakeSpine({ challenge = true } = {}) {
+  const wss = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+  const state = { wss, sockets: [], received: [], nonces: [] };
+  wss.on('connection', (ws) => {
+    state.sockets.push(ws);
+    ws.on('message', (b) => state.received.push(b.toString()));
+    if (!challenge) return;
+    const nonce = newNonce();
+    state.nonces.push(nonce);
+    ws.send(challengeFrame(nonce));
+  });
+  return state;
+}
+
+describe('shell editor — WS client link to the spine (fake spine over a real socket)', () => {
   const cleanups = [];
   afterEach(() => { for (const c of cleanups.splice(0)) try { c(); } catch {} });
 
-  it('a spine frame reaches onSpineMessage; send() pushes {text} back; send with no client drops', async () => {
-    const server = createShellServer({ port: 0, io: fakeIo() });
-    const wss = server.start();
-    cleanups.push(() => server.stop());
-    await once(wss, 'listening');
-    const { port } = wss.address();
-
-    // No client connected yet → send drops without throwing.
-    expect(() => server.send('nobody-here')).not.toThrow();
-    expect(server.send('nobody-here')).toBe(false);
-
-    // The fake spine dials in (mirrors shell-port dialing OUT to the editor).
-    const spine = new WebSocket(`ws://127.0.0.1:${port}`);
-    cleanups.push(() => spine.close());
+  async function linked(opts = {}, spineOpts = {}) {
+    const spine = fakeSpine(spineOpts);
+    cleanups.push(() => spine.wss.close());
+    await once(spine.wss, 'listening');
+    const logs = [];
+    const link = createSpineLink({
+      url: `ws://127.0.0.1:${spine.wss.address().port}`, token: TOKEN, io: fakeIo(),
+      onLog: (m) => logs.push(m), ...opts,
+    });
+    cleanups.push(() => link.stop());
     const inbound = [];
-    server.onSpineMessage(m => inbound.push(m));
-    await once(spine, 'open');
-    await waitFor(() => server.isConnected);
+    link.onSpineMessage((m) => inbound.push(m));
+    link.start();
+    return { spine, link, inbound, logs };
+  }
 
-    // spine → editor: `{ text, chatId, streaming }` (the outbound shape shell-port emits now —
+  it('a spine frame reaches onSpineMessage; send() pushes {text} back; send with no spine drops', async () => {
+    const { spine, link, inbound } = await linked();
+
+    // Not connected yet → send drops without throwing.
+    expect(() => link.send('nobody-here')).not.toThrow();
+    expect(link.send('nobody-here')).toBe(false);
+
+    await waitFor(() => link.isConnected);            // ← the challenge has been ANSWERED
+
+    // spine → editor: `{ text, chatId, streaming }` (the outbound shape shell-port emits —
     // `streaming` distinguishes a live ⏳ edit from a committed final; parse defaults it false).
-    spine.send(JSON.stringify({ text: 'from-spine', chatId: 'main' }));
+    spine.sockets[0].send(JSON.stringify({ text: 'from-spine', chatId: 'main' }));
     await waitFor(() => inbound.length > 0);
     expect(inbound[0]).toEqual({ text: 'from-spine', chatId: 'main', streaming: false });
 
-    // editor → spine: server.send('hi') pushes `{ text:'hi' }` (MVP single console).
-    const framed = once(spine, 'message');
-    expect(server.send('hi')).toBe(true);
-    const [buf] = await framed;
-    expect(JSON.parse(buf.toString())).toEqual({ text: 'hi' });
+    // editor → spine: link.send('hi') pushes `{ text:'hi' }` (MVP single console).
+    expect(link.send('hi')).toBe(true);
+    await waitFor(() => spine.received.some((r) => r.includes('"hi"')));
+    expect(JSON.parse(spine.received.at(-1))).toEqual({ text: 'hi' });
   });
 
-  // Reproduce-first (operator 2026-08-17): a stale prior `node egpt.mjs` still holding :23375
-  // used to make a fresh instance EADDRINUSE-loop forever with no self-healing. start() now
-  // reaps the configured port FIRST via an injected seam (mirrors reapPortFn in boot.mjs) —
-  // this proves the call happens, with the right port, BEFORE the WebSocketServer binds.
-  it('start() reaps the configured port before binding — real port passed through, called before the WSS is constructed', async () => {
-    const reapCalls = [];
-    let constructedAfterReap = false;
-    class TrackingWSS extends WebSocketServer {
-      constructor(opts) {
-        super({ ...opts, port: 0 });   // never actually bind the "real" port under test
-        constructedAfterReap = reapCalls.length === 1;
-      }
-    }
-    const fakeReapPort = (port, log) => { reapCalls.push(port); log?.(`reap-port: killing stale pid 1234 on :${port}`); return 1; };
-    const server = createShellServer({
-      port: 23375, io: fakeIo(), WebSocketServer: TrackingWSS, reapPort: fakeReapPort,
-    });
-    const wss = server.start();
-    cleanups.push(() => server.stop());
-    await once(wss, 'listening');
+  // REPRODUCE-FIRST for the inversion: an OPEN-but-unauthenticated socket is not deliverable.
+  // The spine discards every pre-auth frame, so reporting "connected" there would turn a
+  // dropped operator line into a silent loss instead of a loud not-delivered row.
+  it('send() drops while the socket is open but the challenge has NOT been answered', async () => {
+    const { spine, link } = await linked({}, { challenge: false });   // the spine never challenges
+    await waitFor(() => spine.sockets.length > 0);    // the socket IS open…
 
-    expect(reapCalls).toEqual([23375]);        // reaped exactly the configured (real) port, not the rebound 0
-    expect(constructedAfterReap).toBe(true);   // reap ran BEFORE the WebSocketServer was constructed
+    expect(link.isConnected).toBe(false);             // …but the link honestly reports itself down
+    expect(link.send('into the void')).toBe(false);
+    await new Promise((r) => setTimeout(r, 25));
+    expect(spine.received).toHaveLength(0);           // and nothing was pushed at all
   });
 
   // THE GATE THIS LOCKS: `if (m.text || m.delete) onMsg?.(m)` used to DROP a header-only frame
@@ -109,36 +136,23 @@ describe('shell editor — WS server (fake spine over a real socket)', () => {
   // `if (m.text || m.delete || m.header != null)` — this is the single most likely way the
   // permanent-header feature silently does nothing, so it is verified explicitly here.
   it('a header-only spine frame ({ text: "", chatId, header }) reaches onSpineMessage — the widened gate, not dropped', async () => {
-    const server = createShellServer({ port: 0, io: fakeIo() });
-    const wss = server.start();
-    cleanups.push(() => server.stop());
-    await once(wss, 'listening');
-    const { port } = wss.address();
+    const { spine, link, inbound } = await linked();
+    await waitFor(() => link.isConnected);
 
-    const spine = new WebSocket(`ws://127.0.0.1:${port}`);
-    cleanups.push(() => spine.close());
-    const inbound = [];
-    server.onSpineMessage(m => inbound.push(m));
-    await once(spine, 'open');
-    await waitFor(() => server.isConnected);
-
-    spine.send(JSON.stringify({ text: '', chatId: 'main', header: 'test-header' }));
+    spine.sockets[0].send(JSON.stringify({ text: '', chatId: 'main', header: 'test-header' }));
     await waitFor(() => inbound.length > 0);
     expect(inbound[0]).toEqual({ text: '', chatId: 'main', streaming: false, header: 'test-header' });
   });
 
-  it('announces itself into the ingest box once listening — so the spine pokes in immediately (no real ~/.egpt write, io is faked)', async () => {
+  it('announces itself into the ingest box on start — so a spine whose BIND failed re-listens (no real ~/.egpt write, io is faked)', async () => {
     const calls = { mkdir: [], writeFile: [], rename: [] };
     const io = {
       mkdir: async (dir) => { calls.mkdir.push(dir); },
       writeFile: async (path, data) => { calls.writeFile.push({ path, data }); },
       rename: async (from, to) => { calls.rename.push({ from, to }); },
     };
-    const server = createShellServer({ port: 0, io });
-    const wss = server.start();
-    cleanups.push(() => server.stop());
-    await once(wss, 'listening');
-    await waitFor(() => calls.rename.length > 0);   // announce() is fire-and-forget on 'listening'
+    await linked({ io });
+    await waitFor(() => calls.rename.length > 0);   // announce() is fire-and-forget on start()
 
     expect(calls.writeFile).toHaveLength(1);
     expect(calls.writeFile[0].data).toBe('/shell-connect');
@@ -147,67 +161,94 @@ describe('shell editor — WS server (fake spine over a real socket)', () => {
     expect(finalName.startsWith('.')).toBe(false);                // ingest sweep skips dotfiles
     expect(finalName.endsWith('.tmp')).toBe(false);                // ...and *.tmp
   });
+
+  // REPRODUCE-FIRST: as the SERVER this end used to answer a dead listener with a re-listen.
+  // As the CLIENT it must DIAL again instead — and back off, so a down spine cannot spin the
+  // dial (or the log) every few ms.
+  it('a spine that goes away arms a RECONNECT that dials again, backing off 3s → 6s', async () => {
+    const clock = makeFakeClock();
+    const { spine, link } = await linked({ setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout });
+    await waitFor(() => link.isConnected);
+
+    spine.sockets[0].close();                                     // the spine drops this console
+    await waitFor(() => clock.timers.length > 0);
+    expect(clock.timers[0].ms).toBe(3_000);
+    expect(link.isConnected).toBe(false);
+
+    clock.timers[0].fn();                                         // the reconnect fires → dials again
+    await waitFor(() => spine.sockets.length === 2);
+    await waitFor(() => link.isConnected);                        // …and re-authenticates on the fresh socket
+
+    spine.sockets[1].close();
+    await waitFor(() => clock.timers.length === 2);
+    expect(clock.timers[1].ms).toBe(3_000);                       // reset by the successful open in between
+  });
+
+  it('stop() never triggers a reconnect: the pending timer is cancelled and no further dial happens', async () => {
+    const clock = makeFakeClock();
+    const { spine, link } = await linked({ setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout });
+    await waitFor(() => link.isConnected);
+
+    spine.sockets[0].close();
+    await waitFor(() => clock.timers.length > 0);
+
+    link.stop();
+    expect(clock.cleared).toContain(clock.timers[0].id);          // the pending reconnect was cancelled
+    expect(clock.timers).toHaveLength(1);                          // stop() itself schedules nothing new
+    expect(link.isConnected).toBe(false);
+  });
 });
 
 // ── THE EDITOR'S HALF OF THE HANDSHAKE (operator 2026-08-21) ────────────────────────────────
-// The spine no longer trusts whatever answers 127.0.0.1:23375 — loopback is bindable by the
-// sandboxed CLI accounts, and the port sits unbound whenever the editor is closed. So the
-// editor must PROVE it holds the node's shell token: the spine sends a nonce, this server
-// answers HMAC-SHA256(token, nonce) (src/shell/auth.mjs, the same module the limb runs).
-// Same style as the block above: a REAL `ws` client as the fake spine against a REAL server on
-// an ephemeral port.
-describe('shell editor — WS server answers the spine auth challenge', () => {
+// The spine does not trust whatever dials 127.0.0.1:23375 — loopback is dialable by the
+// sandboxed CLI accounts. So the editor must PROVE it holds the node's shell token: the spine
+// sends a nonce, this client answers HMAC-SHA256(token, nonce) (src/shell/auth.mjs, the same
+// module the limb runs).
+describe('shell editor — the client answers the spine auth challenge', () => {
   const cleanups = [];
   afterEach(() => { for (const c of cleanups.splice(0)) try { c(); } catch {} });
 
-  async function connected(opts = {}) {
+  async function linked(opts = {}) {
+    const spine = fakeSpine();
+    cleanups.push(() => spine.wss.close());
+    await once(spine.wss, 'listening');
     const logs = [];
-    const server = createShellServer({ port: 0, io: fakeIo(), onLog: (m) => logs.push(m), ...opts });
-    const wss = server.start();
-    cleanups.push(() => server.stop());
-    await once(wss, 'listening');
-    const spine = new WebSocket(`ws://127.0.0.1:${wss.address().port}`);
-    cleanups.push(() => spine.close());
+    const link = createSpineLink({
+      url: `ws://127.0.0.1:${spine.wss.address().port}`, io: fakeIo(), onLog: (m) => logs.push(m), ...opts,
+    });
+    cleanups.push(() => link.stop());
     const inbound = [];
-    server.onSpineMessage(m => inbound.push(m));
-    await once(spine, 'open');
-    await waitFor(() => server.isConnected);
-    return { server, spine, inbound, logs };
+    link.onSpineMessage((m) => inbound.push(m));
+    link.start();
+    await waitFor(() => spine.sockets.length > 0);
+    return { spine, link, inbound, logs };
   }
 
-  it('REPRODUCE-FIRST: a challenge is answered with the right MAC — and is NEVER surfaced as a transcript line', async () => {
-    const TOKEN = 'test-shell-token';
-    const { spine, inbound } = await connected({ token: TOKEN });
-    const nonce = newNonce();
-
-    const answered = once(spine, 'message');
-    spine.send(challengeFrame(nonce));
-    const [buf] = await answered;
+  it('REPRODUCE-FIRST: the challenge is answered with the right MAC — and is NEVER surfaced as a transcript line', async () => {
+    const { spine, inbound } = await linked({ token: TOKEN });
+    await waitFor(() => spine.received.length > 0);
 
     // The proof, computed independently here — and the token itself never rode the wire.
-    expect(parseAuthFrame(buf)).toEqual({ auth: 'response', nonce: '', mac: authMac(TOKEN, nonce) });
-    expect(buf.toString()).not.toContain(TOKEN);
+    expect(parseAuthFrame(spine.received[0])).toEqual({ auth: 'response', nonce: '', mac: authMac(TOKEN, spine.nonces[0]) });
+    expect(spine.received[0]).not.toContain(TOKEN);
 
     // Pre-fix, the challenge fell through parse() and reached the app as a bare text row —
     // the operator would have seen raw handshake JSON printed in the transcript.
     expect(inbound).toHaveLength(0);
 
     // …and ordinary traffic still flows exactly as before.
-    spine.send(JSON.stringify({ text: 'from-spine', chatId: 'main' }));
+    spine.sockets[0].send(JSON.stringify({ text: 'from-spine', chatId: 'main' }));
     await waitFor(() => inbound.length > 0);
     expect(inbound[0]).toEqual({ text: 'from-spine', chatId: 'main', streaming: false });
   });
 
   it('FAIL CLOSED with no token: the challenge goes unanswered and the log says exactly what to add', async () => {
-    const { spine, logs, inbound } = await connected();          // no token configured
-    let answer = null;
-    spine.on('message', (b) => { if (parseAuthFrame(b)) answer = b; });
-
-    spine.send(challengeFrame(newNonce()));
-    await waitFor(() => logs.length > 0);
+    const { spine, link, logs, inbound } = await linked();       // no token configured
+    await waitFor(() => logs.some((m) => /FAIL/.test(m)));
     await new Promise((r) => setTimeout(r, 25));                  // give any (wrong) answer time to land
 
-    expect(answer).toBeNull();                                    // nothing to authenticate with → nothing sent
+    expect(spine.received).toHaveLength(0);                       // nothing to authenticate with → nothing sent
+    expect(link.isConnected).toBe(false);                         // …and the link knows it is not usable
     expect(inbound).toHaveLength(0);                              // and still never a transcript row
     const log = logs.join('\n');
     expect(log).toMatch(/FAIL/);                                  // worded so egpt.mjs's fault filter surfaces it
@@ -217,186 +258,87 @@ describe('shell editor — WS server answers the spine auth challenge', () => {
   });
 });
 
-// END TO END over a REAL loopback socket: the real editor server and the real spine limb, the
-// pair that actually runs in production. The unit tests either fake the limb's socket or use a
-// raw client as the fake spine; only this one proves the two halves agree on the wire.
-describe('shell editor ↔ spine limb — the real pair over a real socket', () => {
+// END TO END over a REAL loopback socket: the real spine limb (SERVER) and the real editor link
+// (CLIENT), the pair that actually runs in production. The unit tests either fake the limb's
+// listener or use a raw server as the fake spine; only this one proves the two halves agree on
+// the wire, in the new direction.
+describe('spine limb ↔ shell editor — the real pair over a real socket', () => {
   const cleanups = [];
   afterEach(() => { for (const c of cleanups.splice(0)) try { c(); } catch {} });
 
-  it('matching tokens: the limb authenticates, then frames flow both ways', async () => {
-    const TOKEN = 'test-shell-token';
-    const server = createShellServer({ port: 0, token: TOKEN, io: fakeIo() });
-    const wss = server.start();
-    cleanups.push(() => server.stop());
-    await once(wss, 'listening');
-
-    const inbound = [];
-    const port = createShellPort({ url: `ws://127.0.0.1:${wss.address().port}`, token: TOKEN, header: 'test-header' });
+  // The limb binds an EPHEMERAL port here (reapPort's own port===0 guard makes the port-kill a
+  // no-op), and the editor is pointed at whatever it got.
+  async function realPair(linkOpts = {}) {
+    const port = createShellPort({ port: 0, token: TOKEN, header: 'test-header' });
     cleanups.push(() => port.stop());
-    server.onSpineMessage((m) => inbound.push(m));
-    port.onMessage((msg) => { inbound.push(msg); });
-    port.start();
+    const wss = port.start();
+    await once(wss, 'listening');
+    const inbound = [];
+    port.onMessage((msg) => inbound.push(msg));
+    const logs = [];
+    const link = createSpineLink({
+      url: `ws://127.0.0.1:${wss.address().port}`, token: TOKEN, io: fakeIo(),
+      onLog: (m) => logs.push(m), setTimeout: () => 0, clearTimeout: () => {},   // no real reconnect wait
+      ...linkOpts,
+    });
+    cleanups.push(() => link.stop());
+    link.onSpineMessage((m) => inbound.push(m));
+    link.start();
+    return { port, link, inbound, logs };
+  }
 
-    await waitFor(() => port.isConnected);                        // ← the handshake completed
+  it('matching tokens: the editor authenticates, then frames flow both ways', async () => {
+    const { port, link, inbound } = await realPair();
+
+    await waitFor(() => port.isConnected);                        // ← the handshake completed, spine side
+    await waitFor(() => link.isConnected);                        // ← …and the editor knows it answered
     await waitFor(() => inbound.some((m) => m.header === 'test-header'));   // the deferred header landed
-    expect(server.send('hola')).toBe(true);
+    expect(link.send('hola')).toBe(true);
     await waitFor(() => inbound.some((m) => m.body === 'hola'));   // editor → spine
     expect(port.send('main', 'reply')).toBe(true);                 // spine → editor
     await waitFor(() => inbound.some((m) => m.text === 'reply'));
   });
 
-  it('REPRODUCE-FIRST: an IMPOSTOR server that does not know the token gets NOTHING through — its frames never reach the spine', async () => {
-    // Exactly the sandbox-escape shape: a process that is not the editor squats the port while
-    // the editor is closed, and pushes a lifecycle command at the spine the moment it dials in.
-    const impostor = new WebSocketServer({ host: '127.0.0.1', port: 0 });
-    cleanups.push(() => impostor.close());
-    await once(impostor, 'listening');
-    const attempts = [];
-    impostor.on('connection', (ws) => {
-      ws.on('message', (b) => attempts.push(b.toString()));
-      ws.send(JSON.stringify({ text: '/upgrade', chatId: 'main' }));      // unsolicited, pre-auth
-      ws.send(JSON.stringify({ auth: 'response', mac: 'f'.repeat(64) })); // …and a guessed answer
-    });
-
-    const delivered = [];
+  // Exactly the impostor shape, now from the other side: a process that is not the editor dials
+  // the spine's console port and pushes a lifecycle command at it. It cannot answer the
+  // challenge, so nothing it says is ever dispatched and it is dropped — while the spine keeps
+  // serving and the REAL editor still gets in afterwards.
+  it('REPRODUCE-FIRST: an IMPOSTOR client with the wrong token gets NOTHING through, and the console stays served', async () => {
     const logs = [];
-    const port = createShellPort({
-      url: `ws://127.0.0.1:${impostor.address().port}`, token: 'test-shell-token',
-      onLog: (m) => logs.push(m), setTimeout: () => 0, clearTimeout: () => {},   // no real reconnect wait
-    });
+    const port = createShellPort({ port: 0, token: TOKEN, onLog: (m) => logs.push(m) });
     cleanups.push(() => port.stop());
-    port.onMessage((msg) => { delivered.push(msg); });
-    port.start();
+    const wss = port.start();
+    await once(wss, 'listening');
+    const delivered = [];
+    port.onMessage((msg) => delivered.push(msg));
+
+    // A RAW client, not the editor module: it pushes a lifecycle command unsolicited (pre-auth)
+    // and then a guessed answer — the exact order a squatter would try.
+    const impostor = new WebSocket(`ws://127.0.0.1:${wss.address().port}`);
+    cleanups.push(() => impostor.close());
+    const seenByImpostor = [];
+    impostor.on('message', (b) => seenByImpostor.push(b.toString()));
+    await once(impostor, 'open');
+    impostor.send(JSON.stringify({ text: '/upgrade', chatId: 'main' }));
+    impostor.send(JSON.stringify({ auth: 'response', mac: 'f'.repeat(64) }));
 
     await waitFor(() => logs.some((m) => /FAILED THE AUTH CHALLENGE/.test(m)));
+    // It only ever saw the challenge — no header, no reply, no token.
+    expect(seenByImpostor.every((a) => JSON.parse(a).auth === 'challenge')).toBe(true);
+    expect(seenByImpostor.join('')).not.toContain(TOKEN);
     expect(delivered).toHaveLength(0);            // `/upgrade` never reached the spine
-    expect(port.isConnected).toBe(false);
-    // The impostor only ever saw the challenge — no header, no reply, no token.
-    expect(attempts.every((a) => JSON.parse(a).auth === 'challenge')).toBe(true);
-    expect(attempts.join('')).not.toContain('test-shell-token');
-  });
-});
+    expect(port.isConnected).toBe(false);         // it never counted as a console seat
 
-// A fake clock for the re-listen backoff — SAME recording-and-manually-firing idiom
-// tests/shell-port.test.mjs's makeFakeClock() uses for its reconnect backoff, so no test
-// waits out a real 3s-60s delay.
-function makeFakeClock() {
-  const timers = [];
-  const cleared = [];
-  const setTimeout = (fn, ms) => { const id = timers.length + 1; timers.push({ id, fn, ms }); return id; };
-  const clearTimeout = (id) => { cleared.push(id); };
-  return { timers, cleared, setTimeout, clearTimeout };
-}
-
-// THE BUG THIS LOCKS (operator, tonight): the wss listener died twice with zero logging and
-// zero recovery — server.mjs registered 'listening'/'connection'/'error' on wss but never
-// 'close', so an unexpectedly-closed listener just sat dead until the process was restarted.
-// These close the underlying wss DIRECTLY (not via server.stop()) to simulate that unexpected
-// death, on a REAL `ws` server/client pair (same style as the describe block above) with an
-// INJECTED fake clock so no test waits out the real 3s-60s backoff.
-describe('shell editor — WS server: unexpected wss close is logged and recovered (not via stop())', () => {
-  const cleanups = [];
-  afterEach(() => { for (const c of cleanups.splice(0)) try { c(); } catch {} });
-
-  it('an unexpected close is logged loudly, then the server re-listens (backoff fired manually) and accepts a fresh connection', async () => {
-    const clock = makeFakeClock();
-    const logs = [];
-    const server = createShellServer({
-      port: 0, io: fakeIo(), onLog: (m) => logs.push(m),
-      setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout,
+    // …and the listener survived it: the real editor walks straight in.
+    const real = createSpineLink({
+      url: `ws://127.0.0.1:${wss.address().port}`, token: TOKEN, io: fakeIo(),
+      setTimeout: () => 0, clearTimeout: () => {},
     });
-    const wss1 = server.start();
-    cleanups.push(() => server.stop());
-    await once(wss1, 'listening');
-
-    wss1.close();   // simulate the unexpected death — NOT server.stop()
-    await waitFor(() => clock.timers.length > 0);
-    expect(logs.some((m) => /closed/i.test(m))).toBe(true);        // logged loudly, unambiguous wording
-    expect(clock.timers[0].ms).toBe(3_000);                        // RECONNECT_MIN_MS
-
-    clock.timers[0].fn();                                          // fire the fake timer — re-listen attempt
-    const wss2 = server.wss;
-    expect(wss2).not.toBe(wss1);                                   // a fresh WebSocketServer was bound
-    await once(wss2, 'listening');
-    const { port } = wss2.address();
-
-    const spine = new WebSocket(`ws://127.0.0.1:${port}`);
-    cleanups.push(() => spine.close());
-    await once(spine, 'open');
-    await waitFor(() => server.isConnected);
-    expect(server.isConnected).toBe(true);                          // a fresh connection succeeds post-recovery
-  });
-
-  it('server.stop() never triggers a re-listen: the pending timer is cancelled and no second WebSocketServer is built', async () => {
-    let constructCount = 0;
-    class CountingWSS extends WebSocketServer {
-      constructor(opts) { super(opts); constructCount++; }
-    }
-    const clock = makeFakeClock();
-    const server = createShellServer({
-      port: 0, io: fakeIo(), WebSocketServer: CountingWSS,
-      setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout,
-    });
-    const wss1 = server.start();
-    cleanups.push(() => server.stop());
-    await once(wss1, 'listening');
-    expect(constructCount).toBe(1);
-
-    wss1.close();                                                  // unexpected close → schedules a re-listen
-    await waitFor(() => clock.timers.length > 0);
-    expect(clock.timers).toHaveLength(1);
-
-    server.stop();                                                 // deliberate shutdown
-    expect(clock.cleared).toContain(clock.timers[0].id);           // the pending re-listen timer was cancelled
-    expect(clock.timers).toHaveLength(1);                          // stop() itself schedules nothing new
-    expect(constructCount).toBe(1);                                // no re-listen attempt → no second wss built
-  });
-
-  it('a re-listen retry does NOT re-reap: the port-kill only ever runs once, before the FIRST bind', async () => {
-    const reapCalls = [];
-    const fakeReapPort = (port) => { reapCalls.push(port); return 0; };
-    const clock = makeFakeClock();
-    const server = createShellServer({
-      port: 0, io: fakeIo(), reapPort: fakeReapPort,
-      setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout,
-    });
-    const wss1 = server.start();
-    cleanups.push(() => server.stop());
-    await once(wss1, 'listening');
-    expect(reapCalls).toHaveLength(1);         // reaped once, ahead of the first bind
-
-    wss1.close();                              // unexpected close → schedules a re-listen (bind() again)
-    await waitFor(() => clock.timers.length > 0);
-    clock.timers[0].fn();                      // fire the re-listen attempt
-    const wss2 = server.wss;
-    await once(wss2, 'listening');
-
-    expect(reapCalls).toHaveLength(1);         // the retry rebinds WITHOUT calling reapPortFn again
-  });
-
-  it('repeated unexpected closes back off exponentially: first retry at RECONNECT_MIN_MS, second retry doubles', async () => {
-    const clock = makeFakeClock();
-    const server = createShellServer({
-      port: 0, io: fakeIo(),
-      setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout,
-    });
-    const wss1 = server.start();
-    cleanups.push(() => server.stop());
-    await once(wss1, 'listening');
-
-    wss1.close();
-    await waitFor(() => clock.timers.length === 1);
-    expect(clock.timers[0].ms).toBe(3_000);                        // RECONNECT_MIN_MS
-
-    clock.timers[0].fn();                                          // fires the re-listen attempt synchronously
-    const wss2 = server.wss;
-    expect(wss2).not.toBe(wss1);
-    wss2.close();                                                  // the re-listened server ALSO closes, before
-                                                                    // ever reaching 'listening' (backoff must NOT
-                                                                    // have been reset by this attempt)
-    await waitFor(() => clock.timers.length === 2);
-    expect(clock.timers[1].ms).toBe(6_000);                        // doubled (caps at RECONNECT_MAX_MS = 60_000)
+    cleanups.push(() => real.stop());
+    real.start();
+    await waitFor(() => port.isConnected);
+    real.send('hola');
+    await waitFor(() => delivered.some((m) => m.body === 'hola'));
   });
 });
 

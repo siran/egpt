@@ -1,5 +1,31 @@
 # SHELL LIMB + S1 SPINE — design plan
 
+> **AMENDMENT 2026-08-26 — the shell socket's direction is INVERTED.** Everything below is
+> preserved as written; this note records where it is now wrong. §0/§1/§3/§7/§8 state the
+> invariant "the spine is a CLIENT of its surface apps" and apply it to the shell: the editor
+> serves `ws://127.0.0.1:23375`, the spine dials out. **For the SHELL that is now reversed —
+> the SPINE serves 23375 and holds it from boot; the EDITOR is the client that dials in and
+> authenticates.** (The BEEPER limb is unchanged: Beeper Desktop is a third-party app that
+> serves 23373 by its own design, so the spine still dials it. The invariant was over-general —
+> it was derived from Beeper and applied to an app that is ours.)
+>
+> Why: (1) the durable process should be the server and the transient one the client — the
+> spine is always running, the editor is opened and closed; (2) auth becomes
+> client-proves-to-server, the conventional direction; (3) **decisively** — the spine binds at
+> boot and HOLDS the port, so there is no unbound window to squat. With the editor serving,
+> 23375 was free whenever the operator's editor was closed (the usual state), and any local
+> process — notably a sandboxed pool account, which can bind loopback freely, Windows having
+> no per-user loopback namespace — could take the port and receive the spine's outbound
+> connection. Holding the port kills that structurally rather than detecting it after the fact.
+>
+> §1's stated reason for the original direction — *"Close it → spine lives"* — conflated who
+> SERVES with whose lifetime dominates. A server with no clients is fine, and the editor's
+> lifetime remains entirely its own.
+>
+> Code: `src/bridges/shell-port.mjs` (spine, now the WS server) and
+> `src/shell/spine-link.mjs` (editor, now the WS client — renamed from `src/shell/server.mjs`,
+> which every §-reference below to "the editor's server" should be read as).
+
 **What:** the operator console is a *limb* — a transport adapter exactly like the
 Beeper bridge. An external interactive **editor** serves a local port; the spine's
 `shell-port` limb **connects out to it as a client**, precisely how the beeper limb

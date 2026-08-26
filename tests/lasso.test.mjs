@@ -208,21 +208,29 @@ describe('lasso — the outbound ceiling', () => {
     const beeper = fakePort(clock);
     const lasso = createLasso({ messages: 3, windowMs: 5000, now: clock.now, onTrip: (t) => trips.push(t) });
 
-    // The real shell port, over a fake editor socket. The fake editor also ANSWERS THE AUTH
-    // CHALLENGE (src/shell/auth.mjs): the limb sends nothing and trusts nothing until the peer
-    // proves it holds the shell token, so a fake that only opens would never go ready.
+    // The real shell port, which now SERVES the console (operator ruling 2026-08-26) over a fake
+    // listener, with a fake EDITOR dialing in. The fake editor also ANSWERS THE AUTH CHALLENGE
+    // (src/shell/auth.mjs): the limb sends nothing and trusts nothing until the peer proves it
+    // holds the shell token, so a fake that only connects would never take the seat.
     const frames = [];
-    class FakeWS {
-      constructor() { this._h = {}; }
-      on(ev, cb) { (this._h[ev] ||= []).push(cb); if (ev === 'open') queueMicrotask(cb); }
+    class FakeEditorSocket {
+      constructor() { this._h = {}; this.readyState = 1; }
+      on(ev, cb) { (this._h[ev] ||= []).push(cb); return this; }
       send(f) {
         const j = JSON.parse(f);
-        if (j.auth === 'challenge') { for (const cb of (this._h.message || [])) cb(Buffer.from(responseFrame(SHELL_TOKEN, j.nonce))); return; }
+        // Deferred: the limb sends the challenge BEFORE it registers its 'message' handler, so
+        // a synchronous answer here would land on nobody.
+        if (j.auth === 'challenge') { queueMicrotask(() => { for (const cb of (this._h.message || [])) cb(Buffer.from(responseFrame(SHELL_TOKEN, j.nonce))); }); return; }
         frames.push(j);
       }
       close() {}
     }
-    const shell = lasso.wrap(createShellPort({ WebSocket: FakeWS, token: SHELL_TOKEN }));
+    class FakeWSS {
+      constructor() { this._h = {}; }
+      on(ev, cb) { (this._h[ev] ||= []).push(cb); if (ev === 'connection') queueMicrotask(() => cb(new FakeEditorSocket())); return this; }
+      close() {}
+    }
+    const shell = lasso.wrap(createShellPort({ WebSocketServer: FakeWSS, token: SHELL_TOKEN, reapPort: () => 0 }));
     shell.start();
     await flush();
 

@@ -1,5 +1,5 @@
 // src/shell/app.mjs — the operator EDITOR's Ink VIEW. Thin on purpose: it holds NO logic
-// of its own — server.mjs owns transport, input.mjs owns the compose reducer, commands.mjs
+// of its own — spine-link.mjs owns transport, input.mjs owns the compose reducer, commands.mjs
 // owns local-vs-forward routing. This file only draws them. It is TTY-bound and therefore
 // NOT unit-tested (rendering it with no TTY hangs the harness); keep it thin so there is
 // little here to get wrong.
@@ -149,7 +149,7 @@ function MultiLineInput({ onSubmit }) {
     }));
 }
 
-function App({ server, themes, initialTheme, onError }) {
+function App({ link, themes, initialTheme, onError }) {
   const { exit } = useApp();
   const [items, setItems] = useState([]);
   const [live, setLive] = useState(null);   // the in-progress streaming line: { text } or null
@@ -166,8 +166,9 @@ function App({ server, themes, initialTheme, onError }) {
     // `header` (the PERMANENT status line, boot's computeShellHeader) may ride ANY frame,
     // including a header-only frame with neither text nor streaming nor delete — that shape
     // must update the header and fall through WITHOUT touching the transcript/live state below.
-    server.onSpineMessage(m => {
-      // A header-only frame rides on EVERY (re)connect (shell-port.mjs's ws.on('open')) — the
+    link.onSpineMessage(m => {
+      // A header-only frame rides on EVERY (re)connect (shell-port.mjs pushes it the moment
+      // this editor passes the spine's auth handshake) — the
       // spine process may have restarted in between, wiping its in-memory `awaiting` map, so
       // any live streaming line left over from before the restart has nowhere to land and would
       // otherwise sit stuck forever. Clear it here, in the header branch itself, since that's
@@ -190,7 +191,7 @@ function App({ server, themes, initialTheme, onError }) {
   }, []);
 
   // Ctrl+C quits the EDITOR only — the spine is a separate process and lives on.
-  useInput((input, key) => { if (key.ctrl && input === 'c') { try { server.stop(); } catch {} exit(); } });
+  useInput((input, key) => { if (key.ctrl && input === 'c') { try { link.stop(); } catch {} exit(); } });
 
   const applyTheme = (arg) => {
     const idx = themes.indexOf(themeName);
@@ -204,12 +205,12 @@ function App({ server, themes, initialTheme, onError }) {
 
   const submit = (line) => {
     const r = routeCommand(line);
-    if (r.action === 'exit') { try { server.stop(); } catch {} exit(); return; }
+    if (r.action === 'exit') { try { link.stop(); } catch {} exit(); return; }
     if (r.action === 'clear') { setItems([]); return; }
     if (r.action === 'theme') { applyTheme(r.arg); return; }
     add('you', r.text);
-    const wasConnected = server.isConnected;
-    if (!server.send(r.text)) add('error', notDeliveredMessage(wasConnected));
+    const wasConnected = link.isConnected;
+    if (!link.send(r.text)) add('error', notDeliveredMessage(wasConnected));
   };
 
   // No status/connection chrome at all beyond the permanent header — the editor opens
@@ -226,6 +227,6 @@ function App({ server, themes, initialTheme, onError }) {
 
 // v1 rendered Ink with NO JSX and exitOnCtrlC:false so its own Ctrl+C handler ran; we mirror
 // both. Returns the Ink instance (has .waitUntilExit()).
-export function runApp({ server, themes, initialTheme = 'catppuccin', onError }) {
-  return render(h(App, { server, themes, initialTheme, onError }), { exitOnCtrlC: false });
+export function runApp({ link, themes, initialTheme = 'catppuccin', onError }) {
+  return render(h(App, { link, themes, initialTheme, onError }), { exitOnCtrlC: false });
 }

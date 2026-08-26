@@ -1,19 +1,19 @@
 #!/usr/bin/env node
 // egpt.mjs — the operator SHELL EDITOR entry (egpt v2).
 //
-// A standalone Ink app that SERVES ws://127.0.0.1:23375. The running spine's `shell-port`
-// limb (src/bridges/shell-port.mjs) dials INTO this server as a client — the editor is the
-// server, the spine is the client (plan §1: the spine is a CLIENT of its surface apps).
-// Composed lines forward to the spine as `{ text }`; the spine's replies arrive as
-// `{ text, chatId }` and render in the transcript. Closing this editor NEVER touches the
-// spine — the socket just closes and the limb idles + reconnects.
+// A standalone Ink app that DIALS ws://127.0.0.1:23375, which the running spine's `shell-port`
+// limb (src/bridges/shell-port.mjs) serves and holds from boot — the spine is the server, this
+// editor is the client (operator ruling 2026-08-26, inverting the original plan §1; see the
+// shell-port header for why). Composed lines forward to the spine as `{ text }`; the spine's
+// replies arrive as `{ text, chatId }` and render in the transcript. Closing this editor NEVER
+// touches the spine — the socket just closes and the spine keeps serving the console port.
 //
 // No build step: v1's Ink shell used React.createElement in plain .mjs, so this runs with
 // `node egpt.mjs` — no bundler, no JSX.
 //
 //   Usage: node egpt.mjs [--port 23375] [--theme catppuccin]
 import process from 'node:process';
-import { createShellServer, SHELL_WS_PORT } from './src/shell/server.mjs';
+import { createSpineLink, SHELL_WS_PORT } from './src/shell/spine-link.mjs';
 import { shellTokenFrom } from './src/shell/auth.mjs';
 import { readConfigSync } from './src/tools/config-io.mjs';
 import { listThemes } from './src/tools/theme.mjs';
@@ -37,8 +37,8 @@ if (!process.stdout.isTTY) {
   process.exit(1);
 }
 
-// Do NOT swallow server/socket faults. Ink owns the screen, so a raw console.error would
-// corrupt the TUI — instead forward only FAULT lines (announce/socket/server/send failures;
+// Do NOT swallow link/socket faults. Ink owns the screen, so a raw console.error would
+// corrupt the TUI — instead forward only FAULT lines (announce/socket/dial/send failures;
 // the plain connect/disconnect/announce info lines the app already tracks by polling stay
 // quiet) to the app, which renders them as loud `error` transcript rows.
 const errorListeners = [];
@@ -47,15 +47,15 @@ const errorListeners = [];
 // ~/.egpt/config/config.yaml the spine reads; the sandboxed accounts that could otherwise
 // impersonate this editor cannot. Read-only, and the ONE place the editor touches config.
 // Missing → the handshake goes unanswered and the spine refuses this editor, loudly (fail closed).
-const server = createShellServer({
+const link = createSpineLink({
   port: args.port,
   token: shellTokenFrom(readConfigSync()),
   onLog: (m) => { if (/fail|error/i.test(m)) for (const fn of errorListeners) fn(m); },
 });
-server.start();
+link.start();
 
 // listThemes reads config/themes (shipped) + ~/.egpt/themes (read-only); default catppuccin.
 const themes = await listThemes();
 const initialTheme = themes.includes(args.theme) ? args.theme : (themes.includes('catppuccin') ? 'catppuccin' : themes[0]);
 
-runApp({ server, themes, initialTheme, port: args.port, onError: (fn) => errorListeners.push(fn) });
+runApp({ link, themes, initialTheme, port: args.port, onError: (fn) => errorListeners.push(fn) });

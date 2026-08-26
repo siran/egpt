@@ -15,17 +15,6 @@ import { createCommands } from '../src/spine/commands.mjs';
 import { createShellPort } from '../src/bridges/shell-port.mjs';
 import { createIdentity } from '../src/spine/identity.mjs';
 
-function makeFakeWs() {
-  class FakeWS {
-    constructor() { this.sent = []; this._h = {}; }
-    on(ev, cb) { (this._h[ev] ||= []).push(cb); return this; }
-    fire(ev, ...a) { for (const cb of (this._h[ev] || [])) cb(...a); }
-    send(data) { this.sent.push(data); }
-    close() {}
-  }
-  return FakeWS;
-}
-
 describe('redirectShellToRoom — the pure decision boot.mjs\'s shell-limb wiring makes', () => {
   const shellMsg = (body = 'hi') => ({ body, from: { chatId: 'main', chatName: 'shell', network: 'shell', userId: 'operator' } });
 
@@ -176,20 +165,22 @@ describe('the live gap, reproduced end to end: /room join acim → currentRoomOf
   });
 });
 
+// owns()/claim() are pure registry reads — no port is ever start()ed here, so nothing binds
+// and no `ws` seam is needed at all.
 describe('outbound routing: the redirect must claim() the room chatId, or a reply never finds its way back to the shell socket', () => {
   it('REPRODUCE-FIRST: before claim(), the room chatId is NOT shell-owned — a reply would be handed to the wrong bridge', () => {
-    const port = createShellPort({ WebSocket: makeFakeWs() });
+    const port = createShellPort();
     expect(port.owns('acim')).toBe(false);
   });
 
   it('claim() registers the chatId — owns() then recognizes it, exactly like an id actually seen inbound', () => {
-    const port = createShellPort({ WebSocket: makeFakeWs() });
+    const port = createShellPort();
     port.claim('acim');
     expect(port.owns('acim')).toBe(true);
   });
 
   it('end to end: makeShellAwareBridge routes a send for the claimed room chatId to the shell socket, not the raw bridge', async () => {
-    const port = createShellPort({ WebSocket: makeFakeWs() });
+    const port = createShellPort();
     const beeperSends = [];
     const rawBridge = { send: async (c, t) => { beeperSends.push({ c, t }); return null; } };
 

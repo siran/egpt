@@ -774,9 +774,10 @@ export const CONFIG_SCHEMA = {
   `,
 
   shell: `
-    The operator console — the egpt editor serving ws://127.0.0.1:23375, which
-    the spine's shell-port limb dials OUT to (plans/2607191835-SHELL-LIMB-S1-PLAN.md:
-    the editor serves so that closing it never takes the spine with it).
+    The operator console — the spine's shell-port limb SERVES ws://127.0.0.1:23375
+    from boot and holds it; the egpt editor dials in as a client (direction
+    inverted 2026-08-26: the durable process serves, and a held port has no
+    unbound window for a local squatter to take).
 
     SHAPE:
       shell:
@@ -788,15 +789,17 @@ export const CONFIG_SCHEMA = {
               BOTH ends. The secret never rides the wire; a captured response is
               useless on the next connection.
 
-    REQUIRED — with no token the spine refuses to dial the console AT ALL (fail
+    REQUIRED — with no token the spine does not SERVE the console AT ALL (fail
     closed, no unauthenticated fallback). That is deliberate (operator 2026-08-21):
     the socket used to trust the LOOPBACK itself, treating whatever answered as
     the operator, i.e. a peer authorized to run /upgrade (git pull + npm install,
     unsandboxed). Windows has no per-user loopback namespace and does not filter
-    loopback, so a sandboxed CLI account (egpt-sbx-NN) can bind 23375 — and it is
-    usually UNBOUND, since the editor is only up when the operator opens it. A
-    squatter could therefore wait for the spine to dial it and speak as the
-    operator. Loopback is not an authenticator.
+    loopback, so a sandboxed CLI account (egpt-sbx-NN) can bind and dial 23375
+    freely — and back when the EDITOR served it, the port was usually UNBOUND,
+    since the editor is only up when the operator opens it. A squatter could
+    therefore take the port and wait for the spine to dial it. Loopback is not an
+    authenticator; the token is, and holding the port from boot removes the
+    squattable window as well.
 
     The SAME value goes to both ends: the spine reads it here, the editor reads
     it from this same file. Changing it means restarting the spine AND the editor.

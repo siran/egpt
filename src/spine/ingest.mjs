@@ -54,10 +54,12 @@ export function createIngest({ dir, handle, intervalMs = 1000, io = {}, onLog = 
   };
 }
 
-// The shell editor's self-announce marker (src/shell/server.mjs drops it into ingest right
-// after its WS server starts listening). Not a lifecycle command — boot's ingest handle
-// checks this FIRST and routes it to the shell-port limb's poke() instead of lifecycleExit,
-// so the editor's own announce never gets logged as an unknown command. Pure + exported so
+// The shell editor's self-announce marker (src/shell/spine-link.mjs drops it into ingest as
+// it starts dialing). Not a lifecycle command — boot's ingest handle checks this FIRST and
+// routes it to the shell-port limb's poke() instead of lifecycleExit, so the editor's own
+// announce never gets logged as an unknown command. poke() is normally a no-op (the spine
+// already holds the console port from boot); it matters when the spine's BIND failed and it
+// is backing off, where the announce makes it retry now. Pure + exported so
 // the check is unit-testable in isolation, same as lifecycleExit below.
 export const SHELL_CONNECT_MARKER = '/shell-connect';
 export function isShellConnectMarker(line) { return String(line ?? '').trim() === SHELL_CONNECT_MARKER; }

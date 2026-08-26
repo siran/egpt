@@ -255,9 +255,10 @@ function parseNodeAddressable(text) {
   return { token: 'radio', cmd: 'radio', node: rm[1] ?? null, rest: rm[2] ?? '' };
 }
 
-// The SHELL is node-local: the spine dials the operator's editor on 127.0.0.1:23375, so no other
-// node ever sees a shell message. NOTE what that does and does not buy (corrected 2026-08-21):
-// node-locality is a ROUTING fact, not a security one — loopback is bindable by any local
+// The SHELL is node-local: the spine SERVES 127.0.0.1:23375 and the operator's editor dials in
+// (direction inverted 2026-08-26 — src/bridges/shell-port.mjs header), so no other node ever
+// sees a shell message. NOTE what that does and does not buy (corrected 2026-08-21):
+// node-locality is a ROUTING fact, not a security one — loopback is dialable by any local
 // account, so the limb AUTHENTICATES the editor (a nonce/HMAC handshake under the node's
 // shell.token, src/shell/auth.mjs) before treating its frames as the operator's. What matters
 // here is only the routing half. Everywhere else this node speaks is a chat on the shared Beeper

@@ -5,24 +5,28 @@
 // operator's editor — a PARTICIPANT with `authorized: true`, i.e. a peer allowed to run
 // `/upgrade` (git pull + npm install, unsandboxed). Windows has no per-user loopback
 // namespace and does not firewall loopback, so the sandboxed CLI accounts (egpt-sbx-NN)
-// can bind and dial 127.0.0.1 freely — and 23375 is USUALLY UNBOUND (the editor is only
-// open when the operator has it open; that is the ECONNREFUSED reconnect loop in the
+// can bind and dial 127.0.0.1 freely — and 23375 was USUALLY UNBOUND (the editor was only
+// open when the operator had it open; that was the ECONNREFUSED reconnect loop in the
 // daemon log). A sandboxed process could therefore bind the port, wait for the spine to
 // dial OUT to it, and speak as the operator. Loopback is NOT an authenticator here.
 //
-// THE FIX, and the reason it lives in ONE module: the SERVER proves it holds the shared
-// secret before the CLIENT trusts it. Both ends need the identical algorithm, so the
+// THE FIX, and the reason it lives in ONE module: the peer proves it holds the shared
+// secret before the other end trusts it. Both ends need the identical algorithm, so the
 // wire frames, the MAC and the comparison are defined here exactly once and imported by
 // both src/bridges/shell-port.mjs (the spine's limb, which challenges) and
-// src/shell/server.mjs (the editor, which answers). No second implementation.
+// src/shell/spine-link.mjs (the editor, which answers). No second implementation.
 //
 // SHAPE — nonce challenge-response, so the secret never rides the wire and a captured
 // answer cannot be replayed onto a later connection:
 //   spine  → editor : { auth: 'challenge', nonce }      (fresh 32 random bytes per socket)
 //   editor → spine  : { auth: 'response',  mac }        mac = HMAC-SHA256(token, nonce)
 // The spine compares with crypto.timingSafeEqual and sends/accepts NOTHING until it
-// matches. The topology is unchanged (plans/2607191835-SHELL-LIMB-S1-PLAN.md §1: the
-// editor serves, the spine dials — "Close it → spine lives").
+// matches. DELIBERATELY DIRECTION-AGNOSTIC, which is why the 2026-08-26 inversion of the
+// topology (the SPINE now serves 23375 and the editor dials in — src/bridges/shell-port.mjs
+// header) needed nothing here: the same frames, the same MAC, the same fresh-nonce-per-
+// connection property. All that changed is that the challenger is now the server and the
+// answerer the client — the conventional direction — and that the port is never unbound
+// for a squatter to take in the first place.
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 
 // The one operator-facing instruction, appended to whichever end had to refuse. FAIL
