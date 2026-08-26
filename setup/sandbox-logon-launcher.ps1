@@ -18,7 +18,7 @@
 #   a) lease one pool account via an atomic per-account lock file (first
 #      caller to successfully create the lock file with FileMode.CreateNew
 #      owns the lease; the lock stays open, via $lockStream, for the whole
-#      turn - that open handle IS the lease), and wipe its scratch profile.
+#      turn - that open handle IS the lease).
 #   b) get that account's stored credential (DPAPI, operator-scoped).
 #   c) resolve that account's own fixed user SID - always present in its own
 #      token, unlike the broken per-call logon-session SID.
@@ -26,10 +26,14 @@
 #      never Everyone, never a parent dir.
 #   e) create a PRIVATE per-turn desktop and grant that SID access to it (see
 #      New-SandboxDesktop) - nothing on the operator's own WinSta0\Default.
-#   f) CreateProcessWithLogonW launches InnerBin AS that account, with the
-#      launcher's OWN stdio handles passed straight through (STARTF_USESTDHANDLES)
-#      so the inner process's stdin/stdout/stderr ARE the same pipes Node's
-#      child_process.spawn of THIS script sees.
+#   f) CreateProcessWithLogonW launches AS that account, twice, through the one
+#      shared Invoke-AsLeasedAccount helper: FIRST a short scrub pass that
+#      empties the account's scratch profile (see Clear-SandboxProfileContents -
+#      it must run as the account itself, which is the only principal that can
+#      delete those files without being an Administrator), THEN InnerBin, with
+#      the launcher's OWN stdio handles passed straight through
+#      (STARTF_USESTDHANDLES) so the inner process's stdin/stdout/stderr ARE the
+#      same pipes Node's child_process.spawn of THIS script sees.
 #   g) wait for the inner process, destroy the desktop, best-effort revoke the
 #      ACE, THEN release the lease (ACE revoke before lock release, so no other
 #      turn can claim this account while its ACE from THIS turn might still be
@@ -518,6 +522,243 @@ function Format-Win32Arg([string]$Arg) {
   return $sb.ToString()
 }
 
+function Invoke-AsLeasedAccount {
+  # THE single CreateProcessWithLogonW call site in this script. It is used
+  # TWICE per turn - once for the scratch-profile scrub pass, once for InnerBin
+  # itself - so that both go through exactly the same launch path (same logon
+  # flags, same private desktop, same exit-code handling) instead of growing a
+  # second, divergent copy of it.
+  #
+  # Throws if the LAUNCH fails. A non-zero exit code from the child is RETURNED,
+  # not thrown: the caller decides whether that is fatal (InnerBin) or a warning
+  # (the scrub).
+  #
+  # BUDGET, measured 2026-08-26 on this machine, do not exceed: MSDN's note that
+  # CreateProcessWithLogonW's lpCommandLine maxes out at 1024 characters is real
+  # and ENFORCED - a 3074-character command line fails outright with
+  # E_INVALIDARG (0x80070057), it does not truncate. That is why the scrub below
+  # is a compact inline -Command and NOT a -EncodedCommand payload (base64 of
+  # UTF-16 would be ~3x the script's size and blow the limit immediately).
+  param(
+    [Parameter(Mandatory = $true)][string]$AccountName,
+    [Parameter(Mandatory = $true)][string]$Password,
+    [Parameter(Mandatory = $true)][string]$Bin,
+    [Parameter(Mandatory = $true)][string[]]$BinArgs,
+    [Parameter(Mandatory = $true)][string]$WorkingDirectory,
+    [Parameter(Mandatory = $true)][string]$LpDesktop,
+    [Parameter(Mandatory = $true)][string]$Label,
+    [IntPtr]$StdIn = [IntPtr]::Zero,
+    [IntPtr]$StdOut = [IntPtr]::Zero,
+    [IntPtr]$StdError = [IntPtr]::Zero
+  )
+  $cmdParts = New-Object System.Collections.Generic.List[string]
+  [void]$cmdParts.Add((Format-Win32Arg $Bin))
+  foreach ($a in $BinArgs) { [void]$cmdParts.Add((Format-Win32Arg $a)) }
+  $cmdLine = New-Object System.Text.StringBuilder(($cmdParts -join ' '))
+
+  $si = New-Object SandboxLogon+STARTUPINFO
+  $si.cb = [Runtime.InteropServices.Marshal]::SizeOf([type]([SandboxLogon+STARTUPINFO]))
+  # Land the child on ITS OWN desktop rather than letting it inherit this
+  # launcher's. "<winsta>\<desktop>"  - the backslash is what tells Win32 the
+  # string names both. Without this the child would inherit WinSta0\Default,
+  # which it now (deliberately) has no rights on at all, and die at 0xC0000142.
+  $si.lpDesktop = $LpDesktop
+  $si.dwFlags = [SandboxLogon]::STARTF_USESTDHANDLES -bor [SandboxLogon]::STARTF_USESHOWWINDOW
+  $si.wShowWindow = 0   # SW_HIDE
+  # CreateProcessWithLogonW never inherits handles (seclogon duplicates exactly
+  # these three into the child), so a handle left at IntPtr::Zero gives the child
+  # NO such stream at all rather than a leaked one - verified 2026-08-26, the
+  # call succeeds with a NULL hStdInput. That is how the scrub pass is kept from
+  # ever reading the stream-json stdin or writing the stream-json stdout.
+  $si.hStdInput = $StdIn
+  $si.hStdOutput = $StdOut
+  $si.hStdError = $StdError
+
+  $pi = New-Object SandboxLogon+PROCESS_INFORMATION
+  Log "$Label under ${AccountName}: $Bin (+$($BinArgs.Count) args), cwd=$WorkingDirectory"
+  # lpApplicationName MUST be the resolved path, not $null (operator 2026-08-21):
+  # leaving it null relies on the target account's own (unpredictable) PATH
+  # search to resolve the first token of lpCommandLine, and empirically that
+  # path (not a permissions issue) is what the ERROR_PATH_NOT_FOUND was about.
+  # InnerBin must therefore always be a fully-resolved absolute path by the time
+  # it reaches this script -- callers (sandbox-cli-session.mjs) are responsible
+  # for that, same as any other CreateProcess-family caller.
+  # Domain '.' = this machine's local account database; the pool accounts are
+  # local, never domain.
+  $ok = [SandboxLogon]::CreateProcessWithLogonW(
+    $AccountName, '.', $Password, [SandboxLogon]::LOGON_WITH_PROFILE,
+    $Bin, $cmdLine, [SandboxLogon]::CREATE_NO_WINDOW,
+    [IntPtr]::Zero, $WorkingDirectory, [ref]$si, [ref]$pi)
+  if (-not $ok) {
+    $werr = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    throw "sandbox-logon-launcher: CreateProcessWithLogonW('$AccountName') failed for $Label, Win32 error $werr"
+  }
+
+  [SandboxLogon]::CloseHandle($pi.hThread) | Out-Null
+  [SandboxLogon]::WaitForSingleObject($pi.hProcess, [SandboxLogon]::INFINITE) | Out-Null
+  [uint32]$exitCode = 0
+  [SandboxLogon]::GetExitCodeProcess($pi.hProcess, [ref]$exitCode) | Out-Null
+  [SandboxLogon]::CloseHandle($pi.hProcess) | Out-Null
+  Log "$Label exited $exitCode"
+  # A crashed process's exit code is often a raw NTSTATUS (e.g. 0xC0000142)
+  # reported through GetExitCodeProcess as a uint32 -- a CHECKED [int] cast
+  # throws on anything past Int32.MaxValue instead of exiting with it. Bit-
+  # reinterpret instead (same bytes, signed), matching how exit codes are
+  # conventionally represented everywhere else (Node's child_process included).
+  return [BitConverter]::ToInt32([BitConverter]::GetBytes($exitCode), 0)
+}
+
+function Clear-SandboxProfileContents {
+  # Empty ONE pool account's Windows user profile. Called on LEASE ACQUIRE,
+  # before InnerBin runs.
+  #
+  # WHY (operator ruling 2026-08-21: the account profile is SCRATCH, the
+  # conversation folder is the only durable storage): pool accounts are REUSED
+  # across DIFFERENT conversations, and LOGON_WITH_PROFILE materialises
+  # C:\Users\<account>\. Anything the inner CLI writes under %USERPROFILE% /
+  # %APPDATA% / %LOCALAPPDATA%  - browser profiles, caches, tokens, app config  -
+  # survives there and is visible to whichever DIFFERENT conversation leases that
+  # account next. That is a cross-conversation information leak the per-turn
+  # folder ACE cannot catch, because it is not a permissions failure at all; it
+  # can only be fixed by wiping.
+  #
+  # WHY AS THE LEASED ACCOUNT (operator ruling 2026-08-26, and the whole point of
+  # this function): the previous shape deleted the entire Win32_UserProfile from
+  # HERE, in the launcher's own context, which needs local-Administrator rights.
+  # That worked only while the launcher still ran elevated; the launch path moved
+  # to CreateProcessWithLogonW precisely so the daemon runs UNELEVATED, so in
+  # production it failed on EVERY turn with "A required privilege is not held by
+  # the client" and the leak was live (all 16 profile dirs on REVE, never
+  # emptied). The leased account OWNS everything under its own profile, so IT can
+  # delete those files with no privilege at all - hence a scrub pass launched
+  # through the same Invoke-AsLeasedAccount path as InnerBin itself. Do NOT move
+  # this back into the launcher's own context, and do NOT reintroduce an
+  # elevation requirement on the launch path.
+  #
+  # WHY ONLY THE CONTENTS: removing the profile REGISTRATION (its ProfileList
+  # registry entry) or the C:\Users\<account> directory itself still needs
+  # admin, so neither is attempted. Nothing is lost by that - an EMPTY directory
+  # leaks nothing - and it also sidesteps the accumulation hazard the old
+  # comment here warned about: because the directory and its ProfileList entry
+  # stay in agreement, the next logon reuses them instead of creating
+  # egpt-sbx-07.REVE, then .REVE.000, forever.
+  #
+  # KNOWN RESIDUE, accepted: the profile is LOADED during the scrub (the scrub
+  # pass is itself a LOGON_WITH_PROFILE logon), so the hive files - NTUSER.DAT,
+  # UsrClass.dat and their logs - are locked and get skipped, i.e. HKCU state
+  # does carry across conversations. Deleting them is not an option: a profile
+  # directory whose hive is missing makes the NEXT logon fail into a temporary
+  # profile. Files are where the CLIs actually put tokens and caches.
+  #
+  # SAFETY: this deletes a whole user profile's worth of files, so a targeting
+  # bug could destroy the operator's own. The guards below are belt-and-braces
+  # and REFUSE (throw) rather than proceed - unchanged from the admin-only
+  # version this replaces - and the scrub itself re-checks, INSIDE the child,
+  # that the path it was handed is its own %USERPROFILE%.
+  param(
+    [Parameter(Mandatory = $true)][string]$AccountName,
+    [Parameter(Mandatory = $true)][string]$Password,
+    [Parameter(Mandatory = $true)][string]$LpDesktop
+  )
+  # ---- GUARD 1 (pool prefix): checked FIRST, before a SID is even resolved, so
+  # that no code path in this function can target 'an', 'Administrator' or any
+  # other non-pool account even if it is called wrongly.
+  if (-not $AccountName.StartsWith($SandboxPoolPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "sandbox-logon-launcher: refusing to scrub the profile of '$AccountName'  - it is not a sandbox pool account (its name must start with '$SandboxPoolPrefix')"
+  }
+
+  # Resolve the NAME to a SID and select the profile BY SID  - never by matching
+  # path strings, which a lookalike directory name could fool. Win32_UserProfile
+  # is READABLE unelevated (verified 2026-08-26); only Remove-CimInstance on one
+  # needed the privilege we no longer have.
+  try {
+    $sid = (New-Object System.Security.Principal.NTAccount($AccountName)).Translate([System.Security.Principal.SecurityIdentifier])
+  } catch {
+    # The account does not exist yet (first-ever use on this node  - the pool is
+    # created lazily by Get-SandboxCredential later in the launcher's flow). No
+    # account means no profile: nothing to scrub, and nothing was deleted.
+    Log "no profile to scrub for '$AccountName'  - the account does not resolve to a SID ($($_.Exception.Message))"
+    return
+  }
+
+  $found = @(Get-CimInstance -ClassName Win32_UserProfile -ErrorAction Stop |
+    Where-Object { $_.SID -eq $sid.Value })
+
+  # NORMAL CASE, not an error: first-ever use of this account. There is nothing
+  # to scrub AND no profile directory yet, so skip the extra logon entirely -
+  # step (f)'s own LOGON_WITH_PROFILE will create it fresh.
+  if ($found.Count -eq 0) { return }
+  # ---- GUARD 2 (exactly one match): a SID matching several profiles means
+  # something is wrong that this function is not equipped to reason about.
+  if ($found.Count -gt 1) {
+    throw "sandbox-logon-launcher: refusing to scrub the profile of '$AccountName'  - $($found.Count) Win32_UserProfile entries match SID $($sid.Value)"
+  }
+  $candidate = $found[0]
+  # ---- GUARD 3 (not a system profile).
+  if ($candidate.Special) {
+    throw "sandbox-logon-launcher: refusing to scrub the profile of '$AccountName' (SID $($sid.Value))  - it is flagged Special, i.e. a system profile"
+  }
+  # ---- GUARD 4 (independent path check): the SID lookup above and this leaf
+  # comparison must AGREE. Deliberately redundant with GUARD 1.
+  if ([string]::IsNullOrWhiteSpace($candidate.LocalPath)) {
+    throw "sandbox-logon-launcher: refusing to scrub the profile of '$AccountName' (SID $($sid.Value))  - its Win32_UserProfile entry has no LocalPath"
+  }
+  $leaf = Split-Path -Path $candidate.LocalPath -Leaf
+  if ($leaf -ne $AccountName) {
+    throw "sandbox-logon-launcher: refusing to scrub the profile of '$AccountName' (SID $($sid.Value))  - it lives at '$($candidate.LocalPath)', whose leaf '$leaf' is not the account name"
+  }
+  $profilePath = $candidate.LocalPath
+
+  # The scrub itself, run by the account that owns these files. Both values
+  # interpolated below are launcher-derived and already prefix-guarded above -
+  # the account name comes from Get-SandboxPoolAccountNames and the path from
+  # the Win32_UserProfile entry for its SID - so NEITHER is caller-supplied and
+  # neither can contain a quote. Line by line:
+  #  - GUARD 5, inside the child: refuse unless this really is our own profile.
+  #    Cheap, and it is the one check that cannot be fooled by anything the
+  #    launcher got wrong, because the child is the account.
+  #  - delete the CHILDREN of the profile dir, never the dir itself (see WHY
+  #    ONLY THE CONTENTS above). -Force covers hidden/system/read-only;
+  #    SilentlyContinue is the best-effort part: locked files (the loaded hive,
+  #    a handle a previous turn has not closed yet) are skipped, not fatal.
+  #    Remove-Item deletes a junction/symlink as a LINK rather than recursing
+  #    through it (re-verified 2026-08-26 against a planted junction), so a
+  #    junction a previous turn planted here cannot steer the scrub outside
+  #    this profile.
+  #  - report what is left, so a scrub that silently stops working is visible in
+  #    the log instead of having to be discovered by listing C:\Users.
+  # Keep this SHORT: the whole command line must fit in 1024 characters, see
+  # Invoke-AsLeasedAccount's BUDGET note.
+  $scrubScript = @(
+    "`$r = '$profilePath'"
+    "if (`$env:USERNAME -ne '$AccountName' -or `$env:USERPROFILE -ne `$r) { [Console]::Error.WriteLine('sandbox-logon-launcher: scrub REFUSED - running as ' + `$env:USERNAME + ' at ' + `$env:USERPROFILE); exit 11 }"
+    "Get-ChildItem -LiteralPath `$r -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue"
+    "[Console]::Error.WriteLine('sandbox-logon-launcher: scrubbed ' + `$r + ', ' + @(Get-ChildItem -LiteralPath `$r -Force -Recurse -ErrorAction SilentlyContinue).Count + ' locked entries left')"
+  ) -join '; '
+
+  # NON-FATAL: the scrub is a HYGIENE step, not a security gate. Warn on stderr
+  # (stdout is the inner process's own stream-json pipe, see Log's comment) and
+  # let the turn proceed.
+  try {
+    # stdin/stdout deliberately left NULL: this pass must not be able to touch
+    # the stream-json pipes. Its stdout is pointed at the launcher's own STDERR
+    # so that anything it prints - including the report line above - is a
+    # diagnostic, never protocol. cwd is %SystemRoot%, a directory every account
+    # can use; the scrub has no business in TargetFolder.
+    $errHandle = [SandboxLogon]::GetStdHandle([SandboxLogon]::STD_ERROR_HANDLE)
+    $psExe = Join-Path $PSHOME 'powershell.exe'
+    $rc = Invoke-AsLeasedAccount -AccountName $AccountName -Password $Password `
+      -Bin $psExe -BinArgs @('-NoProfile', '-NonInteractive', '-Command', $scrubScript) `
+      -WorkingDirectory $env:SystemRoot -LpDesktop $LpDesktop -Label 'profile scrub' `
+      -StdOut $errHandle -StdError $errHandle
+    if ($rc -ne 0) {
+      Log "WARNING: the scratch-profile scrub for '$AccountName' at $profilePath exited $rc (continuing anyway: hygiene step, not a security gate)"
+    }
+  } catch {
+    Log "WARNING: could not scrub the scratch profile for '$AccountName' at $profilePath  - $($_.Exception.Message) (continuing anyway: hygiene step, not a security gate)"
+  }
+}
+
 # ---- (a) lease one pool account. An atomic per-account lock file - the
 # first caller to successfully create it with FileMode.CreateNew (atomic on
 # NTFS) owns the lease. Every other concurrent caller gets an IOException
@@ -558,17 +799,6 @@ $aceGranted = $false
 $leasedSid = $null
 $hSandboxDesk = [IntPtr]::Zero
 try {
-  # ---- (a2) wipe this account's Windows user profile. Pool accounts are reused
-  # across DIFFERENT conversations and step (f)'s LOGON_WITH_PROFILE recreates
-  # C:\Users\<account>\ at logon, so whatever the previous turn's CLI left under
-  # %APPDATA% / %LOCALAPPDATA% would otherwise be readable by the next
-  # conversation to lease this name. ON ACQUIRE, deliberately: once the account
-  # is logged on the profile already exists so wiping would be useless, and wiping
-  # on RELEASE would be skipped entirely whenever a turn crashes or is killed  -
-  # which is why there is no wipe in the finally block. Wipe-on-acquire is a
-  # clean start regardless of how the previous turn ended. ----
-  Clear-SandboxAccountProfile -AccountName $leasedName
-
   # ---- (b) get this account's stored credential  - self-heals if somehow
   # missing, but under normal operation the pool was already provisioned by
   # provision-sandbox-account.ps1, so this just reads the existing file. ----
@@ -600,61 +830,30 @@ try {
   $sandboxDesk = New-SandboxDesktop -DesktopName $leasedName -LeasedSid $leasedSid -PoolGroupSid $poolGroupSid
   $hSandboxDesk = $sandboxDesk.Handle
 
+  # ---- (f, scrub pass) empty this account's scratch profile BEFORE InnerBin
+  # runs, as the account itself - the only principal that can delete those files
+  # without being an Administrator (see Clear-SandboxProfileContents). ON
+  # ACQUIRE, deliberately: scrubbing on RELEASE would be skipped entirely
+  # whenever a turn crashes or is killed, which is why there is none in the
+  # finally block. Scrub-on-acquire is a clean start regardless of how the
+  # previous turn ended. It needs the desktop from step (e) - powershell.exe
+  # imports USER32 like any other InnerBin - which is why it runs here and not
+  # earlier. ----
+  Clear-SandboxProfileContents -AccountName $leasedName -Password $plainPwd -LpDesktop $sandboxDesk.LpDesktop
+
   # ---- (f) launch InnerBin AS the leased account, stdio proxied straight
   # through. CreateProcessWithLogonW does the logon itself from the name +
   # password, so there is no separate LogonUser step and no token handle to
   # own: it needs no privilege in THIS process (see the WHY at the top). ----
-  $cmdParts = New-Object System.Collections.Generic.List[string]
-  [void]$cmdParts.Add((Format-Win32Arg $InnerBin))
-  foreach ($a in $InnerArgs) { [void]$cmdParts.Add((Format-Win32Arg $a)) }
-  $cmdLine = New-Object System.Text.StringBuilder(($cmdParts -join ' '))
-
-  $si = New-Object SandboxLogon+STARTUPINFO
-  $si.cb = [Runtime.InteropServices.Marshal]::SizeOf([type]([SandboxLogon+STARTUPINFO]))
-  # Land the child on ITS OWN desktop rather than letting it inherit this
-  # launcher's. "<winsta>\<desktop>"  - the backslash is what tells Win32 the
-  # string names both. Without this the child would inherit WinSta0\Default,
-  # which it now (deliberately) has no rights on at all, and die at 0xC0000142.
-  $si.lpDesktop = $sandboxDesk.LpDesktop
-  $si.dwFlags = [SandboxLogon]::STARTF_USESTDHANDLES -bor [SandboxLogon]::STARTF_USESHOWWINDOW
-  $si.wShowWindow = 0   # SW_HIDE
-  $si.hStdInput = [SandboxLogon]::GetStdHandle([SandboxLogon]::STD_INPUT_HANDLE)
-  $si.hStdOutput = [SandboxLogon]::GetStdHandle([SandboxLogon]::STD_OUTPUT_HANDLE)
-  $si.hStdError = [SandboxLogon]::GetStdHandle([SandboxLogon]::STD_ERROR_HANDLE)
-
-  $pi = New-Object SandboxLogon+PROCESS_INFORMATION
-  Log "launching under ${leasedName}: $InnerBin (+$($InnerArgs.Count) args), cwd=$TargetFolder"
-  # lpApplicationName MUST be the resolved path, not $null (operator 2026-08-21):
-  # leaving it null relies on the target account's own (unpredictable) PATH
-  # search to resolve the first token of lpCommandLine, and empirically that
-  # path (not a permissions issue) is what the ERROR_PATH_NOT_FOUND was about.
-  # InnerBin must therefore always be a fully-resolved absolute path by the time
-  # it reaches this script -- callers (sandbox-cli-session.mjs) are responsible
-  # for that, same as any other CreateProcess-family caller.
-  # Domain '.' = this machine's local account database; the pool accounts are
-  # local, never domain.
-  $ok = [SandboxLogon]::CreateProcessWithLogonW(
-    $leasedName, '.', $plainPwd, [SandboxLogon]::LOGON_WITH_PROFILE,
-    $InnerBin, $cmdLine, [SandboxLogon]::CREATE_NO_WINDOW,
-    [IntPtr]::Zero, $TargetFolder, [ref]$si, [ref]$pi)
-  if (-not $ok) {
-    $werr = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
-    throw "sandbox-logon-launcher: CreateProcessWithLogonW('$leasedName') failed, Win32 error $werr"
-  }
-
-  [SandboxLogon]::CloseHandle($pi.hThread) | Out-Null
-  # ---- (g, part 1) wait for the inner process, capture its real exit code ----
-  [SandboxLogon]::WaitForSingleObject($pi.hProcess, [SandboxLogon]::INFINITE) | Out-Null
-  [uint32]$exitCode = 0
-  [SandboxLogon]::GetExitCodeProcess($pi.hProcess, [ref]$exitCode) | Out-Null
-  [SandboxLogon]::CloseHandle($pi.hProcess) | Out-Null
-  Log "inner process exited $exitCode"
-  # A crashed process's exit code is often a raw NTSTATUS (e.g. 0xC0000142)
-  # reported through GetExitCodeProcess as a uint32 -- a CHECKED [int] cast
-  # throws on anything past Int32.MaxValue instead of exiting with it. Bit-
-  # reinterpret instead (same bytes, signed), matching how exit codes are
-  # conventionally represented everywhere else (Node's child_process included).
-  $finalExit = [BitConverter]::ToInt32([BitConverter]::GetBytes($exitCode), 0)
+  # ---- (g, part 1) ...and wait for it, capturing its real exit code. Both the
+  # launch and the wait live in Invoke-AsLeasedAccount, shared with the scrub
+  # pass above. ----
+  $finalExit = Invoke-AsLeasedAccount -AccountName $leasedName -Password $plainPwd `
+    -Bin $InnerBin -BinArgs $InnerArgs `
+    -WorkingDirectory $TargetFolder -LpDesktop $sandboxDesk.LpDesktop -Label 'launching' `
+    -StdIn ([SandboxLogon]::GetStdHandle([SandboxLogon]::STD_INPUT_HANDLE)) `
+    -StdOut ([SandboxLogon]::GetStdHandle([SandboxLogon]::STD_OUTPUT_HANDLE)) `
+    -StdError ([SandboxLogon]::GetStdHandle([SandboxLogon]::STD_ERROR_HANDLE))
 } finally {
   if ($plainPwd) { $plainPwd = $null }
   # A desktop dies once its last handle closes and no threads remain attached  -
