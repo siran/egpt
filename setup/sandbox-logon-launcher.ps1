@@ -18,7 +18,8 @@
 #   a) lease one pool account via an atomic per-account lock file (first
 #      caller to successfully create the lock file with FileMode.CreateNew
 #      owns the lease; the lock stays open, via $lockStream, for the whole
-#      turn - that open handle IS the lease).
+#      turn - that open handle IS the lease, and a lock file NO process holds
+#      open is stale and gets reclaimed in place - see the leasing block).
 #   b) get that account's stored credential (DPAPI, operator-scoped).
 #   c) resolve that account's own fixed user SID - always present in its own
 #      token, unlike the broken per-call logon-session SID.
@@ -763,7 +764,31 @@ function Clear-SandboxProfileContents {
 # first caller to successfully create it with FileMode.CreateNew (atomic on
 # NTFS) owns the lease. Every other concurrent caller gets an IOException
 # (file already exists) and moves on to the next pool name. The open
-# FileStream handle IS the lease; it stays open for the whole turn. ----
+# FileStream handle IS the lease; it stays open for the whole turn.
+#
+# WHAT "LEASED" MEANS, and why the file EXISTING is not it (bug found live
+# 2026-08-26): release happens in the finally block at the bottom - close the
+# stream, delete the file - and a HARD-killed turn (taskkill /F, crash, reboot)
+# never runs it. The OS drops the file HANDLE, but the FILE survives, so
+# CreateNew failed forever afterwards for that account and the name was starved
+# PERMANENTLY. Measured on this machine: 14 lock files, 13 of which nothing
+# held - the 16-account pool was down to 2 leasable names, two crashes from
+# total exhaustion, silently.
+#
+# So the discriminator is NOT the file's existence and NOT its age (an
+# `idle_ttl_by_class: conversation: -1` warm session never idle-evicts, so a
+# LEGITIMATE lease can be days old): it is whether a LIVE HANDLE holds it.
+# Opening a path with FileShare::None succeeds only when no other handle is
+# open on it - and both opens below use FileShare::None (File.Open's 3-arg
+# overload defaults to it), so the test is exact in both directions.
+#
+# RACE SAFETY: the successful exclusive open IS the reclaimed lease - the same
+# $lockStream the whole turn holds and the same finally releases. It is
+# deliberately NOT "open, close, re-CreateNew", which would reopen the very
+# window it is testing. Two launchers racing the same stale lock both fail
+# CreateNew and both attempt the exclusive open; the kernel's share-mode check
+# is atomic, so exactly one gets a handle and the loser takes the IOException
+# path to the next pool name, exactly as against a live lease. ----
 $locksDir = Join-Path (Join-Path $env:ProgramData 'egpt') 'sandbox-pool-locks'
 New-Item -ItemType Directory -Path $locksDir -Force -ErrorAction Stop | Out-Null
 
@@ -782,7 +807,21 @@ for ($attempt = 1; $attempt -le $maxLeaseAttempts -and -not $leasedName; $attemp
       $lockPath = $candidatePath
       break
     } catch [System.IO.IOException] {
-      # already leased by another concurrent turn  - try the next pool name
+      # The lock FILE exists. That is not yet a lease - see WHAT "LEASED" MEANS
+      # above. Try to take it EXCLUSIVELY: if that succeeds nothing held it, the
+      # lock is a crashed turn's litter, and this handle is now our lease. If it
+      # throws (sharing violation from a live turn's own handle; or the file
+      # vanished under us because its owner's release ran in between; or it is
+      # unreadable), fall through to the next pool name exactly as before.
+      try {
+        $lockStream = [System.IO.File]::Open($candidatePath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        $leasedName = $name
+        $lockPath = $candidatePath
+        Log "RECLAIMED stale lease lock $candidatePath  - the file existed but NO process held it open, i.e. a previous turn on '$name' was hard-killed before its release ran. Frequent reclaims mean turns are dying badly."
+        break
+      } catch {
+        # genuinely leased by another concurrent turn  - try the next pool name
+      }
     }
   }
   if (-not $leasedName -and $attempt -lt $maxLeaseAttempts) {
