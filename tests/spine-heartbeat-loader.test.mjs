@@ -8,6 +8,7 @@ import { describe, it, expect } from 'vitest';
 import { join } from 'node:path';
 import { createHeartbeatLoader, parseFrequency, parseWhen, resolveTimeZone, zonedWallClockToEpoch } from '../src/spine/heartbeat-loader.mjs';
 import { createConfigResolver, parseEntityConfig, NODE_FILE } from '../src/spine/config-resolver.mjs';
+import { createHeartbeats } from '../src/spine/heartbeats.mjs';   // the REAL cadence registry, for the no-per-tick-spam lock
 import { framePrompt } from '../src/tools/textecute.mjs';
 
 // ── fakes ───────────────────────────────────────────────────────────────────
@@ -759,5 +760,166 @@ describe('createHeartbeatLoader — the three profile-root aggregates', () => {
       join('/home', 'conversations.readonly.yaml'),
       join('/home', 'heartbeats.readonly.yaml'),
     ]);
+  });
+});
+
+// ── run observability (operator 2026-08-23: "when a heartbeat runs the agent does whatever.
+//    so log errors and triggers? as to know if it ran successfully"). A beat is unattended, so
+//    every RUN logs exactly TWO lines: one at FIRE time naming what is about to run, one
+//    OUTCOME carrying ok/FAILED, the ELAPSED time, and on failure the real reason. Both action
+//    kinds. Nothing logs per tick. All fakes — no process spawns, no session opens. ──
+describe('createHeartbeatLoader — run logging (fire + outcome, both action kinds)', () => {
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+
+  // One room beat, a hand-cranked clock (injected `now`) so elapsed is exact, not wall-clock.
+  function build(raw) {
+    const logs = [];
+    const turns = [];
+    const { spawn, calls } = makeSpawn();
+    const registry = makeRegistry();
+    let clockMs = 1_000_000;
+    let onTurn = async () => ({ text: 'ok' });
+    const loader = makeLoader({
+      getConfig: () => ({ default_time_zone: 'UTC', agents: { pi: {} } }),
+      aliveMs: 0, egptHome: '/home', procCwd: '/checkout', spawn,
+      listEntityDirs: async () => [{ dir: '/home/rooms/dj', ns: 'room/dj' }],
+      readEntityConfig: async () => ({ heartbeats: { dj: raw } }),
+      dispatchTurn: async (t) => { turns.push(t); return onTurn(t); },
+      io: { writeFile: async () => {}, mkdir: async () => {}, readFile: async () => 'script body\n' },
+      onLog: (m) => logs.push(m), now: () => clockMs,
+    });
+    return {
+      logs, turns, calls,
+      advance: (ms) => { clockMs += ms; },
+      setTurn: (f) => { onTurn = f; },
+      async start() {
+        loader.wrapRegistry(registry);
+        await loader.collect();
+        await loader.activate({ stats: () => ({}) });
+        logs.length = 0;   // load-time lines are not RUN lines
+        return beatsOf(registry).find((r) => r.name === 'room/dj:dj').fn;
+      },
+    };
+  }
+
+  it('a command beat logs ONE fire line naming the command, then ONE ok outcome with elapsed', async () => {
+    const h = build({ frequency: '5s', command: 'node job.js' });
+    const beat = await h.start();
+
+    beat();
+    expect(h.logs).toEqual(['room/dj:dj: fire command — node job.js']);   // fired, before the work
+
+    h.advance(2500);
+    h.calls[0].child.emit('exit', 0);
+    expect(h.logs).toEqual([
+      'room/dj:dj: fire command — node job.js',
+      'room/dj:dj: ok in 2.5s',
+    ]);
+  });
+
+  it('a command beat that exits NON-ZERO logs FAILED with the exit code + elapsed — and still releases the guard', async () => {
+    const h = build({ frequency: '5s', command: 'node job.js' });
+    const beat = await h.start();
+
+    beat();
+    h.advance(900);
+    h.calls[0].child.emit('exit', 3);
+    expect(h.logs).toEqual([
+      'room/dj:dj: fire command — node job.js',
+      'room/dj:dj: FAILED in 900ms — exited 3',   // the REASON, not a bare error line
+    ]);
+
+    beat();   // non-fatal, exactly as before: the cadence keeps going
+    expect(h.calls).toHaveLength(2);
+    expect(h.logs.filter((l) => l.includes('fire command'))).toHaveLength(2);
+  });
+
+  it('a child that emits BOTH error and exit still logs ONE outcome (a run is one pair, never two)', async () => {
+    const h = build({ frequency: '5s', command: 'node job.js' });
+    const beat = await h.start();
+
+    beat();
+    h.advance(120);
+    h.calls[0].child.emit('error', new Error('ENOENT node'));
+    h.calls[0].child.emit('exit', null, 'SIGTERM');
+    expect(h.logs).toEqual([
+      'room/dj:dj: fire command — node job.js',
+      'room/dj:dj: FAILED in 120ms — ENOENT node',
+    ]);
+  });
+
+  it('a turn beat logs fire (being + script) and an ok outcome with elapsed + a one-line prefix of the reply', async () => {
+    const h = build({ frequency: '30m', agent: 'pi', script_path: 'dj.x.md' });
+    h.setTurn(async () => { h.advance(12_400); return { text: '  Queued three tracks\nand posted the set list.  ' }; });
+    const beat = await h.start();
+
+    beat();
+    await flush();
+    expect(h.turns).toHaveLength(1);
+    expect(h.logs).toEqual([
+      'room/dj:dj: fire turn — pi dj.x.md',
+      'room/dj:dj: ok in 12.4s — Queued three tracks and posted the set list.',   // one line, always
+    ]);
+  });
+
+  it('a long turn reply is truncated in the outcome line (one greppable line, not a transcript)', async () => {
+    const h = build({ frequency: '30m', agent: 'pi', script_path: 'dj.x.md' });
+    h.setTurn(async () => ({ text: 'x'.repeat(500) }));
+    const beat = await h.start();
+
+    beat();
+    await flush();
+    expect(h.logs).toHaveLength(2);
+    expect(h.logs[1]).toBe(`room/dj:dj: ok in 0ms — ${'x'.repeat(200)}…`);
+  });
+
+  it('a turn beat whose dispatcher THROWS logs fire + FAILED with the thrown message and elapsed', async () => {
+    const h = build({ frequency: '30m', agent: 'pi', script_path: 'dj.x.md' });
+    h.setTurn(async () => { h.advance(1500); throw new Error('no conversation for room/dj'); });
+    const beat = await h.start();
+
+    beat();
+    await flush();
+    expect(h.logs).toEqual([
+      'room/dj:dj: fire turn — pi dj.x.md',
+      'room/dj:dj: FAILED in 1.5s — no conversation for room/dj',
+    ]);
+  });
+
+  it('a tick that fires NOTHING logs NOTHING — no per-tick spam (regression lock, on the REAL registry)', async () => {
+    const logs = [];
+    const { spawn, calls } = makeSpawn();
+    const registry = createHeartbeats({ onLog: (m) => logs.push(m) });
+    let clockMs = Date.UTC(2026, 6, 2, 8, 0);
+    const loader = makeLoader({
+      getConfig: () => ({
+        default_time_zone: 'UTC',
+        heartbeats: {
+          slow: { frequency: '5m', command: 'node slow.js' },
+          later: { when: '7/2/2026 09:00', command: 'node later.js' },
+        },
+      }),
+      aliveMs: 0, spawn, procCwd: '/checkout', io: noopIo(),
+      onLog: (m) => logs.push(m), now: () => clockMs,
+    });
+    loader.wrapRegistry(registry);
+    await loader.collect();
+    await loader.activate({ stats: () => ({}) });
+    logs.length = 0;
+
+    registry.runDue(clockMs);            // first tick: the recurring beat is due (lastRun 0)
+    expect(calls).toHaveLength(1);
+    calls[0].child.emit('exit', 0);
+    expect(logs).toEqual(['slow: fire command — node slow.js', 'slow: ok in 0ms']);
+
+    logs.length = 0;
+    for (let i = 0; i < 100; i++) { clockMs += 2000; registry.runDue(clockMs); }   // ~3min of ticks, nothing due
+    expect(calls).toHaveLength(1);       // the one-shot is not due, the cadence has not elapsed
+    expect(logs).toEqual([]);            // not one line per tick, not one line at all
+
+    clockMs = Date.UTC(2026, 6, 2, 9, 1);   // past the cadence AND the one-shot
+    registry.runDue(clockMs);
+    expect(calls).toHaveLength(3);
+    expect(logs.filter((l) => l.includes('fire command'))).toHaveLength(2);
   });
 });

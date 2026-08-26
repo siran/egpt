@@ -76,6 +76,20 @@
 // restart, no periodic timer, no self-checking beat — the trigger belongs to a real message
 // arriving, not to a tick or to a task listed inside the set being reloaded.
 //
+// EVERY RUN IS OBSERVABLE (operator 2026-08-23: "when a heartbeat runs the agent does
+// whatever. so log errors and triggers? as to know if it ran successfully"). A beat is
+// unattended — nobody watches it fire — so each RUN logs exactly TWO lines through onLog
+// (boot prefixes them `[heartbeat] `), one PAIR per run, keyed by the beat name:
+//   <name>: fire command — <the shell line>        <name>: fire turn — <being> <script>
+//   <name>: ok in 2.5s                             <name>: ok in 12.4s — <reply prefix>
+//   <name>: FAILED in 0.9s — exited 3              <name>: FAILED in 600.0s — <message>
+// ELAPSED is the point, not decoration: a beat that "succeeds" in 600s is a problem and
+// must read as one without cross-referencing timestamps. The fire line lives in _fire (ONE
+// path, both action kinds); the outcome lines live in each kind's runner because only it
+// knows what "done" means (a child exit code / a resolved turn). Nothing else logs per
+// tick — a not-due beat, a skipped one-shot and a plain tick are all silent. The one
+// exception is the overlap-skip line, which IS the signal that something wedged.
+//
 // Three seams, one module, because of a boot ordering constraint (see boot.mjs):
 //   collect()      — pure-ish: take the resolver's scan, parse cadences →
 //                    { entries, finestMs }. Runs BEFORE createSpine so boot can
@@ -117,6 +131,19 @@ const TEXTECUTE_PATH = fileURLToPath(new URL('../tools/textecute.mjs', import.me
 // slow boot / brief downtime); older than this at load time is stale — skipped so
 // a long-dead node doesn't re-fire every past one-shot when it finally comes up.
 const _WHEN_GRACE_MS = 2 * 60_000;
+
+// ── run-log formatting (pure) ───────────────────────────────────────────────
+// Elapsed reads at a glance: sub-second in ms, everything else in tenths of a
+// second (so a 600s beat says `600.0s`, not `600000ms`).
+function _elapsed(ms) { return ms < 1000 ? `${Math.max(0, Math.round(ms))}ms` : `${(ms / 1000).toFixed(1)}s`; }
+
+// A turn's reply, squeezed to ONE greppable line. This is boot's old truncation (it used to
+// log the reply itself); it moved here so there is a single outcome formatter for both kinds.
+const _REPLY_MAX = 200;
+function _replyPrefix(text) {
+  const s = String(text ?? '').trim().replace(/\s+/g, ' ');
+  return s.length > _REPLY_MAX ? `${s.slice(0, _REPLY_MAX)}…` : s;
+}
 
 // ── frequency parser (pure) ─────────────────────────────────────────────────
 // A number is taken as milliseconds; a string is `<quantity><unit>` with unit
@@ -313,9 +340,9 @@ function _normalizeEntry({ name, source, cwd, raw, isAlive, aliveFallbackMs, ali
  * @param {object} deps.resolver                        the config RESOLVER (src/spine/config-resolver.mjs) — THE walk; supplies the node rung (heartbeats + default_time_zone), every entity's UNION-merged heartbeats block, the aggregate paths and the staleness probe
  * @param {number} [deps.aliveMs]                       boot's aliveMs; 0 = don't inject the default alive (test contract)
  * @param {string} [deps.aliveCommand]                  the default alive command boot passes in: the one-liner `echo beat > state/alive.txt` (run with cwd = egptHome so the relative state/ resolves into the profile)
- * @param {() => number} [deps.now]                     clock for the stale-`when` check at load time
+ * @param {() => number} [deps.now]                     clock for the stale-`when` check at load time AND for each run's elapsed time
  * @param {(cmd:string, opts:object) => any} deps.spawn                        child_process.spawn seam (shell:true)
- * @param {(t:{being:string, ns:string, prompt:string, name:string}) => Promise<any>} [deps.dispatchTurn]   an `agent:` beat's TURN, injected by boot (ns → the conversation, then brainpool.turn). The loader never imports the brain: it hands over the being, the entity and the framed prompt and lets boot run it through the ONE turn path.
+ * @param {(t:{being:string, ns:string, prompt:string, name:string}) => Promise<{text?:string}>} [deps.dispatchTurn]   an `agent:` beat's TURN, injected by boot (ns → the conversation, then brainpool.turn). The loader never imports the brain: it hands over the being, the entity and the framed prompt and lets boot run it through the ONE turn path. It RETURNS the turn result; the loader puts a prefix of `text` in the run's outcome line.
  * @param {object} [deps.env]                           base env commands inherit (boot: process.env)
  * @param {string} [deps.egptHome]                      EGPT_HOME (spawn env + the alive beat's cwd)
  * @param {string} [deps.procCwd]                       cwd for node-level command heartbeats (the checkout)
@@ -422,47 +449,68 @@ export function createHeartbeatLoader({
   }
 
   // Spawn an entry's command with the pump-stats env. onSettle() fires when the
-  // child errors or exits (clears the caller's running/one-shot state).
-  function _spawnAction(entry, stats, onSettle) {
+  // child errors or exits (clears the caller's running/one-shot state), and with it the
+  // run's ONE outcome line: `ok in <elapsed>`, or `FAILED in <elapsed> — <reason>` carrying
+  // the real reason (the exit code, the signal, the spawn error). A failure is still only
+  // logged — never thrown, never fatal. The latch matters because a failed spawn can emit
+  // BOTH 'error' and 'exit': one outcome per run, and onSettle exactly once.
+  function _spawnAction(entry, stats, startedMs, onSettle) {
     const { queueDepth = 0, oldestMs = 0 } = stats?.() ?? {};
     const childEnv = { ...env, EGPT_HOME: egptHome, EGPT_QUEUE_DEPTH: String(queueDepth), EGPT_QUEUE_OLDEST_MS: String(oldestMs) };
+    let settled = false;
+    const settle = (failure) => {
+      if (settled) return;
+      settled = true;
+      const el = _elapsed(now() - startedMs);
+      onLog(failure ? `${entry.name}: FAILED in ${el} — ${failure}` : `${entry.name}: ok in ${el}`);
+      onSettle?.();
+    };
     let child;
     try { child = spawn(entry.action.command, { shell: true, cwd: entry.action.cwd, env: childEnv }); }
-    catch (e) { onLog(`${entry.name}: spawn failed: ${e?.message ?? e}`); onSettle?.(); return; }
-    child?.on?.('error', (e) => { onLog(`${entry.name}: ${e?.message ?? e}`); onSettle?.(); });
-    child?.on?.('exit', (code) => { if (code) onLog(`${entry.name}: exited ${code}`); onSettle?.(); });
+    catch (e) { settle(`spawn failed: ${e?.message ?? e}`); return; }
+    child?.on?.('error', (e) => settle(e?.message ?? e));
+    child?.on?.('exit', (code, signal) => settle(code === 0 ? null : (signal ? `killed by ${signal}` : `exited ${code}`)));
   }
 
   // An `agent:` action: read the script FRESH (an edited *.x.md takes effect on the next
   // beat, exactly as it does for the spawned textecute), frame it with textecute's OWN
   // framing, and hand being + entity + prompt to boot's injected dispatcher, which runs it
   // through brainpool.turn. Never throws — a failure logs like a non-zero command exit, and
-  // onSettle ALWAYS runs, so the overlap guard below cannot get stuck closed.
-  async function _dispatchTurn(entry, onSettle) {
+  // onSettle ALWAYS runs, so the overlap guard below cannot get stuck closed. Either way it
+  // logs the run's ONE outcome line; on success with a prefix of the dispatcher's reply,
+  // which is the only trace a turn otherwise leaves (its output is the script's business).
+  async function _dispatchTurn(entry, startedMs, onSettle) {
     const { being, script, cwd, ns } = entry.action;
     try {
       if (typeof dispatchTurn !== 'function') throw new Error('no turn dispatcher wired — boot injects dispatchTurn');
       const path = resolvePath(cwd, script);
       const content = await readFile(path, 'utf8');
-      await dispatchTurn({ being, ns, name: entry.name, prompt: framePrompt(basename(path), content) });
+      const res = await dispatchTurn({ being, ns, name: entry.name, prompt: framePrompt(basename(path), content) });
+      const reply = _replyPrefix(res?.text);
+      onLog(`${entry.name}: ok in ${_elapsed(now() - startedMs)}${reply ? ` — ${reply}` : ''}`);
     } catch (e) {
-      onLog(`${entry.name}: ${e?.message ?? e}`);
+      onLog(`${entry.name}: FAILED in ${_elapsed(now() - startedMs)} — ${e?.message ?? e}`);
     } finally {
       onSettle?.();
     }
   }
 
-  // Run an entry's action, whichever kind it is. ONE fire path, so the overlap guard and
-  // the one-shot latch below cover a turn exactly as they cover a spawn.
+  // Run an entry's action, whichever kind it is. ONE fire path, so the overlap guard, the
+  // one-shot latch below and the FIRE LINE cover a turn exactly as they cover a spawn — the
+  // fire line belongs here for that reason; the outcome differs per kind, so it does not.
   function _fire(entry, stats, onSettle) {
-    if (entry.action.kind === 'turn') { _dispatchTurn(entry, onSettle); return; }
-    _spawnAction(entry, stats, onSettle);
+    const a = entry.action;
+    onLog(a.kind === 'turn' ? `${entry.name}: fire turn — ${a.being} ${a.script}` : `${entry.name}: fire command — ${a.command}`);
+    const startedMs = now();
+    if (a.kind === 'turn') { _dispatchTurn(entry, startedMs, onSettle); return; }
+    _spawnAction(entry, stats, startedMs, onSettle);
   }
 
   // A recurring action: on each due tick spawn the shell line / dispatch the turn. OVERLAP
   // GUARD — a still-running previous run skips this tick + logs, so a slow command (or a
-  // slow being turn: onSettle fires only when the turn resolves) never piles up. Non-zero
-  // exit only logs.
+  // slow being turn: onSettle fires only when the turn resolves) never piles up. This skip
+  // line is the ONE per-tick log that stays: a beat skipped because the last run is still
+  // going is exactly the signal that something wedged. A failed run only logs (see _fire).
   function _makeRecurringBeat(entry, stats) {
     let running = false;
     return () => {

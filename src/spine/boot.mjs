@@ -1267,12 +1267,14 @@ export async function boot({
   // lookup and nothing else. Deliberately NOT routed through spine.handleInbound: a beat is
   // not an inbound message, and gating.mjs (mode: mention et al) decides who may answer
   // MESSAGES — a scheduled turn has no sender to be addressed by and never touches it.
-  // The reply is logged, not posted: the script says what to do with its own output.
-  const dispatchHeartbeatTurn = async ({ being, ns, prompt, name }) => {
+  // The reply is logged, not posted: the script says what to do with its own output. It is
+  // the LOADER that logs it, in the run's one outcome line (with elapsed, next to the fire
+  // line) — this closure just hands the turn result back so there is a single place that
+  // formats + truncates a beat's outcome, for both action kinds.
+  const dispatchHeartbeatTurn = async ({ being, ns, prompt }) => {
     const target = chatIdForEntity(await _loadState(), ns);
     if (!target) throw new Error(`no conversation for ${ns} — not registered in conversations.yaml`);
-    const { text } = await brain.turn(being, { surface: target.surface, chatId: target.chatId, line: prompt, body: prompt });
-    log.line?.(`[heartbeat] ${name}: ${being} ran in ${target.surface}/${target.chatId} — ${String(text ?? '').trim().slice(0, 200)}`);
+    return brain.turn(being, { surface: target.surface, chatId: target.chatId, line: prompt, body: prompt });
   };
 
   const heartbeatLoader = createHeartbeatLoader({
