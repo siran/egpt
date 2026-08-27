@@ -60,7 +60,11 @@ try {
   # MACHINE scope is forced: sandbox-logon-launcher passes lpEnvironment = NULL,
   # so the value cannot be handed over per-spawn. The operator's own pi picks up
   # the same dir, which is why models.json is seeded across.
-  $piPoolDir = Join-Path (Join-Path $env:ProgramData 'egpt') 'pi-agent'
+  # Under the eGPT PROFILE, not ProgramData: everything else eGPT owns lives in
+  # ~/.egpt, and the pool already writes there every turn (its conversation
+  # folder). ProgramData is for the machine-level sandbox CREDENTIALS, which are
+  # a different kind of thing (operator 2026-08-27).
+  $piPoolDir = Join-Path $env:USERPROFILE '.egpt\pi-agent'
   New-Item -ItemType Directory -Path $piPoolDir -Force | Out-Null
   $srcModels = Join-Path (Join-Path $env:USERPROFILE '.pi') 'agent\models.json'
   $dstModels = Join-Path $piPoolDir 'models.json'
