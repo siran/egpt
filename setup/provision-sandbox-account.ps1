@@ -64,7 +64,7 @@ try {
   # ~/.egpt, and the pool already writes there every turn (its conversation
   # folder). ProgramData is for the machine-level sandbox CREDENTIALS, which are
   # a different kind of thing (operator 2026-08-27).
-  $piPoolDir = Join-Path $env:USERPROFILE '.egpt\pi-agent'
+  $piPoolDir = Join-Path (Join-Path (Join-Path $env:USERPROFILE '.egpt') 'config') (Join-Path 'agents' 'pi-agent')
   New-Item -ItemType Directory -Path $piPoolDir -Force | Out-Null
   $srcModels = Join-Path (Join-Path $env:USERPROFILE '.pi') 'agent\models.json'
   $dstModels = Join-Path $piPoolDir 'models.json'
