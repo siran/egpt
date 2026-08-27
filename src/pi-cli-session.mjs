@@ -171,7 +171,11 @@ export function createPiCliSession(options = {}) {
     // design -- a sandboxed turn must not write into the operator's config. The
     // conversation folder is the one place it holds Modify, so point pi there.
     // Without this: EPERM mkdir on .../agent/sessions/... and pi exits 1.
-    const args = [...prefix, '--mode', 'rpc', '--offline'];
+    // -nc: no AGENTS.md / CLAUDE.md discovery. A being's brief is its identity.d
+    // layers, delivered below via --append-system-prompt; letting pi also scoop up
+    // whatever AGENTS.md happens to sit in the conversation folder or above it
+    // just spends prefill on someone else's instructions (operator 2026-08-27).
+    const args = [...prefix, '--mode', 'rpc', '--offline', '-nc'];
     const sessionDir = options.sessionDir || (options.cwd ? join(options.cwd, 'pi-sessions') : null);
     if (sessionDir) args.push('--session-dir', sessionDir);
     if (options.provider) args.push('--provider', options.provider);
