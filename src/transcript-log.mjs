@@ -46,10 +46,18 @@ export function transcriptAppend({ existing = false, body, name, surface, slug, 
  * HH:MM renders in `timeZone` — the node's config `default_time_zone`, injected by boot
  * through the SAME `hhmm` the inbound line uses, so the two halves of a transcript can
  * never disagree about what time it is. Unset/invalid → UTC (operator 2026-07-26).
+ *
+ * `streaming` opens the RAW BYTE TRAIN of a turn (operator 2026-08-27: "whatever reply is
+ * emitted by model (the bytes) gets written into the transcript"). Its body is EMPTY here —
+ * the model's own bytes are appended after it as they arrive, so the block grows in place
+ * (src/spine/transcript.mjs logStream) and the settled reply still lands as its own line
+ * below it. The tag rides the SAME slot `(not surfaced) ` uses because it answers the same
+ * question about the same line shape — a reader (human or model) must be able to tell the
+ * train from the record, and every predicate keyed on this shape keeps working.
  */
-export function replyLine({ being, body, surfaced = true, now = new Date(), timeZone = null } = {}) {
+export function replyLine({ being, body, surfaced = true, streaming = false, now = new Date(), timeZone = null } = {}) {
   const t = hhmm(now, timeZone);
-  const tag = surfaced ? '' : '(not surfaced) ';
+  const tag = streaming ? '(streaming) ' : (surfaced ? '' : '(not surfaced) ');
   return `[@${being} (${t})]: ${tag}${String(body ?? '').trim()}`;
 }
 
@@ -215,7 +223,14 @@ export function lastSurfacedBeing(text, { node = null } = {}) {
     const b = blocks[i].trim();
     const m = b.match(_REPLY_HEAD);
     if (m) {                                                                      // (a) our own reply line
-      if (b.slice(m[0].length).trimStart().startsWith('(not surfaced)')) continue; // nobody saw it
+      const rest = b.slice(m[0].length).trimStart();
+      if (rest.startsWith('(not surfaced)')) continue;                            // nobody saw it
+      // The RAW BYTE TRAIN of a turn (operator 2026-08-27), not a message: those bytes were
+      // live edits of a placeholder, and the turn's SETTLED line sits directly below carrying
+      // the authority. Skipping keeps `r` resolution byte-identical to before the train was
+      // recorded — without this a WITHHELD turn would claim the floor through its own train,
+      // the exact opposite of what the `(not surfaced)` skip above decides.
+      if (rest.startsWith('(streaming)')) continue;
       return m[1].toLowerCase();
     }
     const signer = decodeRenderedNodeSignature(b);                                // (b) a spine committed this

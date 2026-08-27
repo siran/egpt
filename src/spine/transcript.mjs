@@ -16,7 +16,8 @@
 import { recordMemberStat, isoFromMs } from '../conversations-state.mjs';
 import { Room } from '../room-core.mjs';
 import { transcriptAppend, replyLine } from '../transcript-log.mjs';
-import { isLiveStreamFrame } from '../dispatch-line.mjs';
+import { renderFrontMatter } from '../transcript-meta.mjs';
+import { isLiveStreamFrame, liveFrameIncrement, streamIncrement } from '../dispatch-line.mjs';
 import { appendFile as fsAppendFile, mkdir as fsMkdir } from 'node:fs/promises';
 import { existsSync as fsExistsSync } from 'node:fs';
 
@@ -45,8 +46,127 @@ export function createTranscript({
   const appendFile = io.appendFile ?? fsAppendFile;
   const mkdir = io.mkdir ?? fsMkdir;
   const existsSync = io.existsSync ?? fsExistsSync;
+  const beingLabel = (being) => (node_name ? `${being}.${node_name}` : being);
+
+  // WHERE a write lands: a joined room wins over ev's own native (surface, chatId) — the same
+  // "joined room wins" rule redirectShellToRoom applies to dispatch (boot.mjs). 'lobby' is
+  // sugar for "no room" (same rule redirectShellToRoom applies): /room join lobby resolves to
+  // "no redirect", not to a literal room named lobby. Already-redirected PROSE arrives here
+  // with ev.surface === 'room' — a key currentRoom never holds (roomJoin only ever writes
+  // under 'shell') — so currentRoomOf('room') is always null and this naturally no-ops for it:
+  // prose's own redirect already happened upstream (boot.mjs), and this must never re-target
+  // it a second time.
+  //
+  // `ev` itself is NEVER mutated — only the returned surface/chatId (used in place of
+  // ev.surface/ev.chatId) decide WHERE the write lands. Deliberate per-field split on what
+  // follows the redirect vs what stays literal ev metadata:
+  //   - contacts.resolve/Room.forChat (the slug + path) and recordMemberStat's own
+  //     (surface, chatId) key ALL follow the target: a stat is "who's active in WHICH
+  //     conversation", so a redirected write's activity belongs to the room it actually
+  //     landed in — exactly what an already-redirected prose ev gets for free today, since
+  //     redirectShellToRoom rewrites ev.surface/chatId themselves before ev is ever built.
+  //   - ev.chatName/ev.line/ev.body/ev.senderName stay literal at the call sites: they are
+  //     the event's own metadata (what was said, by whom, its display context), never the
+  //     routing decision of where it's filed — again matching prose, whose chatName is
+  //     unchanged by redirectShellToRoom.
+  // The path comes from the Room (room-core.mjs), not a hand-rolled join — every Room answers
+  // baseDir()/transcriptPath with the SAME getters, so an operator-named room (surface `room`)
+  // lands here too (operator 2026-08-07).
+  async function target(ev) {
+    const joinedRoom = currentRoomOf(ev.surface);
+    const redirected = joinedRoom && joinedRoom !== 'lobby';
+    const surface = redirected ? 'room' : ev.surface;
+    const chatId = redirected ? joinedRoom : ev.chatId;
+    const slug = await contacts.resolve(surface, chatId, { chatName: ev.chatName });
+    if (!slug) return null;
+    return { surface, chatId, slug, room: Room.forChat(surface, slug) };
+  }
+
+  // Stream appends are SERIALIZED through one chain. "In order" is the whole ruling, and
+  // appendFile is open-write-close: token deltas fire faster than that round-trip, so
+  // concurrent calls could land out of order. The chain never rejects (appendStream owns its
+  // own catch), so nothing accumulates on it.
+  let chain = Promise.resolve();
+  // Transcript paths whose last write left a stream block UNTERMINATED (no trailing blank
+  // line). A transcript entry is one blank-line-separated block (transcriptAppend/replyLine
+  // both end '\n\n'), and a stream block is written a few bytes at a time — so it stays open
+  // until the next ordinary entry closes it. This is the ONLY state the feature keeps, and it
+  // is per FILE, not per message: an observing node holds nothing naming a peer's message
+  // (372c17f) and does not need to.
+  const openBlocks = new Set();
+
+  // Close an open stream block before an ordinary entry lands under it, so the train and the
+  // record are two blocks and every reader that splits on blank lines keeps working.
+  async function closeBlock(fpath) {
+    if (!openBlocks.has(fpath)) return;
+    openBlocks.delete(fpath);
+    await appendFile(fpath, '\n\n', 'utf8');
+  }
+
+  // THE BYTES, INTO transcript.md (operator 2026-08-27: "whatever reply is emitted by model
+  // (the bytes) gets written into the transcript (aka logged)"). Not a sidecar: the record a
+  // human reads and a being is prompted with is the thing the interim content was vanishing
+  // from, so that is where it goes.
+  //
+  // `being` names the block's author and is written ONCE, when the block opens. An OBSERVING
+  // node passes null: a peer's frames carry the peer's own persona stamp inside the bytes
+  // (`🤝 don …`), and this node cannot honestly label them — the frames arrive as INBOUND
+  // edits on a shared account, so ev.senderName is the account, not the being. An unlabelled
+  // block is the honest form; nothing is invented.
+  async function appendStream(ev, inc, { being }) {
+    try {
+      const t = await target(ev);
+      if (!t) return false;
+      await mkdir(t.room.baseDir(), { recursive: true });
+      const fpath = t.room.transcriptPath;
+      let head = '';
+      if (!openBlocks.has(fpath)) {
+        // Same front-matter rule transcriptAppend applies, for the case where a stream is the
+        // first thing this file ever receives (normally the inbound line is already in: the
+        // spine records at ingestion, before any turn is dispatched).
+        if (!existsSync(fpath)) head += renderFrontMatter({ name: ev.chatName ?? t.chatId ?? t.slug, surface: t.surface, slug: t.slug, chat_id: t.chatId, persona });
+        if (being) head += replyLine({ being: beingLabel(being), body: '', streaming: true, now: now(), timeZone });
+        openBlocks.add(fpath);
+      }
+      await appendFile(fpath, head + inc, 'utf8');
+      return true;
+    } catch (e) { onLog(`stream ${ev?.surface}/${ev?.chatId}: ${e?.message ?? e}`); return false; }
+  }
 
   return {
+    /**
+     * THE EMITTING HALF (operator 2026-08-27): "every byte coming out of the model gets logged
+     * in order. period. no deletions in log, no custom delta formats: whatever the model says,
+     * whatever it is, gets logged."
+     *
+     * This node is running the CLI, so there is nothing to reconstruct — but the seam it
+     * receives the stream through hands it the ACCUMULATED text, not the delta (every engine:
+     * warm-cli-session `pending.acc += d.text; onUpdate(pending.acc)`, pi-cli-session the
+     * same, codex-cli-session, and cdp.mjs which POLLS a page and cannot produce a delta at
+     * all). So the caller keeps what it has already logged and the tail is DERIVED here,
+     * through the same streamIncrement an observing node uses — one derivation, not two.
+     *
+     * The NON-APPEND case is the point: a turn's accumulated text is replaced wholesale by a
+     * later frame (codex-cli-session's `item/completed` sets `currentTurn.text = item.text`;
+     * warm-cli's final `result` supersedes the narration), which is the operator's "boom, it
+     * changes, and the previous output is not even getting transcribed". A divergent update is
+     * LOGGED, not dropped for failing a prefix test — and the text already written stays
+     * written. This file is append-only; nothing in it is ever removed or rewritten.
+     *
+     * Not awaited by the caller (a token delta must not wait on fs); returns the chain so a
+     * test can. Order is guaranteed by the chain, not by the caller.
+     * @param {object} ev            the InboundEvent this turn is answering
+     * @param {string} before        the accumulated text ALREADY logged for this turn ('' at turn start)
+     * @param {string} after         the accumulated text as it now stands
+     */
+    logStream(ev, before, after, { being = defaultKey } = {}) {
+      if (!ev?.chatId) return chain;
+      const inc = streamIncrement(before, after);
+      if (!inc) return chain;
+      chain = chain.then(() => appendStream(ev, inc, { being }));
+      return chain;
+    },
+
     /**
      * Append ONE line to the conversation's transcript.md. Which line is decided by the
      * `reply` argument alone — there is no third mode and no flag:
@@ -68,40 +188,28 @@ export function createTranscript({
         // Only the SETTLED text is the record; the settle frame carries no live marker and
         // still lands. A human's edit of an earlier message never carries one either, so it
         // stays on the record — see isLiveStreamFrame.
-        if (reply == null && ev.kind === 'edit' && isLiveStreamFrame(ev.body)) return false;
-        // WHERE this write lands: a joined room wins over ev's own native (surface, chatId) —
-        // the same "joined room wins" rule redirectShellToRoom applies to dispatch (boot.mjs).
-        // 'lobby' is sugar for "no room" (same rule redirectShellToRoom applies): /room join
-        // lobby resolves to "no redirect", not to a literal room named lobby. Already-redirected
-        // PROSE arrives here with ev.surface === 'room' — a key currentRoom never holds (roomJoin
-        // only ever writes under 'shell') — so currentRoomOf('room') is always null and this
-        // naturally no-ops for it: prose's own redirect already happened upstream (boot.mjs), and
-        // this must never re-target it a second time.
         //
-        // `ev` itself is NEVER mutated — only targetSurface/targetChatId (used below in place of
-        // ev.surface/ev.chatId) decide WHERE the write lands. Deliberate per-field split on what
-        // follows the redirect vs what stays literal ev metadata:
-        //   - contacts.resolve/Room.forChat (the slug + path) and recordMemberStat's own
-        //     (surface, chatId) key ALL follow the target: a stat is "who's active in WHICH
-        //     conversation", so a redirected write's activity belongs to the room it actually
-        //     landed in — exactly what an already-redirected prose ev gets for free today, since
-        //     redirectShellToRoom rewrites ev.surface/chatId themselves before ev is ever built.
-        //   - ev.chatName/ev.line/ev.body/ev.senderName stay literal everywhere below: they are
-        //     the event's own metadata (what was said, by whom, its display context), never the
-        //     routing decision of where it's filed — again matching prose, whose chatName is
-        //     unchanged by redirectShellToRoom.
-        const joinedRoom = currentRoomOf(ev.surface);
-        const redirected = joinedRoom && joinedRoom !== 'lobby';
-        const targetSurface = redirected ? 'room' : ev.surface;
-        const targetChatId = redirected ? joinedRoom : ev.chatId;
-        const slug = await contacts.resolve(targetSurface, targetChatId, { chatName: ev.chatName });
-        if (!slug) return false;
-        // The path comes from the Room (room-core.mjs), not a hand-rolled join — every
-        // Room answers baseDir()/transcriptPath with the SAME getters, so an
-        // operator-named room (surface `room`) lands here too (operator 2026-08-07).
-        const room = Room.forChat(targetSurface, slug);
+        // THE OBSERVING HALF of the 2026-08-27 ruling: the frame is still not an ENTRY — no
+        // `edited #<id>` block, no stats — but what it ADDED joins the stream block, so the
+        // peer's reply is on the record as it is written instead of only once it settles. A
+        // peer only ever hands this node before/after text, so the increment is DERIVED
+        // (liveFrameIncrement); the `-` side is read and never written, which is what keeps
+        // the flood dead — a reply of N bytes costs N bytes here, not five snapshots of it.
+        if (reply == null && ev.kind === 'edit' && isLiveStreamFrame(ev.body)) {
+          const inc = liveFrameIncrement(ev.body);
+          if (inc) { chain = chain.then(() => appendStream(ev, inc, { being: null })); await chain; }
+          return false;   // still NOT an entry: no dispatch line, no stats side-effect
+        }
+        const t = await target(ev);
+        if (!t) return false;
+        const { surface: targetSurface, chatId: targetChatId, slug, room } = t;
         await mkdir(room.baseDir(), { recursive: true });
         const fpath = room.transcriptPath;
+        // An ordinary entry lands UNDER the train, never inside it: drain whatever bytes are
+        // still queued, then terminate the open block. Append-only — closing writes the blank
+        // line that separates two blocks and touches nothing already written.
+        await chain;
+        await closeBlock(fpath);
         if (reply == null) {
           // §3.1: every received message passes ASYNCHRONOUSLY to the stats collector —
           // fire-and-forget (never awaited, so it can't block or delay the transcript

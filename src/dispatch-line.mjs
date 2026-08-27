@@ -130,3 +130,80 @@ export function isLiveStreamFrame(editBody) {
   const plus = String(editBody ?? '').split('\n').find((l) => l.startsWith('    + '));
   return plus != null && plus.includes(LIVE_FRAME_MARK);
 }
+
+// THE INCREMENT — what `after` ADDED to `before`, and nothing else (operator 2026-08-27:
+// "the peer node needs to log only the increments, not the deletions").
+//
+// ONE derivation, used by BOTH halves of the ruling: the EMITTING node diffs the
+// accumulated model text against what it has already logged (spine.mjs's onPartial), and an
+// OBSERVING node diffs a live frame's `-` side against its `+` side (liveFrameIncrement
+// below). Two sides of the same coin, so they must not be two functions that drift.
+//
+// Common PREFIX + common SUFFIX, returning the middle of `after`. The suffix half is not a
+// nicety: a live frame is wrapped by the node's bridge signature and ends with the live
+// marker, so `after` is NEVER a prefix-extension of `before` on a real node — a
+// startsWith() test would fail on every frame and log the whole wrapped text each time,
+// which is exactly the 1.3 MB flood 372c17f exists to stop. No signature format appears
+// here: the suffix is DISCOVERED, never named.
+//
+// A shrink returns '' (nothing was added — a deletion is not an increment). A DIVERGENCE
+// (the model rewrote, rather than extended, what it had said — the "boom, it changes" the
+// operator reported) has a short common prefix/suffix, so the new text comes back whole and
+// gets logged. Nothing already written is ever removed: this only ever RETURNS bytes.
+//
+// PREFIX FIRST, then the suffix over what is left — never the other way round. Suffix-first
+// over-matches into the CONTENT (the `a` of "para" against the `a` of "verla") and emits a
+// fragment that reconstructs WRONG. The order here costs a known, harmless artifact instead:
+// when a frame's new space coincides with the wrapper's own separator space, the prefix
+// swallows it and the next increment carries it, so a wrapped stream reconstructs with a
+// space displaced by one token ("Buenluga r random" for "Buen lugar random"). Every
+// character is present, in order, exactly once — only whitespace can shift. Removing even
+// that would mean knowing the signature format, which is precisely what 372c17f forbids.
+// The EMITTING side has no wrapper, so its stream is byte-exact.
+const _isHigh = (c) => c >= 0xd800 && c <= 0xdbff;
+const _isLow = (c) => c >= 0xdc00 && c <= 0xdfff;
+export function streamIncrement(before, after) {
+  const a = String(before ?? ''), b = String(after ?? '');
+  if (a === b) return '';
+  const max = Math.min(a.length, b.length);
+  let p = 0;
+  while (p < max && a[p] === b[p]) p++;
+  let s = 0;
+  while (s < max - p && a[a.length - 1 - s] === b[b.length - 1 - s]) s++;
+  // Never cut a surrogate pair in half — two different emoji share a high surrogate
+  // (🌉/🌀 are both U+D83C …), and a signature layer is made of emoji, so a boundary
+  // landing mid-pair is reachable and would append a lone surrogate to the record.
+  if (p > 0 && _isHigh(a.charCodeAt(p - 1))) p--;
+  if (s > 0 && _isLow(b.charCodeAt(b.length - s))) s--;
+  const inc = b.slice(p, b.length - s);
+  // A RESTART gets a line break, and only a restart: `after` shares NOTHING with the text
+  // already on the record, so it is a new utterance, not a continuation of the last one.
+  // Without it a wholesale replacement (the "boom, it changes") glues onto the interim train
+  // mid-sentence and the log asserts a continuity that never happened. This is a boundary,
+  // not a notation — nothing to learn to read, and nothing is removed. A frame that DOES
+  // continue (every ordinary token delta, and every peer frame, whose shared persona stamp
+  // guarantees a common prefix) is appended bare, so the increments still concatenate back
+  // into the text the model wrote.
+  return (p === 0 && a && inc) ? `\n${inc}` : inc;
+}
+
+// The increment carried by an edit stage-direction — the inverse of editAction, for the
+// OBSERVING half of the ruling. A peer's streamed reply reaches this node only as edits
+// (`don` runs on DOLLY, so the frames are inbound and this process holds no state naming
+// that message), so its `-`/`+` sides are the only material there is to derive from.
+// Reads BOTH sides but returns only what the `+` side added: the `-` text is never
+// returned, so it can never be written.
+//
+// THE MARKER COMES OFF BOTH SIDES FIRST. It is OUR OWN token — sender.mjs stamps it, this
+// module defines it — not something the model said, and it moves to the end of the text on
+// every frame, so leaving it in writes a `⏳` into the middle of the record at each restart
+// ("Buen lugar random para ⏳verla …"). Stripping it is not knowledge of the SIGNATURE
+// format, which stays undiscussed here (372c17f): the wrapper is still only ever found by
+// the common-suffix scan.
+const _MARK_RE = new RegExp(LIVE_FRAME_MARK, 'g');
+const _demark = (s) => s.replace(_MARK_RE, '').replace(/\s+/g, ' ');
+export function liveFrameIncrement(editBody) {
+  const lines = String(editBody ?? '').split('\n');
+  const side = (mark) => { const l = lines.find((x) => x.startsWith(mark)); return l == null ? '' : _demark(l.slice(mark.length)); };
+  return streamIncrement(side('    - '), side('    + '));
+}

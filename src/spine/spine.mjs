@@ -867,7 +867,24 @@ export function createSpine({
       // wired nothing is stripped below either, so the raw partial streams — still a mirror.
       // It takes the SAME quotedId as the parse below: without it the stream would strip a
       // redundant /reply that finish() DEMOTES to prose, and the mirror would break.
-      const onPartial = (partial) => out.update(actions?.partialProse ? actions.partialProse(partial, ev, { quotedId: replyTo }) : partial);
+      //
+      // EVERY BYTE THE MODEL EMITS, IN ORDER (operator 2026-08-27: "no deletions in log …
+      // whatever the model says, whatever it is, gets logged"). This is the EMITTING node —
+      // it is running the CLI and holds the model's own token stream — so the raw `partial`
+      // is logged BEFORE partialProse touches it: the record gets the reasoning train and the
+      // action lines, the CHAT gets the prose. `streamed` is what has already gone to the
+      // record, so the tail is derived per update (transcript.logStream). This is what
+      // restores the interim text a later frame overwrites: the reply line written below
+      // carries only the FINAL answer (warm-cli resolves with `result`, codex replaces
+      // `text` on item/completed), so before this the earlier output was simply gone.
+      // Fire-and-forget — a token delta must not wait on fs; logStream serializes.
+      let streamed = '';
+      const onPartial = (partial) => {
+        const raw = typeof partial === 'string' ? partial : (partial?.text ?? '');
+        transcript.logStream?.(ev, streamed, raw, { being: to });
+        streamed = raw;
+        return out.update(actions?.partialProse ? actions.partialProse(partial, ev, { quotedId: replyTo }) : partial);
+      };
       const reply = await runTurnWithTimeout(to, ev, promptEv, onPartial);
       const rawText = reply?.text ?? '';
       const surfaced = gating.surfaces(d, rawText);
