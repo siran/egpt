@@ -18,6 +18,7 @@
 param(
   [string]$EgptHome  = $(if ($env:EGPT_HOME) { $env:EGPT_HOME } else { Join-Path $env:USERPROFILE '.egpt' }),
   [string]$Repo      = (Join-Path $env:USERPROFILE 'bin\egpt'),
+  [string]$Source    = (Join-Path $env:USERPROFILE 'src\egpt'),   # the CHECKOUT people edit and run by hand
   [int]$TimeoutSec   = 120,
   [string]$Peer      = ''     # user@host -- deploy THIS node, then run this same script there over ssh
 )
@@ -49,6 +50,99 @@ function Get-ShortHead($gitExe, $repo) {
   if ($LASTEXITCODE -ne 0 -or -not $out) { return '?' }
   return ([string]$out).Trim()
 }
+
+# --- SOURCE TREES ---------------------------------------------------------------------
+# The /upgrade handshake below only ever touches the RUNNING copy (~/bin/egpt). The checkout
+# people actually edit and launch by hand (~/src/egpt) was never part of a deploy, so it
+# drifted silently -- and on 2026-08-27 that drift broke a live node: a source tree ~30
+# commits old still SERVED ws://127.0.0.1:23375 (the shell socket was inverted in af5fde2),
+# so `node egpt.mjs` from it fought the current spine for the port, the spine logged
+# EADDRINUSE on a loop and the editor sat forever on "spine is not connected". Stale source
+# is no longer merely old code; running it actively breaks the node. So a deploy updates it.
+#
+# NEVER CLOBBER. A source tree is somebody's working copy and this repo has more than one
+# engineer. Dirty, or not a clean fast-forward, means SKIP AND SAY SO -- no stash, no reset,
+# no checkout, no merge. A skip is a normal reported outcome, never a failure: it must not
+# abort the deploy, because the running copies still have to update.
+
+# Native git under $ErrorActionPreference='Stop' is a trap in PS 5.1 -- with 2>&1 each stderr
+# line becomes an ErrorRecord and TERMINATES the script, so a mere "not a fast-forward" would
+# kill the deploy it is supposed to report. Drop the preference for the call, then restore it.
+# (Same reasoning as the ls-remote probe below; this is that pattern, reused.)
+function Invoke-TreeGit([scriptblock]$Run, [string[]]$GitArgs) {
+  $prevEAP = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  $out = (& $Run $GitArgs 2>&1 | Out-String)
+  $rc  = $LASTEXITCODE
+  $ErrorActionPreference = $prevEAP
+  return @{ Text = $out.Trim(); Code = $rc }
+}
+
+# git's real cause is the fatal:/error: line, not the first line: a failed pull leads with the
+# harmless "From github.com:..." fetch chatter, and naming that as the reason explains nothing.
+# PS 5.1 also renders a native exe's first stderr line as an ErrorRecord ("git.exe : fatal: ..")
+# followed by an "At line:1 char:1 / + CategoryInfo .." block -- strip both, or the reason we
+# print is PowerShell's own plumbing rather than anything git said.
+function Get-GitReason([string]$text) {
+  $lines = @(($text -split "`r?`n") |
+    ForEach-Object { ($_ -replace '^[\w.-]+\.exe\s*:\s*', '').Trim() } |
+    Where-Object { $_ -and $_ -notmatch '^(At line:|\+|CategoryInfo|FullyQualifiedErrorId)' })
+  $bad   = @($lines | Where-Object { $_ -match '^(fatal|error|remote error):' }) | Select-Object -First 1
+  if ($bad)   { return $bad.Trim() }
+  if ($lines) { return ($lines | Select-Object -First 1).Trim() }
+  return 'no output'
+}
+
+# ONE policy, two transports: local and peer differ only in the $Run scriptblock, so there is
+# no second implementation to drift. Prints its own result line; never throws, never exits.
+function Update-SourceTree([string]$Where, [scriptblock]$Run) {
+  $head = Invoke-TreeGit $Run @('rev-parse', '--short', 'HEAD')
+  if ($head.Code -ne 0 -or -not $head.Text) {
+    Write-Host "  source  SKIPPED -- no usable checkout at $Where" -ForegroundColor Yellow
+    Write-Host ("          " + (Get-GitReason $head.Text)) -ForegroundColor DarkGray
+    return
+  }
+  $st = Invoke-TreeGit $Run @('status', '--porcelain')
+  if ($st.Code -ne 0) {
+    Write-Host "  source  SKIPPED -- cannot read status of $Where" -ForegroundColor Yellow
+    Write-Host ("          " + (Get-GitReason $st.Text)) -ForegroundColor DarkGray
+    return
+  }
+  if ($st.Text) {
+    # Someone is working in here. Show what is in the way so the skip is actionable.
+    $lines = @(($st.Text -split "`r?`n") | Where-Object { $_.Trim() })
+    Write-Host ("  source  SKIPPED -- working tree is DIRTY (" + $lines.Count + " change(s)), left untouched") -ForegroundColor Yellow
+    foreach ($ln in ($lines | Select-Object -First 5)) { Write-Host ("          " + $ln.Trim()) -ForegroundColor DarkGray }
+    if ($lines.Count -gt 5) { Write-Host ("          ... and " + ($lines.Count - 5) + " more") -ForegroundColor DarkGray }
+    return
+  }
+  # --ff-only with no refspec: it follows the tree's OWN upstream, so this can neither switch
+  # a branch nor invent a merge commit. Diverged, or no upstream at all, is a clean refusal.
+  $pull = Invoke-TreeGit $Run @('pull', '--ff-only')
+  if ($pull.Code -ne 0) {
+    Write-Host "  source  SKIPPED -- not a clean fast-forward at $Where" -ForegroundColor Yellow
+    Write-Host ("          " + (Get-GitReason $pull.Text)) -ForegroundColor DarkGray
+    return
+  }
+  $now = Invoke-TreeGit $Run @('rev-parse', '--short', 'HEAD')
+  $to  = if ($now.Code -eq 0 -and $now.Text) { $now.Text } else { '?' }
+  Write-Host ("  source  " + $head.Text + " -> " + $to)
+  if ($head.Text -eq $to) { Write-Host "          (already current)" -ForegroundColor DarkGray }
+}
+
+$localSrcGit = {
+  param([string[]]$a)
+  & $git -C $Source @a
+}
+# The peer's shell is cmd.exe and ssh flattens argv into one command line, so anything quoted
+# arrives mangled. Everything here is therefore quote-free and space-free; %USERPROFILE%
+# expands on the REMOTE, exactly as the recursive call at the bottom of this script does it.
+$peerSrcGit = {
+  param([string[]]$a)
+  $remote = @('git', '-C', '%USERPROFILE%/src/egpt') + $a
+  & ssh -o ConnectTimeout=8 $Peer @remote
+}
+
 $before = Get-ShortHead $git $Repo
 $beat0 = (Get-Item $alive).LastWriteTime
 
@@ -91,6 +185,16 @@ Write-Host ""
 Write-Host "Deploying:" -ForegroundColor Cyan
 Write-Host "  profile : $EgptHome"
 Write-Host "  prod    : $Repo  (at $before)"
+Write-Host "  source  : $Source"
+Write-Host ""
+
+# The source tree goes FIRST and unconditionally: it is independent of the ingest handshake,
+# so it must still be reported even when the prod deploy below fails and exits.
+if ($git) {
+  Update-SourceTree $Source $localSrcGit
+} else {
+  Write-Host "  source  SKIPPED -- git is not on PATH" -ForegroundColor Yellow
+}
 Write-Host ""
 
 # --- temp -> rename, because the sweep skips *.tmp so a half-written file is never read ---
@@ -136,7 +240,7 @@ if ($ok -and $target -and $after -ne $target) {
   exit 1
 } elseif ($ok) {
   Write-Host "=== DEPLOY OK ===" -ForegroundColor Green
-  Write-Host "  $before -> $after"
+  Write-Host "  prod    $before -> $after"
   if ($before -eq $after) {
     if ($remoteErr) {
       # Say WHICH kind of no-op this was. These look identical in the sha and are not the
@@ -160,6 +264,14 @@ if ($ok -and $target -and $after -ne $target) {
 if ($Peer) {
   Write-Host ""
   Write-Host "Peer $Peer :" -ForegroundColor Cyan
+  # The peer's SOURCE tree is fast-forwarded from HERE, not by the recursive call below. That
+  # call runs the peer's OWN copy of this script out of ~/bin/egpt -- i.e. whatever version
+  # was deployed BEFORE this run, which cannot be assumed to know about source trees at all.
+  # Driving it from here means a deploy fixes the peer's source on the FIRST run rather than
+  # the second; once the peer's copy is current it fast-forwards its own source too and simply
+  # finds nothing left to do.
+  Update-SourceTree "$Peer %USERPROFILE%/src/egpt" $peerSrcGit
+  Write-Host ""
   # FORWARD SLASHES, UNQUOTED, on purpose: backslashes are eaten in transit to the remote
   # shell (a quoted C:\Users\... arrives as C:\Users\anbinegpt...), and quoting to survive
   # both shells is worse. Windows accepts / in a path, and this one has no spaces.
