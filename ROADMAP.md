@@ -313,7 +313,8 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
   - Browser wrappers (/chrome, /tabs, /open, /tab, /close); rooms + /members (add tab, modes);
     provenance guard; chatgpt relay (design B — a brain reply re-enters via handleInbound as a
     synthetic fromBrain event, counted once at the chokepoint); the LOBBY (shell's default Room
-    at rooms/lobby/, default members E/D/L, inherits transcript/media/members — like Beeper Self).
+    at rooms/lobby/ AS OF THAT DATE — now conversations/room/lobby/, see 2026-08-09 below;
+    default members E/D/L, inherits transcript/media/members — like Beeper Self).
   - 2026-07-24: streamed @e / brain-member replies now render in the SHELL, not Beeper
     (makeShellAwareBridge facade + shellPort.startStream routing send/startStream to the shell
     for shell-owned chats; e62f1b4). Shell UI cleaned: quiet transcript (no permanent status/hint
@@ -335,7 +336,15 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
 
 - **⭐ CONFIG RESOLUTION — ONE NAMESPACE, THREE RUNGS (operator ruling 2026-07-26).**
   `config/config.yaml` (node defaults) < `config/conversations.yaml` (the registry entry)
-  < the entity's own `conversations/<slug>/config.yaml` or `rooms/<name>/config.yaml`.
+  < the entity's own near-tier row.
+  **THE THIRD RUNG IS NO LONGER A FOLDER FILE** (2026-08-24, `df94855`): it is a row in
+  `config/conversations.yaml` or, for surface `room`, in `config/rooms.yaml` — "a
+  conversation folder holds NO operator config any more; zero config.yaml files remain
+  under conversations/". The ruling below is unchanged in SHAPE (three rungs, nearest
+  wins); only what backs the near tier moved. The original wording named
+  `conversations/<slug>/config.yaml` / `rooms/<name>/config.yaml`; neither path exists
+  now, and `rooms/<name>/` at root has been gone since 2026-08-09 (`85f346d` — a room
+  IS a conversation, rooted at `conversations/room/<slug>/`).
   **Nearest the room wins.** Operator: *"the configuration in a rooms/<room name>, or
   conversations/<slug> is more specific than a general conversations or config file"* and
   *"yaml keys in conversations.yaml are orthogonal from config.yaml; we only separate into
@@ -1109,7 +1118,12 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
   launcher is just a spine starter.
 
 - **Rooms — remaining** (folded from the retired ROOMS-UNIFICATION.md; GENOME
-  §2.5 is the north-star). DONE in v2: the Room ABSTRACTION exists and unifies the
+  §2.5 is the north-star). ⚠️ **THIS ENTRY PREDATES 2026-08-09 (`85f346d`) AND NAMES
+  THINGS THAT NO LONGER EXIST** — `NamedRoom`, `rooms/<name>/` at the profile root,
+  `src/rooms.mjs` (deleted, `53e1c9e`), `src/room-routing.mjs`. There is ONE Room kind
+  now, `ConversationRoom`, and a room is surface `room` at `conversations/room/<slug>/`.
+  Read the rest as history, not as a worklist; re-scope before acting on it.
+  DONE in v2: the Room ABSTRACTION exists and unifies the
   path tree + member model — `src/room-core.mjs` (base `Room` + `ConversationRoom`
   + `NamedRoom`, one tree from `baseDir()`: config.yaml/transcript.md/media/files/
   identity.d, the 6-state member gate), LIVE via `conversations-state.slugDir`
@@ -1455,7 +1469,9 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
 - Profile: EGPT_HOME=~/.egpt (renamed from ~/.egpt2, operator 2026-07-03; old v1 profile archived as ~/.egpt-v1). Layout (operator 2026-07-03, disk = spec): config/
   {config.yaml, conversations.yaml, agents/, identities/<name>.md (FLAT), logs/,
   skeletons/ (incl. room/ = the shared identity/pointers/rules template)}; state/
-  {ingest/, alive.txt, spine.pid, …}; conversations/<surface>/<slug>/; rooms/. Config
+  {ingest/, alive.txt, spine.pid, …}; conversations/<surface>/<slug>/ — INCLUDING rooms,
+  which are surface `room` (conversations/room/<slug>/) and have been since 2026-08-09
+  (`85f346d`); there is no rooms/ folder at the profile root. Config
   is at ~/.egpt/config/config.yaml (the ONLY location — no legacy fallbacks since
   85a824e). Old production (egpt-daemon service, ~/.egpt, C:\Users\an\src\egpt) is
   STOPPED — both ride the same local Beeper Desktop (127.0.0.1:23373), so running both
