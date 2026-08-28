@@ -249,7 +249,7 @@ export function createBrainPool({
   isOverflow = isContextOverflowError,
   isDeadSession = isDeadSessionError,
   resolveConfig = () => ({}),       // (convDir) -> that conversation's RESOLVED config doc (src/spine/config-resolver.mjs configFor). ONE namespace, three rungs; boot injects the live resolver, tests a canned doc.
-  loadFeed = readIdentityFeed,      // (personality) -> identities/<name>/ feed string
+  loadFeed = readIdentityFeed,      // (personality, config) -> the persona's full feed
   seedLayers = seedIdentityLayers,  // (room, personality, {io}) -> copy the fed layers into <room>/identity.d
   loadAutoLayer = readAutoModeLayer,// () -> the `mode: auto` operator-role instruction layer (appended to an auto conversation's kickoff)
   loadManifest = null,              // () -> e_identity.md fallback (default below)
@@ -510,10 +510,12 @@ export function createBrainPool({
       // overflow-reset retry re-wraps because its fresh session needs the identity.
       const line = ev.line ?? ev.body;
       const wrapFresh = async () => {
-        // Siblings are engineers, not the persona — no identity kickoff (unchanged by phase 2:
-        // the operator's enumerated asymmetries to collapse were resolution / seedLayers /
-        // auto-eligibility / access-override, not this live-prompt feed prefix).
-        if (being !== defaultKey) return line;
+        // EVERY agent gets its own feed. There is no persona/sibling split any
+        // more -- the concept was evicted (operator 2026-08-28: "there are no
+        // siblings no more... we only have agents now"). Each agent names its own
+        // `personality:`, so the feed it gets is ITS identity plus the shared
+        // layers, and no agent opens a thread not knowing what /media is or that
+        // it has a folder.
         // config passed so the cards can quote it ({{chrome.bin}} etc.)
         let feed = (await loadFeed(personality, getConfig() ?? {})) || '';
         if (!feed.trim()) feed = (await _loadManifest()) || '';

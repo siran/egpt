@@ -420,11 +420,17 @@ describe('brainpool.turn — local sibling beings (agents registry)', () => {
   it('a LOCAL agent\'s type file (agents block) is resolved through the registry — no readonly instancing', async () => {
     const brains = { resolve: (name) => name === 'sonnet-high' ? ({ name: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'Read,Bash' }) : null };
     const config = { agents: { 'don-local': { configuration: 'sonnet-high', name: 'Don' } } };
-    const { brain, pool, getState } = harness([{ text: 'ok', sessionId: 'd1' }], { brains, config });
+    const { brain, pool, getState } = harness([{ text: 'ok', sessionId: 'd1' }],
+      { brains, config, loadFeed: async () => 'FEED-LAYERS' });
     await brain.turn('don-local', ev);
     expect(pool.calls[0].key).toMatch(/^don-local:ccode:whatsapp:SPOILER-\d{10}$/);
     expect(pool.calls[0].brainOptions).toMatchObject({ model: 'sonnet', effort: 'high', allowedTools: 'Read,Bash' });
-    expect(pool.calls[0].message).toBe(ev.line);   // a local agent is an engineer — no identity kickoff
+    // EVERY agent gets its own kickoff feed — the persona/sibling split was
+    // evicted (operator 2026-08-28: "we only have agents now"). A local agent
+    // opens its thread knowing the actions grammar and its own folder, with its
+    // own line last.
+    expect(pool.calls[0].message.startsWith('FEED-LAYERS')).toBe(true);   // the feed LEADS
+    expect(pool.calls[0].message.endsWith(ev.line)).toBe(true);           // its own line LAST
     const entry = getState().contacts.whatsapp['!room:beeper.com'];
     expect(entry['don-local']?.readonly).toBeUndefined();   // def lives in config → not instanced
   });
