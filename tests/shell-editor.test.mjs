@@ -199,6 +199,129 @@ describe('shell editor — WS client link to the spine (fake spine over a real s
   });
 });
 
+// ── THE PRE-MOUNT RACE (operator 2026-08-28) ────────────────────────────────────────────────
+// MEASURED against the live spine: dial→open 8ms, open→challenge 1ms, answer→HEADER 1ms — the
+// spine pushes its header-only frame ~10ms after the dial. egpt.mjs dials FIRST (deliberately,
+// so the link starts as early as possible), THEN awaits listThemes() and mounts Ink, and
+// app.mjs registers onSpineMessage from a useEffect — >100ms later. The frame therefore lands
+// while `onMsg` is still null, and `onMsg?.(m)` made it vanish silently. The header is
+// useState('') fed ONLY by a spine frame, so a dropped one left the shell header line BLANK
+// until something called setHeader() again or the link reconnected — the "shell lags when
+// connecting to spine" the operator reported. These tests model that order exactly: the frame
+// arrives FIRST, the handler registers AFTER.
+describe('shell editor — frames that land before the app registers a handler', () => {
+  const cleanups = [];
+  afterEach(() => { for (const c of cleanups.splice(0)) try { c(); } catch {} });
+
+  // A spine that pushes the instant the editor's auth answer lands — shell-port.mjs's real
+  // timing (its header push rides straight off the handshake). `framesFor(i)` supplies what the
+  // i-th connection pushes, so the reconnect test can give the second socket different content.
+  function eagerSpine(framesFor) {
+    const wss = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+    const state = { wss, sockets: [], received: [] };
+    wss.on('connection', (ws) => {
+      const i = state.sockets.length;
+      state.sockets.push(ws);
+      let armed = true;
+      ws.on('message', (b) => {
+        state.received.push(b.toString());
+        if (!armed) return;
+        armed = false;                                    // push once, off the auth answer only
+        for (const f of framesFor(i)) ws.send(JSON.stringify(f));
+      });
+      ws.send(challengeFrame(newNonce()));
+    });
+    return state;
+  }
+
+  // The WebSocket injection seam, wrapped to record every frame that reached the CLIENT socket.
+  // Without it a pre-registration drop is invisible: there is no handler to observe, so a test
+  // could not tell "not delivered yet" from "already dropped". Its listener is attached in the
+  // constructor, i.e. BEFORE connect() attaches the link's own — so once `seen` has the frame,
+  // the link has already had its chance at it.
+  function spyWS(seen) {
+    return class SpyWS extends WebSocket {
+      constructor(...args) { super(...args); this.on('message', (b) => seen.push(b.toString())); }
+    };
+  }
+
+  // Dial with NO handler registered — the state egpt.mjs is in between link.start() and Ink's
+  // first useEffect.
+  async function dialedButUnmounted(framesFor, opts = {}) {
+    const seen = [];
+    const spine = eagerSpine(framesFor);
+    cleanups.push(() => spine.wss.close());
+    await once(spine.wss, 'listening');
+    const link = createSpineLink({
+      url: `ws://127.0.0.1:${spine.wss.address().port}`, token: TOKEN, io: fakeIo(),
+      WebSocket: spyWS(seen), ...opts,
+    });
+    cleanups.push(() => link.stop());
+    link.start();
+    return { spine, link, seen };
+  }
+
+  it('REPRODUCE-FIRST: a header-only frame that lands BEFORE onSpineMessage registers still reaches the handler', async () => {
+    const { seen, link } = await dialedButUnmounted(() => [{ text: '', chatId: 'main', header: 'boot-header' }]);
+    await waitFor(() => seen.some((s) => s.includes('boot-header')));   // it ARRIVED (pre-fix: dropped here)
+
+    const inbound = [];
+    link.onSpineMessage((m) => inbound.push(m));                        // …and only NOW does Ink mount
+    expect(inbound).toEqual([{ text: '', chatId: 'main', streaming: false, header: 'boot-header' }]);
+  });
+
+  it('several early frames flush IN ORDER, oldest first', async () => {
+    const { seen, link } = await dialedButUnmounted(() => [
+      { text: 'one', chatId: 'main' },
+      { text: 'two', chatId: 'main' },
+      { text: '', chatId: 'main', header: 'boot-header' },
+    ]);
+    await waitFor(() => seen.some((s) => s.includes('boot-header')));
+
+    const inbound = [];
+    link.onSpineMessage((m) => inbound.push(m));
+    expect(inbound.map((m) => m.text)).toEqual(['one', 'two', '']);
+    expect(inbound.at(-1).header).toBe('boot-header');
+  });
+
+  // The bound: an editor that never mounts (or a spine that floods first) must not grow the
+  // queue without limit. Past the cap the OLDEST goes, so the most RECENT state — the header,
+  // the latest streaming line — is what survives to be flushed.
+  it('past the cap the OLDEST frames are dropped, never the newest', async () => {
+    const frames = Array.from({ length: 40 }, (_, i) => ({ text: `m${i + 1}`, chatId: 'main' }));
+    const { seen, link } = await dialedButUnmounted(() => frames);
+    await waitFor(() => seen.some((s) => s.includes('"m40"')));
+
+    const inbound = [];
+    link.onSpineMessage((m) => inbound.push(m));
+    expect(inbound).toHaveLength(32);                                   // PENDING_MAX in spine-link.mjs
+    expect(inbound[0].text).toBe('m9');                                 // m1..m8 evicted, oldest first
+    expect(inbound.at(-1).text).toBe('m40');
+  });
+
+  // Across a RECONNECT the queue is DROPPED: what the previous socket pushed describes a spine
+  // session that is over (its process may have restarted, wiping the state that frame reported),
+  // and the fresh connection pushes its own header off its own handshake. Delivering the old one
+  // would show the operator a stale header as if it were current.
+  it('a RECONNECT drops what the PREVIOUS socket queued — only the fresh header is delivered', async () => {
+    const clock = makeFakeClock();
+    const { spine, link, seen } = await dialedButUnmounted(
+      (i) => [{ text: '', chatId: 'main', header: i === 0 ? 'stale-header' : 'fresh-header' }],
+      { setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout },
+    );
+    await waitFor(() => seen.some((s) => s.includes('stale-header')));
+
+    spine.sockets[0].close();                                           // the spine goes away…
+    await waitFor(() => clock.timers.length > 0);
+    clock.timers[0].fn();                                               // …and the backoff dials again
+    await waitFor(() => seen.some((s) => s.includes('fresh-header')));
+
+    const inbound = [];
+    link.onSpineMessage((m) => inbound.push(m));
+    expect(inbound.map((m) => m.header)).toEqual(['fresh-header']);
+  });
+});
+
 // ── THE EDITOR'S HALF OF THE HANDSHAKE (operator 2026-08-21) ────────────────────────────────
 // The spine does not trust whatever dials 127.0.0.1:23375 — loopback is dialable by the
 // sandboxed CLI accounts. So the editor must PROVE it holds the node's shell token: the spine

@@ -72,6 +72,21 @@ export function createSpineLink({
   let answered = false;
   let reconnectTimer = null;
   let reconnectMs = RECONNECT_MIN_MS;
+  // Frames that landed BEFORE the app had a handler for them. MEASURED against the live spine:
+  // dial→open 8ms, open→challenge 1ms, answer→HEADER 1ms — the spine pushes its header-only
+  // frame ~10ms after the dial. egpt.mjs dials FIRST (deliberately: the link starts as early as
+  // possible), THEN awaits listThemes() and mounts Ink, and app.mjs registers onSpineMessage
+  // from a useEffect — >100ms later. So the frame arrives while `onMsg` is still null, and
+  // `onMsg?.(m)` used to make it VANISH. The app's header is useState('') fed ONLY by a spine
+  // frame, so losing that one frame left the shell header line blank until something called
+  // setHeader() again or the link reconnected. Hold what arrives early and flush it, in order,
+  // the moment a handler registers — that closes the race whichever side wins, which reordering
+  // the two never could. Do not "simplify" this away.
+  let pending = [];
+  // The bound: an editor that never registers a handler (or a spine that floods before the app
+  // mounts) must not grow `pending` without limit. 32 is far more than the handful the handshake
+  // produces; past it the OLDEST is dropped, so the most RECENT state is what survives.
+  const PENDING_MAX = 32;
 
   // Announce into the ingest box. Temp-name then rename so the ingest sweep — which skips
   // dotfiles and *.tmp — never reads a half-written file. Never throws: a failed announce just
@@ -130,6 +145,11 @@ export function createSpineLink({
   function connect() {
     if (stopped) return;
     answered = false;
+    // Anything still queued belongs to the socket we just LOST. The spine process may have
+    // restarted in between (wiping the state that frame reported), and this fresh connection
+    // pushes its own header off its own handshake — so a previous session's frame must never be
+    // flushed as if it were current. Drop it here, beside the `answered` reset, for the same reason.
+    pending = [];
     try { sock = new WebSocket(url); }
     catch (e) { sock = null; onLog(`shell-editor: dial threw — ${e?.message ?? e}`); scheduleReconnect(); return; }
     const ws = sock;
@@ -140,7 +160,11 @@ export function createSpineLink({
     ws.on('message', (buf) => {
       const auth = parseAuthFrame(buf);
       if (auth) { answerChallenge(ws, auth); return; }
-      const m = parse(buf); if (m.text || m.delete || m.header != null) onMsg?.(m);
+      const m = parse(buf);
+      if (!(m.text || m.delete || m.header != null)) return;
+      if (onMsg) { onMsg(m); return; }             // handler registered → straight through, no queue
+      pending.push(m);                              // …not yet: hold it for the flush (see `pending`)
+      if (pending.length > PENDING_MAX) pending.shift();
     });
     ws.on('close', () => {
       if (sock === ws) { sock = null; answered = false; }
@@ -165,8 +189,11 @@ export function createSpineLink({
     // failed to bind); the dial never throws — an absent spine just backs off and retries.
     // Returns the underlying socket so a caller/test can await its 'open'.
     start() { announce(); return connect(); },
-    // Register the inbound handler (fires `{ text, chatId }` the spine pushed).
-    onSpineMessage(cb) { onMsg = cb; },
+    // Register the inbound handler (fires `{ text, chatId }` the spine pushed). Flushes, in
+    // order, whatever landed before this call — see `pending`: the app mounts long after the
+    // dial, and the spine's header frame is already here by then. After the flush the queue is
+    // out of the path for good; every later frame goes straight through.
+    onSpineMessage(cb) { onMsg = cb; for (const m of pending.splice(0)) cb(m); },
     // Push a frame to the spine. MVP omits chatId → `{ text }` (shell-port defaults it to
     // 'main'). Drops (returns false, never throws) when the link is not up OR we have not yet
     // answered the challenge — the spine discards a pre-auth frame, so pretending it was sent
@@ -182,6 +209,7 @@ export function createSpineLink({
       if (reconnectTimer) { clearTimeoutFn(reconnectTimer); reconnectTimer = null; }
       try { sock?.close?.(); } catch { /* closing */ }
       sock = null; answered = false;
+      pending = [];   // a deliberately stopped link owes nobody a backlog (same reason as connect())
     },
   };
 }
