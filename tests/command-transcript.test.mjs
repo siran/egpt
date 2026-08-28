@@ -193,7 +193,7 @@ describe('command replies land in transcript.md (real createCommands + real crea
     expect(sent).toHaveLength(1);
     expect(sent[0].chatId).toBe('!self');   // dispatch still targets the REAL chat id, untouched
     const normPath = (p) => p.replace(/\\/g, '/');
-    const roomText = [...files.entries()].find(([p]) => normPath(p).includes('/conversations/room/') && p.endsWith('transcript.md'))?.[1] ?? '';
+    const roomText = [...files.entries()].find(([p]) => normPath(p).includes('/rooms/') && p.endsWith('transcript.md'))?.[1] ?? '';
     const nativeText = [...files.entries()].find(([p]) => normPath(p).includes('/conversations/whatsapp/') && p.endsWith('transcript.md'))?.[1] ?? '';
     expect(roomText).toContain(sent[0].text);   // the RECORD landed in the joined room
     expect(nativeText).toBe('');                // no native-chat transcript file was ever written

@@ -1281,7 +1281,7 @@ describe('/chrome <node>', () => {
 
 // /room create <name> — the FIRST wired named-room create path (Phase 2). A Room IS a
 // folder: `create` makes the standard tree (baseDir + media/files/identity.d/scripts + a minimal
-// config.yaml) so the heartbeat/transcription loaders enumerate conversations/room/<slug>/. All
+// config.yaml) so the heartbeat/transcription loaders enumerate rooms/<slug>/. All
 // fs is routed through the commands io seam, so these run fully in-memory (mkdir recorded,
 // writeFile captured) and never touch a real profile. No member roster yet (later work).
 //
@@ -1305,9 +1305,10 @@ describe('/room create <name>', () => {
     // … and NO config file is written into the room folder: the room rung lives
     // in config/rooms.yaml now, and a room with no row resolves to {}.
     expect(Object.keys(files).some((f) => f.endsWith('config.yaml'))).toBe(false);
-    // the reply names the EGPT_HOME-relative path — under conversations/, NOT the retired rooms/ root
+    // the reply names the EGPT_HOME-relative path — rooms/<slug>/, OUTSIDE the Beeper tree
     expect(sent).toHaveLength(1);
-    expect(sent[0].text).toMatch(/conversations\/room\/foo\//);
+    expect(sent[0].text).toMatch(/(^|[^\/])rooms\/foo\//);
+    expect(sent[0].text).not.toMatch(/conversations/);
     expect(sent[0].text).toMatch(/created/);
     expect(sent[0].text).not.toMatch(/recognized/);   // NOT the unwired catch-all
   });

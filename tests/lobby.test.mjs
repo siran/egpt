@@ -52,12 +52,12 @@ describe('lobby slug — the shell console seat is the durable lobby, not an aut
     expect(ensureContact(emptyState(), 'whatsapp', '@x', { pushedName: 'acim' }).slug).toMatch(/^acim-\d{10}$/);
   });
 
-  it('ensureContact("room","acim") mints the suffix-less slug "acim" at conversations/room/acim', () => {
+  it('ensureContact("room","acim") mints the suffix-less slug "acim" at rooms/acim', () => {
     const ens = ensureContact(emptyState(), 'room', 'acim');   // no pushedName — a room has no title
     expect(ens.slug).toBe('acim');
     expect(ens.slug).not.toMatch(/-\d{10}$/);
     expect(ens.slug).not.toMatch(/^contact/);   // the placeholder a title-less mint used to give
-    expect(norm(slugDir('room', ens.slug))).toMatch(/conversations\/room\/acim$/);
+    expect(norm(slugDir('room', ens.slug))).toMatch(/\/rooms\/acim$/);
   });
 
   it('a room is never re-slugged, and a second sighting is a no-op (stable folder)', () => {

@@ -161,9 +161,9 @@ describe('an operator-named room is an ordinary conversation — created, addres
     const resolveConvRoom = makeResolveConvRoom();
     const { cmds, sent } = commandsFor(resolveConvRoom);
 
-    // 1. CREATE. The name is the chatId; the reply names the conversations/room/ path.
+    // 1. CREATE. The name is the chatId; the reply names the rooms/ path.
     await cmds.run({ chatId: '!conv-1', surface: 'whatsapp', body: '/room create acim' });
-    expect(sent.at(-1).text).toMatch(/room acim created at conversations\/room\/acim\//);
+    expect(sent.at(-1).text).toMatch(/room acim created at rooms\/acim\//);
 
     // 2. RESOLVABLE — the whole reason for the change. The same resolver every other path
     //    uses answers for ('room','acim'), and it is the folder create just made.

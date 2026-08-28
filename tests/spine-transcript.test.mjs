@@ -348,9 +348,11 @@ describe('transcript.log — currentRoomOf redirects WHERE a write lands, ev its
   });
   // Discriminates the write by SURFACE (room vs native), same shape as the two callers' own thin
   // wiring tests: fakeContacts ignores its arguments, so the redirect is visible only through
-  // which surface segment (conversations/room/… vs conversations/<native>/…) the path lands under.
+  // which root the path lands under — rooms/… for surface `room` (it does not arrive through
+  // Beeper, so it sits outside the Beeper tree, operator 2026-08-28) vs conversations/<native>/….
   const contacts = { resolve: async () => 'fam-1' };
-  const transcriptText = (files, seg) => [...files.entries()].find(([p]) => p.replace(/\\/g, '/').includes(`/conversations/${seg}/`) && p.endsWith('transcript.md'))?.[1] ?? '';
+  const rootSeg = (seg) => (seg === 'room' ? '/rooms/' : `/conversations/${seg}/`);
+  const transcriptText = (files, seg) => [...files.entries()].find(([p]) => p.replace(/\\/g, '/').includes(rootSeg(seg)) && p.endsWith('transcript.md'))?.[1] ?? '';
 
   it('room joined on ev.surface → the inbound line lands in the ROOM\'s transcript, not the native chat\'s', async () => {
     const files = new Map();
@@ -379,7 +381,7 @@ describe('transcript.log — currentRoomOf redirects WHERE a write lands, ev its
     const t = createTranscript({ contacts, io: mkIo(files), currentRoomOf: () => null });
     expect(await t.log(ev)).toBe(true);
     expect(transcriptText(files, 'whatsapp')).toContain('hola');
-    expect([...files.keys()].some((p) => p.replace(/\\/g, '/').includes('/conversations/room/'))).toBe(false);
+    expect([...files.keys()].some((p) => p.replace(/\\/g, '/').includes('/rooms/'))).toBe(false);
   });
 
   it('currentRoomOf omitted entirely (default) — byte-identical to before this option existed', async () => {
@@ -394,7 +396,7 @@ describe('transcript.log — currentRoomOf redirects WHERE a write lands, ev its
     const t = createTranscript({ contacts, io: mkIo(files), currentRoomOf: () => 'lobby' });
     expect(await t.log(ev)).toBe(true);
     expect(transcriptText(files, 'whatsapp')).toContain('hola');
-    expect([...files.keys()].some((p) => p.replace(/\\/g, '/').includes('/conversations/room/'))).toBe(false);
+    expect([...files.keys()].some((p) => p.replace(/\\/g, '/').includes('/rooms/'))).toBe(false);
   });
 
   // The regression most likely to silently break: PROSE while a room is joined already arrives

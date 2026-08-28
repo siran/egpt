@@ -23,7 +23,7 @@ import { createSandboxCliSession } from '../sandbox-cli-session.mjs';
 import { readConfigSync } from '../tools/config-io.mjs';
 import { reapPort } from '../tools/reap-port.mjs';
 import * as cdp from '../tools/cdp.mjs';
-import { Room } from '../room-core.mjs';
+import { Room, CONVERSATIONS_ROOT, ROOMS_ROOT } from '../room-core.mjs';
 import { loadAdapterModule } from '../adapters/registry.mjs';
 import {
   CONV_YAML_PATH, readState as readConvState, writeState as writeConvState, slugDir, getContact, LOBBY_SLUG, fixedSlugFor,
@@ -272,6 +272,38 @@ export function chatIdForEntity(state, ns) {
   }
   if (fixedSlugFor(surface, slug) === slug) return { surface, chatId: slug };
   return null;
+}
+
+// Enumerate the entity folders: conversations/<surface>/<slug>/ and rooms/<slug>/.
+// An operator-named room is not a second KIND — it is a conversation on surface `room`
+// (2026-08-09, chatId and all) — but conversations/ is the BEEPER tree, and a room does not
+// arrive through Beeper, so its folder sits at EGPT_HOME/rooms/<slug>/ (operator 2026-08-28).
+// Hence ONE walk over TWO roots, both from room-core's surface→root map, and the ns it emits
+// for a room is still `room/<slug>` — byte-identical to ConversationRoom.ns(), which is what
+// keys config/rooms.yaml. Missing dirs are tolerated (a fresh profile has neither).
+//
+// THIS IS THE WALK — the only one. It feeds the config RESOLVER, which layers the three rungs
+// and serves EVERY per-entity reader (heartbeats, warm, transcription); adding a second
+// enumeration anywhere is the bug this replaced. Module-scope + exported so it is testable
+// directly (tests/list-entity-dirs.test.mjs) — it closes over nothing.
+export async function listEntityDirs() {
+  const out = [];
+  // Surfaces are OPEN (operator ruling: any network Beeper bridges is its own
+  // surface) — driven by real disk contents, not a fixed list, so a new surface's
+  // folder is walked with zero code change.
+  let surfaces = [];
+  try { surfaces = await readdir(CONVERSATIONS_ROOT, { withFileTypes: true }); } catch { surfaces = []; }
+  for (const surfaceEnt of surfaces) {
+    if (!surfaceEnt.isDirectory()) continue;
+    const surface = surfaceEnt.name;
+    let ents = [];
+    try { ents = await readdir(join(CONVERSATIONS_ROOT, surface), { withFileTypes: true }); } catch { continue; }
+    for (const ent of ents) if (ent.isDirectory()) out.push({ dir: join(CONVERSATIONS_ROOT, surface, ent.name), ns: `${surface}/${ent.name}` });
+  }
+  let rooms = [];
+  try { rooms = await readdir(ROOMS_ROOT, { withFileTypes: true }); } catch { rooms = []; }
+  for (const ent of rooms) if (ent.isDirectory()) out.push({ dir: join(ROOMS_ROOT, ent.name), ns: `room/${ent.name}` });
+  return out;
 }
 
 // Where does this agent ROUTE? No `to:` anywhere → LOCAL, keyed by this node's own nodeName.
@@ -628,32 +660,6 @@ export async function boot({
   const _loadState = loadState ?? (() => readConvState(CONV_YAML_PATH));
   const _writeState = writeState ?? ((s) => writeConvState(CONV_YAML_PATH, s));
 
-  // Enumerate the entity folders (conversations/<surface>/<slug>/).
-  // An operator-named room is one of THESE, on surface `room` — it lives at
-  // EGPT_HOME/conversations/room/<slug>/ (2026-08-09), so the surfaces loop below
-  // walks it with no branch of its own. Missing dirs are tolerated (a fresh
-  // profile has none).
-  //
-  // THIS IS THE WALK — the only one. It feeds the config RESOLVER below, which layers
-  // the three rungs and serves EVERY per-entity reader (heartbeats, warm, transcription);
-  // adding a second enumeration anywhere is the bug this replaced.
-  async function listEntityDirs() {
-    const out = [];
-    const convRoot = join(EGPT_HOME, 'conversations');
-    // Surfaces are OPEN (operator ruling: any network Beeper bridges is its own
-    // surface) — driven by real disk contents, not a fixed list, so a new surface's
-    // folder is walked with zero code change.
-    let surfaces = [];
-    try { surfaces = await readdir(convRoot, { withFileTypes: true }); } catch { surfaces = []; }
-    for (const surfaceEnt of surfaces) {
-      if (!surfaceEnt.isDirectory()) continue;
-      const surface = surfaceEnt.name;
-      let ents = [];
-      try { ents = await readdir(join(convRoot, surface), { withFileTypes: true }); } catch { continue; }
-      for (const ent of ents) if (ent.isDirectory()) out.push({ dir: join(convRoot, surface, ent.name), ns: `${surface}/${ent.name}` });
-    }
-    return out;
-  }
   // An entity's WHOLE config.yaml doc — the resolver picks the blocks apart, so this
   // reads the file ONCE for every concern that used to open it separately (heartbeats,
   // warm, transcription). Tolerant: absent / unreadable / malformed → {}.

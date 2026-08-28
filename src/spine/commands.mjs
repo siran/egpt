@@ -22,7 +22,7 @@ import * as YAML from 'yaml';
 import { EGPT_HOME } from '../egpt-home.mjs';
 import { shortChatId } from '../bridges/chat-id.mjs';
 import { ownNodeNamesOf, knownNodeNames } from './node-names.mjs';
-import { Room } from '../room-core.mjs';
+import { Room, ROOMS_ROOT } from '../room-core.mjs';
 // The room slug rule (fixedSlugFor, surface `room`) applied to a READ, which must not mint —
 // see roomOnDisk. NOT for the /room verbs: they pass the operator's raw string through.
 import { sanitizeName } from '../sanitize.mjs';
@@ -90,12 +90,13 @@ const shortAdapterId = (name) => String(name).replace(/-cdp$/i, '');
 // The host of a tab URL for the "no adapter matches <host>" refusal — best-effort.
 const hostOf = (url) => { try { return new URL(String(url)).host; } catch { return String(url ?? ''); } };
 
-// The rooms on disk: the immediate subdirectories of EGPT_HOME/conversations/room/ (each
-// folder IS a room — a room is a conversation on surface `room`, 2026-08-09). Never throws
-// — a missing dir yields []. Injected in tests.
+// The rooms on disk: the immediate subdirectories of the ROOMS root (each folder IS a room —
+// a room is a conversation on surface `room`, 2026-08-09, whose folder sits outside the Beeper
+// tree, operator 2026-08-28). The root comes from room-core's surface→root map, never a
+// second formula here. Never throws — a missing dir yields []. Injected in tests.
 function defaultListRoomNames() {
   try {
-    return readdirSync(join(EGPT_HOME, 'conversations', 'room'), { withFileTypes: true })
+    return readdirSync(ROOMS_ROOT, { withFileTypes: true })
       .filter((e) => e.isDirectory())
       .map((e) => e.name)
       .sort();
@@ -1307,7 +1308,7 @@ export function createCommands({
     const r = await resolveConvRoom('room', name);
     if (!r) { await send?.(ev.chatId, `can't resolve room '${name}'`); return; }
     const slug = r.slug;
-    const rel = `conversations/room/${slug}/`;
+    const rel = `rooms/${slug}/`;
     // Idempotent: an existing room folder is NEVER clobbered.
     try { await stat(r.baseDir()); await send?.(ev.chatId, `room ${slug} already exists at ${rel}`); return; }
     catch { /* absent → create below */ }
@@ -1331,7 +1332,7 @@ export function createCommands({
 
   // ─────────────────────────────────────────────────────────────────────────────
   // /rooms — the saved rooms, each with its member count, the current one marked.
-  // Never throws (a missing conversations/room/ dir → "no rooms yet"; a per-room count that
+  // Never throws (a missing rooms/ dir → "no rooms yet"; a per-room count that
   // can't be read degrades to 0). listRoomNames yields FOLDER names (i.e. slugs), so each
   // one is a Room via the same (surface, slug) constructor resolveConvRoom ends in and
   // roomFromNs uses for the disk walk — resolving these through resolveConvRoom would treat

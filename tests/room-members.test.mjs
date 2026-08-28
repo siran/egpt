@@ -19,7 +19,9 @@ const _PRIVATE_HOME = vi.hoisted(() => {
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
+import * as YAML from 'yaml';
 import { Room, ROOM_MEMBER_STATES, normalizeMemberState, isMemberStateAlias } from '../src/room-core.mjs';
+import { EGPT_HOME } from '../src/egpt-home.mjs';
 import { ROOMS_FILE } from '../src/rooms-file.mjs';
 import { rmSync as _rmRooms } from 'node:fs';
 
@@ -129,6 +131,59 @@ describe('downstream-inheritance', () => {
 
   it('member state IS the full 6-state auto-mode (one gate, zero loss)', () => {
     expect(ROOM_MEMBER_STATES).toEqual(['muted', 'mention', 'active', 'mention-direct', 'off', 'accum']);
+  });
+});
+
+// The folder moved out of conversations/ (operator 2026-08-28) — the MEMBER MODEL did not.
+// The 2026-08-09 @chatgpt bug was TWO paths for one room: /members wrote one file, the relay
+// read another. These lock that shut across the move: ONE folder (the new root), ONE roster
+// (add/read/remove through instances from the SAME constructor), ONE rung row (still keyed
+// `room/<slug>`, so an operator's heartbeats:/members:/access_level: block is still found).
+describe('an operator-named room after the move — ONE folder, ONE roster, ONE rung key', () => {
+  const NAME = 'acim';
+  let acim;
+  beforeEach(() => {
+    rmSync(ROOMS_FILE, { force: true });                                 // fixed ns → no row leaks
+    acim = Room.forChat('room', NAME);
+    rmSync(acim.baseDir(), { recursive: true, force: true });
+  });
+  afterEach(() => { rmSync(acim.baseDir(), { recursive: true, force: true }); });
+
+  it('roots at rooms/<slug> and keys its rung row room/<slug>', async () => {
+    expect(acim.baseDir()).toBe(join(EGPT_HOME, 'rooms', NAME));
+    expect(acim.ns()).toBe(`room/${NAME}`);
+  });
+
+  it('add → read → remove: a member written here is read back by a SEPARATE instance', async () => {
+    await acim.setMember({ kind: 'brain', id: 'chatgpt', state: 'active', adapter: 'chatgpt-cdp' });
+    // the relay's read side: a fresh Room from the SAME (surface, slug) constructor
+    expect(await Room.forChat('room', NAME).members()).toMatchObject([{ id: 'chatgpt', state: 'active', adapter: 'chatgpt-cdp' }]);
+    // ONE row, in the ONE rung file, under the ns key — not a second file beside it
+    const rows = YAML.parse(readFileSync(ROOMS_FILE, 'utf8')).rooms;
+    expect(Object.keys(rows)).toEqual([`room/${NAME}`]);
+    expect(rows[`room/${NAME}`].members).toHaveLength(1);
+    expect(await acim.removeMember('chatgpt')).toBe(true);
+    expect(await Room.forChat('room', NAME).members()).toEqual([]);
+  });
+
+  it('an operator block already written under room/<slug> survives the move (same key)', async () => {
+    mkdirSync(dirname(ROOMS_FILE), { recursive: true });
+    writeFileSync(ROOMS_FILE, `rooms:\n  room/${NAME}:\n    heartbeats:\n      - every: 30m\n    access_level: all\n`);
+    const cfg = await acim.loadConfig();
+    expect(cfg.access_level).toBe('all');
+    expect(cfg.heartbeats).toEqual([{ every: '30m' }]);
+    await acim.setMember({ id: 'e', state: 'active' });                  // a write keeps the row
+    const row = YAML.parse(readFileSync(ROOMS_FILE, 'utf8')).rooms[`room/${NAME}`];
+    expect(row.access_level).toBe('all');
+    expect(row.heartbeats).toEqual([{ every: '30m' }]);
+    expect(row.members).toEqual([{ kind: 'brain', id: 'e', state: 'active' }]);
+  });
+
+  it('the whole tree follows the new baseDir', () => {
+    for (const [getter, leaf] of Object.entries({
+      transcriptPath: 'transcript.md', mediaDir: 'media', filesDir: 'files',
+      identityDir: 'identity.d', scriptsDir: 'scripts', transcriptsDir: 'transcripts',
+    })) expect(acim[getter]).toBe(join(EGPT_HOME, 'rooms', NAME, leaf));
   });
 });
 

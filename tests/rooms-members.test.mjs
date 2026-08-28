@@ -59,7 +59,7 @@ const ADAPTERS = [
 ];
 
 let base;
-// Every conversations/room/<slug>/ this file materialised, removed after each test. The room
+// Every rooms/<slug>/ this file materialised, removed after each test. The room
 // READ verbs (/room members, /room delete) and /rooms resolve the slug PURELY — no seam, by
 // design (a read must not mint a contact) — so those rooms are real folders under the suite's
 // isolated EGPT_HOME. Same tripwire tests/beeper-bridge.test.mjs uses: never the live ~/.egpt.
@@ -154,7 +154,7 @@ describe('CONNECTION — a member added via /members is found by the relay for t
   });
 });
 
-// /rooms enumerates FOLDERS (listRoomNames yields slugs under conversations/room/), so each
+// /rooms enumerates FOLDERS (listRoomNames yields slugs under rooms/), so each
 // listed name is turned into a Room by the plain (surface, slug) constructor — resolving a
 // folder name as if it were a chatId would mint a contact per room on every /rooms.
 describe('/rooms — list rooms, mark current', () => {
@@ -249,11 +249,11 @@ describe('a room READ never mints — /room create is the only room path that wr
   }
 
   // THE RULING'S WHOLE PURPOSE: the folder name IS the chatId IS the typed name.
-  it('/room create acim lands at conversations/room/acim/ — no -yymmddhhmm tail', async () => {
+  it('/room create acim lands at rooms/acim/ — no -yymmddhhmm tail', async () => {
     const { cmds, sent, rooms } = stateHarness();
     const room = roomAt('acim');   // registers the real dir for cleanup
     await cmds.run({ ...self, body: '/room create acim' });
-    expect(sent.at(-1).text).toBe('room acim created at conversations/room/acim/');
+    expect(sent.at(-1).text).toBe('room acim created at rooms/acim/');
     expect(existsSync(room.baseDir())).toBe(true);
     // the contact was minted, under the typed name, with an untailed slug
     expect(rooms().acim?.slug).toBe('acim');
@@ -266,7 +266,7 @@ describe('a room READ never mints — /room create is the only room path that wr
     const { cmds, sent, rooms } = stateHarness();
     roomAt('Foo');
     await cmds.run({ ...self, body: '/room create Foo' });
-    expect(sent.at(-1).text).toMatch(/room foo created at conversations\/room\/foo\//);
+    expect(sent.at(-1).text).toMatch(/room foo created at rooms\/foo\//);
     await cmds.run({ ...self, body: '/room members foo' });
     expect(sent.at(-1).text).toMatch(/foo \(0 members\)/);
     expect(sent.at(-1).text).not.toMatch(/no room/);

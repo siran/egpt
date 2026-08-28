@@ -3,9 +3,14 @@
 // behavior change), satisfy ONE identical tree, and exhibit the
 // downstream-inheritance property (adding to the base flows to the implementation).
 //
-// 2026-08-09: there is only ONE root now. An operator-named room is a conversation
-// on surface `room` (conversations/room/<slug>/), so NamedRoom / Room.named /
-// rooms.roomDir are gone and the old rooms/<name>/ characterization goes with them.
+// 2026-08-09: there is only ONE Room KIND. An operator-named room is a conversation on
+// surface `room`, so NamedRoom / Room.named / rooms.roomDir are gone.
+//
+// 2026-08-28 (operator): conversations/ is THE BEEPER TREE — *"voice, instagram, telegram,
+// whatsapp, matrix is all under beeper, only rooms is not… rooms does belong outside
+// conversations"*. A room's FOLDER therefore moves back out to rooms/<slug>/. That is the
+// ONLY difference: same chatId, same ns `room/<slug>` (so every config/rooms.yaml key is
+// byte-identical), same ONE member model / ONE tree, same constructor.
 
 import { describe, it, expect } from 'vitest';
 import { join } from 'node:path';
@@ -41,26 +46,37 @@ describe('ConversationRoom — byte-identical to the legacy slugDir root', () =>
   });
 });
 
-// The old rooms/<name>/ root is GONE (2026-08-09). An operator-named room is not a second
-// kind of Room: it is a conversation on surface `room`, so it roots under the SAME
-// conversations tree and comes out of the SAME constructor. These were the roomDir
-// characterization cases, rewritten against the new path.
-describe('an operator-named room roots at conversations/room/<slug> — ONE kind, ONE formula', () => {
+// An operator-named room is not a second KIND of Room — it is a conversation on surface
+// `room`, out of the SAME constructor, with the SAME tree. It simply does not arrive
+// through Beeper, so its folder sits OUTSIDE the Beeper tree (operator 2026-08-28).
+describe('an operator-named room roots at rooms/<slug> — outside the Beeper tree', () => {
   for (const name of ['work', 'ChatGPT CDP', 'acim']) {
-    it(`baseDir for room "${name}" is the conversations root, not rooms/<name>`, () => {
+    it(`baseDir for room "${name}" is the rooms root, not conversations/room/<name>`, () => {
       const room = Room.forChat('room', name);
-      expect(room.baseDir()).toBe(join(EGPT_HOME, 'conversations', 'room', sanitizeSlug(name)));
+      expect(room.baseDir()).toBe(join(EGPT_HOME, 'rooms', sanitizeSlug(name)));
       expect(room.baseDir()).toBe(slugDir('room', name));     // delegation = byte-identical
-      expect(room.baseDir()).not.toContain(join(EGPT_HOME, 'rooms'));
+      expect(room.baseDir()).not.toContain(join(EGPT_HOME, 'conversations'));
       expect(room).toBeInstanceOf(ConversationRoom);
     });
   }
+  // THE REGRESSION GUARD: the folder moved, the NAMESPACE did not. ns() is what keys
+  // config/rooms.yaml (heartbeats:/members:/access_level:) and what listEntityDirs emits —
+  // a room whose ns drifted with its folder would silently lose the operator's whole block.
+  for (const name of ['work', 'ChatGPT CDP', 'acim']) {
+    it(`ns() for room "${name}" is still room/<slug>`, () => {
+      expect(Room.forChat('room', name).ns()).toBe(`room/${sanitizeSlug(name)}`);
+    });
+  }
+  it('a chat on any other surface still roots INSIDE conversations/', () => {
+    expect(Room.forChat('whatsapp', 'x').baseDir()).toBe(join(EGPT_HOME, 'conversations', 'whatsapp', 'x'));
+    expect(Room.forChat('whatsapp', 'x').ns()).toBe('whatsapp/x');
+  });
   // sanitizeSlug (not the retired kebab sanitizeName) is what a room name goes through now:
   // a plain lowercase name must survive it untouched, so `/room create acim` and
   // resolveConvRoom('room','acim') land on the same folder.
   it('a plain room name survives sanitizeSlug unchanged', () => {
     expect(sanitizeSlug('acim')).toBe('acim');
-    expect(Room.forChat('room', 'acim').baseDir()).toBe(join(EGPT_HOME, 'conversations', 'room', 'acim'));
+    expect(Room.forChat('room', 'acim').baseDir()).toBe(join(EGPT_HOME, 'rooms', 'acim'));
   });
   it('filesDir is baseDir/files, same getter as any other Room', () => {
     const room = Room.forChat('room', 'work');

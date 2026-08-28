@@ -279,7 +279,7 @@ describe('a room-joined inbound message lands in the room\'s transcript, ev used
     // DISPATCH untouched: the turn ran with the ORIGINAL native ev, not a room-redirected one.
     expect(seenEv).toEqual([{ surface: 'shell', chatId: 'main' }]);
 
-    const roomText = [...files.entries()].find(([p]) => p.replace(/\\/g, '/').includes('/conversations/room/') && p.endsWith('transcript.md'))?.[1];
+    const roomText = [...files.entries()].find(([p]) => p.replace(/\\/g, '/').includes('/rooms/') && p.endsWith('transcript.md'))?.[1];
     const nativeText = [...files.entries()].find(([p]) => p.replace(/\\/g, '/').includes('/conversations/shell/') && p.endsWith('transcript.md'))?.[1];
     expect(roomText).toContain('/agents egpt reset');       // the RECORD landed in the joined room
     expect(nativeText ?? '').not.toContain('/agents egpt reset');   // NOT in the native chat's transcript
@@ -302,6 +302,6 @@ describe('a room-joined inbound message lands in the room\'s transcript, ev used
 
     const nativeText = [...files.entries()].find(([p]) => p.replace(/\\/g, '/').includes('/conversations/shell/') && p.endsWith('transcript.md'))?.[1];
     expect(nativeText).toContain('/agents egpt reset');
-    expect([...files.keys()].some((p) => p.replace(/\\/g, '/').includes('/conversations/room/'))).toBe(false);
+    expect([...files.keys()].some((p) => p.replace(/\\/g, '/').includes('/rooms/'))).toBe(false);
   });
 });
