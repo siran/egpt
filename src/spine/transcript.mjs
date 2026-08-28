@@ -24,7 +24,7 @@ import { existsSync as fsExistsSync } from 'node:fs';
 export function createTranscript({
   contacts,                              // the shared contact-resolver (createContacts) — chatId → slug + rename self-heal
   persona = null,
-  defaultKey = 'e',                      // the persona being-id (its map key), injected by boot — the fallback label when a reply carries no being
+  defaultKey = 'egpt',                   // the persona being-id (its `agents:` MAP KEY), injected by boot — the fallback label when a reply carries no being. NOT a handle: `e` is one of the persona's handles (`handles: [e, egpt, ev]`), and this value is written into the record as the speaker, so a handle here labels the file with something no reader can route on (operator 2026-08-28)
   node_name = null,                      // this node's name — qualifies the being's reply label as <being>.<node_name> so the record shows WHICH node produced a line (provenance; operator 2026-07-10). null → bare being label unchanged
   timeZone = null,                       // the node's config default_time_zone (boot-resolved via the heartbeat loader's resolveTimeZone) — the zone the reply line's HH:MM renders in. null → UTC, unchanged
   io = {},                               // { appendFile, mkdir, existsSync } — real by default
@@ -46,7 +46,17 @@ export function createTranscript({
   const appendFile = io.appendFile ?? fsAppendFile;
   const mkdir = io.mkdir ?? fsMkdir;
   const existsSync = io.existsSync ?? fsExistsSync;
+  // Node-qualify the being label (operator 2026-07-10): <being>.<node_name> (e.g. egpt.kg,
+  // wren.do) so the record shows WHICH node on this shared account produced the line. Applies to
+  // whatever beings the transcript labels — it's this node's node_name for all of them.
   const beingLabel = (being) => (node_name ? `${being}.${node_name}` : being);
+  // The chat/surface half of a reply line, since a being's reply now renders through the SAME
+  // formatter as the inbound line beside it (transcript-log.replyLine → formatDispatchLine).
+  // These are ev's OWN metadata, kept LITERAL exactly like ev.line/ev.body/ev.senderName at the
+  // call sites below — never the routing decision of where the write is filed (see target()) —
+  // so a being's line and the inbound line it answers render the same chat and the same surface
+  // tag, byte for byte, in whichever file they land.
+  const lineContext = (ev) => ({ chatName: ev.chatName, node: ev.node, surface: ev.surface });
 
   // WHERE a write lands: a joined room wins over ev's own native (surface, chatId) — the same
   // "joined room wins" rule redirectShellToRoom applies to dispatch (boot.mjs). 'lobby' is
@@ -125,7 +135,7 @@ export function createTranscript({
         // first thing this file ever receives (normally the inbound line is already in: the
         // spine records at ingestion, before any turn is dispatched).
         if (!existsSync(fpath)) head += renderFrontMatter({ name: ev.chatName ?? t.chatId ?? t.slug, surface: t.surface, slug: t.slug, chat_id: t.chatId, persona });
-        if (being) head += replyLine({ being: beingLabel(being), body: '', streaming: true, now: now(), timeZone });
+        if (being) head += replyLine({ being: beingLabel(being), body: '', streaming: true, now: now(), timeZone, ...lineContext(ev) });
         openBlocks.add(fpath);
       }
       await appendFile(fpath, head + inc, 'utf8');
@@ -226,11 +236,12 @@ export function createTranscript({
           const text = typeof reply === 'string' ? reply : reply.text;
           const being = (typeof reply === 'object' && reply.being) || defaultKey;
           const surfaced = typeof reply === 'object' ? reply.surfaced !== false : true;
-          // Node-qualify the being label (operator 2026-07-10): <being>.<node_name> (e.g. e.kg,
-          // wren.do) so the record shows WHICH node on this shared account produced the line.
-          // Applies to whatever beings the transcript labels — it's this node's node_name for all.
-          const label = node_name ? `${being}.${node_name}` : being;
-          await appendFile(fpath, replyLine({ being: label, body: text, surfaced, now: now(), timeZone }) + '\n\n', 'utf8');
+          // `msgId` — the id of the message this reply was POSTED as, which makes the line
+          // addressable (`#<id>`) the way an inbound line is. No caller carries one yet: the
+          // spine records the reply BEFORE delivering it (record-first is durability), so at
+          // this point the surface has not assigned an id. Absent → the tag is omitted.
+          const msgId = (typeof reply === 'object' ? reply.msgId : null) ?? null;
+          await appendFile(fpath, replyLine({ being: beingLabel(being), body: text, surfaced, msgId, now: now(), timeZone, ...lineContext(ev) }) + '\n\n', 'utf8');
         }
         return true;
       } catch (e) { onLog(`transcript ${ev?.surface}/${ev?.chatId}: ${e?.message ?? e}`); return false; }

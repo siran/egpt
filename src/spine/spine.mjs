@@ -914,7 +914,11 @@ export function createSpine({
       // alone: the message itself went on the record at ingestion, so however many agents
       // answer it, each appends exactly one reply line under the one inbound line.
       await transcript.log(ev, { ...reply, surfaced: responded });
-      if (responded) pushCycle(turnKey, replyLine({ being: to, body: rawText, surfaced: true, now: new Date(), timeZone }));
+      // The cycle line renders through the SAME formatter the record does (replyLine →
+      // formatDispatchLine), carrying ev's own chat + surface tag, so the accumulated prompt
+      // reads as one timeline in one shape — and so bodyForMessageId, which runs over the
+      // composed prompt below, still sees a real entry head here rather than a loose line.
+      if (responded) pushCycle(turnKey, replyLine({ being: to, body: rawText, surfaced: true, now: new Date(), timeZone, chatName: ev.chatName, node: ev.node, surface: ev.surface }));
       await store?.recordThread?.({ ev, reply, being: to });
       // TYPING TIME (auto only): a human takes time to type. Delay the plain post-once send
       // by a typing-speed function of the reply length (capped 90s, outside the turn-timeout

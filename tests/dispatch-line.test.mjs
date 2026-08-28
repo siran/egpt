@@ -203,6 +203,26 @@ describe('isLiveStreamFrame — the ⏳ marker, wherever the frame carries it', 
       .open('!c', { being: 'e', queued: true, queuedAhead: 2 });
     expect(isLiveStreamFrame(frame('', queuedInit[0]))).toBe(true);
   });
+
+  // THE RETAINED NARRATION (operator 2026-08-28). A settle whose text DIVERGES from the
+  // streamed narration now keeps that narration above a seam instead of erasing it, so the
+  // settled message carries text that was previously stamped as a live frame. The seam itself
+  // must carry NO marker: an observing node classifies by PRESENCE, anywhere in the frame, so a
+  // marker anywhere in the retained block would make every settled reply look transient and drop
+  // it from the peer's record. Driven through the REAL sender, signed with BOTH node closes.
+  it('the REAL sender\'s settle is history even when it RETAINS the narration — on either node', async () => {
+    const frames = [], finals = [];
+    const bridge = {
+      send() {},
+      startStream(chat, init) { return { update: (t) => frames.push(t), async finish(t) { finals.push(t); this.delivered = true; }, async delete() {}, delivered: false }; },
+    };
+    const out = createSender({ bridge }).open('!c', { being: 'e' });
+    out.update('Buen lugar random para');
+    await out.finish({ text: '¿la disfrutaste o se sintió como fan service?' });   // diverges → narration retained
+    expect(finals[0]).toContain('Buen lugar random para');                          // nothing the human read is gone
+    expect(isLiveStreamFrame(frame(frames[0], signed('🌉kg', finals[0], '🌉')))).toBe(false);
+    expect(isLiveStreamFrame(frame(frames[0], signed('💸do', finals[0], '💸')))).toBe(false);
+  });
 });
 
 describe('formatDispatchLine — derives {node,name} from a legacy surface tag', () => {

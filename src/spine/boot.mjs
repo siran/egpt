@@ -204,7 +204,7 @@ export function makeShellAwareBridge(bridge, shellPort) {
 // LABEL: 'system' — a command reply is the NODE speaking, not a persona (src/shell/app.mjs
 // already uses author 'system' for this identical class of message: spine-generated, not a
 // being's turn). Node-qualified like any other reply — createTranscript renders <being>.<node_name>
-// — so the record shows e.g. `[@system.kg (18:07)]:`.
+// — so the record shows e.g. `@system.kg@[fam].wa (18:07): …`.
 //
 // Pure/DI'd so it's testable directly (mirrors the other top-level boot helpers): `send` and
 // `transcript.log` are both injected, nothing here touches fs or config.

@@ -13,7 +13,7 @@
 // transcript line is defined in this module, so the one function that reads lines back
 // out of transcript.md keys on THAT definition rather than on a copy of it.
 import { renderFrontMatter, stripFrontMatter } from './transcript-meta.mjs';
-import { hhmm } from './dispatch-line.mjs';
+import { formatDispatchLine } from './dispatch-line.mjs';
 // WHICH NODE committed a line, read back off the record. The frame is invisible on the wire and
 // identity.build renders it to `<node>` before the transcript is written, so this reader — not
 // decodeNodeSignature — is the one that works on a file. See lastSurfacedBeing below.
@@ -40,12 +40,40 @@ export function transcriptAppend({ existing = false, body, name, surface, slug, 
 }
 
 /**
- * Format a being's reply line for the transcript: `[<being> (HH:MM)]: body`,
- * tagged `(not surfaced)` when the reply was withheld by the gate/mode.
+ * Format a being's reply line for the transcript. ONE LINE SHAPE FOR THE WHOLE FILE
+ * (operator 2026-08-28, reading a live transcript: "the correct format is 'e' outside the
+ * [], and better egpt instead of e") — a being's utterance reads like every other utterance
+ * in the file, so this is THE inbound formatter (dispatch-line.formatDispatchLine), not a
+ * second near-identical template beside it:
  *
- * HH:MM renders in `timeZone` — the node's config `default_time_zone`, injected by boot
- * through the SAME `hhmm` the inbound line uses, so the two halves of a transcript can
- * never disagree about what time it is. Unset/invalid → UTC (operator 2026-07-26).
+ *   @egpt.kg@[SPOILER ALERT: chat de EyAy].wa (07:36) #202360: No, no te creería sin evidencia
+ *
+ * The file used to carry TWO shapes — `Sender@[chat].node (HH:MM) #id: body` for what was
+ * received and `[@being (HH:MM)]: body` for what a being said — and they had already drifted
+ * apart (the reply half carried no chat, no surface, no message id, and its clock/label were
+ * maintained separately). Routing both through one formatter is what stops that happening
+ * again; every field below is a pass-through to it.
+ *
+ * `being` is the BEING-ID (its `agents:` map key — `egpt`, never the handle `e`), node-qualified
+ * `<being>.<node_name>` by the transcript service so the record still says WHICH of two
+ * co-account nodes produced the line (provenance, operator 2026-07-10).
+ *
+ * THE `@` SIGIL IS LOAD-BEARING, not decoration. In this one shape a being's name sits in the
+ * same slot a human's display name does, so it is the only thing that still separates "an agent
+ * spoke" from "a person spoke" — and three readers turn on exactly that question:
+ * lastSurfacedBeing (who `r` addresses — a human line in between must stay irrelevant, operator
+ * 2026-07-26), contextSinceLastTurn's boundary, and /status's member roster. It is also the
+ * sigil this system already uses for a being everywhere else (`@e`, `@don`, and the `@<being>`
+ * membersFromTranscript itself reports).
+ *
+ * HH:MM renders in `timeZone` — the node's config `default_time_zone` — through the formatter's
+ * own `hhmm`, so the two halves of a transcript can no longer disagree about what time it is
+ * even in principle. Unset/invalid → UTC (operator 2026-07-26).
+ *
+ * `msgId` — the posted message's id, making the line addressable for `/react` / `/reply` the way
+ * an inbound line is (MESSAGES-FIRST-CLASS plan). Omitted when absent, which is every caller
+ * today: the spine records the reply BEFORE it is delivered (record-first is durability), so at
+ * write time no id exists yet. The slot is here so the id lands the moment a caller has one.
  *
  * `streaming` opens the RAW BYTE TRAIN of a turn (operator 2026-08-27: "whatever reply is
  * emitted by model (the bytes) gets written into the transcript"). Its body is EMPTY here —
@@ -53,12 +81,18 @@ export function transcriptAppend({ existing = false, body, name, surface, slug, 
  * (src/spine/transcript.mjs logStream) and the settled reply still lands as its own line
  * below it. The tag rides the SAME slot `(not surfaced) ` uses because it answers the same
  * question about the same line shape — a reader (human or model) must be able to tell the
- * train from the record, and every predicate keyed on this shape keeps working.
+ * train from the record, and every predicate keyed on this shape keeps working. Both tags now
+ * open the BODY rather than following a `]:`, which is the same position relative to the
+ * `: ` separator they always had.
  */
-export function replyLine({ being, body, surfaced = true, streaming = false, now = new Date(), timeZone = null } = {}) {
-  const t = hhmm(now, timeZone);
+export function replyLine({ being, body, surfaced = true, streaming = false, now = new Date(), timeZone = null, chatName = null, node = null, surface = null, msgId = null } = {}) {
   const tag = streaming ? '(streaming) ' : (surfaced ? '' : '(not surfaced) ');
-  return `[@${being} (${t})]: ${tag}${String(body ?? '').trim()}`;
+  return formatDispatchLine({
+    senderName: `@${being}`,
+    chatName, node, surface, msgId, timeZone,
+    ts: now,
+    body: `${tag}${String(body ?? '').trim()}`,
+  });
 }
 
 // ── RECENT CONTEXT — reading the gap back out of transcript.md ────────────────
@@ -79,10 +113,11 @@ export function replyLine({ being, body, surfaced = true, streaming = false, now
 // which is also why NO TIMESTAMP IS PARSED here: `(HH:MM)` renders in the node's
 // configured zone and carries no date, so any clock comparison would be both
 // zone-sensitive and ambiguous across midnight. The predicate is the SHAPE `replyLine`
-// (above) writes — `[@<being>[.<node>] (HH:MM)]:` — matched at the head of a block:
+// (above) writes — `@<being>[.<node>]@[<chat>].<surface> (HH:MM)`, and the pre-2026-08-28
+// `[@<being>[.<node>] (HH:MM)]:` still on disk — matched at the head of a block:
 //   - only THIS being's line is the boundary; another agent's reply is part of the gap
 //     (E did not see it either),
-//   - a WITHHELD reply counts: `(not surfaced) ` follows the `]:`, so it matches — and
+//   - a WITHHELD reply counts: `(not surfaced) ` opens the BODY, past the head, so it matches — and
 //     it SHOULD, because that turn ran and the being saw everything before it,
 //   - a being that has never replied here has no boundary → the whole tail.
 //
@@ -93,11 +128,29 @@ export function replyLine({ being, body, surfaced = true, streaming = false, now
 // only switch this behaviour has, and it is not getting a config knob beside it.
 export const RECENT_CONTEXT_MAX_CHARS = 8000;
 
+// ── THE TWO SHAPES A REPLY LINE CAN HAVE ON DISK ─────────────────────────────
+// Every reader below understands BOTH, and that is permanent, not a migration window: the
+// operator's live transcripts are months of history and NOTHING already written is ever
+// rewritten (this file is append-only by contract). So a file straddling the 2026-08-28
+// change reads correctly end to end — old blocks above, new blocks below.
+//
+//   NEW — one line shape for the whole file (replyLine → formatDispatchLine):
+//     @<being>[.<node>]@[<chat>].<surface> (HH:MM)[ #<id>]: [(not surfaced) |(streaming) ]body
+//   OLD — the reply-only template this replaced:
+//     [@<being>[.<node>] (HH:MM)]: [(not surfaced) |(streaming) ]body
+//
+// The `.<node>` provenance qualifier is optional in both (a transcript service wired without
+// node_name writes a bare being label), and `[^\s\]@]+` stops it swallowing the `@[` that
+// opens the chat in the new shape while still matching the old one's `]`-terminated form.
+const _TS = String.raw`\(\d{1,2}:\d{2}\)`;
+const _NODE_Q = String.raw`(?:\.[^\s\]@]+)?`;                                   // the optional .<node_name>
+const _ID_TAGS = String.raw`(?:\s+#[^\s:]+)?(?:\s+re\s+#[^\s:]+)?`;             // formatDispatchLine's ` #<id>` / ` re #<id>`
+
 const _escapeBeing = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-// `[@e (22:05)]:` / `[@e.kg (22:05)]: (not surfaced) …` — replyLine's shape, with the
-// optional `.<node_name>` qualifier the transcript service adds (spine/transcript.mjs).
+// THIS being's reply line, in either shape — the accum boundary (below).
 function beingReplyRe(being) {
-  return new RegExp(`^\\[@${_escapeBeing(String(being ?? '').toLowerCase())}(?:\\.[^\\s\\]]+)?\\s\\(\\d{1,2}:\\d{2}\\)\\]:`, 'i');
+  const b = _escapeBeing(String(being ?? '').toLowerCase());
+  return new RegExp(`^(?:@${b}${_NODE_Q}@\\[[^\\]]*\\]\\.\\S+\\s${_TS}|\\[@${b}${_NODE_Q}\\s${_TS}\\]:)`, 'i');
 }
 
 /**
@@ -202,7 +255,16 @@ export function promptWithRecentContext(line, { blocks = [], truncated = false }
 //
 // The node qualifier is stripped (`e.kg` → `e`): the BEING-ID is what routes, and `.<node>` is
 // provenance the transcript service adds (src/spine/transcript.mjs).
-const _REPLY_HEAD = /^\[@(\S+?)(?:\.[^\s\]]+)?\s\(\d{1,2}:\d{2}\)\]:/;
+//
+// THE `@` SIGIL IS WHAT MAKES (a) STILL ANSWERABLE. Since 2026-08-28 a being's line uses the
+// SAME shape as a human's, so without the leading `@` on the speaker this walk would land on
+// whoever spoke last — usually a person — and `r` would stop resolving the moment a human said
+// anything after E. That is the exact behaviour operator 2026-07-26 ruled OUT ("human lines in
+// between are irrelevant"). Both shapes are matched: the new one and the `[@…]:` still on disk.
+const _REPLY_HEAD = new RegExp(
+  String.raw`^(?:@([^\s@\[]+?)${_NODE_Q}@\[[^\]]*\]\.\S+\s${_TS}${_ID_TAGS}:`
+  + String.raw`|\[@(\S+?)${_NODE_Q}\s${_TS}\]:)`,
+);
 
 /**
  * The being-id of the last SURFACED reply line in the transcript, lowercased — or null when this
@@ -231,7 +293,7 @@ export function lastSurfacedBeing(text, { node = null } = {}) {
       // recorded — without this a WITHHELD turn would claim the floor through its own train,
       // the exact opposite of what the `(not surfaced)` skip above decides.
       if (rest.startsWith('(streaming)')) continue;
-      return m[1].toLowerCase();
+      return (m[1] ?? m[2]).toLowerCase();                                      // whichever shape matched
     }
     const signer = decodeRenderedNodeSignature(b);                                // (b) a spine committed this
     if (signer == null) continue;                                                 // an ordinary human line
@@ -256,15 +318,17 @@ export function lastSurfacedBeing(text, { node = null } = {}) {
 // out must key on that definition rather than on a copy of it — and because the spine reads it
 // too, which must not mean the spine importing a bridge's parser.
 //
-// An entry header is an inbound dispatch line ("Sender@[chat].node (HH:MM)…", optionally
-// "[ "-wrapped for a stage-direction) OR a being reply ("[@being (HH:MM)]:"). A plain
-// continuation line matches NEITHER, so it is kept as body and a multi-line message stays whole.
-// The id is the tag directly AFTER the time, so a ` re #<id>` reply tag can never be mistaken
-// for an entry's own id. Front matter is dropped with the shared stripFrontMatter so a
-// `name:`/`---` line can't match. The id is compared as a STRING extracted from the header, so
-// no caller-supplied id is ever spliced into a regex.
-const _TS = String.raw`\(\d{1,2}:\d{2}\)`;
-const _ENTRY_HEAD = new RegExp(String.raw`^(?:\[\s*)?[^@\n]+@\[[^\]]*\]\.\S+\s+${_TS}|^\[@\S+\s+${_TS}\]:`);
+// An entry header is a dispatch line — "Sender@[chat].node (HH:MM)…" for a human, the same
+// shape with the being's `@` sigil ("@egpt.kg@[chat].wa (HH:MM)…") for a being since
+// 2026-08-28, optionally "[ "-wrapped for a stage-direction — OR the pre-2026-08-28 being
+// reply ("[@being (HH:MM)]:") still on disk. A plain continuation line matches NONE of them,
+// so it is kept as body and a multi-line message stays whole. The id is the tag directly AFTER
+// the time, so a ` re #<id>` reply tag can never be mistaken for an entry's own id. Front matter
+// is dropped with the shared stripFrontMatter so a `name:`/`---` line can't match. The id is
+// compared as a STRING extracted from the header, so no caller-supplied id is ever spliced into
+// a regex. (`@?` is all the new shape costs here: `[^@\n]+` still demands a real speaker name
+// between the sigil and the `@[`, so an @mention inside a body line stays a continuation.)
+const _ENTRY_HEAD = new RegExp(String.raw`^(?:\[\s*)?@?[^@\n]+@\[[^\]]*\]\.\S+\s+${_TS}|^\[@\S+\s+${_TS}\]:`);
 const _ID_AFTER_TS = new RegExp(`${_TS}\\s+#([^\\s:]+)`);   // the message-id tag directly after the time
 
 /**
