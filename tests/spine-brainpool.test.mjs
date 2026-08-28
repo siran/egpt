@@ -4,6 +4,9 @@
 // Against a fake warm pool + in-memory conv-state. No claude, no spawn.
 import { describe, it, expect, vi } from 'vitest';
 import { createBrainPool, parseWarmBlock } from '../src/spine/brainpool.mjs';
+import { createWarmPool } from '../src/warm-sessions.mjs';
+import { createPiCliSession } from '../src/pi-cli-session.mjs';
+import { EventEmitter } from 'node:events';
 import { loadPermissionLevel } from '../src/spine/permission-levels.mjs';
 import { createContacts } from '../src/spine/contacts.mjs';
 import { createBrains } from '../src/spine/brains.mjs';
@@ -31,7 +34,7 @@ function fakePool(scriptedResults) {
 
 const ev = { surface: 'whatsapp', chatId: '!room:beeper.com', chatName: 'SPOILER', line: 'An@[SPOILER].wa (14:05) #m1: hola', body: 'hola' };
 
-function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, loadFeed, loadManifest, loadAutoLayer, seedSession, seedMode, seedAgents, brains, afterTurn, io, nodeIdentity, seedLayers, resolveConfig, loadPermission, skipAccessLevelDefault } = {}) {
+function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, loadFeed, loadManifest, loadAutoLayer, seedSession, seedMode, seedAgents, brains, afterTurn, io, nodeIdentity, seedLayers, resolveConfig, loadPermission, skipAccessLevelDefault, poolOverride } = {}) {
   let state = emptyState();
   if (seedSession || seedMode || seedAgents) {   // pre-register the contact (WITH a stored thread, an E mode, and/or per-being pins)
     const ens = ensureContact(state, ev.surface, ev.chatId, { pushedName: ev.chatName, slugHint: ev.chatName });
@@ -47,7 +50,9 @@ function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, load
       for (const [being, fields] of Object.entries(seedAgents)) state = patchBeing(state, ev.surface, ev.chatId, being, fields);
     }
   }
-  const pool = fakePool(scriptedResults);
+  // poolOverride: a REAL createWarmPool, for the one test that has to see the warm
+  // process reused across turns (the fake pool has no session lifetime of its own).
+  const pool = poolOverride ?? fakePool(scriptedResults);
   const loadState = async () => state;
   const writeState = async (s) => { state = s; };
   // resolveBeingDef (phase 2, operator 2026-08-14: "remove the concept of siblings") needs an
@@ -296,6 +301,50 @@ describe('brainpool.turn', () => {
     await brain.turn('e', ev);
     expect(pool.calls[0].brainOptions.sessionId).toBe('sid');
     expect(pool.calls[0].message).toBe(ev.line);   // resumed → no wrap
+  });
+
+  // THE dj-son OVERFLOW (2026-08-28): `@pd` on a local 16k model died with
+  // "request (25322 tokens) exceeds the available context size (16384)". Its pi
+  // session held 32 copies of the identity feed — 2018 chars each, ~75% of the
+  // whole 80-minute session — because the engine never reported a session id, so
+  // recordThread never fired, so every turn resolved sessionId:null and took the
+  // wrapFresh branch, while the WARM POOL kept feeding all of it to the SAME live
+  // pi process. Two turns is enough to see it: the feed must reach the thread ONCE.
+  // Real warm pool + real pi session (fake spawn) — the fake pool has no session
+  // lifetime, and the lifetime is exactly what is broken.
+  it('pi: the identity feed reaches ONE warm pi thread ONCE, not on every turn', async () => {
+    const proc = new EventEmitter();
+    proc.stdout = new EventEmitter();
+    proc.stderr = new EventEmitter();
+    proc.prompts = [];
+    proc.kill = () => {};
+    proc.stdin = {
+      write: (s) => {
+        proc.prompts.push(JSON.parse(s).message);
+        setImmediate(() => {
+          for (const e of [{ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'ok' } }, { type: 'agent_settled' }]) {
+            proc.stdout.emit('data', Buffer.from(`${JSON.stringify(e)}\n`));
+          }
+        });
+        return true;
+      },
+      end() {},
+    };
+    const spawn = vi.fn(() => proc);
+    const pool = createWarmPool({ makeSession: (opts) => createPiCliSession({ ...opts, spawn }) });
+    const { brain } = harness([], {
+      poolOverride: pool,
+      brains: { resolve: () => ({ name: 'pi', type: 'pi', personality: 'egpt' }) },
+      config: { agents: { pd: { configuration: 'pi', handles: ['pd'] } } },
+      loadFeed: async () => 'I AM EGPT (the feed)',
+    });
+    await brain.turn('pd', ev);
+    await brain.turn('pd', ev);
+    pool.close();
+    expect(spawn).toHaveBeenCalledTimes(1);                                        // ONE warm process = ONE pi session
+    expect(proc.prompts).toHaveLength(2);
+    expect(proc.prompts.filter((m) => m.includes('I AM EGPT (the feed)'))).toHaveLength(1);
+    expect(proc.prompts[1]).toBe(ev.line);                                         // turn 2 continues its own thread
   });
 
   it('no identity available (no feed, no manifest) → raw line even when fresh', async () => {

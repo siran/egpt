@@ -21,9 +21,10 @@
 //
 // Interface = what src/warm-sessions.mjs (createWarmPool) expects:
 //   turn(message, onUpdate) -> { text, sessionId }   ·   close()
-// Pi owns its own session persistence (--session-id), so sessionId here is null
-// unless the caller pins one.
+// Pi owns its own session persistence (--session-id); the caller's id is used when
+// it pins one, otherwise this mints one and REPORTS it (see sessionId below).
 import { spawn as nodeSpawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -96,6 +97,17 @@ export function createPiCliSession(options = {}) {
   const onLog = typeof options.onLog === 'function' ? options.onLog : () => {};
   const _spawn = options.spawn || nodeSpawn;   // injectable for tests
   const { bin, prefix } = resolvePiCommand(options.bin);
+  // THE THREAD ID. Pi mints its own session when none is pinned and never tells the
+  // client which — so this reported sessionId:null, brainpool's recordThread never
+  // fired, every later turn resolved sessionId:null and took the wrapFresh branch,
+  // and the identity kickoff went into the SAME warm pi process again and again
+  // (dj-son, 2026-08-28: 32 copies of the feed in one 80-minute session, ~75% of it,
+  // 25k tokens against a 16k window). Pin one HERE instead: `--session-id` opens the
+  // project session with that id when it exists and creates it under that id when it
+  // does not (pi's createSessionManager), which is claude's --resume contract. The
+  // other two engines already report theirs — warm-cli-session learns session_id off
+  // the stream, codex-cli-session off thread/start; this one had no way to.
+  const sessionId = options.sessionId ?? randomUUID();
 
   let proc = null;
   let stdoutBuf = '';
@@ -146,7 +158,7 @@ export function createPiCliSession(options = {}) {
     if (ev.type === 'agent_settled') {
       const { resolve, acc } = pending;
       pending = null;
-      resolve({ text: acc, sessionId: options.sessionId ?? null });
+      resolve({ text: acc, sessionId });
     }
   }
 
@@ -180,7 +192,7 @@ export function createPiCliSession(options = {}) {
     if (sessionDir) args.push('--session-dir', sessionDir);
     if (options.provider) args.push('--provider', options.provider);
     if (options.model) args.push('--model', options.model);
-    if (options.sessionId) args.push('--session-id', String(options.sessionId));
+    args.push('--session-id', String(sessionId));
     if (options.thinking) args.push('--thinking', String(options.thinking));
     // ALL-OR-NOTHING on purpose. A Claude list like [Read, Glob, Task] lowercases
     // to a set where only `read` matches, and honouring that partial overlap would
@@ -241,6 +253,6 @@ export function createPiCliSession(options = {}) {
       try { proc?.kill?.(); } catch { /* already closing */ }
       proc = null;
     },
-    get sessionId() { return options.sessionId ?? null; },
+    get sessionId() { return sessionId; },
   };
 }

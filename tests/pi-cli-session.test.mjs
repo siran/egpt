@@ -46,7 +46,36 @@ describe('pi cli session (rpc mode)', () => {
     proc.textDelta('Hello '); proc.textDelta('world');
     proc.emitEvent({ type: 'agent_end' });        // NOT terminal — retry/compaction may follow
     proc.emitEvent({ type: 'agent_settled' });
-    expect(await p).toEqual({ text: 'Hello world', sessionId: null });
+    expect(await p).toEqual({ text: 'Hello world', sessionId: expect.any(String) });
+  });
+
+  // dj-son overflow (2026-08-28). Pi mints its own session and, unpinned, never told
+  // us which — so `turn()` reported sessionId:null, brainpool's recordThread never
+  // fired, and its next turn resolved sessionId:null again and re-sent the identity
+  // kickoff into the same warm process (32 copies of the feed in one session, 25k
+  // tokens against a 16k window). The other two engines already report theirs
+  // (warm-cli learns session_id off the stream, codex off thread/start).
+  it('pins a session id and REPORTS it, so the caller can record the thread', async () => {
+    const proc = fakePi();
+    const spawn = spawnFake(proc);
+    const s = createPiCliSession({ spawn });
+    const p = s.turn('go');
+    proc.textDelta('ok'); proc.emitEvent({ type: 'agent_settled' });
+    const { sessionId } = await p;
+    expect(sessionId).toBeTruthy();
+    expect(s.sessionId).toBe(sessionId);                     // the pool's re-pin guard reads this
+    const args = spawn.mock.calls[0][1];
+    expect(args[args.indexOf('--session-id') + 1]).toBe(sessionId);   // and pi runs under it
+  });
+
+  it('honours a session id the caller pinned (resume) instead of minting one', async () => {
+    const proc = fakePi();
+    const spawn = spawnFake(proc);
+    const s = createPiCliSession({ spawn, sessionId: 'sid-pinned' });
+    const p = s.turn('go');
+    proc.emitEvent({ type: 'agent_settled' });
+    expect((await p).sessionId).toBe('sid-pinned');
+    expect(spawn.mock.calls[0][1]).toContain('sid-pinned');
   });
 
   it('does not resolve on agent_end alone', async () => {
