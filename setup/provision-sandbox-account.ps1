@@ -60,8 +60,18 @@ try {
   # handles a MISSING file fine, but an EPERM wedges it -- it accepts the prompt
   # and never starts the agent. A sandboxed turn can therefore read whatever
   # credentials pi stores. Keep cloud logins out of pi if that matters.
-  [Environment]::SetEnvironmentVariable('PI_CODING_AGENT_DIR', $null, 'Machine')
+  # Set to PI'S OWN DEFAULT PATH, not to a directory eGPT invented. For the
+  # operator this is a no-op -- ~/.pi/agent is where their pi already looks --
+  # but it is REQUIRED for a sandboxed turn: under the launcher the being runs as
+  # a pool account whose USERPROFILE is C:\Users\egpt-sbx-NN, so pi's "default"
+  # resolves to a profile with no config and the turn dies with
+  # 'Model "..." not found'. Granting the pool read on the operator's ~/.pi does
+  # nothing on its own, because pi never looks there without being told.
+  #
+  # Machine scope is forced: sandbox-logon-launcher passes lpEnvironment = NULL,
+  # so it cannot be handed over per-spawn.
   $piDir = Join-Path (Join-Path $env:USERPROFILE '.pi') 'agent'
+  [Environment]::SetEnvironmentVariable('PI_CODING_AGENT_DIR', $piDir, 'Machine')
   if (Test-Path -LiteralPath $piDir) {
     Grant-SandboxPoolModify -Path $piDir
   } else {
