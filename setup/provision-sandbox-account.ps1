@@ -78,6 +78,25 @@ try {
     Write-Host "note: $piDir not present - run pi once, then re-run this"
   }
 
+  # pi's bash tool: WARN, never rewrite. pi owns its own settings.json; this
+  # just points out the one setting that silently breaks every tool turn here.
+  #
+  # `where bash` on these boxes finds C:\Windows\System32\bash.exe FIRST -- the
+  # WSL launcher -- and with no distro installed it exits 1 (or 0xC0000022 under
+  # the sandbox's restricted token). pi then reports a confusing "access denied"
+  # for what looks like a plain ls. settings.json's shellPath fixes it, and the
+  # operator's own terminal pi needs it just as much.
+  $piSettings = Join-Path $piDir 'settings.json'
+  $shell = $null
+  try { $shell = (Get-Content -LiteralPath $piSettings -Raw | ConvertFrom-Json).shellPath } catch { }
+  if (-not $shell) {
+    Write-Host "WARNING: $piSettings has no shellPath. pi's bash tool will resolve to WSL's bash.exe and fail. Set it to a real bash, e.g. C:/msys64/usr/bin/bash.exe"
+  } elseif (-not (Test-Path -LiteralPath $shell)) {
+    Write-Host "WARNING: pi shellPath points at a missing file: $shell"
+  } else {
+    Write-Host "ok: pi shellPath = $shell"
+  }
+
   # Must come AFTER Ensure-SandboxPool: that is what creates the credential
   # files this locks down. Needs admin, which is exactly why it lives here and
   # not in the (unelevated) launcher.
