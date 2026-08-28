@@ -10,9 +10,29 @@
 //
 // Everything here runs the REAL services (commands + mesh + spine) against a fake bridge and
 // a fake brain. No network, no Chrome, no Claude.
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
+// A PRIVATE profile for this file — the SAME fix, for the same reason, as
+// tests/rooms-members.test.mjs and tests/list-entity-dirs.test.mjs.
+//
+// The room-scoped mesh tests below use a REAL Room, so /members writes go through
+// Room.setMember → ONE process-global config/rooms.yaml (rooms-file.roomsFilePath). The
+// suite's SHARED throwaway profile (tests/setup-egpt-home.mjs) is written CONCURRENTLY by
+// tests/lobby.test.mjs, and vitest's `forks` pool puts the two in DIFFERENT PROCESSES — so
+// their read-modify-writes lose each other's updates, and whichever file is mid-sequence
+// reads back a roster missing the member it just added. Nothing prunes that shared file
+// either (179 KB / 6.5k junk rows locally), so the window only ever widened.
+//
+// egpt-home.mjs freezes EGPT_HOME at module load, so the override must run BEFORE the imports
+// below — vi.hoisted is what does that. The beforeAll below is the tripwire + the prune.
+const TEST_HOME = vi.hoisted(() => {
+  const tmp = process.env.TEMP || process.env.TMP || process.env.TMPDIR || '/tmp';
+  const dir = `${tmp}/egpt-remote-command-home`;
+  process.env.EGPT_HOME = dir;
+  return dir;
+});
+
 import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 import { createCommands } from '../src/spine/commands.mjs';
 import { createMeshService } from '../src/spine/mesh.mjs';
@@ -21,6 +41,17 @@ import { encodeMesh, parseMesh } from '../src/mesh/relay.mjs';
 import { createContacts } from '../src/spine/contacts.mjs';
 import { emptyState } from '../src/conversations-state.mjs';
 import { Room } from '../src/room-core.mjs';
+import { EGPT_HOME } from '../src/egpt-home.mjs';
+
+
+// Tripwire + prune: never the live profile, never the shared one, and never an accumulation
+// of its own. Fails loudly rather than racing again.
+beforeAll(() => {
+  expect(join(EGPT_HOME)).toBe(join(TEST_HOME));
+  expect(EGPT_HOME).not.toBe(join(homedir(), '.egpt'));
+  expect(EGPT_HOME).not.toBe(join(homedir(), '.egpt-test-home'));
+  rmSync(TEST_HOME, { recursive: true, force: true });
+});
 
 const flush = async () => { await new Promise((r) => setTimeout(r, 0)); await new Promise((r) => setTimeout(r, 0)); };
 // Real fs I/O (the room-scoped mesh tests below use a REAL Room, config.yaml and all) takes a
@@ -118,7 +149,11 @@ function nodeStack({ config, cdp = LIVE_CDP, resolveConvRoom, loadAdapters } = {
 const envelopes = (bridge) => bridge.sent.filter((s) => parseMesh(s.text) != null);
 const plain = (bridge) => bridge.sent.filter((s) => parseMesh(s.text) == null);
 
-const SHELL = { surface: 'shell', node: 'sh', chatId: 'main', chatName: 'shell', senderId: 'operator', senderName: 'operator', msgId: null, ts: 1, kind: 'text', authorized: true, raw: {} };
+// The console's InboundEvent as identity.build actually stamps it since 2026-08-28: the shell
+// is a TRANSPORT (node tag 'sh', network 'shell') onto surface `room`, seat `lobby`. The
+// operator's `don: surface: shell` pin still routes here — it names a network, and both the
+// router and agentRoutes resolve it through the SAME network->surface map identity used.
+const SHELL = { surface: 'room', node: 'sh', chatId: 'lobby', chatName: 'shell', senderId: 'operator', senderName: 'operator', msgId: null, ts: 1, kind: 'text', authorized: true, raw: {} };
 const FAM = { surface: 'whatsapp', node: 'wa', chatId: '!fam', chatName: 'fam', senderId: 'u-an', senderName: 'An', msgId: 'm1', ts: 1, kind: 'text', authorized: true, isSender: true, raw: {} };
 
 // ── 1. THE HEADLINE: a node-addressed command typed on the SHELL must TRAVEL ───────────────
@@ -135,7 +170,7 @@ describe('origin — a node-addressed command the target cannot hear becomes a m
     expect(envs[0].chat).toBe('egpt-mesh-do-kg');
     expect(parseMesh(envs[0].text)).toMatchObject({ to: 'don.do', body: '/chrome do', from_node: 'kg', from: 'shell' });
     // …and the origin got its living-mirror placeholder, in the SHELL chat.
-    expect(bridge.statusPosts.map((p) => p.chat)).toEqual(['main']);
+    expect(bridge.statusPosts.map((p) => p.chat)).toEqual(['lobby']);
     // Nothing was answered locally: kg does not run a `do` command.
     expect(plain(bridge)).toHaveLength(0);
   });
@@ -154,7 +189,7 @@ describe('origin — a node-addressed command the target cannot hear becomes a m
     });
     await flush();
 
-    const home = bridge.streams.filter((s) => s.chat === 'main');
+    const home = bridge.streams.filter((s) => s.chat === 'lobby');
     expect(home).toHaveLength(1);
     expect(home[0].finals.join('\n')).toContain('attached: 127.0.0.1:9221');
   });
@@ -168,7 +203,7 @@ describe('origin — the local and broadcast paths are untouched', () => {
     await flush();
     expect(envelopes(bridge)).toHaveLength(0);
     expect(plain(bridge)).toHaveLength(1);
-    expect(plain(bridge)[0]).toMatchObject({ chat: 'main' });
+    expect(plain(bridge)[0]).toMatchObject({ chat: 'lobby' });
     expect(plain(bridge)[0].text).toContain('attached: 127.0.0.1:9221');
   });
 
@@ -207,7 +242,7 @@ describe('origin — a node no agent can route to fails loudly', () => {
     await flush();
     expect(envelopes(bridge)).toHaveLength(0);
     expect(plain(bridge)).toHaveLength(1);
-    expect(plain(bridge)[0].chat).toBe('main');
+    expect(plain(bridge)[0].chat).toBe('lobby');
     expect(plain(bridge)[0].text).toMatch(/mo/);
     expect(plain(bridge)[0].text).toMatch(/route|agent/i);
   });
@@ -542,7 +577,7 @@ describe("responder — a room-scoped command over the mesh resolves to THIS nod
     await drain();
 
     expect(state.contacts?.whatsapp ?? null).toBeNull();             // never resolved through the synthetic surface/chatId
-    expect(state.contacts?.shell?.main?.slug).toBe('lobby');          // resolved through the lobby instead
+    expect(state.contacts?.room?.lobby?.slug).toBe('lobby');          // resolved through the lobby instead
     const relayReplies = bridge.sent.filter((s) => s.chat === 'egpt-mesh-do-kg' && parseMesh(s.text)?.done);
     expect(parseMesh(relayReplies[1].text).body).toContain('c1');
   });

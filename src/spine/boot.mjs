@@ -32,7 +32,7 @@ import { createStopGuard, STOP_FILE, stopFilePresent, writeStopFile } from '../s
 import { createLasso } from '../lasso.mjs';
 import { CLEAN_EXIT_CODE } from '../daemon-runtime.mjs';
 
-import { createIdentity, surfaceOf } from './identity.mjs';
+import { createIdentity, surfaceOf, SHELL_SURFACE } from './identity.mjs';
 import { echoRank } from './echo-priority.mjs';
 import { shortChatId } from '../bridges/chat-id.mjs';
 import { createContacts } from './contacts.mjs';
@@ -137,31 +137,35 @@ export function whisperPortOf(cfg) {
 // service call to shellPort for shell-owned chat ids and to the real bridge otherwise; every other bridge
 // method passes through unchanged (spread first). Pure so the routing is testable directly
 // (mirrors the other top-level boot helpers). The beeper path for non-shell chats is untouched.
-// Redirect a shell-surface inbound event to its CURRENT joined room, if any — "entering a
+// Redirect a shell inbound event to its CURRENT joined room, if any — "entering a
 // room is like typing in another chat" (operator): once `/room join acim` sets the shell's
 // current room, a plain or `@e`-addressed message typed at the shell must dispatch as
-// surface 'room' chatId 'acim', not surface 'shell' chatId 'main', so it reaches the SAME
+// chatId 'acim' rather than the console's own seat, so it reaches the SAME
 // (surface, chatId)-keyed resolution/confinement a room-native message already gets (the
 // room refactor's own principle — room-core.mjs). currentRoomOf is commands.mjs's ONE reader
 // onto its ONE currentRoom map (written only by roomJoin/roomLeave) — no second map here.
-// 'lobby' (or no room joined) means the shell's own native identity: there is no room/lobby
-// folder, so the event is left untouched, same as before this redirect existed.
+// The shell IS surface `room` now (identity.SHELL_SURFACE), so the map key on both sides is
+// that one surface: nothing here re-decides it.
+// The LOBBY (or no room joined) means the console's own home conversation — rooms/lobby/,
+// a room like any other — so the event is left untouched and files there, same as before
+// this redirect existed. /room lobby join is therefore "go home", not a redirect into a
+// second folder.
 // A reply goes out to ev.chatId (spine.mjs's sender.open), which is now the room slug — so
 // the redirect also `claim`s it on shellPort (the SAME ownership signal `owns()` already
-// keys outbound routing on for 'main'), or the reply would be handed to the beeper bridge
-// instead of pushed back over this socket. Pure aside from that one registration call, so
-// the redirect decision itself is testable directly (mirrors makeShellAwareBridge below).
+// keys outbound routing on for the console seat), or the reply would be handed to the beeper
+// bridge instead of pushed back over this socket. Pure aside from that one registration call,
+// so the redirect decision itself is testable directly (mirrors makeShellAwareBridge below).
 export function redirectShellToRoom(msg, { currentRoomOf, claim } = {}) {
   // Commands (anything slash-prefixed) are never part of the room fan-out — this feature is
   // "prose fan-out to the current room", not "commands run against the room". Without this
   // guard, `/room leave acim` itself got redirected before commands.mjs ever saw it, so it
-  // read/wrote currentRoom['room'] instead of currentRoom['shell'] and the shell got wedged
-  // in the room permanently (confirmed live, 2026-08-09). This is the same primitive signal
+  // dispatched on the room instead of the console's own seat and the shell got wedged in the
+  // room permanently (confirmed live, 2026-08-09). This is the same primitive signal
   // commands.mjs's isCommand() checks first (body.startsWith('/')) — the full check also
   // needs a built `ev` (identity.build), which doesn't exist yet at this point in the pipeline.
   if (String(msg?.body ?? '').trim().startsWith('/')) return msg;
-  const room = currentRoomOf?.('shell');
-  if (!room || room === 'lobby') return msg;
+  const room = currentRoomOf?.(SHELL_SURFACE);
+  if (!room || room === LOBBY_SLUG) return msg;
   claim?.(room);
   return { ...msg, from: { ...(msg?.from ?? {}), network: 'room', chatId: room } };
 }
@@ -336,7 +340,7 @@ function shellHeaderGroupOf(agent, nodeName) {
 //   have.
 //   nodeName    = cfg.node_name — the LOCAL group's key when an agent has no `to:`/`paths:`.
 //   agents      = cfg.agents — absent/empty tolerated (no throw; just no trailing groups segment).
-//   currentRoom = commands.mjs's currentRoomOf('shell') (operator 2026-08-16: live status-line
+//   currentRoom = commands.mjs's currentRoomOf(SHELL_SURFACE) (operator 2026-08-16: live status-line
 //                 join reflection; operator 2026-08-17: rendered as `room: <slug>`, not a
 //                 `lobby → X` arrow — the shell's fixed home conversation is LOBBY_SLUG itself,
 //                 so with nothing joined the segment reads `room: lobby` (honest, not "→ nothing"),
@@ -1202,7 +1206,7 @@ export async function boot({
     // of computeShellHeader besides this file's own initial boot-time push (shellHeader,
     // above). Every other surface is a no-op: only the shell has a status line to update.
     onRoomChange: (surface, slug) => {
-      if (surface !== 'shell') return;
+      if (surface !== SHELL_SURFACE) return;
       shellPort.setHeader(computeShellHeader({ nodeName: node_name, agents: cfg.agents, defaultNode: cfg.dispatch?.default_node, currentRoom: slug }));
     },
     onLog: (m) => log.line?.(`[command] ${m}`),

@@ -1,12 +1,48 @@
-// lobby.test.mjs — the LOBBY: the shell's durable default Room (plans/260724-LOBBY-DEFAULT-ROOM.md).
+// lobby.test.mjs — the LOBBY: the console's durable home Room (plans/260724-LOBBY-DEFAULT-ROOM.md).
 //
 // Reproduce-first locks for v1 (the core): opening the shell lands the operator in a
-// stable `lobby` conversation (conversations/shell/lobby/) instead of the throwaway
-// shell-<yymmddhhmm> auto slug, the lobby inherits the Room machinery (transcript,
-// members, phase-4 relay) for free, and /members lists this node's local beings E/D/L.
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+// stable `lobby` conversation instead of the throwaway shell-<yymmddhhmm> auto slug, the
+// lobby inherits the Room machinery (transcript, members, phase-4 relay) for free, and
+// /members lists this node's local beings E/D/L.
+//
+// 2026-08-28 — THE LOBBY IS A ROOM. Operator: *"rooms is a shell… but shell/rooms/* makes no
+// sense. in the same way naming it 'beeper' would make it confusing and we called it
+// conversations. in this same way, we can call 'rooms' what is a shell. so we can have
+// rooms/lobby, rooms/dj-son, rooms/radio."* So the shell is a TRANSPORT (a network), not a
+// storage surface: rooms/ holds exactly ONE surface, `room`, and the console's own seat is
+// (room, lobby) at rooms/lobby/. Section 0 below is the reproduce-first lock for that.
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
+// A PRIVATE profile for this file — the SAME fix, for the same reason, as
+// tests/rooms-members.test.mjs and tests/list-entity-dirs.test.mjs.
+//
+// Section 4 writes a member roster through Room.setMember, which read-modify-writes ONE
+// process-global config/rooms.yaml (rooms-file.roomsFilePath). The suite's SHARED throwaway
+// profile (tests/setup-egpt-home.mjs) is written CONCURRENTLY by other files —
+// remote-command.test.mjs lands the mesh lobby's row in the very same file — and vitest's
+// `forks` pool puts them in DIFFERENT PROCESSES, so no in-process serializer can order them:
+// the two simply lose each other's updates. `/members add tab` writes the member, the other
+// file's write clobbers the row, and the next `/members chatgpt mode mention` throws
+// `Room.setMemberState: no member "chatgpt"`.
+//
+// The window scales with the file, and NOTHING prunes it (it had reached 179 KB / 6.5k junk
+// rows on this machine), so this was a coin the suite had been winning rather than a hazard it
+// did not have. Adding section 0 above shifted this file's write a few ms into the other's
+// window and the coin started landing tails every time.
+//
+// egpt-home.mjs freezes EGPT_HOME at module load, so the override must run BEFORE the imports
+// below — vi.hoisted is what does that. (os/path are not importable in a hoisted block, which
+// runs before the imports it precedes, so the temp root comes from the env — which is what
+// os.tmpdir() reads anyway.) The beforeAll below is the tripwire + the prune that keeps THIS
+// profile from becoming the next 179 KB file.
+const TEST_HOME = vi.hoisted(() => {
+  const tmp = process.env.TEMP || process.env.TMP || process.env.TMPDIR || '/tmp';
+  const dir = `${tmp}/egpt-lobby-home`;
+  process.env.EGPT_HOME = dir;
+  return dir;
+});
+
 import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 import {
   emptyState, ensureContact, getContact, slugDir, fixedSlugFor, LOBBY_SLUG,
@@ -17,13 +53,89 @@ import { createTranscript } from '../src/spine/transcript.mjs';
 import { createSpine } from '../src/spine/spine.mjs';
 import { createRoomRelay } from '../src/spine/room-relay.mjs';
 import { createStopGuard } from '../src/stop-guard.mjs';
-import { createIdentity } from '../src/spine/identity.mjs';
+import { createIdentity, surfaceOf, SHELL_SURFACE } from '../src/spine/identity.mjs';
+import { chatIdForEntity } from '../src/spine/boot.mjs';
+import { createShellPort } from '../src/bridges/shell-port.mjs';
 import { Room } from '../src/room-core.mjs';
+import { EGPT_HOME } from '../src/egpt-home.mjs';
 
 const norm = (p) => String(p).replace(/\\/g, '/');
 
+// ── 0. THE SHELL IS A TRANSPORT; ITS SURFACE IS `room`, ITS SEAT IS `lobby` ───
+// REPRODUCE-FIRST for the 2026-08-28 ruling. Before it, surfaceOf('shell') was 'shell', the
+// console seat was chatId 'main', and the lobby's folder sat inside conversations/ — the
+// BEEPER tree, which the shell does not arrive through. Every assertion here failed.
+describe('the shell is a transport onto surface `room` — the console seat is (room, lobby)', () => {
+  it('surfaceOf maps the shell NETWORK onto surface `room` — the ONE map', () => {
+    expect(surfaceOf('shell')).toBe('room');
+    expect(SHELL_SURFACE).toBe('room');
+    expect(surfaceOf('shell_2')).toBe('room');       // the instance-prefix fold still folds first
+    expect(surfaceOf('room')).toBe('room');           // a room-native event is already there
+    expect(surfaceOf('whatsapp')).toBe('whatsapp');   // no other surface moves
+    expect(surfaceOf('telegram')).toBe('telegram');
+    expect(surfaceOf('googlevoice')).toBe('googlevoice');
+  });
+
+  it("the shell port's default console seat IS the lobby — one string is the chatId, the slug and the folder", () => {
+    // The seat id is what an editor frame that omits chatId lands on; claim/owns is the
+    // registry that proves which id this limb answers for.
+    const port = createShellPort();
+    port.claim(LOBBY_SLUG);
+    expect(port.owns(LOBBY_SLUG)).toBe(true);
+    expect(fixedSlugFor('room', LOBBY_SLUG)).toBe(LOBBY_SLUG);   // chatId → slug is the identity function
+  });
+
+  it('an inbound shell frame builds an event on surface `room` — network, node tag and AUTHORITY unchanged', () => {
+    const identity = createIdentity({ now: () => 1000 });
+    const ev = identity.build({
+      body: 'hola',
+      from: { chatId: LOBBY_SLUG, chatName: 'shell', network: 'shell', userId: 'operator', senderName: 'operator', authorized: true },
+    });
+    expect(ev.surface).toBe('room');
+    expect(ev.chatId).toBe(LOBBY_SLUG);
+    expect(ev.node).toBe('sh');          // the TRANSPORT tag is still the shell — the dispatch line is unchanged
+    expect(ev.authorized).toBe(true);    // the console's authority is untouched by the surface move
+    expect(ev.senderId).toBe('operator');
+  });
+
+  it('ONE folder and ONE namespace: rooms/lobby and room/lobby', () => {
+    const lobby = Room.forChat('room', LOBBY_SLUG);
+    expect(lobby.ns()).toBe('room/lobby');
+    expect(norm(lobby.baseDir())).toMatch(/\/rooms\/lobby$/);
+    expect(norm(lobby.baseDir())).not.toMatch(/conversations/);
+    expect(norm(slugDir('room', LOBBY_SLUG))).toBe(norm(lobby.baseDir()));
+  });
+
+  it('the lobby needs NO registry row — its chatId IS its name, so the walk resolves it alone', () => {
+    expect(chatIdForEntity(emptyState(), 'room/lobby')).toEqual({ surface: 'room', chatId: LOBBY_SLUG });
+  });
+
+  it('ONE registry row when it does get one: contacts.room.lobby, pointing at rooms/lobby', () => {
+    const ens = ensureContact(emptyState(), 'room', LOBBY_SLUG, { pushedName: 'shell' });
+    expect(ens.slug).toBe(LOBBY_SLUG);
+    expect(Object.keys(ens.state.contacts.room)).toEqual([LOBBY_SLUG]);
+    expect(ens.state.contacts.shell).toBeUndefined();               // nothing lands on the old surface
+    expect(norm(ens.entry.conversation_path)).toMatch(/\/rooms\/lobby$/);
+    expect(norm(ens.entry.conversation_path)).not.toMatch(/conversations/);
+  });
+
+  it('the lobby is a room among rooms — same kind, same tree, same rung key shape', () => {
+    for (const name of [LOBBY_SLUG, 'dj-son', 'radio']) {
+      const r = Room.forChat('room', name);
+      expect(r.ns()).toBe(`room/${name}`);
+      expect(norm(r.baseDir())).toMatch(new RegExp(`/rooms/${name}$`));
+      expect(norm(r.transcriptPath)).toMatch(new RegExp(`/rooms/${name}/transcript\\.md$`));
+    }
+  });
+});
+
 // ── 1. the shell's default conversation resolves to the fixed slug `lobby` ────
 describe('lobby slug — the shell console seat is the durable lobby, not an auto slug', () => {
+  // The RETIRED seat, kept as a READ path only: nothing produces ('shell','main') any more
+  // (the console is ('room','lobby') — section 0), but a profile that has not run
+  // setup/move-rooms-out-of-conversations.mjs yet still carries a contacts.shell.main row,
+  // and this arm is what keeps it resolving to `lobby` instead of minting a shell-<ts> beside
+  // it. Delete this arm when every profile has been migrated, not before.
   it('fixedSlugFor maps only the shell "main" seat to lobby', () => {
     expect(fixedSlugFor('shell', 'main')).toBe('lobby');
     expect(fixedSlugFor('shell', '!other')).toBe(null);   // a joined chat is not the lobby
@@ -129,7 +241,7 @@ describe('lobby slug — the shell console seat is the durable lobby, not an aut
 describe('/members in the lobby — lists the node\'s local beings E/D/L', () => {
   function lobbyCommands(agents) {
     const sent = [];
-    const room = { slug: LOBBY_SLUG, surface: 'shell', members: async () => [] };
+    const room = { slug: LOBBY_SLUG, surface: 'room', members: async () => [] };
     const cmds = createCommands({
       getConfig: () => ({ agents }),
       send: async (chatId, text) => sent.push({ chatId, text }),
@@ -145,7 +257,7 @@ describe('/members in the lobby — lists the node\'s local beings E/D/L', () =>
       d: { name: 'D' },
       l: { name: 'L' },
     });
-    await cmds.run({ chatId: 'main', surface: 'shell', body: '/members' });
+    await cmds.run({ chatId: LOBBY_SLUG, surface: 'room', body: '/members' });
     const text = sent.at(-1).text;
     expect(text).toContain('lobby (3 members)');
     expect(text).toContain('e   being');
@@ -163,7 +275,7 @@ describe('/members in the lobby — lists the node\'s local beings E/D/L', () =>
       _note: 'ignored',
       off: { enabled: false },
     });
-    await cmds.run({ chatId: 'main', surface: 'shell', body: '/members' });
+    await cmds.run({ chatId: LOBBY_SLUG, surface: 'room', body: '/members' });
     const text = sent.at(-1).text;
     expect(text).toContain('lobby (2 members)');
     expect(text).toContain('e   being');
@@ -187,7 +299,7 @@ describe('/members in the lobby — lists the node\'s local beings E/D/L', () =>
   });
 });
 
-// ── 3. a shell message in the lobby logs to conversations/shell/lobby/transcript.md ──
+// ── 3. a shell message in the lobby logs to rooms/lobby/transcript.md ───────
 const readdirOver = (files) => async (dir) => {
   const prefix = norm(dir).replace(/\/$/, '') + '/';
   const out = new Set();
@@ -198,7 +310,7 @@ const readdirOver = (files) => async (dir) => {
   return [...out];
 };
 
-describe('lobby transcript — a shell message records under conversations/shell/lobby/', () => {
+describe('lobby transcript — a shell message records under rooms/lobby/', () => {
   it('routes the transcript append to the lobby folder (via the shared contacts resolver)', async () => {
     let state = emptyState();
     const contacts = createContacts({
@@ -217,12 +329,12 @@ describe('lobby transcript — a shell message records under conversations/shell
     };
     const t = createTranscript({ contacts, io });
     const shellEv = {
-      surface: 'shell', chatId: 'main', chatName: 'shell',
+      surface: 'room', chatId: LOBBY_SLUG, chatName: 'shell',
       senderId: 'operator', ts: Date.UTC(2026, 6, 24, 12, 0),
       line: 'operator@[shell].kg (12:00) #m1: hello lobby', body: 'hello lobby',
     };
     expect(await t.log(shellEv)).toBe(true);
-    const transcript = [...files.entries()].find(([p]) => norm(p).endsWith('conversations/shell/lobby/transcript.md'));
+    const transcript = [...files.entries()].find(([p]) => norm(p).endsWith('rooms/lobby/transcript.md'));
     expect(transcript).toBeTruthy();
     expect(transcript[1]).toContain('hello lobby');
   });
@@ -237,7 +349,7 @@ const ADAPTERS = [{ name: 'chatgpt-cdp', urlMatch: /chatgpt\.com|chat\.openai\.c
 const oneTab = [{ id: 'GPT1', title: 'ChatGPT', url: 'https://chatgpt.com/c/abc' }];
 
 function shellHuman(body) {
-  return { body, from: { network: 'shell', chatId: 'main', chatName: 'shell', userId: 'operator', senderName: 'operator', authorized: true, msgKey: 'm1' } };
+  return { body, from: { network: 'shell', chatId: LOBBY_SLUG, chatName: 'shell', userId: 'operator', senderName: 'operator', authorized: true, msgKey: 'm1' } };
 }
 
 describe('lobby relay — @chatgpt added in the lobby fires the phase-4 relay', () => {
@@ -246,7 +358,7 @@ describe('lobby relay — @chatgpt added in the lobby fires the phase-4 relay', 
   afterEach(() => { rmSync(base, { recursive: true, force: true }); });
 
   // The SHARED resolver both /members (WRITE) and the relay (READ) go through — the REAL
-  // contacts.resolve so ('shell','main') deterministically keys the lobby Room for both sides.
+  // contacts.resolve so ('room','lobby') deterministically keys the lobby Room for both sides.
   function makeLobbyResolveConvRoom() {
     let state = emptyState();
     const contacts = createContacts({
@@ -318,12 +430,12 @@ describe('lobby relay — @chatgpt added in the lobby fires the phase-4 relay', 
     const resolveConvRoom = makeLobbyResolveConvRoom();
 
     // sanity: the shell console seat resolves to the LOBBY room (not an auto slug).
-    expect((await resolveConvRoom('shell', 'main')).slug).toBe('lobby');
+    expect((await resolveConvRoom('room', LOBBY_SLUG)).slug).toBe('lobby');
 
     const { cmds, sent } = commandsFor(resolveConvRoom);
-    await cmds.run({ chatId: 'main', surface: 'shell', body: '/members add tab 1' });
+    await cmds.run({ chatId: LOBBY_SLUG, surface: 'room', body: '/members add tab 1' });
     expect(sent.at(-1).text).toMatch(/added 'chatgpt'/);
-    await cmds.run({ chatId: 'main', surface: 'shell', body: '/members chatgpt mode mention' });
+    await cmds.run({ chatId: LOBBY_SLUG, surface: 'room', body: '/members chatgpt mode mention' });
     expect(sent.at(-1).text).toMatch(/mode:mention/);
 
     const { spine, relayCalls, posts } = spineFor(resolveConvRoom);

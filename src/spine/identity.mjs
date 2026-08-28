@@ -52,16 +52,36 @@ function netKey(network) {
   return n;
 }
 
+// A network that is a TRANSPORT, not a storage surface. The shell is the operator's
+// console — a way IN, like a Beeper socket — and what it opens into is a ROOM
+// (operator 2026-08-28: *"rooms is a shell… we can call 'rooms' what is a shell. so
+// we can have rooms/lobby, rooms/dj-son, rooms/radio"*). So the shell NETWORK keeps
+// its name — `network: 'shell'` is the console's AUTHORITY, earned at the auth
+// handshake (src/bridges/shell-port.mjs) and never renamed — while its SURFACE (where
+// files land, how state is keyed) is `room`, slug `lobby`. rooms/ then holds exactly
+// ONE surface, which is what keeps Room.ns()'s inverse map and listEntityDirs exact
+// rather than a guess.
+const TRANSPORT_SURFACE = { shell: 'room' };
+
 // THE network→surface map, exported so identity (transcript/brain cwd) and the
 // media service (media/ folder) can't drift — a Telegram photo must bucket under
 // the SAME surface as the chat's transcript, not silently fall into 'whatsapp'
 // (they did diverge: media hardcoded 'whatsapp', so a TG photo's media/<file> was
 // announced under a path the brain's telegram cwd never had). Returns the
 // (possibly instance-prefix-folded) network key directly — every network is its
-// own surface, no whitelist gate.
+// own surface, no whitelist gate — EXCEPT a transport (above), which resolves to
+// the surface it opens into. THIS IS THE ONE PLACE that decision is made: no call
+// site anywhere may re-derive it with a `surface === 'shell' ? …` of its own.
 export function surfaceOf(network) {
-  return netKey(network);
+  const key = netKey(network);
+  return TRANSPORT_SURFACE[key] ?? key;
 }
+
+// The surface the operator's console opens into — `room`. Exported for the handful of call
+// sites that are about THE CONSOLE ITSELF (its status line, its node-local command routing,
+// the mesh's own lobby) rather than about some event's surface. They READ the map above;
+// they never re-decide it, which is the whole point of it having one home.
+export const SHELL_SURFACE = surfaceOf('shell');
 
 // `timeZone`: the node's config default_time_zone (boot-resolved via the heartbeat loader's
 // resolveTimeZone) — the zone the dispatch line's HH:MM renders in. null → UTC, unchanged.

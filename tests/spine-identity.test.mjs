@@ -61,11 +61,23 @@ describe('identity.build', () => {
   // NAME (this machine's), so on any OTHER node (DOLLY) every shell line read `.kg` and
   // claimed REVE had spoken it. A transcript already lives in exactly one node's profile,
   // so per-line node provenance is a constant and belongs on the reply label, not here.
+  // The SURFACE the shell opens into is `room` (operator 2026-08-28 — the shell is a
+  // transport, and what it opens into is the lobby, a room beside dj-son and radio); the
+  // NODE tag stays 'sh' because it names the transport the human actually used. The two
+  // slots are independent, and this is the test that keeps them from being confused again.
   it('maps the shell surface to a TRANSPORT tag, never a node name', () => {
     const ev = identity.build({ body: 'hola', from: { ...FROM, network: 'shell', chatName: 'shell' } });
-    expect(ev).toMatchObject({ surface: 'shell', node: 'sh' });
+    expect(ev).toMatchObject({ surface: 'room', node: 'sh' });
     expect(ev.node).not.toBe('kg');                       // 'kg' is a node name, not a transport
-    expect(ev.line).toBe('An@[shell].sh (14:05) #m7: hola');
+    expect(ev.line).toBe('An@[shell].sh (14:05) #m7: hola');   // the dispatch line is untouched
+  });
+
+  // The shell NETWORK resolves to the ROOM surface — a transport, not a bucket of its own.
+  it('the shell network resolves to surface `room`; no other surface moves', () => {
+    expect(surfaceOf('shell')).toBe('room');
+    expect(surfaceOf('shell_2')).toBe('room');       // instance-prefix fold, then the transport map
+    expect(surfaceOf('whatsapp')).toBe('whatsapp');
+    expect(surfaceOf('room')).toBe('room');
   });
 
   // The inbound line's clock renders in the node's configured zone (config

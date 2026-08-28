@@ -63,12 +63,12 @@ export function createTranscript({
 
   // WHERE a write lands: a joined room wins over ev's own native (surface, chatId) — the same
   // "joined room wins" rule redirectShellToRoom applies to dispatch (boot.mjs). 'lobby' is
-  // sugar for "no room" (same rule redirectShellToRoom applies): /room join lobby resolves to
-  // "no redirect", not to a literal room named lobby. Already-redirected PROSE arrives here
-  // with ev.surface === 'room' — a key currentRoom never holds (roomJoin only ever writes
-  // under 'shell') — so currentRoomOf('room') is always null and this naturally no-ops for it:
-  // prose's own redirect already happened upstream (boot.mjs), and this must never re-target
-  // it a second time.
+  // "no redirect": it is the console's OWN home room (rooms/lobby/), so /room join lobby
+  // means "go home", never a second hop. Already-redirected PROSE arrives here with
+  // ev.chatId ALREADY equal to the joined room (that is what the upstream redirect set it
+  // to), so recomputing the target here lands on the identical (surface, chatId) and this is
+  // a no-op for it — prose's own redirect happened upstream and is never applied twice.
+  // Since 2026-08-28 the shell IS surface `room`, so both sides of the map read one key.
   //
   // `ev` itself is NEVER mutated — only the returned surface/chatId (used in place of
   // ev.surface/ev.chatId) decide WHERE the write lands. Deliberate per-field split on what

@@ -29,6 +29,7 @@
 import { agentPaths } from '../mesh/relay.mjs';
 import { mentionHits } from '../auto-mode.mjs';
 import { getBeing, allowedUsersPermits } from '../conversations-state.mjs';
+import { surfaceOf } from './identity.mjs';
 
 // THE wake vocabulary — the ONE definition of "which @tokens address this agent", lowercased
 // (operator 2026-07-26: "don must not wake or respond with 'egpt'" … "the key has no bearing …
@@ -202,8 +203,12 @@ export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', addre
           // `don` relay agent `surface: shell`. A surface-mismatched agent is dropped from the
           // target list (the OTHER agents this message addressed are unaffected). A MULTIPATH
           // agent is an ordinary map since 2026-07-26, so it can be pinned like any other.
+          // The pin names a NETWORK the operator types (`surface: shell`), so it is resolved
+          // through THE network→surface map before comparing — the same map identity.build used
+          // to stamp ev.surface. Without that, kg's live `don: surface: shell` stopped matching
+          // the moment the shell became surface `room` (2026-08-28) and the relay went silent.
           if (hit.agent.surface != null
-              && String(hit.agent.surface).toLowerCase() !== String(ev?.surface ?? '').toLowerCase()) continue;
+              && surfaceOf(String(hit.agent.surface).toLowerCase()) !== String(ev?.surface ?? '').toLowerCase()) continue;
           // ALLOWED_USERS GATE (operator 2026-08-15): "we should control by access_level and who
           // is able to trigger the agent … i think the 'dangerous' key is mistake" — replaces the
           // evicted TYPE-FILE `dangerous:true` reachability mechanism (meta-engineer.yaml, gone;

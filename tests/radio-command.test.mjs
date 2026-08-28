@@ -35,6 +35,7 @@ const TEST_HOME = vi.hoisted(() => {
   return dir;
 });
 import { createCommands } from '../src/spine/commands.mjs';
+import { SHELL_SURFACE } from '../src/spine/identity.mjs';
 import { Room } from '../src/room-core.mjs';
 import { EGPT_HOME } from '../src/egpt-home.mjs';
 import * as YAML from 'yaml';
@@ -1136,7 +1137,9 @@ describe('/radio say — a multi-line payload is not smuggled anywhere and not m
     const { cmds } = harness({
       config: { node_name: 'kg', account_peers: ['kg', 'do'], radio_service: { wildnloyal: { enabled: true } } },
     });
-    expect(cmds.remoteNode({ ...self, surface: 'shell', body: '/radio=do say hola\na todos' })).toBe('do');
+    // The console's own surface — node-local, so a peer-addressed command travels rather
+    // than being answered here. (`room` since 2026-08-28; the shell is a transport onto it.)
+    expect(cmds.remoteNode({ ...self, surface: SHELL_SURFACE, body: '/radio=do say hola\na todos' })).toBe('do');
   });
 
   it("LOCK — the 4004d6f smuggling guard still holds for OTHER commands: '/tabs do\\nand more' is still not node-addressed at all", () => {

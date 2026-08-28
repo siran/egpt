@@ -12,6 +12,7 @@
 // Lives in its own file to stay importable from commands.mjs without an
 // import cycle back through boot.mjs.
 import { agentPaths } from '../mesh/relay.mjs';
+import { surfaceOf } from './identity.mjs';
 
 /** @returns {Set<string>} lowercased node_name ∪ node_alias (empty/absent entries dropped) */
 export function ownNodeNames({ nodeName = null, nodeAlias = [] } = {}) {
@@ -49,7 +50,10 @@ export function agentRoutes(cfg) {
   const out = [];
   for (const [name, agent] of Object.entries(cfg?.agents ?? {})) {
     if (!agent || typeof agent !== 'object' || name.startsWith('_')) continue;
-    const surface = agent.surface != null ? String(agent.surface).toLowerCase() : null;
+    // The pin names a NETWORK the operator types (`surface: shell`); resolve it through THE
+    // network→surface map here, once, so routeToNode compares it against an ev.surface built
+    // from the SAME map. router.mjs applies the identical resolution to the identical key.
+    const surface = agent.surface != null ? surfaceOf(String(agent.surface).toLowerCase()) : null;
     for (const p of agentPaths(agent)) {
       const to = String(p.to ?? '').trim();
       if (!to || !p.relay_channel) continue;

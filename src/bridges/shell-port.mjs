@@ -67,7 +67,16 @@ const RELISTEN_MAX_MS = 60_000;
 // console (plan §2). It is the outbound-routing key too (boot routes a shell-surface chat
 // back to this socket). That `authorized: true` is EARNED, not assumed: it is stamped only
 // on frames from a peer that already passed the auth handshake below (src/shell/auth.mjs).
-const SHELL_CHAT_ID = 'main';
+//
+// The seat is `lobby`, not `main` (operator 2026-08-28: the shell is a transport and what it
+// opens into is a ROOM — rooms/lobby beside rooms/dj-son, rooms/radio). The chat id IS the
+// room's name, exactly as it is for every other room: fixedSlugFor('room','lobby') is a pure
+// function of it, so ONE string is the chatId, the slug, the folder rooms/lobby/ and the
+// config key room/lobby — resolvable with no registry row at all. `main` would have made
+// fixedSlugFor('room','main') yield `main`, splitting the name from the folder and colliding
+// with a room an operator could legitimately create. The NETWORK stays 'shell' (below): the
+// console's authority is unchanged, only where its files land.
+const SHELL_CHAT_ID = 'lobby';
 const SHELL_USER = 'operator';
 
 /**
@@ -318,7 +327,7 @@ export function createShellPort({
     // push a shell-surface reply back over the socket instead of the beeper bridge.
     owns(chatId) { return _chatIds.has(chatId); },
     // Register a chat id as shell-owned WITHOUT it having arrived inbound — boot's room
-    // redirect (a shell turn dispatched as room <slug> instead of native (shell, 'main'))
+    // redirect (a shell turn dispatched as room <slug> instead of the native lobby seat)
     // sends its reply to ev.chatId, which is now the room slug, not the id this socket last
     // saw. owns() must recognize it too, or the reply would be handed to the wrong bridge.
     // Generic on purpose: this limb still carries zero room logic, only the registry itself.

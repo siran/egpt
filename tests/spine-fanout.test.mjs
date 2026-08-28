@@ -10,6 +10,7 @@
 // map key + its handles — with the persona's own code-fence + word-boundary rules, and
 // resolve() returns EVERY addressed agent so the spine can fan out.
 import { describe, it, expect } from 'vitest';
+import { SHELL_SURFACE } from '../src/spine/identity.mjs';
 import { createRouter, addressed } from '../src/spine/router.mjs';
 import { createSpine } from '../src/spine/spine.mjs';
 import { createGating } from '../src/spine/gating.mjs';
@@ -159,7 +160,9 @@ describe('LOCKS — every current resolve() semantic survives the fan-out', () =
   });
 
   it('a surface-PINNED agent is addressed only on its pinned surface — off it, it is not a target at all', async () => {
-    expect((await arouter.resolve(ev('@pinned hi', { surface: 'shell' }))).mesh).toEqual({ being: 'pinned', route: { room_id: 'shell-only' } });
+    // `surface: shell` in config names the NETWORK; it is resolved through the ONE
+    // network->surface map, so it matches the surface identity.build actually stamps.
+    expect((await arouter.resolve(ev('@pinned hi', { surface: SHELL_SURFACE }))).mesh).toEqual({ being: 'pinned', route: { room_id: 'shell-only' } });
     const off = await arouter.resolve(ev('@pinned hi', { surface: 'whatsapp' }));
     expect(off.mesh).toBeUndefined();
     expect(off.being).toBe('egpt');

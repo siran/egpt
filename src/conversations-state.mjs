@@ -1129,15 +1129,17 @@ export function normalizeResidents(val) {
   return [];
 }
 
-// ── The LOBBY: the shell's durable default room ─────────────────────────────
-// The shell surface has ONE console seat, keyed 'main' (shell-port's SHELL_CHAT_ID).
-// Its conversation is a FIXED, suffix-less slug — the operator's home Room at
-// conversations/shell/lobby/ — instead of the throwaway shell-<yymmddhhmm> the name-
-// derived path would mint. All keying (transcript, members, phase-4 relay) routes
-// through ensureContact, so this ONE deterministic mapping makes the shell open
-// straight into the lobby with the Room machinery it inherits for free.
+// ── The LOBBY: the console's durable home ROOM ──────────────────────────────
+// The operator's console has ONE seat, and since 2026-08-28 it is a ROOM like any other
+// (operator: *"rooms is a shell… so we can have rooms/lobby, rooms/dj-son, rooms/radio"*):
+// surface `room`, chatId `lobby`, folder rooms/lobby/, config key room/lobby. The shell is
+// the TRANSPORT that opens into it (identity.SHELL_SURFACE) — its network stays 'shell' and
+// so does its authority; only where its files land is a room's.
+// That makes the lobby need NO special mapping of its own: shell-port's SHELL_CHAT_ID is
+// literally this string, so the `room` rule below already gives it a fixed, suffix-less slug
+// instead of the throwaway shell-<yymmddhhmm> the name-derived path would mint.
 export const LOBBY_SLUG = 'lobby';
-// The OTHER fixed-slug surface: `room` (2026-08-09). An operator-named room is a
+// The fixed-slug surface: `room` (2026-08-09). An operator-named room is a
 // conversation whose chatId IS the name the operator typed, so its slug must be a PURE
 // FUNCTION of that name — no -yymmddhhmm tail (the name is already unique by fiat: /room
 // create refuses an existing one) and no title-driven re-slug (a room has no title). That
@@ -1147,6 +1149,11 @@ export const LOBBY_SLUG = 'lobby';
 // sanitizeName is the SAME kebab normalisation the /room verbs used to apply at five call
 // sites; it lives here now, as one rule, so `/room create Foo` and `/room members foo` are
 // the same room. Every other surface is untouched and keeps its timestamped slug.
+// The trailing ('shell','main') arm is the RETIRED console seat: nothing in the live path
+// produces it any more (the console is ('room','lobby') now), but a profile that has not run
+// setup/move-rooms-out-of-conversations.mjs yet still carries a contacts.shell.main row, and
+// resolving it to `lobby` rather than minting a fresh shell-<ts> beside it is what keeps that
+// row readable until the migration moves it.
 export function fixedSlugFor(surface, jid) {
   if (surface === 'room') return sanitizeName(jid) || null;
   return (surface === 'shell' && jid === 'main') ? LOBBY_SLUG : null;

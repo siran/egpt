@@ -23,6 +23,7 @@ import { EGPT_HOME } from '../egpt-home.mjs';
 import { shortChatId } from '../bridges/chat-id.mjs';
 import { ownNodeNamesOf, knownNodeNames } from './node-names.mjs';
 import { Room, ROOMS_ROOT } from '../room-core.mjs';
+import { SHELL_SURFACE } from './identity.mjs';
 // The room slug rule (fixedSlugFor, surface `room`) applied to a READ, which must not mint —
 // see roomOnDisk. NOT for the /room verbs: they pass the operator's raw string through.
 import { sanitizeName } from '../sanitize.mjs';
@@ -265,7 +266,10 @@ function parseNodeAddressable(text) {
 // here is only the routing half. Everywhere else this node speaks is a chat on the shared Beeper
 // account, where a co-account peer heard the very same message and answers through its own gate —
 // which is exactly why a peer addressed THERE must not also be sent an envelope.
-const NODE_LOCAL_SURFACES = new Set(['shell']);
+// SHELL_SURFACE (identity.mjs) is that surface — `room`, the console's own home and the
+// operator-named rooms beside it. Every one of them is node-local for the same reason: a room
+// has no transport at all, so no co-account peer can have heard it either.
+const NODE_LOCAL_SURFACES = new Set([SHELL_SURFACE]);
 
 export function createCommands({
   getConfig = () => ({}),
@@ -389,9 +393,10 @@ export function createCommands({
   // mesh.mjs commandReply). A mesh-delivered command's ev.chatId is a private per-command id
   // (`<chat>#cmd<n>`) that is DIFFERENT on every call — resolving through it mints a fresh
   // contact-<ts> room each time, so an add and a list land in two different rooms and disagree.
-  // ev.mesh routes it to THIS node's own lobby instead (surface 'shell', jid 'main' —
-  // fixedSlugFor's fixed mapping), through the SAME resolveConvRoom seam every other room
-  // resolution uses. Mesh is unconditional and unaffected by anything below.
+  // ev.mesh routes it to THIS node's own lobby instead (SHELL_SURFACE + LOBBY_SLUG — the
+  // console's home room, whose chatId IS its name, fixedSlugFor's fixed mapping), through the
+  // SAME resolveConvRoom seam every other room resolution uses. Mesh is unconditional and
+  // unaffected by anything below.
   //
   // The JOINED-ROOM default (operator 2026-08-17, generalizing the 2026-08-16 /agents-only fix):
   // "this conversation" means the room currently /room join'd on this surface, when one is
@@ -404,7 +409,7 @@ export function createCommands({
   // (surfaceOf(ev), ev.chatId) byte-for-byte, unchanged. This is the ONE choke point every
   // room-scoped command funnels through, so fixing it here fixes all of them at once.
   const convRoomOf = (ev) => {
-    if (ev?.mesh) return resolveConvRoom('shell', 'main');
+    if (ev?.mesh) return resolveConvRoom(SHELL_SURFACE, LOBBY_SLUG);
     const joined = currentRoomOf(surfaceOf(ev));
     return resolveConvRoom(joined ? 'room' : surfaceOf(ev), joined ?? ev.chatId);
   };
@@ -1427,7 +1432,7 @@ export function createCommands({
   // the router's own filter (an agent-level `enabled:` key is not consulted — operator
   // 2026-07-26, "disabling is just commenting the config").
   function lobbyBeings(ev, room) {
-    if (surfaceOf(ev) !== 'shell' || room?.slug !== LOBBY_SLUG) return [];
+    if (surfaceOf(ev) !== SHELL_SURFACE || room?.slug !== LOBBY_SLUG) return [];
     const agents = cfg().agents;
     if (!agents || typeof agents !== 'object') return [];
     return Object.entries(agents)

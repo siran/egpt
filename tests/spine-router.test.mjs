@@ -4,6 +4,7 @@
 // agent to the canonical being 'e'. A qualified @being.node reaches another machine (mesh).
 // Everything else falls through to E.
 import { describe, it, expect } from 'vitest';
+import { SHELL_SURFACE } from '../src/spine/identity.mjs';
 import { createRouter, addressed, voiceWakeTokens } from '../src/spine/router.mjs';
 
 const ev = (body, mention) => ({
@@ -147,7 +148,10 @@ describe('router.resolve — multi-path relay agent (operator 2026-07-06)', () =
 //    agent ONLY on that surface; on any OTHER surface the @mention falls through (as if unmatched).
 //    CORRECTNESS, not convenience: `do` and `kg` share ONE Beeper account, so on Beeper `do` hears
 //    `@don` DIRECTLY and answers it — kg must NOT also relay it. kg relays `don` ONLY from the shell
-//    (which `do` can't hear), so kg pins its `don` relay agent `surface: shell`. ──
+//    (which `do` can't hear), so kg pins its `don` relay agent `surface: shell`.
+//    The pin names a NETWORK; since 2026-08-28 the shell network resolves to surface `room`,
+//    and BOTH sides of the comparison go through that one map — so the operator's config is
+//    unchanged and still matches. ──
 describe('router.resolve — surface-pinned relay agent (operator 2026-07-25)', () => {
   const agents = {
     egpt: { configuration: 'sonnet-high', handles: ['e', 'egpt'], default: true },
@@ -157,7 +161,7 @@ describe('router.resolve — surface-pinned relay agent (operator 2026-07-25)', 
   const evS = (body, surface) => ({ ...ev(body), surface });
 
   it('@don on the SHELL surface → the mesh relay (its pinned surface matches)', async () => {
-    const r = await arouter.resolve(evS('@don ping', 'shell'));
+    const r = await arouter.resolve(evS('@don ping', SHELL_SURFACE));   // the surface the shell network resolves to
     expect(r.being).toBeNull();
     expect(r.mesh).toEqual({ being: 'don', route: { room_id: 'egpt-mesh-do-kg' }, to: 'don.do' });
     expect(r.mention).toMatchObject({ atEStart: true });
@@ -331,7 +335,7 @@ describe('addressed() — a bare handle opening the message (operator 2026-07-27
     const router = createRouter({ getAgents: () => KG, defaultBeing: 'egpt' });
     const beeper = await router.resolve({ ...ev('don Pedro me dijo que sí'), surface: 'beeper' });
     expect(beeper.targets).toEqual([{ being: 'egpt', mention: ev('x').mention }]);   // unmentioned persona → gated silent
-    const shell = await router.resolve({ ...ev('don Pedro me dijo que sí'), surface: 'shell' });
+    const shell = await router.resolve({ ...ev('don Pedro me dijo que sí'), surface: SHELL_SURFACE });
     expect(shell.mesh?.being).toBe('don');
   });
 
