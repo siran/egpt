@@ -12,6 +12,21 @@
 # bare `script.x.md` sits beside config.yaml; a script in a subfolder must say
 # so (`scripts/script.x.md`). A wrong path is ENOENT on every tick.
 #
+# WHO RUNS A script_path: by default nobody — it opens its own CLI session with
+# no persona, no transcript and no access_level/allowed_users/sandboxed limits.
+# Add `agent: <handle>` beside a `script_path:` and the script runs as a TURN for
+# that being instead, in this chat/room, through every gate an ordinary message
+# turn passes. See the commented `dj` entry below.
+#
+# `agent:` takes the HANDLE — what you'd @address it as, e.g. `agent: pd`, not
+# the config.yaml `agents:` map key. An agent that declares `handles:` answers to
+# THOSE ONLY (its key is not an address); an agent that declares none answers to
+# its key. Same rule as an @mention, so both always mean the same being.
+# Constraints: `agent:` needs a `script_path:` (never `command:` — a shell line
+# has no being), and the beat must be declared in a CHAT/ROOM config.yaml — a
+# node-level beat names no entity for the turn to run in. Break any of those and
+# the entry is skipped and logged, never silently run unconfined.
+#
 # `when:` times are wall-clock in the zone from config `default_time_zone`
 # (e.g. America/New_York, or an alias like "New York" / "ET"); with no config
 # zone set, the machine's local zone is used. Accepted forms:
@@ -32,3 +47,11 @@ heartbeats:
   daily-sweep:
     frequency: 24h
     command: echo swept > last-sweep.txt
+
+  # recurring, run BY A BEING: the script is a turn for whoever answers to `pd`
+  # (its handle, not its map key). Left commented because it only loads from a
+  # chat/room config.yaml — uncomment it there, not in the node config.
+  # dj:
+  #   frequency: 30m
+  #   agent: pd
+  #   script_path: dj.x.md

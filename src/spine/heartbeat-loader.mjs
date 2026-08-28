@@ -45,14 +45,20 @@
 // WHO RUNS A script_path (operator 2026-08-22): a bare `script_path:` spawns textecute.mjs,
 // which opens its OWN CLI session — a turn that runs outside the being system entirely: no
 // persona, no transcript, and (the reason this exists) no access_level, no allowed_users,
-// no sandboxed. An entry may instead NAME the being that runs it — `agent: <being-id>`, a
-// KEY of config.yaml's `agents:` map, never a handle — and then the loader dispatches a
-// TURN for that being through the ONE turn path (brainpool.turn, injected as
+// no sandboxed. An entry may instead NAME the being that runs it — `agent: <handle>`, the way a
+// HUMAN addresses it (operator 2026-08-28: "on dolly we use pd from egpt. that is that agents.yaml
+// should say. also, use the handle, not the key. it's a person, not an object haha"). The handle is
+// the SAME wake token an @mention carries, resolved through THE wake vocabulary (router.mjs's
+// `addressed`, over `wakeTokens`) so a beat and a mention can never disagree about who `pd` is:
+// declared `handles:` are an agent's COMPLETE address list (its map KEY is then NOT one), and an
+// agent declaring none is addressed by its key. What comes back is the KEY — the being-id that
+// keys warm sessions and the entry[<being>] threads — so it is handle in, key out. The loader then
+// dispatches a TURN for that being through the ONE turn path (brainpool.turn, injected as
 // `dispatchTurn` by boot) in the entity the beat was declared in, so every confinement
 // gate that guards an ordinary message turn guards this one too. The PROMPT is identical
 // either way: textecute's own framePrompt, imported, never re-spelled. `agent:` +
 // `command:` is invalid (a shell line has no being), `agent:` without `script_path:` is
-// invalid, `agent:` naming a being config.yaml does not declare is invalid, `agent:` on a
+// invalid, `agent:` naming a handle no config.yaml agent answers to is invalid, `agent:` on a
 // NODE-level beat is invalid (it names no entity to run in) — each skipped + logged like
 // every other malformed entry. A turn beat is NOT an inbound message: it never touches
 // gating.mjs, so a `mode: mention` being runs it without that also making the being answer
@@ -121,6 +127,11 @@ import { NODE_FILE } from './config-resolver.mjs';
 // the `agent:` turn path reuses them from there rather than owning a second copy (operator
 // 2026-08-22: an .x.md script must read identically whichever surface interprets it).
 import { framePrompt, isTextecutable } from '../tools/textecute.mjs';
+// THE wake vocabulary (router.mjs) — `agent:` is a HANDLE, so it resolves through the SAME scan a
+// typed @mention goes through. `addressed` over a single already-extracted token is the house
+// single-token lookup (src/spine/mesh.mjs's findAgentByToken does exactly this for an envelope's
+// `<being>` half); `wakeTokens` is imported only to LIST the valid handles in the skip message.
+import { addressed, wakeTokens } from './router.mjs';
 
 // The loader owns the script_path sugar, so it resolves textecute.mjs itself (relative
 // to this file: src/spine/ → src/tools/). Absolute path, so the expanded command
@@ -267,12 +278,22 @@ export function parseWhen(str, { timeZone } = {}) {
 // mistaken for "no action") — the entry is invalid and skipped.
 const _INVALID_ACTION = Symbol('invalid-action');
 
+// Every handle the node answers to — for the unknown-agent SKIP MESSAGE only (an operator whose
+// beat named the map key has to see what to write instead). Same guard `addressed`'s own scan
+// applies (`_`-prefixed comment keys and non-map values are not agents), so it can never advertise
+// a token that would not resolve.
+function _knownHandles(agents) {
+  return Object.entries(agents ?? {})
+    .filter(([n, a]) => a && typeof a === 'object' && !n.startsWith('_'))
+    .flatMap(([n, a]) => wakeTokens(n, a));
+}
+
 // Resolve the ACTION for a raw entry: `command:` (verbatim shell line), `script_path:`
 // (expanded to `node "<textecute.mjs>" "<script>"`, script relative → the entry cwd), or
 // `agent:` + `script_path:` (a TURN for that being, dispatched through brainpool — see the
 // header). Mutually exclusive. `alive` with no explicit action falls back to aliveCommand.
 // `ns` is the entity namespace (`<surface>/<slug>`), absent for a node-level entry; `agents`
-// is config.yaml's `agents:` map, the ONE registry an `agent:` value must be a key of.
+// is config.yaml's `agents:` map, the ONE registry an `agent:` value must be a WAKE TOKEN of.
 function _resolveAction({ name, raw, isAlive, aliveCommand, cwd, aliveCwd, ns, agents = {}, onLog }) {
   const hasCommand = typeof raw?.command === 'string' && raw.command.trim();
   const hasScriptPath = typeof raw?.script_path === 'string' && raw.script_path.trim();
@@ -288,10 +309,18 @@ function _resolveAction({ name, raw, isAlive, aliveCommand, cwd, aliveCwd, ns, a
   if (hasCommand && hasScriptPath) { onLog(`${name}: both command and script_path set — skipped (use one action)`); return _INVALID_ACTION; }
   if (hasAgent && hasCommand) { onLog(`${name}: both agent and command set — skipped (a shell line has no being; agent: runs a script_path script)`); return _INVALID_ACTION; }
   if (hasAgent) {
-    const being = raw.agent.trim().toLowerCase();
+    const handle = raw.agent.trim().toLowerCase();
     if (!hasScriptPath) { onLog(`${name}: agent ${JSON.stringify(raw.agent)} without script_path — skipped (agent: names WHO runs the script_path script)`); return _INVALID_ACTION; }
     if (!ns) { onLog(`${name}: agent ${JSON.stringify(raw.agent)} on a node-level beat — skipped (a turn runs in a conversation/room; declare the beat in that entity's config.yaml)`); return _INVALID_ACTION; }
-    if (!Object.prototype.hasOwnProperty.call(agents, being)) { onLog(`${name}: unknown agent ${JSON.stringify(raw.agent)} — skipped (agent: is a KEY of config.yaml agents:, not a handle)`); return _INVALID_ACTION; }
+    // WHO IS `pd`? THE wake vocabulary answers, never a lookup of our own: `addressed` over the
+    // one handle, exactly as mesh.mjs resolves an envelope's `<being>` token. It returns the map
+    // KEY (hit.name), which is what RUNS — warm sessions and the entry[<being>] threads are keyed
+    // by it. An agent whose `handles:` are declared no longer answers to its key; that is the rule
+    // (@mention has worked this way since 2026-07-26) and the skip message names the real handles.
+    // (addressWithoutAt is passed EXPLICITLY, as mesh.mjs does: a config key is written bare, so
+    // the node's `dispatch.address_without_at` switch — about typed chat text — never governs it.)
+    const being = addressed(handle, agents, { addressWithoutAt: true })[0]?.name;
+    if (!being) { onLog(`${name}: unknown agent ${JSON.stringify(raw.agent)} — skipped (agent: is a HANDLE, the way you'd @address it; known: ${_knownHandles(agents).join(' ') || '(none)'})`); return _INVALID_ACTION; }
     const script = raw.script_path.trim();
     if (!isTextecutable(script)) { onLog(`${name}: script_path ${JSON.stringify(script)} is not a textecutable — skipped (must end in .x.md)`); return _INVALID_ACTION; }
     return { kind: 'turn', being, script, cwd, ns, scriptPath: script };

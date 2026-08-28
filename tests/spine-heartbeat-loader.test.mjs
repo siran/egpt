@@ -447,14 +447,14 @@ describe('createHeartbeatLoader — agent: (a heartbeat that runs as a being)', 
   const CONFIG = { agents: { egpt: { default: true }, pi: { mode: 'mention' } } };
 
   // One room entity, one beat, everything injectable. `raw` is the beat's declaration.
-  function build(raw, { dispatchTurn, script = 'This is the DJ script.\n' } = {}) {
+  function build(raw, { dispatchTurn, script = 'This is the DJ script.\n', config = CONFIG } = {}) {
     const logs = [];
     const turns = [];
     const { spawn, calls } = makeSpawn();
     const registry = makeRegistry();
     const reads = [];
     const loader = makeLoader({
-      getConfig: () => CONFIG,
+      getConfig: () => config,
       aliveMs: 0, procCwd: '/checkout', egptHome: '/home', spawn,
       listEntityDirs: async () => [{ dir: '/home/conversations/room/dj-son', ns: 'room/dj-son' }],
       readEntityConfig: async () => ({ heartbeats: { dj: raw } }),
@@ -515,10 +515,49 @@ describe('createHeartbeatLoader — agent: (a heartbeat that runs as a being)', 
     expect(calls).toHaveLength(0);
   });
 
-  it('a HANDLE is not a being-id: agent: "@p" is unknown, skipped + logged', async () => {
+  it('a token no agent declares is unknown: agent: "@p" is skipped + logged', async () => {
     const { loader, logs } = build({ frequency: '30m', agent: '@p', script_path: 'dj.x.md' });
     expect((await loader.collect()).entries).toEqual([]);
     expect(logs.some((l) => l.includes('unknown agent'))).toBe(true);
+  });
+
+  // THE HANDLE, NOT THE KEY (operator 2026-08-28: "on dolly we use pd from egpt. that is that
+  // agents.yaml should say. also, use the handle, not the key. it's a person, not an object haha").
+  // DOLLY's pi agent is KEYED `pi` and declares `handles: [pd]`; nobody there ever types `pi`.
+  // Resolution rides THE wake vocabulary (router.mjs addressed/wakeTokens) — the same scan an
+  // @mention goes through — so a beat and a mention can never disagree about who `pd` is. The
+  // RESOLVED value is still the map KEY: it keys warm sessions and the entry[<being>] threads.
+  const DOLLY = { agents: { egpt: { default: true }, pi: { handles: ['pd'] } } };
+
+  it('agent: names the HANDLE and resolves to the map KEY — agent: pd on a pi-keyed agent runs as being pi', async () => {
+    const { loader, registry, turns } = build({ frequency: '30m', agent: 'pd', script_path: 'dj.x.md' }, { config: DOLLY });
+    const { entries } = await loader.collect();
+    const e = entries.find((x) => x.name === 'room/dj-son:dj');
+    expect(e.action).toMatchObject({ kind: 'turn', being: 'pi', script: 'dj.x.md', ns: 'room/dj-son' });
+
+    loader.wrapRegistry(registry);
+    await loader.activate({ stats: () => ({}) });
+    beatsOf(registry).find((r) => r.name === 'room/dj-son:dj').fn();
+    await flush();
+    expect(turns[0]).toMatchObject({ being: 'pi', ns: 'room/dj-son' });   // handle in, KEY out
+  });
+
+  it('a declared handles: list is COMPLETE — the KEY is not a wake token, so agent: pi is skipped + logged with the handles to use', async () => {
+    const { loader, registry, logs, turns, calls } = build({ frequency: '30m', agent: 'pi', script_path: 'dj.x.md' }, { config: DOLLY });
+    expect((await loader.collect()).entries).toEqual([]);
+    expect(logs.some((l) => l.includes('unknown agent') && l.includes('pd'))).toBe(true);
+    loader.wrapRegistry(registry);
+    await loader.activate({ stats: () => ({}) });
+    expect(beatsOf(registry)).toHaveLength(0);
+    await flush();
+    expect(turns).toHaveLength(0);
+    expect(calls).toHaveLength(0);       // never falls through to the unconfined textecute spawn
+  });
+
+  it('an agent declaring NO handles: is still addressed by its map key (wakeTokens\' other arm)', async () => {
+    const { loader } = build({ frequency: '30m', agent: 'pi', script_path: 'dj.x.md' });   // CONFIG's pi declares no handles
+    const e = (await loader.collect()).entries.find((x) => x.name === 'room/dj-son:dj');
+    expect(e.action).toMatchObject({ kind: 'turn', being: 'pi' });
   });
 
   it('a declared-but-unusable agent: (empty, or not a string) is invalid — it NEVER falls through to the unconfined textecute spawn', async () => {
