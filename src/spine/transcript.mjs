@@ -25,7 +25,7 @@ export function createTranscript({
   contacts,                              // the shared contact-resolver (createContacts) — chatId → slug + rename self-heal
   persona = null,
   defaultKey = 'egpt',                   // the persona being-id (its `agents:` MAP KEY), injected by boot — the fallback label when a reply carries no being. NOT a handle: `e` is one of the persona's handles (`handles: [e, egpt, ev]`), and this value is written into the record as the speaker, so a handle here labels the file with something no reader can route on (operator 2026-08-28)
-  node_name = null,                      // this node's name — qualifies the being's reply label as <being>.<node_name> so the record shows WHICH node produced a line (provenance; operator 2026-07-10). null → bare being label unchanged
+  labelOf = (being) => String(being ?? ''),   // THE being→display-name resolver (boot.mjs labelOf: the agents-registry `name:`, else the map key), injected — the SAME function createSender and createReplyActions already take, so the record and the chat call an agent by one name. Default identity (tests) = the key
   timeZone = null,                       // the node's config default_time_zone (boot-resolved via the heartbeat loader's resolveTimeZone) — the zone the reply line's HH:MM renders in. null → UTC, unchanged
   io = {},                               // { appendFile, mkdir, existsSync } — real by default
   now = () => new Date(),
@@ -46,10 +46,13 @@ export function createTranscript({
   const appendFile = io.appendFile ?? fsAppendFile;
   const mkdir = io.mkdir ?? fsMkdir;
   const existsSync = io.existsSync ?? fsExistsSync;
-  // Node-qualify the being label (operator 2026-07-10): <being>.<node_name> (e.g. egpt.kg,
-  // wren.do) so the record shows WHICH node on this shared account produced the line. Applies to
-  // whatever beings the transcript labels — it's this node's node_name for all of them.
-  const beingLabel = (being) => (node_name ? `${being}.${node_name}` : being);
+  // THE AGENT NAME IS THE IDENTIFIER (operator 2026-08-28: "the only agent named egpt lives in
+  // kg. in do there is don"). The label is labelOf(being) and nothing else — not the `agents:`
+  // MAP KEY (DOLLY's persona is keyed `egpt` but is `name: don`, so the record used to name an
+  // agent nobody calls that), and no `.<node_name>` qualifier either: names are unique across the
+  // shared Beeper account by construction, since both nodes hear every message. What the record
+  // says is now exactly what the bridge stamps on the message in the chat.
+  //
   // The chat/surface half of a reply line, since a being's reply now renders through the SAME
   // formatter as the inbound line beside it (transcript-log.replyLine → formatDispatchLine).
   // These are ev's OWN metadata, kept LITERAL exactly like ev.line/ev.body/ev.senderName at the
@@ -135,7 +138,7 @@ export function createTranscript({
         // first thing this file ever receives (normally the inbound line is already in: the
         // spine records at ingestion, before any turn is dispatched).
         if (!existsSync(fpath)) head += renderFrontMatter({ name: ev.chatName ?? t.chatId ?? t.slug, surface: t.surface, slug: t.slug, chat_id: t.chatId, persona });
-        if (being) head += replyLine({ being: beingLabel(being), body: '', streaming: true, now: now(), timeZone, ...lineContext(ev) });
+        if (being) head += replyLine({ being: labelOf(being), body: '', streaming: true, now: now(), timeZone, ...lineContext(ev) });
         openBlocks.add(fpath);
       }
       await appendFile(fpath, head + inc, 'utf8');
@@ -241,7 +244,7 @@ export function createTranscript({
           // spine records the reply BEFORE delivering it (record-first is durability), so at
           // this point the surface has not assigned an id. Absent → the tag is omitted.
           const msgId = (typeof reply === 'object' ? reply.msgId : null) ?? null;
-          await appendFile(fpath, replyLine({ being: beingLabel(being), body: text, surfaced, msgId, now: now(), timeZone, ...lineContext(ev) }) + '\n\n', 'utf8');
+          await appendFile(fpath, replyLine({ being: labelOf(being), body: text, surfaced, msgId, now: now(), timeZone, ...lineContext(ev) }) + '\n\n', 'utf8');
         }
         return true;
       } catch (e) { onLog(`transcript ${ev?.surface}/${ev?.chatId}: ${e?.message ?? e}`); return false; }

@@ -108,7 +108,7 @@ describe('v1 pipe — gated receive → brain → reply → send, per mode', () 
     expect(bridge.sent).toHaveLength(0);                      // no fallback send
     const t = onlyFile(files);
     expect(t).toContain('An@[fam].wa (14:05) #m1: hola');    // inbound dispatch line
-    expect(t).toContain('@e@[fam].wa (14:05): ↩ hola');             // reply line
+    expect(t).toContain('e@[fam].wa (14:05): ↩ hola');             // reply line
   });
 
   it("'mute': receives + logs inbound, but NO brain, NO send", async () => {
@@ -119,7 +119,7 @@ describe('v1 pipe — gated receive → brain → reply → send, per mode', () 
     expect(bridge.sent).toHaveLength(0);
     const t = onlyFile(files);
     expect(t).toContain('An@[fam].wa (14:05) #m1: hola');
-    expect(t).not.toContain('@e@[');                          // no reply
+    expect(t).not.toContain('e@[');                          // no reply
   });
 
   it("'off': not received — NOT logged, no brain, no send", async () => {
@@ -138,7 +138,7 @@ describe('v1 pipe — gated receive → brain → reply → send, per mode', () 
     expect(bridge.streams).toHaveLength(0);           // no train for a non-surfacing turn
     const t = onlyFile(files);
     expect(t).toContain('#m1: hola');                                  // inbound logged
-    expect(t).toContain('@e@[fam].wa (14:05): (not surfaced) ↩ hola');        // reply recorded, withheld
+    expect(t).toContain('e@[fam].wa (14:05): (not surfaced) ↩ hola');        // reply recorded, withheld
   });
 
   it("'mention' without @e: logged, withheld (no brain, no send)", async () => {
@@ -154,7 +154,7 @@ describe('v1 pipe — gated receive → brain → reply → send, per mode', () 
     await bridge.emit(msg({ body: '@e estas?', atE: true }));
     expect(brain.calls).toHaveLength(1);
     expect(bridge.streams[0].finals).toEqual(['↩ @e estas?']);
-    expect(onlyFile(files)).toContain('@e@[fam].wa (14:05): ↩ @e estas?');   // transcript records the bare reply (chat reply is bare too now)
+    expect(onlyFile(files)).toContain('e@[fam].wa (14:05): ↩ @e estas?');   // transcript records the bare reply (chat reply is bare too now)
   });
 
   it("'accum': gates like mention — received + logged, withheld without @e", async () => {
@@ -174,7 +174,7 @@ describe('v1 pipe — gated receive → brain → reply → send, per mode', () 
     await bridge.emit(msg({ body: '@e estas?', atE: true }));
     expect(brain.calls).toHaveLength(1);
     expect(bridge.streams[0].finals).toEqual(['↩ @e estas?']);
-    expect(onlyFile(files)).toContain('@e@[fam].wa (14:05): ↩ @e estas?');
+    expect(onlyFile(files)).toContain('e@[fam].wa (14:05): ↩ @e estas?');
   });
 
   it('auto_e_paused: absolute kill — even @e in on-mode is withheld but logged', async () => {
@@ -259,7 +259,7 @@ function siblingHarness(config = {}, { eMode, wrenMode } = {}) {
 describe('v1 pipe — local agent routing (@wren)', () => {
   const cfg = { agents: { wren: { configuration: 'sonnet-high', name: 'wren', body_emoji: '🐦' } } };
 
-  it("'@wren do X': brain.turn(being=wren), reply delivered with wren's emoji+label, transcript line @wren@[fam].wa …", async () => {
+  it("'@wren do X': brain.turn(being=wren), reply delivered with wren's emoji+label, transcript line wren@[fam].wa …", async () => {
     const { bridge, brain, files } = siblingHarness(cfg);
     await bridge.emit(msg({ body: '@wren do X' }));
     expect(brain.calls).toHaveLength(1);
@@ -269,7 +269,7 @@ describe('v1 pipe — local agent routing (@wren)', () => {
     expect(bridge.streams[0].tag).toMatchObject({ bodyEmoji: '🐦', label: 'wren' });
     // reply-to quote fires (the sibling is mentioned by its own @name)
     expect(bridge.streams[0].tag.replyTo).toBe('m1');
-    expect(onlyFile(files)).toContain('@wren@[fam].wa (14:05): ↩ @wren do X');
+    expect(onlyFile(files)).toContain('wren@[fam].wa (14:05): ↩ @wren do X');
   });
 
   it('a plain message still routes to e (not the sibling)', async () => {
@@ -287,6 +287,6 @@ describe('v1 pipe — local agent routing (@wren)', () => {
     expect(bridge.sent).toHaveLength(0);
     const t = onlyFile(files);
     expect(t).toContain('#m1: @wren do X');   // inbound still logged
-    expect(t).not.toContain('@wren@[');        // …but no reply line
+    expect(t).not.toContain('wren@[');        // …but no reply line
   });
 });

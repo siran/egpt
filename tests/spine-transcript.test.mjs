@@ -86,9 +86,11 @@ describe('transcript.log — §3.1 stats collector chokepoint', () => {
     expect(contact[1]).toContain('@whatsapp_555:beeper.local');  // body sender_id anchor preserved
   });
 
-  // NODE-QUALIFIED BEING LABEL (operator 2026-07-10): the reply line records <being>.<node_name>
-  // (e.g. egpt.kg, wren.do) so the transcript shows WHICH node on this shared Beeper account
-  // produced the line. Bare being label (no node_name) is unchanged (back-compat).
+  // THE BEING'S LABEL IS ITS NAME (operator 2026-08-28: "the only agent named egpt lives in kg.
+  // in do there is don" / "the agent name is the identifier"). The reply line's speaker is
+  // labelOf(being) — the agents-registry `name:`, else the map key — and nothing else: no
+  // `.<node_name>` qualifier any more, because names are unique across the shared account by
+  // construction. Unwired labelOf (tests) falls back to the key.
   const mkIo = (files) => ({
     appendFile: async (p, d) => { files.set(p, (files.get(p) ?? '') + d); },
     mkdir: async () => {},
@@ -114,39 +116,46 @@ describe('transcript.log — §3.1 stats collector chokepoint', () => {
     expect(text).not.toContain('thread_id:');
   });
 
-  it('qualifies the PERSONA reply label as <being>.<node_name>, not the bare being', async () => {
+  it('labels the PERSONA reply with its NAME, bare — no sigil, no node qualifier', async () => {
     const files = new Map();
-    const t = createTranscript({ contacts: fakeContacts, io: mkIo(files), node_name: 'kg', defaultKey: 'egpt' });
+    const t = createTranscript({ contacts: fakeContacts, io: mkIo(files), defaultKey: 'egpt', labelOf: (b) => b });
     expect(await t.log(ev, { text: 'hi from egpt', being: 'egpt', surfaced: true })).toBe(true);
     const text = transcriptText(files);
-    expect(text).toContain('@egpt.kg@[fam].wa ');   // node-qualified reply label, in the one line shape
-    expect(text).not.toMatch(/@egpt@\[/);           // NOT the bare being label
+    expect(text).toContain('egpt@[fam].wa ');
+    expect(text).not.toContain('@egpt@[');          // the sigil is gone
+    expect(text).not.toContain('egpt.kg@[');        // …and so is the node qualifier
   });
 
-  it('qualifies a LOCAL SIBLING reply too (this node\'s node_name for every being it labels)', async () => {
+  // REPRODUCE-FIRST (operator 2026-08-28, live on DOLLY): the persona is KEYED `egpt` but is
+  // `name: don` and wakes on [d, don], so the record used to read `@egpt.do` for an agent nobody
+  // calls egpt. The label routes through the SAME labelOf boot hands createSender, so the
+  // transcript and the chat now call the agent one name.
+  it('a being whose config `name:` differs from its map key is recorded by the NAME', async () => {
     const files = new Map();
-    const t = createTranscript({ contacts: fakeContacts, io: mkIo(files), node_name: 'do' });
-    await t.log(ev, { text: 'sibling line', being: 'wren' });
-    expect(transcriptText(files)).toContain('@wren.do@[fam].wa ');
-  });
-
-  it('no node_name → the bare being label is unchanged (back-compat)', async () => {
-    const files = new Map();
-    const t = createTranscript({ contacts: fakeContacts, io: mkIo(files) });   // node_name unset
-    await t.log(ev, { text: 'hi', being: 'egpt' });
+    const agents = { egpt: { name: 'don', handles: ['d', 'don'], default: true } };
+    const labelOf = (b) => agents[String(b).toLowerCase()]?.name ?? String(b);
+    const t = createTranscript({ contacts: fakeContacts, io: mkIo(files), defaultKey: 'egpt', labelOf });
+    await t.log(ev, { text: 'dale', being: 'egpt' });
     const text = transcriptText(files);
-    expect(text).toContain('@egpt@[fam].wa (');
-    expect(text).not.toContain('egpt.');
+    expect(text).toContain('don@[fam].wa (');
+    expect(text).not.toContain('egpt');
+  });
+
+  it('a LOCAL SIBLING is labelled the same way (one resolver for every being)', async () => {
+    const files = new Map();
+    const t = createTranscript({ contacts: fakeContacts, io: mkIo(files) });
+    await t.log(ev, { text: 'sibling line', being: 'wren' });
+    expect(transcriptText(files)).toContain('wren@[fam].wa ');
   });
 
   // The reply line's clock reads in the node's configured zone (config `default_time_zone`,
   // boot-resolved with the heartbeat loader's resolveTimeZone) — the same clock the inbound
-  // line renders. Unset → UTC, exactly as before (operator 2026-07-26).
+  // line renders. Unset -> UTC, exactly as before (operator 2026-07-26).
   it('renders the reply-line clock in the injected time zone', async () => {
     const files = new Map();
-    const t = createTranscript({ contacts: fakeContacts, io: mkIo(files), node_name: 'kg', defaultKey: 'egpt', timeZone: 'America/New_York', now: () => new Date(Date.UTC(2026, 6, 25, 19, 7)) });
+    const t = createTranscript({ contacts: fakeContacts, io: mkIo(files), defaultKey: 'egpt', timeZone: 'America/New_York', now: () => new Date(Date.UTC(2026, 6, 25, 19, 7)) });
     await t.log(ev, { text: 'hi', being: 'egpt' });
-    expect(transcriptText(files)).toContain('@egpt.kg@[fam].wa (15:07): hi');
+    expect(transcriptText(files)).toContain('egpt@[fam].wa (15:07): hi');
   });
 
   it('never throws/rejects when the collector io read/write throws — transcript still appended', async () => {
@@ -359,7 +368,7 @@ describe('transcript.log — currentRoomOf redirects WHERE a write lands, ev its
   it('a reply write (log(ev, reply)) redirects the same way as an inbound write', async () => {
     const files = new Map();
     const inEv = Object.freeze({ ...ev, surface: 'shell', chatId: 'main' });
-    const t = createTranscript({ contacts, io: mkIo(files), node_name: 'kg', currentRoomOf: (surface) => (surface === 'shell' ? 'acim' : null) });
+    const t = createTranscript({ contacts, io: mkIo(files), currentRoomOf: (surface) => (surface === 'shell' ? 'acim' : null) });
     expect(await t.log(inEv, { text: 'reset done', being: 'system' })).toBe(true);
     expect(transcriptText(files, 'room')).toContain('reset done');
     expect(transcriptText(files, 'shell')).toBe('');

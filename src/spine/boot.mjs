@@ -203,8 +203,8 @@ export function makeShellAwareBridge(bridge, shellPort) {
 //
 // LABEL: 'system' — a command reply is the NODE speaking, not a persona (src/shell/app.mjs
 // already uses author 'system' for this identical class of message: spine-generated, not a
-// being's turn). Node-qualified like any other reply — createTranscript renders <being>.<node_name>
-// — so the record shows e.g. `@system.kg@[fam].wa (18:07): …`.
+// being's turn). Named like any other reply — createTranscript renders labelOf('system'), which
+// matches no agent and so stays 'system' — so the record shows `system@[fam].wa (18:07): …`.
 //
 // Pure/DI'd so it's testable directly (mirrors the other top-level boot helpers): `send` and
 // `transcript.log` are both injected, nothing here touches fs or config.
@@ -1129,18 +1129,17 @@ export async function boot({
     // the ONE registry, and since 2026-07-25 the ONLY source of off-node reach (a relay agent's
     // relay_channel). defaultBeing = defaultKey: the persona-route + the un-@mentioned
     // fall-through both yield the persona's KEY (operator 2026-07-10 — no hardcoded 'e'/'egpt').
-    // quick_reply_string: the token that addresses whoever spoke last (default 'r', '' disables).
     // loadState (operator 2026-08-15, allowed_users): the SAME conversations-state reader
     // gating.mjs's createGating takes (`_loadState`, declared above) — resolve()'s per-
     // conversation allowed_users override reads through it, one state load per resolve() call.
-    router: createRouter({ getAgents: () => cfg.agents ?? {}, defaultBeing: defaultKey, getQuickReply: () => cfg.quick_reply_string, addressWithoutAt, loadState: _loadState }),
+    router: createRouter({ getAgents: () => cfg.agents ?? {}, defaultBeing: defaultKey, addressWithoutAt, loadState: _loadState }),
     // currentRoomOf: a lazy thunk, not `commands.currentRoomOf` directly — `commands` (below)
     // isn't constructed until after `services` (it takes `services.transcript` itself as one of
     // its own options, via commandTranscript below), so a direct reference would be undefined
     // here. Safe forward reference: this callback only ever fires later, on an actual write,
     // by which time `commands` is assigned (mirrors createSpine's own construction site further
     // down, which passes commands.currentRoomOf directly because by THAT point commands exists).
-    transcript: createTranscript({ contacts, persona: labelOf(defaultKey), defaultKey, node_name, timeZone: transcriptTimeZone, io, currentRoomOf: (surface) => commands.currentRoomOf(surface), onLog: (m) => log.line?.(`[transcript] ${m}`) }),
+    transcript: createTranscript({ contacts, persona: labelOf(defaultKey), defaultKey, labelOf, timeZone: transcriptTimeZone, io, currentRoomOf: (surface) => commands.currentRoomOf(surface), onLog: (m) => log.line?.(`[transcript] ${m}`) }),
     sender: createSender({ bridge: shellAwareBridge, bodyEmojiOf, labelOf, agentSignatureOpenOf, agentSignatureCloseOf, defaultKey }),
     // The real cadence registry the spine's tick() drives. The heartbeat LOADER
     // (below) collects every declarative heartbeat and registers it here, so each
@@ -1346,7 +1345,7 @@ export async function boot({
     onLog: (m) => log.line?.(`[relay] ${m}`),
   });
 
-  const spine = createSpine({ bridge, brain, ...services, commands, mesh, actions, advice, guard, guardOverride, stopSwitch, isSelfChat, roomRelay, readTranscript, refreshConfig: heartbeatLoader.reload, radioRelay: radioRelay.relay, synthesize: vx.synthesize, voice: vx.voice, defaultBeing: defaultKey, node_name, timeZone: transcriptTimeZone, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
+  const spine = createSpine({ bridge, brain, ...services, commands, mesh, actions, advice, guard, guardOverride, stopSwitch, isSelfChat, roomRelay, readTranscript, refreshConfig: heartbeatLoader.reload, radioRelay: radioRelay.relay, synthesize: vx.synthesize, voice: vx.voice, defaultBeing: defaultKey, labelOf, timeZone: transcriptTimeZone, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
   // Bind the advice service's answer-routing dispatch now that the spine exists: an
   // operator answer in the advice channel re-enters the pipe as a turn in the origin chat.
   advice.useDispatch(spine.handleInbound);

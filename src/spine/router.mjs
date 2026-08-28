@@ -30,24 +30,6 @@ import { agentPaths } from '../mesh/relay.mjs';
 import { mentionHits } from '../auto-mode.mjs';
 import { getBeing, allowedUsersPermits } from '../conversations-state.mjs';
 
-// QUICK REPLY (operator 2026-07-25: "a lo mejor empezar la respuesta con 'r', tipo 'r ok pero que
-// no sea tan común' … si el ultimo mensaje fue de don o de E, el bridge routes and dispatches" —
-// "no sé el msgid como tú … solo quiero responder fácilmente al ultimo prompt"). `r <body>` is an
-// ADDRESSEE, not a second dispatch mechanism: it resolves through `addressed` below like any
-// @token, so the mode gate, the fan-out and mesh forwarding stay exactly as they are.
-// `<qr> <body>` → the body with the token stripped, or null when this text is not a quick reply.
-// Case-insensitive; REQUIRES whitespace + a non-empty body, so `really?` and a bare `r` are
-// ordinary text. An empty/blank token disables the feature.
-function quickReplyBody(text, token) {
-  const t = String(token ?? '').trim();
-  if (!t) return null;
-  const s = String(text ?? '').replace(/^\s+/, '');
-  if (s.slice(0, t.length).toLowerCase() !== t.toLowerCase()) return null;
-  const rest = s.slice(t.length);
-  if (!/^\s/.test(rest)) return null;
-  return rest.trim() || null;
-}
-
 // THE wake vocabulary — the ONE definition of "which @tokens address this agent", lowercased
 // (operator 2026-07-26: "don must not wake or respond with 'egpt'" … "the key has no bearing …
 // the yaml key can be discarded, an agent reacts if its handle is invoked").
@@ -104,42 +86,27 @@ export function voiceWakeTokens(agent) {
 // skip them. (An agent-level `enabled:` key is NOT consulted: operator 2026-07-26, "disabling is
 // just commenting the config. no need to have or check an enabled key in this case.")
 //
-// A QUICK REPLY (`quickReply` + `lastSpeaker`) is resolved HERE too, and to ONE addressee: the
-// last AGENT that spoke in this conversation, ATSTART (it was directly addressed, so a
-// mention-direct chat answers it), carrying the `body` the token was stripped from. The gate is
-// `lastSpeaker` — null in a conversation where no agent has spoken, and there `r …` matches
-// nobody and stays ordinary text. It is a STATIC LOOKUP the spine performs on the RECORD
-// (transcript-log.lastSurfacedBeing — operator 2026-07-27: "r is static, it searches the
-// transcript"); nothing here reads a file, and nothing anywhere remembers who spoke. HUMAN LINES
-// IN BETWEEN ARE IRRELEVANT (operator 2026-07-26: "'r' should reply to last bot message") — for
-// free now, since the walk asks for the last AGENT line and skips everything else.
-// lastSpeaker is a BEING-ID (the record labels the agent's map key, never a handle), so it is
-// looked up BY KEY — not through the wake-token map, which since 2026-07-26 need not contain the
-// key at all (DOLLY's persona is keyed `egpt` and wakes on [d, don]).
+// THERE IS NO QUICK REPLY ANY MORE (operator 2026-08-28: "so we evict r. it was a bad idea, you
+// can just use 'e'"). `r <body>` used to resolve HERE to whichever agent spoke last, read off the
+// transcript — a second addressing scheme beside the @token, with its own config key, its own
+// grammar and its own reader in transcript-log.mjs. All of it is gone; an @handle is the only way
+// to address an agent, and this function's whole job is again the mention scan below.
 //
 // Returns EVERY addressed agent in TEXT ORDER, deduped by agent, each carrying its OWN
 // { atStart, anywhere } — real per-agent flags, never a blanket constant, because the auto-modes
 // rest on exactly that distinction (`mention-direct` wakes on atStart, `mention` on anywhere).
-// @returns {{name: string, agent: object, atStart: boolean, anywhere: boolean, body?: string}[]}
+// @returns {{name: string, agent: object, atStart: boolean, anywhere: boolean}[]}
 //
 // `addressWithoutAt` (DEFAULT true) is the node's `dispatch.address_without_at` — THE switch for
 // the bare form, handed straight to the matcher. It arrives the SAME way the wake list does:
 // boot → createRouter → here, never read from a config inside this function. It touches ONLY the
-// matcher's bare scan: the '@' path and the QUICK REPLY above are resolved before/around it and
-// are unaffected (`r ok` is not a bare handle — it is the last speaker, looked up by lastSpeaker).
-export function addressed(text, agents, { quickReply = '', lastSpeaker = null, addressWithoutAt = true } = {}) {
+// matcher's bare scan; the '@' form is untouched in both states.
+export function addressed(text, agents, { addressWithoutAt = true } = {}) {
   const byToken = new Map();                       // WAKE TOKEN -> { name, agent }; first agent wins a shared handle
-  const byBeing = new Map();                       // BEING-ID (the map key) -> { name, agent }
   for (const [name, agent] of Object.entries(agents ?? {})) {
     if (!agent || typeof agent !== 'object' || name.startsWith('_')) continue;
     const hit = { name: name.toLowerCase(), agent };
-    byBeing.set(hit.name, hit);
     for (const id of wakeTokens(name, agent)) if (!byToken.has(id)) byToken.set(id, hit);
-  }
-  const body = lastSpeaker ? quickReplyBody(text, quickReply) : null;
-  if (body != null) {
-    const hit = byBeing.get(String(lastSpeaker).toLowerCase());
-    if (hit) return [{ name: hit.name, agent: hit.agent, atStart: true, anywhere: true, body }];
   }
   const out = [];
   const seen = new Set();
@@ -152,7 +119,6 @@ export function addressed(text, agents, { quickReply = '', lastSpeaker = null, a
   return out;
 }
 
-// `getQuickReply` reads config.quick_reply_string (unset → the 'r' default below; '' disables).
 // `addressWithoutAt` is the node's dispatch.address_without_at (boot reads it once; DEFAULT true)
 // — the ONE switch for the bare-handle form, forwarded to `addressed` above.
 // `loadState` (operator 2026-08-15, allowed_users) — () => Promise<conv state>, the SAME
@@ -161,10 +127,10 @@ export function addressed(text, agents, { quickReply = '', lastSpeaker = null, a
 // simply never reads any per-conversation allowed_users, and every being's reachability falls
 // straight to its global `agents:` default (or unrestricted, when neither is set) — today's
 // behaviour for a caller that supplies nothing.
-export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', getQuickReply = () => undefined, addressWithoutAt = true, loadState = null } = {}) {
+export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', addressWithoutAt = true, loadState = null } = {}) {
   // ONE addressed agent → the routing target it resolves to. Per-kind semantics are
   // UNCHANGED; only the caller changed (every hit, not just the first).
-  function targetFor({ name, agent, atStart, body }, ev) {
+  function targetFor({ name, agent, atStart }, ev) {
     // The mention an addressed agent hands its own gate. NOT a constant: the flags are the
     // matcher's REAL per-agent findings (operator 2026-07-25: "respect the mode, if it's
     // mention-direct not the same as mention … nothing has changed"). replyAllowed() already
@@ -203,10 +169,8 @@ export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', getQu
     // The DEFAULT (persona) agent routes to its own key (= defaultBeing), keeping
     // the bridge-computed ev.mention. Matched by key OR the `default: true` marker —
     // no 'e'/'egpt' literals (operator 2026-07-10).
-    // A QUICK REPLY (`body` set) carries no @token, so the bridge computed no mention for the
-    // persona: hand it the matcher's own — exactly what a leading `@e` would have produced.
     if (name === defaultBeing || agent.default === true) {
-      return { being: defaultBeing, mention: body != null ? mention : ev?.mention };
+      return { being: defaultBeing, mention: ev?.mention };
     }
     // Any other LOCAL agent → being = its name, gated on its own mention.
     return { being: name, mention };
@@ -214,27 +178,22 @@ export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', getQu
 
   return {
     /** @param {import('./spine.mjs').InboundEvent} ev
-     *  @param {string|null} lastSpeaker  the AGENT that spoke last in this conversation (the
-     *    spine's per-(surface,chatId) record), or null when a human did / nobody has — the
-     *    quick-reply gate.
-     *  @returns {Promise<{ being: string|null, mesh?: object, mention: object|undefined, targets: object[], body?: string }>}
+     *  @returns {Promise<{ being: string|null, mesh?: object, mention: object|undefined, targets: object[] }>}
      *  `targets` is EVERY addressed agent in text order (the spine fans out over it); the
      *  first target's fields are mirrored at the top level so a single-target caller reads
-     *  exactly what resolve() always returned. `body` is present ONLY for a quick reply: the
-     *  message minus its token, what the agent should be handed.
+     *  exactly what resolve() always returned.
      *  ASYNC (operator 2026-08-15, allowed_users): a per-conversation allowed_users override
      *  lives in conversations.yaml, which nothing caches (re-read per lookup) — resolving it
      *  needs one state read, done ONCE here, not once per hit. */
-    async resolve(ev, lastSpeaker = null) {
+    async resolve(ev) {
       const agents = getAgents() ?? {};
       const targets = [];
-      let body;
       // ONE conv-state read for the whole call (never per-hit) — mirrors gating.mjs's own
       // beingView seam/failure mode: no loadState injected, or a read that throws → null, and
       // every hit below falls straight to its GLOBAL allowed_users (or unrestricted).
       const state = loadState ? await loadState().catch(() => null) : null;
       if (agents && typeof agents === 'object') {
-        for (const hit of addressed(ev?.body ?? '', agents, { quickReply: getQuickReply() ?? 'r', lastSpeaker, addressWithoutAt })) {
+        for (const hit of addressed(ev?.body ?? '', agents, { addressWithoutAt })) {
           // SURFACE PIN (operator 2026-07-25): an agent may carry `surface: <name>` so it is an
           // agent ONLY on that surface; on any OTHER surface the @mention falls through (as if
           // unmatched). Co-account CORRECTNESS, not convenience: `do` and `kg` share ONE Beeper
@@ -275,22 +234,13 @@ export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', getQu
           const globalAllowed = Array.isArray(hit.agent.conversation_defaults?.allowed_users) ? hit.agent.conversation_defaults.allowed_users : null;
           const allowedUsers = convAllowed ?? globalAllowed;
           if (!allowedUsersPermits(allowedUsers, ev?.senderId)) continue;
-          if (hit.body != null) body = hit.body;
           targets.push(targetFor(hit, ev));
         }
       }
       // Nobody addressed (or every hit was surface-pinned/allowed-users away): an @token that
       // matched no agent is the persona's, and so is a bare message.
       if (!targets.length) targets.push({ being: defaultBeing, mention: ev?.mention });
-      return { ...targets[0], targets, ...(body != null ? { body } : {}) };
+      return { ...targets[0], targets };
     },
-
-    /** Is this text a QUICK REPLY — and if so, what is its body? THE grammar (quickReplyBody
-     *  above) applied to THIS node's configured token, exposed as one function so the spine can
-     *  ask the question without owning a copy of either half. The spine asks it to decide whether
-     *  a message is worth a transcript read at all (resolve() applies it again on the answer):
-     *  `r …` is rare, so ordinary traffic must not pay for a file read.
-     *  @returns {string|null} the body minus the token, or null when this is not a quick reply */
-    quickReplyOf: (text) => quickReplyBody(text, getQuickReply() ?? 'r'),
   };
 }

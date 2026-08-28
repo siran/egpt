@@ -160,7 +160,6 @@ networks:
 # default_time_zone: "America/New_York"                       # timezone-less heartbeat times
 # warm: { max: 6, idle_ttl_by_class: { conversation: 15m } }  # -1 = never evict, 0 = always
 # compaction: { enabled: true, ratio: 0.20, cooling_ms: 120000 }
-# quick_reply_string: r           # "r <text>" answers whoever spoke last (only if that was an agent); "" disables
 # guard: { turns: 6, window: -1 }   # loop-breaker: N consecutive non-human turns pause a channel (a human msg resets); -1 turns = off, -1 window = pure consecutive count
 # lasso: { messages: 18, window_ms: 10000, edits: 4000 }   # outbound ceiling: an over-ceiling emit STOPS the node (config/config-schema.mjs: lasso)
 # advice_channel: "EGPT AUTO"     # mode:auto consult chat (fail-closed if unset)

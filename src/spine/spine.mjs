@@ -23,7 +23,7 @@ import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { makeSerialByKey } from '../serial-by-key.mjs';
 import { isBrainFailureResult } from '../brain-errors.mjs';
-import { replyLine, contextSinceLastTurn, promptWithRecentContext, bodyForMessageId, promptWithQuotedMessage, lastSurfacedBeing, RECENT_CONTEXT_MAX_CHARS } from '../transcript-log.mjs';
+import { replyLine, contextSinceLastTurn, promptWithRecentContext, bodyForMessageId, promptWithQuotedMessage, RECENT_CONTEXT_MAX_CHARS } from '../transcript-log.mjs';
 import { isHumanTurn, parseStopWord } from '../stop-guard.mjs';
 import { mentionHits } from '../auto-mode.mjs';
 import { lifecycleExit } from './ingest.mjs';
@@ -137,7 +137,7 @@ export function createSpine({
   synthesize = null,                   // optional (text, voice, log) => Promise<Buffer|null> — voice-reply TTS (createVoiceSynthesis, boot-wired). Null = no voice pipeline wired (byte-identical to today: every reply is text).
   voice = null,                        // optional string — the persona's own voice name (voice_service's active profile.voice). Null = voice-out can never render even if synthesize is set (falls back to text).
   defaultBeing = 'e',                  // the persona: the being an un-addressed message dispatches to, and the turn/cycle owner for a mesh-target message (which is GATED as its own relay agent — see gateAs)
-  node_name = null,                    // THIS node's name (config node_name, boot-asserted non-empty) — the ONE thing the quick-reply lookup needs to tell its own rendered signature on the record from a co-account PEER's. Null (tests) = every signed line reads as a peer's, the safe direction.
+  labelOf = (being) => String(being ?? ''),   // a being's DISPLAY NAME — THE resolver (boot.mjs labelOf: the agents-registry `name:`, else the map key), the same one the sender and the transcript service are handed. The accum boundary needs it because a reply line's speaker IS that name since 2026-08-28. Default identity (tests, an un-wired caller) = the key, which is what the record used to carry.
   timeZone = null,                     // the node's config default_time_zone (boot-resolved) — the zone the CYCLE's reply lines render in, the same clock identity/transcript use so the accumulated prompt never disagrees with the file. null → UTC, unchanged.
   clock = { now: () => Date.now() },
   log = {},
@@ -548,46 +548,7 @@ export function createSpine({
     // pipe below (gate, guard, cycle, turn) exactly as the single result always did, and the REST
     // fan out beside it (fanOutExtras). A bare-string or single `{ being, mention }` return
     // (older/other fakes) normalizes to a one-target list, so those callers are unchanged.
-    // WHO DOES `r …` ADDRESS? A STATIC LOOKUP ON THE RECORD (operator 2026-07-27: "r is static,
-    // it searches the transcript") — the last SURFACED agent reply line in this conversation's
-    // transcript.md, through transcript-log.lastSurfacedBeing, which owns the shape. It replaced
-    // an in-memory Map whose only real property was that a restart emptied it: E spoke at 23:32,
-    // a deploy bounced the node at 23:41, and `r cachifa?` at 00:02 addressed nobody. Nothing is
-    // remembered between messages now, so there is no restart hole and no clearing rule — and a
-    // human line in between is irrelevant for free.
-    //
-    // ON A SHARED ACCOUNT THE LAST BOT MESSAGE MAY NOT BE OURS (operator 2026-07-27, LIVE: both
-    // nodes answered one `r`). A co-account peer's reply is an INBOUND line here carrying that
-    // node's rendered signature, so lastSurfacedBeing weighs it against our own reply lines and
-    // returns null when the peer spoke more recently — `node_name` is what lets it tell the peer's
-    // signature from our own. Null then means exactly what it always meant: nobody is addressed,
-    // `r …` is ordinary text, and the other node answers.
-    //
-    // THE SAME readTranscript seam the quoted-message/accum lookup in runReplyTurn uses — one
-    // reader, so this can never read a different chat's file — and it runs BEFORE the ingestion
-    // append (handleFast logs after classify), so the `r …` line itself is never on the record
-    // this reads. Unwired seam, unreadable file, or nothing on the record → null → `r …` is
-    // ordinary text, exactly as in a chat where no agent has ever spoken.
-    //
-    // COST: one transcript read per QUICK REPLY, gated on the message actually being one —
-    // router.quickReplyOf is THE grammar plus this node's configured token, so ordinary traffic
-    // reads nothing.
-    let lastSpeaker = null;
-    if (readTranscript && router.quickReplyOf?.(ev.body) != null) {
-      try {
-        const text = await readTranscript(ev.chatId, { chatName: ev.chatName, network: ev.surface });
-        if (text) lastSpeaker = lastSurfacedBeing(text, { node: node_name });
-      } catch (e) { note(`quick-reply lookup ${ev.chatId}: ${e?.message ?? e}`); }
-    }
-    const routed = await router.resolve(ev, lastSpeaker);
-    // QUICK REPLY: the router resolved `r <body>` to the agent that spoke last here, and hands
-    // back the body its token was stripped from. That body is what the agent sees — here and in
-    // the dispatch line (which ends with it). The RECORD keeps the message as typed: transcript.log
-    // runs on the caller's ev, above, which this local rebind does not touch.
-    if (routed?.body != null) {
-      const line = String(ev.line ?? '');
-      ev = { ...ev, body: routed.body, ...(line.endsWith(ev.body) ? { line: line.slice(0, -ev.body.length) + routed.body } : {}) };
-    }
+    const routed = await router.resolve(ev);
     const targets = (Array.isArray(routed?.targets) && routed.targets.length)
       ? routed.targets
       : [typeof routed === 'string' ? { being: routed } : { being: routed?.being, mesh: routed?.mesh ?? null, mention: routed?.mention }];
@@ -835,7 +796,10 @@ export function createSpine({
         try {
           const text = await readTranscript(ev.chatId, { chatName: ev.chatName, network: ev.surface });
           if (text && d.mode === 'accum') {
-            const got = contextSinceLastTurn(text, { being: to, maxChars: RECENT_CONTEXT_MAX_CHARS, exclude: ev.line ?? ev.body });
+            // BOTH of this being's labels: the NAME its lines carry since 2026-08-28 and the map
+            // KEY every older line carries. transcript.md is append-only, so a live file holds
+            // both and either one is a valid boundary (transcript-log.beingReplyRe).
+            const got = contextSinceLastTurn(text, { being: [labelOf(to), to], maxChars: RECENT_CONTEXT_MAX_CHARS, exclude: ev.line ?? ev.body });
             if (got.blocks.length) recent = got;
           }
           if (text && ev.replyToId != null) {

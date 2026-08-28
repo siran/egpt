@@ -527,12 +527,12 @@ export function createCommands({
     return `/${parsed.token}=${node}${parsed.rest ? ` ${parsed.rest}` : ''}`;
   }
 
-  // rs — the RADIO quick reply (operator 2026-08-08): configured the SAME way `r` is
-  // (quick_reply_string) — a single top-level string, DEFAULT "rs", "" disables — but its OWN
-  // key, not derived from quick_reply_string: `r` addresses whichever AGENT spoke last
-  // (router.mjs, no isOperator gate, any sender may use it); `rs` triggers an upload through the
-  // SAME isOperator-gated path /radio say does (see radioQuickReply below), so the two need to
-  // be nameable/disableable independently.
+  // rs — the RADIO quick reply (operator 2026-08-08): a single top-level string of its own,
+  // radio_quick_reply_string, DEFAULT "rs", "" disables. It reads a QUOTED message aloud through
+  // the SAME isOperator-gated path /radio say does (see radioQuickReply below). It once shared a
+  // paragraph with the `r` agent quick reply, which was evicted root and branch (operator
+  // 2026-08-28: "so we evict r. it was a bad idea, you can just use 'e'"); this key is unrelated
+  // to that one and unaffected by its removal.
   const RADIO_QUICK_REPLY_DEFAULT = 'rs';
   function radioQuickReplyToken() {
     const t = cfg().radio_quick_reply_string;
@@ -2316,27 +2316,26 @@ export function createCommands({
     return '```yaml\n' + lines.join('\n') + '\n```';
   }
 
-  // Distinct participants seen in a transcript's tail: human senders (the
-  // dispatch-line "Sender@[chat]…" shape, incl. its stage-direction "[ Sender@…" wrap)
-  // and being replies — since 2026-08-28 the SAME shape carrying the being's `@` sigil
-  // ("@egpt.kg@[chat].wa (HH:MM): …"), and the older "[@being (HH:MM)]: …" still on disk —
-  // being names reported as "@<being>". The sigil is what keeps the two apart now that they
-  // share one shape, and _HUMAN_SENDER_RE already rejected a leading `@`, so a being's line
-  // falls through to _BEING_REPLY_RE instead of being counted as a person. No
+  // Distinct participants seen in a transcript's tail. ONE SHAPE, ONE KIND OF NAME (operator
+  // 2026-08-28: "no sigil, no distinction, an agent is just another participant in a room") —
+  // so ONE regex over the dispatch-line "Sender@[chat]…" head, incl. its stage-direction
+  // "[ Sender@…" wrap. Lines written before that ruling carry the being's `@` sigil and a
+  // `.<node>` qualifier ("@egpt.kg@[chat].wa (HH:MM): …"), and older ones still the reply-only
+  // "[@being (HH:MM)]: …" template; both are matched here and both are reported BARE, so one
+  // agent that spoke on either side of the change is one roster entry, not two. The sigil and
+  // the qualifier are stripped TOGETHER (the first alternative), never the qualifier alone — a
+  // person's display name may legitimately contain a dot and must survive whole. No
   // member-roster store exists yet — conversation-members.mjs seeds a BRAIN roster from
   // config (residents_per_chat + auto-mode), not who actually spoke, so it doesn't answer
   // "who's in this conversation"; this reads the honest signal that already exists on
   // disk. Pure; `text` is front-matter-stripped first so `name:`/`---` lines never match.
-  const _HUMAN_SENDER_RE = /^\[?\s*([^@\s][^@]*?)@\[/;
-  const _BEING_REPLY_RE = /^(?:@([^\s@[]+)@\[[^\]]*\]\.\S+\s\(\d{1,2}:\d{2}\)|\[@(\S+)\s\(\d{1,2}:\d{2}\)\]:)/;
+  const _SENDER_RE = /^\[?\s*(?:@([^\s@]+?)(?:\.[^\s.@]+)?|([^@\s][^@]*?))@\[|^\[@([^\s@]+?)(?:\.[^\s.@]+)?\s\(\d{1,2}:\d{2}\)\]:/;
   function membersFromTranscript(text, { tailLines = 200 } = {}) {
     const lines = stripFrontMatter(String(text ?? '')).split('\n').slice(-tailLines);
     const seen = new Set();
     for (const line of lines) {
-      const h = _HUMAN_SENDER_RE.exec(line);
-      if (h) { seen.add(h[1].trim()); continue; }
-      const b = _BEING_REPLY_RE.exec(line);
-      if (b) seen.add(`@${b[1] ?? b[2]}`);
+      const m = _SENDER_RE.exec(line);
+      if (m) seen.add((m[1] ?? m[2] ?? m[3]).trim());
     }
     return [...seen];
   }

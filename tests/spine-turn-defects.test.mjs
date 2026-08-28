@@ -232,7 +232,7 @@ describe('spine — FEATURE: a queued turn prompts with the accumulated cycle', 
     const prompt = brain.calls[1].line;
     const parts = prompt.split('\n\n');
     expect(parts[parts.length - 1]).toBe(M2);                         // ends with its own mention
-    expect(parts.some((p) => /^@e@\[grp\]\.wa .*reply-one/.test(p))).toBe(true); // E's own past reply, in the one line shape
+    expect(parts.some((p) => /^e@\[grp\]\.wa .*reply-one/.test(p))).toBe(true); // E's own past reply, in the one line shape
     expect(parts).toContain(C);                                        // the intervening chatter
     // order: reply-one before chatter before the mention
     const iReply = parts.findIndex((p) => /reply-one/.test(p));

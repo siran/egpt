@@ -413,8 +413,8 @@ export function createBrainPool({
         // this conversation's only resident, but a SECOND resident being's own fresh-thread
         // event (e.g. its first-ever message here, while the persona is mid-thread) would
         // archive the persona's still-live transcript out from under it: accum-mode's
-        // contextSinceLastTurn gap-fill and the `r` / quoted-message lookups (transcript-
-        // log.mjs) all read this one file, and a resumed CLI session's own history is NOT
+        // contextSinceLastTurn gap-fill and the quoted-message lookup (transcript-
+        // log.mjs) both read this one file, and a resumed CLI session's own history is NOT
         // what would be lost — the shared file's un-resumed record (what every OTHER being
         // and every human said since each being's own last turn) is. Left exactly as today.
         if (fresh) await rollTranscript(ev.surface, slug, { io });

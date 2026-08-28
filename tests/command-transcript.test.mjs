@@ -122,9 +122,9 @@ describe('command replies land in transcript.md (real createCommands + real crea
   }
   const transcriptText = (files) => [...files.entries()].find(([p]) => p.endsWith('transcript.md'))?.[1] ?? '';
 
-  function buildWiredCommands({ node_name = 'kg', currentRoomOf } = {}) {
+  function buildWiredCommands({ currentRoomOf } = {}) {
     const files = new Map();
-    const transcript = createTranscript({ contacts: fakeContacts, io: mkIo(files), node_name, currentRoomOf });
+    const transcript = createTranscript({ contacts: fakeContacts, io: mkIo(files), currentRoomOf });
     const sent = [];
     const commandTranscript = wrapCommandsForTranscript({
       send: async (chatId, text) => { sent.push({ chatId, text }); },
@@ -141,22 +141,18 @@ describe('command replies land in transcript.md (real createCommands + real crea
 
   const ev = { body: '/foo', chatId: '!self', surface: 'whatsapp', chatName: 'self' };
 
-  it('an unrecognized command\'s catch-all reply is recorded under @system.<node>@[chat]…', async () => {
+  // 'system' matches no agent, so labelOf leaves it alone: the command reply is recorded under
+  // the bare name, in the same one line shape every other utterance has (operator 2026-08-28).
+  it('an unrecognized command\'s catch-all reply is recorded under system@[chat]…', async () => {
     const { commands, files, sent } = buildWiredCommands();
     await commands.run(ev);
     expect(sent).toHaveLength(1);
     expect(sent[0].text).toMatch(/recognized/);
     const text = transcriptText(files);
-    expect(text).toContain('@system.kg@[self].whatsapp ');
+    expect(text).toContain('system@[self].whatsapp (');
+    expect(text).not.toContain('@system');      // no sigil
+    expect(text).not.toContain('system.kg@');   // no node qualifier
     expect(text).toContain(sent[0].text);
-  });
-
-  it('no node_name → the bare "system" label (back-compat with the reply-line shape)', async () => {
-    const { commands, files } = buildWiredCommands({ node_name: null });
-    await commands.run(ev);
-    const text = transcriptText(files);
-    expect(text).toContain('@system@[self].whatsapp (');
-    expect(text).not.toContain('system.');
   });
 
   // A being's reply (spine.mjs's own transcript.log(ev, {...}) call — nothing to do with
@@ -166,21 +162,21 @@ describe('command replies land in transcript.md (real createCommands + real crea
     // A SECOND transcript service instance over the SAME files map — mirrors production, where
     // spine.mjs's own transcript.log(ev, {...}) call and boot's command-reply wrap are two
     // independent callers of the transcript service, never the same call.
-    const beingTranscript = createTranscript({ contacts: fakeContacts, io: mkIo(files), node_name: 'kg' });
+    const beingTranscript = createTranscript({ contacts: fakeContacts, io: mkIo(files) });
     await beingTranscript.log(ev, { text: 'a being reply', being: 'egpt' });
     await commands.run(ev);
     const text = transcriptText(files);
-    expect(text.match(/@egpt\.kg@\[/g)).toHaveLength(1);     // the being line appears exactly once
-    expect(text.match(/@system\.kg@\[/g)).toHaveLength(1);   // the command line appears exactly once
+    expect(text.match(/^egpt@\[/gm)).toHaveLength(1);     // the being line appears exactly once
+    expect(text.match(/^system@\[/gm)).toHaveLength(1);   // the command line appears exactly once
   });
 
   it('inbound recording (transcript.log(ev) with no reply) is untouched by the command wrap', async () => {
     const { files } = buildWiredCommands();
-    const transcript = createTranscript({ contacts: fakeContacts, io: mkIo(files), node_name: 'kg' });
+    const transcript = createTranscript({ contacts: fakeContacts, io: mkIo(files) });
     await transcript.log({ ...ev, line: 'An@[self].wa (18:06): /foo', body: '/foo' });
     const text = transcriptText(files);
     expect(text).toContain('/foo');
-    expect(text).not.toContain('@system@[');   // inbound line only — no reply line synthesized
+    expect(text).not.toContain('system@[');   // inbound line only — no reply line synthesized
   });
 
   // ── ROOM-JOIN RECORD-KEEPING (operator, room-join transcript-routing fix) — a THIN integration

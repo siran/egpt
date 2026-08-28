@@ -335,18 +335,12 @@ describe('addressed() — a bare handle opening the message (operator 2026-07-27
     expect(shell.mesh?.being).toBe('don');
   });
 
-  it('the QUICK REPLY stays separate: `r ok` is not a bare handle and needs a lastSpeaker', () => {
-    expect(addressed('r ok', DOLLY, { quickReply: 'r', lastSpeaker: null })).toEqual([]);
-    expect(addressed('r ok', DOLLY, { quickReply: 'r', lastSpeaker: 'egpt' }).map((h) => h.body)).toEqual(['ok']);
-  });
-
   // ── THE SWITCH (operator 2026-07-27: "this addressing without the '@' must be an option, easy
   //    to turn on/off globally") — `dispatch.address_without_at`, node rung, DEFAULT TRUE.
   //
   //    The agent registry is the matcher's OTHER caller, and it receives the flag by the SAME
   //    route as its wake list: boot injects it into createRouter beside getAgents, and resolve()
-  //    hands it to `addressed` in the same options object as the quick-reply token. Nothing is
-  //    read from a config inside either function. ──
+  //    hands it straight to `addressed`. Nothing is read from a config inside either function. ──
   describe('address_without_at: false — the bare form is OFF at the agent registry too', () => {
     const OFF = { addressWithoutAt: false };
 
@@ -364,17 +358,6 @@ describe('addressed() — a bare handle opening the message (operator 2026-07-27
       // …and ON (the default) is untouched: no option = today's live behaviour.
       const on = createRouter({ getAgents: () => KG, defaultBeing: 'egpt' });
       expect((await on.resolve(ev('wren ping'))).mesh?.being).toBe('wren');
-    });
-    it('REPRODUCE-FIRST: `r ok` STILL reaches the last agent with the flag OFF — the quick reply is not a bare handle', async () => {
-      expect(addressed('r ok', DOLLY, { quickReply: 'r', lastSpeaker: 'egpt', ...OFF }).map((h) => h.body)).toEqual(['ok']);
-      expect(addressed('r ok', DOLLY, { quickReply: 'r', lastSpeaker: 'egpt', ...OFF }))
-        .toEqual(addressed('r ok', DOLLY, { quickReply: 'r', lastSpeaker: 'egpt' }));
-      const off = createRouter({ getAgents: () => DOLLY, defaultBeing: 'egpt', getQuickReply: () => 'r', addressWithoutAt: false });
-      expect(off.quickReplyOf('r ok')).toBe('ok');                     // the grammar is untouched by the flag
-      const r = await off.resolve(ev('r ok'), 'egpt');
-      expect([r.being, r.body]).toEqual(['egpt', 'ok']);
-      expect(r.mention).toEqual({ atEStart: true, atEAnywhere: true, replyToBot: false });
-      expect((await off.resolve(ev('r ok'), null)).targets).toEqual([{ being: 'egpt', mention: ev('x').mention }]);  // no last speaker → ordinary text, unchanged
     });
   });
 });

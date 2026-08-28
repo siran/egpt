@@ -12,8 +12,8 @@ import { formatDispatchLine } from '../dispatch-line.mjs';
 // handed a body that has already been decided, whereas this is the ONE place inbound text is
 // INTERPRETED (C7.6e — "the InboundEvent built once, consumed by all paths"). Decoding here fixes
 // ev.body and ev.line together; decoding in the formatter alone would leave them disagreeing, and
-// spine.mjs's quick-reply patch tests `line.endsWith(ev.body)` — it would silently stop stripping
-// the routed token from the line the brain reads.
+// every downstream reader that relates the two (the accum window's `exclude`, the quoted-message
+// walk) would be comparing a decoded half against an undecoded one.
 //
 // It is also the SMUGGLING GUARD. Invisible characters in a prompt are an injection vector and we
 // must not feed them to ourselves: after this call no path downstream — the dispatch line, the

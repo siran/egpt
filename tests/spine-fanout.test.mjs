@@ -14,11 +14,6 @@ import { createRouter, addressed } from '../src/spine/router.mjs';
 import { createSpine } from '../src/spine/spine.mjs';
 import { createGating } from '../src/spine/gating.mjs';
 import { replyAllowed } from '../src/auto-mode.mjs';
-import { transcriptAppend, replyLine } from '../src/transcript-log.mjs';
-// The REAL codec + renderer a peer's reply travels through (persona-wrap appends the invisible
-// frame outbound; identity.build renders it to `<node>` inbound) — so the shape the quick-reply
-// walk keys on is derived here, never hand-typed.
-import { encodeNodeSignature, renderNodeSignature } from '../src/node-signature.mjs';
 
 const ev = (body, extra = {}) => ({
   body,
@@ -185,23 +180,14 @@ describe('LOCKS — every current resolve() semantic survives the fan-out', () =
 //    an envelope and waits — so neither sequences the other. ──
 const MSG = { surface: 'wa', node: 'wa', chatId: 'CHAT', chatName: 'fam', senderId: 'u', senderName: 'An', msgId: 'm1', ts: 1, kind: 'text', raw: {} };
 
-function fanoutSpine({ router = arouter, mayReply = true, mode = null, gating = null, readTranscript = null } = {}) {
+function fanoutSpine({ router = arouter, mayReply = true, mode = null, gating = null } = {}) {
   const bridge = { sent: [], onMessage() {}, send(chat, text) { this.sent.push({ chat, text }); }, stop() {} };
   // `being` rides the result exactly as the real Brain returns it (brainpool.turn: { text,
   // sessionId, being }) — it is what labels the reply line the transcript below writes.
   const brain = { calls: [], async turn(being, e) { this.calls.push({ being, body: e.body, line: e.line }); return { text: `↩ ${e.body}`, sessionId: 's1', being }; } };
-  // The transcript is a FILE here, not just a list of calls: the fake renders it with the REAL
-  // writers (transcriptAppend / replyLine, node-qualified the way spine/transcript.mjs does) and
-  // hands it back through readTranscript, so the quick-reply lookup walks a genuine record
-  // instead of a hand-written one.
   const transcript = {
-    entries: [], text: '',
-    async log(e, r, opts = {}) {
-      this.entries.push({ ev: e, r, opts });
-      this.text += r == null
-        ? transcriptAppend({ existing: !!this.text, body: e.line ?? e.body, name: e.chatName, surface: e.surface, slug: 'fam', chatId: e.chatId })
-        : `${replyLine({ being: `${r.being ?? 'egpt'}.kg`, body: r.text, surfaced: r.surfaced !== false })}\n\n`;
-    },
+    entries: [],
+    async log(e, r, opts = {}) { this.entries.push({ ev: e, r, opts }); },
   };
   const mesh = {
     handled: [], forwarded: [],
@@ -214,12 +200,7 @@ function fanoutSpine({ router = arouter, mayReply = true, mode = null, gating = 
     bridge, brain, mesh, transcript,
     identity: { build: (m) => ({ ...m }) },
     router,
-    // THE record, read back — the same seam boot wires to the conversation's transcript.md.
-    // Default: this fake spine's own file. A test that wants a record it did not produce
-    // (a node that just restarted) passes its own.
-    readTranscript: readTranscript ?? (async () => transcript.text || null),
     defaultBeing: 'egpt',
-    node_name: 'kg',                     // THIS node — the one whose replies the fake transcript labels `.kg`
 
     // `mode` runs the REAL mode semantics (auto-mode.replyAllowed) over whatever mention each
     // target was handed — the seam that proves the fan-out feeds honest per-agent flags into
@@ -324,274 +305,6 @@ describe('spine — FAN OUT to every addressed agent', () => {
 // router already carries the relay agent's NAME on the mesh descriptor (`t.mesh.being`), so the
 // gate now asks for THAT agent's mode. Real gating service, real config: the modes below are the
 // per-agent rung, nothing per-conversation.
-// ── QUICK REPLY (operator 2026-07-25: "a lo mejor empezar la respuesta con 'r', tipo 'r ok pero
-//    que no sea tan común' … si el ultimo mensaje fue de don o de E, el bridge routes and
-//    dispatches" / "no sé el msgid como tú … solo quiero responder fácilmente al ultimo prompt").
-//
-//    `r <body>` is an ADDRESSEE, resolved by the same `addressed()` matcher an @token goes
-//    through — so the mode gate and the fan-out work unchanged. The SAFETY is the last-speaker
-//    gate: it fires only where an AGENT has spoken in this conversation, so in a chat no agent
-//    has ever answered in, `r …` is just text.
-//
-//    WHO SPOKE LAST IS A STATIC LOOKUP ON THE RECORD (operator 2026-07-27: "r is static, it
-//    searches the transcript") — the last SURFACED agent line in transcript.md. Nothing is
-//    remembered between messages, so a restart cannot break it (the REPRODUCE-FIRST below) and
-//    human lines in between are irrelevant for free. The fake spine above renders a REAL
-//    transcript and reads it back, so these exercise the actual walk. ──
-describe('QUICK REPLY — `r <body>` answers the last AGENT that spoke here', () => {
-  const AT_HEAD = { atEStart: true, atEAnywhere: true, replyToBot: false };
-  const NONE    = { atEStart: false, atEAnywhere: false, replyToBot: false };
-  const routerWith = (qr, rest = {}) => createRouter({ getAgents: () => AGENTS, defaultBeing: 'egpt', getQuickReply: () => qr, ...rest });
-
-  // The router owns the grammar AND this node's token; `quickReplyOf` is that pair asked as one
-  // question, so the spine can gate its transcript read without a second copy of either half.
-  it('quickReplyOf is THE gate: the body for a real quick reply, null for everything else', () => {
-    expect(arouter.quickReplyOf('r ok pero que no sea tan común')).toBe('ok pero que no sea tan común');
-    expect(arouter.quickReplyOf('R ok')).toBe('ok');
-    expect(arouter.quickReplyOf('really?')).toBeNull();
-    expect(arouter.quickReplyOf('r')).toBeNull();
-    expect(arouter.quickReplyOf('')).toBeNull();
-    expect(routerWith('resp').quickReplyOf('resp ok')).toBe('ok');
-    expect(routerWith('resp').quickReplyOf('r ok')).toBeNull();
-    expect(routerWith('').quickReplyOf('r ok')).toBeNull();          // '' disables the feature
-  });
-
-  it('the matcher itself resolves it: addressed() returns the last speaker, atStart, body minus the token', () => {
-    expect(addressed('r ok pero que no sea tan común', AGENTS, { quickReply: 'r', lastSpeaker: 'don' }))
-      .toEqual([{ name: 'don', agent: AGENTS.don, atStart: true, anywhere: true, body: 'ok pero que no sea tan común' }]);
-  });
-
-  // `lastSpeaker` is a BEING-ID (the record labels the agent's map KEY, never a handle), so it is
-  // resolved BY KEY — not through the wake-token map, which since 2026-07-26 need not contain the
-  // key at all. DOLLY's persona is keyed `egpt` and wakes on [d, don]: looking the last speaker up
-  // as a wake token would find nothing and silently kill `r …` on that node.
-  it('resolves lastSpeaker by BEING-ID even when the key is not a wake token (DOLLY: key `egpt`, handles [d, don])', () => {
-    const DOLLY = { egpt: { configuration: 'egpt', handles: ['d', 'don'], default: true, name: 'don' } };
-    expect(addressed('r dale', DOLLY, { quickReply: 'r', lastSpeaker: 'egpt' }))
-      .toEqual([{ name: 'egpt', agent: DOLLY.egpt, atStart: true, anywhere: true, body: 'dale' }]);
-  });
-
-  // THE BARE-HANDLE SWITCH MUST NOT TOUCH THIS. `r` is not a handle: it is resolved by
-  // lastSpeaker, BEFORE the mention scan the switch gates. If `r` ever rode the bare-handle code
-  // path, `dispatch.address_without_at: false` would silently kill the quick reply on that node —
-  // so the whole dispatch is locked here with the switch OFF, not just the matcher.
-  it('SURVIVES dispatch.address_without_at: false — `r …` still reaches the last agent', async () => {
-    const { spine, brain } = fanoutSpine({ mode: 'mention-direct', router: routerWith('r', { addressWithoutAt: false }) });
-    await spine.handleInbound({ ...MSG, body: '@e hola', mention: AT_HEAD });
-    await spine.handleInbound({ ...MSG, msgId: 'm2', body: 'r ok', mention: NONE,
-      line: 'An@[fam].wa (00:00) #m2: r ok' });
-    expect(brain.calls.map((c) => c.being)).toEqual(['egpt', 'egpt']);
-    expect(brain.calls[1].body).toBe('ok');
-    expect(brain.calls[1].line).toBe('An@[fam].wa (00:00) #m2: ok');
-  });
-
-  it('REPRODUCE-FIRST: a LOCAL being spoke last → `r …` dispatches to IT, with the token stripped', async () => {
-    const { spine, brain } = fanoutSpine({ mode: 'mention-direct' });
-    await spine.handleInbound({ ...MSG, body: '@e hola', mention: AT_HEAD });
-    await spine.handleInbound({ ...MSG, msgId: 'm2', body: 'r ok pero que no sea tan común', mention: NONE,
-      line: 'An@[fam].wa (00:00) #m2: r ok pero que no sea tan común' });
-    expect(brain.calls.map((c) => c.being)).toEqual(['egpt', 'egpt']);
-    // …directly addressed (atStart), so a mention-direct chat answers it — and the body, and the
-    // dispatch line the model reads, carry the message MINUS the quick-reply token.
-    expect(brain.calls[1].body).toBe('ok pero que no sea tan común');
-    expect(brain.calls[1].line).toBe('An@[fam].wa (00:00) #m2: ok pero que no sea tan común');
-  });
-
-  // THE CONTRACT for a RELAY agent (operator 2026-07-27, overruling the earlier objection to a
-  // static lookup): `r` addresses the last agent line IN THIS TRANSCRIPT, and a relay agent's
-  // reply is not one — the FAR node answers and mirrors it into the chat, and mesh.mjs writes no
-  // local record at all (the only writers of a `[@being …]:` line are the spine's two
-  // transcript.log(ev, reply) calls). So "the last bot message here" genuinely IS the last LOCAL
-  // one. This is the definition, not a gap in it.
-  it('a RELAY agent leaves NO local agent line → `r …` is not forwarded to it', async () => {
-    const { spine, mesh, brain } = fanoutSpine({ mode: 'mention-direct' });
-    await spine.handleInbound({ ...MSG, body: '@don hola', mention: NONE });
-    expect(mesh.forwarded).toHaveLength(1);
-    await spine.handleInbound({ ...MSG, msgId: 'm2', body: 'r ok pero que no sea tan común', mention: NONE });
-    expect(mesh.forwarded).toHaveLength(1);      // no second forward — nothing local had spoken
-    expect(brain.calls).toHaveLength(0);
-  });
-
-  it('…and where a LOCAL being HAS spoken, `r …` answers that one — the last agent ON THE RECORD', async () => {
-    const { spine, mesh, brain } = fanoutSpine({ mode: 'mention-direct' });
-    await spine.handleInbound({ ...MSG, body: '@e hola', mention: AT_HEAD });
-    await spine.handleInbound({ ...MSG, msgId: 'm2', body: '@don y tú?', mention: NONE });
-    expect(mesh.forwarded).toHaveLength(1);
-    await spine.handleInbound({ ...MSG, msgId: 'm3', body: 'r ok', mention: NONE });
-    expect(brain.calls.map((c) => c.being)).toEqual(['egpt', 'egpt']);
-    expect(brain.calls[1].body).toBe('ok');
-    expect(mesh.forwarded).toHaveLength(1);
-  });
-
-  // REPRODUCE-FIRST (operator 2026-07-26: "'r' should reply to last bot message, here it was left
-  // unreplied"). LIVE, tonight: E answered at 22:09, Andrés typed `hsjshsj` at 22:10, and at 23:29
-  // `r qué me va a llegar?` did NOTHING. The human line had deleted the channel's last-speaker
-  // entry, so resolve() was handed lastSpeaker:null and never even looked for the token — the
-  // quick reply only worked when the agent had spoken IMMEDIATELY before, which in any group with
-  // a second human is almost never. Intervening human chatter is IRRELEVANT: `r` addresses the
-  // last AGENT that spoke here.
-  it('REPRODUCE-FIRST: a HUMAN spoke in between → `r …` STILL answers the last agent', async () => {
-    const { spine, brain } = fanoutSpine({ mode: 'mention-direct' });
-    await spine.handleInbound({ ...MSG, body: '@e Después le llega a An también?', mention: AT_HEAD });
-    await spine.handleInbound({ ...MSG, msgId: 'm2', body: 'hsjshsj', mention: NONE, senderName: 'Andrés' });
-    await spine.handleInbound({ ...MSG, msgId: 'm3', body: 'r qué me va a llegar?', mention: NONE });
-    expect(brain.calls.map((c) => c.being)).toEqual(['egpt', 'egpt']);   // the human line ran no turn
-    expect(brain.calls[1].body).toBe('qué me va a llegar?');
-  });
-
-  // …and it holds however much human chatter is in between — the walk asks for the last AGENT
-  // line and skips everything else, so 4d4626f's rule now costs nothing to keep.
-  it('TWO humans and a second agent in between → `r …` still answers the LAST agent to speak', async () => {
-    const { spine, brain } = fanoutSpine({ mode: 'mention-direct' });
-    await spine.handleInbound({ ...MSG, body: '@e hola', mention: AT_HEAD });
-    await spine.handleInbound({ ...MSG, msgId: 'm2', body: '@wren y tú?', mention: NONE });
-    await spine.handleInbound({ ...MSG, msgId: 'm3', body: 'gente, alguien sabe?', mention: NONE });
-    await spine.handleInbound({ ...MSG, msgId: 'm4', body: 'hsjshsj', mention: NONE, senderName: 'Andrés' });
-    await spine.handleInbound({ ...MSG, msgId: 'm5', body: 'r ok', mention: NONE });
-    expect(brain.calls.map((c) => c.being)).toEqual(['egpt', 'wren', 'wren']);
-    expect(brain.calls[2].body).toBe('ok');
-  });
-
-  it('nothing spoken yet → ordinary text, reaching the default agent with the token INTACT', async () => {
-    const { spine, brain } = fanoutSpine();
-    await spine.handleInbound({ ...MSG, body: 'r hola' });
-    expect(brain.calls).toEqual([{ being: 'egpt', body: 'r hola', line: undefined }]);
-  });
-
-  it('`really?` and a bare `r` are NOT triggers — whitespace + a non-empty body are required', async () => {
-    const { spine, brain } = fanoutSpine();
-    await spine.handleInbound({ ...MSG, body: '@wren hola' });                    // wren spoke last
-    await spine.handleInbound({ ...MSG, msgId: 'm2', body: 'really?' });
-    await spine.handleInbound({ ...MSG, msgId: 'm3', body: 'r' });
-    expect(brain.calls.map((c) => c.being)).toEqual(['wren', 'egpt', 'egpt']);    // both fell through as text
-    expect(brain.calls.map((c) => c.body)).toEqual(['@wren hola', 'really?', 'r']);
-  });
-
-  it('case-insensitive: `R ok` triggers too', async () => {
-    const { spine, brain } = fanoutSpine();
-    await spine.handleInbound({ ...MSG, body: '@wren hola' });
-    await spine.handleInbound({ ...MSG, msgId: 'm2', body: 'R ok' });
-    expect(brain.calls.map((c) => c.being)).toEqual(['wren', 'wren']);
-    expect(brain.calls[1].body).toBe('ok');
-  });
-
-  it('quick_reply_string: "" DISABLES it — `r ok` is ordinary text again', async () => {
-    const { spine, brain } = fanoutSpine({ router: routerWith('') });
-    await spine.handleInbound({ ...MSG, body: '@wren hola' });
-    await spine.handleInbound({ ...MSG, msgId: 'm2', body: 'r ok' });
-    expect(brain.calls.map((c) => c.being)).toEqual(['wren', 'egpt']);            // fell through to the persona
-    expect(brain.calls[1].body).toBe('r ok');
-  });
-
-  it('a custom quick_reply_string triggers on THAT instead', async () => {
-    const { spine, brain } = fanoutSpine({ router: routerWith('resp') });
-    await spine.handleInbound({ ...MSG, body: '@wren hola' });
-    await spine.handleInbound({ ...MSG, msgId: 'm2', body: 'resp ok' });
-    await spine.handleInbound({ ...MSG, msgId: 'm3', body: 'r ok' });             // no longer the token
-    expect(brain.calls.map((c) => c.being)).toEqual(['wren', 'wren', 'egpt']);
-    expect(brain.calls.map((c) => c.body)).toEqual(['@wren hola', 'ok', 'r ok']);
-  });
-
-  // ── REPRODUCE-FIRST (operator 2026-07-27, LIVE): E answered at 23:32, a deploy restarted the
-  //    node at 23:41, and `r cachifa?` at 00:02 did NOTHING. `r` resolved out of an IN-MEMORY map,
-  //    so every deploy — several an evening — emptied it and the token addressed nobody. The spine
-  //    below is FRESH, exactly like the process that came up at 23:41: nothing has ever spoken to
-  //    it. The record is the answer. ──
-  const TONIGHT = [
-    '---', 'name: fam', 'surface: wa', '---', '',
-    'An@[fam].wa (23:30) #m0: @e ayudas?', '',
-    '[@egpt.kg (23:32)]: Ayudo porque quiero',
-    '',
-    'Andrés@[fam].wa (23:35) #m1: hsjshsj', '',
-  ].join('\n');
-
-  it('REPRODUCE-FIRST: a FRESH spine (the node just restarted) → `r …` answers the agent on the record', async () => {
-    const { spine, brain } = fanoutSpine({ mode: 'mention-direct', readTranscript: async () => TONIGHT });
-    await spine.handleInbound({ ...MSG, msgId: 'm2', body: 'r cachifa?', mention: NONE,
-      line: 'An@[fam].wa (00:02) #m2: r cachifa?' });
-    expect(brain.calls.map((c) => c.being)).toEqual(['egpt']);
-    expect(brain.calls[0].body).toBe('cachifa?');
-  });
-
-  // A WITHHELD reply is on the record but was never posted — nobody in the chat saw it, so it is
-  // not a bot MESSAGE and `r` must not address it. (contextSinceLastTurn's boundary deliberately
-  // MATCHES those same lines: its question is "what has this being already seen". Same shape,
-  // opposite predicate — the tag after the `]:` is what separates them.)
-  const REC = (...lines) => ['---', 'name: fam', 'surface: wa', '---', '', ...lines, ''].join('\n');
-
-  it('LOCK: a NOT-SURFACED reply is skipped — `r …` answers the last SURFACED agent', async () => {
-    const text = REC(
-      '[@wren.kg (23:30)]: esto sí se dijo', '',
-      '[@egpt.kg (23:32)]: (not surfaced) esto no lo vio nadie',
-    );
-    const { spine, brain } = fanoutSpine({ mode: 'mention-direct', readTranscript: async () => text });
-    await spine.handleInbound({ ...MSG, body: 'r y entonces?', mention: NONE });
-    expect(brain.calls.map((c) => c.being)).toEqual(['wren']);
-    expect(brain.calls[0].body).toBe('y entonces?');
-  });
-
-  it('LOCK: EVERY reply withheld → `r …` addresses nobody and the token stays intact', async () => {
-    const text = REC('[@egpt.kg (23:32)]: (not surfaced) nadie vio esto');
-    const { spine, brain } = fanoutSpine({ readTranscript: async () => text });
-    await spine.handleInbound({ ...MSG, body: 'r hola' });
-    expect(brain.calls).toEqual([{ being: 'egpt', body: 'r hola', line: undefined }]);
-  });
-
-  // COST: the read is gated on the message actually being a quick reply, so ordinary traffic
-  // never opens the file. The grammar + the token are the router's (quickReplyOf) — one
-  // definition, asked here rather than copied.
-  it('ordinary traffic reads NOTHING — the transcript is opened only for a real `r …`', async () => {
-    let reads = 0;
-    const { spine } = fanoutSpine({ readTranscript: async () => { reads++; return null; } });
-    await spine.handleInbound({ ...MSG, body: 'hola gente' });
-    await spine.handleInbound({ ...MSG, msgId: 'm2', body: 'really?' });          // not the token
-    await spine.handleInbound({ ...MSG, msgId: 'm3', body: 'r' });                // bare token
-    expect(reads).toBe(0);
-    await spine.handleInbound({ ...MSG, msgId: 'm4', body: 'r sí' });
-    expect(reads).toBe(1);
-  });
-
-  it('an unreadable record never breaks the turn — `r …` falls through as ordinary text', async () => {
-    const { spine, brain } = fanoutSpine({ readTranscript: async () => { throw new Error('EACCES'); } });
-    await spine.handleInbound({ ...MSG, body: 'r hola' });
-    expect(brain.calls).toEqual([{ being: 'egpt', body: 'r hola', line: undefined }]);
-  });
-
-  // ── REPRODUCE-FIRST (operator 2026-07-27, LIVE — BOTH NODES ANSWERED ONE `r`): kg replied at
-  //    00:41 (correct) and DOLLY replied at 00:41 too, unprompted. `r` resolves PER NODE against
-  //    THAT node's own transcript, and on a shared Beeper account both nodes receive the `r`: each
-  //    walked its own file, found whichever of ITS OWN agents spoke last, and both claimed the
-  //    message. A peer's reply is NOT an agent line in this file — it arrives as an ordinary
-  //    INBOUND line (isSender on the shared account) whose body carries the peer's structural
-  //    signature, rendered `<do>` by identity.build. So the last BOT message is knowable here, and
-  //    when it is the PEER's this node must stay out of it. This spine is kg (its transcript
-  //    labels replies `.kg`); `do` is the node on the other end. ──
-  const PEER = (node, body) => `An@[fam].wa (00:41) #m9: 🐶 ${node}\n`
-    + renderNodeSignature(`${body}${encodeNodeSignature(node)}`);
-
-  it('REPRODUCE-FIRST: a PEER node answered after us → `r …` is ordinary text, this node stays silent', async () => {
-    const text = REC(
-      '[@egpt.kg (00:41)]: Pescado Rabioso arrancó en 1971 — Spinetta tenía 21', '',
-      PEER('do', "The question's already been answered — kg replied to #20871"),
-    );
-    const { spine, brain, bridge } = fanoutSpine({ mode: 'mention-direct', readTranscript: async () => text });
-    await spine.handleInbound({ ...MSG, msgId: 'm2', body: 'r y en Almendra?', mention: NONE });
-    expect(brain.calls).toHaveLength(0);       // nobody addressed → mention-direct answers nothing
-    expect(bridge.sent).toHaveLength(0);       // …and no reply reaches the surface
-  });
-
-  it('REPRODUCE-FIRST (mirror): the peer answered FIRST and WE answered last → `r …` is still ours', async () => {
-    const text = REC(
-      PEER('do', 'esa ya la contesté yo'), '',
-      '[@egpt.kg (00:42)]: y yo agrego esto',
-    );
-    const { spine, brain } = fanoutSpine({ mode: 'mention-direct', readTranscript: async () => text });
-    await spine.handleInbound({ ...MSG, msgId: 'm2', body: 'r y en Almendra?', mention: NONE });
-    expect(brain.calls.map((c) => c.being)).toEqual(['egpt']);
-    expect(brain.calls[0].body).toBe('y en Almendra?');
-  });
-});
-
 describe('spine — a RELAY target is gated as its OWN agent', () => {
   const gatingWith = (agents) => createGating({ getConfig: () => ({ agents }), loadState: null, defaultKey: 'egpt' });
   const MID_M = { atEStart: false, atEAnywhere: true, replyToBot: false };

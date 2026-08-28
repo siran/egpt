@@ -423,9 +423,7 @@ export const CONFIG_SCHEMA = {
         NODE-WIDE and nothing else — there is no per-conversation or per-agent
         rung, by ruling.
         It switches ONLY the bare form. The '@' form is untouched in both
-        states, unicode word boundary included; so is the quick reply
-        (quick_reply_string, "r ok"), which resolves by LAST SPEAKER and is not
-        a handle at all.
+        states, unicode word boundary included.
         Read once at boot and handed to BOTH callers of the one mention matcher
         (src/auto-mode.mjs mentionHits): the beeper + shell limbs' persona gate
         (mentionStatus) and the agent registry (src/spine/router.mjs addressed).
@@ -1433,29 +1431,18 @@ export const CONFIG_SCHEMA = {
         don:  { configuration: relay, relay_channel: Rodz } }
   `,
 
-  quick_reply_string: `
-    Token that addresses whoever spoke LAST in a conversation, so answering the
-    last agent needs no @name: "r ok pero que no sea tan común".
-      DEFAULT: "r"      "" disables the feature
-    Fires only when an AGENT spoke last there (after a human line it is ordinary
-    text), and only with whitespace + a body — "really?" and a bare "r" are not
-    triggers. Case-insensitive. The agent is addressed as if @named at the head
-    and receives the message minus the token (src/spine/router.mjs addressed).
-  `,
-
   radio_quick_reply_string: `
     Token that reads a QUOTED message aloud on the radio this conversation's room
     is joined to — reply to any message with just this token (operator
     2026-08-08). Equivalent to "/radio say <that message's text>": same room/
     joined/enabled/blocked-sender/speaker checks, same uploader+gate.
       DEFAULT: "rs"      "" disables the feature
-    The WHOLE message must equal the token (case-insensitive) — unlike
-    quick_reply_string, it takes no trailing argument; the text comes from the
-    reply-to, not from what follows the token. A separate key from
-    quick_reply_string on purpose: "r" addresses whichever agent spoke last (any
-    sender, no operator gate); "rs" triggers a radio upload through the SAME
-    isOperator-gated path /radio say does, so the two must be nameable/
-    disableable independently (src/spine/commands.mjs radioQuickReply).
+    The WHOLE message must equal the token (case-insensitive): it takes no
+    trailing argument — the text comes from the reply-to, not from what follows
+    the token. It is a top-level key of its own so the radio upload stays
+    nameable/disableable on its own terms; it triggers through the SAME
+    isOperator-gated path /radio say does (src/spine/commands.mjs
+    radioQuickReply).
   `,
 
   bridge_signature_open: `

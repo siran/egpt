@@ -86,29 +86,8 @@ export function renderNodeSignature(text) {
 }
 
 /**
- * The node named by the FIRST RENDERED signature in `text` — the inverse of renderNodeSignature,
- * and it lives beside it so the `<node>` shape has ONE definition rather than a copy in each
- * reader. Null when there is none (the ordinary case: a human line).
- *
- * WHY A SECOND READER AT ALL: rendering is where a frame stops being invisible. identity.build
- * renders inbound text once, deliberately lossily (the smuggling guard — no tag byte may reach a
- * prompt), and the TRANSCRIPT is written from that rendered body. So anything asking "which node
- * committed this line" OUT OF THE RECORD — transcript-log.lastSurfacedBeing, deciding whether a
- * co-account peer already answered an `r` — has only this text to key on; decodeNodeSignature is
- * for the raw frame and finds nothing there.
- *
- * PLAIN TEXT is all this is. A human can type `<kg>` (tests/guard-provenance locks that a rendered
- * marker is NOT a provenance claim), so this answers "which node does this line say it is", never
- * "is that true". Its one caller uses it to stay SILENT, which is the safe direction to be wrong in.
- */
-const RENDERED = /<([^<>\s]+)>/;
-export function decodeRenderedNodeSignature(text) {
-  return String(text ?? '').match(RENDERED)?.[1] ?? null;
-}
-
-/**
  * Strip a RENDERED `<node>` marker (renderNodeSignature's output) from `text` — the strip
- * counterpart to decodeRenderedNodeSignature, for a caller reading a TRANSCRIPT rather than the
+ * counterpart to renderNodeSignature, for a caller reading a TRANSCRIPT rather than the
  * wire: by the time a line is on the record the frame is already legible (identity.build renders
  * it before anything writes the file), so stripNodeSignature (raw invisible bytes) finds nothing
  * there. Anchored to the END of the string on purpose — renderNodeSignature's frame is always

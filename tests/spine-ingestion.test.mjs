@@ -82,11 +82,11 @@ describe('REPRODUCE-FIRST — one message, two local agents: ONE inbound line, B
     const text = transcriptText(files);
     expect(brain.calls.map((c) => c.being).sort()).toEqual(['e', 'wren']);   // both agents answered
     expect(countOf(text, /An@\[fam\] #m1:/g)).toBe(1);                       // ONE inbound line
-    expect(countOf(text, /^@\S+@\[/gm)).toBe(2);                             // TWO reply lines
+    expect(countOf(text, /^(?:e|wren)@\[fam\]\.wa /gm)).toBe(2);              // TWO reply lines
     const inbound = at(text, 'An@[fam] #m1:');
     expect(inbound).toBeGreaterThanOrEqual(0);
-    expect(at(text, '@e@[fam].wa (')).toBeGreaterThan(inbound);
-    expect(at(text, '@wren@[fam].wa (')).toBeGreaterThan(inbound);   // the fast agent must NOT precede the message
+    expect(at(text, 'e@[fam].wa (')).toBeGreaterThan(inbound);
+    expect(at(text, 'wren@[fam].wa (')).toBeGreaterThan(inbound);   // the fast agent must NOT precede the message
   });
 });
 
@@ -158,8 +158,8 @@ describe('REGRESSION — the auto-dwell burst still records each line once, in o
     expect(at(text, '#a: one')).toBeLessThan(at(text, '#b: two'));
     expect(at(text, '#b: two')).toBeLessThan(at(text, '#c: three'));
     // one reply, after the whole burst
-    expect(countOf(text, /^@\S+@\[/gm)).toBe(1);
-    expect(at(text, '@e@[fam].wa (')).toBeGreaterThan(at(text, '#c: three'));
+    expect(countOf(text, /^e@\[fam\]\.wa /gm)).toBe(1);
+    expect(at(text, 'e@[fam].wa (')).toBeGreaterThan(at(text, '#c: three'));
     // …and the COMBINED prompt form is intact
     expect(brain.calls).toEqual(['Bea@[fam] #a: one\n\nCy@[fam] #b: two\n\nBea@[fam] #c: three']);
   });

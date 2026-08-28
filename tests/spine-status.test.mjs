@@ -247,12 +247,16 @@ describe('/status <target>', () => {
     const slug = first.slug;
     let state = patchContact(first.state, 'whatsapp', '!hfm:beeper.local', { agents: { e: { mode: 'on' } } });
     state = recordThread(state, 'whatsapp', '!hfm:beeper.local', 'THREAD-1', undefined, 'e');
+    // The file straddles the 2026-08-28 shape change: `e` spoke ONCE under the old sigil+node
+    // label and once under the new bare name. Both must resolve to the same roster entry.
     const transcript = [
       'An@[HFM].wa (10:00): hola',
       '',
       '@e.kg@[HFM].wa (10:01): hola An',
       '',
       'Ron@[HFM].wa (10:02): que tal',
+      '',
+      'e@[HFM].wa (10:03): sigo acá',
       '',
     ].join('\n');
     const brains = { resolve: (name) => (name === 'sonnet-high' ? { name, type: 'ccode', model: 'opus', effort: 'high', allowed_tools: ['Read'], personality: 'poet' } : null) };
@@ -275,9 +279,10 @@ describe('/status <target>', () => {
     expect(text).toMatch(/allowed_tools: \[Read\]/);
     expect(text).toMatch(/personality: poet/);
     expect(text).toMatch(/thread_id: THREAD-1/);
-    // Distinct, first-seen order — and the being's `@` sigil is what keeps `@e.kg` off the
-    // HUMAN list now that a being's line and a person's line share one shape (2026-08-28).
-    expect(text).toMatch(/members: An, @e\.kg, Ron/);
+    // Distinct, first-seen order. REPRODUCE-FIRST (operator 2026-08-28: no sigil, no
+    // distinction): `@e.kg` and `e` are the SAME participant — the sigil and the node qualifier
+    // are stripped — so the agent appears once, under its bare name, beside the humans.
+    expect(text).toMatch(/members: An, e, Ron\n/);
   });
 
   it('a resolved type file that omits `personality:` falls back to \'egpt\'; a literal \'all\' is coerced to the explicit list (same as brainpool)', async () => {
@@ -366,7 +371,7 @@ members:
     });
 
     await cmds.run({ body: '/status hfm', chatId: '!self', surface: 'whatsapp' });
-    expect(sent[0].text).toMatch(/members: An, @e/);   // transcript derivation intact (regression)
+    expect(sent[0].text).toMatch(/members: An, e\n/);   // transcript derivation intact (regression)
   });
 });
 
