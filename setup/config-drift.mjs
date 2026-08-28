@@ -13,8 +13,10 @@
 // Only key paths cross the wire — never values. config.yaml holds beeper_token
 // and relay_password.
 import { execFileSync } from 'node:child_process';
-import { readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { EGPT_HOME } from '../src/egpt-home.mjs';
 import { shapeOf, diffShapes, dropPerNode } from '../src/tools/config-shape.mjs';
 
@@ -28,6 +30,8 @@ const PEER_LABEL = (PEER.split('@')[1] || PEER.split(' ').pop() || PEER).trim();
 
 const FILES = ['config/config.yaml', 'config/rooms.yaml', 'config/conversations.yaml'];
 const AGENT_DIR = 'config/agents';
+const SKEL_DIR  = 'config/skeletons/room';   // the cards a being is fed — must be identical on both nodes
+const SHIPPED_SKEL = join(dirname(fileURLToPath(import.meta.url)), '..', SKEL_DIR);
 
 const localRead = (rel) => { try { return readFileSync(join(EGPT_HOME, rel), 'utf8'); } catch { return ''; } };
 const localList = () => { try { return readdirSync(join(EGPT_HOME, AGENT_DIR)).filter((f) => f.endsWith('.yaml')); } catch { return []; } };
@@ -64,6 +68,46 @@ for (const f of [...new Set([...lf, ...rf])].sort()) {
   if (!rf.includes(f)) { drift++; console.log(`  DRIFT ${rel}\n          local only : the whole file`); continue; }
   report(rel, shapeOf(localRead(rel)), shapeOf(remoteRead(rel)));
 }
+
+// ---- the CARDS (operator 2026-08-24: "dolly's skeletal path in .egpt must always
+// match reve's. never update only one node"). These are markdown, not YAML, so
+// shape-diffing says nothing — compare digests. Still no content over the wire.
+const sha = (t) => createHash('sha256').update(String(t).replace(/\r\n/g, '\n'), 'utf8').digest('hex').slice(0, 12);
+const localSkels = () => { try { return readdirSync(join(EGPT_HOME, SKEL_DIR)).filter((f) => f.endsWith('.md')); } catch { return []; } };
+const remoteSkels = () => { try { return ssh(`ls ~/.egpt/${SKEL_DIR} 2>/dev/null || true`).split(/\r?\n/).map((x) => x.trim()).filter((f) => f.endsWith('.md')); } catch { return []; } };
+
+console.log(`\ncards: local vs ${PEER_LABEL}\n`);
+const ls = localSkels(), rs = remoteSkels();
+if (!ls.length && !rs.length) console.log('  ok    no profile card overrides on either node (both use the shipped cards)');
+for (const f of [...new Set([...ls, ...rs])].sort()) {
+  const rel = `${SKEL_DIR}/${f}`;
+  if (!ls.includes(f)) { drift++; console.log(`  DRIFT ${rel}\n          ${PEER_LABEL} only : the whole file`); continue; }
+  if (!rs.includes(f)) { drift++; console.log(`  DRIFT ${rel}\n          local only : the whole file`); continue; }
+  const a = sha(localRead(rel)), b = sha(remoteRead(rel));
+  if (a === b) console.log(`  ok    ${rel}`);
+  else { drift++; console.log(`  DRIFT ${rel}\n          differing content (local ${a} / ${PEER_LABEL} ${b})`); }
+}
+
+// A profile card SHADOWS the shipped one. seed.mjs copies it copy-IF-MISSING (so an
+// operator edit is never clobbered) and preferNewer() then picks between them by MTIME.
+// Seeded once, never refreshed: edit the shipped card and the profile copy keeps the old
+// text, waiting for any touch to make it win again. That is how a retired /delete limb
+// stayed advertised for days. Identical is fine and self-healing; DIFFERING is the one
+// a human has to judge — an intentional edit, or residue from an older deploy.
+console.log(`\ncards: profile vs shipped (this node)\n`);
+let shadows = 0;
+for (const f of ls) {
+  const shipped = join(SHIPPED_SKEL, f);
+  if (!existsSync(shipped)) { console.log(`  ok    ${f} — profile-only card, nothing shipped to shadow`); continue; }
+  const prof = join(EGPT_HOME, SKEL_DIR, f);
+  if (sha(readFileSync(prof, 'utf8')) === sha(readFileSync(shipped, 'utf8'))) { console.log(`  ok    ${f} — in sync with the shipped card`); continue; }
+  shadows++; drift++;
+  const wins = statSync(prof).mtimeMs > statSync(shipped).mtimeMs ? 'the PROFILE copy WINS' : 'the shipped copy wins today, by mtime alone';
+  console.log(`  DRIFT ${f}\n          differs from the shipped card — ${wins}.`);
+  console.log(`          If that edit was deliberate, keep it. If it is residue, delete the`);
+  console.log(`          profile copy — boot re-seeds it from shipped.`);
+}
+if (ls.length && !shadows) console.log('\n  (no stale card overrides — every profile card matches what ships)');
 
 console.log(drift ? `\n${drift} file(s) drifted.` : '\nno drift.');
 process.exit(drift ? 1 : 0);
