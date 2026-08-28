@@ -40,7 +40,10 @@ import { existsSync } from 'node:fs';
 // The reserved action verbs. A line is an ACTION-family line iff (trimmed) it starts
 // with '/' + one of these + whitespace-or-EOL — nothing else is ever touched, so
 // ordinary prose (even prose that mentions "/react") passes through untouched.
-const ACTION_VERBS = new Set(['react', 'reply', 'media', 'edit', 'ask']);
+// Exported so tests/skeletons.test.mjs can hold the shipped actions CARD to it. A card
+// advertising a verb that is not in here is worse than a missing card: the model emits
+// the line, the parser refuses it, and it is posted to the chat as literal prose.
+export const ACTION_VERBS = new Set(['react', 'reply', 'media', 'edit', 'ask']);
 const ACTION_LINE = /^\/([a-z]+)(?:\s+([\s\S]*))?$/i;
 
 // A tiny word→emoji alias table so `/react like` works as well as `/react 👍`.

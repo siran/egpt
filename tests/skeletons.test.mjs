@@ -13,11 +13,13 @@ import { CONFIG_SCHEMA } from '../config/config-schema.mjs';
 import { AUTO_MODES } from '../src/auto-mode.mjs';
 import { ROOM_MEMBER_STATES, ROOM_MEMBER_KINDS } from '../src/room-core.mjs';
 import { parseWarmBlock } from '../src/spine/brainpool.mjs';
+import { ACTION_VERBS, parseReplyActions } from '../src/spine/reply-actions.mjs';
 import { parseTranscriptionConfig } from '../src/transcription-service.mjs';
 import { parse as parseConvState, getContact, getBeing, residentsOf } from '../src/conversations-state.mjs';
 
 const SKELETON = fileURLToPath(new URL('../config/skeletons/heartbeats.yaml', import.meta.url));
 const CONFIG_SKELETON = fileURLToPath(new URL('../config/skeletons/config.yaml', import.meta.url));
+const ACTIONS_CARD   = fileURLToPath(new URL('../config/skeletons/room/10-actions.md', import.meta.url));
 const CONV_SKELETON = fileURLToPath(new URL('../config/skeletons/conversations.yaml', import.meta.url));
 const CONVCFG_SKELETON = fileURLToPath(new URL('../config/skeletons/room/config.yaml', import.meta.url));
 
@@ -59,6 +61,41 @@ describe('config/skeletons/heartbeats.yaml', () => {
     // the one-shot demoes script_path → expanded to a textecute command
     expect(when.action.scriptPath).toBeTruthy();
     expect(when.action.command).toContain('textecute.mjs');
+  });
+});
+
+// The actions CARD is the only thing that tells a model which limbs it has. If it
+// advertises a verb the parser does not accept, the model emits that line in good
+// faith, parseReplyActions refuses it, and it reaches the chat as literal prose --
+// which is how a retired `/delete` limb kept being offered long after the code
+// dropped it (operator 2026-08-24: "evict delete from action, even from bridge.
+// there is no use case for deletion"). Card and code are pinned together here.
+describe('config/skeletons/room/10-actions.md (the limbs card)', () => {
+  const card = readFileSync(ACTIONS_CARD, 'utf8');
+  const advertised = [...card.matchAll(/^\s*\/([a-z]+)/gim)].map((m) => m[1].toLowerCase());
+
+  it('advertises at least one limb (the card has not been emptied)', () => {
+    expect(advertised.length).toBeGreaterThan(0);
+  });
+
+  it('advertises ONLY verbs parseReplyActions accepts', () => {
+    const unknown = [...new Set(advertised)].filter((v) => !ACTION_VERBS.has(v));
+    expect(unknown).toEqual([]);
+  });
+
+  it('does NOT offer a delete limb', () => {
+    expect(ACTION_VERBS.has('delete')).toBe(false);
+    expect(advertised).not.toContain('delete');
+  });
+
+  it('every advertised verb actually parses as an action, not as prose', () => {
+    const sample = { react: '/react #1 x', reply: '/reply #1 hi', media: '/media a.png', edit: '/edit #1 hi', ask: '/ask hi' };
+    for (const verb of new Set(advertised)) {
+      const line = sample[verb];
+      expect(line, `no sample line for advertised verb /${verb}`).toBeTruthy();
+      const { prose } = parseReplyActions(line, { surface: 'whatsapp', chatId: 'c' });
+      expect(prose.trim(), `/${verb} fell through to prose`).toBe('');
+    }
   });
 });
 
