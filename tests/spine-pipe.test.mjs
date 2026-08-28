@@ -755,4 +755,29 @@ describe('spine — /reply handled BEFORE posting (no visible token, no delete+r
     expect(bridge.streams[0].finals).toEqual(['<received silence (error?)>']);   // resolved to the silence mark, never deleted — the limb IS the response
     expect(bridge.sent).toHaveLength(0);
   });
+
+  // THE STABLE MESSAGE (operator 2026-08-28): "the message is replaced for a 'final' message,
+  // and the in-transit thinking is deleted … sometimes it is writing something and then boom, it
+  // changes". The settled reply is NOT always an extension of what streamed (warm-cli resolves
+  // with the LAST assistant message; codex replaces `text` wholesale on item/completed), and the
+  // final edit used to overwrite the whole message — so text a human had already read vanished.
+  // Locked through the WHOLE pipe: the real sender, the real partialProse, the real parse.
+  it('a settled reply that DIVERGES from the narration keeps it — and still shows no action line', async () => {
+    const { bridge } = buildStreaming({
+      replyText: `Listo: son 42 líneas.\n/react #${MSG.msgId} 👍`,
+      partials: ['Voy a mirar', 'Voy a mirar el archivo…', `Voy a mirar el archivo…\n/react #${MSG.msgId} 👍`],
+    });
+    await bridge.emit(MSG);
+
+    const h = bridge.streams[0];
+    const shown = [...h.frames.map((f) => f.replace(/ ⏳$/, '')), ...h.finals];
+    for (const s of shown) expect(s).not.toMatch(/\//);                  // the raw train still belongs to the transcript, not the chat
+    for (let i = 1; i < shown.length; i++)                                // append-only: every value extends the last
+      expect(shown[i].startsWith(shown[i - 1])).toBe(true);
+    const final = h.finals[0];
+    expect(final).toContain('Voy a mirar el archivo…');                   // what the human read is still there
+    expect(final.endsWith('Listo: son 42 líneas.')).toBe(true);           // …and the settled answer is the last block
+    expect(h.deleted).toBe(false);
+    expect(bridge.sent).toHaveLength(0);                                  // still ONE message
+  });
 });

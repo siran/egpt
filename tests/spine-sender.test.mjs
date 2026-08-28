@@ -7,7 +7,8 @@
 // the historical signature / ∎ was removed (operator 2026-07-12) — the sole agent close
 // is the agent_signature_close layer, applied downstream in the port (default empty).
 import { describe, it, expect } from 'vitest';
-import { createSender } from '../src/spine/sender.mjs';
+import { createSender, RETAINED_SEAM } from '../src/spine/sender.mjs';
+import { LIVE_FRAME_MARK } from '../src/dispatch-line.mjs';
 
 function fakeBridge() {
   const streams = [], sent = [];
@@ -128,6 +129,94 @@ describe('sender — single-message reply train', () => {
     expect(bridge.streams[0].opts).toMatchObject({ agentSigOpen: '⟨wren⟩', agentSigClose: '⟨/wren⟩' });
     await out.finish({ text: 'listo' });   // stream did not deliver → §7 fallback send carries the same tag
     expect(bridge.sent[0].opts).toMatchObject({ agentSigOpen: '⟨wren⟩', agentSigClose: '⟨/wren⟩' });
+  });
+});
+
+// THE MESSAGE IS APPEND-ONLY (operator 2026-08-28): "the message is replaced for a 'final'
+// message, and the in-transit thinking is deleted … sometimes it is writing something and then
+// boom, it changes … the messages should also be stable". Every edit used to SUPERSEDE the last,
+// so a settled reply that was not an EXTENSION of the streamed text erased what a human had
+// already read. The invariant these lock: each value the message takes has its predecessor as a
+// literal PREFIX. `stable` below is the whole train — every streamed frame (marker stripped) plus
+// the settle — which is exactly the sequence a human watches.
+describe('sender — the message never shrinks (append-only living mirror)', () => {
+  const stable = (h) => [...h.frames.map((f) => f.replace(new RegExp(` ${LIVE_FRAME_MARK}$`), '')), ...h.finals];
+  const monotone = (texts) => {
+    for (let i = 1; i < texts.length; i++) expect(texts[i].startsWith(texts[i - 1])).toBe(true);
+  };
+
+  it('a settled reply that DIVERGES from the narration keeps the narration and reads as the answer LAST', async () => {
+    // warm-cli resolves with `ev.result` — the LAST assistant message, not the accumulated
+    // train — so the settle is routinely NOT an extension of what streamed.
+    const bridge = fakeBridge();
+    const out = createSender({ bridge }).open('!c', { being: 'e', replyTo: 'm1' });
+    out.update('Voy a mirar');
+    out.update('Voy a mirar el archivo…');
+    await out.finish({ text: 'El archivo tiene 42 líneas.' });
+
+    const final = bridge.streams[0].finals[0];
+    expect(final).toContain('Voy a mirar el archivo…');            // NOTHING shown is removed
+    expect(final.startsWith('Voy a mirar el archivo…')).toBe(true);  // the narration stays where it was
+    expect(final.endsWith('El archivo tiene 42 líneas.')).toBe(true);// the settled answer is the LAST block
+    expect(final).toBe(`Voy a mirar el archivo…${RETAINED_SEAM}El archivo tiene 42 líneas.`);
+    monotone(stable(bridge.streams[0]));
+    expect(bridge.streams[0].deleted).toBe(false);
+  });
+
+  it('a MID-STREAM divergence seals once — the tail keeps growing under the SAME seam, never duplicated', async () => {
+    // codex assigns `currentTurn.text = item.text` wholesale on item/completed and then keeps
+    // streaming the next item's deltas onto it, so a turn can diverge mid-flight and continue.
+    const bridge = fakeBridge();
+    const out = createSender({ bridge }).open('!c', { being: 'e' });
+    out.update('primer intento');
+    out.update('respuesta');            // wholesale replacement mid-stream
+    out.update('respuesta buena');      // …which then extends normally
+    await out.finish({ text: 'respuesta buena' });
+
+    const h = bridge.streams[0];
+    expect(h.finals).toEqual([`primer intento${RETAINED_SEAM}respuesta buena`]);
+    expect(h.finals[0].split('respuesta buena')).toHaveLength(2);   // ONE copy — the seam is not re-stamped
+    monotone(stable(h));
+  });
+
+  it('a pure-APPEND stream settles with the answer alone — no seam, no retained duplicate', async () => {
+    const bridge = fakeBridge();
+    const out = createSender({ bridge }).open('!c', { being: 'e' });
+    out.update('Hola');
+    out.update('Hola mun');
+    await out.finish({ text: 'Hola mundo' });
+    expect(bridge.streams[0].finals).toEqual(['Hola mundo']);       // the ordinary case is untouched
+    monotone(stable(bridge.streams[0]));
+  });
+
+  it('the seam carries NO live marker — a peer node must still record the settle as history', () => {
+    // isLiveStreamFrame (372c17f) classifies by the marker's PRESENCE anywhere in the frame,
+    // so a seam containing ⏳ would make every settled message look transient to an observing
+    // node and drop it from that node's transcript.
+    expect(RETAINED_SEAM).not.toContain(LIVE_FRAME_MARK);
+  });
+
+  it('an empty/withheld settle still keeps what was already read (marker below the seam, nothing erased)', async () => {
+    const bridge = fakeBridge();
+    const sender = createSender({ bridge });
+    const out = sender.open('!c', { being: 'e' });
+    out.update('lo estoy mirando');
+    await out.finish({ text: '' }, { surface: true });              // meant to surface, nothing came back
+    expect(bridge.streams[0].finals).toEqual([`lo estoy mirando${RETAINED_SEAM}⚠️ no reply (turn failed/empty)`]);
+
+    const out2 = sender.open('!c', { being: 'e' });
+    out2.update('lo estoy mirando');
+    await out2.finish({ text: '' }, { surface: false });            // withheld with nothing from the model
+    expect(bridge.streams[1].finals).toEqual([`lo estoy mirando${RETAINED_SEAM}<received silence (error?)>`]);
+  });
+
+  it('a send failure ends the message with ❌ WITHOUT eating a divergent narration', async () => {
+    const bridge = fakeBridge();
+    const out = createSender({ bridge }).open('!c', { being: 'e' });
+    out.update('empiezo');
+    out.update('otra cosa');                                        // divergence
+    await out.fail(new Error('boom'));
+    expect(bridge.streams[0].finals).toEqual([`empiezo${RETAINED_SEAM}otra cosa … ❌ Sending failed.`]);
   });
 });
 
