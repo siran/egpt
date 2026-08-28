@@ -20,14 +20,12 @@
 //     "unnecessary AND wasteful — the brain accepts being eGPT through the normal
 //     conversation." A resumed thread already holds it, so it isn't re-sent.
 //
-// v1 is the E persona on the ccode engine. LOCAL sibling beings (@wren, @don) run
-// through the SAME resolution path as the persona (phase 2, operator 2026-08-14: "remove
-// the concept of siblings" — every being under agents[<being>], defaultKey included,
-// resolves via resolveBeingDef; .configuration names a type file resolved through the
-// brains registry, never frozen into readonly). A sibling still gets NO identity kickoff
-// (engineers, not the persona — see wrapFresh below) and its thread persists in a
-// per-being NESTED block (recordThread(..., being)). codex/URL brains + emitted-command
-// stripping (the comm-handler's job, Phase 4) layer in later.
+// There are only AGENTS (operator 2026-08-28: "there are no siblings no more. we
+// evicted the concept"). Every one under agents[<name>], defaultKey included, resolves
+// the same way via resolveBeingDef; .configuration names a type file resolved through
+// the brains registry, never frozen into readonly. Every one gets the kickoff feed for
+// its own `personality:` (see wrapFresh below), and its thread persists in a per-agent
+// NESTED block (recordThread(..., being)).
 import { slugDir, getBeing, recordThread, readIdentityFeed, seedIdentityLayers, readAutoModeLayer, appendThreadStat, mutateState, nowIsoString, rollTranscript, stampThreadId, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS } from '../conversations-state.mjs';
 import { Room } from '../room-core.mjs';
 import { isContextOverflowError, isDeadSessionError } from '../brain-errors.mjs';
@@ -191,13 +189,13 @@ function shapeDef(name, def, agent = {}, brainType = 'ccode') {
     // Now that resolveBeingDef shapes the PERSONA's def too, an unshaped personality pin
     // would silently stop reaching loadFeed — carried through here instead.
     personality: def?.personality ?? undefined,
-    dangerously_skip_permissions: def?.dangerously_skip_permissions === true,   // carried so a sibling's unconfined type file survives shaping
+    dangerously_skip_permissions: def?.dangerously_skip_permissions === true,   // carried so an unconfined type file survives shaping
   };
 }
 
-// THE ONE being-def resolver (operator 2026-08-14, phase 2: "remove the concept of
-// siblings" — every being under agents[<being>], defaultKey included, resolves the SAME
-// way; was `siblingDef`, sibling-only, renamed because it no longer is). Its
+// THE ONE agent-def resolver (operator 2026-08-14: "remove the concept of siblings" —
+// every agent under agents[<name>], defaultKey included, resolves the SAME way; was
+// `siblingDef`, and renamed because it no longer is). Its
 // `configuration` (configuration ≠ relay) names an agent-type file resolved through the
 // brains registry. Never frozen — the def LIVES in config, nothing per-conversation to
 // instance. No agent entry / unresolvable configuration → a bare ccode def keyed by the
@@ -242,7 +240,7 @@ export function createBrainPool({
   contacts,                          // the shared contact-resolver (createContacts) — slug + rename self-heal
   loadState, writeState,            // conversations-state YAML IO (injected)
   brains = null,                     // the brain registry (createBrains) — resolves the default a fresh conv is instanced from
-  defaultKey = 'e',                  // the persona being-id (its map key), injected by boot from the single `default:true` agent — the persona-vs-sibling split keys off this, never 'e' (operator 2026-07-10)
+  defaultKey = 'e',                  // the DEFAULT agent's id (its map key), injected by boot from the single `default:true` agent — never assume 'e' (operator 2026-07-10); all it still gates is the deterministic model/effort floor below
   nodeIdentity = null,               // the persona's node-identity addendum (boot's buildNodeIdentity) — appended to the PERSONA turn's system prompt so who/where-am-I survives resumes; null on a node with no node_name (operator 2026-07-10)
   brainType = 'ccode',               // fallback engine when a brain def / registry is absent
   io = {},
@@ -367,9 +365,9 @@ export function createBrainPool({
       }
 
       const convDir = slugDir(ev.surface, slug);
-      // 'mode: auto' — every being's own conversations.yaml mode is eligible now (phase 2,
-      // operator 2026-08-14: "remove the concept of siblings" — was persona-only; a sibling
-      // hand-configured `mode: auto` now also gets the operator-role kickoff below).
+      // 'mode: auto' — every agent's own conversations.yaml mode is eligible (operator
+      // 2026-08-14: "remove the concept of siblings" — was default-agent-only; any agent
+      // hand-configured `mode: auto` also gets the operator-role kickoff below).
       const wantAuto = mode === 'auto';
       const autoKey = (tid) => `${ev.surface}:${ev.chatId}:${tid}`;
       // A THREAD IS BEING INSTANCED on this turn (no thread yet) — read by the layer seeding: a
@@ -393,11 +391,10 @@ export function createBrainPool({
         // DETERMINISM (operator 2026-07-02: "don't do 'null means inherit the login default' —
         // make it deterministic"): the persona's RUN must carry CONCRETE model/effort, never
         // null. A type def that omits either falls back to the module constants — logged so a
-        // mis-specified type is visible. NOT extended to every being by phase 2 — the
-        // operator's own enumerated list of asymmetries to collapse was resolution path /
-        // identity-seeding / auto-eligibility / access-override, not this one; a sibling's
-        // model/effort still stay exactly as configured (may be unset — an engineer, not the
-        // persona, may legitimately inherit the CLI login default).
+        // mis-specified type is visible. This is the ONE asymmetry defaultKey still gates:
+        // another agent's model/effort stay exactly as configured (may be unset — it can
+        // legitimately inherit the CLI login default, or be a local engine that has no
+        // notion of either).
         if (def.model == null || def.effort == null) onLog(`type ${def.name} omits model/effort — using deterministic fallback`);
         runModel = def.model ?? DETERMINISTIC_MODEL;
         runEffort = def.effort ?? DETERMINISTIC_EFFORT;
@@ -430,8 +427,8 @@ export function createBrainPool({
       // changes this turn's grant with no command re-run needed. /agents <handle>|all access_level
       // all|regular (retired /e access's replacement, 2026-08-15) can write ANY being's
       // accessLevel now, not just defaultKey's — closing the asymmetry this comment used to
-      // note; a sibling given an accessLevel by hand-editing conversations.yaml has always
-      // gotten the same live override the persona does.
+      // note; an agent given an accessLevel by hand-editing conversations.yaml has always
+      // gotten the same live override the default one does.
       if (accessLevel === 'all' || accessLevel === 'regular') {
         const perm = loadPermission(accessLevel);
         if (perm) def = { ...def, dangerously_skip_permissions: perm.dangerouslySkipPermissions, allowed_tools: perm.allowedTools };
@@ -457,10 +454,10 @@ export function createBrainPool({
       // /ask) reaches a conversation seeded long ago; copy-if-missing alone never could. A
       // mid-thread turn keeps copy-if-missing so nothing is rewritten under a running E.
       // Targets convDir, NOT cwd: a def that pins a workspace must not have identity.d
-      // written into it. EVERY being now (phase 2, operator 2026-08-14: no longer
-      // persona-only) — a sibling's identity.d is copied into its own conv folder too, for
-      // local file-tool consult, even though (see wrapFresh below) it is still never force-
-      // fed into a sibling's live prompt — that distinction is unchanged.
+      // written into it. EVERY agent gets its identity.d copied into its own conv folder,
+      // for local file-tool consult — and since 2026-08-28 that same identity also reaches
+      // its live prompt on a fresh thread (see wrapFresh below), so the two no longer
+      // disagree.
       // Best-effort by contract (seedIdentityLayers never throws) — never breaks a turn.
       // Room.forChat, not slugDir: seedIdentityLayers is keyed on the Room instance now (a
       // conversation IS a Room), so its own ensureTree/identityDir resolve off convDir too.
@@ -468,9 +465,8 @@ export function createBrainPool({
 
       const key = `${being}:${engine}:${ev.surface}:${slug}`;
       lastKeyByConv.set(`${being}:${ev.surface}:${ev.chatId}`, key);
-      // Node-identity addendum (operator 2026-07-10; phase 2, operator 2026-08-14: no longer
-      // persona-only — EVERY being's turn now carries the concise who/where-am-I line so
-      // identity survives RESUMES, the persona's AND a sibling's alike). It COMBINES with the
+      // Node-identity addendum (operator 2026-07-10; operator 2026-08-14: EVERY agent's turn
+      // carries the concise who/where-am-I line so identity survives RESUMES). It COMBINES with the
       // def's own system_prompt (both, blank-line joined) — never replaces it.
       const appendSystemPrompt = [def.system_prompt, nodeIdentity].filter(Boolean).join('\n\n');
       const baseOpts = {
