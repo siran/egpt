@@ -233,6 +233,43 @@ const quoteLeadingCommand = (text) => String(text ?? '').replace(/^\/([a-z0-9_-]
 // one; UNSET, every bare form is a strict no-op — today's behaviour, byte for byte.
 const NODE_ADDRESSABLE = /^\/(chrome|status|tabs|tab|open|close|members?|config|radio)\b(?:=(\S+))?(?:[ \t]*(.*))?$/i;
 
+// § /agents GRAMMAR — VERB FIRST (operator 2026-08-28: "better '/cmd subcmd <options>'").
+//
+// /agents was the outlier on this whole command surface: /room, /radio and /members all read
+// `/cmd <verb> <object>`, while /agents alone read `/agents <object> <verb>`. So the obvious
+// `/agents restart p` parsed `restart` as the being and `p` as the subcommand and answered
+// `unknown subcommand "p"` — an error message pointing at the wrong token entirely.
+//
+// Canonical now:  /agents <sub> <handle>|all [<value>] [<conversation>]
+// Still accepted: /agents <handle>|all [<sub> [<value>]]   (the original order)
+//
+// Disambiguation is positional and total: if the FIRST token is a known subcommand the line is
+// verb-first, otherwise it is the legacy order. A being whose handle collides with a subcommand
+// name is therefore unreachable in the bare status form — acceptable, since `reset`/`restart`/
+// `auto`/`access_level` are not plausible handles, and the alternative (guessing from arity) is
+// ambiguous for real inputs.
+//
+// The trailing <conversation> parses unambiguously because every subcommand's arity is FIXED and
+// its value comes from a closed set: after the verb, the handle, and the value if the verb takes
+// one, at most one token can remain, and it can only be the conversation. `=<slug>` still works
+// and means the same thing; naming the conversation BOTH ways is an error rather than a silent
+// precedence rule.
+export const AGENT_SUB_ARITY = { reset: 0, restart: 0, auto: 1, access_level: 1 };
+export const AGENTS_USAGE = 'usage: /agents <reset|restart|auto <mode>|access_level <all|regular>> <handle>|all [<conversation>] — bare `/agents <handle>|all` shows status';
+
+// args (already whitespace-split) -> { args: [handle, sub, value] for agentsCmd, slug, extra }.
+// Pure; exported for tests. `extra` non-empty means the caller passed more tokens than the
+// grammar can place — reported, never ignored.
+export function normalizeAgentsArgs(args) {
+  const first = args[0]?.toLowerCase();
+  if (!first || !Object.hasOwn(AGENT_SUB_ARITY, first)) return { args, slug: null, extra: [] };
+  const [sub, handle, ...rest] = args;
+  const takesValue = AGENT_SUB_ARITY[first] === 1;
+  const value = takesValue ? rest[0] : undefined;
+  const trailing = takesValue ? rest.slice(1) : rest;
+  return { args: [handle, sub, value], slug: trailing[0] ?? null, extra: trailing.slice(1) };
+}
+
 // /radio say's PAYLOAD ALONE may contain embedded newlines (operator ruling 2026-08-08: the
 // text to read aloud is genuinely free-form prose, unlike every other argument this whole
 // command surface takes). NODE_ADDRESSABLE above stays exactly as it was — `[ \t]*(.*)` still
@@ -617,11 +654,15 @@ export function createCommands({
     // conversation survived untouched by a reset meant to cover "this conversation". /agents
     // fixes that by taking the being explicitly, never assuming defaultKey.
     //
-    //   /agents[=<slug>] <handle>|all                        → status (bare, see agentsStatus)
-    //   /agents[=<slug>] <handle>|all reset                  → archive + wipe + reseed
-    //   /agents[=<slug>] <handle>|all restart                → clear ONLY threadId, everything else survives
-    //   /agents[=<slug>] <handle>|all auto <mode>             → was /e auto <mode>
-    //   /agents[=<slug>] <handle>|all access_level <all|regular>  → was /e access all|regular
+    //   /agents <handle>|all [<conv>]                        → status (bare, see agentsStatus)
+    //   /agents reset <handle>|all [<conv>]                  → archive + wipe + reseed
+    //   /agents restart <handle>|all [<conv>]                → clear ONLY threadId, everything else survives
+    //   /agents auto <handle>|all <mode> [<conv>]            → was /e auto <mode>
+    //   /agents access_level <handle>|all <all|regular> [<conv>]  → was /e access all|regular
+    //
+    // Verb-first since 2026-08-28 (see § /agents GRAMMAR at module scope for why, and for the
+    // legacy object-first order, which still parses). `[<conv>]` and `=<slug>` are the same
+    // thing said two ways.
     //
     // `=<slug>` is a PRIVATE convention parsed by THIS regex alone — it is bound directly to
     // the command token exactly like NODE_ADDRESSABLE's `=<name>` (`/chrome=kg`, `/tab=do 3`,
@@ -635,10 +676,16 @@ export function createCommands({
     // (same error/ambiguity semantics). `<handle>` is a being's agents.<being> map key
     // (`e`, `wren`, …); `all` applies the subcommand to every being residentsOf() finds on
     // that conversation's entry. See agentsCmd() for the full dispatch.
-    const agentsMatch = /^\/agents(?:=(\S+))?(?:\s+(.+?))?\s*$/i.exec(line);
+    // `/agents?` — the singular is accepted too. It is what the operator reached for
+    // (2026-08-28), it collides with nothing, and being lectured about a missing plural
+    // is a worse answer than just doing the thing.
+    const agentsMatch = /^\/agents?(?:=(\S+))?(?:\s+(.+?))?\s*$/i.exec(line);
     if (agentsMatch) {
-      const args = (agentsMatch[2] ?? '').trim().split(/\s+/).filter(Boolean);
-      await agentsCmd(ev, agentsMatch[1] || null, args);
+      const raw = (agentsMatch[2] ?? '').trim().split(/\s+/).filter(Boolean);
+      const { args, slug, extra } = normalizeAgentsArgs(raw);
+      if (extra.length) { await send?.(ev.chatId, `/agents: don't know where to put "${extra.join(' ')}" — ${AGENTS_USAGE}`); return; }
+      if (slug && agentsMatch[1]) { await send?.(ev.chatId, `/agents: conversation named twice (=${agentsMatch[1]} and ${slug}) — name it once`); return; }
+      await agentsCmd(ev, agentsMatch[1] || slug || null, args);
       return;
     }
 
@@ -985,11 +1032,11 @@ export function createCommands({
   // (surface, jid, where, handles[, state]) — none of them re-parse or re-resolve.
   async function agentsCmd(ev, slugArg, args) {
     const [handleArg, subRaw, valueRaw] = args;
-    if (!handleArg) { await send?.(ev.chatId, 'usage: /agents[=<slug>] <handle>|all [reset|restart|auto <mode>|access_level <all|regular>]'); return; }
+    if (!handleArg) { await send?.(ev.chatId, AGENTS_USAGE); return; }
     if (!loadState || !writeState) { await send?.(ev.chatId, '/agents: conversation state not wired'); return; }
     const sub = subRaw?.toLowerCase() || null;
     if (sub && !['reset', 'restart', 'auto', 'access_level'].includes(sub)) {
-      await send?.(ev.chatId, `/agents: unknown subcommand "${subRaw}" — reset|restart|auto <mode>|access_level <all|regular>`);
+      await send?.(ev.chatId, `/agents: unknown subcommand "${subRaw}" — reset|restart|auto <mode>|access_level <all|regular>. Verb first: /agents <sub> <handle>.`);
       return;
     }
     if (sub === 'auto') {

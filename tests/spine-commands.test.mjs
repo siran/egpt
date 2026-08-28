@@ -4,7 +4,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createCommands } from '../src/spine/commands.mjs';
+import { createCommands, normalizeAgentsArgs, AGENTS_USAGE } from '../src/spine/commands.mjs';
 import { createSpine } from '../src/spine/spine.mjs';
 import { COMMANDS } from '../src/interpreter.mjs';
 import { Room } from '../src/room-core.mjs';
@@ -592,6 +592,23 @@ describe('/agents <handle>|all restart — clears ONLY threadId, mode/access_lev
       expect(eAfter.accessLevel).toBe('all');
     });
   }
+  // END TO END, through the real dispatch — the parser being right is not the claim that
+  // matters. This is the exact line the operator typed (2026-08-28), which used to answer
+  // `unknown subcommand "p"`: verb first, singular /agent, no `=` on the conversation.
+  for (const { label, surface, jid, ctx } of cases) {
+    it(`/agent restart e — verb-first AND singular — clears threadId just like /agents e restart — ${label}`, async () => {
+      const state = seedRestartState(surface, jid, ctx);
+      const { cmds, getState } = harness({ state, io: { rename: async () => {}, mkdir: async () => {} } });
+      await cmds.run({ chatId: jid, surface, body: '/agent restart e' });
+
+      const eAfter = getBeing(getState(), surface, jid, 'e');
+      expect(eAfter.present).toBe(true);
+      expect(eAfter.threadId).toBeNull();     // the whole point: the verb was understood
+      expect(eAfter.mode).toBe('mention');    // and restart stayed narrow
+      expect(eAfter.accessLevel).toBe('all');
+    });
+  }
+
 
   // THE CONTRAST PAIR (operator-mandated): the SAME seeded being, reset wipes mode too
   // (regression lock on reset's existing, unchanged behavior) — restart does not. Run back
@@ -1008,7 +1025,8 @@ describe('/agents <handle>|all — bare status view, usage, and /e/egpt retireme
     const { cmds, sent, writes } = harness({ state: contact() });
     const ev = { chatId: '!room', surface: 'whatsapp', authorized: true };
     await cmds.run({ ...ev, body: '/agents' });
-    expect(sent[0].text).toBe('usage: /agents[=<slug>] <handle>|all [reset|restart|auto <mode>|access_level <all|regular>]');
+    expect(sent[0].text).toBe(AGENTS_USAGE);            // verb-first since 2026-08-28
+    expect(sent[0].text).toMatch(/^usage: \/agents <reset\|restart\|/);   // ...and it LEADS with the verb
     expect(writes).toHaveLength(0);
     // a plain follow-up message is NOT claimed as a command (nothing was armed)
     expect(cmds.isCommand({ chatId: '!room', surface: 'whatsapp', body: '1', authorized: true })).toBe(false);
@@ -1706,5 +1724,42 @@ describe('browseTab is fully evicted from src/', () => {
     };
     walk(SRC_DIR);
     expect(offenders).toEqual([]);
+  });
+});
+
+// § VERB-FIRST GRAMMAR (operator 2026-08-28: "better '/cmd subcmd <options>'"). /agents was
+// the one command on this surface reading object-then-verb, so `/agents restart p` -- the
+// obvious thing to type, and what the operator typed -- parsed `restart` as the being and
+// answered `unknown subcommand "p"`, blaming the wrong token. Both orders parse now; the
+// pure parser is asserted directly, then end-to-end so it is the real dispatch being proven.
+describe('/agents grammar — verb first, legacy order still accepted', () => {
+  const parse = (s) => normalizeAgentsArgs(s.split(/\s+/).filter(Boolean));
+
+  it('verb-first: /agents restart p spoiler places all three tokens', () => {
+    const r = parse('restart p spoiler');
+    expect(r.args).toEqual(['p', 'restart', undefined]);
+    expect(r.slug).toBe('spoiler');
+    expect(r.extra).toEqual([]);
+  });
+
+  it('a value-taking subcommand still leaves the conversation unambiguous (fixed arity)', () => {
+    expect(parse('auto p mention spoiler')).toMatchObject({ args: ['p', 'auto', 'mention'], slug: 'spoiler' });
+    expect(parse('auto p mention')).toMatchObject({ args: ['p', 'auto', 'mention'], slug: null });
+    expect(parse('access_level p all')).toMatchObject({ args: ['p', 'access_level', 'all'], slug: null });
+  });
+
+  it('legacy object-first is untouched — the first token is not a subcommand, so nothing moves', () => {
+    expect(parse('p restart')).toMatchObject({ args: ['p', 'restart'], slug: null });
+    expect(parse('e auto mention')).toMatchObject({ args: ['e', 'auto', 'mention'], slug: null });
+    expect(parse('p')).toMatchObject({ args: ['p'], slug: null });
+    expect(parse('all')).toMatchObject({ args: ['all'], slug: null });
+  });
+
+  it('a token the grammar cannot place is REPORTED, never silently dropped', () => {
+    expect(parse('restart p spoiler junk').extra).toEqual(['junk']);
+  });
+
+  it('`all` reads as the handle in verb-first order', () => {
+    expect(parse('reset all')).toMatchObject({ args: ['all', 'reset', undefined], slug: null });
   });
 });
