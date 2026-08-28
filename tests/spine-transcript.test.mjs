@@ -31,7 +31,7 @@ const readdirOver = (files) => async (dir) => {
 const fakeContacts = { resolve: async () => 'fam-1234567890' };
 
 const ev = {
-  surface: 'whatsapp', chatId: '!room:beeper.com', chatName: 'fam',
+  surface: 'whatsapp', node: 'wa', chatId: '!room:beeper.com', chatName: 'fam',
   senderId: '@whatsapp_555:beeper.local', ts: Date.UTC(2026, 6, 3, 14, 22),
   line: 'An@[fam].wa (14:22) #m1: hola', body: 'hola',
 };
@@ -119,15 +119,15 @@ describe('transcript.log — §3.1 stats collector chokepoint', () => {
     const t = createTranscript({ contacts: fakeContacts, io: mkIo(files), node_name: 'kg', defaultKey: 'egpt' });
     expect(await t.log(ev, { text: 'hi from egpt', being: 'egpt', surfaced: true })).toBe(true);
     const text = transcriptText(files);
-    expect(text).toContain('[@egpt.kg ');    // node-qualified reply label
-    expect(text).not.toMatch(/\[@egpt \(/);  // NOT the bare being label
+    expect(text).toContain('@egpt.kg@[fam].wa ');   // node-qualified reply label, in the one line shape
+    expect(text).not.toMatch(/@egpt@\[/);           // NOT the bare being label
   });
 
   it('qualifies a LOCAL SIBLING reply too (this node\'s node_name for every being it labels)', async () => {
     const files = new Map();
     const t = createTranscript({ contacts: fakeContacts, io: mkIo(files), node_name: 'do' });
     await t.log(ev, { text: 'sibling line', being: 'wren' });
-    expect(transcriptText(files)).toContain('[@wren.do ');
+    expect(transcriptText(files)).toContain('@wren.do@[fam].wa ');
   });
 
   it('no node_name → the bare being label is unchanged (back-compat)', async () => {
@@ -135,7 +135,7 @@ describe('transcript.log — §3.1 stats collector chokepoint', () => {
     const t = createTranscript({ contacts: fakeContacts, io: mkIo(files) });   // node_name unset
     await t.log(ev, { text: 'hi', being: 'egpt' });
     const text = transcriptText(files);
-    expect(text).toContain('[@egpt (');
+    expect(text).toContain('@egpt@[fam].wa (');
     expect(text).not.toContain('egpt.');
   });
 
@@ -146,7 +146,7 @@ describe('transcript.log — §3.1 stats collector chokepoint', () => {
     const files = new Map();
     const t = createTranscript({ contacts: fakeContacts, io: mkIo(files), node_name: 'kg', defaultKey: 'egpt', timeZone: 'America/New_York', now: () => new Date(Date.UTC(2026, 6, 25, 19, 7)) });
     await t.log(ev, { text: 'hi', being: 'egpt' });
-    expect(transcriptText(files)).toContain('[@egpt.kg (15:07)]: hi');
+    expect(transcriptText(files)).toContain('@egpt.kg@[fam].wa (15:07): hi');
   });
 
   it('never throws/rejects when the collector io read/write throws — transcript still appended', async () => {

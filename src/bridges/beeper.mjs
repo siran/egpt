@@ -1446,8 +1446,10 @@ export async function startBeeperBridge(opts = {}) {
         // trigger (operator 2026-08-10: editing/deleting the TRIGGER isn't reliably permitted when
         // it wasn't sent by our account). The trigger itself is NEVER touched; the ack is deleted
         // once the audio reply lands (success) or immediately (failure), so nothing dangles.
-        // E's OWN reply lines carry NO id in transcript.md — replyLine's format is
-        // `[@being (HH:MM)]: body`, UNCONDITIONALLY (transcript.mjs), a structural fact, not an
+        // E's OWN reply lines carry NO id in transcript.md — since 2026-08-28 replyLine has an
+        // `#<id>` slot (it renders through the SAME formatter the inbound line does), but no
+        // caller can fill it: the spine records a reply BEFORE delivering it (record-first is
+        // durability), so at write time the surface has assigned no id. Structural, not an
         // occasional miss. So quoting E's own prior message would otherwise always fall through
         // to a normal @e→E turn instead of reading it back (live bug, 2026-08-10: "e" replying to
         // E's own message woke E instead of reading it). _seenText (this file's own edit-

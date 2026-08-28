@@ -141,13 +141,13 @@ describe('command replies land in transcript.md (real createCommands + real crea
 
   const ev = { body: '/foo', chatId: '!self', surface: 'whatsapp', chatName: 'self' };
 
-  it('an unrecognized command\'s catch-all reply is recorded under [@system.<node> …]', async () => {
+  it('an unrecognized command\'s catch-all reply is recorded under @system.<node>@[chat]…', async () => {
     const { commands, files, sent } = buildWiredCommands();
     await commands.run(ev);
     expect(sent).toHaveLength(1);
     expect(sent[0].text).toMatch(/recognized/);
     const text = transcriptText(files);
-    expect(text).toContain('[@system.kg ');
+    expect(text).toContain('@system.kg@[self].whatsapp ');
     expect(text).toContain(sent[0].text);
   });
 
@@ -155,7 +155,7 @@ describe('command replies land in transcript.md (real createCommands + real crea
     const { commands, files } = buildWiredCommands({ node_name: null });
     await commands.run(ev);
     const text = transcriptText(files);
-    expect(text).toContain('[@system (');
+    expect(text).toContain('@system@[self].whatsapp (');
     expect(text).not.toContain('system.');
   });
 
@@ -170,8 +170,8 @@ describe('command replies land in transcript.md (real createCommands + real crea
     await beingTranscript.log(ev, { text: 'a being reply', being: 'egpt' });
     await commands.run(ev);
     const text = transcriptText(files);
-    expect(text.match(/\[@egpt\.kg /g)).toHaveLength(1);     // the being line appears exactly once
-    expect(text.match(/\[@system\.kg /g)).toHaveLength(1);   // the command line appears exactly once
+    expect(text.match(/@egpt\.kg@\[/g)).toHaveLength(1);     // the being line appears exactly once
+    expect(text.match(/@system\.kg@\[/g)).toHaveLength(1);   // the command line appears exactly once
   });
 
   it('inbound recording (transcript.log(ev) with no reply) is untouched by the command wrap', async () => {
@@ -180,7 +180,7 @@ describe('command replies land in transcript.md (real createCommands + real crea
     await transcript.log({ ...ev, line: 'An@[self].wa (18:06): /foo', body: '/foo' });
     const text = transcriptText(files);
     expect(text).toContain('/foo');
-    expect(text).not.toContain('[@system');   // inbound line only — no reply line synthesized
+    expect(text).not.toContain('@system@[');   // inbound line only — no reply line synthesized
   });
 
   // ── ROOM-JOIN RECORD-KEEPING (operator, room-join transcript-routing fix) — a THIN integration

@@ -274,12 +274,12 @@ describe('spine — the emitting node records every byte the model emitted, in o
     expect(text).toContain('Let me look at the config file first…');   // the interim thought SURVIVES
     expect(text).toContain('42 is the answer.');                       // and so does what replaced it
     expect(text.indexOf('Let me look')).toBeLessThan(text.indexOf('42 is the answer.'));   // in order
-    expect(text).toContain('[@e (14:05)]: (streaming) ');              // the train, opened as its own block
+    expect(text).toContain('@e@[fam].wa (14:05): (streaming) ');              // the train, opened as its own block
     // The token stream is written ONCE — the appended tail only, never a re-snapshot.
     expect(text.split('Let me look at the config').length - 1).toBe(1);
     // …and the SETTLED reply still lands as its own line under it, exactly as before.
-    expect(text).toContain('\n\n[@e (14:05)]: 42 is the answer.\n\n');
-    expect(text.indexOf('(streaming)')).toBeLessThan(text.indexOf('[@e (14:05)]: 42 is the answer.'));
+    expect(text).toContain('\n\n@e@[fam].wa (14:05): 42 is the answer.\n\n');
+    expect(text.indexOf('(streaming)')).toBeLessThan(text.indexOf('@e@[fam].wa (14:05): 42 is the answer.'));
   });
 
   it('the train is a SEPARATE block — the inbound line, the train and the reply are three entries', async () => {
@@ -292,8 +292,8 @@ describe('spine — the emitting node records every byte the model emitted, in o
     const blocks = fileEndingIn(files, 'transcript.md').split(/\n{2,}/).map((b) => b.trim()).filter(Boolean);
     expect(blocks.slice(-3)).toEqual([
       'An@[fam].wa (14:05) #m1: hola',
-      '[@e (14:05)]: (streaming) pensando… listo',
-      '[@e (14:05)]: listo',
+      '@e@[fam].wa (14:05): (streaming) pensando… listo',
+      '@e@[fam].wa (14:05): listo',
     ]);
   });
 
@@ -319,6 +319,6 @@ describe('spine — the emitting node records every byte the model emitted, in o
     await settle();
     const text = fileEndingIn(files, 'transcript.md');
     expect(text).not.toContain('(streaming)');
-    expect(text).toContain('[@e (14:05)]: ok');
+    expect(text).toContain('@e@[fam].wa (14:05): ok');
   });
 });

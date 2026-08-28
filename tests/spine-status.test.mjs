@@ -250,7 +250,7 @@ describe('/status <target>', () => {
     const transcript = [
       'An@[HFM].wa (10:00): hola',
       '',
-      '[@e (10:01)]: hola An',
+      '@e.kg@[HFM].wa (10:01): hola An',
       '',
       'Ron@[HFM].wa (10:02): que tal',
       '',
@@ -275,7 +275,9 @@ describe('/status <target>', () => {
     expect(text).toMatch(/allowed_tools: \[Read\]/);
     expect(text).toMatch(/personality: poet/);
     expect(text).toMatch(/thread_id: THREAD-1/);
-    expect(text).toMatch(/members: An, @e, Ron/);   // distinct, first-seen order
+    // Distinct, first-seen order — and the being's `@` sigil is what keeps `@e.kg` off the
+    // HUMAN list now that a being's line and a person's line share one shape (2026-08-28).
+    expect(text).toMatch(/members: An, @e\.kg, Ron/);
   });
 
   it('a resolved type file that omits `personality:` falls back to \'egpt\'; a literal \'all\' is coerced to the explicit list (same as brainpool)', async () => {
@@ -349,6 +351,8 @@ members:
 
   it('falls back to the transcript-derived members line when stats.yaml is absent/unreadable', async () => {
     const first = ensureContact(emptyState(), 'whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' });
+    // OLD-SHAPE BACK-COMPAT: months of the operator's history predate the 2026-08-28 unified
+    // line shape and are never rewritten, so `[@being (HH:MM)]:` must keep deriving members.
     const transcript = ['An@[HFM].wa (10:00): hola', '', '[@e (10:01)]: hola An', ''].join('\n');
     const { cmds, sent } = harness({
       loadState: async () => first.state,
