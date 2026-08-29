@@ -1184,6 +1184,13 @@ export async function boot({
     loadState: _loadState, writeState: _writeState,   // /agents … auto/reset/access_level persist into conversations.yaml
     logTranscript: (ev, reply) => services.transcript.log(ev, reply),   // THE reply writer — the same service commandTranscript wraps above; /agents restart's accum boundary rides it instead of assembling a line of its own
     resolveConvRoom,                                  // (surface, chatId) → the conversation's Room — the SAME resolver the phase-4 relay reads members from, so /members writes where the relay reads (bug fix 2026-07-23)
+    // `/members add group <chat name>` — THE bridge's name→id resolver, the same one
+    // mesh.mjs's canonRoute takes off this bridge (`bridge.resolveChatId`), so a chat NAME
+    // resolves to the id the relay actually delivers under. NOTE (2026-08-29): the §2b port
+    // (src/bridges/beeper-port.mjs) exposes only the loop's Bridge interface and does NOT
+    // forward resolveChatId, so this is `null` today and `add group <name>` refuses with an
+    // error rather than adding an unresolvable id. Same degrade convention as canonRoute.
+    resolveChatId: bridge.resolveChatId ?? null,
     brains,                                           // /agents' status + access_level resolve a being's agent type through the registry
     defaultKey,                                       // the persona being-id (its map key) — /agents + /status key their per-conversation reads/writes/evictions off this, never 'e' (operator 2026-07-10)
     evictWarm: (key) => pool.evict(key),              // drop a re-pointed conversation's warm session so it respawns fresh

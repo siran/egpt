@@ -356,6 +356,14 @@ export function createCommands({
     try { const slug = getContact(await loadState(), surface, chatId)?.slug; return slug ? Room.forChat(surface, slug) : null; }
     catch { return null; }
   },
+  // Chat NAME → canonical chat id, for `/members add group <name>` (operator 2026-08-29: the
+  // operator types the chat's NAME, not the id they'd have to go dig up). THE bridge's own
+  // resolver (src/bridges/beeper.mjs resolveChatId — name-or-slug match, cached, walks EVERY
+  // chat page before giving up), injected by boot, exactly as src/spine/mesh.mjs's canonRoute
+  // takes it. Same degrade convention as there: a null resolver (standalone/tests that don't
+  // need one) is not an error — but `add group <name>` then REFUSES rather than adding the
+  // raw string as an id, because a bogus member id fails silently at relay time.
+  resolveChatId = null,
   // Launch seam for /chrome — fires the Session-1 `egpt-chrome` scheduled task (default:
   // `schtasks /run /tn egpt-chrome`, see defaultLaunchChromeTask). Returns { ok } — false
   // when the task isn't registered (schtasks non-zero) or the spawn errored. Tests inject a
@@ -993,7 +1001,7 @@ export function createCommands({
   }
 
   const ROOM_USAGE = 'usage: /rooms | /rooms create <name> | /rooms join|leave|members <room> | /rooms delete [force] <room>';
-  const MEMBERS_USAGE = 'usage: /members | /members add tab <n> [alias=<name>|<name>] | /members add group <chatId> | /members remove <id> | /members mode <disable|mention|all> <id>';
+  const MEMBERS_USAGE = 'usage: /members | /members add tab <n> [alias=<name>|<name>] | /members add group <chat name|id> | /members remove <id> | /members mode <disable|mention|all> <id>';
   // A slug with no folder on disk — the members path and the delete path both need to say
   // this instead of acting as though it exists (bug fix 2026-08-07: "/rooms help" rendered
   // "help (0 members)", a roster fabricated for a room that was never created — 'help' just
@@ -1594,8 +1602,10 @@ export function createCommands({
     // trailing token (operator ruling 2026-07-27).
     const add = /^add\s+tab\s+(\d+)(?:\s+(\S+))?$/i.exec(rest);
     if (add) { await membersAddTab(ev, room, Number(add[1]), add[2] ?? null); return; }
-    const addGroup = /^add\s+group\s+(\S+)$/i.exec(rest);
-    if (addGroup) { await membersAddGroup(ev, room, addGroup[1]); return; }
+    // `add group <chat name|id>` — the argument runs to END OF LINE, because a chat NAME has
+    // spaces in it ("Radio WnL"). A single-token capture could only ever take an id.
+    const addGroup = /^add\s+group\s+(\S.*)$/i.exec(rest);
+    if (addGroup) { await membersAddGroup(ev, room, addGroup[1].trim()); return; }
     const remove = /^remove\s+(\S+)$/i.exec(rest);
     if (remove) { await membersRemove(ev, room, remove[1]); return; }
     // VERB FIRST, target last (operator 2026-08-29) — was `<id> mode <value>`, the last
@@ -1670,10 +1680,28 @@ export function createCommands({
   // inbound in that group into a fan-out over this room's roster. Same roster, same setMember
   // resolver as `add tab`, and — like a tab — it starts muted, so nothing crosses until the
   // operator flips its mode.
-  async function membersAddGroup(ev, room, chatId) {
-    if ((await room.members()).some((m) => m.id === chatId)) { await send?.(ev.chatId, `'${chatId}' is already a member here`); return; }
-    await room.setMember({ kind: 'wa-group', id: chatId, state: 'muted' });
-    await send?.(ev.chatId, `added group '${chatId}' — mode:disable (no chatter reaches it yet)`);
+  //
+  // The ARGUMENT is a chat NAME or a chat id (operator 2026-08-29: `/members add group radio`
+  // came back with the usage line because only a raw id parsed). A `!`-prefixed argument IS
+  // already a canonical id and is taken as-is with no lookup — the SAME short-circuit the
+  // bridge's own resolveChatId takes on a `!` prefix (beeper.mjs). Anything else goes through
+  // the injected resolveChatId seam, THE bridge resolver mesh.mjs's canonRoute already uses.
+  // NO FALLBACK to adding the raw string: an unresolvable name means the operator gets an
+  // error and an unchanged roster, never a member id that silently never delivers.
+  async function membersAddGroup(ev, room, arg) {
+    let id = arg;
+    if (!arg.startsWith('!')) {
+      if (!resolveChatId) { await send?.(ev.chatId, `can't resolve '${arg}' — this node has no chat resolver; give the chat id instead (it looks like !xxxx:beeper.local)`); return; }
+      let found = null;
+      try { found = await resolveChatId(arg); } catch { found = null; }
+      if (!found) { await send?.(ev.chatId, `no chat named '${arg}' — nothing added; check the name, or give the chat id instead (it looks like !xxxx:beeper.local)`); return; }
+      id = found;
+    }
+    if ((await room.members()).some((m) => m.id === id)) { await send?.(ev.chatId, `'${id}' is already a member here`); return; }
+    await room.setMember({ kind: 'wa-group', id, state: 'muted' });
+    // The RESOLVED id is named in the reply either way — it is what /members mode <m> <id> takes.
+    const what = id === arg ? `'${id}'` : `'${arg}' → '${id}'`;
+    await send?.(ev.chatId, `added group ${what} — mode:disable (no chatter reaches it yet)`);
   }
 
   // /members remove <id> — drop a member from the roster. room.removeMember owns the

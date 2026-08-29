@@ -88,7 +88,7 @@ function roomAt(name) {
   return room;
 }
 
-function harness({ cdp, adapters = ADAPTERS, roomNames = [], config = {} } = {}) {
+function harness({ cdp, adapters = ADAPTERS, roomNames = [], config = {}, resolveChatId = null } = {}) {
   const sent = [];
   const convRooms = new Map();   // `${surface}:${chatId}` -> TmpRoom (real fs under base/conv)
   // The SHARED conversation-room resolver: the SAME function shape boot injects into BOTH
@@ -111,6 +111,9 @@ function harness({ cdp, adapters = ADAPTERS, roomNames = [], config = {} } = {})
     ...(cdp ? { cdp } : {}),
     loadAdapters: async () => adapters,
     resolveConvRoom,
+    // The bridge's chat NAME→id resolver seam (boot injects bridge.resolveChatId). Absent by
+    // default, exactly as a standalone createCommands has it — so `add group <name>` refuses.
+    ...(resolveChatId ? { resolveChatId } : {}),
     listRoomNames: () => roomNames,
   });
   return { cmds, sent, namedRoom, resolveConvRoom };
@@ -594,6 +597,86 @@ describe('/members add group <chatId> — invite a WhatsApp group into this room
     expect(sent.at(-1).text).toMatch(/!grp-B\s+wa-group\s+active\s+mode:disable/);
     await cmds.run({ ...self, body: '/members mode all !grp-B' });
     expect(await (await resolveConvRoom(self.surface, self.chatId)).memberState('!grp-B')).toBe('active');
+  });
+});
+
+// …BY NAME (operator 2026-08-29: `/members add group radio` came back with the usage line —
+// only a raw chat id parsed, and the operator does not have the id to hand). The argument is
+// resolved through the SAME bridge resolver mesh.mjs's canonRoute uses (bridge.resolveChatId),
+// injected here as a seam so no test needs a live bridge. The two rules that matter: a `!`-id
+// is canonical already and is never looked up, and an unresolvable name is an ERROR — never a
+// raw string added as an id, which would join a member the relay can never deliver to.
+describe('/members add group <name> — a chat NAME resolves through the bridge resolver', () => {
+  // 'radio' is the operator's real case: the chat is titled "Radio WnL".
+  const CHATS = { radio: '!t6et3mN89hsPKfVmjMBG:beeper.local', 'Radio WnL': '!t6et3mN89hsPKfVmjMBG:beeper.local' };
+  const fakeResolver = () => {
+    const calls = [];
+    const fn = async (nameOrId) => { calls.push(nameOrId); return CHATS[nameOrId] ?? null; };
+    fn.calls = calls;
+    return fn;
+  };
+
+  it('a NAME lands in the roster as the RESOLVED id, and the reply names both', async () => {
+    const resolveChatId = fakeResolver();
+    const { cmds, sent, resolveConvRoom } = harness({ resolveChatId });
+
+    await cmds.run({ ...self, body: '/members add group radio' });
+
+    expect(resolveChatId.calls).toEqual(['radio']);
+    const ms = await (await resolveConvRoom(self.surface, self.chatId)).members();
+    // the RESOLVED id is the member id — not the word the operator typed
+    expect(ms).toHaveLength(1);
+    expect(ms[0]).toMatchObject({ kind: 'wa-group', id: '!t6et3mN89hsPKfVmjMBG:beeper.local', state: 'muted' });
+    // both are named, so the id can be copied straight into `/members mode all <id>`
+    expect(sent.at(-1).text).toMatch(/'radio'/);
+    expect(sent.at(-1).text).toMatch(/!t6et3mN89hsPKfVmjMBG:beeper\.local/);
+    expect(sent.at(-1).text).toMatch(/mode:disable/);
+  });
+
+  it('a MULTI-WORD name is accepted — the argument runs to end of line', async () => {
+    const resolveChatId = fakeResolver();
+    const { cmds, sent, resolveConvRoom } = harness({ resolveChatId });
+
+    await cmds.run({ ...self, body: '/members add group Radio WnL' });
+
+    expect(resolveChatId.calls).toEqual(['Radio WnL']);
+    expect(sent.at(-1).text).not.toMatch(/usage:/);
+    const ms = await (await resolveConvRoom(self.surface, self.chatId)).members();
+    expect(ms.map((m) => m.id)).toEqual(['!t6et3mN89hsPKfVmjMBG:beeper.local']);
+  });
+
+  it('a `!…:beeper.local` id is canonical already — added as-is, resolver never called', async () => {
+    const resolveChatId = fakeResolver();
+    const { cmds, sent, resolveConvRoom } = harness({ resolveChatId });
+
+    await cmds.run({ ...self, body: '/members add group !t6et3mN89hsPKfVmjMBG:beeper.local' });
+
+    expect(resolveChatId.calls).toEqual([]);            // no lookup at all
+    const ms = await (await resolveConvRoom(self.surface, self.chatId)).members();
+    expect(ms.map((m) => m.id)).toEqual(['!t6et3mN89hsPKfVmjMBG:beeper.local']);
+    expect(sent.at(-1).text).toMatch(/added group '!t6et3mN89hsPKfVmjMBG:beeper\.local'/);
+  });
+
+  it('an UNRESOLVABLE name changes nothing and says so — never added as a raw id', async () => {
+    const resolveChatId = fakeResolver();
+    const { cmds, sent, resolveConvRoom } = harness({ resolveChatId });
+
+    await cmds.run({ ...self, body: '/members add group nosuchchat' });
+
+    expect(resolveChatId.calls).toEqual(['nosuchchat']);
+    expect(sent.at(-1).text).toMatch(/nosuchchat/);
+    expect(sent.at(-1).text).toMatch(/no chat named/i);
+    expect(await (await resolveConvRoom(self.surface, self.chatId)).members()).toEqual([]);
+  });
+
+  it('NO resolver injected → a name is REFUSED, not added blind (a bogus id never delivers)', async () => {
+    const { cmds, sent, resolveConvRoom } = harness({});   // no resolveChatId seam
+
+    await cmds.run({ ...self, body: '/members add group radio' });
+
+    expect(sent.at(-1).text).toMatch(/radio/);
+    expect(sent.at(-1).text).toMatch(/can't resolve/i);
+    expect(await (await resolveConvRoom(self.surface, self.chatId)).members()).toEqual([]);
   });
 });
 
