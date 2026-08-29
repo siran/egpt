@@ -89,7 +89,7 @@ const SHELL_USER = 'operator';
  * @param {string} [opts.bridgeSignatureClose]
  * @param {string} [opts.token]               the node's SHELL TOKEN (cfg.shell.token, handed in by boot exactly like bridgeSignatureOpen/nodeName — this limb never reads config itself). The editor that dials in must prove it knows this secret before a single frame is sent to it or accepted from it. UNSET → the limb FAILS CLOSED: it does not SERVE at all and logs what to add to config. No default, no auto-generation, no unauthenticated mode.
  * @param {string} [opts.nodeName]            the STRUCTURAL node id (cfg.node_name), tag-encoded invisibly onto every frame — same value boot hands the beeper bridge. Default ''.
- * @param {string} [opts.header]              the shell status-line header (boot's computeShellHeader) — the initial value handed in at boot, pushed as a header-only frame the moment an editor authenticates. Updatable later via setHeader() (e.g. /room join|leave). Default '' → no header frame sent until setHeader() is called.
+ * @param {string} [opts.header]              the shell status-line header (boot's computeShellHeader) — the initial value handed in at boot, pushed as a header-only frame the moment an editor authenticates. Updatable later via setHeader() (e.g. /rooms join|leave). Default '' → no header frame sent until setHeader() is called.
  * @param {(m: string) => void} [opts.onLog]
  * @param {typeof reapPort} [opts.reapPort]   port-killer seam (see start()) — real reapPort by default; tests inject a fake so no real netstat/taskkill runs
  * @param {typeof globalThis.setTimeout} [opts.setTimeout]     re-listen timer seam (tests inject a fake clock so no real wait blocks)
@@ -333,7 +333,7 @@ export function createShellPort({
     // Generic on purpose: this limb still carries zero room logic, only the registry itself.
     claim(chatId) { _chatIds.add(chatId); },
     // Push an UPDATED header line now (operator 2026-08-16: live status-line room reflection,
-    // e.g. after /room join|leave) — boot.mjs's onRoomChange calls this with a freshly
+    // e.g. after /rooms join|leave) — boot.mjs's onRoomChange calls this with a freshly
     // recomputed computeShellHeader(). Reassigns _header so the NEXT editor to take the seat
     // resends the NEW line too, not the one captured at construction. Drops (never throws)
     // when no editor holds the seat, same as any other push — the next editor's handshake

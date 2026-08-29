@@ -86,14 +86,14 @@ describe('(A) a command reply never parses as a command', () => {
     const lines = [
       '/status do',                 // /status target: ambiguous
       '/status zzz',                // /status target: no match
-      '/agents e auto loud',        // /agents ... auto: unknown mode
-      '/agents=zzz e auto on',      // /agents=<slug>: unresolvable target
+      '/agents auto loud e',        // /agents ... auto: unknown mode
+      '/agents=zzz auto on e',      // /agents=<slug>: unresolvable target
       '/agents',                    // bare /agents usage reply (no handle)
       '/agents e badsub',           // /agents ...: unknown subcommand
       '/e do',                      // /e carries no special meaning any more — generic catch-all
       '/e zzz',                     // /e carries no special meaning any more — generic catch-all
       '/chrome',                    // /chrome usage line
-      '/room x badverb',            // /room: unknown subcommand
+      '/rooms x badverb',            // /rooms: unknown subcommand
       '/unmapped-command',          // the catch-all
     ];
     for (const body of lines) await cmds.run({ body, chatId: '!self', surface: 'whatsapp' });

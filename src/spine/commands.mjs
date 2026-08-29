@@ -25,7 +25,7 @@ import { ownNodeNamesOf, knownNodeNames } from './node-names.mjs';
 import { Room, ROOMS_ROOT } from '../room-core.mjs';
 import { SHELL_SURFACE } from './identity.mjs';
 // The room slug rule (fixedSlugFor, surface `room`) applied to a READ, which must not mint —
-// see roomOnDisk. NOT for the /room verbs: they pass the operator's raw string through.
+// see roomOnDisk. NOT for the /rooms verbs: they pass the operator's raw string through.
 import { sanitizeName } from '../sanitize.mjs';
 import { loadAdapters as defaultLoadAdapters, matchAdapter } from '../adapters/registry.mjs';
 import { agentPaths } from '../mesh/relay.mjs';
@@ -233,42 +233,54 @@ const quoteLeadingCommand = (text) => String(text ?? '').replace(/^\/([a-z0-9_-]
 // one; UNSET, every bare form is a strict no-op — today's behaviour, byte for byte.
 const NODE_ADDRESSABLE = /^\/(chrome|status|tabs|tab|open|close|members?|config|radio)\b(?:=(\S+))?(?:[ \t]*(.*))?$/i;
 
-// § /agents GRAMMAR — VERB FIRST (operator 2026-08-28: "better '/cmd subcmd <options>'").
+// § COMMAND GRAMMAR — one shape for the whole surface (operator 2026-08-28 / 2026-08-29).
 //
-// /agents was the outlier on this whole command surface: /room, /radio and /members all read
-// `/cmd <verb> <object>`, while /agents alone read `/agents <object> <verb>`. So the obvious
-// `/agents restart p` parsed `restart` as the being and `p` as the subcommand and answered
-// `unknown subcommand "p"` — an error message pointing at the wrong token entirely.
+//     /<commands> <verb> [<value>] <target> [<scope>]
 //
-// Canonical now:  /agents <sub> <handle>|all [<value>] [<conversation>]
-// Still accepted: /agents <handle>|all [<sub> [<value>]]   (the original order)
+// Plural command word, verb second, and the thing being acted on LAST — so on /agents the
+// being and the conversation end up adjacent (`auto mention p spoiler`) instead of with the
+// value wedged between them. Deliberate cost, chosen by the operator over the alternative:
+// the target's slot moves with the verb's arity (slot 2 in `restart p`, slot 3 in `auto
+// mention p`). That is the price of keeping the scope chain contiguous, and it is only
+// payable because every verb's arity is FIXED and its value comes from a closed set.
 //
-// Disambiguation is positional and total: if the FIRST token is a known subcommand the line is
-// verb-first, otherwise it is the legacy order. A being whose handle collides with a subcommand
-// name is therefore unreachable in the bare status form — acceptable, since `reset`/`restart`/
-// `auto`/`access_level` are not plausible handles, and the alternative (guessing from arity) is
-// ambiguous for real inputs.
+//   /agents <handle>|all [<conv>]                             status
+//   /agents reset|restart <handle>|all [<conv>]
+//   /agents auto <mode> <handle>|all [<conv>]
+//   /agents access_level <all|regular> <handle>|all [<conv>]
 //
-// The trailing <conversation> parses unambiguously because every subcommand's arity is FIXED and
-// its value comes from a closed set: after the verb, the handle, and the value if the verb takes
-// one, at most one token can remain, and it can only be the conversation. `=<slug>` still works
-// and means the same thing; naming the conversation BOTH ways is an error rather than a silent
-// precedence rule.
+// The object-first order (`/agents restart e`) is GONE — operator 2026-08-29, "remove legacy
+// ways". It is DETECTED and named rather than left to misparse: a line that silently does the
+// wrong thing is worse than one that tells you what to type. `=<slug>` still says the same
+// thing as the trailing <conv>; saying it both ways is an error, not a precedence rule.
 export const AGENT_SUB_ARITY = { reset: 0, restart: 0, auto: 1, access_level: 1 };
-export const AGENTS_USAGE = 'usage: /agents <reset|restart|auto <mode>|access_level <all|regular>> <handle>|all [<conversation>] — bare `/agents <handle>|all` shows status';
+export const AGENTS_USAGE = 'usage: /agents [<verb>] [<value>] <handle>|all [<conversation>] — verbs: reset | restart | auto <mode> | access_level <all|regular>. Bare `/agents <handle>|all` shows status.';
 
-// args (already whitespace-split) -> { args: [handle, sub, value] for agentsCmd, slug, extra }.
-// Pure; exported for tests. `extra` non-empty means the caller passed more tokens than the
-// grammar can place — reported, never ignored.
+// args (already whitespace-split) -> what agentsCmd wants: { args: [handle, verb, value],
+// slug, extra }, or { retired } for the old order. Pure; exported for tests.
 export function normalizeAgentsArgs(args) {
-  const first = args[0]?.toLowerCase();
-  if (!first || !Object.hasOwn(AGENT_SUB_ARITY, first)) return { args, slug: null, extra: [] };
-  const [sub, handle, ...rest] = args;
-  const takesValue = AGENT_SUB_ARITY[first] === 1;
-  const value = takesValue ? rest[0] : undefined;
-  const trailing = takesValue ? rest.slice(1) : rest;
-  return { args: [handle, sub, value], slug: trailing[0] ?? null, extra: trailing.slice(1) };
+  const verb = args[0]?.toLowerCase();
+  if (verb && Object.hasOwn(AGENT_SUB_ARITY, verb)) {
+    const takesValue = AGENT_SUB_ARITY[verb] === 1;
+    const value = takesValue ? args[1] : undefined;
+    const handle = takesValue ? args[2] : args[1];
+    const trailing = args.slice(takesValue ? 3 : 2);
+    return { args: [handle, args[0], value], slug: trailing[0] ?? null, extra: trailing.slice(1) };
+  }
+  // No leading verb: either the bare status form (`<handle> [<conv>]`) or the retired
+  // object-first order, which is recognisable exactly — and worth recognising, to say so.
+  const second = args[1]?.toLowerCase();
+  if (second && Object.hasOwn(AGENT_SUB_ARITY, second)) {
+    return { retired: { handle: args[0], verb: args[1], rest: args.slice(2) } };
+  }
+  return { args: [args[0]], slug: args[1] ?? null, extra: args.slice(2) };
 }
+
+// The whole surface is PLURAL (operator 2026-08-29: "we should keep only '/agents', '/rooms',
+// and the singular asking you means plural?"). The singular is NOT silently aliased — it asks.
+// An alias would work forever and teach nothing; a question is answered once.
+export const PLURAL_OF = { agent: 'agents', room: 'rooms', member: 'members' };
+export const SINGULAR_CMD = /^\/(agent|room|member)(?:=\S+)?(?:\s+[\s\S]*)?$/i;
 
 // /radio say's PAYLOAD ALONE may contain embedded newlines (operator ruling 2026-08-08: the
 // text to read aloud is genuinely free-form prose, unlike every other argument this whole
@@ -419,7 +431,7 @@ export function createCommands({
   const rename = io.rename ?? fsRename;
 
   // The current named room, per surface (the shell, a Beeper Self-DM) — NAVIGATION
-  // only now: /rooms marks it "(current)", /room <slug> leave clears it. It NO LONGER gates
+  // only now: /rooms marks it "(current)", /rooms <slug> leave clears it. It NO LONGER gates
   // /members (bug fix 2026-07-23: /members operates on the CURRENT CONVERSATION's room, the
   // room the relay reads — see resolveConvRoom). Kept in-memory; a fresh boot starts with none.
   const currentRoom = new Map();   // surface -> room slug
@@ -442,11 +454,11 @@ export function createCommands({
   // unaffected by anything below.
   //
   // The JOINED-ROOM default (operator 2026-08-17, generalizing the 2026-08-16 /agents-only fix):
-  // "this conversation" means the room currently /room join'd on this surface, when one is
+  // "this conversation" means the room currently /rooms join'd on this surface, when one is
   // joined — exactly what redirectShellToRoom (boot.mjs) does for PROSE fan-out and what
   // /agents' own bare-target resolution already did for itself. currentRoomOf's stored value is
   // always a room SLUG (roomJoin: `currentRoom.set(surfaceOf(ev), slug)`, the same slug
-  // /room create/join addresses on surface 'room' — see redirectShellToRoom's `network: 'room',
+  // /rooms create/join addresses on surface 'room' — see redirectShellToRoom's `network: 'room',
   // chatId: room`), so the fallback resolves it there, never through the caller's own surface.
   // No room joined → currentRoomOf returns null → falls through to today's behavior
   // (surfaceOf(ev), ev.chatId) byte-for-byte, unchanged. This is the ONE choke point every
@@ -651,6 +663,18 @@ export function createCommands({
       else if (named) line = line.replace(addressed.raw, '');
     }
 
+    // The singular of a plural command ASKS (operator 2026-08-29: "the singular asking you
+    // means plural?"). Deliberately not an alias: an alias works forever and teaches nothing,
+    // a question is answered once. Placed ahead of every plural dispatch — none of them can
+    // match a singular anyway (`/agents` needs the s, `/rooms` needs it, `/members` needs it),
+    // so this only ever claims lines that would otherwise have fallen through to the brain.
+    const singular = SINGULAR_CMD.exec(line);
+    if (singular) {
+      const one = singular[1].toLowerCase();
+      await send?.(ev.chatId, `/${one} → did you mean \`/${PLURAL_OF[one]}\`? the commands are plural.`);
+      return;
+    }
+
     // /agents[=<slug>] <handle>|all [reset|restart|auto <mode>|access_level <all|regular>] —
     // the general per-being command surface (operator 2026-08-15, retires /e + /egpt entirely).
     // /e's whole family was hardcoded to defaultKey (the persona's own map key) — "a failure
@@ -660,15 +684,14 @@ export function createCommands({
     // conversation survived untouched by a reset meant to cover "this conversation". /agents
     // fixes that by taking the being explicitly, never assuming defaultKey.
     //
-    //   /agents <handle>|all [<conv>]                        → status (bare, see agentsStatus)
-    //   /agents reset <handle>|all [<conv>]                  → archive + wipe + reseed
-    //   /agents restart <handle>|all [<conv>]                → clear ONLY threadId, everything else survives
-    //   /agents auto <handle>|all <mode> [<conv>]            → was /e auto <mode>
-    //   /agents access_level <handle>|all <all|regular> [<conv>]  → was /e access all|regular
+    //   /agents <handle>|all [<conv>]                             → status (bare, see agentsStatus)
+    //   /agents reset <handle>|all [<conv>]                       → archive + wipe + reseed
+    //   /agents restart <handle>|all [<conv>]                     → clear ONLY threadId, everything else survives
+    //   /agents auto <mode> <handle>|all [<conv>]                 → was /e auto <mode>
+    //   /agents access_level <all|regular> <handle>|all [<conv>]  → was /e access all|regular
     //
-    // Verb-first since 2026-08-28 (see § /agents GRAMMAR at module scope for why, and for the
-    // legacy object-first order, which still parses). `[<conv>]` and `=<slug>` are the same
-    // thing said two ways.
+    // See § COMMAND GRAMMAR at module scope for the shape and why the target trails.
+    // `[<conv>]` and `=<slug>` are the same thing said two ways.
     //
     // `=<slug>` is a PRIVATE convention parsed by THIS regex alone — it is bound directly to
     // the command token exactly like NODE_ADDRESSABLE's `=<name>` (`/chrome=kg`, `/tab=do 3`,
@@ -682,13 +705,19 @@ export function createCommands({
     // (same error/ambiguity semantics). `<handle>` is a being's agents.<being> map key
     // (`e`, `wren`, …); `all` applies the subcommand to every being residentsOf() finds on
     // that conversation's entry. See agentsCmd() for the full dispatch.
-    // `/agents?` — the singular is accepted too. It is what the operator reached for
-    // (2026-08-28), it collides with nothing, and being lectured about a missing plural
-    // is a worse answer than just doing the thing.
-    const agentsMatch = /^\/agents?(?:=(\S+))?(?:\s+(.+?))?\s*$/i.exec(line);
+    const agentsMatch = /^\/agents(?:=(\S+))?(?:\s+(.+?))?\s*$/i.exec(line);
     if (agentsMatch) {
       const raw = (agentsMatch[2] ?? '').trim().split(/\s+/).filter(Boolean);
-      const { args, slug, extra } = normalizeAgentsArgs(raw);
+      const { args, slug, extra, retired } = normalizeAgentsArgs(raw);
+      // The retired object-first order gets its own line back, rebuilt into the new one —
+      // naming the exact replacement, not just the rule.
+      if (retired) {
+        const fixed = AGENT_SUB_ARITY[retired.verb.toLowerCase()] === 1
+          ? `/agents ${retired.verb} ${retired.rest[0] ?? '<value>'} ${retired.handle}`
+          : `/agents ${retired.verb} ${retired.handle}`;
+        await send?.(ev.chatId, `/agents: the verb comes first now — \`${fixed}\``);
+        return;
+      }
       if (extra.length) { await send?.(ev.chatId, `/agents: don't know where to put "${extra.join(' ')}" — ${AGENTS_USAGE}`); return; }
       if (slug && agentsMatch[1]) { await send?.(ev.chatId, `/agents: conversation named twice (=${agentsMatch[1]} and ${slug}) — name it once`); return; }
       await agentsCmd(ev, agentsMatch[1] || slug || null, args);
@@ -744,30 +773,21 @@ export function createCommands({
     const closeMatch = /^\/close\s+(\d+)\s*$/i.exec(line);
     if (closeMatch) { await send?.(ev.chatId, await closeTabCmd(Number(closeMatch[1]))); return; }
 
-    // /rooms — Phase 2: list the saved rooms (bare), or an ALIAS of /room <verb>
-    // <room> (`/rooms join devwork` == `/room join devwork`). Matched BEFORE /room: the
-    // /room regex can't match "/rooms" (the trailing 's' is neither whitespace nor end),
-    // but keeping /rooms first makes the alias intent explicit. Same pre-catch-all slot.
+    // /rooms — bare: list the saved rooms. Otherwise `/rooms <verb> [<room>]`, routed to the
+    // same room() the singular /rooms used to reach. /rooms itself is retired (operator
+    // 2026-08-29: "keep only '/agents', '/rooms'") and now answers the plural question below.
     const roomsMatch = /^\/rooms(?:\s+(\S+))?(?:\s+(.+?))?\s*$/i.exec(line);
     if (roomsMatch) {
       const verb = roomsMatch[1]?.toLowerCase() || null;
       if (!verb) { await send?.(ev.chatId, await roomsList(ev)); return; }
-      await room(ev, verb, roomsMatch[2]?.trim() || null);   // alias: /rooms <verb> <room>
+      await room(ev, verb, roomsMatch[2]?.trim() || null);
       return;
     }
 
-    // /room <verb> [<room>] — Phase 2 rooms & members, verb-first (bug fix 2026-08-07: the
-    // old slug-first grammar let an unrecognized first token default to a room lookup — see
-    // the room() comment below). Slots in exactly like /chrome: a dispatch match BEFORE the
-    // final generic catch-all.
-    const roomMatch = /^\/room(?:\s+(\S+))?(?:\s+(.+?))?\s*$/i.exec(line);
-    if (roomMatch) { await room(ev, roomMatch[1]?.toLowerCase() || null, roomMatch[2]?.trim() || null); return; }
-
     // /members … — the CURRENT room's roster. Bare: list. `add tab <n>`: adapter-match a
-    // Chrome tab and add it as a disabled brain. `<id> mode <disable|mention|all>`: flip a
-    // member's mode. Pre-catch-all so none leak to E. `/member` (singular) is accepted too
-    // (operators type both) — same handler.
-    const membersMatch = /^\/members?(?:\s+(.+?))?\s*$/i.exec(line);
+    // Chrome tab and add it as a disabled brain. `mode <disable|mention|all> <id>`: flip a
+    // member's mode. Pre-catch-all so none leak to E. Plural only — /member asks below.
+    const membersMatch = /^\/members(?:\s+(.+?))?\s*$/i.exec(line);
     if (membersMatch) { await members(ev, membersMatch[1]?.trim() || null); return; }
 
     // /radio [join|leave] — WHICH node relays the CURRENT CONVERSATION's room to the
@@ -972,19 +992,20 @@ export function createCommands({
     catch (e) { return `/close: failed — ${e?.message ?? e}`; }
   }
 
-  const ROOM_USAGE = 'usage: /room create <name> | /room join|leave|members <room> | /room delete [force] <room>';
+  const ROOM_USAGE = 'usage: /rooms | /rooms create <name> | /rooms join|leave|members <room> | /rooms delete [force] <room>';
+  const MEMBERS_USAGE = 'usage: /members | /members add tab <n> [alias=<name>|<name>] | /members remove <id> | /members mode <disable|mention|all> <id>';
   // A slug with no folder on disk — the members path and the delete path both need to say
-  // this instead of acting as though it exists (bug fix 2026-08-07: "/room help" rendered
+  // this instead of acting as though it exists (bug fix 2026-08-07: "/rooms help" rendered
   // "help (0 members)", a roster fabricated for a room that was never created — 'help' just
   // happened to parse as a slug under the OLD slug-first grammar, like any typo would).
-  const noRoomMsg = (slug) => `no room '${slug}' — /rooms lists them, /room create ${slug} makes it`;
+  const noRoomMsg = (slug) => `no room '${slug}' — /rooms lists them, /rooms create ${slug} makes it`;
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // /room — the named-room router (Phase 2). VERB-first: the first token is always matched
+  // /rooms — the named-room router (Phase 2). VERB-first: the first token is always matched
   // against the fixed verb set {create, join, leave, members, delete, help} and the room
   // name comes from `rest`. This replaced a slug-first grammar (first token = room, second
   // = sub-verb) after a live bug: an unrecognized first token silently defaulted to
-  // sub==='members' and was looked up as a room name, so "/room help" rendered a fabricated
+  // sub==='members' and was looked up as a room name, so "/rooms help" rendered a fabricated
   // "help (0 members)" roster. Under this grammar an unrecognized first token NEVER touches
   // a room — it just gets the usage/unknown-verb reply. `/rooms` (list) and `/rooms <verb>
   // <room>` (alias) route through here too. `first === 'help'` is special-cased to the
@@ -1010,7 +1031,7 @@ export function createCommands({
       // bug this guards against (see noRoomMsg above).
       const room = await roomOnDisk(rest);
       if (!room) { await send?.(ev.chatId, noRoomMsg(rest)); return; }
-      // Labelled by the room's OWN slug, not the raw token — `/room members FOO` is the
+      // Labelled by the room's OWN slug, not the raw token — `/rooms members FOO` is the
       // room `foo`, and the roster should say which room it actually read.
       await send?.(ev.chatId, await renderMembers(ev, room, room.slug)); return;
     }
@@ -1023,7 +1044,7 @@ export function createCommands({
     }
     // Any other first token is an unrecognized verb — NEVER a room lookup (the property the
     // slug-first bug violated): no roomOnDisk/stat call, nothing room-shaped touched.
-    await send?.(ev.chatId, `/room: unknown verb "${first}" — create|join|leave|members|delete`);
+    await send?.(ev.chatId, `/rooms: unknown verb "${first}" — create|join|leave|members|delete`);
   }
 
   // /agents[=<slug>] <handle>|all [reset|restart|auto <mode>|access_level <all|regular>] — THE
@@ -1051,7 +1072,7 @@ export function createCommands({
       if (!isAutoMode(mode)) { await send?.(ev.chatId, `/agents: unknown mode "${mode}" — use one of: ${AUTO_MODES.join(', ')}`); return; }
     }
     if (sub === 'access_level' && valueRaw?.toLowerCase() !== 'all' && valueRaw?.toLowerCase() !== 'regular') {
-      await send?.(ev.chatId, 'usage: /agents <handle>|all access_level all|regular');
+      await send?.(ev.chatId, 'usage: /agents access_level all|regular <handle>|all');
       return;
     }
 
@@ -1064,7 +1085,7 @@ export function createCommands({
     // reset <target> already used.
     //
     // Bug fix (operator 2026-08-16): a bare invocation used to mean "this chat" even when the
-    // operator had /room join'd a room — silently writing to the shell's own lobby instead of
+    // operator had /rooms join'd a room — silently writing to the shell's own lobby instead of
     // the joined room. roomLeave already treats currentRoom as the natural bare-invocation
     // default; /agents now follows the same precedent, resolving the joined room through the
     // SAME resolveTarget the explicit `=<slug>` branch uses above, so an explicit slug still
@@ -1084,7 +1105,7 @@ export function createCommands({
     }
 
     // `all` = every being residentsOf() finds on that conversation's entry — the exact
-    // registry-block owner /room's members roster is silent on (residentsOf reads
+    // registry-block owner /rooms's members roster is silent on (residentsOf reads
     // entry.agents.<being> blocks, conversations-state.mjs). Ordered defaultKey-first (when
     // resident) so the persona is always the first block/reply in a multi-being result; the
     // rest keep residentsOf()'s own order.
@@ -1174,7 +1195,7 @@ export function createCommands({
     }
     try { await writeState(next); } catch (e) { onLog(`/agents reset ${ev.chatId}: ${e?.message ?? e}`); }
 
-    // Reseed a pristine tree at the ORIGINAL path — the same two calls /room create makes
+    // Reseed a pristine tree at the ORIGINAL path — the same two calls /rooms create makes
     // for a brand-new room. No config.yaml write: neither call writes one, matching what a
     // genuinely first-contact conversation has.
     await room.ensureTree({ io: { mkdir } });
@@ -1204,7 +1225,7 @@ export function createCommands({
   //
   // No evictWarm() call either (unlike access_level, which needs one): warm-sessions.mjs's
   // run() already carries a SESSION-IDENTITY GUARD (its own comment names this exact case —
-  // "`/agents <handle> reset` nulling the thread ... would otherwise be silently ignored")
+  // "`/agents reset <handle>` nulling the thread ... would otherwise be silently ignored")
   // that compares the `sessionId` brainpool.mjs passes every turn (`sessionId: threadId ??
   // null`, always an explicit key so the guard's hasOwnProperty check fires) against the warm
   // entry's own bound session id, and self-evicts + reopens fresh on a mismatch. Nulling
@@ -1256,7 +1277,7 @@ export function createCommands({
     }
   }
 
-  // /agents[=<slug>] <handle>|all auto <mode> — was /e auto <mode> [<target>], generalized:
+  // /agents auto <mode> <handle>|all — was /e auto <mode> [<target>], generalized:
   // sets EACH target being's own conversation mode (modes live in conversations.yaml,
   // `agents.<being>.mode`, merged over the block's existing fields via patchBeing — siblings
   // survive). Bare (`where === 'here'`): this chat. `=<slug>`-resolved: a DIFFERENT known
@@ -1270,8 +1291,8 @@ export function createCommands({
     } catch (e) { onLog(`/agents auto ${ev.chatId}: ${e?.message ?? e}`); await send?.(ev.chatId, `/agents: auto failed — ${e?.message ?? e}`); }
   }
 
-  // /agents[=<slug>] <handle>|all access_level <all|regular> — was /e access all|regular
-  // (renamed subcommand keyword, operator's own example: `/agents wren access_level all`),
+  // /agents access_level <all|regular> <handle>|all — was /e access all|regular
+  // (renamed subcommand keyword, operator's own example: `/agents access_level all wren`),
   // generalized to any being (or every resident). Points EACH target being's own
   // `access_level` at config/permissions/all.md or regular.md. NOT a freeze: writes ONLY
   // `access_level: target` into the being's block, merged over its existing fields
@@ -1375,13 +1396,13 @@ export function createCommands({
     } catch (e) { return `being: ${handle}\nerror: ${e?.message ?? e}`; }
   }
 
-  // The room called <name>, iff its folder exists on disk — the same stat-probe /room create
+  // The room called <name>, iff its folder exists on disk — the same stat-probe /rooms create
   // uses for its own idempotency check, reused here so "does this room exist" has ONE
   // answer across create/members/delete. Returns the Room, or null.
   //
   // A READ NEVER MINTS. A room's slug is a pure function of its name (fixedSlugFor, surface
   // `room`), so this needs no conv-state at all: it applies that identical rule and stats the
-  // folder. Going through resolveConvRoom here would call ensureContact, so `/room members
+  // folder. Going through resolveConvRoom here would call ensureContact, so `/rooms members
   // <typo>` would leave a contact entry behind for a room that does not exist. Same
   // constructor roomsList and roomFromNs use for a name that came off disk.
   async function roomOnDisk(name) {
@@ -1389,7 +1410,7 @@ export function createCommands({
     try { await stat(room.baseDir()); return room; } catch { return null; }
   }
 
-  // /room create <name> — CREATE a room. A Room IS a folder (room-core.mjs), and a room is
+  // /rooms create <name> — CREATE a room. A Room IS a folder (room-core.mjs), and a room is
   // a CONVERSATION on surface `room` whose chatId is the name itself: resolveConvRoom mints
   // the contact (the SAME ensureContact a first Beeper message goes through — that is the
   // whole reason a named room is now addressable) and ensureTree makes the folder, which the
@@ -1399,7 +1420,7 @@ export function createCommands({
   // in-memory and it never touches a real profile.
   async function roomCreate(ev, name) {
     // A room NAME is operator-chosen; reject an empty/punctuation-only one before touching fs.
-    if (!name || !/[a-z0-9]/i.test(name)) { await send?.(ev.chatId, 'usage: /room create <name>'); return; }
+    if (!name || !/[a-z0-9]/i.test(name)) { await send?.(ev.chatId, 'usage: /rooms create <name>'); return; }
     const r = await resolveConvRoom('room', name);
     if (!r) { await send?.(ev.chatId, `can't resolve room '${name}'`); return; }
     const slug = r.slug;
@@ -1420,7 +1441,7 @@ export function createCommands({
     // already empty, so copy-if-missing is a plain seed here — and it's the same
     // never-clobber default every other seed path uses. Never throws by its own contract, so
     // a seed failure still leaves a created room rather than an error the operator can't act
-    // on — an empty identity.d is a smaller problem than a /room create that fails outright.
+    // on — an empty identity.d is a smaller problem than a /rooms create that fails outright.
     await seedIdentityLayers(r, 'egpt', { io: { mkdir, readFile, writeFile } });
     await send?.(ev.chatId, `room ${slug} created at ${rel}`);
   }
@@ -1434,7 +1455,7 @@ export function createCommands({
   // a slug as a chatId and mint a contact for every listed room on every /rooms.
   async function roomsList(ev) {
     const names = listRoomNames();
-    if (!names.length) return 'no rooms yet — /room create <name> to make one';
+    if (!names.length) return 'no rooms yet — /rooms create <name> to make one';
     const cur = curRoomName(ev);
     const lines = ['rooms:'];
     for (const name of names) {
@@ -1445,25 +1466,25 @@ export function createCommands({
     return lines.join('\n');
   }
 
-  // /room <slug> join — make <slug> the current room for this surface (what bare /members
+  // /rooms <slug> join — make <slug> the current room for this surface (what bare /members
   // targets). In-memory for Phase 2; a room folder materializes when its first member is
-  // added (setMember mkdir's it) or via /room create.
+  // added (setMember mkdir's it) or via /rooms create.
   async function roomJoin(ev, slug) {
     currentRoom.set(surfaceOf(ev), slug);
     onRoomChange(surfaceOf(ev), slug);
     await send?.(ev.chatId, `joined '${slug}' — now current.`);
   }
 
-  // /room <slug> leave — clear the current room for this surface iff it IS <slug>.
+  // /rooms <slug> leave — clear the current room for this surface iff it IS <slug>.
   async function roomLeave(ev, slug) {
     if (curRoomName(ev) === slug) { currentRoom.delete(surfaceOf(ev)); onRoomChange(surfaceOf(ev), null); await send?.(ev.chatId, `left '${slug}' — no current room.`); return; }
     await send?.(ev.chatId, `not in '${slug}' — current room is ${curRoomName(ev) ? `'${curRoomName(ev)}'` : 'none'}`);
   }
 
-  // /room <slug> delete [force] — remove a room folder outright. Irreversible: a room
+  // /rooms <slug> delete [force] — remove a room folder outright. Irreversible: a room
   // folder holds transcript.md, media/, files/, identity.d/, scripts/, transcripts/ — real
   // content an operator (or a brain) put there. A room that is STILL JUST the seeded
-  // skeleton (what /room create + seedIdentityLayers leave behind: the empty tree plus
+  // skeleton (what /rooms create + seedIdentityLayers leave behind: the empty tree plus
   // identity.d/'s seeded layers, nothing else) is removed outright; a room holding anything
   // more requires the explicit `force` token so the operator has to mean it.
   async function roomDelete(ev, slug, force) {
@@ -1475,7 +1496,7 @@ export function createCommands({
     if (!force) {
       const contents = await roomContents(room);
       if (contents.length) {
-        await send?.(ev.chatId, `room ${slug} has content — ${contents.join(', ')} — /room ${slug} delete force to remove anyway`);
+        await send?.(ev.chatId, `room ${slug} has content — ${contents.join(', ')} — /rooms ${slug} delete force to remove anyway`);
         return;
       }
     }
@@ -1511,7 +1532,7 @@ export function createCommands({
   // member's id, kind, live presence, and friendly mode. Presence for a brain member = its
   // saved targetId is a LIVE tab (from listTabs); a listTabs hiccup degrades every brain to
   // "inactive", never throws. Non-brain members read as "active" (a surface/chat member is
-  // present as such). Shared by /members (the conversation room) and /room <slug> members (a
+  // present as such). Shared by /members (the conversation room) and /rooms <slug> members (a
   // named room) — the caller passes the Room + its display label.
   // The lobby's DEFAULT members: this node's local beings, read from the agents
   // registry (E = the persona, plus every configured being like @d / @l). DISPLAY
@@ -1560,9 +1581,9 @@ export function createCommands({
   // /members … — operate on the CURRENT CONVERSATION's room (bare = list; `add tab <n>`;
   // `<id> mode <m>`). A conversation IS a room (the model): resolveConvRoom yields the SAME Room
   // the phase-4 relay reads, so a member added here lands in the exact config.yaml resolveMembers
-  // reads → an @<brain> on this conversation drives the relay. NO "/room <slug> join" gate — the
+  // reads → an @<brain> on this conversation drives the relay. NO "/rooms <slug> join" gate — the
   // conversation you're in IS the room. (An operator-named room is addressed EXPLICITLY — /rooms
-  // + /room <slug> members inspect/manage it — but it is the same kind of Room on surface `room`,
+  // + /rooms <slug> members inspect/manage it — but it is the same kind of Room on surface `room`,
   // so the relay reads its roster through the identical resolver.)
   async function members(ev, rest) {
     const room = await convRoomOf(ev);
@@ -1575,9 +1596,11 @@ export function createCommands({
     if (add) { await membersAddTab(ev, room, Number(add[1]), add[2] ?? null); return; }
     const remove = /^remove\s+(\S+)$/i.exec(rest);
     if (remove) { await membersRemove(ev, room, remove[1]); return; }
-    const mode = /^(\S+)\s+mode\s+(\S+)$/i.exec(rest);
-    if (mode) { await membersSetMode(ev, room, mode[1], mode[2]); return; }
-    await send?.(ev.chatId, 'usage: /members | /members add tab <n> [alias=<name>|<name>] | /members remove <id> | /members <id> mode <disable|mention|all>');
+    // VERB FIRST, target last (operator 2026-08-29) — was `<id> mode <value>`, the last
+    // object-first form on this surface.
+    const mode = /^mode\s+(\S+)\s+(\S+)$/i.exec(rest);
+    if (mode) { await membersSetMode(ev, room, mode[2], mode[1]); return; }
+    await send?.(ev.chatId, MEMBERS_USAGE);
   }
 
   // /members add tab <n> — add the nth /tabs tab as a brain member of the conversation's room,
@@ -1648,7 +1671,7 @@ export function createCommands({
     await send?.(ev.chatId, `removed '${id}'`);
   }
 
-  // /members <id> mode <disable|mention|all> — flip a member's mode. The friendly word
+  // /members mode <disable|mention|all> <id> — flip a member's mode. The friendly word
   // maps to the stored room-core token (setMemberState preserves adapter/url/targetId).
   async function membersSetMode(ev, room, id, word) {
     const w = word.toLowerCase();
@@ -1692,7 +1715,7 @@ export function createCommands({
   // The distinction reuses the node gate's own answer (`explicit`, below,
   // `addressed.raw.startsWith('=')`) rather than a second "was I addressed" test.
   //
-  // Verb-first (the /room 2026-08-07 lesson): an unrecognized verb NEVER touches a room,
+  // Verb-first (the /rooms 2026-08-07 lesson): an unrecognized verb NEVER touches a room,
   // it just gets the usage line.
   const RADIO_USAGE = 'usage: /radio | /radio join [<radio>] | /radio leave [all|<slug>] | /radio say <text> | /radio disable [<radio>|<node>|<person>]';
 

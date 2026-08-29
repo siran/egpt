@@ -114,9 +114,8 @@ export const COMMANDS = [
   { cmd: '/prompts',        surface: 'shell',     usage: '/prompts [on|off]',                              desc: 'show/hide full prompt sent to operators' },
 
   { section: 'ROOMS' },
-  { cmd: '/room',           surface: 'shell',     usage: '/room create <name> | /room join|leave|members <room> | /room delete [force] <room>', desc: 'show room info, switch, create, or delete', wired: true },
-  { cmd: '/rooms',          surface: 'shell',     usage: '/rooms',                                         desc: 'list saved rooms (legacy YAML snapshots, not the live room set)', wired: true },
-  { cmd: '/members',        surface: 'shell',     usage: '/members | /members add tab <n> [alias=<name>|<name>] | /members remove <id> | /members <id> mode <disable|mention|all>', desc: 'manage the CURRENT CONVERSATION\'s room roster: list, add a Chrome tab as a brain member, remove one, or set its contribution mode', wired: true },
+  { cmd: '/rooms',          surface: 'shell',     usage: '/rooms | /rooms create <name> | /rooms join|leave|members <room> | /rooms delete [force] <room>', desc: 'list rooms, or create/join/leave/inspect/delete one. Absorbed the singular /rooms (retired 2026-08-29 — the commands are plural).', wired: true },
+  { cmd: '/members',        surface: 'shell',     usage: '/members | /members add tab <n> [alias=<name>|<name>] | /members remove <id> | /members mode <disable|mention|all> <id>', desc: 'manage the CURRENT CONVERSATION\'s room roster: list, add a Chrome tab as a brain member, remove one, or set its contribution mode', wired: true },
   { cmd: '/radio',          surface: 'shell',     usage: '/radio | /radio join [<radio>] | /radio leave [all|<slug>] | /radio say <text> | /radio disable [<radio>|<node>|<person>]', desc: 'node-wide radio status (listeners + joined rooms); join/leave a room\'s relay, /radio say airs text as your voice, /radio disable turns off a radio/node or blocks a person', wired: true },
   { cmd: '/save-room',      surface: 'shell',     usage: '/save-room [name]',                              desc: 'snapshot the current room lineup as YAML' },
 
@@ -129,7 +128,7 @@ export const COMMANDS = [
   { cmd: '/help',           surface: 'both',      usage: '/help',                                          desc: 'list commands wired on this surface; unwired registry entries print in a separate labelled tail', wired: true },
   { cmd: '/log',            surface: 'shell',     usage: '/log [N=30]',                                    desc: 'show last N log entries (telemetry, hints, debug)' },
   { cmd: '/logs',           surface: 'shell',     usage: '/logs [N=30]',                                   desc: 'alias for /log' },
-  { cmd: '/agents',         surface: 'shell',     usage: '/agents[=<slug>] <handle>|all [reset|auto <mode>|access_level <all|regular>]', desc: 'manage ANY resident being (persona or sibling) on any conversation: bare = live status, reset = archive+wipe+reseed, auto <mode> = set reply mode, access_level all|regular = confinement toggle. `all` applies to every resident being. Was /e /egpt (retired 2026-08-15).', wired: true },
+  { cmd: '/agents',         surface: 'shell',     usage: '/agents [<verb>] [<value>] <handle>|all [<conversation>]  ·  verbs: reset | restart | auto <mode> | access_level <all|regular>', desc: 'manage ANY agent on any conversation: bare = live status, reset = archive+wipe+reseed, restart = new thread only, auto <mode> = set reply mode, access_level all|regular = confinement toggle. `all` applies to every resident agent. Verb first, target last (2026-08-29); =<slug> still names the conversation. Was /e /egpt (retired 2026-08-15).', wired: true },
 ];
 
 // All known command tokens (across all surfaces). Used by surfaces to validate

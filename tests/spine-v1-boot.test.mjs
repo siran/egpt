@@ -597,11 +597,11 @@ describe('computeShellHeader — the permanent shell status line', () => {
       .toBe('🟢 room: lobby — ? for help · ctrl-d = send');
   });
 
-  // Live status-line room reflection (operator 2026-08-16, reworded 2026-08-17): /room join
+  // Live status-line room reflection (operator 2026-08-16, reworded 2026-08-17): /rooms join
   // <slug> should show up in the SAME header string boot pushes to the shell — currentRoom is
   // the seam. Rendered as `room: <slug>`, never a `lobby → X` arrow (that read like cross-node
   // routing, a different concept — see the defaultNode arrow below).
-  describe('`currentRoom` — the /room join reflection', () => {
+  describe('`currentRoom` — the /rooms join reflection', () => {
     it('a joined room renders as "room: <currentRoom>"', () => {
       expect(computeShellHeader({ nodeName: 'kg', currentRoom: 'acim' }))
         .toBe('🟢 room: acim — ? for help · ctrl-d = send');

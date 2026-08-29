@@ -4,7 +4,7 @@
 // THE DRIFT THIS LOCKS DOWN: the directory list was written out TWICE — once in
 // src/spine/commands.mjs (/room create's mkdir loop) and once in
 // src/conversations-state.mjs (seedIdentityLayers) — and the two copies had already
-// disagreed: /room create made media/ + files/, seeding did not, so an operator-named room
+// disagreed: /rooms create made media/ + files/, seeding did not, so an operator-named room
 // and a chat conversation were NOT the same Room on disk. A conversation IS a Room with
 // another base_dir; if the two creation paths can produce different trees, the abstraction
 // is a shared helper wearing a class.
@@ -27,7 +27,7 @@ const ROOM_NAME = 'tree-fixture';
 
 // An io seam that RECORDS mkdir and every write (path -> bytes). readFile always misses, so
 // seedIdentityLayers takes its copy-if-missing branch (it would otherwise skip layers) and
-// /room create's stat-probe reports "no such room yet".
+// /rooms create's stat-probe reports "no such room yet".
 function captureIo() {
   const mkdirs = [];
   const writes = {};
@@ -48,15 +48,15 @@ function captureIo() {
 // folder itself), deduped + sorted so creation ORDER is not part of the contract.
 const treeOf = (mkdirs, room) => [...new Set(mkdirs.map((p) => relative(room.baseDir(), p)))].sort();
 
-// The shared (surface, chatId) → Room resolver boot injects. `/room create <name>` reaches
+// The shared (surface, chatId) → Room resolver boot injects. `/rooms create <name>` reaches
 // it as ('room', <name>) — a room is a conversation on surface `room` — and here the slug
 // IS the name, so the created tree is the one ROOM lands at below.
 const resolveConvRoom = async (surface, chatId) => Room.forChat(surface, chatId);
 const ROOM = () => Room.forChat('room', ROOM_NAME);
 
 describe('ONE owner of the Room tree — both creation paths make the SAME tree', () => {
-  it('/room create <name> and seeding a conversation produce the identical dir set', async () => {
-    // (a) the operator-named-room path — /room create
+  it('/rooms create <name> and seeding a conversation produce the identical dir set', async () => {
+    // (a) the operator-named-room path — /rooms create
     const named = captureIo();
     const cmds = createCommands({
       getConfig: () => ({ whatsapp: { chat_id: '!self' } }),
@@ -64,7 +64,7 @@ describe('ONE owner of the Room tree — both creation paths make the SAME tree'
       io: named.io,
       resolveConvRoom,
     });
-    await cmds.run({ chatId: '!self', surface: SURFACE, body: `/room create ${ROOM_NAME}` });
+    await cmds.run({ chatId: '!self', surface: SURFACE, body: `/rooms create ${ROOM_NAME}` });
 
     // (b) the conversation path — the turn-boundary seeding
     const conv = captureIo();
@@ -85,17 +85,17 @@ describe('ONE owner of the Room tree — both creation paths make the SAME tree'
       io: named.io,
       resolveConvRoom,
     });
-    await cmds.run({ chatId: '!self', surface: SURFACE, body: `/room create ${ROOM_NAME}` });
+    await cmds.run({ chatId: '!self', surface: SURFACE, body: `/rooms create ${ROOM_NAME}` });
     // '' is the base folder; the rest are the dir getters room-core.mjs declares.
     expect(treeOf(named.mkdirs, ROOM())).toEqual(['', 'files', 'identity.d', 'media', 'scripts', 'transcripts']);
   });
 
   // REPRODUCE-FIRST (operator 2026-07-26: "why an empty identity.d in namedrooms? fix,
-  // please."): the tree existing is not the same as it being SEEDED. /room create must
+  // please."): the tree existing is not the same as it being SEEDED. /rooms create must
   // populate identity.d/ with the room template's NN-*.md layers, exactly like a
   // conversation's turn-boundary seeding does — else both pointer cards tell a room's
   // brain to read ./identity.d/ and find nothing there.
-  it('/room create SEEDS identity.d/ with the room template layers — not just an empty folder', async () => {
+  it('/rooms create SEEDS identity.d/ with the room template layers — not just an empty folder', async () => {
     const named = captureIo();
     const cmds = createCommands({
       getConfig: () => ({ whatsapp: { chat_id: '!self' } }),
@@ -103,7 +103,7 @@ describe('ONE owner of the Room tree — both creation paths make the SAME tree'
       io: named.io,
       resolveConvRoom,
     });
-    await cmds.run({ chatId: '!self', surface: SURFACE, body: `/room create ${ROOM_NAME}` });
+    await cmds.run({ chatId: '!self', surface: SURFACE, body: `/rooms create ${ROOM_NAME}` });
 
     const room = ROOM();
     const layerNames = Object.keys(named.writes)

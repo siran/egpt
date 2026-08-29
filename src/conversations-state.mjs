@@ -110,7 +110,7 @@ export function slugTranscriptPath(surface, slug) {
 // Archive the FINISHED thread's transcript so the new one starts empty (operator 2026-07-25:
 // "there must be a new transcript if thread-id changes"). Its home is the fresh moment — the
 // brainpool's no-thread branch, BEFORE the new thread writes anything — because that is when
-// the thread changes, whatever changed it (a deleted threadId, /agents <handle> reset, a
+// the thread changes, whatever changed it (a deleted threadId, /agents reset <handle>, a
 // dead session).
 //
 // WHICH id: the one the file itself names in its front matter (transcript-meta.parseFrontMatter),
@@ -930,7 +930,7 @@ export function getBeing(state, surface, jid, being) {
     mode:               b?.mode               ?? null,
     send_to_egpt:       b?.send_to_egpt       ?? null,  // per-conv 'always'|'mode' override
     threadId:           b?.threadId           ?? null,
-    // /agents <handle>|all access_level all|regular (operator 2026-08-14, was /e access
+    // /agents access_level all|regular <handle>|all (operator 2026-08-14, was /e access
     // all|regular): points this being at a
     // config/permissions/<level>.md file, read fresh every turn by
     // spine/brainpool.mjs — NOT a freeze. null = never touched (this node's
@@ -1141,13 +1141,13 @@ export function normalizeResidents(val) {
 export const LOBBY_SLUG = 'lobby';
 // The fixed-slug surface: `room` (2026-08-09). An operator-named room is a
 // conversation whose chatId IS the name the operator typed, so its slug must be a PURE
-// FUNCTION of that name — no -yymmddhhmm tail (the name is already unique by fiat: /room
+// FUNCTION of that name — no -yymmddhhmm tail (the name is already unique by fiat: /rooms
 // create refuses an existing one) and no title-driven re-slug (a room has no title). That
 // makes the folder name, the chatId and the typed name ONE string, which is what lets
-// /rooms print a name you can type straight back, and lets a READ verb (/room members,
-// /room delete) find the room without touching conv-state at all.
-// sanitizeName is the SAME kebab normalisation the /room verbs used to apply at five call
-// sites; it lives here now, as one rule, so `/room create Foo` and `/room members foo` are
+// /rooms print a name you can type straight back, and lets a READ verb (/rooms members,
+// /rooms delete) find the room without touching conv-state at all.
+// sanitizeName is the SAME kebab normalisation the /rooms verbs used to apply at five call
+// sites; it lives here now, as one rule, so `/rooms create Foo` and `/rooms members foo` are
 // the same room. Every other surface is untouched and keeps its timestamped slug.
 // The trailing ('shell','main') arm is the RETIRED console seat: nothing in the live path
 // produces it any more (the console is ('room','lobby') now), but a profile that has not run
@@ -1334,7 +1334,7 @@ export function patchBeing(state, surface, jidOrSlug, being, fields) {
 // all" (a field-wise merge of `undefined`s would leave the block as a truthy object full of
 // undefined values, which still reads as present). deleteBeing wipes `entry.agents.<being>`
 // OUTRIGHT, so getBeing(...).present reads back false — exactly what a never-instanced
-// contact looks like. Used by /agents <handle>|all reset (spine/commands.mjs's agentsReset,
+// contact looks like. Used by /agents reset <handle>|all (spine/commands.mjs's agentsReset,
 // was eReset) to reset one or more beings' state without touching another resident being's
 // block in the same conversation, when it isn't named. Mirrors
 // patchBeing's own JID-or-slug lookup (_entryByJidOrSlug) and patchContact's no-op-on-
@@ -1631,7 +1631,7 @@ async function _identityLayers(name) {
 // please.") — this used to take (surface, slug) and could only ever resolve
 // Room.forChat(surface, slug), so it was structurally incapable of targeting rooms/<name>/.
 // The caller now hands in the Room instance it already has (from the persona turn, or from
-// /room create), and every path below reads off IT.
+// /rooms create), and every path below reads off IT.
 //
 // DESTINATION `<room>/identity.d/<NN-name>.md`: the path both cards name and the one
 // Room.identityDir already defines ("NN-*.md fed to the room's brain(s)"). ALL layers are
@@ -1644,12 +1644,12 @@ async function _identityLayers(name) {
 // capabilities refresher — an edited template (10-actions.md learning /ask) could otherwise
 // never reach a conversation that was seeded once, months ago. THE TRADE: a hand-edit to
 // <room>/identity.d/ is discarded on the next refresh. Intended — these are consult COPIES;
-// the sources are the room template and config/identities/<name>.md. /room create passes no
+// the sources are the room template and config/identities/<name>.md. /rooms create passes no
 // overwrite (copy-if-missing): a brand-new room's identity.d is already empty, so there is
 // nothing to refresh — and copy-if-missing is the same never-clobber default every other
 // seed path uses, in case creation is ever retried against a room that already has layers.
 //
-// NEVER throws — a seeding hiccup must not break a turn (or a /room create). Returns the
+// NEVER throws — a seeding hiccup must not break a turn (or a /rooms create). Returns the
 // filenames it wrote.
 export async function seedIdentityLayers(room, name, { io = {}, overwrite = false } = {}) {
   const readFileFn = io.readFile ?? readFile;
@@ -1660,9 +1660,9 @@ export async function seedIdentityLayers(room, name, { io = {}, overwrite = fals
     const layers = await _identityLayers(name);
     const dir = room.identityDir;
     // The Room's WHOLE tree — identity.d/ AND media/ files/ scripts/ — through the
-    // abstraction's own ensureTree, the SAME call /room create makes (operator 2026-07-26:
+    // abstraction's own ensureTree, the SAME call /rooms create makes (operator 2026-07-26:
     // "the work is for the Room abstraction, it is then for free in a room or conversation
-    // on any network"). Before this the list was duplicated here and had drifted from /room
+    // on any network"). Before this the list was duplicated here and had drifted from /rooms
     // create's copy.
     //
     // Created HERE — in the very function that writes the pointers card that advertises
@@ -1688,7 +1688,7 @@ export async function seedIdentityLayers(room, name, { io = {}, overwrite = fals
 // The identity.d/ FILENAMES a fresh seedIdentityLayers(room, name) would write — i.e. what
 // "just the seeded skeleton" means for a room's identity.d/, straight from the same source
 // seedIdentityLayers reads (_identityLayers), never a hand-kept list that could drift from
-// it. Used by /room <slug> delete (spine/commands.mjs) to tell "still just the skeleton"
+// it. Used by /rooms <slug> delete (spine/commands.mjs) to tell "still just the skeleton"
 // apart from "something was added" without re-deriving the skeleton's contents itself.
 export async function skeletonIdentityFiles(name = 'egpt') {
   const layers = await _identityLayers(name);

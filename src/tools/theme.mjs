@@ -73,7 +73,7 @@ export const DEFAULTS = {
   listAccent:   'yellowBright',  // pin markers, default-op asterisks, highlights
   listSub:      'cyan',          // sub-rows (preview/bio/detail under an item)
   listMuted:    'gray',          // "(no rooms)" / "(none)" placeholders
-  listHint:     'blueBright',    // footer hints ("/room join <name> to enter…")
+  listHint:     'blueBright',    // footer hints ("/rooms join <name> to enter…")
 };
 
 // Load a theme by name. Returns merged theme object (always complete).

@@ -403,14 +403,14 @@ export const CONFIG_SCHEMA = {
     KEYS:
       auto_paused
         Boolean. DEFAULT: false
-        The absolute @e-emit kill-switch, toggled by /agents <handle> auto pause|resume.
+        The absolute @e-emit kill-switch, toggled by /agents auto pause|resume <handle>.
         Layered OVER the per-conversation mode gate.
       auto_default_mode
         ENUM: "on" | "auto" | "mute" | "mention-direct" | "mention" | "accum" | "off"
         DEFAULT: "mention"
         The NODE-WIDE default reply mode: the persona's mode in any chat that
         sets none, and the last rung under the per-agent agents.<name>.mode
-        (operator 2026-07-25). Set via /agents <handle> auto <mode>.
+        (operator 2026-07-25). Set via /agents auto <mode> <handle>.
         It reaches the PERSONA only — every other agent defaults to "mention" —
         so setting "accum" here does not make N siblings replay the gap.
       address_without_at
@@ -456,7 +456,7 @@ export const CONFIG_SCHEMA = {
         global.
     Per-chat modes live in each conversation entry, PER AGENT
     (contacts.<surface>[<id>].<being>.mode, or the entry's agents.<name>.mode
-    override, via /agents[=<slug>] <handle> auto <mode>). There is no flat entry-level mode —
+    override, via /agents auto <mode> <handle>). There is no flat entry-level mode —
     getBeing() has had no flat fallback since 2026-07-10.
     Paste-ready reference: config/skeletons/conversations.yaml.
 
@@ -512,7 +512,7 @@ export const CONFIG_SCHEMA = {
         LEGACY write-whitelist only (bridge-bypass + busy-queue gate).
         Per-chat E modes + residents MIGRATED 2026-06-24 into each
         conversation's config.yaml: contacts.whatsapp[<jid>].mode (set via
-        /agents[=<slug>] <handle> auto <mode>, was /e auto <mode> <chat>) plus
+        /agents auto <mode> <handle>, was /e auto <mode> <chat>) plus
         the Room members[] store (set via /e residents). The global default +
         pause MOVED 2026-06-25 to dispatch.auto_default_mode / dispatch.auto_paused
         (was /e auto <mode> all | pause | resume).
@@ -1170,7 +1170,7 @@ export const CONFIG_SCHEMA = {
     KEYS:
       routing_enabled
         Boolean. DEFAULT: FALSE — the MASTER SAFETY SWITCH for live room
-        fan-out. While false, /room commands still configure rooms but NO
+        fan-out. While false, /rooms commands still configure rooms but NO
         message routing happens. Flip true to let a contributing member message
         fan to the room's other members + shared transcript. Default off because
         a routing loop bug would spam real groups; enable + verify on a test
@@ -1596,7 +1596,7 @@ export const CONFIG_SCHEMA = {
         ENUM:
           "lazy"  (DEFAULT) saved sessions load as data; brains spin up on first
                   @session use
-          "eager" auto-/attach every saved session on /room join — opens Chrome
+          "eager" auto-/attach every saved session on /rooms join — opens Chrome
                   tabs, starts codex processes
           "off"   do not load saved sessions at all on join — start clean
       max_chain
@@ -1959,7 +1959,7 @@ export const CONFIG_SCHEMA = {
     (src/spine/advice.mjs).
 
     Per-conversation opt-in only (a chat is auto iff its mode is set to auto via
-    /agents[=<slug>] <handle> auto auto); the turn-counter guard bounds runaway unchanged.
+    /agents auto <handle> auto); the turn-counter guard bounds runaway unchanged.
   `,
 
   aliases: `

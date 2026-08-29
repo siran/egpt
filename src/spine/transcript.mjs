@@ -63,7 +63,7 @@ export function createTranscript({
 
   // WHERE a write lands: a joined room wins over ev's own native (surface, chatId) — the same
   // "joined room wins" rule redirectShellToRoom applies to dispatch (boot.mjs). 'lobby' is
-  // "no redirect": it is the console's OWN home room (rooms/lobby/), so /room join lobby
+  // "no redirect": it is the console's OWN home room (rooms/lobby/), so /rooms join lobby
   // means "go home", never a second hop. Already-redirected PROSE arrives here with
   // ev.chatId ALREADY equal to the joined room (that is what the upstream redirect set it
   // to), so recomputing the target here lands on the identical (surface, chatId) and this is

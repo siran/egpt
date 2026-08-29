@@ -72,7 +72,7 @@ describe('an operator-named room roots at rooms/<slug> — outside the Beeper tr
     expect(Room.forChat('whatsapp', 'x').ns()).toBe('whatsapp/x');
   });
   // sanitizeSlug (not the retired kebab sanitizeName) is what a room name goes through now:
-  // a plain lowercase name must survive it untouched, so `/room create acim` and
+  // a plain lowercase name must survive it untouched, so `/rooms create acim` and
   // resolveConvRoom('room','acim') land on the same folder.
   it('a plain room name survives sanitizeSlug unchanged', () => {
     expect(sanitizeSlug('acim')).toBe('acim');

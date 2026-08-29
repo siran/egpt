@@ -1,12 +1,12 @@
 // Command Surface Phase 2 — rooms & members core (DATA MODEL + COMMANDS).
 //
 // THE MODEL (bug fix 2026-07-23): a conversation IS a room. The /members family (/members,
-// /members add tab <n>, /members <id> mode <m>, /activate <id>) operates on the CURRENT
+// /members add tab <n>, /members mode <m> <id>, /activate <id>) operates on the CURRENT
 // CONVERSATION's room — the SAME room the phase-4 relay reads its members from — resolved
-// through the injected resolveConvRoom seam. There is NO "/room <slug> join first" gate: the
+// through the injected resolveConvRoom seam. There is NO "/rooms <slug> join first" gate: the
 // conversation you're in IS the room.
 //
-// 2026-08-09: an operator-named room is no longer a second KIND. /rooms + /room
+// 2026-08-09: an operator-named room is no longer a second KIND. /rooms + /rooms
 // create|join|leave|members|delete address a conversation on surface `room` whose chatId is
 // the name itself, resolved through the SAME resolveConvRoom seam — there is no roomForName.
 // It stays a separately ADDRESSED construct (you name it instead of being in it), not a
@@ -23,7 +23,7 @@ import { join } from 'node:path';
 
 // A PRIVATE profile for this file. The room READ verbs resolve their slug purely (no seam,
 // by design — a read must not mint), so the rooms below are real folders under EGPT_HOME,
-// and `/room delete`'s skeleton comparison reads the profile's identity layers. The suite's
+// and `/rooms delete`'s skeleton comparison reads the profile's identity layers. The suite's
 // SHARED throwaway profile (tests/setup-egpt-home.mjs) is written by other files IN PARALLEL
 // — seedSkeletons lands config/skeletons/room/* mid-run — so seeding a room and then asking
 // "is it still just the skeleton?" against it raced ~1 in 3. egpt-home.mjs freezes EGPT_HOME
@@ -60,7 +60,7 @@ const ADAPTERS = [
 
 let base;
 // Every rooms/<slug>/ this file materialised, removed after each test. The room
-// READ verbs (/room members, /room delete) and /rooms resolve the slug PURELY — no seam, by
+// READ verbs (/room members, /rooms delete) and /rooms resolve the slug PURELY — no seam, by
 // design (a read must not mint a contact) — so those rooms are real folders under the suite's
 // isolated EGPT_HOME. Same tripwire tests/beeper-bridge.test.mjs uses: never the live ~/.egpt.
 let roomDirs;
@@ -80,7 +80,7 @@ afterEach(() => {
 });
 
 // The room called <name>, at the path production resolves it to: fixedSlugFor makes a room's
-// slug sanitizeName(<name>), so this is the SAME folder /room create writes and the read verbs
+// slug sanitizeName(<name>), so this is the SAME folder /rooms create writes and the read verbs
 // stat. Registered for cleanup.
 function roomAt(name) {
   const room = Room.forChat('room', sanitizeName(name));
@@ -103,7 +103,7 @@ function harness({ cdp, adapters = ADAPTERS, roomNames = [], config = {} } = {})
     if (!convRooms.has(key)) convRooms.set(key, new TmpRoom(join(base, 'conv', surface, String(chatId)), String(chatId)));
     return convRooms.get(key);
   };
-  // The named room called <name> — the SAME resolution `/room <verb> <name>` performs.
+  // The named room called <name> — the SAME resolution `/rooms <verb> <name>` performs.
   const namedRoom = (name) => resolveConvRoom('room', name);
   const cmds = createCommands({
     getConfig: () => ({ whatsapp: { chat_id: '!conv-1' }, ...config }),
@@ -134,7 +134,7 @@ describe('CONNECTION — a member added via /members is found by the relay for t
     const cdp = { listTabs: async () => threeTabs };
     const { cmds, sent, resolveConvRoom } = harness({ cdp });
 
-    // Operator, IN conversation !conv-1, adds the chatgpt tab as a member — no /room join.
+    // Operator, IN conversation !conv-1, adds the chatgpt tab as a member — no /rooms join.
     await cmds.run({ ...self, body: '/members add tab 1' });
     expect(sent.at(-1).text).toMatch(/added 'chatgpt'/);
 
@@ -181,9 +181,9 @@ describe('/rooms — list rooms, mark current', () => {
 
   // THE ROUND TRIP (operator's ruling 2026-08-09). /rooms prints FOLDER names; a room's
   // folder name is its typed name (fixedSlugFor, no -yymmddhhmm tail), so the string /rooms
-  // prints must go straight back into /room members. With a tailed slug this fails: /rooms
+  // prints must go straight back into /rooms members. With a tailed slug this fails: /rooms
   // would print `acim-2608091345` and typing that back answers "no room".
-  it('the name /rooms prints is the name /room members accepts (no tail, typeable round trip)', async () => {
+  it('the name /rooms prints is the name /rooms members accepts (no tail, typeable round trip)', async () => {
     const room = roomAt('acim');
     await room.setMember({ kind: 'brain', id: 'claude', state: 'mention' });
     const { cmds, sent } = harness({ roomNames: ['acim'] });
@@ -193,18 +193,18 @@ describe('/rooms — list rooms, mark current', () => {
     expect(listed).toBe('acim');                       // the printed name, verbatim
     expect(listed).not.toMatch(/-\d{10}$/);            // no date tail
 
-    await cmds.run({ ...self, body: `/room members ${listed}` });
+    await cmds.run({ ...self, body: `/rooms members ${listed}` });
     expect(sent.at(-1).text).toMatch(/acim \(1 members\)/);
     expect(sent.at(-1).text).toMatch(/claude/);        // it really read THAT room
     expect(sent.at(-1).text).not.toMatch(/no room/);
   });
 
-  // …and the (current) marker matches the listed name again: /room join stores the typed
+  // …and the (current) marker matches the listed name again: /rooms join stores the typed
   // name, /rooms lists the folder name, and after the ruling those are one string.
-  it('/room join acim then /rooms marks acim (current)', async () => {
+  it('/rooms join acim then /rooms marks acim (current)', async () => {
     roomAt('acim');
     const { cmds, sent } = harness({ roomNames: ['acim'] });
-    await cmds.run({ ...self, body: '/room join acim' });
+    await cmds.run({ ...self, body: '/rooms join acim' });
     await cmds.run({ ...self, body: '/rooms' });
     expect(sent.at(-1).text).toMatch(/·\s+acim\s+\d+ members\s+\(current\)/);
   });
@@ -213,11 +213,11 @@ describe('/rooms — list rooms, mark current', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 // THE MINTING BOUNDARY (operator's ruling 2026-08-09). A room's slug is a PURE FUNCTION of
 // its name (fixedSlugFor, surface `room`), so a READ verb resolves it without conv-state and
-// must leave conv-state untouched — `/room members <typo>` may not deposit a contact for a
-// room that does not exist. `/room create` is the ONE room path that mints, and that is where
+// must leave conv-state untouched — `/rooms members <typo>` may not deposit a contact for a
+// room that does not exist. `/rooms create` is the ONE room path that mints, and that is where
 // the entry belongs. Run against the REAL contacts service over in-memory state, wired
 // exactly as src/spine/boot.mjs does, so this exercises ensureContact for real.
-describe('a room READ never mints — /room create is the only room path that writes conv-state', () => {
+describe('a room READ never mints — /rooms create is the only room path that writes conv-state', () => {
   function stateHarness() {
     let st = emptyState();
     const writes = [];
@@ -238,10 +238,10 @@ describe('a room READ never mints — /room create is the only room path that wr
   }
 
   for (const verb of ['members', 'delete']) {
-    it(`/room ${verb} <nonexistent> reports "no room" and leaves conv-state byte-identical`, async () => {
+    it(`/rooms ${verb} <nonexistent> reports "no room" and leaves conv-state byte-identical`, async () => {
       const { cmds, sent, writes, snapshot } = stateHarness();
       const before = snapshot();
-      await cmds.run({ ...self, body: `/room ${verb} ghost` });
+      await cmds.run({ ...self, body: `/rooms ${verb} ghost` });
       expect(sent.at(-1).text).toMatch(/no room 'ghost'/);
       expect(snapshot()).toBe(before);   // nothing minted for a room that does not exist
       expect(writes).toEqual([]);        // and nothing was even written
@@ -249,10 +249,10 @@ describe('a room READ never mints — /room create is the only room path that wr
   }
 
   // THE RULING'S WHOLE PURPOSE: the folder name IS the chatId IS the typed name.
-  it('/room create acim lands at rooms/acim/ — no -yymmddhhmm tail', async () => {
+  it('/rooms create acim lands at rooms/acim/ — no -yymmddhhmm tail', async () => {
     const { cmds, sent, rooms } = stateHarness();
     const room = roomAt('acim');   // registers the real dir for cleanup
-    await cmds.run({ ...self, body: '/room create acim' });
+    await cmds.run({ ...self, body: '/rooms create acim' });
     expect(sent.at(-1).text).toBe('room acim created at rooms/acim/');
     expect(existsSync(room.baseDir())).toBe(true);
     // the contact was minted, under the typed name, with an untailed slug
@@ -262,12 +262,12 @@ describe('a room READ never mints — /room create is the only room path that wr
 
   // Finding (c), closed by the ruling: sanitizeName is the slug rule now, so case and
   // punctuation fold to ONE room instead of creating a second one.
-  it('/room create Foo then /room members foo reach the SAME room', async () => {
+  it('/rooms create Foo then /rooms members foo reach the SAME room', async () => {
     const { cmds, sent, rooms } = stateHarness();
     roomAt('Foo');
-    await cmds.run({ ...self, body: '/room create Foo' });
+    await cmds.run({ ...self, body: '/rooms create Foo' });
     expect(sent.at(-1).text).toMatch(/room foo created at rooms\/foo\//);
-    await cmds.run({ ...self, body: '/room members foo' });
+    await cmds.run({ ...self, body: '/rooms members foo' });
     expect(sent.at(-1).text).toMatch(/foo \(0 members\)/);
     expect(sent.at(-1).text).not.toMatch(/no room/);
     expect(Object.keys(rooms())).toEqual(['Foo']);   // ONE entry, keyed by the typed chatId
@@ -277,24 +277,24 @@ describe('a room READ never mints — /room create is the only room path that wr
 // Defect 1 regression lock: an EXISTING room that genuinely has zero members must still
 // render its roster ("<slug> (0 members):") — that is a DIFFERENT case from a room that
 // doesn't exist on disk at all (locked in spine-commands.test.mjs) and must not regress.
-describe('/room <slug> members — a real, genuinely empty room still renders its roster', () => {
+describe('/rooms <slug> members — a real, genuinely empty room still renders its roster', () => {
   it('a room whose tree exists but has no members renders "(0 members)", not "no room"', async () => {
     const { cmds, sent, namedRoom } = harness();
     await (await namedRoom('nobody-yet')).ensureTree();
-    await cmds.run({ ...self, body: '/room members nobody-yet' });
+    await cmds.run({ ...self, body: '/rooms members nobody-yet' });
     expect(sent.at(-1).text).toMatch(/nobody-yet \(0 members\)/);
     expect(sent.at(-1).text).not.toMatch(/no room/);
   });
 });
 
 // Defect 2 (live incident 2026-08-07): create/join/leave/members was the whole vocabulary —
-// there was no way to remove a NamedRoom short of deleting the folder by hand. /room <slug>
+// there was no way to remove a NamedRoom short of deleting the folder by hand. /rooms <slug>
 // delete fills that gap: a room that's STILL JUST the seeded skeleton (the empty tree plus
-// identity.d/'s seeded layers — exactly what /room create + seedIdentityLayers leave behind)
+// identity.d/'s seeded layers — exactly what /rooms create + seedIdentityLayers leave behind)
 // is removed outright; a room holding anything more REFUSES and names what's there, requiring
 // an explicit `delete force` to proceed.
-describe('/room <slug> delete — remove a room, refusing when it holds real content', () => {
-  // Builds a room exactly the way /room create does: the tree + the seeded identity.d/
+describe('/rooms <slug> delete — remove a room, refusing when it holds real content', () => {
+  // Builds a room exactly the way /rooms create does: the tree + the seeded identity.d/
   // layers — so "still just the skeleton" is tested against the SAME shape the creator
   // produces, not a hand-picked filename list.
   async function freshRoom(namedRoom, slug) {
@@ -307,7 +307,7 @@ describe('/room <slug> delete — remove a room, refusing when it holds real con
   it('a room that is still just the seeded skeleton is deleted outright', async () => {
     const { cmds, sent, namedRoom } = harness();
     const room = await freshRoom(namedRoom, 'scratch');
-    await cmds.run({ ...self, body: '/room delete scratch' });
+    await cmds.run({ ...self, body: '/rooms delete scratch' });
     expect(sent.at(-1).text).toMatch(/room scratch deleted/);
     expect(existsSync(room.baseDir())).toBe(false);
   });
@@ -316,11 +316,11 @@ describe('/room <slug> delete — remove a room, refusing when it holds real con
     const { cmds, sent, namedRoom } = harness();
     const room = await freshRoom(namedRoom, 'devwork');
     writeFileSync(room.transcriptPath, '# hi\n', 'utf8');
-    await cmds.run({ ...self, body: '/room delete devwork' });
+    await cmds.run({ ...self, body: '/rooms delete devwork' });
     expect(sent.at(-1).text).toMatch(/transcript\.md/);
     expect(sent.at(-1).text).toMatch(/delete force/);
     expect(existsSync(room.baseDir())).toBe(true);   // refused — NOT removed
-    await cmds.run({ ...self, body: '/room delete force devwork' });
+    await cmds.run({ ...self, body: '/rooms delete force devwork' });
     expect(sent.at(-1).text).toMatch(/deleted/);
     expect(existsSync(room.baseDir())).toBe(false);
   });
@@ -329,31 +329,31 @@ describe('/room <slug> delete — remove a room, refusing when it holds real con
     const { cmds, sent, namedRoom } = harness();
     const room = await freshRoom(namedRoom, 'withmedia');
     writeFileSync(join(room.mediaDir, 'photo.jpg'), 'x');
-    await cmds.run({ ...self, body: '/room delete withmedia' });
+    await cmds.run({ ...self, body: '/rooms delete withmedia' });
     expect(sent.at(-1).text).toMatch(/1 file in media\//);
     expect(existsSync(room.baseDir())).toBe(true);
   });
 
-  it('/room <slug> delete on a room that does not exist reports it (same wording as the "no room" path)', async () => {
+  it('/rooms <slug> delete on a room that does not exist reports it (same wording as the "no room" path)', async () => {
     const { cmds, sent } = harness();
-    await cmds.run({ ...self, body: '/room delete ghost' });
+    await cmds.run({ ...self, body: '/rooms delete ghost' });
     expect(sent.at(-1).text).toMatch(/no room 'ghost'/);
   });
 
   it('deleting the current room clears currentRoom for that surface (no dangling pointer)', async () => {
     const { cmds, sent, namedRoom } = harness();
     await freshRoom(namedRoom, 'current-one');
-    await cmds.run({ ...self, body: '/room join current-one' });
+    await cmds.run({ ...self, body: '/rooms join current-one' });
     expect(sent.at(-1).text).toMatch(/joined 'current-one'/);
-    await cmds.run({ ...self, body: '/room delete current-one' });
+    await cmds.run({ ...self, body: '/rooms delete current-one' });
     expect(sent.at(-1).text).toMatch(/deleted/);
     // leave now reports "not in" — the pointer was cleared, not left dangling at a deleted room
-    await cmds.run({ ...self, body: '/room leave current-one' });
+    await cmds.run({ ...self, body: '/rooms leave current-one' });
     expect(sent.at(-1).text).toMatch(/not in 'current-one'/);
   });
 });
 
-describe('/members — targets the CURRENT CONVERSATION (no /room join gate)', () => {
+describe('/members — targets the CURRENT CONVERSATION (no /rooms join gate)', () => {
   it('/members with no named room joined lists the conversation members (NOT "no current room")', async () => {
     const cdp = { listTabs: async () => threeTabs };
     const { cmds, sent } = harness({ cdp });
@@ -364,7 +364,7 @@ describe('/members — targets the CURRENT CONVERSATION (no /room join gate)', (
     expect(text).toMatch(/0 members|no members/i);   // the conversation's (empty) roster
   });
 
-  it('/members lists the members after one is added — no /room join anywhere', async () => {
+  it('/members lists the members after one is added — no /rooms join anywhere', async () => {
     const cdp = { listTabs: async () => threeTabs };
     const { cmds, sent } = harness({ cdp });
     await cmds.run({ ...self, body: '/members add tab 1' });   // a chatgpt member (active tab)
@@ -533,26 +533,37 @@ describe('/members add tab <n> — adapter-matched, added disabled, in the conve
     });
   });
 
-  it('/member add tab 1 (singular alias) routes to the same members handler', async () => {
+  // The singular is no longer an alias (operator 2026-08-29). It asks — and, the property
+  // worth locking, it does NOT do the work first: no member is added by the line that asks.
+  it('/member add tab 1 asks for the plural and adds nothing', async () => {
     const cdp = { listTabs: async () => threeTabs };
     const { cmds, sent, resolveConvRoom } = harness({ cdp });
     await cmds.run({ ...self, body: '/member add tab 1' });
+    expect(sent.at(-1).text).toMatch(/did you mean `\/members`\?/);
+    expect(sent.at(-1).text).not.toMatch(/recognized/);   // not the unwired catch-all either
+    const ms = await (await resolveConvRoom(self.surface, self.chatId)).members();
+    expect(ms).toEqual([]);
+  });
+
+  it('/members add tab 1 — the plural — does the work', async () => {
+    const cdp = { listTabs: async () => threeTabs };
+    const { cmds, sent, resolveConvRoom } = harness({ cdp });
+    await cmds.run({ ...self, body: '/members add tab 1' });
     expect(sent.at(-1).text).toMatch(/added 'chatgpt'/);
-    expect(sent.at(-1).text).not.toMatch(/recognized/);   // not the unwired catch-all
     const ms = await (await resolveConvRoom(self.surface, self.chatId)).members();
     expect(ms.map((m) => m.id)).toEqual(['chatgpt']);
   });
 });
 
-describe('/members <id> mode <disable|mention|all>', () => {
+describe('/members mode <disable|mention|all> <id>', () => {
   it('mode mention persists (re-read shows mention); mode all → active token', async () => {
     const cdp = { listTabs: async () => threeTabs };
     const { cmds, sent, resolveConvRoom } = harness({ cdp });
     await cmds.run({ ...self, body: '/members add tab 1' });   // chatgpt, muted
-    await cmds.run({ ...self, body: '/members chatgpt mode mention' });
+    await cmds.run({ ...self, body: '/members mode mention chatgpt' });
     expect(sent.at(-1).text).toMatch(/mode:mention/);
     expect(await (await resolveConvRoom(self.surface, self.chatId)).memberState('chatgpt')).toBe('mention');
-    await cmds.run({ ...self, body: '/members chatgpt mode all' });
+    await cmds.run({ ...self, body: '/members mode all chatgpt' });
     expect(await (await resolveConvRoom(self.surface, self.chatId)).memberState('chatgpt')).toBe('active');   // all → active
     // mode change must NOT clobber the persisted adapter/url/targetId
     const m = (await (await resolveConvRoom(self.surface, self.chatId)).members()).find((x) => x.id === 'chatgpt');
@@ -563,10 +574,10 @@ describe('/members <id> mode <disable|mention|all>', () => {
     const cdp = { listTabs: async () => threeTabs };
     const { cmds, sent, resolveConvRoom } = harness({ cdp });
     await cmds.run({ ...self, body: '/members add tab 1' });
-    await cmds.run({ ...self, body: '/members chatgpt mode loud' });
+    await cmds.run({ ...self, body: '/members mode loud chatgpt' });
     expect(sent.at(-1).text).toMatch(/disable\|mention\|all|unknown mode/i);
     expect(await (await resolveConvRoom(self.surface, self.chatId)).memberState('chatgpt')).toBe('muted');   // unchanged
-    await cmds.run({ ...self, body: '/members ghost mode all' });
+    await cmds.run({ ...self, body: '/members mode all ghost' });
     expect(sent.at(-1).text).toMatch(/no member/i);
   });
 });
@@ -635,7 +646,7 @@ describe('/members <node> — the shared node gate, with the sub-grammar intact'
     const { cmds, sent, resolveConvRoom } = harness({ cdp, config: NODES });
     await cmds.run({ ...self, body: '/members add tab 1' });
     expect(sent.at(-1).text).toMatch(/added 'chatgpt'/);
-    await cmds.run({ ...self, body: '/members chatgpt mode mention' });
+    await cmds.run({ ...self, body: '/members mode mention chatgpt' });
     expect(sent.at(-1).text).toMatch(/mode:mention/);
     expect(await (await resolveConvRoom(self.surface, self.chatId)).memberState('chatgpt')).toBe('mention');
   });
@@ -672,16 +683,16 @@ describe('/activate <id> — reopen a closed tab (in the conversation room)', ()
 });
 
 // convRoomOf's joined-room default (operator 2026-08-17): "this conversation" now means the
-// room currently /room join'd on this surface, when one is joined — the SAME default
+// room currently /rooms join'd on this surface, when one is joined — the SAME default
 // redirectShellToRoom already applies to prose and /agents already applied to itself
 // (2026-08-16), generalized to the ONE shared resolver every room-scoped command (/members,
 // /activate, /radio join|leave|say, the r-quickreply) funnels through. No room joined →
 // unchanged native-chat behavior.
 describe("/members and /activate default to the CURRENTLY JOINED room (convRoomOf generalization)", () => {
-  it('/room join <slug> then a bare /members add tab lands in the JOINED room, not the caller\'s own native chat', async () => {
+  it('/rooms join <slug> then a bare /members add tab lands in the JOINED room, not the caller\'s own native chat', async () => {
     const cdp = { listTabs: async () => threeTabs };
     const { cmds, sent, resolveConvRoom } = harness({ cdp });
-    await cmds.run({ ...self, body: '/room join devwork' });
+    await cmds.run({ ...self, body: '/rooms join devwork' });
     await cmds.run({ ...self, body: '/members add tab 1' });
     expect(sent.at(-1).text).toMatch(/added 'chatgpt'/);
 
@@ -701,14 +712,14 @@ describe("/members and /activate default to the CURRENTLY JOINED room (convRoomO
     expect((await native.members()).find((m) => m.id === 'chatgpt')).toBeTruthy();
   });
 
-  it('/room join <slug> then /activate reopens the JOINED room\'s member, not one in the native chat', async () => {
+  it('/rooms join <slug> then /activate reopens the JOINED room\'s member, not one in the native chat', async () => {
     const opened = [];
     const cdp = {
       listTabs: async () => threeTabs,   // add-time: GPT1 present
       openTab: async (url) => { opened.push(url); return 'GPT-NEW'; },
     };
     const { cmds, sent, resolveConvRoom } = harness({ cdp });
-    await cmds.run({ ...self, body: '/room join devwork' });
+    await cmds.run({ ...self, body: '/rooms join devwork' });
     await cmds.run({ ...self, body: '/members add tab 1' });   // added into 'devwork', not !conv-1
     cdp.listTabs = async () => ([{ id: 'OTHER', title: 'x', url: 'https://x' }]);   // GPT1 closed
     await cmds.run({ ...self, body: '/activate chatgpt' });
@@ -733,16 +744,16 @@ describe("/members and /activate default to the CURRENTLY JOINED room (convRoomO
   });
 });
 
-// An operator-named room stays a SEPARATELY ADDRESSED construct: /room <slug> members
+// An operator-named room stays a SEPARATELY ADDRESSED construct: /rooms <slug> members
 // inspects THAT room's own roster, decoupled from whatever conversation you type it in.
-describe('/room <slug> members — named-room inspection (kept, separate from /members)', () => {
+describe('/rooms <slug> members — named-room inspection (kept, separate from /members)', () => {
   it('lists the named room roster, not the conversation roster', async () => {
     const cdp = { listTabs: async () => threeTabs };
     const { cmds, sent, namedRoom, resolveConvRoom } = harness({ cdp });
     await (await namedRoom('devwork')).setMember({ kind: 'brain', id: 'claude', state: 'mention' });
     // add a member to the CONVERSATION — it must NOT show up under the named room
     await cmds.run({ ...self, body: '/members add tab 1' });   // chatgpt → conversation room
-    await cmds.run({ ...self, body: '/room members devwork' });
+    await cmds.run({ ...self, body: '/rooms members devwork' });
     const text = sent.at(-1).text;
     expect(text).toMatch(/devwork/);     // labelled by the named room
     expect(text).toMatch(/claude/);      // the named room's own member

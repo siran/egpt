@@ -4,7 +4,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createCommands, normalizeAgentsArgs, AGENTS_USAGE } from '../src/spine/commands.mjs';
+import { createCommands, normalizeAgentsArgs, AGENTS_USAGE, SINGULAR_CMD, PLURAL_OF } from '../src/spine/commands.mjs';
 import { createSpine } from '../src/spine/spine.mjs';
 import { createTranscript } from '../src/spine/transcript.mjs';
 import { contextSinceLastTurn } from '../src/transcript-log.mjs';
@@ -15,7 +15,7 @@ import { emptyState, ensureContact, getBeing, getContact, patchContact } from '.
 
 function harness({ config = {}, state = null, brains, io = {}, cdp, launch, clock, resolveConvRoom, onRoomChange, logTranscript } = {}) {
   const sent = [], exits = [], rewinds = [], writes = [], evicts = [], roomChanges = [], logged = [];
-  const files = {};   // any command-authored files (e.g. /room create's config.yaml)
+  const files = {};   // any command-authored files (e.g. /rooms create's config.yaml)
   let st = state;
   // /chrome launch + clock seams: default to a fake that reports "task not registered"
   // and an advancing fake clock, so NO command test ever runs real schtasks or waits real
@@ -101,10 +101,10 @@ describe('commands.run', () => {
     expect(sent[0].text.startsWith('/')).toBe(false);
   });
 
-  it('/agents e auto <mode> persists the conversation mode into conversations.yaml', async () => {
+  it('/agents auto <mode> e persists the conversation mode into conversations.yaml', async () => {
     const state = ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state;
     const { cmds, sent, getState } = harness({ state });
-    await cmds.run({ body: '/agents e auto on', chatId: '!room', surface: 'whatsapp' });
+    await cmds.run({ body: '/agents auto on e', chatId: '!room', surface: 'whatsapp' });
     expect(getBeing(getState(), 'whatsapp', '!room', 'e').mode).toBe('on');
     expect(sent[0].text).toMatch(/e mode here → on/);
   });
@@ -112,38 +112,38 @@ describe('commands.run', () => {
   // The `agents:` override block WINS getBeing's field-wise merge (operator 2026-07-25), so a
   // write into entry[e].mode was invisible — the command answered "✅ … → on" while the
   // effective mode stayed pinned. The write must land where the READ resolves it.
-  it('/agents e auto <mode> changes the effective mode even when an agents: block pins it', async () => {
+  it('/agents auto <mode> e changes the effective mode even when an agents: block pins it', async () => {
     const state = ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state;
     state.contacts.whatsapp['!room'].agents = { e: { mode: 'mention' } };
     const { cmds, sent, getState } = harness({ state });
-    await cmds.run({ body: '/agents e auto on', chatId: '!room', surface: 'whatsapp' });
+    await cmds.run({ body: '/agents auto on e', chatId: '!room', surface: 'whatsapp' });
     expect(getBeing(getState(), 'whatsapp', '!room', 'e').mode).toBe('on');
     expect(sent[0].text).toMatch(/e mode here → on/);
   });
 
   // Phase 1 (operator 2026-08-14): there is only ONE destination now — every write lands in
   // agents.<being>, first write included, whether or not the conversation ever used it before.
-  it('/agents e auto <mode> on a never-before-touched conversation writes into agents.<being> — the only destination now', async () => {
+  it('/agents auto <mode> e on a never-before-touched conversation writes into agents.<being> — the only destination now', async () => {
     const state = ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state;
     const { cmds, getState } = harness({ state });
-    await cmds.run({ body: '/agents e auto on', chatId: '!room', surface: 'whatsapp' });
+    await cmds.run({ body: '/agents auto on e', chatId: '!room', surface: 'whatsapp' });
     const entry = getState().contacts.whatsapp['!room'];
     expect(entry.agents.e.mode).toBe('on');
     expect(entry.e).toBeUndefined();   // no pre-phase-1 entry[<being>] block is ever written
   });
 
-  it('/agents e auto <bad> is rejected and leaves the mode unchanged', async () => {
+  it('/agents auto <bad> e is rejected and leaves the mode unchanged', async () => {
     const state = ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state;
     const { cmds, sent, getState } = harness({ state });
-    await cmds.run({ body: '/agents e auto loud', chatId: '!room', surface: 'whatsapp' });
+    await cmds.run({ body: '/agents auto loud e', chatId: '!room', surface: 'whatsapp' });
     expect(getBeing(getState(), 'whatsapp', '!room', 'e').mode).toBe(null);
     expect(sent[0].text).toMatch(/unknown mode/);
   });
 
-  it('/agents e auto accum is accepted and persisted (accum is a mode again, operator 2026-07-26)', async () => {
+  it('/agents auto accum e is accepted and persisted (accum is a mode again, operator 2026-07-26)', async () => {
     const state = ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state;
     const { cmds, sent, getState } = harness({ state });
-    await cmds.run({ body: '/agents e auto accum', chatId: '!room', surface: 'whatsapp' });
+    await cmds.run({ body: '/agents auto accum e', chatId: '!room', surface: 'whatsapp' });
     expect(getBeing(getState(), 'whatsapp', '!room', 'e').mode).toBe('accum');
     expect(sent[0].text).toMatch(/e mode here → accum/);
   });
@@ -151,48 +151,48 @@ describe('commands.run', () => {
   it('the unknown-mode error offers the WHOLE enum, accum included', async () => {
     const state = ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state;
     const { cmds, sent } = harness({ state });
-    await cmds.run({ body: '/agents e auto batch', chatId: '!room', surface: 'whatsapp' });
+    await cmds.run({ body: '/agents auto batch e', chatId: '!room', surface: 'whatsapp' });
     expect(sent[0].text).toMatch(/unknown mode "batch"/);
     expect(sent[0].text).toMatch(/on, auto, mute, mention-direct, mention, accum, off/);
   });
 
-  it('/agents=hfm e auto <mode> from Self sets the NAMED chat (not the Self DM)', async () => {
+  it('/agents=hfm auto <mode> e from Self sets the NAMED chat (not the Self DM)', async () => {
     const state = ensureContact(emptyState(), 'whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' }).state;
     const { cmds, sent, getState } = harness({ state });
-    await cmds.run({ body: '/agents=hfm e auto on', chatId: '!self', surface: 'whatsapp' });
+    await cmds.run({ body: '/agents=hfm auto on e', chatId: '!self', surface: 'whatsapp' });
     expect(getBeing(getState(), 'whatsapp', '!hfm:beeper.local', 'e').mode).toBe('on');   // the NAMED chat
     expect(getBeing(getState(), 'whatsapp', '!self', 'e')).toBe(null);                     // Self DM untouched (not even a contact)
     expect(sent[0].text).toMatch(/HFM.*→ on/);
   });
 
-  it('/agents=<unknown> e auto <mode> reports no match', async () => {
+  it('/agents=<unknown> auto <mode> e reports no match', async () => {
     const state = ensureContact(emptyState(), 'whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' }).state;
     const { cmds, sent } = harness({ state });
-    await cmds.run({ body: '/agents=zzz e auto on', chatId: '!self', surface: 'whatsapp' });
+    await cmds.run({ body: '/agents=zzz auto on e', chatId: '!self', surface: 'whatsapp' });
     expect(sent[0].text).toMatch(/no chat matches/);
   });
 
-  it('/agents=<unknown-jid> e auto <mode> errors and does NOT write state (no false ✅)', async () => {
+  it('/agents=<unknown-jid> auto <mode> e errors and does NOT write state (no false ✅)', async () => {
     const state = ensureContact(emptyState(), 'whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' }).state;
     const { cmds, sent, writes } = harness({ state });
     // A verbatim jid E has never seen: patchContact would silently no-op, so the
     // old code replied "✅" for a chat it never touched. Now it must fail loudly.
-    await cmds.run({ body: '/agents=!nope:beeper.local e auto mute', chatId: '!self', surface: 'whatsapp' });
+    await cmds.run({ body: '/agents=!nope:beeper.local auto mute e', chatId: '!self', surface: 'whatsapp' });
     expect(sent[0].text).toMatch(/no chat matches/);
     expect(writes).toHaveLength(0);
   });
 
-  it('/agents=<known-jid> e auto <mode> succeeds and writes state', async () => {
+  it('/agents=<known-jid> auto <mode> e succeeds and writes state', async () => {
     const state = ensureContact(emptyState(), 'whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' }).state;
     const { cmds, sent, writes, getState } = harness({ state });
-    await cmds.run({ body: '/agents=!hfm:beeper.local e auto mute', chatId: '!self', surface: 'whatsapp' });
+    await cmds.run({ body: '/agents=!hfm:beeper.local auto mute e', chatId: '!self', surface: 'whatsapp' });
     expect(getBeing(getState(), 'whatsapp', '!hfm:beeper.local', 'e').mode).toBe('mute');
     expect(writes).toHaveLength(1);
     expect(sent[0].text).toMatch(/→ mute/);
   });
 });
 
-// /agents <handle>|all reset — restarts the CURRENT conversation (bare, self-only, unless
+// /agents reset <handle>|all — restarts the CURRENT conversation (bare, self-only, unless
 // `=<slug>` names a different one): archives the whole folder aside (never delete), wipes
 // the TARGET being(s)' registry state, reseeds a pristine tree at the ORIGINAL path. "It
 // works the same for rooms and conversations alike" (operator) — ONE shared path, proven
@@ -202,7 +202,7 @@ describe('commands.run', () => {
 // identically: a sibling resident on the SAME conversation survived a reset meant to cover
 // "this conversation" untouched, simply because /e reset could never even NAME it. The
 // sibling-survives-reset tests below are the regression lock for exactly that bug.
-describe('/agents <handle>|all reset — archive + registry wipe + reseed, one shared path for rooms and ordinary conversations', () => {
+describe('/agents reset <handle>|all — archive + registry wipe + reseed, one shared path for rooms and ordinary conversations', () => {
   const cases = [
     { label: 'a room-surface conversation (fixed slug)', surface: 'room', jid: 'acim', ctx: {} },
     { label: 'an ordinary whatsapp conversation (timestamped slug)', surface: 'whatsapp', jid: '1234@s.whatsapp.net', ctx: { pushedName: 'diego', slugHint: 'diego' } },
@@ -237,7 +237,7 @@ describe('/agents <handle>|all reset — archive + registry wipe + reseed, one s
           rm: async () => { throw new Error('/agents reset must never delete — rm was called'); },
         },
       });
-      await cmds.run({ chatId: jid, surface, body: '/agents e reset' });
+      await cmds.run({ chatId: jid, surface, body: '/agents reset e' });
 
       // the archive rename actually happened: old baseDir -> conversations/archive/<slug>-archived-<suffix>,
       // NOT `<baseDir>-archived-<suffix>` (the old sibling-of-baseDir location)
@@ -268,7 +268,7 @@ describe('/agents <handle>|all reset — archive + registry wipe + reseed, one s
         state,
         io: { rename: async () => {}, mkdir: async () => {} },
       });
-      await cmds.run({ chatId: jid, surface, body: '/agents e reset' });
+      await cmds.run({ chatId: jid, surface, body: '/agents reset e' });
 
       const reloaded = getState();
       const eAfter = getBeing(reloaded, surface, jid, 'e');
@@ -312,7 +312,7 @@ describe('/agents <handle>|all reset — archive + registry wipe + reseed, one s
       },
     });
     const { cmds, getState } = harness({ state, io: { rename: async () => {}, mkdir: async () => {} } });
-    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents e reset' });
+    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents reset e' });
 
     const reloaded = getState();
     const eAfter = getBeing(reloaded, 'whatsapp', '1234@s.whatsapp.net', 'e');
@@ -335,7 +335,7 @@ describe('/agents <handle>|all reset — archive + registry wipe + reseed, one s
       agents: { e: { mode: 'on', threadId: 'thread-abc', access_level: 'regular' } },
     });
     const { cmds, getState } = harness({ state, io: { rename: async () => {}, mkdir: async () => {} } });
-    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents e reset' });
+    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents reset e' });
 
     const eAfter = getBeing(getState(), 'whatsapp', '1234@s.whatsapp.net', 'e');
     expect(eAfter.accessLevel).toBe('regular');
@@ -349,7 +349,7 @@ describe('/agents <handle>|all reset — archive + registry wipe + reseed, one s
       agents: { e: { mode: 'on', threadId: 'thread-abc', allowed_users: ['999'] } },
     });
     const { cmds, getState } = harness({ state, io: { rename: async () => {}, mkdir: async () => {} } });
-    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents e reset' });
+    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents reset e' });
 
     const eAfter = getBeing(getState(), 'whatsapp', '1234@s.whatsapp.net', 'e');
     expect(eAfter.allowedUsers).toEqual(['999']);
@@ -363,7 +363,7 @@ describe('/agents <handle>|all reset — archive + registry wipe + reseed, one s
       agents: { e: { mode: 'on', threadId: 'thread-abc' } },
     });
     const { cmds, getState } = harness({ state, io: { rename: async () => {}, mkdir: async () => {} } });
-    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents e reset' });
+    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents reset e' });
 
     const eAfter = getBeing(getState(), 'whatsapp', '1234@s.whatsapp.net', 'e');
     expect(eAfter.present).toBe(false);
@@ -378,7 +378,7 @@ describe('/agents <handle>|all reset — archive + registry wipe + reseed, one s
   // This is the mirror image of the "wipes e's ... leaves a SIBLING untouched" test above —
   // here the being actually being reset is the NON-default one, proving the scoping fix
   // wipes whichever handle it's told to, not defaultKey unconditionally.
-  it("/agents wren reset wipes ONLY wren's registry block — the persona (e), also resident here, is untouched byte-for-byte", async () => {
+  it("/agents reset wren wipes ONLY wren's registry block — the persona (e), also resident here, is untouched byte-for-byte", async () => {
     let state = ensureContact(emptyState(), 'whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' }).state;
     state = patchContact(state, 'whatsapp', '1234@s.whatsapp.net', {
       agents: {
@@ -388,7 +388,7 @@ describe('/agents <handle>|all reset — archive + registry wipe + reseed, one s
     });
     const before = getContact(state, 'whatsapp', '1234@s.whatsapp.net').entry.agents.e;
     const { cmds, getState } = harness({ state, io: { rename: async () => {}, mkdir: async () => {} } });
-    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents wren reset' });
+    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents reset wren' });
 
     const reloaded = getState();
     const wrenAfter = getBeing(reloaded, 'whatsapp', '1234@s.whatsapp.net', 'wren');
@@ -399,13 +399,13 @@ describe('/agents <handle>|all reset — archive + registry wipe + reseed, one s
     expect(eAfter).toEqual(before);   // byte-for-byte untouched
   });
 
-  it('/agents all reset wipes EVERY resident being on the entry', async () => {
+  it('/agents reset all wipes EVERY resident being on the entry', async () => {
     let state = ensureContact(emptyState(), 'whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' }).state;
     state = patchContact(state, 'whatsapp', '1234@s.whatsapp.net', {
       agents: { e: { mode: 'on' }, wren: { mode: 'mention' }, d: { mode: 'accum' } },
     });
     const { cmds, getState } = harness({ state, io: { rename: async () => {}, mkdir: async () => {} } });
-    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents all reset' });
+    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents reset all' });
     const reloaded = getState();
     for (const h of ['e', 'wren', 'd']) {
       expect(getBeing(reloaded, 'whatsapp', '1234@s.whatsapp.net', h).present).toBe(false);
@@ -418,7 +418,7 @@ describe('/agents <handle>|all reset — archive + registry wipe + reseed, one s
       state,
       io: { rename: async () => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); }, mkdir: async () => {} },
     });
-    await expect(cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents e reset' })).resolves.toBeUndefined();
+    await expect(cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents reset e' })).resolves.toBeUndefined();
     expect(sent).toHaveLength(1);
     expect(sent[0].text).toMatch(/reset/);
     // seedResetState pins access_level: 'all' on e, which now survives reset (present stays
@@ -433,15 +433,15 @@ describe('/agents <handle>|all reset — archive + registry wipe + reseed, one s
       state,
       io: { rename: async (from, to) => { renames.push([from, to]); }, mkdir: async (p) => { mkdirs.push(p); } },
     });
-    await cmds.run({ chatId: '9999@s.whatsapp.net', surface: 'whatsapp', body: '/agents e reset' });
+    await cmds.run({ chatId: '9999@s.whatsapp.net', surface: 'whatsapp', body: '/agents reset e' });
     expect(sent[0].text).toMatch(/can't resolve this conversation's room/);
     expect(renames).toHaveLength(0);
     expect(mkdirs).toHaveLength(0);
     expect(writes).toHaveLength(0);
   });
 
-  it('/agents e reset is recognized case-insensitively on the command token + subcommand', async () => {
-    for (const body of ['/agents e reset', '/AGENTS e RESET', '/Agents e Reset']) {
+  it('/agents reset e is recognized case-insensitively on the command token + subcommand', async () => {
+    for (const body of ['/agents reset e', '/AGENTS e RESET', '/Agents e Reset']) {
       const state = seedResetState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
       const { cmds, sent } = harness({
         state,
@@ -464,7 +464,7 @@ describe('/agents <handle>|all reset — archive + registry wipe + reseed, one s
       state,
       io: { rename: async () => {}, mkdir: async () => {} },
     });
-    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents e reset' });
+    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents reset e' });
     expect(sent[0].text).toBe(`✅ ${slug} reset — e state cleared (access_level/allowed_users preserved), next message starts fresh.`);
     expect(sent[0].text).not.toMatch(/\bfor\b/);
   });
@@ -473,7 +473,7 @@ describe('/agents <handle>|all reset — archive + registry wipe + reseed, one s
   // DIFFERENT known chat to reset it instead of the conversation the command was typed in.
   // resolveTarget (the SAME fuzzy resolver /agents auto uses) does the lookup — these three
   // tests exercise its three outcomes (unique hit / ambiguous / no match).
-  it('/agents=hfm e reset resets the NAMED chat while the operator types from Self — Self itself is never touched', async () => {
+  it('/agents=hfm reset e resets the NAMED chat while the operator types from Self — Self itself is never touched', async () => {
     const state = seedResetState('whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' });
     const slug = getContact(state, 'whatsapp', '!hfm:beeper.local').slug;
     const room = Room.forChat('whatsapp', slug);
@@ -485,7 +485,7 @@ describe('/agents <handle>|all reset — archive + registry wipe + reseed, one s
         mkdir: async (p) => { mkdirs.push(p); },
       },
     });
-    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/agents=hfm e reset' });
+    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/agents=hfm reset e' });
 
     // the NAMED chat got archived + reseeded + registry-wiped, exactly like the bare-case tests
     expect(renames).toHaveLength(1);
@@ -506,7 +506,7 @@ describe('/agents <handle>|all reset — archive + registry wipe + reseed, one s
     expect(sent[0].text).toMatch(/for HFM/);
   });
 
-  it('/agents=work e reset (ambiguous) reports the same disambiguation error resolveTarget uses — no archive, no write', async () => {
+  it('/agents=work reset e (ambiguous) reports the same disambiguation error resolveTarget uses — no archive, no write', async () => {
     let state = ensureContact(emptyState(), 'whatsapp', '!a1', { pushedName: 'work-alpha', slugHint: 'work-alpha' }).state;
     state = ensureContact(state, 'whatsapp', '!a2', { pushedName: 'work-beta', slugHint: 'work-beta' }).state;
     const renames = [], mkdirs = [];
@@ -514,21 +514,21 @@ describe('/agents <handle>|all reset — archive + registry wipe + reseed, one s
       state,
       io: { rename: async (from, to) => { renames.push([from, to]); }, mkdir: async (p) => { mkdirs.push(p); } },
     });
-    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/agents=work e reset' });
+    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/agents=work reset e' });
     expect(sent[0].text).toMatch(/matches 2:/);
     expect(renames).toHaveLength(0);
     expect(mkdirs).toHaveLength(0);
     expect(writes).toHaveLength(0);
   });
 
-  it('/agents=zzz e reset (unknown) reports no match — no archive, no write', async () => {
+  it('/agents=zzz reset e (unknown) reports no match — no archive, no write', async () => {
     const state = seedResetState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
     const renames = [], mkdirs = [];
     const { cmds, sent, writes } = harness({
       state,
       io: { rename: async (from, to) => { renames.push([from, to]); }, mkdir: async (p) => { mkdirs.push(p); } },
     });
-    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/agents=zzz e reset' });
+    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/agents=zzz reset e' });
     expect(sent[0].text).toMatch(/no chat matches/);
     expect(renames).toHaveLength(0);
     expect(mkdirs).toHaveLength(0);
@@ -539,12 +539,12 @@ describe('/agents <handle>|all reset — archive + registry wipe + reseed, one s
     const roomState = seedResetState('room', 'acim', {});
     const renames1 = [];
     const { cmds: cmds1 } = harness({ state: roomState, io: { rename: async (from, to) => { renames1.push([from, to]); }, mkdir: async () => {} } });
-    await cmds1.run({ chatId: 'acim', surface: 'room', body: '/agents e reset' });
+    await cmds1.run({ chatId: 'acim', surface: 'room', body: '/agents reset e' });
 
     const waState = seedResetState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
     const renames2 = [];
     const { cmds: cmds2 } = harness({ state: waState, io: { rename: async (from, to) => { renames2.push([from, to]); }, mkdir: async () => {} } });
-    await cmds2.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents e reset' });
+    await cmds2.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents reset e' });
 
     expect(renames1[0][1].startsWith(archiveRoot)).toBe(true);
     expect(renames2[0][1].startsWith(archiveRoot)).toBe(true);
@@ -553,7 +553,7 @@ describe('/agents <handle>|all reset — archive + registry wipe + reseed, one s
   });
 });
 
-// /agents <handle>|all restart — the NARROWER sibling of reset (operator 2026-08-15,
+// /agents restart <handle>|all — the NARROWER sibling of reset (operator 2026-08-15,
 // decided directly against reset's archive-and-wipe): clears ONLY the target being(s)'
 // threadId via patchBeing (a merge, never deleteBeing) — mode/access_level and every other
 // field on the block survive, and the conversation folder (transcript.md, media/, files/,
@@ -565,7 +565,7 @@ describe('/agents <handle>|all reset — archive + registry wipe + reseed, one s
 // names this exact "handle reset nulling the thread" case) that self-evicts + reopens once
 // the next turn passes `sessionId: null` for this being — nulling threadId here is what arms
 // that guard, so restart needs no eviction call of its own.
-describe('/agents <handle>|all restart — clears ONLY threadId, mode/access_level/folder untouched', () => {
+describe('/agents restart <handle>|all — clears ONLY threadId, mode/access_level/folder untouched', () => {
   const cases = [
     { label: 'a room-surface conversation', surface: 'room', jid: 'acim', ctx: {} },
     { label: 'an ordinary whatsapp conversation', surface: 'whatsapp', jid: '1234@s.whatsapp.net', ctx: { pushedName: 'diego', slugHint: 'diego' } },
@@ -586,10 +586,10 @@ describe('/agents <handle>|all restart — clears ONLY threadId, mode/access_lev
   }
 
   for (const { label, surface, jid, ctx } of cases) {
-    it(`/agents e restart clears ONLY threadId — mode/access_level survive, being stays present — ${label}`, async () => {
+    it(`/agents restart e clears ONLY threadId — mode/access_level survive, being stays present — ${label}`, async () => {
       const state = seedRestartState(surface, jid, ctx);
       const { cmds, getState } = harness({ state, io: { rename: async () => {}, mkdir: async () => {} } });
-      await cmds.run({ chatId: jid, surface, body: '/agents e restart' });
+      await cmds.run({ chatId: jid, surface, body: '/agents restart e' });
 
       const eAfter = getBeing(getState(), surface, jid, 'e');
       expect(eAfter.present).toBe(true);
@@ -598,19 +598,27 @@ describe('/agents <handle>|all restart — clears ONLY threadId, mode/access_lev
       expect(eAfter.accessLevel).toBe('all');
     });
   }
-  // END TO END, through the real dispatch — the parser being right is not the claim that
-  // matters. This is the exact line the operator typed (2026-08-28), which used to answer
-  // `unknown subcommand "p"`: verb first, singular /agent, no `=` on the conversation.
+  // END TO END, through the real dispatch. Two properties, and the second is the one that
+  // would bite: the singular ANSWERS, and it answers WITHOUT acting. A silent alias would
+  // have cleared a live thread here and looked identical in the reply.
   for (const { label, surface, jid, ctx } of cases) {
-    it(`/agent restart e — verb-first AND singular — clears threadId just like /agents e restart — ${label}`, async () => {
+    it(`/agent restart e asks for the plural and changes NOTHING — ${label}`, async () => {
       const state = seedRestartState(surface, jid, ctx);
-      const { cmds, getState } = harness({ state, io: { rename: async () => {}, mkdir: async () => {} } });
+      const { cmds, sent, getState } = harness({ state, io: { rename: async () => {}, mkdir: async () => {} } });
       await cmds.run({ chatId: jid, surface, body: '/agent restart e' });
 
+      expect(sent.at(-1).text).toMatch(/did you mean `\/agents`\?/);
+      expect(getBeing(getState(), surface, jid, 'e').threadId).toBe('thread-abc');   // untouched
+    });
+
+    it(`/agents restart e — the plural — does the work — ${label}`, async () => {
+      const state = seedRestartState(surface, jid, ctx);
+      const { cmds, getState } = harness({ state, io: { rename: async () => {}, mkdir: async () => {} } });
+      await cmds.run({ chatId: jid, surface, body: '/agents restart e' });
+
       const eAfter = getBeing(getState(), surface, jid, 'e');
-      expect(eAfter.present).toBe(true);
-      expect(eAfter.threadId).toBeNull();     // the whole point: the verb was understood
-      expect(eAfter.mode).toBe('mention');    // and restart stayed narrow
+      expect(eAfter.threadId).toBeNull();
+      expect(eAfter.mode).toBe('mention');       // restart stayed narrow
       expect(eAfter.accessLevel).toBe('all');
     });
   }
@@ -622,10 +630,10 @@ describe('/agents <handle>|all restart — clears ONLY threadId, mode/access_lev
   // access_level is now a shared column, not a contrast point (operator ruling 2026-08-17):
   // both reset and restart preserve it, for different reasons — reset because it's a durable
   // grant reapplied after the wipe, restart because it never wipes anything.
-  it('CONTRAST — /agents e reset wipes mode (regression lock, unchanged) but PRESERVES access_level, vs /agents e restart leaves mode/access_level intact — same seed, side by side', async () => {
+  it('CONTRAST — /agents reset e wipes mode (regression lock, unchanged) but PRESERVES access_level, vs /agents restart e leaves mode/access_level intact — same seed, side by side', async () => {
     const resetState = seedRestartState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
     const { cmds: resetCmds, getState: getResetState } = harness({ state: resetState, io: { rename: async () => {}, mkdir: async () => {} } });
-    await resetCmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents e reset' });
+    await resetCmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents reset e' });
     const eAfterReset = getBeing(getResetState(), 'whatsapp', '1234@s.whatsapp.net', 'e');
     expect(eAfterReset.present).toBe(true);   // access_level survives, so the block is not fully gone
     expect(eAfterReset.mode).toBeNull();
@@ -634,7 +642,7 @@ describe('/agents <handle>|all restart — clears ONLY threadId, mode/access_lev
 
     const restartState = seedRestartState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
     const { cmds: restartCmds, getState: getRestartState } = harness({ state: restartState, io: { rename: async () => {}, mkdir: async () => {} } });
-    await restartCmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents e restart' });
+    await restartCmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents restart e' });
     const eAfterRestart = getBeing(getRestartState(), 'whatsapp', '1234@s.whatsapp.net', 'e');
     expect(eAfterRestart.present).toBe(true);
     expect(eAfterRestart.mode).toBe('mention');
@@ -645,7 +653,7 @@ describe('/agents <handle>|all restart — clears ONLY threadId, mode/access_lev
   // Sibling scoping (mirrors reset's own "wren reset leaves e untouched" regression lock
   // above): restart must NAME the being it clears, never assume defaultKey or spill onto a
   // resident sibling that wasn't targeted.
-  it("/agents wren restart clears ONLY wren's threadId — sibling e (also resident here) is untouched byte-for-byte", async () => {
+  it("/agents restart wren clears ONLY wren's threadId — sibling e (also resident here) is untouched byte-for-byte", async () => {
     let state = ensureContact(emptyState(), 'whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' }).state;
     state = patchContact(state, 'whatsapp', '1234@s.whatsapp.net', {
       agents: {
@@ -655,7 +663,7 @@ describe('/agents <handle>|all restart — clears ONLY threadId, mode/access_lev
     });
     const before = getContact(state, 'whatsapp', '1234@s.whatsapp.net').entry.agents.e;
     const { cmds, getState } = harness({ state });
-    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents wren restart' });
+    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents restart wren' });
 
     const reloaded = getState();
     const wrenAfter = getBeing(reloaded, 'whatsapp', '1234@s.whatsapp.net', 'wren');
@@ -669,7 +677,7 @@ describe('/agents <handle>|all restart — clears ONLY threadId, mode/access_lev
 
   // Contrast with reset's own "archives the old folder" test above, which asserts rename/
   // mkdir DO fire: restart must never touch the conversation folder at all.
-  it('/agents e restart never touches the conversation folder — rename/mkdir are NEVER called (contrast: reset always calls both)', async () => {
+  it('/agents restart e never touches the conversation folder — rename/mkdir are NEVER called (contrast: reset always calls both)', async () => {
     const state = seedRestartState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
     const renames = [], mkdirs = [];
     const { cmds } = harness({
@@ -679,18 +687,18 @@ describe('/agents <handle>|all restart — clears ONLY threadId, mode/access_lev
         mkdir: async (p) => { mkdirs.push(p); },
       },
     });
-    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents e restart' });
+    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents restart e' });
     expect(renames).toHaveLength(0);
     expect(mkdirs).toHaveLength(0);
   });
 
-  it('/agents all restart clears threadId for EVERY resident being, leaving each one\'s own mode intact', async () => {
+  it('/agents restart all clears threadId for EVERY resident being, leaving each one\'s own mode intact', async () => {
     let state = ensureContact(emptyState(), 'whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' }).state;
     state = patchContact(state, 'whatsapp', '1234@s.whatsapp.net', {
       agents: { e: { mode: 'on', threadId: 'e-t' }, wren: { mode: 'mention', threadId: 'wren-t' }, d: { mode: 'accum', threadId: 'd-t' } },
     });
     const { cmds, getState } = harness({ state });
-    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents all restart' });
+    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents restart all' });
     const reloaded = getState();
     for (const h of ['e', 'wren', 'd']) {
       const b = getBeing(reloaded, 'whatsapp', '1234@s.whatsapp.net', h);
@@ -702,12 +710,12 @@ describe('/agents <handle>|all restart — clears ONLY threadId, mode/access_lev
     expect(getBeing(reloaded, 'whatsapp', '1234@s.whatsapp.net', 'd').mode).toBe('accum');
   });
 
-  // `=<slug>` target form (mirrors reset's own /agents=hfm e reset test above): from Self,
+  // `=<slug>` target form (mirrors reset's own /agents=hfm reset e test above): from Self,
   // name a DIFFERENT known chat instead of the conversation the command was typed in.
-  it('/agents=hfm e restart clears threadId on the NAMED chat while the operator types from Self — Self itself is never touched', async () => {
+  it('/agents=hfm restart e clears threadId on the NAMED chat while the operator types from Self — Self itself is never touched', async () => {
     const state = seedRestartState('whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' });
     const { cmds, sent, getState } = harness({ state });
-    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/agents=hfm e restart' });
+    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/agents=hfm restart e' });
 
     const eAfter = getBeing(getState(), 'whatsapp', '!hfm:beeper.local', 'e');
     expect(eAfter.threadId).toBeNull();
@@ -720,10 +728,10 @@ describe('/agents <handle>|all restart — clears ONLY threadId, mode/access_lev
   // relies on warm-sessions.mjs's own session-identity guard to evict a stale warm process
   // once threadId goes null on the next turn — it must NOT call evictWarm itself (that would
   // duplicate access_level's own, different, reason for evicting).
-  it('/agents e restart does NOT call evictWarm — the warm pool\'s own session-identity guard self-evicts once threadId is nulled', async () => {
+  it('/agents restart e does NOT call evictWarm — the warm pool\'s own session-identity guard self-evicts once threadId is nulled', async () => {
     const state = seedRestartState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
     const { cmds, evicts } = harness({ state });
-    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents e restart' });
+    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents restart e' });
     expect(evicts).toEqual([]);
   });
 
@@ -759,7 +767,7 @@ describe('/agents <handle>|all restart — clears ONLY threadId, mode/access_lev
     `An@[${chat}].wa (20:30) #b: dale`, '', '',
   ].join('\n');   // every real append ends '\n\n' — the boundary must land as its OWN block
 
-  it('/agents e restart appends ONE withheld boundary line — the next accum window is EMPTY while the file keeps its history', async () => {
+  it('/agents restart e appends ONE withheld boundary line — the next accum window is EMPTY while the file keeps its history', async () => {
     const surface = 'whatsapp', jid = '1234@s.whatsapp.net';
     const state = seedRestartState(surface, jid, { pushedName: 'diego', slugHint: 'diego' });
     const { files, log } = memTranscript(() => state);
@@ -768,7 +776,7 @@ describe('/agents <handle>|all restart — clears ONLY threadId, mode/access_lev
     const before = files[fpath];
 
     const { cmds } = harness({ state, logTranscript: log });
-    await cmds.run({ chatId: jid, surface, body: '/agents e restart' });
+    await cmds.run({ chatId: jid, surface, body: '/agents restart e' });
 
     expect(files[fpath].startsWith(before)).toBe(true);                       // append-only: nothing rewritten
     const added = files[fpath].slice(before.length);
@@ -780,7 +788,7 @@ describe('/agents <handle>|all restart — clears ONLY threadId, mode/access_lev
     expect(contextSinceLastTurn(files[fpath], { being: 'wren' }).blocks.length).toBeGreaterThan(0);
   });
 
-  it("/agents wren restart moves ONLY wren's boundary — e is resident here too and its window is unmoved", async () => {
+  it("/agents restart wren moves ONLY wren's boundary — e is resident here too and its window is unmoved", async () => {
     const surface = 'whatsapp', jid = '1234@s.whatsapp.net';
     let state = ensureContact(emptyState(), surface, jid, { pushedName: 'diego', slugHint: 'diego' }).state;
     state = patchContact(state, surface, jid, { agents: { e: { threadId: 'e-t' }, wren: { threadId: 'wren-t' } } });
@@ -790,19 +798,19 @@ describe('/agents <handle>|all restart — clears ONLY threadId, mode/access_lev
     const eWindowBefore = contextSinceLastTurn(files[fpath], { being: 'e' }).blocks;
 
     const { cmds } = harness({ state, logTranscript: log });
-    await cmds.run({ chatId: jid, surface, body: '/agents wren restart' });
+    await cmds.run({ chatId: jid, surface, body: '/agents restart wren' });
 
     expect(contextSinceLastTurn(files[fpath], { being: 'wren' }).blocks).toEqual([]);
     const eWindowAfter = contextSinceLastTurn(files[fpath], { being: 'e' }).blocks;
     expect(eWindowAfter.slice(0, eWindowBefore.length)).toEqual(eWindowBefore);   // e's own boundary never moved
   });
 
-  it('/agents all restart writes ONE boundary line per restarted being, each under its own label', async () => {
+  it('/agents restart all writes ONE boundary line per restarted being, each under its own label', async () => {
     const surface = 'whatsapp', jid = '1234@s.whatsapp.net';
     let state = ensureContact(emptyState(), surface, jid, { pushedName: 'diego', slugHint: 'diego' }).state;
     state = patchContact(state, surface, jid, { agents: { e: { threadId: 'e-t' }, wren: { threadId: 'wren-t' } } });
     const { cmds, logged } = harness({ state });
-    await cmds.run({ chatId: jid, surface, body: '/agents all restart' });
+    await cmds.run({ chatId: jid, surface, body: '/agents restart all' });
 
     expect(logged.map((l) => l.reply.being)).toEqual(['e', 'wren']);
     for (const l of logged) expect(l.reply.surfaced).toBe(false);
@@ -815,14 +823,14 @@ describe('/agents <handle>|all restart — clears ONLY threadId, mode/access_lev
     const state = seedRestartState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
     let sentAtLog = null;
     const h = harness({ state, logTranscript: async () => { sentAtLog = h.sent.length; return true; } });
-    await h.cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents e restart' });
+    await h.cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents restart e' });
     expect(sentAtLog).toBe(1);
   });
 
-  it('/agents=hfm e restart writes the boundary into the NAMED chat, not the one the command was typed in', async () => {
+  it('/agents=hfm restart e writes the boundary into the NAMED chat, not the one the command was typed in', async () => {
     const state = seedRestartState('whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' });
     const { cmds, logged } = harness({ state });
-    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/agents=hfm e restart' });
+    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/agents=hfm restart e' });
     expect(logged).toHaveLength(1);
     expect(logged[0].ev.chatId).toBe('!hfm:beeper.local');
     expect(logged[0].ev.surface).toBe('whatsapp');
@@ -830,15 +838,15 @@ describe('/agents <handle>|all restart — clears ONLY threadId, mode/access_lev
 
   // reset's own behaviour is UNCHANGED: it archives the whole folder, which already clears the
   // window — it must not also start writing boundary lines.
-  it('CONTRAST — /agents e reset writes NO boundary line (it archives instead; unchanged)', async () => {
+  it('CONTRAST — /agents reset e writes NO boundary line (it archives instead; unchanged)', async () => {
     const state = seedRestartState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
     const { cmds, logged } = harness({ state, io: { rename: async () => {}, mkdir: async () => {} } });
-    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents e reset' });
+    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents reset e' });
     expect(logged).toEqual([]);
   });
 
-  it('/agents e restart is recognized case-insensitively on the command token + subcommand', async () => {
-    for (const body of ['/agents e restart', '/AGENTS e RESTART', '/Agents e Restart']) {
+  it('/agents restart e is recognized case-insensitively on the command token + subcommand', async () => {
+    for (const body of ['/agents restart e', '/AGENTS e RESTART', '/Agents e Restart']) {
       const state = seedRestartState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
       const { cmds, sent } = harness({ state });
       await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body });
@@ -848,8 +856,8 @@ describe('/agents <handle>|all restart — clears ONLY threadId, mode/access_lev
   });
 });
 
-// /agents <handle>|all access_level all|regular — a PLAIN TOGGLE (operator: same trust
-// model as /room delete force, no extra reachability gate) that points the TARGET being's
+// /agents access_level all|regular <handle>|all — a PLAIN TOGGLE (operator: same trust
+// model as /rooms delete force, no extra reachability gate) that points the TARGET being's
 // `access_level` at config/permissions/all.md or config/permissions/regular.md. NOT a
 // freeze (operator 2026-08-14): it writes ONLY the access_level field, merged over the
 // being's existing agents.<being> block — mode/threadId survive untouched.
@@ -858,8 +866,8 @@ describe('/agents <handle>|all restart — clears ONLY threadId, mode/access_lev
 // live-application is covered in tests/spine-brainpool.test.mjs, not here — this file only
 // proves the command writes the right field to the right place and leaves mode/threadId
 // alone. Was /e access all|regular, hardcoded to defaultKey; the subcommand keyword is also
-// renamed access_level (operator's own example: `/agents wren access_level all`).
-describe('/agents <handle>|all access_level all|regular — points access_level at a permissions file, no freeze, one shared path for rooms and ordinary conversations', () => {
+// renamed access_level (operator's own example: `/agents access_level all wren`).
+describe('/agents access_level all|regular <handle>|all — points access_level at a permissions file, no freeze, one shared path for rooms and ordinary conversations', () => {
   const cases = [
     { label: 'a room-surface conversation', surface: 'room', jid: 'acim', ctx: {} },
     { label: 'an ordinary whatsapp conversation', surface: 'whatsapp', jid: '1234@s.whatsapp.net', ctx: { pushedName: 'diego', slugHint: 'diego' } },
@@ -875,10 +883,10 @@ describe('/agents <handle>|all access_level all|regular — points access_level 
   }
 
   for (const { label, surface, jid, ctx } of cases) {
-    it(`/agents e access_level all sets accessLevel: 'all' and leaves mode/threadId untouched — ${label}`, async () => {
+    it(`/agents access_level all e sets accessLevel: 'all' and leaves mode/threadId untouched — ${label}`, async () => {
       const state = seedAccessState(surface, jid, ctx);
       const { cmds, sent, getState } = harness({ state });
-      await cmds.run({ chatId: jid, surface, body: '/agents e access_level all' });
+      await cmds.run({ chatId: jid, surface, body: '/agents access_level all e' });
       const being = getBeing(getState(), surface, jid, 'e');
       expect(being.accessLevel).toBe('all');
       expect(being.mode).toBe('on');
@@ -887,10 +895,10 @@ describe('/agents <handle>|all access_level all|regular — points access_level 
       expect(sent[0].text).toMatch(/unconfined/);
     });
 
-    it(`/agents e access_level regular sets accessLevel: 'regular' and leaves mode/threadId untouched — ${label}`, async () => {
+    it(`/agents access_level regular e sets accessLevel: 'regular' and leaves mode/threadId untouched — ${label}`, async () => {
       const state = seedAccessState(surface, jid, ctx);
       const { cmds, sent, getState } = harness({ state });
-      await cmds.run({ chatId: jid, surface, body: '/agents e access_level regular' });
+      await cmds.run({ chatId: jid, surface, body: '/agents access_level regular e' });
       const being = getBeing(getState(), surface, jid, 'e');
       expect(being.accessLevel).toBe('regular');
       expect(being.mode).toBe('on');
@@ -902,55 +910,55 @@ describe('/agents <handle>|all access_level all|regular — points access_level 
     it(`threadId/mode survive both access_level all and access_level regular — ${label}`, async () => {
       const stateAll = seedAccessState(surface, jid, ctx);
       const { cmds: cmdsAll, getState: getStateAll } = harness({ state: stateAll });
-      await cmdsAll.run({ chatId: jid, surface, body: '/agents e access_level all' });
+      await cmdsAll.run({ chatId: jid, surface, body: '/agents access_level all e' });
       const afterAll = getBeing(getStateAll(), surface, jid, 'e');
       expect(afterAll.threadId).toBe('thread-abc');
       expect(afterAll.mode).toBe('on');
 
       const stateRegular = seedAccessState(surface, jid, ctx);
       const { cmds: cmdsRegular, getState: getStateRegular } = harness({ state: stateRegular });
-      await cmdsRegular.run({ chatId: jid, surface, body: '/agents e access_level regular' });
+      await cmdsRegular.run({ chatId: jid, surface, body: '/agents access_level regular e' });
       const afterRegular = getBeing(getStateRegular(), surface, jid, 'e');
       expect(afterRegular.threadId).toBe('thread-abc');
       expect(afterRegular.mode).toBe('on');
     });
   }
 
-  it('/agents e access_level evicts the warm session keyed on the FRESH-resolved engine (resolveBeingDef, same function turn() calls)', async () => {
+  it('/agents access_level evicts e the warm session keyed on the FRESH-resolved engine (resolveBeingDef, same function turn() calls)', async () => {
     const state = seedAccessState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
     const { cmds, evicts, getState } = harness({ state });
-    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents e access_level all' });
+    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents access_level all e' });
     const slug = getContact(getState(), 'whatsapp', '1234@s.whatsapp.net').slug;
     expect(evicts).toEqual([`e:ccode:whatsapp:${slug}`]);
   });
 
   // THE scoping generalization: access_level is no longer defaultKey-only — `all` writes
   // EVERY resident being's own access_level and evicts EACH being's own warm key.
-  it("/agents all access_level regular sets EVERY resident being's accessLevel and evicts each one's own warm key", async () => {
+  it("/agents access_level regular all sets EVERY resident being's accessLevel and evicts each one's own warm key", async () => {
     let state = ensureContact(emptyState(), 'whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' }).state;
     state = patchContact(state, 'whatsapp', '1234@s.whatsapp.net', {
       agents: { e: { mode: 'on' }, wren: { mode: 'mention' } },
     });
     const { cmds, evicts, getState } = harness({ state });
-    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents all access_level regular' });
+    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents access_level regular all' });
     const slug = getContact(getState(), 'whatsapp', '1234@s.whatsapp.net').slug;
     expect(evicts).toEqual(expect.arrayContaining([`e:ccode:whatsapp:${slug}`, `wren:ccode:whatsapp:${slug}`]));
     expect(getBeing(getState(), 'whatsapp', '1234@s.whatsapp.net', 'e').accessLevel).toBe('regular');
     expect(getBeing(getState(), 'whatsapp', '1234@s.whatsapp.net', 'wren').accessLevel).toBe('regular');
   });
 
-  it('/agents e access_level <bad> and bare access_level get the usage reply — not silence, not a fallthrough', async () => {
-    for (const body of ['/agents e access_level foo', '/agents e access_level']) {
+  it('/agents access_level <bad> e and bare access_level get the usage reply — not silence, not a fallthrough', async () => {
+    for (const body of ['/agents access_level foo e', '/agents access_level bad e']) {
       const state = seedAccessState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
       const { cmds, sent } = harness({ state });
       await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body });
-      expect(sent[0].text).toBe('usage: /agents <handle>|all access_level all|regular');
+      expect(sent[0].text).toBe('usage: /agents access_level all|regular <handle>|all');
       expect(sent[0].text).not.toMatch(/recognized/);
     }
   });
 
-  it('/agents e access_level all is recognized case-insensitively on the command token + subcommand (the all|regular value stays case-insensitive too)', async () => {
-    for (const body of ['/agents e access_level all', '/AGENTS e ACCESS_LEVEL all', '/Agents e Access_Level ALL']) {
+  it('/agents access_level all e is recognized case-insensitively on the command token + subcommand (the all|regular value stays case-insensitive too)', async () => {
+    for (const body of ['/agents access_level all e', '/AGENTS e ACCESS_LEVEL all', '/Agents e Access_Level ALL']) {
       const state = seedAccessState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
       const { cmds, sent } = harness({ state });
       await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body });
@@ -960,18 +968,18 @@ describe('/agents <handle>|all access_level all|regular — points access_level 
   });
 });
 
-// /agents bare-target default honoring a joined /room (operator 2026-08-16 fix): /room join
+// /agents bare-target default honoring a joined /rooms (operator 2026-08-16 fix): /rooms join
 // already made the joined room the natural default target for roomLeave's own bare form, but
 // /agents's own bare-target resolution never read currentRoom at all — an operator who joined
 // a room and then ran a bare /agents (no explicit `=<slug>`) silently kept writing to their
 // own native chat instead of the room. The fix reuses the SAME resolveTarget the explicit
 // `=<slug>` branch already used (see the resolution block at the top of agentsCmd).
-describe('/agents bare-target default honors a joined /room (operator 2026-08-16 fix)', () => {
-  it("/room join <slug> then a BARE /agents ... access_level writes to the JOINED ROOM, not the caller's own chat", async () => {
+describe('/agents bare-target default honors a joined /rooms (operator 2026-08-16 fix)', () => {
+  it("/rooms join <slug> then a BARE /agents ... access_level writes to the JOINED ROOM, not the caller's own chat", async () => {
     const state = ensureContact(emptyState(), 'room', 'acim', {}).state;
     const { cmds, getState } = harness({ state });
-    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/room join acim' });
-    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/agents e access_level all' });
+    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/rooms join acim' });
+    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/agents access_level all e' });
     expect(getBeing(getState(), 'room', 'acim', 'e').accessLevel).toBe('all');
     expect(getBeing(getState(), 'whatsapp', '!self', 'e')).toBe(null);
   });
@@ -979,7 +987,7 @@ describe('/agents bare-target default honors a joined /room (operator 2026-08-16
   it("regression: no room joined — bare /agents still targets the caller's own native chat (unchanged)", async () => {
     const state = ensureContact(emptyState(), 'whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' }).state;
     const { cmds, getState } = harness({ state });
-    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents e access_level all' });
+    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents access_level all e' });
     expect(getBeing(getState(), 'whatsapp', '1234@s.whatsapp.net', 'e').accessLevel).toBe('all');
   });
 
@@ -987,8 +995,8 @@ describe('/agents bare-target default honors a joined /room (operator 2026-08-16
     let state = ensureContact(emptyState(), 'room', 'acim', {}).state;
     state = ensureContact(state, 'whatsapp', '!other:beeper.local', { pushedName: 'Other', slugHint: 'other' }).state;
     const { cmds, getState } = harness({ state });
-    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/room join acim' });
-    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/agents=other e access_level all' });
+    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/rooms join acim' });
+    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/agents=other access_level all e' });
     expect(getBeing(getState(), 'whatsapp', '!other:beeper.local', 'e').accessLevel).toBe('all');
     expect(getBeing(getState(), 'room', 'acim', 'e').accessLevel).toBeNull();
   });
@@ -1000,39 +1008,39 @@ describe('/agents bare-target default honors a joined /room (operator 2026-08-16
 // a caller the room actually changed, so boot had no way to recompute+push a header. These
 // assert the hook fires with the right (surface, slug|null) at every currentRoom mutation site.
 describe('onRoomChange — fires at every currentRoom mutation site (roomJoin/roomLeave/roomDelete)', () => {
-  it('/room join <slug> fires onRoomChange(surface, slug)', async () => {
+  it('/rooms join <slug> fires onRoomChange(surface, slug)', async () => {
     const { cmds, roomChanges } = harness();
-    await cmds.run({ chatId: 'main', surface: 'shell', body: '/room join acim' });
+    await cmds.run({ chatId: 'main', surface: 'shell', body: '/rooms join acim' });
     expect(roomChanges).toEqual([{ surface: 'shell', slug: 'acim' }]);
   });
 
-  it('/room leave <slug> (room IS current) fires onRoomChange(surface, null)', async () => {
+  it('/rooms leave <slug> (room IS current) fires onRoomChange(surface, null)', async () => {
     const { cmds, roomChanges } = harness();
-    await cmds.run({ chatId: 'main', surface: 'shell', body: '/room join acim' });
-    await cmds.run({ chatId: 'main', surface: 'shell', body: '/room leave acim' });
+    await cmds.run({ chatId: 'main', surface: 'shell', body: '/rooms join acim' });
+    await cmds.run({ chatId: 'main', surface: 'shell', body: '/rooms leave acim' });
     expect(roomChanges).toEqual([{ surface: 'shell', slug: 'acim' }, { surface: 'shell', slug: null }]);
   });
 
-  it('/room leave <slug> when NOT current does NOT fire onRoomChange (nothing changed)', async () => {
+  it('/rooms leave <slug> when NOT current does NOT fire onRoomChange (nothing changed)', async () => {
     const { cmds, roomChanges } = harness();
-    await cmds.run({ chatId: 'main', surface: 'shell', body: '/room leave acim' });
+    await cmds.run({ chatId: 'main', surface: 'shell', body: '/rooms leave acim' });
     expect(roomChanges).toEqual([]);
   });
 
-  it('bare /room leave (current room implied) fires onRoomChange(surface, null)', async () => {
+  it('bare /rooms leave (current room implied) fires onRoomChange(surface, null)', async () => {
     const { cmds, roomChanges } = harness();
-    await cmds.run({ chatId: 'main', surface: 'shell', body: '/room join acim' });
-    await cmds.run({ chatId: 'main', surface: 'shell', body: '/room leave' });
+    await cmds.run({ chatId: 'main', surface: 'shell', body: '/rooms join acim' });
+    await cmds.run({ chatId: 'main', surface: 'shell', body: '/rooms leave' });
     expect(roomChanges).toEqual([{ surface: 'shell', slug: 'acim' }, { surface: 'shell', slug: null }]);
   });
 
   it('a non-shell surface joining/leaving still fires onRoomChange — boot.mjs is what filters to shell, not this seam', async () => {
     const { cmds, roomChanges } = harness();
-    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/room join acim' });
+    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/rooms join acim' });
     expect(roomChanges).toEqual([{ surface: 'whatsapp', slug: 'acim' }]);
   });
 
-  it('/room delete force on a JOINED room clears currentRoom AND fires onRoomChange(surface, null) too', async () => {
+  it('/rooms delete force on a JOINED room clears currentRoom AND fires onRoomChange(surface, null) too', async () => {
     const room = Room.forChat('room', 'acim');
     const { cmds, roomChanges, sent } = harness({
       config: { whatsapp: { chat_id: '!self' } },
@@ -1042,15 +1050,15 @@ describe('onRoomChange — fires at every currentRoom mutation site (roomJoin/ro
         rm: async () => {},
       },
     });
-    await cmds.run({ chatId: 'main', surface: 'shell', body: '/room join acim' });
-    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/room delete force acim' });
+    await cmds.run({ chatId: 'main', surface: 'shell', body: '/rooms join acim' });
+    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/rooms delete force acim' });
     expect(sent[sent.length - 1].text).toMatch(/room acim deleted/);
     expect(roomChanges).toEqual([{ surface: 'shell', slug: 'acim' }, { surface: 'shell', slug: null }]);
   });
 });
 
 // resolveTarget cross-surface fallback (operator 2026-07-05 live bug): from the whatsapp
-// Self DM, "/agents e auto on miss" reported "no chat matches" even though a telegram chat
+// Self DM, "/agents auto on e miss" reported "no chat matches" even though a telegram chat
 // "Miss Xinyi" was registered — resolveTarget only ever searched the command's own
 // surface. Own-surface hits still win with no ambiguity check against other surfaces;
 // only a ZERO own-surface hit falls through to every other surface registered in state.contacts.
@@ -1058,7 +1066,7 @@ describe('/agents=<slug> …: cross-surface resolution', () => {
   it('a TELEGRAM chat targeted by name from the whatsapp Self DM resolves + patches the TELEGRAM entry', async () => {
     const state = ensureContact(emptyState(), 'telegram', '!miss:something', { pushedName: 'Miss Xinyi', slugHint: 'miss-xinyi' }).state;
     const { cmds, sent, getState } = harness({ state });
-    await cmds.run({ body: '/agents=miss e auto on', chatId: '!self', surface: 'whatsapp' });
+    await cmds.run({ body: '/agents=miss auto on e', chatId: '!self', surface: 'whatsapp' });
     expect(getBeing(getState(), 'telegram', '!miss:something', 'e').mode).toBe('on');   // the TELEGRAM entry
     expect(getBeing(getState(), 'whatsapp', '!miss:something', 'e')).toBe(null);         // whatsapp has no such being
     expect(sent[0].text).toMatch(/Miss Xinyi.*→ on/);
@@ -1068,7 +1076,7 @@ describe('/agents=<slug> …: cross-surface resolution', () => {
     let state = ensureContact(emptyState(), 'whatsapp', '!miss-wa:beeper.local', { pushedName: 'Miss Wa', slugHint: 'miss-wa' }).state;
     state = ensureContact(state, 'telegram', '!miss-tg:something', { pushedName: 'Miss Tg', slugHint: 'miss-tg' }).state;
     const { cmds, sent, getState } = harness({ state });
-    await cmds.run({ body: '/agents=miss e auto on', chatId: '!self', surface: 'whatsapp' });
+    await cmds.run({ body: '/agents=miss auto on e', chatId: '!self', surface: 'whatsapp' });
     expect(getBeing(getState(), 'whatsapp', '!miss-wa:beeper.local', 'e').mode).toBe('on');   // the OWN-surface hit
     expect(getBeing(getState(), 'telegram', '!miss-tg:something', 'e').mode).toBe(null);       // telegram untouched, no ambiguity check
     expect(sent[0].text).not.toMatch(/be more specific/);
@@ -1078,7 +1086,7 @@ describe('/agents=<slug> …: cross-surface resolution', () => {
     let state = ensureContact(emptyState(), 'telegram', '!miss-tg:something', { pushedName: 'Miss Tg', slugHint: 'miss-tg' }).state;
     state = ensureContact(state, 'signal', '!miss-sig:something', { pushedName: 'Miss Sig', slugHint: 'miss-sig' }).state;
     const { cmds, sent, writes } = harness({ state });
-    await cmds.run({ body: '/agents=miss e auto on', chatId: '!self', surface: 'whatsapp' });
+    await cmds.run({ body: '/agents=miss auto on e', chatId: '!self', surface: 'whatsapp' });
     expect(sent[0].text).toMatch(/matches 2/);
     expect(sent[0].text).toMatch(/Miss Tg \(telegram\)/);
     expect(sent[0].text).toMatch(/Miss Sig \(signal\)/);
@@ -1142,7 +1150,7 @@ describe('/agents <handle>|all — bare status view, usage, and /e/egpt retireme
     const ev = { chatId: '!room', surface: 'whatsapp', authorized: true };
     await cmds.run({ ...ev, body: '/agents' });
     expect(sent[0].text).toBe(AGENTS_USAGE);            // verb-first since 2026-08-28
-    expect(sent[0].text).toMatch(/^usage: \/agents <reset\|restart\|/);   // ...and it LEADS with the verb
+    expect(sent[0].text).toMatch(/^usage: \/agents \[<verb>\] \[<value>\] <handle>/);   // ...verb slot first, target after
     expect(writes).toHaveLength(0);
     // a plain follow-up message is NOT claimed as a command (nothing was armed)
     expect(cmds.isCommand({ chatId: '!room', surface: 'whatsapp', body: '1', authorized: true })).toBe(false);
@@ -1151,7 +1159,10 @@ describe('/agents <handle>|all — bare status view, usage, and /e/egpt retireme
   it('/agents <handle> <unknown-subcommand> gets a usage-shaped reply, not a fallthrough', async () => {
     const { cmds, sent } = harness({ state: contact() });
     await cmds.run({ chatId: '!room', surface: 'whatsapp', body: '/agents e frobnicate' });
-    expect(sent[0].text).toMatch(/unknown subcommand "frobnicate"/);
+    // The trailing slot after a bare handle is the CONVERSATION now (`/agents e spoiler`),
+    // so an unrecognised token is reported as an unresolvable chat rather than a bad verb.
+    // The property this test actually guards is unchanged: /agents ANSWERS, never falls through.
+    expect(sent[0].text).toMatch(/no chat matches "frobnicate"/);
     expect(sent[0].text).not.toMatch(/recognized/);
   });
 
@@ -1413,7 +1424,7 @@ describe('/chrome <node>', () => {
   });
 });
 
-// /room create <name> — the FIRST wired named-room create path (Phase 2). A Room IS a
+// /rooms create <name> — the FIRST wired named-room create path (Phase 2). A Room IS a
 // folder: `create` makes the standard tree (baseDir + media/files/identity.d/scripts + a minimal
 // config.yaml) so the heartbeat/transcription loaders enumerate rooms/<slug>/. All
 // fs is routed through the commands io seam, so these run fully in-memory (mkdir recorded,
@@ -1421,18 +1432,18 @@ describe('/chrome <node>', () => {
 //
 // 2026-08-09: the room is minted through resolveConvRoom('room', <name>) — the SAME shared
 // resolver a Beeper chat goes through — so the harness injects it, exactly as boot does.
-describe('/room create <name>', () => {
+describe('/rooms create <name>', () => {
   const self = { chatId: '!self', surface: 'whatsapp' };
   const resolveConvRoom = async (surface, chatId) => Room.forChat(surface, chatId);
 
-  it('/room create foo makes the room folder tree and confirms the path', async () => {
+  it('/rooms create foo makes the room folder tree and confirms the path', async () => {
     const mkdirs = [];
     const { cmds, sent, files } = harness({
       config: { whatsapp: { chat_id: '!self' } },
       resolveConvRoom,
       io: { mkdir: async (p) => { mkdirs.push(p); }, stat: async () => { throw new Error('ENOENT'); } },
     });
-    await cmds.run({ ...self, body: '/room create foo' });
+    await cmds.run({ ...self, body: '/rooms create foo' });
     const r = Room.forChat('room', 'foo');
     // the standard tree dirs were created …
     for (const dir of [r.baseDir(), r.mediaDir, r.filesDir, r.identityDir, r.scriptsDir]) expect(mkdirs).toContain(dir);
@@ -1447,38 +1458,40 @@ describe('/room create <name>', () => {
     expect(sent[0].text).not.toMatch(/recognized/);   // NOT the unwired catch-all
   });
 
-  it('/room create foo again reports it already exists and does NOT clobber (idempotent)', async () => {
+  it('/rooms create foo again reports it already exists and does NOT clobber (idempotent)', async () => {
     const mkdirs = [];
     const { cmds, sent, files } = harness({
       config: { whatsapp: { chat_id: '!self' } },
       resolveConvRoom,
       io: { mkdir: async (p) => { mkdirs.push(p); }, stat: async () => ({ isDirectory: () => true }) },   // folder present
     });
-    await cmds.run({ ...self, body: '/room create foo' });
+    await cmds.run({ ...self, body: '/rooms create foo' });
     expect(sent[0].text).toMatch(/already exists/);
     expect(mkdirs).toHaveLength(0);              // nothing created
     expect(Object.keys(files)).toHaveLength(0);  // nothing written → existing content untouched
   });
 
-  it('/room create with no name replies usage and creates nothing', async () => {
+  it('/rooms create with no name replies usage and creates nothing', async () => {
     const mkdirs = [];
     const { cmds, sent, files } = harness({
       config: { whatsapp: { chat_id: '!self' } },
       resolveConvRoom,
       io: { mkdir: async (p) => { mkdirs.push(p); }, stat: async () => { throw new Error('ENOENT'); } },
     });
-    await cmds.run({ ...self, body: '/room create' });
-    expect(sent[0].text).toMatch(/usage: \/room create <name>/);
+    await cmds.run({ ...self, body: '/rooms create' });
+    expect(sent[0].text).toMatch(/usage: \/rooms create <name>/);
     expect(mkdirs).toHaveLength(0);
     expect(Object.keys(files)).toHaveLength(0);
   });
 
-  it('/room (bare) shows the usage line naming the wired subcommands', async () => {
+  // Bare /rooms LISTS. It absorbed the singular /room, whose bare form showed usage instead
+  // (operator 2026-08-29). With nothing to list it still names the verb that makes one, so
+  // the command stays self-teaching rather than answering with a dead end.
+  it('/rooms (bare) lists rooms, and with none still names the verb that creates one', async () => {
     const { cmds, sent } = harness({ config: { whatsapp: { chat_id: '!self' } } });
-    await cmds.run({ ...self, body: '/room' });
-    expect(sent[0].text).toMatch(/usage/i);
-    expect(sent[0].text).toMatch(/create/);
-    expect(sent[0].text).toMatch(/join/);
+    await cmds.run({ ...self, body: '/rooms' });
+    expect(sent[0].text).toMatch(/no rooms yet/);
+    expect(sent[0].text).toMatch(/\/rooms create/);
     expect(sent[0].text).not.toMatch(/recognized/);
   });
 
@@ -1486,72 +1499,72 @@ describe('/room create <name>', () => {
   // {create, join, leave, members, delete, help}. Reproduce-first regression for the
   // 2026-08-07 bug fix: an unrecognized first token must NEVER become a room lookup — no
   // roomOnDisk/stat call, nothing room-shaped touched. Proven here by spying on io.stat.
-  it('/room <unrecognized-verb> <anything> reports the unknown verb and never touches disk', async () => {
+  it('/rooms <unrecognized-verb> <anything> reports the unknown verb and never touches disk', async () => {
     const statCalls = [];
     const { cmds, sent } = harness({
       config: { whatsapp: { chat_id: '!self' } },
       io: { stat: async (p) => { statCalls.push(p); throw new Error('ENOENT'); } },
     });
-    await cmds.run({ ...self, body: '/room frobnicate acim' });
+    await cmds.run({ ...self, body: '/rooms frobnicate acim' });
     expect(sent[0].text).toMatch(/unknown verb/i);
     expect(sent[0].text).toMatch(/frobnicate/);
     expect(statCalls).toEqual([]);   // no roomOnDisk lookup ever ran
   });
 
-  // /room delete <room> (verb-first, no force) still reaches the real delete path — proven
+  // /rooms delete <room> (verb-first, no force) still reaches the real delete path — proven
   // via the "no room" wording, which only happens if roomOnDisk/roomDelete actually ran.
-  it('/room delete <room> (no force) reaches roomDelete, not a generic unknown-verb reply', async () => {
+  it('/rooms delete <room> (no force) reaches roomDelete, not a generic unknown-verb reply', async () => {
     const { cmds, sent } = harness({
       config: { whatsapp: { chat_id: '!self' } },
       io: { stat: async () => { throw new Error('ENOENT'); } },
     });
-    await cmds.run({ ...self, body: '/room delete acim' });
+    await cmds.run({ ...self, body: '/rooms delete acim' });
     expect(sent[0].text).toMatch(/no room 'acim'/);
   });
 });
 
 // Defect 1 (live incident 2026-08-07): the slug-first grammar defaults an unrecognized
-// first token's sub-verb to `members`, so `/room help` (or any typo) rendered a fabricated
+// first token's sub-verb to `members`, so `/rooms help` (or any typo) rendered a fabricated
 // "help (0 members)" roster for a room that was never created — nothing on disk backed it.
 // A room absent on disk must say so instead of answering as though it exists.
-describe('/room <slug> — a nonexistent room says so, never a fabricated roster', () => {
+describe('/rooms <slug> — a nonexistent room says so, never a fabricated roster', () => {
   const self = { chatId: '!self', surface: 'whatsapp' };
   const cfg = { whatsapp: { chat_id: '!self' } };
   const noSuchRoom = { stat: async () => { throw new Error('ENOENT'); } };
 
-  it('/room help prints the usage line, NOT a "help (0 members)" roster (the live incident, verbatim)', async () => {
+  it('/rooms help prints the usage line, NOT a "help (0 members)" roster (the live incident, verbatim)', async () => {
     const { cmds, sent } = harness({ config: cfg, io: noSuchRoom });
-    await cmds.run({ ...self, body: '/room help' });
+    await cmds.run({ ...self, body: '/rooms help' });
     expect(sent[0].text).toMatch(/usage/i);
     expect(sent[0].text).not.toMatch(/members\)/);
   });
 
   // Under verb-first grammar there is no bare-slug-defaults-to-members case anymore — that
-  // WAS the bug. "/room bogus" has no recognized verb, so it must hit the unknown-verb
+  // WAS the bug. "/rooms bogus" has no recognized verb, so it must hit the unknown-verb
   // path, not an implicit "show me room bogus's members" (noRoomMsg).
-  it('/room <unqualified-token> (no verb) is a bad command, not an implicit members lookup', async () => {
+  it('/rooms <unqualified-token> (no verb) is a bad command, not an implicit members lookup', async () => {
     const { cmds, sent } = harness({ config: cfg, io: noSuchRoom });
-    await cmds.run({ ...self, body: '/room bogus' });
+    await cmds.run({ ...self, body: '/rooms bogus' });
     expect(sent[0].text).toMatch(/unknown verb/i);
     expect(sent[0].text).not.toMatch(/members\)/);
     expect(sent[0].text).not.toMatch(/no room 'bogus'/);
   });
 
-  it('/room members <nonexistent-room> reports "no room"', async () => {
+  it('/rooms members <nonexistent-room> reports "no room"', async () => {
     const { cmds, sent } = harness({ config: cfg, io: noSuchRoom });
-    await cmds.run({ ...self, body: '/room members bogus' });
+    await cmds.run({ ...self, body: '/rooms members bogus' });
     expect(sent[0].text).toMatch(/no room 'bogus'/);
   });
 
-  it('/room delete <nonexistent-room> reports "no room" (same wording as the members path)', async () => {
+  it('/rooms delete <nonexistent-room> reports "no room" (same wording as the members path)', async () => {
     const { cmds, sent } = harness({ config: cfg, io: noSuchRoom });
-    await cmds.run({ ...self, body: '/room delete bogus' });
+    await cmds.run({ ...self, body: '/rooms delete bogus' });
     expect(sent[0].text).toMatch(/no room 'bogus'/);
   });
 
-  it('/room join <room> still works against a not-yet-created room (unchanged pre-provisioning)', async () => {
+  it('/rooms join <room> still works against a not-yet-created room (unchanged pre-provisioning)', async () => {
     const { cmds, sent } = harness({ config: cfg, io: noSuchRoom });
-    await cmds.run({ ...self, body: '/room join future-room' });
+    await cmds.run({ ...self, body: '/rooms join future-room' });
     expect(sent[0].text).toMatch(/joined 'future-room'/);
   });
 });
@@ -1806,7 +1819,7 @@ describe('/help "wired" marker matches src/spine/commands.mjs + src/shell/comman
   });
 
   it('sanity: the mechanical scan actually found the known dozen (catches a scan that silently matches nothing)', () => {
-    for (const tok of ['status', 'chrome', 'tabs', 'open', 'room', 'rooms', 'config', 'help', 'agents', 'restart', 'upgrade', 'rewind']) {
+    for (const tok of ['status', 'chrome', 'tabs', 'open', 'rooms', 'config', 'help', 'agents', 'restart', 'upgrade', 'rewind']) {
       expect(spineTokens.has(tok), `expected "${tok}" in the dispatched-token scan`).toBe(true);
     }
   });
@@ -1848,34 +1861,59 @@ describe('browseTab is fully evicted from src/', () => {
 // obvious thing to type, and what the operator typed -- parsed `restart` as the being and
 // answered `unknown subcommand "p"`, blaming the wrong token. Both orders parse now; the
 // pure parser is asserted directly, then end-to-end so it is the real dispatch being proven.
-describe('/agents grammar — verb first, legacy order still accepted', () => {
+// § COMMAND GRAMMAR — `/<commands> <verb> [<value>] <target> [<scope>]` (operator 2026-08-29:
+// "remove legacy ways", "keep only '/agents', '/rooms'", "/members mode <value> <id|slug>").
+// The target trails so the being and the conversation sit together; the accepted cost is that
+// its slot moves with the verb's arity, which only works because arities are FIXED.
+describe('/agents grammar — verb first, target last, no legacy order', () => {
   const parse = (s) => normalizeAgentsArgs(s.split(/\s+/).filter(Boolean));
 
-  it('verb-first: /agents restart p spoiler places all three tokens', () => {
-    const r = parse('restart p spoiler');
-    expect(r.args).toEqual(['p', 'restart', undefined]);
-    expect(r.slug).toBe('spoiler');
-    expect(r.extra).toEqual([]);
+  it('a 0-arity verb places verb, target, conversation', () => {
+    expect(parse('restart p spoiler')).toMatchObject({ args: ['p', 'restart', undefined], slug: 'spoiler', extra: [] });
+    expect(parse('restart p')).toMatchObject({ args: ['p', 'restart', undefined], slug: null });
   });
 
-  it('a value-taking subcommand still leaves the conversation unambiguous (fixed arity)', () => {
-    expect(parse('auto p mention spoiler')).toMatchObject({ args: ['p', 'auto', 'mention'], slug: 'spoiler' });
-    expect(parse('auto p mention')).toMatchObject({ args: ['p', 'auto', 'mention'], slug: null });
-    expect(parse('access_level p all')).toMatchObject({ args: ['p', 'access_level', 'all'], slug: null });
+  it('a value-taking verb puts the VALUE before the target, conversation last', () => {
+    expect(parse('auto mention p spoiler')).toMatchObject({ args: ['p', 'auto', 'mention'], slug: 'spoiler' });
+    expect(parse('auto mention p')).toMatchObject({ args: ['p', 'auto', 'mention'], slug: null });
+    expect(parse('access_level all p')).toMatchObject({ args: ['p', 'access_level', 'all'], slug: null });
   });
 
-  it('legacy object-first is untouched — the first token is not a subcommand, so nothing moves', () => {
-    expect(parse('p restart')).toMatchObject({ args: ['p', 'restart'], slug: null });
-    expect(parse('e auto mention')).toMatchObject({ args: ['e', 'auto', 'mention'], slug: null });
+  it('`all` reads as the target, in either arity, and is never mistaken for a value', () => {
+    expect(parse('reset all')).toMatchObject({ args: ['all', 'reset', undefined], slug: null });
+    expect(parse('access_level all all')).toMatchObject({ args: ['all', 'access_level', 'all'], slug: null });
+  });
+
+  it('no verb = the bare status form, which also takes a trailing conversation', () => {
     expect(parse('p')).toMatchObject({ args: ['p'], slug: null });
-    expect(parse('all')).toMatchObject({ args: ['all'], slug: null });
+    expect(parse('p spoiler')).toMatchObject({ args: ['p'], slug: 'spoiler' });
+  });
+
+  it('the RETIRED object-first order is recognised as such — not misparsed, not silently accepted', () => {
+    expect(parse('p restart').retired).toMatchObject({ handle: 'p', verb: 'restart' });
+    expect(parse('e auto mention').retired).toMatchObject({ handle: 'e', verb: 'auto', rest: ['mention'] });
+    expect(parse('p restart').args).toBeUndefined();
   });
 
   it('a token the grammar cannot place is REPORTED, never silently dropped', () => {
     expect(parse('restart p spoiler junk').extra).toEqual(['junk']);
   });
+});
 
-  it('`all` reads as the handle in verb-first order', () => {
-    expect(parse('reset all')).toMatchObject({ args: ['all', 'reset', undefined], slug: null });
+// The singular ASKS rather than aliasing (operator 2026-08-29: "the singular asking you means
+// plural?"). Asserted on the pure matcher and then end-to-end, where the point is that it
+// answers WITHOUT acting — a silent alias would have cleared the thread.
+describe('singular command forms ask for the plural', () => {
+  it('matches the three singulars and nothing plural', () => {
+    for (const l of ['/agent restart p', '/room join x', '/member mode all 3', '/member=do add tab 3'])
+      expect(SINGULAR_CMD.test(l), l).toBe(true);
+    for (const l of ['/agents restart p', '/rooms join x', '/members mode all 3', '/agents', '/rooms'])
+      expect(SINGULAR_CMD.test(l), l).toBe(false);
+  });
+
+  it('names the plural it means', () => {
+    expect(PLURAL_OF[SINGULAR_CMD.exec('/agent restart p')[1]]).toBe('agents');
+    expect(PLURAL_OF[SINGULAR_CMD.exec('/room join x')[1]]).toBe('rooms');
+    expect(PLURAL_OF[SINGULAR_CMD.exec('/member remove z')[1]]).toBe('members');
   });
 });

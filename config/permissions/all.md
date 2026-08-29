@@ -14,7 +14,7 @@ dangerously_skip_permissions: true
 # sandbox, exactly like an interactive `claude` session. Reachability — who may
 # even flip a conversation to this level — is the operator's own judgment call;
 # `/agents … access_level` is a plain toggle with no extra gate, the same trust
-# model as `/room delete force`.
+# model as `/rooms delete force`.
 #
 # Bash and Agent are BARE below, not scoped `Bash(<bin>:*)`: the house rule that
 # scopes Bash exists to stop a CONFINED being from getting a shell escape hatch,

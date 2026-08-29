@@ -258,7 +258,7 @@ describe('REPRODUCE-FIRST — config refresh fires on message arrival, no tick/t
 // ends up in the room's file and ev itself (what dispatch sees) stays untouched — not a re-test
 // of the resolution logic, which lives with createTranscript's own tests.
 describe('a room-joined inbound message lands in the room\'s transcript, ev used for dispatch untouched', () => {
-  const SHELL_MSG = { ...MSG, surface: 'shell', chatId: 'main', chatName: 'shell', senderName: 'operator', body: '/agents egpt reset' };
+  const SHELL_MSG = { ...MSG, surface: 'shell', chatId: 'main', chatName: 'shell', senderName: 'operator', body: '/agents reset egpt' };
 
   it('handleFast\'s plain transcript.log(ev) call still redirects, because createTranscript itself is room-wired', async () => {
     const files = new Map();
@@ -281,8 +281,8 @@ describe('a room-joined inbound message lands in the room\'s transcript, ev used
 
     const roomText = [...files.entries()].find(([p]) => p.replace(/\\/g, '/').includes('/rooms/') && p.endsWith('transcript.md'))?.[1];
     const nativeText = [...files.entries()].find(([p]) => p.replace(/\\/g, '/').includes('/conversations/shell/') && p.endsWith('transcript.md'))?.[1];
-    expect(roomText).toContain('/agents egpt reset');       // the RECORD landed in the joined room
-    expect(nativeText ?? '').not.toContain('/agents egpt reset');   // NOT in the native chat's transcript
+    expect(roomText).toContain('/agents reset egpt');       // the RECORD landed in the joined room
+    expect(nativeText ?? '').not.toContain('/agents reset egpt');   // NOT in the native chat's transcript
   });
 
   it('no currentRoomOf wired on the transcript (every existing pipe path / test) — byte-identical, logs to the native chat', async () => {
@@ -301,7 +301,7 @@ describe('a room-joined inbound message lands in the room\'s transcript, ev used
     await bridge.emit(SHELL_MSG);
 
     const nativeText = [...files.entries()].find(([p]) => p.replace(/\\/g, '/').includes('/conversations/shell/') && p.endsWith('transcript.md'))?.[1];
-    expect(nativeText).toContain('/agents egpt reset');
+    expect(nativeText).toContain('/agents reset egpt');
     expect([...files.keys()].some((p) => p.replace(/\\/g, '/').includes('/rooms/'))).toBe(false);
   });
 });

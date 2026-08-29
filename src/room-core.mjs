@@ -5,7 +5,7 @@
 // it is NOT a thing a Room points at. There is ONE implementation now:
 //   ConversationRoom → conversations/<surface>/<slug>/, and rooms/<slug>/ for
 //   surface `room`.
-// An operator-named room is NOT a second kind: `/room create acim` mints a
+// An operator-named room is NOT a second kind: `/rooms create acim` mints a
 // contact on surface `room` (chatId = the name) through the SAME ensureContact
 // every Beeper chat goes through, so every path keyed by (surface, chatId)
 // reaches it for free (2026-08-09 — the chatId-less NamedRoom subclass is gone,
@@ -127,7 +127,7 @@ export class Room {
   get transcriptsDir() { return join(this.baseDir(), 'transcripts'); }     // finished threads: transcript.md is archived here as <thread_id>.md when the thread changes
 
   // ── the tree, ENSURED (ONE owner) ─────────────────────────────────────────
-  // The list used to be written out twice — /room create's mkdir loop (spine/commands.mjs)
+  // The list used to be written out twice — /rooms create's mkdir loop (spine/commands.mjs)
   // and seedIdentityLayers (conversations-state.mjs) — and the two copies had ALREADY
   // drifted: create made media/ + files/, seeding did not, so a NamedRoom's identity.d was
   // born empty while a conversation's was seeded, and a conversation never got the shelf.
@@ -152,7 +152,7 @@ export class Room {
 
   // Create the tree. Idempotent (mkdir -p on every call). `io.mkdir` is the seam both
   // callers already thread so their tests stay in-memory; absent, real fs/promises.
-  // Deliberately does NOT swallow: /room create wants an fs failure to reach the operator,
+  // Deliberately does NOT swallow: /rooms create wants an fs failure to reach the operator,
   // and seedIdentityLayers already runs inside its own never-throw try/catch — so error
   // behavior at each call site is exactly what it was.
   async ensureTree({ io = {} } = {}) {
@@ -173,7 +173,7 @@ export class Room {
   // or their comments: edit via the YAML Document API (comment-preserving) and
   // round-trip. mkdir the room folder first so a never-seen room can be written.
   async _setConfigBlock(key, value) {
-    // The FOLDER still IS the room — /room members and friends test existence
+    // The FOLDER still IS the room — /rooms members and friends test existence
     // with stat(baseDir()). Writing the rung no longer touches the folder, so
     // materialize it here as the config write used to.
     await mkdir(this.baseDir(), { recursive: true });

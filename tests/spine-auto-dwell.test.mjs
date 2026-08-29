@@ -174,7 +174,7 @@ describe('auto dwell — a mid-dwell /agents auto flip AWAY from auto cancels th
     const { bridge, brain, timers } = build({ gating });
     await bridge.emit(other({ body: 'hey' }));   // arms the dwell (auto)
     expect(timers.size()).toBe(1);
-    mode = 'mention';                            // operator does /agents e auto mention mid-dwell
+    mode = 'mention';                            // operator does /agents auto mention e mid-dwell
     await settle(timers);                        // dwell fires → re-decides → not auto → drops
     expect(brain.calls).toHaveLength(0);         // NO turn fired
     expect(bridge.sent).toHaveLength(0);         // nothing sent — cancelled cleanly

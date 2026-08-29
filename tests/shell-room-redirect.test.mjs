@@ -1,4 +1,4 @@
-// shell-room-redirect.test.mjs — REPRODUCE-FIRST for the gap confirmed live: `/room join
+// shell-room-redirect.test.mjs — REPRODUCE-FIRST for the gap confirmed live: `/rooms join
 // acim` typed at the shell set commands.mjs's currentRoom map, but an ordinary or `@e`
 // message typed right after still dispatched on the console's own seat — the join had zero effect
 // on where the turn actually ran, because nothing between the limb and the shared dispatch
@@ -56,7 +56,7 @@ describe('redirectShellToRoom — the pure decision boot.mjs\'s shell-limb wirin
     expect(msg.from).toEqual(frozenFrom);
   });
 
-  // REPRODUCE-FIRST — the live-confirmed bug: `/room leave acim` typed at the shell while
+  // REPRODUCE-FIRST — the live-confirmed bug: `/rooms leave acim` typed at the shell while
   // a room is joined got swept into the redirect like any other message, so it dispatched
   // as chatId 'acim' instead of the console's own lobby seat — commands.mjs then read/wrote
   // a currentRoom entry keyed off the WRONG conversation, so leave silently failed to clear
@@ -66,7 +66,7 @@ describe('redirectShellToRoom — the pure decision boot.mjs\'s shell-limb wirin
   // regardless of any joined room.
   it('REPRODUCE-FIRST: a slash command is NEVER redirected, even with a room joined — stays on the console lobby seat', () => {
     const claims = [];
-    const msg = shellMsg('/room leave acim');
+    const msg = shellMsg('/rooms leave acim');
     const out = redirectShellToRoom(msg, { currentRoomOf: (surface) => (surface === 'room' ? 'acim' : null), claim: (c) => claims.push(c) });
     expect(out.from.network).toBe('shell');
     expect(out.from.chatId).toBe(LOBBY);
@@ -92,7 +92,7 @@ describe('redirectShellToRoom — the pure decision boot.mjs\'s shell-limb wirin
   });
 });
 
-describe('the live gap, reproduced end to end: /room join acim → currentRoomOf → redirect → identity.build', () => {
+describe('the live gap, reproduced end to end: /rooms join acim → currentRoomOf → redirect → identity.build', () => {
   it('a bare identity.build (no redirect) stays on the lobby seat — the ORIGINAL bug, still true of the raw inbound frame', () => {
     const identity = createIdentity();
     const ev = identity.build({ body: '@e hi E', from: { chatId: LOBBY, chatName: 'shell', network: 'shell', userId: 'operator', authorized: true } });
@@ -100,13 +100,13 @@ describe('the live gap, reproduced end to end: /room join acim → currentRoomOf
     expect(ev.chatId).toBe(LOBBY);
   });
 
-  it('after /room join acim, the SAME message redirected + identity.build lands on (room, acim) — E now runs confined to that room', async () => {
+  it('after /rooms join acim, the SAME message redirected + identity.build lands on (room, acim) — E now runs confined to that room', async () => {
     const sent = [];
     const commands = createCommands({
       getConfig: () => ({}),
       send: async (chatId, text) => sent.push({ chatId, text }),
     });
-    await commands.run({ chatId: LOBBY, surface: 'room', body: '/room join acim', authorized: true });
+    await commands.run({ chatId: LOBBY, surface: 'room', body: '/rooms join acim', authorized: true });
     expect(sent[0].text).toBe("joined 'acim' — now current.");
     expect(commands.currentRoomOf('room')).toBe('acim');
 
@@ -118,12 +118,12 @@ describe('the live gap, reproduced end to end: /room join acim → currentRoomOf
     expect(ev.chatId).toBe('acim');
   });
 
-  it('/room join lobby restores native lobby routing for subsequent messages', async () => {
+  it('/rooms join lobby restores native lobby routing for subsequent messages', async () => {
     const sent = [];
     const commands = createCommands({ getConfig: () => ({}), send: async (chatId, text) => sent.push({ chatId, text }) });
-    await commands.run({ chatId: LOBBY, surface: 'room', body: '/room join acim', authorized: true });
+    await commands.run({ chatId: LOBBY, surface: 'room', body: '/rooms join acim', authorized: true });
     expect(commands.currentRoomOf('room')).toBe('acim');
-    await commands.run({ chatId: LOBBY, surface: 'room', body: '/room join lobby', authorized: true });
+    await commands.run({ chatId: LOBBY, surface: 'room', body: '/rooms join lobby', authorized: true });
     expect(commands.currentRoomOf('room')).toBe('lobby');
 
     const identity = createIdentity();
@@ -134,30 +134,30 @@ describe('the live gap, reproduced end to end: /room join acim → currentRoomOf
     expect(ev.chatId).toBe(LOBBY);
   });
 
-  it('/room leave acim ALSO restores native routing (curRoomName clears the map entirely, same as before this fix)', async () => {
+  it('/rooms leave acim ALSO restores native routing (curRoomName clears the map entirely, same as before this fix)', async () => {
     const sent = [];
     const commands = createCommands({ getConfig: () => ({}), send: async (chatId, text) => sent.push({ chatId, text }) });
-    await commands.run({ chatId: LOBBY, surface: 'room', body: '/room join acim', authorized: true });
-    await commands.run({ chatId: LOBBY, surface: 'room', body: '/room leave acim', authorized: true });
+    await commands.run({ chatId: LOBBY, surface: 'room', body: '/rooms join acim', authorized: true });
+    await commands.run({ chatId: LOBBY, surface: 'room', body: '/rooms leave acim', authorized: true });
     expect(commands.currentRoomOf('room')).toBe(null);
     const out = redirectShellToRoom({ body: 'hola', from: { chatId: LOBBY, network: 'shell' } }, { currentRoomOf: commands.currentRoomOf, claim: () => {} });
     expect(out.from.network).toBe('shell');
   });
 
   // REPRODUCE-FIRST, the exact live sequence from the bug report: join a room, then send
-  // `/room leave acim` through the SAME redirect + identity.build pipeline shellPort.onMessage
+  // `/rooms leave acim` through the SAME redirect + identity.build pipeline shellPort.onMessage
   // actually runs it through. Before the fix, this landed on (room, acim), so commands.run
   // (keyed by surfaceOf(ev) = ev.surface) read/wrote currentRoom['room'] instead of
   // the wrong currentRoom entry and the leave silently failed to clear the entry that gates the
   // redirect — the shell got permanently wedged inside the room.
-  it('/room join acim then /room leave acim through redirect+identity.build lands on the lobby seat, not (room, acim) — the exact live bug', async () => {
+  it('/rooms join acim then /rooms leave acim through redirect+identity.build lands on the lobby seat, not (room, acim) — the exact live bug', async () => {
     const sent = [];
     const commands = createCommands({ getConfig: () => ({}), send: async (chatId, text) => sent.push({ chatId, text }) });
-    await commands.run({ chatId: LOBBY, surface: 'room', body: '/room join acim', authorized: true });
+    await commands.run({ chatId: LOBBY, surface: 'room', body: '/rooms join acim', authorized: true });
     expect(commands.currentRoomOf('room')).toBe('acim');
 
     const identity = createIdentity();
-    const leaveMsg = { body: '/room leave acim', from: { chatId: LOBBY, chatName: 'shell', network: 'shell', userId: 'operator', authorized: true } };
+    const leaveMsg = { body: '/rooms leave acim', from: { chatId: LOBBY, chatName: 'shell', network: 'shell', userId: 'operator', authorized: true } };
     const redirected = redirectShellToRoom(leaveMsg, { currentRoomOf: commands.currentRoomOf, claim: () => {} });
     const ev = identity.build(redirected);
     expect(ev.surface).toBe('room');
@@ -189,7 +189,7 @@ describe('outbound routing: the redirect must claim() the room chatId, or a repl
     const rawBridge = { send: async (c, t) => { beeperSends.push({ c, t }); return null; } };
 
     const commands = createCommands({ getConfig: () => ({}), send: async () => {} });
-    await commands.run({ chatId: LOBBY, surface: 'room', body: '/room join acim', authorized: true });
+    await commands.run({ chatId: LOBBY, surface: 'room', body: '/rooms join acim', authorized: true });
 
     const bridge = makeShellAwareBridge(rawBridge, port);
     // BEFORE the redirect ever claims 'acim', a send targeting it falls through to beeper (wrong bridge)
@@ -204,24 +204,24 @@ describe('outbound routing: the redirect must claim() the room chatId, or a repl
 });
 
 // REPRODUCE-FIRST — the smaller bug surfaced by the redirect fix above: even once
-// redirectShellToRoom stops mis-routing, a bare `/room leave` (no slug) still just prints
+// redirectShellToRoom stops mis-routing, a bare `/rooms leave` (no slug) still just prints
 // ROOM_USAGE and does nothing, forcing the operator to retype the slug of the room they're
-// already in. `/room leave` with no argument should leave whatever room is current.
-describe('bare /room leave (no slug) — leaves the current room without retyping it', () => {
-  it('current room set (join acim) + bare /room leave → leaves it', async () => {
+// already in. `/rooms leave` with no argument should leave whatever room is current.
+describe('bare /rooms leave (no slug) — leaves the current room without retyping it', () => {
+  it('current room set (join acim) + bare /rooms leave → leaves it', async () => {
     const sent = [];
     const commands = createCommands({ getConfig: () => ({}), send: async (chatId, text) => sent.push({ chatId, text }) });
-    await commands.run({ chatId: LOBBY, surface: 'room', body: '/room join acim', authorized: true });
-    await commands.run({ chatId: LOBBY, surface: 'room', body: '/room leave', authorized: true });
+    await commands.run({ chatId: LOBBY, surface: 'room', body: '/rooms join acim', authorized: true });
+    await commands.run({ chatId: LOBBY, surface: 'room', body: '/rooms leave', authorized: true });
     expect(commands.currentRoomOf('room')).toBe(null);
     expect(sent[sent.length - 1].text).toBe("left 'acim' — no current room.");
   });
 
-  it('no current room joined + bare /room leave → short no-op message, NOT the full ROOM_USAGE line', async () => {
+  it('no current room joined + bare /rooms leave → short no-op message, NOT the full ROOM_USAGE line', async () => {
     const sent = [];
     const commands = createCommands({ getConfig: () => ({}), send: async (chatId, text) => sent.push({ chatId, text }) });
-    await commands.run({ chatId: LOBBY, surface: 'room', body: '/room leave', authorized: true });
+    await commands.run({ chatId: LOBBY, surface: 'room', body: '/rooms leave', authorized: true });
     expect(sent[0].text).not.toMatch(/^usage:/);
-    expect(sent[0].text).not.toContain('/room create');
+    expect(sent[0].text).not.toContain('/rooms create');
   });
 });

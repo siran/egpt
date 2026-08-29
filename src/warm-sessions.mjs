@@ -119,7 +119,7 @@ export function createWarmPool({
     // SESSION-IDENTITY GUARD (operator 2026-06-21): a warm entry stays bound to
     // whatever claude session it opened/resumed. The conversation/E key omits the
     // session id (unlike the sibling key `sib:name:session_id`), so a re-pin on
-    // the SAME key — `/agents <handle> reset` nulling the thread, or the
+    // the SAME key — `/agents reset <handle>` nulling the thread, or the
     // out-of-process compactor reseeding it to a new session — would otherwise be
     // silently ignored: the pool keeps resuming the STALE session. That was the
     // SPOILER bug (a fresh-thread reset rebooted straight back onto the 4 MB /

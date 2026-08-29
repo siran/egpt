@@ -137,7 +137,7 @@ export function whisperPortOf(cfg) {
 // method passes through unchanged (spread first). Pure so the routing is testable directly
 // (mirrors the other top-level boot helpers). The beeper path for non-shell chats is untouched.
 // Redirect a shell inbound event to its CURRENT joined room, if any — "entering a
-// room is like typing in another chat" (operator): once `/room join acim` sets the shell's
+// room is like typing in another chat" (operator): once `/rooms join acim` sets the shell's
 // current room, a plain or `@e`-addressed message typed at the shell must dispatch as
 // chatId 'acim' rather than the console's own seat, so it reaches the SAME
 // (surface, chatId)-keyed resolution/confinement a room-native message already gets (the
@@ -147,7 +147,7 @@ export function whisperPortOf(cfg) {
 // that one surface: nothing here re-decides it.
 // The LOBBY (or no room joined) means the console's own home conversation — rooms/lobby/,
 // a room like any other — so the event is left untouched and files there, same as before
-// this redirect existed. /room lobby join is therefore "go home", not a redirect into a
+// this redirect existed. /rooms lobby join is therefore "go home", not a redirect into a
 // second folder.
 // A reply goes out to ev.chatId (spine.mjs's sender.open), which is now the room slug — so
 // the redirect also `claim`s it on shellPort (the SAME ownership signal `owns()` already
@@ -157,7 +157,7 @@ export function whisperPortOf(cfg) {
 export function redirectShellToRoom(msg, { currentRoomOf, claim } = {}) {
   // Commands (anything slash-prefixed) are never part of the room fan-out — this feature is
   // "prose fan-out to the current room", not "commands run against the room". Without this
-  // guard, `/room leave acim` itself got redirected before commands.mjs ever saw it, so it
+  // guard, `/rooms leave acim` itself got redirected before commands.mjs ever saw it, so it
   // dispatched on the room instead of the console's own seat and the shell got wedged in the
   // room permanently (confirmed live, 2026-08-09). This is the same primitive signal
   // commands.mjs's isCommand() checks first (body.startsWith('/')) — the full check also
@@ -1154,7 +1154,7 @@ export async function boot({
     shellConnected: () => shellPort.isConnected,       // /status `shell:` field — is the operator's editor dialed in
     gate: lasso.gate,                                  // /radio say's upload — the SAME node-wide lasso instance the beeper bridge, echo and shell port already spend from (never a second one)
     listEntityDirs,                                    // bare /radio's joined-rooms report + /radio leave all|<slug> — THE walk (above), never a second entity enumeration
-    // Live status-line room reflection (operator 2026-08-16): /room join|leave (or any other
+    // Live status-line room reflection (operator 2026-08-16): /rooms join|leave (or any other
     // currentRoom clear) on the shell surface recomputes the SAME computeShellHeader (above)
     // with the new currentRoom and pushes it down the shell-port limb — the ONE other caller
     // of computeShellHeader besides this file's own initial boot-time push (shellHeader,

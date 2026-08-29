@@ -281,7 +281,7 @@ describe('transcript.log — living-mirror stream frames are not recorded', () =
 
 // STRUCTURAL EQUALITY (operator 2026-08-07): the transcript path must come from the Room
 // abstraction (room-core.mjs), not a hand-rolled join — an operator-named room created by
-// `/room create` got a full tree and NO WAY to ever receive a transcript, because the old code
+// `/rooms create` got a full tree and NO WAY to ever receive a transcript, because the old code
 // asked conversations-state.slugDir + a local join() for the path instead of asking the Room.
 // Routing an inbound message TO a named room is a separate feature (out of scope here) — what
 // this locks down is that the PATH-RESOLUTION code the service now runs is Room-derived, so a

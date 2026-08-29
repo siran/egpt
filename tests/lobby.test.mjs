@@ -21,7 +21,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vite
 // remote-command.test.mjs lands the mesh lobby's row in the very same file — and vitest's
 // `forks` pool puts them in DIFFERENT PROCESSES, so no in-process serializer can order them:
 // the two simply lose each other's updates. `/members add tab` writes the member, the other
-// file's write clobbers the row, and the next `/members chatgpt mode mention` throws
+// file's write clobbers the row, and the next `/members mode mention chatgpt` throws
 // `Room.setMemberState: no member "chatgpt"`.
 //
 // The window scales with the file, and NOTHING prunes it (it had reached 179 KB / 6.5k junk
@@ -435,7 +435,7 @@ describe('lobby relay — @chatgpt added in the lobby fires the phase-4 relay', 
     const { cmds, sent } = commandsFor(resolveConvRoom);
     await cmds.run({ chatId: LOBBY_SLUG, surface: 'room', body: '/members add tab 1' });
     expect(sent.at(-1).text).toMatch(/added 'chatgpt'/);
-    await cmds.run({ chatId: LOBBY_SLUG, surface: 'room', body: '/members chatgpt mode mention' });
+    await cmds.run({ chatId: LOBBY_SLUG, surface: 'room', body: '/members mode mention chatgpt' });
     expect(sent.at(-1).text).toMatch(/mode:mention/);
 
     const { spine, relayCalls, posts } = spineFor(resolveConvRoom);

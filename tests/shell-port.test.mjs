@@ -431,7 +431,7 @@ describe('shell-port limb', () => {
     });
   });
 
-  describe('setHeader() — live header update (operator 2026-08-16: /room join reflection)', () => {
+  describe('setHeader() — live header update (operator 2026-08-16: /rooms join reflection)', () => {
     // REPRODUCE-FIRST: before setHeader existed, _header was a `const` captured once at
     // construction — there was no way for boot.mjs's onRoomChange to push an updated header
     // after boot, and no way for a LATER editor to carry anything but the original line.

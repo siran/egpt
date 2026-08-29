@@ -597,7 +597,7 @@ describe('residentsOf — resident beings vs flat blocks', () => {
 
   // THE TRAP the positive test must not spring: a resident CREATED but never given a turn
   // carries almost nothing — the registry skeleton's documented block is literally
-  // `threadId: null`, and `/agents <handle> auto <mode>` on a fresh chat writes only `mode`.
+  // `threadId: null`, and `/agents auto <mode> <handle>` on a fresh chat writes only `mode`.
   // Testing for
   // the KEY (not a truthy value) is what keeps these residents; a predicate that wanted a
   // real thread id would silently drop the conversation from the compactor.

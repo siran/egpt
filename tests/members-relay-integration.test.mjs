@@ -123,10 +123,10 @@ describe('members → relay integration — the flagship @chatgpt flow end to en
     const resolveConvRoom = makeResolveConvRoom();
     const { cmds, sent } = commandsFor(resolveConvRoom);
 
-    // Operator wires the tab into THIS conversation (no /room join — the conversation IS the room).
+    // Operator wires the tab into THIS conversation (no /rooms join — the conversation IS the room).
     await cmds.run({ chatId: '!conv-1', surface: 'whatsapp', body: '/members add tab 1' });
     expect(sent.at(-1).text).toMatch(/added 'chatgpt'/);
-    await cmds.run({ chatId: '!conv-1', surface: 'whatsapp', body: '/members chatgpt mode mention' });
+    await cmds.run({ chatId: '!conv-1', surface: 'whatsapp', body: '/members mode mention chatgpt' });
     expect(sent.at(-1).text).toMatch(/mode:mention/);
 
     // A real spine, sharing the SAME resolveConvRoom, receives @chatgpt on that conversation.
@@ -154,15 +154,15 @@ describe('members → relay integration — the flagship @chatgpt flow end to en
 // THE POINT OF THE 2026-08-09 MERGE: an OPERATOR-NAMED room is not a second kind. It is a
 // conversation on surface `room` whose chatId is the name itself, so the very same
 // (surface, chatId) machinery — resolver, /members write, relay read — reaches it with no
-// room-specific path anywhere. Before this, `/room create` minted no chatId, so nothing
+// room-specific path anywhere. Before this, `/rooms create` minted no chatId, so nothing
 // keyed by (surface, chatId) could ever address the room it made.
 describe('an operator-named room is an ordinary conversation — created, addressed, relayed', () => {
-  it('/room create acim → resolveConvRoom("room","acim") is THAT room, and its members are the ones the relay reads', async () => {
+  it('/rooms create acim → resolveConvRoom("room","acim") is THAT room, and its members are the ones the relay reads', async () => {
     const resolveConvRoom = makeResolveConvRoom();
     const { cmds, sent } = commandsFor(resolveConvRoom);
 
     // 1. CREATE. The name is the chatId; the reply names the rooms/ path.
-    await cmds.run({ chatId: '!conv-1', surface: 'whatsapp', body: '/room create acim' });
+    await cmds.run({ chatId: '!conv-1', surface: 'whatsapp', body: '/rooms create acim' });
     expect(sent.at(-1).text).toMatch(/room acim created at rooms\/acim\//);
 
     // 2. RESOLVABLE — the whole reason for the change. The same resolver every other path
@@ -179,7 +179,7 @@ describe('an operator-named room is an ordinary conversation — created, addres
     // 4. WRITE members IN the room (an ordinary /members on that conversation) …
     await cmds.run({ chatId: 'acim', surface: 'room', body: '/members add tab 1' });
     expect(sent.at(-1).text).toMatch(/added 'chatgpt'/);
-    await cmds.run({ chatId: 'acim', surface: 'room', body: '/members chatgpt mode mention' });
+    await cmds.run({ chatId: 'acim', surface: 'room', body: '/members mode mention chatgpt' });
 
     // 5. … and READ them the way the relay does: resolveMembers('room','acim').
     const { spine, relayCalls, posts } = spineFor(resolveConvRoom);
