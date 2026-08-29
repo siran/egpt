@@ -47,7 +47,6 @@ import { createBrainPool } from './brainpool.mjs';
 import { createRoomRelay } from './room-relay.mjs';
 import { createIngest, lifecycleExit, isShellConnectMarker } from './ingest.mjs';
 import { createCommands } from './commands.mjs';
-import { ownNodeNames } from './node-names.mjs';
 import { createReplyActions } from './reply-actions.mjs';
 import { createAdvice } from './advice.mjs';
 import { createMedia } from './media.mjs';
@@ -227,35 +226,6 @@ export function wrapCommandsForTranscript({ send, transcript, being = 'system', 
   return { send: wrappedSend, wrapRun };
 }
 
-// READABLE NODE-IDENTITY (operator 2026-07-10): two co-account spines (REVE `kg`, DOLLY `do`)
-// share ONE Beeper account, so on the wire every line looks "from the account owner" and the
-// persona itself couldn't say which node it is. Assemble a concise, FACTUAL who/where-am-I line
-// the persona always carries in its system prompt (brainpool appends it to the PERSONA turn
-// only), so identity survives RESUMED threads — the first-turn kickoff feed only lands on a
-// FRESH thread. NOT a signature, NOT invisible encoding: the visible in-chat node marker stays
-// the per-node body_emoji. Pure so it is testable directly (mirrors shouldReapStrayWhisper).
-//   address  = <name>.<node_name> lowercased (don.do, egpt.kg)
-//   handles  = the persona agent's handles as `@d @don`
-//   peers    = account_peers MINUS this node's own names (node_name ∪ node_alias); the "Other
-//              nodes" sentence is OMITTED when that leaves nothing (a solo node).
-export function buildNodeIdentity({
-  name,                 // persona display name (labelOf(defaultKey))
-  nodeName,             // cfg.node_name
-  userName,             // cfg.user_name (whatsapp.user_name wins, mirroring the bridge)
-  handles = [],         // the persona agent's `handles`
-  emoji,                // bodyEmojiOf(defaultKey) — this node's reply stamp
-  accountPeers = [],    // node identities sharing this Beeper account (incl. self)
-  nodeAlias = [],       // this node's extra self-names (cfg.node_alias)
-} = {}) {
-  const address = `${String(name).toLowerCase()}.${String(nodeName).toLowerCase()}`;
-  const handleStr = handles.map((h) => `@${h}`).join(' ');
-  const own = ownNodeNames({ nodeName, nodeAlias });
-  const peers = accountPeers.filter((p) => !own.has(String(p).toLowerCase()));
-  let s = `You are the eGPT persona "${name}" running as ${address} — node "${nodeName}", ${userName}'s account. You answer to ${handleStr}; your reply stamp is ${emoji}.`;
-  if (peers.length) s += ` Other nodes on this account: ${peers.join(', ')}.`;
-  return s;
-}
-
 // A heartbeat entity's NAMESPACE (`<surface>/<slug>` — what the config resolver's walk hands
 // the loader) → the (surface, chatId) a turn dispatches on, which is what brainpool.turn and
 // every gate under it are keyed by. The registry is JID-keyed and the walk is SLUG-keyed, so
@@ -330,7 +300,7 @@ function shellHeaderGroupOf(agent, nodeName) {
 // fixed status line — a `room:` segment + a roster of this node's OWN `agents:`, grouped by
 // where each one routes — and a FUTURE browser-extension surface will need the identical
 // string but cannot read config.yaml at all. So the derivation lives HERE, spine-side, pure
-// (mirrors buildNodeIdentity), and boot hands the computed STRING to the shell limb over the
+// (mirrors shouldReapStrayWhisper), and boot hands the computed STRING to the shell limb over the
 // frame the two already share (src/bridges/shell-port.mjs `header`) — the editor never reads
 // config. Never a peer node's roster: only this node's own `agents:` map, grouped by route.
 //   No standalone persona label (operator 2026-08-17, dropped): the default persona is already
@@ -788,8 +758,8 @@ export async function boot({
   // notes are still transcribed + logged, just never echoed into the live chat. Default 1h.
   const echoMaxAgeMs = Number.isFinite(cfg.echo_max_age_ms) ? cfg.echo_max_age_ms : 3_600_000;
   // account_peers (operator 2026-07-09): node identities sharing THIS Beeper account (incl self).
-  // Still carried for the persona node-identity line (buildNodeIdentity) + the boot return; the 👂
-  // echo priority reads echo_priority (below), falling back to account_peers.
+  // Still carried for the boot return; the 👂 echo priority reads echo_priority (below), falling
+  // back to account_peers.
   const accountPeers = Array.isArray(cfg.account_peers) ? cfg.account_peers : [];
 
   // 👂 ECHO — REAL HRW ON A NODE-STABLE AUDIO HASH + ORDERED FAILOVER (operator 2026-07-24; revives
@@ -849,23 +819,6 @@ export async function boot({
   const echoPlan = cfg.echo === false
     ? () => ({ rank: 0, winner: false })
     : (noteKey) => { const rank = echoRank(node_name, echoPeers, noteKey); return { rank, winner: rank === 1 }; };
-
-  // The persona's node-identity addendum (operator 2026-07-10): assembled ONCE from the pieces
-  // already resolved above + the persona agent's handles, and handed to the brain pool, which
-  // appends it to the PERSONA turn's system prompt (siblings are engineers, out of scope). Only
-  // when this node has a node_name — without one the "who/where" is meaningless, so we omit it
-  // (brainpool's filter(Boolean) leaves the def's own system_prompt untouched).
-  const nodeIdentity = node_name
-    ? buildNodeIdentity({
-        name: labelOf(defaultKey),
-        nodeName: node_name,
-        userName: cfg.whatsapp?.user_name ?? cfg.user_name ?? null,
-        handles: (() => { const a = personaAgent().agent; return Array.isArray(a?.handles) ? a.handles : []; })(),
-        emoji: bodyEmojiOf(defaultKey),
-        accountPeers,
-        nodeAlias: Array.isArray(cfg.node_alias) ? cfg.node_alias : [],
-      })
-    : null;
 
   // Per-surface config resolver (operator 2026-07-09): the NEW shape wraps the per-surface
   // blocks under `networks:` and lists command channels as `chat_ids` (plural); the OLD shape
@@ -1166,7 +1119,7 @@ export async function boot({
   // Auto-compaction: keep each conversation's warm session thin (native /compact a
   // cooling period after the last reply, once it's over ratio of the window).
   const compaction = createCompaction({ pool, getConfig, onLog: (m) => log.line?.(`[compact] ${m}`) });
-  const brain = createBrainPool({ pool, getConfig, contacts, loadState: _loadState, writeState: _writeState, brains, defaultKey, nodeIdentity, afterTurn: compaction.afterTurn, resolveConfig: configResolver.configFor, io, onLog: (m) => log.line?.(`[brain] ${m}`) });
+  const brain = createBrainPool({ pool, getConfig, contacts, loadState: _loadState, writeState: _writeState, brains, defaultKey, afterTurn: compaction.afterTurn, resolveConfig: configResolver.configFor, io, onLog: (m) => log.line?.(`[brain] ${m}`) });
 
   // operator slash commands (Self DM / authorized) — lifecycle wired now; reuses
   // the same exit codes the daemon respawns on. Constructed BEFORE the mesh: a

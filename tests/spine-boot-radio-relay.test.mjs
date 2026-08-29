@@ -1,6 +1,6 @@
 // tests/spine-boot-radio-relay.test.mjs — src/spine/boot.mjs's createRadioNoteRelay: the
 // orchestration around src/radio-relay.mjs's uploadNote. Tested directly (like
-// shouldReapStrayWhisper / buildNodeIdentity / wrapCommandsForTranscript), never through a
+// shouldReapStrayWhisper / computeShellHeader / wrapCommandsForTranscript), never through a
 // full boot() — no network (uploadNote is injected), no real download (readFile is
 // injected), real fs only for the room's config.yaml (TmpRoom, same harness as
 // tests/radio-command.test.mjs).

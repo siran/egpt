@@ -34,7 +34,7 @@ function fakePool(scriptedResults) {
 
 const ev = { surface: 'whatsapp', chatId: '!room:beeper.com', chatName: 'SPOILER', line: 'An@[SPOILER].wa (14:05) #m1: hola', body: 'hola' };
 
-function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, loadFeed, loadManifest, loadAutoLayer, seedSession, seedMode, seedAgents, brains, afterTurn, io, nodeIdentity, seedLayers, resolveConfig, loadPermission, skipAccessLevelDefault, poolOverride } = {}) {
+function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, loadFeed, loadManifest, loadAutoLayer, seedSession, seedMode, seedAgents, brains, afterTurn, io, seedLayers, resolveConfig, loadPermission, skipAccessLevelDefault, poolOverride } = {}) {
   let state = emptyState();
   if (seedSession || seedMode || seedAgents) {   // pre-register the contact (WITH a stored thread, an E mode, and/or per-being pins)
     const ens = ensureContact(state, ev.surface, ev.chatId, { pushedName: ev.chatName, slugHint: ev.chatName });
@@ -97,7 +97,6 @@ function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, load
     resolveConfig: resolveConfig ?? (() => ({})),
     loadFeed: loadFeed ?? (async () => ''),        // default: no folder feed
     loadManifest: loadManifest ?? (async () => ''),// default: no manifest → raw line (focus on warm logic)
-    ...(nodeIdentity != null ? { nodeIdentity } : {}),   // persona node-identity addendum (operator 2026-07-10)
     ...(seedLayers ? { seedLayers } : {}),         // the identity.d copy (default: the real seeder)
     ...(loadAutoLayer ? { loadAutoLayer } : {}),   // the mode:auto operator-role layer (default: real file)
     ...(brains ? { brains } : {}),                 // omit → falls back to a bare ccode def
@@ -515,40 +514,21 @@ describe('brainpool.turn — local sibling beings (agents registry)', () => {
   });
 });
 
-// READABLE NODE-IDENTITY (operator 2026-07-10): the who/where-am-I addendum is appended to the
-// turn's system prompt so it survives RESUMED threads (the first-turn kickoff feed only lands on
-// a fresh thread). It COMBINES with the def's own system_prompt (both), never replaces it.
-// PHASE 2 (operator 2026-08-14, "remove the concept of siblings"): no longer persona-only —
-// EVERY being's turn carries it now, the persona's and a sibling's alike (was gated on
-// `!isSibling`; the gate is REMOVED, not widened).
-describe('brainpool.turn — node-identity system prompt', () => {
-  const NODE_ID = 'You are the eGPT persona "Don" running as don.do — node "do".';
-
-  it('PERSONA turn: appendSystemPrompt COMBINES nodeIdentity with the def system_prompt (both present)', async () => {
+// NO HARDCODED NODE IDENTITY (operator 2026-08-29): the boot-assembled who/where-am-I addendum
+// is GONE. It named the node's DEFAULT persona ("You are the eGPT persona \"don\"…") in EVERY
+// agent's system prompt, contradicting each agent's own identity feed. WHO an agent is now comes
+// from the identity feed (config/identities/<personality>.md in the 00-identity slot) and nowhere
+// else, so the turn's appendSystemPrompt is the def's own system_prompt — nothing appended.
+describe('brainpool.turn — appendSystemPrompt is the def system_prompt alone', () => {
+  it('appendSystemPrompt is EXACTLY the def system_prompt, and is absent when the def has none', async () => {
     const brains = { resolve: () => ({ name: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'all', system_prompt: 'DEF-PROMPT' }) };
-    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains, nodeIdentity: NODE_ID });
-    await brain.turn('e', ev);
-    const asp = pool.calls[0].brainOptions.appendSystemPrompt;
-    expect(asp).toContain(NODE_ID);        // node identity present
-    expect(asp).toContain('DEF-PROMPT');   // the def's own system prompt ALSO present — combined, not replaced
-  });
+    const withPrompt = harness([{ text: 'ok', sessionId: 's' }], { brains });
+    await withPrompt.brain.turn('e', ev);
+    expect(withPrompt.pool.calls[0].brainOptions.appendSystemPrompt).toBe('DEF-PROMPT');
 
-  it('PERSONA turn with NO def system_prompt: appendSystemPrompt is exactly the nodeIdentity', async () => {
-    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { nodeIdentity: NODE_ID });
-    await brain.turn('e', ev);
-    expect(pool.calls[0].brainOptions.appendSystemPrompt).toBe(NODE_ID);
-  });
-
-  // REPRODUCE-FIRST (phase 2): before this change a sibling turn's appendSystemPrompt never
-  // carried nodeIdentity at all — this asserts the NEW, intentionally widened behavior.
-  it('PHASE 2: SIBLING turn now ALSO COMBINES nodeIdentity with the def system_prompt — no longer persona-only', async () => {
-    const brains = { resolve: (name) => name === 'sonnet-high' ? ({ name: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'Read,Bash', system_prompt: 'WREN-PROMPT' }) : null };
-    const config = { agents: { wren: { configuration: 'sonnet-high', name: 'wren' } } };
-    const { brain, pool } = harness([{ text: 'ok', sessionId: 'w1' }], { brains, config, nodeIdentity: NODE_ID });
-    await brain.turn('wren', ev);
-    const asp = pool.calls[0].brainOptions.appendSystemPrompt;
-    expect(asp).toContain(NODE_ID);          // phase 2: the sibling now gets it too
-    expect(asp).toContain('WREN-PROMPT');    // combined with its own def system_prompt, not replaced
+    const noPrompt = harness([{ text: 'ok', sessionId: 's' }]);   // bare ccode def — no system_prompt
+    await noPrompt.brain.turn('e', ev);
+    expect(noPrompt.pool.calls[0].brainOptions.appendSystemPrompt).toBe(undefined);
   });
 });
 

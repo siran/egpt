@@ -241,7 +241,6 @@ export function createBrainPool({
   loadState, writeState,            // conversations-state YAML IO (injected)
   brains = null,                     // the brain registry (createBrains) — resolves the default a fresh conv is instanced from
   defaultKey = 'e',                  // the DEFAULT agent's id (its map key), injected by boot from the single `default:true` agent — never assume 'e' (operator 2026-07-10); all it still gates is the deterministic model/effort floor below
-  nodeIdentity = null,               // the persona's node-identity addendum (boot's buildNodeIdentity) — appended to the PERSONA turn's system prompt so who/where-am-I survives resumes; null on a node with no node_name (operator 2026-07-10)
   brainType = 'ccode',               // fallback engine when a brain def / registry is absent
   io = {},
   isOverflow = isContextOverflowError,
@@ -465,10 +464,11 @@ export function createBrainPool({
 
       const key = `${being}:${engine}:${ev.surface}:${slug}`;
       lastKeyByConv.set(`${being}:${ev.surface}:${ev.chatId}`, key);
-      // Node-identity addendum (operator 2026-07-10; operator 2026-08-14: EVERY agent's turn
-      // carries the concise who/where-am-I line so identity survives RESUMES). It COMBINES with the
-      // def's own system_prompt (both, blank-line joined) — never replaces it.
-      const appendSystemPrompt = [def.system_prompt, nodeIdentity].filter(Boolean).join('\n\n');
+      // The def's OWN system_prompt and nothing else (operator 2026-08-29): WHO an agent is comes
+      // from its identity feed (config/identities/<personality>.md in the 00-identity slot), never
+      // from a sentence boot assembles about the node's DEFAULT persona — that addendum told every
+      // agent it was "don" while its feed said otherwise.
+      const appendSystemPrompt = def.system_prompt;
       const baseOpts = {
         engine,
         cwd,
