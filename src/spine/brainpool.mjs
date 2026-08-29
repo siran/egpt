@@ -190,6 +190,9 @@ function shapeDef(name, def, agent = {}, brainType = 'ccode') {
     // would silently stop reaching loadFeed — carried through here instead.
     personality: def?.personality ?? undefined,
     dangerously_skip_permissions: def?.dangerously_skip_permissions === true,   // carried so an unconfined type file survives shaping
+    // verbose_thinking (operator 2026-08-29 ruling, wren's "see your full chain of thought"):
+    // carried the same way dangerously_skip_permissions is, so a type file's opt-in survives shaping.
+    verbose_thinking: def?.verbose_thinking === true,
   };
 }
 
@@ -494,6 +497,10 @@ export function createBrainPool({
         // allowed_users non-empty + sender matched before this turn ever ran) — never
         // attacker-writable.
         dangerouslySkipPermissions: def.dangerously_skip_permissions === true,
+        // verbose_thinking (operator 2026-08-29 ruling): reaches createWarmCliSession the same
+        // way cwd/model/effort do — a plain def.X read into baseOpts, spread by warm-sessions.mjs
+        // into makeSession(...brainOptions). Opt-in, default false for every other being.
+        verboseThinking: def.verbose_thinking === true,
         // Plain passthrough (operator 2026-08-20) — boot.mjs's makeSession reads this to pick
         // createSandboxCliSession over createBrainSession. No structural gating beyond this:
         // the STRUCTURAL SAFETY GATES above already refuse the whole turn when accessLevel

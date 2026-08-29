@@ -26,6 +26,23 @@ function normalizeCwd(p) {
   return m ? `${m[1].toUpperCase()}:/${m[2]}` : p;
 }
 
+// verboseThinking rendering (operator 2026-08-29, wren's "see your full chain of thought"
+// request over WhatsApp: "tool use can be only like Bash()"). One assistant event's content
+// blocks -> pushed onto pending.verboseBlocks, arrival order preserved across the WHOLE turn
+// (every assistant event, not just one — a ccode turn is agentic: reason -> tool_use ->
+// tool_result -> reason again -> ... -> final text, each step its own `assistant` event).
+// text/thinking render verbatim; tool_use renders as a bare `${name}()` stub — never its
+// `input`. A tool_result arrives on a separate `user`-role event, which onStdout never routes
+// here, so it never appears regardless. Only called when verboseThinking is on — the default
+// OFF path never calls this.
+function pushVerboseBlocks(pending, content) {
+  for (const c of content) {
+    if (c?.type === 'text' && typeof c.text === 'string' && c.text) pending.verboseBlocks.push(c.text);
+    else if (c?.type === 'thinking' && typeof c.thinking === 'string' && c.thinking) pending.verboseBlocks.push(c.thinking);
+    else if (c?.type === 'tool_use' && typeof c.name === 'string') pending.verboseBlocks.push(`${c.name}()`);
+  }
+}
+
 // Resolve the claude binary to a FULL path. A Windows SERVICE inherits a minimal
 // PATH (not the login PATH), and — verified the hard way (operator 2026-06-14:
 // DOLLY's Don ENOENT survived an `egpt-spine.mjs` PATH prepend) — mutating
@@ -46,6 +63,10 @@ function resolveClaudeBin(explicit) {
 export function createWarmCliSession(options = {}) {
   const onLog = typeof options.onLog === 'function' ? options.onLog : () => {};
   const _spawn = options.spawn || nodeSpawn;   // injectable for tests
+  // Opt-in, default off (operator 2026-08-29 ruling): when on, the turn's resolved `text` is
+  // the full verbose transcript (thinking verbatim + tool-name stubs) instead of the CLI's own
+  // clean `ev.result`. Wired the same way as cwd/model/effort — see brainpool.mjs baseOpts.
+  const verboseThinking = options.verboseThinking === true;
   let proc = null;
   let stdoutBuf = '';
   let stderrBuf = '';
@@ -92,6 +113,12 @@ export function createWarmCliSession(options = {}) {
       try { ev = JSON.parse(t); } catch { continue; }
       // Capture the (possibly freshly-minted) session id, first-wins.
       if (typeof ev.session_id === 'string' && !sessionId) sessionId = ev.session_id;
+      // verboseThinking: tap EVERY assistant event's content blocks, independent of the
+      // existing (unchanged, below) `!pending.acc` first-wins fallback — additive only, a
+      // no-op when the option is off. See pushVerboseBlocks above.
+      if (verboseThinking && ev.type === 'assistant' && ev.message?.content && pending) {
+        pushVerboseBlocks(pending, ev.message.content);
+      }
       if (ev.type === 'stream_event' && ev.event?.type === 'content_block_delta') {
         const d = ev.event.delta;
         if (d?.type === 'text_delta' && typeof d.text === 'string' && pending) {
@@ -103,7 +130,12 @@ export function createWarmCliSession(options = {}) {
         if (text) { pending.acc = text; try { pending.onUpdate?.(pending.acc); } catch { /* */ } }
       } else if (ev.type === 'result') {
         if (ev.subtype === 'success') {
-          resolvePending(typeof ev.result === 'string' ? ev.result : (pending?.acc ?? ''));
+          // verboseThinking ON: the accumulated verbose buffer wins over ev.result. OFF
+          // (default): exactly today's precedence — ev.result, else the streamed pending.acc.
+          const text = verboseThinking
+            ? (pending?.verboseBlocks ?? []).join('\n\n')
+            : (typeof ev.result === 'string' ? ev.result : (pending?.acc ?? ''));
+          resolvePending(text);
         } else {
           const detail = stderrBuf.trim() ? ` — ${stderrBuf.trim().slice(-300)}` : '';
           failPending(new Error(`claude: ${ev.subtype}${detail}`));
@@ -139,7 +171,7 @@ export function createWarmCliSession(options = {}) {
       if (pending) throw new Error('warm-cli: a turn is already in flight (the pool must serialize per key)');
       if (!proc) spawnProc();
       return new Promise((resolve, reject) => {
-        pending = { resolve, reject, onUpdate, acc: '', settled: false };
+        pending = { resolve, reject, onUpdate, acc: '', verboseBlocks: [], settled: false };
         const userMsg = JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: String(message ?? '') }] } }) + '\n';
         try { proc.stdin.write(userMsg); } catch (e) { failPending(e); }
       });

@@ -98,3 +98,77 @@ describe('warm-cli-session — resident multi-turn', () => {
     await expect(s.turn('TWO')).rejects.toThrow(/closed/);
   });
 });
+
+// A fake AGENTIC turn: reason+tool_use -> tool_result -> reason again -> stream the final
+// text -> a mirrored final assistant text block -> result. Models what a real ccode turn
+// actually emits (multiple `assistant` events before `result`), which the plain fakeClaude()
+// above (single result, no assistant/thinking/tool_use events) does not exercise.
+function fakeClaudeAgentic({ sessionId = 'sess-agentic' } = {}) {
+  const spawn = () => {
+    const proc = new EventEmitter();
+    proc.stdout = new EventEmitter(); proc.stdout.setEncoding = () => {};
+    proc.stderr = new EventEmitter(); proc.stderr.setEncoding = () => {};
+    proc.killed = false;
+    proc.kill = () => { proc.killed = true; };
+    proc.stdin = {
+      write: () => {
+        setImmediate(() => {
+          const emit = (o) => proc.stdout.emit('data', JSON.stringify(o) + '\n');
+          emit({ type: 'system', subtype: 'init', session_id: sessionId });
+          emit({ type: 'assistant', message: { role: 'assistant', content: [
+            { type: 'thinking', thinking: 'THINK1: let me check the directory' },
+            { type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls -la' } },
+          ] } });
+          emit({ type: 'user', message: { role: 'user', content: [
+            { type: 'tool_result', tool_use_id: 't1', content: 'DIRLISTING-secret-output' },
+          ] } });
+          emit({ type: 'assistant', message: { role: 'assistant', content: [
+            { type: 'thinking', thinking: 'THINK2: now I can answer' },
+          ] } });
+          emit({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Hel' } } });
+          emit({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'lo' } } });
+          emit({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Hello' }] } });
+          emit({ type: 'result', subtype: 'success', result: 'Hello' });
+        });
+      },
+      end: () => {},
+    };
+    return proc;
+  };
+  return { spawn };
+}
+
+describe('warm-cli-session — verboseThinking (operator 2026-08-29, wren\'s "full chain of thought")', () => {
+  it('OFF (default): same text as today on a multi-assistant-event agentic turn (regression lock)', async () => {
+    const s = createWarmCliSession({ spawn: fakeClaudeAgentic().spawn });
+    const r = await s.turn('what is in the dir?');
+    expect(r.text).toBe('Hello');
+    s.close();
+  });
+
+  it('ON: thinking verbatim + ToolName() stubs + final text, in order, no tool input/output', async () => {
+    const s = createWarmCliSession({ spawn: fakeClaudeAgentic().spawn, verboseThinking: true });
+    const r = await s.turn('what is in the dir?');
+    expect(r.text).toBe(
+      'THINK1: let me check the directory\n\nBash()\n\nTHINK2: now I can answer\n\nHello'
+    );
+    expect(r.text).not.toContain('ls -la');       // tool_use input never included
+    expect(r.text).not.toContain('DIRLISTING');    // tool_result content never included
+    s.close();
+  });
+
+  it('the live onUpdate preview is identical in both modes (text-delta-only, unchanged)', async () => {
+    const updatesOff = [];
+    const sOff = createWarmCliSession({ spawn: fakeClaudeAgentic().spawn });
+    await sOff.turn('x', (t) => updatesOff.push(t));
+    sOff.close();
+
+    const updatesOn = [];
+    const sOn = createWarmCliSession({ spawn: fakeClaudeAgentic().spawn, verboseThinking: true });
+    await sOn.turn('x', (t) => updatesOn.push(t));
+    sOn.close();
+
+    expect(updatesOff).toEqual(['Hel', 'Hello']);
+    expect(updatesOn).toEqual(updatesOff);
+  });
+});
