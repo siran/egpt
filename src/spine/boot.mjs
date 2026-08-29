@@ -66,7 +66,7 @@ import { createHeartbeats } from './heartbeats.mjs';
 import { createHeartbeatLoader, parseFrequency, resolveTimeZone } from './heartbeat-loader.mjs';
 import { createConfigResolver, parseEntityConfig } from './config-resolver.mjs';
 import { seedSkeletons } from './seed.mjs';
-import { readRoomConfig } from '../rooms-file.mjs';
+import { readRoomConfig, readRoomsFile } from '../rooms-file.mjs';
 
 // STRAY WHISPER-SERVER REAP (operator 2026-07-10): dropping `local` from a
 // transcription profile's fallback_order (e.g. → [remote, cli] so this node leans on
@@ -431,6 +431,43 @@ export function createRadioNoteRelay({
       if (result == null) return;
       onLog(result.ok ? `aired [${radioName}/${speaker}] ${filename}` : `upload FAILED [${radioName}/${speaker}] ${filename}`);
     },
+  };
+}
+
+// THE ROSTER a fan-out resolves for one conversation — the room-relay's `resolveMembers` seam.
+// A conversation reaches a roster TWO ways, and both are resolved here so there is ONE resolver
+// (never a second lookup beside it):
+//   1. its OWN room. A conversation IS a Room, and its members[] is what /members writes through
+//      resolveConvRoom — the original phase-4 lookup, unchanged.
+//   2. every room that INVITED this chat in. `/members add group <chatId>` stores a `wa-group`
+//      member whose id IS a chat id, so scanning config/rooms.yaml for this chatId is the REVERSE
+//      of (1): an inbound in that group fans out over THAT room's members — the other groups, the
+//      room's brains, all of it (operator 2026-08-29: "many and different groups to join a room …
+//      a room works as a communication tunnel between groups").
+// Concatenated and deduped by member id, own room first, so a conversation no room lists resolves
+// EXACTLY as it did before. Never throws — a fan-out with no roster is a no-op.
+export function createMemberResolver({ resolveConvRoom, readRooms = readRoomsFile } = {}) {
+  return async (surface, chatId) => {
+    try {
+      const rooms = [];
+      const own = await resolveConvRoom(surface, chatId);
+      if (own) rooms.push(own);
+      for (const [ns, row] of Object.entries(await readRooms())) {
+        const listed = Array.isArray(row?.members) ? row.members : [];
+        if (!listed.some((m) => m && m.kind === 'wa-group' && String(m.id) === String(chatId))) continue;
+        // The row KEY is the room's ns — `<surface>/<slug>`, the same string Room.ns() emits —
+        // so the room it names is rebuilt through the SAME (surface, slug) constructor
+        // resolveConvRoom ends in. A key with no surface prefix is not a room address; skip it.
+        const cut = String(ns).indexOf('/');
+        if (cut > 0) rooms.push(Room.forChat(String(ns).slice(0, cut), String(ns).slice(cut + 1)));
+      }
+      const seen = new Set();
+      const roster = [];
+      for (const room of rooms) {
+        for (const m of await room.members()) { if (seen.has(m.id)) continue; seen.add(m.id); roster.push(m); }
+      }
+      return roster;
+    } catch { return []; }
   };
 }
 
@@ -1290,14 +1327,13 @@ export async function boot({
   // engine is the real cdp.streamFromTab (tests inject a fake). resolveMembers reads the room's
   // roster through resolveConvRoom — the SAME resolver /members WRITES through (createCommands
   // above), so the roster the relay reads is exactly the one the operator edited on this
-  // conversation (bug fix 2026-07-23: previously the two resolved to different config.yaml files).
+  // conversation (bug fix 2026-07-23: previously the two resolved to different config.yaml files)
+  // — plus the roster of any room that INVITED this chat in as a `wa-group` member, which is the
+  // other half createMemberResolver resolves (see its header).
   const memberSender = createSender({ bridge: shellAwareBridge, bodyEmojiOf: () => '🤖', labelOf: (id) => id, defaultKey });
   const _adapterMods = new Map();
   const roomRelay = createRoomRelay({
-    resolveMembers: async (surface, chatId) => {
-      try { const room = await resolveConvRoom(surface, chatId); return room ? await room.members() : []; }
-      catch { return []; }
-    },
+    resolveMembers: createMemberResolver({ resolveConvRoom }),
     adapterOf: async (name) => {
       if (!name) return null;
       if (!_adapterMods.has(name)) _adapterMods.set(name, await loadAdapterModule(name));

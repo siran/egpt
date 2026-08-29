@@ -993,7 +993,7 @@ export function createCommands({
   }
 
   const ROOM_USAGE = 'usage: /rooms | /rooms create <name> | /rooms join|leave|members <room> | /rooms delete [force] <room>';
-  const MEMBERS_USAGE = 'usage: /members | /members add tab <n> [alias=<name>|<name>] | /members remove <id> | /members mode <disable|mention|all> <id>';
+  const MEMBERS_USAGE = 'usage: /members | /members add tab <n> [alias=<name>|<name>] | /members add group <chatId> | /members remove <id> | /members mode <disable|mention|all> <id>';
   // A slug with no folder on disk — the members path and the delete path both need to say
   // this instead of acting as though it exists (bug fix 2026-08-07: "/rooms help" rendered
   // "help (0 members)", a roster fabricated for a room that was never created — 'help' just
@@ -1594,6 +1594,8 @@ export function createCommands({
     // trailing token (operator ruling 2026-07-27).
     const add = /^add\s+tab\s+(\d+)(?:\s+(\S+))?$/i.exec(rest);
     if (add) { await membersAddTab(ev, room, Number(add[1]), add[2] ?? null); return; }
+    const addGroup = /^add\s+group\s+(\S+)$/i.exec(rest);
+    if (addGroup) { await membersAddGroup(ev, room, addGroup[1]); return; }
     const remove = /^remove\s+(\S+)$/i.exec(rest);
     if (remove) { await membersRemove(ev, room, remove[1]); return; }
     // VERB FIRST, target last (operator 2026-08-29) — was `<id> mode <value>`, the last
@@ -1659,6 +1661,19 @@ export function createCommands({
     }
     await room.setMember({ kind: 'brain', id, state: 'muted', adapter: adapter.name, url: tab.url, targetId: tab.id, title: tab.title });
     await send?.(ev.chatId, `added '${id}' (tab ${n} · adapter:${base}) — mode:disable (no chatter reaches it yet)`);
+  }
+
+  // /members add group <chatId> — invite a WhatsApp GROUP into this room as a member (operator
+  // 2026-08-29: "that even allows for many and different groups to join a room. a room works as a
+  // communication tunnel between groups"). The member id IS the group's chat id: that is what the
+  // relay SENDS to, and what the reverse lookup (boot.createMemberResolver) keys on to turn an
+  // inbound in that group into a fan-out over this room's roster. Same roster, same setMember
+  // resolver as `add tab`, and — like a tab — it starts muted, so nothing crosses until the
+  // operator flips its mode.
+  async function membersAddGroup(ev, room, chatId) {
+    if ((await room.members()).some((m) => m.id === chatId)) { await send?.(ev.chatId, `'${chatId}' is already a member here`); return; }
+    await room.setMember({ kind: 'wa-group', id: chatId, state: 'muted' });
+    await send?.(ev.chatId, `added group '${chatId}' — mode:disable (no chatter reaches it yet)`);
   }
 
   // /members remove <id> — drop a member from the roster. room.removeMember owns the

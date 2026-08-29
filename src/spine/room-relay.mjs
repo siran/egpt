@@ -15,6 +15,15 @@
 // fan-out. This service NEVER counts and NEVER logs the transcript — the re-entry does both
 // once, at the chokepoint (spine.mjs), which is what keeps "count/log exactly once" honest.
 //
+// A CHAT MEMBER (operator 2026-08-29: *"implement wa-group membership … a room works as a
+// communication tunnel between groups, since whatever is said in the room is fanned out to
+// members, this also includes under the same open umbrella members like chatgpt tabs"*). A
+// `wa-group` member is a WhatsApp group INVITED into the room (`/members add group <chatId>`);
+// several groups may join one room. It is fanned out to by the same loop, gated by the same
+// admits(), from the same roster — only the DELIVERY differs: a plain send to that group's OWN
+// chat id (m.id) instead of an injection into a CDP tab. So a line said in one group reaches the
+// other groups AND the room's brains AND the persona, from one chokepoint.
+//
 // Everything external is injected so the whole fan-out is exercisable against fakes (no live
 // Chrome, no socket): resolveMembers (the room roster), adapterOf (the driver module),
 // streamFromTab (the CDP relay engine), openStream (the member-stamped sender).
@@ -48,6 +57,13 @@ export function createRoomRelay({
     return null;   // muted / off / accum / unknown → nothing reaches it
   }
 
+  // WHO IS SPEAKING, for a delivery into another chat. openStream's first argument is the
+  // member-stamped sender's `being` — the label the receiving chat sees beside the 🤖 glyph —
+  // so a line tunnelled into another group must carry the ORIGIN's voice, never the receiving
+  // group's own chat id. A person's name for a human turn; for a brain member's re-entered
+  // reply syntheticOf already set senderName = the member id, so it lands stamped `chatgpt`.
+  const speakerOf = (ev) => String(ev.senderName || ev.chatName || ev.chatId || '');
+
   // A synthetic inbound payload ({ body, from }) for a member's reply. from.network = the
   // origin surface (a surface name is a recognized network prefix, so identity.build re-derives
   // the SAME surface + chatId → the same room). msgKey:null → not addressable (like an advice
@@ -75,6 +91,26 @@ export function createRoomRelay({
       catch (e) { onLog(`resolveMembers ${ev.surface}/${ev.chatId}: ${e?.message ?? e}`); return; }
       for (const m of (Array.isArray(members) ? members : [])) {
         if (blocked()) break;                                 // guard tripped — stop fanning
+        // A CHAT member (a WhatsApp group invited into this room): the room is the tunnel, so the
+        // message is SENT to that group's own chat id — not injected into ev.chatId the way a
+        // brain member's tab is driven.
+        //
+        // LOOP PREVENTION, the group-origin MIRROR of the `ev.fromBrain === m.id` skip below: the
+        // group a message arrived in IS this conversation, so `m.id === ev.chatId` is exactly "its
+        // own author" — A never gets its own line handed back. And a delivery is a SEND, not a
+        // turn: nothing is re-entered for it, so B's copy can never fan back to A. (The bridge's
+        // sent-id guard drops the echo of this send in B before the spine sees it; were an echo
+        // ever to arrive it is node-signed → non-human → the ONE guard bounds it, exactly as it
+        // bounds two brains answering each other.)
+        if (m.kind === 'wa-group') {
+          if (m.id === ev.chatId) continue;                   // the origin group — never deliver a message back to where it came from
+          const text = admits(m, ev);
+          if (text == null) continue;                         // this member's mode doesn't admit the message
+          const out = openStream(speakerOf(ev), m.id, {});    // replyTo omitted: ev.msgId belongs to ANOTHER chat
+          try { await out.finish({ text }); }
+          catch (e) { onLog(`send '${m.id}': ${e?.message ?? e}`); }
+          continue;
+        }
         if (m.kind !== 'brain' || !m.targetId) continue;      // not a live web-brain member (no open tab)
         if (ev.fromBrain && ev.fromBrain === m.id) continue;  // never feed a reply back to its own author
         const text = admits(m, ev);

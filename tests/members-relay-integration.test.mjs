@@ -31,6 +31,7 @@ import { join } from 'node:path';
 import { createCommands } from '../src/spine/commands.mjs';
 import { createSpine } from '../src/spine/spine.mjs';
 import { createRoomRelay } from '../src/spine/room-relay.mjs';
+import { createMemberResolver } from '../src/spine/boot.mjs';
 import { createStopGuard } from '../src/stop-guard.mjs';
 import { createIdentity } from '../src/spine/identity.mjs';
 import { Room } from '../src/room-core.mjs';
@@ -77,7 +78,9 @@ function commandsFor(resolveConvRoom) {
   return { cmds, sent };
 }
 
-function spineFor(resolveConvRoom) {
+// `resolveMembers` defaults to the plain own-room lookup (the flagship @chatgpt cases below);
+// the wa-group cases pass boot's REAL createMemberResolver, which adds the reverse lookup.
+function spineFor(resolveConvRoom, resolveMembers = null) {
   const relayCalls = [];
   const posts = [];
   let seq = 0;
@@ -93,10 +96,10 @@ function spineFor(resolveConvRoom) {
 
   const roomRelay = createRoomRelay({
     // READ the roster through the SAME resolveConvRoom /members WRITES through (boot's wiring).
-    resolveMembers: async (surface, chatId) => {
+    resolveMembers: resolveMembers ?? (async (surface, chatId) => {
       const room = await resolveConvRoom(surface, chatId);
       return room ? await room.members() : [];
-    },
+    }),
     adapterOf: async () => ({ injectScript: (t) => `INJECT[${t}]`, pollScript: 'POLL' }),
     streamFromTab: async ({ targetId, injectScript, pollScript, onUpdate }) => {
       relayCalls.push({ targetId, injectScript, pollScript });
@@ -187,5 +190,93 @@ describe('an operator-named room is an ordinary conversation — created, addres
     expect(relayCalls).toHaveLength(1);
     expect(relayCalls[0].targetId).toBe('GPT1');
     expect(posts[0].final).toBe('brain-reply-1');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE TUNNEL (operator 2026-08-29): "implement wa-group membership. that even allows for many
+// and different groups to join a room. a room works as a communication tunnel between groups,
+// since whatever is said in the room is fanned out to members, this also includes under the same
+// open umbrella members like chatgpt tabs."
+//
+// End to end across BOTH halves, with nothing faked between them:
+//   · WRITE — the operator, in room `tunnel`, runs the REAL `/members add group <chatId>`;
+//   · INGRESS — boot's REAL createMemberResolver turns an inbound in a group into that room's
+//     roster by the REVERSE lookup over config/rooms.yaml (the group's own conversation-room is
+//     empty; the room that INVITED it is what supplies the members);
+//   · EGRESS — the REAL room relay sends the line to the OTHER group's own chat id.
+// Real rooms here, not TmpRoom: the reverse lookup keys on a room's ns (`<surface>/<slug>`), so a
+// fixture whose baseDir sits outside the profile would key a row nothing could address back.
+describe('wa-group membership — many groups joined to ONE room, which tunnels between them', () => {
+  const rooms = async (surface, chatId) => Room.forChat(surface, String(chatId));
+  // The room rung is ONE shared file — start each case from an empty one.
+  beforeEach(() => { try { _rmRooms(ROOMS_FILE, { force: true }); } catch { /* none yet */ } });
+
+  async function tunnelWith(cmds, extra = []) {
+    for (const body of ['/members add group !grp-A', '/members add group !grp-B', ...extra]) {
+      await cmds.run({ chatId: 'tunnel', surface: 'room', body });
+    }
+    for (const id of ['!grp-A', '!grp-B']) {
+      await cmds.run({ chatId: 'tunnel', surface: 'room', body: `/members mode all ${id}` });
+    }
+  }
+
+  it('a message in group A reaches group B in ITS OWN chat — and A never receives its own line back', async () => {
+    const { cmds, sent } = commandsFor(rooms);
+    await tunnelWith(cmds);
+    expect(sent.map((s) => s.text).join('\n')).toMatch(/added group '!grp-A'/);
+
+    const { spine, posts } = spineFor(rooms, createMemberResolver({ resolveConvRoom: rooms }));
+
+    await spine.handleInbound(human('hola from A', { chatId: '!grp-A' }));
+    expect(posts.map((p) => ({ chatId: p.chatId, final: p.final }))).toEqual([
+      { chatId: '!grp-B', final: 'hola from A' },
+    ]);
+
+    // …and back the other way, from the SAME roster, with no third delivery anywhere: the
+    // ping-pong two groups in one room would otherwise run forever.
+    await spine.handleInbound(human('y from B', { chatId: '!grp-B', msgId: 'm2' }));
+    expect(posts.map((p) => ({ chatId: p.chatId, final: p.final }))).toEqual([
+      { chatId: '!grp-B', final: 'hola from A' },
+      { chatId: '!grp-A', final: 'y from B' },
+    ]);
+  });
+
+  it('THE OPEN UMBRELLA: a chatgpt tab joined to the same room is driven by the group message too', async () => {
+    const { cmds } = commandsFor(rooms);
+    await tunnelWith(cmds, ['/members add tab 1']);
+    await cmds.run({ chatId: 'tunnel', surface: 'room', body: '/members mode all chatgpt' });
+
+    const { spine, posts, relayCalls } = spineFor(rooms, createMemberResolver({ resolveConvRoom: rooms }));
+    await spine.handleInbound(human('team, status?', { chatId: '!grp-A' }));
+
+    expect(relayCalls).toHaveLength(1);                                   // the tab was driven
+    expect(relayCalls[0].targetId).toBe('GPT1');
+    expect(relayCalls[0].injectScript).toBe('INJECT[team, status?]');
+    // group B saw the human line AND, via the tab reply's re-entry, chatgpt's answer
+    expect(posts.filter((p) => p.chatId === '!grp-B').map((p) => p.final)).toEqual(['team, status?', 'brain-reply-1']);
+    // A, the ORIGIN, gets chatgpt's answer where the question was asked (the unchanged brain
+    // path posts into ev.chatId) — and never its own line handed back to it.
+    expect(posts.filter((p) => p.chatId === '!grp-A').map((p) => p.final)).toEqual(['brain-reply-1']);
+  });
+
+  it('a muted group receives nothing — the mode gate is the same one a tab member passes', async () => {
+    const { cmds } = commandsFor(rooms);
+    await cmds.run({ chatId: 'tunnel', surface: 'room', body: '/members add group !grp-A' });
+    await cmds.run({ chatId: 'tunnel', surface: 'room', body: '/members add group !grp-B' });
+    await cmds.run({ chatId: 'tunnel', surface: 'room', body: '/members mode all !grp-A' });   // B left muted
+
+    const { spine, posts } = spineFor(rooms, createMemberResolver({ resolveConvRoom: rooms }));
+    await spine.handleInbound(human('hola', { chatId: '!grp-A' }));
+    expect(posts).toHaveLength(0);
+  });
+
+  it('a conversation NO room lists resolves exactly as before — its own roster, nothing else', async () => {
+    const { cmds } = commandsFor(rooms);
+    await tunnelWith(cmds);
+
+    const resolveMembers = createMemberResolver({ resolveConvRoom: rooms });
+    expect(await resolveMembers('whatsapp', '!unrelated')).toEqual([]);
+    expect((await resolveMembers('whatsapp', '!grp-A')).map((m) => m.id)).toEqual(['!grp-A', '!grp-B']);
   });
 });

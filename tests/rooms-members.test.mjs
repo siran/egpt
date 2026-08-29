@@ -555,6 +555,48 @@ describe('/members add tab <n> — adapter-matched, added disabled, in the conve
   });
 });
 
+// /members add group <chatId> — the WHATSAPP-GROUP membership (operator 2026-08-29: "that even
+// allows for many and different groups to join a room. a room works as a communication tunnel
+// between groups"). Same roster, same setMember resolver, same mode vocabulary as a tab member;
+// the member id IS the group's chat id, because that is what the relay sends to and what the
+// reverse lookup keys on.
+describe('/members add group <chatId> — invite a WhatsApp group into this room', () => {
+  it('adds a wa-group member, muted, persisted in the SAME roster a tab member lands in', async () => {
+    const cdp = { listTabs: async () => threeTabs };
+    const { cmds, sent, resolveConvRoom } = harness({ cdp });
+
+    await cmds.run({ ...self, body: '/members add group !grp-B' });
+    expect(sent.at(-1).text).toMatch(/added group '!grp-B'/);
+    expect(sent.at(-1).text).toMatch(/mode:disable/);
+
+    const ms = await (await resolveConvRoom(self.surface, self.chatId)).members();
+    expect(ms.find((m) => m.id === '!grp-B')).toMatchObject({ kind: 'wa-group', id: '!grp-B', state: 'muted' });
+
+    // …beside a tab member, in one roster — the "open umbrella"
+    await cmds.run({ ...self, body: '/members add tab 1' });
+    const both = await (await resolveConvRoom(self.surface, self.chatId)).members();
+    expect(both.map((m) => `${m.kind}:${m.id}`)).toEqual(['wa-group:!grp-B', 'brain:chatgpt']);
+  });
+
+  it('adding the same group twice is refused — no duplicate row', async () => {
+    const { cmds, sent, resolveConvRoom } = harness({});
+    await cmds.run({ ...self, body: '/members add group !grp-B' });
+    await cmds.run({ ...self, body: '/members add group !grp-B' });
+    expect(sent.at(-1).text).toMatch(/already a member/);
+    const ms = await (await resolveConvRoom(self.surface, self.chatId)).members();
+    expect(ms).toHaveLength(1);
+  });
+
+  it('/members lists it as wa-group, and /members mode all <chatId> opens it (the same mode verb)', async () => {
+    const { cmds, sent, resolveConvRoom } = harness({});
+    await cmds.run({ ...self, body: '/members add group !grp-B' });
+    await cmds.run({ ...self, body: '/members' });
+    expect(sent.at(-1).text).toMatch(/!grp-B\s+wa-group\s+active\s+mode:disable/);
+    await cmds.run({ ...self, body: '/members mode all !grp-B' });
+    expect(await (await resolveConvRoom(self.surface, self.chatId)).memberState('!grp-B')).toBe('active');
+  });
+});
+
 describe('/members mode <disable|mention|all> <id>', () => {
   it('mode mention persists (re-read shows mention); mode all → active token', async () => {
     const cdp = { listTabs: async () => threeTabs };
@@ -601,13 +643,14 @@ describe('/members remove <id>', () => {
 });
 
 describe('/members usage line', () => {
-  it('mentions every accepted form: add, alias, remove, mode', async () => {
+  it('mentions every accepted form: add, alias, group, remove, mode', async () => {
     const { cmds, sent } = harness({});
     await cmds.run({ ...self, body: '/members bogus' });   // matches none of the sub-grammars
     const text = sent.at(-1).text;
     expect(text).toMatch(/usage:/);
     expect(text).toMatch(/add tab/);
     expect(text).toMatch(/alias/);
+    expect(text).toMatch(/add group/);
     expect(text).toMatch(/remove/);
     expect(text).toMatch(/mode/);
   });

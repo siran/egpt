@@ -163,6 +163,88 @@ describe('room relay — two active brains answering each other halt at guard.tu
   });
 });
 
+// ── wa-group members: the room as a TUNNEL between groups (operator 2026-08-29) ──────────
+//
+// A `wa-group` member is a WhatsApp group INVITED into the room (`/members add group <chatId>`);
+// several groups may join the same room, and they share the roster with the brain members. It is
+// fanned out to by the SAME loop and gated by the SAME admits(); only the delivery differs — a
+// send to that group's OWN chat id (m.id), never an injection into a tab and never into ev.chatId.
+//
+// The correctness risk is a PING-PONG: two groups in one room answering each other forever. The
+// mirror of the brain path's `ev.fromBrain === m.id` skip is asserted here — the origin group is
+// never delivered its own line, and a group delivery re-enters NOTHING (it is a send, not a turn),
+// so B's copy cannot fan back to A.
+describe('room relay — a wa-group member is a CHAT the room fans out to', () => {
+  const A = 'room-1';        // the chat every human() below arrives in
+  const B = 'group-B';
+
+  it('the other group receives it in ITS OWN chat id, stamped with who spoke — the origin group receives nothing', async () => {
+    const members = [
+      { id: A, kind: 'wa-group', state: 'active' },
+      { id: B, kind: 'wa-group', state: 'active' },
+    ];
+    const { spine, posts, relayCalls } = harness({ members });
+
+    await spine.handleInbound(human('hola equipo'));
+
+    expect(posts).toHaveLength(1);
+    expect(posts[0]).toMatchObject({ chatId: B, memberId: 'An' });   // B's own chat id; the ORIGIN speaker's name
+    expect(posts[0].final).toBe('hola equipo');
+    expect(posts.some((p) => p.chatId === A)).toBe(false);           // never back to where it came from
+    expect(relayCalls).toHaveLength(0);                              // a send, not a CDP injection — no tab driven
+  });
+
+  it('PING-PONG LOCK: two groups relay BOTH ways, each line delivered exactly once, nothing re-entered', async () => {
+    const members = [
+      { id: A, kind: 'wa-group', state: 'active' },
+      { id: B, kind: 'wa-group', state: 'active' },
+    ];
+    const { spine, posts, guard } = harness({ members });
+
+    await spine.handleInbound(human('from A'));
+    await spine.handleInbound(human('from B', { chatId: B, msgId: 'm2' }));
+
+    expect(posts.map((p) => ({ chatId: p.chatId, final: p.final }))).toEqual([
+      { chatId: B, final: 'from A' },     // A's line reached B, once
+      { chatId: A, final: 'from B' },     // …and B's reached A, once — no third delivery anywhere
+    ]);
+    // A delivery is a SEND, not a turn: neither channel accrues a non-human turn, because there
+    // is no synthetic re-entry to fan back at the origin. That absence IS the loop's floor.
+    expect(guard.countOf('whatsapp:room-1')).toBe(0);
+    expect(guard.countOf('whatsapp:group-B')).toBe(0);
+  });
+
+  it('a muted and an off group receive NOTHING — the same mode gate a brain member passes', async () => {
+    const members = [
+      { id: 'group-muted', kind: 'wa-group', state: 'muted' },
+      { id: 'group-off', kind: 'wa-group', state: 'off' },
+    ];
+    const { spine, posts } = harness({ members });
+    await spine.handleInbound(human('anyone there'));
+    expect(posts).toHaveLength(0);
+  });
+
+  it('THE OPEN UMBRELLA: one room, a group AND a chatgpt tab — both receive the message, and the group receives the tab\'s reply too', async () => {
+    const members = [
+      { id: B, kind: 'wa-group', state: 'active' },
+      { id: 'chatgpt', kind: 'brain', state: 'active', adapter: 'chatgpt-cdp', targetId: 'T1' },
+    ];
+    const { spine, posts, relayCalls } = harness({ members });
+
+    await spine.handleInbound(human('hi team'));
+
+    expect(relayCalls).toHaveLength(1);                             // the tab was driven with the same line
+    expect(relayCalls[0].injectScript).toBe('INJECT[hi team]');
+    // The group saw the human line AND — through the brain reply's re-entry — chatgpt's answer,
+    // each stamped with whoever produced it. That is the "same open umbrella".
+    const toB = posts.filter((p) => p.chatId === B);
+    expect(toB.map((p) => p.final)).toEqual(['hi team', 'brain-reply-1']);
+    expect(toB.map((p) => p.memberId)).toEqual(['An', 'chatgpt']);
+    // …and chatgpt's reply still posts into the origin room exactly as it did before.
+    expect(posts.filter((p) => p.chatId === A).map((p) => p.final)).toEqual(['brain-reply-1']);
+  });
+});
+
 describe('room relay — E participates in the brain chatter per its OWN mode (design B)', () => {
   it("with E at 'on', E's turn runs on the human message AND on the brain member's reply", async () => {
     const members = [{ id: 'chatgpt', kind: 'brain', state: 'active', adapter: 'chatgpt-cdp', targetId: 'T1' }];
