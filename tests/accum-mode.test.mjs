@@ -256,6 +256,55 @@ describe('contextSinceLastTurn — the gap read back out of transcript.md', () =
     expect(truncated).toBe(true);
   });
 
+  // ── A MULTI-BLOCK ENTRY (operator 2026-08-29, the "restart didn't clear the accum" incident) ──
+  // A transcript entry is one blank-line-separated block ONLY when its body has no blank line
+  // in it. A multi-paragraph reply is written as SEVERAL blocks and just the FIRST carries the
+  // `<label>@[chat].<surface> (HH:MM):` header — so walking backward collected the headerless
+  // paragraphs BEFORE the boundary was reached and the being was re-fed the tail of its OWN
+  // last reply, labelled "what was said since your last turn", on EVERY accum turn.
+  // A headerless block belongs to the entry above it: it is included or dropped with it.
+  const HEAD = ['---', 'name: fam', 'chat_id: c1', '---', ''];
+  const REC = (...lines) => [...HEAD, ...lines, ''].join('\n');
+
+  it("this being's MULTI-PARAGRAPH reply is the boundary WHOLE — its headerless continuations never come back", () => {
+    const doc = REC(
+      'An@[fam].wa (19:55) #a: antes del turno', '',
+      'egpt@[fam].wa (20:01): Ahí sí metiste un mecanismo real', '',
+      'Pero fijate el precio que pagás', '',
+      'Eso no es una especie forjando su futuro', '',
+      'Bea@[fam].wa (20:30) #b: lo que sigue',
+    );
+    expect(contextSinceLastTurn(doc, { being: 'egpt' }).blocks)
+      .toEqual(['Bea@[fam].wa (20:30) #b: lo que sigue']);
+  });
+
+  // THE OVER-CORRECTION GUARD: a human's continuation paragraphs are headerless too, and they
+  // are real context. Only the run belonging to the BOUNDARY reply is dropped.
+  it("a HUMAN's multi-paragraph message is included in FULL — every paragraph, header first", () => {
+    const doc = REC(
+      'egpt@[fam].wa (20:01): mi último turno', '',
+      'An@[fam].wa (20:30) #b: primer párrafo', '',
+      'segundo párrafo', '',
+      'tercer párrafo',
+    );
+    expect(contextSinceLastTurn(doc, { being: 'egpt' }).blocks)
+      .toEqual(['An@[fam].wa (20:30) #b: primer párrafo', 'segundo párrafo', 'tercer párrafo']);
+  });
+
+  it("ANOTHER agent's multi-paragraph reply is context in full — only THIS being's own line is the boundary", () => {
+    const doc = REC(
+      'egpt@[fam].wa (20:01): mi último turno', '',
+      'don@[fam].wa (20:10): don, primer párrafo', '',
+      'don, segundo párrafo', '',
+      'An@[fam].wa (20:30) #b: lo que sigue',
+    );
+    expect(contextSinceLastTurn(doc, { being: 'egpt' }).blocks).toEqual([
+      'don@[fam].wa (20:10): don, primer párrafo',
+      'don, segundo párrafo',
+      'An@[fam].wa (20:30) #b: lo que sigue',
+    ]);
+  });
+
   it('renders no labelled block when the gap is empty; announces truncation when it is not whole', () => {
     expect(promptWithRecentContext('the line', { blocks: [], truncated: false })).toBe('the line');
     const whole = promptWithRecentContext('the line', { blocks: ['a'], truncated: false });

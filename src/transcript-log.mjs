@@ -151,8 +151,21 @@ function beingReplyRe(beings) {
 
 /**
  * The conversation blocks recorded since `being`'s last reply — oldest first.
- * A transcript entry is one blank-line-separated block (transcriptAppend/replyLine both
- * end `\n\n`), so a multi-line body stays whole.
+ *
+ * AN ENTRY IS NOT ALWAYS ONE BLOCK (operator 2026-08-29, the "restart didn't clear the accum"
+ * incident). transcriptAppend/replyLine end `\n\n`, so an entry whose body has no blank line
+ * IS one blank-line-separated block — but a multi-paragraph body is written as SEVERAL, and
+ * only the FIRST carries the `<name>@[<chat>].<surface> (HH:MM):` head. Walking backward, the
+ * headerless paragraphs of the being's own last reply were therefore collected BEFORE the
+ * boundary was reached, and the being was re-fed the tail of what it had just said, labelled
+ * "what was said since your last turn", on every accum turn.
+ *
+ * So a HEADERLESS block belongs to the entry above it: it is held pending until an entry head
+ * is reached (_ENTRY_HEAD — the SAME definition bodyForMessageId reads entries with, below),
+ * and then included or dropped WITH that entry. A human's continuation paragraphs are equally
+ * headerless and equally real context — only the run belonging to the BOUNDARY reply is
+ * dropped, which is why the pending buffer is discarded exactly there and flushed everywhere
+ * else. The cap applies to the whole entry, so a block never lands without its head.
  *
  * @param {string} text      transcript.md, front matter included
  * @param {{being?: string|string[], maxChars?: number, exclude?: string}} opts
@@ -168,14 +181,26 @@ export function contextSinceLastTurn(text, { being = null, maxChars = RECENT_CON
   const skip = String(exclude ?? '').trim();
   const out = [];
   let used = 0, truncated = false;
-  for (let i = blocks.length - 1; i >= 0; i--) {
+  // ONE entry — its head plus the continuation blocks it owns, newest-first like the walk.
+  // False = the cap is reached, so the caller stops (`out` stays whole-entry aligned).
+  const take = (entry) => {
+    const keep = entry.filter((b) => !(skip && b === skip));                    // the prompt itself
+    const size = keep.reduce((n, b) => n + b.length, 0);
+    if (used + size > maxChars) { truncated = true; return false; }             // cap: keep the most recent
+    used += size;
+    out.push(...keep);
+    return true;
+  };
+  let pending = [];                                                             // headerless blocks awaiting their head
+  let i = blocks.length - 1;
+  for (; i >= 0; i--) {
     const b = blocks[i];
-    if (mine && mine.test(b)) break;                                  // the boundary — above it is already in the session
-    if (skip && b === skip) continue;                                 // the prompt itself
-    if (used + b.length > maxChars) { truncated = true; break; }      // cap: keep the most recent
-    used += b.length;
-    out.push(b);
+    if (!_ENTRY_HEAD.test(b)) { pending.push(b); continue; }                    // a continuation of the entry below
+    if (mine && mine.test(b)) { pending = []; break; }                          // the boundary — it and its own tail are already in the session
+    if (!take([...pending, b])) break;
+    pending = [];
   }
+  if (i < 0 && pending.length) take(pending);                                   // continuations with no head in the file
   out.reverse();
   return { blocks: out, truncated };
 }

@@ -6,13 +6,15 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createCommands, normalizeAgentsArgs, AGENTS_USAGE } from '../src/spine/commands.mjs';
 import { createSpine } from '../src/spine/spine.mjs';
+import { createTranscript } from '../src/spine/transcript.mjs';
+import { contextSinceLastTurn } from '../src/transcript-log.mjs';
 import { COMMANDS } from '../src/interpreter.mjs';
 import { Room } from '../src/room-core.mjs';
 import { EGPT_HOME } from '../src/egpt-home.mjs';
 import { emptyState, ensureContact, getBeing, getContact, patchContact } from '../src/conversations-state.mjs';
 
-function harness({ config = {}, state = null, brains, io = {}, cdp, launch, clock, resolveConvRoom, onRoomChange } = {}) {
-  const sent = [], exits = [], rewinds = [], writes = [], evicts = [], roomChanges = [];
+function harness({ config = {}, state = null, brains, io = {}, cdp, launch, clock, resolveConvRoom, onRoomChange, logTranscript } = {}) {
+  const sent = [], exits = [], rewinds = [], writes = [], evicts = [], roomChanges = [], logged = [];
   const files = {};   // any command-authored files (e.g. /room create's config.yaml)
   let st = state;
   // /chrome launch + clock seams: default to a fake that reports "task not registered"
@@ -34,9 +36,13 @@ function harness({ config = {}, state = null, brains, io = {}, cdp, launch, cloc
     evictWarm: (key) => evicts.push(key),
     io: { writeFile: async (p, c) => { files[p] = c; }, mkdir: async () => {}, ...io },
     ...(resolveConvRoom ? { resolveConvRoom } : {}),
+    // The transcript service's reply writer (boot injects services.transcript.log) — captured
+    // by default so a test can assert WHAT was written where, or overridden with a real
+    // createTranscript when the BYTES are the claim.
+    logTranscript: logTranscript ?? (async (ev, reply) => { logged.push({ ev, reply }); return true; }),
     onRoomChange: (surface, slug) => { roomChanges.push({ surface, slug }); onRoomChange?.(surface, slug); },
   });
-  return { cmds, sent, exits, rewinds, writes, evicts, files, roomChanges, getState: () => st };
+  return { cmds, sent, exits, rewinds, writes, evicts, files, roomChanges, logged, getState: () => st };
 }
 
 describe('commands.isCommand', () => {
@@ -719,6 +725,116 @@ describe('/agents <handle>|all restart — clears ONLY threadId, mode/access_lev
     const { cmds, evicts } = harness({ state });
     await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents e restart' });
     expect(evicts).toEqual([]);
+  });
+
+  // ── THE ACCUM BOUNDARY (operator ruling 2026-08-29: "the reset should clean next accum, so
+  // that the model really starts fresh") ─────────────────────────────────────────────────────
+  // REPRODUCE-FIRST, from the live incident: the operator restarted E, asked "sin revisar el
+  // historial, recuerdas de qué estábamos hablando?" and got an accurate summary — restart
+  // nulled threadId and NOTHING else, so contextSinceLastTurn still found the pre-restart
+  // history and handed it to the "fresh" being on turn one. The fix reuses the mechanism
+  // already in transcript-log.mjs (a WITHHELD reply line is a valid boundary): restart appends
+  // ONE `(not surfaced)` line per restarted being, through the SAME writer every reply goes
+  // through (createTranscript.log). Nothing is archived — reset's job, not this one's.
+  //
+  // Wires the REAL transcript service over an in-memory file map, because the BYTES are the
+  // claim here: the line has to be one the real reader accepts as a boundary.
+  function memTranscript(getSt) {
+    const files = {};
+    const transcript = createTranscript({
+      contacts: { resolve: async (surface, chatId) => getContact(getSt(), surface, chatId)?.slug ?? chatId },
+      io: {
+        appendFile: async (p, c) => { files[p] = (files[p] ?? '') + c; },
+        mkdir: async () => {},
+        existsSync: (p) => files[p] != null,
+      },
+    });
+    return { files, log: transcript.log };
+  }
+  const HISTORY = (chat) => [
+    '---', `name: ${chat}`, '---', '',
+    `An@[${chat}].wa (19:55) #a: de qué estábamos hablando`, '',
+    `e@[${chat}].wa (20:01): de la especie y su futuro`, '',
+    'Pero fijate el precio que pagás', '',
+    `An@[${chat}].wa (20:30) #b: dale`, '', '',
+  ].join('\n');   // every real append ends '\n\n' — the boundary must land as its OWN block
+
+  it('/agents e restart appends ONE withheld boundary line — the next accum window is EMPTY while the file keeps its history', async () => {
+    const surface = 'whatsapp', jid = '1234@s.whatsapp.net';
+    const state = seedRestartState(surface, jid, { pushedName: 'diego', slugHint: 'diego' });
+    const { files, log } = memTranscript(() => state);
+    const fpath = Room.forChat(surface, getContact(state, surface, jid).slug).transcriptPath;
+    files[fpath] = HISTORY('diego');
+    const before = files[fpath];
+
+    const { cmds } = harness({ state, logTranscript: log });
+    await cmds.run({ chatId: jid, surface, body: '/agents e restart' });
+
+    expect(files[fpath].startsWith(before)).toBe(true);                       // append-only: nothing rewritten
+    const added = files[fpath].slice(before.length);
+    expect(added).toMatch(/^e@\[diego\]\.\S+ \(\d{1,2}:\d{2}\): \(not surfaced\) /);
+    expect(added.trim().split(/\n{2,}/)).toHaveLength(1);                     // ONE block, or it leaks its own tail
+    expect(contextSinceLastTurn(files[fpath], { being: 'e' }).blocks).toEqual([]);
+    // …and the shared record every OTHER reader relies on is untouched (contrast: reset archives)
+    expect(files[fpath]).toContain('de qué estábamos hablando');
+    expect(contextSinceLastTurn(files[fpath], { being: 'wren' }).blocks.length).toBeGreaterThan(0);
+  });
+
+  it("/agents wren restart moves ONLY wren's boundary — e is resident here too and its window is unmoved", async () => {
+    const surface = 'whatsapp', jid = '1234@s.whatsapp.net';
+    let state = ensureContact(emptyState(), surface, jid, { pushedName: 'diego', slugHint: 'diego' }).state;
+    state = patchContact(state, surface, jid, { agents: { e: { threadId: 'e-t' }, wren: { threadId: 'wren-t' } } });
+    const { files, log } = memTranscript(() => state);
+    const fpath = Room.forChat(surface, getContact(state, surface, jid).slug).transcriptPath;
+    files[fpath] = HISTORY('diego');
+    const eWindowBefore = contextSinceLastTurn(files[fpath], { being: 'e' }).blocks;
+
+    const { cmds } = harness({ state, logTranscript: log });
+    await cmds.run({ chatId: jid, surface, body: '/agents wren restart' });
+
+    expect(contextSinceLastTurn(files[fpath], { being: 'wren' }).blocks).toEqual([]);
+    const eWindowAfter = contextSinceLastTurn(files[fpath], { being: 'e' }).blocks;
+    expect(eWindowAfter.slice(0, eWindowBefore.length)).toEqual(eWindowBefore);   // e's own boundary never moved
+  });
+
+  it('/agents all restart writes ONE boundary line per restarted being, each under its own label', async () => {
+    const surface = 'whatsapp', jid = '1234@s.whatsapp.net';
+    let state = ensureContact(emptyState(), surface, jid, { pushedName: 'diego', slugHint: 'diego' }).state;
+    state = patchContact(state, surface, jid, { agents: { e: { threadId: 'e-t' }, wren: { threadId: 'wren-t' } } });
+    const { cmds, logged } = harness({ state });
+    await cmds.run({ chatId: jid, surface, body: '/agents all restart' });
+
+    expect(logged.map((l) => l.reply.being)).toEqual(['e', 'wren']);
+    for (const l of logged) expect(l.reply.surfaced).toBe(false);
+  });
+
+  // The confirmation reply is itself recorded (boot wraps `send` — wrapCommandsForTranscript),
+  // so the boundary has to be appended AFTER it or the "fresh" being reads its own restart
+  // notice as accumulated context.
+  it('the boundary is appended AFTER the confirmation reply, so the ✅ line lands above it', async () => {
+    const state = seedRestartState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
+    let sentAtLog = null;
+    const h = harness({ state, logTranscript: async () => { sentAtLog = h.sent.length; return true; } });
+    await h.cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents e restart' });
+    expect(sentAtLog).toBe(1);
+  });
+
+  it('/agents=hfm e restart writes the boundary into the NAMED chat, not the one the command was typed in', async () => {
+    const state = seedRestartState('whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' });
+    const { cmds, logged } = harness({ state });
+    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/agents=hfm e restart' });
+    expect(logged).toHaveLength(1);
+    expect(logged[0].ev.chatId).toBe('!hfm:beeper.local');
+    expect(logged[0].ev.surface).toBe('whatsapp');
+  });
+
+  // reset's own behaviour is UNCHANGED: it archives the whole folder, which already clears the
+  // window — it must not also start writing boundary lines.
+  it('CONTRAST — /agents e reset writes NO boundary line (it archives instead; unchanged)', async () => {
+    const state = seedRestartState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
+    const { cmds, logged } = harness({ state, io: { rename: async () => {}, mkdir: async () => {} } });
+    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents e reset' });
+    expect(logged).toEqual([]);
   });
 
   it('/agents e restart is recognized case-insensitively on the command token + subcommand', async () => {

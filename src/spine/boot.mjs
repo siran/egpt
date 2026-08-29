@@ -1192,6 +1192,7 @@ export async function boot({
     exit: announceAndExit,
     writeRewindTarget: (ref) => writeFile(join(EGPT_HOME, 'rewind-target.txt'), ref, 'utf8'),
     loadState: _loadState, writeState: _writeState,   // /agents … auto/reset/access_level persist into conversations.yaml
+    logTranscript: (ev, reply) => services.transcript.log(ev, reply),   // THE reply writer — the same service commandTranscript wraps above; /agents restart's accum boundary rides it instead of assembling a line of its own
     resolveConvRoom,                                  // (surface, chatId) → the conversation's Room — the SAME resolver the phase-4 relay reads members from, so /members writes where the relay reads (bug fix 2026-07-23)
     brains,                                           // /agents' status + access_level resolve a being's agent type through the registry
     defaultKey,                                       // the persona being-id (its map key) — /agents + /status key their per-conversation reads/writes/evictions off this, never 'e' (operator 2026-07-10)

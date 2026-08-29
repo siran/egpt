@@ -381,6 +381,12 @@ export function createCommands({
   // test may exercise it; tests always inject a fake).
   listEntityDirs = async () => [],
   fetch: fetchFn = globalThis.fetch,
+  // THE transcript reply writer (src/spine/transcript.mjs createTranscript.log) — boot injects
+  // `services.transcript.log`, the SAME function every being's reply and every command reply
+  // (via wrapCommandsForTranscript) already goes through. /agents restart's accum boundary is
+  // its one caller: no command hand-assembles a transcript line. No-op default so a standalone
+  // /test-constructed createCommands never writes to disk.
+  logTranscript = async () => {},
   // Live status-line room reflection (operator 2026-08-16): fired (surface, slug|null) any
   // time currentRoom changes — roomJoin, roomLeave, and roomDelete's bulk clear below. `null`
   // means "no current room" (roomLeave / roomDelete's clear); a slug means "now current"
@@ -1185,9 +1191,10 @@ export function createCommands({
   // decided directly against `reset`'s big archive-and-wipe): clears ONLY the target
   // being(s)' `threadId` via patchBeing (a merge, NOT deleteBeing) — `mode`, `access_level`,
   // and every other field on the being's block survive byte-for-byte. The conversation
-  // folder (transcript.md, media/, files/, identity.d/) is never archived or otherwise
-  // touched — no rename, no mkdir, no folder IO at all. This matches exactly what already
-  // happens today when an operator manually clears `threadId` by hand.
+  // folder (transcript.md, media/, files/, identity.d/) is never archived, moved or wiped —
+  // no rename, no reseed. This matches exactly what already happens today when an operator
+  // manually clears `threadId` by hand, plus the ONE line restartBoundary appends to
+  // transcript.md (below) so `mode: accum`'s window starts here too.
   //
   // Nothing else is done synchronously: transcript rolling and identity reseeding are NOT
   // triggered here. They already happen automatically, lazily, on the NEXT real inbound
@@ -1209,8 +1216,44 @@ export function createCommands({
       let next = state;
       for (const h of handles) next = patchBeing(next, surface, jid, h, { threadId: null });
       await writeState(next);
-      await send?.(ev.chatId, `✅ ${handles.join(', ')} restart ${where} — threadId cleared, next message starts a fresh session (mode/access_level unchanged; transcript + identity refresh happen automatically on that next message).`);
+      await send?.(ev.chatId, `✅ ${handles.join(', ')} restart ${where} — threadId cleared and an accum boundary marked in transcript.md, so nothing said before now is fed back; next message starts a fresh session (mode/access_level unchanged, the conversation folder untouched — /agents reset is what archives).`);
+      await restartBoundary(ev, surface, jid, handles, state);
     } catch (e) { onLog(`/agents restart ${ev.chatId}: ${e?.message ?? e}`); await send?.(ev.chatId, `/agents: restart failed — ${e?.message ?? e}`); }
+  }
+
+  // THE ACCUM BOUNDARY (operator ruling 2026-08-29: "the reset should clean next accum, so
+  // that the model really starts fresh"). Nulling threadId above starts a fresh SESSION, but
+  // `mode: accum` reads the gap since the being's last turn straight out of transcript.md
+  // (transcript-log.contextSinceLastTurn), so a restarted being was still handed up to
+  // RECENT_CONTEXT_MAX_CHARS of pre-restart history on turn one — the live incident where E,
+  // asked "sin revisar el historial, recuerdas de qué estábamos hablando?", answered correctly
+  // without reading anything.
+  //
+  // NO NEW MECHANISM: contextSinceLastTurn already treats a WITHHELD reply line as a valid
+  // boundary (its own docblock: "`(not surfaced) ` opens the BODY, past the head, so it
+  // matches"), so one such line per restarted being re-anchors the window at the restart point
+  // — no new field, no timestamp comparison (that module deliberately parses none), and the
+  // shared record every OTHER being and every human relies on is left whole. That is the whole
+  // difference from reset, which archives the folder.
+  //
+  // Written through logTranscript — createTranscript.log, THE reply writer — never assembled
+  // here. SINGLE BLOCK, deliberately: a multi-paragraph marker would be split on its blank
+  // lines and its headerless tail would leak back into the very window this closes.
+  //
+  // LAST, after the confirmation: boot records a command's reply through the same transcript
+  // (wrapCommandsForTranscript), so a boundary written first would leave the ✅ line — and the
+  // `/agents … restart` line above it — sitting in the "fresh" being's first window.
+  //
+  // The ev is the CALLER-RESOLVED conversation's, not the one the command was typed in: a
+  // `/agents=<slug> … restart` from Self must re-anchor the named chat. Only where the write is
+  // filed changes; chatName follows it so the line names the chat it lands in.
+  async function restartBoundary(ev, surface, jid, handles, state) {
+    const contact = getContact(state, surface, jid);
+    const chatName = contact?.entry?.pushedName ?? contact?.slug ?? ev.chatName;
+    const at = { ...ev, surface, chatId: jid, chatName };
+    for (const h of handles) {
+      await logTranscript(at, { text: 'restarted — fresh session from here; nothing above this line is in context', being: h, surfaced: false });
+    }
   }
 
   // /agents[=<slug>] <handle>|all auto <mode> — was /e auto <mode> [<target>], generalized:
