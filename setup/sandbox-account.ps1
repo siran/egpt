@@ -15,10 +15,13 @@ $SandboxPoolPrefix = 'egpt-sbx-'
 # otherwise. Granting ReadAndExecute to this ONE group, once, is simpler than
 # granting each of the 16 pool accounts individually.
 $SandboxPoolGroup = 'egpt-sandbox-pool'
-# DPAPI (Export-Clixml's SecureString protection) is scoped to the Windows
-# account that encrypts it  - only decryptable by that same account. Fine
-# here: this daemon always runs under one fixed operator account (Startup-
-# folder supervisor), never as a rotating service identity.
+# Credentials are protected with DPAPI at LocalMachine scope (see
+# Protect-/Unprotect-SandboxCredentialBytes below), not the CurrentUser scope
+# Export-Clixml would give a SecureString  - CurrentUser-scope ciphertext is
+# only decryptable by the exact logon session that encrypted it, which broke
+# once the daemon started running from non-interactive/Session-0 logons
+# (operator 2026-08-30). LocalMachine scope decrypts from any logon session on
+# THIS machine; it is still not portable off the box.
 $CredDir = Join-Path $env:ProgramData 'egpt'
 
 # Every diagnostic goes to STDERR ONLY. The inner process's stdout is wired
@@ -43,19 +46,80 @@ function Get-SandboxPoolAccountNames {
   0..($SandboxPoolSize - 1) | ForEach-Object { "{0}{1:D2}" -f $SandboxPoolPrefix, $_ }
 }
 
+# [System.Security.Cryptography.ProtectedData] lives in System.Security.dll,
+# which is not loaded by default in every PowerShell host (confirmed: even a
+# plain `powershell -File` run throws TypeNotFound without this) -- load it
+# explicitly once so Protect-/Unprotect-SandboxCredentialBytes below can rely
+# on the type being present regardless of caller.
+Add-Type -AssemblyName System.Security
+
+# Raw DPAPI byte protect/unprotect at LocalMachine scope  - the
+# Export-/Import-Clixml convenience path only offers CurrentUser scope for a
+# SecureString, so credential bytes go through these instead. No optional
+# entropy: the ciphertext is already confined to $CredDir by
+# Protect-SandboxCredDir's ACLs.
+function Protect-SandboxCredentialBytes {
+  param([Parameter(Mandatory = $true)][byte[]]$PlainBytes)
+  return [System.Security.Cryptography.ProtectedData]::Protect(
+    $PlainBytes, $null, [System.Security.Cryptography.DataProtectionScope]::LocalMachine)
+}
+
+function Unprotect-SandboxCredentialBytes {
+  param([Parameter(Mandatory = $true)][byte[]]$CipherBytes)
+  return [System.Security.Cryptography.ProtectedData]::Unprotect(
+    $CipherBytes, $null, [System.Security.Cryptography.DataProtectionScope]::LocalMachine)
+}
+
+# Small on-disk wrapper (account name + DPAPI ciphertext) replacing the
+# PSCredential/Clixml round-trip  - BinaryWriter.Write(string) length-prefixes
+# the name itself, so the ciphertext (the rest of the stream) needs no
+# separate length field.
+function Save-SandboxCredentialFile {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$AccountName,
+    [Parameter(Mandatory = $true)][byte[]]$CipherBytes
+  )
+  $stream = New-Object System.IO.FileStream($Path, [System.IO.FileMode]::Create)
+  try {
+    $writer = New-Object System.IO.BinaryWriter($stream)
+    $writer.Write($AccountName)
+    $writer.Write($CipherBytes)
+    $writer.Flush()
+  } finally { $stream.Dispose() }
+}
+
+function Read-SandboxCredentialFile {
+  param([Parameter(Mandatory = $true)][string]$Path)
+  $stream = New-Object System.IO.FileStream($Path, [System.IO.FileMode]::Open)
+  try {
+    $reader = New-Object System.IO.BinaryReader($stream)
+    $accountName = $reader.ReadString()
+    $cipherBytes = $reader.ReadBytes([int]($stream.Length - $stream.Position))
+    return [PSCustomObject]@{ AccountName = $accountName; CipherBytes = $cipherBytes }
+  } finally { $stream.Dispose() }
+}
+
 # (a) Ensure ONE named account exists  - idempotent, local-admin only,
 # fail loudly (never silently degrade) if creation is not possible.
 function Get-SandboxCredential {
   param(
     [Parameter(Mandatory = $true)][string]$AccountName
   )
-  $credPath = Join-Path $CredDir "sandbox-cred-$AccountName.xml"
+  $credPath = Join-Path $CredDir "sandbox-cred-$AccountName.bin"
   $existing = Get-LocalUser -Name $AccountName -ErrorAction SilentlyContinue
   if ($existing -and (Test-Path -LiteralPath $credPath)) {
-    try { return Import-Clixml -Path $credPath }
+    try {
+      $stored = Read-SandboxCredentialFile -Path $credPath
+      $plainBytes = Unprotect-SandboxCredentialBytes -CipherBytes $stored.CipherBytes
+      $plainPwd = [System.Text.Encoding]::UTF8.GetString($plainBytes)
+      $securePwd = ConvertTo-SecureString -String $plainPwd -AsPlainText -Force
+      return New-Object System.Management.Automation.PSCredential($AccountName, $securePwd)
+    }
     catch { throw "sandbox-logon-launcher: account '$AccountName' exists but its stored credential at $credPath could not be read ($($_.Exception.Message))  - delete that file to force a self-heal, or fix its permissions" }
   }
-  $securePwd = ConvertTo-SecureString -String (New-RandomPassword) -AsPlainText -Force
+  $plainPwd = New-RandomPassword
+  $securePwd = ConvertTo-SecureString -String $plainPwd -AsPlainText -Force
   if (-not $existing) {
     Log "creating sandbox pool account '$AccountName' (first use on this node)"
     try {
@@ -74,14 +138,14 @@ function Get-SandboxCredential {
     try { Set-LocalUser -Name $AccountName -Password $securePwd -ErrorAction Stop }
     catch { throw "sandbox-logon-launcher: account '$AccountName' exists but its password could not be reset to restore a known credential  - $($_.Exception.Message) (must run as a local Administrator)" }
   }
-  $cred = New-Object System.Management.Automation.PSCredential($AccountName, $securePwd)
   try {
     New-Item -ItemType Directory -Path $CredDir -Force -ErrorAction Stop | Out-Null
-    $cred | Export-Clixml -Path $credPath -Force
+    $cipherBytes = Protect-SandboxCredentialBytes -PlainBytes ([System.Text.Encoding]::UTF8.GetBytes($plainPwd))
+    Save-SandboxCredentialFile -Path $credPath -AccountName $AccountName -CipherBytes $cipherBytes
   } catch {
     throw "sandbox-logon-launcher: account '$AccountName' is ready but its credential could not be persisted to $credPath  - $($_.Exception.Message)"
   }
-  return $cred
+  return New-Object System.Management.Automation.PSCredential($AccountName, $securePwd)
 }
 
 # Ensure every pool account exists  - idempotent, same self-heal as
