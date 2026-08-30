@@ -948,6 +948,16 @@ export function getBeing(state, surface, jid, being) {
     // override at this tier, fall to the global conversation_defaults tier (brainpool.mjs's
     // resolveConv). See setup/sandbox-logon-launcher.ps1 for the mechanism.
     sandboxed:          b?.sandboxed            ?? null,
+    // Chain-of-thought rendering (operator 2026-08-30: "verbose thinking should be controlled
+    // from config.yaml rather than the agent.yaml") — per-conversation override, same shape/
+    // tier as accessLevel/allowedUsers/sandboxed above. It shipped 2026-08-29 as a TYPE-FILE-
+    // only field, so the only way to turn it on was to edit an agent-type file, which turned
+    // it on for EVERY being sharing that type; this is the per-conversation end of the two
+    // config.yaml tiers that fixes it. null = no override at this tier, fall to the global
+    // conversation_defaults tier and then to the type file's own verbose_thinking (both in
+    // brainpool.mjs's resolveConv/baseOpts — the type-file tier is KEPT, wren's live
+    // egpt-xhigh.yaml declares it there).
+    verboseThinking:    b?.verbose_thinking     ?? null,
   };
 }
 

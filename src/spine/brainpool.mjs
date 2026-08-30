@@ -192,6 +192,10 @@ function shapeDef(name, def, agent = {}, brainType = 'ccode') {
     dangerously_skip_permissions: def?.dangerously_skip_permissions === true,   // carried so an unconfined type file survives shaping
     // verbose_thinking (operator 2026-08-29 ruling, wren's "see your full chain of thought"):
     // carried the same way dangerously_skip_permissions is, so a type file's opt-in survives shaping.
+    // STILL LOAD-BEARING after the 2026-08-30 move to config.yaml ("verbose thinking should be
+    // controlled from config.yaml rather than the agent.yaml"): that added two config.yaml tiers
+    // ABOVE this one (see resolveConv), it did not retire it — this carry IS the bottom tier, and
+    // wren's live egpt-xhigh.yaml sets verbose_thinking here and in neither config.yaml tier.
     verbose_thinking: def?.verbose_thinking === true,
   };
 }
@@ -338,13 +342,29 @@ export function createBrainPool({
       // only falls through on null/undefined, so an explicit `sandboxed: false` at either
       // tier still short-circuits before reaching this fallback.
       sandboxed: b?.sandboxed ?? getConfig()?.agents?.[being]?.conversation_defaults?.sandboxed ?? true,
+      // VERBOSE_THINKING, same two-tier resolution as accessLevel/allowedUsers/sandboxed above
+      // (operator 2026-08-30: "verbose thinking should be controlled from config.yaml rather
+      // than the agent.yaml"). It shipped the day before as a TYPE-FILE-ONLY field, which made
+      // the agent-type file the ONLY place to turn it on — far too coarse a knob: every being
+      // pointed at that type got it, in every conversation. Nesting it under
+      // conversation_defaults is what buys it the per-conversation override (the nesting IS the
+      // allowlist — see the accessLevel note above), so one chat can watch a being think without
+      // arming the whole node.
+      //
+      // THIS FIELD ALONE HAS A THIRD TIER, and it is why the fallback here is null rather than
+      // false: the type file's own verbose_thinking (carried through shapeDef) is still honoured
+      // BELOW these two, applied in baseOpts where `def` finally exists. A `false` fallback here
+      // would short-circuit `??` and silently regress wren's live egpt-xhigh.yaml, which declares
+      // it on the type file and nowhere else. null = "neither config.yaml tier stated anything —
+      // go ask the type file".
+      verboseThinking: b?.verboseThinking ?? getConfig()?.agents?.[being]?.conversation_defaults?.verbose_thinking ?? null,
     };
   }
 
   return {
     /** @returns {Promise<{ text: string, sessionId: string|null, being: string }>} */
     async turn(being, ev, onPartial = () => {}) {
-      const { slug, sessionId, mode, accessLevel, allowedUsers, sandboxed } = await resolveConv(ev, being);
+      const { slug, sessionId, mode, accessLevel, allowedUsers, sandboxed, verboseThinking } = await resolveConv(ev, being);
       if (!slug) throw new Error(`brainpool: no slug for ${ev.surface}/${ev.chatId}`);
 
       // STRUCTURAL SAFETY GATE (operator 2026-08-16; refined 2026-08-20). Refuses the ENTIRE
@@ -497,10 +517,24 @@ export function createBrainPool({
         // allowed_users non-empty + sender matched before this turn ever ran) — never
         // attacker-writable.
         dangerouslySkipPermissions: def.dangerously_skip_permissions === true,
-        // verbose_thinking (operator 2026-08-29 ruling): reaches createWarmCliSession the same
-        // way cwd/model/effort do — a plain def.X read into baseOpts, spread by warm-sessions.mjs
-        // into makeSession(...brainOptions). Opt-in, default false for every other being.
-        verboseThinking: def.verbose_thinking === true,
+        // verbose_thinking (operator 2026-08-29 ruling; MOVED to config.yaml 2026-08-30 —
+        // "verbose thinking should be controlled from config.yaml rather than the agent.yaml").
+        // Reaches createWarmCliSession the same way cwd/model/effort do — a plain read into
+        // baseOpts, spread by warm-sessions.mjs into makeSession(...brainOptions). Opt-in,
+        // default false.
+        //
+        // THE FULL PRECEDENCE LANDS HERE, and only here, because this is the first point where
+        // both halves exist: resolveConv already collapsed the two config.yaml tiers (the
+        // per-conversation conversations.yaml override, then agents.<being>.
+        // conversation_defaults.verbose_thinking) into `verboseThinking`, null when neither
+        // stated anything; `def` — the TYPE FILE, the original and still-live third tier — is
+        // only resolved down here. So: per-conversation ?? conversation_defaults ?? type file ??
+        // false. `??` (not ||) throughout, so an explicit `verbose_thinking: false` at a HIGHER
+        // tier is a real opt-out that stops the walk rather than falling through to a lower
+        // tier's `true` — the whole point of adding the config.yaml tiers over a type file one
+        // conversation can't otherwise escape. The `=== true` keeps a hand-typed non-boolean
+        // (`verbose_thinking: "yes"`) from reaching warm-cli-session as anything but a boolean.
+        verboseThinking: (verboseThinking ?? def.verbose_thinking) === true,
         // Plain passthrough (operator 2026-08-20) — boot.mjs's makeSession reads this to pick
         // createSandboxCliSession over createBrainSession. No structural gating beyond this:
         // the STRUCTURAL SAFETY GATES above already refuse the whole turn when accessLevel

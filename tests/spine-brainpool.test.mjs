@@ -920,6 +920,89 @@ describe('brainpool.turn — sandboxed default-on (operator 2026-08-20)', () => 
   });
 });
 
+// ── VERBOSE_THINKING, THREE tiers (operator 2026-08-30: "verbose thinking should be
+//    controlled from config.yaml rather than the agent.yaml"). It shipped 2026-08-29 as a
+//    TYPE-FILE-ONLY field, so the agent-type file was the only place to turn it on — and a type
+//    is shared by every agent pointed at it, so it could not say "verbose for THIS agent, in
+//    THIS chat". It is now a conversation_defaults field with the same two-tier resolution
+//    accessLevel/allowedUsers/sandboxed have, stacked ON TOP of the original type-file tier
+//    (which is KEPT — wren's live egpt-xhigh.yaml declares it there and must not regress).
+//    Precedence, highest first: per-conversation → conversation_defaults → type file → false.
+//    `??` throughout, so an explicit `false` at a higher tier STOPS the walk instead of falling
+//    through to a lower tier's `true` — that opt-out is the whole reason the tiers were added.
+//    resolveConv resolves tiers 1-2 to null-when-unset; baseOpts applies tier 3, the first
+//    point where the resolved `def` exists. ──
+describe('brainpool.turn — verbose_thinking three-tier resolution (operator 2026-08-30)', () => {
+  // A type file that says nothing about verbose_thinking (tier 3 silent), vs one that opts in.
+  const typeFile = (verbose) => ({
+    resolve: () => ({
+      name: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: ['Read'],
+      ...(verbose == null ? {} : { verbose_thinking: verbose }),
+    }),
+  });
+
+  it('unset at all three tiers → false (the default for every being)', async () => {
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains: typeFile(null) });
+    await brain.turn('e', ev);
+    expect(pool.calls[0].brainOptions.verboseThinking).toBe(false);
+  });
+
+  it("REGRESSION (tier 3): the TYPE FILE's own verbose_thinking:true still wins when neither config.yaml tier states anything — wren's live egpt-xhigh.yaml", async () => {
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains: typeFile(true) });
+    await brain.turn('e', ev);
+    expect(pool.calls[0].brainOptions.verboseThinking).toBe(true);
+  });
+
+  it('tier 2 (THE NEW TIER): agents.<being>.conversation_defaults.verbose_thinking:true applies with no per-conversation override and a silent type file', async () => {
+    const config = { agents: { e: { conversation_defaults: { access_level: 'regular', verbose_thinking: true } } } };
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { config, brains: typeFile(null) });
+    await brain.turn('e', ev);
+    expect(pool.calls[0].brainOptions.verboseThinking).toBe(true);
+  });
+
+  it('tier 2 OUTRANKS tier 3: an explicit conversation_defaults.verbose_thinking:false overrides a type file that says true (the opt-out a shared type file could never express)', async () => {
+    const config = { agents: { e: { conversation_defaults: { access_level: 'regular', verbose_thinking: false } } } };
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { config, brains: typeFile(true) });
+    await brain.turn('e', ev);
+    expect(pool.calls[0].brainOptions.verboseThinking).toBe(false);
+  });
+
+  it('tier 1: a per-conversation verbose_thinking:true applies with nothing set at either lower tier', async () => {
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
+      brains: typeFile(null), seedAgents: { e: { verbose_thinking: true } },
+    });
+    await brain.turn('e', ev);
+    expect(pool.calls[0].brainOptions.verboseThinking).toBe(true);
+  });
+
+  it('tier 1 OUTRANKS tier 2: a per-conversation verbose_thinking:false wins over conversation_defaults.verbose_thinking:true', async () => {
+    const config = { agents: { e: { conversation_defaults: { access_level: 'regular', verbose_thinking: true } } } };
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
+      config, brains: typeFile(null), seedAgents: { e: { verbose_thinking: false } },
+    });
+    await brain.turn('e', ev);
+    expect(pool.calls[0].brainOptions.verboseThinking).toBe(false);
+  });
+
+  it('FULL PRECEDENCE: per-conversation true beats a conversation_defaults false beats a type-file true', async () => {
+    const config = { agents: { e: { conversation_defaults: { access_level: 'regular', verbose_thinking: false } } } };
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
+      config, brains: typeFile(true), seedAgents: { e: { verbose_thinking: true } },
+    });
+    await brain.turn('e', ev);
+    expect(pool.calls[0].brainOptions.verboseThinking).toBe(true);
+  });
+
+  it('getBeing surfaces the per-conversation value (null when the block states none) — the tier-1 read resolveConv makes', async () => {
+    const { brain, getState } = harness([{ text: 'ok', sessionId: 's' }], {
+      brains: typeFile(null), seedAgents: { e: { verbose_thinking: true }, wren: { mode: 'mention' } },
+    });
+    await brain.turn('e', ev);
+    expect(getBeing(getState(), ev.surface, ev.chatId, 'e').verboseThinking).toBe(true);
+    expect(getBeing(getState(), ev.surface, ev.chatId, 'wren').verboseThinking).toBe(null);
+  });
+});
+
 // ── accessLevel GLOBAL-DEFAULT TIER (operator 2026-08-15): access_level used to ONLY have a
 //    per-conversation override (getBeing(...).accessLevel) — no node-level default at all. Now
 //    config.yaml's agents.<being>.conversation_defaults.access_level is a fallback, read via

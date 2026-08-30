@@ -1345,9 +1345,32 @@ export const CONFIG_SCHEMA = {
             does not change that CLI-flag grant, it bounds what the OS itself
             will let the process touch on disk regardless of it.
 
+          verbose_thinking
+            boolean (operator 2026-08-29 for the field, 2026-08-30 for THIS
+            tier - "verbose thinking should be controlled from config.yaml
+            rather than the agent.yaml"). UNSET/false = the reply is the
+            engine's final answer only. true = this agent's replies also carry
+            its chain of thought - warm-cli-session taps every assistant
+            event's thinking blocks and renders them above the answer, with
+            tool calls collapsed to bare stubs (wren's "see your full chain of
+            thought").
+
+            THE ONE conversation_defaults field with a THIRD tier BELOW these
+            two: the same key on the AGENT-TYPE FILE (config/agents/<type>.yaml
+            - the field's original and still-supported home, see the type-file
+            note under CONFINEMENT below). Full precedence, highest first:
+            conversations.yaml agents.<name>.verbose_thinking, then this key,
+            then the type file's, then false. Each tier is consulted only when
+            the one above it is UNSET - an explicit  verbose_thinking: false
+            here is a real opt-out that stops the walk, and does NOT fall
+            through to a type file that says true. That is the point of this
+            tier: a type file is shared by every agent pointed at it, so it
+            could not express "verbose for THIS agent" (or "for this one
+            conversation") on its own.
+
         OVERRIDDEN PER CONVERSATION in conversations.yaml under the entry's
         agents: block - contacts.<surface>[<id>].agents.<name>.allowed_users /
-        .access_level / .sandboxed - FLAT there (no conversation_defaults
+        .access_level / .sandboxed / .verbose_thinking - FLAT there (no conversation_defaults
         wrapper: that block is already scoped to one being in one
         conversation, so there is no registry-field ambiguity to guard
         against). When set, the per-conversation value REPLACES this global
@@ -1425,6 +1448,17 @@ export const CONFIG_SCHEMA = {
     set  personality: <name>  to pin the identities/<name>/ feed a fresh
     conversation boots from; absent ⇒ "egpt". There is no per-conversation
     personality key.
+
+    VERBOSE_THINKING is ALSO settable on the TYPE FILE (operator 2026-08-29):
+    verbose_thinking: true  in config/agents/<type>.yaml makes every agent
+    pointed at that type render its chain of thought above its answers. Unlike
+    personality this is NOT type-file-only — it is the LOWEST of three tiers,
+    outranked by conversation_defaults.verbose_thinking above and by the
+    per-conversation override in conversations.yaml (operator 2026-08-30:
+    "verbose thinking should be controlled from config.yaml rather than the
+    agent.yaml"). Prefer the config.yaml tier: the type file cannot say
+    "verbose for this ONE agent/chat", because a type is shared by every agent
+    that names it. Kept working for the profiles that already set it here.
 
     EXAMPLE:
       { egpt: { configuration: sonnet-high, handles: [e, egpt], default: true },

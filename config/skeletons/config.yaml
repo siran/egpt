@@ -65,6 +65,12 @@ agents:
     #   access_level: regular     # access_level default (all|regular) - points at
     #                             # config/permissions/<level>.md. Overridable per-conversation
     #                             # (conversations.yaml agents.<name>.access_level, same replace-not-merge rule).
+    #   verbose_thinking: false   # render this agent's chain of thought above its answers (operator
+    #                             # 2026-08-30: "verbose thinking should be controlled from config.yaml
+    #                             # rather than the agent.yaml"). Overridable per-conversation
+    #                             # (conversations.yaml agents.<name>.verbose_thinking). The one field
+    #                             # here with a THIRD tier below it: the agent-TYPE file's own
+    #                             # verbose_thinking, used only when both tiers above are unset.
 
 # Relay agents (optional - foreign-mesh across SEPARATE accounts). A relay
 # forwards a mention into another chat; `to:` chains hops. Not needed within one account.
