@@ -1368,9 +1368,44 @@ export const CONFIG_SCHEMA = {
             could not express "verbose for THIS agent" (or "for this one
             conversation") on its own.
 
+          allow_new_input
+            none | same_sender | any  -  DEFAULT same_sender, AND THAT DEFAULT
+            HAS ONLY BEEN TESTED WITH ccode (operator 2026-08-30). An ORDERED
+            enum (widest last) deciding what happens to a message that arrives
+            while this agent is ALREADY streaming a turn in that conversation:
+
+              none         today's behavior - the message QUEUES on the
+                           per-conversation FIFO and is prompted into the NEXT
+                           turn, under its own placeholder.
+              same_sender  a message from the SAME sender whose message
+                           triggered the in-flight turn STEERS it: the line is
+                           written into the live CLI session's stdin and the
+                           running turn answers it, in ONE reply, with NO
+                           second placeholder. Anyone else queues.
+              any          ANY sender in the conversation steers the in-flight
+                           turn (a bystander can redirect someone else's live
+                           answer). Everything else is as same_sender.
+
+            WHY IT WORKS, AND WHY THE ccode CAVEAT: measured 2026-08-30 against
+            the real "claude --input-format stream-json" CLI. A second user
+            line written to a live stdin mid-turn is ABSORBED by an AGENTIC
+            turn at a tool boundary - one result, answering the NEW
+            instruction, the rest of the original plan abandoned - while a
+            PURE-TEXT turn instead finishes its original task and answers the
+            new message separately (two replies, nothing lost). Only ccode was
+            driven: pi is a different harness and is UNTESTED, llama is plain
+            HTTP request/response with no stream to interrupt. Neither exports
+            the session-level inject() this rides on, so with either brain
+            EVERY value here behaves exactly like none. The enum is the POLICY;
+            the session primitive is the CAPABILITY, and the capability is what
+            actually gates it.
+
+            An unrecognized value is NOT fatal: it logs and falls back to the
+            default (a typo in config.yaml must not take a conversation down).
+
         OVERRIDDEN PER CONVERSATION in conversations.yaml under the entry's
         agents: block - contacts.<surface>[<id>].agents.<name>.allowed_users /
-        .access_level / .sandboxed / .verbose_thinking - FLAT there (no conversation_defaults
+        .access_level / .sandboxed / .verbose_thinking / .allow_new_input - FLAT there (no conversation_defaults
         wrapper: that block is already scoped to one being in one
         conversation, so there is no registry-field ambiguity to guard
         against). When set, the per-conversation value REPLACES this global

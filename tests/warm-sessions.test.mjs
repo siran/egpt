@@ -155,11 +155,22 @@ describe('warm-session pool', () => {
     expect(pool.has('k')).toBe(true);     // session stays WARM — not evicted
   });
 
-  // CONTRACT (operator 2026-06-13): a message that arrives while a turn is
-  // already streaming on a key is INJECTED into that running turn (woven in
-  // mid-flight), NOT queued as a fresh turn behind it. The in-flight turn's
-  // single result carries the combined reply; the injected call resolves with
-  // an `injected` marker so the caller emits nothing separately.
+  // CONTRACT (operator 2026-06-13 for the mechanism, 2026-08-30 for this shape): a message
+  // that arrives while a turn is already streaming on a key can be WOVEN INTO that running
+  // turn instead of queueing as a fresh turn behind it. The in-flight turn's single result
+  // carries the combined reply, so steer() returns a plain boolean and the caller emits
+  // nothing of its own.
+  //
+  // IT IS ASKED FOR BY NAME (pool.steer), never inferred from `busy`. The weave used to live
+  // inside run(), firing on whoever happened to reach a busy key second — harmless only while
+  // it was dead (no session exported `inject` until 2026-08-30). Live, that would have let
+  // compaction's /compact, a due heartbeat and a mesh responder each land an unrelated prompt
+  // inside a human's turn and take {text:null} as their own answer.
+  //
+  // INJECTED-OR-NOTHING: steer() NEVER opens a session, queues, or runs a turn. false means
+  // the message was not touched, so the caller falls back to what it would have done anyway
+  // (the spine's placeholder + FIFO). Were it to fall through to a real turn, a caller that
+  // opened no placeholder — because it expected a weave — would have a turn nobody delivers.
   function injectableFactory() {
     const made = [];
     const makeSession = (opts) => {
@@ -179,13 +190,12 @@ describe('warm-session pool', () => {
     return { makeSession, made };
   }
 
-  it('injects a mid-turn message into the running turn (no second turn)', async () => {
+  it('steers a mid-turn message into the running turn (no second turn)', async () => {
     const { makeSession, made } = injectableFactory();
     const pool = createWarmPool({ makeSession });
     const p1 = pool.run('k', 'first');
     await sleep(2);                                  // let _doTurn start → e.busy
-    const r2 = await pool.run('k', 'second');        // arrives mid-turn
-    expect(r2.injected).toBe(true);                  // woven in, not queued
+    expect(pool.steer('k', 'second')).toBe(true);    // woven in, not queued
     expect(made[0].injected).toEqual(['second']);
     expect(made[0].turns).toEqual(['first']);        // NOT a second turn
     made[0].finish({ text: 'first+second', sessionId: 'sid' });
@@ -193,28 +203,62 @@ describe('warm-session pool', () => {
     expect(made.length).toBe(1);
   });
 
-  it('does NOT inject when the key is idle — runs a normal turn', async () => {
+  it('run() NEVER weaves on its own — a second run behind a busy key still queues', async () => {
+    const { makeSession, made } = injectableFactory();
+    const pool = createWarmPool({ makeSession });
+    const p1 = pool.run('k', 'first');
+    await sleep(2);                                  // busy — the old run() would have injected here
+    const p2 = pool.run('k', 'second');
+    expect(made[0].injected).toEqual([]);            // nothing woven: nobody asked
+    made[0].finish({ text: 'a', sessionId: 'sid' });
+    await sleep(2);
+    made[0].finish({ text: 'b', sessionId: 'sid' }); // the queued turn now runs
+    const [r1, r2] = await Promise.all([p1, p2]);
+    expect([r1.text, r2.text]).toEqual(['a', 'b']);
+    expect(made[0].turns).toEqual(['first', 'second']);
+  });
+
+  it('steer on an IDLE key is false and runs NOTHING (injected-or-nothing — no fallthrough turn)', async () => {
     const { makeSession, made } = injectableFactory();
     const pool = createWarmPool({ makeSession });
     const p1 = pool.run('k', 'first');
     await sleep(2);
     made[0].finish({ text: 'a', sessionId: 'sid' });
     await p1;                                         // turn ended → key idle
-    const p2 = pool.run('k', 'second');
-    await sleep(2);
-    expect(made[0].turns).toEqual(['first', 'second']);   // a real second turn
+    expect(pool.steer('k', 'second')).toBe(false);
+    expect(made[0].turns).toEqual(['first']);         // NOT a fallthrough turn
     expect(made[0].injected).toEqual([]);
-    made[0].finish({ text: 'b', sessionId: 'sid' });
-    expect((await p2).text).toBe('b');
   });
 
-  it('injectWhileBusy:false preserves serialize-behind behavior', async () => {
+  it('steer on an UNKNOWN key is false and opens nothing', async () => {
+    const { makeSession, made } = injectableFactory();
+    const pool = createWarmPool({ makeSession });
+    expect(pool.steer('never-opened', 'x')).toBe(false);
+    expect(made).toHaveLength(0);
+    expect(pool.has('never-opened')).toBe(false);
+  });
+
+  // STRUCTURAL SAFETY (operator 2026-08-30): llama is plain HTTP request/response and pi is a
+  // different, UNTESTED harness — neither exports `inject`, and neither may gain one. A
+  // session without it must queue EXACTLY as it does today, with no per-brain branching above.
+  it('a session with NO inject() cannot be steered — it queues exactly as today', async () => {
+    const { makeSession, made } = fakeFactory();      // fakeFactory sessions have no inject
+    const pool = createWarmPool({ makeSession });
+    const r1 = await pool.run('k', 'first');
+    expect(pool.steer('k', 'second')).toBe(false);    // no capability → never steered
+    const r2 = await pool.run('k', 'second');         // ...and the ordinary path is untouched
+    expect([r1.text, r2.text]).toEqual(['echo:first', 'echo:second']);
+    expect(made[0].turns).toEqual(['first', 'second']);
+  });
+
+  it('injectWhileBusy:false is the pool-level master switch — steer refuses even a busy key', async () => {
     const { makeSession, made } = injectableFactory();
     const pool = createWarmPool({ makeSession, injectWhileBusy: false });
     const p1 = pool.run('k', 'first');
     await sleep(2);
-    const p2 = pool.run('k', 'second');              // queues behind, not injected
+    expect(pool.steer('k', 'second')).toBe(false);
     expect(made[0].injected).toEqual([]);
+    const p2 = pool.run('k', 'second');              // queues behind, not injected
     made[0].finish({ text: 'a', sessionId: 'sid' });
     await sleep(2);
     made[0].finish({ text: 'b', sessionId: 'sid' }); // second turn now runs

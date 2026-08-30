@@ -18,23 +18,26 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 // A fake warm pool that records run() calls and lets a test script the results.
-function fakePool(scriptedResults) {
-  const calls = [], evicted = [];
+function fakePool(scriptedResults, { steerTakes = true } = {}) {
+  const calls = [], evicted = [], steered = [];
   let i = 0;
   return {
-    calls, evicted,
+    calls, evicted, steered,
     run(key, message, onPartial, opts) {
       calls.push({ key, message, brainOptions: opts.brainOptions, klass: opts.klass, idleTtlMs: opts.idleTtlMs });
       const r = scriptedResults[Math.min(i, scriptedResults.length - 1)]; i++;
       return typeof r === 'function' ? r() : Promise.resolve(r);
     },
+    // The real pool's injected-or-nothing weave (warm-sessions `steer`): a boolean, and it
+    // NEVER runs a turn — so a `false` here must leave `calls` untouched.
+    steer(key, message) { steered.push({ key, message }); return steerTakes; },
     evict(key) { evicted.push(key); },
   };
 }
 
 const ev = { surface: 'whatsapp', chatId: '!room:beeper.com', chatName: 'SPOILER', line: 'An@[SPOILER].wa (14:05) #m1: hola', body: 'hola' };
 
-function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, loadFeed, loadManifest, loadAutoLayer, seedSession, seedMode, seedAgents, brains, afterTurn, io, seedLayers, resolveConfig, loadPermission, skipAccessLevelDefault, poolOverride } = {}) {
+function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, loadFeed, loadManifest, loadAutoLayer, seedSession, seedMode, seedAgents, brains, afterTurn, io, seedLayers, resolveConfig, loadPermission, skipAccessLevelDefault, poolOverride, onLog, steerTakes } = {}) {
   let state = emptyState();
   if (seedSession || seedMode || seedAgents) {   // pre-register the contact (WITH a stored thread, an E mode, and/or per-being pins)
     const ens = ensureContact(state, ev.surface, ev.chatId, { pushedName: ev.chatName, slugHint: ev.chatName });
@@ -52,7 +55,7 @@ function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, load
   }
   // poolOverride: a REAL createWarmPool, for the one test that has to see the warm
   // process reused across turns (the fake pool has no session lifetime of its own).
-  const pool = poolOverride ?? fakePool(scriptedResults);
+  const pool = poolOverride ?? fakePool(scriptedResults, { steerTakes: steerTakes ?? true });
   const loadState = async () => state;
   const writeState = async (s) => { state = s; };
   // resolveBeingDef (phase 2, operator 2026-08-14: "remove the concept of siblings") needs an
@@ -111,6 +114,7 @@ function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, load
     // reader (the "end-to-end with the REAL config/permissions/*.md files" test) injects
     // loadPermissionLevel itself.
     loadPermission: loadPermission ?? (() => null),
+    ...(onLog ? { onLog } : {}),                   // the diagnostic sink (allow_new_input validation)
   });
   return { brain, pool, getState: () => state, setState: (s) => { state = s; } };
 }
@@ -1000,6 +1004,116 @@ describe('brainpool.turn — verbose_thinking three-tier resolution (operator 20
     await brain.turn('e', ev);
     expect(getBeing(getState(), ev.surface, ev.chatId, 'e').verboseThinking).toBe(true);
     expect(getBeing(getState(), ev.surface, ev.chatId, 'wren').verboseThinking).toBe(null);
+  });
+});
+
+// ── ALLOW_NEW_INPUT (operator's ruling 2026-08-30): may a message arriving while this being
+//    is ALREADY streaming a turn STEER that turn, instead of queueing behind it on the spine's
+//    per-conversation FIFO? An ORDERED enum none|same_sender|any, resolved with the SAME two
+//    tiers accessLevel/allowedUsers/sandboxed use — per-conversation override, then
+//    agents.<being>.conversation_defaults. Unlike verbose_thinking there is deliberately NO
+//    type-file tier: this is a property of a CONVERSATION, not of an agent TYPE.
+//
+//    The fallback is the LITERAL DEFAULT ('same_sender'), not null, because resolution ENDS
+//    here — there is no lower tier for a null to defer to. And the default carries a caveat
+//    that belongs in the tests too: IT HAS ONLY BEEN TESTED WITH ccode. The measurement the
+//    feature rests on drove the real claude stream-json CLI and nothing else; pi is untested
+//    and llama has no stream, and neither exports the session-level inject() this rides on —
+//    so with either brain every value here behaves like 'none' regardless (locked in
+//    warm-sessions.test.mjs, where the capability actually gates it).
+//
+//    The spine holds the OTHER half of the decision (who triggered the live turn) and asks
+//    for this via brain.allowNewInput; brain.steer is the weave itself. ──
+describe('brainpool — allow_new_input (operator 2026-08-30)', () => {
+  it("unset at BOTH tiers → 'same_sender' (the default)", async () => {
+    const { brain } = harness([{ text: 'ok', sessionId: 's' }]);
+    expect(await brain.allowNewInput('e', ev)).toBe('same_sender');
+  });
+
+  it("tier 2: agents.<being>.conversation_defaults.allow_new_input applies with no per-conversation override", async () => {
+    for (const v of ['none', 'same_sender', 'any']) {
+      const config = { agents: { e: { conversation_defaults: { access_level: 'regular', allow_new_input: v } } } };
+      const { brain } = harness([{ text: 'ok', sessionId: 's' }], { config });
+      expect(await brain.allowNewInput('e', ev)).toBe(v);
+    }
+  });
+
+  it('tier 1: a per-conversation allow_new_input applies with nothing set at the global tier', async () => {
+    for (const v of ['none', 'same_sender', 'any']) {
+      const { brain } = harness([{ text: 'ok', sessionId: 's' }], { seedAgents: { e: { allow_new_input: v } } });
+      expect(await brain.allowNewInput('e', ev)).toBe(v);
+    }
+  });
+
+  it("tier 1 OUTRANKS tier 2: a per-conversation 'none' is a real opt-out over a node-wide 'any'", async () => {
+    const config = { agents: { e: { conversation_defaults: { access_level: 'regular', allow_new_input: 'any' } } } };
+    const { brain } = harness([{ text: 'ok', sessionId: 's' }], { config, seedAgents: { e: { allow_new_input: 'none' } } });
+    expect(await brain.allowNewInput('e', ev)).toBe('none');
+  });
+
+  it('an INVALID value falls back to the default and is LOGGED — a config typo must not take the conversation down', async () => {
+    const logs = [];
+    const config = { agents: { e: { conversation_defaults: { access_level: 'regular', allow_new_input: 'same-sender' } } } };
+    const { brain } = harness([{ text: 'ok', sessionId: 's' }], { config, onLog: (s) => logs.push(s) });
+    expect(await brain.allowNewInput('e', ev)).toBe('same_sender');
+    expect(logs.join('\n')).toMatch(/allow_new_input .*same-sender.* is not one of none\|same_sender\|any/);
+    // ...and the turn itself still runs: this is a routing preference, not a safety gate.
+    await expect(brain.turn('e', ev)).resolves.toMatchObject({ text: 'ok' });
+  });
+
+  it('an invalid value at the PER-CONVERSATION tier falls back too (the walk normalizes whatever it produced)', async () => {
+    const logs = [];
+    const { brain } = harness([{ text: 'ok', sessionId: 's' }], { seedAgents: { e: { allow_new_input: 'yes' } }, onLog: (s) => logs.push(s) });
+    expect(await brain.allowNewInput('e', ev)).toBe('same_sender');
+    expect(logs.join('\n')).toMatch(/allow_new_input/);
+  });
+
+  it('getBeing surfaces the per-conversation value RAW (null when the block states none)', async () => {
+    const { brain, getState } = harness([{ text: 'ok', sessionId: 's' }], {
+      seedAgents: { e: { allow_new_input: 'any' }, wren: { mode: 'mention' } },
+    });
+    await brain.turn('e', ev);
+    expect(getBeing(getState(), ev.surface, ev.chatId, 'e').allowNewInput).toBe('any');
+    expect(getBeing(getState(), ev.surface, ev.chatId, 'wren').allowNewInput).toBe(null);
+  });
+
+  it('steer() weaves into the warm key this conversation LAST ran — the same lookup evict() uses, no re-derivation', async () => {
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }]);
+    await brain.turn('e', ev);
+    expect(brain.steer('e', ev)).toBe(true);
+    expect(pool.steered).toHaveLength(1);
+    expect(pool.steered[0].key).toBe(pool.calls[0].key);   // exactly the turn's warm key
+    expect(pool.steered[0].message).toBe(ev.line);         // the plain dispatch line
+    expect(pool.calls).toHaveLength(1);                    // a steer is NOT a turn
+  });
+
+  it('steer() is false — and runs NOTHING — for a conversation that has never opened a warm key', async () => {
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }]);
+    expect(brain.steer('e', ev)).toBe(false);
+    expect(pool.steered).toHaveLength(0);
+    expect(pool.calls).toHaveLength(0);
+  });
+
+  it("steer() reports the pool's refusal verbatim (a session that cannot weave → false, never a turn)", async () => {
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { steerTakes: false });
+    await brain.turn('e', ev);
+    expect(brain.steer('e', ev)).toBe(false);
+    expect(pool.calls).toHaveLength(1);                    // no fallthrough turn was run
+  });
+
+  it('steer() does NOT re-enter turn()\'s fresh-thread machinery — no identity feed, no roll, no second turn', async () => {
+    const seeded = [];
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 'brand-new' }], {
+      loadFeed: async () => 'IDENTITY FEED',
+      seedLayers: async (...a) => { seeded.push(a); },
+    });
+    await brain.turn('e', ev);                             // FRESH thread: this turn IS feed-wrapped
+    expect(pool.calls[0].message).toMatch(/IDENTITY FEED/);
+    const seedsAfterTurn = seeded.length;
+    expect(brain.steer('e', ev)).toBe(true);
+    expect(pool.steered[0].message).toBe(ev.line);         // the raw line — NOT the feed
+    expect(seeded.length).toBe(seedsAfterTurn);            // nothing re-seeded/overwritten
+    expect(pool.calls).toHaveLength(1);
   });
 });
 

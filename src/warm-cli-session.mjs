@@ -8,16 +8,45 @@
 // the process is kept RESIDENT instead of re-spawned per turn.
 //
 // Interface = what `src/warm-sessions.mjs` (createWarmPool) expects of a session:
-//   turn(message, onUpdate) -> { text, sessionId }   ·   close()
+//   turn(message, onUpdate) -> { text, sessionId }  ·  inject(message) -> bool  ·  close()
 // The pool owns lazy-warm, idle-evict (the residency/reap policy), LRU, and
 // per-key serialization, so this primitive only manages ONE process running ONE
-// turn at a time. No `inject` is exported — the pool then serializes follow-ups
-// (stream-json treats each user message as a separate query, not a mid-turn weave).
+// turn at a time.
+//
+// `inject` — AMENDED 2026-08-30, and the history is kept because it was half right.
+// This header used to say: "No `inject` is exported — the pool then serializes follow-ups
+// (stream-json treats each user message as a separate query, not a mid-turn weave)." The
+// operator MEASURED that claim against the real `claude --input-format stream-json` CLI on
+// 2026-08-30, writing a SECOND user line to a live process's stdin while turn 1 was still
+// generating. Two distinct behaviors, and the difference is the whole feature:
+//
+//   - PURE TEXT generation (no tool calls): the mid-flight line is NOT absorbed. Turn 1
+//     finishes its ORIGINAL task, then a second `init` appears on the SAME session and a
+//     second `result` answers the new message. Two replies, nothing lost. The old comment
+//     described exactly this case, and for this case it still holds.
+//   - AGENTIC turn (a Read loop): the line written right after the 2nd `tool_use` IS
+//     absorbed into the running turn. ONE result, answering the NEW instruction, having
+//     abandoned 4 of its 6 planned Reads — and the process then sat open 143 more seconds
+//     with no second result. That silence is what proves absorption rather than a
+//     fast-queued second query.
+//
+// So the CLI supports steering NATIVELY, at a tool boundary — which is where an agentic
+// turn spends its time and where a human's follow-up ("actually, do X instead") is worth
+// anything at all. `inject` is that primitive; WHEN it may be used is a policy decision
+// made far above it (conversation_defaults.allow_new_input → spine → warm pool `steer`).
 import { spawn as nodeSpawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { buildClaudeArgs } from './claude-args.mjs';
+
+// THE stream-json wire format for ONE user message, in one place. turn() and inject()
+// write byte-identical lines to the same stdin — the CLI cannot tell them apart, and the
+// measurement above says it must not: a steered line IS an ordinary user message, the only
+// difference being that nobody is waiting on a `result` of its own.
+function userLine(text) {
+  return JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: String(text ?? '') }] } }) + '\n';
+}
 
 // MSYS2/Cygwin "/c/Users/.." → "C:/Users/.." for Node spawn cwd on Windows.
 function normalizeCwd(p) {
@@ -287,9 +316,24 @@ export function createWarmCliSession(options = {}) {
       if (!proc) spawnProc();
       return new Promise((resolve, reject) => {
         pending = { resolve, reject, onUpdate, acc: '', verboseBlocks: [], settled: false };
-        const userMsg = JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: String(message ?? '') }] } }) + '\n';
-        try { proc.stdin.write(userMsg); } catch (e) { failPending(e); }
+        try { proc.stdin.write(userLine(message)); } catch (e) { failPending(e); }
       });
+    },
+    // STEER the turn that is ALREADY streaming (operator 2026-08-30 — see the measurement
+    // in the header). One user line to the SAME stdin, and deliberately NO new `pending`:
+    // the in-flight turn's single `result` carries the combined reply, so a second pending
+    // would be a promise nothing could ever settle (that is precisely the 143-second
+    // silence the measurement recorded). The caller therefore gets NO reply of its own —
+    // the spine's steer path opens no placeholder for exactly this reason.
+    //
+    // NEVER THROWS, and `false` is the honest, safe answer to "was this woven in?": no turn
+    // in flight (no pending), no process yet, the session already closed, or the write
+    // itself failed. Every caller treats false as "nothing happened at all" and falls back
+    // to queueing an ordinary turn — so a false NEGATIVE costs a queued turn, while a false
+    // POSITIVE would silently swallow the message. Biased accordingly.
+    inject(message) {
+      if (closed || !proc || !pending) return false;
+      try { proc.stdin.write(userLine(message)); return true; } catch { return false; }
     },
     close() {
       closed = true;

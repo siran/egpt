@@ -99,6 +99,77 @@ describe('warm-cli-session — resident multi-turn', () => {
   });
 });
 
+// inject() — STEER THE TURN THAT IS ALREADY STREAMING (operator 2026-08-30, measured against
+// the real `claude --input-format stream-json` CLI: an AGENTIC turn absorbs a second user line
+// written to its stdin at a tool boundary — one result, answering the new instruction; a
+// pure-text turn instead finishes and answers twice. See the module header).
+//
+// The invariants that matter here: the wire format is BYTE-IDENTICAL to a turn's (the CLI
+// cannot tell them apart, and must not), NO second `pending` is created (the live turn's one
+// result is the combined reply — a second pending would be a promise nothing can settle), and
+// it NEVER throws: every "nothing to steer" is a plain `false`, because a false NEGATIVE only
+// costs a queued turn while a false POSITIVE silently swallows the message.
+describe('warm-cli-session — inject (steer the live turn, operator 2026-08-30)', () => {
+  it('writes ONE user line to the SAME stdin, in the same wire format a turn uses', async () => {
+    const f = fakeClaude({ hang: true });                 // hang: the turn stays in flight
+    const s = createWarmCliSession({ spawn: f.spawn });
+    s.turn('ORIGINAL');
+    await new Promise((r) => setImmediate(r));
+    expect(s.inject('ACTUALLY DO X')).toBe(true);
+    expect(f.calls).toEqual(['ORIGINAL', 'ACTUALLY DO X']);   // parsed by the fake as a user msg
+    expect(f.spawnCount()).toBe(1);                            // the SAME process
+    s.close();
+  });
+
+  it('creates NO second pending — the live turn resolves ONCE, with the combined reply', async () => {
+    const f = fakeClaude({ hang: true });
+    const s = createWarmCliSession({ spawn: f.spawn });
+    let settled = 0;
+    const pr = s.turn('ORIGINAL').then(() => { settled++; });
+    await new Promise((r) => setImmediate(r));
+    expect(s.inject('AND ALSO Y')).toBe(true);
+    // ONE result event, and it settles the ONE pending the turn made.
+    f.getProc().stdout.emit('data', JSON.stringify({ type: 'result', subtype: 'success', result: 'combined' }) + '\n');
+    await pr;
+    expect(settled).toBe(1);
+    // A second result would have nothing to settle — no throw, no double-resolve.
+    f.getProc().stdout.emit('data', JSON.stringify({ type: 'result', subtype: 'success', result: 'stray' }) + '\n');
+    await new Promise((r) => setImmediate(r));
+    expect(settled).toBe(1);
+    s.close();
+  });
+
+  it('false when there is NO turn in flight (nothing to steer) — and no process is spawned', async () => {
+    const f = fakeClaude();
+    const s = createWarmCliSession({ spawn: f.spawn });
+    expect(s.inject('too early')).toBe(false);            // never turned: no proc, no pending
+    expect(f.spawnCount()).toBe(0);
+    await s.turn('ONE');                                   // turn settled → pending is null again
+    expect(s.inject('too late')).toBe(false);
+    expect(f.calls).toEqual(['ONE']);
+    s.close();
+  });
+
+  it('false on a CLOSED session', async () => {
+    const f = fakeClaude({ hang: true });
+    const s = createWarmCliSession({ spawn: f.spawn });
+    s.turn('ORIGINAL');
+    await new Promise((r) => setImmediate(r));
+    s.close();
+    expect(s.inject('x')).toBe(false);
+  });
+
+  it('false — never a throw — when the stdin write itself fails', async () => {
+    const f = fakeClaude({ hang: true });
+    const s = createWarmCliSession({ spawn: f.spawn });
+    s.turn('ORIGINAL');
+    await new Promise((r) => setImmediate(r));
+    f.getProc().stdin.write = () => { throw new Error('EPIPE'); };
+    expect(s.inject('x')).toBe(false);                     // swallowed, reported as false
+    s.close();
+  });
+});
+
 // A fake AGENTIC turn: reason+tool_use -> tool_result -> reason again -> stream the final
 // text -> a mirrored final assistant text block -> result. Models what a real ccode turn
 // actually emits (multiple `assistant` events before `result`), which the plain fakeClaude()

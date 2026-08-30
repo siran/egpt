@@ -40,6 +40,8 @@ import { cleanForSpeech } from '../speech-clean.mjs';
  *
  * @typedef {object} Brain   A warm/cold being turn. The warm pool hides behind this.
  * @property {(being: string, ev: InboundEvent, onPartial?: Function, ctx?: object) => Promise<{text: string, sessionId?: string}>} turn
+ * @property {(being: string, ev: InboundEvent) => Promise<'none'|'same_sender'|'any'>} [allowNewInput]  this conversation's resolved steer policy (operator 2026-08-30). OPTIONAL — absent ⇒ never steer
+ * @property {(being: string, ev: InboundEvent) => boolean} [steer]  weave this message into the turn already streaming; TRUE = woven in (emit nothing), FALSE = nothing happened (queue as usual). OPTIONAL — absent ⇒ never steer
  *
  * @typedef {object} Store   contact ops + thread/state persistence (conversations-state).
  * @property {(rec: {ev: InboundEvent, reply: any, being: string}) => void} [recordThread]
@@ -208,6 +210,19 @@ export function createSpine({
   const trains = new Map();                    // convKey -> in-flight+queued turn count (drives the queued placeholder)
   function bumpTrain(key) { const ahead = trains.get(key) ?? 0; trains.set(key, ahead + 1); return ahead; }
   function dropTrain(key) { const n = (trains.get(key) ?? 1) - 1; if (n <= 0) trains.delete(key); else trains.set(key, n); }
+  // WHOSE message is the turn currently STREAMING on this key answering (operator 2026-08-30,
+  // allow_new_input)? `trains` cannot answer that: it is a COUNT of in-flight+queued turns,
+  // which is all the queued-placeholder needs, and it says nothing about identity. The
+  // same_sender tier needs identity, so this is the minimum state added beside it.
+  //
+  // Written by runReplyTurn ONLY — set as its first act (it is already at the front of
+  // turnBy, so it IS the live turn) and deleted in the same `finally` that drops the train,
+  // which is what makes it correct on the throw path too. A QUEUED turn is deliberately
+  // absent: there is no stream to weave into until it reaches the front. runContextTurn is
+  // deliberately absent too — its reply is recorded and never surfaced, so a message steered
+  // into one would be answered where nobody can read it. Absent ⇒ no steer ⇒ today's
+  // queueing, which is the safe direction for every gap.
+  const liveTurnBy = new Map();                // convKey -> { senderId } of the message the LIVE turn is answering
 
   // --- Per-conversation CYCLE accumulation (operator 2026-07-04: "when addressing the
   //     queued messages … it should accumulate messages, even E's own past replies in
@@ -659,6 +674,21 @@ export function createSpine({
     }
 
     if (d.mayReply) {
+      // STEER FIRST, AND THE ORDER IS THE POINT (operator 2026-08-30). openAndRunReply's
+      // very FIRST act is sender.open — the placeholder is posted before anything knows
+      // whether this message will run a turn at all. A steered message has no reply of its
+      // own to put in one (the live turn's single result IS the combined answer), so a
+      // placeholder opened ahead of the verdict is an orphan: nothing activates it, nothing
+      // finishes it, and it sits in the chat on "⏳ Thinking…" forever — or, on the shape
+      // where the turn is still dispatched, resolves to the no-reply marker and drops a
+      // stray "…" under a message that WAS answered, inside the other reply. Deciding the
+      // placeholder AFTER the steer verdict is what makes "no placeholder, no reply, no
+      // train" structural rather than remembered. steerLiveTurn is true ONLY when the weave
+      // actually landed, so the fallthrough below is the ordinary path, untouched.
+      //
+      // The steered message is NOT pushed into the cycle either: the cycle exists for lines
+      // the model has NOT yet seen, and this one went straight into its live prompt.
+      if (await steerLiveTurn({ to, ev, turnKey })) return withRelay();
       // Reply branch (the reply train). Open THIS message's OWN placeholder NOW, on
       // arrival — the per-message ack + streaming target, quoting the triggering message
       // (operator: "mentions should always be replied to the message" — now EVERY reply,
@@ -698,6 +728,46 @@ export function createSpine({
       }
       throw e;
     } finally { clearTimeoutFn(timer); }
+  }
+
+  // STEER THE LIVE TURN (operator's ruling 2026-08-30, `allow_new_input`). A message that
+  // arrives while a turn is ALREADY streaming on this key can be WOVEN INTO that turn instead
+  // of queueing behind it — the running turn then answers the new instruction, in ONE reply.
+  //
+  // WHY THIS IS POSSIBLE AT ALL: measured 2026-08-30 against the real `claude --input-format
+  // stream-json` CLI. A second user line written to a live stdin mid-turn is ABSORBED by an
+  // AGENTIC turn at a tool boundary (one result, answering the new instruction, 4 of 6 planned
+  // Reads abandoned, then 143s of silence — no second result), while a pure-text turn instead
+  // finishes and answers twice. See warm-cli-session.mjs's header for the full measurement.
+  // ONLY ccode was measured; pi is untested and llama has no stream — neither exports `inject`,
+  // so both land on the false branch below and queue exactly as they do today.
+  //
+  // TRUE means the message was genuinely woven in, and the caller must then produce NOTHING:
+  // no placeholder, no reply, no train. FALSE means NOTHING HAPPENED — not "it half happened"
+  // — so the caller falls straight through to openAndRunReply, i.e. today's behavior. That
+  // sharpness is the whole safety story: the pool's `steer` never runs a turn as a fallback
+  // (warm-sessions.mjs), so a false can never leave a turn running that nobody delivers.
+  //
+  // Both brain seams are OPTIONAL. A spine wired with a Brain that has neither (every test
+  // fake, every older caller) can never steer, and is byte-identical to before.
+  async function steerLiveTurn({ to, ev, turnKey }) {
+    const live = liveTurnBy.get(turnKey);
+    if (!live) return false;                          // nothing streaming on this key to steer
+    if (typeof brain.steer !== 'function' || typeof brain.allowNewInput !== 'function') return false;
+    let allow;
+    try { allow = await brain.allowNewInput(to, ev); }
+    catch (e) { note(`allow_new_input ${to}/${ev.chatId}: ${e?.message ?? e}`); return false; }
+    // 'none' (and any value brainpool could not normalize) reads as "queue" here. Deliberately
+    // an allowlist, not a denylist: an unexpected value must fall to today's behavior, never
+    // to the widest one.
+    const admits = allow === 'any' || (allow === 'same_sender' && (ev.senderId ?? null) === live.senderId);
+    if (!admits) return false;
+    let woven = false;
+    try { woven = await brain.steer(to, ev); }
+    catch (e) { note(`steer ${to}/${ev.chatId}: ${e?.message ?? e}`); return false; }
+    if (woven !== true) return false;                 // the turn ended between the check and the push — queue it
+    note(`steer ${to}/${ev.chatId}: wove ${ev.senderName ?? ev.senderId ?? '?'}'s message into the live turn (allow_new_input=${allow})`);
+    return true;
   }
 
   // Open THIS mention's placeholder + enqueue its reply turn on the per-conversation FIFO.
@@ -755,6 +825,11 @@ export function createSpine({
   // concern only — it says nothing about the record.
   async function runReplyTurn({ to, ev, d, out, replyTo = null, turnKey, queued, burst = false }) {
     try {
+      // THIS turn is now the live one on this key, and this is whose message it answers —
+      // the identity the same_sender tier of allow_new_input compares against (2026-08-30).
+      // Set here, not in openAndRunReply: openAndRunReply runs at ARRIVAL, so a queued turn
+      // would claim the live slot from the turn actually streaming.
+      liveTurnBy.set(turnKey, { senderId: ev.senderId ?? null });
       out.activate?.();                                 // queued → live the moment its turn starts
       // Drain the accumulated cycle. A QUEUED turn prompts with it (ending with its own
       // mention line); an IMMEDIATE turn discards it and keeps the single dispatch line —
@@ -936,7 +1011,7 @@ export function createSpine({
       // been logged at arrival but was invisible to the flag this branch checked).
       try { await out.fail?.(e); } catch { /* best effort */ }
       note(`turn ${to}/${ev.chatId}: ${e?.message ?? e}`);
-    } finally { dropTrain(turnKey); }
+    } finally { dropTrain(turnKey); liveTurnBy.delete(turnKey); }
   }
 
   async function runContextTurn({ to, ev, turnKey }) {

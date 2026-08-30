@@ -70,6 +70,34 @@ export function coerceAllowedTools(def) {
   return def;
 }
 
+// ALLOW_NEW_INPUT (operator 2026-08-30) — may a message arriving while a turn is ALREADY
+// streaming STEER that turn, instead of queueing behind it on the spine's per-conversation
+// FIFO? An ORDERED enum, widest last:
+//   none         today's behavior — the message queues and is prompted into the NEXT turn.
+//   same_sender  a message from the SAME sender whose message triggered the in-flight turn
+//                steers it; anyone else queues.
+//   any          any sender in the conversation steers the in-flight turn.
+//
+// DEFAULT same_sender, AND IT HAS ONLY BEEN TESTED WITH ccode. The 2026-08-30 measurement
+// that this whole feature rests on drove the real `claude --input-format stream-json` CLI
+// and nothing else: an agentic turn absorbs a mid-flight user line at a tool boundary. What
+// pi's harness does with one is unknown (untested), and llama is plain HTTP request/response
+// with no stream to interrupt at all. Neither exports `inject`, so neither can steer no
+// matter what this says — the enum is a POLICY, the session primitive is the CAPABILITY, and
+// the capability is what actually gates it (warm-sessions.mjs `steer`).
+export const ALLOW_NEW_INPUT_VALUES = ['none', 'same_sender', 'any'];
+export const DEFAULT_ALLOW_NEW_INPUT = 'same_sender';
+
+// A typo in config.yaml must NOT take a conversation down — this is a routing preference,
+// not a safety gate, and the default is the safe reading either way. So: log it once per
+// turn it is read and fall back, never throw (the same forgiveness resolveBeingDef gives a
+// type file that omits model/effort).
+export function normalizeAllowNewInput(v, being = '?', onLog = () => {}) {
+  if (ALLOW_NEW_INPUT_VALUES.includes(v)) return v;
+  onLog(`brainpool: ${being} allow_new_input ${JSON.stringify(v)} is not one of ${ALLOW_NEW_INPUT_VALUES.join('|')} — using '${DEFAULT_ALLOW_NEW_INPUT}'`);
+  return DEFAULT_ALLOW_NEW_INPUT;
+}
+
 // DANGEROUSLY_SKIP_PERMISSIONS (operator 2026-08 meta-engineer): the ONE type-file flag
 // that skips coercion AND confinement entirely — a `dangerously_skip_permissions: true`
 // type runs genuinely unconfined (full filesystem, its allowed_tools list passed verbatim,
@@ -358,6 +386,27 @@ export function createBrainPool({
       // it on the type file and nowhere else. null = "neither config.yaml tier stated anything —
       // go ask the type file".
       verboseThinking: b?.verboseThinking ?? getConfig()?.agents?.[being]?.conversation_defaults?.verbose_thinking ?? null,
+      // ALLOW_NEW_INPUT, same two-tier resolution as accessLevel/allowedUsers/sandboxed
+      // above (operator 2026-08-30). Unlike verbose_thinking there is NO third tier: this
+      // is a property of a CONVERSATION (who is talking to whom, right now), never of an
+      // agent TYPE — a type file could not sensibly say "in every chat, anyone may cut in".
+      //
+      // The fallback is the LITERAL DEFAULT, not null, because unlike verboseThinking there
+      // is no lower tier for a null to defer to — resolution ENDS here, so it must end on a
+      // real value. DEFAULT 'same_sender': the person who asked is the person allowed to
+      // change their mind mid-answer, which is the case the operator actually asked for;
+      // 'any' additionally lets a bystander redirect someone else's live turn, and 'none'
+      // is today's byte-for-byte behavior. ONLY TESTED WITH ccode — see the enum's note
+      // above; a brain whose session exports no `inject` queues regardless of this value.
+      //
+      // `??` (not ||) so an explicit `allow_new_input: none` at the per-conversation tier is
+      // a real opt-out that stops the walk instead of falling through to a node-wide 'any'.
+      // normalizeAllowNewInput runs LAST, over whatever the walk produced, so a typo at
+      // EITHER tier is caught and logged rather than reaching the spine as a routing verdict.
+      allowNewInput: normalizeAllowNewInput(
+        b?.allowNewInput ?? getConfig()?.agents?.[being]?.conversation_defaults?.allow_new_input ?? DEFAULT_ALLOW_NEW_INPUT,
+        being, onLog,
+      ),
     };
   }
 
@@ -655,6 +704,36 @@ export function createBrainPool({
     evict(being, ev) {
       const k = lastKeyByConv.get(`${being}:${ev?.surface}:${ev?.chatId}`);
       if (k) pool.evict?.(k);
+    },
+
+    // This conversation's resolved allow_new_input (operator 2026-08-30). The spine holds
+    // the OTHER half of the steer decision — WHO triggered the turn currently streaming —
+    // and cannot resolve config itself, so it asks here: resolution stays in resolveConv
+    // beside every other two-tier conversation_defaults field, and the spine only compares.
+    // Read per call, never cached, exactly like every other field there: an edited config
+    // takes effect on the next message, not the next restart.
+    async allowNewInput(being, ev) {
+      return (await resolveConv(ev, being)).allowNewInput;
+    },
+
+    // Weave this message into the turn ALREADY streaming for this being+conversation
+    // (operator 2026-08-30). Returns true ONLY if it was genuinely woven in — false means
+    // NOTHING happened and the caller must queue an ordinary turn (see warm-sessions
+    // `steer`'s injected-or-nothing contract; that is what keeps a false from becoming a
+    // reply nobody delivers).
+    //
+    // Keyed off lastKeyByConv, the SAME lookup evict() uses, and for the same reason: no
+    // re-derivation of engine/slug. It is also exact here by construction — a turn can only
+    // be in flight because turn() ran and stamped that key on its way to pool.run. And it is
+    // what keeps this off turn()'s own path: a steer must NOT re-enter the fresh-thread
+    // machinery there (rollTranscript, the identity-feed wrap, an overwrite seedLayers),
+    // because a conversation's FIRST turn has no recorded sessionId while it is still in
+    // flight — steering it through turn() would post the whole identity feed as the
+    // mid-turn message and archive the live transcript out from under it.
+    steer(being, ev) {
+      const k = lastKeyByConv.get(`${being}:${ev?.surface}:${ev?.chatId}`);
+      if (!k) return false;
+      return pool.steer?.(k, ev?.line ?? ev?.body ?? '') === true;
     },
   };
 }

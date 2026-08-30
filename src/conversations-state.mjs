@@ -958,6 +958,14 @@ export function getBeing(state, surface, jid, being) {
     // brainpool.mjs's resolveConv/baseOpts — the type-file tier is KEPT, wren's live
     // egpt-xhigh.yaml declares it there).
     verboseThinking:    b?.verbose_thinking     ?? null,
+    // MAY A MESSAGE ARRIVING MID-TURN STEER THE TURN ALREADY RUNNING (operator 2026-08-30)
+    // — an ORDERED enum none|same_sender|any, per-conversation override, same shape/tier as
+    // accessLevel/allowedUsers/sandboxed/verboseThinking above. null = no override at this
+    // tier, fall to the global conversation_defaults tier (brainpool.mjs's resolveConv,
+    // which also owns the default and the enum validation — a typo must not reach the spine
+    // as a routing decision). Raw here on purpose: getBeing reports what the file SAYS; one
+    // place resolves what it MEANS.
+    allowNewInput:      b?.allow_new_input      ?? null,
   };
 }
 

@@ -71,6 +71,18 @@ agents:
     #                             # (conversations.yaml agents.<name>.verbose_thinking). The one field
     #                             # here with a THIRD tier below it: the agent-TYPE file's own
     #                             # verbose_thinking, used only when both tiers above are unset.
+    #   allow_new_input: same_sender
+    #                             # none|same_sender|any (default same_sender) - what happens to a
+    #                             # message that arrives while this agent is ALREADY streaming a turn
+    #                             # here (operator 2026-08-30). none = queue it behind, prompt it into
+    #                             # the next turn (the old behavior). same_sender = a message from the
+    #                             # SAME person the live turn is answering STEERS that turn - one
+    #                             # reply, no second placeholder; anyone else queues. any = any sender
+    #                             # steers it. ONLY TESTED WITH ccode: it rides the claude CLI's
+    #                             # stream-json stdin, which absorbs a mid-turn line at a tool
+    #                             # boundary. pi is untested and llama has no stream, so with either
+    #                             # every value behaves like none. Overridable per-conversation
+    #                             # (conversations.yaml agents.<name>.allow_new_input).
 
 # Relay agents (optional - foreign-mesh across SEPARATE accounts). A relay
 # forwards a mention into another chat; `to:` chains hops. Not needed within one account.

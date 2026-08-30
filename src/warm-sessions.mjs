@@ -33,7 +33,7 @@ export function createWarmPool({
   idleTtlMs = 180_000,               // fallback for an unlisted class — absent NEVER means 0
   idleTtlByClass = {},
   dispatchTimeoutMs = 600_000,
-  injectWhileBusy = true,            // weave a mid-turn message into the live turn
+  injectWhileBusy = true,            // master switch for steer() — weave a mid-turn message into the live turn
   onLog = () => {},
   makeSession,                       // REQUIRED: the warm-session factory (injected)
 } = {}) {
@@ -82,7 +82,7 @@ export function createWarmPool({
     const e = _s.get(key);
     if (!e || e.errored) throw new Error('warm: session unavailable');
     e.busy = true;
-    e.injectSeq = 0;   // reset the per-turn injection counter (see run/INJECT)
+    e.injectSeq = 0;   // reset the per-turn injection counter (see steer)
     // NEVER evict while thinking. An idle timer armed after the PREVIOUS turn
     // must not fire mid-turn and close a busy session (that would end the query
     // mid-turn). Idle = time since the last turn ENDED, so clear any pending idle
@@ -136,20 +136,16 @@ export function createWarmPool({
         e = null;
       }
     }
-    // INJECT-INTO-RUNNING-TURN (operator 2026-06-13): if a turn is already
-    // streaming on this key, weave the new message into THAT live turn rather
-    // than serializing a fresh turn behind it. The in-flight turn's single
-    // result carries the combined reply, so this call resolves with an
-    // `injected` marker and the caller emits nothing separately. Falls through
-    // to the normal queued turn when the session can't inject or the turn just
-    // ended (race: busy flipped false between the check and the push).
-    if (injectWhileBusy && e && e.busy && !e.errored && typeof e.session.inject === 'function') {
-      if (e.session.inject(message)) {
-        e.lastUsed = Date.now();
-        onLog(`warm: injected into running turn ${key}`);
-        return Promise.resolve({ injected: true, text: null, sessionId: null });
-      }
-    }
+    // The INJECT-INTO-RUNNING-TURN block that used to sit HERE (operator 2026-06-13) now
+    // lives in `steer()` below — MOVED, not duplicated, and for one reason: it fired on
+    // `e.busy` alone, i.e. on WHO GOT THERE SECOND rather than on anyone's intent. That was
+    // harmless only while it was dead (no session exported `inject` until 2026-08-30). The
+    // moment createWarmCliSession gained one, EVERY caller that reaches a busy key would
+    // have started weaving: compaction's `/compact` (whose own header promises it "queues
+    // behind any in-flight turn ... never woven into one"), a due heartbeat, a mesh
+    // responder — each of them landing an unrelated prompt inside a human's live turn AND
+    // getting `{text:null}` back as its own answer. Weaving is now something a caller ASKS
+    // for, by name, once policy (conversation_defaults.allow_new_input) has said it may.
     if (!e) {
       _lruEvictIfFull(key);
       e = { session: makeSession({ ...brainOptions, onLog }), klass, lastUsed: Date.now(), idleTimer: null, busy: false, errored: false, chain: Promise.resolve(), idleTtlMs: undefined };
@@ -166,10 +162,42 @@ export function createWarmPool({
     return p;
   }
 
+  // STEER — weave `message` into the turn ALREADY streaming on `key`, instead of queueing a
+  // fresh turn behind it (the mechanism: operator 2026-06-13; this explicit shape + the
+  // measurement that proves the CLI supports it: operator 2026-08-30, see
+  // warm-cli-session.mjs's header). The live turn's single `result` carries the combined
+  // reply, so there is NOTHING to return here beyond "did it take" — no promise, no text.
+  //
+  // INJECTED-OR-NOTHING, and that is the whole contract. It NEVER opens a session, never
+  // queues, never runs a turn. `false` means the message was not touched at all, so the
+  // caller's fallback is simply "do what you would have done anyway" — the spine's
+  // openAndRunReply, i.e. today's per-conversation FIFO, placeholder and all. That is what
+  // makes the fallthrough structurally safe rather than a lost reply: were this to fall
+  // through to a real turn (as the run()-embedded version did), a caller that opened no
+  // placeholder — because it expected a weave — would have a turn nobody delivers.
+  //
+  // Four ways to get false, all of them "there was nothing to steer": no warm entry, the
+  // entry is idle (the turn ended between the caller's check and this call — the race),
+  // the entry is errored, or the session exports no `inject`. THAT LAST ONE IS THE BRAIN-
+  // AGNOSTIC GUARD: llama is plain HTTP request/response with no stream to interrupt, and
+  // pi is a different harness the 2026-08-30 measurement never covered — neither exports
+  // `inject`, so both land here and queue exactly as they do today, with no per-brain
+  // branching anywhere above.
+  function steer(key, message) {
+    if (!injectWhileBusy) return false;               // pool-level master switch (off = never weave)
+    const e = _s.get(key);
+    if (!e || !e.busy || e.errored) return false;
+    if (typeof e.session.inject !== 'function') return false;
+    if (!e.session.inject(message)) return false;
+    e.lastUsed = Date.now();
+    onLog(`warm: steered into the running turn ${key}`);
+    return true;
+  }
+
   function has(key) { return _s.has(key); }
   function evict(key) { _evict(key, 'manual'); }
   function close() { for (const k of [..._s.keys()]) _evict(k, 'pool close'); }
   function stats() { return { size: _s.size, max, keys: [..._s.keys()] }; }
 
-  return { run, has, evict, close, stats };
+  return { run, steer, has, evict, close, stats };
 }
