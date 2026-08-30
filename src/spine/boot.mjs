@@ -1417,7 +1417,11 @@ export async function boot({
       const head = (sc.preSha && sc.preSha !== nowSha) ? `${sc.preSha} → ${nowSha}` : nowSha;
       const pids = (sc.pid && sc.pid !== process.pid) ? `pid ${sc.pid} → ${process.pid}` : `pid ${process.pid}`;
       const subject = gitOut(['log', '-1', '--format=%s']);
-      try { await bridge.send(sc.chatId, `✅ egpt back up! (${head}) ${pids}${subject ? `\n\n${subject}` : ''}`); }
+      // `note` (daemon-runtime.mjs's boot-failure ladder, operator 2026-08-30) is the only
+      // way the recovery reaches a human: it names what the daemon did on its own and, for a
+      // dirty-tree rescue, which rescue/<ts> branch the operator's uncommitted work is on.
+      // Absent on every other sidecar, which therefore renders byte-for-byte as before.
+      try { await bridge.send(sc.chatId, `✅ egpt back up! (${head}) ${pids}${sc.note ? `\n\n⚠️ ${sc.note}` : ''}${subject ? `\n\n${subject}` : ''}`); }
       catch (e) { log.line?.(`[announce] ${e?.message ?? e}`); }
       return;
     }
