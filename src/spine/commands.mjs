@@ -1359,12 +1359,35 @@ export function createCommands({
   // config between two calls changes the NEXT call's tools/model/effort with nothing to evict.
   function agentsBeingBlock(surface, jid, handle, state) {
     try {
+      // NOT configured on THIS node (operator 2026-08-29: dolly answered `/agents wren` with a
+      // plausible-looking status even though wren exists nowhere in dolly's config — every node
+      // parses every command it hears, independent of which node the named being actually lives
+      // on). resolveBeingDef below is DELIBERATELY total — "No agent entry ... -> a bare ccode
+      // def keyed by the being name (keeps it runnable)", its own header says so, and turn()
+      // relies on exactly that to let an unregistered handle still run. The status VIEW must not
+      // dress that bare fallback up as a real being, though: check membership in THIS node's
+      // agents: map first, and say so plainly when there is none, rather than falling through
+      // resolveBeingDef's every `??` and rendering a config-shaped answer for a being that is
+      // not here.
+      const b = getBeing(state, surface, jid, handle);
+      // defaultKey is exempt: the persona is real by definition even with an empty agents:
+      // map (resolveDefaultBrainDef's own shipped-'egpt'-type fallback). Any OTHER handle is
+      // real here iff it is either configured at the node level (agents: in config.yaml) or
+      // already RESIDENT in this conversation — getBeing ALWAYS returns a truthy object
+      // (jid/slug/surface/being are set unconditionally), so its OWN `present` flag is what
+      // actually says whether a per-conversation `agents.<handle>` block exists, not the
+      // object's truthiness. Neither true means resolveBeingDef below would still hand back
+      // its DELIBERATELY total fallback ("No agent entry ... -> a bare ccode def keyed by the
+      // being name (keeps it runnable)", its own header) — fine for turn(), which that
+      // total-ness exists to serve, but the status VIEW must not dress that bare fallback up
+      // as a real being.
+      if (handle !== defaultKey && !((cfg() ?? {}).agents ?? {})[handle] && !b?.present) {
+        return `being: ${handle}\nnot configured on this node`;
+      }
       const c = getContact(state, surface, jid);
       const slug = c?.slug ?? jid;
       let convDir = null;
       try { convDir = slugDir(surface, slug); } catch { /* non-default surface */ }
-
-      const b = getBeing(state, surface, jid, handle);
 
       let def = null;
       try { def = resolveBeingDef(handle, convDir, { getConfig: cfg, brains, brainType: CCODE }); } catch { def = null; }

@@ -1209,6 +1209,32 @@ describe('/agents <handle>|all — bare status view, usage, and /e/egpt retireme
     expect(sent[0].text).toMatch(/no resident beings/);
   });
 
+  // operator 2026-08-29: dolly answered "/agents wren" with a plausible-looking status block
+  // even though wren exists nowhere in dolly's config — every node parses every command it
+  // hears, regardless of which node the named being actually lives on, and resolveBeingDef's
+  // OWN fallback ("no agent entry -> a bare def, keeps it runnable") let that fallback dress
+  // itself up as a real status. Neither configured (no config.agents entry) nor resident (no
+  // per-conversation being block) -> refuse plainly instead of fabricating one.
+  it('/agents <unconfigured handle> refuses plainly rather than fabricating a status for a being not on this node', async () => {
+    const state = ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state;
+    const { cmds, sent } = harness({ state });
+    await cmds.run({ chatId: '!room', surface: 'whatsapp', body: '/agents wren' });
+    expect(sent[0].text).toMatch(/being: wren\nnot configured on this node/);
+    expect(sent[0].text).not.toMatch(/thread_id/);
+  });
+
+  // A being with no standing config.yaml entry but genuine per-conversation residency
+  // (seeded by an earlier turn) is NOT the fabricated case above — it is real, just
+  // unconfigured at the node level, and must still report its live status.
+  it('/agents <handle> WITH per-conversation residency but no config.yaml entry still reports real status', async () => {
+    let state = ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state;
+    state = patchContact(state, 'whatsapp', '!room', { agents: { wren: { mode: 'mention' } } });
+    const { cmds, sent } = harness({ state });
+    await cmds.run({ chatId: '!room', surface: 'whatsapp', body: '/agents wren' });
+    expect(sent[0].text).toMatch(/being: wren/);
+    expect(sent[0].text).not.toMatch(/not configured/);
+  });
+
   it('/e and /egpt carry no special meaning any more — every form falls through to the generic catch-all', async () => {
     const { cmds, sent } = harness({ state: contact() });
     const ev = { chatId: '!room', surface: 'whatsapp', authorized: true };
