@@ -5,7 +5,7 @@
 // speaks stream-json — no real CLI / network.
 import { describe, it, expect } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { createWarmCliSession } from '../src/warm-cli-session.mjs';
+import { createWarmCliSession, renderToolUse, redactSecrets } from '../src/warm-cli-session.mjs';
 
 function fakeClaude({ failOn = null, hang = false, sessionId = 'sess-123' } = {}) {
   let spawnCount = 0;
@@ -146,14 +146,41 @@ describe('warm-cli-session — verboseThinking (operator 2026-08-29, wren\'s "fu
     s.close();
   });
 
-  it('ON: thinking verbatim + ToolName() stubs + final text, in order, no tool input/output', async () => {
+  // Was `Bash()` until 2026-08-30; the operator then asked to "reveal a bit more on what
+  // inside the parenthesis". The stub now summarizes the INPUT — the invariant that did NOT
+  // change, and is the one that matters, is that the tool RESULT is still never included.
+  it('ON: thinking verbatim + ToolName(<input summary>) + final text, in order, never the tool result', async () => {
     const s = createWarmCliSession({ spawn: fakeClaudeAgentic().spawn, verboseThinking: true });
     const r = await s.turn('what is in the dir?');
     expect(r.text).toBe(
-      'THINK1: let me check the directory\n\nBash()\n\nTHINK2: now I can answer\n\nHello'
+      'THINK1: let me check the directory\n\nBash(ls -la)\n\nTHINK2: now I can answer\n\nHello'
     );
-    expect(r.text).not.toContain('ls -la');       // tool_use input never included
     expect(r.text).not.toContain('DIRLISTING');    // tool_result content never included
+    s.close();
+  });
+
+  it('ON: a tool_use carrying a credential reaches the reply REDACTED', async () => {
+    const spawn = () => {
+      const proc = new EventEmitter();
+      proc.stdout = new EventEmitter(); proc.stdout.setEncoding = () => {};
+      proc.stderr = new EventEmitter(); proc.stderr.setEncoding = () => {};
+      proc.kill = () => {};
+      proc.stdin = {
+        write: () => setImmediate(() => {
+          const emit = (o) => proc.stdout.emit('data', JSON.stringify(o) + '\n');
+          emit({ type: 'assistant', message: { role: 'assistant', content: [
+            { type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'curl -u radio:hunter2 https://station.local/now' } },
+          ] } });
+          emit({ type: 'result', subtype: 'success', result: 'done' });
+        }),
+        end: () => {},
+      };
+      return proc;
+    };
+    const s = createWarmCliSession({ spawn, verboseThinking: true });
+    const r = await s.turn('play something');
+    expect(r.text).toBe('Bash(curl -u *** https://station.local/now)');
+    expect(r.text).not.toContain('hunter2');
     s.close();
   });
 
@@ -170,5 +197,157 @@ describe('warm-cli-session — verboseThinking (operator 2026-08-29, wren\'s "fu
 
     expect(updatesOff).toEqual(['Hel', 'Hello']);
     expect(updatesOn).toEqual(updatesOff);
+  });
+});
+
+// renderToolUse — the pure stub renderer (operator 2026-08-30: "reveal a bit more on what
+// inside the parenthesis of 'Bash()'"). Tested directly, not through a fake CLI, because
+// the rules that matter (headline field, whitespace, truncation, REDACTION) are per-block.
+describe('renderToolUse — headline field per tool', () => {
+  const t = (name, input) => renderToolUse({ type: 'tool_use', name, input });
+
+  it('picks the one field that says what the call does', () => {
+    expect(t('Bash', { command: 'ls -la', description: 'list' })).toBe('Bash(ls -la)');
+    expect(t('Read', { file_path: '/a/b.mjs', offset: 3 })).toBe('Read(/a/b.mjs)');
+    expect(t('Write', { file_path: '/a/b.mjs', content: 'x'.repeat(400) })).toBe('Write(/a/b.mjs)');
+    expect(t('Edit', { file_path: '/a/b.mjs', old_string: 'x', new_string: 'y' })).toBe('Edit(/a/b.mjs)');
+    expect(t('MultiEdit', { file_path: '/a/b.mjs', edits: [] })).toBe('MultiEdit(/a/b.mjs)');
+    expect(t('NotebookEdit', { file_path: '/a/n.ipynb' })).toBe('NotebookEdit(/a/n.ipynb)');
+    expect(t('Glob', { pattern: '**/*.mjs', path: 'src' })).toBe('Glob(**/*.mjs)');
+    expect(t('Grep', { pattern: 'verbose_thinking', path: 'src' })).toBe('Grep(verbose_thinking)');
+    expect(t('WebFetch', { url: 'https://x/y', prompt: 'summarize' })).toBe('WebFetch(https://x/y)');
+    expect(t('WebSearch', { query: 'vitest snapshot' })).toBe('WebSearch(vitest snapshot)');
+    expect(t('Task', { description: 'audit the redactor', prompt: 'long...' })).toBe('Task(audit the redactor)');
+    expect(t('Agent', { description: 'audit the redactor', prompt: 'long...' })).toBe('Agent(audit the redactor)');
+  });
+
+  it('NotebookEdit also accepts the notebook_path alias', () => {
+    expect(t('NotebookEdit', { notebook_path: '/a/n.ipynb' })).toBe('NotebookEdit(/a/n.ipynb)');
+  });
+
+  it('the headline field wins over an earlier-declared field', () => {
+    // `description` comes first in insertion order but `command` is what Bash DOES.
+    expect(t('Bash', { description: 'list the dir', command: 'ls -la' })).toBe('Bash(ls -la)');
+  });
+
+  it('unknown tool: first COMPACT string field; a payload blob is skipped', () => {
+    expect(t('mcp__thing__do', { big: 'x'.repeat(500), tiny: 'ok' })).toBe('mcp__thing__do(ok)');
+    expect(t('Whatever', { name: 'alpha', other: 'beta' })).toBe('Whatever(alpha)');
+  });
+
+  it('no usable field -> exactly today\'s bare stub', () => {
+    expect(t('Nope', {})).toBe('Nope()');
+    expect(t('Nope', { n: 5, ok: true, list: ['a'] })).toBe('Nope()');
+    expect(t('Nope', { blob: 'x'.repeat(500) })).toBe('Nope()');   // nothing compact
+    expect(t('Nope', undefined)).toBe('Nope()');
+    expect(t('Nope', 'not-an-object')).toBe('Nope()');
+    expect(t('Bash', { timeout: 5 })).toBe('Bash()');              // known tool, field missing
+    expect(t('Bash', { command: '   ' })).toBe('Bash()');          // blank is not a summary
+  });
+
+  it('a nameless block renders nothing', () => {
+    expect(renderToolUse({ type: 'tool_use', input: { command: 'ls' } })).toBe('');
+    expect(renderToolUse(null)).toBe('');
+  });
+});
+
+describe('renderToolUse — whitespace + truncation', () => {
+  const t = (name, input) => renderToolUse({ type: 'tool_use', name, input });
+
+  it('collapses newlines/tabs so a heredoc stays ONE line', () => {
+    expect(t('Bash', { command: 'cat <<EOF\n\thello\n  world\nEOF' })).toBe('Bash(cat <<EOF hello world EOF)');
+    expect(t('Bash', { command: '  leading and trailing  ' })).toBe('Bash(leading and trailing)');
+  });
+
+  it('truncates at the 60-char budget with a trailing ellipsis (boundary exact)', () => {
+    expect(t('Bash', { command: 'a'.repeat(60) })).toBe(`Bash(${'a'.repeat(60)})`);   // 60 = untouched
+    expect(t('Bash', { command: 'a'.repeat(61) })).toBe(`Bash(${'a'.repeat(59)}…)`);  // 61 = cut
+    // the ellipsis lives INSIDE the budget: the rendered field is never longer than 60
+    const long = t('Bash', { command: 'b'.repeat(5000) });
+    expect(long.slice('Bash('.length, -1)).toHaveLength(60);
+  });
+
+  it('collapse happens before the budget, so a wrapped command is measured as one line', () => {
+    const cmd = 'curl \\\n  --silent \\\n  https://station.local/api/queue/next-track-please';
+    const out = t('Bash', { command: cmd });
+    expect(out).not.toContain('\n');
+    expect(out.endsWith('…)')).toBe(true);
+  });
+});
+
+// The part that matters most: this text is posted into a WhatsApp chat.
+describe('redactSecrets — every pattern (a leaked stub cannot be unposted)', () => {
+  const gone = (raw, secret, expected) => {
+    const out = redactSecrets(raw);
+    expect(out).toBe(expected);
+    expect(out).not.toContain(secret);
+  };
+
+  it('curl basic auth: -u / --user, spaced, =-joined, and glued', () => {
+    gone('curl -u radio:hunter2 https://station.local/now', 'hunter2', 'curl -u *** https://station.local/now');
+    gone('curl --user radio:hunter2 https://x', 'hunter2', 'curl --user *** https://x');
+    gone('curl --user=radio:hunter2 https://x', 'hunter2', 'curl --user *** https://x');
+    gone('curl -uradio:hunter2 https://x', 'hunter2', 'curl -u *** https://x');
+    gone("curl -u 'radio:hunter 2' https://x", 'hunter 2', 'curl -u *** https://x');
+  });
+
+  it('Authorization headers (Bearer / Basic), keeping the enclosing quote', () => {
+    gone('curl -H "Authorization: Bearer abc.def.ghi" https://api', 'abc.def.ghi',
+      'curl -H "Authorization: Bearer ***" https://api');
+    gone("curl -H 'Authorization: Basic Zm9vOmJhcg==' https://api", 'Zm9vOmJhcg==',
+      "curl -H 'Authorization: Basic ***' https://api");
+    gone('curl -H "Authorization: raw-token-value" https://api', 'raw-token-value',
+      'curl -H "Authorization: ***" https://api');
+  });
+
+  it('a bare Bearer token, but not the English word', () => {
+    gone('curl -H "Bearer abcdefghijklmnop" https://api', 'abcdefghijklmnop',
+      'curl -H "Bearer ***" https://api');
+    expect(redactSecrets('the bearer of bad news')).toBe('the bearer of bad news');
+  });
+
+  it('password=/passwd=/token=/api_key=/secret= in query strings AND env assignments', () => {
+    gone("curl 'https://x/api?password=hunter2&q=1'", 'hunter2', "curl 'https://x/api?password=***&q=1'");
+    gone('curl -d "api_key=abc123&x=1" https://x', 'abc123', 'curl -d "api_key=***&x=1" https://x');
+    gone('EGPT_RELAY_PASSWORD=hunter2 node egpt.mjs', 'hunter2', 'EGPT_RELAY_PASSWORD=*** node egpt.mjs');
+    gone('BEEPER_TOKEN=bpr_abc123 node x', 'bpr_abc123', 'BEEPER_TOKEN=*** node x');
+    gone("SPEAKER_SECRET='s3 cr3t' ./play.sh", 's3 cr3t', 'SPEAKER_SECRET=*** ./play.sh');
+    gone('psql "passwd=hunter2"', 'hunter2', 'psql "passwd=***"');
+  });
+
+  it('--password <x> / --token <x> flag forms', () => {
+    gone('mysqldump --password hunter2 db', 'hunter2', 'mysqldump --password *** db');
+    gone('cli --token abc123 --api-key=XYZ789', 'abc123', 'cli --token *** --api-key ***');
+    gone('cli -token abc123', 'abc123', 'cli -token ***');
+    // the separator is required, so a longer flag that merely STARTS with one is untouched
+    expect(redactSecrets('cli --passthrough on')).toBe('cli --passthrough on');
+  });
+
+  it('credentials inline in a URL', () => {
+    gone('git clone https://an:ghp_ABCDEFGHIJKL@github.com/siran/x.git', 'ghp_ABCDEFGHIJKL',
+      'git clone https://***@github.com/siran/x.git');
+    gone('curl http://admin:admin@speaker.local/play', 'admin:admin', 'curl http://***@speaker.local/play');
+    // a bare username (no ':') is not a credential — keep it readable
+    expect(redactSecrets('ssh://an@dolly')).toBe('ssh://an@dolly');
+  });
+
+  it('self-identifying key shapes with nothing to anchor on', () => {
+    gone('node x.mjs sk-ant-api03-AAAABBBBCCCC', 'sk-ant-api03-AAAABBBBCCCC', 'node x.mjs ***');
+    gone('gh auth login --with-token ghp_ABCDEFGHIJKLMNOP', 'ghp_ABCDEFGHIJKLMNOP', 'gh auth login --with-token ***');
+    gone('curl -d eyJhbGciOiJIUzI1.cGF5bG9hZA.c2ln https://x', 'eyJhbGciOiJIUzI1.cGF5bG9hZA.c2ln', 'curl -d *** https://x');
+  });
+
+  it('leaves an innocent command completely alone', () => {
+    const plain = 'git log --oneline -5 && npx vitest run tests/warm-cli-session.test.mjs';
+    expect(redactSecrets(plain)).toBe(plain);
+  });
+
+  it('redaction runs BEFORE truncation — the ellipsis is never what hides a secret', () => {
+    // The credential sits inside the first 60 chars: only the redactor can remove it.
+    const cmd = 'curl -u radio:hunter2 https://station.local/api/queue?track=all-the-things';
+    const out = renderToolUse({ type: 'tool_use', name: 'Bash', input: { command: cmd } });
+    expect(out).not.toContain('hunter2');
+    expect(out).toContain('***');
+    expect(out.endsWith('…)')).toBe(true);   // still truncated, on the redacted text
   });
 });

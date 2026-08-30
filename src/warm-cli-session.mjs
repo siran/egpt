@@ -26,20 +26,135 @@ function normalizeCwd(p) {
   return m ? `${m[1].toUpperCase()}:/${m[2]}` : p;
 }
 
+// ── tool_use summaries ──────────────────────────────────────────────────────
+//
+// The 2026-08-29 shape was a BARE `Bash()` stub. Operator 2026-08-30 refined it:
+// "tool-calls as stubs, it is ok, i'd like to see a bit more of the command being
+// executed, not so much as the result that can be too much... reveal a bit more on
+// what inside the parenthesis of 'Bash()'". So the parens now carry a SHORT summary
+// of the call's `input` — never its result. (The result needs no guard: a tool_result
+// arrives on a separate `user`-role event and onStdout never routes those here. Keep
+// it that way.)
+//
+// ONE headline field per tool: the single argument that says what the call DOES. A
+// list per tool (not a bare string) only so a renamed-but-equivalent field can alias
+// — e.g. NotebookEdit's `notebook_path`. Unknown/MCP tools fall through to a generic
+// scan below.
+const TOOL_HEADLINE_FIELDS = {
+  Bash: ['command'],
+  Read: ['file_path'],
+  Write: ['file_path'],
+  Edit: ['file_path'],
+  MultiEdit: ['file_path'],
+  NotebookEdit: ['file_path', 'notebook_path'],
+  Glob: ['pattern'],
+  Grep: ['pattern'],
+  WebFetch: ['url'],
+  WebSearch: ['query'],
+  Task: ['description'],
+  Agent: ['description'],
+};
+
+// A field only qualifies for the UNKNOWN-tool scan if it is already compact. The point
+// is to skip payload blobs (a Write `content`, a prompt) and land on the identifying
+// argument, so the bar is ~3× the render budget — loose enough that a long real path
+// or pattern still wins, tight enough that a file body never does. A KNOWN tool's
+// headline field is exempt: a 4KB heredoc `command` is still the right thing to show,
+// truncated.
+const UNKNOWN_FIELD_MAX = 200;
+
+// 60 chars. The rendered text is a WhatsApp reply, and an agentic turn emits DOZENS of
+// tool calls — the budget is paid once per call, so it is a signpost ("which file? which
+// host?"), not a payload. 60 keeps `Bash(<60>)` inside ~70 columns, about one wrapped
+// line in a phone bubble, and comfortably fits a repo-relative path or a `curl` up to
+// its URL. The ellipsis is INSIDE the budget so the rendered field is never > 60.
+const SUMMARY_MAX = 60;
+
+// SECRET REDACTION. This is posted into a chat, so a naive `Bash(command)` render would
+// publish the operator's real credentials: `curl -u <user>:<password>` against the radio
+// station, the Beeper API token, the egpt-relay password, speaker creds. Applied to EVERY
+// headline value (a WebFetch url can carry inline creds too), and BEFORE truncation — so
+// truncation is never the only thing hiding a secret, and a redacted long command is
+// still cut at a sane place. Patterns run in order; each replaces only the SECRET span so
+// the shape of the command survives (`curl -u ***  https://...` still reads as a curl).
+// Deliberately biased toward over-redaction: a stub that says `***` too often costs
+// nothing, a stub that leaks once cannot be unposted.
+const SECRET_PATTERNS = [
+  // https://user:pass@host → https://***@host. Requires the ':' so a bare `ssh://an@dolly`
+  // (a username, not a credential) still renders.
+  [/\b([a-z][a-z0-9+.-]*:\/\/)[^\s:/@]+:[^\s@/]*@/gi, '$1***@'],
+  // curl basic auth, spaced or '=': `-u user:pass`, `--user user:pass`, `--user=user:pass`.
+  [/(^|\s)(-u|--user)(?:\s+|=)(?:'[^']*'|"[^"]*"|\S+)/g, '$1$2 ***'],
+  // …and curl's glued form `-umy:pass`. Only when the value has curl's user:pass colon,
+  // so an unrelated `-utf8`-ish flag is left alone.
+  [/(^|\s)(-u)[^\s:'"]+:[^\s'"]*/g, '$1$2 ***'],
+  // `Authorization: Bearer <x>` (also Basic/Token/Digest, also with no scheme word). Stops
+  // at a quote so the enclosing `-H "..."` keeps its closing quote.
+  [/(authorization\s*:\s*)((?:bearer|basic|token|digest)\s+)?[^\s'"]+/gi, '$1$2***'],
+  // A bare `Bearer <token>` outside an Authorization header. Length-gated so ordinary prose
+  // ("bearer of bad news") in a Task `description` is not mangled.
+  [/\b(bearer)\s+[A-Za-z0-9._~+/=-]{8,}/gi, '$1 ***'],
+  // `--password x` / `--token x` / `--api-key=x` / `--secret x` (also single-dash).
+  [/(^|\s)(--?(?:password|passwd|pwd|pass|token|api[-_]?key|apikey|secret|credential)s?)(?:\s+|=)(?:'[^']*'|"[^"]*"|\S+)/gi, '$1$2 ***'],
+  // key=value in a query string OR an env assignment. The leading `[\w.-]*` is what makes
+  // `EGPT_RELAY_PASSWORD=hunter2` match at all (no word boundary before `PASSWORD`); the
+  // quoted alternatives come first so `SPEAKER_SECRET='s3 cr3t'` is taken WHOLE (the bare
+  // form stops at '&' so the rest of a query string survives).
+  [/([\w.-]*(?:password|passwd|pwd|token|api[-_]?key|apikey|secret))\s*=\s*(?:'[^']*'|"[^"]*"|[^\s&'"]+)/gi, '$1=***'],
+  // Self-identifying key shapes that can appear as a bare argument with no flag or key to
+  // anchor on: `sk-…` / `sk-ant-…`, GitHub PATs, and JWTs (a Beeper token is a JWT).
+  [/\b(?:sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9]{8,}|github_pat_[A-Za-z0-9_]{8,}|eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9._-]{8,})/g, '***'],
+];
+
+export function redactSecrets(s) {
+  let out = String(s ?? '');
+  for (const [re, rep] of SECRET_PATTERNS) out = out.replace(re, rep);
+  return out;
+}
+
+// The pure renderer, exported so the mapping/redaction/truncation rules are testable
+// without driving a fake CLI. Returns `Name(<short summary>)`, or exactly today's
+// `Name()` when nothing usable is in `input`.
+export function renderToolUse(block) {
+  const name = typeof block?.name === 'string' ? block.name : '';
+  if (!name) return '';
+  const input = block?.input;
+  let raw = null;
+  if (input && typeof input === 'object' && !Array.isArray(input)) {
+    for (const f of TOOL_HEADLINE_FIELDS[name] ?? []) {
+      if (typeof input[f] === 'string' && input[f].trim()) { raw = input[f]; break; }
+    }
+    // Unknown tool (or a known one missing its headline field): first compact string.
+    if (raw === null) {
+      for (const v of Object.values(input)) {
+        if (typeof v === 'string' && v.trim() && v.length <= UNKNOWN_FIELD_MAX) { raw = v; break; }
+      }
+    }
+  }
+  if (raw === null) return `${name}()`;
+  // Collapse first (a heredoc or a backslash-continued command must stay ONE line, and it
+  // also lets every pattern above be a single-line regex), then redact, then truncate.
+  let s = raw.replace(/\s+/g, ' ').trim();
+  s = redactSecrets(s);
+  if (s.length > SUMMARY_MAX) s = s.slice(0, SUMMARY_MAX - 1) + '…';
+  return s ? `${name}(${s})` : `${name}()`;
+}
+
 // verboseThinking rendering (operator 2026-08-29, wren's "see your full chain of thought"
 // request over WhatsApp: "tool use can be only like Bash()"). One assistant event's content
 // blocks -> pushed onto pending.verboseBlocks, arrival order preserved across the WHOLE turn
 // (every assistant event, not just one — a ccode turn is agentic: reason -> tool_use ->
 // tool_result -> reason again -> ... -> final text, each step its own `assistant` event).
-// text/thinking render verbatim; tool_use renders as a bare `${name}()` stub — never its
-// `input`. A tool_result arrives on a separate `user`-role event, which onStdout never routes
+// text/thinking render verbatim; tool_use renders via renderToolUse above — a stub whose
+// parens carry a redacted, truncated summary of the INPUT (operator 2026-08-30), never the
+// result. A tool_result arrives on a separate `user`-role event, which onStdout never routes
 // here, so it never appears regardless. Only called when verboseThinking is on — the default
 // OFF path never calls this.
 function pushVerboseBlocks(pending, content) {
   for (const c of content) {
     if (c?.type === 'text' && typeof c.text === 'string' && c.text) pending.verboseBlocks.push(c.text);
     else if (c?.type === 'thinking' && typeof c.thinking === 'string' && c.thinking) pending.verboseBlocks.push(c.thinking);
-    else if (c?.type === 'tool_use' && typeof c.name === 'string') pending.verboseBlocks.push(`${c.name}()`);
+    else if (c?.type === 'tool_use' && typeof c.name === 'string' && c.name) pending.verboseBlocks.push(renderToolUse(c));
   }
 }
 
