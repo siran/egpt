@@ -17,32 +17,32 @@ describe('personaStamp — the bridge-enforced persona identifier', () => {
   });
 
   it('body_emoji + label → two-line persona header, and a model self-label is stripped', () => {
-    expect(personaStamp('🐶', 'egpt', 'Aquí estoy')).toBe('🐶 egpt Aquí estoy');
-    expect(personaStamp('🐶', 'egpt', 'egpt: Aquí estoy')).toBe('🐶 egpt Aquí estoy');   // self-label stripped
+    expect(personaStamp('🐶', 'egpt', 'Aquí estoy')).toBe('🐶 egpt: Aquí estoy');
+    expect(personaStamp('🐶', 'egpt', 'egpt: Aquí estoy')).toBe('🐶 egpt: Aquí estoy');   // self-label stripped
   });
 });
 
 describe('makeWrapPersona — concentric [bridge, agent] wrap around the stamped core', () => {
   it('all slots empty → byte-identical to the bare stamp (regression lock)', () => {
     const wrap = makeWrapPersona({});
-    expect(wrap({ bodyEmoji: '🐶', label: 'egpt' }, 'Hola')).toBe('🐶 egpt Hola');
+    expect(wrap({ bodyEmoji: '🐶', label: 'egpt' }, 'Hola')).toBe('🐶 egpt: Hola');
   });
 
   it('bridge + agent both set → bridge_open, agent_open, CORE, agent_close, bridge_close', () => {
     const wrap = makeWrapPersona({ bridgeSignatureOpen: '🌉kg', bridgeSignatureClose: '💸' });
     const out = wrap({ bodyEmoji: '🐶', label: 'egpt', agentSigOpen: '— e —', agentSigClose: '~ e' }, 'Hola mundo');
-    expect(out).toBe('🌉kg — e — 🐶 egpt Hola mundo ~ e 💸');
+    expect(out).toBe('🌉kg — e — 🐶 egpt: Hola mundo ~ e 💸');
   });
 
   it('agent layer alone (bridge empty) wraps just the inner layer', () => {
     const wrap = makeWrapPersona({});
     expect(wrap({ bodyEmoji: '🐶', label: 'egpt', agentSigOpen: 'A_open', agentSigClose: 'A_close' }, 'Hola'))
-      .toBe('A_open 🐶 egpt Hola A_close');
+      .toBe('A_open 🐶 egpt: Hola A_close');
   });
 
   it('bridge layer alone (agent empty) wraps just the outer layer', () => {
     const wrap = makeWrapPersona({ bridgeSignatureOpen: 'B_open', bridgeSignatureClose: 'B_close' });
-    expect(wrap({ bodyEmoji: '🐶', label: 'egpt' }, 'Hola')).toBe('B_open 🐶 egpt Hola B_close');
+    expect(wrap({ bodyEmoji: '🐶', label: 'egpt' }, 'Hola')).toBe('B_open 🐶 egpt: Hola B_close');
   });
 
   // THE PERIOD (operator 2026-07-25: "all messages coming out from a spine to any surface are
@@ -79,7 +79,7 @@ describe('makeWrapPersona — concentric [bridge, agent] wrap around the stamped
       expect(f.split('🌉kg').length - 1).toBe(1);
       expect(f.split('💸').length - 1).toBe(1);
     }
-    expect(frames.at(-1)).toBe('🌉kg 🐶 egpt Hola mundo 💸');
+    expect(frames.at(-1)).toBe('🌉kg 🐶 egpt: Hola mundo 💸');
   });
 
   // THE 👂 ECHO through the ONE path (operator 2026-07-25). beeper.mjs used to apply

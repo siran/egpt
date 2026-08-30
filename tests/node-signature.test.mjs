@@ -71,7 +71,7 @@ describe('makeWrapPersona — the structural layer rides EVERY frame', () => {
   it('a frame carries a DECODABLE invisible node id', () => {
     const out = wrapKg()({ bodyEmoji: '🐶', label: 'egpt' }, 'Hola');
     expect(decodeNodeSignature(out)).toBe('kg');
-    expect(stripNodeSignature(out)).toBe('🐶 egpt Hola');   // visible bytes unchanged
+    expect(stripNodeSignature(out)).toBe('🐶 egpt: Hola');   // visible bytes unchanged
   });
 
   it('the VISIBLE layers stay optional — empty open/close still signs structurally', () => {
@@ -80,7 +80,7 @@ describe('makeWrapPersona — the structural layer rides EVERY frame', () => {
     expect(stripNodeSignature(bare)).toBe('Hey');
     const dressed = wrapKg({ bridgeSignatureOpen: '🌉kg', bridgeSignatureClose: '💸' })({ bodyEmoji: '🐶', label: 'egpt' }, 'Hola');
     expect(decodeNodeSignature(dressed)).toBe('kg');
-    expect(stripNodeSignature(dressed)).toBe('🌉kg 🐶 egpt Hola 💸');
+    expect(stripNodeSignature(dressed)).toBe('🌉kg 🐶 egpt: Hola 💸');
   });
 
   it('EMPTY BODY returns untouched — never a bare signature (cd96edc)', () => {
@@ -116,7 +116,7 @@ describe('makeWrapPersona — the structural layer rides EVERY frame', () => {
   });
 
   it('no node name configured → byte-identical to today (the port default is tolerant)', () => {
-    expect(makeWrapPersona({})({ bodyEmoji: '🐶', label: 'egpt' }, 'Hola')).toBe('🐶 egpt Hola');
+    expect(makeWrapPersona({})({ bodyEmoji: '🐶', label: 'egpt' }, 'Hola')).toBe('🐶 egpt: Hola');
   });
 
   it('the LIVE-FRAME guard still fires on a frame carrying BOTH the marker and ⏳', () => {
