@@ -257,7 +257,7 @@ describe('shell-port limb', () => {
       expect(sock.sent).toHaveLength(1);
       const f = frames(sock)[0];
       expect(f.streaming).toBe(true);
-      expect(f.text).toBe('🐶 egpt\n⏳ Thinking…');               // bare persona stamp on the placeholder
+      expect(f.text).toBe('🐶 egpt ⏳ Thinking…');               // bare persona stamp on the placeholder
     });
 
     it('update() pushes live SIGNED frames; finish() commits ONE streaming:false frame carrying the same FULL wrap', () => {
@@ -268,12 +268,12 @@ describe('shell-port limb', () => {
       const fs = frames(sock);
       // WAS: "live, bare stamp (NO sigs)". C13 (operator 2026-07-26) — a live frame is a message
       // on a surface, so it signs; the live/committed distinction is about REPLACEMENT, not signing.
-      expect(fs[0]).toMatchObject({ streaming: true, text: '🌉kg\n— e —\n🐶 egpt\n⏳ Thinking…\n~ e\n💸' });
-      expect(fs[1]).toMatchObject({ streaming: true, text: '🌉kg\n— e —\n🐶 egpt\nHola ⏳\n~ e\n💸' });
+      expect(fs[0]).toMatchObject({ streaming: true, text: '🌉kg — e — 🐶 egpt ⏳ Thinking… ~ e 💸' });
+      expect(fs[1]).toMatchObject({ streaming: true, text: '🌉kg — e — 🐶 egpt Hola ⏳ ~ e 💸' });
       const final = fs[fs.length - 1];
       expect(final.streaming).toBe(false);
       // the ONE committed final: bridge_open, agent_open, CORE, agent_close, bridge_close
-      expect(final.text).toBe('🌉kg\n— e —\n🐶 egpt\nHola mundo\n~ e\n💸');
+      expect(final.text).toBe('🌉kg — e — 🐶 egpt Hola mundo ~ e 💸');
       expect(fs.filter((f) => f.streaming === false)).toHaveLength(1);   // exactly one committed frame
       expect(stream.delivered).toBe(true);                       // → sender skips its §7 beeper fallback
     });
@@ -289,11 +289,11 @@ describe('shell-port limb', () => {
       stream.update('Hola mundo ⏳');
       stream.finish('Hola mundo');
       const fs = frames(sock);
-      expect(fs[0]).toMatchObject({ streaming: true, text: '🌉kg\n— e —\n🐶 egpt\n⏳ Thinking…\n~ e\n💸' });
-      expect(fs[1]).toMatchObject({ streaming: true, text: '🌉kg\n— e —\n🐶 egpt\nHola ⏳\n~ e\n💸' });
-      expect(fs[2]).toMatchObject({ streaming: true, text: '🌉kg\n— e —\n🐶 egpt\nHola mundo ⏳\n~ e\n💸' });
+      expect(fs[0]).toMatchObject({ streaming: true, text: '🌉kg — e — 🐶 egpt ⏳ Thinking… ~ e 💸' });
+      expect(fs[1]).toMatchObject({ streaming: true, text: '🌉kg — e — 🐶 egpt Hola ⏳ ~ e 💸' });
+      expect(fs[2]).toMatchObject({ streaming: true, text: '🌉kg — e — 🐶 egpt Hola mundo ⏳ ~ e 💸' });
       // settled bytes IDENTICAL to before the change
-      expect(fs[3]).toMatchObject({ streaming: false, text: '🌉kg\n— e —\n🐶 egpt\nHola mundo\n~ e\n💸' });
+      expect(fs[3]).toMatchObject({ streaming: false, text: '🌉kg — e — 🐶 egpt Hola mundo ~ e 💸' });
       const count = (s, needle) => s.split(needle).length - 1;
       for (const f of fs) { expect(count(f.text, '🌉kg')).toBe(1); expect(count(f.text, '💸')).toBe(1); }
     });
@@ -303,7 +303,7 @@ describe('shell-port limb', () => {
       port.startStream('main', '⏳', { bodyEmoji: '🐶', label: 'egpt' }).finish('done');
       const committed = frames(sock).filter((f) => f.streaming === false);
       expect(committed).toHaveLength(1);
-      expect(committed[0].text).toBe('🐶 egpt\ndone');
+      expect(committed[0].text).toBe('🐶 egpt done');
     });
 
     it('delete() clears the live line with a streaming:false delete frame — commits nothing', () => {
@@ -343,13 +343,13 @@ describe('shell-port limb', () => {
     it('a 👂 echo send is SIGNED on the shell too — byte-identical to the beeper echo render', () => {
       const { port, sock } = connected({ bridgeSignatureOpen: 'BO', bridgeSignatureClose: 'BC' });
       port.send('main', '👂 hola', { agentSigOpen: 'TO', agentSigClose: 'TC' });
-      expect(frames(sock)[0].text).toBe('BO\nTO\n👂 hola\nTC\nBC');
+      expect(frames(sock)[0].text).toBe('BO TO 👂 hola TC BC');
     });
 
     it('a plain system reply (/status) carries the node bridge layer too — signing is a property of the SEND', () => {
       const { port, sock } = connected({ bridgeSignatureOpen: '🌉kg', bridgeSignatureClose: '🌉' });
       port.send('main', 'node: kg\npeers: do');
-      expect(frames(sock)[0].text).toBe('🌉kg\nnode: kg\npeers: do\n🌉');
+      expect(frames(sock)[0].text).toBe('🌉kg node: kg\npeers: do 🌉');
     });
   });
 
@@ -387,7 +387,7 @@ describe('shell-port limb', () => {
       const { ws: sock } = dialAuthed(servers[0]);
       port.postStatus('main', '🤔 thinking…');
       const frame = JSON.parse(sock.sent[0]);
-      expect(frame).toMatchObject({ streaming: true, text: '🌉kg\n🤔 thinking…\n💸' });
+      expect(frame).toMatchObject({ streaming: true, text: '🌉kg 🤔 thinking… 💸' });
     });
   });
 

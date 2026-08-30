@@ -1072,7 +1072,7 @@ describe('beeper bridge', () => {
     })] });
     await waitFor(() => incoming.length === 1);
     await waitFor(() => fake.posts.length === 1);
-    expect(fake.posts[0].text).toBe('BO\nTO\n👂 fake transcript\nTC\nBC');   // concentric: opens top-down, closes bottom-up
+    expect(fake.posts[0].text).toBe('BO TO 👂 fake transcript TC BC');   // concentric: opens top-down, closes bottom-up
   });
 
   // CLOSES-ONLY (opens empty) → the 👂 still LEADS. A pure render lock; with token-based coverage the
@@ -1088,7 +1088,7 @@ describe('beeper bridge', () => {
     })] });
     await waitFor(() => incoming.length === 1);
     await waitFor(() => fake.posts.length === 1);
-    expect(fake.posts[0].text).toBe('👂 fake transcript\nTC\n💸');   // 👂 leads, closes below (inner then outer)
+    expect(fake.posts[0].text).toBe('👂 fake transcript TC 💸');   // 👂 leads, closes below (inner then outer)
     expect(fake.posts[0].text.startsWith('👂')).toBe(true);          // still the LEADING char
   });
 
@@ -1146,7 +1146,7 @@ describe('beeper bridge', () => {
     })] });
     await waitFor(() => incoming.length === 1);
     await waitFor(() => fake.posts.length === 1);
-    expect(fake.posts[0].text).toBe('TO\n👂 fake transcript');    // the open sits ABOVE the 👂
+    expect(fake.posts[0].text).toBe('TO 👂 fake transcript');    // the open sits ABOVE the 👂
     expect(fake.posts[0].text.startsWith('👂')).toBe(false);      // 👂 no longer leads — coverage is token-based, so dedup is unaffected
   });
 

@@ -220,10 +220,10 @@ describe('mesh service — responder (a request arrives at the owning node)', ()
     // The reply is RENDERED INTO the payload by the shared persona wrap — the same renderer a
     // local reply gets — so the being's identity travels inside the nugget. Live frames carry the
     // bare stamp (the ports' once-at-the-end convention); the final carries the full wrap.
-    expect(stripNodeSignature(parseMesh(s.updates.at(-1)).body)).toBe('🤝 don\naquí');
+    expect(stripNodeSignature(parseMesh(s.updates.at(-1)).body)).toBe('🤝 don aquí');
     const fin = parseMesh(s.finals.at(-1));
     expect(fin).toMatchObject({ by: 'don.do', re: 'HFM.kg', post_id: 'p1', done: true });
-    expect(stripNodeSignature(fin.body)).toBe('🤝 don\naquí');
+    expect(stripNodeSignature(fin.body)).toBe('🤝 don aquí');
     expect(decodeNodeSignature(fin.body)).toBe('do');   // the STRUCTURAL id of the node that rendered it
   });
 
@@ -241,7 +241,7 @@ describe('mesh service — responder (a request arrives at the owning node)', ()
     await flush();
 
     const wire = bridge.streams[0].finals.at(-1);
-    expect(stripNodeSignature(parseMesh(wire).body)).toBe('🌉do\n🤝 don\naquí\n🌉do');   // stamp + VISIBLE signature INSIDE the nugget
+    expect(stripNodeSignature(parseMesh(wire).body)).toBe('🌉do 🤝 don aquí 🌉do');   // stamp + VISIBLE signature INSIDE the nugget
     expect(decodeNodeSignature(parseMesh(wire).body)).toBe('do');                        // …and the STRUCTURAL one too
     expect(parseMesh(wire)).toMatchObject({ by: 'don.do', done: true });                 // …and the envelope still parses
   });

@@ -17,32 +17,32 @@ describe('personaStamp — the bridge-enforced persona identifier', () => {
   });
 
   it('body_emoji + label → two-line persona header, and a model self-label is stripped', () => {
-    expect(personaStamp('🐶', 'egpt', 'Aquí estoy')).toBe('🐶 egpt\nAquí estoy');
-    expect(personaStamp('🐶', 'egpt', 'egpt: Aquí estoy')).toBe('🐶 egpt\nAquí estoy');   // self-label stripped
+    expect(personaStamp('🐶', 'egpt', 'Aquí estoy')).toBe('🐶 egpt Aquí estoy');
+    expect(personaStamp('🐶', 'egpt', 'egpt: Aquí estoy')).toBe('🐶 egpt Aquí estoy');   // self-label stripped
   });
 });
 
 describe('makeWrapPersona — concentric [bridge, agent] wrap around the stamped core', () => {
   it('all slots empty → byte-identical to the bare stamp (regression lock)', () => {
     const wrap = makeWrapPersona({});
-    expect(wrap({ bodyEmoji: '🐶', label: 'egpt' }, 'Hola')).toBe('🐶 egpt\nHola');
+    expect(wrap({ bodyEmoji: '🐶', label: 'egpt' }, 'Hola')).toBe('🐶 egpt Hola');
   });
 
   it('bridge + agent both set → bridge_open, agent_open, CORE, agent_close, bridge_close', () => {
     const wrap = makeWrapPersona({ bridgeSignatureOpen: '🌉kg', bridgeSignatureClose: '💸' });
     const out = wrap({ bodyEmoji: '🐶', label: 'egpt', agentSigOpen: '— e —', agentSigClose: '~ e' }, 'Hola mundo');
-    expect(out).toBe('🌉kg\n— e —\n🐶 egpt\nHola mundo\n~ e\n💸');
+    expect(out).toBe('🌉kg — e — 🐶 egpt Hola mundo ~ e 💸');
   });
 
   it('agent layer alone (bridge empty) wraps just the inner layer', () => {
     const wrap = makeWrapPersona({});
     expect(wrap({ bodyEmoji: '🐶', label: 'egpt', agentSigOpen: 'A_open', agentSigClose: 'A_close' }, 'Hola'))
-      .toBe('A_open\n🐶 egpt\nHola\nA_close');
+      .toBe('A_open 🐶 egpt Hola A_close');
   });
 
   it('bridge layer alone (agent empty) wraps just the outer layer', () => {
     const wrap = makeWrapPersona({ bridgeSignatureOpen: 'B_open', bridgeSignatureClose: 'B_close' });
-    expect(wrap({ bodyEmoji: '🐶', label: 'egpt' }, 'Hola')).toBe('B_open\n🐶 egpt\nHola\nB_close');
+    expect(wrap({ bodyEmoji: '🐶', label: 'egpt' }, 'Hola')).toBe('B_open 🐶 egpt Hola B_close');
   });
 
   // THE PERIOD (operator 2026-07-25: "all messages coming out from a spine to any surface are
@@ -53,7 +53,7 @@ describe('makeWrapPersona — concentric [bridge, agent] wrap around the stamped
   // the SEND; only the persona STAMP still depends on there being an identity to stamp.
   it('a plain/auto send carries the node bridge layer — signing does NOT depend on a persona header', () => {
     const wrap = makeWrapPersona({ bridgeSignatureOpen: '🌉', bridgeSignatureClose: '💸' });
-    expect(wrap({}, 'Hey, all good')).toBe('🌉\nHey, all good\n💸');   // no stamp (nothing to stamp) — but signed
+    expect(wrap({}, 'Hey, all good')).toBe('🌉 Hey, all good 💸');   // no stamp (nothing to stamp) — but signed
   });
 
   it('with every slot empty a plain send is still byte-identical to the bare text (unsigned node unchanged)', () => {
@@ -79,7 +79,7 @@ describe('makeWrapPersona — concentric [bridge, agent] wrap around the stamped
       expect(f.split('🌉kg').length - 1).toBe(1);
       expect(f.split('💸').length - 1).toBe(1);
     }
-    expect(frames.at(-1)).toBe('🌉kg\n🐶 egpt\nHola mundo\n💸');
+    expect(frames.at(-1)).toBe('🌉kg 🐶 egpt Hola mundo 💸');
   });
 
   // THE 👂 ECHO through the ONE path (operator 2026-07-25). beeper.mjs used to apply
@@ -89,7 +89,7 @@ describe('makeWrapPersona — concentric [bridge, agent] wrap around the stamped
   // byte-identical to the deleted copy (tests/beeper-bridge.test.mjs locks the live beeper output).
   it('a 👂 echo core (no persona header) renders through the SHARED wrap: bridge outside, transcription inside', () => {
     const wrap = makeWrapPersona({ bridgeSignatureOpen: 'BO', bridgeSignatureClose: 'BC' });
-    expect(wrap({ agentSigOpen: 'TO', agentSigClose: 'TC' }, '👂 hola')).toBe('BO\nTO\n👂 hola\nTC\nBC');
+    expect(wrap({ agentSigOpen: 'TO', agentSigClose: 'TC' }, '👂 hola')).toBe('BO TO 👂 hola TC BC');
   });
 });
 
@@ -107,6 +107,6 @@ describe('makeWrapPersona — a mesh envelope is transport, never signed', () =>
 
   it('ordinary prose that merely ENDS in a provenance-looking line is still signed (the fence is required)', () => {
     const wrap = makeWrapPersona({ bridgeSignatureOpen: '🌉kg', bridgeSignatureClose: '🌉' });
-    expect(wrap({}, 'shipping it\nby: An')).toBe('🌉kg\nshipping it\nby: An\n🌉');
+    expect(wrap({}, 'shipping it\nby: An')).toBe('🌉kg shipping it\nby: An 🌉');
   });
 });

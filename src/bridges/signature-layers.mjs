@@ -19,7 +19,7 @@
 /**
  * @param {string} core            the message body being wrapped
  * @param {{open?: any, close?: any}[]} [layers]  ordered OUTER→INNER
- * @returns {string}  opens (in order) + core + closes (reversed), empties skipped, joined by '\n'
+ * @returns {string}  opens (in order) + core + closes (reversed), empties skipped, joined by ' '
  */
 export function applyLayers(core, layers = []) {
   return [
@@ -29,5 +29,5 @@ export function applyLayers(core, layers = []) {
   ]
     .map((s) => String(s ?? ''))
     .filter((s) => s.trim() !== '')
-    .join('\n');
+    .join(' ');
 }

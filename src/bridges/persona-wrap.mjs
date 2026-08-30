@@ -47,7 +47,7 @@ export function personaStamp(bodyEmoji, label, text) {
   if (!bodyEmoji) return text;
   if (!label) return `${bodyEmoji} ${text}`;   // body_emoji only (system/echo sends) → inline, no header line
   const clean = String(text).replace(new RegExp(`^\\s*${_escapeRe(label)}\\s*[:：]\\s*`, 'i'), '');
-  return `${bodyEmoji} ${label}\n${clean}`;      // persona header line: "🐶 egpt" then the reply
+  return `${bodyEmoji} ${label} ${clean}`;      // persona header: "🐶 egpt" then the reply, one line
 }
 
 // A mesh ENVELOPE is TRANSPORT, not a message to a surface — the one thing the "period" does not

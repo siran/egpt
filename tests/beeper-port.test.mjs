@@ -90,10 +90,10 @@ describe('beeper-port adapter', () => {
     s.update('egpt: Aquí estoy bien ⏳');                          // model wrote "egpt:" → bridge strips it
     s.finish('Aquí estoy bien');                                  // sender supplies the completed reply — NO inline end-marker
     const h = spy.streams[0];
-    expect(h.init).toBe('🐶 egpt\n⏳');                            // persona header line + placeholder, no nonce suffix
+    expect(h.init).toBe('🐶 egpt ⏳');                            // persona header line + placeholder, no nonce suffix
     expect(h.opts).toMatchObject({ chatId: '!room', persona: 'e', replyToMessageID: 'm7' });
-    expect(h.updates).toEqual(['🐶 egpt\nAquí estoy ⏳', '🐶 egpt\nAquí estoy bien ⏳']);   // header on every frame; "egpt:" stripped
-    expect(h.finals).toEqual(['🐶 egpt\nAquí estoy bien']);
+    expect(h.updates).toEqual(['🐶 egpt Aquí estoy ⏳', '🐶 egpt Aquí estoy bien ⏳']);   // header on every frame; "egpt:" stripped
+    expect(h.finals).toEqual(['🐶 egpt Aquí estoy bien']);
   });
 
   it('exposes NO delete limb — a being never removes a message', async () => {
@@ -173,12 +173,12 @@ describe('beeper-port adapter — layered signatures (bridge + agent wrap)', () 
     // WAS: "placeholder/updates stay un-wrapped … sigs appear once, at the end". C13 (operator
     // 2026-07-26) reversed that — a live frame is a message on a surface, so it signs. Id
     // resolution is unaffected: beeper.mjs matches on the exact bytes it posted.
-    expect(h.init).toBe('🌉kg\n— e —\n🐶 egpt\n⏳\n~ e\n💸');    // placeholder: FULL wrap
-    expect(h.updates).toEqual(['🌉kg\n— e —\n🐶 egpt\nHola ⏳\n~ e\n💸']);   // intermediate frame: FULL wrap
+    expect(h.init).toBe('🌉kg — e — 🐶 egpt ⏳ ~ e 💸');    // placeholder: FULL wrap
+    expect(h.updates).toEqual(['🌉kg — e — 🐶 egpt Hola ⏳ ~ e 💸']);   // intermediate frame: FULL wrap
     // FINAL: outer bridge_open, inner agent_open, the stamped core, inner agent_close, outer bridge_close
-    expect(h.finals).toEqual(['🌉kg\n— e —\n🐶 egpt\nHola mundo\n~ e\n💸']);
+    expect(h.finals).toEqual(['🌉kg — e — 🐶 egpt Hola mundo ~ e 💸']);
     expect(h.finals[0].startsWith('🌉kg')).toBe(true);
-    expect(h.finals[0].endsWith('\n💸')).toBe(true);
+    expect(h.finals[0].endsWith(' 💸')).toBe(true);
   });
 
   it('each slot works alone — only agent_open+agent_close set (bridge empty) wraps just the inner layer', async () => {
@@ -186,7 +186,7 @@ describe('beeper-port adapter — layered signatures (bridge + agent wrap)', () 
     const port = await createBeeperBridgePort({}, { start });   // no bridge_* → outer layer invisible
     const s = port.startStream('!room', '⏳', { bodyEmoji: '🐶', label: 'egpt', agentSigOpen: 'A_open', agentSigClose: 'A_close' });
     s.finish('Hola');
-    expect(spy.streams[0].finals).toEqual(['A_open\n🐶 egpt\nHola\nA_close']);   // agent layer only, concentric around the core
+    expect(spy.streams[0].finals).toEqual(['A_open 🐶 egpt Hola A_close']);   // agent layer only, concentric around the core
   });
 
   it('only bridge_open+bridge_close set (agent empty) wraps just the outer layer', async () => {
@@ -194,14 +194,14 @@ describe('beeper-port adapter — layered signatures (bridge + agent wrap)', () 
     const port = await createBeeperBridgePort({ bridgeSignatureOpen: 'B_open', bridgeSignatureClose: 'B_close' }, { start });
     const s = port.startStream('!room', '⏳', { bodyEmoji: '🐶', label: 'egpt' });   // no agentSig* → inner layer invisible
     s.finish('Hola');
-    expect(spy.streams[0].finals).toEqual(['B_open\n🐶 egpt\nHola\nB_close']);
+    expect(spy.streams[0].finals).toEqual(['B_open 🐶 egpt Hola B_close']);
   });
 
   it('the §7 fallback send of a persona reply carries the same concentric wrap', async () => {
     const { start, spy } = fakeStart();
     const port = await createBeeperBridgePort({ bridgeSignatureOpen: '🌉', bridgeSignatureClose: '💸' }, { start });
     await port.send('!room', 'reply', { bodyEmoji: '🐶', label: 'egpt', replyTo: 'm1', agentSigOpen: 'A_open', agentSigClose: 'A_close' });
-    expect(spy.sent[0].text).toBe('🌉\nA_open\n🐶 egpt\nreply\nA_close\n💸');
+    expect(spy.sent[0].text).toBe('🌉 A_open 🐶 egpt reply A_close 💸');
   });
 
   // WAS "mode:auto plain posts get NO layers". Operator 2026-07-25: "all messages coming out from a
@@ -213,7 +213,7 @@ describe('beeper-port adapter — layered signatures (bridge + agent wrap)', () 
     const { start, spy } = fakeStart();
     const port = await createBeeperBridgePort({ bridgeSignatureOpen: '🌉', bridgeSignatureClose: '💸' }, { start });
     await port.send('!room', 'Hey, all good', {});   // auto branch: no bodyEmoji/label passed
-    expect(spy.sent[0].text).toBe('🌉\nHey, all good\n💸');
+    expect(spy.sent[0].text).toBe('🌉 Hey, all good 💸');
   });
 
   // C12 (HANDOFF 2026-07-26). postStatus was the ONE outbound in this port that never met the
@@ -227,7 +227,7 @@ describe('beeper-port adapter — layered signatures (bridge + agent wrap)', () 
     const port = await createBeeperBridgePort({ bridgeSignatureOpen: '🌉', bridgeSignatureClose: '💸' }, { start });
     const text = '❓ eGPT needs advice — «Bea» (whatsapp):\nconfirm the Friday move?';
     const id = await port.postStatus('!advice', text);
-    expect(spy.statusPosts[0]).toEqual({ text: `🌉\n${text}\n💸`, chatId: '!advice' });
+    expect(spy.statusPosts[0]).toEqual({ text: `🌉 ${text} 💸`, chatId: '!advice' });
     expect(id).toBe('id-1');                       // the CONFIRMED id advice.ask routes answers on
   });
 
@@ -248,7 +248,7 @@ describe('beeper-port adapter — layered signatures (bridge + agent wrap)', () 
     const port = await createBeeperBridgePort({}, { start });   // no bridge_*, no agentSig*
     const s = port.startStream('!room', '⏳', { bodyEmoji: '🐶', label: 'egpt' });
     s.finish('Hola');
-    expect(spy.streams[0].finals).toEqual(['🐶 egpt\nHola']);   // exactly today's output — bare core, no end-marker
+    expect(spy.streams[0].finals).toEqual(['🐶 egpt Hola']);   // exactly today's output — bare core, no end-marker
   });
 
   // C13 (operator 2026-07-26): "how is that that dolly posted without signing? bridge must sign.
@@ -273,14 +273,14 @@ describe('beeper-port adapter — layered signatures (bridge + agent wrap)', () 
     const h = spy.streams[0];
 
     // the placeholder is a real posted message → signed
-    expect(h.init).toBe('🌉kg\n— e —\n🤝 don\n⏳ Thinking…\n~ e\n💸');
+    expect(h.init).toBe('🌉kg — e — 🤝 don ⏳ Thinking… ~ e 💸');
     // every intermediate edit → signed
     expect(h.updates).toEqual([
-      '🌉kg\n— e —\n🤝 don\n30 años ⏳\n~ e\n💸',
-      '🌉kg\n— e —\n🤝 don\n30 años ya — ⏳\n~ e\n💸',
+      '🌉kg — e — 🤝 don 30 años ⏳ ~ e 💸',
+      '🌉kg — e — 🤝 don 30 años ya — ⏳ ~ e 💸',
     ]);
     // the settled reply is BYTE-IDENTICAL to what finish produced before this change
-    expect(h.finals).toEqual(['🌉kg\n— e —\n🤝 don\n30 años ya — y aquí seguimos\n~ e\n💸']);
+    expect(h.finals).toEqual(['🌉kg — e — 🤝 don 30 años ya — y aquí seguimos ~ e 💸']);
     // NO ACCUMULATION: a frame EDITS a message that already carries the signature — each frame is
     // built from the raw core, so every one of them carries exactly one open and one close.
     const count = (s2, needle) => s2.split(needle).length - 1;
@@ -319,10 +319,10 @@ describe('beeper-port adapter — layered signatures (bridge + agent wrap)', () 
     await port.sendMedia('!room', '/tmp/a.png', { caption: 'mira esto', bodyEmoji: '🐶', label: 'egpt' });
     await port.editOwn('!room', 'm1', 'corregido', { bodyEmoji: '🐶', label: 'egpt' });
     await port.editStatus('!room', 'm2', '📨 … ✅');
-    expect(spy.media[0].caption).toBe('🌉\n🐶 egpt\nmira esto\n💸');
+    expect(spy.media[0].caption).toBe('🌉 🐶 egpt mira esto 💸');
     expect(spy.statusEdits).toEqual([
-      { chatId: '!room', msgId: 'm1', text: '🌉\n🐶 egpt\ncorregido\n💸' },
-      { chatId: '!room', msgId: 'm2', text: '🌉\n📨 … ✅\n💸' },
+      { chatId: '!room', msgId: 'm1', text: '🌉 🐶 egpt corregido 💸' },
+      { chatId: '!room', msgId: 'm2', text: '🌉 📨 … ✅ 💸' },
     ]);
   });
 

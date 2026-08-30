@@ -309,7 +309,7 @@ describe('the ORIGIN node signs the relayed reply it posts home (shell surface)'
 
     const final = committed().at(-1);
     // outer = kg's bridge layer; inner = do's body, transported verbatim (its own 🤝 stamp + close)
-    expect(final.text).toBe('🌉kg\n🤝 Yep, still here\n🤝\n🌉');
+    expect(final.text).toBe('🌉kg 🤝 Yep, still here\n🤝 🌉');
   });
 
   // WAS "the 🤔 placeholder is NOT signed — only the reply the node actually posts is". C13
@@ -321,7 +321,7 @@ describe('the ORIGIN node signs the relayed reply it posts home (shell surface)'
     // lingers"), not a committed one — check the raw frame, not committed().
     const { sock } = await shellOriginRelay();
     const live = sock.sent.map((s) => JSON.parse(s)).find((f) => f.streaming === true);
-    expect(live.text).toBe('🌉kg\n🤔 thinking…\n🌉');
+    expect(live.text).toBe('🌉kg 🤔 thinking… 🌉');
   });
 
   it('the ONE-SHOT surface path (no stream primitive / no msgId) is signed identically', async () => {
@@ -329,7 +329,7 @@ describe('the ORIGIN node signs the relayed reply it posts home (shell surface)'
     // msgId null → no mirror stage can be keyed → the engine surfaces the reply home once.
     await mesh.handle({ surface: 'wa', chatId: 'egpt-mesh-do-kg', msgId: null, body: encodeMesh({ by: 'don.do', body, re, post_id, done: true }) });
 
-    expect(committed().at(-1).text).toBe('🌉kg\n🤝 Yep, still here\n🤝\n🌉');
+    expect(committed().at(-1).text).toBe('🌉kg 🤝 Yep, still here\n🤝 🌉');
   });
 
   // TWO signatures are correct (do's inside the transported body, kg's around the delivery).
@@ -349,9 +349,9 @@ describe('the ORIGIN node signs the relayed reply it posts home (shell surface)'
     expect(all.length).toBeGreaterThan(1);
     for (const f of all) {
       expect(f.text.split('🌉kg').length - 1).toBe(1);     // one open, never "🌉kg 🌉kg 🌉kg"
-      expect(f.text.endsWith('\n🌉')).toBe(true);          // one close, at the bottom
+      expect(f.text.endsWith(' 🌉')).toBe(true);          // one close, at the bottom
     }
     expect(all.filter((f) => f.streaming === false)).toHaveLength(1);      // still exactly one COMMITTED frame
-    expect(all.at(-1).text).toBe('🌉kg\n🤝 Yep, still here\n🤝\n🌉');       // settled bytes unchanged
+    expect(all.at(-1).text).toBe('🌉kg 🤝 Yep, still here\n🤝 🌉');       // settled bytes unchanged
   });
 });
