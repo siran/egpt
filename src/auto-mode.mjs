@@ -205,11 +205,43 @@ export function mentionHitsAnywhere(text, tokens) {
 // glue into — or lose — a word boundary) BEFORE running the wake matchers. An
 // unclosed opening ``` strips to end-of-text. (operator 2026-07-24: E replied
 // '…' to its own /status output because the raw text was matched as-is.)
+//
+// GENERALIZED (operator 2026-08-30): a live message used an AD-HOC double-backtick
+// fence ("``…``"), which the old regex — hardcoded to runs of exactly 1 or 3 — never
+// recognized as code at all, so the @e inside it woke E. CommonMark's real rule is a
+// backtick run of ANY length N, closed by the next MAXIMAL run of exactly N backticks
+// (a run of a different length is just content). This is a plain left-to-right scan,
+// not a backreference regex, on purpose: it runs on every inbound message and must
+// stay linear-time with no backtracking risk, even on pathological input (thousands
+// of backticks, no closer).
 function stripCode(text) {
-  return text
-    .replace(/```[\s\S]*?```/g, ' ')   // paired fenced blocks
-    .replace(/```[\s\S]*$/g, ' ')      // unclosed fence → rest of text
-    .replace(/`[^`\n]*`/g, ' ');       // inline code spans
+  let out = '';
+  let i = 0;
+  const n = text.length;
+  while (i < n) {
+    if (text[i] !== '`') {
+      out += text[i++];
+      continue;
+    }
+    let j = i;
+    while (j < n && text[j] === '`') j++;
+    const runLen = j - i;               // maximal opening run, any length
+    let k = j;
+    let closed = false;
+    while (k < n) {
+      if (text[k] === '`') {
+        let m = k;
+        while (m < n && text[m] === '`') m++;
+        if (m - k === runLen) { k = m; closed = true; break; }   // maximal same-length closer
+        k = m;                          // a run of a different length is not a closer — skip it
+      } else {
+        k++;
+      }
+    }
+    out += ' ';                         // paired block/span → single space; unclosed → rest of text
+    i = closed ? k : n;
+  }
+  return out;
 }
 // The PERSONA's view of the matcher: does this text wake E? Returns { atEStart, atEAnywhere }.
 //

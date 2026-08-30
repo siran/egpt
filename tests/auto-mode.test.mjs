@@ -91,6 +91,24 @@ describe('mentionStatus', () => {
       expect(mentionStatus('@ed estás?', wake)).toEqual({ atEAnywhere: true, atEStart: true });
       expect(mentionStatus('```\n@ed estás?\n```', wake)).toEqual({ atEAnywhere: false, atEStart: false });
     });
+    // Live bug (operator 2026-08-30, WhatsApp): an ad-hoc DOUBLE-backtick fence (not the
+    // usual triple) was used to quote an illustrative example addressed to a DIFFERENT
+    // being. The old stripCode only recognized runs of exactly 1 or 3 backticks, so a
+    // run of 2 was not code at all to it — the fenced @e survived stripping and woke E on
+    // someone else's example. CommonMark's real rule (run of N backticks, closed by the
+    // NEXT run of the same N) covers any run length, not just 1 and 3.
+    it('an @e inside a DOUBLE-backtick fence does not wake (any backtick run length is code)', () => {
+      const text = [
+        'w te explico:',
+        '',
+        '``',
+        'an: @e estás',
+        '``',
+        '',
+        'agarra el spine de kg que reconoce a e',
+      ].join('\n');
+      expect(mentionStatus(text)).toEqual({ atEAnywhere: false, atEStart: false });
+    });
   });
 });
 
