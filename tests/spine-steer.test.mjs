@@ -27,9 +27,21 @@ import { createSpine } from '../src/spine/spine.mjs';
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
-function fakeBridge() {
+function fakeBridge({ reactThrows = false } = {}) {
   let cb = null;
-  return { onMessage(fn) { cb = fn; }, emit(msg) { return cb(msg); }, send() {}, stop() {} };
+  const reactions = [];
+  return {
+    reactions,
+    onMessage(fn) { cb = fn; },
+    emit(msg) { return cb(msg); },
+    send() {},
+    stop() {},
+    async react(chatId, msgId, emoji) {
+      reactions.push({ chatId, msgId, emoji });
+      if (reactThrows) throw new Error('reaction boom');
+      return true;
+    },
+  };
 }
 
 // Records every placeholder opened and what it resolved to. A STEERED message must add
@@ -86,8 +98,8 @@ const fakeRouter = { resolve: () => ({ being: 'e', mention: { atEStart: true, at
 const fakeGating = { async decide() { return { mode: 'mention', receives: true, mayReply: true, sendToEgpt: 'mode' }; }, surfaces: () => true };
 const fakeHeartbeats = { runDue() {} };
 
-function build(brainOpts = {}) {
-  const bridge = fakeBridge();
+function build(brainOpts = {}, bridgeOpts = {}) {
+  const bridge = fakeBridge(bridgeOpts);
   const sender = recordingSender();
   const brain = steerableBrain(brainOpts);
   const logged = [];                                    // [ev.body, isReply] per transcript.log call
@@ -144,6 +156,41 @@ describe('spine — allow_new_input steers the live turn (operator 2026-08-30)',
     expect(sender.placeholders).toHaveLength(1);
     expect(sender.placeholders[0].finished).toEqual({ text: 'reply-one', surface: true });
     expect(brain.order).toEqual(['start:one', 'end:one']);
+  });
+
+  // The operator's ask (2026-08-30): a woven message gets no placeholder/reply of its own, so
+  // without SOME ack its sender sees nothing until the live turn's eventual answer. A successful
+  // steer must react on the STEERED message itself (its own chatId/msgId), not the one that's
+  // already streaming — using the SAME bridge.react primitive the /react limb uses.
+  it('a successful steer ACKs the steered message with a reaction (not a new placeholder/reply)', async () => {
+    const { bridge, sender, brain } = build({ allow: 'any' });
+    const p1 = bridge.emit(msg('one', 'm1', 'an'));
+    await flush();
+    const p2 = bridge.emit(msg('actually do X', 'm2', 'someone-else'));
+    await flush();
+
+    expect(brain.steered).toEqual(['actually do X']);
+    expect(bridge.reactions).toEqual([{ chatId: CHAT, msgId: 'm2', emoji: '👀' }]);
+    expect(sender.placeholders).toHaveLength(1);          // still no second placeholder
+    brain.releaseFirst();
+    await Promise.all([p1, p2]);
+  });
+
+  // Best-effort (operator constraint): a reaction fault must never undo a steer that already
+  // landed — the woven message stays woven, and the turn resolves exactly as it would have.
+  it('a reaction FAILURE does not break the steer — the weave still lands', async () => {
+    const { bridge, sender, brain } = build({ allow: 'any' }, { reactThrows: true });
+    const p1 = bridge.emit(msg('one', 'm1', 'an'));
+    await flush();
+    const p2 = bridge.emit(msg('actually do X', 'm2', 'someone-else'));
+    await flush();
+
+    expect(brain.steered).toEqual(['actually do X']);     // still woven despite the reaction throwing
+    expect(bridge.reactions).toHaveLength(1);              // the attempt was made
+    expect(sender.placeholders).toHaveLength(1);
+    brain.releaseFirst();
+    await expect(Promise.all([p1, p2])).resolves.toBeDefined();  // never throws out to the caller
+    expect(sender.placeholders[0].finished).toEqual({ text: 'reply-one', surface: true });
   });
 
   it("'same_sender' + a DIFFERENT sender QUEUES (the bystander does not get to redirect someone else's answer)", async () => {

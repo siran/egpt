@@ -730,6 +730,11 @@ export function createSpine({
     } finally { clearTimeoutFn(timer); }
   }
 
+  // The steer ack's reactionKey — same convention as the /react limb (reply-actions.mjs's
+  // EMOJI_ALIASES 'eyes'): "seen", not "thinking" (that's the placeholder's job, and a woven
+  // message gets no placeholder).
+  const STEER_ACK_EMOJI = '👀';
+
   // STEER THE LIVE TURN (operator's ruling 2026-08-30, `allow_new_input`). A message that
   // arrives while a turn is ALREADY streaming on this key can be WOVEN INTO that turn instead
   // of queueing behind it — the running turn then answers the new instruction, in ONE reply.
@@ -742,11 +747,13 @@ export function createSpine({
   // ONLY ccode was measured; pi is untested and llama has no stream — neither exports `inject`,
   // so both land on the false branch below and queue exactly as they do today.
   //
-  // TRUE means the message was genuinely woven in, and the caller must then produce NOTHING:
-  // no placeholder, no reply, no train. FALSE means NOTHING HAPPENED — not "it half happened"
-  // — so the caller falls straight through to openAndRunReply, i.e. today's behavior. That
-  // sharpness is the whole safety story: the pool's `steer` never runs a turn as a fallback
-  // (warm-sessions.mjs), so a false can never leave a turn running that nobody delivers.
+  // TRUE means the message was genuinely woven in, and the caller must then produce NOTHING
+  // NEW FOR THE CONVERSATION: no placeholder, no reply, no train — only a lightweight reaction
+  // on the inbound message itself (below), acking that it was received and folded in (operator
+  // 2026-08-30: silently absorbing it read as dropped). FALSE means NOTHING HAPPENED — not "it
+  // half happened" — so the caller falls straight through to openAndRunReply, i.e. today's
+  // behavior. That sharpness is the whole safety story: the pool's `steer` never runs a turn as
+  // a fallback (warm-sessions.mjs), so a false can never leave a turn running that nobody delivers.
   //
   // Both brain seams are OPTIONAL. A spine wired with a Brain that has neither (every test
   // fake, every older caller) can never steer, and is byte-identical to before.
@@ -767,6 +774,14 @@ export function createSpine({
     catch (e) { note(`steer ${to}/${ev.chatId}: ${e?.message ?? e}`); return false; }
     if (woven !== true) return false;                 // the turn ended between the check and the push — queue it
     note(`steer ${to}/${ev.chatId}: wove ${ev.senderName ?? ev.senderId ?? '?'}'s message into the live turn (allow_new_input=${allow})`);
+    // ACK the steered message itself (operator 2026-08-30): a woven message gets no placeholder
+    // and no reply of its own — it's folded into the live turn's ONE eventual answer — so without
+    // this its sender sees nothing until then. A reaction, not a message: it doesn't open a
+    // second train. Same primitive + reactionKey convention as the /react limb (reply-actions.mjs,
+    // bridge.react → beeper's sendReaction). Best-effort: a reaction fault must never undo the
+    // steer that already landed.
+    try { await bridge.react?.(ev.chatId, ev.msgId, STEER_ACK_EMOJI); }
+    catch (e) { note(`steer-ack ${to}/${ev.chatId}: ${e?.message ?? e}`); }
     return true;
   }
 
