@@ -255,7 +255,11 @@ describe('warm-cli-session — verboseThinking (operator 2026-08-29, wren\'s "fu
     s.close();
   });
 
-  it('the live onUpdate preview is identical in both modes (text-delta-only, unchanged)', async () => {
+  // Was "identical in both modes" until the progressive-preview fix below: ON mode now ALSO
+  // gets a preview per assistant event, so the two can no longer match exactly. What must
+  // still hold is that OFF stays byte-identical (regression lock), and ON's text-delta-driven
+  // updates are the SAME ones OFF gets — verbose previews are additive, not a replacement.
+  it('OFF is unchanged; ON gets the SAME text-delta updates PLUS progressive verbose previews', async () => {
     const updatesOff = [];
     const sOff = createWarmCliSession({ spawn: fakeClaudeAgentic().spawn });
     await sOff.turn('x', (t) => updatesOff.push(t));
@@ -266,8 +270,30 @@ describe('warm-cli-session — verboseThinking (operator 2026-08-29, wren\'s "fu
     await sOn.turn('x', (t) => updatesOn.push(t));
     sOn.close();
 
-    expect(updatesOff).toEqual(['Hel', 'Hello']);
-    expect(updatesOn).toEqual(updatesOff);
+    expect(updatesOff).toEqual(['Hel', 'Hello']);            // regression lock: OFF path byte-identical
+    const deltaOnlyUpdates = updatesOn.filter((u) => !u.startsWith('THINK1'));
+    expect(deltaOnlyUpdates).toEqual(updatesOff);             // same delta pipeline still fires in ON mode
+    expect(updatesOn.length).toBeGreaterThan(updatesOff.length);   // plus the new verbose previews
+  });
+
+  // The gap this fix closes: today the verbose transcript is only ever delivered ONCE,
+  // at `result`. The operator wants it to grow message-by-message (edited in place in
+  // WhatsApp) the same way plain streaming already does via pending.acc. So onUpdate
+  // must fire on EVERY assistant event that pushes new verbose blocks, each call
+  // carrying the transcript accumulated so far, and the last such call must equal the
+  // turn's final resolved text.
+  it('ON: onUpdate also fires progressively with the growing verbose transcript (not just once at the end)', async () => {
+    const s = createWarmCliSession({ spawn: fakeClaudeAgentic().spawn, verboseThinking: true });
+    const updates = [];
+    const r = await s.turn('what is in the dir?', (t) => updates.push(t));
+    const verboseUpdates = updates.filter((u) => u.startsWith('THINK1'));
+    // fakeClaudeAgentic emits 3 assistant events that each push new verbose blocks
+    // (thinking+tool_use, then thinking, then the final text) — expect a preview per event.
+    expect(verboseUpdates.length).toBeGreaterThanOrEqual(2);
+    for (let i = 1; i < verboseUpdates.length; i++) {
+      expect(verboseUpdates[i].startsWith(verboseUpdates[i - 1])).toBe(true);   // strictly growing
+    }
+    expect(verboseUpdates[verboseUpdates.length - 1]).toBe(r.text);   // last preview == final resolved text
   });
 });
 

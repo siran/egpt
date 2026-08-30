@@ -262,6 +262,10 @@ export function createWarmCliSession(options = {}) {
       // no-op when the option is off. See pushVerboseBlocks above.
       if (verboseThinking && ev.type === 'assistant' && ev.message?.content && pending) {
         pushVerboseBlocks(pending, ev.message.content);
+        // Progressive preview, mirroring pending.acc's onUpdate below: grow the WhatsApp
+        // placeholder message-by-message instead of delivering the whole transcript once,
+        // at `result`. The final `result`-event resolution below is unchanged/authoritative.
+        try { pending.onUpdate?.(pending.verboseBlocks.join('\n\n')); } catch { /* caller's onUpdate */ }
       }
       if (ev.type === 'stream_event' && ev.event?.type === 'content_block_delta') {
         const d = ev.event.delta;
