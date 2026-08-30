@@ -27,7 +27,7 @@
 // route, so nothing could ever carry it. `@don.do` still works when `don` is a relay agent —
 // the @token match below stops at the dot and finds the agent.
 import { agentPaths } from '../mesh/relay.mjs';
-import { mentionHits } from '../auto-mode.mjs';
+import { mentionHits, mentionHitsAnywhere } from '../auto-mode.mjs';
 import { getBeing, allowedUsersPermits } from '../conversations-state.mjs';
 import { surfaceOf } from './identity.mjs';
 
@@ -102,12 +102,24 @@ export function voiceWakeTokens(agent) {
 // the bare form, handed straight to the matcher. It arrives the SAME way the wake list does:
 // boot → createRouter → here, never read from a config inside this function. It touches ONLY the
 // matcher's bare scan; the '@' form is untouched in both states.
-export function addressed(text, agents, { addressWithoutAt = true } = {}) {
+//
+// `isVoice` (DEFAULT false, operator 2026-08-30): the ONLY per-being voice-wake path — before
+// this, voice-wake was wired in exactly ONE place (boot.mjs's persona-only voiceWakeWords, gating
+// only the bridge's own mentionStatus call), so a non-persona agent's voice_handles never reached
+// this function and could never wake it. When true, EVERY candidate agent's OWN voiceWakeTokens
+// (declared `voice_handles:`, no map-key fallback) are ALSO run through mentionHitsAnywhere — the
+// SAME matcher the persona's own voice case already uses via mentionStatus' alsoAnywhere — and
+// merged into the SAME { name, agent, atStart, anywhere } shape, mirroring mentionStatus' own
+// convention: a voice-only hit ORs into `anywhere` and never sets `atStart` (an anywhere match has
+// no "start"). Default false → byte-identical to before for every caller that doesn't pass it.
+export function addressed(text, agents, { addressWithoutAt = true, isVoice = false } = {}) {
   const byToken = new Map();                       // WAKE TOKEN -> { name, agent }; first agent wins a shared handle
+  const byVoiceToken = new Map();                   // VOICE TOKEN -> { name, agent }; same convention, voice-only
   for (const [name, agent] of Object.entries(agents ?? {})) {
     if (!agent || typeof agent !== 'object' || name.startsWith('_')) continue;
     const hit = { name: name.toLowerCase(), agent };
     for (const id of wakeTokens(name, agent)) if (!byToken.has(id)) byToken.set(id, hit);
+    if (isVoice) for (const id of voiceWakeTokens(agent)) if (!byVoiceToken.has(id)) byVoiceToken.set(id, hit);
   }
   const out = [];
   const seen = new Set();
@@ -116,6 +128,14 @@ export function addressed(text, agents, { addressWithoutAt = true } = {}) {
     if (!hit || seen.has(hit.name)) continue;
     seen.add(hit.name);
     out.push({ name: hit.name, agent: hit.agent, atStart, anywhere: true });
+  }
+  if (isVoice) {
+    for (const { token } of mentionHitsAnywhere(text, [...byVoiceToken.keys()])) {
+      const hit = byVoiceToken.get(token);
+      if (!hit || seen.has(hit.name)) continue;
+      seen.add(hit.name);
+      out.push({ name: hit.name, agent: hit.agent, atStart: false, anywhere: true });
+    }
   }
   return out;
 }
@@ -194,7 +214,11 @@ export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', addre
       // every hit below falls straight to its GLOBAL allowed_users (or unrestricted).
       const state = loadState ? await loadState().catch(() => null) : null;
       if (agents && typeof agents === 'object') {
-        for (const hit of addressed(ev?.body ?? '', agents, { addressWithoutAt })) {
+        // isVoice rides off the SAME ev already in scope (spine.mjs sets it; identity.mjs stamps
+        // it from the bridge's isTranscriptFromVoice) — no new field, the one this node already
+        // carries for a voice-note turn. Absent/false → addressed() runs its @/bare-only path,
+        // byte-identical to before.
+        for (const hit of addressed(ev?.body ?? '', agents, { addressWithoutAt, isVoice: ev?.isVoice })) {
           // SURFACE PIN (operator 2026-07-25): an agent may carry `surface: <name>` so it is an
           // agent ONLY on that surface; on any OTHER surface the @mention falls through (as if
           // unmatched). Co-account CORRECTNESS, not convenience: `do` and `kg` share ONE Beeper

@@ -473,3 +473,48 @@ describe('voiceWakeTokens — voice_handles, no map-key fallback (silence-by-def
     expect(voiceWakeTokens({ voice_handles: ['perrito', '', null, undefined] })).toEqual(['perrito']);
   });
 });
+
+// ── addressed({ isVoice }) — a NON-persona agent's voice_handles reach the router (bug fix).
+//    Before this: voice-wake was wired in exactly ONE place (boot.mjs's persona-only
+//    voiceWakeWords, gating ONLY the bridge's own mentionStatus call) — the REAL per-being
+//    router (addressed(), here) never looked at voice at all, so no non-persona agent ever
+//    had a path to wake by spoken alias, config or no config. `addressed()` now accepts
+//    `isVoice` and, when true, ALSO runs each candidate agent's voiceWakeTokens through
+//    mentionHitsAnywhere (the SAME matcher the persona's own voice case already uses via
+//    mentionStatus' alsoAnywhere) and merges the hits into the SAME { name, agent, atStart,
+//    anywhere } shape — a voice-only hit carries atStart:false, anywhere:true, mirroring
+//    mentionStatus' own OR-into-atEAnywhere-never-atEStart convention. ──
+describe('addressed({ isVoice }) — non-persona voice_handles reach the router (operator 2026-08-30)', () => {
+  const agents = {
+    egpt: { configuration: 'sonnet-high', handles: ['e', 'egpt'], default: true },   // persona, NO voice_handles
+    wren: { configuration: 'sonnet-high', handles: ['wren'], voice_handles: ['wren', 'ren'] },   // non-persona, spoken alias 'ren'
+  };
+
+  it('REPRODUCE-FIRST: a spoken-only alias ("ren", not in handles) wakes the non-persona agent when isVoice:true', () => {
+    const hits = addressed('so anyway ren can you check that', agents, { isVoice: true });
+    expect(hits).toEqual([{ name: 'wren', agent: agents.wren, atStart: false, anywhere: true }]);
+  });
+
+  it('the same text with isVoice:false (or omitted) addresses NOBODY — "ren" is not a handle', () => {
+    expect(addressed('so anyway ren can you check that', agents, { isVoice: false })).toEqual([]);
+    expect(addressed('so anyway ren can you check that', agents)).toEqual([]);
+  });
+
+  it('the router itself wakes the non-persona being on a spoken alias when resolve() is handed isVoice:true', async () => {
+    const router = createRouter({ getAgents: () => agents, defaultBeing: 'egpt' });
+    const r = await router.resolve({ body: 'so anyway ren can you check that', isVoice: true });
+    expect(r.being).toBe('wren');
+  });
+
+  it('a text handle (@wren) and a voice alias (ren) in the same message dedup to ONE entry, atStart true (the OR convention)', () => {
+    const hits = addressed('@wren and also ren are you there', agents, { isVoice: true });
+    expect(hits).toEqual([{ name: 'wren', agent: agents.wren, atStart: true, anywhere: true }]);
+  });
+
+  it('REGRESSION: isVoice omitted/false is byte-identical to today for every existing shape — an @/bare handle still works, voice_handles never consulted', () => {
+    expect(addressed('@wren ping', agents)).toEqual([{ name: 'wren', agent: agents.wren, atStart: true, anywhere: true }]);
+    expect(addressed('@wren ping', agents, { isVoice: false })).toEqual([{ name: 'wren', agent: agents.wren, atStart: true, anywhere: true }]);
+    expect(addressed('ren ping', agents, { isVoice: false })).toEqual([]);
+    expect(addressed('ren ping', agents)).toEqual([]);
+  });
+});
