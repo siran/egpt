@@ -259,7 +259,13 @@ describe('warm-cli-session — verboseThinking (operator 2026-08-29, wren\'s "fu
   // gets a preview per assistant event, so the two can no longer match exactly. What must
   // still hold is that OFF stays byte-identical (regression lock), and ON's text-delta-driven
   // updates are the SAME ones OFF gets — verbose previews are additive, not a replacement.
-  it('OFF is unchanged; ON gets the SAME text-delta updates PLUS progressive verbose previews', async () => {
+  // Was "ON gets the SAME text-delta updates PLUS progressive verbose previews" — that
+  // assertion was itself checking the bug (operator 2026-08-30): branch 2's bare pending.acc
+  // updates and branch 1's THINK1-prefixed updates diverged, which made sender.mjs's absorb()
+  // seal one behind RETAINED_SEAM and start a new tail, producing visible duplicate text in
+  // WhatsApp. Fix: branch 2's onUpdate is suppressed when verboseThinking is on, so ON mode's
+  // updates are fed by the verbose-block branch only.
+  it('OFF is unchanged; ON only gets verbose-block previews (plain-delta updates suppressed to avoid a divergence/duplicate in sender.mjs)', async () => {
     const updatesOff = [];
     const sOff = createWarmCliSession({ spawn: fakeClaudeAgentic().spawn });
     await sOff.turn('x', (t) => updatesOff.push(t));
@@ -271,9 +277,32 @@ describe('warm-cli-session — verboseThinking (operator 2026-08-29, wren\'s "fu
     sOn.close();
 
     expect(updatesOff).toEqual(['Hel', 'Hello']);            // regression lock: OFF path byte-identical
-    const deltaOnlyUpdates = updatesOn.filter((u) => !u.startsWith('THINK1'));
-    expect(deltaOnlyUpdates).toEqual(updatesOff);             // same delta pipeline still fires in ON mode
-    expect(updatesOn.length).toBeGreaterThan(updatesOff.length);   // plus the new verbose previews
+    expect(updatesOn.length).toBeGreaterThan(0);
+    for (const u of updatesOn) {
+      expect(u.startsWith('THINK1')).toBe(true);              // every ON update is a verbose-block preview
+    }
+    for (const off of updatesOff) {
+      expect(updatesOn).not.toContain(off);                   // bare delta strings never reach onUpdate in ON mode
+    }
+  });
+
+  // Reproduces the production duplicate-text bug (operator 2026-08-30, live WhatsApp
+  // screenshot: "ListAgents()\n\nI'll start by reading...\n\n— ↓ reply —\n\nI'll start by
+  // reading..."). Before the fix, branch 1 (verbose-block preview) and branch 2 (bare
+  // text-delta / pending.acc preview) both called onUpdate for the same turn, feeding
+  // sender.mjs's absorb() two independently-growing strings. absorb() seals the current tail
+  // behind RETAINED_SEAM and starts a new one whenever the next value does NOT start with the
+  // current one — so any such interruption here would reproduce the visible duplicate. Post-fix
+  // there must be exactly ONE growing sequence, fed only by the verbose-block branch.
+  it('ON: every onUpdate value monotonically extends the previous one (no divergence for sender.mjs to duplicate)', async () => {
+    const s = createWarmCliSession({ spawn: fakeClaudeAgentic().spawn, verboseThinking: true });
+    const updates = [];
+    await s.turn('what is in the dir?', (t) => updates.push(t));
+    s.close();
+    expect(updates.length).toBeGreaterThan(1);
+    for (let i = 1; i < updates.length; i++) {
+      expect(updates[i].startsWith(updates[i - 1])).toBe(true);
+    }
   });
 
   // The gap this fix closes: today the verbose transcript is only ever delivered ONCE,

@@ -271,11 +271,11 @@ export function createWarmCliSession(options = {}) {
         const d = ev.event.delta;
         if (d?.type === 'text_delta' && typeof d.text === 'string' && pending) {
           pending.acc += d.text;
-          try { pending.onUpdate?.(pending.acc); } catch { /* caller's onUpdate */ }
+          if (!verboseThinking) { try { pending.onUpdate?.(pending.acc); } catch { /* caller's onUpdate */ } }
         }
       } else if (ev.type === 'assistant' && ev.message?.content && pending && !pending.acc) {
         const text = ev.message.content.filter((c) => c.type === 'text').map((c) => c.text).join('');
-        if (text) { pending.acc = text; try { pending.onUpdate?.(pending.acc); } catch { /* */ } }
+        if (text) { pending.acc = text; if (!verboseThinking) { try { pending.onUpdate?.(pending.acc); } catch { /* */ } } }
       } else if (ev.type === 'result') {
         if (ev.subtype === 'success') {
           // verboseThinking ON: the accumulated verbose buffer wins over ev.result. OFF
