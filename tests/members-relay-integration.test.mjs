@@ -279,4 +279,17 @@ describe('wa-group membership — many groups joined to ONE room, which tunnels 
     expect(await resolveMembers('whatsapp', '!unrelated')).toEqual([]);
     expect((await resolveMembers('whatsapp', '!grp-A')).map((m) => m.id)).toEqual(['!grp-A', '!grp-B']);
   });
+
+  // room-relay.mjs's ROOM-TRANSCRIPT seam (operator 2026-08-30) reads the room NAME(s) a
+  // wa-group chat tunnels into off `roster.tunnelRooms`, so it never re-derives this reverse
+  // lookup. Locking the REAL shape here, against the real reverse lookup, not a fake of it.
+  it("resolveMembers hands back which room(s) a wa-group chat tunnels into, on `.tunnelRooms`", async () => {
+    const { cmds } = commandsFor(rooms);
+    await tunnelWith(cmds);
+
+    const resolveMembers = createMemberResolver({ resolveConvRoom: rooms });
+    expect((await resolveMembers('whatsapp', '!grp-A')).tunnelRooms).toEqual(['tunnel']);
+    expect((await resolveMembers('whatsapp', '!grp-B')).tunnelRooms).toEqual(['tunnel']);
+    expect((await resolveMembers('whatsapp', '!unrelated')).tunnelRooms).toEqual([]);
+  });
 });

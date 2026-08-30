@@ -24,11 +24,12 @@ function human(body, { chatId = 'room-1', msgId = 'm1' } = {}) {
   return { body, from: { network: 'whatsapp', chatId, chatName: 'devroom', userId: 'u-an', senderName: 'An', authorized: true, msgKey: msgId } };
 }
 
-function harness({ members = [], eGating, turns = 6 } = {}) {
+function harness({ members = [], eGating, turns = 6, tunnelRooms = null } = {}) {
   const relayCalls = [];
   const activateCalls = [];
   const callOrder = [];
   const posts = [];
+  const roomLogs = [];
   let seq = 0;
   const bridge = { sent: [], onMessage() {}, send(chat, text, opts) { this.sent.push({ chat, text, opts }); }, stop() {}, wasSentByUs: () => false };
   const brain = { calls: [], async turn(being, ev) { this.calls.push({ being, body: ev.body }); return { text: `E:${ev.body}`, sessionId: 's1' }; } };
@@ -44,7 +45,9 @@ function harness({ members = [], eGating, turns = 6 } = {}) {
   const guard = createStopGuard({ turns });
 
   const roomRelay = createRoomRelay({
-    resolveMembers: async () => members,
+    // tunnelRooms mirrors boot.mjs createMemberResolver's `roster.tunnelRooms` — the room
+    // name(s) the reverse lookup found ev's own chat invited into (see room-relay.mjs header).
+    resolveMembers: async () => { if (tunnelRooms) members.tunnelRooms = tunnelRooms; return members; },
     adapterOf: async () => ({ injectScript: (t) => `INJECT[${t}]`, pollScript: 'POLL' }),
     // The fake focus seam: record the drive so tests can assert it fires BEFORE streamFromTab.
     activateTarget: async (targetId) => {
@@ -64,6 +67,7 @@ function harness({ members = [], eGating, turns = 6 } = {}) {
       posts.push(rec);
       return { update: (t) => rec.updates.push(t), finish: async (r) => { rec.final = typeof r === 'string' ? r : r?.text; }, fail: async () => {} };
     },
+    logRoomTranscript: async (roomName, ev) => { roomLogs.push({ roomName, ev }); },
     onLog: () => {},
   });
 
@@ -71,7 +75,7 @@ function harness({ members = [], eGating, turns = 6 } = {}) {
     bridge, brain, identity, router, gating, sender, transcript, heartbeats,
     guard, roomRelay, clock: { now: () => 1000 }, turnTimeoutMs: 0,
   });
-  return { spine, bridge, brain, transcript, guard, relayCalls, activateCalls, callOrder, posts, channel: 'whatsapp:room-1' };
+  return { spine, bridge, brain, transcript, guard, relayCalls, activateCalls, callOrder, posts, roomLogs, channel: 'whatsapp:room-1' };
 }
 
 describe('room relay — brain-member gated delivery (mode)', () => {
@@ -257,5 +261,57 @@ describe('room relay — E participates in the brain chatter per its OWN mode (d
     const bodies = brain.calls.map((c) => c.body);
     expect(bodies).toContain('hi team');                               // E answered the human
     expect(bodies).toContain('brain-reply-1');                         // …and saw the brain's re-entered reply
+  });
+});
+
+// ── the room's OWN transcript record for a tunnelled wa-group message (operator 2026-08-30) ──
+//
+// The root cause: this service never counts/logs (see the module header) — the re-entry does
+// that once, at the chokepoint, and a wa-group delivery is a plain SEND, never re-entered (the
+// ping-pong lock). So the ROOM's own transcript.md never saw a wa-group message that tunnelled
+// through it. `logRoomTranscript` closes exactly that gap, additively: `resolveMembers`'s
+// reverse lookup hands the room name(s) back on `members.tunnelRooms` (mirroring boot.mjs
+// createMemberResolver's real shape), and fanOut calls the seam ONCE per resolved room per
+// inbound event — never once per member relayed to.
+describe("room relay — a wa-group message logs ONE record into the room's own transcript", () => {
+  const A = 'room-1';
+  const B = 'group-B';
+
+  it('fans out AND calls logRoomTranscript exactly once (not once per wa-group member), with who/what/where', async () => {
+    const members = [
+      { id: A, kind: 'wa-group', state: 'active' },
+      { id: B, kind: 'wa-group', state: 'active' },
+    ];
+    const { spine, roomLogs, posts } = harness({ members, tunnelRooms: ['dj-son'] });
+
+    await spine.handleInbound(human('hola equipo'));
+
+    expect(posts).toHaveLength(1);          // the OTHER group still gets delivered exactly as before
+    expect(roomLogs).toHaveLength(1);       // ONE record, even though two wa-group members are in the roster
+    expect(roomLogs[0].roomName).toBe('dj-son');
+    expect(roomLogs[0].ev.body).toBe('hola equipo');       // what was said
+    expect(roomLogs[0].ev.senderName).toBe('An');          // who said it
+    expect(roomLogs[0].ev.chatName).toBe('devroom');        // which group it came from
+  });
+
+  it('no tunnelRooms on the roster (the ordinary/non-tunnel case) — logRoomTranscript is never called', async () => {
+    const members = [{ id: 'chatgpt', kind: 'brain', state: 'active', adapter: 'chatgpt-cdp', targetId: 'T1' }];
+    const { spine, roomLogs } = harness({ members });   // no tunnelRooms passed
+    await spine.handleInbound(human('anything at all'));
+    expect(roomLogs).toHaveLength(0);
+  });
+
+  it('logRoomTranscript not injected (default) — fanOut behaves exactly as before: no throw, no attempt', async () => {
+    const members = [{ id: A, kind: 'wa-group', state: 'active' }, { id: B, kind: 'wa-group', state: 'active' }];
+    members.tunnelRooms = ['dj-son'];   // resolveMembers hands back a tunnel — but the seam is unset
+    const roomRelay = createRoomRelay({
+      resolveMembers: async () => members,
+      adapterOf: async () => null,
+      streamFromTab: async () => '',
+      openStream: () => ({ update() {}, finish: async () => {}, fail: async () => {} }),
+      onLog: () => {},
+    });
+    const ev = { surface: 'whatsapp', chatId: A, chatName: 'devroom', senderName: 'An', body: 'hola', ts: 1000 };
+    await expect(roomRelay.fanOut(ev, {})).resolves.toBeUndefined();
   });
 });

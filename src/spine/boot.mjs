@@ -446,10 +446,17 @@ export function createRadioNoteRelay({
 //      a room works as a communication tunnel between groups").
 // Concatenated and deduped by member id, own room first, so a conversation no room lists resolves
 // EXACTLY as it did before. Never throws — a fan-out with no roster is a no-op.
+//
+// `roster.tunnelRooms` (operator 2026-08-30) — the room NAME(s) found by the REVERSE lookup
+// above (never `own`: that is a chat's OWN incidental conversation-room, not a tunnel target).
+// room-relay.mjs's fanOut reads this to log a wa-group message into the room(s) it tunnels
+// into, WITHOUT re-deriving this same scan a second time — see its header. A plain array
+// (no property) is a valid roster shape too (every existing caller/test), so this is additive.
 export function createMemberResolver({ resolveConvRoom, readRooms = readRoomsFile } = {}) {
   return async (surface, chatId) => {
     try {
       const rooms = [];
+      const tunnelRooms = [];
       const own = await resolveConvRoom(surface, chatId);
       if (own) rooms.push(own);
       for (const [ns, row] of Object.entries(await readRooms())) {
@@ -459,13 +466,20 @@ export function createMemberResolver({ resolveConvRoom, readRooms = readRoomsFil
         // so the room it names is rebuilt through the SAME (surface, slug) constructor
         // resolveConvRoom ends in. A key with no surface prefix is not a room address; skip it.
         const cut = String(ns).indexOf('/');
-        if (cut > 0) rooms.push(Room.forChat(String(ns).slice(0, cut), String(ns).slice(cut + 1)));
+        if (cut > 0) {
+          rooms.push(Room.forChat(String(ns).slice(0, cut), String(ns).slice(cut + 1)));
+          tunnelRooms.push(String(ns).slice(cut + 1));
+        }
       }
       const seen = new Set();
       const roster = [];
       for (const room of rooms) {
         for (const m of await room.members()) { if (seen.has(m.id)) continue; seen.add(m.id); roster.push(m); }
       }
+      // Non-enumerable: an existing caller that deep-equals the roster against a plain array
+      // (every test today, e.g. `toEqual([])`) must see no difference — only a reader that
+      // knows to ask for `.tunnelRooms` by name (room-relay.mjs fanOut) ever sees it.
+      Object.defineProperty(roster, 'tunnelRooms', { value: tunnelRooms, enumerable: false });
       return roster;
     } catch { return []; }
   };
@@ -1349,6 +1363,15 @@ export async function boot({
     streamFromTab: cdp.streamFromTab,
     activateTarget: cdp.activateTarget,
     openStream: (memberId, chatId, opts = {}) => memberSender.open(chatId, { being: memberId, replyTo: opts.replyTo ?? null }),
+    // ROOM-TRANSCRIPT RECORD for a wa-group tunnel (operator 2026-08-30): resolveMembers above
+    // (createMemberResolver) hands fanOut the room name(s) ev's own chat tunnels into on
+    // `members.tunnelRooms` — route THAT into the ONE existing transcript service (services.transcript,
+    // built above), never a second writer. Explicit surface/chatId/chatName come AFTER `...ev`
+    // so ev's OWN (surface, chatId) — the wa-group's own chat, not the room — can never win the
+    // spread and misdirect the write back to the group's own file.
+    logRoomTranscript: async (roomName, ev) => {
+      await services.transcript.log({ ...ev, surface: 'room', chatId: roomName, chatName: roomName });
+    },
     onLog: (m) => log.line?.(`[relay] ${m}`),
   });
 

@@ -13,7 +13,7 @@
 // Effectful deps are injected (conv-state load/write via the shared contacts
 // resolver, fs) so the service is testable in-memory; the pure path helpers are
 // imported directly.
-import { recordMemberStat, isoFromMs } from '../conversations-state.mjs';
+import { recordMemberStat, isoFromMs, LOBBY_SLUG } from '../conversations-state.mjs';
 import { Room } from '../room-core.mjs';
 import { transcriptAppend, replyLine } from '../transcript-log.mjs';
 import { renderFrontMatter } from '../transcript-meta.mjs';
@@ -87,7 +87,15 @@ export function createTranscript({
   // lands here too (operator 2026-08-07).
   async function target(ev) {
     const joinedRoom = currentRoomOf(ev.surface);
-    const redirected = joinedRoom && joinedRoom !== 'lobby';
+    // Surface 'room' is BOTH identity.SHELL_SURFACE (the shell's own transport) AND the literal
+    // surface a caller uses to address a room DIRECTLY with an already-resolved chatId (e.g.
+    // boot.mjs's logRoomTranscript, recording a wa-group's tunnelled line into the room it
+    // tunnels through). currentRoomOf('room') answers the SAME map key for both, so on this one
+    // surface the redirect must additionally confirm ev.chatId is still the shell's own default
+    // home (LOBBY_SLUG) — an event that already names a specific, non-default room is final and
+    // must never be reinterpreted onto whatever room the console happens to have joined. Every
+    // OTHER surface keeps its existing per-surface redirect (no such collision exists there).
+    const redirected = joinedRoom && joinedRoom !== LOBBY_SLUG && (ev.surface !== 'room' || ev.chatId === LOBBY_SLUG);
     const surface = redirected ? 'room' : ev.surface;
     const chatId = redirected ? joinedRoom : ev.chatId;
     const slug = await contacts.resolve(surface, chatId, { chatName: ev.chatName });

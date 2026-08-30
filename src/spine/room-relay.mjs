@@ -27,6 +27,15 @@
 // Everything external is injected so the whole fan-out is exercisable against fakes (no live
 // Chrome, no socket): resolveMembers (the room roster), adapterOf (the driver module),
 // streamFromTab (the CDP relay engine), openStream (the member-stamped sender).
+//
+// ROOM-TRANSCRIPT RECORD (operator 2026-08-30): this service NEVER logs — see above — which
+// left a genuine gap for a wa-group tunnel: the group's OWN chat gets the ingestion-chokepoint
+// line, but the ROOM it tunnels into never does (a group delivery is a plain SEND, never a
+// re-entered turn, by design — the ping-pong lock). `logRoomTranscript` closes exactly that
+// gap, additively: resolveMembers's reverse lookup (boot.mjs createMemberResolver) already
+// finds which room(s) invited ev's own chat as a wa-group member and hands the room NAME(s)
+// back on `members.tunnelRooms` (see there) — so fanOut calls this ONCE per resolved room per
+// inbound event, never re-deriving the lookup and never once per member relayed to.
 
 export function createRoomRelay({
   resolveMembers,   // (surface, chatId) => Promise<member[]> — the room's members[] (room-core)
@@ -34,6 +43,7 @@ export function createRoomRelay({
   streamFromTab,    // ({ targetId, injectScript, pollScript, onUpdate }) => Promise<text> — CDP engine (fake in tests)
   openStream,       // (memberId, chatId, { replyTo }) => { update, finish, fail } — member-stamped sender
   activateTarget = async () => {},  // (targetId) => Promise<void> — best-effort tab focus before inject (CDP, fake in tests)
+  logRoomTranscript = null,         // (roomName, ev) => Promise<void> — records ev into roomName's OWN transcript.md (boot-wired to services.transcript.log). Optional: absent → byte-identical to before this seam existed.
   onLog = () => {},
 } = {}) {
   if (typeof resolveMembers !== 'function') throw new Error('createRoomRelay: resolveMembers is required');
@@ -89,6 +99,18 @@ export function createRoomRelay({
       let members;
       try { members = await resolveMembers(ev.surface, ev.chatId); }
       catch (e) { onLog(`resolveMembers ${ev.surface}/${ev.chatId}: ${e?.message ?? e}`); return; }
+      // ONE record of "this was said", per room this event tunnels into — not per member
+      // delivered to (a room with several wa-group members must not get N duplicate lines),
+      // and independent of any member's admit()/mode (the record is about what happened at
+      // the origin, not about who received it). No-op when resolveMembers hands back a plain
+      // roster (every existing caller/test, and the non-tunnel case) or logRoomTranscript is
+      // unset (default) — byte-identical to before either existed.
+      if (typeof logRoomTranscript === 'function' && Array.isArray(members?.tunnelRooms)) {
+        for (const roomName of members.tunnelRooms) {
+          try { await logRoomTranscript(roomName, ev); }
+          catch (e) { onLog(`logRoomTranscript '${roomName}': ${e?.message ?? e}`); }
+        }
+      }
       for (const m of (Array.isArray(members) ? members : [])) {
         if (blocked()) break;                                 // guard tripped — stop fanning
         // A CHAT member (a WhatsApp group invited into this room): the room is the tunnel, so the

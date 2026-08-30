@@ -414,4 +414,26 @@ describe('transcript.log — currentRoomOf redirects WHERE a write lands, ev its
     expect(text).toContain('hola');
     expect((text.match(/hola/g) ?? []).length).toBe(1);   // exactly once — no double record
   });
+
+  // REPRODUCE-FIRST (operator 2026-08-30): logRoomTranscript (boot.mjs) calls transcript.log
+  // with an event that ALREADY names its final destination — surface 'room', chatId the
+  // SPECIFIC room a wa-group tunnels through (never LOBBY_SLUG). But surface 'room' is ALSO
+  // identity.SHELL_SURFACE, so currentRoomOf('room') answers the SAME map key as the shell's
+  // own joined room. Before this fix, `redirected` fired unconditionally whenever something was
+  // joined under that key — so a tunnelled write landed wherever the console's OWN /rooms join
+  // happened to sit, not where the caller explicitly targeted it.
+  it("an event that already names its OWN room under surface 'room' (e.g. logRoomTranscript) is NOT reinterpreted onto a DIFFERENT room joined on that surface", async () => {
+    const files = new Map();
+    // Mirrors production room slugging (fixedSlugFor: surface 'room' -> sanitizeName(chatId)) —
+    // the slug tracks the specific chatId, so 'dj-son' and 'other-room' resolve to distinct paths.
+    const roomContacts = { resolve: async (surface, chatId) => chatId };
+    const tunnelEv = { ...ev, surface: 'room', chatId: 'dj-son', chatName: 'dj-son' };
+    const t = createTranscript({ contacts: roomContacts, io: mkIo(files), currentRoomOf: (surface) => (surface === 'room' ? 'other-room' : null) });
+    expect(await t.log(tunnelEv)).toBe(true);
+    const norm = (p) => p.replace(/\\/g, '/');
+    const ownText = [...files.entries()].find(([p]) => norm(p).includes('/rooms/dj-son/') && p.endsWith('transcript.md'))?.[1] ?? '';
+    const otherText = [...files.entries()].find(([p]) => norm(p).includes('/rooms/other-room/') && p.endsWith('transcript.md'))?.[1] ?? '';
+    expect(ownText).toContain('hola');     // lands in the room the caller actually named
+    expect(otherText).toBe('');            // never redirected onto the unrelated joined room
+  });
 });
