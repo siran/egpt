@@ -73,6 +73,27 @@ function fakeStart() {
   return { start, spy };
 }
 
+// MULTI-CONNECTION fake transport (operator 2026-08-30): boot() now calls startBridge once per
+// DISTINCT resolved token (src/spine/boot.mjs bridgeForToken), so this variant of fakeStart
+// keys a SEPARATE spy per opts.beeperToken — proving, in an end-to-end boot()+spine drive, that
+// each token got its OWN bridge instance (not just its own `beeperToken` field on a shared one).
+function fakeMultiStart() {
+  const byToken = new Map();   // beeperToken -> { onIncoming, sent, streams }
+  const start = async (opts) => {
+    const spy = { onIncoming: opts.onIncoming, sent: [], streams: [] };
+    byToken.set(opts.beeperToken, spy);
+    return {
+      async send(text, o) { spy.sent.push({ text, chatId: o?.chatId }); return { ok: true, confirmedId: `id-${spy.sent.length}` }; },
+      startStreamMessage(init, o) {
+        const h = { delivered: false, finals: [], chatId: o?.chatId, update() {}, async finish(t) { this.finals.push(t); this.delivered = true; } };
+        spy.streams.push(h); return h;
+      },
+      isAlive: () => true, stop() {},
+    };
+  };
+  return { start, byToken };
+}
+
 // fake claude session: the warm pool calls makeSession(brainOptions) → { turn, close, sessionId }.
 function fakeSession(opts) {
   return { sessionId: opts.sessionId ?? 'sess-1', async turn(message, onUpdate) { onUpdate?.(`↩ ${message}`); return { text: `↩ ${message}`, sessionId: this.sessionId }; }, close() {} };
@@ -352,8 +373,13 @@ describe('boot() — config-shape migration', () => {
   const AG = { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true } };
   async function captureBoot(config) {
     let opts = null;
+    // optsList: EVERY startBridge call, in order (operator 2026-08-30, multi-connection Beeper —
+    // boot now calls startBridge once per DISTINCT resolved token, not always once). `opts`
+    // stays the LAST call's, unchanged for every single-connection caller below.
+    const optsList = [];
     const start = async (o) => {
       opts = o;
+      optsList.push(o);
       return { async send() { return { ok: true }; }, startStreamMessage() { return { delivered: false, update() {}, async finish() {} }; }, isAlive: () => true, stop() {} };
     };
     const app = await boot({
@@ -364,18 +390,109 @@ describe('boot() — config-shape migration', () => {
       loadState: async () => emptyState(), writeState: async () => {},
       io: memIo(), ingest: false, tickMs: 0, log: { line: () => {} },
     });
-    return { opts, app };
+    return { opts, optsList, app };
   }
 
   it('beeper.use resolves the ACTIVE account token', async () => {
-    const { opts, app } = await captureBoot({ agents: AG, beeper: { use: 'main', main: { account: 'a@b', token: 'TOK-main' }, alt: { account: 'c@d', token: 'TOK-alt' } } });
+    const { opts, optsList, app } = await captureBoot({ agents: AG, beeper: { use: 'main', main: { account: 'a@b', token: 'TOK-main' }, alt: { account: 'c@d', token: 'TOK-alt' } } });
     expect(opts.beeperToken).toBe('TOK-main');
+    expect(optsList).toHaveLength(1);   // no agent names `alt` → exactly ONE bridge instance, never one per declared account
     app.stop();
   });
 
   it('back-compat: no beeper block → top-level beeper_token still resolves the token', async () => {
-    const { opts, app } = await captureBoot({ agents: AG, beeper_token: 'TOK-legacy' });
+    const { opts, optsList, app } = await captureBoot({ agents: AG, beeper_token: 'TOK-legacy' });
     expect(opts.beeperToken).toBe('TOK-legacy');
+    expect(optsList).toHaveLength(1);
+    app.stop();
+  });
+
+  // MULTI-CONNECTION (operator 2026-08-30): more than one Beeper account wired into ONE node —
+  // agents.<name>.beeper_connection names which `beeper:` block an agent's own outbound rides.
+  // Dedup is by RESOLVED TOKEN, not connection name, so a node where nobody sets the field still
+  // collapses to exactly one bridge — proven directly by this back-compat variant.
+  it('back-compat: MULTIPLE agents, none set beeper_connection → still exactly ONE startBridge call', async () => {
+    const { opts, optsList, app } = await captureBoot({
+      agents: {
+        egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true },
+        wren: { configuration: 'egpt', handles: ['wren'] },
+      },
+      beeper_token: 'TOK-legacy',
+    });
+    expect(optsList).toHaveLength(1);
+    expect(opts.beeperToken).toBe('TOK-legacy');
+    app.stop();
+  });
+
+  // END-TO-END: two agents, two beeper: connections, one names `beeper_connection` — drives a
+  // REAL reply from each through boot()/spine (fakeMultiStart, above) and asserts (a) exactly
+  // TWO startBridge calls (one per distinct token) and (b)/(c) each being's OUTBOUND reply lands
+  // on ITS OWN bridge spy, never the other's. Both inbound messages arrive over the SAME (only-
+  // wired) default connection — inbound dispatch (bridge.onMessage) still rides ONE connection
+  // (this task's scope is OUTBOUND routing only, a documented gap for a follow-up); it's the
+  // reply that must split by being, which is exactly what sender.mjs's per-being bridgeOf proves.
+  //
+  // egpt's chat is seeded mode:'on' (seedMode, top of file) — same reason the top-level 'boot()'
+  // test does: the PERSONA's mention gate reads ev.mention, which is the BRIDGE's own wake-word
+  // computation (identity.mjs), and this fake bridge is a bare stub that never computes it —
+  // mode 'on' replies regardless. rodz needs no such seeding: a NON-default agent's mention is
+  // the ROUTER's own text scan (router.mjs targetFor), so its default 'mention' mode gates
+  // correctly off the literal "@rodz" in the message body alone.
+  it('per-agent beeper_connection routes each being\'s OUTBOUND reply to its OWN bridge — no cross-talk', async () => {
+    const { start, byToken } = fakeMultiStart();
+    const config = {
+      node_name: 'kg',
+      whatsapp: {},
+      beeper: {
+        use: 'main',
+        main: { account: 'a@b', token: 'fake-token-1' },
+        rodz: { account: 'c@d', token: 'fake-token-2' },
+      },
+      agents: {
+        egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true, conversation_defaults: { access_level: 'regular' } },
+        rodz: { configuration: 'egpt', handles: ['rodz'], beeper_connection: 'rodz', conversation_defaults: { access_level: 'regular' } },
+      },
+    };
+    let state = seedMode(emptyState(), 'on', '!room1:beeper.com', 'fam1');
+    const app = await boot({
+      readConfig: () => config,
+      startBridge: start,
+      makeSession: fakeSession,
+      loadState: async () => state,
+      writeState: async (s) => { state = s; },
+      io: memIo(), ingest: false,
+      now: () => Date.UTC(2026, 5, 29, 14, 5),
+      tickMs: 0,
+      log: { line: () => {} },
+    });
+
+    expect(byToken.size).toBe(2);   // exactly one startBridge call per distinct token
+    const mainSpy = byToken.get('fake-token-1');
+    const rodzSpy = byToken.get('fake-token-2');
+    expect(mainSpy.onIncoming).toBeTypeOf('function');
+
+    // egpt (no beeper_connection → falls to beeper.use → main), mode 'on' → replies unconditionally
+    await mainSpy.onIncoming('hola egpt', {
+      chatId: '!room1:beeper.com', chatName: 'fam1', network: 'whatsapp',
+      userId: 'u-1', senderName: 'An', authorized: true, msgKey: 'm1',
+    });
+    // rodz (beeper_connection: 'rodz') answers an @rodz-addressed message — delivered over the
+    // SAME inbound socket (mainSpy), since only the default connection's onMessage is wired.
+    await mainSpy.onIncoming('@rodz hola rodz', {
+      chatId: '!room2:beeper.com', chatName: 'fam2', network: 'whatsapp',
+      userId: 'u-1', senderName: 'An', authorized: true, msgKey: 'm2',
+    });
+
+    expect(mainSpy.streams).toHaveLength(1);
+    expect(mainSpy.streams[0].finals[0]).toContain('hola egpt');
+    expect(mainSpy.streams[0].chatId).toBe('!room1:beeper.com');
+    expect(rodzSpy.streams).toHaveLength(1);
+    expect(rodzSpy.streams[0].finals[0]).toContain('hola rodz');
+    expect(rodzSpy.streams[0].chatId).toBe('!room2:beeper.com');
+    // no cross-talk: neither connection carries the other being's reply
+    expect(mainSpy.sent).toHaveLength(0);
+    expect(rodzSpy.sent).toHaveLength(0);
+
     app.stop();
   });
 

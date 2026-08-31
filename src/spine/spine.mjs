@@ -111,6 +111,13 @@ const gateAs = (t, fallback) => t?.being ?? t?.mesh?.being ?? fallback;
  */
 export function createSpine({
   bridge, brain, store,
+  // bridgeOf (operator 2026-08-30, multi-connection Beeper): OPTIONAL (being) => Bridge. The
+  // spine's OWN two direct bridge sends — the steer-ack react and the voice-out media attach,
+  // both below, both keyed on the being `to` — bypass sender/actions (which already take a
+  // per-being bridgeOf, boot-wired) and must ride the SAME being's connection, not always the
+  // node's default one. Absent, or returning nullish for a given being, falls straight back to
+  // `bridge` above — BYTE-IDENTICAL to before for every existing caller/test.
+  bridgeOf = null,
   identity, router, gating, sender, transcript, heartbeats,
   commands,                            // optional §2c command intercept (operator slash commands)
   mesh,                                // optional §2c mesh service (Phase 4b cross-node relay)
@@ -165,6 +172,7 @@ export function createSpine({
     if (!dep) throw new Error(`createSpine: missing required dependency '${name}'`);
   }
   const note = (s) => { try { log.line?.(s); } catch {} };
+  const bridgeFor = (being) => (bridgeOf ? (bridgeOf(being) ?? bridge) : bridge);
 
   // --- GUARD (C7.7): the SINGLE per-channel loop-breaker + human STOP/RESUME, wired at
   //     THIS chokepoint (handleFast) through which every inbound turn flows. Injected, so
@@ -780,7 +788,7 @@ export function createSpine({
     // second train. Same primitive + reactionKey convention as the /react limb (reply-actions.mjs,
     // bridge.react → beeper's sendReaction). Best-effort: a reaction fault must never undo the
     // steer that already landed.
-    try { await bridge.react?.(ev.chatId, ev.msgId, STEER_ACK_EMOJI); }
+    try { await bridgeFor(to).react?.(ev.chatId, ev.msgId, STEER_ACK_EMOJI); }
     catch (e) { note(`steer-ack ${to}/${ev.chatId}: ${e?.message ?? e}`); }
     return true;
   }
@@ -1009,7 +1017,7 @@ export function createSpine({
             const tmpPath = join(tmpdir(), `egpt-voice-reply-${randomBytes(8).toString('hex')}.ogg`);
             try {
               await writeFile(tmpPath, audio);
-              try { await bridge.sendMedia(ev.chatId, tmpPath, { replyTo: textId }); }
+              try { await bridgeFor(to).sendMedia(ev.chatId, tmpPath, { replyTo: textId }); }
               catch (e) { note(`voice-send ${to}/${ev.chatId}: ${e?.message ?? e}`); }
             } finally { try { await unlink(tmpPath); } catch {} }
           }

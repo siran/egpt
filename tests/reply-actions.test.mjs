@@ -342,3 +342,32 @@ describe('createReplyActions.execute — confined + fail-closed', () => {
     expect(logs.some((l) => /action react failed: boom/.test(l))).toBe(true);
   });
 });
+
+// PER-BEING CONNECTION ROUTING (operator 2026-08-30, multi-connection Beeper): bridgeOf is an
+// OPTIONAL (being) => Bridge selector — a node wired to more than one Beeper account runs a
+// being's OWN limbs (react/reply/media/edit) against ITS OWN bridge. `bridge` stays REQUIRED
+// and is the fallback: absent bridgeOf, or bridgeOf(being) returning nullish, is byte-identical
+// to every test above this block (which pass only `bridge`).
+describe('createReplyActions.execute — bridgeOf: per-being connection routing (multi-connection Beeper)', () => {
+  it('bridgeOf present: react/reply each hit the BEING\'s OWN bridge — no cross-talk', async () => {
+    const mainBridge = fakeBridge();
+    const rodzBridge = fakeBridge();
+    const bridgeOf = (being) => (being === 'rodz' ? rodzBridge : null);   // null for e → falls back to the default `bridge`
+    const a = createReplyActions({ bridge: mainBridge, bridgeOf, bodyEmojiOf: () => '🐶', labelOf: (b) => b, resolveConvDir: async () => null, onLog: () => {} });
+
+    await a.execute(a.parse('/react #7 🔥', EV).run, [], EV, { being: 'e' });
+    await a.execute(a.parse('/reply #9 hola', EV).run, [], EV, { being: 'rodz' });
+
+    expect(mainBridge.calls.react).toEqual([{ chat: EV.chatId, id: '7', emoji: '🔥' }]);
+    expect(mainBridge.calls.send).toEqual([]);           // egpt's /reply never landed here
+    expect(rodzBridge.calls.react).toEqual([]);           // rodz's bridge never saw egpt's /react
+    expect(rodzBridge.calls.send).toEqual([{ chat: EV.chatId, text: 'hola', opts: { replyTo: '9', bodyEmoji: '🐶', label: 'rodz' } }]);
+  });
+
+  it('bridgeOf absent or nullish for a being: falls back to the default `bridge`, never throws', async () => {
+    const b = fakeBridge();
+    const a = createReplyActions({ bridge: b, bridgeOf: () => null, bodyEmojiOf: () => '🐶', labelOf: () => 'e', resolveConvDir: async () => null, onLog: () => {} });
+    await a.execute(a.parse('/react #7 🔥', EV).run, [], EV, { being: 'e' });
+    expect(b.calls.react).toEqual([{ chat: EV.chatId, id: '7', emoji: '🔥' }]);
+  });
+});

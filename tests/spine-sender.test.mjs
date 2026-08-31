@@ -244,3 +244,49 @@ describe('sender — mode:auto post-once (no persona head, no thinking train)', 
     expect(bridge.streams).toHaveLength(0);
   });
 });
+
+// PER-BEING CONNECTION ROUTING (operator 2026-08-30, multi-connection Beeper): bridgeOf is an
+// OPTIONAL (being) => Bridge selector, resolved per open() call (open() already receives
+// `being`) — a node wired to more than one Beeper account routes each being's reply through its
+// OWN bridge instance. The `bridge` param stays REQUIRED and is the fallback: absent bridgeOf,
+// or bridgeOf(being) returning nullish, must behave exactly like every test above this block
+// (which pass only `bridge`) — additive, never a change to that existing path.
+describe('sender — bridgeOf: per-being connection routing (multi-connection Beeper)', () => {
+  it('bridgeOf present: each being streams + falls back through its OWN bridge — no cross-talk', async () => {
+    const mainBridge = fakeBridge();
+    const rodzBridge = fakeBridge();
+    const bridgeOf = (being) => (being === 'rodz' ? rodzBridge : null);   // null for e/egpt → falls back to the default `bridge`
+    const sender = createSender({ bridge: mainBridge, bridgeOf, bodyEmojiOf: () => '🐶', labelOf: (b) => b });
+
+    const outMain = sender.open('!c1', { being: 'egpt', replyTo: 'm1' });
+    await outMain.finish({ text: 'from egpt' });
+    const outRodz = sender.open('!c2', { being: 'rodz', replyTo: 'm2' });
+    await outRodz.finish({ text: 'from rodz' });
+
+    expect(mainBridge.streams).toHaveLength(1);
+    expect(mainBridge.streams[0].finals).toEqual(['from egpt']);
+    expect(rodzBridge.streams).toHaveLength(1);
+    expect(rodzBridge.streams[0].finals).toEqual(['from rodz']);
+    // no cross-talk: neither bridge saw the other being's frames
+    expect(mainBridge.sent).toHaveLength(0);
+    expect(rodzBridge.sent).toHaveLength(0);
+  });
+
+  it('bridgeOf absent (the default path, every other caller): unchanged — every send rides the single `bridge`', async () => {
+    const bridge = fakeBridge();
+    const sender = createSender({ bridge, bodyEmojiOf: () => '🐶' });   // no bridgeOf — mirrors memberSender + every caller above this block
+    const out = sender.open('!c', { being: 'e', replyTo: 'm1' });
+    await out.finish({ text: 'hi' });
+    expect(bridge.streams).toHaveLength(1);
+    expect(bridge.streams[0].finals).toEqual(['hi']);
+  });
+
+  it('bridgeOf returns nullish for a being: falls back to the default `bridge`, never throws', async () => {
+    const bridge = fakeBridge();
+    const sender = createSender({ bridge, bridgeOf: () => null, bodyEmojiOf: () => '🐶' });
+    const out = sender.open('!c', { being: 'e', replyTo: 'm1' });
+    await out.finish({ text: 'hi' });
+    expect(bridge.streams).toHaveLength(1);
+    expect(bridge.streams[0].finals).toEqual(['hi']);
+  });
+});

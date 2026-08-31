@@ -647,17 +647,26 @@ export const CONFIG_SCHEMA = {
   `,
 
   beeper: `
-    Beeper accounts block (operator 2026-07-09).
+    Beeper accounts block (operator 2026-07-09; MULTI-CONNECTION operator 2026-08-30).
 
     SHAPE:
       use: <name>
-        Which account below this node connects with.
+        Which account below is this node's DEFAULT connection (every agent that
+        doesn't name its own — agents.<name>.beeper_connection, below — rides
+        this one).
       <name>:
         account   label — the Beeper address this token belongs to
         token     that account's Desktop API token
 
-    The node's ACTIVE token = beeper[beeper.use].token — switch accounts by
+    A node's default token = beeper[beeper.use].token — switch the default by
     changing use, no re-typing tokens. This REPLACES the top-level beeper_token.
+
+    MORE THAN ONE <name> block may be declared — e.g. a second Beeper Desktop
+    login/WhatsApp number for a second being on the SAME node. One bridge
+    instance is opened per DISTINCT TOKEN actually referenced (by use or by
+    some agent's beeper_connection); an agent that never sets beeper_connection
+    still rides use exactly as before. See agents.beeper_connection below for
+    how an agent picks a NON-default one.
 
     BACK-COMPAT: with no beeper: block (or no use), the bridge falls back to the
     top-level beeper_token key, then the BEEPER_ACCESS_TOKEN env var (unchanged).
@@ -1240,6 +1249,22 @@ export const CONFIG_SCHEMA = {
         answers).
       body_emoji
         Prefixes this agent's outbound messages.
+      beeper_connection
+        OPTIONAL (operator 2026-08-30) — names a <name> block under the top-
+        level beeper: (above) this agent's outbound replies ride, for a node
+        wired to MORE THAN ONE Beeper account. ABSENT ⇒ this node's ordinary
+        single-connection resolution (beeper.use) — NOT the literal 'main':
+        a beeper: { main: {...} } block with no use key falls through to
+        beeper_token/the BEEPER_ACCESS_TOKEN env var today, and an absent
+        beeper_connection must keep landing there too, never on a guessed
+        'main' entry. One bridge instance is opened per DISTINCT TOKEN actually
+        referenced across every agent (dedup by the resolved token, not the
+        connection name) — a node where no agent sets this collapses to
+        exactly one bridge, byte-identical to before. Applies to this agent's
+        own OUTBOUND sends (the sender + reply-actions limbs); inbound
+        dispatch, mesh relay, and node-lifecycle posts (restart announce, /ask
+        advice channel, operator commands) are unaffected and still ride the
+        node's single default connection.
       name
         Display label the bridge stamps as "<body_emoji> <name>: <reply>".
         DEFAULT: the map key.

@@ -255,8 +255,13 @@ export function partialProse(partial, ev = {}, opts = {}) {
  * conversation-dir resolver (for /media confinement). Exposes .parse (the pure
  * split) and .execute (run the actions against the bridge, confined + logged).
  */
-export function createReplyActions({ bridge, bodyEmojiOf = () => null, labelOf = () => null, resolveConvDir = async () => null, askAdvice = null, defaultKey = 'e', onLog = () => {} } = {}) {
+// bridgeOf (operator 2026-08-30, multi-connection Beeper): OPTIONAL (being) => Bridge — a node
+// wired to more than one Beeper connection runs a being's own limbs (react/reply/media/edit)
+// against ITS OWN bridge. Absent, or returning nullish for a given being, falls straight back
+// to the single `bridge` below — BYTE-IDENTICAL to before for every existing caller.
+export function createReplyActions({ bridge, bridgeOf = null, bodyEmojiOf = () => null, labelOf = () => null, resolveConvDir = async () => null, askAdvice = null, defaultKey = 'e', onLog = () => {} } = {}) {
   if (!bridge) throw new Error('createReplyActions: bridge is required');
+  const bridgeForBeing = (being) => (bridgeOf ? (bridgeOf(being) ?? bridge) : bridge);
   // The /ask limb delegates the sole sanctioned cross-chat post to the advice service
   // (createAdvice.ask). Absent (unit tests, no advice wiring) → fail-closed: log + drop,
   // never a bridge send. Keeps reply-actions' "every direct bridge action targets
@@ -271,20 +276,20 @@ export function createReplyActions({ bridge, bodyEmojiOf = () => null, labelOf =
     // Belt-and-suspenders confinement: the resolved path must stay INSIDE convDir.
     if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) { onLog(`media: "${a.path}" escapes the conversation dir — rejected (fail-closed)`); return; }
     if (!existsSync(abs)) { onLog(`media: file not found "${a.path}" in ${convDir} — skipped`); return; }
-    const ok = await bridge.sendMedia?.(ev.chatId, abs, { caption: a.caption, bodyEmoji: bodyEmojiOf(being), label: labelOf(being) });
+    const ok = await bridgeForBeing(being).sendMedia?.(ev.chatId, abs, { caption: a.caption, bodyEmoji: bodyEmojiOf(being), label: labelOf(being) });
     if (!ok) onLog(`media: send failed "${a.path}"`);
   }
 
   async function runOne(a, ev, being) {
     switch (a.type) {
       case 'react': {
-        const ok = await bridge.react?.(ev.chatId, a.targetId, a.emoji);
+        const ok = await bridgeForBeing(being).react?.(ev.chatId, a.targetId, a.emoji);
         if (!ok) onLog(`react: ${a.emoji} → #${a.targetId} failed`);
         return;
       }
       case 'reply': {
         // A persona-stamped quote-reply (reuses the bridge's send + replyTo threading).
-        const r = await bridge.send?.(ev.chatId, a.text, { replyTo: a.targetId, bodyEmoji: bodyEmojiOf(being), label: labelOf(being) });
+        const r = await bridgeForBeing(being).send?.(ev.chatId, a.text, { replyTo: a.targetId, bodyEmoji: bodyEmojiOf(being), label: labelOf(being) });
         if (r?.blocked || r == null) onLog(`reply: → #${a.targetId} not delivered`);
         return;
       }
@@ -299,8 +304,8 @@ export function createReplyActions({ bridge, bodyEmojiOf = () => null, labelOf =
       }
       case 'media': return runMedia(a, ev, being);
       case 'edit': {
-        if (!(await bridge.wasSentByUs?.(ev.chatId, a.targetId))) { onLog(`edit: #${a.targetId} is not one of our messages — rejected (fail-closed)`); return; }
-        const ok = await bridge.editOwn?.(ev.chatId, a.targetId, a.text, { bodyEmoji: bodyEmojiOf(being), label: labelOf(being) });
+        if (!(await bridgeForBeing(being).wasSentByUs?.(ev.chatId, a.targetId))) { onLog(`edit: #${a.targetId} is not one of our messages — rejected (fail-closed)`); return; }
+        const ok = await bridgeForBeing(being).editOwn?.(ev.chatId, a.targetId, a.text, { bodyEmoji: bodyEmojiOf(being), label: labelOf(being) });
         if (!ok) onLog(`edit: #${a.targetId} failed`);
         return;
       }

@@ -66,11 +66,17 @@ const QUEUED = (ahead) => `${LIVE_FRAME_MARK} Queued (${ahead} ahead)…`;
 // message look transient to an observing node and vanish from its transcript.
 export const RETAINED_SEAM = '\n\n— ↓ reply —\n\n';
 
-export function createSender({ bridge, bodyEmojiOf = () => null, labelOf = () => null, agentSignatureOpenOf = () => '', agentSignatureCloseOf = () => '', defaultKey = 'e' } = {}) {
+// bridgeOf (operator 2026-08-30, multi-connection Beeper): OPTIONAL (being) => Bridge, resolved
+// PER open() CALL (open() already receives `being`) — a node wired to more than one Beeper
+// connection routes each being's reply through its OWN bridge. Absent, or returning nullish for
+// a given being, falls straight back to the single `bridge` above — BYTE-IDENTICAL to before for
+// every caller that only passes `bridge` (memberSender, every existing test).
+export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null, labelOf = () => null, agentSignatureOpenOf = () => '', agentSignatureCloseOf = () => '', defaultKey = 'e' } = {}) {
   if (!bridge) throw new Error('createSender: bridge is required');
   const textOf = (v) => (typeof v === 'string' ? v : v?.text ?? '');
   return {
     open(chatId, { being = defaultKey, replyTo = null, queued = false, queuedAhead = 0, auto = false } = {}) {
+      const bridgeForThisBeing = bridgeOf ? (bridgeOf(being) ?? bridge) : bridge;
       // mode:auto — E impersonates the operator, so the reply is PLAIN operator text:
       // NO persona line (no body_emoji/label tag passed → the port stamps nothing), no
       // end-marker, and NO thinking scaffold — no "⏳ Thinking…" placeholder, no streamed
@@ -88,7 +94,7 @@ export function createSender({ bridge, bodyEmojiOf = () => null, labelOf = () =>
           async finish(reply, { surface = true } = {}) {
             const t = textOf(reply);
             if (!surface || !t.trim()) return;          // withheld / empty → post nothing
-            sendResult = await bridge.send(chatId, t, { replyTo });   // plain text: no bodyEmoji/label, no end-marker
+            sendResult = await bridgeForThisBeing.send(chatId, t, { replyTo });   // plain text: no bodyEmoji/label, no end-marker
           },
           async fail() { /* a human doesn't post a typing/failure scaffold — stay silent */ },
           get confirmedId() { return sendResult?.confirmedId ?? null; },
@@ -103,7 +109,7 @@ export function createSender({ bridge, bodyEmojiOf = () => null, labelOf = () =>
       const agentSigOpen = agentSignatureOpenOf(being);
       const agentSigClose = agentSignatureCloseOf(being);
       const tag = { bodyEmoji, label, replyTo, agentSigOpen, agentSigClose };   // the bridge enforces the persona stamp (emoji + label) + wraps the layers from these
-      const stream = bridge.startStream?.(chatId, queued ? QUEUED(queuedAhead) : THINKING, { ...tag, persona: being });
+      const stream = bridgeForThisBeing.startStream?.(chatId, queued ? QUEUED(queuedAhead) : THINKING, { ...tag, persona: being });
       // What the human has already read, in two parts: `tail` is the block the current
       // frame extends, `head` everything sealed behind a seam. See RETAINED_SEAM.
       let head = '';
@@ -152,15 +158,15 @@ export function createSender({ bridge, bodyEmojiOf = () => null, labelOf = () =>
           const body = absorb(t.trim() ? t : noReplyMark());
           if (stream) {
             await stream.finish?.(body);
-            if (!stream.delivered) fallbackResult = await bridge.send(chatId, body, tag);   // §7 fallback
+            if (!stream.delivered) fallbackResult = await bridgeForThisBeing.send(chatId, body, tag);   // §7 fallback
           } else {
-            fallbackResult = await bridge.send(chatId, body, tag);
+            fallbackResult = await bridgeForThisBeing.send(chatId, body, tag);
           }
         },
         async fail() {                                 // visible failure: the message ends with ❌
           try {
             if (stream) await stream.finish?.(`${shown() ? `${shown()} ` : ''}${FAIL_SUFFIX}`);
-            else await bridge.send(chatId, FAIL_SUFFIX, tag);
+            else await bridgeForThisBeing.send(chatId, FAIL_SUFFIX, tag);
           } catch { /* best effort */ }
         },
         get confirmedId() { return fallbackResult ? (fallbackResult?.confirmedId ?? null) : (stream?.confirmedId ?? null); },

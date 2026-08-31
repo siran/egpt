@@ -675,6 +675,17 @@ export async function boot({
     const a = agents()[String(being ?? '').toLowerCase()];
     return (a && typeof a === 'object' && a.agent_signature_close != null) ? a.agent_signature_close : (cfg.agent_signature_close ?? '');
   };
+  // Per-agent Beeper CONNECTION selection (operator 2026-08-30): names which connection (a key
+  // under beeper:, resolved below by tokenFor) this agent's own outbound sends ride. Same
+  // resolver shape as bodyEmojiOf/labelOf/agentSignature*Of above. ABSENT ⇒ this node's existing
+  // single-connection resolution (beeper.use) — deliberately NOT the literal 'main': a
+  // `beeper: { main: {...} }` block with no `use` key falls through to beeper_token/env today
+  // (tokenFor, below), and an absent per-agent field must keep landing there too, never on a
+  // guessed 'main' entry.
+  const connectionOf = (being) => {
+    const a = agents()[String(being ?? '').toLowerCase()];
+    return (a && typeof a === 'object' && a.beeper_connection) ? a.beeper_connection : (cfg.beeper?.use ?? null);
+  };
 
   // conv-state YAML IO — default to the real file, missing = empty state.
   // Routed through conversations-state's OWN readState/writeState (was an inline
@@ -908,15 +919,17 @@ export async function boot({
     if (!self || ev?.surface !== 'whatsapp') return false;
     return shortChatId(ev?.chatId) === shortChatId(self);
   };
-  // Active Beeper token (operator 2026-07-09): the new `beeper:` block selects an account with
-  // `use` → beeper[use].token. BACK-COMPAT: no block / no `use` → the top-level beeper_token key,
-  // then the BEEPER_ACCESS_TOKEN env var (unchanged).
-  const beeperToken = (() => {
+  // Beeper token resolution — GENERALIZED (operator 2026-08-30) from the old single-connection
+  // lookup (operator 2026-07-09, `beeper[beeper.use].token`) into a per-CONNECTION-NAME one, so
+  // more than one Beeper account can be wired into this node — connectionOf (above) picks the
+  // name per agent; `name` may be null (no beeper: block / no per-agent field / no `use`), which
+  // falls straight through to back-compat. BYTE-IDENTICAL to the old resolution when called as
+  // tokenFor(cfg.beeper?.use ?? null) — today's only shape.
+  const tokenFor = (name) => {
     const b = cfg.beeper;
-    const sel = b && typeof b === 'object' ? b.use : null;
-    const acct = sel && b[sel] && typeof b[sel] === 'object' ? b[sel] : null;
+    const acct = name && b && typeof b === 'object' && b[name] && typeof b[name] === 'object' ? b[name] : null;
     return acct?.token ?? cfg.beeper_token ?? process.env.BEEPER_ACCESS_TOKEN;
-  })();
+  };
 
   // (The old pre-👂 OPEN vs observe-cancel warning was removed 2026-07-12: co-account de-dup is now the
   // on-demand coverage query (src/bridges/beeper.mjs noteCovered), which matches on normalized WORD TOKENS
@@ -982,8 +995,14 @@ export async function boot({
     return await (io.readFile ?? readFile)(join(dir, 'transcript.md'), 'utf8').catch(() => null);
   };
 
-  const bridge = lasso.wrap(await createBeeperBridgePort({
-    beeperToken,
+  // Bridge construction — one instance per DISTINCT RESOLVED TOKEN, not per connection NAME
+  // (operator 2026-08-30): dedup by the token VALUE is what collapses "no second connection
+  // declared anywhere" to exactly one instance, byte-identical to before, with no special-casing
+  // for the back-compat shape (beeper_token/env, or a beeper: block with no per-agent field).
+  // Every option below is NODE-LEVEL and shared across every connection — ONLY beeperToken
+  // legitimately varies per instance (userName, media, transcribe*, wakeWords, … are one node's
+  // settings, not one account's).
+  const sharedBridgeOpts = {
     userName: cfg.whatsapp?.user_name ?? cfg.user_name ?? null,
     // Per-surface authorization (operator 2026-07-02): ids are per-surface
     // NAMESPACES — a WhatsApp jid authorizes nothing on Telegram — so the sender
@@ -1040,7 +1059,24 @@ export async function boot({
     earProbeEveryMs: earOff ? 0 : (parseFrequency(earCfg.every) ?? 30 * 60_000),
     earProbeTimeoutMs: parseFrequency(earCfg.timeout) ?? 45_000,
     onLog: (m) => log.line?.(`[bridge] ${m}`),
-  }, startBridge ? { start: startBridge } : {}));
+  };
+  const bridgeByToken = new Map();   // resolved beeperToken value -> lasso-wrapped bridge instance (the DEDUP key, never the connection name)
+  const bridgeForToken = async (token) => {
+    if (!bridgeByToken.has(token)) {
+      bridgeByToken.set(token, lasso.wrap(await createBeeperBridgePort({ ...sharedBridgeOpts, beeperToken: token }, startBridge ? { start: startBridge } : {})));
+    }
+    return bridgeByToken.get(token);
+  };
+  // Construct exactly one bridge per token actually referenced by an agent in the registry — on
+  // a node where no agent names a beeper_connection, every one of these resolves to the SAME
+  // token (connectionOf's fallback), so this loop constructs exactly one bridge, exactly as
+  // before. defaultKey is always among agents() (personaAgent(), above, guarantees it).
+  for (const being of Object.keys(agents())) await bridgeForToken(tokenFor(connectionOf(being)));
+  const bridge = bridgeByToken.get(tokenFor(connectionOf(defaultKey)));   // the default/persona connection's bridge — every node-level (non-per-being) call site below rides THIS, unchanged
+  // rawBridgeOf(being): the RAW (non-shell-aware) bridge for a given being's own connection.
+  // Fallback to the default `bridge` is defensive only — every being in agents() was already
+  // enumerated above, so this should never miss.
+  const rawBridgeOf = (being) => bridgeByToken.get(tokenFor(connectionOf(being))) ?? bridge;
 
   // Persist incoming attachments into the chat's media/ folder + surface them to E.
   // For a video: keyframes (ffmpeg) + audio transcript (via the same chain) — Route A.
@@ -1089,7 +1125,13 @@ export async function boot({
   // `bridge`, which was the raw beeper bridge — so a streamed @e / @member reply on a
   // shell-owned chat streamed to Beeper and never reached the editor. Handed as `bridge` to
   // BOTH createSender calls below; the beeper path for non-shell chats is untouched.
-  const shellAwareBridge = makeShellAwareBridge(bridge, shellPort);
+  // ONE facade per distinct bridge (operator 2026-08-30): a being on ANY connection must still
+  // redirect to a shell-owned chat, not just the default one. shellAwareBridge (the default
+  // connection's facade — the same object mesh/memberSender rode before this change) is this
+  // map's defaultKey entry; shellAwareBridgeOf mirrors rawBridgeOf's per-being lookup.
+  const shellAwareBridgeByToken = new Map([...bridgeByToken].map(([token, b]) => [token, makeShellAwareBridge(b, shellPort)]));
+  const shellAwareBridge = shellAwareBridgeByToken.get(tokenFor(connectionOf(defaultKey)));
+  const shellAwareBridgeOf = (being) => shellAwareBridgeByToken.get(tokenFor(connectionOf(being))) ?? shellAwareBridge;
 
   // --- lifecycle announce: "restarting…" to Self before exit, "back up! <commit>"
   //     on the next boot. The bounce is otherwise invisible to the operator. ---
@@ -1154,7 +1196,7 @@ export async function boot({
     // by which time `commands` is assigned (mirrors createSpine's own construction site further
     // down, which passes commands.currentRoomOf directly because by THAT point commands exists).
     transcript: createTranscript({ contacts, persona: labelOf(defaultKey), defaultKey, labelOf, timeZone: transcriptTimeZone, io, currentRoomOf: (surface) => commands.currentRoomOf(surface), onLog: (m) => log.line?.(`[transcript] ${m}`) }),
-    sender: createSender({ bridge: shellAwareBridge, bodyEmojiOf, labelOf, agentSignatureOpenOf, agentSignatureCloseOf, defaultKey }),
+    sender: createSender({ bridge: shellAwareBridge, bridgeOf: shellAwareBridgeOf, bodyEmojiOf, labelOf, agentSignatureOpenOf, agentSignatureCloseOf, defaultKey }),
     // The real cadence registry the spine's tick() drives. The heartbeat LOADER
     // (below) collects every declarative heartbeat and registers it here, so each
     // beat rides the loop's own tick instead of a side timer (operator 2026-07-01).
@@ -1261,7 +1303,7 @@ export async function boot({
   // quote-reply answer back into the origin conversation (dispatch bound after the spine
   // exists). Fail-closed when advice_channel is unset.
   const advice = createAdvice({ bridge, getConfig, onLog: (m) => log.line?.(`[advice] ${m}`) });
-  const actions = createReplyActions({ bridge, bodyEmojiOf, labelOf, resolveConvDir, askAdvice: (a) => advice.ask(a), defaultKey, onLog: (m) => log.line?.(`[actions] ${m}`) });
+  const actions = createReplyActions({ bridge, bridgeOf: rawBridgeOf, bodyEmojiOf, labelOf, resolveConvDir, askAdvice: (a) => advice.ask(a), defaultKey, onLog: (m) => log.line?.(`[actions] ${m}`) });
 
   // Heartbeats are DECLARATIVE now (operator 2026-07-01): the loader collects
   // them from the node config.heartbeats block + every conversation/room entity's
@@ -1375,7 +1417,7 @@ export async function boot({
     onLog: (m) => log.line?.(`[relay] ${m}`),
   });
 
-  const spine = createSpine({ bridge, brain, ...services, commands, mesh, actions, advice, guard, guardOverride, stopSwitch, isSelfChat, roomRelay, readTranscript, refreshConfig: heartbeatLoader.reload, radioRelay: radioRelay.relay, synthesize: vx.synthesize, voice: vx.voice, defaultBeing: defaultKey, labelOf, timeZone: transcriptTimeZone, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
+  const spine = createSpine({ bridge, bridgeOf: rawBridgeOf, brain, ...services, commands, mesh, actions, advice, guard, guardOverride, stopSwitch, isSelfChat, roomRelay, readTranscript, refreshConfig: heartbeatLoader.reload, radioRelay: radioRelay.relay, synthesize: vx.synthesize, voice: vx.voice, defaultBeing: defaultKey, labelOf, timeZone: transcriptTimeZone, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
   // Bind the advice service's answer-routing dispatch now that the spine exists: an
   // operator answer in the advice channel re-enters the pipe as a turn in the origin chat.
   advice.useDispatch(spine.handleInbound);
