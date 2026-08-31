@@ -1188,7 +1188,17 @@ export async function boot({
     // loadState (operator 2026-08-15, allowed_users): the SAME conversations-state reader
     // gating.mjs's createGating takes (`_loadState`, declared above) — resolve()'s per-
     // conversation allowed_users override reads through it, one state load per resolve() call.
-    router: createRouter({ getAgents: () => cfg.agents ?? {}, defaultBeing: defaultKey, addressWithoutAt, loadState: _loadState }),
+    // isPresent (operator 2026-08-31, fallback_handle): THE membership question — "is this identity
+    // a participant of this chat?" — answered by the node's OWN Beeper account (the persona
+    // connection's `bridge`), which is the right vantage precisely because the question is "should
+    // THIS node answer here". Cached, TTL'd, and free for a 1:1 inside the bridge; null = UNKNOWN,
+    // and the router stays silent on null. A room/shell conversation never gets this far — it has
+    // no Beeper chat and no roster, so resolve() decides absence itself (see its comment).
+    router: createRouter({
+      getAgents: () => cfg.agents ?? {}, defaultBeing: defaultKey, addressWithoutAt, loadState: _loadState,
+      isPresent: (identity, ev) => bridge.chatHasParticipant?.(ev?.chatId, identity) ?? null,
+      onLog: (m) => log.line?.(`[router] ${m}`),
+    }),
     // currentRoomOf: a lazy thunk, not `commands.currentRoomOf` directly — `commands` (below)
     // isn't constructed until after `services` (it takes `services.transcript` itself as one of
     // its own options, via commandTranscript below), so a direct reference would be undefined

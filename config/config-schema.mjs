@@ -1233,6 +1233,45 @@ export const CONFIG_SCHEMA = {
         ABSENT    = no spoken alias reaches this agent — unlike \`handles\`,
                     there is NO map-key fallback.
         []        = same as absent: no voice wake.
+      fallback_handle
+        OPTIONAL (operator 2026-08-31) — ONE MORE @token this agent wakes on,
+        but ONLY where a named OTHER identity is not in the chat:
+
+          fallback_handle: { handle: e, unless_present: "+13472576794" }
+
+        reads "also wake on @e, unless +1347… is a participant here". Where
+        that identity IS present the token belongs to the OTHER account's
+        agent and this node stays silent — which is what keeps one @e from
+        waking two spines.
+
+        WHY IT EXISTS: kg and do stopped sharing one Beeper account. do runs on
+        a second account (+1 347…, "Rodz") and carries a relay agent \`e\` that
+        forwards to ekg.kg, so @e is ANSWERED by kg's brain but POSTED from a
+        visibly different account — the point of the arrangement. The cost is
+        that \`e\` became a handle on do ONLY, so in every chat the 347 account
+        never joined — most chats, and every room — @e reached nobody.
+
+        SHAPE: both keys REQUIRED. A declaration missing either is IGNORED —
+        a \`handle\` with no \`unless_present\` would be an unconditional extra
+        wake token, which is what \`handles\` is for. Exactly one handle; a
+        list of conditional aliases has never been asked for.
+        unless_present takes a PHONE NUMBER (compared on digits only, so any
+        punctuation works) — the one identifier that means the same thing on
+        both accounts — or a raw participant id (shortChatId-normalized, same
+        as allowed_users).
+
+        SELF-CONTAINED: this node declares only the handle and the identity
+        that pre-empts it. It reads nothing of the other node's config.
+
+        MEMBERSHIP, NOT LIVENESS: "did the other node answer?" is unusable —
+        it may just be slow, so every message would carry a timeout.
+        Membership is static and answered LOCALLY from this account's copy of
+        the chat (bridge chatHasParticipant: cached, 15m TTL, no round trip
+        for a 1:1). A ROOM (surface \`room\`) has no participants at all, so
+        the peer is DEFINITELY absent there and the fallback always applies.
+        If membership cannot be established at all, the agent does NOT wake
+        (the token stays its owner's) and the reason is logged — the declared
+        \`handles\` above are unconditional and always work.
       relay_channel
         Marks a RELAY agent — the chat this agent forwards to: a chat NAME or a
         raw Beeper room id in SHORT form (no "!" / ":beeper.local", operator

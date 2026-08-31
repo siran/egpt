@@ -180,6 +180,14 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
     },
     editOwn(chat, msgId, text, opts = {}) { return real.editMessage?.(chat, msgId, wrapPersona(opts, text)); },
     wasSentByUs(chat, msgId) { return real.wasSentByUs?.(chat, msgId); },
+    // MEMBERSHIP (operator 2026-08-31) — "is <identity> a participant of this chat?", the ONE
+    // question a `fallback_handle:` asks before waking (src/spine/router.mjs fallbackWake). Not an
+    // outbound: a READ of this account's own copy of the roster, cached and TTL'd in the bridge.
+    // A bridge without it (a test fake) answers null = UNKNOWN, which the router treats as "the
+    // token stays its owner's" — never as absence.
+    async chatHasParticipant(chat, identity) {
+      return real.chatHasParticipant ? await real.chatHasParticipant(chat, identity) : null;
+    },
 
     isAlive: () => real.isAlive(),
     stop: () => real.stop(),

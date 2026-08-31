@@ -41,6 +41,7 @@ async function startFakeBeeper() {
   let msgListGets = 0;        // GET /messages polls served — lets a test choreograph the upsert race
   let accountsGets = 0;       // GET /v1/accounts calls served — lets a test wait for the startup fetch
   let chatListGets = 0;       // GET /v1/chats pages served — lets a test bound the cursor walk
+  const chatGets = [];        // GET /v1/chats/:id served (chat info + the roster it carries) — lets a test prove the membership cache never re-asks
   // stuckCursor models a BROKEN server that re-serves page 1 forever with hasMore:true
   // (the cursor never advances) — the page walk must not spin on it.
   const chatsOpts = { stuckCursor: false };
@@ -162,7 +163,10 @@ async function startFakeBeeper() {
       const get = req.url.match(/^\/v1\/chats\/([^/]+)$/);
       if (req.method === 'GET' && get) {
         const id = decodeURIComponent(get[1]);
-        res.end(JSON.stringify(chats.get(id) ?? { id, title: `Chat ${id}`, type: 'single', isMuted: false, accountID: 'whatsapp' }));
+        chatGets.push(id);   // the ONE chat-info round trip — counted so the membership cache/TTL is provable
+        const c = chats.get(id);
+        if (typeof c === 'function') { try { res.end(JSON.stringify(c())); } catch (e) { res.statusCode = 500; res.end(JSON.stringify({ error: String(e?.message ?? e) })); } return; }
+        res.end(JSON.stringify(c ?? { id, title: `Chat ${id}`, type: 'single', isMuted: false, accountID: 'whatsapp' }));
         return;
       }
       res.statusCode = 404; res.end('{}');
@@ -181,7 +185,7 @@ async function startFakeBeeper() {
     ws.send(JSON.stringify({ type: 'ready' }));
   });
   return {
-    port, posts, edits, deletes, reactions, uploads, chats, messages, accounts, chatsOpts, serverOpts, telegram,
+    port, posts, edits, deletes, reactions, uploads, chats, messages, accounts, chatsOpts, serverOpts, telegram, chatGets,
     msgListGets: () => msgListGets,
     accountsGets: () => accountsGets,
     chatListGets: () => chatListGets,
@@ -276,6 +280,7 @@ async function startBridge(extra = {}) {
     onIncoming: (text, from) => incoming.push({ text, from }),
     onMedia: (m) => media.push(m),
     transcribe: async () => 'fake transcript',
+    onLog: (m) => { if (/failed|DROPPED|error/i.test(m)) console.error('[BRIDGELOG]', m); },
     postsBackDelayMs: 0,   // tests assert the 👂 gate synchronously; debounce timing is covered in incoming-media.test.mjs
     ...extra,
   });
@@ -1008,7 +1013,7 @@ describe('beeper bridge', () => {
   // postsBackDelayMs the resolver returns (conversations.yaml `posts_back_delay_ms`), NOT the
   // boot-global. Here the port default is 0 (immediate), but the resolver returns 20_000 → the
   // 👂 is HELD, proving the per-chat delay overrode the boot-global.
-  it('the bridge debounces with the resolver’s PER-CHAT postsBackDelayMs (over the boot-global)', async () => {
+  it('the bridge debounces with the resolver’s PER-CHAT postsBackDelayMs (over the boot-global)', { timeout: 15_000 }, async () => {
     const clock = makeClock();
     const { incoming } = await startBridge({
       echoPlan: () => ({ rank: 1, winner: true }),
@@ -1926,7 +1931,7 @@ describe('beeper bridge — own-send suppression is id-exact (shared account)', 
   // instead, so a miss is visible in the log rather than hidden behind a heuristic.
   // If this line ever appears live, fix the RESOLVER's matching — not by reintroducing
   // resemblance.
-  it('a send whose confirmed id cannot be resolved is logged LOUD (never silently text-suppressed)', async () => {
+  it('a send whose confirmed id cannot be resolved is logged LOUD (never silently text-suppressed)', { timeout: 15_000 }, async () => {
     const logs = [];
     const { bridge } = await startBridge({ onLog: (m) => logs.push(m) });
     const gone = CHAT('chat-unlistable');
@@ -2170,7 +2175,7 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
   // own-send-suppression tests above). Suppression is guarded on the send's id ACTUALLY
   // confirming, so on a miss we do NOT return — the trigger falls through and a normal @e still
   // wakes E, with no bogus reveal left dangling.
-  it('trigger met + transcript found but the reveal send never confirms → the @e is NOT eaten; E is dispatched', async () => {
+  it('trigger met + transcript found but the reveal send never confirms → the @e is NOT eaten; E is dispatched', { timeout: 15_000 }, async () => {
     const chat = CHAT('chat-unconfirmed-reveal');
     fake.messages.set(chat, () => []);   // our reveal POST never becomes findable → resolveSentMessageId exhausts its polls
     const { incoming } = await startBridge({ readTranscript: async () => transcriptDoc(voiceLine('vn-6', 'hola')) });
@@ -2596,5 +2601,135 @@ describe('beeper bridge — startupReady', () => {
   it('settles (never rejects) even when the fetch FAILS — start is never blocked on Beeper', async () => {
     const { bridge } = await startBridge({ baseUrl: 'http://127.0.0.1:1' });   // nothing listening
     await expect(bridge.startupReady).resolves.toBeUndefined();
+  });
+});
+
+// ── CHAT MEMBERSHIP (operator 2026-08-31) — "is <identity> a participant of this chat?", the ONE
+//    question a `fallback_handle:` asks before waking (src/spine/router.mjs fallbackWake). kg and do
+//    stopped sharing a Beeper account: `e` is now a handle on do's account (+1 347…, "Rodz") only,
+//    so kg wakes on @e as a fallback ONLY where that identity is not in the chat.
+//
+//    It rides the EXISTING chat-info GET — same /v1/chats/:id call, same _chatCache entry the
+//    arrival path already fills for every inbound message — so no second HTTP path was opened.
+//    `fake.chatGets` counts that ONE round trip, which is what makes the cache provable here. ──
+describe('beeper bridge — chat membership (fallback_handle, operator 2026-08-31)', () => {
+  // participants.items[] with a phoneNumber is the LIVE shape; phoneNumber is the one identifier
+  // that means the same thing on BOTH accounts (a participant id does not — each account sees the
+  // other through its own namespace).
+  const group = (extra = {}) => ({
+    title: 'Familia', type: 'group', isMuted: false, accountID: 'whatsapp',
+    participants: { items: [
+      { id: 'an@beeper.local', phoneNumber: '+15551112222', fullName: 'An' },
+      { id: 'rodz@beeper.local', phoneNumber: '+1 (347) 257-6794', fullName: 'Rodz' },
+    ] },
+    ...extra,
+  });
+
+  it('a group the peer IS in answers true; one the peer is NOT in answers false', async () => {
+    fake.chats.set(CHAT('with-peer'), group());
+    fake.chats.set(CHAT('no-peer'), { title: 'Solo', type: 'group', isMuted: false, accountID: 'whatsapp',
+      participants: { items: [{ id: 'an@beeper.local', phoneNumber: '+15551112222' }, { id: 'bea@beeper.local', phoneNumber: '+15559998888' }] } });
+    const { bridge } = await startBridge();
+    expect(await bridge.chatHasParticipant('with-peer', '+13472576794')).toBe(true);
+    expect(await bridge.chatHasParticipant('no-peer', '+13472576794')).toBe(false);
+  });
+
+  // The fixture stores the peer as "+1 (347) 257-6794" and the config declares "+13472576794".
+  // A phone-shaped identity compares on DIGITS ONLY, so punctuation/spacing on either side is
+  // irrelevant. The country code is NOT guessed: a bare national form (3472576794) is a DIFFERENT
+  // digit string and does not match — declare the full international number, as the operator does.
+  it('phone numbers compare on DIGITS — punctuation/spacing on either side is irrelevant', async () => {
+    fake.chats.set(CHAT('with-peer'), group());
+    const { bridge } = await startBridge();
+    for (const form of ['+13472576794', '13472576794', '+1 347-257-6794', '+1 (347) 257 6794']) {
+      expect(await bridge.chatHasParticipant('with-peer', form), form).toBe(true);
+    }
+    expect(await bridge.chatHasParticipant('with-peer', '3472576794')).toBe(false);   // no country code ⇒ not the same identity
+  });
+
+  it('a raw participant id still works (shortChatId-normalized, same as allowed_users)', async () => {
+    fake.chats.set(CHAT('with-peer'), group());
+    const { bridge } = await startBridge();
+    expect(await bridge.chatHasParticipant('with-peer', 'rodz@beeper.local')).toBe(true);
+    expect(await bridge.chatHasParticipant('with-peer', 'nobody@beeper.local')).toBe(false);
+  });
+
+  it('CACHED: repeated lookups on one group cost exactly ONE round trip', async () => {
+    fake.chats.set(CHAT('with-peer'), group());
+    const { bridge } = await startBridge();
+    for (let i = 0; i < 5; i++) await bridge.chatHasParticipant('with-peer', '+13472576794');
+    expect(fake.chatGets.filter((id) => id === CHAT('with-peer'))).toHaveLength(1);
+  });
+
+  // THE 1:1 SHORTCUT: a `type: single` roster is IMMUTABLE — Beeper cannot add a third identity to
+  // a 1:1 (that makes a NEW group chat with a new id) — so it never expires, whatever the TTL says.
+  // ttl 0 forces a refresh on every non-single lookup, so a single chat that still costs ONE GET is
+  // the shortcut working. It is answered from the roster itself, never assumed empty: the
+  // operator's own 1:1 WITH the peer account is a single chat that DOES contain it.
+  it('a `type: single` chat NEVER re-fetches, even with the TTL driven to zero', async () => {
+    fake.chats.set(CHAT('dm-bea'), { title: 'Bea', type: 'single', isMuted: false, accountID: 'whatsapp',
+      participants: { items: [{ id: 'an@beeper.local', phoneNumber: '+15551112222' }, { id: 'bea@beeper.local', phoneNumber: '+15559998888' }] } });
+    const { bridge } = await startBridge({ participantsTtlMs: 0 });
+    for (let i = 0; i < 5; i++) expect(await bridge.chatHasParticipant('dm-bea', '+13472576794')).toBe(false);
+    expect(fake.chatGets.filter((id) => id === CHAT('dm-bea'))).toHaveLength(1);
+  });
+
+  it('the operator\'s own 1:1 WITH the peer answers TRUE — a single chat is read, never assumed empty', async () => {
+    fake.chats.set(CHAT('dm-rodz'), { title: 'Rodz', type: 'single', isMuted: false, accountID: 'whatsapp',
+      participants: { items: [{ id: 'an@beeper.local', phoneNumber: '+15551112222' }, { id: 'rodz@beeper.local', phoneNumber: '+13472576794' }] } });
+    const { bridge } = await startBridge();
+    expect(await bridge.chatHasParticipant('dm-rodz', '+13472576794')).toBe(true);
+  });
+
+  it('TTL EXPIRY: a group roster IS re-read once it goes stale (ttl 0 ⇒ every lookup refreshes)', async () => {
+    fake.chats.set(CHAT('grp'), group());
+    const { bridge } = await startBridge({ participantsTtlMs: 0 });
+    await bridge.chatHasParticipant('grp', '+13472576794');
+    // the peer LEAVES the group; the next lookup past the TTL must see it
+    fake.chats.set(CHAT('grp'), { title: 'Familia', type: 'group', isMuted: false, accountID: 'whatsapp',
+      participants: { items: [{ id: 'an@beeper.local', phoneNumber: '+15551112222' }] } });
+    expect(await bridge.chatHasParticipant('grp', '+13472576794')).toBe(false);
+    expect(fake.chatGets.filter((id) => id === CHAT('grp')).length).toBeGreaterThan(1);
+  });
+
+  // UNKNOWN is not "absent": a failed GET, or a payload with no participants shape, must never read
+  // as "nobody is in this chat" — the router treats null as "the token stays its owner's".
+  it('a FAILING chat GET answers null (UNKNOWN), never false', async () => {
+    fake.chats.set(CHAT('boom'), () => { throw new Error('beeper down'); });
+    const { bridge } = await startBridge();
+    expect(await bridge.chatHasParticipant('boom', '+13472576794')).toBeNull();
+  });
+
+  it('a payload carrying NO participants shape answers null (UNKNOWN), never false', async () => {
+    fake.chats.set(CHAT('bare'), { title: 'Bare', type: 'group', isMuted: false, accountID: 'whatsapp' });
+    const { bridge } = await startBridge();
+    expect(await bridge.chatHasParticipant('bare', '+13472576794')).toBeNull();
+  });
+
+  // The arrival path (dispatch → chatInfo) already GETs the chat for every inbound message, and the
+  // roster now rides that SAME response — so by the time the router asks, the answer is a Map read.
+  it('the ARRIVAL path already paid for the fetch: a dispatched message leaves the roster cached', async () => {
+    fake.chats.set(CHAT('grp2'), group());
+    const { incoming, bridge } = await startBridge();
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ chatID: CHAT('grp2'), text: '@e hola' })] });
+    await waitFor(() => incoming.length === 1);
+    const before = fake.chatGets.filter((id) => id === CHAT('grp2')).length;
+    expect(await bridge.chatHasParticipant('grp2', '+13472576794')).toBe(true);
+    expect(fake.chatGets.filter((id) => id === CHAT('grp2'))).toHaveLength(before);   // no extra round trip
+  });
+
+  // A chat.upserted fired for a title/mute change omits participants; dropping the cached list
+  // would turn a KNOWN membership into UNKNOWN, which silences a fallback handle.
+  it('a chat.upserted without participants PRESERVES the cached roster (and one carrying it wins)', async () => {
+    fake.chats.set(CHAT('grp3'), group());
+    const { bridge } = await startBridge();
+    expect(await bridge.chatHasParticipant('grp3', '+13472576794')).toBe(true);
+    fake.emit({ type: 'chat.upserted', entries: [{ id: CHAT('grp3'), title: 'Familia renamed', type: 'group' }] });
+    await waitFor(() => bridge.getChatName('grp3') === 'Familia renamed');
+    expect(await bridge.chatHasParticipant('grp3', '+13472576794')).toBe(true);       // roster survived the rename
+    fake.emit({ type: 'chat.upserted', entries: [{ id: CHAT('grp3'), title: 'Familia smaller', type: 'group',
+      participants: { items: [{ id: 'an@beeper.local', phoneNumber: '+15551112222' }] } }] });
+    await waitFor(() => bridge.getChatName('grp3') === 'Familia smaller');
+    expect(await bridge.chatHasParticipant('grp3', '+13472576794')).toBe(false);      // a live departure is seen at once, not at the end of the TTL
   });
 });

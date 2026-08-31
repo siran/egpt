@@ -303,6 +303,10 @@ export async function startBeeperBridge(opts = {}) {
     // Hold-on-reconnect grace (ms): messages older than bridgeStart - grace
     // are backlog — seen, never dispatched. Mirrors the baileys/TG semantic.
     holdGraceMs = 5_000,
+    // How long a cached chat ROSTER stays good (chatHasParticipant, below — operator 2026-08-31).
+    // An injection seam, not an operator knob: nothing in config sets it; a test drives it to 0 to
+    // prove the refresh actually happens. Justification for the 15m default lives at the constant.
+    participantsTtlMs = 15 * 60_000,
     stateDir = join(EGPT_HOME, 'state'),   // profile-aware default (boot injects it; a caller that omits it still lands in THIS node's profile, never ~/.egpt)
     // TRANSCRIPT READ SEAM (operator 2026-07-20): the bare-@e-reply-to-voice-note
     // shortcut REUSES the target note's already-made arrival transcription by looking it
@@ -399,14 +403,77 @@ export async function startBeeperBridge(opts = {}) {
   // robustness: once a short id is known real, resolving it again never depends
   // on a listChats round-trip (or on that chat ever being independently listed).
   const _knownChatIds = new Set();
-  async function chatInfo(chatID) {
-    if (_chatCache.has(chatID)) return _chatCache.get(chatID);
-    let info = { title: chatID, type: 'single', isMuted: false, accountID: null };
-    try { const c = await api('GET', `/v1/chats/${encodeURIComponent(fullChatId(chatID))}`); info = { title: c.title || chatID, type: c.type || 'single', isMuted: !!c.isMuted, accountID: c.accountID || null }; }
+  // `refresh` (operator 2026-08-31, fallback_handle): re-GET even on a cache hit. The title/type
+  // cache is deliberately PERMANENT — a chat's name and kind don't move, and every inbound message
+  // reads it — but the ROSTER this same payload now carries does move (someone joins a group), so
+  // chatHasParticipant below re-asks on its own TTL rather than trusting a hit forever. Same ONE
+  // GET, same ONE cache entry: no second HTTP path was opened for membership.
+  async function chatInfo(chatID, { refresh = false } = {}) {
+    if (!refresh && _chatCache.has(chatID)) return _chatCache.get(chatID);
+    // `participants: null` is UNKNOWN, never "empty" — the catch below leaves it null, and the
+    // membership answer must never read a failed fetch as "nobody is in this chat".
+    let info = { title: chatID, type: 'single', isMuted: false, accountID: null, participants: null, at: Date.now() };
+    try { const c = await api('GET', `/v1/chats/${encodeURIComponent(fullChatId(chatID))}`); info = { title: c.title || chatID, type: c.type || 'single', isMuted: !!c.isMuted, accountID: c.accountID || null, participants: participantKeys(c), at: Date.now() }; }
     catch (e) { onLog(`beeper: chatInfo(${chatID}) failed — ${e?.message ?? e}`); }
     _chatCache.set(chatID, info);
     _knownChatIds.add(chatID);
     return info;
+  }
+
+  // ── CHAT MEMBERSHIP (operator 2026-08-31) ──────────────────────────────────────────────────
+  // "is <identity> a participant of this chat?", answered from THIS account's own copy of the
+  // roster. It exists for the two-account arrangement (see router.mjs fallbackWake): kg and do no
+  // longer share a Beeper account, `e` is now a handle on do's account only, and kg wakes on `@e`
+  // as a fallback ONLY where do's identity (+1 347…) is not in the chat. Membership — unlike
+  // liveness ("did do answer?", which is a timeout on every message) — is STATIC and knowable
+  // locally, which is the whole reason the feature is shaped this way.
+  //
+  // IDENTITY KEY: `participants.items[]` carries `phoneNumber`, the one identifier that means the
+  // same thing on BOTH accounts (a matrix/participant id does not: each account sees the other
+  // through its own namespace). A phone-shaped value compares on DIGITS ONLY, so "+1 (347)
+  // 257-6794", "+13472576794" and "13472576794" are one identity; anything else falls back to
+  // shortChatId, the SAME normalizer allowed_users uses, so a raw participant id still works.
+  // The country code is NOT guessed — a bare national form is a different digit string and does
+  // not match. Declare the full international number (which is what Beeper reports anyway); a
+  // guessed prefix would silently make one identity match another country's number.
+  const idKey = (v) => {
+    const s = String(v ?? '').trim().toLowerCase();
+    if (!s) return '';
+    const digits = s.replace(/\D/g, '');
+    return (/^\+?[\d\s().-]+$/.test(s) && digits.length >= 7) ? `#${digits}` : shortChatId(s);
+  };
+  function participantKeys(c) {
+    const items = Array.isArray(c?.participants?.items) ? c.participants.items
+      : Array.isArray(c?.participants) ? c.participants : null;
+    if (!items) return null;                        // shape absent ⇒ UNKNOWN, not empty
+    const out = new Set();
+    for (const p of items) for (const v of [p?.phoneNumber, p?.id]) { const k = idKey(v); if (k) out.add(k); }
+    return [...out];
+  }
+  // A chat's roster is re-read at most every `participantsTtlMs` (default 15 minutes). Membership
+  // changes RARELY (a group gains a member maybe once in its life) while inbound messages arrive
+  // constantly, so a per-message lookup is out of the question; 15m is short enough that a real
+  // join is honoured within one coffee break and long enough that a busy group costs ~4 GETs an
+  // hour. The bound only ever delays RECOGNISING a join — and a live `chat.upserted` carrying a
+  // roster (above) beats it anyway. Until it is recognised the node behaves as it does today.
+  const PARTICIPANTS_TTL_MS = participantsTtlMs;
+  // Returns true | false | null (UNKNOWN — the caller decides; router.mjs stays silent on null).
+  async function chatHasParticipant(chatID, identity) {
+    const want = idKey(identity);
+    if (!want) return null;
+    const id = shortChatId(chatID);
+    let info = _chatCache.get(id);
+    // THE 1:1 SHORTCUT: a `type: single` roster is IMMUTABLE — Beeper cannot add a third identity
+    // to a 1:1 (that makes a NEW group chat with a new id), so it never expires and never costs a
+    // round trip. And it is answered from the roster itself rather than assumed empty: the
+    // operator's own 1:1 WITH the peer account is a single chat that DOES contain it, and
+    // assuming otherwise would double-answer in exactly the chat where do is most certainly there.
+    // The arrival path (dispatch → chatInfo) has already paid for this fetch on any chat we are
+    // being asked about, so the common case is a Map read.
+    const fresh = info?.participants && (info.type === 'single' || Date.now() - (info.at ?? 0) < PARTICIPANTS_TTL_MS);
+    if (!fresh) info = await chatInfo(id, { refresh: true });
+    if (!info?.participants) { onLog(`beeper: chatHasParticipant(${id}) — no roster in the chat payload; membership UNKNOWN`); return null; }
+    return info.participants.includes(want);
   }
 
   // Deterministic chat slug (operator 2026-06-10: "conversations should be
@@ -1623,7 +1690,17 @@ export async function startBeeperBridge(opts = {}) {
           if (!c?.id) continue;
           const id = shortChatId(c.id);
           const prev = _chatCache.get(id);
-          _chatCache.set(id, { title: c.title || id, type: c.type || 'single', isMuted: !!c.isMuted, accountID: c.accountID ?? prev?.accountID ?? null });
+          // The ROSTER (operator 2026-08-31, fallback_handle) is preserved the same way accountID
+          // is — an upsert fired for a title/mute change omits participants, and dropping the list
+          // would turn a KNOWN membership into UNKNOWN (which silences a fallback handle). When the
+          // upsert DOES carry one it is fresher than anything cached, so it wins and re-stamps
+          // `at`: a live join is honoured immediately, not at the end of the TTL.
+          const roster = participantKeys(c);
+          _chatCache.set(id, {
+            title: c.title || id, type: c.type || 'single', isMuted: !!c.isMuted, accountID: c.accountID ?? prev?.accountID ?? null,
+            participants: roster ?? prev?.participants ?? null,
+            at: roster ? Date.now() : (prev?.at ?? 0),
+          });
           _knownChatIds.add(id);
         }
       }
@@ -1672,6 +1749,9 @@ export async function startBeeperBridge(opts = {}) {
     // Deterministic-name surface (operator 2026-06-10): callers and slash
     // files work with names/slugs; room ids stay an internal detail.
     listChats,
+    // MEMBERSHIP (operator 2026-08-31, router.mjs fallback_handle): true | false | null (UNKNOWN).
+    // Cached + TTL'd + free for a 1:1 — see chatHasParticipant above.
+    chatHasParticipant: (chatId, identity) => chatHasParticipant(chatId, identity),
     getChatName: (id) => _chatCache.get(shortChatId(id))?.title ?? null,
     getChatSlug: (id) => { const t = _chatCache.get(shortChatId(id))?.title; return t ? chatSlug(t) : null; },
     resolveChatId,

@@ -4,7 +4,8 @@
 // The `agents:` config block is the ONE registry (operator 2026-07-02, new-config-only):
 // resolve() runs the ONE mention matcher (`addressed`, below) over the node's whole
 // addressable set — every agent's WAKE TOKENS (its declared `handles:`, else its map key,
-// see wakeTokens below) — and resolves EVERY agent the
+// see wakeTokens below; plus, since 2026-08-31, the CONDITIONAL `fallback_handle:` token — see
+// fallbackWake) — and resolves EVERY agent the
 // message addressed, in text order. A LOCAL agent (configuration ≠ 'relay') routes like a
 // being (being = agent name); a RELAY agent (configuration: relay) routes to a mesh target
 // whose ROUTE is the agent's relay_channel; the DEFAULT (persona) agent — the one carrying
@@ -29,7 +30,7 @@
 import { agentPaths } from '../mesh/relay.mjs';
 import { mentionHits, mentionHitsAnywhere } from '../auto-mode.mjs';
 import { getBeing, allowedUsersPermits } from '../conversations-state.mjs';
-import { surfaceOf } from './identity.mjs';
+import { surfaceOf, SHELL_SURFACE } from './identity.mjs';
 
 // THE wake vocabulary — the ONE definition of "which @tokens address this agent", lowercased
 // (operator 2026-07-26: "don must not wake or respond with 'egpt'" … "the key has no bearing …
@@ -75,6 +76,44 @@ export function voiceWakeTokens(agent) {
   return hs.map((h) => String(h ?? '').toLowerCase()).filter(Boolean);
 }
 
+// THE CONDITIONAL counterpart to wakeTokens, above — ONE MORE handle this agent wakes on, but
+// ONLY in a chat where a named OTHER identity is not a participant (operator 2026-08-31: "it's
+// one line to specify the handles that i expect to be answered by some other account (like
+// rodz); if that account is not present in the chat, fallback_handle can be used").
+//
+//   fallback_handle: { handle: e, unless_present: "+13472576794" }
+//
+// THE ARRANGEMENT it exists for: kg and do stopped sharing ONE Beeper account (2026-08-31). `do`
+// now runs on a SECOND account (+1 347…, "Rodz") and carries a relay agent `e` that forwards to
+// ekg.kg — so `@e` is ANSWERED by kg's brain but POSTED from a visibly different account, which is
+// the whole point of the arrangement. The COST is that `e` became a handle on `do` ONLY: in every
+// chat the 347 account is not a member of — most of the operator's chats, and EVERY room, since a
+// `~/.egpt/rooms/<name>` conversation is not a Beeper chat at all and has no participants — `@e`
+// reached nobody and he had to type `@ekg` instead.
+//
+// WHY MEMBERSHIP AND NOT LIVENESS: "did do answer?" is unusable — do may simply be slow, so every
+// message would carry a timeout. Membership is STATIC and knowable LOCALLY: kg looks at its own
+// copy of the chat and asks whether the peer account is in it. Where that identity IS present the
+// token belongs to the OTHER account's agent and this node stays silent — which is what keeps one
+// `@e` from waking two spines (THE LIVE BUG wakeTokens documents above: "both spines answered ONE
+// @egpt, kg stamped egpt, DOLLY stamped don").
+//
+// SELF-CONTAINED, per agent: kg declares only what IT needs to know — a handle and the identity
+// that pre-empts it. Nothing here reads, mirrors or validates do's config; the two nodes stay
+// independently editable, which is why this is one line and not a shared peer table.
+//
+// BOTH fields are REQUIRED; a declaration missing either is IGNORED (null), never half-honoured. A
+// `handle` with no `unless_present` would be an UNCONDITIONAL extra wake token — that is exactly
+// what `handles:` is for, and silently promoting a half-written fallback into one is precisely how
+// a second spine starts answering. Fail closed.
+export function fallbackWake(agent) {
+  const fb = agent?.fallback_handle;
+  if (!fb || typeof fb !== 'object' || Array.isArray(fb)) return null;
+  const handle = String(fb.handle ?? '').trim().toLowerCase();
+  const unlessPresent = String(fb.unless_present ?? '').trim();
+  return (handle && unlessPresent) ? { handle, unlessPresent } : null;
+}
+
 // Who does this message address? The node's WHOLE addressable set — every agent's WAKE TOKENS
 // (wakeTokens above: its declared `handles:`, else its map KEY) — run through THE mention matcher
 // (auto-mode.mjs `mentionHits`), the same scan the persona's wake words go through. That is the
@@ -112,14 +151,37 @@ export function voiceWakeTokens(agent) {
 // merged into the SAME { name, agent, atStart, anywhere } shape, mirroring mentionStatus' own
 // convention: a voice-only hit ORs into `anywhere` and never sets `atStart` (an anywhere match has
 // no "start"). Default false → byte-identical to before for every caller that doesn't pass it.
-export function addressed(text, agents, { addressWithoutAt = true, isVoice = false } = {}) {
+//
+// `withFallback` (DEFAULT false, operator 2026-08-31): admit each agent's `fallback_handle` token
+// (fallbackWake, above) into the SAME vocabulary, so the CONDITIONAL handle goes through THE ONE
+// mention matcher like every other token — no parallel scan, no fourth mention system (this repo
+// has already accumulated three and evicted two). A hit won that way carries `unlessPresent`, the
+// identity whose PRESENCE in the chat silences it; the caller that admitted the token owes the
+// membership answer. It is OPT-IN precisely because a guarded token nobody can evaluate must not
+// exist: mesh.mjs (resolving an envelope's `<being>.<node>`) and heartbeat-loader.mjs (resolving a
+// configured handle) both name an agent with NO chat in hand, so their vocabulary is unchanged —
+// and so is resolve()'s on a node that wired no membership seam.
+export function addressed(text, agents, { addressWithoutAt = true, isVoice = false, withFallback = false } = {}) {
   const byToken = new Map();                       // WAKE TOKEN -> { name, agent }; first agent wins a shared handle
   const byVoiceToken = new Map();                   // VOICE TOKEN -> { name, agent }; same convention, voice-only
+  const guardOf = new Map();                        // FALLBACK TOKEN -> the identity whose PRESENCE silences it
   for (const [name, agent] of Object.entries(agents ?? {})) {
     if (!agent || typeof agent !== 'object' || name.startsWith('_')) continue;
     const hit = { name: name.toLowerCase(), agent };
     for (const id of wakeTokens(name, agent)) if (!byToken.has(id)) byToken.set(id, hit);
     if (isVoice) for (const id of voiceWakeTokens(agent)) if (!byVoiceToken.has(id)) byVoiceToken.set(id, hit);
+  }
+  // A SECOND pass, deliberately: a token some agent DECLARES as a real handle always beats another
+  // agent's fallback for it (the first-agent-wins rule above, extended by precedence — a declared
+  // handle is unconditional, a fallback is a courtesy that yields to it).
+  if (withFallback) {
+    for (const [name, agent] of Object.entries(agents ?? {})) {
+      if (!agent || typeof agent !== 'object' || name.startsWith('_')) continue;
+      const fb = fallbackWake(agent);
+      if (!fb || byToken.has(fb.handle)) continue;
+      byToken.set(fb.handle, { name: name.toLowerCase(), agent });
+      guardOf.set(fb.handle, fb.unlessPresent);
+    }
   }
   const out = [];
   const seen = new Set();
@@ -127,7 +189,10 @@ export function addressed(text, agents, { addressWithoutAt = true, isVoice = fal
     const hit = byToken.get(token);
     if (!hit || seen.has(hit.name)) continue;
     seen.add(hit.name);
-    out.push({ name: hit.name, agent: hit.agent, atStart, anywhere: true });
+    // The guard rides ALONG, it is not applied here: answering it needs the chat's roster (IO),
+    // and this function is sync + pure. The key is ABSENT on an ordinary hit, so an unguarded
+    // hit is the same object it always was.
+    out.push({ name: hit.name, agent: hit.agent, atStart, anywhere: true, ...(guardOf.has(token) ? { unlessPresent: guardOf.get(token) } : {}) });
   }
   if (isVoice) {
     for (const { token } of mentionHitsAnywhere(text, [...byVoiceToken.keys()])) {
@@ -148,7 +213,16 @@ export function addressed(text, agents, { addressWithoutAt = true, isVoice = fal
 // simply never reads any per-conversation allowed_users, and every being's reachability falls
 // straight to its global `agents:` default (or unrestricted, when neither is set) — today's
 // behaviour for a caller that supplies nothing.
-export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', addressWithoutAt = true, loadState = null } = {}) {
+// `isPresent` (operator 2026-08-31, fallback_handle) — async (identity, ev) => true | false | null
+// ("unknown"), THE membership question, injected exactly the way loadState is: the router never
+// opens a socket of its own, it ASKS. boot binds it to the node's own Beeper bridge, which answers
+// it from the chat info GET the arrival path already makes (src/bridges/beeper.mjs
+// chatHasParticipant — cached, and free for a 1:1). ABSENT (tests, a caller with no bridge) → no
+// agent's fallback_handle token enters the vocabulary at all, so resolve() is byte-identical to
+// today: a guarded token nobody can evaluate must not be addressable.
+// `onLog` — the router's diagnostic sink; the ONLY thing it says is the fallback membership
+// failure below, which must never be silent.
+export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', addressWithoutAt = true, loadState = null, isPresent = null, onLog = () => {} } = {}) {
   // ONE addressed agent → the routing target it resolves to. Per-kind semantics are
   // UNCHANGED; only the caller changed (every hit, not just the first).
   function targetFor({ name, agent, atStart }, ev) {
@@ -213,12 +287,36 @@ export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', addre
       // beingView seam/failure mode: no loadState injected, or a read that throws → null, and
       // every hit below falls straight to its GLOBAL allowed_users (or unrestricted).
       const state = loadState ? await loadState().catch(() => null) : null;
+      // ONE membership answer per identity per resolve() call (never per hit) — same discipline as
+      // the conv-state read above. Only ever consulted for a hit that actually carries a guard, so
+      // a message addressing nobody, or addressing an ordinary handle, costs nothing.
+      const presence = new Map();                  // identity -> Promise<true|false|null>
+      const presentInChat = (identity) => {
+        if (!presence.has(identity)) presence.set(identity, (async () => {
+          // A ROOM IS NOT A BEEPER CHAT (operator 2026-08-31). A `~/.egpt/rooms/<name>`
+          // conversation lives on the shell/room surface: it has no Beeper chat id and no
+          // participant list — there is nothing to query and nothing that COULD answer. That is a
+          // DEFINITE absence, not an unknown: a Beeper account provably is not in the operator's
+          // local console. So the fallback applies, decided HERE with no network call and without
+          // touching the failure path below — as cheap and as certain as the 1:1 shortcut. This
+          // is the case that matters most: the operator's room transcripts are full of
+          // `@e can you please…`, and those lines have reached nobody since `e` moved off kg.
+          // SHELL_SURFACE (identity.mjs) is read, never re-derived — see its header.
+          if (String(ev?.surface ?? '').toLowerCase() === SHELL_SURFACE) return false;
+          try { const v = await isPresent(identity, ev); return v == null ? null : !!v; }
+          catch (e) { onLog(`fallback_handle: membership lookup for ${identity} in ${ev?.surface}/${ev?.chatId} threw — ${e?.message ?? e}`); return null; }
+        })());
+        return presence.get(identity);
+      };
       if (agents && typeof agents === 'object') {
         // isVoice rides off the SAME ev already in scope (spine.mjs sets it; identity.mjs stamps
         // it from the bridge's isTranscriptFromVoice) — no new field, the one this node already
         // carries for a voice-note turn. Absent/false → addressed() runs its @/bare-only path,
         // byte-identical to before.
-        for (const hit of addressed(ev?.body ?? '', agents, { addressWithoutAt, isVoice: ev?.isVoice })) {
+        // withFallback rides off the membership seam being WIRED (operator 2026-08-31): the
+        // conditional token exists exactly where its condition can be evaluated, so a node/test
+        // with no `isPresent` resolves precisely as it did before this feature existed.
+        for (const hit of addressed(ev?.body ?? '', agents, { addressWithoutAt, isVoice: ev?.isVoice, withFallback: !!isPresent })) {
           // SURFACE PIN (operator 2026-07-25): an agent may carry `surface: <name>` so it is an
           // agent ONLY on that surface; on any OTHER surface the @mention falls through (as if
           // unmatched). Co-account CORRECTNESS, not convenience: `do` and `kg` share ONE Beeper
@@ -263,6 +361,31 @@ export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', addre
           const globalAllowed = Array.isArray(hit.agent.conversation_defaults?.allowed_users) ? hit.agent.conversation_defaults.allowed_users : null;
           const allowedUsers = convAllowed ?? globalAllowed;
           if (!allowedUsersPermits(allowedUsers, ev?.senderId)) continue;
+          // FALLBACK-HANDLE GUARD (operator 2026-08-31) — the THIRD post-match filter here, and
+          // deliberately shaped like the two above (surface pin, allowed_users): the ONE matcher
+          // decided the token was addressed, this decides whether THIS node is the one to answer
+          // it, and a drop falls through exactly as if the @token had never matched. LAST, so the
+          // only lookup that ever happens is for a hit that already survived everything else.
+          //
+          // FAILURE MODE — UNKNOWN MEANS SILENT, and the choice is not symmetric:
+          //   · A fallback token is not this agent's own handle. It BELONGS to the other account's
+          //     agent (`e` on do) and is borrowed only where its owner cannot hear it. With no
+          //     evidence, it goes back to its owner.
+          //   · Waking on unknown re-creates the exact live bug this whole vocabulary exists to
+          //     prevent — two spines answering ONE mention — and does it LOUDLY, in a group, in
+          //     front of other people, with two different accounts posting the same answer.
+          //   · The opposite failure is bounded and recoverable: the agent's DECLARED handles
+          //     (@ekg, @egptkg) are unconditional and always work, so a miss costs one retyped
+          //     token, never a lost message. And it can only ever bite in a GROUP whose roster GET
+          //     is failing — a 1:1 is answered from cache without a round trip, and a room is a
+          //     definite absence decided above, so neither can reach this branch.
+          // Loud on the way out (never silent): this is a node choosing not to answer something
+          // that was addressed to it, which is otherwise indistinguishable from a hung spine.
+          if (hit.unlessPresent != null) {
+            const present = await presentInChat(hit.unlessPresent);
+            if (present == null) onLog(`fallback_handle: @${hit.name} NOT woken by its fallback handle in ${ev?.surface}/${ev?.chatId} — could not establish whether ${hit.unlessPresent} is in the chat (unknown ⇒ the token stays its owner's; use a declared handle)`);
+            if (present !== false) continue;
+          }
           targets.push(targetFor(hit, ev));
         }
       }

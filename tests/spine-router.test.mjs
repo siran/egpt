@@ -5,7 +5,7 @@
 // Everything else falls through to E.
 import { describe, it, expect } from 'vitest';
 import { SHELL_SURFACE } from '../src/spine/identity.mjs';
-import { createRouter, addressed, voiceWakeTokens } from '../src/spine/router.mjs';
+import { createRouter, addressed, voiceWakeTokens, fallbackWake } from '../src/spine/router.mjs';
 
 const ev = (body, mention) => ({
   body,
@@ -516,5 +516,189 @@ describe('addressed({ isVoice }) — non-persona voice_handles reach the router 
     expect(addressed('@wren ping', agents, { isVoice: false })).toEqual([{ name: 'wren', agent: agents.wren, atStart: true, anywhere: true }]);
     expect(addressed('ren ping', agents, { isVoice: false })).toEqual([]);
     expect(addressed('ren ping', agents)).toEqual([]);
+  });
+});
+
+// ── fallback_handle — ONE conditional wake token, gated on CHAT MEMBERSHIP (operator 2026-08-31).
+//
+//    THE PRODUCTION PROBLEM: kg and do stopped sharing one Beeper account. `do` now runs on a
+//    second account (+1 347…, "Rodz") and carries a relay agent `e` forwarding to ekg.kg — so @e is
+//    ANSWERED by kg's brain but POSTED from a visibly different account, which is the whole point.
+//    The cost: `e` became a handle on do ONLY, so in every chat the 347 account is not a member of
+//    — most of the operator's chats, and EVERY room, which is not a Beeper chat at all — @e reached
+//    nobody and he had to type @ekg.
+//
+//    THE RULE: the agent additionally wakes on its fallback handle, but ONLY where `unless_present`
+//    is NOT a participant. Where that identity IS present the token belongs to the other account's
+//    agent and this node stays silent — which is what stops one @e waking two spines. Membership
+//    (static, knowable locally) not liveness ("did do answer?", a timeout on every message).
+//
+//    The token flows through THE ONE matcher (wakeTokens/addressed), never a parallel one; the
+//    guard is applied in resolve() beside the surface pin and the allowed_users gate, which are the
+//    other two post-match filters. ──
+describe('fallback_handle — a conditional wake token gated on membership (operator 2026-08-31)', () => {
+  // The persona is `assistant` so a MISSED @e falls through to IT, not to the agent under test —
+  // otherwise the fall-through would make every assertion vacuous (kg's real persona IS the agent
+  // carrying the fallback, so this fixture separates them deliberately; the real shape is asserted
+  // on addressed() below, where the miss is visible).
+  const AGENTS = {
+    assistant: { configuration: 'sonnet-high', handles: ['a'], default: true },
+    egpt: { configuration: 'sonnet-high', handles: ['ekg', 'egptkg'], fallback_handle: { handle: 'e', unless_present: '+13472576794' } },
+  };
+  const chat = (body, extra = {}) => ({ body, surface: 'whatsapp', chatId: '!grp', senderId: 'op', ...extra });
+  // A spy for the injected membership seam: records what was asked, answers what the test says.
+  const seam = (answer) => {
+    const asked = [];
+    return { asked, fn: async (identity, ev) => { asked.push({ identity, chatId: ev?.chatId }); return typeof answer === 'function' ? answer(identity, ev) : answer; } };
+  };
+
+  it('REPRODUCE-FIRST: @e in a chat the peer is NOT in wakes the local agent (it reached nobody before)', async () => {
+    const s = seam(false);
+    const r = await createRouter({ getAgents: () => AGENTS, defaultBeing: 'assistant', isPresent: s.fn }).resolve(chat('@e can you check this'));
+    expect(r.being).toBe('egpt');                       // the fallback handle woke the agent…
+    expect(r.targets).toHaveLength(1);                  // …and nothing else
+    expect(s.asked).toEqual([{ identity: '+13472576794', chatId: '!grp' }]);   // asked EXACTLY the declared identity
+  });
+
+  it('REPRODUCE-FIRST: @e in a chat the peer IS in does NOT wake it — the token is the other account\'s', async () => {
+    const s = seam(true);
+    const r = await createRouter({ getAgents: () => AGENTS, defaultBeing: 'assistant', isPresent: s.fn }).resolve(chat('@e can you check this'));
+    expect(r.being).toBe('assistant');                  // dropped exactly as if the @token never matched
+    expect(r.targets).toHaveLength(1);
+    expect(s.asked).toHaveLength(1);                    // the membership question WAS asked (it is not asked at all today)
+  });
+
+  it('A ROOM has no participants, so the peer is DEFINITELY absent: @e works there with NO membership call', async () => {
+    const s = seam(() => { throw new Error('a room must never reach the membership seam'); });
+    const r = await createRouter({ getAgents: () => AGENTS, defaultBeing: 'assistant', isPresent: s.fn })
+      .resolve({ body: '@e can you please execute translation script?', surface: SHELL_SURFACE, chatId: 'acim', senderId: 'op' });
+    expect(r.being).toBe('egpt');
+    expect(s.asked).toEqual([]);   // decided locally — a room is not a Beeper chat, there is nothing to query
+  });
+
+  it('the DECLARED handles are unconditional — @ekg never consults membership', async () => {
+    const s = seam(true);   // peer present: irrelevant to a real handle
+    const r = await createRouter({ getAgents: () => AGENTS, defaultBeing: 'assistant', isPresent: s.fn }).resolve(chat('@ekg ping'));
+    expect(r.being).toBe('egpt');
+    expect(s.asked).toEqual([]);
+  });
+
+  // FAILURE MODE (justified at the guard in router.mjs): UNKNOWN ⇒ SILENT. The token belongs to the
+  // other account's agent and is only borrowed; on no evidence it goes back to its owner, because
+  // the opposite failure re-creates the live two-spines-answer-one-@egpt bug, loudly, in a group.
+  it('membership UNKNOWN (null) ⇒ the agent does NOT wake, and the reason is logged loudly', async () => {
+    const lines = [];
+    const r = await createRouter({ getAgents: () => AGENTS, defaultBeing: 'assistant', isPresent: async () => null, onLog: (m) => lines.push(m) }).resolve(chat('@e hola'));
+    expect(r.being).toBe('assistant');
+    expect(lines.join('\n')).toMatch(/fallback_handle.*NOT woken.*\+13472576794/s);
+  });
+
+  it('a THROWING membership lookup is the same unknown — silent, logged, never a crashed resolve', async () => {
+    const lines = [];
+    const r = await createRouter({ getAgents: () => AGENTS, defaultBeing: 'assistant', isPresent: async () => { throw new Error('beeper down'); }, onLog: (m) => lines.push(m) }).resolve(chat('@e hola'));
+    expect(r.being).toBe('assistant');
+    expect(lines.join('\n')).toMatch(/beeper down/);
+    expect(lines.join('\n')).toMatch(/NOT woken/);
+  });
+
+  it('ONE membership answer per resolve() call, never per hit — two guarded agents, one lookup', async () => {
+    const two = {
+      assistant: { configuration: 'sonnet-high', handles: ['a'], default: true },
+      egpt: { handles: ['ekg'], fallback_handle: { handle: 'e', unless_present: '+13472576794' } },
+      wren: { handles: ['wren'], fallback_handle: { handle: 'w', unless_present: '+13472576794' } },
+    };
+    const s = seam(false);
+    const r = await createRouter({ getAgents: () => two, defaultBeing: 'assistant', isPresent: s.fn }).resolve(chat('@e and @w both'));
+    expect(r.targets.map((t) => t.being)).toEqual(['egpt', 'wren']);
+    expect(s.asked).toHaveLength(1);   // memoized for the whole call, like the conv-state read
+  });
+
+  it('no guarded token in the message ⇒ NO membership lookup at all (the gate is the token, not the config)', async () => {
+    const s = seam(false);
+    const router = createRouter({ getAgents: () => AGENTS, defaultBeing: 'assistant', isPresent: s.fn });
+    await router.resolve(chat('just talking'));
+    await router.resolve(chat('@a hola'));
+    await router.resolve(chat('@nobody hola'));
+    expect(s.asked).toEqual([]);
+  });
+
+  it('the guard runs LAST — a hit already dropped by allowed_users costs no lookup', async () => {
+    const gated = {
+      assistant: { configuration: 'sonnet-high', handles: ['a'], default: true },
+      egpt: { handles: ['ekg'], fallback_handle: { handle: 'e', unless_present: '+13472576794' }, conversation_defaults: { allowed_users: ['someone-else'] } },
+    };
+    const s = seam(false);
+    const r = await createRouter({ getAgents: () => gated, defaultBeing: 'assistant', isPresent: s.fn }).resolve(chat('@e hola'));
+    expect(r.being).toBe('assistant');
+    expect(s.asked).toEqual([]);
+  });
+
+  it('a DECLARED handle beats another agent\'s fallback for the same token (unconditional wins over conditional)', async () => {
+    const clash = {
+      assistant: { configuration: 'sonnet-high', handles: ['a'], default: true },
+      egpt: { handles: ['ekg'], fallback_handle: { handle: 'e', unless_present: '+13472576794' } },
+      ed: { handles: ['e'] },   // owns @e outright
+    };
+    const s = seam(false);
+    const r = await createRouter({ getAgents: () => clash, defaultBeing: 'assistant', isPresent: s.fn }).resolve(chat('@e hola'));
+    expect(r.being).toBe('ed');
+    expect(s.asked).toEqual([]);
+  });
+
+  // fallbackWake — BOTH fields required. A `handle` with no `unless_present` would be an
+  // unconditional extra wake token, which is what `handles:` is for; promoting a half-written
+  // declaration to one is how a second spine starts answering. Fail closed.
+  it('a half-written declaration is IGNORED, never half-honoured', async () => {
+    expect(fallbackWake(AGENTS.egpt)).toEqual({ handle: 'e', unlessPresent: '+13472576794' });
+    expect(fallbackWake({ fallback_handle: { handle: 'e' } })).toBeNull();
+    expect(fallbackWake({ fallback_handle: { unless_present: '+1347' } })).toBeNull();
+    expect(fallbackWake({ fallback_handle: 'e' })).toBeNull();
+    expect(fallbackWake({ fallback_handle: ['e'] })).toBeNull();
+    expect(fallbackWake({})).toBeNull();
+    const half = { assistant: { handles: ['a'], default: true }, egpt: { handles: ['ekg'], fallback_handle: { handle: 'e' } } };
+    const s = seam(false);
+    expect((await createRouter({ getAgents: () => half, defaultBeing: 'assistant', isPresent: s.fn }).resolve(chat('@e hola'))).being).toBe('assistant');
+    expect(s.asked).toEqual([]);
+  });
+
+  // kg's REAL shape, asserted on addressed() where the miss is visible (on resolve() the persona
+  // fall-through would answer @e either way and prove nothing).
+  const KG = { egpt: { configuration: 'sonnet-high', handles: ['ekg', 'egptkg'], fallback_handle: { handle: 'e', unless_present: '+13472576794' }, default: true } };
+
+  it('the fallback token rides THE ONE matcher: withFallback:true puts @e in the vocabulary, carrying its guard', () => {
+    expect(addressed('@e hola', KG, { withFallback: true }))
+      .toEqual([{ name: 'egpt', agent: KG.egpt, atStart: true, anywhere: true, unlessPresent: '+13472576794' }]);
+    // …and it inherits every protection a real handle has (bare form, mid-sentence, glued-token, case)
+    expect(addressed('e hola', KG, { withFallback: true }).map((h) => h.name)).toEqual(['egpt']);
+    expect(addressed('please @E look', KG, { withFallback: true }).map((h) => h.name)).toEqual(['egpt']);
+    expect(addressed('write me@e.com please', KG, { withFallback: true })).toEqual([]);
+    expect(addressed('e hola', KG, { withFallback: true, addressWithoutAt: false })).toEqual([]);
+  });
+
+  it('withFallback is OPT-IN: mesh.mjs / heartbeat-loader.mjs (which have no chat, so cannot answer the guard) see the vocabulary unchanged', () => {
+    expect(addressed('@e hola', KG)).toEqual([]);
+    expect(addressed('@e hola', KG, { withFallback: false })).toEqual([]);
+    expect(addressed('@ekg hola', KG).map((h) => h.name)).toEqual(['egpt']);   // declared handles unaffected
+  });
+
+  // ── THE REGRESSION LOCK: an agent with NO fallback_handle must resolve EXACTLY as it did before
+  //    this feature existed — same targets, and NO added IO. This is the main risk of the change. ──
+  it('REGRESSION: an agents block with no fallback_handle never touches the membership seam and resolves identically', async () => {
+    const plain = {
+      egpt: { configuration: 'sonnet-high', handles: ['e', 'egpt'], default: true },
+      don: { configuration: 'relay', relay_channel: 'Rodz' },
+      wren: { configuration: 'sonnet-high', handles: ['wren'] },
+    };
+    const s = seam(() => { throw new Error('no fallback_handle is declared — nothing may ask about membership'); });
+    const wired = createRouter({ getAgents: () => plain, defaultBeing: 'egpt', isPresent: s.fn });
+    const bare = createRouter({ getAgents: () => plain, defaultBeing: 'egpt' });   // the pre-change router
+    for (const body of ['@e hola', '@egpt hola', 'e hola', '@wren ping', '@don ping', '@e and @wren and @don', '@nobody hi', 'just talking', '']) {
+      expect(await wired.resolve(chat(body)), body).toEqual(await bare.resolve(chat(body)));
+    }
+    expect(s.asked).toEqual([]);
+    // …and the matcher itself is untouched with or without the flag when nothing declares a fallback
+    for (const body of ['@e hola', '@wren ping', 'just talking']) {
+      expect(addressed(body, plain, { withFallback: true })).toEqual(addressed(body, plain));
+    }
   });
 });
