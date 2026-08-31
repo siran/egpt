@@ -45,6 +45,7 @@ import { createTranscript } from './transcript.mjs';
 import { createSender } from './sender.mjs';
 import { createBrainPool } from './brainpool.mjs';
 import { createRoomRelay } from './room-relay.mjs';
+import { createIdentityScope } from './identity-scope.mjs';
 import { createIngest, lifecycleExit, isShellConnectMarker } from './ingest.mjs';
 import { createCommands } from './commands.mjs';
 import { createReplyActions } from './reply-actions.mjs';
@@ -738,6 +739,16 @@ export async function boot({
     return slug ? Room.forChat(surface, slug) : null;
   };
 
+  // THE roster resolver — the ONE reverse lookup over config/rooms.yaml (createMemberResolver,
+  // above). TWO readers now, and deliberately the same instance of it: room-relay's fan-out asks
+  // WHICH ROOMS this message tunnels into, and the identity scope below asks WHOSE INSTANCE this
+  // conversation is. Both answers come off the same `roster.tunnelRooms`, so the tunnel and the
+  // identity can never disagree about a membership — a group whose message re-enters room/acim is
+  // by construction the same group whose turn runs on room/acim's thread (operator 2026-08-31).
+  // Hoisted here, above the brainpool, only because the brainpool is constructed first; the relay
+  // further down takes this same value instead of building a second one.
+  const memberResolver = createMemberResolver({ resolveConvRoom });
+
   // Voice/video transcription: the fallback CHAIN (remote node → local whisper-
   // server → cli), driven by config.transcription_service. One transcriber feeds
   // the bridge (voice notes) and the media service (a video's audio).
@@ -1222,7 +1233,12 @@ export async function boot({
   // Auto-compaction: keep each conversation's warm session thin (native /compact a
   // cooling period after the last reply, once it's over ratio of the window).
   const compaction = createCompaction({ pool, getConfig, onLog: (m) => log.line?.(`[compact] ${m}`) });
-  const brain = createBrainPool({ pool, getConfig, contacts, loadState: _loadState, writeState: _writeState, brains, defaultKey, afterTurn: compaction.afterTurn, resolveConfig: configResolver.configFor, io, onLog: (m) => log.line?.(`[brain] ${m}`) });
+  // resolveScope (operator 2026-08-31): WHICH conversation a being's instance lives in, resolved
+  // before the thread / warm key / conv dir / run config are derived from it. A chat invited into
+  // exactly one room as a `wa-group` member resolves to THAT ROOM — so room/acim's E and the
+  // "perrito traducciones" group's E are one being: one thread, one warm CLI, one queue, one
+  // access_level. Every other conversation resolves to itself and is unchanged.
+  const brain = createBrainPool({ pool, getConfig, contacts, loadState: _loadState, writeState: _writeState, brains, defaultKey, afterTurn: compaction.afterTurn, resolveConfig: configResolver.configFor, resolveScope: createIdentityScope({ resolveMembers: memberResolver, onLog: (m) => log.line?.(`[scope] ${m}`) }), io, onLog: (m) => log.line?.(`[brain] ${m}`) });
 
   // operator slash commands (Self DM / authorized) — lifecycle wired now; reuses
   // the same exit codes the daemon respawns on. Constructed BEFORE the mesh: a
@@ -1407,7 +1423,7 @@ export async function boot({
   const memberSender = createSender({ bridge: shellAwareBridge, bodyEmojiOf: () => '🤖', labelOf: (id) => id, defaultKey });
   const _adapterMods = new Map();
   const roomRelay = createRoomRelay({
-    resolveMembers: createMemberResolver({ resolveConvRoom }),
+    resolveMembers: memberResolver,
     adapterOf: async (name) => {
       if (!name) return null;
       if (!_adapterMods.has(name)) _adapterMods.set(name, await loadAdapterModule(name));

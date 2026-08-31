@@ -269,6 +269,27 @@ export function resolveBeingDef(being, convDir, { getConfig = () => ({}), brains
   };
 }
 
+// THE PROVENANCE FRAME a SCOPED turn's prompt carries (operator 2026-08-31). One instance now
+// hears SEVERAL chats: room/acim's E answers in the room AND in every group invited into it, all
+// on one thread. The dispatch line already names the chat it came from (`Ana@[perrito
+// traducciones].wa (13:25): …`), but on a SHARED thread that name stops being decoration — it is
+// the only thing telling the being who is talking, which of its chats this turn belongs to, and
+// therefore where the answer it is about to write will be delivered. So a scoped turn says it
+// outright, once, above the line. ALL-CAPS lead, matching the two other frames the pipe composes
+// around a prompt (transcript-log.mjs's promptWithRecentContext / promptWithQuotedMessage), so a
+// being reads all three the same way.
+//
+// It says nothing about the REPLY PATH because that path is untouched: `out` is opened per
+// message by the spine and goes back to the origin whatever this says. This only lets the being
+// KNOW that, instead of having to infer it from a chat name it has no reason to read closely.
+// Module scope, pure, and NOT exported: turn() is its only caller, and its shape is locked from
+// outside through the prompt the warm pool is handed (tests/identity-scope.test.mjs).
+function withOrigin(ev) {
+  const line = ev?.line ?? ev?.body ?? '';
+  const name = (ev?.chatName != null && String(ev.chatName).trim()) ? String(ev.chatName).trim() : String(ev?.chatId ?? '?');
+  return `THIS LINE ARRIVED IN "${name}" (${ev?.surface ?? '?'}) — one of the several chats that share this thread, not the conversation the thread is named for. Your reply to it is delivered THERE, to the people in that chat.\n${line}`;
+}
+
 export function createBrainPool({
   pool,                              // a createWarmPool instance ({ run, evict })
   getConfig = () => ({}),
@@ -281,6 +302,7 @@ export function createBrainPool({
   isOverflow = isContextOverflowError,
   isDeadSession = isDeadSessionError,
   resolveConfig = () => ({}),       // (convDir) -> that conversation's RESOLVED config doc (src/spine/config-resolver.mjs configFor). ONE namespace, three rungs; boot injects the live resolver, tests a canned doc.
+  resolveScope = null,              // (being, surface, chatId) -> {surface, chatId}|null — THE IDENTITY SCOPE (src/spine/identity-scope.mjs, operator 2026-08-31). null — the default, and every caller that wires none — means every conversation is its own scope: the four keys below derive from exactly the inputs they derive from today, with no extra read.
   loadFeed = readIdentityFeed,      // (personality, config) -> the persona's full feed
   seedLayers = seedIdentityLayers,  // (room, personality, {io}) -> copy the fed layers into <room>/identity.d
   loadAutoLayer = readAutoModeLayer,// () -> the `mode: auto` operator-role instruction layer (appended to an auto conversation's kickoff)
@@ -330,15 +352,57 @@ export function createBrainPool({
   // VOCABULARY RETIREMENT (operator 2026-07-02): we no longer read the conversation's
   // `personality` — the identity feed a fresh thread boots from is a property of the
   // resolved agent-type def (def.personality ?? 'egpt'), read at kickoff in turn().
+  //
+  // THE IDENTITY SCOPE (operator 2026-08-31 — the module header of src/spine/identity-scope.mjs
+  // carries the case and the ruling). Resolved FIRST, above, because WHICH conversation this
+  // being's instance lives in is upstream of every key derived below it: the thread, the warm
+  // key, the conversation dir, and the per-conversation run config. `scoped:false` means the
+  // conversation IS its own scope — the only possible answer with no resolveScope injected, and
+  // the reason an unscoped node's derivation is byte-identical to what it was before this
+  // existed: same address in, same address out, no extra state read, no extra file read.
+  //
+  // NEVER THROWS. A scope that will not resolve falls back to the conversation itself, because
+  // being your own instance is never WRONG — only narrower than the operator asked for — while a
+  // half-resolved one would put two processes on one session file.
+  async function scopeAddr(being, ev) {
+    if (!resolveScope) return { surface: ev.surface, chatId: ev.chatId, scoped: false };
+    let s = null;
+    try { s = await resolveScope(being, ev.surface, ev.chatId); }
+    catch (e) { onLog(`brainpool: scope ${being} ${ev.surface}/${ev.chatId}: ${e?.message ?? e}`); }
+    if (!s || (s.surface === ev.surface && String(s.chatId) === String(ev.chatId))) {
+      return { surface: ev.surface, chatId: ev.chatId, scoped: false };
+    }
+    return { surface: s.surface, chatId: s.chatId, scoped: true };
+  }
+
   async function resolveConv(ev, being) {
-    const slug = await contacts.resolve(ev.surface, ev.chatId, { chatName: ev.chatName });
-    const b = slug ? getBeing(await loadState(), ev.surface, ev.chatId, being) : null;
+    const scope = await scopeAddr(being, ev);
+    // The ORIGIN's own registration still runs, first and unchanged: it is what re-arms the
+    // pushedName refresh and the rename self-heal for the chat the message actually arrived in,
+    // and a scoped conversation still owns its folder, its transcript and its media (operator
+    // 2026-08-31: a transcript is about the CHAT, not the being — they are not merged).
+    const own = await contacts.resolve(ev.surface, ev.chatId, { chatName: ev.chatName });
+    // ...and then the SCOPE's own slug — the one every identity key below is built from —
+    // WITHOUT the origin's chatName: ensureContact reads pushedName as the chat's own title, so
+    // passing it would re-slug (and move on disk) the room after whichever group last spoke into
+    // it. Unscoped, this is the SAME single resolve() call it has always been.
+    const slug = scope.scoped ? await contacts.resolve(scope.surface, scope.chatId) : own;
+    const state = slug ? await loadState() : null;
+    const b = state ? getBeing(state, scope.surface, scope.chatId, being) : null;
+    // MODE STAYS WITH THE CHAT, alone among the fields read here. Everything else joins the
+    // scope; `mode` is the one the SPINE also resolves for this same message (gating.decide, on
+    // the ORIGIN conversation, deciding whether this being answers in this chat at all), and two
+    // readings of one field would mean a group in `mode: auto` dwelling and impersonating per
+    // the origin while its kickoff layer was chosen per the room. getBeing is a PURE function
+    // over the state already loaded, so the second view costs no second read.
+    const b0 = (state && scope.scoped) ? getBeing(state, ev.surface, ev.chatId, being) : b;
     return {
+      scope,
       slug,
       sessionId: b?.threadId ?? null,
       // The conversation's stored E mode — 'auto' arms the operator-role kickoff layer
       // (read raw, not gating-resolved: auto is an explicit per-conversation opt-in).
-      mode: b?.mode ?? null,
+      mode: b0?.mode ?? null,
       // /e access all|regular (operator 2026-08-14) — applied live, every turn, in turn()
       // below (see the ACCESS-LEVEL OVERRIDE comment). No more `brain` field here (phase 1,
       // 2026-08-14): there is no per-conversation freeze to read any more — turn() always
@@ -355,6 +419,14 @@ export function createBrainPool({
       // value at both tiers is no longer a distinct "undeclared" state that refuses the
       // turn, it explicitly resolves to the confined tier. Gate #1 below (which used to
       // catch the null case) is now unreachable and has been removed accordingly.
+      // AND IT JOINS THE SCOPE (operator 2026-08-31, ruled explicitly for acim + "perrito
+      // traducciones"): the invited group's members are in his circle of trust, so the ROOM's
+      // `all` applies to a turn the group triggers — the group does not keep the 'regular' it
+      // would otherwise inherit from the global default. This is safe only because it is
+      // `allowed_users` that gates WHO may wake the being (router.mjs/mesh.mjs's reachability
+      // check, and the structural gate in turn() below which REFUSES an 'all' being with no
+      // allowed_users at either tier) — and room/acim already carries one, as any 'all' being
+      // structurally must.
       accessLevel: b?.accessLevel ?? getConfig()?.agents?.[being]?.conversation_defaults?.access_level ?? 'regular',
       // ALLOWED_USERS, same two-tier resolution as accessLevel just above (operator 2026-08-16) —
       // needed here (not just at router.mjs/mesh.mjs's reachability gates) so turn() can refuse to
@@ -413,8 +485,13 @@ export function createBrainPool({
   return {
     /** @returns {Promise<{ text: string, sessionId: string|null, being: string }>} */
     async turn(being, ev, onPartial = () => {}) {
-      const { slug, sessionId, mode, accessLevel, allowedUsers, sandboxed, verboseThinking } = await resolveConv(ev, being);
-      if (!slug) throw new Error(`brainpool: no slug for ${ev.surface}/${ev.chatId}`);
+      // `scope` is the address this being's INSTANCE lives at — the conversation itself for
+      // every unscoped turn, the room for a chat invited into one. EVERY identity key below
+      // derives from it and none from `ev`: thread, warm key, conv dir, run config, transcript
+      // roll, thread stats. `ev` still owns what belongs to the MESSAGE — its line, its reply,
+      // its own transcript (see resolveConv above).
+      const { scope, slug, sessionId, mode, accessLevel, allowedUsers, sandboxed, verboseThinking } = await resolveConv(ev, being);
+      if (!slug) throw new Error(`brainpool: no slug for ${scope.surface}/${scope.chatId}`);
 
       // STRUCTURAL SAFETY GATE (operator 2026-08-16; refined 2026-08-20). Refuses the ENTIRE
       // turn — no engine/LLM invocation, no tool grant of any kind, not even the type file's
@@ -435,12 +512,12 @@ export function createBrainPool({
         throw new Error(`brainpool: ${being} has access_level 'all' but no allowed_users set — refusing to run (set allowed_users, or ['*'] to explicitly allow anyone)`);
       }
 
-      const convDir = slugDir(ev.surface, slug);
+      const convDir = slugDir(scope.surface, slug);
       // 'mode: auto' — every agent's own conversations.yaml mode is eligible (operator
       // 2026-08-14: "remove the concept of siblings" — was default-agent-only; any agent
       // hand-configured `mode: auto` also gets the operator-role kickoff below).
       const wantAuto = mode === 'auto';
-      const autoKey = (tid) => `${ev.surface}:${ev.chatId}:${tid}`;
+      const autoKey = (tid) => `${scope.surface}:${scope.chatId}:${tid}`;
       // A THREAD IS BEING INSTANCED on this turn (no thread yet) — read by the layer seeding: a
       // refresh re-copies the room template, an ordinary turn does not. Being-agnostic: each
       // being's own thread (getBeing(..., being).threadId, read by resolveConv above) is
@@ -485,7 +562,7 @@ export function createBrainPool({
         // log.mjs) both read this one file, and a resumed CLI session's own history is NOT
         // what would be lost — the shared file's un-resumed record (what every OTHER being
         // and every human said since each being's own last turn) is. Left exactly as today.
-        if (fresh) await rollTranscript(ev.surface, slug, { io });
+        if (fresh) await rollTranscript(scope.surface, slug, { io });
       } else {
         runModel = def.model; runEffort = def.effort;
       }
@@ -532,10 +609,16 @@ export function createBrainPool({
       // Best-effort by contract (seedIdentityLayers never throws) — never breaks a turn.
       // Room.forChat, not slugDir: seedIdentityLayers is keyed on the Room instance now (a
       // conversation IS a Room), so its own ensureTree/identityDir resolve off convDir too.
-      await seedLayers(Room.forChat(ev.surface, slug), personality, { io, overwrite: fresh });
+      await seedLayers(Room.forChat(scope.surface, slug), personality, { io, overwrite: fresh });
 
-      const key = `${being}:${engine}:${ev.surface}:${slug}`;
+      const key = `${being}:${engine}:${scope.surface}:${slug}`;
       lastKeyByConv.set(`${being}:${ev.surface}:${ev.chatId}`, key);
+      // ...and under the SCOPE's address too when the two differ (operator 2026-08-31). evict()
+      // and steer() below are SYNCHRONOUS by contract — the spine awaits them, but their return
+      // values are a key lookup, not a resolution — so they cannot resolve a scope of their own.
+      // Registering both addresses is what lets a wedged entry be evicted, and a live turn be
+      // steered, from EITHER end of a joined pair: both names now point at the one warm entry.
+      if (scope.scoped) lastKeyByConv.set(`${being}:${scope.surface}:${scope.chatId}`, key);
       // The def's OWN system_prompt and nothing else (operator 2026-08-29): WHO an agent is comes
       // from its identity feed (config/identities/<personality>.md in the 00-identity slot), never
       // from a sentence boot assembles about the node's DEFAULT persona — that addendum told every
@@ -594,7 +677,9 @@ export function createBrainPool({
       // Identity kickoff: prefix the first turn of a fresh thread with the feed,
       // framed as a plain live message (no "installing persona" preamble). The
       // overflow-reset retry re-wraps because its fresh session needs the identity.
-      const line = ev.line ?? ev.body;
+      // A SCOPED turn's line is framed with where it came from (withOrigin, above); an unscoped
+      // one is the bare dispatch line, byte-for-byte as it has always been.
+      const line = scope.scoped ? withOrigin(ev) : (ev.line ?? ev.body);
       const wrapFresh = async () => {
         // EVERY agent gets its own feed. There is no persona/sibling split any
         // more -- the concept was evicted (operator 2026-08-28: "there are no
@@ -677,24 +762,38 @@ export function createBrainPool({
       if (newSession && newSession !== sessionId) {
         const nowIso = nowIsoString();
         await mutateState(writeState, async () => {
-          await writeState(recordThread(await loadState(), ev.surface, ev.chatId, newSession, nowIso, being));
+          await writeState(recordThread(await loadState(), scope.surface, scope.chatId, newSession, nowIso, being));
         });
         // THE STAMP: the transcript now names the thread it belongs to. Here because this is
         // the ONE place a new session is recorded — a transcript is born at ingestion, before
         // any thread exists, so the slot can only be filled once the turn mints one. A turn
         // that throws never gets here, and an un-stamped transcript is exactly what the roll
         // above refuses to touch. Never throws by contract.
-        await stampThreadId(ev.surface, slug, newSession, { io });
+        await stampThreadId(scope.surface, slug, newSession, { io });
         // Mirror the freshly-minted thread into the per-chat stats file's branchable history
         // (state/stats/<surface>/<chatId>.yaml — a changed threadId appends; the old id stays
-        // addressable so a conversation can be branched from it). Keyed by ev.chatId (the
-        // registry key), not the slug. Injectable io, never fatal — the state write is durable.
-        try { await appendThreadStat(ev.surface, ev.chatId, { id: newSession, created: nowIso, identity_injected: nowIso }, { io }); } catch { /* non-fatal */ }
+        // addressable so a conversation can be branched from it). Keyed by the SCOPE's chatId
+        // (the registry key the thread was just recorded under), not the slug and not the chat
+        // the message arrived in — a thread has exactly one history, wherever it was woken from.
+        // Injectable io, never fatal — the state write is durable.
+        try { await appendThreadStat(scope.surface, scope.chatId, { id: newSession, created: nowIso, identity_injected: nowIso }, { io }); } catch { /* non-fatal */ }
       }
       // Auto-compaction hook: after a cooling period the service /compacts this
       // session in place if it grew past ratio. Fire-and-forget — never block the reply.
       try { afterTurn?.({ key, sessionId: newSession ?? sessionId ?? null, model: def.model, cwd, allowedTools: baseOpts.allowedTools }); } catch { /* non-fatal */ }
       return { text, sessionId: newSession ?? sessionId ?? null, being };
+    },
+
+    // WHERE THIS BEING'S INSTANCE LIVES for this event — the conversation itself, or the room a
+    // `wa-group` membership joined it to (operator 2026-08-31). The spine's per-conversation turn
+    // FIFO is the ONE of the four identity keys derived outside this module, and the spine cannot
+    // resolve config or rooms.yaml itself, so it asks here — the same division allowNewInput below
+    // already draws (resolution lives beside every other field in resolveConv; the caller only
+    // formats). Returns an address, never a key, so the turn-key FORMAT stays in the one file that
+    // owns it. Read per call, never cached: an invited group joins or leaves on the next message.
+    async scopeOf(being, ev) {
+      const s = await scopeAddr(being, ev ?? {});
+      return { surface: s.surface, chatId: s.chatId };
     },
 
     // Evict the warm entry for a conversation (DEFECT 2): the spine's per-turn timeout

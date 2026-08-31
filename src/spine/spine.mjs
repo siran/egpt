@@ -42,6 +42,7 @@ import { cleanForSpeech } from '../speech-clean.mjs';
  * @property {(being: string, ev: InboundEvent, onPartial?: Function, ctx?: object) => Promise<{text: string, sessionId?: string}>} turn
  * @property {(being: string, ev: InboundEvent) => Promise<'none'|'same_sender'|'any'>} [allowNewInput]  this conversation's resolved steer policy (operator 2026-08-30). OPTIONAL — absent ⇒ never steer
  * @property {(being: string, ev: InboundEvent) => boolean} [steer]  weave this message into the turn already streaming; TRUE = woven in (emit nothing), FALSE = nothing happened (queue as usual). OPTIONAL — absent ⇒ never steer
+ * @property {(being: string, ev: InboundEvent) => Promise<{surface: string, chatId: string}>} [scopeOf]  WHICH conversation this being's INSTANCE lives in — its thread, warm process and run config (src/spine/identity-scope.mjs, operator 2026-08-31). The address the per-conversation turn FIFO must key on, since that FIFO is what keeps one warm entry to one turn. OPTIONAL — absent ⇒ the event's own address, i.e. every conversation is its own instance
  *
  * @typedef {object} Store   contact ops + thread/state persistence (conversations-state).
  * @property {(rec: {ev: InboundEvent, reply: any, being: string}) => void} [recordThread]
@@ -638,13 +639,24 @@ export function createSpine({
       return { turn: turn ? Promise.all([turn, sideTurn]).then(() => {}) : sideTurn };
     };
 
-    // Per-conversation turn key = the routed being + this conversation. It maps 1:1
-    // to the warm-pool key (`<being>:<engine>:<surface>:<slug>`) at the granularity
-    // that matters — same being, same chat — so serializing on it is exactly "one
-    // turn at a time per warm key". Different chats (or different beings) key apart
+    // Per-conversation turn key = the routed being + the conversation its INSTANCE lives in.
+    // It maps 1:1 to the warm-pool key (`<being>:<engine>:<surface>:<slug>`) at the
+    // granularity that matters — same being, same instance — so serializing on it is exactly
+    // "one turn at a time per warm key". Different instances (or different beings) key apart
     // and run concurrently. Also the CYCLE key: ambient lines accumulate under it so a
     // later queued mention on the same conversation drains exactly this chat's cycle.
-    const turnKey = `${to}:${ev.surface}:${ev.chatId}`;
+    //
+    // brain.scopeOf (operator 2026-08-31) is what makes "this conversation" and "its instance"
+    // two different questions: a WhatsApp group invited into room/acim as a `wa-group` member
+    // runs on the ROOM's thread and the ROOM's warm process, so it has to queue on the ROOM's
+    // key too. A per-chat key here beside a per-room warm key is exactly the split that puts
+    // two `claude --resume <same id>` processes on one session file. HEAD-OF-LINE BLOCKING IS
+    // THE ACCEPTED PRICE (the operator has been told): the room and every group joined to it
+    // share ONE queue, and no concurrency is added to dodge it — the concurrency IS the defect.
+    // OPTIONAL SEAM: a Brain without scopeOf (every test fake, every older caller) falls back
+    // to the event's own address, which is byte-identical to the line this replaces.
+    const scope = (await brain.scopeOf?.(to, ev)) ?? ev;
+    const turnKey = `${to}:${scope.surface}:${scope.chatId}`;
 
     // mode:auto is an IMPERSONATION of the operator: E replies to OTHER people AS the
     // operator, and the operator's OWN messages (isSender) here NEVER prompt E. Accumulate
@@ -831,7 +843,11 @@ export function createSpine({
         const d = await gating.decide(gateAs(t, being), ev, t.mention ?? ev.mention);
         if (!d.receives || !d.mayReply) return;
         if (t.mesh) { if (mesh) await mesh.forward(ev, t.mesh); return; }
-        await openAndRunReply({ to: being, ev, d, turnKey: `${being}:${ev.surface}:${ev.chatId}` });
+        // The SAME instance resolution the primary target's key gets above (operator
+        // 2026-08-31). A fan-out target takes an ordinary turn on its own queue, so a queue
+        // keyed NARROWER than the warm key it guards is the corruption case for it too.
+        const scope = (await brain.scopeOf?.(being, ev)) ?? ev;
+        await openAndRunReply({ to: being, ev, d, turnKey: `${being}:${scope.surface}:${scope.chatId}` });
       } catch (e) { note(`fan-out ${being}/${ev.chatId}: ${e?.message ?? e}`); }
     })).then(() => {});
   }
