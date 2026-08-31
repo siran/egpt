@@ -181,6 +181,47 @@ describe('beeper-port adapter — layered signatures (bridge + agent wrap)', () 
     expect(h.finals[0].endsWith(' 💸')).toBe(true);
   });
 
+  // THE STREAMING MARKER (operator 2026-08-31, on the mesh living mirror in "perrito
+  // traducciones"): "'done' is printed off the signature, which is kind of strange" / "Done should
+  // replace the thinking hour-clock for when it is streaming a reply. instead of 'done' please use
+  // an emoji." Two faults in ONE line (beeper.mjs's final edit, which posted the frame plus a
+  // trailing "✅ Done" line): the word was appended to an ALREADY-WRAPPED frame, so it dangled
+  // BELOW bridge_signature_close as detached debris, and it existed ONLY at the end — a showThink
+  // stream ran with no in-progress mark at all. The marker therefore belongs HERE, stamped on the
+  // raw CORE before the wrap, exactly where sender.mjs stamps LIVE_FRAME_MARK on a live frame of
+  // the local reply train: ONE marker, two states, INSIDE the frame. ⏳ while it streams, ✅ once
+  // it settles — and the done state REPLACES the live one for free, because every frame is
+  // rebuilt from the core, never from the previous frame (the same idempotence the wrap relies on).
+  it('showThink: ⏳ rides INSIDE the frame while streaming, and ✅ REPLACES it on the final frame', async () => {
+    const { start, spy } = fakeStart();
+    const port = await createBeeperBridgePort({ bridgeSignatureOpen: '🌉kg', bridgeSignatureClose: '💸' }, { start });
+    // The mesh origin mirror — the ONE showThink caller (mesh.mjs openOriginStream): an
+    // already-posted placeholder edited in place, with no persona to stamp (the RESPONDER
+    // stamped the nugget before it travelled).
+    const s = port.startStream('!room', '', { existingMsgId: 'post-1', showThink: true });
+    s.update('🤝 Jaja');
+    s.finish('🤝 Jaja, aquí');
+    const h = spy.streams[0];
+    expect(h.updates).toEqual(['🌉kg 🤝 Jaja ⏳ 💸']);            // live: the hour-clock, inside the wrap
+    expect(h.finals).toEqual(['🌉kg 🤝 Jaja, aquí ✅ 💸']);       // settled: ✅ in the SAME position
+    expect(h.finals[0].endsWith(' 💸')).toBe(true);              // …never past the node signature
+  });
+
+  // THE OFF PATH IS BYTE-IDENTICAL. showThink is false for every ordinary reply and for the mesh's
+  // own plumbing frames (mesh.mjs: the relay's placeholder/done-marker are deliberately not the
+  // AI-thinking ones), so nothing this layer adds may reach them. The ⏳ below is the SENDER's own
+  // live-frame marker riding in the text — proof the two never compose into two markers.
+  it('showThink OFF adds no marker to any frame (every ordinary reply)', async () => {
+    const { start, spy } = fakeStart();
+    const port = await createBeeperBridgePort({ bridgeSignatureOpen: '🌉kg', bridgeSignatureClose: '💸' }, { start });
+    const s = port.startStream('!room', '⏳', { bodyEmoji: '🐶', label: 'egpt' });
+    s.update('Hola ⏳');
+    s.finish('Hola mundo');
+    const h = spy.streams[0];
+    expect(h.updates).toEqual(['🌉kg 🐶 egpt: Hola ⏳ 💸']);
+    expect(h.finals).toEqual(['🌉kg 🐶 egpt: Hola mundo 💸']);
+  });
+
   it('each slot works alone — only agent_open+agent_close set (bridge empty) wraps just the inner layer', async () => {
     const { start, spy } = fakeStart();
     const port = await createBeeperBridgePort({}, { start });   // no bridge_* → outer layer invisible

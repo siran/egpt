@@ -1967,6 +1967,27 @@ describe('newerMsgId (resolveSentMessageId newest-match reducer)', () => {
   });
 });
 
+// THE STREAMING MARKER LIVES INSIDE THE FRAME, NOT AFTER IT (operator 2026-08-31, on the mesh
+// living mirror in "perrito traducciones": "'done' is printed off the signature, which is kind
+// of strange"). handle.finish used to post `latest` plus a trailing "✅ Done" line — and `latest`
+// is an ALREADY-WRAPPED frame (beeper-port's wrapPersona ran one layer up, before this ever saw
+// it), so the word landed on its own line BELOW bridge_signature_close and read as detached
+// debris rather than as part of the message. This layer only ever holds a FINISHED frame, so
+// marking is not its job at all: the marker is stamped on the raw CORE in beeper-port.startStream,
+// the same place sender.mjs stamps ⏳ for the local reply train. What is locked here is the
+// consequence — the bridge writes EXACTLY the bytes it was handed and adds nothing of its own.
+describe('beeper bridge — a streamed reply finishes to exactly the frame it was handed', () => {
+  it('appends no marker of its own to the final edit', async () => {
+    const chat = CHAT('chat-1');
+    const { bridge } = await startBridge();
+    // showThink is passed on purpose: it is the port's option now, and the bridge must ignore it.
+    const handle = bridge.startStreamMessage('🤔 thinking…', { chatId: chat, showThink: true });
+    await handle.finish('🌉kg 🤝 don: hola ✅ 💸');
+    expect(handle.delivered).toBe(true);
+    expect(fake.edits.map((e) => e.text)).toEqual(['🌉kg 🤝 don: hola ✅ 💸']);
+  });
+});
+
 // The STALE-TWIN LANDMINE (live 2026-07-04, SPOILER — the acceptance rerun on the
 // guarded spine): once ONE '⏳ Thinking…' placeholder is left orphaned in a chat,
 // every LATER same-text placeholder binds its edit stream to the STALE message:

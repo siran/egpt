@@ -15,6 +15,19 @@
 // (tests/beeper-port.test.mjs). The live echo verify is tests-manual/phase2-echo.mjs.
 import { startBeeperBridge } from './beeper.mjs';
 import { makeWrapPersona } from './persona-wrap.mjs';
+// THE live-frame marker — THE one definition (dispatch-line.mjs, beside its recogniser
+// isLiveStreamFrame), the same '⏳' src/spine/sender.mjs stamps on every intermediate frame of a
+// local reply. The showThink stream below reuses it rather than minting a second hour-clock: an
+// observing peer classifies a streaming frame by this token's PRESENCE, so a private copy would
+// drift the mesh mirror out of that classification the moment either literal changed.
+import { LIVE_FRAME_MARK } from '../dispatch-line.mjs';
+
+// The SETTLED counterpart of LIVE_FRAME_MARK for a showThink stream (operator 2026-08-31: "instead
+// of 'done' please use an emoji"). ✅ is the very check the retired "✅ Done" carried — kept so the
+// state the operator already reads as "finished" is unchanged, now alone and in the marker's own
+// position. It lives here rather than in dispatch-line.mjs because, unlike ⏳, nothing classifies a
+// frame by it: it is decoration on the settled text, not a signal any reader parses.
+const DONE_MARK = '✅';
 
 // NOTE (placeholder id resolution): resolveSentMessageId (beeper.mjs) text-matches
 // the recent list and reduces with newerMsgId, which since d7614b8 picks the
@@ -127,21 +140,42 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
       // Each frame is built from the RAW core, never from the previous frame, so replacing a
       // signed frame with the next one cannot accumulate signatures.
       const frame = (t) => wrapPersona(opts, t);
+      // THE showThink PROGRESS MARKER (operator 2026-08-31, on the mesh living mirror in the
+      // "perrito traducciones" group): "'done' is printed off the signature, which is kind of
+      // strange" / "Done should replace the thinking hour-clock for when it is streaming a reply.
+      // instead of 'done' please use an emoji." The marker used to be beeper.mjs's own final
+      // edit — the frame, a blank line, then the words "✅ Done" — appended to an ALREADY-WRAPPED
+      // frame, so it landed BELOW bridge_signature_close as detached debris; and it existed ONLY at
+      // the end, so a streaming showThink reply carried no in-progress mark at all. It belongs
+      // HERE, the one layer that still holds the RAW CORE: stamped on the core, the mark ends up
+      // INSIDE the signature frame — exactly where sender.mjs puts ⏳ for the local reply train.
+      //
+      // ONE marker, two states, one position: ⏳ while it streams, ✅ once it settles. The done
+      // state REPLACES the live one for free, because every frame is rebuilt from the core and
+      // never from the previous frame (the same idempotence the wrap itself relies on) — so
+      // there is never a second marker and never an extra trailing line.
+      //
+      // showThink is false for every ordinary reply and for the mesh's own plumbing frames
+      // (mesh.mjs: the relay's placeholder and done-marker are deliberately not the AI-thinking
+      // ones), so that path renders byte-for-byte as before. An EMPTY frame stays empty: the mesh
+      // origin mirror opens its stream with '', which must not become a lone marker under a
+      // signature with no content (the same rule wrapPersona applies one layer down).
+      const mark = (t, m) => (opts.showThink && String(t ?? '').trim() ? `${t} ${m}` : t);
       // The placeholder is the wrapped init — it carries the body_emoji (so a
       // re-ingested copy is caught by the persona-marker echo-suppression). No nonce:
       // numeric newest-wins + monotonic per-chat ids + the spine's serialized turns
       // already resolve an identical-text match to THIS turn's message (see the
       // module-top note). Id resolution is unaffected by the wrap: beeper.mjs matches on the
       // very bytes it posted (sendMessage → postAndConfirm(…, String(text))).
-      const placeholder = frame(init);
-      // existingMsgId + showThink pass through for the mesh living-mirror (Phase 4b):
-      // the ORIGIN edits an ALREADY-posted placeholder (post_id) in place instead of
-      // posting a fresh one, and showThink appends "✅ Done" on the final frame. Default
-      // null/false → every existing caller (the reply train) is unaffected.
-      const h = real.startStreamMessage(placeholder, { chatId: chat, persona: opts.persona, replyToMessageID: opts.replyTo ?? null, existingMsgId: opts.existingMsgId ?? null, showThink: opts.showThink ?? false });
+      const placeholder = frame(mark(init, LIVE_FRAME_MARK));
+      // existingMsgId passes through for the mesh living-mirror (Phase 4b): the ORIGIN edits an
+      // ALREADY-posted placeholder (post_id) in place instead of posting a fresh one. Default
+      // null → every existing caller (the reply train) is unaffected. showThink is NOT forwarded:
+      // it is consumed HERE (see mark above) because only this layer holds the raw core.
+      const h = real.startStreamMessage(placeholder, { chatId: chat, persona: opts.persona, replyToMessageID: opts.replyTo ?? null, existingMsgId: opts.existingMsgId ?? null });
       return {
-        update: (t) => h.update(frame(t)),
-        finish: (t) => h.finish(frame(t)),
+        update: (t) => h.update(frame(mark(t, LIVE_FRAME_MARK))),
+        finish: (t) => h.finish(frame(mark(t, DONE_MARK))),
         get delivered() { return h.delivered; },
         get lastError() { return h.lastError; },
         get confirmedId() { return h.confirmedId; },

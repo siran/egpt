@@ -1765,11 +1765,13 @@ export async function startBeeperBridge(opts = {}) {
     // message, never a separate "final" send. The edit lifecycle is OWNED HERE in
     // the bridge so every surface behaves identically. An 2026-06-20: edit-streaming
     // is a bridge PROPERTY of ANY bot reply (the operator's own typing never
-    // streams — this only ever runs on a bot's generated reply). `showThink` only
-    // adds the 🤔 placeholder + "✅ Done" marker (engineers); a plain reply (E)
-    // finalizes to just its text. The host skips its fallback send only when the
-    // stream reports `delivered`, so the handle MUST expose delivered (+ lastError).
-    startStreamMessage(initialText, { chatId, chatName, persona, showThink = false, existingMsgId = null, replyToMessageID = null } = {}) {
+    // streams — this only ever runs on a bot's generated reply). It writes EXACTLY the
+    // frame it is handed and adds nothing of its own: the streaming/settled progress
+    // marker moved UP to beeper-port's startStream (operator 2026-08-31), the one layer
+    // that still holds the raw core, because a marker appended HERE lands below the
+    // signature the caller already wrapped the text in. The host skips its fallback send
+    // only when the stream reports `delivered`, so the handle MUST expose delivered (+ lastError).
+    startStreamMessage(initialText, { chatId, chatName, persona, existingMsgId = null, replyToMessageID = null } = {}) {
       // ── universal in-place editor (every bot reply) ──────────────────────────
       let latest = initialText, finished = false, cid = null, realId = null;
       let lastEditAt = 0, editTimer = null, pendingText = null, chain = Promise.resolve();
@@ -1834,7 +1836,7 @@ export async function startBeeperBridge(opts = {}) {
         if (t) latest = t;
         await ready;
         if (cid && realId) {
-          const ok = await applyEdit(showThink ? `${latest}\n\n✅ Done` : latest);
+          const ok = await applyEdit(latest);
           if (ok) handle.delivered = true; else handle.lastError = handle.lastError || 'final edit failed';
         }
         // Couldn't edit in place. NOTHING IS EVER DELETED (operator 2026-08-24):
