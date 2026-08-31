@@ -317,6 +317,26 @@ export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', addre
       // beingView seam/failure mode: no loadState injected, or a read that throws → null, and
       // every hit below falls straight to its GLOBAL allowed_users (or unrestricted).
       const state = loadState ? await loadState().catch(() => null) : null;
+      // WHERE THIS MESSAGE ARRIVED (operator 2026-08-31), which is not always where it is being
+      // dispatched. Since 8227b99 a wa-group's message re-enters the room it was invited to as a
+      // turn addressed `{network:'room', chatId:<room>}`; that address is the turn's IDENTITY and
+      // must not move (a569ada — the room's thread, warm process, queue, access_level). But the
+      // two gates BELOW that ask about the CONVERSATION were then asking about the wrong one:
+      //   · the SURFACE PIN matched a `surface: shell` agent against a message that arrived on
+      //     WhatsApp, because the tunnel re-addressed it onto surface `room`;
+      //   · the ROSTER gate asked a ROOM whether the peer account is a participant. A room has no
+      //     roster, so the answer is a definite absence — and `@e` in "perrito traducciones",
+      //     which kg correctly declines because Rodz IS in that group, woke kg's E a second time
+      //     through the tunnel. One message, two turns, from two visibly different accounts.
+      // `ev.origin` (identity.mjs, ridden across by room-relay's tunnelOf) is that conversation.
+      // ABSENT on every genuine inbound and every older caller → this IS `ev`, so both gates read
+      // the identical object they always read.
+      //
+      // DELIBERATELY NOT the allowed_users gate below: that one asks "may this sender reach this
+      // being HERE", which is REACHABILITY, not arrival — its per-conversation override is written
+      // against the conversation the turn runs in, and moving it would silently re-scope who may
+      // wake a being. Same line f70edce drew for the mesh responder's own allowed_users.
+      const org = ev?.origin ?? ev;
       // ONE membership answer per identity per resolve() call (never per hit) — same discipline as
       // the conv-state read above. Only ever consulted for a hit that actually carries a guard, so
       // a message addressing nobody, or addressing an ordinary handle, costs nothing.
@@ -332,9 +352,12 @@ export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', addre
           // is the case that matters most: the operator's room transcripts are full of
           // `@e can you please…`, and those lines have reached nobody since `e` moved off kg.
           // SHELL_SURFACE (identity.mjs) is read, never re-derived — see its header.
-          if (String(ev?.surface ?? '').toLowerCase() === SHELL_SURFACE) return false;
-          try { const v = await isPresent(identity, ev); return v == null ? null : !!v; }
-          catch (e) { onLog(`fallback_handle: membership lookup for ${identity} in ${ev?.surface}/${ev?.chatId} threw — ${e?.message ?? e}`); return null; }
+          // …asked of the conversation the message ARRIVED in (`org`, above), never the one it is
+          // dispatched into: a tunnelled group message is a room event by address and would take
+          // this shortcut on the room's behalf, throwing away the group's real roster.
+          if (String(org?.surface ?? '').toLowerCase() === SHELL_SURFACE) return false;
+          try { const v = await isPresent(identity, org); return v == null ? null : !!v; }
+          catch (e) { onLog(`fallback_handle: membership lookup for ${identity} in ${org?.surface}/${org?.chatId} threw — ${e?.message ?? e}`); return null; }
         })());
         return presence.get(identity);
       };
@@ -359,8 +382,12 @@ export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', addre
           // through THE network→surface map before comparing — the same map identity.build used
           // to stamp ev.surface. Without that, kg's live `don: surface: shell` stopped matching
           // the moment the shell became surface `room` (2026-08-28) and the relay went silent.
+          // …and it is compared against the ARRIVAL surface (`org`, above), not the dispatch one:
+          // kg pins `don` to `surface: shell` precisely because on Beeper `do` hears @don himself,
+          // so a WhatsApp line tunnelled into a room must not start matching that pin the moment
+          // the tunnel re-addresses it onto surface `room`.
           if (hit.agent.surface != null
-              && surfaceOf(String(hit.agent.surface).toLowerCase()) !== String(ev?.surface ?? '').toLowerCase()) continue;
+              && surfaceOf(String(hit.agent.surface).toLowerCase()) !== String(org?.surface ?? '').toLowerCase()) continue;
           // ALLOWED_USERS GATE (operator 2026-08-15): "we should control by access_level and who
           // is able to trigger the agent … i think the 'dangerous' key is mistake" — replaces the
           // evicted TYPE-FILE `dangerous:true` reachability mechanism (meta-engineer.yaml, gone;

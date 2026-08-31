@@ -77,7 +77,8 @@ import { cleanForSpeech } from '../speech-clean.mjs';
  * @property {boolean} isSender    arrived on OUR OWN account (the operator, a peer node, or our own echo)
  * @property {boolean} isVoice     the body is a voice-note transcription
  * @property {{id: string, kind: string}|null} fromMember  the ROSTER MEMBER this turn was re-entered from by the room relay — a brain member whose reply this is, or the invited group whose message this is, tunnelled into the room it joined; null on every genuine inbound
- * @property {string|null} fromNode   WHICH NODE's spine committed this text. null = UNSIGNED (a human, the ordinary case); '' = SIGNED BY A NODE WE CANNOT NAME; otherwise the node name. Callers test `!= null`, NEVER truthiness
+ * @property {string|null} fromNode   WHICH NODE's spine committed this text. null = UNSIGNED (a human, the ordinary case); '' = SIGNED BY A NODE WE CANNOT NAME; otherwise the node name. Callers test `!= null`, NEVER truthiness — and "is it ANOTHER node" is a comparison against node_name ∪ node_alias (src/spine/node-names.mjs fromOtherNode), never mere presence
+ * @property {{surface: string, chatId: string, chatName?: string}|null} origin  WHERE this message ACTUALLY ARRIVED, when a synthetic re-addressed it elsewhere (the room relay's wa-group tunnel). The address above is its IDENTITY (thread/warm process/queue/access_level); this is its PROVENANCE, read ONLY by the gates that ask "where did this arrive" (router.mjs's surface pin + fallback_handle roster question). null on every genuine inbound ⇒ those gates read ev itself
  * @property {string} [line]    the formatted dispatch line every brain sees, built once here (C7.6e)
  * @property {any}    raw       the bridge's original `from` payload
  */
@@ -127,6 +128,21 @@ export function createSpine({
   guard = null,                        // optional §2c stop-guard: the per-channel loop-breaker + RESUME (createStopGuard, boot-wired). Null = pipe runs unguarded (tests).
   stopSwitch = null,                   // optional §2c KILL SWITCH (boot-wired): { present(): does EGPT_HOME/STOP exist, async pull(why): warn in why.chatId (capped, best-effort) + write the file + take the SERVICE down }. Two call sites, both on paths that already exist — tick() (the operator touched the file; no chatId, so nothing to warn) and classify() (the chat safe word, which carries its chat). Null = no kill switch (tests).
   isSelfChat = () => false,            // (ev) => is this message in THE SELF CHAT — the operator's own command channel (boot: networks.whatsapp.chat_ids[0]). The ONLY chat the safe word is honoured in (operator 2026-07-26). Default false = FAIL-CLOSED: an un-wired spine has no chat kill switch at all, which is the safe direction for a switch that takes the service down.
+  // A RELAY CHANNEL IS TRANSIT, NOT A CONVERSATION (operator 2026-08-31: "when a message arrived
+  // to a 'egpt-mesh-*' channel, it must be treated as a transit message. the log if required is in
+  // beeper itself"). OPTIONAL (ev) => boolean, boot-wired to src/spine/node-names.mjs's
+  // isRelayChannelChat — the set of relay channels derived from THE routing table (agentRoutes),
+  // never re-derived here. Two readings below, and they are different facts: handleFast skips the
+  // RECORD (no slug, no transcript.md, no stats), classify skips the ordinary-chat DISPATCH (no
+  // thread). Default false = a node with no relay channels is byte-identical to before.
+  isTransit = () => false,
+  // A BEING DOES NOT WAKE ON A FRAME ANOTHER NODE'S SPINE COMMITTED (operator 2026-08-31).
+  // OPTIONAL (ev) => boolean, boot-wired to src/spine/node-names.mjs's fromOtherNode — ev.fromNode
+  // compared against THIS node's own names (node_name ∪ node_alias). NOT `fromNode != null`: that
+  // means "some spine posted this" and includes our OWN synthetics (the room relay's tunnel carries
+  // fromNode across on purpose), which would silence multi-brain rooms. Default false = a message
+  // with no fromNode, and every un-wired caller, are byte-identical to before.
+  fromOtherNode = () => false,
   guardOverride = null,                // optional (surface, chatId) => { turns?, window? } | null — the conversation's per-channel guard override (conversations.yaml). Null = node defaults only.
   // RECENT CONTEXT read seam (operator 2026-07-26) — `(chatId, {chatName, network}) =>
   // Promise<string|null>`, the conversation's transcript.md. THE SAME function boot
@@ -425,7 +441,15 @@ export function createSpine({
     const channel = guard ? guardChannel(ev) : null;
     const act = await classify(ev, channel);
     if (!act) return;                  // 'off' — not received (C4): not recorded, not processed
-    await transcript.log(ev);          // ←── THE INGESTION POINT (C1.2). The only one.
+    // TRANSIT IS NOT RECORDED (operator 2026-08-31: "the log if required is in beeper itself").
+    // A relay channel carries envelopes between spines; a second copy here is not a log, it is a
+    // conversation that does not exist — kg had grown conversations/whatsapp/egpt-mesh-do-kg-
+    // 2608311419/transcript.md and a conversations.yaml entry with its own threadId. Skipping the
+    // record is ALL this does: `act` was already decided above and still runs, so a mesh envelope
+    // routes exactly as it always did (classify returns for it two branches earlier). The ONE
+    // ingestion point stays the one ingestion point — this is which messages reach it, not a
+    // second writer.
+    if (!isTransit(ev)) await transcript.log(ev);          // ←── THE INGESTION POINT (C1.2). The only one.
     // Radio relay: a genuine inbound voice note, in a room joined to a radio, airs on the
     // station (createRadioNoteRelay owns the rest of the gate — joined+enabled, sender→speaker,
     // dedupe). Fire-and-forget with its own catch, the SAME shape transcript.log uses for its
@@ -559,6 +583,18 @@ export function createSpine({
       return async () => { await mesh.handle(ev); };
     }
 
+    // TRANSIT IS NOT A CONVERSATION (operator 2026-08-31) — and this is the DISPATCH half of
+    // that, the record half being the skipped ingestion in handleFast above. Anything left on a
+    // relay channel once the envelope branch has taken its own exit (directly above, which is
+    // what makes "skipping the record must not skip the routing" structural rather than
+    // remembered) is chatter in a pipe: our own 🤔 placeholder escaping the echo gate, a peer's
+    // mirror frame, a human wandering into the channel. None of it addresses a being HERE, and
+    // answering it is what minted `agents.egpt.threadId` on the channel's own conversation entry.
+    // `null` — the SAME "not received" the 'off' mode returns (C4), so nothing is recorded and
+    // nothing runs. The branches ABOVE keep their exits deliberately: an envelope routes, a
+    // lifecycle command still rescues a wedged node, a backlog replay is still swallowed.
+    if (isTransit(ev)) return null;
+
     // Advice answer (mode: auto): the operator quote-replied in the advice channel to one
     // of E's /ask questions — route that answer into the ORIGIN conversation instead of
     // treating it as a message in the advice channel. Detected EARLY, before gating, so
@@ -602,6 +638,26 @@ export function createSpine({
       if (humanTurn(ev)) guard.noteHuman(channel);
       else await guardCountNonHuman(ev, channel);
     }
+
+    // A BEING DOES NOT WAKE ON A FRAME ANOTHER NODE'S SPINE COMMITTED (operator 2026-08-31, on a
+    // room message fanned into a group that the other node then sees). The node signature already
+    // told the guard this was not a person — that only bounded the COUNTING. It did not stop a
+    // reply: a node-posted line containing `@e` mention-matches like any other text and gets
+    // answered, so two spines watching one chat answer each other until guard.turns cuts it off,
+    // guard.turns messages deep, in front of everybody.
+    //
+    // AFTER the guard block on purpose: the counter must keep counting these (tests/guard-
+    // provenance.test.mjs locks a burst of peer posts tripping at `turns`) — the loop-breaker is
+    // not weakened, it is simply no longer the only thing standing between two nodes. And after
+    // gating too, so an 'off' chat still returns null and records nothing.
+    //
+    // A no-op ACTION, not null: the frame IS received. It stays on the record (handleFast already
+    // wrote it, above), the guard already counted it, and the being reads it as back-context in
+    // transcript.md like any other line — it simply prompts nobody. That covers every wake this
+    // message could produce in one place: the primary turn, fanOutExtras' other addressed agents,
+    // the mesh forward, the auto dwell, and roomRelay.fanOut's drive of the brain-member tabs.
+    // THE TEST IS "another node", never `fromNode != null` — see the seam's own note above.
+    if (fromOtherNode(ev)) return () => { note(`${ev.surface}/${ev.chatId}: frame committed by node "${ev.fromNode}" — recorded, no being woken`); };
 
     return () => dispatchChat({ ev, d, to, mention, meshTarget, targets, channel });
   }

@@ -143,6 +143,16 @@ export function createIdentity({ formatLine = formatDispatchLine, now = () => Da
         // of our own sends that escaped the bridge's echo gate would read HUMAN in the room.
         // Every genuine bridge inbound carries no `from.fromNode` → null, exactly as before.
         fromNode: signed ? (decodeNodeSignature(rawBody) ?? '') : (f.fromNode ?? null),
+        // WHERE THIS MESSAGE ACTUALLY ARRIVED, when that is not where it is being dispatched:
+        // { surface, chatId, chatName } of the ORIGIN conversation. Carried exactly as fromMember
+        // and fromNode are, and for the same reason — a synthetic that RE-ADDRESSES an already-built
+        // event (the room relay's wa-group tunnel, src/spine/room-relay.mjs tunnelOf) destroys the
+        // fact, so it has to ride the payload. The two are a deliberate SPLIT (operator 2026-08-31):
+        // the address above is the message's IDENTITY (its thread, warm process, queue, access_level
+        // — a569ada), this is its PROVENANCE, and only the gates that ask "where did this arrive"
+        // read it (router.mjs: the surface pin, and fallback_handle's roster question). Every genuine
+        // bridge inbound carries no `from.origin` → null → every reader falls back to ev itself.
+        origin: f.origin ?? null,
         raw: from,
       };
       // The one dispatch line, built once (C7.6e). A reaction/edit is a

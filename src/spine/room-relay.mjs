@@ -150,6 +150,21 @@ export function createRoomRelay({
       // invited to wake.
       fromMember: { id: ev.chatId, kind: 'wa-group' },
       fromNode: ev.fromNode,
+      // WHERE IT ACTUALLY ARRIVED (operator 2026-08-31). The re-addressing above is right for
+      // IDENTITY — the turn runs on the ROOM's thread, warm process, queue and access_level,
+      // which is a569ada's whole point and does not change. It is WRONG for GATING, and one
+      // live message proved it: `@e` in "perrito traducciones" is Rodz's to answer, so kg's
+      // fallback_handle guard sees the peer account present in that GROUP and correctly stays
+      // quiet — but the tunnelled copy presents as a room event, a room has no roster, and the
+      // guard re-read that as "peer absent" and woke kg's E anyway. ONE message, TWO turns.
+      // Same shape for the surface pin: a `surface: shell` agent must not match a message that
+      // arrived on WhatsApp just because the tunnel re-addressed it onto surface `room`.
+      //
+      // It rides the payload for the same reason fromNode does — by the time this service holds
+      // ev, the origin address has been replaced, so it cannot be re-derived downstream. It is
+      // READ ONLY by the gates that ask "where did this arrive" (src/spine/router.mjs); nothing
+      // dispatches, keys or files on it, so identity stays exactly what a569ada made it.
+      origin: { surface: ev.surface, chatId: ev.chatId, chatName: ev.chatName },
     },
   });
 
