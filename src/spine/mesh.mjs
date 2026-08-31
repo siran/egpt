@@ -61,6 +61,15 @@ export function createMeshService({
   commands = null,
   getConfig = () => ({}),
   bodyEmojiOf = () => '',              // (being) => body_emoji — stamps the relayed reply
+  // (being) => DISPLAY NAME. THE resolver, the same one boot.mjs already hands createTranscript,
+  // createSender, createReplyActions and createSpine (the agents-registry `name:`, else the map
+  // key) — this service was the ONE surface it was never threaded into, so it stamped the raw
+  // being-id. Invisible until the two diverged (operator 2026-08-31, live): kg's persona is keyed
+  // `egpt` and named `ken` — the KEY is the being-id that keys warm sessions, threads and
+  // transcripts, so it deliberately stays `egpt` when the display name changes. A mesh reply
+  // therefore landed in WhatsApp as "🐶 egpt: …" while the SAME being's local reply said "ken:".
+  // Identity default: a standalone construction (tests) keeps stamping the id, byte-identical.
+  labelOf = (b) => b,
   getSelfChatId = () => null,          // () => this node's Self chat id — the fallback transport when a relay channel doesn't resolve
   // `loadState` (operator 2026-08-15, allowed_users) — () => Promise<conv state>, the SAME
   // conversations-state IO router.mjs's createRouter and gating.mjs's createGating take, injected
@@ -96,7 +105,7 @@ export function createMeshService({
   // lazy way as the visible ones. The ORIGIN re-wraps the nugget when it posts it, and the wrap
   // replaces rather than stacks markers, so the surfaced frame ends up naming the spine that put
   // it on the surface while the envelope's own provenance lines still name who answered.
-  const renderReply = (being, text) => makeWrapPersona({ bridgeSignatureOpen: cfg().bridge_signature_open ?? '', bridgeSignatureClose: cfg().bridge_signature_close ?? '', nodeName: cfg().node_name ?? '' })({ bodyEmoji: bodyEmojiOf(being), label: being }, text);
+  const renderReply = (being, text) => makeWrapPersona({ bridgeSignatureOpen: cfg().bridge_signature_open ?? '', bridgeSignatureClose: cfg().bridge_signature_close ?? '', nodeName: cfg().node_name ?? '' })({ bodyEmoji: bodyEmojiOf(being), label: labelOf(being) }, text);
   const timeoutMs = () => Number(cfg().mesh?.timeout_ms ?? 60_000) || 60_000;
 
   // Find the non-comment agent whose WAKE TOKEN matches `token` → { name, agent }
@@ -406,8 +415,11 @@ export function createMeshService({
         const b = String(body ?? '').trim();
         // Live frames carry the bare stamp, the FINAL carries the full wrap — the once-at-the-end
         // convention both ports already follow for a local reply (placeholder/updates un-wrapped).
+        // BOTH stamp labelOf(being), never the raw being-id: a live frame and the settled one are
+        // the same reply and must name the being identically, or a `ken`-named / `egpt`-keyed being
+        // would stream as "egpt:" and then snap to "ken:" (operator 2026-08-31 — see labelOf above).
         const out = (!b || b === PLACEHOLDER || b === '🤔') ? PLACEHOLDER
-          : done ? renderReply(being, b) : personaStamp(bodyEmojiOf(being), being, b);
+          : done ? renderReply(being, b) : personaStamp(bodyEmojiOf(being), labelOf(being), b);
         // echo `via` (the forward trail) home so the origin can show the traceroute path.
         return encodeMesh({ by, body: out, re, post_id, via, done });
       };

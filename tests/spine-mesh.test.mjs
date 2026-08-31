@@ -65,15 +65,21 @@ function fakeTimers() {
 const EMOJI = { don: '🤝', wren: '🐦' };
 const bodyEmojiOf = (b) => EMOJI[String(b).toLowerCase()] ?? '';
 
-function svc({ node, aliases = [], agents = {}, meshCfg = {}, brain, timers, logs, chatIds = {}, selfChatId = null, sig = {}, loadState } = {}) {
+// boot.mjs's OWN display-name derivation, in one line: the agents-registry `name:`, else the key.
+// Built from a test's registry so the label tests exercise the real resolver SHAPE, not a stub
+// hardcoded to answer "ken" (operator 2026-08-31 — see the display-name describe block below).
+const registryLabelOf = (agents) => (b) => agents[String(b).toLowerCase()]?.name ?? String(b ?? '');
+
+function svc({ node, aliases = [], agents = {}, meshCfg = {}, brain, timers, logs, chatIds = {}, selfChatId = null, sig = {}, loadState, labelOf, emojiOf } = {}) {
   const bridge = fakeBridge({ chatIds });
   const cfg = { node_name: node, node_alias: aliases, agents, mesh: meshCfg, ...sig };   // sig = this node's bridge_signature_* (the keys boot hands the ports)
   const mesh = createMeshService({
     bridge, brain: brain ?? fakeBrain(),
-    getConfig: () => cfg, bodyEmojiOf,
+    getConfig: () => cfg, bodyEmojiOf: emojiOf ?? bodyEmojiOf,
     getSelfChatId: () => selfChatId,
     setTimer: timers?.setTimer, clearTimer: timers?.clearTimer,
     ...(loadState ? { loadState } : {}),   // allowed_users per-conversation override (operator 2026-08-15) — default: no-op
+    ...(labelOf ? { labelOf } : {}),       // display-name resolver (operator 2026-08-31) — default: the being-id, as before
     onLog: (m) => logs?.push(m),
   });
   return { bridge, mesh, cfg };
@@ -932,5 +938,70 @@ describe('mesh service — allowed_users gate (operator 2026-08-15)', () => {
     await mesh.handle({ surface: 'whatsapp', chatId: 'RELAY', msgId: 'm1', body: req, senderId: 'boss' });
     await flush();
     expect(brain.calls).toHaveLength(1);
+  });
+});
+
+// ── DISPLAY NAME ≠ BEING-ID (operator 2026-08-31, live incident) ───────────────────────────────
+//    kg's persona is KEYED `egpt` and NAMED `ken`. The key is the BEING-ID — it keys the warm
+//    session, the thread and the transcript — so the rename deliberately kept it; only `name:`
+//    moved. Every other surface renders through boot's labelOf (createTranscript, createSender,
+//    createReplyActions, createSpine) and said "ken:", but createMeshService was never handed it
+//    and stamped the raw id, so exactly ONE reply — the relayed one — arrived in WhatsApp as
+//    "🐶 egpt: …". Both frame paths are locked here, because they must agree: the SETTLED reply
+//    (renderReply → makeWrapPersona) and the LIVE frames (personaStamp) of the same turn. ──
+describe('mesh service — a relayed reply is stamped with the DISPLAY NAME, not the being-id', () => {
+  const KEN = { egpt: { configuration: 'egpt', name: 'ken' } };   // the live kg registry, minimized
+  const kenSvc = (brain) => svc({ node: 'kg', agents: KEN, brain, emojiOf: () => '🐶', labelOf: registryLabelOf(KEN) });
+  const req = (post_id = 'p1') => encodeMesh({ by: 'An', body: '@egpt hola', from: 'HFM', from_node: 'do', to: 'egpt.kg', post_id });
+
+  it('REPRODUCE-FIRST: the SETTLED reply says "🐶 ken: …" — the name, never the map key', async () => {
+    const brain = fakeBrain({ reply: 'aquí' });
+    const { bridge, mesh } = kenSvc(brain);
+    await mesh.handle({ surface: 'whatsapp', chatId: 'RELAY', msgId: 'm1', body: req() });
+    await flush();
+    expect(brain.calls[0].being).toBe('egpt');                       // the BEING-ID is what RUNS — unchanged
+    const fin = parseMesh(bridge.streams[0].finals.at(-1));
+    expect(stripNodeSignature(fin.body)).toBe('🐶 ken: aquí');       // …and the DISPLAY NAME is what is stamped
+  });
+
+  it('REPRODUCE-FIRST: the LIVE streaming frames say "🐶 ken: …" too — no snap from id to name mid-turn', async () => {
+    const brain = fakeBrain({ reply: 'aquí', partials: ['aq', 'aquí'] });
+    const { bridge, mesh } = kenSvc(brain);
+    await mesh.handle({ surface: 'whatsapp', chatId: 'RELAY', msgId: 'm1', body: req() });
+    await flush();
+    const live = bridge.streams[0].updates.map((u) => stripNodeSignature(parseMesh(u).body));
+    expect(live).toEqual(['🐶 ken: aq', '🐶 ken: aquí']);
+    expect(live.some((b) => /egpt/.test(b))).toBe(false);
+  });
+
+  it('REGRESSION LOCK: the ADDRESSING forms are untouched — `by:`/`re:` stay the map-key form the mesh routes on', async () => {
+    // The stamp is for a human; `by:`/`to:`/`re:` are ROUTING. `ken.kg` addresses nobody (the key
+    // is the wake token here — no handles declared), so these must not follow the display name.
+    const brain = fakeBrain({ reply: 'aquí' });
+    const { bridge, mesh } = kenSvc(brain);
+    await mesh.handle({ surface: 'whatsapp', chatId: 'RELAY', msgId: 'm1', body: req('p1') });
+    await flush();
+    expect(parseMesh(bridge.streams[0].finals.at(-1))).toMatchObject({ by: 'egpt.kg', re: 'HFM.do', post_id: 'p1', done: true });
+  });
+
+  it('REGRESSION LOCK: an un-hosted being still answers "no <being>.<node> here" in the ADDRESS form', async () => {
+    const { bridge, mesh } = kenSvc();
+    const notHere = encodeMesh({ by: 'An', body: '@ghost hola', from: 'HFM', from_node: 'do', to: 'ghost.kg', mid: 'M1' });
+    await mesh.handle({ surface: 'whatsapp', chatId: 'RELAY', msgId: 'm1', body: notHere });
+    await flush();
+    expect(bridge.sent.map((s) => parseMesh(s.text)?.body).filter(Boolean)).toContain('no ghost.kg here');
+  });
+
+  it('REGRESSION LOCK: the ORIGIN relays on the address form, and the origin-wait names that address', async () => {
+    // The forwarded `to:` and the "did not answer" it arms are the ADDRESS the operator must be
+    // able to re-type, not a display name — left exactly as they were.
+    const timers = fakeTimers();
+    const { bridge, mesh } = svc({ node: 'do', meshCfg: { timeout_ms: 30000 }, timers, labelOf: registryLabelOf(KEN) });
+    const ev = { surface: 'whatsapp', chatId: 'CHAT', chatName: 'HFM', senderName: 'An', body: '@egpt hola' };
+    await mesh.forward(ev, { being: 'kgrelay', route: { room_id: 'RELAY' }, to: 'egpt.kg' });
+    expect(parseMesh(bridge.sent.at(-1).text)).toMatchObject({ to: 'egpt.kg' });
+    timers.timers[0].fn();
+    await flush();
+    expect(bridge.sent.some((s) => s.chat === 'CHAT' && /egpt\.kg did not answer/.test(s.text))).toBe(true);
   });
 });
