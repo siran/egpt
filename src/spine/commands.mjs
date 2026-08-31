@@ -21,6 +21,10 @@ import { join, basename } from 'node:path';
 import * as YAML from 'yaml';
 import { EGPT_HOME } from '../egpt-home.mjs';
 import { shortChatId } from '../bridges/chat-id.mjs';
+// "did you mean …?" for the two /members misses that used to be dead ends (operator
+// 2026-08-31) — the scorer lives in src/text-similarity.mjs beside the echo one, so
+// this module never grows a fuzzy-match of its own.
+import { closestNames } from '../text-similarity.mjs';
 import { ownNodeNamesOf, knownNodeNames } from './node-names.mjs';
 import { Room, ROOMS_ROOT } from '../room-core.mjs';
 import { SHELL_SURFACE } from './identity.mjs';
@@ -364,6 +368,15 @@ export function createCommands({
   // need one) is not an error — but `add group <name>` then REFUSES rather than adding the
   // raw string as an id, because a bogus member id fails silently at relay time.
   resolveChatId = null,
+  // The bridge's chat LIST (src/bridges/beeper.mjs listChats — the same cached, paginated
+  // walk resolveChatId itself reads), injected by boot. NOT a second resolver and never
+  // consulted for one: no code path here turns an operator argument into a member id
+  // through this. It exists for exactly two MESSAGES that were dead ends (operator
+  // 2026-08-31) — `add group`'s "no chat named" now offers name near-misses off the very
+  // list the resolver just walked, and the "no member" roster now NAMES a wa-group member
+  // whose stored id is the only thing on disk about it. Same degrade convention as
+  // resolveChatId: absent (or throwing) simply makes those two messages shorter.
+  listChats = null,
   // Launch seam for /chrome — fires the Session-1 `egpt-chrome` scheduled task (default:
   // `schtasks /run /tn egpt-chrome`, see defaultLaunchChromeTask). Returns { ok } — false
   // when the task isn't registered (schtasks non-zero) or the spawn errored. Tests inject a
@@ -1001,7 +1014,10 @@ export function createCommands({
   }
 
   const ROOM_USAGE = 'usage: /rooms | /rooms create <name> | /rooms join|leave|members <room> | /rooms delete [force] <room>';
-  const MEMBERS_USAGE = 'usage: /members | /members add tab <n> [alias=<name>|<name>] | /members add group <chat name|id> | /members remove <id> | /members mode <disable|mention|all> <id>';
+  // remove/mode take `<id|name>` for the same reason add group does (operator 2026-08-31):
+  // all three now run the SAME argument through the SAME resolver, so the usage line stops
+  // implying that only one of them knows what a chat name is.
+  const MEMBERS_USAGE = 'usage: /members | /members add tab <n> [alias=<name>|<name>] | /members add group <chat name|id> | /members remove <id|name> | /members mode <disable|mention|all> <id|name>';
   // A slug with no folder on disk — the members path and the delete path both need to say
   // this instead of acting as though it exists (bug fix 2026-08-07: "/rooms help" rendered
   // "help (0 members)", a roster fabricated for a room that was never created — 'help' just
@@ -1629,12 +1645,18 @@ export function createCommands({
     // spaces in it ("Radio WnL"). A single-token capture could only ever take an id.
     const addGroup = /^add\s+group\s+(\S.*)$/i.exec(rest);
     if (addGroup) { await membersAddGroup(ev, room, addGroup[1].trim()); return; }
-    const remove = /^remove\s+(\S+)$/i.exec(rest);
-    if (remove) { await membersRemove(ev, room, remove[1]); return; }
+    // remove/mode take their target to END OF LINE for the SAME reason add group does —
+    // a chat NAME has spaces in it. Live console 2026-08-31: `/members mode all perrito
+    // traduciones` fell through to the usage line because `(\S+)` could not span the
+    // space, which is what made the operator's third attempt look like a syntax error
+    // rather than the near-miss it actually was. The target is still LAST, so running it
+    // to end of line is unambiguous — nothing follows it.
+    const remove = /^remove\s+(\S.*)$/i.exec(rest);
+    if (remove) { await membersRemove(ev, room, remove[1].trim()); return; }
     // VERB FIRST, target last (operator 2026-08-29) — was `<id> mode <value>`, the last
     // object-first form on this surface.
-    const mode = /^mode\s+(\S+)\s+(\S+)$/i.exec(rest);
-    if (mode) { await membersSetMode(ev, room, mode[2], mode[1]); return; }
+    const mode = /^mode\s+(\S+)\s+(\S.*)$/i.exec(rest);
+    if (mode) { await membersSetMode(ev, room, mode[2].trim(), mode[1]); return; }
     await send?.(ev.chatId, MEMBERS_USAGE);
   }
 
@@ -1696,56 +1718,179 @@ export function createCommands({
     await send?.(ev.chatId, `added '${id}' (tab ${n} · adapter:${base}) — mode:disable (no chatter reaches it yet)`);
   }
 
-  // /members add group <chatId> — invite a WhatsApp GROUP into this room as a member (operator
-  // 2026-08-29: "that even allows for many and different groups to join a room. a room works as a
-  // communication tunnel between groups"). The member id IS the group's chat id: that is what the
-  // relay SENDS to, and what the reverse lookup (boot.createMemberResolver) keys on to turn an
-  // inbound in that group into a fan-out over this room's roster. Same roster, same setMember
-  // resolver as `add tab`, and — like a tab — it starts muted, so nothing crosses until the
-  // operator flips its mode.
+  // ── ONE chat-argument resolution path, shared by add group / remove / mode ────────────
+  // (Operator console, 2026-08-31 — three symptoms, one cause. `add group` grew a chat
+  // resolver in c63cdd6 + c84deac and its siblings did not:
+  //   /members add group perrito traduciones
+  //     → added group 'perrito traduciones' → '0MP97ovrD6XvVovMVx6v' — mode:disable
+  //   /members mode all !0MP97ovrD6XvVovMVx6v:beeper.local
+  //     → no member '!0MP97ovrD6XvVovMVx6v:beeper.local' in this conversation
+  //   /members mode all perrito traduciones
+  //     → usage: /members | /members add tab … | /members mode <disable|mention|all> <id>
+  // …i.e. the system printed a chat id in its OWN error message that its OWN next command
+  // would not accept, and refused the name it had itself just resolved. Four attempts.)
   //
-  // The ARGUMENT is a chat NAME or a chat id (operator 2026-08-29: `/members add group radio`
-  // came back with the usage line because only a raw id parsed). A `!`-prefixed argument IS
-  // already a canonical id and is taken as-is with no lookup — the SAME short-circuit the
-  // bridge's own resolveChatId takes on a `!` prefix (beeper.mjs). Anything else goes through
-  // the injected resolveChatId seam, THE bridge resolver mesh.mjs's canonRoute already uses.
-  // NO FALLBACK to adding the raw string: an unresolvable name means the operator gets an
-  // error and an unchanged roster, never a member id that silently never delivers.
-  async function membersAddGroup(ev, room, arg) {
-    let id = arg;
-    if (!arg.startsWith('!')) {
-      if (!resolveChatId) { await send?.(ev.chatId, `can't resolve '${arg}' — this node has no chat resolver; give the chat id instead (it looks like !xxxx:beeper.local)`); return; }
-      let found = null;
-      try { found = await resolveChatId(arg); } catch { found = null; }
-      if (!found) { await send?.(ev.chatId, `no chat named '${arg}' — nothing added; check the name, or give the chat id instead (it looks like !xxxx:beeper.local)`); return; }
-      id = found;
+  // THIS is that resolver, lifted out of membersAddGroup unchanged so the other two verbs
+  // reach it rather than growing copies of it:
+  //   · a `!`-prefixed argument IS a canonical id — taken as-is, never looked up (the same
+  //     short-circuit the bridge's own resolveChatId takes on a '!' prefix, beeper.mjs)
+  //   · anything else goes through THE injected resolveChatId seam, the one mesh.mjs's
+  //     canonRoute already takes off this bridge
+  //   · NO FALLBACK to the raw string: an unresolvable name is an ERROR with an unchanged
+  //     roster, never a member id that silently never delivers at relay time
+  // Returns { id } or { error }. The CALLER words the failure, because "no chat goes by
+  // that name" and "that chat is not a member here" are different facts and only the
+  // caller knows which one the operator is actually asking about.
+  async function resolveChatArg(arg) {
+    if (arg.startsWith('!')) return { id: arg };
+    if (!resolveChatId) return { error: `can't resolve '${arg}' — this node has no chat resolver; give the chat id instead (it looks like !xxxx:beeper.local)` };
+    let found = null;
+    try { found = await resolveChatId(arg); } catch { found = null; }
+    if (found) return { id: found };
+    // The wording is `add group`'s, because it is the only verb that SURFACES this error:
+    // remove/mode answer a resolution miss with the roster instead (noMemberHere below),
+    // which is the more useful fact when the operator is naming a member, not a chat.
+    return { error: `no chat named '${arg}' — nothing added; check the name, or give the chat id instead (it looks like !xxxx:beeper.local)${await didYouMeanChat(arg)}` };
+  }
+
+  // THE id comparison, in SHORT space (operator 2026-08-31). The two id forms on this node
+  // are not a mistake to be migrated away, they are both real: resolveChatId NORMALIZES to
+  // the short form and returns it (beeper.mjs — a '!' argument is passed through
+  // shortChatId), so `add group <name>` stores '0MP97ovrD6XvVovMVx6v'; `add group !<id>:
+  // beeper.local` stores the full form verbatim; and the FULL form is what /members
+  // listings, Beeper's own UI, and this module's own error messages show the operator.
+  // Comparing raw strings therefore made the printed form unusable. Folding BOTH sides
+  // through shortChatId — the same normalizer every other id comparison on this node
+  // already uses (boot.isAllowedUser, inSelfDm above) — makes the two forms ONE key at the
+  // point of comparison, with NOTHING rewritten on disk and no migration: a member seated
+  // before this change is reachable by both forms from the very next command. shortChatId
+  // is the identity function on anything that isn't a '!…:beeper.local' room id, so a brain
+  // member ('chatgpt') compares exactly as it always did.
+  const sameChat = (a, b) => shortChatId(String(a ?? '')) === shortChatId(String(b ?? ''));
+
+  // chat id (short) -> its NAME, from the bridge's own cached chat list. MESSAGES ONLY —
+  // see the listChats seam. No seam, or a throwing one, degrades to an empty map so an
+  // error path can never become a second error.
+  async function chatNames() {
+    if (!listChats) return new Map();
+    try {
+      const out = new Map();
+      for (const c of (await listChats()) ?? []) if (c?.id && c?.name) out.set(shortChatId(c.id), String(c.name));
+      return out;
+    } catch { return new Map(); }
+  }
+
+  // "did you mean …?" off the very chat list resolveChatId just walked. The operator's real
+  // failure was a ONE-LETTER difference ('traduciones' vs 'traducciones') in a group name he
+  // did not choose; naming the near-miss would have ended it on the first attempt instead of
+  // the fourth. Empty string when nothing is close enough — a wrong guess costs an attempt.
+  async function didYouMeanChat(arg) {
+    const near = closestNames(arg, [...(await chatNames()).values()]);
+    return near.length ? `\ndid you mean: ${near.map((n) => `'${n}'`).join(' · ')}` : '';
+  }
+
+  // The operator's argument -> the member it names, through the ONE path above. ORDER IS
+  // THE FIX: a STORED id wins first and with no lookup at all — in EITHER form, via
+  // sameChat — so `/members mode all chatgpt` and remove/mode given the exact stored id
+  // behave byte-for-byte as they did and never touch the bridge. Only an argument that
+  // names no member at all is then offered to the resolver as a chat NAME, and what it
+  // resolves to is matched in the same short space. Returns { member, roster }; member is
+  // undefined when nothing matched, and roster is what the error message renders.
+  async function memberFor(room, arg) {
+    const roster = await room.members();
+    const stored = roster.find((m) => sameChat(m.id, arg));
+    if (stored) return { member: stored, roster };
+    const { id } = await resolveChatArg(arg);
+    return { member: id ? roster.find((m) => sameChat(m.id, id)) : undefined, roster };
+  }
+
+  // At most this many roster rows in a "no member" reply — a handful of candidates, not a
+  // dump of a room that has collected twenty tabs.
+  const ROSTER_HINT_MAX = 6;
+
+  // The "no member" reply, which used to be `no member '<x>' in this conversation` and
+  // nothing else — true, and useless: it holds the entire roster and named none of it
+  // (operator 2026-08-31). Now it answers the question the operator actually has, "well,
+  // what IS in here?", with id + kind + the chat's name where the bridge knows one — that
+  // last column being the whole point for a wa-group member, whose stored id is the only
+  // thing about it on disk. NEAREST-FIRST (the same scorer as didYouMeanChat, over the ids
+  // AND the names) so a one-letter miss floats to the top rather than being cut by the cap.
+  async function noMemberHere(arg, roster) {
+    const head = `no member '${arg}' in this conversation`;
+    if (!roster.length) return `${head} — the roster is empty; /members add tab <n> or /members add group <chat name|id> seats one`;
+    const names = await chatNames();
+    const nameOf = (m) => names.get(shortChatId(m.id)) ?? m.title ?? null;
+    // Every string the operator could plausibly have been aiming at, mapped back to its
+    // member; ranked; then anything the scorer found too far off, in roster order.
+    const byKey = new Map();
+    for (const m of roster) { if (!byKey.has(m.id)) byKey.set(m.id, m); const n = nameOf(m); if (n && !byKey.has(n)) byKey.set(n, m); }
+    const ranked = [], seen = new Set();
+    for (const k of closestNames(arg, [...byKey.keys()], { limit: byKey.size })) {
+      const m = byKey.get(k);
+      if (m && !seen.has(m.id)) { seen.add(m.id); ranked.push(m); }
     }
-    if ((await room.members()).some((m) => m.id === id)) { await send?.(ev.chatId, `'${id}' is already a member here`); return; }
+    for (const m of roster) if (!seen.has(m.id)) ranked.push(m);
+    const shown = ranked.slice(0, ROSTER_HINT_MAX);
+    // A 20-char chat id and a 7-char tab alias in one list read as noise unaligned — and the
+    // whole point of this reply is that the operator can SCAN it for the row he meant.
+    const wId = Math.max(...shown.map((m) => m.id.length));
+    const wKind = Math.max(...shown.map((m) => m.kind.length));
+    const lines = shown.map((m) => `  · ${m.id.padEnd(wId)}   ${m.kind.padEnd(wKind)}${nameOf(m) ? `   ${nameOf(m)}` : ''}`.trimEnd());
+    const more = ranked.length - lines.length;
+    if (more > 0) lines.push(`  … and ${more} more — /members lists them all`);
+    return `${head}. members here:\n${lines.join('\n')}`;
+  }
+
+  // /members add group <chat name|id> — invite a WhatsApp GROUP into this room as a member
+  // (operator 2026-08-29: "that even allows for many and different groups to join a room. a room
+  // works as a communication tunnel between groups"). The member id IS the group's chat id: that
+  // is what the relay SENDS to, and what the reverse lookup (boot.createMemberResolver) keys on to
+  // turn an inbound in that group into a fan-out over this room's roster. Same roster, same
+  // setMember resolver as `add tab`, and — like a tab — it starts muted, so nothing crosses until
+  // the operator flips its mode. The ARGUMENT goes through resolveChatArg above (operator
+  // 2026-08-29: `/members add group radio` came back with the usage line because only a raw id
+  // parsed) — that function IS this verb's old body, now shared.
+  async function membersAddGroup(ev, room, arg) {
+    const { id, error } = await resolveChatArg(arg);
+    if (!id) { await send?.(ev.chatId, error); return; }
+    // The duplicate check folds through sameChat too: a group already seated under one id
+    // form must NOT be seated a second time under the other. Storing both forms is exactly
+    // the split this chunk closes at comparison time — re-opening it on disk would defeat it.
+    if ((await room.members()).some((m) => sameChat(m.id, id))) { await send?.(ev.chatId, `'${id}' is already a member here`); return; }
     await room.setMember({ kind: 'wa-group', id, state: 'muted' });
     // The RESOLVED id is named in the reply either way — it is what /members mode <m> <id> takes.
     const what = id === arg ? `'${id}'` : `'${arg}' → '${id}'`;
     await send?.(ev.chatId, `added group ${what} — mode:disable (no chatter reaches it yet)`);
   }
 
-  // /members remove <id> — drop a member from the roster. room.removeMember owns the
+  // /members remove <id|name> — drop a member from the roster. room.removeMember owns the
   // actual removal (a full filter of the members[] array in config.yaml — nothing else
   // in room-core/commands.mjs is keyed by member id, so this is a complete removal); this
-  // is wiring only.
-  async function membersRemove(ev, room, id) {
-    const removed = await room.removeMember(id);
-    if (!removed) { await send?.(ev.chatId, `no member '${id}' in this conversation`); return; }
-    await send?.(ev.chatId, `removed '${id}'`);
+  // is wiring only. The STORED id is what gets removed, never the operator's spelling of
+  // it — room-core stays keyed on the raw string it wrote, so nothing there had to change.
+  async function membersRemove(ev, room, arg) {
+    const { member, roster } = await memberFor(room, arg);
+    if (!member) { await send?.(ev.chatId, await noMemberHere(arg, roster)); return; }
+    await room.removeMember(member.id);
+    const what = sameChat(member.id, arg) ? `'${member.id}'` : `'${arg}' (${member.id})`;
+    await send?.(ev.chatId, `removed ${what}`);
   }
 
-  // /members mode <disable|mention|all> <id> — flip a member's mode. The friendly word
+  // /members mode <disable|mention|all> <id|name> — flip a member's mode. The friendly word
   // maps to the stored room-core token (setMemberState preserves adapter/url/targetId).
-  async function membersSetMode(ev, room, id, word) {
+  // The mode WORD is validated before the target is resolved, so a typo'd mode never pays
+  // for a chat-list walk and its error is unchanged.
+  async function membersSetMode(ev, room, arg, word) {
     const w = word.toLowerCase();
     const token = MODE_TO_STATE[w];
     if (!token) { await send?.(ev.chatId, `/members mode: unknown mode "${word}" — use disable|mention|all`); return; }
-    if (!(await room.members()).some((m) => m.id === id)) { await send?.(ev.chatId, `no member '${id}' in this conversation`); return; }
-    await room.setMemberState(id, token);
-    await send?.(ev.chatId, `${id} → mode:${w} (${MODE_GLOSS[w]})`);
+    const { member, roster } = await memberFor(room, arg);
+    if (!member) { await send?.(ev.chatId, await noMemberHere(arg, roster)); return; }
+    await room.setMemberState(member.id, token);
+    // A name gets echoed back beside the id it resolved to, so the operator learns the key
+    // this room is actually filed under; an id (either form) just names the stored one.
+    const what = sameChat(member.id, arg) ? `${member.id}` : `'${arg}' (${member.id})`;
+    await send?.(ev.chatId, `${what} → mode:${w} (${MODE_GLOSS[w]})`);
   }
 
   // ─────────────────────────────────────────────────────────────────────────────

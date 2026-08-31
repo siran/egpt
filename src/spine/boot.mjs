@@ -1272,11 +1272,16 @@ export async function boot({
     resolveConvRoom,                                  // (surface, chatId) → the conversation's Room — the SAME resolver the phase-4 relay reads members from, so /members writes where the relay reads (bug fix 2026-07-23)
     // `/members add group <chat name>` — THE bridge's name→id resolver, the same one
     // mesh.mjs's canonRoute takes off this bridge (`bridge.resolveChatId`), so a chat NAME
-    // resolves to the id the relay actually delivers under. NOTE (2026-08-29): the §2b port
-    // (src/bridges/beeper-port.mjs) exposes only the loop's Bridge interface and does NOT
-    // forward resolveChatId, so this is `null` today and `add group <name>` refuses with an
-    // error rather than adding an unresolvable id. Same degrade convention as canonRoute.
+    // resolves to the id the relay actually delivers under. LIVE since c84deac, which forwards
+    // it through the §2b port (src/bridges/beeper-port.mjs) — the note that used to stand here
+    // said this was `null` and the verb inert, and that stopped being true on 2026-08-31. Same
+    // degrade convention as canonRoute: no resolver → the name is refused, never guessed at.
     resolveChatId: bridge.resolveChatId ?? null,
+    // The chat LIST off the same bridge — MESSAGES only (see the seam in commands.mjs).
+    // /members' two dead-end errors read it: "no chat named" offers near-misses off the very
+    // list resolveChatId just walked, and "no member" names a wa-group member beside its id
+    // (operator 2026-08-31, after a one-letter group-name typo cost four attempts).
+    listChats: bridge.listChats ? ((opts) => bridge.listChats(opts)) : null,
     brains,                                           // /agents' status + access_level resolve a being's agent type through the registry
     defaultKey,                                       // the persona being-id (its map key) — /agents + /status key their per-conversation reads/writes/evictions off this, never 'e' (operator 2026-07-10)
     evictWarm: (key) => pool.evict(key),              // drop a re-pointed conversation's warm session so it respawns fresh

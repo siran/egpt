@@ -207,6 +207,16 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
       return real.resolveChatId ? await real.resolveChatId(nameOrId, opts) : null;
     },
 
+    // THE CHAT LIST (operator 2026-08-31) — the same cached, paginated walk resolveChatId
+    // above already reads, forwarded for MESSAGES only. Its one consumer is commands.mjs's
+    // /members error wording: `add group`'s "no chat named" offers name near-misses off it,
+    // and the "no member" roster uses it to put a NAME beside a wa-group member whose stored
+    // chat id is all there is on disk. It resolves nothing — no argument becomes a member id
+    // through this — so forwarding it switches on no routing, unlike resolveChatId above.
+    async listChats(opts) {
+      return real.listChats ? await real.listChats(opts) : [];
+    },
+
     isAlive: () => real.isAlive(),
     stop: () => real.stop(),
   };

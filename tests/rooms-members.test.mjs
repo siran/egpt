@@ -88,7 +88,7 @@ function roomAt(name) {
   return room;
 }
 
-function harness({ cdp, adapters = ADAPTERS, roomNames = [], config = {}, resolveChatId = null } = {}) {
+function harness({ cdp, adapters = ADAPTERS, roomNames = [], config = {}, resolveChatId = null, listChats = null } = {}) {
   const sent = [];
   const convRooms = new Map();   // `${surface}:${chatId}` -> TmpRoom (real fs under base/conv)
   // The SHARED conversation-room resolver: the SAME function shape boot injects into BOTH
@@ -114,6 +114,11 @@ function harness({ cdp, adapters = ADAPTERS, roomNames = [], config = {}, resolv
     // The bridge's chat NAME→id resolver seam (boot injects bridge.resolveChatId). Absent by
     // default, exactly as a standalone createCommands has it — so `add group <name>` refuses.
     ...(resolveChatId ? { resolveChatId } : {}),
+    // The bridge's chat LIST seam (boot injects bridge.listChats) — MESSAGES only: the
+    // "no chat named"/"no member" replies read it for near-misses and for a member's name.
+    // Absent by default, so every pre-existing case here proves those errors still render
+    // without it.
+    ...(listChats ? { listChats } : {}),
     listRoomNames: () => roomNames,
   });
   return { cmds, sent, namedRoom, resolveConvRoom };
@@ -722,6 +727,202 @@ describe('/members remove <id>', () => {
     const { cmds, sent } = harness({});
     await expect(cmds.run({ ...self, body: '/members remove ghost' })).resolves.toBeUndefined();
     expect(sent.at(-1).text).toMatch(/no member 'ghost' in this conversation/);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE OPERATOR'S CONSOLE, 2026-08-31 — reproduced verbatim. Three symptoms, ONE cause:
+// `/members add group` gained a chat resolver (c63cdd6 + c84deac) and its siblings did not.
+//
+//   /members add group perrito traduciones
+//     → added group 'perrito traduciones' → '0MP97ovrD6XvVovMVx6v' — mode:disable
+//   /members mode all !0MP97ovrD6XvVovMVx6v:beeper.local
+//     → no member '!0MP97ovrD6XvVovMVx6v:beeper.local' in this conversation
+//   /members mode all perrito traduciones
+//     → usage: /members | /members add tab … | /members mode <disable|mention|all> <id>
+//
+// WHY the id form even differs, and why the existing `add group <name>` cases above did NOT
+// catch it: their fake resolver returns a FULL '!…:beeper.local' id, but the REAL one
+// (src/bridges/beeper.mjs resolveChatId) NORMALIZES to the SHORT form and returns that — a
+// '!' argument is run through shortChatId on its way out. So `add group <name>` stores
+// '0MP97ovrD6XvVovMVx6v' while /members listings, Beeper's UI, and the system's own error
+// message all show '!0MP97ovrD6XvVovMVx6v:beeper.local'. The resolver below returns SHORT
+// ids, exactly as the bridge does, which is what makes these reproduce.
+describe('/members mode|remove take what add group takes — id (either form) or name (2026-08-31)', () => {
+  // The operator's real chat: named with two c's, typed with one.
+  const GROUP_SHORT = '0MP97ovrD6XvVovMVx6v';
+  const GROUP_FULL = `!${GROUP_SHORT}:beeper.local`;
+  const GROUP_NAME = 'perrito traducciones';
+
+  // The bridge's resolver, modelled on the real one: '!'-prefixed → shortChatId, never a
+  // lookup; a name → the SHORT id; anything else → null.
+  const bridgeResolver = () => {
+    const calls = [];
+    const fn = async (nameOrId) => {
+      calls.push(nameOrId);
+      if (String(nameOrId).startsWith('!')) return String(nameOrId).replace(/^!/, '').replace(/:beeper\.local$/, '');
+      return nameOrId === GROUP_NAME ? GROUP_SHORT : null;
+    };
+    fn.calls = calls;
+    return fn;
+  };
+  const bridgeChats = () => async () => [
+    { id: GROUP_SHORT, name: GROUP_NAME },
+    { id: 'r4d10', name: 'Radio WnL' },
+  ];
+
+  // The room as `add group <name>` leaves it — and, identically, as it ALREADY SITS ON DISK
+  // for the member the operator added minutes before the fix: the SHORT id, written by the
+  // old code. Nothing migrates it; every case below reads that same row.
+  const seatGroup = async (resolveConvRoom) =>
+    (await resolveConvRoom(self.surface, self.chatId)).setMember({ kind: 'wa-group', id: GROUP_SHORT, state: 'muted' });
+
+  it('SYMPTOM 1 — the FULL id form (the one the system itself prints) reaches a member stored SHORT', async () => {
+    const { cmds, sent, resolveConvRoom } = harness({ resolveChatId: bridgeResolver(), listChats: bridgeChats() });
+    await seatGroup(resolveConvRoom);
+
+    await cmds.run({ ...self, body: `/members mode all ${GROUP_FULL}` });
+
+    expect(sent.at(-1).text).not.toMatch(/no member/);
+    expect(await (await resolveConvRoom(self.surface, self.chatId)).memberState(GROUP_SHORT)).toBe('active');
+  });
+
+  it('SYMPTOM 2 — a chat NAME reaches it, resolved through the SAME seam add group uses', async () => {
+    const resolveChatId = bridgeResolver();
+    const { cmds, sent, resolveConvRoom } = harness({ resolveChatId, listChats: bridgeChats() });
+    await seatGroup(resolveConvRoom);
+
+    await cmds.run({ ...self, body: `/members mode mention ${GROUP_NAME}` });
+
+    expect(resolveChatId.calls).toEqual([GROUP_NAME]);         // THE injected resolver, not a second lookup
+    expect(sent.at(-1).text).not.toMatch(/usage:|no member/);
+    expect(await (await resolveConvRoom(self.surface, self.chatId)).memberState(GROUP_SHORT)).toBe('mention');
+    // the reply names the id the room is actually filed under, so the operator learns the key
+    expect(sent.at(-1).text).toMatch(new RegExp(GROUP_SHORT));
+  });
+
+  it('SYMPTOM 3 — a name with a SPACE parses (the argument runs to end of line, like add group)', async () => {
+    const { cmds, sent, resolveConvRoom } = harness({ resolveChatId: bridgeResolver(), listChats: bridgeChats() });
+    await seatGroup(resolveConvRoom);
+
+    await cmds.run({ ...self, body: `/members mode all ${GROUP_NAME}` });     // two words
+
+    expect(sent.at(-1).text).not.toMatch(/usage:/);
+    expect(await (await resolveConvRoom(self.surface, self.chatId)).memberState(GROUP_SHORT)).toBe('active');
+  });
+
+  it('/members remove takes all three the same way — full id, name, name-with-a-space', async () => {
+    const idsLeft = async (r) => (await (await r(self.surface, self.chatId)).members()).map((m) => m.id);
+
+    for (const arg of [GROUP_FULL, GROUP_SHORT, GROUP_NAME]) {
+      const { cmds, sent, resolveConvRoom } = harness({ resolveChatId: bridgeResolver(), listChats: bridgeChats() });
+      await seatGroup(resolveConvRoom);
+      await cmds.run({ ...self, body: `/members remove ${arg}` });
+      expect(sent.at(-1).text, arg).toMatch(/^removed /);
+      expect(await idsLeft(resolveConvRoom), arg).toEqual([]);
+    }
+  });
+
+  it('NO MIGRATION — the id on disk is untouched, and BOTH forms keep reaching it', async () => {
+    const { cmds, resolveConvRoom } = harness({ resolveChatId: bridgeResolver(), listChats: bridgeChats() });
+    await seatGroup(resolveConvRoom);
+    const room = await resolveConvRoom(self.surface, self.chatId);
+
+    await cmds.run({ ...self, body: `/members mode all ${GROUP_FULL}` });     // by the full form
+    expect(await room.memberState(GROUP_SHORT)).toBe('active');              // …and it LANDED
+    expect((await room.members()).map((m) => m.id)).toEqual([GROUP_SHORT]);   // still stored SHORT
+    await cmds.run({ ...self, body: `/members mode disable ${GROUP_SHORT}` }); // by the short form
+    expect(await room.memberState(GROUP_SHORT)).toBe('muted');
+    expect((await room.members()).map((m) => m.id)).toEqual([GROUP_SHORT]);   // …still, and one row
+  });
+
+  it('add group refuses a SECOND seat for a group already here under the other id form', async () => {
+    const { cmds, sent, resolveConvRoom } = harness({ resolveChatId: bridgeResolver(), listChats: bridgeChats() });
+    await seatGroup(resolveConvRoom);                                          // stored SHORT
+
+    await cmds.run({ ...self, body: `/members add group ${GROUP_FULL}` });     // same chat, full form
+
+    expect(sent.at(-1).text).toMatch(/already a member/);
+    expect((await (await resolveConvRoom(self.surface, self.chatId)).members()).map((m) => m.id)).toEqual([GROUP_SHORT]);
+  });
+
+  // The ONE resolution path: a STORED id wins before the resolver is consulted at all, so
+  // the paths that already worked never pay for a chat-list walk and cannot change behavior.
+  it('an exact stored id never reaches the resolver — mode and remove both', async () => {
+    const resolveChatId = bridgeResolver();
+    const cdp = { listTabs: async () => threeTabs };
+    const { cmds, sent, resolveConvRoom } = harness({ cdp, resolveChatId, listChats: bridgeChats() });
+    await cmds.run({ ...self, body: '/members add tab 1' });                   // brain member 'chatgpt'
+
+    await cmds.run({ ...self, body: '/members mode mention chatgpt' });
+    expect(sent.at(-1).text).toBe('chatgpt → mode:mention (reached only when @mentioned)');
+    await cmds.run({ ...self, body: '/members remove chatgpt' });
+    expect(sent.at(-1).text).toBe("removed 'chatgpt'");
+    expect(resolveChatId.calls).toEqual([]);                                   // never consulted
+    expect(await (await resolveConvRoom(self.surface, self.chatId)).members()).toEqual([]);
+  });
+});
+
+// The messages themselves — what actually cost the operator four attempts. `no member '<x>'
+// in this conversation` was true and useless: it holds the whole roster and named none of it,
+// and `no chat named '<x>'` had just walked every chat page and offered no near-miss, on a
+// one-letter difference in a group name the operator did not choose.
+describe('/members errors say what IS here (2026-08-31)', () => {
+  const GROUP_SHORT = '0MP97ovrD6XvVovMVx6v';
+  const CHATS = [{ id: GROUP_SHORT, name: 'perrito traducciones' }, { id: 'r4d10', name: 'Radio WnL' }];
+  const listChats = async () => CHATS;
+  const resolveChatId = async (n) => CHATS.find((c) => c.name === n)?.id ?? null;
+
+  it('"no member" lists the roster — id, kind, and the chat name where the bridge knows one', async () => {
+    const cdp = { listTabs: async () => threeTabs };
+    const { cmds, sent, resolveConvRoom } = harness({ cdp, resolveChatId, listChats });
+    await (await resolveConvRoom(self.surface, self.chatId)).setMember({ kind: 'wa-group', id: GROUP_SHORT, state: 'muted' });
+    await cmds.run({ ...self, body: '/members add tab 1' });
+
+    await cmds.run({ ...self, body: '/members mode all ghost' });
+
+    const text = sent.at(-1).text;
+    expect(text).toMatch(/no member 'ghost' in this conversation/);   // the old sentence still leads
+    expect(text).toMatch(new RegExp(`${GROUP_SHORT}\\s+wa-group\\s+perrito traducciones`));
+    expect(text).toMatch(/chatgpt\s+brain/);
+  });
+
+  it('a one-letter miss on a group NAME floats to the top of that roster listing', async () => {
+    const { cmds, sent, resolveConvRoom } = harness({ resolveChatId, listChats });
+    const room = await resolveConvRoom(self.surface, self.chatId);
+    for (let i = 1; i <= 8; i++) await room.setMember({ kind: 'brain', id: `filler-${i}`, state: 'muted' });
+    await room.setMember({ kind: 'wa-group', id: GROUP_SHORT, state: 'muted' });
+
+    await cmds.run({ ...self, body: '/members mode all perrito traduciones' });   // ONE missing 'c'
+
+    const text = sent.at(-1).text;
+    // capped, and the near-miss is not what got cut
+    expect(text).toMatch(/… and \d+ more/);
+    expect(text.split('\n')[1]).toMatch(new RegExp(`${GROUP_SHORT}\\s+wa-group\\s+perrito traducciones`));
+  });
+
+  it('"no member" on an EMPTY roster says so, and says how to seat one', async () => {
+    const { cmds, sent } = harness({ resolveChatId, listChats });
+    await cmds.run({ ...self, body: '/members remove ghost' });
+    expect(sent.at(-1).text).toMatch(/no member 'ghost' in this conversation/);
+    expect(sent.at(-1).text).toMatch(/roster is empty/);
+  });
+
+  it('"no chat named" offers the near-miss off the very list the resolver just walked', async () => {
+    const { cmds, sent, resolveConvRoom } = harness({ resolveChatId, listChats });
+
+    await cmds.run({ ...self, body: '/members add group perrito traduciones' });   // ONE missing 'c'
+
+    expect(sent.at(-1).text).toMatch(/no chat named 'perrito traduciones'/);
+    expect(sent.at(-1).text).toMatch(/did you mean: 'perrito traducciones'/);
+    expect(await (await resolveConvRoom(self.surface, self.chatId)).members()).toEqual([]);   // roster unchanged
+  });
+
+  it('no chat list seam → the same errors, just without the extra help (never a second error)', async () => {
+    const { cmds, sent } = harness({ resolveChatId });   // resolver, but no listChats
+    await cmds.run({ ...self, body: '/members add group perrito traduciones' });
+    expect(sent.at(-1).text).toMatch(/no chat named 'perrito traduciones'/);
+    expect(sent.at(-1).text).not.toMatch(/did you mean/);
   });
 });
 

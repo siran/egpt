@@ -3,8 +3,11 @@
 //     covering reply is matched by its WORDS, not its markers (this is WHY 👂/💸/🌉 can
 //     never reach a post/no-post decision — they are simply not tokens);
 //   - similarity is the OVERLAP COEFFICIENT |A∩B|/min(|A|,|B|), 0 when either is empty.
+// …plus closestNames, the CHARACTER-level "did you mean …?" the /members errors read
+// (2026-08-31) — a different metric over the same folded space, because a one-letter typo
+// makes two words disjoint TOKENS and the overlap coefficient cannot see it at all.
 import { describe, it, expect } from 'vitest';
-import { normalizeTokens, similarity } from '../src/text-similarity.mjs';
+import { normalizeTokens, similarity, closestNames } from '../src/text-similarity.mjs';
 
 describe('normalizeTokens', () => {
   it('lowercases and splits on non-alphanumerics', () => {
@@ -69,5 +72,47 @@ describe('similarity — overlap coefficient', () => {
     const mine = T('hola que tal como estas');
     const peerEcho = T('👂 (8s) hola que tal como estas');   // marker + duration prefix, same words
     expect(similarity(peerEcho, mine)).toBeGreaterThanOrEqual(0.6);
+  });
+});
+
+// closestNames — the "did you mean …?" behind /members' two dead-end errors.
+describe('closestNames — character-level near-miss', () => {
+  // The operator's live case, 2026-08-31: a chat named with two c's, typed with one.
+  const CHATS = ['perrito traducciones', 'Radio WnL', 'Familia', 'egpt-mesh-do-kg'];
+
+  it('catches the ONE-LETTER miss the overlap coefficient cannot see', () => {
+    // token sets {perrito,traduciones} vs {perrito,traducciones} → disjoint on the 2nd word
+    expect(similarity(normalizeTokens('perrito traduciones'), normalizeTokens('perrito traducciones'))).toBe(0.5);
+    expect(closestNames('perrito traduciones', CHATS)).toEqual(['perrito traducciones']);
+  });
+
+  it('a single-word typo, where token overlap scores a flat 0', () => {
+    expect(similarity(normalizeTokens('Familai'), normalizeTokens('Familia'))).toBe(0);
+    expect(closestNames('Familai', CHATS)).toEqual(['Familia']);
+  });
+
+  it('compares in the folded space — case, accents and punctuation are free', () => {
+    expect(closestNames('RADIO WNL!', CHATS)).toEqual(['Radio WnL']);
+    expect(closestNames('perrito traducciónes', CHATS)).toEqual(['perrito traducciones']);
+  });
+
+  it('a CONTAINED fragment is a hit even though the ratio alone would bury it', () => {
+    expect(closestNames('radio', CHATS)).toEqual(['Radio WnL']);
+  });
+
+  it('returns the candidate VERBATIM, so it can be quoted back at the operator', () => {
+    expect(closestNames('egpt mesh do kg', CHATS)).toEqual(['egpt-mesh-do-kg']);
+  });
+
+  it('nothing close enough → [] (a wrong guess costs another attempt)', () => {
+    expect(closestNames('zzzzzzzzzz', CHATS)).toEqual([]);
+    expect(closestNames('', CHATS)).toEqual([]);
+    expect(closestNames('anything', [])).toEqual([]);
+    expect(closestNames('anything', null)).toEqual([]);
+  });
+
+  it('nearest first, capped by limit, de-duplicated', () => {
+    const near = closestNames('familia', ['Familia', 'familia', 'Familai', 'Familias', 'zzz'], { limit: 2 });
+    expect(near).toEqual(['Familia', 'Familias']);   // 'familia' folds to the same key as 'Familia' — one entry
   });
 });
