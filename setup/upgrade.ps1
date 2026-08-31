@@ -134,12 +134,18 @@ $localSrcGit = {
   param([string[]]$a)
   & $git -C $Source @a
 }
-# The peer's shell is cmd.exe and ssh flattens argv into one command line, so anything quoted
-# arrives mangled. Everything here is therefore quote-free and space-free; %USERPROFILE%
+# The peer's shell is msys BASH (dolly answers on port 2222, full POSIX -- ~/.ssh/config pins it;
+# port 22 is the cmd.exe sshd and is NOT what this reaches). It was cmd.exe when this was
+# written, which is why `%USERPROFILE%` used to expand here and stopped on 2026-08-31 --
+# bash leaves %VAR% literal, so the path arrived unexpanded and the deploy died with exit 127.
+# `~` is what BOTH shells resolve, and msys converts it to a Windows path on the way into a
+# native exe, so `-File ~/bin/...` reaches powershell.exe correctly. ssh flattens argv into one
+# command line, so anything quoted
+# arrives mangled. Everything here is therefore quote-free and space-free; `~`
 # expands on the REMOTE, exactly as the recursive call at the bottom of this script does it.
 $peerSrcGit = {
   param([string[]]$a)
-  $remote = @('git', '-C', '%USERPROFILE%/src/egpt') + $a
+  $remote = @('git', '-C', '~/src/egpt') + $a
   & ssh -o ConnectTimeout=8 $Peer @remote
 }
 
@@ -260,7 +266,7 @@ if ($ok -and $target -and $after -ne $target) {
 
 # --- the peer, by running THIS SAME SCRIPT there over ssh: the remote copy does its own
 #     drop + heartbeat proof, so there is one deploy procedure, never a second one that
-#     drifts. %USERPROFILE% expands on the REMOTE shell, so no path is hardcoded here. ---
+#     drifts. `~` resolves on the REMOTE shell, so no path is hardcoded here. ---
 if ($Peer) {
   Write-Host ""
   Write-Host "Peer $Peer :" -ForegroundColor Cyan
@@ -270,12 +276,12 @@ if ($Peer) {
   # Driving it from here means a deploy fixes the peer's source on the FIRST run rather than
   # the second; once the peer's copy is current it fast-forwards its own source too and simply
   # finds nothing left to do.
-  Update-SourceTree "$Peer %USERPROFILE%/src/egpt" $peerSrcGit
+  Update-SourceTree "$Peer ~/src/egpt" $peerSrcGit
   Write-Host ""
   # FORWARD SLASHES, UNQUOTED, on purpose: backslashes are eaten in transit to the remote
   # shell (a quoted C:\Users\... arrives as C:\Users\anbinegpt...), and quoting to survive
   # both shells is worse. Windows accepts / in a path, and this one has no spaces.
-  $remote = 'powershell -NoProfile -ExecutionPolicy Bypass -File %USERPROFILE%/bin/egpt/setup/upgrade.ps1'
+  $remote = 'powershell -NoProfile -ExecutionPolicy Bypass -File ~/bin/egpt/setup/upgrade.ps1'
   & ssh -o ConnectTimeout=8 $Peer $remote
   if ($LASTEXITCODE -ne 0) { Write-Host "PEER DEPLOY FAILED (exit $LASTEXITCODE)" -ForegroundColor Red; exit 1 }
 }
