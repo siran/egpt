@@ -5,7 +5,12 @@
 // Everything else falls through to E.
 import { describe, it, expect } from 'vitest';
 import { SHELL_SURFACE } from '../src/spine/identity.mjs';
-import { createRouter, addressed, voiceWakeTokens, fallbackWake } from '../src/spine/router.mjs';
+import { createRouter, addressed, voiceWakeTokens, fallbackWake, wakeTokens } from '../src/spine/router.mjs';
+// THE REAL GATE + THE REAL BRIDGE COMPUTATION — the fallback_handle-on-the-persona block at the
+// end of this file asserts on a REPLY, not just a route, so it needs both: mentionStatus is what
+// the limb runs over the persona wake set to produce ev.mention, replyAllowed is what
+// gating.decide runs over the ROUTED mention to decide whether the reply is emitted at all.
+import { mentionStatus, replyAllowed } from '../src/auto-mode.mjs';
 
 const ev = (body, mention) => ({
   body,
@@ -699,6 +704,125 @@ describe('fallback_handle — a conditional wake token gated on membership (oper
     // …and the matcher itself is untouched with or without the flag when nothing declares a fallback
     for (const body of ['@e hola', '@wren ping', 'just talking']) {
       expect(addressed(body, plain, { withFallback: true })).toEqual(addressed(body, plain));
+    }
+  });
+});
+
+// ── fallback_handle ON THE PERSONA — the guard's verdict has to reach the GATE (operator
+//    2026-08-31). Every test above puts the fallback on a NON-persona agent, where targetFor's
+//    local-agent branch mints the mention from the matcher's own per-agent findings. kg's LIVE
+//    config puts it on the PERSONA, which is the one branch that keeps the BRIDGE's ev.mention —
+//    and the bridge computes atE from `wakeWords` (boot.mjs, wakeTokens: DECLARED handles only),
+//    which cannot know the fallback token exists.
+//
+//    THE LIVE FAILURE: `@ekg estás?` in a 1:1 was answered, `@e estás?` in the SAME chat was
+//    silent, logged `(atE=false)` — with the membership guard having already said the peer is
+//    absent. resolve() returned `{ being: 'egpt', mention: <atE=false> }` either way, so a
+//    guard-PASSED hit and a guard-DROPPED fall-through were indistinguishable: the feature was a
+//    no-op for the persona, and invisibly so.
+//
+//    So these assert the thing that actually matters — does the message PRODUCE A REPLY — by
+//    running the routed mention through the REAL gate (auto-mode replyAllowed, the same call
+//    gating.decide makes), with ev.mention built by the REAL bridge chain rather than hardcoded. ──
+describe('fallback_handle on the PERSONA — from the bridge\'s atE to the reply gate (operator 2026-08-31)', () => {
+  const PEER = '+13472576794';
+  // kg's LIVE shape: the persona ITSELF carries the fallback, and it is also the defaultBeing.
+  const KG = { egpt: { configuration: 'sonnet-high', handles: ['ekg', 'egptkg'], fallback_handle: { handle: 'e', unless_present: PEER }, default: true } };
+
+  // ev.mention exactly as it is built LIVE, never hardcoded: boot.mjs hands the limb
+  // wakeTokens(persona) — declared handles only — the limb runs mentionStatus over it
+  // (beeper.mjs), and identity.mjs stamps the result as ev.mention. Reproducing the chain here
+  // means these break if any rung of it changes shape, instead of silently testing a fiction.
+  const inbound = (body, { chatId = '!dm', surface = 'whatsapp', replyToBot = false } = {}) => {
+    const st = mentionStatus(body, wakeTokens('egpt', KG.egpt));
+    return { body, surface, chatId, senderId: 'op', mention: { atEStart: st.atEStart, atEAnywhere: st.atEAnywhere, replyToBot } };
+  };
+  // Route it, then ask the REAL gate whether a reply is emitted, in the node's default mode.
+  const ask = async (body, { present = false, agents = KG, mode = 'mention', ...evOpts } = {}) => {
+    const asked = [];
+    const isPresent = async (identity, e) => { asked.push({ identity, chatId: e?.chatId }); return typeof present === 'function' ? present(identity, e) : present; };
+    const ev = inbound(body, evOpts);
+    const r = await createRouter({ getAgents: () => agents, defaultBeing: 'egpt', isPresent }).resolve(ev);
+    return { being: r.being, mention: r.mention, replies: replyAllowed(mode, r.mention ?? {}), asked, ev };
+  };
+
+  it('REPRODUCE-FIRST: the bridge alone judges @e unaddressed — this is the atE=false in the live log', () => {
+    expect(inbound('@e estás?').mention).toEqual({ atEStart: false, atEAnywhere: false, replyToBot: false });
+    expect(inbound('@ekg estás?').mention).toEqual({ atEStart: true, atEAnywhere: true, replyToBot: false });
+  });
+
+  it('REPRODUCE-FIRST: @e in a 1:1 the peer is NOT in reaches the persona AND produces a reply', async () => {
+    const r = await ask('@e estás?', { present: false });
+    expect(r.being).toBe('egpt');
+    expect(r.asked).toEqual([{ identity: PEER, chatId: '!dm' }]);   // the guard was consulted…
+    expect(r.replies).toBe(true);                                    // …and its YES reached the gate
+    expect(r.mention).toMatchObject({ atEStart: true, atEAnywhere: true, replyToBot: false });
+  });
+
+  it('THE DOUBLE-ANSWER LOCK: @e in a GROUP the peer IS in must not wake the persona', async () => {
+    const r = await ask('@e estás?', { present: true, chatId: '!grp' });
+    expect(r.replies).toBe(false);            // silent — the token is the other account's here
+    expect(r.mention).toEqual({ atEStart: false, atEAnywhere: false, replyToBot: false });
+    expect(r.asked).toHaveLength(1);
+  });
+
+  it('@ekg is UNAFFECTED in both — a declared handle is unconditional and costs no lookup', async () => {
+    for (const present of [false, true]) {
+      const r = await ask('@ekg estás?', { present, chatId: present ? '!grp' : '!dm' });
+      expect(r.being, `present=${present}`).toBe('egpt');
+      expect(r.replies, `present=${present}`).toBe(true);
+      expect(r.asked, `present=${present}`).toEqual([]);
+      expect(r.mention, `present=${present}`).toBe(r.ev.mention);   // the SAME object the bridge built
+    }
+  });
+
+  it('membership UNKNOWN ⇒ silent, exactly like the peer being present (the token goes back to its owner)', async () => {
+    const r = await createRouter({ getAgents: () => KG, defaultBeing: 'egpt', isPresent: async () => null })
+      .resolve(inbound('@e estás?', { chatId: '!grp' }));
+    expect(replyAllowed('mention', r.mention ?? {})).toBe(false);
+  });
+
+  it('A ROOM is a definite absence: @e wakes the persona there with NO membership call', async () => {
+    const r = await ask('@e can you please execute translation script?', {
+      surface: SHELL_SURFACE, chatId: 'acim',
+      present: () => { throw new Error('a room must never reach the membership seam'); },
+    });
+    expect(r.being).toBe('egpt');
+    expect(r.replies).toBe(true);
+    expect(r.asked).toEqual([]);
+  });
+
+  it('the flags are the matcher\'s REAL findings, so mention-direct keeps its meaning', async () => {
+    expect((await ask('@e estás?')).mention).toMatchObject({ atEStart: true });
+    expect(replyAllowed('mention-direct', (await ask('@e estás?')).mention)).toBe(true);
+    // mid-sentence: anywhere, never atStart — so a mention-direct chat still stays silent
+    const mid = await ask('hola gente @e mira esto');
+    expect(mid.mention).toMatchObject({ atEStart: false, atEAnywhere: true });
+    expect(replyAllowed('mention', mid.mention)).toBe(true);
+    expect(replyAllowed('mention-direct', mid.mention)).toBe(false);
+  });
+
+  it('the fallback OR-s onto the bridge\'s mention, never replaces it — replyToBot survives', async () => {
+    const r = await ask('@e estás?', { replyToBot: true });
+    expect(r.mention).toEqual({ atEStart: true, atEAnywhere: true, replyToBot: true });
+    // and a quote-reply with NO handle at all is still the bridge's own object, untouched
+    const plain = await ask('sí, dale', { replyToBot: true });
+    expect(plain.mention).toBe(plain.ev.mention);
+    expect(replyAllowed('mention', plain.mention)).toBe(true);
+  });
+
+  // ── THE REGRESSION LOCK: a persona with NO fallback_handle must route byte-identically and add
+  //    no IO — the same lock the non-persona block above carries, on the branch this change edits. ──
+  it('REGRESSION: a persona with no fallback_handle returns the bridge\'s OWN mention object, and asks nothing', async () => {
+    const plain = { egpt: { configuration: 'sonnet-high', handles: ['e', 'egpt'], default: true }, wren: { handles: ['wren'] } };
+    const boom = async () => { throw new Error('no fallback_handle is declared — nothing may ask about membership'); };
+    const wired = createRouter({ getAgents: () => plain, defaultBeing: 'egpt', isPresent: boom });
+    const bare = createRouter({ getAgents: () => plain, defaultBeing: 'egpt' });   // the pre-change router
+    for (const body of ['@e hola', '@egpt hola', 'e hola', '@wren ping', '@nobody hi', 'just talking', '']) {
+      const evb = { body, surface: 'whatsapp', chatId: '!dm', senderId: 'op', mention: { atEStart: true, atEAnywhere: true, replyToBot: false } };
+      const w = await wired.resolve(evb);
+      expect(w, body).toEqual(await bare.resolve(evb));
+      if (w.being === 'egpt') expect(w.mention, body).toBe(evb.mention);   // the identical object, not a copy
     }
   });
 });

@@ -225,7 +225,7 @@ export function addressed(text, agents, { addressWithoutAt = true, isVoice = fal
 export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', addressWithoutAt = true, loadState = null, isPresent = null, onLog = () => {} } = {}) {
   // ONE addressed agent → the routing target it resolves to. Per-kind semantics are
   // UNCHANGED; only the caller changed (every hit, not just the first).
-  function targetFor({ name, agent, atStart }, ev) {
+  function targetFor({ name, agent, atStart, unlessPresent }, ev) {
     // The mention an addressed agent hands its own gate. NOT a constant: the flags are the
     // matcher's REAL per-agent findings (operator 2026-07-25: "respect the mode, if it's
     // mention-direct not the same as mention … nothing has changed"). replyAllowed() already
@@ -264,8 +264,38 @@ export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', addre
     // The DEFAULT (persona) agent routes to its own key (= defaultBeing), keeping
     // the bridge-computed ev.mention. Matched by key OR the `default: true` marker —
     // no 'e'/'egpt' literals (operator 2026-07-10).
+    //
+    // WHY ev.mention AND NOT the synthetic `mention` above: for the PERSONA the bridge's is the
+    // richer one. It is the only mention carrying `replyToBot` (the synthetic hardcodes false),
+    // so replacing it would break the quote-reply-without-@e path. E keeps ev.mention.
+    //
+    // …EXCEPT for a hit won by this agent's `fallback_handle` (operator 2026-08-31), which is the
+    // one thing ev.mention CANNOT know about: the bridge computes atE from `wakeWords` (boot.mjs,
+    // via wakeTokens — DECLARED handles only, see its header). On kg — `handles: [ekg, egptkg]`,
+    // `fallback_handle: { handle: e, unless_present: +1347… }` — a live `@e estás?` in a 1:1 logged
+    // `(atE=false)` and got NOTHING, while `@ekg estás?` in the SAME chat was answered. The
+    // membership guard below had ALREADY run and ALREADY said the peer was absent; this branch
+    // then handed the gate the bridge's atE=false and threw that YES away. The feature was a
+    // no-op for the persona, and INVISIBLY so: a guard-DROPPED hit falls through to the identical
+    // `{ being: defaultBeing, mention: ev.mention }` at the bottom of resolve(), so passing and
+    // dropping produced the same object and the log stayed silent either way.
+    //
+    // OR, NEVER REPLACE: the fallback match ADDS the matcher's own per-agent findings (same flags,
+    // same convention as `mention` above) onto whatever the bridge already found, so `replyToBot`
+    // and an atEStart the bridge saw on some OTHER handle both survive. `unlessPresent` is set on
+    // this hit ONLY after it passed the guard — resolve() never pushes a dropped hit — so the guard
+    // stays the SINGLE authority on whether this node answers, and an ordinary persona hit returns
+    // the very same object it always did (identity, not a copy).
+    //
+    // AND THIS IS WHY `wakeWords` IS LEFT ALONE. Widening the BRIDGE's vocabulary to `e` would set
+    // atE=true before any guard exists to say otherwise, and resolve()'s "nobody addressed"
+    // fall-through would then hand that atE=true to the persona in precisely the chats the guard
+    // REJECTED — reviving the live two-spines-answer-one-mention bug (wakeTokens' header), loudly,
+    // in a group, from two visibly different accounts. Silence under the guard has to stay the
+    // default that costs no code, not a second suppression kept in sync with this one.
     if (name === defaultBeing || agent.default === true) {
-      return { being: defaultBeing, mention: ev?.mention };
+      if (unlessPresent == null) return { being: defaultBeing, mention: ev?.mention };
+      return { being: defaultBeing, mention: { replyToBot: false, ...(ev?.mention ?? {}), atEStart: !!ev?.mention?.atEStart || atStart, atEAnywhere: true } };
     }
     // Any other LOCAL agent → being = its name, gated on its own mention.
     return { being: name, mention };
