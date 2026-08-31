@@ -80,15 +80,15 @@ function commandsFor(resolveConvRoom) {
 
 // `resolveMembers` defaults to the plain own-room lookup (the flagship @chatgpt cases below);
 // the wa-group cases pass boot's REAL createMemberResolver, which adds the reverse lookup.
-function spineFor(resolveConvRoom, resolveMembers = null) {
+function spineFor(resolveConvRoom, resolveMembers = null, gatingOverride = null) {
   const relayCalls = [];
   const posts = [];
   let seq = 0;
   const bridge = { sent: [], onMessage() {}, send(chat, text, opts) { this.sent.push({ chat, text, opts }); }, stop() {}, wasSentByUs: () => false };
-  const brain = { calls: [], async turn(being, ev) { this.calls.push({ being, body: ev.body }); return { text: `E:${ev.body}`, sessionId: 's1' }; } };
+  const brain = { calls: [], async turn(being, ev) { this.calls.push({ being, body: ev.body, surface: ev.surface, chatId: ev.chatId }); return { text: `E:${ev.body}`, sessionId: 's1' }; } };
   const router = { resolve: () => 'e' };
-  const gating = { async decide() { return { mode: 'mention', receives: true, mayReply: false, sendToEgpt: 'mode' }; }, surfaces: () => false };
-  const transcript = { entries: [], async log(ev) { this.entries.push({ body: ev.body, fromBrain: ev.fromBrain ?? null }); } };
+  const gating = gatingOverride ?? { async decide() { return { mode: 'mention', receives: true, mayReply: false, sendToEgpt: 'mode' }; }, surfaces: () => false };
+  const transcript = { entries: [], async log(ev) { this.entries.push({ surface: ev.surface, chatId: ev.chatId, body: ev.body, fromMember: ev.fromMember ?? null }); } };
   const heartbeats = { runDue() {} };
   const sender = { open(chatId, { replyTo } = {}) { return { activate() {}, update() {}, async finish() {}, fail() {} }; } };
   const guard = createStopGuard({ turns: 6 });
@@ -118,7 +118,7 @@ function spineFor(resolveConvRoom, resolveMembers = null) {
     bridge, brain, identity, router, gating, sender, transcript, heartbeats,
     guard, roomRelay, clock: { now: () => 1000 }, turnTimeoutMs: 0,
   });
-  return { spine, relayCalls, posts };
+  return { spine, relayCalls, posts, transcript, brain };
 }
 
 describe('members → relay integration — the flagship @chatgpt flow end to end', () => {
@@ -201,10 +201,11 @@ describe('an operator-named room is an ordinary conversation — created, addres
 //
 // End to end across BOTH halves, with nothing faked between them:
 //   · WRITE — the operator, in room `tunnel`, runs the REAL `/members add group <chatId>`;
-//   · INGRESS — boot's REAL createMemberResolver turns an inbound in a group into that room's
-//     roster by the REVERSE lookup over config/rooms.yaml (the group's own conversation-room is
-//     empty; the room that INVITED it is what supplies the members);
-//   · EGRESS — the REAL room relay sends the line to the OTHER group's own chat id.
+//   · INGRESS — boot's REAL createMemberResolver turns an inbound in a group into the NAME of the
+//     room that invited it, by the REVERSE lookup over config/rooms.yaml (the group's own
+//     conversation-room is empty; the members live in the ROOM's config), and the relay RE-ENTERS
+//     the message into that room as a turn of its own (operator 2026-08-31);
+//   · EGRESS — the room's own fan-out sends the line to the OTHER group's own chat id.
 // Real rooms here, not TmpRoom: the reverse lookup keys on a room's ns (`<surface>/<slug>`), so a
 // fixture whose baseDir sits outside the profile would key a row nothing could address back.
 describe('wa-group membership — many groups joined to ONE room, which tunnels between them', () => {
@@ -226,20 +227,48 @@ describe('wa-group membership — many groups joined to ONE room, which tunnels 
     await tunnelWith(cmds);
     expect(sent.map((s) => s.text).join('\n')).toMatch(/added group '!grp-A'/);
 
-    const { spine, posts } = spineFor(rooms, createMemberResolver({ resolveConvRoom: rooms }));
+    const { spine, posts, transcript } = spineFor(rooms, createMemberResolver({ resolveConvRoom: rooms }));
 
     await spine.handleInbound(human('hola from A', { chatId: '!grp-A' }));
     expect(posts.map((p) => ({ chatId: p.chatId, final: p.final }))).toEqual([
       { chatId: '!grp-B', final: 'hola from A' },
     ]);
+    // The delivery came out of a TURN in the room (operator 2026-08-31), which is what puts the
+    // line on the room's own record and lets the room's agents run on it. ONE record per hop —
+    // the group's own, and the room's — never a second writer for either.
+    expect(transcript.entries.map((e) => `${e.surface}:${e.chatId}`)).toEqual(['whatsapp:!grp-A', 'room:tunnel']);
 
-    // …and back the other way, from the SAME roster, with no third delivery anywhere: the
+    // …and back the other way, through the SAME room, with no third delivery anywhere: the
     // ping-pong two groups in one room would otherwise run forever.
     await spine.handleInbound(human('y from B', { chatId: '!grp-B', msgId: 'm2' }));
     expect(posts.map((p) => ({ chatId: p.chatId, final: p.final }))).toEqual([
       { chatId: '!grp-B', final: 'hola from A' },
       { chatId: '!grp-A', final: 'y from B' },
     ]);
+  });
+
+  // THE ASK (operator 2026-08-31): *"a delivery IS a turn then, so that the group can trigger the
+  // room's agents. i want precisely for the group to trigger acim's E, which has been doing good
+  // work."* End to end, against the REAL reverse lookup: E is mute in the group and 'on' in the
+  // room, so the room turn is the ONLY path from a group message to a room agent's turn.
+  it("THE ASK: a message in an invited group triggers the ROOM's agent, gated by the ROOM's own mode", async () => {
+    const { cmds } = commandsFor(rooms);
+    await tunnelWith(cmds);
+
+    const onlyRoomReplies = {
+      async decide(_being, ev) {
+        return ev.surface === 'room'
+          ? { mode: 'on', receives: true, mayReply: true, sendToEgpt: 'mode' }
+          : { mode: 'mention', receives: true, mayReply: false, sendToEgpt: 'mode' };
+      },
+      surfaces: () => true,
+    };
+    const { spine, brain } = spineFor(rooms, createMemberResolver({ resolveConvRoom: rooms }), onlyRoomReplies);
+
+    await spine.handleInbound(human('equipo, status?', { chatId: '!grp-A' }));
+
+    expect(brain.calls.map((c) => ({ surface: c.surface, chatId: c.chatId, body: c.body })))
+      .toEqual([{ surface: 'room', chatId: 'tunnel', body: 'equipo, status?' }]);
   });
 
   it('THE OPEN UMBRELLA: a chatgpt tab joined to the same room is driven by the group message too', async () => {
@@ -255,8 +284,9 @@ describe('wa-group membership — many groups joined to ONE room, which tunnels 
     expect(relayCalls[0].injectScript).toBe('INJECT[team, status?]');
     // group B saw the human line AND, via the tab reply's re-entry, chatgpt's answer
     expect(posts.filter((p) => p.chatId === '!grp-B').map((p) => p.final)).toEqual(['team, status?', 'brain-reply-1']);
-    // A, the ORIGIN, gets chatgpt's answer where the question was asked (the unchanged brain
-    // path posts into ev.chatId) — and never its own line handed back to it.
+    // A, the ORIGIN, gets chatgpt's answer too — the tab is driven from the room turn now, so its
+    // reply re-enters at the ROOM and the room's fan-out hands it to every group — and never its
+    // own line handed back to it.
     expect(posts.filter((p) => p.chatId === '!grp-A').map((p) => p.final)).toEqual(['brain-reply-1']);
   });
 
@@ -271,18 +301,24 @@ describe('wa-group membership — many groups joined to ONE room, which tunnels 
     expect(posts).toHaveLength(0);
   });
 
-  it('a conversation NO room lists resolves exactly as before — its own roster, nothing else', async () => {
+  it("a conversation's roster is its OWN room's, always — an invited group's is empty, not the room's", async () => {
     const { cmds } = commandsFor(rooms);
     await tunnelWith(cmds);
 
     const resolveMembers = createMemberResolver({ resolveConvRoom: rooms });
     expect(await resolveMembers('whatsapp', '!unrelated')).toEqual([]);
-    expect((await resolveMembers('whatsapp', '!grp-A')).map((m) => m.id)).toEqual(['!grp-A', '!grp-B']);
+    // The invited group's roster is EMPTY (2026-08-31, a net deletion): the room's members used
+    // to be concatenated in here, so the group's own fan-out delivered to them directly. Now the
+    // message is re-entered into the room and the ROOM's fan-out reaches them — concatenating
+    // would deliver every line twice, once from each end.
+    expect(await resolveMembers('whatsapp', '!grp-A')).toEqual([]);
+    // …and the room's own conversation is where those members actually are.
+    expect((await resolveMembers('room', 'tunnel')).map((m) => m.id)).toEqual(['!grp-A', '!grp-B']);
   });
 
-  // room-relay.mjs's ROOM-TRANSCRIPT seam (operator 2026-08-30) reads the room NAME(s) a
-  // wa-group chat tunnels into off `roster.tunnelRooms`, so it never re-derives this reverse
-  // lookup. Locking the REAL shape here, against the real reverse lookup, not a fake of it.
+  // room-relay.mjs reads the room NAME(s) a wa-group chat tunnels into off `roster.tunnelRooms`,
+  // so it never re-derives this reverse lookup. Locking the REAL shape here, against the real
+  // reverse lookup, not a fake of it.
   it("resolveMembers hands back which room(s) a wa-group chat tunnels into, on `.tunnelRooms`", async () => {
     const { cmds } = commandsFor(rooms);
     await tunnelWith(cmds);
@@ -291,5 +327,21 @@ describe('wa-group membership — many groups joined to ONE room, which tunnels 
     expect((await resolveMembers('whatsapp', '!grp-A')).tunnelRooms).toEqual(['tunnel']);
     expect((await resolveMembers('whatsapp', '!grp-B')).tunnelRooms).toEqual(['tunnel']);
     expect((await resolveMembers('whatsapp', '!unrelated')).tunnelRooms).toEqual([]);
+  });
+
+  // THE ONE-HOP LOCK, at the resolver: a tunnel starts at a surface chat and ends in a ROOM. A
+  // room's own conversation lives on surface `room`, and a wa-group member names a chat on a
+  // messaging surface, so a room turn has nothing it could match — which is what stops two rooms
+  // that list each other's names from re-entering into each other forever.
+  it('a ROOM never tunnels onward — the reverse lookup does not run on surface `room`', async () => {
+    const { cmds } = commandsFor(rooms);
+    await tunnelWith(cmds);
+    // A room named exactly like an invited group's chat id: the pathological hand-edit the lock
+    // has to survive. The reverse lookup would match it on chatId alone; the surface is what
+    // makes it structurally impossible.
+    await cmds.run({ chatId: 'other', surface: 'room', body: '/members add group tunnel' });
+
+    const resolveMembers = createMemberResolver({ resolveConvRoom: rooms });
+    expect((await resolveMembers('room', 'tunnel')).tunnelRooms).toEqual([]);
   });
 });

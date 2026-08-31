@@ -127,10 +127,10 @@ function buildSpine({ guard, stopSwitch = null, isCommand = (ev) => String(ev.bo
 // before boot's exit(0). tests/stop-file.test.mjs owns the real file + exit contract.
 const fakeSwitch = (pulls) => ({ present: () => false, pull: (why) => pulls.push(why) });
 
-// The operator's Self DM. `fromBrain` is the provenance the room relay stamps on our OWN
+// The operator's Self DM. `fromMember` is the provenance the room relay stamps on our OWN
 // output when it re-enters — a NON-human turn, exactly what a command echo is.
 const opCmd = (body, extra = {}) => ({ surface: 'wa', chatId: 'self', chatName: 'self', senderName: 'An', isSender: true, authorized: true, msgId: null, body, kind: 'text', raw: {}, ...extra });
-const echoed = (body) => opCmd(body, { fromBrain: 'chatgpt' });
+const echoed = (body) => opCmd(body, { fromMember: { id: 'chatgpt', kind: 'brain' } });
 
 describe('(B) command turns pass through the loop guard', () => {
   it('a burst of non-human command turns trips the guard; further commands are suppressed', async () => {

@@ -519,10 +519,10 @@ describe('(C) provenance gates the kill switch: only a human turn may pull it', 
     expect(sw.pulls).toHaveLength(0);
   });
 
-  it('a BRAIN MEMBER\'s reply re-entering the room (fromBrain) never pulls it', async () => {
+  it('a BRAIN MEMBER\'s reply re-entering the room (fromMember) never pulls it', async () => {
     const sw = fakeSwitch();
     const { spine } = buildSpine({ guard: createStopGuard(), stopSwitch: sw });
-    await spine.handleInbound(stopMsg({ fromBrain: 'chatgpt' }));
+    await spine.handleInbound(stopMsg({ fromMember: { id: 'chatgpt', kind: 'brain' } }));
     expect(sw.pulls).toHaveLength(0);
   });
 

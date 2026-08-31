@@ -75,7 +75,7 @@ import { cleanForSpeech } from '../speech-clean.mjs';
  * @property {boolean} authorized  sender is an allowed_user on this surface — on a shared account every own-account send reads true, so this is NOT a provenance test
  * @property {boolean} isSender    arrived on OUR OWN account (the operator, a peer node, or our own echo)
  * @property {boolean} isVoice     the body is a voice-note transcription
- * @property {string|null} fromBrain  the web-brain member id whose reply this is, re-entered by the room relay; null on every genuine inbound
+ * @property {{id: string, kind: string}|null} fromMember  the ROSTER MEMBER this turn was re-entered from by the room relay — a brain member whose reply this is, or the invited group whose message this is, tunnelled into the room it joined; null on every genuine inbound
  * @property {string|null} fromNode   WHICH NODE's spine committed this text. null = UNSIGNED (a human, the ordinary case); '' = SIGNED BY A NODE WE CANNOT NAME; otherwise the node name. Callers test `!= null`, NEVER truthiness
  * @property {string} [line]    the formatted dispatch line every brain sees, built once here (C7.6e)
  * @property {any}    raw       the bridge's original `from` payload
@@ -612,9 +612,12 @@ export function createSpine({
     // PHASE 4 — brain-member fan-out (design B: re-entry). Kicked off HERE, concurrently with
     // E's own dispatch below (never blocking E's turn). It delivers this received room message
     // to each brain member whose mode admits it; each member's finalized reply is streamed into
-    // the room AND re-enters handleFast as a synthetic NON-human turn (from.fromBrain) — reaching
-    // the OTHER brains + E (per E's own mode) and counted EXACTLY ONCE by the guardCountNonHuman
-    // above (on re-entry), never here. `blocked` short-circuits a channel the counter just tripped,
+    // the room AND re-enters handleFast as a synthetic NON-human turn (from.fromMember, kind
+    // `brain`) — reaching the OTHER brains + E (per E's own mode) and counted EXACTLY ONCE by the
+    // guardCountNonHuman above (on re-entry), never here. THE SAME `reenter` carries an INVITED
+    // GROUP's message into the room it joined (operator 2026-08-31), which is how a group triggers
+    // that room's agents: one re-entry mechanism, two kinds of member (see room-relay.mjs's
+    // header). `blocked` short-circuits a channel the counter just tripped,
     // so a runaway multi-brain room halts at guard.turns. Its completion promise folds into the
     // turn this message resolves on (withRelay), so a caller awaits the fan-out too. Absent roomRelay
     // (every existing pipe path) → null → handleFast is byte-identical to before.

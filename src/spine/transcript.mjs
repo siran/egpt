@@ -88,9 +88,9 @@ export function createTranscript({
   async function target(ev) {
     const joinedRoom = currentRoomOf(ev.surface);
     // Surface 'room' is BOTH identity.SHELL_SURFACE (the shell's own transport) AND the literal
-    // surface a caller uses to address a room DIRECTLY with an already-resolved chatId (e.g.
-    // boot.mjs's logRoomTranscript, recording a wa-group's tunnelled line into the room it
-    // tunnels through). currentRoomOf('room') answers the SAME map key for both, so on this one
+    // surface a caller uses to address a room DIRECTLY with an already-resolved chatId (e.g. the
+    // room-relay tunnel's re-entry, which carries a wa-group's line into the room it joined as a
+    // turn of that room's own). currentRoomOf('room') answers the SAME map key for both, so on this one
     // surface the redirect must additionally confirm ev.chatId is still the shell's own default
     // home (LOBBY_SLUG) — an event that already names a specific, non-default room is final and
     // must never be reinterpreted onto whatever room the console happens to have joined. Every

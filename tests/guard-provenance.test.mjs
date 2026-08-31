@@ -37,11 +37,21 @@ describe('isHumanTurn — provenance, not display name', () => {
     expect(isHumanTurn(humanMsg, { isEnvelope, wasSentByUs: () => true })).toBe(false);
   });
 
-  it('a web-brain member reply re-entering the room (fromBrain) is NON-human by provenance (phase 4, design B)', () => {
+  it('a web-brain member reply re-entering the room (fromMember, kind brain) is NON-human by provenance (phase 4, design B)', () => {
     // The room relay re-feeds a brain member's own reply as a synthetic inbound tagged
-    // fromBrain — it is OUR output, so it counts toward the cap (bounds a two-brain room),
+    // fromMember — it is OUR output, so it counts toward the cap (bounds a two-brain room),
     // never resets it. Provenance, not display name (senderName is the member).
-    expect(isHumanTurn({ ...humanMsg, senderName: 'chatgpt', fromBrain: 'chatgpt' }, { isEnvelope })).toBe(false);
+    expect(isHumanTurn({ ...humanMsg, senderName: 'chatgpt', fromMember: { id: 'chatgpt', kind: 'brain' } }, { isEnvelope })).toBe(false);
+  });
+
+  it("an INVITED GROUP's message tunnelled into the room it joined stays HUMAN — the KIND is the test (operator 2026-08-31)", () => {
+    // The SAME re-entry carries a wa-group member's line into the room, so the group can trigger
+    // the room's agents. That is a person talking: counting it would auto-STOP the room after
+    // guard.turns group messages and silence the very agents the tunnel exists to wake.
+    expect(isHumanTurn({ ...humanMsg, fromMember: { id: '!grp-A', kind: 'wa-group' } }, { isEnvelope })).toBe(true);
+    // …but one of OUR OWN sends that escaped the bridge's echo gate is caught by the signature the
+    // tunnel synthetic carries across the re-addressing — non-human, so the guard still bounds it.
+    expect(isHumanTurn({ ...humanMsg, fromMember: { id: '!grp-A', kind: 'wa-group' }, fromNode: 'kg' }, { isEnvelope })).toBe(false);
   });
 });
 
@@ -69,7 +79,7 @@ describe('isHumanTurn — the node signature is provenance (a peer node is not t
     const ev = peerPost();
     // the four old signals all say "human" — this is exactly why the fifth exists
     expect(ev.backlog).toBeFalsy();
-    expect(ev.fromBrain).toBeFalsy();
+    expect(ev.fromMember).toBeFalsy();
     expect(isEnvelope(ev)).toBe(false);
     expect(oursOnly(new Set(['our-1']))(ev)).toBe(false);
     expect(isHumanTurn(ev, { isEnvelope, wasSentByUs: oursOnly(new Set(['our-1'])) })).toBe(false);

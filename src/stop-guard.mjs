@@ -117,11 +117,19 @@ export function parseStopWord(text) {
 // so it counts toward the cap. Signals (each defaults to "not that", so a caller wiring
 // only some of them still gets a correct answer):
 //   - backlog     : a woken node's replay is not a live human turn.
-//   - fromBrain   : a web-brain MEMBER's own reply re-entering the room (design B, phase 4):
-//                   the finalized reply is posted, then re-fed as a synthetic inbound so it
-//                   reaches the other brains + E. It is OUR output, so NON-human by provenance
-//                   (the flag rides `from`, set by the room relay) — it counts toward the cap,
-//                   which is exactly what bounds a two-brain room at guard.turns.
+//   - fromMember  : a turn the ROOM RELAY re-entered, as { id, kind } — WHICH roster member it
+//                   came from. A `brain` MEMBER's own reply (design B, phase 4) is posted and then
+//                   re-fed as a synthetic inbound so it reaches the other brains + E: that is OUR
+//                   output, so NON-human by provenance — it counts toward the cap, which is
+//                   exactly what bounds a two-brain room at guard.turns.
+//                   THE KIND IS THE TEST, not the mere presence (operator 2026-08-31). The same
+//                   re-entry now carries an INVITED GROUP's message into the room it joined, so
+//                   the group can trigger the room's agents — and that is a PERSON talking, not
+//                   our output. Counting it would auto-STOP the room after guard.turns group
+//                   messages and silence the very agents the tunnel exists to wake, so a
+//                   non-brain member stays human here and resets the room's counter as any human
+//                   turn does. (An escaped echo of one of OUR sends is caught a line below
+//                   instead, by fromNode, which the tunnel synthetic carries across.)
 //   - isEnvelope  : relay/provenance-tail traffic (src/spine/mesh.mjs, src/mesh/relay.mjs).
 //   - wasSentByUs : one of our OWN bot sends re-entering (id-based, src/bridges/beeper.mjs);
 //                   a being's own room fan-out is likewise ours. The bridge already
@@ -148,7 +156,7 @@ export function parseStopWord(text) {
 //                       there; it is simply never the one that fires inside the spine.
 export function isHumanTurn(ev, { isEnvelope = () => false, wasSentByUs = () => false } = {}) {
   if (!ev || ev.backlog) return false;
-  if (ev.fromBrain) return false;
+  if (ev.fromMember?.kind === 'brain') return false;
   if (ev.fromNode != null) return false;
   if (hasNodeSignature(ev.body)) return false;
   if (isEnvelope(ev)) return false;

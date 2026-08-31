@@ -435,47 +435,47 @@ export function createRadioNoteRelay({
 }
 
 // THE ROSTER a fan-out resolves for one conversation — the room-relay's `resolveMembers` seam.
-// A conversation reaches a roster TWO ways, and both are resolved here so there is ONE resolver
-// (never a second lookup beside it):
-//   1. its OWN room. A conversation IS a Room, and its members[] is what /members writes through
-//      resolveConvRoom — the original phase-4 lookup, unchanged.
-//   2. every room that INVITED this chat in. `/members add group <chatId>` stores a `wa-group`
-//      member whose id IS a chat id, so scanning config/rooms.yaml for this chatId is the REVERSE
-//      of (1): an inbound in that group fans out over THAT room's members — the other groups, the
-//      room's brains, all of it (operator 2026-08-29: "many and different groups to join a room …
-//      a room works as a communication tunnel between groups").
-// Concatenated and deduped by member id, own room first, so a conversation no room lists resolves
-// EXACTLY as it did before. Never throws — a fan-out with no roster is a no-op.
+// A conversation IS a Room, and its members[] is what /members writes through resolveConvRoom:
+// that own-room lookup is the whole roster, exactly as in the original phase-4 wiring. Never
+// throws — a fan-out with no roster is a no-op.
 //
-// `roster.tunnelRooms` (operator 2026-08-30) — the room NAME(s) found by the REVERSE lookup
-// above (never `own`: that is a chat's OWN incidental conversation-room, not a tunnel target).
-// room-relay.mjs's fanOut reads this to log a wa-group message into the room(s) it tunnels
-// into, WITHOUT re-deriving this same scan a second time — see its header. A plain array
-// (no property) is a valid roster shape too (every existing caller/test), so this is additive.
+// `roster.tunnelRooms` — WHICH ROOMS INVITED THIS CHAT IN, by the REVERSE lookup: `/members add
+// group <chatId>` stores a `wa-group` member whose id IS a chat id, so scanning config/rooms.yaml
+// for this chatId finds every room this conversation tunnels into (operator 2026-08-29: "many and
+// different groups to join a room … a room works as a communication tunnel between groups").
+// room-relay.mjs's fanOut re-enters the message into each of those rooms as a TURN of its own, so
+// the room records it, wakes its agents, and fans out to the other groups + brains from THERE
+// (operator 2026-08-31 — see that module's header). A plain array with no property is a valid
+// roster shape too (every existing caller/test), so this stays additive.
+//
+// THOSE ROOMS' MEMBERS ARE NOT CONCATENATED IN (2026-08-31, a net deletion). They used to be: the
+// group's own fan-out delivered to the room's members directly, and the room itself only got a
+// transcript line. With the message re-entered into the room, the room's own fan-out reaches them
+// — so concatenating here would deliver every line TWICE, once from each end.
+//
+// AND THE REVERSE LOOKUP DOES NOT RUN FOR SURFACE `room` — the ONE-HOP lock. A tunnel starts at a
+// surface chat and ends in a room: a wa-group member names a chat on a messaging surface, while a
+// room's own conversation lives on surface `room`, so a room turn has nothing it could match. That
+// is structural rather than a counter — without it, two rooms each listing the other's name would
+// re-enter into each other forever.
 export function createMemberResolver({ resolveConvRoom, readRooms = readRoomsFile } = {}) {
   return async (surface, chatId) => {
     try {
-      const rooms = [];
       const tunnelRooms = [];
-      const own = await resolveConvRoom(surface, chatId);
-      if (own) rooms.push(own);
-      for (const [ns, row] of Object.entries(await readRooms())) {
-        const listed = Array.isArray(row?.members) ? row.members : [];
-        if (!listed.some((m) => m && m.kind === 'wa-group' && String(m.id) === String(chatId))) continue;
-        // The row KEY is the room's ns — `<surface>/<slug>`, the same string Room.ns() emits —
-        // so the room it names is rebuilt through the SAME (surface, slug) constructor
-        // resolveConvRoom ends in. A key with no surface prefix is not a room address; skip it.
-        const cut = String(ns).indexOf('/');
-        if (cut > 0) {
-          rooms.push(Room.forChat(String(ns).slice(0, cut), String(ns).slice(cut + 1)));
-          tunnelRooms.push(String(ns).slice(cut + 1));
+      if (surface !== SHELL_SURFACE) {
+        for (const [ns, row] of Object.entries(await readRooms())) {
+          const listed = Array.isArray(row?.members) ? row.members : [];
+          if (!listed.some((m) => m && m.kind === 'wa-group' && String(m.id) === String(chatId))) continue;
+          // The row KEY is the room's ns — `<surface>/<slug>`, the same string Room.ns() emits —
+          // so the SLUG it names is the chatId the re-entry addresses the room by (a room is a
+          // contact on surface `room` whose chatId IS its name). A key with no surface prefix is
+          // not a room address; skip it.
+          const cut = String(ns).indexOf('/');
+          if (cut > 0) tunnelRooms.push(String(ns).slice(cut + 1));
         }
       }
-      const seen = new Set();
-      const roster = [];
-      for (const room of rooms) {
-        for (const m of await room.members()) { if (seen.has(m.id)) continue; seen.add(m.id); roster.push(m); }
-      }
+      const own = await resolveConvRoom(surface, chatId);
+      const roster = own ? await own.members() : [];
       // Non-enumerable: an existing caller that deep-equals the roster against a plain array
       // (every test today, e.g. `toEqual([])`) must see no difference — only a reader that
       // knows to ask for `.tunnelRooms` by name (room-relay.mjs fanOut) ever sees it.
@@ -1401,8 +1401,9 @@ export async function boot({
   // roster through resolveConvRoom — the SAME resolver /members WRITES through (createCommands
   // above), so the roster the relay reads is exactly the one the operator edited on this
   // conversation (bug fix 2026-07-23: previously the two resolved to different config.yaml files)
-  // — plus the roster of any room that INVITED this chat in as a `wa-group` member, which is the
-  // other half createMemberResolver resolves (see its header).
+  // — plus, on `.tunnelRooms`, the name of any room that INVITED this chat in as a `wa-group`
+  // member, which the relay re-enters the message into as a turn (see createMemberResolver's
+  // header and room-relay.mjs's).
   const memberSender = createSender({ bridge: shellAwareBridge, bodyEmojiOf: () => '🤖', labelOf: (id) => id, defaultKey });
   const _adapterMods = new Map();
   const roomRelay = createRoomRelay({
@@ -1415,15 +1416,10 @@ export async function boot({
     streamFromTab: cdp.streamFromTab,
     activateTarget: cdp.activateTarget,
     openStream: (memberId, chatId, opts = {}) => memberSender.open(chatId, { being: memberId, replyTo: opts.replyTo ?? null }),
-    // ROOM-TRANSCRIPT RECORD for a wa-group tunnel (operator 2026-08-30): resolveMembers above
-    // (createMemberResolver) hands fanOut the room name(s) ev's own chat tunnels into on
-    // `members.tunnelRooms` — route THAT into the ONE existing transcript service (services.transcript,
-    // built above), never a second writer. Explicit surface/chatId/chatName come AFTER `...ev`
-    // so ev's OWN (surface, chatId) — the wa-group's own chat, not the room — can never win the
-    // spread and misdirect the write back to the group's own file.
-    logRoomTranscript: async (roomName, ev) => {
-      await services.transcript.log({ ...ev, surface: 'room', chatId: roomName, chatName: roomName });
-    },
+    // NO logRoomTranscript SEAM ANY MORE (operator 2026-08-31, a net deletion): a wa-group message
+    // is RE-ENTERED into the room it tunnels into now, so the room's own ingestion writes its ONE
+    // transcript record at the same chokepoint every other message goes through — and wakes the
+    // room's agents while it is there. A second writer here would double that record.
     onLog: (m) => log.line?.(`[relay] ${m}`),
   });
 
