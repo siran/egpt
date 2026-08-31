@@ -24,6 +24,10 @@ import { createMemberResolver } from '../src/spine/boot.mjs';
 import { createBrainPool } from '../src/spine/brainpool.mjs';
 import { createContacts } from '../src/spine/contacts.mjs';
 import { createSpine } from '../src/spine/spine.mjs';
+// The mesh SERVICE and its wire codec — the responder half of the relay, exercised here against
+// the REAL brainpool so 'which conversation does a relayed turn run in' is answered end to end.
+import { createMeshService } from '../src/spine/mesh.mjs';
+import { encodeMesh } from '../src/mesh/relay.mjs';
 import { emptyState, getBeing, patchBeing } from '../src/conversations-state.mjs';
 
 const ROOM = 'acim';                          // room/acim — where the instance lives
@@ -303,5 +307,99 @@ describe('spine — the turn FIFO keys on the INSTANCE, not the chat', () => {
     expect(brain.order).not.toContain('end:from the room');
     brain.release();
     await Promise.all([a, b]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// REACHED THROUGH THE MESH (operator 2026-08-31, the same day and the same E):
+// *"the mesh tail should get from/to agents separate, and so the threads. there should be
+// relation between thread-id and the egpt-mesh. mesh is transport, not mixing."*
+//
+// Everything above assumes the group's message arrives on THIS node. The operator's E is
+// reached the other way round: the group lives on the requester's account, and its line crosses
+// as a relay envelope through the channel `egpt-mesh-do-kg`. The responder used to run that turn
+// in the CHANNEL's conversation, so the membership rule the whole file is about could never fire
+// for it — relay-E got its own thread, its own warm CLI and `access_level: regular`, no matter
+// which room the group had been invited into.
+//
+// The envelope's `from:` carries the origin chat's NAME, and a NAME is the one part of a chat's
+// identity that crosses accounts (the same group is `!6ljZJkx0OaY9ZVhEzFgi` on anrodz42 and
+// `!HuXFQeZSY1X4khNDWTzz` on dolly.egpt — measured 2026-08-31). The responder resolves it to its
+// OWN id and answers there; the scope above then does the rest with no further change.
+const RELAY_CHANNEL = 'egpt-mesh-do-kg';
+
+// The Bridge port surface mesh.mjs uses, plus the name→id resolver (forwarded by beeper-port
+// since c84deac). `chatIds` is THIS node's own view: GROUP_NAME is the group's title, GROUP is
+// the id THIS account knows it by — never the requester's.
+function meshBridge({ chatIds = {} } = {}) {
+  const b = {
+    sent: [], streams: [], resolveCalls: [],
+    async resolveChatId(nameOrId, opts) { b.resolveCalls.push({ nameOrId, opts }); return (nameOrId in chatIds) ? chatIds[nameOrId] : null; },
+    send(chat, text) { b.sent.push({ chat, text }); return { ok: true }; },
+    async postStatus() { return 'post-1'; },
+    startStream(chat, init) {
+      const h = { chat, init, updates: [], finals: [] };
+      h.update = (t) => h.updates.push(t);
+      h.finish = async (t) => { h.finals.push(t); };
+      b.streams.push(h);
+      return h;
+    },
+  };
+  return b;
+}
+
+const meshFlush = async () => { await new Promise((r) => setTimeout(r, 0)); await new Promise((r) => setTimeout(r, 0)); };
+
+// One envelope, as the requester's node posts it: the human's body, the origin chat's NAME, and
+// the target being.node. `to: e.do` is what puts this node on the hook.
+const envelope = (from, body) => encodeMesh({ by: 'An', body, from, from_node: 'kg', to: 'e.do', post_id: 'p1' });
+
+function meshOver(brain, bridge) {
+  return createMeshService({
+    bridge, brain,
+    getConfig: () => ({ node_name: 'do', agents: { e: { configuration: 'egpt', name: 'e' } } }),
+    onLog: () => {},
+  });
+}
+
+describe('the mesh is TRANSPORT, not identity — a relayed group turn lands on the ROOM\'s instance', () => {
+  it("THE OPERATOR'S CASE: perrito traducciones reached through egpt-mesh-do-kg runs on room/acim's thread, warm key and access_level", async () => {
+    const { brain, pool, getState } = await harness({ rooms: JOINED });
+    const bridge = meshBridge({ chatIds: { [GROUP_NAME]: GROUP } });
+    const mesh = meshOver(brain, bridge);
+
+    await mesh.handle({ surface: 'whatsapp', chatId: RELAY_CHANNEL, msgId: 'm1', body: envelope(GROUP_NAME, '@e traduce esto') });
+    await meshFlush();
+
+    expect(pool.calls).toHaveLength(1);
+    // The same three keys THE ASK asserts for a locally-delivered group message — reached the
+    // long way round, they resolve identically. One E, one memory, one pair of hands.
+    expect(pool.calls[0].key).toBe('e:ccode:room:acim');
+    expect(pool.calls[0].brainOptions.sessionId).toBe(ACIM_THREAD);
+    expect(pool.calls[0].brainOptions.dangerouslySkipPermissions).toBe(true);   // the room's `all`
+    // NOT A COPY, here either: the group's own entry gains no thread.
+    expect(getBeing(getState(), 'whatsapp', GROUP, 'e')?.threadId ?? null).toBe(null);
+    expect(getBeing(getState(), 'room', ROOM, 'e').threadId).toBe(ACIM_THREAD);
+    // PROVENANCE: the being is told which chat the line arrived in, by its real name.
+    expect(pool.calls[0].message).toMatch(new RegExp(`ARRIVED IN "${GROUP_NAME}"`));
+    // TRANSPORT UNCHANGED: the answer still goes back out through the channel it came in on.
+    expect(bridge.streams.map((s) => s.chat)).toEqual([RELAY_CHANNEL]);
+  });
+
+  it('...and the pre-change behaviour beside it: an origin that does not resolve here still answers in the CHANNEL', async () => {
+    // The fallback, and the reason it must exist: this node is not in "Radio WnL", so there is
+    // no local address for it. Guessing would key a live thread on a foreign account's id; the
+    // turn runs in the transport chat instead, exactly as every relayed turn did before today.
+    const { brain, pool } = await harness({ rooms: JOINED });
+    const bridge = meshBridge({});                       // resolves nothing
+    const mesh = meshOver(brain, bridge);
+
+    await mesh.handle({ surface: 'whatsapp', chatId: RELAY_CHANNEL, msgId: 'm1', body: envelope('Radio WnL', '@e pon musica') });
+    await meshFlush();
+
+    expect(pool.calls).toHaveLength(1);
+    expect(pool.calls[0].key).toMatch(/^e:ccode:whatsapp:egpt-mesh-do-kg-\d{10}$/);
+    expect(pool.calls[0].brainOptions.sessionId).toBe(null);                    // its own thread
+    expect(pool.calls[0].brainOptions.dangerouslySkipPermissions).toBe(false);  // 'regular'
   });
 });

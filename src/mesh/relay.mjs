@@ -258,9 +258,14 @@ export function createMeshRelay({
   resolveBeingRelay = () => null,    // (being) => {being,node}|null — relay-record: re-resolve to another node
   // STREAMING — a relayed reply is a LIVING MIRROR (An 2026-06-21). Edit-streaming
   // is a bridge property, so a relayed reply streams for free; the relay just mirrors.
-  //   RESPONDER: relayDispatch({being,prompt,route,re,post_id,by}) → edit-stream ONE
+  //   RESPONDER: relayDispatch({being,prompt,route,from,re,post_id,by}) → edit-stream ONE
   //     relay-room message wrapped in the mesh tail (by/emoji/re/post_id). The responder's
   //     OWN edits are suppressed locally by the bridge but propagate to the origin.
+  //     `from` is the ORIGIN CHAT'S NAME, handed over so the dispatcher can run the turn in
+  //     the conversation the line actually came from rather than in the transport channel
+  //     (operator 2026-08-31: "mesh is transport, not mixing" — see src/spine/mesh.mjs's
+  //     meshEv). It rides the tail already and survives every chain hop unchanged; passing it
+  //     here just stops the dispatcher having to re-split it back out of `re`.
   //     Null → one-shot runBeing fallback.
   //   ORIGIN: openOriginStream(returnTo, info{by,emoji,msgId,structural}) → {update,finish}.
   //     info.msgId is the origin placeholder (post_id) to edit IN PLACE; emoji stamps identity.
@@ -529,7 +534,11 @@ export function createMeshRelay({
     // don't await the whole turn here.
     if (relayDispatch) {
       // `via` (the accumulated forward trail) rides to the dispatcher so it echoes the path home.
-      relayDispatch({ being: runB, prompt, route, re: reAddress, post_id: prov.post_id, by: `${being}.${asNode}`, via: prov.via })
+      // `from` — the ORIGIN CHAT'S NAME — rides too (operator 2026-08-31): the dispatcher runs the
+      // turn in THAT conversation, not in the channel the envelope happened to travel on. It is the
+      // ORIGINAL origin's name even after N hops, because the relay-record branch above forwards
+      // `from`/`from_node` verbatim rather than restamping them at each hop.
+      relayDispatch({ being: runB, prompt, route, from: prov.from, re: reAddress, post_id: prov.post_id, by: `${being}.${asNode}`, via: prov.via })
         .catch((e) => log(`mesh: relayDispatch ${runB} failed: ${e?.message ?? e}`));
       return true;
     }

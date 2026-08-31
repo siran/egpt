@@ -257,12 +257,60 @@ export function createMeshService({
     return { being: paths[0].name, route: routeOf(paths[0]), to: paths[0].to };
   }
 
-  // A synthetic InboundEvent for the RESPONDER's brain.turn: the being answers in the
-  // context of the relay chat it was addressed in (surface + chatId = that channel).
-  function meshEv(route, prompt) {
-    const chat = chatOf(route);
+  // THE ORIGIN CHAT'S NAME → THIS NODE'S OWN ADDRESS FOR IT (operator 2026-08-31: "the mesh tail
+  // should get from/to agents separate, and so the threads. there should be relation between
+  // thread-id and the egpt-mesh. mesh is transport, not mixing." / "E on the radio and E on acim
+  // MUST BE DIFFERENT THREADS!"). Returns { chatId, name }, or null = "not addressable here".
+  //
+  // THE NAME IS THE ONLY THING THAT CROSSES. Beeper chat ids do NOT: the same WhatsApp group is
+  // `!6ljZJkx0OaY9ZVhEzFgi` on anrodz42 and `!HuXFQeZSY1X4khNDWTzz` on dolly.egpt, and Radio WnL
+  // is `!9M8Dhdj…` vs `!3yqv8ll…` (both measured on these two machines, 2026-08-31). So the
+  // requester's chat id is meaningless on this node — config/rooms.yaml here lists its members by
+  // THIS node's ids — while a WhatsApp group's TITLE is the same for both accounts. The tail has
+  // carried that title as `from:` since the first envelope (relayOut sends origin.name =
+  // ev.chatName ?? ev.chatId), so nothing new travels; we just resolve it locally, through the
+  // SAME bridge resolver canonRoute already uses for a relay_channel name (live since c84deac).
+  //
+  // NEVER AN ID, AND NEVER A GUESS. An id-shaped `from:` is the requester's own chat id (the
+  // ev.chatName ?? ev.chatId fallback fired at the origin), and resolveChatId's `!` branch hands a
+  // full-form Matrix id straight back WITHOUT a lookup — which would key this node's thread, warm
+  // process and access_level on another account's id. Refused out loud. Everything else that does
+  // not resolve (we are not in that chat, the lookup fails) returns null and the caller keeps the
+  // relay channel: being answered in the transport chat is what happened before today, so the
+  // fallback is not a degradation, it is the status quo.
+  //
+  // NOT NETWORK-PINNED, unlike canonRoute: a relay_channel declares its `network:`, an arriving
+  // envelope says nothing about the origin's, and the route's pin describes the TRANSPORT. An
+  // ambiguous title therefore resolves the way every other name does here (bridge logs it, first
+  // match wins) rather than by a pin invented on this side.
+  const originConv = async (name) => {
+    const n = String(name ?? '').trim();
+    if (!n || !bridge.resolveChatId) return null;              // no name / no resolver (test fakes, raw-id configs) — unchanged
+    if (n.startsWith('!')) { onLog(`mesh: origin ${JSON.stringify(n)} is a chat id, not a name — ids do not cross accounts, so answering in the relay channel`); return null; }
+    let id = null;
+    try { id = await bridge.resolveChatId(n); } catch { id = null; }
+    if (!id) { onLog(`mesh: origin chat ${JSON.stringify(n)} does not resolve on ${node} — answering in the relay channel`); return null; }
+    return { chatId: String(id), name: n };
+  };
+
+  // A synthetic InboundEvent for the RESPONDER's brain.turn — THE ONE PLACE the conversation a
+  // relayed turn runs in is decided.
+  //
+  // It used to be the relay chat the envelope was addressed in, which made the transport decide
+  // identity: every group reached through egpt-mesh-do-kg answered on ONE thread, one warm CLI and
+  // one access_level, with the true origin present only as text inside the prompt. It also defeated
+  // a569ada — a chat that is a `wa-group` member of a room resolves to the ROOM's identity, but a
+  // group reached through the relay never presented its own address, so the membership rule could
+  // not fire and relay-E had none of room/acim's memory or permissions. Now the turn runs in the
+  // ORIGIN conversation (`from` = its name, resolved by originConv above) and everything downstream
+  // — resolveConv, the a569ada scope lookup, the warm key, access_level — follows unchanged.
+  //
+  // `from` omitted (commandReply) or unresolvable → the relay channel, byte for byte as before.
+  async function meshEv(route, prompt, from = null) {
     const surface = route?.limb ?? route?.surface ?? 'whatsapp';
-    return { surface, node, chatId: chat, chatName: chat, senderId: null, senderName: null, msgId: null, ts: Date.now(), body: prompt, line: prompt, kind: 'text', raw: null };
+    const conv = await originConv(from);
+    const chat = conv?.chatId ?? chatOf(route);
+    return { surface, node, chatId: chat, chatName: conv?.name ?? chat, senderId: null, senderName: null, msgId: null, ts: Date.now(), body: prompt, line: prompt, kind: 'text', raw: null };
   }
 
   // RESPONDER: is this arriving prompt a node-addressed command for THIS node, and if so what
@@ -285,7 +333,11 @@ export function createMeshService({
     if (!commands?.nodeCommandForMe?.(prompt)) return null;
     const src = route?.ev ?? {};
     const ev = {
-      ...meshEv(route, prompt),
+      // NO ORIGIN CONVERSATION, deliberately (operator 2026-08-31): a node-addressed command is
+      // node plumbing, not a conversation — it is answered by THIS node about ITSELF, and the
+      // chatId below is a private per-command id anyway. meshEv without a `from` is the
+      // pre-2026-08-31 event exactly, so this path costs no lookup and cannot move.
+      ...(await meshEv(route, prompt)),
       chatId: `${chatOf(route)}#cmd${++cmdSeq}`,   // a private id: the captured replies key off it
       mesh: true,   // EXPLICIT MARK (bug #23 half A, 2026-07-27): this chatId is a private
                     // per-command id, never a real room — a room-scoped command (/members,
@@ -398,7 +450,7 @@ export function createMeshService({
     // relay channel as ONE message wrapped in the mesh tail (by/emoji/re/post_id). The
     // being's body_emoji is stamped INTO the body (the responder owns it; the origin
     // can't look up a remote being's). The FINAL frame carries done:true.
-    relayDispatch: async ({ being, prompt, route, re, post_id, by, via }) => {
+    relayDispatch: async ({ being, prompt, route, from, re, post_id, by, via }) => {
       const chat = chatOf(route);
       if (chat == null) return;
       const surface = route?.limb ?? route?.surface ?? 'whatsapp';   // same derivation as meshEv
@@ -420,6 +472,13 @@ export function createMeshService({
           // ALLOWED_USERS GATE: checked here, AFTER the command branch (a node-addressed command
           // is unrelated to which being was nominally addressed) but BEFORE the placeholder stream
           // opens and BEFORE brain.turn ever runs — an unauthorized envelope never starts a turn.
+          //
+          // KEYED ON THE CHANNEL, and it stays there (operator 2026-08-31, when the TURN moved to
+          // the origin conversation). This is REACHABILITY — may this peer wake this being through
+          // this transport — not identity: it is the responder-side half of the rule router.mjs
+          // enforces at the origin, its per-conversation override is written against the relay chat
+          // (locked in tests/spine-mesh.test.mjs), and re-keying it would silently re-scope who may
+          // reach a being over the mesh. Only the conversation the turn RUNS in moved.
           const denial = await allowedUsersDenial(being, route, surface, chat);
           if (denial) final = denial;
           else {
@@ -428,7 +487,11 @@ export function createMeshService({
             // extra outbound edit against the lasso budget (operator 2026-07-27: "no AI involved,
             // it's static tubing").
             stream = bridge.startStream(chat, wrap(''), {});
-            const r = await brain.turn(being, meshEv(route, prompt), (partial) => { try { stream?.update?.(wrap(textOf(partial))); } catch {} });
+            // THE ONE PLACE the origin conversation enters: `from` (the origin chat's name, off the
+            // tail) reaches meshEv only on the being path, so a static command still pays for no
+            // name lookup. `chat` above — the transport — is untouched: the reply streams home
+            // exactly where it came from, whatever conversation the turn ran in.
+            const r = await brain.turn(being, await meshEv(route, prompt, from), (partial) => { try { stream?.update?.(wrap(textOf(partial))); } catch {} });
             final = textOf(r);
           }
         }

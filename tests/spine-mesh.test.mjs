@@ -288,6 +288,139 @@ describe('mesh service — responder (a request arrives at the owning node)', ()
   });
 });
 
+// ── THE MESH IS TRANSPORT, NOT IDENTITY (operator 2026-08-31) ──────────────────────────────
+// *"the mesh tail should get from/to agents separate, and so the threads. there should be
+// relation between thread-id and the egpt-mesh. mesh is transport, not mixing."* and, on the
+// same day, *"E on the radio and E on acim MUST BE DIFFERENT THREADS!"*.
+//
+// meshEv used to hand brain.turn the RELAY CHANNEL as the conversation, so every group reached
+// through egpt-mesh-do-kg answered on ONE thread, one warm CLI and one access_level — Radio WnL
+// and "perrito traducciones" both landing in the transport's conversation, with their real
+// origin present only as text inside the prompt. It also defeated a569ada: a chat listed as a
+// `wa-group` member of a room resolves to that room's identity, but a group reached through the
+// relay never presented its own address, so the membership rule could never fire for it.
+//
+// THE HARD PART, and why this is not `chatId: <the requester's chat id>`: Beeper chat ids do NOT
+// cross accounts. The same WhatsApp group is `!6ljZJkx0OaY9ZVhEzFgi` on anrodz42 and
+// `!HuXFQeZSY1X4khNDWTzz` on dolly.egpt (measured on these two machines, 2026-08-31), so the
+// requester's id is meaningless here — rooms.yaml on THIS node lists members by THIS node's ids.
+// The chat NAME is what crosses (a WhatsApp group's title is the same on both accounts) and the
+// tail has carried it as `from:` since the first envelope. So the responder resolves that name
+// to its OWN local id (bridge.resolveChatId, live since c84deac) and answers THERE.
+describe('mesh service — the RESPONDER answers in the ORIGIN conversation, not the transport channel', () => {
+  const persona = { e: { configuration: 'egpt', name: 'e' } };
+  const CHANNEL = 'egpt-mesh-do-kg';
+  // The responder's OWN ids for the two groups (its account's, not the requester's).
+  const chatIds = { 'Radio WnL': 'do-radio-wnl', 'perrito traducciones': 'do-perrito' };
+  const req = (from, body, post_id) => encodeMesh({ by: 'An', body, from, from_node: 'kg', to: 'e.do', post_id });
+
+  it('THE ASK: two origin chats relayed through ONE channel run in TWO conversations', async () => {
+    const brain = fakeBrain({ reply: 'ok' });
+    const { mesh } = svc({ node: 'do', agents: persona, brain, chatIds });
+
+    await mesh.handle({ surface: 'whatsapp', chatId: CHANNEL, msgId: 'm1', body: req('Radio WnL', '@e pon musica', 'p1') });
+    await flush();
+    await mesh.handle({ surface: 'whatsapp', chatId: CHANNEL, msgId: 'm2', body: req('perrito traducciones', '@e traduce esto', 'p2') });
+    await flush();
+
+    expect(brain.calls).toHaveLength(2);
+    // Radio-E and acim-E are DIFFERENT conversations — which is what makes them different
+    // threads, different warm processes and different run configs downstream.
+    expect(brain.calls[0].ev.chatId).toBe('do-radio-wnl');
+    expect(brain.calls[1].ev.chatId).toBe('do-perrito');
+    expect(brain.calls[0].ev.chatId).not.toBe(brain.calls[1].ev.chatId);
+    // …and the being is told WHICH chat it is in by name, not by the transport's name.
+    expect(brain.calls[0].ev.chatName).toBe('Radio WnL');
+    expect(brain.calls[1].ev.chatName).toBe('perrito traducciones');
+  });
+
+  it('THE REPLY PATH IS UNTOUCHED: both answers still mirror home through the one relay channel', async () => {
+    const brain = fakeBrain({ reply: 'ok' });
+    const { bridge, mesh } = svc({ node: 'do', agents: persona, brain, chatIds });
+
+    await mesh.handle({ surface: 'whatsapp', chatId: CHANNEL, msgId: 'm1', body: req('Radio WnL', '@e pon musica', 'p1') });
+    await flush();
+    await mesh.handle({ surface: 'whatsapp', chatId: CHANNEL, msgId: 'm2', body: req('perrito traducciones', '@e traduce esto', 'p2') });
+    await flush();
+
+    // Transport is transport: the envelope goes back the way it came, on the channel, with the
+    // same return-address and the same post_id it arrived with.
+    expect(bridge.streams.map((s) => s.chat)).toEqual([CHANNEL, CHANNEL]);
+    expect(parseMesh(bridge.streams[0].finals.at(-1))).toMatchObject({ by: 'e.do', re: 'Radio WnL.kg', post_id: 'p1', done: true });
+    expect(parseMesh(bridge.streams[1].finals.at(-1))).toMatchObject({ by: 'e.do', re: 'perrito traducciones.kg', post_id: 'p2', done: true });
+  });
+
+  it("LOCK: an origin that does NOT resolve here keeps today's behaviour — the relay channel — and says so", async () => {
+    const logs = [];
+    const brain = fakeBrain({ reply: 'ok' });
+    // `null` = the bridge cannot resolve this name (we are not in that chat, or it simply is not
+    // visible). NEVER GUESS: the turn falls back to the transport chat, exactly as before.
+    const { bridge, mesh } = svc({ node: 'do', agents: persona, brain, chatIds: { 'chat de EyAy': null }, logs });
+
+    await mesh.handle({ surface: 'whatsapp', chatId: CHANNEL, msgId: 'm1', body: req('chat de EyAy', '@e hola', 'p1') });
+    await flush();
+
+    expect(brain.calls).toHaveLength(1);
+    expect(brain.calls[0].ev.chatId).toBe(CHANNEL);
+    expect(brain.calls[0].ev.chatName).toBe(CHANNEL);      // byte-identical to the pre-change meshEv
+    expect(logs.join('\n')).toMatch(/chat de EyAy.*does not resolve/);
+    expect(bridge.streams[0].chat).toBe(CHANNEL);
+  });
+
+  it("LOCK: an id-shaped `from:` is REFUSED without a lookup — a chat id from the requester's account is not an address here", async () => {
+    const logs = [];
+    const brain = fakeBrain({ reply: 'ok' });
+    // A resolver that WOULD answer, to prove it is never asked: resolveChatId's `!` branch hands
+    // a full-form id straight back UNVERIFIED, which is exactly how a foreign account's id would
+    // become this node's thread key.
+    const { bridge, mesh } = svc({ node: 'do', agents: persona, brain, chatIds: { '!6ljZJkx0OaY9ZVhEzFgi': 'do-would-be-wrong' }, logs });
+
+    await mesh.handle({ surface: 'whatsapp', chatId: CHANNEL, msgId: 'm1', body: req('!6ljZJkx0OaY9ZVhEzFgi', '@e hola', 'p1') });
+    await flush();
+
+    expect(brain.calls[0].ev.chatId).toBe(CHANNEL);
+    expect(bridge.resolveCalls).toEqual([]);               // not even looked up
+    expect(logs.join('\n')).toMatch(/ids do not cross accounts/);
+  });
+
+  it('LOCK: a bridge with no resolver (raw-id configs, test fakes) is unchanged — the relay channel, no lookup', async () => {
+    const brain = fakeBrain({ reply: 'ok' });
+    const bridge = fakeBridge();
+    delete bridge.resolveChatId;
+    const mesh = createMeshService({ bridge, brain, getConfig: () => ({ node_name: 'do', agents: persona }), bodyEmojiOf });
+
+    await mesh.handle({ surface: 'whatsapp', chatId: CHANNEL, msgId: 'm1', body: req('Radio WnL', '@e hola', 'p1') });
+    await flush();
+
+    expect(brain.calls[0].ev.chatId).toBe(CHANNEL);
+    expect(brain.calls[0].ev.chatName).toBe(CHANNEL);
+  });
+
+  it("LOCK: a node-addressed COMMAND still runs in the responder's own private per-command id, never the origin chat", async () => {
+    // A `/command` is node plumbing, not a conversation: commandReply mints `<channel>#cmd<n>`
+    // and marks the event `mesh:true` so a room-scoped command resolves to THIS node's lobby
+    // (bug #23 half A, 2026-07-27). The origin conversation has nothing to do with it, so it is
+    // never resolved for one — and the name is never even looked up.
+    const captured = [];
+    const commands = {
+      nodeCommandForMe: (p) => p.startsWith('/'),
+      isCommand: () => true,
+      runCaptured: async (ev) => { captured.push(ev); return 'chrome tabs: 3 open'; },
+    };
+    const bridge = fakeBridge({ chatIds });
+    const mesh = createMeshService({ bridge, brain: fakeBrain(), commands, getConfig: () => ({ node_name: 'do', agents: persona }), bodyEmojiOf });
+
+    await mesh.handle({ surface: 'whatsapp', chatId: CHANNEL, msgId: 'm1', body: req('perrito traducciones', '/tabs', 'p1') });
+    await flush();
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0].chatId).toBe(`${CHANNEL}#cmd1`);
+    expect(captured[0].chatName).toBe(CHANNEL);
+    expect(captured[0].mesh).toBe(true);
+    expect(bridge.resolveCalls).toEqual([]);
+  });
+});
+
 describe('mesh service — origin (the reply streams home as a living mirror)', () => {
   it('(c) edits the origin placeholder in place (existingMsgId); the done frame finalizes it', async () => {
     const timers = fakeTimers();
