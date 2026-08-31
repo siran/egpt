@@ -189,6 +189,24 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
       return real.chatHasParticipant ? await real.chatHasParticipant(chat, identity) : null;
     },
 
+    // NAME->ID (operator 2026-08-31) — `/members add group <chat name>` shipped in c63cdd6 and
+    // has been INERT ever since, because this port exposed only the loop's Bridge interface and
+    // the command's resolver seam therefore resolved to null: every name was refused with "give
+    // the chat id instead". This forwards it.
+    //
+    // IT ALSO SWITCHES ON mesh.mjs's canonRoute + chatResolves, which BOTH guard on
+    // `bridge.resolveChatId` and have consequently never run in production. Deliberate, not a
+    // side effect: canonRoute resolves a relay_channel NAME to the canonical chat id before
+    // sending, which is what sendMessage already did internally (chatIdOrName), so the delivered
+    // outcome is unchanged for a channel that resolves — verified live, the do->kg relay answers
+    // through egpt-mesh-do-kg today. What changes is the FAILURE path: an unresolvable channel
+    // now falls back to the Self chat with a one-time notice instead of being dropped silently
+    // ("send DROPPED … resolved=null"), and chatResolves starts verifying rather than assuming.
+    // Both still fail safe on a throw.
+    async resolveChatId(nameOrId, opts) {
+      return real.resolveChatId ? await real.resolveChatId(nameOrId, opts) : null;
+    },
+
     isAlive: () => real.isAlive(),
     stop: () => real.stop(),
   };
