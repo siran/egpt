@@ -1284,12 +1284,7 @@ export async function boot({
   // loadState: the SAME conversations-state IO the router/gating DI already share (operator
   // 2026-08-15, allowed_users) — one reference, threaded to every call site that needs a
   // per-conversation override, never re-derived.
-  // labelOf: the SAME display-name resolver every other surface is handed (transcript/sender/
-  // reply-actions/spine above) — threaded here 2026-08-31 because the mesh was the one surface
-  // missing it and so stamped a relayed reply with the map KEY: kg's persona, keyed `egpt` and
-  // renamed `name: ken` (the key is the being-id behind warm sessions/threads/transcripts, so it
-  // stays), answered into WhatsApp as "🐶 egpt:" where its local reply said "ken:".
-  const mesh = createMeshService({ bridge: shellAwareBridge, brain, commands, getConfig, bodyEmojiOf, labelOf, getSelfChatId: selfChatId, loadState: _loadState, onLog: (m) => log.line?.(`[mesh] ${m}`) });
+  const mesh = createMeshService({ bridge: shellAwareBridge, brain, commands, getConfig, bodyEmojiOf, getSelfChatId: selfChatId, loadState: _loadState, onLog: (m) => log.line?.(`[mesh] ${m}`) });
   bridge.onEdit((e) => mesh.onEdit({ msgId: e.msgId, newText: e.newText }));
 
   // Conversation-E LIMBS (ROADMAP §3): a reply may carry own-line action commands

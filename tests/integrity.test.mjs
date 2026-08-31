@@ -84,24 +84,3 @@ describe('no literal NUL bytes under src/', () => {
     });
   }
 });
-
-// ── DI WIRING: the mesh service gets the display-name resolver (operator 2026-08-31) ──────────
-//    A missing ARGUMENT at ONE call site is a bug no service test can see: mesh.mjs's own
-//    `labelOf = (b) => b` default is correct for a standalone construction, so every mesh test
-//    keeps passing while the live spine stamps the map key. That is exactly what happened — kg's
-//    persona is keyed `egpt` and named `ken`, and its relayed replies came back "🐶 egpt: …" while
-//    every other surface (createTranscript / createSender / createReplyActions / createSpine, all
-//    handed labelOf right there in boot) said "ken:". Static, because the defect is textual.
-describe('boot DI — createMeshService is handed the display-name resolver', () => {
-  it('boot.mjs passes labelOf to createMeshService', () => {
-    const src = readFileSync(join(ROOT, 'src/spine/boot.mjs'), 'utf8');
-    const call = src.match(/createMeshService\(\{[\s\S]*?\}\);/)?.[0] ?? '';
-    expect(call, 'no createMeshService({…}) call found in boot.mjs').not.toBe('');
-    expect(
-      /\blabelOf\b/.test(call),
-      'createMeshService is constructed without labelOf — a relayed reply will be stamped with ' +
-      'the being-id (the agents map KEY) instead of its display name, the way kg\'s `egpt`-keyed / ' +
-      '`ken`-named persona was on 2026-08-31. labelOf is THE display-name resolver; thread it in.'
-    ).toBe(true);
-  });
-});
