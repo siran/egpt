@@ -52,6 +52,18 @@ const memberResolver = (rooms) => createMemberResolver({
 });
 const scopeOver = (rooms, onLog) => createIdentityScope({ resolveMembers: memberResolver(rooms), ...(onLog ? { onLog } : {}) });
 
+// THE PIN, as an operator writes it: FLAT on the agent, not under `conversation_defaults` —
+// `conversation_defaults` means "node-wide default a conversation MAY override", the exact
+// opposite of a pin, which no conversation may override.
+const PINNED = { agents: { wren: { scope: 'room/wren' } } };
+// The same reverse lookup, counting the calls, so "the pin never asks" is assertable.
+const countingResolver = (rooms) => {
+  const inner = memberResolver(rooms);
+  const spy = (...a) => { spy.calls++; return inner(...a); };
+  spy.calls = 0;
+  return spy;
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 describe('createIdentityScope — which conversation a being\'s instance lives in', () => {
   it('a chat invited into exactly ONE room resolves to that room', async () => {
@@ -72,6 +84,77 @@ describe('createIdentityScope — which conversation a being\'s instance lives i
   it('a ROOM never resolves into another room — the reverse lookup declines on surface `room` (the one-hop lock)', async () => {
     const rooms = { 'room/outer': { members: [{ id: ROOM, kind: 'wa-group', state: 'active' }] } };
     expect(await scopeOver(rooms)('e', 'room', ROOM)).toBe(null);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE GLOBAL WREN (operator 2026-09-01) — the second scope the module header predicted: a being
+// pinned node-wide to ONE conversation, so every chat it is addressed in resolves to the same
+// instance. It reads `being` and nothing else, and it is the ONLY rule that fires when it does.
+describe('createIdentityScope — a being pinned node-wide to one conversation', () => {
+  it('a pinned being resolves to the pin from an ordinary chat that is in NO room', async () => {
+    const scope = createIdentityScope({ resolveMembers: memberResolver(NO_ROOMS), getConfig: () => PINNED });
+    expect(await scope('wren', 'whatsapp', GROUP)).toEqual({ surface: 'room', chatId: 'wren' });
+  });
+
+  it('the pin BEATS wa-group membership, and never even asks: an explicit declaration about a BEING outranks an inference about a CHAT', async () => {
+    const spy = countingResolver(JOINED);           // this chat WOULD resolve to room/acim
+    const scope = createIdentityScope({ resolveMembers: spy, getConfig: () => PINNED });
+    expect(await scope('wren', 'whatsapp', GROUP)).toEqual({ surface: 'room', chatId: 'wren' });
+    expect(spy.calls).toBe(0);                      // no membership lookup at all
+  });
+
+  it('the pin is per-BEING, not per-node: an UNPINNED being in that SAME chat still gets the membership answer', async () => {
+    const scope = createIdentityScope({ resolveMembers: memberResolver(JOINED), getConfig: () => PINNED });
+    expect(await scope('e', 'whatsapp', GROUP)).toEqual({ surface: 'room', chatId: ROOM });
+  });
+
+  it('a chatId containing a `/` survives — split on the FIRST slash only', async () => {
+    const scope = createIdentityScope({ resolveMembers: memberResolver(NO_ROOMS), getConfig: () => ({ agents: { wren: { scope: 'whatsapp/!a/b@g.us' } } }) });
+    expect(await scope('wren', 'whatsapp', GROUP)).toEqual({ surface: 'whatsapp', chatId: '!a/b@g.us' });
+  });
+
+  it('`shell/wren` and `room/wren` are the SAME pin — the surface goes through surfaceOf', async () => {
+    // The console's NETWORK is `shell`; its SURFACE is `room` (identity.mjs TRANSPORT_SURFACE).
+    // Without this an operator writing the network name would open a SECOND instance that reads
+    // correctly in config.yaml and shares nothing with the first — a thread split with no error.
+    const asShell = createIdentityScope({ resolveMembers: memberResolver(NO_ROOMS), getConfig: () => ({ agents: { wren: { scope: 'shell/wren' } } }) });
+    const asRoom  = createIdentityScope({ resolveMembers: memberResolver(NO_ROOMS), getConfig: () => PINNED });
+    expect(await asShell('wren', 'whatsapp', GROUP)).toEqual({ surface: 'room', chatId: 'wren' });
+    expect(await asShell('wren', 'whatsapp', GROUP)).toEqual(await asRoom('wren', 'whatsapp', GROUP));
+  });
+
+  it('a MALFORMED scope never throws — it falls through to today\'s answer, and says why', async () => {
+    for (const bad of ['room', '/wren', 'room/', 42, {}, true]) {
+      const logs = [];
+      const scope = createIdentityScope({
+        resolveMembers: memberResolver(JOINED),
+        getConfig: () => ({ agents: { wren: { scope: bad } } }),
+        onLog: (m) => logs.push(m),
+      });
+      // Today's answer, unchanged: half an address is never guessed at.
+      expect(await scope('wren', 'whatsapp', GROUP)).toEqual({ surface: 'room', chatId: ROOM });
+      expect(logs.join('\n')).toMatch(/agents\.wren\.scope/);
+    }
+    // An ABSENT scope is not malformed, and says nothing.
+    for (const absent of [undefined, null, '']) {
+      const logs = [];
+      const scope = createIdentityScope({
+        resolveMembers: memberResolver(NO_ROOMS),
+        getConfig: () => ({ agents: { wren: { scope: absent } } }),
+        onLog: (m) => logs.push(m),
+      });
+      expect(await scope('wren', 'whatsapp', GROUP)).toBe(null);
+      expect(logs).toEqual([]);
+    }
+  });
+
+  it('LOCK — with NO getConfig injected at all, every answer is exactly today\'s, for a would-be pinned being too', async () => {
+    // Every existing caller and test fake wires none; this is the regression that matters most.
+    expect(await scopeOver(JOINED)('wren', 'whatsapp', GROUP)).toEqual({ surface: 'room', chatId: ROOM });
+    expect(await scopeOver(NO_ROOMS)('wren', 'whatsapp', GROUP)).toBe(null);
+    expect(await scopeOver(TWO_ROOMS, () => {})('wren', 'whatsapp', GROUP)).toBe(null);
+    expect(await scopeOver(NO_ROOMS)('wren', 'room', ROOM)).toBe(null);
   });
 });
 

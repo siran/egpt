@@ -34,12 +34,12 @@
 // Here there is ONE record, on the scope, and the invited group has no thread of its own at
 // all. Nothing to sync, nothing to unwind when the group leaves the room.
 //
-// THE `being` PARAMETER IS LOAD-BEARING even though the one rule below ignores it. The next
-// scope is already known — a being pinned node-wide to ONE scope, so every conversation it
-// is addressed in resolves to the same instance (wren). That is a rule which reads `being`
-// and nothing else, slotted in AHEAD of the membership rule below. It is not written here;
-// it will not need this contract changed when it is.
-import { SHELL_SURFACE } from './identity.mjs';
+// THE `being` PARAMETER IS LOAD-BEARING, and the FIRST rule below is why: a being pinned
+// node-wide to ONE scope, so every conversation it is addressed in resolves to the same
+// instance (wren, operator 2026-09-01). It reads `being` and nothing else. It was predicted
+// here before it was written, and it went in without this contract changing — same
+// `resolveScope(being, surface, chatId)`, same `{surface, chatId}` or null.
+import { SHELL_SURFACE, surfaceOf } from './identity.mjs';
 
 /**
  * @param {object} deps
@@ -48,12 +48,35 @@ import { SHELL_SURFACE } from './identity.mjs';
  *   `roster.tunnelRooms` from. REUSED, never re-scanned: one scan of config/rooms.yaml
  *   decides both "which rooms does this message tunnel into" and "whose instance is this
  *   conversation", so the tunnel and the identity can never disagree about membership.
+ * @param {() => any} [deps.getConfig] boot.mjs's already-read config accessor — the SAME one
+ *   createBrainPool takes. Nothing here is read from disk; this module still touches no file.
  * @returns {(being: string, surface: string, chatId: string) => Promise<{surface: string, chatId: string}|null>}
  *   the scope, or null when the conversation is its own scope (the default).
  */
-export function createIdentityScope({ resolveMembers, onLog = () => {} } = {}) {
+export function createIdentityScope({ resolveMembers, getConfig = () => ({}), onLog = () => {} } = {}) {
   if (typeof resolveMembers !== 'function') throw new Error('createIdentityScope: resolveMembers is required');
   return async function resolveScope(being, surface, chatId) {
+    // THE PIN — `agents.<being>.scope: <surface>/<chatId>`, flat on the agent (NOT under
+    // `conversation_defaults`, which means "a node-wide default a conversation MAY override" —
+    // the exact opposite of a pin). Split on the FIRST `/` only; room ids are slugs.
+    //
+    // AHEAD OF THE MEMBERSHIP RULE ON PURPOSE. Both can fire for one chat — a pinned being
+    // addressed in a group that is also a room member — and the pin wins: it is an explicit
+    // operator declaration about a BEING, while membership is an inference about a CHAT. When it
+    // fires no membership lookup happens at all.
+    const pin = getConfig()?.agents?.[being]?.scope;
+    if (pin !== undefined && pin !== null && pin !== '') {
+      const cut = typeof pin === 'string' ? pin.indexOf('/') : -1;
+      // The surface goes through surfaceOf — THE one place network→surface is decided — so a pin
+      // written `shell/wren` and one written `room/wren` name the SAME address. The console’s
+      // NETWORK is `shell` while its SURFACE is `room` (identity.mjs TRANSPORT_SURFACE), so an
+      // operator writing the former would otherwise open a SECOND instance that reads correctly
+      // in the config and shares nothing with the first.
+      if (cut > 0 && cut < pin.length - 1) return { surface: surfaceOf(pin.slice(0, cut)), chatId: pin.slice(cut + 1) };
+      // Half an address is never guessed at: a scope that will not parse falls back to the
+      // conversation itself, the same safe direction every other failure here takes.
+      onLog(`agents.${being}.scope is not <surface>/<chatId> (${JSON.stringify(pin)}) — ignored, ${being} keeps its own instance in ${surface}/${chatId}`);
+    }
     let roster;
     // The resolver already swallows its own faults (returns []); this is the belt. A scope
     // that cannot be resolved must fall back to the conversation itself — being your own
