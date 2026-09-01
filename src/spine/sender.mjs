@@ -32,6 +32,16 @@ const noReplyMark = () => `⚠️ no reply (turn failed/empty)`;
 // a silence the bridge invented is indistinguishable from one the being chose.
 // When the bridge has nothing from the model, it says so in its OWN voice.
 const BRIDGE_SILENCE = '<received silence (error?)>';
+// A LIMB-ONLY turn is not silence (operator 2026-09-01, reading his own SPOILER transcript:
+// "the bridge acted on it but forgot that the reply was non empty" ... "then bridge can say
+// 'processing command' (/react is a command), something like that, so that there is legible
+// record of what happened"). The model DID speak — in commands — so resolving its placeholder
+// with BRIDGE_SILENCE told the chat the opposite of what happened, right beside the 🤝 the same
+// turn had just landed. The bridge names what it is DOING instead, in its own voice, listing the
+// verbs it is about to run (the spine calls finish() BEFORE actions.execute, so "processing" is
+// literally true at that instant; whether each limb LANDED is what the transcript's
+// stage-direction records afterwards — dispatch-line.limbAction).
+const commandMark = (verbs = []) => `⚙️ processing ${verbs.length > 1 ? 'commands' : 'command'} (${verbs.map((v) => `/${v}`).join(' ')})`;
 const THINKING = `${LIVE_FRAME_MARK} Thinking…`;   // NOT a lone emoji (renders oversized in some clients)
 // A mention that arrives while THIS conversation's train is still running gets its
 // OWN placeholder immediately (the operator's per-message ack), opened in the QUEUED
@@ -137,7 +147,11 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
         // for a placeholder that was never queued.
         activate() { if (queued) stream?.update?.(THINKING); },
         update(partial) { const t = textOf(partial); if (!t) return; stream?.update?.(`${absorb(t)} ${LIVE_FRAME_MARK}`); },
-        async finish(reply, { surface = true } = {}) {
+        // `commands` (operator 2026-09-01): the verbs of a LIMB-ONLY reply — the turn's whole
+        // answer was action commands, so there is no prose to deliver but plenty happened. Null
+        // for every other turn, which is why a reply with no action and a genuinely empty reply
+        // both resolve byte-identically to before.
+        async finish(reply, { surface = true, commands = null } = {}) {
           const t = textOf(reply);
           // Gate-withheld ('on'-mode silence / not surfaced). NOTHING IS EVER
           // DELETED (operator 2026-08-24): the placeholder resolves to the
@@ -145,11 +159,24 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
           // "A polite silence is '...' or '…'" — so the withheld turn reads as
           // a deliberate silence rather than a message that disappeared.
           if (!surface) {
+            // A LIMB-ONLY turn says what it is DOING, never that it heard nothing (commandMark).
+            if (commands?.length) { if (stream) await stream.finish?.(absorb(commandMark(commands))); return; }
             // The model's own words if it produced any (its '…' is ITS silence);
             // otherwise the bridge says, in its own voice, that nothing arrived.
             // Absorbed like any other value: a silence that ARRIVES after the model
             // narrated does not erase the narration — it lands under the seam.
-            if (stream) await stream.finish?.(absorb(t.trim() ? t : BRIDGE_SILENCE));
+            //
+            // ...BUT IT NEVER LANDS BESIDE PROSE (operator 2026-09-01). BRIDGE_SILENCE means one
+            // thing only — "the bridge got NOTHING from the model" — and the message is
+            // append-only, so appending it under a seam to text a human has ALREADY READ asserts
+            // a silence that visibly did not happen (live: "...doesn't need a reply from me. — ↓
+            // reply — <received silence (error?)>", which is what the operator diagnosed as "the
+            // bridge acted on it but forgot that the reply was non empty"). With something already
+            // shown there is nothing to resolve: the placeholder settles on exactly what was read,
+            // the ⏳ comes off, nothing is erased and nothing is invented. Nothing shown ⇒ the
+            // mark, unchanged.
+            const settled = t.trim() ? t : (shown() ? '' : BRIDGE_SILENCE);
+            if (stream) await stream.finish?.(absorb(settled));
             return;
           }
           // Surfaced: deliver the reply, OR — when it came back empty — the no-reply

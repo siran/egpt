@@ -244,12 +244,25 @@ export function promptWithRecentContext(line, { blocks = [], truncated = false }
 // line matches NONE of them, so it is kept as body and a multi-line message stays whole. The id
 // is the tag directly AFTER the time, so a ` re #<id>` reply tag can never be mistaken for an
 // entry's own id. Front matter is dropped with the shared stripFrontMatter so a `name:`/`---`
-// line can't match. The id is compared as a STRING extracted from the header, so no
+// line can't match. Since 2026-09-01 the reply reference no longer sits between them at all —
+// it opens the BODY as `[re #<id>] ` (dispatch-line.formatDispatchLine) — but the id is still
+// read as the tag directly after the time, so the OLD shape still on disk (` re #<rid>:`) reads
+// exactly as it always did: this file is append-only and months of history keep both.
+// The id is compared as a STRING extracted from the header, so no
 // caller-supplied id is ever spliced into a regex. (`@?` is all the old sigil costs here:
 // `[^@\n]+` still demands a real speaker name before the `@[`, so an @mention inside a body
 // line stays a continuation.)
 const _ENTRY_HEAD = new RegExp(String.raw`^(?:\[\s*)?@?[^@\n]+@\[[^\]]*\]\.\S+\s+${_TS}|^\[@\S+\s+${_TS}\]:`);
 const _ID_AFTER_TS = new RegExp(`${_TS}\\s+#([^\\s:]+)`);   // the message-id tag directly after the time
+// The `[re #<id>] ` prefix formatDispatchLine puts at the FRONT OF THE BODY since 2026-09-01
+// (the legibility move: the reference used to sit bare between the id and the `:`). It is a HEAD
+// field wearing a body's clothes — it names what the message ANSWERS, not what it SAYS — so it
+// comes back off here. That is what keeps this reader's contract byte-identical across the move:
+// every caller that asks this module for "the recorded body" (promptWithQuotedMessage's quoted
+// text, beeper.transcriptionForNoteId's `(voice transcription, Ns)` marker test) gets exactly the
+// bytes it got when the reference lived before the colon. Anchored + `[^\]\s]+`, so an ordinary
+// body that merely starts with a bracket is untouched.
+const _REPLY_REF = /^\s*\[re #[^\]\s]+\]\s*/;
 
 /**
  * The recorded body of the entry whose OWN message id is `msgId`: the text after the header's
@@ -270,9 +283,9 @@ export function bodyForMessageId(text, msgId) {
     if (!_ENTRY_HEAD.test(head)) continue;                            // only a real entry header
     const idm = head.match(_ID_AFTER_TS);
     if (!idm || idm[1] !== want) continue;                            // …for THIS id
-    const colon = head.indexOf(':', idm.index + idm[0].length);       // the separator after `#<id>[ re #<rid>]`
+    const colon = head.indexOf(':', idm.index + idm[0].length);       // the separator after `#<id>` (or, on pre-2026-09-01 lines, after `#<id> re #<rid>`)
     if (colon < 0) return null;
-    const parts = [head.slice(colon + 1)];
+    const parts = [head.slice(colon + 1).replace(_REPLY_REF, '')];   // see _REPLY_REF: the reply reference is head, not body
     for (let j = i + 1; j < lines.length && !_ENTRY_HEAD.test(lines[j]); j++) parts.push(lines[j]);
     return parts.join('\n').trim() || null;
   }

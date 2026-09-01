@@ -1034,7 +1034,15 @@ export function createSpine({
       // failShaped → blanked → no-reply marker; else the prose (or no-reply marker if empty).
       // UNCONDITIONAL — the normal streaming path (placeholder → live edits → final text,
       // kept) runs exactly as it always did, whether or not voice-out follows below.
-      await out.finish(failShaped ? { text: '' } : { ...reply, text: proseText }, { surface: actionOnly ? false : surfaced });
+      // `commands` (operator 2026-09-01): an action-only turn is not silence. Without it the
+      // sender resolved the placeholder with BRIDGE_SILENCE — "the bridge got nothing from the
+      // model" — for a turn whose limbs were about to fire, and (the message being append-only)
+      // it landed under a seam beneath prose the human had already read. The verbs go down, the
+      // sender says it is processing them, and the transcript records what each one did below.
+      await out.finish(failShaped ? { text: '' } : { ...reply, text: proseText }, {
+        surface: actionOnly ? false : surfaced,
+        commands: actionOnly ? parsed.run.map((a) => a.type) : null,
+      });
       // VOICE-OUT (chunk 2, operator 2026-08-09; redesigned operator 2026-08-10 — the
       // original delete-the-text-and-post-audio-only shape looked broken: a live-streamed
       // answer would appear, then vanish, replaced by audio alone). Text is now ALWAYS the
@@ -1067,7 +1075,18 @@ export function createSpine({
       }
       // EXECUTE the limbs AFTER the reply is recorded + delivered: confined to ev.chatId,
       // errors logged, never crash the turn (the record above already captured everything).
-      if (parsed && hadActions) { try { await actions.execute(parsed.run, parsed.stripped, ev, { being: to }); } catch (e) { note(`actions ${to}/${ev.chatId}: ${e?.message ?? e}`); } }
+      // …and then the RECORD SAYS SO (operator 2026-09-01: "we need to put in transcript its
+      // reaction … so that there is legible record of what happened"). One stage-direction per
+      // limb that LANDED, in the same shape the bridge writes for everyone else's reactions —
+      // which is also what makes the per-account message id a non-problem: the event is recorded
+      // in THIS node's transcript, carrying THIS node's ids, the ones the model reads and emits.
+      // Optional-chained: a transcript service without the method (older fakes) just records less.
+      if (parsed && hadActions) {
+        try {
+          const { ran = [] } = (await actions.execute(parsed.run, parsed.stripped, ev, { being: to })) ?? {};
+          for (const a of ran) await transcript.logAction?.(ev, a, { being: to });
+        } catch (e) { note(`actions ${to}/${ev.chatId}: ${e?.message ?? e}`); }
+      }
     } catch (e) {
       // Any failure once the placeholder is open (brain throw, per-turn timeout, or a
       // delivery fault) → resolve the placeholder VISIBLY. The MESSAGE needs no rescue

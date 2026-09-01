@@ -139,6 +139,50 @@ describe('parseReplyActions — the pure split', () => {
     expect(run).toEqual([]); expect(stripped).toEqual([]);
   });
 
+  // THE LIVE SHAPE (operator 2026-09-01, twice that morning in the SPOILER chat). The delivered
+  // message read "…a simple affirmation doesn't need a reply from me./react #563 🤝": the model
+  // put the action on its own line, but the accumulated token train a CLI hands up concatenates
+  // two consecutive assistant messages with NO separator, so the command arrived welded to the
+  // sentence's full stop and a line-anchored parse could not see it. A '/' glued straight onto
+  // sentence-ending punctuation is a LOST NEWLINE — restored here, so ONE code path decides
+  // prose/run for both shapes.
+  it('an action WELDED to the end of a sentence is a lost newline: stripped from the prose AND run', () => {
+    const live = "This is agreeing with something #560 (not in view) — a simple affirmation doesn't need a reply from me./react #563 🤝";
+    const { prose, run, stripped } = parseReplyActions(live, EV);
+    expect(prose).toBe("This is agreeing with something #560 (not in view) — a simple affirmation doesn't need a reply from me.");
+    expect(run).toEqual([{ type: 'react', chatId: EV.chatId, targetId: '563', emoji: '🤝' }]);
+    expect(stripped).toEqual([]);
+    // …and the second live case, verbatim
+    expect(parseReplyActions('"d d" is just a stray/typo ping — a light acknowledgment is enough./react #525 👀', EV).prose)
+      .toBe('"d d" is just a stray/typo ping — a light acknowledgment is enough.');
+  });
+
+  // The weld does NOT loosen the "impossible to fire by accident" bar: prose that MENTIONS a
+  // verb always has a space or a word character before the slash, never a full stop with
+  // nothing between. /ask is why this matters — its grammar takes the whole rest of the line,
+  // so a loose "anywhere in the line" rule would let ordinary prose fire the cross-chat limb.
+  it('a space, a word char or a backtick before the slash is still PROSE — the anti-accident bar is untouched', () => {
+    for (const line of [
+      'usa /react #12 👍',                              // a SPACE — how prose mentions a verb
+      'no me puedes /ask nada a nadie',                 // a SPACE, and /ask takes anything
+      'mira https://x.com/reply #12 hola',              // a WORD CHAR — a URL
+      'está en src/media foto.png',                     // a WORD CHAR — a path
+      'mis acciones son `/ask` lo que sea',             // a BACKTICK — a card quoting itself
+    ]) {
+      const r = parseReplyActions(line, EV);
+      expect(r.prose).toBe(line);
+      expect(r.run).toEqual([]);
+      expect(r.stripped).toEqual([]);
+    }
+  });
+
+  it('a MALFORMED welded fragment leaves the line WHOLE — a half-shaped command is prose, never a guess', () => {
+    const line = 'no tengo ningún react aquí./react #12 👍 y algo más';   // 3 tokens → react is malformed
+    const { prose, run, stripped } = parseReplyActions(line, EV);
+    expect(prose).toBe(line);
+    expect(run).toEqual([]); expect(stripped).toEqual([]);
+  });
+
   it('an unknown slash verb stays prose (only the reserved verbs are action-family)', () => {
     const { prose, run, stripped } = parseReplyActions('/help me out', EV);
     expect(prose).toBe('/help me out');
@@ -196,6 +240,21 @@ describe('partialProse — what a PARTIAL may safely stream', () => {
 
   it('strips COMPLETED action lines mid-stream while later prose keeps flowing', () => {
     expect(partialProse('Nice\n/react #7 🔥\nby', EV)).toBe('Nice\nby');
+  });
+
+  // A WELDED action must be withheld from the FIRST character of the weld (2026-09-01). The
+  // delivered message is APPEND-ONLY (sender.RETAINED_SEAM), so a frame that once showed
+  // '…me./react #563' would keep showing it after finish() stripped it — which is exactly the
+  // text the operator read in the chat. Every frame therefore lands on the SAME prose.
+  it('withholds a WELDED action from the first character of the weld — the frame never shrinks', () => {
+    const head = 'no hace falta responder de mi parte.';
+    for (const tail of ['', '/', '/r', '/re', '/react', '/react ', '/react #563', '/react #563 🤝'])
+      expect(partialProse(head + tail, EV)).toBe(head);
+  });
+
+  it('does not withhold a weld that can never become an action — ordinary prose still flows', () => {
+    expect(partialProse('mira https://x.com/rep', EV)).toBe('mira https://x.com/rep');   // word char before the slash
+    expect(partialProse('listo./usr/bin', EV)).toBe('listo./usr/bin');                   // welded, but never action-shaped
   });
 
   it('is a pure prefix walk: the streamed prose only ever grows toward the finished prose', () => {
@@ -332,12 +391,29 @@ describe('createReplyActions.execute — confined + fail-closed', () => {
     expect(logs.some((l) => /no advice channel/i.test(l))).toBe(true);
   });
 
+  // `ran` (operator 2026-09-01): the spine writes ONE transcript stage-direction per limb, and
+  // the record must say what a limb DID, not what was attempted — so execute reports back the
+  // ones that landed, on the same truthiness every branch already logged on.
+  it('execute reports the limbs that LANDED — a refused one stays out of `ran`', async () => {
+    const bridge = {
+      react: async () => true,
+      editOwn: async () => true,
+      wasSentByUs: async () => false,      // the /edit target is NOT one of ours → fail-closed
+    };
+    const actions = createReplyActions({ bridge, onLog: () => {} });
+    const { run } = parseReplyActions('/react #12 👍\n/edit #13 nope', EV);
+    expect(run).toHaveLength(2);
+    const { ran } = await actions.execute(run, [], EV);
+    expect(ran.map((a) => a.type)).toEqual(['react']);
+  });
+
   it('malformed lines are logged, never executed; a throwing limb never crashes execute', async () => {
     const logs = [];
     const b = fakeBridge({ react: () => { throw new Error('boom'); } });
     const a = mk(b, { onLog: (m) => logs.push(m) });
     const { run, stripped } = a.parse('/react\n/react #7 👍', EV);   // one malformed, one that throws
-    await expect(a.execute(run, stripped, EV, { being: 'e' })).resolves.toBeUndefined();
+    // …and a limb that THREW is not reported as having landed: `ran` stays empty (2026-09-01).
+    await expect(a.execute(run, stripped, EV, { being: 'e' })).resolves.toEqual({ ran: [] });
     expect(logs.some((l) => /stripped malformed action/.test(l))).toBe(true);
     expect(logs.some((l) => /action react failed: boom/.test(l))).toBe(true);
   });

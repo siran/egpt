@@ -2525,6 +2525,16 @@ describe('transcriptionForNoteId (transcript.md reuse parser)', () => {
     expect(transcriptionForNoteId(doc, '40')).toBe(null);            // the reply-target tag is NOT the entry id
   });
 
+  // The 2026-09-01 line shape: the reply reference moved into the front of the BODY as
+  // `[re #<rid>] `. transcript-log.bodyForMessageId strips it back off, so the voice marker is
+  // still the first thing in the body here — without that strip this returns null and a voice
+  // note that was a REPLY silently stops being reusable.
+  it('reads the NEW `#<id>: [re #<rid>] (voice transcription…)` shape', () => {
+    const doc = 'An@[Bea].wa (14:32) #100: [re #40] (voice transcription) the answer\n\n';
+    expect(transcriptionForNoteId(doc, '100')).toBe('the answer');
+    expect(transcriptionForNoteId(doc, '40')).toBe(null);
+  });
+
   it('returns null for a text (non-voice) entry, and for a missing id', () => {
     const doc = transcriptDocLike('Bea@[Bea].wa (14:32) #tn-1: just text, no marker');
     expect(transcriptionForNoteId(doc, 'tn-1')).toBe(null);   // id present but not a voice note

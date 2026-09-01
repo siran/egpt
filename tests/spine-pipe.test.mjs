@@ -5,7 +5,7 @@
 import { describe, it, expect } from 'vitest';
 import { createSpine } from '../src/spine/spine.mjs';
 import { createReplyActions } from '../src/spine/reply-actions.mjs';
-import { createSender } from '../src/spine/sender.mjs';
+import { createSender, RETAINED_SEAM } from '../src/spine/sender.mjs';
 
 // --- fakes: each port/service as a tiny recorder ------------------------------
 function fakeBridge() {
@@ -46,7 +46,14 @@ function fakeGating({ receive = true, reply = true, send = 'mode', surface } = {
 
 // ONE append per call: the spine records the inbound at its single ingestion point
 // (`log(ev)`) and each answering turn appends its own reply (`log(ev, reply)`).
-function fakeTranscript() { return { entries: [], log(ev, reply) { this.entries.push({ ev, reply }); } }; }
+// `actions` — the limb stage-directions the spine appends after execute (operator 2026-09-01).
+function fakeTranscript() {
+  return {
+    entries: [], actions: [],
+    log(ev, reply) { this.entries.push({ ev, reply }); },
+    logAction(ev, action, opts) { this.actions.push({ ev, action, ...opts }); },
+  };
+}
 const inbounds = (t) => t.entries.filter((e) => e.reply == null);
 const replies = (t) => t.entries.filter((e) => e.reply != null);
 // sender wraps the bridge — a real round-trip: inbound via bridge, outbound via bridge.
@@ -626,6 +633,7 @@ describe('spine — /reply handled BEFORE posting (no visible token, no delete+r
   // MID-LINE).
   function buildStreaming({ replyText, partials = [] }) {
     const bridge = streamingBridge();
+    const transcript = fakeTranscript();
     const brain = {
       calls: [],
       async turn(being, ev, onPartial) {
@@ -639,11 +647,11 @@ describe('spine — /reply handled BEFORE posting (no visible token, no delete+r
       bridge, brain, store: fakeStore(),
       identity: fakeIdentity, router: fakeRouter, gating: fakeGating({}),
       sender: createSender({ bridge, bodyEmojiOf: () => '🐶', labelOf: () => 'egpt' }),
-      transcript: fakeTranscript(), heartbeats: fakeHeartbeats(), actions,
+      transcript, heartbeats: fakeHeartbeats(), actions,
       clock: { now: () => 1000 },
     });
     spine.start();
-    return { spine, bridge, brain };
+    return { spine, bridge, brain, transcript };
   }
 
   // (1) The token — or ANY prefix of it — must never reach the chat. The partials below
@@ -696,7 +704,7 @@ describe('spine — /reply handled BEFORE posting (no visible token, no delete+r
     await bridge.emit(MSG);
 
     expect(bridge.streams[0].deleted).toBe(false);                    // nothing is ever deleted
-    expect(bridge.streams[0].finals).toEqual(['<received silence (error?)>']);              // action-only → placeholder resolves to the silence mark
+    expect(bridge.streams[0].finals).toEqual(['⚙️ processing command (/reply)']);           // limb-only → the bridge names what it is doing (2026-09-01), never a silence it did not receive
     expect(bridge.sent).toHaveLength(1);
     expect(bridge.sent[0]).toMatchObject({ chat: MSG.chatId, text: 'sounds good', opts: { replyTo: '157204' } });
   });
@@ -752,8 +760,42 @@ describe('spine — /reply handled BEFORE posting (no visible token, no delete+r
 
     expect(bridge.streams[0].init).toBe('⏳ Thinking…');
     expect(bridge.streams[0].frames).toEqual([]);      // no half-typed token ever rendered
-    expect(bridge.streams[0].finals).toEqual(['<received silence (error?)>']);   // resolved to the silence mark, never deleted — the limb IS the response
+    expect(bridge.streams[0].finals).toEqual(['⚙️ processing command (/react)']);   // resolved to what the bridge is DOING, never deleted — the limb IS the response
     expect(bridge.sent).toHaveLength(0);
+  });
+
+  // THE LIVE TURN OF 2026-09-01, whole (operator's own SPOILER transcript, twice that morning).
+  // Three faults in one reply: the model's REASONING message and its ACTION message reached the
+  // spine glued into one accumulated line ("…from me./react #563 🤝"), so the command streamed
+  // into the chat as prose and — the message being append-only — stayed there; the CLI's own
+  // `result` was the LAST message alone, so the turn went action-only and the placeholder
+  // resolved with "<received silence (error?)>" beside prose a human had already read; and
+  // nothing anywhere recorded that a reaction had happened.
+  it('the welded command never reaches the chat, the bridge says it is processing it, and the transcript records the reaction', async () => {
+    const prose = "This is agreeing with something #560 — a simple affirmation doesn't need a reply from me.";
+    const { bridge, transcript } = buildStreaming({
+      replyText: '/react #563 🤝',                                     // the CLI's `result`: the LAST assistant message
+      partials: [prose, prose + '/', prose + '/react #563', prose + '/react #563 🤝'],   // …the ACCUMULATED train, welded
+    });
+    await bridge.emit(MSG);
+
+    for (const f of bridge.streams[0].frames) expect(f).not.toContain('/react');   // (1) never streamed
+    expect(bridge.streams[0].finals).toEqual([prose + RETAINED_SEAM + '⚙️ processing command (/react)']);
+    expect(bridge.streams[0].finals[0]).not.toContain('/react #563');              // (1) never delivered
+    expect(bridge.streams[0].finals[0]).not.toContain('received silence');         // (2) never beside prose
+    expect(transcript.actions).toHaveLength(1);                                    // (3) the reaction IS an event now
+    expect(transcript.actions[0].action).toMatchObject({ type: 'react', targetId: '563', emoji: '🤝' });
+    expect(transcript.actions[0].being).toBe('e');
+    // the RAW reply is still what the record keeps — nothing the model emitted is lost
+    expect(replies(transcript)[0].reply.text).toBe('/react #563 🤝');
+  });
+
+  it('a weld in the SETTLED reply is executed and stripped: the prose is delivered, the command is gone', async () => {
+    const { bridge, transcript } = buildStreaming({ replyText: 'Listo, ya lo miré./react #7 👍' });
+    await bridge.emit(MSG);
+
+    expect(bridge.streams[0].finals).toEqual(['Listo, ya lo miré.']);   // prose delivered, no command, no seam
+    expect(transcript.actions.map((a) => a.action.type)).toEqual(['react']);
   });
 
   // THE STABLE MESSAGE (operator 2026-08-28): "the message is replaced for a 'final' message,

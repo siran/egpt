@@ -4,7 +4,7 @@
 // identity, NEVER hardcoded. This test is what keeps the shape from drifting
 // back to a baked-in '.wa' or to bracket-less / node-less variants.
 import { describe, it, expect } from 'vitest';
-import { formatDispatchLine, splitSurfaceTag, reactionAction, editAction, isLiveStreamFrame } from '../src/dispatch-line.mjs';
+import { formatDispatchLine, splitSurfaceTag, reactionAction, editAction, limbAction, isLiveStreamFrame } from '../src/dispatch-line.mjs';
 import { createSender } from '../src/spine/sender.mjs';
 
 // 2026-06-11 17:21 UTC — fixed so the HH:MM (UTC) assertion is deterministic.
@@ -22,12 +22,25 @@ describe('formatDispatchLine — canonical shape', () => {
       .toBe('Ron@[HFM].wa (17:21): x');   // empty id → omitted
   });
 
-  // Reply reference (operator 2026-07-04): a quoted reply renders `re #<id>` after the
-  // msg id so the model sees which message is being answered (and can target it back
-  // via a /reply emit action). Omitted when absent (back-compat).
-  it('renders re #<id> for a reply, after the msg id; omitted when absent', () => {
+  // Reply reference (operator 2026-07-04): a quoted reply names the message being answered
+  // (which the model can target back via a /reply emit action). Omitted when absent.
+  //
+  // IT OPENS THE BODY, BRACKETED (operator 2026-09-01, reading his own live transcript). The
+  // id is followed STRAIGHT by the `:` that separates head from body, and the reference moves
+  // in front of the body instead of floating bare between the id and the colon — same
+  // information, one head shape for every line, parseable by eye. His words: "An@[SPOILER
+  // ALERT: chat de EyAy].wa (08:26) #204778: [re #204774] no podría estar más de acuerdo".
+  it('the reply reference opens the BODY as [re #<id>], with the colon straight after the id', () => {
     expect(formatDispatchLine({ senderName: 'Bea', chatName: 'HFM', node: 'wa', body: 'gracias', ts: TS, msgId: '157267', replyToId: '157204' }))
-      .toBe('Bea@[HFM].wa (17:21) #157267 re #157204: gracias');
+      .toBe('Bea@[HFM].wa (17:21) #157267: [re #157204] gracias');
+    // the operator's own line, verbatim
+    expect(formatDispatchLine({
+      senderName: 'An', chatName: 'SPOILER ALERT: chat de EyAy', node: 'wa',
+      body: 'no podría estar más de acuerdo', ts: Date.UTC(2026, 8, 1, 8, 26), msgId: '204778', replyToId: '204774',
+    })).toBe('An@[SPOILER ALERT: chat de EyAy].wa (08:26) #204778: [re #204774] no podría estar más de acuerdo');
+    // no msg id, still a reply → the reference is all the body carries ahead of the text
+    expect(formatDispatchLine({ senderName: 'Bea', chatName: 'HFM', node: 'wa', body: 'gracias', ts: TS, replyToId: '157204' }))
+      .toBe('Bea@[HFM].wa (17:21): [re #157204] gracias');
     expect(formatDispatchLine({ senderName: 'Bea', chatName: 'HFM', node: 'wa', body: 'gracias', ts: TS, msgId: '157267' }))
       .toBe('Bea@[HFM].wa (17:21) #157267: gracias');
     // a stage-direction never carries the ↩ tag (it references its own target)
@@ -73,6 +86,33 @@ describe('formatDispatchLine — stage-direction (reactions etc.)', () => {
       senderName: 'An', chatName: 'HFM', node: 'wa', ts: TS, msgId: '142379',
       stageDirection: true, body: reactionAction({ emoji: '👍', targetId: '142378', snippet: 'ron is bold person' }),
     })).toBe('[ An@[HFM].wa (17:21): reacted 👍 to #142378 "ron is bold person" ]');
+  });
+});
+
+// A LIMB (operator 2026-09-01): the being drove an action from INSIDE its own reply and the
+// transcript said nothing about it — the 🤝 landed in WhatsApp, the record showed only the
+// settled message. A limb is a meta-event, so it takes the stage-direction shape the bridge
+// already writes for everyone else's reactions — and for /react, the SAME words.
+describe('limbAction — an action the being drove from inside its own reply', () => {
+  it('a /react renders in the SAME vocabulary as an observed reaction — one line shape for both', () => {
+    expect(limbAction({ type: 'react', targetId: '563', emoji: '🤝' })).toBe('reacted 🤝 to #563');
+    expect(limbAction({ type: 'react', targetId: '563', emoji: '🤝' })).toBe(reactionAction({ emoji: '🤝', targetId: '563' }));
+  });
+
+  it('names the other limbs, and invents no vocabulary for one it does not know', () => {
+    expect(limbAction({ type: 'reply', targetId: '9', text: 'hola' })).toBe('replied to #9 "hola"');
+    expect(limbAction({ type: 'edit', targetId: '9', text: 'fixed' })).toBe('edited #9 → "fixed"');
+    expect(limbAction({ type: 'media', path: 'media/a.png', caption: 'mira' })).toBe('sent media media/a.png "mira"');
+    expect(limbAction({ type: 'ask', question: '¿sigo?' })).toBe('asked the advice channel "¿sigo?"');
+    expect(limbAction({ type: 'nope' })).toBe(null);
+    expect(limbAction()).toBe(null);
+  });
+
+  it('wraps as the stage-direction the bridge already writes for a reaction', () => {
+    expect(formatDispatchLine({
+      senderName: 'don', chatName: 'SPOILER ALERT: chat de EyAy', node: 'wa', ts: TS,
+      stageDirection: true, body: limbAction({ type: 'react', targetId: '563', emoji: '🤝' }),
+    })).toBe('[ don@[SPOILER ALERT: chat de EyAy].wa (17:21): reacted 🤝 to #563 ]');
   });
 });
 

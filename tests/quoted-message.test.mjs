@@ -113,7 +113,7 @@ describe('a reply resolves its QUOTED message into the prompt', () => {
     await bridge.emit({ ...CHAT, msgId: '177211', ts: T + 20 * 60_000, body: ASK, replyToId: '177210' });
 
     const inbound = transcript.entries.filter((e) => e.reply == null);
-    expect(inbound[1].ev.line).toBe(`Ana@[grupo].wa (22:20) #177211 re #177210: ${ASK}`);   // the recorded bytes are untouched
+    expect(inbound[1].ev.line).toBe(`Ana@[grupo].wa (22:20) #177211: [re #177210] ${ASK}`);   // the recorded bytes are the 2026-09-01 shape, and only that
     expect(count(transcript.text, QUOTED)).toBe(1);      // exactly the one original entry
   });
 
@@ -236,6 +236,19 @@ describe('bodyForMessageId — one walk over transcript.md, by message id', () =
     expect(bodyForMessageId('', 'x')).toBe(null);
     expect(bodyForMessageId(null, 'x')).toBe(null);
     expect(bodyForMessageId(doc, null)).toBe(null);
+  });
+
+  // THE 2026-09-01 LINE SHAPE: the reply reference moved out from between the id and the colon
+  // into the front of the BODY as `[re #<id>] `. It is a HEAD field, so this reader strips it
+  // back off — what a caller gets as "the recorded body" is byte-identical across the move,
+  // which is what keeps promptWithQuotedMessage's quote and beeper.transcriptionForNoteId's
+  // voice-marker test working. The OLD shape stays readable: transcript.md is append-only.
+  it('reads the NEW `#<id>: [re #<rid>] body` shape, and the reference is head, never body', () => {
+    const d = 'An@[Bea].wa (14:35) #100: [re #42] la respuesta\n\n';
+    expect(bodyForMessageId(d, '100')).toBe('la respuesta');      // identical to the old ` re #42:` shape
+    expect(bodyForMessageId(d, '42')).toBe(null);                 // still never the reply TARGET
+    // a body that merely starts with a bracket is untouched
+    expect(bodyForMessageId('An@[Bea].wa (14:36) #101: [nota] ojo', '101')).toBe('[nota] ojo');
   });
 
   it('is not fooled by a coincidental "(HH:MM) #id" inside a LATER entry body', () => {

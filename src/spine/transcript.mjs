@@ -17,7 +17,7 @@ import { recordMemberStat, isoFromMs, LOBBY_SLUG } from '../conversations-state.
 import { Room } from '../room-core.mjs';
 import { transcriptAppend, replyLine } from '../transcript-log.mjs';
 import { renderFrontMatter } from '../transcript-meta.mjs';
-import { isLiveStreamFrame, liveFrameIncrement, streamIncrement } from '../dispatch-line.mjs';
+import { isLiveStreamFrame, liveFrameIncrement, streamIncrement, formatDispatchLine, limbAction } from '../dispatch-line.mjs';
 import { appendFile as fsAppendFile, mkdir as fsMkdir } from 'node:fs/promises';
 import { existsSync as fsExistsSync } from 'node:fs';
 
@@ -186,6 +186,42 @@ export function createTranscript({
       if (!inc) return chain;
       chain = chain.then(() => appendStream(ev, inc, { being }));
       return chain;
+    },
+
+    /**
+     * ONE LIMB, as an EVENT (operator 2026-09-01: "if model replies '/react ...', we need to put
+     * in transcript its reaction … so that there is legible record of what happened"). A being
+     * drove an action from inside its own reply, the 🤝 landed in WhatsApp, and the record held
+     * only the raw reply line — so reading back what happened meant resolving per-account ids by
+     * hand. The line takes the stage-direction shape the bridge already writes for everyone
+     * else's reactions and edits ('[ don@[chat].wa (08:27): reacted 🤝 to #563 ]'), because it IS
+     * the same kind of thing: a meta-event, not an utterance.
+     *
+     * Written AFTER execution, once per limb that LANDED (spine.mjs reads execute()'s `ran`), so
+     * the record never claims a react the bridge refused. Same target()/closeBlock/front-matter
+     * path every other write takes — the service stays the ONE ingestion point. NO stats: a limb
+     * is this node's own action, not a member's message.
+     * @param {object} ev      the InboundEvent the turn was answering (supplies chat + surface)
+     * @param {object} action  one entry of createReplyActions' parsed `run`
+     */
+    async logAction(ev, action, { being = defaultKey } = {}) {
+      try {
+        if (!ev?.chatId) return false;
+        const body = limbAction(action);
+        if (!body) return false;                                   // an unknown limb invents no vocabulary
+        const t = await target(ev);
+        if (!t) return false;
+        await mkdir(t.room.baseDir(), { recursive: true });
+        const fpath = t.room.transcriptPath;
+        await chain;
+        await closeBlock(fpath);
+        const line = formatDispatchLine({ senderName: labelOf(being), ...lineContext(ev), timeZone, ts: now(), body, stageDirection: true });
+        await appendFile(fpath, transcriptAppend({
+          existing: existsSync(fpath), body: line,
+          name: ev.chatName, surface: t.surface, slug: t.slug, chatId: t.chatId, persona,
+        }), 'utf8');
+        return true;
+      } catch (e) { onLog(`limb ${ev?.surface}/${ev?.chatId}: ${e?.message ?? e}`); return false; }
     },
 
     /**

@@ -204,10 +204,34 @@ describe('sender — the message never shrinks (append-only living mirror)', () 
     await out.finish({ text: '' }, { surface: true });              // meant to surface, nothing came back
     expect(bridge.streams[0].finals).toEqual([`lo estoy mirando${RETAINED_SEAM}⚠️ no reply (turn failed/empty)`]);
 
+    // …BUT THE SILENCE MARK NEVER LANDS BESIDE PROSE (operator 2026-09-01, live in the SPOILER
+    // chat: "…doesn't need a reply from me. — ↓ reply — <received silence (error?)>"; his
+    // diagnosis: "the bridge acted on it but forgot that the reply was non empty"). The mark
+    // means one thing only — the bridge got NOTHING from the model — so appending it under a
+    // seam to text a human has already read asserts a silence that visibly did not happen.
+    // With something shown there is nothing left to resolve: the placeholder settles on exactly
+    // what was read, the ⏳ comes off, nothing is erased and nothing is invented.
     const out2 = sender.open('!c', { being: 'e' });
     out2.update('lo estoy mirando');
     await out2.finish({ text: '' }, { surface: false });            // withheld with nothing from the model
-    expect(bridge.streams[1].finals).toEqual([`lo estoy mirando${RETAINED_SEAM}<received silence (error?)>`]);
+    expect(bridge.streams[1].finals).toEqual(['lo estoy mirando']);
+  });
+
+  // A LIMB-ONLY turn is not silence either — the model spoke, in commands (operator 2026-09-01:
+  // "then bridge can say 'processing command' (/react is a command), something like that, so
+  // that there is legible record of what happened").
+  it('a LIMB-ONLY turn says it is PROCESSING the command — never the silence mark', async () => {
+    const bridge = fakeBridge();
+    const sender = createSender({ bridge });
+    const out = sender.open('!c', { being: 'e' });
+    await out.finish({ text: '' }, { surface: false, commands: ['react'] });
+    expect(bridge.streams[0].finals).toEqual(['⚙️ processing command (/react)']);
+
+    const out2 = sender.open('!c', { being: 'e' });
+    out2.update('lo estoy mirando');
+    await out2.finish({ text: '' }, { surface: false, commands: ['react', 'reply'] });
+    // append-only: what was read stays, the marker lands under the seam
+    expect(bridge.streams[1].finals).toEqual([`lo estoy mirando${RETAINED_SEAM}⚙️ processing commands (/react /reply)`]);
   });
 
   it('a send failure ends the message with ❌ WITHOUT eating a divergent narration', async () => {

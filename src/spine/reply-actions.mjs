@@ -10,6 +10,23 @@
 // a slash mid-sentence is just prose. The parse is PURE (parseReplyActions); the
 // executor (createReplyActions.execute) is the only effectful half.
 //
+// ...PLUS THE MISSING LINE BREAK (operator 2026-09-01, live TWICE that morning in the SPOILER
+// chat). A being's reply reached the humans reading "...a simple affirmation doesn't need a
+// reply from me./react #563 🤝": the model DID put the action on its own line, but the token
+// stream that feeds the live message hands this parser the turn's ACCUMULATED text, and a CLI
+// concatenates two consecutive assistant messages with NO separator — so the reasoning and the
+// command arrived welded at the sentence's full stop and a line-anchored parse could not see the
+// action at all. The delivered message is APPEND-ONLY (sender.RETAINED_SEAM), so that one frame
+// stayed on screen forever. A '/' welded DIRECTLY onto sentence-ending punctuation is therefore
+// read as a LOST NEWLINE and the parser restores it (WELD_AFTER_SENTENCE below).
+//
+// Deliberately NOT "an action anywhere in the line": /ask takes the whole rest of the line as
+// its question and /reply takes any text after an id, so recognising them mid-sentence would let
+// ordinary prose ("no me puedes /ask nada a nadie") FIRE the one cross-chat limb. The weld is the
+// tightest rule that covers the live shape without touching the "impossible to fire by accident"
+// bar: real prose that mentions a command always has a SPACE or a word character before the slash
+// ("usa /react ...", "see /usr/bin", "https://x.com/reply"), never a full stop with nothing between.
+//
 // FAIL-CLOSED (the operator's hard constraint):
 //   - every action executes ONLY in E's OWN conversation (ev.chatId) — the emit
 //     syntax carries NO chat target, so cross-chat is impossible by construction;
@@ -81,6 +98,19 @@ function unsafePath(p) {
   if (isAbsolute(s) || /^[a-zA-Z]:[\\/]/.test(s) || /^[\\/]/.test(s)) return 'absolute path';
   if (s.split(/[\\/]/).some((seg) => seg === '..')) return 'parent traversal (..)';
   return null;
+}
+
+// A LOST NEWLINE (operator 2026-09-01 — see the module docstring). A '/' glued straight onto the
+// end of a sentence, with nothing between, is not prose about a command: nobody writes
+// "me./react", and the two live cases were exactly that ("...from me./react #563 🤝",
+// "...is enough./react #525 👀"). The three excluded neighbours are what keeps the anti-accident
+// bar intact — WHITESPACE before the slash is how prose actually mentions a verb, a WORD
+// CHARACTER is a path or a URL ("src/media a.png", "https://x.com/reply #1 hi"), and a backtick
+// or quote is a card quoting itself ("mis acciones son `/react`, `/reply`").
+const WELD_AFTER_SENTENCE = /[.!?…]/;
+function* weldStarts(line) {
+  const s = String(line ?? '');
+  for (let i = 1; i < s.length; i++) if (s[i] === '/' && WELD_AFTER_SENTENCE.test(s[i - 1])) yield i;
 }
 
 // Parse ONE action line's arguments into an executable action, or a malformed
@@ -161,6 +191,21 @@ function parseOne(verb, args, ev, opts = {}) {
   }
 }
 
+// The welded action inside ONE line: { head (the prose before it), r (the parseOne verdict) },
+// or null when the line carries none. Only a WELL-FORMED (or demoting) tail splits the line —
+// see the anti-accident note in parseReplyActions.
+function weldedAction(line, ev, opts) {
+  const s = String(line ?? '');
+  for (const i of weldStarts(s)) {
+    const m = ACTION_LINE.exec(s.slice(i));
+    const verb = m ? m[1].toLowerCase() : null;
+    if (!verb || !ACTION_VERBS.has(verb)) continue;          // not a verb of ours — keep looking
+    const r = parseOne(verb, m[2] ?? '', ev, opts);
+    return (r.ok || r.demote != null) ? { head: s.slice(0, i), r } : null;
+  }
+  return null;
+}
+
 /**
  * PURE split of a reply into { prose, run, stripped }.
  *   prose    — the reply with every action-family line removed (what gets surfaced), plus the
@@ -176,15 +221,28 @@ export function parseReplyActions(text, ev = {}, opts = {}) {
   const run = [];
   const stripped = [];
   for (const line of String(text ?? '').split('\n')) {
+    // The historical rule first: the WHOLE line is the action.
     const m = ACTION_LINE.exec(line.trim());
     const verb = m ? m[1].toLowerCase() : null;
-    if (!verb || !ACTION_VERBS.has(verb)) { proseLines.push(line); continue; }
-    const r = parseOne(verb, m[2] ?? '', ev, opts);
-    // DEMOTE (redundant /reply): the action is dropped but its TEXT is content — it becomes
-    // prose VERBATIM, never re-parsed, so an action-shaped payload can't smuggle a live limb.
-    if (r.ok) run.push(r.action);
-    else if (r.demote != null) proseLines.push(r.demote);
-    else stripped.push({ raw: line.trim(), reason: r.reason });
+    if (verb && ACTION_VERBS.has(verb)) {
+      const r = parseOne(verb, m[2] ?? '', ev, opts);
+      // DEMOTE (redundant /reply): the action is dropped but its TEXT is content — it becomes
+      // prose VERBATIM, never re-parsed, so an action-shaped payload can't smuggle a live limb.
+      if (r.ok) run.push(r.action);
+      else if (r.demote != null) proseLines.push(r.demote);
+      else stripped.push({ raw: line.trim(), reason: r.reason });
+      continue;
+    }
+    // ...then the LOST NEWLINE (weldStarts). RESTORING it is the whole treatment: the sentence
+    // becomes its own prose line and the command becomes the line it was always meant to be, so
+    // ONE code path decides prose/run/demote for both shapes and the stream cannot disagree with
+    // the delivered text. A welded fragment that is MALFORMED is left ALONE — the line stays
+    // prose, whole, exactly as before — because a half-shaped command is indistinguishable from
+    // prose about one, and executing on a guess is the accident this module exists to prevent.
+    const w = weldedAction(line, ev, opts);
+    if (!w) { proseLines.push(line); continue; }
+    proseLines.push(w.head);
+    if (w.r.ok) run.push(w.r.action); else proseLines.push(w.r.demote);
   }
   // Collapse the blank lines a removed action leaves behind; trim the ends.
   const prose = proseLines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
@@ -246,8 +304,20 @@ export function partialProse(partial, ev = {}, opts = {}) {
   const s = String(partial ?? '');
   const cut = s.lastIndexOf('\n');
   const tail = cut < 0 ? s : s.slice(cut + 1);
-  const withhold = couldBecomeAction(tail) && !isDemotingReply(tail, opts);
-  return parseReplyActions(withhold ? s.slice(0, cut + 1) : s, ev, opts).prose;
+  // WHERE the trailing line's action could start: the line itself (the historical rule), else a
+  // WELD inside it (2026-09-01). Everything from that point is withheld until it terminates, so
+  // "...from me./", "...from me./re", "...from me./react #563" and the finished
+  // "...from me./react #563 🤝" all stream the SAME "...from me." and the frame never SHRINKS
+  // when the line completes. A shrink is not cosmetic here: the message is append-only, so a
+  // frame that once showed the command would keep showing it after finish() stripped it — which
+  // is exactly the text the operator read in the chat.
+  let hold = -1;
+  if (couldBecomeAction(tail) && !isDemotingReply(tail, opts)) hold = tail.length - tail.trimStart().length;
+  else for (const i of weldStarts(tail)) {
+    const frag = tail.slice(i);
+    if (couldBecomeAction(frag) && !isDemotingReply(frag, opts)) { hold = i; break; }
+  }
+  return parseReplyActions(hold < 0 ? s : s.slice(0, cut + 1 + hold), ev, opts).prose;
 }
 
 /**
@@ -270,28 +340,33 @@ export function createReplyActions({ bridge, bridgeOf = null, bodyEmojiOf = () =
 
   async function runMedia(a, ev, being) {
     const convDir = await resolveConvDir(ev);
-    if (!convDir) { onLog(`media: no conversation dir for ${ev.surface}/${ev.chatId} — skipped`); return; }
+    if (!convDir) { onLog(`media: no conversation dir for ${ev.surface}/${ev.chatId} — skipped`); return false; }
     const abs = resolvePath(convDir, a.path);
     const rel = relPath(convDir, abs);
     // Belt-and-suspenders confinement: the resolved path must stay INSIDE convDir.
-    if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) { onLog(`media: "${a.path}" escapes the conversation dir — rejected (fail-closed)`); return; }
-    if (!existsSync(abs)) { onLog(`media: file not found "${a.path}" in ${convDir} — skipped`); return; }
+    if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) { onLog(`media: "${a.path}" escapes the conversation dir — rejected (fail-closed)`); return false; }
+    if (!existsSync(abs)) { onLog(`media: file not found "${a.path}" in ${convDir} — skipped`); return false; }
     const ok = await bridgeForBeing(being).sendMedia?.(ev.chatId, abs, { caption: a.caption, bodyEmoji: bodyEmojiOf(being), label: labelOf(being) });
     if (!ok) onLog(`media: send failed "${a.path}"`);
+    return !!ok;
   }
 
+  // Returns whether the limb LANDED. The SAME truthiness every branch already logged on, promoted
+  // to a return value (operator 2026-09-01) so the caller can record in the transcript what the
+  // limb DID rather than what was merely attempted — see execute's `ran`.
   async function runOne(a, ev, being) {
     switch (a.type) {
       case 'react': {
         const ok = await bridgeForBeing(being).react?.(ev.chatId, a.targetId, a.emoji);
         if (!ok) onLog(`react: ${a.emoji} → #${a.targetId} failed`);
-        return;
+        return !!ok;
       }
       case 'reply': {
         // A persona-stamped quote-reply (reuses the bridge's send + replyTo threading).
         const r = await bridgeForBeing(being).send?.(ev.chatId, a.text, { replyTo: a.targetId, bodyEmoji: bodyEmojiOf(being), label: labelOf(being) });
-        if (r?.blocked || r == null) onLog(`reply: → #${a.targetId} not delivered`);
-        return;
+        const ok = !(r?.blocked || r == null);
+        if (!ok) onLog(`reply: → #${a.targetId} not delivered`);
+        return ok;
       }
       case 'ask': {
         // The ONE sanctioned cross-chat emit. Delegated to the advice service, which
@@ -300,16 +375,16 @@ export function createReplyActions({ bridge, bridgeOf = null, bodyEmojiOf = () =
         // Fail-closed inside _askAdvice when no advice channel is configured.
         const ok = await _askAdvice({ ev, question: a.question, being });
         if (!ok) onLog(`ask: not delivered (no advice channel or post failed): ${JSON.stringify(String(a.question).slice(0, 120))}`);
-        return;
+        return !!ok;
       }
       case 'media': return runMedia(a, ev, being);
       case 'edit': {
-        if (!(await bridgeForBeing(being).wasSentByUs?.(ev.chatId, a.targetId))) { onLog(`edit: #${a.targetId} is not one of our messages — rejected (fail-closed)`); return; }
+        if (!(await bridgeForBeing(being).wasSentByUs?.(ev.chatId, a.targetId))) { onLog(`edit: #${a.targetId} is not one of our messages — rejected (fail-closed)`); return false; }
         const ok = await bridgeForBeing(being).editOwn?.(ev.chatId, a.targetId, a.text, { bodyEmoji: bodyEmojiOf(being), label: labelOf(being) });
         if (!ok) onLog(`edit: #${a.targetId} failed`);
-        return;
+        return !!ok;
       }
-      default: onLog(`action: unknown type ${a?.type}`);
+      default: onLog(`action: unknown type ${a?.type}`); return false;
     }
   }
 
@@ -321,13 +396,21 @@ export function createReplyActions({ bridge, bridgeOf = null, bodyEmojiOf = () =
      * Execute the parsed actions. `stripped` lines are logged (never run). Every
      * action targets ev.chatId (the emit syntax has no cross-chat target); errors are
      * swallowed to onLog so a bad limb can never crash the turn.
+     *
+     * Returns { ran } — the actions that LANDED, in order (operator 2026-09-01: "we need to put
+     * in transcript its reaction"). The spine writes one stage-direction per entry, so the record
+     * says what a limb DID, not what was merely attempted: a react the bridge refused, an /edit on
+     * someone else's message, a /media file that isn't there all log and stay OUT of `ran`.
+     * Additive — every existing caller ignored the (previously undefined) return value.
      */
     async execute(run = [], stripped = [], ev = {}, { being = defaultKey } = {}) {
       for (const s of stripped) onLog(`stripped malformed action (${s.reason}): ${JSON.stringify(String(s.raw).slice(0, 120))}`);
+      const ran = [];
       for (const a of run) {
-        try { await runOne(a, ev, being); }
+        try { if (await runOne(a, ev, being)) ran.push(a); }
         catch (e) { onLog(`action ${a?.type} failed: ${e?.message ?? e}`); }
       }
+      return { ran };
     },
   };
 }

@@ -75,8 +75,20 @@ export function formatDispatchLine({ senderName, chatName, node, surface, body, 
   // Reply reference (operator 2026-07-04): when this message QUOTES/replies to another,
   // `re #<id>` names the answered message so the model can respond to it directly —
   // including via a /reply emit action. Omitted when absent (back-compat).
-  const replyTag = (replyToId != null && String(replyToId).trim()) ? ` re #${String(replyToId).trim()}` : '';
-  return `${sender}@[${nm}].${nd} (${tstr})${idTag}${replyTag}: ${body ?? ''}`;
+  //
+  // IT RIDES THE BODY, BRACKETED (operator 2026-09-01, reading his own live SPOILER transcript:
+  // the old shape "…wa (08:26) #204778 re #204774: no podría…" is hard to read, because a bare
+  // `re #…` floats between the id and the `:` and the head's length changes with it). Same
+  // information, one head shape for every line — the id is followed STRAIGHT by the separator,
+  // and the reference opens the body as `[re #<id>] `, the way `(not surfaced) `/`(streaming) `
+  // already open a body (transcript-log.replyLine):
+  //   An@[SPOILER ALERT: chat de EyAy].wa (08:26) #204778: [re #204774] no podría estar más de acuerdo
+  // Every reader keyed on this shape keeps working: _ENTRY_HEAD/beingReplyRe stop at the
+  // timestamp, and bodyForMessageId's id capture stops at the `:` either way — it strips the
+  // prefix back off (transcript-log._REPLY_REF) so "the recorded body" stays byte-identical to
+  // what it was before the move. Edit-block indentation (editAction) is untouched.
+  const replyRef = (replyToId != null && String(replyToId).trim()) ? `[re #${String(replyToId).trim()}] ` : '';
+  return `${sender}@[${nm}].${nd} (${tstr})${idTag}: ${replyRef}${body ?? ''}`;
 }
 
 // The body of a reaction stage-direction (MESSAGES-FIRST-CLASS-PLAN Phase 2):
@@ -105,6 +117,39 @@ export function editAction({ targetId, oldText, newText } = {}) {
   const o = String(oldText ?? '').replace(/\s+/g, ' ').trim();
   const n = String(newText ?? '').replace(/\s+/g, ' ').trim();
   return `edited #${id}\n    - ${o}\n    + ${n}`;
+}
+
+// The body of a LIMB stage-direction (operator 2026-09-01): the being drove an action from
+// INSIDE its own reply (`/react #563 🤝`, src/spine/reply-actions.mjs) and the transcript said
+// nothing about it. Live that day, twice, in the SPOILER chat: the 🤝 landed on the right
+// message in WhatsApp, but the record showed only the settled message text — so reading back
+// what happened meant resolving ids by hand across two accounts. The operator's target: "if
+// model replies '/react ...', we need to put in transcript its reaction … so that there is
+// legible record of what happened".
+//
+// A limb is a meta-EVENT, exactly like the reaction/edit the bridge already records for
+// everyone else, so it takes the SAME stage-direction wrapper (formatDispatchLine
+// stageDirection:true) and — for /react — the SAME vocabulary (reactionAction above), so one
+// kind of line means "a reaction happened" whoever caused it.
+//
+// THE ID IS THIS NODE'S OWN, and that needs no apology: Beeper message ids are PER-ACCOUNT
+// (measured 2026-09-01 — the same chat is localChatID 13 on one node and in the 69,000s on
+// another; a raw payload carries only id/chatID/accountID/senderID/senderName/timestamp/
+// linkedMessageID, so no cross-account message id exists). The model emitted #563 because #563
+// is what THIS node's transcript calls that message, and this line is written into THAT
+// transcript — recording the action as an EVENT is precisely what makes a shared id unnecessary.
+// Pure + exported so the shape is test-locked beside the two above.
+export function limbAction(action = {}) {
+  const snip = (s) => String(s ?? '').replace(/\s+/g, ' ').trim().slice(0, 60);
+  const id = String(action?.targetId ?? '').trim();
+  switch (action?.type) {
+    case 'react': return reactionAction({ emoji: action.emoji, targetId: id });
+    case 'reply': return `replied to #${id}${snip(action.text) ? ` "${snip(action.text)}"` : ''}`;
+    case 'edit': return `edited #${id}${snip(action.text) ? ` → "${snip(action.text)}"` : ''}`;
+    case 'media': return `sent media ${snip(action.path)}${snip(action.caption) ? ` "${snip(action.caption)}"` : ''}`;
+    case 'ask': return `asked the advice channel${snip(action.question) ? ` "${snip(action.question)}"` : ''}`;
+    default: return null;   // an unknown limb invents no vocabulary — the raw reply line already holds it
+  }
 }
 
 // The LIVE-FRAME marker. src/spine/sender.mjs `update()` stamps it onto every
