@@ -267,9 +267,37 @@ export function createWarmCliSession(options = {}) {
         // at `result`. The final `result`-event resolution below is unchanged/authoritative.
         try { pending.onUpdate?.(pending.verboseBlocks.join('\n\n')); } catch { /* caller's onUpdate */ }
       }
+      // A MESSAGE BOUNDARY IS INFORMATION (operator 2026-09-01, live TWICE that morning in the
+      // SPOILER chat). An agentic turn is MANY assistant messages (reason -> tool_use ->
+      // tool_result -> reason -> ...) and `pending.acc += d.text` ran them together with NOTHING
+      // between, so the humans read "...a simple affirmation doesn't need a reply from me./react
+      // #563 🤝": the model HAD put its limb on its own line, the accumulator welded it onto the
+      // previous message's full stop, and the line-anchored parse (reply-actions.mjs) could not
+      // see the action at all. 51df9d8 taught THAT parser to read a '/' glued to sentence-ending
+      // punctuation as a lost newline; this restores the newline at the seam where it is actually
+      // lost, so the repair becomes a backstop instead of the only defence — and so a boundary
+      // that lands anywhere (mid-sentence, after a comma, before ordinary prose) is carried too.
+      //
+      // ONE '\n', and only BETWEEN two runs of text:
+      //   - acc still only ever APPENDS, so the record (spine.mjs onPartial -> transcript.logStream
+      //     -> streamIncrement) reconstructs unchanged — the 2026-08-27 ruling's "every character
+      //     present, in order, exactly once" holds, the separator simply being one of them now.
+      //   - a BOOLEAN, not a counter: several tool_use-only messages between two reasons yield ONE
+      //     break, not one per call.
+      //   - consumed only by a delta that actually CARRIES text, so a '\n' is never written with
+      //     nothing behind it; and skipped while acc is empty, so the turn's FIRST message gains no
+      //     leading separator and a single-message turn stays byte-identical to before.
+      //   - set on the `assistant` event without caring whether the CLI emits it before or after
+      //     that message's own deltas — either ordering leaves exactly one pending break per
+      //     message transition, which is why this is keyed on the event the module already trusts
+      //     (see pushVerboseBlocks) rather than on a `message_start` nothing here has ever seen.
+      // verboseThinking is untouched: it builds its text from verboseBlocks and its onUpdate is
+      // fed by that branch alone, so acc's separator never reaches it.
+      if (ev.type === 'assistant' && ev.message?.content && pending) pending.msgBreak = true;
       if (ev.type === 'stream_event' && ev.event?.type === 'content_block_delta') {
         const d = ev.event.delta;
         if (d?.type === 'text_delta' && typeof d.text === 'string' && pending) {
+          if (d.text && pending.msgBreak) { if (pending.acc) pending.acc += '\n'; pending.msgBreak = false; }
           pending.acc += d.text;
           if (!verboseThinking) { try { pending.onUpdate?.(pending.acc); } catch { /* caller's onUpdate */ } }
         }
@@ -319,7 +347,7 @@ export function createWarmCliSession(options = {}) {
       if (pending) throw new Error('warm-cli: a turn is already in flight (the pool must serialize per key)');
       if (!proc) spawnProc();
       return new Promise((resolve, reject) => {
-        pending = { resolve, reject, onUpdate, acc: '', verboseBlocks: [], settled: false };
+        pending = { resolve, reject, onUpdate, acc: '', msgBreak: false, verboseBlocks: [], settled: false };
         try { proc.stdin.write(userLine(message)); } catch (e) { failPending(e); }
       });
     },

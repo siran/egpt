@@ -326,6 +326,129 @@ describe('warm-cli-session — verboseThinking (operator 2026-08-29, wren\'s "fu
   });
 });
 
+// ── THE MESSAGE BOUNDARY (operator 2026-09-01) ──────────────────────────────────────────
+//
+// The LIVE failure, twice that morning in the SPOILER chat: a being's reply reached the
+// humans as "...a simple affirmation doesn't need a reply from me./react #563 🤝". The model
+// put its limb on its own line; the turn's accumulator ran two consecutive assistant messages
+// together with NOTHING between, so the line-anchored parse in reply-actions.mjs saw one line
+// and no action — and the delivered message being append-only, that frame stayed on screen.
+// 51df9d8 repaired it at the PARSER (a '/' welded onto sentence-ending punctuation is read as
+// a lost newline) and said explicitly that the accumulator was still welding. This is the cure
+// at the seam. Not a ccode quirk: codex-cli-session has the same accumulator-vs-result shape.
+//
+// `messages` is the turn's assistant messages in order: a STRING is a text message (streamed
+// as two deltas, then mirrored by its own `assistant` event — the order a real ccode turn
+// uses), an object { tool } is a tool_use-only message (an `assistant` event, a tool_result on
+// a `user` event, and no text delta at all). `result` is what the CLI settles with, which for
+// a real agentic turn is only the LAST message — the other half of the disagreement.
+function fakeClaudeMessages(messages, { result = null, sessionId = 'sess-multi' } = {}) {
+  const spawn = () => {
+    const proc = new EventEmitter();
+    proc.stdout = new EventEmitter(); proc.stdout.setEncoding = () => {};
+    proc.stderr = new EventEmitter(); proc.stderr.setEncoding = () => {};
+    proc.kill = () => {};
+    proc.stdin = {
+      write: () => setImmediate(() => {
+        const emit = (o) => proc.stdout.emit('data', JSON.stringify(o) + '\n');
+        const delta = (text) => emit({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } });
+        emit({ type: 'system', subtype: 'init', session_id: sessionId });
+        let last = '';
+        for (const m of messages) {
+          if (typeof m !== 'string') {
+            emit({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't', name: m.tool, input: { command: 'ls -la' } }] } });
+            emit({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't', content: 'DIRLISTING' }] } });
+            continue;
+          }
+          // Split on CODE POINTS, never UTF-16 units — the live case ends in 🤝 and a
+          // half-emoji delta would be testing the fake, not the session.
+          const cps = Array.from(m);
+          const half = Math.ceil(cps.length / 2);
+          delta(cps.slice(0, half).join(''));
+          delta(cps.slice(half).join(''));
+          emit({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: m }] } });
+          last = m;
+        }
+        emit({ type: 'result', subtype: 'success', result: result ?? last });
+      }),
+      end: () => {},
+    };
+    return proc;
+  };
+  return { spawn };
+}
+
+const PROSE = "Un abrazo — a simple affirmation doesn't need a reply from me.";
+const LIMB = '/react #563 🤝';
+
+describe('warm-cli-session — consecutive assistant messages carry a boundary, not a weld (operator 2026-09-01)', () => {
+  it('THE LIVE CASE: two assistant messages in one turn stream with a newline between them', async () => {
+    const s = createWarmCliSession({ spawn: fakeClaudeMessages([PROSE, LIMB]).spawn });
+    const updates = [];
+    const r = await s.turn('gracias', (t) => updates.push(t));
+    s.close();
+    const streamed = updates[updates.length - 1];
+    expect(streamed).toBe(`${PROSE}\n${LIMB}`);
+    expect(streamed).not.toContain('me./react');           // the weld the operator read, verbatim
+    // The POINT of the boundary: the limb is a LINE again, which is all the line-anchored
+    // parse in reply-actions.mjs ever needed to see it (51df9d8's weld repair is now a backstop).
+    expect(streamed.split('\n')).toEqual([PROSE, LIMB]);
+    // UNCHANGED by this commit, and the other half of the disagreement: ev.result still wins
+    // at `result` and still carries only the LAST message.
+    expect(r.text).toBe(LIMB);
+  });
+
+  it('every onUpdate value still monotonically extends the previous one (acc only ever APPENDS)', async () => {
+    const s = createWarmCliSession({ spawn: fakeClaudeMessages([PROSE, LIMB]).spawn });
+    const updates = [];
+    await s.turn('gracias', (t) => updates.push(t));
+    s.close();
+    // What transcript.logStream/streamIncrement reconstructs from, and what sender.mjs's
+    // absorb() refuses to seal a seam over: a pure append, separator included.
+    expect(updates[0]).toBe(Array.from(PROSE).slice(0, Math.ceil(Array.from(PROSE).length / 2)).join(''));
+    for (let i = 1; i < updates.length; i++) expect(updates[i].startsWith(updates[i - 1])).toBe(true);
+  });
+
+  it('the FIRST message of a turn gains NO leading separator', async () => {
+    const s = createWarmCliSession({ spawn: fakeClaudeMessages([PROSE, LIMB]).spawn });
+    const updates = [];
+    await s.turn('gracias', (t) => updates.push(t));
+    s.close();
+    for (const u of updates) expect(u.startsWith('\n')).toBe(false);
+    expect(updates[updates.length - 1].startsWith('Un abrazo')).toBe(true);
+  });
+
+  it('a SINGLE-message turn is byte-identical to before — no separator anywhere', async () => {
+    const s = createWarmCliSession({ spawn: fakeClaudeMessages([PROSE]).spawn });
+    const updates = [];
+    const r = await s.turn('hola', (t) => updates.push(t));
+    s.close();
+    const cps = Array.from(PROSE);
+    const head = cps.slice(0, Math.ceil(cps.length / 2)).join('');
+    expect(updates).toEqual([head, PROSE]);                // exactly the two deltas' running concat
+    expect(updates.join('')).not.toContain('\n');
+    expect(r.text).toBe(PROSE);
+  });
+
+  it('tool_use-only messages between two runs of text add ONE break, not one per call', async () => {
+    const s = createWarmCliSession({ spawn: fakeClaudeMessages([PROSE, { tool: 'Bash' }, { tool: 'Read' }, LIMB]).spawn });
+    const updates = [];
+    await s.turn('what is in the dir?', (t) => updates.push(t));
+    s.close();
+    expect(updates[updates.length - 1]).toBe(`${PROSE}\n${LIMB}`);   // the flag is a boolean, not a counter
+  });
+
+  it('verboseThinking is untouched — its text comes from verboseBlocks, never from acc', async () => {
+    const s = createWarmCliSession({ spawn: fakeClaudeMessages([PROSE, { tool: 'Bash' }, LIMB]).spawn, verboseThinking: true });
+    const updates = [];
+    const r = await s.turn('what is in the dir?', (t) => updates.push(t));
+    s.close();
+    expect(r.text).toBe(`${PROSE}\n\nBash(ls -la)\n\n${LIMB}`);      // the '\n\n' block join, as before
+    for (const u of updates) expect(u.startsWith('Un abrazo')).toBe(true);   // verbose-block previews only
+    expect(updates).not.toContain(`${PROSE}\n${LIMB}`);              // acc never reaches onUpdate in ON mode
+  });
+});
+
 // renderToolUse — the pure stub renderer (operator 2026-08-30: "reveal a bit more on what
 // inside the parenthesis of 'Bash()'"). Tested directly, not through a fake CLI, because
 // the rules that matter (headline field, whitespace, truncation, REDACTION) are per-block.
