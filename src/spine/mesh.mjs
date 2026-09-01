@@ -120,7 +120,7 @@ export function createMeshService({
   // lazy way as the visible ones. The ORIGIN re-wraps the nugget when it posts it, and the wrap
   // replaces rather than stacks markers, so the surfaced frame ends up naming the spine that put
   // it on the surface while the envelope's own provenance lines still name who answered.
-  const renderReply = (being, text) => makeWrapPersona({ bridgeSignatureOpen: cfg().bridge_signature_open ?? '', bridgeSignatureClose: cfg().bridge_signature_close ?? '', nodeName: cfg().node_name ?? '' })({ bodyEmoji: bodyEmojiOf(being), label: being }, text);
+  const renderReply = (being, text) => makeWrapPersona({ bridgeSignatureOpen: cfg().bridge_signature_open ?? '', bridgeSignatureClose: cfg().bridge_signature_close ?? '', nodeName: cfg().node_name ?? '' })({ bodyEmoji: bodyEmojiOf(being), label: labelOf(being) }, text);
   const timeoutMs = () => Number(cfg().mesh?.timeout_ms ?? 60_000) || 60_000;
 
   // Find the non-comment agent whose WAKE TOKEN matches `token` → { name, agent }
@@ -519,7 +519,7 @@ export function createMeshService({
         // "thinking". Only the idle frame changes — a real body renders exactly as before, and the
         // origin's mirror already posts whatever body arrives, so no protocol moved.
         const out = (!b || b === PLACEHOLDER || b === '🤔') ? (ahead > 0 ? QUEUED(ahead) : PLACEHOLDER)
-          : done ? renderReply(being, b) : personaStamp(bodyEmojiOf(being), being, b);
+          : done ? renderReply(being, b) : personaStamp(bodyEmojiOf(being), labelOf(being), b);
         // echo `via` (the forward trail) home so the origin can show the traceroute path.
         return encodeMesh({ by, body: out, re, post_id, via, done });
       };
