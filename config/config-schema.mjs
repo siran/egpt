@@ -1237,7 +1237,8 @@ export const CONFIG_SCHEMA = {
         OPTIONAL (operator 2026-08-31) — ONE MORE @token this agent wakes on,
         but ONLY where a named OTHER identity is not in the chat:
 
-          fallback_handle: { handle: e, unless_present: "+13472576794" }
+          fallback_handle: { handle: e,        unless_present: "+13472576794" }
+          fallback_handle: { handle: [d, don], unless_present: "+13472576794" }
 
         reads "also wake on @e, unless +1347… is a participant here". Where
         that identity IS present the token belongs to the OTHER account's
@@ -1253,8 +1254,14 @@ export const CONFIG_SCHEMA = {
 
         SHAPE: both keys REQUIRED. A declaration missing either is IGNORED —
         a \`handle\` with no \`unless_present\` would be an unconditional extra
-        wake token, which is what \`handles\` is for. Exactly one handle; a
-        list of conditional aliases has never been asked for.
+        wake token, which is what \`handles\` is for.
+        \`handle\` is a STRING **or a LIST** (operator 2026-09-01), the same
+        shape \`handles\` has: each node reaches the other's persona through a
+        relay agent gated by this token, and a persona answers to more than one
+        name — do's to \`d\` AND \`don\`, kg's to \`e\` AND \`egpt\`. Every token
+        in the list carries the SAME unless_present, because the list is ONE
+        peer agent's addresses, not several policies. Blank entries are dropped;
+        an all-blank list is the same as declaring no fallback.
         unless_present takes a PHONE NUMBER (compared on digits only, so any
         punctuation works) — the one identifier that means the same thing on
         both accounts — or a raw participant id (shortChatId-normalized, same

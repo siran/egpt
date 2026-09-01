@@ -537,6 +537,27 @@ describe('boot() — config-shape migration', () => {
     normal.app.stop();
   });
 
+  // THE REPLY GATE'S OWN LIST (operator 2026-09-01). The beeper limb's bare-reply gate — reply
+  // with nothing but a wake token to read that message back — is a DIFFERENT consumer from the
+  // mention gate, so it gets its own list: the persona's wake tokens ∪ the persona's OWN
+  // fallback_handle tokens. `wakeWords` is deliberately NOT widened: it feeds atE, computed
+  // BEFORE any membership guard exists to say otherwise, which is the two-spines-answer-one-
+  // mention bug the fallback exists to prevent (src/spine/router.mjs).
+  it('replyWakeWords = the persona\'s handles ∪ its fallback tokens; wakeWords stays the DECLARED handles alone', async () => {
+    const kg = await captureBoot({ agents: { egpt: { configuration: 'egpt', handles: ['ekg', 'egptkg'], fallback_handle: { handle: ['e', 'egpt'], unless_present: '+13472576794' }, default: true } } });
+    expect([...kg.opts.wakeWords].sort()).toEqual(['egptkg', 'ekg']);                       // the MENTION path — untouched
+    expect([...kg.opts.replyWakeWords].sort()).toEqual(['e', 'egpt', 'egptkg', 'ekg']);     // the REPLY gate — wider
+    kg.app.stop();
+    // A HALF-WRITTEN fallback is ignored here exactly as the router ignores it (fallbackWake).
+    const half = await captureBoot({ agents: { egpt: { configuration: 'egpt', handles: ['ekg'], fallback_handle: { handle: ['e'] }, default: true } } });
+    expect(half.opts.replyWakeWords).toEqual(['ekg']);
+    half.app.stop();
+    // …and a persona with NO fallback hands the two lists identical — byte-identical to before.
+    const plain = await captureBoot({ agents: AG });
+    expect([...plain.opts.replyWakeWords].sort()).toEqual([...plain.opts.wakeWords].sort());
+    plain.app.stop();
+  });
+
   // 👂 ECHO — REAL HRW ON A NODE-STABLE AUDIO HASH + ORDERED FAILOVER (operator 2026-07-24; revives HRW
   // over the static-priority stopgap): boot hands the bridge an echoPlan(noteKey) → { rank, winner } that
   // rendezvous-hashes the resolved peer set (transcription_service.echo.peer_priority, else legacy

@@ -654,7 +654,7 @@ describe('fallback_handle — a conditional wake token gated on membership (oper
   // unconditional extra wake token, which is what `handles:` is for; promoting a half-written
   // declaration to one is how a second spine starts answering. Fail closed.
   it('a half-written declaration is IGNORED, never half-honoured', async () => {
-    expect(fallbackWake(AGENTS.egpt)).toEqual({ handle: 'e', unlessPresent: '+13472576794' });
+    expect(fallbackWake(AGENTS.egpt)).toEqual({ handles: ['e'], unlessPresent: '+13472576794' });   // a plain string is a ONE-element list (operator 2026-09-01)
     expect(fallbackWake({ fallback_handle: { handle: 'e' } })).toBeNull();
     expect(fallbackWake({ fallback_handle: { unless_present: '+1347' } })).toBeNull();
     expect(fallbackWake({ fallback_handle: 'e' })).toBeNull();
@@ -705,6 +705,100 @@ describe('fallback_handle — a conditional wake token gated on membership (oper
     for (const body of ['@e hola', '@wren ping', 'just talking']) {
       expect(addressed(body, plain, { withFallback: true })).toEqual(addressed(body, plain));
     }
+  });
+});
+
+// ── `handle:` IS A LIST (operator 2026-09-01) — ONE peer agent's WHOLE address set behind ONE
+//    guard. kg and do reach each other's persona through a relay agent gated by fallback_handle,
+//    and a persona answers to more than one name: do's to `d` AND `don`, kg's to `e` AND `egpt`.
+//    With one token per fallback the operator got `@don` working in 1:1s while `@d` reached
+//    nobody — "'d' is not enabled as wake word on 1:1s" — because String(['d','don']) is the
+//    single token 'd,don', which nothing can ever type.
+//
+//    EVERY token carries the SAME unless_present, because the list is one peer's ADDRESSES, not
+//    several independent policies: one identity in the chat pre-empts the whole set. ──
+describe('fallback_handle — `handle:` accepts a LIST of tokens (operator 2026-09-01)', () => {
+  const PEER = '+13472576794';
+  // kg's shape for reaching do: a RELAY agent carrying do's persona's WHOLE address set, gated on
+  // do's own account being absent (where do IS present, do hears @d/@don directly and answers).
+  const AGENTS = {
+    egpt: { configuration: 'sonnet-high', handles: ['ekg', 'egptkg'], default: true },
+    // `handles: []` — a COMPLETE, empty declared list: this relay's ONLY addresses are the
+    // conditional ones, which is the shape a borrowed handle set has (nothing is unconditional).
+    don: { configuration: 'relay', relay_channel: 'Rodz', handles: [], fallback_handle: { handle: ['d', 'don'], unless_present: PEER } },
+  };
+  const chat = (body) => ({ body, surface: 'whatsapp', chatId: '!grp', senderId: 'op' });
+  const seam = (answer) => { const asked = []; return { asked, fn: async (identity) => { asked.push(identity); return answer; } }; };
+  const route = async (body, answer = false, agents = AGENTS) => {
+    const s = seam(answer);
+    const r = await createRouter({ getAgents: () => agents, defaultBeing: 'egpt', isPresent: s.fn }).resolve(chat(body));
+    return { r, asked: s.asked };
+  };
+
+  it('REPRODUCE-FIRST: @d reaches the relay where the peer is absent (before, only @don did — `d` reached nobody)', async () => {
+    const { r, asked } = await route('@d hola');
+    expect(r.being).toBeNull();                 // a relay agent: forwarded, not answered locally
+    expect(r.mesh.being).toBe('don');
+    expect(asked).toEqual([PEER]);              // …after asking EXACTLY the one declared identity
+  });
+
+  it('the OTHER token of the same list still works — one list, not a replacement', async () => {
+    const { r } = await route('@don hola');
+    expect(r.mesh.being).toBe('don');
+  });
+
+  it('EVERY token in the list carries the SAME guard: peer present ⇒ neither @d nor @don wakes it', async () => {
+    for (const body of ['@d hola', '@don hola']) {
+      const { r, asked } = await route(body, true);
+      expect(r.being, body).toBe('egpt');       // dropped exactly as if the @token never matched
+      expect(r.mesh, body).toBeUndefined();
+      expect(asked, body).toEqual([PEER]);
+    }
+  });
+
+  it('both tokens ride THE ONE matcher, each carrying the guard (no parallel scan)', () => {
+    expect(addressed('@d hola', AGENTS, { withFallback: true }))
+      .toEqual([{ name: 'don', agent: AGENTS.don, atStart: true, anywhere: true, unlessPresent: PEER }]);
+    expect(addressed('@don hola', AGENTS, { withFallback: true }))
+      .toEqual([{ name: 'don', agent: AGENTS.don, atStart: true, anywhere: true, unlessPresent: PEER }]);
+    // …and each inherits every protection a declared handle has (bare form, mid-sentence, glued)
+    expect(addressed('d hola', AGENTS, { withFallback: true }).map((h) => h.name)).toEqual(['don']);
+    expect(addressed('please @D look', AGENTS, { withFallback: true }).map((h) => h.name)).toEqual(['don']);
+    expect(addressed('mail me@d.com', AGENTS, { withFallback: true })).toEqual([]);
+    expect(addressed('@d hola', AGENTS)).toEqual([]);   // still OPT-IN
+  });
+
+  it('blank entries are dropped; an ALL-blank list is the same as NO fallback (fail closed)', async () => {
+    expect(fallbackWake({ fallback_handle: { handle: ['', ' ', 'd'], unless_present: PEER } })).toEqual({ handles: ['d'], unlessPresent: PEER });
+    expect(fallbackWake({ fallback_handle: { handle: [], unless_present: PEER } })).toBeNull();
+    expect(fallbackWake({ fallback_handle: { handle: ['', '  '], unless_present: PEER } })).toBeNull();
+    expect(fallbackWake({ fallback_handle: { handle: ['d', 'd', 'D'], unless_present: PEER } })).toEqual({ handles: ['d'], unlessPresent: PEER });
+    expect(fallbackWake({ fallback_handle: { handle: ['d'] } })).toBeNull();   // still BOTH fields required
+    const blank = { egpt: { handles: ['ekg'], default: true }, don: { relay_channel: 'Rodz', handles: [], fallback_handle: { handle: ['', ' '], unless_present: PEER } } };
+    const { r, asked } = await route('@d hola', false, blank);
+    expect(r.being).toBe('egpt');
+    expect(asked).toEqual([]);   // no token entered the vocabulary, so nothing asked about membership
+  });
+
+  it('a DECLARED handle claims ONE token of the list without disarming the others', async () => {
+    const clash = { ...AGENTS, dd: { handles: ['d'] } };   // some other agent owns @d outright
+    expect((await route('@d hola', false, clash)).r.being).toBe('dd');
+    expect((await route('@don hola', false, clash)).r.mesh.being).toBe('don');   // the rest of the list is untouched
+  });
+
+  // ── THE REGRESSION LOCK: a plain STRING handle — the live config on BOTH nodes today — must
+  //    resolve byte-identically, list support or not. This is the change's main risk. ──
+  it('REGRESSION: a plain-STRING handle is a one-element list and routes identically', async () => {
+    const str = { egpt: { handles: ['ekg'], default: true }, don: { relay_channel: 'Rodz', handles: [], fallback_handle: { handle: 'don', unless_present: PEER } } };
+    const one = { egpt: { handles: ['ekg'], default: true }, don: { relay_channel: 'Rodz', handles: [], fallback_handle: { handle: ['don'], unless_present: PEER } } };
+    // (the `agent` ride-along is the fixture object itself, so compare the matcher's FINDINGS)
+    const found = (body, ag) => addressed(body, ag, { withFallback: true }).map(({ agent, ...rest }) => rest);
+    for (const body of ['@don hola', '@d hola', '@ekg hola', 'don hola', '@nobody hi', 'just talking']) {
+      expect(await route(body, false, str), body).toEqual(await route(body, false, one));
+      expect(found(body, str), body).toEqual(found(body, one));
+    }
+    expect((await route('@don hola', false, str)).r.mesh.being).toBe('don');
+    expect((await route('@d hola', false, str)).r.being).toBe('egpt');   // a string is ONE token — `d` is not in it
   });
 });
 

@@ -2257,7 +2257,7 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
     expect(fake.uploads).toHaveLength(0);                                        // no audio sent
     expect(fake.posts.find((p) => p.text === '🔊 reading…')).toBeFalsy();        // no ack — synthesis path never entered
     const turn = incoming.find((i) => i.from.msgKey === 'reply-img');
-    expect(turn.text).toBe("Describe what you see in the message you're replying to.");   // substituted, not bare "@e"
+    expect(turn.text).toBe("@e Describe what you see in the message you're replying to.");   // substituted, keeping the trigger token at the head (operator 2026-09-01)
     expect(turn.from.atEAnywhere).toBe(true);                                    // wake still recognized (computed from the ORIGINAL bare text)
     expect(turn.from.atEStart).toBe(true);
   });
@@ -2272,7 +2272,7 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
     expect(synthesize.calls).toBe(0);                                            // the multi-line body still matches at line-start
     expect(fake.uploads).toHaveLength(0);
     const turn = incoming.find((i) => i.from.msgKey === 'reply-vid');
-    expect(turn.text).toBe("Describe what you see in the message you're replying to.");
+    expect(turn.text).toBe("@e Describe what you see in the message you're replying to.");
   });
 
   // BARE FORM ACCEPTED TOO (operator 2026-08-10): unlike @ev voice-out (which needs '@' to avoid
@@ -2395,6 +2395,105 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
     expect(fake.deletes.some((d) => d.messageID === ack.confirmedID)).toBe(true);
     expect(fake.deletes.some((d) => d.messageID === 'reply-throw')).toBe(false);
     expect(incoming.find((i) => i.from.msgKey === 'reply-throw').from.atEStart).toBe(true);
+  });
+
+  // ── THE REPLY GATE HAS ITS OWN VOCABULARY (operator 2026-09-01) ───────────────────────────
+  // This gate and the MENTION gate are two DIFFERENT consumers of what used to be one list.
+  // When `e` became kg's `fallback_handle` instead of a declared handle (2026-08-31) it left
+  // `wakeWords` — and with it this gate — so replying `e` to a voice note started doing nothing
+  // and only @ekg/@egptkg worked. The fix is a SECOND list for THIS gate (the persona's wake
+  // tokens ∪ its OWN fallback tokens), never a wider `wakeWords`: `wakeWords` feeds atE, which is
+  // computed BEFORE any membership guard exists to say otherwise, so widening it would have kg
+  // claim a mention owned by do's account and revive the two-spines-answer-one-mention bug
+  // (src/spine/router.mjs, "AND THIS IS WHY `wakeWords` IS LEFT ALONE"). This gate can safely see
+  // more because it is a different question: it requires the WHOLE reply to be nothing but the
+  // token, and it answers "read this back", not "take a turn".
+  const KG_WAKE = ['ekg', 'egptkg'];              // kg's DECLARED handles — the MENTION path's list
+  const KG_REPLY_WAKE = ['ekg', 'egptkg', 'e'];   // …∪ its fallback_handle token — THIS gate's list
+
+  it('REPRODUCE-FIRST: replying `e` to a VOICE NOTE reads the transcript back (before: nothing — `e` had left wakeWords)', async () => {
+    const doc = transcriptDoc(voiceLine('vn-fb', 'hola que tal'));
+    const { incoming } = await startBridge({ readTranscript: async () => doc, wakeWords: KG_WAKE, replyWakeWords: KG_REPLY_WAKE });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-fb', text: 'e', isSender: true, linkedMessageID: 'vn-fb' })] });
+    await waitFor(() => fake.posts.some((p) => p.text === '👂 hola que tal'));
+    expect(fake.posts.find((p) => p.text === '👂 hola que tal').replyToMessageID).toBe('vn-fb');   // a NEW message on the ORIGINAL note
+    expect(fake.edits).toHaveLength(0);                                                            // the trigger is never touched
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'sentinel-fb', text: 'plain human line' })] });
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'sentinel-fb'));
+    expect(incoming.some((i) => i.from.msgKey === 'reply-fb')).toBe(false);   // substituted, never routed to E
+  });
+
+  it('the `@`-prefixed form of a fallback token works too — same gate, same both-forms rule as a declared handle', async () => {
+    const doc = transcriptDoc(voiceLine('vn-fb2', 'hola de nuevo'));
+    await startBridge({ readTranscript: async () => doc, wakeWords: KG_WAKE, replyWakeWords: KG_REPLY_WAKE });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-fb2', text: '@e', isSender: true, linkedMessageID: 'vn-fb2' })] });
+    await waitFor(() => fake.posts.some((p) => p.text === '👂 hola de nuevo'));
+  });
+
+  // ONE GATE, TWO BEHAVIOURS, chosen by WHAT IS QUOTED (operator 2026-09-01: "replying to 'e' to a
+  // text should read it then also. before it was 'ev', but we can reuse the 'e'"). The text branch
+  // is the SAME 2026-08-10 mirror above — no second synthesis path; only its vocabulary changed.
+  it('REPRODUCE-FIRST: replying `e` to a TEXT synthesizes that text and returns it as audio', async () => {
+    const synthesize = countingSynthesize();
+    const doc = transcriptDoc(textLine('tn-fb', 'hello there'));
+    const { incoming } = await startBridge({ readTranscript: async () => doc, synthesize, voice: 'ona', wakeWords: KG_WAKE, replyWakeWords: KG_REPLY_WAKE });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-fbtxt', text: 'e', isSender: true, linkedMessageID: 'tn-fb' })] });
+    await waitFor(() => fake.uploads.length === 1);
+    expect(synthesize.calls).toBe(1);
+    expect(synthesize.lastText).toBe('hello there');                          // verbatim — no model turn, no new content
+    const mediaPost = fake.posts.find((p) => p.attachment);
+    expect(mediaPost.replyToMessageID).toBe('tn-fb');                         // audio replies to the ORIGINAL quoted text
+    const ack = fake.posts.find((p) => p.text === '🔊 reading…');
+    await waitFor(() => fake.deletes.some((d) => d.messageID === ack.confirmedID));
+    expect(fake.deletes.some((d) => d.messageID === 'reply-fbtxt')).toBe(false);
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'sentinel-fbtxt', text: 'plain human line' })] });
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'sentinel-fbtxt'));
+    expect(incoming.some((i) => i.from.msgKey === 'reply-fbtxt')).toBe(false);
+  });
+
+  // ── THE LOCK THAT MATTERS: the wider list reaches THIS gate and NOTHING else. atE is still
+  //    computed from `wakeWords`, so a guarded token stays the ROUTER's to judge (it alone can
+  //    ask whether the peer account is in this chat). ──
+  it('LOCK: a fallback token never widens the MENTION path — a plain `e` line, and a reply-`e` that MISSES, both arrive atE=false', async () => {
+    const doc = transcriptDoc(textLine('unrelated-id', 'unrelated'));
+    const { incoming } = await startBridge({ readTranscript: async () => doc, wakeWords: KG_WAKE, replyWakeWords: KG_REPLY_WAKE });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'plain-e', text: 'e estás?', isSender: false, senderName: 'Bea' })] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-nohit', text: 'e', isSender: true, linkedMessageID: 'no-entry-for-this' })] });
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'reply-nohit'));
+    expect(incoming.find((i) => i.from.msgKey === 'plain-e').from.atEAnywhere).toBe(false);
+    const miss = incoming.find((i) => i.from.msgKey === 'reply-nohit');
+    expect(miss.from.atEAnywhere).toBe(false);   // the bridge claims nothing…
+    expect(miss.text).toBe('e');                 // …and the token survives into the body, so the router's guard CAN decide
+  });
+
+  // A MEDIA-ANNOUNCEMENT quote is the ONE sub-case of this gate that takes a real TURN, so the
+  // address token must stay in the body it hands on: the router (which can ask about membership)
+  // decides who describes the image, exactly as it decides every other guarded mention. Dropping
+  // the token — as the substitution used to — left a `mention`-mode chat (the default) with a
+  // describe instruction addressed to nobody, which is silence.
+  it('a MEDIA-announcement quote keeps the trigger token in the substituted body (the router, not the bridge, decides)', async () => {
+    const synthesize = countingSynthesize();
+    const doc = transcriptDoc(textLine('img-fb', '(image cat.png) [saved: media/20260901-abc-cat.png]'));
+    const { incoming } = await startBridge({ readTranscript: async () => doc, synthesize, voice: 'ona', wakeWords: KG_WAKE, replyWakeWords: KG_REPLY_WAKE });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-imgfb', text: '@e', isSender: true, linkedMessageID: 'img-fb' })] });
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'reply-imgfb'));
+    expect(synthesize.calls).toBe(0);
+    expect(fake.uploads).toHaveLength(0);
+    const turn = incoming.find((i) => i.from.msgKey === 'reply-imgfb');
+    expect(turn.text).toBe("@e Describe what you see in the message you're replying to.");
+    expect(turn.from.atEAnywhere).toBe(false);   // a guarded token is NOT claimed here — router.mjs's job
+  });
+
+  // ── THE REGRESSION LOCK: a node that configures no fallback hands no second list, and this
+  //    gate is then exactly `wakeWords` — byte-identical to before this existed. ──
+  it('REGRESSION: with NO replyWakeWords the gate IS `wakeWords` — `e` does nothing, a declared handle still reveals', async () => {
+    const doc = transcriptDoc(voiceLine('vn-reg', 'hola'));
+    const { incoming } = await startBridge({ readTranscript: async () => doc, wakeWords: KG_WAKE });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-reg', text: 'e', isSender: true, linkedMessageID: 'vn-reg' })] });
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'reply-reg'));
+    expect(fake.posts.some((p) => (p.text || '').startsWith('👂'))).toBe(false);   // not in the vocabulary → no substitution
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-reg2', text: 'ekg', isSender: true, linkedMessageID: 'vn-reg' })] });
+    await waitFor(() => fake.posts.some((p) => p.text === '👂 hola'));            // …a DECLARED handle is unaffected
   });
 });
 

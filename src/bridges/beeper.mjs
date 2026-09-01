@@ -216,6 +216,20 @@ export async function startBeeperBridge(opts = {}) {
     // produces one). Default EMPTY, unlike wakeWords above: silence-by-default, no network-wide or
     // map-key fallback — a node that configures nothing wakes on NO spoken alias.
     voiceWakeWords = [],
+    // THE BARE-REPLY GATE'S OWN VOCABULARY (operator 2026-09-01) — wakeWords ∪ the persona's
+    // `fallback_handle` tokens, computed by boot (src/spine/boot.mjs). A SECOND list because the
+    // gate below is a DIFFERENT consumer from the mention gate: `wakeWords` feeds mentionStatus →
+    // atE, stamped BEFORE any membership guard exists to say otherwise, so widening THAT would
+    // have this node claim a mention owned by the peer account's agent (src/spine/router.mjs,
+    // "AND THIS IS WHY `wakeWords` IS LEFT ALONE"). The reply gate asks a narrower question — the
+    // WHOLE reply must be nothing but the token — and answers "read this message back", not "take
+    // a turn", so a wider vocabulary is safe there and only there.
+    // THE LIVE GAP it closes: once `e` moved from kg's `handles:` to its `fallback_handle:`
+    // (2026-08-31) it left wakeWords and with it this gate, so replying `e` to a voice note did
+    // nothing and only `ekg`/`egptkg` read one back. Default null (or empty) → the gate IS
+    // `wakeWords`, byte-identical for a node that declares no fallback and for any caller that
+    // constructs this bridge directly.
+    replyWakeWords = null,
     // BARE-@wakeword-REPLY-TO-TEXT → SPOKEN mirror (operator 2026-08-10) of the voice-note
     // shortcut below: synthesize/voice reach createSpine (boot's `createSpine({ synthesize:
     // vx.synthesize, voice: vx.voice, ... })`) but not this limb, which needs its OWN TTS access
@@ -329,6 +343,10 @@ export async function startBeeperBridge(opts = {}) {
     transcribeCfg = null,
   } = opts;
   const token = beeperToken || process.env.BEEPER_ACCESS_TOKEN;
+  // The bare-reply gate's vocabulary (replyWakeWords above), resolved ONCE. Absent/empty ⇒ it IS
+  // `wakeWords` — the ONE list this gate has always read — so nothing changes for a node that
+  // declares no fallback_handle, nor for a caller that constructs this bridge directly.
+  const replyWake = (Array.isArray(replyWakeWords) && replyWakeWords.length) ? replyWakeWords : wakeWords;
   const audioCfg = transcribeCfg ?? media.audio_transcribe ?? {};
   const mediaDownloadPolicy = media.download ?? 'all';   // 'all' | 'images_docs' | 'off'
   // The 👂 echo's concentric WRAP — now the SHARED wrap every surface send renders through
@@ -1487,8 +1505,12 @@ export async function startBeeperBridge(opts = {}) {
     // the @ev voice-out override (which needs '@' to avoid matching the word "ev" INSIDE ordinary
     // prose), this gate already requires the WHOLE reply to be nothing but the wake-word, so a
     // bare form carries no meaningful false-positive risk of its own.
+    // …and the list it scans is `replyWake`, NOT `wakeWords` (operator 2026-09-01): this gate is a
+    // different consumer, see replyWakeWords at the top of this file. `st`/atE above stay on
+    // `wakeWords` — a fallback token is the ROUTER's to judge, because only it can ask whether the
+    // peer account is in this chat.
     const isReplyWakeWord = (w) => bareReply === `@${String(w).toLowerCase()}` || bareReply === String(w).toLowerCase();
-    if (replyToId && (!!msg.isSender || isAllowedUser(msg.senderID, acct)) && wakeWords.some(isReplyWakeWord)) {
+    if (replyToId && (!!msg.isSender || isAllowedUser(msg.senderID, acct)) && replyWake.some(isReplyWakeWord)) {
       const doc = await readTranscript(chatID, { chatName: info.title, network: acct });
       const t = transcriptionForNoteId(doc, replyToId);
       if (t) {
@@ -1529,7 +1551,15 @@ export async function startBeeperBridge(opts = {}) {
           // prose — synthesizing it verbatim would read the saved-path bookkeeping aloud as
           // garbage audio (operator 2026-08-10). Don't touch synthesize/sendMedia; instead swap
           // the bare wake-word for a vision instruction and fall through to a normal @e→E turn.
-          text = "Describe what you see in the message you're replying to.";
+          // THE TOKEN IS KEPT AT THE HEAD (operator 2026-09-01): this is the ONE branch of this
+          // gate that hands the message on as a real TURN, so whoever the token addresses must
+          // still be readable in the body. A guarded fallback token (`e` on kg) is never in
+          // `wakeWords`, so atE is false for it and the ROUTER's membership guard is the only
+          // thing that can decide whether this node answers — and it decides by scanning ev.body.
+          // Replacing the whole text dropped that token, which left the default `mention` mode
+          // with a describe instruction addressed to nobody: silence. A DECLARED handle already
+          // carried atE=true and is unaffected either way.
+          text = `${(text || '').trim()} Describe what you see in the message you're replying to.`;
           onLog(`beeper: 👁 quoted media announcement ↩${replyToId} [${info.title}] — falling through to @e→E with a describe instruction`);
         } else if (quotedText && !_VOICE_MARK.test(quotedText) && synthesize && voice) {
           const ack = await sendMessage(chatID, '🔊 reading…', { replyToMessageID: replyToId });

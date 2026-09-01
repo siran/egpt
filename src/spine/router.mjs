@@ -81,7 +81,8 @@ export function voiceWakeTokens(agent) {
 // one line to specify the handles that i expect to be answered by some other account (like
 // rodz); if that account is not present in the chat, fallback_handle can be used").
 //
-//   fallback_handle: { handle: e, unless_present: "+13472576794" }
+//   fallback_handle: { handle: e,          unless_present: "+13472576794" }
+//   fallback_handle: { handle: [d, don],   unless_present: "+13472576794" }   ← since 2026-09-01
 //
 // THE ARRANGEMENT it exists for: kg and do stopped sharing ONE Beeper account (2026-08-31). `do`
 // now runs on a SECOND account (+1 347…, "Rodz") and carries a relay agent `e` that forwards to
@@ -106,12 +107,30 @@ export function voiceWakeTokens(agent) {
 // `handle` with no `unless_present` would be an UNCONDITIONAL extra wake token — that is exactly
 // what `handles:` is for, and silently promoting a half-written fallback into one is precisely how
 // a second spine starts answering. Fail closed.
+//
+// `handle:` IS A STRING **OR A LIST** (operator 2026-09-01) — the same shape `handles:` has, for
+// the same reason: a persona answers to more than one name. Each node reaches the other's persona
+// through a relay agent gated by this token, so the fallback carries that peer persona's WHOLE
+// address set — do's answers to `d` AND `don`, kg's to `e` AND `egpt`. With ONE token per fallback
+// the operator got `@don` working in 1:1s while `@d` reached nobody ("'d' is not enabled as wake
+// word on 1:1s"), because String(['d','don']) is the single token 'd,don', which nothing can type.
+//
+// EVERY token in the list carries the SAME `unless_present`: the list is one peer agent's
+// ADDRESSES, not several independent policies, so one identity in the chat pre-empts the whole set
+// — which is exactly the guarantee that keeps one mention from waking two spines. A plain string
+// is a one-element list (the live config on both nodes today, byte-identical to before). Blank
+// entries are dropped and an all-blank list is the same as no fallback: `handle: []` cannot both
+// mean "wake on nothing" and mean something, so it takes the fail-closed reading, like a missing
+// field. (Contrast `handles: []`, which IS a meaningful empty list — there it is the COMPLETE wake
+// set, and saying "addressable by nothing" is a thing an operator may want; a fallback that wakes
+// on nothing is indistinguishable from not declaring one.)
 export function fallbackWake(agent) {
   const fb = agent?.fallback_handle;
   if (!fb || typeof fb !== 'object' || Array.isArray(fb)) return null;
-  const handle = String(fb.handle ?? '').trim().toLowerCase();
+  const handles = [...new Set((Array.isArray(fb.handle) ? fb.handle : [fb.handle])
+    .map((h) => String(h ?? '').trim().toLowerCase()).filter(Boolean))];
   const unlessPresent = String(fb.unless_present ?? '').trim();
-  return (handle && unlessPresent) ? { handle, unlessPresent } : null;
+  return (handles.length && unlessPresent) ? { handles, unlessPresent } : null;
 }
 
 // Who does this message address? The node's WHOLE addressable set — every agent's WAKE TOKENS
@@ -178,9 +197,16 @@ export function addressed(text, agents, { addressWithoutAt = true, isVoice = fal
     for (const [name, agent] of Object.entries(agents ?? {})) {
       if (!agent || typeof agent !== 'object' || name.startsWith('_')) continue;
       const fb = fallbackWake(agent);
-      if (!fb || byToken.has(fb.handle)) continue;
-      byToken.set(fb.handle, { name: name.toLowerCase(), agent });
-      guardOf.set(fb.handle, fb.unlessPresent);
+      if (!fb) continue;
+      // PER TOKEN (operator 2026-09-01, `handle:` is a list now): the yield-to-a-declared-handle
+      // rule is decided one alias at a time, so another agent owning `d` outright never disarms
+      // this agent's `don`. Each token lands in guardOf carrying the SAME unlessPresent — that
+      // shared guard is what makes the list ONE peer's address set rather than several handles.
+      for (const handle of fb.handles) {
+        if (byToken.has(handle)) continue;
+        byToken.set(handle, { name: name.toLowerCase(), agent });
+        guardOf.set(handle, fb.unlessPresent);
+      }
     }
   }
   const out = [];
