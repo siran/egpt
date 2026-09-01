@@ -49,7 +49,7 @@ import { createIdentityScope } from './identity-scope.mjs';
 // THE routing table's own two readings (operator 2026-08-31): which chats are TRANSIT (a
 // relay_channel, so not a conversation at all) and whether a frame was committed by ANOTHER
 // node's spine. Both derive from the SAME agents block / node identity every other gate reads.
-import { isRelayChannelChat, fromOtherNode } from './node-names.mjs';
+import { isRelayChannelChat } from './node-names.mjs';
 import { createIngest, lifecycleExit, isShellConnectMarker } from './ingest.mjs';
 import { createCommands } from './commands.mjs';
 import { createReplyActions } from './reply-actions.mjs';
@@ -1508,7 +1508,7 @@ export async function boot({
   // agent's relay_channel is TRANSIT (no record, no chat dispatch — the messages live in Beeper),
   // and a frame carrying ANOTHER node's signature wakes nobody here. Own-node frames are
   // untouched: the room relay's tunnel carries this node's own fromNode across deliberately.
-  const spine = createSpine({ bridge, bridgeOf: rawBridgeOf, brain, turns, ...services, commands, mesh, actions, advice, guard, guardOverride, stopSwitch, isSelfChat, isTransit: (ev) => isRelayChannelChat(getConfig(), ev), fromOtherNode: (ev) => fromOtherNode(getConfig(), ev), roomRelay, readTranscript, refreshConfig: heartbeatLoader.reload, radioRelay: radioRelay.relay, synthesize: vx.synthesize, voice: vx.voice, defaultBeing: defaultKey, labelOf, timeZone: transcriptTimeZone, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
+  const spine = createSpine({ bridge, bridgeOf: rawBridgeOf, brain, turns, ...services, commands, mesh, actions, advice, guard, guardOverride, stopSwitch, isSelfChat, isTransit: (ev) => isRelayChannelChat(getConfig(), ev), roomRelay, readTranscript, refreshConfig: heartbeatLoader.reload, radioRelay: radioRelay.relay, synthesize: vx.synthesize, voice: vx.voice, defaultBeing: defaultKey, labelOf, timeZone: transcriptTimeZone, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
   // Bind the advice service's answer-routing dispatch now that the spine exists: an
   // operator answer in the advice channel re-enters the pipe as a turn in the origin chat.
   advice.useDispatch(spine.handleInbound);

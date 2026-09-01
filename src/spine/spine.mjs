@@ -77,7 +77,7 @@ import { cleanForSpeech } from '../speech-clean.mjs';
  * @property {boolean} isSender    arrived on OUR OWN account (the operator, a peer node, or our own echo)
  * @property {boolean} isVoice     the body is a voice-note transcription
  * @property {{id: string, kind: string}|null} fromMember  the ROSTER MEMBER this turn was re-entered from by the room relay — a brain member whose reply this is, or the invited group whose message this is, tunnelled into the room it joined; null on every genuine inbound
- * @property {string|null} fromNode   WHICH NODE's spine committed this text. null = UNSIGNED (a human, the ordinary case); '' = SIGNED BY A NODE WE CANNOT NAME; otherwise the node name. Callers test `!= null`, NEVER truthiness — and "is it ANOTHER node" is a comparison against node_name ∪ node_alias (src/spine/node-names.mjs fromOtherNode), never mere presence
+ * @property {string|null} fromNode   WHICH NODE's spine committed this text. null = UNSIGNED (a human, the ordinary case); '' = SIGNED BY A NODE WE CANNOT NAME; otherwise the node name. Read by the guard (isHumanTurn: OUR OWN output is not a human turn) and by the room relay. It does NOT gate waking: cross-node and same-node inter-agent addressing is wanted (operator 2026-09-01), and loop safety is the guard's counter plus /rules, not a blanket refusal to hear another node
  * @property {{surface: string, chatId: string, chatName?: string}|null} origin  WHERE this message ACTUALLY ARRIVED, when a synthetic re-addressed it elsewhere (the room relay's wa-group tunnel). The address above is its IDENTITY (thread/warm process/queue/access_level); this is its PROVENANCE, read ONLY by the gates that ask "where did this arrive" (router.mjs's surface pin + fallback_handle roster question). null on every genuine inbound ⇒ those gates read ev itself
  * @property {string} [line]    the formatted dispatch line every brain sees, built once here (C7.6e)
  * @property {any}    raw       the bridge's original `from` payload
@@ -145,12 +145,6 @@ export function createSpine({
   // thread). Default false = a node with no relay channels is byte-identical to before.
   isTransit = () => false,
   // A BEING DOES NOT WAKE ON A FRAME ANOTHER NODE'S SPINE COMMITTED (operator 2026-08-31).
-  // OPTIONAL (ev) => boolean, boot-wired to src/spine/node-names.mjs's fromOtherNode — ev.fromNode
-  // compared against THIS node's own names (node_name ∪ node_alias). NOT `fromNode != null`: that
-  // means "some spine posted this" and includes our OWN synthetics (the room relay's tunnel carries
-  // fromNode across on purpose), which would silence multi-brain rooms. Default false = a message
-  // with no fromNode, and every un-wired caller, are byte-identical to before.
-  fromOtherNode = () => false,
   guardOverride = null,                // optional (surface, chatId) => { turns?, window? } | null — the conversation's per-channel guard override (conversations.yaml). Null = node defaults only.
   // RECENT CONTEXT read seam (operator 2026-07-26) — `(chatId, {chatName, network}) =>
   // Promise<string|null>`, the conversation's transcript.md. THE SAME function boot
@@ -664,7 +658,6 @@ export function createSpine({
     // message could produce in one place: the primary turn, fanOutExtras' other addressed agents,
     // the mesh forward, the auto dwell, and roomRelay.fanOut's drive of the brain-member tabs.
     // THE TEST IS "another node", never `fromNode != null` — see the seam's own note above.
-    if (fromOtherNode(ev)) return () => { note(`${ev.surface}/${ev.chatId}: frame committed by node "${ev.fromNode}" — recorded, no being woken`); };
 
     return () => dispatchChat({ ev, d, to, mention, meshTarget, targets, channel });
   }
