@@ -204,8 +204,13 @@ export function createSpine({
   //     a mesh envelope posted AS the operator is NON-human, so it counts toward the cap
   //     instead of resetting it (the 2026-06-19 hole a name-based counter missed). ---
   const guardChannel = (ev) => `${ev.surface}:${ev.chatId}`;
+  // THE envelope predicate — mesh.mjs owns the wire format, and this is the ONE way to ask.
+  // Read TWICE and only twice: by isHumanTurn's provenance gate just below (an envelope is not a
+  // human turn), and by handleFast's guard-channel derivation (an envelope carries no channel at
+  // all). Hoisted rather than repeated, because those two answers must never be able to disagree.
+  const isEnvelope = (ev) => !!mesh?.isEnvelope?.(ev);
   const humanTurn = (ev) => isHumanTurn(ev, {
-    isEnvelope: (e) => !!mesh?.isEnvelope?.(e),
+    isEnvelope,
     wasSentByUs: (e) => !!bridge.wasSentByUs?.(e.chatId, e.msgId),
   });
   // Is this message a LIFECYCLE command (/restart, /upgrade, /rewind)? The operator's
@@ -217,6 +222,10 @@ export function createSpine({
   // and auto-STOP the channel when the cap trips. The tripping turn still runs; the STOP
   // pauses the NEXT one (blocked() is checked at the top of every dispatch path).
   async function guardCountNonHuman(ev, channel) {
+    // NO CHANNEL, NO COUNT — an ENVELOPE (see handleFast). Without this the count would pile up
+    // under a literal `null` key shared by every relay channel on the node, and stopChannel(null)
+    // refuses it, so it could only ever log a stop that never happened.
+    if (channel == null) return;
     const override = guardOverride ? await Promise.resolve(guardOverride(ev.surface, ev.chatId)).catch(() => null) : null;
     const action = guard.noteBeing(channel, override);
     if (action === 'stop') { guard.stopChannel(channel); note(`guard: ${channel} auto-STOP — ${guard.countOf(channel)} consecutive non-human turns`); }
@@ -437,9 +446,53 @@ export function createSpine({
     // read for this message (gating, brainpool, transcription) sees the freshest scan.
     await refreshConfig?.();
     const ev = identity.build(msg);
-    // GUARD (C7.7): the channel is the conversation (surface + chatId). Resolved once here
+    // GUARD (C7.7): the channel is the CONVERSATION (surface + chatId). Resolved once here
     // for the safe-word + the loop counter inside classify; null when no guard is wired.
-    const channel = guard ? guardChannel(ev) : null;
+    //
+    // AN ENVELOPE CARRIES NO GUARD CHANNEL (live outage 2026-09-01). The counter is a LOOP
+    // detector resting on one assumption, written in stop-guard.mjs's own header: "a human turn
+    // resets the count, so normal conversation never trips it". On a RELAY CHANNEL that
+    // assumption is structurally false — every message there is an envelope, isHumanTurn
+    // correctly says an envelope is not a human turn, so the count only ever climbs. It was not
+    // a loop detector on the wire; it was a countdown to a permanent stop, and an unrecoverable
+    // one, because clearing it needs a `resume` typed in a machine-to-machine channel nobody
+    // watches. kg's egpt-mesh-do-kg auto-STOPped three times in one morning ("guard:
+    // whatsapp:EWlUhmXiFZTYGiKdbfRP stopped — mesh turn suppressed") and E fell silent in
+    // "perrito traduciones" — a chat the guard had never looked at. The guard was applied to the
+    // TRANSPORT instead of to the conversation.
+    //
+    // AND IT ASKS ABOUT THE MESSAGE, NEVER ABOUT THE CHAT — the one thing not to "simplify" back.
+    // `isTransit` (isRelayChannelChat, wired at boot) looks like the natural predicate here and is
+    // the WEAKER one: it matches the configured relay_channel NAME against ev.chatName/ev.chatId,
+    // so it can only recognise a wire whose name this node has already learned. When the second
+    // mesh chat appeared in the 2026-08-31 account split its pushedName had never been recorded —
+    // its conversations.yaml entry still carries the raw id as its comment — so isTransit answered
+    // FALSE for it and the channel registered as a full conversation, transcript and thread
+    // (30688631) and all. A chat-identity test fails exactly when a channel is NEW, which is
+    // exactly when it must not. Relay traffic is recognisable in the FRAME, from the first one,
+    // with nothing learned and nothing configured: that is what this keys on.
+    //
+    // NOTHING IS LEFT UNPROTECTED: since f70edce a relayed turn runs in the ORIGIN conversation,
+    // not in the relay channel, so the conversation the turn actually happens in already has its
+    // own guard channel, its own counter and real human turns that reset it. The transport's
+    // counter was never a second layer of safety — it was this same layer on the wrong key.
+    //
+    // A HUMAN message in a relay channel KEEPS its channel, and that is load-bearing: it is how
+    // the operator recovered that morning (he typed `resume` in egpt-mesh-do-kg), and RESUME /
+    // RESUME ALL / the lifecycle commands must all still work there. Only ENVELOPES go unguarded,
+    // and they go unguarded for free — a message-level test needs no exemption for the human
+    // words, because a human typing `resume` is not an envelope.
+    //
+    // THE CONSEQUENCE, said out loud rather than discovered later: because envelopes never count,
+    // a relay channel's counter is only ever touched by human messages — which are human turns,
+    // which reset it — so that channel can no longer auto-stop at all. That is the intended
+    // outcome, not a side effect.
+    //
+    // null then makes every guard use inert on this path: blocked(null) is false (stopChannel
+    // refuses a null channel, so nothing is ever added under it) and guardCountNonHuman returns
+    // early. `isEnvelope` is the SAME predicate humanTurn is built with, one derivation above —
+    // never a second way to ask.
+    const channel = (guard && !isEnvelope(ev)) ? guardChannel(ev) : null;
     const act = await classify(ev, channel);
     if (!act) return;                  // 'off' — not received (C4): not recorded, not processed
     // TRANSIT IS NOT RECORDED (operator 2026-08-31: "the log if required is in beeper itself").

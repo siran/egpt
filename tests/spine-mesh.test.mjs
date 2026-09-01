@@ -7,6 +7,7 @@ import { describe, it, expect } from 'vitest';
 import { createMeshService } from '../src/spine/mesh.mjs';
 import { createSpine } from '../src/spine/spine.mjs';
 import { encodeMesh, parseMesh } from '../src/mesh/relay.mjs';
+import { createStopGuard } from '../src/stop-guard.mjs';
 // The responder's nugget is rendered through the SHARED wrap, so since 2026-07-26 it also carries
 // the STRUCTURAL (invisible, tag-encoded) node id of the node that rendered it — decoded here so
 // the assertions read the visible bytes and the node id separately.
@@ -970,7 +971,7 @@ describe('mesh service — shell-origin (postStatus resolves null) concurrent re
 
 // ── the SPINE SEAM: handleInbound routes envelopes + mesh targets to the service,
 //    and leaves ordinary chat untouched (regression lock g). ──
-function seamSpine({ router, mesh, mayReply = true } = {}) {
+function seamSpine({ router, mesh, mayReply = true, guard = null } = {}) {
   const bridge = { sent: [], onMessage() {}, send(chat, text) { this.sent.push({ chat, text }); }, stop() {} };
   const brain = { calls: [], async turn(being, ev) { this.calls.push({ being, ev }); return { text: `↩ ${ev.body}`, sessionId: 's1' }; } };
   const transcript = { entries: [], async log(ev, r) { this.entries.push({ ev, r }); } };
@@ -981,7 +982,7 @@ function seamSpine({ router, mesh, mayReply = true } = {}) {
     gating: { async decide() { return { mode: 'on', receives: true, mayReply, sendToEgpt: 'mode' }; }, surfaces: () => mayReply },
     sender: { open() { return { update() {}, fail() {}, async finish(reply, { surface = true } = {}) { const t = typeof reply === 'string' ? reply : reply?.text; if (surface && t) bridge.send('CHAT', t); } }; } },
     transcript, heartbeats: { runDue() {} },
-    mesh, clock: { now: () => 1 },
+    mesh, guard, clock: { now: () => 1 },
   });
   return { spine, bridge, brain, transcript };
 }
@@ -1016,6 +1017,38 @@ describe('spine seam — handleInbound ↔ mesh', () => {
     const { spine } = seamSpine({ router: meshRouter, mesh, mayReply: false });
     await spine.handleInbound({ ...MSG, body: '@don do X' });
     expect(mesh.forwarded).toHaveLength(0);
+  });
+
+  // THE PROTECTION MOVED, IT DID NOT VANISH (live outage 2026-09-01). An envelope no longer
+  // carries a guard channel, so the TRANSPORT can never auto-stop again (locked in
+  // tests/relay-channel-transit.test.mjs). What still bounds a mesh echo storm is the counter on
+  // the conversation the relayed turn actually runs in — since f70edce the ORIGIN conversation,
+  // not the wire. Model the storm at the origin: node-signed lines (a bridge wrote them, so
+  // NEVER a human turn — nothing between them resets) keep landing in ONE chat, each addressing a
+  // mesh target, so each would put another envelope on the wire. The ORIGIN channel counts them,
+  // trips at `turns`, stops, and no further forward leaves that chat.
+  it('a mesh echo storm into ONE ORIGIN conversation still trips THAT channel — never the transport', async () => {
+    const mesh = recorderMesh();
+    const guard = createStopGuard({ turns: 3 });
+    const { spine } = seamSpine({ router: meshRouter, mesh, guard });
+    for (let i = 0; i < 6; i++) {
+      await spine.handleInbound({ ...MSG, msgId: `echo-${i}`, body: '@don do X', fromNode: 'kg' });
+    }
+    // turns:3 — the tripping turn still runs, the STOP pauses the next one
+    expect(mesh.forwarded).toHaveLength(3);
+    expect(guard.blocked('wa:CHAT')).toBe(true);        // the ORIGIN conversation stopped…
+    expect(guard.blocked('wa:RELAY')).toBe(false);      // …and the relay channel never did
+  });
+
+  it('a HUMAN line in that origin conversation resets it — normal relayed talk never trips', async () => {
+    const mesh = recorderMesh();
+    const guard = createStopGuard({ turns: 3 });
+    const { spine } = seamSpine({ router: meshRouter, mesh, guard });
+    for (let i = 0; i < 10; i++) {
+      await spine.handleInbound({ ...MSG, msgId: `h-${i}`, body: '@don do X' });
+    }
+    expect(mesh.forwarded).toHaveLength(10);
+    expect(guard.blocked('wa:CHAT')).toBe(false);
   });
 
   it('(g) an ordinary message flows the normal pipe untouched — brain runs, mesh idle', async () => {

@@ -195,13 +195,23 @@ function buildSpine({ guard, guardOverride, stopSwitch = null } = {}) {
 }
 
 describe('guard wiring at the prompt chokepoint (handleFast)', () => {
-  it('operator-posted relay envelopes pause the responder after `turns` (mesh.handle suppressed)', async () => {
+  // AN ENVELOPE CARRIES NO GUARD CHANNEL (live outage 2026-09-01). This case used to assert the
+  // opposite — that a burst of envelopes paused the channel they arrived in — and that assertion
+  // WAS the defect, written down. The chat an envelope arrives in is the TRANSPORT, not a
+  // conversation; every message on it is an envelope, so isHumanTurn (correctly) never resets and
+  // the count could only ever climb to a permanent, unwatched stop. kg's egpt-mesh-do-kg stopped
+  // three times in one morning and E went silent in "perrito traduciones". Since f70edce the
+  // relayed turn runs in the ORIGIN conversation, which guards itself — see
+  // tests/spine-mesh.test.mjs ("a mesh echo storm into ONE ORIGIN conversation") for the lock that
+  // the protection MOVED rather than vanished, and tests/relay-channel-transit.test.mjs for the
+  // live shape of this channel.
+  it('operator-posted relay envelopes never pause the responder — the transport is not a conversation', async () => {
     const guard = createStopGuard({ turns: 3 });
     const { spine, meshCalls } = buildSpine({ guard });
     for (let i = 0; i < 5; i++) await spine.handleInbound(opEnvelope());
-    // turns=3 → the 3rd trips + still runs, pausing the channel; the 4th/5th are suppressed
-    expect(meshCalls).toHaveLength(3);
-    expect(guard.blocked('wa:relay')).toBe(true);
+    expect(meshCalls).toHaveLength(5);                 // was 3 — the 4th and 5th used to be suppressed
+    expect(guard.blocked('wa:relay')).toBe(false);
+    expect(guard.countOf('wa:relay')).toBe(0);         // the counter is never even touched
   });
 
   it('a genuine human↔bot chat never trips the guard (every human turn resets)', async () => {
@@ -215,7 +225,10 @@ describe('guard wiring at the prompt chokepoint (handleFast)', () => {
   // EGPT_HOME/STOP and stops the SERVICE, it does not pause a channel (that whole contract
   // is locked end-to-end in tests/stop-file.test.mjs). What still pauses a channel is the
   // LOOP COUNTER, and RESUME is still the way back from it.
-  it('STOP pulls the kill switch (never a channel pause); RESUME clears an auto-stopped channel', async () => {
+  // A HUMAN message in a relay channel KEEPS its guard channel — only ENVELOPES go unguarded.
+  // That is what makes the human vocabulary still work in a machine-to-machine chat, and it is
+  // how the operator got out of this on 2026-09-01: he typed `resume` in egpt-mesh-do-kg.
+  it('STOP pulls the kill switch (never a channel pause); RESUME typed in the relay channel clears a stop', async () => {
     const guard = createStopGuard({ turns: 3 });
     const pulls = [];
     const { spine, meshCalls } = buildSpine({ guard, stopSwitch: { present: () => false, pull: (why) => pulls.push(why) } });
@@ -224,25 +237,38 @@ describe('guard wiring at the prompt chokepoint (handleFast)', () => {
     expect(pulls).toHaveLength(1);                           // the service goes down
     expect(guard.blocked('wa:relay')).toBe(false);           // …not a per-channel mute
 
-    for (let i = 0; i < 3; i++) await spine.handleInbound(opEnvelope());   // the counter trips at 3
-    expect(meshCalls).toHaveLength(3);
+    // The counter can no longer stop this channel itself, so the stop is placed directly — the
+    // case under test is the way BACK, which must keep resolving the relay chat's OWN channel and
+    // not the `null` an envelope now gets. blocked(true → false) across the RESUME is the whole
+    // assertion: a `resume` that derived a null channel would clear nothing.
+    guard.stopChannel('wa:relay');
     expect(guard.blocked('wa:relay')).toBe(true);
-    await spine.handleInbound(opEnvelope());                 // suppressed while stopped
-    expect(meshCalls).toHaveLength(3);
+    await spine.handleInbound(opEnvelope());                 // envelopes are unguarded — they flow through it
+    expect(meshCalls).toHaveLength(1);
 
     await spine.handleInbound({ surface: 'wa', chatId: 'relay', chatName: 'relay', authorized: true, msgId: 's2', body: 'RESUME', kind: 'text', raw: {} });
     expect(guard.blocked('wa:relay')).toBe(false);
-    await spine.handleInbound(opEnvelope());                 // flows again
-    expect(meshCalls).toHaveLength(4);
+    expect(guard.status().stoppedChannels).toEqual([]);      // …and nothing was stopped under a null key
   });
 
   it('a per-conversation override (turns: -1) disables tripping for that channel', async () => {
+    // RETARGETED off the relay channel (2026-09-01): against envelopes this would now assert
+    // nothing, since they never count with or without an override — and a hand-written override
+    // on the mesh chat is precisely the stopgap this fix replaces. The knob itself is unchanged
+    // and still live for a conversation whose NON-HUMAN traffic is legitimate, so it is locked
+    // against traffic it actually applies to: peer-node posts, non-human but no envelope.
     const guard = createStopGuard({ turns: 3 });
-    const guardOverride = async (surface, chatId) => (chatId === 'relay' ? { turns: -1 } : null);
-    const { spine, meshCalls } = buildSpine({ guard, guardOverride });
-    for (let i = 0; i < 20; i++) await spine.handleInbound(opEnvelope());
-    expect(meshCalls).toHaveLength(20);                      // never paused
-    expect(guard.blocked('wa:relay')).toBe(false);
+    const guardOverride = async (surface, chatId) => (chatId === 'c' ? { turns: -1 } : null);
+    const { spine } = buildSpine({ guard, guardOverride });
+    for (let i = 0; i < 20; i++) await spine.handleInbound(peerPost({ msgId: `peer-${i}` }));
+    expect(guard.countOf('wa:c')).toBe(0);                   // disabled → never even counted
+    expect(guard.blocked('wa:c')).toBe(false);
+
+    // …and the SAME burst without the override does trip, so the override is what did the work.
+    const bare = createStopGuard({ turns: 3 });
+    const { spine: s2 } = buildSpine({ guard: bare });
+    for (let i = 0; i < 20; i++) await s2.handleInbound(peerPost({ msgId: `peer-${i}` }));
+    expect(bare.blocked('wa:c')).toBe(true);
   });
 });
 

@@ -73,6 +73,28 @@ function harness({ wired = true, cfg = CFG } = {}) {
   return { spine, brain, transcript, meshCalls, guard };
 }
 
+// A spine wired for the COMMAND path only (`/restart` exits the process for real, so it is
+// asserted through commands.isCommand/run rather than run). `guard` is optional: without one the
+// case is purely about where the transit check sits; with one it is about the guard not being
+// able to lock the operator out of a stopped transport.
+function commandSpine({ guard = null } = {}) {
+  const ran = [];
+  const transcript = { logged: [], async log(ev) { this.logged.push(ev.chatId); } };
+  const spine = createSpine({
+    bridge: { onMessage() {}, send() {}, stop() {}, wasSentByUs: () => false },
+    brain: { async turn() { return { text: '' }; } },
+    identity: createIdentity({ now: () => 1000 }),
+    router: { resolve: () => 'egpt' },
+    gating: { async decide() { return { mode: 'on', receives: true, mayReply: false, sendToEgpt: 'mode' }; }, surfaces: () => false },
+    sender: { open() { return { activate() {}, update() {}, async finish() {}, fail() {} }; } },
+    transcript, heartbeats: { runDue() {} },
+    commands: { isCommand: (ev) => String(ev.body ?? '').startsWith('/'), run: async (ev) => ran.push(ev.body) },
+    isTransit: (ev) => isRelayChannelChat(CFG, ev),
+    guard, clock: { now: () => 1000 }, turnTimeoutMs: 0,
+  });
+  return { spine, ran, transcript };
+}
+
 describe('REPRODUCE-FIRST — the transcript, the registration and the thread on a relay channel', () => {
   it('an ENVELOPE on the relay channel is HANDLED but never recorded (no slug, no transcript.md, no stats)', async () => {
     const { spine, transcript, meshCalls } = harness();
@@ -104,42 +126,81 @@ describe('REPRODUCE-FIRST — the transcript, the registration and the thread on
   });
 });
 
-describe('THE TRAP — mesh handling is completely unaffected', () => {
-  it('the guard still classifies + counts an envelope on the channel (the loop cap is not weakened)', async () => {
-    const { spine, meshCalls, guard } = harness();
-    for (let i = 0; i < 3; i++) await spine.handleInbound(onRelay(envelope(), { msgKey: `m${i}` }));
-    expect(meshCalls).toHaveLength(3);
-    expect(guard.countOf(`whatsapp:${RELAY_ID}`)).toBe(3);
-  });
-
-  it('a STOPPED channel still suppresses the responder turn (transit changed the record, not the gate)', async () => {
-    const { spine, meshCalls, guard } = harness();
+// === A TRANSPORT IS NOT A GUARD CHANNEL (live outage 2026-09-01) ============================
+// The same "transit is not a conversation" fact, one layer down: the LOOP COUNTER was keyed on
+// the chat the envelope ARRIVED IN, i.e. the wire, instead of the conversation the turn runs in.
+//
+// THE LIVE EVIDENCE, from the operator's own log that morning:
+//   guard: whatsapp:EWlUhmXiFZTYGiKdbfRP stopped — mesh turn suppressed
+//   [bridge] incoming [perrito traduciones] Rodz Rodriguez: "⚠ ekg.kg did not answer"
+// egpt-mesh-do-kg auto-STOPped three times before lunch, each time `nearing the loop cap (4)`
+// then `[guard] STOP` — and E went silent in a chat the guard never even looked at.
+//
+// WHY IT COULD ONLY EVER MISFIRE HERE: the counter is a LOOP detector resting on one assumption,
+// written in stop-guard.mjs's own header — "a human turn resets the count, so normal conversation
+// never trips it". On a relay channel every message is an envelope, isHumanTurn correctly says an
+// envelope is not a human turn, so the count only ever climbs. Not a loop detector: a countdown
+// to a permanent stop, unrecoverable in practice because clearing it needs a `resume` typed in a
+// machine-to-machine channel nobody watches.
+describe('THE TRANSPORT IS NOT THE GUARD CHANNEL — an envelope carries none', () => {
+  it('REPRODUCE-FIRST: N+1 envelopes with no human between them ALL dispatch (the 7th and 8th used to be suppressed)', async () => {
+    const { spine, meshCalls, guard } = harness();     // turns: 6
     for (let i = 0; i < 8; i++) await spine.handleInbound(onRelay(envelope(), { msgKey: `m${i}` }));
-    expect(guard.blocked(`whatsapp:${RELAY_ID}`)).toBe(true);
-    expect(meshCalls).toHaveLength(6);          // turns:6 — the 7th and 8th are suppressed
+    expect(meshCalls).toHaveLength(8);                 // was 6: the channel auto-STOPped at the 6th
+    expect(guard.blocked(`whatsapp:${RELAY_ID}`)).toBe(false);
   });
 
+  it('an envelope never TOUCHES the counter — so a relay channel can no longer auto-stop at all', async () => {
+    // The consequence, stated out loud rather than discovered later: the only messages left that
+    // can move this channel's counter are HUMAN ones, and a human turn resets it. Loop protection
+    // for relayed traffic did not vanish — since f70edce a relayed turn runs in the ORIGIN
+    // conversation, which has its own channel, its own counter and real human turns that reset it
+    // (locked in tests/spine-mesh.test.mjs, "the protection moved").
+    const { spine, guard } = harness();
+    for (let i = 0; i < 20; i++) await spine.handleInbound(onRelay(envelope(), { msgKey: `m${i}` }));
+    expect(guard.countOf(`whatsapp:${RELAY_ID}`)).toBe(0);
+    expect(guard.status().stoppedChannels).toEqual([]);
+  });
+
+  it('a HUMAN message in the relay channel KEEPS its guard channel — `resume` typed there still clears a stop', async () => {
+    // Load-bearing, and it is how the operator recovered that morning: he typed `resume` in
+    // egpt-mesh-do-kg and it worked. Only ENVELOPES go unguarded.
+    const { spine, guard } = harness();
+    guard.stopChannel(`whatsapp:${RELAY_ID}`);         // however it got stopped, this is the way out
+    expect(guard.blocked(`whatsapp:${RELAY_ID}`)).toBe(true);
+    await spine.handleInbound(onRelay('resume', { msgKey: 'r1' }));
+    // blocked(true → false) is the whole assertion: a `resume` that derived the `null` channel an
+    // envelope now gets would have cleared nothing at all.
+    expect(guard.blocked(`whatsapp:${RELAY_ID}`)).toBe(false);
+  });
+
+  it('`resume all` typed there clears every channel too (the counter can stop several)', async () => {
+    const { spine, guard } = harness();
+    guard.stopChannel(`whatsapp:${RELAY_ID}`);
+    guard.stopChannel('whatsapp:!fam');
+    await spine.handleInbound(onRelay('resume all', { msgKey: 'r2' }));
+    expect(guard.status().stoppedChannels).toEqual([]);
+  });
+});
+
+describe('THE TRAP — mesh handling is completely unaffected', () => {
   it('a LIFECYCLE command on the channel is still the way back out of a wedged node', async () => {
     // /restart exits the process, so it is asserted through commands.isCommand/run rather than
     // run for real. The point is only that the transit check sits BELOW that branch.
-    const ran = [];
-    const bridge = { onMessage() {}, send() {}, stop() {}, wasSentByUs: () => false };
-    const brain = { async turn() { return { text: '' }; } };
-    const identity = createIdentity({ now: () => 1000 });
-    const transcript = { logged: [], async log(ev) { this.logged.push(ev.chatId); } };
-    const s2 = createSpine({
-      bridge, brain, identity,
-      router: { resolve: () => 'egpt' },
-      gating: { async decide() { return { mode: 'on', receives: true, mayReply: false, sendToEgpt: 'mode' }; }, surfaces: () => false },
-      sender: { open() { return { activate() {}, update() {}, async finish() {}, fail() {} }; } },
-      transcript, heartbeats: { runDue() {} },
-      commands: { isCommand: (ev) => String(ev.body ?? '').startsWith('/'), run: async (ev) => ran.push(ev.body) },
-      isTransit: (ev) => isRelayChannelChat(CFG, ev),
-      clock: { now: () => 1000 }, turnTimeoutMs: 0,
-    });
-    await s2.handleInbound(onRelay('/restart'));
+    const { spine, ran, transcript } = commandSpine();
+    await spine.handleInbound(onRelay('/restart'));
     expect(ran).toEqual(['/restart']);          // still dispatched…
     expect(transcript.logged).toEqual([]);      // …and still not a conversation
+  });
+
+  it('…and it still is with the guard wired and that very channel STOPPED (lifecycle is exempt)', async () => {
+    // The operator's way back out of a wedged node must survive a stopped transport: isLifecycle
+    // returns above the guard block, so neither blocked() nor the counter can lock it out.
+    const guard = createStopGuard({ turns: 6 });
+    const { spine, ran } = commandSpine({ guard });
+    guard.stopChannel(`whatsapp:${RELAY_ID}`);
+    await spine.handleInbound(onRelay('/restart'));
+    expect(ran).toEqual(['/restart']);
   });
 });
 
