@@ -13,8 +13,8 @@
 // byte-identical), same ONE member model / ONE tree, same constructor.
 
 import { describe, it, expect } from 'vitest';
-import { join } from 'node:path';
-import { Room, ConversationRoom } from '../src/room-core.mjs';
+import { join, relative, sep } from 'node:path';
+import { Room, ConversationRoom, CONVERSATIONS_ROOT } from '../src/room-core.mjs';
 import { slugDir, slugTranscriptPath, sanitizeSlug } from '../src/conversations-state.mjs';
 import { EGPT_HOME } from '../src/egpt-home.mjs';
 
@@ -81,6 +81,71 @@ describe('an operator-named room roots at rooms/<slug> — outside the Beeper tr
   it('filesDir is baseDir/files, same getter as any other Room', () => {
     const room = Room.forChat('room', 'work');
     expect(room.filesDir).toBe(join(room.baseDir(), 'files'));
+  });
+});
+
+// 2026-09-01 (operator): an AGENT's own conversation is the third such kind — `agent/wren`
+// is a real folder-backed conversation, exactly as `room/acim` is one, but it is NOT a room:
+// *"agents/wren/ holds the Room instance from wren as a conversation"*. Surface `agent`
+// therefore roots at agents/<name>/, beside rooms/ and the Beeper tree, through the SAME
+// surface→root map — one more branch of ONE expression, no second kind of Room.
+describe('an agent roots at agents/<name> — the third entity root', () => {
+  for (const name of ['wren', 'Meta Engineer']) {
+    it(`baseDir for agent "${name}" is the agents root, not conversations/agent/<name>`, () => {
+      const room = Room.forChat('agent', name);
+      expect(room.baseDir()).toBe(join(EGPT_HOME, 'agents', sanitizeSlug(name)));
+      expect(room.baseDir()).not.toContain(join(EGPT_HOME, 'conversations'));
+      expect(room.baseDir()).not.toContain(join(EGPT_HOME, 'rooms'));
+      expect(room).toBeInstanceOf(ConversationRoom);
+    });
+    // ConversationRoom.ns() derives from (surface, slug) DIRECTLY, so it needed no change —
+    // this is the lock that says so: the key config/rooms.yaml is written under.
+    it(`ns() for agent "${name}" is agent/<name>`, () => {
+      expect(Room.forChat('agent', name).ns()).toBe(`agent/${sanitizeSlug(name)}`);
+    });
+  }
+  it('agent/wren is a full Room: the same ONE tree, under the agents root', () => {
+    const room = Room.forChat('agent', 'wren');
+    expect(room.baseDir()).toBe(join(EGPT_HOME, 'agents', 'wren'));
+    expect(room.transcriptPath).toBe(join(EGPT_HOME, 'agents', 'wren', 'transcript.md'));
+    expect(room.filesDir).toBe(join(EGPT_HOME, 'agents', 'wren', 'files'));
+    expect(room.identityDir).toBe(join(EGPT_HOME, 'agents', 'wren', 'identity.d'));
+  });
+});
+
+// The INVERSE of that map: the BASE class derives ns() from baseDir() alone. The three roots
+// are SIBLINGS under EGPT_HOME, so the CHECK ORDER matters — conversations/ is the
+// unconditional LAST fallback, and the two prefix tests above it must be mutually exclusive
+// or a folder under one root keys as `../<other>/<name>` and silently loses the operator's
+// rooms.yaml block.
+describe('Room base ns() — the inverse map and its check order', () => {
+  class FixedRoom extends Room {
+    constructor(dir) { super(); this.dir = dir; }
+    baseDir() { return this.dir; }
+  }
+
+  it('a folder under the AGENTS root keys as agent/<name>, not ../agents/<name>', () => {
+    const ns = new FixedRoom(join(EGPT_HOME, 'agents', 'wren')).ns();
+    expect(ns).toBe('agent/wren');
+    expect(ns.startsWith('..')).toBe(false);
+  });
+  it('a folder under the ROOMS root still keys as room/<slug> (unchanged)', () => {
+    expect(new FixedRoom(join(EGPT_HOME, 'rooms', 'acim')).ns()).toBe('room/acim');
+  });
+  it('a folder under the Beeper tree still keys as <surface>/<slug> (unchanged)', () => {
+    expect(new FixedRoom(join(EGPT_HOME, 'conversations', 'whatsapp', 'diego')).ns()).toBe('whatsapp/diego');
+  });
+  // path.relative is SEGMENT-aware, so a sibling that merely shares a root's name prefix is
+  // not swallowed by that root's check — it falls through to the conversations/ fallback.
+  it('no root swallows a sibling that merely shares its name prefix', () => {
+    expect(new FixedRoom(join(EGPT_HOME, 'agents-archive', 'x')).ns()).toBe('../agents-archive/x');
+    expect(new FixedRoom(join(EGPT_HOME, 'roomsx', 'y')).ns()).toBe('../roomsx/y');
+  });
+  it('a folder under NO root relativizes against conversations/ exactly as before', () => {
+    const fixture = join(EGPT_HOME, '..', 'egpt-tmp-fixture', 'conv');
+    const ns = new FixedRoom(fixture).ns();
+    expect(ns).toBe(relative(CONVERSATIONS_ROOT, fixture).split(sep).join('/'));
+    expect(ns.startsWith('..')).toBe(true);
   });
 });
 

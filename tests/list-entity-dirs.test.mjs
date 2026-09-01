@@ -9,6 +9,10 @@
 // The ns it emits must stay `room/<slug>` — byte-identical to ConversationRoom.ns(), which
 // is what keys config/rooms.yaml. A room whose ns drifted with its folder would lose the
 // operator's heartbeats:/members:/access_level: block silently.
+//
+// 2026-09-01: the THIRD root, agents/<name>/ (ns `agent/<name>`) — an agent's own
+// conversation is not a room, so it roots beside rooms/ — joined the SAME walk for the same
+// reason: a third enumeration anywhere would be that bug again.
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 
 // A PRIVATE profile for this file: the walk reads the REAL EGPT_HOME, and egpt-home.mjs
@@ -36,18 +40,30 @@ beforeAll(() => {
     ['conversations', 'telegram', 'tio-jesus'],
     ['rooms', 'acim'],
     ['rooms', 'dj-son'],
+    ['agents', 'wren'],
+    ['agents', 'carol'],
   ]) mkdirSync(join(EGPT_HOME, ...p), { recursive: true });
   writeFileSync(join(EGPT_HOME, 'rooms', 'notes.md'), 'not an entity\n');
 });
 afterAll(() => { rmSync(TEST_HOME, { recursive: true, force: true }); });
 
-describe('listEntityDirs — one walk, two roots', () => {
+describe('listEntityDirs — one walk, three roots', () => {
   it('yields every room folder from the NEW root with ns room/<name>', async () => {
     const out = await listEntityDirs();
     for (const name of ['acim', 'dj-son']) {
       expect(out).toContainEqual({ dir: join(EGPT_HOME, 'rooms', name), ns: `room/${name}` });
       // the ns is the SAME string the Room computes — the config/rooms.yaml key
       expect(Room.forChat('room', name).ns()).toBe(`room/${name}`);
+    }
+  });
+
+  it('yields every agent folder from the agents root with ns agent/<name>', async () => {
+    const out = await listEntityDirs();
+    for (const name of ['wren', 'carol']) {
+      expect(out).toContainEqual({ dir: join(EGPT_HOME, 'agents', name), ns: `agent/${name}` });
+      // the ns is the SAME string the Room computes — the config/rooms.yaml key
+      expect(Room.forChat('agent', name).ns()).toBe(`agent/${name}`);
+      expect(Room.forChat('agent', name).baseDir()).toBe(join(EGPT_HOME, 'agents', name));
     }
   });
 
@@ -60,7 +76,7 @@ describe('listEntityDirs — one walk, two roots', () => {
   it('emits each entity exactly ONCE (one walk, not two)', async () => {
     const out = await listEntityDirs();
     expect(new Set(out.map((e) => e.ns)).size).toBe(out.length);
-    expect(out).toHaveLength(4);
+    expect(out).toHaveLength(6);
   });
 
   it('a plain file under rooms/ is not an entity', async () => {
@@ -71,9 +87,17 @@ describe('listEntityDirs — one walk, two roots', () => {
   it('a missing rooms/ root is tolerated (a fresh profile has none)', async () => {
     rmSync(join(EGPT_HOME, 'rooms'), { recursive: true, force: true });
     const out = await listEntityDirs();
-    expect(out.map((e) => e.ns).sort()).toEqual(['telegram/tio-jesus', 'whatsapp/diego']);
+    expect(out.map((e) => e.ns).sort()).toEqual(['agent/carol', 'agent/wren', 'telegram/tio-jesus', 'whatsapp/diego']);
     mkdirSync(join(EGPT_HOME, 'rooms', 'acim'), { recursive: true });     // restore for the rest
     mkdirSync(join(EGPT_HOME, 'rooms', 'dj-son'), { recursive: true });
     writeFileSync(join(EGPT_HOME, 'rooms', 'notes.md'), 'not an entity\n');
+  });
+
+  it('a missing agents/ root is tolerated (a fresh profile has none)', async () => {
+    rmSync(join(EGPT_HOME, 'agents'), { recursive: true, force: true });
+    const out = await listEntityDirs();
+    expect(out.map((e) => e.ns).sort()).toEqual(['room/acim', 'room/dj-son', 'telegram/tio-jesus', 'whatsapp/diego']);
+    mkdirSync(join(EGPT_HOME, 'agents', 'wren'), { recursive: true });    // restore for the rest
+    mkdirSync(join(EGPT_HOME, 'agents', 'carol'), { recursive: true });
   });
 });

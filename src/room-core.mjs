@@ -37,13 +37,16 @@ import { readRoomConfig, setRoomConfigBlock } from './rooms-file.mjs';
 
 // ── THE surface → filesystem-root map ───────────────────────────────────────
 // The ONLY place in the codebase that decides which root a surface's folders
-// live under. conversations/ is the BEEPER tree; surface `room` is the one
-// surface that does not arrive through Beeper, so it roots beside it (operator
-// 2026-08-28). Exported for the two ENUMERATORS that walk a root rather than
-// address one folder — boot.listEntityDirs (THE walk) and commands.listRoomNames
-// — so neither re-derives a root of its own.
+// live under. conversations/ is the BEEPER tree; surfaces `room` and `agent` are
+// the ones that do not arrive through Beeper, so they root beside it (operator
+// 2026-08-28 for rooms; 2026-09-01 for agents — an agent's own instance is not a
+// room: *"agents/wren/ holds the Room instance from wren as a conversation"*).
+// Exported for the two ENUMERATORS that walk a root rather than address one
+// folder — boot.listEntityDirs (THE walk) and commands.listRoomNames — so
+// neither re-derives a root of its own.
 export const CONVERSATIONS_ROOT = join(EGPT_HOME, 'conversations');
 export const ROOMS_ROOT = join(EGPT_HOME, 'rooms');
+export const AGENTS_ROOT = join(EGPT_HOME, 'agents');
 
 // ── Member model (the Room's contribution gate) ─────────────────────────────
 // A member is { kind, id, state }. `state` is the contribution gate, mirroring
@@ -107,14 +110,21 @@ export class Room {
   // baseDir(), so every subclass (including a test's own) has one for free.
   // Operator 2026-08-24: a conversation folder belongs to the BEING and carries
   // no operator config; the rung moved to a registry file the operator owns.
-  // A folder under the ROOMS root maps back to `room/<slug>` — the INVERSE of the
-  // one surface→root map above — so the base cannot key a room-rooted folder as
-  // `../rooms/<slug>` and silently lose the operator's block (2026-08-28). A
-  // folder under NEITHER root (a test fixture in a temp dir) relativizes against
-  // conversations/ exactly as before.
+  // A folder under the ROOMS root maps back to `room/<slug>`, one under the AGENTS
+  // root to `agent/<name>` — the INVERSE of the one surface→root map above — so the
+  // base cannot key such a folder as `../rooms/<slug>` (or `../agents/<name>`) and
+  // silently lose the operator's block (2026-08-28; agent 2026-09-01). The three
+  // roots are SIBLINGS under EGPT_HOME and relative() is segment-aware, so a folder
+  // under one always relativizes to a `..`-prefixed path from the others (a sibling
+  // that merely shares a prefix, `agents-archive/`, is not swallowed either): the
+  // two tests are mutually exclusive and conversations/ stays the unconditional LAST
+  // fallback. A folder under NO root (a test fixture in a temp dir) relativizes
+  // against conversations/ exactly as before.
   ns() {
-    const rel = relative(ROOMS_ROOT, this.baseDir());
-    if (rel && !rel.startsWith('..') && !isAbsolute(rel)) return `room/${rel.split(sep).join('/')}`;
+    const room = relative(ROOMS_ROOT, this.baseDir());
+    if (room && !room.startsWith('..') && !isAbsolute(room)) return `room/${room.split(sep).join('/')}`;
+    const agent = relative(AGENTS_ROOT, this.baseDir());
+    if (agent && !agent.startsWith('..') && !isAbsolute(agent)) return `agent/${agent.split(sep).join('/')}`;
     return relative(CONVERSATIONS_ROOT, this.baseDir()).split(sep).join('/');
   }
   // First-class (I3). NOT a rolling window — nothing truncates or ages it out. It rotates with
@@ -263,10 +273,12 @@ export class Room {
 
 /**
  * A conversation: the Room a surface chat IS. Roots at
- * ~/.egpt/conversations/<surface>/<sanitizeSlug(slug)>/ — except surface `room`,
- * which roots at ~/.egpt/rooms/<sanitizeSlug(slug)>/ (the one surface that does
- * not arrive through Beeper). An operator-named room is one of these on surface
- * `room`: same kind, same tree, same members, different root.
+ * ~/.egpt/conversations/<surface>/<sanitizeSlug(slug)>/ — except surfaces `room`
+ * and `agent`, which root at ~/.egpt/rooms/<sanitizeSlug(slug)>/ and
+ * ~/.egpt/agents/<sanitizeSlug(slug)>/ (the surfaces that do not arrive through
+ * Beeper). An operator-named room is one of these on surface `room`, and an
+ * agent's own conversation one on surface `agent`: same kind, same tree, same
+ * members, different root.
  */
 export class ConversationRoom extends Room {
   constructor(surface, slug) {
@@ -275,10 +287,13 @@ export class ConversationRoom extends Room {
     this.slug = slug;
   }
   // THE surface→root decision, made once, here (see the map at the top of the
-  // file). A room differs from every other chat in this ONE line and nowhere else.
+  // file). A room — and an agent — differs from every other chat in this ONE
+  // expression and nowhere else.
   baseDir() {
     const slug = sanitizeSlug(this.slug);
-    return this.surface === 'room' ? join(ROOMS_ROOT, slug) : join(CONVERSATIONS_ROOT, this.surface, slug);
+    return this.surface === 'room'  ? join(ROOMS_ROOT, slug)
+         : this.surface === 'agent' ? join(AGENTS_ROOT, slug)
+         : join(CONVERSATIONS_ROOT, this.surface, slug);
   }
   // From (surface, slug) DIRECTLY, never derived from baseDir(): a Room whose
   // folder is not under EGPT_HOME (a test fixture in a temp dir) would otherwise

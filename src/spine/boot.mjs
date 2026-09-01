@@ -23,7 +23,7 @@ import { createSandboxCliSession } from '../sandbox-cli-session.mjs';
 import { readConfigSync } from '../tools/config-io.mjs';
 import { reapPort } from '../tools/reap-port.mjs';
 import * as cdp from '../tools/cdp.mjs';
-import { Room, CONVERSATIONS_ROOT, ROOMS_ROOT } from '../room-core.mjs';
+import { Room, CONVERSATIONS_ROOT, ROOMS_ROOT, AGENTS_ROOT } from '../room-core.mjs';
 import { loadAdapterModule } from '../adapters/registry.mjs';
 import {
   CONV_YAML_PATH, readState as readConvState, writeState as writeConvState, slugDir, getContact, LOBBY_SLUG, fixedSlugFor,
@@ -259,13 +259,16 @@ export function chatIdForEntity(state, ns) {
   return null;
 }
 
-// Enumerate the entity folders: conversations/<surface>/<slug>/ and rooms/<slug>/.
+// Enumerate the entity folders: conversations/<surface>/<slug>/, rooms/<slug>/ and
+// agents/<name>/.
 // An operator-named room is not a second KIND — it is a conversation on surface `room`
 // (2026-08-09, chatId and all) — but conversations/ is the BEEPER tree, and a room does not
 // arrive through Beeper, so its folder sits at EGPT_HOME/rooms/<slug>/ (operator 2026-08-28).
-// Hence ONE walk over TWO roots, both from room-core's surface→root map, and the ns it emits
-// for a room is still `room/<slug>` — byte-identical to ConversationRoom.ns(), which is what
-// keys config/rooms.yaml. Missing dirs are tolerated (a fresh profile has neither).
+// An agent's own conversation is the same story on surface `agent`, rooted at
+// EGPT_HOME/agents/<name>/ (operator 2026-09-01).
+// Hence ONE walk over THREE roots, all from room-core's surface→root map, and the ns it emits
+// is still `room/<slug>` / `agent/<name>` — byte-identical to ConversationRoom.ns(), which is
+// what keys config/rooms.yaml. Missing dirs are tolerated (a fresh profile has none).
 //
 // THIS IS THE WALK — the only one. It feeds the config RESOLVER, which layers the three rungs
 // and serves EVERY per-entity reader (heartbeats, warm, transcription); adding a second
@@ -288,6 +291,9 @@ export async function listEntityDirs() {
   let rooms = [];
   try { rooms = await readdir(ROOMS_ROOT, { withFileTypes: true }); } catch { rooms = []; }
   for (const ent of rooms) if (ent.isDirectory()) out.push({ dir: join(ROOMS_ROOT, ent.name), ns: `room/${ent.name}` });
+  let agents = [];
+  try { agents = await readdir(AGENTS_ROOT, { withFileTypes: true }); } catch { agents = []; }
+  for (const ent of agents) if (ent.isDirectory()) out.push({ dir: join(AGENTS_ROOT, ent.name), ns: `agent/${ent.name}` });
   return out;
 }
 

@@ -25,7 +25,7 @@ import * as YAML from 'yaml';
 import { sanitizeSlug, sanitizeName } from './sanitize.mjs';
 import { parseFrontMatter, renderFrontMatter, stripFrontMatter } from './transcript-meta.mjs';
 import { Room } from './room-core.mjs';
-import { mergeRoomBeings, persistRoomBeings, roomsPathBeside } from './rooms-file.mjs';
+import { mergeRoomBeings, persistRoomBeings, mergeAgentBeings, persistAgentBeings, roomsPathBeside, agentsPathBeside } from './rooms-file.mjs';
 import { EGPT_HOME } from './egpt-home.mjs';
 import { makeSerialByKey } from './serial-by-key.mjs';
 import { preferNewer } from './prefer-newer.mjs';
@@ -1173,7 +1173,12 @@ export const LOBBY_SLUG = 'lobby';
 // resolving it to `lobby` rather than minting a fresh shell-<ts> beside it is what keeps that
 // row readable until the migration moves it.
 export function fixedSlugFor(surface, jid) {
-  if (surface === 'room') return sanitizeName(jid) || null;
+  // `agent` joins `room` here (operator 2026-09-01). A globally pinned being's own
+  // conversation is addressed by its NAME — agents/wren/, never agents/wren-2609011200/ —
+  // and it must NEVER be re-slugged, because that folder IS the address every chat resolves
+  // to. It also gives chatIdForEntity (boot.mjs) the reverse lookup for free: that function
+  // already resolves any fixed-slug surface generically through this one.
+  if (surface === 'room' || surface === 'agent') return sanitizeName(jid) || null;
   return (surface === 'shell' && jid === 'main') ? LOBBY_SLUG : null;
 }
 
@@ -1915,11 +1920,13 @@ export function parse(text) {
 
 // THE surface routing decision, read half (operator 2026-08-26): a `room` is a
 // conversation with a different base dir, so its per-being state is backed by
-// config/rooms.yaml, not this file. mergeRoomBeings hydrates each room entry's
-// `agents:` block from the sibling rooms.yaml — read-through, so a room whose block is
-// still only in conversations.yaml keeps it (and its thread) until the next write moves
-// it. Everything above this line (getBeing, patchBeing, recordThread, brainpool) sees
-// ONE state object and never learns which file backed it.
+// config/rooms.yaml, not this file — and an `agent` (a being's own global conversation,
+// operator 2026-09-01) by config/agents.yaml, the SAME rung over a second registry.
+// mergeRoomBeings / mergeAgentBeings hydrate each such entry's `agents:` block from the
+// sibling file — read-through, so an entry whose block is still only in conversations.yaml
+// keeps it (and its thread) until the next write moves it. Everything above this line
+// (getBeing, patchBeing, recordThread, brainpool) sees ONE state object and never learns
+// which file backed it.
 export async function readState(yamlPath) {
   let state;
   try {
@@ -1935,7 +1942,8 @@ export async function readState(yamlPath) {
     }
     state = emptyState();
   }
-  return mergeRoomBeings(state, { path: roomsPathBeside(yamlPath) });
+  const withRooms = await mergeRoomBeings(state, { path: roomsPathBeside(yamlPath) });
+  return mergeAgentBeings(withRooms, { path: agentsPathBeside(yamlPath) });
 }
 
 // Atomic write: serialize → temp file → rename to final. Protects against
@@ -1945,10 +1953,12 @@ export async function readState(yamlPath) {
 // 2026-05-21: parse failures returning emptyState made the next write
 // dangerous — atomicity removes the partial-write class of failures.
 // …and the write half of that ONE decision: a room's `agents:` block is persisted into
-// the sibling rooms.yaml and STRIPPED from what this file serializes, so the two never
-// hold the same key twice. persistRoomBeings only writes when the row actually differs.
+// the sibling rooms.yaml (an agent's into agents.yaml) and STRIPPED from what this file
+// serializes, so no two of them hold the same key twice. Each half only writes when the
+// row actually differs.
 export async function writeState(yamlPath, state) {
-  const routed = await persistRoomBeings(state, { path: roomsPathBeside(yamlPath) });
+  const roomed = await persistRoomBeings(state, { path: roomsPathBeside(yamlPath) });
+  const routed = await persistAgentBeings(roomed, { path: agentsPathBeside(yamlPath) });
   await mkdir(dirname(yamlPath), { recursive: true });
   const body = serialize(routed);
   const tmp = yamlPath + '.tmp-' + process.pid + '-' + Date.now();

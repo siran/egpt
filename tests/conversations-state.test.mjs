@@ -3,7 +3,7 @@
 // upsert + migration all run in-memory.
 
 import { describe, it, expect } from 'vitest';
-import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, readFile, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -53,6 +53,8 @@ import {
   readPersonality,
   readPersonalityMeta,
   residentsOf,
+  readState,
+  writeState,
 } from '../src/conversations-state.mjs';
 
 const WA = 'whatsapp';
@@ -1474,5 +1476,125 @@ describe('ISO time helpers', () => {
     expect(isoFromMs(1779216717520)).toBe(new Date(1779216717520).toISOString());
     expect(isoFromMs('not-a-number')).toBe(null);
     expect(isoFromMs(NaN)).toBe(null);
+  });
+});
+
+// ── readState / writeState: WHICH registry file backs a surface ─────────────────────────
+// THE routing decision lives at this IO boundary and nowhere else (src/rooms-file.mjs): a
+// `room` entry's per-being `agents:` block is persisted into config/rooms.yaml, an `agent`
+// entry's into config/agents.yaml (operator 2026-09-01 — a globally pinned being needs one
+// conversation of its own, and wren is not a room), and conversations.yaml serializes
+// NEITHER. Both halves are locked here: the room half is what every live room depends on.
+const withTempProfile = async (fn) => {
+  const dir = await mkdtemp(join(tmpdir(), 'egpt-registry-'));
+  try {
+    await fn({
+      dir,
+      conv: join(dir, 'config', 'conversations.yaml'),
+      rooms: join(dir, 'config', 'rooms.yaml'),
+      agents: join(dir, 'config', 'agents.yaml'),
+    });
+  } finally { await rm(dir, { recursive: true, force: true }); }
+};
+const entry = (slug, agents) => ({ slug, agents });
+const stateOf = (contacts) => ({ ...emptyState(), contacts });
+
+describe('readState/writeState — rooms.yaml and agents.yaml back their own surface', () => {
+  it('an agent/<name> block round-trips through config/agents.yaml, absent from conversations.yaml', async () => {
+    await withTempProfile(async (p) => {
+      await writeState(p.conv, stateOf({ agent: { wren: entry('wren', { wren: { threadId: 'w-1', access_level: 'all' } }) } }));
+      expect(YAML.parse(await readFile(p.agents, 'utf8')).agents['agent/wren'].agents.wren)
+        .toEqual({ threadId: 'w-1', access_level: 'all' });
+      const convText = await readFile(p.conv, 'utf8');
+      expect(convText).not.toContain('w-1');
+      expect(YAML.parse(convText).contacts.agent.wren.agents).toBeUndefined();
+      expect(existsSync(p.rooms)).toBe(false);                       // nothing crossed over
+      const back = await readState(p.conv);
+      expect(back.contacts.agent.wren.agents.wren.threadId).toBe('w-1');
+      expect(back.contacts.agent.wren.agents.wren.access_level).toBe('all');
+    });
+  });
+
+  it('a room/<slug> block still round-trips through config/rooms.yaml, untouched', async () => {
+    await withTempProfile(async (p) => {
+      await writeState(p.conv, stateOf({ room: { 'dj-son': entry('dj-son', { egpt: { threadId: 'r-1' } }) } }));
+      expect(YAML.parse(await readFile(p.rooms, 'utf8')).rooms['room/dj-son'].agents.egpt)
+        .toEqual({ threadId: 'r-1' });
+      const convText = await readFile(p.conv, 'utf8');
+      expect(convText).not.toContain('r-1');
+      expect(YAML.parse(convText).contacts.room['dj-son'].agents).toBeUndefined();
+      expect(existsSync(p.agents)).toBe(false);                      // a room never creates agents.yaml
+      const back = await readState(p.conv);
+      expect(back.contacts.room['dj-son'].agents.egpt.threadId).toBe('r-1');
+    });
+  });
+
+  it('the two files do not cross — one write, two surfaces, neither row in the other file', async () => {
+    await withTempProfile(async (p) => {
+      await writeState(p.conv, stateOf({
+        room:  { 'dj-son': entry('dj-son', { egpt: { threadId: 'r-1' } }) },
+        agent: { wren:     entry('wren',   { wren: { threadId: 'w-1' } }) },
+      }));
+      const rooms = YAML.parse(await readFile(p.rooms, 'utf8')).rooms;
+      const agents = YAML.parse(await readFile(p.agents, 'utf8')).agents;
+      expect(Object.keys(rooms)).toEqual(['room/dj-son']);
+      expect(Object.keys(agents)).toEqual(['agent/wren']);
+      const back = await readState(p.conv);
+      expect(back.contacts.room['dj-son'].agents.egpt.threadId).toBe('r-1');
+      expect(back.contacts.agent.wren.agents.wren.threadId).toBe('w-1');
+    });
+  });
+
+  it("an operator's comments and unrelated rows in agents.yaml survive a single-block edit", async () => {
+    await withTempProfile(async (p) => {
+      await mkdir(dirname(p.agents), { recursive: true });
+      await writeFile(p.agents, [
+        '# operator notes — hands off',
+        'agents:',
+        '  agent/wren:',
+        '    access_level: all',
+        '  agent/lyra:',
+        '    agents:',
+        '      lyra:',
+        '        threadId: lyra-thread',
+        '',
+      ].join('\n'), 'utf8');
+      await writeState(p.conv, stateOf({ agent: { wren: entry('wren', { wren: { threadId: 'w-2' } }) } }));
+      const text = await readFile(p.agents, 'utf8');
+      expect(text).toContain('# operator notes — hands off');
+      const parsed = YAML.parse(text).agents;
+      expect(parsed['agent/lyra'].agents.lyra.threadId).toBe('lyra-thread');   // unrelated row intact
+      expect(parsed['agent/wren'].access_level).toBe('all');                   // sibling key intact
+      expect(parsed['agent/wren'].agents.wren.threadId).toBe('w-2');
+    });
+  });
+
+  it('read-through migration: an agent entry whose block is still in conversations.yaml keeps its thread', async () => {
+    await withTempProfile(async (p) => {
+      await mkdir(dirname(p.conv), { recursive: true });
+      await writeFile(p.conv, [
+        'contacts:',
+        '  agent:',
+        '    wren:',
+        '      conversation_path: .egpt/agents/wren',
+        '      home_dir: /c/Users/an',
+        '      agents:',
+        '        wren:',
+        '          threadId: legacy-thread',
+        '',
+      ].join('\n'), 'utf8');
+      expect(existsSync(p.agents)).toBe(false);                                 // fresh profile: no agents.yaml
+      const back = await readState(p.conv);                                     // …and that is not an error
+      expect(back.contacts.agent.wren.agents.wren.threadId).toBe('legacy-thread');
+    });
+  });
+
+  it('a state with no agent bucket never creates agents.yaml', async () => {
+    await withTempProfile(async (p) => {
+      await writeState(p.conv, stateOf({ whatsapp: { '123': entry('diego', { egpt: { threadId: 'wa-1' } }) } }));
+      expect(existsSync(p.agents)).toBe(false);
+      expect(existsSync(p.rooms)).toBe(false);
+      expect(await readFile(p.conv, 'utf8')).toContain('wa-1');                 // transport surfaces stay put
+    });
   });
 });

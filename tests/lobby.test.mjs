@@ -155,6 +155,20 @@ describe('lobby slug — the shell console seat is the durable lobby, not an aut
     expect(fixedSlugFor('room', 'acim')).not.toMatch(/-\d{10}$/);
   });
 
+  // AGENT joins ROOM (operator 2026-09-01, the global wren). A being pinned node-wide
+  // resolves every chat it is addressed in to ONE conversation, and that conversation's
+  // folder IS the address — agents/wren/, never agents/wren-2609011200/, and never
+  // re-slugged when a title changes. Without this arm the pin still works but lands on a
+  // timestamped folder that differs between profiles.
+  it('fixedSlugFor gives an agent the kebab of its name too, with no tail', () => {
+    expect(fixedSlugFor('agent', 'wren')).toBe('wren');
+    expect(fixedSlugFor('agent', 'Wren')).toBe('wren');
+    expect(fixedSlugFor('agent', 'Meta Engineer')).toBe('meta-engineer');
+    expect(fixedSlugFor('agent', 'wren')).not.toMatch(/-d{10}$/);
+    // and it round-trips: the slug an agent registers under IS its chatId
+    expect(ensureContact(emptyState(), 'agent', 'wren').slug).toBe('wren');
+  });
+
   it('fixedSlugFor leaves every OTHER surface null — no Beeper conversation loses its tail', () => {
     expect(fixedSlugFor('whatsapp', 'acim')).toBe(null);
     expect(fixedSlugFor('whatsapp', '@1234@s.whatsapp.net')).toBe(null);
