@@ -242,3 +242,137 @@ describe('spine — FEATURE: a queued turn prompts with the accumulated cycle', 
     expect(iChat).toBeLessThan(iMention);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE GLOBAL WREN (operator 2026-09-01, said twice): *"when in a chat he is mentioned, the
+// model is prompted with that message, not with the accumulated."* A being PINNED node-wide
+// (`agents.<being>.scope`, src/spine/identity-scope.mjs) resolves EVERY chat it is addressed in
+// onto ONE instance — and that instance's key is also the CYCLE key of the FEATURE above. So
+// the pin, on its own, turns that feature into a defect: one bucket collecting every pinned
+// chat's ambient chatter and every one of the being's own replies, prepended to a mention that
+// arrived somewhere else entirely. The prompt is the message; context is what a pinned being
+// FETCHES with its own tools.
+//
+// THE CONDITION IS `pinned`, NOT `scoped`, and the operator ruled that explicitly: *"wren is the
+// same in all groups/rooms (including acim and perrito traducciones), but E remains independent
+// per conversation, as always."* room/acim's E and the WhatsApp group joined to it share a key by
+// MEMBERSHIP and keep their accumulated cycle exactly as they have it today — the LOCK below is
+// that ruling, and it is green on both sides of this change on purpose.
+const CHAT_A = 'chat-A@g.us';
+const CHAT_B = 'chat-B@g.us';
+const inChat = (chatId, m) => ({ ...m, chatId, chatName: chatId });
+const mentionIn = (chatId, body, id, line) => inChat(chatId, mention(body, id, line));
+const chatterIn = (chatId, body, id, line) => inChat(chatId, chatter(body, id, line));
+const until = async (fn) => { for (let i = 0; i < 100 && !fn(); i++) await flush(); };
+
+// A Brain whose scopeOf puts every chat on ONE instance. `pinned` says WHICH kind of shared key
+// it is — a node-wide pin, or a wa-group membership, which reports no flag at all. Read PER TURN,
+// exactly as the real seam is, so a test can flip it between turns.
+function sharedScopeBrain({ pinned, holds = [0] } = {}) {
+  const releases = new Map();
+  const brain = {
+    calls: [], pinned,
+    async scopeOf() { return { surface: 'room', chatId: 'wren', pinned: brain.pinned }; },
+    async turn(_being, ev) {
+      const i = brain.calls.length;
+      brain.calls.push({ line: ev.line, body: ev.body });
+      if (holds.includes(i)) await new Promise((r) => releases.set(i, r));
+      return { text: `reply-${ev.body}`, sessionId: `s${i}` };
+    },
+    release: (i = 0) => releases.get(i)?.(),
+  };
+  return brain;
+}
+
+const A1 = 'An@[A].wa (00:00) #m1: @e uno';
+const B1 = 'An@[B].wa (00:01) #m2: @e dos';
+const CA = 'Bob@[A].wa (00:02) #m3: chatter in A';
+const CB = 'Bob@[B].wa (00:03) #m5: chatter in B';
+const A3 = 'An@[A].wa (00:04) #m4: @e tres';
+
+describe('spine — a PINNED being is prompted with the message that arrived, not the accumulated cycle', () => {
+  it('REPRODUCE: a queued turn in chat B is prompted with B\'s own line ALONE — none of chat A\'s lines', async () => {
+    const brain = sharedScopeBrain({ pinned: true });
+    const { bridge } = buildSpine({ brain, sender: recordingSender() });
+
+    const p1 = bridge.emit(mentionIn(CHAT_A, 'uno', 'm1', A1));       // chat A — immediate, holds at the brain
+    const p2 = bridge.emit(mentionIn(CHAT_B, 'dos', 'm2', B1));       // chat B — QUEUED: the pin put it on A's key
+    await flush();
+    await bridge.emit(chatterIn(CHAT_A, 'chatter in A', 'm3', CA));   // A's ambient chatter joins the cycle
+    await flush();
+    brain.release();
+    await Promise.all([p1, p2]);
+
+    expect(brain.calls[0].line).toBe(A1);
+    // B's mention is prompted with B's message. Not A's chatter, not the being's own reply in A —
+    // both of which the queued-turn prepend would otherwise have put in front of it.
+    expect(brain.calls[1].line).toBe(B1);
+  });
+
+  it('the pin does not break the DRAIN: the cycle it did not prepend is still emptied', async () => {
+    // A pinned turn's prompt cannot show what it drained, so the drain is observed the only way it
+    // can be: `pinned` is resolved PER TURN (brain.scopeOf is read per call), so the NEXT turn on
+    // the same key is taken unpinned — it prepends, and what it prepends must be only what
+    // accumulated AFTER the pinned turn drained.
+    const brain = sharedScopeBrain({ pinned: true, holds: [0, 1] });
+    const { bridge } = buildSpine({ brain, sender: recordingSender() });
+
+    const p1 = bridge.emit(mentionIn(CHAT_A, 'uno', 'm1', A1));       // immediate, holds
+    const p2 = bridge.emit(mentionIn(CHAT_B, 'dos', 'm2', B1));       // queued behind it — PINNED
+    await flush();
+    await bridge.emit(chatterIn(CHAT_A, 'chatter in A', 'm3', CA));
+    await flush();
+    brain.release(0);                                                  // turn 1 ends → turn 2 drains [CA, reply-uno]
+    await until(() => brain.calls.length === 2);
+
+    brain.pinned = undefined;                                          // ...and the pin leaves the config
+    await bridge.emit(chatterIn(CHAT_B, 'chatter in B', 'm5', CB));
+    const p3 = bridge.emit(mentionIn(CHAT_A, 'tres', 'm4', A3));       // queued behind turn 2 — UNPINNED
+    await flush();
+    brain.release(1);
+    await Promise.all([p1, p2, p3]);
+
+    expect(brain.calls[1].line).toBe(B1);                              // the pinned turn: its own line
+    const prompt = brain.calls[2].line;
+    expect(prompt.endsWith(A3)).toBe(true);
+    expect(prompt).toContain(CB);                                      // accumulated AFTER the drain
+    expect(prompt).not.toContain('chatter in A');                      // drained by the pinned turn
+    expect(prompt).not.toContain('reply-uno');                         // ...and so was its reply
+  });
+
+  it('LOCK — UNSCOPED: a Brain with no scopeOf keys per CHAT, so two chats never share a cycle at all', async () => {
+    // The queued, mode:auto and burst prepends for an unscoped conversation are locked by the
+    // FEATURE describe above, tests/spine-pipe.test.mjs and tests/spine-auto-dwell.test.mjs —
+    // every one of them runs on a Brain with no scopeOf, i.e. `pinned` never resolves true.
+    const brain = sharedScopeBrain({ pinned: true });
+    delete brain.scopeOf;
+    const { bridge } = buildSpine({ brain, sender: recordingSender() });
+
+    const p1 = bridge.emit(mentionIn(CHAT_A, 'uno', 'm1', A1));
+    const p2 = bridge.emit(mentionIn(CHAT_B, 'dos', 'm2', B1));
+    await until(() => brain.calls.length === 2);
+    expect(brain.calls.map((c) => c.line)).toEqual([A1, B1]);          // concurrent, each its own line
+    brain.release();
+    await Promise.all([p1, p2]);
+  });
+});
+
+describe('spine — a MEMBERSHIP-scoped being still prepends its accumulated cycle', () => {
+  it('LOCK (the operator\'s ruling): the room and the wa-group joined to it share a key, and the queued turn accumulates exactly as today', async () => {
+    const brain = sharedScopeBrain({ pinned: undefined });   // a wa-group membership reports no pin
+    const { bridge } = buildSpine({ brain, sender: recordingSender() });
+
+    const p1 = bridge.emit(mentionIn(CHAT_A, 'uno', 'm1', A1));
+    const p2 = bridge.emit(mentionIn(CHAT_B, 'dos', 'm2', B1));
+    await flush();
+    await bridge.emit(chatterIn(CHAT_A, 'chatter in A', 'm3', CA));
+    await flush();
+    brain.release();
+    await Promise.all([p1, p2]);
+
+    const parts = brain.calls[1].line.split('\n\n');
+    expect(parts[parts.length - 1]).toBe(B1);                          // ends with its own mention
+    expect(parts).toContain(CA);                                       // the other chat's chatter, as today
+    expect(parts.some((p) => /reply-uno/.test(p))).toBe(true);         // ...and E's own reply
+  });
+});

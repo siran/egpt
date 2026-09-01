@@ -50,8 +50,9 @@ import { SHELL_SURFACE, surfaceOf } from './identity.mjs';
  *   conversation", so the tunnel and the identity can never disagree about membership.
  * @param {() => any} [deps.getConfig] boot.mjs's already-read config accessor — the SAME one
  *   createBrainPool takes. Nothing here is read from disk; this module still touches no file.
- * @returns {(being: string, surface: string, chatId: string) => Promise<{surface: string, chatId: string}|null>}
- *   the scope, or null when the conversation is its own scope (the default).
+ * @returns {(being: string, surface: string, chatId: string) => Promise<{surface: string, chatId: string, pinned?: true}|null>}
+ *   the scope, or null when the conversation is its own scope (the default). `pinned` marks the
+ *   PIN specifically — see the branch below; a caller reading only {surface, chatId} is unaffected.
  */
 export function createIdentityScope({ resolveMembers, getConfig = () => ({}), onLog = () => {} } = {}) {
   if (typeof resolveMembers !== 'function') throw new Error('createIdentityScope: resolveMembers is required');
@@ -72,7 +73,14 @@ export function createIdentityScope({ resolveMembers, getConfig = () => ({}), on
       // NETWORK is `shell` while its SURFACE is `room` (identity.mjs TRANSPORT_SURFACE), so an
       // operator writing the former would otherwise open a SECOND instance that reads correctly
       // in the config and shares nothing with the first.
-      if (cut > 0 && cut < pin.length - 1) return { surface: surfaceOf(pin.slice(0, cut)), chatId: pin.slice(cut + 1) };
+      // `pinned` RIDES OUT WITH THE ADDRESS, and only from here. Both rules produce a SHARED key,
+      // but they are not the same fact: a pin is an operator declaration that this being is ONE
+      // mind everywhere, so the spine prompts it with the message that arrived and never with the
+      // key's accumulated cycle (operator 2026-09-01) — while a membership scope is several chats
+      // legitimately sharing one conversation, which keeps accumulating exactly as it does today.
+      // Additive: the contract is still {surface, chatId}, and every caller that reads only those
+      // two fields (the thread, the warm key, the conversation dir, the run config) is unaffected.
+      if (cut > 0 && cut < pin.length - 1) return { surface: surfaceOf(pin.slice(0, cut)), chatId: pin.slice(cut + 1), pinned: true };
       // Half an address is never guessed at: a scope that will not parse falls back to the
       // conversation itself, the same safe direction every other failure here takes.
       onLog(`agents.${being}.scope is not <surface>/<chatId> (${JSON.stringify(pin)}) — ignored, ${being} keeps its own instance in ${surface}/${chatId}`);

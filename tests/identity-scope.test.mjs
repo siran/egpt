@@ -94,14 +94,36 @@ describe('createIdentityScope — which conversation a being\'s instance lives i
 describe('createIdentityScope — a being pinned node-wide to one conversation', () => {
   it('a pinned being resolves to the pin from an ordinary chat that is in NO room', async () => {
     const scope = createIdentityScope({ resolveMembers: memberResolver(NO_ROOMS), getConfig: () => PINNED });
-    expect(await scope('wren', 'whatsapp', GROUP)).toEqual({ surface: 'room', chatId: 'wren' });
+    expect(await scope('wren', 'whatsapp', GROUP)).toEqual({ surface: 'room', chatId: 'wren', pinned: true });
   });
 
   it('the pin BEATS wa-group membership, and never even asks: an explicit declaration about a BEING outranks an inference about a CHAT', async () => {
     const spy = countingResolver(JOINED);           // this chat WOULD resolve to room/acim
     const scope = createIdentityScope({ resolveMembers: spy, getConfig: () => PINNED });
-    expect(await scope('wren', 'whatsapp', GROUP)).toEqual({ surface: 'room', chatId: 'wren' });
+    expect(await scope('wren', 'whatsapp', GROUP)).toEqual({ surface: 'room', chatId: 'wren', pinned: true });
     expect(spy.calls).toBe(0);                      // no membership lookup at all
+  });
+
+  // WHICH KIND OF SHARED KEY IS THIS (operator 2026-09-01)? Both rules collapse several chats onto
+  // one instance, but the spine has to tell them apart: a pinned being is prompted with the message
+  // that arrived and never with the key's accumulated cycle, while a membership scope keeps
+  // accumulating exactly as it does today (*"E remains independent per conversation, as always"*).
+  // So the PIN says so on its way out, and the membership branch says nothing at all.
+  it('the pin branch reports `pinned: true`; the membership branch reports no flag', async () => {
+    const scope = createIdentityScope({ resolveMembers: memberResolver(JOINED), getConfig: () => PINNED });
+    expect(await scope('wren', 'whatsapp', GROUP)).toEqual({ surface: 'room', chatId: 'wren', pinned: true });
+    // The SAME chat, an unpinned being: the wa-group membership answer, unchanged and unmarked.
+    const membership = await scope('e', 'whatsapp', GROUP);
+    expect(membership).toEqual({ surface: 'room', chatId: ROOM });
+    expect('pinned' in membership).toBe(false);
+  });
+
+  it('ADDITIVE — a caller that reads only {surface, chatId} sees no difference', async () => {
+    // The thread, the warm key, the conversation dir and the run config all read exactly two
+    // fields; the flag is for the ONE caller that builds a prompt.
+    const scope = createIdentityScope({ resolveMembers: memberResolver(NO_ROOMS), getConfig: () => PINNED });
+    const { surface, chatId } = await scope('wren', 'whatsapp', GROUP);
+    expect({ surface, chatId }).toEqual({ surface: 'room', chatId: 'wren' });
   });
 
   it('the pin is per-BEING, not per-node: an UNPINNED being in that SAME chat still gets the membership answer', async () => {
@@ -111,7 +133,7 @@ describe('createIdentityScope — a being pinned node-wide to one conversation',
 
   it('a chatId containing a `/` survives — split on the FIRST slash only', async () => {
     const scope = createIdentityScope({ resolveMembers: memberResolver(NO_ROOMS), getConfig: () => ({ agents: { wren: { scope: 'whatsapp/!a/b@g.us' } } }) });
-    expect(await scope('wren', 'whatsapp', GROUP)).toEqual({ surface: 'whatsapp', chatId: '!a/b@g.us' });
+    expect(await scope('wren', 'whatsapp', GROUP)).toEqual({ surface: 'whatsapp', chatId: '!a/b@g.us', pinned: true });
   });
 
   it('`shell/wren` and `room/wren` are the SAME pin — the surface goes through surfaceOf', async () => {
@@ -120,7 +142,7 @@ describe('createIdentityScope — a being pinned node-wide to one conversation',
     // correctly in config.yaml and shares nothing with the first — a thread split with no error.
     const asShell = createIdentityScope({ resolveMembers: memberResolver(NO_ROOMS), getConfig: () => ({ agents: { wren: { scope: 'shell/wren' } } }) });
     const asRoom  = createIdentityScope({ resolveMembers: memberResolver(NO_ROOMS), getConfig: () => PINNED });
-    expect(await asShell('wren', 'whatsapp', GROUP)).toEqual({ surface: 'room', chatId: 'wren' });
+    expect(await asShell('wren', 'whatsapp', GROUP)).toEqual({ surface: 'room', chatId: 'wren', pinned: true });
     expect(await asShell('wren', 'whatsapp', GROUP)).toEqual(await asRoom('wren', 'whatsapp', GROUP));
   });
 
@@ -177,7 +199,7 @@ function fakePool(results) {
 // A brainpool over an in-memory registry, counting the IO a TURN costs. `rooms: undefined`
 // wires NO resolveScope at all — which is exactly the derivation as it stood before the scope
 // existed, and is what the locks below compare against.
-async function harness({ rooms, results = [{ text: 'ok', sessionId: ACIM_THREAD }] } = {}) {
+async function harness({ rooms, results = [{ text: 'ok', sessionId: ACIM_THREAD }], scope } = {}) {
   let state = emptyState();
   const io = { loadState: 0, resolve: 0 };
   const loadState = async () => { io.loadState++; return state; };
@@ -203,7 +225,7 @@ async function harness({ rooms, results = [{ text: 'ok', sessionId: ACIM_THREAD 
     // Observable stand-in for config/permissions/<level>.md, so a turn's brainOptions SHOW
     // which access_level was resolved for it.
     loadPermission: (level) => ({ dangerouslySkipPermissions: level === 'all', allowedTools: level === 'all' ? ['ALL'] : ['Read'] }),
-    ...(rooms === undefined ? {} : { resolveScope: scopeOver(rooms) }),
+    ...(scope ? { resolveScope: scope } : rooms === undefined ? {} : { resolveScope: scopeOver(rooms) }),
   });
   return { brain, pool, io, getState: () => state };
 }
@@ -283,6 +305,25 @@ describe('brainpool — the four identity keys derive from the SCOPE, not the ch
     expect(await brain.scopeOf('e', roomEv)).toEqual({ surface: 'room', chatId: ROOM });
     const joined = await harness({ rooms: JOINED });
     expect(await joined.brain.scopeOf('e', groupEv)).toEqual({ surface: 'room', chatId: ROOM });
+    expect(Boolean((await joined.brain.scopeOf('e', groupEv)).pinned)).toBe(false);
+  });
+
+  // The seam the SPINE reads to build a prompt (operator 2026-09-01): the address is the turn key,
+  // and `pinned` says the key is a node-wide pin rather than a membership scope. It comes out of the
+  // resolve the turn already makes — the spine never asks a second time.
+  it('the PIN reaches the spine through the same seam the address does; a membership scope carries no flag', async () => {
+    const pinScope = createIdentityScope({ resolveMembers: memberResolver(NO_ROOMS), getConfig: () => PINNED });
+    const { brain } = await harness({ scope: pinScope });
+    expect(await brain.scopeOf('wren', groupEv)).toEqual({ surface: 'room', chatId: 'wren', pinned: true });
+  });
+
+  it('a pinned being IN its own pinned conversation is still pinned — the flag survives the "already there" branch', async () => {
+    // room/wren resolving to room/wren is scoped:false (the address did not move), and that chat is
+    // exactly the one whose own chatter would otherwise be the cycle wren gets prepended.
+    const pinScope = createIdentityScope({ resolveMembers: memberResolver(NO_ROOMS), getConfig: () => PINNED });
+    const { brain } = await harness({ scope: pinScope });
+    const homeEv = { surface: 'room', chatId: 'wren', chatName: 'wren', line: 'An@[wren].room (14:05): sigue', body: 'sigue' };
+    expect(await brain.scopeOf('wren', homeEv)).toEqual({ surface: 'room', chatId: 'wren', pinned: true });
   });
 
   it('PROVENANCE — a scoped turn names the chat the line came from, above the line; an unscoped one is the bare line', async () => {

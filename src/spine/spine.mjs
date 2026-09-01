@@ -42,7 +42,7 @@ import { cleanForSpeech } from '../speech-clean.mjs';
  * @property {(being: string, ev: InboundEvent, onPartial?: Function, ctx?: object) => Promise<{text: string, sessionId?: string}>} turn
  * @property {(being: string, ev: InboundEvent) => Promise<'none'|'same_sender'|'any'>} [allowNewInput]  this conversation's resolved steer policy (operator 2026-08-30). OPTIONAL — absent ⇒ never steer
  * @property {(being: string, ev: InboundEvent) => boolean} [steer]  weave this message into the turn already streaming; TRUE = woven in (emit nothing), FALSE = nothing happened (queue as usual). OPTIONAL — absent ⇒ never steer
- * @property {(being: string, ev: InboundEvent) => Promise<{surface: string, chatId: string}>} [scopeOf]  WHICH conversation this being's INSTANCE lives in — its thread, warm process and run config (src/spine/identity-scope.mjs, operator 2026-08-31). The address the per-conversation turn FIFO must key on, since that FIFO is what keeps one warm entry to one turn. OPTIONAL — absent ⇒ the event's own address, i.e. every conversation is its own instance
+ * @property {(being: string, ev: InboundEvent) => Promise<{surface: string, chatId: string, pinned?: boolean}>} [scopeOf]  WHICH conversation this being's INSTANCE lives in — its thread, warm process and run config (src/spine/identity-scope.mjs, operator 2026-08-31). The address the per-conversation turn FIFO must key on, since that FIFO is what keeps one warm entry to one turn. `pinned` marks a being PINNED node-wide, as opposed to one whose chats share a scope by membership — only the pin suppresses the cycle prepend (2026-09-01, runReplyTurn). OPTIONAL — absent ⇒ the event's own address, i.e. every conversation is its own instance
  *
  * @typedef {object} Store   contact ops + thread/state persistence (conversations-state).
  * @property {(rec: {ev: InboundEvent, reply: any, being: string}) => void} [recordThread]
@@ -346,7 +346,7 @@ export function createSpine({
   // timer, keeping the SAME trigger — no-op when no dwell is pending.
   function extendDwell(turnKey) {
     const cur = dwellBy.get(turnKey);
-    if (cur) armDwell(turnKey, { to: cur.to, ev: cur.ev, mention: cur.mention });
+    if (cur) armDwell(turnKey, { to: cur.to, ev: cur.ev, mention: cur.mention, pinned: cur.pinned });
   }
   // The dwell expired: re-read the gate (a mid-dwell /agents auto flip AWAY from auto cancels the
   // pending dwell cleanly — the timer fires but dispatches NO turn; the accumulated cycle
@@ -358,7 +358,7 @@ export function createSpine({
     const entry = dwellBy.get(turnKey);
     if (!entry) return;
     dwellBy.delete(turnKey);
-    const { to, ev, mention } = entry;
+    const { to, ev, mention, pinned } = entry;
     let d;
     try { d = await gating.decide(to, ev, mention); }
     catch (e) { note(`dwell ${turnKey}: re-decide failed — ${e?.message ?? e}`); return; }
@@ -366,7 +366,7 @@ export function createSpine({
     const replyTo = ev.msgId ?? null;                 // quote UNIFORMLY — including auto (see openAndRunReply)
     const ahead = bumpTrain(turnKey);
     const out = sender.open(ev.chatId, { being: to, replyTo, auto: true });
-    turnBy(turnKey, () => runReplyTurn({ to, ev, d, out, replyTo, turnKey, queued: ahead > 0, burst: true }));
+    turnBy(turnKey, () => runReplyTurn({ to, ev, d, out, replyTo, turnKey, queued: ahead > 0, burst: true, pinned }));
   }
 
   // enqueue resolves when THIS message's turn (if any) completes, so a caller — and
@@ -701,7 +701,12 @@ export function createSpine({
     // serializing on it is exactly "one turn at a time per warm key". Also the CYCLE key:
     // ambient lines accumulate under it so a later queued mention on the same conversation
     // drains exactly this chat's cycle. See turns.mjs for why scopeOf decides it.
-    const turnKey = await turns.keyOf(to, ev);
+    // `pinned` (operator 2026-09-01) comes out of that SAME resolve: a being pinned node-wide is
+    // prompted with the message that arrived, never with this key's accumulated cycle, and asking
+    // again inside the turn would be a second config read that could answer differently from the
+    // key the turn is queued on. Threaded down to runReplyTurn from here and from the other two
+    // dispatch sites; nothing else in the pipe reads it.
+    const { key: turnKey, pinned } = await turns.keyOf(to, ev);
 
     // mode:auto is an IMPERSONATION of the operator: E replies to OTHER people AS the
     // operator, and the operator's OWN messages (isSender) here NEVER prompt E. Accumulate
@@ -759,7 +764,7 @@ export function createSpine({
     // no reply to delay).
     if (d.mayReply && d.mode === 'auto') {
       pushCycle(turnKey, ev.line ?? ev.body);
-      armDwell(turnKey, { to, ev, mention });
+      armDwell(turnKey, { to, ev, mention, pinned });
       return withRelay();
     }
 
@@ -785,7 +790,7 @@ export function createSpine({
       // not just mentions; see openAndRunReply). If a train is already in flight for this
       // conversation, the placeholder opens in the QUEUED state and the turn WAITS its turn
       // on turnBy; when it reaches the front it activates and streams.
-      const turn = openAndRunReply({ to, ev, d, turnKey });
+      const turn = openAndRunReply({ to, ev, d, turnKey, pinned });
       return withRelay(turn);
     }
 
@@ -834,11 +839,11 @@ export function createSpine({
   // exist. Quoting from the START is also what removes the delete+repost churn for the common
   // case: E's /reply at the message it is answering is now GENUINELY redundant, so it strips
   // instead of tearing the placeholder down and posting a fresh quote in its place.
-  function openAndRunReply({ to, ev, d, turnKey }) {
+  function openAndRunReply({ to, ev, d, turnKey, pinned = false }) {
     const replyTo = ev.msgId ?? null;
     const ahead = bumpTrain(turnKey);
     const out = sender.open(ev.chatId, { being: to, replyTo, queued: ahead > 0, queuedAhead: ahead, auto: d.mode === 'auto' });
-    return turnBy(turnKey, () => runReplyTurn({ to, ev, d, out, replyTo, turnKey, queued: ahead > 0 }));
+    return turnBy(turnKey, () => runReplyTurn({ to, ev, d, out, replyTo, turnKey, queued: ahead > 0, pinned }));
   }
 
   // The spine's FAN-OUT (operator 2026-07-25): dispatch the agents addressed BESIDE the one
@@ -863,7 +868,8 @@ export function createSpine({
         // 2026-08-31). A fan-out target takes an ordinary turn on its own queue, so a queue
         // keyed NARROWER than the warm key it guards is the corruption case for it too. ONE
         // derivation now (turns.keyOf) — this used to be a second copy of the line above it.
-        await openAndRunReply({ to: being, ev, d, turnKey: await turns.keyOf(being, ev) });
+        const scope = await turns.keyOf(being, ev);
+        await openAndRunReply({ to: being, ev, d, turnKey: scope.key, pinned: scope.pinned });
       } catch (e) { note(`fan-out ${being}/${ev.chatId}: ${e?.message ?? e}`); }
     })).then(() => {});
   }
@@ -881,7 +887,7 @@ export function createSpine({
   // `burst` (the auto-dwell fire): this turn answers a whole accumulated burst, so it prompts
   // with the drained cycle verbatim instead of appending its own trigger line. A PROMPT
   // concern only — it says nothing about the record.
-  async function runReplyTurn({ to, ev, d, out, replyTo = null, turnKey, queued, burst = false }) {
+  async function runReplyTurn({ to, ev, d, out, replyTo = null, turnKey, queued, burst = false, pinned = false }) {
     try {
       // THIS turn is now the live one on this key, and this is whose message it answers —
       // the identity the same_sender tier of allow_new_input compares against (2026-08-30) —
@@ -943,7 +949,18 @@ export function createSpine({
           }
         } catch (e) { note(`prompt-context ${to}/${ev.chatId}: ${e?.message ?? e}`); }
       }
-      const prepend = burst || ((queued || d.mode === 'auto') && pending.length);
+      // A PINNED BEING NEVER PREPENDS (operator 2026-09-01, said twice: *"when in a chat he is
+      // mentioned, the model is prompted with that message, not with the accumulated"*). The pin
+      // makes ONE key out of every chat the being is addressed in, so the cycle above stops being
+      // this conversation's recent history: it is every pinned chat's chatter and every one of the
+      // being's own replies in one bucket, and prepending it answers a mention in chat B with chat
+      // A's last twenty lines. The prompt is the message; a pinned being FETCHES its context with
+      // its own tools. THE CONDITION IS THE PIN, NOT THE SHARED KEY: a wa-group joined to a room
+      // shares a key by MEMBERSHIP and keeps accumulating exactly as it does today (the operator
+      // ruled it — "E remains independent per conversation, as always"), so `scoped` would be the
+      // wrong test. drainCycle above still RAN either way: draining is what advances the baseline
+      // the next turn's cycle starts from, and skipping it would be a different bug.
+      const prepend = !pinned && (burst || ((queued || d.mode === 'auto') && pending.length));
       const base = ev.line ?? ev.body;
       let line = recent
         ? promptWithRecentContext(base, recent)

@@ -86,9 +86,17 @@ export function createTurns({ brain, bridge = null, bridgeOf = null, log = null 
   // ONE DEFINITION (2026-08-31): this derivation used to be written out twice in spine.mjs —
   // once for the message's own target, once per fan-out target — which is two places for the
   // warm-key/queue-key correspondence to drift apart. It is now called from four.
+  //
+  // IT RETURNS THE PIN WITH THE KEY (operator 2026-09-01). A being PINNED node-wide is prompted
+  // with the message that arrived, never with the key's accumulated cycle — and this is the ONE
+  // place a dispatch resolves the scope, so the flag comes out of the resolve that already
+  // happened. Asking brain.scopeOf a second time inside the turn would read config twice per
+  // turn and could answer differently from the key the turn is queued on. `pinned` is normalized
+  // to a boolean here so every caller compares one shape; a Brain without scopeOf (every test
+  // fake, every older caller) falls back to the event, which carries no flag ⇒ false ⇒ unchanged.
   async function keyOf(being, ev) {
     const scope = (await brain.scopeOf?.(being, ev)) ?? ev;
-    return `${being}:${scope.surface}:${scope.chatId}`;
+    return { key: `${being}:${scope.surface}:${scope.chatId}`, pinned: scope.pinned === true };
   }
 
   // THE ONE allow_new_input VERDICT, asked by both halves of the rule (operator 2026-08-31).
@@ -206,6 +214,7 @@ export function createTurns({ brain, bridge = null, bridgeOf = null, log = null 
     // bump returns how many turns were ALREADY on this key — the queued placeholder's "N ahead"
     bump: bumpTrain,
     drop: dropTrain,
+    // { key, pinned } — the key every seam below takes, and the pin the prompt is built from
     keyOf,
     // the live-turn identity register. Set as the turn body's FIRST act, cleared in the same
     // `finally` that drops the train.

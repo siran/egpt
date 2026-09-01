@@ -559,7 +559,9 @@ export function createMeshService({
             // lands on the SAME key a LOCAL message in that chat lands on, which is the collision
             // that has to exist for one warm entry to see one turn at a time. Unwired → null, and
             // every `turns?.` below is inert: byte-for-byte the pre-2026-08-31 body.
-            const turnKey = (await turns?.keyOf(being, ev)) ?? null;
+            // (keyOf returns { key, pinned } since 2026-09-01 — the pin decides how the SPINE
+            // builds a prompt, and a relayed turn builds none of its own, so only the key is read.)
+            const turnKey = (await turns?.keyOf(being, ev))?.key ?? null;
             // WHO ASKED, as far as the wire knows (operator 2026-08-31). `by:` carries the origin
             // human's display NAME and has since the first envelope, so nothing new crosses. The
             // synthetic event's own senderId stays null BY DESIGN (the allowed_users gate reads the

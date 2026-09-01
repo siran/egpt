@@ -403,10 +403,14 @@ export function createBrainPool({
     let s = null;
     try { s = await resolveScope(being, ev.surface, ev.chatId); }
     catch (e) { onLog(`brainpool: scope ${being} ${ev.surface}/${ev.chatId}: ${e?.message ?? e}`); }
+    // THE PIN RIDES ALONG (operator 2026-09-01). Carried on BOTH returns, the `scoped:false` one
+    // included: a being pinned to room/wren is pinned when it is addressed IN room/wren too, and
+    // that is precisely the chat whose own chatter would otherwise be the cycle it gets prepended.
+    // Read, never invented — undefined for a membership scope, which must not change at all.
     if (!s || (s.surface === ev.surface && String(s.chatId) === String(ev.chatId))) {
-      return { surface: ev.surface, chatId: ev.chatId, scoped: false };
+      return { surface: ev.surface, chatId: ev.chatId, scoped: false, pinned: s?.pinned };
     }
-    return { surface: s.surface, chatId: s.chatId, scoped: true };
+    return { surface: s.surface, chatId: s.chatId, scoped: true, pinned: s.pinned };
   }
 
   async function resolveConv(ev, being) {
@@ -827,9 +831,13 @@ export function createBrainPool({
     // already draws (resolution lives beside every other field in resolveConv; the caller only
     // formats). Returns an address, never a key, so the turn-key FORMAT stays in the one file that
     // owns it. Read per call, never cached: an invited group joins or leaves on the next message.
+    // `pinned` comes out beside the address (operator 2026-09-01): the spine has to tell a
+    // node-wide PIN from a membership scope — only the first suppresses the cycle prepend — and
+    // this is the one resolve a turn makes, so the flag travels with it rather than being asked
+    // for a second time. Still an address, never a key.
     async scopeOf(being, ev) {
       const s = await scopeAddr(being, ev ?? {});
-      return { surface: s.surface, chatId: s.chatId };
+      return { surface: s.surface, chatId: s.chatId, pinned: s.pinned };
     },
 
     // Evict the warm entry for a conversation (DEFECT 2): the spine's per-turn timeout
