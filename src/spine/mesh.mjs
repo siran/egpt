@@ -67,6 +67,11 @@ export function createMeshService({
   commands = null,
   getConfig = () => ({}),
   bodyEmojiOf = () => '',              // (being) => body_emoji — stamps the relayed reply
+  // THE DISPLAY NAME, not the being-id (operator 2026-09-01). do's persona is KEYED `egpt` and
+  // NAMED `don`; a local reply stamps `don` (sender.mjs uses labelOf) while a relayed one stamped
+  // the raw key, so one being answered as `don:` in one chat and `egpt:` in another. Live: `@don`
+  // in a 1:1 came back `🤝 egpt:`. Identity default, so a construction without it is unchanged.
+  labelOf = (b) => b,
   getSelfChatId = () => null,          // () => this node's Self chat id — the fallback transport when a relay channel doesn't resolve
   // `loadState` (operator 2026-08-15, allowed_users) — () => Promise<conv state>, the SAME
   // conversations-state IO router.mjs's createRouter and gating.mjs's createGating take, injected
