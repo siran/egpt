@@ -288,6 +288,65 @@ describe('mesh service — responder (a request arrives at the owning node)', ()
   });
 });
 
+// ── THE STAMP CARRIES THE `name:`, NEVER THE MAP KEY (operator 2026-09-01: "please don't use
+//    the yaml array key as name … that is why agents have name") ────────────────────────────
+//
+// THIS ONE REGRESSED THREE TIMES IN TWO DAYS and nothing in the suite noticed (3296 tests before
+// the real fix, 3296 after):
+//   c13db3f  fixed it — "a relayed reply is stamped with the being's NAME, not its map key".
+//   7dad417  REVERTED it. The ruling was taken while looking at kg, where the persona's key and
+//            its `name:` happen to be the SAME STRING — so the bug was invisible there and the
+//            revert looked correct.
+//   24c2a7d  } re-fixed it INERTLY, twice: both shipped the wiring (boot.mjs's labelOf, the
+//   c346d8e  } startup warning) but NOT the one-line change here, because the patch script
+//            asserted after editing and before writing — it printed success and saved nothing.
+//   e782524  finally applied `label: labelOf(being)` in mesh.mjs's renderReply for real.
+//
+// THE FIXTURE'S KEY AND ITS `name:` MUST DIFFER — that is the entire point of this block, and
+// both ways of "simplifying" it are how the bug walks back in:
+//   • Key the persona the same as its name (`e`/`e`, `don`/`don`) and this test passes with the
+//     bug fully reinstated. That is precisely the condition 7dad417 was ruled under. do's live
+//     persona is KEYED `egpt` and NAMED `don`, so it answered `🤝 don:` locally and `🤝 egpt:`
+//     when relayed — one being with two names depending on which path served it.
+//   • Drop `body_emoji` and the stamp stops rendering an identity line at all (persona-wrap.mjs:
+//     personaStamp returns the text untouched when bodyEmoji is falsy), so the assertion has
+//     nothing left to bite on. The neighbouring `e` fixture below has exactly that hole, which
+//     is why the lock lives here on its own fixture instead of riding on that one.
+//
+// bodyEmojiOf/labelOf below are boot.mjs's own resolvers, mirrored — including labelOf's
+// deliberate ABSENCE of a key fallback: the key is an identifier (it keys warm sessions, threads
+// and transcripts), not a display name, and falling back to it is what made the wrong answer
+// look like a right one.
+describe('mesh service — a relayed reply is stamped with the being\'s NAME, never its map key', () => {
+  // do's live shape: KEYED `egpt`, NAMED `don`. The two MUST NOT be made equal (see above).
+  const persona = { egpt: { configuration: 'egpt', name: 'don', body_emoji: '🤝' } };
+  const emojiOf = (being) => persona[String(being ?? '').toLowerCase()]?.body_emoji ?? '🐶';
+  const nameOf = (being) => String(persona[String(being ?? '').toLowerCase()]?.name ?? '');
+
+  it('REGRESSION LOCK (regressed 3×): the nugget stamps `don` (the `name:`) and never `egpt` (the key)', async () => {
+    const brain = fakeBrain({ reply: 'aquí', partials: ['aq', 'aquí'] });
+    const bridge = fakeBridge();
+    const mesh = createMeshService({ bridge, brain, getConfig: () => ({ node_name: 'do', agents: persona }), bodyEmojiOf: emojiOf, labelOf: nameOf });
+    // Addressed by the token that IS the key, so the being that RUNS is `egpt` — which is exactly
+    // the string the stamp must not carry.
+    const req = encodeMesh({ by: 'An', body: '@egpt hola', from: 'HFM', from_node: 'kg', to: 'egpt.do', post_id: 'p1' });
+
+    await mesh.handle({ surface: 'whatsapp', chatId: 'RELAY', msgId: 'm1', body: req });
+    await flush();
+
+    expect(brain.calls).toHaveLength(1);
+    expect(brain.calls[0].being).toBe('egpt');            // the KEY still identifies who runs — only the STAMP is the name
+    const live = stripNodeSignature(parseMesh(bridge.streams[0].updates.at(-1)).body);
+    const final = stripNodeSignature(parseMesh(bridge.streams[0].finals.at(-1)).body);
+    // BOTH DIRECTIONS, on BOTH frames (renderReply owns the final, personaStamp the live ones).
+    // A one-sided "contains don" assertion is how the reverted state read as correct.
+    expect(final).toBe('🤝 don: aquí');
+    expect(final).not.toMatch(/egpt/);
+    expect(live).toBe('🤝 don: aquí');
+    expect(live).not.toMatch(/egpt/);
+  });
+});
+
 // ── THE MESH IS TRANSPORT, NOT IDENTITY (operator 2026-08-31) ──────────────────────────────
 // *"the mesh tail should get from/to agents separate, and so the threads. there should be
 // relation between thread-id and the egpt-mesh. mesh is transport, not mixing."* and, on the
