@@ -993,13 +993,18 @@ describe('spine seam — handleInbound ↔ mesh', () => {
   const recorderMesh = () => ({ handled: [], forwarded: [], isEnvelope: (ev) => String(ev.body).startsWith('ENV:'), async handle(ev) { this.handled.push(ev); }, async forward(ev, t) { this.forwarded.push({ ev, t }); return true; }, async onEdit() { return false; } });
   const MSG = { surface: 'wa', node: 'wa', chatId: 'CHAT', chatName: 'fam', senderId: 'u', senderName: 'An', msgId: 'm1', ts: 1, kind: 'text', raw: {} };
 
-  it('an inbound envelope → mesh.handle, logged, NO brain, NO routing', async () => {
+  it('an inbound envelope → mesh.handle, NOT recorded, NO brain, NO routing', async () => {
     const mesh = recorderMesh();
     const { spine, brain, transcript } = seamSpine({ router: localRouter, mesh });
     await spine.handleInbound({ ...MSG, body: 'ENV: relay traffic' });
     expect(mesh.handled).toHaveLength(1);
     expect(brain.calls).toHaveLength(0);
-    expect(transcript.entries).toHaveLength(1);
+    // WAS 1 — "recorded like any received message (C1.2)". An ENVELOPE is now never recorded,
+    // whatever chat it lands in (this MSG's chat is an ordinary one, and no isTransit is wired
+    // here at all): relay traffic is not chat wherever it lands, and a chat-identity test could
+    // not see the unnamed wire the 2026-08-31 account split created. See spine.mjs's ingestion
+    // point and tests/relay-channel-transit.test.mjs, "AN ENVELOPE IS NEVER RECORDED".
+    expect(transcript.entries).toHaveLength(0);
   });
 
   it('a mesh-target mention (mayReply) → mesh.forward, logged, NO brain', async () => {

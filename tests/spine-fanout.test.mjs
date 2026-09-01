@@ -260,7 +260,9 @@ describe('spine — FAN OUT to every addressed agent', () => {
     expect(mesh.handled).toHaveLength(1);
     expect(mesh.forwarded).toHaveLength(0);      // the @don in the envelope body never routed
     expect(brain.calls).toHaveLength(0);
-    expect(transcript.entries).toHaveLength(1);
+    // WAS 1: an envelope is no longer recorded in ANY chat, this ordinary one included — the
+    // record half of "relay traffic is not chat" (tests/relay-channel-transit.test.mjs).
+    expect(transcript.entries).toHaveLength(0);
   });
 
   // THE CRUX of the fan-out (operator 2026-07-25: "'router returns all addressed' respect the

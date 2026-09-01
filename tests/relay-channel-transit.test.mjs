@@ -47,6 +47,18 @@ const elsewhere = (body, over = {}) => ({
 // A genuine request envelope, exactly the wire form the mesh puts on the channel.
 const envelope = () => encodeMesh({ by: 'An', body: 'hola @don', from: 'familia', from_node: 'kg', to: 'don.do' });
 
+// THE UNNAMED WIRE — the 2026-08-31 ACCOUNT SPLIT shape, measured on the operator's profile: a
+// SECOND egpt-mesh-do-kg chat appeared, its pushedName was never recorded (its conversations.yaml
+// entry still carries the raw chat id as its comment), so the arriving event has NO chatName to
+// match `relay_channel: egpt-mesh-do-kg` against. Same configured channel, same traffic, and
+// isRelayChannelChat answers FALSE for it — a chat-identity test fails exactly when a channel is
+// NEW, which is exactly when it must not.
+const SPLIT_ID = 'HkQpZvNrLmTdWbXe';
+const onUnnamed = (body, over = {}) => ({
+  body,
+  from: { network: 'whatsapp', chatId: SPLIT_ID, chatName: null, userId: 'u-an', senderName: 'An', authorized: true, msgKey: 'u1', ...over },
+});
+
 // `wired: false` builds the spine with NO isTransit at all — literally the pre-change
 // derivation, which is what makes the LOCKs below a comparison against the old code rather
 // than the new code agreeing with itself.
@@ -123,6 +135,66 @@ describe('REPRODUCE-FIRST — the transcript, the registration and the thread on
     expect(transcript.logged.map((l) => l.chatId)).toContain('!fam');
     expect(brain.calls.map((c) => c.chatId)).toEqual(['!fam']);
     expect(meshCalls).toHaveLength(1);          // an envelope elsewhere is still an envelope
+  });
+});
+
+// === AN ENVELOPE IS NEVER A RECORD, WHATEVER CHAT IT LANDS IN ==============================
+// The RECORD half of the ruling f013bea made for the guard channel: ask about the MESSAGE, never
+// about the chat. `isTransit` (isRelayChannelChat) can only recognise a wire whose NAME this node
+// has already learned; `isEnvelope` needs nothing learned and nothing configured, because relay
+// traffic is recognisable in the FRAME from the first one. The two are OR'd, NOT swapped — the
+// name test stays the only thing that catches a HUMAN line typed into a wire, which is not an
+// envelope, and the cases below check both halves are still doing their own job.
+describe('AN ENVELOPE IS NEVER RECORDED — the message, not the chat', () => {
+  it('REPRODUCE-FIRST: an envelope on the UNNAMED relay channel is handled but never recorded', async () => {
+    // Stated first, so this case cannot quietly stop modelling the live shape: the chat-identity
+    // test is blind to this chat by construction.
+    expect(isRelayChannelChat(CFG, { chatId: SPLIT_ID, chatName: null })).toBe(false);
+    const { spine, brain, transcript, meshCalls } = harness();
+    await spine.handleInbound(onUnnamed(envelope()));
+    // FAILED before this change with ONE inbound line — and that one line is the whole defect:
+    // transcript.log is where the conversation gets REGISTERED (contacts.resolve → ensureContact
+    // writes the conversations.yaml entry and mkdirs conversations/whatsapp/egpt-mesh-do-kg-…/),
+    // so it IS the folder and the transcript.md a relay channel must never have.
+    expect(transcript.logged).toEqual([]);
+    expect(brain.calls).toEqual([]);            // never dispatched as chat…
+    expect(meshCalls).toHaveLength(1);          // …and the routing is untouched
+  });
+
+  it('a HUMAN line on that same unnamed channel is STILL an ordinary conversation — the residual half, locked', async () => {
+    // The honest limit of a message-level test, locked so it is not mistaken for closed. Chatter
+    // in a wire — a human wandering in, our own 🤔 placeholder escaping the echo gate, a peer's
+    // mirror frame — is NOT an envelope, so only the NAME test can recognise it, and on this chat
+    // the name test is blind. That is what mints `agents.egpt.threadId` on a channel that should
+    // have none. Closing it needs isRelayChannelChat to learn the id: a different change, on a
+    // different file, deliberately not made here.
+    const { spine, brain, transcript } = harness();
+    await spine.handleInbound(onUnnamed('hola?', { msgKey: 'u2' }));
+    expect(transcript.logged.map((l) => l.chatId)).toContain(SPLIT_ID);
+    expect(brain.calls.map((c) => c.chatId)).toEqual([SPLIT_ID]);
+  });
+
+  it('DECISION — a stray envelope in an ORDINARY chat is not recorded either: relay traffic is not chat wherever it lands', async () => {
+    // Not a hypothetical. mesh's SELF-FALLBACK posts envelopes into the Self chat BY DESIGN when a
+    // relay channel does not resolve (mesh.mjs selfRoute — "Relaying through this chat meanwhile"),
+    // so the chat an envelope arrives in is not reliably a wire and a chat-identity test can never
+    // cover that case; a message-level one covers it for free. Nothing is lost: since f70edce the
+    // relayed turn runs in the ORIGIN conversation and is recorded THERE, and the frame itself is
+    // in Beeper. What is avoided is a machine frame in a human transcript — which is not an audit
+    // trail, it is read BACK into the next prompt as recent context.
+    const { spine, brain, transcript, meshCalls } = harness();
+    await spine.handleInbound(elsewhere(envelope(), { msgKey: 'e1' }));
+    expect(transcript.logged).toEqual([]);
+    expect(brain.calls).toEqual([]);
+    expect(meshCalls).toHaveLength(1);          // still decoded and acted on, exactly as before
+  });
+
+  it('…and that chat itself is NOT transit: an ordinary line in it records and answers exactly as before', async () => {
+    const { spine, brain, transcript } = harness();
+    await spine.handleInbound(elsewhere(envelope(), { msgKey: 'e1' }));
+    await spine.handleInbound(elsewhere('hola?', { msgKey: 'e2' }));
+    expect(transcript.logged.filter((l) => l.reply == null).map((l) => l.chatId)).toEqual(['!fam']);
+    expect(brain.calls.map((c) => c.chatId)).toEqual(['!fam']);
   });
 });
 

@@ -503,7 +503,31 @@ export function createSpine({
     // routes exactly as it always did (classify returns for it two branches earlier). The ONE
     // ingestion point stays the one ingestion point — this is which messages reach it, not a
     // second writer.
-    if (!isTransit(ev)) await transcript.log(ev);          // ←── THE INGESTION POINT (C1.2). The only one.
+    //
+    // AND AN ENVELOPE IS NEVER RECORDED, WHATEVER CHAT IT LANDS IN — the RECORD half of the ruling
+    // f013bea made one derivation up for the guard channel: ask about the MESSAGE, never about the
+    // chat. `isTransit` can only recognise a wire whose NAME this node has already learned, so when
+    // the 2026-08-31 account split produced a SECOND egpt-mesh-do-kg whose pushedName was never
+    // recorded it answered FALSE for it and every envelope on that channel was ingested — which is
+    // the slug, the conversations.yaml entry and the transcript.md that channel should not have.
+    // `isEnvelope` needs nothing learned and nothing configured. OR'd, never SWAPPED: the name test
+    // still catches the traffic no frame can identify — a HUMAN line typed into a named wire, our
+    // own 🤔 placeholder, a peer's mirror frame — and remains the only test that can.
+    //
+    // WHATEVER CHAT IT LANDS IN is deliberate, not collateral. mesh's SELF-FALLBACK posts envelopes
+    // into the Self chat BY DESIGN when a relay channel does not resolve (mesh.mjs selfRoute,
+    // "Relaying through this chat meanwhile"), so the chat an envelope arrives in is not reliably a
+    // wire at all and no chat-identity test can ever cover that. Nothing is lost by not recording
+    // it: since f70edce the relayed turn runs in the ORIGIN conversation and is recorded THERE, and
+    // the frame itself is in Beeper. What is avoided is a machine frame in a human transcript — not
+    // an audit trail, but a line read BACK into the next prompt as recent context (readTranscript).
+    //
+    // ONLY HERE, not at the transit check in classify: an envelope returns from classify TWO
+    // branches ABOVE `if (isTransit(ev)) return null`, so it can never reach that line and OR-ing
+    // isEnvelope into it would be unreachable — and hoisting the widened test above the envelope
+    // branch would kill mesh routing outright. That ordering is what keeps "skipping the record"
+    // from ever becoming "skipping the routing".
+    if (!isTransit(ev) && !isEnvelope(ev)) await transcript.log(ev);   // ←── THE INGESTION POINT (C1.2). The only one.
     // Radio relay: a genuine inbound voice note, in a room joined to a radio, airs on the
     // station (createRadioNoteRelay owns the rest of the gate — joined+enabled, sender→speaker,
     // dedupe). Fire-and-forget with its own catch, the SAME shape transcript.log uses for its
@@ -625,8 +649,8 @@ export function createSpine({
     // not chat — decode + act on it (a request at the responder, a reply/mirror-update
     // at the origin) and stop. Detected EARLY, before gating: an envelope is ADDRESSED
     // traffic, so it bypasses this chat's ambient reply modes (the responder's own
-    // being-turn still respects that being's availability, inside mesh.handle). Recorded
-    // like any received message (C1.2). A relay envelope is NON-human traffic (it may
+    // being-turn still respects that being's availability, inside mesh.handle). NEVER recorded,
+    // in ANY chat — see the ingestion point above. A relay envelope is NON-human traffic (it may
     // DISPLAY as the operator — the 2026-06-19 loop), so it counts toward the loop cap;
     // a STOPPED channel suppresses the responder turn entirely.
     if (mesh?.isEnvelope?.(ev)) {
