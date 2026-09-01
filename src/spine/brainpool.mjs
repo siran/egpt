@@ -30,7 +30,6 @@ import { slugDir, getBeing, recordThread, readIdentityFeed, seedIdentityLayers, 
 // THE wake vocabulary, imported — not re-read here. `handles:` (else the map key) plus the
 // CONDITIONAL fallback_handle, exactly as the mention matcher resolves them, so what the card
 // tells an agent it answers to can never drift from what actually wakes it (feedConfig below).
-import { wakeTokens, fallbackWake } from './router.mjs';
 import { Room } from '../room-core.mjs';
 import { isContextOverflowError, isDeadSessionError } from '../brain-errors.mjs';
 import { parseFrequency } from './heartbeat-loader.mjs';
@@ -342,21 +341,16 @@ export function createBrainPool({
   //                      for an agent that declares none, and fillCardPlaceholders DROPS THE
   //                      WHOLE LINE on a blank value, so an unnamed agent renders no stamp
   //                      rather than an empty one. Same rule the reply stamp follows (c346d8e).
-  //   {{agent_handles}}  the @tokens it wakes on — wakeTokens (declared `handles:`, else the
-  //                      map key) ∪ fallbackWake's CONDITIONAL handles, deduped, in declaration
-  //                      order, rendered `@a, @b`. Imported from router.mjs rather than re-read
-  //                      here: a second reading of `handles:` is exactly how this repo grew
-  //                      three mention systems. '' (an agent addressable by nothing,
-  //                      `handles: []`) drops its line too.
+  //
+  // NO {{agent_handles}} (operator 2026-09-01: "handles need not appear in identity files, model
+  // is a bit agnostic, the model just gets prompted"). The ROUTER decides who wakes; telling the
+  // model its own wake tokens buys nothing and would have stated the CONDITIONAL fallback flatly
+  // — kg's card would claim @e when @e only reaches kg where the peer account is absent.
   //
   // A FRESH object per kickoff, spread OVER the node config — never a mutation of the shared
   // config object, and the agent taking the turn wins over any same-named top-level key.
-  const feedConfig = (being) => {
-    const cfg = getConfig() ?? {};
-    const agent = (cfg.agents ?? {})[being];
-    const handles = [...new Set([...wakeTokens(being, agent), ...(fallbackWake(agent)?.handles ?? [])])];
-    return { ...cfg, agent_name: labelOf(being), agent_handles: handles.map((h) => `@${h}`).join(', ') };
-  };
+  const feedConfig = (being) => ({ ...(getConfig() ?? {}), agent_name: labelOf(being) });
+
   // Last warm-pool key run per conversation (`<being>:<surface>:<chatId>` → warm key).
   // Lets a caller (the spine's per-turn TIMEOUT, DEFECT 2) evict EXACTLY the entry a
   // hung turn is wedged on without re-deriving the engine/slug — a hung CLI must not

@@ -223,11 +223,13 @@ describe('brainpool.turn', () => {
     });
     await brain.turn('egpt', ev);
     expect(seenCfg.agent_name).toBe('don');              // the `name:`, NOT the map key `egpt` — the whole bug
-    expect(seenCfg.agent_handles).toBe('@d, @don, @e');  // declared handles ∪ the CONDITIONAL fallback, router.mjs's own vocabulary
+    // NO agent_handles (operator 2026-09-01): the router decides who wakes, so the card does not
+    // tell the model its own tokens — and it would have stated the CONDITIONAL fallback flatly.
+    expect('agent_handles' in seenCfg).toBe(false);
     expect(seenCfg.node_name).toBe('do');                // the node config still rides along untouched
     // Rendered, that is an identity card that says who it is and where it lives.
-    expect(fillCardPlaceholders('I am {{agent_name}} on {{node_name}}. I answer to {{agent_handles}}.', seenCfg))
-      .toBe('I am don on do. I answer to @d, @don, @e.');
+    expect(fillCardPlaceholders('I am {{agent_name}} on {{node_name}}.', seenCfg))
+      .toBe('I am don on do.');
   });
 
   it('an agent with NO name: renders the {{agent_name}} line AWAY, never an empty stamp', async () => {
