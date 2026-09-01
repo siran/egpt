@@ -12,7 +12,7 @@ import { createContacts } from '../src/spine/contacts.mjs';
 import { createBrains } from '../src/spine/brains.mjs';
 import { ConversationRoom } from '../src/room-core.mjs';
 import { buildClaudeArgs, DEFAULT_ALLOWED_TOOLS } from '../src/claude-args.mjs';
-import { emptyState, getBeing, getContact, ensureContact, recordThread, patchBeing, slugDir } from '../src/conversations-state.mjs';
+import { emptyState, getBeing, getContact, ensureContact, recordThread, patchBeing, slugDir, fillCardPlaceholders } from '../src/conversations-state.mjs';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -37,7 +37,7 @@ function fakePool(scriptedResults, { steerTakes = true } = {}) {
 
 const ev = { surface: 'whatsapp', chatId: '!room:beeper.com', chatName: 'SPOILER', line: 'An@[SPOILER].wa (14:05) #m1: hola', body: 'hola' };
 
-function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, loadFeed, loadManifest, loadAutoLayer, seedSession, seedMode, seedAgents, brains, afterTurn, io, seedLayers, resolveConfig, loadPermission, skipAccessLevelDefault, poolOverride, onLog, steerTakes } = {}) {
+function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, loadFeed, loadManifest, loadAutoLayer, labelOf, seedSession, seedMode, seedAgents, brains, afterTurn, io, seedLayers, resolveConfig, loadPermission, skipAccessLevelDefault, poolOverride, onLog, steerTakes } = {}) {
   let state = emptyState();
   if (seedSession || seedMode || seedAgents) {   // pre-register the contact (WITH a stored thread, an E mode, and/or per-being pins)
     const ens = ensureContact(state, ev.surface, ev.chatId, { pushedName: ev.chatName, slugHint: ev.chatName });
@@ -99,6 +99,7 @@ function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, load
     // warm override (the class TTL applies)
     resolveConfig: resolveConfig ?? (() => ({})),
     loadFeed: loadFeed ?? (async () => ''),        // default: no folder feed
+    ...(labelOf ? { labelOf } : {}),               // being -> display name, fed to the card as {{agent_name}} (default: '' — the line drops)
     loadManifest: loadManifest ?? (async () => ''),// default: no manifest → raw line (focus on warm logic)
     ...(seedLayers ? { seedLayers } : {}),         // the identity.d copy (default: the real seeder)
     ...(loadAutoLayer ? { loadAutoLayer } : {}),   // the mode:auto operator-role layer (default: real file)
@@ -197,6 +198,62 @@ describe('brainpool.turn', () => {
     });
     await brain.turn('e', ev);
     expect(seen).toEqual(['custom']);            // the agent-type def's personality, not 'default'
+  });
+
+  // ── 00-identity AS A TEMPLATE (operator 2026-09-01) ────────────────────────────────────
+  // "we can have it even as a template file with <node_name>, <agent_name>... this helps when
+  // egpt is used by other users, they only configure the name in config.yaml for their agents".
+  //
+  // THE LIVE BUG: do's persona is an eGPT instance NAMED `don` on node `do`; its hand-written
+  // identity file said "I am don" and the model STILL answered "Sí, soy eGPT — este hilo es mi
+  // nodo, no el de Don". A card that can only ASSERT a name is not the agent's own identity, so
+  // every node hand-edited its copy and they drifted. The feed config now carries WHICH agent is
+  // being fed — the one thing the node config could never say — so ONE shipped card is right
+  // everywhere. {{node_name}} needed nothing: the whole node config was already passed.
+  it('the kickoff feed config carries the ANSWERING agent\'s own name + handles, beside its node', async () => {
+    let seenCfg = null;
+    const config = {
+      node_name: 'do',
+      agents: { egpt: { name: 'don', handles: ['d', 'don'], fallback_handle: { handle: 'e', unless_present: '+13472576794' } } },
+    };
+    const { brain } = harness([{ text: 'ok', sessionId: 's' }], {
+      config,
+      labelOf: (b) => config.agents[b]?.name ?? '',
+      loadFeed: async (_p, cfg) => { seenCfg = cfg; return 'FEED'; },
+    });
+    await brain.turn('egpt', ev);
+    expect(seenCfg.agent_name).toBe('don');              // the `name:`, NOT the map key `egpt` — the whole bug
+    expect(seenCfg.agent_handles).toBe('@d, @don, @e');  // declared handles ∪ the CONDITIONAL fallback, router.mjs's own vocabulary
+    expect(seenCfg.node_name).toBe('do');                // the node config still rides along untouched
+    // Rendered, that is an identity card that says who it is and where it lives.
+    expect(fillCardPlaceholders('I am {{agent_name}} on {{node_name}}. I answer to {{agent_handles}}.', seenCfg))
+      .toBe('I am don on do. I answer to @d, @don, @e.');
+  });
+
+  it('an agent with NO name: renders the {{agent_name}} line AWAY, never an empty stamp', async () => {
+    let seenCfg = null;
+    // No `name:` — labelOf resolves '' by contract (it never falls back to the map key, c346d8e).
+    const config = { node_name: 'kg', agents: { nameless: { handles: ['n'] } } };
+    const { brain } = harness([{ text: 'ok', sessionId: 's' }], {
+      config,
+      labelOf: () => '',
+      loadFeed: async (_p, cfg) => { seenCfg = cfg; return 'FEED'; },
+    });
+    await brain.turn('nameless', ev);
+    expect(seenCfg.agent_name).toBe('');
+    // fillCardPlaceholders' drop-the-line rule does the rest — no code of its own needed here.
+    expect(fillCardPlaceholders('# I am {{agent_name}}\nI live on node {{node_name}}.', seenCfg))
+      .toBe('I live on node kg.');
+  });
+
+  it('the feed config is a FRESH object — the shared node config is never mutated', async () => {
+    const config = { node_name: 'kg', agents: { e: { name: 'egpt' } } };
+    const { brain } = harness([{ text: 'ok', sessionId: 's' }], {
+      config, labelOf: () => 'egpt', loadFeed: async () => 'FEED',
+    });
+    await brain.turn('e', ev);
+    expect('agent_name' in config).toBe(false);
+    expect('agent_handles' in config).toBe(false);
   });
 
   it('persona agent type (agents block) supplies E\'s def, resolved through the registry', async () => {

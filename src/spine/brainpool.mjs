@@ -27,6 +27,10 @@
 // its own `personality:` (see wrapFresh below), and its thread persists in a per-agent
 // NESTED block (recordThread(..., being)).
 import { slugDir, getBeing, recordThread, readIdentityFeed, seedIdentityLayers, readAutoModeLayer, appendThreadStat, mutateState, nowIsoString, rollTranscript, stampThreadId, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS } from '../conversations-state.mjs';
+// THE wake vocabulary, imported — not re-read here. `handles:` (else the map key) plus the
+// CONDITIONAL fallback_handle, exactly as the mention matcher resolves them, so what the card
+// tells an agent it answers to can never drift from what actually wakes it (feedConfig below).
+import { wakeTokens, fallbackWake } from './router.mjs';
 import { Room } from '../room-core.mjs';
 import { isContextOverflowError, isDeadSessionError } from '../brain-errors.mjs';
 import { parseFrequency } from './heartbeat-loader.mjs';
@@ -304,6 +308,7 @@ export function createBrainPool({
   resolveConfig = () => ({}),       // (convDir) -> that conversation's RESOLVED config doc (src/spine/config-resolver.mjs configFor). ONE namespace, three rungs; boot injects the live resolver, tests a canned doc.
   resolveScope = null,              // (being, surface, chatId) -> {surface, chatId}|null — THE IDENTITY SCOPE (src/spine/identity-scope.mjs, operator 2026-08-31). null — the default, and every caller that wires none — means every conversation is its own scope: the four keys below derive from exactly the inputs they derive from today, with no extra read.
   loadFeed = readIdentityFeed,      // (personality, config) -> the persona's full feed
+  labelOf = () => '',               // (being) -> its DISPLAY NAME — THE resolver (boot.mjs labelOf: the agents-registry `name:`, NEVER the map key, c346d8e), the SAME function the sender and the transcript service are handed, so the card stamps the name the chat stamps. Fed to the kickoff as {{agent_name}} (feedConfig below). Default '' — an unwired caller (a test) renders that line AWAY rather than leaking a key into an identity card
   seedLayers = seedIdentityLayers,  // (room, personality, {io}) -> copy the fed layers into <room>/identity.d
   loadAutoLayer = readAutoModeLayer,// () -> the `mode: auto` operator-role instruction layer (appended to an auto conversation's kickoff)
   loadManifest = null,              // () -> e_identity.md fallback (default below)
@@ -317,6 +322,41 @@ export function createBrainPool({
   const mkdir = io.mkdir ?? fsMkdir;
   const readFile = io.readFile ?? fsReadFile;
   const _loadManifest = loadManifest ?? (() => defaultLoadManifest(getConfig));
+
+  // THE ANSWERING AGENT'S OWN IDENTITY, as feed placeholders — what turns the shipped
+  // 00-identity card from one node's hand-written prose into a TEMPLATE (operator 2026-09-01:
+  // "we can have it even as a template file with <node_name>, <agent_name>... this helps when
+  // egpt is used by other users, they only configure the name in config.yaml for their agents").
+  //
+  // THE LIVE BUG: do's persona is an eGPT instance NAMED `don` on node `do`, and its identity
+  // file said "I am don" — yet the model still answered "Sí, soy eGPT — este hilo es mi nodo,
+  // no el de Don". A card can only ASSERT a name it was typed with; it could never BE the agent
+  // taking the turn, so every node hand-edited its own copy and they all drifted.
+  //
+  // The config the feed already receives is the NODE's whole config (passed so cards can quote
+  // {{chrome.bin}}), which is why {{node_name}} needed no change here at all. What it carried
+  // nothing of is WHICH agent is being fed: turn() knows (`being`), the config does not. These
+  // two keys are exactly that gap and nothing more:
+  //
+  //   {{agent_name}}     labelOf(being) — the agents-registry `name:`, NEVER the map key. ''
+  //                      for an agent that declares none, and fillCardPlaceholders DROPS THE
+  //                      WHOLE LINE on a blank value, so an unnamed agent renders no stamp
+  //                      rather than an empty one. Same rule the reply stamp follows (c346d8e).
+  //   {{agent_handles}}  the @tokens it wakes on — wakeTokens (declared `handles:`, else the
+  //                      map key) ∪ fallbackWake's CONDITIONAL handles, deduped, in declaration
+  //                      order, rendered `@a, @b`. Imported from router.mjs rather than re-read
+  //                      here: a second reading of `handles:` is exactly how this repo grew
+  //                      three mention systems. '' (an agent addressable by nothing,
+  //                      `handles: []`) drops its line too.
+  //
+  // A FRESH object per kickoff, spread OVER the node config — never a mutation of the shared
+  // config object, and the agent taking the turn wins over any same-named top-level key.
+  const feedConfig = (being) => {
+    const cfg = getConfig() ?? {};
+    const agent = (cfg.agents ?? {})[being];
+    const handles = [...new Set([...wakeTokens(being, agent), ...(fallbackWake(agent)?.handles ?? [])])];
+    return { ...cfg, agent_name: labelOf(being), agent_handles: handles.map((h) => `@${h}`).join(', ') };
+  };
   // Last warm-pool key run per conversation (`<being>:<surface>:<chatId>` → warm key).
   // Lets a caller (the spine's per-turn TIMEOUT, DEFECT 2) evict EXACTLY the entry a
   // hung turn is wedged on without re-deriving the engine/slug — a hung CLI must not
@@ -687,8 +727,10 @@ export function createBrainPool({
         // `personality:`, so the feed it gets is ITS identity plus the shared
         // layers, and no agent opens a thread not knowing what /media is or that
         // it has a folder.
-        // config passed so the cards can quote it ({{chrome.bin}} etc.)
-        let feed = (await loadFeed(personality, getConfig() ?? {})) || '';
+        // config passed so the cards can quote it ({{chrome.bin}} etc.) — plus THIS being's own
+        // name and handles (feedConfig above), so 00-identity can be one shipped template every
+        // agent on every node renders correctly instead of a per-node hand-edit.
+        let feed = (await loadFeed(personality, feedConfig(being))) || '';
         if (!feed.trim()) feed = (await _loadManifest()) || '';
         // 'mode: auto': append the operator-role instruction layer to the kickoff feed so
         // a fresh auto thread learns the stance up front. Best-effort (a missing layer just

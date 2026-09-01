@@ -1289,7 +1289,10 @@ export async function boot({
   // exactly one room as a `wa-group` member resolves to THAT ROOM — so room/acim's E and the
   // "perrito traducciones" group's E are one being: one thread, one warm CLI, one queue, one
   // access_level. Every other conversation resolves to itself and is unchanged.
-  const brain = createBrainPool({ pool, getConfig, contacts, loadState: _loadState, writeState: _writeState, brains, defaultKey, afterTurn: compaction.afterTurn, resolveConfig: configResolver.configFor, resolveScope: createIdentityScope({ resolveMembers: memberResolver, onLog: (m) => log.line?.(`[scope] ${m}`) }), io, onLog: (m) => log.line?.(`[brain] ${m}`) });
+  // labelOf rides along (operator 2026-09-01): the kickoff feed hands the card THIS being's own
+  // display name as {{agent_name}}, so one shipped 00-identity template reads correctly for every
+  // agent on every node. Same resolver the sender/transcript/mesh already take — one definition.
+  const brain = createBrainPool({ pool, getConfig, contacts, loadState: _loadState, writeState: _writeState, brains, defaultKey, labelOf, afterTurn: compaction.afterTurn, resolveConfig: configResolver.configFor, resolveScope: createIdentityScope({ resolveMembers: memberResolver, onLog: (m) => log.line?.(`[scope] ${m}`) }), io, onLog: (m) => log.line?.(`[brain] ${m}`) });
 
   // ONE turn machinery for the whole node (see the import note). Built here because it needs
   // `brain` (its scopeOf/allowNewInput/steer seams) and the bridge pair the steer-ack rides —

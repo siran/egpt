@@ -29,4 +29,25 @@ describe('card placeholders', () => {
     expect(fillCardPlaceholders('./transcript.md   this thread', cfg))
       .toBe('./transcript.md   this thread');
   });
+
+  // THE LOCK behind shipping 00-identity as a TEMPLATE (operator 2026-09-01): every node's
+  // EXISTING hand-written profile identity file — no {{...}} anywhere in it — must keep feeding
+  // BYTE-FOR-BYTE as it does today, CRLF and blank lines included. A card only changes when it
+  // actually quotes config; nothing else is touched on the way through.
+  it('a card with NO placeholder passes through byte-identical (CRLF, blanks and all)', () => {
+    const card = '# I am eGPT\r\n\r\nI am a loop around a mind.\r\n\r\n  indented   spacing kept\r\n';
+    expect(fillCardPlaceholders(card, cfg)).toBe(card);
+    expect(fillCardPlaceholders(card, {})).toBe(card);   // …and with no config at all
+  });
+
+  // The three keys the identity template quotes (agent_name / agent_handles from the brainpool's
+  // feedConfig, node_name straight off the node config) are ordinary dotted lookups — nothing in
+  // fillCardPlaceholders knows about them, which is the point: the caller supplies the facts.
+  it('fills the identity-template keys, and drops the stamp line for an agent with no name:', () => {
+    const feedCfg = { node_name: 'kg', agent_name: 'egpt', agent_handles: '@ekg, @egptkg' };
+    expect(fillCardPlaceholders('I am {{agent_name}} on {{node_name}}, answering to {{agent_handles}}.', feedCfg))
+      .toBe('I am egpt on kg, answering to @ekg, @egptkg.');
+    expect(fillCardPlaceholders('# I am {{agent_name}}\nI live on node {{node_name}}.', { ...feedCfg, agent_name: '' }))
+      .toBe('I live on node kg.');
+  });
 });
