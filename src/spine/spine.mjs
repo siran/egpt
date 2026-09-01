@@ -884,10 +884,12 @@ export function createSpine({
   async function runReplyTurn({ to, ev, d, out, replyTo = null, turnKey, queued, burst = false }) {
     try {
       // THIS turn is now the live one on this key, and this is whose message it answers —
-      // the identity the same_sender tier of allow_new_input compares against (2026-08-30).
+      // the identity the same_sender tier of allow_new_input compares against (2026-08-30) —
+      // and IN WHICH CHAT, which the KEY no longer implies now that brain.scopeOf can put
+      // several chats on one key (2026-09-01; admitsNewInput requires it for any steer).
       // Set here, not in openAndRunReply: openAndRunReply runs at ARRIVAL, so a queued turn
       // would claim the live slot from the turn actually streaming.
-      turns.setLive(turnKey, { senderId: ev.senderId ?? null });
+      turns.setLive(turnKey, { senderId: ev.senderId ?? null, chatId: ev.chatId ?? null });
       out.activate?.();                                 // queued → live the moment its turn starts
       // Drain the accumulated cycle. A QUEUED turn prompts with it (ending with its own
       // mention line); an IMMEDIATE turn discards it and keeps the single dispatch line —

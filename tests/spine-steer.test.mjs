@@ -24,6 +24,7 @@
 // every non-ccode brain byte-identical to before.
 import { describe, it, expect } from 'vitest';
 import { createSpine } from '../src/spine/spine.mjs';
+import { createTurns } from '../src/spine/turns.mjs';
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
@@ -68,7 +69,11 @@ function recordingSender() {
 // steer seams are scriptable. `hasSeams:false` models a Brain that predates the feature — and,
 // equivalently, a spine wired to one; `steerTakes:false` models what llama/pi actually produce
 // (no session-level inject(), so the pool refuses and NOTHING happened).
-function steerableBrain({ allow = 'same_sender', steerTakes = true, hasSeams = true, throwOnFirst = false } = {}) {
+// `scopeOf` models a SHARED SCOPE — the seam turns.keyOf resolves the turn key through, which is
+// what lets several chats land on ONE key (a WhatsApp group invited into a room runs on the
+// ROOM's thread and the ROOM's warm process). Omitted ⇒ no seam at all, i.e. key = the event's
+// own address, which is what every other test here uses.
+function steerableBrain({ allow = 'same_sender', steerTakes = true, hasSeams = true, throwOnFirst = false, scopeOf = null } = {}) {
   const calls = [], steered = [], allowAsked = [], order = [];
   let releaseFirst = null;
   const brain = {
@@ -90,6 +95,7 @@ function steerableBrain({ allow = 'same_sender', steerTakes = true, hasSeams = t
     brain.allowNewInput = async (being, ev) => { allowAsked.push({ being, body: ev.body }); return allow; };
     brain.steer = (being, ev) => { if (!steerTakes) return false; steered.push(ev.body); return true; };
   }
+  if (scopeOf) brain.scopeOf = scopeOf;
   return brain;
 }
 
@@ -118,8 +124,8 @@ function build(brainOpts = {}, bridgeOpts = {}) {
 }
 
 const CHAT = 'chat-A@g.us';
-const msg = (body, msgId, senderId = 'an') => ({
-  surface: 'wa', node: 'wa', chatId: CHAT, chatName: 'fam',
+const msg = (body, msgId, senderId = 'an', chatId = CHAT) => ({
+  surface: 'wa', node: 'wa', chatId, chatName: 'fam',
   senderId, senderName: senderId, msgId, ts: 1000, body, kind: 'text', raw: {},
 });
 
@@ -339,5 +345,105 @@ describe('spine — allow_new_input steers the live turn (operator 2026-08-30)',
     brain.releaseFirst();
     await Promise.all([p1, p2, p3]);
     expect(brain.calls).toHaveLength(1);
+  });
+});
+
+// A SHARED SCOPE PUTS SEVERAL CHATS ON ONE TURN KEY (operator 2026-09-01).
+//
+// The verdict above compared the SENDER and nothing else, which was sufficient only while a turn
+// key meant exactly one chat. It no longer does: turns.keyOf resolves the key through
+// brain.scopeOf, so a WhatsApp group invited into a room runs on the ROOM's key — room/acim and
+// the group "perrito traduciones" share one today.
+//
+// THE LIVE FAULT: a group member writes while the ROOM's turn is streaming. Same key, and the
+// sender passes ('any', or the same person under 'same_sender') ⇒ his line is woven in. But a
+// woven message makes its caller produce NOTHING for its conversation — no placeholder, no reply,
+// only a 👀 — and the live turn's single answer is delivered to the LIVE TURN'S origin, the room.
+// His question is answered where he cannot read it, and all he ever sees is an eye.
+//
+// The operator's ruling: the unit is the PAIR. "Keep the same sender+group: add, different
+// sender+group: enqueue." So the CHAT must match for ANY steer, in both tiers; the sender must
+// match on top of that only under 'same_sender'. Queueing is today's safe behaviour and produces
+// a real reply in the right chat.
+describe("spine — a SHARED SCOPE puts two chats on one key; only the live turn's OWN chat may steer it", () => {
+  const ROOM = 'room-acim';
+  const GROUP = 'perrito-traducciones@g.us';
+  // Both chats resolve to the ROOM's instance: one warm key, one queue, ONE turn key.
+  const sharedScope = { scopeOf: async () => ({ surface: 'wa', chatId: ROOM }) };
+
+  it("REPRODUCE: a line from the GROUP is NOT woven into the ROOM's live turn — it queues and is answered in its OWN chat", async () => {
+    const { bridge, sender, brain } = build({ allow: 'any', ...sharedScope });
+    const p1 = bridge.emit(msg('one', 'm1', 'an', ROOM));
+    await flush();
+    const p2 = bridge.emit(msg('two', 'm2', 'marina', GROUP));   // same key, other chat, mid-turn
+    await flush();
+
+    expect(brain.steered).toEqual([]);                    // was ['two'] — woven into the ROOM's turn
+    expect(bridge.reactions).toEqual([]);                 // …and the 👀 was all the group ever saw
+    expect(sender.placeholders).toHaveLength(2);
+    expect(sender.placeholders[1].chatId).toBe(GROUP);    // a real reply, in the chat that asked
+    expect(sender.placeholders[1].opts).toMatchObject({ queued: true, queuedAhead: 1 });
+    brain.releaseFirst();
+    await Promise.all([p1, p2]);
+    expect(sender.placeholders[1].finished).toEqual({ text: 'reply-two', surface: true });
+    expect(brain.order).toEqual(['start:one', 'end:one', 'start:two', 'end:two']);
+  });
+
+  it("'same_sender' does not override the chat: the SAME person writing from the other chat still queues", async () => {
+    const { bridge, sender, brain } = build({ allow: 'same_sender', ...sharedScope });
+    const p1 = bridge.emit(msg('one', 'm1', 'an', ROOM));
+    await flush();
+    const p2 = bridge.emit(msg('two', 'm2', 'an', GROUP));       // same sender, different chat
+    await flush();
+
+    expect(brain.steered).toEqual([]);
+    expect(sender.placeholders).toHaveLength(2);
+    expect(sender.placeholders[1].chatId).toBe(GROUP);
+    brain.releaseFirst();
+    await Promise.all([p1, p2]);
+    expect(brain.order).toEqual(['start:one', 'end:one', 'start:two', 'end:two']);
+  });
+
+  // The other half of the ruling, and the proof this is a NO-OP wherever the chat matches: inside
+  // ONE chat a shared scope changes nothing, in either tier.
+  it("the SAME chat still steers under 'same_sender' from the same person — unchanged", async () => {
+    const { bridge, sender, brain } = build({ allow: 'same_sender', ...sharedScope });
+    const p1 = bridge.emit(msg('one', 'm1', 'an', GROUP));
+    await flush();
+    const p2 = bridge.emit(msg('actually do X', 'm2', 'an', GROUP));
+    await flush();
+
+    expect(brain.steered).toEqual(['actually do X']);
+    expect(sender.placeholders).toHaveLength(1);
+    expect(brain.calls).toHaveLength(1);
+    brain.releaseFirst();
+    await Promise.all([p1, p2]);
+  });
+
+  it("the SAME chat still steers under 'any' from a DIFFERENT sender — unchanged", async () => {
+    const { bridge, sender, brain } = build({ allow: 'any', ...sharedScope });
+    const p1 = bridge.emit(msg('one', 'm1', 'an', GROUP));
+    await flush();
+    const p2 = bridge.emit(msg('two', 'm2', 'marina', GROUP));
+    await flush();
+
+    expect(brain.steered).toEqual(['two']);
+    expect(sender.placeholders).toHaveLength(1);
+    brain.releaseFirst();
+    await Promise.all([p1, p2]);
+    expect(brain.calls).toHaveLength(1);
+  });
+
+  // FAIL CLOSED. admitsNewInput is THE one verdict, and steerRelayedTurn hands it a live record
+  // built OUTSIDE this module (mesh.relayInFlight). A record with no chat on it is a caller that
+  // forgot to record one, and it must QUEUE — never steer. Same convention as the policy
+  // allowlist: an unexpected value falls to today's behavior, never to the widest one.
+  it("a live record with NO chatId is never steered, even under 'any'", async () => {
+    const turns = createTurns({ brain: { async allowNewInput() { return 'any'; }, steer: () => true } });
+    const ev = { surface: 'wa', chatId: ROOM, senderId: 'an', body: 'two' };
+
+    expect(await turns.steerRelayedTurn({ to: 'e', ev, live: { senderId: 'an' } })).toBe(false);
+    // …and the very same record WITH the chat steers, so it is the missing field that decided it.
+    expect(await turns.steerRelayedTurn({ to: 'e', ev, live: { senderId: 'an', chatId: ROOM } })).toBe(true);
   });
 });

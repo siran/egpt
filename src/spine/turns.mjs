@@ -60,7 +60,11 @@ export function createTurns({ brain, bridge = null, bridgeOf = null, log = null 
   // deliberately absent too — its reply is recorded and never surfaced, so a message steered
   // into one would be answered where nobody can read it. Absent ⇒ no steer ⇒ today's
   // queueing, which is the safe direction for every gap.
-  const liveTurnBy = new Map();                // convKey -> { senderId } of the message the LIVE turn is answering
+  //
+  // THE CHAT is recorded beside the sender (operator 2026-09-01) because the KEY no longer
+  // implies one: keyOf resolves it through brain.scopeOf, so a SHARED SCOPE puts several chats
+  // on one key. Every caller that claims the live slot records both — see admitsNewInput.
+  const liveTurnBy = new Map();                // convKey -> { senderId, chatId } of the message the LIVE turn is answering
 
   // Per-conversation turn key = the routed being + the conversation its INSTANCE lives in.
   // It maps 1:1 to the warm-pool key (`<being>:<engine>:<surface>:<slug>`) at the
@@ -101,7 +105,21 @@ export function createTurns({ brain, bridge = null, bridgeOf = null, log = null 
     // 'none' (and any value brainpool could not normalize) reads as "queue" here. Deliberately
     // an allowlist, not a denylist: an unexpected value must fall to today's behavior, never
     // to the widest one.
-    const admits = allow === 'any' || (allow === 'same_sender' && (ev.senderId ?? null) === live.senderId);
+    //
+    // THE CHAT MUST MATCH FOR ANY STEER, IN BOTH TIERS (operator 2026-09-01: "keep the same
+    // sender+group: add, different sender+group: enqueue"). The sender alone was enough only
+    // while a turn key meant exactly one chat; keyOf resolves the key through brain.scopeOf, so
+    // a SHARED SCOPE now puts several chats on one key — room/acim and the WhatsApp group
+    // "perrito traduciones" share one today. A group member writing while the ROOM's turn is
+    // streaming passed the sender test and was WOVEN IN, which means his caller produced nothing
+    // for HIS chat (no placeholder, no reply, just the 👀) while the live turn's answer went to
+    // ITS origin, the room, where he cannot read it. This is a NO-OP for every unscoped
+    // conversation — there the key already implies one chat, so ev.chatId always equalled
+    // live.chatId — and it bites only where a scope is shared, which is exactly where it is
+    // needed. Strict, the both-null case included: a caller that forgot to record the chat must
+    // fail CLOSED (queue), same reason as the allowlist above.
+    const sameChat = (ev.chatId ?? null) === (live.chatId ?? null);
+    const admits = sameChat && (allow === 'any' || (allow === 'same_sender' && (ev.senderId ?? null) === live.senderId));
     return admits ? allow : false;
   }
 

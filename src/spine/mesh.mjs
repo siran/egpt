@@ -283,9 +283,12 @@ export function createMeshService({
   // placeholder rather than being folded into a turn `don` is running. The being travels back on
   // the origin object itself (`relayBeing`), the same way relayOut already stashes `waitKey` on it
   // — it is a local object, never encoded, so nothing new reaches the wire.
-  const inFlight = new Map();   // `${surface}:${chatId}:${being}` -> { senderId } of the line that started it
+  // The CHAT rides on the record as well as in the key (operator 2026-09-01): admitsNewInput now
+  // requires it for any steer, and this lookup is already per-chat, so it costs nothing here and
+  // keeps both halves of the rule reading the same shape.
+  const inFlight = new Map();   // `${surface}:${chatId}:${being}` -> { senderId, chatId } of the line that started it
   const inFlightKey = (surface, chatId, being) => `${String(surface ?? '')}:${String(chatId ?? '')}:${String(being ?? '')}`;
-  const noteInFlight = (ev, being) => { inFlight.set(inFlightKey(ev?.surface, ev?.chatId, being), { senderId: ev?.senderId ?? null }); };
+  const noteInFlight = (ev, being) => { inFlight.set(inFlightKey(ev?.surface, ev?.chatId, being), { senderId: ev?.senderId ?? null, chatId: ev?.chatId ?? null }); };
   const clearInFlight = (returnTo) => {
     const chat = returnTo?.chat_id ?? returnTo?.chatId ?? (typeof returnTo === 'string' ? returnTo : null);
     if (chat != null) inFlight.delete(inFlightKey(returnTo?.surface, chat, returnTo?.relayBeing));
@@ -585,11 +588,12 @@ export function createMeshService({
             const ahead = turns?.bump(turnKey) ?? 0;
             stream = bridge.startStream(chat, wrap('', false, ahead), {});
             const runTurn = async () => {
-              // THIS turn is now the live one on this key, and this is whose message it answers.
+              // THIS turn is now the live one on this key, and this is whose message it answers,
+              // and IN WHICH CHAT (2026-09-01: a shared scope puts several chats on one key).
               // Set here, not above: openAndRunReply's lesson — a QUEUED turn must not claim the
               // live slot from the turn actually streaming. Cleared in the `finally`, which is what
               // makes it correct on the throw path too.
-              turns?.setLive(turnKey, { senderId: who });
+              turns?.setLive(turnKey, { senderId: who, chatId: ev.chatId ?? null });
               if (ahead > 0) { try { stream?.update?.(wrap('')); } catch {} }   // queued → live, the local activate()
               try {
                 const r = await brain.turn(being, ev, (partial) => { try { stream?.update?.(wrap(textOf(partial))); } catch {} });
