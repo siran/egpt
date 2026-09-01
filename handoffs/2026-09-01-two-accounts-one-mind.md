@@ -1,8 +1,13 @@
 # Two accounts, one mind — 2026-08-31 / 2026-09-01
 
-Sixteen commits over two days, all deployed to both nodes. The through-line: the
-two nodes stopped sharing a Beeper account, and almost everything that broke
-afterwards broke because some piece of the system had quietly assumed they did.
+Nineteen commits over two days. The through-line: the two nodes stopped sharing a
+Beeper account, and almost everything that broke afterwards broke because some
+piece of the system had quietly assumed they did.
+
+The first sixteen are deployed to both nodes. The last three — the mesh-stamp
+lock, the node-wide pin, and the sender+chat steer rule — are committed and
+pushed but NOT yet deployed; they were held so the wren config could go out in
+the same restart.
 
 Read `git log` for the changes. This is the shape and the open work.
 
@@ -102,6 +107,17 @@ These cost time to establish. Do not re-derive them.
 - **dolly's ssh is msys bash on port 2222** (`~/.ssh/config` pins it; port 22 is
   a cmd.exe sshd). `%USERPROFILE%` is not expanded there — that broke
   `upgrade.ps1`'s peer hop, now fixed with `~`.
+- **A Claude Code session file is keyed by WORKING DIRECTORY**, at
+  `~/.claude/projects/<sanitised-cwd>/<id>.jsonl` plus a sidecar directory of the
+  same name holding subagent transcripts and tool results. A being whose type
+  file pins a `cwd` therefore keeps all its threads under that one project dir
+  (wren: `C:/Users/an/bin/egpt`), and `--resume` cannot reach a thread created
+  under a different cwd. Moving a thread between beings means moving both the
+  file and the sidecar.
+- **The identity card reaches the PROMPT only on a fresh thread** (brainpool's
+  `wrapFresh`). `identity.d/` is copied into the conversation folder every turn
+  for local consult, but a RESUMED thread is never told who it is. An adopted
+  thread has to be fed the layers by hand.
 - **`egpt-daemon` is Stopped *and* Disabled on both nodes.** Both run from the
   Startup-folder supervisor. `setup/deploy.ps1` cannot work; **`setup/upgrade.ps1
   -Peer an@dolly` is the deploy** and does both nodes including their source
@@ -111,21 +127,24 @@ These cost time to establish. Do not re-derive them.
 
 ## Open work
 
-### 1. The mesh stamp has no regression lock — do this first
+### 1. The mesh stamp — DONE, `8ffc6e0`
 
 `mesh.mjs` renders the reply label. It rendered the raw map key instead of the
 display name, so do's persona (keyed `egpt`, named `don`) answered as `don:`
 locally and `egpt:` relayed.
 
-**It regressed three times in two days.** Fixed (`c13db3f`), reverted
-(`7dad417`) on a ruling made when kg's key and name happened to be identical,
-then re-fixed *inertly* twice (`24c2a7d`, `c346d8e` — a patch script wrote the
-option but not the change), and finally landed in `e782524`.
+**It regressed three times in two days** and nothing tested it — the suite was
+3296 before the real fix and 3296 after. Fixed (`c13db3f`), reverted (`7dad417`)
+on a ruling made when kg's key and name happened to be identical, then re-fixed
+*inertly* twice (`24c2a7d`, `c346d8e` — a patch script wrote the option but not
+the change), and finally landed in `e782524`.
 
-Nothing tests it. The suite was 3296 before the real fix and 3296 after. A lock
-was attempted and abandoned: the fake's persona in `tests/spine-mesh.test.mjs` is
-keyed `e` with no body emoji, so the stamp never renders in that harness. The
-harness needs a persona whose `name` and key differ.
+The lock is now in `tests/spine-mesh.test.mjs`, on its own fixture carrying do's
+live shape: keyed `egpt`, named `don`, with a `body_emoji`. Both are load-bearing
+and the comment above the block says so — keying the persona the same as its name
+reproduces exactly the blind spot `7dad417` was ruled under, and dropping the
+emoji stops the stamp rendering at all, which is why the earlier attempt (riding
+on the neighbouring `e` fixture) had nothing to assert on.
 
 ### 2. `beeper-bridge.test.mjs` is flaky under load
 
@@ -200,12 +219,20 @@ diverge silently.
 
 ---
 
-## Global wren — scoped, not built
+## Global wren — BUILT (`0ddd4d0`), not yet configured
 
-wren is the meta-engineer: one mind over egpt, the radio, and the machine. Today
-it has **five different threads** — self/Radio WnL (sharing `2a3975c2`), HFM
-(`35db53b0`), SPOILER (`0c701e7e`), lobby (`f953fc6f`) — so "wren" in one chat
-knows nothing of "wren" in another.
+wren is the meta-engineer: one mind over egpt, the radio, and the machine. It had
+**six conversations and five threads**, so "wren" in one chat knew nothing of
+"wren" in another:
+
+| conversation | thread |
+| --- | --- |
+| `whatsapp/yz3kJjWXsQJofK9naaVb` — @anrodz, the self-DM | `2a3975c2` |
+| `whatsapp/9M8DhdjMm3Qc3hFm3NVy` — Radio WnL | `2a3975c2` — the same one |
+| `whatsapp/UuY6K6ly3BV3Ye7QqIne` — SPOILER ALERT: chat de EyAy | `0c701e7e` |
+| `whatsapp/6ljZJkx0OaY9ZVhEzFgi` — HFM | `35db53b0` |
+| `whatsapp/bWv3isJYZMzDwJzQWDLr` — Reencuentro CRC 1991-2026 | `ee8a293a` |
+| `room/lobby` | `f953fc6f` |
 
 **Wanted:** one thread, node-wide. Operator: *"wren should always be the same. he
 is a meta engineer."* And: *"warm cli is not so important, since the thread is
@@ -213,52 +240,85 @@ going to be replaced by this one, thus the memory — a new warm thread can live
 and substitute all other wrens."* The thread is the memory; the process is
 disposable.
 
-**The seam already exists and was built for this.** `identity-scope.mjs`'s
-`resolveScope(being, surface, chatId)` takes `being` **unused**, deliberately:
-its author noted that a being pinned node-wide is a rule that reads `being` and
-slots in *ahead of* the membership rule, with no contract change. All four keys
-already derive from the scope it returns.
+### What shipped
 
-**So the work is:**
+The seam was already there and had been built for exactly this: `resolveScope`
+took `being` unused, and its header said the rule would read `being`, sit ahead
+of the membership rule, and need no contract change. All three held.
 
-1. A rule in `identity-scope.mjs`: if the agent declares a node-wide pin, return
-   that scope for every conversation, ahead of the wa-group membership rule.
-2. Config, flat on the agent — **not** under `conversation_defaults`, which means
-   "global default, per-conversation override", the opposite of what this is:
+```yaml
+agents:
+  wren:
+    scope: room/wren
+```
 
-   ```yaml
-   agents:
-     wren:
-       thread_id: <uuid>        # ONE thread, node-wide
-   ```
+Flat on the agent, deliberately NOT under `conversation_defaults` — that means
+"a node-wide default a conversation may override", the opposite of a pin. When
+the pin fires, no membership lookup happens at all: it is an explicit operator
+declaration about a BEING, while membership is an inference about a CHAT.
 
-3. `allow_new_input` keyed on `(sender, chat)` rather than sender alone. Once
-   every conversation feeds one queue, "same sender" is too coarse — the operator
-   said this himself: *"keep the same sender+group: add, different sender+group:
-   enqueue."*
+Because all four identity keys already derive from the scope, pinning it is the
+whole job. The thread, the warm process, the turn FIFO and the run config follow.
 
-**Provenance is mandatory, not optional.** One instance now hears every chat.
-`brainpool`'s `withOrigin` already frames a scoped turn with which chat the line
-arrived in and that the reply goes back there — confirm it covers this case.
+**A note the earlier scoping got wrong:** a `thread_id` on the agent is the WRONG
+knob, and it is the corruption `identity-scope.mjs`'s header warns about. A
+thread is not configuration — it lives in state, in `conversations.yaml` or
+`rooms.yaml`, at the conversation's address. Pin the scope and the shared thread
+follows; pin the thread alone and you get one session file with several warm keys
+on it.
 
-**The cost, and it is real:** one queue means head-of-line blocking. A long turn
-in the radio room delays a message in HFM. That is inherent to being one mind,
-not a bug to engineer around.
+The surface goes through `surfaceOf`, so `shell/wren` and `room/wren` are the
+same address. The console's NETWORK is `shell` and its SURFACE is `room`, and
+either name looks right in config.yaml — without the normalisation, writing the
+wrong one opens a second wren that shares nothing with the first.
 
-**Consequence to state out loud before doing it:** all five existing wren threads
-are abandoned. That includes `35db53b0`, the HFM one, which was measured at
-**882,608 tokens of a 1,000,000 window** — 88% full, and it would not have
-compacted until 95%. Overshooting does not compact, it **resets**: `brainpool`
-starts a fresh session, so wren would have lost the conversation rather than
-compressing it. `ratio` was lowered 0.95 → 0.80 on kg for that reason.
+`allow_new_input` is now keyed on `(sender, chat)` (`aee43c0`), which a shared
+scope makes necessary and which fixed a live defect at acim on the way — see the
+commit.
 
-**Do not hand-set the same thread id in several conversations meanwhile.** That
-is the unsafe version of exactly this: N conversations, N warm-pool keys, N
+### What is left, and it is all configuration
+
+1. `mkdir ~/.egpt/rooms/wren` — what makes `room/wren` a real room. Folders and
+   `rooms.yaml` entries are independent (`lu2` exists as a folder with no entry).
+2. `config.yaml`: `scope: room/wren` on the agent. **Needs a spine restart** —
+   config is read once at boot.
+3. `rooms.yaml`: `room/wren` → `agents.wren.threadId`. This one reloads live.
+4. Move the session file. **wren's type file pins `cwd: C:/Users/an/bin/egpt`**,
+   and Claude Code files sessions by working directory, so every wren thread lives
+   in `~/.claude/projects/C--Users-an-bin-egpt/`. A thread created anywhere else
+   must be copied there — the `.jsonl` **and its sidecar directory** — or
+   `--resume` simply will not find it.
+
+### Two things to know before doing it
+
+**The identity card only reaches the prompt on a FRESH thread.** A resumed one
+never gets it, so a thread adopted from elsewhere does not know it is wren, on kg,
+with the room limbs and rules. Feed it the four `skeletons/room/` layers (about
+2 KB) into the conversation before the handover, or it starts blind.
+
+**One queue means head-of-line blocking.** A long turn in the radio room delays a
+message in HFM. That is inherent to being one mind, not a bug to engineer around.
+
+**And wren's memory now spans chats.** Something said in SPOILER ALERT is visible
+to wren answering in HFM. `allowed_users` gates who can WAKE it, not what it
+remembers.
+
+### The threads that get abandoned
+
+All five. That includes `35db53b0`, the HFM one, measured at **882,608 tokens of
+a 1,000,000 window** — 88% full, and it would not have compacted until 95%.
+Overshooting does not compact, it **resets**: `brainpool` starts a fresh session,
+so wren would have lost that conversation rather than compressing it. `ratio` was
+lowered 0.95 → 0.80 on kg for that reason.
+
+**Do not hand-set the same thread id in several conversations instead.** That is
+the unsafe version of exactly this: N conversations, N warm-pool keys, N
 `claude --resume` processes on one session file. It is already configured that
 way in one place — `2a3975c2` sits on both the self-DM and Radio WnL — and has
-not visibly broken, but that is luck, not design.
+not visibly broken, but that is luck, not design. The pin is what makes it safe.
 
 ---
+
 
 ## Traps
 
