@@ -4,10 +4,11 @@ Nineteen commits over two days. The through-line: the two nodes stopped sharing 
 Beeper account, and almost everything that broke afterwards broke because some
 piece of the system had quietly assumed they did.
 
-The first sixteen are deployed to both nodes. The last three — the mesh-stamp
-lock, the node-wide pin, and the sender+chat steer rule — are committed and
-pushed but NOT yet deployed; they were held so the wren config could go out in
-the same restart.
+The first sixteen are deployed to both nodes. Everything after `34a650c` — the
+mesh-stamp lock, the node-wide pin, the sender+chat steer rule, the `agent`
+surface, and the pinned-prompt rule — is committed and pushed but NOT deployed;
+it was held so the wren config could go out in the same restart. All of it is
+inert until a `scope:` exists in a live config, and none does.
 
 Read `git log` for the changes. This is the shape and the open work.
 
@@ -249,7 +250,7 @@ of the membership rule, and need no contract change. All three held.
 ```yaml
 agents:
   wren:
-    scope: room/wren
+    scope: agent/wren
 ```
 
 Flat on the agent, deliberately NOT under `conversation_defaults` — that means
@@ -267,10 +268,44 @@ thread is not configuration — it lives in state, in `conversations.yaml` or
 follows; pin the thread alone and you get one session file with several warm keys
 on it.
 
-The surface goes through `surfaceOf`, so `shell/wren` and `room/wren` are the
+The surface goes through `surfaceOf`, so `shell/lobby` and `room/lobby` are the
 same address. The console's NETWORK is `shell` and its SURFACE is `room`, and
 either name looks right in config.yaml — without the normalisation, writing the
-wrong one opens a second wren that shares nothing with the first.
+wrong one opens a second instance that shares nothing with the first.
+
+**The address is `agent/wren`, not `room/wren`** (operator, 2026-09-01, rejecting
+the first proposal): *"wren is just an opus. above egpt, above the radio. full
+access to everything… basically a super human being with real existence and
+agency in the world."* He is not a room. So `agent` became the third entity root
+(`67d227e`), beside the Beeper tree and `rooms/`:
+
+```
+conversations/<surface>/<slug>/   the Beeper tree
+rooms/<slug>/                    a room, which does not arrive through Beeper
+agents/<name>/                   an agent's own conversation, likewise
+```
+
+`rooms-file.mjs` was GENERALIZED, not copied — every surface-specific thing in it
+was one of three values (the surface, the file, the file's root key) — so
+`config/agents.yaml` is the same rung over a second registry, holding a pinned
+being's global thread and its access configuration. It routes off the namespace
+itself, which is what lets `room-core`'s `loadConfig` reach it unchanged.
+
+`fixedSlugFor` gained `agent` beside `room`: the folder is `agents/wren/`, never
+`agents/wren-2609011200/`, and never re-slugged — that folder IS the address every
+chat resolves to.
+
+**And a pinned being is prompted with the message, never the accumulated cycle**
+(`198b151`). This is what "the same thread" means to the operator: *"when in a
+chat he is mentioned, the model is prompted with that message, not with the
+accumulated."* Without it the pin made things WORSE — `pushCycle` keys on the turn
+key, which the pin has just made the scope, so every pinned chat's chatter lands
+in one bucket and a single queue means most turns are queued.
+
+The condition is the PIN, not the shared key. The operator ruled directly: *"wren
+is the same in all groups/rooms (including acim and perrito traducciones), but E
+remains independent per conversation, as always."* A wa-group joined to a room
+shares a key by MEMBERSHIP and keeps accumulating exactly as today.
 
 `allow_new_input` is now keyed on `(sender, chat)` (`aee43c0`), which a shared
 scope makes necessary and which fixed a live defect at acim on the way — see the
@@ -278,11 +313,12 @@ commit.
 
 ### What is left, and it is all configuration
 
-1. `mkdir ~/.egpt/rooms/wren` — what makes `room/wren` a real room. Folders and
-   `rooms.yaml` entries are independent (`lu2` exists as a folder with no entry).
-2. `config.yaml`: `scope: room/wren` on the agent. **Needs a spine restart** —
+1. `mkdir ~/.egpt/agents/wren` — what makes `agent/wren` a real conversation.
+   Folders and registry entries are independent (`lu2` exists as a room folder
+   with no `rooms.yaml` entry).
+2. `config.yaml`: `scope: agent/wren` on the agent. **Needs a spine restart** —
    config is read once at boot.
-3. `rooms.yaml`: `room/wren` → `agents.wren.threadId`. This one reloads live.
+3. `agents.yaml`: `agent/wren` → `agents.wren.threadId`. This one reloads live.
 4. Move the session file. **wren's type file pins `cwd: C:/Users/an/bin/egpt`**,
    and Claude Code files sessions by working directory, so every wren thread lives
    in `~/.claude/projects/C--Users-an-bin-egpt/`. A thread created anywhere else
