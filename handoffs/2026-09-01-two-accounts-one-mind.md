@@ -4,11 +4,7 @@ Nineteen commits over two days. The through-line: the two nodes stopped sharing 
 Beeper account, and almost everything that broke afterwards broke because some
 piece of the system had quietly assumed they did.
 
-The first sixteen are deployed to both nodes. Everything after `34a650c` — the
-mesh-stamp lock, the node-wide pin, the sender+chat steer rule, the `agent`
-surface, and the pinned-prompt rule — is committed and pushed but NOT deployed;
-it was held so the wren config could go out in the same restart. All of it is
-inert until a `scope:` exists in a live config, and none does.
+**Everything is deployed to both nodes (`d4be10a`), and global wren is LIVE.**
 
 Read `git log` for the changes. This is the shape and the open work.
 
@@ -220,7 +216,7 @@ diverge silently.
 
 ---
 
-## Global wren — BUILT (`0ddd4d0`), not yet configured
+## Global wren — LIVE since 2026-09-01 14:00
 
 wren is the meta-engineer: one mind over egpt, the radio, and the machine. It had
 **six conversations and five threads**, so "wren" in one chat knew nothing of
@@ -311,14 +307,47 @@ shares a key by MEMBERSHIP and keeps accumulating exactly as today.
 scope makes necessary and which fixed a live defect at acim on the way — see the
 commit.
 
-### What is left, and it is all configuration
+### How it was wired, and how to verify it again
 
-1. `mkdir ~/.egpt/agents/wren` — what makes `agent/wren` a real conversation.
-   Folders and registry entries are independent (`lu2` exists as a room folder
-   with no `rooms.yaml` entry).
-2. `config.yaml`: `scope: agent/wren` on the agent. **Needs a spine restart** —
-   config is read once at boot.
-3. `agents.yaml`: `agent/wren` → `agents.wren.threadId`. This one reloads live.
+```
+wren in HFM            -> agent/wren   pinned=true
+wren in Radio WnL      -> agent/wren   pinned=true
+wren in SPOILER ALERT  -> agent/wren   pinned=true
+wren in the console    -> agent/wren   pinned=true
+egpt in HFM            -> null              (unpinned: untouched)
+
+thread   : 3fddb61c-72f1-41d1-8ee9-328645c89084
+folder   : C:Usersan.egptagentswren
+warm key : wren:ccode:agent:wren
+```
+
+Resolved against the LIVE config and state, not asserted. Note `readConfigSync`,
+not `readConfig` — the latter is async and returns a Promise, which silently
+reads as "no config at all" and made the pin look broken on the first attempt.
+
+1. `~/.egpt/agents/wren/` created. It starts EMPTY: `seedLayers` copies the
+   `skeletons/room/` layers into `identity.d/` on the first turn.
+2. `config.yaml`: `scope: agent/wren`, flat on the agent. Needed the restart.
+3. The thread was written into `conversations.yaml` under `contacts.agent.wren`
+   with `conversation_path: .egpt/agents/wren` — `parse()` re-derives the slug as
+   that path's basename, and `fixedSlugFor` keeps it fixed. NOT hand-written into
+   `agents.yaml`: the read-through migration lifts it there on the first write,
+   which is the designed path and needs no entry to exist first.
+4. `3fddb61c-….jsonl` (4053 records, 33 MB) and its sidecar copied into
+   `~/.claude/projects/C--Users-an-bin-egpt/`, the project dir wren's pinned
+   `cwd` puts it in. The source was LIVE and being appended to, so the copy drops
+   a trailing partial line and validates the last complete one — a half-written
+   record would make `--resume` fail to parse.
+
+Backups: `config.yaml.bak-wren-0901`, `conversations.yaml.bak-wren-0901`,
+`egpt-xhigh.yaml.bak-opus-0901` (wren is `model: opus`, `effort: xhigh` — type
+files are `readFileSync` per turn with no cache, so that needed no restart).
+
+**The adopted thread is a FORK, not a share.** Two files in two project dirs. The
+Claude Code window it came from kept running on the original; wren continues the
+same conversation from the snapshot. No branch was needed. And because the thread
+is adopted rather than fresh, the identity card never reaches its prompt — the
+four skeleton layers were read INTO the conversation before the handover instead.
 4. Move the session file. **wren's type file pins `cwd: C:/Users/an/bin/egpt`**,
    and Claude Code files sessions by working directory, so every wren thread lives
    in `~/.claude/projects/C--Users-an-bin-egpt/`. A thread created anywhere else
@@ -355,6 +384,64 @@ not visibly broken, but that is luck, not design. The pin is what makes it safe.
 
 ---
 
+
+## The guard outage — 2026-09-01, and what it taught
+
+E went silent in *perrito traduciones*, a chat the guard had never looked at.
+
+```
+guard: whatsapp:EWlUhmXiFZTYGiKdbfRP stopped — mesh turn suppressed
+[perrito traduciones] Rodz: "⚠ ekg.kg did not answer"
+```
+
+`EWlUhmXiFZTYGiKdbfRP` is `egpt-mesh-do-kg` — and it is the SECOND chat by that
+name, created by the account split. The first, `vcRg7Jh6cLBnQaceeyCP`, has carried
+`guard: { turns: -1 }` since July. That override is keyed by chat id, so it did
+not come along.
+
+**The counter is a loop detector resting on one assumption**, in `stop-guard.mjs`'s
+own header: *"a human turn resets the count, so normal conversation never trips
+it."* On a wire that is structurally false — every message is an envelope, so the
+count only ever climbs. It was not a loop detector there; it was a countdown to a
+permanent stop, and unrecoverable in practice, because clearing it needs a
+`resume` typed into a machine-to-machine channel nobody watches.
+
+Fixed in `f013bea` (the guard) and `d4be10a` (the record), both by the same
+ruling: **ask about the MESSAGE, never about the chat.**
+
+### Why the obvious predicate was the wrong one
+
+`isTransit` / `isRelayChannelChat` looks like the natural test and is the weaker
+one: it matches the configured `relay_channel` NAME against `ev.chatName`, so it
+only recognises a wire whose name this node has already learned. The new channel's
+`pushedName` was never recorded — its `conversations.yaml` entry still carries the
+raw id as its comment — so it answered false, which is ALSO how that channel came
+to have a conversation, a transcript and thread `30688631` that transit never gets.
+
+**A chat-identity test fails exactly when a channel is new, which is exactly when
+it must not.**
+
+And the case no chat-identity test can ever cover: `mesh.mjs`'s `selfRoute` posts
+envelopes into the SELF chat by design when a relay channel does not resolve. The
+operator's own command channel is not a wire, so the mesh's own failure path is
+precisely the one the narrow reading would miss — filling his transcript with wire
+frames exactly when things are already going wrong.
+
+### Still open
+
+The RECORD half is closed. Non-envelope traffic on an unnamed wire — a human
+line, our own placeholder escaping the echo gate, a peer's mirror frame — is not
+recognisable in the frame, so only the name test can catch it, and on that chat
+the name test is blind. That path still registers a conversation. It is locked as
+a test so it is not mistaken for fixed. Closing it means teaching
+`isRelayChannelChat` the id.
+
+Also still open, and now live rather than theoretical: **two chats share the name
+`egpt-mesh-do-kg`**, and `relay_channel` resolves by name with `resolveChatId`
+taking the FIRST match. Which chat kg relays into is currently decided by
+iteration order — see open item 5.
+
+---
 
 ## Traps
 
