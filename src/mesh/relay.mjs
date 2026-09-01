@@ -220,6 +220,12 @@ const appendVia = (existing, hop) => { const e = String(existing ?? '').trim(); 
 // when it's actually water through pipes" — a relayed COMMAND is structural tubing, a
 // relayed BEING-PROMPT is an AI turn; they must not look alike). ONE place so the operator
 // can change either string in a single edit.
+
+// The `by:` an origin stamps on a request when the surface gave it no sender NAME. It is a
+// PLACEHOLDER, not an identity: the responder's steer (src/spine/mesh.mjs) must never read two
+// envelopes carrying it as "the same person", so it is exported and tested for there rather
+// than re-spelled (operator 2026-08-31).
+export const ANON_SENDER = 'someone';
 const THINKING_STATUS = '🤔 thinking…';
 const STRUCTURAL_STATUS = '🔗 relaying…';
 // LOCAL_KEY_PREFIX (operator 2026-07-28): shell-port's postStatus returns null BY DESIGN (the
@@ -266,6 +272,9 @@ export function createMeshRelay({
   //     (operator 2026-08-31: "mesh is transport, not mixing" — see src/spine/mesh.mjs's
   //     meshEv). It rides the tail already and survives every chain hop unchanged; passing it
   //     here just stops the dispatcher having to re-split it back out of `re`.
+  //     `sender` is the ORIGIN HUMAN'S display name (the request's own `by:`), handed over so
+  //     the dispatcher can answer allow_new_input's same_sender tier about a RELAYED turn —
+  //     its synthetic event carries no senderId (operator 2026-08-31, src/spine/mesh.mjs).
   //     Null → one-shot runBeing fallback.
   //   ORIGIN: openOriginStream(returnTo, info{by,emoji,msgId,structural}) → {update,finish}.
   //     info.msgId is the origin placeholder (post_id) to edit IN PLACE; emoji stamps identity.
@@ -321,7 +330,15 @@ export function createMeshRelay({
   // structural (operator 2026-07-27): true when this relay carries a `/command`, not a
   // being-prompt — the origin already knows this at the call site (forwardCommand gates on
   // the allowlist), so it rides straight through as a flag rather than being re-derived here.
-  async function relayOut({ being, route = null, to: explicitTo = '', body = '', origin = null, sender = '', paths = null, structural = false } = {}) {
+  // quiet (operator 2026-08-31, "the mesh is only transport"): the ORIGIN already has a turn in
+  // flight for this conversation and has decided — LOCALLY, on its own allow_new_input verdict —
+  // not to open a second placeholder for this line. So: no ack, no "🤔", no notify. The
+  // correlation id is still MINTED (the synthetic branch below), which is what keeps the safe
+  // degradation: if the responder does NOT weave the line in, its reply comes home carrying that
+  // synthetic post_id, and openOriginStream never PATCHes a synthetic — so the answer posts FRESH
+  // instead of resolving a placeholder that was never opened. Each quiet relay gets its OWN key,
+  // so two of them cannot overwrite each other's return route in `awaiting`.
+  async function relayOut({ being, route = null, to: explicitTo = '', body = '', origin = null, sender = '', paths = null, structural = false, quiet = false } = {}) {
     // MULTIPATH (operator 2026-07-06: multipath is configuration — an agent is a list of paths,
     // every message through every path). `paths` = [{ route, to, label }] (routes already resolved
     // by the caller's canonRoute). Post the placeholder ONCE (one 🤔 / post_id for the human), then
@@ -334,7 +351,8 @@ export function createMeshRelay({
       let postId = null;
       let ackSettled = false;                 // did ackWithPostId run to completion (regardless of what it returned)?
       const statusText = structural ? STRUCTURAL_STATUS : THINKING_STATUS;
-      if (ackWithPostId) {
+      if (quiet) { ackSettled = true; }        // no placeholder — but STILL mint the id below (see relayOut's note)
+      else if (ackWithPostId) {
         try { const _raw = await ackWithPostId(origin, statusText); postId = typeof _raw === 'string' ? _raw : null; ackSettled = true; }
         catch { /* best-effort — ackSettled stays false, exactly like today's failure path */ }
       } else {
@@ -347,7 +365,7 @@ export function createMeshRelay({
         if (!p?.route) continue;
         const to = String(p?.to ?? '').trim();
         try {
-          const ok = await guardedSend(p.route, encodeMesh({ by: sender || 'someone', body, from: fromName, from_node: String(node), to, post_id: synthPostId, via: viaSeed }));
+          const ok = await guardedSend(p.route, encodeMesh({ by: sender || ANON_SENDER, body, from: fromName, from_node: String(node), to, post_id: synthPostId, via: viaSeed }));
           if (ok) anyOk = true;
           else log(`mesh: multipath ${being} path ${p.label ?? '?'} — send paused (loop guard)`);
         } catch (e) { log(`mesh: multipath ${being} path ${p.label ?? '?'} failed: ${e?.message ?? e}`); }
@@ -367,7 +385,8 @@ export function createMeshRelay({
     let postId = null;
     let ackSettled = false;                 // did ackWithPostId run to completion (regardless of what it returned)?
     const statusText = structural ? STRUCTURAL_STATUS : THINKING_STATUS;
-    if (ackWithPostId) {
+    if (quiet) { ackSettled = true; }        // no placeholder — but STILL mint the id below (see relayOut's note)
+    else if (ackWithPostId) {
       try { const _raw = await ackWithPostId(origin, statusText); postId = typeof _raw === 'string' ? _raw : null; ackSettled = true; }
       catch { /* best-effort — ackSettled stays false, exactly like today's failure path */ }
     } else {
@@ -386,7 +405,7 @@ export function createMeshRelay({
       // (e.g. carol posting into Rodz1) — seed `via` with its own identity so the traceroute
       // lists every relay agent the request passed through, including the origin's.
       const viaSeed = `${being}.${node}`;
-      const ok = await guardedSend(route, encodeMesh({ by: sender || 'someone', body, from: fromName, from_node: String(node), to, post_id: synthPostId, via: viaSeed }));
+      const ok = await guardedSend(route, encodeMesh({ by: sender || ANON_SENDER, body, from: fromName, from_node: String(node), to, post_id: synthPostId, via: viaSeed }));
       if (!ok) { await surface(origin, `!! mesh: too many sends to ${tgt}'s channel — paused (loop guard)`); return false; }
     }
     catch (e) { await surface(origin, `!! mesh relay to ${tgt} failed: ${e?.message ?? e}`); return false; }
@@ -538,7 +557,12 @@ export function createMeshRelay({
       // turn in THAT conversation, not in the channel the envelope happened to travel on. It is the
       // ORIGINAL origin's name even after N hops, because the relay-record branch above forwards
       // `from`/`from_node` verbatim rather than restamping them at each hop.
-      relayDispatch({ being: runB, prompt, route, from: prov.from, re: reAddress, post_id: prov.post_id, by: `${being}.${asNode}`, via: prov.via })
+      // `sender` — the ORIGIN human's display name off the SAME tail (`by:`, on the wire since the
+      // first envelope). The dispatcher needs it because the synthetic event it builds for the
+      // turn has `senderId: null` by design, and allow_new_input's same_sender tier would then
+      // read EVERY relayed envelope as "the same person" and weave a stranger's line into someone
+      // else's turn (operator 2026-08-31). Nothing new crosses the wire — this is already here.
+      relayDispatch({ being: runB, prompt, route, from: prov.from, sender: prov.by, re: reAddress, post_id: prov.post_id, by: `${being}.${asNode}`, via: prov.via })
         .catch((e) => log(`mesh: relayDispatch ${runB} failed: ${e?.message ?? e}`));
       return true;
     }

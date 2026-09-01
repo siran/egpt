@@ -66,6 +66,12 @@ import { createSynthesizerWorker } from './synthesizer-worker.mjs';
 import { startSynthesizerServer } from '../tools/synthesizer.mjs';
 import { createBrains } from './brains.mjs';
 import { createMeshService } from './mesh.mjs';
+// THE TURN MACHINERY (operator 2026-08-31) — built ONCE below and injected into BOTH the mesh
+// service and the spine. It used to be private to createSpine, which is why a RELAYED turn got
+// no FIFO, no queued placeholder and no allow_new_input steer; two instances would be worse than
+// none, because a relayed turn and a local turn in one conversation derive the SAME key and must
+// meet on the SAME queue.
+import { createTurns } from './turns.mjs';
 import { createCompaction } from './compaction.mjs';
 import { createHeartbeats } from './heartbeats.mjs';
 import { createHeartbeatLoader, parseFrequency, resolveTimeZone } from './heartbeat-loader.mjs';
@@ -1244,6 +1250,11 @@ export async function boot({
   // access_level. Every other conversation resolves to itself and is unchanged.
   const brain = createBrainPool({ pool, getConfig, contacts, loadState: _loadState, writeState: _writeState, brains, defaultKey, afterTurn: compaction.afterTurn, resolveConfig: configResolver.configFor, resolveScope: createIdentityScope({ resolveMembers: memberResolver, onLog: (m) => log.line?.(`[scope] ${m}`) }), io, onLog: (m) => log.line?.(`[brain] ${m}`) });
 
+  // ONE turn machinery for the whole node (see the import note). Built here because it needs
+  // `brain` (its scopeOf/allowNewInput/steer seams) and the bridge pair the steer-ack rides —
+  // all three exist by now — and because BOTH consumers below take this same instance.
+  const turns = createTurns({ brain, bridge, bridgeOf: rawBridgeOf, log });
+
   // operator slash commands (Self DM / authorized) — lifecycle wired now; reuses
   // the same exit codes the daemon respawns on. Constructed BEFORE the mesh: a
   // node-addressed command can arrive as an envelope and is executed through THIS
@@ -1319,7 +1330,7 @@ export async function boot({
   // loadState: the SAME conversations-state IO the router/gating DI already share (operator
   // 2026-08-15, allowed_users) — one reference, threaded to every call site that needs a
   // per-conversation override, never re-derived.
-  const mesh = createMeshService({ bridge: shellAwareBridge, brain, commands, getConfig, bodyEmojiOf, getSelfChatId: selfChatId, loadState: _loadState, onLog: (m) => log.line?.(`[mesh] ${m}`) });
+  const mesh = createMeshService({ bridge: shellAwareBridge, brain, commands, getConfig, bodyEmojiOf, getSelfChatId: selfChatId, loadState: _loadState, turns, onLog: (m) => log.line?.(`[mesh] ${m}`) });
   bridge.onEdit((e) => mesh.onEdit({ msgId: e.msgId, newText: e.newText }));
 
   // Conversation-E LIMBS (ROADMAP §3): a reply may carry own-line action commands
@@ -1453,7 +1464,7 @@ export async function boot({
   // agent's relay_channel is TRANSIT (no record, no chat dispatch — the messages live in Beeper),
   // and a frame carrying ANOTHER node's signature wakes nobody here. Own-node frames are
   // untouched: the room relay's tunnel carries this node's own fromNode across deliberately.
-  const spine = createSpine({ bridge, bridgeOf: rawBridgeOf, brain, ...services, commands, mesh, actions, advice, guard, guardOverride, stopSwitch, isSelfChat, isTransit: (ev) => isRelayChannelChat(getConfig(), ev), fromOtherNode: (ev) => fromOtherNode(getConfig(), ev), roomRelay, readTranscript, refreshConfig: heartbeatLoader.reload, radioRelay: radioRelay.relay, synthesize: vx.synthesize, voice: vx.voice, defaultBeing: defaultKey, labelOf, timeZone: transcriptTimeZone, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
+  const spine = createSpine({ bridge, bridgeOf: rawBridgeOf, brain, turns, ...services, commands, mesh, actions, advice, guard, guardOverride, stopSwitch, isSelfChat, isTransit: (ev) => isRelayChannelChat(getConfig(), ev), fromOtherNode: (ev) => fromOtherNode(getConfig(), ev), roomRelay, readTranscript, refreshConfig: heartbeatLoader.reload, radioRelay: radioRelay.relay, synthesize: vx.synthesize, voice: vx.voice, defaultBeing: defaultKey, labelOf, timeZone: transcriptTimeZone, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
   // Bind the advice service's answer-routing dispatch now that the spine exists: an
   // operator answer in the advice channel re-enters the pipe as a turn in the origin chat.
   advice.useDispatch(spine.handleInbound);

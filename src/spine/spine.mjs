@@ -21,7 +21,7 @@ import { writeFile, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { makeSerialByKey } from '../serial-by-key.mjs';
+import { createTurns } from './turns.mjs';
 import { isBrainFailureResult } from '../brain-errors.mjs';
 import { replyLine, contextSinceLastTurn, promptWithRecentContext, bodyForMessageId, promptWithQuotedMessage, RECENT_CONTEXT_MAX_CHARS } from '../transcript-log.mjs';
 import { isHumanTurn, parseStopWord } from '../stop-guard.mjs';
@@ -120,6 +120,14 @@ export function createSpine({
   // node's default one. Absent, or returning nullish for a given being, falls straight back to
   // `bridge` above — BYTE-IDENTICAL to before for every existing caller/test.
   bridgeOf = null,
+  // THE TURN MACHINERY (src/spine/turns.mjs, operator 2026-08-31): the per-conversation FIFO, the
+  // in-flight/queued count, the live-turn identity, the key derivation and the allow_new_input
+  // steer. OPTIONAL, and boot.mjs ALWAYS passes it — because it must be THE SAME INSTANCE the
+  // mesh service got, or a relayed turn and a local turn in one conversation queue on two
+  // different maps under the same key, which is precisely the concurrency the FIFO exists to
+  // prevent. Absent (every test, every older caller) → this spine builds its own private one,
+  // which is byte-for-byte the pre-extraction closure.
+  turns: injectedTurns = null,
   identity, router, gating, sender, transcript, heartbeats,
   commands,                            // optional §2c command intercept (operator slash commands)
   mesh,                                // optional §2c mesh service (Phase 4b cross-node relay)
@@ -190,6 +198,10 @@ export function createSpine({
   }
   const note = (s) => { try { log.line?.(s); } catch {} };
   const bridgeFor = (being) => (bridgeOf ? (bridgeOf(being) ?? bridge) : bridge);
+  // The shared turn machinery, or our own private one (see the option's note above). Built with
+  // the SAME bridge/bridgeOf pair `bridgeFor` uses, because the steer-ack react it owns is one of
+  // the spine's own direct bridge sends and must ride the acked being's connection.
+  const turns = injectedTurns ?? createTurns({ brain, bridge, bridgeOf, log });
 
   // --- GUARD (C7.7): the SINGLE per-channel loop-breaker + human STOP/RESUME, wired at
   //     THIS chokepoint (handleFast) through which every inbound turn flows. Injected, so
@@ -231,23 +243,18 @@ export function createSpine({
   //     time so stats() can report the oldest pending message's age. ---
   const queue = [];
   let pumping = null;
-  const turnBy = makeSerialByKey();           // per-conversation turn FIFO (the §7 "one turn at a time per key")
-  const trains = new Map();                    // convKey -> in-flight+queued turn count (drives the queued placeholder)
-  function bumpTrain(key) { const ahead = trains.get(key) ?? 0; trains.set(key, ahead + 1); return ahead; }
-  function dropTrain(key) { const n = (trains.get(key) ?? 1) - 1; if (n <= 0) trains.delete(key); else trains.set(key, n); }
-  // WHOSE message is the turn currently STREAMING on this key answering (operator 2026-08-30,
-  // allow_new_input)? `trains` cannot answer that: it is a COUNT of in-flight+queued turns,
-  // which is all the queued-placeholder needs, and it says nothing about identity. The
-  // same_sender tier needs identity, so this is the minimum state added beside it.
-  //
-  // Written by runReplyTurn ONLY — set as its first act (it is already at the front of
-  // turnBy, so it IS the live turn) and deleted in the same `finally` that drops the train,
-  // which is what makes it correct on the throw path too. A QUEUED turn is deliberately
-  // absent: there is no stream to weave into until it reaches the front. runContextTurn is
-  // deliberately absent too — its reply is recorded and never surfaced, so a message steered
-  // into one would be answered where nobody can read it. Absent ⇒ no steer ⇒ today's
-  // queueing, which is the safe direction for every gap.
-  const liveTurnBy = new Map();                // convKey -> { senderId } of the message the LIVE turn is answering
+  // THE MACHINERY ITSELF LIVES IN src/spine/turns.mjs NOW (operator 2026-08-31). It was
+  // closure-private here, which is why src/spine/mesh.mjs's relayDispatch — the RESPONDER of a
+  // cross-node relay — could not reach any of it and called brain.turn bare: a relayed turn got
+  // no FIFO, no queued placeholder, no steer and no scopeOf, and a second message in the same
+  // conversation opened a second bare "🤔 thinking…". boot.mjs builds ONE instance and injects it
+  // into BOTH services, so a relayed turn and a local turn in the same conversation queue on the
+  // same key (they already derive the same one — f70edce). These aliases keep every call site
+  // below spelled exactly as it was; the move is otherwise behaviourally empty.
+  const turnBy = turns.serial;                 // per-conversation turn FIFO (the §7 "one turn at a time per key")
+  const bumpTrain = turns.bump;                // convKey -> in-flight+queued turn count (drives the queued placeholder)
+  const dropTrain = turns.drop;
+  const steerLiveTurn = turns.steerLiveTurn;   // the allow_new_input weave (see turns.mjs for the ruling + the measurement)
 
   // --- Per-conversation CYCLE accumulation (operator 2026-07-04: "when addressing the
   //     queued messages … it should accumulate messages, even E's own past replies in
@@ -695,24 +702,13 @@ export function createSpine({
       return { turn: turn ? Promise.all([turn, sideTurn]).then(() => {}) : sideTurn };
     };
 
-    // Per-conversation turn key = the routed being + the conversation its INSTANCE lives in.
-    // It maps 1:1 to the warm-pool key (`<being>:<engine>:<surface>:<slug>`) at the
-    // granularity that matters — same being, same instance — so serializing on it is exactly
-    // "one turn at a time per warm key". Different instances (or different beings) key apart
-    // and run concurrently. Also the CYCLE key: ambient lines accumulate under it so a
-    // later queued mention on the same conversation drains exactly this chat's cycle.
-    //
-    // brain.scopeOf (operator 2026-08-31) is what makes "this conversation" and "its instance"
-    // two different questions: a WhatsApp group invited into room/acim as a `wa-group` member
-    // runs on the ROOM's thread and the ROOM's warm process, so it has to queue on the ROOM's
-    // key too. A per-chat key here beside a per-room warm key is exactly the split that puts
-    // two `claude --resume <same id>` processes on one session file. HEAD-OF-LINE BLOCKING IS
-    // THE ACCEPTED PRICE (the operator has been told): the room and every group joined to it
-    // share ONE queue, and no concurrency is added to dodge it — the concurrency IS the defect.
-    // OPTIONAL SEAM: a Brain without scopeOf (every test fake, every older caller) falls back
-    // to the event's own address, which is byte-identical to the line this replaces.
-    const scope = (await brain.scopeOf?.(to, ev)) ?? ev;
-    const turnKey = `${to}:${scope.surface}:${scope.chatId}`;
+    // Per-conversation turn key = the routed being + the conversation its INSTANCE lives in
+    // (turns.keyOf — the ONE derivation, shared with the fan-out below and with the mesh
+    // responder). It maps 1:1 to the warm-pool key at the granularity that matters, so
+    // serializing on it is exactly "one turn at a time per warm key". Also the CYCLE key:
+    // ambient lines accumulate under it so a later queued mention on the same conversation
+    // drains exactly this chat's cycle. See turns.mjs for why scopeOf decides it.
+    const turnKey = await turns.keyOf(to, ev);
 
     // mode:auto is an IMPERSONATION of the operator: E replies to OTHER people AS the
     // operator, and the operator's OWN messages (isSender) here NEVER prompt E. Accumulate
@@ -736,7 +732,29 @@ export function createSpine({
     // the message to the target's node (a visible envelope) and stop — the reply streams
     // back into this chat as a living mirror. A local-being target has meshTarget=null
     // and falls through to the brain below.
-    if (meshTarget && mesh && d.mayReply) { await mesh.forward(ev, meshTarget); return withRelay(); }
+    //
+    // THE STEER VERDICT IS TAKEN HERE TOO (operator 2026-08-31: "the mesh is only transport").
+    // This branch returns ABOVE steerLiveTurn/openAndRunReply, so until now a mesh-target message
+    // never reached the steer path at all: a second line while the remote turn was still streaming
+    // opened a SECOND "🤔 thinking…" instead of being folded in — the live fault. The obvious fix
+    // (ask the responder, then invent a wire frame for "folded in") was ruled out: the placeholder's
+    // lifecycle belongs to the ORIGIN, not to the protocol. And the origin needs no protocol — it
+    // sent envelope #1 and has not seen it finish (mesh.relayInFlight), which IS "a turn is in
+    // flight over there", known locally.
+    //
+    // So the SAME allow_new_input rule decides, at the SAME point in the sequence it decides
+    // locally: before anything opens a placeholder. Admitted ⇒ forward the line QUIET — no
+    // placeholder, no origin-wait timer, and nothing new on the wire — betting the responder weaves
+    // it into the turn already streaming into this chat's living mirror. When the bet loses (the
+    // responder queues instead) its reply still comes home and posts FRESH; nothing strands either
+    // way. A mesh service without the seam (older callers, fakes) reads null ⇒ never quiet ⇒
+    // byte-identical to before.
+    if (meshTarget && mesh && d.mayReply) {
+      const relayBeing = gateAs(targets[0], to);          // THE relay agent whose mode governs this forward
+      const quiet = await turns.steerRelayedTurn({ to: relayBeing, ev, live: mesh.relayInFlight?.(ev, relayBeing) ?? null });
+      await mesh.forward(ev, meshTarget, { quiet });
+      return withRelay();
+    }
 
     // AUTO DWELL (auto chats only): a person messaging an auto chat doesn't get an instant
     // reply — a human reads the burst and wanders back. The message is already on the record
@@ -809,60 +827,9 @@ export function createSpine({
     } finally { clearTimeoutFn(timer); }
   }
 
-  // The steer ack's reactionKey — same convention as the /react limb (reply-actions.mjs's
-  // EMOJI_ALIASES 'eyes'): "seen", not "thinking" (that's the placeholder's job, and a woven
-  // message gets no placeholder).
-  const STEER_ACK_EMOJI = '👀';
-
-  // STEER THE LIVE TURN (operator's ruling 2026-08-30, `allow_new_input`). A message that
-  // arrives while a turn is ALREADY streaming on this key can be WOVEN INTO that turn instead
-  // of queueing behind it — the running turn then answers the new instruction, in ONE reply.
-  //
-  // WHY THIS IS POSSIBLE AT ALL: measured 2026-08-30 against the real `claude --input-format
-  // stream-json` CLI. A second user line written to a live stdin mid-turn is ABSORBED by an
-  // AGENTIC turn at a tool boundary (one result, answering the new instruction, 4 of 6 planned
-  // Reads abandoned, then 143s of silence — no second result), while a pure-text turn instead
-  // finishes and answers twice. See warm-cli-session.mjs's header for the full measurement.
-  // ONLY ccode was measured; pi is untested and llama has no stream — neither exports `inject`,
-  // so both land on the false branch below and queue exactly as they do today.
-  //
-  // TRUE means the message was genuinely woven in, and the caller must then produce NOTHING
-  // NEW FOR THE CONVERSATION: no placeholder, no reply, no train — only a lightweight reaction
-  // on the inbound message itself (below), acking that it was received and folded in (operator
-  // 2026-08-30: silently absorbing it read as dropped). FALSE means NOTHING HAPPENED — not "it
-  // half happened" — so the caller falls straight through to openAndRunReply, i.e. today's
-  // behavior. That sharpness is the whole safety story: the pool's `steer` never runs a turn as
-  // a fallback (warm-sessions.mjs), so a false can never leave a turn running that nobody delivers.
-  //
-  // Both brain seams are OPTIONAL. A spine wired with a Brain that has neither (every test
-  // fake, every older caller) can never steer, and is byte-identical to before.
-  async function steerLiveTurn({ to, ev, turnKey }) {
-    const live = liveTurnBy.get(turnKey);
-    if (!live) return false;                          // nothing streaming on this key to steer
-    if (typeof brain.steer !== 'function' || typeof brain.allowNewInput !== 'function') return false;
-    let allow;
-    try { allow = await brain.allowNewInput(to, ev); }
-    catch (e) { note(`allow_new_input ${to}/${ev.chatId}: ${e?.message ?? e}`); return false; }
-    // 'none' (and any value brainpool could not normalize) reads as "queue" here. Deliberately
-    // an allowlist, not a denylist: an unexpected value must fall to today's behavior, never
-    // to the widest one.
-    const admits = allow === 'any' || (allow === 'same_sender' && (ev.senderId ?? null) === live.senderId);
-    if (!admits) return false;
-    let woven = false;
-    try { woven = await brain.steer(to, ev); }
-    catch (e) { note(`steer ${to}/${ev.chatId}: ${e?.message ?? e}`); return false; }
-    if (woven !== true) return false;                 // the turn ended between the check and the push — queue it
-    note(`steer ${to}/${ev.chatId}: wove ${ev.senderName ?? ev.senderId ?? '?'}'s message into the live turn (allow_new_input=${allow})`);
-    // ACK the steered message itself (operator 2026-08-30): a woven message gets no placeholder
-    // and no reply of its own — it's folded into the live turn's ONE eventual answer — so without
-    // this its sender sees nothing until then. A reaction, not a message: it doesn't open a
-    // second train. Same primitive + reactionKey convention as the /react limb (reply-actions.mjs,
-    // bridge.react → beeper's sendReaction). Best-effort: a reaction fault must never undo the
-    // steer that already landed.
-    try { await bridgeFor(to).react?.(ev.chatId, ev.msgId, STEER_ACK_EMOJI); }
-    catch (e) { note(`steer-ack ${to}/${ev.chatId}: ${e?.message ?? e}`); }
-    return true;
-  }
+  // (STEER THE LIVE TURN moved to src/spine/turns.mjs on 2026-08-31, along with the FIFO, the
+  // train count and the live-turn identity it reads — the mesh responder needs the same weave,
+  // and one steer means one place it can be decided. Aliased as `steerLiveTurn` above.)
 
   // Open THIS mention's placeholder + enqueue its reply turn on the per-conversation FIFO.
   // Returns the turn's completion promise.
@@ -901,9 +868,9 @@ export function createSpine({
         if (t.mesh) { if (mesh) await mesh.forward(ev, t.mesh); return; }
         // The SAME instance resolution the primary target's key gets above (operator
         // 2026-08-31). A fan-out target takes an ordinary turn on its own queue, so a queue
-        // keyed NARROWER than the warm key it guards is the corruption case for it too.
-        const scope = (await brain.scopeOf?.(being, ev)) ?? ev;
-        await openAndRunReply({ to: being, ev, d, turnKey: `${being}:${scope.surface}:${scope.chatId}` });
+        // keyed NARROWER than the warm key it guards is the corruption case for it too. ONE
+        // derivation now (turns.keyOf) — this used to be a second copy of the line above it.
+        await openAndRunReply({ to: being, ev, d, turnKey: await turns.keyOf(being, ev) });
       } catch (e) { note(`fan-out ${being}/${ev.chatId}: ${e?.message ?? e}`); }
     })).then(() => {});
   }
@@ -927,7 +894,7 @@ export function createSpine({
       // the identity the same_sender tier of allow_new_input compares against (2026-08-30).
       // Set here, not in openAndRunReply: openAndRunReply runs at ARRIVAL, so a queued turn
       // would claim the live slot from the turn actually streaming.
-      liveTurnBy.set(turnKey, { senderId: ev.senderId ?? null });
+      turns.setLive(turnKey, { senderId: ev.senderId ?? null });
       out.activate?.();                                 // queued → live the moment its turn starts
       // Drain the accumulated cycle. A QUEUED turn prompts with it (ending with its own
       // mention line); an IMMEDIATE turn discards it and keeps the single dispatch line —
@@ -1109,7 +1076,7 @@ export function createSpine({
       // been logged at arrival but was invisible to the flag this branch checked).
       try { await out.fail?.(e); } catch { /* best effort */ }
       note(`turn ${to}/${ev.chatId}: ${e?.message ?? e}`);
-    } finally { dropTrain(turnKey); liveTurnBy.delete(turnKey); }
+    } finally { dropTrain(turnKey); turns.clearLive(turnKey); }
   }
 
   async function runContextTurn({ to, ev, turnKey }) {
