@@ -56,6 +56,46 @@ export function hhmm(ts, timeZone) {
   return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
 }
 
+// THE DAY, MARKED WHERE IT CHANGES (operator 2026-09-01, reading his own live SPOILER
+// transcript — three adjacent lines, `(22:40)`, `(00:18)`, `(06:20)`, with midnight passing
+// between the first two and NOTHING saying so, so no reader, human or model, can tell which
+// day any line belongs to). A dispatch line carries HH:MM and no date on purpose (the shape
+// above is operator-mandated), and stamping the date on every line would repeat it thousands
+// of times across months of history to say one thing — so it is said ONCE, at the boundary:
+//
+//   [ 2026-09-01 ]
+//
+// Its own block, bracket-wrapped like a stage direction, because a day change is not an
+// utterance. Deliberately NOT an entry shape: no `@[`, no `(HH:MM)`, so it matches neither
+// transcript-log's _ENTRY_HEAD/beingReplyRe nor commands.mjs's _SENDER_RE — a boundary can
+// never be read back as a message, a speaker, or a roster member. The ONE reader that must
+// know it is bodyForMessageId's continuation walk (transcript-log.mjs), which stops at
+// `isDayBoundary` instead of swallowing the marker into the body of the previous day's last
+// entry; that is why the predicate lives HERE, beside the formatter, and is imported there.
+//
+// Same clock discipline as hhmm above: the node's configured `default_time_zone`, UTC when
+// unset or rejected by Intl, and NEVER throwing — a boundary computed in the wrong zone marks
+// midnight at the wrong line, which is worse than not marking it.
+export function dayBoundary(ts, timeZone) {
+  const d = new Date(ts ?? Date.now());
+  if (timeZone) {
+    try {
+      const parts = new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(d);
+      const at = (t) => parts.find((p) => p.type === t)?.value ?? '';
+      const y = at('year'), m = at('month'), day = at('day');
+      if (y && m && day) return `[ ${y}-${m}-${day} ]`;
+    } catch { /* invalid zone → the UTC fallback below */ }
+  }
+  const pad = (n) => String(n).padStart(2, '0');
+  return `[ ${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ]`;
+}
+
+// Is this line a day boundary rather than transcript content? PRESENCE of the exact shape
+// above and nothing looser — the readers that consult it are deciding whether an entry's body
+// ends here, so a false positive would truncate a real message.
+const _DAY_BOUNDARY_RE = /^\[\s*\d{4}-\d{2}-\d{2}\s*\]$/;
+export function isDayBoundary(line) { return _DAY_BOUNDARY_RE.test(String(line ?? '').trim()); }
+
 export function formatDispatchLine({ senderName, chatName, node, surface, body, ts, msgId, replyToId, stageDirection = false, timeZone = null } = {}) {
   const tstr = hhmm(ts, timeZone);
   const sender = (senderName != null && String(senderName).trim()) ? String(senderName).trim() : 'someone';
@@ -207,9 +247,12 @@ export function isLiveStreamFrame(editBody) {
 // The EMITTING side has no wrapper, so its stream is byte-exact.
 const _isHigh = (c) => c >= 0xd800 && c <= 0xdbff;
 const _isLow = (c) => c >= 0xdc00 && c <= 0xdfff;
-export function streamIncrement(before, after) {
-  const a = String(before ?? ''), b = String(after ?? '');
-  if (a === b) return '';
+// THE ONE SCAN. `p` = length of the common prefix, `s` = length of the common suffix, so
+// `b.slice(p, b.length - s)` is what was ADDED and `a.slice(p, a.length - s)` is what was
+// TAKEN BACK — two reads of one boundary pair, never two scans that can drift (operator
+// 2026-09-01 added the second read; the first has been the ruling since 2026-08-27).
+// The `s < max - p` guard keeps the two halves from overlapping, so both slices are valid.
+function _scan(a, b) {
   const max = Math.min(a.length, b.length);
   let p = 0;
   while (p < max && a[p] === b[p]) p++;
@@ -218,8 +261,17 @@ export function streamIncrement(before, after) {
   // Never cut a surrogate pair in half — two different emoji share a high surrogate
   // (🌉/🌀 are both U+D83C …), and a signature layer is made of emoji, so a boundary
   // landing mid-pair is reachable and would append a lone surrogate to the record.
+  // Both adjustments serve BOTH slices: prefix and suffix are COMMON, so a[p-1] === b[p-1]
+  // and a[a.length-s] === b[b.length-s] — pulling the boundary back keeps the pair whole on
+  // the `-` side and the `+` side at once.
   if (p > 0 && _isHigh(a.charCodeAt(p - 1))) p--;
   if (s > 0 && _isLow(b.charCodeAt(b.length - s))) s--;
+  return { p, s };
+}
+export function streamIncrement(before, after) {
+  const a = String(before ?? ''), b = String(after ?? '');
+  if (a === b) return '';
+  const { p, s } = _scan(a, b);
   const inc = b.slice(p, b.length - s);
   // A RESTART gets a line break, and only a restart: `after` shares NOTHING with the text
   // already on the record, so it is a new utterance, not a continuation of the last one.
@@ -230,6 +282,64 @@ export function streamIncrement(before, after) {
   // guarantees a common prefix) is appended bare, so the increments still concatenate back
   // into the text the model wrote.
   return (p === 0 && a && inc) ? `\n${inc}` : inc;
+}
+
+// WHAT WAS TAKEN BACK — the middle of `before` that `after` does not keep (operator 2026-09-01:
+// "forward edits means keeping the diffs after every backwards edit of the model").
+//
+// His example: a reply streams ab → abcd → abef → abegi → abcdefghi and the record kept only
+// `- ab / + abcdefghi`. Every intermediate state was gone, and with it the FACT that the model
+// wrote `cd`, then `f`, then `eg`, and took each of them back. streamIncrement above records
+// what a frame ADDED and, by design, nothing else — so `abcd`→`abef` logged `ef` and said
+// nothing at all about `cd` vanishing from a surface a human was already reading.
+//
+// THE RULE, and why it does not resurrect the flood 372c17f killed:
+//     after.startsWith(before)  →  pure append, nothing was lost, record nothing new
+//     otherwise                 →  text was retracted, record the diff
+// A streaming reply is appends almost end to end, so the common case still costs zero extra
+// bytes; a retraction is rare and ALWAYS means the model changed its mind about something
+// already on the surface, which is exactly what deserves a line. The 2026-08-27 ruling (no
+// per-frame `edited #<id>` snapshot pair: 492 frames, 35% of the live SPOILER transcript) is
+// untouched — this writes the removed text ONCE, never the full before/after pair.
+//
+// The test is COMPUTED, not restated: an empty middle IS `after.startsWith(before)` for raw
+// text, and it is the only form that survives contact with a real node — a live frame is
+// wrapped by the bridge signature and ends with the live marker, so a literal startsWith()
+// would call EVERY peer frame a retraction and log the whole wrapped text each time. Prefix
+// and suffix are both discovered (see _scan); no signature format appears here (372c17f).
+export function streamRetraction(before, after) {
+  const a = String(before ?? ''), b = String(after ?? '');
+  if (a === b) return '';
+  const { p, s } = _scan(a, b);
+  return a.slice(p, a.length - s);
+}
+
+// THE BYTES ONE FRAME CONTRIBUTES to the record: the retraction first (this was taken back),
+// then what replaced it, on its own line. Retracted text is FLATTENED to one line exactly as
+// editAction flattens a diff side — a blank line inside it would split the stream block and
+// every reader that walks blank-line-separated entries would see two.
+//
+//   e@[fam].wa (14:05): (streaming) Let me look at the config file first…
+//       - Let me look at the config file first…
+//   42 is the answer.
+//
+// `    - ` is the notation editAction already uses for "this text is gone", so the file has
+// ONE way of saying it. It is a body line inside an open `(streaming)` block, never an entry:
+// no `@[`, no `(HH:MM)` of its own, so _ENTRY_HEAD/beingReplyRe/_SENDER_RE cannot read it as a
+// message or a speaker. It changes nothing about which entry the block belongs to either — on
+// the emitting side the `(streaming)` head is itself an entry head and stops the walk above it;
+// on the observing side the train is unlabelled (this node cannot honestly name a peer's being)
+// and already reads as continuation of the entry above, so a `    - ` line is no different from
+// the increment bytes beside it.
+//
+// The increment's own restart break (streamIncrement's leading `\n`) is dropped when a
+// retraction already opened the line — a divergence is ALWAYS a retraction, so the two rules
+// would otherwise emit a blank line between them and split the block in half.
+export function streamRecord(before, after) {
+  const inc = streamIncrement(before, after);
+  const back = streamRetraction(before, after).replace(/\s+/g, ' ').trim();
+  if (!back) return inc;
+  return `\n    - ${back}\n${inc.startsWith('\n') ? inc.slice(1) : inc}`;
 }
 
 // The increment carried by an edit stage-direction — the inverse of editAction, for the
@@ -247,8 +357,30 @@ export function streamIncrement(before, after) {
 // the common-suffix scan.
 const _MARK_RE = new RegExp(LIVE_FRAME_MARK, 'g');
 const _demark = (s) => s.replace(_MARK_RE, '').replace(/\s+/g, ' ');
-export function liveFrameIncrement(editBody) {
+// The two demarked sides of a frame, read ONCE — the increment and the retraction are two
+// questions about the same pair and must never disagree about what the pair is.
+function _frameSides(editBody) {
   const lines = String(editBody ?? '').split('\n');
   const side = (mark) => { const l = lines.find((x) => x.startsWith(mark)); return l == null ? '' : _demark(l.slice(mark.length)); };
-  return streamIncrement(side('    - '), side('    + '));
+  return { minus: side('    - '), plus: side('    + ') };
+}
+export function liveFrameIncrement(editBody) {
+  const { minus, plus } = _frameSides(editBody);
+  return streamIncrement(minus, plus);
+}
+
+// The OBSERVING half of the retraction ruling (operator 2026-09-01): the same frame, read for
+// what it took back as well as what it added. Demarking runs FIRST and that is load-bearing:
+// the marker's POSITION moves — the eager placeholder is `⏳ Thinking…` (marker first) and
+// every real frame ends with it — so scanning the raw bytes puts OUR OWN token inside the
+// retracted middle and writes `⏳` into the record as if the model had said it. (Where the
+// marker sits at the end on both sides the common-suffix scan absorbs it and a pure append
+// retracts nothing even raw; demarking is what makes that true in every frame, not most.)
+//
+// The eager `⏳ Thinking…` placeholder IS retracted when the first real frame lands, so a
+// streamed peer reply opens with one `    - Thinking…` line. That is honest — the placeholder
+// was on the surface and the model replaced it — and it is one line per reply, not per frame.
+export function liveFrameRecord(editBody) {
+  const { minus, plus } = _frameSides(editBody);
+  return streamRecord(minus, plus);
 }

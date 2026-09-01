@@ -20,7 +20,7 @@
 // from. The train is its own `(streaming)` block; the settled reply still lands as its own
 // line below it, and nothing already written is ever removed, rewritten or de-duplicated.
 import { describe, it, expect } from 'vitest';
-import { streamIncrement, liveFrameIncrement, editAction, LIVE_FRAME_MARK } from '../src/dispatch-line.mjs';
+import { streamIncrement, streamRetraction, streamRecord, liveFrameIncrement, liveFrameRecord, isLiveStreamFrame, editAction, LIVE_FRAME_MARK } from '../src/dispatch-line.mjs';
 import { createTranscript } from '../src/spine/transcript.mjs';
 import { createIdentity } from '../src/spine/identity.mjs';
 import { createGating } from '../src/spine/gating.mjs';
@@ -87,6 +87,80 @@ describe('streamIncrement — what was ADDED, never what was removed', () => {
   });
 });
 
+// ── A RETRACTION MUST SURVIVE (operator 2026-09-01) ─────────────────────────────────────
+// "forward edits means keeping the diffs after every backwards edit of the model."
+//
+// His example: a reply streams ab → abcd → abef → abegi → abcdefghi and the record kept only
+// `- ab / + abcdefghi`. Every intermediate state was gone, and with it the FACT that the model
+// wrote `cd`, then `f`, then `eg`, and took each of them back. streamIncrement records what a
+// frame ADDED and by design nothing else, so `abcd`→`abef` logged `ef` and said nothing about
+// `cd` vanishing off a surface a human was already reading.
+//
+// The rule that fixes it without resurrecting the 1.3 MB flood 372c17f killed:
+//     after.startsWith(before)  →  pure append, nothing lost, record nothing new
+//     otherwise                 →  text was retracted, record the diff
+describe('streamRetraction — what `after` took BACK from `before`', () => {
+  it('a pure append retracts nothing — the common case still costs zero extra bytes', () => {
+    expect(streamRetraction('Buen lugar', 'Buen lugar random')).toBe('');
+    expect(streamRetraction('', 'Hola')).toBe('');
+    expect(streamRetraction('same', 'same')).toBe('');
+    expect(streamRecord('Buen lugar', 'Buen lugar random')).toBe(streamIncrement('Buen lugar', 'Buen lugar random'));
+  });
+
+  it("the operator's sequence: each backwards edit names exactly what it withdrew", () => {
+    expect(streamRetraction('ab', 'abcd')).toBe('');            // append
+    expect(streamRetraction('abcd', 'abef')).toBe('cd');        // `cd` was on the surface and is gone
+    expect(streamRetraction('abef', 'abegi')).toBe('f');
+    expect(streamRetraction('abegi', 'abcdefghi')).toBe('eg');
+  });
+
+  it('a shrink is a pure retraction — nothing added, the deleted tail named', () => {
+    expect(streamRetraction('Buen lugar random', 'Buen lugar')).toBe(' random');
+    expect(streamIncrement('Buen lugar random', 'Buen lugar')).toBe('');
+    expect(streamRetraction('anything', '')).toBe('anything');
+  });
+
+  it('a SIGNED frame is not a retraction just because it is wrapped', () => {
+    // The trap: on a real node `after` never startsWith `before` — the bridge signature wraps
+    // the core and the live marker sits inside it — so a LITERAL startsWith() test would call
+    // every peer frame a retraction and re-log the whole wrapped text each time. The test is
+    // COMPUTED from the discovered prefix/suffix, so a wrapped append still retracts nothing.
+    const wrap = (core) => `🌉kg ${core} 🌉`;
+    expect(streamRetraction(wrap('Buen lugar random para'), wrap('Buen lugar random para verla'))).toBe('');
+  });
+
+  it('never cuts a surrogate pair in half on the `-` side either', () => {
+    const back = streamRetraction('tag 🌀 end', 'tag 🌉 end');
+    expect(back).toBe('🌀');
+    expect([...back].length).toBe(1);
+  });
+});
+
+describe('streamRecord — the bytes one frame contributes', () => {
+  it('a retraction opens its own `    - ` line and what replaced it starts on the next', () => {
+    expect(streamRecord('abcd', 'abef')).toBe('\n    - cd\nef');
+  });
+
+  it('a wholesale replacement writes ONE break, not a blank line that splits the block', () => {
+    // streamIncrement gives a divergence its own restart break; a divergence is ALWAYS a
+    // retraction, so the two rules would otherwise emit `\n…\n` + `\n…` and every reader that
+    // splits on blank lines would see the train as two blocks.
+    const rec = streamRecord('Let me check the config first', 'The answer is 42.');
+    expect(rec).toBe('\n    - Let me check the config first\nThe answer is 42.');
+    expect(rec).not.toMatch(/\n\n/);
+  });
+
+  it('retracted text is FLATTENED to one line, exactly as editAction flattens a diff side', () => {
+    expect(streamRecord('one\n\ntwo', 'three')).toBe('\n    - one two\nthree');
+  });
+
+  it('a retraction record is not a message and not a frame — every reader keyed on shape ignores it', () => {
+    const rec = streamRecord('abcd', 'abef');
+    expect(isLiveStreamFrame(rec)).toBe(false);          // no `    + ` side, no ⏳
+    expect(liveFrameIncrement(rec)).toBe('');            // …so nothing is derived back out of it
+  });
+});
+
 describe('liveFrameIncrement — derived from an edit stage-direction, `-` side never returned', () => {
   const frame = (o, n) => editAction({ targetId: '176209', oldText: o, newText: n });
 
@@ -128,6 +202,32 @@ describe('liveFrameIncrement — derived from an edit stage-direction, `-` side 
     expect(squash(log)).toBe(squash(full));              // every character, once, in order
     expect(log.length).toBeLessThan(full.length + 8);    // the reply's own size, not a multiple of it
     expect(snapshotBytes).toBeGreaterThan(10 * log.length);
+  });
+});
+
+describe('liveFrameRecord — the observing half of the retraction ruling', () => {
+  const frame = (o, n) => editAction({ targetId: '176209', oldText: o, newText: n });
+
+  it('a pure-append frame is byte-identical to the increment alone — no extra bytes', () => {
+    const wrap = (core) => `🌉kg\n🤝 don\n${core} ${LIVE_FRAME_MARK}\n🌉`;
+    const body = frame(wrap('Buen lugar random para'), wrap('Buen lugar random para verla'));
+    expect(liveFrameRecord(body)).toBe(liveFrameIncrement(body));
+    expect(liveFrameRecord(body)).toBe('verla ');
+  });
+
+  it('a retracting frame names what went, with the marker OFF the retracted text', () => {
+    // DEMARK FIRST is load-bearing here: the eager placeholder carries `⏳` at the FRONT and
+    // the frame that replaces it carries it at the end, so scanning the raw bytes would write
+    // our own live marker into the record as if the model had said it.
+    const body = frame(`🌉kg ${LIVE_FRAME_MARK} Thinking… 🌉`, `🌉kg Buen lugar ${LIVE_FRAME_MARK} 🌉`);
+    expect(liveFrameRecord(body)).toBe('\n    - Thinking…\nBuen lugar');
+    expect(liveFrameRecord(body)).not.toContain(LIVE_FRAME_MARK);
+  });
+
+  it('the `-` side is still never written WHOLESALE — only the middle `after` does not keep', () => {
+    const body = frame('🤝 don Buen lugar random para verla', '🤝 don Buen lugar random para verlo');
+    expect(liveFrameRecord(body)).toBe('\n    - a\no');           // not the two full sides
+    expect(liveFrameRecord(body)).not.toContain('Buen lugar');
   });
 });
 
@@ -191,7 +291,12 @@ describe('transcript.log — an observing node logs a peer frame INCREMENT, neve
     expect(text).toContain('verla');
     expect(text.split('Buen lugar random para').length - 1).toBe(1);   // added once, not re-snapshotted
     expect(text).not.toContain('edited #');                            // no frame is an entry
-    expect(text).not.toContain('    - ');                              // and no deletion is ever written
+    // A DELETION IS WRITTEN ONLY WHERE ONE HAPPENED (operator 2026-09-01). These frames are
+    // pure appends but the eager `⏳ Thinking…` placeholder IS retracted when the first real
+    // frame lands, so exactly one `    - ` line exists and it names that. Nothing that was
+    // APPENDED is ever echoed back as a deletion — that is the 372c17f flood, and it stays dead.
+    expect(text.match(/^ {4}- .*/gm)).toEqual(['    - Thinking…']);
+    expect(text).not.toContain('    - Buen lugar');
   });
 
   it('a stream frame is still not a received message — returns false, no stats side-effect', async () => {
@@ -275,8 +380,14 @@ describe('spine — the emitting node records every byte the model emitted, in o
     expect(text).toContain('42 is the answer.');                       // and so does what replaced it
     expect(text.indexOf('Let me look')).toBeLessThan(text.indexOf('42 is the answer.'));   // in order
     expect(text).toContain('e@[fam].wa (14:05): (streaming) ');              // the train, opened as its own block
-    // The token stream is written ONCE — the appended tail only, never a re-snapshot.
-    expect(text.split('Let me look at the config').length - 1).toBe(1);
+    // AND THE RECORD SAYS IT WAS TAKEN BACK (operator 2026-09-01). The narration is written
+    // once as it streams and once more on its own `    - ` line, because that is the whole
+    // fact: the model put it on the surface and then withdrew it. Twice, never five times —
+    // no before/after snapshot PAIR, so the 372c17f flood stays dead.
+    expect(text).toContain('\n    - Let me look at the config file first…\n42 is the answer.');
+    expect(text.split('Let me look at the config').length - 1).toBe(2);
+    // The APPENDS on the way there cost nothing extra: no `    - ` for either of them.
+    expect(text.match(/^ {4}- .*/gm)).toEqual(['    - Let me look at the config file first…']);
     // …and the SETTLED reply still lands as its own line under it, exactly as before.
     expect(text).toContain('\n\ne@[fam].wa (14:05): 42 is the answer.\n\n');
     expect(text.indexOf('(streaming)')).toBeLessThan(text.indexOf('e@[fam].wa (14:05): 42 is the answer.'));
@@ -320,5 +431,32 @@ describe('spine — the emitting node records every byte the model emitted, in o
     const text = fileEndingIn(files, 'transcript.md');
     expect(text).not.toContain('(streaming)');
     expect(text).toContain('e@[fam].wa (14:05): ok');
+  });
+});
+
+// ── THE OPERATOR'S OWN EXAMPLE, ON THE RECORD ───────────────────────────────────────────
+describe("transcript.logStream — the operator's sequence keeps every backwards edit", () => {
+  const ev = { surface: 'whatsapp', chatId: '!room:beeper.com', chatName: 'fam' };
+
+  const trainFor = async (states) => {
+    const files = new Map();
+    const t = createTranscript({ contacts: fakeContacts, io: mkIo(files), now: () => new Date(Date.UTC(2026, 6, 25, 19, 10)) });
+    let prev = '';
+    for (const s of states) { await t.logStream(ev, prev, s); prev = s; }
+    await settle();
+    return fileEndingIn(files, 'transcript.md').split('(streaming) ')[1];
+  };
+
+  it('ab → abcd → abef → abegi → abcdefghi: the three retractions are all on the record', async () => {
+    // Before this, the record showed only what each frame ADDED, so `cd`, `f` and `eg` were
+    // written and silently withdrawn and the file could not say so. Reading the train back:
+    // abcd, minus cd → ab, plus ef → abef, minus f → abe, plus gi → abegi, minus eg, plus
+    // cdefgh → abcdefghi. Every state the model passed through is reconstructible.
+    expect(await trainFor(['ab', 'abcd', 'abef', 'abegi', 'abcdefghi']))
+      .toBe('abcd\n    - cd\nef\n    - f\ngi\n    - eg\ncdefgh');
+  });
+
+  it('a stream that only ever appends is byte-identical to what it always was', async () => {
+    expect(await trainFor(['Buen', 'Buen lugar', 'Buen lugar random'])).toBe('Buen lugar random');
   });
 });

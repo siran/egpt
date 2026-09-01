@@ -13,7 +13,7 @@
 // transcript line is defined in this module, so the one function that reads lines back
 // out of transcript.md keys on THAT definition rather than on a copy of it.
 import { renderFrontMatter, stripFrontMatter } from './transcript-meta.mjs';
-import { formatDispatchLine } from './dispatch-line.mjs';
+import { formatDispatchLine, isDayBoundary } from './dispatch-line.mjs';
 
 /**
  * Bytes to append for one transcript line. Prepends the YAML front matter when
@@ -195,7 +195,14 @@ export function contextSinceLastTurn(text, { being = null, maxChars = RECENT_CON
   let i = blocks.length - 1;
   for (; i >= 0; i--) {
     const b = blocks[i];
-    if (!_ENTRY_HEAD.test(b)) { pending.push(b); continue; }                    // a continuation of the entry below
+    // A DAY BOUNDARY IS ITS OWN BLOCK, never a continuation (operator 2026-09-01,
+    // dispatch-line.dayBoundary). Treated as a head here for one reason: emitted with the
+    // FIRST entry of a new day, it sits directly under the being's own last reply whenever
+    // that reply closed the previous day — and as a headerless block it would be swept into
+    // the `pending` run that the boundary reply DISCARDS, so the model would be handed the
+    // new day's messages with nothing saying the day had changed. Nothing can accumulate
+    // under it: the block below a boundary is always a real entry with its own head.
+    if (!_ENTRY_HEAD.test(b) && !isDayBoundary(b)) { pending.push(b); continue; }  // a continuation of the entry below
     if (mine && mine.test(b)) { pending = []; break; }                          // the boundary — it and its own tail are already in the session
     if (!take([...pending, b])) break;
     pending = [];
@@ -286,7 +293,14 @@ export function bodyForMessageId(text, msgId) {
     const colon = head.indexOf(':', idm.index + idm[0].length);       // the separator after `#<id>` (or, on pre-2026-09-01 lines, after `#<id> re #<rid>`)
     if (colon < 0) return null;
     const parts = [head.slice(colon + 1).replace(_REPLY_REF, '')];   // see _REPLY_REF: the reply reference is head, not body
-    for (let j = i + 1; j < lines.length && !_ENTRY_HEAD.test(lines[j]); j++) parts.push(lines[j]);
+    // …up to the next entry OR the next DAY BOUNDARY (operator 2026-09-01). The walk collects
+    // every headerless line as body, and a boundary is deliberately headerless — so without
+    // this the marker (and the blank line before it) would be appended to the body of the last
+    // entry of the previous day, and every caller asking this module for "the recorded body"
+    // would get it: promptWithQuotedMessage would quote it back to the model, and
+    // beeper.transcriptionForNoteId would hand the 👂 echo a transcription with `[ 2026-09-01 ]`
+    // stuck on the end. The marker terminates a body; it is never part of one.
+    for (let j = i + 1; j < lines.length && !_ENTRY_HEAD.test(lines[j]) && !isDayBoundary(lines[j]); j++) parts.push(lines[j]);
     return parts.join('\n').trim() || null;
   }
   return null;

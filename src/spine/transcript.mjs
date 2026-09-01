@@ -17,7 +17,7 @@ import { recordMemberStat, isoFromMs, LOBBY_SLUG } from '../conversations-state.
 import { Room } from '../room-core.mjs';
 import { transcriptAppend, replyLine } from '../transcript-log.mjs';
 import { renderFrontMatter } from '../transcript-meta.mjs';
-import { isLiveStreamFrame, liveFrameIncrement, streamIncrement, formatDispatchLine, limbAction } from '../dispatch-line.mjs';
+import { isLiveStreamFrame, liveFrameRecord, streamRecord, dayBoundary, formatDispatchLine, limbAction } from '../dispatch-line.mjs';
 import { appendFile as fsAppendFile, mkdir as fsMkdir } from 'node:fs/promises';
 import { existsSync as fsExistsSync } from 'node:fs';
 
@@ -115,6 +115,36 @@ export function createTranscript({
   // is per FILE, not per message: an observing node holds nothing naming a peer's message
   // (372c17f) and does not need to.
   const openBlocks = new Set();
+  // WHICH DAY THE RECORD IS ON, per FILE (operator 2026-09-01, from his own live SPOILER
+  // transcript: "Ron Tomkins@… (22:40)", "Mauricio Castro@… (00:18)", "José Velarde@… (06:20)"
+  // — midnight passed between two adjacent lines and nothing marked it, so no reader could
+  // tell which day any line belonged to). A line carries HH:MM only, by operator mandate
+  // (dispatch-line.formatDispatchLine), so the DAY is stated once, where it CHANGES — lighter
+  // than dating thousands of lines to repeat the same fact.
+  //
+  // The value is the rendered marker itself, so "did the day change" is one string compare in
+  // the CONFIGURED zone (`timeZone`, the node's default_time_zone — never UTC, never the
+  // machine's local zone; the operator reads at −0400 and a UTC boundary would land four hours
+  // late, at the wrong line). Second state this service keeps, per file exactly like
+  // openBlocks, and for the same reason: this is the ONE ingestion point every write funnels
+  // through, so one Map answers it for every caller.
+  //
+  // KNOWN GAP, deliberately not papered over: this is PROCESS memory, and a transcript is
+  // months long and never re-read (the files are MB-scale; a tail-read per chat per boot is
+  // not worth it). So the first entry a process writes to a file NEVER carries a boundary —
+  // which is exactly what keeps a same-day transcript byte-identical to what it was before
+  // this existed, and what a restart costs is one unmarked midnight.
+  const lastDay = new Map();
+
+  // The boundary block to prepend to an entry, or ''. NEVER on a file that does not exist yet:
+  // renderFrontMatter's `---` block must start at byte 0 or stripFrontMatter stops recognising
+  // it, and a brand-new file has no previous day to differ from anyway.
+  function dayMark(fpath, when) {
+    const mark = dayBoundary(when, timeZone);
+    const prev = lastDay.get(fpath);
+    lastDay.set(fpath, mark);
+    return (prev && prev !== mark && existsSync(fpath)) ? `${mark}\n\n` : '';
+  }
 
   // Close an open stream block before an ordinary entry lands under it, so the train and the
   // record are two blocks and every reader that splits on blank lines keeps working.
@@ -146,6 +176,10 @@ export function createTranscript({
         // first thing this file ever receives (normally the inbound line is already in: the
         // spine records at ingestion, before any turn is dispatched).
         if (!existsSync(fpath)) head += renderFrontMatter({ name: ev.chatName ?? t.chatId ?? t.slug, surface: t.surface, slug: t.slug, chat_id: t.chatId, persona });
+        // A train that OPENS on a new day says so, like any other entry. It rides the block
+        // HEAD, so the marker lands above the first byte of the stream and never inside it —
+        // which is also why dayMark is called here and not per increment: one entry, one day.
+        head += dayMark(fpath, now());
         if (being) head += replyLine({ being: labelOf(being), body: '', streaming: true, now: now(), timeZone, ...lineContext(ev) });
         openBlocks.add(fpath);
       }
@@ -174,6 +208,15 @@ export function createTranscript({
      * LOGGED, not dropped for failing a prefix test — and the text already written stays
      * written. This file is append-only; nothing in it is ever removed or rewritten.
      *
+     * AND WHAT IT TOOK BACK (operator 2026-09-01: "forward edits means keeping the diffs after
+     * every backwards edit of the model"). Recording only the ADDITION made a retraction
+     * invisible — `abcd`→`abef` logged `ef` and said nothing at all about `cd` disappearing
+     * from a surface a human was already reading, so the record could not show that the model
+     * wrote something and then withdrew it. streamRecord puts the retracted text on its own
+     * `    - ` line ahead of whatever replaced it, and ONLY when something was retracted: a
+     * pure append (`after.startsWith(before)`) still costs exactly the appended bytes, so the
+     * 2026-08-27 anti-flood ruling is untouched and the rare reversal is the thing that shows.
+     *
      * Not awaited by the caller (a token delta must not wait on fs); returns the chain so a
      * test can. Order is guaranteed by the chain, not by the caller.
      * @param {object} ev            the InboundEvent this turn is answering
@@ -182,9 +225,9 @@ export function createTranscript({
      */
     logStream(ev, before, after, { being = defaultKey } = {}) {
       if (!ev?.chatId) return chain;
-      const inc = streamIncrement(before, after);
-      if (!inc) return chain;
-      chain = chain.then(() => appendStream(ev, inc, { being }));
+      const bytes = streamRecord(before, after);
+      if (!bytes) return chain;
+      chain = chain.then(() => appendStream(ev, bytes, { being }));
       return chain;
     },
 
@@ -216,10 +259,14 @@ export function createTranscript({
         await chain;
         await closeBlock(fpath);
         const line = formatDispatchLine({ senderName: labelOf(being), ...lineContext(ev), timeZone, ts: now(), body, stageDirection: true });
-        await appendFile(fpath, transcriptAppend({
+        // The entry is built BEFORE the day is marked: transcriptAppend throws on an empty
+        // body, and a dayMark whose entry never landed would leave the file's day advanced
+        // with no boundary written in it. Same order at every write site below.
+        const entry = transcriptAppend({
           existing: existsSync(fpath), body: line,
           name: ev.chatName, surface: t.surface, slug: t.slug, chatId: t.chatId, persona,
-        }), 'utf8');
+        });
+        await appendFile(fpath, dayMark(fpath, now()) + entry, 'utf8');
         return true;
       } catch (e) { onLog(`limb ${ev?.surface}/${ev?.chatId}: ${e?.message ?? e}`); return false; }
     },
@@ -250,11 +297,18 @@ export function createTranscript({
         // `edited #<id>` block, no stats — but what it ADDED joins the stream block, so the
         // peer's reply is on the record as it is written instead of only once it settles. A
         // peer only ever hands this node before/after text, so the increment is DERIVED
-        // (liveFrameIncrement); the `-` side is read and never written, which is what keeps
-        // the flood dead — a reply of N bytes costs N bytes here, not five snapshots of it.
+        // (liveFrameRecord); the `-` side is never written WHOLESALE, which is what keeps the
+        // flood dead — a reply of N bytes costs N bytes here, not five snapshots of it.
+        //
+        // AND WHAT THE FRAME TOOK BACK (operator 2026-09-01: "forward edits means keeping the
+        // diffs after every backwards edit of the model"). Dropping removals silently meant a
+        // peer frame `abcd`→`abef` logged `ef` and lost the fact that `cd` had been on the
+        // surface and was withdrawn. Still not the `-` side wholesale: only the middle that
+        // `after` does not keep, once, on its own `    - ` line. A pure append — nearly every
+        // frame — writes nothing extra, so the 2026-08-27 anti-flood ruling is untouched.
         if (reply == null && ev.kind === 'edit' && isLiveStreamFrame(ev.body)) {
-          const inc = liveFrameIncrement(ev.body);
-          if (inc) { chain = chain.then(() => appendStream(ev, inc, { being: null })); await chain; }
+          const bytes = liveFrameRecord(ev.body);
+          if (bytes) { chain = chain.then(() => appendStream(ev, bytes, { being: null })); await chain; }
           return false;   // still NOT an entry: no dispatch line, no stats side-effect
         }
         const t = await target(ev);
@@ -275,10 +329,14 @@ export function createTranscript({
             .catch((e) => onLog(`stats ${ev?.surface}/${ev?.chatId}: ${e?.message ?? e}`));
           // The inbound line is the dispatch line (the conversation-readable form,
           // C7.6); transcriptAppend prepends front matter on a fresh file.
-          await appendFile(fpath, transcriptAppend({
+          const entry = transcriptAppend({
             existing: existsSync(fpath), body: ev.line ?? ev.body,
             name: ev.chatName, surface: targetSurface, slug, chatId: targetChatId, persona,
-          }), 'utf8');
+          });
+          // ev.ts, not now(): the inbound line's own HH:MM was rendered from it (identity.build),
+          // so the boundary and the line under it must answer to the same clock — a backlog
+          // replay is the case that makes the difference visible.
+          await appendFile(fpath, dayMark(fpath, ev.ts) + entry, 'utf8');
         } else {
           const text = typeof reply === 'string' ? reply : reply.text;
           const being = (typeof reply === 'object' && reply.being) || defaultKey;
@@ -288,7 +346,8 @@ export function createTranscript({
           // spine records the reply BEFORE delivering it (record-first is durability), so at
           // this point the surface has not assigned an id. Absent → the tag is omitted.
           const msgId = (typeof reply === 'object' ? reply.msgId : null) ?? null;
-          await appendFile(fpath, replyLine({ being: labelOf(being), body: text, surfaced, msgId, now: now(), timeZone, ...lineContext(ev) }) + '\n\n', 'utf8');
+          const entry = replyLine({ being: labelOf(being), body: text, surfaced, msgId, now: now(), timeZone, ...lineContext(ev) }) + '\n\n';
+          await appendFile(fpath, dayMark(fpath, now()) + entry, 'utf8');
         }
         return true;
       } catch (e) { onLog(`transcript ${ev?.surface}/${ev?.chatId}: ${e?.message ?? e}`); return false; }
