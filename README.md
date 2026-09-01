@@ -43,9 +43,15 @@ default `~/.egpt`).
 
 3. **Install the service.** On Windows, double-click
    `setup\install-nssm-service.cmd` (auto-elevates, registers `egpt-daemon` as an
-   NSSM Windows Service, starts it). macOS/Linux: `./setup/install-service.sh`
-   (launchd / systemd user service). The daemon keeps the node running and
+   NSSM Windows Service, starts it). The daemon keeps the node running and
    respawns it on the lifecycle exit codes below.
+
+   **macOS** has no service installer yet. Run the two scripts instead —
+   `./setup/install-macos-deps.sh` (Homebrew: Beeper, ffmpeg, whisper.cpp + a
+   model, Chrome, piper) then `./setup/install-macos.sh` (preflight + profile +
+   the shell token) — and drive the node in the foreground:
+   `node egpt-spine.mjs` in one terminal, `node egpt.mjs` in another. A launchd
+   agent is a separate, unwritten step.
 
 4. **Verify the install:**
 
@@ -124,6 +130,15 @@ reference and [`TESTING.md`](TESTING.md) for the manual verification tiers.
 - `claude` CLI on PATH (the default persona engine — your Claude login)
 - optional: a whisper build for voice-note transcription; Chrome with
   `--remote-debugging-port` for the browser/CDP limbs
+
+The operator console (`node egpt.mjs`) additionally needs a `shell:`/`  token:`
+in `config.yaml`. Without it the spine boots normally, logs `shell: DISABLED`,
+and never binds 23375 — the editor then cannot connect and nothing says why.
+`setup/install-macos.sh` generates it; on Windows, add it by hand.
+
+On macOS the Beeper bridge is the only piece that needs a token to be useful: the
+spine boots and stays up without one (the bridge logs 401 and retries), so the
+shell console alone is a valid way to try eGPT.
 
 ## License
 
