@@ -98,6 +98,39 @@ describe('synthesizer worker — start wiring', () => {
   });
 });
 
+// PLATFORM venv LAYOUT: `python -m venv` puts the interpreter at venv/Scripts/python.exe on
+// Windows but venv/bin/python on macOS/Linux. Getting this wrong kills TTS SILENTLY — the
+// bad path only surfaces when piper is spawned, and start()'s try/catch just logs it.
+describe('synthesizer worker — pythonPath venv layout per platform', () => {
+  const ORIGINAL_PLATFORM = Object.getOwnPropertyDescriptor(process, 'platform');
+  const setPlatform = (value) => Object.defineProperty(process, 'platform', { ...ORIGINAL_PLATFORM, value });
+  afterEach(() => Object.defineProperty(process, 'platform', ORIGINAL_PLATFORM));
+
+  async function pythonPathOn(platform) {
+    setPlatform(platform);
+    const f = fakes();
+    const w = createSynthesizerWorker({
+      getConfig: () => ({ synthesizer: { enabled: true, server: { token: 'K' } } }),
+      ...f,
+    });
+    await w.start();
+    return f.calls.server[0].pythonPath;
+  }
+
+  // Separator-agnostic: node:path's join follows the HOST, so a faked darwin on a Windows dev
+  // box still yields backslashes. The SEGMENTS are what this bug is about, not the separator.
+  const tail = (p) => p.split(/[\\/]/).slice(-3).join('/');
+
+  it('darwin/linux: the POSIX venv layout, venv/bin/python', async () => {
+    expect(tail(await pythonPathOn('darwin'))).toBe('venv/bin/python');
+    expect(tail(await pythonPathOn('linux'))).toBe('venv/bin/python');
+  });
+
+  it('win32 REGRESSION LOCK: still venv/Scripts/python.exe (the operator\'s live node)', async () => {
+    expect(tail(await pythonPathOn('win32'))).toBe('venv/Scripts/python.exe');
+  });
+});
+
 describe('synthesizer worker — teardown', () => {
   it('stop() closes the synthesizer endpoint', async () => {
     const f = fakes();

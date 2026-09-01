@@ -64,7 +64,11 @@ export function createSynthesizerWorker({
       return;
     }
 
-    const pythonPath = join(radioPiper, 'venv', 'Scripts', 'python.exe');
+    // venv layout is platform-specific: Windows puts the interpreter at venv/Scripts/python.exe,
+    // macOS/Linux (`python3 -m venv`) at venv/bin/python.
+    const pythonPath = process.platform === 'win32'
+      ? join(radioPiper, 'venv', 'Scripts', 'python.exe')
+      : join(radioPiper, 'venv', 'bin', 'python');
     const voicesDir = join(radioPiper, 'voices');
     const ffmpegCommand = resolveFfmpegCommand(cfg);
     const bind = scfg.bind || '127.0.0.1';   // default 127.0.0.1 — set synthesizer.bind to the LAN ip to expose
