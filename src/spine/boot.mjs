@@ -668,10 +668,28 @@ export async function boot({
     const a = agents()[String(being ?? '').toLowerCase()];
     return (a && typeof a === 'object' && a.body_emoji) ? a.body_emoji : '🐶';
   };
+  // THE DISPLAY NAME COMES FROM `name:`, NEVER FROM THE MAP KEY (operator 2026-09-01: "please
+  // don't use the yaml array key as name... that is why agents have name"). The key is an
+  // IDENTIFIER -- it keys warm sessions, threads and transcripts -- and conflating the two is
+  // exactly how do's persona, KEYED `egpt` and NAMED `don`, stamped `🤝 egpt:` on a relayed
+  // reply while stamping `don:` on a local one. Falling back to the key made that wrong answer
+  // look like a right one.
+  //
+  // An agent with no `name` therefore renders EMPTY rather than leaking its key. That is a
+  // visible gap, and the boot check below names it once at startup so it is fixed in config
+  // rather than papered over here. Every agent that runs turns declares one today; the three
+  // that do not (carol, cara, don on kg) are relays, which never stamp anything.
   const labelOf = (being) => {
     const a = agents()[String(being ?? '').toLowerCase()];
-    return (a && typeof a === 'object' && a.name) ? a.name : String(being ?? '');
+    return (a && typeof a === 'object' && a.name) ? String(a.name) : '';
   };
+  // Named once at boot, not per turn: an agent that can take a turn (it names a `configuration`)
+  // but declares no `name` will stamp blank, and silence about that is what let the key stand in.
+  for (const [k, a] of Object.entries(agents())) {
+    if (a && typeof a === 'object' && a.configuration && !a.name) {
+      log.line?.(`[boot] agent '${k}' runs turns but declares no name: -- its replies will stamp blank. Add name: to config.yaml.`);
+    }
+  }
   // Per-AGENT signature WRAP (operator 2026-07-12): agent_signature_open/close bracket a persona/being
   // reply as the INNER concentric layer (bridge_signature_* is the outer, per-node layer — resolved at
   // the bridge). These fall back agent → node → ''. The sender resolves them per-being and hands them to
