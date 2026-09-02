@@ -22,6 +22,24 @@ const READY_POLL_MS = 500;
 
 // Spawn + supervise a resident whisper-server. Returns { url, stop,
 // isAlive }. Respawns on crash with backoff; stop() is idempotent.
+//
+// ADOPTION (operator 2026-09-02: "if installed, spine can monitor whisper.
+// whisper is not sine qua non"). If something is ALREADY serving on the port,
+// this does not reap it and does not spawn — it ADOPTS it: monitors it by the
+// same readiness probe, and never kills what it did not start. That is what
+// lets whisper-server run as an ordinary Windows service, in Session 0, with a
+// lifetime independent of the spine's — so a forced restart with nobody logged
+// in leaves transcription up.
+//
+// It was NOT possible before, and the failure was not subtle: reapPort below
+// KILLS whatever holds the port and takes it, while a service is configured to
+// restart on exit. Two supervisors, one port, flapping forever (measured on
+// dolly, 2026-09-02). The probe-before-reap is the whole fix.
+//
+// An adopted server that DIES is not replaced here — isAlive goes false and the
+// transcription chain falls through to whisper-cli, its always-available floor.
+// That is the "not sine qua non" half: the spine reports the truth about a
+// server it does not own rather than fighting the service manager for it.
 export async function startWhisperServer({
   command,                 // path to whisper-server(.exe)
   model,                   // GGUF model path (-m)
@@ -32,12 +50,21 @@ export async function startWhisperServer({
   antiRepetition = true,   // -mc 0 -sns at launch (the server owns the loop, op 2026-06-16)
   readyTimeoutMs = 120_000,
   onLog = () => {},
+  // INJECTION SEAMS (default to the real thing) — the adoption path has to be
+  // provable without a whisper binary on the box running the tests.
+  spawn: spawnFn = spawn,
+  reap: reapFn = reapPort,
+  // How often an ADOPTED server is re-probed. Only used when adopted: a server we
+  // spawned reports liveness from its own process handle, which needs no polling.
+  adoptedProbeMs = 15_000,
 } = {}) {
   if (!command) throw new Error('startWhisperServer: command (whisper-server path) required');
   if (!model) throw new Error('startWhisperServer: model path required');
   const url = `http://${host}:${port}`;
 
   let proc = null, stopped = false, backoff = 1000, ready = false, stableTimer = null;
+  // adopted: this server was already running when we arrived. We monitor it; we never own it.
+  let adopted = false, adoptedTimer = null;
 
   const spawnOnce = () => {
     if (stopped) return;
@@ -53,9 +80,9 @@ export async function startWhisperServer({
     // Free the port first: a prior whisper-server orphaned by a soft restart
     // (Windows doesn't kill the child with the parent) would still hold it and
     // block this bind. The daemon is elevated, so it can reap it. See reap-port.mjs.
-    reapPort(port, onLog);
+    reapFn(port, onLog);
     onLog(`whisper-server: spawning ${command} ${args.join(' ')}`);
-    proc = spawn(command, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    proc = spawnFn(command, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     proc.stdout?.on('data', (d) => { const s = d.toString().trim(); if (s) onLog(`whisper-server: ${s.slice(0, 200)}`); });
     proc.stderr?.on('data', (d) => { const s = d.toString().trim(); if (/error|fail|load/i.test(s)) onLog(`whisper-server: ${s.slice(0, 200)}`); });
     proc.on('exit', (code) => {
@@ -79,7 +106,24 @@ export async function startWhisperServer({
     } catch { return false; }
   };
 
-  spawnOnce();
+  // PROBE FIRST. An answer here means a whisper-server is already serving this port —
+  // a service, or a previous spine's resident server — so adopt it rather than reap it.
+  if (await pingReady()) {
+    adopted = true;
+    ready = true;
+    onLog(`whisper-server: ADOPTED the server already serving ${url} — monitoring it, not supervising it`);
+    // Monitor: keep `ready` honest so isAlive stops lying the moment it goes away.
+    // unref so this timer never holds the process open.
+    adoptedTimer = setInterval(async () => {
+      if (stopped) return;
+      const up = await pingReady();
+      if (up !== ready) onLog(`whisper-server: adopted server at ${url} is now ${up ? 'up' : 'DOWN — falling through to the cli floor'}`);
+      ready = up;
+    }, adoptedProbeMs);
+    adoptedTimer.unref?.();
+  } else {
+    spawnOnce();
+  }
   const deadline = Date.now() + readyTimeoutMs;
   while (!ready && Date.now() < deadline && !stopped) {
     if (await pingReady()) { ready = true; break; }
@@ -90,11 +134,17 @@ export async function startWhisperServer({
 
   return {
     url,
-    isAlive: () => ready && !!proc,
+    // An adopted server has no `proc` of ours — its liveness is the probe's verdict.
+    isAlive: () => ready && (adopted || !!proc),
+    // True when this server belongs to someone else (a service, another spine).
+    isAdopted: () => adopted,
     stop: () => {
       stopped = true;
       if (stableTimer) { clearTimeout(stableTimer); stableTimer = null; }
-      try { proc?.kill(); } catch { /* already gone */ }
+      if (adoptedTimer) { clearInterval(adoptedTimer); adoptedTimer = null; }
+      // NEVER kill an adopted server: we did not start it, and on a service-managed
+      // box killing it here is exactly the flap this module now avoids.
+      if (!adopted) { try { proc?.kill(); } catch { /* already gone */ } }
       proc = null;
     },
   };
