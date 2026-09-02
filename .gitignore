@@ -25,3 +25,8 @@ AGENTS.md
 
 # disposable local runbooks (operator convention: *.disposable.md are ignored)
 *.disposable.md
+
+# A live talk channel between an and the running thread, not source. It quotes
+# WhatsApp messages and voice-note transcripts, so it must never enter this
+# PUBLIC repo (it did once, b376194, 2026-09-02 - removed from HEAD).
+an-on-errands.md
