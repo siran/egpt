@@ -13,14 +13,18 @@
 //
 //   Usage: node egpt.mjs [--port 23375] [--theme catppuccin]
 import process from 'node:process';
-import { createSpineLink, SHELL_WS_PORT } from './src/shell/spine-link.mjs';
+import { createSpineLink } from './src/shell/spine-link.mjs';
 import { shellTokenFrom } from './src/shell/auth.mjs';
+import { shellPortFrom } from './src/bridges/shell-port.mjs';
 import { readConfigSync } from './src/tools/config-io.mjs';
 import { listThemes } from './src/tools/theme.mjs';
 import { runApp } from './src/shell/app.mjs';
 
-function parseArgs(argv) {
-  const args = { port: SHELL_WS_PORT, theme: 'catppuccin' };
+// defaultPort is the port THIS NODE serves (config `shell.port`), not the module default:
+// on a node running two spines the editor would otherwise dial the wrong one and hang on an
+// unanswered challenge. An explicit --port still wins, which is how you reach the other spine.
+function parseArgs(argv, defaultPort) {
+  const args = { port: defaultPort, theme: 'catppuccin' };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--port') args.port = Number(argv[++i]) || args.port;
     else if (argv[i] === '--theme') args.theme = argv[++i] ?? args.theme;
@@ -28,7 +32,9 @@ function parseArgs(argv) {
   return args;
 }
 
-const args = parseArgs(process.argv.slice(2));
+// ONE config read, shared by the port default and the token below.
+const cfg = readConfigSync();
+const args = parseArgs(process.argv.slice(2), shellPortFrom(cfg));
 
 // Ink needs a TTY. In a pipe/redirect there is no terminal to draw to — say so and exit
 // cleanly (exit 1), rather than letting Ink throw a raw-mode error.
@@ -49,7 +55,7 @@ const errorListeners = [];
 // Missing → the handshake goes unanswered and the spine refuses this editor, loudly (fail closed).
 const link = createSpineLink({
   port: args.port,
-  token: shellTokenFrom(readConfigSync()),
+  token: shellTokenFrom(cfg),
   onLog: (m) => { if (/fail|error/i.test(m)) for (const fn of errorListeners) fn(m); },
 });
 link.start();

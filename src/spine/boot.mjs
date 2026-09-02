@@ -15,7 +15,7 @@ import { spawnSync, spawn } from 'node:child_process';
 import { createSpine } from './spine.mjs';
 import { EGPT_HOME } from '../egpt-home.mjs';
 import { createBeeperBridgePort } from '../bridges/beeper-port.mjs';
-import { createShellPort } from '../bridges/shell-port.mjs';
+import { createShellPort, shellPortFrom } from '../bridges/shell-port.mjs';
 import { shellTokenFrom } from '../shell/auth.mjs';
 import { createWarmPool } from '../warm-sessions.mjs';
 import { createBrainSession } from '../brain-session.mjs';
@@ -1241,6 +1241,11 @@ export async function boot({
     // CLI accounts included) and a frame from it would be dispatched as the AUTHORIZED operator
     // — `/upgrade` and all (src/shell/auth.mjs). Fail closed, never auto-generate.
     token: shellTokenFrom(cfg),
+    // The console PORT (config `shell.port`), read here for the same reason the token is:
+    // the limb never reads config. Absent ⇒ 23375, so a node that sets nothing is unchanged.
+    // It exists so a SECOND spine can run on this machine — Session 0 and Session 1 cannot
+    // both bind one port, and that collision was the only thing making two spines impossible.
+    port: shellPortFrom(cfg),
     header: shellHeader,
     onLog: (m) => log.line?.(`[shell] ${m}`),
   }));

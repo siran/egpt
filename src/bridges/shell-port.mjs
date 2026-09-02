@@ -48,9 +48,24 @@ import { reapPort } from '../tools/reap-port.mjs';
 // algorithm is imported, never re-implemented — the editor end runs the same module.
 import { newNonce, challengeFrame, parseAuthFrame, authMac, macMatches, SHELL_TOKEN_HELP } from '../shell/auth.mjs';
 
-// The spine serves this fixed port; the editor dials in. Exported so boot + tests share the
-// one number (plan §3, §9 — fixed port, not discovery).
+// The spine serves this port; the editor dials in. Exported so boot + tests share the
+// one number (plan §3, §9 — a KNOWN port, not discovery).
 export const SHELL_WS_PORT = 23375;
+// ...but the number is no longer FIXED (operator 2026-09-02). Two spines can now run on one
+// machine — one in Session 0 holding the agent's Beeper, one in Session 1 holding the
+// operator's — and they cannot both bind 23375. The transcriptor and synthesizer ports were
+// already config-driven (cfg.transcriptor.port, cfg.transcriptor.server.port); the console
+// was the one limb that never got the same treatment, which is what made a second spine on a
+// box impossible.
+//
+// Read HERE rather than in the limb: shell-port never touches config, boot hands it every
+// option (see the token, same shape). A missing / malformed / out-of-range value falls back to
+// 23375 rather than throwing — a node with no shell.port must keep behaving exactly as before,
+// and a typo must not stop the spine from serving a console at all.
+export function shellPortFrom(cfg) {
+  const n = Number(cfg?.shell?.port);
+  return Number.isInteger(n) && n > 0 && n < 65536 ? n : SHELL_WS_PORT;
+}
 // The listener only ever binds LOOPBACK — the operator's console is a local device, never a
 // network service.
 const SHELL_WS_HOST = '127.0.0.1';

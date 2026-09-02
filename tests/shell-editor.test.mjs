@@ -29,7 +29,7 @@ import { readFileSync } from 'node:fs';
 import { WebSocket, WebSocketServer } from 'ws';
 import { createSpineLink } from '../src/shell/spine-link.mjs';
 import { challengeFrame, parseAuthFrame, authMac, newNonce } from '../src/shell/auth.mjs';
-import { createShellPort } from '../src/bridges/shell-port.mjs';
+import { createShellPort, shellPortFrom, SHELL_WS_PORT } from '../src/bridges/shell-port.mjs';
 import * as edit from '../src/shell/input.mjs';
 import { routeCommand } from '../src/shell/commands.mjs';
 import * as hist from '../src/shell/history.mjs';
@@ -645,5 +645,80 @@ describe('shell editor — delivery-failure notice', () => {
     expect(neverConnected).toMatch(/not delivered/i);
     expect(failedWhileConnected).toMatch(/not delivered/i);
     expect(neverConnected).not.toBe(failedWhileConnected);
+  });
+});
+
+// ── CONFIGURABLE CONSOLE PORT (operator 2026-09-02) ──────────────────────────
+// 23375 stopped being FIXED because two spines can now run on one machine: one in
+// Session 0 holding the agent's Beeper, one in Session 1 holding the operator's.
+// They cannot both bind one port, and that collision was the only thing making a
+// second spine on a box impossible. The transcriptor and synthesizer ports were
+// already config-driven (cfg.transcriptor.port, cfg.transcriptor.server.port); the
+// console was the last limb without the same treatment.
+//
+// Resolution is DELIBERATELY forgiving: a node that sets nothing must behave exactly
+// as before, and a typo must not stop the spine from serving a console at all.
+describe('shellPortFrom - the console port a node serves', () => {
+  it('absent config falls back to 23375', () => {
+    expect(shellPortFrom(undefined)).toBe(SHELL_WS_PORT);
+    expect(shellPortFrom({})).toBe(SHELL_WS_PORT);
+    expect(shellPortFrom({ shell: {} })).toBe(SHELL_WS_PORT);
+  });
+
+  it('a configured port is used', () => {
+    expect(shellPortFrom({ shell: { port: 23376 } })).toBe(23376);
+  });
+
+  // YAML happily yields a string; the limb needs a number.
+  it('a numeric string is coerced', () => {
+    expect(shellPortFrom({ shell: { port: '23376' } })).toBe(23376);
+  });
+
+  // A typo must not take the console down - fall back, never throw.
+  it('nonsense falls back rather than throwing', () => {
+    for (const bad of ['abc', '', null, 0, -1, 1.5, 65536, 99999, {}, []]) {
+      expect(shellPortFrom({ shell: { port: bad } })).toBe(SHELL_WS_PORT);
+    }
+  });
+
+  // THE POINT: two spines on one box. Two consoles, bound at the same time, on
+  // different ports - which is exactly what EADDRINUSE prevented before.
+  it('two consoles bind at once, on different ports, as two spines would', async () => {
+    const a = createShellPort({ port: 0, token: TOKEN, header: 'spine-a' });
+    const b = createShellPort({ port: 0, token: TOKEN, header: 'spine-b' });
+    try {
+      const wa = a.start(); await once(wa, 'listening');
+      const wb = b.start(); await once(wb, 'listening');
+      const pa = wa.address().port;
+      const pb = wb.address().port;
+      expect(pa).toBeGreaterThan(0);
+      expect(pb).toBeGreaterThan(0);
+      expect(pa).not.toBe(pb);
+    } finally {
+      a.stop();
+      b.stop();
+    }
+  });
+
+  // And an editor pointed at one of them reaches THAT one - the reason egpt.mjs now
+  // takes its default port from config too, rather than the module constant.
+  it('an editor dialling the configured port gets that console', async () => {
+    const p = createShellPort({ port: 0, token: TOKEN, header: 'configured-header' });
+    let link = null;
+    try {
+      const wss = p.start(); await once(wss, 'listening');
+      const seen = [];
+      link = createSpineLink({
+        url: `ws://127.0.0.1:${wss.address().port}`, token: TOKEN, io: fakeIo(),
+        onLog: () => {}, setTimeout: () => 0, clearTimeout: () => {},
+      });
+      link.onSpineMessage((m) => seen.push(m));
+      link.start();
+      await waitFor(() => seen.some((m) => m?.header === 'configured-header'), 3000);
+      expect(seen.some((m) => m?.header === 'configured-header')).toBe(true);
+    } finally {
+      link?.stop();
+      p.stop();
+    }
   });
 });
