@@ -920,3 +920,114 @@ describe('fallback_handle on the PERSONA — from the bridge\'s atE to the reply
     }
   });
 });
+
+// ── unless_peer_alive — the fallback gated on the PEER SPINE, not on membership ──
+// (operator 2026-09-02) Two spines fit on one machine now: Session 0 holds the agent's
+// Beeper, Session 1 the operator's. On a forced restart only S0 exists, because S1
+// needs a human to log in — so S0 assumes the peer's handle while the peer is absent
+// and gives it back when it returns. "Is my peer alive?" is an OBSERVATION, so no
+// message passes between the two spines to decide it.
+//
+// Same rule as unless_present, different predicate. In the operator's topology they
+// name one fact (S1 is always `an`, S0 always Rodz), so a fallback carries one or the
+// other; both are accepted, and if both appear BOTH must permit.
+describe('fallback_handle — unless_peer_alive (operator 2026-09-02)', () => {
+  const AGENTS = {
+    assistant: { handles: ['a'], default: true },
+    egpt: { handles: ['ekg'], fallback_handle: { handle: ['e', 'egpt'], unless_peer_alive: 23376 } },
+  };
+  const chat = (body) => ({ body, surface: 'whatsapp', chatId: '!grp', senderId: 'op' });
+  // alive: true | false | null(unknown)
+  const liveness = (alive) => { const asked = []; return { asked, fn: (port) => { asked.push(port); return alive; } }; };
+
+  it('parses a port, and rejects one that is not a port', () => {
+    expect(fallbackWake({ fallback_handle: { handle: 'e', unless_peer_alive: 23376 } }))
+      .toEqual({ handles: ['e'], unlessPeerAlive: 23376 });
+    for (const bad of [0, -1, 65536, 'abc', null, undefined, 1.5]) {
+      expect(fallbackWake({ fallback_handle: { handle: 'e', unless_peer_alive: bad } })).toBe(null);
+    }
+  });
+
+  // An unconfigured predicate must add NO field — a fallback carrying only
+  // unless_present returns exactly the object it always did.
+  it('adds no field when it is not declared', () => {
+    expect(fallbackWake({ fallback_handle: { handle: 'e', unless_present: '+1' } }))
+      .toEqual({ handles: ['e'], unlessPresent: '+1' });
+  });
+
+  it('the token rides THE ONE matcher and carries its liveness guard', () => {
+    expect(addressed('@e hola', AGENTS, { withFallback: true }))
+      .toEqual([{ name: 'egpt', agent: AGENTS.egpt, atStart: true, anywhere: true, unlessPeerAlive: 23376 }]);
+  });
+
+  // THE RESTART CASE: no S1 process, so S0 answers.
+  it('peer DEAD → the handle is assumed', async () => {
+    const l = liveness(false);
+    const r = await createRouter({ getAgents: () => AGENTS, defaultBeing: 'assistant', isPeerAlive: l.fn }).resolve(chat('@e hola'));
+    expect(r.being).toBe('egpt');
+    expect(l.asked).toEqual([23376]);   // asked about exactly the declared port
+  });
+
+  // THE LOGIN CASE: S1 is back, so S0 goes quiet — dropped as if the token never matched.
+  it('peer ALIVE → the handle stays its owner\'s', async () => {
+    const l = liveness(true);
+    const r = await createRouter({ getAgents: () => AGENTS, defaultBeing: 'assistant', isPeerAlive: l.fn }).resolve(chat('@e hola'));
+    expect(r.being).toBe('assistant');
+    expect(r.targets).toHaveLength(1);
+  });
+
+  // Fail-safe: anything but a definite `false` leaves the handle alone. Silence is the
+  // cheap direction; a double answer is not.
+  it('peer liveness UNKNOWN → silent', async () => {
+    const l = liveness(null);
+    const r = await createRouter({ getAgents: () => AGENTS, defaultBeing: 'assistant', isPeerAlive: l.fn }).resolve(chat('@e hola'));
+    expect(r.being).toBe('assistant');
+  });
+
+  it('a throwing liveness seam is treated as unknown, not as dead', async () => {
+    const r = await createRouter({
+      getAgents: () => AGENTS, defaultBeing: 'assistant',
+      isPeerAlive: () => { throw new Error('probe exploded'); },
+    }).resolve(chat('@e hola'));
+    expect(r.being).toBe('assistant');
+  });
+
+  // FAIL-CLOSED, the same rule the membership guard follows: a guard nobody can
+  // evaluate must never wake anything.
+  it('declared but NO liveness seam wired → never woken', async () => {
+    const r = await createRouter({ getAgents: () => AGENTS, defaultBeing: 'assistant' }).resolve(chat('@e hola'));
+    expect(r.being).toBe('assistant');
+  });
+
+  // Both predicates: BOTH must permit. Only ever a config the operator would not write
+  // (the two name one fact in his topology), but the safe reading is the cheap one.
+  describe('both predicates declared', () => {
+    const BOTH = {
+      assistant: { handles: ['a'], default: true },
+      egpt: { handles: ['ekg'], fallback_handle: { handle: 'e', unless_present: '+13472576794', unless_peer_alive: 23376 } },
+    };
+    const present = (v) => async () => v;
+
+    it('peer dead AND identity absent → woken', async () => {
+      const r = await createRouter({ getAgents: () => BOTH, defaultBeing: 'assistant', isPresent: present(false), isPeerAlive: () => false }).resolve(chat('@e hola'));
+      expect(r.being).toBe('egpt');
+    });
+    it('peer dead but identity PRESENT → silent', async () => {
+      const r = await createRouter({ getAgents: () => BOTH, defaultBeing: 'assistant', isPresent: present(true), isPeerAlive: () => false }).resolve(chat('@e hola'));
+      expect(r.being).toBe('assistant');
+    });
+    it('identity absent but peer ALIVE → silent', async () => {
+      const r = await createRouter({ getAgents: () => BOTH, defaultBeing: 'assistant', isPresent: present(false), isPeerAlive: () => true }).resolve(chat('@e hola'));
+      expect(r.being).toBe('assistant');
+    });
+  });
+
+  // A DECLARED handle is unconditional and never consults liveness — the escape hatch
+  // that makes a wrong verdict cost one retyped token instead of a lost message.
+  it('a declared handle is untouched by the guard', async () => {
+    const l = liveness(true);
+    const r = await createRouter({ getAgents: () => AGENTS, defaultBeing: 'assistant', isPeerAlive: l.fn }).resolve(chat('@ekg hola'));
+    expect(r.being).toBe('egpt');
+    expect(l.asked).toEqual([]);
+  });
+});

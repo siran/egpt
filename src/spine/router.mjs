@@ -130,7 +130,29 @@ export function fallbackWake(agent) {
   const handles = [...new Set((Array.isArray(fb.handle) ? fb.handle : [fb.handle])
     .map((h) => String(h ?? '').trim().toLowerCase()).filter(Boolean))];
   const unlessPresent = String(fb.unless_present ?? '').trim();
-  return (handles.length && unlessPresent) ? { handles, unlessPresent } : null;
+  // `unless_peer_alive: <port>` — silent while the PEER SPINE on this machine is up (operator
+  // 2026-09-02). Two spines now fit on one box, Session 0 holding the agent's Beeper and Session
+  // 1 the operator's, and on a forced restart only S0 exists because S1 needs a login. So S0
+  // assumes the peer's handle while the peer is absent and gives it back when it returns.
+  //
+  // It is the SAME RULE as unless_present with a different predicate: one asks "is that identity
+  // in this chat", the other "is my peer serving its console port". In the operator's topology
+  // they name one fact — S1 is always `an`, S0 is always Rodz — so a fallback would carry one or
+  // the other, never both. Both are accepted anyway and, if both appear, BOTH must permit (see
+  // the drop in resolve): silence is the cheap direction, a double answer is not.
+  //
+  // A port, validated here, because the caller that evaluates it needs one and a malformed value
+  // must disarm the fallback rather than arm it against a port nobody serves.
+  const peerPort = Number(fb.unless_peer_alive);
+  const unlessPeerAlive = Number.isInteger(peerPort) && peerPort > 0 && peerPort < 65536 ? peerPort : null;
+  if (!handles.length || (!unlessPresent && unlessPeerAlive == null)) return null;
+  // Each key is present ONLY when declared, so a fallback carrying only unless_present returns
+  // exactly the object it always did — an unconfigured predicate adds no field to compare.
+  return {
+    handles,
+    ...(unlessPresent ? { unlessPresent } : {}),
+    ...(unlessPeerAlive != null ? { unlessPeerAlive } : {}),
+  };
 }
 
 // Who does this message address? The node's WHOLE addressable set — every agent's WAKE TOKENS
@@ -183,7 +205,7 @@ export function fallbackWake(agent) {
 export function addressed(text, agents, { addressWithoutAt = true, isVoice = false, withFallback = false } = {}) {
   const byToken = new Map();                       // WAKE TOKEN -> { name, agent }; first agent wins a shared handle
   const byVoiceToken = new Map();                   // VOICE TOKEN -> { name, agent }; same convention, voice-only
-  const guardOf = new Map();                        // FALLBACK TOKEN -> the identity whose PRESENCE silences it
+  const guardOf = new Map();                        // FALLBACK TOKEN -> the GUARD that silences it ({ unlessPresent, unlessPeerAlive })
   for (const [name, agent] of Object.entries(agents ?? {})) {
     if (!agent || typeof agent !== 'object' || name.startsWith('_')) continue;
     const hit = { name: name.toLowerCase(), agent };
@@ -205,7 +227,10 @@ export function addressed(text, agents, { addressWithoutAt = true, isVoice = fal
       for (const handle of fb.handles) {
         if (byToken.has(handle)) continue;
         byToken.set(handle, { name: name.toLowerCase(), agent });
-        guardOf.set(handle, fb.unlessPresent);
+        guardOf.set(handle, {
+          ...(fb.unlessPresent != null ? { unlessPresent: fb.unlessPresent } : {}),
+          ...(fb.unlessPeerAlive != null ? { unlessPeerAlive: fb.unlessPeerAlive } : {}),
+        });
       }
     }
   }
@@ -218,7 +243,7 @@ export function addressed(text, agents, { addressWithoutAt = true, isVoice = fal
     // The guard rides ALONG, it is not applied here: answering it needs the chat's roster (IO),
     // and this function is sync + pure. The key is ABSENT on an ordinary hit, so an unguarded
     // hit is the same object it always was.
-    out.push({ name: hit.name, agent: hit.agent, atStart, anywhere: true, ...(guardOf.has(token) ? { unlessPresent: guardOf.get(token) } : {}) });
+    out.push({ name: hit.name, agent: hit.agent, atStart, anywhere: true, ...(guardOf.has(token) ? guardOf.get(token) : {}) });
   }
   if (isVoice) {
     for (const { token } of mentionHitsAnywhere(text, [...byVoiceToken.keys()])) {
@@ -248,10 +273,10 @@ export function addressed(text, agents, { addressWithoutAt = true, isVoice = fal
 // today: a guarded token nobody can evaluate must not be addressable.
 // `onLog` — the router's diagnostic sink; the ONLY thing it says is the fallback membership
 // failure below, which must never be silent.
-export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', addressWithoutAt = true, loadState = null, isPresent = null, onLog = () => {} } = {}) {
+export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', addressWithoutAt = true, loadState = null, isPresent = null, isPeerAlive = null, onLog = () => {} } = {}) {
   // ONE addressed agent → the routing target it resolves to. Per-kind semantics are
   // UNCHANGED; only the caller changed (every hit, not just the first).
-  function targetFor({ name, agent, atStart, unlessPresent }, ev) {
+  function targetFor({ name, agent, atStart, unlessPresent, unlessPeerAlive }, ev) {
     // The mention an addressed agent hands its own gate. NOT a constant: the flags are the
     // matcher's REAL per-agent findings (operator 2026-07-25: "respect the mode, if it's
     // mention-direct not the same as mention … nothing has changed"). replyAllowed() already
@@ -320,7 +345,7 @@ export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', addre
     // in a group, from two visibly different accounts. Silence under the guard has to stay the
     // default that costs no code, not a second suppression kept in sync with this one.
     if (name === defaultBeing || agent.default === true) {
-      if (unlessPresent == null) return { being: defaultBeing, mention: ev?.mention };
+      if (unlessPresent == null && unlessPeerAlive == null) return { being: defaultBeing, mention: ev?.mention };
       return { being: defaultBeing, mention: { replyToBot: false, ...(ev?.mention ?? {}), atEStart: !!ev?.mention?.atEStart || atStart, atEAnywhere: true } };
     }
     // Any other LOCAL agent → being = its name, gated on its own mention.
@@ -395,7 +420,7 @@ export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', addre
         // withFallback rides off the membership seam being WIRED (operator 2026-08-31): the
         // conditional token exists exactly where its condition can be evaluated, so a node/test
         // with no `isPresent` resolves precisely as it did before this feature existed.
-        for (const hit of addressed(ev?.body ?? '', agents, { addressWithoutAt, isVoice: ev?.isVoice, withFallback: !!isPresent })) {
+        for (const hit of addressed(ev?.body ?? '', agents, { addressWithoutAt, isVoice: ev?.isVoice, withFallback: !!isPresent || !!isPeerAlive })) {
           // SURFACE PIN (operator 2026-07-25): an agent may carry `surface: <name>` so it is an
           // agent ONLY on that surface; on any OTHER surface the @mention falls through (as if
           // unmatched). Co-account CORRECTNESS, not convenience: `do` and `kg` share ONE Beeper
@@ -464,6 +489,24 @@ export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', addre
           //     definite absence decided above, so neither can reach this branch.
           // Loud on the way out (never silent): this is a node choosing not to answer something
           // that was addressed to it, which is otherwise indistinguishable from a hung spine.
+          // PEER LIVENESS, first because it is the cheaper question — a local observation with
+          // no network call and no roster. `isPeerAlive` returns true | false | null(unknown);
+          // anything but a definite false leaves the handle with its owner. Unwired seam ⇒ the
+          // same refusal: a guard nobody can evaluate must never wake anything (the fail-closed
+          // rule the membership guard below already follows).
+          if (hit.unlessPeerAlive != null) {
+            if (typeof isPeerAlive !== 'function') {
+              onLog(`fallback_handle: @${hit.name} NOT woken — unless_peer_alive is declared but this node wired no liveness seam`);
+              continue;
+            }
+            let alive = null;
+            try { alive = isPeerAlive(hit.unlessPeerAlive); }
+            catch (e) { onLog(`fallback_handle: @${hit.name} liveness probe for port ${hit.unlessPeerAlive} threw — ${e?.message ?? e}`); alive = null; }
+            if (alive !== false) {
+              onLog(`fallback_handle: @${hit.name} NOT woken — the peer spine on port ${hit.unlessPeerAlive} is ${alive == null ? 'of unknown liveness' : 'alive'}, so the handle stays its owner's`);
+              continue;
+            }
+          }
           if (hit.unlessPresent != null) {
             const present = await presentInChat(hit.unlessPresent);
             if (present == null) onLog(`fallback_handle: @${hit.name} NOT woken by its fallback handle in ${ev?.surface}/${ev?.chatId} — could not establish whether ${hit.unlessPresent} is in the chat (unknown ⇒ the token stays its owner's; use a declared handle)`);

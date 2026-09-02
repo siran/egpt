@@ -46,6 +46,7 @@ import { createSender } from './sender.mjs';
 import { createBrainPool } from './brainpool.mjs';
 import { createRoomRelay } from './room-relay.mjs';
 import { createIdentityScope } from './identity-scope.mjs';
+import { createPeerLiveness, tcpProbe } from './peer-liveness.mjs';
 // THE routing table's own two readings (operator 2026-08-31): which chats are TRANSIT (a
 // relay_channel, so not a conversation at all) and whether a frame was committed by ANOTHER
 // node's spine. Both derive from the SAME agents block / node identity every other gate reads.
@@ -1229,6 +1230,21 @@ export async function boot({
   // THE PERMANENT SHELL HEADER (operator 2026-07-27, computeShellHeader above): computed HERE,
   // the ONE place config is read for this feature — the editor never touches config.yaml.
   const shellHeader = computeShellHeader({ nodeName: node_name, agents: cfg.agents, defaultNode: cfg.dispatch?.default_node });
+  // The watchers, built before the router that consults them. Ports come from the agents block
+  // and nowhere else, so a node declaring no unless_peer_alive builds none and probes nothing.
+  const peerLiveness = new Map();
+  for (const agent of Object.values(cfg.agents ?? {})) {
+    const raw = Number(agent?.fallback_handle?.unless_peer_alive);
+    if (!Number.isInteger(raw) || raw <= 0 || raw >= 65536 || peerLiveness.has(raw)) continue;
+    const watcher = createPeerLiveness({
+      probe: tcpProbe({ port: raw }),
+      onLog: (m) => log.line?.(`[peer] :${raw} ${m}`),
+    });
+    watcher.start();
+    peerLiveness.set(raw, watcher);
+    log.line?.(`[peer] watching the peer spine on :${raw} — its fallback handle is assumed only while it is absent`);
+  }
+
   const shellPort = lasso.wrap(createShellPort({
     wakeWords,
     addressWithoutAt,                     // same switch, same route — the shell gate and the beeper gate move together
@@ -1324,9 +1340,20 @@ export async function boot({
     // THIS node answer here". Cached, TTL'd, and free for a 1:1 inside the bridge; null = UNKNOWN,
     // and the router stays silent on null. A room/shell conversation never gets this far — it has
     // no Beeper chat and no roster, so resolve() decides absence itself (see its comment).
+    // PEER LIVENESS (operator 2026-09-02) — one watcher per DISTINCT port any agent's
+    // `fallback_handle.unless_peer_alive` names. Two spines fit on one machine now (Session 0
+    // holds the agent's Beeper, Session 1 the operator's) and on a forced restart only S0
+    // exists, because S1 needs a login. A spine whose peer is absent assumes the peer's handle.
+    //
+    // Nothing is negotiated: the watcher OBSERVES the peer's console port. Deduped by port so
+    // several agents naming one peer share a single probe, and empty on a node that declares
+    // none — in which case isPeerAlive is never consulted and resolution is unchanged.
     router: createRouter({
       getAgents: () => cfg.agents ?? {}, defaultBeing: defaultKey, addressWithoutAt, loadState: _loadState,
       isPresent: (identity, ev) => bridge.chatHasParticipant?.(ev?.chatId, identity) ?? null,
+      // true | false | null(unknown). A port with no watcher returns null rather than a
+      // guess, and the router reads anything but a definite false as "stay silent".
+      isPeerAlive: (port) => peerLiveness.get(Number(port))?.isAlive() ?? null,
       onLog: (m) => log.line?.(`[router] ${m}`),
     }),
     // currentRoomOf: a lazy thunk, not `commands.currentRoomOf` directly — `commands` (below)
@@ -1666,6 +1693,7 @@ export async function boot({
       transcriptorWorker.stop();   // stops BOTH the resident whisper-server + the :23390 endpoint
       synthesizerWorker.stop();    // stops the :23391 endpoint
       shellPort.stop();            // close the console listener + the seated editor's socket
+      for (const w of peerLiveness.values()) w.stop();   // stop probing the peer spines
       spine.stop();
     },
   };
