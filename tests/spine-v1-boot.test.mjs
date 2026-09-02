@@ -1109,3 +1109,154 @@ describe('boot() — the persona wake set is its handles, not its key (operator 
     expect(await captureWake({ egpt: { configuration: 'egpt', handles: [], default: true } })).toEqual([]);
   });
 });
+
+// ── PER-CONNECTION ENDPOINT + OWNERSHIP (operator 2026-09-02) ─────────────────
+// Two Beeper Desktops now run on ONE node: the agent's in Session 0 under its own
+// Windows account, the operator's in Session 1. The second one to start takes the NEXT
+// free port (23374 while the first holds 23373 — measured, not assumed), so a connection
+// carrying only a token can address exactly ONE of them. Hence base_url, and hence a
+// bridge keyed by (base_url, token) rather than by the token alone.
+//
+// owner_node is the WAKE half. With the SAME account live in Session 0 on BOTH nodes,
+// fallback_handle's `unless_present` stops separating them — it asks whether the account
+// is IN the chat, which was decisive only while one node held that account, and is now
+// true for both. So both would answer. A connection names its owner; every other node
+// still SENDS on it and never WAKES on it.
+describe('boot() — beeper connection ENDPOINT and ownership', () => {
+  const AG = { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true } };
+  async function bootWith(config) {
+    const optsList = [];
+    const start = async (o) => {
+      optsList.push(o);
+      return { async send() { return { ok: true }; }, startStreamMessage() { return { delivered: false, update() {}, async finish() {} }; }, isAlive: () => true, stop() {} };
+    };
+    const app = await boot({
+      readConfig: () => ({ node_name: 'kg', ...config }), startBridge: start, makeSession: fakeSession,
+      loadState: async () => emptyState(), writeState: async () => {},
+      io: memIo(), ingest: false, tickMs: 0, log: { line: () => {} },
+    });
+    return { opts: optsList[optsList.length - 1], optsList, app };
+  }
+
+  it('base_url reaches the bridge, and ws_url is DERIVED from it', async () => {
+    const { opts, app } = await bootWith({ agents: AG, beeper: { use: 'main', main: { account: 'a@b', token: 'T', base_url: 'http://127.0.0.1:23374' } } });
+    expect(opts.baseUrl).toBe('http://127.0.0.1:23374');
+    expect(opts.wsUrl).toBe('ws://127.0.0.1:23374/v1/ws');
+    app.stop();
+  });
+
+  it('an explicit ws_url WINS over the derivation', async () => {
+    const { opts, app } = await bootWith({ agents: AG, beeper: { use: 'main', main: { token: 'T', base_url: 'http://127.0.0.1:23374', ws_url: 'ws://127.0.0.1:9999/custom' } } });
+    expect(opts.wsUrl).toBe('ws://127.0.0.1:9999/custom');
+    app.stop();
+  });
+
+  // BACK-COMPAT, and the reason baseUrl/wsUrl are spread in ONLY when set: an explicit
+  // undefined would OVERRIDE startBeeperBridge's own defaults instead of leaving them.
+  it('no base_url means the keys are ABSENT, so the bridge keeps its own defaults', async () => {
+    const { opts, app } = await bootWith({ agents: AG, beeper: { use: 'main', main: { account: 'a@b', token: 'T' } } });
+    expect('baseUrl' in opts).toBe(false);
+    expect('wsUrl' in opts).toBe(false);
+    app.stop();
+  });
+
+  // THE CRUX. Same token, two Desktops. Keyed by token alone this collapsed to ONE bridge
+  // pointed at whichever was built first, and the second Desktop was simply unreachable.
+  it('SAME token, DIFFERENT base_url gives TWO bridges, one per Desktop', async () => {
+    const { optsList, app } = await bootWith({
+      agents: {
+        egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true },
+        rodz: { configuration: 'egpt', handles: ['rodz'], beeper_connection: 'rodz' },
+      },
+      beeper: {
+        use: 'main',
+        main: { account: 'a@b', token: 'SAME', base_url: 'http://127.0.0.1:23373' },
+        rodz: { account: 'a@b', token: 'SAME', base_url: 'http://127.0.0.1:23374' },
+      },
+    });
+    expect(optsList).toHaveLength(2);
+    expect(optsList.map((o) => o.baseUrl).sort()).toEqual(['http://127.0.0.1:23373', 'http://127.0.0.1:23374']);
+    app.stop();
+  });
+
+  it('same token AND same base_url still collapses to ONE bridge', async () => {
+    const { optsList, app } = await bootWith({
+      agents: {
+        egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true },
+        rodz: { configuration: 'egpt', handles: ['rodz'], beeper_connection: 'rodz' },
+      },
+      beeper: { use: 'main', main: { token: 'SAME', base_url: 'http://127.0.0.1:23373' }, rodz: { token: 'SAME', base_url: 'http://127.0.0.1:23373' } },
+    });
+    expect(optsList).toHaveLength(1);
+    app.stop();
+  });
+
+  // OWNERSHIP, end to end: a connection owned by ANOTHER node must not wake this one.
+  it('owner_node naming ANOTHER node means inbound never wakes this node', async () => {
+    const { start, byToken } = fakeMultiStart();
+    let state = seedMode(emptyState(), 'on', '!room1:beeper.com', 'fam1');
+    const app = await boot({
+      readConfig: () => ({
+        node_name: 'kg', whatsapp: {},
+        agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true, conversation_defaults: { access_level: 'regular' } } },
+        beeper: { use: 'rodz', rodz: { account: 'c@d', token: 'tok-rodz', owner_node: 'do' } },
+      }),
+      startBridge: start, makeSession: fakeSession,
+      loadState: async () => state, writeState: async (s) => { state = s; },
+      io: memIo(), ingest: false, now: () => Date.UTC(2026, 5, 29, 14, 5), tickMs: 0, log: { line: () => {} },
+    });
+    const spy = byToken.get('tok-rodz');
+    await spy.onIncoming('hola egpt', { chatId: '!room1:beeper.com', chatName: 'fam1', network: 'whatsapp', userId: 'u-1', senderName: 'An', authorized: true, msgKey: 'm1' });
+    expect(spy.streams).toHaveLength(0);
+    expect(spy.sent).toHaveLength(0);
+    app.stop();
+  });
+
+  it('owner_node naming THIS node means inbound wakes normally', async () => {
+    const { start, byToken } = fakeMultiStart();
+    let state = seedMode(emptyState(), 'on', '!room1:beeper.com', 'fam1');
+    const app = await boot({
+      readConfig: () => ({
+        node_name: 'kg', whatsapp: {},
+        agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true, conversation_defaults: { access_level: 'regular' } } },
+        beeper: { use: 'rodz', rodz: { account: 'c@d', token: 'tok-rodz', owner_node: 'kg' } },
+      }),
+      startBridge: start, makeSession: fakeSession,
+      loadState: async () => state, writeState: async (s) => { state = s; },
+      io: memIo(), ingest: false, now: () => Date.UTC(2026, 5, 29, 14, 5), tickMs: 0, log: { line: () => {} },
+    });
+    const spy = byToken.get('tok-rodz');
+    await spy.onIncoming('hola egpt', { chatId: '!room1:beeper.com', chatName: 'fam1', network: 'whatsapp', userId: 'u-1', senderName: 'An', authorized: true, msgKey: 'm1' });
+    expect(spy.streams).toHaveLength(1);
+    expect(spy.streams[0].finals[0]).toContain('hola egpt');
+    app.stop();
+  });
+
+  // A non-owned connection is OUTBOUND-ONLY, not skipped: the bridge is still built so
+  // this node can send on it. Only the three inbound registrations are muted.
+  it('a non-owned connection is still BUILT, so outbound still rides it', async () => {
+    const { optsList, app } = await bootWith({ agents: AG, beeper: { use: 'main', main: { token: 'T', owner_node: 'do' } } });
+    expect(optsList).toHaveLength(1);
+    app.stop();
+  });
+
+  // The node match is case- and whitespace-tolerant, like every other node-name test.
+  it('owner_node matching is case-insensitive and trimmed', async () => {
+    const { start, byToken } = fakeMultiStart();
+    let state = seedMode(emptyState(), 'on', '!room1:beeper.com', 'fam1');
+    const app = await boot({
+      readConfig: () => ({
+        node_name: 'kg', whatsapp: {},
+        agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true, conversation_defaults: { access_level: 'regular' } } },
+        beeper: { use: 'rodz', rodz: { token: 'tok-rodz', owner_node: '  KG  ' } },
+      }),
+      startBridge: start, makeSession: fakeSession,
+      loadState: async () => state, writeState: async (s) => { state = s; },
+      io: memIo(), ingest: false, now: () => Date.UTC(2026, 5, 29, 14, 5), tickMs: 0, log: { line: () => {} },
+    });
+    const spy = byToken.get('tok-rodz');
+    await spy.onIncoming('hola egpt', { chatId: '!room1:beeper.com', chatName: 'fam1', network: 'whatsapp', userId: 'u-1', senderName: 'An', authorized: true, msgKey: 'm1' });
+    expect(spy.streams).toHaveLength(1);
+    app.stop();
+  });
+});

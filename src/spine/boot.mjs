@@ -49,7 +49,7 @@ import { createIdentityScope } from './identity-scope.mjs';
 // THE routing table's own two readings (operator 2026-08-31): which chats are TRANSIT (a
 // relay_channel, so not a conversation at all) and whether a frame was committed by ANOTHER
 // node's spine. Both derive from the SAME agents block / node identity every other gate reads.
-import { isRelayChannelChat } from './node-names.mjs';
+import { isRelayChannelChat, ownNodeNamesOf } from './node-names.mjs';
 import { createIngest, lifecycleExit, isShellConnectMarker } from './ingest.mjs';
 import { createCommands } from './commands.mjs';
 import { createReplyActions } from './reply-actions.mjs';
@@ -992,11 +992,42 @@ export async function boot({
   // name per agent; `name` may be null (no beeper: block / no per-agent field / no `use`), which
   // falls straight through to back-compat. BYTE-IDENTICAL to the old resolution when called as
   // tokenFor(cfg.beeper?.use ?? null) — today's only shape.
-  const tokenFor = (name) => {
+  // A connection's ENDPOINT — its token, WHERE that Beeper Desktop is, and WHO wakes on it.
+  // GENERALIZED from the token-only lookup (operator 2026-09-02) because a node now hosts TWO
+  // Beeper Desktops at once: the agent's, in Session 0 under its own Windows account, and the
+  // operator's, in Session 1. Beeper takes the NEXT free port when one is held, so the second
+  // Desktop answers on 23374 while the first has 23373 — measured, not assumed. A connection
+  // carrying only a token can therefore address exactly ONE of them. `base_url` names the
+  // Desktop; `ws_url` is DERIVED from it unless given outright, so the operator sets one field.
+  //
+  // `owner_node` is the WAKE half of the same split, and it exists because the presence test
+  // stops working: `fallback_handle`'s `unless_present` asks whether the account is IN the chat,
+  // which distinguished the nodes only while ONE of them held that account. With the same
+  // account live in Session 0 on BOTH nodes it is true for both, and both answer — the exact
+  // double-answer the account split was built to end. A connection names its owner; every other
+  // node still SENDS on it and never WAKES on it. ABSENT ⇒ every node wakes, today's behaviour,
+  // so a node that declares no owner anywhere is byte-identical to before.
+  const wsFromBase = (base) => {
+    if (!base) return undefined;
+    // Same host/port, ws(s) scheme, the bridge's own /v1/ws path — the one place that mapping
+    // is written, so base_url alone is a complete answer. Unparseable ⇒ undefined, which falls
+    // through to startBeeperBridge's default rather than inventing a wrong URL.
+    try { const u = new URL(base); u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:'; u.pathname = '/v1/ws'; u.search = ''; u.hash = ''; return u.toString(); }
+    catch { return undefined; }
+  };
+  const endpointFor = (name) => {
     const b = cfg.beeper;
     const acct = name && b && typeof b === 'object' && b[name] && typeof b[name] === 'object' ? b[name] : null;
-    return acct?.token ?? cfg.beeper_token ?? process.env.BEEPER_ACCESS_TOKEN;
+    const baseUrl = acct?.base_url ?? undefined;
+    return {
+      token: acct?.token ?? cfg.beeper_token ?? process.env.BEEPER_ACCESS_TOKEN,
+      baseUrl,
+      wsUrl: acct?.ws_url ?? wsFromBase(baseUrl),
+      ownerNode: acct?.owner_node ?? null,
+    };
   };
+  // The token ALONE, for callers that only need the identity and not the address.
+  const tokenFor = (name) => endpointFor(name).token;
 
   // (The old pre-👂 OPEN vs observe-cancel warning was removed 2026-07-12: co-account de-dup is now the
   // on-demand coverage query (src/bridges/beeper.mjs noteCovered), which matches on normalized WORD TOKENS
@@ -1128,23 +1159,49 @@ export async function boot({
     earProbeTimeoutMs: parseFrequency(earCfg.timeout) ?? 45_000,
     onLog: (m) => log.line?.(`[bridge] ${m}`),
   };
-  const bridgeByToken = new Map();   // resolved beeperToken value -> lasso-wrapped bridge instance (the DEDUP key, never the connection name)
-  const bridgeForToken = async (token) => {
-    if (!bridgeByToken.has(token)) {
-      bridgeByToken.set(token, lasso.wrap(await createBeeperBridgePort({ ...sharedBridgeOpts, beeperToken: token }, startBridge ? { start: startBridge } : {})));
+  // Bridge instances, keyed by ENDPOINT — the (base_url, token) pair, not the token alone
+  // (operator 2026-09-02). The token was a sufficient key only while every connection reached
+  // the SAME Beeper Desktop; two Desktops on one node are two different addresses, and keying
+  // by token would collapse them into one bridge pointed at whichever was built first. A node
+  // that declares no base_url anywhere keys on ('' , token) and still collapses to exactly one
+  // instance, byte-identical to before.
+  const bridgeByEndpoint = new Map();
+  // JSON, not a delimiter character. The obvious separator (NUL) puts a literal 0x00 in this
+  // file, which makes ripgrep treat the whole thing as binary and silently truncate every
+  // future audit of it — tests/integrity.test.mjs exists for exactly that failure. A two-
+  // element array is unambiguous and needs no such reasoning.
+  const endpointKey = (ep) => JSON.stringify([ep.baseUrl ?? '', ep.token ?? '']);
+  // OWNERSHIP, decided HERE and nowhere else, so no call site downstream has to remember it.
+  // A connection this node does not own is OUTBOUND-ONLY: it still sends, and its three inbound
+  // registrations become no-ops, so nothing this node can do will wake on it. Same Proxy shape
+  // lasso.wrap uses — the bridge's whole surface passes through untouched except those three.
+  const wakesOn = (ep) => !ep.ownerNode || ownNodeNamesOf(cfg).has(String(ep.ownerNode).trim().toLowerCase());
+  const outboundOnly = (port) => new Proxy(port, {
+    get: (t, k) => ((k === 'onMessage' || k === 'onEdit' || k === 'onMedia') ? (() => {}) : Reflect.get(t, k, t)),
+  });
+  const bridgeForEndpoint = async (ep) => {
+    const key = endpointKey(ep);
+    if (!bridgeByEndpoint.has(key)) {
+      // baseUrl/wsUrl are spread in ONLY when set: absent must leave startBeeperBridge's own
+      // defaults standing, never an explicit undefined that would override them.
+      const opts = { ...sharedBridgeOpts, beeperToken: ep.token, ...(ep.baseUrl ? { baseUrl: ep.baseUrl } : {}), ...(ep.wsUrl ? { wsUrl: ep.wsUrl } : {}) };
+      const port = lasso.wrap(await createBeeperBridgePort(opts, startBridge ? { start: startBridge } : {}));
+      const owned = wakesOn(ep);
+      if (!owned) log.line?.(`[bridge] connection is owned by node '${ep.ownerNode}' — this node sends on it, never wakes on it`);
+      bridgeByEndpoint.set(key, owned ? port : outboundOnly(port));
     }
-    return bridgeByToken.get(token);
+    return bridgeByEndpoint.get(key);
   };
-  // Construct exactly one bridge per token actually referenced by an agent in the registry — on
-  // a node where no agent names a beeper_connection, every one of these resolves to the SAME
+  // Construct exactly one bridge per ENDPOINT actually referenced by an agent in the registry —
+  // on a node where no agent names a beeper_connection, every one of these resolves to the SAME
   // token (connectionOf's fallback), so this loop constructs exactly one bridge, exactly as
   // before. defaultKey is always among agents() (personaAgent(), above, guarantees it).
-  for (const being of Object.keys(agents())) await bridgeForToken(tokenFor(connectionOf(being)));
-  const bridge = bridgeByToken.get(tokenFor(connectionOf(defaultKey)));   // the default/persona connection's bridge — every node-level (non-per-being) call site below rides THIS, unchanged
+  for (const being of Object.keys(agents())) await bridgeForEndpoint(endpointFor(connectionOf(being)));
+  const bridge = bridgeByEndpoint.get(endpointKey(endpointFor(connectionOf(defaultKey))));   // the default/persona connection's bridge — every node-level (non-per-being) call site below rides THIS, unchanged
   // rawBridgeOf(being): the RAW (non-shell-aware) bridge for a given being's own connection.
   // Fallback to the default `bridge` is defensive only — every being in agents() was already
   // enumerated above, so this should never miss.
-  const rawBridgeOf = (being) => bridgeByToken.get(tokenFor(connectionOf(being))) ?? bridge;
+  const rawBridgeOf = (being) => bridgeByEndpoint.get(endpointKey(endpointFor(connectionOf(being)))) ?? bridge;
 
   // Persist incoming attachments into the chat's media/ folder + surface them to E.
   // For a video: keyframes (ffmpeg) + audio transcript (via the same chain) — Route A.
@@ -1197,9 +1254,9 @@ export async function boot({
   // redirect to a shell-owned chat, not just the default one. shellAwareBridge (the default
   // connection's facade — the same object mesh/memberSender rode before this change) is this
   // map's defaultKey entry; shellAwareBridgeOf mirrors rawBridgeOf's per-being lookup.
-  const shellAwareBridgeByToken = new Map([...bridgeByToken].map(([token, b]) => [token, makeShellAwareBridge(b, shellPort)]));
-  const shellAwareBridge = shellAwareBridgeByToken.get(tokenFor(connectionOf(defaultKey)));
-  const shellAwareBridgeOf = (being) => shellAwareBridgeByToken.get(tokenFor(connectionOf(being))) ?? shellAwareBridge;
+  const shellAwareBridgeByEndpoint = new Map([...bridgeByEndpoint].map(([key, b]) => [key, makeShellAwareBridge(b, shellPort)]));
+  const shellAwareBridge = shellAwareBridgeByEndpoint.get(endpointKey(endpointFor(connectionOf(defaultKey))));
+  const shellAwareBridgeOf = (being) => shellAwareBridgeByEndpoint.get(endpointKey(endpointFor(connectionOf(being)))) ?? shellAwareBridge;
 
   // --- lifecycle announce: "restarting…" to Self before exit, "back up! <commit>"
   //     on the next boot. The bounce is otherwise invisible to the operator. ---
