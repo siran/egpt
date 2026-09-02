@@ -47,6 +47,7 @@ import { createBrainPool } from './brainpool.mjs';
 import { createRoomRelay } from './room-relay.mjs';
 import { createIdentityScope } from './identity-scope.mjs';
 import { createPeerLiveness, tcpProbe } from './peer-liveness.mjs';
+import { fanoutInbound } from './bridge-fanout.mjs';
 // THE routing table's own two readings (operator 2026-08-31): which chats are TRANSIT (a
 // relay_channel, so not a conversation at all) and whether a frame was committed by ANOTHER
 // node's spine. Both derive from the SAME agents block / node identity every other gate reads.
@@ -1198,11 +1199,22 @@ export async function boot({
   // token (connectionOf's fallback), so this loop constructs exactly one bridge, exactly as
   // before. defaultKey is always among agents() (personaAgent(), above, guarantees it).
   for (const being of Object.keys(agents())) await bridgeForEndpoint(endpointFor(connectionOf(being)));
-  const bridge = bridgeByEndpoint.get(endpointKey(endpointFor(connectionOf(defaultKey))));   // the default/persona connection's bridge — every node-level (non-per-being) call site below rides THIS, unchanged
+  const defaultBridge = bridgeByEndpoint.get(endpointKey(endpointFor(connectionOf(defaultKey))));   // the default/persona connection's bridge — every node-level (non-per-being) OUTBOUND call site below rides THIS, unchanged
+  // INBOUND ON EVERY CONNECTION (operator 2026-09-02), closing the gap the multi-connection work
+  // left open: outbound has been per-connection since 2026-08-30, but the spine registered
+  // onMessage/onEdit/onMedia on the DEFAULT bridge alone, so a message arriving on any other
+  // connection woke nothing. With two Beeper Desktops on one machine that is the difference
+  // between "E hears on Rodz and replies as Rodz, locally" and a cross-node relay round trip.
+  //
+  // Outbound is untouched — the facade delegates everything that is not an inbound registration
+  // to defaultBridge — and a node with ONE connection gets that bridge back identically, not a
+  // wrapper. See bridge-fanout.mjs for why wasSentByUs must ask every connection (it is the echo
+  // gate, and it is per-ACCOUNT) and why nothing here deduplicates.
+  const bridge = fanoutInbound(defaultBridge, [...bridgeByEndpoint.values()]);
   // rawBridgeOf(being): the RAW (non-shell-aware) bridge for a given being's own connection.
   // Fallback to the default `bridge` is defensive only — every being in agents() was already
   // enumerated above, so this should never miss.
-  const rawBridgeOf = (being) => bridgeByEndpoint.get(endpointKey(endpointFor(connectionOf(being)))) ?? bridge;
+  const rawBridgeOf = (being) => bridgeByEndpoint.get(endpointKey(endpointFor(connectionOf(being)))) ?? defaultBridge;
 
   // Persist incoming attachments into the chat's media/ folder + surface them to E.
   // For a video: keyframes (ffmpeg) + audio transcript (via the same chain) — Route A.

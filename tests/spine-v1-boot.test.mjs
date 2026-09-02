@@ -427,10 +427,11 @@ describe('boot() — config-shape migration', () => {
   // END-TO-END: two agents, two beeper: connections, one names `beeper_connection` — drives a
   // REAL reply from each through boot()/spine (fakeMultiStart, above) and asserts (a) exactly
   // TWO startBridge calls (one per distinct token) and (b)/(c) each being's OUTBOUND reply lands
-  // on ITS OWN bridge spy, never the other's. Both inbound messages arrive over the SAME (only-
-  // wired) default connection — inbound dispatch (bridge.onMessage) still rides ONE connection
-  // (this task's scope is OUTBOUND routing only, a documented gap for a follow-up); it's the
-  // reply that must split by being, which is exactly what sender.mjs's per-being bridgeOf proves.
+  // on ITS OWN bridge spy, never the other's. Both inbound messages are delivered here over the
+  // default connection because that is what this case drives; inbound is NO LONGER limited to it
+  // (operator 2026-09-02, bridge-fanout.mjs — the "documented gap for a follow-up" this comment
+  // used to name is closed, and the test below drives a turn from the NON-default connection).
+  // What this case proves is the REPLY splitting by being, which is sender.mjs's per-being bridgeOf.
   //
   // egpt's chat is seeded mode:'on' (seedMode, top of file) — same reason the top-level 'boot()'
   // test does: the PERSONA's mention gate reads ev.mention, which is the BRIDGE's own wake-word
@@ -493,6 +494,67 @@ describe('boot() — config-shape migration', () => {
     expect(mainSpy.sent).toHaveLength(0);
     expect(rodzSpy.sent).toHaveLength(0);
 
+    app.stop();
+  });
+
+  // INBOUND ON EVERY CONNECTION (operator 2026-09-02). Outbound had been per-connection since
+  // 2026-08-30 while inbound rode the default bridge alone, so a message arriving on any other
+  // connection woke nothing. That was the last thing between "two Beeper Desktops on one machine"
+  // and the operator's design: E hears on Rodz's connection and replies as Rodz, in one process,
+  // with no relay agent and no mesh round trip.
+  //
+  // NOTHING DEDUPLICATES, deliberately. Each account has its own Matrix room, so one real chat is
+  // a different chatId per connection - a different conversation, not a duplicate message. Which
+  // one ANSWERS is decided by addressing, exactly as it already is across two nodes.
+  it('a message arriving on the NON-default connection drives a turn', async () => {
+    const { start, byToken } = fakeMultiStart();
+    const config = {
+      node_name: 'kg',
+      whatsapp: {},
+      beeper: {
+        use: 'main',
+        main: { account: 'a@b', token: 'tok-main' },
+        rodz: { account: 'c@d', token: 'tok-rodz' },
+      },
+      agents: {
+        egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true, conversation_defaults: { access_level: 'regular' } },
+        rodz: { configuration: 'egpt', handles: ['rodz'], beeper_connection: 'rodz', conversation_defaults: { access_level: 'regular' } },
+      },
+    };
+    let state = seedMode(emptyState(), 'on', '!rodz-view:beeper.com', 'famR');
+    const app = await boot({
+      readConfig: () => config, startBridge: start, makeSession: fakeSession,
+      loadState: async () => state, writeState: async (x) => { state = x; },
+      io: memIo(), ingest: false, now: () => Date.UTC(2026, 5, 29, 14, 5), tickMs: 0, log: { line: () => {} },
+    });
+
+    const rodzSpy = byToken.get('tok-rodz');
+    expect(rodzSpy.onIncoming).toBeTypeOf('function');   // the NON-default connection is wired for inbound
+
+    // Delivered ONLY on rodz's connection - the default one never sees it.
+    await rodzSpy.onIncoming('hola egpt', {
+      chatId: '!rodz-view:beeper.com', chatName: 'famR', network: 'whatsapp',
+      userId: 'u-1', senderName: 'An', authorized: true, msgKey: 'mR',
+    });
+
+    // THE TURN RAN. Before this, a message on a non-default connection woke nothing at all.
+    // egpt is the DEFAULT being, so its reply rides its OWN connection (main) — the per-being
+    // outbound routing that already worked. Inbound and outbound are separate decisions.
+    const mainSpy = byToken.get('tok-main');
+    expect(mainSpy.streams).toHaveLength(1);
+    expect(mainSpy.streams[0].finals[0]).toContain('hola egpt');
+    expect(mainSpy.streams[0].chatId).toBe('!rodz-view:beeper.com');   // answered INTO the chat it arrived in
+    expect(rodzSpy.streams).toHaveLength(0);
+
+    // …and the operator's actual design: a being whose beeper_connection IS rodz both HEARS
+    // and ANSWERS there — mind and mouth in one process, no relay agent, no mesh round trip.
+    await rodzSpy.onIncoming('@rodz hola', {
+      chatId: '!rodz-view:beeper.com', chatName: 'famR', network: 'whatsapp',
+      userId: 'u-1', senderName: 'An', authorized: true, msgKey: 'mR2',
+    });
+    expect(rodzSpy.streams).toHaveLength(1);
+    expect(rodzSpy.streams[0].finals[0]).toContain('hola');
+    expect(rodzSpy.streams[0].chatId).toBe('!rodz-view:beeper.com');
     app.stop();
   });
 
