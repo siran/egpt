@@ -794,3 +794,96 @@ describe('boot-failure recovery ladder (never-healthy crash loop)', () => {
     });
   });
 });
+
+// ── SLEEP IS NOT A WEDGE (operator 2026-09-03) ────────────────────────────────
+// beatAge() is WALL-CLOCK age, which says nothing across a suspend: in Modern Standby the
+// spine's timers do not fire, so alive.txt stops moving. reve wakes every 5 min, and 300s
+// of sleep always exceeds the 150s stale threshold - so on EVERY resume the watchdog killed
+// a healthy spine. 45 restarts in one night, each dropping every warm CLI.
+//
+// The tell is that the watchdog's OWN loop stopped ticking too. A watchdog that was itself
+// frozen has no business blaming the thing it watches.
+describe('daemon runtime: a sleep is not a wedge', () => {
+  const OLD_BEAT = Date.UTC(2026, 5, 18, 11, 0, 0);   // ~1h before the clock starts: always stale
+
+  it('a long gap between liveness ticks is a RESUME, not a wedge - the child survives', () => {
+    let clock = Date.UTC(2026, 5, 18, 12, 0, 0);
+    const { runtime, children, logs } = makeRuntime({
+      now: () => clock,
+      statSync: () => ({ mtimeMs: OLD_BEAT }),
+      aliveGraceMs: 1_000, aliveStaleMs: 60_000, livenessIntervalMs: 30_000,
+    });
+    runtime.spawnShell();
+    clock += 500;                 // inside the boot grace: establishes the first tick, no kill
+    runtime.checkLiveness();
+    expect(children[0].child.killed).toEqual([]);
+
+    clock += 300_000;             // the machine slept for 5 minutes
+    runtime.checkLiveness();
+    expect(children[0].child.killed).toEqual([]);                        // NOT killed
+    expect(logs.join(' ')).toMatch(/machine slept/);                     // and it said why
+  });
+
+  // After a resume the spine genuinely needs a moment: the heartbeat is ~60s against a 150s
+  // threshold, so merely skipping one 30s tick would not be enough.
+  it('the post-resume grace protects a still-stale beat for a while', () => {
+    let clock = Date.UTC(2026, 5, 18, 12, 0, 0);
+    const { runtime, children } = makeRuntime({
+      now: () => clock,
+      statSync: () => ({ mtimeMs: OLD_BEAT }),
+      aliveGraceMs: 90_000, aliveStaleMs: 60_000, livenessIntervalMs: 30_000,
+    });
+    runtime.spawnShell();
+    clock += 500;  runtime.checkLiveness();          // first tick
+    clock += 300_000; runtime.checkLiveness();       // slept -> resume grace starts
+    clock += 30_000;  runtime.checkLiveness();       // normal tick, inside the grace
+    clock += 30_000;  runtime.checkLiveness();       // still inside
+    expect(children[0].child.killed).toEqual([]);
+  });
+
+  // …but the grace is not indefinite: a spine that is REALLY wedged still gets restarted.
+  // Each step here is one interval, so none of them looks like a sleep.
+  it('once the post-resume grace expires, a genuinely stale beat is still a wedge', () => {
+    let clock = Date.UTC(2026, 5, 18, 12, 0, 0);
+    const { runtime, children } = makeRuntime({
+      now: () => clock,
+      statSync: () => ({ mtimeMs: OLD_BEAT }),
+      aliveGraceMs: 60_000, aliveStaleMs: 60_000, livenessIntervalMs: 30_000,
+    });
+    runtime.spawnShell();
+    clock += 500;  runtime.checkLiveness();
+    clock += 300_000; runtime.checkLiveness();       // slept -> 60s of resume grace
+    clock += 30_000;  runtime.checkLiveness();       // +30s, inside grace
+    expect(children[0].child.killed).toEqual([]);
+    clock += 31_000;  runtime.checkLiveness();       // past the grace, beat still ancient
+    expect(children[0].child.killed).toEqual(['SIGTERM']);
+  });
+
+  // Back-compat: with the watchdog ticking normally, nothing about the old behaviour moves.
+  it('normal ticking still restarts a wedged child on the first stale check', () => {
+    let clock = Date.UTC(2026, 5, 18, 12, 0, 0);
+    const { runtime, children } = makeRuntime({
+      now: () => clock,
+      statSync: () => ({ mtimeMs: OLD_BEAT }),
+      aliveGraceMs: 1_000, aliveStaleMs: 60_000, livenessIntervalMs: 30_000,
+    });
+    runtime.spawnShell();
+    clock += 5_000;               // past grace, one ordinary gap, beat ~1h stale
+    runtime.checkLiveness();
+    expect(children[0].child.killed).toEqual(['SIGTERM']);
+  });
+
+  // A disabled watchdog interval must not turn every tick into a "resume".
+  it('livenessIntervalMs = 0 disables the sleep heuristic rather than firing it constantly', () => {
+    let clock = Date.UTC(2026, 5, 18, 12, 0, 0);
+    const { runtime, children } = makeRuntime({
+      now: () => clock,
+      statSync: () => ({ mtimeMs: OLD_BEAT }),
+      aliveGraceMs: 1_000, aliveStaleMs: 60_000, livenessIntervalMs: 0,
+    });
+    runtime.spawnShell();
+    clock += 300_000;             // a gap that WOULD look like sleep if the heuristic were on
+    runtime.checkLiveness();
+    expect(children[0].child.killed).toEqual(['SIGTERM']);   // treated as a wedge, as before
+  });
+});

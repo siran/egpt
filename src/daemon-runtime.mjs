@@ -98,6 +98,21 @@ export function createDaemonRuntime(opts = {}) {
   // respawning "until the service is stopped or the heartbeat restored" (operator
   // 2026-07-01). A fresh beat observed by checkLiveness resets it.
   let wedgeStreak = 0;
+  // SLEEP IS NOT A WEDGE (operator 2026-09-03, reve found at 14% after a night on battery).
+  // beatAge() is WALL-CLOCK age, which is meaningless across a suspend: in Modern Standby the
+  // spine's timers do not fire, so alive.txt simply stops moving. reve wakes every 5 min (the
+  // egpt-wake-duty timer), and 300s of sleep always exceeds the 150s stale threshold — so on
+  // EVERY resume the watchdog killed a perfectly healthy spine. 45 restarts in one night, each
+  // dropping every warm CLI and re-resuming every thread.
+  //
+  // The tell is that OUR OWN loop stopped ticking too, and a watchdog that was itself frozen
+  // has no business blaming the thing it watches. So: measure the gap between consecutive
+  // ticks, and when it far exceeds the interval, treat it as a resume — then give the child
+  // the same grace a freshly-spawned one gets, because after a resume it genuinely needs a
+  // moment before its next beat lands (heartbeat ~60s vs a 150s threshold, so merely skipping
+  // one 30s tick would not be enough).
+  let lastLivenessTickAt = null;
+  let resumeGraceUntil = 0;
   // Set by checkLiveness right before it SIGTERMs a wedged child, so the exit
   // handler can tell that kill apart from an operator-initiated stop. On POSIX a
   // wedged child traps SIGTERM and exits 0 (egpt-spine.mjs) — identical to a clean
@@ -200,10 +215,22 @@ export function createDaemonRuntime(opts = {}) {
   // so a just-spawned (still-booting) child is never killed for not-yet-beating.
   function checkLiveness() {
     if (stopping || !child) return;
+    const at = now();
+    const sinceTick = lastLivenessTickAt == null ? 0 : at - lastLivenessTickAt;
+    lastLivenessTickAt = at;
     noteBeatObserved();   // a beat inside the grace window already proves this child booted
-    if (now() - childStartedAt < aliveGraceMs) return;
+    if (at - childStartedAt < aliveGraceMs) return;
     const age = beatAge();
     if (age > aliveStaleMs) {
+      // STALE — but a sleep explains staleness perfectly well, so ask that first. Our own
+      // loop skipping is the tell (see the note above); a fresh beat never reaches here, so
+      // a long gap with a healthy child still takes the ordinary path below.
+      if (livenessIntervalMs > 0 && sinceTick > livenessIntervalMs * 3) {
+        resumeGraceUntil = at + aliveGraceMs;
+        log(`resumed after ~${Math.round(sinceTick / 1000)}s without a liveness tick (the machine slept) — not a wedge; giving the spine ${Math.round(aliveGraceMs / 1000)}s to beat again`);
+        return;
+      }
+      if (at < resumeGraceUntil) return;   // still inside the post-resume grace
       const tail = lastBeatLine();
       log(`spine wedged — alive beat ${age === Infinity ? 'absent' : `${Math.round(age / 1000)}s old`} (> ${Math.round(aliveStaleMs / 1000)}s)${tail ? ` — last beat: ${tail}` : ''} — restarting`);
       wedgeKilled = true;   // exit handler: respawn, don't read a SIGTERM-induced exit 0 as an operator stop
