@@ -22,6 +22,10 @@ import { createBrainSession } from '../brain-session.mjs';
 import { createSandboxCliSession } from '../sandbox-cli-session.mjs';
 import { readConfigSync } from '../tools/config-io.mjs';
 import { reapPort } from '../tools/reap-port.mjs';
+// THE liveness question for a Beeper install, already written and already tested
+// (tests/beeper-whoami.test.mjs): GET /v1/accounts with a candidate's OWN token. Imported, never
+// re-implemented — a second probe here would be a second thing to get wrong about what a 401 means.
+import { probe as probeBeeperEndpoint } from '../tools/beeper-whoami.mjs';
 import * as cdp from '../tools/cdp.mjs';
 import { Room, CONVERSATIONS_ROOT, ROOMS_ROOT, AGENTS_ROOT } from '../room-core.mjs';
 import { loadAdapterModule } from '../adapters/registry.mjs';
@@ -519,6 +523,10 @@ export async function boot({
   aliveMs = 0,                        // >0: register the alive-file writer as a heartbeat so the daemon's wedge check sees liveness
   spawn: spawnFn = spawn,             // child_process.spawn seam — heartbeat command beats (incl. the alive script) spawn through here; tests inject a fake to observe the beat WITHOUT a real process
   reapPort: reapPortFn = reapPort,    // port-killer seam — the boot-time stray-whisper reap goes through here; tests inject a fake so the real netstat/taskkill NEVER runs against a live server
+  // Beeper endpoint-liveness seam — the ONLY network call boot makes before the bridge exists,
+  // and ONLY for a connection that declares `endpoints:` (see endpointFor below). Tests inject a
+  // fake so candidate resolution is observable without a real Desktop on a real port.
+  probeEndpoint: probeEndpointFn = probeBeeperEndpoint,
   // transcriptor WORKER-role process-boundary seams — the resident whisper-server + the :23390
   // endpoint spawn through here. Default to the real spawners; tests inject fakes so a boot with
   // transcriptor.enabled NEVER spawns a real whisper-server or binds a real port (see below).
@@ -1017,19 +1025,93 @@ export async function boot({
     try { const u = new URL(base); u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:'; u.pathname = '/v1/ws'; u.search = ''; u.hash = ''; return u.toString(); }
     catch { return undefined; }
   };
-  const endpointFor = (name) => {
+  // SEVERAL CANDIDATE ENDPOINTS for ONE connection (operator 2026-09-03). The Session 0 Desktop
+  // now FLIPS IDENTITY at logon: before the operator logs in it runs HIS account, after he logs
+  // in it is restarted as a different one while his GUI in Session 1 carries his. So the SAME
+  // connection must address a DIFFERENT INSTALL depending on that state — and not merely a
+  // different port: a token is minted by, and belongs to, ONE install, so each state needs its
+  // own (base_url, token) PAIR. Rewriting config.yaml and restarting the spine at every logon and
+  // logoff is not an option; the operator's file is hand-commented and the node would bounce
+  // twice a day. Instead a connection may list its candidates and the spine OBSERVES which one is
+  // actually alive at boot — the same "ask, don't assume" the peer-liveness watcher, whisper
+  // adoption and the fallback gate already run on.
+  //
+  //   main:
+  //     account: a@b
+  //     endpoints:                       # tried IN ORDER; first that answers 200 wins
+  //       - { base_url: http://127.0.0.1:23373, token: <the S0 install's token> }
+  //       - { base_url: http://127.0.0.1:23374, token: <the S1 install's token> }
+  //
+  // `owner_node` is NOT per-candidate: a connection has ONE owner regardless of which install
+  // answers, so it stays on the connection beside `account` — same as `account` itself.
+  const candidatesOf = (acct) => (Array.isArray(acct?.endpoints) && acct.endpoints.length ? acct.endpoints : null);
+  const connectionBlock = (name) => {
     const b = cfg.beeper;
-    const acct = name && b && typeof b === 'object' && b[name] && typeof b[name] === 'object' ? b[name] : null;
-    const baseUrl = acct?.base_url ?? undefined;
+    return name && b && typeof b === 'object' && b[name] && typeof b[name] === 'object' ? b[name] : null;
+  };
+  // One candidate (or the connection block itself, which is the SAME shape minus `endpoints`)
+  // read as an endpoint. `owner_node` is taken from the CONNECTION, never from the candidate.
+  const endpointOf = (src, acct) => {
+    const baseUrl = src?.base_url ?? undefined;
     return {
-      token: acct?.token ?? cfg.beeper_token ?? process.env.BEEPER_ACCESS_TOKEN,
+      token: src?.token ?? cfg.beeper_token ?? process.env.BEEPER_ACCESS_TOKEN,
       baseUrl,
-      wsUrl: acct?.ws_url ?? wsFromBase(baseUrl),
+      wsUrl: src?.ws_url ?? wsFromBase(baseUrl),
       ownerNode: acct?.owner_node ?? null,
     };
   };
+  // Filled by the resolution pass immediately below, BEFORE anything asks for an endpoint. It
+  // stays EMPTY on every node that declares no `endpoints:`, which is every node today — so
+  // endpointFor remains the pure, synchronous, network-free lookup it has always been and every
+  // consumer downstream (endpointKey, wakesOn, bridgeForEndpoint, rawBridgeOf, the shell-aware
+  // map) keeps calling it unchanged. That is also why this is a resolve-once cache rather than an
+  // async endpointFor: those consumers are synchronous per-being lookups on the hot path.
+  const resolvedByConnection = new Map();
+  const endpointFor = (name) => {
+    if (resolvedByConnection.has(name)) return resolvedByConnection.get(name);
+    const acct = connectionBlock(name);
+    // Candidates not yet resolved (or none declared) ⇒ the FIRST candidate, so this is never
+    // endpoint-less and a plain base_url/token connection is byte-identical to before.
+    return endpointOf(candidatesOf(acct)?.[0] ?? acct, acct);
+  };
   // The token ALONE, for callers that only need the identity and not the address.
   const tokenFor = (name) => endpointFor(name).token;
+
+  // THE OBSERVATION. Runs ONCE per connection an agent actually rides, here, before any endpoint
+  // is asked for. A connection with no `endpoints:` is skipped entirely — no probe, no network
+  // call, no delay at boot. 2s per candidate and strictly in order, so a black-holed port costs a
+  // bounded wait instead of hanging the node.
+  //
+  // 401 IS A POSITIVE RESULT, not an error: a token belongs to one install, so a 401 PROVES a
+  // different install is serving that port — exactly the reading src/tools/beeper-whoami.mjs was
+  // written for. Every verdict is logged because that line is the operator's proof of which
+  // install this node is bound to; today he has to run a tool to find out.
+  //
+  // NOTHING alive ⇒ the FIRST candidate, loudly. Booting against a dead endpoint is already what
+  // a misconfigured node does; refusing to boot would take the whole node down because Beeper was
+  // merely slow to start.
+  for (const name of new Set(Object.keys(agents()).map((being) => connectionOf(being)))) {
+    const acct = connectionBlock(name);
+    const candidates = candidatesOf(acct);
+    if (!candidates) continue;
+    let won = null;
+    for (const c of candidates) {
+      const ep = endpointOf(c, acct);
+      const r = await probeEndpointFn(ep.baseUrl, ep.token, { timeoutMs: 2000 });
+      if (r?.ok) {
+        log.line?.(`[bridge] connection '${name}' → ${ep.baseUrl} — 200, this install answers to this candidate's token`);
+        won = ep;
+        break;
+      }
+      if (r?.status === 401) log.line?.(`[bridge] connection '${name}': ${ep.baseUrl} answered 401 — a DIFFERENT install is serving that port, trying the next candidate`);
+      else log.line?.(`[bridge] connection '${name}': ${ep.baseUrl} did not answer (${r?.status || r?.error || 'nothing there'}) — trying the next candidate`);
+    }
+    if (!won) {
+      won = endpointOf(candidates[0], acct);
+      log.line?.(`[bridge] no live endpoint for connection '${name}' — falling back to ${won.baseUrl}`);
+    }
+    resolvedByConnection.set(name, won);
+  }
 
   // (The old pre-👂 OPEN vs observe-cancel warning was removed 2026-07-12: co-account de-dup is now the
   // on-demand coverage query (src/bridges/beeper.mjs noteCovered), which matches on normalized WORD TOKENS

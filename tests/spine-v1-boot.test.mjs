@@ -1186,8 +1186,9 @@ describe('boot() — the persona wake set is its handles, not its key (operator 
 // still SENDS on it and never WAKES on it.
 describe('boot() — beeper connection ENDPOINT and ownership', () => {
   const AG = { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true } };
-  async function bootWith(config) {
+  async function bootWith(config, { probeAnswers = {} } = {}) {
     const optsList = [];
+    const probes = [];
     const start = async (o) => {
       optsList.push(o);
       return { async send() { return { ok: true }; }, startStreamMessage() { return { delivered: false, update() {}, async finish() {} }; }, isAlive: () => true, stop() {} };
@@ -1196,8 +1197,14 @@ describe('boot() — beeper connection ENDPOINT and ownership', () => {
       readConfig: () => ({ node_name: 'kg', ...config }), startBridge: start, makeSession: fakeSession,
       loadState: async () => emptyState(), writeState: async () => {},
       io: memIo(), ingest: false, tickMs: 0, log: { line: () => {} },
+      // The endpoint-liveness seam. Every shape in this block is the PLAIN one, so this must
+      // never be called — see the additive lock at the end of the describe.
+      probeEndpoint: async (baseUrl, token) => {
+        probes.push({ baseUrl, token });
+        return probeAnswers[`${baseUrl}|${token}`] ?? { ok: false, status: 0, error: 'nothing there' };
+      },
     });
-    return { opts: optsList[optsList.length - 1], optsList, app };
+    return { opts: optsList[optsList.length - 1], optsList, probes, app };
   }
 
   it('base_url reaches the bridge, and ws_url is DERIVED from it', async () => {
@@ -1319,6 +1326,52 @@ describe('boot() — beeper connection ENDPOINT and ownership', () => {
     const spy = byToken.get('tok-rodz');
     await spy.onIncoming('hola egpt', { chatId: '!room1:beeper.com', chatName: 'fam1', network: 'whatsapp', userId: 'u-1', senderName: 'An', authorized: true, msgKey: 'm1' });
     expect(spy.streams).toHaveLength(1);
+    app.stop();
+  });
+
+  // ── THE ADDITIVE LOCK for candidate endpoints (operator 2026-09-03) ────────────
+  // A connection may now list several candidate (base_url, token) pairs and let the spine probe
+  // which install is actually alive — see tests/beeper-endpoint-candidates.test.mjs for that
+  // whole behaviour. What is locked HERE, beside the plain shapes it must not disturb, is that
+  // a connection WITHOUT `endpoints:` resolves exactly as it always did and asks the network
+  // nothing at boot. Every node today, and every other test in this suite, uses that shape.
+  it('a connection with NO endpoints: makes ZERO probe calls at boot', async () => {
+    const { probes, app } = await bootWith({
+      agents: {
+        egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true },
+        rodz: { configuration: 'egpt', handles: ['rodz'], beeper_connection: 'rodz' },
+      },
+      beeper: {
+        use: 'main',
+        main: { account: 'a@b', token: 'T', base_url: 'http://127.0.0.1:23373' },
+        rodz: { account: 'c@d', token: 'R', base_url: 'http://127.0.0.1:23374', owner_node: 'do' },
+      },
+    });
+    expect(probes).toEqual([]);
+    app.stop();
+  });
+
+  // And the endpoint the bridge is built on is the RESOLVED one, so the identity that keys
+  // bridgeByEndpoint is the winning candidate — not the config block it came from.
+  it('endpoints: resolves to the live candidate, and THAT is what reaches the bridge', async () => {
+    const { opts, probes, app } = await bootWith({
+      agents: AG,
+      beeper: {
+        use: 'main',
+        main: {
+          account: 'a@b',
+          owner_node: 'kg',
+          endpoints: [
+            { base_url: 'http://127.0.0.1:23373', token: 'S0' },
+            { base_url: 'http://127.0.0.1:23374', token: 'S1' },
+          ],
+        },
+      },
+    }, { probeAnswers: { 'http://127.0.0.1:23374|S1': { ok: true, status: 200 } } });
+    expect(probes.map((p) => p.token)).toEqual(['S0', 'S1']);
+    expect(opts.beeperToken).toBe('S1');
+    expect(opts.baseUrl).toBe('http://127.0.0.1:23374');
+    expect(opts.wsUrl).toBe('ws://127.0.0.1:23374/v1/ws');
     app.stop();
   });
 });
