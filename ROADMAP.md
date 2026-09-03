@@ -1301,12 +1301,25 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
     never looks stale), and the message sent DURING sleep dispatched and
     was ANSWERED on resume (backlog hold anchors to process start —
     process survived, so nothing held). The whole dormant→wake→hear→answer
-    loop works on an S3 box. REVE CANNOT do this: it is Modern Standby
-    (S0 Low Power Idle) — RTC wake timers are not honored there (two ticks
-    slept through, empty wake history); REVE options = stay always-on
-    (current), or buddy-wake via Wake-on-LAN from DOLLY (S0 honors WoL;
-    needs the NIC's "Wake on Magic Packet" enabled + REVE's MAC in DOLLY's
-    duty). Harnesses still armed on both (5-min): DISABLE after testing —
+    loop works on an S3 box. REVE could not do this in July, and that is NO LONGER TRUE.
+
+    - **CORRECTED 2026-09-03 — REVE CAN DO THIS TOO.** This entry used to read
+      "REVE CANNOT do this: it is Modern Standby (S0 Low Power Idle) — RTC wake timers
+      are not honored there (two ticks slept through, empty wake history)", and
+      prescribed Wake-on-LAN buddy-wake from DOLLY as the only alternative to
+      staying always-on. That is EMPIRICALLY FALSE on this machine now.
+      Overnight 2026-09-02 -> 03 REVE was woken **101 times** by this very RTC wake
+      timer, **while on battery**, with `powercfg /lastwake` naming it outright
+      ("Presume Wake Timer … NT TASK\egpt-wake-duty"), and networking up in
+      **0.1-0.2s on every wake** (`net(lan=True inet=True in 0.1s)`, 101 lines in
+      egpt-wake-duty.log). No Wake-on-LAN required. Whatever blocked it in July —
+      firmware, a Windows update, or the wake-timer policy being off at the time —
+      does not block it now. MEASURE BEFORE BELIEVING THIS AGAIN, in either direction.
+      The same night also exposed the REAL cost, which was never the wake: the daemon
+      killed the spine on 45 of those resumes because beatAge() is wall-clock and a
+      slept-through beat looks wedged. Fixed 2026-09-03 (daemon-runtime.mjs, "a sleep
+      is not a wedge"), so the wake cycle is now cheap as well as possible.
+    - Harnesses still armed on both (5-min): DISABLE after testing —
     `schtasks /change /tn egpt-wake-duty /disable`.
   - **✅ RESOLVED 2026-07-15 — AUTO-LOGON. The L0/L1 gap was never the spine's session.**
     ⚠️ TERMINOLOGY: this file already uses S0/S3 for POWER states (S0 Low Power Idle, above).
