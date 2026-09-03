@@ -20,6 +20,7 @@
 #   .\beeper-update.cmd -WhatIf      say what it would do and stop
 #   .\beeper-update.cmd -Force       reinstall even if the version is not newer
 #   .\beeper-update.cmd -NoRelaunchGui   leave the Session 1 GUI closed
+#   .\beeper-update.cmd -Pause          keep the ELEVATED window open at the end
 #
 # ASCII ONLY, deliberately: PowerShell 5.1 decodes a BOM-less UTF-8 script as ANSI, so a single
 # em-dash in a comment is a parse error.
@@ -29,6 +30,7 @@ param(
   [switch] $Force,
   [switch] $WhatIf,
   [switch] $NoRelaunchGui,
+  [switch] $Pause,
   [int]    $ServicePortTimeoutSec = 90
 )
 
@@ -169,3 +171,7 @@ if ($guiWasUp -and -not $NoRelaunchGui) {
 }
 
 Say "done. verify with:  node src/tools/beeper-whoami.mjs"
+
+# The elevated child gets its OWN window, which vanishes on exit before any of the above
+# can be read - and the whole point of a double-clickable tool is seeing what it did.
+if ($Pause) { Write-Host ''; Write-Host 'Press Enter to close...' -ForegroundColor Cyan; try { Read-Host | Out-Null } catch { } }
