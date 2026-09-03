@@ -188,3 +188,52 @@ Session 0 X-server is still unbuilt and wanted.
 - **Transcription language is `auto`, not absent** — whisper.cpp's `-l` default is `en`, so
   deleting the key pins English instead of Spanish. Three config sites plus the service's own
   arguments.
+
+---
+
+## Addendum, later on 2026-09-03
+
+**Session 0 is NOT opaque from Session 1, and the earlier claim that it was is wrong.** What
+is per-install is the TOKEN, not the visibility: loopback is machine-wide, so the S0 Desktop's
+`/v1/accounts` answers a Session 1 caller exactly as it answers the spine. The S1 token's 401
+against 23373 is not a boundary — it is the cheapest PROOF that a different install owns that
+port. `src/tools/beeper-whoami.mjs` is that question made reproducible; measured on both nodes:
+
+```
+reve   :23373 SESSION 0  @anrodriguez:beeper.com   :23374 SESSION 1  @anrodriguez:beeper.com
+dolly  :23373 SESSION 0  @dolly-egpt:beeper.com    :23374 SESSION 1  (no token minted)
+```
+
+**BOTH endpoints are now in config.yaml on both nodes** (`beeper.main` = S0, `beeper.s1` = S1).
+`s1` is RECORDED, NOT WIRED: a bridge is built only for what `beeper.use` or an agent's
+`beeper_connection` names, so it costs nothing at boot. Do not point an agent at it — it is the
+SAME ACCOUNT as `main`, one account with two devices, so the rooms and chatIds are identical and
+a node waking on both would answer every message twice. dolly's `main` also got its `base_url`
+pinned explicitly; it was riding the 23373 default, which is right only by accident of boot order.
+
+**GOOGLE VOICE IS INVISIBLE TO THE SPINE.** The gvoice bridge is `provider: local` — it runs
+INSIDE an install, not in the cloud — and it exists only on the SESSION 1 install. So the S0
+Desktop the spine rides carries matrix/telegram/whatsapp and nothing else, and no agent answers
+a Google Voice message while nobody is logged in. Every cloud bridge is fine. Open question,
+operator's call: re-link gvoice on the S0 install, or accept that it is a logged-in-only surface.
+
+**wren was never broken, and `agents/wren/` having no transcript is BY DESIGN.** The pin works:
+`warm: opened wren:ccode:agent:wren`, resuming `3fddb61c`. A transcript belongs to a CHAT, not to
+a being (brainpool's `resolveConv` says so outright), so wren's turns are written into the origin
+chat's `transcript.md` — 111 wren lines in Radio WnL's. Its own folder holds identity, not history;
+its history is the thread. `contacts.agent.wren` is not strange either: it is the path row for the
+pinned scope, and the THREAD row for it lives in `config/agents.yaml`, a separate registry.
+
+What WAS stale: six per-chat `wren` rows in `conversations.yaml` carrying threadIds from before
+the pin, which nothing reads any more — `sessionId` comes from the SCOPE. Removed. `mode` is the
+one per-chat wren key still live (it is read from the ORIGIN chat, since it is what `gating.decide`
+asks about THIS chat), so Radio WnL's `mode: on` was kept. Backup:
+`conversations.yaml.bak-wrencleanup-0903`, which still holds the removed thread pointers.
+
+**Beeper can now be updated programmatically** — `src/tools/beeper-update.cmd`. Both nodes sat at
+4.3.73 with 4.3.89 downloaded and stuck: electron-updater cannot overwrite a tree two processes
+hold, and killing the S0 Desktop does not help because NSSM restarts it in 10s. The service must
+be STOPPED. The script stops it, closes the GUI gracefully, verifies the pending installer's
+sha512, runs it `/S --updated`, then brings the SERVICE BACK FIRST and waits for it to bind 23373
+before relaunching the GUI — start the GUI first and the two Desktops swap ports, which silently
+points the spine at the operator's own Desktop.
