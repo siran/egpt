@@ -78,6 +78,36 @@ describe('getBeing — reads ONLY entry.agents.<being> (phase 1)', () => {
   });
 });
 
+// AUTO-COMPACTION overrides (operator 2026-09-03: config/agents.yaml is where a globally-pinned
+// agent's "threads, compaction rules — en fin, honor existing configuration keys" live). Unlike
+// every other per-conversation override this one is OBJECT-valued, because the node-global
+// `compaction:` block it overrides is — and it reuses that block's OWN key names (`enabled`,
+// `ratio`, `cooling_ms`, `context_window`) rather than a second dialect of them. RAW here, like
+// access_level/allow_new_input above: getBeing reports what the file SAYS, and brainpool's
+// resolveConv is the ONE place that decides what it MEANS.
+describe('getBeing — the compaction override block (operator 2026-09-03)', () => {
+  const st = (compaction) => ({ contacts: { whatsapp: { '!comp:beeper.local': { slug: 'comp',
+    agents: { e: { mode: 'on', ...(compaction === undefined ? {} : { compaction }) } },
+  } } } });
+  const read = (compaction) => getBeing(st(compaction), 'whatsapp', '!comp:beeper.local', 'e').compaction;
+
+  it('present → the block comes back VERBATIM, keys and values untouched', () => {
+    const block = { enabled: true, ratio: 0.8, cooling_ms: 30_000, context_window: 1_000_000 };
+    expect(read(block)).toEqual(block);
+  });
+
+  it('absent → null ("this conversation states nothing" — the node-global block keeps applying)', () => {
+    expect(read(undefined)).toBe(null);
+    expect(getBeing(state, 'whatsapp', '!current:beeper.local', 'e').compaction).toBe(null);
+  });
+
+  it('not a plain object (a scalar, a list) → null, never handed on as a policy', () => {
+    expect(read('0.8')).toBe(null);
+    expect(read(['ratio', 0.8])).toBe(null);
+    expect(read(0.8)).toBe(null);
+  });
+});
+
 describe('residentsOf — agents.<name> keys, PLUS a recognized-but-inert legacy entry[<being>] block', () => {
   it('a legacy flat entry (no object-valued being block at all) has no residents', () => {
     expect(residentsOf(state.contacts.whatsapp['!legacy:beeper.local'])).toEqual([]);

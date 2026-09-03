@@ -1451,6 +1451,46 @@ describe('brainpool.turn — the fresh moment', () => {
   });
 });
 
+// ── AUTO-COMPACTION OVERRIDES (operator's ruling 2026-09-03): "config/agents.yaml is where a
+//    globally-pinned agent's configuration lives — their threads, compaction rules — en fin,
+//    honor existing configuration keys". So a conversation's `compaction:` block resolves with
+//    the SAME two tiers accessLevel/allowedUsers/sandboxed/allowNewInput use, and it REPLACES
+//    rather than merges at whichever tier answers — allowed_users' rule, for the same reason: a
+//    half-overridden policy assembled from two files is harder to reason about than one that
+//    says what it means where it is written.
+//
+//    resolveConv RESOLVES, compaction.mjs APPLIES — the block rides out on the afterTurn hook.
+//    What the service then does with it (validation, and freezing the ratio at arm time) is
+//    locked in compaction-overrides.test.mjs, not here. Absent at BOTH tiers is null, which is
+//    exactly what leaves a node that configures nothing on the node-global block. ──
+describe('brainpool — compaction overrides, two-tier (operator 2026-09-03)', () => {
+  // Run one turn and hand back the `compaction` the afterTurn hook was called with.
+  const ranWith = async (opts) => {
+    const seen = [];
+    const { brain } = harness([{ text: 'ok', sessionId: 'sid-c' }], { ...opts, afterTurn: (x) => seen.push(x) });
+    await brain.turn('e', ev);
+    expect(seen).toHaveLength(1);
+    return seen[0].compaction;
+  };
+  const globalTier = (compaction) => ({ agents: { e: { conversation_defaults: { access_level: 'regular', compaction } } } });
+
+  it('tier 1 OUTRANKS tier 2: the per-conversation block beats conversation_defaults.compaction — and REPLACES it whole, no field-wise merge', async () => {
+    expect(await ranWith({
+      config: globalTier({ enabled: true, ratio: 0.9, cooling_ms: 600_000 }),
+      seedAgents: { e: { compaction: { ratio: 0.4 } } },
+    })).toEqual({ ratio: 0.4 });   // NOT { enabled, ratio: 0.4, cooling_ms } — the answering tier answers alone
+  });
+
+  it('tier 2: agents.<being>.conversation_defaults.compaction applies when the conversation states none', async () => {
+    expect(await ranWith({ config: globalTier({ ratio: 0.8, context_window: 1_000_000 }) }))
+      .toEqual({ ratio: 0.8, context_window: 1_000_000 });
+  });
+
+  it('absent at BOTH tiers → null (nothing stated here — the node-global compaction block keeps applying)', async () => {
+    expect(await ranWith({})).toBe(null);
+  });
+});
+
 // parseWarmBlock takes the RESOLVED doc, not config.yaml text — `warm:` is one
 // rung-resolved block of the one namespace, and the resolver already did the parsing.
 describe('parseWarmBlock', () => {

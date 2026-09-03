@@ -517,6 +517,15 @@ export function createBrainPool({
         b?.allowNewInput ?? getConfig()?.agents?.[being]?.conversation_defaults?.allow_new_input ?? DEFAULT_ALLOW_NEW_INPUT,
         being, onLog,
       ),
+      // AUTO-COMPACTION OVERRIDES for this conversation (operator 2026-09-03), same two-tier
+      // walk as everything above it: the per-conversation block (for a PINNED being that block
+      // is its row in config/agents.yaml, which is the point) beats
+      // agents.<being>.conversation_defaults.compaction, and an absent answer at both tiers is
+      // null — "nothing stated here", so compaction.mjs keeps applying the node-global block
+      // exactly as it does today. REPLACES rather than merges at whichever tier answers, the
+      // same rule allowed_users follows: a half-overridden compaction policy assembled from two
+      // files is far harder to reason about than one that says what it means where it is written.
+      compaction: b?.compaction ?? getConfig()?.agents?.[being]?.conversation_defaults?.compaction ?? null,
     };
   }
 
@@ -528,7 +537,7 @@ export function createBrainPool({
       // derives from it and none from `ev`: thread, warm key, conv dir, run config, transcript
       // roll, thread stats. `ev` still owns what belongs to the MESSAGE — its line, its reply,
       // its own transcript (see resolveConv above).
-      const { scope, slug, sessionId, mode, accessLevel, allowedUsers, sandboxed, verboseThinking } = await resolveConv(ev, being);
+      const { scope, slug, sessionId, mode, accessLevel, allowedUsers, sandboxed, verboseThinking, compaction: compactionOver } = await resolveConv(ev, being);
       if (!slug) throw new Error(`brainpool: no slug for ${scope.surface}/${scope.chatId}`);
 
       // STRUCTURAL SAFETY GATE (operator 2026-08-16; refined 2026-08-20). Refuses the ENTIRE
@@ -820,7 +829,9 @@ export function createBrainPool({
       }
       // Auto-compaction hook: after a cooling period the service /compacts this
       // session in place if it grew past ratio. Fire-and-forget — never block the reply.
-      try { afterTurn?.({ key, sessionId: newSession ?? sessionId ?? null, model: def.model, cwd, allowedTools: baseOpts.allowedTools }); } catch { /* non-fatal */ }
+      // `compaction` rides along so the service applies THIS conversation's own policy
+      // (operator 2026-09-03). null ⇒ the node-global block, i.e. today's behaviour exactly.
+      try { afterTurn?.({ key, sessionId: newSession ?? sessionId ?? null, model: def.model, cwd, allowedTools: baseOpts.allowedTools, compaction: compactionOver }); } catch { /* non-fatal */ }
       return { text, sessionId: newSession ?? sessionId ?? null, being };
     },
 

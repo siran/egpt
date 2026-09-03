@@ -966,6 +966,20 @@ export function getBeing(state, surface, jid, being) {
     // as a routing decision). Raw here on purpose: getBeing reports what the file SAYS; one
     // place resolves what it MEANS.
     allowNewInput:      b?.allow_new_input      ?? null,
+    // AUTO-COMPACTION for THIS conversation (operator 2026-09-03: config/agents.yaml is where a
+    // global agent's "threads, compaction rules — en fin, honor existing configuration keys"
+    // live). Same shape/tier as the overrides above, and it is an OBJECT rather than a scalar
+    // because the node-global block it overrides is one: the keys inside are `enabled`, `ratio`,
+    // `cooling_ms` and `context_window` — config.yaml's OWN `compaction:` key names, reused
+    // verbatim so there is one vocabulary and not a per-conversation dialect of it.
+    //
+    // It matters most exactly where it now lives. A node-wide ratio is a compromise between
+    // beings that do not compare: a pinned agent is ONE THREAD carrying every chat it is
+    // addressed in, so it fills a window far faster than any single conversation, and 0.80
+    // node-wide is either too eager for a chat or too late for wren. RAW here, resolved in
+    // brainpool's resolveConv — getBeing reports what the file SAYS, one place decides what it
+    // MEANS. null = no override at this tier, fall to conversation_defaults and then the node.
+    compaction:         _obj(b?.compaction)     ?? null,
   };
 }
 

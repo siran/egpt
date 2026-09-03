@@ -1,0 +1,95 @@
+# config/agents.yaml — WHERE A GLOBALLY PINNED AGENT IS CONFIGURED.
+#
+# A being pinned node-wide (`agents.<being>.scope: agent/<name>` in config.yaml) is ONE MIND
+# everywhere: every chat it is addressed in resolves to a single conversation, so it has one
+# thread, one warm process, one turn queue and one run configuration. That conversation is not a
+# room and does not belong in a room's row, so it gets its own registry — this file.
+#
+# Operator, 2026-09-03: *"much better to have a config/agents.yaml file to configure the global
+# agents, their threads, compaction rules — en fin, honor existing configuration keys."* That
+# last clause is the rule this file follows: every key below is a key that already means the same
+# thing somewhere else. There is no vocabulary here that exists only here.
+#
+# FOUR UNRELATED THINGS ARE SPELLED `agents` (see src/rooms-file.mjs). This file is the first:
+#   1. THIS FILE          — per-agent-INSTANCE rows, keyed `agent/<name>`.
+#   2. config.yaml's `agents:` — the node's agent REGISTRY: which beings exist, their handles,
+#                           type, routing and `scope:`. That is where a being is DECLARED.
+#   3. config/agents/*.yaml — the agent TYPE files (engine, model, effort, cwd, allowed_tools).
+#   4. a row's own `agents:` — the container of per-being blocks below.
+# The nesting `agents: → agent/wren: → agents: → wren:` is (1) containing (4). Not a bug.
+#
+# THE SPINE WRITES THIS FILE. Thread bookkeeping is persisted here after a turn, so hand-edit it
+# while the daemon is stopped, or expect the next write to be built on what is on disk (state is
+# re-read from disk before every write, so a live edit is picked up — it is the parse that is
+# unforgiving). An UNPARSEABLE registry reads as EMPTY, not as an error.
+
+agents:
+  agent/wren:
+    agents:
+      wren:
+        # ── the thread ────────────────────────────────────────────────────────────────────
+        # Written by the spine, not by hand. This is the one global thread the pinned being
+        # resumes from every chat; deleting it starts a fresh mind, and the old transcript
+        # survives (transcripts belong to the CHAT, so they are in the chats it spoke in, not
+        # here). identityInjectedAt records when the identity feed was last seeded into it.
+        threadId: 00000000-0000-0000-0000-000000000000
+        threadCreatedAt: 2026-09-01T17:57:32.476Z
+        identityInjectedAt: 2026-09-01T17:57:32.476Z
+
+        # ── reachability and capability ───────────────────────────────────────────────────
+        # Identical in meaning to the same keys on a conversations.yaml row and to
+        # `agents.<being>.conversation_defaults.*` in config.yaml — this is the NEARER tier and
+        # it REPLACES the further one, never merges with it.
+        #
+        # access_level: all | regular   points at config/permissions/<level>.md, read fresh
+        #                               every turn. `all` REQUIRES allowed_users (the spine
+        #                               refuses the turn otherwise: unconfined capability plus
+        #                               unrestricted reachability is the combination to catch).
+        # allowed_users:                who may WAKE this being. `["*"]` is the explicit
+        #                               wildcard; an empty/absent list is unrestricted.
+        # sandboxed:                    OS-level process isolation. Defaults to TRUE when unset
+        #                               at every tier.
+        # verbose_thinking:             render the chain of thought. Has a THIRD tier below
+        #                               these two — the type file's own value — so `null` here
+        #                               means "go ask the type file", not "off".
+        # allow_new_input: none | same_sender | any
+        #                               may a message arriving mid-turn STEER the running turn.
+        access_level: all
+        allowed_users: [ "*" ]
+        sandboxed: false
+        # verbose_thinking: true
+        # allow_new_input: same_sender
+
+        # ── compaction (operator 2026-09-03) ──────────────────────────────────────────────
+        # config.yaml's OWN `compaction:` keys, reused verbatim, applying to THIS conversation
+        # only. Absent ⇒ the node-global `compaction:` block, unchanged.
+        #
+        # THIS IS THE KEY THAT MOST WANTS TO LIVE HERE. A node-wide ratio is a compromise
+        # between conversations that do not compare: a pinned agent is ONE THREAD carrying every
+        # chat it is addressed in, so it fills a context window far faster than any single chat
+        # does. Measured 2026-08-30: wren's thread sat at 882,608 of 1,000,000 tokens. And
+        # overshooting does not compact — the overflow path RESETS to a fresh session, losing the
+        # conversation instead of compressing it — so the margin is what the number buys.
+        #
+        #   enabled         false disables compaction for this conversation. It can also be
+        #                   true here while the node has it off.
+        #   ratio           compact once the session passes this fraction of the model window.
+        #                   Must be > 0 and <= 1; anything else falls back to the node value
+        #                   (0 would mean "compact after every turn").
+        #   cooling_ms      quiet time after the last reply before the check runs.
+        #   context_window  override the window inferred from the model.
+        #
+        # Resolved when the turn ARMS the timer and frozen onto it, so the policy that armed a
+        # compaction is the one that runs it.
+        compaction:
+          ratio: 0.60
+          # enabled: true
+          # cooling_ms: 120000
+          # context_window: 1000000
+
+        # ── NOT here: `mode` ──────────────────────────────────────────────────────────────
+        # `mode` (on | auto | mute | mention | accum) is the one per-being key still read from
+        # the ORIGIN CHAT rather than from the scope, because it is what the spine asks about
+        # THIS chat — "does this being answer un-addressed here?" — and one being can reasonably
+        # be `on` in the radio room and mention-only everywhere else. Set it on the chat's row in
+        # conversations.yaml; setting it here does nothing.

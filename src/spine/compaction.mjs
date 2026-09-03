@@ -40,10 +40,39 @@ export function createCompaction({
   const coolingMs = () => Number(cfg().cooling_ms ?? DEFAULT_COOLING_MS) || DEFAULT_COOLING_MS;
   const windowOf = (model) => Number(cfg().context_window) || windowForModel(model);
 
+  // PER-CONVERSATION OVERRIDES (operator 2026-09-03), carried in on afterTurn from brainpool's
+  // resolveConv and using config.yaml's OWN `compaction:` key names — `enabled`, `ratio`,
+  // `cooling_ms`, `context_window` — so there is one vocabulary and not a second dialect. For a
+  // PINNED being the block they come from is its row in config/agents.yaml, which is the reason
+  // this exists: a node-wide ratio is a compromise between conversations that do not compare.
+  // wren is ONE THREAD carrying every chat he is addressed in, so he fills a window far faster
+  // than any single chat does, and one number cannot be right for both.
+  //
+  // Absent or unusable ⇒ the node-global answer, unchanged. Every read is validated rather than
+  // trusted: `Number(x) || fallback` would silently accept a ratio of 0 as falsy and a NEGATIVE
+  // one as real, and a ratio of 0 means "compact after every single turn".
+  //
+  // BOOLEANS ARE REJECTED, and it is the ONE case where the fallback direction is what matters
+  // rather than the validation: `Number(true)` is 1, so `ratio: true` would resolve to "compact
+  // at 100% of the window" — never, in practice. And a conversation that overshoots is not
+  // compacted late, it is LOST: brainpool's §7 overflow backstop RESETS to a fresh session. So a
+  // typo that READS as "on" would silently arm the exact outcome this service exists to prevent,
+  // and `enabled: true` sits directly above `ratio:` in the block, which makes transposing them
+  // the realistic mistake. Numeric STRINGS are deliberately still coerced ('0.6' is an ordinary
+  // YAML quoting accident, and it means what it says).
+  const _obj = (v) => (v && typeof v === 'object' && !Array.isArray(v)) ? v : null;
+  const _pos = (v) => { const n = typeof v === 'boolean' ? NaN : Number(v); return Number.isFinite(n) && n > 0 ? n : null; };
+  const ratioFor = (o) => { const n = _pos(o?.ratio); return n && n <= 1 ? n : ratio(); };
+  const coolingFor = (o) => _pos(o?.cooling_ms) ?? coolingMs();
+  const windowFor = (model, o) => _pos(o?.context_window) ?? windowOf(model);
+  // enabled: false at EITHER tier disables. The per-conversation tier can also turn compaction
+  // back ON for one being while the node has it off, which is why this is `??` and not an AND.
+  const enabledFor = (o) => (o?.enabled ?? cfg().enabled) !== false;
+
   async function fire(key, target) {
     pending.delete(key);
     try {
-      const { due, tokens, threshold } = dueFor(target, { ratio: ratio() });
+      const { due, tokens, threshold } = dueFor(target, { ratio: target.ratio ?? ratio() });
       if (!due) return;
       onLog(`compacting ${key} (${tokens} tok >= ${threshold})`);
       // native /compact through the SAME warm session (in place, same id). brainOptions
@@ -55,12 +84,17 @@ export function createCompaction({
   return {
     // Called after every bot turn. (Re)arms the cooling timer for this conversation;
     // the check + /compact run only once it goes quiet for the cooling period.
-    afterTurn({ key, sessionId, model, cwd, allowedTools } = {}) {
-      if (cfg().enabled === false || !pool || !key || !sessionId) return;
+    afterTurn({ key, sessionId, model, cwd, allowedTools, compaction } = {}) {
+      const over = _obj(compaction);
+      if (!enabledFor(over) || !pool || !key || !sessionId) return;
       const prev = pending.get(key);
       if (prev !== undefined) scheduler.clear(prev);
-      const target = { sessionId, model, window: windowOf(model), brainOptions: { sessionId, cwd, model, allowedTools } };
-      const h = scheduler.set(() => fire(key, target), coolingMs());
+      // The resolved ratio is FROZEN ONTO THE TARGET, not re-read when the timer fires: the
+      // policy that armed this compaction is the one that should run it, and the alternative is
+      // a conversation compacted under whichever config happened to be loaded a cooling period
+      // later. `window` was already frozen here for the same reason.
+      const target = { sessionId, model, window: windowFor(model, over), ratio: ratioFor(over), brainOptions: { sessionId, cwd, model, allowedTools } };
+      const h = scheduler.set(() => fire(key, target), coolingFor(over));
       h?.unref?.();
       pending.set(key, h);
     },
