@@ -217,7 +217,7 @@ const KNOWN_PLATFORM_DEBT = [
   {
     file: 'src/sandbox-cli-session.mjs',
     code: "_spawn('powershell.exe', psArgs, spawnOpts)",
-    why: 'FOUND BY THIS SCAN 2026-09-04, unguarded. sandboxed:true spawns powershell.exe running setup/sandbox-logon-launcher.ps1 with no process.platform check anywhere in the module, so on Linux/macOS a sandboxed being fails at spawn time with a bare ENOENT that names powershell, not the feature. REAL FIX: either gate the feature on win32 with an explicit error ("sandboxed: true is Windows-only on this build"), the way the engine check above it already fails loudly, or grow a POSIX launcher.',
+    why: 'FOUND BY THIS SCAN 2026-09-04, GUARDED THE SAME DAY. createSandboxCliSession now throws BEFORE this spawn whenever the platform is not win32 ("sandboxed: true does not support platform=<p> - OS-level sandboxing is Windows-only on this build (set sandboxed: false for this agent, or run this node on Windows)"), the same loud shape as the engine check above it, and brainpool.mjs no longer DEFAULTS anyone into it off Windows (unset at both tiers now resolves to true on win32, false elsewhere). So the bare ENOENT is gone and an explicit sandboxed:true is REFUSED rather than silently downgraded. REMAINING DEBT, and why this entry stays: the line itself is still Windows-only machinery, so the feature is simply unavailable on Linux/macOS until setup/sandbox-logon-launcher.ps1 grows a POSIX equivalent.',
   },
   {
     file: 'src/spine/commands.mjs',

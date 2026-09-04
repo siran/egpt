@@ -49,7 +49,7 @@ describe('sandbox-cli-session — wraps warm-cli-session with the OS-isolation l
   it('spawns powershell.exe running the launcher with TargetFolder/InnerBin, not claude.exe directly', async () => {
     const f = fakeLauncherSpawn();
     const cwd = process.cwd();   // must exist — warm-cli-session.mjs's spawnProc validates it
-    const s = createSandboxCliSession({ spawn: f.spawn, cwd });
+    const s = createSandboxCliSession({ spawn: f.spawn, cwd, platform: 'win32' });
     await s.turn('hi');
 
     expect(f.spawnCount()).toBe(1);
@@ -84,7 +84,7 @@ describe('sandbox-cli-session — wraps warm-cli-session with the OS-isolation l
 
   it('still satisfies turn()/sessionId/streaming exactly like a plain warm-cli-session (thin wrapper)', async () => {
     const f = fakeLauncherSpawn();
-    const s = createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd() });
+    const s = createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), platform: 'win32' });
     const updates = [];
     const r1 = await s.turn('ONE', (t) => updates.push(t));
     const r2 = await s.turn('TWO');
@@ -98,7 +98,7 @@ describe('sandbox-cli-session — wraps warm-cli-session with the OS-isolation l
 
   it('throws synchronously for an unsupported engine, without spawning anything', () => {
     const f = fakeLauncherSpawn();
-    expect(() => createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), engine: 'llama' })).toThrow(/llama/);
+    expect(() => createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), engine: 'llama', platform: 'win32' })).toThrow(/llama/);
     expect(f.spawnCount()).toBe(0);
   });
 
@@ -119,7 +119,7 @@ describe('sandbox-cli-session — wraps warm-cli-session with the OS-isolation l
       return proc;
     };
     const cwd = process.cwd();
-    const s = createSandboxCliSession({ spawn, cwd, engine: 'codex' });
+    const s = createSandboxCliSession({ spawn, cwd, engine: 'codex', platform: 'win32' });
     s.turn('hi').catch(() => {});   // fire the spawn; the app-server never replies here, so the turn itself is left pending/uninspected
 
     expect(calls.length).toBe(1);
@@ -159,7 +159,7 @@ describe('sandbox-cli-session — wraps warm-cli-session with the OS-isolation l
       return proc;
     };
     const cwd = process.cwd();
-    const s = createSandboxCliSession({ spawn, cwd, engine: 'pi' });
+    const s = createSandboxCliSession({ spawn, cwd, engine: 'pi', platform: 'win32' });
     const r = await s.turn('hi');
     expect(r.text).toBe('hi');
 
@@ -174,5 +174,43 @@ describe('sandbox-cli-session — wraps warm-cli-session with the OS-isolation l
     expect(innerArgs).toContain('--offline');
 
     s.close();
+  });
+
+  // ── PLATFORM GUARD (operator 2026-09-04). Every test above pins `platform: 'win32'`: they lock
+  //    the WINDOWS path, which must stay byte-identical, and pinning it is what lets them keep
+  //    doing that on a POSIX runner. The seam still DEFAULTS to the real process.platform (last
+  //    test below).
+  //
+  //    A DEFAULT may be platform-aware — brainpool.mjs's `sandboxed` fallback is (unset at both
+  //    tiers = true on win32, false elsewhere). AN EXPLICIT REQUEST MAY NOT BE: reaching this
+  //    factory at all means some tier said `sandboxed: true`, so on a non-Windows node it must
+  //    fail LOUDLY and BEFORE the spawn — never run the being unsandboxed behind a config key
+  //    that claims otherwise, and never leak the bare ENOENT naming a shell binary that an
+  //    unguarded spawn used to produce. ──
+  for (const platform of ['linux', 'darwin']) {
+    it(`REPRODUCE-FIRST: an explicit sandboxed:true on ${platform} throws, naming the feature and the fix, WITHOUT spawning`, () => {
+      const f = fakeLauncherSpawn();
+      let err = null;
+      try { createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), platform }); } catch (e) { err = e; }
+      expect(err, `a sandboxed session was created on ${platform}, which has no launcher to run`).toBeTruthy();
+      expect(err.message).toContain('sandboxed: true');    // the feature, named by its config key
+      expect(err.message).toContain(platform);             // ...and why it cannot run here
+      expect(err.message).toContain('Windows-only');
+      expect(err.message).toContain('sandboxed: false');   // THE FIX, named in the message itself
+      expect(f.spawnCount()).toBe(0);                      // and no ENOENT is possible: nothing was spawned
+    });
+  }
+
+  it('the platform seam DEFAULTS to the real process.platform (injection is for tests, not a requirement)', () => {
+    const f = fakeLauncherSpawn();
+    const make = () => createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd() });
+    if (process.platform === 'win32') {
+      const s = make();                 // the operator's own node: created exactly as before...
+      expect(f.spawnCount()).toBe(0);   // ...and still lazy — the launcher spawns on the first turn()
+      s.close();
+    } else {
+      expect(make).toThrow(/Windows-only/);
+      expect(f.spawnCount()).toBe(0);
+    }
   });
 });

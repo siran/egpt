@@ -37,7 +37,7 @@ function fakePool(scriptedResults, { steerTakes = true } = {}) {
 
 const ev = { surface: 'whatsapp', chatId: '!room:beeper.com', chatName: 'SPOILER', line: 'An@[SPOILER].wa (14:05) #m1: hola', body: 'hola' };
 
-function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, loadFeed, loadManifest, loadAutoLayer, labelOf, seedSession, seedMode, seedAgents, brains, afterTurn, io, seedLayers, resolveConfig, loadPermission, skipAccessLevelDefault, poolOverride, onLog, steerTakes } = {}) {
+function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, loadFeed, loadManifest, loadAutoLayer, labelOf, seedSession, seedMode, seedAgents, brains, afterTurn, io, seedLayers, resolveConfig, loadPermission, skipAccessLevelDefault, poolOverride, onLog, steerTakes, platform } = {}) {
   let state = emptyState();
   if (seedSession || seedMode || seedAgents) {   // pre-register the contact (WITH a stored thread, an E mode, and/or per-being pins)
     const ens = ensureContact(state, ev.surface, ev.chatId, { pushedName: ev.chatName, slugHint: ev.chatName });
@@ -116,6 +116,7 @@ function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, load
     // loadPermissionLevel itself.
     loadPermission: loadPermission ?? (() => null),
     ...(onLog ? { onLog } : {}),                   // the diagnostic sink (allow_new_input validation)
+    ...(platform ? { platform } : {}),             // 'win32' | 'linux' | ... — drives the PLATFORM-AWARE `sandboxed` default below (omit → this host's real process.platform)
   });
   return { brain, pool, getState: () => state, setState: (s) => { state = s; } };
 }
@@ -939,48 +940,90 @@ describe('brainpool.turn — STRUCTURAL SAFETY GATE (operator 2026-08-16, refine
   });
 });
 
-// ── SANDBOXED default-on (operator 2026-08-20): same two-tier resolution (per-conversation,
-//    then agents.<being>.conversation_defaults) as accessLevel/allowedUsers, but the FALLBACK
-//    when unset at both tiers is now `true` (was `null`) — OS-level isolation applies to every
-//    being unless a tier explicitly opts out with `sandboxed: false`. `??` only falls through on
-//    null/undefined, so an explicit `false` at either tier still wins over the default. ──
-describe('brainpool.turn — sandboxed default-on (operator 2026-08-20)', () => {
-  it('unset at both tiers → resolves to true (brainOptions.sandboxed reaches boot.mjs\'s makeSession dispatch)', async () => {
-    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }]);   // no seedAgents.e.sandboxed, no config default
+// ── SANDBOXED default-on (operator 2026-08-20), PLATFORM-AWARE since 2026-09-04: same two-tier
+//    resolution (per-conversation, then agents.<being>.conversation_defaults) as
+//    accessLevel/allowedUsers, but the FALLBACK when unset at both tiers is now
+//    `platform === 'win32'` — `true` on Windows (byte-identical to the 2026-08-20 default-on:
+//    Windows loses nothing) and `false` everywhere else, where the launcher is machinery that
+//    does not exist and the old default failed a fresh clone on its FIRST turn.
+//
+//    `??` only falls through on null/undefined, so an explicit `sandboxed: true|false` at either
+//    tier still wins over the default ON BOTH PLATFORMS: a DEFAULT may be platform-aware because
+//    nobody asked for it, a REQUEST may not be silently downgraded. An explicit `true` on POSIX
+//    therefore resolves TRUE here, on purpose — the loud refusal is the SESSION layer's job
+//    (src/sandbox-cli-session.mjs, tests/sandbox-cli-session.test.mjs), so this layer never hands
+//    back a `false` that would turn `sandboxed: true` into a lie. ──
+describe('brainpool.turn — sandboxed default (operator 2026-08-20; platform-aware 2026-09-04)', () => {
+  it('DO NOT WEAKEN WINDOWS: on win32, unset at both tiers → still resolves to true (brainOptions.sandboxed reaches boot.mjs\'s makeSession dispatch)', async () => {
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { platform: 'win32' });   // no seedAgents.e.sandboxed, no config default
     await brain.turn('e', ev);
     expect(pool.calls[0].brainOptions.sandboxed).toBe(true);
   });
 
-  it('conversation_defaults.sandboxed unset (agents block present but no sandboxed key) → still resolves to true', async () => {
+  it('DO NOT WEAKEN WINDOWS: on win32, conversation_defaults.sandboxed unset (agents block present but no sandboxed key) → still resolves to true', async () => {
     const config = { agents: { e: { conversation_defaults: { access_level: 'regular' } } } };
-    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { config });
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { config, platform: 'win32' });
     await brain.turn('e', ev);
     expect(pool.calls[0].brainOptions.sandboxed).toBe(true);
   });
 
-  it('REGRESSION: explicit per-conversation sandboxed:false overrides the true default (opt-out survives)', async () => {
-    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
-      seedAgents: { e: { sandboxed: false } },
+  for (const platform of ['linux', 'darwin']) {
+    it(`REPRODUCE-FIRST: on ${platform}, unset at both tiers → false (a fresh clone's first turn must not be defaulted into Windows-only machinery)`, async () => {
+      const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { platform });
+      await brain.turn('e', ev);
+      expect(pool.calls[0].brainOptions.sandboxed).toBe(false);
     });
-    await brain.turn('e', ev);
-    expect(pool.calls[0].brainOptions.sandboxed).toBe(false);
-  });
 
-  it('REGRESSION: explicit conversation_defaults.sandboxed:false overrides the true default when no per-conversation value is set', async () => {
-    const config = { agents: { e: { conversation_defaults: { access_level: 'regular', sandboxed: false } } } };
-    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { config });
-    await brain.turn('e', ev);
-    expect(pool.calls[0].brainOptions.sandboxed).toBe(false);
-  });
-
-  it('a per-conversation sandboxed:true wins over an explicit conversation_defaults.sandboxed:false', async () => {
-    const config = { agents: { e: { conversation_defaults: { access_level: 'regular', sandboxed: false } } } };
-    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
-      config, seedAgents: { e: { sandboxed: true } },
+    it(`on ${platform}, conversation_defaults present but no sandboxed key → still false`, async () => {
+      const config = { agents: { e: { conversation_defaults: { access_level: 'regular' } } } };
+      const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { config, platform });
+      await brain.turn('e', ev);
+      expect(pool.calls[0].brainOptions.sandboxed).toBe(false);
     });
-    await brain.turn('e', ev);
-    expect(pool.calls[0].brainOptions.sandboxed).toBe(true);
-  });
+  }
+
+  // EXPLICIT VALUES ARE PLATFORM-BLIND — the same five walks, asserted identically on both.
+  for (const platform of ['win32', 'linux']) {
+    it(`on ${platform}: REGRESSION — explicit per-conversation sandboxed:false overrides the default (opt-out survives)`, async () => {
+      const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
+        seedAgents: { e: { sandboxed: false } }, platform,
+      });
+      await brain.turn('e', ev);
+      expect(pool.calls[0].brainOptions.sandboxed).toBe(false);
+    });
+
+    it(`on ${platform}: REGRESSION — explicit conversation_defaults.sandboxed:false overrides the default when no per-conversation value is set`, async () => {
+      const config = { agents: { e: { conversation_defaults: { access_level: 'regular', sandboxed: false } } } };
+      const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { config, platform });
+      await brain.turn('e', ev);
+      expect(pool.calls[0].brainOptions.sandboxed).toBe(false);
+    });
+
+    it(`on ${platform}: an explicit conversation_defaults.sandboxed:true resolves TRUE — a REQUEST is never silently downgraded to match the platform`, async () => {
+      const config = { agents: { e: { conversation_defaults: { access_level: 'regular', sandboxed: true } } } };
+      const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { config, platform });
+      await brain.turn('e', ev);
+      expect(pool.calls[0].brainOptions.sandboxed).toBe(true);
+    });
+
+    it(`on ${platform}: a per-conversation sandboxed:true wins over an explicit conversation_defaults.sandboxed:false`, async () => {
+      const config = { agents: { e: { conversation_defaults: { access_level: 'regular', sandboxed: false } } } };
+      const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
+        config, seedAgents: { e: { sandboxed: true } }, platform,
+      });
+      await brain.turn('e', ev);
+      expect(pool.calls[0].brainOptions.sandboxed).toBe(true);
+    });
+
+    it(`on ${platform}: a per-conversation sandboxed:false wins over an explicit conversation_defaults.sandboxed:true`, async () => {
+      const config = { agents: { e: { conversation_defaults: { access_level: 'regular', sandboxed: true } } } };
+      const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
+        config, seedAgents: { e: { sandboxed: false } }, platform,
+      });
+      await brain.turn('e', ev);
+      expect(pool.calls[0].brainOptions.sandboxed).toBe(false);
+    });
+  }
 });
 
 // ── VERBOSE_THINKING, THREE tiers (operator 2026-08-30: "verbose thinking should be

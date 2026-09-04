@@ -313,6 +313,11 @@ export function createBrainPool({
   loadManifest = null,              // () -> e_identity.md fallback (default below)
   afterTurn = null,                 // ({key, sessionId, model, cwd, allowedTools}) — post-turn hook (auto-compaction)
   loadPermission = loadPermissionLevel,  // (level) -> {dangerouslySkipPermissions, allowedTools}|null — config/permissions/<level>.md for /agents ... access_level; injectable (tests), NO caching in the real implementation (see permission-levels.mjs)
+  // THE PLATFORM THIS NODE RUNS ON, injected rather than read off the global, so a test can
+  // drive win32 AND posix in one run without redefining process.platform (same options-DI
+  // convention as io/loadPermission above). Read by exactly one thing: the PLATFORM-AWARE
+  // `sandboxed` default in resolveConv below.
+  platform = process.platform,
   onLog = () => {},
 } = {}) {
   if (!pool || typeof pool.run !== 'function') throw new Error('createBrainPool: pool (createWarmPool) is required');
@@ -479,7 +484,23 @@ export function createBrainPool({
       // — every being runs OS-sandboxed unless a tier explicitly opts out with `false`. `??`
       // only falls through on null/undefined, so an explicit `sandboxed: false` at either
       // tier still short-circuits before reaching this fallback.
-      sandboxed: b?.sandboxed ?? getConfig()?.agents?.[being]?.conversation_defaults?.sandboxed ?? true,
+      //
+      // AND THE DEFAULT IS PLATFORM-AWARE (operator 2026-09-04: "egpt is meant to be run in an
+      // OS agnostic way. im on windows so i want it work for me to the fullest. but a beeper
+      // account + whatsapp account is enough to unleash all agents, like it has always been").
+      // The isolation this flag buys is Windows machinery (setup/sandbox-logon-launcher.ps1 —
+      // LogonUser + a per-folder ACE), so an unset value resolves to `true` on win32 —
+      // byte-identical to the 2026-08-20 default-on above, Windows loses nothing — and to
+      // `false` everywhere else, where that same default failed a fresh clone on its FIRST turn
+      // with a bare spawn ENOENT that named a shell binary instead of the feature.
+      //
+      // A DEFAULT MAY BE PLATFORM-AWARE BECAUSE IT IS A DEFAULT — nobody asked for it, so it is
+      // ours to pick per node. AN EXPLICIT REQUEST MAY NOT BE: a tier that says
+      // `sandboxed: true` short-circuits the `??` walk above and resolves to true on EVERY
+      // platform. Downgrading it here would make the config key a lie — "sandboxed: true" while
+      // running unsandboxed — so instead sandbox-cli-session.mjs refuses the session loudly on a
+      // non-win32 node, naming the feature and the fix. Resolution here; refusal there.
+      sandboxed: b?.sandboxed ?? getConfig()?.agents?.[being]?.conversation_defaults?.sandboxed ?? (platform === 'win32'),
       // VERBOSE_THINKING, same two-tier resolution as accessLevel/allowedUsers/sandboxed above
       // (operator 2026-08-30: "verbose thinking should be controlled from config.yaml rather
       // than the agent.yaml"). It shipped the day before as a TYPE-FILE-ONLY field, which made

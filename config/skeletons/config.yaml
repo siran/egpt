@@ -91,6 +91,12 @@ agents:
     #   access_level: regular     # access_level default (all|regular) - points at
     #                             # config/permissions/<level>.md. Overridable per-conversation
     #                             # (conversations.yaml agents.<name>.access_level, same replace-not-merge rule).
+    #   sandboxed: true           # OS-level process isolation for this agent's CLI, underneath
+    #                             # access_level. WINDOWS-ONLY machinery, so the default when UNSET
+    #                             # is platform-aware: true on Windows, false elsewhere. Setting it
+    #                             # true off Windows is an explicit request and FAILS LOUDLY rather
+    #                             # than running unsandboxed. Overridable per-conversation
+    #                             # (conversations.yaml agents.<name>.sandboxed).
     #   verbose_thinking: false   # render this agent's chain of thought above its answers (operator
     #                             # 2026-08-30: "verbose thinking should be controlled from config.yaml
     #                             # rather than the agent.yaml"). Overridable per-conversation

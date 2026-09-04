@@ -1401,9 +1401,15 @@ export const CONFIG_SCHEMA = {
             unmodified).
 
           sandboxed
-            boolean (operator 2026-08-20). UNSET/false = this node's ordinary
-            default - the being's warm CLI process runs like any other,
-            confined only by whatever access_level/allowed_tools already
+            boolean (operator 2026-08-20). UNSET is PLATFORM-AWARE (operator
+            2026-09-04): true on Windows, false everywhere else. The isolation
+            below is Windows machinery, so a default of true failed a fresh
+            clone on macOS/Linux on its FIRST turn. A DEFAULT may be platform-
+            aware because nobody asked for it; an EXPLICIT true may not be - it
+            resolves true on every platform, and a non-Windows node then REFUSES
+            the session loudly rather than run unsandboxed behind a key that
+            claims otherwise. false = the being's warm CLI process runs like any
+            other, confined only by whatever access_level/allowed_tools already
             apply. true (meaningful only when access_level is 'all'): the
             being's warm CLI process is launched under a dedicated Windows
             logon session - LogonUser against the one shared local
