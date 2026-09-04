@@ -11,6 +11,18 @@ It reaches the world through **Beeper Desktop's local API** — one login, one
 node, every network Beeper bridges. A voice note arrives, gets transcribed, is
 answered in the same chat; you drive the node from your own Self-DM.
 
+**eGPT is OS-agnostic, and that is the reason it is built the way it is.** node
+plus Beeper Desktop, and nothing else: both run on Windows, macOS and Linux, so
+eGPT does too. **One desktop UI is all that is required.** The spine's runtime
+path carries no platform — the Windows-specific machinery in `setup/` (services,
+scheduled tasks, PowerShell) belongs to the OPTIONAL Session 0 expansion, never
+to running eGPT, and `tests/integrity.test.mjs` scans `src/` to keep it that way.
+
+Three things are enhancements, not requirements, and each can be skipped
+independently: **a second node**, **a second Beeper account**, and **running the
+Desktop as a Session 0 service**. One node, one account, one logged-in desktop is
+the whole product.
+
 > Deeper reading: [`GENOME.md`](GENOME.md) (what eGPT is at heart),
 > [`CONTRACTS.md`](CONTRACTS.md) (test-locked behavior), [`ROADMAP.md`](ROADMAP.md)
 > (state + what's next).

@@ -19,7 +19,15 @@
 //   node src/tools/beeper-whoami.mjs                 # config's connections + the usual ports
 //   node src/tools/beeper-whoami.mjs 23373 23380     # plus any extra ports to probe
 //
-// Read-only: it GETs /v1/accounts and asks Windows who owns the socket. It changes nothing.
+// Read-only: it GETs /v1/accounts and asks the OS who owns the socket. It changes nothing.
+//
+// PORTABILITY: the PROBE half is plain fetch and runs anywhere node runs, which is why boot.mjs
+// can import it — eGPT is OS-agnostic by design and the spine must never acquire a platform.
+// Only the socket-OWNER half (localOwners, below) is Windows-specific, it is guarded by a
+// platform check, and its child_process import is INSIDE the function so importing this module
+// costs nothing on Linux or macOS. Elsewhere the tool still reports every account and every
+// 401 — it just cannot name the pid or the session.
+import { pathToFileURL } from 'node:url';
 import { readConfigSync } from './config-io.mjs';
 
 const DEFAULT_PORTS = [23373, 23374, 23375 - 1];   // the two Desktops, and 23372 in case a third install ever lands below them
@@ -129,7 +137,12 @@ export async function report({ cfg = readConfigSync(), extraPorts = [], deps = {
   return lines.join('\n');
 }
 
-const isMain = import.meta.url === `file:///${process.argv[1]?.replace(/\\/g, '/')}`;
+// pathToFileURL, not a hand-built `file:///` string: the string form only ever matches on
+// Windows — a POSIX argv[1] is already absolute, so it renders file:////home/... and never
+// matches — which would make this CLI silently do nothing on Linux and macOS. eGPT is
+// OS-agnostic by design; that is the whole reason it is node + Beeper, and a tool must not
+// quietly become Windows-only. Same idiom as src/tools/compact-being.mjs.
+const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMain) {
   const extraPorts = process.argv.slice(2).map(Number).filter((n) => Number.isFinite(n) && n > 0);
   console.log(await report({ extraPorts }));
