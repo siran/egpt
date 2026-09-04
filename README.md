@@ -22,7 +22,22 @@ default `~/.egpt`).
 
 1. **Run Beeper Desktop** and get its API token: Beeper Desktop → Settings →
    Developer → Desktop API. This is the one credential eGPT needs (it talks to
-   `127.0.0.1:23373`). Every node needs its own Beeper account.
+   `127.0.0.1:23373`), and it is genuinely the only one: **one token, one account,
+   one node, running in your ordinary logged-in desktop session.** That is the
+   baseline and it is meant to stay that way — locked by
+   `tests/single-account-node.test.mjs`, which boots a node from exactly this and
+   asserts none of the optional machinery below is reached.
+
+   Nodes MAY share one Beeper account (list the co-account nodes in
+   `account_peers`) or hold one each. Neither is required to start.
+
+   > **Everything past this point is OPTIONAL EXPANSION, and none of it is needed
+   > to run eGPT.** A node can additionally hold a SECOND Beeper account, and can
+   > run its Beeper Desktop as a Windows SESSION 0 service so the agents answer
+   > with nobody logged in — see `handoffs/2026-09-03-session-zero.md`. That
+   > buys an unattended node and a reply that arrives from a visibly different
+   > person. It also costs a second install, a second login, and a service to
+   > supervise. Skip it. Add it the day you want what it buys.
 
 2. **Create the profile config.** Copy the shipped skeleton to your profile and
    fill it in:

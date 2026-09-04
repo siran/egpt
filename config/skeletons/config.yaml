@@ -15,9 +15,30 @@
 
 # --- Beeper accounts ---------------------------------------------------------
 # eGPT reaches the world through Beeper Desktop's local API (127.0.0.1:23373).
+#
+# ONE TOKEN IS THE WHOLE REQUIREMENT. One account, one node, running in your
+# ordinary logged-in desktop session - that is the baseline, it is what eGPT has
+# always been, and it is meant to stay that way. Fill in `main.token` below and
+# this block is finished. Everything else in this section is OPTIONAL EXPANSION
+# that a node may grow into later; a node that declares none of it behaves
+# exactly as it did before those features existed, and the test suite locks that
+# (tests/single-account-node.test.mjs).
+#
 # Store one or MANY accounts (each account + its token together); `use` selects
 # the one this node connects with - switch by changing `use`, no re-typing tokens.
 # Keep this file private. Token: Beeper Desktop > Settings > Developer > Desktop API.
+#
+# THE OPTIONAL KEYS, and what each one is FOR - do not add them speculatively:
+#   base_url / ws_url  WHICH Beeper Desktop, when a machine runs more than one.
+#                      Absent = 127.0.0.1:23373, which is right for one Desktop.
+#   owner_node         WHICH node wakes on this connection, when the SAME account
+#                      is live on several nodes. Every other node still SENDS on
+#                      it. Absent = every node wakes, which is right for one node.
+#   endpoints          SEVERAL (base_url, token) candidates for ONE connection,
+#                      probed at boot so the spine binds whichever is alive. Only
+#                      needed when a Desktop CHANGES IDENTITY under the node (the
+#                      Session 0 logon flip). Absent = no probing, no network call
+#                      at boot at all.
 beeper:
   use: main                       # which account below this node connects with
   main:
@@ -51,7 +72,12 @@ agents:
     #                             # Declared handles are COMPLETE — the map key does NOT wake.
     #                             # Omit handles and the key wakes instead; [] means nothing does.
     default: true                 # THE persona: answers un-mentioned messages + ends relay chains. EXACTLY ONE agent per node. Its map KEY is the being-id (renaming the key = a new identity).
-    # name: "egpt"                # display label the bridge stamps ("<emoji> <name>: <reply>"); defaults to the key.
+    name: "egpt"                  # REQUIRED for any agent that runs turns: the display label the
+    #                             # bridge stamps ("<emoji> <name>: <reply>"). It does NOT default to
+    #                             # the map key - that fallback was removed 2026-09-01 because the key
+    #                             # is an IDENTIFIER, not a display name, and conflating the two is how
+    #                             # a relayed reply once got stamped with the wrong being's name. An
+    #                             # agent with no name: stamps BLANK, and boot says so at every startup.
     # body_emoji: "<emoji>"       # reply stamp the bridge enforces; default is the dog.
     #                             # A 2nd node sets its OWN so humans see which node spoke.
     # conversation_defaults:      # THIS AGENT'S global defaults for fields conversations.yaml can

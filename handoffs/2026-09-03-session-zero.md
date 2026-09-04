@@ -4,6 +4,35 @@ Read `git log` for the changes. This is the shape, the traps, and the open work.
 
 ---
 
+## READ THIS FIRST: none of it is required
+
+**eGPT runs on ONE Beeper token, one account, one node, entirely in the ordinary
+logged-in desktop session. That is the baseline, it is what eGPT has always been, and it
+must stay that way** (operator 2026-09-03: *"egpt can and must be able to run on a single
+beeper account. like it has always. all in s1 ... all that is needed in principle is one
+beeper token and to clone the egpt repo"*).
+
+Everything in this document is OPTIONAL EXPANSION on top of that. A node that declares none
+of it behaves exactly as it did before any of it existed, and that is enforced, not merely
+intended: every feature below is additive, and `tests/single-account-node.test.mjs` boots a
+node from one token and asserts none of this machinery is reached — no endpoint probing, one
+bridge, no fanout wrapper, no ownership gate.
+
+What the expansion buys, and what it costs, so a reader can decide rather than assume:
+
+| you want | you add | it costs |
+|---|---|---|
+| agents that answer with nobody logged in | a Beeper Desktop as a Session 0 service | a second install, its own login, a service to supervise |
+| replies that arrive from a visibly different person | a SECOND Beeper account on the node | a second login, and `owner_node` so two nodes do not both answer |
+| one node hosting both | the Session 0 logon flip | a second service, a reconciler, and `endpoints:` candidates |
+
+**The operator happens to run two laptops as nodes and has grown into all of it. That is a
+destination, not a starting point.** Do not make a new user, or a new agent reading this,
+believe any of it is a prerequisite. If you are adding a feature here, the question to ask
+first is: does a single-token node still work, and does it still cost nothing?
+
+---
+
 ## Where we are
 
 **Both nodes run egpt entirely in Windows Session 0. reve was proven cold, with nobody
