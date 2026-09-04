@@ -61,6 +61,33 @@ user_name: "John"                  # the human here; shown as <user_name>@<surfa
 # candidate set. Omit for a solo node.
 # account_peers: [kg, do]
 
+# egpt_nodes - the eGPT nodes YOU run, and HOW TO REACH each one. OPTIONAL: a
+# single node needs none of this. Read by src/tools/beeper-whoami.mjs (the
+# topology table) and by nothing else: every entry that is not `type: self` is a
+# peer it probes over ssh, so a node listed here needs no --host flag (--host
+# still names one that is not listed; the two are unioned).
+# NOTHING IS DISCOVERED - no subnet scan, no ARP, no broadcast. A peer exists
+# because you named it. `host` (default: the map key) is THE way in, never `ip`:
+# a node can be off-LAN and reachable only by a tailscale/DNS name.
+#   type     self | peer - exactly ONE entry is self (this machine)
+#   name     host name; the label in the table's host column
+#   ip       the address you know it by. On the self entry it overrides
+#            auto-detection; absent is fine for an off-LAN node.
+#   ip_type  reserved | fixed | dhcp - how that address is held (documentation only)
+#   host     ssh target: hostname / ip / ssh alias / VPN name. Default: the map key.
+# egpt_nodes:
+#   kg:
+#     type: self
+#     name: KG
+#     ip: 192.0.2.11
+#     ip_type: reserved
+#   do:
+#     type: peer
+#     name: DO
+#     ip: 192.0.2.12
+#     ip_type: reserved
+#     host: do.example.net
+
 # --- Agents (what this node answers to) --------------------------------------
 # REQUIRED. A node answers ONLY the agents it lists - nothing is injected. Two
 # nodes hosting the same name BOTH reply (same being); use different names for a

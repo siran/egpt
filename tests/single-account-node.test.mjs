@@ -360,6 +360,7 @@ describe('config/skeletons/config.yaml — the file a new user copies actually b
     // new user the expanded path (and, for `endpoints:`, a boot-time HTTP probe) by default.
     expect(Object.keys(conn).sort()).toEqual(['account', 'token']);
     expect(cfg.account_peers).toBeUndefined();
+    expect(cfg.egpt_nodes, 'the topology block is for an operator who runs SEVERAL machines').toBeUndefined();
     for (const [name, agent] of Object.entries(cfg.agents ?? {})) {
       expect(agent.fallback_handle, `${name} ships a fallback_handle`).toBeUndefined();
       expect(agent.scope, `${name} ships a scope pin`).toBeUndefined();

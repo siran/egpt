@@ -16,6 +16,7 @@ import { parseWarmBlock } from '../src/spine/brainpool.mjs';
 import { ACTION_VERBS, parseReplyActions } from '../src/spine/reply-actions.mjs';
 import { parseTranscriptionConfig } from '../src/transcription-service.mjs';
 import { parse as parseConvState, getContact, getBeing, residentsOf } from '../src/conversations-state.mjs';
+import { nodesOf } from '../src/tools/beeper-whoami.mjs';
 
 const SKELETON = fileURLToPath(new URL('../config/skeletons/heartbeats.yaml', import.meta.url));
 const CONFIG_SKELETON = fileURLToPath(new URL('../config/skeletons/config.yaml', import.meta.url));
@@ -121,6 +122,32 @@ describe('config/skeletons/config.yaml', () => {
     for (const key of keys) {
       expect(CONFIG_SCHEMA, `skeleton sets "${key}" but it is not in CONFIG_SCHEMA`).toHaveProperty(key);
     }
+  });
+
+  // The COMMENTED blocks need their own coherence check, because the assertion above can only see
+  // keys the file SETS. Configuring here is uncommenting (the same ruling conversations.yaml is
+  // held to below), so a commented example has to be live YAML at the right indent — not prose
+  // that happens to start with '#'. This strips the '#' exactly as an operator would and runs the
+  // REAL reader over the result, so the example cannot drift from what the tool accepts.
+  it('the commented egpt_nodes example uncomments into a block the topology tool actually reads', () => {
+    expect(CONFIG_SCHEMA, 'the skeleton teaches egpt_nodes, so it must be registered').toHaveProperty('egpt_nodes');
+    const lines = text.split('\n');
+    const at = lines.findIndex((l) => l.trim() === '# egpt_nodes:');
+    expect(at, 'the skeleton no longer carries the egpt_nodes example').toBeGreaterThan(-1);
+    const block = [];
+    for (let i = at; i < lines.length && lines[i].startsWith('#'); i++) block.push(lines[i].replace(/^# ?/, ''));
+
+    const doc = YAML.parse(block.join('\n'));
+    expect(Object.keys(doc)).toEqual(['egpt_nodes']);
+    const { self, peers, notes } = nodesOf(doc);
+    expect(notes, 'the shipped example must not itself be a misconfiguration').toEqual([]);
+    expect(self).toMatchObject({ name: 'KG', ip: '192.0.2.11' });
+    // The peer demoes an explicit host:, which is THE way in — an off-LAN node has no useful ip.
+    expect(peers.map((p) => ({ host: p.host, name: p.name }))).toEqual([{ host: 'do.example.net', name: 'DO' }]);
+  });
+
+  it('ships egpt_nodes COMMENTED OUT — one node needs no topology at all', () => {
+    expect(YAML.parse(text).egpt_nodes).toBeUndefined();
   });
 
   it('ships the agents registry uncommented, and no longer sets default_brain (agent configuration supersedes)', () => {

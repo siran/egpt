@@ -780,6 +780,70 @@ export const CONFIG_SCHEMA = {
       harder failure to attribute.
   `,
 
+  egpt_nodes: `
+    The eGPT nodes the operator runs, and HOW TO REACH each one (operator
+    2026-09-04: "the table needs to be outputted by a tool, not only here" —
+    the topology had been living in chat, retyped as --host flags every time).
+
+    A MAP of node key -> that node's entry, mirroring radio_service's named
+    blocks. OPTIONAL, and inert when absent: a single-node install declares none
+    of it and behaves EXACTLY as it did before this block existed — the baseline
+    tests/single-account-node.test.mjs locks.
+
+      egpt_nodes:
+        node-one:
+          type: self
+          name: NODE-ONE
+          ip: 192.0.2.11
+          ip_type: reserved
+        peer-two:
+          type: peer
+          name: PEER-TWO
+          ip: 192.0.2.12
+          ip_type: reserved
+          host: peer-two.example.net
+
+    WHAT READS IT: src/tools/beeper-whoami.mjs, the topology table, and nothing
+    else — no spine path reads this block. Every entry that is not type: self is
+    a PEER the table probes over ssh, so a configured node needs NO --host flag;
+    --host still names a node this block does not, and the two are UNIONED and
+    deduplicated by SSH TARGET.
+
+    NOTHING HERE IS DISCOVERED. No subnet scan, no ARP, no broadcast, no
+    192.168.* assumption: a peer exists because the operator named it. An eGPT
+    node can be OFF-LAN entirely, so ip is never the way to reach one — host is.
+
+    KEYS, per <node-key>:
+      type
+        self | peer — which entry is THIS machine. Exactly one self is expected.
+        Two or more is a MISCONFIGURATION that is REPORTED, never resolved by
+        picking one: the table says so in a note and leaves the local row
+        auto-detected. DEFAULT: peer (an entry with no type is a peer).
+      name
+        The host name (e.g. NODE-ONE) — the label in the table's host column.
+        DEFAULT: this machine's own hostname() for self, the ssh target for a peer.
+      ip
+        The address the operator knows this node by. On the SELF entry it
+        OVERRIDES what os.networkInterfaces() reports: a machine has several
+        addresses (LAN, VPN, hypervisor switches) and the operator knows which
+        one is THE one. On a PEER it FILLS IN only where ssh did not report the
+        address it actually connected to — measured beats declared.
+        DEFAULT: what the tool measured, else ?. An off-LAN node may have
+        nothing meaningful to put here, which is fine — see host.
+      ip_type
+        reserved | fixed | dhcp — how that address is held: a DHCP RESERVATION,
+        a statically configured address, or an ordinary lease. DOCUMENTATION
+        ONLY: nothing reads it and the table does not print it.
+      host
+        The ssh target — a hostname, a bare IP, an ssh alias, an overlay/VPN
+        name. DEFAULT: the map key. THIS, never ip, is how a node is reached:
+        an off-LAN node may be reachable only by a tailscale/DNS name.
+
+    NOT account_peers, which answers a different question: that lists node
+    IDENTITIES sharing ONE Beeper account (they collapse to a single room
+    member); this lists MACHINES and how to ssh to them.
+  `,
+
   shell: `
     The operator console — the spine's shell-port limb SERVES ws://127.0.0.1:23375
     from boot and holds it; the egpt editor dials in as a client (direction

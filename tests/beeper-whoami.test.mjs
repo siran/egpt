@@ -7,7 +7,7 @@
 // reported as riding the bridge DEFAULT (23373) rather than as unset, because that default is
 // exactly what the spine would ride.
 import { describe, it, expect } from 'vitest';
-import { connectionsOf, report, topology, renderTable, localAddresses, shellPortOf } from '../src/tools/beeper-whoami.mjs';
+import { connectionsOf, report, topology, renderTable, localAddresses, shellPortOf, nodesOf } from '../src/tools/beeper-whoami.mjs';
 
 const cfg = {
   node_name: 'kg',
@@ -262,5 +262,176 @@ describe('beeper-whoami — the topology table', () => {
       'Wi-Fi': [{ family: 'IPv4', address: '169.254.7.7', internal: false }],
       overlay0: [{ family: 'IPv4', address: '100.64.0.2', internal: false }],
     })).toEqual(['100.64.0.2']);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// THE NODES NAMED IN CONFIG — `egpt_nodes` (operator 2026-09-04: "the table needs to be outputted
+// by a tool, not only here"). The topology had been living in chat and being retyped as --host
+// flags on every run; the block moves it into config.yaml, where the tool can read it.
+//
+// What is locked here, in order of how expensive each would be to get wrong:
+//   · NO BLOCK = NO CHANGE. The first thing to hold, because every single-node install is that
+//     case and none of them asked for any of this.
+//   · A PEER IS ONLY EVER SOMETHING THE OPERATOR NAMED. No scan, no ARP, no broadcast, no
+//     192.168.* assumption — so `host` (defaulting to the map key) is the way in, and an entry
+//     with no `ip` at all is still probed. An eGPT node can be off-LAN.
+//   · TWO `self` ENTRIES ARE REPORTED, not resolved by picking one. A wrong pick prints a
+//     confidently wrong local row, which is the failure this whole tool exists to avoid.
+// The vocabulary stays role-shaped (node-one / peer-two): eGPT is a public tool and no machine,
+// person or account name belongs in it. What the table PRINTS is discovered data.
+const NODES = {
+  'node-one': { type: 'self', name: 'NODE-ONE', ip: '192.0.2.11', ip_type: 'reserved' },
+  'peer-two': { type: 'peer', name: 'PEER-TWO', ip: '192.0.2.12', ip_type: 'reserved' },
+};
+
+// Records every ssh target asked for, so "which peers were probed" is an assertion and not an
+// inference from the rendered rows. Answers as a peer that is up but reports no ssh address.
+function spyRemote(answer = async () => ({ ok: false, error: 'not asked' })) {
+  const asked = [];
+  return { asked, remoteProbe: async (host, opts) => { asked.push(host); return answer(host, opts); } };
+}
+
+const remoteRows = (node = 'do') => [
+  { host: 'ignored', ip: '?', node, port: 23373, role: 'api', session: 'S0', account: '@remote:beeper.com', state: 'logged in' },
+  { host: 'ignored', ip: '?', node, port: 23375, role: 'console', session: 'S0', account: '-', state: 'listening' },
+];
+
+describe('beeper-whoami — the nodes named in config (egpt_nodes)', () => {
+  it('reads nothing at all from a config that declares no egpt_nodes', () => {
+    expect(nodesOf({})).toEqual({ self: null, peers: [], notes: [] });
+    expect(nodesOf({ egpt_nodes: null })).toEqual({ self: null, peers: [], notes: [] });
+  });
+
+  // THE BASELINE. A node with no egpt_nodes must behave byte-identically: the local row is still
+  // hostname() + os.networkInterfaces(), and NOTHING is probed — no ssh, no discovery, nothing.
+  it('with NO egpt_nodes: the local row stays auto-detected and no peer is probed', async () => {
+    const { asked, remoteProbe } = spyRemote();
+    const { rows, notes } = await topology({ cfg: table, deps: tableDeps({ remoteProbe }) });
+    expect(asked, 'a config that names no peers must cost no ssh at all').toEqual([]);
+    expect([...new Set(rows.map((r) => r.host))]).toEqual(['node-one']);   // the injected hostname()
+    expect([...new Set(rows.map((r) => r.ip))]).toEqual(['10.0.0.4']);     // the injected interface
+    expect(notes.some((n) => n.startsWith('remote nodes:')), 'it still says how to name one').toBe(true);
+  });
+
+  // THE POINT OF THE BLOCK: a bare run, no flags, lists every peer.
+  it('probes every peer in config with NO flags, and reaches it by the map key when host: is absent', async () => {
+    const { asked, remoteProbe } = spyRemote(async () => ({ ok: true, ip: null, rows: remoteRows() }));
+    const { rows, notes } = await topology({ cfg: { ...table, egpt_nodes: NODES }, deps: tableDeps({ remoteProbe }) });
+
+    // `peer-two` carries no host:, so the MAP KEY is the ssh target. `node-one` is self and is
+    // never probed — a node does not ssh to itself.
+    expect(asked).toEqual(['peer-two']);
+    expect(renderTable(rows, notes)).toBe([
+      'host      ip          node  port           S0/S1  account                state',
+      '--------  ----------  ----  -------------  -----  ---------------------  ------------------',
+      'NODE-ONE  192.0.2.11  kg    23373 api      S0     @primary:beeper.com    logged in',
+      'NODE-ONE  192.0.2.11  kg    23374 api      S1     @secondary:beeper.com  logged in',
+      'NODE-ONE  192.0.2.11  kg    23375 console  S1     -                      listening',
+      'NODE-ONE  192.0.2.11  kg    23376 api      S0     -                      NOT LOGGED IN',
+      'NODE-ONE  192.0.2.11  kg     9222 cdp      S0     -                      listening (Beeper)',
+      'NODE-ONE  192.0.2.11  kg     9223 cdp      S1     -                      listening (Chrome)',
+      'PEER-TWO  192.0.2.12  do    23373 api      S0     @remote:beeper.com     logged in',
+      'PEER-TWO  192.0.2.12  do    23375 console  S0     -                      listening',
+    ].join('\n'));
+    // …and with the peers named, the "name them with --host" note has nothing left to ask for.
+    expect(notes).toEqual([]);
+  });
+
+  it('unions --host with the config peers and deduplicates by SSH TARGET', async () => {
+    const { asked, remoteProbe } = spyRemote(async () => ({ ok: false, error: 'down' }));
+    await topology({
+      cfg: { ...table, egpt_nodes: NODES },
+      // peer-two is already in config (same target, one probe); peer-three is not (still works).
+      hosts: ['peer-two', 'peer-three'],
+      deps: tableDeps({ remoteProbe }),
+    });
+    expect(asked, 'config first, then the flags config does not already name').toEqual(['peer-two', 'peer-three']);
+  });
+
+  it('keeps --host working for a node config does not name at all', async () => {
+    const { asked, remoteProbe } = spyRemote(async () => ({ ok: false, error: 'down' }));
+    await topology({ cfg: table, hosts: ['peer-three'], deps: tableDeps({ remoteProbe }) });
+    expect(asked).toEqual(['peer-three']);
+  });
+
+  // The operator knows his own topology better than os.networkInterfaces() does: it can enumerate
+  // a machine's addresses but cannot say which one peers use.
+  it('lets the self entry name the local row, overriding the auto-detected address', async () => {
+    const cfg = { ...table, egpt_nodes: NODES };
+    const { rows, notes } = await topology({ cfg, deps: tableDeps({ localAddresses: () => ['10.0.0.4', '100.64.0.2'] }) });
+    expect(rows[0].host).toBe('NODE-ONE');
+    expect(rows[0].ip).toBe('192.0.2.11');
+    // …and the "several addresses, so ip reads ?" note is gone with it: the question it explains
+    // has been answered, and repeating it over a declared address would just read as a warning.
+    expect(notes.some((n) => n.includes('several addresses'))).toBe(false);
+  });
+
+  it('falls back to auto-detection for anything the self entry leaves out', async () => {
+    const cfg = { ...table, egpt_nodes: { 'node-one': { type: 'self', name: 'NODE-ONE' } } };
+    const { rows } = await topology({ cfg, deps: tableDeps() });
+    expect(rows[0].host).toBe('NODE-ONE');
+    expect(rows[0].ip, 'no ip declared, so the measured one still stands').toBe('10.0.0.4');
+  });
+
+  // OFF-LAN IS A FIRST-CLASS CASE, not a degraded one: a node reachable only by a tailscale/DNS
+  // name has no meaningful ip, and `ip` is never how a node is reached anyway.
+  it('probes a peer that has host: and no ip at all', async () => {
+    const { asked, remoteProbe } = spyRemote(async () => ({ ok: true, ip: null, rows: remoteRows('far') }));
+    const cfg = { ...table, egpt_nodes: { 'peer-two': { type: 'peer', host: 'peer-two.tailnet.example' } } };
+    const { rows } = await topology({ cfg, deps: tableDeps({ remoteProbe }) });
+
+    expect(asked).toEqual(['peer-two.tailnet.example']);
+    const remote = rows.filter((r) => r.node === 'far');
+    expect(remote).toHaveLength(2);
+    // No name: ⇒ the ssh target labels the row. No ip anywhere ⇒ ? , never a guess.
+    expect(remote[0].host).toBe('peer-two.tailnet.example');
+    expect(remote[0].ip).toBe('?');
+  });
+
+  it('prefers the address ssh actually connected to over the one config declares', async () => {
+    const { remoteProbe } = spyRemote(async () => ({ ok: true, ip: '203.0.113.7', rows: remoteRows() }));
+    const { rows } = await topology({ cfg: { ...table, egpt_nodes: NODES }, deps: tableDeps({ remoteProbe }) });
+    expect(rows.find((r) => r.host === 'PEER-TWO').ip, 'measured beats declared').toBe('203.0.113.7');
+  });
+
+  it('shows a configured peer that does not answer as unreachable, keeping its declared address', async () => {
+    const { remoteProbe } = spyRemote(async () => ({ ok: false, ip: null, error: 'ssh: connect to host peer-two port 22: Connection timed out' }));
+    const { rows, notes } = await topology({ cfg: { ...table, egpt_nodes: NODES }, deps: tableDeps({ remoteProbe }) });
+    expect(rows.find((r) => r.host === 'PEER-TWO')).toMatchObject({ node: '?', port: '-', state: 'unreachable', ip: '192.0.2.12' });
+    // The note names the SSH TARGET, not the label: that is the string the operator would retype.
+    expect(notes.some((n) => n.startsWith('peer-two: unreachable -'))).toBe(true);
+  });
+
+  // A wrong pick prints a confidently wrong local row, and the operator would have no way to see
+  // that the tool chose. So it says so and measures instead.
+  it('REPORTS two self entries rather than resolving them by picking one', async () => {
+    const { asked, remoteProbe } = spyRemote();
+    const cfg = {
+      ...table,
+      egpt_nodes: {
+        'node-one': { type: 'self', name: 'NODE-ONE', ip: '192.0.2.11' },
+        'node-two': { type: 'self', name: 'NODE-TWO', ip: '192.0.2.13' },
+      },
+    };
+    const { self, notes } = nodesOf(cfg);
+    expect(self, 'neither one is chosen').toBe(null);
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toContain('node-one, node-two');
+    expect(notes[0]).toContain('type: self');
+
+    const t = await topology({ cfg, deps: tableDeps({ remoteProbe }) });
+    expect(t.notes[0], 'the report reaches the operator, at the top of the table').toBe(notes[0]);
+    expect(t.rows[0].host, 'and the local row falls back to what it can measure').toBe('node-one');
+    expect(t.rows[0].ip).toBe('10.0.0.4');
+    expect(asked, 'a self entry is never a peer, however many of them there are').toEqual([]);
+  });
+
+  // --json is what a REMOTE node returns to whoever asked. If it fanned out to its own config
+  // peers, two nodes listing each other would ssh back and forth and never come back.
+  it('fans out to NOTHING with configPeers: false — the shape --json runs', async () => {
+    const { asked, remoteProbe } = spyRemote();
+    await topology({ cfg: { ...table, egpt_nodes: NODES }, configPeers: false, deps: tableDeps({ remoteProbe }) });
+    expect(asked).toEqual([]);
   });
 });

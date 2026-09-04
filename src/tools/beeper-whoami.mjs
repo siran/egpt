@@ -16,8 +16,9 @@
 // install owns a port, so this tool tries every token it knows against every port and reports
 // the whole matrix.
 //
-//   node src/tools/beeper-whoami.mjs                       # THE MAP: one table, every port
-//   node src/tools/beeper-whoami.mjs --host <ssh target>   # ...plus a remote node, best-effort
+//   node src/tools/beeper-whoami.mjs                       # THE MAP: one table, every port, and
+//                                                          #   every peer named in egpt_nodes
+//   node src/tools/beeper-whoami.mjs --host <ssh target>   # ...plus a node config does not name
 //   node src/tools/beeper-whoami.mjs --detail              # the full token x port matrix below
 //   node src/tools/beeper-whoami.mjs --detail 23373 23380  # plus any extra ports to probe
 //   node src/tools/beeper-whoami.mjs --json                # the table's rows, machine-readable
@@ -246,11 +247,41 @@ export function localAddresses(ifaces = networkInterfaces()) {
   return real.length ? real : pick(false);   // filtered everything away ⇒ better a virtual one than nothing
 }
 
-// A REMOTE NODE IS WHATEVER --host NAMES: a hostname, a bare IP, an ssh alias, an overlay-VPN
-// name, a box on the far side of the internet. It is an OPAQUE ssh target. Nothing here scans,
-// broadcasts, reads an ARP table or assumes a subnet, because an eGPT node can be off-LAN and
-// there is no local network to enumerate. The remote runs THIS SAME tool in --json mode — the
-// probing logic exists once, here, and is never re-implemented over there.
+// THE NODES THE OPERATOR RUNS — `egpt_nodes` in config.yaml (config/config-schema.mjs), so the
+// topology stops living in chat and stops being retyped as --host flags (operator 2026-09-04:
+// "the table needs to be outputted by a tool, not only here"). OPTIONAL: with no block this
+// returns nothing at all and every path below behaves exactly as it did before it existed.
+//
+// A peer is EVERY entry that is not `type: self`, and it is reached by `host` — DEFAULTING TO THE
+// MAP KEY, never derived from `ip`. That distinction is the point of the block: an eGPT node can
+// be off-LAN, reachable only by a tailscale/DNS name, with no meaningful `ip` at all.
+//
+// TWO `self` ENTRIES ARE REPORTED, NOT RESOLVED. Picking one would be inventing an answer to a
+// question only the operator can settle, and the wrong pick prints a confidently wrong local row.
+export function nodesOf(cfg = {}) {
+  const block = cfg?.egpt_nodes;
+  if (!block || typeof block !== 'object') return { self: null, peers: [], notes: [] };
+  const entries = Object.entries(block).filter(([, v]) => v && typeof v === 'object');
+  const node = (key, v) => ({ key, host: v.host ?? key, name: v.name ?? null, ip: v.ip ?? null });
+  const selves = entries.filter(([, v]) => v.type === 'self');
+  const peers = entries.filter(([, v]) => v.type !== 'self').map(([k, v]) => node(k, v));
+  const notes = [];
+  if (selves.length > 1) {
+    notes.push(`egpt_nodes: ${selves.map(([k]) => k).join(', ')} all say type: self - exactly ONE entry is this machine. None is used, so the local row stays auto-detected.`);
+  }
+  return { self: selves.length === 1 ? node(...selves[0]) : null, peers, notes };
+}
+
+// MEASURED BEATS DECLARED, and neither beats a blank: the first real address wins, '?' and absent
+// both count as no answer. (`r.ip ?? row.ip` alone could never fall through to config, because a
+// node that cannot pick among its own addresses reports the STRING '?' rather than nothing.)
+const firstAddr = (...candidates) => candidates.find((a) => a && a !== '?') ?? '?';
+
+// A REMOTE NODE IS WHATEVER egpt_nodes OR --host NAMES: a hostname, a bare IP, an ssh alias, an
+// overlay-VPN name, a box on the far side of the internet. It is an OPAQUE ssh target. Nothing
+// here scans, broadcasts, reads an ARP table or assumes a subnet, because an eGPT node can be
+// off-LAN and there is no local network to enumerate. The remote runs THIS SAME tool in --json
+// mode — the probing logic exists once, here, and is never re-implemented over there.
 //
 // Failure is reported as `unreachable` and nothing else. Slow is not dead, a closed laptop is
 // not "off the network", and this tool cannot tell those apart — so it does not pretend to.
@@ -306,9 +337,18 @@ async function apiState(port, conns, probeImpl) {
   return { account: '-', state: `listening (HTTP ${statuses[statuses.length - 1]})` };
 }
 
-export async function topology({ cfg = readConfigSync(), hosts = [], extraPorts = [], remotePath, deps = {} } = {}) {
+export async function topology({ cfg = readConfigSync(), hosts = [], extraPorts = [], remotePath, configPeers = true, deps = {} } = {}) {
   const conns = connectionsOf(cfg);
   const shellPort = shellPortOf(cfg);
+  const { self, peers, notes: nodeNotes } = nodesOf(cfg);
+  // CONFIG PEERS FIRST, then any --host the config does not already name. Deduplicated by SSH
+  // TARGET, which is the only identity either source has: `--host peer-two` and an egpt_nodes
+  // entry reaching peer-two are ONE probe. Two spellings of one machine (an alias and its bare
+  // IP) stay two, because telling them apart would take exactly the discovery this tool refuses.
+  const targets = [];
+  for (const t of [...(configPeers ? peers : []), ...hosts.map((h) => ({ key: h, host: h, name: null, ip: null }))]) {
+    if (!targets.some((x) => x.host === t.host)) targets.push(t);
+  }
   // A port named in config (or on the command line) EARNS a row even when nothing answers —
   // "the port you configured is dead" is exactly the answer the operator came for. A scan port
   // that is merely empty does not. The console port is subtracted from the API scan because it
@@ -323,9 +363,13 @@ export async function topology({ cfg = readConfigSync(), hosts = [], extraPorts 
   const cdp = deps.cdpProbe ?? cdpProbe;
   const listening = deps.tcpListening ?? tcpListening;
   const addrs = (deps.localAddresses ?? localAddresses)();
-  const host = (deps.hostname ?? hostname)();
+  // THE SELF ENTRY OUTRANKS THE INTERFACE LIST. os.networkInterfaces() can only enumerate; it
+  // cannot say which of a machine's addresses is the one peers use, and the operator can — so a
+  // declared name/ip wins here. With no egpt_nodes (or no self in it) this is exactly the old
+  // auto-detection, unchanged.
+  const host = self?.name ?? (deps.hostname ?? hostname)();
   const node = cfg.node_name ?? '?';
-  const ip = addrs.length === 1 ? addrs[0] : '?';
+  const ip = self?.ip ?? (addrs.length === 1 ? addrs[0] : '?');
   // S0/S1 is a WINDOWS fact and localOwners already returns an empty Map everywhere else, so
   // off win32 every row reads `-`. There is no POSIX equivalent and inventing one would be a lie.
   const sessionOf = (port) => { const o = owners.get(port); return o ? `S${o.session}` : '-'; };
@@ -345,20 +389,27 @@ export async function topology({ cfg = readConfigSync(), hosts = [], extraPorts 
 
   // The printed text is ASCII on purpose: this is a DOUBLE-CLICKED tool, and a console still
   // opens on the machine's OEM codepage, where a UTF-8 em-dash arrives as mojibake.
-  const notes = [];
-  if (addrs.length > 1) notes.push(`${host}: several addresses (${addrs.join(', ')}) - none of them is THE one, so ip reads ?`);
-  else if (!addrs.length) notes.push(`${host}: no non-internal IPv4 address found, so ip reads ?`);
+  const notes = [...nodeNotes];
+  // The ip column only needs explaining when the tool had to CHOOSE. A self entry settles it, so
+  // saying "none of them is THE one" over a declared address would be answering a live question.
+  if (!self?.ip) {
+    if (addrs.length > 1) notes.push(`${host}: several addresses (${addrs.join(', ')}) - none of them is THE one, so ip reads ?`);
+    else if (!addrs.length) notes.push(`${host}: no non-internal IPv4 address found, so ip reads ?`);
+  }
 
   // Remote hosts CONCURRENTLY: N asleep nodes must cost one timeout, not N.
   const remote = deps.remoteProbe ?? remoteProbe;
-  const results = await Promise.all(hosts.map(async (h) => [h, await remote(h, { remotePath })]));
-  for (const [h, r] of results) {
+  const results = await Promise.all(targets.map(async (t) => [t, await remote(t.host, { remotePath })]));
+  for (const [t, r] of results) {
     if (r?.noSsh) continue;   // no ssh client on this machine — skip remote silently, as asked
-    if (r?.ok) { rows.push(...r.rows.map((row) => ({ ...row, host: h, ip: r.ip ?? row.ip ?? '?' }))); continue; }
-    rows.push({ host: h, ip: r?.ip ?? '?', node: '?', port: '-', role: '', session: '-', account: '-', state: 'unreachable' });
-    if (r?.error) notes.push(`${h}: unreachable - ${r.error}`);
+    // The NOTE keeps the ssh target, always: `name` is a label, and the thing that failed is the
+    // target you would retype.
+    const label = t.name ?? t.host;
+    if (r?.ok) { rows.push(...r.rows.map((row) => ({ ...row, host: label, ip: firstAddr(r.ip, row.ip, t.ip) }))); continue; }
+    rows.push({ host: label, ip: firstAddr(r?.ip, t.ip), node: '?', port: '-', role: '', session: '-', account: '-', state: 'unreachable' });
+    if (r?.error) notes.push(`${t.host}: unreachable - ${r.error}`);
   }
-  if (!hosts.length) notes.push('remote nodes: name them with --host <ssh target> (repeatable). Nothing in config lists peers, so none is ever guessed - and none is ever discovered, because a node can be off-LAN.');
+  if (!targets.length) notes.push('remote nodes: list them in config.yaml under egpt_nodes (see config/config-schema.mjs), or name one with --host <ssh target> (repeatable). None is ever guessed - and none is ever discovered, because a node can be off-LAN.');
 
   return { rows, notes };
 }
@@ -408,9 +459,10 @@ if (isMain) {
   }
   if (detail) console.log(await report({ extraPorts }));
   else {
-    // --json carries no --host: this is the shape a remote node returns to whoever asked, and a
-    // node fanning out to its own peers would recurse across the mesh.
-    const { rows, notes } = await topology({ hosts: json ? [] : hosts, extraPorts, remotePath });
+    // --json IS THE LEAF SHAPE: it is what a remote node returns to whoever asked, so it fans out
+    // to NOTHING — neither --host nor the peers in its own egpt_nodes. A node that fanned out here
+    // would ssh onward across the mesh and, with two nodes listing each other, never come back.
+    const { rows, notes } = await topology({ hosts: json ? [] : hosts, configPeers: !json, extraPorts, remotePath });
     console.log(json ? JSON.stringify(rows) : renderTable(rows, notes));
   }
 }
