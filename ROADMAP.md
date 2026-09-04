@@ -334,6 +334,49 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
 
 ## 3. Decided, not yet dispatched
 
+- **⭐ HEADLESS RENDER SURFACE — ONE CAPABILITY, THREE PLATFORM PATHS (operator 2026-09-03).**
+  The requirement, stated once: a node's GUI dependencies (Beeper Desktop, Chrome/CDP) must
+  RENDER and serve their loopback APIs with NO human logged in, and come back alone after a
+  reboot. Windows is DONE — Session 0, `349ac98`, "both nodes run egpt with nobody logged in".
+  This item is the other two platforms, and the point of writing it here is that the Windows
+  work was never a Windows feature: it was one capability that every platform names differently.
+  - **The capability is "a display that exists only in memory."** Not a VM, not remote desktop,
+    not auto-login — those are workarounds for not having it. Treat it as a platform-SCANNED
+    capability, the way `chrome-launcher.mjs` already scans per-platform paths (its `darwin:`
+    branch, line 22), per `753ff82` — *eGPT is OS-agnostic — scanned for, not assumed*. The
+    spine is portable Node and needs no change; `setup/` is the ONLY Windows-locked layer
+    (all PowerShell + nssm), so porting eGPT is rewriting the STARTUP, not the program.
+  - **Linux — Xvfb. The designed-for-it path, and it lands first.** X virtual framebuffer:
+    a display server that draws to memory. No monitor, no session, no login. Beeper Desktop
+    ships a Linux (Electron) build, so it runs under `Xvfb :99` + `DISPLAY=:99` unpatched.
+    It is also the REFERENCE implementation, because Windows Session 0 turns out to be an
+    ACCIDENTAL Xvfb — the same capability, undocumented, falling out of the 2006 interactive-
+    services split. Linux has had it on purpose for thirty years and installs it with one
+    command. That is why the Windows version was hard to find and looked unprecedented: it is
+    not a feature there, it is a residue.
+  - **macOS — Xvfb DOES NOT APPLY. Correction to the chat framing of 2026-09-03.** XQuartz/Xvfb
+    serve X11 clients only; a macOS Electron app renders through Cocoa/WindowServer and never
+    touches X11. And a `LaunchDaemon` holds no WindowServer connection at all — the window
+    cannot be CREATED, not merely hidden. macOS is therefore STRICTER than Windows here and has
+    no equivalent of the Session 0 gap. Two options, both worse than Windows':
+    - **(a) auto-login + LaunchAgent**, screen locked. Works; it is the normal "Mac as home
+      server" pattern; and it leaves a user session open permanently — the exact compromise
+      Session 0 was built to retire.
+    - **(b) headless Linux VM** running the Linux path above. A VM's display is virtual BY
+      CONSTRUCTION (the guest draws into a framebuffer the VM process owns, not the host's
+      WindowServer), so it exists with nobody logged in. QEMU+HVF from `launchd` is clean;
+      Virtualization.framework wants entitlements and is fiddly outside a GUI session —
+      UNVERIFIED, no Mac available to test (2026-09-03).
+    So macOS gets NO first-class path. Say that in the docs instead of implying parity.
+  - **Minimum scope:** a `headless-display.mjs` that reports the platform's capability and, on
+    Linux, owns the Xvfb lifecycle the way `whisper-server.mjs` owns its server (spawn,
+    readiness wait, respawn). ONE supervisor — never a service registered beside it; see
+    `b376194`, the spine ADOPTS a server it finds already running rather than reaping it, which
+    is the lesson from the nssm whisper attempt that flapped against the spine on dolly.
+    `chrome-launcher.mjs` gains a `DISPLAY`, not a branch.
+  - **NOT in scope:** RDP/VNC/remote desktop of any kind; any rework of the Windows path (done);
+    running eGPT INSIDE a VM as the default on any platform.
+
 - **⭐ CONFIG RESOLUTION — ONE NAMESPACE, THREE RUNGS (operator ruling 2026-07-26).**
   `config/config.yaml` (node defaults) < `config/conversations.yaml` (the registry entry)
   < the entity's own near-tier row.
