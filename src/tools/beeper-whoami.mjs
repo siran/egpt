@@ -16,8 +16,11 @@
 // install owns a port, so this tool tries every token it knows against every port and reports
 // the whole matrix.
 //
-//   node src/tools/beeper-whoami.mjs                 # config's connections + the usual ports
-//   node src/tools/beeper-whoami.mjs 23373 23380     # plus any extra ports to probe
+//   node src/tools/beeper-whoami.mjs                       # THE MAP: one table, every port
+//   node src/tools/beeper-whoami.mjs --host <ssh target>   # ...plus a remote node, best-effort
+//   node src/tools/beeper-whoami.mjs --detail              # the full token x port matrix below
+//   node src/tools/beeper-whoami.mjs --detail 23373 23380  # plus any extra ports to probe
+//   node src/tools/beeper-whoami.mjs --json                # the table's rows, machine-readable
 //
 // Read-only: it GETs /v1/accounts and asks the OS who owns the socket. It changes nothing.
 //
@@ -28,6 +31,7 @@
 // costs nothing on Linux or macOS. Elsewhere the tool still reports every account and every
 // 401 — it just cannot name the pid or the session.
 import { pathToFileURL } from 'node:url';
+import { hostname, networkInterfaces } from 'node:os';
 import { readConfigSync } from './config-io.mjs';
 
 const DEFAULT_PORTS = [23373, 23374, 23375 - 1];   // the two Desktops, and 23372 in case a third install ever lands below them
@@ -39,16 +43,31 @@ const TIMEOUT_MS = 6000;
 export function connectionsOf(cfg = {}) {
   const b = cfg.beeper;
   if (!b || typeof b !== 'object') return [];
-  return Object.entries(b)
-    .filter(([k, v]) => k !== 'use' && v && typeof v === 'object')
-    .map(([name, v]) => ({
-      name,
-      account: v.account ?? null,
-      baseUrl: v.base_url ?? 'http://127.0.0.1:23373',
-      token: v.token ?? null,
-      ownerNode: v.owner_node ?? null,
-      isUse: b.use === name,
-    }));
+  // A CONNECTION MAY CARRY SEVERAL CANDIDATE ENDPOINTS (`endpoints:`), and each has its OWN
+  // token — that is the whole point of the shape: one account, several installs, and the spine
+  // binds whichever answers. Flattening them here means every token this node holds gets tried,
+  // which is what makes the difference between "that install refused us" and "we never asked"
+  // reportable at all. Reading only the top-level `token` silently loses every candidate and
+  // then reports a perfectly healthy install as NOT LOGGED IN — measured live, 2026-09-04.
+  const rows = [];
+  for (const [name, v] of Object.entries(b)) {
+    if (name === 'use' || !v || typeof v !== 'object') continue;
+    const eps = Array.isArray(v.endpoints) && v.endpoints.length ? v.endpoints : null;
+    const common = { account: v.account ?? null, ownerNode: v.owner_node ?? null, isUse: b.use === name };
+    if (!eps) {
+      rows.push({ name, baseUrl: v.base_url ?? 'http://127.0.0.1:23373', token: v.token ?? null, ...common });
+      continue;
+    }
+    // Labelled by their port so the operator can tell two candidates of ONE connection apart —
+    // `main` alone would print twice and look like a bug.
+    eps.forEach((e, i) => {
+      const baseUrl = e?.base_url ?? 'http://127.0.0.1:23373';
+      let tag = String(i);
+      try { tag = new URL(baseUrl).port || String(i); } catch { /* keep the index */ }
+      rows.push({ name: `${name}:${tag}`, baseUrl, token: e?.token ?? v.token ?? null, ...common });
+    });
+  }
+  return rows;
 }
 
 // GET /v1/accounts. Returns {ok, status, loginID, email, networks} — a 401 is a RESULT, not an
@@ -137,6 +156,238 @@ export async function report({ cfg = readConfigSync(), extraPorts = [], deps = {
   return lines.join('\n');
 }
 
+// ---------------------------------------------------------------------------------------------
+// THE MAP — one table, every port, every node the operator can name.
+//
+// report() above prints the EVIDENCE: the whole token x port matrix, 401s and all. This half
+// prints the CONCLUSION, one line per port, because the question in practice is not "what does
+// the matrix say" but "which number do I type" (operator 2026-09-04, lost in the port numbers):
+//
+//   host | ip | node | port | S0/S1 | account | state
+//
+// ROLES, NEVER NAMES. A node runs the operator's PRIMARY account and usually a SECONDARY one the
+// agents wear; which is which is DATA — it arrives from /v1/accounts, is printed, and is never
+// baked in. Nothing here is named after a person, a machine, an account or a service: the S0
+// Desktop is found by the socket it holds, exactly as setup/beeper-update.ps1 finds its service
+// by Application path rather than by a service name that differs on every install.
+const API_SCAN = { from: 23373, to: 23385 };  // Beeper takes the NEXT FREE port from 23373 up
+const CDP_SCAN = { from: 9222, to: 9230 };    // the Chrome/Electron debugger — the number a driver is aimed at
+const DEFAULT_SHELL_PORT = 23375;
+const SCAN_TIMEOUT_MS = 2500;                 // a scan is ~25 loopback ports; a black hole must not hold the table
+const range = ({ from, to }) => Array.from({ length: to - from + 1 }, (_, i) => from + i);
+
+// The spine console's port (config `shell.port`, else 23375). Read HERE rather than imported
+// from src/bridges/shell-port.mjs, which owns shellPortFrom(): that module imports reap-port,
+// which imports node:child_process AT TOP LEVEL — and boot.mjs imports THIS file, so borrowing
+// the accessor would hand the spine a platform at import time and trip tests/integrity.test.mjs
+// ("gives the spine no platform"). Same key, same fallback, same range check.
+export function shellPortOf(cfg) {
+  const n = Number(cfg?.shell?.port);
+  return Number.isInteger(n) && n > 0 && n < 65536 ? n : DEFAULT_SHELL_PORT;
+}
+
+// Is anything holding this port? A raw TCP connect, because the console is a WebSocket server
+// and answers nothing useful over plain HTTP — "did the socket open" is the entire question.
+// node:net is portable; the import stays inside the function so importing this module is free.
+export async function tcpListening(port, { host = '127.0.0.1', timeoutMs = SCAN_TIMEOUT_MS } = {}) {
+  const { connect } = await import('node:net');
+  return new Promise((resolve) => {
+    const sock = connect({ port, host });
+    const done = (v) => { sock.destroy(); resolve(v); };
+    sock.setTimeout(timeoutMs, () => done(false));
+    sock.once('connect', () => done(true));
+    sock.once('error', () => done(false));
+  });
+}
+
+// WHAT is behind a CDP port. /json/version names the browser and its user agent, and an Electron
+// app says so there — which is how a headless Desktop being driven is told apart from a browser
+// the operator drives by hand. Both are legitimate things to find on 9222; confusing them is how
+// a driver ends up typing into the wrong window.
+export async function cdpProbe(port, { timeoutMs = SCAN_TIMEOUT_MS, fetchImpl = fetch } = {}) {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    const res = await fetchImpl(`http://127.0.0.1:${port}/json/version`, { signal: ctl.signal });
+    if (!res.ok) return { ok: false };
+    const v = await res.json();
+    const blob = `${v?.Browser ?? ''} ${v?.['User-Agent'] ?? ''}`;
+    // Beeper first: an Electron user agent also says Chrome, so the looser tests must come last.
+    const label = /beeper/i.test(blob) ? 'Beeper'
+      : /electron/i.test(blob) ? 'Electron'
+      : /chrom(e|ium)/i.test(blob) ? 'Chrome'
+      : 'unknown';
+    return { ok: true, label };
+  } catch { return { ok: false }; }
+  finally { clearTimeout(t); }
+}
+
+// THE ADDRESS A PEER WOULD REACH THIS NODE ON — plural, honestly. A machine has several (loopback,
+// LAN, VPN, hypervisor switches) so this returns the LIST and lets the table print `?` rather than
+// crown a favourite: a confidently wrong address is worse than no address. Host-side virtual
+// switches are dropped because nothing off-box can reach them. A VPN / overlay address is KEPT —
+// an eGPT node can be off-LAN entirely, and that may be the only way in.
+const HOST_ONLY_IFACE = /^(vethernet|virtualbox|vmware|hyper-v|docker|wsl|loopback|npcap)/i;
+export function localAddresses(ifaces = networkInterfaces()) {
+  const pick = (skipVirtual) => {
+    const out = [];
+    for (const [name, addrs] of Object.entries(ifaces ?? {})) {
+      if (skipVirtual && HOST_ONLY_IFACE.test(name)) continue;
+      for (const a of addrs ?? []) {
+        if (!a || a.internal) continue;
+        if (a.family !== 'IPv4' && a.family !== 4) continue;
+        if (a.address.startsWith('169.254.')) continue;   // link-local: self-assigned, reaches nobody
+        out.push(a.address);
+      }
+    }
+    return [...new Set(out)];
+  };
+  const real = pick(true);
+  return real.length ? real : pick(false);   // filtered everything away ⇒ better a virtual one than nothing
+}
+
+// A REMOTE NODE IS WHATEVER --host NAMES: a hostname, a bare IP, an ssh alias, an overlay-VPN
+// name, a box on the far side of the internet. It is an OPAQUE ssh target. Nothing here scans,
+// broadcasts, reads an ARP table or assumes a subnet, because an eGPT node can be off-LAN and
+// there is no local network to enumerate. The remote runs THIS SAME tool in --json mode — the
+// probing logic exists once, here, and is never re-implemented over there.
+//
+// Failure is reported as `unreachable` and nothing else. Slow is not dead, a closed laptop is
+// not "off the network", and this tool cannot tell those apart — so it does not pretend to.
+export const DEFAULT_REMOTE_PATH = 'src/egpt/src/tools/beeper-whoami.mjs';  // relative ⇒ resolved against the login home by both cmd.exe and sh
+
+const sshIp = (stderr = '') => (stderr.match(/Connecting to \S+ \[([^\]]+)\] port/) ?? [])[1] ?? null;
+const sshWhy = (stderr = '') => stderr.split(/\r?\n/).map((l) => l.trim())
+  .find((l) => l && !/^(debug\d|OpenSSH_|Warning: Permanently)/.test(l)) ?? 'ssh failed';
+
+export async function remoteProbe(host, { remotePath = DEFAULT_REMOTE_PATH, connectTimeoutSec = 6, timeoutMs = 20_000 } = {}) {
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const run = promisify(execFile);
+  // -v ONLY so ssh prints the address it actually connected to (the ip column for this row is
+  // then measured, not guessed). BatchMode so an unknown host or a missing key FAILS instead of
+  // prompting forever. ConnectTimeout explicit because an off-LAN node can be slow rather than
+  // dead and ssh's own default wait is minutes. `timeout` on top of that kills a session that
+  // connects and then hangs — one asleep node must never hold the table.
+  const args = ['-v', '-o', 'BatchMode=yes', '-o', `ConnectTimeout=${connectTimeoutSec}`, host, 'node', remotePath, '--json'];
+  try {
+    const { stdout, stderr } = await run('ssh', args, { timeout: timeoutMs, maxBuffer: 4_000_000 });
+    let rows = null;
+    try { rows = JSON.parse(stdout); } catch { /* not our JSON — handled below */ }
+    if (!Array.isArray(rows)) return { ok: false, ip: sshIp(stderr), error: `connected, but no --json from ${remotePath} (pass --remote-path)` };
+    return { ok: true, ip: sshIp(stderr), rows };
+  } catch (e) {
+    if (e?.code === 'ENOENT') return { ok: false, noSsh: true };   // no ssh client here at all
+    return { ok: false, ip: sshIp(e?.stderr ?? ''), error: sshWhy(e?.stderr ?? String(e?.message ?? e)) };
+  }
+}
+
+// ONE PORT'S VERDICT. Every token in config is tried against it, because a token belongs to an
+// INSTALL: the one that answers 200 names the account, and the 401s are proof the others are
+// different installs. Two readings must never be conflated — "401 to every token we hold" means
+// something is up there that no connection of ours can talk to, while "we hold no token at all"
+// means we never asked. The second dressed as the first is a confident wrong answer.
+async function apiState(port, conns, probeImpl) {
+  const base = `http://127.0.0.1:${port}`;
+  const tokened = conns.filter((c) => c.token);
+  if (!tokened.length) {
+    const r = await probeImpl(base, null, { timeoutMs: SCAN_TIMEOUT_MS });
+    return r.status ? { account: '-', state: 'no token in config' } : { account: '-', state: 'not listening' };
+  }
+  const statuses = [];
+  for (const c of tokened) {
+    const r = await probeImpl(base, c.token, { timeoutMs: SCAN_TIMEOUT_MS });
+    if (r.ok) return { account: r.loginID ?? r.email ?? '?', state: 'logged in' };
+    if (!r.status) break;            // nothing answered — the other tokens would fail the same way
+    statuses.push(r.status);
+  }
+  if (!statuses.length) return { account: '-', state: 'not listening' };
+  if (statuses.every((s) => s === 401)) return { account: '-', state: 'NOT LOGGED IN' };
+  return { account: '-', state: `listening (HTTP ${statuses[statuses.length - 1]})` };
+}
+
+export async function topology({ cfg = readConfigSync(), hosts = [], extraPorts = [], remotePath, deps = {} } = {}) {
+  const conns = connectionsOf(cfg);
+  const shellPort = shellPortOf(cfg);
+  // A port named in config (or on the command line) EARNS a row even when nothing answers —
+  // "the port you configured is dead" is exactly the answer the operator came for. A scan port
+  // that is merely empty does not. The console port is subtracted from the API scan because it
+  // sits inside 23373..23385 and answers HTTP: without this it would appear twice, once
+  // truthfully as the console and once as a nonsense API row.
+  const named = new Set([...conns.map((c) => portOf(c.baseUrl)), ...extraPorts].filter(Boolean));
+  const apiPorts = [...new Set([...range(API_SCAN), ...named])].filter((p) => p !== shellPort).sort((a, b) => a - b);
+  const cdpPorts = range(CDP_SCAN);
+
+  const owners = await (deps.localOwners ?? localOwners)([...apiPorts, shellPort, ...cdpPorts]);
+  const probeImpl = deps.probe ?? probe;
+  const cdp = deps.cdpProbe ?? cdpProbe;
+  const listening = deps.tcpListening ?? tcpListening;
+  const addrs = (deps.localAddresses ?? localAddresses)();
+  const host = (deps.hostname ?? hostname)();
+  const node = cfg.node_name ?? '?';
+  const ip = addrs.length === 1 ? addrs[0] : '?';
+  // S0/S1 is a WINDOWS fact and localOwners already returns an empty Map everywhere else, so
+  // off win32 every row reads `-`. There is no POSIX equivalent and inventing one would be a lie.
+  const sessionOf = (port) => { const o = owners.get(port); return o ? `S${o.session}` : '-'; };
+  const here = { host, ip, node };
+
+  const [apiRows, consoleRow, cdpRows] = await Promise.all([
+    Promise.all(apiPorts.map(async (port) => ({ ...here, port, role: 'api', session: sessionOf(port), ...(await apiState(port, conns, probeImpl)) })))
+      .then((rs) => rs.filter((r) => r.state !== 'not listening' || named.has(r.port))),
+    listening(shellPort).then((up) => ({ ...here, port: shellPort, role: 'console', session: sessionOf(shellPort), account: '-', state: up ? 'listening' : 'not listening' })),
+    Promise.all(cdpPorts.map(async (port) => {
+      const r = await cdp(port);
+      return r.ok ? { ...here, port, role: 'cdp', session: sessionOf(port), account: '-', state: `listening (${r.label})` } : null;
+    })).then((rs) => rs.filter(Boolean)),
+  ]);
+
+  const rows = [...apiRows, consoleRow].sort((a, b) => a.port - b.port).concat(cdpRows);
+
+  // The printed text is ASCII on purpose: this is a DOUBLE-CLICKED tool, and a console still
+  // opens on the machine's OEM codepage, where a UTF-8 em-dash arrives as mojibake.
+  const notes = [];
+  if (addrs.length > 1) notes.push(`${host}: several addresses (${addrs.join(', ')}) - none of them is THE one, so ip reads ?`);
+  else if (!addrs.length) notes.push(`${host}: no non-internal IPv4 address found, so ip reads ?`);
+
+  // Remote hosts CONCURRENTLY: N asleep nodes must cost one timeout, not N.
+  const remote = deps.remoteProbe ?? remoteProbe;
+  const results = await Promise.all(hosts.map(async (h) => [h, await remote(h, { remotePath })]));
+  for (const [h, r] of results) {
+    if (r?.noSsh) continue;   // no ssh client on this machine — skip remote silently, as asked
+    if (r?.ok) { rows.push(...r.rows.map((row) => ({ ...row, host: h, ip: r.ip ?? row.ip ?? '?' }))); continue; }
+    rows.push({ host: h, ip: r?.ip ?? '?', node: '?', port: '-', role: '', session: '-', account: '-', state: 'unreachable' });
+    if (r?.error) notes.push(`${h}: unreachable - ${r.error}`);
+  }
+  if (!hosts.length) notes.push('remote nodes: name them with --host <ssh target> (repeatable). Nothing in config lists peers, so none is ever guessed - and none is ever discovered, because a node can be off-LAN.');
+
+  return { rows, notes };
+}
+
+const COLUMNS = [
+  ['host', (r) => r.host],
+  ['ip', (r) => r.ip],
+  ['node', (r) => r.node],
+  // The role rides in the PORT cell: a bare number does not say what it is, and "which number do
+  // I type" is the whole question. api = the Beeper HTTP API, console = the spine's operator
+  // console, cdp = the debugger a driver attaches to. The number is right-aligned inside the cell
+  // so a 4-digit CDP port and a 5-digit API port keep their role words in one column.
+  ['port', (r, pw) => (r.role ? `${String(r.port).padStart(pw)} ${r.role}` : String(r.port))],
+  ['S0/S1', (r) => r.session],
+  ['account', (r) => r.account],
+  ['state', (r) => r.state],
+];
+
+export function renderTable(rows, notes = []) {
+  const pw = Math.max(0, ...rows.map((r) => String(r.port).length));
+  const cells = [COLUMNS.map(([h]) => h), ...rows.map((r) => COLUMNS.map(([, f]) => String(f(r, pw) ?? '-')))];
+  const width = COLUMNS.map((_, i) => Math.max(...cells.map((c) => c[i].length)));
+  const line = (c) => c.map((v, i) => (i === c.length - 1 ? v : v.padEnd(width[i]))).join('  ').trimEnd();
+  const out = [line(cells[0]), width.map((n) => '-'.repeat(n)).join('  ')];
+  for (const c of cells.slice(1)) out.push(line(c));
+  if (notes.length) out.push('', ...notes);
+  return out.join('\n');
+}
+
 // pathToFileURL, not a hand-built `file:///` string: the string form only ever matches on
 // Windows — a POSIX argv[1] is already absolute, so it renders file:////home/... and never
 // matches — which would make this CLI silently do nothing on Linux and macOS. eGPT is
@@ -144,6 +395,22 @@ export async function report({ cfg = readConfigSync(), extraPorts = [], deps = {
 // quietly become Windows-only. Same idiom as src/tools/compact-being.mjs.
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMain) {
-  const extraPorts = process.argv.slice(2).map(Number).filter((n) => Number.isFinite(n) && n > 0);
-  console.log(await report({ extraPorts }));
+  const argv = process.argv.slice(2);
+  const hosts = [], extraPorts = [];
+  let json = false, detail = false, remotePath;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--host') hosts.push(argv[++i]);
+    else if (a === '--remote-path') remotePath = argv[++i];
+    else if (a === '--json') json = true;
+    else if (a === '--detail') detail = true;
+    else if (/^\d+$/.test(a)) extraPorts.push(Number(a));
+  }
+  if (detail) console.log(await report({ extraPorts }));
+  else {
+    // --json carries no --host: this is the shape a remote node returns to whoever asked, and a
+    // node fanning out to its own peers would recurse across the mesh.
+    const { rows, notes } = await topology({ hosts: json ? [] : hosts, extraPorts, remotePath });
+    console.log(json ? JSON.stringify(rows) : renderTable(rows, notes));
+  }
 }
