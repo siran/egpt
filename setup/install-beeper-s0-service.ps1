@@ -8,11 +8,12 @@
 #
 # This installs ONE such Desktop. A node can host SEVERAL: they are the same binaries with
 # DIFFERENT --user-data-dir values, which is what makes them separate INSTALLS - separate
-# logins, separate tokens, separate ports. reve runs one for `an` and one for `rodz`.
+# logins, separate tokens, separate ports: one for the PRIMARY account (the operator's own) and
+# one for the SECONDARY (the account the agents wear).
 #
 # Run ELEVATED, from the repo root:
-#   .\setup\install-beeper-s0-service.ps1 -ServiceName BeeperRodz `
-#       -UserDataDir C:\Users\an\.egpt\state\rodz-beeper\userdata -CdpPort 9224
+#   .\setup\install-beeper-s0-service.ps1 -ServiceName egpt-beeper-secondary `
+#       -UserDataDir $env:USERPROFILE\.egpt\state\beeper-secondary\userdata -CdpPort 9225
 #
 # Remove:  nssm remove <ServiceName> confirm
 #
@@ -58,7 +59,7 @@ if (Get-Service $ServiceName -ErrorAction SilentlyContinue) { throw "service $Se
 # A CDP port already in use would silently give this Desktop NO debugger, which is the one way
 # back into a window nobody can see.
 if (Get-NetTCPConnection -State Listen -LocalPort $CdpPort -ErrorAction SilentlyContinue) {
-  throw "CDP port $CdpPort is already listening - pick another (BeeperAn uses 9223)"
+  throw "CDP port $CdpPort is already listening - pick another (egpt-beeper-primary uses 9223)"
 }
 
 New-Item -ItemType Directory -Force -Path $UserDataDir | Out-Null

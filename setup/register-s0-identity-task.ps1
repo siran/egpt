@@ -15,9 +15,9 @@
 #   .\setup\register-s0-identity-task.ps1 -IntervalMin 5  a different cadence
 #   .\setup\register-s0-identity-task.ps1 -Remove         unregister
 #
-# DO NOT REGISTER THIS UNTIL THE RODZ INSTALL IS LOGGED IN. The reconciler's safety gate refuses
+# DO NOT REGISTER THIS UNTIL THE SECONDARY INSTALL IS LOGGED IN. The reconciler's safety gate refuses
 # to hand Session 0 to an install that cannot answer, so it will not take the node off the air -
-# but until the gate opens it will also stop a BeeperRodz you are in the middle of logging in to.
+# but until the gate opens it will also stop a egpt-beeper-secondary you are in the middle of logging in to.
 #
 # ASCII ONLY (PowerShell 5.1 reads a BOM-less UTF-8 script as ANSI).
 [CmdletBinding()]
@@ -67,7 +67,7 @@ $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoi
 
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger @($atBoot, $atLogon) `
   -Settings $settings -User 'SYSTEM' -RunLevel Highest `
-  -Description 'Keeps the Session 0 Beeper on the right identity: an when nobody is logged in, rodz once the operator GUI is up.' | Out-Null
+  -Description 'Keeps the Session 0 Beeper on the right identity: the primary account when nobody is logged in, the secondary once the operator GUI is up.' | Out-Null
 
 Write-Host "[s0-identity] registered $TaskName - at boot, at logon, every $IntervalMin min, as SYSTEM"
 Write-Host "[s0-identity] log: C:\Users\an\.egpt\config\logs\s0-identity.log"

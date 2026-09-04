@@ -1,10 +1,10 @@
 # s0-identity-reconcile.ps1 - keep the SESSION 0 Beeper on the right IDENTITY for who is here.
 #
-# THE RULE (operator 2026-09-03: "s0 should be an, after logon and logon-stutter, s1 an and s0
-# rodz"):
+# THE RULE. A node may hold TWO Beeper accounts: the PRIMARY (the operator's own) and the
+# SECONDARY (the one the agents wear). Session 0 carries whichever has nobody else to carry it:
 #
-#   nobody logged in  ->  Session 0 runs AN     so his agents answer in his own groups unattended
-#   an logged in      ->  Session 1 GUI is AN, so Session 0 is free to be RODZ, and the node
+#   nobody logged in   ->  Session 0 runs the PRIMARY, so the agents answer unattended
+#   operator logged in ->  Session 1 GUI is the PRIMARY, so Session 0 is free to be the SECONDARY,
 #                         carries both identities at once
 #
 # OBSERVATION, NOT TRIGGERS. A logon task and a logoff task would each be one event away from
@@ -14,43 +14,84 @@
 # needs no negotiation and cannot split-brain.
 #
 # ASYMMETRIC HYSTERESIS, also borrowed from peer-liveness: YIELD EAGERLY, CLAIM RELUCTANTLY. The
-# two mistakes do not cost the same. Flipping to RODZ when the operator is NOT really here takes
-# `an` off Session 0 and his agents go silent in his own groups - the exact capability the whole
-# Session 0 build exists for. Flipping back to AN when he IS here costs a duplicate device. So:
-# going to rodz needs ClaimTicks CONSECUTIVE sightings of a live GUI; coming back to an happens on
+# two mistakes do not cost the same. Flipping to SECONDARY when the operator is NOT really here takes
+# the PRIMARY off Session 0 and the agents go silent in the operator's own groups - the capability the whole
+# Session 0 build exists for. Flipping back to the PRIMARY when the operator IS here costs a
+# duplicate device. So:
+# going to the SECONDARY needs ClaimTicks CONSECUTIVE sightings of a live GUI; coming back to the
+# PRIMARY happens on
 # the FIRST tick that does not see one.
 #
 # THE SAFETY GATE. It will NEVER hand Session 0 to a Beeper install that is not logged in - that
-# would trade a working `an` for a login screen and take the node off the air. The rodz install
+# would trade a working PRIMARY for a login screen and take the node off the air. The secondary install
 # must answer /v1/accounts 200 with its own token, recorded in the ready-file, before this script
-# will ever stop BeeperAn. Absent or stale ready-file = do nothing, and say so.
+# will ever stop egpt-beeper-primary. Absent or stale ready-file = do nothing, and say so.
 #
 #   .\s0-identity-reconcile.ps1              one reconcile pass (what the scheduled task runs)
 #   .\s0-identity-reconcile.ps1 -WhatIf      say what it would do, change nothing
-#   .\s0-identity-reconcile.ps1 -Force an    flip to a named identity now, ignoring the observation
+#   .\s0-identity-reconcile.ps1 -Force primary    flip to a named identity now, ignoring the observation
 #
 # ASCII ONLY: PowerShell 5.1 decodes a BOM-less UTF-8 script as ANSI, so one em-dash is a parse
 # error. Runs as SYSTEM from the task, so it needs no elevation of its own.
 [CmdletBinding()]
 param(
-  [string] $AnService    = 'BeeperAn',
-  [string] $RodzService  = 'BeeperRodz',
+  [string] $PrimaryService    = 'egpt-beeper-primary',
+  [string] $SecondaryService  = 'egpt-beeper-secondary',
   [string] $SpineService = 'egpt-daemon',
   [string] $StatePath    = 'C:\Users\an\.egpt\state\s0-identity.json',
-  [string] $ReadyPath    = 'C:\Users\an\.egpt\state\s0-rodz-ready.json',
+  [string] $ReadyPath    = 'C:\Users\an\.egpt\state\s0-secondary-ready.json',
   [string] $LogPath      = 'C:\Users\an\.egpt\config\logs\s0-identity.log',
   [int]    $ClaimTicks   = 2,
-  [ValidateSet('an','rodz')][string] $Force,
+  [ValidateSet('primary','secondary')][string] $Force,
   [switch] $WhatIf
 )
 
 $ErrorActionPreference = 'Stop'
+
+# ---- find the two services, by ROLE rather than by name --------------------------------------
+# eGPT is a public tool: the service NAMES are whatever whoever installed them chose, and the
+# first two here were named after the operator's own accounts. So the names are parameters with
+# sensible defaults, and when a default does not exist we DISCOVER instead of failing.
+#
+# THE DISCRIMINATOR IS START MODE, and it is semantic rather than incidental: the Desktop that
+# must be up before anyone logs in is AUTOMATIC (that is the whole reason it exists - it survives
+# a forced restart), and the one the logon flip owns is MANUAL, so Windows cannot start it behind
+# the flip's back. install-beeper-s0-service.ps1 -StartMode writes exactly that distinction.
+# Anything ambiguous is reported, never guessed: two automatics is a misconfiguration a human
+# should see, not something to resolve by coin flip.
+function Find-BeeperServices {
+  $found = @()
+  foreach ($svc in Get-CimInstance Win32_Service) {
+    $k = "HKLM:\SYSTEM\CurrentControlSet\Services\$($svc.Name)\Parameters"
+    if (-not (Test-Path $k)) { continue }
+    $app = (Get-ItemProperty $k -ErrorAction SilentlyContinue).Application
+    if ($app -and $app -like '*Beeper.exe') { $found += [pscustomobject]@{ Name = $svc.Name; Start = $svc.StartMode } }
+  }
+  return $found
+}
+
+function Resolve-ServiceName($configured, $role) {
+  if (Get-Service $configured -ErrorAction SilentlyContinue) { return $configured }
+  $all = Find-BeeperServices
+  $want = if ($role -eq 'primary') { 'Auto' } else { 'Manual' }
+  $hit = @($all | Where-Object { $_.Start -eq $want })
+  if ($hit.Count -eq 1) {
+    Say "service '$configured' not found - discovered the $role Beeper service by start mode: $($hit[0].Name)"
+    return $hit[0].Name
+  }
+  if ($hit.Count -gt 1) { Say "AMBIGUOUS: $($hit.Count) Beeper services are $want start ($($hit.Name -join ', ')) - pass -${role}Service explicitly" }
+  else { Say "no $want-start Beeper service found for role '$role' (looked at: $(if ($all) { $all.Name -join ', ' } else { 'none' }))" }
+  return $configured
+}
 
 function Say($m) {
   $line = "[{0}] {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $m
   Write-Host $line
   try { Add-Content -Path $LogPath -Value $line -Encoding utf8 } catch { }
 }
+
+$PrimaryService   = Resolve-ServiceName $PrimaryService   'primary'
+$SecondaryService = Resolve-ServiceName $SecondaryService 'secondary'
 
 # ---- observe ---------------------------------------------------------------------------------
 # A GUI that merely EXISTS is not enough: Beeper spawns helper processes early and sits for a
@@ -67,20 +108,20 @@ function Get-InteractiveBeeperPort {
 }
 
 function Get-RunningIdentity {
-  $an   = (Get-Service $AnService   -ErrorAction SilentlyContinue).Status -eq 'Running'
-  $rodz = (Get-Service $RodzService -ErrorAction SilentlyContinue).Status -eq 'Running'
-  if ($an -and $rodz) { return 'both' }
-  if ($an)   { return 'an' }
-  if ($rodz) { return 'rodz' }
+  $primary   = (Get-Service $PrimaryService   -ErrorAction SilentlyContinue).Status -eq 'Running'
+  $secondary = (Get-Service $SecondaryService -ErrorAction SilentlyContinue).Status -eq 'Running'
+  if ($primary -and $secondary) { return 'both' }
+  if ($primary) { return 'primary' }
+  if ($secondary) { return 'secondary' }
   return 'none'
 }
 
 # ---- the safety gate -------------------------------------------------------------------------
-# Written by hand (or by the login run) once the rodz install is logged in AND has an approved
+# Written by hand (or by the login run) once the secondary install is logged in AND has an approved
 # connection: { "token": "bdapi_...", "verifiedAt": "..." }. Checked LIVE, not trusted: the token
-# is probed against the rodz service's own port after it starts, and a rodz that stops answering
-# sends the node back to `an` on the next tick.
-function Get-RodzReady {
+# is probed against the secondary service's own port after it starts, and a secondary that stops answering
+# sends the node back to the PRIMARY on the next tick.
+function Get-SecondaryReady {
   if (-not (Test-Path $ReadyPath)) { return $null }
   try { return (Get-Content $ReadyPath -Raw | ConvertFrom-Json) } catch { return $null }
 }
@@ -94,8 +135,8 @@ function Save-State { if (-not $WhatIf) { try { ($state | ConvertTo-Json -Compre
 
 # ---- the flip --------------------------------------------------------------------------------
 function Invoke-Flip($to) {
-  $stop  = if ($to -eq 'rodz') { $AnService }   else { $RodzService }
-  $start = if ($to -eq 'rodz') { $RodzService } else { $AnService }
+  $stop  = if ($to -eq 'secondary') { $PrimaryService }   else { $SecondaryService }
+  $start = if ($to -eq 'secondary') { $SecondaryService } else { $PrimaryService }
 
   if ($WhatIf) { Say "-WhatIf: would stop $stop, start $start, then restart $SpineService"; return }
 
@@ -141,30 +182,30 @@ function Invoke-Flip($to) {
 # ---- decide ----------------------------------------------------------------------------------
 $have = Get-RunningIdentity
 $guiPort = Get-InteractiveBeeperPort
-$ready = Get-RodzReady
+$ready = Get-SecondaryReady
 
 if ($Force) {
   Say "forced: '$Force' (observed gui=$(if($guiPort){"listening on $guiPort"}else{'none'}), running=$have)"
-  if ($Force -eq 'rodz' -and -not $ready) { Say "REFUSING: $ReadyPath is absent - the rodz install is not logged in, and handing Session 0 to a login screen takes the node off the air"; return }
+  if ($Force -eq 'secondary' -and -not $ready) { Say "REFUSING: $ReadyPath is absent - the secondary install is not logged in, and handing Session 0 to a login screen takes the node off the air"; return }
   if ($Force -ne $have) { Invoke-Flip $Force } else { Say "already '$have' - nothing to do" }
   return
 }
 
 # CLAIM RELUCTANTLY: a live GUI has to be seen ClaimTicks times running before Session 0 gives up
-# `an`. YIELD EAGERLY: one tick without a GUI sends it straight back.
+# the PRIMARY. YIELD EAGERLY: one tick without a GUI sends it straight back.
 if ($guiPort) { $state.streak = [Math]::Min($state.streak + 1, $ClaimTicks) } else { $state.streak = 0 }
-$want = if ($state.streak -ge $ClaimTicks) { 'rodz' } else { 'an' }
+$want = if ($state.streak -ge $ClaimTicks) { 'secondary' } else { 'primary' }
 
-if ($want -eq 'rodz' -and -not $ready) {
+if ($want -eq 'secondary' -and -not $ready) {
   # Not an error and not a retry loop - just the honest state. Said once per change, not every tick.
-  if ($state.last -ne 'blocked') { Say "GUI is up, but $ReadyPath is absent - the rodz install is not logged in yet, so Session 0 stays on 'an'" }
-  # Blocked means the desired identity is 'an', so make sure it is actually RUNNING - saying
-  # "stays on an" while nothing is on is the failure this whole gate exists to prevent.
-  # BeeperRodz is deliberately NOT stopped here: while the gate is closed it is the install a
+  if ($state.last -ne 'blocked') { Say "GUI is up, but $ReadyPath is absent - the secondary install is not logged in yet, so Session 0 stays on 'primary'" }
+  # Blocked means the desired identity is 'primary', so make sure it is actually RUNNING - saying
+  # "stays on the primary" while nothing is on is the failure this whole gate exists to prevent.
+  # egpt-beeper-secondary is deliberately NOT stopped here: while the gate is closed it is the install a
   # human is logging IN to, and pulling it out from under that is the one unhelpful thing to do.
-  if ((Get-Service $AnService -ErrorAction SilentlyContinue).Status -ne 'Running') {
-    Say "BeeperAn is not running while blocked - starting it"
-    if (-not $WhatIf) { Start-Service $AnService }
+  if ((Get-Service $PrimaryService -ErrorAction SilentlyContinue).Status -ne 'Running') {
+    Say "egpt-beeper-primary is not running while blocked - starting it"
+    if (-not $WhatIf) { Start-Service $PrimaryService }
   }
   $state.last = 'blocked'; Save-State
   return
@@ -177,11 +218,12 @@ if ($have -eq $want) {
 }
 
 Say "want '$want', have '$have' (gui=$(if($guiPort){"listening on $guiPort"}else{'none'}), streak=$($state.streak))"
-# BOTH RUNNING, and the one we want is already up: the surplus service is the only problem. `an`
+# BOTH RUNNING, and the one we want is already up: the surplus service is the only problem. The
+# primary
 # never went away, so the spine is still bound to a live install and restarting it would drop the
 # warm pool for nothing. Stop the extra and leave the spine alone.
 if ($have -eq 'both') {
-  $surplus = if ($want -eq 'an') { $RodzService } else { $AnService }
+  $surplus = if ($want -eq 'primary') { $SecondaryService } else { $PrimaryService }
   Say "both services are running - stopping the surplus ($surplus), leaving $SpineService alone"
   if (-not $WhatIf) { Stop-Service $surplus -Force }
   $state.last = $want; Save-State
