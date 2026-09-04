@@ -358,16 +358,22 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
     serve X11 clients only; a macOS Electron app renders through Cocoa/WindowServer and never
     touches X11. And a `LaunchDaemon` holds no WindowServer connection at all — the window
     cannot be CREATED, not merely hidden. macOS is therefore STRICTER than Windows here and has
-    no equivalent of the Session 0 gap. Two options, both worse than Windows':
-    - **(a) auto-login + LaunchAgent**, screen locked. Works; it is the normal "Mac as home
-      server" pattern; and it leaves a user session open permanently — the exact compromise
-      Session 0 was built to retire.
-    - **(b) headless Linux VM** running the Linux path above. A VM's display is virtual BY
-      CONSTRUCTION (the guest draws into a framebuffer the VM process owns, not the host's
-      WindowServer), so it exists with nobody logged in. QEMU+HVF from `launchd` is clean;
-      Virtualization.framework wants entitlements and is fiddly outside a GUI session —
-      UNVERIFIED, no Mac available to test (2026-09-03).
-    So macOS gets NO first-class path. Say that in the docs instead of implying parity.
+    no equivalent of the Session 0 gap. **RULED 2026-09-03: NO AUTO-LOGIN ON MAC. The VM is
+    the macOS path.**
+    - **THE PATH — a headless Linux VM** running the Linux/Xvfb path above. A VM's display is
+      virtual BY CONSTRUCTION: the guest draws into a framebuffer the VM process owns, never the
+      host's WindowServer, so it exists with nobody logged in and the host never needs to render
+      anything. That also collapses the platform count — macOS does not get its own
+      implementation, it HOSTS the Linux one, so Xvfb stays the single render surface to build
+      and test. QEMU+HVF from `launchd` is the clean spawn; Virtualization.framework wants
+      entitlements and is fiddly outside a GUI session — UNVERIFIED, no Mac available to test
+      (2026-09-03).
+    - **REJECTED — auto-login + LaunchAgent**, screen locked. It is the normal "Mac as home
+      server" pattern and it works, which is exactly why it needs to be ruled out in writing: it
+      leaves a user session open permanently, the precise compromise Session 0 was built to
+      retire. Taking it would mean the Mac node is the one machine still holding a logged-in
+      human seat for the agents' benefit. Operator ruling, not a technical limit.
+    So macOS gets no NATIVE path, and does not need one: it runs the Linux node in a box.
   - **Minimum scope:** a `headless-display.mjs` that reports the platform's capability and, on
     Linux, owns the Xvfb lifecycle the way `whisper-server.mjs` owns its server (spawn,
     readiness wait, respawn). ONE supervisor — never a service registered beside it; see
