@@ -156,6 +156,107 @@ export function transcriptionForNoteId(doc, noteId) {
   return body.slice(vm[0].length).trim() || null;
 }
 
+// ── CROSS-ACCOUNT CHAT IDENTITY ───────────────────────────────────────────
+// PURE, and deliberately so: everything below reads a chat payload and nothing else, closes
+// over nothing but shortChatId, and is therefore callable with no live bridge. idKey and
+// participantKeys were LIFTED here verbatim from inside startBeeperBridge (they were always
+// pure) so crossAccountChatKey could be written beside the ONE roster reader instead of
+// growing a second one. Nothing about their behaviour changed; the membership tests in
+// tests/beeper-bridge.test.mjs cover them unaltered.
+//
+// IDENTITY KEY: `participants.items[]` carries `phoneNumber`, the one identifier that means the
+// same thing on BOTH accounts (a matrix/participant id does not: each account sees the other
+// through its own namespace). A phone-shaped value compares on DIGITS ONLY, so "+1 (347)
+// 257-6794", "+13472576794" and "13472576794" are one identity; anything else falls back to
+// shortChatId, the SAME normalizer allowed_users uses, so a raw participant id still works.
+// The country code is NOT guessed — a bare national form is a different digit string and does
+// not match. Declare the full international number (which is what Beeper reports anyway); a
+// guessed prefix would silently make one identity match another country's number.
+const idKey = (v) => {
+  const s = String(v ?? '').trim().toLowerCase();
+  if (!s) return '';
+  const digits = s.replace(/\D/g, '');
+  return (/^\+?[\d\s().-]+$/.test(s) && digits.length >= 7) ? `#${digits}` : shortChatId(s);
+};
+function participantKeys(c) {
+  const items = Array.isArray(c?.participants?.items) ? c.participants.items
+    : Array.isArray(c?.participants) ? c.participants : null;
+  if (!items) return null;                        // shape absent ⇒ UNKNOWN, not empty
+  const out = new Set();
+  for (const p of items) for (const v of [p?.phoneNumber, p?.id]) { const k = idKey(v); if (k) out.add(k); }
+  return [...out];
+}
+
+// ── THE CROSS-ACCOUNT CHAT KEY (operator 2026-09-05) ────────────────────────────
+// ONE real group, seen by TWO Beeper accounts, shares NOTHING in the payload. Measured live on
+// the same machine, the same underlying WhatsApp group:
+//
+//   primary   sees  !6ljZJkx0OaY9ZVhEzFgi:beeper.local   localChatID 211
+//   secondary sees  !HuXFQeZSY1X4khNDWTzz:beeper.local   localChatID 3
+//
+// Beeper is Matrix: each account gets its OWN room for the same underlying chat, so the room
+// id, the local id and every other handle are per-account. THE PEOPLE ARE NOT. This derives a
+// key from them — so a node told about a chat by its co-account can find ITS OWN chatId for
+// that same chat. NOTHING CALLS IT YET (operator 2026-09-05): it is the primitive the mouth-
+// routing job needs, landed and locked on its own.
+//
+// THE RULE: the set of participant PHONE NUMBERS, digits-normalised through idKey, and nothing
+// else. A matrix/participant id is DROPPED on purpose — it is namespaced per account (each
+// account sees the others through its own), so including one would guarantee a mismatch rather
+// than cause one. That same filter is what excludes THE VIEWING ACCOUNT for free: measured
+// live, an account's own entry in its own roster carries NO phoneNumber at all — it is the
+// matrix id with isSelf true — so "phone numbers only" already means "everyone but me", with
+// no self-detection to get wrong and no special case to keep in sync.
+//
+// `exclude` IS WHAT MAKES TWO VIEWS COMPARE EQUAL, and the same measurement is why. Diffing
+// the two rosters above, after normalisation, left exactly two entries:
+//
+//   only in primary's roster  : the SECONDARY account's number
+//   only in secondary's roster: the PRIMARY account's number
+//
+// i.e. each account sees the OTHER as an ordinary member WITH a phone number, and itself as
+// the phone-less self entry. Dropping self is automatic; dropping the co-account is not, and
+// it is the one thing still standing between the two views. So a caller that holds BOTH
+// accounts passes both identities here and the two keys become byte-identical. Called with no
+// exclusions the key is still well defined and still self-free — it simply carries the
+// co-account, which lines two views up only where neither account is a member.
+//
+// REFUSING TO KEY. A key that is not EVIDENCE must not be a key at all: every chat producing
+// the same non-evidence would "match" every other one, which is the opposite of identifying a
+// chat. Two refusals, both returning null:
+//   · NO ROSTER in the payload (participantKeys → null). UNKNOWN is never "empty" — the same
+//     reading chatHasParticipant takes on a failed GET.
+//   · FEWER THAN MIN_KEY_IDENTITIES (2) phone identities left. Zero is the matrix-only chat:
+//     nothing was learned, and every such chat would collide with every other. ONE is the case
+//     that LOOKS usable and is not — a 1:1 with X keys as {X}, and so does a small group of
+//     [self, X, co-account] once the co-account is excluded, so a size-1 key can put a reply
+//     meant for a group into a PRIVATE chat. Two is the smallest set a 1:1 cannot produce at
+//     all. The price is a three-person group going unkeyed, which a caller reads as "no key"
+//     and can fall back from; the price of accepting one is posting into the wrong chat, which
+//     nobody notices until it is public. Silence over a wrong-place answer, the same trade the
+//     fallback_handle guard makes (src/spine/router.mjs, "UNKNOWN MEANS SILENT").
+//
+// HONEST LIMIT, not fixable at this layer: two DIFFERENT groups with the SAME membership key
+// identically. A participant set cannot tell them apart and no threshold changes that — a
+// caller needing certainty must confirm some other way (an id it just posted, say).
+const MIN_KEY_IDENTITIES = 2;
+// idKey's own marker for "this value was phone-shaped": '#' + digits only. Read rather than
+// re-derived, so the phone/not-phone judgement is made in exactly one place.
+const PHONE_KEY_RE = /^#\d+$/;
+/**
+ * @param {object} chat  a Beeper chat payload (the /v1/chats shape participantKeys reads).
+ * @param {string|string[]} [exclude]  identities to leave out — the accounts the CALLER holds.
+ *   Normalised the same way the roster is, so any phone form works.
+ * @returns {string|null} a stable key for the underlying chat, or null when it refuses (above).
+ */
+export function crossAccountChatKey(chat, exclude = []) {
+  const keys = participantKeys(chat);
+  if (!keys) return null;                                   // no roster ⇒ UNKNOWN, never "nobody"
+  const skip = new Set((Array.isArray(exclude) ? exclude : [exclude]).map(idKey).filter(Boolean));
+  const phones = keys.filter((k) => PHONE_KEY_RE.test(k) && !skip.has(k)).sort();
+  return phones.length >= MIN_KEY_IDENTITIES ? phones.join(',') : null;
+}
+
 export async function startBeeperBridge(opts = {}) {
   const {
     onIncoming,
@@ -446,28 +547,11 @@ export async function startBeeperBridge(opts = {}) {
   // liveness ("did do answer?", which is a timeout on every message) — is STATIC and knowable
   // locally, which is the whole reason the feature is shaped this way.
   //
-  // IDENTITY KEY: `participants.items[]` carries `phoneNumber`, the one identifier that means the
-  // same thing on BOTH accounts (a matrix/participant id does not: each account sees the other
-  // through its own namespace). A phone-shaped value compares on DIGITS ONLY, so "+1 (347)
-  // 257-6794", "+13472576794" and "13472576794" are one identity; anything else falls back to
-  // shortChatId, the SAME normalizer allowed_users uses, so a raw participant id still works.
-  // The country code is NOT guessed — a bare national form is a different digit string and does
-  // not match. Declare the full international number (which is what Beeper reports anyway); a
-  // guessed prefix would silently make one identity match another country's number.
-  const idKey = (v) => {
-    const s = String(v ?? '').trim().toLowerCase();
-    if (!s) return '';
-    const digits = s.replace(/\D/g, '');
-    return (/^\+?[\d\s().-]+$/.test(s) && digits.length >= 7) ? `#${digits}` : shortChatId(s);
-  };
-  function participantKeys(c) {
-    const items = Array.isArray(c?.participants?.items) ? c.participants.items
-      : Array.isArray(c?.participants) ? c.participants : null;
-    if (!items) return null;                        // shape absent ⇒ UNKNOWN, not empty
-    const out = new Set();
-    for (const p of items) for (const v of [p?.phoneNumber, p?.id]) { const k = idKey(v); if (k) out.add(k); }
-    return [...out];
-  }
+  // The identity KEY and the roster reader it feeds (idKey / participantKeys) sit at MODULE
+  // scope now, unchanged: they close over nothing but shortChatId, and crossAccountChatKey —
+  // written beside them rather than as a second roster reader — has to be callable without a
+  // live bridge. See "CROSS-ACCOUNT CHAT IDENTITY" above.
+  //
   // A chat's roster is re-read at most every `participantsTtlMs` (default 15 minutes). Membership
   // changes RARELY (a group gains a member maybe once in its life) while inbound messages arrive
   // constantly, so a per-message lookup is out of the question; 15m is short enough that a real
