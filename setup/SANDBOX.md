@@ -191,33 +191,47 @@ Real, current, and worth knowing before relying on any of this.
    mechanism is a token in the environment (`CLAUDE_CODE_OAUTH_TOKEN` from
    `claude setup-token`, or `ANTHROPIC_API_KEY`), which leads directly to:
 
-2. **Nothing yet passes `-SetEnv`.** The launcher can now build a per-user
+2. **`-SetEnv` works, but nothing passes it yet.** The launcher can now build a per-user
    environment block (`LogonUser` → `CreateEnvironmentBlock` → overlay →
    `CREATE_UNICODE_ENVIRONMENT`), so a per-turn credential such as
    `CLAUDE_CODE_OAUTH_TOKEN` can be injected without touching disk or a
    machine-wide variable. **`src/sandbox-cli-session.mjs` does not pass it yet**,
    so gap 1 stands until that caller is wired.
 
-   **`-SetEnv` CORRUPTS THE BASE ENVIRONMENT — measured 2026-09-05, do not use
-   it until this is fixed.** The injected variable arrives correctly, but the
-   block it is overlaid onto is wrong. Same launcher, same account, same batch,
-   only `-SetEnv` differing:
+   **The block is rebased on the account's own profile** — fixed 2026-09-05
+   after the first smoke test caught it corrupting the environment. Worth
+   knowing, because the failure was silent:
 
-   | | `USERPROFILE` | `TEMP` |
-   |---|---|---|
-   | without `-SetEnv` | `C:\Users\egpt-sbx-NN` ✅ | the account's own |
-   | with `-SetEnv` | `C:\Users\Default` ❌ | `C:\WINDOWS\TEMP` ❌ |
+   | with `-SetEnv`, before the fix | after |
+   |---|---|
+   | `USERPROFILE=C:\Users\Default` | `C:\Users\egpt-sbx-NN` |
+   | `TEMP`/`TMP`=`C:\WINDOWS\TEMP` | under the account's own profile |
+   | `APPDATA`/`LOCALAPPDATA` empty | the account's own |
 
-   Cause: `CreateProcessWithLogonW` with `LOGON_WITH_PROFILE` loads the account's
-   hive and derives these itself, but only when `lpEnvironment` is NULL. The
-   moment a block is supplied, that block wins — and the block is built from a
-   *separate* `LogonUser` token whose hive is not loaded, so `CreateEnvironmentBlock`
-   falls back to the Default profile. A `claude` launched this way would look for
-   `~/.claude` under `C:\Users\Default`.
+   Cause: `CreateProcessWithLogonW` with `LOGON_WITH_PROFILE` loads the hive and
+   derives these itself — but only while `lpEnvironment` is NULL. Supply a block
+   and the block wins, and ours came from a *separate* `LogonUser` token whose
+   hive is not loaded, so `CreateEnvironmentBlock` fell back to the Default
+   profile. A `claude` launched that way looked for `~/.claude` under
+   `C:\Users\Default`.
 
-   Fixing it means loading the hive for the token before building the block
-   (`LoadUserProfile`/`UnloadUserProfile` around it), or deriving the per-user
-   paths and overlaying them too. Until then `-SetEnv` is not usable.
+   The fix overlays `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `TEMP`, `TMP`,
+   `HOMEDRIVE`, `HOMEPATH`, `USERNAME`, `USERDOMAIN` onto the block, derived from
+   the profile path `Get-SandboxProfilePath` resolves — the same guarded
+   `Win32_UserProfile` lookup the scrub uses, now shared rather than copied.
+   **Not** `LoadUserProfile`: that needs `SE_RESTORE_NAME`/`SE_BACKUP_NAME`, and
+   this launcher's premise is that it needs no privilege at all. That premise was
+   confirmed the same day — with those two privileges stripped from the caller's
+   token the defect appears, which is what identified hive loading as the
+   privileged step.
+
+   An account with no profile yet now **fails loudly** on a `-SetEnv` turn rather
+   than silently shipping the Default block. One non-`-SetEnv` turn creates the
+   profile and fixes it permanently.
+
+   Note `HOMEPATH` deliberately differs from the no-block path: without a block
+   the child gets the *cwd*, with the rebase it gets `\Users\egpt-sbx-NN`,
+   consistent with `USERPROFILE`. The new value is the correct one.
 
 3. **Confined ccode and the sandbox do not compose — fixed, unverified live.**
    `claude-args.mjs:123` pushes `'--setting-sources', ''`, an empty-string argv

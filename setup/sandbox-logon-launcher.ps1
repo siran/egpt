@@ -620,6 +620,120 @@ function Format-Win32Arg([string]$Arg) {
   return $sb.ToString()
 }
 
+function Get-SandboxProfilePath {
+  # THE one place in this script that answers "where does this pool account's
+  # Windows profile live". TWO callers need that answer and they must never be
+  # able to disagree: Clear-SandboxProfileContents (which deletes everything
+  # under it) and New-SandboxEnvironmentBlock (which points a -SetEnv child's
+  # USERPROFILE/APPDATA/LOCALAPPDATA/TEMP at it). A second derivation - even an
+  # identical-looking copy - would be a second thing to keep correct, and the
+  # guards below are the whole reason this is safe at all.
+  #
+  # Returns the profile's LocalPath, or $null when this account HAS no profile
+  # yet - a normal state, not an error: the pool is provisioned before any
+  # profile exists, and a profile directory is only materialised by the first
+  # LOGON_WITH_PROFILE launch on that account. Every OTHER unexpected shape
+  # THROWS rather than guessing.
+  #
+  # Resolve the NAME to a SID and select the profile BY SID  - never by matching
+  # path strings, which a lookalike directory name could fool. Win32_UserProfile
+  # is READABLE unelevated (verified 2026-08-26); only Remove-CimInstance on one
+  # needed the privilege we no longer have.
+  param(
+    [Parameter(Mandatory = $true)][string]$AccountName
+  )
+  # ---- GUARD 1 (pool prefix): checked FIRST, before a SID is even resolved, so
+  # that nothing reachable from here can target 'an', 'Administrator' or any
+  # other non-pool account even if this is called wrongly.
+  if (-not $AccountName.StartsWith($SandboxPoolPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "sandbox-logon-launcher: refusing to resolve the profile path of '$AccountName'  - it is not a sandbox pool account (its name must start with '$SandboxPoolPrefix')"
+  }
+
+  try {
+    $sid = (New-Object System.Security.Principal.NTAccount($AccountName)).Translate([System.Security.Principal.SecurityIdentifier])
+  } catch {
+    # The account does not exist yet (first-ever use on this node  - the pool is
+    # created lazily by Get-SandboxCredential later in the launcher's flow). No
+    # account means no profile.
+    Log "no profile for '$AccountName'  - the account does not resolve to a SID ($($_.Exception.Message))"
+    return $null
+  }
+
+  $found = @(Get-CimInstance -ClassName Win32_UserProfile -ErrorAction Stop |
+    Where-Object { $_.SID -eq $sid.Value })
+
+  # NORMAL CASE, not an error: first-ever use of this account, no profile
+  # directory yet. $null, and each caller decides what that means for it.
+  if ($found.Count -eq 0) { return $null }
+  # ---- GUARD 2 (exactly one match): a SID matching several profiles means
+  # something is wrong that this script is not equipped to reason about.
+  if ($found.Count -gt 1) {
+    throw "sandbox-logon-launcher: refusing to use the profile of '$AccountName'  - $($found.Count) Win32_UserProfile entries match SID $($sid.Value)"
+  }
+  $candidate = $found[0]
+  # ---- GUARD 3 (not a system profile).
+  if ($candidate.Special) {
+    throw "sandbox-logon-launcher: refusing to use the profile of '$AccountName' (SID $($sid.Value))  - it is flagged Special, i.e. a system profile"
+  }
+  # ---- GUARD 4 (independent path check): the SID lookup above and this leaf
+  # comparison must AGREE. Deliberately redundant with GUARD 1.
+  if ([string]::IsNullOrWhiteSpace($candidate.LocalPath)) {
+    throw "sandbox-logon-launcher: refusing to use the profile of '$AccountName' (SID $($sid.Value))  - its Win32_UserProfile entry has no LocalPath"
+  }
+  $leaf = Split-Path -Path $candidate.LocalPath -Leaf
+  if ($leaf -ne $AccountName) {
+    throw "sandbox-logon-launcher: refusing to use the profile of '$AccountName' (SID $($sid.Value))  - it lives at '$($candidate.LocalPath)', whose leaf '$leaf' is not the account name"
+  }
+  return $candidate.LocalPath
+}
+
+function Set-EnvBlockEntry {
+  # Upsert ONE NAME=VALUE into an environment block's entry list, IN PLACE
+  # ($Entries is a List, i.e. a reference - the caller sees the change).
+  #
+  # Windows wants an environment block sorted by NAME, case-insensitively, and
+  # CreateEnvironmentBlock hands one back already sorted that way (verified
+  # 2026-09-05 on this machine, 52 entries, in order). So a name that ALREADY
+  # exists is replaced IN PLACE - which keeps the ordering intact for free - and
+  # a genuinely new name is INSERTED at its sorted position rather than
+  # appended, because appending would be the one move that breaks the ordering
+  # the API just established.
+  #
+  # BOTH overlays in New-SandboxEnvironmentBlock go through here - the leased
+  # account's own per-user variables and the caller's -SetEnv pairs - so there
+  # is exactly one implementation of "put this name in the block".
+  #
+  # NEVER logs anything: a -SetEnv VALUE is expected to BE a credential.
+  param(
+    # AllowEmptyCollection: a Mandatory collection parameter is rejected by the
+    # BINDER when it is empty, and "the block had no entries" must surface as
+    # whatever the caller makes of it, not as a binding exception here.
+    [Parameter(Mandatory = $true)][AllowEmptyCollection()][System.Collections.Generic.List[string]]$Entries,
+    [Parameter(Mandatory = $true)][string]$Name,
+    # A value may legitimately be the empty string ("FOO="), which a Mandatory
+    # [string] would reject in the binder - same attribute, same reason, as
+    # -InnerArgs and -BinArgs elsewhere in this file.
+    [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value
+  )
+  $pair = "$Name=$Value"
+  $at = -1
+  for ($i = 0; $i -lt $Entries.Count; $i++) {
+    if ($Entries[$i].StartsWith("$Name=", [System.StringComparison]::OrdinalIgnoreCase)) { $at = $i; break }
+  }
+  if ($at -ge 0) {
+    $Entries[$at] = $pair
+    return
+  }
+  $ins = $Entries.Count
+  for ($i = 0; $i -lt $Entries.Count; $i++) {
+    $cur = $Entries[$i]
+    $cut = $cur.IndexOf('=')
+    $curName = if ($cut -gt 0) { $cur.Substring(0, $cut) } else { $cur }
+    if ([string]::Compare($curName, $Name, [System.StringComparison]::OrdinalIgnoreCase) -gt 0) { $ins = $i; break }
+  }
+  $Entries.Insert($ins, $pair)
+}
+
 function New-SandboxEnvironmentBlock {
   # Build the environment block a spawned child will get: THE LEASED ACCOUNT'S
   # OWN environment, with $SetEnv's NAME=VALUE pairs laid over it. Returns
@@ -649,16 +763,40 @@ function New-SandboxEnvironmentBlock {
   #     CreateEnvironmentBlock(tok) -> that account's own variables
   # and only then are $SetEnv's pairs overlaid on the result.
   #
-  # KNOWN GAP, measured as far as it could be and NOT further - worth knowing
-  # before relying on this: the token minted here is a SEPARATE logon from the
-  # one seclogon makes for the child, and it does not load the account's
-  # registry hive. CreateEnvironmentBlock derives USERPROFILE / APPDATA /
-  # LOCALAPPDATA from the token itself, but TEMP, TMP and any per-user PATH live
-  # in HKCU\Environment; if that account's hive is not currently loaded, those
-  # may come out of the MACHINE values instead of the user's. It was NOT
-  # possible to measure that here - it needs a pool account's password and a
-  # real launch, neither of which this change was allowed to do. If a -SetEnv
-  # turn ever shows a child writing into C:\Windows\Temp, this is why.
+  # THE GAP THAT WAS ONCE ONLY SUSPECTED HERE IS REAL, AND IS FIXED BELOW.
+  # MEASURED 2026-09-05 by running this launcher: same account, same inner
+  # command, ONLY -SetEnv differing.
+  #                 USERPROFILE                TEMP
+  #   no -SetEnv    C:\Users\egpt-sbx-NN       the account's own
+  #   with -SetEnv  C:\Users\Default           C:\WINDOWS\TEMP
+  # CAUSE: CreateProcessWithLogonW with LOGON_WITH_PROFILE loads the account's
+  # hive and derives those names ITSELF - but ONLY while lpEnvironment is NULL.
+  # The moment a block is supplied, THE BLOCK WINS and seclogon derives nothing.
+  # And the token minted here is a SEPARATE logon whose profile hive is NOT
+  # loaded, so CreateEnvironmentBlock falls back to the DEFAULT profile.
+  # CONSEQUENCE while it was unfixed: a `claude` launched this way looked for
+  # ~/.claude under C:\Users\Default, i.e. -SetEnv - the whole mechanism for
+  # handing a turn a credential without persisting it - was unusable.
+  # THE FIX (see the REBASE block below): overlay the per-user names onto the
+  # block after CreateEnvironmentBlock returns, exactly the way the -SetEnv
+  # names are overlaid, deriving them from the account's REAL profile path via
+  # Get-SandboxProfilePath.
+  # NOT LoadUserProfile, the obvious-looking alternative: it requires
+  # SE_RESTORE_NAME and SE_BACKUP_NAME in the CALLER, and this launcher's entire
+  # premise (see the top of the file) is that it needs NO privilege in the
+  # caller - which is exactly why CreateProcessWithLogonW was chosen over both
+  # token-based APIs in the first place. Neither privilege is among the five an
+  # unelevated logon keeps, which this file's header already records from a
+  # `whoami /priv` on the real token (SeShutdown, SeChangeNotify, SeUndock,
+  # SeIncreaseWorkingSet, SeTimeZone).
+  # A WARNING TO WHOEVER TESTS THIS NEXT, measured 2026-09-05 the hard way: the
+  # defect above REPRODUCES ONLY WITHOUT those two privileges. The same -SetEnv
+  # launch, same account, minutes apart, run from an ELEVATED shell - which DOES
+  # hold SeBackup/SeRestore - came out with the RIGHT USERPROFILE, because
+  # userenv could load the hive itself. An elevated test therefore cannot see
+  # this bug at all; the runs that found it were made from a token cut down to
+  # exactly those five privileges. The rebase below needs none of that either
+  # way: it is string math over a block we already have.
   param(
     [Parameter(Mandatory = $true)][string]$AccountName,
     [Parameter(Mandatory = $true)][string]$Password,
@@ -697,13 +835,58 @@ function New-SandboxEnvironmentBlock {
       $off += ($s.Length + 1) * 2   # +1 for the NUL, *2 because these are WCHARs
     }
 
-    # ---- overlay $SetEnv. Windows wants an environment block sorted by NAME,
-    # case-insensitively, and CreateEnvironmentBlock hands one back already
-    # sorted that way (verified 2026-09-05 on this machine, 52 entries, in
-    # order). So a name that ALREADY exists is replaced IN PLACE - which keeps
-    # the ordering intact for free - and a genuinely new name is INSERTED at its
-    # sorted position rather than appended, because appending would be the one
-    # move that breaks the ordering the API just established.
+    # ---- REBASE the block on the account's REAL profile. This is the fix for
+    # the measured defect written up above the param block: everything
+    # CreateEnvironmentBlock derived from an unloaded hive points at
+    # C:\Users\Default, and lpEnvironment is authoritative, so whatever is wrong
+    # here is what the child gets. Only the PER-USER names can be wrong - the
+    # rest of the block (PATH, ProgramFiles, SystemRoot, ...) is machine-wide
+    # and identical either way - so exactly those are rewritten:
+    #   USERPROFILE APPDATA LOCALAPPDATA TEMP TMP HOMEDRIVE HOMEPATH
+    #   USERNAME USERDOMAIN
+    # DERIVED FROM THE PROFILE PATH, never by string-guessing "C:\Users\<name>":
+    # Get-SandboxProfilePath is the same SID-based lookup, with the same four
+    # guards, that the scrub uses - and the scrub then cross-checks that answer
+    # from INSIDE the account (it refuses unless the child's own
+    # $env:USERPROFILE equals the path it was handed), so the value this rebases
+    # onto is known-good rather than merely plausible.
+    $profilePath = Get-SandboxProfilePath -AccountName $AccountName
+    if (-not $profilePath) {
+      # No profile directory yet, i.e. this account has never been launched on
+      # this node. REFUSE rather than ship the Default-profile block that the
+      # whole rebase exists to prevent: a child silently pointed at
+      # C:\Users\Default is the exact failure this is fixing, and a loud, one-
+      # line-fix error beats a turn that half-works. Any single launch on this
+      # account WITHOUT -SetEnv materialises the profile (LOGON_WITH_PROFILE
+      # does it), after which this path is resolvable forever.
+      throw "sandbox-logon-launcher: refusing to build a -SetEnv environment block for '$AccountName'  - it has no Win32_UserProfile entry yet, so there is no profile path to point USERPROFILE/APPDATA/LOCALAPPDATA/TEMP at and the child would silently get the DEFAULT profile. Run one turn on this account without -SetEnv first (any LOGON_WITH_PROFILE launch creates the profile)."
+    }
+    $localAppData = Join-Path $profilePath 'AppData\Local'
+    $userTemp = Join-Path $localAppData 'Temp'
+    # 'C:' from 'C:\Users\egpt-sbx-NN\', so HOMEDRIVE/HOMEPATH re-concatenate to
+    # exactly USERPROFILE, which is what Windows itself guarantees about them.
+    $homeDrive = [System.IO.Path]::GetPathRoot($profilePath).TrimEnd('\')
+    $perUser = [ordered]@{
+      USERPROFILE  = $profilePath
+      APPDATA      = (Join-Path $profilePath 'AppData\Roaming')
+      LOCALAPPDATA = $localAppData
+      TEMP         = $userTemp
+      TMP          = $userTemp
+      HOMEDRIVE    = $homeDrive
+      HOMEPATH     = $profilePath.Substring($homeDrive.Length)
+      # The pool accounts are LOCAL (domain '.' at every logon call in this
+      # file), so their USERDOMAIN is this machine's own name.
+      USERNAME     = $AccountName
+      USERDOMAIN   = [System.Environment]::MachineName
+    }
+    foreach ($n in $perUser.Keys) { Set-EnvBlockEntry -Entries $entries -Name $n -Value ([string]$perUser[$n]) }
+    # Paths and an account name, never a secret - and the scrub already logs
+    # this same profile path on every turn.
+    Log "environment block for '$AccountName' rebased on its own profile at ${profilePath}: $($perUser.Keys -join ', ')"
+
+    # ---- overlay $SetEnv, AFTER the rebase and deliberately so: a caller that
+    # passes one of the names above by hand is being explicit and outranks our
+    # derivation.
     $names = New-Object System.Collections.Generic.List[string]
     foreach ($pair in $SetEnv) {
       $eq = $pair.IndexOf('=')
@@ -716,22 +899,7 @@ function New-SandboxEnvironmentBlock {
       }
       $name = $pair.Substring(0, $eq)
       [void]$names.Add($name)
-      $at = -1
-      for ($i = 0; $i -lt $entries.Count; $i++) {
-        if ($entries[$i].StartsWith("$name=", [System.StringComparison]::OrdinalIgnoreCase)) { $at = $i; break }
-      }
-      if ($at -ge 0) {
-        $entries[$at] = $pair
-      } else {
-        $ins = $entries.Count
-        for ($i = 0; $i -lt $entries.Count; $i++) {
-          $cur = $entries[$i]
-          $cut = $cur.IndexOf('=')
-          $curName = if ($cut -gt 0) { $cur.Substring(0, $cut) } else { $cur }
-          if ([string]::Compare($curName, $name, [System.StringComparison]::OrdinalIgnoreCase) -gt 0) { $ins = $i; break }
-        }
-        $entries.Insert($ins, $pair)
-      }
+      Set-EnvBlockEntry -Entries $entries -Name $name -Value $pair.Substring($eq + 1)
     }
 
     # ---- write it back out in exactly the shape it was read in, into memory we
@@ -936,63 +1104,32 @@ function Clear-SandboxProfileContents {
   # profile. Files are where the CLIs actually put tokens and caches.
   #
   # SAFETY: this deletes a whole user profile's worth of files, so a targeting
-  # bug could destroy the operator's own. The guards below are belt-and-braces
-  # and REFUSE (throw) rather than proceed - unchanged from the admin-only
-  # version this replaces - and the scrub itself re-checks, INSIDE the child,
-  # that the path it was handed is its own %USERPROFILE%.
+  # bug could destroy the operator's own. The guards in Get-SandboxProfilePath,
+  # which is where the path this function deletes under now comes from, are
+  # belt-and-braces and REFUSE (throw) rather than proceed - unchanged in
+  # substance from the admin-only version this replaces - and the scrub itself
+  # re-checks, INSIDE the child, that the path it was handed is its own
+  # %USERPROFILE%.
   param(
     [Parameter(Mandatory = $true)][string]$AccountName,
     [Parameter(Mandatory = $true)][string]$Password,
     [Parameter(Mandatory = $true)][string]$LpDesktop
   )
-  # ---- GUARD 1 (pool prefix): checked FIRST, before a SID is even resolved, so
-  # that no code path in this function can target 'an', 'Administrator' or any
-  # other non-pool account even if it is called wrongly.
-  if (-not $AccountName.StartsWith($SandboxPoolPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
-    throw "sandbox-logon-launcher: refusing to scrub the profile of '$AccountName'  - it is not a sandbox pool account (its name must start with '$SandboxPoolPrefix')"
-  }
-
-  # Resolve the NAME to a SID and select the profile BY SID  - never by matching
-  # path strings, which a lookalike directory name could fool. Win32_UserProfile
-  # is READABLE unelevated (verified 2026-08-26); only Remove-CimInstance on one
-  # needed the privilege we no longer have.
-  try {
-    $sid = (New-Object System.Security.Principal.NTAccount($AccountName)).Translate([System.Security.Principal.SecurityIdentifier])
-  } catch {
-    # The account does not exist yet (first-ever use on this node  - the pool is
-    # created lazily by Get-SandboxCredential later in the launcher's flow). No
-    # account means no profile: nothing to scrub, and nothing was deleted.
-    Log "no profile to scrub for '$AccountName'  - the account does not resolve to a SID ($($_.Exception.Message))"
-    return
-  }
-
-  $found = @(Get-CimInstance -ClassName Win32_UserProfile -ErrorAction Stop |
-    Where-Object { $_.SID -eq $sid.Value })
-
-  # NORMAL CASE, not an error: first-ever use of this account. There is nothing
-  # to scrub AND no profile directory yet, so skip the extra logon entirely -
-  # step (f)'s own LOGON_WITH_PROFILE will create it fresh.
-  if ($found.Count -eq 0) { return }
-  # ---- GUARD 2 (exactly one match): a SID matching several profiles means
-  # something is wrong that this function is not equipped to reason about.
-  if ($found.Count -gt 1) {
-    throw "sandbox-logon-launcher: refusing to scrub the profile of '$AccountName'  - $($found.Count) Win32_UserProfile entries match SID $($sid.Value)"
-  }
-  $candidate = $found[0]
-  # ---- GUARD 3 (not a system profile).
-  if ($candidate.Special) {
-    throw "sandbox-logon-launcher: refusing to scrub the profile of '$AccountName' (SID $($sid.Value))  - it is flagged Special, i.e. a system profile"
-  }
-  # ---- GUARD 4 (independent path check): the SID lookup above and this leaf
-  # comparison must AGREE. Deliberately redundant with GUARD 1.
-  if ([string]::IsNullOrWhiteSpace($candidate.LocalPath)) {
-    throw "sandbox-logon-launcher: refusing to scrub the profile of '$AccountName' (SID $($sid.Value))  - its Win32_UserProfile entry has no LocalPath"
-  }
-  $leaf = Split-Path -Path $candidate.LocalPath -Leaf
-  if ($leaf -ne $AccountName) {
-    throw "sandbox-logon-launcher: refusing to scrub the profile of '$AccountName' (SID $($sid.Value))  - it lives at '$($candidate.LocalPath)', whose leaf '$leaf' is not the account name"
-  }
-  $profilePath = $candidate.LocalPath
+  # WHERE: Get-SandboxProfilePath, which is the SINGLE derivation of a pool
+  # account's profile path in this script and carries every guard this function
+  # used to carry inline (pool-name prefix; exactly one Win32_UserProfile match
+  # for the SID; not Special; non-empty LocalPath; leaf == account name). It is
+  # shared with New-SandboxEnvironmentBlock, which must point a -SetEnv child's
+  # USERPROFILE at the very same directory this pass empties - two copies of
+  # this lookup would be two things to keep in agreement. The prefix guard still
+  # runs before anything else can touch $AccountName, because this call is the
+  # first statement in the function.
+  $profilePath = Get-SandboxProfilePath -AccountName $AccountName
+  # NORMAL CASE, not an error: first-ever use of this account (or an account
+  # that does not exist yet). There is nothing to scrub AND no profile directory
+  # yet, so skip the extra logon entirely - step (f)'s own LOGON_WITH_PROFILE
+  # will create it fresh.
+  if (-not $profilePath) { return }
 
   # The scrub itself, run by the account that owns these files. Both values
   # interpolated below are launcher-derived and already prefix-guarded above -
