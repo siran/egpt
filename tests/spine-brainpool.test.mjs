@@ -1026,6 +1026,138 @@ describe('brainpool.turn — sandboxed default (operator 2026-08-20; platform-aw
   }
 });
 
+// ── access_level 'sandbox' — THE THIRD TIER (operator 2026-09-05). It carries `all`'s
+//    CAPABILITY (config/permissions/sandbox.md is all.md's tool list verbatim,
+//    dangerously_skip_permissions: true) but only ever INSIDE the OS sandbox, so the
+//    kernel-enforced boundary REPLACES the CLI-enforced one rather than stacking a second,
+//    overlapping one on top of it. Three consequences, asserted below:
+//      1. the grant is all.md's, read through the SAME loadPermissionLevel path — no second
+//         reader, no tier registry;
+//      2. `sandboxed` resolves TRUE for this level whatever any rung says, short-circuiting the
+//         whole `??` walk (platform-aware default included) — an unboxed 'sandbox' would make
+//         the name a lie, which is the same argument that forbids downgrading an explicit
+//         `sandboxed: true` on POSIX (resolution here, refusal in sandbox-cli-session.mjs);
+//      3. it is EXEMPT from the allowed_users gate 'all' carries. That gate exists because
+//         unconfined + reachable-by-anyone is dangerous; under 'sandbox' the blast radius is
+//         one ACL'd folder, so the operator ruled a 'sandbox' being may be reachable by anyone
+//         with no list set. The regression lock that 'all' STILL throws is in this same
+//         describe, deliberately: it is the thing most likely to be "fixed" wrong later. ──
+describe("permission-levels — the 'sandbox' level (operator 2026-09-05)", () => {
+  it("REPRODUCE-FIRST: loadPermissionLevel('sandbox') returns the parsed doc, not null (it used to be an unknown level)", () => {
+    const doc = loadPermissionLevel('sandbox');
+    expect(doc).not.toBe(null);
+    expect(doc.dangerouslySkipPermissions).toBe(true);
+    expect(doc.allowedTools).toEqual(expect.arrayContaining(['Bash', 'Agent']));   // BARE, exactly as all.md grants them
+  });
+
+  it("carries the SAME grant as 'all' — sandbox.md IS all.md's capability; the OS box is the only difference between the two tiers", () => {
+    expect(loadPermissionLevel('sandbox')).toEqual(loadPermissionLevel('all'));
+  });
+
+  it('REGRESSION: an unknown level is still null — the guard kept its shape, it did not become a lookup table', () => {
+    expect(loadPermissionLevel('sandboxed')).toBe(null);   // the CONFIG KEY's name, not a level
+    expect(loadPermissionLevel('')).toBe(null);
+    expect(loadPermissionLevel(undefined)).toBe(null);
+  });
+
+  it("REGRESSION: 'all' and 'regular' still parse to their own docs, unchanged by the third file", () => {
+    expect(loadPermissionLevel('all').dangerouslySkipPermissions).toBe(true);
+    const regular = loadPermissionLevel('regular');
+    expect(regular.dangerouslySkipPermissions).toBe(false);
+    expect(regular.allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);
+  });
+});
+
+describe("brainpool.turn — access_level 'sandbox' (operator 2026-09-05)", () => {
+  const brains = { resolve: () => ({ name: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: ['Read'] }) };
+
+  it("REPRODUCE-FIRST: a per-conversation sandboxed:false does NOT unbox a 'sandbox' being — the level forces true ahead of the ?? walk", async () => {
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
+      brains, seedAgents: { e: { access_level: 'sandbox', sandboxed: false } }, platform: 'win32',
+    });
+    await brain.turn('e', ev);
+    expect(pool.calls[0].brainOptions.sandboxed).toBe(true);
+  });
+
+  it("REPRODUCE-FIRST: an explicit conversation_defaults.sandboxed:false does not unbox it either (both rungs are overridden, not just the top one)", async () => {
+    const config = { agents: { e: { conversation_defaults: { access_level: 'sandbox', sandboxed: false } } } };
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains, config, platform: 'win32' });
+    await brain.turn('e', ev);
+    expect(pool.calls[0].brainOptions.sandboxed).toBe(true);
+  });
+
+  it("REPRODUCE-FIRST: the force is PLATFORM-BLIND, like every other explicit request — on linux it still resolves TRUE, and sandbox-cli-session.mjs is what refuses there", async () => {
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
+      brains, seedAgents: { e: { access_level: 'sandbox' } }, platform: 'linux',
+    });
+    await brain.turn('e', ev);
+    expect(pool.calls[0].brainOptions.sandboxed).toBe(true);
+  });
+
+  it("REPRODUCE-FIRST: a 'sandbox' being with NO allowed_users at either tier RUNS, and gets the level's grant — the OS boundary bounds the blast radius, so the 'all' gate does not apply", async () => {
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
+      brains, skipAccessLevelDefault: true, seedAgents: { e: { access_level: 'sandbox' } }, platform: 'win32',
+      loadPermission: (level) => (level === 'sandbox' ? { dangerouslySkipPermissions: true, allowedTools: ['Bash'] } : null),
+    });
+    const out = await brain.turn('e', ev);
+    expect(out.text).toBe('ok');                                              // no throw
+    expect(pool.calls).toHaveLength(1);
+    expect(pool.calls[0].brainOptions.allowedTools).toEqual(['Bash']);        // the ACCESS-LEVEL OVERRIDE block ran for this level
+    expect(pool.calls[0].brainOptions.dangerouslySkipPermissions).toBe(true);
+    expect(pool.calls[0].brainOptions.sandboxed).toBe(true);
+  });
+
+  it("end-to-end with the REAL config/permissions/*.md files: 'sandbox' grants all.md's bare Bash/Agent + --dangerously-skip-permissions, unconfined at the CLI level, and IS boxed", async () => {
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
+      brains, seedAgents: { e: { access_level: 'sandbox' } }, loadPermission: loadPermissionLevel, platform: 'win32',
+    });
+    await brain.turn('e', ev);
+    const opts = pool.calls[0].brainOptions;
+    expect(opts.allowedTools).toEqual(expect.arrayContaining(['Bash', 'Agent']));
+    expect(opts.confineToDirs).toBeUndefined();                  // the CLI-level boundary is deliberately dropped...
+    expect(opts.dangerouslySkipPermissions).toBe(true);
+    expect(buildClaudeArgs(opts)).toContain('--dangerously-skip-permissions');
+    expect(opts.sandboxed).toBe(true);                           // ...because THIS is what replaces it
+  });
+
+  // ── REGRESSION LOCKS. The third tier is additive: neither existing tier moves. ──
+  it("REGRESSION: 'all' with no allowed_users STILL throws — the sandbox exemption must never widen to 'all'", async () => {
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
+      brains, skipAccessLevelDefault: true, seedAgents: { e: { access_level: 'all' } },
+    });
+    await expect(brain.turn('e', ev)).rejects.toThrow(/allowed_users/);
+    expect(pool.calls).toHaveLength(0);
+  });
+
+  it("REGRESSION: 'regular' still resolves its OWN confined tool list, never the sandbox grant", async () => {
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
+      brains, seedAgents: { e: { access_level: 'regular' } }, loadPermission: loadPermissionLevel, platform: 'win32',
+    });
+    await brain.turn('e', ev);
+    const opts = pool.calls[0].brainOptions;
+    expect(opts.allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);
+    expect(opts.dangerouslySkipPermissions).toBe(false);
+    expect(opts.confineToDirs).toEqual([opts.cwd]);
+  });
+
+  it("REGRESSION: the platform-aware `sandboxed` default is untouched for every level that is not 'sandbox'", async () => {
+    const win = harness([{ text: 'ok', sessionId: 's' }], { brains, seedAgents: { e: { access_level: 'regular' } }, platform: 'win32' });
+    await win.brain.turn('e', ev);
+    expect(win.pool.calls[0].brainOptions.sandboxed).toBe(true);
+
+    const posix = harness([{ text: 'ok', sessionId: 's' }], { brains, seedAgents: { e: { access_level: 'regular' } }, platform: 'linux' });
+    await posix.brain.turn('e', ev);
+    expect(posix.pool.calls[0].brainOptions.sandboxed).toBe(false);
+
+    // ...and an explicit opt-out on a NON-sandbox level is still a real opt-out (only 'sandbox' overrides one).
+    const optOut = harness([{ text: 'ok', sessionId: 's' }], {
+      brains, seedAgents: { e: { access_level: 'all', allowed_users: ['123'], sandboxed: false } }, platform: 'win32',
+    });
+    await optOut.brain.turn('e', ev);
+    expect(optOut.pool.calls[0].brainOptions.sandboxed).toBe(false);
+  });
+});
+
 // ── VERBOSE_THINKING, THREE tiers (operator 2026-08-30: "verbose thinking should be
 //    controlled from config.yaml rather than the agent.yaml"). It shipped 2026-08-29 as a
 //    TYPE-FILE-ONLY field, so the agent-type file was the only place to turn it on — and a type

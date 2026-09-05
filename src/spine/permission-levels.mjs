@@ -1,7 +1,7 @@
 // permission-levels.mjs — parses config/permissions/<level>.md, the file
-// `access_level: 'all'|'regular'` (set by /agents <handle>|all access_level
-// all|regular, see spine/commands.mjs agentsAccessLevel; was /e access) points a
-// being at. Sibling module to brains.mjs (the agent-
+// `access_level: 'all'|'regular'|'sandbox'` (the first two set by /agents
+// <handle>|all access_level all|regular, see spine/commands.mjs agentsAccessLevel;
+// was /e access) points a being at. Sibling module to brains.mjs (the agent-
 // TYPE resolver) but a deliberately different shape: brains.mjs resolves a def
 // ONCE per conversation and it gets frozen into `readonly` (see its own header);
 // this module is read FRESH, on every call, no caching, ever. That is
@@ -49,7 +49,12 @@ export function parsePermissionsDoc(text) {
 // or a missing/unparseable file; callers decide how to treat that (eAccess
 // refuses to write state, brainpool.mjs's turn() simply skips the override).
 export function loadPermissionLevel(level, { dir = PERMISSIONS_DIR, exists = existsSync, readFile = readFileSync } = {}) {
-  if (level !== 'all' && level !== 'regular') return null;
+  // 'sandbox' (operator 2026-09-05) is the THIRD name this resolves — config/permissions/
+  // sandbox.md, which is all.md's grant verbatim. What makes that tier different is NOT
+  // anything this parser can see: brainpool.mjs forces `sandboxed: true` for it, so the OS
+  // box replaces the CLI-level confinement this file's flag drops. The guard stays a guard —
+  // three literals, not a lookup table grown for one extra entry.
+  if (level !== 'all' && level !== 'regular' && level !== 'sandbox') return null;
   const p = join(dir, `${level}.md`);
   if (!exists(p)) return null;
   let text;

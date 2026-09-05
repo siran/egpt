@@ -1457,30 +1457,71 @@ export const CONFIG_SCHEMA = {
             account-owner concept, networks.*.allowed_users) - this is a
             narrower, per-being gate and never reuses that signal.
           access_level
-            all | regular, the SAME values /agents <handle>|all access_level
-            all|regular writes per-conversation. Points this agent at
+            ENUM: regular | all | sandbox. Points this agent at
             config/permissions/<level>.md (src/spine/permission-levels.mjs),
             resolved fresh every turn (brainpool.mjs) - never a freeze. UNSET
             = this node's ordinary default (the type file's own grant,
-            unmodified).
+            unmodified). all and regular are the SAME values /agents
+            <handle>|all access_level all|regular writes per-conversation;
+            sandbox is settable HERE (and by hand in conversations.yaml) but
+            not yet by that command, whose validator still takes all|regular
+            only (2026-09-05).
+
+            regular
+              The confined tier. config/permissions/regular.md is a LIST grant
+              (DEFAULT_ALLOWED_TOOLS), so brainpool's confinementFor pins the
+              file tools to the conversation's own folder: no bare Bash, no
+              bare Agent, no filesystem beyond the room.
+
+            all
+              Unconfined at the CLI level - dangerously_skip_permissions plus
+              bare Bash/Agent and no path confinement, exactly like an
+              interactive claude session. STRUCTURALLY REFUSED when no
+              allowed_users is set at either tier (brainpool.mjs's gate): it is
+              unconfined capability AND reachable-by-anyone TOGETHER that is
+              dangerous, so an 'all' being must name who may reach it (['*'] is
+              the explicit "anyone").
+
+            sandbox
+              (operator 2026-09-05) all's CAPABILITY, but only ever inside the
+              OS sandbox. config/permissions/sandbox.md is all.md's grant
+              verbatim - same flag, same tool list - and this level additionally
+              FORCES sandboxed: true, ahead of the whole two-tier walk below, so
+              no rung can run a 'sandbox' being unboxed and (like every explicit
+              request) it is not downgraded per platform. The reasoning is ONE
+              boundary instead of two overlapping ones: the kernel-enforced box
+              REPLACES the CLI-enforced confinement rather than layering over
+              it, so the CLI-level one is dropped on purpose.
+
+              EXEMPT from the allowed_users requirement 'all' carries, also on
+              purpose: the blast radius of a 'sandbox' turn is one ACL'd folder,
+              so such a being may be left reachable by anyone with no list set.
+              brainpool.mjs's gate therefore tests === 'all' and must keep
+              testing exactly that.
 
           sandboxed
             boolean (operator 2026-08-20). UNSET is PLATFORM-AWARE (operator
-            2026-09-04): true on Windows, false everywhere else. The isolation
-            below is Windows machinery, so a default of true failed a fresh
-            clone on macOS/Linux on its FIRST turn. A DEFAULT may be platform-
-            aware because nobody asked for it; an EXPLICIT true may not be - it
-            resolves true on every platform, and a non-Windows node then REFUSES
-            the session loudly rather than run unsandboxed behind a key that
-            claims otherwise. false = the being's warm CLI process runs like any
-            other, confined only by whatever access_level/allowed_tools already
-            apply. true (meaningful only when access_level is 'all'): the
-            being's warm CLI process is launched under a dedicated Windows
-            logon session - LogonUser against the one shared local
+            2026-09-04): true on Windows, false everywhere else. IGNORED
+            ENTIRELY when access_level is 'sandbox' (operator 2026-09-05) -
+            that level forces true ahead of both tiers, because a 'sandbox'
+            being running unboxed would make the level's name a lie.
+
+            The isolation below is Windows machinery, so a default of true
+            failed a fresh clone on macOS/Linux on its FIRST turn. A DEFAULT
+            may be platform-aware because nobody asked for it; an EXPLICIT true
+            may not be - it resolves true on every platform, and a non-Windows
+            node then REFUSES the session loudly rather than run unsandboxed
+            behind a key that claims otherwise. false = the being's warm CLI
+            process runs like any other, confined only by whatever
+            access_level/allowed_tools already apply. true (meaningful when
+            access_level is 'all'; FORCED, and so redundant to write, when it
+            is 'sandbox'): the being's warm CLI process is launched under a
+            dedicated Windows logon session - LogonUser against the one shared local
             'egpt-sandbox' account (a fresh, unique logon SID every warm
             session) + a read/write ACE scoped to exactly that conversation's
             own folder - via setup/sandbox-logon-launcher.ps1. This is OS-
-            level confinement, layered UNDERNEATH access_level:'all', which
+            level confinement, layered UNDERNEATH access_level:'all' (and the
+            ONLY confinement under access_level:'sandbox'), which
             already grants unconfined Bash / no path confinement at the
             CLI-flag level (dangerously_skip_permissions) - sandboxed:true
             does not change that CLI-flag grant, it bounds what the OS itself

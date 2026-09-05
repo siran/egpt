@@ -439,6 +439,11 @@ export function createBrainPool({
     // the origin while its kickoff layer was chosen per the room. getBeing is a PURE function
     // over the state already loaded, so the second view costs no second read.
     const b0 = (state && scope.scoped) ? getBeing(state, ev.surface, ev.chatId, being) : b;
+    // Hoisted out of the literal below ONLY because `sandboxed:` now has to read it (operator
+    // 2026-09-05) and an object literal cannot reference a sibling property. Same two-tier walk,
+    // same 'regular' fallback, still decided in exactly one place — see the ACCESS LEVEL comment
+    // block on the field itself below, which is where this is documented.
+    const accessLevel = b?.accessLevel ?? getConfig()?.agents?.[being]?.conversation_defaults?.access_level ?? 'regular';
     return {
       scope,
       slug,
@@ -458,7 +463,8 @@ export function createBrainPool({
       // (not a flat sibling of handles/configuration) is the allowlist of which agent fields
       // get this two-tier treatment — see router.mjs's allowed_users read for the twin of this.
       // UNSET RESOLVES TO 'regular' (operator 2026-08-20, refinement of the 2026-08-16
-      // structural gate): accessLevel can now only ever be 'all' or 'regular' — an unset
+      // structural gate): accessLevel can now only ever be a real level — 'all', 'regular', or
+      // (2026-09-05) 'sandbox' — an unset
       // value at both tiers is no longer a distinct "undeclared" state that refuses the
       // turn, it explicitly resolves to the confined tier. Gate #1 below (which used to
       // catch the null case) is now unreachable and has been removed accordingly.
@@ -470,7 +476,7 @@ export function createBrainPool({
       // check, and the structural gate in turn() below which REFUSES an 'all' being with no
       // allowed_users at either tier) — and room/acim already carries one, as any 'all' being
       // structurally must.
-      accessLevel: b?.accessLevel ?? getConfig()?.agents?.[being]?.conversation_defaults?.access_level ?? 'regular',
+      accessLevel,
       // ALLOWED_USERS, same two-tier resolution as accessLevel just above (operator 2026-08-16) —
       // needed here (not just at router.mjs/mesh.mjs's reachability gates) so turn() can refuse to
       // run an accessLevel:'all' being that has no allowed_users set at either tier: unconfined
@@ -500,7 +506,17 @@ export function createBrainPool({
       // platform. Downgrading it here would make the config key a lie — "sandboxed: true" while
       // running unsandboxed — so instead sandbox-cli-session.mjs refuses the session loudly on a
       // non-win32 node, naming the feature and the fix. Resolution here; refusal there.
-      sandboxed: b?.sandboxed ?? getConfig()?.agents?.[being]?.conversation_defaults?.sandboxed ?? (platform === 'win32'),
+      //
+      // AND access_level:'sandbox' FORCES IT TRUE, ahead of the entire walk (operator
+      // 2026-09-05). That tier means "all's capability, but only inside the OS box": the
+      // kernel-enforced boundary REPLACES the CLI-enforced one rather than layering over it, so
+      // a rung answering `sandboxed: false` would leave the being unconfined at BOTH levels and
+      // make the level's own name a lie. This is an EXPLICIT REQUEST in precisely the sense the
+      // paragraph above defends — it lands on the same side of that argument as an explicit
+      // `sandboxed: true`, and so it resolves true on EVERY platform for the same reason:
+      // downgrading it here would be the silent lie that argument forbids. sandbox-cli-session.mjs
+      // still refuses the session loudly on a non-win32 node. Resolution here; refusal there.
+      sandboxed: accessLevel === 'sandbox' ? true : (b?.sandboxed ?? getConfig()?.agents?.[being]?.conversation_defaults?.sandboxed ?? (platform === 'win32')),
       // VERBOSE_THINKING, same two-tier resolution as accessLevel/allowedUsers/sandboxed above
       // (operator 2026-08-30: "verbose thinking should be controlled from config.yaml rather
       // than the agent.yaml"). It shipped the day before as a TYPE-FILE-ONLY field, which made
@@ -574,8 +590,15 @@ export function createBrainPool({
       // The former gate #1 here ("accessLevel must be structurally 'all' or 'regular', or the
       // turn refuses") is REMOVED, not left as unreachable dead code: resolveConv's own
       // accessLevel fallback now resolves an unset value to the explicit 'regular' (operator
-      // 2026-08-20) rather than null, so accessLevel can only ever be 'all' or 'regular' by the
-      // time turn() reads it — that throw could no longer fire.
+      // 2026-08-20) rather than null, so accessLevel is always a real level ('all' | 'regular' |
+      // 'sandbox') by the time turn() reads it — that throw could no longer fire.
+      // 'sandbox' IS EXEMPT, AND MUST STAY EXEMPT (operator 2026-09-05). This condition tests
+      // `=== 'all'` deliberately — it is not a stand-in for "is unconfined". The pair this gate
+      // catches is unconfined capability AND unrestricted reachability TOGETHER; under 'sandbox'
+      // the turn runs in a Windows logon session whose only ACE is this conversation's own
+      // folder, so the blast radius of a stranger reaching it is that folder. The operator ruled
+      // a 'sandbox' being may therefore be reachable by anyone with no allowed_users set. Do NOT
+      // "fix" this later by adding 'sandbox' to the condition: that deletes the tier's point.
       if (accessLevel === 'all' && !(Array.isArray(allowedUsers) && allowedUsers.length)) {
         throw new Error(`brainpool: ${being} has access_level 'all' but no allowed_users set — refusing to run (set allowed_users, or ['*'] to explicitly allow anyone)`);
       }
@@ -645,7 +668,10 @@ export function createBrainPool({
       // accessLevel now, not just defaultKey's — closing the asymmetry this comment used to
       // note; an agent given an accessLevel by hand-editing conversations.yaml has always
       // gotten the same live override the default one does.
-      if (accessLevel === 'all' || accessLevel === 'regular') {
+      // 'sandbox' (operator 2026-09-05) reads config/permissions/sandbox.md through this SAME
+      // call — the tier is a third FILE, not a third code path; its `sandboxed` force lives in
+      // resolveConv above and nothing about the grant itself is special-cased here.
+      if (accessLevel === 'all' || accessLevel === 'regular' || accessLevel === 'sandbox') {
         const perm = loadPermission(accessLevel);
         if (perm) def = { ...def, dangerously_skip_permissions: perm.dangerouslySkipPermissions, allowed_tools: perm.allowedTools };
       }
