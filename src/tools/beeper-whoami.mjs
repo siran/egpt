@@ -16,8 +16,10 @@
 // install owns a port, so this tool tries every token it knows against every port and reports
 // the whole matrix.
 //
-//   node src/tools/beeper-whoami.mjs                       # THE MAP: one table, every port, and
-//                                                          #   every peer named in egpt_nodes
+//   node src/tools/beeper-whoami.mjs                       # WHO IS LOGGED IN WHERE: one line per
+//                                                          #   node x session, and every peer named
+//                                                          #   in egpt_nodes
+//   node src/tools/beeper-whoami.mjs --ports               # THE MAP: every port and what holds it
 //   node src/tools/beeper-whoami.mjs --host <ssh target>   # ...plus a node config does not name
 //   node src/tools/beeper-whoami.mjs --detail              # the full token x port matrix below
 //   node src/tools/beeper-whoami.mjs --detail 23373 23380  # plus any extra ports to probe
@@ -456,6 +458,24 @@ export async function topology({ cfg = readConfigSync(), hosts = [], extraPorts 
     };
   });
 
+  // THE SAME JOIN, READ THE OTHER WAY ROUND. The api row knows the account; the cdp port is the
+  // number a driver is actually aimed at — so each api row carries its own install's debugger port
+  // in `cdp`, and the session summary can name both without a second scan. Same evidence, same
+  // rule: one pid is one process, a port nothing answered on names no install, and a pid with no
+  // debugger of its own keeps null rather than borrowing a neighbour's number.
+  //
+  // It is set HERE, on the node that measured the pids, so a remote's api rows arrive already
+  // joined over ITS pids — the parent never joins across nodes, where a pid means nothing.
+  const cdpByPid = new Map();
+  for (const { port } of cdpFound) {
+    const pid = owners.get(port)?.pid;
+    if (pid != null && !cdpByPid.has(pid)) cdpByPid.set(pid, port);
+  }
+  for (const r of apiRows) {
+    const pid = owners.get(r.port)?.pid;
+    r.cdp = pid != null && r.state !== 'not listening' ? cdpByPid.get(pid) ?? null : null;
+  }
+
   const rows = [...apiRows, consoleRow, ...cdpRows].sort(byRow);
 
   // The printed text is ASCII on purpose: this is a DOUBLE-CLICKED tool, and a console still
@@ -502,15 +522,82 @@ const COLUMNS = [
   ['state', (r) => r.state],
 ];
 
-export function renderTable(rows, notes = []) {
-  const pw = Math.max(0, ...rows.map((r) => String(r.port).length));
-  const cells = [COLUMNS.map(([h]) => h), ...rows.map((r) => COLUMNS.map(([, f]) => String(f(r, pw) ?? '-')))];
-  const width = COLUMNS.map((_, i) => Math.max(...cells.map((c) => c[i].length)));
+// Header, dashes, padded cells, notes underneath. Both tables print through this, so the port map
+// and the session summary keep one look and one alignment rule.
+function renderColumns(headers, rowCells, notes = []) {
+  const cells = [headers, ...rowCells];
+  const width = headers.map((_, i) => Math.max(...cells.map((c) => c[i].length)));
   const line = (c) => c.map((v, i) => (i === c.length - 1 ? v : v.padEnd(width[i]))).join('  ').trimEnd();
   const out = [line(cells[0]), width.map((n) => '-'.repeat(n)).join('  ')];
   for (const c of cells.slice(1)) out.push(line(c));
   if (notes.length) out.push('', ...notes);
   return out.join('\n');
+}
+
+export function renderTable(rows, notes = []) {
+  const pw = Math.max(0, ...rows.map((r) => String(r.port).length));
+  return renderColumns(COLUMNS.map(([h]) => h), rows.map((r) => COLUMNS.map(([, f]) => String(f(r, pw) ?? '-'))), notes);
+}
+
+// ---------------------------------------------------------------------------------------------
+// THE SESSION SUMMARY — the DEFAULT view, and the one the operator asked for in his own words
+// (2026-09-05: "i only want to see s0 in kg/dolly beeper ports ... it has to say logged in s0 with
+// <account>"). The question is not which port a Desktop happened to take — Beeper takes the next
+// free one and the mapping inverts with boot order, which is why the port table exists at all —
+// the question is WHICH ACCOUNT IS LOGGED IN, IN WHICH SESSION, ON WHICH NODE. So the summary is
+// keyed by node x session and the port numbers drop out of the row entirely.
+//
+// It is a PROJECTION over topology()'s rows: nothing is probed a second time and no state string
+// is rewritten. `logged in`, `up, no token of ours works`, `no token in config`, `not listening`
+// and `unreachable` arrive already decided (see apiState) and are printed verbatim — the wording
+// is load-bearing, because a 401 is evidence about our token and never about who is signed in.
+//
+// BEEPER INSTALLS ONLY. The console is not an account and a cdp row is the same install counted
+// twice, so neither earns a line here; both are still in --ports. The ONE port kept is the api
+// row's own `cdp`, because that is the number typed into a driver and it is the one thing the
+// account alone cannot tell you.
+//
+// A SESSION WITH NO BEEPER GETS NO ROW. Only an api row makes a line, so a session holding just a
+// console or somebody's Chrome is simply absent — inventing an empty row for it would read as a
+// missing install rather than as a session that never had one.
+//
+// TWO INSTALLS IN ONE SESSION PRINT TWO LINES, node and session repeated. That is rare (it takes a
+// third Desktop on one node) and collapsing it would drop a real install from the default view,
+// which is the class of confident-wrong-answer this whole tool exists to avoid.
+const SUMMARY_COLUMNS = [
+  // The egpt node name is how the operator refers to a node, so it is the identity here; the host
+  // name stays on the row object for anyone who needs it, and is printed only as the FALLBACK for
+  // a node that never answered with a name of its own (`?` names nothing you could retype).
+  ['node', (r) => r.node],
+  ['session', (r) => r.session],
+  ['account', (r) => r.account],
+  ['state', (r) => r.state],
+  ['cdp', (r) => r.cdp],
+];
+
+export function summarize(rows = []) {
+  const out = [];
+  for (const r of rows) {
+    const node = r.node && r.node !== '?' ? r.node : r.host;
+    // An unreachable node has no session to report and must still be SEEN: dropping it would read
+    // as "that node is fine", which is the opposite of what was measured.
+    if (r.state === 'unreachable') out.push({ node, host: r.host, session: '-', account: '-', state: r.state, cdp: '-' });
+    else if (r.role === 'api') out.push({ node, host: r.host, session: r.session, account: r.account, state: r.state, cdp: r.cdp == null ? '-' : String(r.cdp) });
+  }
+  return out;
+}
+
+export function renderSummary(rows, notes = []) {
+  // OFF WINDOWS THE SUMMARY STILL ANSWERS, it just answers less. localOwners names no owner there,
+  // so every session reads `-` — the accounts, states and cdp ports are all still measured, and
+  // they are most of what was asked for. So the rows stay and a note says why the column is empty,
+  // rather than the table collapsing to nothing or a session being guessed from a port number.
+  const installs = rows.filter((r) => r.state !== 'unreachable');
+  const said = installs.some((r) => /^S\d+$/.test(r.session));
+  const n = installs.length && !said
+    ? [...notes, 'session: the OS named none of these - only Windows can say which session owns a socket.']
+    : notes;
+  return renderColumns(SUMMARY_COLUMNS.map(([h]) => h), rows.map((r) => SUMMARY_COLUMNS.map(([, f]) => String(f(r) ?? '-'))), n);
 }
 
 // pathToFileURL, not a hand-built `file:///` string: the string form only ever matches on
@@ -522,13 +609,14 @@ const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv
 if (isMain) {
   const argv = process.argv.slice(2);
   const hosts = [], extraPorts = [];
-  let json = false, detail = false, remotePath;
+  let json = false, detail = false, ports = false, remotePath;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--host') hosts.push(argv[++i]);
     else if (a === '--remote-path') remotePath = argv[++i];
     else if (a === '--json') json = true;
     else if (a === '--detail') detail = true;
+    else if (a === '--ports') ports = true;
     else if (/^\d+$/.test(a)) extraPorts.push(Number(a));
   }
   if (detail) console.log(await report({ extraPorts }));
@@ -536,7 +624,10 @@ if (isMain) {
     // --json IS THE LEAF SHAPE: it is what a remote node returns to whoever asked, so it fans out
     // to NOTHING — neither --host nor the peers in its own egpt_nodes. A node that fanned out here
     // would ssh onward across the mesh and, with two nodes listing each other, never come back.
+    // It stays the FULL row list whatever the default view becomes: the parent re-renders those
+    // rows itself, and a remote answering with the summary would strip the port map off every peer.
     const { rows, notes } = await topology({ hosts: json ? [] : hosts, configPeers: !json, extraPorts, remotePath });
-    console.log(json ? JSON.stringify(rows) : renderTable(rows, notes));
+    if (json) console.log(JSON.stringify(rows));
+    else console.log(ports ? renderTable(rows, notes) : renderSummary(summarize(rows), notes));
   }
 }

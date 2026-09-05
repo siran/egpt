@@ -7,7 +7,9 @@
 // reported as riding the bridge DEFAULT (23373) rather than as unset, because that default is
 // exactly what the spine would ride.
 import { describe, it, expect } from 'vitest';
-import { connectionsOf, report, topology, renderTable, localAddresses, shellPortOf, nodesOf } from '../src/tools/beeper-whoami.mjs';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { connectionsOf, report, topology, renderTable, renderSummary, summarize, localAddresses, shellPortOf, nodesOf } from '../src/tools/beeper-whoami.mjs';
 
 const cfg = {
   node_name: 'kg',
@@ -627,5 +629,185 @@ describe('beeper-whoami — the nodes named in config (egpt_nodes)', () => {
     const { asked, remoteProbe } = spyRemote();
     await topology({ cfg: { ...table, egpt_nodes: NODES }, configPeers: false, deps: tableDeps({ remoteProbe }) });
     expect(asked).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// THE SESSION SUMMARY — the DEFAULT view (operator 2026-09-05: "i only want to see s0 in kg/dolly
+// beeper ports. it has to say logged in s0 with <account>, logged in s1 with <account>"). He does
+// not care which port a Beeper install happened to take; he cares WHICH ACCOUNT IS LOGGED IN, IN
+// WHICH SESSION, ON WHICH NODE. So the default is keyed by node x session and the port numbers
+// drop out — except the install's own cdp port, which is the number he types into a driver.
+//
+// It is a PROJECTION over the same topology() rows the port map renders, so both are locked here
+// off ONE fixture: same probes, same owners, same remote, two renderings. What that fixture
+// carries, and why each piece is in it:
+//   kg S0  the primary install, and its debugger on the SAME pid  -> account + cdp 9222
+//   kg S1  the secondary install, no debugger of its own          -> account + cdp -
+//   kg S2  the spine console and somebody's Chrome, NO Beeper     -> NO ROW AT ALL
+//   do S0  a peer, logged in, joined to its own debugger remotely -> account + cdp 9222
+//   do S1  an install that answers and 401s every token we hold   -> `-` and the verbatim state
+//   peer-three  a node that never answered                        -> one `unreachable` row
+const summaryProbe = async (baseUrl, token) => {
+  const port = Number(new URL(baseUrl).port);
+  const owner = { 23373: 'tok-primary', 23374: 'tok-secondary' }[port];
+  if (!owner) return { ok: false, status: 0, error: 'ECONNREFUSED' };
+  if (token !== owner) return { ok: false, status: 401 };
+  return port === 23373
+    ? { ok: true, status: 200, loginID: '@primary:beeper.com', email: 'operator@example.com', networks: ['Beeper'] }
+    : { ok: true, status: 200, loginID: '@secondary:beeper.com', email: 'agents@example.com', networks: ['Beeper'] };
+};
+
+// SESSION 2 HOLDS THE CONSOLE AND A CHROME AND NOTHING ELSE — a real shape (a second interactive
+// login), and the one that proves the summary reports the sessions it FOUND A BEEPER IN rather
+// than every session the OS happens to have.
+const summaryOwners = async () => new Map([
+  [23373, { pid: 100, session: 0, image: 'Beeper.exe' }],
+  [23374, { pid: 200, session: 1, image: 'Beeper.exe' }],
+  [23375, { pid: 300, session: 2, image: 'node.exe' }],
+  [9222, { pid: 100, session: 0, image: 'Beeper.exe' }],   // the SAME process as 23373
+  [9223, { pid: 500, session: 2, image: 'chrome.exe' }],   // nobody's install
+]);
+
+// The peer runs THIS tool and answers --json, so its api rows arrive already joined over ITS OWN
+// pids — `cdp` included. A pid means nothing across a network and is never joined across nodes.
+const summaryRemoteRows = [
+  { host: 'ignored', ip: '?', node: 'do', port: 23373, role: 'api', session: 'S0', account: '@remote:beeper.com', state: 'logged in', cdp: 9222 },
+  { host: 'ignored', ip: '?', node: 'do', port: 9222, role: 'cdp', session: 'S0', account: '@remote:beeper.com', state: 'listening (Beeper)' },
+  { host: 'ignored', ip: '?', node: 'do', port: 23374, role: 'api', session: 'S1', account: '-', state: 'up, no token of ours works', cdp: null },
+  { host: 'ignored', ip: '?', node: 'do', port: 23375, role: 'console', session: 'S1', account: '-', state: 'listening' },
+];
+
+const summaryDeps = (over = {}) => ({
+  probe: summaryProbe,
+  localOwners: summaryOwners,
+  tcpListening: async (port) => port === 23375,
+  cdpProbe: async (port) => (port === 9222 ? { ok: true, label: 'Beeper' }
+    : port === 9223 ? { ok: true, label: 'Chrome' }
+    : { ok: false }),
+  localAddresses: () => ['10.0.0.4'],
+  hostname: () => 'node-one',
+  remoteProbe: async (host) => (host === 'peer-two'
+    ? { ok: true, ip: '203.0.113.7', rows: summaryRemoteRows }
+    : { ok: false, ip: '198.51.100.9', error: 'ssh: connect to host peer-three port 22: Connection timed out' }),
+  ...over,
+});
+
+const summaryTopology = (over = {}, hosts = ['peer-two', 'peer-three']) =>
+  topology({ cfg: table, hosts, deps: summaryDeps(over) });
+
+describe('beeper-whoami — the session summary (the default view)', () => {
+  it('prints node | session | account | state | cdp, one line per Beeper install', async () => {
+    const { rows, notes } = await summaryTopology();
+    expect(renderSummary(summarize(rows), notes)).toBe([
+      'node        session  account                state                       cdp',
+      '----------  -------  ---------------------  --------------------------  ----',
+      // The account and the session are the answer; 9222 is the one port that survives, because
+      // it is the number typed into a driver and the account alone cannot tell you it.
+      'kg          S0       @primary:beeper.com    logged in                   9222',
+      'kg          S1       @secondary:beeper.com  logged in                   -',
+      // kg S2 has the console and a Chrome and no Beeper, so it is ABSENT — not an empty row.
+      'do          S0       @remote:beeper.com     logged in                   9222',
+      // Verbatim, and it stays a statement about our token: see the login-state lock below.
+      'do          S1       -                      up, no token of ours works  -',
+      // A node that never answered has no session to report and must still be SEEN. It reports no
+      // node name either, so the ssh target labels it — that is the string you would retype.
+      'peer-three  -        -                      unreachable                 -',
+      '',
+      'peer-three: unreachable - ssh: connect to host peer-three port 22: Connection timed out',
+    ].join('\n'));
+  });
+
+  // THE PORT MAP IS NOT DELETED, IT IS DEMOTED. "What is listening and why" is still a real
+  // question, so --ports renders exactly the table that used to be the default, byte for byte,
+  // off these same rows.
+  it('--ports still renders the full port map, unchanged', async () => {
+    const { rows, notes } = await summaryTopology();
+    expect(renderTable(rows, notes)).toBe([
+      'host        ip            node  port           S0/S1  account                state',
+      '----------  ------------  ----  -------------  -----  ---------------------  --------------------------',
+      'node-one    10.0.0.4      kg    23373 api      S0     @primary:beeper.com    logged in',
+      'node-one    10.0.0.4      kg     9222 cdp      S0     @primary:beeper.com    listening (Beeper)',
+      'node-one    10.0.0.4      kg    23374 api      S1     @secondary:beeper.com  logged in',
+      'node-one    10.0.0.4      kg     9223 cdp      S2     -                      listening (Chrome)',
+      'node-one    10.0.0.4      kg    23375 console  S2     -                      listening',
+      'peer-two    203.0.113.7   do    23373 api      S0     @remote:beeper.com     logged in',
+      'peer-two    203.0.113.7   do     9222 cdp      S0     @remote:beeper.com     listening (Beeper)',
+      'peer-two    203.0.113.7   do    23374 api      S1     -                      up, no token of ours works',
+      'peer-two    203.0.113.7   do    23375 console  S1     -                      listening',
+      'peer-three  198.51.100.9  ?     -              -      -                      unreachable',
+      '',
+      'peer-three: unreachable - ssh: connect to host peer-three port 22: Connection timed out',
+    ].join('\n'));
+  });
+
+  // A session the OS reports but no Beeper lives in is not a Beeper session. Printing an empty row
+  // for it would read as "the install is missing" rather than "there was never one here".
+  it('never invents a session row: a session with no Beeper is absent, not blank', async () => {
+    const { rows } = await summaryTopology();
+    const sum = summarize(rows);
+    expect(rows.some((r) => r.session === 'S2'), 'the fixture must really have an S2 for this to lock anything').toBe(true);
+    expect(sum.some((r) => r.session === 'S2')).toBe(false);
+    expect(sum.map((r) => `${r.node} ${r.session}`)).toEqual(['kg S0', 'kg S1', 'do S0', 'do S1', 'peer-three -']);
+  });
+
+  it('drops the console and the cdp rows — a debugger is the same install counted twice', async () => {
+    const { rows } = await summaryTopology();
+    expect(rows.some((r) => r.role === 'console') && rows.some((r) => r.role === 'cdp'), 'both are in the port map').toBe(true);
+    expect(summarize(rows), 'four installs and one unreachable node').toHaveLength(5);
+  });
+
+  // The cdp cell is the PID JOIN, not a port that happens to be up. 9223 is listening and is
+  // nobody's install, so it never reaches a row; 23374's process runs no debugger, so it reads `-`.
+  it('takes the cdp port from the install own process, never from a port merely being up', async () => {
+    const { rows } = await summaryTopology();
+    const at = (node, session) => summarize(rows).find((r) => r.node === node && r.session === session);
+    expect(at('kg', 'S0').cdp, 'pid 100 serves 23373 and 9222 — one process, one install').toBe('9222');
+    expect(at('kg', 'S1').cdp, 'pid 200 runs no debugger; 9223 is Chrome and belongs to nobody here').toBe('-');
+    expect(summarize(rows).some((r) => r.cdp === '9223')).toBe(false);
+  });
+
+  // THE SAME RULE AS THE PORT MAP'S STATE CELL, in the view the operator actually reads. A 401 is
+  // evidence about OUR TOKEN and nothing else: a signed-out install and one signed in as an account
+  // whose token this node does not hold answer identically. The tool once called that `NOT LOGGED
+  // IN` and the operator read it off an install he had just used, signed in as himself (2026-09-04).
+  it('never describes an install that only 401d us in terms of login state', async () => {
+    const { rows, notes } = await summaryTopology();
+    const line = renderSummary(summarize(rows), notes).split('\n').find((l) => l.startsWith('do          S1'));
+    expect(line, 'the row must be in the summary for this to lock anything').toBeTruthy();
+    expect(line).not.toMatch(/logged in/i);
+    expect(line, 'the install answered — that is real information').toContain('up');
+    expect(line, 'and no token this node holds was accepted').toContain('no token of ours works');
+  });
+
+  // OFF WINDOWS THE SUMMARY STILL ANSWERS, it just answers less: localOwners returns nothing, so
+  // there is no session and no pid. The accounts and states are measured over plain HTTP and are
+  // unaffected, so the rows STAY and a note says why the column is empty. Collapsing to nothing
+  // would throw away the part that still works; guessing a session from a port number would be a lie.
+  it('keeps every row where the OS names no session, and says why the column is -', async () => {
+    const { rows, notes } = await summaryTopology({ localOwners: async () => new Map(), remoteProbe: async () => ({ ok: false, noSsh: true }) }, []);
+    expect(summarize(rows).map((r) => [r.session, r.account, r.state, r.cdp])).toEqual([
+      // No pid either, so no join: `-` rather than 9222 guessed off a port that is merely up.
+      ['-', '@primary:beeper.com', 'logged in', '-'],
+      ['-', '@secondary:beeper.com', 'logged in', '-'],
+    ]);
+    expect(renderSummary(summarize(rows), notes)).toContain('session: the OS named none of these');
+  });
+
+  it('does not blame the OS when it named the sessions it could', async () => {
+    // The local half is sessionless here but the peer answered with S0/S1 of its own, so the note
+    // would be false — the column is populated, just not everywhere.
+    const { rows, notes } = await summaryTopology({ localOwners: async () => new Map() }, ['peer-two']);
+    expect(renderSummary(summarize(rows), notes)).not.toContain('session: the OS named none of these');
+  });
+
+  // THE DEFAULT IS THE DELIVERABLE. --json stays the full row list because that is the leaf shape a
+  // peer answers with — a remote that returned the summary would strip the port map off every peer.
+  it('wires the CLI: summary by default, --ports for the map, --json still the rows', () => {
+    const src = readFileSync(fileURLToPath(new URL('../src/tools/beeper-whoami.mjs', import.meta.url)), 'utf8');
+    const cli = src.slice(src.indexOf('if (isMain)'));
+    expect(cli).toContain("a === '--ports'");
+    expect(cli).toMatch(/ports \? renderTable\(rows, notes\) : renderSummary\(summarize\(rows\), notes\)/);
+    expect(cli).toContain('JSON.stringify(rows)');
   });
 });
