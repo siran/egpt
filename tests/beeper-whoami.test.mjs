@@ -272,6 +272,94 @@ describe('beeper-whoami — the topology table', () => {
   });
 
   // -------------------------------------------------------------------------------------------
+  // A SECOND SPINE'S CONSOLE ON THE SAME HOST (live 2026-09-05: `23377 api  S0  -  listening
+  // (HTTP 426)` — a number that is not a Beeper at all). One machine can host several eGPT
+  // spines, each with its own shell.port, which is exactly why that port stopped being a
+  // constant. The tool subtracts THIS profile's console from the api scan by number, but it has
+  // no number for anybody else's: a profile is picked by the EGPT_HOME env var of whoever
+  // launched the spine, nothing registers it, and egpt_nodes names MACHINES rather than the
+  // profiles on one machine. So there is no list to subtract and none is invented.
+  //
+  // THE SIGNAL IS BEHAVIOURAL. A console is a WebSocket server, so a plain HTTP GET gets 426
+  // Upgrade Required; a Beeper API answers 200 or 401 and never 426. That identifies a third
+  // spine on a port nobody configured just as well as a second one.
+  const twoSpineDeps = (over = {}) => tableDeps({
+    // 23377 is the OTHER spine's console: a WebSocket server, so every GET is 426 — with our
+    // token, without it, and with a token belonging to some install elsewhere.
+    probe: async (baseUrl, token) => (Number(new URL(baseUrl).port) === 23377
+      ? { ok: false, status: 426 }
+      : tableProbe(baseUrl, token)),
+    localOwners: async () => new Map([...(await tableOwners()), [23377, { pid: 700, session: 0, image: 'node.exe' }]]),
+    ...over,
+  });
+
+  it('reads a scanned port answering 426 as a console, never as an api install', async () => {
+    const { rows } = await topology({ cfg: table, deps: twoSpineDeps() });
+    const at = rows.filter((r) => r.port === 23377);
+    expect(at).toHaveLength(1);
+    expect(at[0], 'a WebSocket server is not a Beeper — no role, account or install claim')
+      .toMatchObject({ role: 'console', account: '-', state: 'listening' });
+    // It must never print as `listening (HTTP 426)`, the raw-status fallback it used to hit…
+    expect(at[0].state).not.toMatch(/426/);
+    // …and it is NOT an install, so the summary — one line per Beeper — must not grow a row.
+    expect(summarize(rows).some((r) => r.state === 'listening')).toBe(false);
+    expect(summarize(rows).map((r) => `${r.session} ${r.account}`), 'the three Beepers, and nothing else').toEqual([
+      'S0 @primary:beeper.com', 'S0 -', 'S1 @secondary:beeper.com',
+    ]);
+  });
+
+  it('still renders THIS profile\'s own console exactly once beside the other spine\'s', async () => {
+    const { rows } = await topology({ cfg: table, deps: twoSpineDeps() });
+    expect(rows.filter((r) => r.port === 23375).map((r) => r.role), 'the shell.port dedup is untouched').toEqual(['console']);
+    // The whole table, so the ONLY difference from the one-spine run is the new console row.
+    expect(renderTable(rows)).toBe([
+      'host      ip        node  port           S0/S1  account                state',
+      '--------  --------  ----  -------------  -----  ---------------------  --------------------------',
+      'node-one  10.0.0.4  kg    23373 api      S0     @primary:beeper.com    logged in',
+      'node-one  10.0.0.4  kg    23376 api      S0     -                      up, no token of ours works',
+      'node-one  10.0.0.4  kg     9222 cdp      S0     @primary:beeper.com    listening (Beeper)',
+      // The other spine's console: role `console`, so it sorts after its session's cdp rows.
+      'node-one  10.0.0.4  kg    23377 console  S0     -                      listening',
+      'node-one  10.0.0.4  kg    23374 api      S1     @secondary:beeper.com  logged in',
+      'node-one  10.0.0.4  kg     9223 cdp      S1     -                      listening (Chrome)',
+      'node-one  10.0.0.4  kg    23375 console  S1     -                      listening',
+    ].join('\n'));
+  });
+
+  it('a 401 is still an install, and is never mistaken for a console', async () => {
+    // The two are one digit apart in the status line and opposite in meaning: 401 is a Beeper
+    // that refused our token, 426 is not a Beeper at all. 23376 401s every token we hold.
+    const { rows } = await topology({ cfg: table, deps: twoSpineDeps() });
+    expect(rows.find((r) => r.port === 23376))
+      .toMatchObject({ role: 'api', account: '-', state: 'up, no token of ours works' });
+    // …and with NO token in config either, the unauthenticated 401 keeps its own state too.
+    const noTok = { ...table, beeper: { use: 'primary', primary: { base_url: 'http://127.0.0.1:23376' } } };
+    const { rows: bare } = await topology({ cfg: noTok, deps: twoSpineDeps() });
+    expect(bare.find((r) => r.port === 23376)).toMatchObject({ role: 'api', state: 'no token in config' });
+    // The 426 verdict does not need a token to be reached, so it holds in that config too.
+    expect(bare.find((r) => r.port === 23377)).toMatchObject({ role: 'console', state: 'listening' });
+  });
+
+  it('lends nothing to a CDP row: another spine\'s console is not an install to inherit from', async () => {
+    // The console's pid is a node.exe, and if a debugger ever shared it the join must still find
+    // no install — an account and a state may only come from a row that a 200 or a 401 named.
+    const { rows } = await topology({
+      cfg: table,
+      deps: twoSpineDeps({
+        localOwners: async () => new Map([...(await tableOwners()), [23377, { pid: 700, session: 0, image: 'node.exe' }], [9224, { pid: 700, session: 0, image: 'node.exe' }]]),
+        cdpProbe: async (port) => (port === 9222 ? { ok: true, label: 'Beeper' }
+          : port === 9223 ? { ok: true, label: 'Chrome' }
+          : port === 9224 ? { ok: true, label: 'Electron' }
+          : { ok: false }),
+      }),
+    });
+    expect(rows.find((r) => r.port === 9224)).toMatchObject({ account: '-', state: 'listening (Electron)' });
+    // And the console row carries no cdp of its own — same shape as the local console row.
+    expect(rows.find((r) => r.port === 23377).cdp).toBeUndefined();
+    expect(rows.find((r) => r.port === 23375).cdp).toBeUndefined();
+  });
+
+  // -------------------------------------------------------------------------------------------
   // WHICH INSTALL IS THIS CDP PORT — the question the number itself cannot answer, and the one
   // the operator got wrong three times running (2026-09-04: tunnelling to a CDP port and finding
   // a different account than the one he was aiming at). Two Beeper CDP rows print identically, so

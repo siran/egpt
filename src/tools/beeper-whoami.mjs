@@ -181,6 +181,9 @@ export async function report({ cfg = readConfigSync(), extraPorts = [], deps = {
 const API_SCAN = { from: 23373, to: 23385 };  // Beeper takes the NEXT FREE port from 23373 up
 const CDP_SCAN = { from: 9222, to: 9230 };    // the Chrome/Electron debugger — the number a driver is aimed at
 const DEFAULT_SHELL_PORT = 23375;
+// 426 Upgrade Required — a WebSocket server's answer to a plain HTTP GET, and therefore the
+// SIGNATURE OF A SPINE CONSOLE sitting inside the API scan range. See apiState.
+const WS_UPGRADE_REQUIRED = 426;
 const SCAN_TIMEOUT_MS = 2500;                 // a scan is ~25 loopback ports; a black hole must not hold the table
 const range = ({ from, to }) => Array.from({ length: to - from + 1 }, (_, i) => from + i);
 
@@ -320,6 +323,22 @@ export async function remoteProbe(host, { remotePath = DEFAULT_REMOTE_PATH, conn
   }
 }
 
+// A SCANNED PORT THAT IS NOT A BEEPER AT ALL, BUT ANOTHER SPINE'S CONSOLE. One machine can host
+// SEVERAL eGPT spines (that is why shell.port stopped being a constant), and every one of them
+// puts a console inside 23373..23385. The local profile's own console is subtracted from the scan
+// by port number — but a SECOND spine's console is just a number nothing here configured, so it
+// was scanned as an api port, answered the probe, and printed as an api row (live: a `23377 api`
+// row that is a console, 2026-09-05).
+//
+// THERE IS NO CLEAN LIST TO SUBTRACT. A profile is chosen by the EGPT_HOME env var of whoever
+// launched the spine (src/egpt-home.mjs) — nothing registers it, and `egpt_nodes` names MACHINES,
+// not the profiles on one machine. So there is no config to read the other consoles' ports out of,
+// and inventing a ~/.egpt* directory scan would be a discovery mechanism guessing at what a running
+// process decided. The SIGNAL IS BEHAVIOURAL INSTEAD: a console is a WebSocket server, so a plain
+// HTTP GET gets 426 Upgrade Required, while a Beeper API answers 200 or 401 and never 426. That is
+// self-maintaining — a third spine on a port nobody configured is identified the same way.
+const consoleVerdict = () => ({ role: 'console', account: '-', state: 'listening' });
+
 // ONE PORT'S VERDICT. Every token in config is tried against it, because a token belongs to an
 // INSTALL: the one that answers 200 names the account, and the 401s are proof the others are
 // different installs. Two readings must never be conflated — "401 to every token we hold" means
@@ -330,12 +349,16 @@ async function apiState(port, conns, probeImpl) {
   const tokened = conns.filter((c) => c.token);
   if (!tokened.length) {
     const r = await probeImpl(base, null, { timeoutMs: SCAN_TIMEOUT_MS });
+    if (r.status === WS_UPGRADE_REQUIRED) return consoleVerdict();
     return r.status ? { account: '-', state: 'no token in config' } : { account: '-', state: 'not listening' };
   }
   const statuses = [];
   for (const c of tokened) {
     const r = await probeImpl(base, c.token, { timeoutMs: SCAN_TIMEOUT_MS });
     if (r.ok) return { account: r.loginID ?? r.email ?? '?', state: 'logged in' };
+    // BEFORE the 401 bookkeeping, because 426 is not a refusal of our token: it is a different
+    // KIND of server answering, and no further token is worth trying against it.
+    if (r.status === WS_UPGRADE_REQUIRED) return consoleVerdict();
     if (!r.status) break;            // nothing answered — the other tokens would fail the same way
     statuses.push(r.status);
   }
@@ -387,9 +410,12 @@ export async function topology({ cfg = readConfigSync(), hosts = [], extraPorts 
   }
   // A port named in config (or on the command line) EARNS a row even when nothing answers —
   // "the port you configured is dead" is exactly the answer the operator came for. A scan port
-  // that is merely empty does not. The console port is subtracted from the API scan because it
-  // sits inside 23373..23385 and answers HTTP: without this it would appear twice, once
-  // truthfully as the console and once as a nonsense API row.
+  // that is merely empty does not. THIS profile's console port is subtracted from the API scan
+  // because it sits inside 23373..23385 and answers HTTP: without this it would appear twice, once
+  // truthfully as the console and once as a nonsense API row. ANOTHER spine's console cannot be
+  // subtracted — nothing here knows its number — so it is recognised inside the scan instead, by
+  // the 426 it answers with (see apiState); this subtraction stays because it is cheaper than a
+  // probe and because a console that is DOWN must still print its configured row.
   const named = new Set([...conns.map((c) => portOf(c.baseUrl)), ...extraPorts].filter(Boolean));
   const apiPorts = [...new Set([...range(API_SCAN), ...named])].filter((p) => p !== shellPort).sort((a, b) => a - b);
   const cdpPorts = range(CDP_SCAN);
@@ -411,6 +437,8 @@ export async function topology({ cfg = readConfigSync(), hosts = [], extraPorts 
   const sessionOf = (port) => { const o = owners.get(port); return o ? `S${o.session}` : '-'; };
   const here = { host, ip, node };
 
+  // `api` is the DEFAULT role of a scanned port, not its verdict: apiState spreads LAST and
+  // rewrites it to `console` for a port that answered 426 (another spine's console — see there).
   const [apiRows, consoleRow, cdpFound] = await Promise.all([
     Promise.all(apiPorts.map(async (port) => ({ ...here, port, role: 'api', session: sessionOf(port), ...(await apiState(port, conns, probeImpl)) })))
       .then((rs) => rs.filter((r) => r.state !== 'not listening' || named.has(r.port))),
@@ -442,11 +470,14 @@ export async function topology({ cfg = readConfigSync(), hosts = [], extraPorts 
   // debugger's own process answers its API and refused every token, so a driver aimed here is
   // aimed at an install this node cannot name — which is precisely what must be known BEFORE the
   // number is typed. It says nothing about whether anyone is signed in there; see apiState.
+  // A CONSOLE ROW IS NOT AN INSTALL, so it never lends an account or a state to anything — both
+  // joins below skip it. It reaches here only because the scan is what found it.
+  const isApi = (r) => r.role === 'api';
   const apiByPid = new Map();
   for (const r of apiRows) {
     const pid = owners.get(r.port)?.pid;
     // A port nothing answered on names no install, whatever pid the OS reports for it.
-    if (pid != null && r.state !== 'not listening') apiByPid.set(pid, r);
+    if (pid != null && isApi(r) && r.state !== 'not listening') apiByPid.set(pid, r);
   }
   const cdpRows = cdpFound.map(({ port, label }) => {
     const pid = owners.get(port)?.pid;
@@ -472,6 +503,7 @@ export async function topology({ cfg = readConfigSync(), hosts = [], extraPorts 
     if (pid != null && !cdpByPid.has(pid)) cdpByPid.set(pid, port);
   }
   for (const r of apiRows) {
+    if (!isApi(r)) continue;   // the local console row carries no `cdp` either; a scanned one must match it
     const pid = owners.get(r.port)?.pid;
     r.cdp = pid != null && r.state !== 'not listening' ? cdpByPid.get(pid) ?? null : null;
   }
@@ -513,8 +545,9 @@ const COLUMNS = [
   ['ip', (r) => r.ip],
   ['node', (r) => r.node],
   // The role rides in the PORT cell: a bare number does not say what it is, and "which number do
-  // I type" is the whole question. api = the Beeper HTTP API, console = the spine's operator
-  // console, cdp = the debugger a driver attaches to. The number is right-aligned inside the cell
+  // I type" is the whole question. api = the Beeper HTTP API, console = A spine's operator console
+  // (this node's, or another spine's on the same host), cdp = the debugger a driver attaches to.
+  // The number is right-aligned inside the cell
   // so a 4-digit CDP port and a 5-digit API port keep their role words in one column.
   ['port', (r, pw) => (r.role ? `${String(r.port).padStart(pw)} ${r.role}` : String(r.port))],
   ['S0/S1', (r) => r.session],
