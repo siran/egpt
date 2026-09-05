@@ -40,10 +40,10 @@ describe('beeper-whoami', () => {
   });
 
   // A CONNECTION WITH CANDIDATE ENDPOINTS carries a token PER ENDPOINT, and the tool must try
-  // every one. Reading only the top-level `token` loses them all and then reports a perfectly
-  // healthy install as NOT LOGGED IN — measured live on 2026-09-04, right after the operator's
-  // own `main` moved its token into `endpoints:`. The two states are opposite ("it refused us"
-  // vs "we never asked"), so losing a token is not a missing row, it is a WRONG one.
+  // every one. Reading only the top-level `token` loses them all and then reports an install this
+  // node can talk to as `up, no token of ours works` — measured live on 2026-09-04, right after
+  // the operator's own `main` moved its token into `endpoints:`. The two states are opposite ("it
+  // refused us" vs "we never asked"), so losing a token is not a missing row, it is a WRONG one.
   it('flattens `endpoints:` candidates so EVERY token this node holds is tried', () => {
     const conns = connectionsOf({
       beeper: {
@@ -86,10 +86,18 @@ describe('beeper-whoami', () => {
     expect(out).toMatch(/config beeper\.s1 → http:\/\/127\.0\.0\.1:23374.*→ SESSION 1/);
   });
 
-  it('reads a 401 as PROOF of a different install, never as a broken token', async () => {
+  // THE TEST NAME USED TO SAY "PROOF", and that was the overclaim itself, written into a lock.
+  // A token belongs to one install, so a different install is the LIKELY reading of a 401 — but a
+  // revoked or expired token on the SAME install answers identically. The detail view now offers
+  // the reading instead of asserting it, and this asserts that it never states it as fact.
+  it('offers a 401 as the likely different-install reading, without asserting it', async () => {
     const out = await report({ cfg, deps: { probe: fakeProbe, localOwners: fakeOwners } });
-    expect(out).toMatch(/s1: 401\s+a different install answers here/);
-    expect(out).toMatch(/main \(use\): 401\s+a different install answers here/);
+    expect(out).toMatch(/s1: 401\s+refused/);
+    expect(out).toMatch(/main \(use\): 401\s+refused/);
+    // it must still SAY which reading is likely — honesty is not the same as saying nothing
+    expect(out).toMatch(/likely a different install/);
+    // ...and must not present it as established
+    expect(out).not.toMatch(/a different install answers here/);
   });
 
   it('says so plainly when a connection carries no token', async () => {
@@ -112,10 +120,12 @@ describe('beeper-whoami', () => {
 //
 // Everything is injected: no network, no ssh, no real ports, no Windows. What is locked here is
 // the SHAPE of the answer and, more importantly, the four states that are easy to conflate:
-//   logged in            a token of ours got 200 there
-//   NOT LOGGED IN        it answers, and 401s every token we hold
-//   no token in config   we never asked — an unauthenticated 401 looks identical, means the opposite
-//   not listening        nothing answered at all
+//   logged in                   a token of ours got 200 there
+//   up, no token of ours works  it answers, and 401s every token we hold — and that is ALL it
+//                               says: a signed-out install and one signed in as an account whose
+//                               token we do not hold both 401, so login state is unknowable here
+//   no token in config          we never asked — an unauthenticated 401 looks identical, means the opposite
+//   not listening               nothing answered at all
 // The vocabulary is deliberately role-shaped (primary / secondary): eGPT is a public tool and no
 // person, machine or account name belongs in it. What the table PRINTS is discovered data.
 const table = {
@@ -179,12 +189,12 @@ describe('beeper-whoami — the topology table', () => {
     const { rows, notes } = await topology({ cfg: table, hosts: ['peer-two', 'peer-three'], deps: tableDeps({ remoteProbe }) });
     expect(renderTable(rows, notes)).toBe([
       'host        ip            node  port           S0/S1  account                state',
-      '----------  ------------  ----  -------------  -----  ---------------------  ------------------',
+      '----------  ------------  ----  -------------  -----  ---------------------  --------------------------',
       // ORDER: node, then S0/S1, then api/cdp/console, then port. The local node is first and its
       // S0 rows come before its S1 rows; inside a session the api row (which names the account)
       // sits above the cdp row (which is the number a driver is typed at).
       'node-one    10.0.0.4      kg    23373 api      S0     @primary:beeper.com    logged in',
-      'node-one    10.0.0.4      kg    23376 api      S0     -                      NOT LOGGED IN',
+      'node-one    10.0.0.4      kg    23376 api      S0     -                      up, no token of ours works',
       // 9222 is pid 100 — the SAME process as the 23373 api row, so it inherits that account.
       'node-one    10.0.0.4      kg     9222 cdp      S0     @primary:beeper.com    listening (Beeper)',
       'node-one    10.0.0.4      kg    23374 api      S1     @secondary:beeper.com  logged in',
@@ -199,10 +209,10 @@ describe('beeper-whoami — the topology table', () => {
     ].join('\n'));
   });
 
-  it('reads an install that answers and 401s every token we hold as NOT LOGGED IN', async () => {
+  it('reads an install that answers and 401s every token we hold as up, no token of ours works', async () => {
     const { rows } = await topology({ cfg: table, deps: tableDeps() });
     const up = rows.find((r) => r.port === 23376);
-    expect(up.state).toBe('NOT LOGGED IN');
+    expect(up.state).toBe('up, no token of ours works');
     expect(up.account, 'there is no account to name when nothing authenticated').toBe('-');
   });
 
@@ -213,7 +223,7 @@ describe('beeper-whoami — the topology table', () => {
     const { rows } = await topology({ cfg: noTok, deps: tableDeps() });
     const row = rows.find((r) => r.port === 23376);
     expect(row.state).toBe('no token in config');
-    expect(rows.some((r) => r.state === 'NOT LOGGED IN')).toBe(false);
+    expect(rows.some((r) => r.state === 'up, no token of ours works')).toBe(false);
   });
 
   it('keeps a CONFIGURED port that answers nothing, and drops an empty scan port', async () => {
@@ -291,11 +301,11 @@ describe('beeper-whoami — the topology table', () => {
     const { rows } = await topology({ cfg: table, deps: joinDeps() });
     expect(renderTable(rows)).toBe([
       'host      ip        node  port           S0/S1  account                state',
-      '--------  --------  ----  -------------  -----  ---------------------  ---------------------------------',
+      '--------  --------  ----  -------------  -----  ---------------------  ----------------------------------------------',
       'node-one  10.0.0.4  kg    23373 api      S0     @primary:beeper.com    logged in',
-      'node-one  10.0.0.4  kg    23376 api      S0     -                      NOT LOGGED IN',
+      'node-one  10.0.0.4  kg    23376 api      S0     -                      up, no token of ours works',
       'node-one  10.0.0.4  kg     9222 cdp      S0     @primary:beeper.com    listening (Beeper)',
-      'node-one  10.0.0.4  kg     9224 cdp      S0     -                      listening (Beeper, NOT LOGGED IN)',
+      'node-one  10.0.0.4  kg     9224 cdp      S0     -                      listening (Beeper, up, no token of ours works)',
       'node-one  10.0.0.4  kg    23374 api      S1     @secondary:beeper.com  logged in',
       'node-one  10.0.0.4  kg     9223 cdp      S1     -                      listening (Chrome)',
       'node-one  10.0.0.4  kg     9225 cdp      S1     -                      listening (Beeper)',
@@ -324,12 +334,12 @@ describe('beeper-whoami — the topology table', () => {
     ]);
   });
 
-  it('says NOT LOGGED IN on a CDP row whose api row is up but unauthenticated', async () => {
-    // The install sitting at a login/verify screen. That is precisely what has to be known BEFORE
-    // the number is typed into a driver, and it is DERIVED from the joined api row's own state —
-    // never assumed from the absence of an account.
+  it('carries the api row\'s own state onto a CDP row whose api row answers but takes no token of ours', async () => {
+    // A driver aimed here would be driving an install this node cannot name. That is precisely
+    // what has to be known BEFORE the number is typed, and it is DERIVED from the joined api row's
+    // own state — never assumed from the absence of an account.
     const { rows } = await topology({ cfg: table, deps: joinDeps() });
-    expect(rows.find((r) => r.port === 9224)).toMatchObject({ account: '-', state: 'listening (Beeper, NOT LOGGED IN)' });
+    expect(rows.find((r) => r.port === 9224)).toMatchObject({ account: '-', state: 'listening (Beeper, up, no token of ours works)' });
 
     // …and it really is that api row talking: hand 23376 a token it answers, and the CDP row on
     // the same pid becomes that account, with the plain state back.
@@ -344,6 +354,33 @@ describe('beeper-whoami — the topology table', () => {
     expect(authed.find((r) => r.port === 9224)).toMatchObject({ account: '@third:beeper.com', state: 'listening (Beeper)' });
   });
 
+  // THE RULE THE WORDING EXISTS FOR, locked so it cannot be "improved" back into a claim.
+  // A 401 from Beeper's local API is evidence about OUR TOKEN and about nothing else. An install
+  // with no approved connection and an install fully signed in as an account whose token this node
+  // does not hold answer with the SAME 401 — indistinguishable from outside. The tool once called
+  // that `NOT LOGGED IN` and it misled: the operator read it off an install he had just used,
+  // signed in as himself (2026-09-04). The cell may say what answered and what was refused; it may
+  // not say who is signed in there.
+  it('an install answering 401 to every token must NOT be described in terms of login state', async () => {
+    const { rows } = await topology({ cfg: table, deps: joinDeps() });
+    const rendered = renderTable(rows).split('\n');
+    //   23376 api  the install itself     9224 cdp  its debugger, joined by pid and carrying its state
+    const cellOf = (port, role) => rendered.find((l) => l.includes(`${port} ${role} `));
+
+    for (const [port, role] of [[23376, 'api'], [9224, 'cdp']]) {
+      const cell = cellOf(port, role);
+      expect(cell, `the ${port} ${role} row must be in the table for this to lock anything`).toBeTruthy();
+      // The literal the tool used to print. Case-insensitive too, so a lowercase rewording of the
+      // same claim fails just as loudly — the objection is the CLAIM, not its capitalisation.
+      expect(cell, 'a 401 says our token was refused; it says nothing about who is logged in').not.toContain('LOGGED IN');
+      expect(cell).not.toMatch(/logged in/i);
+      // …and it is not gutted into silence either: what IS known still has to be printed, or the
+      // row stops answering "is anything up on this port at all".
+      expect(cell, 'the install answered — that is real information').toContain('up');
+      expect(cell, 'and no token this node holds was accepted').toContain('no token of ours works');
+    }
+  });
+
   it('carries the same CDP labelling for a remote node — it runs THIS tool, so it comes back joined', async () => {
     // The remote did the join over ITS OWN pids and returned finished rows; the parent relabels
     // host/ip and nothing else. A CDP account must therefore survive the trip untouched.
@@ -353,7 +390,7 @@ describe('beeper-whoami — the topology table', () => {
       rows: [
         { host: 'ignored', ip: '?', node: 'do', port: 23373, role: 'api', session: 'S0', account: '@remote:beeper.com', state: 'logged in' },
         { host: 'ignored', ip: '?', node: 'do', port: 9222, role: 'cdp', session: 'S0', account: '@remote:beeper.com', state: 'listening (Beeper)' },
-        { host: 'ignored', ip: '?', node: 'do', port: 9223, role: 'cdp', session: 'S0', account: '-', state: 'listening (Beeper, NOT LOGGED IN)' },
+        { host: 'ignored', ip: '?', node: 'do', port: 9223, role: 'cdp', session: 'S0', account: '-', state: 'listening (Beeper, up, no token of ours works)' },
       ],
     });
     const { rows } = await topology({ cfg: table, hosts: ['peer-two'], deps: joinDeps({ remoteProbe }) });
@@ -361,7 +398,7 @@ describe('beeper-whoami — the topology table', () => {
     expect(remote.map((r) => [r.port, r.account, r.state])).toEqual([
       [23373, '@remote:beeper.com', 'logged in'],
       [9222, '@remote:beeper.com', 'listening (Beeper)'],
-      [9223, '-', 'listening (Beeper, NOT LOGGED IN)'],
+      [9223, '-', 'listening (Beeper, up, no token of ours works)'],
     ]);
     expect(remote.every((r) => r.ip === '203.0.113.7' && r.host === 'peer-two')).toBe(true);
   });
@@ -481,9 +518,9 @@ describe('beeper-whoami — the nodes named in config (egpt_nodes)', () => {
     expect(asked).toEqual(['peer-two']);
     expect(renderTable(rows, notes)).toBe([
       'host      ip          node  port           S0/S1  account                state',
-      '--------  ----------  ----  -------------  -----  ---------------------  ------------------',
+      '--------  ----------  ----  -------------  -----  ---------------------  --------------------------',
       'NODE-ONE  192.0.2.11  kg    23373 api      S0     @primary:beeper.com    logged in',
-      'NODE-ONE  192.0.2.11  kg    23376 api      S0     -                      NOT LOGGED IN',
+      'NODE-ONE  192.0.2.11  kg    23376 api      S0     -                      up, no token of ours works',
       'NODE-ONE  192.0.2.11  kg     9222 cdp      S0     @primary:beeper.com    listening (Beeper)',
       'NODE-ONE  192.0.2.11  kg    23374 api      S1     @secondary:beeper.com  logged in',
       'NODE-ONE  192.0.2.11  kg     9223 cdp      S1     -                      listening (Chrome)',

@@ -48,8 +48,9 @@ export function connectionsOf(cfg = {}) {
   // token — that is the whole point of the shape: one account, several installs, and the spine
   // binds whichever answers. Flattening them here means every token this node holds gets tried,
   // which is what makes the difference between "that install refused us" and "we never asked"
-  // reportable at all. Reading only the top-level `token` silently loses every candidate and
-  // then reports a perfectly healthy install as NOT LOGGED IN — measured live, 2026-09-04.
+  // reportable at all. Reading only the top-level `token` silently loses every candidate and then
+  // reports an install this node can talk to as `up, no token of ours works` — a line that is not
+  // even false, just useless, because we held the working token and never tried it (live 2026-09-04).
   const rows = [];
   for (const [name, v] of Object.entries(b)) {
     if (name === 'use' || !v || typeof v !== 'object') continue;
@@ -144,7 +145,11 @@ export async function report({ cfg = readConfigSync(), extraPorts = [], deps = {
       if (!c.token) { lines.push(`        ${tag}: no token in config — cannot ask`); continue; }
       const r = await p(`http://127.0.0.1:${port}`, c.token);
       if (r.ok) lines.push(`        ${tag}: 200  ${r.loginID ?? '?'}  ${r.email ?? ''}  [${(r.networks ?? []).join(', ')}]`);
-      else if (r.status === 401) lines.push(`        ${tag}: 401  a different install answers here`);
+      // SAME RULE AS THE TABLE'S STATE CELL (see apiState below): a 401 is evidence about THIS
+      // TOKEN, never about the install. A different install is the LIKELY reading here, because
+      // a token belongs to one install — but a revoked or expired token on the SAME install
+      // answers identically, so the line offers the reading instead of asserting it.
+      else if (r.status === 401) lines.push(`        ${tag}: 401  refused — likely a different install (or this token is stale)`);
       else lines.push(`        ${tag}: ${r.status || '—'} ${r.error ?? ''}`);
     }
   }
@@ -333,7 +338,16 @@ async function apiState(port, conns, probeImpl) {
     statuses.push(r.status);
   }
   if (!statuses.length) return { account: '-', state: 'not listening' };
-  if (statuses.every((s) => s === 401)) return { account: '-', state: 'NOT LOGGED IN' };
+  // A 401 IS EVIDENCE ABOUT OUR TOKEN, NEVER ABOUT THE INSTALL'S LOGIN STATE. Beeper's local API
+  // refuses a token that was not minted by that install, and it refuses it with the SAME 401 an
+  // install with no approved connection returns. So these two are INDISTINGUISHABLE from outside:
+  //   · an install that is up and has nobody signed in, and
+  //   · an install fully signed in as an account whose token this node simply does not hold.
+  // The only fact in hand is "it answered, and nothing we hold was accepted", so that is all the
+  // cell may say. Wording this as a login state is a confident wrong answer, and it has already
+  // been made once: the operator read `NOT LOGGED IN` off his own signed-in GUI (2026-09-04).
+  // Do not "improve" this back into a claim about who is logged in — from here, we cannot know.
+  if (statuses.every((s) => s === 401)) return { account: '-', state: 'up, no token of ours works' };
   return { account: '-', state: `listening (HTTP ${statuses[statuses.length - 1]})` };
 }
 
@@ -422,8 +436,10 @@ export async function topology({ cfg = readConfigSync(), hosts = [], extraPorts 
   //
   // NOTHING IS GUESSED. A pid with no api row (its API is outside the scan range, or the OS said
   // nothing about that socket) keeps `-`. And when the joined row names no account, its own state
-  // rides along in the cell: "listening (Beeper, NOT LOGGED IN)" is the install sitting at a login
-  // screen, which is precisely what must be known BEFORE a driver is pointed at it.
+  // rides along in the cell VERBATIM: "listening (Beeper, up, no token of ours works)" says this
+  // debugger's own process answers its API and refused every token, so a driver aimed here is
+  // aimed at an install this node cannot name — which is precisely what must be known BEFORE the
+  // number is typed. It says nothing about whether anyone is signed in there; see apiState.
   const apiByPid = new Map();
   for (const r of apiRows) {
     const pid = owners.get(r.port)?.pid;
