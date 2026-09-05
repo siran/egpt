@@ -198,12 +198,26 @@ Real, current, and worth knowing before relying on any of this.
    machine-wide variable. **`src/sandbox-cli-session.mjs` does not pass it yet**,
    so gap 1 stands until that caller is wired.
 
-   Known sub-gap, written into the code: the token minted for the block is a
-   separate logon that does not load the pool account's registry hive.
-   `USERPROFILE`/`APPDATA`/`LOCALAPPDATA` come from the token and are correct;
-   `TEMP`, `TMP` and per-user `PATH` live in `HKCU\Environment` and may fall
-   back to machine values. Symptom to look for: a child writing into
-   `C:\Windows\Temp`. Only affects the `-SetEnv` path.
+   **`-SetEnv` CORRUPTS THE BASE ENVIRONMENT — measured 2026-09-05, do not use
+   it until this is fixed.** The injected variable arrives correctly, but the
+   block it is overlaid onto is wrong. Same launcher, same account, same batch,
+   only `-SetEnv` differing:
+
+   | | `USERPROFILE` | `TEMP` |
+   |---|---|---|
+   | without `-SetEnv` | `C:\Users\egpt-sbx-NN` ✅ | the account's own |
+   | with `-SetEnv` | `C:\Users\Default` ❌ | `C:\WINDOWS\TEMP` ❌ |
+
+   Cause: `CreateProcessWithLogonW` with `LOGON_WITH_PROFILE` loads the account's
+   hive and derives these itself, but only when `lpEnvironment` is NULL. The
+   moment a block is supplied, that block wins — and the block is built from a
+   *separate* `LogonUser` token whose hive is not loaded, so `CreateEnvironmentBlock`
+   falls back to the Default profile. A `claude` launched this way would look for
+   `~/.claude` under `C:\Users\Default`.
+
+   Fixing it means loading the hive for the token before building the block
+   (`LoadUserProfile`/`UnloadUserProfile` around it), or deriving the per-user
+   paths and overlaying them too. Until then `-SetEnv` is not usable.
 
 3. **Confined ccode and the sandbox do not compose — fixed, unverified live.**
    `claude-args.mjs:123` pushes `'--setting-sources', ''`, an empty-string argv

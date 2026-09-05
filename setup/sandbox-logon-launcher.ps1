@@ -86,7 +86,25 @@
 # ones starting with `--` - verbatim, one array element each, no shell
 # re-parsing anywhere in the chain (Node's spawn() never touches a shell,
 # and PowerShell's remaining-arguments capture does not re-tokenize).
-[CmdletBinding()]
+# PositionalBinding = $false IS LOAD-BEARING, and it was measured the hard way
+# (2026-09-05). A PowerShell parameter declared with no explicit Position is
+# POSITIONAL BY DEFAULT, and positional binding runs BEFORE
+# ValueFromRemainingArguments collects anything. So the moment -SharePath and
+# -SetEnv were added below, the caller's own shape -
+#
+#   -TargetFolder <dir> -InnerBin <exe> /c <script> ""
+#
+# which is exactly what sandbox-cli-session.mjs builds - bound `/c` to
+# $SharePath and `<script>` to $SetEnv, left $InnerArgs EMPTY, and the script
+# died on its own "InnerArgs is empty - nothing to run" guard. Every sandboxed
+# turn, including pi's. A smoke test caught it; nothing in the unit-level checks
+# could have, because they all passed the new parameters BY NAME, which is the
+# one case that works.
+#
+# With positional binding off, every parameter here is name-only and the
+# trailing tokens reach $InnerArgs the way they always did. The two Mandatory
+# parameters are unaffected: the caller has always passed them by name.
+[CmdletBinding(PositionalBinding = $false)]
 param(
   [Parameter(Mandatory = $true)][string]$TargetFolder,
   [Parameter(Mandatory = $true)][string]$InnerBin,
