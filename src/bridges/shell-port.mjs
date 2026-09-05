@@ -22,6 +22,15 @@
 // plans/2607191835-SHELL-LIMB-S1-PLAN.md §1) conflated who SERVES with whose lifetime dominates:
 // a server with no clients is fine, and the editor's lifetime is still entirely its own.
 //
+// TWO ROLES ON ONE PORT (operator 2026-09-05). The same listener also serves the MOUTH LINK: a
+// second spine on this machine, holding the OTHER Beeper account, dials MOUTH_PATH here, proves it
+// holds the same shell token, and has a FINISHED line posted on this node's account. It rides this
+// port because the handshake, the bind-at-boot-and-hold property and the squatter protection are
+// already solved here and must not be re-solved on a second listener. The role is the dial PATH,
+// read before a byte is exchanged, and a peer NEVER takes the console seat — so an open editor
+// cannot lock the mouth out and the mouth cannot lock the operator out. The limb stays a dumb pipe:
+// it recognizes the frame and hands it to the injected onPeerSay, which owns every decision.
+//
 // A STRIPPED-DOWN sibling of beeper.mjs: TEXT in, TEXT out — no media, no reactions,
 // no edit-streaming, no REST. The limb carries ZERO command logic and ZERO fan-out; it
 // is a dumb pipe, exactly like beeper-port (plan §2, §8). Everything after the inbound
@@ -47,6 +56,13 @@ import { reapPort } from '../tools/reap-port.mjs';
 // must PROVE it holds the node's shell token before this limb trusts a byte of it. The
 // algorithm is imported, never re-implemented — the editor end runs the same module.
 import { newNonce, challengeFrame, parseAuthFrame, authMac, macMatches, SHELL_TOKEN_HELP } from '../shell/auth.mjs';
+// The MOUTH wire (src/shell/mouth.mjs — header there for the whole arrangement). A second spine on
+// this machine, holding the OTHER Beeper account, dials this same port on MOUTH_PATH to have a
+// finished line said on its behalf. Its frames carry a `say` discriminator and are recognized
+// BEFORE the console parse, for the same reason auth frames are: a console frame means "a human
+// said this" and would RUN A TURN, and the mouth means the exact opposite — "post this verbatim".
+// The wire is imported, never re-implemented; the peer end reads the same module.
+import { MOUTH_PATH, isMouthDial, parseMouthFrame, sayResultFrame } from '../shell/mouth.mjs';
 
 // The spine serves this port; the editor dials in. Exported so boot + tests share the
 // one number (plan §3, §9 — a KNOWN port, not discovery).
@@ -105,6 +121,14 @@ const SHELL_USER = 'operator';
  * @param {string} [opts.token]               the node's SHELL TOKEN (cfg.shell.token, handed in by boot exactly like bridgeSignatureOpen/nodeName — this limb never reads config itself). The editor that dials in must prove it knows this secret before a single frame is sent to it or accepted from it. UNSET → the limb FAILS CLOSED: it does not SERVE at all and logs what to add to config. No default, no auto-generation, no unauthenticated mode.
  * @param {string} [opts.nodeName]            the STRUCTURAL node id (cfg.node_name), tag-encoded invisibly onto every frame — same value boot hands the beeper bridge. Default ''.
  * @param {string} [opts.header]              the shell status-line header (boot's computeShellHeader) — the initial value handed in at boot, pushed as a header-only frame the moment an editor authenticates. Updatable later via setHeader() (e.g. /rooms join|leave). Default '' → no header frame sent until setHeader() is called.
+ * @param {((say: {chatKey: string, text: string}) => Promise<{ok: boolean, chatId?: string, reason?: string, detail?: string}>)} [opts.onPeerSay]
+ *   THE MOUTH HANDLER (src/shell/peer-mouth.mjs createMouthReceiver), handed in by boot exactly
+ *   like the token — this limb never builds it and never reads config. Given, a PEER SPINE may
+ *   dial MOUTH_PATH on this port, prove it holds the same shell token, and have a finished line
+ *   posted on THIS node's Beeper account. UNSET (the default, and every node that configures no
+ *   peer): a mouth dial is closed immediately, so the limb behaves exactly as it did before this
+ *   existed. The handler's answer — success or refusal — is pushed straight back over the same
+ *   socket so the peer can fall back to speaking on its own account.
  * @param {(m: string) => void} [opts.onLog]
  * @param {typeof reapPort} [opts.reapPort]   port-killer seam (see start()) — real reapPort by default; tests inject a fake so no real netstat/taskkill runs
  * @param {typeof globalThis.setTimeout} [opts.setTimeout]     re-listen timer seam (tests inject a fake clock so no real wait blocks)
@@ -120,6 +144,7 @@ export function createShellPort({
   token = '',
   nodeName = '',
   header = '',
+  onPeerSay = null,
   onLog = () => {},
   reapPort: reapPortFn = reapPort,
   setTimeout: setTimeoutFn = globalThis.setTimeout,
@@ -150,6 +175,12 @@ export function createShellPort({
   // Connections that have dialed in but not yet authenticated. Tracked ONLY so the winner of
   // the handshake can shut the door behind it — a stranger must not keep a foot in it.
   const _pending = new Set();
+  // AUTHENTICATED PEER-SPINE connections (the mouth link). Kept separate from `sock` on purpose:
+  // a peer is NOT at the console. It never takes the seat, so it can neither be locked out by a
+  // seated editor nor lock the operator out by holding the seat itself — and every existing reader
+  // of `sock` (pushFrame's drop guard, isConnected/isAlive, poke's already-serving check) keeps
+  // meaning exactly what it meant, with no extra branch. Tracked only so stop() can close them.
+  const _mouths = new Set();
   // Chat ids seen inbound — the outbound-routing signal boot uses to send a shell-surface
   // reply back over THIS socket instead of the beeper bridge. A shell console uses the
   // deterministic `main` id (or whatever the frame carries), which never collides with a
@@ -174,15 +205,25 @@ export function createShellPort({
   // succeeds, so an impostor cannot front-load a `/upgrade` and have it delivered the instant a
   // genuine editor authenticates. A WRONG answer is fatal for that connection: close it, and
   // LEAVE THE LISTENER SERVING — one bad client must never take the console down.
-  function verifyPeer(raw, nonce, ws) {
+  // `mouth` is the ONE branch this shared handshake grew (2026-09-05): a verified PEER SPINE is
+  // trusted to have a line said, not to hold the console. So it takes no seat, gets no header, and
+  // — deliberately — does NOT evict the other half-open strangers: a mouth dial arriving while the
+  // operator's editor is mid-handshake must not knock that editor out.
+  function verifyPeer(raw, nonce, ws, { mouth = false } = {}) {
     const f = parseAuthFrame(raw);
     if (!f || f.auth !== 'response') return false;               // pre-auth noise → dropped on the floor
     if (!macMatches(f.mac, authMac(_token, nonce))) {
-      onLog('shell: A CLIENT FAILED THE AUTH CHALLENGE — refusing to trust whatever just dialed 127.0.0.1:23375. '
+      onLog(`shell: A CLIENT FAILED THE AUTH CHALLENGE${mouth ? ` (on ${MOUTH_PATH}, so it claimed to be a peer spine)` : ''} — refusing to trust whatever just dialed 127.0.0.1:23375. `
         + 'Most likely an IMPOSTOR (a sandboxed account can dial loopback freely); otherwise the editor is '
         + 'running with a different shell.token. Dropping that connection; the console stays served.');
       dropPending(ws);
       return false;
+    }
+    if (mouth) {
+      _pending.delete(ws);
+      _mouths.add(ws);
+      onLog('shell: a peer spine authenticated on the mouth link');
+      return true;
     }
     // Trusted from here on: NOW the limb may speak. The header push (the first frame this limb
     // ever sends a peer) is deliberately deferred to this point — before it, the peer is a
@@ -205,15 +246,64 @@ export function createShellPort({
     try { ws?.close?.(); } catch { /* closing */ }
   }
 
+  // One frame to a socket that is NOT the console seat (a peer on the mouth link). pushFrame is
+  // bound to `sock` by design — a peer must never be reachable through the console's send path —
+  // so the mouth answer needs its own one-liner. Never throws, same as every other push here.
+  function pushTo(ws, raw) {
+    try { ws.send(raw); return true; }
+    catch (e) { onLog(`shell: mouth answer failed — ${e?.message ?? e}`); return false; }
+  }
+
+  // A `say: 'post'` frame off an AUTHENTICATED peer connection: hand it to the mouth handler and
+  // push its verdict straight back. THIS PATH NEVER REACHES onMsg — a peer's line is a finished
+  // reply to be POSTED, not a message to be answered, and dispatching one as a turn is the exact
+  // failure src/shell/mouth.mjs exists to prevent. A handler that throws still answers (a peer
+  // holding an unsaid reply must learn it was not said, so it can fall back to its own account).
+  function handleMouth(raw, ws) {
+    const f = parseMouthFrame(raw);
+    if (f?.say !== 'post') {
+      onLog(`shell: a peer sent a frame the mouth link does not serve (${f?.say ? `say:${f.say}` : 'not a mouth frame'}) — refusing`);
+      pushTo(ws, sayResultFrame({ ok: false, reason: 'bad-frame', detail: 'the mouth link serves say:post only' }));
+      return;
+    }
+    // try/catch AND .catch: a handler that throws SYNCHRONOUSLY would otherwise escape into the
+    // socket's read loop, exactly as the console path guards its own onMsg call.
+    try {
+      Promise.resolve(onPeerSay({ chatKey: f.chatKey, text: f.text }))
+        .then((r) => pushTo(ws, sayResultFrame(r && typeof r === 'object' ? r : { ok: false, reason: 'send-failed', detail: 'the mouth handler answered nothing' })))
+        .catch((e) => pushTo(ws, sayResultFrame({ ok: false, reason: 'send-failed', detail: e?.message ?? String(e) })));
+    } catch (e) { pushTo(ws, sayResultFrame({ ok: false, reason: 'send-failed', detail: e?.message ?? String(e) })); }
+  }
+
   // A client dialed in. It is a STRANGER until it answers the challenge: it is sent nothing but
   // the nonce, and every frame it pushes is discarded until then.
-  function onConnection(ws) {
+  //
+  // `req` is the upgrade request the `ws` server hands alongside the socket. Its PATH is the role
+  // (src/shell/mouth.mjs): MOUTH_PATH = a peer spine wanting a line said, anything else = the
+  // operator's editor, which is what every existing caller and every absent req reads as. The role
+  // has to be known HERE, before a byte is exchanged, because the single-seat rule below is
+  // decided at connection time — and a peer must neither be refused for a seat it does not want
+  // nor take the seat away from the operator.
+  function onConnection(ws, req) {
     if (_stopped) { try { ws.close(); } catch { /* closing */ } return; }
+    const mouth = isMouthDial(req);
+    // NO MOUTH CONFIGURED (the default, and every node with no peer): a peer dial is closed on
+    // the spot. Not answered with a refusal frame — a stranger is told NOTHING before it
+    // authenticates, and this decision is made before the handshake. It is also never demoted to
+    // a console connection: a dial that asked to be a peer must not become an operator seat.
+    if (mouth && !onPeerSay) {
+      onLog(`shell: a client dialed ${MOUTH_PATH} but this node offers no mouth link (no peer configured) — refusing it`);
+      try { ws.close(); } catch { /* closing */ }
+      return;
+    }
     // SINGLE SEAT, incumbent-holds. The seat is freed by its own socket closing, never taken
     // from it — so neither an unauthenticated client nor a second holder of the token can
     // displace an operator who is already at the console. A refused editor is not stranded:
     // its own reconnect backoff keeps retrying, so it takes over the moment the seat frees.
-    if (sock) {
+    // …for CONSOLE clients only. A peer on the mouth link is not asking for the seat, so a seated
+    // editor must not lock the mouth out (the operator's editor is open most of the time, which
+    // would otherwise mean the peer's replies stop whenever the console is in use).
+    if (sock && !mouth) {
       onLog('shell: a second client dialed in while the console seat is held — refusing it (the seated editor keeps the console)');
       try { ws.close(); } catch { /* closing */ }
       return;
@@ -227,7 +317,14 @@ export function createShellPort({
     // Handlers FIRST, challenge second: a peer that answers the instant it is challenged must
     // not answer into a socket we have not started listening to yet.
     ws.on('message', (buf) => {
-      if (!authed) { authed = verifyPeer(buf, nonce, ws); return; }
+      if (!authed) { authed = verifyPeer(buf, nonce, ws, { mouth }); return; }
+      if (mouth) { handleMouth(buf, ws); return; }
+      // A MOUTH FRAME ON THE CONSOLE CONNECTION is discarded, never dispatched. It can only be a
+      // misconfigured peer (one that dialled the root instead of MOUTH_PATH), and the console's
+      // toInbound below would hand the raw JSON to the spine as something a human typed — a turn
+      // run on a finished reply. Belt and braces beside the path check: nothing carrying `say`
+      // reaches the dispatch, whichever door it came in.
+      if (parseMouthFrame(buf)) { onLog(`shell: a mouth frame arrived on the CONSOLE connection (a peer must dial ${MOUTH_PATH}) — discarded, never dispatched`); return; }
       const { text, chatId } = toInbound(buf);
       if (!text) return;
       _chatIds.add(chatId);
@@ -248,6 +345,7 @@ export function createShellPort({
     });
     ws.on('close', () => {
       _pending.delete(ws);
+      _mouths.delete(ws);
       if (sock === ws) { sock = null; onLog('shell: editor disconnected — console seat free'); }
     });
     ws.on('error', (e) => onLog(`shell: socket error — ${e?.message ?? e}`));
@@ -273,7 +371,7 @@ export function createShellPort({
       if (!_stopped && !_listening) scheduleRelisten();
     });
     wss.on('close', () => {
-      sock = null; _pending.clear(); _listening = false;
+      sock = null; _pending.clear(); _mouths.clear(); _listening = false;
       if (_stopped) return;   // deliberate stop() — never recover from our own shutdown
       onLog(`shell: WS SERVER CLOSED UNEXPECTEDLY — the console port is UNHELD until it re-listens (retrying in ${Math.round(_relistenMs / 1000)}s)`);
       scheduleRelisten();
@@ -429,6 +527,8 @@ export function createShellPort({
       try { sock?.close?.(); } catch { /* closing */ }
       for (const p of _pending) { try { p.close(); } catch { /* closing */ } }
       _pending.clear();
+      for (const m of _mouths) { try { m.close(); } catch { /* closing */ } }
+      _mouths.clear();
       try { wss?.close?.(); } catch { /* closing */ }
       sock = null; wss = null; _listening = false;
     },

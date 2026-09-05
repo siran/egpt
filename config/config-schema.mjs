@@ -876,6 +876,78 @@ export const CONFIG_SCHEMA = {
     it from this same file. Changing it means restarting the spine AND the editor.
   `,
 
+  peer_spine: `
+    THE MOUTH LINK (operator 2026-09-05) — the OTHER eGPT spine on this machine,
+    the one holding the other Beeper account, and how to speak through it.
+
+    THE ARRANGEMENT. One machine can run TWO spines, one per Beeper account,
+    sharing one checkout and differing only by EGPT_HOME. The PRIMARY spine is
+    the ear and the brain: it receives, logs, gates and runs the turn exactly as
+    it always has. The SECONDARY is the MOUTH: instead of posting the finished
+    reply on its own account, the primary hands the text over this link and the
+    secondary says it on the other account. A message addressed to the secondary
+    alone is answered by the secondary directly, with no link involved.
+
+    SHAPE:
+      peer_spine:
+        console_port: 23377
+        console_token: "<the PEER node's shell.token>"
+        accounts: ["+15550000001", "+15550000002"]
+
+    KEYS:
+      console_port
+              The PEER's console port — its shell.port (default 23375). The link
+              rides the peer's console listener rather than a port of its own:
+              the handshake, the bind-at-boot-and-HOLD property and the squatter
+              protection are already solved there (see shell). A peer dials it on
+              the path /peer, which is what tells the peer's limb it is a spine
+              wanting a line said and not the operator's editor wanting a seat.
+      console_token
+              The PEER's shell.token — the secret this node proves it holds when
+              it dials. Same nonce/HMAC challenge the editor answers, same module
+              (src/shell/auth.mjs), no relaxation: loopback is not an
+              authenticator, since a sandboxed local account can dial 127.0.0.1
+              as freely as the peer spine can. Wrong or unset = refused.
+      accounts
+              The phone identities of BOTH accounts, in any form (+1 555 000
+              0001, +15550000001, 15550000001 - compared on digits). These are
+              EXCLUDED when a chat is keyed across the two accounts, and that
+              exclusion is the whole reason two views of one group compare equal.
+              Beeper is Matrix, so each account sees the same real group as its
+              OWN room: nothing in the two payloads is shared and a chatId cannot
+              cross the link. What can is the set of participant PHONE NUMBERS
+              (src/bridges/beeper.mjs crossAccountChatKey). An account's own entry
+              in its own roster carries no phone number at all, so dropping SELF
+              is automatic - but each account sees the OTHER as an ordinary member
+              WITH a number, and that is the one difference left between the two
+              views. List both, on BOTH nodes: the values must match or the two
+              spines cannot agree on which chat is which. Fewer than two
+              identities is refused rather than half-working.
+
+    ABSENT = NO PEER: no dialling, no link, and a /peer dial to this node's own
+    console is closed on the spot. A node that configures none of this behaves
+    exactly as it did before the block existed (tests/peer-mouth.test.mjs locks
+    that first).
+
+    SYMMETRIC. Each node's block names the OTHER node's console port and token,
+    and both carry the same accounts list, so either spine can be the mouth.
+
+    FAIL CLOSED, LOUDLY. A reply in the wrong chat is worse than no reply - it is
+    public before anyone notices. So the receiving node refuses to post when NO
+    chat of its own keys to what it was sent, and refuses just as hard when MORE
+    THAN ONE does; the speaking node refuses before it dials when its own chat
+    cannot be keyed at all (no roster, or fewer than two identities left after
+    the exclusions). Every refusal is reported back over the same socket so the
+    caller can fall back to speaking on its own account.
+
+    NOT account_peers, which answers a different question: that lists node
+    IDENTITIES sharing ONE Beeper account. This names a spine on ANOTHER account.
+
+    FINAL TEXT ONLY. The link carries a finished line. Streaming a reply across
+    it (the thinking placeholder and its in-place edits) means relaying a message
+    IDENTITY across two accounts, and is deliberately out of scope.
+  `,
+
   networks: `
     Per-surface config wrapper (operator 2026-07-09).
 

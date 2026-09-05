@@ -88,6 +88,37 @@ user_name: "John"                  # the human here; shown as <user_name>@<surfa
 #     ip_type: reserved
 #     host: do.example.net
 
+# --- peer_spine: speaking through the OTHER spine (the "mouth link") ---------
+# OPTIONAL, and only for a machine running TWO spines - one per Beeper account,
+# one checkout, differing only by EGPT_HOME. The PRIMARY spine is the ear and the
+# brain: it receives, logs, gates and runs the turn exactly as it always has. The
+# SECONDARY is the MOUTH: the primary hands it the finished text over this link
+# and it says that text on the other account. A message addressed to the
+# secondary alone is answered by the secondary directly, with no link involved.
+#
+# ABSENT = NO PEER: no dialling, no link, and a /peer dial to this node's console
+# is refused. A single-account node needs none of this and pays nothing for it.
+#
+#   console_port   the PEER node's shell.port (its console listener; default
+#                  23375). The link rides that port - the token handshake and the
+#                  bind-at-boot-and-hold property are already solved there - on
+#                  the path /peer, which is what marks the dial as a peer spine
+#                  rather than the operator's editor asking for the console seat.
+#   console_token  the PEER node's shell.token. Same nonce/HMAC challenge the
+#                  editor answers; wrong or unset = refused. Loopback is not an
+#                  authenticator here.
+#   accounts       the phone numbers of BOTH accounts. Beeper is Matrix, so each
+#                  account sees the same real group as its OWN room and a chat id
+#                  cannot cross the link; what crosses is the set of participant
+#                  phone numbers. Each account sees the OTHER as an ordinary
+#                  member with a number (and itself as a number-less self entry),
+#                  so both are excluded here to make the two views line up. The
+#                  SAME list goes on both nodes, and fewer than two is refused.
+# peer_spine:
+#   console_port: 23377
+#   console_token: "PASTE_THE_PEER_NODES_SHELL_TOKEN_HERE"
+#   accounts: ["+15550000001", "+15550000002"]
+
 # --- Agents (what this node answers to) --------------------------------------
 # REQUIRED. A node answers ONLY the agents it lists - nothing is injected. Two
 # nodes hosting the same name BOTH reply (same being); use different names for a
