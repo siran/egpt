@@ -10,7 +10,7 @@
 # IS the node. EGPT_HOME is set in the service environment and inherited by the
 # spine, so the whole node follows the one profile.
 #
-# Run from an ELEVATED PowerShell, from the repo root:
+# Run from any PowerShell, from the repo root - it SELF-ELEVATES (one UAC prompt):
 #   # production node (default profile ~/.egpt, service 'egpt-daemon'):
 #   powershell -ExecutionPolicy Bypass -File .\setup\install-nssm-service.ps1
 #   # a second, isolated node on profile ~/.egpt2 (service 'egpt2-daemon'):
@@ -33,11 +33,26 @@ if (-not $ServiceName) {
   $ServiceName = "$base-daemon"
 }
 
-# --- 1. ensure elevated ---
+# --- 1. ensure elevated -----------------------------------------------------------------------
+# SELF-ELEVATES rather than refusing (operator 2026-09-05). Refusing made this a two-step dance
+# from an ordinary shell, and the second step is easy to get wrong: an MSYS/git-bash prompt eats
+# the backslashes out of a Windows path, so the retyped command fails with a mangled filename
+# rather than a clear error. Relaunching ourselves removes the retype entirely.
+#
+# The elevated child gets its OWN console window, and Get-Credential below prompts INSIDE it, so
+# -Wait is required: without it this returns immediately and the caller thinks it finished while
+# the password box is still open. -Pause keeps that window readable after it ends.
 $me = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-  Write-Host "This script must be run from an ELEVATED PowerShell (Run as administrator)." -ForegroundColor Red
-  exit 1
+  Write-Host "Not elevated - relaunching as administrator (approve the UAC prompt)..." -ForegroundColor Yellow
+  $a = @('-NoProfile','-ExecutionPolicy','Bypass','-File', ('"' + $PSCommandPath + '"'))
+  foreach ($kv in $PSBoundParameters.GetEnumerator()) {
+    if ($kv.Value -is [switch]) { if ($kv.Value.IsPresent) { $a += "-$($kv.Key)" } }
+    else { $a += @("-$($kv.Key)", ('"' + $kv.Value + '"')) }
+  }
+  try { Start-Process powershell -Verb RunAs -ArgumentList $a -Wait }
+  catch { Write-Host "Elevation was refused or cancelled." -ForegroundColor Red; exit 1 }
+  exit 0
 }
 
 # --- 2. ensure NSSM is on the system ---
