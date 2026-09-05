@@ -24,7 +24,8 @@
 #   c) resolve that account's own fixed user SID - always present in its own
 #      token, unlike the broken per-call logon-session SID.
 #   d) grant that SID a read/write (Modify) ACE on exactly TargetFolder -
-#      never Everyone, never a parent dir.
+#      never Everyone, never a parent dir - and the SAME ACE on each -SharePath
+#      entry, if any were passed. Still never broader: each is one named path.
 #   e) create a PRIVATE per-turn desktop and grant that SID access to it (see
 #      New-SandboxDesktop) - nothing on the operator's own WinSta0\Default.
 #   f) CreateProcessWithLogonW launches AS that account, twice, through the one
@@ -36,9 +37,9 @@
 #      (STARTF_USESTDHANDLES) so the inner process's stdin/stdout/stderr ARE the
 #      same pipes Node's child_process.spawn of THIS script sees.
 #   g) wait for the inner process, destroy the desktop, best-effort revoke the
-#      ACE, THEN release the lease (ACE revoke before lock release, so no other
-#      turn can claim this account while its ACE from THIS turn might still be
-#      getting cleaned up), exit with the inner process's own exit code.
+#      ACEs from (d), THEN release the lease (revoke before lock release, so no
+#      other turn can claim this account while an ACE from THIS turn might still
+#      be getting cleaned up), exit with the inner process's own exit code.
 #
 # WHY CreateProcessWithLogonW, and not either token-based API (all three were
 # tried; this is the only one that works from where this script actually runs):
@@ -89,7 +90,45 @@
 param(
   [Parameter(Mandatory = $true)][string]$TargetFolder,
   [Parameter(Mandatory = $true)][string]$InnerBin,
-  [Parameter(ValueFromRemainingArguments = $true)][string[]]$InnerArgs
+  # AllowEmptyString, and it is not cosmetic anywhere it appears in this file:
+  # claude-args.mjs:123 pushes the PAIR `--setting-sources` '' - the EMPTY
+  # string IS the value, it is what tells Claude Code to load NO settings
+  # sources at all so a sandboxed being does not inherit the operator's personal
+  # ~/.claude (and above all its MCP servers). Belt-and-braces on THIS
+  # parameter, measured 2026-09-05: a ValueFromRemainingArguments [string[]]
+  # that is NOT Mandatory already binds an empty element happily, so this
+  # attribute changes nothing today - it is here so that putting Mandatory (or
+  # any other validator) on this parameter later cannot silently resurrect the
+  # failure. The parameter that ACTUALLY threw
+  # `ParameterArgumentValidationErrorEmptyStringNotAllowed,sandbox-logon-launcher.ps1`
+  # in production is Invoke-AsLeasedAccount's -BinArgs, which IS Mandatory - see
+  # the note there for the measurement and the consequence.
+  [Parameter(ValueFromRemainingArguments = $true)][AllowEmptyString()][string[]]$InnerArgs,
+  # ---- OPTIONAL, and both default to an empty array ON PURPOSE: with neither
+  # flag passed this script does exactly what it did before they existed - no
+  # extra ACL write, and no environment block built at all.
+  #
+  # Declared AFTER the ValueFromRemainingArguments parameter above, which looks
+  # wrong and is not: measured 2026-09-05 against the real caller's argv shape
+  # (`-TargetFolder X -InnerBin Y --input-format stream-json --setting-sources ''
+  # --permission-mode default --add-dir Z`), InnerArgs collects all eight
+  # trailing tokens identically whether these two are declared before or after
+  # it. They go last because that is where the diff is smallest.
+  #
+  # CAVEAT for whoever wires the caller (sandbox-cli-session.mjs), and MEASURED,
+  # not assumed - it is the same PS 5.1 array-binding quirk the PARAMS note in
+  # the header already records for InnerArgs. Through `powershell.exe -File`,
+  # spawned by Node with one argv element per token:
+  #   `-SharePath A B`   binds A here and drops B into the NEXT parameter.
+  #   `-SharePath A,B`   binds the SINGLE string "A,B" - PowerShell does NOT
+  #                      re-parse an argv element into an array.
+  # So one path per launcher invocation is all this shape can carry over -File.
+  # Do NOT "fix" that by splitting on ',' or ';' in here: both are legal
+  # characters in a Windows path, so a splitter would silently corrupt a real
+  # directory name. A caller that needs several paths has to change the
+  # invocation (e.g. -Command instead of -File), which is a caller-side decision.
+  [string[]]$SharePath = @(),
+  [string[]]$SetEnv = @()
 )
 
 $ErrorActionPreference = 'Stop'
@@ -122,6 +161,14 @@ public static class SandboxLogon {
     public const int STD_OUTPUT_HANDLE = -11;
     public const int STD_ERROR_HANDLE = -12;
     public const uint INFINITE = 0xFFFFFFFF;
+
+    // ---- per-spawn environment (see New-SandboxEnvironmentBlock) ----
+    // NOT optional whenever a block is actually passed: lpEnvironment is read as
+    // ANSI unless this flag is set, so a UTF-16 block without it reaches the
+    // child as garbage. Only ever OR'd in on the -SetEnv path.
+    public const int CREATE_UNICODE_ENVIRONMENT = 0x00000400;
+    public const int LOGON32_LOGON_INTERACTIVE = 2;
+    public const int LOGON32_PROVIDER_DEFAULT = 0;
 
     // ---- window station / desktop security (see New-SandboxDesktop) ----
     public const uint READ_CONTROL = 0x00020000;
@@ -239,6 +286,38 @@ public static class SandboxLogon {
         int dwLogonFlags, string lpApplicationName, StringBuilder lpCommandLine, int dwCreationFlags,
         IntPtr lpEnvironment, string lpCurrentDirectory,
         ref STARTUPINFO lpStartupInfo, out PROCESS_INFORMATION lpProcessInformation);
+
+    // ---- the three below exist ONLY to build a per-spawn environment block,
+    // i.e. only on the -SetEnv path; with no -SetEnv none of them is ever
+    // called and lpEnvironment above stays NULL exactly as before.
+    //
+    // LogonUser here does NOT reopen the settled question at the top of this
+    // file. That WHY is about LAUNCHING from a token (CreateProcessAsUser needs
+    // SeAssignPrimaryTokenPrivilege, CreateProcessWithTokenW needs
+    // SeImpersonatePrivilege, and the unelevated daemon holds neither). Merely
+    // OBTAINING and HOLDING a token needs no privilege at all, and nothing is
+    // launched from this one - it is only the thing CreateEnvironmentBlock
+    // renders a user's own environment from. VERIFIED 2026-09-05 on this
+    // machine from a token deliberately stripped by CreateRestrictedToken
+    // (DISABLE_MAX_PRIVILEGE) down to SeChangeNotifyPrivilege alone, i.e.
+    // strictly weaker than the daemon's: LogonUser came back 1326
+    // ERROR_LOGON_FAILURE (it got all the way to checking the password), never
+    // 1314 ERROR_PRIVILEGE_NOT_HELD, and CreateEnvironmentBlock succeeded.
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "LogonUserW")]
+    public static extern bool LogonUser(string lpszUsername, string lpszDomain, string lpszPassword,
+        int dwLogonType, int dwLogonProvider, out IntPtr phToken);
+
+    // userenv.dll, not kernel32: this is the API that renders ONE USER'S OWN
+    // environment - their USERPROFILE/APPDATA/LOCALAPPDATA and their
+    // HKCU\Environment values - from a token for that user. bInherit=false
+    // means "do not fold the CALLING process's environment in", which is the
+    // single most load-bearing argument in this whole feature; see THE TRAP in
+    // New-SandboxEnvironmentBlock.
+    [DllImport("userenv.dll", SetLastError = true)]
+    public static extern bool CreateEnvironmentBlock(out IntPtr lpEnvironment, IntPtr hToken, bool bInherit);
+
+    [DllImport("userenv.dll", SetLastError = true)]
+    public static extern bool DestroyEnvironmentBlock(IntPtr lpEnvironment);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern IntPtr GetStdHandle(int nStdHandle);
@@ -523,6 +602,139 @@ function Format-Win32Arg([string]$Arg) {
   return $sb.ToString()
 }
 
+function New-SandboxEnvironmentBlock {
+  # Build the environment block a spawned child will get: THE LEASED ACCOUNT'S
+  # OWN environment, with $SetEnv's NAME=VALUE pairs laid over it. Returns
+  # @{ Ptr; Names }. The CALLER owns Ptr and must FreeHGlobal it (see
+  # Invoke-AsLeasedAccount, which does it in a finally the moment
+  # CreateProcessWithLogonW returns).
+  #
+  # WHY THIS EXISTS AT ALL: with lpEnvironment NULL the child simply inherits
+  # the pool account's default environment and NOTHING can be handed to it per
+  # spawn. provision-sandbox-account.ps1 records the cost of that in its own
+  # comments - PI_CODING_AGENT_DIR had to be set at MACHINE scope, redirecting
+  # every pi on the box including the operator's own terminal, purely because
+  # "the launcher passes lpEnvironment = NULL - so it cannot be per-spawn". The
+  # target case here is a per-turn CREDENTIAL (CLAUDE_CODE_OAUTH_TOKEN) that
+  # must reach exactly one child and be persisted NOWHERE: not on disk, not in a
+  # machine-wide variable, not in this launcher's own environment.
+  #
+  # THE TRAP, and the reason this is forty lines rather than four: lpEnvironment
+  # REPLACES the child's entire environment - it does not merge into it. So the
+  # obvious shape (copy $env:*, add the extras, pass that) is WRONG in the one
+  # way that matters: the child would get the OPERATOR'S USERPROFILE, APPDATA,
+  # TEMP and PATH, i.e. a pool account running pointed at the operator's own
+  # profile. That is precisely the isolation this entire script exists to
+  # create. Do NOT "simplify" it that way. The block has to be built FOR THE
+  # TARGET USER:
+  #     LogonUser(account)          -> a token that IS that account
+  #     CreateEnvironmentBlock(tok) -> that account's own variables
+  # and only then are $SetEnv's pairs overlaid on the result.
+  #
+  # KNOWN GAP, measured as far as it could be and NOT further - worth knowing
+  # before relying on this: the token minted here is a SEPARATE logon from the
+  # one seclogon makes for the child, and it does not load the account's
+  # registry hive. CreateEnvironmentBlock derives USERPROFILE / APPDATA /
+  # LOCALAPPDATA from the token itself, but TEMP, TMP and any per-user PATH live
+  # in HKCU\Environment; if that account's hive is not currently loaded, those
+  # may come out of the MACHINE values instead of the user's. It was NOT
+  # possible to measure that here - it needs a pool account's password and a
+  # real launch, neither of which this change was allowed to do. If a -SetEnv
+  # turn ever shows a child writing into C:\Windows\Temp, this is why.
+  param(
+    [Parameter(Mandatory = $true)][string]$AccountName,
+    [Parameter(Mandatory = $true)][string]$Password,
+    # AllowEmptyString for the same reason as -BinArgs below: a Mandatory
+    # [string[]] rejects an empty element in the BINDER, and a malformed pair
+    # should come back as this function's own explicit error, not as a
+    # parameter-binding exception the caller cannot act on.
+    [Parameter(Mandatory = $true)][AllowEmptyString()][string[]]$SetEnv
+  )
+  $token = [IntPtr]::Zero
+  $block = [IntPtr]::Zero
+  try {
+    # Domain '.' = this machine's local account database, same as the launch
+    # call - the pool accounts are local, never domain.
+    if (-not [SandboxLogon]::LogonUser($AccountName, '.', $Password,
+            [SandboxLogon]::LOGON32_LOGON_INTERACTIVE, [SandboxLogon]::LOGON32_PROVIDER_DEFAULT, [ref]$token)) {
+      throw "sandbox-logon-launcher: LogonUser('$AccountName') for the environment block failed, Win32 error $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+    }
+    # bInherit = $false. See THE TRAP: $true would fold THIS process's (the
+    # operator's) environment into the result.
+    if (-not [SandboxLogon]::CreateEnvironmentBlock([ref]$block, $token, $false)) {
+      throw "sandbox-logon-launcher: CreateEnvironmentBlock for '$AccountName' failed, Win32 error $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+    }
+
+    # ---- read it. An environment block is NUL-terminated UTF-16 "NAME=VALUE"
+    # runs back to back, with one EXTRA NUL closing the whole block.
+    # PtrToStringUni stops at the first NUL, so the walker advances by the
+    # string it just read plus its terminator, and an empty read means it hit
+    # the block's own final NUL, i.e. the end.
+    $entries = New-Object System.Collections.Generic.List[string]
+    $off = 0
+    while ($true) {
+      $s = [Runtime.InteropServices.Marshal]::PtrToStringUni([IntPtr]::Add($block, $off))
+      if ([string]::IsNullOrEmpty($s)) { break }
+      [void]$entries.Add($s)
+      $off += ($s.Length + 1) * 2   # +1 for the NUL, *2 because these are WCHARs
+    }
+
+    # ---- overlay $SetEnv. Windows wants an environment block sorted by NAME,
+    # case-insensitively, and CreateEnvironmentBlock hands one back already
+    # sorted that way (verified 2026-09-05 on this machine, 52 entries, in
+    # order). So a name that ALREADY exists is replaced IN PLACE - which keeps
+    # the ordering intact for free - and a genuinely new name is INSERTED at its
+    # sorted position rather than appended, because appending would be the one
+    # move that breaks the ordering the API just established.
+    $names = New-Object System.Collections.Generic.List[string]
+    foreach ($pair in $SetEnv) {
+      $eq = $pair.IndexOf('=')
+      # Only the FIRST '=' splits: a Win32 variable NAME cannot contain one, a
+      # VALUE can contain anything (and may be empty, e.g. "FOO="). $eq -lt 1
+      # therefore rejects both "no '=' at all" and a leading '=' (the "=C:"
+      # drive-cwd form, which is never something a caller means to inject).
+      if ($eq -lt 1) {
+        throw "sandbox-logon-launcher: -SetEnv entry is not NAME=VALUE: '$pair'"
+      }
+      $name = $pair.Substring(0, $eq)
+      [void]$names.Add($name)
+      $at = -1
+      for ($i = 0; $i -lt $entries.Count; $i++) {
+        if ($entries[$i].StartsWith("$name=", [System.StringComparison]::OrdinalIgnoreCase)) { $at = $i; break }
+      }
+      if ($at -ge 0) {
+        $entries[$at] = $pair
+      } else {
+        $ins = $entries.Count
+        for ($i = 0; $i -lt $entries.Count; $i++) {
+          $cur = $entries[$i]
+          $cut = $cur.IndexOf('=')
+          $curName = if ($cut -gt 0) { $cur.Substring(0, $cut) } else { $cur }
+          if ([string]::Compare($curName, $name, [System.StringComparison]::OrdinalIgnoreCase) -gt 0) { $ins = $i; break }
+        }
+        $entries.Insert($ins, $pair)
+      }
+    }
+
+    # ---- write it back out in exactly the shape it was read in, into memory we
+    # own, and hand the caller the pointer.
+    $sb = New-Object System.Text.StringBuilder
+    foreach ($e in $entries) { [void]$sb.Append($e); [void]$sb.Append([char]0) }
+    [void]$sb.Append([char]0)   # the block's own closing NUL
+    $chars = $sb.ToString().ToCharArray()
+    $ptr = [Runtime.InteropServices.Marshal]::AllocHGlobal($chars.Length * 2)
+    [Runtime.InteropServices.Marshal]::Copy($chars, 0, $ptr, $chars.Length)
+    return [PSCustomObject]@{ Ptr = $ptr; Names = $names.ToArray() }
+  } finally {
+    # Both of these are released HERE and not by the caller: the block has
+    # already been copied into our own HGlobal above, and the token was only
+    # ever the thing that block was rendered from. The caller therefore owns
+    # exactly one resource, Ptr - which is the whole point of returning it alone.
+    if ($block -ne [IntPtr]::Zero) { [SandboxLogon]::DestroyEnvironmentBlock($block) | Out-Null }
+    if ($token -ne [IntPtr]::Zero) { [SandboxLogon]::CloseHandle($token) | Out-Null }
+  }
+}
+
 function Invoke-AsLeasedAccount {
   # THE single CreateProcessWithLogonW call site in this script. It is used
   # TWICE per turn - once for the scratch-profile scrub pass, once for InnerBin
@@ -544,13 +756,37 @@ function Invoke-AsLeasedAccount {
     [Parameter(Mandatory = $true)][string]$AccountName,
     [Parameter(Mandatory = $true)][string]$Password,
     [Parameter(Mandatory = $true)][string]$Bin,
-    [Parameter(Mandatory = $true)][string[]]$BinArgs,
+    # THIS is the parameter that broke production, and the reason for the
+    # attribute: Mandatory on a [string[]] validates EVERY ELEMENT as non-empty,
+    # so one empty element rejects the whole array with
+    #   Cannot bind argument to parameter 'BinArgs' because it is an empty string
+    #   ParameterArgumentValidationErrorEmptyStringNotAllowed,sandbox-logon-launcher.ps1
+    # and claude-args.mjs:123 always pushes one - the `--setting-sources` ''
+    # pair, whose empty value is exactly what stops a sandboxed being inheriting
+    # the operator's ~/.claude. Reproduced and fixed in isolation 2026-09-05:
+    # Mandatory [string[]] throws on @('--setting-sources','',...), the same
+    # parameter with [AllowEmptyString()] binds all six elements.
+    # The failure mode is nasty because it is LATE and PARTIAL - by the time it
+    # fires the lease is held and the folder ACE is granted, and only the launch
+    # dies - so the symptom is a confined ccode being that cannot be sandboxed AT
+    # ALL while every other part of the turn looks healthy. Do not "clean up"
+    # this attribute; -InnerArgs at the top of the file carries the same one for
+    # the same reason.
+    [Parameter(Mandatory = $true)][AllowEmptyString()][string[]]$BinArgs,
     [Parameter(Mandatory = $true)][string]$WorkingDirectory,
     [Parameter(Mandatory = $true)][string]$LpDesktop,
     [Parameter(Mandatory = $true)][string]$Label,
     [IntPtr]$StdIn = [IntPtr]::Zero,
     [IntPtr]$StdOut = [IntPtr]::Zero,
-    [IntPtr]$StdError = [IntPtr]::Zero
+    [IntPtr]$StdError = [IntPtr]::Zero,
+    # NAME=VALUE pairs to inject into THIS child's environment. Empty by default
+    # and the default path is untouched: with none passed, no block is built,
+    # lpEnvironment stays [IntPtr]::Zero and dwCreationFlags stays exactly
+    # CREATE_NO_WINDOW - byte for byte the call that was here before.
+    # NOT plumbed through from the scrub pass, deliberately; the argument for
+    # that asymmetry is at the scrub's own call site in
+    # Clear-SandboxProfileContents.
+    [string[]]$SetEnv = @()
   )
   $cmdParts = New-Object System.Collections.Generic.List[string]
   [void]$cmdParts.Add((Format-Win32Arg $Bin))
@@ -577,6 +813,25 @@ function Invoke-AsLeasedAccount {
 
   $pi = New-Object SandboxLogon+PROCESS_INFORMATION
   Log "$Label under ${AccountName}: $Bin (+$($BinArgs.Count) args), cwd=$WorkingDirectory"
+
+  # ---- per-spawn environment. NOTHING is built unless -SetEnv was actually
+  # passed, so the ordinary path below still hands CreateProcessWithLogonW a
+  # NULL lpEnvironment and the child gets the account's default environment from
+  # seclogon, unchanged.
+  # NAMES ONLY in the log, never values. A -SetEnv value is expected to BE a
+  # credential - CLAUDE_CODE_OAUTH_TOKEN is the reason this exists - and Log
+  # writes to the daemon's stderr, which is captured to
+  # ~/.egpt/config/logs/daemon-startup-err.log and kept. A token in there would
+  # outlive the turn it was minted for, which defeats the point of never
+  # persisting it.
+  $creationFlags = [SandboxLogon]::CREATE_NO_WINDOW
+  $envBlock = [IntPtr]::Zero
+  if ($SetEnv -and $SetEnv.Count -gt 0) {
+    $envInfo = New-SandboxEnvironmentBlock -AccountName $AccountName -Password $Password -SetEnv $SetEnv
+    $envBlock = $envInfo.Ptr
+    $creationFlags = $creationFlags -bor [SandboxLogon]::CREATE_UNICODE_ENVIRONMENT
+    Log "$Label under ${AccountName}: injecting $($envInfo.Names.Count) env var(s) into the child: $($envInfo.Names -join ', ') (names only - values are never logged)"
+  }
   # lpApplicationName MUST be the resolved path, not $null (operator 2026-08-21):
   # leaving it null relies on the target account's own (unpredictable) PATH
   # search to resolve the first token of lpCommandLine, and empirically that
@@ -586,12 +841,23 @@ function Invoke-AsLeasedAccount {
   # for that, same as any other CreateProcess-family caller.
   # Domain '.' = this machine's local account database; the pool accounts are
   # local, never domain.
-  $ok = [SandboxLogon]::CreateProcessWithLogonW(
-    $AccountName, '.', $Password, [SandboxLogon]::LOGON_WITH_PROFILE,
-    $Bin, $cmdLine, [SandboxLogon]::CREATE_NO_WINDOW,
-    [IntPtr]::Zero, $WorkingDirectory, [ref]$si, [ref]$pi)
+  $werr = 0
+  try {
+    $ok = [SandboxLogon]::CreateProcessWithLogonW(
+      $AccountName, '.', $Password, [SandboxLogon]::LOGON_WITH_PROFILE,
+      $Bin, $cmdLine, $creationFlags,
+      $envBlock, $WorkingDirectory, [ref]$si, [ref]$pi)
+    # Captured INSIDE the try, immediately: the free in the finally must never
+    # get a chance to come between a failure and the error code that explains it.
+    if (-not $ok) { $werr = [Runtime.InteropServices.Marshal]::GetLastWin32Error() }
+  } finally {
+    # Freed as soon as the call returns, success or failure, and NOT after the
+    # wait: the kernel copies the environment block into the new process at
+    # creation time, so nothing past this point ever reads it again. A finally
+    # rather than a straight line so a throw here cannot leak it.
+    if ($envBlock -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::FreeHGlobal($envBlock) }
+  }
   if (-not $ok) {
-    $werr = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
     throw "sandbox-logon-launcher: CreateProcessWithLogonW('$AccountName') failed for $Label, Win32 error $werr"
   }
 
@@ -746,6 +1012,21 @@ function Clear-SandboxProfileContents {
     # so that anything it prints - including the report line above - is a
     # diagnostic, never protocol. cwd is %SystemRoot%, a directory every account
     # can use; the scrub has no business in TargetFolder.
+    #
+    # NO -SetEnv HERE, and this function does not even take one - the asymmetry
+    # is the decision, not an oversight. Invoke-AsLeasedAccount is shared so
+    # that the two passes get the same LAUNCH MECHANICS (logon flags, desktop,
+    # exit-code handling); it was never a promise that they get the same
+    # PAYLOAD, which is why they already differ on stdio, cwd, bin and args. A
+    # -SetEnv value is a credential meant for the inner CLI and for one turn. An
+    # environment variable is readable by anything running as that same account
+    # for the life of the process that holds it, so handing it to a second
+    # process only widens where the token exists - and this second process is a
+    # powershell.exe whose entire job is deleting files under one profile, which
+    # has no use for it whatsoever. Least exposure beats uniformity. It also
+    # keeps the scrub's launch byte-identical to what it was before -SetEnv
+    # existed, so a bug in the environment-block path cannot take the hygiene
+    # pass down with it.
     $errHandle = [SandboxLogon]::GetStdHandle([SandboxLogon]::STD_ERROR_HANDLE)
     $psExe = Join-Path $PSHOME 'powershell.exe'
     $rc = Invoke-AsLeasedAccount -AccountName $AccountName -Password $Password `
@@ -835,6 +1116,12 @@ Log "leased pool account '$leasedName'"
 
 $plainPwd = $null
 $aceGranted = $false
+# The -SharePath entries whose ACE actually LANDED, in the order they landed.
+# The finally purges exactly these and nothing else: a path that was missing, or
+# whose Set-Acl threw, must not be touched on the way out - re-ACLing a folder
+# this turn never modified is how a cleanup path turns into a bug. Declared out
+# here, before the try, so the finally can always see it.
+$sharesGranted = New-Object System.Collections.Generic.List[string]
 $leasedSid = $null
 $hSandboxDesk = [IntPtr]::Zero
 try {
@@ -856,6 +1143,62 @@ try {
   Set-Acl -LiteralPath $TargetFolder -AclObject $acl
   $aceGranted = $true
   Log "granted Modify to $($leasedSid.Value) ($leasedName) on $TargetFolder"
+
+  # ---- (d2) the SAME ACE on each -SharePath entry. WHY THIS EXISTS: a being's
+  # `allowed_paths` currently produce a `--add-dir` at the CLI layer and NOTHING
+  # at the OS layer, so under the sandbox the folder is permitted by Claude Code
+  # and denied by the kernel - the being is told it may use a directory that
+  # then refuses it. This closes that one gap and only that gap: with no
+  # -SharePath the loop body never executes and this step costs a turn nothing.
+  #
+  # EACH PATH INDEPENDENTLY, deliberately, and that is the whole design of this
+  # block: one unshareable path must not cost the turn its OTHER paths or its
+  # launch, so every entry gets its own try/catch and a failure is logged and
+  # stepped over. A MISSING path is likewise logged and skipped rather than
+  # thrown - a share path that was renamed, or lives on a drive that is not
+  # mounted right now, is a configuration problem, and failing every turn of
+  # that being over it would be a far worse outcome than the being not seeing
+  # one directory.
+  #
+  # ON THE INHERITANCE FLAGS: step (d) above hardcodes
+  # ContainerInherit,ObjectInherit because TargetFolder is always a directory. A
+  # share path may be a single FILE, and those flags are illegal on a leaf (.NET
+  # throws "This flag may not be set on a leaf object"), so a file gets the same
+  # Modify ACE with no inheritance instead.
+  $sharesSeen = New-Object 'System.Collections.Generic.HashSet[string]' -ArgumentList ([System.StringComparer]::OrdinalIgnoreCase)
+  # Seeded with TargetFolder so that a -SharePath entry naming the conversation
+  # folder is recognised as already covered by (d) - otherwise it would mean a
+  # second Set-Acl for an ACE that is already there, and a second purge on the
+  # way out, both pointless writes to the folder the turn is actually using.
+  [void]$sharesSeen.Add([System.IO.Path]::GetFullPath($TargetFolder).TrimEnd('\'))
+  foreach ($sp in $SharePath) {
+    if ([string]::IsNullOrWhiteSpace($sp)) { continue }
+    try {
+      if (-not (Test-Path -LiteralPath $sp)) {
+        Log "share path does not exist  - skipping, no ACE granted: $sp"
+        continue
+      }
+      # Pure string math on a path that was just shown to exist, so it cannot
+      # throw, and it is used ONLY as a de-duplication key - every ACL call
+      # below still uses the caller's own spelling of the path.
+      if (-not $sharesSeen.Add([System.IO.Path]::GetFullPath($sp).TrimEnd('\'))) {
+        Log "share path already granted this turn  - skipping duplicate: $sp"
+        continue
+      }
+      $shareInherit = if (Test-Path -LiteralPath $sp -PathType Container) { 'ContainerInherit,ObjectInherit' } else { 'None' }
+      $shareAcl = Get-Acl -LiteralPath $sp
+      $shareRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+        $leasedSid, 'Modify', $shareInherit, 'None', 'Allow')
+      $shareAcl.AddAccessRule($shareRule)
+      Set-Acl -LiteralPath $sp -AclObject $shareAcl
+      # Recorded only AFTER Set-Acl returned, so the revoke list is what was
+      # actually written, not what was attempted.
+      [void]$sharesGranted.Add($sp)
+      Log "granted Modify to $($leasedSid.Value) ($leasedName) on shared path $sp"
+    } catch {
+      Log "WARNING: could not grant Modify to $($leasedSid.Value) ($leasedName) on shared path $sp  - $($_.Exception.Message) (continuing: the other share paths and the launch are unaffected)"
+    }
+  }
 
   # ---- (e) give this turn its own desktop and the window-station access to
   # reach it, or every USER32-importing InnerBin dies at 0xC0000142 before its
@@ -890,6 +1233,7 @@ try {
   $finalExit = Invoke-AsLeasedAccount -AccountName $leasedName -Password $plainPwd `
     -Bin $InnerBin -BinArgs $InnerArgs `
     -WorkingDirectory $TargetFolder -LpDesktop $sandboxDesk.LpDesktop -Label 'launching' `
+    -SetEnv $SetEnv `
     -StdIn ([SandboxLogon]::GetStdHandle([SandboxLogon]::STD_INPUT_HANDLE)) `
     -StdOut ([SandboxLogon]::GetStdHandle([SandboxLogon]::STD_OUTPUT_HANDLE)) `
     -StdError ([SandboxLogon]::GetStdHandle([SandboxLogon]::STD_ERROR_HANDLE))
@@ -903,7 +1247,9 @@ try {
   # lease is released below, so no other turn can lease this account name while
   # a desktop named after it from THIS turn is still alive.
   if ($hSandboxDesk -ne [IntPtr]::Zero) { [SandboxLogon]::CloseDesktop($hSandboxDesk) | Out-Null }
-  # NOTE: of the ACEs, only the per-turn FOLDER one is revoked here. The WINDOW
+  # NOTE: of the ACEs, only the per-turn FILESYSTEM ones are revoked here -
+  # TargetFolder from step (d), and whichever -SharePath entries step (d2)
+  # actually granted. The WINDOW
   # STATION ACE from step (e) is deliberately LEFT IN PLACE: it is granted to
   # the pool GROUP (not per-turn, not per-account) and is shared by every
   # concurrent turn, so revoking it here would race sessions still running. It
@@ -918,6 +1264,24 @@ try {
       Log "revoked ACE for $($leasedSid.Value) ($leasedName) on $TargetFolder"
     } catch {
       Log "WARNING: could not revoke the ACE for $($leasedSid.Value) ($leasedName) on $TargetFolder  - $($_.Exception.Message)"
+    }
+  }
+  # ...and the same for every extra shared path that actually GOT an ACE, one
+  # try EACH for the same reason the grant loop has one each: a path that cannot
+  # be purged now (someone re-ACL'd it mid-turn, a drive went away) must not
+  # leave the ACEs on all the paths after it in the list behind. Same
+  # best-effort contract as above too - a cleanup failure is logged, never
+  # allowed to mask the inner process's own result.
+  if ($leasedSid -and $sharesGranted -and $sharesGranted.Count -gt 0) {
+    foreach ($sp in $sharesGranted) {
+      try {
+        $shareAcl2 = Get-Acl -LiteralPath $sp
+        $shareAcl2.PurgeAccessRules($leasedSid)
+        Set-Acl -LiteralPath $sp -AclObject $shareAcl2
+        Log "revoked ACE for $($leasedSid.Value) ($leasedName) on shared path $sp"
+      } catch {
+        Log "WARNING: could not revoke the ACE for $($leasedSid.Value) ($leasedName) on shared path $sp  - $($_.Exception.Message)"
+      }
     }
   }
   # ---- (g, part 3) release the lease  - ACE revoke happens first (above),

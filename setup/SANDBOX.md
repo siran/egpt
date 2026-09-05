@@ -38,6 +38,16 @@ warm session spawns
 | `src/sandbox-cli-session.mjs` | Wraps the warm CLI session so its `spawn` goes through the launcher. |
 | `setup/sandbox-account.Tests.ps1`, `setup/test-sandbox-logon-launcher.ps1` | Their tests. |
 
+The launcher's parameters:
+
+| Parameter | |
+|---|---|
+| `-TargetFolder` | required — the conversation folder, ACE'd for the lease |
+| `-InnerBin` | required — the binary to launch as the leased account |
+| `-InnerArgs` | its arguments, `ValueFromRemainingArguments` |
+| `-SharePath` | optional, repeatable — extra folders to ACE alongside `TargetFolder`, granted and revoked independently. One path per invocation (see *Known gaps* 4). |
+| `-SetEnv` | optional — `NAME=VALUE` entries overlaid onto a per-user environment block. Values are never logged, only names. |
+
 Constants live at the top of `sandbox-account.ps1`:
 
 ```powershell
@@ -181,25 +191,44 @@ Real, current, and worth knowing before relying on any of this.
    mechanism is a token in the environment (`CLAUDE_CODE_OAUTH_TOKEN` from
    `claude setup-token`, or `ANTHROPIC_API_KEY`), which leads directly to:
 
-2. **The launcher passes `lpEnvironment = NULL`.** The child inherits the pool
-   account's own default environment; nothing can be handed to it per spawn.
-   This is why `PI_CODING_AGENT_DIR` had to be set at Machine scope. Until the
-   launcher builds and passes an environment block, a per-turn credential cannot
-   be injected — and a Machine-scope credential would be readable by every
-   process on the box, which defeats the point.
+2. **Nothing yet passes `-SetEnv`.** The launcher can now build a per-user
+   environment block (`LogonUser` → `CreateEnvironmentBlock` → overlay →
+   `CREATE_UNICODE_ENVIRONMENT`), so a per-turn credential such as
+   `CLAUDE_CODE_OAUTH_TOKEN` can be injected without touching disk or a
+   machine-wide variable. **`src/sandbox-cli-session.mjs` does not pass it yet**,
+   so gap 1 stands until that caller is wired.
 
-3. **Confined ccode and the sandbox do not compose.** `claude-args.mjs:123`
-   pushes `'--setting-sources', ''` — an empty-string argv element — and the
-   launcher's `[string[]]$InnerArgs` binder rejects it
-   (`ParameterArgumentValidationErrorEmptyStringNotAllowed` in
-   `daemon-startup-err.log`). The lease and the ACE both succeed; only the
-   launch fails. A skip-permissions tier is unaffected, because
+   Known sub-gap, written into the code: the token minted for the block is a
+   separate logon that does not load the pool account's registry hive.
+   `USERPROFILE`/`APPDATA`/`LOCALAPPDATA` come from the token and are correct;
+   `TEMP`, `TMP` and per-user `PATH` live in `HKCU\Environment` and may fall
+   back to machine values. Symptom to look for: a child writing into
+   `C:\Windows\Temp`. Only affects the `-SetEnv` path.
+
+3. **Confined ccode and the sandbox do not compose — fixed, unverified live.**
+   `claude-args.mjs:123` pushes `'--setting-sources', ''`, an empty-string argv
+   element. The parameter that rejected it was **`Invoke-AsLeasedAccount`'s
+   `-BinArgs`**, not the script's `-InnerArgs`: `Mandatory` on a `[string[]]`
+   validates every *element* as non-empty, and `-InnerArgs` is
+   `ValueFromRemainingArguments` without `Mandatory`, so it always bound the
+   empty element fine. The live log names `BinArgs` seven times and `InnerArgs`
+   never. Both now carry `[AllowEmptyString()]`; `-BinArgs` is the one that
+   mattered. A skip-permissions tier was never affected, because
    `confinementFor` returns `{}` and no `--setting-sources` is emitted.
 
-4. **Shared paths are not ACE'd.** The launcher takes one path, `-TargetFolder`,
-   and grants only that. A folder added through a being's `allowed_paths` gets
-   an `--add-dir` at the CLI layer and no ACE at the OS layer, so under a
-   sandbox it is permitted by Claude Code and denied by the kernel.
+4. **Shared paths: launcher ready, caller not wired.** `-SharePath` now takes
+   extra folders and gives each the same `Modify` ACE as `TargetFolder`, granted
+   independently and purged in the same `finally`. **Nothing passes it yet**, so
+   a being's `allowed_paths` still produce an `--add-dir` at the CLI layer and no
+   ACE at the OS layer — permitted by Claude Code, denied by the kernel.
+
+   Constraint on the eventual caller: through `powershell -File`, **one path per
+   invocation**. `-SharePath A B` binds `A` and spills `B` into the next
+   parameter; `-SharePath A,B` binds the single string `"A,B"` — PS 5.1 does not
+   re-parse an argv element into an array. No `,`/`;` splitter was added on
+   purpose: both are legal in Windows paths and a splitter would silently
+   corrupt real directory names. Several paths means changing the invocation
+   style, not the separator.
 
 5. **pi's tool list is not enforceable.** `access_level` overwrites
    `allowed_tools` with ccode tool names, which are not pi tool names, so
