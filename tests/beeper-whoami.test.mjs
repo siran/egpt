@@ -180,12 +180,17 @@ describe('beeper-whoami — the topology table', () => {
     expect(renderTable(rows, notes)).toBe([
       'host        ip            node  port           S0/S1  account                state',
       '----------  ------------  ----  -------------  -----  ---------------------  ------------------',
+      // ORDER: node, then S0/S1, then api/cdp/console, then port. The local node is first and its
+      // S0 rows come before its S1 rows; inside a session the api row (which names the account)
+      // sits above the cdp row (which is the number a driver is typed at).
       'node-one    10.0.0.4      kg    23373 api      S0     @primary:beeper.com    logged in',
-      'node-one    10.0.0.4      kg    23374 api      S1     @secondary:beeper.com  logged in',
-      'node-one    10.0.0.4      kg    23375 console  S1     -                      listening',
       'node-one    10.0.0.4      kg    23376 api      S0     -                      NOT LOGGED IN',
-      'node-one    10.0.0.4      kg     9222 cdp      S0     -                      listening (Beeper)',
+      // 9222 is pid 100 — the SAME process as the 23373 api row, so it inherits that account.
+      'node-one    10.0.0.4      kg     9222 cdp      S0     @primary:beeper.com    listening (Beeper)',
+      'node-one    10.0.0.4      kg    23374 api      S1     @secondary:beeper.com  logged in',
+      // 9223 is Chrome's own pid, which no api row is, so it stays `-`.
       'node-one    10.0.0.4      kg     9223 cdp      S1     -                      listening (Chrome)',
+      'node-one    10.0.0.4      kg    23375 console  S1     -                      listening',
       'peer-two    203.0.113.7   do    23373 api      S0     @remote:beeper.com     logged in',
       'peer-two    203.0.113.7   do    23375 console  S0     -                      listening',
       'peer-three  198.51.100.9  ?     -              -      -                      unreachable',
@@ -252,6 +257,158 @@ describe('beeper-whoami — the topology table', () => {
     expect(at.map((r) => r.role)).toEqual(['console']);
     expect(shellPortOf({}), 'a node that configures nothing keeps the old default').toBe(23375);
     expect(shellPortOf({ shell: { port: 23385 } })).toBe(23385);
+  });
+
+  // -------------------------------------------------------------------------------------------
+  // WHICH INSTALL IS THIS CDP PORT — the question the number itself cannot answer, and the one
+  // the operator got wrong three times running (2026-09-04: tunnelling to a CDP port and finding
+  // a different account than the one he was aiming at). Two Beeper CDP rows print identically, so
+  // the number typed into a driver used to say nothing about whose account was behind it.
+  //
+  // A Beeper install serves its HTTP API and its debugger from ONE process, so the pid the OS
+  // reports for the CDP socket is the pid of an api row above — and that row has already been
+  // told, by a 200, whose account it is. No second probe, no new scan: the same data read the
+  // other way round. Four cases in one fixture, because it is the DIFFERENCE between them the
+  // operator needs and all four used to print `-`:
+  //   9222  Beeper, pid 100 — the process behind the 23373 api row  -> inherits @primary
+  //   9223  Chrome, pid 500 — no api row is that process            -> stays `-`
+  //   9224  Beeper, pid 400 — the process behind 23376, which 401s  -> `-`, and SAYS why
+  //   9225  Beeper, pid 600 — no api row shares that pid at all     -> stays `-`, nothing guessed
+  const joinOwners = async () => new Map([
+    ...(await tableOwners()),
+    [9224, { pid: 400, session: 0, image: 'Beeper.exe' }],
+    [9225, { pid: 600, session: 1, image: 'Beeper.exe' }],
+  ]);
+  const joinDeps = (over = {}) => tableDeps({
+    localOwners: joinOwners,
+    cdpProbe: async (port) => (port === 9223 ? { ok: true, label: 'Chrome' }
+      : [9222, 9224, 9225].includes(port) ? { ok: true, label: 'Beeper' }
+      : { ok: false }),
+    ...over,
+  });
+
+  it('gives a Beeper CDP port the account of the api port its own PROCESS serves', async () => {
+    const { rows } = await topology({ cfg: table, deps: joinDeps() });
+    expect(renderTable(rows)).toBe([
+      'host      ip        node  port           S0/S1  account                state',
+      '--------  --------  ----  -------------  -----  ---------------------  ---------------------------------',
+      'node-one  10.0.0.4  kg    23373 api      S0     @primary:beeper.com    logged in',
+      'node-one  10.0.0.4  kg    23376 api      S0     -                      NOT LOGGED IN',
+      'node-one  10.0.0.4  kg     9222 cdp      S0     @primary:beeper.com    listening (Beeper)',
+      'node-one  10.0.0.4  kg     9224 cdp      S0     -                      listening (Beeper, NOT LOGGED IN)',
+      'node-one  10.0.0.4  kg    23374 api      S1     @secondary:beeper.com  logged in',
+      'node-one  10.0.0.4  kg     9223 cdp      S1     -                      listening (Chrome)',
+      'node-one  10.0.0.4  kg     9225 cdp      S1     -                      listening (Beeper)',
+      'node-one  10.0.0.4  kg    23375 console  S1     -                      listening',
+    ].join('\n'));
+  });
+
+  it('never guesses: Chrome, and a Beeper pid no api row shares, both stay -', async () => {
+    const { rows } = await topology({ cfg: table, deps: joinDeps() });
+    const at = (port) => rows.find((r) => r.port === port);
+    expect(at(9223), 'no api row is Chrome — a browser the operator drives by hand has no account here')
+      .toMatchObject({ account: '-', state: 'listening (Chrome)' });
+    // Chrome stays `-` because of the PID, not because of its name: the join is evidence, and a
+    // real install whose /json/version omits the word "beeper" (it labels itself Electron) is
+    // still that pid's process, so it must still be named.
+    const electron = await topology({ cfg: table, deps: joinDeps({ cdpProbe: async (port) => (port === 9222 ? { ok: true, label: 'Electron' } : { ok: false }) }) });
+    expect(electron.rows.find((r) => r.port === 9222))
+      .toMatchObject({ account: '@primary:beeper.com', state: 'listening (Electron)' });
+    expect(at(9225), 'pid 600 serves its API outside the scan, or serves none — either way we do not know')
+      .toMatchObject({ account: '-', state: 'listening (Beeper)' });
+    // And where the OS names no owner at all (off win32) there is no pid to join on, so the join
+    // adds nothing rather than inventing something: every CDP row is exactly as it was before.
+    const off = await topology({ cfg: table, deps: joinDeps({ localOwners: async () => new Map() }) });
+    expect(off.rows.filter((r) => r.role === 'cdp').map((r) => [r.account, r.state])).toEqual([
+      ['-', 'listening (Beeper)'], ['-', 'listening (Chrome)'], ['-', 'listening (Beeper)'], ['-', 'listening (Beeper)'],
+    ]);
+  });
+
+  it('says NOT LOGGED IN on a CDP row whose api row is up but unauthenticated', async () => {
+    // The install sitting at a login/verify screen. That is precisely what has to be known BEFORE
+    // the number is typed into a driver, and it is DERIVED from the joined api row's own state —
+    // never assumed from the absence of an account.
+    const { rows } = await topology({ cfg: table, deps: joinDeps() });
+    expect(rows.find((r) => r.port === 9224)).toMatchObject({ account: '-', state: 'listening (Beeper, NOT LOGGED IN)' });
+
+    // …and it really is that api row talking: hand 23376 a token it answers, and the CDP row on
+    // the same pid becomes that account, with the plain state back.
+    const { rows: authed } = await topology({
+      cfg: { ...table, beeper: { ...table.beeper, third: { base_url: 'http://127.0.0.1:23376', token: 'tok-third' } } },
+      deps: joinDeps({
+        probe: async (baseUrl, token) => (Number(new URL(baseUrl).port) === 23376
+          ? (token === 'tok-third' ? { ok: true, status: 200, loginID: '@third:beeper.com', networks: ['Beeper'] } : { ok: false, status: 401 })
+          : tableProbe(baseUrl, token)),
+      }),
+    });
+    expect(authed.find((r) => r.port === 9224)).toMatchObject({ account: '@third:beeper.com', state: 'listening (Beeper)' });
+  });
+
+  it('carries the same CDP labelling for a remote node — it runs THIS tool, so it comes back joined', async () => {
+    // The remote did the join over ITS OWN pids and returned finished rows; the parent relabels
+    // host/ip and nothing else. A CDP account must therefore survive the trip untouched.
+    const remoteProbe = async () => ({
+      ok: true,
+      ip: '203.0.113.7',
+      rows: [
+        { host: 'ignored', ip: '?', node: 'do', port: 23373, role: 'api', session: 'S0', account: '@remote:beeper.com', state: 'logged in' },
+        { host: 'ignored', ip: '?', node: 'do', port: 9222, role: 'cdp', session: 'S0', account: '@remote:beeper.com', state: 'listening (Beeper)' },
+        { host: 'ignored', ip: '?', node: 'do', port: 9223, role: 'cdp', session: 'S0', account: '-', state: 'listening (Beeper, NOT LOGGED IN)' },
+      ],
+    });
+    const { rows } = await topology({ cfg: table, hosts: ['peer-two'], deps: joinDeps({ remoteProbe }) });
+    const remote = rows.filter((r) => r.host === 'peer-two');
+    expect(remote.map((r) => [r.port, r.account, r.state])).toEqual([
+      [23373, '@remote:beeper.com', 'logged in'],
+      [9222, '@remote:beeper.com', 'listening (Beeper)'],
+      [9223, '-', 'listening (Beeper, NOT LOGGED IN)'],
+    ]);
+    expect(remote.every((r) => r.ip === '203.0.113.7' && r.host === 'peer-two')).toBe(true);
+  });
+
+  // ORDER: node, then S0/S1, then api/cdp/console, then port (operator 2026-09-04). The rows of
+  // ONE install have to sit together, and the api row that NAMES the account has to come before
+  // the cdp row that gets typed into a driver. Port order alone scatters them — 9xxx and 233xx
+  // land at opposite ends of the table.
+  it('orders by node, then session, then api/cdp/console, then port', async () => {
+    // The remote answers with its rows DELIBERATELY out of order: one node's rows are one node's
+    // block and the same rule applies inside it, whatever the far end sent.
+    const remoteProbe = async () => ({
+      ok: true,
+      ip: '203.0.113.7',
+      rows: [
+        { host: 'ignored', ip: '?', node: 'do', port: 23375, role: 'console', session: 'S1', account: '-', state: 'listening' },
+        { host: 'ignored', ip: '?', node: 'do', port: 9222, role: 'cdp', session: 'S0', account: '@remote:beeper.com', state: 'listening (Beeper)' },
+        { host: 'ignored', ip: '?', node: 'do', port: 23373, role: 'api', session: 'S0', account: '@remote:beeper.com', state: 'logged in' },
+      ],
+    });
+    const { rows } = await topology({ cfg: table, hosts: ['peer-two'], deps: joinDeps({ remoteProbe }) });
+    expect(rows.map((r) => `${r.host} ${r.session} ${r.role} ${r.port}`)).toEqual([
+      // The local node first, then the peers in the order the operator listed them: that is HIS
+      // order, and it is positional — the `node` column is self-reported and says ? for a node
+      // that never answered, so it could not carry the grouping anyway.
+      'node-one S0 api 23373',      // port breaks the tie between two S0 api rows…
+      'node-one S0 api 23376',
+      'node-one S0 cdp 9222',       // …but role outranks it: a 9xxx cdp still follows a 233xx api
+      'node-one S0 cdp 9224',
+      'node-one S1 api 23374',      // and session outranks role: S1's api follows S0's cdp
+      'node-one S1 cdp 9223',
+      'node-one S1 cdp 9225',
+      'node-one S1 console 23375',  // console last of the three roles, not alphabetically third
+      'peer-two S0 api 23373',
+      'peer-two S0 cdp 9222',
+      'peer-two S1 console 23375',
+    ]);
+  });
+
+  it('sorts a row the OS names no session for LAST within its node, not first', async () => {
+    // `-` is the least informative row there is; leading with it would push the answer down.
+    const { rows } = await topology({
+      cfg: table,
+      deps: joinDeps({ localOwners: async () => new Map([[23373, { pid: 100, session: 0, image: 'Beeper.exe' }]]) }),
+    });
+    expect(rows[0]).toMatchObject({ port: 23373, session: 'S0' });
+    expect(rows.slice(1).every((r) => r.session === '-'), 'everything the OS did not name follows it').toBe(true);
   });
 
   it('keeps an overlay/VPN address but drops host-only virtual switches and link-local', () => {
@@ -326,11 +483,11 @@ describe('beeper-whoami — the nodes named in config (egpt_nodes)', () => {
       'host      ip          node  port           S0/S1  account                state',
       '--------  ----------  ----  -------------  -----  ---------------------  ------------------',
       'NODE-ONE  192.0.2.11  kg    23373 api      S0     @primary:beeper.com    logged in',
-      'NODE-ONE  192.0.2.11  kg    23374 api      S1     @secondary:beeper.com  logged in',
-      'NODE-ONE  192.0.2.11  kg    23375 console  S1     -                      listening',
       'NODE-ONE  192.0.2.11  kg    23376 api      S0     -                      NOT LOGGED IN',
-      'NODE-ONE  192.0.2.11  kg     9222 cdp      S0     -                      listening (Beeper)',
+      'NODE-ONE  192.0.2.11  kg     9222 cdp      S0     @primary:beeper.com    listening (Beeper)',
+      'NODE-ONE  192.0.2.11  kg    23374 api      S1     @secondary:beeper.com  logged in',
       'NODE-ONE  192.0.2.11  kg     9223 cdp      S1     -                      listening (Chrome)',
+      'NODE-ONE  192.0.2.11  kg    23375 console  S1     -                      listening',
       'PEER-TWO  192.0.2.12  do    23373 api      S0     @remote:beeper.com     logged in',
       'PEER-TWO  192.0.2.12  do    23375 console  S0     -                      listening',
     ].join('\n'));

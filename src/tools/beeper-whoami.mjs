@@ -337,6 +337,26 @@ async function apiState(port, conns, probeImpl) {
   return { account: '-', state: `listening (HTTP ${statuses[statuses.length - 1]})` };
 }
 
+// ROW ORDER: node, then S0/S1, then role, then port (operator 2026-09-04). The table is read to
+// answer "which number do I type", so the rows of ONE install must sit together and the api row —
+// the one carrying the account — must come BEFORE the cdp row a driver is actually aimed at.
+// Sorting by port alone scatters them: a CDP port is 9xxx and an API port 233xx, so the two
+// sockets of one process land at opposite ends of the table.
+//
+// NODE is the outer grouping and it is POSITIONAL, not sorted: local rows first, then each remote
+// in the order the operator listed it (egpt_nodes, then --host). That is his own order, and
+// alphabetising it would throw away the only ranking anybody has stated. It also cannot be read
+// off the `node` column, which is self-reported and says `?` for a node that never answered.
+const ROLE_ORDER = ['api', 'cdp', 'console'];   // NOT alphabetical by intent — a new role must be placed here deliberately
+const roleRank = (role) => { const i = ROLE_ORDER.indexOf(role); return i < 0 ? ROLE_ORDER.length : i; };
+// No session at all (off win32, or an owner the OS would not name) is a node's least informative
+// row, so it sorts last within that node rather than first. Same for a row with no port.
+const sessionRank = (s) => (/^S\d+$/.test(s ?? '') ? Number(String(s).slice(1)) : Infinity);
+const portRank = (p) => (Number.isFinite(Number(p)) ? Number(p) : Infinity);
+const byRow = (a, b) => (sessionRank(a.session) - sessionRank(b.session))
+  || (roleRank(a.role) - roleRank(b.role))
+  || (portRank(a.port) - portRank(b.port));
+
 export async function topology({ cfg = readConfigSync(), hosts = [], extraPorts = [], remotePath, configPeers = true, deps = {} } = {}) {
   const conns = connectionsOf(cfg);
   const shellPort = shellPortOf(cfg);
@@ -375,17 +395,52 @@ export async function topology({ cfg = readConfigSync(), hosts = [], extraPorts 
   const sessionOf = (port) => { const o = owners.get(port); return o ? `S${o.session}` : '-'; };
   const here = { host, ip, node };
 
-  const [apiRows, consoleRow, cdpRows] = await Promise.all([
+  const [apiRows, consoleRow, cdpFound] = await Promise.all([
     Promise.all(apiPorts.map(async (port) => ({ ...here, port, role: 'api', session: sessionOf(port), ...(await apiState(port, conns, probeImpl)) })))
       .then((rs) => rs.filter((r) => r.state !== 'not listening' || named.has(r.port))),
     listening(shellPort).then((up) => ({ ...here, port: shellPort, role: 'console', session: sessionOf(shellPort), account: '-', state: up ? 'listening' : 'not listening' })),
     Promise.all(cdpPorts.map(async (port) => {
       const r = await cdp(port);
-      return r.ok ? { ...here, port, role: 'cdp', session: sessionOf(port), account: '-', state: `listening (${r.label})` } : null;
+      return r.ok ? { port, label: r.label } : null;
     })).then((rs) => rs.filter(Boolean)),
   ]);
 
-  const rows = [...apiRows, consoleRow].sort((a, b) => a.port - b.port).concat(cdpRows);
+  // WHOSE INSTALL IS THIS CDP PORT — the question the number alone cannot answer, and the one the
+  // operator got wrong three times in a row (2026-09-04, tunnelling to a CDP port and finding a
+  // different account than the one he was aiming at). Two Beeper CDP rows print identically, so
+  // the port he types into a driver says nothing about the account behind it.
+  //
+  // ONE PROCESS SERVES BOTH: a Beeper install's HTTP API and its debugger are sockets of the SAME
+  // pid, and the api row above has already been TOLD whose account that is, by a 200. So the pid
+  // the OS reports for the CDP socket joins it to that row — no second probe, no new scan, just
+  // the data already collected read the other way round.
+  //
+  // THE PID IS THE EVIDENCE, not the label /json/version prints: a pid is one process, so an api
+  // row sharing it IS this install, whether the debugger calls itself Beeper or Electron. Chrome
+  // keeps `-` for the reason that actually holds — no api row is Chrome's process — rather than
+  // by being named, which would also refuse a real install whose user agent omits the word.
+  //
+  // NOTHING IS GUESSED. A pid with no api row (its API is outside the scan range, or the OS said
+  // nothing about that socket) keeps `-`. And when the joined row names no account, its own state
+  // rides along in the cell: "listening (Beeper, NOT LOGGED IN)" is the install sitting at a login
+  // screen, which is precisely what must be known BEFORE a driver is pointed at it.
+  const apiByPid = new Map();
+  for (const r of apiRows) {
+    const pid = owners.get(r.port)?.pid;
+    // A port nothing answered on names no install, whatever pid the OS reports for it.
+    if (pid != null && r.state !== 'not listening') apiByPid.set(pid, r);
+  }
+  const cdpRows = cdpFound.map(({ port, label }) => {
+    const pid = owners.get(port)?.pid;
+    const api = pid == null ? undefined : apiByPid.get(pid);
+    return {
+      ...here, port, role: 'cdp', session: sessionOf(port),
+      account: api?.account ?? '-',
+      state: api && api.account === '-' ? `listening (${label}, ${api.state})` : `listening (${label})`,
+    };
+  });
+
+  const rows = [...apiRows, consoleRow, ...cdpRows].sort(byRow);
 
   // The printed text is ASCII on purpose: this is a DOUBLE-CLICKED tool, and a console still
   // opens on the machine's OEM codepage, where a UTF-8 em-dash arrives as mojibake.
@@ -405,7 +460,10 @@ export async function topology({ cfg = readConfigSync(), hosts = [], extraPorts 
     // The NOTE keeps the ssh target, always: `name` is a label, and the thing that failed is the
     // target you would retype.
     const label = t.name ?? t.host;
-    if (r?.ok) { rows.push(...r.rows.map((row) => ({ ...row, host: label, ip: firstAddr(r.ip, row.ip, t.ip) }))); continue; }
+    // One remote's rows are one node's block, so the same order applies inside it. The remote runs
+    // THIS tool and already sorted them — sorting again costs nothing and keeps the table right
+    // when the node on the far end is an older build.
+    if (r?.ok) { rows.push(...r.rows.map((row) => ({ ...row, host: label, ip: firstAddr(r.ip, row.ip, t.ip) })).sort(byRow)); continue; }
     rows.push({ host: label, ip: firstAddr(r?.ip, t.ip), node: '?', port: '-', role: '', session: '-', account: '-', state: 'unreachable' });
     if (r?.error) notes.push(`${t.host}: unreachable - ${r.error}`);
   }
