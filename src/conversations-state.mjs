@@ -986,14 +986,33 @@ export function getBeing(state, surface, jid, being) {
 // SENDER MATCH (operator 2026-08-16): the shared allowed_users sender-match predicate
 // router.mjs's resolve() and mesh.mjs's allowedUsersDenial() both need — collapsed into ONE
 // implementation here since this module already owns and documents the two-tier allowedUsers
-// shape (getBeing above). UNSET/EMPTY list = unrestricted (today's convention, unchanged). The
-// literal "*" entry is an explicit wildcard — "reachable by anyone" — the escape hatch an
-// access_level:'all' being needs (see brainpool.mjs's ACCESS-LEVEL/ALLOWED-USERS gate): without
-// it, "*" would just be an entry no real sender id ever equals, denying everyone. shortChatId
-// normalizes both sides (src/bridges/chat-id.mjs) so a short OR legacy full-form config entry
-// matches either way.
+// shape (getBeing above). shortChatId normalizes both sides (src/bridges/chat-id.mjs) so a
+// short OR legacy full-form config entry matches either way.
+//
+// THREE STATES, NOT TWO (operator 2026-09-05):
+//
+//   absent   inherit. Nothing at either tier is nothing to enforce, so it permits — this is
+//            what nearly every being in the profile relies on, and it does not change.
+//   []       DENY EVERYONE. Somebody wrote a list and put nobody on it; that is an answer,
+//            not a silence.
+//   ["*"]    permit everyone. The explicit wildcard, and the escape hatch an access_level:'all'
+//            being needs (see brainpool.mjs's ACCESS-LEVEL/ALLOWED-USERS gate) — without it,
+//            "*" would just be an entry no real sender id ever equals, denying everyone.
+//
+// This used to be two states: `|| !allowedUsers.length` folded [] in with absent and permitted
+// both, so `allowed_users: []` — the exact syntax README.md:63 and MANUAL.md:155 teach as deny —
+// did the opposite of what it says, on the two rungs that gate a being. The callers never had
+// this confusion and did not need changing: router.mjs:468-470 and mesh.mjs:178-180 both resolve
+// an absent list to null and a present one to the array itself, so `convAllowed ?? globalAllowed`
+// was already handing this predicate null for absent and [] for empty. Only the fold was wrong.
+//
+// Nearest rung still wins, now in both directions: a conversation that sets [] shuts a being its
+// global default would have allowed.
+//
+// NOT the same list as the per-SURFACE allowed_users (boot.mjs's isAllowedUser), which has always
+// been correctly fail-closed on empty because it tests with .includes() and nothing else.
 export function allowedUsersPermits(allowedUsers, senderId) {
-  if (!Array.isArray(allowedUsers) || !allowedUsers.length) return true;
+  if (!Array.isArray(allowedUsers)) return true;
   if (allowedUsers.includes('*')) return true;
   return allowedUsers.map(shortChatId).includes(shortChatId(senderId));
 }

@@ -1132,6 +1132,40 @@ describe('mesh service — allowed_users gate (operator 2026-08-15)', () => {
     expect(brain.calls).toHaveLength(1);
   });
 
+  // AN EMPTY LIST IS DENY, AND IS NOT THE SAME AS AN ABSENT ONE (operator 2026-09-05).
+  //
+  // Three states, not two, and the rungs already told them apart before the predicate did:
+  // router.mjs and mesh.mjs both resolve an absent list to null and a present one to the array
+  // itself, so `convAllowed ?? globalAllowed` hands over null for "nobody set this" and [] for
+  // "somebody set it to nothing". allowedUsersPermits was collapsing the two into ALLOW, which
+  // made `allowed_users: []` - the exact syntax README.md:63 and MANUAL.md:155 teach as deny -
+  // mean the opposite of what it says.
+  //
+  //   absent  -> inherit, and with nothing to inherit, permit (the test above)
+  //   []      -> deny everyone (these two)
+  //   ['*']   -> permit everyone (the test above that)
+  it('REPRODUCE-FIRST: allowed_users: [] is DENY — no mesh requester reaches the being', async () => {
+    const shutAgents = { wren: { configuration: 'sonnet-high', name: 'wren', conversation_defaults: { allowed_users: [] } } };
+    const brain = fakeBrain({ reply: 'ok' });
+    const { bridge, mesh } = svc({ node: 'do', agents: shutAgents, brain });
+    const req = encodeMesh({ by: 'Anyone', body: '@wren do X', from: 'HFM', from_node: 'kg', to: 'wren.do', post_id: 'p1' });
+    await mesh.handle({ surface: 'whatsapp', chatId: 'RELAY', msgId: 'm1', body: req, senderId: 'totally-unlisted' });
+    await flush();
+    expect(brain.calls).toHaveLength(0);
+  });
+
+  it('REPRODUCE-FIRST: a per-conversation allowed_users: [] SHUTS a being the global default would have allowed', async () => {
+    // The nearest rung wins for deny exactly as it does for allow: 'boss' is on the global list
+    // and is still refused, because this conversation set the list to nothing.
+    const state = { contacts: { whatsapp: { RELAY: { slug: 'chat', agents: { wren: { allowed_users: [] } } } } } };
+    const brain = fakeBrain({ reply: 'ok' });
+    const { bridge, mesh } = svc({ node: 'do', agents, brain, loadState: async () => state });
+    const req = encodeMesh({ by: 'Boss', body: '@wren do X', from: 'HFM', from_node: 'kg', to: 'wren.do', post_id: 'p1' });
+    await mesh.handle({ surface: 'whatsapp', chatId: 'RELAY', msgId: 'm1', body: req, senderId: 'boss' });
+    await flush();
+    expect(brain.calls).toHaveLength(0);
+  });
+
   it('a PER-CONVERSATION allowed_users override REPLACES (never merges with) the global default via the mesh path too', async () => {
     // surface/chatId keys mirror the RESPONDER's own resolution (route.limb/route.room_id — the
     // arriving envelope's ev.surface/ev.chatId): 'whatsapp'/'RELAY', same as mesh.handle below.
