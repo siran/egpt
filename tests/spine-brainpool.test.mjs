@@ -7,7 +7,7 @@ import { createBrainPool, parseWarmBlock } from '../src/spine/brainpool.mjs';
 import { createWarmPool } from '../src/warm-sessions.mjs';
 import { createPiCliSession } from '../src/pi-cli-session.mjs';
 import { EventEmitter } from 'node:events';
-import { loadPermissionLevel } from '../src/spine/permission-levels.mjs';
+import { loadPermissionLevel, ACCESS_LEVELS, isAccessLevel } from '../src/spine/permission-levels.mjs';
 import { createContacts } from '../src/spine/contacts.mjs';
 import { createBrains } from '../src/spine/brains.mjs';
 import { ConversationRoom } from '../src/room-core.mjs';
@@ -1065,6 +1065,29 @@ describe("permission-levels — the 'sandbox' level (operator 2026-09-05)", () =
     const regular = loadPermissionLevel('regular');
     expect(regular.dangerouslySkipPermissions).toBe(false);
     expect(regular.allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);
+  });
+
+  // ── ACCESS_LEVELS / isAccessLevel (2026-09-05, second pass). Adding the third tier left
+  //    the SET of valid level names written out in four places: this module's own guard,
+  //    brainpool's override condition, and TWO validators in commands.mjs — the last two of
+  //    which still said all|regular, which is exactly why `/agents access_level sandbox` was
+  //    refused and the tier was reachable only by hand-editing conversations.yaml. The list
+  //    lives HERE now, once; every other site is downstream of it, so these pin the list
+  //    itself (order included — it is what the user-facing usage text is built from). ──
+  it('ACCESS_LEVELS is THE list — frozen, in human order (confined → unconfined → boxed), and every name in it resolves to a real permissions file', () => {
+    expect(ACCESS_LEVELS).toEqual(['regular', 'all', 'sandbox']);
+    expect(Object.isFrozen(ACCESS_LEVELS)).toBe(true);
+    for (const level of ACCESS_LEVELS) {
+      expect(isAccessLevel(level)).toBe(true);
+      expect(loadPermissionLevel(level)).not.toBe(null);
+    }
+  });
+
+  it('isAccessLevel IS the guard loadPermissionLevel applies — it rejects exactly what that returns null for, and it is not a second copy of the list', () => {
+    for (const bad of ['sandboxed', 'ALL', 'Regular', '', 'bogus', undefined, null]) {
+      expect(isAccessLevel(bad)).toBe(false);
+      expect(loadPermissionLevel(bad)).toBe(null);
+    }
   });
 });
 

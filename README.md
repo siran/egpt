@@ -123,9 +123,10 @@ answered by the persona:
                               mention-direct · mention · accum (mention + the turn
                               is prompted with what was said since the being's
                               last turn) · off
-/agents[=<slug>] <handle>|all access_level <all|regular>
-                              flip between the unconfined tier and the node's
-                              regular confined default
+/agents[=<slug>] <handle>|all access_level <regular|all|sandbox>
+                              point a being at a confinement tier: regular (the
+                              node's confined default), all (unconfined), or
+                              sandbox (all's capability, only inside the OS box)
 /restart                      bounce the node (daemon respawns the current checkout)
 /upgrade                      git pull + npm install + rebuild, then respawn
 /rewind <ref>                 check out <ref>, reinstall, respawn

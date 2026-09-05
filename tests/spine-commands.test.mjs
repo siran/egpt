@@ -948,11 +948,15 @@ describe('/agents access_level all|regular <handle>|all — points access_level 
   });
 
   it('/agents access_level <bad> e and bare access_level get the usage reply — not silence, not a fallthrough', async () => {
-    for (const body of ['/agents access_level foo e', '/agents access_level bad e']) {
+    // 'sandboxed' is in this list on purpose: it is the CONFIG KEY's name, not a level —
+    // the near-miss most likely to be typed once the third tier exists.
+    for (const body of ['/agents access_level foo e', '/agents access_level bad e', '/agents access_level sandboxed e']) {
       const state = seedAccessState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
       const { cmds, sent } = harness({ state });
       await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body });
-      expect(sent[0].text).toBe('usage: /agents access_level all|regular <handle>|all');
+      // The refusal NAMES EVERY LEVEL, because it is built from ACCESS_LEVELS. It used to say
+      // all|regular, which hid the third tier from the one person guaranteed to be reading it.
+      expect(sent[0].text).toBe('usage: /agents access_level regular|all|sandbox <handle>|all');
       expect(sent[0].text).not.toMatch(/recognized/);
     }
   });
@@ -965,6 +969,41 @@ describe('/agents access_level all|regular <handle>|all — points access_level 
       expect(sent[0].text).toMatch(/access.*all/i);
       expect(sent[0].text).not.toMatch(/recognized/);
     }
+  });
+
+  // REPRODUCE-FIRST (2026-09-05): the third tier shipped in permission-levels.mjs and
+  // brainpool.mjs, but THIS command's validator still hard-coded all|regular — so the only
+  // way to put a being in the OS box was to hand-edit conversations.yaml, and the operator
+  // asking for it by command got a usage line that denied the tier existed.
+  it("/agents access_level sandbox e sets accessLevel: 'sandbox' — the third tier is reachable BY COMMAND, not only by hand-editing config", async () => {
+    const state = seedAccessState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
+    const { cmds, sent, evicts, getState } = harness({ state });
+    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents access_level sandbox e' });
+    const being = getBeing(getState(), 'whatsapp', '1234@s.whatsapp.net', 'e');
+    expect(being.accessLevel).toBe('sandbox');
+    expect(being.mode).toBe('on');                       // same field-only write as the other two tiers
+    expect(being.threadId).toBe('thread-abc');
+    expect(evicts).toHaveLength(1);                      // ...and the same warm-session eviction
+    expect(sent[0].text).toMatch(/e access here → sandbox/);
+    expect(sent[0].text).toMatch(/OS sandbox/);          // the tier's own blurb, not 'all'/'regular' text
+    expect(sent[0].text).not.toMatch(/^usage:/);
+  });
+
+  it('/agents access_level SANDBOX e is case-insensitive on the value, exactly like the other two levels', async () => {
+    const state = seedAccessState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
+    const { cmds, sent, getState } = harness({ state });
+    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents access_level SANDBOX e' });
+    expect(getBeing(getState(), 'whatsapp', '1234@s.whatsapp.net', 'e').accessLevel).toBe('sandbox');
+    expect(sent[0].text).not.toMatch(/^usage:/);
+  });
+
+  it('AGENTS_USAGE names EVERY level — the usage line is built from ACCESS_LEVELS, so a fourth tier can never leave it stale', async () => {
+    expect(AGENTS_USAGE).toMatch(/access_level <regular\|all\|sandbox>/);
+    const state = seedAccessState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
+    const { cmds, sent } = harness({ state });
+    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents' });
+    expect(sent[0].text).toBe(AGENTS_USAGE);
+    expect(sent[0].text).toMatch(/sandbox/);
   });
 });
 
@@ -1233,6 +1272,45 @@ describe('/agents <handle>|all — bare status view, usage, and /e/egpt retireme
     await cmds.run({ chatId: '!room', surface: 'whatsapp', body: '/agents wren' });
     expect(sent[0].text).toMatch(/being: wren/);
     expect(sent[0].text).not.toMatch(/not configured/);
+  });
+
+  // The status view's ACCESS-LEVEL OVERRIDE block was hard-coded to 'all'/'regular', so a
+  // being pinned to the THIRD tier previewed its TYPE FILE's own allowed_tools — a status
+  // that contradicted what that being's very next turn would actually run with (brainpool
+  // applies the tier live). REPRODUCE-FIRST: before the ACCESS_LEVELS refactor this reported
+  // the fake type's [Read].
+  it("/agents e for a being at access_level: sandbox previews the TIER's grant (bare Bash/Agent), not the type file's own tools", async () => {
+    const config = { agents: { e: { configuration: 'mytype' } } };
+    const brains = { resolve: (name) => ({ name, type: 'ccode', allowed_tools: ['Read'] }) };
+    const seed = (level) => patchContact(
+      ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state,
+      'whatsapp', '!room', { agents: { e: { access_level: level } } },
+    );
+
+    const { cmds, sent } = harness({ state: seed('sandbox'), config, brains });
+    await cmds.run({ chatId: '!room', surface: 'whatsapp', body: '/agents e' });
+    expect(sent[0].text).toMatch(/access_level: sandbox/);
+    expect(sent[0].text).not.toMatch(/allowed_tools: \[Read\]/);          // NOT the type file's grant
+    expect(sent[0].text).toMatch(/allowed_tools: \[[^\]]*\bBash\b[^\]]*\]/);
+    expect(sent[0].text).toMatch(/allowed_tools: \[[^\]]*\bAgent\b[^\]]*\]/);
+
+    // The tier IS all's capability, so the two previews' tool lines must be identical — a
+    // stabler claim than any hand-copied list, and it re-reads the real permissions files.
+    const { cmds: cmdsAll, sent: sentAll } = harness({ state: seed('all'), config, brains });
+    await cmdsAll.run({ chatId: '!room', surface: 'whatsapp', body: '/agents e' });
+    const tools = (t) => /allowed_tools: .*/.exec(t)[0];
+    expect(tools(sent[0].text)).toBe(tools(sentAll[0].text));
+  });
+
+  it("REGRESSION: a being with NO access_level still previews its own type file's tools — the override fires only for a real level", async () => {
+    let state = ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state;
+    state = patchContact(state, 'whatsapp', '!room', { agents: { e: { mode: 'on' } } });
+    const config = { agents: { e: { configuration: 'mytype' } } };
+    const brains = { resolve: (name) => ({ name, type: 'ccode', allowed_tools: ['Read'] }) };
+    const { cmds, sent } = harness({ state, config, brains });
+    await cmds.run({ chatId: '!room', surface: 'whatsapp', body: '/agents e' });
+    expect(sent[0].text).toMatch(/access_level: unset/);
+    expect(sent[0].text).toMatch(/allowed_tools: \[Read\]/);
   });
 
   it('/e and /egpt carry no special meaning any more — every form falls through to the generic catch-all', async () => {

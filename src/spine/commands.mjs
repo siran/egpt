@@ -13,7 +13,7 @@ import { isAutoMode, AUTO_MODES, DEFAULT_AUTO_MODE } from '../auto-mode.mjs';
 import { patchBeing, deleteBeing, getContact, getBeing, residentsOf, slugDir, statsPath, conversationPathOf, seedIdentityLayers, skeletonIdentityFiles, slugSuffix, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS, LOBBY_SLUG } from '../conversations-state.mjs';
 import { stripFrontMatter } from '../transcript-meta.mjs';
 import { coerceAllowedTools, resolveDefaultBrainDef, resolveBeingDef } from './brainpool.mjs';
-import { loadPermissionLevel } from './permission-levels.mjs';
+import { loadPermissionLevel, ACCESS_LEVELS, isAccessLevel } from './permission-levels.mjs';
 import { stat as fsStat, readFile as fsReadFile, writeFile as fsWriteFile, mkdir as fsMkdir, readdir as fsReaddir, rm as fsRm, rename as fsRename } from 'node:fs/promises';
 import { readdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -251,14 +251,17 @@ const NODE_ADDRESSABLE = /^\/(chrome|status|tabs|tab|open|close|members?|config|
 //   /agents <handle>|all [<conv>]                             status
 //   /agents reset|restart <handle>|all [<conv>]
 //   /agents auto <mode> <handle>|all [<conv>]
-//   /agents access_level <all|regular> <handle>|all [<conv>]
+//   /agents access_level <level> <handle>|all [<conv>]        (level: see ACCESS_LEVELS)
 //
 // The object-first order (`/agents restart e`) is GONE — operator 2026-08-29, "remove legacy
 // ways". It is DETECTED and named rather than left to misparse: a line that silently does the
 // wrong thing is worse than one that tells you what to type. `=<slug>` still says the same
 // thing as the trailing <conv>; saying it both ways is an error, not a precedence rule.
 export const AGENT_SUB_ARITY = { reset: 0, restart: 0, auto: 1, access_level: 1 };
-export const AGENTS_USAGE = 'usage: /agents [<verb>] [<value>] <handle>|all [<conversation>] — verbs: reset | restart | auto <mode> | access_level <all|regular>. Bare `/agents <handle>|all` shows status.';
+// Every level name in the operator-facing text comes from ACCESS_LEVELS (permission-levels.mjs),
+// never a literal: the tier list is spelled out in ONE place, and a new tier updates this line,
+// the refusals below and /help together or not at all.
+export const AGENTS_USAGE = `usage: /agents [<verb>] [<value>] <handle>|all [<conversation>] — verbs: reset | restart | auto <mode> | access_level <${ACCESS_LEVELS.join('|')}>. Bare \`/agents <handle>|all\` shows status.`;
 
 // args (already whitespace-split) -> what agentsCmd wants: { args: [handle, verb, value],
 // slug, extra }, or { retired } for the old order. Pure; exported for tests.
@@ -696,7 +699,7 @@ export function createCommands({
       return;
     }
 
-    // /agents[=<slug>] <handle>|all [reset|restart|auto <mode>|access_level <all|regular>] —
+    // /agents[=<slug>] <handle>|all [reset|restart|auto <mode>|access_level <level>] —
     // the general per-being command surface (operator 2026-08-15, retires /e + /egpt entirely).
     // /e's whole family was hardcoded to defaultKey (the persona's own map key) — "a failure
     // in design" now that every resident being (the persona AND a sibling like wren) is
@@ -709,7 +712,7 @@ export function createCommands({
     //   /agents reset <handle>|all [<conv>]                       → archive + wipe + reseed
     //   /agents restart <handle>|all [<conv>]                     → clear ONLY threadId, everything else survives
     //   /agents auto <mode> <handle>|all [<conv>]                 → was /e auto <mode>
-    //   /agents access_level <all|regular> <handle>|all [<conv>]  → was /e access all|regular
+    //   /agents access_level <level> <handle>|all [<conv>]        → was /e access all|regular
     //
     // See § COMMAND GRAMMAR at module scope for the shape and why the target trails.
     // `[<conv>]` and `=<slug>` are the same thing said two ways.
@@ -1071,7 +1074,7 @@ export function createCommands({
     await send?.(ev.chatId, `/rooms: unknown verb "${first}" — create|join|leave|members|delete`);
   }
 
-  // /agents[=<slug>] <handle>|all [reset|restart|auto <mode>|access_level <all|regular>] — THE
+  // /agents[=<slug>] <handle>|all [reset|restart|auto <mode>|access_level <level>] — THE
   // dispatcher (operator 2026-08-15, retires the whole /e/egpt family — see its own comment
   // at the dispatch site above for the "failure in design" this closes). Parses the already-
   // tokenized args ([handle-or-'all', subcommand?, value?] — the regex above split them),
@@ -1087,7 +1090,7 @@ export function createCommands({
     if (!loadState || !writeState) { await send?.(ev.chatId, '/agents: conversation state not wired'); return; }
     const sub = subRaw?.toLowerCase() || null;
     if (sub && !['reset', 'restart', 'auto', 'access_level'].includes(sub)) {
-      await send?.(ev.chatId, `/agents: unknown subcommand "${subRaw}" — reset|restart|auto <mode>|access_level <all|regular>. Verb first: /agents <sub> <handle>.`);
+      await send?.(ev.chatId, `/agents: unknown subcommand "${subRaw}" — reset|restart|auto <mode>|access_level <${ACCESS_LEVELS.join('|')}>. Verb first: /agents <sub> <handle>.`);
       return;
     }
     if (sub === 'auto') {
@@ -1095,8 +1098,12 @@ export function createCommands({
       if (!mode) { await send?.(ev.chatId, `/agents: auto needs a mode — one of: ${AUTO_MODES.join(', ')}`); return; }
       if (!isAutoMode(mode)) { await send?.(ev.chatId, `/agents: unknown mode "${mode}" — use one of: ${AUTO_MODES.join(', ')}`); return; }
     }
-    if (sub === 'access_level' && valueRaw?.toLowerCase() !== 'all' && valueRaw?.toLowerCase() !== 'regular') {
-      await send?.(ev.chatId, 'usage: /agents access_level all|regular <handle>|all');
+    // The level set is permission-levels.mjs's (isAccessLevel), so this validator can never
+    // again lag a tier that module already resolves — which is exactly what happened to
+    // 'sandbox': it worked everywhere except here, leaving a hand edit of conversations.yaml
+    // as the only way in.
+    if (sub === 'access_level' && !isAccessLevel(valueRaw?.toLowerCase())) {
+      await send?.(ev.chatId, `usage: /agents access_level ${ACCESS_LEVELS.join('|')} <handle>|all`);
       return;
     }
 
@@ -1315,11 +1322,12 @@ export function createCommands({
     } catch (e) { onLog(`/agents auto ${ev.chatId}: ${e?.message ?? e}`); await send?.(ev.chatId, `/agents: auto failed — ${e?.message ?? e}`); }
   }
 
-  // /agents access_level <all|regular> <handle>|all — was /e access all|regular
+  // /agents access_level <level> <handle>|all — was /e access all|regular
   // (renamed subcommand keyword, operator's own example: `/agents access_level all wren`),
   // generalized to any being (or every resident). Points EACH target being's own
-  // `access_level` at config/permissions/all.md or regular.md. NOT a freeze: writes ONLY
-  // `access_level: target` into the being's block, merged over its existing fields
+  // `access_level` at config/permissions/<level>.md, for any level in ACCESS_LEVELS.
+  // NOT a freeze: writes ONLY `access_level: target` into the being's block, merged
+  // over its existing fields
   // (patchBeing) — brainpool.mjs's turn() reads the matching permissions file FRESH every
   // turn (permission-levels.mjs — no caching) and overrides that turn's allowed_tools/
   // dangerously_skip_permissions, so editing either file changes behavior immediately with
@@ -1348,10 +1356,15 @@ export function createCommands({
       }
       await writeState(next);
     } catch (e) { onLog(`/agents access_level ${ev.chatId}: ${e?.message ?? e}`); await send?.(ev.chatId, `/agents: access_level failed — ${e?.message ?? e}`); return; }
-    const msg = target === 'all'
-      ? `✅ ${handles.join(', ')} access ${where} → all (unconfined: full filesystem, bare Bash)`
-      : `✅ ${handles.join(', ')} access ${where} → regular (confined default tools)`;
-    await send?.(ev.chatId, msg);
+    // What each tier MEANS, in one line — NOT a second list of what is valid (isAccessLevel
+    // already ruled on that, above). A level with no line here still confirms honestly by
+    // naming its own file rather than borrowing another tier's description.
+    const blurb = {
+      regular: 'confined default tools',
+      all: 'unconfined: full filesystem, bare Bash',
+      sandbox: "all's capability, but only ever inside the OS sandbox",
+    }[target] ?? `see config/permissions/${target}.md`;
+    await send?.(ev.chatId, `✅ ${handles.join(', ')} access ${where} → ${target} (${blurb})`);
   }
 
   // /agents[=<slug>] <handle>|all (bare) — the LIVE status view (never a stale snapshot; see
@@ -1368,8 +1381,8 @@ export function createCommands({
   // resolveBeingDef(handle, convDir, …) — the SAME resolver brainpool.mjs's turn() itself
   // calls for this being on its NEXT turn (name-the-existing-thing, not a second derivation)
   // — PLUS the ACCESS-LEVEL OVERRIDE block turn() applies right after it (loadPermissionLevel,
-  // when the being's own accessLevel is 'all'/'regular' — a live override statusTarget's own
-  // preview never applied, a real gap this closes for the new command) PLUS the
+  // when the being's own accessLevel is one of ACCESS_LEVELS — a live override
+  // statusTarget's own preview never applied, a real gap this closes for the new command) PLUS the
   // `dangerouslySkipPermissions ? raw : coerceAllowedTools(raw)` coercion statusTarget already
   // applies to its own preview. Resolved FRESH on every call (no caching anywhere in this chain), so editing
   // config between two calls changes the NEXT call's tools/model/effort with nothing to evict.
@@ -1407,7 +1420,11 @@ export function createCommands({
 
       let def = null;
       try { def = resolveBeingDef(handle, convDir, { getConfig: cfg, brains, brainType: CCODE }); } catch { def = null; }
-      if (def && (b?.accessLevel === 'all' || b?.accessLevel === 'regular')) {
+      // isAccessLevel, not a copy of the level list: this preview claims to show what the
+      // being's NEXT turn will run with, so it must recognise exactly the levels brainpool's
+      // own override recognises. While it did not, a 'sandbox' being previewed its type file's
+      // tools and the status block quietly contradicted the run.
+      if (def && isAccessLevel(b?.accessLevel)) {
         const perm = loadPermissionLevel(b.accessLevel);
         if (perm) def = { ...def, dangerously_skip_permissions: perm.dangerouslySkipPermissions, allowed_tools: perm.allowedTools };
       }

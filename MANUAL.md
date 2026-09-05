@@ -48,10 +48,11 @@ not answered by the persona. Authorization = the surface's own `chat_id`
                                                below for how this differs from
                                                reset
 /agents[=<slug>] <handle>|all auto <mode>      set a being's reply mode
-/agents[=<slug>] <handle>|all access_level <all|regular>
-                                               flip a being between the
-                                               unconfined tier and this node's
-                                               regular default (see below)
+/agents[=<slug>] <handle>|all access_level <regular|all|sandbox>
+                                               point a being at a confinement
+                                               tier: this node's regular
+                                               default, the unconfined one, or
+                                               the OS-sandboxed one (see below)
 /restart                                       bounce the node (daemon respawns
                                                the current checkout)
 /upgrade                                       git pull + npm install + rebuild,
@@ -71,7 +72,7 @@ reply is prompted with everything said here since the being's own last turn) ·
 does not buffer, batch, or flush on a heartbeat. (The 2026-07-01 accum did; same
 word, different mechanism.)
 
-### `/agents … access_level` — the unconfined tier
+### `/agents … access_level` — the confinement tiers
 
 `/agents <handle>|all access_level all` points the being at
 `config/permissions/all.md` — full filesystem, bare Bash — read fresh every turn
@@ -84,6 +85,15 @@ engine/model/effort/tools FRESH from config.yaml's `agents:` block, every turn
 (point `agents.<being>.configuration` at whichever type file conversations
 should run on). The warm session is evicted so the change takes effect on the
 very next turn — no `/restart` needed.
+
+`/agents <handle>|all access_level sandbox` is the third tier: it points the
+being at `config/permissions/sandbox.md`, which is `all.md`'s grant byte for
+byte, but the spine forces `sandboxed: true` for that level, so the being only
+ever runs inside the OS sandbox — the kernel holds the boundary instead of the
+CLI's own flags, and no config rung can unbox it. `regular`, `all` and
+`sandbox` are the whole set (`ACCESS_LEVELS`, src/spine/permission-levels.mjs);
+the command's usage line is built from it, so it can never name fewer than
+exist.
 
 ### `/agents … reset` — start a being over
 

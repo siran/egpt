@@ -34,7 +34,7 @@ import { Room } from '../room-core.mjs';
 import { isContextOverflowError, isDeadSessionError } from '../brain-errors.mjs';
 import { parseFrequency } from './heartbeat-loader.mjs';
 import { WRITE_TOOLS } from '../claude-args.mjs';
-import { loadPermissionLevel } from './permission-levels.mjs';
+import { loadPermissionLevel, isAccessLevel } from './permission-levels.mjs';
 import { mkdir as fsMkdir, readFile as fsReadFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import * as YAML from 'yaml';
@@ -670,8 +670,11 @@ export function createBrainPool({
       // gotten the same live override the default one does.
       // 'sandbox' (operator 2026-09-05) reads config/permissions/sandbox.md through this SAME
       // call — the tier is a third FILE, not a third code path; its `sandboxed` force lives in
-      // resolveConv above and nothing about the grant itself is special-cased here.
-      if (accessLevel === 'all' || accessLevel === 'regular' || accessLevel === 'sandbox') {
+      // resolveConv above and nothing about the grant itself is special-cased here. WHICH names
+      // are levels is permission-levels.mjs's own answer (isAccessLevel), not a copy of its
+      // list kept in sync by hand — that copy is what made the third tier unreachable by
+      // command for a day.
+      if (isAccessLevel(accessLevel)) {
         const perm = loadPermission(accessLevel);
         if (perm) def = { ...def, dangerously_skip_permissions: perm.dangerouslySkipPermissions, allowed_tools: perm.allowedTools };
       }

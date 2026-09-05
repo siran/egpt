@@ -1461,11 +1461,11 @@ export const CONFIG_SCHEMA = {
             config/permissions/<level>.md (src/spine/permission-levels.mjs),
             resolved fresh every turn (brainpool.mjs) - never a freeze. UNSET
             = this node's ordinary default (the type file's own grant,
-            unmodified). all and regular are the SAME values /agents
-            <handle>|all access_level all|regular writes per-conversation;
-            sandbox is settable HERE (and by hand in conversations.yaml) but
-            not yet by that command, whose validator still takes all|regular
-            only (2026-09-05).
+            unmodified). All three are the SAME values /agents <handle>|all
+            access_level <level> writes per-conversation - that validator and
+            this enum are the same list, ACCESS_LEVELS in
+            src/spine/permission-levels.mjs, so a fourth tier cannot reach one
+            without the other (2026-09-05).
 
             regular
               The confined tier. config/permissions/regular.md is a LIST grant
