@@ -260,13 +260,19 @@ the thread. The one thing that folder is for: keeping `identity.d/` out of the p
   `desiredSize` backpressure, currently ignored.
 
 - **A grep across the home directory returns STALE COPIES OF MEMORY AS IF CURRENT.** Google
-  Drive's `lost_and_found` currently holds **1,133 files / 1.5 GB**, including four old
-  `MEMORY.md` copies - measured 2026-09-04, still being written to that day. A home-wide search
-  hits them and can hand you a superseded fact with a straight face. **Constrain memory searches
-  to `~/.claude/projects/C--Users-an/memory/`.** (An unscoped home grep is also slow enough to
-  need backgrounding - `AppData` and `node_modules` dominate it.) The flood itself is the failure
-  the operator's own `ffs-drive-backup` memory warns about: AI-CLI dirs must stay excluded from
-  the FreeFileSync job or Drive lost-and-found fills. **It is currently live.**
+  Drive's `lost_and_found` holds ~1,133 files / 1.5 GB, mostly DUPLICATE `.jsonl` transcripts
+  (one session appears four times at 50-65 MB each) plus old `MEMORY.md` copies. A home-wide
+  search hits them and can hand you a superseded fact with a straight face. **Constrain memory
+  searches to `~/.claude/projects/C--Users-an/memory/`.** An unscoped home grep is also slow
+  enough to need backgrounding - `AppData` and `node_modules` dominate it.
+
+  **This is NOT a misconfiguration** - I first wrote that here and it was wrong. The operator's
+  `ffs-drive-backup` memory records it as a deliberate trade: FreeFileSync mirrors a live-edited
+  tree into Drive, so files edited at sync time bounce a stale intermediate into lost-and-found,
+  and *"backup stays correct (verified H:==C:) ... a deliberate completeness-over-tidiness
+  trade."* Credentials in the backup are likewise an explicit ruling (*"circle of trust"*).
+  The only live question is volume: that memory says a *flood* means a new un-excluded churny
+  dir, and 1.5 GB accumulated since 2026-08-11 sits on the line between trickle and flood.
 
 ---
 
