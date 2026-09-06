@@ -111,8 +111,18 @@ Session 0 isolation isolates the *desktop*, not a loopback socket, and the
 banner's claim is false. The honest justification for wanting Session 1 is
 narrower: a Session 0 browser is invisible to the operator — cannot be seen,
 clicked, or shown a login prompt, and does not carry the interactive profile's
-logged-in state. That is exactly why `src/tools/s0-driver` exists (a CORS proxy
-and an HTML page to *view* CDP targets nobody can look at).
+logged-in state.
+
+**A second correction, caught by the chunk-6 agent: `src/tools/s0-driver` does
+not exist.** I cited it as evidence and it has never been in this repo's git
+history, nor is it in `bin/egpt`. Four setup scripts tell the operator to use it
+by name — `install-beeper-s0-service.ps1:6,110,118` and
+`set-beeper-s0-cdp-port.ps1:9` ("drive it with src/tools/s0-driver to log this
+install in") — and `handoffs/2026-09-03-session-zero.md:175` describes it as
+built. It is a dangling reference: anyone following those instructions to log in
+a Session 0 Beeper finds nothing. `src/tools/cdp-proxy.mjs` is a different thing
+(a token-authenticated reverse proxy for LAN access, not a viewer). Either build
+it or strike it from the four scripts; today it is a trap.
 
 The chunk-6 agent was briefed on the old claim and has been sent the correction;
 its report should say which of its decisions rested on it. Note that the
