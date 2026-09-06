@@ -226,20 +226,41 @@ function participantKeys(c) {
 // chat. Two refusals, both returning null:
 //   · NO ROSTER in the payload (participantKeys → null). UNKNOWN is never "empty" — the same
 //     reading chatHasParticipant takes on a failed GET.
-//   · FEWER THAN MIN_KEY_IDENTITIES (2) phone identities left. Zero is the matrix-only chat:
-//     nothing was learned, and every such chat would collide with every other. ONE is the case
-//     that LOOKS usable and is not — a 1:1 with X keys as {X}, and so does a small group of
-//     [self, X, co-account] once the co-account is excluded, so a size-1 key can put a reply
-//     meant for a group into a PRIVATE chat. Two is the smallest set a 1:1 cannot produce at
-//     all. The price is a three-person group going unkeyed, which a caller reads as "no key"
-//     and can fall back from; the price of accepting one is posting into the wrong chat, which
-//     nobody notices until it is public. Silence over a wrong-place answer, the same trade the
-//     fallback_handle guard makes (src/spine/router.mjs, "UNKNOWN MEANS SILENT").
+//   · FEWER THAN THE FLOOR phone identities left. Zero is always refused — the matrix-only
+//     chat, where nothing was learned and every such chat would collide with every other. ONE
+//     is refused for a `single` and ACCEPTED for a `group`, which is what CHAT TYPE below buys.
+//
+// CHAT TYPE IS THE FIRST FIELD OF THE KEY (operator 2026-09-06, live: "An y Dando"). Membership
+// alone cannot separate a group from the 1:1 nested inside it — a 1:1 with X reduces to {X}, and
+// so does the group [self, X, co-account] once the co-account is excluded — so the floor was two,
+// and the price was that the SMALLEST REAL GROUP THERE IS (both accounts plus one other person)
+// could not be keyed at all. Measured live: `An y Dando` keyed to nothing on either endpoint, the
+// mouth link refused with `no-key`, and the reply fell back onto the node's OWN account — the
+// operator answering himself, the one thing the second account exists to prevent.
+//
+// `type` fixes that because it is a property of the REAL chat, not of a view: BOTH endpoints
+// independently report `group` for the same underlying room (measured 2026-09-06 on
+// 127.0.0.1:23373 and :23376), unlike `id` and `localChatID`, which differ per account and are
+// useless here. So it costs the cross-account equality nothing, and `{group,X}` and `{single,X}`
+// can no longer collide. Only THEN does a one-identity key become safe — for a group and only for
+// a group: a group can never be produced by a 1:1, which was the entire reason for the floor of
+// two, while nothing distinguishes a 1:1 from itself, so `single` keeps it.
+//
+// (Beeper exposes no WhatsApp-native group JID anywhere on the chat payload — checked field by
+// field against both live endpoints — and participant ids are per-account `@whatsapp_lid-…`
+// namespaced forms carrying nothing the phone does not. There is no truer key to reach for.)
 //
 // HONEST LIMIT, not fixable at this layer: two DIFFERENT groups with the SAME membership key
 // identically. A participant set cannot tell them apart and no threshold changes that — a
-// caller needing certainty must confirm some other way (an id it just posted, say).
+// caller needing certainty must confirm some other way (an id it just posted, say). Excluding
+// the co-account has the same edge by construction: the group [self, X, co-account] and the group
+// [self, X] key alike. That is not new with the lower floor — [self, X, Y, co-account] and
+// [self, X, Y] already did — and the receiving half refuses rather than guesses when two of its
+// own chats key alike (src/shell/peer-mouth.mjs findChatByKey, `ambiguous`).
 const MIN_KEY_IDENTITIES = 2;
+// The floor for a `group`, per CHAT TYPE above. Zero is still refused: a chat that yielded no
+// phone identity at all is not evidence of anything.
+const MIN_GROUP_KEY_IDENTITIES = 1;
 // idKey's own marker for "this value was phone-shaped": '#' + digits only. Read rather than
 // re-derived, so the phone/not-phone judgement is made in exactly one place.
 const PHONE_KEY_RE = /^#\d+$/;
@@ -247,14 +268,18 @@ const PHONE_KEY_RE = /^#\d+$/;
  * @param {object} chat  a Beeper chat payload (the /v1/chats shape participantKeys reads).
  * @param {string|string[]} [exclude]  identities to leave out — the accounts the CALLER holds.
  *   Normalised the same way the roster is, so any phone form works.
- * @returns {string|null} a stable key for the underlying chat, or null when it refuses (above).
+ * @returns {string|null} `<type>,<phone>,<phone>…` — the chat's type, then the sorted member
+ *   phone set — or null when it refuses (above). A payload with no `type` at all keys with an
+ *   empty leading field and keeps the floor of two, i.e. exactly what it did before type existed.
  */
 export function crossAccountChatKey(chat, exclude = []) {
   const keys = participantKeys(chat);
   if (!keys) return null;                                   // no roster ⇒ UNKNOWN, never "nobody"
   const skip = new Set((Array.isArray(exclude) ? exclude : [exclude]).map(idKey).filter(Boolean));
   const phones = keys.filter((k) => PHONE_KEY_RE.test(k) && !skip.has(k)).sort();
-  return phones.length >= MIN_KEY_IDENTITIES ? phones.join(',') : null;
+  const type = String(chat?.type ?? '').trim().toLowerCase();
+  const floor = type === 'group' ? MIN_GROUP_KEY_IDENTITIES : MIN_KEY_IDENTITIES;
+  return phones.length >= floor ? [type, ...phones].join(',') : null;
 }
 
 export async function startBeeperBridge(opts = {}) {

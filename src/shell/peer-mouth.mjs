@@ -26,8 +26,8 @@
 //   secondary sees it as  !HuXF…:beeper.local   localChatID 3
 //
 // So a chatId cannot cross the link. beeper.crossAccountChatKey() is the primitive that can: the
-// sorted set of participant PHONE NUMBERS, digits-normalised, excluding the identities the caller
-// holds — byte-identical across both accounts' views of one group when BOTH account identities
+// chat's TYPE plus the sorted set of participant PHONE NUMBERS, digits-normalised, excluding the
+// identities the caller holds — byte-identical across both accounts' views of one group when BOTH
 // are excluded (its header carries the measurement and the reasoning). The speaker computes the
 // key for its own chat and sends it; the receiver finds ITS chat with the same key and posts there.
 //
@@ -40,9 +40,9 @@
 //   no-peer      no peer_spine configured (or the block is unusable). Refused BEFORE any dial.
 //   no-text      nothing to say. Refused before any dial.
 //   no-key       crossAccountChatKey returned null for this chat — no roster in the payload, or
-//                fewer than two phone identities left after the exclusions. The key would not be
-//                EVIDENCE, and a non-evidence key matches everything to everything. Refused
-//                BEFORE any dial: the frame is never sent.
+//                too few phone identities left after the exclusions (a group needs one, anything
+//                else two). The key would not be EVIDENCE, and a non-evidence key matches
+//                everything to everything. Refused BEFORE any dial: the frame is never sent.
 //   unreachable  the peer did not answer, refused the dial, dropped the connection, or timed out.
 //                Also what a peer that offers no mouth at all looks like (it closes the dial
 //                without a byte, because a stranger is told nothing before it authenticates).
@@ -449,7 +449,7 @@ export async function speakThroughPeer({
   if (!body) return { ok: false, reason: 'no-text', detail: 'nothing to say' };
   const chatKey = crossAccountChatKey(chat, peer.accounts);
   if (!chatKey) {
-    onLog('mouth: this chat cannot be keyed across accounts (no roster, or fewer than two phone identities after the exclusions) — NOT speaking through the peer');
+    onLog('mouth: this chat cannot be keyed across accounts (no roster, or too few phone identities after the exclusions — a group needs one, anything else two) — NOT speaking through the peer');
     return { ok: false, reason: 'no-key', detail: 'crossAccountChatKey refused this chat' };
   }
 

@@ -64,9 +64,9 @@ describe('crossAccountChatKey — two accounts, one underlying chat', () => {
     const b = crossAccountChatKey(AS_SECONDARY, OWN_ACCOUNTS);
     expect(a).toBeTruthy();
     expect(a).toBe(b);
-    // …and it is exactly the member phone set, digits-normalised and ordered — not an opaque hash,
-    // so a failure here says WHICH identity moved.
-    expect(a).toBe('#15551110001,#15551110002');
+    // …and it is exactly the chat TYPE and then the member phone set, digits-normalised and
+    // ordered — not an opaque hash, so a failure here says WHICH identity moved.
+    expect(a).toBe('group,#15551110001,#15551110002');
     // nothing account-shaped survived: no room id, no local id, no participant id
     expect(a).not.toMatch(/beeper|!|@|p-|s-/);
   });
@@ -78,8 +78,8 @@ describe('crossAccountChatKey — two accounts, one underlying chat', () => {
     const a = crossAccountChatKey(AS_PRIMARY);
     const b = crossAccountChatKey(AS_SECONDARY);
     expect(a).not.toBe(b);
-    expect(a).toBe('#15550000002,#15551110001,#15551110002');   // primary sees the SECONDARY's number
-    expect(b).toBe('#15550000001,#15551110001,#15551110002');   // secondary sees the PRIMARY's number
+    expect(a).toBe('group,#15550000002,#15551110001,#15551110002');   // primary sees the SECONDARY's number
+    expect(b).toBe('group,#15550000001,#15551110001,#15551110002');   // secondary sees the PRIMARY's number
     // the VIEWING account's own number is absent from its OWN key either way — the self entry
     // carries no phoneNumber, so no self-detection was needed to drop it
     expect(a).not.toContain('15550000001');
@@ -97,7 +97,7 @@ describe('crossAccountChatKey — two accounts, one underlying chat', () => {
   });
 
   it('a single identity may be passed instead of a list', () => {
-    expect(crossAccountChatKey(AS_PRIMARY, SECONDARY_NUM)).toBe('#15551110001,#15551110002');
+    expect(crossAccountChatKey(AS_PRIMARY, SECONDARY_NUM)).toBe('group,#15551110001,#15551110002');
   });
 
   it('the key is a SET: roster order and phone punctuation cannot change it', () => {
@@ -111,8 +111,8 @@ describe('crossAccountChatKey — two accounts, one underlying chat', () => {
   });
 
   it('reads the bare-array roster shape too (the other shape participantKeys accepts)', () => {
-    const asArray = { participants: [member('a', M1), member('b', M2)] };
-    expect(crossAccountChatKey(asArray)).toBe('#15551110001,#15551110002');
+    const asArray = { type: 'single', participants: [member('a', M1), member('b', M2)] };
+    expect(crossAccountChatKey(asArray)).toBe('single,#15551110001,#15551110002');
   });
 });
 
@@ -139,6 +139,73 @@ describe('crossAccountChatKey — different chats must not collide', () => {
     const one = { id: '!aaa:beeper.local', title: 'Trip', participants: { items: [member('a', M1), member('b', M2)] } };
     const two = { id: '!bbb:beeper.local', title: 'Trip planning', participants: { items: [member('c', M1), member('d', M2)] } };
     expect(crossAccountChatKey(one)).toBe(crossAccountChatKey(two));
+  });
+});
+
+// ── THE LIVE TOPOLOGY THAT BROKE IT (operator 2026-09-06, "An y Dando") ─────────────────────
+// Measured on BOTH Beeper endpoints the same day — the smallest real group there is: the two
+// accounts the node holds plus ONE other person. Roles, not people, but the SHAPE is verbatim:
+//
+//   primary's view of the group    type=group   [ self(no phone), OTHER, SECONDARY ]
+//   secondary's view of the SAME   type=group   [ self(no phone), PRIMARY, OTHER   ]
+//   primary's 1:1 with OTHER       type=single  [ self(no phone), OTHER            ]
+//
+// Both accounts are excluded, so every one of the three reduces to {OTHER} — one identity. That
+// is why membership ALONE cannot key this: the group and the 1:1 are the same set. `type` is the
+// axis that separates them, and it is a property of the REAL chat, not of a view (both endpoints
+// independently report `group` for the same room), so folding it in costs the cross-account
+// equality nothing. Only once they cannot collide is a one-identity key safe FOR A GROUP.
+const OTHER = M1;
+const LIVE_GROUP_AS_PRIMARY = {
+  id: '!primaryroom:beeper.local', title: 'Trio', type: 'group',
+  participants: { items: [
+    member('p-other@beeper.local', OTHER),
+    member('p-secondary@beeper.local', SECONDARY_NUM),
+    self('@primary:beeper.com'),
+  ] },
+};
+const LIVE_GROUP_AS_SECONDARY = {
+  id: '!secondaryroom:beeper.local', title: 'Trio', type: 'group',
+  participants: { items: [
+    member('s-primary@beeper.local', PRIMARY_NUM),
+    member('s-other@beeper.local', OTHER),
+    self('@secondary:beeper.com'),
+  ] },
+};
+const LIVE_DM_AS_PRIMARY = {
+  id: '!primarydm:beeper.local', title: 'Other', type: 'single',
+  participants: { items: [member('p-other@beeper.local', OTHER), self('@primary:beeper.com')] },
+};
+
+describe('crossAccountChatKey — the smallest real group: two accounts and one other person', () => {
+  // THE OPERATOR'S SYMPTOM, as an assertion. Without a key the mouth link refuses ('no-key') and
+  // the reply falls back onto the node's OWN account — the operator talking to himself, which is
+  // the one thing the second account exists to prevent. This is the property that fixes it.
+  it('BOTH accounts derive the SAME key for the three-person group', () => {
+    const a = crossAccountChatKey(LIVE_GROUP_AS_PRIMARY, OWN_ACCOUNTS);
+    const b = crossAccountChatKey(LIVE_GROUP_AS_SECONDARY, OWN_ACCOUNTS);
+    expect(a).toBeTruthy();
+    expect(a).toBe(b);
+    expect(a).toBe('group,#15551110001');
+  });
+
+  // …AND the collision that made the one-identity floor necessary is gone, which is what earns
+  // the relaxation. Same surviving member, same account, different chat, different key.
+  it('the group and the 1:1 with the SAME person key DIFFERENTLY', () => {
+    const g = crossAccountChatKey(LIVE_GROUP_AS_PRIMARY, OWN_ACCOUNTS);
+    const dm = crossAccountChatKey(LIVE_DM_AS_PRIMARY, OWN_ACCOUNTS);
+    expect(g).toBeTruthy();
+    expect(g).not.toBe(dm);
+    // the 1:1 is still refused outright: nothing distinguishes a 1:1 from itself, so the floor of
+    // two stands for `single` and only `single`.
+    expect(dm).toBeNull();
+  });
+
+  // The type axis is not decoration: it is IN the key, and a chat that changed type would not
+  // key as the same chat.
+  it('type leads the key, ahead of the member set', () => {
+    expect(crossAccountChatKey({ ...LIVE_GROUP_AS_PRIMARY, type: 'single' }, OWN_ACCOUNTS)).toBeNull();
+    expect(crossAccountChatKey(LIVE_GROUP_AS_PRIMARY, OWN_ACCOUNTS)).toBe('group,#15551110001');
   });
 });
 
@@ -170,31 +237,36 @@ describe('crossAccountChatKey — refuses rather than matching everything to eve
     expect(crossAccountChatKey(one)).toBeNull();
   });
 
-  // THE THRESHOLD (MIN_KEY_IDENTITIES = 2), and the collision that sets it. A 1:1 with X yields
-  // {X}; so does a small group of [self, X, co-account] once the co-account is excluded. A size-1
-  // key would therefore let a reply meant for the GROUP land in a PRIVATE chat. Two is the
-  // smallest set a 1:1 cannot produce at all.
-  it('ONE surviving identity is refused — the 1:1 and the small group that would collide on it', () => {
+  // THE THRESHOLD, and the collision that used to set it for everyone. A 1:1 with X yields {X};
+  // so does the group [self, X, co-account] once the co-account is excluded — which is why a bare
+  // size-1 key could put a reply meant for the GROUP into a PRIVATE chat. Now `type` leads the key
+  // and they cannot collide, so the floor is one FOR A GROUP and stays two for a `single`: nothing
+  // distinguishes a 1:1 from itself.
+  it('ONE surviving identity keys a GROUP and is still refused for a 1:1', () => {
     const oneToOne = { type: 'single', participants: { items: [self('@primary:beeper.com'), member('x', M1)] } };
     const smallGroup = { type: 'group', participants: { items: [
       self('@primary:beeper.com'), member('x', M1), member('co', SECONDARY_NUM),
     ] } };
     expect(crossAccountChatKey(oneToOne, OWN_ACCOUNTS)).toBeNull();
-    expect(crossAccountChatKey(smallGroup, OWN_ACCOUNTS)).toBeNull();
-    // …and without the refusal they WOULD have been the same key — the reason the floor is 2 and
-    // not "anything non-empty".
-    expect(crossAccountChatKey(smallGroup, [])).toContain('15551110001');
+    expect(crossAccountChatKey(smallGroup, OWN_ACCOUNTS)).toBe('group,#15551110001');
+    // the collision that made the old floor necessary, checked directly: same surviving member,
+    // and the two keys are still not each other.
+    expect(crossAccountChatKey(smallGroup, OWN_ACCOUNTS)).not.toBe(crossAccountChatKey(oneToOne, OWN_ACCOUNTS));
   });
 
   it('a group whose only phone-bearing members are excluded is refused, not keyed empty', () => {
-    const chat = { participants: { items: [
+    const chat = { type: 'group', participants: { items: [
       self('@primary:beeper.com'), member('co', SECONDARY_NUM), { id: '@matrix-only:beeper.com' },
     ] } };
     expect(crossAccountChatKey(chat, OWN_ACCOUNTS)).toBeNull();
   });
 
-  it('TWO surviving identities is the smallest key it will produce', () => {
-    const chat = { participants: { items: [self('@primary:beeper.com'), member('x', M1), member('y', M2)] } };
-    expect(crossAccountChatKey(chat, OWN_ACCOUNTS)).toBe('#15551110001,#15551110002');
+  it('TWO surviving identities is the smallest key a NON-group will produce', () => {
+    const chat = { type: 'single', participants: { items: [self('@primary:beeper.com'), member('x', M1), member('y', M2)] } };
+    expect(crossAccountChatKey(chat, OWN_ACCOUNTS)).toBe('single,#15551110001,#15551110002');
+    // a payload with no `type` at all keeps the same floor — it is not a group, so it is not
+    // trusted with one identity
+    const untyped = { participants: { items: [self('@primary:beeper.com'), member('x', M1)] } };
+    expect(crossAccountChatKey(untyped, OWN_ACCOUNTS)).toBeNull();
   });
 });

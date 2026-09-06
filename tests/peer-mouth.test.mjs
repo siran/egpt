@@ -893,7 +893,7 @@ describe('the mouth refuses rather than guessing — and always says so', () => 
 
 // ── 4. THE MAPPING, PURE ───────────────────────────────────────────────────────────────────────
 describe('findChatByKey — the mapping, on its own', () => {
-  const KEY_OF_GROUP = '#15551110001,#15551110002';
+  const KEY_OF_GROUP = 'group,#15551110001,#15551110002';
 
   it('finds the one chat and returns it in the RECEIVER\'s own id namespace', () => {
     expect(findChatByKey([OTHER_CHAT, AS_SECONDARY], KEY_OF_GROUP, ACCOUNTS)).toEqual({ ok: true, chatId: SECONDARY_CHAT_ID });
