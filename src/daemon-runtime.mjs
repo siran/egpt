@@ -5,12 +5,19 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as YAML from 'yaml';
 import { liveDaemonPid as defaultLiveDaemonPid } from './daemon-singleton.mjs';
+import { createPeerLiveness, tcpProbe, DEFAULT_EVERY_MS as PEER_PROBE_EVERY_MS } from './spine/peer-liveness.mjs';
 
 export const RESTART_MIN_MS = 2_000;
 export const RESTART_MAX_MS = 60_000;
 export const UPGRADE_EXIT_CODE = 42;
 export const RESTART_EXIT_CODE = 43;
 export const REWIND_EXIT_CODE = 44;
+// The one lifecycle code that does NOT respawn: a PEER took the profile (the Session 0 →
+// Session 1 handover). Two spines share one EGPT_HOME on this node, so exactly one may hold
+// it; the departing spine drains and leaves with 45, and the daemon waits for the successor
+// to die with its session before bringing this one back. CLEAN_EXIT_CODE could not carry
+// this: it means "the user wanted out" and stops the daemon entirely (see the branch below).
+export const STANDDOWN_EXIT_CODE = 45;
 export const CLEAN_EXIT_CODE = 0;
 
 // --- the boot-failure recovery ladder (operator 2026-08-30) ------------------------------
@@ -38,6 +45,14 @@ export const NEVER_HEALTHY_ROLLBACK_AT = 6;   // step 3: 3 MORE failures -> roll
 export const LAST_GOOD_UPTIME_MS = 600_000;
 
 const DEFAULT_ROOT = dirname(fileURLToPath(new URL('../egpt-daemon.mjs', import.meta.url)));
+// The console port a profile serves when its config says nothing — shell-port.mjs's
+// SHELL_WS_PORT / shellPortFrom() own this rule. It is re-stated rather than imported for
+// exactly the reason resolveSelfChatId re-reads config.yaml below: this supervisor shares NO
+// module graph with the spine (egpt-daemon.mjs imports this file and nothing else), and
+// shell-port pulls in ws + half the surface — a module-load failure there would then take the
+// watchdog down with the thing it watches, which is the 33-minute incident with no survivor.
+const DEFAULT_CONSOLE_PORT = 23375;
+const validPort = (n) => (Number.isInteger(n) && n > 0 && n < 65536 ? n : null);
 
 export function createDaemonRuntime(opts = {}) {
   const root = opts.root ?? DEFAULT_ROOT;
@@ -64,6 +79,11 @@ export function createDaemonRuntime(opts = {}) {
   const now = opts.now ?? Date.now;
 
   const rewindSidecar = opts.rewindSidecar ?? join(egptHome, 'rewind-target.txt');
+  // The stand-down's equivalent of rewind-target.txt: the departing spine names the port its
+  // successor is taking, written the same way /rewind writes its ref and consumed the same way.
+  const standdownSidecar = opts.standdownSidecar ?? join(egptHome, 'standdown-target.txt');
+  // The observation seam — peer-liveness's own TCP probe by default; tests inject a fake.
+  const peerProbe = opts.peerProbe ?? tcpProbe;
   const alivePath = opts.alivePath ?? join(egptHome, 'state', 'alive.txt');
   const spinePidPath = opts.spinePidPath ?? join(egptHome, 'state', 'spine.pid');
   // The SAME sidecar boot.mjs's read-back block reads (join(EGPT_HOME, 'state',
@@ -84,6 +104,8 @@ export function createDaemonRuntime(opts = {}) {
   const aliveGraceMs = opts.aliveGraceMs ?? 90_000;
   const lastGoodUptimeMs = opts.lastGoodUptimeMs ?? LAST_GOOD_UPTIME_MS;
   let childStartedAt = 0, livenessTimer = null;
+  // Non-null only while the daemon is stood down watching a peer hold the profile.
+  let standdownTimer = null;
 
   // v2 entry takes no role flags; pass argv straight through (egpt-spine.mjs ignores it).
   const shellArgs = argv;
@@ -475,6 +497,55 @@ export function createDaemonRuntime(opts = {}) {
     if (!ok) alarm(`rollback to ${good.sha} did not complete — restarting on the current code anyway`);
   }
 
+  // --- the stand-down watch (the Session 0 → Session 1 handover) ---------------------------
+  // A peer has taken the profile. The daemon is the only thing alive across the handover, so it
+  // does the waiting: no respawn while the successor answers on the console port, one respawn
+  // when that port goes quiet (logoff, crash — the session ended and took the spine with it).
+  //
+  // The observation is peer-liveness's, NOT a second probe. Its predicate ("does anything serve
+  // there") and its ASYMMETRIC HYSTERESIS carry over unchanged, and the asymmetry is if anything
+  // more important here than where it was written: believing the peer dead when it is alive would
+  // start a SECOND spine on one EGPT_HOME — two Beeper connections, two answers, both writing
+  // conversations.yaml — which is the one unrecoverable failure in this design. Believing it
+  // alive when it is dead only costs a few more seconds of silence. So this loop drives the
+  // module's tick() on the module's own cadence and adds exactly one thing: respawn when it
+  // finally claims.
+  function standdownPort() {
+    let named = null;
+    try {
+      named = validPort(Number(readFileSync(standdownSidecar, 'utf8').trim()));
+      unlinkSync(standdownSidecar);   // consumed like the rewind sidecar, valid or not
+    } catch { /* no sidecar — the profile's own console port is the answer */ }
+    if (named) return named;
+    try {
+      const doc = YAML.parse(readFileSync(configYamlPath, 'utf8')) ?? {};
+      const own = validPort(Number(doc?.shell?.port));
+      if (own) return own;
+    } catch { /* missing / unreadable / malformed config — the default is the answer */ }
+    return DEFAULT_CONSOLE_PORT;
+  }
+
+  function standDownAndWatch() {
+    const port = standdownPort();
+    const watcher = createPeerLiveness({
+      probe: peerProbe({ port }),
+      onLog: (m) => log(`stand-down watch: ${m}`),
+    });
+    log(`stood down — a peer has taken the profile on 127.0.0.1:${port}; NOT respawning, watching that port every ${Math.round(PEER_PROBE_EVERY_MS / 1000)}s until it goes quiet`);
+    let respawned = false;   // a slow probe can overlap the next tick; only ONE respawn ever
+    standdownTimer = setIntervalFn(async () => {
+      if (respawned || stopping) return;
+      await watcher.tick();
+      if (respawned || stopping || !watcher.isClaiming()) return;
+      respawned = true;
+      if (standdownTimer) { clearIntervalFn(standdownTimer); standdownTimer = null; }
+      log(`127.0.0.1:${port} went quiet — the peer released the profile; respawning the spine`);
+      backoff = RESTART_MIN_MS;   // a handover is not a failure; the next boot starts clean
+      spawnShell();
+    }, PEER_PROBE_EVERY_MS);
+    standdownTimer?.unref?.();
+  }
+
   function spawnShell() {
     if (stopping) return null;
     const appPath = join(root, 'egpt-spine.mjs');
@@ -538,6 +609,12 @@ export function createDaemonRuntime(opts = {}) {
         return;
       }
 
+      // The one code that does not respawn — a peer holds the profile now (see the watch above).
+      if (code === STANDDOWN_EXIT_CODE) {
+        standDownAndWatch();
+        return;
+      }
+
       // === the boot-failure ladder (operator 2026-08-30) ================================
       // A spine that ran for an hour and then crashed advanced alive.txt: that is today's
       // plain-backoff crash and it CLEARS the ladder. A spine that never advanced it never
@@ -581,6 +658,7 @@ export function createDaemonRuntime(opts = {}) {
     stopping = true;
     log(`${sig} received — stopping egpt-daemon`);
     if (livenessTimer) { clearIntervalFn(livenessTimer); livenessTimer = null; }
+    if (standdownTimer) { clearIntervalFn(standdownTimer); standdownTimer = null; }
     if (child) {
       try { child.kill('SIGTERM'); } catch {}
     }
@@ -634,6 +712,6 @@ export function createDaemonRuntime(opts = {}) {
     spawnShell,
     start,
     get child() { return child; },
-    get state() { return { stopping, backoff, wedgeStreak, neverHealthyStreak, shellArgs: [...shellArgs] }; },
+    get state() { return { stopping, backoff, wedgeStreak, neverHealthyStreak, standingDown: standdownTimer != null, shellArgs: [...shellArgs] }; },
   };
 }

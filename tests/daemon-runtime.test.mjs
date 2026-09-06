@@ -8,6 +8,8 @@ import {
   RESTART_EXIT_CODE,
   RESTART_MIN_MS,
   RESTART_MAX_MS,
+  REWIND_EXIT_CODE,
+  STANDDOWN_EXIT_CODE,
   UPGRADE_EXIT_CODE,
   createDaemonRuntime,
 } from '../src/daemon-runtime.mjs';
@@ -91,6 +93,7 @@ function makeRuntime(extra = {}) {
     aliveStaleMs: extra.aliveStaleMs,
     aliveGraceMs: extra.aliveGraceMs,
     importModule: extra.importModule ?? (async () => ({})),
+    peerProbe: extra.peerProbe,
     now: extra.now ?? (() => Date.UTC(2026, 5, 18, 12, 0, 0)),
   });
   return { runtime, children, logs, processObj, spawnSync };
@@ -885,5 +888,185 @@ describe('daemon runtime: a sleep is not a wedge', () => {
     clock += 300_000;             // a gap that WOULD look like sleep if the heuristic were on
     runtime.checkLiveness();
     expect(children[0].child.killed).toEqual(['SIGTERM']);   // treated as a wedge, as before
+  });
+});
+
+// ── THE STAND-DOWN WATCH (the Session 0 → Session 1 handover) ──────────────────────────────
+// Exit 45 is the one lifecycle code that does NOT respawn: a peer spine has taken the profile
+// (two spines share one EGPT_HOME here, so exactly one may hold it). The daemon is the only
+// thing alive across the handover, so it watches the console port and brings the Session 0
+// spine back when that port goes quiet — logoff or crash, the session ended.
+//
+// Everything below runs on the injected timer + prober seams: no real network, no real spine.
+describe('daemon runtime: the stand-down watch (exit 45 — a peer took the profile)', () => {
+  // A world where the probe's answer is a test-mutable boolean and the watch interval is
+  // captured rather than armed, so every observation is driven by hand.
+  function makeStandingDown({ answers = true, sidecar = null, configPort = null, extra = {} } = {}) {
+    const state = { answers };
+    const intervals = [];         // every setInterval the runtime armed
+    const cleared = [];
+    const probedPorts = [];
+    const unlinked = [];
+    const timers = [];            // setTimeout — a stand-down must arm NONE of these
+    const h = makeRuntime({
+      setInterval: (fn, ms) => { intervals.push({ fn, ms }); return intervals.length; },
+      clearInterval: (id) => cleared.push(id),
+      setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; },
+      unlinkSync: (p) => unlinked.push(String(p)),
+      readFileSync: (p) => {
+        const path = String(p);
+        if (path.includes('standdown-target.txt')) {
+          if (sidecar == null) { const e = new Error('missing'); e.code = 'ENOENT'; throw e; }
+          return sidecar;
+        }
+        if (path.includes('config.yaml') && configPort != null) return `shell:\n  port: ${configPort}\n`;
+        const e = new Error('missing'); e.code = 'ENOENT'; throw e;
+      },
+      peerProbe: ({ port }) => { probedPorts.push(port); return async () => state.answers; },
+      ...extra,
+    });
+    // Drive the watch interval the runtime armed (the last one — start() also arms liveness).
+    const tick = async (n = 1) => { for (let k = 0; k < n; k += 1) await intervals.at(-1).fn(); };
+    return { ...h, state, intervals, cleared, probedPorts, unlinked, timers, tick };
+  }
+
+  it('exit 45 does NOT respawn — it stands down and watches the port the departing spine named', async () => {
+    const h = makeStandingDown({ sidecar: '23999\n' });
+    h.runtime.spawnShell();
+
+    await h.children[0].child.handlers.exit(STANDDOWN_EXIT_CODE, null);
+
+    expect(h.children).toHaveLength(1);                 // no respawn
+    expect(h.timers).toEqual([]);                       // and no backoff timer armed either
+    expect(h.processObj.exits).toEqual([]);             // the daemon itself stayed up
+    expect(h.runtime.state.standingDown).toBe(true);
+    expect(h.probedPorts).toEqual([23999]);             // the port the exit carried
+    expect(h.unlinked.some((p) => p.includes('standdown-target.txt'))).toBe(true);   // consumed
+    expect(h.logs.join('')).toContain('stood down — a peer has taken the profile on 127.0.0.1:23999');
+  });
+
+  it('a peer that keeps answering is never displaced, however long the watch runs', async () => {
+    const h = makeStandingDown({ sidecar: '23375', answers: true });
+    h.runtime.spawnShell();
+    await h.children[0].child.handlers.exit(STANDDOWN_EXIT_CODE, null);
+
+    await h.tick(20);
+
+    expect(h.children).toHaveLength(1);
+    expect(h.runtime.state.standingDown).toBe(true);
+  });
+
+  // THE HYSTERESIS IS THE SAFETY ARGUMENT (peer-liveness.mjs): believing the peer dead when it
+  // is alive would put TWO spines on one EGPT_HOME — two Beeper connections, two answers, both
+  // writing conversations.yaml. So one missed probe, or two, proves nothing.
+  it('a single missed probe does not respawn — it takes claimAfter CONSECUTIVE misses', async () => {
+    const h = makeStandingDown({ sidecar: '23375', answers: true });
+    h.runtime.spawnShell();
+    await h.children[0].child.handlers.exit(STANDDOWN_EXIT_CODE, null);
+
+    await h.tick(1);                    // alive
+    h.state.answers = false;
+    await h.tick(1);                    // one miss
+    expect(h.children).toHaveLength(1);
+    await h.tick(1);                    // two misses — still not enough
+    expect(h.children).toHaveLength(1);
+
+    h.state.answers = true;             // it answered again: the dead streak resets
+    await h.tick(1);
+    h.state.answers = false;
+    await h.tick(2);                    // two fresh misses — still not enough
+    expect(h.children).toHaveLength(1);
+
+    await h.tick(1);                    // the third consecutive miss
+    expect(h.children).toHaveLength(2);
+  });
+
+  it('the port going quiet respawns EXACTLY ONCE and tears the watch down — no storm', async () => {
+    const h = makeStandingDown({ sidecar: '23375', answers: false });
+    h.runtime.spawnShell();
+    await h.children[0].child.handlers.exit(STANDDOWN_EXIT_CODE, null);
+    const watchId = h.intervals.length;   // the id the fake setInterval handed back
+
+    await h.tick(3);
+    expect(h.children).toHaveLength(2);                 // the Session 0 spine is back
+    expect(h.cleared).toContain(watchId);               // …and the watch is gone
+    expect(h.runtime.state.standingDown).toBe(false);
+    expect(h.logs.join('')).toContain('127.0.0.1:23375 went quiet');
+
+    await h.tick(10);                                   // late ticks must not spawn a second
+    expect(h.children).toHaveLength(2);
+  });
+
+  it('the respawn after a hand-back is a clean start, not the next rung of the crash backoff', async () => {
+    const h = makeStandingDown({ sidecar: '23375', answers: false });
+    h.runtime.spawnShell();
+    await h.children[0].child.handlers.exit(1, null);   // a crash first: the backoff doubles
+    h.timers.pop().fn();
+    expect(h.runtime.state.backoff).toBe(RESTART_MIN_MS * 2);
+
+    await h.children[1].child.handlers.exit(STANDDOWN_EXIT_CODE, null);
+    await h.tick(3);
+
+    expect(h.children).toHaveLength(3);
+    expect(h.runtime.state.backoff).toBe(RESTART_MIN_MS);
+  });
+
+  describe('which port gets watched', () => {
+    it("falls back to this profile's own console port when the exit named none", async () => {
+      const h = makeStandingDown({ sidecar: null, configPort: 24001 });
+      h.runtime.spawnShell();
+      await h.children[0].child.handlers.exit(STANDDOWN_EXIT_CODE, null);
+      expect(h.probedPorts).toEqual([24001]);
+    });
+
+    it('falls back to 23375 when neither the exit nor the config names one', async () => {
+      const h = makeStandingDown({ sidecar: null });
+      h.runtime.spawnShell();
+      await h.children[0].child.handlers.exit(STANDDOWN_EXIT_CODE, null);
+      expect(h.probedPorts).toEqual([23375]);
+    });
+
+    it('a garbage sidecar is consumed and ignored rather than probed', async () => {
+      const h = makeStandingDown({ sidecar: 'not-a-port\n', configPort: 24002 });
+      h.runtime.spawnShell();
+      await h.children[0].child.handlers.exit(STANDDOWN_EXIT_CODE, null);
+      expect(h.probedPorts).toEqual([24002]);
+      expect(h.unlinked.some((p) => p.includes('standdown-target.txt'))).toBe(true);
+    });
+  });
+
+  // REGRESSION LOCK: 45 is additive. Every other code keeps the behaviour it had, and none of
+  // them stands anything down or probes anything.
+  describe('regression: no other exit code stands down', () => {
+    it('42 / 43 / 44 respawn immediately and start no watch', async () => {
+      for (const code of [UPGRADE_EXIT_CODE, RESTART_EXIT_CODE, REWIND_EXIT_CODE]) {
+        const h = makeStandingDown({ extra: { spawnSync: makeGitWorld() } });
+        h.runtime.spawnShell();
+        await h.children[0].child.handlers.exit(code, null);
+        expect(h.children).toHaveLength(2);                 // respawned, as before
+        expect(h.runtime.state.standingDown).toBe(false);
+        expect(h.probedPorts).toEqual([]);                  // nothing was ever probed
+      }
+    });
+
+    it('0 still stops the daemon and 1 still takes the backoff ladder — neither watches a port', async () => {
+      const clean = makeStandingDown();
+      clean.runtime.spawnShell();
+      await clean.children[0].child.handlers.exit(CLEAN_EXIT_CODE, null);
+      expect(clean.processObj.exits).toEqual([0]);
+      expect(clean.children).toHaveLength(1);
+      expect(clean.probedPorts).toEqual([]);
+
+      const crash = makeStandingDown();
+      crash.runtime.spawnShell();
+      await crash.children[0].child.handlers.exit(1, null);
+      expect(crash.timers).toHaveLength(1);
+      expect(crash.timers[0].ms).toBe(RESTART_MIN_MS);
+      crash.timers[0].fn();
+      expect(crash.children).toHaveLength(2);
+      expect(crash.runtime.state.backoff).toBe(RESTART_MIN_MS * 2);
+      expect(crash.probedPorts).toEqual([]);
+      expect(crash.runtime.state.standingDown).toBe(false);
+    });
   });
 });

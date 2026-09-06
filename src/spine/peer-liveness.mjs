@@ -28,7 +28,9 @@
 // not yet looked must not speak on a handle that might not be its own; the cost is one probe
 // interval of silence on a cold start, which is the cheap direction.
 
-const DEFAULT_EVERY_MS = 5_000;
+// Exported so a caller that drives `tick()` on its own timer (the daemon's stand-down watch)
+// uses THIS cadence rather than inventing a second one. Value and behaviour unchanged.
+export const DEFAULT_EVERY_MS = 5_000;
 const DEFAULT_CLAIM_AFTER = 3;
 
 /**
