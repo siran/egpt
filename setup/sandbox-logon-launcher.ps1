@@ -20,6 +20,9 @@
 #      owns the lease; the lock stays open, via $lockStream, for the whole
 #      turn - that open handle IS the lease, and a lock file NO process holds
 #      open is stale and gets reclaimed in place - see the leasing block).
+#      The pool is walked STICKILY: the account this conversation's own folder
+#      hashes to is tried first and the rest follow in random order, so a
+#      conversation keeps the same account across leases whenever it is free.
 #   b) get that account's stored credential (DPAPI, operator-scoped).
 #   c) resolve that account's own fixed user SID - always present in its own
 #      token, unlike the broken per-call logon-session SID.
@@ -1307,14 +1310,28 @@ function Clear-SandboxProfileContents {
 $locksDir = Join-Path (Join-Path $env:ProgramData 'egpt') 'sandbox-pool-locks'
 New-Item -ItemType Directory -Path $locksDir -Force -ErrorAction Stop | Out-Null
 
+# STICKY, THEN FREE (operator ruling 2026-09-06). ONLY THE ORDER the pool is
+# walked in changes here; the lease MECHANISM below - CreateNew, the exclusive
+# reclaim, the handle that IS the lease - is untouched.
+#   PREFERRED: the account $TargetFolder hashes to, tried first on every sweep,
+#     so a conversation keeps landing on the same Windows account. See
+#     Get-SandboxPoolAccountForFolder in sandbox-account.ps1 for the derivation
+#     and for why account-bound (DPAPI) browser state needs it.
+#   THEN THE REST, still shuffled - the shuffle spreads concurrent turns whose
+#     preferred account is taken instead of herding them all onto the same next
+#     name.
+# A BUSY PREFERRED ACCOUNT IS NORMAL, NOT AN ERROR. The walk always continues
+# into the rest of the pool: stickiness is a preference, and one stuck or
+# long-held lease must never be able to wedge a conversation out of running.
 $poolNames = Get-SandboxPoolAccountNames
+$preferredName = Get-SandboxPoolAccountForFolder -Folder $TargetFolder
 $leasedName = $null
 $lockStream = $null
 $lockPath = $null
 $maxLeaseAttempts = 40   # ~10s total at 250ms between full-pool sweeps
 for ($attempt = 1; $attempt -le $maxLeaseAttempts -and -not $leasedName; $attempt++) {
-  $shuffled = Get-Random -InputObject $poolNames -Count $poolNames.Count
-  foreach ($name in $shuffled) {
+  $sweepOrder = Get-SandboxPoolLeaseOrder -Folder $TargetFolder
+  foreach ($name in $sweepOrder) {
     $candidatePath = Join-Path $locksDir "$name.lock"
     try {
       $lockStream = [System.IO.File]::Open($candidatePath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write)
@@ -1346,7 +1363,11 @@ for ($attempt = 1; $attempt -le $maxLeaseAttempts -and -not $leasedName; $attemp
 if (-not $leasedName) {
   throw "sandbox-logon-launcher: sandbox pool exhausted ($($poolNames.Count) accounts all in use)"
 }
-Log "leased pool account '$leasedName'"
+if ($leasedName -eq $preferredName) {
+  Log "leased pool account '$leasedName' (this conversation's preferred account)"
+} else {
+  Log "leased pool account '$leasedName'  - fell back: preferred '$preferredName' was already leased. Normal under concurrency; account-bound per-conversation state (e.g. a browser profile) does not carry over to this turn."
+}
 
 $plainPwd = $null
 $aceGranted = $false

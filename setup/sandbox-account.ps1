@@ -46,6 +46,78 @@ function Get-SandboxPoolAccountNames {
   0..($SandboxPoolSize - 1) | ForEach-Object { "{0}{1:D2}" -f $SandboxPoolPrefix, $_ }
 }
 
+# The pool account a given conversation PREFERS  - a stable index derived from
+# that conversation's own folder, so the same conversation leases the same
+# account every time (operator ruling 2026-09-06). The launcher tries this name
+# FIRST and falls back to any other free one; see its leasing block. This
+# function only NAMES a preference - it takes no lock and makes no promise that
+# the account is free.
+#
+# WHY STICKINESS IS WANTED: per-conversation browser state. Chrome seals its
+# cookie master key with DPAPI bound to the WINDOWS ACCOUNT that wrote it
+# (verified 2026-09-06 on the live profile: Local State's os_crypt.encrypted_key
+# is a 293-byte DPAPI blob, and ProtectedData.Unprotect at CurrentUser scope
+# succeeds only as the account that wrote it). A profile written by egpt-sbx-04
+# is undecryptable by egpt-sbx-11, so a conversation that lands on a different
+# account each time is silently logged out of everything.
+#
+# THE FOLDER IS THE KEY because it is the only conversation-stable thing the
+# launcher is handed: -TargetFolder is the conversation's own directory and the
+# one path the per-turn ACE is granted on. (-SharePath is the BEING's
+# allowed_paths, shared by every conversation of that being, so it identifies
+# the wrong thing.) Normalised first  - full path, no trailing separator,
+# lowercased  - so C:/x/y/, C:\X\Y and C:\x\z\..\y cannot map to three
+# different accounts.
+#
+# SHA256, NOT [string]::GetHashCode(): .NET's string hash is explicitly not
+# stable across processes (randomized string hashing is a switch in .NET
+# Framework and is always on in .NET Core), and "the same account next time"
+# is precisely a cross-process contract.
+function Get-SandboxPoolAccountForFolder {
+  param([Parameter(Mandatory = $true)][string]$Folder)
+  $names = @(Get-SandboxPoolAccountNames)
+  $key = [System.IO.Path]::GetFullPath($Folder).TrimEnd('\').ToLowerInvariant()
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $digest = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($key))
+  } finally {
+    $sha.Dispose()
+  }
+  # [int64] of the UNSIGNED first four bytes: PowerShell's % on a negative left
+  # operand yields a negative remainder, which would be an out-of-range index.
+  $index = [int]([int64][System.BitConverter]::ToUInt32($digest, 0) % $names.Count)
+  return $names[$index]
+}
+
+# The ORDER the launcher walks the pool in for one conversation: its preferred
+# account first, then EVERY other account, shuffled. Nothing here leases
+# anything - the launcher's leasing block does that, unchanged, one name at a
+# time down this list.
+#
+# THE TAIL IS THE SAFETY PROPERTY, and the reason this returns the WHOLE pool
+# rather than just the preference: stickiness must never become starvation. If
+# the preferred account is held - by a concurrent turn, or by a lease that is
+# simply stuck - the conversation walks on and runs on another account. It is
+# shuffled so that many turns whose preference is taken do not all pile onto the
+# same next name.
+function Get-SandboxPoolLeaseOrder {
+  param([Parameter(Mandatory = $true)][string]$Folder)
+  $preferred = Get-SandboxPoolAccountForFolder -Folder $Folder
+  $rest = @(Get-SandboxPoolAccountNames | Where-Object { $_ -ne $preferred })
+  $order = @($preferred)
+  # Get-Random throws on an empty -InputObject, which is what a pool of one
+  # would hand it.
+  if ($rest.Count -gt 0) { $order += @(Get-Random -InputObject $rest -Count $rest.Count) }
+  # NO leading comma here, deliberately, unlike ConvertFrom-JsonArgv in the
+  # launcher: `return ,$order` writes a NESTED array to the pipeline, and while
+  # an assignment unrolls that back to the 16 names, `@(Get-SandboxPoolLeaseOrder
+  # ...)` at a call site collects ONE element - the whole array as a single
+  # object. The comma exists to protect an EMPTY or one-element return; this
+  # order always has at least the preferred account in it, so there is nothing
+  # to protect and the comma only buys an inconsistency.
+  return $order
+}
+
 # [System.Security.Cryptography.ProtectedData] lives in System.Security.dll,
 # which is not loaded by default in every PowerShell host (confirmed: even a
 # plain `powershell -File` run throws TypeNotFound without this) -- load it
