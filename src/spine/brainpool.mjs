@@ -109,11 +109,23 @@ export function normalizeAllowNewInput(v, being = '?', onLog = () => {}) {
 // the function stays what its callers already assume: ALWAYS confining. Reachability (who
 // may even address an unconfined agent) is gated upstream, in router.mjs/mesh.mjs — this
 // file only decides how the TURN runs once addressed.
-function confinementFor(def, cwd, onLog) {
-  if (def?.dangerously_skip_permissions === true) return {};   // the unconfined tier — no confineToDirs/addDirs/readOnlyDirs, ever
-  if (!Array.isArray(def?.allowed_tools)) return {};   // defensive: post-coercion this is always a list
+// THE ONE `allowed_paths` WALK. Extracted 2026-09-05 because it now has TWO consumers that
+// must never disagree about what a being's declared paths ARE: confinementFor below (the CLI
+// layer — `--add-dir` / read-only deny rules) and sandboxSharePathsFor below that (the OS
+// layer — the launcher's per-turn ACE). A copy would be a second thing to keep correct, and
+// the two layers disagreeing is exactly the bug being fixed: a folder Claude Code permits and
+// the kernel then refuses.
+//
+// PURE and grant-classifying only: `{ addDirs, readOnlyDirs }`, in declaration order, with
+// blank/whitespace keys dropped and each key normalizeCwd()'d. It knows NOTHING about tiers —
+// no dangerously_skip_permissions check, no allowed_tools check. Those are the CALLERS' own
+// early returns, and that asymmetry is the whole point of the split (see sandboxSharePathsFor).
+//
+// onLog defaults to a no-op so the second consumer does not double-log the one line this walk
+// emits: confinementFor passes the real logger, the share-path accessor deliberately does not.
+function allowedPathsFor(def, onLog = () => {}) {
   const addDirs = [], readOnlyDirs = [];
-  const paths = (def.allowed_paths && typeof def.allowed_paths === 'object' && !Array.isArray(def.allowed_paths)) ? def.allowed_paths : {};
+  const paths = (def?.allowed_paths && typeof def.allowed_paths === 'object' && !Array.isArray(def.allowed_paths)) ? def.allowed_paths : {};
   for (const [rawPath, grant] of Object.entries(paths)) {
     const p = normalizeCwd(String(rawPath).trim());
     if (!p) continue;
@@ -125,7 +137,40 @@ function confinementFor(def, cwd, onLog) {
       addDirs.push(p);        // null/empty grant, or a list WITH write tools → full access
     }
   }
+  return { addDirs, readOnlyDirs };
+}
+
+function confinementFor(def, cwd, onLog) {
+  if (def?.dangerously_skip_permissions === true) return {};   // the unconfined tier — no confineToDirs/addDirs/readOnlyDirs, ever
+  if (!Array.isArray(def?.allowed_tools)) return {};   // defensive: post-coercion this is always a list
+  const { addDirs, readOnlyDirs } = allowedPathsFor(def, onLog);
   return { confineToDirs: [cwd], ...(addDirs.length ? { addDirs } : {}), ...(readOnlyDirs.length ? { readOnlyDirs } : {}) };
+}
+
+// THE OS-LAYER CONSUMER of the same walk: every path a being's `allowed_paths` declares, for
+// sandbox-cli-session.mjs to hand the launcher as `-SharePath` so the leased pool account gets
+// a real ACE on each. Flat array, declaration order, add-dirs before read-only ones.
+//
+// NO dangerously_skip_permissions EARLY RETURN, and that is the entire reason this is a
+// separate function rather than a field of confinementFor's return. confinementFor returns {}
+// for the `all` and `sandbox` tiers, so those beings have no addDirs at all — the CLI layer is
+// DELIBERATELY off for them, and an ACE is therefore the ONLY way a shared folder is reachable
+// under exactly the tiers most likely to declare one. Gating this on the same flag would leave
+// the widest tiers with no OS-layer grant, which is the bug, not the fix.
+//
+// The allowed_tools guard is dropped for the same reason: a being with no allowed_tools list
+// still has an `allowed_paths` block that says which folders it is meant to reach.
+//
+// ONE HONEST CAVEAT, and it is why read-only paths are included rather than silently dropped:
+// the launcher has exactly ONE ACE mode, `Modify`. A path declared read-only therefore gets a
+// WRITE-capable OS grant, and its read-only-ness stays a CLI-layer property — enforced under a
+// confined tier (readOnlyDenyRules), enforced by nothing at all under a skip-permissions tier,
+// which already has full filesystem access at the CLI layer anyway. Excluding them instead
+// would reproduce the original defect for exactly those paths: permitted by Claude Code,
+// unreadable to the kernel. Recorded in setup/SANDBOX.md's Known gaps.
+export function sandboxSharePathsFor(def) {
+  const { addDirs, readOnlyDirs } = allowedPathsFor(def);   // no onLog: confinementFor already emitted that line this turn
+  return [...addDirs, ...readOnlyDirs];
 }
 
 // Pure: a conversation's RESOLVED config doc → { idleTtlMs }. The `warm: { idle_ttl }`
@@ -735,6 +780,13 @@ export function createBrainPool({
       // nowhere else — warm-cli-session.mjs's `warm-cli: spawn ...` line prints the INNER claude
       // argv, which is built AND logged before sandboxSpawn ever wraps it.
       const sandboxOauthToken = sandboxed === true ? String(getConfig()?.sandbox_oauth_token ?? '').trim() : '';
+      // THE OS-LAYER SHARE PATHS (operator 2026-09-05) — `allowed_paths` finally reaching the
+      // kernel and not only the CLI flags. Read from the SAME `def` confinementFor reads below
+      // (post access-level override, so a tier change moves both layers together) and gated on
+      // the resolved `sandboxed` for the same reason the credential above is: a NON-sandboxed
+      // turn runs as the operator's own Windows account, which already reaches these folders,
+      // so handing it a share list would be a no-op field on every ordinary turn.
+      const sandboxSharePaths = sandboxed === true ? sandboxSharePathsFor(def) : [];
       const baseOpts = {
         engine,
         cwd,
@@ -787,6 +839,15 @@ export function createBrainPool({
         // above, sandboxed-only). With the key unset this contributes nothing at all, which is
         // the common case and the one whose spawn argv must not change.
         ...(sandboxOauthToken ? { sandboxOauthToken } : {}),
+        // ...and the OS-LAYER half of this being's `allowed_paths` (operator 2026-09-05),
+        // spread in only when there are any, exactly like the credential above. Resolved from
+        // the SAME def the confinementFor spread above reads, through the SAME walk
+        // (sandboxSharePathsFor / allowedPathsFor), so the two layers cannot disagree about
+        // which folders this being was told it may use. sandbox-cli-session.mjs turns it into
+        // the launcher's `-SharePath` JSON array and each path gets a per-turn ACE, granted and
+        // revoked with the lease. Sandboxed turns only: a non-sandboxed turn runs as the
+        // operator's own account and already reaches every one of these paths.
+        ...(sandboxSharePaths.length ? { sandboxSharePaths } : {}),
       };
 
       // Identity kickoff: prefix the first turn of a fresh thread with the feed,

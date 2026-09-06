@@ -13,9 +13,10 @@
 // session's SID a read/write ACE on exactly this conversation's own folder,
 // and launches the real claude.exe under that token with stdio proxied
 // straight through. See setup/sandbox-logon-launcher.ps1's header for the
-// full mechanism + the two verified deviations from the original spec
-// (CreateProcessWithTokenW over CreateProcessAsUser; InnerArgs as
-// ValueFromRemainingArguments, not a named flag).
+// full mechanism + the verified deviations from the original spec
+// (CreateProcessWithLogonW over CreateProcessAsUser; and the ARGUMENT CONTRACT —
+// -InnerArgs, -SharePath and -SetEnv are each exactly ONE argv element holding a
+// JSON array, so PowerShell's parameter binder never tokenizes caller data).
 //
 // warm-cli-session.mjs's spawnProc() already resolves `bin` (full claude.exe
 // path) and `args` (the full stream-json argv, via buildClaudeArgs) itself,
@@ -88,28 +89,58 @@ export function createSandboxCliSession(options = {}) {
   // brainpool.mjs only puts it there when the being actually resolved `sandboxed: true`.
   const oauthToken = typeof options.sandboxOauthToken === 'string' ? options.sandboxOauthToken.trim() : '';
 
+  // THE OS-LAYER HALF OF A BEING'S `allowed_paths` (brainpool.mjs's sandboxSharePathsFor,
+  // handed here as options.sandboxSharePaths). Same normalisation discipline as the token
+  // above, and for the same reason — sandboxSpawn must stay a pure argv build: anything that
+  // is not a non-blank string is dropped, duplicates are dropped, and an empty result
+  // contributes ZERO argv elements so the no-share argv is byte-identical to what it was.
+  //
+  // WHY IT EXISTS: `allowed_paths` produced an `--add-dir` at the CLI layer and NOTHING at the
+  // OS layer, so under the sandbox the folder was permitted by Claude Code and denied by the
+  // kernel — the being was told it may use a directory that then refused it. Under the
+  // `all`/`sandbox` tiers there is no CLI layer at all (confinementFor returns {} for
+  // dangerously_skip_permissions), so the launcher's ACE is the ONLY way a shared folder is
+  // reachable at all.
+  const sharePaths = [...new Set(
+    (Array.isArray(options.sandboxSharePaths) ? options.sandboxSharePaths : [])
+      .filter((p) => typeof p === 'string' && p.trim())
+      .map((p) => p.trim()),
+  )];
+
   function sandboxSpawn(bin, args, spawnOpts) {
     // spawnOpts.cwd is already normalizeCwd()'d by warm-cli-session.mjs's
     // spawnProc() by the time we're called; fall back to the raw
     // options.cwd only for the (untested-in-practice) case spawnProc ran
     // with no cwd at all.
     const targetFolder = spawnOpts?.cwd ?? options.cwd;
+    // ONE ARGV ELEMENT PER LAUNCHER PARAMETER, AND EVERY LIST IS A JSON ARRAY. This is THE one
+    // place psArgs is built and the contract is the launcher's own PARAMS header. The three
+    // JSON.stringify()s below are LOAD-BEARING, not tidiness — passed as bare tokens instead,
+    // PowerShell's parameter binder:
+    //   * ATE the inner argv's `--verbose`, prefix-matching [CmdletBinding()]'s common
+    //     -Verbose switch, which made `--print --output-format stream-json` illegal and killed
+    //     every sandboxed ccode turn before the model ("requires --verbose");
+    //   * bound only the FIRST value of a multi-value flag and spilled the rest into the inner
+    //     argv, silently (`-SharePath A B` -> SharePath=[A], InnerArgs=[B, ...]);
+    //   * rejected the empty `--setting-sources ''` element outright.
+    // Inside a JSON string none of the three is a token the binder can see.
+    //
+    // ORDER: the optional flags stay BEFORE -InnerBin and -InnerArgs comes last. Nothing binds
+    // by position any more, so this is purely for readers — the argv reads in the same order
+    // the launcher's param block declares.
     const psArgs = [
       '-NoProfile', '-ExecutionPolicy', 'Bypass',
       '-File', LAUNCHER_PATH,
       '-TargetFolder', targetFolder,
-      // EVERY OPTIONAL NAMED FLAG GOES HERE — BEFORE -InnerBin, never after it. The launcher
-      // binds by NAME only (PositionalBinding = $false) and sweeps everything it does not bind
-      // into InnerArgs (ValueFromRemainingArguments), so a flag placed after -InnerBin's value
-      // would still BIND correctly — but it would sit inside what every reader, and every test,
-      // treats as "the inner argv is the contiguous tail after -InnerBin <bin>". Keeping the
-      // optional flags ahead of -InnerBin keeps that tail exactly the claude/codex/pi argv.
-      //
-      // WITH NO TOKEN THE SPREAD IS EMPTY and psArgs is byte-identical to what it was before
-      // this existed. That is the common case and it must stay unchanged.
-      ...(oauthToken ? ['-SetEnv', `${OAUTH_ENV_NAME}=${oauthToken}`] : []),
+      // WITH NO SHARE PATHS AND NO TOKEN both spreads are EMPTY and the launcher's own
+      // defaults ('' = "no entries") apply. That is the common case and it must stay unchanged.
+      ...(sharePaths.length ? ['-SharePath', JSON.stringify(sharePaths)] : []),
+      ...(oauthToken ? ['-SetEnv', JSON.stringify([`${OAUTH_ENV_NAME}=${oauthToken}`])] : []),
       '-InnerBin', bin,
-      ...args,   // collected by the launcher's InnerArgs (ValueFromRemainingArguments) — verbatim array elements, never joined/re-parsed
+      // The WHOLE inner argv as ONE element. Empty elements, `--flags` and repeated flags all
+      // ride INSIDE the JSON, verbatim, and the launcher's ConvertFrom-JsonArgv hands them to
+      // CreateProcessWithLogonW one array slot each.
+      '-InnerArgs', JSON.stringify(Array.isArray(args) ? args : []),
     ];
     return _spawn('powershell.exe', psArgs, spawnOpts);
   }

@@ -43,10 +43,28 @@ The launcher's parameters:
 | Parameter | |
 |---|---|
 | `-TargetFolder` | required — the conversation folder, ACE'd for the lease |
-| `-InnerBin` | required — the binary to launch as the leased account |
-| `-InnerArgs` | its arguments, `ValueFromRemainingArguments` |
-| `-SharePath` | optional, repeatable — extra folders to ACE alongside `TargetFolder`, granted and revoked independently. One path per invocation (see *Known gaps* 4). |
-| `-SetEnv` | optional — `NAME=VALUE` entries overlaid onto a per-user environment block. Values are never logged, only names. |
+| `-InnerBin` | required — the binary to launch as the leased account, an absolute path |
+| `-InnerArgs` | required — the inner argv as **one argv element holding a JSON array**, e.g. `'["--print","--verbose",""]'` |
+| `-SharePath` | optional — extra paths to ACE alongside `TargetFolder`, granted and revoked independently. **One JSON array**, any number of paths: `'["C:\\a","C:\\b"]'` |
+| `-SetEnv` | optional — `NAME=VALUE` entries overlaid onto a per-user environment block, as **one JSON array**. Values are never logged, only names. |
+
+**One argv element per parameter, and every list is a JSON array.** The launcher
+parses them itself (`ConvertFrom-JsonArgv`) so that PowerShell's *parameter
+binder* never sees caller-supplied data as a token. That is not stylistic — it is
+the fix for three measured defects, one of which killed every sandboxed `ccode`
+turn; see *Known gaps* 3. Malformed JSON throws, naming the parameter. Omitting
+an optional flag and passing `'[]'` mean the same thing.
+
+`src/sandbox-cli-session.mjs`'s `sandboxSpawn` is the only production caller and
+`JSON.stringify()`s all three.
+
+**A PowerShell caller cannot do this** (measured, PS 5.1): passing a JSON string
+to a native exe strips every quote; `\"`-escaping keeps the quotes but splits the
+argument at its first space; `""`-doubling survives spaces but breaks on a quote
+inside a value. PS 5.1 re-tokenizes native arguments and has no
+`$PSNativeCommandArgumentPassing` (PS 7.3+). Node's `child_process.spawn` builds
+the command line itself, one argv element per array slot — which is why
+`setup/test-sandbox-logon-launcher.ps1` spawns the launcher *through node*.
 
 Constants live at the top of `sandbox-account.ps1`:
 
@@ -185,18 +203,21 @@ Two kinds of residue are normal to find and worth sweeping occasionally:
 
 Real, current, and worth knowing before relying on any of this.
 
-1. **A sandboxed turn cannot use the operator's Claude subscription.** The CLI
-   authenticates from `~/.claude/.credentials.json`, which the pool cannot read
-   (correctly — it is the operator's credential). The documented headless
-   mechanism is a token in the environment (`CLAUDE_CODE_OAUTH_TOKEN` from
-   `claude setup-token`, or `ANTHROPIC_API_KEY`), which leads directly to:
+1. **A sandboxed turn needs `sandbox_oauth_token` set, or it has no credential.**
+   The CLI authenticates from `~/.claude/.credentials.json`, which the pool cannot
+   read (correctly — it is the operator's credential). The headless mechanism is a
+   token in the environment (`CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`,
+   or `ANTHROPIC_API_KEY`), and that path **is wired now**: `config.yaml`'s
+   `sandbox_oauth_token` → `brainpool.mjs` (sandboxed turns only) →
+   `sandbox-cli-session.mjs` → the launcher's `-SetEnv`. With the key unset a
+   sandboxed ccode turn reaches the CLI and dies at
+   `Not logged in · Please run /login` — which is this gap, not a launcher fault.
 
-2. **`-SetEnv` works, but nothing passes it yet.** The launcher can now build a per-user
+2. **`-SetEnv` and the environment block.** The launcher builds a per-user
    environment block (`LogonUser` → `CreateEnvironmentBlock` → overlay →
    `CREATE_UNICODE_ENVIRONMENT`), so a per-turn credential such as
-   `CLAUDE_CODE_OAUTH_TOKEN` can be injected without touching disk or a
-   machine-wide variable. **`src/sandbox-cli-session.mjs` does not pass it yet**,
-   so gap 1 stands until that caller is wired.
+   `CLAUDE_CODE_OAUTH_TOKEN` is injected without touching disk or a machine-wide
+   variable. Values are never logged, only names.
 
    **The block is rebased on the account's own profile** — fixed 2026-09-05
    after the first smoke test caught it corrupting the environment. Worth
@@ -233,30 +254,61 @@ Real, current, and worth knowing before relying on any of this.
    the child gets the *cwd*, with the rebase it gets `\Users\egpt-sbx-NN`,
    consistent with `USERPROFILE`. The new value is the correct one.
 
-3. **Confined ccode and the sandbox do not compose — fixed, unverified live.**
-   `claude-args.mjs:123` pushes `'--setting-sources', ''`, an empty-string argv
-   element. The parameter that rejected it was **`Invoke-AsLeasedAccount`'s
-   `-BinArgs`**, not the script's `-InnerArgs`: `Mandatory` on a `[string[]]`
-   validates every *element* as non-empty, and `-InnerArgs` is
-   `ValueFromRemainingArguments` without `Mandatory`, so it always bound the
-   empty element fine. The live log names `BinArgs` seven times and `InnerArgs`
-   never. Both now carry `[AllowEmptyString()]`; `-BinArgs` is the one that
-   mattered. A skip-permissions tier was never affected, because
-   `confinementFor` returns `{}` and no `--setting-sources` is emitted.
+3. **The argument contract — three defects, one root cause. Fixed and verified
+   live, 2026-09-05.** Caller-supplied data used to reach PowerShell's *parameter
+   binder*, which then interpreted it. All three were measured, not inferred:
 
-4. **Shared paths: launcher ready, caller not wired.** `-SharePath` now takes
-   extra folders and gives each the same `Modify` ACE as `TargetFolder`, granted
-   independently and purged in the same `finally`. **Nothing passes it yet**, so
-   a being's `allowed_paths` still produce an `--add-dir` at the CLI layer and no
-   ACE at the OS layer — permitted by Claude Code, denied by the kernel.
+   | what the caller sent | what the launcher received |
+   |---|---|
+   | the inner argv's own `--verbose` | eaten — prefix-matched `[CmdletBinding()]`'s common `-Verbose` switch. 7 args sent, `(+6 args)` logged, and `claude` died with *When using --print, --output-format=stream-json requires --verbose* |
+   | `-SharePath A B` | `SharePath=['A']`, and `B` silently spilled into `InnerArgs` |
+   | `-SharePath A,B` | the one literal string `'A,B'` — PS 5.1 never re-parses an argv element into an array |
+   | `-SharePath A -SharePath B` | hard error, `ParameterAlreadyBound` |
+   | `--setting-sources ''` | rejected outright: `Mandatory` on a `[string[]]` validates every *element* as non-empty |
 
-   Constraint on the eventual caller: through `powershell -File`, **one path per
-   invocation**. `-SharePath A B` binds `A` and spills `B` into the next
-   parameter; `-SharePath A,B` binds the single string `"A,B"` — PS 5.1 does not
-   re-parse an argv element into an array. No `,`/`;` splitter was added on
-   purpose: both are legal in Windows paths and a splitter would silently
-   corrupt real directory names. Several paths means changing the invocation
-   style, not the separator.
+   **This is very likely the undiagnosed outage** `~/.egpt/config/config.yaml`
+   records against the `egpt` being — *"don ran OS-sandboxed and every turn died
+   before the model"* — and the reason the handoffs concluded *"a ccode being
+   cannot be sandboxed"*. It was not the sandbox. It was one missing flag.
+
+   The fix is the one fix for all three: **each caller-supplied list is exactly
+   one argv element holding a JSON array**, which the launcher parses itself. The
+   binder now sees a flag name and one opaque string. `-Command` was rejected as
+   an alternative — it *adds* a PowerShell re-parse (a quoting bug there is code
+   execution, not a corrupted argv) and would not have fixed the `--verbose` case
+   anyway, since the script still binds parameters.
+
+   `PositionalBinding = $false` is kept but now guards something smaller: a stray
+   token has nowhere to be swept, so it becomes a loud *"A positional parameter
+   cannot be found"* instead of a silent bind by position. `[AllowEmptyString()]`
+   was **removed** from the script's own parameters (dead — the empty element
+   lives inside the JSON now) and **kept** on `Invoke-AsLeasedAccount`'s
+   `-BinArgs`, `New-SandboxEnvironmentBlock`'s `-SetEnv` and `Set-EnvBlockEntry`'s
+   `-Value`, which receive the *parsed* arrays and are `Mandatory`.
+
+   Verified live: `claude.exe` launched with the real 15-element confined argv
+   logs `(+15 args)`, reaches `{"type":"system","subtype":"init"}` with
+   `"permissionMode":"default"` and `"mcp_servers":[]` (the empty
+   `--setting-sources` value did its job), and fails only on authentication —
+   which is gap 1's territory, well past the model gate.
+
+4. **Shared paths are wired end to end, and read-only ones get a *write* ACE.**
+   `brainpool.mjs`'s `allowedPathsFor` is now one walk with two consumers:
+   `confinementFor` (the CLI layer — `--add-dir` and read-only deny rules) and
+   `sandboxSharePathsFor` (the OS layer). The second has **no
+   `dangerously_skip_permissions` early return**, deliberately: under the `all`
+   and `sandbox` tiers `confinementFor` returns `{}`, so the CLI layer is off and
+   the ACE is the *only* way a shared folder is reachable — exactly the tiers most
+   likely to declare one.
+
+   **The caveat.** The launcher has one ACE mode, `Modify`. A path declared
+   read-only in `allowed_paths` therefore gets a *write-capable* OS grant, and its
+   read-only-ness remains a CLI-layer property: enforced under a confined tier
+   (`readOnlyDenyRules`), enforced by nothing under a skip-permissions tier —
+   which already has full filesystem access at the CLI layer regardless. Excluding
+   read-only paths instead would reproduce the original defect for exactly those
+   paths: permitted by Claude Code, unreadable to the kernel. A real fix means
+   teaching the launcher a `ReadAndExecute` ACE mode, and nothing needs it yet.
 
 5. **pi's tool list is not enforceable.** `access_level` overwrites
    `allowed_tools` with ccode tool names, which are not pi tool names, so
@@ -277,9 +329,23 @@ lost `ReadAndExecute` on the binary's directory. Re-run
 scope, so pi resolved its config against `C:\Users\egpt-sbx-NN` instead. Re-run
 the provisioner.
 
-**The turn dies before the model, with no useful error** — check whether the
-being is `sandboxed` at all. A ccode being cannot currently be sandboxed; see
-gap 1.
+**The turn dies before the model, with no useful error** — until 2026-09-05 this
+was almost certainly the launcher eating `--verbose`; see gap 3. If it still
+happens, check whether the being is `sandboxed` at all, and whether
+`sandbox_oauth_token` is set (gap 1).
+
+**`Error: When using --print, --output-format=stream-json requires --verbose`** —
+gap 3. The flag was in the argv the caller built and never reached `claude`.
+
+**`A positional parameter cannot be found that accepts argument ...` from the
+launcher** — something was passed to `sandbox-logon-launcher.ps1` as a bare token.
+Every list is one `-Flag '<json array>'` pair now; nothing is positional and
+nothing is swept up as remaining arguments. That message is the guard working.
+
+**`sandbox-logon-launcher: -InnerArgs is not valid JSON`** (or `must be a JSON
+ARRAY of strings`) — the caller did not `JSON.stringify()` the list, or a
+PowerShell caller passed it as a native argument. See the caller note under *The
+parts*: PS 5.1 cannot pass a JSON string to an exe intact.
 
 **`ParameterArgumentValidationErrorEmptyStringNotAllowed`** — gap 3.
 

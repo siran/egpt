@@ -74,79 +74,97 @@
 # do - the inner process's stdout came back through the launcher's own pipe -
 # and lpDesktop does land the child on its private desktop.
 #
-# PARAMS: InnerArgs is declared ValueFromRemainingArguments (see below), NOT
-# a named -InnerArgs flag one would join and re-parse. Verified empirically
-# (a plain `-InnerArgs val1 val2 val3` NAMED array parameter only ever binds
-# the FIRST following token in PowerShell 5.1  - everything after it fails
-# with "A positional parameter cannot be found"): the caller must NOT pass
-# the literal `-InnerArgs` token; it must just append the raw inner argv
-# after -InnerBin, e.g.
-#   powershell.exe -File sandbox-logon-launcher.ps1 -TargetFolder <dir> -InnerBin <bin> --input-format stream-json ...
-# ValueFromRemainingArguments then collects every trailing token - INCLUDING
-# ones starting with `--` - verbatim, one array element each, no shell
-# re-parsing anywhere in the chain (Node's spawn() never touches a shell,
-# and PowerShell's remaining-arguments capture does not re-tokenize).
-# PositionalBinding = $false IS LOAD-BEARING, and it was measured the hard way
-# (2026-09-05). A PowerShell parameter declared with no explicit Position is
-# POSITIONAL BY DEFAULT, and positional binding runs BEFORE
-# ValueFromRemainingArguments collects anything. So the moment -SharePath and
-# -SetEnv were added below, the caller's own shape -
+# PARAMS - ONE ARGV ELEMENT PER PARAMETER, AND THAT ELEMENT IS A JSON ARRAY.
+# Every caller-supplied LIST (-InnerArgs, -SharePath, -SetEnv) arrives as a
+# SINGLE [string] holding a JSON array, which this script parses itself (see
+# ConvertFrom-JsonArgv below). NOTHING A CALLER SUPPLIES IS EVER SEEN BY
+# POWERSHELL'S PARAMETER BINDER AS A TOKEN, and that is the entire point: the
+# binder is what broke all three of the following. All three were MEASURED on
+# this machine 2026-09-05 against the previous param block, not theorised, and
+# all three are ONE root cause.
 #
-#   -TargetFolder <dir> -InnerBin <exe> /c <script> ""
+# 1) THE BINDER ATE --verbose, AND THAT KILLED EVERY SANDBOXED ccode TURN.
+#    [CmdletBinding()] enables PowerShell's COMMON parameters, and PowerShell
+#    PREFIX-MATCHES them: the inner argv's own `--verbose` (claude-args.mjs's
+#    BASE_ARGS) bound the common -Verbose SWITCH instead of reaching InnerArgs.
+#    Observed, running the real launcher with the real claude argv:
+#      VERBOSE: Perform operation 'Enumerate CimInstances' ...   <- OUR verbose stream, switched on by the caller's data
+#      sandbox-logon-launcher: launching under egpt-sbx-06: claude.exe (+6 args)   <- 7 sent, 6 arrived
+#      Error: When using --print, --output-format=stream-json requires --verbose
+#    `claude --help` makes --verbose MANDATORY alongside
+#    `--print --output-format stream-json`, so the turn died before the model on
+#    EVERY sandboxed ccode turn. This is very likely the outage
+#    ~/.egpt/config/config.yaml records against the `egpt` being ("don ran
+#    OS-sandboxed and every turn died before the model"), and the reason the
+#    handoffs concluded "a ccode being cannot be sandboxed".
 #
-# which is exactly what sandbox-cli-session.mjs builds - bound `/c` to
-# $SharePath and `<script>` to $SetEnv, left $InnerArgs EMPTY, and the script
-# died on its own "InnerArgs is empty - nothing to run" guard. Every sandboxed
-# turn, including pi's. A smoke test caught it; nothing in the unit-level checks
-# could have, because they all passed the new parameters BY NAME, which is the
-# one case that works.
+# 2) A MULTI-VALUE PARAMETER SILENTLY CORRUPTED THE INNER ARGV. Through
+#    `powershell.exe -File`, spawned by Node with one argv element per token:
+#      -SharePath A B            -> SharePath=@('A')   InnerArgs=@('B','--print',...)
+#      -SetEnv X=1 Y=2           -> SetEnv=@('X=1')    InnerArgs=@('Y=2','--print',...)
+#      -SharePath A,B            -> SharePath=@('A,B')  - ONE literal string; PS 5.1
+#                                   does not re-parse an argv element into an array
+#      -SharePath A -SharePath B -> hard error, ParameterAlreadyBound
+#    PositionalBinding = $false did NOT fix this. It stopped the spill hitting the
+#    next NAMED parameter and made it land in the inner argv instead - which is
+#    WORSE, because it is silent.
 #
-# With positional binding off, every parameter here is name-only and the
-# trailing tokens reach $InnerArgs the way they always did. The two Mandatory
-# parameters are unaffected: the caller has always passed them by name.
+# 3) AN EMPTY ARGV ELEMENT BROKE BINDING. claude-args.mjs pushes the PAIR
+#    `--setting-sources` '' - the EMPTY string IS the value, and it is what stops
+#    a sandboxed being inheriting the operator's personal ~/.claude (above all
+#    its MCP servers). It was papered over with [AllowEmptyString()] on the two
+#    parameters the binder saw.
+#
+# THE FIX IS THE SAME ONE FIX FOR ALL THREE: caller data no longer reaches the
+# binder. `-InnerArgs '["--print","--output-format","stream-json","--verbose"]'`
+# is ONE token; it is not a flag, it is not empty, and it is not a second value.
+#
+# NOT -Command, deliberately. That would ADD a PowerShell re-parse of the whole
+# command string (a quoting bug there is arbitrary code execution, not merely a
+# corrupted argv), and it would not have fixed (1) anyway - the script still
+# binds parameters either way.
+#
+# ONE WAY TO INVOKE. The parameter NAMES are unchanged:
+#   powershell.exe -NoProfile -ExecutionPolicy Bypass -File sandbox-logon-launcher.ps1 `
+#     -TargetFolder <dir> [-SharePath '["<dir>","<dir>"]'] [-SetEnv '["NAME=VALUE"]'] `
+#     -InnerBin <absolute exe> -InnerArgs '["--print","--verbose",""]'
+# src/sandbox-cli-session.mjs's sandboxSpawn is THE one builder of that argv and
+# it JSON.stringify()s all three. There is no second shape to support.
+#
+# WHAT SURVIVED THE REWRITE, and why - the two attributes the old shape needed:
+#  - PositionalBinding = $false: KEPT, but it now guards something DIFFERENT and
+#    much smaller. No parameter takes remaining arguments any more, so a stray
+#    token has nowhere to be swept - but with positional binding ON it would
+#    silently bind BY POSITION to $TargetFolder/$InnerBin/$InnerArgs (a
+#    PowerShell parameter declared with no explicit Position is positional by
+#    default). Off, the same stray token is a loud "A positional parameter cannot
+#    be found that accepts argument ...". Cheap, and it turns a silent misbind
+#    into a crash.
+#  - [AllowEmptyString()] ON THESE PARAMETERS: REMOVED - it is now dead. It
+#    existed because a [string[]] bound the inner argv ELEMENT BY ELEMENT and one
+#    element was ''. The inner argv is a single JSON string now; the empty element
+#    lives INSIDE it and the binder never sees it. The attribute is still
+#    LOAD-BEARING further down this file - on Invoke-AsLeasedAccount's -BinArgs,
+#    on New-SandboxEnvironmentBlock's -SetEnv, and on Set-EnvBlockEntry's -Value -
+#    because those three receive the PARSED arrays, empty elements and all, and
+#    are Mandatory. Do not "clean up" those.
 [CmdletBinding(PositionalBinding = $false)]
 param(
   [Parameter(Mandatory = $true)][string]$TargetFolder,
   [Parameter(Mandatory = $true)][string]$InnerBin,
-  # AllowEmptyString, and it is not cosmetic anywhere it appears in this file:
-  # claude-args.mjs:123 pushes the PAIR `--setting-sources` '' - the EMPTY
-  # string IS the value, it is what tells Claude Code to load NO settings
-  # sources at all so a sandboxed being does not inherit the operator's personal
-  # ~/.claude (and above all its MCP servers). Belt-and-braces on THIS
-  # parameter, measured 2026-09-05: a ValueFromRemainingArguments [string[]]
-  # that is NOT Mandatory already binds an empty element happily, so this
-  # attribute changes nothing today - it is here so that putting Mandatory (or
-  # any other validator) on this parameter later cannot silently resurrect the
-  # failure. The parameter that ACTUALLY threw
-  # `ParameterArgumentValidationErrorEmptyStringNotAllowed,sandbox-logon-launcher.ps1`
-  # in production is Invoke-AsLeasedAccount's -BinArgs, which IS Mandatory - see
-  # the note there for the measurement and the consequence.
-  [Parameter(ValueFromRemainingArguments = $true)][AllowEmptyString()][string[]]$InnerArgs,
-  # ---- OPTIONAL, and both default to an empty array ON PURPOSE: with neither
-  # flag passed this script does exactly what it did before they existed - no
-  # extra ACL write, and no environment block built at all.
-  #
-  # Declared AFTER the ValueFromRemainingArguments parameter above, which looks
-  # wrong and is not: measured 2026-09-05 against the real caller's argv shape
-  # (`-TargetFolder X -InnerBin Y --input-format stream-json --setting-sources ''
-  # --permission-mode default --add-dir Z`), InnerArgs collects all eight
-  # trailing tokens identically whether these two are declared before or after
-  # it. They go last because that is where the diff is smallest.
-  #
-  # CAVEAT for whoever wires the caller (sandbox-cli-session.mjs), and MEASURED,
-  # not assumed - it is the same PS 5.1 array-binding quirk the PARAMS note in
-  # the header already records for InnerArgs. Through `powershell.exe -File`,
-  # spawned by Node with one argv element per token:
-  #   `-SharePath A B`   binds A here and drops B into the NEXT parameter.
-  #   `-SharePath A,B`   binds the SINGLE string "A,B" - PowerShell does NOT
-  #                      re-parse an argv element into an array.
-  # So one path per launcher invocation is all this shape can carry over -File.
-  # Do NOT "fix" that by splitting on ',' or ';' in here: both are legal
-  # characters in a Windows path, so a splitter would silently corrupt a real
-  # directory name. A caller that needs several paths has to change the
-  # invocation (e.g. -Command instead of -File), which is a caller-side decision.
-  [string[]]$SharePath = @(),
-  [string[]]$SetEnv = @()
+  # A JSON array of strings: the inner argv, verbatim, one element each.
+  # NOT Mandatory on purpose. A missing Mandatory parameter PROMPTS, and this
+  # script is spawned by a daemon with no console attached - it would hang for
+  # ever instead of failing. The explicit guard below throws instead, loudly and
+  # immediately.
+  [string]$InnerArgs = '',
+  # ---- OPTIONAL. '' (this default) and '[]' both mean "no entries", so with
+  # neither flag passed this script does exactly what it did before they existed:
+  # no extra ACL write, and no environment block built at all.
+  [string]$SharePath = '',
+  # A JSON array of NAME=VALUE strings. A VALUE may legitimately be empty
+  # ("FOO="); it lives inside the JSON, so nothing out here has to allow for it.
+  [string]$SetEnv = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -157,11 +175,72 @@ $ErrorActionPreference = 'Stop'
 # shared with provision-sandbox-account.ps1's self-elevating one-time setup.
 . (Join-Path $PSScriptRoot 'sandbox-account.ps1')
 
+# ---- THE ONE PARSER for the three JSON-array parameters (see PARAMS above).
+# Three consumers, ONE implementation: -InnerArgs, -SharePath and -SetEnv all
+# mean "a JSON array of strings" and must fail identically when they are not one.
+#
+# PS 5.1 TRAP, and this repo has been bitten by it before, so it is spelled out
+# rather than trusted to memory. ConvertFrom-Json on a TOP-LEVEL ARRAY writes the
+# WHOLE ARRAY as ONE object to the pipeline, so `@(ConvertFrom-Json $raw)` is a
+# ONE-ELEMENT array whose single element is the array. MEASURED on this box:
+#   $raw            @(ConvertFrom-Json $raw).Count   $p = ConvertFrom-Json $raw; @($p).Count
+#   []                           1                                 0
+#   ["a"]                        1                                 1
+#   ["a","","b"]                 1                                 3
+#   [""]                         1                                 1  (one EMPTY element)
+# ASSIGN FIRST, THEN WRAP. That is exactly what this function does, and the only
+# reason $parsed exists as its own variable.
+#
+# ANYTHING MALFORMED THROWS, naming the parameter. Never a silent empty array: a
+# silently-empty -InnerArgs is the precise class of failure this whole contract
+# exists to end.
+function ConvertFrom-JsonArgv {
+  param(
+    [Parameter(Mandatory = $true)][string]$ParamName,
+    # AllowEmptyString because '' is THIS SCRIPT'S OWN default for the optional
+    # parameters and means "no entries" - it is not caller data. A caller that
+    # means the same thing sends '[]'.
+    [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Raw
+  )
+  if ([string]::IsNullOrWhiteSpace($Raw)) { return ,@() }
+  $parsed = $null
+  try {
+    $parsed = ConvertFrom-Json $Raw
+  } catch {
+    throw "sandbox-logon-launcher: -$ParamName is not valid JSON  - $($_.Exception.Message). Received: $Raw"
+  }
+  # `$null -eq $parsed`, NOT `$parsed -eq $null`: with an array on the left the
+  # latter is an ELEMENT-WISE filter that returns an array, not a boolean.
+  if ($null -eq $parsed -or $parsed -isnot [System.Object[]]) {
+    throw "sandbox-logon-launcher: -$ParamName must be a JSON ARRAY of strings, e.g. [`"--print`",`"`"]  - received: $Raw"
+  }
+  $arr = @($parsed)
+  $out = New-Object System.Collections.Generic.List[string]
+  foreach ($e in $arr) {
+    if ($null -ne $e -and $e -isnot [string]) {
+      throw "sandbox-logon-launcher: -$ParamName element $($out.Count) is not a string (got $($e.GetType().Name))  - received: $Raw"
+    }
+    [void]$out.Add([string]$e)
+  }
+  # The leading comma stops PowerShell unrolling the array on the way out: an
+  # empty one would otherwise come back as $null and a one-element one as a bare
+  # string, which is the same shape bug in a different costume.
+  return ,$out.ToArray()
+}
+
+# Parsed ONCE, here, into the three arrays the rest of this script already
+# expects. Every use below is unchanged from when these were [string[]]
+# parameters - the ONLY difference is that PowerShell's parameter binder never
+# saw the contents.
+$InnerArgsList = ConvertFrom-JsonArgv -ParamName 'InnerArgs' -Raw $InnerArgs
+$SharePathList = ConvertFrom-JsonArgv -ParamName 'SharePath' -Raw $SharePath
+$SetEnvList    = ConvertFrom-JsonArgv -ParamName 'SetEnv'    -Raw $SetEnv
+
 if (-not (Test-Path -LiteralPath $TargetFolder -PathType Container)) {
   throw "sandbox-logon-launcher: TargetFolder does not exist or is not a directory: $TargetFolder"
 }
-if (-not $InnerArgs -or $InnerArgs.Count -eq 0) {
-  throw "sandbox-logon-launcher: InnerArgs is empty  - nothing to run"
+if ($InnerArgsList.Count -eq 0) {
+  throw "sandbox-logon-launcher: -InnerArgs parsed to an empty array  - nothing to run. It must be a JSON array of the inner argv, one element per token."
 }
 
 # ---- Win32 P/Invoke (inline C#, no separate binary) ----
@@ -1326,7 +1405,7 @@ try {
   # second Set-Acl for an ACE that is already there, and a second purge on the
   # way out, both pointless writes to the folder the turn is actually using.
   [void]$sharesSeen.Add([System.IO.Path]::GetFullPath($TargetFolder).TrimEnd('\'))
-  foreach ($sp in $SharePath) {
+  foreach ($sp in $SharePathList) {
     if ([string]::IsNullOrWhiteSpace($sp)) { continue }
     try {
       if (-not (Test-Path -LiteralPath $sp)) {
@@ -1386,9 +1465,9 @@ try {
   # launch and the wait live in Invoke-AsLeasedAccount, shared with the scrub
   # pass above. ----
   $finalExit = Invoke-AsLeasedAccount -AccountName $leasedName -Password $plainPwd `
-    -Bin $InnerBin -BinArgs $InnerArgs `
+    -Bin $InnerBin -BinArgs $InnerArgsList `
     -WorkingDirectory $TargetFolder -LpDesktop $sandboxDesk.LpDesktop -Label 'launching' `
-    -SetEnv $SetEnv `
+    -SetEnv $SetEnvList `
     -StdIn ([SandboxLogon]::GetStdHandle([SandboxLogon]::STD_INPUT_HANDLE)) `
     -StdOut ([SandboxLogon]::GetStdHandle([SandboxLogon]::STD_OUTPUT_HANDLE)) `
     -StdError ([SandboxLogon]::GetStdHandle([SandboxLogon]::STD_ERROR_HANDLE))

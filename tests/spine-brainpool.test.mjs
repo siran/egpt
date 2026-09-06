@@ -1776,3 +1776,92 @@ describe('brainpool.turn — sandbox_oauth_token reaches brainOptions ONLY for a
     for (const l of logs) expect(l, `a log line leaked the token: ${l}`).not.toContain(TOKEN);
   });
 });
+
+// ── allowed_paths REACHING THE OS LAYER (operator 2026-09-05). `allowed_paths` produced an
+//    `--add-dir` at the CLI layer and NOTHING at the OS layer, so under the sandbox a shared
+//    folder was permitted by Claude Code and denied by the kernel. brainOptions.sandboxSharePaths
+//    is the missing half: sandbox-cli-session.mjs turns it into the launcher's `-SharePath` JSON
+//    array and each path gets a per-turn Modify ACE for the leased pool account.
+//
+//    ONE PARSER, TWO CONSUMERS, AND THEY DIFFER ON PURPOSE. confinementFor keeps its
+//    dangerously_skip_permissions early return (the `all`/`sandbox` tiers are unconfined at the
+//    CLI layer by design). sandboxSharePathsFor has NO such early return — under exactly those
+//    tiers the CLI layer is off, so the ACE is the ONLY way a shared folder is reachable at all.
+//    Gating both on the same flag is what left the widest tiers with no grant anywhere. ──
+describe('brainpool.turn — allowed_paths reach the OS layer as brainOptions.sandboxSharePaths', () => {
+  const PATHS = {
+    '/c/work/project':   null,                                        // full access
+    '/c/work/reference': { allowed_tools: ['Read', 'Glob', 'Grep'] },  // read-only at the CLI layer
+  };
+
+  it('REPRODUCE-FIRST (the gap): a SKIP-PERMISSIONS sandboxed being has NO addDirs at all — and now still gets every path as a share path', async () => {
+    const brains = { resolve: () => ({ name: 'meta', type: 'ccode', allowed_tools: ['Read'], allowed_paths: PATHS }) };
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
+      brains, platform: 'win32',
+      seedAgents: { e: { access_level: 'all', allowed_users: ['123'], sandboxed: true } },
+      loadPermission: (level) => (level === 'all' ? { dangerouslySkipPermissions: true, allowedTools: ['Read', 'Write', 'Bash', 'Agent'] } : null),
+    });
+    await brain.turn('e', ev);
+    const opts = pool.calls[0].brainOptions;
+    expect(opts.sandboxed).toBe(true);
+    expect(opts.dangerouslySkipPermissions).toBe(true);
+    // THE CLI LAYER IS DELIBERATELY OFF for this tier — confinementFor returns {} ...
+    expect(opts.confineToDirs).toBeUndefined();
+    expect(opts.addDirs).toBeUndefined();
+    expect(opts.readOnlyDirs).toBeUndefined();
+    expect(buildClaudeArgs(opts).filter((a) => a === '--add-dir')).toEqual([]);
+    // ... so the ACE is the ONLY reachability this being has, and it is now there:
+    expect(opts.sandboxSharePaths).toEqual(['C:/work/project', 'C:/work/reference']);
+  });
+
+  it('a CONFINED sandboxed being gets BOTH layers from the one walk, and they agree on the path list', async () => {
+    const brains = { resolve: () => ({ name: 'egpt', type: 'ccode', allowed_tools: ['Read', 'Edit'], allowed_paths: PATHS }) };
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
+      brains, platform: 'win32',
+      seedAgents: { e: { access_level: 'regular', sandboxed: true } },
+    });
+    await brain.turn('e', ev);
+    const opts = pool.calls[0].brainOptions;
+    expect(opts.addDirs).toEqual(['C:/work/project']);
+    expect(opts.readOnlyDirs).toEqual(['C:/work/reference']);
+    // the OS layer covers EVERY declared path, read-only ones included: the launcher's only ACE
+    // mode is Modify, and leaving a read-only path out would reproduce the original defect for
+    // exactly that path (permitted by Claude Code, unreadable to the kernel). See SANDBOX.md.
+    expect(opts.sandboxSharePaths).toEqual([...opts.addDirs, ...opts.readOnlyDirs]);
+  });
+
+  it('THE COMMON CASE: a being with no allowed_paths carries no sandboxSharePaths at all, so the launcher argv is unchanged', async () => {
+    const brains = { resolve: () => ({ name: 'egpt', type: 'ccode', allowed_tools: ['Read'] }) };
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
+      brains, platform: 'win32', seedAgents: { e: { access_level: 'regular', sandboxed: true } },
+    });
+    await brain.turn('e', ev);
+    expect(pool.calls[0].brainOptions.sandboxed).toBe(true);
+    expect(pool.calls[0].brainOptions).not.toHaveProperty('sandboxSharePaths');
+  });
+
+  it('sandboxed:false → no sandboxSharePaths even with allowed_paths set (the operator\'s own account already reaches them)', async () => {
+    const brains = { resolve: () => ({ name: 'egpt', type: 'ccode', allowed_tools: ['Read'], allowed_paths: PATHS }) };
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
+      brains, platform: 'win32', seedAgents: { e: { access_level: 'regular', sandboxed: false } },
+    });
+    await brain.turn('e', ev);
+    const opts = pool.calls[0].brainOptions;
+    expect(opts.sandboxed).toBe(false);
+    expect(opts.addDirs).toEqual(['C:/work/project']);            // the CLI layer is untouched...
+    expect(opts).not.toHaveProperty('sandboxSharePaths');         // ...and nothing extra travels
+  });
+
+  it('the shared walk logs the write-tools line ONCE, not once per consumer', async () => {
+    const logs = [];
+    const brains = { resolve: () => ({
+      name: 'egpt', type: 'ccode', allowed_tools: ['Read'],
+      allowed_paths: { '/c/work/rw': { allowed_tools: ['Read', 'Write'] } },
+    }) };
+    const { brain, pool } = harnessWithLog(logs, brains);
+    await brain.turn('e', ev);
+    expect(pool.calls[0].brainOptions.addDirs).toEqual(['C:/work/rw']);
+    const hits = logs.filter((l) => String(l).includes("per-path tool granularity beyond read-only isn't native"));
+    expect(hits, `the line was emitted ${hits.length} times`).toHaveLength(1);
+  });
+});
