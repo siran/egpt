@@ -41,7 +41,9 @@ cloud drive and one un-backed-up disk".
 ## The account facts, verified 2026-09-06
 
 - Secrets Manager is **organization-scoped**; activating it needs an org admin.
-  The operator **is** an organization, so this is a toggle, not a signup.
+  The operator has **no Bitwarden organization** — so Chunk 1 begins by creating
+  a free one (2 users, which is one more than needed). This is the only step in
+  the whole plan that is a signup rather than a configuration.
 - Free tier: **unlimited secrets, 2 users, 3 projects, 3 machine accounts.**
 - Machine accounts are scoped **per project**, with **Can read** or
   **Can read, write**.
@@ -130,7 +132,8 @@ never was.
 
 ## Chunks
 
-**Chunk 1 — provision.** Activate Secrets Manager in the existing org. Create
+**Chunk 1 — provision.** Create a free Bitwarden organization, then activate
+Secrets Manager in it. Create
 the two projects and the two machine accounts with read-only grants. Capture
 each token AT CREATION (they are unretrievable) straight into the operator's
 personal Bitwarden vault.
