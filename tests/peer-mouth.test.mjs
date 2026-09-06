@@ -28,6 +28,12 @@ import { createShellPort } from '../src/bridges/shell-port.mjs';
 import { MOUTH_PATH, sayFrame, parseMouthFrame } from '../src/shell/mouth.mjs';
 import { peerSpineFrom, findChatByKey, createMouthReceiver, speakThroughPeer, startPeerStream } from '../src/shell/peer-mouth.mjs';
 import { responseFrame } from '../src/shell/auth.mjs';
+// §2d dials the WHOLE reply path across the link — the real sender on one side, a real Beeper
+// port on each account — so the bytes asserted there are the bytes a chat would show.
+import { createBeeperBridgePort } from '../src/bridges/beeper-port.mjs';
+import { createSender } from '../src/spine/sender.mjs';
+import { encodeNodeSignature, decodeNodeSignature, stripNodeSignature } from '../src/node-signature.mjs';
+import { LIVE_FRAME_MARK } from '../src/dispatch-line.mjs';
 
 // ── THE FIXTURE ────────────────────────────────────────────────────────────────────────────────
 // The MEASURED shape (tests/cross-account-chat-key.test.mjs): every ordinary member carries a
@@ -193,9 +199,11 @@ function rig({ chats = [AS_SECONDARY, OTHER_CHAT], token = PEER.consoleToken, po
   const speak = ({ chat = AS_PRIMARY, text = 'the finished line', peer = PEER } = {}) =>
     speakThroughPeer({ peer, chat, text, WebSocket: FakeClient, onLog: (m) => logs.push(m), setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout });
   // The SPEAKER's reply train, over the same fake socket: what src/spine/sender.mjs opens on a
-  // peer route. `fallback` is the sender's local stream factory (tier 3).
-  const train = ({ chat = AS_PRIMARY, init = '⏳ Thinking…', peer = PEER, fallback = null } = {}) =>
-    startPeerStream({ peer, chat, init, fallback, WebSocket: FakeClient, onLog: (m) => logs.push(m), setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout });
+  // peer route. `fallback` is the sender's local stream factory (tier 3); `render` is the BRAIN's
+  // own wrap, applied to every frame that crosses the wire (absent ⇒ the default identity, which
+  // is what every case that is not about the persona passes).
+  const train = ({ chat = AS_PRIMARY, init = '⏳ Thinking…', peer = PEER, fallback = null, render } = {}) =>
+    startPeerStream({ peer, chat, init, fallback, render, WebSocket: FakeClient, onLog: (m) => logs.push(m), setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout });
   // Let every queued microtask drain — the fake sockets deliver on microtasks, so "the frames have
   // landed and been answered" is a few turns of the loop away and never a timer.
   const flush = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
@@ -558,6 +566,188 @@ describe('the mid-stream drop — a half-written message is never left stranded,
     expect(posted).toEqual([{ chatId: SECONDARY_CHAT_ID, text: 'the whole answer' }]);   // …and the reply, said
     expect(t.delivered).toBe(true);
     expect(dialled).toHaveLength(2);                             // one dial for the train, one for the retry
+    port.stop();
+  });
+});
+
+// ── 2d. WHOSE VOICE A PEER-SAID REPLY IS IN ────────────────────────────────────────────────────
+// THE DEFECT (operator 2026-09-05, reading his own two chats): a local reply renders as
+// "🤴 King Ken: <text> 🏰" plus the invisible node id, and a peer-routed one went out as BARE
+// TEXT — so the same being appeared stamped in one chat and naked in the next. The mouth posts
+// VERBATIM by contract (beeper-port.postVerbatim / startStreamVerbatim), and postVerbatim's own
+// comment said the text "arrived already signed by the other spine" — which was simply false,
+// because nothing on the way there signed it. These cases make it true.
+//
+// THE WRAP HAPPENS ON THE BRAIN, and the alternative is worth naming to see why not: making the
+// RECEIVER wrap would mean shipping the brain's persona, emoji and signature strings over the
+// wire so the mouth could re-render them — strictly more coupling for identical pixels, and a
+// second definition of a stamp that persona-wrap.mjs deliberately owns alone.
+//
+// THE TWO SIDES ARE CONFIGURED DIFFERENTLY ON PURPOSE. On the operator's own machine both nodes
+// are `King Ken 🤴 🏰`, so a reply rendered by the WRONG spine would look exactly right and no
+// assertion could tell. Here the mouth is a different being on a different node, and what is
+// being locked is that not one byte of it reaches the message.
+describe('a peer-said reply is stamped by the BRAIN that wrote it, exactly once', () => {
+  const BRAIN = { bodyEmoji: '🤴', label: 'King Ken', bridgeSignatureClose: '🏰', nodeName: 'kg' };
+  const MOUTH = { bodyEmoji: '🤖', label: 'Rodz Bot', bridgeSignatureClose: '🏯', nodeName: 'kg2' };
+  const KG = encodeNodeSignature(BRAIN.nodeName);
+
+  // A fake real-bridge behind createBeeperBridgePort — the same seam tests/beeper-port.test.mjs
+  // uses, kept to the two outbounds this file exercises. `sent` / `streams` are the BYTES that
+  // account would have put in the chat.
+  function fakeBeeper() {
+    const spy = { sent: [], streams: [] };
+    const start = async () => ({
+      async send(text, o) { spy.sent.push({ text, chatId: o?.chatId }); return { ok: true }; },
+      startStreamMessage(init, o) {
+        const h = { init, chatId: o?.chatId, updates: [], finals: [], delivered: false };
+        h.update = (t) => h.updates.push(t);
+        h.finish = (t) => { h.finals.push(t); h.delivered = true; };
+        spy.streams.push(h);
+        return h;
+      },
+      isAlive: () => true, stop: () => {},
+    });
+    return { start, spy };
+  }
+
+  // Two spines over one fake link: the BRAIN's sender (the real createSender, with the real peer
+  // route) speaking through the MOUTH's receiver, whose post/startStream are the mouth account's
+  // own verbatim primitives — i.e. exactly boot's wiring (boot.mjs createMouthReceiver).
+  async function twoSpines(rigOpts = {}) {
+    const brainIO = fakeBeeper();
+    const mouthIO = fakeBeeper();
+    const brainPort = await createBeeperBridgePort({ bridgeSignatureClose: BRAIN.bridgeSignatureClose, nodeName: BRAIN.nodeName }, { start: brainIO.start });
+    const mouthPort = await createBeeperBridgePort({ bridgeSignatureClose: MOUTH.bridgeSignatureClose, nodeName: MOUTH.nodeName }, { start: mouthIO.start });
+    const r = rig({
+      post: (chatId, text) => mouthPort.postVerbatim(chatId, text),
+      startStream: (chatId, init) => mouthPort.startStreamVerbatim(chatId, init),
+      ...rigOpts,
+    });
+    // boot's makePeerMouth in miniature: the membership question is already answered, and the
+    // stream is the REAL transport with the sender's own render handed straight through.
+    const peerMouth = {
+      async route() { return AS_PRIMARY; },
+      startStream(chat, init, { fallback = null, render } = {}) { return r.train({ chat, init, fallback, render }); },
+    };
+    const sender = createSender({ bridge: brainPort, bodyEmojiOf: () => BRAIN.bodyEmoji, labelOf: () => BRAIN.label, peerMouth });
+    return { ...r, brain: brainIO.spy, mouth: mouthIO.spy, brainPort, sender };
+  }
+
+  // One whole turn down the peer route: placeholder, one edit, settled answer.
+  const aTurn = async ({ sender, flush }) => {
+    const out = sender.open(AS_PRIMARY.id, { being: 'e' });
+    await flush();
+    out.update('Hola');
+    await out.finish({ text: 'Hola mundo' });
+    await flush();
+    return out;
+  };
+
+  it('THE DEFECT: the reply the peer says is byte-identical to the one this account would have said', async () => {
+    // The operator's sentence, as an assertion. Both replies are the same being answering the same
+    // words; the only difference is which account's name is on the message, and that must not show
+    // in the text at all.
+    const { mouth, brain, brainPort, sender, flush, port } = await twoSpines();
+    await aTurn({ sender, flush });
+
+    const local = createSender({ bridge: brainPort, bodyEmojiOf: () => BRAIN.bodyEmoji, labelOf: () => BRAIN.label });
+    const out = local.open('!local:beeper.local', { being: 'e' });
+    out.update('Hola');
+    await out.finish({ text: 'Hola mundo' });
+
+    expect(mouth.streams).toHaveLength(1);
+    expect(brain.streams).toHaveLength(1);                       // the local one, and ONLY the local one
+    expect(mouth.streams[0].init).toBe(brain.streams[0].init);
+    expect(mouth.streams[0].updates).toEqual(brain.streams[0].updates);
+    expect(mouth.streams[0].finals).toEqual(brain.streams[0].finals);
+    port.stop();
+  });
+
+  it('EVERY FRAME is wrapped — the ⏳ placeholder and each intermediate edit, not just the answer', async () => {
+    // Signing is a property of the SEND, therefore of every frame (persona-wrap.mjs's header). The
+    // placeholder is a real message living on the OTHER account for the whole turn, so it is the
+    // one that would be visibly unsigned the longest.
+    const { mouth, sender, flush, port } = await twoSpines();
+    await aTurn({ sender, flush });
+
+    expect(mouth.streams[0].init).toBe(`${BRAIN.bodyEmoji} ${BRAIN.label}: ${LIVE_FRAME_MARK} Thinking… ${BRAIN.bridgeSignatureClose}${KG}`);
+    expect(mouth.streams[0].updates).toEqual([`${BRAIN.bodyEmoji} ${BRAIN.label}: Hola ${LIVE_FRAME_MARK} ${BRAIN.bridgeSignatureClose}${KG}`]);
+    expect(mouth.streams[0].finals).toEqual([`${BRAIN.bodyEmoji} ${BRAIN.label}: Hola mundo ${BRAIN.bridgeSignatureClose}${KG}`]);
+    port.stop();
+  });
+
+  it('EXACTLY ONCE, and it is the BRAIN\'s — no 🏰 🏰, and nothing of the mouth\'s own identity', async () => {
+    const { mouth, sender, flush, port } = await twoSpines();
+    await aTurn({ sender, flush });
+
+    const count = (s, needle) => s.split(needle).length - 1;
+    const frames = [mouth.streams[0].init, ...mouth.streams[0].updates, ...mouth.streams[0].finals];
+    expect(frames).toHaveLength(3);
+    for (const f of frames) {
+      expect(count(f, BRAIN.bridgeSignatureClose)).toBe(1);
+      expect(count(f, BRAIN.bodyEmoji)).toBe(1);
+      expect(count(f, `${BRAIN.label}:`)).toBe(1);
+      // EXACTLY ONE node frame, and it is the last thing in the message — `strip + re-append`
+      // reconstructs the string only when there is precisely one and it trails.
+      expect(`${stripNodeSignature(f)}${KG}`).toBe(f);
+      expect(decodeNodeSignature(f)).toBe(BRAIN.nodeName);       // kg composed it, whatever account says it
+      // …and the mouth added nothing of its own: not its node, not its signature, not its persona.
+      expect(f).not.toContain(MOUTH.bridgeSignatureClose);
+      expect(f).not.toContain(MOUTH.bodyEmoji);
+      expect(f).not.toContain(MOUTH.label);
+      expect(f).not.toContain(encodeNodeSignature(MOUTH.nodeName));
+    }
+    port.stop();
+  });
+
+  it('TIER 2 — the degraded finished line is wrapped too (a peer whose bridge cannot edit in place)', async () => {
+    // The train refuses with `no-stream` and the reply goes out whole through `say: post`. It is
+    // still the brain speaking on the peer's account, so it is still the brain's stamp.
+    const { mouth, sender, flush, port } = await twoSpines({ startStream: null });
+    await aTurn({ sender, flush });
+
+    expect(mouth.streams).toEqual([]);
+    expect(mouth.sent).toHaveLength(1);
+    expect(mouth.sent[0].text).toBe(`${BRAIN.bodyEmoji} ${BRAIN.label}: Hola mundo ${BRAIN.bridgeSignatureClose}${KG}`);
+    port.stop();
+  });
+
+  it('TIER 3 — the local fallback is wrapped ONCE, by the ordinary local path, never twice', async () => {
+    // The peer can neither stream nor say it, so sender.mjs's own openLocal factory takes over —
+    // and that factory is beeper-port.startStream, which wraps. The text handed to it must
+    // therefore still be RAW: pre-wrapping it here is what would produce "🏰 🏰".
+    const { mouth, brain, sender, flush, port } = await twoSpines({ chats: [] });
+    await aTurn({ sender, flush });
+
+    expect(mouth.streams).toEqual([]);
+    expect(mouth.sent).toEqual([]);
+    expect(brain.streams).toHaveLength(1);                       // said here instead, loudly logged
+    expect(brain.streams[0].init).toBe(`${BRAIN.bodyEmoji} ${BRAIN.label}: ${LIVE_FRAME_MARK} Thinking… ${BRAIN.bridgeSignatureClose}${KG}`);
+    expect(brain.streams[0].finals).toEqual([`${BRAIN.bodyEmoji} ${BRAIN.label}: Hola mundo ${BRAIN.bridgeSignatureClose}${KG}`]);
+    expect(brain.streams[0].finals[0].split(BRAIN.bridgeSignatureClose)).toHaveLength(2);   // one close marker, not two
+    expect(brain.sent).toEqual([]);                              // the local stream delivered, so §7 sends nothing beside it
+    port.stop();
+  });
+
+  it('THE RE-INGESTION: the brain can now recognise its own routed reply coming back as Rodz', async () => {
+    // The reason this is worth more than the pixels. The brain is in the same chat, so the reply
+    // the MOUTH posts arrives at the brain as an ordinary inbound from the other account — the
+    // bridge's own-send suppression is id-based (beeper.mjs wasSentByUs) and those ids belong to
+    // the other spine, so it cannot help. Unsigned, the frame read as a HUMAN turn and RESET the
+    // very loop counter that exists to stop two spines talking to each other. Signed, its
+    // provenance is legible: identity.build lifts the node id off it and stop-guard classifies it
+    // as node-committed. (What this does NOT do is keep it off the record or away from the
+    // router — see the module note in src/spine/sender.mjs.)
+    const { mouth, sender, flush, port } = await twoSpines();
+    await aTurn({ sender, flush });
+    const asRodzSaysIt = mouth.streams[0].finals[0];
+
+    const { createIdentity } = await import('../src/spine/identity.mjs');
+    const { isHumanTurn } = await import('../src/stop-guard.mjs');
+    const ev = createIdentity().build({ body: asRodzSaysIt, from: { network: 'whatsapp', chatId: '!x', senderName: 'Rodz', isSender: false } });
+    expect(ev.fromNode).toBe(BRAIN.nodeName);
+    expect(isHumanTurn(ev)).toBe(false);
     port.stop();
   });
 });

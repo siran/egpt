@@ -123,20 +123,39 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
       return real.send(wrapPersona(opts, text), { chatId: chat, replyToMessageID: opts.replyTo ?? null });
     },
 
+    // THE WRAP ITSELF, HANDED OUT (operator 2026-09-05, "if an receives 'e hi' if Rodz is present
+    // let him reply as the king") — this node's OWN wrapPersona, exposed so THE reply path can
+    // render a frame that ANOTHER account is going to post. It sends nothing and knows no chat.
+    //
+    // IT IS WHAT MAKES postVerbatim'S COMMENT TRUE. That comment says the text "arrived already
+    // signed by the other spine"; until this existed nothing on the way there signed it, so a
+    // peer-routed reply went out as bare text while the same being's local reply carried its
+    // stamp, its bridge signature and its node id — the same being, stamped in one chat and naked
+    // in the next. The wrap belongs on the BRAIN and not on the mouth: the alternative is to ship
+    // the brain's persona, emoji and signature strings across the wire so the receiver can
+    // re-render them, which is strictly more coupling for identical pixels.
+    //
+    // The SAME closure every send on this port renders through — deliberately not a second one —
+    // so the two mouths can never drift apart. Its one caller is src/spine/sender.mjs, at the
+    // moment it hands a frame to the peer; a bridge that lacks it (the shell port, a test fake) is
+    // never on that path, and the sender treats its absence as "hand the text over unchanged".
+    renderFrame(opts, text) { return wrapPersona(opts ?? {}, text); },
+
     // THE MOUTH'S POST (operator 2026-09-05) — the one outbound on this port that does NOT wrap,
     // and the reason is the whole contract of the link: the text arrived from a PEER SPINE
-    // already wrapped and signed by the brain that wrote it (src/shell/mouth.mjs — "the mouth
-    // posts exactly these bytes and adds nothing"). Rendering it through wrapPersona would staple
-    // THIS node's bridge signature onto a line the other node already signed, so one reply would
-    // carry two nodes' marks. Nothing else may use it: every other send here is this node
-    // speaking in its own voice and stays wrapped.
+    // already wrapped and signed by the brain that wrote it (renderFrame above; src/shell/mouth.mjs
+    // — "the mouth posts exactly these bytes and adds nothing"). Rendering it through wrapPersona
+    // would staple THIS node's bridge signature onto a line the other node already signed, so one
+    // reply would carry two nodes' marks. Nothing else may use it: every other send here is this
+    // node speaking in its own voice and stays wrapped.
     postVerbatim(chat, text) { return real.send(text, { chatId: chat }); },
 
     // THE MOUTH'S STREAM (operator 2026-09-05, "let's recover the thinking train") — postVerbatim's
     // edit-in-place twin, and unwrapped for exactly the same reason: every frame of it was written,
-    // wrapped and signed by the PEER SPINE that is thinking, and this node only holds the message
-    // the frames land in. Rendering them through wrapPersona would staple this node's signature
-    // onto another node's sentence, once per edit.
+    // wrapped and signed by the PEER SPINE that is thinking (renderFrame above, applied at the
+    // wire — placeholder included), and this node only holds the message the frames land in.
+    // Rendering them through wrapPersona would staple this node's signature onto another node's
+    // sentence, once per edit.
     //
     // NO showThink AND NO LIVE_FRAME_MARK either: the ⏳ on a peer-routed reply is the sender's,
     // stamped on the brain side (src/spine/sender.mjs) before the text ever reaches the wire, so

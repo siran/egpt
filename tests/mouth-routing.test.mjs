@@ -91,9 +91,16 @@ const settled = () => new Promise((r) => setTimeout(r, 0));
 // means exactly what it means there: a `startStream` handle (the ⏳ placeholder edited in place)
 // or a fresh `send`.
 function fakeBridge() {
-  const streams = [], sent = [];
+  const streams = [], sent = [], renders = [];
   return {
-    streams, sent,
+    streams, sent, renders,
+    // THIS NODE'S OWN PERSONA WRAP, as the real port hands it out (beeper-port.renderFrame): the
+    // reply path renders a frame through it before handing it to the PEER, and must never touch it
+    // on any other path — the local stream is wrapped one layer down, inside the port, so a
+    // pre-rendered frame there would be wrapped twice. `renders` is the assertion surface for both
+    // halves of that. Deliberately NOT the real wrap: what the real bytes come out as is locked end
+    // to end in tests/peer-mouth.test.mjs §2d; what matters here is WHICH tag reached it and WHEN.
+    renderFrame(opts, text) { renders.push({ opts, text }); return `«${opts.bodyEmoji ?? ''}|${opts.label ?? ''}|${text}|kg»`; },
     send(chat, text, opts) { sent.push({ chat, text, opts }); return { confirmedId: 'local-1' }; },
     startStream(chat, init, opts) {
       const h = {
@@ -169,6 +176,21 @@ describe('no peer_spine — the reply posts locally and no peer is ever consulte
     await out.finish({ text: 'Hola mundo' });
     expect(bridge.streams[0].finals).toEqual(['Hola mundo']);
     expect(bridge.sent).toHaveLength(0);
+  });
+
+  it('does not render a frame for anyone — the wrap it could hand a peer is never even consulted', async () => {
+    // THE ADDITIVITY LOCK for the persona wrap (operator 2026-09-05). A peer-routed frame is
+    // rendered on THIS side, because the mouth posts verbatim — but the LOCAL path must keep
+    // handing the port its RAW core, exactly as it always has, or beeper-port.startStream would
+    // wrap an already-wrapped frame and the reply would carry two stamps and two signatures.
+    const { bridge, sender } = senderWith(null);
+    const out = sender.open(CHAT_ID, { being: 'e', replyTo: 'm1' });
+    out.update('Hola');
+    await out.finish({ text: 'Hola mundo' });
+    expect(bridge.renders).toEqual([]);
+    expect(bridge.streams[0].init).toBe(`${LIVE_FRAME_MARK} Thinking…`);
+    expect(bridge.streams[0].frames).toEqual([`Hola ${LIVE_FRAME_MARK}`]);
+    expect(bridge.streams[0].finals).toEqual(['Hola mundo']);
   });
 
   it('builds NO mouth out of a config that declares no peer — so there is nothing to dial', () => {
@@ -296,6 +318,48 @@ describe('peer configured and the peer account IS in the chat — the peer speak
     expect(calls.streams[0].finals).toEqual(['...']);
     expect(bridge.streams).toHaveLength(0);
     expect(bridge.sent).toHaveLength(0);
+  });
+
+  it('HANDS THE PEER THIS NODE\'S OWN WRAP, bound to the being being replied as', async () => {
+    // WHOSE STAMP a peer-said reply carries: the BRAIN's. The mouth posts verbatim and knows
+    // nothing of personas, so the reply is rendered on this side or not at all — and the tag it is
+    // rendered with is THIS being's, resolved by this sender exactly as it is for a local reply.
+    //
+    // What crosses THIS seam is still the RAW core plus a renderer: the transport applies it at the
+    // wire (peer-mouth.mjs `wire`) so the frames it may have to replay into a LOCAL fallback stay
+    // unrendered, and that stream wraps them the ordinary way. Rendering here instead is precisely
+    // how a fallback reply would end up with "🏰 🏰".
+    const { calls, mouth } = fakeMouth();
+    const { bridge, sender } = senderWith(mouth);
+    const out = sender.open(CHAT_ID, { being: 'e', replyTo: 'm1' });
+    await settled();
+
+    out.update('Hola');
+    await out.finish({ text: 'Hola mundo' });
+    expect(calls.streams[0].init).toBe(`${LIVE_FRAME_MARK} Thinking…`);       // raw on this side…
+    expect(calls.streams[0].frames).toEqual([`Hola ${LIVE_FRAME_MARK}`]);
+    expect(calls.streams[0].finals).toEqual(['Hola mundo']);
+    expect(bridge.renders).toEqual([]);                                       // …and nothing rendered yet
+
+    // …but what the transport renders WITH is this node's wrap, carrying this being's stamp.
+    const render = calls.streams[0].opts.render;
+    expect(typeof render).toBe('function');
+    expect(render('Hola mundo')).toBe('«🐶||Hola mundo|kg»');
+    expect(bridge.renders).toEqual([{ opts: expect.objectContaining({ bodyEmoji: '🐶', replyTo: 'm1' }), text: 'Hola mundo' }]);
+  });
+
+  it('a bridge with no wrap to hand out (a test fake, the shell port) passes the text through unchanged', async () => {
+    // The console is never routed to a peer, so this branch is only ever a fake — but it must be
+    // the pre-wrap behaviour rather than a throw: never a lost reply, for any reason.
+    const { calls, mouth } = fakeMouth();
+    const bridge = fakeBridge();
+    delete bridge.renderFrame;
+    const sender = createSender({ bridge, bodyEmojiOf: () => '🐶', peerMouth: mouth });
+    const out = sender.open(CHAT_ID, { being: 'e' });
+    await settled();
+    expect(calls.streams[0].opts.render('Hola mundo')).toBe('Hola mundo');
+    await out.finish({ text: 'Hola mundo' });
+    expect(calls.streams[0].finals).toEqual(['Hola mundo']);
   });
 
   it('a turn that FAILS ends the PEER\'s placeholder with ❌ — the ⏳ a human is watching is the peer\'s', async () => {
@@ -522,10 +586,22 @@ describe('makePeerMouth — the membership question, and what each answer means'
     // definition of "speak a finished line through the peer" and this is where it is handed over.
     const { mouth, streamed } = rig();
     const fallback = () => null;
-    mouth.startStream(AS_PRIMARY, '⏳ Thinking…', { fallback });
+    const render = (t) => `«${t}»`;
+    mouth.startStream(AS_PRIMARY, '⏳ Thinking…', { fallback, render });
     expect(streamed).toHaveLength(1);
-    expect(streamed[0]).toMatchObject({ peer: PEER, chat: AS_PRIMARY, init: '⏳ Thinking…', fallback });
+    // `render` rides along with them and is decided nowhere here: it is the BRAIN's persona wrap,
+    // bound to the being the sender is replying as, and this object only forwards it.
+    expect(streamed[0]).toMatchObject({ peer: PEER, chat: AS_PRIMARY, init: '⏳ Thinking…', fallback, render });
     expect(typeof streamed[0].say).toBe('function');
+  });
+
+  it('no render handed over ⇒ none forwarded, so the transport keeps its identity default', () => {
+    // The additivity seam for the wrap: a caller that hands no renderer must reach startPeerStream
+    // as `undefined`, not `null`, or the default parameter would not fire and the frames would go
+    // out as `String(null)`.
+    const { mouth, streamed } = rig();
+    mouth.startStream(AS_PRIMARY, '⏳ Thinking…');
+    expect(streamed[0].render).toBeUndefined();
   });
 });
 

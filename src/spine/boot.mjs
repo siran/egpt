@@ -257,7 +257,12 @@ export function makePeerMouth({ peer, bridge, owns = () => false, speak = speakT
     // sender knows the chat, the tag and the placeholder text. `speak` is the SECOND tier, the
     // finished-line path this file used to expose separately as say(): it is not a different
     // feature, it is what a reply train degrades INTO, so it is injected here and nowhere else.
-    startStream(chat, init, { fallback = null } = {}) { return stream({ peer, chat, init, fallback, say: speak, onLog }); },
+    //
+    // `render` is the sender's too, and for the same reason: it is the BRAIN's persona wrap bound
+    // to the being being replied as, and only the sender knows which being that is. Passed
+    // straight through — this object decides nothing about it. Absent (undefined) ⇒ startPeerStream's
+    // identity default ⇒ the frames cross the wire raw, which is what they did before it existed.
+    startStream(chat, init, { fallback = null, render } = {}) { return stream({ peer, chat, init, render, fallback, say: speak, onLog }); },
   };
 }
 

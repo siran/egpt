@@ -525,6 +525,11 @@ export async function speakThroughPeer({
  * @param {{consolePort: number, consoleToken: string, accounts: string[]}|null} o.peer
  * @param {object} o.chat   the RAW Beeper chat payload for the chat being replied in.
  * @param {string} o.init   the PLACEHOLDER text ("⏳ Thinking…"), posted verbatim by the peer.
+ * @param {(t: string) => string} [o.render]  THE BRAIN'S OWN WRAP — its persona stamp, its bridge
+ *   signature and its node id (src/bridges/beeper-port.mjs renderFrame, handed down by
+ *   src/spine/sender.mjs). Applied to every frame that CROSSES THE WIRE and to nothing else; see
+ *   the note above `wire` below for why that boundary is exactly the right one. Default identity ⇒
+ *   the peer is sent the caller's raw text, exactly as before.
  * @param {(() => object|null)|null} [o.fallback]  open a LOCAL stream on the caller's own account
  *   (sender.mjs's openLocal). Tier 3 above. Absent ⇒ tier 3 is skipped.
  * @param {typeof speakThroughPeer} [o.say]   INJECTION SEAM for tier 2.
@@ -539,6 +544,7 @@ export function startPeerStream({
   peer,
   chat,
   init,
+  render = (t) => t,
   fallback = null,
   say = speakThroughPeer,
   WebSocket = WS,
@@ -560,6 +566,25 @@ export function startPeerStream({
   // finish() awaits it; update() does not (it buffers instead), which is what keeps the first
   // token off the round trip.
   const opened = new Promise((r) => { settleOpen = (v) => { if (settleOpen.done) return; settleOpen.done = true; r(v); }; });
+
+  // THE BRAIN'S WRAP, APPLIED AT THE WIRE AND NOWHERE ELSE (operator 2026-09-05). The peer posts
+  // VERBATIM and adds nothing — that is its whole contract (beeper-port.postVerbatim /
+  // startStreamVerbatim) — so a frame is signed on this side or it is not signed at all, and a
+  // peer-routed reply used to go out bare while the same being's local reply carried its stamp.
+  //
+  // EVERY frame, the ⏳ placeholder included: signing is a property of the SEND, therefore of each
+  // one (persona-wrap.mjs's header), and the placeholder is a real message living on the other
+  // account for the whole turn. IDEMPOTENT BY CONSTRUCTION, because `last` and `body` stay the RAW
+  // core and each wire frame is built from that core rather than from the frame before it — the
+  // same property beeper-port's own stream relies on, so replacing one signed frame with the next
+  // can never stack "🏰 🏰".
+  //
+  // AND THE BOUNDARY IS THE POINT. Tier 3 hands the LOCAL stream the raw text instead, because
+  // that stream is beeper-port.startStream, which wraps for itself: wrapping before it would be
+  // the one way to sign a frame twice. So the rule is simply "rendered on the way out of this
+  // process, raw everywhere else" — which is also why tier 2's finished line is rendered at its
+  // own call site below rather than inside speakThroughPeer.
+  const wire = (t) => render(String(t ?? ''));
 
   // Tier 3, and the ONE place it is taken. Replays whatever has already streamed into the fresh
   // local placeholder, exactly as sender.mjs's own late openLocal does, so nothing a human should
@@ -600,7 +625,7 @@ export function startPeerStream({
           streamId = f.stream;
           onLog(`mouth: the peer opened the reply train in ${f.chatId} after ${now() - dialledAt}ms (dial + handshake + its own chat lookup)`);
           settleOpen(f);
-          if (last) link.send(sayUpdateFrame({ stream: streamId, text: last }));   // flush what streamed while it was opening
+          if (last) link.send(sayUpdateFrame({ stream: streamId, text: wire(last) }));   // flush what streamed while it was opening
           return;
         }
         if (f.say === 'result') {
@@ -632,14 +657,14 @@ export function startPeerStream({
       },
     });
     link.expire(timeoutMs, `the peer did not open the reply within ${timeoutMs}ms`);
-    link.send(sayOpenFrame({ chatKey, init: String(init ?? '') }));
+    link.send(sayOpenFrame({ chatKey, init: wire(init) }));
   }
 
   return {
     update(text) {
       last = String(text ?? '');
       if (local) { try { local.update?.(last); } catch { /* an edit that fails is not fatal to the reply */ } return; }
-      if (streamId && link?.alive) link.send(sayUpdateFrame({ stream: streamId, text: last }));
+      if (streamId && link?.alive) link.send(sayUpdateFrame({ stream: streamId, text: wire(last) }));
       // else: buffered in `last` — flushed when `opened` arrives, or replayed into tier 2/3.
     },
 
@@ -653,7 +678,7 @@ export function startPeerStream({
         const r = await new Promise((resolve) => {
           settleFinish = (v) => { settleFinish = null; resolve(v); };
           link.expire(timeoutMs, `the peer did not confirm the reply within ${timeoutMs}ms`);
-          if (!link.send(sayFinishFrame({ stream: streamId, text: body }))) settleFinish?.({ ok: false, reason: 'unreachable', detail: 'the link went before the reply could be settled' });
+          if (!link.send(sayFinishFrame({ stream: streamId, text: wire(body) }))) settleFinish?.({ ok: false, reason: 'unreachable', detail: 'the link went before the reply could be settled' });
         });
         link.close();
         if (r?.ok) { delivered = true; onLog(`mouth: the PEER said this reply (its chat ${r.chatId}) — nothing posted on this account`); return; }
@@ -666,7 +691,7 @@ export function startPeerStream({
       // already closed whatever half-written message it was holding, so this posts beside a
       // message that says, in as many words, that it was interrupted.
       const r2 = await Promise.resolve()
-        .then(() => say({ peer, chat, text: body, WebSocket, timeoutMs, onLog, setTimeout: setTimeoutFn, clearTimeout: clearTimeoutFn }))
+        .then(() => say({ peer, chat, text: wire(body), WebSocket, timeoutMs, onLog, setTimeout: setTimeoutFn, clearTimeout: clearTimeoutFn }))
         .catch((e) => ({ ok: false, reason: 'send-failed', detail: e?.message ?? String(e) }));
       if (r2?.ok) { delivered = true; onLog(`mouth: the reply train could not be settled, so the PEER said this reply whole instead (its chat ${r2.chatId})`); return; }
       onLog(`mouth: FALLING BACK TO THIS ACCOUNT — the peer neither streamed nor said this reply (${r2?.reason || 'no answer'}${r2?.detail ? `: ${r2.detail}` : ''})`);

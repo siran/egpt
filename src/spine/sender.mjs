@@ -112,6 +112,22 @@ export const RETAINED_SEAM = '\n\n— ↓ reply —\n\n';
 // included: `delivered === false` means "it was not said", whether the stream was this account's
 // or the peer's, and it has always meant "send it fresh here". There is no second finish path.
 //
+// THE WRAP IS THIS SIDE'S JOB, THOUGH (operator 2026-09-05). The mouth posts VERBATIM by contract,
+// so the two factories are NOT symmetric about signing: a local stream is wrapped one layer down,
+// in beeper-port, and a peer stream has no layer down at all. `renderForPeer` below closes that —
+// see its note. Beyond the pixels it buys one thing worth naming, and one it does not:
+//   IT DOES fix the PROVENANCE of the reply coming back. The brain is in the same chat, so the
+//   line the mouth posts arrives here as an ordinary inbound from the other account, and the
+//   bridge's own-send suppression cannot help (it is id-based — beeper.mjs wasSentByUs — and those
+//   ids belong to the other spine). Unsigned it read as a HUMAN turn (stop-guard.isHumanTurn) and
+//   RESET the very loop counter that exists to stop two spines answering each other; signed, its
+//   node id is legible (identity.build) and it counts as node-committed instead.
+//   IT DOES NOT keep that copy off the record or away from the router. The transcript ingestion
+//   (spine.mjs, "THE INGESTION POINT") logs every non-transit inbound regardless of provenance, and
+//   the frame still reaches the router — fromOtherNode is FALSE for our OWN node name, and nothing
+//   in src/ calls it anyway (spine.mjs's InboundEvent note: provenance "does NOT gate waking").
+//   What actually keeps the reply from being answered is that it mentions nobody.
+//
 // THE STREAM IS STILL OPENED LAZILY on a peer-configured node, because the route has to settle
 // before there is a factory to choose — a cached membership read, normally landing before the
 // first token. What changed is what happens when it says "peer": the placeholder used to be
@@ -166,6 +182,23 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
       const agentSigOpen = agentSignatureOpenOf(being);
       const agentSigClose = agentSignatureCloseOf(being);
       const tag = { bodyEmoji, label, replyTo, agentSigOpen, agentSigClose };   // the bridge enforces the persona stamp (emoji + label) + wraps the layers from these
+      // WHOSE STAMP A PEER-SAID REPLY CARRIES: THIS node's, the BRAIN's (operator 2026-09-05, "if
+      // an receives 'e hi' if Rodz is present let him reply as the king"). A routed reply used to
+      // cross the wire as bare text and be posted bare, because the mouth posts VERBATIM by
+      // contract — so the same being read "🤴 King Ken: … 🏰" in one chat and naked in the next.
+      // The frame is rendered HERE instead, through the very wrap the local stream one line down
+      // would have used, `tag` and all: the reply carries this being's persona stamp, this node's
+      // bridge signature and this node's invisible node id even though the other account's name is
+      // on the message. Wrapping on the MOUTH was the alternative and is worse — it would have to
+      // be told the brain's persona, emoji and signature over the wire, strictly more coupling for
+      // the same pixels, and a second definition of a stamp persona-wrap.mjs owns alone.
+      //
+      // It is a RENDERER, applied per frame at the wire and to nothing else (peer-mouth.mjs's
+      // `wire`), so every frame is built from the raw core and the §7 fallback and the peer's own
+      // tier-3 local stream still get RAW text — which the ordinary local path then wraps exactly
+      // once, as it always has. A bridge with no renderFrame (the shell port, a test fake) is
+      // never on this path anyway (the console is never routed), and hands the text over unchanged.
+      const renderForPeer = (t) => (bridgeForThisBeing.renderFrame ? bridgeForThisBeing.renderFrame(tag, t) : t);
       // WHICH MOUTH SAYS IT (header). Started HERE, at the top of the reply, so the answer is in
       // hand by the time there is anything to show. A route that throws — or a peerMouth that
       // throws synchronously — reads as "no peer": never a lost reply. Absent peerMouth ⇒ null ⇒
@@ -210,7 +243,7 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
       const openStream = (peerChat = null) => {
         if (streamOpened) return stream;
         streamOpened = true;
-        stream = peerChat ? peerMouth.startStream(peerChat, placeholderText(), { fallback: openLocalStream }) : openLocalStream();
+        stream = peerChat ? peerMouth.startStream(peerChat, placeholderText(), { fallback: openLocalStream, render: renderForPeer }) : openLocalStream();
         const already = shown();
         if (already) stream?.update?.(`${already} ${LIVE_FRAME_MARK}`);
         return stream;
