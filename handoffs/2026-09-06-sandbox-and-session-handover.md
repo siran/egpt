@@ -146,7 +146,9 @@ nothing, and cannot be supervised. That case stands on its own.
   word at all. Single letters are deliberately excluded (matched bare, anywhere
   in a transcript). `rey` is an ordinary Spanish word and will produce false
   wakes on "el rey"; that is the operator's explicit choice.
-- **An OAuth token was pasted into a chat transcript. Re-mint it.**
+- `sandbox_oauth_token` (`config.yaml:378`) is the credential the sandbox tier
+  authenticates with. It was set by hand and is not in the repo; the vault plan
+  (below) is where it eventually belongs.
 - `plans/2609061405-EGPT-VAULT-PLAN.md` (`c38c747`, `af1f23c`) landed at 14:06
   from work outside this session. Not authored or reviewed here.
 - `bin/egpt` has three pre-existing untracked files the operator asked to leave
