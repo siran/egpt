@@ -214,3 +214,88 @@ describe('sandbox-cli-session — wraps warm-cli-session with the OS-isolation l
     }
   });
 });
+
+// ── -SetEnv, THE OPERATOR'S SUBSCRIPTION CREDENTIAL (config sandbox_oauth_token, resolved by
+//    brainpool.mjs for a SANDBOXED turn only and handed here as options.sandboxOauthToken).
+//
+//    THE INVARIANT THESE LOCK is not "a -SetEnv appears" — it is that the NO-TOKEN argv, which
+//    is the common case and every sandboxed turn on this node today, did not move by one byte.
+//    So the with-token argv is asserted AGAINST the no-token argv (a real array comparison),
+//    never against a hand-copied literal that could drift with the caller. ──
+describe('sandbox-cli-session — -SetEnv CLAUDE_CODE_OAUTH_TOKEN (config sandbox_oauth_token)', () => {
+  const TOKEN = 'sk-ant-oat01-FAKE-TEST-TOKEN-NOT-REAL';
+
+  // One turn through the fake launcher; returns the psArgs it was spawned with.
+  async function argvFor(extra = {}) {
+    const f = fakeLauncherSpawn();
+    const s = createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), platform: 'win32', ...extra });
+    await s.turn('hi');
+    s.close();
+    expect(f.spawnCount()).toBe(1);
+    return f.calls[0].args;
+  }
+
+  it('REPRODUCE-FIRST: with NO token there is no -SetEnv at all, and -TargetFolder is still followed straight by -InnerBin', async () => {
+    const args = await argvFor();
+    expect(args).not.toContain('-SetEnv');
+    const tfIdx = args.indexOf('-TargetFolder');
+    expect(args[tfIdx + 2]).toBe('-InnerBin');   // nothing inserted between them
+  });
+
+  it('a token inserts EXACTLY [-SetEnv, CLAUDE_CODE_OAUTH_TOKEN=<value>] immediately before -InnerBin — and changes nothing else', async () => {
+    const plain = await argvFor();
+    const withTok = await argvFor({ sandboxOauthToken: TOKEN });
+
+    const ibIdx = plain.indexOf('-InnerBin');
+    const expected = [...plain];
+    expected.splice(ibIdx, 0, '-SetEnv', `CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}`);
+    expect(withTok).toEqual(expected);            // the WHOLE argv, not a probe for the flag
+
+    expect(withTok.filter((a) => a === '-SetEnv')).toHaveLength(1);   // never twice
+    // ...and the inner argv is still the contiguous tail after -InnerBin <bin>, unpolluted:
+    const ib2 = withTok.indexOf('-InnerBin');
+    expect(withTok.slice(ib2 + 2)).toEqual(plain.slice(ibIdx + 2));
+    expect(withTok[ib2 + 2]).toBe('--input-format');
+  });
+
+  it('a blank, whitespace-only or non-string token is NOT a credential: argv stays byte-identical to the no-token argv', async () => {
+    const plain = await argvFor();
+    for (const junk of ['', '   ', null, undefined, 0, false, {}, ['x']]) {
+      expect(await argvFor({ sandboxOauthToken: junk }), `sandboxOauthToken=${JSON.stringify(junk)} changed the argv`).toEqual(plain);
+    }
+  });
+
+  it('THE VALUE IS NEVER LOGGED: nothing the session emits through onLog contains the token', async () => {
+    const f = fakeLauncherSpawn();
+    const logs = [];
+    const s = createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), platform: 'win32', sandboxOauthToken: TOKEN, onLog: (l) => logs.push(String(l)) });
+    await s.turn('hi');
+    s.close();
+    expect(logs.length).toBeGreaterThan(0);                              // the spawn line really was emitted...
+    expect(logs.some((l) => l.includes('warm-cli: spawn'))).toBe(true);
+    for (const l of logs) expect(l, `a log line leaked the token: ${l}`).not.toContain(TOKEN);
+    expect(logs.join('\n')).not.toContain('CLAUDE_CODE_OAUTH_TOKEN');   // not even the name
+  });
+
+  it("engine: 'codex' and 'pi' route through the SAME sandboxSpawn, so both get the -SetEnv too", () => {
+    for (const engine of ['codex', 'pi']) {
+      const calls = [];
+      const spawn = (bin, args, opts) => {
+        calls.push({ bin, args, opts });
+        const proc = new EventEmitter();
+        proc.stdout = new EventEmitter(); proc.stdout.setEncoding = () => {};
+        proc.stderr = new EventEmitter(); proc.stderr.setEncoding = () => {};
+        proc.stdin = { write: () => {}, end: () => {} };
+        proc.kill = () => {};
+        return proc;
+      };
+      const s = createSandboxCliSession({ spawn, cwd: process.cwd(), engine, platform: 'win32', sandboxOauthToken: TOKEN });
+      s.turn('hi').catch(() => {});
+      const seIdx = calls[0].args.indexOf('-SetEnv');
+      expect(seIdx, `engine ${engine} lost the -SetEnv`).toBeGreaterThanOrEqual(0);
+      expect(calls[0].args[seIdx + 1]).toBe(`CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}`);
+      expect(calls[0].args[seIdx + 2]).toBe('-InnerBin');
+      s.close();
+    }
+  });
+});

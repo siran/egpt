@@ -35,6 +35,21 @@ import { createPiCliSession } from './pi-cli-session.mjs';
 
 const LAUNCHER_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', 'setup', 'sandbox-logon-launcher.ps1');
 
+// THE ONE variable a sandboxed turn is ever handed, and the only reason the launcher's
+// -SetEnv flag is ever passed: the operator's Claude SUBSCRIPTION credential — a long-lived
+// OAuth token from `claude setup-token`, NOT an API key. config.yaml carries it as
+// `sandbox_oauth_token` and brainpool.mjs resolves it FOR A SANDBOXED SESSION ONLY (a
+// non-sandboxed turn runs as the operator's own account and reads ~/.claude directly, so it
+// needs nothing from here).
+//
+// It cannot come from the sandboxed account's own profile: the turn runs as a leased pool
+// account (egpt-sbx-NN) whose profile is empty and which is denied the operator's
+// ~/.claude/.credentials.json by the very ACLs that make the sandbox a sandbox. -SetEnv puts
+// the value in THAT child's environment block and nowhere else — not in the pool account's
+// profile, where the NEXT lease of that account would inherit it, and not in a machine-wide
+// variable, where every process on the box would see it.
+const OAUTH_ENV_NAME = 'CLAUDE_CODE_OAUTH_TOKEN';
+
 export function createSandboxCliSession(options = {}) {
   // sandboxed:true wraps whichever CLI engine's own session primitive spawns a
   // process — ccode (claude.exe), codex (app-server), or pi (--mode rpc) — all
@@ -67,6 +82,12 @@ export function createSandboxCliSession(options = {}) {
 
   const _spawn = options.spawn || nodeSpawn;   // injectable for tests, same DI convention as warm-cli-session.mjs
 
+  // Normalised ONCE, here, so sandboxSpawn stays a pure argv build: a non-string, an empty
+  // string and an all-whitespace string all collapse to '' = "no credential", and the psArgs
+  // spread below then contributes ZERO elements. Read from options like every other field —
+  // brainpool.mjs only puts it there when the being actually resolved `sandboxed: true`.
+  const oauthToken = typeof options.sandboxOauthToken === 'string' ? options.sandboxOauthToken.trim() : '';
+
   function sandboxSpawn(bin, args, spawnOpts) {
     // spawnOpts.cwd is already normalizeCwd()'d by warm-cli-session.mjs's
     // spawnProc() by the time we're called; fall back to the raw
@@ -77,6 +98,16 @@ export function createSandboxCliSession(options = {}) {
       '-NoProfile', '-ExecutionPolicy', 'Bypass',
       '-File', LAUNCHER_PATH,
       '-TargetFolder', targetFolder,
+      // EVERY OPTIONAL NAMED FLAG GOES HERE — BEFORE -InnerBin, never after it. The launcher
+      // binds by NAME only (PositionalBinding = $false) and sweeps everything it does not bind
+      // into InnerArgs (ValueFromRemainingArguments), so a flag placed after -InnerBin's value
+      // would still BIND correctly — but it would sit inside what every reader, and every test,
+      // treats as "the inner argv is the contiguous tail after -InnerBin <bin>". Keeping the
+      // optional flags ahead of -InnerBin keeps that tail exactly the claude/codex/pi argv.
+      //
+      // WITH NO TOKEN THE SPREAD IS EMPTY and psArgs is byte-identical to what it was before
+      // this existed. That is the common case and it must stay unchanged.
+      ...(oauthToken ? ['-SetEnv', `${OAUTH_ENV_NAME}=${oauthToken}`] : []),
       '-InnerBin', bin,
       ...args,   // collected by the launcher's InnerArgs (ValueFromRemainingArguments) — verbatim array elements, never joined/re-parsed
     ];

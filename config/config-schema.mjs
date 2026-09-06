@@ -1776,6 +1776,45 @@ export const CONFIG_SCHEMA = {
         don:  { configuration: relay, relay_channel: Rodz } }
   `,
 
+  sandbox_oauth_token: `
+    The Claude credential a SANDBOXED turn runs on (operator 2026-09-05) - a
+    long-lived OAuth token from "claude setup-token", i.e. the operator's own
+    SUBSCRIPTION, not an API key.
+
+      DEFAULT: unset - nothing is injected and NOTHING about the launch
+      changes. src/sandbox-cli-session.mjs passes no -SetEnv at all in that
+      case, so the powershell/launcher argv is byte-identical to what it was
+      before this key existed. That is the common case, and it is the one
+      this key must never disturb.
+
+    ONLY CONSULTED FOR A SANDBOXED SESSION, and src/spine/brainpool.mjs gates
+    the read on exactly that - the RESOLVED "sandboxed" (see
+    agents.<name>.conversation_defaults.sandboxed, which access_level
+    "sandbox" forces true). WHY THE GATE: a NON-sandboxed turn runs as the
+    operator's own Windows account and reads ~/.claude directly, so it
+    already has a credential and needs nothing from here. Only a sandboxed
+    turn has none - it runs as a leased pool account (egpt-sbx-NN) with its
+    own empty profile, denied the operator's ~/.claude/.credentials.json by
+    the very ACLs that make the sandbox a sandbox.
+
+    HOW IT REACHES THE TURN: setup/sandbox-logon-launcher.ps1's
+    "-SetEnv CLAUDE_CODE_OAUTH_TOKEN=<value>", overlaid onto that ONE child's
+    environment block. Deliberately NOT the two easier routes, both of which
+    outlive the turn: writing it into the pool account's profile leaves it on
+    disk for the NEXT lease of that account, and a machine-wide environment
+    variable hands it to every process on the box.
+
+    KEEP IT IN config.local.json, NOT config.yaml - it is a live credential.
+    REDACTED wherever /config prints it (the bare dump, a GET, and the SET
+    echo): CONFIG_REDACT_RE matches "token" in the key name, exactly as it
+    does for beeper_token.
+
+    NEVER LOGGED. src/warm-cli-session.mjs's "warm-cli: spawn ..." line prints
+    the INNER claude argv, which is built AND logged before sandboxSpawn wraps
+    it; the -SetEnv pair is added inside that wrapper, and the launcher's own
+    New-SandboxEnvironmentBlock logs nothing either.
+  `,
+
   radio_quick_reply_string: `
     Token that reads a QUOTED message aloud on the radio this conversation's room
     is joined to — reply to any message with just this token (operator

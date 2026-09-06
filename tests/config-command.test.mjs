@@ -251,3 +251,28 @@ describe('LOCK: lifecycle + STOP still not node-addressable after /config joined
     }
   });
 });
+
+// ── sandbox_oauth_token (operator 2026-09-05). The key was NAMED so the EXISTING
+//    CONFIG_REDACT_RE (/token|key|secret|password|^account$|allowed_users/i) catches it with no
+//    change to the redactor — these two tests are what makes that a verified claim rather than
+//    an assumption about a regex. ──
+describe('/config — sandbox_oauth_token is redacted by the EXISTING key-name rule', () => {
+  it('a bare /config dump never leaks the sandbox OAuth token', async () => {
+    const configPath = await tmpConfigPath();
+    const config = { node_name: 'kg', sandbox_oauth_token: 'SUPER-SECRET-OAUTH-TOKEN-VALUE' };
+    const { cmds, sent } = harness({ config, configPath });
+    await cmds.run({ body: '/config', chatId: '!self', authorized: true });
+    expect(sent[0].text).not.toContain('SUPER-SECRET-OAUTH-TOKEN-VALUE');
+    expect(sent[0].text).toContain('sandbox_oauth_token');   // the KEY is still visible...
+    expect(sent[0].text).toContain('<redacted>');            // ...only the value is gone
+  });
+
+  it('a GET of sandbox_oauth_token never leaks the real value either', async () => {
+    const configPath = await tmpConfigPath();
+    const config = { sandbox_oauth_token: 'SUPER-SECRET-OAUTH-TOKEN-VALUE' };
+    const { cmds, sent } = harness({ config, configPath });
+    await cmds.run({ body: '/config sandbox_oauth_token', chatId: '!self', authorized: true });
+    expect(sent[0].text).not.toContain('SUPER-SECRET-OAUTH-TOKEN-VALUE');
+    expect(sent[0].text).toContain('<redacted>');
+  });
+});

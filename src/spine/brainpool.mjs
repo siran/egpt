@@ -721,6 +721,20 @@ export function createBrainPool({
       // from a sentence boot assembles about the node's DEFAULT persona — that addendum told every
       // agent it was "don" while its feed said otherwise.
       const appendSystemPrompt = def.system_prompt;
+      // SANDBOX-ONLY CREDENTIAL (operator 2026-09-05). config.yaml's `sandbox_oauth_token` is
+      // the operator's own SUBSCRIPTION token (`claude setup-token`, not an API key), and the
+      // read is GATED on the resolved `sandboxed` for one reason: a NON-sandboxed turn runs as
+      // the operator's own Windows account and reads ~/.claude directly, so it already has a
+      // credential and must not be handed a second one. Only a sandboxed turn has none — it
+      // runs as a leased pool account (egpt-sbx-NN) with its own empty profile, denied the
+      // operator's ~/.claude/.credentials.json by the very ACLs that make the sandbox a sandbox.
+      //
+      // Unset/blank collapses to '' and baseOpts below then omits the field ENTIRELY, so
+      // sandbox-cli-session.mjs passes no -SetEnv and the launcher argv stays byte-identical to
+      // what it was before this key existed. NEVER LOGGED: the value lands in baseOpts and
+      // nowhere else — warm-cli-session.mjs's `warm-cli: spawn ...` line prints the INNER claude
+      // argv, which is built AND logged before sandboxSpawn ever wraps it.
+      const sandboxOauthToken = sandboxed === true ? String(getConfig()?.sandbox_oauth_token ?? '').trim() : '';
       const baseOpts = {
         engine,
         cwd,
@@ -769,6 +783,10 @@ export function createBrainPool({
         // the STRUCTURAL SAFETY GATES above already refuse the whole turn when accessLevel
         // isn't set, so a sandboxed being still needs its own access_level/allowed_users.
         sandboxed: sandboxed === true,
+        // ...and the credential THAT turn runs on, spread in ONLY when there is one (resolved
+        // above, sandboxed-only). With the key unset this contributes nothing at all, which is
+        // the common case and the one whose spawn argv must not change.
+        ...(sandboxOauthToken ? { sandboxOauthToken } : {}),
       };
 
       // Identity kickoff: prefix the first turn of a fresh thread with the feed,

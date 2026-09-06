@@ -1713,3 +1713,66 @@ describe('parseWarmBlock', () => {
     expect(parseWarmBlock({ warm: { idle_ttl: -5 } }).idleTtlMs).toBe(-5);   // not special-cased to -1: any negative passes through
   });
 });
+
+// ── sandbox_oauth_token (operator 2026-09-05) — the operator's SUBSCRIPTION credential
+//    ("claude setup-token", not an API key), read from config.yaml and forwarded to
+//    sandbox-cli-session.mjs as brainOptions.sandboxOauthToken, which turns it into the
+//    launcher's -SetEnv CLAUDE_CODE_OAUTH_TOKEN=<value>.
+//
+//    THE GATE IS THE POINT: a NON-sandboxed turn runs as the operator's own Windows account and
+//    reads ~/.claude directly — it already has a credential, and handing it a second one from
+//    config would be a needless second copy of a live secret in a process that never asked for
+//    it. Only a sandboxed turn (leased egpt-sbx-NN account, own empty profile, denied the
+//    operator's ~/.claude/.credentials.json) has none. ──
+describe('brainpool.turn — sandbox_oauth_token reaches brainOptions ONLY for a sandboxed turn', () => {
+  const TOKEN = 'sk-ant-oat01-FAKE-TEST-TOKEN-NOT-REAL';
+  const defaults = (sandboxed) => ({ agents: { e: { conversation_defaults: { access_level: 'regular', sandboxed } } } });
+
+  it('REPRODUCE-FIRST: sandboxed:false with the key SET → brainOptions carries no sandboxOauthToken at all', async () => {
+    const config = { ...defaults(false), sandbox_oauth_token: TOKEN };
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { config, platform: 'win32' });
+    await brain.turn('e', ev);
+    expect(pool.calls[0].brainOptions.sandboxed).toBe(false);
+    expect(pool.calls[0].brainOptions).not.toHaveProperty('sandboxOauthToken');
+  });
+
+  it('sandboxed:true with the key set → brainOptions.sandboxOauthToken is exactly the configured value', async () => {
+    const config = { ...defaults(true), sandbox_oauth_token: TOKEN };
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { config, platform: 'win32' });
+    await brain.turn('e', ev);
+    expect(pool.calls[0].brainOptions.sandboxed).toBe(true);
+    expect(pool.calls[0].brainOptions.sandboxOauthToken).toBe(TOKEN);
+  });
+
+  it('THE COMMON CASE: sandboxed:true with the key UNSET → no sandboxOauthToken, so the launcher argv is unchanged', async () => {
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { config: defaults(true), platform: 'win32' });
+    await brain.turn('e', ev);
+    expect(pool.calls[0].brainOptions.sandboxed).toBe(true);
+    expect(pool.calls[0].brainOptions).not.toHaveProperty('sandboxOauthToken');
+  });
+
+  it('a blank or whitespace-only value is not a credential — it is dropped, not passed as an empty NAME=', async () => {
+    for (const blank of ['', '   ', '\t\n']) {
+      const config = { ...defaults(true), sandbox_oauth_token: blank };
+      const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { config, platform: 'win32' });
+      await brain.turn('e', ev);
+      expect(pool.calls[0].brainOptions, `sandbox_oauth_token=${JSON.stringify(blank)} was forwarded`).not.toHaveProperty('sandboxOauthToken');
+    }
+  });
+
+  it('surrounding whitespace is trimmed (a YAML-pasted token keeps no stray newline)', async () => {
+    const config = { ...defaults(true), sandbox_oauth_token: `  ${TOKEN}\n` };
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { config, platform: 'win32' });
+    await brain.turn('e', ev);
+    expect(pool.calls[0].brainOptions.sandboxOauthToken).toBe(TOKEN);
+  });
+
+  it('THE VALUE IS NEVER LOGGED by the turn that carries it', async () => {
+    const logs = [];
+    const config = { ...defaults(true), sandbox_oauth_token: TOKEN };
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { config, platform: 'win32', onLog: (l) => logs.push(String(l)) });
+    await brain.turn('e', ev);
+    expect(pool.calls[0].brainOptions.sandboxOauthToken).toBe(TOKEN);   // it really did travel...
+    for (const l of logs) expect(l, `a log line leaked the token: ${l}`).not.toContain(TOKEN);
+  });
+});
