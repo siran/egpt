@@ -60,6 +60,10 @@ import { fanoutInbound } from './bridge-fanout.mjs';
 // node's spine. Both derive from the SAME agents block / node identity every other gate reads.
 import { isRelayChannelChat, ownNodeNamesOf } from './node-names.mjs';
 import { createIngest, lifecycleExit, isShellConnectMarker } from './ingest.mjs';
+// THE SESSION 1 SUCCESSOR'S ANNOUNCE (chunk 3 of plans/2609061200-SESSION-0-TO-1-HANDOVER-PLAN.md).
+// Absent EGPT_SESSION1 this is one `false` and nothing else runs — every Session 0 spine, every
+// test and every other node take the identical path they took before it existed.
+import { isSession1Successor, announceStanddown, SESSION1_ENV } from './successor-announce.mjs';
 import { createCommands } from './commands.mjs';
 import { createReplyActions } from './reply-actions.mjs';
 import { createAdvice } from './advice.mjs';
@@ -604,6 +608,14 @@ export async function boot({
   startSynthesizerServer: startSynthesizerServerFn = startSynthesizerServer,
 
   ingest = true,                      // watch EGPT_HOME/state/ingest for /restart, /upgrade, /rewind (tests pass false)
+  // THE SUCCESSOR FLAG, read from the environment ONCE, here, like every other config-fed option
+  // — the announce module never reads process.env at a call site. setup/session1-logon-launcher.vbs
+  // sets EGPT_SESSION1=1 for the spine it starts at logon; it cannot be a config key because both
+  // spines read the SAME config file. Injected in tests so no test has to mutate process.env.
+  session1 = isSession1Successor(),
+  // The dial itself, injected the same way probeEndpoint / reapPort / startWhisperServer are, so a
+  // test can observe the announce WITHOUT opening a real socket. Only ever called when session1.
+  announceStanddown: announceStanddownFn = announceStanddown,
   exit = (code) => process.exit(code),// how a lifecycle command leaves (the daemon respawns on 42/43/44)
   setInterval: setIntervalFn = globalThis.setInterval,       // the spine tick-timer seam; injected so a test can observe the effective cadence
   clearInterval: clearIntervalFn = globalThis.clearInterval,
@@ -680,6 +692,30 @@ export async function boot({
   const transcriptTimeZone = cfg.default_time_zone
     ? resolveTimeZone(cfg.default_time_zone, { onLog: (m) => log.line?.(`[boot] ${m}`) })
     : null;
+
+  // === THE SUCCESSOR'S ANNOUNCE (chunk 3, plans/2609061200-SESSION-0-TO-1-HANDOVER-PLAN.md) ====
+  // A spine started with EGPT_SESSION1=1 is the arriving Session 1 spine and the profile it wants is
+  // already held. It says so HERE — before the first line below writes state/spine.pid, and long
+  // before the Beeper bridge dials — because everything under this EGPT_HOME is shared, and the
+  // sooner the incumbent knows, the shorter the window in which both are awake on one profile.
+  //
+  // IT SAYS ONLY *THAT*, NEVER *WHEN*. The departing spine owns the timing (the operator's ruling):
+  // it stops admitting turns, drains the one it is writing, and leaves with 45. So this is one
+  // sentence and no wait — the waiting is shell-port's own re-listen backoff, below, which already
+  // exists and already backs off on a failed bind.
+  //
+  // NO INCUMBENT IS AN ORDINARY STARTUP, not an error: nothing answers the dial, nothing was
+  // written anywhere, and the bind below simply succeeds. Ingest-gated like every other real-node
+  // side effect (whisper-reap, seedSkeletons, the port bind itself) — with ingest:false no spine
+  // binds the console port at all, so there is nothing to contend for and nothing to announce.
+  if (session1 && ingest) {
+    const { outcome, detail } = await announceStanddownFn({
+      port: shellPortFrom(cfg),
+      token: shellTokenFrom(cfg),
+      onLog: (m) => log.line?.(`[standdown] ${m}`),
+    });
+    log.line?.(`[standdown] successor (${SESSION1_ENV}=1): ${outcome} — ${detail}`);
+  }
 
   // Identity vs liveness are SEPARATE files now (operator 2026-07-02): state/
   // spine.pid holds the long-lived spine pid — written ONCE here because it never
@@ -1445,6 +1481,18 @@ export async function boot({
     // It exists so a SECOND spine can run on this machine — Session 0 and Session 1 cannot
     // both bind one port, and that collision was the only thing making two spines impossible.
     port: shellPortFrom(cfg),
+    // THE ONE GUARD (chunk 3). start() REAPS the port before binding it — netstat + `taskkill /F /T`
+    // (src/tools/reap-port.mjs) — which is right for a Session 0 spine clearing its own orphan or a
+    // squatter, and catastrophic for the successor: the thing holding this port is the INCUMBENT,
+    // mid-turn, and killing it is precisely the abrupt death the deferred stand-down exists to
+    // prevent (`interrupted — the link to the spine writing this reply dropped`, observed live
+    // 2026-09-05). Worse, the reap would SUCCEED, so the bind would succeed too and the plan's
+    // "wait for the port" would never happen. Suppressed, the failed bind takes shell-port's own
+    // re-listen backoff and the successor waits — which is the whole sequencing this chunk is.
+    // STATED COST: a successor therefore never clears a genuine ORPHAN on this port either; it
+    // waits, and the Session 0 spine (which still reaps) is what clears one on its next boot.
+    // Spread, so a non-successor's options object is byte-for-byte the one it was before.
+    ...(session1 ? { reapPort: (p, onLog) => { onLog(`shell: the Session 1 successor does NOT reap :${p} — whatever holds it is the incumbent, and it is draining, not stale`); return 0; } } : {}),
     header: shellHeader,
     // THE MOUTH HANDLER (above). Null on every node with no peer_spine, which is what makes the
     // limb refuse a /peer dial outright — exactly as it did before this feature existed.
@@ -1625,6 +1673,12 @@ export async function boot({
     send: commandTranscript.send,
     exit: announceAndExit,
     writeRewindTarget: (ref) => writeFile(join(EGPT_HOME, 'rewind-target.txt'), ref, 'utf8'),
+    // The SAME writer the ingest handle passes below (:1945) — `/standdown <port>` reaches this
+    // node by TWO doors, the ingest box and a line typed at the console or in Self, and the port
+    // argument has to survive both. Without it commands.mjs parsed the port and dropped it, and
+    // the daemon fell back to this profile's own console port; harmless while the two agree, wrong
+    // the moment they do not. It is also the door the successor's announce comes in through.
+    writeStanddownTarget: (port) => writeFile(join(EGPT_HOME, 'standdown-target.txt'), port, 'utf8'),
     loadState: _loadState, writeState: _writeState,   // /agents … auto/reset/access_level persist into conversations.yaml
     logTranscript: (ev, reply) => services.transcript.log(ev, reply),   // THE reply writer — the same service commandTranscript wraps above; /agents restart's accum boundary rides it instead of assembling a line of its own
     resolveConvRoom,                                  // (surface, chatId) → the conversation's Room — the SAME resolver the phase-4 relay reads members from, so /members writes where the relay reads (bug fix 2026-07-23)

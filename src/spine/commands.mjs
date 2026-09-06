@@ -332,6 +332,13 @@ export function createCommands({
   send: rawSend,                         // (chatId, text) -> deliver a plain system reply
   exit = (code) => process.exit(code),
   writeRewindTarget,
+  // /standdown's port, the same shape writeRewindTarget has and injected by the same call in
+  // boot.mjs. It was MISSING here while the ingest box already had it, so a `/standdown <port>`
+  // typed at the console or in Self parsed its port and then dropped it on the floor: the exit
+  // code was right, the sidecar was never written, and the daemon silently fell back to this
+  // profile's own console port. Harmless while the two agree — wrong the moment they do not, and
+  // this is the door the Session 1 successor's announce comes in through (successor-announce.mjs).
+  writeStanddownTarget,
   loadState = null, writeState = null,   // conv-state IO — lets /agents auto persist a mode
   brains = null,                         // the brain registry (createBrains) — /agents' status + access_level, and /status's own preview, resolve a being's live def through it (brainpool.mjs's resolveBeingDef / resolveDefaultBrainDef)
   defaultKey = 'e',                      // the persona being-id (its map key), injected by boot from the single `default:true` agent — the persona's per-conversation mode/state reads+writes and its warm-key prefix all key off this, never a hardcoded 'e' (operator 2026-07-10)
@@ -658,7 +665,7 @@ export function createCommands({
     // (see isCommand above) — every other non-slash line never reaches run() at all.
     if (isRadioQuickReply(ev)) { await radioQuickReply(ev); return; }
 
-    const code = lifecycleExit(line, { writeRewindTarget });
+    const code = lifecycleExit(line, { writeRewindTarget, writeStanddownTarget });
     if (code != null) {
       onLog(`${line} -> exit ${code}`);
       await exit(code);                    // process leaves (after the bridge's "restarting…" announce); the daemon respawns

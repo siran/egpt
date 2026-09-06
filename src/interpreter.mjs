@@ -76,6 +76,15 @@ export const COMMANDS = [
   { cmd: '/upgrade',        surface: 'shell',     usage: '/upgrade',                                       desc: 'exit with code 42; egpt-daemon pulls + rebuilds + restarts', wired: true },
   { cmd: '/restart',        surface: 'shell',     usage: '/restart',                                       desc: 'exit with code 43; egpt-daemon respawns from current disk (picks up external git pulls)', wired: true },
   { cmd: '/rewind',         surface: 'shell',     usage: '/rewind <ref>',                                  desc: 'exit with code 44; egpt-daemon checks out <ref>, installs, builds, restarts', wired: true },
+  // LISTED, deliberately, and it was a real question (2026-09-06). /standdown is machine-to-machine
+  // plumbing — the Session 1 successor's announce (src/spine/successor-announce.mjs) is what
+  // normally sends it — and this registry is bundled for the browser extension, so "leave it out"
+  // was defensible. It is listed anyway for the reason that outweighs both: an operator CAN type
+  // it, it dispatches through the very same lifecycleExit its three siblings above do, and unlike
+  // them THE NODE DOES NOT COME BACK — exit 45 tells egpt-daemon to stop respawning and watch a
+  // port instead. A command that takes the node down and leaves it down, missing from the one
+  // table whose stated job is to say what exists honestly, is a trap.
+  { cmd: '/standdown',      surface: 'shell',     usage: '/standdown [port]',                              desc: 'hand this profile to another spine: finish the turn in flight, refuse new ones, then exit with code 45. egpt-daemon does NOT respawn — it watches [port] (default: the console port this profile serves) and brings this spine back only when that port goes quiet. The Session 1 logon spine sends this for itself; typing it by hand parks the node until something takes the port.', wired: true },
 
   { section: 'SESSIONS' },
   { cmd: '/open',           surface: 'both',      usage: '/open <brain> [name]',                           desc: 'open a new tab/subprocess and register a session', wired: true },
