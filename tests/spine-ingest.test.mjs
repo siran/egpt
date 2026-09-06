@@ -57,6 +57,48 @@ describe('lifecycleExit', () => {
     expect(refs).toEqual(['abc123']);
     expect(lifecycleExit('/rewind')).toBe(44);   // no ref → still rewinds (daemon handles empty)
   });
+
+  // --- /standdown: the Session 0 → Session 1 handover verb (chunk 1 of the handover plan) ---
+  // The PORT reaches the daemon by the SAME mechanism /rewind's ref does — an injected writer
+  // that drops a sidecar in EGPT_HOME — never a second one.
+  it('/standdown returns 45 and writes NOTHING when no port is named', () => {
+    const ports = [];
+    expect(lifecycleExit('/standdown', { writeStanddownTarget: (p) => ports.push(p) })).toBe(45);
+    expect(lifecycleExit('  /standdown \n')).toBe(45);              // trimmed like every other token
+    expect(ports).toEqual([]);   // absent sidecar = "the profile's own console port" (daemon-runtime's standdownPort)
+  });
+  it('/standdown <port> returns 45 and writes the stand-down target', () => {
+    const ports = [];
+    expect(lifecycleExit('/standdown 23375', { writeStanddownTarget: (p) => ports.push(p) })).toBe(45);
+    expect(ports).toEqual(['23375']);
+    expect(lifecycleExit('/standdown 1', { writeStanddownTarget: (p) => ports.push(p) })).toBe(45);
+    expect(lifecycleExit('/standdown 65535', { writeStanddownTarget: (p) => ports.push(p) })).toBe(45);
+    expect(ports).toEqual(['23375', '1', '65535']);
+  });
+  it('a MALFORMED port is not a stand-down at all — null, and no sidecar is written', () => {
+    const ports = [];
+    const w = { writeStanddownTarget: (p) => ports.push(p) };
+    for (const line of ['/standdown abc', '/standdown 0', '/standdown -1', '/standdown 65536', '/standdown 23375.5', '/standdown 23375 extra', '/standdown 0x5b57']) {
+      expect(lifecycleExit(line, w)).toBe(null);     // unknown command — boot logs "ignored", nothing exits
+    }
+    expect(ports).toEqual([]);
+    expect(lifecycleExit('/standdownnow', w)).toBe(null);   // the token is the whole word
+    expect(ports).toEqual([]);
+  });
+  it('the three existing tokens are untouched by the fourth — same codes, and /standdown never writes the rewind target', () => {
+    const refs = [], ports = [];
+    const w = { writeRewindTarget: (r) => refs.push(r), writeStanddownTarget: (p) => ports.push(p) };
+    expect(lifecycleExit('/restart', w)).toBe(43);
+    expect(lifecycleExit('/upgrade', w)).toBe(42);
+    expect(lifecycleExit('/rewind abc123', w)).toBe(44);
+    expect(lifecycleExit('hello', w)).toBe(null);
+    expect(lifecycleExit('', w)).toBe(null);
+    expect(lifecycleExit(null, w)).toBe(null);
+    expect(refs).toEqual(['abc123']);   // only /rewind wrote
+    expect(lifecycleExit('/standdown 23375', w)).toBe(45);
+    expect(refs).toEqual(['abc123']);   // …and the stand-down did not touch it
+    expect(ports).toEqual(['23375']);
+  });
 });
 
 function memDir(files) {
@@ -98,6 +140,19 @@ describe('createIngest sweep', () => {
     const ing = createIngest({ dir: '/ingest', io, handle: async (line) => { const c = lifecycleExit(line); if (c != null) exits.push(c); } });
     await ing.sweep();
     expect(exits).toEqual([43]);
+    ing.stop();
+  });
+
+  it('wires a /standdown <port> file to exit 45 AND the sidecar (the boot handle\'s shape)', async () => {
+    const { io } = memDir({ go: '/standdown 23376\n' });
+    const exits = [], ports = [];
+    const ing = createIngest({ dir: '/ingest', io, handle: async (line) => {
+      const c = lifecycleExit(line, { writeStanddownTarget: (p) => ports.push(p) });
+      if (c != null) exits.push(c);
+    } });
+    await ing.sweep();
+    expect(exits).toEqual([45]);
+    expect(ports).toEqual(['23376']);
     ing.stop();
   });
 

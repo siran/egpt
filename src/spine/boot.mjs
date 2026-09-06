@@ -1473,15 +1473,30 @@ export async function boot({
   // --- lifecycle announce: "restarting…" to Self before exit, "back up! <commit>"
   //     on the next boot. The bounce is otherwise invisible to the operator. ---
   const sidecar = join(EGPT_HOME, 'state', 'restart-announce.json');
-  const KIND_OF = { 43: '/restart', 42: '/upgrade', 44: '/rewind' };
+  const KIND_OF = { 43: '/restart', 42: '/upgrade', 44: '/rewind', 45: '/standdown' };
   const gitOut = (args) => { try { return spawnSync('git', args, { cwd: process.cwd() }).stdout?.toString().trim() || ''; } catch { return ''; } };
   const shortSha = () => gitOut(['rev-parse', '--short', 'HEAD']) || '?';
-  async function announceAndExit(code) {
+  // The going-down half, unchanged: the sidecar the NEXT boot reads back, the capped "↻ …" line,
+  // then the exit itself.
+  async function goDown(code) {
     const selfDm = selfChatId();   // the Self chat (above) = the Self-DM announce target
     try { await mkdir(join(EGPT_HOME, 'state'), { recursive: true }); await writeFile(sidecar, JSON.stringify({ chatId: selfDm, kind: KIND_OF[code] ?? '?', preSha: shortSha(), pid: process.pid })); } catch {}
     // best-effort going-down — names the PID going down (capped so a slow POST can't wedge the exit)
     try { if (selfDm) await Promise.race([bridge.send(selfDm, `↻ ${KIND_OF[code] ?? 'restart'}… (pid ${process.pid})`), new Promise((r) => setTimeout(r, 3000))]); } catch {}
     exit(code);
+  }
+  // THE STAND-DOWN IS DEFERRED, NEVER ABRUPT (operator's ruling, plans/2609061200-SESSION-0-TO-1-
+  // HANDOVER-PLAN.md): 43/42/44 leave the moment they are read, but 45 (daemon-runtime.mjs's
+  // STANDDOWN_EXIT_CODE) hands the decision to the spine — which stops admitting turns, drains
+  // the ones already in flight, and calls back. goDown then runs exactly as it does for every
+  // other code, so "↻ /standdown… (pid …)" is truthful about the moment it is posted.
+  //
+  // ONE BRANCH, HERE, because this is where BOTH ways a lifecycle command arrives converge: the
+  // ingest box below, and a /standdown typed in Self (commands.mjs dispatches on the same
+  // lifecycleExit and leaves through this same injected `exit` seam).
+  async function announceAndExit(code) {
+    if (code === 45) { spine.standdown(() => { goDown(code).catch((e) => log.line?.(`[standdown] ${e?.message ?? e}`)); }); return; }
+    await goDown(code);
   }
 
   const pool = createWarmPool({
@@ -1854,8 +1869,8 @@ export async function boot({
     catch (e) { log.line?.(`[announce] ${e?.message ?? e}`); }
   })();
 
-  // Command ingest: drop /restart, /upgrade, or /rewind <ref> into EGPT_HOME/state/ingest
-  // (operator 2026-07-03: the ingest box lives under state/ now).
+  // Command ingest: drop /restart, /upgrade, /rewind <ref> or /standdown [port] into
+  // EGPT_HOME/state/ingest (operator 2026-07-03: the ingest box lives under state/ now).
   let ingestWatcher = null;
   if (ingest) {
     ingestWatcher = createIngest({
@@ -1868,7 +1883,13 @@ export async function boot({
         // limb is backing off, where this makes it re-listen NOW so the editor has something
         // to dial. Not a lifecycle command.
         if (isShellConnectMarker(line)) { shellPort.poke(); return; }
-        const code = lifecycleExit(line, { writeRewindTarget: (ref) => writeFile(join(EGPT_HOME, 'rewind-target.txt'), ref, 'utf8') });
+        const code = lifecycleExit(line, {
+          writeRewindTarget: (ref) => writeFile(join(EGPT_HOME, 'rewind-target.txt'), ref, 'utf8'),
+          // The stand-down's port, written the SAME way and read the same way — daemon-runtime's
+          // standdownPort() consumes it on exit 45 and falls back to this profile's own console
+          // port when it is absent, which is why no port means nothing is written.
+          writeStanddownTarget: (port) => writeFile(join(EGPT_HOME, 'standdown-target.txt'), port, 'utf8'),
+        });
         if (code != null) { log.line?.(`[ingest] ${line} -> exit ${code}`); await announceAndExit(code); }
         else log.line?.(`[ingest] ignored: ${JSON.stringify(line)}`);
       },
