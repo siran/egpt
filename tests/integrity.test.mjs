@@ -222,7 +222,7 @@ const KNOWN_PLATFORM_DEBT = [
   {
     file: 'src/spine/commands.mjs',
     code: "spawnSync('schtasks', ['/run', '/tn', CHROME_LAUNCH_TASK]",
-    why: 'FOUND BY THIS SCAN 2026-09-04. Windows-only (schtasks triggers the Session-1 Chrome task), but it DEGRADES rather than breaks: the try/catch turns a POSIX ENOENT into { ok: false }, which is already /chrome\'s graceful-fallback path. Soft debt — it is the launch SEAM that is Windows-shaped, and the seam is injectable, so the real fix is a per-platform default launcher rather than a branch here.',
+    why: 'FOUND BY THIS SCAN 2026-09-04. Windows-only (schtasks triggers the Session-1 Chrome task), but it DEGRADES rather than breaks: the try/catch turns a POSIX ENOENT into { ok: false }, which is already /chrome\'s graceful-fallback path. Soft debt — it is the launch SEAM that is Windows-shaped, and the seam is injectable, so the real fix is a per-platform default launcher rather than a branch here. HALF PAID 2026-09-06 (chunk 6 of the Session 0 -> Session 1 handover plan): a SESSION 1 spine no longer takes this path at all. boot.mjs overrides the seam with launchChromeDirect, which spawns Chrome through src/tools/chrome-launcher.mjs — one function, per-platform since CHROME_PATHS, and supervised. THE ENTRY STAYS BECAUSE THE CALL STAYS: schtasks is now the SESSION 0 fallback, and it is not about capability (a Session 0 Chrome runs and serves CDP fine — measured on reve the same day, chrome.exe pid 2388 on :9224, SessionId 0) but about putting the window on a desktop the operator can actually see and click. A node with nobody logged in still has no other way to do that, so the line is still reachable and still Windows-shaped.',
   },
 ];
 

@@ -126,7 +126,7 @@ function nodeStack({ config, cdp = LIVE_CDP, resolveConvRoom, loadAdapters } = {
     send: (chatId, text) => bridge.send(chatId, text),
     exit: (code) => exits.push(code),
     cdp,
-    launchChromeTask: () => ({ ok: false }),
+    launchChrome: () => ({ ok: false }),   // the seam was renamed in chunk 6; a stale key here would silently restore the REAL schtasks default
     now: () => t,
     sleep: async (ms) => { t += ms; },
     resolveConvRoom,

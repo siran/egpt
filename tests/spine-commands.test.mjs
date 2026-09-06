@@ -4,7 +4,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createCommands, normalizeAgentsArgs, AGENTS_USAGE, SINGULAR_CMD, PLURAL_OF } from '../src/spine/commands.mjs';
+import { createCommands, normalizeAgentsArgs, AGENTS_USAGE, SINGULAR_CMD, PLURAL_OF, launchChromeDirect, CHROME_BRAIN_PROFILE } from '../src/spine/commands.mjs';
 import { createSpine } from '../src/spine/spine.mjs';
 import { createTranscript } from '../src/spine/transcript.mjs';
 import { contextSinceLastTurn } from '../src/transcript-log.mjs';
@@ -19,12 +19,14 @@ function harness({ config = {}, state = null, brains, io = {}, cdp, launch, cloc
   let st = state;
   // /chrome launch + clock seams: default to a fake that reports "task not registered"
   // and an advancing fake clock, so NO command test ever runs real schtasks or waits real
-  // wall-clock time (both seams are consumed ONLY by /chrome's chromeReport).
+  // wall-clock time (both seams are consumed ONLY by /chrome's chromeReport). The seam is
+  // `launchChrome` (not launchChromeTask) since chunk 6: the task hop is its DEFAULT, not its
+  // identity — a Session 1 spine is handed a direct spawner through the same door.
   const fakeClock = clock ?? (() => { let t = 0; return { now: () => t, sleep: async (ms) => { t += ms; } }; })();
   const cmds = createCommands({
     getConfig: () => config,
     ...(cdp ? { cdp } : {}),
-    launchChromeTask: launch ?? (() => ({ ok: false })),
+    launchChrome: launch ?? (() => ({ ok: false })),
     now: fakeClock.now,
     sleep: fakeClock.sleep,
     send: async (chatId, text) => sent.push({ chatId, text }),
@@ -1525,6 +1527,166 @@ describe('/chrome <node>', () => {
     await cmds.run({ ...self, body: '/chrome kg' });
     expect(sent).toHaveLength(0);
     expect(launched).toHaveLength(0);
+  });
+});
+
+// ── THE LAUNCH SEAM IS PICKED BY WINDOWS SESSION (chunk 6) ───────────────────────────────────
+// A Session 0 spine keeps the scheduled-task hop; a Session 1 successor spawns Chrome as an
+// ordinary child, with the port it will attach to and the profile config names. Every seam here
+// is injected: no test in this file spawns a browser, runs schtasks, or touches a real desktop.
+describe('/chrome: the Session 0 hop and the Session 1 direct spawn', () => {
+  const self = { chatId: '!self', surface: 'whatsapp' };
+  const kg = { node_name: 'kg', whatsapp: { chat_id: '!self' } };
+  const unreachable = {
+    isRunning: async () => false,
+    cdpHost: async () => 'localhost:9221',
+    listTabs: async () => { throw new Error('Cannot reach Chrome at localhost:9221'); },
+  };
+  // Down at the launch decision, up on the next probe — a launcher that actually worked.
+  const comesUp = () => {
+    let up = false;
+    return {
+      isRunning: async () => { const was = up; up = true; return was; },
+      cdpHost: async () => 'localhost:9333',
+      listTabs: async () => ([{ title: 'ChatGPT', url: 'https://chatgpt.com/c/abc' }]),
+    };
+  };
+
+  it('the seam is handed the port this node will ATTACH to, and the profile + binary config names', async () => {
+    const calls = [];
+    const config = { ...kg, chrome: { bin: 'C:/x/chrome.exe', profile_dir: 'C:/x/brain' } };
+    const cdp = { ...unreachable, cdpHost: async () => 'localhost:9333' };
+    const { cmds } = harness({ config, cdp, launch: (o) => { calls.push(o); return { ok: false }; } });
+    await cmds.run({ ...self, body: '/chrome kg' });
+    // Never the task's frozen 9221, and never a profile the operator did not name.
+    expect(calls).toEqual([{ port: '9333', userDataDir: 'C:/x/brain', bin: 'C:/x/chrome.exe' }]);
+  });
+
+  it('with no chrome: block it falls back to the discovered brain profile and lets the launcher find the binary', async () => {
+    const calls = [];
+    const { cmds } = harness({ config: kg, cdp: unreachable, launch: (o) => { calls.push(o); return { ok: false }; } });
+    await cmds.run({ ...self, body: '/chrome kg' });
+    expect(calls[0]).toEqual({ port: '9221', userDataDir: CHROME_BRAIN_PROFILE, bin: null });
+  });
+
+  it('a Session 1 direct launch reports the pid — the one fact `schtasks /run` could never return', async () => {
+    // async on purpose: the direct launcher returns a promise, and the call site must await it.
+    const launch = async () => ({ ok: true, direct: true, pid: 4242, detail: 'chrome.exe --remote-debugging-port=9333' });
+    const { cmds, sent } = harness({ config: kg, cdp: comesUp(), launch });
+    await cmds.run({ ...self, body: '/chrome kg' });
+    expect(sent[0].text).toMatch(/attached: localhost:9333/);
+    expect(sent[0].text).toMatch(/launched: pid 4242/);
+  });
+
+  it('the Session 0 task hop reports exactly what it always did — no pid line, because it has none', async () => {
+    const { cmds, sent } = harness({ config: kg, cdp: comesUp(), launch: () => ({ ok: true }) });
+    await cmds.run({ ...self, body: '/chrome kg' });
+    expect(sent[0].text).toMatch(/attached: localhost:9333/);
+    expect(sent[0].text).not.toMatch(/launched:/);
+  });
+
+  it('a direct launch that fails degrades to the hint and does NOT send the operator off to register a scheduled task', async () => {
+    const launch = async () => ({ ok: false, direct: true, detail: 'Chrome executable not found in standard locations' });
+    const { cmds, sent } = harness({ config: kg, cdp: unreachable, launch });
+    await cmds.run({ ...self, body: '/chrome kg' });
+    expect(sent[0].text).toMatch(/no Chrome is listening/);
+    expect(sent[0].text).toMatch(/I tried to open one myself/);
+    expect(sent[0].text).toMatch(/Chrome executable not found/);
+    // Registering the task is the SESSION 0 remedy. Offering it here would be a wrong instruction,
+    // and so would "I can't open it myself" from a spine that just tried.
+    expect(sent[0].text).not.toMatch(/register-chrome-task\.ps1/);
+    expect(sent[0].text).not.toMatch(/I can't open it myself/);
+  });
+
+  it('a direct launch whose browser never binds the port says THAT, rather than blaming a missing task', async () => {
+    const { cmds, sent } = harness({ config: kg, cdp: unreachable, launch: async () => ({ ok: true, direct: true, pid: 7 }) });
+    await cmds.run({ ...self, body: '/chrome kg' });
+    expect(sent[0].text).toMatch(/never bound :9221/);
+    expect(sent[0].text).not.toMatch(/register-chrome-task\.ps1/);
+  });
+
+  // The Session 0 wording is load-bearing and unchanged: it is what tells the operator WHY the
+  // node is asking them to run a command line instead of just opening a browser.
+  it('the Session 0 fallback keeps its own sentence and its setup note (regression lock)', async () => {
+    const { cmds, sent } = harness({ config: kg, cdp: unreachable, launch: () => ({ ok: false }) });
+    await cmds.run({ ...self, body: '/chrome kg' });
+    expect(sent[0].text).toMatch(/I can't open it myself — I run as a service in another Windows session/);
+    expect(sent[0].text).toMatch(/register-chrome-task\.ps1/);
+    expect(sent[0].text).not.toMatch(/I tried to open one myself/);
+  });
+});
+
+// launchChromeDirect itself, against an injected spawn seam — chrome-launcher's real spawnChrome
+// is never called here, so nothing in this suite can put a window on anyone's desktop.
+describe('launchChromeDirect() — the Session 1 launcher', () => {
+  it('spawns through chrome-launcher with the port, the profile and the configured binary, and reports the pid', async () => {
+    const seen = [];
+    const spawn = async (o) => { seen.push(o); return { pid: 4242, command: 'chrome.exe --remote-debugging-port=9333' }; };
+    const r = await launchChromeDirect({ port: '9333', userDataDir: 'C:/x/brain', bin: 'C:/x/chrome.exe', spawn });
+    expect(r).toMatchObject({ ok: true, direct: true, pid: 4242 });
+    expect(seen[0]).toMatchObject({ port: '9333', userDataDir: 'C:/x/brain', bin: 'C:/x/chrome.exe' });
+    expect(typeof seen[0].onExit).toBe('function');   // supervision is wired, not optional
+  });
+
+  it('turns a spawn failure into the graceful-fallback shape, never a throw', async () => {
+    const logs = [];
+    const spawn = async () => { throw new Error('Chrome executable not found in standard locations'); };
+    const r = await launchChromeDirect({ port: '9221', userDataDir: 'C:/x/brain', spawn, onLog: (m) => logs.push(m) });
+    expect(r).toMatchObject({ ok: false, direct: true });
+    expect(r.detail).toMatch(/not found/);
+    expect(logs.join('\n')).toMatch(/direct launch failed/);
+  });
+
+  it('a spawn that starts nothing (no pid — a chrome.bin that is not there) is ok:false, not a 20-second wait', async () => {
+    const spawn = async () => ({ pid: undefined, command: 'C:/nope/chrome.exe --remote-debugging-port=9333' });
+    const r = await launchChromeDirect({ port: '9333', userDataDir: 'C:/x/brain', spawn });
+    expect(r).toMatchObject({ ok: false, direct: true });
+    expect(r.detail).toMatch(/nothing started/);
+  });
+
+  it('a browser that exits is REPORTED and never relaunched — supervision is observation, not ownership', async () => {
+    const logs = [];
+    let spawns = 0, onExit = null;
+    const spawn = async (o) => { spawns++; onExit = o.onExit; return { pid: 4242, command: 'chrome.exe' }; };
+    await launchChromeDirect({ port: '9333', userDataDir: 'C:/x/brain', spawn, onLog: (m) => logs.push(m) });
+    onExit({ code: 0, signal: null, error: null });
+    expect(logs.some((l) => /exited \(code 0\)/.test(l))).toBe(true);
+    expect(logs.some((l) => /nothing is being restarted/.test(l))).toBe(true);
+    expect(spawns).toBe(1);   // ← the assertion that matters: no restart policy grew in here
+  });
+
+  it('a browser that never starts arrives through the same callback (the child `error` path)', async () => {
+    const logs = [];
+    let onExit = null;
+    const spawn = async (o) => { onExit = o.onExit; return { pid: 4242, command: 'chrome.exe' }; };
+    await launchChromeDirect({ port: '9333', userDataDir: 'C:/x/brain', spawn, onLog: (m) => logs.push(m) });
+    onExit({ code: null, signal: null, error: new Error('spawn ENOENT') });
+    expect(logs.some((l) => /never started — spawn ENOENT/.test(l))).toBe(true);
+  });
+});
+
+// The CHOICE lives in boot.mjs and cannot be exercised here: driving the non-successor path for
+// real would fire `schtasks /run /tn egpt-chrome` at the operator's live desktop. So it is locked
+// at the source, the way this file already locks browseTab's eviction and the editor's `case`s.
+describe('boot picks the launcher by session (source lock — the negative path must never be run for real)', () => {
+  const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
+  const BOOT_SRC = readFileSync(join(REPO, 'src', 'spine', 'boot.mjs'), 'utf8');
+  const CMD_SRC = readFileSync(join(REPO, 'src', 'spine', 'commands.mjs'), 'utf8');
+  const injections = BOOT_SRC.split('\n').filter((l) => /launchChrome:/.test(l));
+
+  it('a Session 1 successor gets the direct launcher, from exactly one place', () => {
+    expect(injections).toHaveLength(1);
+    expect(injections[0]).toMatch(/\.\.\.\(session1 \?/);
+    expect(injections[0]).toMatch(/launchChromeDirectFn/);
+  });
+
+  it('a non-successor gets NO launch key at all, so commands.mjs\'s own default — the task hop — stands', () => {
+    expect(injections[0]).toMatch(/: \{\}\)/);   // the else branch is an EMPTY object, not a second launcher
+    expect(CMD_SRC).toContain('  launchChrome = defaultLaunchChromeTask,');
+  });
+
+  it('and the task hop is still in src/ — a Session 0 node has no other way onto a visible desktop', () => {
+    expect(CMD_SRC).toContain("spawnSync('schtasks', ['/run', '/tn', CHROME_LAUNCH_TASK]");
   });
 });
 

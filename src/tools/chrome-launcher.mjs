@@ -206,17 +206,34 @@ export function chromeCommandLine(exe, args) {
  * Spawn Chrome detached so it survives this Node process exiting.
  * Returns immediately — call waitForChromeReady() to know when CDP is up.
  *
- * NOTE: a spawned child inherits its parent's Windows session. The spine runs as
- * a service in Session 0, so it must NEVER call this — see src/spine/commands.mjs.
+ * WHICH SPINE MAY CALL THIS, and it is a question about WINDOWS SESSIONS: a child inherits its
+ * parent's session, so a Session 1 spine (the logon successor) puts the window on the operator's
+ * desktop and may call this freely, while a Session 0 spine would put it on a desktop nobody can
+ * look at. NOT because Session 0 cannot run a browser — it plainly can, measured on reve
+ * 2026-09-06: chrome.exe pid 2388 serving CDP on :9224, SessionId 0 — but because the operator
+ * cannot see it, click it, or answer a login prompt on it, and Chrome single-instances per
+ * --user-data-dir, so an unseen one holding the brain profile is one they then cannot open
+ * themselves. A Session 0 spine therefore hops through the `egpt-chrome` scheduled task instead.
+ * The whole decision lives in ONE place — boot.mjs's launchChrome injection, explained in the
+ * banner over the /chrome dispatch in src/spine/commands.mjs.
+ *
+ * DETACHED IS DELIBERATE, and it is what makes onExit OBSERVATION rather than ownership: the
+ * browser must outlive an /upgrade or a /restart (the spine bounces often — the operator's
+ * logged-in tabs must not go with it).
  *
  * @param {object} opts
  * @param {number} opts.port          - --remote-debugging-port (private, localhost-only)
  * @param {string} opts.userDataDir   - persistent profile directory
  * @param {string} [opts.extensionDir]- absolute path to unpacked extension (loaded via --load-extension)
  * @param {string} [opts.url]         - initial URL (default: about:blank)
+ * @param {string} [opts.bin]         - the Chrome binary to run (config `chrome.bin`); UNSET = findChromeExecutable()
+ * @param {function} [opts.onExit]    - ({ code, signal, error }) => void, fired when this Chrome ends
+ *   or never starts. Passing it ALSO installs the child's 'error' listener — a ChildProcess without
+ *   one turns a failed spawn into an UNCAUGHT exception, which in the spine's runtime path is a
+ *   crash. Callers that want that loud old behaviour simply omit it.
  */
-export async function spawnChrome({ port, userDataDir, extensionDir, url = 'about:blank' }) {
-  const chrome = findChromeExecutable();
+export async function spawnChrome({ port, userDataDir, extensionDir, url = 'about:blank', bin = null, onExit = null }) {
+  const chrome = bin || findChromeExecutable();
   if (!chrome) throw new Error('Chrome executable not found in standard locations');
   await mkdir(userDataDir, { recursive: true });
   const args = chromeArgs({ port, userDataDir, extensionDir, url });
@@ -225,6 +242,13 @@ export async function spawnChrome({ port, userDataDir, extensionDir, url = 'abou
     detached: true,
     stdio: 'ignore',
   });
+  if (onExit) {
+    // Both ends of "this Chrome is not running", through one callback: a spawn that never started
+    // (ENOENT on a configured chrome.bin) and a browser that has since exited. Wrapped, because a
+    // throwing supervisor must not become an unhandled rejection inside a child-process event.
+    child.on('error', (error) => { try { onExit({ code: null, signal: null, error }); } catch { /* supervisor's problem */ } });
+    child.on('exit', (code, signal) => { try { onExit({ code, signal, error: null }); } catch { /* supervisor's problem */ } });
+  }
   child.unref();
   // The exact Target the shell echoes on /chrome — exe + flags as spawned.
   const command = chromeCommandLine(chrome, args);

@@ -39,7 +39,7 @@ import { NODE_FILE, REGISTRY_FILE, parseEntityConfig } from './config-resolver.m
 import { CONFIG_YAML_PATH, writeConfigKey } from '../tools/config-io.mjs';
 import { resolveConfigKey } from '../../config/config-schema.mjs';
 import { isRunning as cdpIsRunning, listTabs as cdpListTabs, cdpHost as cdpHostOf, openTab as cdpOpenTab, activateTarget as cdpActivateTarget, closeTab as cdpCloseTab } from '../tools/cdp.mjs';
-import { findChromeExecutable, chromeArgs, chromeCommandLine, resolveBrainProfile } from '../tools/chrome-launcher.mjs';
+import { findChromeExecutable, chromeArgs, chromeCommandLine, resolveBrainProfile, spawnChrome } from '../tools/chrome-launcher.mjs';
 import { helpText } from '../interpreter.mjs';
 import { uploadNote, radioNoteFilename, pickSpeaker } from '../radio-relay.mjs';
 import { stripNodeSignature, stripRenderedNodeSignature } from '../node-signature.mjs';
@@ -54,9 +54,10 @@ import { readRoomConfig } from '../rooms-file.mjs';
 // own root. See src/tools/chrome-launcher.mjs.
 export const CHROME_BRAIN_PROFILE = resolveBrainProfile();
 
-// The Session-1 launch task /chrome fires to open Chrome on the operator's desktop (see the
-// chrome() dispatch for the session-hop rationale). setup/register-chrome-task.ps1 registers
-// it; the Session-0 spine triggers it with `schtasks /run /tn egpt-chrome`.
+// The scheduled task a SESSION 0 spine fires to put Chrome on the operator's visible desktop (see
+// the banner over the chrome() dispatch for which spine takes which path, and why).
+// setup/register-chrome-task.ps1 registers it; the Session-0 spine triggers it with
+// `schtasks /run /tn egpt-chrome`.
 export const CHROME_LAUNCH_TASK = 'egpt-chrome';
 const CHROME_LAUNCH_TIMEOUT_MS = 20000;   // how long to wait for a cold Chrome to bind its CDP port
 const CHROME_LAUNCH_POLL_MS = 500;
@@ -64,11 +65,83 @@ const CHROME_LAUNCH_POLL_MS = 500;
 // Default launch seam: fire the scheduled task and report whether schtasks accepted it. A
 // non-zero exit (the task isn't registered) or a spawn error both surface as { ok: false },
 // which drives /chrome's graceful fallback. Tests inject a fake so no real schtasks runs.
+// It IGNORES its arguments, and that is not sloppiness — it is the seam's defining limitation:
+// the task's command line was frozen when the task was registered (port 9221 and one profile),
+// so a port or a profile handed in here has nowhere to go. Half of why chunk 6 exists.
 function defaultLaunchChromeTask() {
   try {
     const r = spawnSync('schtasks', ['/run', '/tn', CHROME_LAUNCH_TASK], { windowsHide: true });
     return { ok: r.status === 0 };
   } catch { return { ok: false }; }
+}
+
+// The CDP port out of the host this node will ATTACH to — ONE formula, shared by the launch hint
+// and the direct launcher, so "launch on the port I will attach to" can never become two answers.
+const chromePortOf = (host) => String(host).split(':')[1] ?? '9221';
+
+// The --user-data-dir a launch should use: config `chrome.profile_dir` when the operator set one,
+// else the discovered brain profile. CONFIGURATION BEATS DISCOVERY, and the schema says why in its
+// own words — profile_dir names "a REAL, already-logged-in profile kept for the purpose", and it is
+// the same path a being is TOLD to drive CDP on (30-pointers.md). A spine that launched Chrome into
+// some other directory would hand its beings a browser logged in to nothing they were promised.
+// resolveBrainProfile() is the fallback precisely because it is a HEURISTIC: it scans for a profile
+// that has been used on an AI site. Unset ⇒ CHROME_BRAIN_PROFILE ⇒ byte-identical to before.
+const chromeProfileOf = (c) => c?.chrome?.profile_dir || CHROME_BRAIN_PROFILE;
+// The executable: config `chrome.bin`, else null — which lets chrome-launcher run its own
+// per-platform CHROME_PATHS search. Never a second locator here.
+const chromeBinOf = (c) => c?.chrome?.bin || null;
+
+/**
+ * THE SESSION 1 LAUNCH SEAM: spawn Chrome as an ordinary child of this spine. boot.mjs injects it
+ * over `launchChrome` for a Session 1 successor and for nobody else (chunk 6,
+ * plans/2609061200-SESSION-0-TO-1-HANDOVER-PLAN.md); the banner over the chrome() dispatch carries
+ * the session argument.
+ *
+ * NOT A SECOND SPAWNER. The executable search, the flag set, the profile mkdir and the spawn itself
+ * are all chrome-launcher's spawnChrome — the very file chromeLaunchHint already renders its
+ * command line from, which is what keeps "what I would run" and "what I tell you to run" one thing.
+ * What this wrapper adds is the two things a scheduled task could never give: ARGUMENTS (a port and
+ * a profile resolved per call, instead of frozen at registration) and SUPERVISION.
+ *
+ * SUPERVISION IS OBSERVATION, NOT OWNERSHIP — a decision, not an omission. The spine now learns
+ * three facts `schtasks /run` cannot return: that the spawn was accepted, and the pid; that CDP
+ * came up on the port it will attach to (chromeReport's existing poll); and that the browser died,
+ * at the moment it died. It does NOT restart it. The ordinary reason a browser exits is that the
+ * operator closed it, and relaunching would be arguing with them; /chrome is already the relaunch
+ * verb, one word long and idempotent (isRunning() is the launch decision). A restart POLICY — how
+ * many, how fast, whether a crash-looping Chrome is retried at all — is a ruling nobody has made,
+ * and inventing one would put an unattended respawn loop in the runtime path.
+ *
+ * Returns the seam's shape, WIDENED but compatible: `ok` is all /chrome's fallback reads, and
+ * `direct` / `pid` / `detail` are additive. The task hop returns none of them, so its path — every
+ * node in Session 0, and every injected fake in the suite — is untouched.
+ */
+export async function launchChromeDirect({ port, userDataDir, bin = null, spawn: spawnFn = spawnChrome, onLog = () => {} } = {}) {
+  try {
+    const { pid, command } = await spawnFn({
+      port,
+      userDataDir,
+      bin,
+      // The death notice. Logged, never acted on — see SUPERVISION above.
+      onExit: ({ code, signal, error }) => onLog(error
+        ? `the browser this spine launched on :${port} never started — ${error?.message ?? error}`
+        : `the browser this spine launched on :${port} exited (${signal ? `signal ${signal}` : `code ${code}`}) — nothing is being restarted; /chrome launches another`),
+    });
+    // NO PID MEANS NOTHING STARTED — Node sets pid synchronously on a successful spawn and leaves
+    // it undefined when the spawn failed (a chrome.bin that is not there). Reporting ok:true here
+    // would make /chrome sit out the whole CDP timeout and then blame the PORT instead of the
+    // binary. The child's 'error' event still arrives through onExit a tick later.
+    if (!pid) return { ok: false, direct: true, detail: `nothing started — the spawn returned no pid for ${command}` };
+    onLog(`launched pid ${pid} on :${port} — ${command}`);
+    return { ok: true, direct: true, pid, detail: command };
+  } catch (e) {
+    // The same graceful shape the task hop uses for "not registered": /chrome degrades to the hint.
+    // `direct` still true — the hint needs to know WHICH seam failed so it does not tell a Session 1
+    // operator to go register a scheduled task that would not help them.
+    const detail = String(e?.message ?? e);
+    onLog(`direct launch failed — ${detail}`);
+    return { ok: false, direct: true, detail };
+  }
 }
 
 // A fresh room's config.yaml — a commented placeholder (like the seeded templates,
@@ -387,13 +460,18 @@ export function createCommands({
   // whose stored id is the only thing on disk about it. Same degrade convention as
   // resolveChatId: absent (or throwing) simply makes those two messages shorter.
   listChats = null,
-  // Launch seam for /chrome — fires the Session-1 `egpt-chrome` scheduled task (default:
-  // `schtasks /run /tn egpt-chrome`, see defaultLaunchChromeTask). Returns { ok } — false
-  // when the task isn't registered (schtasks non-zero) or the spawn errored. Tests inject a
-  // fake so no real schtasks runs. This is NOT a direct spawn: a Chrome the spine spawned
-  // itself would render on its own Session 0 (see the chrome() dispatch); the task hops to
-  // the operator's Session 1 instead, which is the whole point.
-  launchChromeTask = defaultLaunchChromeTask,
+  // THE LAUNCH SEAM for /chrome, and WHICH ONE a spine gets is decided by its Windows session —
+  // in boot.mjs, once, never here (see the banner over the chrome() dispatch). The DEFAULT is the
+  // Session 0 task hop: `schtasks /run /tn egpt-chrome`, defaultLaunchChromeTask. A SESSION 1
+  // successor gets launchChromeDirect instead, which spawns Chrome as an ordinary child.
+  // Called with { port, userDataDir, bin } — the task hop ignores all three because its command
+  // line was frozen when the task was registered, which is exactly the limitation the direct
+  // launcher exists to lift. Returns { ok } — false when the task isn't registered (schtasks
+  // non-zero), when the spawn errored, or when the direct launcher could not start a browser —
+  // and that false is what drives /chrome's graceful fallback to the hint. MAY BE ASYNC: the call
+  // site awaits, so a synchronous { ok } (the task hop, and every fake in the suite) is unchanged.
+  // Tests inject a fake, so no test ever runs schtasks or spawns a real browser.
+  launchChrome = defaultLaunchChromeTask,
   // Clock seam for /chrome's post-launch CDP poll — real timers by default; tests inject an
   // advancing fake clock so the ~20s wait is instant and deterministic.
   now = () => Date.now(),
@@ -867,25 +945,46 @@ export function createCommands({
   // /chrome [<node>] — Chrome status from the addressed node; LAUNCHES one when none
   // is listening, then attaches.
   //
-  // ⚠️ THE SPINE STILL MUST NOT SPAWN CHROME DIRECTLY. DO NOT REPLACE THE TASK HOP
-  //    BELOW WITH A bare spawn()/spawnChrome(). ⚠️
+  // ⚠️ WHICH SPINE MAY SPAWN CHROME DIRECTLY IS DECIDED BY ITS WINDOWS SESSION, AND THE
+  //    DECISION IS MADE ONCE IN boot.mjs — NOT HERE. A SESSION 1 SPINE SPAWNS. A SESSION 0
+  //    SPINE HOPS THROUGH THE SCHEDULED TASK. DO NOT COLLAPSE THE TWO INTO EITHER ONE. ⚠️
   //
-  // The spine runs as a Windows SERVICE, which means Session 0. The operator's desktop
-  // is Session 1. (Verified live 2026-07-15: spine pid 19696 SessionId 0, explorer.exe
-  // SessionId 1.) A child process INHERITS its parent's session, so a Chrome the spine
-  // spawned itself would render on Session 0's isolated, headless-in-practice desktop —
-  // the operator would never see the window, and the only symptom would be a browser
-  // that "starts" and is invisible.
+  // WHAT SESSION 0 ACTUALLY COSTS — corrected 2026-09-06, because the note that stood here
+  // overstated it and the overstatement is worth naming. Session 0 isolation removed the ability
+  // to SEE a service's windows. It never removed the ability to RUN there: Session 0 has a window
+  // station, a desktop and a compositor, so a browser started in it launches, renders and serves
+  // CDP perfectly well. MEASURED ON reve THAT DAY, read-only, off the listening ports:
+  // chrome.exe pid 2388 answering CDP on :9224 — SessionId 0 — beside two Chromium-based Beeper
+  // Desktops on :9223 / :9225, all three in Session 0. setup/install-beeper-s0-service.ps1 has
+  // said so in its own header all along, and those Session 0 Desktops are the feature built on it.
   //
-  // The HOP around that is a scheduled task registered with LogonType Interactive: it runs
-  // in the operator's Session 1, and the Session-0 spine triggers it with `schtasks /run /tn
-  // egpt-chrome` (the injected launchChromeTask seam). This is exactly the proven pattern of
-  // the egpt-lock-on-logon task (rundll32 LockWorkStation, Interactive) fired from Session 0.
-  // setup/register-chrome-task.ps1 registers it once per node; until then the launch seam
-  // reports { ok:false } and /chrome falls back to handing over the command line, as before.
+  // So the reason a Session 0 spine does not spawn its own browser is not CAPABILITY, it is
+  // VISIBILITY AND INTERACTION. A child inherits its parent's session (verified live 2026-07-15:
+  // spine pid 19696 SessionId 0, explorer.exe SessionId 1), so a Chrome that spine started would
+  // render on a desktop nobody can look at: the operator cannot see it, cannot click it, and
+  // cannot answer the login prompt it puts up — and since Chrome single-instances per
+  // --user-data-dir, an unseen one squatting the brain profile is also a browser the operator can
+  // no longer open in their own session. /chrome exists to give the OPERATOR a browser, so on that
+  // spine the launch has to LEAVE the session: a scheduled task registered with LogonType
+  // Interactive runs in Session 1, and `schtasks /run /tn egpt-chrome` fires it (the seam's
+  // default, defaultLaunchChromeTask) — the same proven pattern as the egpt-lock-on-logon task.
+  // setup/register-chrome-task.ps1 registers it once per node; until then the seam reports
+  // { ok:false } and /chrome falls back to handing over the command line, as before. (A browser
+  // deliberately driven in Session 0 with nobody watching is a DIFFERENT feature, and it does not
+  // come in through /chrome.)
   //
-  // ATTACHING is fine across sessions: CDP is plain localhost HTTP, and the session boundary
-  // isolates window stations/desktops, not the loopback network. This is exactly how the
+  // A SESSION 1 SPINE IS ALREADY ON THE OPERATOR'S DESKTOP, so for it the hop buys nothing and
+  // costs everything the plan lists: `schtasks /run` is fire-and-forget, takes NO ARGUMENTS (the
+  // task's command line was frozen at registration — port 9221 and one profile), and returns
+  // nothing but "accepted", so the spine can never learn whether the browser came up, on which
+  // port, or that it died. It spawns instead, through the ONE launcher (chrome-launcher's
+  // spawnChrome — the same file the hint below renders its command line from), with the port it
+  // will attach to and the profile config names, and it watches the child. boot.mjs makes that
+  // swap for EGPT_SESSION1=1 alone, by overriding the launchChrome seam; every other node keeps
+  // the default, and this dispatch does not branch at all.
+  //
+  // ATTACHING is fine across sessions either way: CDP is plain localhost HTTP, and the session
+  // boundary isolates window stations/desktops, not the loopback network. This is exactly how the
   // bridge already reaches Beeper Desktop at 127.0.0.1:23373 from Session 0.
   //
   // NODE GATE: `<node>` is matched against this node's own names (node_name ∪ node_alias,
@@ -903,9 +1002,10 @@ export function createCommands({
   }
 
   // The report body. Every probe is wrapped: an unreachable Chrome is the NORMAL resting
-  // state, not an error. When none is listening we fire the Session-1 launch task and poll
-  // CDP until it comes up, then attach; a task that isn't registered, or a Chrome that never
-  // binds its port, degrades to the launch hint. Never throws.
+  // state, not an error. When none is listening we fire the launch seam — the Session 0 task hop
+  // or a Session 1 spine's direct spawn, whichever boot injected — and poll CDP until it comes up,
+  // then attach; a task that isn't registered, a direct launch that failed, or a Chrome that never
+  // binds its port all degrade to the launch hint. Never throws.
   async function chromeReport() {
     let host = '?';
     try { host = await cdp.cdpHost(); } catch { host = '?'; }
@@ -914,14 +1014,30 @@ export function createCommands({
     let running = false;
     try { running = await cdp.isRunning(); } catch { running = false; }
 
-    // Not listening → fire the Session-1 launch task, then poll for it to bind its CDP port.
-    // A task that isn't registered (launch seam → { ok:false }) or a Chrome that never comes
-    // up within the timeout both fall back to the hint + a one-line setup note.
+    // Not listening → fire the launch seam, then poll for it to bind its CDP port. THE ARGUMENTS
+    // ARE THE POINT of the Session 1 path: the port is the one this node will ATTACH to (never the
+    // task's frozen 9221) and the profile is the one config names, so the browser that comes up is
+    // the browser /chrome then talks to. The task hop ignores both, exactly as it always has.
+    // A seam that reports { ok:false }, or a Chrome that never comes up within the timeout, both
+    // fall back to the hint.
+    let launchedPid = null;
     if (!running) {
-      let ok = false;
-      try { ok = !!launchChromeTask()?.ok; } catch { ok = false; }
+      let ok = false, direct = false, why = '';
+      try {
+        const r = await launchChrome({ port: chromePortOf(host), userDataDir: chromeProfileOf(cfg()), bin: chromeBinOf(cfg()) });
+        ok = !!r?.ok;
+        direct = !!r?.direct;          // which seam answered — the hint's remedy differs (below)
+        launchedPid = r?.pid ?? null;
+        if (!ok) why = r?.detail ?? '';
+      } catch { ok = false; }
       if (ok) running = await waitForChromeUp();
-      if (!running) return chromeLaunchHint(host, { setupNote: true });
+      if (!running) return chromeLaunchHint(host, {
+        // The setup note tells the operator to register the scheduled task. That is the remedy on
+        // the Session 0 path and NOT on the Session 1 one, where this spine tried to spawn the
+        // browser itself — so a direct failure reports what it tried instead of misdirecting.
+        setupNote: !direct,
+        tried: direct ? (why || `it never bound :${chromePortOf(host)} within ${Math.round(CHROME_LAUNCH_TIMEOUT_MS / 1000)}s`) : null,
+      });
     }
 
     // Reachable (already, or after a successful launch) → attach + report tabs. A tab-list
@@ -930,7 +1046,11 @@ export function createCommands({
     try { tabs = await cdp.listTabs(); } catch { tabs = null; }
     if (!tabs) return chromeLaunchHint(host);
 
-    const lines = [`attached: ${host}`, `tabs: ${tabs.length}`];
+    const lines = [`attached: ${host}`];
+    // The pid is the one fact `schtasks /run` could never hand back, so when this spine launched
+    // the browser itself it says so. The task hop returns no pid, so its report is unchanged.
+    if (launchedPid) lines.push(`launched: pid ${launchedPid}`);
+    lines.push(`tabs: ${tabs.length}`);
     // A few tabs only, each truncated — this lands in a chat, not a terminal.
     for (const t of tabs.slice(0, CHROME_TAB_LIMIT)) {
       lines.push(`  · ${trunc(t?.title ?? '(untitled)', 48)}`);
@@ -959,14 +1079,18 @@ export function createCommands({
   // drift from what the repo would actually spawn; the port is derived from the CDP host the
   // node will attach to, so the two always agree. `setupNote` appends the one-liner to enable
   // one-command launch (registering the Session-1 task) — shown only on the launch-fallback
-  // paths, not when Chrome is up but tab-listing hiccupped.
-  function chromeLaunchHint(host, { setupNote = false } = {}) {
-    const port = String(host).split(':')[1] ?? '9221';
+  // paths, not when Chrome is up but tab-listing hiccupped. `tried` replaces the "I can't open
+  // it myself" line on a SESSION 1 spine, which can and did try: saying it cannot would be a lie,
+  // and it is the one sentence in this reply an operator acts on.
+  function chromeLaunchHint(host, { setupNote = false, tried = null } = {}) {
+    const port = chromePortOf(host);
     const exe = findChromeExecutable() ?? 'chrome';
     const args = chromeArgs({ port, userDataDir: CHROME_BRAIN_PROFILE });
     const lines = [
       `no Chrome is listening on ${host}.`,
-      `I can't open it myself — I run as a service in another Windows session, so any Chrome I start would be invisible to you.`,
+      tried
+        ? `I tried to open one myself and it didn't come up — ${tried}.`
+        : `I can't open it myself — I run as a service in another Windows session, so any Chrome I start would be invisible to you.`,
       `Run this in your own session and I'll attach:`,
       '```\n' + chromeCommandLine(exe, args) + '\n```',
     ];

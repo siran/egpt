@@ -13,7 +13,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { resolveBrainProfile, chromeArgs } from '../src/tools/chrome-launcher.mjs';
+import { resolveBrainProfile, chromeArgs, spawnChrome } from '../src/tools/chrome-launcher.mjs';
 
 // Build a Chrome-shaped profile at `dir`. A REAL profile needs Default/Preferences OR
 // Default/Network/Cookies; `history`/`cookies` (when non-null) seed the AI-marker files.
@@ -125,5 +125,27 @@ describe('chromeArgs() without an extension', () => {
     const args = chromeArgs({ port: 9221, userDataDir: 'C:\\x\\brain' });
     expect(args.some((a) => a.startsWith('--load-extension'))).toBe(false);
     expect(args).toContain('--user-data-dir=C:\\x\\brain');
+  });
+});
+
+// spawnChrome's two options added for the Session 1 direct launch (chunk 6,
+// plans/2609061200-SESSION-0-TO-1-HANDOVER-PLAN.md): the CONFIGURED binary (config `chrome.bin`)
+// and the supervision callback.
+//
+// SAFE BY CONSTRUCTION, and that is the whole reason this shape was chosen: `bin` points at a path
+// that does not exist, so the operating system starts NOTHING — no browser, no window, no CDP port.
+// What the test observes is the ENOENT arriving through onExit, which is exactly the case that
+// matters: a ChildProcess with no 'error' listener turns that failure into an UNCAUGHT exception,
+// and the spine is the process that would take.
+describe('spawnChrome({ bin, onExit })', () => {
+  it('runs the CONFIGURED binary, and hands a failed spawn to onExit instead of throwing', async () => {
+    const missing = join(root, 'no-such-chrome.exe');
+    const seen = [];
+    const out = await spawnChrome({ port: 9333, userDataDir: join(root, 'profile'), bin: missing, onExit: (e) => seen.push(e) });
+    expect(out.command).toContain(missing);   // the configured binary — not one findChromeExecutable found
+    expect(out.pid).toBeUndefined();          // nothing started, which is what launchChromeDirect reads
+    await new Promise((r) => setTimeout(r, 250));   // the child's 'error' event is asynchronous
+    expect(seen).toHaveLength(1);
+    expect(`${seen[0].error?.code ?? ''} ${seen[0].error?.message ?? ''}`).toMatch(/ENOENT/);
   });
 });
