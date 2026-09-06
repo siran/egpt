@@ -19,7 +19,7 @@ import { createShellPort, shellPortFrom } from '../bridges/shell-port.mjs';
 import { shellTokenFrom } from '../shell/auth.mjs';
 // THE MOUTH LINK (operator 2026-09-05): the peer spine holding the OTHER Beeper account, the
 // receiving half this node offers on its own console, and the speaking half the reply path uses.
-import { peerSpineFrom, createMouthReceiver, speakThroughPeer } from '../shell/peer-mouth.mjs';
+import { peerSpineFrom, createMouthReceiver, speakThroughPeer, startPeerStream } from '../shell/peer-mouth.mjs';
 import { createWarmPool } from '../warm-sessions.mjs';
 import { createBrainSession } from '../brain-session.mjs';
 import { createSandboxCliSession } from '../sandbox-cli-session.mjs';
@@ -212,6 +212,8 @@ export function makeShellAwareBridge(bridge, shellPort) {
 // `route(chatId)` answers "should the PEER say this reply?" and, when it should, hands back the
 // RAW chat payload the cross-account key is computed from (never a chatId: the two accounts see
 // one real group as two different Matrix rooms and nothing in the payloads is shared).
+// `startStream(chat, init, { fallback })` then opens the reply there — the placeholder, its
+// in-place edits and its settled text, all on the other account (src/shell/peer-mouth.mjs).
 //
 // WHICH OF THE TWO IDENTITIES IS THE PEER'S is not configured and does not need to be: it is
 // whichever one is IN THIS ACCOUNT'S OWN ROSTER. An account's own entry in its own roster carries
@@ -230,7 +232,7 @@ export function makeShellAwareBridge(bridge, shellPort) {
 // THE CONSOLE IS NEVER ROUTED. A shell/room chat id is not a Beeper chat, so asking Beeper about
 // its roster is a wasted (and failing) GET on every reply typed at the editor. `owns` is the SAME
 // ownership signal the shell-aware bridge already routes outbound on — no second rule.
-export function makePeerMouth({ peer, bridge, owns = () => false, speak = speakThroughPeer, onLog = () => {} } = {}) {
+export function makePeerMouth({ peer, bridge, owns = () => false, speak = speakThroughPeer, stream = startPeerStream, onLog = () => {} } = {}) {
   if (!peer) return null;                     // no peer_spine ⇒ no mouth ⇒ createSender is handed none ⇒ nothing changes
   return {
     async route(chatId) {
@@ -248,7 +250,14 @@ export function makePeerMouth({ peer, bridge, owns = () => false, speak = speakT
       }
       return null;
     },
-    say(chat, text) { return speak({ peer, chat, text, onLog }); },
+    // THE REPLY THROUGH THE PEER, and the only way to make one: a stream object with the SAME
+    // surface a local one has, so the sender's whole decision is which factory to call
+    // (src/spine/sender.mjs). `fallback` is the sender's own local stream factory — the last of
+    // the three tiers startPeerStream walks — handed in rather than built here because only the
+    // sender knows the chat, the tag and the placeholder text. `speak` is the SECOND tier, the
+    // finished-line path this file used to expose separately as say(): it is not a different
+    // feature, it is what a reply train degrades INTO, so it is injected here and nowhere else.
+    startStream(chat, init, { fallback = null } = {}) { return stream({ peer, chat, init, fallback, say: speak, onLog }); },
   };
 }
 
@@ -1404,6 +1413,11 @@ export async function boot({
   const mouthReceiver = peerSpine ? createMouthReceiver({
     listChats: (o) => bridge.listChatsRaw(o),
     post: (chatId, text) => bridge.postVerbatim(chatId, text),
+    // THE REPLY TRAIN's target on this account: the UNWRAPPED stream, for exactly the reason
+    // postVerbatim above is unwrapped — every frame of it was written and signed by the peer.
+    // Lasso-gated like any other stream this node opens (one 'message' for the placeholder, the
+    // edits on the 'edit' budget), because `bridge` here is the wrapped port.
+    startStream: (chatId, init) => bridge.startStreamVerbatim(chatId, init),
     accounts: peerSpine.accounts,
     onLog: mouthLog,
   }) : null;

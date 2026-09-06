@@ -86,9 +86,9 @@ export const RETAINED_SEAM = '\n\n— ↓ reply —\n\n';
 // THE DECISION IS MADE HERE AND NOWHERE ELSE, because this is THE reply path: every persona reply
 // on every surface is opened by open() below. `peerMouth` is boot's injected pair — route(chatId)
 // answers "should the peer say this one?" (it does when the peer's account is a participant of
-// the chat) with the RAW chat payload the key is computed from, and say(chat, text) hands the
-// finished line over. ABSENT (the ordinary single-account node) ⇒ not one line of this runs and
-// the sender behaves byte-identically, which is the whole additivity requirement.
+// the chat) with the RAW chat payload the key is computed from, and startStream(chat, init, …)
+// opens the reply on that account. ABSENT (the ordinary single-account node) ⇒ not one line of
+// this runs and the sender behaves byte-identically, which is the whole additivity requirement.
 //
 // FALL BACK, NEVER GO SILENT — the INVERSE of the fail-closed rule the mouth's own refusals
 // follow, and the difference is worth stating. Refusing to POST INTO A CHAT is fail-closed
@@ -98,18 +98,26 @@ export const RETAINED_SEAM = '\n\n— ↓ reply —\n\n';
 // send-failed, a handler that threw — falls back to posting on THIS node's own account, loudly
 // logged. The transport reports every refusal back over the same socket for exactly this.
 //
-// STREAMING STAYS LOCAL — AND SO THE PLACEHOLDER IS NOT OPENED AT ALL ON A PEER-ROUTED REPLY.
-// The link carries a FINISHED line and nothing else (relaying the "⏳ Thinking…" placeholder and
-// its in-place edits means relaying a message IDENTITY across two accounts — mouth.mjs says why
-// that is out of scope). The placeholder is therefore not something to route: it is something to
-// SUPPRESS, because opening it locally would stream the whole answer on the primary's account and
-// then say it again on the secondary's. So when a peer is configured the local stream is opened
-// LAZILY — the moment the route says "local", which is a cached membership read and normally
-// lands before the first token — and on a peer route it is never opened, so nothing is posted on
-// this account at all. On a fallback the accumulated text is still whole (absorb() has been
-// running throughout) and goes out as one fresh local post, which is what the no-stream branch of
-// finish() has always done. THE SEAM, stated plainly: a node with a peer trades an instant "⏳"
-// ack for a silent moment while membership resolves; a node without one is untouched.
+// THE TRAIN GOES WHEREVER THE MOUTH IS (operator 2026-09-05, "it's working, but please let's
+// recover the thinking train"). The first cut of the link carried a FINISHED line and nothing
+// else, so a peer-routed reply had no placeholder at all: silence, then the whole answer at once,
+// while a local one shows "⏳ Thinking…" immediately and edits it in place as the tokens land.
+// The link carries the train now — src/shell/peer-mouth.mjs startPeerStream — and it does so
+// WITHOUT any message identity crossing the wire: the receiver keeps the live stream object and
+// hands back an opaque id of its own (src/shell/mouth.mjs).
+//
+// WHICH IS WHY THE ONLY THING THE ROUTE DECIDES HERE IS WHICH FACTORY MINTS THE STREAM. A peer
+// stream implements the SAME surface a local one does — update / awaited finish / delivered /
+// confirmedId — so everything past that line is the code this file already had, the §7 fallback
+// included: `delivered === false` means "it was not said", whether the stream was this account's
+// or the peer's, and it has always meant "send it fresh here". There is no second finish path.
+//
+// THE STREAM IS STILL OPENED LAZILY on a peer-configured node, because the route has to settle
+// before there is a factory to choose — a cached membership read, normally landing before the
+// first token. What changed is what happens when it says "peer": the placeholder used to be
+// SUPPRESSED (nothing was posted anywhere until the answer was finished) and is now OPENED ON THE
+// PEER'S ACCOUNT. THE SEAM, stated plainly: a node with a peer pays the membership read plus one
+// loopback hop before its "⏳" appears; a node without one is untouched.
 //
 // bridgeOf (operator 2026-08-30, multi-connection Beeper): OPTIONAL (being) => Bridge, resolved
 // PER open() CALL (open() already receives `being`) — a node wired to more than one Beeper
@@ -180,28 +188,39 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
         tail = t;
         return shown();
       };
-      // THE LOCAL PLACEHOLDER, opened once. With NO peer this runs on the next line, at the exact
-      // moment it always has, with `shown()` still empty — so the call is byte-identical to the
-      // one that used to sit here. With a peer it waits for the route: on "local" it opens then
-      // (replaying whatever streamed in the meantime, so nothing a human should have seen is
-      // lost), on "peer" it is never called and this account posts nothing at all.
+      // THE PLACEHOLDER, opened once. With NO peer this runs on the next line, at the exact moment
+      // it always has, with `shown()` still empty — so the call is byte-identical to the one that
+      // used to sit here. With a peer it waits for the route and then opens on whichever account
+      // is going to say this reply, replaying whatever streamed in the meantime so nothing a human
+      // should have seen is lost.
       let activated = false;
       let stream = null;
-      let localOpened = false;
-      const openLocal = () => {
-        if (localOpened) return stream;
-        localOpened = true;
-        stream = bridgeForThisBeing.startStream?.(chatId, (queued && !activated) ? QUEUED(queuedAhead) : THINKING, { ...tag, persona: being });
+      let streamOpened = false;
+      // The text the placeholder opens with. A QUEUED one differs from THINKING and, via `ahead`,
+      // from every other queued one, which is what keeps two coexisting placeholders resolvable to
+      // their own message ids (see QUEUED).
+      const placeholderText = () => ((queued && !activated) ? QUEUED(queuedAhead) : THINKING);
+      // THIS ACCOUNT'S OWN STREAM — and also the LAST RESORT the peer stream falls back to when it
+      // can neither stream nor speak through the peer (peer-mouth.startPeerStream, tier 3), which
+      // is why it is a factory rather than an inline call: only this file knows the chat, the tag
+      // and the placeholder, so it is this file that hands the fallback over.
+      const openLocalStream = () => bridgeForThisBeing.startStream?.(chatId, placeholderText(), { ...tag, persona: being });
+      // THE ONE DECISION (header): which factory mints the stream. Both hand back the same surface,
+      // so nothing below this line knows or cares which mouth it is driving.
+      const openStream = (peerChat = null) => {
+        if (streamOpened) return stream;
+        streamOpened = true;
+        stream = peerChat ? peerMouth.startStream(peerChat, placeholderText(), { fallback: openLocalStream }) : openLocalStream();
         const already = shown();
         if (already) stream?.update?.(`${already} ${LIVE_FRAME_MARK}`);
         return stream;
       };
-      if (!route) openLocal();
+      if (!route) openStream();
       // …and a placeholder that cannot be opened is LOGGED, never an unhandled rejection: on the
       // no-peer path a throwing startStream propagates out of open() as it always has, but on this
       // path there is no caller left to catch it. finish() then finds no stream and posts the
       // reply fresh, which is the branch it already has for a bridge with no streaming at all.
-      else route.then((peerChat) => { if (!peerChat) openLocal(); }).catch((e) => onLog(`mouth: could not open the local placeholder in ${chatId} — the reply will be posted whole: ${e?.message ?? e}`));
+      else route.then((peerChat) => openStream(peerChat)).catch((e) => onLog(`mouth: could not open the placeholder for ${chatId} — the reply will be posted whole: ${e?.message ?? e}`));
       // fallbackResult (operator 2026-08-10, voice-reply-as-a-reply-to-the-text chunk): set
       // ONLY when the §7 fallback below fires (a FRESH send, not an edit-in-place) — its own
       // confirmedId then supersedes the stream's, which never delivered.
@@ -223,9 +242,10 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
         // both resolve byte-identically to before.
         async finish(reply, { surface = true, commands = null } = {}) {
           // Settle the mouth decision before anything is written anywhere. With no peer this is
-          // null and costs nothing; with one, the `route.then` above has already opened the local
-          // stream by the time this resolves (microtask order), so every branch below sees the
-          // same `stream` it always did on a local route.
+          // null and costs nothing; with one, the `route.then` above has already opened the stream
+          // by the time this resolves (microtask order), so every branch below sees the same
+          // `stream` it always did. Still read here for the withheld branch, which may be reached
+          // before any token arrived and therefore before anything opened it.
           const peerChat = route ? await route : null;
           const t = textOf(reply);
           // Gate-withheld ('on'-mode silence / not surfaced). NOTHING IS EVER
@@ -234,12 +254,13 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
           // "A polite silence is '...' or '…'" — so the withheld turn reads as
           // a deliberate silence rather than a message that disappeared.
           if (!surface) {
-            // A WITHHELD TURN RESOLVES ON THIS NODE'S OWN ACCOUNT, never through the peer. The
-            // link carries REPLIES; a gate-withheld turn has none — what is left is a placeholder
-            // that must not be left stuck (operator 2026-08-24, "nothing is ever deleted"), and
-            // that placeholder is this account's. So open it if the route suppressed it and
-            // resolve it exactly as this branch always has.
-            openLocal();
+            // A WITHHELD TURN RESOLVES THE PLACEHOLDER IT ACTUALLY OPENED — which, on a peer
+            // route, is the one on the peer's account. The rule this branch exists for is that a
+            // placeholder must never be left stuck (operator 2026-08-24, "nothing is ever
+            // deleted"), and that rule follows the message, not the account. Idempotent: the
+            // stream is normally already open by now, and this only matters when the turn was
+            // withheld before the route settled.
+            openStream(peerChat);
             // A LIMB-ONLY turn says what it is DOING, never that it heard nothing (commandMark).
             if (commands?.length) { if (stream) await stream.finish?.(absorb(commandMark(commands))); return; }
             // The model's own words if it produced any (its '…' is ITS silence);
@@ -264,16 +285,13 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
           // marker (a turn meant to reply that produced nothing is resolved VISIBLY,
           // not silently deleted / left stuck).
           const body = absorb(t.trim() ? t : noReplyMark());
-          // THE MOUTH. The finished line goes to the peer, which says it on the other account and
-          // answers ok/refusal on the same socket. Anything short of ok — including a `say` that
-          // threw, which no transport failure should ever be able to do but a wiring fault could
-          // — falls through to the local post below, loudly. NEVER a silent drop: the log line
-          // names the reason so an operator reading the chat can see which mouth spoke and why.
-          if (peerChat) {
-            const r = await Promise.resolve().then(() => peerMouth.say(peerChat, body)).catch((e) => ({ ok: false, reason: 'send-failed', detail: e?.message ?? String(e) }));
-            if (r?.ok) { onLog(`mouth: the PEER said this reply (its chat ${r.chatId}) — nothing posted on this account`); return; }
-            onLog(`mouth: FALLING BACK TO THIS ACCOUNT — the peer did not say it (${r?.reason || 'no answer'}${r?.detail ? `: ${r.detail}` : ''}); posting the reply here instead`);
-          }
+          // AND THAT IS THE WHOLE MOUTH DECISION, spent. A peer stream settles the message the peer
+          // has been editing; a local one settles this account's. Either way `delivered` says
+          // whether it was said, and the §7 line below — unchanged, and the only fallback in this
+          // file — sends the reply fresh HERE when it was not. Every reason it might not have been
+          // (link dropped, peer refused, unknown verb, timeout, handler threw) is logged by name
+          // inside the stream that hit it, so an operator reading the chat can see which mouth
+          // spoke and why. NEVER a silent drop, and never a lost reply.
           if (stream) {
             await stream.finish?.(body);
             if (!stream.delivered) fallbackResult = await bridgeForThisBeing.send(chatId, body, tag);   // §7 fallback
@@ -283,11 +301,11 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
         },
         async fail() {                                 // visible failure: the message ends with ❌
           try {
-            if (route) await route;                    // …after the mouth decision, so a local route still EDITS its placeholder rather than posting a fresh ❌
-            // A peer-routed turn has no local placeholder to end (nothing was posted here), so
-            // the failure goes out as a fresh line ON THIS ACCOUNT — the no-stream branch, which
-            // is exactly right: the peer never got a finished reply to say, and a visible ❌ here
-            // beats a failure nobody sees.
+            if (route) await route;                    // …after the mouth decision, so the placeholder that was opened is the one this EDITS rather than posting a fresh ❌ beside it
+            // The failure ends the placeholder wherever it lives — the peer's account on a peer
+            // route, this one otherwise — because that is where a human is watching a "⏳" that
+            // must not be left thinking forever. Only a turn that never opened a stream at all
+            // (no streaming bridge) posts the ❌ fresh, which is the branch this always had.
             if (stream) await stream.finish?.(`${shown() ? `${shown()} ` : ''}${FAIL_SUFFIX}`);
             else await bridgeForThisBeing.send(chatId, FAIL_SUFFIX, tag);
           } catch { /* best effort */ }

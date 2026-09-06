@@ -384,6 +384,36 @@ describe('beeper-port adapter — layered signatures (bridge + agent wrap)', () 
     ]);
   });
 
+  // THE MOUTH'S STREAM (operator 2026-09-05, the reply train across the link) — postVerbatim's
+  // edit-in-place twin, unwrapped for exactly the same reason, and unmarked besides: the ⏳ on a
+  // peer-routed reply is stamped by the BRAIN's sender before the text reaches the wire, so a
+  // second one added here would double it. Every frame — placeholder, edits, settled answer — is
+  // the other node's bytes and nothing else.
+  it('startStreamVerbatim streams the bytes UNWRAPPED and UNMARKED — while startStream through the same port wraps every frame', async () => {
+    const { start, spy } = fakeStart();
+    const port = await createBeeperBridgePort({ bridgeSignatureOpen: '🌉', bridgeSignatureClose: '💸' }, { start });
+    const peer = port.startStreamVerbatim('!room', '⏳ Thinking…');
+    peer.update('🐶 egpt: half an ans ⏳');
+    await peer.finish('🌉 🐶 egpt: the whole answer 💸');
+    const mine = port.startStream('!room', '⏳ Thinking…', { bodyEmoji: '🐶', label: 'egpt' });
+    await mine.finish('the whole answer');
+
+    expect(spy.streams[0].init).toBe('⏳ Thinking…');            // no layers, no persona stamp
+    expect(spy.streams[0].opts).toEqual({ chatId: '!room' });    // and no replyTo/persona of ours
+    expect(spy.streams[0].updates).toEqual(['🐶 egpt: half an ans ⏳']);
+    expect(spy.streams[0].finals).toEqual(['🌉 🐶 egpt: the whole answer 💸']);
+    expect(peer.delivered).toBe(true);
+    // …beside this node's OWN stream through the same port, which wraps every frame as it always has.
+    expect(spy.streams[1].init).toBe('🌉 🐶 egpt: ⏳ Thinking… 💸');
+    expect(spy.streams[1].finals).toEqual(['🌉 🐶 egpt: the whole answer 💸']);
+  });
+
+  it('startStreamVerbatim answers null on a transport that cannot stream — the mouth then refuses with no-stream', async () => {
+    const start = async () => ({ async send() { return { ok: true }; }, isAlive: () => true, stop() {} });
+    const port = await createBeeperBridgePort({}, { start });
+    expect(port.startStreamVerbatim('!room', '⏳ Thinking…')).toBeNull();
+  });
+
   // THE RAW ROSTERS (operator 2026-09-05) — the two READS the mouth needs and the normalized
   // surface cannot give it: crossAccountChatKey reads `participants.items[]`, which listChats
   // normalizes away and chatInfo's cache has already reduced to keys. A bridge that has neither (a

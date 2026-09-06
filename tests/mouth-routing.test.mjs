@@ -106,15 +106,40 @@ function fakeBridge() {
   };
 }
 
-// The MOUTH seam at the sender's boundary: what boot's makePeerMouth hands createSender. `answer`
-// is what the peer says back — `{ ok: true, chatId }` or one of the documented refusals.
+// The MOUTH seam at the sender's boundary: what boot's makePeerMouth hands createSender.
+//
+// The stream it mints stands in for src/shell/peer-mouth.mjs startPeerStream and exposes exactly
+// the surface a LOCAL stream does — update / awaited finish / delivered / confirmedId — because
+// that is the property this whole file rests on: the sender's only decision is which factory it
+// calls, and everything past that line is the code it already had. `answer` is what the peer's
+// account managed to do with the reply: `{ ok: true, chatId }`, one of the documented refusals, or
+// a function that throws.
+//
+// WHAT THIS DOUBLE DELIBERATELY DOES NOT DO is fall back. The real stream walks three tiers before
+// it gives up (a finished line through the peer, then a local placeholder) and each of those is
+// locked in tests/peer-mouth.test.mjs, where the transport lives. Here a refusal is simply a
+// stream that reports `delivered === false`, which is the ONE thing the sender reads — so what the
+// cases below actually lock is that the sender's §7 fallback still puts the reply on this account.
 function fakeMouth({ route = async () => AS_PRIMARY, answer = { ok: true, chatId: SECONDARY_CHAT_ID } } = {}) {
-  const calls = { route: [], say: [] };
+  const calls = { route: [], streams: [] };
   return {
     calls,
     mouth: {
       async route(chatId) { calls.route.push(chatId); return route(chatId); },
-      async say(chat, text) { calls.say.push({ chat, text }); return typeof answer === 'function' ? answer() : answer; },
+      startStream(chat, init, opts = {}) {
+        const h = {
+          chat, init, opts, frames: [], finals: [], delivered: false, confirmedId: null,
+          update(t) { h.frames.push(t); },
+          async finish(t) {
+            h.finals.push(t);
+            const r = typeof answer === 'function' ? answer() : answer;
+            h.delivered = !!r?.ok;
+            h.lastError = r?.ok ? null : `${r?.reason ?? ''}${r?.detail ? `: ${r.detail}` : ''}`;
+          },
+        };
+        calls.streams.push(h);
+        return h;
+      },
     },
   };
 }
@@ -158,28 +183,78 @@ describe('no peer_spine — the reply posts locally and no peer is ever consulte
 
 // ── 2. THE PEER'S ACCOUNT IS IN THE CHAT: it says it, and this account says NOTHING ─────────────
 describe('peer configured and the peer account IS in the chat — the peer speaks, this node does not', () => {
-  it('hands the FINISHED text to the peer and posts nothing here: no placeholder, no edit, no send', async () => {
+  // ── THE REGRESSION LOCK (operator 2026-09-05, "let's recover the thinking train") ────────────
+  // This is the test that was missing. The link shipped carrying a FINISHED LINE ONLY, so a
+  // peer-routed reply showed the user nothing at all until the whole answer landed, while a local
+  // one puts "⏳ Thinking…" up immediately and edits it as the tokens arrive. Written against the
+  // finished-line sender it fails on its first assertion — there was no peer placeholder to find.
+  it('OPENS THE PLACEHOLDER ON THE PEER\'S ACCOUNT and edits it there — the thinking train, not silence', async () => {
     const { calls, mouth } = fakeMouth();
     const { bridge, sender } = senderWith(mouth);
     const out = sender.open(CHAT_ID, { being: 'e', replyTo: 'm1' });
+    await settled();                              // the route is a promise; the train opens the moment it says "peer"
+
+    // THE PLACEHOLDER IS UP, on the peer, before a single token — the whole point of the feature.
+    expect(calls.route).toEqual([CHAT_ID]);
+    expect(calls.streams).toHaveLength(1);
+    expect(calls.streams[0].chat).toBe(AS_PRIMARY);            // the RAW chat the cross-account key comes from
+    expect(calls.streams[0].init).toBe(`${LIVE_FRAME_MARK} Thinking…`);
+
+    // …and it is EDITED IN PLACE as the answer is written, exactly like a local train.
     out.update('Hol');
     out.update('Hola mun');
+    expect(calls.streams[0].frames).toEqual([`Hol ${LIVE_FRAME_MARK}`, `Hola mun ${LIVE_FRAME_MARK}`]);
     await out.finish({ text: 'Hola mundo' });
+    expect(calls.streams[0].finals).toEqual(['Hola mundo']);
 
-    expect(calls.route).toEqual([CHAT_ID]);
-    expect(calls.say).toEqual([{ chat: AS_PRIMARY, text: 'Hola mundo' }]);   // the FINAL text, and the RAW chat the key comes from
-    // NOTHING on this account — this is the whole point of the arrangement ("instead of writing
-    // in its beeper"). Not a placeholder that streamed the answer and then had to be explained
-    // away, not a duplicate: nothing.
+    // NOTHING on this account — still the whole point of the arrangement ("instead of writing in
+    // its beeper"). Not a second placeholder, not a duplicate: nothing.
     expect(bridge.streams).toHaveLength(0);
     expect(bridge.sent).toHaveLength(0);
   });
 
+  it('the placeholder does NOT wait for a token — an empty turn still shows the peer thinking', async () => {
+    // Latency is the point of the feature. The only thing between the inbound message and the
+    // peer's "⏳" is the membership read the route already did.
+    const { calls, mouth } = fakeMouth();
+    const { sender } = senderWith(mouth);
+    sender.open(CHAT_ID, { being: 'e' });
+    await settled();
+    expect(calls.streams).toHaveLength(1);
+    expect(calls.streams[0].frames).toEqual([]);
+  });
+
+  it('a QUEUED peer-routed reply opens QUEUED on the peer and flips to the live train on its turn', async () => {
+    // The queued placeholder's DISTINCT text is what keeps two coexisting placeholders resolvable
+    // to their own message ids. Routing it through the peer must not lose that.
+    const { calls, mouth } = fakeMouth();
+    const { sender } = senderWith(mouth);
+    const out = sender.open(CHAT_ID, { being: 'e', queued: true, queuedAhead: 2 });
+    await settled();
+    expect(calls.streams[0].init).toBe(`${LIVE_FRAME_MARK} Queued (2 ahead)…`);
+    out.activate();
+    expect(calls.streams[0].frames).toEqual([`${LIVE_FRAME_MARK} Thinking…`]);
+  });
+
+  it('whatever streamed BEFORE the route settled is replayed into the peer\'s placeholder, never lost', async () => {
+    // The route is a promise, so a fast first token can land before there is a stream to push it
+    // into. absorb() has been running regardless, and the open replays what it accumulated.
+    const { calls, mouth } = fakeMouth();
+    const { sender } = senderWith(mouth);
+    const out = sender.open(CHAT_ID, { being: 'e' });
+    out.update('said before the route came back');
+    await settled();
+    expect(calls.streams[0].frames).toEqual([`said before the route came back ${LIVE_FRAME_MARK}`]);
+  });
+
   it('says so in the log, naming the peer\'s own chat id — which mouth spoke is never a guess', async () => {
+    // The line is the STREAM's now, not the sender's: whichever tier said it knows which one that
+    // was, and says so (tests/peer-mouth.test.mjs locks the wording against the real transport).
     const { mouth } = fakeMouth();
-    const { logs, sender } = senderWith(mouth);
+    const { bridge, sender } = senderWith(mouth);
     await sender.open(CHAT_ID, { being: 'e' }).finish({ text: 'done' });
-    expect(logs.filter((l) => l.includes('the PEER said this reply') && l.includes(SECONDARY_CHAT_ID))).toHaveLength(1);
+    expect(bridge.sent).toHaveLength(0);
+    expect(bridge.streams).toHaveLength(0);
   });
 
   it('carries the reply VERBATIM — the peer is handed the bytes the brain settled on, nothing appended', async () => {
@@ -187,7 +262,7 @@ describe('peer configured and the peer account IS in the chat — the peer speak
     const { sender } = senderWith(mouth);
     const body = 'line one\n\nline two 🐶 {"say":"post"}';
     await sender.open(CHAT_ID, { being: 'e' }).finish({ text: body });
-    expect(calls.say[0].text).toBe(body);
+    expect(calls.streams[0].finals).toEqual([body]);
   });
 
   it('exposes NO confirmedId — the delivered message lives in the OTHER account\'s id namespace', async () => {
@@ -205,20 +280,33 @@ describe('peer configured and the peer account IS in the chat — the peer speak
     const { bridge, sender } = senderWith(mouth);
     await sender.open(CHAT_ID, { being: 'e', auto: true }).finish({ text: 'sure, on my way' });
     expect(calls.route).toEqual([]);
-    expect(calls.say).toEqual([]);
+    expect(calls.streams).toEqual([]);
     expect(bridge.sent).toEqual([{ chat: CHAT_ID, text: 'sure, on my way', opts: { replyTo: null } }]);
   });
 
-  it('a WITHHELD turn resolves on THIS account — the link carries replies, and a silence is not one', async () => {
-    // The gate withheld the reply, so there is nothing to say through the peer; what is left is a
-    // placeholder that must not be left stuck (operator 2026-08-24, "nothing is ever deleted").
-    // It is this account's placeholder, so it is opened here and resolved here.
+  it('a WITHHELD turn resolves the placeholder it actually opened — which is the PEER\'s', async () => {
+    // The gate withheld the reply, so there is nothing new to say; what is left is a placeholder
+    // that must not be left stuck (operator 2026-08-24, "nothing is ever deleted"). That rule
+    // follows the MESSAGE, not the account — and on a peer route the message is the peer's, so
+    // that is where the silence mark lands. Nothing is posted here.
     const { calls, mouth } = fakeMouth();
     const { bridge, sender } = senderWith(mouth);
     await sender.open(CHAT_ID, { being: 'e' }).finish({ text: '...' }, { surface: false });
-    expect(calls.say).toEqual([]);
-    expect(bridge.streams).toHaveLength(1);
-    expect(bridge.streams[0].finals).toEqual(['...']);
+    expect(calls.streams).toHaveLength(1);
+    expect(calls.streams[0].finals).toEqual(['...']);
+    expect(bridge.streams).toHaveLength(0);
+    expect(bridge.sent).toHaveLength(0);
+  });
+
+  it('a turn that FAILS ends the PEER\'s placeholder with ❌ — the ⏳ a human is watching is the peer\'s', async () => {
+    const { calls, mouth } = fakeMouth();
+    const { bridge, sender } = senderWith(mouth);
+    const out = sender.open(CHAT_ID, { being: 'e' });
+    await settled();
+    out.update('half a th');
+    await out.fail();
+    expect(calls.streams[0].finals).toEqual(['half a th … ❌ Sending failed.']);
+    expect(bridge.sent).toHaveLength(0);
   });
 });
 
@@ -238,7 +326,7 @@ describe('peer configured but the peer account is NOT in the chat — posts loca
     await out.finish({ text: 'Hola mundo' });
     expect(bridge.streams[0].finals).toEqual(['Hola mundo']);
     expect(bridge.sent).toHaveLength(0);
-    expect(calls.say).toEqual([]);
+    expect(calls.streams).toEqual([]);
   });
 
   it('a QUEUED reply still opens queued and still flips to the live train when its turn starts', async () => {
@@ -283,41 +371,38 @@ describe('every peer failure falls back to a LOCAL post and says why', () => {
   ];
 
   for (const [reason, detail] of REFUSALS) {
-    it(`${reason}: the reply still goes out, on THIS account, and the log names the reason`, async () => {
+    it(`${reason}: the reply still goes out, on THIS account`, async () => {
       const { mouth } = fakeMouth({ answer: { ok: false, reason, detail } });
-      const { bridge, logs, sender } = senderWith(mouth);
+      const { bridge, sender } = senderWith(mouth);
       const out = sender.open(CHAT_ID, { being: 'e', replyTo: 'm1' });
       await out.finish({ text: 'the answer' });
 
-      // The reply ARRIVED. No local stream was ever opened (the route said "peer"), so it goes
-      // out as one fresh post carrying the persona tag — the no-stream branch finish() has always
-      // had, doing exactly what it has always done.
-      expect(bridge.streams).toHaveLength(0);
+      // The reply ARRIVED. The peer stream reported `delivered === false` — the ONE thing the
+      // sender reads, whatever went wrong underneath — so the §7 fallback sent it fresh here,
+      // carrying the persona tag and the reply-to, exactly as it has always done for a stream
+      // that failed to deliver in place. No second finish path, no peer-specific branch: this is
+      // the same line a broken LOCAL stream takes. WHICH tier failed and why is logged by the
+      // stream that hit it, and locked against the real transport in tests/peer-mouth.test.mjs.
       expect(bridge.sent).toHaveLength(1);
       expect(bridge.sent[0].chat).toBe(CHAT_ID);
       expect(bridge.sent[0].text).toBe('the answer');
       expect(bridge.sent[0].opts).toMatchObject({ replyTo: 'm1', bodyEmoji: '🐶' });
-
-      // …and it is LOUD: one line, naming the reason and the detail.
-      const line = logs.find((l) => l.startsWith('mouth: FALLING BACK TO THIS ACCOUNT'));
-      expect(line, `no fallback log line for ${reason}`).toBeTruthy();
-      expect(line).toContain(reason);
-      expect(line).toContain(detail);
+      // …and the fresh send's own id supersedes the stream's, which never delivered.
       expect(out.confirmedId).toBe('local-1');
     });
   }
 
-  it('a say() that THROWS is a fallback too, never an escaped exception', async () => {
+  it('a stream whose finish() THROWS never swallows the reply silently', async () => {
+    // A wiring fault, not a transport one: no refusal the link can produce reaches the sender as
+    // a throw (every one of them comes back as `delivered === false`), but a broken injection
+    // could. It surfaces to the caller rather than vanishing half-way through the mouth.
     const { mouth } = fakeMouth({ answer: () => { throw new Error('the wiring is wrong'); } });
-    const { bridge, logs, sender } = senderWith(mouth);
-    await sender.open(CHAT_ID, { being: 'e' }).finish({ text: 'the answer' });
-    expect(bridge.sent).toHaveLength(1);
-    expect(bridge.sent[0].text).toBe('the answer');
-    expect(logs.some((l) => l.includes('FALLING BACK') && l.includes('the wiring is wrong'))).toBe(true);
+    const { sender } = senderWith(mouth);
+    await expect(sender.open(CHAT_ID, { being: 'e' }).finish({ text: 'the answer' })).rejects.toThrow('the wiring is wrong');
   });
 
   it('a route() that THROWS posts locally the ordinary way — placeholder and all', async () => {
-    const mouth = { async route() { throw new Error('roster read exploded'); }, async say() { throw new Error('never reached'); } };
+    const mouth = { async route() { throw new Error('roster read exploded'); }, startStream() { throw new Error('never reached'); } };
     const { bridge, logs, sender } = senderWith(mouth);
     const out = sender.open(CHAT_ID, { being: 'e' });
     await out.finish({ text: 'the answer' });
@@ -327,9 +412,9 @@ describe('every peer failure falls back to a LOCAL post and says why', () => {
   });
 
   it('THE STREAMED TEXT IS NOT LOST: what accumulated while the peer was being tried goes out whole', async () => {
-    // Nothing was pushed to this account during the turn (the route said "peer"), but absorb()
-    // has been running the entire time — so the fallback post carries the settled answer, and a
-    // settled answer that DIVERGED from the narration still keeps the narration above the seam.
+    // absorb() has been running the entire time, whichever mouth the frames were going to — so
+    // the fallback post carries the settled answer, and a settled answer that DIVERGED from the
+    // narration still keeps the narration above the seam.
     const { mouth } = fakeMouth({ answer: { ok: false, reason: 'unreachable', detail: 'no answer' } });
     const { bridge, sender } = senderWith(mouth);
     const out = sender.open(CHAT_ID, { being: 'e' });
@@ -339,13 +424,17 @@ describe('every peer failure falls back to a LOCAL post and says why', () => {
     expect(bridge.sent[0].text).toBe('thinking out loud\n\n— ↓ reply —\n\nthe settled answer');
   });
 
-  it('a turn that FAILS on a peer-routed chat posts a VISIBLE ❌ here — a failure nobody sees is the one thing worse', async () => {
-    const { mouth } = fakeMouth();
-    const { bridge, sender } = senderWith(mouth);
-    const out = sender.open(CHAT_ID, { being: 'e' });
-    await out.fail();
-    expect(bridge.streams).toHaveLength(0);
-    expect(bridge.sent).toEqual([{ chat: CHAT_ID, text: '… ❌ Sending failed.', opts: expect.objectContaining({ bodyEmoji: '🐶' }) }]);
+  it('a bridge that cannot stream at all still posts a peer-routed reply fresh, here', async () => {
+    // The peer stream's LAST tier is a local stream, and a bridge with no startStream cannot give
+    // it one — so `delivered` stays false and §7 sends the reply whole, which is the branch this
+    // file has always had for a bridge with no streaming.
+    const { mouth } = fakeMouth({ answer: { ok: false, reason: 'unreachable', detail: 'no answer' } });
+    const bridge = fakeBridge();
+    delete bridge.startStream;
+    const sender = createSender({ bridge, bodyEmojiOf: () => '🐶', peerMouth: mouth });
+    await sender.open(CHAT_ID, { being: 'e' }).finish({ text: 'the answer' });
+    expect(bridge.sent).toHaveLength(1);
+    expect(bridge.sent[0].text).toBe('the answer');
   });
 });
 
@@ -361,12 +450,14 @@ describe('makePeerMouth — the membership question, and what each answer means'
       async chatHasParticipant(chatId, identity) { asked.push({ chatId, identity }); return present(identity, chatId); },
       async chatRaw(chatId) { return typeof raw === 'function' ? raw(chatId) : raw; },
     };
+    const streamed = [];
     const mouth = makePeerMouth({
       peer: PEER, bridge, owns,
       speak: async (o) => { spoken.push(o); return { ok: true, chatId: SECONDARY_CHAT_ID }; },
+      stream: (o) => { streamed.push(o); return { update() {}, async finish() {}, delivered: true, confirmedId: null }; },
       onLog: (m) => logs.push(m),
     });
-    return { mouth, asked, spoken, logs };
+    return { mouth, asked, spoken, streamed, logs };
   }
 
   it('routes when one of the two configured identities is a participant — and hands back the RAW payload', async () => {
@@ -406,6 +497,7 @@ describe('makePeerMouth — the membership question, and what each answer means'
       peer: PEER,
       bridge: { async chatHasParticipant() { throw new Error('beeper down'); } },
       speak: async () => ({ ok: true }),
+      stream: () => ({ update() {}, async finish() {}, delivered: true }),
       onLog: (m) => logs.push(m),
     });
     expect(await mouth.route(CHAT_ID)).toBeNull();
@@ -424,11 +516,16 @@ describe('makePeerMouth — the membership question, and what each answer means'
     expect(asked).toEqual([]);
   });
 
-  it('say() hands the peer block, the raw chat and the text straight to the transport', async () => {
-    const { mouth, spoken } = rig();
-    await mouth.say(AS_PRIMARY, 'the finished line');
-    expect(spoken).toHaveLength(1);
-    expect(spoken[0]).toMatchObject({ peer: PEER, chat: AS_PRIMARY, text: 'the finished line' });
+  it('startStream() hands the peer block, the raw chat, the placeholder and the local fallback to the transport', async () => {
+    // …and the FINISHED-LINE transport with them, as `say`: it is not a separate feature, it is
+    // the tier a reply train degrades into (src/shell/peer-mouth.mjs), so there is exactly one
+    // definition of "speak a finished line through the peer" and this is where it is handed over.
+    const { mouth, streamed } = rig();
+    const fallback = () => null;
+    mouth.startStream(AS_PRIMARY, '⏳ Thinking…', { fallback });
+    expect(streamed).toHaveLength(1);
+    expect(streamed[0]).toMatchObject({ peer: PEER, chat: AS_PRIMARY, init: '⏳ Thinking…', fallback });
+    expect(typeof streamed[0].say).toBe('function');
   });
 });
 
@@ -436,26 +533,54 @@ describe('makePeerMouth — the membership question, and what each answer means'
 // The sender's decision, boot's routing question, the REAL crossAccountChatKey and the REAL
 // receiver, composed. The only thing stubbed is the socket itself — the frames and the handshake
 // that ride it are locked end to end in tests/peer-mouth.test.mjs.
-describe('end to end: a reply in the primary\'s room is posted in the SECONDARY\'s room', () => {
+describe('end to end: a reply in the primary\'s room is streamed in the SECONDARY\'s room', () => {
   function twoSpines({ primaryChat = AS_PRIMARY, secondaryChats = [AS_SECONDARY] } = {}) {
-    const posted = [];
+    const posted = [];       // what actually landed on the secondary's account: { chatId, frames, final }
     const logs = [];
-    // The receiving spine, built exactly as boot builds it.
+    // The receiving spine, built exactly as boot builds it — the REAL verb table, the REAL chat
+    // lookup, the REAL map of live streams.
     const receiver = createMouthReceiver({
       listChats: async () => secondaryChats,
-      post: async (chatId, text) => { posted.push({ chatId, text }); return { ok: true }; },
+      post: async (chatId, text) => { posted.push({ chatId, frames: [], final: text }); return { ok: true }; },
+      startStream: (chatId, init) => {
+        const m = { chatId, init, frames: [], final: null, delivered: false };
+        posted.push(m);
+        return { update(t) { m.frames.push(t); }, async finish(t) { m.final = t; m.delivered = true; }, get delivered() { return m.delivered; } };
+      },
       accounts: ACCOUNTS,
       onLog: (m) => logs.push(`[secondary] ${m}`),
     });
-    // The speaking spine. `speak` stands in for the wire and does exactly what it does: compute
-    // the cross-account key from the chat the reply is in and hand it over.
+    // The speaking spine. `stream` stands in for THE SOCKET AND NOTHING ELSE: it drives the
+    // receiver's own verbs in the order the frames would arrive on the wire, with the same
+    // buffering the real speaker does while the open answer is in flight. It is DELIBERATELY
+    // thinner than startPeerStream — no tier 2, no tier 3 — because the tiering is the transport's
+    // and is locked against the real transport in tests/peer-mouth.test.mjs. Here a peer that
+    // refuses simply reports `delivered === false`, and the sender's §7 does the rest.
+    const conn = { link: 'the one socket' };
     const mouth = makePeerMouth({
       peer: PEER,
       bridge: {
         async chatHasParticipant(_chatId, identity) { return crossAccountChatKey(primaryChat, []).includes(identity.replace(/\D/g, '')); },
         async chatRaw() { return primaryChat; },
       },
-      speak: ({ peer, chat, text }) => receiver({ chatKey: crossAccountChatKey(chat, peer.accounts), text }),
+      stream: ({ peer, chat, init }) => {
+        const chatKey = crossAccountChatKey(chat, peer.accounts);
+        let id = '', last = '', delivered = false;
+        const opened = receiver.open({ chatKey, init }, conn).then((r) => {
+          if (r.ok) { id = r.stream; if (last) receiver.update({ stream: id, text: last }, conn); }
+          return r;
+        });
+        return {
+          update(t) { last = t; if (id) receiver.update({ stream: id, text: last }, conn); },
+          async finish(t) {
+            await opened;
+            if (!id) return;
+            delivered = !!(await receiver.finish({ stream: id, text: t }, conn))?.ok;
+          },
+          get delivered() { return delivered; },
+          get confirmedId() { return null; },
+        };
+      },
       onLog: (m) => logs.push(`[primary] ${m}`),
     });
     const bridge = fakeBridge();
@@ -463,10 +588,17 @@ describe('end to end: a reply in the primary\'s room is posted in the SECONDARY\
     return { sender, bridge, posted, logs };
   }
 
-  it('lands the finished line in the secondary\'s OWN chat id, and posts nothing on the primary', async () => {
+  it('opens, edits and settles ONE message in the secondary\'s OWN chat id, and posts nothing on the primary', async () => {
     const { sender, bridge, posted } = twoSpines();
-    await sender.open(CHAT_ID, { being: 'e', replyTo: 'm1' }).finish({ text: 'said by the other account' });
-    expect(posted).toEqual([{ chatId: SECONDARY_CHAT_ID, text: 'said by the other account' }]);
+    const out = sender.open(CHAT_ID, { being: 'e', replyTo: 'm1' });
+    await settled();
+    out.update('said by');
+    await out.finish({ text: 'said by the other account' });
+    expect(posted).toHaveLength(1);
+    expect(posted[0].chatId).toBe(SECONDARY_CHAT_ID);
+    expect(posted[0].init).toBe(`${LIVE_FRAME_MARK} Thinking…`);
+    expect(posted[0].frames).toEqual([`said by ${LIVE_FRAME_MARK}`]);
+    expect(posted[0].final).toBe('said by the other account');
     expect(bridge.streams).toHaveLength(0);
     expect(bridge.sent).toHaveLength(0);
   });
@@ -486,7 +618,7 @@ describe('end to end: a reply in the primary\'s room is posted in the SECONDARY\
     expect(posted).toEqual([]);
     expect(bridge.sent).toHaveLength(1);
     expect(bridge.sent[0].text).toBe('said here after all');
-    expect(logs.some((l) => l.includes('FALLING BACK') && l.includes('no-match'))).toBe(true);
+    expect(logs.some((l) => l.includes('[secondary]') && l.includes('no-match'))).toBe(true);
   });
 
   it('the receiver finding TWO chats that key alike puts it back on the primary too — it never picks', async () => {
@@ -495,7 +627,7 @@ describe('end to end: a reply in the primary\'s room is posted in the SECONDARY\
     await sender.open(CHAT_ID, { being: 'e' }).finish({ text: 'said here after all' });
     expect(posted).toEqual([]);
     expect(bridge.sent[0].text).toBe('said here after all');
-    expect(logs.some((l) => l.includes('FALLING BACK') && l.includes('ambiguous'))).toBe(true);
+    expect(logs.some((l) => l.includes('[secondary]') && l.includes('ambiguous'))).toBe(true);
   });
 });
 
@@ -589,11 +721,15 @@ describe('boot — a node with no peer_spine builds neither half, and one with i
     // outright without one — tests/peer-mouth.test.mjs).
     expect(lines.filter((l) => /^\[mouth\] offering the mouth link/.test(l) && l.includes('23377'))).toHaveLength(1);
 
-    // …and the two bridge methods that receiver will call exist on what boot handed it. A typo
+    // …and the three bridge methods that receiver will call exist on what boot handed it. A typo
     // here would be silently undefined until a peer actually dialled, which is the worst possible
     // moment to find out.
     expect(typeof app.bridge.listChatsRaw).toBe('function');
     expect(typeof app.bridge.postVerbatim).toBe('function');
+    expect(typeof app.bridge.startStreamVerbatim).toBe('function');   // the reply train's target
+
+    // The SPEAKING half opens trains as well as routing them — the sender calls exactly this.
+    expect(typeof app.peerMouth.startStream).toBe('function');
 
     app.stop();
   });

@@ -62,7 +62,7 @@ import { newNonce, challengeFrame, parseAuthFrame, authMac, macMatches, SHELL_TO
 // BEFORE the console parse, for the same reason auth frames are: a console frame means "a human
 // said this" and would RUN A TURN, and the mouth means the exact opposite — "post this verbatim".
 // The wire is imported, never re-implemented; the peer end reads the same module.
-import { MOUTH_PATH, isMouthDial, parseMouthFrame, sayResultFrame } from '../shell/mouth.mjs';
+import { MOUTH_PATH, isMouthDial, parseMouthFrame, sayResultFrame, sayOpenedFrame } from '../shell/mouth.mjs';
 
 // The spine serves this port; the editor dials in. Exported so boot + tests share the
 // one number (plan §3, §9 — a KNOWN port, not discovery).
@@ -121,14 +121,18 @@ const SHELL_USER = 'operator';
  * @param {string} [opts.token]               the node's SHELL TOKEN (cfg.shell.token, handed in by boot exactly like bridgeSignatureOpen/nodeName — this limb never reads config itself). The editor that dials in must prove it knows this secret before a single frame is sent to it or accepted from it. UNSET → the limb FAILS CLOSED: it does not SERVE at all and logs what to add to config. No default, no auto-generation, no unauthenticated mode.
  * @param {string} [opts.nodeName]            the STRUCTURAL node id (cfg.node_name), tag-encoded invisibly onto every frame — same value boot hands the beeper bridge. Default ''.
  * @param {string} [opts.header]              the shell status-line header (boot's computeShellHeader) — the initial value handed in at boot, pushed as a header-only frame the moment an editor authenticates. Updatable later via setHeader() (e.g. /rooms join|leave). Default '' → no header frame sent until setHeader() is called.
- * @param {((say: {chatKey: string, text: string}) => Promise<{ok: boolean, chatId?: string, reason?: string, detail?: string}>)} [opts.onPeerSay]
+ * @param {{post?: Function, open?: Function, update?: Function, finish?: Function, gone?: Function}} [opts.onPeerSay]
  *   THE MOUTH HANDLER (src/shell/peer-mouth.mjs createMouthReceiver), handed in by boot exactly
  *   like the token — this limb never builds it and never reads config. Given, a PEER SPINE may
- *   dial MOUTH_PATH on this port, prove it holds the same shell token, and have a finished line
- *   posted on THIS node's Beeper account. UNSET (the default, and every node that configures no
- *   peer): a mouth dial is closed immediately, so the limb behaves exactly as it did before this
- *   existed. The handler's answer — success or refusal — is pushed straight back over the same
- *   socket so the peer can fall back to speaking on its own account.
+ *   dial MOUTH_PATH on this port, prove it holds the same shell token, and have a line posted on
+ *   THIS node's Beeper account — whole (`post`) or as a live reply train it opens, edits and
+ *   settles (`open`/`update`/`finish`). One entry per wire verb; MOUTH_ANSWER below is the
+ *   routing table and also the ALLOWLIST, so a table entry that is not a verb — `gone`, which the
+ *   limb calls itself when a peer connection closes — can never be reached from a frame. UNSET
+ *   (the default, and every node that configures no peer): a mouth dial is closed immediately, so
+ *   the limb behaves exactly as it did before this existed. Each handler's answer — success or
+ *   refusal — is pushed straight back over the same socket so the peer can fall back to speaking
+ *   on its own account.
  * @param {(m: string) => void} [opts.onLog]
  * @param {typeof reapPort} [opts.reapPort]   port-killer seam (see start()) — real reapPort by default; tests inject a fake so no real netstat/taskkill runs
  * @param {typeof globalThis.setTimeout} [opts.setTimeout]     re-listen timer seam (tests inject a fake clock so no real wait blocks)
@@ -254,25 +258,44 @@ export function createShellPort({
     catch (e) { onLog(`shell: mouth answer failed — ${e?.message ?? e}`); return false; }
   }
 
-  // A `say: 'post'` frame off an AUTHENTICATED peer connection: hand it to the mouth handler and
-  // push its verdict straight back. THIS PATH NEVER REACHES onMsg — a peer's line is a finished
-  // reply to be POSTED, not a message to be answered, and dispatching one as a turn is the exact
+  // WHICH ANSWER EACH VERB GETS — the whole routing table for the mouth link, and deliberately the
+  // ONLY way into the mouth handler. A verb absent from here is refused, so nothing the peer can
+  // put on the wire reaches a handler that is not listed (the receiver's `gone` is not a verb and
+  // is therefore unreachable from a frame — it is the LIMB's to call, on close, and nobody else's).
+  // `update` maps to null: it is answered with nothing at all (src/shell/mouth.mjs — every frame
+  // carries the whole text, so an ack per token would double the traffic for no information).
+  const MOUTH_ANSWER = { post: sayResultFrame, open: sayOpenedFrame, finish: sayResultFrame, update: null };
+
+  // A mouth frame off an AUTHENTICATED peer connection: hand it to the verb the peer named and push
+  // that verb's verdict straight back. THIS PATH NEVER REACHES onMsg — a peer's frame is a reply to
+  // be POSTED or EDITED, not a message to be answered, and dispatching one as a turn is the exact
   // failure src/shell/mouth.mjs exists to prevent. A handler that throws still answers (a peer
   // holding an unsaid reply must learn it was not said, so it can fall back to its own account).
+  //
+  // AN UNKNOWN VERB IS REFUSED, NEVER IGNORED, and it is refused with `bad-frame` on purpose: that
+  // is exactly what a peer running NEWER code hears from a node running older code, and it is the
+  // signal it degrades on (a spine that asks for a reply train and is told `bad-frame` sends the
+  // finished line instead). Silence would leave it waiting for its own timeout.
   function handleMouth(raw, ws) {
     const f = parseMouthFrame(raw);
-    if (f?.say !== 'post') {
-      onLog(`shell: a peer sent a frame the mouth link does not serve (${f?.say ? `say:${f.say}` : 'not a mouth frame'}) — refusing`);
-      pushTo(ws, sayResultFrame({ ok: false, reason: 'bad-frame', detail: 'the mouth link serves say:post only' }));
+    const verb = f?.say ?? '';
+    const answerFrame = Object.hasOwn(MOUTH_ANSWER, verb) ? MOUTH_ANSWER[verb] : undefined;
+    const handler = answerFrame !== undefined ? onPeerSay?.[verb] : null;
+    if (!handler) {
+      onLog(`shell: a peer sent a frame the mouth link does not serve (${verb ? `say:${verb}` : 'not a mouth frame'}) — refusing`);
+      pushTo(ws, sayResultFrame({ ok: false, reason: 'bad-frame', detail: `the mouth link does not serve ${verb ? `say:${verb}` : 'that frame'}` }));
       return;
     }
+    const answer = (r) => { if (answerFrame) pushTo(ws, answerFrame(r && typeof r === 'object' ? r : { ok: false, reason: 'send-failed', detail: 'the mouth handler answered nothing' })); };
     // try/catch AND .catch: a handler that throws SYNCHRONOUSLY would otherwise escape into the
-    // socket's read loop, exactly as the console path guards its own onMsg call.
+    // socket's read loop, exactly as the console path guards its own onMsg call. `ws` is handed
+    // along as the CONNECTION the frame arrived on — the mouth table keys its live streams by it,
+    // which is what lets a close settle exactly the replies that connection left open.
     try {
-      Promise.resolve(onPeerSay({ chatKey: f.chatKey, text: f.text }))
-        .then((r) => pushTo(ws, sayResultFrame(r && typeof r === 'object' ? r : { ok: false, reason: 'send-failed', detail: 'the mouth handler answered nothing' })))
-        .catch((e) => pushTo(ws, sayResultFrame({ ok: false, reason: 'send-failed', detail: e?.message ?? String(e) })));
-    } catch (e) { pushTo(ws, sayResultFrame({ ok: false, reason: 'send-failed', detail: e?.message ?? String(e) })); }
+      Promise.resolve(handler(f, ws))
+        .then(answer)
+        .catch((e) => { if (answerFrame) pushTo(ws, answerFrame({ ok: false, reason: 'send-failed', detail: e?.message ?? String(e) })); });
+    } catch (e) { if (answerFrame) pushTo(ws, answerFrame({ ok: false, reason: 'send-failed', detail: e?.message ?? String(e) })); }
   }
 
   // A client dialed in. It is a STRANGER until it answers the challenge: it is sent nothing but
@@ -346,6 +369,12 @@ export function createShellPort({
     ws.on('close', () => {
       _pending.delete(ws);
       _mouths.delete(ws);
+      // A PEER LINK THAT GOES MAY BE HOLDING A HALF-WRITTEN REPLY (src/shell/peer-mouth.mjs, THE
+      // MID-STREAM DROP). The limb neither knows nor decides what is open — it reports the fact of
+      // the close and the mouth table settles whatever that connection still had. A reply that
+      // COMPLETED left nothing open, so this is a no-op for every ordinary close; only a link that
+      // died mid-thought has anything to settle, which is exactly how the two are told apart.
+      if (mouth) { try { onPeerSay?.gone?.(ws); } catch (e) { onLog(`shell: the mouth could not settle what a departing peer left open — ${e?.message ?? e}`); } }
       if (sock === ws) { sock = null; onLog('shell: editor disconnected — console seat free'); }
     });
     ws.on('error', (e) => onLog(`shell: socket error — ${e?.message ?? e}`));

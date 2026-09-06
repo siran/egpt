@@ -60,6 +60,13 @@ function fakePort(clock) {
       h.fail = (e) => h.frames.push(`❌ ${e}`);
       return h;
     },
+    startStreamVerbatim(chat, init) {
+      const h = { delivered: false, lastError: null, frames: [] };
+      posts.push({ at: clock.now(), kind: 'startStreamVerbatim', chat, text: init, handle: h });
+      h.update = (t) => h.frames.push(t);
+      h.finish = async (t) => { h.frames.push(t); h.delivered = true; };
+      return h;
+    },
     isAlive: () => true,
     stop() {},
   };
@@ -317,6 +324,39 @@ describe('lasso — the outbound ceiling', () => {
     expect(await bridge.postVerbatim('!room', 'over')).toBe(null);
     expect(port.posts).toHaveLength(3);
     expect(trips).toHaveLength(1);
+  });
+
+  // A STREAMED peer reply is still ONE message (operator 2026-09-05, the reply train across the
+  // link). The placeholder is the message; every edit that follows spends the EDIT budget, exactly
+  // as a local streamed reply does. Counting per frame would make the peer's mouth cost twenty
+  // times what this node's own does for the same reply, and leaving it ungated would be the same
+  // hole postVerbatim's gate exists to close — reachable from another process.
+  it('11c. startStreamVerbatim (the peer spine\'s reply TRAIN) costs ONE message, then edits', async () => {
+    const { trips, port, bridge } = withTrips({ messages: 3, edits: 100 });
+    const a = bridge.startStreamVerbatim('!room', '⏳ Thinking…');
+    for (let i = 0; i < 20; i++) a.update(`token ${i}`);
+    await a.finish('the whole answer');
+    expect(port.posts.filter((p) => p.kind === 'startStreamVerbatim')).toHaveLength(1);
+    expect(a.delivered).toBe(true);
+    expect(trips).toEqual([]);                                 // 21 edits, 1 message — nowhere near 3
+
+    // …and the ONE message it did cost comes out of the SAME budget every other outbound spends.
+    await bridge.send('!room', 'mine');
+    bridge.startStreamVerbatim('!room', '⏳ Thinking…');
+    expect(trips).toEqual([]);
+    bridge.startStreamVerbatim('!room', '⏳ Thinking…');
+    expect(trips).toHaveLength(1);
+    expect(trips[0]).toMatchObject({ kind: 'message', count: 4, limit: 3 });
+  });
+
+  it('11d. a tripped ceiling hands the peer a DEAD stream, never an unwatched outbound', async () => {
+    const { port, bridge } = withTrips({ messages: 1 });
+    await bridge.send('!room', 'mine');
+    const dead = bridge.startStreamVerbatim('!room', '⏳ Thinking…');
+    dead.update('x');
+    await dead.finish('the answer');
+    expect(port.posts.filter((p) => p.kind === 'startStreamVerbatim')).toHaveLength(0);
+    expect(dead.delivered).toBe(false);                        // ⇒ the peer is told, and falls back
   });
 
   it('10. the SHIPPED defaults are 18 messages / 10000ms and 4000 edits (operator: raise the ceiling, not a classification branch)', async () => {

@@ -132,6 +132,22 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
     // speaking in its own voice and stays wrapped.
     postVerbatim(chat, text) { return real.send(text, { chatId: chat }); },
 
+    // THE MOUTH'S STREAM (operator 2026-09-05, "let's recover the thinking train") — postVerbatim's
+    // edit-in-place twin, and unwrapped for exactly the same reason: every frame of it was written,
+    // wrapped and signed by the PEER SPINE that is thinking, and this node only holds the message
+    // the frames land in. Rendering them through wrapPersona would staple this node's signature
+    // onto another node's sentence, once per edit.
+    //
+    // NO showThink AND NO LIVE_FRAME_MARK either: the ⏳ on a peer-routed reply is the sender's,
+    // stamped on the brain side (src/spine/sender.mjs) before the text ever reaches the wire, so
+    // adding one here would double it. This layer holds nothing of its own to add — which is why,
+    // unlike startStream above, it hands back startStreamMessage's handle as it is. That handle's
+    // surface IS the §2b one ({ update, finish, delivered, lastError, confirmedId, fail }); there
+    // is nothing left to translate.
+    startStreamVerbatim(chat, init) {
+      return real.startStreamMessage ? real.startStreamMessage(String(init ?? ''), { chatId: chat }) : null;
+    },
+
     // In-place edit-stream. Returns the §2b { update, finish, delete } plus
     // delivered / lastError passthrough: the sender's fallback-send must send fresh
     // ONLY when the stream did not deliver in place (§7 invariant — "the host

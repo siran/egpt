@@ -207,6 +207,15 @@ export function createLasso({
       // is send()'s alone, and nothing arriving over the link is a stop.
       postVerbatim: port.postVerbatim && (async (chat, text) =>
         admit('message') ? port.postVerbatim(chat, text) : (refuse('postVerbatim', chat), null)),
+      // THE MOUTH's verbatim STREAM (beeper-port.startStreamVerbatim, operator 2026-09-05): the
+      // peer's reply train, said on this account. Gated EXACTLY like startStream below and for the
+      // same reason — ONE 'message' for the placeholder that is opened, then every frame that
+      // edits it on the 'edit' budget — so a streamed reply arriving over the link costs the same
+      // as a streamed reply this node writes itself, and costs it ONCE rather than once per token.
+      // Leaving it ungated would be a hole straight through a node-wide ceiling, reachable from
+      // another process.
+      startStreamVerbatim: port.startStreamVerbatim && ((chat, init) =>
+        admit('message') ? gateFrames(port.startStreamVerbatim(chat, init)) : (refuse('startStreamVerbatim', chat), deadStream())),
       sendMedia: port.sendMedia && (async (chat, filePath, opts = {}) =>
         admit('message') ? port.sendMedia(chat, filePath, opts) : (refuse('sendMedia', chat), false)),
       startStream: port.startStream && ((chat, init, opts = {}) =>

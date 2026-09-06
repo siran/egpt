@@ -30,14 +30,40 @@
 // the same shell token, with the same challenge, or it is refused (loopback is not an
 // authenticator: a sandboxed local account can dial 127.0.0.1 as freely as the peer spine can).
 //
-// FINAL TEXT ONLY — STREAMING IS OUT OF SCOPE, deliberately. A real reply today posts a "⏳
-// thinking" placeholder and EDITS it in place as the turn streams (beeper-port.startStream over
-// beeper.startStreamMessage). Relaying that faithfully means relaying a message IDENTITY across
-// two accounts — the mouth would have to hand back the id of the message it posted, the brain
-// would have to address every later edit to it, and both ends would have to agree on what happens
-// when the link drops mid-stream, leaving a half-written placeholder on the OTHER account with
-// nobody able to finish or delete it. None of that is needed to say a finished sentence, so this
-// slice carries the finished sentence and nothing else. Streaming is its own problem, later.
+// ── TWO WAYS TO SAY A REPLY, AND WHY BOTH EXIST ────────────────────────────────────────────────
+// `say: 'post'` says a FINISHED sentence: one frame, one message, one answer. It shipped first and
+// it is still the floor — every degraded path in src/shell/peer-mouth.mjs lands on it.
+//
+// `say: 'open'` / `'update'` / `'finish'` say a reply the way a LOCAL one is said: a "⏳ Thinking…"
+// placeholder appears at once and is EDITED IN PLACE as the turn streams (the reply train,
+// src/spine/sender.mjs over beeper-port.startStreamVerbatim). The first cut of this file refused
+// to carry that, on the grounds that it means relaying a message IDENTITY across two accounts —
+// the mouth handing back the id of the message it posted and the brain addressing every later edit
+// to it. That reasoning was right about the danger and wrong about the only possible shape.
+//
+// NO MESSAGE ID EVER CROSSES THIS WIRE. The RECEIVER keeps the live stream object; the brain holds
+// only an opaque, RECEIVER-MINTED stream id — a handle into the receiver's own map, meaningless
+// anywhere else, and never a Beeper id. So the brain cannot address an edit to a message even in
+// principle: it can only say "update the stream you opened for me". Two of the three hard parts
+// (relaying identity, addressing edits) do not arise; the third — what happens if the link dies
+// mid-stream — is answered in peer-mouth.mjs's THE MID-STREAM DROP section, by the ONLY party that
+// can answer it, which is the one holding the handle.
+//
+// THE ORDER ON THE WIRE, one dial per REPLY (never per frame — the socket is held for the life of
+// the stream and closed when it settles):
+//
+//   brain → mouth   say:'open'    { chatKey, init }        "open a live reply here; post `init`"
+//   mouth → brain   say:'opened'  { ok, stream, chatId }   the minted handle, or a refusal
+//   brain → mouth   say:'update'  { stream, text }         edit it; NOT answered (fire and forget)
+//   brain → mouth   say:'finish'  { stream, text }         settle it
+//   mouth → brain   say:'result'  { ok, chatId }           the SAME answer `post` gets, for the
+//                                                          same reason: the brain must know
+//                                                          whether the line is said before it
+//                                                          decides to say it itself.
+//
+// A frame whose verb this end does not serve is refused, never ignored — an OLD peer (one running
+// the pre-streaming code) answers `bad-frame` to `open`, and the brain then falls back to `post`,
+// which that peer does serve. That is what makes the two spines upgradable one at a time.
 
 // The dial path that means "I am a peer spine, not the operator's editor".
 export const MOUTH_PATH = '/peer';
@@ -85,6 +111,44 @@ export function sayResultFrame({ ok, chatId = '', reason = '', detail = '' }) {
   return JSON.stringify(f);
 }
 
+/**
+ * THE STREAM REQUEST — "open a live reply in the chat this key identifies".
+ * @param {object} o
+ * @param {string} o.chatKey  the same CROSS-ACCOUNT key sayFrame carries, meaning the same thing.
+ * @param {string} o.init     the PLACEHOLDER text, posted verbatim — the message every later
+ *   update edits in place. The brain owns its wording ("⏳ Thinking…" / "⏳ Queued (N ahead)…",
+ *   src/spine/sender.mjs), because the brain is what will later replace it with the answer.
+ */
+export function sayOpenFrame({ chatKey, init }) {
+  return JSON.stringify({ say: 'open', chatKey: String(chatKey ?? ''), init: String(init ?? '') });
+}
+
+/**
+ * THE STREAM ANSWER — the receiver-minted handle, or a refusal in the same vocabulary as
+ * sayResultFrame's. `stream` is OPAQUE to the brain: a key into the receiver's own map of live
+ * stream objects, NOT a Beeper message id and not usable as one anywhere (module header).
+ */
+export function sayOpenedFrame({ ok, stream = '', chatId = '', reason = '', detail = '' }) {
+  const f = { say: 'opened', ok: !!ok };
+  if (stream) f.stream = String(stream);
+  if (chatId) f.chatId = String(chatId);
+  if (reason) f.reason = String(reason);
+  if (detail) f.detail = String(detail);
+  return JSON.stringify(f);
+}
+
+/** AN IN-PLACE EDIT of an open stream. Not answered: a dropped edit costs one stale frame, and
+ *  the next one supersedes it whole (every frame carries the WHOLE text, never a delta). */
+export function sayUpdateFrame({ stream, text }) {
+  return JSON.stringify({ say: 'update', stream: String(stream ?? ''), text: String(text ?? '') });
+}
+
+/** SETTLE an open stream on its final text. Answered with sayResultFrame — same shape, same
+ *  meaning, and the same reason as `post`'s: the brain must learn whether it was said. */
+export function sayFinishFrame({ stream, text }) {
+  return JSON.stringify({ say: 'finish', stream: String(stream ?? ''), text: String(text ?? '') });
+}
+
 // Is this raw frame a MOUTH frame? Returns the normalized frame, or null for anything else (an
 // auth frame, a console `{ text, chatId }`, a bare text line, garbage). Both ends call this
 // BEFORE the console parse so a mouth frame is never answered as if a human had typed it.
@@ -109,6 +173,26 @@ export function parseMouthFrame(raw) {
         reason: j.reason ? String(j.reason) : '',
         detail: j.detail ? String(j.detail) : '',
       };
+    }
+    // The STREAMING verbs. `init` and `text` are strings — the very shape the console parse would
+    // read as "a human typed this" — which is why every one of them carries `say` and why this
+    // function runs BEFORE that parse on both ends (header). Nothing below changes that; it only
+    // gives the frames structure once they have already been recognised as NOT console input.
+    if (j.say === 'open') {
+      return { say: 'open', chatKey: String(j.chatKey ?? ''), init: typeof j.init === 'string' ? j.init : '' };
+    }
+    if (j.say === 'opened') {
+      return {
+        say: 'opened',
+        ok: !!j.ok,
+        stream: j.stream ? String(j.stream) : '',
+        chatId: j.chatId ? String(j.chatId) : '',
+        reason: j.reason ? String(j.reason) : '',
+        detail: j.detail ? String(j.detail) : '',
+      };
+    }
+    if (j.say === 'update' || j.say === 'finish') {
+      return { say: j.say, stream: String(j.stream ?? ''), text: typeof j.text === 'string' ? j.text : '' };
     }
     return { say: j.say };
   } catch { /* not JSON → not a mouth frame */ }

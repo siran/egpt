@@ -26,7 +26,7 @@
 import { describe, it, expect } from 'vitest';
 import { createShellPort } from '../src/bridges/shell-port.mjs';
 import { MOUTH_PATH, sayFrame, parseMouthFrame } from '../src/shell/mouth.mjs';
-import { peerSpineFrom, findChatByKey, createMouthReceiver, speakThroughPeer } from '../src/shell/peer-mouth.mjs';
+import { peerSpineFrom, findChatByKey, createMouthReceiver, speakThroughPeer, startPeerStream } from '../src/shell/peer-mouth.mjs';
 import { responseFrame } from '../src/shell/auth.mjs';
 
 // ── THE FIXTURE ────────────────────────────────────────────────────────────────────────────────
@@ -115,13 +115,16 @@ function makeFakeWss() {
 
 // The `ws` CLIENT seam speakThroughPeer dials through: constructing one reaches the fake server on
 // the next microtask, exactly as a dial does. `dialled` records every URL so a test can assert
-// that NOTHING was dialled at all.
+// that NOTHING was dialled at all; `sockets` holds the client ends, so a test can READ every frame
+// the speaker put on the wire, and can CUT one link mid-reply without stopping the whole limb.
 function makeFakeClient(server) {
   const dialled = [];
+  const sockets = [];
   class FakeClient extends Sock {
     constructor(url) {
       super();
       dialled.push(String(url));
+      sockets.push(this);
       const u = String(url);
       const path = u.slice(u.indexOf('/', u.indexOf('//') + 2)) || '/';
       queueMicrotask(() => {
@@ -133,7 +136,7 @@ function makeFakeClient(server) {
       });
     }
   }
-  return { FakeClient, dialled };
+  return { FakeClient, dialled, sockets };
 }
 
 // A clock that arms nothing: every case below settles on a frame, so a fired timeout would be a
@@ -155,30 +158,48 @@ function seatEditor(server, token) {
 // A whole two-spine rig: the RECEIVER's shell-port limb with a mouth handler over a fake Beeper,
 // and the SPEAKER's client seam pointed at it. `turns` records anything the receiving spine
 // dispatched as a message — it must stay EMPTY: a peer's line is posted, never answered.
-function rig({ chats = [AS_SECONDARY, OTHER_CHAT], token = PEER.consoleToken, post, mouth = true } = {}) {
+function rig({ chats = [AS_SECONDARY, OTHER_CHAT], token = PEER.consoleToken, post, startStream, mouth = true, legacy = false } = {}) {
   const { WebSocketServer, servers } = makeFakeWss();
   const posted = [];
+  const trains = [];      // the live messages the RECEIVER opened: { chatId, init, frames, final }
   const logs = [];
   const turns = [];
   const receiver = createMouthReceiver({
     listChats: async () => chats,
     post: post ?? (async (chatId, text) => { posted.push({ chatId, text }); return { ok: true }; }),
+    // The secondary account's edit-in-place primitive (boot wires bridge.startStreamVerbatim).
+    // `startStream: null` models a bridge that has none, which is what `no-stream` is for.
+    startStream: startStream === null ? null : (startStream ?? ((chatId, init) => {
+      const m = { chatId, init, frames: [], final: null, delivered: false };
+      trains.push(m);
+      return { update(t) { m.frames.push(t); }, async finish(t) { m.final = t; m.delivered = true; }, get delivered() { return m.delivered; } };
+    })),
     accounts: ACCOUNTS,
     onLog: (m) => logs.push(m),
   });
   const port = createShellPort({
     WebSocketServer, token, reapPort: () => 0,
-    onPeerSay: mouth ? receiver : null,
+    // `legacy` is a node running the code from BEFORE the streaming verbs existed: a table with
+    // `post` and nothing else, which is exactly what createMouthReceiver used to hand the limb.
+    // The limb then refuses every other verb with `bad-frame` — the upgrade-one-at-a-time case.
+    onPeerSay: mouth ? (legacy ? { post: (f) => receiver.post(f) } : receiver) : null,
     onLog: (m) => logs.push(m),
   });
   port.onMessage((ev) => { turns.push(ev); });
   port.start();
   const server = servers[0];
-  const { FakeClient, dialled } = makeFakeClient(server);
+  const { FakeClient, dialled, sockets } = makeFakeClient(server);
   const clock = makeClock();
   const speak = ({ chat = AS_PRIMARY, text = 'the finished line', peer = PEER } = {}) =>
     speakThroughPeer({ peer, chat, text, WebSocket: FakeClient, onLog: (m) => logs.push(m), setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout });
-  return { port, server, posted, logs, turns, speak, dialled, clock, FakeClient };
+  // The SPEAKER's reply train, over the same fake socket: what src/spine/sender.mjs opens on a
+  // peer route. `fallback` is the sender's local stream factory (tier 3).
+  const train = ({ chat = AS_PRIMARY, init = '⏳ Thinking…', peer = PEER, fallback = null } = {}) =>
+    startPeerStream({ peer, chat, init, fallback, WebSocket: FakeClient, onLog: (m) => logs.push(m), setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout });
+  // Let every queued microtask drain — the fake sockets deliver on microtasks, so "the frames have
+  // landed and been answered" is a few turns of the loop away and never a timer.
+  const flush = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
+  return { port, server, posted, trains, logs, turns, speak, train, dialled, sockets, clock, flush, FakeClient };
 }
 
 // ── 1. ABSENT MEANS ABSENT ─────────────────────────────────────────────────────────────────────
@@ -292,6 +313,255 @@ describe('a finished line crosses the link and is posted VERBATIM on the other a
   });
 });
 
+// ── 2b. THE REPLY TRAIN ACROSS THE LINK ────────────────────────────────────────────────────────
+// The thing the first cut of this link could not do (operator 2026-09-05, "it's working, but
+// please let's recover the thinking train"): a "⏳ Thinking…" placeholder on the OTHER account,
+// edited in place until it is the answer. The shape that makes it safe is that the RECEIVER keeps
+// the live stream object and hands back an opaque id of its own — no Beeper message id ever
+// crosses the wire, in either direction.
+describe('a reply TRAIN crosses the link: placeholder, edits, settled answer, all on the other account', () => {
+  it('posts the placeholder, edits it in place, and settles it — ONE message on the secondary', async () => {
+    const { trains, turns, posted, dialled, train, flush, port } = rig();
+    const t = train({ init: '⏳ Thinking…' });
+    await flush();
+    t.update('Hol');
+    t.update('Hola mun');
+    await t.finish('Hola mundo');
+
+    expect(trains).toHaveLength(1);
+    expect(trains[0].chatId).toBe(SECONDARY_CHAT_ID);           // the SECONDARY's own id, resolved by key
+    expect(trains[0].init).toBe('⏳ Thinking…');
+    expect(trains[0].frames).toEqual(['Hol', 'Hola mun']);
+    expect(trains[0].final).toBe('Hola mundo');
+    expect(t.delivered).toBe(true);
+    // ONE message, and one dial for the whole reply — not one per frame.
+    expect(posted).toEqual([]);
+    expect(dialled).toHaveLength(1);
+    // Still the one that matters most: the receiving spine ran no turn on any of it.
+    expect(turns).toEqual([]);
+    port.stop();
+  });
+
+  it('NO BEEPER MESSAGE ID CROSSES THE WIRE — the brain only ever names the receiver\'s own handle', async () => {
+    // The whole reason this shape is safe (src/shell/mouth.mjs). The brain cannot address an edit
+    // to a message even in principle: the only token it holds is a key into the receiver's own map.
+    const { sockets, train, port } = rig();
+    const t = train();
+    t.update('half');
+    await t.finish('whole');
+
+    const frames = sockets[0].sent.map((f) => JSON.parse(f)).filter((f) => typeof f.say === 'string');
+    expect(frames.map((f) => f.say)).toEqual(['open', 'update', 'finish']);
+    expect(frames[0]).not.toHaveProperty('stream');             // the open frame names no stream at all
+    // …and the token the later frames DO carry is the receiver's minted handle, not any id that
+    // exists on either Beeper account.
+    const handle = frames[1].stream;
+    expect(handle).toBeTruthy();
+    expect(frames[2].stream).toBe(handle);
+    expect(handle).not.toBe(SECONDARY_CHAT_ID);
+    expect(handle).not.toContain(':beeper.local');
+    expect(t.confirmedId).toBeNull();                           // and nothing addressable comes back either
+    port.stop();
+  });
+
+  it('TOKENS NEVER WAIT ON THE OPEN ANSWER — an update pushed first is buffered, not lost', async () => {
+    // The stream id comes back a round trip after the open frame goes out, and a fast first token
+    // can beat it. It is held (every frame carries the WHOLE text, so only the newest matters) and
+    // flushed the instant the answer arrives — so the round trip costs no latency on the tokens,
+    // only on the brain's knowledge of the handle.
+    const { trains, train, port } = rig();
+    const t = train();
+    t.update('written before the peer answered');               // synchronous: the stream id cannot exist yet
+    await t.finish('the settled answer');
+    expect(trains[0].frames).toEqual(['written before the peer answered']);
+    expect(trains[0].final).toBe('the settled answer');
+    port.stop();
+  });
+
+  it('AN OLD PEER — one that serves say:post only — gets the finished line instead, with no stall', async () => {
+    // THE UPGRADE-ONE-AT-A-TIME CASE, and the reason an unknown verb is refused rather than
+    // ignored: a node running the pre-streaming code answers `open` with a `post`-shaped
+    // `bad-frame` result, and the speaker takes that as the open refusal ON THE SPOT rather than
+    // waiting out its own watchdog. A ten-second stall on every reply is what silence would cost.
+    const { trains, posted, logs, train, port } = rig({ legacy: true });
+    const t = train();
+    t.update('half');
+    await t.finish('the whole answer');
+    expect(trains).toEqual([]);
+    expect(posted).toEqual([{ chatId: SECONDARY_CHAT_ID, text: 'the whole answer' }]);
+    expect(t.delivered).toBe(true);
+    expect(logs.some((l) => l.includes('does not serve reply trains') && l.includes('bad-frame'))).toBe(true);
+    port.stop();
+  });
+
+  it('A PEER WHOSE BRIDGE CANNOT EDIT IN PLACE refuses with no-stream and gets the finished line too', async () => {
+    // The same degradation from the other direction: the verbs are served, but this account's own
+    // Beeper bridge has no edit-in-place primitive to hold a train with.
+    const { trains, posted, logs, train, port } = rig({ startStream: null });
+    const t = train();
+    await t.finish('the whole answer');
+    expect(trains).toEqual([]);
+    expect(posted).toEqual([{ chatId: SECONDARY_CHAT_ID, text: 'the whole answer' }]);
+    expect(t.delivered).toBe(true);
+    expect(logs.some((l) => l.includes('would not open a reply train') && l.includes('no-stream'))).toBe(true);
+    port.stop();
+  });
+
+  it('A CHAT THE RECEIVER CANNOT FIND refuses the train AND the line, and the caller is told', async () => {
+    const { trains, posted, train, port } = rig({ chats: [] });
+    const t = train();
+    await t.finish('the answer');
+    expect(trains).toEqual([]);
+    expect(posted).toEqual([]);
+    expect(t.delivered).toBe(false);                            // ⇒ src/spine/sender.mjs's §7 posts it here
+    port.stop();
+  });
+
+  it('A CHAT THAT CANNOT BE KEYED never dials, and takes the LOCAL fallback immediately', async () => {
+    // Known synchronously, so the local placeholder goes up at once rather than after a silent
+    // wait — the one refusal that does not cost the user a delay.
+    const local = { init: null, frames: [], final: null, delivered: false };
+    const fallback = () => ({ update: (t) => local.frames.push(t), finish: async (t) => { local.final = t; local.delivered = true; }, get delivered() { return local.delivered; }, confirmedId: 'local-1' });
+    const { dialled, train, port } = rig();
+    const t = train({ chat: ONE_TO_ONE, fallback });
+    t.update('half');
+    await t.finish('the answer');
+    expect(dialled).toEqual([]);
+    expect(local.frames).toEqual(['half']);
+    expect(local.final).toBe('the answer');
+    expect(t.delivered).toBe(true);
+    expect(t.confirmedId).toBe('local-1');                      // the ONLY case with an id this node can use
+    port.stop();
+  });
+
+  it('NEITHER MOUTH AVAILABLE ⇒ the local fallback, replayed — the reply is never lost', async () => {
+    const local = { frames: [], final: null, delivered: false };
+    const fallback = () => ({ update: (t) => local.frames.push(t), finish: async (t) => { local.final = t; local.delivered = true; }, get delivered() { return local.delivered; } });
+    const { trains, posted, logs, train, port } = rig({ chats: [] });   // the peer can neither stream nor post
+    const t = train({ fallback });
+    t.update('half an answer');
+    await t.finish('the whole answer');
+    expect(trains).toEqual([]);
+    expect(posted).toEqual([]);
+    expect(local.frames).toEqual(['half an answer']);           // what streamed is replayed, never lost
+    expect(local.final).toBe('the whole answer');
+    expect(t.delivered).toBe(true);
+    expect(logs.some((l) => l.startsWith('mouth: FALLING BACK TO THIS ACCOUNT') && l.includes('no-match'))).toBe(true);
+    port.stop();
+  });
+});
+
+// ── 2c. THE MID-STREAM DROP ────────────────────────────────────────────────────────────────────
+// THE decision this feature turns on. If the link dies after the placeholder is posted, the peer's
+// account is holding a "⏳ Thinking…" message that ONLY the receiver can finish — the brain has no
+// id for it and never will. A message stranded mid-thought on the other account is the worst
+// outcome available here, worse than not streaming at all.
+//
+// THE RULE: the receiver finishes its own orphans on socket close, with a visible marker. And the
+// bug this rule could have had is that "the link dropped" and "the reply ended" are the SAME close
+// event, because the socket is per-reply — so the two are told apart by PRESENCE in the receiver's
+// map, which `finish` clears BEFORE it awaits anything.
+describe('the mid-stream drop — a half-written message is never left stranded, and never double-written', () => {
+  const INTERRUPTED = '⚠️ interrupted — the link to the spine writing this reply dropped.';
+
+  it('a link that dies mid-thought settles the peer\'s message on what was written, marked interrupted', async () => {
+    const { trains, sockets, train, flush, port } = rig();
+    const t = train();
+    t.update('the brain got this far');
+    await flush();
+    expect(trains[0].final).toBeNull();                          // still thinking, placeholder up
+
+    sockets[0].close();                                          // THE DROP: the brain died mid-reply
+    await flush();
+
+    expect(trains[0].final).toBe(`the brain got this far\n\n${INTERRUPTED}`);
+    expect(trains[0].delivered).toBe(true);
+    port.stop();
+  });
+
+  it('a drop before a single token settles the placeholder on the marker alone — never left thinking', async () => {
+    const { trains, sockets, train, flush, port } = rig();
+    train();
+    await flush();
+    expect(trains).toHaveLength(1);
+    expect(trains[0].final).toBeNull();
+    sockets[0].close();
+    await flush();
+    expect(trains[0].final).toBe(INTERRUPTED);
+    port.stop();
+  });
+
+  it('A COMPLETED REPLY IS NOT AN ORPHAN — the close that follows it settles nothing a second time', async () => {
+    // The socket is opened per reply and closed the instant the reply settles, so a normal
+    // completion and a drop arrive as the SAME close event. `finish` removes the entry from the
+    // receiver's map before it awaits anything, so this close finds nothing to settle. Without
+    // that ordering every finished reply would be overwritten by the interruption marker.
+    const { trains, sockets, train, flush, port } = rig();
+    const t = train();
+    t.update('half');
+    await t.finish('the settled answer');
+    expect(sockets[0].closed).toBe(true);                        // the speaker closed it, as it always does
+    await flush();
+    expect(trains[0].final).toBe('the settled answer');
+    expect(trains[0].final).not.toContain('interrupted');
+    port.stop();
+  });
+
+  it('THE LIMB STOPPING settles what its peers left open, rather than orphaning it on the way down', async () => {
+    const { trains, train, flush, port } = rig();
+    const t = train();
+    t.update('mid-thought');
+    await flush();
+    port.stop();                                                 // closes every authenticated peer socket
+    await flush();
+    expect(trains[0].final).toBe(`mid-thought\n\n${INTERRUPTED}`);
+    expect(t.delivered).toBe(false);                             // …and the brain has NOT been told it was said
+  });
+
+  it('`gone` IS NOT A VERB — a peer cannot settle another connection\'s replies by asking', async () => {
+    // The orphan sweep is the LIMB's to call, on close, and nobody else's. shell-port's answer
+    // table is also the allowlist, so a table entry that is not a wire verb is unreachable from a
+    // frame — otherwise anything holding the token could truncate a reply mid-thought.
+    const { server, trains, train, flush, port } = rig();
+    const t = train();
+    t.update('mid-thought');
+    await flush();
+
+    const peerWs = server.dial(MOUTH_PATH);
+    const challenge = JSON.parse(peerWs.sent.shift());
+    peerWs.fire('message', Buffer.from(responseFrame(PEER.consoleToken, challenge.nonce)));
+    peerWs.fire('message', Buffer.from(JSON.stringify({ say: 'gone' })));
+    await flush();
+
+    expect(parseMouthFrame(peerWs.sent.pop())).toMatchObject({ say: 'result', ok: false, reason: 'bad-frame' });
+    expect(trains[0].final).toBeNull();                          // the live train is untouched
+    await t.finish('the whole answer');
+    expect(trains[0].final).toBe('the whole answer');
+    port.stop();
+  });
+
+  it('after a drop the brain RE-DIALS the peer, so the finished reply still lands on the RIGHT account', async () => {
+    // Tier 2: a fresh dial and one finished line, beside the message the receiver just marked
+    // interrupted. Posting on the brain's own account is only the LAST resort — the whole point of
+    // the arrangement is which account the reply comes out of, and a dropped socket does not
+    // change that. Two messages, one of them explicitly labelled interrupted, is the deliberate
+    // trade: a truncated answer wearing the shape of a finished one would be worse.
+    const { trains, posted, sockets, dialled, train, flush, port } = rig();
+    const t = train();
+    t.update('half');
+    await flush();
+    sockets[0].close();                                          // the link dies mid-thought
+    await flush();
+    await t.finish('the whole answer');
+
+    expect(trains[0].final).toBe(`half\n\n${INTERRUPTED}`);      // the orphan, settled by the receiver
+    expect(posted).toEqual([{ chatId: SECONDARY_CHAT_ID, text: 'the whole answer' }]);   // …and the reply, said
+    expect(t.delivered).toBe(true);
+    expect(dialled).toHaveLength(2);                             // one dial for the train, one for the retry
+    port.stop();
+  });
+});
+
 // ── 3. REFUSALS ────────────────────────────────────────────────────────────────────────────────
 // Every one of these must FAIL CLOSED (nothing posted) and REPORT BACK (the caller learns it must
 // fall back to speaking on its own account).
@@ -377,7 +647,7 @@ describe('the mouth refuses rather than guessing — and always says so', () => 
     const { WebSocketServer, servers } = makeFakeWss();
     const port = createShellPort({
       WebSocketServer, token: PEER.consoleToken, reapPort: () => 0,
-      onPeerSay: () => { throw new Error('handler exploded before it ever returned a promise'); },
+      onPeerSay: { post: () => { throw new Error('handler exploded before it ever returned a promise'); } },
     });
     port.start();
     const { FakeClient } = makeFakeClient(servers[0]);
