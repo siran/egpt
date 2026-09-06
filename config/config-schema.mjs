@@ -924,10 +924,32 @@ export const CONFIG_SCHEMA = {
               spines cannot agree on which chat is which. Fewer than two
               identities is refused rather than half-working.
 
+    WHEN THE PEER SPEAKS, decided per reply in the reply path itself
+    (src/spine/sender.mjs, the one place): if this block is set AND one of the
+    accounts identities is a participant of the chat being replied in - i.e.
+    the co-account is in that chat - the finished text is handed over the link
+    and said there. Otherwise the reply is posted on this node's own account,
+    unchanged, with no dial at all. Membership that cannot be READ (a failed
+    chat GET, a payload with no roster) counts as absent: this node says it
+    itself. A mode:auto reply is never routed - the whole point of that mode is
+    that it reads as the operator's own typing, on the operator's own account.
+
+    AND IT ALWAYS ARRIVES. Every refusal listed above falls back to a post on
+    this node's own account, logged loudly under [mouth]. That is the INVERSE of
+    the fail-closed rule the refusals themselves follow, deliberately: a reply
+    said by the wrong mouth is cosmetic, a reply that never arrives is not.
+
+    THE PLACEHOLDER IS NOT ROUTED, IT IS SUPPRESSED. A reply normally posts a
+    "thinking" placeholder and edits it in place as the turn streams. On a
+    peer-routed chat that placeholder is never opened, because opening it would
+    stream the whole answer on THIS account and then say it again on the other.
+    So nothing at all is posted here. The price is that the instant ack waits
+    for the membership answer (normally a cached read).
+
     ABSENT = NO PEER: no dialling, no link, and a /peer dial to this node's own
     console is closed on the spot. A node that configures none of this behaves
     exactly as it did before the block existed (tests/peer-mouth.test.mjs locks
-    that first).
+    that first; tests/mouth-routing.test.mjs locks the reply path's half).
 
     SYMMETRIC. Each node's block names the OTHER node's console port and token,
     and both carry the same accounts list, so either spine can be the mouth.

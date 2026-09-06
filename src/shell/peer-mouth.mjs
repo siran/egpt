@@ -9,9 +9,13 @@
 // secondary alone is answered by the secondary directly, with no link involved — that is the
 // ordinary single-account path and nothing here touches it.
 //
-// NOTHING CALLS speakThroughPeer() YET. This slice lands the transport and the chat mapping,
-// tested and inert: createSender/sender.mjs are untouched and WHEN to use the mouth (rather than
-// posting on the node's own account) is the follow-up's decision, not this module's.
+// WHO CALLS THIS (2026-09-05, the follow-up that made the transport live). The WHEN is decided in
+// ONE place: src/spine/sender.mjs, the reply path, at the moment a reply is opened — if a peer is
+// configured AND the peer's account is a participant of the chat being replied in, the finished
+// text goes through speakThroughPeer instead of being posted here. boot.mjs builds both halves
+// (makePeerMouth for the speaker, createMouthReceiver handed to the shell-port limb as its
+// onPeerSay). Every refusal below falls back to a LOCAL post on the caller's own account: a reply
+// from the wrong mouth is cosmetic, a reply that never arrives is not.
 //
 // ── THE HARD PART IS NOT THE SOCKET, IT IS FINDING THE CHAT ────────────────────────────────────
 // The two accounts see the SAME real group as DIFFERENT Matrix rooms, and NOTHING in the two
@@ -137,7 +141,9 @@ export function findChatByKey(chats, chatKey, exclude = []) {
  * node with no peer_spine does.
  *
  * @param {object} o
- * @param {() => Promise<object[]>} o.listChats  RAW chat payloads with rosters (see findChatByKey).
+ * @param {(opts?: {full?: boolean}) => Promise<object[]>} o.listChats  RAW chat payloads with
+ *   rosters (see findChatByKey). Called with no argument first (the recently-active page) and,
+ *   only if nothing keys alike, once more with `{ full: true }` — see the two-step below.
  * @param {(chatId: string, text: string) => Promise<any>} o.post  post verbatim; falsy or a throw
  *   is a failure. boot's wiring is `(chatId, text) => bridge.send(text, { chatId })`.
  * @param {string[]} o.accounts   peer_spine.accounts — the identities excluded when keying.
@@ -148,10 +154,19 @@ export function createMouthReceiver({ listChats, post, accounts = [], onLog = ()
     const body = String(text ?? '');
     if (!body) { onLog('mouth: a peer asked for an EMPTY line to be said — refusing'); return { ok: false, reason: 'no-text', detail: 'nothing to say' }; }
     if (!String(chatKey ?? '').trim()) { onLog('mouth: a peer sent no chat key — refusing (a reply in the wrong chat is worse than no reply)'); return { ok: false, reason: 'no-key', detail: 'the frame carried no chat key' }; }
-    let chats;
-    try { chats = await listChats(); }
+    let found;
+    // PAGE ONE FIRST, THE WHOLE ACCOUNT ONLY ON A MISS — the same two-step beeper.resolveChatId
+    // already makes, for the same reason. `GET /v1/chats` is cursor-paginated by RECENT ACTIVITY
+    // (25 a page; the operator's account walks 18 pages to the end), and the chat a line is being
+    // said in has just had a message in it, so it is on the first page nearly always. Walking
+    // every page per reply would be unacceptable; never walking would silently demote a chat that
+    // has been quiet on THIS account to a local post forever. So: one page, and only if nothing
+    // keys alike, one walk. The bridge caches both under one 60s entry, so a burst pays once.
+    try {
+      found = findChatByKey(await listChats(), chatKey, accounts);
+      if (found.reason === 'no-match') found = findChatByKey(await listChats({ full: true }), chatKey, accounts);
+    }
     catch (e) { onLog(`mouth: could not read this account's chat list — refusing: ${e?.message ?? e}`); return { ok: false, reason: 'unavailable', detail: e?.message ?? String(e) }; }
-    const found = findChatByKey(chats, chatKey, accounts);
     if (!found.ok) { onLog(`mouth: REFUSING to speak — ${found.reason}: ${found.detail}`); return found; }
     try {
       const r = await post(found.chatId, body);

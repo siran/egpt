@@ -2863,3 +2863,91 @@ describe('beeper bridge — chat membership (fallback_handle, operator 2026-08-3
     expect(await bridge.chatHasParticipant('grp3', '+13472576794')).toBe(false);      // a live departure is seen at once, not at the end of the TTL
   });
 });
+
+// ── THE RAW ROSTERS (operator 2026-09-05, the mouth link) ────────────────────────────────────
+// crossAccountChatKey keys one real chat across TWO Beeper accounts off the participant PHONE
+// NUMBERS, and it reads `participants.items[]` — the roster itself. Every reader past this
+// boundary had been served the REDUCED form: listChats normalizes participants away entirely and
+// chatInfo's cache keeps only participantKeys, so neither could feed it and feeding it the keys
+// back is not the same thing. These two readers hand back the payload, and the cases below are
+// about COST as much as correctness: resolving a chat per reply must not walk the account.
+describe('beeper bridge — raw chat payloads (crossAccountChatKey needs the roster, not the keys)', () => {
+  // Roles only. The VIEWING account's own entry is the phone-less self entry (the measured live
+  // shape); the co-account is an ordinary member WITH a number, which is exactly the difference
+  // crossAccountChatKey exists to normalize away.
+  const roster = { items: [
+    { id: 'self@beeper.local', isSelf: true },
+    { id: 'co-account@beeper.local', phoneNumber: '+15550000002', fullName: 'Co-account' },
+    { id: 'member@beeper.local', phoneNumber: '+15551110001', fullName: 'Member' },
+  ] };
+
+  it('chatRaw hands back the PAYLOAD, where listChats/chatHasParticipant only ever hand back the reduction', async () => {
+    fake.chats.set(CHAT('grp'), { title: 'Familia', type: 'group', isMuted: false, accountID: 'whatsapp', participants: roster });
+    const { bridge } = await startBridge();
+    const raw = await bridge.chatRaw('grp');
+    expect(raw.participants.items.map((p) => p.phoneNumber)).toEqual([undefined, '+15550000002', '+15551110001']);
+    // …and the normalized surface genuinely cannot: this is why the reader exists.
+    expect((await bridge.listChats()).find((c) => c.id === 'grp').participants).toBeUndefined();
+  });
+
+  it('rides the SAME cached GET as the membership question — a reply costs a Map read, not a round trip', async () => {
+    fake.chats.set(CHAT('grp'), { title: 'Familia', type: 'group', isMuted: false, accountID: 'whatsapp', participants: roster });
+    const { bridge } = await startBridge();
+    await bridge.chatHasParticipant('grp', '+15550000002');
+    const after = fake.chatGets.filter((id) => id === CHAT('grp')).length;
+    expect(after).toBe(1);
+    for (let i = 0; i < 5; i++) expect(await bridge.chatRaw('grp')).toBeTruthy();
+    expect(fake.chatGets.filter((id) => id === CHAT('grp'))).toHaveLength(after);   // no second HTTP path, no second cache
+  });
+
+  it('a chat listed but never fetched IS fetched once — a listChats entry carries no roster to serve', async () => {
+    fake.chats.set(CHAT('grp'), { title: 'Familia', type: 'group', isMuted: false, accountID: 'whatsapp', participants: roster });
+    const { bridge } = await startBridge();
+    await bridge.listChats();                                    // fills the title/type cache, WITHOUT a roster
+    expect(fake.chatGets.filter((id) => id === CHAT('grp'))).toHaveLength(0);
+    expect((await bridge.chatRaw('grp')).participants.items).toHaveLength(3);
+    expect(fake.chatGets.filter((id) => id === CHAT('grp'))).toHaveLength(1);
+  });
+
+  it('a FAILING GET answers null (UNKNOWN) — never an empty payload a caller could key on', async () => {
+    fake.chats.set(CHAT('boom'), () => { throw new Error('beeper down'); });
+    const { bridge } = await startBridge();
+    expect(await bridge.chatRaw('boom')).toBeNull();
+  });
+
+  it('listChatsRaw serves ONE page by default and the whole account only when asked — the walk is opt-in', async () => {
+    // The fake page size is 2 (live it is 25). The receiving half of the mouth reads page one
+    // first and walks only when nothing keys alike, so this bound is the feature's cost promise.
+    for (const n of ['a', 'b', 'c', 'd', 'e']) fake.chats.set(CHAT(n), { title: n.toUpperCase(), type: 'group', isMuted: false, accountID: 'whatsapp', participants: roster });
+    const { bridge } = await startBridge();
+    const page1 = await bridge.listChatsRaw();
+    expect(page1).toHaveLength(CHATS_PER_PAGE);
+    expect(page1[0].participants.items).toHaveLength(3);          // the roster survives, which listChats' items do not carry
+    expect(await bridge.listChatsRaw({ full: true })).toHaveLength(5);
+  });
+
+  it('CACHED for 60s, with `full` part of the identity — a cached first page never satisfies a full walk', async () => {
+    for (const n of ['a', 'b', 'c', 'd', 'e']) fake.chats.set(CHAT(n), { title: n.toUpperCase(), type: 'group', isMuted: false, accountID: 'whatsapp' });
+    const { bridge } = await startBridge();
+    const before = fake.chatListGets();
+    await bridge.listChatsRaw();
+    await bridge.listChatsRaw();
+    expect(fake.chatListGets() - before).toBe(1);                 // second call served from cache
+    await bridge.listChatsRaw({ full: true });
+    expect(fake.chatListGets() - before).toBeGreaterThan(1);      // …but the walk was NOT served by the cached page
+  });
+
+  it('ONE walk serves both readers: listChats reads THROUGH listChatsRaw', async () => {
+    // Not an optimization for its own sake — the mouth's receiving half asks for the raw list and
+    // then posts, and posting resolves the chat id through listChats. Two independent walks per
+    // relayed line would be the cost this whole design is trying not to pay.
+    for (const n of ['a', 'b', 'c', 'd', 'e']) fake.chats.set(CHAT(n), { title: n.toUpperCase(), type: 'group', isMuted: false, accountID: 'whatsapp' });
+    const { bridge } = await startBridge();
+    const before = fake.chatListGets();
+    await bridge.listChatsRaw({ full: true });
+    const afterRaw = fake.chatListGets();
+    expect(await bridge.listChats({ full: true })).toHaveLength(5);
+    expect(fake.chatListGets()).toBe(afterRaw);                   // the normalized list cost nothing extra
+    expect(afterRaw).toBeGreaterThan(before);
+  });
+});

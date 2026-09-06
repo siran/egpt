@@ -17,6 +17,9 @@ import { EGPT_HOME } from '../egpt-home.mjs';
 import { createBeeperBridgePort } from '../bridges/beeper-port.mjs';
 import { createShellPort, shellPortFrom } from '../bridges/shell-port.mjs';
 import { shellTokenFrom } from '../shell/auth.mjs';
+// THE MOUTH LINK (operator 2026-09-05): the peer spine holding the OTHER Beeper account, the
+// receiving half this node offers on its own console, and the speaking half the reply path uses.
+import { peerSpineFrom, createMouthReceiver, speakThroughPeer } from '../shell/peer-mouth.mjs';
 import { createWarmPool } from '../warm-sessions.mjs';
 import { createBrainSession } from '../brain-session.mjs';
 import { createSandboxCliSession } from '../sandbox-cli-session.mjs';
@@ -197,6 +200,55 @@ export function makeShellAwareBridge(bridge, shellPort) {
     // return path (operator 2026-07-25). shellPort.postStatus returns null (no editable shell msg
     // id), so the mesh's later edit/delete of the placeholder is a guarded no-op.
     postStatus: (c, t) => (shellPort.owns(c) ? shellPort.postStatus(c, t) : bridge.postStatus(c, t)),
+  };
+}
+
+// ── WHICH MOUTH SAYS A REPLY (operator 2026-09-05, the peer-spine mouth link) ──────────────────
+// The SPEAKING half's two questions, in one object, handed to createSender — which is where the
+// decision is actually made (src/spine/sender.mjs header). Split out here for the same reason
+// makeShellAwareBridge and redirectShellToRoom are: it is the routing rule, it is pure but for
+// the injected bridge reads, and it is worth testing directly rather than through a whole boot.
+//
+// `route(chatId)` answers "should the PEER say this reply?" and, when it should, hands back the
+// RAW chat payload the cross-account key is computed from (never a chatId: the two accounts see
+// one real group as two different Matrix rooms and nothing in the payloads is shared).
+//
+// WHICH OF THE TWO IDENTITIES IS THE PEER'S is not configured and does not need to be: it is
+// whichever one is IN THIS ACCOUNT'S OWN ROSTER. An account's own entry in its own roster carries
+// no phone number at all (measured — see beeper.crossAccountChatKey), so this node's own identity
+// can never match here, and the one that does is the co-account's. `peer_spine.accounts` names
+// both symmetrically on both nodes, which is exactly what makes that work without a third key.
+//
+// UNKNOWN MEMBERSHIP POSTS LOCALLY. chatHasParticipant answers true | false | null, and null means
+// the roster could not be read. Routing on a guess would risk handing the line to a peer that is
+// not in the chat, which then finds no match and costs a round trip before falling back anyway;
+// posting locally is guaranteed to arrive. So null is treated exactly like false — no dial at all.
+// This is NOT the router's "UNKNOWN MEANS SILENT" trade inverted: silence there protects against
+// two spines answering one @handle, while here the reply is going out either way and the only
+// question is out of which mouth.
+//
+// THE CONSOLE IS NEVER ROUTED. A shell/room chat id is not a Beeper chat, so asking Beeper about
+// its roster is a wasted (and failing) GET on every reply typed at the editor. `owns` is the SAME
+// ownership signal the shell-aware bridge already routes outbound on — no second rule.
+export function makePeerMouth({ peer, bridge, owns = () => false, speak = speakThroughPeer, onLog = () => {} } = {}) {
+  if (!peer) return null;                     // no peer_spine ⇒ no mouth ⇒ createSender is handed none ⇒ nothing changes
+  return {
+    async route(chatId) {
+      if (owns(chatId)) return null;
+      for (const account of peer.accounts) {
+        let present = null;
+        try { present = await bridge?.chatHasParticipant?.(chatId, account); }
+        catch (e) { onLog(`could not read the roster of ${chatId} — this node will say the reply itself: ${e?.message ?? e}`); return null; }
+        if (present !== true) continue;       // false = the peer is not here; null = UNKNOWN → local (above)
+        let raw = null;
+        try { raw = await bridge?.chatRaw?.(chatId); }
+        catch (e) { onLog(`the peer's account is in ${chatId} but its chat payload could not be read — this node will say the reply itself: ${e?.message ?? e}`); return null; }
+        if (!raw) { onLog(`the peer's account is in ${chatId} but its chat payload came back empty — this node will say the reply itself`); return null; }
+        return raw;
+      }
+      return null;
+    },
+    say(chat, text) { return speak({ peer, chat, text, onLog }); },
   };
 }
 
@@ -1339,6 +1391,24 @@ export async function boot({
     log.line?.(`[peer] watching the peer spine on :${raw} — its fallback handle is assumed only while it is absent`);
   }
 
+  // THE MOUTH LINK (operator 2026-09-05), read ONCE, here, like every other config-fed option —
+  // the limb and the sender never read config themselves. ABSENT (every ordinary single-account
+  // node) ⇒ null ⇒ no receiver is constructed, a /peer dial to this node's console is refused on
+  // the spot, and the reply path is handed no mouth at all: not one line of this feature runs.
+  const mouthLog = (m) => log.line?.(`[mouth] ${m}`);
+  const peerSpine = peerSpineFrom(cfg, mouthLog);
+  // THE RECEIVING HALF: the handler the console limb calls for a `say: post` frame off an
+  // AUTHENTICATED peer connection. It resolves the cross-account chat key against THIS account's
+  // own chats and posts the text VERBATIM — postVerbatim, not send, because the line arrived from
+  // the other spine already wrapped and signed by the brain that wrote it (beeper-port.mjs).
+  const mouthReceiver = peerSpine ? createMouthReceiver({
+    listChats: (o) => bridge.listChatsRaw(o),
+    post: (chatId, text) => bridge.postVerbatim(chatId, text),
+    accounts: peerSpine.accounts,
+    onLog: mouthLog,
+  }) : null;
+  if (peerSpine) mouthLog(`offering the mouth link on this node's console — a peer spine on :${peerSpine.consolePort} may speak through it, and replies in chats its account is in will be said by it`);
+
   const shellPort = lasso.wrap(createShellPort({
     wakeWords,
     addressWithoutAt,                     // same switch, same route — the shell gate and the beeper gate move together
@@ -1357,8 +1427,16 @@ export async function boot({
     // both bind one port, and that collision was the only thing making two spines impossible.
     port: shellPortFrom(cfg),
     header: shellHeader,
+    // THE MOUTH HANDLER (above). Null on every node with no peer_spine, which is what makes the
+    // limb refuse a /peer dial outright — exactly as it did before this feature existed.
+    onPeerSay: mouthReceiver,
     onLog: (m) => log.line?.(`[shell] ${m}`),
   }));
+
+  // THE SPEAKING HALF, built after the limb because it asks the limb which chat ids are the
+  // console's (a shell/room id is not a Beeper chat and is never routed). Handed to createSender
+  // below — the ONE place the mouth decision is made.
+  const peerMouth = makePeerMouth({ peer: peerSpine, bridge, owns: (c) => shellPort.owns(c), onLog: mouthLog });
 
   // Shell-aware bridge facade (makeShellAwareBridge, top of file): the STREAMING senders
   // (E's persona sender + the brain-member relay sender) render through their injected
@@ -1457,7 +1535,9 @@ export async function boot({
     // by which time `commands` is assigned (mirrors createSpine's own construction site further
     // down, which passes commands.currentRoomOf directly because by THAT point commands exists).
     transcript: createTranscript({ contacts, persona: labelOf(defaultKey), defaultKey, labelOf, timeZone: transcriptTimeZone, io, currentRoomOf: (surface) => commands.currentRoomOf(surface), onLog: (m) => log.line?.(`[transcript] ${m}`) }),
-    sender: createSender({ bridge: shellAwareBridge, bridgeOf: shellAwareBridgeOf, bodyEmojiOf, labelOf, agentSignatureOpenOf, agentSignatureCloseOf, defaultKey }),
+    // peerMouth (operator 2026-09-05): THE reply path, so THE place the mouth decision is made —
+    // null on a node with no peer_spine, and the sender is then byte-identical to before.
+    sender: createSender({ bridge: shellAwareBridge, bridgeOf: shellAwareBridgeOf, bodyEmojiOf, labelOf, agentSignatureOpenOf, agentSignatureCloseOf, defaultKey, peerMouth, onLog: mouthLog }),
     // The real cadence registry the spine's tick() drives. The heartbeat LOADER
     // (below) collects every declarative heartbeat and registers it here, so each
     // beat rides the loop's own tick instead of a side timer (operator 2026-07-01).
@@ -1779,6 +1859,8 @@ export async function boot({
 
   return {
     spine, bridge, shellPort, pool, cfg, accountPeers,   // shellPort: the second LIMB — exposed so its regulation is assertable, like bridge's
+    peerMouth,                                           // null on a node with no peer_spine — exposed for the same reason: "absent means absent" is assertable
+
     stop: () => {
       // No alive-timer teardown: the beat is a heartbeat now, riding the spine's
       // tick timer, which spine.stop() clears.

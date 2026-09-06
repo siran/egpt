@@ -44,6 +44,7 @@ function fakePort(clock) {
     posts,
     async send(chat, text) { posts.push({ at: clock.now(), kind: 'send', chat, text }); return { ok: true }; },
     async postStatus(chat, text) { posts.push({ at: clock.now(), kind: 'postStatus', chat, text }); return 'id-1'; },
+    async postVerbatim(chat, text) { posts.push({ at: clock.now(), kind: 'postVerbatim', chat, text }); return { ok: true }; },
     async sendMedia(chat, filePath) { posts.push({ at: clock.now(), kind: 'sendMedia', chat, filePath }); return true; },
     editStatus(chat, msgId, text) { posts.push({ at: clock.now(), kind: 'editStatus', chat, text }); return true; },
     editOwn(chat, msgId, text) { posts.push({ at: clock.now(), kind: 'editOwn', chat, text }); return true; },
@@ -290,6 +291,32 @@ describe('lasso — the outbound ceiling', () => {
     await Promise.all(Array.from({ length: 20 }, () => b2.send('!room', 'x')));
     expect(trips).toHaveLength(1);                            // …the message ceiling still trips
     expect(trips[0].kind).toBe('message');
+  });
+
+  // THE MOUTH LINK'S POST IS STILL A MESSAGE (operator 2026-09-05). A peer spine hands this node a
+  // finished line and this node posts it on its own account — that is an outbound message leaving
+  // this limb, and the ceiling is "any limb, node-wide". A path the lasso did not know about would
+  // be a hole straight through the ceiling, and the hole would be reachable from ANOTHER process.
+  it('11. postVerbatim (the peer spine\'s line, said on this account) is counted like any other message', async () => {
+    const { trips, port, bridge } = withTrips({ messages: 3 });
+    for (let i = 0; i < 3; i++) expect(await bridge.postVerbatim('!room', `peer line ${i}`)).toEqual({ ok: true });
+    expect(port.posts).toHaveLength(3);
+    expect(trips).toEqual([]);
+
+    expect(await bridge.postVerbatim('!room', 'the 4th')).toBe(null);
+    expect(port.posts).toHaveLength(3);                        // never reached the limb
+    expect(trips[0]).toMatchObject({ kind: 'message', count: 4, limit: 3 });
+  });
+
+  it('11b. it shares ONE budget with send — the two mouths cannot each spend the ceiling', async () => {
+    const { trips, port, bridge } = withTrips({ messages: 3 });
+    await bridge.send('!room', 'mine');
+    await bridge.postVerbatim('!room', 'the peer\'s');
+    await bridge.send('!room', 'mine again');
+    expect(trips).toEqual([]);
+    expect(await bridge.postVerbatim('!room', 'over')).toBe(null);
+    expect(port.posts).toHaveLength(3);
+    expect(trips).toHaveLength(1);
   });
 
   it('10. the SHIPPED defaults are 18 messages / 10000ms and 4000 edits (operator: raise the ceiling, not a classification branch)', async () => {

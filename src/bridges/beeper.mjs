@@ -531,8 +531,8 @@ export async function startBeeperBridge(opts = {}) {
     if (!refresh && _chatCache.has(chatID)) return _chatCache.get(chatID);
     // `participants: null` is UNKNOWN, never "empty" — the catch below leaves it null, and the
     // membership answer must never read a failed fetch as "nobody is in this chat".
-    let info = { title: chatID, type: 'single', isMuted: false, accountID: null, participants: null, at: Date.now() };
-    try { const c = await api('GET', `/v1/chats/${encodeURIComponent(fullChatId(chatID))}`); info = { title: c.title || chatID, type: c.type || 'single', isMuted: !!c.isMuted, accountID: c.accountID || null, participants: participantKeys(c), at: Date.now() }; }
+    let info = { title: chatID, type: 'single', isMuted: false, accountID: null, participants: null, raw: null, at: Date.now() };
+    try { const c = await api('GET', `/v1/chats/${encodeURIComponent(fullChatId(chatID))}`); info = { title: c.title || chatID, type: c.type || 'single', isMuted: !!c.isMuted, accountID: c.accountID || null, participants: participantKeys(c), raw: c, at: Date.now() }; }
     catch (e) { onLog(`beeper: chatInfo(${chatID}) failed — ${e?.message ?? e}`); }
     _chatCache.set(chatID, info);
     _knownChatIds.add(chatID);
@@ -578,6 +578,31 @@ export async function startBeeperBridge(opts = {}) {
     return info.participants.includes(want);
   }
 
+  // ── THE RAW CHAT PAYLOAD (operator 2026-09-05, the mouth link) ──────────────────────────────
+  // The ROSTER ITSELF, not the keys chatInfo reduced it to. crossAccountChatKey reads
+  // `participants.items[]` (a phoneNumber per member) and every other reader past this boundary
+  // is served the REDUCED form — listChats normalizes participants away entirely, chatInfo keeps
+  // only participantKeys — so neither can feed it, and feeding it the keys back is not the same
+  // thing (participantKeys reads objects, a key array reads as an empty roster).
+  //
+  // NO SECOND HTTP PATH AND NO SECOND CACHE: this is the payload the SAME `GET /v1/chats/{id}`
+  // chatInfo/chatHasParticipant already fetch, kept on the same cache entry, refreshed on the
+  // SAME freshness rule chatHasParticipant uses (a `type: single` roster is immutable, so it
+  // never expires; anything else is re-read after PARTICIPANTS_TTL_MS). So resolving a reply's
+  // chat key normally costs a Map read — the arrival path has already paid for this GET on any
+  // chat we are replying in — and at worst one GET per chat per TTL.
+  //
+  // null = UNKNOWN (never fetched, or the GET failed). The caller must read that as "this chat
+  // cannot be keyed", never as "this chat has nobody in it" — the same reading chatHasParticipant
+  // takes, for the same reason.
+  async function chatRaw(chatID) {
+    const id = shortChatId(chatID);
+    let info = _chatCache.get(id);
+    const fresh = info?.raw && (info.type === 'single' || Date.now() - (info.at ?? 0) < PARTICIPANTS_TTL_MS);
+    if (!fresh) info = await chatInfo(id, { refresh: true });
+    return info?.raw ?? null;
+  }
+
   // Deterministic chat slug (operator 2026-06-10: "conversations should be
   // a deterministic contact name"). Beeper chatIDs are opaque Matrix room
   // ids; nobody should have to chase them. The slug of a chat TITLE is the
@@ -617,6 +642,29 @@ export async function startBeeperBridge(opts = {}) {
     return out;
   }
 
+  // The RAW payloads of that same walk, cached 60s, with `full` part of the cache identity for
+  // the same reason listChats keeps it (a cached FIRST PAGE must never satisfy a full request).
+  // It exists for the mouth link's RECEIVING half, which has to key every chat on this account by
+  // its roster (src/shell/peer-mouth.mjs findChatByKey) and therefore needs the participants
+  // listChats throws away. listChats reads THROUGH it, so one walk serves both and a mouth lookup
+  // never costs the chat list a second round trip. Ids are registered in _knownChatIds exactly as
+  // listChats registers them — a page walk is the same evidence that a room is real — so the
+  // receiver's post() resolves the chatId it just found with no further lookup.
+  //
+  // COST, deliberately bounded: the default is ONE page (the 25 most recently active chats), which
+  // is where a chat being replied in right now is; the 18-page walk this account measures happens
+  // only when a caller asks for `full` — i.e. only when the first page did not contain the chat —
+  // and its result lands in this same 60s entry, so a burst of replies pays for it once.
+  let _chatRawList = null, _chatRawAt = 0, _chatRawFull = false;
+  async function listChatsRaw({ full = false } = {}) {
+    if (_chatRawList && Date.now() - _chatRawAt < 60_000 && (!full || _chatRawFull)) return _chatRawList;
+    _chatRawList = await fetchChatPages(full);
+    _chatRawAt = Date.now();
+    _chatRawFull = full;
+    for (const c of _chatRawList) { const id = shortChatId(c?.id ?? ''); if (id) _knownChatIds.add(id); }
+    return _chatRawList;
+  }
+
   // All chats from the Desktop API, normalized + briefly cached (60s) —
   // powers /channels-style listings and name→chatID resolution.
   // `full` is part of the cache identity: a cached FIRST PAGE must never satisfy a
@@ -624,7 +672,7 @@ export async function startBeeperBridge(opts = {}) {
   let _chatList = null, _chatListAt = 0, _chatListFull = false;
   async function listChats({ full = false } = {}) {
     if (_chatList && Date.now() - _chatListAt < 60_000 && (!full || _chatListFull)) return _chatList;
-    const items = await fetchChatPages(full);
+    const items = await listChatsRaw({ full });
     _chatList = items.map(c => {
       const id = shortChatId(c.id);   // SHORT past this boundary — see chat-id.mjs
       return {
@@ -1863,6 +1911,11 @@ export async function startBeeperBridge(opts = {}) {
     // Deterministic-name surface (operator 2026-06-10): callers and slash
     // files work with names/slugs; room ids stay an internal detail.
     listChats,
+    // THE ROSTERS THEMSELVES (operator 2026-09-05, the mouth link) — the two RAW readers
+    // crossAccountChatKey needs and the normalized surface above cannot give it. Same GETs, same
+    // caches; see listChatsRaw / chatRaw for the cost bound.
+    listChatsRaw,
+    chatRaw: (chatId) => chatRaw(chatId),
     // MEMBERSHIP (operator 2026-08-31, router.mjs fallback_handle): true | false | null (UNKNOWN).
     // Cached + TTL'd + free for a 1:1 — see chatHasParticipant above.
     chatHasParticipant: (chatId, identity) => chatHasParticipant(chatId, identity),

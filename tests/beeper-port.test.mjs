@@ -367,6 +367,43 @@ describe('beeper-port adapter — layered signatures (bridge + agent wrap)', () 
     ]);
   });
 
+  // THE MOUTH'S POST (operator 2026-09-05) — the ONE outbound on this port that must NOT wrap.
+  // The line arrived from the PEER SPINE already wrapped and signed by the brain that wrote it
+  // (src/shell/mouth.mjs: "the mouth posts exactly these bytes and adds nothing"), so rendering it
+  // through wrapPersona would staple THIS node's bridge signature onto a line the other node
+  // already signed and one reply would carry two nodes' marks. Asserted against a port that DOES
+  // have layers configured, beside a send() through the same port, so the difference is the point.
+  it('postVerbatim posts the bytes UNWRAPPED — while send() through the same port still wraps', async () => {
+    const { start, spy } = fakeStart();
+    const port = await createBeeperBridgePort({ bridgeSignatureOpen: '🌉', bridgeSignatureClose: '💸' }, { start });
+    await port.postVerbatim('!room', '🌉 🐶 egpt: said by the other spine 💸');
+    await port.send('!room', 'said by this one', { bodyEmoji: '🐶', label: 'egpt' });
+    expect(spy.sent).toEqual([
+      { text: '🌉 🐶 egpt: said by the other spine 💸', opts: { chatId: '!room' } },
+      { text: '🌉 🐶 egpt: said by this one 💸', opts: { chatId: '!room', replyToMessageID: null } },
+    ]);
+  });
+
+  // THE RAW ROSTERS (operator 2026-09-05) — the two READS the mouth needs and the normalized
+  // surface cannot give it: crossAccountChatKey reads `participants.items[]`, which listChats
+  // normalizes away and chatInfo's cache has already reduced to keys. A bridge that has neither (a
+  // test fake, an older transport) answers empty/null rather than throwing, which the mouth reads
+  // as "cannot key this chat" and falls back from.
+  it('forwards listChatsRaw / chatRaw — and answers empty/null on a transport that has neither', async () => {
+    const { start, spy } = fakeStart();
+    const raw = [{ id: '!room:beeper.local', participants: { items: [{ id: 'p1', phoneNumber: '+15551110001' }] } }];
+    const port = await createBeeperBridgePort({}, { start });
+    expect(await port.listChatsRaw()).toEqual([]);       // the fake transport has no raw readers
+    expect(await port.chatRaw('!room')).toBeNull();
+
+    const withRaw = await createBeeperBridgePort({}, {
+      start: async (o) => ({ ...(await start(o)), listChatsRaw: async (opts) => { spy.rawOpts = opts; return raw; }, chatRaw: async (c) => ({ id: c }) }),
+    });
+    expect(await withRaw.listChatsRaw({ full: true })).toBe(raw);
+    expect(spy.rawOpts).toEqual({ full: true });         // `full` reaches the transport — the walk is the caller's choice
+    expect(await withRaw.chatRaw('!room')).toEqual({ id: '!room' });
+  });
+
   it('forwards bridge_* + transcription_* through to startBeeperBridge (the 👂 echo layers are applied there)', async () => {
     const { start, spy } = fakeStart();
     await createBeeperBridgePort({ bridgeSignatureOpen: '🌉', bridgeSignatureClose: '💸', transcriptionOpen: 'T_open', transcriptionClose: 'T_close' }, { start });

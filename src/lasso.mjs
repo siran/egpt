@@ -200,6 +200,13 @@ export function createLasso({
         (opts?.bypassLasso || admit('message')) ? port.send(chat, text, opts) : (refuse('send', chat), null),
       postStatus: async (chat, text) =>
         admit('message') ? port.postStatus(chat, text) : (refuse('postStatus', chat), null),
+      // THE MOUTH's verbatim post (beeper-port.postVerbatim, operator 2026-09-05): a PEER SPINE's
+      // finished line, said on this account. It leaves this node's limb like any other message —
+      // the ceiling is "any limb", and an unwrapped path here would be a hole straight through it
+      // — so it is admitted on the same 'message' budget as send(). No bypassLasso: the stop path
+      // is send()'s alone, and nothing arriving over the link is a stop.
+      postVerbatim: port.postVerbatim && (async (chat, text) =>
+        admit('message') ? port.postVerbatim(chat, text) : (refuse('postVerbatim', chat), null)),
       sendMedia: port.sendMedia && (async (chat, filePath, opts = {}) =>
         admit('message') ? port.sendMedia(chat, filePath, opts) : (refuse('sendMedia', chat), false)),
       startStream: port.startStream && ((chat, init, opts = {}) =>

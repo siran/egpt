@@ -76,12 +76,47 @@ const QUEUED = (ahead) => `${LIVE_FRAME_MARK} Queued (${ahead} ahead)…`;
 // message look transient to an observing node and vanish from its transcript.
 export const RETAINED_SEAM = '\n\n— ↓ reply —\n\n';
 
+// ── WHICH MOUTH SAYS IT (operator 2026-09-05, the peer-spine mouth link) ──────────────────────
+// One machine, two spines, one Beeper account each, differing only by EGPT_HOME. The PRIMARY is
+// the ear and the brain — it receives, logs, gates and runs the turn exactly as it always has —
+// and when it wants to reply it hands the finished text to the SECONDARY over a loopback link,
+// and the secondary says it on the OTHER account (src/shell/peer-mouth.mjs; the whole arrangement
+// is in src/shell/mouth.mjs's header).
+//
+// THE DECISION IS MADE HERE AND NOWHERE ELSE, because this is THE reply path: every persona reply
+// on every surface is opened by open() below. `peerMouth` is boot's injected pair — route(chatId)
+// answers "should the peer say this one?" (it does when the peer's account is a participant of
+// the chat) with the RAW chat payload the key is computed from, and say(chat, text) hands the
+// finished line over. ABSENT (the ordinary single-account node) ⇒ not one line of this runs and
+// the sender behaves byte-identically, which is the whole additivity requirement.
+//
+// FALL BACK, NEVER GO SILENT — the INVERSE of the fail-closed rule the mouth's own refusals
+// follow, and the difference is worth stating. Refusing to POST INTO A CHAT is fail-closed
+// because a reply in the wrong chat is public before anyone notices and cannot be taken back.
+// Refusing to REPLY AT ALL is not the same trade: a reply that comes out of the wrong mouth is
+// cosmetic. So every failure the link can produce — unreachable, no-key, no-match, ambiguous,
+// send-failed, a handler that threw — falls back to posting on THIS node's own account, loudly
+// logged. The transport reports every refusal back over the same socket for exactly this.
+//
+// STREAMING STAYS LOCAL — AND SO THE PLACEHOLDER IS NOT OPENED AT ALL ON A PEER-ROUTED REPLY.
+// The link carries a FINISHED line and nothing else (relaying the "⏳ Thinking…" placeholder and
+// its in-place edits means relaying a message IDENTITY across two accounts — mouth.mjs says why
+// that is out of scope). The placeholder is therefore not something to route: it is something to
+// SUPPRESS, because opening it locally would stream the whole answer on the primary's account and
+// then say it again on the secondary's. So when a peer is configured the local stream is opened
+// LAZILY — the moment the route says "local", which is a cached membership read and normally
+// lands before the first token — and on a peer route it is never opened, so nothing is posted on
+// this account at all. On a fallback the accumulated text is still whole (absorb() has been
+// running throughout) and goes out as one fresh local post, which is what the no-stream branch of
+// finish() has always done. THE SEAM, stated plainly: a node with a peer trades an instant "⏳"
+// ack for a silent moment while membership resolves; a node without one is untouched.
+//
 // bridgeOf (operator 2026-08-30, multi-connection Beeper): OPTIONAL (being) => Bridge, resolved
 // PER open() CALL (open() already receives `being`) — a node wired to more than one Beeper
 // connection routes each being's reply through its OWN bridge. Absent, or returning nullish for
 // a given being, falls straight back to the single `bridge` above — BYTE-IDENTICAL to before for
 // every caller that only passes `bridge` (memberSender, every existing test).
-export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null, labelOf = () => null, agentSignatureOpenOf = () => '', agentSignatureCloseOf = () => '', defaultKey = 'e' } = {}) {
+export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null, labelOf = () => null, agentSignatureOpenOf = () => '', agentSignatureCloseOf = () => '', defaultKey = 'e', peerMouth = null, onLog = () => {} } = {}) {
   if (!bridge) throw new Error('createSender: bridge is required');
   const textOf = (v) => (typeof v === 'string' ? v : v?.text ?? '');
   return {
@@ -93,6 +128,10 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
       // edits, no queued placeholder. It posts ONCE, complete, when the turn finishes, the
       // way a human types a single message. A withheld ('…' silence, surface:false) or
       // empty reply posts NOTHING — silence is a valid operator move.
+      //
+      // AND IT IS NEVER ROUTED THROUGH THE PEER MOUTH: the point of mode:auto is that the reply
+      // looks like the OPERATOR typed it, on the operator's own account. Saying it from the
+      // second account would defeat exactly the thing the mode exists for.
       if (auto) {
         // sendResult (operator 2026-08-10, voice-reply-as-a-reply-to-the-text chunk): the
         // delivered message's own confirmedId, exposed so a caller can thread a FOLLOW-UP
@@ -119,7 +158,11 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
       const agentSigOpen = agentSignatureOpenOf(being);
       const agentSigClose = agentSignatureCloseOf(being);
       const tag = { bodyEmoji, label, replyTo, agentSigOpen, agentSigClose };   // the bridge enforces the persona stamp (emoji + label) + wraps the layers from these
-      const stream = bridgeForThisBeing.startStream?.(chatId, queued ? QUEUED(queuedAhead) : THINKING, { ...tag, persona: being });
+      // WHICH MOUTH SAYS IT (header). Started HERE, at the top of the reply, so the answer is in
+      // hand by the time there is anything to show. A route that throws — or a peerMouth that
+      // throws synchronously — reads as "no peer": never a lost reply. Absent peerMouth ⇒ null ⇒
+      // the local stream opens immediately below, exactly as it always has.
+      const route = peerMouth ? Promise.resolve().then(() => peerMouth.route(chatId)).catch((e) => { onLog(`mouth: could not decide the route for ${chatId} — posting locally: ${e?.message ?? e}`); return null; }) : null;
       // What the human has already read, in two parts: `tail` is the block the current
       // frame extends, `head` everything sealed behind a seam. See RETAINED_SEAM.
       let head = '';
@@ -137,6 +180,28 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
         tail = t;
         return shown();
       };
+      // THE LOCAL PLACEHOLDER, opened once. With NO peer this runs on the next line, at the exact
+      // moment it always has, with `shown()` still empty — so the call is byte-identical to the
+      // one that used to sit here. With a peer it waits for the route: on "local" it opens then
+      // (replaying whatever streamed in the meantime, so nothing a human should have seen is
+      // lost), on "peer" it is never called and this account posts nothing at all.
+      let activated = false;
+      let stream = null;
+      let localOpened = false;
+      const openLocal = () => {
+        if (localOpened) return stream;
+        localOpened = true;
+        stream = bridgeForThisBeing.startStream?.(chatId, (queued && !activated) ? QUEUED(queuedAhead) : THINKING, { ...tag, persona: being });
+        const already = shown();
+        if (already) stream?.update?.(`${already} ${LIVE_FRAME_MARK}`);
+        return stream;
+      };
+      if (!route) openLocal();
+      // …and a placeholder that cannot be opened is LOGGED, never an unhandled rejection: on the
+      // no-peer path a throwing startStream propagates out of open() as it always has, but on this
+      // path there is no caller left to catch it. finish() then finds no stream and posts the
+      // reply fresh, which is the branch it already has for a bridge with no streaming at all.
+      else route.then((peerChat) => { if (!peerChat) openLocal(); }).catch((e) => onLog(`mouth: could not open the local placeholder in ${chatId} — the reply will be posted whole: ${e?.message ?? e}`));
       // fallbackResult (operator 2026-08-10, voice-reply-as-a-reply-to-the-text chunk): set
       // ONLY when the §7 fallback below fires (a FRESH send, not an edit-in-place) — its own
       // confirmedId then supersedes the stream's, which never delivered.
@@ -145,13 +210,23 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
         // A queued placeholder flips from the queue into the live train the instant
         // its turn starts (before the first token), so the user sees it move. No-op
         // for a placeholder that was never queued.
-        activate() { if (queued) stream?.update?.(THINKING); },
-        update(partial) { const t = textOf(partial); if (!t) return; stream?.update?.(`${absorb(t)} ${LIVE_FRAME_MARK}`); },
+        activate() { activated = true; if (queued) stream?.update?.(THINKING); },
+        // absorb() runs UNCONDITIONALLY, before the push. `stream?.update?.(`${absorb(t)} …`)`
+        // reads as if it did, but optional chaining short-circuits the WHOLE call expression —
+        // arguments included — so with no stream yet (a peer route being resolved, or a peer
+        // route outright) the running text was silently never accumulated, and a fallback post
+        // would have carried only the settled value with the narration above it lost.
+        update(partial) { const t = textOf(partial); if (!t) return; const frame = `${absorb(t)} ${LIVE_FRAME_MARK}`; stream?.update?.(frame); },
         // `commands` (operator 2026-09-01): the verbs of a LIMB-ONLY reply — the turn's whole
         // answer was action commands, so there is no prose to deliver but plenty happened. Null
         // for every other turn, which is why a reply with no action and a genuinely empty reply
         // both resolve byte-identically to before.
         async finish(reply, { surface = true, commands = null } = {}) {
+          // Settle the mouth decision before anything is written anywhere. With no peer this is
+          // null and costs nothing; with one, the `route.then` above has already opened the local
+          // stream by the time this resolves (microtask order), so every branch below sees the
+          // same `stream` it always did on a local route.
+          const peerChat = route ? await route : null;
           const t = textOf(reply);
           // Gate-withheld ('on'-mode silence / not surfaced). NOTHING IS EVER
           // DELETED (operator 2026-08-24): the placeholder resolves to the
@@ -159,6 +234,12 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
           // "A polite silence is '...' or '…'" — so the withheld turn reads as
           // a deliberate silence rather than a message that disappeared.
           if (!surface) {
+            // A WITHHELD TURN RESOLVES ON THIS NODE'S OWN ACCOUNT, never through the peer. The
+            // link carries REPLIES; a gate-withheld turn has none — what is left is a placeholder
+            // that must not be left stuck (operator 2026-08-24, "nothing is ever deleted"), and
+            // that placeholder is this account's. So open it if the route suppressed it and
+            // resolve it exactly as this branch always has.
+            openLocal();
             // A LIMB-ONLY turn says what it is DOING, never that it heard nothing (commandMark).
             if (commands?.length) { if (stream) await stream.finish?.(absorb(commandMark(commands))); return; }
             // The model's own words if it produced any (its '…' is ITS silence);
@@ -183,6 +264,16 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
           // marker (a turn meant to reply that produced nothing is resolved VISIBLY,
           // not silently deleted / left stuck).
           const body = absorb(t.trim() ? t : noReplyMark());
+          // THE MOUTH. The finished line goes to the peer, which says it on the other account and
+          // answers ok/refusal on the same socket. Anything short of ok — including a `say` that
+          // threw, which no transport failure should ever be able to do but a wiring fault could
+          // — falls through to the local post below, loudly. NEVER a silent drop: the log line
+          // names the reason so an operator reading the chat can see which mouth spoke and why.
+          if (peerChat) {
+            const r = await Promise.resolve().then(() => peerMouth.say(peerChat, body)).catch((e) => ({ ok: false, reason: 'send-failed', detail: e?.message ?? String(e) }));
+            if (r?.ok) { onLog(`mouth: the PEER said this reply (its chat ${r.chatId}) — nothing posted on this account`); return; }
+            onLog(`mouth: FALLING BACK TO THIS ACCOUNT — the peer did not say it (${r?.reason || 'no answer'}${r?.detail ? `: ${r.detail}` : ''}); posting the reply here instead`);
+          }
           if (stream) {
             await stream.finish?.(body);
             if (!stream.delivered) fallbackResult = await bridgeForThisBeing.send(chatId, body, tag);   // §7 fallback
@@ -192,10 +283,20 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
         },
         async fail() {                                 // visible failure: the message ends with ❌
           try {
+            if (route) await route;                    // …after the mouth decision, so a local route still EDITS its placeholder rather than posting a fresh ❌
+            // A peer-routed turn has no local placeholder to end (nothing was posted here), so
+            // the failure goes out as a fresh line ON THIS ACCOUNT — the no-stream branch, which
+            // is exactly right: the peer never got a finished reply to say, and a visible ❌ here
+            // beats a failure nobody sees.
             if (stream) await stream.finish?.(`${shown() ? `${shown()} ` : ''}${FAIL_SUFFIX}`);
             else await bridgeForThisBeing.send(chatId, FAIL_SUFFIX, tag);
           } catch { /* best effort */ }
         },
+        // null after a PEER-said reply: the delivered message lives on the other account, in the
+        // other spine's id namespace, and an id from there means nothing here (mouth.mjs). Its
+        // one consumer threads a follow-up voice note as a reply to the text — with no local id
+        // that follow-up simply goes out unthreaded, which is the same thing it already does
+        // whenever a stream fails to resolve its placeholder.
         get confirmedId() { return fallbackResult ? (fallbackResult?.confirmedId ?? null) : (stream?.confirmedId ?? null); },
       };
     },

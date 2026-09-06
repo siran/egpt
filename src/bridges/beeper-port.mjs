@@ -123,6 +123,15 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
       return real.send(wrapPersona(opts, text), { chatId: chat, replyToMessageID: opts.replyTo ?? null });
     },
 
+    // THE MOUTH'S POST (operator 2026-09-05) — the one outbound on this port that does NOT wrap,
+    // and the reason is the whole contract of the link: the text arrived from a PEER SPINE
+    // already wrapped and signed by the brain that wrote it (src/shell/mouth.mjs — "the mouth
+    // posts exactly these bytes and adds nothing"). Rendering it through wrapPersona would staple
+    // THIS node's bridge signature onto a line the other node already signed, so one reply would
+    // carry two nodes' marks. Nothing else may use it: every other send here is this node
+    // speaking in its own voice and stays wrapped.
+    postVerbatim(chat, text) { return real.send(text, { chatId: chat }); },
+
     // In-place edit-stream. Returns the §2b { update, finish, delete } plus
     // delivered / lastError passthrough: the sender's fallback-send must send fresh
     // ONLY when the stream did not deliver in place (§7 invariant — "the host
@@ -249,6 +258,19 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
     // through this — so forwarding it switches on no routing, unlike resolveChatId above.
     async listChats(opts) {
       return real.listChats ? await real.listChats(opts) : [];
+    },
+
+    // THE RAW ROSTERS (operator 2026-09-05, the mouth link) — forwarded for the same reason
+    // chatHasParticipant is: they are READS of this account's own chat payloads, never an
+    // outbound. The mouth cannot key one real chat across two accounts without them —
+    // crossAccountChatKey reads `participants.items[]`, which listChats above normalizes away and
+    // chatInfo's cache has already reduced to keys. A bridge that has neither (a test fake)
+    // answers empty/null, which the mouth reads as "cannot key this chat" and falls back from.
+    async listChatsRaw(opts) {
+      return real.listChatsRaw ? await real.listChatsRaw(opts) : [];
+    },
+    async chatRaw(chat) {
+      return real.chatRaw ? await real.chatRaw(chat) : null;
     },
 
     isAlive: () => real.isAlive(),
