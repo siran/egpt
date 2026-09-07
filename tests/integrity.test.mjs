@@ -203,6 +203,11 @@ const PORTABLE_BY_DESIGN = [
     code: '#- PowerShell(Get-ChildItem *)',
     why: 'not code — a COMMENTED-OUT line inside the seeded YAML tool-grant template, listing a CLI tool an operator may uncomment, already labelled "Windows-only tool" right there. Nothing here runs.',
   },
+  {
+    file: 'src/sandbox-cli-session.mjs',
+    code: 'powershell -ExecutionPolicy Bypass -File setup',
+    why: 'ERROR-MESSAGE TEXT, not a spawn (added 2026-09-06 — both redeploy lines of OAUTH_REMEDY match this snippet). Nothing here executes: it is the copy-pasteable fix printed when `sandbox_oauth_token` is missing or rejected, and the whole sandbox feature ALREADY refuses to run off win32 two guards earlier in the same function ("Windows-only on this build"), so the string is unreachable on a POSIX node. Naming the exact command is the point — the failure this text exists for takes every sandboxed being on the node down at once, and a message that said "redeploy somehow" is precisely what was wrong before.',
+  },
 ];
 
 // Group 2: genuine platform coupling in the scanned tree. NOT excused — recorded, so the suite

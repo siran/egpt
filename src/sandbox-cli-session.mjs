@@ -51,6 +51,42 @@ const LAUNCHER_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', 'setup
 // variable, where every process on the box would see it.
 const OAUTH_ENV_NAME = 'CLAUDE_CODE_OAUTH_TOKEN';
 
+// THE REMEDY, WORD FOR WORD, IN BOTH FAILURES BELOW (operator 2026-09-06). This is the one
+// credential on a sandboxed node that a human must mint by hand, and it is STATIC — so when it
+// lapses, every sandboxed being on the node dies at the same moment (38 conversations across 16
+// pool accounts on 2026-09-05) with nothing in the failure that says what to do. The operator
+// reads this at 2am, in a chat reply or a log line, so it carries the commands themselves rather
+// than pointing at a doc. NEVER the token VALUE: presence and LENGTH only (see brainpool.mjs's
+// "NEVER LOGGED" note on the same value).
+const OAUTH_REMEDY = [
+  'It is STATIC and cannot refresh itself — your own ~/.claude login rotates every ~12h, this one never does —',
+  'so it takes every sandboxed being on the node down at once. To replace it:',
+  '  1. Mint one AS THE OPERATOR: the `an` Windows account, the one holding the Claude subscription login.',
+  '     NEVER as a pool account (egpt-sbx-NN) — those profiles are empty and have no login, by design.',
+  '       claude setup-token',
+  '     That is a SUBSCRIPTION token. An `sk-ant-api...` API key will NOT work here.',
+  '  2. Paste it as the TOP-LEVEL `sandbox_oauth_token:` key of EACH node\'s own config. The two nodes on this',
+  '     machine keep separate profiles: ~/.egpt/config/config.yaml (kg) and ~/.egpt2/config/config.yaml (kg2).',
+  '  3. Make it take effect, once per node, from the repo. setup/upgrade.ps1 drops an /upgrade the running',
+  '     spine consumes; the daemon then pulls, rebuilds and respawns it, and the new config is read on the way up:',
+  '       powershell -ExecutionPolicy Bypass -File setup\\upgrade.ps1',
+  '       powershell -ExecutionPolicy Bypass -File setup\\upgrade.ps1 -EgptHome "$env:USERPROFILE\\.egpt2"',
+].join('\n');
+
+// CASE B — THE CREDENTIAL IS THERE AND THE API REFUSED IT. MEASURED on 2026-09-06 against
+// claude.exe 2.1.263 with a deliberately invalid token and a fresh profile, NOT assumed:
+// stderr stayed EMPTY (0 bytes) and the whole failure arrived on stdout as the turn's final
+// stream-json event — `{"type":"result","subtype":"success","is_error":true,
+// "api_error_status":401,"result":"Failed to authenticate. API Error: 401 OAuth access token is
+// invalid."}`. subtype **success**, so warm-cli-session.mjs RESOLVES the turn and the being
+// replies that sentence into the chat. The resolved TEXT is therefore where a sandboxed auth
+// failure actually surfaces, and the only place the remedy can be attached.
+//
+// NARROW BY DESIGN: the 401 AND the OAuth wording, never the vendor's whole sentence, which is
+// theirs to reword. A miss costs the operator the remedy (exactly today's behaviour); a false
+// positive would staple it onto an innocent reply, which requiring the 401 makes implausible.
+const oauthRejected = (text) => /\b401\b/.test(text) && /oauth/i.test(text);
+
 export function createSandboxCliSession(options = {}) {
   // sandboxed:true wraps whichever CLI engine's own session primitive spawns a
   // process — ccode (claude.exe), codex (app-server), or pi (--mode rpc) — all
@@ -88,6 +124,24 @@ export function createSandboxCliSession(options = {}) {
   // spread below then contributes ZERO elements. Read from options like every other field —
   // brainpool.mjs only puts it there when the being actually resolved `sandboxed: true`.
   const oauthToken = typeof options.sandboxOauthToken === 'string' ? options.sandboxOauthToken.trim() : '';
+
+  // CASE A — THE CREDENTIAL IS SIMPLY NOT THERE (operator 2026-09-06). Third guard, same loud
+  // shape and same position as the engine and platform checks above: thrown before the inner
+  // session exists, therefore before any spawn. Without it the turn spawned with NOTHING (the
+  // -SetEnv spread above contributes zero elements), reached the API with no credential, and
+  // died deep inside the CLI in a message that named neither the config key nor the fix.
+  //
+  // ccode ONLY, deliberately. CLAUDE_CODE_OAUTH_TOKEN is a Claude Code credential and the
+  // remedy below is `claude setup-token`; a sandboxed codex/pi being authenticates some other
+  // way entirely, so refusing it with THIS text would be a confident wrong diagnosis. Those two
+  // keep exactly today's behaviour — no token, no -SetEnv, spawn unchanged.
+  if ((engine === 'ccode' || engine === 'claude-code') && !oauthToken) {
+    throw new Error(
+      'sandboxed: true has NO credential: config.yaml\'s `sandbox_oauth_token` is unset or blank, and it is the '
+      + 'ONLY credential a sandboxed turn ever gets — the leased pool account it runs as has an empty profile and '
+      + 'is denied your ~/.claude by the very ACLs that make the sandbox a sandbox.\n' + OAUTH_REMEDY,
+    );
+  }
 
   // THE OS-LAYER HALF OF A BEING'S `allowed_paths` (brainpool.mjs's sandboxSharePathsFor,
   // handed here as options.sandboxSharePaths). Same normalisation discipline as the token
@@ -147,5 +201,30 @@ export function createSandboxCliSession(options = {}) {
 
   if (engine === 'codex') return createCodexCliSession({ ...options, spawn: sandboxSpawn });
   if (engine === 'pi') return createPiCliSession({ ...options, spawn: sandboxSpawn });
-  return createWarmCliSession({ ...options, spawn: sandboxSpawn });
+  // Case A above guarantees a non-empty token on this path, so the length below is always the
+  // length of a real credential — never zero, and never the value itself.
+  return withOauthRemedy(createWarmCliSession({ ...options, spawn: sandboxSpawn }), oauthToken.length);
+}
+
+// Case B's other half: the resolved text of a turn the API refused gets the remedy stapled to
+// it, so the sentence the being would otherwise post into the chat ("Failed to authenticate.
+// API Error: 401 OAuth access token is invalid.") carries the fix with it. Only ever reached
+// from the ccode branch above, which is only ever reached for `sandboxed: true` — a
+// non-sandboxed turn never constructs this wrapper at all, so its path is untouched.
+//
+// MUTATES the one method instead of spreading into a new object: warm-cli-session.mjs returns
+// `sessionId` as a GETTER, and a spread would freeze it to the value it had at creation (null)
+// rather than tracking the live session id.
+function withOauthRemedy(session, tokenLength) {
+  const innerTurn = session.turn.bind(session);
+  session.turn = async (message, onUpdate) => {
+    const r = await innerTurn(message, onUpdate);
+    if (typeof r?.text !== 'string' || !oauthRejected(r.text)) return r;
+    return {
+      ...r,
+      text: `${r.text}\n\n[egpt] THE SANDBOX CREDENTIAL WAS REJECTED. config.yaml's \`sandbox_oauth_token\` is set `
+        + `(${tokenLength} characters) but the API refused it — expired, revoked, or truncated on paste.\n${OAUTH_REMEDY}`,
+    };
+  };
+  return session;
 }

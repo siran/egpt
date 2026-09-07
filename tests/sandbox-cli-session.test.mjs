@@ -10,6 +10,12 @@ import { describe, it, expect } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { createSandboxCliSession } from '../src/sandbox-cli-session.mjs';
 
+// Hoisted to module scope 2026-09-06: a sandboxed CCODE session now REFUSES to be created
+// without the operator's subscription credential (see the last describe in this file), so every
+// ccode fixture here has to carry one. codex/pi are deliberately not guarded and still build
+// with no token at all.
+const TOKEN = 'sk-ant-oat01-FAKE-TEST-TOKEN-NOT-REAL';
+
 function fakeLauncherSpawn({ failOn = null, hang = false, sessionId = 'sess-123' } = {}) {
   let turnNo = 0;
   const calls = [];   // { bin, args, opts }
@@ -66,7 +72,7 @@ describe('sandbox-cli-session — wraps warm-cli-session with the OS-isolation l
   it('spawns powershell.exe running the launcher with TargetFolder/InnerBin, not claude.exe directly', async () => {
     const f = fakeLauncherSpawn();
     const cwd = process.cwd();   // must exist — warm-cli-session.mjs's spawnProc validates it
-    const s = createSandboxCliSession({ spawn: f.spawn, cwd, platform: 'win32' });
+    const s = createSandboxCliSession({ spawn: f.spawn, cwd, platform: 'win32', sandboxOauthToken: TOKEN });
     await s.turn('hi');
 
     expect(f.spawnCount()).toBe(1);
@@ -105,7 +111,7 @@ describe('sandbox-cli-session — wraps warm-cli-session with the OS-isolation l
 
   it('still satisfies turn()/sessionId/streaming exactly like a plain warm-cli-session (thin wrapper)', async () => {
     const f = fakeLauncherSpawn();
-    const s = createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), platform: 'win32' });
+    const s = createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), platform: 'win32', sandboxOauthToken: TOKEN });
     const updates = [];
     const r1 = await s.turn('ONE', (t) => updates.push(t));
     const r2 = await s.turn('TWO');
@@ -224,7 +230,7 @@ describe('sandbox-cli-session — wraps warm-cli-session with the OS-isolation l
 
   it('the platform seam DEFAULTS to the real process.platform (injection is for tests, not a requirement)', () => {
     const f = fakeLauncherSpawn();
-    const make = () => createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd() });
+    const make = () => createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), sandboxOauthToken: TOKEN });
     if (process.platform === 'win32') {
       const s = make();                 // the operator's own node: created exactly as before...
       expect(f.spawnCount()).toBe(0);   // ...and still lazy — the launcher spawns on the first turn()
@@ -239,33 +245,60 @@ describe('sandbox-cli-session — wraps warm-cli-session with the OS-isolation l
 // ── -SetEnv, THE OPERATOR'S SUBSCRIPTION CREDENTIAL (config sandbox_oauth_token, resolved by
 //    brainpool.mjs for a SANDBOXED turn only and handed here as options.sandboxOauthToken).
 //
-//    THE INVARIANT THESE LOCK is not "a -SetEnv appears" — it is that the NO-TOKEN argv, which
-//    is the common case and every sandboxed turn on this node today, did not move by one byte.
-//    So the with-token argv is asserted AGAINST the no-token argv (a real array comparison),
-//    never against a hand-copied literal that could drift with the caller. ──
+//    THE INVARIANT THESE LOCK is not "a -SetEnv appears" — it is that adding the token moves
+//    NOTHING ELSE in the launcher argv. So the with-token argv is asserted AGAINST the no-token
+//    argv (a real array comparison), never against a hand-copied literal that could drift with
+//    the caller.
+//
+//    THE NO-TOKEN BASELINE MOVED TO `pi` ON 2026-09-06. A ccode session can no longer be built
+//    without a token at all — it throws, actionably (last describe in this file) — but -SetEnv
+//    is inserted by sandboxSpawn, which is engine-independent, so a pi session exercises the
+//    IDENTICAL argv build and still yields a real no-token baseline to diff against. ──
 describe('sandbox-cli-session — -SetEnv CLAUDE_CODE_OAUTH_TOKEN (config sandbox_oauth_token)', () => {
-  const TOKEN = 'sk-ant-oat01-FAKE-TEST-TOKEN-NOT-REAL';
-
   // One turn through the fake launcher; returns the psArgs it was spawned with.
   async function argvFor(extra = {}) {
     const f = fakeLauncherSpawn();
-    const s = createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), platform: 'win32', ...extra });
+    const s = createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), platform: 'win32', sandboxOauthToken: TOKEN, ...extra });
     await s.turn('hi');
     s.close();
     expect(f.spawnCount()).toBe(1);
     return f.calls[0].args;
   }
 
-  it('REPRODUCE-FIRST: with NO token there is no -SetEnv at all, and -TargetFolder is still followed straight by -InnerBin', async () => {
-    const args = await argvFor();
+  // The unguarded engine, so the no-token half of the diff is buildable. pi does not speak the
+  // stream-json fake above, so the spawn is read SYNCHRONOUSLY — same technique as the codex/pi
+  // tests further up: warm/codex/pi all spawn inside turn() before returning the promise.
+  function piArgvFor(extra = {}) {
+    const calls = [];
+    const spawn = (bin, args, opts) => {
+      calls.push({ bin, args, opts });
+      const proc = new EventEmitter();
+      proc.stdout = new EventEmitter(); proc.stdout.setEncoding = () => {};
+      proc.stderr = new EventEmitter(); proc.stderr.setEncoding = () => {};
+      proc.stdin = { write: () => {}, end: () => {} };
+      proc.kill = () => {};
+      return proc;
+    };
+    // sessionId PINNED: pi mints a random UUID into its own `--session-id` when the caller
+    // leaves it null (pi-cli-session.mjs line 110), which would make two argv builds differ by
+    // that one element and break the byte comparison this helper exists for.
+    const s = createSandboxCliSession({ spawn, cwd: process.cwd(), platform: 'win32', engine: 'pi', sessionId: 'sess-pinned', ...extra });
+    s.turn('hi').catch(() => {});
+    s.close();
+    expect(calls.length).toBe(1);
+    return calls[0].args;
+  }
+
+  it('with NO token there is no -SetEnv at all, and -TargetFolder is still followed straight by -InnerBin', () => {
+    const args = piArgvFor();
     expect(args).not.toContain('-SetEnv');
     const tfIdx = args.indexOf('-TargetFolder');
     expect(args[tfIdx + 2]).toBe('-InnerBin');   // nothing inserted between them
   });
 
-  it('a token inserts EXACTLY [-SetEnv, ["CLAUDE_CODE_OAUTH_TOKEN=<value>"]] before -InnerBin — and changes nothing else', async () => {
-    const plain = await argvFor();
-    const withTok = await argvFor({ sandboxOauthToken: TOKEN });
+  it('a token inserts EXACTLY [-SetEnv, ["CLAUDE_CODE_OAUTH_TOKEN=<value>"]] before -InnerBin — and changes nothing else', () => {
+    const plain = piArgvFor();
+    const withTok = piArgvFor({ sandboxOauthToken: TOKEN });
 
     const ibIdx = plain.indexOf('-InnerBin');
     const expected = [...plain];
@@ -280,13 +313,19 @@ describe('sandbox-cli-session — -SetEnv CLAUDE_CODE_OAUTH_TOKEN (config sandbo
     expect(jsonArgOf(withTok, '-SetEnv')).toEqual([`CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}`]);
     // ...and the inner argv is untouched by the token's presence:
     expect(innerArgvOf(withTok)).toEqual(innerArgvOf(plain));
-    expect(innerArgvOf(withTok)[0]).toBe('--input-format');
   });
 
-  it('a blank, whitespace-only or non-string token is NOT a credential: argv stays byte-identical to the no-token argv', async () => {
-    const plain = await argvFor();
+  it('the ccode argv carries the same one -SetEnv element, and its inner argv is still the stream-json one', async () => {
+    const args = await argvFor();
+    expect(jsonArgOf(args, '-SetEnv')).toEqual([`CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}`]);
+    expect(args[args.indexOf('-SetEnv') + 2]).toBe('-InnerBin');
+    expect(innerArgvOf(args)[0]).toBe('--input-format');
+  });
+
+  it('a blank, whitespace-only or non-string token is NOT a credential on the unguarded engines either', () => {
+    const plain = piArgvFor();
     for (const junk of ['', '   ', null, undefined, 0, false, {}, ['x']]) {
-      expect(await argvFor({ sandboxOauthToken: junk }), `sandboxOauthToken=${JSON.stringify(junk)} changed the argv`).toEqual(plain);
+      expect(piArgvFor({ sandboxOauthToken: junk }), `sandboxOauthToken=${JSON.stringify(junk)} changed the argv`).toEqual(plain);
     }
   });
 
@@ -343,9 +382,12 @@ describe('sandbox-cli-session — -SetEnv CLAUDE_CODE_OAUTH_TOKEN (config sandbo
 //    These lock the CALLER's half. The launcher's half (ConvertFrom-JsonArgv, and the PS 5.1
 //    ConvertFrom-Json array trap it exists for) is exercised by setup/test-sandbox-logon-launcher.ps1. ──
 describe('sandbox-cli-session — the launcher argument contract (one argv element per parameter, each a JSON array)', () => {
+  // sandboxOauthToken is a FIXTURE here, not the subject: a ccode session cannot be built
+  // without one since 2026-09-06. It is constant across every argv this helper returns, so the
+  // "changed the argv" comparisons below still isolate the thing each test is about.
   async function argvFor(extra = {}) {
     const f = fakeLauncherSpawn();
-    const s = createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), platform: 'win32', ...extra });
+    const s = createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), platform: 'win32', sandboxOauthToken: TOKEN, ...extra });
     await s.turn('hi');
     s.close();
     expect(f.spawnCount()).toBe(1);
@@ -372,9 +414,11 @@ describe('sandbox-cli-session — the launcher argument contract (one argv eleme
     const inner = innerArgvOf(args);
     expect(inner).not.toContain('C:\\shared\\two');   // the old shape dropped it exactly here
     expect(inner[0]).toBe('--input-format');
-    // one flag, one value, then the next flag — nothing loose between them:
+    // one flag, one value, then the next flag — nothing loose between them. (The next flag is
+    // -SetEnv rather than -InnerBin since 2026-09-06: the helper always supplies a token now,
+    // because a ccode session without one is refused.)
     const spIdx = args.indexOf('-SharePath');
-    expect(args[spIdx + 2]).toBe('-InnerBin');
+    expect(args[spIdx + 2]).toBe('-SetEnv');
   });
 
   it('defect 3: an EMPTY argv element survives as an empty ELEMENT of -InnerArgs, and no empty element is ever loose in the launcher argv', async () => {
@@ -430,6 +474,154 @@ describe('sandbox-cli-session — the launcher argument contract (one argv eleme
       expect(jsonArgOf(calls[0].args, '-SharePath'), `engine ${engine} lost the -SharePath`).toEqual(['C:\\a', 'C:\\b']);
       expect(Array.isArray(innerArgvOf(calls[0].args)), `engine ${engine} lost the -InnerArgs JSON`).toBe(true);
       s.close();
+    }
+  });
+});
+
+// ── THE CREDENTIAL IS GONE (operator 2026-09-06). `sandbox_oauth_token` is the ONLY credential
+//    a sandboxed turn has, and it is STATIC: unlike the operator's own ~/.claude login (refresh
+//    token, rotates every ~12h) it cannot renew itself, so when it lapses EVERY sandboxed being
+//    on the node dies at the same moment — 38 conversations across 16 pool accounts the day
+//    before this was written — and the operator's only clue was whatever the CLI happened to
+//    say. These lock the two failures and, above all, that the REMEDY travels inside the error
+//    itself: mint it as `an`, subscription not API key, into each node's own config.yaml, then
+//    setup\upgrade.ps1 once per node.
+//
+//    NEITHER MESSAGE MAY EVER CARRY THE TOKEN VALUE (brainpool.mjs: "NEVER LOGGED") — presence
+//    and LENGTH only. Asserted at the bottom of this block. ──
+describe('sandbox-cli-session — a missing or rejected sandbox_oauth_token tells the operator how to mint a new one', () => {
+  // Every clause the operator needs at 2am, checked one by one, so a reworded message that
+  // silently drops the mint command, the node paths or the redeploy line fails HERE.
+  function expectRemedy(text) {
+    expect(text, 'the mint command is not in the message').toContain('claude setup-token');
+    expect(text, 'nothing says WHICH account to mint it on').toContain('`an`');
+    expect(text, 'nothing warns that a pool account is the wrong place').toContain('egpt-sbx-NN');
+    expect(text, 'nothing says it is a subscription token, not an API key').toContain('sk-ant-api');
+    expect(text, 'the config key is not named').toContain('sandbox_oauth_token');
+    expect(text, "node 1's config path is missing").toContain('~/.egpt/config/config.yaml');
+    expect(text, "node 2's config path is missing").toContain('~/.egpt2/config/config.yaml');
+    expect(text, 'the redeploy command is missing').toContain('powershell -ExecutionPolicy Bypass -File setup\\upgrade.ps1');
+    expect(text, "the second node's redeploy is missing").toContain('-EgptHome "$env:USERPROFILE\\.egpt2"');
+    expect(text, 'nothing explains WHY it happened (a static credential that cannot refresh)').toMatch(/STATIC and cannot refresh/);
+  }
+
+  // ── CASE A: absent or blank ──
+  it('REPRODUCE-FIRST: a sandboxed ccode session with NO token throws the actionable error, WITHOUT spawning anything', () => {
+    const f = fakeLauncherSpawn();
+    let err = null;
+    try { createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), platform: 'win32' }); } catch (e) { err = e; }
+    expect(err, 'a sandboxed ccode session was created with no credential at all').toBeTruthy();
+    expect(err.message).toContain('sandbox_oauth_token');
+    expectRemedy(err.message);
+    expect(f.spawnCount(), 'the turn was spawned anyway — the whole point is to fail BEFORE the launcher').toBe(0);
+  });
+
+  it('blank, whitespace-only and non-string tokens are all "no credential", and all throw the same way', () => {
+    for (const junk of [undefined, '', '   ', '\t\n', null, 0, false, {}, ['x']]) {
+      const f = fakeLauncherSpawn();
+      let err = null;
+      try { createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), platform: 'win32', sandboxOauthToken: junk }); } catch (e) { err = e; }
+      expect(err, `sandboxOauthToken=${JSON.stringify(junk)} was accepted as a credential`).toBeTruthy();
+      expectRemedy(err.message);
+      expect(f.spawnCount()).toBe(0);
+    }
+  });
+
+  it('the guard runs AFTER the engine and platform guards, so those keep their own diagnosis', () => {
+    const f = fakeLauncherSpawn();
+    expect(() => createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), platform: 'win32', engine: 'llama' })).toThrow(/engine=llama/);
+    expect(() => createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), platform: 'linux' })).toThrow(/Windows-only/);
+    expect(f.spawnCount()).toBe(0);
+  });
+
+  it('codex and pi are NOT refused: CLAUDE_CODE_OAUTH_TOKEN is not their credential, so they behave exactly as before', () => {
+    for (const engine of ['codex', 'pi']) {
+      const calls = [];
+      const spawn = (bin, args, opts) => {
+        calls.push({ bin, args, opts });
+        const proc = new EventEmitter();
+        proc.stdout = new EventEmitter(); proc.stdout.setEncoding = () => {};
+        proc.stderr = new EventEmitter(); proc.stderr.setEncoding = () => {};
+        proc.stdin = { write: () => {}, end: () => {} };
+        proc.kill = () => {};
+        return proc;
+      };
+      const s = createSandboxCliSession({ spawn, cwd: process.cwd(), platform: 'win32', engine });
+      s.turn('hi').catch(() => {});
+      expect(calls.length, `engine ${engine} was refused for want of a ccode credential`).toBe(1);
+      expect(calls[0].args, `engine ${engine} gained a -SetEnv out of nowhere`).not.toContain('-SetEnv');
+      s.close();
+    }
+  });
+
+  // ── CASE B: present, and the API refused it ──
+  //
+  //    THE FIXTURE IS MEASURED OUTPUT, not a guess. claude.exe 2.1.263, fresh profile, a
+  //    deliberately invalid CLAUDE_CODE_OAUTH_TOKEN, the same argv warm-cli-session.mjs sends:
+  //    stderr was EMPTY (0 bytes) and the failure arrived on stdout as the FINAL result event,
+  //    subtype "success" with is_error/api_error_status alongside — so the turn RESOLVES, and
+  //    its text is what the being posts into the chat. That resolved text is the only place the
+  //    remedy can be attached.
+  const REJECTED = 'Failed to authenticate. API Error: 401 OAuth access token is invalid.';
+
+  function fakeApiResult(resultEvent) {
+    const calls = [];
+    const spawn = (bin, args, opts) => {
+      calls.push({ bin, args, opts });
+      const proc = new EventEmitter();
+      proc.stdout = new EventEmitter(); proc.stdout.setEncoding = () => {};
+      proc.stderr = new EventEmitter(); proc.stderr.setEncoding = () => {};
+      proc.stdin = {
+        write: () => { setImmediate(() => proc.stdout.emit('data', JSON.stringify(resultEvent) + '\n')); },
+        end: () => {},
+      };
+      proc.kill = () => {};
+      return proc;
+    };
+    return { spawn, calls };
+  }
+
+  const rejectedEvent = {
+    type: 'result', subtype: 'success', is_error: true, api_error_status: 401,
+    session_id: 'sess-401', terminal_reason: 'api_error', result: REJECTED,
+  };
+
+  it("REPRODUCE-FIRST: a 401-rejected sandboxed turn comes back with the remedy stapled to the CLI's own sentence", async () => {
+    const f = fakeApiResult(rejectedEvent);
+    const s = createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), platform: 'win32', sandboxOauthToken: TOKEN });
+    const r = await s.turn('hi');
+    expect(r.text.startsWith(REJECTED), 'the vendor sentence was replaced instead of appended to').toBe(true);
+    expectRemedy(r.text);
+    expect(r.text).toContain('REJECTED');
+    expect(r.text, 'the LENGTH is what distinguishes "set but wrong" from "blank"').toContain(`(${TOKEN.length} characters)`);
+    expect(r.sessionId, 'wrapping turn() must not break the sessionId getter').toBe('sess-401');
+    s.close();
+  });
+
+  it('an ordinary reply is returned untouched — the matcher needs BOTH a 401 and the OAuth wording', async () => {
+    for (const result of [
+      'Sure, here is the answer.',
+      'The server replied 401 Unauthorized for that URL.',   // a 401 the MODEL is talking about
+      'OAuth is a delegated authorization framework.',       // OAuth, no 401
+    ]) {
+      const f = fakeApiResult({ type: 'result', subtype: 'success', session_id: 's', result });
+      const s = createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), platform: 'win32', sandboxOauthToken: TOKEN });
+      expect((await s.turn('hi')).text, `a remedy was appended to an innocent reply: ${result}`).toBe(result);
+      s.close();
+    }
+  });
+
+  it('NEITHER message ever contains the token VALUE — only its length', async () => {
+    let caseA = '';
+    try { createSandboxCliSession({ spawn: fakeLauncherSpawn().spawn, cwd: process.cwd(), platform: 'win32' }); } catch (e) { caseA = e.message; }
+    const f = fakeApiResult(rejectedEvent);
+    const s = createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), platform: 'win32', sandboxOauthToken: TOKEN });
+    const caseB = (await s.turn('hi')).text;
+    s.close();
+    for (const [name, text] of [['case A', caseA], ['case B', caseB]]) {
+      expect(text.length, `${name} produced no message`).toBeGreaterThan(0);
+      expect(text, `${name} leaked the token value`).not.toContain(TOKEN);
+      expect(text, `${name} leaked a slice of the token value`).not.toContain(TOKEN.slice(0, 16));
     }
   });
 });
