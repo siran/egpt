@@ -5,6 +5,9 @@ What a finished eGPT node looks like.
 eGPT can be configured with no mobile numbers, one mobile number, two mobile
 numbers or more. eGPT can use the other number(s) for its replies.
 
+One spine holds them all. Numbers are connections in one config, not processes:
+adding a number adds a Beeper install and a config block, never another spine.
+
 
 ## Zero mobile numbers
 
@@ -15,23 +18,26 @@ You can use eGPT from the shell and access AI.
 
 ## One mobile number
 
-One account, one token, one Beeper install, one spine, in your ordinary desktop
-session (`s1-primary`). Agents answer from your own number — the reply and the
-message it answers share a sender.
-
-To also answer before login, add `s0-primary`: two installs, two spines.
+One account, one token, one Beeper install, one spine. Agents answer from your
+own number — the reply and the message it answers share a sender.
 
 
 ## Two mobile numbers, or more
 
 A second account is a second number, so the agents answer as themselves. It
-costs three Beeper installs — `s0-primary`, `s1-primary`, `s0-secondary`, for
-before and after login — and a spine each: three sessions, three spines. Each
-further number adds one more of both.
+costs one more Beeper install and one more block under `beeper:`. The spine
+listens on every connection it holds and answers on whichever one heard the
+message; an agent that names its own `beeper_connection` answers on that
+instead.
 
 - `email@domain.com` — yours. The human.
 - `email.secondary@domain.com` — **secondary**. The mouth the agents speak
   through.
+
+Two accounts in one real group are **two chats, not one**. Beeper is Matrix, so
+each account sees that group as its own room with its own `chatId`, thread,
+warm process and queue. Nothing is deduplicated, deliberately: which one answers
+is decided by addressing.
 
 
 ## In general
@@ -47,48 +53,50 @@ Name the secondary account whatever. The identity is the phone number, not the
 login, so renaming costs a WhatsApp re-link and buys nothing.
 
 
-## Three Beeper installs per machine
+## One Beeper install per account
 
 Identity lives entirely in `--user-data-dir`: different directory = different
 install = different device = different token. Same directory twice and the
 second launch loses Chromium's singleton and exits (`process_singleton_win.cc`,
 `Lock file can not be created! Error code: 32` — a sharing violation, not
-damage).
+damage). So the installs cannot be merged the way the spines can: a token
+belongs to an install.
 
-| install | runs as | account | why |
-|---|---|---|---|
-| `s0-primary` | nssm service, LocalSystem, **Auto** | yours | survives logoff and reboot |
-| `s1-primary` | ordinary desktop GUI | yours | your own window; what a browser and a desktop need |
-| `s0-secondary` | nssm service, LocalSystem, **Auto** | secondary | unattended too |
+Name each install after its connection, and run every one of them in session 0
+as an nssm service, LocalSystem, **Auto**:
 
-**Both s0 services Auto.** A service that inherits `Manual` from whatever
-it was renamed from leaves the node half-alive after a reboot: one spine
-talking, the other silent, nothing announcing it.
+| install | account | why |
+|---|---|---|
+| `beeper-main` | yours | survives logoff and reboot |
+| `beeper-secondary` | secondary | the same, for the second number |
 
-Give each install a display name carrying its role, or the service list is
-unreadable.
+**Auto, not Manual.** A service that inherits `Manual` from whatever it was
+renamed from leaves the node half-alive after a reboot: the spine up, one
+account deaf, nothing announcing it.
+
+Session 0 is enough for all of them. **Session isolation isolates the desktop,
+not a loopback socket** — measured on 2026-09-06, a real Chrome and two
+`Beeper.exe` were serving CDP from session 0. A session 1 Beeper buys visibility
+to you, not reachability for the spine.
 
 
-## Three spines per machine, two live
+## Two spines per machine, one live
 
-`egpt-daemon` and `egpt2-daemon` run the **identical command** —
-`node egpt-daemon.mjs` from `~/bin/egpt` — differing ONLY in `EGPT_HOME`
-(`~/.egpt` vs `~/.egpt2`). One deploy, nothing to keep in sync; wrong with one
-is wrong with both. The profile is the entire distinction between the accounts.
+`s0-egpt` and `s1-egpt` are **one node in two sessions**, not two nodes. Same
+config, same `EGPT_HOME`, same tokens — which is why they take turns instead of
+coexisting. Both live at once would open two connections per token (every
+message ingested twice, answered twice), race `config/conversations.yaml` and
+`state/ingest/`, and collide on console port 23375.
 
-**`s0-primary` and `s1-primary` are one node, not two.** Same config, same
-`EGPT_HOME`, same token — which is why they take turns instead of coexisting.
-Two live at once would open two connections on one token (every message ingested
-twice, answered twice), race `config/conversations.yaml` and `state/ingest/`,
-and collide on console port 23375. The disjoint-handle rule is between accounts,
-not inside this pair.
+Session 1 exists for one reason: a spine there can **spawn and supervise a
+browser as an ordinary child process**. A session 0 browser is invisible to you
+— it cannot be seen, clicked, or shown a login prompt.
 
-**The S0→S1 flip** is that handover. After a restart both spines run in session
-0. At logon the HKCU Run key starts the session 1 spine, which asks the
-incumbent for the profile; the incumbent finishes the turn it is writing and
-exits (`STANDDOWN_EXIT_CODE = 45`), and its daemon respawns only once port 23375
-goes quiet. One port is the mutex on one shared profile. The secondary never
-moves.
+**The S0→S1 flip** is the handover. After a restart the spine runs in session 0.
+At logon the HKCU Run key starts the session 1 spine, which asks the incumbent
+for the profile; the incumbent finishes the turn it is writing and exits
+(`STANDDOWN_EXIT_CODE = 45`), and its daemon respawns only once port 23375 goes
+quiet. One port is the mutex on one shared profile.
 
 Built, never exercised across a real logoff/logon — see
 `plans/2609061200-SESSION-0-TO-1-HANDOVER-PLAN.md`.
@@ -102,41 +110,71 @@ beeper:
   main:
     account: email@domain.com
     token: bdapi_...
+  secondary:
+    account: email.secondary@domain.com
+    token: bdapi_...
 ```
+
+One bridge is opened per distinct token. `use:` names the default connection —
+every agent that does not set its own `beeper_connection` rides it — and
+switching the default is one word, not a re-typing of tokens.
 
 **No port.** Beeper takes the first free port from 23373, so the number follows
 start order, not identity. The spine probes the loopback range with the token,
-takes the install answering 200, and re-probes on every reconnect.
+takes the install answering 200, and re-probes on every reconnect. A token
+answers 200 on its own install and 401 everywhere else, which is what makes the
+probe unambiguous.
 
 `base_url` skips that discovery — only for a genuinely non-local Beeper.
-`endpoints:` is deprecated: it repeated one token across four ports, the
-config admitting the code could not find its own API.
+`endpoints:` is deprecated: it repeated one token across four ports, the config
+admitting the code could not find its own API.
+
+`peer_spine` is for another machine, not this one. Two accounts on one machine
+need no link: mind and mouth are already in one process.
 
 
 ## Checklist
 
-Two-number node. Run it before saying yes.
+Run it before saying yes.
 
-1. `s0-primary` and `s0-secondary` **Running** and **Auto**; `s1-primary` up in
-   your session
-2. 2 spines Running — the secondary, plus the primary in whichever session.
-   Both primaries live at once is the failure, not the goal
-3. `config.yaml` is `account` + `token` per account — no ports, no `endpoints:`
-4. Both live spines log `connection 'main' → ... 200` and `subscribed to all
-   chats`
-5. Handles disjoint between the accounts, and no other node claiming them
-6. **It survives a reboot** — services come back, discovery finds the installs
-   cold, both spines subscribe untouched
+1. One Beeper service per account, **Running** and **Auto**
+2. One spine Running, in whichever session — two live is the failure, not the
+   goal
+3. One `config.yaml`, one block per account, `account` + `token` — no ports, no
+   `endpoints:`, no `peer_spine`
+4. The spine logs `connection '<name>' → ... 200` for every connection, and
+   `subscribed to all chats`
+5. A message on each number wakes the spine, and its reply goes out on that same
+   number
+6. Handles disjoint between accounts, and no other node claiming them
+7. **It survives a reboot** — services come back, discovery finds the installs
+   cold, the spine subscribes untouched
+
+
+## What is deployed today
+
+Not this. The running arrangement is the older one: two spines on two profiles
+(`~/.egpt`, `~/.egpt2`), one per account, joined by the `peer_spine` mouth link
+— the primary is ear and brain, the secondary says the finished line on the
+other account. It works, and the machinery for keying one group's two chatIds
+across accounts lives there.
+
+Moving to the shape above is config, not code: fold the second account into one
+`beeper:` block, drop `peer_spine`, retire the second profile. The inbound half
+has been in the tree since 2026-09-02 (`src/spine/bridge-fanout.mjs`), the
+outbound half since 2026-08-30 (`beeper_connection`, `bridgeOf`).
 
 
 ## Mirroring to another machine
 
-Same accounts, same service shape, same config shape. What differs:
+Same accounts, same install shape, same config shape. What differs:
 
 - `node_name` and the persona
 - Each account needs its OWN enrolled device on the new machine. Enroll it,
   don't copy — a copied `user-data-dir` moves the device, so two machines on
   one copy is two clients claiming one device id.
+- `owner_node` decides which node WAKES on an account that is live on both.
+  Every other node still sends on it.
 - **Disarm any relay handle both machines answer to before waking the second
   one**, or one mention wakes both nodes and the group gets two answers from two
   accounts.
