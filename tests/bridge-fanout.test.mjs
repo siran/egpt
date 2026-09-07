@@ -95,6 +95,47 @@ describe('fanoutInbound', () => {
     expect(fanoutInbound(a, [a, b]).wasSentByUs('!c', 'm')).toBe(false);
   });
 
+  // THE ROSTER QUESTION (operator 2026-09-07). One real group is a DIFFERENT room per account, so
+  // the connection a message arrived on is usually the ONLY one that has the chat at all — every
+  // other answers UNKNOWN. Asked of the default connection alone, `fallback_handle`'s
+  // unless_present read that unknown and stayed silent, and a group only the second account is in
+  // got no answer at all (tests/multi-connection-wake.test.mjs).
+  it('chatHasParticipant asks EVERY connection — the one that has the chat answers', async () => {
+    const a = fakeBridge('a'), b = fakeBridge('b');
+    a.chatHasParticipant = async () => null;        // An's Desktop has never seen Rodz's room
+    b.chatHasParticipant = async () => false;       // Rodz's Desktop has it, and An is not in it
+    expect(await fanoutInbound(a, [a, b]).chatHasParticipant('!rodz-only', '+16468217865')).toBe(false);
+  });
+
+  // NOT `.some()`, unlike wasSentByUs: true | false | null, and null must stay null. A definite
+  // TRUE from any connection wins; a definite FALSE beats an unknown; unknown everywhere is
+  // unknown, which is the state the router fails closed on.
+  it('chatHasParticipant: any definite TRUE wins, then any definite FALSE, else UNKNOWN', async () => {
+    const mk = (v) => ({ ...fakeBridge('x'), chatHasParticipant: async () => v });
+    const ask = (...vals) => {
+      const bs = vals.map(mk);
+      return fanoutInbound(bs[0], bs).chatHasParticipant('!c', '+1');
+    };
+    expect(await ask(null, true)).toBe(true);
+    expect(await ask(false, true)).toBe(true);
+    expect(await ask(null, false)).toBe(false);
+    expect(await ask(null, null)).toBeNull();
+  });
+
+  it('chatHasParticipant: a connection that throws is that ONE connection\'s unknown, not the node\'s', async () => {
+    const a = fakeBridge('a'), b = fakeBridge('b');
+    a.chatHasParticipant = async () => { throw new Error('beeper down'); };
+    b.chatHasParticipant = async () => true;
+    expect(await fanoutInbound(a, [a, b]).chatHasParticipant('!c', '+1')).toBe(true);
+  });
+
+  it('chatHasParticipant survives a connection that does not implement it', async () => {
+    const a = fakeBridge('a');
+    a.chatHasParticipant = async () => false;
+    const b = { onMessage() {}, onEdit() {}, onMedia() {} };   // no chatHasParticipant at all
+    expect(await fanoutInbound(a, [a, b]).chatHasParticipant('!c', '+1')).toBe(false);
+  });
+
   it('stop reaches every connection, not just the default', () => {
     const a = fakeBridge('a'), b = fakeBridge('b');
     fanoutInbound(a, [a, b]).stop();

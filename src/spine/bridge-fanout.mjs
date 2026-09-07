@@ -24,7 +24,7 @@
 // (its onMessage/onEdit/onMedia are no-ops), so registering across every bridge automatically
 // respects `owner_node` without this module knowing the rule exists.
 
-// The three registrations that must reach EVERY connection, and the two questions that must be
+// The three registrations that must reach EVERY connection, and the three questions that must be
 // asked of ALL of them rather than of the default one.
 const FANOUT_REGISTER = new Set(['onMessage', 'onEdit', 'onMedia']);
 
@@ -57,6 +57,54 @@ export function fanoutInbound(primary, all = []) {
       // message; erring the other way costs a loop.
       if (key === 'wasSentByUs') {
         return (...args) => bridges.some((b) => !!b?.wasSentByUs?.(...args));
+      }
+
+      // THE ROSTER QUESTION, and it is per-ACCOUNT for the same reason wasSentByUs is (operator
+      // 2026-09-07). `fallback_handle`'s `unless_present` asks "is that identity in THIS chat"
+      // (router.mjs, via boot's `isPresent: (identity, ev) => bridge.chatHasParticipant(ev.chatId,
+      // identity)`) — and `bridge` is THIS facade. Asked only of the default connection it was
+      // asked about a chatId that connection has never seen: one real group is a DIFFERENT room
+      // per account (crossAccountChatKey's header, measured live 2026-09-05), so the default
+      // Desktop 404s, chatInfo leaves `participants: null`, and the answer is UNKNOWN. Measured
+      // consequence on a two-account node: in a group only the SECOND account is in, the fallback
+      // was silenced by that unknown and NOBODY answered a message addressed to this node.
+      //
+      // NOT `.some()`, unlike wasSentByUs: the answer is true | false | null and a null must stay
+      // null. `.some()` would read "the account that has this chat says NO" and "nobody here has
+      // this chat" as the same thing — the second is exactly the state the router must fail closed
+      // on. So: any definite TRUE wins, else any definite FALSE, else UNKNOWN. Because chat ids
+      // are per-account, at most one connection ever holds a definite answer, which makes this
+      // "ask the one that knows" rather than a vote.
+      //
+      // A THROW is one connection's failure, not the node's: it becomes that connection's null and
+      // the connection that actually has the chat still answers. The router's own try/catch around
+      // isPresent (router.mjs presentInChat) still covers a facade-level failure.
+      //
+      // THE COST, NAMED AND ACCEPTED (operator 2026-09-07) — so the next reader does not rediscover
+      // it as a bug. Every connection that does NOT have this chat pays a real GET, and pays it
+      // again next time: beeper.mjs's chatInfo leaves `participants: null` on a failed GET, and
+      // chatHasParticipant's `fresh` test requires participants, so a negative never caches. That
+      // is one extra loopback 404 (and one "no roster in the chat payload; membership UNKNOWN"
+      // bridge-log line) per GUARDED mention per non-owning connection — N-1 of them, so exactly
+      // one on a two-account node.
+      //
+      // Acceptable, and NOT worth a negative cache today: the path runs only for a hit that already
+      // matched a `fallback_handle` token and survived the surface pin and allowed_users, the
+      // router asks once per resolve() (its `presence` Map), the requests go out together rather
+      // than in series, and a human types those mentions at human rates. Caching the negative would
+      // also point the wrong way — "this account does not have this chat" is exactly the fact that
+      // changes when the account is added to a group, which is the event the roster TTL exists to
+      // notice. If the log noise ever does matter, the smallest fix is in beeper.mjs: let chatInfo
+      // distinguish a 404 from a failed GET and let `fresh` accept a 404-negative for the TTL.
+      if (key === 'chatHasParticipant') {
+        return async (...args) => {
+          const answers = await Promise.all(bridges.map(async (b) => {
+            try { return await b?.chatHasParticipant?.(...args); } catch { return null; }
+          }));
+          if (answers.some((a) => a === true)) return true;
+          if (answers.some((a) => a === false)) return false;
+          return null;
+        };
       }
 
       // stop() must reach every connection too — the spine stops "the bridge", and a connection

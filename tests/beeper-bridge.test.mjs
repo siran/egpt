@@ -2767,6 +2767,25 @@ describe('beeper bridge — chat membership (fallback_handle, operator 2026-08-3
     expect(await bridge.chatHasParticipant('no-peer', '+13472576794')).toBe(false);
   });
 
+  // AN ACCOUNT'S OWN ENTRY IN ITS OWN ROSTER CARRIES NO phoneNumber — only a matrix id (measured
+  // live on both endpoints 2026-09-06, and the fact makePeerMouth's routing already rests on:
+  // "an account's own entry in its own roster carries no phone number at all", src/spine/boot.mjs).
+  // So an `unless_present` naming THIS account's own number reads a definite FALSE here, while a
+  // real member's number reads true. That asymmetry is the whole reason one config could hope to
+  // discriminate between two connections — see tests/multi-connection-wake.test.mjs for what it
+  // actually does on a node holding both accounts.
+  it("an account's OWN entry has no phoneNumber, so its own number reads ABSENT from its own roster", async () => {
+    fake.chats.set(CHAT('own-view'), { title: 'An y Dando', type: 'group', isMuted: false, accountID: 'whatsapp',
+      participants: { items: [
+        { id: 'an@beeper.local', fullName: 'An', isSelf: true },          // self — no phoneNumber at all
+        { id: 'dando@beeper.local', phoneNumber: '+34658515045' },
+        { id: 'rodz@beeper.local', phoneNumber: '+13472576794' },
+      ] } });
+    const { bridge } = await startBridge();
+    expect(await bridge.chatHasParticipant('own-view', '+16468217865')).toBe(false);   // An's own number
+    expect(await bridge.chatHasParticipant('own-view', '+13472576794')).toBe(true);    // a real member's
+  });
+
   // The fixture stores the peer as "+1 (347) 257-6794" and the config declares "+13472576794".
   // A phone-shaped identity compares on DIGITS ONLY, so punctuation/spacing on either side is
   // irrelevant. The country code is NOT guessed: a bare national form (3472576794) is a DIFFERENT

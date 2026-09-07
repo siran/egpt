@@ -1422,6 +1422,10 @@ export async function boot({
   // that declares no base_url anywhere keys on ('' , token) and still collapses to exactly one
   // instance, byte-identical to before.
   const bridgeByEndpoint = new Map();
+  // …of which THESE are the ones this node WAKES on. An outbound-only connection cannot deliver a
+  // message here at all, so it can never be half of a double answer — which is why the warning
+  // below counts this set and not bridgeByEndpoint.
+  const inboundOwned = new Set();
   // JSON, not a delimiter character. The obvious separator (NUL) puts a literal 0x00 in this
   // file, which makes ripgrep treat the whole thing as binary and silently truncate every
   // future audit of it — tests/integrity.test.mjs exists for exactly that failure. A two-
@@ -1444,6 +1448,7 @@ export async function boot({
       const port = lasso.wrap(await createBeeperBridgePort(opts, startBridge ? { start: startBridge } : {}));
       const owned = wakesOn(ep);
       if (!owned) log.line?.(`[bridge] connection is owned by node '${ep.ownerNode}' — this node sends on it, never wakes on it`);
+      if (owned) inboundOwned.add(key);
       bridgeByEndpoint.set(key, owned ? port : outboundOnly(port));
     }
     return bridgeByEndpoint.get(key);
@@ -1469,6 +1474,35 @@ export async function boot({
   // Fallback to the default `bridge` is defensive only — every being in agents() was already
   // enumerated above, so this should never miss.
   const rawBridgeOf = (being) => bridgeByEndpoint.get(endpointKey(endpointFor(connectionOf(being)))) ?? defaultBridge;
+
+  // ── ONE MENTION, TWO ANSWERS (operator 2026-09-07) ────────────────────────────────────────
+  // A node that wakes on more than one connection hears a chat BOTH its accounts are in twice —
+  // one real group is a different room per account, and nothing deduplicates them (deliberately;
+  // see bridge-fanout.mjs). A DECLARED handle is unconditional, so both arrivals resolve to the
+  // same agent and the chat gets two answers from two visibly different numbers. That is the same
+  // live bug wakeTokens' header records across two SPINES, now reachable inside one.
+  //
+  // `fallback_handle`'s `unless_present` is what makes exactly one arrival answer, and it does NOT
+  // cover an agent's declared handles: a token in `handles:` beats a fallback for the same token
+  // (router.mjs's second pass), which is precisely what a naive merge of two nodes' configs
+  // produces — the guarded handle becomes an unconditional one and the guard goes quiet.
+  //
+  // A WARNING, NEVER A REFUSAL. Two accounts that never share a chat is a legitimate node and this
+  // must not stop it booting; nor can boot know which chats they share. It names the agent and its
+  // handles so the line is actionable without opening the config. No token value is logged —
+  // connection COUNT only, never a token, and the remedy names a phone number the operator already
+  // has rather than any secret.
+  if (inboundOwned.size > 1) {
+    for (const [name, agent] of Object.entries(agents())) {
+      if (!agent || typeof agent !== 'object' || name.startsWith('_')) continue;
+      // The agent's UNCONDITIONAL vocabulary, through THE one rule. `handles: []` yields nothing —
+      // an agent addressable by nothing cannot double-answer — and a purely guarded agent (every
+      // token under fallback_handle) never appears here either, which is the shape being advised.
+      const unconditional = wakeTokens(name, agent);
+      if (!unconditional.length) continue;
+      log.line?.(`[router] '${name}' wakes on ${unconditional.map((h) => `@${h}`).join(' ')} unconditionally and this node wakes on ${inboundOwned.size} connections — in any chat two of its accounts are both in, ONE mention wakes it TWICE and the chat gets two answers. To make exactly one answer, move those handles into fallback_handle: { handle: [...], unless_present: <one of this node's own account numbers> } — the account whose number you name is the one that answers, and the other stays silent wherever the two share a chat.`);
+    }
+  }
 
   // Persist incoming attachments into the chat's media/ folder + surface them to E.
   // For a video: keyframes (ffmpeg) + audio transcript (via the same chain) — Route A.
