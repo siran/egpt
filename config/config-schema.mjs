@@ -791,7 +791,7 @@ export const CONFIG_SCHEMA = {
     attempt made right after "/radio disable <person>" is refused at once.
   `,
 
-  account_peers: `
+  peer_nodes: `
     Node identities sharing THIS Beeper account, INCLUDING self (operator
     2026-07-09) — a LIST of node names, e.g. [kg, do]. Co-account nodes collapse
     to ONE Beeper room member, so this completes the HRW candidate set the 👂
@@ -867,7 +867,7 @@ export const CONFIG_SCHEMA = {
         name. DEFAULT: the map key. THIS, never ip, is how a node is reached:
         an off-LAN node may be reachable only by a tailscale/DNS name.
 
-    NOT account_peers, which answers a different question: that lists node
+    NOT peer_nodes, which answers a different question: that lists node
     IDENTITIES sharing ONE Beeper account (they collapse to a single room
     member); this lists MACHINES and how to ssh to them.
   `,
@@ -990,7 +990,7 @@ export const CONFIG_SCHEMA = {
     the exclusions). Every refusal is reported back over the same socket so the
     caller can fall back to speaking on its own account.
 
-    NOT account_peers, which answers a different question: that lists node
+    NOT peer_nodes, which answers a different question: that lists node
     IDENTITIES sharing ONE Beeper account. This names a spine on ANOTHER account.
 
     FINAL TEXT ONLY. The link carries a finished line. Streaming a reply across
@@ -1049,7 +1049,7 @@ export const CONFIG_SCHEMA = {
     A node that echoes MUST appear in the resolved set or boot is FATAL (this
     kills the silent-divergence class).
 
-    FALLBACK CHAIN: this key → account_peers → [node_name] (a solo node is
+    FALLBACK CHAIN: this key → peer_nodes → [node_name] (a solo node is
     always rank 1). echo:false opts this node out entirely.
   `,
 
@@ -1252,7 +1252,7 @@ export const CONFIG_SCHEMA = {
     (kills the silent-divergence class).
 
     BACK-COMPAT:
-      peer_priority  <- legacy top-level echo_priority → account_peers →
+      peer_priority  <- legacy top-level echo_priority → peer_nodes →
                         [node_name] (solo node = rank 1)
       timeout_ms     <- legacy echo_timeout_ms → 20000
     The top-level echo:false opts a node out entirely (transcribed + logged,

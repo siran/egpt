@@ -64,11 +64,11 @@ node_name: kg                     # REQUIRED - this node's name on the network, 
 # node_alias: [kg2, kg3]            # extra identities this ONE process also answers to
 user_name: "John"                  # the human here; shown as <user_name>@<surface>
 
-# account_peers - node identities sharing THIS Beeper account (include self).
+# peer_nodes - node identities sharing THIS Beeper account (include self).
 # Nodes on DIFFERENT accounts appear as distinct room members and need no listing;
 # co-account nodes collapse to one member, so list them here to complete the HRW
 # candidate set. Omit for a solo node.
-# account_peers: [kg, do]
+# peer_nodes: [kg, do]
 
 # egpt_nodes - the eGPT nodes YOU run, and HOW TO REACH each one. OPTIONAL: a
 # single node needs none of this. Read by src/tools/beeper-whoami.mjs (the

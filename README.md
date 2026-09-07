@@ -41,7 +41,7 @@ default `~/.egpt`).
    asserts none of the optional machinery below is reached.
 
    Nodes MAY share one Beeper account (list the co-account nodes in
-   `account_peers`) or hold one each. Neither is required to start.
+   `peer_nodes`) or hold one each. Neither is required to start.
 
    > **Everything past this point is OPTIONAL EXPANSION, and none of it is needed
    > to run eGPT.** A node can additionally hold a SECOND Beeper account, and can

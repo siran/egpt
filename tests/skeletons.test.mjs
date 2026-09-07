@@ -150,6 +150,18 @@ describe('config/skeletons/config.yaml', () => {
     expect(YAML.parse(text).egpt_nodes).toBeUndefined();
   });
 
+  // HARD RENAME account_peers → peer_nodes (operator 2026-09-07): no alias, so a skeleton still
+  // teaching the old spelling would hand a fresh install a key nothing reads — a silently
+  // never-echoing node, exactly the class the boot assertion exists to kill.
+  it('teaches the co-account peer set as peer_nodes, and the old account_peers spelling is GONE', () => {
+    expect(CONFIG_SCHEMA, 'the skeleton teaches peer_nodes, so it must be registered').toHaveProperty('peer_nodes');
+    expect(CONFIG_SCHEMA, 'account_peers was hard-renamed — no alias survives').not.toHaveProperty('account_peers');
+    expect(text, 'the skeleton still names account_peers').not.toMatch(/account_peers/);
+    const at = text.split('\n').findIndex((l) => l.trim() === '# peer_nodes: [kg, do]');
+    expect(at, 'the skeleton no longer carries the peer_nodes example').toBeGreaterThan(-1);
+    expect(YAML.parse('peer_nodes: [kg, do]')).toEqual({ peer_nodes: ['kg', 'do'] });   // uncomments into live YAML
+  });
+
   it('ships the agents registry uncommented, and no longer sets default_brain (agent configuration supersedes)', () => {
     const doc = YAML.parse(text);
     // agents is the shipped centerpiece now (operator 2026-07-02) — the persona agent

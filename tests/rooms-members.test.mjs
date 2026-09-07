@@ -949,7 +949,7 @@ describe('/members usage line', () => {
 // OUR name runs here, and the existing sub-grammar (`add tab <n>`, `<id> mode <m>`, bare) is
 // untouched.
 describe('/members <node> — the shared node gate, with the sub-grammar intact', () => {
-  const NODES = { node_name: 'kg', account_peers: ['kg', 'do'] };
+  const NODES = { node_name: 'kg', peer_nodes: ['kg', 'do'] };
 
   it('REPRODUCE-FIRST: /members=do (a peer, not us) answers NOTHING AT ALL', async () => {
     const { cmds, sent } = harness({ config: NODES });

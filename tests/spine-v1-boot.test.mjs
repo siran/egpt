@@ -365,10 +365,10 @@ describe('boot()', () => {
   });
 });
 
-// CONFIG-SHAPE MIGRATION (operator 2026-07-09): the new beeper:/networks:/account_peers shape
+// CONFIG-SHAPE MIGRATION (operator 2026-07-09): the new beeper:/networks:/peer_nodes shape
 // (back-compat with the old flat shape) + the REMOVED wake-word injection (symmetric nodes wake on
 // their OWN handles only). Assert boot RESOLVES each by capturing the opts it hands the bridge
-// (token / wakeWords / echoDecider / echoMaxAgeMs / isAllowedUser) and app.accountPeers.
+// (token / wakeWords / echoDecider / echoMaxAgeMs / isAllowedUser) and app.peerNodes.
 describe('boot() — config-shape migration', () => {
   const AG = { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true } };
   async function captureBoot(config) {
@@ -623,7 +623,7 @@ describe('boot() — config-shape migration', () => {
   // 👂 ECHO — REAL HRW ON A NODE-STABLE AUDIO HASH + ORDERED FAILOVER (operator 2026-07-24; revives HRW
   // over the static-priority stopgap): boot hands the bridge an echoPlan(noteKey) → { rank, winner } that
   // rendezvous-hashes the resolved peer set (transcription_service.echo.peer_priority, else legacy
-  // echo_priority, else account_peers, else [self]) for the note's key PLUS the per-rank promotion step
+  // echo_priority, else peer_nodes, else [self]) for the note's key PLUS the per-rank promotion step
   // echoTimeoutMs (transcription_service.echo.timeout_ms, else legacy echo_timeout_ms). The rank is
   // PER-NOTE (the bridge feeds the note's audio-byte sha256, node-stable), so the echoer ROTATES per
   // note yet the two co-account nodes AGREE (same key → same ordering). A solo node is always rank 1;
@@ -644,8 +644,8 @@ describe('boot() — config-shape migration', () => {
   });
 
   it('echoPlan: co-account HRW rank — matches echoRank over the peer set, one rank-1 per note, reshuffles per note', async () => {
-    const kg = await captureBoot({ agents: AG, node_name: 'kg', account_peers: ['kg', 'do'] });
-    const doNode = await captureBoot({ agents: AG, node_name: 'do', account_peers: ['kg', 'do'] });
+    const kg = await captureBoot({ agents: AG, node_name: 'kg', peer_nodes: ['kg', 'do'] });
+    const doNode = await captureBoot({ agents: AG, node_name: 'do', peer_nodes: ['kg', 'do'] });
     // boot's echoPlan is per-note HRW over the resolved peer set, keyed on the note key (the bridge feeds
     // the audio hash). It matches the pure echoRank for the same key, and the two nodes are a
     // permutation of 1..2 for EVERY note (exactly one winner).
@@ -662,14 +662,14 @@ describe('boot() — config-shape migration', () => {
     doNode.app.stop();
   });
 
-  it('echoPlan: transcription_service.echo.peer_priority is READ and WINS over legacy echo_priority / account_peers; timeout_ms too', async () => {
+  it('echoPlan: transcription_service.echo.peer_priority is READ and WINS over legacy echo_priority / peer_nodes; timeout_ms too', async () => {
     // Give the three sources DIFFERENT sets so precedence is observable: if the legacy echo_priority
     // [kg] (a solo set) had won, kg would be rank 1 for EVERY note; the new peer_priority [do, kg]
     // instead reshuffles kg across both ranks.
     const node = await captureBoot({ agents: AG, node_name: 'kg',
       transcription_service: { echo: { method: 'hrw', participants: 'group-members', peer_priority: ['do', 'kg'], timeout_ms: 7000 } },
       echo_priority: ['kg'],                // legacy — would make kg solo (rank 1 always) if used → IGNORED
-      account_peers: ['kg', 'do', 'zz'],    // also IGNORED (new home wins)
+      peer_nodes: ['kg', 'do', 'zz'],       // also IGNORED (new home wins)
     });
     for (const k of ['a', 'b', 'c', 'd']) {
       expect(node.opts.echoPlan(k).rank).toBe(echoRank('kg', ['do', 'kg'], k));   // resolved set is the new peer_priority
@@ -701,10 +701,56 @@ describe('boot() — config-shape migration', () => {
       .rejects.toThrow(/not in the 👂 echo peer set/);
   });
 
-  it('account_peers parsed + exposed on the boot return', async () => {
-    const { app } = await captureBoot({ agents: AG, node_name: 'kg', account_peers: ['kg', 'do'] });   // node_name in peers → valid echo config (boot asserts membership)
-    expect(app.accountPeers).toEqual(['kg', 'do']);
-    app.stop();
+  // HARD RENAME account_peers → peer_nodes (operator 2026-09-07). The key naming the node
+  // identities that share THIS Beeper account is `peer_nodes`, and that is the ONLY spelling:
+  // no alias, no read-fallback, no deprecation branch. Its rung in the echo resolution chain is
+  // unchanged (transcription_service.echo.peer_priority → legacy echo_priority → peer_nodes →
+  // [self]) — only the name moved. NOT egpt_nodes, which is machine reachability and untouched.
+  it('peer_nodes resolves the 👂 echo peer set and is exposed on the boot return', async () => {
+    const kg = await captureBoot({ agents: AG, node_name: 'kg', peer_nodes: ['kg', 'do'] });
+    for (const k of ['a', 'b', 'c', 'd']) {
+      expect(kg.opts.echoPlan(k).rank).toBe(echoRank('kg', ['kg', 'do'], k));
+    }
+    // Reshuffles across BOTH ranks — proof the TWO-node set was resolved, not the solo [node_name]
+    // default a silently-ignored key would have left behind.
+    const ranks = new Set(Array.from({ length: 64 }, (_, i) => kg.opts.echoPlan(`k${i}`).rank));
+    expect(ranks).toEqual(new Set([1, 2]));
+    expect(kg.app.peerNodes).toEqual(['kg', 'do']);
+    kg.app.stop();
+  });
+
+  it('boot ASSERTION fires through peer_nodes too: an echoing node not in its own set is FATAL', async () => {
+    await expect(captureBoot({ agents: AG, node_name: 'zz', peer_nodes: ['do', 'kg'] }))
+      .rejects.toThrow(/not in the 👂 echo peer set/);
+  });
+
+  it('BREAKING, locked: account_peers is UNRECOGNIZED — the old spelling buys nothing', async () => {
+    // Under the old name this WAS the two-node set. It now resolves nothing and boot falls straight
+    // through to the solo [node_name] default: rank 1 for every note.
+    const kg = await captureBoot({ agents: AG, node_name: 'kg', account_peers: ['kg', 'do'] });
+    const ranks = new Set(Array.from({ length: 64 }, (_, i) => kg.opts.echoPlan(`k${i}`).rank));
+    expect(ranks, 'account_peers still resolved a peer set — an alias survived the rename').toEqual(new Set([1]));
+    expect(kg.app.peerNodes).toEqual([]);
+    kg.app.stop();
+    // The sharpest proof: node_name ABSENT from account_peers used to be a FATAL boot. It now boots
+    // clean, because the key means nothing at all.
+    const solo = await captureBoot({ agents: AG, node_name: 'kg', account_peers: ['do'] });
+    expect(solo.opts.echoPlan('a')).toEqual({ rank: 1, winner: true });
+    solo.app.stop();
+  });
+
+  it('peer_nodes ABSENT (or empty): a solo node boots clean at rank 1 — never fatal', async () => {
+    // The fatal is ONLY "a non-empty resolved set that omits node_name". A missing key resolves to
+    // [node_name]; an empty list resolves to [] and echoRank itself falls back to [selfNode]. Both
+    // degrade to the lone-node echo, which is why a deploy that outruns the config edit goes quiet-
+    // wrong (two solo rank-1 nodes = double 👂) rather than refusing to boot.
+    const solo = await captureBoot({ agents: AG, node_name: 'kg' });
+    expect(solo.opts.echoPlan('any-note')).toEqual({ rank: 1, winner: true });
+    expect(solo.app.peerNodes).toEqual([]);
+    solo.app.stop();
+    const empty = await captureBoot({ agents: AG, node_name: 'kg', peer_nodes: [] });
+    expect(empty.opts.echoPlan('any-note')).toEqual({ rank: 1, winner: true });
+    empty.app.stop();
   });
 });
 

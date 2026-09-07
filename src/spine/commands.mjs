@@ -666,7 +666,7 @@ export function createCommands({
     const hit = nodeAddressed(ev?.body);
     if (!hit) return null;
     if (ownNodeNamesOf(cfg()).has(hit.node)) return null;
-    const peers = cfg().account_peers;
+    const peers = cfg().peer_nodes;
     const isPeer = Array.isArray(peers) && peers.some((p) => String(p ?? '').trim().toLowerCase() === hit.node);
     if (isPeer && !NODE_LOCAL_SURFACES.has(String(ev?.surface ?? '').toLowerCase())) return null;
     return hit.node;
@@ -2483,7 +2483,7 @@ export function createCommands({
   // to whatever surface asked, which is usually a real Beeper chat, permanently. `account` and
   // `allowed_users` are the operator's email and phone numbers — not secrets, but a config dump
   // exists to check values like default_node, not to post a contact list into a group.
-  // `account` is ANCHORED so `account_peers` ([kg, do] — not sensitive, and worth seeing) stays.
+  // `account` is ANCHORED so `peer_nodes` ([kg, do] — not sensitive, and worth seeing) stays.
   const CONFIG_REDACT_RE = /token|key|secret|password|^account$|allowed_users/i;
   function redactConfigValue(value) {
     if (Array.isArray(value)) return value.map(redactConfigValue);
@@ -2561,7 +2561,7 @@ export function createCommands({
   //   'mine'   — <target> is one of THIS node's own names (node_name ∪ node_alias, via
   //              the SHARED ownNodeNamesOf — the same set /chrome's gate matches). This
   //              node replies with the bare-/status node-health payload.
-  //   'silent' — <target> is a node on this Beeper account that is NOT us (cfg.account_peers,
+  //   'silent' — <target> is a node on this Beeper account that is NOT us (cfg.peer_nodes,
   //              the roster /status already surfaces as `peers:`). Reply NOTHING AT ALL —
   //              the same deliberate silence /chrome uses. It must NOT fall through to the
   //              fragment search: on 2026-07-25 `/status do` typed on kg did exactly that,
@@ -2576,7 +2576,7 @@ export function createCommands({
   function statusNodeGate(target) {
     const t = String(target).toLowerCase();
     if (ownNodeNamesOf(cfg()).has(t)) return 'mine';
-    const peers = cfg().account_peers;
+    const peers = cfg().peer_nodes;
     if (Array.isArray(peers) && peers.some((p) => String(p ?? '').trim().toLowerCase() === t)) return 'silent';
     return null;
   }
@@ -2661,7 +2661,7 @@ export function createCommands({
     // (not '?') when unset, same optional-field pattern as `mode` above.
     try { const nn = cfg().node_name; if (nn) lines.push(`node_name: ${nn}`); } catch { /* omit */ }
     try {
-      const peers = cfg().account_peers;
+      const peers = cfg().peer_nodes;
       if (Array.isArray(peers) && peers.length) lines.push(`peers: [${peers.join(', ')}]`);
     } catch { /* omit */ }
 

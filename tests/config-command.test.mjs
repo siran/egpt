@@ -225,7 +225,7 @@ describe('/config <key> — bare-key GET, mirrors the write path\'s resolution +
 describe('/config participates in node addressing (NODE_ADDRESSABLE gate)', () => {
   it('/config=do default_node=do applies LOCALLY on the node named "do", replying with the resolved path', async () => {
     const configPath = await tmpConfigPath();
-    const { cmds, sent } = harness({ config: { node_name: 'do', account_peers: ['kg', 'do'] }, configPath });
+    const { cmds, sent } = harness({ config: { node_name: 'do', peer_nodes: ['kg', 'do'] }, configPath });
     await cmds.run({ body: '/config=do default_node=do', chatId: '!fam', surface: 'whatsapp', authorized: true });
     expect(sent).toHaveLength(1);
     expect(sent[0].text).toMatch(/dispatch\.default_node/);
@@ -235,7 +235,7 @@ describe('/config participates in node addressing (NODE_ADDRESSABLE gate)', () =
 
   it('/config=do default_node=do stays SILENT on a co-account peer node that is NOT named (kg)', async () => {
     const configPath = await tmpConfigPath();
-    const { cmds, sent } = harness({ config: { node_name: 'kg', account_peers: ['kg', 'do'] }, configPath });
+    const { cmds, sent } = harness({ config: { node_name: 'kg', peer_nodes: ['kg', 'do'] }, configPath });
     await cmds.run({ body: '/config=do default_node=do', chatId: '!fam', surface: 'whatsapp', authorized: true });
     expect(sent).toHaveLength(0);
     await expect(readFile(configPath, 'utf8')).rejects.toThrow();   // never touched
@@ -245,7 +245,7 @@ describe('/config participates in node addressing (NODE_ADDRESSABLE gate)', () =
 describe('LOCK: lifecycle + STOP still not node-addressable after /config joined NODE_ADDRESSABLE', () => {
   it('/restart do, /upgrade do, /rewind do, and the STOP safe word never resolve to a remote node — even with default_node set', async () => {
     const configPath = await tmpConfigPath();
-    const { cmds } = harness({ config: { node_name: 'kg', account_peers: ['kg', 'do'], dispatch: { default_node: 'do' } }, configPath });
+    const { cmds } = harness({ config: { node_name: 'kg', peer_nodes: ['kg', 'do'], dispatch: { default_node: 'do' } }, configPath });
     for (const body of ['/restart do', '/upgrade do', '/rewind do', 'stop']) {
       expect(cmds.remoteNode({ body, surface: 'shell', chatId: 'main' })).toBe(null);
     }

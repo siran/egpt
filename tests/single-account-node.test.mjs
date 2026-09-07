@@ -68,7 +68,7 @@ const TOKEN = 'TOK-single';
 
 // THE WHOLE CONFIG. One connection carrying one token, this node's name, the human's name, and
 // the shipped persona. No base_url, no ws_url, no owner_node, no endpoints, no fallback_handle,
-// no scope, no compaction, no account_peers, no networks block.
+// no scope, no compaction, no peer_nodes, no networks block.
 const MINIMAL = () => ({
   node_name: 'kg',
   user_name: 'John',
@@ -167,7 +167,7 @@ describe('ONE beeper token, ONE account, ONE node — the baseline that must nev
     // …and boot resolved that persona all the way through to the bridge's wake vocabulary, so
     // "it booted" means "it can be addressed", not merely "it did not throw".
     expect([...opts.wakeWords].sort()).toEqual(['e', 'egpt']);
-    expect(app.accountPeers).toEqual([]);   // solo node — no co-account peer set to complete
+    expect(app.peerNodes).toEqual([]);   // solo node — no co-account peer set to complete
 
     app.stop();
   });
@@ -371,7 +371,7 @@ describe('config/skeletons/config.yaml — the file a new user copies actually b
     // Beeper Desktop or a second node on one account. Shipping any of them SET would hand every
     // new user the expanded path (and, for `endpoints:`, a boot-time HTTP probe) by default.
     expect(Object.keys(conn).sort()).toEqual(['account', 'token']);
-    expect(cfg.account_peers).toBeUndefined();
+    expect(cfg.peer_nodes).toBeUndefined();
     expect(cfg.egpt_nodes, 'the topology block is for an operator who runs SEVERAL machines').toBeUndefined();
     for (const [name, agent] of Object.entries(cfg.agents ?? {})) {
       expect(agent.fallback_handle, `${name} ships a fallback_handle`).toBeUndefined();

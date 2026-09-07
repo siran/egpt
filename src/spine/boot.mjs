@@ -1002,10 +1002,10 @@ export async function boot({
   // never echo a note whose OWN timestamp is older than this — a Beeper resync's ancient backlog
   // notes are still transcribed + logged, just never echoed into the live chat. Default 1h.
   const echoMaxAgeMs = Number.isFinite(cfg.echo_max_age_ms) ? cfg.echo_max_age_ms : 3_600_000;
-  // account_peers (operator 2026-07-09): node identities sharing THIS Beeper account (incl self).
+  // peer_nodes (operator 2026-07-09): node identities sharing THIS Beeper account (incl self).
   // Still carried for the boot return; the 👂 echo priority reads echo_priority (below), falling
-  // back to account_peers.
-  const accountPeers = Array.isArray(cfg.account_peers) ? cfg.account_peers : [];
+  // back to peer_nodes.
+  const peerNodes = Array.isArray(cfg.peer_nodes) ? cfg.peer_nodes : [];
 
   // 👂 ECHO — REAL HRW ON A NODE-STABLE AUDIO HASH + ORDERED FAILOVER (operator 2026-07-24; revives
   // HRW over the static-priority stopgap; plans/2607101713-HRW-ECHO-PLAN.md). NOT dedup. Two co-account
@@ -1026,13 +1026,13 @@ export async function boot({
   //   echo: { method: hrw, participants, peer_priority: [do, kg], timeout_ms: 20000 }
   // BACK-COMPAT read-fallbacks keep a not-yet-migrated live config booting through the deploy→migrate
   // window: the HRW candidate set (also the hash-collision tiebreak order) is echoCfg.peer_priority,
-  // else the legacy top-level echo_priority, else account_peers, else [self] (a solo node is always
+  // else the legacy top-level echo_priority, else peer_nodes, else [self] (a solo node is always
   // rank 1); all lowercased so config casing never splits the order.
   const echoCfg = cfg.transcription_service?.echo ?? {};
   const echoPeers = (
     Array.isArray(echoCfg.peer_priority) ? echoCfg.peer_priority
     : Array.isArray(cfg.echo_priority) ? cfg.echo_priority
-    : Array.isArray(cfg.account_peers) ? cfg.account_peers
+    : Array.isArray(cfg.peer_nodes) ? cfg.peer_nodes
     : [node_name]
   ).map((p) => String(p).toLowerCase());
   // `method`/`participants` are descriptive for now (no behavior branches on them): assert the method,
@@ -1057,7 +1057,7 @@ export async function boot({
   // no node echoes — or both do). Fail loudly so the operator fixes the config — this makes the
   // silent-divergence class impossible. echo:false opts out entirely, so the check is skipped there.
   if (cfg.echo !== false && echoRank(node_name, echoPeers, '') === 0) {
-    throw new Error(`boot: node_name "${node_name}" is not in the 👂 echo peer set [${echoPeers.join(', ')}] — a node that echoes must appear in transcription_service.echo.peer_priority (or the legacy echo_priority / account_peers), else it would never echo (${CONFIG_FILE}). Add "${node_name}" to the list, or set echo:false to opt out.`);
+    throw new Error(`boot: node_name "${node_name}" is not in the 👂 echo peer set [${echoPeers.join(', ')}] — a node that echoes must appear in transcription_service.echo.peer_priority (or the legacy echo_priority / peer_nodes), else it would never echo (${CONFIG_FILE}). Add "${node_name}" to the list, or set echo:false to opt out.`);
   }
   // Per-note HRW plan: rendezvous-hash the peer set for the note's key (the audio-hash the bridge feeds)
   // and read off this node's rank. echo:false is the hard opt-out (rank 0, never post/promote).
@@ -2068,7 +2068,7 @@ export async function boot({
   }
 
   return {
-    spine, bridge, shellPort, pool, cfg, accountPeers,   // shellPort: the second LIMB — exposed so its regulation is assertable, like bridge's
+    spine, bridge, shellPort, pool, cfg, peerNodes,      // shellPort: the second LIMB — exposed so its regulation is assertable, like bridge's
     peerMouth,                                           // null on a node with no peer_spine — exposed for the same reason: "absent means absent" is assertable
 
     stop: () => {

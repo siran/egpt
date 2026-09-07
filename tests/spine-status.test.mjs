@@ -479,7 +479,7 @@ describe('/status: enriched fields', () => {
   const RICH_CONFIG = {
     whatsapp: { chat_id: '!self' },
     node_name: 'kg',
-    account_peers: ['kg', 'do'],
+    peer_nodes: ['kg', 'do'],
     transcription_service: {
       enabled: true,
       use_config: 'reve',
@@ -688,7 +688,7 @@ describe('/status: enriched fields', () => {
 describe('/status <node> — node-first gate', () => {
   const HEALTHY_IO = { stat: async () => ({ mtimeMs: Date.now() }), readFile: async () => READONLY_YAML };
   const HEALTHY_GIT = (args) => (args.includes('--short') ? 'abc1234' : 's');
-  const KG = { whatsapp: { chat_id: '!self' }, node_name: 'kg', account_peers: ['kg', 'do'] };
+  const KG = { whatsapp: { chat_id: '!self' }, node_name: 'kg', peer_nodes: ['kg', 'do'] };
   const self = { chatId: '!self', surface: 'whatsapp' };
 
   // Contacts whose slugs all contain "do" — the live shape that made `/status do`
@@ -723,7 +723,7 @@ describe('/status <node> — node-first gate', () => {
   });
 
   it('/status do on the do node answers with the node-health payload (exactly one node replies)', async () => {
-    const cfg = { whatsapp: { chat_id: '!self' }, node_name: 'do', account_peers: ['kg', 'do'] };
+    const cfg = { whatsapp: { chat_id: '!self' }, node_name: 'do', peer_nodes: ['kg', 'do'] };
     const { cmds, sent } = harness({ io: HEALTHY_IO, gitOut: HEALTHY_GIT, loadState: async () => doAmbiguousContacts(), getConfig: () => cfg });
     await cmds.run({ ...self, body: '/status do' });
     expect(sent).toHaveLength(1);
@@ -775,7 +775,7 @@ describe('/status <node> — node-first gate', () => {
 
   // REGRESSION: a SOLO node (no node identity at all) is byte-identical to today — the
   // gate can only fire on a configured node name/alias/peer.
-  it('a node with no node_name/account_peers falls through to the fragment path unchanged', async () => {
+  it('a node with no node_name/peer_nodes falls through to the fragment path unchanged', async () => {
     const { cmds, sent } = harness({ io: HEALTHY_IO, gitOut: HEALTHY_GIT, loadState: async () => doAmbiguousContacts() });
     await cmds.run({ ...self, body: '/status do' });
     expect(sent).toHaveLength(1);

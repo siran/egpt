@@ -135,10 +135,10 @@ export function fromOtherNode(cfg, ev) {
   return !ownNodeNamesOf(cfg).has(String(from).trim().toLowerCase());
 }
 
-/** Every node name this config KNOWS: our own ∪ account_peers ∪ every node an agent routes to. */
+/** Every node name this config KNOWS: our own ∪ peer_nodes ∪ every node an agent routes to. */
 export function knownNodeNames(cfg) {
   const out = ownNodeNamesOf(cfg);
-  for (const p of (Array.isArray(cfg?.account_peers) ? cfg.account_peers : [])) {
+  for (const p of (Array.isArray(cfg?.peer_nodes) ? cfg.peer_nodes : [])) {
     const s = String(p ?? '').trim().toLowerCase();
     if (s) out.add(s);
   }

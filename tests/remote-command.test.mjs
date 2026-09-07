@@ -64,7 +64,7 @@ const drain = async () => { for (let i = 0; i < 10; i++) await flush(); };
 // mesh.nodes (evicted 2026-07-25, "we do agent-base routing").
 const KG = () => ({
   node_name: 'kg',
-  account_peers: ['kg', 'do'],
+  peer_nodes: ['kg', 'do'],
   networks: { whatsapp: { chat_ids: ['!self'] } },
   agents: {
     egpt: { configuration: 'claude', handles: ['e'], default: true },
@@ -76,7 +76,7 @@ const KG = () => ({
 // do's side: `don` is a LOCAL being here (that is what `to: don.do` points at).
 const DO = () => ({
   node_name: 'do',
-  account_peers: ['kg', 'do'],
+  peer_nodes: ['kg', 'do'],
   networks: { whatsapp: { chat_ids: ['!do-self'] } },
   agents: {
     egpt: { configuration: 'claude', handles: ['e'], default: true },
@@ -208,7 +208,7 @@ describe('origin — the local and broadcast paths are untouched', () => {
   });
 
   it('/chrome do in a SHARED BEEPER chat is unchanged: broadcast + gate, NO envelope, kg silent', async () => {
-    // `do` shares this Beeper account (account_peers) and saw the very same message, so it
+    // `do` shares this Beeper account (peer_nodes) and saw the very same message, so it
     // answers through its own gate. kg must neither answer nor relay — one answer, as today.
     const { bridge, spine } = nodeStack({ config: KG() });
     await spine.handleInbound({ ...FAM, body: '/chrome do' });
@@ -247,11 +247,11 @@ describe('origin — a node no agent can route to fails loudly', () => {
     expect(plain(bridge)[0].text).toMatch(/route|agent/i);
   });
 
-  it('BEHAVIOUR CHANGE, locked: on a Beeper surface too — account_peers is what buys the silence', async () => {
+  it('BEHAVIOUR CHANGE, locked: on a Beeper surface too — peer_nodes is what buys the silence', async () => {
     // `/chrome <node>` used to be silent for ANY non-match, anywhere. It still is for a node
-    // listed in account_peers (which heard the message and answers — the test above), but an
+    // listed in peer_nodes (which heard the message and answers — the test above), but an
     // unroutable, unknown node now says so instead of vanishing. On a co-account node that
-    // means account_peers must actually list the siblings; the message itself says as much.
+    // means peer_nodes must actually list the siblings; the message itself says as much.
     const { bridge, spine } = nodeStack({ config: KG() });
     await spine.handleInbound({ ...FAM, body: '/chrome mo' });
     await flush();
@@ -304,7 +304,7 @@ describe('node → route derivation', () => {
     // /chrome do broadcasts there instead of relaying. With carol removed there is no route.
     const config = KG();
     delete config.agents.carol;
-    config.account_peers = ['kg'];                              // …and do is not a co-account peer
+    config.peer_nodes = ['kg'];                              // …and do is not a co-account peer
     const { bridge, spine } = nodeStack({ config });
     await spine.handleInbound({ ...FAM, body: '/chrome do' });
     await flush();

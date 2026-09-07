@@ -981,9 +981,9 @@ describe('/radio disable — Ruling 2 (operator 2026-08-08)', () => {
   });
 
   it("disable <node> acts ONLY on the named node and is silent elsewhere", async () => {
-    // On 'kg', naming a DIFFERENT known node ('do', via account_peers) does nothing, silently.
+    // On 'kg', naming a DIFFERENT known node ('do', via peer_nodes) does nothing, silently.
     const onKg = harness({
-      config: { node_name: 'kg', account_peers: ['kg', 'do'], radio_service: { wildnloyal: { enabled: true } } },
+      config: { node_name: 'kg', peer_nodes: ['kg', 'do'], radio_service: { wildnloyal: { enabled: true } } },
     });
     await onKg.cmds.run({ ...self, body: '/radio disable do' });
     expect(onKg.sent).toHaveLength(0);
@@ -991,7 +991,7 @@ describe('/radio disable — Ruling 2 (operator 2026-08-08)', () => {
 
     // On 'do' itself, the SAME bare command (independently heard, no mesh) disables its own radios.
     const onDo = harness({
-      config: { node_name: 'do', account_peers: ['kg', 'do'], radio_service: { wildnloyal: { enabled: true } } },
+      config: { node_name: 'do', peer_nodes: ['kg', 'do'], radio_service: { wildnloyal: { enabled: true } } },
     });
     await onDo.cmds.run({ ...self, body: '/radio disable do' });
     expect(onDo.sent[0].text).toMatch(/disabled 1 radio on do/);
@@ -1125,7 +1125,7 @@ describe('/radio say — a multi-line payload is not smuggled anywhere and not m
 
   it('=<node> naming a DIFFERENT node on a multi-line say stays silent here (the same node gate every other command uses)', async () => {
     const { cmds, sent, room, uploadCalls } = harness({
-      config: { node_name: 'kg', account_peers: ['kg', 'do'], radio_service: { wildnloyal: { enabled: true, default_speaker: 'egpt' } } },
+      config: { node_name: 'kg', peer_nodes: ['kg', 'do'], radio_service: { wildnloyal: { enabled: true, default_speaker: 'egpt' } } },
     });
     seed(room, 'radio:\n  join: wildnloyal\n');
     await cmds.run({ ...self, senderId: '16468217865', body: '/radio=do say hola\na todos' });
@@ -1135,7 +1135,7 @@ describe('/radio say — a multi-line payload is not smuggled anywhere and not m
 
   it('remoteNode resolves the multi-line say to the OTHER node, so it travels rather than being silently dropped', () => {
     const { cmds } = harness({
-      config: { node_name: 'kg', account_peers: ['kg', 'do'], radio_service: { wildnloyal: { enabled: true } } },
+      config: { node_name: 'kg', peer_nodes: ['kg', 'do'], radio_service: { wildnloyal: { enabled: true } } },
     });
     // The console's own surface — node-local, so a peer-addressed command travels rather
     // than being answered here. (`room` since 2026-08-28; the shell is a transport onto it.)
@@ -1143,12 +1143,12 @@ describe('/radio say — a multi-line payload is not smuggled anywhere and not m
   });
 
   it("LOCK — the 4004d6f smuggling guard still holds for OTHER commands: '/tabs do\\nand more' is still not node-addressed at all", () => {
-    const { cmds } = harness({ config: { node_name: 'kg', account_peers: ['kg', 'do'] } });
+    const { cmds } = harness({ config: { node_name: 'kg', peer_nodes: ['kg', 'do'] } });
     expect(cmds.remoteNode({ ...self, surface: 'shell', body: '/tabs do\nand more' })).toBe(null);
   });
 
   it("LOCK — '/tabs=do\\nand more' (explicit form) is ALSO still not node-addressed: NODE_ADDRESSABLE is untouched for /tabs", () => {
-    const { cmds } = harness({ config: { node_name: 'kg', account_peers: ['kg', 'do'] } });
+    const { cmds } = harness({ config: { node_name: 'kg', peer_nodes: ['kg', 'do'] } });
     expect(cmds.remoteNode({ ...self, surface: 'shell', body: '/tabs=do\nand more' })).toBe(null);
   });
 
