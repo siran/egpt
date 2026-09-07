@@ -14,7 +14,14 @@
 # and non-ASCII punctuation corrupts through some encodings.
 
 # --- Beeper accounts ---------------------------------------------------------
-# eGPT reaches the world through Beeper Desktop's local API (127.0.0.1:23373).
+# eGPT reaches the world through Beeper Desktop's local API, on 127.0.0.1.
+#
+# YOU DO NOT CONFIGURE A PORT. Beeper takes the first free one from 23373, so the
+# number follows start order, not identity, and it changes when installs restart
+# in a different order. Your TOKEN is the address instead: a token belongs to the
+# install it was minted on, which is the only one that answers it (every other
+# install answers 401), so eGPT probes 23373-23382 with your token at boot and
+# again on every reconnect, and logs the port it found.
 #
 # ONE TOKEN IS THE WHOLE REQUIREMENT. One account, one node, running in your
 # ordinary logged-in desktop session - that is the baseline, it is what eGPT has
@@ -29,16 +36,18 @@
 # Keep this file private. Token: Beeper Desktop > Settings > Developer > Desktop API.
 #
 # THE OPTIONAL KEYS, and what each one is FOR - do not add them speculatively:
-#   base_url / ws_url  WHICH Beeper Desktop, when a machine runs more than one.
-#                      Absent = 127.0.0.1:23373, which is right for one Desktop.
+#   base_url / ws_url  A Beeper Desktop that is NOT on this machine's loopback
+#                      range - another host, or a port outside 23373-23382.
+#                      SETTING base_url SKIPS THE LOOKUP ENTIRELY: eGPT dials
+#                      exactly what you named, forever. ws_url is derived from
+#                      base_url unless you give it. Absent = the port is found.
 #   owner_node         WHICH node wakes on this connection, when the SAME account
 #                      is live on several nodes. Every other node still SENDS on
 #                      it. Absent = every node wakes, which is right for one node.
-#   endpoints          SEVERAL (base_url, token) candidates for ONE connection,
-#                      probed at boot so the spine binds whichever is alive. Only
-#                      needed when a Desktop CHANGES IDENTITY under the node (the
-#                      Session 0 logon flip). Absent = no probing, no network call
-#                      at boot at all.
+#   endpoints          DEPRECATED - a list of (base_url, token) candidates tried
+#                      in order. The token lookup above answers the same question
+#                      without a port list; a list repeating one token across
+#                      several ports collapses to plain account + token.
 beeper:
   use: main                       # which account below this node connects with
   main:

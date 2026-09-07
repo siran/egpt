@@ -172,15 +172,25 @@ describe('ONE beeper token, ONE account, ONE node — the baseline that must nev
     app.stop();
   });
 
-  // THE ONE THAT COSTS A NEW USER SOMETHING IF IT BREAKS. Candidate probing (operator 2026-09-03)
-  // exists for a Desktop that CHANGES IDENTITY under the node; a plain token-only connection must
-  // never pay for it with an HTTP call — nor with the 2s-per-candidate wait a black-holed port
-  // costs. tests/beeper-endpoint-candidates.test.mjs locks the base_url and no-beeper-block
-  // shapes; this locks the shape the skeleton actually ships, a `beeper.use` connection whose
-  // block carries nothing but `account` and `token`.
-  it('makes ZERO network probes at boot — candidate resolution stays opt-in', async () => {
-    const { app, probeCalls } = await bootWith(MINIMAL());
-    expect(probeCalls).toEqual([]);
+  // THE ONE THAT COSTS A NEW USER SOMETHING IF IT BREAKS. Until 2026-09-07 this locked the
+  // OPPOSITE — a token-only connection made no network call at boot — because the port was a
+  // constant. That constant is what went wrong: Beeper Desktop binds the first free port from
+  // 23373, so the number follows START ORDER, and a node pointed at the wrong install is deaf
+  // with nothing in the log but 401s (the ~90-minute outage of 2026-09-06). A token belongs to an
+  // INSTALL, so the baseline now LOOKS THE PORT UP with it and the config names no port at all —
+  // which is simpler for a new user, not harder: one token is still the whole requirement.
+  //
+  // What must stay true is the COST. One concurrent sweep of ten loopback ports on a short
+  // timeout (48ms measured live on a machine with four Beeper installs), never a serial wait per
+  // port, and never a second sweep — a new user's boot must not stall behind a dead port.
+  it('looks its install up on the loopback range — ONE concurrent sweep, short timeout, no port pinned', async () => {
+    const { app, probeCalls, opts } = await bootWith(MINIMAL());
+    expect(probeCalls.map((c) => c.baseUrl)).toEqual([...Array(10)].map((_, i) => `http://127.0.0.1:${23373 + i}`));
+    expect(probeCalls.every((c) => c.token === TOKEN)).toBe(true);
+    expect([...new Set(probeCalls.map((c) => c.timeoutMs))]).toEqual([750]);
+    // …and the config still names no port: nothing answered this fake probe, so the bridge keeps
+    // its own default rather than being handed a guess.
+    expect('baseUrl' in opts).toBe(false);
     app.stop();
   });
 
@@ -303,7 +313,7 @@ describe('config/skeletons/config.yaml — the file a new user copies actually b
     return YAML.parse(text.split(PLACEHOLDER).join(TOKEN));
   };
 
-  it('carries everything boot() structurally requires — and boots, on one bridge, with no probing', async () => {
+  it('carries everything boot() structurally requires — and boots, on one bridge, naming no port', async () => {
     const cfg = filled();
 
     // The three structural requirements boot throws on, checked as claims about the FILE first so
@@ -320,7 +330,9 @@ describe('config/skeletons/config.yaml — the file a new user copies actually b
     const { app, built, opts, probeCalls } = await bootWith(cfg);
     expect(built).toHaveLength(1);
     expect(opts.beeperToken).toBe(TOKEN);
-    expect(probeCalls).toEqual([]);
+    // The shipped file names no port, so boot looks one up with the token — ONE sweep, and only
+    // for the connection an agent actually rides (the cost of that sweep is locked above).
+    expect(probeCalls).toHaveLength(10);
     expect(Object.entries(app.cfg.agents).filter(([, a]) => a?.default === true)).toHaveLength(1);
     app.stop();
   });

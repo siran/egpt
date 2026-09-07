@@ -658,6 +658,34 @@ export const CONFIG_SCHEMA = {
         account   label — the Beeper address this token belongs to
         token     that account's Desktop API token
 
+    THE PORT IS DISCOVERED — there is none to configure (operator 2026-09-07).
+    Beeper Desktop's local API binds the FIRST FREE PORT starting at 23373, so
+    on a machine running more than one install the numbering follows START
+    ORDER, not identity, and reshuffles whenever they restart in a different
+    order. A pinned port is a guess with a shelf life: on 2026-09-06 one named
+    the wrong install, every request 401'd, and the node was deaf for ~90
+    minutes. But a TOKEN BELONGS TO AN INSTALL, not to an account — only the
+    install a token was minted on answers 200, every other one answers 401 — so
+    the spine probes 127.0.0.1:23373-23382 with the token at boot, and again on
+    every reconnect, and the 401s identify the right install unambiguously. The
+    winning port is logged. account + token is therefore a COMPLETE connection.
+
+    OPTIONAL, only when a Desktop is NOT on this machine's default loopback:
+      base_url  where that Desktop's API is, e.g. http://127.0.0.1:23380.
+                SETTING IT SKIPS DISCOVERY entirely — the spine dials exactly
+                what you named, at boot and on every redial.
+      ws_url    the event socket. DERIVED from base_url unless given, so
+                base_url alone is a complete answer.
+      owner_node  which node WAKES on this connection when the same account is
+                live on several nodes; every other node still SENDS on it.
+                Absent = every node wakes, which is right for one node.
+
+    DEPRECATED, still read: endpoints: — a list of (base_url, token) candidates
+    tried in order, first 200 wins (operator 2026-09-03, for a Session 0 Desktop
+    that changes identity at logon). Discovery answers that case with no port
+    list at all; a list that repeats ONE token across several ports collapses to
+    plain account + token. Boot logs a line naming any connection still on it.
+
     A node's default token = beeper[beeper.use].token — switch the default by
     changing use, no re-typing tokens. This REPLACES the top-level beeper_token.
 

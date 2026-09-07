@@ -768,6 +768,10 @@ async function bootWith(config) {
     io: memIo(), ingest: false, tickMs: 0,
     now: () => Date.UTC(2026, 8, 5, 14, 5),
     log: { line: (s) => lines.push(s) },
+    // This node's connection carries account+token and no base_url, so boot LOOKS ITS PORT UP
+    // (src/spine/boot.mjs discovery). Injected so the sweep never leaves the process — nothing
+    // here cares which install answers; tests/beeper-endpoint-candidates.test.mjs owns that.
+    probeEndpoint: async () => ({ ok: false, status: 0 }),
   });
   return { app, lines };
 }

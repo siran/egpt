@@ -283,7 +283,7 @@ export function crossAccountChatKey(chat, exclude = []) {
 }
 
 export async function startBeeperBridge(opts = {}) {
-  const {
+  let {   // `let`, not `const`: the redial below re-points baseUrl/wsUrl when the install has moved
     onIncoming,
     // RAW edit hook (An 2026-06-20): an incoming message EDIT, before it's wrapped
     // as an editAction stage-direction. Lets the mesh router mirror a relayed
@@ -300,6 +300,11 @@ export async function startBeeperBridge(opts = {}) {
     beeperToken,
     baseUrl = 'http://127.0.0.1:23373',
     wsUrl = 'ws://127.0.0.1:23373/v1/ws',
+    // WHERE THIS INSTALL IS, ASKED AGAIN ON EVERY REDIAL. The spine hands this in for a
+    // connection it DISCOVERED the port for rather than one that pins base_url (src/spine/boot.mjs
+    // — a Beeper token belongs to an install, so probing the port range with it finds that
+    // install). null ⇒ the reconnect path is exactly what it was. async () => { baseUrl, wsUrl } | null.
+    rediscover = null,
     networks = [],   // [] / null = process EVERY network Beeper bridges (signal/telegram/whatsapp/…). Beeper is the transport; network is metadata on each message, NOT a gate — anything that reaches the spine is processed (operator 2026-06-25). Set ['whatsapp', ...] to restrict scope.
     // Host verdict for this chat's transcription service (a per-entity ROOM
     // service, NOT E enrollment — the host reads the conversation/room config
@@ -1897,10 +1902,32 @@ export async function startBeeperBridge(opts = {}) {
       _wsReady = false;
       if (_stopped) return;
       onLog(`beeper: WS closed — reconnecting in ${Math.round(_reconnectMs / 1000)}s`);
-      _reconnectTimer = setTimeout(connect, _reconnectMs);
+      _reconnectTimer = setTimeout(redial, _reconnectMs);
       _reconnectMs = Math.min(_reconnectMs * 2, RECONNECT_MAX_MS);
     });
     ws.on('error', (e) => onLog(`beeper: WS error — ${e?.message ?? e}`));
+  }
+  // THE REDIAL — ASK WHERE THE INSTALL IS BEFORE DIALLING IT (operator 2026-09-07). Beeper takes
+  // the first free port from 23373, so a Desktop that restarted can come back on a DIFFERENT one,
+  // and the socket dropping is exactly when that happens. This is not a second reconnect path: it
+  // is the SAME 'close' → backoff → connect() loop with the address looked up first. Without a
+  // `rediscover` (a connection that pins base_url, or a directly-constructed bridge) it is
+  // connect() with one extra tick, byte-identical in effect.
+  //
+  // BOTH catches are load-bearing. A failed lookup must never stop the reconnect loop — the whole
+  // point is to keep redialling — and connect() throwing inside an async function would be an
+  // unhandled rejection where the old setTimeout(connect) would merely have thrown.
+  async function redial() {
+    if (_stopped) return;
+    try {
+      const found = await rediscover?.();
+      if (found?.baseUrl && found.baseUrl !== baseUrl) {
+        onLog(`beeper: install moved — ${baseUrl} → ${found.baseUrl}`);
+        baseUrl = found.baseUrl;
+        wsUrl = found.wsUrl ?? wsUrl;
+      }
+    } catch (e) { onLog(`beeper: rediscovery failed (${e?.message ?? e}) — redialling the address we have`); }
+    try { connect(); } catch (e) { onLog(`beeper: redial failed — ${e?.message ?? e}`); }
   }
   connect();
 

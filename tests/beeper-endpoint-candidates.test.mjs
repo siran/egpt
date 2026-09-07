@@ -12,8 +12,13 @@
 // token). 200 = this is the install. 401 = a POSITIVE result: a different install is serving
 // that port. Anything else = nothing there.
 //
-// The load-bearing constraint locked here is that this is STRICTLY ADDITIVE: a connection with
-// a plain base_url/token and NO `endpoints:` makes ZERO probe calls at boot.
+// The load-bearing constraint locked here is that this is STRICTLY ADDITIVE: a connection that
+// PINS `base_url` makes ZERO probe calls at boot.
+//
+// SUPERSEDED 2026-09-07 by the second describe at the foot of this file: a connection needs no
+// port at all now, because the token identifies the install and the port is discovered. The
+// `endpoints:` shape below is deprecated and still read — both live profiles carry it — and its
+// cases stay exactly as they were until those two files are migrated.
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 
 // Private profile, frozen before the imports (egpt-home.mjs reads EGPT_HOME once at load).
@@ -59,13 +64,23 @@ function fakeSession(opts) {
 
 // The injected probe: a scripted (base_url|token) → answer table, plus the call log that proves
 // what was asked and — for the plain shape — that nothing was asked at all.
+// `answers` is read at CALL time, not captured — a test mutates it to model an install that
+// moved between the boot sweep and a later re-discovery.
 function fakeProbe(answers) {
   const calls = [];
+  const stats = { maxInFlight: 0 };
+  let inFlight = 0;
   const probe = async (baseUrl, token, opts) => {
     calls.push({ baseUrl, token, timeoutMs: opts?.timeoutMs });
+    inFlight += 1;
+    stats.maxInFlight = Math.max(stats.maxInFlight, inFlight);
+    // One microtask, so the counter can tell the two shapes apart: a CONCURRENT sweep has all
+    // its calls in flight at once, a serial loop never has more than one.
+    await Promise.resolve();
+    inFlight -= 1;
     return answers[`${baseUrl}|${token}`] ?? { ok: false, status: 0, error: 'nothing there' };
   };
-  return { probe, calls };
+  return { probe, calls, stats };
 }
 
 const AG = { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true } };
@@ -297,6 +312,159 @@ describe('beeper connection endpoints: — candidate resolution by observation',
     }, { probe });
     expect(calls.map((c) => c.token)).toEqual(['S0', 'S1']);
     expect(optsList.map((o) => o.beeperToken).sort()).toEqual(['PLAIN', 'S1']);
+    app.stop();
+  });
+});
+
+// ── THE PORT IS NOT AN IDENTITY (operator 2026-09-07) ────────────────────────────────────────
+//
+// Beeper Desktop's local API binds the FIRST FREE PORT starting at 23373, so which install holds
+// which port follows START ORDER, not identity. With several installs on one machine the mapping
+// RESHUFFLES whenever they restart in a different order — measured three times in one evening,
+// 23373 moving from one install to another inside the hour. On 2026-09-06 a pinned base_url
+// therefore named the wrong install, every request 401'd, the bridge redialled every 60s, and the
+// node was DEAF FOR ~90 MINUTES with nothing in the log naming the cause.
+//
+// The fix is not a longer candidate list — that is the same guess, four times. It is that A TOKEN
+// BELONGS TO AN INSTALL, NOT TO AN ACCOUNT: only the install a token was minted on answers 200,
+// every other install answers 401. So the token IS the address, the port is a lookup, and a
+// connection is complete with nothing but `account` + `token`. The 401s do the work.
+describe('beeper connection port DISCOVERY — account + token, and no port anywhere', () => {
+  const at = (port) => `http://127.0.0.1:${port}`;
+  const RANGE = [...Array(10)].map((_, i) => at(23373 + i));
+  const CONN = (extra = {}) => ({ agents: AG, beeper: { use: 'main', main: { account: 'a@b', token: 'T', ...extra } } });
+
+  it('REPRODUCE-FIRST: a connection carrying ONLY account+token finds the install that answers 200 — on 23378, not the default', async () => {
+    const { probe, calls } = fakeProbe({ [`${at(23378)}|T`]: { ok: true, status: 200, loginID: '@an' } });
+    const { opts, lines, app } = await bootWith(CONN(), { probe });
+    expect(calls.map((c) => c.baseUrl)).toEqual(RANGE);
+    expect(calls.every((c) => c.token === 'T')).toBe(true);
+    expect(opts.baseUrl).toBe(at(23378));
+    expect(opts.wsUrl).toBe('ws://127.0.0.1:23378/v1/ws');   // …and the socket follows the same answer
+    expect(lines).toContain(`[bridge] connection 'main' → ${at(23378)} — 200, this install answers to this connection's token`);
+    app.stop();
+  });
+
+  // BOOT MUST NOT STALL. Ten loopback calls at once cost ONE timeout, not ten.
+  it('the sweep is CONCURRENT and every port carries the same short timeout', async () => {
+    const { probe, calls, stats } = fakeProbe({ [`${at(23374)}|T`]: { ok: true, status: 200 } });
+    const { app } = await bootWith(CONN(), { probe });
+    expect(calls).toHaveLength(10);
+    expect(stats.maxInFlight).toBe(10);
+    expect([...new Set(calls.map((c) => c.timeoutMs))]).toEqual([750]);
+    app.stop();
+  });
+
+  // 23375 and 23377 are the egpt shell/console on this machine (node.exe, HTTP 426), and the
+  // unused ports refuse outright. Neither is a fault — they are simply not this token's install.
+  it('a non-Beeper listener inside the range is not an error, just not a match', async () => {
+    const { probe } = fakeProbe({
+      [`${at(23375)}|T`]: { ok: false, status: 426 },
+      [`${at(23377)}|T`]: { ok: false, status: 426 },
+      [`${at(23378)}|T`]: { ok: true, status: 200 },
+    });
+    const { opts, lines, app } = await bootWith(CONN(), { probe });
+    expect(opts.baseUrl).toBe(at(23378));
+    expect(lines.filter((l) => /426|refused|error|fail/i.test(l))).toEqual([]);
+    app.stop();
+  });
+
+  it('a probe that THROWS is just another port that did not answer', async () => {
+    const { probe: inner } = fakeProbe({ [`${at(23376)}|T`]: { ok: true, status: 200 } });
+    const probe = async (baseUrl, token, o) => {
+      if (baseUrl === at(23373)) throw new Error('socket hang up');
+      return inner(baseUrl, token, o);
+    };
+    const { opts, app } = await bootWith(CONN(), { probe });
+    expect(opts.baseUrl).toBe(at(23376));
+    app.stop();
+  });
+
+  // Refusing to boot would take the node down because Beeper was merely slow to start. It falls
+  // back to the bridge's own default and says, in one line, what an operator at 2am needs.
+  it('NOTHING answers anywhere: it says so and boots on the bridge default, never hanging', async () => {
+    const { probe, calls } = fakeProbe({});
+    const { opts, lines, app } = await bootWith(CONN(), { probe });
+    expect(calls).toHaveLength(10);
+    expect('baseUrl' in opts).toBe(false);           // absent, so startBeeperBridge's own default stands
+    expect(lines.some((l) => l.includes("connection 'main': NO install on 127.0.0.1:23373-23382 answers this connection's token"))).toBe(true);
+    app.stop();
+  });
+
+  it('never logs a token VALUE — length only', async () => {
+    const SECRET = 'bdapi_never-print-this';
+    const { probe } = fakeProbe({});
+    const { lines, app } = await bootWith({ agents: AG, beeper: { use: 'main', main: { account: 'a@b', token: SECRET } } }, { probe });
+    expect(lines.join('\n')).not.toContain(SECRET);
+    expect(lines.some((l) => l.includes(`(${SECRET.length} chars)`))).toBe(true);
+    app.stop();
+  });
+
+  // Cannot happen while a token belongs to exactly one install — so if it does, the assumption
+  // the whole mechanism rests on is wrong and the operator must SEE that, not catch an exception.
+  it('MORE THAN ONE port answering 200: takes the lowest and says out loud that it happened', async () => {
+    const { probe } = fakeProbe({
+      [`${at(23374)}|T`]: { ok: true, status: 200 },
+      [`${at(23379)}|T`]: { ok: true, status: 200 },
+    });
+    const { opts, lines, app } = await bootWith(CONN(), { probe });
+    expect(opts.baseUrl).toBe(at(23374));
+    expect(lines.some((l) => l.includes('2 installs answered 200 to the SAME token'))).toBe(true);
+    app.stop();
+  });
+
+  // THE REGRESSION LOCK. A node that pins base_url — a Desktop on a non-default host or port —
+  // must behave exactly as it did before discovery existed: no probe, and no re-discovery on
+  // reconnect either, since the operator named the address on purpose.
+  it('an explicit base_url bypasses discovery entirely: zero probes, and NO rediscover reaches the bridge', async () => {
+    const { probe, calls } = fakeProbe({ [`${at(23374)}|T`]: { ok: true, status: 200 } });
+    const { opts, app } = await bootWith(CONN({ base_url: at(23380) }), { probe });
+    expect(calls).toEqual([]);
+    expect(opts.baseUrl).toBe(at(23380));
+    expect(opts.wsUrl).toBe('ws://127.0.0.1:23380/v1/ws');
+    expect('rediscover' in opts).toBe(false);
+    app.stop();
+  });
+
+  // RECONNECT IS WHERE THIS EARNS ITS KEEP: the install can move while the node is running, and
+  // the moment it moves is the moment the socket drops. boot hands the bridge the SAME lookup, so
+  // the existing redial asks again before it dials. The socket-level half of this — the WS 'close'
+  // handler actually calling it and following the answer — is in tests/beeper-bridge.test.mjs.
+  it('hands the bridge a rediscover that ASKS AGAIN, so a moved install is found on the next redial', async () => {
+    const answers = { [`${at(23378)}|T`]: { ok: true, status: 200 } };
+    const { probe, calls } = fakeProbe(answers);
+    const { opts, app } = await bootWith(CONN(), { probe });
+    expect(opts.baseUrl).toBe(at(23378));
+    expect(typeof opts.rediscover).toBe('function');
+
+    // The Desktop restarts and comes back lower in the range.
+    delete answers[`${at(23378)}|T`];
+    answers[`${at(23374)}|T`] = { ok: true, status: 200 };
+    const before = calls.length;
+    await expect(opts.rediscover()).resolves.toEqual({ baseUrl: at(23374), wsUrl: 'ws://127.0.0.1:23374/v1/ws' });
+    expect(calls.length - before).toBe(10);   // it re-probed; it did not replay the boot answer
+    app.stop();
+  });
+
+  it('rediscover answers null when nothing answers, so the redial keeps the address it has', async () => {
+    const answers = { [`${at(23378)}|T`]: { ok: true, status: 200 } };
+    const { probe } = fakeProbe(answers);
+    const { opts, app } = await bootWith(CONN(), { probe });
+    delete answers[`${at(23378)}|T`];
+    await expect(opts.rediscover()).resolves.toBeNull();
+    app.stop();
+  });
+
+  // The deprecated shape still resolves exactly as it did — both live profiles carry it today —
+  // but boot names it, because the whole list repeats one token and collapses to account+token.
+  it('a connection still declaring endpoints: resolves as before, and is told to collapse', async () => {
+    const { probe } = fakeProbe({ [`${at(23374)}|S1`]: { ok: true, status: 200 } });
+    const { opts, lines, app } = await bootWith({
+      agents: AG,
+      beeper: { use: 'main', main: { account: 'a@b', endpoints: [{ base_url: at(23373), token: 'S0' }, { base_url: at(23374), token: 'S1' }] } },
+    }, { probe });
+    expect(opts.baseUrl).toBe(at(23374));
+    expect(lines.some((l) => l.includes("connection 'main' declares endpoints: — DEPRECATED"))).toBe(true);
     app.stop();
   });
 });

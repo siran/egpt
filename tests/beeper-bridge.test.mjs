@@ -192,6 +192,9 @@ async function startFakeBeeper() {
     subscribed: () => subscribed,
     socketCloses: () => socketCloses,
     emit: (ev) => { for (const ws of sockets) ws.send(JSON.stringify(ev)); },
+    // Drop the sockets WITHOUT taking the server down — a restarting Beeper Desktop seen from
+    // the client side, which is the event the redial hangs off (see the install-moved test).
+    dropSockets: () => { for (const ws of sockets) ws.terminate(); sockets.length = 0; },
     close: () => new Promise((r) => { for (const ws of sockets) ws.terminate(); wss.close(() => server.close(r)); }),
   };
 }
@@ -2949,5 +2952,51 @@ describe('beeper bridge — raw chat payloads (crossAccountChatKey needs the ros
     expect(await bridge.listChats({ full: true })).toHaveLength(5);
     expect(fake.chatListGets()).toBe(afterRaw);                   // the normalized list cost nothing extra
     expect(afterRaw).toBeGreaterThan(before);
+  });
+});
+
+// ── THE INSTALL MOVED (operator 2026-09-07) ──────────────────────────────────────────────────
+// Beeper Desktop binds the FIRST FREE PORT from 23373, so a Desktop that restarts can come back
+// on a DIFFERENT one — and the moment it restarts is the moment this bridge's socket drops. A
+// bridge that redials the address it was born with is deaf from then on, which is exactly the
+// ~90-minute outage of 2026-09-06. The spine hands in `rediscover` (src/spine/boot.mjs: probe the
+// port range with this connection's token; only the install it was minted on answers 200), and
+// the redial asks it BEFORE dialling. No new reconnect path — the same 'close' → backoff → dial
+// loop, with the address looked up first.
+describe('the install moved: the redial asks WHERE before it dials', () => {
+  // Budget note: this waits out the bridge's REAL 3s reconnect backoff (RECONNECT_MIN_MS is not
+  // on the injected clock), same as the ear-probe redial test above.
+  it('REPRODUCE-FIRST: the Desktop comes back on another port and the bridge follows it — WS and REST both', { timeout: 20_000 }, async () => {
+    const moved = await startFakeBeeper();
+    try {
+      let asked = 0;
+      const { bridge } = await startBridge({
+        rediscover: async () => {
+          asked += 1;
+          return { baseUrl: `http://127.0.0.1:${moved.port}`, wsUrl: `ws://127.0.0.1:${moved.port}/v1/ws` };
+        },
+      });
+      const subsBefore = moved.subscribed();
+      fake.dropSockets();           // the Desktop this bridge was born on goes away
+
+      await waitFor(() => moved.subscribed() > subsBefore, 15_000);   // a FRESH session, on the new port
+      expect(asked).toBeGreaterThan(0);
+
+      // …and the REST half followed too. Both halves read the same two variables, so a send
+      // landing here is the proof that baseUrl moved and not merely wsUrl.
+      await sendSettled(bridge, 'still reachable', { chatId: CHAT('chat-1') });
+      expect(moved.posts.map((p) => p.text)).toContain('still reachable');
+    } finally { await moved.close(); }
+  });
+
+  // THE LOCK on every bridge that has no discovery behind it (a connection pinning base_url, and
+  // every directly-constructed bridge in this file): the redial is the old redial.
+  it('with NO rediscover the redial dials the SAME address, exactly as before', { timeout: 20_000 }, async () => {
+    const { bridge } = await startBridge();
+    const subsBefore = fake.subscribed();
+    fake.dropSockets();
+    await waitFor(() => fake.subscribed() > subsBefore, 15_000);
+    await sendSettled(bridge, 'same place', { chatId: CHAT('chat-1') });
+    expect(fake.posts.map((p) => p.text)).toContain('same place');
   });
 });

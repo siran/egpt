@@ -593,9 +593,10 @@ export async function boot({
   aliveMs = 0,                        // >0: register the alive-file writer as a heartbeat so the daemon's wedge check sees liveness
   spawn: spawnFn = spawn,             // child_process.spawn seam — heartbeat command beats (incl. the alive script) spawn through here; tests inject a fake to observe the beat WITHOUT a real process
   reapPort: reapPortFn = reapPort,    // port-killer seam — the boot-time stray-whisper reap goes through here; tests inject a fake so the real netstat/taskkill NEVER runs against a live server
-  // Beeper endpoint-liveness seam — the ONLY network call boot makes before the bridge exists,
-  // and ONLY for a connection that declares `endpoints:` (see endpointFor below). Tests inject a
-  // fake so candidate resolution is observable without a real Desktop on a real port.
+  // Beeper endpoint-liveness seam — the ONLY network call boot makes before the bridge exists.
+  // It is how a connection carrying just account+token finds WHICH port its install is on (the
+  // discovery pass below), and it still resolves the deprecated `endpoints:` list too. Tests
+  // inject a fake so resolution is observable without a real Desktop on a real port.
   probeEndpoint: probeEndpointFn = probeBeeperEndpoint,
   // transcriptor WORKER-role process-boundary seams — the resident whisper-server + the :23390
   // endpoint spawn through here. Default to the real spawners; tests inject fakes so a boot with
@@ -1130,25 +1131,36 @@ export async function boot({
     try { const u = new URL(base); u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:'; u.pathname = '/v1/ws'; u.search = ''; u.hash = ''; return u.toString(); }
     catch { return undefined; }
   };
-  // SEVERAL CANDIDATE ENDPOINTS for ONE connection (operator 2026-09-03). The Session 0 Desktop
-  // now FLIPS IDENTITY at logon: before the operator logs in it runs HIS account, after he logs
-  // in it is restarted as a different one while his GUI in Session 1 carries his. So the SAME
-  // connection must address a DIFFERENT INSTALL depending on that state — and not merely a
-  // different port: a token is minted by, and belongs to, ONE install, so each state needs its
-  // own (base_url, token) PAIR. Rewriting config.yaml and restarting the spine at every logon and
-  // logoff is not an option; the operator's file is hand-commented and the node would bounce
-  // twice a day. Instead a connection may list its candidates and the spine OBSERVES which one is
-  // actually alive at boot — the same "ask, don't assume" the peer-liveness watcher, whisper
-  // adoption and the fallback gate already run on.
+  // ── THE PORT IS NOT AN IDENTITY (operator 2026-09-07, after a 90-minute deaf window) ──────
+  // Beeper Desktop's local API binds the FIRST FREE PORT starting at 23373, so which install
+  // holds which port follows START ORDER, not identity. On a machine running several installs
+  // (three Session 0 services plus the Session 1 GUI here) the numbering RESHUFFLES whenever
+  // they come back in a different order — measured three times in one evening, with 23373
+  // moving from one install to another inside the hour. A pinned base_url is therefore a guess
+  // with a shelf life: on 2026-09-06 it named the wrong install, every request 401'd, the bridge
+  // redialled every 60s, and this node was DEAF FOR ~90 MINUTES with nothing in the log naming
+  // the cause — a 401 is indistinguishable from "you are talking to the wrong install".
+  //
+  // A TOKEN, THOUGH, BELONGS TO AN INSTALL, not to an account: only the install a token was
+  // minted on answers 200, and every other install answers 401. So the token already IS the
+  // address, and the port can simply be LOOKED UP — probe the range with the token and the 401s
+  // do the work. That is what makes ACCOUNT + TOKEN a complete connection, with no port in the
+  // config at all:
   //
   //   main:
-  //     account: a@b
-  //     endpoints:                       # tried IN ORDER; first that answers 200 wins
-  //       - { base_url: http://127.0.0.1:23373, token: <the S0 install's token> }
-  //       - { base_url: http://127.0.0.1:23374, token: <the S1 install's token> }
+  //     account: you@example.com
+  //     token: bdapi_…
   //
-  // `owner_node` is NOT per-candidate: a connection has ONE owner regardless of which install
-  // answers, so it stays on the connection beside `account` — same as `account` itself.
+  // `base_url` stays an OPTIONAL OVERRIDE for a Desktop on a non-default host or port, and
+  // setting it SKIPS discovery entirely — a connection that pins one behaves exactly as before.
+  //
+  // DEPRECATED, still read: `endpoints:` — several (base_url, token) candidates for ONE
+  // connection, tried IN ORDER, first 200 wins (operator 2026-09-03, for the Session 0 Desktop
+  // that FLIPS IDENTITY at logon). Discovery answers that case without a port list at all, and
+  // both live profiles' lists repeat ONE token across four ports, so each collapses to plain
+  // account+token — but they still carry `endpoints:` today, so this branch stays until they
+  // are migrated. `owner_node` is NOT per-candidate: a connection has ONE owner regardless of
+  // which install answers, so it sits on the connection beside `account`.
   const candidatesOf = (acct) => (Array.isArray(acct?.endpoints) && acct.endpoints.length ? acct.endpoints : null);
   const connectionBlock = (name) => {
     const b = cfg.beeper;
@@ -1182,40 +1194,95 @@ export async function boot({
   // The token ALONE, for callers that only need the identity and not the address.
   const tokenFor = (name) => endpointFor(name).token;
 
+  // THE RANGE. 23373 is Beeper's documented base and it walks UP to the first free port, so the
+  // highest an install can be pushed to is that base plus however many listeners already squat
+  // the range — six on this machine (four Beeper installs, plus the egpt shell/console on 23375
+  // and 23377, which answer HTTP 426 and are simply not a match). Ten leaves that much headroom
+  // again and costs nothing to widen: the scan is CONCURRENT, so the whole range is ONE timeout,
+  // and a full sweep of these ten measured 48ms live (three 401s, two 426s, five ECONNREFUSED —
+  // a loopback refusal comes back in ~10ms).
+  const DISCOVERY_PORTS = Array.from({ length: 10 }, (_, i) => 23373 + i);
+  // ~15x the slowest answer measured (46ms), so a Desktop under load still answers in time, and
+  // it bounds the WHOLE scan rather than each port, because they run together. Boot never
+  // stalls: a black-holed port costs 750ms once, not 750ms per port.
+  const DISCOVERY_TIMEOUT_MS = 750;
+
+  // WHERE IS THE INSTALL THIS TOKEN WAS MINTED ON? Every port at once, then the LOWEST that
+  // answered 200 — deterministic, where "whichever replied first" would not be. 401, HTTP 426
+  // and ECONNREFUSED are all the same answer here (not a match), which is why a non-Beeper
+  // listener inside the range is not an error. Returns a base_url or null; it never throws, and
+  // it never logs a token VALUE — length only, because a token in a log is a token in a paste.
+  const discoverBaseUrl = async (name, token) => {
+    const urls = DISCOVERY_PORTS.map((p) => `http://127.0.0.1:${p}`);
+    const results = await Promise.all(urls.map(async (url) => {
+      try { return { url, r: await probeEndpointFn(url, token, { timeoutMs: DISCOVERY_TIMEOUT_MS }) }; }
+      catch (e) { return { url, r: { ok: false, status: 0, error: e?.message ?? String(e) } }; }
+    }));
+    const hits = results.filter(({ r }) => r?.ok);   // Promise.all preserves ORDER ⇒ hits[0] is the lowest port
+    if (!hits.length) {
+      log.line?.(`[bridge] connection '${name}': NO install on 127.0.0.1:${DISCOVERY_PORTS[0]}-${DISCOVERY_PORTS[DISCOVERY_PORTS.length - 1]} answers this connection's token (${String(token).length} chars) — the install it was minted on is not running, or the token was revoked. Falling back to the bridge default; every reconnect asks again.`);
+      return null;
+    }
+    // Cannot happen while a token belongs to exactly ONE install — so if it does, the assumption
+    // this whole mechanism rests on is wrong and the operator has to SEE that, not catch an
+    // exception. Take the lowest and say out loud that it happened.
+    if (hits.length > 1) log.line?.(`[bridge] connection '${name}': ${hits.length} installs answered 200 to the SAME token (${hits.map((h) => h.url).join(', ')}) — a token is supposed to belong to exactly one install; taking the lowest port`);
+    log.line?.(`[bridge] connection '${name}' → ${hits[0].url} — 200, this install answers to this connection's token`);
+    return hits[0].url;
+  };
+
   // THE OBSERVATION. Runs ONCE per connection an agent actually rides, here, before any endpoint
-  // is asked for. A connection with no `endpoints:` is skipped entirely — no probe, no network
-  // call, no delay at boot. 2s per candidate and strictly in order, so a black-holed port costs a
-  // bounded wait instead of hanging the node.
+  // is asked for.
   //
   // 401 IS A POSITIVE RESULT, not an error: a token belongs to one install, so a 401 PROVES a
   // different install is serving that port — exactly the reading src/tools/beeper-whoami.mjs was
-  // written for. Every verdict is logged because that line is the operator's proof of which
-  // install this node is bound to; today he has to run a tool to find out.
+  // written for. The winning port is logged because that line is the operator's proof of which
+  // install this node is bound to; without it he has to run a tool to find out.
   //
-  // NOTHING alive ⇒ the FIRST candidate, loudly. Booting against a dead endpoint is already what
-  // a misconfigured node does; refusing to boot would take the whole node down because Beeper was
-  // merely slow to start.
+  // NOTHING alive ⇒ the endpoint we already had, loudly. Booting against a dead endpoint is
+  // already what a misconfigured node does; refusing to boot would take the whole node down
+  // because Beeper was merely slow to start.
   for (const name of new Set(Object.keys(agents()).map((being) => connectionOf(being)))) {
     const acct = connectionBlock(name);
     const candidates = candidatesOf(acct);
-    if (!candidates) continue;
-    let won = null;
-    for (const c of candidates) {
-      const ep = endpointOf(c, acct);
-      const r = await probeEndpointFn(ep.baseUrl, ep.token, { timeoutMs: 2000 });
-      if (r?.ok) {
-        log.line?.(`[bridge] connection '${name}' → ${ep.baseUrl} — 200, this install answers to this candidate's token`);
-        won = ep;
-        break;
+    if (candidates) {
+      log.line?.(`[bridge] connection '${name}' declares endpoints: — DEPRECATED, replace the whole list with the account + token it repeats and the port is discovered`);
+      let won = null;
+      for (const c of candidates) {
+        const ep = endpointOf(c, acct);
+        const r = await probeEndpointFn(ep.baseUrl, ep.token, { timeoutMs: 2000 });
+        if (r?.ok) {
+          log.line?.(`[bridge] connection '${name}' → ${ep.baseUrl} — 200, this install answers to this candidate's token`);
+          won = ep;
+          break;
+        }
+        if (r?.status === 401) log.line?.(`[bridge] connection '${name}': ${ep.baseUrl} answered 401 — a DIFFERENT install is serving that port, trying the next candidate`);
+        else log.line?.(`[bridge] connection '${name}': ${ep.baseUrl} did not answer (${r?.status || r?.error || 'nothing there'}) — trying the next candidate`);
       }
-      if (r?.status === 401) log.line?.(`[bridge] connection '${name}': ${ep.baseUrl} answered 401 — a DIFFERENT install is serving that port, trying the next candidate`);
-      else log.line?.(`[bridge] connection '${name}': ${ep.baseUrl} did not answer (${r?.status || r?.error || 'nothing there'}) — trying the next candidate`);
+      if (!won) {
+        won = endpointOf(candidates[0], acct);
+        log.line?.(`[bridge] no live endpoint for connection '${name}' — falling back to ${won.baseUrl}`);
+      }
+      resolvedByConnection.set(name, won);
+      continue;
     }
-    if (!won) {
-      won = endpointOf(candidates[0], acct);
-      log.line?.(`[bridge] no live endpoint for connection '${name}' — falling back to ${won.baseUrl}`);
-    }
-    resolvedByConnection.set(name, won);
+    // DISCOVERY, for the shape the skeleton ships. Only a NAMED connection block discovers: the
+    // legacy top-level beeper_token / BEEPER_ACCESS_TOKEN fallback has always meant "the bridge
+    // default" and keeps meaning exactly that.
+    if (!acct) continue;
+    const ep = endpointOf(acct, acct);
+    if (ep.baseUrl || !ep.token) continue;   // pinned ⇒ no discovery, byte-identical to before; tokenless ⇒ nothing to ask with
+    // THE SAME LOOKUP, HANDED TO THE BRIDGE. The install can move while this node is running —
+    // that IS the failure — and the moment it moves is the moment the socket drops, so the
+    // bridge's existing redial (src/bridges/beeper.mjs, the WS 'close' handler backing off
+    // 3s→60s) asks this again before it dials. No second reconnect path, and a pinned connection
+    // hands over no rediscover at all, so its redial is unchanged.
+    const rediscover = async () => {
+      const url = await discoverBaseUrl(name, ep.token);
+      return url ? { baseUrl: url, wsUrl: ep.wsUrl ?? wsFromBase(url) } : null;
+    };
+    const found = await discoverBaseUrl(name, ep.token);
+    resolvedByConnection.set(name, { ...ep, ...(found ? { baseUrl: found, wsUrl: ep.wsUrl ?? wsFromBase(found) } : {}), rediscover });
   }
 
   // (The old pre-👂 OPEN vs observe-cancel warning was removed 2026-07-12: co-account de-dup is now the
@@ -1373,7 +1440,7 @@ export async function boot({
     if (!bridgeByEndpoint.has(key)) {
       // baseUrl/wsUrl are spread in ONLY when set: absent must leave startBeeperBridge's own
       // defaults standing, never an explicit undefined that would override them.
-      const opts = { ...sharedBridgeOpts, beeperToken: ep.token, ...(ep.baseUrl ? { baseUrl: ep.baseUrl } : {}), ...(ep.wsUrl ? { wsUrl: ep.wsUrl } : {}) };
+      const opts = { ...sharedBridgeOpts, beeperToken: ep.token, ...(ep.baseUrl ? { baseUrl: ep.baseUrl } : {}), ...(ep.wsUrl ? { wsUrl: ep.wsUrl } : {}), ...(ep.rediscover ? { rediscover: ep.rediscover } : {}) };
       const port = lasso.wrap(await createBeeperBridgePort(opts, startBridge ? { start: startBridge } : {}));
       const owned = wakesOn(ep);
       if (!owned) log.line?.(`[bridge] connection is owned by node '${ep.ownerNode}' — this node sends on it, never wakes on it`);
