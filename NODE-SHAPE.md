@@ -1,64 +1,79 @@
 # The shape of a node
 
-What a finished eGPT node looks like, so "is it done yet" has an answer you can
-check instead of a judgement you have to make. Written 2026-09-07 from reve (kg),
-which reached this shape first; dolly (do) is meant to be a copy of it.
+What a finished eGPT node looks like.
 
-The baseline this refines is still the one in `README.md`: **one Beeper account,
-one token, one node, in your ordinary desktop session.** Everything below is an
-enhancement for a machine that runs unattended and wears a second face. A node
-that stops at the baseline is not a broken node.
+eGPT can be configured with no mobile numbers, one mobile number, two mobile
+numbers or more. eGPT can use the other number(s) for its replies.
 
----
 
-## The two accounts
+## Zero mobile numbers
 
-Every node runs the SAME two Beeper accounts. This is the part that took longest
-to see, so it is first:
+No Beeper needed.
 
-| role | account | what it is |
-|---|---|---|
-| **primary** | `anrodz42@gmail.com` | An. The operator. The real human. |
-| **secondary** | `dolly.egpt@gmail.com` | Rodz. The mouth the agents speak through. |
+You can use eGPT from the shell and access AI.
 
-Both accounts, on both machines. **Configuration decides who answers** — `ken` on
-kg, `don` on do — not which account is logged in where. Both accounts see every
-message either of them is in; the handle is the discriminator, and handles must be
-disjoint across every spine or one mention wakes two of them (live bug,
-`router.mjs`: *"both spines answered ONE @egpt, kg stamped egpt, DOLLY stamped
-don"*).
 
-The secondary account's name is historical. `dolly.egpt` is not dolly's; it is the
-mouth's, on every node. Renaming it costs a WhatsApp re-link and buys nothing —
-the identity that matters is the phone number, not the login.
+## One mobile number
+
+One account, one token, one Beeper install, one spine, in your ordinary desktop
+session. Agents answer from your own number — the reply and the message it
+answers share a sender.
+
+`README.md`'s baseline, and a finished node. Everything below is enhancement,
+not repair.
+
+
+## Two mobile numbers, or more
+
+A second account is a second number, so the agents answer as themselves. It
+costs three Beeper installs and two spines per machine; each further number
+adds one more of each.
+
+- `email@domain.com` — yours. The human.
+- `email.secondary@domain.com` — **secondary**. The mouth the agents speak
+  through.
+
+Every account is logged in on every machine. **Configuration decides who
+answers** — each node gets its own handle — not which account is logged in
+where. Every account sees every message any of them is in, so the handle
+discriminates, and handles must be disjoint across every spine or one mention
+wakes two (live bug in `router.mjs`: two spines answered a single mention, each
+stamping its own handle).
+
+Name the secondary account whatever. The identity is the phone number, not the
+login, so renaming costs a WhatsApp re-link and buys nothing.
+
 
 ## Three Beeper installs per machine
 
-A Beeper identity lives entirely in its `--user-data-dir`. Different directory =
-different install = different device = different token. Same directory = the
+Identity lives entirely in `--user-data-dir`: different directory = different
+install = different device = different token. Same directory twice and the
 second launch loses Chromium's singleton and exits (`process_singleton_win.cc`,
-`Lock file can not be created! Error code: 32` — a sharing violation, not damage).
+`Lock file can not be created! Error code: 32` — a sharing violation, not
+damage).
 
-| install | service | account | why |
+| install | runs as | account | why |
 |---|---|---|---|
-| `s0-primary` | `egpt-primary` (nssm, LocalSystem, **Auto**) | An | survives logoff and reboot |
-| `s0-secondary` | `egpt-secondary` (nssm, LocalSystem, **Auto**) | Rodz | the mouth, also unattended |
-| `s1-an` | the ordinary Session 1 GUI | An | the operator's own window; what a browser and a desktop need |
+| session 0 | nssm service, LocalSystem, **Auto** | yours | survives logoff and reboot |
+| session 0, secondary | nssm service, LocalSystem, **Auto** | secondary | unattended too |
+| session 1 | ordinary desktop GUI | yours | your own window; what a browser and a desktop need |
 
-**Both services must be Auto.** `egpt-secondary` inherited `Manual` from the
-service it was renamed from, which would have left the node half-alive after a
-reboot: kg talking, kg2 silent, nothing announcing it.
+**Both services Auto.** A service that inherits `Manual` from whatever it was
+renamed from leaves the node half-alive after a reboot: one spine talking, the
+other silent, nothing announcing it.
 
-Display names are Beeper's own plus the role — `Beeper Desktop-s0-primary`,
-`Beeper Desktop-s0-secondary`.
+Give each install a display name carrying its role, or the service list is
+unreadable.
+
 
 ## Two spines per machine
 
 `egpt-daemon` and `egpt2-daemon` run the **identical command** —
-`node egpt-daemon.mjs` from `~/bin/egpt` — and differ ONLY in `EGPT_HOME`
-(`~/.egpt` vs `~/.egpt2`). Not versions. Not different code. One deploy, nothing
-to keep in sync. If something is wrong with one it is wrong with both, and the
-profile is the entire distinction between "An" and "the mouth".
+`node egpt-daemon.mjs` from `~/bin/egpt` — differing ONLY in `EGPT_HOME`
+(`~/.egpt` vs `~/.egpt2`). One deploy, nothing to keep in sync; wrong with one
+is wrong with both. The profile is the entire distinction between the two
+accounts.
+
 
 ## The config shape
 
@@ -66,51 +81,56 @@ profile is the entire distinction between "An" and "the mouth".
 beeper:
   use: main
   main:
-    account: anrodz42@gmail.com
+    account: email@domain.com
     token: bdapi_...
 ```
 
-**No port. Ever.** Beeper binds the first free port from 23373, so the number
-follows START ORDER, not identity — with three installs on one machine the ports
-reshuffled three times in one evening. The spine probes the loopback range with
-the token and takes the install that answers 200; a token belongs to an INSTALL,
-so exactly one can. It asks again on every reconnect, so an install that moves is
-followed rather than knocked on forever.
+**No port. Ever.** Beeper binds the first free port from 23373, so it follows
+START ORDER, not identity — three installs reshuffled the ports three times in
+one evening. The spine probes the loopback range with the token and takes the
+install answering 200; a token belongs to an INSTALL, so exactly one can. It
+re-asks on every reconnect, so a moved install is followed rather than knocked
+on forever.
 
-`base_url` still works and skips discovery. Use it only for a genuinely non-local
-Beeper. `endpoints:` is deprecated — it was an interim workaround that repeated
-one token across four ports, which is the config admitting the code could not find
-its own API.
+`base_url` skips discovery — only for a genuinely non-local Beeper.
+`endpoints:` is deprecated: it repeated one token across four ports, the config
+admitting the code could not find its own API.
+
 
 ## Checklist
 
-A node is in shape when all of these are true. Run it before saying yes.
+Two-account node. Run it before saying yes.
 
-1. `egpt-primary` and `egpt-secondary` both **Running** and **Auto**
-2. `egpt-daemon` and `egpt2-daemon` both Running, descriptions naming the profile
-3. Both configs are `account` + `token`, no ports, no `endpoints:`
+1. Both Beeper services **Running** and **Auto**
+2. Both spines Running, descriptions naming the profile
+3. Both configs `account` + `token` — no ports, no `endpoints:`
 4. Both spines log `connection 'main' → ... 200` and `subscribed to all chats`
-5. The two nodes' handles are disjoint, and no other node claims them
+5. The two nodes' handles disjoint, and no other node claiming them
 6. **It survives a reboot** — services come back, discovery finds the installs
-   cold, both spines subscribe without a human touching anything
+   cold, both spines subscribe untouched
 
-## Known-not-done on reve, 2026-09-07
 
-- **6 is unproven.** Nothing has been through a restart. Auto-start,
-  cold-boot discovery and the S0→S1 flip are all configured, none exercised.
-- **Reactions come from the wrong account.** The 👀 that marks new input to the
-  model still posts from whichever bridge ingested the message — An's — while the
-  reply comes from Rodz. The read receipt and the answer disagree.
-- **The S0→S1 flip has never run.** See the handover plan; `s1-an` exists and is
-  addressable, but no logon has ever handed the profile over.
+## Known-not-done, 2026-09-07
 
-## Mirroring to dolly
+On the first node built to this shape:
 
-Same two accounts, same two service names, same config shape. What differs:
+- **6 is unproven.** Nothing has been through a restart; auto-start, cold-boot
+  discovery and the S0→S1 flip are configured, none exercised.
+- **Reactions come from the wrong account.** The 👀 marking new input posts from
+  whichever bridge ingested the message — yours — while the reply comes from the
+  secondary.
+- **The S0→S1 flip has never run.** The session 1 install exists and is
+  addressable; no logon has handed the profile over. See the handover plan.
 
-- `node_name` (`do` / `do2`) and the persona (`don`, not `ken`)
-- Each account needs its OWN enrolled device on dolly. Enroll it, do not copy a
-  profile — a copied `user-data-dir` moves the device, so two machines running one
+
+## Mirroring to another machine
+
+Same accounts, same service shape, same config shape. What differs:
+
+- `node_name` and the persona
+- Each account needs its OWN enrolled device on the new machine. Enroll it,
+  don't copy — a copied `user-data-dir` moves the device, so two machines on one
   copy is two clients claiming one device id.
-- **Disarm dolly's `e` relay before waking it.** `config.yaml` already warns: one
-  `@e` would wake both nodes and the group gets two answers from two accounts.
+- **Disarm any relay handle both machines answer to before waking the second
+  one**, or one mention wakes both nodes and the group gets two answers from two
+  accounts.
