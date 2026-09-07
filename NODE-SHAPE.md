@@ -69,17 +69,29 @@ Give each install a display name carrying its role, or the service list is
 unreadable.
 
 
-## Three spines per machine
+## Three spines per machine, two live
 
-One spine per install. `egpt-daemon`, `egpt2-daemon` and `egpt3-daemon` run the
-**identical command** — `node egpt-daemon.mjs` from `~/bin/egpt` — differing
-ONLY in `EGPT_HOME` (`~/.egpt`, `~/.egpt2`, `~/.egpt3`). One deploy, nothing to
-keep in sync; wrong with one is wrong with all. The profile is the entire
-distinction between them.
+`egpt-daemon` and `egpt2-daemon` run the **identical command** —
+`node egpt-daemon.mjs` from `~/bin/egpt` — differing ONLY in `EGPT_HOME`
+(`~/.egpt` vs `~/.egpt2`). One deploy, nothing to keep in sync; wrong with one
+is wrong with both. The profile is the entire distinction between the accounts.
 
-Two of the three sit on the same account, so the disjoint-handle rule covers
-them as well: `s0-primary` and `s1-primary` are two nodes, not one node in two
-places.
+**`s0-primary` and `s1-primary` are one node, not two.** Same config, same
+`EGPT_HOME`, same token — which is why they take turns instead of coexisting.
+Two live at once would open two connections on one token (every message ingested
+twice, answered twice), race `config/conversations.yaml` and `state/ingest/`,
+and collide on console port 23375. The disjoint-handle rule is between accounts,
+not inside this pair.
+
+**The S0→S1 flip** is that handover. After a restart both spines run in session
+0. At logon the HKCU Run key starts the session 1 spine, which asks the
+incumbent for the profile; the incumbent finishes the turn it is writing and
+exits (`STANDDOWN_EXIT_CODE = 45`), and its daemon respawns only once port 23375
+goes quiet. One port is the mutex on one shared profile. The secondary never
+moves.
+
+Built, never exercised across a real logoff/logon — see
+`plans/2609061200-SESSION-0-TO-1-HANDOVER-PLAN.md`.
 
 
 ## The config shape
@@ -107,12 +119,14 @@ Two-number node. Run it before saying yes.
 
 1. `s0-primary` and `s0-secondary` **Running** and **Auto**; `s1-primary` up in
    your session
-2. 3 spines Running, descriptions naming the profile
-3. `config.yaml` is `account` + `token` for each — no ports, no `endpoints:`
-4. 3 spines log `connection 'main' → ... 200` and `subscribed to all chats`
-5. Handles disjoint across all 3 spines, and no other node claiming them
+2. 2 spines Running — the secondary, plus the primary in whichever session.
+   Both primaries live at once is the failure, not the goal
+3. `config.yaml` is `account` + `token` per account — no ports, no `endpoints:`
+4. Both live spines log `connection 'main' → ... 200` and `subscribed to all
+   chats`
+5. Handles disjoint between the accounts, and no other node claiming them
 6. **It survives a reboot** — services come back, discovery finds the installs
-   cold, 3 spines subscribe untouched
+   cold, both spines subscribe untouched
 
 
 ## Mirroring to another machine
