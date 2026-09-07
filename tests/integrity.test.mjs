@@ -369,3 +369,43 @@ describe('src/tools/beeper-whoami.mjs gives the spine no platform', () => {
     expect(src, 'the hand-built file:/// main-check is back — it never matches on Linux/macOS').not.toMatch(/file:\/\/\//);
   });
 });
+
+// ── ONE ANSWER TO "WHICH CONNECTION DOES THIS OUTBOUND GO OUT ON" (operator 2026-09-07) ────────
+// THE DEFECT THIS LOCKS. `bridgeOf(being) ?? bridge` was written out FOUR times — turns.mjs's
+// steer 👀, sender.mjs's reply, reply-actions.mjs's limbs, spine.mjs's voice-out media — and only
+// the reply path also asked the peer mouth which account should say it. Live consequence, in a
+// group holding both accounts: the 👀 came from the PRIMARY and the answer from the SECONDARY, so
+// the read receipt and the reply pointed at different accounts and gave away which one is really
+// listening.
+//
+// It is one function now (src/spine/sender.mjs makeOutbound) and the other three import it. A
+// fifth site that answers the question locally is the exact regression this catches: a text scan,
+// because the failure mode is not a wrong value anywhere, it is TWO PLACES holding the value.
+describe('the outbound connection is resolved in exactly one place', () => {
+  const files = execSync('git ls-files src', { cwd: ROOT, encoding: 'utf8' })
+    .split('\n').map((f) => f.trim()).filter((f) => f.endsWith('.mjs'));
+
+  it('the per-being fallback expression appears once in src/, in sender.mjs', () => {
+    const hits = files.flatMap((rel) => stripComments(readFileSync(join(ROOT, rel), 'utf8'))
+      .split('\n')
+      .map((line, i) => ({ rel, n: i + 1, line: line.trim() }))
+      .filter(({ line }) => /bridgeOf\s*\(/.test(line)));
+
+    // The FILE and the COUNT, not the line number: pinning an offset would break on any edit
+    // above it and the next person would delete the scan rather than read it.
+    expect(
+      hits.map((h) => `${h.rel}:${h.n}  ${h.line}`),
+      'a second answer to "which connection does this outbound go out on" is back — route it ' +
+      'through src/spine/sender.mjs makeOutbound instead, or the ack and the reply will disagree again',
+    ).toHaveLength(1);
+    expect(hits[0].rel).toBe('src/spine/sender.mjs');
+    expect(hits[0].line).toBe('bridge: bridgeOf ? (bridgeOf(being) ?? bridge) : bridge,');
+  });
+
+  it('every call site that resolves a bridge imports that one resolver', () => {
+    for (const rel of ['src/spine/turns.mjs', 'src/spine/sender.mjs', 'src/spine/reply-actions.mjs', 'src/spine/spine.mjs']) {
+      const src = stripComments(readFileSync(join(ROOT, rel), 'utf8'));
+      expect(src, `${rel} no longer goes through makeOutbound`).toMatch(/makeOutbound/);
+    }
+  });
+});

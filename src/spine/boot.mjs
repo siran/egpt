@@ -1752,7 +1752,10 @@ export async function boot({
   // ONE turn machinery for the whole node (see the import note). Built here because it needs
   // `brain` (its scopeOf/allowNewInput/steer seams) and the bridge pair the steer-ack rides —
   // all three exist by now — and because BOTH consumers below take this same instance.
-  const turns = createTurns({ brain, bridge, bridgeOf: rawBridgeOf, log });
+  // …and the MOUTH, for the same reason (operator 2026-09-07): the steer 👀 is an outbound like
+  // any other, so it resolves through the ONE resolver the reply does (sender.mjs makeOutbound).
+  // Without it the ack went out on this account while the reply came out of the peer's.
+  const turns = createTurns({ brain, bridge, bridgeOf: rawBridgeOf, peerMouth, log });
 
   // operator slash commands (Self DM / authorized) — lifecycle wired now; reuses
   // the same exit codes the daemon respawns on. Constructed BEFORE the mesh: a

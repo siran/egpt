@@ -401,7 +401,7 @@ describe('spine — voice-reply pipeline (chunk 2)', () => {
       },
     };
   }
-  function buildVoice({ synthesize, voice = 'es_MX-claude-high' } = {}) {
+  function buildVoice({ synthesize, voice = 'es_MX-claude-high', bridgeOf = null } = {}) {
     const bridge = fakeVoiceBridge();
     const brain = { calls: [], async turn(being, ev) { this.calls.push({ being, ev }); return { text: `↩ ${ev.body}`, sessionId: 's1' }; } };
     const transcript = fakeTranscript();
@@ -412,7 +412,7 @@ describe('spine — voice-reply pipeline (chunk 2)', () => {
       gating: fakeGating({}),
       sender, transcript, heartbeats: fakeHeartbeats(),
       clock: { now: () => 1000 },
-      synthesize, voice,
+      synthesize, voice, bridgeOf,
     });
     return { spine, bridge, brain, transcript, sender };
   }
@@ -484,6 +484,23 @@ describe('spine — voice-reply pipeline (chunk 2)', () => {
 
     expect(bridge.media).toHaveLength(1);
     expect(bridge.sent).toEqual([{ chat: MSG.chatId, text: '↩ hola', opts: {} }]);
+  });
+
+  // THE FOURTH CALL SITE of the ONE outbound resolver (src/spine/sender.mjs makeOutbound, operator
+  // 2026-09-07). The voice attach is one of the spine's own direct bridge sends, so it must ride
+  // the BEING's own connection — the same answer the reply (spine-sender.test.mjs), the limbs
+  // (reply-actions.test.mjs) and the steer 👀 (mouth-routing.test.mjs) now get from that one
+  // function. Before it, this was a fourth private copy of `bridgeOf(being) ?? bridge`.
+  it('bridgeOf present: the voice note rides the BEING\'s OWN connection, never the default one', async () => {
+    const synthesize = async () => Buffer.from('AUDIO');
+    const rodz = fakeVoiceBridge();
+    const { spine, bridge } = buildVoice({ synthesize, bridgeOf: (b) => (b === 'e' ? rodz : null) });
+    spine.start();
+    await bridge.emit({ ...MSG, isVoice: true });
+
+    expect(rodz.media).toHaveLength(1);
+    expect(rodz.media[0]).toMatchObject({ chat: MSG.chatId, opts: { replyTo: 'text-conf-1' } });
+    expect(bridge.media).toHaveLength(0);        // …and nothing on the default connection
   });
 
   it('no synthesize/voice wired: byte-identical to before — no synth attempted, no media, plain text-out', async () => {

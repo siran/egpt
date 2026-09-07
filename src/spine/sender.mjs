@@ -140,12 +140,42 @@ export const RETAINED_SEAM = '\n\n— ↓ reply —\n\n';
 // connection routes each being's reply through its OWN bridge. Absent, or returning nullish for
 // a given being, falls straight back to the single `bridge` above — BYTE-IDENTICAL to before for
 // every caller that only passes `bridge` (memberSender, every existing test).
+
+/**
+ * WHICH CONNECTION DOES THIS OUTBOUND GO OUT ON — THE ONE ANSWER (operator 2026-09-07).
+ *
+ * Everything above was true of the REPLY and of nothing else, and that was the defect. The
+ * per-being half — `bridgeOf(being) ?? bridge` — had been COPY-PASTED into four places, and only
+ * this file's copy also asked the mouth. Live consequence, in a group holding both accounts: a
+ * message steered into a running turn was 👀'd by the PRIMARY while the answer came from the
+ * SECONDARY, so the read receipt and the reply pointed at different accounts.
+ *
+ * The four sites now ask THIS, and it answers both halves at once:
+ *   src/spine/turns.mjs        the steer 👀
+ *   src/spine/sender.mjs       the reply (below)
+ *   src/spine/reply-actions.mjs  the limbs (/react, /reply, /media, /edit)
+ *   src/spine/spine.mjs        the voice-out media attach
+ *
+ * `bridge` is the connection THIS being's own sends ride — the operator's fail-safe half, which
+ * can never be wrong. `route()` is the peer question, and it is a THUNK on purpose: a caller that
+ * cannot act on the answer (the limbs, the media attach, and mode:auto below, which is never
+ * routed) must not pay the membership read to receive it. Nullish peerMouth ⇒ null ⇒ no peer was
+ * ever consulted, which is the whole additivity requirement in one expression.
+ */
+export function makeOutbound({ bridge, bridgeOf = null, peerMouth = null, onLog = () => {} } = {}) {
+  return (being, chatId = null) => ({
+    bridge: bridgeOf ? (bridgeOf(being) ?? bridge) : bridge,
+    route: () => (peerMouth ? Promise.resolve().then(() => peerMouth.route(chatId)).catch((e) => { onLog(`mouth: could not decide the route for ${chatId} — posting locally: ${e?.message ?? e}`); return null; }) : null),
+  });
+}
+
 export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null, labelOf = () => null, agentSignatureOpenOf = () => '', agentSignatureCloseOf = () => '', defaultKey = 'e', peerMouth = null, onLog = () => {} } = {}) {
   if (!bridge) throw new Error('createSender: bridge is required');
   const textOf = (v) => (typeof v === 'string' ? v : v?.text ?? '');
+  const outbound = makeOutbound({ bridge, bridgeOf, peerMouth, onLog });
   return {
     open(chatId, { being = defaultKey, replyTo = null, queued = false, queuedAhead = 0, auto = false } = {}) {
-      const bridgeForThisBeing = bridgeOf ? (bridgeOf(being) ?? bridge) : bridge;
+      const { bridge: bridgeForThisBeing, route: peerRoute } = outbound(being, chatId);
       // mode:auto — E impersonates the operator, so the reply is PLAIN operator text:
       // NO persona line (no body_emoji/label tag passed → the port stamps nothing), no
       // end-marker, and NO thinking scaffold — no "⏳ Thinking…" placeholder, no streamed
@@ -203,7 +233,7 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
       // hand by the time there is anything to show. A route that throws — or a peerMouth that
       // throws synchronously — reads as "no peer": never a lost reply. Absent peerMouth ⇒ null ⇒
       // the local stream opens immediately below, exactly as it always has.
-      const route = peerMouth ? Promise.resolve().then(() => peerMouth.route(chatId)).catch((e) => { onLog(`mouth: could not decide the route for ${chatId} — posting locally: ${e?.message ?? e}`); return null; }) : null;
+      const route = peerRoute();
       // What the human has already read, in two parts: `tail` is the block the current
       // frame extends, `head` everything sealed behind a seam. See RETAINED_SEAM.
       let head = '';

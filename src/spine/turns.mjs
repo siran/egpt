@@ -26,6 +26,10 @@
 // it into BOTH createMeshService and createSpine — never two, because two queues keyed the same
 // way is exactly the concurrency the queue exists to prevent.
 import { makeSerialByKey } from '../serial-by-key.mjs';
+// WHICH CONNECTION AN OUTBOUND GOES OUT ON, asked of the ONE resolver rather than answered again
+// here. sender.mjs owns it because sender.mjs is THE reply path, and the steer ack below has to
+// agree with the reply or it announces which account is really listening (see its header).
+import { makeOutbound } from './sender.mjs';
 
 // The steer ack's reactionKey — same convention as the /react limb (reply-actions.mjs's
 // EMOJI_ALIASES 'eyes'): "seen", not "thinking" (that's the placeholder's job, and a woven
@@ -37,12 +41,15 @@ const STEER_ACK_EMOJI = '👀';
  *        brain     — the Brain port (turn/scopeOf/allowNewInput/steer). Only the optional seams
  *                    are read here; a Brain without them can never steer and never re-scopes,
  *                    which is byte-identical to the pre-extraction spine.
- *        bridge /  — the steer ACK's send path, resolved per being exactly as the spine resolved
- *        bridgeOf    it (bridgeOf(being) ?? bridge, operator 2026-08-30 multi-connection Beeper).
+ *        bridge /  — the steer ACK's send path, resolved through the ONE outbound resolver
+ *        bridgeOf /   (sender.mjs makeOutbound): the being's own connection, and — when a peer
+ *        peerMouth    spine is the mouth for this chat — the fact that the ack must not go out
+ *                     here at all. Absent peerMouth (every single-account node, every test fake)
+ *                     ⇒ the peer is never consulted and this is byte-identical to before.
  */
-export function createTurns({ brain, bridge = null, bridgeOf = null, log = null } = {}) {
+export function createTurns({ brain, bridge = null, bridgeOf = null, peerMouth = null, log = null } = {}) {
   const note = (s) => { try { log?.line?.(s); } catch {} };
-  const bridgeFor = (being) => (bridgeOf ? (bridgeOf(being) ?? bridge) : bridge);
+  const outbound = makeOutbound({ bridge, bridgeOf, peerMouth, onLog: note });
 
   const turnBy = makeSerialByKey();           // per-conversation turn FIFO (the §7 "one turn at a time per key")
   const trains = new Map();                    // convKey -> in-flight+queued turn count (drives the queued placeholder)
@@ -175,9 +182,27 @@ export function createTurns({ brain, bridge = null, bridgeOf = null, log = null 
     // second train. Same primitive + reactionKey convention as the /react limb (reply-actions.mjs,
     // bridge.react → beeper's sendReaction). Best-effort: a reaction fault must never undo the
     // steer that already landed.
+    //
+    // AND IT RIDES THE MOUTH THE REPLY RIDES (operator 2026-09-07). This asked `bridgeOf(being) ??
+    // bridge` and stopped there, while the reply path additionally asked the peer mouth — two
+    // answers to one question, and in a group holding both accounts they disagreed in public: the
+    // 👀 came from the PRIMARY and the answer from the SECONDARY, which is precisely what betrays
+    // which account is doing the listening. Both now ask makeOutbound.
+    //
+    // WHEN THE PEER SAYS THE REPLY, NOBODY REACTS. The 👀 sits on the INBOUND MESSAGE, and the two
+    // accounts see one real message as two different Matrix events in two different rooms — no
+    // message identity crosses the mouth link, by design, and the link carries no reaction verb.
+    // So the peer cannot place it and this account must not: a read receipt from the mouth that is
+    // not answering is the fault itself. Exactly the fact `ack:false` already encodes for a
+    // MESH-relayed turn (above), reached by a different transport and answered the same way.
     if (ack) {
-      try { await bridgeFor(to).react?.(ev.chatId, ev.msgId, STEER_ACK_EMOJI); }
-      catch (e) { note(`steer-ack ${to}/${ev.chatId}: ${e?.message ?? e}`); }
+      const { bridge: mouth, route } = outbound(to, ev.chatId);
+      const peerSays = route();                       // null with no peer wired — never awaited, so that path is untouched
+      if (peerSays && await peerSays) note(`steer-ack ${to}/${ev.chatId}: the PEER is saying this reply — no 👀 from this account`);
+      else {
+        try { await mouth.react?.(ev.chatId, ev.msgId, STEER_ACK_EMOJI); }
+        catch (e) { note(`steer-ack ${to}/${ev.chatId}: ${e?.message ?? e}`); }
+      }
     }
     return true;
   }

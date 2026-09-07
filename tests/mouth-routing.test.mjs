@@ -41,6 +41,7 @@ const _PRIVATE_HOME = vi.hoisted(() => {
 import { promises as fs } from 'node:fs';
 import { dirname } from 'node:path';
 import { createSender } from '../src/spine/sender.mjs';
+import { createTurns } from '../src/spine/turns.mjs';
 import { boot, makePeerMouth } from '../src/spine/boot.mjs';
 import { createMouthReceiver } from '../src/shell/peer-mouth.mjs';
 import { crossAccountChatKey } from '../src/bridges/beeper.mjs';
@@ -91,9 +92,13 @@ const settled = () => new Promise((r) => setTimeout(r, 0));
 // means exactly what it means there: a `startStream` handle (the ⏳ placeholder edited in place)
 // or a fresh `send`.
 function fakeBridge() {
-  const streams = [], sent = [], renders = [];
+  const streams = [], sent = [], renders = [], reactions = [];
   return {
-    streams, sent, renders,
+    streams, sent, renders, reactions,
+    // The steer ack's primitive (src/spine/turns.mjs, and the /react limb's). It lives on the same
+    // fake as `send`/`startStream` because it is the same question — WHICH ACCOUNT SAYS THIS —
+    // and §6 below is the case where the two used to answer differently.
+    async react(chatId, msgId, emoji) { reactions.push({ chatId, msgId, emoji }); return true; },
     // THIS NODE'S OWN PERSONA WRAP, as the real port hands it out (beeper-port.renderFrame): the
     // reply path renders a frame through it before handing it to the PEER, and must never touch it
     // on any other path — the local stream is wrapped one layer down, inside the port, so a
@@ -812,5 +817,109 @@ describe('boot — a node with no peer_spine builds neither half, and one with i
     expect(typeof app.peerMouth.startStream).toBe('function');
 
     app.stop();
+  });
+});
+
+// ── 6. THE 👀 RIDES THE SAME MOUTH THE REPLY DOES (operator 2026-09-07) ─────────────────────────
+// THE LIVE FAULT. In a WhatsApp group where BOTH accounts are present, a message steered into a
+// running turn got its 👀 acknowledgement from the PRIMARY account while the ANSWER arrived from
+// the SECONDARY. The read receipt and the reply disagreed — which is exactly what gives away that
+// the primary is the account really listening.
+//
+// THE CAUSE WAS ONE DUPLICATION, NOT TWO BUGS. `bridgeOf(being) ?? bridge` was written out in four
+// places (turns.mjs's steer ack, sender.mjs's reply, reply-actions.mjs's limbs, spine.mjs's
+// voice-out media) and only ONE of them — the reply path — also asked the mouth. sender.mjs's
+// `makeOutbound` is now the single answer to "which connection does this outbound go out on", and
+// the steer ack asks it too, so the two can never disagree again.
+//
+// WHY THE ACK IS SUPPRESSED RATHER THAN MOVED TO THE PEER. The 👀 sits on the INBOUND MESSAGE, and
+// the two accounts see one real message as two different Matrix events in two different rooms. No
+// message identity crosses the mouth link, by design (peer-mouth.mjs: "No Beeper message id crosses
+// the wire, in either direction"), and the link has no reaction verb at all. So the peer CANNOT
+// place it, and placing it here IS the disagreement. This is the same fact steerLiveTurn's
+// `ack:false` already encodes for a MESH-relayed turn — the real message is on the other side of
+// the wire — and it gets the same answer: no reaction, rather than one from the mouth that is not
+// answering.
+describe('the steer ack rides the same mouth the reply does', () => {
+  const KEY = 'e:wa:chat-1';
+  const steerable = () => ({ async allowNewInput() { return 'any'; }, steer: () => true });
+  const EV = { surface: 'wa', chatId: CHAT_ID, senderId: 'marina', senderName: 'marina', msgId: 'm2', body: 'and also X' };
+  const LIVE = { senderId: 'an', chatId: CHAT_ID };
+
+  it('the peer IS in the chat: the reply opens on the PEER and NO 👀 is placed on this account', async () => {
+    const { calls, mouth } = fakeMouth();
+    const bridge = fakeBridge();
+    const notes = [];
+    const turns = createTurns({ brain: steerable(), bridge, peerMouth: mouth, log: { line: (s) => notes.push(s) } });
+    const sender = createSender({ bridge, bodyEmojiOf: () => '🐶', peerMouth: mouth });
+
+    // The live turn's reply, routed exactly as it is today: the peer's account holds the train.
+    const out = sender.open(CHAT_ID, { being: 'e' });
+    await settled();
+    expect(calls.streams).toHaveLength(1);           // the answer is coming out of the PEER's mouth
+    expect(bridge.streams).toHaveLength(0);          // …and nothing at all on this account
+
+    // …and NOW the steer, into that same live turn.
+    turns.setLive(KEY, LIVE);
+    expect(await turns.steerLiveTurn({ to: 'e', ev: EV, turnKey: KEY })).toBe(true);
+
+    // THE ASSERTION THE OLD CODE FAILED: the ack must not go out on the account that is not
+    // answering. Same mouth as the reply ⇒ no reaction here, and a log line saying why.
+    expect(bridge.reactions).toEqual([]);
+    expect(notes.filter((l) => /steer-ack/.test(l) && /PEER/.test(l))).toHaveLength(1);
+
+    await out.finish({ text: 'done' });
+    expect(bridge.sent).toHaveLength(0);
+  });
+
+  it('the peer is NOT in the chat: the reply is local and the 👀 goes out here, exactly as before', async () => {
+    const { calls, mouth } = fakeMouth({ route: async () => null });
+    const bridge = fakeBridge();
+    const turns = createTurns({ brain: steerable(), bridge, peerMouth: mouth });
+    const sender = createSender({ bridge, bodyEmojiOf: () => '🐶', peerMouth: mouth });
+
+    const out = sender.open(CHAT_ID, { being: 'e' });
+    await settled();
+    expect(calls.streams).toHaveLength(0);
+    expect(bridge.streams).toHaveLength(1);          // this account holds the train…
+
+    turns.setLive(KEY, LIVE);
+    expect(await turns.steerLiveTurn({ to: 'e', ev: EV, turnKey: KEY })).toBe(true);
+    expect(bridge.reactions).toEqual([{ chatId: CHAT_ID, msgId: 'm2', emoji: '👀' }]);   // …so the 👀 is this account's too
+    await out.finish({ text: 'done' });
+  });
+
+  it('NO peer configured: nothing is asked and the 👀 goes out here — byte-identical to before', async () => {
+    const bridge = fakeBridge();
+    const turns = createTurns({ brain: steerable(), bridge });
+    turns.setLive(KEY, LIVE);
+
+    expect(await turns.steerLiveTurn({ to: 'e', ev: EV, turnKey: KEY })).toBe(true);
+    expect(bridge.reactions).toEqual([{ chatId: CHAT_ID, msgId: 'm2', emoji: '👀' }]);
+  });
+
+  it('a route that THROWS acks HERE — the fail-safe direction: the primary can never be the wrong answer', async () => {
+    const bridge = fakeBridge();
+    const notes = [];
+    const mouth = { async route() { throw new Error('roster boom'); }, startStream() { throw new Error('must not be reached'); } };
+    const turns = createTurns({ brain: steerable(), bridge, peerMouth: mouth, log: { line: (s) => notes.push(s) } });
+    turns.setLive(KEY, LIVE);
+
+    expect(await turns.steerLiveTurn({ to: 'e', ev: EV, turnKey: KEY })).toBe(true);
+    expect(bridge.reactions).toEqual([{ chatId: CHAT_ID, msgId: 'm2', emoji: '👀' }]);
+    expect(notes.filter((l) => /could not decide the route/.test(l))).toHaveLength(1);
+  });
+
+  // CALL SITE 1's per-being half, locked the way sender.mjs's and reply-actions.mjs's already are
+  // (tests/spine-sender.test.mjs, tests/reply-actions.test.mjs): the ack rides the BEING's own
+  // connection, because it is the same resolver answering.
+  it('the ack rides the BEING\'s own connection when the node holds more than one', async () => {
+    const main = fakeBridge(), rodz = fakeBridge();
+    const turns = createTurns({ brain: steerable(), bridge: main, bridgeOf: (b) => (b === 'rodz' ? rodz : null) });
+    turns.setLive('rodz:wa:chat-1', LIVE);
+
+    expect(await turns.steerLiveTurn({ to: 'rodz', ev: EV, turnKey: 'rodz:wa:chat-1' })).toBe(true);
+    expect(rodz.reactions).toEqual([{ chatId: CHAT_ID, msgId: 'm2', emoji: '👀' }]);
+    expect(main.reactions).toEqual([]);
   });
 });

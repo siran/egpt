@@ -22,6 +22,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { createTurns } from './turns.mjs';
+// WHICH CONNECTION AN OUTBOUND GOES OUT ON — the ONE resolver (sender.mjs makeOutbound), not a
+// fourth local copy of `bridgeOf(being) ?? bridge`.
+import { makeOutbound } from './sender.mjs';
 import { isBrainFailureResult } from '../brain-errors.mjs';
 import { replyLine, contextSinceLastTurn, promptWithRecentContext, bodyForMessageId, promptWithQuotedMessage, RECENT_CONTEXT_MAX_CHARS } from '../transcript-log.mjs';
 import { isHumanTurn, parseStopWord } from '../stop-guard.mjs';
@@ -191,7 +194,8 @@ export function createSpine({
     if (!dep) throw new Error(`createSpine: missing required dependency '${name}'`);
   }
   const note = (s) => { try { log.line?.(s); } catch {} };
-  const bridgeFor = (being) => (bridgeOf ? (bridgeOf(being) ?? bridge) : bridge);
+  const outbound = makeOutbound({ bridge, bridgeOf });
+  const bridgeFor = (being) => outbound(being).bridge;
   // The shared turn machinery, or our own private one (see the option's note above). Built with
   // the SAME bridge/bridgeOf pair `bridgeFor` uses, because the steer-ack react it owns is one of
   // the spine's own direct bridge sends and must ride the acked being's connection.

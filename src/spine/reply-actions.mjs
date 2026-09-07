@@ -53,6 +53,9 @@
 //   /ask <question>            (mode: auto) consult the operator in the advice channel
 import { resolve as resolvePath, relative as relPath, isAbsolute } from 'node:path';
 import { existsSync } from 'node:fs';
+// WHICH CONNECTION AN OUTBOUND GOES OUT ON — the ONE resolver (sender.mjs makeOutbound), not a
+// fourth local copy of `bridgeOf(being) ?? bridge`.
+import { makeOutbound } from './sender.mjs';
 
 // The reserved action verbs. A line is an ACTION-family line iff (trimmed) it starts
 // with '/' + one of these + whitespace-or-EOL — nothing else is ever touched, so
@@ -331,7 +334,8 @@ export function partialProse(partial, ev = {}, opts = {}) {
 // to the single `bridge` below — BYTE-IDENTICAL to before for every existing caller.
 export function createReplyActions({ bridge, bridgeOf = null, bodyEmojiOf = () => null, labelOf = () => null, resolveConvDir = async () => null, askAdvice = null, defaultKey = 'e', onLog = () => {} } = {}) {
   if (!bridge) throw new Error('createReplyActions: bridge is required');
-  const bridgeForBeing = (being) => (bridgeOf ? (bridgeOf(being) ?? bridge) : bridge);
+  const outbound = makeOutbound({ bridge, bridgeOf });
+  const bridgeForBeing = (being) => outbound(being).bridge;
   // The /ask limb delegates the sole sanctioned cross-chat post to the advice service
   // (createAdvice.ask). Absent (unit tests, no advice wiring) → fail-closed: log + drop,
   // never a bridge send. Keeps reply-actions' "every direct bridge action targets
