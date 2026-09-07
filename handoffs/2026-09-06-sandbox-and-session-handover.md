@@ -113,16 +113,13 @@ narrower: a Session 0 browser is invisible to the operator — cannot be seen,
 clicked, or shown a login prompt, and does not carry the interactive profile's
 logged-in state.
 
-**A second correction, caught by the chunk-6 agent: `src/tools/s0-driver` does
-not exist.** I cited it as evidence and it has never been in this repo's git
-history, nor is it in `bin/egpt`. Four setup scripts tell the operator to use it
-by name — `install-beeper-s0-service.ps1:6,110,118` and
-`set-beeper-s0-cdp-port.ps1:9` ("drive it with src/tools/s0-driver to log this
-install in") — and `handoffs/2026-09-03-session-zero.md:175` describes it as
-built. It is a dangling reference: anyone following those instructions to log in
-a Session 0 Beeper finds nothing. `src/tools/cdp-proxy.mjs` is a different thing
-(a token-authenticated reverse proxy for LAN access, not a viewer). Either build
-it or strike it from the four scripts; today it is a trap.
+**A second correction, now itself corrected: `src/tools/s0-driver` DOES exist.**
+I reported it missing and committed that. It lives under the operator's own src
+tree (`src/tools/s0-driver`: `s0-driver.cmd`, `s0-driver.html`, `serve.mjs`) --
+I searched only the egpt repo's own `src/tools/` and resolved the setup scripts'
+path against the wrong tree. The four scripts naming it were right all along.
+The lesson is the one the operator named twice tonight: a path in a comment is a
+claim to verify, and "I could not find it" is not "it does not exist".
 
 The chunk-6 agent was briefed on the old claim and has been sent the correction;
 its report should say which of its decisions rested on it. Note that the
