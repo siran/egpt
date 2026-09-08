@@ -32,9 +32,11 @@ const FANOUT_REGISTER = new Set(['onMessage', 'onEdit', 'onMedia']);
  * @param {object} primary  the DEFAULT connection's bridge — every non-inbound call still lands
  *   here untouched, so every existing outbound call site behaves exactly as before.
  * @param {object[]} all    every bridge this node holds, INCLUDING the primary.
+ * @param {Map<object,string>} [connectionOf]  bridge instance -> the CONNECTION NAME boot dialled
+ *   it for. Empty/absent ⇒ nothing is stamped and every arrival is exactly the object it was.
  * @returns {object} a bridge-shaped facade
  */
-export function fanoutInbound(primary, all = []) {
+export function fanoutInbound(primary, all = [], connectionOf = null) {
   const bridges = (Array.isArray(all) ? all : []).filter(Boolean);
   // A single connection is the overwhelmingly common case and must cost nothing: hand back the
   // bridge itself, so a node with one Beeper account is not merely equivalent but IDENTICAL.
@@ -46,7 +48,28 @@ export function fanoutInbound(primary, all = []) {
         // Register the SAME callback on every connection. Bridges that are outbound-only
         // (not owned by this node) implement these as no-ops, so ownership is honoured here
         // by construction rather than by a second rule kept in sync with the first.
-        return (cb) => { for (const b of bridges) b?.[key]?.(cb); };
+        //
+        // WHICH CONNECTION DELIVERED IT (operator 2026-09-08). This is the ONLY point in the
+        // process that knows: one callback is registered on every bridge, so by the time the
+        // spine sees the arrival the bridge that produced it is gone. An agent is bound to a
+        // connection (`beeper_connection`, boot's connectionOf) and must wake on ITS OWN
+        // connection's arrival, so the fact has to ride the arrival — STAMPED HERE, at the one
+        // registration that knows it, rather than re-derived downstream from a chatId (which is
+        // per-account and would need a lookup per message to say the same thing).
+        //
+        // onMessage ONLY: that is the arrival the wake decision is made on (spine.handleFast →
+        // router.resolve). onEdit and onMedia carry payloads with no `from` at all — an edit is
+        // { chatId, msgId, newText, oldText } — so there is nothing to stamp there and nothing
+        // that reads it.
+        //
+        // A COPY, never a mutation: the payload belongs to the bridge that minted it, and the
+        // spread leaves `from`'s own fields untouched (identity.build reads it field by field).
+        return (cb) => {
+          for (const b of bridges) {
+            const conn = key === 'onMessage' ? (connectionOf?.get?.(b) ?? null) : null;
+            b?.[key]?.(conn ? (msg) => cb({ ...msg, from: { ...msg?.from, connection: conn } }) : cb);
+          }
+        };
       }
 
       // THE ECHO GATE, and the reason this is not a one-line Proxy. `wasSentByUs` asks "did WE

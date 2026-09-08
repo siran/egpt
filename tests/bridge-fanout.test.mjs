@@ -153,6 +153,69 @@ describe('fanoutInbound', () => {
     expect(b.registered.onMessage).toHaveLength(0);   // the proxy swallowed it
   });
 
+  // ── WHICH CONNECTION DELIVERED IT (operator 2026-09-08) ──────────────────────────────────
+  // One callback is registered on every bridge, so by the time the spine has the arrival the
+  // bridge that produced it is gone. An agent is bound to a connection (`beeper_connection`), and
+  // the wake gate needs to know whether THIS arrival came in on it — so the name is stamped here,
+  // at the one registration that still knows.
+  it('stamps the delivering connection on the arrival, per bridge', () => {
+    const a = fakeBridge('a'), b = fakeBridge('b');
+    const names = new Map([[a, 'main'], [b, 'secondary']]);
+    const seen = [];
+    fanoutInbound(a, [a, b], names).onMessage((m) => seen.push(m));
+
+    a.registered.onMessage[0]({ body: 'k hi', from: { chatId: '!an-view' } });
+    b.registered.onMessage[0]({ body: 'k hi', from: { chatId: '!rodz-view' } });
+
+    expect(seen).toEqual([
+      { body: 'k hi', from: { chatId: '!an-view', connection: 'main' } },
+      { body: 'k hi', from: { chatId: '!rodz-view', connection: 'secondary' } },
+    ]);
+  });
+
+  // NO MAP, NO STAMP: every caller that passes none gets the object the bridge minted, unchanged
+  // and by IDENTITY, not a copy.
+  it('with no connection map the arrival is the very object the bridge minted', () => {
+    const a = fakeBridge('a'), b = fakeBridge('b');
+    const seen = [];
+    fanoutInbound(a, [a, b]).onMessage((m) => seen.push(m));
+    const msg = { body: 'k hi', from: { chatId: '!an-view' } };
+    b.registered.onMessage[0](msg);
+    expect(seen[0]).toBe(msg);
+  });
+
+  // A bridge the map does not name is not stamped either — one unnamed connection cannot make the
+  // others lie about theirs.
+  it('a bridge missing from the map is passed through unstamped', () => {
+    const a = fakeBridge('a'), b = fakeBridge('b');
+    const seen = [];
+    fanoutInbound(a, [a, b], new Map([[a, 'main']])).onMessage((m) => seen.push(m));
+    const msg = { body: 'k hi', from: { chatId: '!rodz-view' } };
+    b.registered.onMessage[0](msg);
+    expect(seen[0]).toBe(msg);
+  });
+
+  // onEdit/onMedia carry payloads with no `from` at all (an edit is { chatId, msgId, newText,
+  // oldText }), and no wake decision is made on them — so they get the SAME callback, untouched.
+  it('only onMessage is stamped — onEdit and onMedia register the callback itself', () => {
+    const a = fakeBridge('a'), b = fakeBridge('b');
+    const names = new Map([[a, 'main'], [b, 'secondary']]);
+    const f = fanoutInbound(a, [a, b], names);
+    const cb = () => {};
+    f.onEdit(cb); f.onMedia(cb);
+    for (const br of [a, b]) {
+      expect(br.registered.onEdit).toEqual([cb]);
+      expect(br.registered.onMedia).toEqual([cb]);
+    }
+  });
+
+  // THE ONE-CONNECTION PATH IS UNTOUCHED even when a map is handed in: the bridge itself comes
+  // back, so nothing is wrapped and nothing is stamped.
+  it('a single connection still returns the bridge itself, map or no map', () => {
+    const a = fakeBridge('a');
+    expect(fanoutInbound(a, [a], new Map([[a, 'main']]))).toBe(a);
+  });
+
   it('a null connection in the list is skipped rather than thrown on', () => {
     const a = fakeBridge('a'), b = fakeBridge('b');
     const f = fanoutInbound(a, [a, null, b, undefined]);

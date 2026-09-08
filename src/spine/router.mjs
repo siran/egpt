@@ -273,7 +273,7 @@ export function addressed(text, agents, { addressWithoutAt = true, isVoice = fal
 // today: a guarded token nobody can evaluate must not be addressable.
 // `onLog` — the router's diagnostic sink; the ONLY thing it says is the fallback membership
 // failure below, which must never be silent.
-export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', addressWithoutAt = true, loadState = null, isPresent = null, isPeerAlive = null, onLog = () => {} } = {}) {
+export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', addressWithoutAt = true, loadState = null, isPresent = null, isPeerAlive = null, connectionOf = null, onLog = () => {} } = {}) {
   // ONE addressed agent → the routing target it resolves to. Per-kind semantics are
   // UNCHANGED; only the caller changed (every hit, not just the first).
   function targetFor({ name, agent, atStart, unlessPresent, unlessPeerAlive }, ev) {
@@ -469,7 +469,50 @@ export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', addre
           const globalAllowed = Array.isArray(hit.agent.conversation_defaults?.allowed_users) ? hit.agent.conversation_defaults.allowed_users : null;
           const allowedUsers = convAllowed ?? globalAllowed;
           if (!allowedUsersPermits(allowedUsers, ev?.senderId)) continue;
-          // FALLBACK-HANDLE GUARD (operator 2026-08-31) — the THIRD post-match filter here, and
+          // THE CONNECTION GATE (operator 2026-09-08) — another post-match filter, same shape as
+          // the two above and placed before the fallback guard so that guard keeps being the last
+          // thing to run and the only one that can cost a lookup. The ONE matcher decided the
+          // token was addressed; this decides whether THIS ARRIVAL is the one that answers it, and
+          // a drop falls through exactly as if the @token had never matched (the message is still
+          // received, still recorded, still read as back-context — only the wake is withheld).
+          //
+          // WHY. One spine now holds BOTH accounts as two connections, and one real WhatsApp group
+          // is a DIFFERENT room per account, so the spine hears one typed line TWICE — deliberately
+          // undeduplicated (bridge-fanout.mjs). An agent is bound to a connection already
+          // (`beeper_connection`, boot's connectionOf), and the operator's ruling is that the
+          // binding decides: "received by primary, logs, recognized agent, produces reply …
+          // received by secondary, logs, K is not an agent. continue."
+          //
+          // `ev.connection` is stamped at the fan-out registration and is NULL on a one-connection
+          // node (fanoutInbound hands back the bridge itself there), so this whole gate is inert
+          // for every node that dials one Beeper account — which is every node today.
+          //
+          // A GUARDED HIT IS EXEMPT, and that is the CONDITIONAL, not an escape hatch. The gate
+          // can only compare two connection NAMES; it cannot ask "is my own connection in this
+          // chat at all", because one real group is a different chatId per account and the owning
+          // connection has never seen the arriving one's id. So on its own the gate would also
+          // silence the case the operator requires to work — `k hi` in a group only the OTHER
+          // account is in, where the owning connection is not present and the arrival that exists
+          // is the only one there will ever be. `fallback_handle` asks exactly that question
+          // (`unless_present`, answered from the ARRIVING chat's roster, fanned out since
+          // 32eb862): a hit won by a guarded token has already been decided by the one filter that
+          // can see membership, so the gate must not overrule it. Unconditional tokens — which are
+          // the ones that double-answer, and the ones boot warns about — are what this gate is
+          // for.
+          //
+          // WHAT IS STILL MISSING, said out loud so the next reader does not look for it: the
+          // guard names the owning connection by a HAND-PASTED phone number. Deriving it — asking
+          // literally "is my OWNING CONNECTION in this chat" — needs that connection's own account
+          // identity, and a `beeper:` block records only a label, a token and an optional
+          // base_url. Until one exists, an UNCONDITIONAL handle bound to a connection reaches
+          // nobody in a chat only the OTHER connection is in (locked as a gap in
+          // tests/multi-connection-wake.test.mjs).
+          if (ev?.connection && typeof connectionOf === 'function'
+              && hit.unlessPresent == null && hit.unlessPeerAlive == null) {
+            const own = connectionOf(hit.name);
+            if (own && own !== ev.connection) continue;
+          }
+          // FALLBACK-HANDLE GUARD (operator 2026-08-31) — the LAST post-match filter here, and
           // deliberately shaped like the two above (surface pin, allowed_users): the ONE matcher
           // decided the token was addressed, this decides whether THIS node is the one to answer
           // it, and a drop falls through exactly as if the @token had never matched. LAST, so the

@@ -165,6 +165,13 @@ export function createRoomRelay({
       // READ ONLY by the gates that ask "where did this arrive" (src/spine/router.mjs); nothing
       // dispatches, keys or files on it, so identity stays exactly what a569ada made it.
       origin: { surface: ev.surface, chatId: ev.chatId, chatName: ev.chatName },
+      // …and WHICH CONNECTION delivered it (operator 2026-09-08), carried for exactly the reason
+      // `origin` and `fromNode` above are: the re-addressing has already thrown the fact away and
+      // nothing downstream can recover it. Without it a group both accounts are in would tunnel
+      // TWICE into the same room with no way to tell the two copies apart — the very double wake
+      // the connection gate (src/spine/router.mjs) exists to stop, arriving by the one path that
+      // rebuilds the payload. Null on a one-connection node, as everywhere else.
+      connection: ev.connection,
     },
   });
 

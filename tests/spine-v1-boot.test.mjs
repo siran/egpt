@@ -477,9 +477,12 @@ describe('boot() — config-shape migration', () => {
       chatId: '!room1:beeper.com', chatName: 'fam1', network: 'whatsapp',
       userId: 'u-1', senderName: 'An', authorized: true, msgKey: 'm1',
     });
-    // rodz (beeper_connection: 'rodz') answers an @rodz-addressed message — delivered over the
-    // SAME inbound socket (mainSpy), since only the default connection's onMessage is wired.
-    await mainSpy.onIncoming('@rodz hola rodz', {
+    // rodz (beeper_connection: 'rodz') answers an @rodz-addressed message — delivered over ITS
+    // OWN connection. It used to arrive on mainSpy, back when only the default connection's
+    // onMessage was wired at all; since the CONNECTION GATE (operator 2026-09-08, router.mjs) an
+    // agent wakes on the arrival ITS OWN `beeper_connection` delivered, so which socket it comes
+    // in on is now part of the setup rather than an incidental convenience.
+    await rodzSpy.onIncoming('@rodz hola rodz', {
       chatId: '!room2:beeper.com', chatName: 'fam2', network: 'whatsapp',
       userId: 'u-1', senderName: 'An', authorized: true, msgKey: 'm2',
     });

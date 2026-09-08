@@ -205,6 +205,7 @@ const MERGED_GUARDED_ON_SECONDARY = () => NODE(GUARDED_PERSONA, { use: 'secondar
 async function bootWith(config) {
   const { start, built } = fakeTransport();
   const lines = [];
+  const io = memIo();
   let convState = emptyState();
   const app = await boot({
     readConfig: () => config,
@@ -213,14 +214,14 @@ async function bootWith(config) {
     probeEndpoint: fakeProbe,
     loadState: async () => convState,
     writeState: async (s) => { convState = s; },
-    io: memIo(), ingest: false, tickMs: 0,
+    io, ingest: false, tickMs: 0,
     now: () => Date.UTC(2026, 8, 7, 14, 5),
     log: { line: (s) => lines.push(s) },
   });
   const byConnection = Object.fromEntries(built.map((s) => [s.connection, s]));
   // EVERY reply that left the node, whichever connection it went out on.
   const replies = () => built.flatMap((s) => s.streams.map((h) => ({ connection: s.connection, chatId: h.chatId, text: h.finals[0] })));
-  return { app, built, byConnection, replies, lines };
+  return { app, built, byConnection, replies, lines, io };
 }
 
 // One arrival, shaped the way the real bridge shapes it. `atE` is the bridge's OWN mention
@@ -405,6 +406,116 @@ describe('ONE spine, TWO connections — the merged-config shape (operator 2026-
       `secondary:${RODZ_ONLY}`,
     ]);
 
+    app.stop();
+  });
+});
+
+// ── THE CONNECTION GATE (operator 2026-09-08) ────────────────────────────────────────────────
+// The merged shape binds an AGENT to a CONNECTION (`beeper_connection`, resolved by boot's
+// connectionOf). The operator's ruling on what one real message typed into a chat BOTH accounts
+// are in must do: "received by primary, logs, recognized agent, produces reply… received by
+// secondary, logs, K is not an agent. continue." — both arrivals ingest and log, only the arrival
+// on the connection that CARRIES the agent produces a turn. NOT deduplication: the second arrival
+// is a conversation of its own and is recorded as one.
+//
+// The arrival's connection is stamped where it is known — the fan-out registration, the one point
+// that still has the bridge in hand (src/spine/bridge-fanout.mjs) — and read by router.resolve as
+// a fourth post-match filter beside the surface pin, allowed_users and the fallback guard.
+const K_BOUND_TO_MAIN = () => {
+  const c = NODE({ handles: ['king'] });
+  c.agents.k = { configuration: 'egpt', name: 'K', handles: ['k'], beeper_connection: 'main' };
+  return c;
+};
+
+// The SAME agent, addressable only through a GUARDED token — the shape that survives a chat its
+// own connection is not in (see the last case below).
+const K_GUARDED_ON_MAIN = () => {
+  const c = NODE({ handles: ['king'] });
+  c.agents.k = { configuration: 'egpt', name: 'K', handles: [], beeper_connection: 'main',
+                 fallback_handle: { handle: ['k'], unless_present: AN } };
+  return c;
+};
+
+describe('the connection gate — an agent wakes on ITS OWN connection\'s arrival', () => {
+  // THE BUG THIS FIXES. One line, typed once, in one group both accounts are in. Before the gate
+  // both arrivals resolved identically and K answered TWICE, from two visibly different numbers.
+  it('one real message, two arrivals, K bound to main → K answers ONCE, on main', async () => {
+    const { app, byConnection, replies } = await bootWith(K_BOUND_TO_MAIN());
+
+    await deliver(byConnection.main, SHARED_ON_MAIN, 'k hola');
+    await deliver(byConnection.secondary, SHARED_ON_SECONDARY, 'k hola');
+
+    expect(replies().map((r) => `${r.connection}:${r.chatId}`)).toEqual([`main:${SHARED_ON_MAIN}`]);
+
+    app.stop();
+  });
+
+  // …and the arrival that does NOT wake K still INGESTS. Nothing is dropped and nothing is
+  // deduplicated — a gated hit falls through exactly as an unmatched @token does, so the message
+  // is recorded, the guard counts it, and the being reads it as back-context like any other line.
+  it('the non-waking arrival still LOGS', async () => {
+    const { app, byConnection, replies, io } = await bootWith(K_BOUND_TO_MAIN());
+
+    await deliver(byConnection.secondary, SHARED_ON_SECONDARY, 'k hola');
+
+    expect(replies()).toEqual([]);
+    const logged = [...io.files.keys()].filter((f) => /transcript\.md$/.test(f));
+    expect(logged.some((f) => f.includes('shared-as-rodz-sees-it'))).toBe(true);
+
+    app.stop();
+  });
+
+  // NO EFFECT ON A CHAT ONLY THE OWNING CONNECTION HAS: one arrival, on main, and it is main's
+  // agent. The gate is a filter on the SECOND ear, never a new reason to stay silent.
+  it('an An-only chat is unaffected — the single arrival is the owning connection\'s', async () => {
+    const { app, byConnection, replies } = await bootWith(K_BOUND_TO_MAIN());
+    await deliver(byConnection.main, AN_ONLY, 'k hola');
+    expect(replies().map((r) => `${r.connection}:${r.chatId}`)).toEqual([`main:${AN_ONLY}`]);
+    app.stop();
+  });
+
+  // THE CONDITIONAL. A group only the SECONDARY account is in: K's own connection is not there at
+  // all, so the arrival that IS there must still wake it. The gate compares two connection NAMES
+  // and CANNOT see that — one real group is a different chatId per account, so main's Desktop has
+  // never seen this room. `fallback_handle` is the filter that CAN: `unless_present` is answered
+  // from the ARRIVING chat's roster (fanned out since 32eb862), reads a definite FALSE because An
+  // is genuinely not a member, and the hit wakes. A guarded hit is therefore EXEMPT from the gate
+  // — the membership answer outranks the name comparison.
+  it('CONDITIONAL: a GUARDED token still wakes on the other connection\'s arrival when its own is absent from the chat', async () => {
+    const { app, byConnection, replies, lines } = await bootWith(K_GUARDED_ON_MAIN());
+
+    await deliver(byConnection.secondary, RODZ_ONLY, 'k hola');
+
+    expect(replies()).toHaveLength(1);
+    expect(byConnection.secondary.rosterAsks).toEqual([{ chat: RODZ_ONLY, identity: AN }]);
+    expect(lines.filter((l) => /NOT woken/.test(l))).toEqual([]);
+
+    app.stop();
+  });
+
+  // …and the SAME guarded agent still answers exactly once in the shared group: the gate leaves it
+  // alone and its own guard silences the secondary arrival (An IS in Rodz's copy of the roster).
+  it('CONDITIONAL: the guarded token is still answered exactly ONCE in the shared group', async () => {
+    const { app, byConnection, replies } = await bootWith(K_GUARDED_ON_MAIN());
+
+    await deliver(byConnection.main, SHARED_ON_MAIN, 'k hola');
+    await deliver(byConnection.secondary, SHARED_ON_SECONDARY, 'k hola');
+
+    expect(replies().map((r) => `${r.connection}:${r.chatId}`)).toEqual([`main:${SHARED_ON_MAIN}`]);
+
+    app.stop();
+  });
+
+  // ⚠️ THE GAP, LOCKED AS ONE — the piece the operator asked for that is NOT delivered. An
+  // UNCONDITIONAL handle bound to `main` reaches nobody in a group only the SECONDARY account is
+  // in, because the gate cannot ask whether main is in that chat and there is no guard to answer
+  // it. The guarded shape above is the workaround, and it costs a hand-pasted phone number. Making
+  // the gate itself ask "is my OWNING CONNECTION in this chat" needs the owning connection's own
+  // account identity, and nothing in the `beeper:` block records one — see the STOP note.
+  it('GAP: an UNCONDITIONAL handle whose connection is absent from the chat reaches nobody', async () => {
+    const { app, byConnection, replies } = await bootWith(K_BOUND_TO_MAIN());
+    await deliver(byConnection.secondary, RODZ_ONLY, 'k hola');
+    expect(replies()).toEqual([]);
     app.stop();
   });
 });

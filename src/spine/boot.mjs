@@ -1467,7 +1467,17 @@ export async function boot({
   // on a node where no agent names a beeper_connection, every one of these resolves to the SAME
   // token (connectionOf's fallback), so this loop constructs exactly one bridge, exactly as
   // before. defaultKey is always among agents() (personaAgent(), above, guarantees it).
-  for (const being of Object.keys(agents())) await bridgeForEndpoint(endpointFor(connectionOf(being)));
+  // …and remember WHICH CONNECTION each bridge was dialled for (operator 2026-09-08). The bridge
+  // map is keyed by ENDPOINT (base_url + TOKEN) precisely so two connection names pointing at one
+  // Desktop collapse to one instance — which also means the endpoint key cannot serve as the
+  // connection's name downstream, and it carries a token, which must never reach an event or a
+  // log. FIRST name wins, matching the collapse: two names on one endpoint are one ear.
+  const connectionOfBridge = new Map();   // bridge instance -> the CONNECTION NAME it was dialled for
+  for (const being of Object.keys(agents())) {
+    const name = connectionOf(being);
+    const b = await bridgeForEndpoint(endpointFor(name));
+    if (!connectionOfBridge.has(b)) connectionOfBridge.set(b, name);
+  }
   const defaultBridge = bridgeByEndpoint.get(endpointKey(endpointFor(connectionOf(defaultKey))));   // the default/persona connection's bridge — every node-level (non-per-being) OUTBOUND call site below rides THIS, unchanged
   // INBOUND ON EVERY CONNECTION (operator 2026-09-02), closing the gap the multi-connection work
   // left open: outbound has been per-connection since 2026-08-30, but the spine registered
@@ -1479,7 +1489,7 @@ export async function boot({
   // to defaultBridge — and a node with ONE connection gets that bridge back identically, not a
   // wrapper. See bridge-fanout.mjs for why wasSentByUs must ask every connection (it is the echo
   // gate, and it is per-ACCOUNT) and why nothing here deduplicates.
-  const bridge = fanoutInbound(defaultBridge, [...bridgeByEndpoint.values()]);
+  const bridge = fanoutInbound(defaultBridge, [...bridgeByEndpoint.values()], connectionOfBridge);
   // rawBridgeOf(being): the RAW (non-shell-aware) bridge for a given being's own connection.
   // Fallback to the default `bridge` is defensive only — every being in agents() was already
   // enumerated above, so this should never miss.
@@ -1729,6 +1739,10 @@ export async function boot({
       // true | false | null(unknown). A port with no watcher returns null rather than a
       // guess, and the router reads anything but a definite false as "stay silent".
       isPeerAlive: (port) => peerLiveness.get(Number(port))?.isAlive() ?? null,
+      // WHICH CONNECTION AN AGENT IS BOUND TO (operator 2026-09-08) — connectionOf, above, the
+      // SAME resolver that already decides which bridge an agent's outbound rides and which
+      // bridges boot builds at all. The router asks it; it does not learn a second rule.
+      connectionOf,
       onLog: (m) => log.line?.(`[router] ${m}`),
     }),
     // currentRoomOf: a lazy thunk, not `commands.currentRoomOf` directly — `commands` (below)

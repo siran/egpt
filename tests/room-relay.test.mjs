@@ -474,3 +474,36 @@ describe('room relay — LOOP SAFETY: every cycle built, and the thing that stop
     expect(h.guard.countOf('whatsapp:group-B')).toBe(1);   // counted, never a reset
   });
 });
+
+// ── THE TUNNEL CARRIES THE ARRIVAL'S CONNECTION (operator 2026-09-08) ─────────────────────────
+// A node holding two Beeper accounts hears a group both are in TWICE, and the connection gate
+// (src/spine/router.mjs) is what makes exactly one of those arrivals wake the agent bound to it.
+// The tunnel REBUILDS the payload, so anything it does not carry is lost — which is why `fromNode`
+// and `origin` already ride it. Without the connection riding too, both copies of one group
+// message would enter the room indistinguishable and the room's agents would answer twice.
+describe('the tunnel carries which connection delivered the message', () => {
+  const tunnelTo = (room) => {
+    const roster = [];
+    Object.defineProperty(roster, 'tunnelRooms', { value: [room], enumerable: false });
+    return createRoomRelay({
+      resolveMembers: async () => roster,
+      adapterOf: async () => null, streamFromTab: async () => '', openStream: () => ({ update() {}, finish() {}, fail() {} }),
+      onLog: () => {},
+    });
+  };
+
+  it('the room turn carries the connection the group message arrived on', async () => {
+    const seen = [];
+    const ev = identity.build(human('hola equipo'));
+    ev.connection = 'secondary';
+    await tunnelTo('dj-son').fanOut(ev, { reenter: async (m) => { seen.push(m); } });
+    expect(seen).toHaveLength(1);
+    expect(seen[0].from).toMatchObject({ network: 'room', chatId: 'dj-son', connection: 'secondary' });
+  });
+
+  it('a one-connection node tunnels a null connection, exactly as before', async () => {
+    const seen = [];
+    await tunnelTo('dj-son').fanOut(identity.build(human('hola equipo')), { reenter: async (m) => { seen.push(m); } });
+    expect(seen[0].from.connection).toBeNull();
+  });
+});

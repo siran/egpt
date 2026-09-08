@@ -161,6 +161,12 @@ export function createIdentity({ formatLine = formatDispatchLine, now = () => Da
         // read it (router.mjs: the surface pin, and fallback_handle's roster question). Every genuine
         // bridge inbound carries no `from.origin` → null → every reader falls back to ev itself.
         origin: f.origin ?? null,
+        // WHICH CONNECTION DELIVERED THIS (operator 2026-09-08), stamped by the fan-out
+        // registration — the one point that knows (src/spine/bridge-fanout.mjs). A node with one
+        // Beeper connection stamps nothing, so this is null there and every gate reading it is
+        // inert. Carried exactly as fromNode/origin are: a fact about the arrival that cannot be
+        // re-read from the payload once the callback has it.
+        connection: f.connection ?? null,
         raw: from,
       };
       // The one dispatch line, built once (C7.6e). A reaction/edit is a
