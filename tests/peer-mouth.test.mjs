@@ -25,8 +25,11 @@
 // socket, no real port, no real Beeper, no profile touched.
 import { describe, it, expect } from 'vitest';
 import { createShellPort } from '../src/bridges/shell-port.mjs';
-import { MOUTH_PATH, sayFrame, parseMouthFrame } from '../src/shell/mouth.mjs';
-import { peerSpineFrom, findChatByKey, createMouthReceiver, speakThroughPeer, startPeerStream } from '../src/shell/peer-mouth.mjs';
+import { MOUTH_PATH, sayFrame, sayReactFrame, parseMouthFrame } from '../src/shell/mouth.mjs';
+import { peerSpineFrom, findChatByKey, findMessageByKey, createMouthReceiver, speakThroughPeer, startPeerStream, reactThroughPeer } from '../src/shell/peer-mouth.mjs';
+// The message key is minted in the BRIDGE, beside the echo plan's audioHash, and read back here
+// rather than re-derived: a test that hashed its own fixtures would pass while the two ends drifted.
+import { crossAccountMsgKey } from '../src/bridges/beeper.mjs';
 import { responseFrame } from '../src/shell/auth.mjs';
 // §2d dials the WHOLE reply path across the link — the real sender on one side, a real Beeper
 // port on each account — so the bytes asserted there are the bytes a chat would show.
@@ -75,6 +78,23 @@ const ONE_TO_ONE = {
 };
 
 const PEER = { consolePort: 23377, consoleToken: 'peer-shell-token', accounts: ACCOUNTS };
+
+// ── ONE REAL MESSAGE, TWO MATRIX EVENTS ────────────────────────────────────────────────────────
+// Measured live 2026-09-07, ONE WhatsApp message in a group both accounts are in. Nothing
+// addressable crosses: the id is per-account (2901 / 1118) and so is the room. The BODY and the
+// TIMESTAMP are byte-identical, and they are the whole basis of the reaction verb.
+const STEERED_TEXT = 'and also X';
+const STEERED_TS_ISO = '2026-09-07T11:07:17.000Z';
+const STEERED_TS = Date.parse(STEERED_TS_ISO);
+// As the PRIMARY (the brain) sees it — the message a human steered into the live turn.
+const STEERED_ON_PRIMARY = { id: '2901', text: STEERED_TEXT, timestamp: STEERED_TS_ISO };
+// The SAME message as the SECONDARY (the mouth) sees it: different id, same body, same timestamp.
+const STEERED_ON_SECONDARY = { id: '1118', text: STEERED_TEXT, timestamp: STEERED_TS_ISO };
+// Two neighbours on the secondary's copy of the chat, so a match is a match and not the only item.
+const EARLIER_ON_SECONDARY = { id: '1117', text: 'something else entirely', timestamp: '2026-09-07T11:05:00.000Z' };
+const LATER_ON_SECONDARY = { id: '1119', text: 'unrelated', timestamp: '2026-09-07T11:09:00.000Z' };
+// The key the BRIDGE mints for that body — computed by the same function both ends call.
+const STEERED_KEY = crossAccountMsgKey(STEERED_ON_PRIMARY);
 
 // ── THE TRANSPORT SEAM ─────────────────────────────────────────────────────────────────────────
 // One end of a linked pair. Delivery is a microtask (a real socket is never synchronous) which
@@ -164,14 +184,24 @@ function seatEditor(server, token) {
 // A whole two-spine rig: the RECEIVER's shell-port limb with a mouth handler over a fake Beeper,
 // and the SPEAKER's client seam pointed at it. `turns` records anything the receiving spine
 // dispatched as a message — it must stay EMPTY: a peer's line is posted, never answered.
-function rig({ chats = [AS_SECONDARY, OTHER_CHAT], token = PEER.consoleToken, post, startStream, mouth = true, legacy = false } = {}) {
+function rig({
+  chats = [AS_SECONDARY, OTHER_CHAT], token = PEER.consoleToken, post, startStream, mouth = true, legacy = false,
+  // The RECEIVER's own copies of this chat's recent messages, and its reaction primitive — the two
+  // seams `say: react` needs. `null` for either models a bridge that has neither, which is what
+  // `no-react` is for (the same convention `startStream: null` already follows).
+  messages = [LATER_ON_SECONDARY, STEERED_ON_SECONDARY, EARLIER_ON_SECONDARY], listMessages, react,
+} = {}) {
   const { WebSocketServer, servers } = makeFakeWss();
   const posted = [];
   const trains = [];      // the live messages the RECEIVER opened: { chatId, init, frames, final }
+  const reacted = [];     // what the RECEIVER placed, in ITS OWN id namespace: { chatId, msgId, emoji }
+  const listed = [];      // which of its chats it looked in — a reaction may never leave that chat
   const logs = [];
   const turns = [];
   const receiver = createMouthReceiver({
     listChats: async () => chats,
+    listMessages: listMessages === null ? null : (listMessages ?? (async (chatId) => { listed.push(chatId); return messages; })),
+    react: react === null ? null : (react ?? (async (chatId, msgId, emoji) => { reacted.push({ chatId, msgId, emoji }); return true; })),
     post: post ?? (async (chatId, text) => { posted.push({ chatId, text }); return { ok: true }; }),
     // The secondary account's edit-in-place primitive (boot wires bridge.startStreamVerbatim).
     // `startStream: null` models a bridge that has none, which is what `no-stream` is for.
@@ -204,10 +234,13 @@ function rig({ chats = [AS_SECONDARY, OTHER_CHAT], token = PEER.consoleToken, po
   // is what every case that is not about the persona passes).
   const train = ({ chat = AS_PRIMARY, init = '⏳ Thinking…', peer = PEER, fallback = null, render } = {}) =>
     startPeerStream({ peer, chat, init, fallback, render, WebSocket: FakeClient, onLog: (m) => logs.push(m), setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout });
+  // The SPEAKER's reaction: what src/spine/turns.mjs asks for when the peer is saying the reply.
+  const poke = ({ chat = AS_PRIMARY, msgKey = STEERED_KEY, timestamp = STEERED_TS, emoji = '👀', peer = PEER } = {}) =>
+    reactThroughPeer({ peer, chat, msgKey, timestamp, emoji, WebSocket: FakeClient, onLog: (m) => logs.push(m), setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout });
   // Let every queued microtask drain — the fake sockets deliver on microtasks, so "the frames have
   // landed and been answered" is a few turns of the loop away and never a timer.
   const flush = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
-  return { port, server, posted, trains, logs, turns, speak, train, dialled, sockets, clock, flush, FakeClient };
+  return { port, server, posted, trains, reacted, listed, logs, turns, speak, train, poke, dialled, sockets, clock, flush, FakeClient };
 }
 
 // ── 1. ABSENT MEANS ABSENT ─────────────────────────────────────────────────────────────────────
@@ -752,6 +785,86 @@ describe('a peer-said reply is stamped by the BRAIN that wrote it, exactly once'
   });
 });
 
+// ── 2e. THE 👀 CROSSES THE LINK ────────────────────────────────────────────────────────────────
+// The one verb that names a MESSAGE (operator 2026-09-07). Everything else on this wire names a
+// chat and nothing finer, which is why the steer acknowledgement used to be SUPPRESSED whenever
+// the peer said the reply: nobody could tell the peer which message to sit the 👀 on, and placing
+// it on the brain's own account is precisely the fault — the read receipt would come from the one
+// account that is NOT answering.
+//
+// AND STILL NO ID CROSSES. The frame carries the message's cross-account CONTENT KEY and its
+// TIMESTAMP — the two fields both accounts measurably agree on (2901/1118 vs. the identical body
+// and 2026-09-07T11:07:17.000Z) — and the receiver reacts with ITS OWN id, which the brain never
+// learns. Exactly the property the reply train already has for message identity.
+describe('a REACTION crosses the link and is placed on the OTHER account\'s own copy', () => {
+  it('resolves the chat, then the message, and reacts with the SECONDARY\'s id — never the primary\'s', async () => {
+    const { reacted, listed, turns, poke, dialled, port } = rig();
+    const r = await poke();
+
+    expect(r).toEqual({ ok: true, chatId: SECONDARY_CHAT_ID });
+    // THE ASSERTION THIS WHOLE CHUNK EXISTS FOR: the 👀 is on the secondary's OWN message id.
+    expect(reacted).toEqual([{ chatId: SECONDARY_CHAT_ID, msgId: '1118', emoji: '👀' }]);
+    expect(reacted[0].msgId).not.toBe(STEERED_ON_PRIMARY.id);   // the brain's id means nothing here
+    expect(listed).toEqual([SECONDARY_CHAT_ID]);                // it looked in that chat and no other
+    expect(dialled).toEqual([`ws://127.0.0.1:23377${MOUTH_PATH}`]);
+    expect(turns).toEqual([]);                                  // a reaction is placed, never answered
+    port.stop();
+  });
+
+  it('the frame carries the four fields and NO id, in either direction', async () => {
+    const { sockets, poke, port } = rig();
+    await poke();
+    const sent = sockets[0].sent.map((s) => JSON.parse(s));
+    const frame = sent.find((f) => f.say === 'react');
+    expect(frame).toEqual({ say: 'react', chatKey: 'group,#15551110001,#15551110002', msgKey: STEERED_KEY, timestamp: STEERED_TS, emoji: '👀' });
+    // Neither account's message id appears anywhere on the wire, in either direction.
+    const wire = [...sockets[0].sent, ...sockets[0].other.sent].join('\n');
+    expect(wire).not.toContain('"2901"');
+    expect(wire).not.toContain('"1118"');
+    port.stop();
+  });
+
+  it('the SAME BODY IN ANOTHER CHAT is never reacted to — the chat is resolved first, always', async () => {
+    // The secondary's copy of the RIGHT chat does not hold the message at all; an identical body
+    // sitting in some other conversation must not rescue it.
+    const { reacted, poke, logs, port } = rig({ messages: [EARLIER_ON_SECONDARY, LATER_ON_SECONDARY] });
+    const r = await poke();
+    expect(r).toMatchObject({ ok: false, reason: 'no-match' });
+    expect(reacted).toEqual([]);
+    expect(logs.join('\n')).toMatch(/REFUSING to react in HuXFQeZSY1X4khNDWTzz — no-match/);
+    port.stop();
+  });
+
+  it('TWO IDENTICAL BODIES in the chat are told apart by the TIMESTAMP', async () => {
+    // "ok" twice is not exotic — it is the ordinary case, and the reason the timestamp is on the
+    // frame at all. Same body, two ids, two times: the frame's timestamp picks exactly one.
+    const twinEarlier = { id: '1100', text: STEERED_TEXT, timestamp: '2026-09-07T10:00:00.000Z' };
+    const { reacted, poke, port } = rig({ messages: [twinEarlier, STEERED_ON_SECONDARY] });
+    const r = await poke();
+    expect(r.ok).toBe(true);
+    expect(reacted).toEqual([{ chatId: SECONDARY_CHAT_ID, msgId: '1118', emoji: '👀' }]);
+    port.stop();
+  });
+
+  it('ONE match is answered whatever the timestamp says — the content already identified it', async () => {
+    // The timestamp is a TIE-BREAK, not a filter. A single match must not be thrown away because
+    // one account rendered the clock differently; that would turn a working ack into silence.
+    const { reacted, poke, port } = rig({ messages: [{ ...STEERED_ON_SECONDARY, timestamp: '2026-09-07T11:07:19.000Z' }] });
+    const r = await poke();
+    expect(r.ok).toBe(true);
+    expect(reacted).toEqual([{ chatId: SECONDARY_CHAT_ID, msgId: '1118', emoji: '👀' }]);
+    port.stop();
+  });
+
+  it('a chat that does not resolve is never even searched for a message', async () => {
+    const { listed, poke, port } = rig({ chats: [OTHER_CHAT] });   // no chat keys alike
+    const r = await poke();
+    expect(r).toMatchObject({ ok: false, reason: 'no-match' });
+    expect(listed).toEqual([]);                                     // never looked for a message
+    port.stop();
+  });
+});
+
 // ── 3. REFUSALS ────────────────────────────────────────────────────────────────────────────────
 // Every one of these must FAIL CLOSED (nothing posted) and REPORT BACK (the caller learns it must
 // fall back to speaking on its own account).
@@ -879,6 +992,123 @@ describe('the mouth refuses rather than guessing — and always says so', () => 
     port.stop();
   });
 
+  // ── the REACTION verb's own refusals. Every one ends with NO REACTION ANYWHERE, which is the
+  // behaviour this link had before the verb existed and is deliberately kept as the floor: a
+  // missing 👀 is cosmetic, a 👀 from the account that is not answering is the bug being fixed.
+  it('TWO IDENTICAL BODIES AT THE SAME INSTANT stay ambiguous — the tie-break ran and did not break the tie', async () => {
+    const twin = { id: '1200', text: STEERED_TEXT, timestamp: STEERED_TS_ISO };
+    const { reacted, poke, logs, port } = rig({ messages: [STEERED_ON_SECONDARY, twin] });
+    const r = await poke();
+    expect(r.ok).toBe(false);
+    expect(r.reason).toBe('ambiguous');
+    expect(r.detail).toMatch(/2 messages key alike \(1118, 1200\)/);
+    expect(r.detail).toMatch(/2 of them at 2026-09-07T11:07:17\.000Z/);
+    expect(r.detail).toMatch(/refusing to pick/);
+    expect(reacted).toEqual([]);
+    expect(logs.join('\n')).toMatch(/REFUSING to react in HuXFQeZSY1X4khNDWTzz — ambiguous/);
+    port.stop();
+  });
+
+  it('TWO IDENTICAL BODIES AND NO TIMESTAMP on the frame stay ambiguous — it never takes the newest', async () => {
+    const twin = { id: '1200', text: STEERED_TEXT, timestamp: '2026-09-07T11:08:00.000Z' };
+    const { reacted, poke, port } = rig({ messages: [STEERED_ON_SECONDARY, twin] });
+    const r = await poke({ timestamp: 0 });
+    expect(r).toMatchObject({ ok: false, reason: 'ambiguous' });
+    expect(r.detail).toMatch(/the frame carried no timestamp/);
+    expect(reacted).toEqual([]);
+    port.stop();
+  });
+
+  it('A MESSAGE THAT COULD NOT BE KEYED refuses BEFORE the frame is sent — no dial at all', async () => {
+    // A voice note / a captionless attachment has no body to hash, so the bridge mints null and
+    // the peer can never be told which message. Nothing to dial for.
+    const { poke, dialled, reacted, logs, port } = rig();
+    expect(await poke({ msgKey: '' })).toEqual({ ok: false, reason: 'no-key', detail: 'the message carries no cross-account key' });
+    expect(await poke({ msgKey: null })).toMatchObject({ reason: 'no-key' });
+    expect(dialled).toEqual([]);
+    expect(reacted).toEqual([]);
+    expect(logs.join('\n')).toMatch(/no body to hash.*NOBODY reacts/);
+    port.stop();
+  });
+
+  it('A CHAT THAT CANNOT BE KEYED refuses the reaction before the frame is sent, exactly as a line is', async () => {
+    const { poke, dialled, reacted, port } = rig();
+    expect(await poke({ chat: ONE_TO_ONE })).toEqual({ ok: false, reason: 'no-key', detail: 'crossAccountChatKey refused this chat' });
+    expect(dialled).toEqual([]);
+    expect(reacted).toEqual([]);
+    port.stop();
+  });
+
+  it('AN EMPTY EMOJI never dials, and a peer that sends one is refused', async () => {
+    const { poke, dialled, port } = rig();
+    expect(await poke({ emoji: '' })).toEqual({ ok: false, reason: 'no-text', detail: 'nothing to react with' });
+    expect(dialled).toEqual([]);
+    port.stop();
+  });
+
+  it('NO PEER CONFIGURED: the socket constructor is never reached', async () => {
+    const { FakeClient, dialled } = makeFakeClient(null);
+    const r = await reactThroughPeer({ peer: null, chat: AS_PRIMARY, msgKey: STEERED_KEY, timestamp: STEERED_TS, emoji: '👀', WebSocket: FakeClient });
+    expect(r).toEqual({ ok: false, reason: 'no-peer', detail: 'no peer spine configured' });
+    expect(dialled).toEqual([]);
+  });
+
+  it('A PEER THAT IS NOT THERE reads as unreachable, and nobody reacts', async () => {
+    const { FakeClient, dialled } = makeFakeClient(null);
+    const clock = makeClock();
+    const r = await reactThroughPeer({ peer: PEER, chat: AS_PRIMARY, msgKey: STEERED_KEY, timestamp: STEERED_TS, emoji: '👀', WebSocket: FakeClient, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout });
+    expect(r.ok).toBe(false);
+    expect(r.reason).toBe('unreachable');
+    expect(dialled).toHaveLength(1);
+    expect(clock.armed).toHaveLength(1);            // armed and dropped; a settled call leaves no timer
+  });
+
+  it("A RECEIVER THAT CANNOT REACT AT ALL answers no-react, which is what an OLD peer looks like", async () => {
+    // Two shapes of the same fact. A bridge with neither seam…
+    const bare = rig({ listMessages: null, react: null });
+    expect(await bare.poke()).toMatchObject({ ok: false, reason: 'no-react', detail: 'this bridge cannot list its messages or cannot react' });
+    expect(bare.logs.join('\n')).toMatch(/cannot place one — refusing \(nobody will react\)/);
+    bare.port.stop();
+
+    // …and a peer running the code from BEFORE the verb existed, whose verb table has no `react`
+    // entry: the limb refuses it with bad-frame, the same signal `open` degrades on.
+    const legacy = rig({ legacy: true });
+    expect(await legacy.poke()).toMatchObject({ ok: false, reason: 'bad-frame' });
+    expect(legacy.reacted).toEqual([]);
+    legacy.port.stop();
+  });
+
+  it("THE RECEIVER'S OWN MESSAGE LIST being unreadable is reported back as unavailable", async () => {
+    const { poke, reacted, logs, port } = rig({ listMessages: async () => { throw new Error('desktop api is down'); } });
+    expect(await poke()).toMatchObject({ ok: false, reason: 'unavailable', detail: 'desktop api is down' });
+    expect(reacted).toEqual([]);
+    expect(logs.join('\n')).toMatch(/could not read the messages of HuXFQeZSY1X4khNDWTzz — refusing to react/);
+    port.stop();
+  });
+
+  it('THE REACTION ITSELF FAILING is reported back, not swallowed', async () => {
+    const thrower = rig({ react: async () => { throw new Error('beeper said no'); } });
+    expect(await thrower.poke()).toMatchObject({ ok: false, reason: 'send-failed', detail: 'beeper said no' });
+    thrower.port.stop();
+
+    const refuser = rig({ react: async () => false });          // a drop, not a throw
+    expect(await refuser.poke()).toMatchObject({ ok: false, reason: 'send-failed' });
+    refuser.port.stop();
+  });
+
+  it('AN UNAUTHENTICATED PEER cannot place a reaction either', async () => {
+    const { reacted, port, server } = rig();
+    const { FakeClient } = makeFakeClient(server);
+    const clock = makeClock();
+    const r = await reactThroughPeer({
+      peer: { ...PEER, consoleToken: 'WRONG-token' }, chat: AS_PRIMARY, msgKey: STEERED_KEY, timestamp: STEERED_TS, emoji: '👀',
+      WebSocket: FakeClient, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout,
+    });
+    expect(r).toMatchObject({ ok: false, reason: 'unreachable' });
+    expect(reacted).toEqual([]);
+    port.stop();
+  });
+
   it('A PEER THAT IS NOT THERE reads as unreachable, so the caller can fall back', async () => {
     const { FakeClient, dialled } = makeFakeClient(null);      // nothing serving that port
     const clock = makeClock();
@@ -915,6 +1145,65 @@ describe('findChatByKey — the mapping, on its own', () => {
     // carries the co-account and the two sides disagree. Locked so a future "simplification" that
     // drops peer_spine.accounts fails here instead of in a live chat.
     expect(findChatByKey([AS_SECONDARY], KEY_OF_GROUP, []).reason).toBe('no-match');
+  });
+});
+
+// ── 4b. THE SAME MAPPING ONE LEVEL DOWN, PURE ──────────────────────────────────────────────────
+describe('findMessageByKey — which of MY messages is that one, on its own', () => {
+  const LIST = [LATER_ON_SECONDARY, STEERED_ON_SECONDARY, EARLIER_ON_SECONDARY];
+
+  it("finds the one message and returns it in the RECEIVER's own id namespace", () => {
+    expect(findMessageByKey(LIST, STEERED_KEY, STEERED_TS)).toEqual({ ok: true, msgId: '1118' });
+  });
+
+  it('keys the two accounts\' views of ONE message alike — which is the whole point', () => {
+    expect(crossAccountMsgKey(STEERED_ON_PRIMARY)).toBe(crossAccountMsgKey(STEERED_ON_SECONDARY));
+    expect(crossAccountMsgKey(STEERED_ON_PRIMARY)).not.toBe(crossAccountMsgKey(EARLIER_ON_SECONDARY));
+    // …and it is NOT the id, which is exactly the divergence it exists to route around.
+    expect(STEERED_ON_PRIMARY.id).not.toBe(STEERED_ON_SECONDARY.id);
+  });
+
+  it('a body with NOTHING in it is not a key at all — a bare voice note cannot be named', () => {
+    expect(crossAccountMsgKey({ id: '9', text: '' })).toBeNull();
+    expect(crossAccountMsgKey({ id: '9', text: '   ' })).toBeNull();
+    expect(crossAccountMsgKey({ id: '9' })).toBeNull();
+    expect(crossAccountMsgKey(null)).toBeNull();
+  });
+
+  it('one message listed twice is one message, not an ambiguity', () => {
+    expect(findMessageByKey([STEERED_ON_SECONDARY, { ...STEERED_ON_SECONDARY }], STEERED_KEY, STEERED_TS)).toEqual({ ok: true, msgId: '1118' });
+  });
+
+  it('refuses an empty key, an empty list and a list that holds no match', () => {
+    expect(findMessageByKey(LIST, '', STEERED_TS)).toEqual({ ok: false, reason: 'no-key', detail: 'the frame carried no message key' });
+    expect(findMessageByKey([], STEERED_KEY, STEERED_TS).reason).toBe('no-match');
+    expect(findMessageByKey(null, STEERED_KEY, STEERED_TS).reason).toBe('no-match');
+    expect(findMessageByKey([EARLIER_ON_SECONDARY], STEERED_KEY, STEERED_TS).reason).toBe('no-match');
+  });
+
+  it('the TIMESTAMP is a tie-break and not a filter: one match stands, several need it', () => {
+    // One match, wrong timestamp → still the answer (the content already identified it).
+    expect(findMessageByKey([STEERED_ON_SECONDARY], STEERED_KEY, 1)).toEqual({ ok: true, msgId: '1118' });
+    // Two matches, one at that instant → that one.
+    const older = { id: '1100', text: STEERED_TEXT, timestamp: '2026-09-07T10:00:00.000Z' };
+    expect(findMessageByKey([older, STEERED_ON_SECONDARY], STEERED_KEY, STEERED_TS)).toEqual({ ok: true, msgId: '1118' });
+    // Two matches, NEITHER at that instant → refuse. Never "the closest", never "the newest".
+    expect(findMessageByKey([older, STEERED_ON_SECONDARY], STEERED_KEY, Date.parse('2026-09-07T12:00:00.000Z')).reason).toBe('ambiguous');
+    // Two matches at the SAME instant → refuse.
+    expect(findMessageByKey([{ ...STEERED_ON_SECONDARY, id: '1200' }, STEERED_ON_SECONDARY], STEERED_KEY, STEERED_TS).reason).toBe('ambiguous');
+    // Two matches and no timestamp to break with → refuse.
+    expect(findMessageByKey([older, STEERED_ON_SECONDARY], STEERED_KEY, 0).reason).toBe('ambiguous');
+  });
+
+  it('reads epoch ms and epoch seconds the same way the bridge does — one parse, not two', () => {
+    const asMs = { id: '1118', text: STEERED_TEXT, timestamp: STEERED_TS };
+    const asSecs = { id: '1119', text: STEERED_TEXT, timestamp: Math.floor(STEERED_TS / 1000) };
+    expect(findMessageByKey([asMs, asSecs], STEERED_KEY, STEERED_TS).reason).toBe('ambiguous');   // both ARE at that instant
+    expect(findMessageByKey([asMs, { ...EARLIER_ON_SECONDARY }], STEERED_KEY, STEERED_TS)).toEqual({ ok: true, msgId: '1118' });
+  });
+
+  it('a message with no id is skipped — there would be nothing to react to', () => {
+    expect(findMessageByKey([{ text: STEERED_TEXT, timestamp: STEERED_TS_ISO }], STEERED_KEY, STEERED_TS).reason).toBe('no-match');
   });
 });
 

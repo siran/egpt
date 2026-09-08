@@ -43,9 +43,10 @@ const STEER_ACK_EMOJI = '👀';
  *                    which is byte-identical to the pre-extraction spine.
  *        bridge /  — the steer ACK's send path, resolved through the ONE outbound resolver
  *        bridgeOf /   (sender.mjs makeOutbound): the being's own connection, and — when a peer
- *        peerMouth    spine is the mouth for this chat — the fact that the ack must not go out
- *                     here at all. Absent peerMouth (every single-account node, every test fake)
- *                     ⇒ the peer is never consulted and this is byte-identical to before.
+ *        peerMouth    spine is the mouth for this chat — the chat payload that lets the PEER place
+ *                     the ack instead (peerMouth.react). Absent peerMouth (every single-account
+ *                     node, every test fake) ⇒ the peer is never consulted and this is
+ *                     byte-identical to before.
  */
 export function createTurns({ brain, bridge = null, bridgeOf = null, peerMouth = null, log = null } = {}) {
   const note = (s) => { try { log?.line?.(s); } catch {} };
@@ -189,17 +190,30 @@ export function createTurns({ brain, bridge = null, bridgeOf = null, peerMouth =
     // 👀 came from the PRIMARY and the answer from the SECONDARY, which is precisely what betrays
     // which account is doing the listening. Both now ask makeOutbound.
     //
-    // WHEN THE PEER SAYS THE REPLY, NOBODY REACTS. The 👀 sits on the INBOUND MESSAGE, and the two
-    // accounts see one real message as two different Matrix events in two different rooms — no
-    // message identity crosses the mouth link, by design, and the link carries no reaction verb.
-    // So the peer cannot place it and this account must not: a read receipt from the mouth that is
-    // not answering is the fault itself. Exactly the fact `ack:false` already encodes for a
-    // MESH-relayed turn (above), reached by a different transport and answered the same way.
+    // WHEN THE PEER SAYS THE REPLY, THE PEER PLACES THE 👀 (operator 2026-09-07). The ack sits ON
+    // the inbound message, and the two accounts see one real message as two different Matrix
+    // events in two different rooms — id 2901 here, 1118 there, measured — so for one release this
+    // was SUPPRESSED: the peer had no way to be told which message and this account must not react
+    // when it is not the one answering. The link now has a verb that names a message the same way
+    // it has always named a chat, by a key both accounts compute alike (src/shell/mouth.mjs
+    // `say: react`), so the ack goes where the answer goes.
+    //
+    // SUPPRESSION IS NOW THE FALLBACK, NOT THE ANSWER. Every way the peer can fail to place it —
+    // it cannot key the message, the link is down, it finds no match, it finds two — ends with NO
+    // REACTION ANYWHERE and a log line naming the reason. That is the OLD behaviour, kept exactly,
+    // as the floor: a missing 👀 is cosmetic, a 👀 from the wrong account is the bug.
     if (ack) {
       const { bridge: mouth, route } = outbound(to, ev.chatId);
       const peerSays = route();                       // null with no peer wired — never awaited, so that path is untouched
-      if (peerSays && await peerSays) note(`steer-ack ${to}/${ev.chatId}: the PEER is saying this reply — no 👀 from this account`);
-      else {
+      const peerChat = peerSays ? await peerSays : null;
+      if (peerChat) {
+        // The peer's own refusals are logged by name inside the link; this line says what it cost.
+        let r = null;
+        try { r = await peerMouth.react?.(peerChat, { msgKey: ev.msgHash, timestamp: ev.msgTs, emoji: STEER_ACK_EMOJI }); }
+        catch (e) { note(`steer-ack ${to}/${ev.chatId}: asking the peer to react threw — ${e?.message ?? e}`); }
+        if (r?.ok) note(`steer-ack ${to}/${ev.chatId}: the PEER is saying this reply and placed the ${STEER_ACK_EMOJI} on its own copy (its chat ${r.chatId})`);
+        else note(`steer-ack ${to}/${ev.chatId}: the PEER is saying this reply but could not place the ${STEER_ACK_EMOJI} (${r?.reason ?? 'no answer'}${r?.detail ? `: ${r.detail}` : ''}) — no reaction from this account either, it is not the one answering`);
+      } else {
         try { await mouth.react?.(ev.chatId, ev.msgId, STEER_ACK_EMOJI); }
         catch (e) { note(`steer-ack ${to}/${ev.chatId}: ${e?.message ?? e}`); }
       }

@@ -109,6 +109,14 @@ export function createIdentity({ formatLine = formatDispatchLine, now = () => Da
         chatId: f.chatId, chatName: f.chatName,
         senderId: f.userId, senderName,
         msgId: f.msgKey ?? null,
+        // THE CROSS-ACCOUNT IDENTITY of the same message (bridges/beeper.crossAccountMsgKey):
+        // `msgId` above is this node's LOCAL id and means nothing on a co-account node — one real
+        // WhatsApp message is two Matrix events with different ids — so a link between the two
+        // spines names a message by CONTENT plus its own TIMESTAMP, the only two fields measured
+        // identical across both views. Null on every synthetic and on every bridge that does not
+        // mint them, which reads as "this message cannot be named across accounts" and refuses.
+        msgHash: f.msgHash ?? null,
+        msgTs: f.msgTs ?? null,
         replyToId: f.replyToId ?? null,   // the quoted message id (→ `↩#<id>`), null when not a reply
         ts, body, kind,
         // mention status the bridge already computed — the gating service's input.

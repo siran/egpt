@@ -20,7 +20,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { startBeeperBridge, newerMsgId, transcriptionForNoteId } from '../src/bridges/beeper.mjs';
+import { startBeeperBridge, newerMsgId, transcriptionForNoteId, crossAccountMsgKey } from '../src/bridges/beeper.mjs';
 import { EGPT_HOME } from '../src/egpt-home.mjs';
 import { encodeMesh } from '../src/mesh/relay.mjs';
 import { surfaceOf } from '../src/spine/identity.mjs';
@@ -2971,6 +2971,69 @@ describe('beeper bridge — raw chat payloads (crossAccountChatKey needs the ros
     expect(await bridge.listChats({ full: true })).toHaveLength(5);
     expect(fake.chatListGets()).toBe(afterRaw);                   // the normalized list cost nothing extra
     expect(afterRaw).toBeGreaterThan(before);
+  });
+});
+
+// ── THE CROSS-ACCOUNT MESSAGE KEY (operator 2026-09-07) ────────────────────────────────────────
+// The chat key above answers "which of MY chats is that one real chat?". This is the same question
+// about a MESSAGE, and it exists because one WhatsApp message is TWO Matrix events — measured live
+// 2026-09-07, id 2901 on one account and 1118 on the other, identical body, identical timestamp.
+// The mouth link's reaction verb names a message by these two fields and by nothing else, so what
+// is locked here is that the BRIDGE mints them (like the echo plan's audioHash, in the same file,
+// with the same degrade-never-throw posture) and that they are NOT the local id.
+describe('beeper bridge — the cross-account message key (the mouth link names a message by content)', () => {
+  // ONE bridge for all three inbounds: starting one costs a real WS subscription against the
+  // in-process fake, and this file's budget is the reason it flakes when a case starts its own.
+  it('mints the content hash and the payload timestamp on every inbound, beside the LOCAL id', async () => {
+    const { incoming } = await startBridge();
+    const ts = Date.parse('2026-09-07T11:07:17.000Z');
+    fake.emit({ type: 'message.upserted', entries: [
+      liveMsg({ id: '2901', text: 'and also X', timestamp: ts, isSender: false }),
+      liveMsg({ id: 'html-1', text: '<p>hola <strong>mundo</strong></p>', isSender: false }),
+    ] });
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'html-1'));
+    const of = (id) => incoming.find((i) => i.from.msgKey === id).from;
+
+    const steered = of('2901');
+    expect(steered.msgKey).toBe('2901');                               // the LOCAL id, unchanged
+    expect(steered.msgHash).toBe(crossAccountMsgKey({ text: 'and also X' }));
+    expect(steered.msgHash).not.toBe(steered.msgKey);                  // …and emphatically not the id
+    expect(steered.msgTs).toBe(ts);                                    // the PAYLOAD's own clock, not this node's
+
+    // Whatever markup each account's Desktop wraps it in, the MARKDOWN body is what is hashed —
+    // which is what makes two accounts' views of one message key alike.
+    expect(of('html-1').msgHash).toBe(crossAccountMsgKey({ text: 'hola **mundo**' }));
+  });
+
+  it('a VOICE NOTE is keyed by its PAYLOAD body, not by what was heard in it — so it keys to nothing', async () => {
+    // The dispatch `text` of a voice note is a TRANSCRIPT, and two whisper engines can differ —
+    // the same reason the 👂 echo plan keys on the audio bytes and not on the words. The key is
+    // minted from `msg.text`, which a voice note leaves empty, so it comes back NULL: the message
+    // cannot be named across accounts and the mouth link refuses to react rather than guessing.
+    const { incoming } = await startBridge();
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({
+      id: 'note-key', type: 'VOICE', text: '', senderName: 'Bea', isSender: false,
+      attachments: [fakeAttachment({ name: 'v.ogg', mimeType: 'audio/ogg', isVoiceNote: true })],
+    })] });
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'note-key'));
+    const { from, text } = incoming.find((i) => i.from.msgKey === 'note-key');
+    expect(text).toContain('fake transcript');        // it WAS heard…
+    expect(from.msgHash).toBeNull();                  // …and still cannot be named across accounts
+  });
+
+  it('listMessagesRaw hands back the chat\'s own recent payloads, and [] when the GET fails', async () => {
+    fake.messages.set(CHAT('msgs'), [
+      { id: '1118', text: 'and also X', timestamp: '2026-09-07T11:07:17.000Z' },
+      { id: '1117', text: 'something else', timestamp: '2026-09-07T11:05:00.000Z' },
+    ]);
+    const { bridge } = await startBridge();
+    const items = await bridge.listMessagesRaw(CHAT('msgs'));
+    expect(items.map((m) => m.id)).toEqual(['1118', '1117']);
+    // …and the receiving half can key them: this is the whole point of handing them over raw.
+    expect(crossAccountMsgKey(items[0])).toBe(crossAccountMsgKey({ text: 'and also X' }));
+
+    fake.messages.set(CHAT('boom'), () => { throw new Error('beeper down'); });
+    expect(await bridge.listMessagesRaw(CHAT('boom'))).toEqual([]);
   });
 });
 

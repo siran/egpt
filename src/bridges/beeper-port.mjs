@@ -307,6 +307,15 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
     async chatRaw(chat) {
       return real.chatRaw ? await real.chatRaw(chat) : null;
     },
+    // …and the RAW MESSAGES of one chat (operator 2026-09-07, the mouth link's reaction verb),
+    // forwarded for exactly the reason the two rosters above are: a READ of this account's own
+    // copies, never an outbound. The mouth is told WHICH message to react to by content hash
+    // (beeper.crossAccountMsgKey — no id crosses the link), so it has to re-key its own list to
+    // find it. A bridge without it (a test fake) answers [], which the mouth reads as "no match"
+    // and refuses on, placing no reaction at all.
+    async listMessagesRaw(chat, opts) {
+      return real.listMessagesRaw ? await real.listMessagesRaw(chat, opts) : [];
+    },
 
     isAlive: () => real.isAlive(),
     stop: () => real.stop(),

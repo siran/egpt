@@ -123,11 +123,22 @@ const stripComments = (() => {
     let i = 0;
     const n = src.length;
     const blank = (s) => s.replace(/[^\n]/g, ' ');
+    // WALKED BACKWARDS, NOT RE-TRIMMED (2026-09-07). This asked `out.replace(/\s+$/, '')` — the
+    // WHOLE accumulated output — on every `/` in the file, which made the scan quadratic: 4930ms
+    // over src/ on its own, against this suite's hard 5s per-test budget, so any comment added
+    // anywhere under src/ tipped it into a timeout under parallel load. The two things the answer
+    // actually depends on are the last non-space character and, when that is a word character, the
+    // word it ends. Both are found by walking back from the end, and the regex keeps its own
+    // `(?:^|[^\w$])` boundary by being handed the one character before the run. Verified
+    // byte-identical over all 302 .mjs files in src/ and tests/, and 85x faster (8747ms → 103ms).
     const regexOk = () => {
-      const before = out.replace(/\s+$/, '');
-      if (!before) return true;
-      if ('(,=:[!&|?{};+-*%~^<>'.includes(before[before.length - 1])) return true;
-      return KEYWORD_BEFORE_REGEX.test(before);
+      let k = out.length - 1;
+      while (k >= 0 && /\s/.test(out[k])) k--;
+      if (k < 0) return true;
+      if ('(,=:[!&|?{};+-*%~^<>'.includes(out[k])) return true;
+      let j = k;
+      while (j >= 0 && /[\w$]/.test(out[j])) j--;
+      return KEYWORD_BEFORE_REGEX.test(out.slice(Math.max(0, j), k + 1));
     };
     while (i < n) {
       const c = src[i], c2 = src[i + 1];

@@ -61,6 +61,18 @@
 //                                                          whether the line is said before it
 //                                                          decides to say it itself.
 //
+// `say: 'react'` (operator 2026-09-07) is the one verb that names a MESSAGE rather than only a
+// chat — the steer 👀 has to sit ON the line that was steered in — and it does so WITHOUT breaking
+// the rule above: it carries the message's CONTENT KEY and TIMESTAMP, the two fields both accounts
+// measurably agree on, and the receiver resolves them against its own copies and reacts with its
+// OWN id. One frame, answered with sayResultFrame like `post`:
+//
+//   brain → mouth   say:'react'   { chatKey, msgKey, timestamp, emoji }
+//   mouth → brain   say:'result'  { ok, chatId }           or a refusal, and it REFUSES rather
+//                                                          than guessing: nothing matched, or two
+//                                                          things still matched after the
+//                                                          timestamp, means no reaction anywhere.
+//
 // A frame whose verb this end does not serve is refused, never ignored — an OLD peer (one running
 // the pre-streaming code) answers `bad-frame` to `open`, and the brain then falls back to `post`,
 // which that peer does serve. That is what makes the two spines upgradable one at a time.
@@ -149,6 +161,44 @@ export function sayFinishFrame({ stream, text }) {
   return JSON.stringify({ say: 'finish', stream: String(stream ?? ''), text: String(text ?? '') });
 }
 
+/**
+ * A REACTION, placed by the mouth on the message the brain is pointing at (operator 2026-09-07).
+ *
+ * WHY IT IS A VERB AND NOT A `post`. The steer 👀 sits on the INBOUND MESSAGE, not beside it, so
+ * it needs to NAME one. Every other verb here names a CHAT and nothing finer, which is why the
+ * ack used to be suppressed whenever the peer said the reply: the peer had no way to be told
+ * which message, and a 👀 from the account that is NOT answering is the fault being fixed.
+ *
+ * AND STILL NO MESSAGE ID CROSSES (the module header's rule, unchanged and load-bearing). One
+ * real WhatsApp message is TWO Matrix events, one per account, and their ids have nothing to do
+ * with each other — measured 2026-09-07: id 2901 here, 1118 there. What the two views DO share is
+ * the body and the timestamp, so the frame carries those instead and the RECEIVER resolves them
+ * against its own copies and reacts with ITS OWN id. The brain never learns that id, exactly as it
+ * never learns a stream's message id.
+ *
+ * @param {object} o
+ * @param {string} o.chatKey    the SAME cross-account chat key every other verb carries, meaning
+ *   the same thing (beeper.crossAccountChatKey). Resolved first: a message is only ever looked for
+ *   inside the one chat that key identifies.
+ * @param {string} o.msgKey     the cross-account MESSAGE key (beeper.crossAccountMsgKey): a sha256
+ *   over the message body, minted in the bridge beside the echo plan's audioHash and by the same
+ *   discipline. Deliberately general — /reply threading and /edit are blocked on the same missing
+ *   identity and will name a message the same way.
+ * @param {number} o.timestamp  the message's OWN timestamp in epoch ms — identical on both
+ *   accounts (measured). It is what tells two same-text messages apart, and two identical texts in
+ *   one chat is not exotic ("ok", "👍"), which is why it is on the frame rather than assumed away.
+ * @param {string} o.emoji      the reaction key, verbatim (👀 for the steer ack).
+ */
+export function sayReactFrame({ chatKey, msgKey, timestamp, emoji }) {
+  return JSON.stringify({
+    say: 'react',
+    chatKey: String(chatKey ?? ''),
+    msgKey: String(msgKey ?? ''),
+    timestamp: Number.isFinite(Number(timestamp)) ? Number(timestamp) : 0,
+    emoji: String(emoji ?? ''),
+  });
+}
+
 // Is this raw frame a MOUTH frame? Returns the normalized frame, or null for anything else (an
 // auth frame, a console `{ text, chatId }`, a bare text line, garbage). Both ends call this
 // BEFORE the console parse so a mouth frame is never answered as if a human had typed it.
@@ -193,6 +243,18 @@ export function parseMouthFrame(raw) {
     }
     if (j.say === 'update' || j.say === 'finish') {
       return { say: j.say, stream: String(j.stream ?? ''), text: typeof j.text === 'string' ? j.text : '' };
+    }
+    // THE REACTION verb (sayReactFrame). Normalized the same defensive way every other verb is —
+    // a missing field becomes the empty/zero value the receiver already refuses on, never
+    // undefined reaching a lookup.
+    if (j.say === 'react') {
+      return {
+        say: 'react',
+        chatKey: String(j.chatKey ?? ''),
+        msgKey: String(j.msgKey ?? ''),
+        timestamp: Number.isFinite(Number(j.timestamp)) ? Number(j.timestamp) : 0,
+        emoji: typeof j.emoji === 'string' ? j.emoji : '',
+      };
     }
     return { say: j.say };
   } catch { /* not JSON → not a mouth frame */ }

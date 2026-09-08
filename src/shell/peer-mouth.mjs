@@ -54,6 +54,11 @@
 //   no-stream    the receiver's own bridge cannot edit a message in place, so it cannot hold a
 //                reply train. Only `say: 'open'` can produce it, and the speaker answers it by
 //                degrading to `say: 'post'`, which every version of this file has always served.
+//   no-react     the receiver's own bridge cannot list its messages or cannot place a reaction, so
+//                it cannot serve `say: 'react'` at all. Only that verb can produce it.
+//
+// `no-key`, `no-match` and `ambiguous` mean the same three things for a MESSAGE as they already
+// mean for a chat, and are answered the same way (findMessageByKey below). One vocabulary, not two.
 //
 // ── THE REPLY TRAIN ACROSS THE LINK (operator 2026-09-05, "let's recover the thinking train") ──
 // A LOCAL reply posts "⏳ Thinking…" the instant the turn starts and EDITS that one message in
@@ -106,10 +111,11 @@ import { WebSocket as WS } from 'ws';
 // secret never rides the wire; a nonce is good for exactly the connection that issued it.
 import { parseAuthFrame, responseFrame } from './auth.mjs';
 // The wire: the frames and the dial path, defined once (mouth.mjs), read by both ends.
-import { MOUTH_PATH, sayFrame, sayOpenFrame, sayUpdateFrame, sayFinishFrame, parseMouthFrame } from './mouth.mjs';
-// The cross-account primitive this whole feature is built on, and the id normalizer every other
-// caller past the bridge boundary uses.
-import { crossAccountChatKey } from '../bridges/beeper.mjs';
+import { MOUTH_PATH, sayFrame, sayOpenFrame, sayUpdateFrame, sayFinishFrame, sayReactFrame, parseMouthFrame } from './mouth.mjs';
+// The cross-account primitives this whole feature is built on — one for the CHAT, one for the
+// MESSAGE inside it — and the id normalizer every other caller past the bridge boundary uses. Both
+// keys are minted in the bridge, where the payloads and the crypto live; nothing is re-derived here.
+import { crossAccountChatKey, crossAccountMsgKey, _msgTimestampMs } from '../bridges/beeper.mjs';
 import { shortChatId } from '../bridges/chat-id.mjs';
 
 // How long the speaker waits for the peer's answer before calling it unreachable. Generous for a
@@ -182,6 +188,57 @@ export function findChatByKey(chats, chatKey, exclude = []) {
 }
 
 /**
+ * THE SAME MAPPING ONE LEVEL DOWN, pure: which of MY messages is the one that key names?
+ *
+ * Deliberately shaped like findChatByKey above, refusal vocabulary included, because it is the
+ * same question about a smaller thing — and because a REACTION on the wrong message is the
+ * message-sized version of a reply in the wrong chat: public, and unnoticed until it is.
+ *
+ * THE TIMESTAMP IS A TIE-BREAK, NOT A FILTER, and the distinction is the whole design. One match
+ * is answered whatever its timestamp says, because the two accounts' clocks are not the question —
+ * the CONTENT already identified the message. The timestamp is consulted only when the content did
+ * NOT identify it, i.e. when a chat holds two messages with the same body. That is not exotic
+ * ("ok", "👍", "jaja"), which is exactly why the frame carries it.
+ *
+ * AND IT STILL FAILS CLOSED. Zero matches: nothing. Several matches and none of them at that
+ * timestamp: nothing. Several matches AT that timestamp: nothing. Never a guess, never "the newest
+ * one" — the caller's fallback is to place no reaction at all, which is a strictly better outcome
+ * than one on the wrong message.
+ *
+ * @param {object[]} messages   RAW Beeper message payloads — the /v1/chats/{c}/messages shape
+ *   (bridge.listMessagesRaw). Not normalized: crossAccountMsgKey reads `text` itself, exactly as
+ *   findChatByKey's crossAccountChatKey reads the roster itself.
+ * @param {string} msgKey       the cross-account message key off the frame.
+ * @param {number} [timestamp]  the message's own timestamp in epoch ms, off the same frame. 0 or
+ *   absent ⇒ no tie-break available ⇒ several matches stay ambiguous.
+ */
+export function findMessageByKey(messages, msgKey, timestamp = 0) {
+  const want = String(msgKey ?? '').trim();
+  if (!want) return { ok: false, reason: 'no-key', detail: 'the frame carried no message key' };
+  const hits = new Map();
+  for (const m of Array.isArray(messages) ? messages : []) {
+    if (m?.id == null) continue;
+    if (crossAccountMsgKey(m) !== want) continue;
+    hits.set(String(m.id), m);                       // the same id listed twice is ONE message
+  }
+  let ids = [...hits.keys()];
+  if (ids.length === 0) return { ok: false, reason: 'no-match', detail: 'no message on this account keys to that body' };
+  if (ids.length > 1) {
+    const ts = Number(timestamp) || 0;
+    const same = ts ? ids.filter((id) => _msgTimestampMs(hits.get(id)) === ts) : [];
+    if (same.length !== 1) {
+      return {
+        ok: false,
+        reason: 'ambiguous',
+        detail: `${ids.length} messages key alike (${ids.join(', ')})${ts ? ` and ${same.length} of them at ${new Date(ts).toISOString()}` : ' and the frame carried no timestamp'} — refusing to pick`,
+      };
+    }
+    ids = same;
+  }
+  return { ok: true, msgId: ids[0] };
+}
+
+/**
  * THE RECEIVING HALF — the VERB TABLE src/bridges/shell-port.mjs dispatches an AUTHENTICATED peer
  * connection's frames into. One entry per wire verb (mouth.mjs), plus `gone`, which is not a verb
  * at all: it is the limb telling this table that a connection went away, and it is the whole
@@ -205,10 +262,17 @@ export function findChatByKey(chats, chatKey, exclude = []) {
  *   open a live, edit-in-place message on THIS account, posting `init` verbatim as its
  *   placeholder. boot's wiring is `bridge.startStreamVerbatim` — the UNWRAPPED stream, for the
  *   same reason `post` is postVerbatim and not send (beeper-port.mjs). Absent ⇒ no `open`.
+ * @param {((chatId: string) => Promise<object[]>)} [o.listMessages]  RAW message payloads for ONE
+ *   of this account's chats (boot's wiring is `bridge.listMessagesRaw`). Only `react` reads it —
+ *   it is how a message named by CONTENT is found among this account's own copies. Absent ⇒ no
+ *   `react`, exactly as an absent `startStream` means no `open`.
+ * @param {((chatId: string, msgId: string, emoji: string) => Promise<any>)} [o.react]  place a
+ *   reaction on one of this account's own messages (boot's wiring is `bridge.react`, the same
+ *   primitive the /react limb and the steer ack already use). Absent ⇒ no `react`.
  * @param {string[]} o.accounts   peer_spine.accounts — the identities excluded when keying.
  * @param {(m: string) => void} [o.onLog]
  */
-export function createMouthReceiver({ listChats, post, startStream = null, accounts = [], onLog = () => {} }) {
+export function createMouthReceiver({ listChats, post, startStream = null, listMessages = null, react = null, accounts = [], onLog = () => {} }) {
   // THE LIVE STREAMS THIS ACCOUNT IS HOLDING FOR ITS PEER. Keyed by the id this module mints —
   // the only id that ever crosses the wire, and one the brain can do nothing with but name.
   // `conn` is the socket that opened it, which is what makes `gone` below exact.
@@ -303,6 +367,41 @@ export function createMouthReceiver({ listChats, post, startStream = null, accou
       } catch (err) { onLog(`mouth: finishing the reply train in ${e.chatId} threw — ${err?.message ?? err}`); return { ok: false, reason: 'send-failed', detail: err?.message ?? String(err) }; }
       onLog(`mouth: settled a peer's reply train in ${e.chatId}`);
       return { ok: true, chatId: e.chatId };
+    },
+
+    // `say: 'react'` — the 👀 the brain wants on the message it was steered by, placed by THIS
+    // account because this account is the one saying the reply (operator 2026-09-07). It is the
+    // only verb that names a MESSAGE, and it names it the way the link names everything: by a key
+    // both accounts compute alike, never by an id (mouth.mjs).
+    //
+    // THE ORDER IS THE CHAT FIRST, ALWAYS. whichChat() is the same two-step `post` and `open` run,
+    // unchanged, and the message is looked for ONLY inside the one chat it resolves — so a body
+    // that happens to repeat in some other conversation can never be reacted to. Then the message,
+    // then the timestamp as the tie-break (findMessageByKey).
+    //
+    // AND IT REFUSES RATHER THAN GUESSES, which is why the whole thing is safe: the caller's
+    // fallback is NO reaction at all (src/spine/turns.mjs) — the behaviour this link had before
+    // the verb existed — and no reaction is strictly better than one from the wrong account or on
+    // the wrong message. Both were the bug; neither is the fix.
+    async react({ chatKey, msgKey, timestamp, emoji } = {}) {
+      if (!listMessages || !react) { onLog('mouth: a peer asked for a reaction but this account\'s bridge cannot place one — refusing (nobody will react)'); return { ok: false, reason: 'no-react', detail: 'this bridge cannot list its messages or cannot react' }; }
+      const key = String(emoji ?? '');
+      if (!key) { onLog('mouth: a peer asked for an EMPTY reaction — refusing'); return { ok: false, reason: 'no-text', detail: 'nothing to react with' }; }
+      const found = await whichChat(chatKey);
+      if (!found.ok) return found;
+      let messages;
+      try { messages = await listMessages(found.chatId); }
+      catch (e) { onLog(`mouth: could not read the messages of ${found.chatId} — refusing to react: ${e?.message ?? e}`); return { ok: false, reason: 'unavailable', detail: e?.message ?? String(e) }; }
+      const hit = findMessageByKey(messages, msgKey, timestamp);
+      if (!hit.ok) { onLog(`mouth: REFUSING to react in ${found.chatId} — ${hit.reason}: ${hit.detail}`); return hit; }
+      try {
+        // `react` here is the INJECTED bridge primitive, not this method: an object-literal method
+        // introduces no binding of its own name, so the identifier still resolves to the closure.
+        const r = await react(found.chatId, hit.msgId, key);
+        if (r === false || r == null) { onLog(`mouth: the reaction on ${found.chatId}/${hit.msgId} did not go through`); return { ok: false, reason: 'send-failed', detail: `the reaction on ${found.chatId}/${hit.msgId} was not accepted` }; }
+      } catch (e) { onLog(`mouth: the reaction on ${found.chatId}/${hit.msgId} threw — ${e?.message ?? e}`); return { ok: false, reason: 'send-failed', detail: e?.message ?? String(e) }; }
+      onLog(`mouth: placed a peer's ${key} on ${found.chatId}/${hit.msgId}`);
+      return { ok: true, chatId: found.chatId };
     },
 
     // NOT A WIRE VERB — the limb calls it when a peer connection goes away, and shell-port's verb
@@ -473,6 +572,86 @@ export async function speakThroughPeer({
     });
     link.expire(timeoutMs, `the peer did not answer within ${timeoutMs}ms`);
     link.send(sayFrame({ chatKey, text: body }));
+  });
+}
+
+/**
+ * THE SPEAKING HALF, FOR A REACTION — have the peer place the 👀 on the message it is answering.
+ *
+ * SHAPED EXACTLY LIKE speakThroughPeer, deliberately: same dial, same one-utterance socket, same
+ * `result` frame, same refusal vocabulary, same "return, never throw" contract. The only
+ * difference is what the frame names — a message inside the chat rather than the chat alone — so
+ * there is nothing here to keep in sync with the finished-line path.
+ *
+ * AND NO TIERS. speakThroughPeer's caller degrades to this account's own mouth because a reply
+ * MUST arrive; a 👀 must not. Placing it here is precisely the fault being fixed (the read receipt
+ * comes from the account that is not answering), so every refusal below ends with NO REACTION
+ * ANYWHERE, which is the behaviour this link had before the verb existed. The caller logs why.
+ *
+ * @param {object} o
+ * @param {{consolePort: number, consoleToken: string, accounts: string[]}|null} o.peer
+ * @param {object} o.chat        the RAW Beeper chat payload for the chat the message is in — the
+ *   same one speakThroughPeer takes, keyed here for the same reason and by the same primitive.
+ * @param {string} o.msgKey      the cross-account message key (beeper.crossAccountMsgKey), minted
+ *   in the bridge and carried on the inbound event as `msgHash`.
+ * @param {number} o.timestamp   that message's own timestamp in epoch ms (`ev.msgTs`).
+ * @param {string} o.emoji       the reaction key (👀 for the steer ack).
+ * @param {typeof WS} [o.WebSocket]
+ * @param {number} [o.timeoutMs]
+ * @param {(m: string) => void} [o.onLog]
+ * @param {typeof globalThis.setTimeout} [o.setTimeout]
+ * @param {typeof globalThis.clearTimeout} [o.clearTimeout]
+ * @returns {Promise<{ok: true, chatId: string}|{ok: false, reason: string, detail: string}>}
+ */
+export async function reactThroughPeer({
+  peer,
+  chat,
+  msgKey,
+  timestamp = 0,
+  emoji,
+  WebSocket = WS,
+  timeoutMs = SAY_TIMEOUT_MS,
+  onLog = () => {},
+  setTimeout: setTimeoutFn = globalThis.setTimeout,
+  clearTimeout: clearTimeoutFn = globalThis.clearTimeout,
+} = {}) {
+  // THE FOUR REFUSALS THAT NEVER TOUCH THE NETWORK, the same three speakThroughPeer makes plus the
+  // one this verb adds: a message this node could not key (a voice note, an attachment with no
+  // caption) can never be named on the other account, so there is nothing to dial for.
+  if (!peer) return { ok: false, reason: 'no-peer', detail: 'no peer spine configured' };
+  const key = String(emoji ?? '');
+  if (!key) return { ok: false, reason: 'no-text', detail: 'nothing to react with' };
+  const wantMsg = String(msgKey ?? '').trim();
+  if (!wantMsg) {
+    onLog('mouth: this message cannot be keyed across accounts (no body to hash) — the peer cannot be told which message, so NOBODY reacts');
+    return { ok: false, reason: 'no-key', detail: 'the message carries no cross-account key' };
+  }
+  const chatKey = crossAccountChatKey(chat, peer.accounts);
+  if (!chatKey) {
+    onLog('mouth: this chat cannot be keyed across accounts (no roster, or too few phone identities after the exclusions) — NOT reacting through the peer');
+    return { ok: false, reason: 'no-key', detail: 'crossAccountChatKey refused this chat' };
+  }
+
+  return await new Promise((resolve) => {
+    let done = false;
+    let link = null;
+    const settle = (r) => { if (done) return; done = true; link?.close(); resolve(r); };
+    link = connectPeer({
+      peer,
+      WebSocket,
+      onLog,
+      setTimeout: setTimeoutFn,
+      clearTimeout: clearTimeoutFn,
+      onFrame: (f) => {
+        if (f.say !== 'result') return;    // nothing else is expected on this link; ignore, don't guess
+        if (f.ok) return settle({ ok: true, chatId: f.chatId });
+        onLog(`mouth: the peer REFUSED to place the ${key} — ${f.reason}${f.detail ? `: ${f.detail}` : ''}`);
+        settle({ ok: false, reason: f.reason || 'send-failed', detail: f.detail });
+      },
+      onGone: (detail) => settle({ ok: false, reason: 'unreachable', detail }),
+    });
+    link.expire(timeoutMs, `the peer did not answer within ${timeoutMs}ms`);
+    link.send(sayReactFrame({ chatKey, msgKey: wantMsg, timestamp, emoji: key }));
   });
 }
 

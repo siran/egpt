@@ -282,6 +282,69 @@ export function crossAccountChatKey(chat, exclude = []) {
   return phones.length >= floor ? [type, ...phones].join(',') : null;
 }
 
+// ── THE CROSS-ACCOUNT MESSAGE KEY (operator 2026-09-07) ─────────────────────────
+// crossAccountChatKey above answers "which of MY chats is that ONE real chat?". This answers the
+// same question one level down — "which of MY messages is that ONE real message?" — and it exists
+// for the same measured reason. One WhatsApp message is TWO Matrix events, one per co-account
+// node, and the payloads share NOTHING addressable (measured live 2026-09-07, one message):
+//
+//   field       An's view                     Rodz's view
+//   id          2901                          1118
+//   chatID      !JwvpZvGK8H8DLDuPa89w         !lHZ44tI32W0eEtbwMutM
+//   senderID    @whatsapp_lid-694…            @dolly-egpt:beeper.com
+//   timestamp   2026-09-07T11:07:17.000Z      IDENTICAL
+//   text        …                             IDENTICAL
+//
+// So `id` cannot cross a link between the two nodes; CONTENT and TIMESTAMP can. This hashes the
+// content, by exactly the discipline the 👂 echo plan's `audioHash` already follows (dispatchMessage
+// below): a sha256 over bytes both nodes hold identically, NEVER msg.id (node-LOCAL — that very
+// divergence is what double-echoed once before), and crypto lives HERE, beside the transport that
+// reads the payload, never in a pure consumer module. A hashing failure DEGRADES to null rather
+// than throwing on the hot path.
+//
+// IT IS THE BODY, NOT THE DISPATCH TEXT. `htmlToMarkdown(msg.text)` is what BOTH nodes derive from
+// the same wire bytes. The dispatch `text` a voice note ends up with is a TRANSCRIPT, and two
+// whisper engines can differ — the same reason the echo plan keys on the audio and not on what was
+// heard in it. A message with no body (a bare voice note, an attachment with no caption) has no
+// content to key on and returns NULL: a key that is not EVIDENCE must not be a key at all, the
+// same refusal crossAccountChatKey makes.
+//
+// NOT THE SAME THING AS `from.msgKey`, which is this node's LOCAL message id (dispatchMessage
+// below) and reaches the spine as `ev.msgId`. The two live one hop apart, so this one is carried
+// as `msgHash` everywhere inside the process; only the wire frame, where `chatKey` is its
+// neighbour and no local id exists, calls it `msgKey` (src/shell/mouth.mjs).
+//
+// DELIBERATELY GENERAL. The 👀 steer ack is its first caller (src/spine/turns.mjs), but /reply
+// threading and /edit are blocked on exactly this missing identity and will ask the same question.
+/**
+ * @param {object} msg  a RAW Beeper message payload — the WS upsert or a /v1/chats/{c}/messages
+ *   item. Both carry `text` as HTML; the same conversion runs on both.
+ * @returns {string|null} sha256 hex of the message body, or null when there is no body to key on.
+ */
+export function crossAccountMsgKey(msg) {
+  const body = htmlToMarkdown(msg?.text).trim();
+  if (!body) return null;
+  try { return createHash('sha256').update(body, 'utf8').digest('hex'); }
+  catch { return null; }
+}
+
+// Message timestamp (ms) from a message payload, schema-tolerantly: ISO string or epoch
+// ms/seconds in `timestamp` / `ts` / `date`. null = unknown. The backlog/echo gates below read it
+// off the WS upsert; the mouth link's receiver reads it off a /v1/chats/{c}/messages item to tell
+// two same-text messages apart (src/shell/peer-mouth.mjs findMessageByKey). ONE parse for both —
+// two would be two ways to read the one field the two accounts agree on.
+export function _msgTimestampMs(msg) {
+  const v = msg?.timestamp ?? msg?.ts ?? msg?.date ?? null;
+  if (v == null) return null;
+  if (typeof v === 'number') {
+    if (v > 1e12) return v;            // epoch ms
+    if (v > 1e9) return v * 1000;      // epoch seconds
+    return null;
+  }
+  const t = Date.parse(v);
+  return Number.isFinite(t) ? t : null;
+}
+
 export async function startBeeperBridge(opts = {}) {
   let {   // `let`, not `const`: the redial below re-points baseUrl/wsUrl when the install has moved
     onIncoming,
@@ -909,21 +972,10 @@ export async function startBeeperBridge(opts = {}) {
     return _sentIds.has(msgKeyOf(shortChatId(chatID), messageID));
   }
 
-  // Message timestamp (ms) from the upsert payload, schema-tolerantly:
-  // ISO string or epoch ms/seconds in `timestamp` / `ts` / `date`. null =
-  // unknown (gate inactive for that message; logged once).
+  // Message timestamp (ms) — hoisted to module scope (below crossAccountChatKey) so the mouth
+  // link's receiving half can read a candidate message's timestamp with the SAME schema-tolerant
+  // parse this gate uses. Pure move; every call site here is unchanged.
   let _warnedNoTimestamp = false;
-  function _msgTimestampMs(msg) {
-    const v = msg?.timestamp ?? msg?.ts ?? msg?.date ?? null;
-    if (v == null) return null;
-    if (typeof v === 'number') {
-      if (v > 1e12) return v;            // epoch ms
-      if (v > 1e9) return v * 1000;      // epoch seconds
-      return null;
-    }
-    const t = Date.parse(v);
-    return Number.isFinite(t) ? t : null;
-  }
 
   function fileUrlToPath(u) { try { return fileURLToPath(u); } catch { return u.replace(/^file:\/\/\/?/, ''); } }
 
@@ -1197,6 +1249,20 @@ export async function startBeeperBridge(opts = {}) {
     }
     return null;
   }
+  // THE RECENT MESSAGES OF ONE CHAT, exactly as Beeper hands them over (operator 2026-09-07).
+  // Exposed on the bridge for the mouth link's receiving half: it is told a message by its
+  // cross-account CONTENT KEY and has to find its own copy, which means reading its own list and
+  // re-keying each item (src/shell/peer-mouth.mjs findMessageByKey). No normalisation here for the
+  // same reason listChatsRaw does none — the key is computed from the raw payload.
+  async function listMessagesRaw(chatIDOrName, { limit = 50 } = {}) {
+    const chatID = await resolveChatId(chatIDOrName);
+    if (!chatID) return [];
+    try {
+      const r = await api('GET', `/v1/chats/${encodeURIComponent(fullChatId(chatID))}/messages?limit=${Number(limit) || 50}`);
+      return Array.isArray(r?.items) ? r.items : [];
+    } catch (e) { onLog(`beeper: could not list the messages of ${chatID} — ${e?.message ?? e}`); return []; }
+  }
+
   // The newest id currently in the chat — snapshot BEFORE a send to arm
   // resolveSentMessageId's `afterId` floor. null (empty chat / GET failure) =
   // no floor, i.e. today's accept-any behavior (degraded, never blocking).
@@ -1797,6 +1863,13 @@ export async function startBeeperBridge(opts = {}) {
       isReaction: false,
       isTranscriptFromVoice: isVoice,
       msgKey: msg.id || null,
+      // THE CROSS-ACCOUNT IDENTITY of this message (crossAccountMsgKey, above): the content hash
+      // and the message's OWN timestamp — the only two fields the co-account node's view of this
+      // same real message shares with ours. `msgKey` one line up is the LOCAL id and cannot cross.
+      // `msgTs` is deliberately NOT `from.ts` (which identity.build defaults to this node's
+      // receive clock): the payload timestamp is the one both nodes read identically.
+      msgHash: crossAccountMsgKey(msg),
+      msgTs: tsMs,
     };
     onLog(`beeper: incoming [${info.title}] ${msg.senderName}: ${JSON.stringify((text || '').slice(0, 60))} (atE=${st.atEAnywhere}${replyToBot ? ' replyToBot' : ''}${replyToId ? ` ↩${replyToId}` : ''}${isVoice ? ' voice' : ''})`);
     // Hand off to the host WITHOUT awaiting the reply turn. The host (spine) enqueues
@@ -1968,6 +2041,13 @@ export async function startBeeperBridge(opts = {}) {
     // caches; see listChatsRaw / chatRaw for the cost bound.
     listChatsRaw,
     chatRaw: (chatId) => chatRaw(chatId),
+    // THE RECENT MESSAGES OF ONE CHAT, raw (operator 2026-09-07, the mouth link's reaction verb).
+    // The co-account node names a message by CONTENT (crossAccountMsgKey) because no id crosses
+    // the link, so this end has to look at its own copies to find which one it means. Same GET the
+    // three id-resolution readers above already make, uncached on purpose: it is asked once per
+    // steer ack, and a cached page would hand back a list that predates the very message being
+    // pointed at. Returns [] on any failure — the caller refuses rather than guessing.
+    listMessagesRaw: (chatId, opts) => listMessagesRaw(chatId, opts),
     // MEMBERSHIP (operator 2026-08-31, router.mjs fallback_handle): true | false | null (UNKNOWN).
     // Cached + TTL'd + free for a 1:1 — see chatHasParticipant above.
     chatHasParticipant: (chatId, identity) => chatHasParticipant(chatId, identity),

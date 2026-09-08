@@ -19,7 +19,7 @@ import { createShellPort, shellPortFrom } from '../bridges/shell-port.mjs';
 import { shellTokenFrom } from '../shell/auth.mjs';
 // THE MOUTH LINK (operator 2026-09-05): the peer spine holding the OTHER Beeper account, the
 // receiving half this node offers on its own console, and the speaking half the reply path uses.
-import { peerSpineFrom, createMouthReceiver, speakThroughPeer, startPeerStream } from '../shell/peer-mouth.mjs';
+import { peerSpineFrom, createMouthReceiver, speakThroughPeer, startPeerStream, reactThroughPeer } from '../shell/peer-mouth.mjs';
 import { createWarmPool } from '../warm-sessions.mjs';
 import { createBrainSession } from '../brain-session.mjs';
 import { createSandboxCliSession } from '../sandbox-cli-session.mjs';
@@ -236,7 +236,7 @@ export function makeShellAwareBridge(bridge, shellPort) {
 // THE CONSOLE IS NEVER ROUTED. A shell/room chat id is not a Beeper chat, so asking Beeper about
 // its roster is a wasted (and failing) GET on every reply typed at the editor. `owns` is the SAME
 // ownership signal the shell-aware bridge already routes outbound on — no second rule.
-export function makePeerMouth({ peer, bridge, owns = () => false, speak = speakThroughPeer, stream = startPeerStream, onLog = () => {} } = {}) {
+export function makePeerMouth({ peer, bridge, owns = () => false, speak = speakThroughPeer, stream = startPeerStream, reactor = reactThroughPeer, onLog = () => {} } = {}) {
   if (!peer) return null;                     // no peer_spine ⇒ no mouth ⇒ createSender is handed none ⇒ nothing changes
   return {
     async route(chatId) {
@@ -267,6 +267,16 @@ export function makePeerMouth({ peer, bridge, owns = () => false, speak = speakT
     // straight through — this object decides nothing about it. Absent (undefined) ⇒ startPeerStream's
     // identity default ⇒ the frames cross the wire raw, which is what they did before it existed.
     startStream(chat, init, { fallback = null, render } = {}) { return stream({ peer, chat, init, render, fallback, say: speak, onLog }); },
+    // THE 👀 THROUGH THE PEER (operator 2026-09-07), and it takes the SAME `chat` payload route()
+    // handed back — the one this object's other method already takes — because a reaction is
+    // keyed to a chat exactly like a reply and then to a message inside it. The message is named
+    // by the cross-account key the bridge minted on the inbound (`ev.msgHash`) plus its own
+    // timestamp; no id crosses, here as everywhere else on this link.
+    //
+    // NO FALLBACK, unlike startStream's three tiers. A reply must arrive somewhere; a read receipt
+    // from the account that is NOT answering is the fault this exists to fix, so a refusal means
+    // no reaction at all and the caller says so in the log (src/spine/turns.mjs).
+    react(chat, { msgKey, timestamp = 0, emoji } = {}) { return reactor({ peer, chat, msgKey, timestamp, emoji, onLog }); },
   };
 }
 
@@ -1563,6 +1573,13 @@ export async function boot({
     // Lasso-gated like any other stream this node opens (one 'message' for the placeholder, the
     // edits on the 'edit' budget), because `bridge` here is the wrapped port.
     startStream: (chatId, init) => bridge.startStreamVerbatim(chatId, init),
+    // THE REACTION VERB's two reads on this account (operator 2026-09-07): its own copies of the
+    // chat's recent messages — the peer names one by CONTENT, because no id crosses the link — and
+    // the same `react` primitive the /react limb and the steer ack already use. Ungated by the
+    // lasso on purpose, exactly as every other reaction is (src/lasso.mjs: a reaction carries no
+    // text and is not a line in a chat).
+    listMessages: (chatId) => bridge.listMessagesRaw(chatId),
+    react: (chatId, msgId, emoji) => bridge.react(chatId, msgId, emoji),
     accounts: peerSpine.accounts,
     onLog: mouthLog,
   }) : null;

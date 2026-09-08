@@ -121,12 +121,13 @@ const SHELL_USER = 'operator';
  * @param {string} [opts.token]               the node's SHELL TOKEN (cfg.shell.token, handed in by boot exactly like bridgeSignatureOpen/nodeName — this limb never reads config itself). The editor that dials in must prove it knows this secret before a single frame is sent to it or accepted from it. UNSET → the limb FAILS CLOSED: it does not SERVE at all and logs what to add to config. No default, no auto-generation, no unauthenticated mode.
  * @param {string} [opts.nodeName]            the STRUCTURAL node id (cfg.node_name), tag-encoded invisibly onto every frame — same value boot hands the beeper bridge. Default ''.
  * @param {string} [opts.header]              the shell status-line header (boot's computeShellHeader) — the initial value handed in at boot, pushed as a header-only frame the moment an editor authenticates. Updatable later via setHeader() (e.g. /rooms join|leave). Default '' → no header frame sent until setHeader() is called.
- * @param {{post?: Function, open?: Function, update?: Function, finish?: Function, gone?: Function}} [opts.onPeerSay]
+ * @param {{post?: Function, open?: Function, update?: Function, finish?: Function, react?: Function, gone?: Function}} [opts.onPeerSay]
  *   THE MOUTH HANDLER (src/shell/peer-mouth.mjs createMouthReceiver), handed in by boot exactly
  *   like the token — this limb never builds it and never reads config. Given, a PEER SPINE may
  *   dial MOUTH_PATH on this port, prove it holds the same shell token, and have a line posted on
  *   THIS node's Beeper account — whole (`post`) or as a live reply train it opens, edits and
- *   settles (`open`/`update`/`finish`). One entry per wire verb; MOUTH_ANSWER below is the
+ *   settles (`open`/`update`/`finish`), or place a REACTION on one of this account's own messages
+ *   (`react`). One entry per wire verb; MOUTH_ANSWER below is the
  *   routing table and also the ALLOWLIST, so a table entry that is not a verb — `gone`, which the
  *   limb calls itself when a peer connection closes — can never be reached from a frame. UNSET
  *   (the default, and every node that configures no peer): a mouth dial is closed immediately, so
@@ -264,7 +265,10 @@ export function createShellPort({
   // is therefore unreachable from a frame — it is the LIMB's to call, on close, and nobody else's).
   // `update` maps to null: it is answered with nothing at all (src/shell/mouth.mjs — every frame
   // carries the whole text, so an ack per token would double the traffic for no information).
-  const MOUTH_ANSWER = { post: sayResultFrame, open: sayOpenedFrame, finish: sayResultFrame, update: null };
+  // `react` answers with sayResultFrame for the same reason `post` does — the brain must learn
+  // whether the 👀 was placed, because the ONLY safe alternative to the peer placing it is placing
+  // none at all (src/shell/mouth.mjs).
+  const MOUTH_ANSWER = { post: sayResultFrame, open: sayOpenedFrame, finish: sayResultFrame, update: null, react: sayResultFrame };
 
   // A mouth frame off an AUTHENTICATED peer connection: hand it to the verb the peer named and push
   // that verb's verdict straight back. THIS PATH NEVER REACHES onMsg — a peer's frame is a reply to
