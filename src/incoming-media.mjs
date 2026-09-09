@@ -283,3 +283,9 @@ export function voiceTranscriptBody(transcript, { durationSec } = {}) {
   const dur = (Number.isFinite(durationSec) && durationSec > 0) ? `, ${Math.round(durationSec)}s` : '';
   return `(voice transcription${dur}) ${t}`;
 }
+// THE READER of the marker above — one definition beside the writer, because three modules
+// already need to tell "this body IS a transcript" or to get at the transcript itself:
+// beeper.transcriptionForNoteId (the marker TEST on a recorded entry), transcript-log's
+// bare-@e branch, and router.addressed (the spoken-wake scan, which must anchor to the start of
+// the TRANSCRIPT, not to the start of the marked body). Anchored, no /g — safe to share.
+export const VOICE_MARK = /^\(voice transcription(?:,[^)]*)?\)\s*/;

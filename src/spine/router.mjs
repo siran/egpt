@@ -28,7 +28,11 @@
 // route, so nothing could ever carry it. `@don.do` still works when `don` is a relay agent —
 // the @token match below stops at the dot and finds the agent.
 import { agentPaths } from '../mesh/relay.mjs';
-import { mentionHits, mentionHitsAnywhere } from '../auto-mode.mjs';
+import { mentionHits } from '../auto-mode.mjs';
+// The `(voice transcription, Ns) ` marker a voice note's body carries — READ from the module that
+// WRITES it (incoming-media.voiceTranscriptBody), never re-spelled here. addressed() takes it off
+// before the spoken-wake scan so "the start" means the start of the TRANSCRIPT, not of the marker.
+import { VOICE_MARK } from '../incoming-media.mjs';
 import { getBeing, allowedUsersPermits } from '../conversations-state.mjs';
 import { surfaceOf, SHELL_SURFACE } from './identity.mjs';
 
@@ -67,8 +71,9 @@ export function wakeTokens(name, agent) {
 }
 
 // THE SPOKEN counterpart to wakeTokens, above — voice_handles is a SEPARATE, opt-in list (a
-// whisper transcript never carries '@'; it gates auto-mode.mjs's ANYWHERE bare match, not this
-// file's own @token matcher). UNLIKE handles, there is NO map-key fallback: ABSENT or `[]` both
+// whisper transcript never carries '@', so these are matched as a BARE token — and since
+// 2026-09-09 only at the START, the same rule a bare @handle follows; see addressed()).
+// UNLIKE handles, there is NO map-key fallback: ABSENT or `[]` both
 // mean no spoken alias reaches this agent — silence-by-default, since an unconfigured agent has
 // no business waking on a guessed spoken word the way it inherits its own key as an @handle.
 export function voiceWakeTokens(agent) {
@@ -187,11 +192,28 @@ export function fallbackWake(agent) {
 // this, voice-wake was wired in exactly ONE place (boot.mjs's persona-only voiceWakeWords, gating
 // only the bridge's own mentionStatus call), so a non-persona agent's voice_handles never reached
 // this function and could never wake it. When true, EVERY candidate agent's OWN voiceWakeTokens
-// (declared `voice_handles:`, no map-key fallback) are ALSO run through mentionHitsAnywhere — the
-// SAME matcher the persona's own voice case already uses via mentionStatus' alsoAnywhere — and
-// merged into the SAME { name, agent, atStart, anywhere } shape, mirroring mentionStatus' own
-// convention: a voice-only hit ORs into `anywhere` and never sets `atStart` (an anywhere match has
-// no "start"). Default false → byte-identical to before for every caller that doesn't pass it.
+// (declared `voice_handles:`, no map-key fallback) are ALSO run through the scan below.
+//
+// START ONLY, THE SAME RULE AS AN @HANDLE (operator 2026-09-09). It used to be mentionHitsAnywhere
+// — a spoken name matched ANYWHERE in the sentence, while the @handle's bare form has always been
+// start-only. That asymmetry was live and biting: `rey` ("king") is one of ken's spoken names and
+// `perro` ("dog") is one of E's, so "el rey de españa" and "tengo un perro grande" woke a being
+// mid-sentence. There is now ONE rule — the spoken list goes through mentionHits, the SAME matcher
+// on line ~250, and only its `atStart` hits count.
+//
+// SO A VOICE HIT IS A START HIT: it carries { atStart: true, anywhere: true }, the identical shape
+// a leading @handle yields, and the old "ORs into anywhere, never sets atStart" convention is gone
+// with the anywhere-match that motivated it. That distinction is what the auto-modes rest on
+// (`mention-direct` wakes on atStart, `mention` on anywhere), and both readings are now correct:
+// a spoken name at the start IS a direct address, and mid-sentence it is no address at all.
+//
+// AND "THE START" IS THE TRANSCRIPT'S: a voice note arrives with its body already marked
+// `(voice transcription, Ns) …` (incoming-media.voiceTranscriptBody), so VOICE_MARK comes off
+// first. Without that, no spoken alias could ever sit at position 0 and this would have killed
+// voice wake outright rather than narrowing it. Only the spoken scan sees the stripped text — the
+// @handle scan above reads the raw body exactly as it always has.
+//
+// Default false → byte-identical to before for every caller that doesn't pass it.
 //
 // `withFallback` (DEFAULT false, operator 2026-08-31): admit each agent's `fallback_handle` token
 // (fallbackWake, above) into the SAME vocabulary, so the CONDITIONAL handle goes through THE ONE
@@ -246,11 +268,14 @@ export function addressed(text, agents, { addressWithoutAt = true, isVoice = fal
     out.push({ name: hit.name, agent: hit.agent, atStart, anywhere: true, ...(guardOf.has(token) ? guardOf.get(token) : {}) });
   }
   if (isVoice) {
-    for (const { token } of mentionHitsAnywhere(text, [...byVoiceToken.keys()])) {
+    // The transcript, marker off (see the isVoice header) — then THE matcher, start hits only.
+    const spoken = String(text ?? '').replace(VOICE_MARK, '');
+    for (const { token, atStart } of mentionHits(spoken, [...byVoiceToken.keys()], { addressWithoutAt })) {
+      if (!atStart) continue;
       const hit = byVoiceToken.get(token);
       if (!hit || seen.has(hit.name)) continue;
       seen.add(hit.name);
-      out.push({ name: hit.name, agent: hit.agent, atStart: false, anywhere: true });
+      out.push({ name: hit.name, agent: hit.agent, atStart: true, anywhere: true });
     }
   }
   return out;

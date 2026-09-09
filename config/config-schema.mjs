@@ -1410,10 +1410,12 @@ export const CONFIG_SCHEMA = {
         @egpt, which is how one message got two replies across the two spines.
       voice_handles
         ["perrito","perro",...] — SPOKEN aliases that wake this agent from a
-        voice note's whisper TRANSCRIPT, matched ANYWHERE in the sentence
-        (never \`@\`-prefixed — whisper output never produces one). A sibling
-        list to \`handles\`, not an extension of it: text and voice wake
-        independently.
+        voice note's whisper TRANSCRIPT, matched at the START of the transcript
+        (never \`@\`-prefixed — whisper output never produces one; the start is
+        the same rule a bare \`handles\` token follows. Operator 2026-09-09: it
+        used to match anywhere in the sentence, which woke beings on ordinary
+        words — "el rey", "un perro"). A sibling list to \`handles\`, not an
+        extension of it: text and voice wake independently.
 
         DECLARED  = the COMPLETE spoken-alias list.
         ABSENT    = no spoken alias reaches this agent — unlike \`handles\`,
