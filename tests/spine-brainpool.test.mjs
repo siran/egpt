@@ -28,9 +28,10 @@ function fakePool(scriptedResults, { steerTakes = true } = {}) {
       const r = scriptedResults[Math.min(i, scriptedResults.length - 1)]; i++;
       return typeof r === 'function' ? r() : Promise.resolve(r);
     },
-    // The real pool's injected-or-nothing weave (warm-sessions `steer`): a boolean, and it
-    // NEVER runs a turn — so a `false` here must leave `calls` untouched.
-    steer(key, message) { steered.push({ key, message }); return steerTakes; },
+    // The real pool's injected-or-nothing weave (warm-sessions `steer`): `false` for nothing
+    // handed over, else `{ ack }` — the session's later word on whether the MODEL took it
+    // (2026-09-09). It NEVER runs a turn, so a `false` here must leave `calls` untouched.
+    async steer(key, message) { steered.push({ key, message }); return steerTakes ? { ack: Promise.resolve({ ok: true }) } : false; },
     evict(key) { evicted.push(key); },
   };
 }
@@ -1337,7 +1338,7 @@ describe('brainpool — allow_new_input (operator 2026-08-30)', () => {
   it('steer() weaves into the warm key this conversation LAST ran — the same lookup evict() uses, no re-derivation', async () => {
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }]);
     await brain.turn('e', ev);
-    expect(brain.steer('e', ev)).toBe(true);
+    expect(await brain.steer('e', ev)).toBeTruthy();
     expect(pool.steered).toHaveLength(1);
     expect(pool.steered[0].key).toBe(pool.calls[0].key);   // exactly the turn's warm key
     expect(pool.steered[0].message).toBe(ev.line);         // the plain dispatch line
@@ -1346,7 +1347,7 @@ describe('brainpool — allow_new_input (operator 2026-08-30)', () => {
 
   it('steer() is false — and runs NOTHING — for a conversation that has never opened a warm key', async () => {
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }]);
-    expect(brain.steer('e', ev)).toBe(false);
+    expect(await brain.steer('e', ev)).toBe(false);
     expect(pool.steered).toHaveLength(0);
     expect(pool.calls).toHaveLength(0);
   });
@@ -1354,7 +1355,7 @@ describe('brainpool — allow_new_input (operator 2026-08-30)', () => {
   it("steer() reports the pool's refusal verbatim (a session that cannot weave → false, never a turn)", async () => {
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { steerTakes: false });
     await brain.turn('e', ev);
-    expect(brain.steer('e', ev)).toBe(false);
+    expect(await brain.steer('e', ev)).toBe(false);
     expect(pool.calls).toHaveLength(1);                    // no fallthrough turn was run
   });
 
@@ -1367,7 +1368,7 @@ describe('brainpool — allow_new_input (operator 2026-08-30)', () => {
     await brain.turn('e', ev);                             // FRESH thread: this turn IS feed-wrapped
     expect(pool.calls[0].message).toMatch(/IDENTITY FEED/);
     const seedsAfterTurn = seeded.length;
-    expect(brain.steer('e', ev)).toBe(true);
+    expect(await brain.steer('e', ev)).toBeTruthy();
     expect(pool.steered[0].message).toBe(ev.line);         // the raw line — NOT the feed
     expect(seeded.length).toBe(seedsAfterTurn);            // nothing re-seeded/overwritten
     expect(pool.calls).toHaveLength(1);

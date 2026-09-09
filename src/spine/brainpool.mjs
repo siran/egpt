@@ -756,8 +756,9 @@ export function createBrainPool({
       const key = `${being}:${engine}:${scope.surface}:${slug}`;
       lastKeyByConv.set(`${being}:${ev.surface}:${ev.chatId}`, key);
       // ...and under the SCOPE's address too when the two differ (operator 2026-08-31). evict()
-      // and steer() below are SYNCHRONOUS by contract — the spine awaits them, but their return
-      // values are a key lookup, not a resolution — so they cannot resolve a scope of their own.
+      // and steer() below resolve NO SCOPE OF THEIR OWN — their target is a key LOOKUP, never a
+      // re-resolution (steer awaits the model's acknowledgement, but that is the session's
+      // answer, not a config read).
       // Registering both addresses is what lets a wedged entry be evicted, and a live turn be
       // steered, from EITHER end of a joined pair: both names now point at the one warm entry.
       if (scope.scoped) lastKeyByConv.set(`${being}:${scope.surface}:${scope.chatId}`, key);
@@ -1000,10 +1001,9 @@ export function createBrainPool({
     },
 
     // Weave this message into the turn ALREADY streaming for this being+conversation
-    // (operator 2026-08-30). Returns true ONLY if it was genuinely woven in — false means
-    // NOTHING happened and the caller must queue an ordinary turn (see warm-sessions
-    // `steer`'s injected-or-nothing contract; that is what keeps a false from becoming a
-    // reply nobody delivers).
+    // (operator 2026-08-30). `false` means NOTHING happened and the caller must queue an
+    // ordinary turn (see warm-sessions `steer`'s injected-or-nothing contract; that is what
+    // keeps a false from becoming a reply nobody delivers).
     //
     // Keyed off lastKeyByConv, the SAME lookup evict() uses, and for the same reason: no
     // re-derivation of engine/slug. It is also exact here by construction — a turn can only
@@ -1013,10 +1013,17 @@ export function createBrainPool({
     // because a conversation's FIRST turn has no recorded sessionId while it is still in
     // flight — steering it through turn() would post the whole identity feed as the
     // mid-turn message and archive the live transcript out from under it.
-    steer(being, ev) {
+    //
+    // WHAT IT RETURNS IS EVIDENCE OR NOTHING (operator 2026-09-09). `false` still means nothing
+    // happened; anything else is the pool's `{ ack }` — a promise that later says whether the
+    // MODEL took the line, not whether a write to a pipe succeeded. That is the whole Joyce fix,
+    // and it is passed straight through rather than collapsed to a boolean here, because the
+    // spine is the layer that owns what a chat is shown (turns.mjs: 📩 for the bridge's receipt,
+    // 👀 only once this ack says ok).
+    async steer(being, ev) {
       const k = lastKeyByConv.get(`${being}:${ev?.surface}:${ev?.chatId}`);
-      if (!k) return false;
-      return pool.steer?.(k, ev?.line ?? ev?.body ?? '') === true;
+      if (!k) { onLog(`brainpool: steer FAILED ${being} ${ev?.surface}/${ev?.chatId} — no warm key was ever recorded for this conversation`); return false; }
+      return (await pool.steer?.(k, ev?.line ?? ev?.body ?? '')) ?? false;
     },
   };
 }

@@ -93,7 +93,11 @@ function steerableBrain({ allow = 'same_sender', steerTakes = true, hasSeams = t
   };
   if (hasSeams) {
     brain.allowNewInput = async (being, ev) => { allowAsked.push({ being, body: ev.body }); return allow; };
-    brain.steer = (being, ev) => { if (!steerTakes) return false; steered.push(ev.body); return true; };
+    // `{ ack }` since 2026-09-09, not a bare `true`: the pool hands back the session's later
+    // word on whether the MODEL took the line, and only that places the 👀 (see turns.mjs and
+    // tests/steer-ack.test.mjs). A fake that answered `true` would be claiming an ingestion it
+    // has no evidence for — which is the fault this shape exists to make impossible.
+    brain.steer = (being, ev) => { if (!steerTakes) return false; steered.push(ev.body); return { ack: Promise.resolve({ ok: true }) }; };
   }
   if (scopeOf) brain.scopeOf = scopeOf;
   return brain;
@@ -168,6 +172,10 @@ describe('spine — allow_new_input steers the live turn (operator 2026-08-30)',
   // without SOME ack its sender sees nothing until the live turn's eventual answer. A successful
   // steer must react on the STEERED message itself (its own chatId/msgId), not the one that's
   // already streaming — using the SAME bridge.react primitive the /react limb uses.
+  //
+  // TWO REACTIONS SINCE 2026-09-09, in this order and for two different reasons: 📩 the bridge
+  // has it (placed on arrival, true by construction) and 👀 the model took it (placed only once
+  // the session's ack says so). See tests/steer-ack.test.mjs for the Joyce fault behind the split.
   it('a successful steer ACKs the steered message with a reaction (not a new placeholder/reply)', async () => {
     const { bridge, sender, brain } = build({ allow: 'any' });
     const p1 = bridge.emit(msg('one', 'm1', 'an'));
@@ -176,7 +184,11 @@ describe('spine — allow_new_input steers the live turn (operator 2026-08-30)',
     await flush();
 
     expect(brain.steered).toEqual(['actually do X']);
-    expect(bridge.reactions).toEqual([{ chatId: CHAT, msgId: 'm2', emoji: '👀' }]);
+    await flush();
+    expect(bridge.reactions).toEqual([
+      { chatId: CHAT, msgId: 'm2', emoji: '📩' },
+      { chatId: CHAT, msgId: 'm2', emoji: '👀' },
+    ]);
     expect(sender.placeholders).toHaveLength(1);          // still no second placeholder
     brain.releaseFirst();
     await Promise.all([p1, p2]);
@@ -192,7 +204,7 @@ describe('spine — allow_new_input steers the live turn (operator 2026-08-30)',
     await flush();
 
     expect(brain.steered).toEqual(['actually do X']);     // still woven despite the reaction throwing
-    expect(bridge.reactions).toHaveLength(1);              // the attempt was made
+    expect(bridge.reactions.length).toBeGreaterThanOrEqual(1);   // the attempt was made
     expect(sender.placeholders).toHaveLength(1);
     brain.releaseFirst();
     await expect(Promise.all([p1, p2])).resolves.toBeDefined();  // never throws out to the caller
@@ -328,7 +340,9 @@ describe('spine — allow_new_input steers the live turn (operator 2026-08-30)',
     await flush();
     brain.releaseFirst();
     await Promise.all([p1, p2]);
-    expect(notes.join('\n')).toMatch(/steer e\/chat-A@g\.us: wove .* into the live turn \(allow_new_input=any\)/);
+    expect(notes.join('\n')).toMatch(/steer e\/chat-A@g\.us: handed .* to the live turn \(allow_new_input=any\)/);
+    // …and the model's own acknowledgement is a SEPARATE line, said only once it actually arrives.
+    expect(notes.join('\n')).toMatch(/the model took the steered message/);
   });
 
   it('a THIRD message steers the same live turn (the weave is not one-shot)', async () => {

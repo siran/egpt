@@ -31,9 +31,32 @@ import { makeSerialByKey } from '../serial-by-key.mjs';
 // agree with the reply or it announces which account is really listening (see its header).
 import { makeOutbound } from './sender.mjs';
 
-// The steer ack's reactionKey — same convention as the /react limb (reply-actions.mjs's
-// EMOJI_ALIASES 'eyes'): "seen", not "thinking" (that's the placeholder's job, and a woven
-// message gets no placeholder).
+// THE TWO REACTIONS, AND THEY ARE A PAIR (operator 2026-09-09, after `Joyce Vicente-2606301852`
+// swallowed ~90 minutes of the operator's messages behind four confident 👀s and total silence).
+//
+//   📩  THE BRIDGE HAS IT. Placed on arrival, the moment this node accepts a message as destined
+//       for an agent's live turn. It is a claim about THIS PROCESS and nothing else — "a message
+//       to the bridge should be reacted to immediately by the bridge" — so it is honest by
+//       construction and can never be wrong.
+//   👀  THE MODEL TOOK IT. Placed only on evidence of ingestion from the CLI itself (the
+//       `--replay-user-messages` echo, see warm-cli-session.mjs's header). This is the one that
+//       lied: it used to fire because `inject()` returned true, and `inject()` returned true
+//       because a write to a live process's pipe succeeded — which says nothing about whether
+//       anything on the other end ever read it.
+//
+// 📩 WITH NO 👀 FOLLOWING IS NOW A VISIBLE SYMPTOM, in the chat, at the time. That is the whole
+// point of keeping both: in the Joyce incident the operator would have seen four 📩 and no 👀 —
+// received, never ingested — instead of four 👀 that each claimed the model had it.
+//
+// SCOPE, deliberately narrow: only traffic ADMITTED into a live turn (below, once admitsNewInput
+// has said yes) — which is exactly the population that carried the 👀 before. Not every passing
+// message in every group; that would be noise, and a group's ordinary chatter is not addressed
+// to anyone here. A message that is NOT admitted queues and gets its own placeholder, which is
+// already a visible receipt.
+//
+// Same reactionKey convention as the /react limb (reply-actions.mjs's EMOJI_ALIASES): "seen", not
+// "thinking" — that's the placeholder's job, and a woven message gets no placeholder.
+const RECEIPT_EMOJI = '📩';
 const STEER_ACK_EMOJI = '👀';
 
 /**
@@ -139,6 +162,47 @@ export function createTurns({ brain, bridge = null, bridgeOf = null, peerMouth =
     return admits ? allow : false;
   }
 
+  // PLACE ONE OF THE TWO REACTIONS ON THE INBOUND MESSAGE. ONE function, called twice, because
+  // 📩 and 👀 differ only in what they mean — never in where they go or who says them.
+  //
+  // AND IT RIDES THE MOUTH THE REPLY RIDES (operator 2026-09-07). This asked `bridgeOf(being) ??
+  // bridge` and stopped there, while the reply path additionally asked the peer mouth — two
+  // answers to one question, and in a group holding both accounts they disagreed in public: the
+  // 👀 came from the PRIMARY and the answer from the SECONDARY, which is precisely what betrays
+  // which account is doing the listening. Both now ask makeOutbound.
+  //
+  // WHEN THE PEER SAYS THE REPLY, THE PEER PLACES THE REACTION (operator 2026-09-07). It sits ON
+  // the inbound message, and the two accounts see one real message as two different Matrix events
+  // in two different rooms — id 2901 here, 1118 there, measured — so for one release this was
+  // SUPPRESSED: the peer had no way to be told which message and this account must not react when
+  // it is not the one answering. The link now has a verb that names a message the same way it has
+  // always named a chat, by a key both accounts compute alike (src/shell/mouth.mjs `say: react`),
+  // so the ack goes where the answer goes.
+  //
+  // SUPPRESSION IS THE FALLBACK, NOT THE ANSWER. Every way the peer can fail to place it — it
+  // cannot key the message, the link is down, it finds no match, it finds two — ends with NO
+  // REACTION ANYWHERE and a log line naming the reason. That is the OLD behaviour, kept exactly,
+  // as the floor: a missing reaction is cosmetic, a reaction from the wrong account is the bug.
+  //
+  // Best-effort by contract: it never throws, so a reaction fault can never undo a steer that
+  // already landed, and never becomes an unhandled rejection on the 👀's deferred path below.
+  async function placeReaction(to, ev, emoji) {
+    const { bridge: mouth, route } = outbound(to, ev.chatId);
+    const peerSays = route();                         // null with no peer wired — never awaited, so that path is untouched
+    const peerChat = peerSays ? await peerSays : null;
+    if (peerChat) {
+      // The peer's own refusals are logged by name inside the link; this line says what it cost.
+      let r = null;
+      try { r = await peerMouth.react?.(peerChat, { msgKey: ev.msgHash, timestamp: ev.msgTs, emoji }); }
+      catch (e) { note(`steer-ack ${to}/${ev.chatId}: asking the peer to react threw — ${e?.message ?? e}`); }
+      if (r?.ok) note(`steer-ack ${to}/${ev.chatId}: the PEER is saying this reply and placed the ${emoji} on its own copy (its chat ${r.chatId})`);
+      else note(`steer-ack ${to}/${ev.chatId}: the PEER is saying this reply but could not place the ${emoji} (${r?.reason ?? 'no answer'}${r?.detail ? `: ${r.detail}` : ''}) — no reaction from this account either, it is not the one answering`);
+    } else {
+      try { await mouth.react?.(ev.chatId, ev.msgId, emoji); }
+      catch (e) { note(`steer-ack ${to}/${ev.chatId}: ${e?.message ?? e}`); }
+    }
+  }
+
   // STEER THE LIVE TURN (operator's ruling 2026-08-30, `allow_new_input`). A message that
   // arrives while a turn is ALREADY streaming on this key can be WOVEN INTO that turn instead
   // of queueing behind it — the running turn then answers the new instruction, in ONE reply.
@@ -151,13 +215,25 @@ export function createTurns({ brain, bridge = null, bridgeOf = null, peerMouth =
   // ONLY ccode was measured; pi is untested and llama has no stream — neither exports `inject`,
   // so both land on the false branch below and queue exactly as they do today.
   //
-  // TRUE means the message was genuinely woven in, and the caller must then produce NOTHING
-  // NEW FOR THE CONVERSATION: no placeholder, no reply, no train — only a lightweight reaction
-  // on the inbound message itself (below), acking that it was received and folded in (operator
-  // 2026-08-30: silently absorbing it read as dropped). FALSE means NOTHING HAPPENED — not "it
-  // half happened" — so the caller falls straight through to openAndRunReply, i.e. today's
-  // behavior. That sharpness is the whole safety story: the pool's `steer` never runs a turn as
-  // a fallback (warm-sessions.mjs), so a false can never leave a turn running that nobody delivers.
+  // TRUE means the message was HANDED TO the live turn, and the caller must then produce NOTHING
+  // NEW FOR THE CONVERSATION: no placeholder, no reply, no train — only the reactions on the
+  // inbound message itself (above), because silently absorbing it read as dropped (operator
+  // 2026-08-30). FALSE means NOTHING HAPPENED — not "it half happened" — so the caller falls
+  // straight through to openAndRunReply, i.e. today's behavior. That sharpness is the whole
+  // safety story: the pool's `steer` never runs a turn as a fallback (warm-sessions.mjs), so a
+  // false can never leave a turn running that nobody delivers.
+  //
+  // HANDED TO IS NOT INGESTED BY, AND THE RETURN VALUE STILL CANNOT TELL THEM APART (operator
+  // 2026-09-09, OPEN). Whether the model TOOK the line is knowable — that is what `handed.ack`
+  // answers — but not in time to be this function's answer: measured on the real CLI, the ack
+  // lands in ~1.2s inside an agentic turn and only at the turn's END for a pure-text one (1.03s
+  // there, but the turn was short; on a long turn it is the whole turn). This function runs
+  // inside the spine's SINGLE node-wide inbound pump (spine.mjs `pump`), so awaiting the ack
+  // here would stall every other conversation on the node for the length of one model's turn.
+  // Deciding queue-vs-steer on the ack therefore needs the decision to move off the pump, which
+  // is a reshape of the dispatch order rather than a change here — flagged for a ruling, not
+  // invented. What IS fixed: the 👀 no longer rides the return value, so the chat now shows the
+  // difference even where this boolean cannot.
   //
   // Both brain seams are OPTIONAL. A spine wired with a Brain that has neither (every test
   // fake, every older caller) can never steer, and is byte-identical to before.
@@ -172,51 +248,56 @@ export function createTurns({ brain, bridge = null, bridgeOf = null, peerMouth =
     if (typeof brain.steer !== 'function' || typeof brain.allowNewInput !== 'function') return false;
     const allow = await admitsNewInput(to, ev, live);
     if (!allow) return false;
-    let woven = false;
-    try { woven = await brain.steer(to, ev); }
-    catch (e) { note(`steer ${to}/${ev.chatId}: ${e?.message ?? e}`); return false; }
-    if (woven !== true) return false;                 // the turn ended between the check and the push — queue it
-    note(`steer ${to}/${ev.chatId}: wove ${ev.senderName ?? ev.senderId ?? '?'}'s message into the live turn (allow_new_input=${allow})`);
-    // ACK the steered message itself (operator 2026-08-30): a woven message gets no placeholder
-    // and no reply of its own — it's folded into the live turn's ONE eventual answer — so without
-    // this its sender sees nothing until then. A reaction, not a message: it doesn't open a
-    // second train. Same primitive + reactionKey convention as the /react limb (reply-actions.mjs,
-    // bridge.react → beeper's sendReaction). Best-effort: a reaction fault must never undo the
-    // steer that already landed.
+
+    // 📩 — THE BRIDGE'S OWN RECEIPT, PLACED BEFORE THE STEER IS EVEN ATTEMPTED (operator
+    // 2026-09-09: "a message to the bridge should be reacted to immediately by the bridge").
+    // Its truth does not depend on anything below it, which is the entire reason it exists.
+    // STARTED here rather than awaited, so it never delays the write into the live turn, and
+    // JOINED before either exit below, so it can never land after the 👀 or after the caller
+    // has already opened a queued placeholder.
+    const receipt = ack ? placeReaction(to, ev, RECEIPT_EMOJI) : null;
+
+    const who = ev.senderName ?? ev.senderId ?? '?';
+    let handed = false;
+    try { handed = await brain.steer(to, ev); }
+    catch (e) {
+      if (receipt) await receipt;
+      note(`steer FAILED ${to}/${ev.chatId}: the brain threw handing ${who}'s message to the live turn — ${e?.message ?? e}; queueing it instead`);
+      return false;
+    }
+    if (receipt) await receipt;
+    // NOTHING WAS HANDED OVER — and it is an error, not a shrug. The caller queues (that
+    // fallthrough is unchanged and is what keeps a false structurally safe), but the reason it
+    // had to is now in the log instead of nowhere. The layers below name it more precisely
+    // still: warm-sessions.mjs says WHICH refusal, warm-cli-session.mjs says why the session
+    // could not take it.
+    if (!handed) { note(`steer FAILED ${to}/${ev.chatId}: nothing was handed to the live turn for ${who}'s message — queueing it instead`); return false; }
+    // HANDED OVER IS NOT INGESTED, AND THIS LINE NO LONGER PRETENDS OTHERWISE. It used to read
+    // "wove … into the live turn", said on the strength of a successful stdin write.
+    note(`steer ${to}/${ev.chatId}: handed ${who}'s message to the live turn (allow_new_input=${allow})`);
+
+    // 👀 — THE MODEL'S OWN ACKNOWLEDGEMENT, AND ONLY THAT (operator 2026-09-09). `handed.ack`
+    // settles from CLI events alone (warm-cli-session.mjs: the `--replay-user-messages` echo of
+    // the very line, or the turn ending/failing/closing without one) — never from a clock. It is
+    // deliberately NOT awaited: it can take the rest of a pure-text turn to answer, and this
+    // function runs inside the spine's single node-wide inbound pump, which must not stall behind
+    // one conversation's model. A reaction has no deadline, so it is placed when the evidence
+    // arrives, and never at all when it does not — which is exactly the Joyce symptom made
+    // visible: 📩 alone, in the chat, with the reason in the log.
     //
-    // AND IT RIDES THE MOUTH THE REPLY RIDES (operator 2026-09-07). This asked `bridgeOf(being) ??
-    // bridge` and stopped there, while the reply path additionally asked the peer mouth — two
-    // answers to one question, and in a group holding both accounts they disagreed in public: the
-    // 👀 came from the PRIMARY and the answer from the SECONDARY, which is precisely what betrays
-    // which account is doing the listening. Both now ask makeOutbound.
-    //
-    // WHEN THE PEER SAYS THE REPLY, THE PEER PLACES THE 👀 (operator 2026-09-07). The ack sits ON
-    // the inbound message, and the two accounts see one real message as two different Matrix
-    // events in two different rooms — id 2901 here, 1118 there, measured — so for one release this
-    // was SUPPRESSED: the peer had no way to be told which message and this account must not react
-    // when it is not the one answering. The link now has a verb that names a message the same way
-    // it has always named a chat, by a key both accounts compute alike (src/shell/mouth.mjs
-    // `say: react`), so the ack goes where the answer goes.
-    //
-    // SUPPRESSION IS NOW THE FALLBACK, NOT THE ANSWER. Every way the peer can fail to place it —
-    // it cannot key the message, the link is down, it finds no match, it finds two — ends with NO
-    // REACTION ANYWHERE and a log line naming the reason. That is the OLD behaviour, kept exactly,
-    // as the floor: a missing 👀 is cosmetic, a 👀 from the wrong account is the bug.
-    if (ack) {
-      const { bridge: mouth, route } = outbound(to, ev.chatId);
-      const peerSays = route();                       // null with no peer wired — never awaited, so that path is untouched
-      const peerChat = peerSays ? await peerSays : null;
-      if (peerChat) {
-        // The peer's own refusals are logged by name inside the link; this line says what it cost.
-        let r = null;
-        try { r = await peerMouth.react?.(peerChat, { msgKey: ev.msgHash, timestamp: ev.msgTs, emoji: STEER_ACK_EMOJI }); }
-        catch (e) { note(`steer-ack ${to}/${ev.chatId}: asking the peer to react threw — ${e?.message ?? e}`); }
-        if (r?.ok) note(`steer-ack ${to}/${ev.chatId}: the PEER is saying this reply and placed the ${STEER_ACK_EMOJI} on its own copy (its chat ${r.chatId})`);
-        else note(`steer-ack ${to}/${ev.chatId}: the PEER is saying this reply but could not place the ${STEER_ACK_EMOJI} (${r?.reason ?? 'no answer'}${r?.detail ? `: ${r.detail}` : ''}) — no reaction from this account either, it is not the one answering`);
-      } else {
-        try { await mouth.react?.(ev.chatId, ev.msgId, STEER_ACK_EMOJI); }
-        catch (e) { note(`steer-ack ${to}/${ev.chatId}: ${e?.message ?? e}`); }
-      }
+    // A `steer` seam that answers a bare `true` (an older Brain, every test fake) carries no
+    // evidence, so it gets no 👀. That is the contract stated as a default rather than enforced
+    // with a branch.
+    const evidence = handed?.ack;
+    if (ack && typeof evidence?.then === 'function') {
+      evidence.then(async (r) => {
+        if (r?.ok) {
+          note(`steer ${to}/${ev.chatId}: the model took the steered message — placing the ${STEER_ACK_EMOJI}`);
+          await placeReaction(to, ev, STEER_ACK_EMOJI);
+        } else {
+          note(`steer NEVER INGESTED ${to}/${ev.chatId}: ${who}'s message was handed to the live turn and the model never took it (${r?.reason ?? 'no reason given'}) — the ${RECEIPT_EMOJI} stands alone; there is no ${STEER_ACK_EMOJI} to place`);
+        }
+      }).catch((e) => note(`steer-ack ${to}/${ev.chatId}: ${e?.message ?? e}`));
     }
     return true;
   }

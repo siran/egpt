@@ -183,15 +183,40 @@ export function createWarmPool({
   // pi is a different harness the 2026-08-30 measurement never covered — neither exports
   // `inject`, so both land here and queue exactly as they do today, with no per-brain
   // branching anywhere above.
-  function steer(key, message) {
+  //
+  // AND EVERY REFUSAL IS SAID OUT LOUD, AND NONE OF THEM IS A SUCCESS (operator 2026-09-09,
+  // after `Joyce Vicente-2606301852` swallowed ~90 minutes of messages behind four confident
+  // 👀s). `e.busy` is A FLAG THIS FILE SETS, not liveness, and `inject`'s old `true` was a
+  // successful WRITE to a live pipe, not a read — so this function could report a weave into a
+  // turn that had already ended and nothing anywhere disagreed. It now returns `false` (nothing
+  // was handed over — the caller queues, exactly as before) or `{ ack }`, the session's promise
+  // of what the MODEL did with it, and it names the reason on every path that is not the happy
+  // one. "we need to improve error handling, and that no error is swallowed silently".
+  //
+  // NO TIMER ANYWHERE. `ack` settles from CLI events only (warm-cli-session.mjs): the CLI's own
+  // replay of the line, or the turn ending/failing/exiting/closing without one. A session that
+  // does neither is wedged, and the missing 👀 in the chat is how that is reported.
+  async function steer(key, message) {
     if (!injectWhileBusy) return false;               // pool-level master switch (off = never weave)
     const e = _s.get(key);
-    if (!e || !e.busy || e.errored) return false;
-    if (typeof e.session.inject !== 'function') return false;
-    if (!e.session.inject(message)) return false;
+    if (!e) { onLog(`warm: steer FAILED ${key} — no warm entry for that key; the caller believed a turn was live here`); return false; }
+    if (e.errored) { onLog(`warm: steer FAILED ${key} — the session is errored and about to be evicted`); return false; }
+    if (!e.busy) { onLog(`warm: steer FAILED ${key} — no turn is in flight (it ended between the caller's check and this call)`); return false; }
+    // Brain-agnostic guard, unchanged in effect: llama is request/response with no stream to
+    // interrupt and pi is a harness nobody has measured. Neither exports `inject`, so neither
+    // can be steered — but a conversation configured to steer one of them is a misconfiguration
+    // the operator should be able to read, not a silent queue.
+    if (typeof e.session.inject !== 'function') { onLog(`warm: steer FAILED ${key} — this brain cannot be steered (the session exports no inject)`); return false; }
+    const handed = e.session.inject(message);
+    if (!handed) { onLog(`warm: steer FAILED ${key} — the session refused the line (closed, no process, or the stdin write threw)`); return false; }
     e.lastUsed = Date.now();
-    onLog(`warm: steered into the running turn ${key}`);
-    return true;
+    onLog(`warm: handed to the live turn ${key} — awaiting the model's acknowledgement`);
+    const ack = Promise.resolve(handed.ack ?? { ok: false, reason: 'this session gives no acknowledgement' }).then((r) => {
+      if (r?.ok) onLog(`warm: the model ACKNOWLEDGED the steered message ${key}`);
+      else onLog(`warm: steer NOT INGESTED ${key} — the write landed and the model never took it (${r?.reason ?? 'no reason given'})`);
+      return r ?? { ok: false, reason: 'no answer' };
+    });
+    return { ack };
   }
 
   function has(key) { return _s.has(key); }

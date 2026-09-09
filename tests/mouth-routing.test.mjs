@@ -746,7 +746,10 @@ describe('end to end: a reply in the primary\'s room is streamed in the SECONDAR
   // suppressed and the reader saw nothing — and it is the one the operator asked to be placed by
   // the account that actually answers.
   const KEY = 'e:wa:chat-1';
-  const steerable = () => ({ async allowNewInput() { return 'any'; }, steer: () => true });
+  // `{ ack }`, not a bare `true` (2026-09-09): the 👀 is placed only on the session's own word
+  // that the MODEL took the line, so a fake claiming success without evidence would get 📩 and
+  // no 👀 at all. See tests/steer-ack.test.mjs for the Joyce fault that split the two.
+  const steerable = () => ({ async allowNewInput() { return 'any'; }, steer: () => ({ ack: Promise.resolve({ ok: true }) }) });
   const STEER_EV = {
     surface: 'wa', chatId: CHAT_ID, senderId: 'marina', senderName: 'marina', body: STEERED_TEXT,
     msgId: STEERED_ON_PRIMARY.id, msgHash: STEERED_KEY, msgTs: STEERED_TS,
@@ -763,9 +766,15 @@ describe('end to end: a reply in the primary\'s room is streamed in the SECONDAR
     // …and a message steered into that live turn is acknowledged by the SAME account.
     turns.setLive(KEY, { senderId: 'an', chatId: CHAT_ID });
     expect(await turns.steerLiveTurn({ to: 'e', ev: STEER_EV, turnKey: KEY })).toBe(true);
+    await settled();                                          // the 👀 waits on the model's ack
 
-    expect(reacted).toEqual([{ chatId: SECONDARY_CHAT_ID, msgId: '1118', emoji: '👀' }]);
-    expect(listed).toEqual([SECONDARY_CHAT_ID]);
+    // BOTH reactions, on the SECONDARY's own copy and in order: the bridge's receipt, then the
+    // model's acknowledgement. Neither ever lands on the account that is not answering.
+    expect(reacted).toEqual([
+      { chatId: SECONDARY_CHAT_ID, msgId: '1118', emoji: '📩' },
+      { chatId: SECONDARY_CHAT_ID, msgId: '1118', emoji: '👀' },
+    ]);
+    expect(listed).toEqual([SECONDARY_CHAT_ID, SECONDARY_CHAT_ID]);
     expect(bridge.reactions).toEqual([]);                     // nothing from the account not answering
     expect(logs.some((l) => l.includes('[secondary]') && /placed a peer's 👀 on HuXFQeZSY1X4khNDWTzz\/1118/.test(l))).toBe(true);
     expect(notes.join('\n')).toMatch(/placed the 👀 on its own copy/);
@@ -782,9 +791,11 @@ describe('end to end: a reply in the primary\'s room is streamed in the SECONDAR
     turns.setLive(KEY, { senderId: 'an', chatId: CHAT_ID });
 
     expect(await turns.steerLiveTurn({ to: 'e', ev: STEER_EV, turnKey: KEY })).toBe(true);
+    await settled();
     expect(reacted).toEqual([]);
     expect(bridge.reactions).toEqual([]);
     expect(logs.some((l) => l.includes('[secondary]') && /REFUSING to react.*no-match/.test(l))).toBe(true);
+    expect(notes.join('\n')).toMatch(/could not place the 📩 \(no-match/);
     expect(notes.join('\n')).toMatch(/could not place the 👀 \(no-match/);
   });
 
@@ -798,6 +809,7 @@ describe('end to end: a reply in the primary\'s room is streamed in the SECONDAR
     turns.setLive(KEY, { senderId: 'an', chatId: CHAT_ID });
 
     expect(await turns.steerLiveTurn({ to: 'e', ev: STEER_EV, turnKey: KEY })).toBe(true);
+    await settled();
     expect(reacted).toEqual([]);
     expect(bridge.reactions).toEqual([]);
     expect(logs.some((l) => l.includes('[secondary]') && /ambiguous: 2 messages key alike \(1118, 1200\)/.test(l))).toBe(true);
@@ -812,8 +824,12 @@ describe('end to end: a reply in the primary\'s room is streamed in the SECONDAR
     turns.setLive(KEY, { senderId: 'an', chatId: CHAT_ID });
 
     expect(await turns.steerLiveTurn({ to: 'e', ev: STEER_EV, turnKey: KEY })).toBe(true);
+    await settled();
     expect(reacted).toEqual([]);                                     // the peer was never asked
-    expect(bridge.reactions).toEqual([{ chatId: CHAT_ID, msgId: STEERED_ON_PRIMARY.id, emoji: '👀' }]);
+    expect(bridge.reactions).toEqual([
+      { chatId: CHAT_ID, msgId: STEERED_ON_PRIMARY.id, emoji: '📩' },
+      { chatId: CHAT_ID, msgId: STEERED_ON_PRIMARY.id, emoji: '👀' },
+    ]);
   });
 });
 
@@ -954,7 +970,10 @@ describe('boot — a node with no peer_spine builds neither half, and one with i
 // that floor being held: a missing 👀 is cosmetic, a 👀 from the wrong account is the bug.
 describe('the steer ack rides the same mouth the reply does', () => {
   const KEY = 'e:wa:chat-1';
-  const steerable = () => ({ async allowNewInput() { return 'any'; }, steer: () => true });
+  // `{ ack }`, not a bare `true` (2026-09-09): the 👀 is placed only on the session's own word
+  // that the MODEL took the line, so a fake claiming success without evidence would get 📩 and
+  // no 👀 at all. See tests/steer-ack.test.mjs for the Joyce fault that split the two.
+  const steerable = () => ({ async allowNewInput() { return 'any'; }, steer: () => ({ ack: Promise.resolve({ ok: true }) }) });
   // The steered message as the BRAIN's account sees it: its own local id, plus the two fields the
   // bridge mints for naming it across accounts (beeper.crossAccountMsgKey / the payload timestamp).
   const EV = {
@@ -982,9 +1001,14 @@ describe('the steer ack rides the same mouth the reply does', () => {
 
     // THE ASSERTION THIS CHUNK EXISTS FOR: the ack was asked of the SAME mouth the reply rides, on
     // the SAME chat payload the route handed back, naming the message by content + timestamp.
-    expect(calls.reacts).toEqual([{ chat: AS_PRIMARY, msgKey: STEERED_KEY, timestamp: STEERED_TS, emoji: '👀' }]);
+    await settled();
+    expect(calls.reacts).toEqual([
+      { chat: AS_PRIMARY, msgKey: STEERED_KEY, timestamp: STEERED_TS, emoji: '📩' },
+      { chat: AS_PRIMARY, msgKey: STEERED_KEY, timestamp: STEERED_TS, emoji: '👀' },
+    ]);
     // …and nothing at all on the account that is not answering.
     expect(bridge.reactions).toEqual([]);
+    expect(notes.filter((l) => /steer-ack/.test(l) && /placed the 📩 on its own copy/.test(l))).toHaveLength(1);
     expect(notes.filter((l) => /steer-ack/.test(l) && /placed the 👀 on its own copy/.test(l))).toHaveLength(1);
 
     await out.finish({ text: 'done' });
@@ -1005,9 +1029,9 @@ describe('the steer ack rides the same mouth the reply does', () => {
       turns.setLive(KEY, LIVE);
 
       expect(await turns.steerLiveTurn({ to: 'e', ev: EV, turnKey: KEY })).toBe(true);   // the weave still landed
+      await settled();
       expect(bridge.reactions, `${refusal.reason} must not fall back to this account`).toEqual([]);
-      const line = notes.find((l) => /steer-ack/.test(l));
-      expect(line).toMatch(/could not place the 👀/);
+      const line = notes.find((l) => /steer-ack/.test(l) && /could not place the 👀/.test(l));
       expect(line).toContain(refusal.reason);
       expect(line).toMatch(/no reaction from this account either/);
     }
@@ -1022,6 +1046,7 @@ describe('the steer ack rides the same mouth the reply does', () => {
     turns.setLive(KEY, LIVE);
 
     expect(await turns.steerLiveTurn({ to: 'e', ev: EV, turnKey: KEY })).toBe(true);
+    await settled();
     expect(bridge.reactions).toEqual([]);
     expect(notes.join('\n')).toMatch(/asking the peer to react threw — the link exploded/);
     expect(notes.join('\n')).toMatch(/could not place the 👀/);
@@ -1038,7 +1063,11 @@ describe('the steer ack rides the same mouth the reply does', () => {
     turns.setLive(KEY, LIVE);
 
     expect(await turns.steerLiveTurn({ to: 'e', ev: { ...EV, msgHash: null, msgTs: null }, turnKey: KEY })).toBe(true);
-    expect(calls.reacts).toEqual([{ chat: AS_PRIMARY, msgKey: null, timestamp: null, emoji: '👀' }]);
+    await settled();
+    expect(calls.reacts).toEqual([
+      { chat: AS_PRIMARY, msgKey: null, timestamp: null, emoji: '📩' },
+      { chat: AS_PRIMARY, msgKey: null, timestamp: null, emoji: '👀' },
+    ]);
     expect(bridge.reactions).toEqual([]);
     expect(notes.join('\n')).toMatch(/could not place the 👀 \(no-key/);
   });
@@ -1056,17 +1085,25 @@ describe('the steer ack rides the same mouth the reply does', () => {
 
     turns.setLive(KEY, LIVE);
     expect(await turns.steerLiveTurn({ to: 'e', ev: EV, turnKey: KEY })).toBe(true);
-    expect(bridge.reactions).toEqual([{ chatId: CHAT_ID, msgId: STEERED_ON_PRIMARY.id, emoji: '👀' }]);   // …so the 👀 is this account's too
+    await settled();
+    expect(bridge.reactions).toEqual([                                                                   // …so both are this account's too
+      { chatId: CHAT_ID, msgId: STEERED_ON_PRIMARY.id, emoji: '📩' },
+      { chatId: CHAT_ID, msgId: STEERED_ON_PRIMARY.id, emoji: '👀' },
+    ]);
     await out.finish({ text: 'done' });
   });
 
-  it('NO peer configured: nothing is asked and the 👀 goes out here — byte-identical to before', async () => {
+  it('NO peer configured: nothing is asked and both reactions go out here — the single-account path', async () => {
     const bridge = fakeBridge();
     const turns = createTurns({ brain: steerable(), bridge });
     turns.setLive(KEY, LIVE);
 
     expect(await turns.steerLiveTurn({ to: 'e', ev: EV, turnKey: KEY })).toBe(true);
-    expect(bridge.reactions).toEqual([{ chatId: CHAT_ID, msgId: STEERED_ON_PRIMARY.id, emoji: '👀' }]);
+    await settled();
+    expect(bridge.reactions).toEqual([
+      { chatId: CHAT_ID, msgId: STEERED_ON_PRIMARY.id, emoji: '📩' },
+      { chatId: CHAT_ID, msgId: STEERED_ON_PRIMARY.id, emoji: '👀' },
+    ]);
   });
 
   it('a route that THROWS acks HERE — the fail-safe direction: the primary can never be the wrong answer', async () => {
@@ -1077,8 +1114,12 @@ describe('the steer ack rides the same mouth the reply does', () => {
     turns.setLive(KEY, LIVE);
 
     expect(await turns.steerLiveTurn({ to: 'e', ev: EV, turnKey: KEY })).toBe(true);
-    expect(bridge.reactions).toEqual([{ chatId: CHAT_ID, msgId: STEERED_ON_PRIMARY.id, emoji: '👀' }]);
-    expect(notes.filter((l) => /could not decide the route/.test(l))).toHaveLength(1);
+    await settled();
+    expect(bridge.reactions).toEqual([
+      { chatId: CHAT_ID, msgId: STEERED_ON_PRIMARY.id, emoji: '📩' },
+      { chatId: CHAT_ID, msgId: STEERED_ON_PRIMARY.id, emoji: '👀' },
+    ]);
+    expect(notes.filter((l) => /could not decide the route/.test(l))).toHaveLength(2);   // asked once per reaction
   });
 
   // CALL SITE 1's per-being half, locked the way sender.mjs's and reply-actions.mjs's already are
@@ -1090,7 +1131,11 @@ describe('the steer ack rides the same mouth the reply does', () => {
     turns.setLive('rodz:wa:chat-1', LIVE);
 
     expect(await turns.steerLiveTurn({ to: 'rodz', ev: EV, turnKey: 'rodz:wa:chat-1' })).toBe(true);
-    expect(rodz.reactions).toEqual([{ chatId: CHAT_ID, msgId: STEERED_ON_PRIMARY.id, emoji: '👀' }]);
+    await settled();
+    expect(rodz.reactions).toEqual([
+      { chatId: CHAT_ID, msgId: STEERED_ON_PRIMARY.id, emoji: '📩' },
+      { chatId: CHAT_ID, msgId: STEERED_ON_PRIMARY.id, emoji: '👀' },
+    ]);
     expect(main.reactions).toEqual([]);
   });
 });

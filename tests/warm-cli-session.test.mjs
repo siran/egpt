@@ -107,15 +107,20 @@ describe('warm-cli-session — resident multi-turn', () => {
 // The invariants that matter here: the wire format is BYTE-IDENTICAL to a turn's (the CLI
 // cannot tell them apart, and must not), NO second `pending` is created (the live turn's one
 // result is the combined reply — a second pending would be a promise nothing can settle), and
-// it NEVER throws: every "nothing to steer" is a plain `false`, because a false NEGATIVE only
-// costs a queued turn while a false POSITIVE silently swallows the message.
+// it NEVER throws: every "nothing was handed over" is a plain `false`, because a false NEGATIVE
+// only costs a queued turn while a false POSITIVE silently swallows the message.
+//
+// WHAT A NON-FALSE ANSWER MEANS CHANGED ON 2026-09-09 (operator, after the Joyce fault): it is
+// `{ ack }`, not `true` — the bytes are on their way, and `ack` is what later says whether the
+// MODEL took them. The evidence itself is covered in tests/steer-ack.test.mjs; the cases below
+// only care that something/nothing was handed over, so they assert truthiness.
 describe('warm-cli-session — inject (steer the live turn, operator 2026-08-30)', () => {
   it('writes ONE user line to the SAME stdin, in the same wire format a turn uses', async () => {
     const f = fakeClaude({ hang: true });                 // hang: the turn stays in flight
     const s = createWarmCliSession({ spawn: f.spawn });
     s.turn('ORIGINAL');
     await new Promise((r) => setImmediate(r));
-    expect(s.inject('ACTUALLY DO X')).toBe(true);
+    expect(s.inject('ACTUALLY DO X')).toBeTruthy();
     expect(f.calls).toEqual(['ORIGINAL', 'ACTUALLY DO X']);   // parsed by the fake as a user msg
     expect(f.spawnCount()).toBe(1);                            // the SAME process
     s.close();
@@ -127,7 +132,7 @@ describe('warm-cli-session — inject (steer the live turn, operator 2026-08-30)
     let settled = 0;
     const pr = s.turn('ORIGINAL').then(() => { settled++; });
     await new Promise((r) => setImmediate(r));
-    expect(s.inject('AND ALSO Y')).toBe(true);
+    expect(s.inject('AND ALSO Y')).toBeTruthy();
     // ONE result event, and it settles the ONE pending the turn made.
     f.getProc().stdout.emit('data', JSON.stringify({ type: 'result', subtype: 'success', result: 'combined' }) + '\n');
     await pr;

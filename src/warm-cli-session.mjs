@@ -34,6 +34,33 @@
 // turn spends its time and where a human's follow-up ("actually, do X instead") is worth
 // anything at all. `inject` is that primitive; WHEN it may be used is a policy decision
 // made far above it (conversation_defaults.allow_new_input → spine → warm pool `steer`).
+//
+// …AND WHAT IT RETURNS IS NOW EVIDENCE, NOT A SUCCESSFUL WRITE (operator 2026-09-09, after the
+// live fault in `Joyce Vicente-2606301852`: four messages steered, a 👀 on each, no reply ever;
+// the sandboxed claude.exe measured afterwards with NO CHILDREN and ~350s of CPU over 21 hours,
+// i.e. idle). `proc.stdin.write` on a LIVE process's pipe succeeds whether or not anything on
+// the other end ever reads it, so the old `return true` meant SENT and was read one layer up as
+// RECEIVED. Operator: "nothing in eGPT can be allowed to lie".
+//
+// THE SIGNAL, MEASURED 2026-09-09 against the real CLI on this box. `--replay-user-messages`
+// ("Re-emit user messages from stdin back on stdout for acknowledgment", stream-json only) makes
+// the CLI echo each user line it takes as
+//     {"type":"user","message":{…},"isReplay":true,"session_id":…,"uuid":…}
+// AT THE MOMENT OF INGESTION, not when the bytes are read. Both halves of the 2026-08-30
+// behaviour were re-measured through it, and the 3-second gap between them is what proves which
+// moment it marks:
+//   - AGENTIC turn, line written while tool_use #2 was still streaming: the replay came back
+//     29ms later, sequenced right after that call's tool_result — absorbed into the LIVE turn.
+//   - PURE-TEXT turn, line written 2423ms into the generation: the replay came back at 5485ms,
+//     AFTER turn 1's own result (4923ms) and after a second `init` — a separate turn, not a weave.
+// With the flag OFF the injected text appears NOWHERE in stdout (0 hits across a full 258-event
+// agentic run), which is why the flag is not optional here: without it there is no ack at all.
+//
+// `inject` therefore returns `false` (nothing was handed over) or `{ ack }`, where `ack` is a
+// promise that settles from CLI EVENTS ONLY — never a clock: `{ok:true}` on that replay, and
+// `{ok:false, reason}` when the turn ends, fails, the process exits or the session closes with
+// the line still un-ingested. A steer that is never ingested therefore ends as a stated refusal
+// rather than as silence.
 import { spawn as nodeSpawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -91,6 +118,10 @@ const TOOL_HEADLINE_FIELDS = {
 // headline field is exempt: a 4KB heredoc `command` is still the right thing to show,
 // truncated.
 const UNKNOWN_FIELD_MAX = 200;
+
+// How many unreadable stdout lines one session reports before it stops (see onStdout). Small:
+// these should never happen, and if they start happening the first few say everything.
+const UNREADABLE_LOG_CAP = 5;
 
 // 60 chars. The rendered text is a WhatsApp reply, and an agentic turn emits DOZENS of
 // tool calls — the budget is paid once per call, so it is a signpost ("which file? which
@@ -213,6 +244,7 @@ export function createWarmCliSession(options = {}) {
   const verboseThinking = options.verboseThinking === true;
   let proc = null;
   let stdoutBuf = '';
+  let unreadable = 0;               // stdout lines this session could not parse (see onStdout)
   let stderrBuf = '';
   let sessionId = options.sessionId ?? null;
   let pending = null;   // { resolve, reject, onUpdate, acc, settled }
@@ -224,7 +256,12 @@ export function createWarmCliSession(options = {}) {
     // already supplies BASE_ARGS (--print --output-format stream-json --verbose
     // --include-partial-messages), the sandbox flags, --model/--effort, and
     // --resume <sessionId> when set.
-    const args = ['--input-format', 'stream-json', ...buildClaudeArgs(options)];
+    // --replay-user-messages: the injection ACKNOWLEDGEMENT (see the header measurement). It is
+    // paired with --input-format stream-json because that is the only mode it works in, and it
+    // is unconditional because without it `inject` has no evidence to return. Additive to the
+    // OUTPUT stream only — it adds `user`/isReplay events, which onStdout routes to the ack
+    // below and nothing else reads, so every existing turn parses byte-identically.
+    const args = ['--input-format', 'stream-json', '--replay-user-messages', ...buildClaudeArgs(options)];
     const cwd = normalizeCwd(options.cwd);
     // A non-existent cwd makes Node's spawn fail with a MISLEADING `spawn <bin>
     // ENOENT` — it names the binary, not the missing dir (operator 2026-06-14:
@@ -254,9 +291,45 @@ export function createWarmCliSession(options = {}) {
       const t = line.trim();
       if (!t) continue;
       let ev;
-      try { ev = JSON.parse(t); } catch { continue; }
+      // A LINE THIS SESSION CANNOT READ IS AN EVENT IT HAS LOST, AND IT SAYS SO (operator
+      // 2026-09-09, "no error is swallowed silently"). This `continue` used to be silent, and
+      // it sits on the ONLY path a turn has to finish: the turn's own `result` arrives as one
+      // of these lines, and if the line is unreadable it is dropped here, `pending` is never
+      // settled, the pool's `busy` stays true forever and the conversation wedges with the CLI
+      // alive and idle — which is exactly the state the Joyce session was measured in. Whether
+      // that is what happened there cannot be known now; what can be fixed is that it would
+      // have left no trace at all. Capped, because a stdout that has started emitting garbage
+      // must not also flood the log.
+      try { ev = JSON.parse(t); } catch {
+        if (unreadable < UNREADABLE_LOG_CAP) {
+          unreadable++;
+          // Through redactSecrets, the SAME pass the tool_use stubs use, and for the same
+          // reason: a broken line is still raw stdout, and a truncated `Bash` tool_use input
+          // can carry `curl -u user:pass`. Redact BEFORE truncating, as renderToolUse does.
+          onLog(`warm-cli: DISCARDED an unreadable stdout line (${t.length} chars, starts ${JSON.stringify(redactSecrets(t).slice(0, 120))})${unreadable === UNREADABLE_LOG_CAP ? ' — further ones on this session are not logged' : ''}`);
+        }
+        continue;
+      }
       // Capture the (possibly freshly-minted) session id, first-wins.
       if (typeof ev.session_id === 'string' && !sessionId) sessionId = ev.session_id;
+      // THE INJECTION ACK (operator 2026-09-09 — see the header measurement). `isReplay` marks
+      // the CLI echoing back a user line it has just TAKEN, which is the only thing in this
+      // stream that says the model got a steered message; the write itself says nothing.
+      //
+      // The turn's OWN opening line is replayed too, and it is consumed first so it can never
+      // ack anything: without that, a steer whose text happens to equal the opener's ("ok",
+      // "👍" — not exotic in a chat) would be acknowledged by an event that predates it.
+      // A tool_result also arrives as a `user` event, and carries no `isReplay`, so it is not
+      // seen here — same as before.
+      if (ev.type === 'user' && ev.isReplay === true && pending) {
+        const echoed = (Array.isArray(ev.message?.content) ? ev.message.content : [])
+          .filter((c) => c?.type === 'text').map((c) => c.text).join('');
+        if (!pending.openerReplayed && echoed === pending.openerText) pending.openerReplayed = true;
+        else {
+          const rec = pending.injections.find((r) => !r.done && r.text === echoed);
+          if (rec) { rec.done = true; rec.settle({ ok: true }); }
+        }
+      }
       // verboseThinking: tap EVERY assistant event's content blocks, independent of the
       // existing (unchanged, below) `!pending.acc` first-wins fallback — additive only, a
       // no-op when the option is off. See pushVerboseBlocks above.
@@ -320,16 +393,29 @@ export function createWarmCliSession(options = {}) {
     }
   }
 
+  // Tell every injection still waiting on this turn what became of it. Called from EVERY way a
+  // turn can end, so a steered line is never left with nobody ever answering for it — that
+  // silence is precisely what the Joyce incident was made of.
+  function settleInjections(p, reason) {
+    for (const rec of p?.injections ?? []) {
+      if (rec.done) continue;
+      rec.done = true;
+      rec.settle({ ok: false, reason });
+    }
+  }
+
   function resolvePending(text) {
     if (!pending || pending.settled) return;
     pending.settled = true;
     const p = pending; pending = null;
+    settleInjections(p, 'the turn ended before the CLI ingested it');
     p.resolve({ text, sessionId });
   }
   function failPending(err) {
     if (pending && !pending.settled) {
       pending.settled = true;
       const p = pending; pending = null;
+      settleInjections(p, `the turn failed before the CLI ingested it: ${err?.message ?? err}`);
       p.reject(err);
     }
   }
@@ -347,7 +433,7 @@ export function createWarmCliSession(options = {}) {
       if (pending) throw new Error('warm-cli: a turn is already in flight (the pool must serialize per key)');
       if (!proc) spawnProc();
       return new Promise((resolve, reject) => {
-        pending = { resolve, reject, onUpdate, acc: '', msgBreak: false, verboseBlocks: [], settled: false };
+        pending = { resolve, reject, onUpdate, acc: '', msgBreak: false, verboseBlocks: [], settled: false, openerText: String(message ?? ''), openerReplayed: false, injections: [] };
         try { proc.stdin.write(userLine(message)); } catch (e) { failPending(e); }
       });
     },
@@ -358,17 +444,31 @@ export function createWarmCliSession(options = {}) {
     // silence the measurement recorded). The caller therefore gets NO reply of its own —
     // the spine's steer path opens no placeholder for exactly this reason.
     //
-    // NEVER THROWS, and `false` is the honest, safe answer to "was this woven in?": no turn
-    // in flight (no pending), no process yet, the session already closed, or the write
-    // itself failed. Every caller treats false as "nothing happened at all" and falls back
-    // to queueing an ordinary turn — so a false NEGATIVE costs a queued turn, while a false
-    // POSITIVE would silently swallow the message. Biased accordingly.
+    // NEVER THROWS, and `false` is the honest, safe answer to "was anything handed over at
+    // all?": no turn in flight (no pending), no process yet, the session already closed, or
+    // the write itself failed. Every caller treats false as "nothing happened at all" and
+    // falls back to queueing an ordinary turn.
+    //
+    // ANYTHING ELSE IS `{ ack }`, AND `{ ack }` IS NOT A CLAIM (operator 2026-09-09). It says
+    // only that the bytes are on their way; `ack` is the promise that later says whether the
+    // MODEL took them, settled by CLI events alone — the `isReplay` echo above for `{ok:true}`,
+    // and the turn's own end / failure / exit / close for `{ok:false, reason}`. There is
+    // deliberately no timer: a session that neither ingests nor ends is wedged, and the
+    // absence of a 👀 in the chat is the report of that, not a made-up verdict.
     inject(message) {
       if (closed || !proc || !pending) return false;
-      try { proc.stdin.write(userLine(message)); return true; } catch { return false; }
+      const text = String(message ?? '');
+      let settle;
+      const ack = new Promise((r) => { settle = r; });
+      const rec = { text, settle, done: false };
+      pending.injections.push(rec);
+      try { proc.stdin.write(userLine(text)); }
+      catch { rec.done = true; return false; }        // nobody holds `ack` — nothing to settle
+      return { ack };
     },
     close() {
       closed = true;
+      settleInjections(pending, 'the session was closed before the CLI ingested it');
       try { proc?.stdin?.end(); } catch { /* already closing */ }
       try { proc?.kill?.(); } catch { /* */ }
       proc = null;

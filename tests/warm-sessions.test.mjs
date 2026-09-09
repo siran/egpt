@@ -158,8 +158,10 @@ describe('warm-session pool', () => {
   // CONTRACT (operator 2026-06-13 for the mechanism, 2026-08-30 for this shape): a message
   // that arrives while a turn is already streaming on a key can be WOVEN INTO that running
   // turn instead of queueing as a fresh turn behind it. The in-flight turn's single result
-  // carries the combined reply, so steer() returns a plain boolean and the caller emits
-  // nothing of its own.
+  // carries the combined reply, so there is nothing to return beyond "was anything handed
+  // over" — and, since 2026-09-09, the session's promise of what the MODEL then did with it
+  // (`{ ack }`; see tests/steer-ack.test.mjs for the Joyce fault that made `true`-on-a-write
+  // unacceptable). The caller emits nothing of its own either way.
   //
   // IT IS ASKED FOR BY NAME (pool.steer), never inferred from `busy`. The weave used to live
   // inside run(), firing on whoever happened to reach a busy key second — harmless only while
@@ -175,13 +177,23 @@ describe('warm-session pool', () => {
     const made = [];
     const makeSession = (opts) => {
       const s = {
-        opts, closed: false, turns: [], injected: [], _resolve: null,
+        opts, closed: false, turns: [], injected: [], _resolve: null, _acks: [],
         close() { this.closed = true; },
         turn(msg) {
           this.turns.push(msg);
           return new Promise((resolve) => { this._resolve = resolve; });   // stays in flight
         },
-        inject(msg) { if (!this._resolve) return false; this.injected.push(msg); return true; },
+        // Mirrors createWarmCliSession since 2026-09-09: false = nothing handed over,
+        // otherwise `{ ack }`, settled here by ackInjection() the way the real session is
+        // settled by the CLI's own replay of the line.
+        inject(msg) {
+          if (!this._resolve) return false;
+          this.injected.push(msg);
+          let settle; const ack = new Promise((r) => { settle = r; });
+          this._acks.push(settle);
+          return { ack };
+        },
+        ackInjection(r = { ok: true }) { for (const settle of this._acks.splice(0)) settle(r); },
         finish(v) { const r = this._resolve; this._resolve = null; r(v); },
       };
       made.push(s);
@@ -195,7 +207,7 @@ describe('warm-session pool', () => {
     const pool = createWarmPool({ makeSession });
     const p1 = pool.run('k', 'first');
     await sleep(2);                                  // let _doTurn start → e.busy
-    expect(pool.steer('k', 'second')).toBe(true);    // woven in, not queued
+    expect(await pool.steer('k', 'second')).toBeTruthy();   // handed over, not queued
     expect(made[0].injected).toEqual(['second']);
     expect(made[0].turns).toEqual(['first']);        // NOT a second turn
     made[0].finish({ text: 'first+second', sessionId: 'sid' });
@@ -225,7 +237,7 @@ describe('warm-session pool', () => {
     await sleep(2);
     made[0].finish({ text: 'a', sessionId: 'sid' });
     await p1;                                         // turn ended → key idle
-    expect(pool.steer('k', 'second')).toBe(false);
+    expect(await pool.steer('k', 'second')).toBe(false);
     expect(made[0].turns).toEqual(['first']);         // NOT a fallthrough turn
     expect(made[0].injected).toEqual([]);
   });
@@ -233,7 +245,7 @@ describe('warm-session pool', () => {
   it('steer on an UNKNOWN key is false and opens nothing', async () => {
     const { makeSession, made } = injectableFactory();
     const pool = createWarmPool({ makeSession });
-    expect(pool.steer('never-opened', 'x')).toBe(false);
+    expect(await pool.steer('never-opened', 'x')).toBe(false);
     expect(made).toHaveLength(0);
     expect(pool.has('never-opened')).toBe(false);
   });
@@ -245,7 +257,7 @@ describe('warm-session pool', () => {
     const { makeSession, made } = fakeFactory();      // fakeFactory sessions have no inject
     const pool = createWarmPool({ makeSession });
     const r1 = await pool.run('k', 'first');
-    expect(pool.steer('k', 'second')).toBe(false);    // no capability → never steered
+    expect(await pool.steer('k', 'second')).toBe(false);   // no capability → never steered
     const r2 = await pool.run('k', 'second');         // ...and the ordinary path is untouched
     expect([r1.text, r2.text]).toEqual(['echo:first', 'echo:second']);
     expect(made[0].turns).toEqual(['first', 'second']);
@@ -256,7 +268,7 @@ describe('warm-session pool', () => {
     const pool = createWarmPool({ makeSession, injectWhileBusy: false });
     const p1 = pool.run('k', 'first');
     await sleep(2);
-    expect(pool.steer('k', 'second')).toBe(false);
+    expect(await pool.steer('k', 'second')).toBe(false);
     expect(made[0].injected).toEqual([]);
     const p2 = pool.run('k', 'second');              // queues behind, not injected
     made[0].finish({ text: 'a', sessionId: 'sid' });
