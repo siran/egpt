@@ -43,6 +43,16 @@
 // MIGRATION: none. `accum` is a known mode again, so a `mode: accum` on disk means what it
 // says instead of falling through isAutoMode(...) to 'mention' — and since it gates like
 // 'mention', nothing about WHEN those chats reply changes either.
+
+// THE ONE IMPORT THIS MODULE HAS, and the purity lock in tests/auto-mode.test.mjs pins it to
+// exactly this line. It is a frozen shared CONSTANT — the voice-body marker, defined once beside
+// its writer (incoming-media.voiceTranscriptBody) and already read this way by router.addressed —
+// not config, not env, not IO. mentionStatus' spoken scan has to anchor to the start of the
+// TRANSCRIPT, and the alternative to importing the canonical copy is a third private copy of the
+// regex, which is the duplication this repo keeps paying for. incoming-media.mjs imports nothing
+// Node-only and has no import-time side effects, so this module stays browser-safe and pure.
+import { VOICE_MARK } from './incoming-media.mjs';
+
 export const AUTO_MODES = ['on', 'auto', 'mute', 'mention-direct', 'mention', 'accum', 'off'];
 export const DEFAULT_AUTO_MODE = 'mention';
 
@@ -256,15 +266,33 @@ function stripCode(text) {
 const DEFAULT_WAKE_WORDS = ['egpt', 'e'];
 // `opts` is the matcher's option bag, forwarded verbatim to mentionHits — today just
 // { addressWithoutAt }, the node's `dispatch.address_without_at`, handed in by the limb that owns
-// the wake list. `opts.alsoAnywhere` is a SEPARATE, optional voice-alias list (voice_handles) —
-// when supplied, its mentionHitsAnywhere hits are OR'd into atEAnywhere only (an anywhere match
-// has no "start", so it never sets atEStart). Absent (every existing caller) → byte-identical to
-// before; this is additive, not a shape change.
+// the wake list. `opts.voiceWake` is a SEPARATE, optional SPOKEN list (voice_handles), supplied by
+// the limb only when the message IS a voice note.
+//
+// START ONLY, THE SAME RULE AS AN @HANDLE (operator 2026-09-09) — and THE SAME MATCHER: the spoken
+// list goes through mentionHits, and only its `atStart` hits count. It used to be a
+// mentionHitsAnywhere scan OR'd into atEAnywhere alone, which is how `perro` ("dog", one of E's
+// spoken names) woke E out of "tengo un perro grande". This is the BRIDGE half of the same change
+// router.addressed already made; the node now has ONE rule for spoken wake, not two.
+//
+// SO A SPOKEN HIT SETS BOTH FLAGS, exactly as `addressed` now returns { atStart: true,
+// anywhere: true }: a spoken name at the start IS a direct address, so a 'mention-direct' chat
+// must wake on it (it could not, under the anywhere-only merge), and mid-sentence it is no
+// address at all.
+//
+// AND "THE START" IS THE TRANSCRIPT'S: a voice body arrives already marked `(voice transcription,
+// Ns) …` (incoming-media.voiceTranscriptBody), so VOICE_MARK — the canonical copy beside that
+// writer, the one the router uses — comes off before the spoken scan. Without it no spoken alias
+// could ever sit at position 0 and this would kill voice wake outright instead of narrowing it.
+// Only the spoken scan sees the stripped text; the @handle scan reads the body exactly as before.
+//
+// Absent (every non-voice caller) → byte-identical to before: an empty/undefined list makes
+// mentionHits return [], so neither flag moves.
 export function mentionStatus(text, wakeWords, opts) {
-  const { alsoAnywhere, ...matchOpts } = opts || {};
+  const { voiceWake, ...matchOpts } = opts || {};
   const hits = mentionHits(text, (Array.isArray(wakeWords) && wakeWords.length) ? wakeWords : DEFAULT_WAKE_WORDS, matchOpts);
-  const anywhereHits = mentionHitsAnywhere(text, alsoAnywhere);
-  return { atEAnywhere: hits.length > 0 || anywhereHits.length > 0, atEStart: hits.some((h) => h.atStart) };
+  const spoken = mentionHits(String(text ?? '').replace(VOICE_MARK, ''), voiceWake, matchOpts).some((h) => h.atStart);
+  return { atEAnywhere: hits.length > 0 || spoken, atEStart: hits.some((h) => h.atStart) || spoken };
 }
 
 // Given the chat's mode and the triggering message's mention status

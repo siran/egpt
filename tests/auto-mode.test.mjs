@@ -326,14 +326,23 @@ describe('address_without_at: the bare form is a node-wide SWITCH, default ON', 
   });
 
   // PURITY LOCK. The flag must never become a config read INSIDE the matcher: auto-mode.mjs is
-  // the one module the bridges, the router, the gate and the room all share, and it has zero
-  // imports by design. If this goes red, someone reached for the config from inside a pure
-  // function — hand the value in from the caller instead.
-  it('mentionHits stays PURE — auto-mode.mjs imports nothing and reads no config/env', () => {
+  // the one module the bridges, the router, the gate and the room all share. If this goes red,
+  // someone reached for the config from inside a pure function — hand the value in from the
+  // caller instead.
+  //
+  // THE IMPORT CLAUSE IS AN ALLOWLIST NOW, NOT A ZERO (2026-09-09). It used to be "no import line
+  // at all", a proxy for the real hazard; mentionStatus' spoken scan must anchor to the start of
+  // the TRANSCRIPT, so it needs the voice-body marker, and the only alternatives to importing the
+  // canonical constant were a third private copy of that regex or a new per-call option carrying
+  // pre-stripped text. So the clause is pinned instead of dropped: EXACTLY the constants listed
+  // here, byte-for-byte, and nothing else — a config/env/IO import still turns this red, and so
+  // does a second unreviewed one. Widen the list only with the same deliberation.
+  it('mentionHits stays PURE — auto-mode.mjs reads no config/env and imports only the allowlisted constant', () => {
     const src = readFileSync(new URL('../src/auto-mode.mjs', import.meta.url), 'utf8');
     const code = src.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
-    expect(code).not.toMatch(/^\s*import\s/m);
     expect(code).not.toMatch(/require\(|process\.env|readConfig|getConfig|EGPT_CONFIG/);
+    expect([...code.matchAll(/^[ \t]*import\s.*$/gm)].map((m) => m[0].trim()))
+      .toEqual(["import { VOICE_MARK } from './incoming-media.mjs';"]);
   });
 });
 
@@ -369,27 +378,56 @@ describe('mentionHitsAnywhere — the spoken (voice_handles) anywhere-match mode
   });
 });
 
-// mentionStatus' opt-in `alsoAnywhere` — additive merge of the voice-alias anywhere-match into
-// atEAnywhere ONLY (never atEStart, which has no meaning for an anywhere hit). Every EXISTING
-// caller (no alsoAnywhere) is untouched — locked by the huge test surface above this block,
-// none of which was edited to add this option.
-describe('mentionStatus({ alsoAnywhere }) — voice_handles merges additively into atEAnywhere', () => {
-  it('a voice alias mid-transcript sets atEAnywhere true, atEStart stays false', () => {
-    const st = mentionStatus('(voice transcription, 8s) oye perrito estás ahí', [], { alsoAnywhere: ['perrito'] });
-    expect(st).toEqual({ atEAnywhere: true, atEStart: false });
+// mentionStatus' opt-in `voiceWake` — the SPOKEN (voice_handles) list, run through THE SAME
+// matcher as an @handle and counted ONLY where a bare handle counts: at the START (operator
+// 2026-09-09). This is the BRIDGE half of the router's c61bab9; before it, the two halves of the
+// node disagreed — the router had already narrowed to start-only while this one still OR'd
+// mentionHitsAnywhere in, so `tengo un perro grande` kept waking E mid-sentence.
+//
+// A START HIT IS A DIRECT ADDRESS, so it sets BOTH atEStart and atEAnywhere — the same
+// { atStart: true, anywhere: true } shape router.addressed now returns, which is what lets a
+// 'mention-direct' chat wake on a spoken name at all (it could not, before).
+//
+// AND "THE START" IS THE TRANSCRIPT'S: the `(voice transcription, Ns) ` marker comes off first
+// (incoming-media.VOICE_MARK, the canonical copy the router uses too) — without it nothing
+// spoken could ever sit at position 0 and voice wake would be dead, not narrowed.
+//
+// Every EXISTING caller (no voiceWake) is untouched — locked by the huge test surface above this
+// block, none of which was edited to add this option.
+describe('mentionStatus({ voiceWake }) — a spoken alias wakes only at the START of the transcript', () => {
+  const T = (t, list, opts) => mentionStatus(t, [], { voiceWake: list, ...opts });
+  it('REPRODUCE-FIRST: a spoken alias MID-transcript wakes NOTHING — `tengo un perro grande` no longer sets atEAnywhere', () => {
+    const st = T('(voice transcription, 4s) tengo un perro grande', ['perro']);
+    expect(st).toEqual({ atEAnywhere: false, atEStart: false });
+    expect(replyAllowed('mention', st)).toBe(false);        // was true: E answered a dog, not a call
   });
-  it('no alsoAnywhere list (undefined/empty) behaves exactly like plain mentionStatus', () => {
-    expect(mentionStatus('hola perrito', [])).toEqual(mentionStatus('hola perrito', [], { alsoAnywhere: [] }));
-    expect(mentionStatus('hola perrito', [])).toEqual(mentionStatus('hola perrito', [], { alsoAnywhere: undefined }));
+  it('REPRODUCE-FIRST: a spoken alias AT THE START sets BOTH flags, so a mention-direct chat wakes', () => {
+    const st = T('(voice transcription, 4s) perrito ven', ['perrito']);
+    expect(st).toEqual({ atEAnywhere: true, atEStart: true });
+    expect(replyAllowed('mention-direct', st)).toBe(true);  // was false: a spoken name could never wake mention-direct
+    expect(replyAllowed('mention', st)).toBe(true);
   });
-  it('the text @handle path and the voice alsoAnywhere path OR together', () => {
-    const st = mentionStatus('@e y también perrito', ['e', 'egpt'], { alsoAnywhere: ['perrito'] });
-    expect(st).toEqual({ atEAnywhere: true, atEStart: true });   // @e still sets atEStart
+  it('THE START IS THE TRANSCRIPT’S — the marker comes off first, with or without a duration', () => {
+    expect(T('perrito ven', ['perrito'])).toEqual({ atEAnywhere: true, atEStart: true });
+    expect(T('(voice transcription) perrito ven', ['perrito'])).toEqual({ atEAnywhere: true, atEStart: true });
+    expect(T('(voice transcription, 12s) perrito ven', ['perrito'])).toEqual({ atEAnywhere: true, atEStart: true });
   });
-  it('addressWithoutAt keeps riding alongside alsoAnywhere without interference', () => {
-    const st = mentionStatus('e hola perrito', ['e'], { addressWithoutAt: false, alsoAnywhere: ['perrito'] });
-    // bare 'e' at start does NOT address (addressWithoutAt:false) but the voice alias still does
-    expect(st).toEqual({ atEAnywhere: true, atEStart: false });
+  it('the SAME boundary as a bare handle — a glued token at the start is not a hit', () => {
+    expect(T('(voice transcription, 4s) perritolindo vino', ['perrito'])).toEqual({ atEAnywhere: false, atEStart: false });
+    expect(T('(voice transcription, 4s) perrito, ven', ['perrito'])).toEqual({ atEAnywhere: true, atEStart: true });
+  });
+  it('no voiceWake list (undefined/empty) behaves exactly like plain mentionStatus', () => {
+    expect(mentionStatus('hola perrito', [])).toEqual(mentionStatus('hola perrito', [], { voiceWake: [] }));
+    expect(mentionStatus('hola perrito', [])).toEqual(mentionStatus('hola perrito', [], { voiceWake: undefined }));
+    expect(mentionStatus('perrito hola', [])).toEqual(mentionStatus('perrito hola', [], { voiceWake: [] }));
+  });
+  it('the text @handle path and the voice path OR together', () => {
+    const st = mentionStatus('@e y también perrito', ['e', 'egpt'], { voiceWake: ['perrito'] });
+    expect(st).toEqual({ atEAnywhere: true, atEStart: true });   // @e sets atEStart; `perrito` mid-sentence adds nothing
+  });
+  it('addressWithoutAt rides along — with the bare form off, a transcript (never any @) cannot wake', () => {
+    const st = mentionStatus('perrito ven', ['e'], { addressWithoutAt: false, voiceWake: ['perrito'] });
+    expect(st).toEqual({ atEAnywhere: false, atEStart: false });
   });
 });
 

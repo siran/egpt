@@ -1732,13 +1732,16 @@ describe('beeper bridge — wake words (own handles only, no injection)', () => 
   });
 });
 
-// SPOKEN wake alias (operator 2026-08-09): voiceWakeWords gates a voice note's whisper
-// TRANSCRIPT via mentionStatus' alsoAnywhere — anywhere in the sentence, never '@', additive to
-// (never a replacement for) the existing wakeWords/atE gate. Default [] → no behaviour change
-// for a node that configures nothing (every OTHER voice test above passes no voiceWakeWords and
-// is untouched).
-describe('beeper bridge — voice wake alias (voice_handles, anywhere in the transcript)', () => {
-  it('a spoken alias ANYWHERE in the transcript wakes atEAnywhere; atEStart stays false', async () => {
+// SPOKEN wake alias (operator 2026-08-09; narrowed to the START 2026-09-09): voiceWakeWords gates
+// a voice note's whisper TRANSCRIPT via mentionStatus' `voiceWake` — the SAME matcher as an
+// @handle, counted only where a bare handle counts, at the START of the transcript, never '@'.
+// It was an anywhere-match OR'd into atEAnywhere alone; that is the half of c61bab9 the ROUTER
+// already had and this bridge did not, so the node ran two different rules for spoken wake. A
+// start hit is a DIRECT address and sets BOTH flags. Default [] → no behaviour change for a node
+// that configures nothing (every OTHER voice test above passes no voiceWakeWords and is
+// untouched).
+describe('beeper bridge — voice wake alias (voice_handles, at the start of the transcript)', () => {
+  it('REPRODUCE-FIRST: a spoken alias MID-transcript wakes NOTHING — neither atEAnywhere nor atEStart', async () => {
     const { incoming } = await startBridge({
       voiceWakeWords: ['perrito'],
       transcribe: async () => 'oye perrito estás ahí',
@@ -1750,8 +1753,24 @@ describe('beeper bridge — voice wake alias (voice_handles, anywhere in the tra
     })] });
     await waitFor(() => incoming.length === 1);
     expect(incoming[0].text).toBe('(voice transcription) oye perrito estás ahí');
+    expect(incoming[0].from.atEAnywhere).toBe(false);   // was true — a name buried in prose is not an address
+    expect(incoming[0].from.atEStart).toBe(false);
+  });
+
+  it('REPRODUCE-FIRST: a spoken alias AT THE START wakes BOTH flags — the marker is not the start', async () => {
+    const { incoming } = await startBridge({
+      voiceWakeWords: ['perrito'],
+      transcribe: async () => 'perrito ven',
+      resolveTranscriptionService: async () => ({ enabled: true, postsBack: false }),
+    });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({
+      text: null, type: 'VOICE',
+      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+    })] });
+    await waitFor(() => incoming.length === 1);
+    expect(incoming[0].text).toBe('(voice transcription) perrito ven');   // the body the matcher sees, marker and all
     expect(incoming[0].from.atEAnywhere).toBe(true);
-    expect(incoming[0].from.atEStart).toBe(false);   // mid-transcript, never treated as a leading token
+    expect(incoming[0].from.atEStart).toBe(true);      // was false — so a mention-direct chat can finally wake on it
   });
 
   it('the SAME words as a TEXT message do NOT wake — voiceWakeWords only runs on isVoice', async () => {
@@ -1762,6 +1781,19 @@ describe('beeper bridge — voice wake alias (voice_handles, anywhere in the tra
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ isSender: false, senderName: 'Bea', text: 'oye perrito estás ahí' })] });
     await waitFor(() => incoming.length === 1);
     expect(incoming[0].from.atEAnywhere).toBe(false);
+  });
+
+  // TEXT LOCK for the new start rule: `perrito` LEADING a typed message is exactly the shape that
+  // now wakes a voice note, so this pins that the spoken list still never reaches a text message.
+  it('a TEXT message STARTING with the spoken alias still does not wake either flag', async () => {
+    const { incoming } = await startBridge({
+      voiceWakeWords: ['perrito'],
+      resolveTranscriptionService: async () => ({ enabled: true, postsBack: false }),
+    });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ isSender: false, senderName: 'Bea', text: 'perrito ven' })] });
+    await waitFor(() => incoming.length === 1);
+    expect(incoming[0].from.atEAnywhere).toBe(false);
+    expect(incoming[0].from.atEStart).toBe(false);
   });
 
   it('no voiceWakeWords configured (default []) → a voice note with the same words does not wake', async () => {

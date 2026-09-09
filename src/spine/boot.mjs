@@ -976,7 +976,9 @@ export async function boot({
   const wakeWords = (() => { const pa = personaAgent(); return [...new Set(wakeTokens(pa.name, pa.agent))]; })();
   // THE SPOKEN counterpart (operator 2026-08-09): voice_handles, the persona agent's own list —
   // NO map-key fallback (voiceWakeTokens, router.mjs), so an unconfigured persona wakes on NO
-  // spoken alias. Gates a voice note's whisper transcript, anywhere in the sentence, never `@`.
+  // spoken alias. Gates a voice note's whisper transcript at the START of it, never `@` — the
+  // SAME rule as a bare @handle since 2026-09-09 (it used to match anywhere in the sentence,
+  // which is how `perro` woke E out of "tengo un perro grande").
   const voiceWakeWords = (() => { const pa = personaAgent(); return [...new Set(voiceWakeTokens(pa.agent))]; })();
   // THE BARE-REPLY GATE'S OWN LIST (operator 2026-09-01) — wakeWords ∪ the persona's OWN
   // fallback_handle tokens (fallbackWake, router.mjs: the same fail-closed rule, so a
