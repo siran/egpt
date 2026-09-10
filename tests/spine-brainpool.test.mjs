@@ -3,7 +3,7 @@
 // (fresh thread → first turn wrapped with the feed; resumed thread → raw).
 // Against a fake warm pool + in-memory conv-state. No claude, no spawn.
 import { describe, it, expect, vi } from 'vitest';
-import { createBrainPool, parseWarmBlock } from '../src/spine/brainpool.mjs';
+import { createBrainPool, parseWarmBlock, resolveBeingDef, resolveDefaultBrainDef } from '../src/spine/brainpool.mjs';
 import { createWarmPool } from '../src/warm-sessions.mjs';
 import { createPiCliSession } from '../src/pi-cli-session.mjs';
 import { EventEmitter } from 'node:events';
@@ -1864,5 +1864,75 @@ describe('brainpool.turn — allowed_paths reach the OS layer as brainOptions.sa
     expect(pool.calls[0].brainOptions.addDirs).toEqual(['C:/work/rw']);
     const hits = logs.filter((l) => String(l).includes("per-path tool granularity beyond read-only isn't native"));
     expect(hits, `the line was emitted ${hits.length} times`).toHaveLength(1);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// `agents.<name>.configuration` has TWO forms (operator 2026-09-07): a STRING naming
+// config/agents/<name>.yaml, or an INLINE MAP written straight into config.yaml. Both go
+// through the SAME resolver (brains.mjs's resolve) and the SAME two callers here — there is
+// no second registry and no per-caller branch. These lock the caller-side behaviour.
+describe('configuration: inline map vs. type-file name (both forms, one resolver)', () => {
+  const inline = { type: 'ccode', model: 'haiku', effort: 'low', verbose_thinking: true, personality: 'egpt' };
+
+  it('resolveBeingDef: an INLINE map reaches the shaped def whole — model/effort/verbose_thinking/personality all present', () => {
+    const brains = createBrains({ builtinDir: '/nonexistent-builtin', agentsDir: '/nonexistent-agents' });
+    const config = { agents: { egpt: { configuration: { ...inline }, name: 'E', default: true } } };
+    expect(resolveBeingDef('egpt', null, { getConfig: () => config, brains })).toMatchObject({
+      name: 'E', type: 'ccode', model: 'haiku', effort: 'low', verbose_thinking: true, personality: 'egpt',
+    });
+  });
+
+  it('resolveDefaultBrainDef: the persona\'s INLINE map resolves the same way (an object is truthy — it does not fall through to the shipped egpt type)', () => {
+    const brains = createBrains({ builtinDir: '/nonexistent-builtin', agentsDir: '/nonexistent-agents' });
+    const config = { agents: { egpt: { configuration: { ...inline }, name: 'E', default: true } } };
+    expect(resolveDefaultBrainDef({ getConfig: () => config, brains }))
+      .toMatchObject({ type: 'ccode', model: 'haiku', effort: 'low', verbose_thinking: true, personality: 'egpt' });
+  });
+
+  it('an inline map is NOT merged with a same-named file that happens to exist on disk', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'egpt-inline-'));
+    try {
+      writeFileSync(join(dir, 'egpt.yaml'), 'type: codex\nmodel: opus\neffort: max\ncwd: /elsewhere\n', 'utf8');
+      const brains = createBrains({ builtinDir: dir, agentsDir: dir });
+      const config = { agents: { egpt: { configuration: { name: 'egpt', ...inline }, name: 'E', default: true } } };
+      const def = resolveBeingDef('egpt', null, { getConfig: () => config, brains });
+      expect(def).toMatchObject({ type: 'ccode', model: 'haiku', effort: 'low' });   // the inline map, not the file
+      expect(def.cwd).toBeUndefined();                                               // nothing leaked out of egpt.yaml
+      // …and the STRING form still reads that very file, so the layer walk is intact.
+      const named = { agents: { egpt: { configuration: 'egpt', name: 'E', default: true } } };
+      expect(resolveBeingDef('egpt', null, { getConfig: () => named, brains }))
+        .toMatchObject({ type: 'codex', model: 'opus', effort: 'max', cwd: '/elsewhere' });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('the STRING form is unchanged: configuration names config/agents/<name>.yaml and resolves through the registry', () => {
+    const brains = { resolve: vi.fn(() => ({ name: 'ken', type: 'ccode', model: 'opus' })) };
+    const config = { agents: { ken: { configuration: 'ken', name: 'King Ken' } } };
+    expect(resolveBeingDef('ken', '/conv', { getConfig: () => config, brains })).toMatchObject({ name: 'King Ken', model: 'opus' });
+    expect(brains.resolve).toHaveBeenCalledWith('ken', { convDir: '/conv', agent: 'ken' });
+  });
+
+  it('configuration: relay is STILL detected as a relay — the registry is never consulted', () => {
+    const brains = { resolve: vi.fn(() => ({ name: 'x', type: 'codex' })) };
+    const config = { agents: { carol: { configuration: 'relay', name: 'Carol', relay_channel: 'rodz1' } } };
+    expect(resolveBeingDef('carol', null, { getConfig: () => config, brains }))
+      .toEqual({ name: 'Carol', type: 'ccode', model: null, effort: null, allowed_tools: DEFAULT_ALLOWED_TOOLS });
+    expect(brains.resolve).not.toHaveBeenCalled();
+  });
+
+  it('an agent with NO configuration at all (the other relay shape) still resolves quietly to the bare def', () => {
+    const brains = createBrains({ builtinDir: '/nonexistent-builtin', agentsDir: '/nonexistent-agents' });
+    const config = { agents: { cara: { handles: ['cara'], relay_channel: 'rodz1', to: 'ed.do' } } };
+    expect(() => resolveBeingDef('cara', null, { getConfig: () => config, brains })).not.toThrow();
+    expect(resolveBeingDef('cara', null, { getConfig: () => config, brains })).toMatchObject({ name: 'cara', type: 'ccode' });
+  });
+
+  it('an UNUSABLE configuration fails loudly, naming the agent — never a silent bare-def fallback', () => {
+    const brains = createBrains({ builtinDir: '/nonexistent-builtin', agentsDir: '/nonexistent-agents' });
+    const config = { agents: { ken: { configuration: {}, name: 'King Ken' } } };
+    expect(() => resolveBeingDef('ken', null, { getConfig: () => config, brains })).toThrow(/ken/);
+    const pathish = { agents: { ken: { configuration: 'here/the/path', name: 'King Ken' } } };
+    expect(() => resolveBeingDef('ken', null, { getConfig: () => pathish, brains })).toThrow(/ken/);
   });
 });

@@ -1,6 +1,8 @@
-// brains.mjs — the brain-definition registry (operator 2026-06-30). A brain is a
-// YAML file (<name>.yaml) describing an ENGINE config: { type, model, effort,
-// allowed_tools }. A conversation resolves its def FRESH from this registry on
+// brains.mjs — the brain-definition registry (operator 2026-06-30). A brain def describes an
+// ENGINE config: { type, model, effort, verbose_thinking, personality } (plus the older
+// allowed_tools, still honored). It is written EITHER as a YAML file (<name>.yaml, named by a
+// string `configuration:`) OR inline in config.yaml under `configuration:` — see resolve.
+// A conversation resolves its def FRESH from this registry on
 // EVERY turn (spine/brainpool.mjs's resolveDefaultBrainDef, operator 2026-08-14,
 // phase 1: no more per-conversation freeze) — repoint an agent's `configuration`
 // in config.yaml and every conversation follows on its next turn.
@@ -56,7 +58,43 @@ export function createBrains({
     // Only the ORDER of those two changes: a partial override still merges field-by-field,
     // and a conversation's own brains/ still wins over both. With no readable mtimes
     // (an injected fs seam) preferNewer returns the profile path, i.e. the historical order.
-    resolve(name, { convDir = null } = {}) {
+    // TWO FORMS (operator 2026-09-07), ONE entry point — no second registry, no per-caller
+    // branch. config.yaml's `agents.<name>.configuration` is either
+    //
+    //   configuration: ken               a STRING naming config/agents/ken.yaml → the layer walk below
+    //   configuration: { type: … , … }   an INLINE MAP → the def ITSELF
+    //
+    // AN INLINE MAP IS NOT MERGED WITH ANYTHING. It has no filename, so there is nothing to
+    // look up and no layer to merge it with — not the shipped src/brains/<x>.yaml, not a
+    // profile config/agents/<x>.yaml, not a conversation's brains/<x>.yaml, not even when the
+    // map carries a `name:` that happens to match one of them. What the operator wrote in
+    // config.yaml is the whole def, and `convDir` is deliberately ignored for this form.
+    // (`personality:` is just another field on the def either way: it survives resolution and
+    // reaches the caller; who consumes it is not this module's business.)
+    //
+    // LOUD, NEVER SILENT (standing operator rule): a `configuration` that is neither a usable
+    // map nor a name THROWS here, naming the agent, rather than becoming a null that each
+    // caller quietly swaps for a bare ccode def. `agent` is the config.yaml key, passed in for
+    // that message only. An ABSENT configuration (null/undefined — a relay declares none) is
+    // not a mistake and still returns null quietly.
+    resolve(configuration, { convDir = null, agent = null } = {}) {
+      const who = agent ? `agent '${agent}'` : 'an agent';
+      const bad = (why) => new Error(
+        `brains: ${who} has an unusable \`configuration\` in config.yaml — ${why}. `
+        + `Write it as an inline map (type/model/effort/verbose_thinking/personality) or as the bare name of a config/agents/<name>.yaml file.`);
+      if (configuration === null || configuration === undefined) return null;   // none declared (a relay) — nothing to resolve
+      if (typeof configuration === 'object') {
+        if (Array.isArray(configuration)) throw bad('it is a list, not a map or a name');
+        if (Object.keys(configuration).length === 0) throw bad('it is an empty map, which defines no engine');
+        return { name: null, ...configuration };                                // the inline def, whole and unmerged
+      }
+      if (typeof configuration !== 'string') throw bad(`it is a ${typeof configuration}, not a map or a name`);
+      const name = configuration.trim();
+      // A NAME, NEVER A PATH (operator ruling 2026-09-07). A string resolves to
+      // <layer>/<name>.yaml and nowhere else; a separator would let it walk out of the three
+      // layer folders, so it is rejected here instead of being silently joined.
+      if (!name) throw bad('it is an empty string');
+      if (name === '.' || name === '..' || /[\\/]/.test(name)) throw bad(`'${name}' looks like a path — a string configuration is a bare type NAME (config/agents/<name>.yaml)`);
       const builtinPath = join(builtinDir, `${name}.yaml`);
       const profilePath = join(agentsDir, `${name}.yaml`);
       const seeded = preferNewer(profilePath, builtinPath, { exists });

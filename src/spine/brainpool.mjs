@@ -209,18 +209,20 @@ async function defaultLoadManifest(getConfig) {
   } catch { return ''; }
 }
 
-// The persona agent's `configuration` (config.yaml's `agents:` block) — the agent-type file a
-// persona conversation runs on — or null when no default agent is declared. The persona is the
+// The persona agent's KEY and its `configuration` (config.yaml's `agents:` block) — the def a
+// persona conversation runs on, as a type-file name OR an inline map — or nulls when no default
+// agent is declared. The persona is the
 // single `default: true` agent (operator 2026-07-10 — no e/egpt handle test); new-config-only
 // (operator 2026-07-02): reads `configuration`, never the retired `type` back-read. Pure, given
-// getConfig.
+// getConfig. The KEY comes back too so brains.resolve can NAME the agent when a `configuration`
+// is unusable — an error that says which agent is misconfigured is the whole point of it being loud.
 function personaAgentConfigurationFrom(getConfig) {
   const agents = (getConfig?.() ?? {}).agents ?? {};
-  for (const [, a] of Object.entries(agents)) {
+  for (const [key, a] of Object.entries(agents)) {
     if (!a || typeof a !== 'object' || Array.isArray(a)) continue;
-    if (a.default === true) return a.configuration ?? null;
+    if (a.default === true) return { key, configuration: a.configuration ?? null };
   }
-  return null;
+  return { key: null, configuration: null };
 }
 
 // THE persona brain def, resolved FRESH from config (operator 2026-08-14, phase 1: no more
@@ -234,9 +236,9 @@ function personaAgentConfigurationFrom(getConfig) {
 // retired (2026-08-15) — /agents' own status/access_level views resolve through
 // resolveBeingDef instead, since they must cover any being, not just the persona.
 export function resolveDefaultBrainDef({ getConfig = () => ({}), brains = null, convDir, brainType = 'ccode' } = {}) {
-  const configuration = personaAgentConfigurationFrom(getConfig);
-  if (configuration) {
-    const def = brains?.resolve?.(configuration, { convDir });
+  const { key, configuration } = personaAgentConfigurationFrom(getConfig);
+  if (configuration) {                                       // an INLINE MAP is truthy too — both forms land here
+    const def = brains?.resolve?.(configuration, { convDir, agent: key });
     if (def) return def;                                     // persona configuration wins
     // named but unresolvable → fall through to the shipped 'egpt' type
   }
@@ -279,8 +281,9 @@ function shapeDef(name, def, agent = {}, brainType = 'ccode') {
 // THE ONE agent-def resolver (operator 2026-08-14: "remove the concept of siblings" —
 // every agent under agents[<name>], defaultKey included, resolves the SAME way; was
 // `siblingDef`, and renamed because it no longer is). Its
-// `configuration` (configuration ≠ relay) names an agent-type file resolved through the
-// brains registry. Never frozen — the def LIVES in config, nothing per-conversation to
+// `configuration` (configuration ≠ relay) is resolved through the brains registry — as a NAME
+// (config/agents/<name>.yaml) or as an INLINE MAP written straight into config.yaml, brains.mjs
+// takes both. Never frozen — the def LIVES in config, nothing per-conversation to
 // instance. No agent entry / unresolvable configuration → a bare ccode def keyed by the
 // being name (keeps it runnable). NOTE: for defaultKey specifically this bare fallback is
 // narrower than the old persona-only path it replaces — the old resolveDefaultBrainDef
@@ -303,8 +306,13 @@ function shapeDef(name, def, agent = {}, brainType = 'ccode') {
 // passing its own closure vars, in place of the private closure this used to be.
 export function resolveBeingDef(being, convDir, { getConfig = () => ({}), brains = null, brainType = 'ccode' } = {}) {
   const agent = ((getConfig() ?? {}).agents ?? {})[being];
-  if (agent && typeof agent === 'object' && !Array.isArray(agent) && String(agent.configuration ?? '').toLowerCase() !== 'relay') {
-    const def = brains?.resolve?.(agent.configuration, { convDir }) ?? null;
+  // `configuration: relay` is a WORD, so only a STRING can be it (operator 2026-09-07). The old
+  // `String(agent.configuration ?? '')` coercion happened to give the right answer for the new
+  // inline-map form — '[object Object]' is not 'relay' — but it got there by stringifying a def,
+  // which is exactly the kind of accident that stops being right later. Ask the question directly.
+  const isRelay = typeof agent?.configuration === 'string' && agent.configuration.toLowerCase() === 'relay';
+  if (agent && typeof agent === 'object' && !Array.isArray(agent) && !isRelay) {
+    const def = brains?.resolve?.(agent.configuration, { convDir, agent: being }) ?? null;
     if (def) return shapeDef(being, def, agent, brainType);
     // configuration named but no file → fall through to the bare def (keeps the being runnable)
   }

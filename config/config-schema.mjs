@@ -1388,12 +1388,35 @@ export const CONFIG_SCHEMA = {
 
     AGENT FIELDS:
       configuration
-        Names an AGENT-TYPE file — a brain def — in config/agents/<type>.yaml,
-        resolved through the brain registry:
-          src/brains built-in < config/agents < a conversation's brains/
-        e.g. configuration: "sonnet-high" points at
-        config/agents/sonnet-high.yaml. For a relay agent, configuration is the
-        literal "relay".
+        The agent's brain def, in ONE of TWO forms (operator 2026-09-07). Both
+        resolve through the SAME registry entry point (src/spine/brains.mjs
+        resolve).
+
+        1. A STRING — the bare NAME of an agent-type file,
+           config/agents/<name>.yaml, merged across the layers:
+             src/brains built-in < config/agents < a conversation's brains/
+           e.g. configuration: "sonnet-high" points at
+           config/agents/sonnet-high.yaml. A NAME, never a path: a value
+           carrying / or \\ is rejected loudly, not joined.
+
+        2. An INLINE MAP — the def written straight here:
+             configuration:
+               type: ccode
+               model: haiku
+               effort: low
+               verbose_thinking: true
+               personality: egpt
+           An inline map has no filename, so it is NOT merged with any layer —
+           not the shipped src/brains file, not config/agents/<x>.yaml, not a
+           conversation's brains/, even if one shares its name. What is written
+           here is the whole def.
+
+        For a relay agent, configuration is the literal "relay" (a STRING; an
+        inline map is never a relay), or simply absent.
+
+        A configuration that is neither — a list, a number, an empty map, a
+        path-shaped string — THROWS at resolution, naming the agent. It is
+        never silently swapped for a default.
       handles
         ["e","egpt",...] — the @<token>s that WAKE this agent (operator
         2026-07-26: "the yaml key can be discarded, an agent reacts if its
@@ -1786,9 +1809,9 @@ export const CONFIG_SCHEMA = {
     readonly.agent.
 
     IDENTITY/PERSONALITY lives in the TYPE FILE: config/agents/<type>.yaml may
-    set  personality: <name>  to pin the identities/<name>/ feed a fresh
-    conversation boots from; absent ⇒ "egpt". There is no per-conversation
-    personality key.
+    set  personality: <name>  to pin the config/agents/identities/<name>.md feed
+    a fresh conversation boots from; absent ⇒ "egpt". There is no
+    per-conversation personality key.
 
     VERBOSE_THINKING is ALSO settable on the TYPE FILE (operator 2026-08-29):
     verbose_thinking: true  in config/agents/<type>.yaml makes every agent

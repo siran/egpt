@@ -123,6 +123,69 @@ describe('brain registry', () => {
       .toEqual({ name: 'sonnet-high', type: 'ccode', model: 'opus', effort: 'max', allowed_tools: 'all' });
   });
 
+  // ── `agents.<name>.configuration` has TWO forms (operator 2026-09-07). A STRING names
+  // config/agents/<name>.yaml (everything above); an INLINE MAP written straight into
+  // config.yaml IS the def. Same resolver, same single entry point — not a second registry.
+  describe('inline configuration map', () => {
+    it('an INLINE map resolves to itself — type/model/effort/verbose_thinking/personality all survive', () => {
+      const brains = harness({});     // no files anywhere: an inline def needs none
+      expect(brains.resolve({ type: 'ccode', model: 'haiku', effort: 'low', verbose_thinking: true, personality: 'egpt' }))
+        .toMatchObject({ type: 'ccode', model: 'haiku', effort: 'low', verbose_thinking: true, personality: 'egpt' });
+    });
+
+    it('an inline map is NOT merged with any file — there is no filename, so the layer walk does not apply', () => {
+      // Every layer carries an `egpt.yaml` that would loudly win/lose a merge…
+      const brains = harness({
+        [join(BUILTIN, 'egpt.yaml')]: 'type: codex\nmodel: sonnet\neffort: max\nallowed_tools: all\n',
+        [join(AGENTS,  'egpt.yaml')]: 'model: opus\ncwd: /somewhere\n',
+        [join('/conv/slug', 'brains', 'egpt.yaml')]: 'effort: high\n',
+      });
+      // …and the inline map even names itself `egpt`. Nothing from those files may leak in.
+      const def = brains.resolve({ name: 'egpt', type: 'ccode', model: 'haiku' }, { convDir: '/conv/slug' });
+      expect(def).toEqual({ name: 'egpt', type: 'ccode', model: 'haiku' });
+      expect(def.effort).toBeUndefined();
+      expect(def.allowed_tools).toBeUndefined();
+      expect(def.cwd).toBeUndefined();
+    });
+
+    it('allowed_tools written INLINE is still honored (the live egpt.yaml/wren.yaml key is not retired)', () => {
+      const def = harness({}).resolve({ type: 'ccode', allowed_tools: ['Read', 'Grep'] });
+      expect(def.allowed_tools).toEqual(['Read', 'Grep']);
+    });
+
+    it('the STRING form is unchanged — it still walks the layers and merges field-by-field', () => {
+      const brains = harness({
+        [join(BUILTIN, 'egpt.yaml')]: 'type: ccode\nmodel: sonnet\neffort: high\n',
+        [join(AGENTS,  'egpt.yaml')]: 'model: opus\n',
+      });
+      expect(brains.resolve('egpt')).toEqual({ name: 'egpt', type: 'ccode', model: 'opus', effort: 'high' });
+    });
+
+    // LOUD, not silent (standing operator rule). A `configuration` that is neither a usable
+    // map nor a resolvable NAME is a config mistake, and the old code turned every one of
+    // them into a null that each caller quietly replaced with a bare ccode def.
+    it('a structurally unusable configuration THROWS, naming the agent', () => {
+      const brains = harness({});
+      expect(() => brains.resolve([], { agent: 'ken' })).toThrow(/ken/);
+      expect(() => brains.resolve(7, { agent: 'ken' })).toThrow(/ken/);
+      expect(() => brains.resolve({}, { agent: 'ken' })).toThrow(/ken/);
+      expect(() => brains.resolve('', { agent: 'ken' })).toThrow(/ken/);
+    });
+
+    it('a string is a bare NAME, never a path — config/agents/<name>.yaml and nothing else (operator ruling)', () => {
+      const brains = harness({ [join(AGENTS, 'egpt.yaml')]: 'type: ccode\n' });
+      expect(() => brains.resolve('here/the/path', { agent: 'ken' })).toThrow(/ken/);
+      expect(() => brains.resolve('../../etc/egpt', { agent: 'ken' })).toThrow(/ken/);
+      expect(() => brains.resolve('C:\\evil\\egpt', { agent: 'ken' })).toThrow(/ken/);
+    });
+
+    it('no configuration at all (a relay agent) still resolves quietly to null — never a throw', () => {
+      const brains = harness({});
+      expect(brains.resolve(undefined, { agent: 'carol' })).toBeNull();
+      expect(brains.resolve(null, { agent: 'carol' })).toBeNull();
+    });
+  });
+
   it('a VERTICAL allowed_tools list flows end-to-end: type file → resolve (array) → buildClaudeArgs --allowedTools', () => {
     // The documented vertical YAML-list form (default.yaml / config/agents examples).
     const brains = harness({
