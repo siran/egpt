@@ -147,6 +147,11 @@ beforeAll(async () => {
   await fs.writeFile(P.conversations, YAML.stringify(conversations), 'utf8');
   await fs.writeFile(P.agentEgpt, 'type: ccode\nmodel: sonnet\neffort: high\n', 'utf8');
   await fs.writeFile(P.idSecretary, '# I am a secretary\n\nProfile-only preset.\n', 'utf8');
+  // The `egpt` identity is a SHIPPED file now (config/skeletons/agents/identities/egpt.md), and a
+  // profile identity file REPLACES the 00-identity SLOT in the feed. So the fixture has to own this
+  // path too, or boot's copy-if-missing plants the shipped eGPT text here and the feed below leads
+  // with that instead of the fixture's. Same body as the 00-identity layer, so (h) reads the same.
+  await fs.writeFile(join(HOME, 'config', 'agents', 'identities', 'egpt.md'), LAYERS['00-identity.md'], 'utf8');
   for (const [file, body] of Object.entries(LAYERS)) await fs.writeFile(join(P.roomDir, file), body, 'utf8');
 
   // Pre-drop ingest probes: one in the CANONICAL box (must be consumed by boot's

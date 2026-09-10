@@ -1,0 +1,3 @@
+type: ccode # engine: ccode | codex | chatgpt-cdp | claude-cdp | llama
+model: haiku # haiku | sonnet | opus | fable
+effort: low # low | medium | high | xhigh | max

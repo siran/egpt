@@ -3,10 +3,10 @@
 // the profile only when absent; an existing file is NEVER touched (operator edits are
 // sacred). Fully in-memory io — nothing hits the real profile.
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join, dirname } from 'node:path';
-import { seedSkeletons, EXAMPLE_TYPE_FILE, EGPT_TYPE_FILE, PRESET_IDENTITIES } from '../src/spine/seed.mjs';
+import { seedSkeletons, EXAMPLE_TYPE_FILE, EGPT_TYPE_FILE, REPO_SKELETONS_DIR } from '../src/spine/seed.mjs';
 
 // Built with join so keys + the dirs passed to seedSkeletons share the platform separator.
 const REPO = join('/repo', 'skeletons'), SKEL = join('/prof', 'config', 'skeletons'), AGENTS = join('/prof', 'config', 'agents'), IDS = join('/prof', 'config', 'agents', 'identities');
@@ -33,6 +33,29 @@ function run(seed) {
   seedSkeletons({ repoDir: REPO, profileSkeletonsDir: SKEL, agentsDir: AGENTS, identitiesDir: IDS, io });
   return files;
 }
+
+// Same seeding run, but reading the REAL repo skeletons (so the shipped set can't rot)
+// while every WRITE still lands in memory — nothing touches a real profile. `pre` pre-loads
+// the fake profile with operator-edited files, to prove copy-if-missing leaves them alone.
+function runAgainstRepo(pre = {}) {
+  const files = { ...pre };
+  const io = {
+    existsSync: (p) => (String(p).startsWith(REPO_SKELETONS_DIR) ? existsSync(p) : p in files),
+    readdirSync: (p) => readdirSync(p),
+    readFileSync: (p) => (p in files ? files[p] : readFileSync(p, 'utf8')),
+    writeFileSync: (p, c) => { files[p] = c; },
+    mkdirSync: () => {},
+  };
+  seedSkeletons({ repoDir: REPO_SKELETONS_DIR, profileSkeletonsDir: SKEL, agentsDir: AGENTS, identitiesDir: IDS, io });
+  return files;
+}
+
+// The SHIPPED brain defs + personalities, read straight off disk — the one source of truth
+// both the seeder and these assertions are held to.
+const SHIPPED_AGENTS_DIR = join(REPO_SKELETONS_DIR, 'agents');
+const SHIPPED_IDS_DIR = join(SHIPPED_AGENTS_DIR, 'identities');
+const shippedDefs = () => readdirSync(SHIPPED_AGENTS_DIR).filter((n) => n.endsWith('.yaml'));
+const shippedIdentities = () => readdirSync(SHIPPED_IDS_DIR).filter((n) => n.endsWith('.md'));
 
 describe('seedSkeletons', () => {
   it('copies every repo skeleton (*.yaml/*.md) into the profile skeletons/ folder', () => {
@@ -88,23 +111,20 @@ describe('seedSkeletons', () => {
     expect(files[join(AGENTS, 'sonnet-high.yaml')]).toBe(EXAMPLE_TYPE_FILE);
   });
 
-  it('seeds each preset personality identity layer (FLAT config/agents/identities/<name>.md), copy-if-missing', () => {
-    const files = run({});
-    const names = Object.keys(PRESET_IDENTITIES);
-    expect(names).toHaveLength(10);   // the 10 operator-named flavors — can't-rot
-    expect(names).toEqual(expect.arrayContaining([
-      'secretary', 'psychologist', 'detective', 'poet', 'writer',
-      'spiritual-advisor', 'financial-advisor', 'philosopher', 'logicist', 'one-two-many',
-    ]));
-    for (const name of names) {
-      expect(files[join(IDS, `${name}.md`)]).toBe(PRESET_IDENTITIES[name]);
-    }
+  it('copies the shipped brain defs (config/skeletons/agents/*.yaml) into config/agents/', () => {
+    const files = run({
+      [join(REPO, 'agents', 'haiku-low.yaml')]: 'H',
+      [join(REPO, 'agents', 'opus-max.yaml')]: 'O',
+    });
+    expect(files[join(AGENTS, 'haiku-low.yaml')]).toBe('H');
+    expect(files[join(AGENTS, 'opus-max.yaml')]).toBe('O');
+    // the nested identities/ dir is NOT swept up as a brain def
+    expect(files[join(AGENTS, 'identities.yaml')]).toBeUndefined();
   });
 
-  it('NEVER overwrites an operator-edited preset layer (edits are sacred)', () => {
-    const files = run({ [join(IDS, 'poet.md')]: 'MY OWN POET' });
-    expect(files[join(IDS, 'poet.md')]).toBe('MY OWN POET');       // untouched
-    expect(files[join(IDS, 'detective.md')]).toBe(PRESET_IDENTITIES.detective);  // others still seeded
+  it('copies the shipped personalities (config/skeletons/agents/identities/*.md) into config/agents/identities/', () => {
+    const files = run({ [join(REPO, 'agents', 'identities', 'ken.md')]: 'I am Ken' });
+    expect(files[join(IDS, 'ken.md')]).toBe('I am Ken');
   });
 
   it('seeds the shared room template (config/skeletons/room/*.md) copy-if-missing', () => {
@@ -128,12 +148,100 @@ describe('seedSkeletons', () => {
     expect(files[join(SKEL, 'room', '00-identity.md')]).toBe('MY OWN IDENTITY');   // untouched
   });
 
-  it('each preset layer is plain markdown (a short instruction file), not YAML config', () => {
-    for (const [name, body] of Object.entries(PRESET_IDENTITIES)) {
-      expect(body.trimStart().startsWith('#')).toBe(true);   // a markdown heading, like the default layer
-      expect(body.length).toBeLessThan(1200);                // SHORT — a paragraph or two
+  it('each shipped personality is plain markdown (a short instruction file), not YAML config', () => {
+    for (const name of shippedIdentities()) {
+      const body = readFileSync(join(SHIPPED_IDS_DIR, name), 'utf8');
+      expect(body.trimStart().startsWith('#'), `${name} is not a markdown heading`).toBe(true);
       expect(body).not.toMatch(/^type:/m);                   // not an agent-type file
     }
+  });
+});
+
+// ── identities and brain defs ship ONE way: FILES under config/skeletons/agents/ ───────
+// They used to ship TWO ways — these same 10 personalities also lived as a JS object
+// literal (seed.mjs PRESET_IDENTITIES) that the seeder wrote out. Two shipping channels for
+// one artifact is how they drift; the constant is gone and the files are the source.
+describe('the shipped agents/ skeleton is the ONLY channel for brain defs + personalities', () => {
+  it('no longer exports PRESET_IDENTITIES (the second channel is gone)', async () => {
+    const mod = await import('../src/spine/seed.mjs');
+    expect(mod.PRESET_IDENTITIES).toBeUndefined();
+  });
+
+  it('lands every shipped brain def at config/agents/<name>.yaml', () => {
+    const files = runAgainstRepo();
+    const names = shippedDefs();
+    // the model × effort grid: 3 models × 5 efforts
+    expect(names.length).toBe(15);
+    for (const m of ['haiku', 'sonnet', 'opus']) {
+      for (const e of ['low', 'medium', 'high', 'xhigh', 'max']) {
+        expect(names, `no shipped ${m}-${e}.yaml`).toContain(`${m}-${e}.yaml`);
+      }
+    }
+    for (const name of names) {
+      expect(files[join(AGENTS, name)], `${name} was not seeded`)
+        .toBe(readFileSync(join(SHIPPED_AGENTS_DIR, name), 'utf8'));
+    }
+  });
+
+  it('each shipped brain def is a LIVE three-field def — and declares no allowed_tools', async () => {
+    const YAML = await import('yaml');
+    for (const name of shippedDefs()) {
+      const def = YAML.parse(readFileSync(join(SHIPPED_AGENTS_DIR, name), 'utf8'));
+      const [model, effort] = name.replace(/\.yaml$/, '').split('-');
+      expect(def, name).toEqual({ type: 'ccode', model, effort });
+      // capability comes from conversation_defaults.access_level now, not a per-def tool list
+      expect(def.allowed_tools, `${name} still carries allowed_tools`).toBeUndefined();
+    }
+  });
+
+  it('lands every shipped personality at config/agents/identities/<name>.md', () => {
+    const files = runAgainstRepo();
+    const names = shippedIdentities();
+    // the three shipped characters plus the ten preset flavors
+    expect(names).toEqual(expect.arrayContaining([
+      'egpt.md', 'ken.md', 'wren.md',
+      'secretary.md', 'psychologist.md', 'detective.md', 'poet.md', 'writer.md',
+      'spiritual-advisor.md', 'financial-advisor.md', 'philosopher.md', 'logicist.md', 'one-two-many.md',
+    ]));
+    for (const name of names) {
+      expect(files[join(IDS, name)], `${name} was not seeded`)
+        .toBe(readFileSync(join(SHIPPED_IDS_DIR, name), 'utf8'));
+    }
+  });
+
+  // The three characters differ only by an inserted paragraph the operator is still tuning,
+  // so pin the SHARED framing, never the character line itself.
+  it('egpt / ken / wren each carry the shared eGPT framing', () => {
+    for (const name of ['egpt.md', 'ken.md', 'wren.md']) {
+      const body = readFileSync(join(SHIPPED_IDS_DIR, name), 'utf8');
+      expect(body.trim().length, `${name} is empty`).toBeGreaterThan(0);
+      expect(body, name).toContain('{{agent_name}}');
+      expect(body, name).toContain('{{node_name}}');
+      expect(body, name).toMatch(/eGPT is the SYSTEM/);
+    }
+  });
+
+  it('NEVER clobbers an operator-edited brain def or personality (edits are sacred)', () => {
+    const files = runAgainstRepo({
+      [join(AGENTS, 'haiku-low.yaml')]: 'MY OWN BRAIN',
+      [join(IDS, 'poet.md')]: 'MY OWN POET',
+    });
+    expect(files[join(AGENTS, 'haiku-low.yaml')]).toBe('MY OWN BRAIN');   // untouched
+    expect(files[join(IDS, 'poet.md')]).toBe('MY OWN POET');              // untouched
+    // ...and the siblings still seed
+    expect(files[join(AGENTS, 'haiku-high.yaml')]).toBe(readFileSync(join(SHIPPED_AGENTS_DIR, 'haiku-high.yaml'), 'utf8'));
+    expect(files[join(IDS, 'detective.md')]).toBe(readFileSync(join(SHIPPED_IDS_DIR, 'detective.md'), 'utf8'));
+  });
+
+  // sonnet-high is BOTH a shipped brain def and the name of the old commented EXAMPLE_TYPE_FILE.
+  // They collide at config/agents/sonnet-high.yaml, and copy-if-missing means order decides.
+  // The LIVE def wins: a file that parses to null there would make `configuration: sonnet-high`
+  // resolve to nothing on a fresh profile.
+  it('the LIVE sonnet-high brain def wins over the commented example at the same path', () => {
+    const files = runAgainstRepo();
+    expect(files[join(AGENTS, 'sonnet-high.yaml')])
+      .toBe(readFileSync(join(SHIPPED_AGENTS_DIR, 'sonnet-high.yaml'), 'utf8'));
+    expect(files[join(AGENTS, 'sonnet-high.yaml')]).not.toBe(EXAMPLE_TYPE_FILE);
   });
 });
 

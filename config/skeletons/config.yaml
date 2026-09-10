@@ -134,10 +134,22 @@ user_name: "John"                  # the human here; shown as <user_name>@<surfa
 # single answerer. The bridge stamps body_emoji so humans see which node spoke.
 agents:
   egpt:
-    configuration: egpt           # brain: config/agents/egpt.yaml (warm claude CLI)
-    handles: [e, egpt]            # THE wake list: @e / @egpt reach this node's persona.
+    configuration:                # the brain, written INLINE. An inline map is the WHOLE def and is
+      type: ccode                 # merged with nothing, which is how each agent below carries its own
+      model: haiku                # personality while sharing one engine.
+      effort: low
+      verbose_thinking: true
+      personality: egpt           # identity feed: config/agents/identities/egpt.md
+    #                             # THE OTHER FORM: `configuration: haiku-low` - the bare NAME of a
+    #                             # config/agents/<name>.yaml. The shipped grid is <model>-<effort>.yaml
+    #                             # for haiku|sonnet|opus x low|medium|high|xhigh|max. Those files carry
+    #                             # no personality:, so an agent that needs its own writes the map inline.
+    handles: [e, egpt, ekg]       # THE wake list: @e / @egpt / @ekg reach this node's persona.
     #                             # Declared handles are COMPLETE — the map key does NOT wake.
     #                             # Omit handles and the key wakes instead; [] means nothing does.
+    #                             # The full form is <letter><node_name>, so rename these with the node.
+    #                             # A SECOND profile on this machine (its own EGPT_HOME) suffixes s:
+    #                             # ekgs / kkgs / wkgs, so a mention picks one profile, not both.
     default: true                 # THE persona: answers un-mentioned messages + ends relay chains. EXACTLY ONE agent per node. Its map KEY is the being-id (renaming the key = a new identity).
     name: "egpt"                  # REQUIRED for any agent that runs turns: the display label the
     #                             # bridge stamps ("<emoji> <name>: <reply>"). It does NOT default to
@@ -182,6 +194,25 @@ agents:
     #                             # boundary. pi is untested and llama has no stream, so with either
     #                             # every value behaves like none. Overridable per-conversation
     #                             # (conversations.yaml agents.<name>.allow_new_input).
+
+  # The other two shipped characters. Same shape as egpt above, minus the documentation:
+  # a brain, a personality file, an explicit wake list, a display name. Neither is default.
+  ken:
+    configuration:
+      type: ccode
+      model: opus
+      effort: high
+      personality: ken            # config/agents/identities/ken.md
+    handles: [k, ken, kkg]
+    name: "ken"
+  wren:
+    configuration:
+      type: ccode
+      model: sonnet
+      effort: high
+      personality: wren           # config/agents/identities/wren.md
+    handles: [w, wren, wkg]
+    name: "wren"
 
 # Relay agents (optional - foreign-mesh across SEPARATE accounts). A relay
 # forwards a mention into another chat; `to:` chains hops. Not needed within one account.

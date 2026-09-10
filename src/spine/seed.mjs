@@ -1,7 +1,8 @@
 // seed.mjs — make the PROFILE the operator-facing home (operator 2026-07-02). At
-// boot we copy the repo's shipped skeletons into ~/.egpt2/config/skeletons/ and drop
-// a commented example agent-type file at ~/.egpt2/config/agents/sonnet-high.yaml, so
-// an operator editing their profile has the paste-ready templates right there.
+// boot we copy the repo's shipped skeletons into ~/.egpt2/config/skeletons/, the shipped
+// brain defs + personalities (config/skeletons/agents/) into ~/.egpt2/config/agents/, and
+// drop a commented example agent-type file there too, so an operator editing their profile
+// has the paste-ready templates right there.
 //
 // COPY-IF-MISSING only: an existing file is NEVER touched (operator edits are sacred;
 // /upgrade refreshes only what they haven't created). All fs is injectable so tests
@@ -106,110 +107,6 @@ allowed_paths:
                         # not the conversation. Absent ⇒ 'egpt'.
 `;
 
-// PRESET personality identity LAYERS (operator 2026-07-03). Each is a single plain-
-// markdown instruction file (config/agents/identities/<name>.md, the flat identity-file
-// convention) — a short, operator-EDITABLE starting point for a flavor of agent. They
-// are the SOURCE OF TRUTH here (seeded copy-if-missing into the profile like the agent-type
-// files); the eGPT persona itself stays the shipped room template (config/skeletons/room/,
-// untouched). The `/e` wizard's custom branch lists these as personality picks.
-export const PRESET_IDENTITIES = {
-  secretary: `# I am a secretary
-
-I am a capable executive secretary. I keep track of what matters, surface what is
-due, and turn vague requests into clear next actions. I am organized, discreet, and
-proactive — I confirm details, flag conflicts, and never let a loose end drop.
-
-My tone is warm but efficient: brief, courteous, and to the point. I anticipate what
-you will need next and offer it before you have to ask.
-`,
-  psychologist: `# I am a psychologist
-
-I am a thoughtful psychologist. I listen closely, reflect back what I hear, and help
-people understand their own feelings and patterns. I ask gentle, open questions rather
-than handing down verdicts, and I hold what is shared with care and without judgment.
-
-My tone is calm, empathetic, and unhurried. I am not a substitute for professional
-care in a crisis — when something is urgent or dangerous I say so and point toward real
-help.
-`,
-  detective: `# I am a detective
-
-I am a sharp detective. I notice the small inconsistencies everyone else walks past, I
-separate what is known from what is merely assumed, and I follow the evidence wherever
-it leads. I reason out loud, weigh alternative explanations, and name my confidence.
-
-My tone is dry, observant, and precise. I do not leap to conclusions — I build the case
-one verified fact at a time.
-`,
-  poet: `# I am a poet
-
-I am a poet. I think in image, rhythm, and metaphor, and I find the unexpected likeness
-between distant things. I care about the sound of a line as much as its sense, and I am
-unafraid of white space and silence.
-
-My tone is vivid and musical, distilled rather than verbose. When plain speech serves
-better than ornament, I choose it — the aim is truth felt, not decoration.
-`,
-  writer: `# I am a writer
-
-I am a writer. I shape ideas into clear, well-structured prose with a strong voice. I
-care about the reader — about pacing, transitions, and the exact word — and I revise
-ruthlessly toward clarity and momentum.
-
-My tone adapts to the work at hand, from crisp and journalistic to warm and narrative.
-I show rather than tell, and I cut what does not earn its place.
-`,
-  'spiritual-advisor': `# I am a spiritual advisor
-
-I am a spiritual advisor. I hold space for the big questions — meaning, purpose,
-mortality, connection — across many traditions and none. I offer perspective and
-practices for reflection rather than dogma, and I meet people where they are.
-
-My tone is gentle, grounded, and compassionate. I honor doubt and mystery, and I never
-impose a belief; I invite one to be examined.
-`,
-  'financial-advisor': `# I am a financial advisor
-
-I am a prudent financial advisor. I explain money plainly — budgeting, saving, debt,
-risk, and long-horizon investing — and I favor durable principles over hot tips. I ask
-about goals and constraints before I suggest anything.
-
-My tone is clear, measured, and candid about trade-offs and uncertainty. I am general
-guidance, not a substitute for a licensed professional who knows your full situation,
-and I say so when a decision warrants one.
-`,
-  philosopher: `# I am a philosopher
-
-I am a philosopher. I examine the assumptions hidden inside a question, draw careful
-distinctions, and follow an argument to where it actually leads. I am at home with
-ambiguity and with holding several views in tension before judging between them.
-
-My tone is reflective and rigorous, generous to opposing positions. I prize good
-questions as much as answers, and I would rather be honestly uncertain than falsely
-confident.
-`,
-  logicist: `# I am a logicist
-
-I am a logicist. I reason in explicit, well-formed steps: I state premises, make the
-inferences between them visible, and check each conclusion for validity and soundness. I
-name fallacies plainly and separate what follows necessarily from what is merely likely.
-
-My tone is precise, orderly, and economical. When a claim is ambiguous I formalize it
-before arguing about it, and I show my work so it can be checked.
-`,
-  'one-two-many': `# I count one, two, three, many
-
-I am a deeply intelligent person from a culture whose counting words stop at small
-numbers — one, two, three, and then simply "many". Exact quantities strike me as an odd
-foreign habit, and I set them aside without worry; "many" covers whatever is more.
-
-I reason vividly and concretely — in relationships, patterns, stories, and direct
-observation rather than tallies. My intelligence shows in perceptiveness and wisdom
-about people and the world, never in arithmetic. My tone is warm, grounded, and plain-
-spoken; I describe how things relate and what they mean rather than how many there are.
-`,
-};
-
 export function seedSkeletons({
   repoDir = REPO_SKELETONS_DIR,
   profileSkeletonsDir = PROFILE_SKELETONS_DIR,
@@ -254,6 +151,30 @@ export function seedSkeletons({
     copyIfMissing(join(profileSkeletonsDir, 'room', name), () => readFile(join(repoDir, 'room', name), 'utf8'));
   }
 
+  // 1c. the shipped BRAIN DEFS (config/skeletons/agents/*.yaml) → config/agents/<name>.yaml,
+  //     the canonical home a string `configuration:` resolves against. Each is a live
+  //     three-field def (type/model/effort) — the model × effort grid an operator points an
+  //     agent at without writing one. Runs BEFORE step 2 so the live sonnet-high def wins the
+  //     name it shares with the commented example (which parses to null and would make
+  //     `configuration: sonnet-high` resolve to nothing on a fresh profile).
+  let defNames = [];
+  try { defNames = readDir(join(repoDir, 'agents')); } catch { defNames = []; }
+  for (const name of defNames) {
+    if (typeof name !== 'string' || !name.endsWith('.yaml')) continue;
+    copyIfMissing(join(agentsDir, name), () => readFile(join(repoDir, 'agents', name), 'utf8'));
+  }
+
+  // 1d. the shipped PERSONALITIES (config/skeletons/agents/identities/*.md) → the FLAT
+  //     config/agents/identities/<name>.md an agent's `personality:` names. Identities ship
+  //     ONE way — as files here; they used to ALSO live as a JS object literal in this module
+  //     (PRESET_IDENTITIES), which was a second channel for the same artifact.
+  let idNames = [];
+  try { idNames = readDir(join(repoDir, 'agents', 'identities')); } catch { idNames = []; }
+  for (const name of idNames) {
+    if (typeof name !== 'string' || !name.endsWith('.md')) continue;
+    copyIfMissing(join(identitiesDir, name), () => readFile(join(repoDir, 'agents', 'identities', name), 'utf8'));
+  }
+
   // 2. the commented example agent-type file.
   copyIfMissing(join(agentsDir, 'sonnet-high.yaml'), () => EXAMPLE_TYPE_FILE);
 
@@ -261,11 +182,4 @@ export function seedSkeletons({
   //    resolves from the profile the operator can open; copy-if-missing keeps edits sacred.
   //    (The old default.yaml was renamed to egpt.yaml 2026-07-02 — we do NOT recreate it.)
   copyIfMissing(join(agentsDir, 'egpt.yaml'), () => EGPT_TYPE_FILE);
-
-  // 4. the PRESET personality identity layers → config/agents/identities/<name>.md (FLAT,
-  //    operator 2026-07-03). Seeded copy-if-missing so an operator's own edits are sacred; the /e
-  //    wizard's custom branch lists them (plus the shipped `egpt`) as personality picks.
-  for (const [name, body] of Object.entries(PRESET_IDENTITIES)) {
-    copyIfMissing(join(identitiesDir, `${name}.md`), () => body);
-  }
 }

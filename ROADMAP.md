@@ -161,8 +161,9 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
     personality → name, named last, collision re-prompts) and authors config/agents/<name>.yaml
     (+ a free-text identity layer as a FLAT config/agents/identities/<name>.md) then applies it.
     Personality picks = identity layers (listIdentityLayers = profile config/agents/identities/*.md +
-    'egpt') + free text; 10 preset layers seeded copy-if-missing to config/agents/identities/<name>.md
-    (src/spine/seed.mjs PRESET_IDENTITIES).
+    'egpt') + free text; the shipped layers seed copy-if-missing from
+    config/skeletons/agents/identities/*.md (10 presets + egpt/ken/wren). The old
+    seed.mjs PRESET_IDENTITIES constant is gone — identities ship ONE way, as files.
   - **/e wizard tools step (operator 2026-07-03)** — a `tools` option (right before `custom`,
     also last) edits ONLY allowed_tools, keeping the current agent type/model/effort: default
     list / read-only / keep current / custom free text (validated, bare Bash/Agent rejected,

@@ -4,7 +4,7 @@
 // so a skeleton the operator copies always loads. Runs the real loader collect()
 // against the parsed block (no profile touched — all fakes).
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import * as YAML from 'yaml';
 import { createHeartbeatLoader } from '../src/spine/heartbeat-loader.mjs';
@@ -165,10 +165,47 @@ describe('config/skeletons/config.yaml', () => {
   it('ships the agents registry uncommented, and no longer sets default_brain (agent configuration supersedes)', () => {
     const doc = YAML.parse(text);
     // agents is the shipped centerpiece now (operator 2026-07-02) — the persona agent
-    expect(doc.agents?.egpt).toMatchObject({ configuration: 'egpt', handles: ['e', 'egpt'] });
+    expect(doc.agents?.egpt).toMatchObject({
+      configuration: { type: 'ccode', model: 'haiku', effort: 'low', personality: 'egpt' },
+      handles: ['e', 'egpt', 'ekg'],
+      default: true,
+    });
     // default_brain / persona_name are gone from the skeleton (new-config-only)
     expect(Object.keys(doc)).not.toContain('default_brain');
     expect(Object.keys(doc)).not.toContain('persona_name');
+  });
+
+  // The three shipped characters, and the handle convention the operator fixed: handles are
+  // ALWAYS explicit (the map key never wakes on its own), and the full form is <letter><node_name>
+  // — so on the skeleton's `node_name: kg` that is ekg / kkg / wkg. Rename the node, rename these.
+  it('ships exactly the three characters E / K / W, each with explicit <letter><node_name> handles', () => {
+    const doc = YAML.parse(text);
+    expect(Object.keys(doc.agents)).toEqual(['egpt', 'ken', 'wren']);
+    const node = String(doc.node_name).trim();
+    for (const [key, letter] of [['egpt', 'e'], ['ken', 'k'], ['wren', 'w']]) {
+      const a = doc.agents[key];
+      expect(Array.isArray(a.handles), `${key} must declare handles explicitly`).toBe(true);
+      expect(a.handles, `${key} is missing its <letter><node_name> handle`).toContain(`${letter}${node}`);
+      expect(a.handles).toContain(letter);
+      expect(a.name, `${key} runs turns, so it must declare a name: or its replies stamp blank`).toBeTruthy();
+    }
+    // exactly one persona
+    expect(Object.entries(doc.agents).filter(([, a]) => a?.default === true).map(([k]) => k)).toEqual(['egpt']);
+  });
+
+  // Each character carries its OWN personality, which is only possible on the inline-map form:
+  // a string `configuration:` names a shared config/agents/<model>-<effort>.yaml, and those
+  // shipped defs carry no personality: at all (brains.mjs never merges an inline map with a file).
+  it('each character points at a shipped personality file, and the identities exist', () => {
+    const doc = YAML.parse(text);
+    for (const key of ['egpt', 'ken', 'wren']) {
+      const cfgn = doc.agents[key].configuration;
+      expect(cfgn, `${key}.configuration must be an inline map to carry a personality`).toBeTypeOf('object');
+      expect(cfgn.personality, `${key} declares no personality`).toBe(key === 'egpt' ? 'egpt' : key);
+      expect(cfgn.type).toBe('ccode');
+      expect(existsSync(fileURLToPath(new URL(`../config/skeletons/agents/identities/${cfgn.personality}.md`, import.meta.url))),
+        `no shipped identity file for ${cfgn.personality}`).toBe(true);
+    }
   });
 });
 
