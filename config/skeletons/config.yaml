@@ -208,11 +208,14 @@ agents:
   wren:
     configuration:
       type: ccode
-      model: sonnet
-      effort: high
+      model: opus
+      effort: xhigh
       personality: wren           # config/agents/identities/wren.md
     handles: [w, wren, wkg]
     name: "wren"
+    conversation_defaults:
+      access_level: all         # the ONE unsandboxed being - it runs as you, because its job is to change the machine
+      sandboxed: false
 
 # Relay agents (optional - foreign-mesh across SEPARATE accounts). A relay
 # forwards a mention into another chat; `to:` chains hops. Not needed within one account.
