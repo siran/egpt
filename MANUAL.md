@@ -31,7 +31,24 @@ not answered by the persona. Authorization = the surface's own `chat_id`
                                                the Self-DM name a target
                                                (slug/name fragment, or a verbatim
                                                @jid / room-id)
-/agents[=<slug>] <handle>|all reset            BIG: reset THIS being on THIS chat:
+/agents[=<slug>] refresh <handle>|all          SMALLEST: keep the thread, re-feed it.
+                                               <chat>/directives/ is re-copied from
+                                               the current template right away, and
+                                               the being's identity goes back into
+                                               its RUNNING thread on that thread's
+                                               next turn. Nothing is moved, no new
+                                               thread, the context is kept
+/agents[=<slug>] rethread <handle>|all         MIDDLE: clear only this being's
+                                               threadId (mode, access_level, every
+                                               other field survive) and roll
+                                               transcript.md into transcripts/ under
+                                               the retiring thread's id. The chat's
+                                               FOLDER stays where it is. Next
+                                               message starts a fresh thread. Named
+                                               `restart` until 2026-09-10 — that
+                                               word is /restart, the NODE's
+                                               lifecycle, and is now refused here
+/agents[=<slug>] reset <handle>|all            BIG: reset THIS being on THIS chat:
                                                archive the chat's WHOLE folder aside,
                                                wipe this being's registry block
                                                (mode, threadId, all of it — a
@@ -40,15 +57,8 @@ not answered by the persona. Authorization = the surface's own `chat_id`
                                                grants that survive the reset,
                                                reseed pristine — next message
                                                starts fresh
-/agents[=<slug>] <handle>|all restart          NARROW: clear only this being's
-                                               threadId (mode, access_level, every
-                                               other field survive) — the chat's
-                                               folder is never touched. Next
-                                               message starts a fresh thread; see
-                                               below for how this differs from
-                                               reset
-/agents[=<slug>] <handle>|all auto <mode>      set a being's reply mode
-/agents[=<slug>] <handle>|all access_level <regular|all|sandbox>
+/agents[=<slug>] auto <mode> <handle>|all      set a being's reply mode
+/agents[=<slug>] access_level <regular|all|sandbox> <handle>|all
                                                point a being at a confinement
                                                tier: this node's regular
                                                default, the unconfined one, or
@@ -95,14 +105,52 @@ CLI's own flags, and no config rung can unbox it. `regular`, `all` and
 the command's usage line is built from it, so it can never name fewer than
 exist.
 
-### `/agents … reset` — start a being over
+### The three lifecycle verbs
+
+`refresh`, `rethread` and `reset` are three different sizes of the same
+instinct — "give this being a clean start" — and until 2026-09-10 the first one
+did not exist and the second was called `restart`. Pick by how much you want to
+throw away:
+
+| | `refresh` | `rethread` | `reset` |
+|---|---|---|---|
+| Thread | **kept, still running** | new one next message | new one next message |
+| `transcript.md` | untouched | rolled into `transcripts/<old-thread>.md` | goes with the archived folder |
+| Conversation folder | stays; `directives/` re-copied | stays; `directives/` re-copied on the next turn | archived aside, reseeded pristine |
+| Registry block | only `identityInjectedAt` cleared | only `threadId` cleared | wiped, except `access_level`/`allowed_users` |
+| Context the model holds | **kept** | dropped | dropped |
+| Use it when | you edited a card or an identity and want the LIVE conversation to know, without losing what it is in the middle of | this thread is stale/confused but the chat's history and settings are fine | the history itself is the problem |
+
+`restart` is NOT one of them. `/restart` is the node's own lifecycle (the
+daemon respawns the checkout); typing `/agents restart <handle>` is refused by
+name and tells you to use `rethread`, rather than quietly doing something
+adjacent to what you meant.
+
+### `/agents refresh …` — re-feed the running thread
+
+The smallest of the three, and the only one that keeps the conversation's
+context. Two halves, and the reply tells you which is which:
+
+- **On disk, immediately** — `<chat>/directives/` is re-copied from the current
+  room template, overwriting what is there. That is how an edited card
+  (`10-actions.md` learning a new limb) reaches a conversation seeded months
+  ago. Your own hand-edits inside `directives/` are overwritten; the source is
+  the template, these are consult copies.
+- **In context, on the next turn** — the being's identity feed goes back into
+  the thread it is already running, as the next message's preamble. It cannot
+  land sooner: an idle CLI session has nothing to push a message into. The
+  confirmation says so rather than claiming it already happened.
+
+Nothing is moved, no thread is minted, and `mode`/`access_level` are untouched.
+
+### `/agents reset …` — start a being over
 
 Archives the conversation's whole folder aside
 (`conversations/archive/<slug>-archived-<suffix>/`, never deleted), wipes the
 TARGET being's registry state (mode, thread) — a sibling being resident on the
 same conversation, if not also named, is untouched — and reseeds a pristine
-tree at the same path. The next message starts a fresh thread. `/agents all
-reset` wipes every resident being on the conversation in one call.
+tree at the same path. The next message starts a fresh thread. `/agents reset
+all` wipes every resident being on the conversation in one call.
 
 `access_level` and `allowed_users` are durable operator-set grants, not
 session state — `reset` preserves them (captured before the wipe, reapplied
@@ -114,31 +162,25 @@ Was `/e reset`/`/e auto`/`/e access` (retired 2026-08-15): hardcoded to the
 persona's own map key, so it could never reach a sibling being on the same
 conversation — `/agents` fixes that by taking the being explicitly.
 
-### `/agents … restart` — clear only the thread
+### `/agents rethread …` — a new thread, keeping the chat
 
-Narrower than `reset`, on purpose. `/agents <handle>|all restart` clears
+Narrower than `reset`, on purpose. `/agents rethread <handle>|all` clears
 **only** that being's `threadId` (a merge, not a wipe) — `mode`,
 `access_level`, and every other field on the being's registry block are left
-exactly as they were. The conversation folder itself (`transcript.md`,
-`media/`, `files/`, `directives/`) is **never** archived or touched — this is
-the same thing that already happens today if you clear `threadId` by hand.
+exactly as they were — and rolls `transcript.md` into
+`transcripts/<retiring-thread>.md`, leaving a blank one behind. The
+conversation FOLDER itself (`media/`, `files/`, `directives/`) is **never**
+archived or moved.
 
-The command's own job stops there: it does not roll the transcript or reseed
-identity layers itself. Both already happen automatically and lazily, the
-moment the being's next real message arrives (the same `fresh = !sessionId`
-path a never-before-seen thread always takes) — so a warm CLI session left
-over from before the restart is also handled automatically: the pool's own
-session-identity guard notices the next turn asks for a null session and
-reopens fresh, with no separate eviction step needed here.
+If the transcript could not be rolled — nothing written yet, or the file names
+no thread to file it under — the confirmation says `transcript.md was NOT
+moved` instead of claiming it went. The thread half still happened.
 
-**`reset` vs. `restart`, side by side:**
-
-| | `reset` | `restart` |
-|---|---|---|
-| Conversation folder | archived aside, reseeded pristine | untouched |
-| Registry block | wiped (mode, threadId, …) except `access_level`/`allowed_users`, which survive | only `threadId` cleared |
-| Sibling beings not named | untouched | untouched |
-| Use it when | you want a clean slate — wrong mode, stale thread, or the history itself is the problem | you just want the NEXT message to start a fresh Claude thread, keeping this chat's mode/access_level exactly as configured |
+Identity reseeding is not synchronous: it happens lazily the moment the being's
+next real message arrives (the same `fresh = !sessionId` path a never-before-seen
+thread always takes). A warm CLI session left over from before is handled
+automatically too: the pool's own session-identity guard notices the next turn
+asks for a null session and reopens fresh, with no separate eviction step here.
 
 ### Lifecycle without a chat (the ingest box)
 

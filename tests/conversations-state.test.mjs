@@ -719,6 +719,34 @@ describe('YAML parse / serialize round-trip', () => {
     expect(residentsOf(back)).toEqual(['egpt']);
   });
 
+  // THE ARMED REFRESH MUST SURVIVE THE DISK (operator 2026-09-10). `/agents refresh <handle>`
+  // arms an identity re-feed by writing `identityInjectedAt: null` into the being's block, and
+  // getBeing distinguishes that EXPLICIT null from a merely absent key — so if serialize or
+  // parse dropped null-valued keys the way they drop the legacy corpses above, a refresh would
+  // confirm ✅ and then silently never happen. That is precisely the "eGPT may not lie about
+  // what it did" failure, so it gets a lock rather than an assumption.
+  it('an ARMED refresh (identityInjectedAt: null) survives serialize -> parse as an explicit null, not as an absent key', () => {
+    const s = {
+      contacts: { whatsapp: { j: {
+        slug: 'diego-2605200133',
+        conversation_path: conversationPathOf(WA, 'diego-2605200133'),
+        home_dir: homeDirMsys(),
+        pushedName: 'diego',
+        agents: {
+          e: { threadId: 'LIVE-thread', identityInjectedAt: null },   // armed by /agents refresh
+          d: { threadId: 'OTHER-thread' },                            // never carried the key at all
+        },
+      } } },
+    };
+    const back = parse(serialize(s)).contacts.whatsapp.j;
+    expect(Object.hasOwn(back.agents.e, 'identityInjectedAt')).toBe(true);
+    expect(back.agents.e.identityInjectedAt).toBeNull();
+    expect(getBeing(parse(serialize(s)), WA, 'j', 'e').identityRefreshArmed).toBe(true);
+    // ...and the sibling that never had the key is NOT armed by its absence
+    expect(Object.hasOwn(back.agents.d, 'identityInjectedAt')).toBe(false);
+    expect(getBeing(parse(serialize(s)), WA, 'j', 'd').identityRefreshArmed).toBe(false);
+  });
+
   // Reproduce (2026-07-26, extended phase 1 2026-08-14): the third corpse of the same class.
   // MEASURED on the live registry: of 106 entries, 10 carry a flat `mode`, and NOTHING reads
   // it. Phase 1 retires the pre-phase-1 `entry[<being>]` block (e.g. `entry.egpt`) the same way.

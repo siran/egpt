@@ -10,7 +10,7 @@
 // with a short note.
 import { lifecycleExit } from './ingest.mjs';
 import { isAutoMode, AUTO_MODES, DEFAULT_AUTO_MODE } from '../auto-mode.mjs';
-import { patchBeing, deleteBeing, getContact, getBeing, residentsOf, slugDir, statsPath, conversationPathOf, seedIdentityLayers, skeletonIdentityFiles, slugSuffix, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS, LOBBY_SLUG } from '../conversations-state.mjs';
+import { patchBeing, deleteBeing, getContact, getBeing, residentsOf, slugDir, statsPath, conversationPathOf, seedIdentityLayers, skeletonIdentityFiles, slugSuffix, rollTranscript, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS, LOBBY_SLUG } from '../conversations-state.mjs';
 import { stripFrontMatter } from '../transcript-meta.mjs';
 import { coerceAllowedTools, resolveDefaultBrainDef, resolveBeingDef } from './brainpool.mjs';
 import { loadPermissionLevel, ACCESS_LEVELS, isAccessLevel } from './permission-levels.mjs';
@@ -317,24 +317,44 @@ const NODE_ADDRESSABLE = /^\/(chrome|status|tabs|tab|open|close|members?|config|
 // Plural command word, verb second, and the thing being acted on LAST — so on /agents the
 // being and the conversation end up adjacent (`auto mention p spoiler`) instead of with the
 // value wedged between them. Deliberate cost, chosen by the operator over the alternative:
-// the target's slot moves with the verb's arity (slot 2 in `restart p`, slot 3 in `auto
+// the target's slot moves with the verb's arity (slot 2 in `rethread p`, slot 3 in `auto
 // mention p`). That is the price of keeping the scope chain contiguous, and it is only
 // payable because every verb's arity is FIXED and its value comes from a closed set.
 //
 //   /agents <handle>|all [<conv>]                             status
-//   /agents reset|restart <handle>|all [<conv>]
+//   /agents refresh|rethread|reset <handle>|all [<conv>]
 //   /agents auto <mode> <handle>|all [<conv>]
 //   /agents access_level <level> <handle>|all [<conv>]        (level: see ACCESS_LEVELS)
 //
-// The object-first order (`/agents restart e`) is GONE — operator 2026-08-29, "remove legacy
+// The object-first order (`/agents e rethread`) is GONE — operator 2026-08-29, "remove legacy
 // ways". It is DETECTED and named rather than left to misparse: a line that silently does the
 // wrong thing is worse than one that tells you what to type. `=<slug>` still says the same
 // thing as the trailing <conv>; saying it both ways is an error, not a precedence rule.
-export const AGENT_SUB_ARITY = { reset: 0, restart: 0, auto: 1, access_level: 1 };
+//
+// THE THREE CONVERSATION-LIFECYCLE VERBS (operator 2026-09-10). They were two, and the two
+// conflated three distinct things:
+//
+//   refresh   re-feed identity + directives INTO THE RUNNING THREAD. Context untouched,
+//             nothing moved, no new thread.
+//   rethread  mint a NEW thread. transcript.md moves to transcripts/. The folder stays put.
+//   reset     UNCHANGED. The whole folder moves to conversations/archive/, pristine one minted.
+//
+// `restart` PARSES but never ACTS (RETIRED_AGENT_SUBS below). It was this verb's name from
+// 2026-08-15 until 2026-09-10, and the operator ruled the word off precisely because the
+// spine's own lifecycle exit code 43 already means RESTART THE PROCESS — one word cannot mean
+// both "restart this node" and "give this conversation a new thread". Keeping the token
+// parseable is what lets it be REFUSED BY NAME instead of falling through to be misread as a
+// handle; it is the same treatment the retired object-first order gets, for the same reason.
+export const AGENT_SUB_ARITY = { refresh: 0, rethread: 0, reset: 0, auto: 1, access_level: 1, restart: 0 };
+// Parsed, named, and refused — never executed. verb -> the verb that replaced it.
+export const RETIRED_AGENT_SUBS = { restart: 'rethread' };
+// The verbs that actually DO something, derived so a retired token can never leak into an
+// operator-facing list by being forgotten in a hand-kept literal.
+const LIVE_AGENT_SUBS = Object.keys(AGENT_SUB_ARITY).filter((v) => !Object.hasOwn(RETIRED_AGENT_SUBS, v));
 // Every level name in the operator-facing text comes from ACCESS_LEVELS (permission-levels.mjs),
 // never a literal: the tier list is spelled out in ONE place, and a new tier updates this line,
-// the refusals below and /help together or not at all.
-export const AGENTS_USAGE = `usage: /agents [<verb>] [<value>] <handle>|all [<conversation>] — verbs: reset | restart | auto <mode> | access_level <${ACCESS_LEVELS.join('|')}>. Bare \`/agents <handle>|all\` shows status.`;
+// the refusals below and /help together or not at all. Same rule now holds for the verb list.
+export const AGENTS_USAGE = `usage: /agents [<verb>] [<value>] <handle>|all [<conversation>] — verbs: refresh | rethread | reset | auto <mode> | access_level <${ACCESS_LEVELS.join('|')}>. Bare \`/agents <handle>|all\` shows status.`;
 
 // args (already whitespace-split) -> what agentsCmd wants: { args: [handle, verb, value],
 // slug, extra }, or { retired } for the old order. Pure; exported for tests.
@@ -504,7 +524,7 @@ export function createCommands({
   fetch: fetchFn = globalThis.fetch,
   // THE transcript reply writer (src/spine/transcript.mjs createTranscript.log) — boot injects
   // `services.transcript.log`, the SAME function every being's reply and every command reply
-  // (via wrapCommandsForTranscript) already goes through. /agents restart's accum boundary is
+  // (via wrapCommandsForTranscript) already goes through. /agents rethread's accum boundary is
   // its one caller: no command hand-assembles a transcript line. No-op default so a standalone
   // /test-constructed createCommands never writes to disk.
   logTranscript = async () => {},
@@ -784,7 +804,7 @@ export function createCommands({
       return;
     }
 
-    // /agents[=<slug>] <handle>|all [reset|restart|auto <mode>|access_level <level>] —
+    // /agents[=<slug>] <handle>|all [refresh|rethread|reset|auto <mode>|access_level <level>] —
     // the general per-being command surface (operator 2026-08-15, retires /e + /egpt entirely).
     // /e's whole family was hardcoded to defaultKey (the persona's own map key) — "a failure
     // in design" now that every resident being (the persona AND a sibling like wren) is
@@ -794,8 +814,9 @@ export function createCommands({
     // fixes that by taking the being explicitly, never assuming defaultKey.
     //
     //   /agents <handle>|all [<conv>]                             → status (bare, see agentsStatus)
+    //   /agents refresh <handle>|all [<conv>]                     → re-feed identity + directives into the RUNNING thread
+    //   /agents rethread <handle>|all [<conv>]                    → clear threadId + roll transcript.md; everything else survives
     //   /agents reset <handle>|all [<conv>]                       → archive + wipe + reseed
-    //   /agents restart <handle>|all [<conv>]                     → clear ONLY threadId, everything else survives
     //   /agents auto <mode> <handle>|all [<conv>]                 → was /e auto <mode>
     //   /agents access_level <level> <handle>|all [<conv>]        → was /e access all|regular
     //
@@ -821,9 +842,13 @@ export function createCommands({
       // The retired object-first order gets its own line back, rebuilt into the new one —
       // naming the exact replacement, not just the rule.
       if (retired) {
+        // A verb that was ALSO renamed (restart -> rethread) is rebuilt under its LIVE name,
+        // so one reply fixes both mistakes instead of sending the operator round a second
+        // refusal for the old word.
+        const verb = RETIRED_AGENT_SUBS[retired.verb.toLowerCase()] ?? retired.verb;
         const fixed = AGENT_SUB_ARITY[retired.verb.toLowerCase()] === 1
-          ? `/agents ${retired.verb} ${retired.rest[0] ?? '<value>'} ${retired.handle}`
-          : `/agents ${retired.verb} ${retired.handle}`;
+          ? `/agents ${verb} ${retired.rest[0] ?? '<value>'} ${retired.handle}`
+          : `/agents ${verb} ${retired.handle}`;
         await send?.(ev.chatId, `/agents: the verb comes first now — \`${fixed}\``);
         return;
       }
@@ -1205,7 +1230,7 @@ export function createCommands({
     await send?.(ev.chatId, `/rooms: unknown verb "${first}" — create|join|leave|members|delete`);
   }
 
-  // /agents[=<slug>] <handle>|all [reset|restart|auto <mode>|access_level <level>] — THE
+  // /agents[=<slug>] <handle>|all [refresh|rethread|reset|auto <mode>|access_level <level>] — THE
   // dispatcher (operator 2026-08-15, retires the whole /e/egpt family — see its own comment
   // at the dispatch site above for the "failure in design" this closes). Parses the already-
   // tokenized args ([handle-or-'all', subcommand?, value?] — the regex above split them),
@@ -1220,8 +1245,17 @@ export function createCommands({
     if (!handleArg) { await send?.(ev.chatId, AGENTS_USAGE); return; }
     if (!loadState || !writeState) { await send?.(ev.chatId, '/agents: conversation state not wired'); return; }
     const sub = subRaw?.toLowerCase() || null;
-    if (sub && !['reset', 'restart', 'auto', 'access_level'].includes(sub)) {
-      await send?.(ev.chatId, `/agents: unknown subcommand "${subRaw}" — reset|restart|auto <mode>|access_level <${ACCESS_LEVELS.join('|')}>. Verb first: /agents <sub> <handle>.`);
+    // A RETIRED verb is refused BY NAME, before anything is resolved or written — never
+    // silently aliased onto its replacement. `restart` in particular reads as a lifecycle verb
+    // (exit 43 restarts the NODE), so quietly giving one conversation a new thread because the
+    // operator typed it would be the exact class of "did something adjacent to what you meant"
+    // this surface refuses elsewhere.
+    if (sub && Object.hasOwn(RETIRED_AGENT_SUBS, sub)) {
+      await send?.(ev.chatId, `/agents: "${subRaw}" is not a verb here any more — did you mean \`/agents ${RETIRED_AGENT_SUBS[sub]} ${handleArg}\`? (/restart is the NODE's lifecycle; ${RETIRED_AGENT_SUBS[sub]} gives this conversation a new thread). Nothing was changed.`);
+      return;
+    }
+    if (sub && !LIVE_AGENT_SUBS.includes(sub)) {
+      await send?.(ev.chatId, `/agents: unknown subcommand "${subRaw}" — ${LIVE_AGENT_SUBS.join('|')} (auto <mode>, access_level <${ACCESS_LEVELS.join('|')}>). Verb first: /agents <sub> <handle>.`);
       return;
     }
     if (sub === 'auto') {
@@ -1281,8 +1315,9 @@ export function createCommands({
       handles = [handleArg];
     }
 
+    if (sub === 'refresh') { await agentsRefresh(ev, surface, jid, where, handles, state); return; }
     if (sub === 'reset') { await agentsReset(ev, surface, jid, where, handles, state); return; }
-    if (sub === 'restart') { await agentsRestart(ev, surface, jid, where, handles, state); return; }
+    if (sub === 'rethread') { await agentsRethread(ev, surface, jid, where, handles, state); return; }
     if (sub === 'auto') { await agentsAuto(ev, surface, jid, where, handles, valueRaw.toLowerCase(), state); return; }
     if (sub === 'access_level') { await agentsAccessLevel(ev, surface, jid, where, handles, valueRaw.toLowerCase(), state); return; }
     await send?.(ev.chatId, agentsStatus(surface, jid, handles, state));
@@ -1370,22 +1405,84 @@ export function createCommands({
     await send?.(ev.chatId, `✅ ${room.slug} reset ${where === 'here' ? '' : where + ' '}— ${handles.join(', ')} state cleared (access_level/allowed_users preserved), next message starts fresh.`);
   }
 
-  // /agents[=<slug>] <handle>|all restart — NARROWER than reset (operator 2026-08-15 ruling,
+  // /agents[=<slug>] <handle>|all refresh — the verb that changes NO lifecycle at all
+  // (operator 2026-09-10): "re-feed identity + directives into the RUNNING thread. Context
+  // untouched, nothing moved, no new thread." It is the middle rung the surface was missing —
+  // rethread throws the thread away to get a current template, reset throws the whole folder
+  // away, and until now there was no way to hand a live conversation an edited card without
+  // losing what it was in the middle of.
+  //
+  // TWO HALVES, and the reply below is careful to say which is which, because they land at
+  // different times:
+  //
+  //   ON DISK, NOW — <room>/directives/ is re-copied with `overwrite: true`, the SAME call
+  //   /agents reset makes to mint a pristine tree and the same one brainpool.mjs makes on a
+  //   thread instanced anew. That is the capabilities refresher: an edited 10-actions.md
+  //   reaches a conversation seeded months ago. THE IDENTITY IS NOT WRITTEN — seedIdentityLayers
+  //   files only the SHARED layers (_sharedLayers, operator 2026-09-10), which is the whole
+  //   reason that folder is no longer called identity.d.
+  //
+  //   IN CONTEXT, NEXT TURN — clearing `identityInjectedAt` is the arming gesture. brainpool.mjs
+  //   reads it (see turn(): a RESUMED thread with no injected-at stamp re-wraps with the feed
+  //   and stamps it back). It cannot happen sooner and this reply must not pretend otherwise:
+  //   an idle CLI session has nothing to push a message into, so the feed rides the next real
+  //   turn — the same way `mode: auto`'s one-time preamble already does.
+  //
+  // NO NEW FIELD for the arming: `identityInjectedAt` has recorded when the identity was last
+  // fed since recordThread was written; it was simply never read. Nulling it states something
+  // TRUE about the block — this thread is running without its identity in context — rather
+  // than parking a flag beside it.
+  //
+  // 'egpt' as the personality, exactly as agentsReset passes it, and for a reason that is not
+  // laziness: the argument selects only the 00-identity SLOT, which _sharedLayers filters out
+  // before anything is written. What lands on disk is identical for every persona, so there is
+  // no per-being def to resolve here and no second resolution path to keep in step.
+  async function agentsRefresh(ev, surface, jid, where, handles, state) {
+    const room = (where === 'here') ? await convRoomOf(ev) : await resolveConvRoom(surface, jid);
+    if (!room) { await send?.(ev.chatId, "can't resolve this conversation's room"); return; }
+    let wrote = [];
+    try {
+      // Best-effort by contract (seedIdentityLayers never throws); it RETURNS what it wrote,
+      // which is what the reply reports rather than a claim assembled here.
+      wrote = await seedIdentityLayers(room, 'egpt', { io: { mkdir, readFile, writeFile }, overwrite: true });
+      let next = state;
+      for (const h of handles) next = patchBeing(next, surface, jid, h, { identityInjectedAt: null });
+      await writeState(next);
+    } catch (e) { onLog(`/agents refresh ${ev.chatId}: ${e?.message ?? e}`); await send?.(ev.chatId, `/agents: refresh failed — ${e?.message ?? e}`); return; }
+    // Names the two halves separately, and never claims a thread was minted. An empty `wrote`
+    // is reported as such — a refresh that copied nothing must not read like one that did.
+    const copied = wrote.length ? `directives/ re-copied (${wrote.join(', ')})` : 'directives/ re-copied: NOTHING was written (no layer had content to copy)';
+    await send?.(ev.chatId, `✅ ${handles.join(', ')} refresh ${where} — ${copied}; identity re-feeds into the RUNNING thread on its next turn (threadId unchanged, nothing moved, context kept).`);
+  }
+
+  // /agents[=<slug>] <handle>|all rethread — NARROWER than reset (operator 2026-08-15 ruling,
   // decided directly against `reset`'s big archive-and-wipe): clears ONLY the target
   // being(s)' `threadId` via patchBeing (a merge, NOT deleteBeing) — `mode`, `access_level`,
   // and every other field on the being's block survive byte-for-byte. The conversation
-  // folder (transcript.md, media/, files/, directives/) is never archived, moved or wiped —
-  // no rename, no reseed. This matches exactly what already happens today when an operator
-  // manually clears `threadId` by hand, plus the ONE line restartBoundary appends to
-  // transcript.md (below) so `mode: accum`'s window starts here too.
+  // FOLDER is never archived, moved or wiped — no folder rename, no reseed — plus the ONE
+  // line rethreadBoundary appends to transcript.md (below) so `mode: accum`'s window starts
+  // here too.
   //
-  // Nothing else is done synchronously: transcript rolling and identity reseeding are NOT
-  // triggered here. They already happen automatically, lazily, on the NEXT real inbound
-  // message via brainpool.mjs's own `fresh = !sessionId` gate (`if (fresh) await
-  // rollTranscript(...)`, `seedLayers(..., { overwrite: fresh })` — see turn()) — duplicating
-  // that here would just race the proven path.
+  // SHIPPED AS `restart`, RENAMED 2026-09-10 (operator): the spine's lifecycle exit code 43
+  // already means RESTART THE PROCESS, and the same word meaning both "restart the node" and
+  // "new thread for this conversation" is how an operator ends up restarting the wrong thing.
+  // The old token is refused by name in agentsCmd above, never aliased.
   //
-  // No evictWarm() call either (unlike access_level, which needs one): warm-sessions.mjs's
+  // AND THE TRANSCRIPT MOVES, NOW (operator 2026-09-10: "mint a NEW thread. The current
+  // transcript.md moves to transcripts/"). rollTranscript is THE mover — the same function
+  // brainpool.mjs calls on a thread instanced anew, not a second copy of the logic — so the
+  // file lands under its RETIRING thread's own id and a blank, un-stamped transcript.md is
+  // left in its place. Calling it here does not race brainpool's lazy roll: that one keys on
+  // the transcript's own `thread_id` front matter, which this call has just cleared, so the
+  // next turn's roll finds nothing to do and returns null.
+  //
+  // IT CAN FAIL, AND THEN IT SAYS SO. rollTranscript never throws and returns null for every
+  // reason it did not move the file (nothing there yet, un-stamped, the destination taken 99
+  // times over, an fs error it logged). The reply below reports that null as a NOT MOVED
+  // rather than folding it into the ✅ — the thread half genuinely did happen, and claiming
+  // the transcript went with it when it did not is the kind of lie this surface does not tell.
+  //
+  // No evictWarm() call (unlike access_level, which needs one): warm-sessions.mjs's
   // run() already carries a SESSION-IDENTITY GUARD (its own comment names this exact case —
   // "`/agents reset <handle>` nulling the thread ... would otherwise be silently ignored")
   // that compares the `sessionId` brainpool.mjs passes every turn (`sessionId: threadId ??
@@ -1394,27 +1491,49 @@ export function createCommands({
   // `threadId` here is exactly what ARMS that guard on the next turn — the same mechanism
   // that already makes `reset` work with no explicit evict, despite `reset` never calling
   // evictWarm either.
-  async function agentsRestart(ev, surface, jid, where, handles, state) {
+  //
+  // Identity reseeding is still NOT done here: brainpool.mjs's own `fresh = !sessionId` gate
+  // re-copies the layers with `overwrite: fresh` on the next real turn, and duplicating that
+  // would just race the proven path. The transcript move is different precisely because it is
+  // the operator's stated definition of the verb, not a side effect of the next turn.
+  async function agentsRethread(ev, surface, jid, where, handles, state) {
+    const room = (where === 'here') ? await convRoomOf(ev) : await resolveConvRoom(surface, jid);
+    if (!room) { await send?.(ev.chatId, "can't resolve this conversation's room"); return; }
     try {
       let next = state;
       for (const h of handles) next = patchBeing(next, surface, jid, h, { threadId: null });
       await writeState(next);
-      await send?.(ev.chatId, `✅ ${handles.join(', ')} restart ${where} — threadId cleared and an accum boundary marked in transcript.md, so nothing said before now is fed back; next message starts a fresh session (mode/access_level unchanged, the conversation folder untouched — /agents reset is what archives).`);
-      await restartBoundary(ev, surface, jid, handles, state);
-    } catch (e) { onLog(`/agents restart ${ev.chatId}: ${e?.message ?? e}`); await send?.(ev.chatId, `/agents: restart failed — ${e?.message ?? e}`); }
+      // THE ROLL, through the shared mover. Reported by its result, never assumed.
+      const dest = await rollTranscript(room.surface, room.slug, { io: { readFile, writeFile, rename, mkdir } });
+      // The roll's outcome leads its own clause and is never folded into the ✅: "but ... was
+      // NOT moved" has to be readable at a glance, because the operator's next move depends on
+      // it. The ✅ says the command ran; this says what it managed.
+      const rolled = dest
+        ? `and transcript.md moved to transcripts/${basename(dest)}`
+        : 'but transcript.md was NOT moved (nothing written there yet, or it names no thread to file it under)';
+      await send?.(ev.chatId, `✅ ${handles.join(', ')} rethread ${where} — threadId cleared, ${rolled}. An accum boundary is marked in transcript.md, so nothing said before now is fed back; the next message starts a fresh session (mode/access_level unchanged, the conversation folder stays where it is — /agents reset is what archives).`);
+      await rethreadBoundary(ev, surface, jid, handles, state);
+    } catch (e) { onLog(`/agents rethread ${ev.chatId}: ${e?.message ?? e}`); await send?.(ev.chatId, `/agents: rethread failed — ${e?.message ?? e}`); }
   }
 
   // THE ACCUM BOUNDARY (operator ruling 2026-08-29: "the reset should clean next accum, so
   // that the model really starts fresh"). Nulling threadId above starts a fresh SESSION, but
   // `mode: accum` reads the gap since the being's last turn straight out of transcript.md
-  // (transcript-log.contextSinceLastTurn), so a restarted being was still handed up to
-  // RECENT_CONTEXT_MAX_CHARS of pre-restart history on turn one — the live incident where E,
+  // (transcript-log.contextSinceLastTurn), so a rethreaded being was still handed up to
+  // RECENT_CONTEXT_MAX_CHARS of pre-rethread history on turn one — the live incident where E,
   // asked "sin revisar el historial, recuerdas de qué estábamos hablando?", answered correctly
   // without reading anything.
   //
+  // STILL LOAD-BEARING NOW THAT THE TRANSCRIPT ALSO MOVES (2026-09-10): the roll leaves a
+  // BLANK transcript.md behind, which would seem to make a boundary line redundant — but the
+  // roll can legitimately do nothing (an un-stamped or absent file, the case the reply above
+  // reports as NOT moved), and in that case this line is the only thing closing the window.
+  // Belt and braces, on purpose: the cost is one withheld line, the failure is a "fresh"
+  // being reading yesterday.
+  //
   // NO NEW MECHANISM: contextSinceLastTurn already treats a WITHHELD reply line as a valid
   // boundary (its own docblock: "`(not surfaced) ` opens the BODY, past the head, so it
-  // matches"), so one such line per restarted being re-anchors the window at the restart point
+  // matches"), so one such line per rethreaded being re-anchors the window at that point
   // — no new field, no timestamp comparison (that module deliberately parses none), and the
   // shared record every OTHER being and every human relies on is left whole. That is the whole
   // difference from reset, which archives the folder.
@@ -1425,17 +1544,17 @@ export function createCommands({
   //
   // LAST, after the confirmation: boot records a command's reply through the same transcript
   // (wrapCommandsForTranscript), so a boundary written first would leave the ✅ line — and the
-  // `/agents … restart` line above it — sitting in the "fresh" being's first window.
+  // `/agents … rethread` line above it — sitting in the "fresh" being's first window.
   //
   // The ev is the CALLER-RESOLVED conversation's, not the one the command was typed in: a
-  // `/agents=<slug> … restart` from Self must re-anchor the named chat. Only where the write is
+  // `/agents=<slug> … rethread` from Self must re-anchor the named chat. Only where the write is
   // filed changes; chatName follows it so the line names the chat it lands in.
-  async function restartBoundary(ev, surface, jid, handles, state) {
+  async function rethreadBoundary(ev, surface, jid, handles, state) {
     const contact = getContact(state, surface, jid);
     const chatName = contact?.entry?.pushedName ?? contact?.slug ?? ev.chatName;
     const at = { ...ev, surface, chatId: jid, chatName };
     for (const h of handles) {
-      await logTranscript(at, { text: 'restarted — fresh session from here; nothing above this line is in context', being: h, surfaced: false });
+      await logTranscript(at, { text: 'rethreaded — fresh session from here; nothing above this line is in context', being: h, surfaced: false });
     }
   }
 

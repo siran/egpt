@@ -26,7 +26,7 @@
 // the brains registry, never frozen into readonly. Every one gets the kickoff feed for
 // its own `personality:` (see wrapFresh below), and its thread persists in a per-agent
 // NESTED block (recordThread(..., being)).
-import { slugDir, getBeing, recordThread, readIdentityFeed, seedIdentityLayers, readAutoModeLayer, appendThreadStat, mutateState, nowIsoString, rollTranscript, stampThreadId, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS } from '../conversations-state.mjs';
+import { slugDir, getBeing, recordThread, patchBeing, readIdentityFeed, seedIdentityLayers, readAutoModeLayer, appendThreadStat, mutateState, nowIsoString, rollTranscript, stampThreadId, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS } from '../conversations-state.mjs';
 // THE wake vocabulary, imported — not re-read here. `handles:` (else the map key) plus the
 // CONDITIONAL fallback_handle, exactly as the mention matcher resolves them, so what the card
 // tells an agent it answers to can never drift from what actually wakes it (feedConfig below).
@@ -501,6 +501,13 @@ export function createBrainPool({
       scope,
       slug,
       sessionId: b?.threadId ?? null,
+      // `/agents refresh <handle>` armed an identity re-feed on this being's RUNNING thread
+      // (getBeing owns what "armed" means — an EXPLICIT null identityInjectedAt, never a
+      // merely absent one). Read by turn() below, with sessionId. Joins the SCOPE like
+      // everything else here except `mode`: the identity is the scope's, so a scoped being
+      // refreshed once is refreshed on the one thread it answers under, which is the thread
+      // the feed would go into anyway.
+      identityRefreshArmed: b?.identityRefreshArmed === true,
       // The conversation's stored E mode — 'auto' arms the operator-role kickoff layer
       // (read raw, not gating-resolved: auto is an explicit per-conversation opt-in).
       mode: b0?.mode ?? null,
@@ -627,7 +634,7 @@ export function createBrainPool({
       // derives from it and none from `ev`: thread, warm key, conv dir, run config, transcript
       // roll, thread stats. `ev` still owns what belongs to the MESSAGE — its line, its reply,
       // its own transcript (see resolveConv above).
-      const { scope, slug, sessionId, mode, accessLevel, allowedUsers, sandboxed, verboseThinking, compaction: compactionOver } = await resolveConv(ev, being);
+      const { scope, slug, sessionId, identityRefreshArmed, mode, accessLevel, allowedUsers, sandboxed, verboseThinking, compaction: compactionOver } = await resolveConv(ev, being);
       if (!slug) throw new Error(`brainpool: no slug for ${scope.surface}/${scope.chatId}`);
 
       // STRUCTURAL SAFETY GATE (operator 2026-08-16; refined 2026-08-20). Refuses the ENTIRE
@@ -663,10 +670,23 @@ export function createBrainPool({
       const wantAuto = mode === 'auto';
       const autoKey = (tid) => `${scope.surface}:${scope.chatId}:${tid}`;
       // A THREAD IS BEING INSTANCED on this turn (no thread yet) — read by the layer seeding: a
-      // refresh re-copies the room template, an ordinary turn does not. Being-agnostic: each
+      // RETHREAD re-copies the room template, an ordinary turn does not. Being-agnostic: each
       // being's own thread (getBeing(..., being).threadId, read by resolveConv above) is
       // independent of every other resident being's.
+      // (The word here was "refresh" until 2026-09-10, when the operator split the verbs:
+      // `rethread` is the thread-instanced-anew one this flag describes; `refresh` is now the
+      // OTHER thing, immediately below, which deliberately does none of what `fresh` gates.)
       const fresh = !sessionId;
+      // AN IDENTITY REFRESH IS ARMED on a thread that is otherwise fine (operator 2026-09-10,
+      // `/agents refresh <handle>`): the thread is RESUMED — same session, same context, no roll,
+      // no overwrite-reseed — but the command explicitly nulled its identityInjectedAt, which
+      // states the literal truth that this running thread has no identity in context. The feed
+      // therefore rides the next real turn as its kickoff wrap and the stamp is written back
+      // below, exactly the shape `mode: auto`'s one-time resume preamble already uses.
+      //
+      // Never true while `fresh` is: a brand-new thread gets the feed from wrapFresh anyway, and
+      // recordThread stamps threadId and identityInjectedAt together at the end of that turn.
+      const identityRefresh = !fresh && identityRefreshArmed;
       // THE ONE resolution path (phase 2, operator 2026-08-14): every being's def — the
       // persona included — comes from resolveBeingDef (agents[<being>].configuration names a
       // type file resolved through the brains registry). This is the SAME path a
@@ -896,10 +916,16 @@ export function createBrainPool({
         return `${auto.trim()}\n\n---\n\n${line}`;
       };
       // The FIRST message this turn sends: identity kickoff on a fresh thread, the plain
-      // line on a resume — unless a resumed thread just flipped to auto and hasn't been
-      // told yet, in which case the one-time auto preamble leads.
+      // line on a resume — unless the operator asked for a refresh (the feed goes back into
+      // the RESUMED thread, no new session), or a resumed thread just flipped to auto and
+      // hasn't been told yet, in which case the one-time auto preamble leads.
+      //
+      // A refresh reuses wrapFresh VERBATIM rather than growing a second feed assembler: what
+      // `/agents refresh` re-feeds is by definition the same feed a kickoff carries, and the
+      // one difference that would matter — a new session — is not made here but by the
+      // `sessionId` in baseOpts, which a refresh leaves exactly as it was.
       let firstMsg;
-      if (!sessionId) {
+      if (!sessionId || identityRefresh) {
         firstMsg = await wrapFresh();
       } else if (wantAuto && !autoDelivered.has(autoKey(sessionId))) {
         firstMsg = await wrapAutoResume();
@@ -964,6 +990,20 @@ export function createBrainPool({
         // the message arrived in — a thread has exactly one history, wherever it was woken from.
         // Injectable io, never fatal — the state write is durable.
         try { await appendThreadStat(scope.surface, scope.chatId, { id: newSession, created: nowIso, identity_injected: nowIso }, { io }); } catch { /* non-fatal */ }
+      } else if (identityRefresh) {
+        // THE REFRESH STAMP. The feed just went into the SAME thread (no new session, so the
+        // recordThread branch above never fires and nothing would otherwise record that the
+        // identity is back in context) — write identityInjectedAt alone, through patchBeing so
+        // threadId/threadCreatedAt and every other field on the block survive untouched. That
+        // is what disarms the re-feed: the next turn reads a stamped block and sends the raw
+        // line again.
+        //
+        // ONLY ON A TURN THAT GOT HERE. A turn that threw never reaches this line, so the
+        // refresh stays armed and the feed is retried next time — which is correct and is the
+        // honest outcome: an undelivered feed must not be recorded as delivered.
+        await mutateState(writeState, async () => {
+          await writeState(patchBeing(await loadState(), scope.surface, scope.chatId, being, { identityInjectedAt: nowIsoString() }));
+        });
       }
       // Auto-compaction hook: after a cooling period the service /compacts this
       // session in place if it grew past ratio. Fire-and-forget — never block the reply.

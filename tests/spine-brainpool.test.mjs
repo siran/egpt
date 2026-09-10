@@ -367,6 +367,89 @@ describe('brainpool.turn', () => {
     expect(pool.calls[0].message).toBe(ev.line);   // resumed → no wrap
   });
 
+  // ── THE REFRESH RE-FEED (operator 2026-09-10) ────────────────────────────────────────────
+  // `/agents refresh <handle>` re-feeds identity + directives INTO THE RUNNING THREAD: no new
+  // thread, nothing moved, the context kept. Its command half (spine/commands.mjs) does the
+  // disk work — re-copying <room>/directives/ — and ARMS the in-context half by clearing the
+  // being's `identityInjectedAt`. This is that half: a resumed thread whose being carries no
+  // injected-at stamp gets the feed once, on the SAME session, and the stamp is written back
+  // so the next turn is an ordinary one again.
+  //
+  // No new field and no second delivery-tracking mechanism: `identityInjectedAt` has recorded
+  // WHEN the identity was last fed since recordThread was written — it was simply never READ.
+  // Reading it is the whole change. That also makes the state file honest: a block with a
+  // threadId and a null identityInjectedAt says exactly what is true, that this thread is
+  // running without its identity in context.
+  it('REFRESH: a resumed thread whose identityInjectedAt is null gets the feed ONCE, on the SAME session', async () => {
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 'sid' }, { text: 'ok2', sessionId: 'sid' }], {
+      seedSession: 'sid',
+      seedAgents: { e: { identityInjectedAt: null } },   // what /agents refresh writes
+      loadFeed: async () => 'I am eGPT.',
+    });
+    await brain.turn('e', ev);
+    expect(pool.calls[0].brainOptions.sessionId).toBe('sid');   // NOT a new thread
+    expect(pool.calls[0].message).toContain('I am eGPT.');      // …and the identity is back in context
+    expect(pool.calls[0].message.endsWith(ev.line)).toBe(true);
+
+    await brain.turn('e', ev);
+    expect(pool.calls[1].message).toBe(ev.line);                // second turn: ordinary again, no re-inject
+  });
+
+  it('REFRESH: the delivery is stamped back into identityInjectedAt, and the thread id is left alone', async () => {
+    const { brain, getState } = harness([{ text: 'ok', sessionId: 'sid' }], {
+      seedSession: 'sid',
+      seedAgents: { e: { identityInjectedAt: null } },
+      loadFeed: async () => 'I am eGPT.',
+    });
+    await brain.turn('e', ev);
+    const b = getBeing(getState(), ev.surface, ev.chatId, 'e');
+    expect(b.threadId).toBe('sid');
+    expect(getContact(getState(), ev.surface, ev.chatId).entry.agents.e.identityInjectedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  // THE NEGATIVE LOCK, and the one that caught the first cut of this. A being block that
+  // never carried identityInjectedAt at all — a hand-set threadId, a fixture, a profile
+  // written before the field existed — is NOT armed. Reading absence as "needs a feed" re-fed
+  // threads nobody had asked to refresh; boot-profile-contract's GUARD 1(a) is the end-to-end
+  // lock and this is the unit one.
+  it('REFRESH: a resumed thread whose block never CARRIED identityInjectedAt is NOT armed — absence is not an arming', async () => {
+    let state = emptyState();
+    const ens = ensureContact(state, ev.surface, ev.chatId, { pushedName: ev.chatName, slugHint: ev.chatName });
+    state = patchBeing(ens.state, ev.surface, ev.chatId, 'e', { mode: 'on', threadId: 'sid' });   // threadId, no stamp
+    expect(Object.hasOwn(getContact(state, ev.surface, ev.chatId).entry.agents.e, 'identityInjectedAt')).toBe(false);
+
+    const pool = fakePool([{ text: 'ok', sessionId: 'sid' }]);
+    const brain = createBrainPool({
+      pool,
+      getConfig: () => ({ agents: { e: { conversation_defaults: { access_level: 'regular' } } } }),
+      contacts: createContacts({ loadState: async () => state, writeState: async (s) => { state = s; }, io: { mkdir: async () => {} } }),
+      loadState: async () => state,
+      writeState: async (s) => { state = s; },
+      io: { mkdir: async () => {}, readFile: async () => null, writeFile: async () => {} },
+      resolveConfig: () => ({}),
+      loadFeed: async () => 'I am eGPT.',
+      loadManifest: async () => '',
+      loadPermission: () => null,
+    });
+    await brain.turn('e', ev);
+    expect(pool.calls[0].message).toBe(ev.line);   // raw line — today's behaviour, unchanged
+  });
+
+  it('REFRESH: does NOT roll the transcript and does NOT overwrite directives/ — that is rethread\'s job, not this one\'s', async () => {
+    const seeded = [];
+    const rolled = [];
+    const { brain } = harness([{ text: 'ok', sessionId: 'sid' }], {
+      seedSession: 'sid',
+      seedAgents: { e: { identityInjectedAt: null } },
+      loadFeed: async () => 'I am eGPT.',
+      seedLayers: async (room, name, opts) => { seeded.push(opts?.overwrite === true); return []; },
+      io: { mkdir: async () => {}, readFile: async () => null, writeFile: async () => {}, rename: async (a, b) => { rolled.push([a, b]); } },
+    });
+    await brain.turn('e', ev);
+    expect(seeded).toEqual([false]);   // copy-if-missing, the mid-thread default
+    expect(rolled).toEqual([]);        // nothing archived out from under a running thread
+  });
+
   // THE dj-son OVERFLOW (2026-08-28): `@pd` on a local 16k model died with
   // "request (25322 tokens) exceeds the available context size (16384)". Its pi
   // session held 32 copies of the identity feed — 2018 chars each, ~75% of the

@@ -932,6 +932,23 @@ export function getBeing(state, surface, jid, being) {
     mode:               b?.mode               ?? null,
     send_to_egpt:       b?.send_to_egpt       ?? null,  // per-conv 'always'|'mode' override
     threadId:           b?.threadId           ?? null,
+    // IS AN IDENTITY RE-FEED ARMED for this being's RUNNING thread (operator 2026-09-10,
+    // `/agents refresh <handle>`). Read by brainpool.mjs's turn(): an armed RESUMED thread
+    // re-wraps with the identity feed on its next turn and stamps identityInjectedAt back,
+    // with no new session, nothing moved and its context kept. NO NEW STORED FIELD — the
+    // arming gesture is writing the EXISTING `identityInjectedAt` (recordThread's own
+    // breadcrumb, written since the per-being block existed and never read until now)
+    // explicitly to null.
+    //
+    // PRESENT-AND-NULL, NOT MERELY ABSENT, and the difference is load-bearing rather than
+    // pedantic. A block that never carried the key at all is a thread whose identity history
+    // is simply unrecorded — a hand-set threadId, a fixture, a profile written before the
+    // field existed — and those must keep behaving exactly as they do today: resumed, raw
+    // line, no kickoff wrap. boot-profile-contract's GUARD 1(a) is the lock on that, and it
+    // is the test that caught the first cut of this, which read absence as "needs a feed" and
+    // re-fed a fixture thread nobody had asked to refresh. Only an EXPLICIT null is a
+    // deliberate arming, and only the refresh command writes one.
+    identityRefreshArmed: !!b && Object.hasOwn(b, 'identityInjectedAt') && b.identityInjectedAt == null,
     // /agents access_level all|regular <handle>|all (operator 2026-08-14, was /e access
     // all|regular): points this being at a
     // config/permissions/<level>.md file, read fresh every turn by
@@ -1583,16 +1600,27 @@ const _sharedLayers = (layers) => layers.filter(({ file }) => file !== IDENTITY_
 // NO MIGRATION (operator 2026-09-10): a conversation seeded before today keeps its
 // identity.d/ on disk, untouched — no shim, no dual read. New and reset rooms get directives/.
 //
-// COPY-IF-MISSING by default, the house skeleton convention (seed.mjs). `overwrite` (the
-// brainpool passes it on a REFRESH — a thread being instanced) re-copies every layer instead:
-// operator 2026-07-26, "all skeleton files are copied on refresh thread". That is the
-// capabilities refresher — an edited template (10-actions.md learning /ask) could otherwise
-// never reach a conversation that was seeded once, months ago. THE TRADE: a hand-edit to
-// <room>/directives/ is discarded on the next refresh. Intended — these are consult COPIES;
-// the source is the room template. /rooms create passes no overwrite (copy-if-missing): a
-// brand-new room's directives/ is already empty, so there is nothing to refresh — and
-// copy-if-missing is the same never-clobber default every other seed path uses, in case
-// creation is ever retried against a room that already has layers.
+// COPY-IF-MISSING by default, the house skeleton convention (seed.mjs). `overwrite` re-copies
+// every layer instead: operator 2026-07-26, "all skeleton files are copied on refresh thread".
+// That is the capabilities refresher — an edited template (10-actions.md learning /ask) could
+// otherwise never reach a conversation that was seeded once, months ago.
+//
+// WHO PASSES overwrite:true, and A NOTE ON THE WORD "refresh". The 2026-07-26 ruling used
+// "refresh" to mean A THREAD INSTANCED ANEW; since 2026-09-10 that is called `rethread`, and
+// `refresh` is a DIFFERENT verb (re-feed into the RUNNING thread). Both re-copy this folder,
+// for the same capabilities-refresher reason, so the flag now has two callers:
+//
+//   brainpool.mjs turn(), `overwrite: fresh`  — a thread being instanced (a rethread, a reset,
+//                                               a dead session). A mid-thread turn passes
+//                                               false, so nothing is rewritten under a
+//                                               running brain.
+//   commands.mjs agentsRefresh + agentsReset  — the operator asking for it outright.
+//
+// THE TRADE: a hand-edit to <room>/directives/ is discarded on the next overwrite. Intended —
+// these are consult COPIES; the source is the room template. /rooms create passes no overwrite
+// (copy-if-missing): a brand-new room's directives/ is already empty, so there is nothing to
+// re-copy — and copy-if-missing is the same never-clobber default every other seed path uses,
+// in case creation is ever retried against a room that already has layers.
 //
 // NEVER throws — a seeding hiccup must not break a turn (or a /rooms create). Returns the
 // filenames it wrote.

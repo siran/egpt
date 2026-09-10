@@ -100,7 +100,23 @@ answered by the persona:
                               `all` applies to every resident being on the entry.
                               omit `=<slug>` for this chat; from Self-DM name the
                               target (slug/name fragment or @jid)
-/agents[=<slug>] <handle>|all reset
+/agents[=<slug>] refresh <handle>|all
+                              SMALLEST: keep the running thread and re-feed it.
+                              <chat>/directives/ is re-copied from the current
+                              template immediately; the identity goes back into
+                              the LIVE thread on its next turn. Nothing moved, no
+                              new thread, the model keeps its context
+/agents[=<slug>] rethread <handle>|all
+                              MIDDLE: clear ONLY this being's threadId (mode,
+                              access_level, and every other field survive
+                              untouched) and roll transcript.md into
+                              transcripts/<retiring-thread>.md. The conversation
+                              FOLDER is never archived or moved. Identity
+                              reseeding happens on the being's next message, not
+                              as part of this command. Was `restart` until
+                              2026-09-10 — that word is /restart, the NODE's
+                              lifecycle, and is refused here
+/agents[=<slug>] reset <handle>|all
                               BIG: archive this being's whole conversation folder
                               aside (transcript.md, media/, files/, directives/ —
                               everything), wipe ITS registry block (mode,
@@ -109,21 +125,12 @@ answered by the persona:
                               allowed_users, which are durable operator grants and
                               survive the reset, reseed a pristine tree at the
                               same path
-/agents[=<slug>] <handle>|all restart
-                              NARROW: clear ONLY this being's threadId (mode,
-                              access_level, and every other field survive
-                              untouched) — the conversation folder is never
-                              archived or touched. This is exactly what already
-                              happens when threadId alone is cleared by hand;
-                              transcript rolling + identity refresh happen
-                              automatically on the being's next message, not as
-                              part of this command
-/agents[=<slug>] <handle>|all auto <mode>
+/agents[=<slug>] auto <mode> <handle>|all
                               set a chat's reply mode. modes: on · mute ·
                               mention-direct · mention · accum (mention + the turn
                               is prompted with what was said since the being's
                               last turn) · off
-/agents[=<slug>] <handle>|all access_level <regular|all|sandbox>
+/agents[=<slug>] access_level <regular|all|sandbox> <handle>|all
                               point a being at a confinement tier: regular (the
                               node's confined default), all (unconfined), or
                               sandbox (all's capability, only inside the OS box)

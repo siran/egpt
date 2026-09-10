@@ -4,7 +4,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createCommands, normalizeAgentsArgs, AGENTS_USAGE, SINGULAR_CMD, PLURAL_OF, launchChromeDirect, CHROME_BRAIN_PROFILE } from '../src/spine/commands.mjs';
+import { createCommands, normalizeAgentsArgs, AGENTS_USAGE, RETIRED_AGENT_SUBS, SINGULAR_CMD, PLURAL_OF, launchChromeDirect, CHROME_BRAIN_PROFILE } from '../src/spine/commands.mjs';
 import { createSpine } from '../src/spine/spine.mjs';
 import { createTranscript } from '../src/spine/transcript.mjs';
 import { contextSinceLastTurn } from '../src/transcript-log.mjs';
@@ -555,19 +555,24 @@ describe('/agents reset <handle>|all — archive + registry wipe + reseed, one s
   });
 });
 
-// /agents restart <handle>|all — the NARROWER sibling of reset (operator 2026-08-15,
+// /agents rethread <handle>|all — the NARROWER sibling of reset (operator 2026-08-15,
 // decided directly against reset's archive-and-wipe): clears ONLY the target being(s)'
 // threadId via patchBeing (a merge, never deleteBeing) — mode/access_level and every other
-// field on the block survive, and the conversation folder (transcript.md, media/, files/,
-// directives/) is never archived or otherwise touched. Matches exactly what already happens
-// today when an operator manually clears threadId by hand. Transcript rolling + identity
-// reseeding are NOT triggered synchronously here — they already happen lazily, on the
-// being's NEXT real turn, via brainpool.mjs's own `fresh = !sessionId` gate. No evictWarm()
+// field on the block survive, and the conversation FOLDER (media/, files/, directives/) is
+// never archived or otherwise touched. Shipped as `restart`; renamed 2026-09-10 because the
+// spine's lifecycle exit 43 already owns that word — see the three-verb describe below.
+//
+// ONE thing changed with the rename: transcript.md is now ROLLED SYNCHRONOUSLY into
+// transcripts/<retiring-thread>.md (operator 2026-09-10: "the current transcript.md moves to
+// transcripts/"), through the same rollTranscript brainpool.mjs calls — so the tests below
+// that assert "the folder is untouched" mean the FOLDER, not that file. Identity reseeding is
+// still NOT synchronous: it happens lazily on the being's NEXT real turn, via brainpool.mjs's
+// own `fresh = !sessionId` gate. No evictWarm()
 // call either: warm-sessions.mjs's run() carries its own SESSION-IDENTITY GUARD (its comment
 // names this exact "handle reset nulling the thread" case) that self-evicts + reopens once
 // the next turn passes `sessionId: null` for this being — nulling threadId here is what arms
-// that guard, so restart needs no eviction call of its own.
-describe('/agents restart <handle>|all — clears ONLY threadId, mode/access_level/folder untouched', () => {
+// that guard, so rethread needs no eviction call of its own.
+describe('/agents rethread <handle>|all — clears ONLY threadId, mode/access_level/folder untouched', () => {
   const cases = [
     { label: 'a room-surface conversation', surface: 'room', jid: 'acim', ctx: {} },
     { label: 'an ordinary whatsapp conversation', surface: 'whatsapp', jid: '1234@s.whatsapp.net', ctx: { pushedName: 'diego', slugHint: 'diego' } },
@@ -575,8 +580,8 @@ describe('/agents restart <handle>|all — clears ONLY threadId, mode/access_lev
 
   // Same shape as reset's own seedResetState above (E has a prior thread + hand-set mode +
   // an access_level pin, plus a sibling being `d`) — deliberately identical so the
-  // reset-vs-restart contrast below is a true apples-to-apples comparison.
-  function seedRestartState(surface, jid, ctx) {
+  // reset-vs-rethread contrast below is a true apples-to-apples comparison.
+  function seedRethreadState(surface, jid, ctx) {
     let state = ensureContact(emptyState(), surface, jid, ctx).state;
     state = patchContact(state, surface, jid, {
       agents: {
@@ -588,10 +593,10 @@ describe('/agents restart <handle>|all — clears ONLY threadId, mode/access_lev
   }
 
   for (const { label, surface, jid, ctx } of cases) {
-    it(`/agents restart e clears ONLY threadId — mode/access_level survive, being stays present — ${label}`, async () => {
-      const state = seedRestartState(surface, jid, ctx);
+    it(`/agents rethread e clears ONLY threadId — mode/access_level survive, being stays present — ${label}`, async () => {
+      const state = seedRethreadState(surface, jid, ctx);
       const { cmds, getState } = harness({ state, io: { rename: async () => {}, mkdir: async () => {} } });
-      await cmds.run({ chatId: jid, surface, body: '/agents restart e' });
+      await cmds.run({ chatId: jid, surface, body: '/agents rethread e' });
 
       const eAfter = getBeing(getState(), surface, jid, 'e');
       expect(eAfter.present).toBe(true);
@@ -604,36 +609,36 @@ describe('/agents restart <handle>|all — clears ONLY threadId, mode/access_lev
   // would bite: the singular ANSWERS, and it answers WITHOUT acting. A silent alias would
   // have cleared a live thread here and looked identical in the reply.
   for (const { label, surface, jid, ctx } of cases) {
-    it(`/agent restart e asks for the plural and changes NOTHING — ${label}`, async () => {
-      const state = seedRestartState(surface, jid, ctx);
+    it(`/agent rethread e asks for the plural and changes NOTHING — ${label}`, async () => {
+      const state = seedRethreadState(surface, jid, ctx);
       const { cmds, sent, getState } = harness({ state, io: { rename: async () => {}, mkdir: async () => {} } });
-      await cmds.run({ chatId: jid, surface, body: '/agent restart e' });
+      await cmds.run({ chatId: jid, surface, body: '/agent rethread e' });
 
       expect(sent.at(-1).text).toMatch(/did you mean `\/agents`\?/);
       expect(getBeing(getState(), surface, jid, 'e').threadId).toBe('thread-abc');   // untouched
     });
 
-    it(`/agents restart e — the plural — does the work — ${label}`, async () => {
-      const state = seedRestartState(surface, jid, ctx);
+    it(`/agents rethread e — the plural — does the work — ${label}`, async () => {
+      const state = seedRethreadState(surface, jid, ctx);
       const { cmds, getState } = harness({ state, io: { rename: async () => {}, mkdir: async () => {} } });
-      await cmds.run({ chatId: jid, surface, body: '/agents restart e' });
+      await cmds.run({ chatId: jid, surface, body: '/agents rethread e' });
 
       const eAfter = getBeing(getState(), surface, jid, 'e');
       expect(eAfter.threadId).toBeNull();
-      expect(eAfter.mode).toBe('mention');       // restart stayed narrow
+      expect(eAfter.mode).toBe('mention');       // rethread stayed narrow
       expect(eAfter.accessLevel).toBe('all');
     });
   }
 
 
   // THE CONTRAST PAIR (operator-mandated): the SAME seeded being, reset wipes mode too
-  // (regression lock on reset's existing, unchanged behavior) — restart does not. Run back
+  // (regression lock on reset's existing, unchanged behavior) — rethread does not. Run back
   // to back so the distinction is provable at a glance, not just asserted in isolation.
   // access_level is now a shared column, not a contrast point (operator ruling 2026-08-17):
-  // both reset and restart preserve it, for different reasons — reset because it's a durable
-  // grant reapplied after the wipe, restart because it never wipes anything.
-  it('CONTRAST — /agents reset e wipes mode (regression lock, unchanged) but PRESERVES access_level, vs /agents restart e leaves mode/access_level intact — same seed, side by side', async () => {
-    const resetState = seedRestartState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
+  // both reset and rethread preserve it, for different reasons — reset because it's a durable
+  // grant reapplied after the wipe, rethread because it never wipes anything.
+  it('CONTRAST — /agents reset e wipes mode (regression lock, unchanged) but PRESERVES access_level, vs /agents rethread e leaves mode/access_level intact — same seed, side by side', async () => {
+    const resetState = seedRethreadState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
     const { cmds: resetCmds, getState: getResetState } = harness({ state: resetState, io: { rename: async () => {}, mkdir: async () => {} } });
     await resetCmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents reset e' });
     const eAfterReset = getBeing(getResetState(), 'whatsapp', '1234@s.whatsapp.net', 'e');
@@ -642,20 +647,20 @@ describe('/agents restart <handle>|all — clears ONLY threadId, mode/access_lev
     expect(eAfterReset.accessLevel).toBe('all');
     expect(eAfterReset.threadId).toBeNull();
 
-    const restartState = seedRestartState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
+    const restartState = seedRethreadState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
     const { cmds: restartCmds, getState: getRestartState } = harness({ state: restartState, io: { rename: async () => {}, mkdir: async () => {} } });
-    await restartCmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents restart e' });
+    await restartCmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents rethread e' });
     const eAfterRestart = getBeing(getRestartState(), 'whatsapp', '1234@s.whatsapp.net', 'e');
     expect(eAfterRestart.present).toBe(true);
     expect(eAfterRestart.mode).toBe('mention');
     expect(eAfterRestart.accessLevel).toBe('all');
-    expect(eAfterRestart.threadId).toBeNull();   // the ONE field restart does change
+    expect(eAfterRestart.threadId).toBeNull();   // the ONE field rethread does change
   });
 
   // Sibling scoping (mirrors reset's own "wren reset leaves e untouched" regression lock
-  // above): restart must NAME the being it clears, never assume defaultKey or spill onto a
+  // above): rethread must NAME the being it clears, never assume defaultKey or spill onto a
   // resident sibling that wasn't targeted.
-  it("/agents restart wren clears ONLY wren's threadId — sibling e (also resident here) is untouched byte-for-byte", async () => {
+  it("/agents rethread wren clears ONLY wren's threadId — sibling e (also resident here) is untouched byte-for-byte", async () => {
     let state = ensureContact(emptyState(), 'whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' }).state;
     state = patchContact(state, 'whatsapp', '1234@s.whatsapp.net', {
       agents: {
@@ -665,7 +670,7 @@ describe('/agents restart <handle>|all — clears ONLY threadId, mode/access_lev
     });
     const before = getContact(state, 'whatsapp', '1234@s.whatsapp.net').entry.agents.e;
     const { cmds, getState } = harness({ state });
-    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents restart wren' });
+    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents rethread wren' });
 
     const reloaded = getState();
     const wrenAfter = getBeing(reloaded, 'whatsapp', '1234@s.whatsapp.net', 'wren');
@@ -678,29 +683,41 @@ describe('/agents restart <handle>|all — clears ONLY threadId, mode/access_lev
   });
 
   // Contrast with reset's own "archives the old folder" test above, which asserts rename/
-  // mkdir DO fire: restart must never touch the conversation folder at all.
-  it('/agents restart e never touches the conversation folder — rename/mkdir are NEVER called (contrast: reset always calls both)', async () => {
-    const state = seedRestartState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
-    const renames = [], mkdirs = [];
+  // mkdir DO fire: rethread must never touch the conversation folder at all.
+  // Contrast with reset's own "archives the old folder" test above, which asserts the whole
+  // baseDir is renamed away. rethread's ONLY rename is the transcript roll INSIDE the folder;
+  // the folder itself, and everything else in it, stays exactly where it is. Written against
+  // a transcript that IS stamped, so the roll genuinely fires and the assertion is about which
+  // path moved rather than about nothing having happened.
+  it('/agents rethread e renames ONLY transcript.md into transcripts/ — the conversation folder itself is never moved (contrast: reset renames baseDir)', async () => {
+    const state = seedRethreadState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
+    const room = Room.forChat('whatsapp', getContact(state, 'whatsapp', '1234@s.whatsapp.net').slug);
+    const renames = [];
+    const enoent = () => Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
     const { cmds } = harness({
       state,
       io: {
+        readFile: async (p) => {
+          if (p === room.transcriptPath) return '---\nname: diego\nthread_id: thread-abc\n---\n\nAn@[diego].wa (19:55) #a: hola\n\n';
+          throw enoent();
+        },
+        writeFile: async () => {},
         rename: async (from, to) => { renames.push([from, to]); },
-        mkdir: async (p) => { mkdirs.push(p); },
+        mkdir: async () => {},
       },
     });
-    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents restart e' });
-    expect(renames).toHaveLength(0);
-    expect(mkdirs).toHaveLength(0);
+    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents rethread e' });
+    expect(renames).toEqual([[room.transcriptPath, join(room.transcriptsDir, 'thread-abc.md')]]);
+    expect(renames.some(([from]) => from === room.baseDir())).toBe(false);
   });
 
-  it('/agents restart all clears threadId for EVERY resident being, leaving each one\'s own mode intact', async () => {
+  it('/agents rethread all clears threadId for EVERY resident being, leaving each one\'s own mode intact', async () => {
     let state = ensureContact(emptyState(), 'whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' }).state;
     state = patchContact(state, 'whatsapp', '1234@s.whatsapp.net', {
       agents: { e: { mode: 'on', threadId: 'e-t' }, wren: { mode: 'mention', threadId: 'wren-t' }, d: { mode: 'accum', threadId: 'd-t' } },
     });
     const { cmds, getState } = harness({ state });
-    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents restart all' });
+    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents rethread all' });
     const reloaded = getState();
     for (const h of ['e', 'wren', 'd']) {
       const b = getBeing(reloaded, 'whatsapp', '1234@s.whatsapp.net', h);
@@ -714,10 +731,10 @@ describe('/agents restart <handle>|all — clears ONLY threadId, mode/access_lev
 
   // `=<slug>` target form (mirrors reset's own /agents=hfm reset e test above): from Self,
   // name a DIFFERENT known chat instead of the conversation the command was typed in.
-  it('/agents=hfm restart e clears threadId on the NAMED chat while the operator types from Self — Self itself is never touched', async () => {
-    const state = seedRestartState('whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' });
+  it('/agents=hfm rethread e clears threadId on the NAMED chat while the operator types from Self — Self itself is never touched', async () => {
+    const state = seedRethreadState('whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' });
     const { cmds, sent, getState } = harness({ state });
-    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/agents=hfm restart e' });
+    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/agents=hfm rethread e' });
 
     const eAfter = getBeing(getState(), 'whatsapp', '!hfm:beeper.local', 'e');
     expect(eAfter.threadId).toBeNull();
@@ -726,25 +743,25 @@ describe('/agents restart <handle>|all — clears ONLY threadId, mode/access_lev
     expect(sent[0].text).toMatch(/for HFM/);
   });
 
-  // Locks in the investigation's conclusion (see the describe-block comment above): restart
+  // Locks in the investigation's conclusion (see the describe-block comment above): rethread
   // relies on warm-sessions.mjs's own session-identity guard to evict a stale warm process
   // once threadId goes null on the next turn — it must NOT call evictWarm itself (that would
   // duplicate access_level's own, different, reason for evicting).
-  it('/agents restart e does NOT call evictWarm — the warm pool\'s own session-identity guard self-evicts once threadId is nulled', async () => {
-    const state = seedRestartState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
+  it('/agents rethread e does NOT call evictWarm — the warm pool\'s own session-identity guard self-evicts once threadId is nulled', async () => {
+    const state = seedRethreadState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
     const { cmds, evicts } = harness({ state });
-    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents restart e' });
+    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents rethread e' });
     expect(evicts).toEqual([]);
   });
 
   // ── THE ACCUM BOUNDARY (operator ruling 2026-08-29: "the reset should clean next accum, so
   // that the model really starts fresh") ─────────────────────────────────────────────────────
   // REPRODUCE-FIRST, from the live incident: the operator restarted E, asked "sin revisar el
-  // historial, recuerdas de qué estábamos hablando?" and got an accurate summary — restart
-  // nulled threadId and NOTHING else, so contextSinceLastTurn still found the pre-restart
+  // historial, recuerdas de qué estábamos hablando?" and got an accurate summary — rethread
+  // nulled threadId and NOTHING else, so contextSinceLastTurn still found the pre-rethread
   // history and handed it to the "fresh" being on turn one. The fix reuses the mechanism
-  // already in transcript-log.mjs (a WITHHELD reply line is a valid boundary): restart appends
-  // ONE `(not surfaced)` line per restarted being, through the SAME writer every reply goes
+  // already in transcript-log.mjs (a WITHHELD reply line is a valid boundary): rethread appends
+  // ONE `(not surfaced)` line per rethreaded being, through the SAME writer every reply goes
   // through (createTranscript.log). Nothing is archived — reset's job, not this one's.
   //
   // Wires the REAL transcript service over an in-memory file map, because the BYTES are the
@@ -769,16 +786,16 @@ describe('/agents restart <handle>|all — clears ONLY threadId, mode/access_lev
     `An@[${chat}].wa (20:30) #b: dale`, '', '',
   ].join('\n');   // every real append ends '\n\n' — the boundary must land as its OWN block
 
-  it('/agents restart e appends ONE withheld boundary line — the next accum window is EMPTY while the file keeps its history', async () => {
+  it('/agents rethread e appends ONE withheld boundary line — the next accum window is EMPTY while the file keeps its history', async () => {
     const surface = 'whatsapp', jid = '1234@s.whatsapp.net';
-    const state = seedRestartState(surface, jid, { pushedName: 'diego', slugHint: 'diego' });
+    const state = seedRethreadState(surface, jid, { pushedName: 'diego', slugHint: 'diego' });
     const { files, log } = memTranscript(() => state);
     const fpath = Room.forChat(surface, getContact(state, surface, jid).slug).transcriptPath;
     files[fpath] = HISTORY('diego');
     const before = files[fpath];
 
     const { cmds } = harness({ state, logTranscript: log });
-    await cmds.run({ chatId: jid, surface, body: '/agents restart e' });
+    await cmds.run({ chatId: jid, surface, body: '/agents rethread e' });
 
     expect(files[fpath].startsWith(before)).toBe(true);                       // append-only: nothing rewritten
     const added = files[fpath].slice(before.length);
@@ -790,7 +807,7 @@ describe('/agents restart <handle>|all — clears ONLY threadId, mode/access_lev
     expect(contextSinceLastTurn(files[fpath], { being: 'wren' }).blocks.length).toBeGreaterThan(0);
   });
 
-  it("/agents restart wren moves ONLY wren's boundary — e is resident here too and its window is unmoved", async () => {
+  it("/agents rethread wren moves ONLY wren's boundary — e is resident here too and its window is unmoved", async () => {
     const surface = 'whatsapp', jid = '1234@s.whatsapp.net';
     let state = ensureContact(emptyState(), surface, jid, { pushedName: 'diego', slugHint: 'diego' }).state;
     state = patchContact(state, surface, jid, { agents: { e: { threadId: 'e-t' }, wren: { threadId: 'wren-t' } } });
@@ -800,39 +817,39 @@ describe('/agents restart <handle>|all — clears ONLY threadId, mode/access_lev
     const eWindowBefore = contextSinceLastTurn(files[fpath], { being: 'e' }).blocks;
 
     const { cmds } = harness({ state, logTranscript: log });
-    await cmds.run({ chatId: jid, surface, body: '/agents restart wren' });
+    await cmds.run({ chatId: jid, surface, body: '/agents rethread wren' });
 
     expect(contextSinceLastTurn(files[fpath], { being: 'wren' }).blocks).toEqual([]);
     const eWindowAfter = contextSinceLastTurn(files[fpath], { being: 'e' }).blocks;
     expect(eWindowAfter.slice(0, eWindowBefore.length)).toEqual(eWindowBefore);   // e's own boundary never moved
   });
 
-  it('/agents restart all writes ONE boundary line per restarted being, each under its own label', async () => {
+  it('/agents rethread all writes ONE boundary line per rethreaded being, each under its own label', async () => {
     const surface = 'whatsapp', jid = '1234@s.whatsapp.net';
     let state = ensureContact(emptyState(), surface, jid, { pushedName: 'diego', slugHint: 'diego' }).state;
     state = patchContact(state, surface, jid, { agents: { e: { threadId: 'e-t' }, wren: { threadId: 'wren-t' } } });
     const { cmds, logged } = harness({ state });
-    await cmds.run({ chatId: jid, surface, body: '/agents restart all' });
+    await cmds.run({ chatId: jid, surface, body: '/agents rethread all' });
 
     expect(logged.map((l) => l.reply.being)).toEqual(['e', 'wren']);
     for (const l of logged) expect(l.reply.surfaced).toBe(false);
   });
 
   // The confirmation reply is itself recorded (boot wraps `send` — wrapCommandsForTranscript),
-  // so the boundary has to be appended AFTER it or the "fresh" being reads its own restart
+  // so the boundary has to be appended AFTER it or the "fresh" being reads its own rethread
   // notice as accumulated context.
   it('the boundary is appended AFTER the confirmation reply, so the ✅ line lands above it', async () => {
-    const state = seedRestartState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
+    const state = seedRethreadState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
     let sentAtLog = null;
     const h = harness({ state, logTranscript: async () => { sentAtLog = h.sent.length; return true; } });
-    await h.cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents restart e' });
+    await h.cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents rethread e' });
     expect(sentAtLog).toBe(1);
   });
 
-  it('/agents=hfm restart e writes the boundary into the NAMED chat, not the one the command was typed in', async () => {
-    const state = seedRestartState('whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' });
+  it('/agents=hfm rethread e writes the boundary into the NAMED chat, not the one the command was typed in', async () => {
+    const state = seedRethreadState('whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' });
     const { cmds, logged } = harness({ state });
-    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/agents=hfm restart e' });
+    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/agents=hfm rethread e' });
     expect(logged).toHaveLength(1);
     expect(logged[0].ev.chatId).toBe('!hfm:beeper.local');
     expect(logged[0].ev.surface).toBe('whatsapp');
@@ -841,20 +858,318 @@ describe('/agents restart <handle>|all — clears ONLY threadId, mode/access_lev
   // reset's own behaviour is UNCHANGED: it archives the whole folder, which already clears the
   // window — it must not also start writing boundary lines.
   it('CONTRAST — /agents reset e writes NO boundary line (it archives instead; unchanged)', async () => {
-    const state = seedRestartState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
+    const state = seedRethreadState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
     const { cmds, logged } = harness({ state, io: { rename: async () => {}, mkdir: async () => {} } });
     await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents reset e' });
     expect(logged).toEqual([]);
   });
 
-  it('/agents restart e is recognized case-insensitively on the command token + subcommand', async () => {
-    for (const body of ['/agents restart e', '/AGENTS e RESTART', '/Agents e Restart']) {
-      const state = seedRestartState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
+  it('/agents rethread e is recognized case-insensitively on the command token + subcommand', async () => {
+    for (const body of ['/agents rethread e', '/AGENTS e RETHREAD', '/Agents e Rethread']) {
+      const state = seedRethreadState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
       const { cmds, sent } = harness({ state });
       await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body });
-      expect(sent[0].text).toMatch(/restart/i);
+      expect(sent[0].text).toMatch(/rethread/i);
       expect(sent[0].text).not.toMatch(/recognized/);
     }
+  });
+});
+
+// THE THREE CONVERSATION-LIFECYCLE VERBS (operator 2026-09-10)
+//
+//   refresh   re-feed identity + directives INTO THE RUNNING THREAD. Context untouched,
+//             nothing moved, no new thread.
+//   rethread  mint a NEW thread. transcript.md moves to transcripts/. The conversation
+//             folder stays where it is.
+//   reset     UNCHANGED. The whole conversation folder moves to conversations/archive/ and a
+//             pristine one is minted at the original path.
+//
+// `rethread` IS the verb that shipped as `restart` (2026-08-15), renamed here and given the
+// transcript move it always implied but never did synchronously. `restart` is GONE from this
+// vocabulary on purpose: the spine's lifecycle exit 43 already means RESTART THE PROCESS, and
+// one word cannot mean both. It is DETECTED and named rather than silently aliased, the same
+// treatment the retired object-first order gets, because a line that quietly does something
+// adjacent to what you meant is worse than one that tells you what to type.
+//
+// The word `refresh` USED to mean "thread instanced anew" in this tree's prose (operator
+// 2026-07-26, "all skeleton files are copied on refresh thread" - seedIdentityLayers'
+// `overwrite` flag, brainpool's `fresh`). That meaning is now `rethread`. Nothing in CODE ever
+// carried the old sense - it was only ever a word in comments - so the rename costs no
+// behaviour.
+describe('/agents refresh|rethread|reset - the three conversation-lifecycle verbs, each doing exactly its own job', () => {
+  const SURFACE = 'whatsapp', JID = '1234@s.whatsapp.net', CTX = { pushedName: 'diego', slugHint: 'diego' };
+
+  // One seed for all three verbs, so the three-way contrast is apples to apples: E has a live
+  // thread with its identity already injected, a hand-set mode and an access_level grant; a
+  // sibling being `d` is resident and must never be touched unless named.
+  function seedLifecycle(surface = SURFACE, jid = JID, ctx = CTX) {
+    const state = ensureContact(emptyState(), surface, jid, ctx).state;
+    return patchContact(state, surface, jid, {
+      agents: {
+        e: { mode: 'mention', threadId: 'thread-abc', threadCreatedAt: '2026-08-01T00:00:00Z', identityInjectedAt: '2026-08-01T00:00:00Z', access_level: 'all' },
+        d: { mode: 'on' },
+      },
+    });
+  }
+
+  // A transcript.md that NAMES its thread - the only kind rollTranscript will move (an
+  // un-stamped file is its guard). Everything else the io seam is asked for reads as absent,
+  // which is what leaves the destination slot free.
+  const STAMPED = (id) => `---\nname: diego\nthread_id: ${id}\n---\n\nAn@[diego].wa (19:55) #a: hola\n\n`;
+  function transcriptIo(room, { transcript = STAMPED('thread-abc'), renames, mkdirs, writes } = {}) {
+    const enoent = () => Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    return {
+      readFile: async (p) => {
+        if (p === room.transcriptPath) {
+          if (transcript == null) throw enoent();
+          return transcript;
+        }
+        throw enoent();                                                  // dest slot free, directives absent
+      },
+      writeFile: async (p, c) => { writes?.push([p, c]); },
+      rename: async (from, to) => { renames?.push([from, to]); },
+      mkdir: async (p) => { mkdirs?.push(p); },
+      rm: async () => { throw new Error('no lifecycle verb may delete - rm was called'); },
+    };
+  }
+  // Every verb below must actually EXIST and SUCCEED. Without this, a test asserting "nothing
+  // moved" passes for the wrong reason on a verb the parser never recognized.
+  const succeeded = (sent) => expect(sent[0].text.slice(0, 2)).toBe('✅ ');
+
+  describe('refresh - re-feed into the RUNNING thread', () => {
+    it('/agents refresh e keeps the thread: threadId is UNCHANGED and nothing is renamed', async () => {
+      const state = seedLifecycle();
+      const room = Room.forChat(SURFACE, getContact(state, SURFACE, JID).slug);
+      const renames = [];
+      const { cmds, sent, getState } = harness({ state, io: transcriptIo(room, { renames }) });
+      await cmds.run({ chatId: JID, surface: SURFACE, body: '/agents refresh e' });
+
+      succeeded(sent);
+      const e = getBeing(getState(), SURFACE, JID, 'e');
+      expect(e.threadId).toBe('thread-abc');     // THE property: no new thread
+      expect(e.mode).toBe('mention');
+      expect(e.accessLevel).toBe('all');
+      expect(renames).toEqual([]);               // nothing moved - not the transcript, not the folder
+    });
+
+    it('/agents refresh e RE-COPIES directives/ over what is already there (overwrite, not copy-if-missing)', async () => {
+      const state = seedLifecycle();
+      const room = Room.forChat(SURFACE, getContact(state, SURFACE, JID).slug);
+      const writes = [];
+      // readFile answers EVERY path as already-present, so a copy-if-missing seed writes
+      // nothing at all. Only an overwrite seed writes here.
+      const io = { ...transcriptIo(room, { writes }), readFile: async () => 'stale layer already on disk' };
+      const { cmds } = harness({ state, io });
+      await cmds.run({ chatId: JID, surface: SURFACE, body: '/agents refresh e' });
+
+      const layers = writes.map(([p]) => p).filter((p) => p.startsWith(room.directivesDir));
+      expect(layers.length).toBeGreaterThan(0);
+      // ...and the IDENTITY is never among them: it is fed in context, never filed (operator 2026-09-10)
+      expect(layers.some((p) => p.endsWith('00-identity.md'))).toBe(false);
+    });
+
+    it('/agents refresh e ARMS the in-context re-feed by clearing identityInjectedAt - the running thread gets its identity back on its next turn', async () => {
+      const state = seedLifecycle();
+      const room = Room.forChat(SURFACE, getContact(state, SURFACE, JID).slug);
+      const { cmds, getState } = harness({ state, io: transcriptIo(room) });
+      await cmds.run({ chatId: JID, surface: SURFACE, body: '/agents refresh e' });
+
+      const entry = getContact(getState(), SURFACE, JID).entry;
+      expect(entry.agents.e.identityInjectedAt).toBeNull();
+      expect(entry.agents.e.threadId).toBe('thread-abc');   // ...on the SAME thread
+    });
+
+    it("/agents refresh e leaves a resident sibling's block byte-for-byte untouched", async () => {
+      const state = seedLifecycle();
+      const room = Room.forChat(SURFACE, getContact(state, SURFACE, JID).slug);
+      const before = getContact(state, SURFACE, JID).entry.agents.d;
+      const { cmds, sent, getState } = harness({ state, io: transcriptIo(room) });
+      await cmds.run({ chatId: JID, surface: SURFACE, body: '/agents refresh e' });
+      succeeded(sent);
+      expect(getContact(getState(), SURFACE, JID).entry.agents.d).toEqual(before);
+    });
+
+    it('/agents refresh e writes NO transcript boundary - the context is deliberately kept', async () => {
+      const state = seedLifecycle();
+      const room = Room.forChat(SURFACE, getContact(state, SURFACE, JID).slug);
+      const { cmds, sent, logged } = harness({ state, io: transcriptIo(room) });
+      await cmds.run({ chatId: JID, surface: SURFACE, body: '/agents refresh e' });
+      succeeded(sent);
+      expect(logged).toEqual([]);
+    });
+
+    it('/agents refresh e reports what it ACTUALLY did - the folder it re-copied, and that the feed lands on the next turn', async () => {
+      const state = seedLifecycle();
+      const room = Room.forChat(SURFACE, getContact(state, SURFACE, JID).slug);
+      const { cmds, sent } = harness({ state, io: transcriptIo(room) });
+      await cmds.run({ chatId: JID, surface: SURFACE, body: '/agents refresh e' });
+      expect(sent).toHaveLength(1);
+      expect(sent[0].text).toMatch(/refresh/);
+      expect(sent[0].text).toMatch(/directives\//);
+      expect(sent[0].text).toMatch(/next turn/);
+      expect(sent[0].text).not.toMatch(/new thread/);
+    });
+
+    // `=<slug>` parity with reset's and rethread's own tests: from Self, name a DIFFERENT
+    // known chat. The directives re-copy must land in THAT chat's folder, not the Self lobby's.
+    it('/agents=hfm refresh e arms the NAMED chat and re-copies ITS directives/ — Self itself is never touched', async () => {
+      const state = seedLifecycle(SURFACE, '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' });
+      const room = Room.forChat(SURFACE, getContact(state, SURFACE, '!hfm:beeper.local').slug);
+      const writes = [];
+      const io = { ...transcriptIo(room, { writes }), readFile: async () => 'stale layer already on disk' };
+      const { cmds, sent, getState } = harness({ state, io });
+      await cmds.run({ chatId: '!self', surface: SURFACE, body: '/agents=hfm refresh e' });
+
+      const entry = getContact(getState(), SURFACE, '!hfm:beeper.local').entry;
+      expect(entry.agents.e.identityInjectedAt).toBeNull();
+      expect(entry.agents.e.threadId).toBe('thread-abc');
+      expect(getBeing(getState(), SURFACE, '!self', 'e')).toBe(null);                        // Self untouched
+      expect(writes.every(([p]) => p.startsWith(room.baseDir()))).toBe(true);                // wrote into the NAMED chat
+      expect(writes.some(([p]) => p.startsWith(room.directivesDir))).toBe(true);
+      expect(sent[0].text).toMatch(/for HFM/);
+    });
+
+    it('/agents refresh all arms EVERY resident being', async () => {
+      let state = ensureContact(emptyState(), SURFACE, JID, CTX).state;
+      state = patchContact(state, SURFACE, JID, {
+        agents: { e: { threadId: 'e-t', identityInjectedAt: 'x' }, wren: { threadId: 'wren-t', identityInjectedAt: 'y' } },
+      });
+      const room = Room.forChat(SURFACE, getContact(state, SURFACE, JID).slug);
+      const { cmds, getState } = harness({ state, io: transcriptIo(room) });
+      await cmds.run({ chatId: JID, surface: SURFACE, body: '/agents refresh all' });
+      const agents = getContact(getState(), SURFACE, JID).entry.agents;
+      expect(agents.e.identityInjectedAt).toBeNull();
+      expect(agents.wren.identityInjectedAt).toBeNull();
+      expect(agents.e.threadId).toBe('e-t');
+      expect(agents.wren.threadId).toBe('wren-t');
+    });
+  });
+
+  describe('rethread - mint a NEW thread, roll the transcript, keep the folder', () => {
+    it('/agents rethread e clears threadId AND moves transcript.md into transcripts/<thread>.md - the folder itself never moves', async () => {
+      const state = seedLifecycle();
+      const room = Room.forChat(SURFACE, getContact(state, SURFACE, JID).slug);
+      const renames = [], writes = [];
+      const { cmds, getState } = harness({ state, io: transcriptIo(room, { renames, writes }) });
+      await cmds.run({ chatId: JID, surface: SURFACE, body: '/agents rethread e' });
+
+      expect(getBeing(getState(), SURFACE, JID, 'e').threadId).toBeNull();
+      // exactly ONE rename, and it is the transcript roll - NOT the folder archive reset does
+      expect(renames).toHaveLength(1);
+      expect(renames[0][0]).toBe(room.transcriptPath);
+      expect(renames[0][1]).toBe(join(room.transcriptsDir, 'thread-abc.md'));
+      expect(renames.some(([from]) => from === room.baseDir())).toBe(false);
+      // ...and a blank, un-stamped transcript.md is left in its place
+      expect(writes.some(([p, c]) => p === room.transcriptPath && !/thread_id:/.test(c))).toBe(true);
+    });
+
+    // ONE shared path for rooms and ordinary conversations, the same claim reset's own tests
+    // make. It matters here specifically: a room-surface Room roots at rooms/<slug>/, NOT
+    // conversations/room/<slug>/, so a roll that rebuilt the path from the wrong root would
+    // silently find nothing and report "NOT moved" forever.
+    it('/agents rethread e rolls the transcript on a ROOM-surface conversation too, under the rooms/ root', async () => {
+      const state = seedLifecycle('room', 'acim', {});
+      const room = Room.forChat('room', getContact(state, 'room', 'acim').slug);
+      const renames = [];
+      const { cmds, sent } = harness({ state, io: transcriptIo(room, { renames }) });
+      await cmds.run({ chatId: 'acim', surface: 'room', body: '/agents rethread e' });
+
+      expect(renames).toEqual([[room.transcriptPath, join(room.transcriptsDir, 'thread-abc.md')]]);
+      expect(room.baseDir()).toContain('rooms');           // the rooms/ root, not conversations/room/
+      expect(sent[0].text).toContain('transcripts/thread-abc.md');
+    });
+
+    it('/agents rethread e SAYS SO when the transcript could not be moved - never a bare success', async () => {
+      const state = seedLifecycle();
+      const room = Room.forChat(SURFACE, getContact(state, SURFACE, JID).slug);
+      const renames = [];
+      // an UN-STAMPED transcript: rollTranscript's own guard refuses to move it
+      const { cmds, sent, getState } = harness({
+        state,
+        io: transcriptIo(room, { renames, transcript: '---\nname: diego\n---\n\nAn@[diego].wa (19:55) #a: hola\n\n' }),
+      });
+      await cmds.run({ chatId: JID, surface: SURFACE, body: '/agents rethread e' });
+
+      expect(renames).toEqual([]);
+      expect(getBeing(getState(), SURFACE, JID, 'e').threadId).toBeNull();   // the thread half still happened
+      expect(sent[0].text).toMatch(/transcript\.md was NOT moved/);
+      expect(sent[0].text).toMatch(/rethread/);
+    });
+
+    it('/agents rethread e keeps mode/access_level and the sibling - it is NOT reset', async () => {
+      const state = seedLifecycle();
+      const room = Room.forChat(SURFACE, getContact(state, SURFACE, JID).slug);
+      const { cmds, sent, getState } = harness({ state, io: transcriptIo(room) });
+      await cmds.run({ chatId: JID, surface: SURFACE, body: '/agents rethread e' });
+      succeeded(sent);
+      const e = getBeing(getState(), SURFACE, JID, 'e');
+      expect(e.present).toBe(true);
+      expect(e.mode).toBe('mention');
+      expect(e.accessLevel).toBe('all');
+      expect(getBeing(getState(), SURFACE, JID, 'd').mode).toBe('on');
+    });
+
+    it('/agents rethread e still writes the accum boundary (unchanged from restart)', async () => {
+      const state = seedLifecycle();
+      const room = Room.forChat(SURFACE, getContact(state, SURFACE, JID).slug);
+      const { cmds, logged } = harness({ state, io: transcriptIo(room) });
+      await cmds.run({ chatId: JID, surface: SURFACE, body: '/agents rethread e' });
+      expect(logged.map((l) => l.reply.being)).toEqual(['e']);
+      expect(logged[0].reply.surfaced).toBe(false);
+    });
+
+    it('/agents restart e is REFUSED and names rethread - it changes nothing (exit 43 already owns the word)', async () => {
+      const state = seedLifecycle();
+      const room = Room.forChat(SURFACE, getContact(state, SURFACE, JID).slug);
+      const renames = [];
+      const { cmds, sent, getState } = harness({ state, io: transcriptIo(room, { renames }) });
+      await cmds.run({ chatId: JID, surface: SURFACE, body: '/agents restart e' });
+
+      expect(sent[0].text).toMatch(/rethread/);
+      expect(getBeing(getState(), SURFACE, JID, 'e').threadId).toBe('thread-abc');   // untouched
+      expect(renames).toEqual([]);
+    });
+  });
+
+  describe('reset - UNCHANGED: the whole folder is archived and a pristine one minted', () => {
+    it('/agents reset e still archives the WHOLE folder into conversations/archive/ and reseeds at the original path', async () => {
+      const state = seedLifecycle();
+      const room = Room.forChat(SURFACE, getContact(state, SURFACE, JID).slug);
+      const renames = [], mkdirs = [];
+      const { cmds, sent, files } = harness({
+        state,
+        io: {
+          rename: async (from, to) => { renames.push([from, to]); },
+          mkdir: async (p) => { mkdirs.push(p); },
+          rm: async () => { throw new Error('/agents reset must never delete'); },
+        },
+      });
+      await cmds.run({ chatId: JID, surface: SURFACE, body: '/agents reset e' });
+
+      expect(renames).toHaveLength(1);
+      expect(renames[0][0]).toBe(room.baseDir());
+      expect(renames[0][1].startsWith(join(EGPT_HOME, 'conversations', 'archive', `${room.slug}-archived-`))).toBe(true);
+      expect(mkdirs).toContain(room.baseDir());
+      expect(Object.keys(files).some((p) => p.startsWith(room.directivesDir))).toBe(true);
+      expect(sent[0].text).toMatch(/reset/);
+    });
+
+    // THE THREE-WAY CONTRAST, side by side on one seed: what each verb does to the thread.
+    it('CONTRAST - refresh keeps the thread, rethread nulls it, reset nulls it AND wipes mode', async () => {
+      const runVerb = async (verb) => {
+        const state = seedLifecycle();
+        const room = Room.forChat(SURFACE, getContact(state, SURFACE, JID).slug);
+        const { cmds, getState } = harness({ state, io: transcriptIo(room) });
+        await cmds.run({ chatId: JID, surface: SURFACE, body: `/agents ${verb} e` });
+        return getBeing(getState(), SURFACE, JID, 'e');
+      };
+      const refreshed = await runVerb('refresh');
+      expect([refreshed.threadId, refreshed.mode]).toEqual(['thread-abc', 'mention']);
+      const rethreaded = await runVerb('rethread');
+      expect([rethreaded.threadId, rethreaded.mode]).toEqual([null, 'mention']);
+      const wasReset = await runVerb('reset');
+      expect([wasReset.threadId, wasReset.mode]).toEqual([null, null]);
+    });
   });
 });
 
@@ -2135,8 +2450,19 @@ describe('/agents grammar — verb first, target last, no legacy order', () => {
   const parse = (s) => normalizeAgentsArgs(s.split(/\s+/).filter(Boolean));
 
   it('a 0-arity verb places verb, target, conversation', () => {
-    expect(parse('restart p spoiler')).toMatchObject({ args: ['p', 'restart', undefined], slug: 'spoiler', extra: [] });
+    expect(parse('rethread p spoiler')).toMatchObject({ args: ['p', 'rethread', undefined], slug: 'spoiler', extra: [] });
+    expect(parse('rethread p')).toMatchObject({ args: ['p', 'rethread', undefined], slug: null });
+    expect(parse('refresh p')).toMatchObject({ args: ['p', 'refresh', undefined], slug: null });
+  });
+
+  // A RETIRED verb still has to PARSE as a verb, or `/agents restart e` falls through to the
+  // bare status form and reads `restart` as a handle — which is how the operator would get
+  // "no such being" instead of "that word moved". Parsing it is what lets agentsCmd refuse it
+  // by name; the refusal itself is asserted end-to-end in the three-verb describe above.
+  it('`restart` still PARSES as a 0-arity verb so it can be refused by name, never read as a handle', () => {
     expect(parse('restart p')).toMatchObject({ args: ['p', 'restart', undefined], slug: null });
+    expect(RETIRED_AGENT_SUBS.restart).toBe('rethread');
+    expect(AGENTS_USAGE).not.toMatch(/restart/);   // …and it is never OFFERED as one
   });
 
   it('a value-taking verb puts the VALUE before the target, conversation last', () => {
@@ -2156,13 +2482,22 @@ describe('/agents grammar — verb first, target last, no legacy order', () => {
   });
 
   it('the RETIRED object-first order is recognised as such — not misparsed, not silently accepted', () => {
-    expect(parse('p restart').retired).toMatchObject({ handle: 'p', verb: 'restart' });
+    expect(parse('p rethread').retired).toMatchObject({ handle: 'p', verb: 'rethread' });
     expect(parse('e auto mention').retired).toMatchObject({ handle: 'e', verb: 'auto', rest: ['mention'] });
-    expect(parse('p restart').args).toBeUndefined();
+    expect(parse('p rethread').args).toBeUndefined();
   });
 
   it('a token the grammar cannot place is REPORTED, never silently dropped', () => {
-    expect(parse('restart p spoiler junk').extra).toEqual(['junk']);
+    expect(parse('rethread p spoiler junk').extra).toEqual(['junk']);
+  });
+
+  // BOTH mistakes at once (old order AND the old word) get ONE reply that fixes both, rather
+  // than the operator being bounced from "verb first" to "that word moved" in two round trips.
+  it('/agents e restart — retired order AND retired word — is rebuilt under the LIVE verb', async () => {
+    const { cmds, sent } = harness({ state: emptyState() });
+    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/agents e restart' });
+    expect(sent[0].text).toContain('`/agents rethread e`');
+    expect(sent[0].text).not.toMatch(/`\/agents restart/);
   });
 });
 

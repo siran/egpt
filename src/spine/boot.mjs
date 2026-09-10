@@ -1820,7 +1820,7 @@ export async function boot({
     // the moment they do not. It is also the door the successor's announce comes in through.
     writeStanddownTarget: (port) => writeFile(join(EGPT_HOME, 'standdown-target.txt'), port, 'utf8'),
     loadState: _loadState, writeState: _writeState,   // /agents … auto/reset/access_level persist into conversations.yaml
-    logTranscript: (ev, reply) => services.transcript.log(ev, reply),   // THE reply writer — the same service commandTranscript wraps above; /agents restart's accum boundary rides it instead of assembling a line of its own
+    logTranscript: (ev, reply) => services.transcript.log(ev, reply),   // THE reply writer — the same service commandTranscript wraps above; /agents rethread's accum boundary rides it instead of assembling a line of its own
     resolveConvRoom,                                  // (surface, chatId) → the conversation's Room — the SAME resolver the phase-4 relay reads members from, so /members writes where the relay reads (bug fix 2026-07-23)
     // `/members add group <chat name>` — THE bridge's name→id resolver, the same one
     // mesh.mjs's canonRoute takes off this bridge (`bridge.resolveChatId`), so a chat NAME
