@@ -781,6 +781,29 @@ describe('spine — /reply handled BEFORE posting (no visible token, no delete+r
     expect(bridge.sent).toHaveLength(0);
   });
 
+  // …AND THE SAME SHAPE WITH A MALFORMED TARGET (live: service-stderr.log
+  // "stripped malformed action (reply: expected \"#<id> <text>\"): /reply #operator@[shell].room …").
+  // The being's WHOLE reply was one /reply line whose id is not `[\w-]+`, so the parser STRIPS it
+  // (correctly — a half-shaped command must never fire) and the turn is left with NO prose and NO
+  // runnable action. `hadActions` counts the stripped line, so the turn still went down the
+  // ACTION-ONLY branch with an EMPTY verb list — and `commandMark` is guarded on `commands?.length`,
+  // so the placeholder fell through to BRIDGE_SILENCE. The chat was told the bridge received
+  // nothing from the model, in the one case where the model had said everything it had to say.
+  // A reply that cannot be delivered must SURFACE, never vanish behind a silence that did not
+  // happen (operator: nothing in eGPT is allowed to lie).
+  it('a reply that is ONE malformed action line resolves VISIBLY — never as a silence that did not happen', async () => {
+    const { bridge } = buildStreaming({ replyText: '/reply #operator@[shell].room No pude abrir Chrome en esta sesión.' });
+    await bridge.emit(MSG);
+
+    expect(bridge.streams[0].deleted).toBe(false);                       // nothing is ever deleted
+    const settled = bridge.streams[0].finals.at(-1) ?? '';
+    expect(settled).not.toContain('received silence');                   // the model spoke — the bridge must not claim it heard nothing
+    expect(settled.trim()).not.toBe('');                                 // …and must not resolve to an empty message either
+    expect(settled).not.toContain('/reply');                             // the malformed command is still never surfaced
+    expect(settled).toBe('⚠️ no reply (turn failed/empty)');             // the marker this branch already has for "meant to reply, nothing deliverable"
+    expect(bridge.sent).toHaveLength(0);                                 // nothing runnable → no limb fired
+  });
+
   // THE LIVE TURN OF 2026-09-01, whole (operator's own SPOILER transcript, twice that morning).
   // Three faults in one reply: the model's REASONING message and its ACTION message reached the
   // spine glued into one accumulated line ("…from me./react #563 🤝"), so the command streamed

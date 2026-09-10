@@ -1189,9 +1189,21 @@ export function createSpine({
       const parsed = (actions?.parse && surfaced && !failShaped) ? actions.parse(rawText, ev, { quotedId: replyTo }) : null;
       const proseText = parsed ? parsed.prose : rawText;
       const hadActions = !!parsed && (parsed.run.length + parsed.stripped.length) > 0;
-      // Action-only: the reply is nothing but action lines. The placeholder DELETES (the
-      // action IS the response — today's legit-silence path), not a no-reply marker.
-      const actionOnly = surfaced && !failShaped && hadActions && !proseText.trim();
+      // Action-only: the reply is nothing but action lines AND at least one of them RUNS.
+      // The limb is then the response, and the sender says so (commandMark) instead of
+      // resolving the placeholder with a silence.
+      //
+      // …WHICH IS WHY THE TEST IS `run`, NOT `hadActions` (live: "stripped malformed action
+      // (reply: expected \"#<id> <text>\"): /reply #operator@[shell].room …"). A whole reply
+      // that is ONE MALFORMED action line strips to nothing runnable and no prose: counting the
+      // stripped line as "action-only" sent the sender an EMPTY verb list, `commandMark` is
+      // guarded on `commands?.length`, and the placeholder fell through to BRIDGE_SILENCE —
+      // the bridge telling the chat it had heard nothing from the model in the one case where
+      // the model's entire answer was in that line. With no runnable limb the turn is what it
+      // actually is — surfaced with nothing deliverable — so it takes the path that branch
+      // already exists for: the `note` below, and a VISIBLE no-reply marker. `hadActions` still
+      // gates execute, so the stripped line is still logged there.
+      const actionOnly = surfaced && !failShaped && !!parsed && parsed.run.length > 0 && !proseText.trim();
       const deliverable = surfaced && !!proseText.trim() && !failShaped;
       const responded = deliverable || actionOnly;   // E answered — with prose and/or a limb
       // Observability (operator: "diagnose WHY it was empty"): a turn that was meant to
