@@ -57,5 +57,6 @@ allowed_paths:
   #  /c/Users/you/project:               # full access (read + write)
   #  /c/Users/you/reference:             # READ-ONLY — a per-path list with NO write-class tool
   #    allowed_tools: [Read, Glob, Grep] #   (write-class = Edit / Write / MultiEdit / NotebookEdit)
-# personality: egpt  # identity feed a fresh conversation boots from (identities/<name>/);
-                        # a property of the TYPE, not the conversation. Absent ⇒ 'egpt'.
+# personality: egpt  # identity feed a fresh conversation boots from
+                        # (config/agents/identities/<name>.md); a property of the TYPE,
+                        # not the conversation. Absent ⇒ 'egpt'.

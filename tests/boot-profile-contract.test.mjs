@@ -2,7 +2,7 @@
 //
 // The failure this catches: code whose path CONSTANTS disagree with the canonical
 // profile layout boots "successfully" against NOTHING. On 2026-07-03 the profile was
-// relayed out (config/conversations.yaml, config/identities/<name>.md flat,
+// relayed out (config/conversations.yaml, config/agents/identities/<name>.md flat,
 // state/ingest, config/logs); pre-relayout code that still read the OLD root paths
 // booted green — empty registry, old-style seeded dirs, a DEAD node — and the whole
 // suite stayed green because every boot test INJECTS its paths (loadState/io/readConfig),
@@ -49,7 +49,7 @@ const P = {
   config:        join(HOME, 'config', 'config.yaml'),
   conversations: join(HOME, 'config', 'conversations.yaml'),
   agentEgpt:     join(HOME, 'config', 'agents', 'egpt.yaml'),
-  idSecretary:   join(HOME, 'config', 'identities', 'secretary.md'),
+  idSecretary:   join(HOME, 'config', 'agents', 'identities', 'secretary.md'),
   roomDir:       join(HOME, 'config', 'skeletons', 'room'),
   room00:        join(HOME, 'config', 'skeletons', 'room', '00-identity.md'),
   room30:        join(HOME, 'config', 'skeletons', 'room', '30-pointers.md'),
@@ -105,7 +105,7 @@ let spy, app, delivered;
 beforeAll(async () => {
   // 1. Lay the fixture profile on disk in the canonical shape.
   await fs.mkdir(join(HOME, 'config', 'agents'), { recursive: true });
-  await fs.mkdir(join(HOME, 'config', 'identities'), { recursive: true });
+  await fs.mkdir(join(HOME, 'config', 'agents', 'identities'), { recursive: true });
   await fs.mkdir(join(HOME, 'config', 'skeletons', 'room'), { recursive: true });
   await fs.mkdir(P.ingestDir, { recursive: true });
   await fs.mkdir(P.oldIngestDir, { recursive: true });
@@ -204,13 +204,16 @@ describe('GUARD 1 — boot reads the canonical layout (real constants, hermetic 
     expect(onDisk).not.toContain('fresh-sess');                          // no new thread minted
   });
 
-  // (b) seeding lands FLAT at config/identities/<name>.md — never a nested
-  //     identities/<name>/00-*.md dir, never the retired EGPT_HOME/identities root.
-  it('(b) seeding lands flat under config/identities + config/skeletons/room', async () => {
-    const flatPreset = join(HOME, 'config', 'identities', 'psychologist.md');
+  // (b) seeding lands FLAT at config/agents/identities/<name>.md — never a nested
+  //     identities/<name>/00-*.md dir, never the retired EGPT_HOME/identities root, and
+  //     never the retired config/identities/ location (operator 2026-09-10 moved it under
+  //     config/agents/ — an identity is a property of the agent).
+  it('(b) seeding lands flat under config/agents/identities + config/skeletons/room', async () => {
+    const flatPreset = join(HOME, 'config', 'agents', 'identities', 'psychologist.md');
     expect((await fs.stat(flatPreset)).isFile()).toBe(true);             // seeded flat (secretary pre-existed)
-    await expect(fs.stat(join(HOME, 'config', 'identities', 'psychologist'))).rejects.toThrow();      // NOT a dir
-    await expect(fs.stat(join(HOME, 'config', 'identities', 'psychologist', '00-identity.md'))).rejects.toThrow();
+    await expect(fs.stat(join(HOME, 'config', 'agents', 'identities', 'psychologist'))).rejects.toThrow();      // NOT a dir
+    await expect(fs.stat(join(HOME, 'config', 'agents', 'identities', 'psychologist', '00-identity.md'))).rejects.toThrow();
+    await expect(fs.stat(join(HOME, 'config', 'identities'))).rejects.toThrow();   // NOT the retired config/ location
     await expect(fs.stat(join(HOME, 'identities'))).rejects.toThrow();   // NOT the retired root
     expect((await fs.stat(P.room00)).isFile()).toBe(true);              // room template present
   });

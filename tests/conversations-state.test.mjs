@@ -7,7 +7,6 @@ import { mkdtemp, rm, writeFile, readFile, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import * as YAML from 'yaml';
 import { EGPT_HOME } from '../src/egpt-home.mjs';
 import { Room } from '../src/room-core.mjs';
@@ -49,9 +48,6 @@ import {
   serialize,
   nowIsoString,
   isoFromMs,
-  DEFAULT_PERSONALITY_TOOLS,
-  readPersonality,
-  readPersonalityMeta,
   residentsOf,
   readState,
   writeState,
@@ -1217,108 +1213,6 @@ describe('human-readable stats filenames (resolveStatFilename + name history)', 
     const nice = get(files, 'Nice.yaml');
     expect(nice.threads.map((t) => t.id)).toEqual(['T1', 'T2']);  // appended in place under the human name
     expect(nice.name).toBe('Nice');                            // body name untouched by the nameless caller
-  });
-});
-
-describe('personality frontmatter / allowed_tools (security scoping)', () => {
-  const tmpDirs = [];
-  async function makeOpDir(files) {
-    const dir = await mkdtemp(join(tmpdir(), 'egpt-personalities-'));
-    tmpDirs.push(dir);
-    for (const [name, body] of Object.entries(files)) {
-      await writeFile(join(dir, name), body, 'utf8');
-    }
-    return dir;
-  }
-
-  it('readPersonalityMeta returns frontmatter allowed_tools when present', async () => {
-    const operatorDir = await makeOpDir({
-      'system.md': `---\nallowed_tools: all\n---\n\n# Who I am\nI'm system-e.\n`,
-    });
-    const meta = await readPersonalityMeta('system', { operatorDir, shippedDir: operatorDir });
-    expect(meta.allowed_tools).toBe('all');
-  });
-
-  it('readPersonalityMeta supports array of tools', async () => {
-    const operatorDir = await makeOpDir({
-      'restricted.md': `---\nallowed_tools: [Read, Grep]\n---\n\n# body\n`,
-    });
-    const meta = await readPersonalityMeta('restricted', { operatorDir, shippedDir: operatorDir });
-    expect(meta.allowed_tools).toEqual(['Read', 'Grep']);
-  });
-
-  it('readPersonalityMeta falls back to DEFAULT_PERSONALITY_TOOLS when frontmatter omitted', async () => {
-    const operatorDir = await makeOpDir({
-      'nofm.md': `# Just a body, no frontmatter.\n`,
-    });
-    const meta = await readPersonalityMeta('nofm', { operatorDir, shippedDir: operatorDir });
-    expect(meta.allowed_tools).toEqual(DEFAULT_PERSONALITY_TOOLS);
-  });
-
-  it('readPersonalityMeta falls back to safe default when file missing', async () => {
-    const operatorDir = await makeOpDir({});
-    const meta = await readPersonalityMeta('does-not-exist', { operatorDir, shippedDir: operatorDir });
-    expect(meta.allowed_tools).toEqual(DEFAULT_PERSONALITY_TOOLS);
-  });
-
-  it('readPersonality strips the frontmatter from the body', async () => {
-    const operatorDir = await makeOpDir({
-      'p.md': `---\nallowed_tools: []\n---\n\n# Body starts here.\n`,
-    });
-    const body = await readPersonality('p', { operatorDir, shippedDir: operatorDir });
-    expect(body).toBe('\n# Body starts here.\n');
-    expect(body).not.toContain('allowed_tools');
-  });
-
-  it('the shipped default personality grants WebSearch + WebFetch (the real per-chat scope)', async () => {
-    // The bug: default.md explicitly lists allowed_tools, which OVERRIDES the
-    // DEFAULT_PERSONALITY_TOOLS fallback — and it was missing WebSearch, so E kept
-    // telling contacts it couldn't search (operator 2026-06-16). Lock the real
-    // shipped file, not just the fallback constant.
-    const shippedDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'config', 'personalities');
-    const meta = await readPersonalityMeta('default', { operatorDir: join(tmpdir(), 'no-such-op-dir-egpt'), shippedDir });
-    expect(meta.allowed_tools).toContain('WebSearch');
-    expect(meta.allowed_tools).toContain('WebFetch');
-    // Route B: SCOPED Bash to vetted binaries (the model drives them).
-    expect(meta.allowed_tools).toContain('Bash(ffmpeg:*)');
-    expect(meta.allowed_tools).toContain('Bash(yt-dlp:*)');
-    // …but NO bare Bash (arbitrary shell) and NO Agent — no self-elevation.
-    expect(meta.allowed_tools).not.toContain('Bash');
-    expect(meta.allowed_tools).not.toContain('Agent');
-  });
-
-  it('DEFAULT_PERSONALITY_TOOLS bans self-elevation primitives', () => {
-    // Regression guard: a personality without frontmatter MUST NOT get
-    // any tool that allows shelling out, spawning sub-agents, or
-    // executing notebook code. Read/Write/Edit on files inside the
-    // slug-dir are fine — additionalDirectories pins them.
-    //
-    // Operator (2026-05-22) refinement: conversation-e should be able
-    // to write text files (summaries, notes, scratch state) within its
-    // own slug-dir, so Write+Edit ARE allowed. Bash/Agent/NotebookEdit
-    // stay forbidden because they're the self-elevation primitives:
-    //   - Bash: chmod+exec arbitrary scripts; escapes additionalDirectories
-    //   - Agent: spawn sub-agents that may escape the scope
-    //   - NotebookEdit: executes notebook code blocks
-    const forbidden = ['Bash', 'Agent', 'NotebookEdit'];
-    for (const t of forbidden) {
-      expect(DEFAULT_PERSONALITY_TOOLS).not.toContain(t);
-    }
-    expect(DEFAULT_PERSONALITY_TOOLS).toContain('Read');
-    expect(DEFAULT_PERSONALITY_TOOLS).toContain('Write');
-    // 2026-06-16: READ-ONLY web access IS granted (E kept claiming it couldn't
-    // search). These are not self-elevation primitives — no Bash/Agent, no file
-    // escape — so they stay in the safe default.
-    expect(DEFAULT_PERSONALITY_TOOLS).toContain('WebSearch');
-    expect(DEFAULT_PERSONALITY_TOOLS).toContain('WebFetch');
-  });
-
-  // Cleanup — was `expect(true).toBe(true)` (tautology audit 2026-05-29).
-  // Now actually verifies each temp dir was removed.
-  it('temp dirs cleaned up', async () => {
-    const dirs = tmpDirs.splice(0);
-    await Promise.all(dirs.map(d => rm(d, { recursive: true, force: true })));
-    for (const d of dirs) expect(existsSync(d)).toBe(false);
   });
 });
 

@@ -14,8 +14,9 @@ import { EGPT_HOME } from '../egpt-home.mjs';
 export const REPO_SKELETONS_DIR = fileURLToPath(new URL('../../config/skeletons/', import.meta.url));
 export const PROFILE_SKELETONS_DIR = join(EGPT_HOME, 'config', 'skeletons');
 export const PROFILE_AGENTS_DIR = join(EGPT_HOME, 'config', 'agents');
-// Identities are FLAT .md files under config/identities/ now (operator 2026-07-03).
-export const PROFILE_IDENTITIES_DIR = join(EGPT_HOME, 'config', 'identities');
+// Identities are FLAT .md files, and they live under the AGENTS dir (operator 2026-09-10:
+// an identity is a property of the agent) — config/agents/identities/<name>.md.
+export const PROFILE_IDENTITIES_DIR = join(EGPT_HOME, 'config', 'agents', 'identities');
 
 // The example agent-type file. A TYPE is a brain def (config/agents/<type>.yaml); an
 // agents.<name>.type key points here. Shipped FULLY COMMENTED so seeding it can never
@@ -100,12 +101,13 @@ allowed_paths:
   #  /c/Users/you/project:               # full access (read + write)
   #  /c/Users/you/reference:             # READ-ONLY — a per-path list with NO write-class tool
   #    allowed_tools: [Read, Glob, Grep] #   (write-class = Edit / Write / MultiEdit / NotebookEdit)
-# personality: egpt  # identity feed a fresh conversation boots from (identities/<name>/);
-                        # a property of the TYPE, not the conversation. Absent ⇒ 'egpt'.
+# personality: egpt  # identity feed a fresh conversation boots from
+                        # (config/agents/identities/<name>.md); a property of the TYPE,
+                        # not the conversation. Absent ⇒ 'egpt'.
 `;
 
 // PRESET personality identity LAYERS (operator 2026-07-03). Each is a single plain-
-// markdown instruction file (config/identities/<name>.md, the flat identity-file
+// markdown instruction file (config/agents/identities/<name>.md, the flat identity-file
 // convention) — a short, operator-EDITABLE starting point for a flavor of agent. They
 // are the SOURCE OF TRUTH here (seeded copy-if-missing into the profile like the agent-type
 // files); the eGPT persona itself stays the shipped room template (config/skeletons/room/,
@@ -260,8 +262,8 @@ export function seedSkeletons({
   //    (The old default.yaml was renamed to egpt.yaml 2026-07-02 — we do NOT recreate it.)
   copyIfMissing(join(agentsDir, 'egpt.yaml'), () => EGPT_TYPE_FILE);
 
-  // 4. the PRESET personality identity layers → config/identities/<name>.md (FLAT, operator
-  //    2026-07-03). Seeded copy-if-missing so an operator's own edits are sacred; the /e
+  // 4. the PRESET personality identity layers → config/agents/identities/<name>.md (FLAT,
+  //    operator 2026-07-03). Seeded copy-if-missing so an operator's own edits are sacred; the /e
   //    wizard's custom branch lists them (plus the shipped `egpt`) as personality picks.
   for (const [name, body] of Object.entries(PRESET_IDENTITIES)) {
     copyIfMissing(join(identitiesDir, `${name}.md`), () => body);

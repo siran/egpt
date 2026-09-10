@@ -1,5 +1,5 @@
 // identity-folder.test.mjs — identities are FLAT .md files now (operator 2026-07-03).
-// An identity = config/identities/<name>.md; the kickoff feed = that file + the shared
+// An identity = config/agents/identities/<name>.md; the kickoff feed = that file + the shared
 // pointers/rules (the room template config/skeletons/room/{30,40}). A name with no profile
 // file falls back to the room template's 00-identity.md (the shipped eGPT default). Runs
 // against an isolated EMPTY profile so resolution deterministically hits the repo's shipped
@@ -24,7 +24,7 @@ afterAll(async () => {
 });
 
 describe('identity flat files', () => {
-  it('resolveIdentityFile is null when the profile has no config/identities/<name>.md', () => {
+  it('resolveIdentityFile is null when the profile has no config/agents/identities/<name>.md', () => {
     expect(resolveIdentityFile('egpt')).toBeNull();
     expect(resolveIdentityFile('zzz-no-such-identity')).toBeNull();
   });

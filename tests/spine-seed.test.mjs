@@ -9,7 +9,7 @@ import { join, dirname } from 'node:path';
 import { seedSkeletons, EXAMPLE_TYPE_FILE, EGPT_TYPE_FILE, PRESET_IDENTITIES } from '../src/spine/seed.mjs';
 
 // Built with join so keys + the dirs passed to seedSkeletons share the platform separator.
-const REPO = join('/repo', 'skeletons'), SKEL = join('/prof', 'config', 'skeletons'), AGENTS = join('/prof', 'config', 'agents'), IDS = join('/prof', 'config', 'identities');
+const REPO = join('/repo', 'skeletons'), SKEL = join('/prof', 'config', 'skeletons'), AGENTS = join('/prof', 'config', 'agents'), IDS = join('/prof', 'config', 'agents', 'identities');
 
 // A tiny in-memory fs: a { path: contents } map, plus a set of "directories that exist".
 function memfs(seed = {}) {
@@ -88,7 +88,7 @@ describe('seedSkeletons', () => {
     expect(files[join(AGENTS, 'sonnet-high.yaml')]).toBe(EXAMPLE_TYPE_FILE);
   });
 
-  it('seeds each preset personality identity layer (FLAT config/identities/<name>.md), copy-if-missing', () => {
+  it('seeds each preset personality identity layer (FLAT config/agents/identities/<name>.md), copy-if-missing', () => {
     const files = run({});
     const names = Object.keys(PRESET_IDENTITIES);
     expect(names).toHaveLength(10);   // the 10 operator-named flavors — can't-rot

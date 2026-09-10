@@ -1,7 +1,7 @@
 // identity-layers.test.mjs — the `/e` wizard's personality feed: listIdentityLayers()
-// enumerates the FLAT *.md files in the profile's config/identities/ PLUS 'egpt' (the
+// enumerates the FLAT *.md files in the profile's config/agents/identities/ PLUS 'egpt' (the
 // shipped default, which lives in the room template — no profile file). A profile file
-// config/identities/egpt.md OVERRIDES the shipped default for resolution. Runs against an
+// config/agents/identities/egpt.md OVERRIDES the shipped default for resolution. Runs against an
 // isolated EGPT_HOME so nothing touches the real profile. egpt-home.mjs reads EGPT_HOME
 // once at module load, so it is set BEFORE conversations-state is dynamically imported.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -16,9 +16,9 @@ let listIdentityLayers, resolveIdentityFile, readIdentityFeed;
 
 beforeAll(async () => {
   // A profile identity file that OVERRIDES the shipped `egpt`, plus a profile-only layer.
-  await mkdir(join(tmpHome, 'config', 'identities'), { recursive: true });
-  await writeFile(join(tmpHome, 'config', 'identities', 'egpt.md'), '# profile egpt\n\nOverridden.\n', 'utf8');
-  await writeFile(join(tmpHome, 'config', 'identities', 'secretary.md'), '# I am a secretary\n\nProfile-only layer.\n', 'utf8');
+  await mkdir(join(tmpHome, 'config', 'agents', 'identities'), { recursive: true });
+  await writeFile(join(tmpHome, 'config', 'agents', 'identities', 'egpt.md'), '# profile egpt\n\nOverridden.\n', 'utf8');
+  await writeFile(join(tmpHome, 'config', 'agents', 'identities', 'secretary.md'), '# I am a secretary\n\nProfile-only layer.\n', 'utf8');
   ({ listIdentityLayers, resolveIdentityFile, readIdentityFeed } = await import('../src/conversations-state.mjs'));
 });
 afterAll(async () => {
@@ -36,7 +36,7 @@ describe('listIdentityLayers + flat-file resolution', () => {
   });
 
   it('the profile identity file WINS for resolution', async () => {
-    expect(resolveIdentityFile('egpt')).toBe(join(tmpHome, 'config', 'identities', 'egpt.md'));
+    expect(resolveIdentityFile('egpt')).toBe(join(tmpHome, 'config', 'agents', 'identities', 'egpt.md'));
     expect(await readIdentityFeed('egpt')).toMatch(/profile egpt/);   // not the shipped "I am eGPT"
   });
 

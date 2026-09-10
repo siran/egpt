@@ -1,15 +1,14 @@
 // conversations-state.mjs — pure-logic module for @e's per-contact
-// conversation registry and personalities.
+// conversation registry.
 //
 // Per-contact (NOT per-JID) model: each human or group gets ONE
 // contact entry, keyed by a slug (e.g., "diego", "premise-driven-bitcoin").
 // Multiple WA JIDs can map to one contact (lid + phone-number form for
 // the same person) — they all live in the entry's `jids` array, share
-// one `threadId`, one personality.
+// one `threadId`.
 //
-// Operator (2026-05-19): registry is YAML for human readability,
-// personalities are markdown files shipped with egpt + overridable in
-// ~/.egpt/personalities/, all timestamps ISO 8601.
+// Operator (2026-05-19): registry is YAML for human readability, all
+// timestamps ISO 8601.
 //
 // This file: pure functions only — no fs/io side effects EXCEPT in
 // explicit read/write helpers at the bottom that take paths. Easy to
@@ -31,27 +30,28 @@ import { makeSerialByKey } from './serial-by-key.mjs';
 import { preferNewer } from './prefer-newer.mjs';
 import { shortChatId } from './bridges/chat-id.mjs';
 
-// This module lives in src/, but the SHIPPED asset dirs (config/skeletons,
-// config/personalities) sit at the PACKAGE ROOT — hence the '..' below. Holds for
-// both the dev repo and the installed ~/bin/egpt (config/ is a package-root sibling
-// in each). The profile dirs beside them use absolute EGPT_HOME, so they don't care.
+// This module lives in src/, but the SHIPPED asset dir (config/skeletons) sits at
+// the PACKAGE ROOT — hence the '..' below. Holds for both the dev repo and the
+// installed ~/bin/egpt (config/ is a package-root sibling in each). The profile dirs
+// beside them use absolute EGPT_HOME, so they don't care.
 const _here = dirname(fileURLToPath(import.meta.url));
-const PERSONALITIES_SHIPPED_DIR  = join(_here, '..', 'config', 'personalities');
-const PERSONALITIES_OPERATOR_DIR = join(EGPT_HOME, 'personalities');
 // Identities are FLAT markdown files now (operator 2026-07-03: "identities are .md
 // files not directories with a 00-file inside… an identity file 'egpt.md'"). A
 // conversation's kickoff feed = its identity file + the SHARED actions + pointers + rules
 // (the "room template", identity first, then the shared layers).
-//   - identity: EGPT_HOME/config/identities/<name>.md (profile).
+//   - identity: EGPT_HOME/config/agents/identities/<name>.md (profile) — an identity is a
+//     property of the AGENT, so it lives under config/agents/ (operator 2026-09-10).
 //   - shared layers: EVERY other NN-*.md in config/skeletons/room/ (the shipped set is
 //     {10-actions,30-pointers,40-rules}.md, but the dir is ENUMERATED, not hardcoded —
 //     operator 2026-07-25 — so an added 50-*.md feeds and seeds with no code change)
 //     — the profile's seeded copy wins, the repo's shipped template is the fallback. The
 //     ACTIONS layer (the emit-limbs grammar) is a spine contract, so it feeds for EVERY
 //     being regardless of identity (operator 2026-07-06).
-//   - a name with no profile identity file falls back to the room template's
-//     00-identity.md (the shipped eGPT default). No repo-root identities/ back-read.
-const IDENTITIES_PROFILE_DIR    = join(EGPT_HOME, 'config', 'identities');
+//   - `personality:` absent ⇒ 'egpt' (operator 2026-09-10). A name with no profile
+//     identity file falls back to the room template's 00-identity.md (the shipped eGPT
+//     default) — the safety net for a profile that has no agents/identities/<name>.md.
+//     No back-read of the retired config/identities/ location, none of the repo root.
+const IDENTITIES_PROFILE_DIR    = join(EGPT_HOME, 'config', 'agents', 'identities');
 const ROOM_TEMPLATE_PROFILE_DIR = join(EGPT_HOME, 'config', 'skeletons', 'room');
 const ROOM_TEMPLATE_SHIPPED_DIR = join(_here, '..', 'config', 'skeletons', 'room');
 // The `mode: auto` operator-role instruction layer (a top-level skeleton, seeded
@@ -1423,152 +1423,11 @@ function _entryByJidOrSlug(state, surface, jidOrSlug) {
   return _findByslug(state, surface, jidOrSlug)?.entry ?? null;
 }
 
-// ── Personality file resolution ────────────────────────────────────────────
-
-// Resolution chain: operator dir → shipped dir. Returns absolute path or null.
-export function resolvePersonalityFile(name, opts = {}) {
-  const safeName = sanitizeSlug(name || 'default') || 'default';
-  const opDir   = opts.operatorDir   ?? PERSONALITIES_OPERATOR_DIR;
-  const shipDir = opts.shippedDir    ?? PERSONALITIES_SHIPPED_DIR;
-  const candidates = [
-    join(opDir, `${safeName}.md`),
-    join(shipDir, `${safeName}.md`),
-  ];
-  for (const p of candidates) if (existsSync(p)) return p;
-  return null;
-}
-
-// Safe-default tool allowlist for personalities that have no frontmatter
-// or no `allowed_tools` field. File ops (read + write + edit) scoped to
-// the contact's slug-dir via additionalDirectories; READ-ONLY web access
-// (WebSearch + WebFetch); no Bash, no Agent, no NotebookEdit.
-//
-// Operator security trail (2026-05-22):
-//   - First pass: "if any of my contacts convince the model to send
-//     messages via node, that would be a major flaw." → restrict tools.
-//   - Refinement: "conversation-e should be able to write text files"
-//     (so it can maintain summaries, daily notes, scratch state in its
-//     own slug-dir). The additionalDirectories pin keeps writes
-//     contained; absence of Bash blocks self-elevation (no
-//     `chmod +x && ./malicious.sh` path), absence of Agent blocks
-//     spawning sub-agents that could escape the scope.
-//   - 2026-06-16: grant WebSearch + WebFetch. E kept telling contacts it
-//     "couldn't search the internet" and asking for authorization — the
-//     lineage prelude PROMISES these tools, but the permission layer didn't
-//     grant them (they're non-file tools, so under the confined path they
-//     weren't pre-approved → a headless permission prompt = denied). They are
-//     READ-ONLY network tools: no self-elevation (still no Bash/Agent), no file
-//     escape (file tools stay path-confined). So E can answer "what happened in
-//     X?" without widening its sandbox.
-export const DEFAULT_PERSONALITY_TOOLS = ['Read', 'Write', 'Edit', 'Grep', 'Glob', 'WebSearch', 'WebFetch'];
-
-function _parseFrontmatter(raw) {
-  if (typeof raw !== 'string') return { meta: {}, body: '' };
-  const m = raw.match(/^---\r?\n([\s\S]+?)\r?\n---\r?\n([\s\S]*)$/);
-  if (!m) return { meta: {}, body: raw };
-  try {
-    const meta = YAML.parse(m[1]);
-    return { meta: (meta && typeof meta === 'object') ? meta : {}, body: m[2] };
-  } catch (e) {
-    console.error(`!! personality frontmatter parse: ${e?.message ?? e}`);
-    return { meta: {}, body: m[2] };
-  }
-}
-
-export async function readPersonality(name, opts = {}) {
-  const p = resolvePersonalityFile(name, opts);
-  if (!p) return null;
-  try {
-    const raw = await readFile(p, 'utf8');
-    // Strip YAML frontmatter from the body that goes into the prompt;
-    // the meta lives separately (see readPersonalityMeta below).
-    return _parseFrontmatter(raw).body;
-  }
-  catch (e) { console.error(`!! readPersonality(${name}): ${e?.message ?? e}`); return null; }
-}
-
-// Read the personality's YAML frontmatter (allowed_tools, etc.) without
-// the body. Returns { allowed_tools, ... } or a safe default when the
-// file is missing or has no frontmatter.
-export async function readPersonalityMeta(name, opts = {}) {
-  const p = resolvePersonalityFile(name, opts);
-  if (!p) return { allowed_tools: DEFAULT_PERSONALITY_TOOLS };
-  try {
-    const raw = await readFile(p, 'utf8');
-    const { meta } = _parseFrontmatter(raw);
-    if (meta.allowed_tools === undefined) {
-      meta.allowed_tools = DEFAULT_PERSONALITY_TOOLS;
-    }
-    return meta;
-  } catch (e) {
-    console.error(`!! readPersonalityMeta(${name}): ${e?.message ?? e}`);
-    return { allowed_tools: DEFAULT_PERSONALITY_TOOLS };
-  }
-}
-
-// Operator-editable rules + pointers files. These live in ~/.egpt/ but
-// get COPIED into <slug-dir>/ at /e new and /e persona so conversation-e
-// (sandboxed to its slug-dir) can `cat ./rules.md ./pointers.md`.
-const RULES_OPERATOR_PATH    = join(EGPT_HOME, 'rules.md');
-const POINTERS_OPERATOR_PATH = join(EGPT_HOME, 'pointers.md');
-
-// Read identity/rules/pointers content. Returns { identity, rules, pointers }
-// with empty strings (not null) for any missing file — easier downstream.
-export async function readIdentityBundle(personalityName, opts = {}) {
-  // The PERSONALITY (config/personalities/<name>.md) — historically returned as
-  // `identity`, kept under that key for back-compat. The egpt-wide MANIFEST
-  // (e_identity.md) is passed in by the caller via opts.manifest, since this
-  // module doesn't know APP_DIR / config; '' when omitted.
-  const personality = (await readPersonality(personalityName, opts)) ?? '';
-  let rules = '';
-  let pointers = '';
-  try { rules    = await readFile(opts.rulesPath    ?? RULES_OPERATOR_PATH,    'utf8'); }
-  catch (e) { if (e?.code !== 'ENOENT') console.error(`!! readIdentityBundle rules.md: ${e?.message ?? e}`); }
-  try { pointers = await readFile(opts.pointersPath ?? POINTERS_OPERATOR_PATH, 'utf8'); }
-  catch (e) { if (e?.code !== 'ENOENT') console.error(`!! readIdentityBundle pointers.md: ${e?.message ?? e}`); }
-  return { manifest: String(opts.manifest ?? ''), identity: personality, personality, rules, pointers };
-}
-
 // <slug>/identity.d/ — the ordered set of files fed to conversation-e. Files
 // sort lexically; numeric prefixes give order + insertion gaps so the operator
 // (or E) can drop extras (e.g. 30-project.md) and they're fed too — no schema.
 export function identityDir(surface, slug) {
   return join(slugDir(surface, slug), 'identity.d');
-}
-
-// Populate identity.d/ from sources. `manifest` is the egpt-wide e_identity
-// content (caller resolves brains.identity). Also keeps the flat ./identity.md
-// (= personality, back-compat) + ./rules.md + ./pointers.md the sandbox may cat.
-export async function populateIdentityDir(surface, slug, personalityName, opts = {}) {
-  const bundle = await readIdentityBundle(personalityName, opts);
-  const dir = slugDir(surface, slug);
-  const idd = identityDir(surface, slug);
-  await mkdir(idd, { recursive: true });
-  await writeFile(join(idd, '00-manifest.md'),    bundle.manifest,    'utf8');
-  await writeFile(join(idd, '20-personality.md'), bundle.personality, 'utf8');
-  await writeFile(join(idd, '40-rules.md'),       bundle.rules,       'utf8');
-  await writeFile(join(idd, '60-pointers.md'),    bundle.pointers,    'utf8');
-  // Flat copies for back-compat (e_identity references ./rules.md etc.).
-  await writeFile(join(dir, 'identity.md'), bundle.personality, 'utf8');
-  await writeFile(join(dir, 'rules.md'),    bundle.rules,       'utf8');
-  await writeFile(join(dir, 'pointers.md'), bundle.pointers,    'utf8');
-  return bundle;
-}
-
-// Back-compat alias: same as populateIdentityDir, returns the bundle.
-export async function installPersonaIntoSlugDir(surface, slug, personalityName, opts = {}) {
-  return populateIdentityDir(surface, slug, personalityName, opts);
-}
-
-// Rewrite ONLY the personality slice of identity.d/ (for /e persona — swap
-// flavor without re-sending the manifest). Returns the new personality content.
-export async function writeIdentityPersonality(surface, slug, personalityName, opts = {}) {
-  const idd = identityDir(surface, slug);
-  await mkdir(idd, { recursive: true });
-  const personality = (await readPersonality(personalityName, opts)) ?? '';
-  await writeFile(join(idd, '20-personality.md'), personality, 'utf8');
-  await writeFile(join(slugDir(surface, slug), 'identity.md'), personality, 'utf8');
-  return personality;
 }
 
 // Read + concat identity.d/*.md in lexical (= numeric-prefix) order, skipping
@@ -1587,12 +1446,13 @@ export async function readIdentityDir(surface, slug) {
 }
 
 // ── Identities as flat .md files (operator 2026-07-03) ──────────────────────
-// An identity is ONE markdown file `config/identities/<name>.md` (profile). The
+// An identity is ONE markdown file `config/agents/identities/<name>.md` (profile). The
 // kickoff feed = that identity file + the SHARED pointers/rules (the room template
 // config/skeletons/room/{30-pointers,40-rules}.md), identity FIRST — the same content
 // + order as the retired 00/30/40 folder trio, just re-sourced. A name with no profile
 // identity file falls back to the room template's 00-identity.md (the shipped eGPT
-// default). No repo-root identities/ back-read (the operator's new-only house rule).
+// default). No back-read of the retired config/identities/ location, none of the repo
+// root (the operator's new-only house rule).
 
 // Resolve ONE room-template layer FILENAME to a path, PER FILE (operator ruling
 // 2026-07-25: "roomTemplateDir prefer the newer file" — the old wholesale "profile dir
@@ -1608,9 +1468,10 @@ async function _readFileOr(fp, fallback = '') {
   try { return await readFile(fp, 'utf8'); } catch { return fallback; }
 }
 
-// Resolve an identity NAME to its profile markdown file config/identities/<name>.md.
-// Returns the path when it exists, else null (the caller falls back to the room
-// template's 00-identity.md — the shipped eGPT default).
+// Resolve an identity NAME to its profile markdown file
+// config/agents/identities/<name>.md. A missing/blank name is 'egpt' (operator
+// 2026-09-10: `personality:` absent ⇒ egpt). Returns the path when it exists, else null
+// (the caller falls back to the room template's 00-identity.md — the shipped eGPT default).
 export function resolveIdentityFile(name) {
   const safe = sanitizeSlug(name || 'egpt') || 'egpt';
   const p = join(IDENTITIES_PROFILE_DIR, `${safe}.md`);
@@ -1618,7 +1479,7 @@ export function resolveIdentityFile(name) {
 }
 
 // Enumerate identity-LAYER names for the `/e` wizard's personality pick: the *.md
-// basenames in the profile's config/identities/ (operator-authored: seeded presets +
+// basenames in the profile's config/agents/identities/ (operator-authored: seeded presets +
 // wizard free-text layers) PLUS 'egpt' (the shipped default, which lives in the room
 // template, not a profile file). Deduped case-insensitively + sorted. Never throws.
 export function listIdentityLayers() {
@@ -1659,7 +1520,7 @@ function _listRoomLayerFiles() {
 // The room template's layers in feed order, as [{ file, text }] — the shape shared by the
 // in-context kickoff (readIdentityFeed) and the conversation-folder copy (seedIdentityLayers),
 // so what E is FED and what it can later CONSULT can never disagree. A named persona's
-// profile file config/identities/<name>.md replaces the 00-identity SLOT only; every other
+// profile file config/agents/identities/<name>.md replaces the 00-identity SLOT only; every other
 // layer is shared. In particular the ACTIONS layer (10-actions.md) is a SPINE CONTRACT, not
 // an identity trait (operator 2026-07-06: limbs are parsed by reply-actions.mjs for EVERY
 // being) — a custom identity still learns the /react grammar.
@@ -1700,7 +1561,7 @@ async function _identityLayers(name) {
 // capabilities refresher — an edited template (10-actions.md learning /ask) could otherwise
 // never reach a conversation that was seeded once, months ago. THE TRADE: a hand-edit to
 // <room>/identity.d/ is discarded on the next refresh. Intended — these are consult COPIES;
-// the sources are the room template and config/identities/<name>.md. /rooms create passes no
+// the sources are the room template and config/agents/identities/<name>.md. /rooms create passes no
 // overwrite (copy-if-missing): a brand-new room's identity.d is already empty, so there is
 // nothing to refresh — and copy-if-missing is the same never-clobber default every other
 // seed path uses, in case creation is ever retried against a room that already has layers.
