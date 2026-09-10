@@ -159,9 +159,9 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
     (STEPS_EXISTING = [config] now).
   - **/e wizard custom** — a final `custom` option BUILDS a new agent type (model → effort →
     personality → name, named last, collision re-prompts) and authors config/agents/<name>.yaml
-    (+ a free-text identity layer as a FLAT config/identities/<name>.md) then applies it.
-    Personality picks = identity layers (listIdentityLayers = profile config/identities/*.md +
-    'egpt') + free text; 10 preset layers seeded copy-if-missing to config/identities/<name>.md
+    (+ a free-text identity layer as a FLAT config/agents/identities/<name>.md) then applies it.
+    Personality picks = identity layers (listIdentityLayers = profile config/agents/identities/*.md +
+    'egpt') + free text; 10 preset layers seeded copy-if-missing to config/agents/identities/<name>.md
     (src/spine/seed.mjs PRESET_IDENTITIES).
   - **/e wizard tools step (operator 2026-07-03)** — a `tools` option (right before `custom`,
     also last) edits ONLY allowed_tools, keeping the current agent type/model/effort: default
@@ -171,7 +171,7 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
 - **Profile relayout (operator 2026-07-03, disk = spec)** — the code's canonical paths now
   match the reorganized profile: `config/conversations.yaml` (CONV_YAML_PATH), `config/logs/`
   (beeper.log + swallowed.log + NSSM service-std{out,err}.log), `state/ingest/` (the lifecycle
-  box). Identities are FLAT `config/identities/<name>.md` files; the shared eGPT identity +
+  box). Identities are FLAT `config/agents/identities/<name>.md` files; the shared eGPT identity +
   pointers + rules ship as the ROOM TEMPLATE `config/skeletons/room/{00-identity,30-pointers,
   40-rules}.md` (git mv from the retired repo-root identities/egpt/), seeded copy-if-missing.
   readIdentityFeed = identity file + shared pointers + rules (identity first); a name with no
@@ -183,12 +183,14 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
   it's folder." Both halves are live again:
   1. FEED — `_identityLayers` ENUMERATES the room template's `NN-*.md` (numeric-prefix order),
      no longer a hardcoded 00/10/30/40 quartet → verify: boot-profile-contract (h), an extra
-     `50-*.md` feeds with no code change. `config/identities/<name>.md` still replaces the
+     `50-*.md` feeds with no code change. `config/agents/identities/<name>.md` still replaces the
      `00-identity` slot only.
-  2. COPY — `seedIdentityLayers(surface, slug, name, {io})` writes the SAME bytes to
-     `<conv>/identity.d/NN-*.md`, copy-if-missing, called from `brainpool.turn` on every
+  2. COPY — `seedIdentityLayers(surface, slug, name, {io})` writes the SHARED layers only
+     (`_sharedLayers` drops the `00-identity` slot) to `<conv>/directives/NN-*.md`,
+     copy-if-missing, called from `brainpool.turn` on every
      PERSONA turn (not just the fresh kickoff, so live conversations self-heal); never throws
-     → verify: boot-profile-contract (g), all layers incl. 10-actions land on disk.
+     → verify: boot-profile-contract (g), the shared layers land on disk and NO identity
+     file does — the personality is fed in context only (`d1ec317`, 2026-09-10).
      The COPY half had been dead since `2517624` (old-spine deletion took `installIdentity`'s
      only caller); `installIdentity` — which wrote FLAT `identity.md`/`pointers.md`/`rules.md`
      at the slug root, contradicting both pointer cards — is retired by it.
@@ -563,11 +565,11 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
 
 - **SKELETONS RE-COPY ON THREAD REFRESH (operator 2026-07-26).** *"all skeleton files are
   copied on refresh thread."* A refresh (thread instanced anew) overwrites `<conv>/
-  identity.d/`; an ordinary turn keeps copy-if-missing. This CLOSES the capabilities-
+  directives/`; an ordinary turn keeps copy-if-missing. This CLOSES the capabilities-
   refresher gap for conversation folders — the refresh IS the refresh mechanism. Trade,
-  intended: a hand-edit to a conversation's `identity.d/` is discarded on refresh, because
+  intended: a hand-edit to a conversation's `directives/` is discarded on refresh, because
   those files are consult COPIES; the sources are the room template and
-  `config/identities/<name>.md`.
+  `config/agents/identities/<name>.md`.
 
 - **NO LEGACY MAINTENANCE (operator 2026-07-26).** *"do not keep maintaining legacy
   behavior"* + *"do not concern about live profiles. it's all dev environment, although
@@ -607,7 +609,8 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
   > name: "…"
   > ```
   > A CONVERSATION folder holds exactly what `slugDir`'s own doc comment says and nothing more:
-  > `transcript.md`, optional `daily-YYYY-MM-DD.md`, `media/`, and `identity.d/NN-*.md`.
+  > `transcript.md`, optional `daily-YYYY-MM-DD.md`, `media/`, and `directives/NN-*.md`
+  > (named `identity.d/` before `d1ec317`).
   > No `stats.yaml`.
   > The per-conversation `threads:` history below is likewise unbuilt — treat the whole block as
   > a PROPOSAL, not a description of disk.
@@ -708,9 +711,9 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
     + 9 tests; plus 6 of the 7 `OLD-SPINE ONLY` migrations pruned from conversations-state.mjs.
 
   ⚠️ **CORRECTIONS — the previous deletion list was WRONG. These are NOT dead; do NOT delete:**
-  - **`config/personalities/` is LIVE** — `src/conversations-state.mjs` reads it as
-    PERSONALITIES_SHIPPED_DIR (resolvePersonalityFile) and a test asserts on the real
-    `default.md`. ("identities replace them" was aspirational, not true.)
+  - ~~**`config/personalities/` is LIVE**~~ — **RESOLVED and DELETED 2026-09-10** (`e8db41d`).
+    "identities replace them" stopped being aspirational: the operator deleted the directory
+    and the reader went with it. `identities/` is the one holder.
   - **`config/themes/`** is read by `src/tools/theme.mjs`.
   - **`config/brains/llama.mjs`** is imported by `src/tools/agent-loop.mjs`.
   - ~~**`src/rooms.mjs`** survives as a PARITY ORACLE in 3 live tests~~ — **RESOLVED and
