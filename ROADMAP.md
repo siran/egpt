@@ -564,11 +564,11 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
     reserved both fields correctly all along. The archive of a retired thread keys on
     `thread_id`, which is why this had to be fixed before the roll could be wired.
 
-- **SKELETONS RE-COPY ON THREAD REFRESH (operator 2026-07-26).** *"all skeleton files are
-  copied on refresh thread."* A refresh (thread instanced anew) overwrites `<conv>/
+- **SKELETONS RE-COPY ON RETHREAD (operator 2026-07-26).** *"all skeleton files are
+  copied on refresh thread."* A rethread (thread instanced anew) overwrites `<conv>/
   directives/`; an ordinary turn keeps copy-if-missing. This CLOSES the capabilities-
-  refresher gap for conversation folders — the refresh IS the refresh mechanism. Trade,
-  intended: a hand-edit to a conversation's `directives/` is discarded on refresh, because
+  refresher gap for conversation folders — the rethread IS the refresh mechanism. Trade,
+  intended: a hand-edit to a conversation's `directives/` is discarded on rethread, because
   those files are consult COPIES; the sources are the room template and
   `config/agents/identities/<name>.md`.
 
@@ -1555,3 +1555,9 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
   agents (Fable orchestrates/reviews/commits); descriptive commits, no AI
   attribution; no continuity-diary logging for egpt work; commit+push without
   asking when work is done; comments carry the WHY (operator-dated decisions).
+
+- **LIFECYCLE VERBS (operator 2026-09-10, `e4c299e`).** `refresh` re-feeds identity +
+  directives into the RUNNING thread; `rethread` clears threadId and rolls transcript.md
+  into `transcripts/` (was `/agents restart`, renamed off the spine's exit-43 collision);
+  `reset` is unchanged — archive the folder, reseed. Every "refresh" written before this
+  date means `rethread`. OPEN: the feed does not yet happen on compaction.
