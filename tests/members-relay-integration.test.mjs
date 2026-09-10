@@ -177,7 +177,9 @@ describe('an operator-named room is an ordinary conversation — created, addres
     // 3. The tree is the SAME tree a conversation gets — Room.treeDirs(), no room-only list.
     for (const dir of room.treeDirs()) expect(existsSync(dir)).toBe(true);
     expect(existsSync(room.baseDir())).toBe(true);   // the folder IS the room; its rung lives in config/rooms.yaml
-    expect(existsSync(join(room.identityDir, '00-identity.md'))).toBe(true);
+    // The SHARED layers land here; the identity does NOT (2026-09-10 — it is fed in context).
+    expect(existsSync(join(room.directivesDir, '10-actions.md'))).toBe(true);
+    expect(existsSync(join(room.directivesDir, '00-identity.md'))).toBe(false);
 
     // 4. WRITE members IN the room (an ordinary /members on that conversation) …
     await cmds.run({ chatId: 'acim', surface: 'room', body: '/members add tab 1' });

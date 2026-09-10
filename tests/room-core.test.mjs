@@ -109,7 +109,7 @@ describe('an agent roots at agents/<name> — the third entity root', () => {
     expect(room.baseDir()).toBe(join(EGPT_HOME, 'agents', 'wren'));
     expect(room.transcriptPath).toBe(join(EGPT_HOME, 'agents', 'wren', 'transcript.md'));
     expect(room.filesDir).toBe(join(EGPT_HOME, 'agents', 'wren', 'files'));
-    expect(room.identityDir).toBe(join(EGPT_HOME, 'agents', 'wren', 'identity.d'));
+    expect(room.directivesDir).toBe(join(EGPT_HOME, 'agents', 'wren', 'directives'));
   });
 });
 
@@ -154,7 +154,7 @@ describe('the ONE identical tree (GENOME §2.5)', () => {
     transcriptPath: 'transcript.md',
     mediaDir: 'media',
     filesDir: 'files',
-    identityDir: 'identity.d',
+    directivesDir: 'directives',
     scriptsDir: 'scripts',
     transcriptsDir: 'transcripts',
   };

@@ -146,7 +146,7 @@ export async function launchChromeDirect({ port, userDataDir, bin = null, spawn:
 
 // A fresh room's config.yaml — a commented placeholder (like the seeded templates,
 // seed.mjs). Pure comments → parses to null, so the heartbeat/transcription loaders read
-// it as an empty {}. Members are later work — no roster block yet. (The room's identity.d/
+// it as an empty {}. Members are later work — no roster block yet. (The room's directives/
 // layers are a SEPARATE seeding step in roomCreate below, beside ensureTree — the same
 // shared config/skeletons/room/ template a conversation seeds, copied per-room.)
 // A created room gets NO config file of its own: the ROOM RUNG lives in
@@ -1374,7 +1374,7 @@ export function createCommands({
   // decided directly against `reset`'s big archive-and-wipe): clears ONLY the target
   // being(s)' `threadId` via patchBeing (a merge, NOT deleteBeing) — `mode`, `access_level`,
   // and every other field on the being's block survive byte-for-byte. The conversation
-  // folder (transcript.md, media/, files/, identity.d/) is never archived, moved or wiped —
+  // folder (transcript.md, media/, files/, directives/) is never archived, moved or wiped —
   // no rename, no reseed. This matches exactly what already happens today when an operator
   // manually clears `threadId` by hand, plus the ONE line restartBoundary appends to
   // transcript.md (below) so `mode: accum`'s window starts here too.
@@ -1628,15 +1628,15 @@ export function createCommands({
     // conversation seeds the identical tree through the same call.
     // No member roster — that's later work.
     await r.ensureTree({ io: { mkdir } });
-    // Seed identity.d/ beside the tree (operator 2026-07-26: "why an empty identity.d in
+    // Seed directives/ beside the tree (operator 2026-07-26: "why an empty identity.d in
     // namedrooms? fix, please.") — the SAME seedIdentityLayers the persona turn calls,
     // re-keyed on the Room instance it already abstracts both shapes for. 'egpt' (no
     // per-room personality concept exists yet) is exactly the default a conversation falls
-    // back to (def.personality ?? 'egpt'). No overwrite: a brand-new room's identity.d is
+    // back to (def.personality ?? 'egpt'). No overwrite: a brand-new room's directives/ is
     // already empty, so copy-if-missing is a plain seed here — and it's the same
     // never-clobber default every other seed path uses. Never throws by its own contract, so
     // a seed failure still leaves a created room rather than an error the operator can't act
-    // on — an empty identity.d is a smaller problem than a /rooms create that fails outright.
+    // on — an empty directives/ is a smaller problem than a /rooms create that fails outright.
     await seedIdentityLayers(r, 'egpt', { io: { mkdir, readFile, writeFile } });
     await send?.(ev.chatId, `room ${slug} created at ${rel}`);
   }
@@ -1677,10 +1677,10 @@ export function createCommands({
   }
 
   // /rooms <slug> delete [force] — remove a room folder outright. Irreversible: a room
-  // folder holds transcript.md, media/, files/, identity.d/, scripts/, transcripts/ — real
+  // folder holds transcript.md, media/, files/, directives/, scripts/, transcripts/ — real
   // content an operator (or a brain) put there. A room that is STILL JUST the seeded
   // skeleton (what /rooms create + seedIdentityLayers leave behind: the empty tree plus
-  // identity.d/'s seeded layers, nothing else) is removed outright; a room holding anything
+  // directives/'s seeded layers, nothing else) is removed outright; a room holding anything
   // more requires the explicit `force` token so the operator has to mean it.
   async function roomDelete(ev, slug, force) {
     // The contact ENTRY for this room stays in conv-state (there is no path to remove one,
@@ -1702,10 +1702,10 @@ export function createCommands({
 
   // What roomDelete refuses to discard silently: everything a Room can hold BEYOND the
   // seeded skeleton — read through Room's OWN getters (transcriptPath/mediaDir/filesDir/
-  // scriptsDir/transcriptsDir/identityDir), never a filename list re-derived here, so a
-  // room-core change can't drift this out of sync. identity.d/ is ALWAYS non-empty in a
-  // freshly-created room (seedIdentityLayers' copied-in layers) — only names beyond that
-  // seeded set (skeletonIdentityFiles, the SAME source seedIdentityLayers itself reads)
+  // scriptsDir/transcriptsDir/directivesDir), never a filename list re-derived here, so a
+  // room-core change can't drift this out of sync. directives/ is ALWAYS non-empty in a
+  // freshly-created room (seedIdentityLayers' copied-in shared layers) — only names beyond
+  // that seeded set (skeletonIdentityFiles, the SAME source seedIdentityLayers itself reads)
   // count as content someone added.
   async function roomContents(room) {
     const parts = [];
@@ -1716,10 +1716,10 @@ export function createCommands({
       if (names.length) parts.push(`${names.length} file${names.length === 1 ? '' : 's'} in ${basename(dir)}/`);
     }
     let idNames = [];
-    try { idNames = await readdir(room.identityDir); } catch { idNames = []; }
+    try { idNames = await readdir(room.directivesDir); } catch { idNames = []; }
     const skeleton = await skeletonIdentityFiles('egpt');
     const extra = idNames.filter((n) => !skeleton.has(n));
-    if (extra.length) parts.push(`${extra.length} extra file${extra.length === 1 ? '' : 's'} in identity.d/`);
+    if (extra.length) parts.push(`${extra.length} extra file${extra.length === 1 ? '' : 's'} in directives/`);
     return parts;
   }
 

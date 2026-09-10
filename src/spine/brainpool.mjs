@@ -361,7 +361,7 @@ export function createBrainPool({
   resolveScope = null,              // (being, surface, chatId) -> {surface, chatId}|null — THE IDENTITY SCOPE (src/spine/identity-scope.mjs, operator 2026-08-31). null — the default, and every caller that wires none — means every conversation is its own scope: the four keys below derive from exactly the inputs they derive from today, with no extra read.
   loadFeed = readIdentityFeed,      // (personality, config) -> the persona's full feed
   labelOf = () => '',               // (being) -> its DISPLAY NAME — THE resolver (boot.mjs labelOf: the agents-registry `name:`, NEVER the map key, c346d8e), the SAME function the sender and the transcript service are handed, so the card stamps the name the chat stamps. Fed to the kickoff as {{agent_name}} (feedConfig below). Default '' — an unwired caller (a test) renders that line AWAY rather than leaking a key into an identity card
-  seedLayers = seedIdentityLayers,  // (room, personality, {io}) -> copy the fed layers into <room>/identity.d
+  seedLayers = seedIdentityLayers,  // (room, personality, {io}) -> copy the SHARED fed layers into <room>/directives
   loadAutoLayer = readAutoModeLayer,// () -> the `mode: auto` operator-role instruction layer (appended to an auto conversation's kickoff)
   loadManifest = null,              // () -> e_identity.md fallback (default below)
   afterTurn = null,                 // ({key, sessionId, model, cwd, allowedTools}) — post-turn hook (auto-compaction)
@@ -751,14 +751,14 @@ export function createBrainPool({
       // copied on refresh thread") — that is how an edited template (10-actions.md learning
       // /ask) reaches a conversation seeded long ago; copy-if-missing alone never could. A
       // mid-thread turn keeps copy-if-missing so nothing is rewritten under a running E.
-      // Targets convDir, NOT cwd: a def that pins a workspace must not have identity.d
-      // written into it. EVERY agent gets its identity.d copied into its own conv folder,
-      // for local file-tool consult — and since 2026-08-28 that same identity also reaches
-      // its live prompt on a fresh thread (see wrapFresh below), so the two no longer
-      // disagree.
+      // Targets convDir, NOT cwd: a def that pins a workspace must not have directives/
+      // written into it. EVERY agent gets the SHARED layers copied into its own conv folder,
+      // for local file-tool consult. Its IDENTITY is not among them (operator 2026-09-10) —
+      // that reaches the model in context, at kickoff and on compaction (see wrapFresh
+      // below), which is the whole reason the folder is no longer called identity.d.
       // Best-effort by contract (seedIdentityLayers never throws) — never breaks a turn.
       // Room.forChat, not slugDir: seedIdentityLayers is keyed on the Room instance now (a
-      // conversation IS a Room), so its own ensureTree/identityDir resolve off convDir too.
+      // conversation IS a Room), so its own ensureTree/directivesDir resolve off convDir too.
       await seedLayers(Room.forChat(scope.surface, slug), personality, { io, overwrite: fresh });
 
       const key = `${being}:${engine}:${scope.surface}:${slug}`;

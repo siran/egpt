@@ -132,7 +132,14 @@ export class Room {
   get transcriptPath() { return join(this.baseDir(), 'transcript.md'); }
   get mediaDir()       { return join(this.baseDir(), 'media'); }           // per-room downloads (C2)
   get filesDir()       { return join(this.baseDir(), 'files'); }           // operator /inject — the shared shelf
-  get identityDir()    { return join(this.baseDir(), 'identity.d'); }      // NN-*.md fed to the room's brain(s)
+  // The SHARED directive layers (NN-*.md: actions, pointers, rules) copied here for local
+  // consult by a brain confined to this folder. RENAMED from identity.d/ on 2026-09-10
+  // (operator: "models get fed their identity in the beginning and on compaction, but the
+  // file is not placed in identity.d. that folder needs to change name. directives/ ?") —
+  // the personality layer is FED in context and never written here, so the old name
+  // described a file that was not in the folder. ONE folder per room, not one per agent:
+  // with the only per-agent layer gone from disk there is nothing left to split.
+  get directivesDir()  { return join(this.baseDir(), 'directives'); }      // NN-*.md the room's brain(s) can re-read
   get scriptsDir()     { return join(this.baseDir(), 'scripts'); }         // *.x.md TEXTECUTABLES the room's brain(s) can be asked to carry out
   get transcriptsDir() { return join(this.baseDir(), 'transcripts'); }     // finished threads: transcript.md is archived here as <thread_id>.md when the thread changes
 
@@ -157,7 +164,7 @@ export class Room {
   // eagerly; a card naming a folder nothing creates is the ./transcripts/ dead-end of
   // 2026-07-25.
   treeDirs() {
-    return [this.baseDir(), this.mediaDir, this.filesDir, this.identityDir, this.scriptsDir, this.transcriptsDir];
+    return [this.baseDir(), this.mediaDir, this.filesDir, this.directivesDir, this.scriptsDir, this.transcriptsDir];
   }
 
   // Create the tree. Idempotent (mkdir -p on every call). `io.mkdir` is the seam both

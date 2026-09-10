@@ -298,11 +298,11 @@ describe('/rooms <slug> members — a real, genuinely empty room still renders i
 // Defect 2 (live incident 2026-08-07): create/join/leave/members was the whole vocabulary —
 // there was no way to remove a NamedRoom short of deleting the folder by hand. /rooms <slug>
 // delete fills that gap: a room that's STILL JUST the seeded skeleton (the empty tree plus
-// identity.d/'s seeded layers — exactly what /rooms create + seedIdentityLayers leave behind)
+// directives/'s seeded layers — exactly what /rooms create + seedIdentityLayers leave behind)
 // is removed outright; a room holding anything more REFUSES and names what's there, requiring
 // an explicit `delete force` to proceed.
 describe('/rooms <slug> delete — remove a room, refusing when it holds real content', () => {
-  // Builds a room exactly the way /rooms create does: the tree + the seeded identity.d/
+  // Builds a room exactly the way /rooms create does: the tree + the seeded directives/
   // layers — so "still just the skeleton" is tested against the SAME shape the creator
   // produces, not a hand-picked filename list.
   async function freshRoom(namedRoom, slug) {

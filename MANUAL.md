@@ -120,7 +120,7 @@ Narrower than `reset`, on purpose. `/agents <handle>|all restart` clears
 **only** that being's `threadId` (a merge, not a wipe) — `mode`,
 `access_level`, and every other field on the being's registry block are left
 exactly as they were. The conversation folder itself (`transcript.md`,
-`media/`, `files/`, `identity.d/`) is **never** archived or touched — this is
+`media/`, `files/`, `directives/`) is **never** archived or touched — this is
 the same thing that already happens today if you clear `threadId` by hand.
 
 The command's own job stops there: it does not roll the transcript or reseed

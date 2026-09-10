@@ -3,10 +3,11 @@
 // upsert + migration all run in-memory.
 
 import { describe, it, expect } from 'vitest';
-import { mkdtemp, rm, writeFile, readFile, mkdir } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, readFile, readdir, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { join, dirname, basename } from 'node:path';
 import * as YAML from 'yaml';
 import { EGPT_HOME } from '../src/egpt-home.mjs';
 import { Room } from '../src/room-core.mjs';
@@ -39,6 +40,9 @@ import {
   rollTranscript,
   stampThreadId,
   seedIdentityLayers,
+  skeletonIdentityFiles,
+  readIdentityFeed,
+  fillCardPlaceholders,
   isPlaceholderSlug,
   patchContact,
   recordThread,
@@ -1309,6 +1313,80 @@ describe('seedIdentityLayers — a refresh re-copies the room template layers', 
     const actions = Object.entries(s.wrote).find(([p]) => p.endsWith('10-actions.md'))[1];
     expect(actions).not.toBe('AN OLD COPY');
     expect(actions.trim()).not.toBe('');
+  });
+});
+
+// THE SPLIT (operator 2026-09-10, verbatim): "models get fed their identity in the beginning
+// and on compaction, but the file is not placed in identity.d. that folder needs to change
+// name. directives/ ?"
+//
+//   FED in context  — the WHOLE ordered layer set, personality in the 00-identity slot
+//                     included. Unchanged: that is readIdentityFeed's job.
+//   WRITTEN to disk — only the SHARED layers (10-actions / 30-pointers / 40-rules), into
+//                     <conv>/directives/. The identity was NEVER written there in practice
+//                     (it is fed, and re-fed on compaction), so a file claiming to be "who I
+//                     am here" was a copy nothing kept current.
+//
+// Because the only per-agent layer is gone from disk, directives/ stays ONE folder per
+// conversation — no per-agent subfolders (considered and rejected on exactly those grounds).
+// NO MIGRATION: an existing conversation keeps its identity.d/ untouched; new and reset ones
+// get directives/.
+const SHIPPED_ROOM = join(dirname(fileURLToPath(import.meta.url)), '..', 'config', 'skeletons', 'room');
+// A config that RESOLVES every {{…}} the room template uses, so the feed lock below compares
+// WHOLE cards instead of silently dropping their unresolved lines (fillCardPlaceholders
+// deletes a line whose placeholder this node has not configured).
+const FEED_CFG = {
+  agent_name: 'Fixture', node_name: 'kg',
+  chrome: { bin: 'C:/fixture/chrome.exe', profile_dir: 'C:/fixture/profile' },
+};
+
+describe('directives/ — the shared layers are FILED, the identity is only FED', () => {
+  const SURFACE = 'whatsapp', SLUG = 'directives-fixture';
+  // Nothing seeded yet: every readFile MISSES, so copy-if-missing writes every layer it means to.
+  const fresh = () => {
+    const wrote = {};
+    return { wrote, io: {
+      mkdir: async () => {},
+      readFile: async () => { throw new Error('ENOENT'); },
+      writeFile: async (p, d) => { wrote[p] = d; },
+    } };
+  };
+
+  it('a fresh seed writes into <conv>/directives/ — the folder is no longer identity.d/', async () => {
+    const s = fresh();
+    const room = Room.forChat(SURFACE, SLUG);
+    expect((await seedIdentityLayers(room, 'egpt', { io: s.io })).length).toBeGreaterThan(0);
+    const dirs = [...new Set(Object.keys(s.wrote).map((p) => dirname(p)))];
+    expect(dirs).toEqual([join(room.baseDir(), 'directives')]);
+    expect(room.directivesDir).toBe(join(room.baseDir(), 'directives'));
+  });
+
+  it('it writes EXACTLY the shared layers — no identity file lands on disk', async () => {
+    const s = fresh();
+    const wrote = await seedIdentityLayers(Room.forChat(SURFACE, SLUG), 'egpt', { io: s.io });
+    // DERIVED, not hand-kept: skeletonIdentityFiles is what /rooms delete calls "just the
+    // skeleton", and it must name the same set the seeder actually writes.
+    expect(new Set(wrote)).toEqual(await skeletonIdentityFiles('egpt'));
+    expect(wrote).toContain('10-actions.md');
+    expect(wrote).toContain('30-pointers.md');
+    expect(wrote).toContain('40-rules.md');
+    expect(wrote).not.toContain('00-identity.md');
+    expect(Object.keys(s.wrote).map((p) => basename(p))).not.toContain('00-identity.md');
+  });
+
+  // THE OTHER HALF, and the lock that the split changed nothing about the feed: the
+  // in-context bundle is still EVERY numbered layer, in numeric order, personality first.
+  it('the FEED is unchanged — every layer in numeric order, the personality still leading', async () => {
+    const names = (await readdir(SHIPPED_ROOM))
+      .filter((n) => /^\d+-.+\.md$/i.test(n))
+      .sort((a, b) => (parseInt(a, 10) - parseInt(b, 10)) || a.localeCompare(b));
+    expect(names[0]).toBe('00-identity.md');           // the personality slot still LEADS the feed
+    const bodies = await Promise.all(names.map((n) => readFile(join(SHIPPED_ROOM, n), 'utf8')));
+    const expected = fillCardPlaceholders(bodies.map((t) => t.trim()).filter(Boolean).join('\n\n'), FEED_CFG);
+    const feed = await readIdentityFeed('egpt', FEED_CFG);
+    expect(feed).toBe(expected);
+    // …and the personality's own text really is in there, at the FRONT of the bundle.
+    expect(feed.startsWith(fillCardPlaceholders(bodies[0], FEED_CFG).trim())).toBe(true);
   });
 });
 

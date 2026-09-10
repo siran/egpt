@@ -182,7 +182,7 @@ describe('an operator-named room after the move — ONE folder, ONE roster, ONE 
   it('the whole tree follows the new baseDir', () => {
     for (const [getter, leaf] of Object.entries({
       transcriptPath: 'transcript.md', mediaDir: 'media', filesDir: 'files',
-      identityDir: 'identity.d', scriptsDir: 'scripts', transcriptsDir: 'transcripts',
+      directivesDir: 'directives', scriptsDir: 'scripts', transcriptsDir: 'transcripts',
     })) expect(acim[getter]).toBe(join(EGPT_HOME, 'rooms', NAME, leaf));
   });
 });

@@ -37,7 +37,7 @@ const CONV = join(HOME, 'conversations', SURFACE, SLUG);
 // A directory in NEITHER class is a pointer to nothing. `transcripts/` — the original offender
 // — joined SEEDED_NOW on 2026-07-26: it is part of the tree now (Room.treeDirs), which is what
 // let the card name it again, and line 72 below still checks that against DISK.
-const SEEDED_NOW = ['identity.d', 'scripts', 'media', 'transcripts'];
+const SEEDED_NOW = ['directives', 'scripts', 'media', 'transcripts'];
 const ON_DEMAND = [];
 
 let seeded;
@@ -47,7 +47,7 @@ beforeAll(async () => {
   const { seedIdentityLayers } = await import('../src/conversations-state.mjs');
   const { Room } = await import('../src/room-core.mjs');
   await seedIdentityLayers(Room.forChat(SURFACE, SLUG), 'egpt');
-  seeded = await fs.readFile(join(CONV, 'identity.d', '30-pointers.md'), 'utf8');
+  seeded = await fs.readFile(join(CONV, 'directives', '30-pointers.md'), 'utf8');
 });
 
 afterAll(async () => { await fs.rm(HOME, { recursive: true, force: true }); });

@@ -251,10 +251,10 @@ describe('/agents reset <handle>|all — archive + registry wipe + reseed, one s
       expect(mkdirs).toContain(archiveRoot);   // the flat archive/ root is mkdir'd before the rename
 
       // the fresh folder gets ensureTree + seedIdentityLayers at the SAME (original) baseDir
-      for (const dir of [room.baseDir(), room.mediaDir, room.filesDir, room.identityDir, room.scriptsDir, room.transcriptsDir]) {
+      for (const dir of [room.baseDir(), room.mediaDir, room.filesDir, room.directivesDir, room.scriptsDir, room.transcriptsDir]) {
         expect(mkdirs).toContain(dir);
       }
-      expect(Object.keys(files).some((p) => p.startsWith(room.identityDir))).toBe(true);
+      expect(Object.keys(files).some((p) => p.startsWith(room.directivesDir))).toBe(true);
 
       expect(sent).toHaveLength(1);
       expect(sent[0].text).toMatch(/reset/);
@@ -559,7 +559,7 @@ describe('/agents reset <handle>|all — archive + registry wipe + reseed, one s
 // decided directly against reset's archive-and-wipe): clears ONLY the target being(s)'
 // threadId via patchBeing (a merge, never deleteBeing) — mode/access_level and every other
 // field on the block survive, and the conversation folder (transcript.md, media/, files/,
-// identity.d/) is never archived or otherwise touched. Matches exactly what already happens
+// directives/) is never archived or otherwise touched. Matches exactly what already happens
 // today when an operator manually clears threadId by hand. Transcript rolling + identity
 // reseeding are NOT triggered synchronously here — they already happen lazily, on the
 // being's NEXT real turn, via brainpool.mjs's own `fresh = !sessionId` gate. No evictWarm()
@@ -1691,7 +1691,7 @@ describe('boot picks the launcher by session (source lock — the negative path 
 });
 
 // /rooms create <name> — the FIRST wired named-room create path (Phase 2). A Room IS a
-// folder: `create` makes the standard tree (baseDir + media/files/identity.d/scripts + a minimal
+// folder: `create` makes the standard tree (baseDir + media/files/directives/scripts + a minimal
 // config.yaml) so the heartbeat/transcription loaders enumerate rooms/<slug>/. All
 // fs is routed through the commands io seam, so these run fully in-memory (mkdir recorded,
 // writeFile captured) and never touch a real profile. No member roster yet (later work).
@@ -1712,7 +1712,7 @@ describe('/rooms create <name>', () => {
     await cmds.run({ ...self, body: '/rooms create foo' });
     const r = Room.forChat('room', 'foo');
     // the standard tree dirs were created …
-    for (const dir of [r.baseDir(), r.mediaDir, r.filesDir, r.identityDir, r.scriptsDir]) expect(mkdirs).toContain(dir);
+    for (const dir of [r.baseDir(), r.mediaDir, r.filesDir, r.directivesDir, r.scriptsDir]) expect(mkdirs).toContain(dir);
     // … and NO config file is written into the room folder: the room rung lives
     // in config/rooms.yaml now, and a room with no row resolves to {}.
     expect(Object.keys(files).some((f) => f.endsWith('config.yaml'))).toBe(false);

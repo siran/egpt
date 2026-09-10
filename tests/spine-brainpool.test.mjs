@@ -102,7 +102,7 @@ function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, load
     loadFeed: loadFeed ?? (async () => ''),        // default: no folder feed
     ...(labelOf ? { labelOf } : {}),               // being -> display name, fed to the card as {{agent_name}} (default: '' — the line drops)
     loadManifest: loadManifest ?? (async () => ''),// default: no manifest → raw line (focus on warm logic)
-    ...(seedLayers ? { seedLayers } : {}),         // the identity.d copy (default: the real seeder)
+    ...(seedLayers ? { seedLayers } : {}),         // the directives/ copy (default: the real seeder)
     ...(loadAutoLayer ? { loadAutoLayer } : {}),   // the mode:auto operator-role layer (default: real file)
     ...(brains ? { brains } : {}),                 // omit → falls back to a bare ccode def
     ...(afterTurn ? { afterTurn } : {}),

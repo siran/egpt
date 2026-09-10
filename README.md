@@ -102,7 +102,7 @@ answered by the persona:
                               target (slug/name fragment or @jid)
 /agents[=<slug>] <handle>|all reset
                               BIG: archive this being's whole conversation folder
-                              aside (transcript.md, media/, files/, identity.d/ —
+                              aside (transcript.md, media/, files/, directives/ —
                               everything), wipe ITS registry block (mode,
                               threadId, all of it — a sibling's own state
                               survives untouched) EXCEPT access_level and

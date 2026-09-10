@@ -87,15 +87,17 @@ describe('ONE owner of the Room tree — both creation paths make the SAME tree'
     });
     await cmds.run({ chatId: '!self', surface: SURFACE, body: `/rooms create ${ROOM_NAME}` });
     // '' is the base folder; the rest are the dir getters room-core.mjs declares.
-    expect(treeOf(named.mkdirs, ROOM())).toEqual(['', 'files', 'identity.d', 'media', 'scripts', 'transcripts']);
+    expect(treeOf(named.mkdirs, ROOM())).toEqual(['', 'directives', 'files', 'media', 'scripts', 'transcripts']);
   });
 
   // REPRODUCE-FIRST (operator 2026-07-26: "why an empty identity.d in namedrooms? fix,
   // please."): the tree existing is not the same as it being SEEDED. /rooms create must
-  // populate identity.d/ with the room template's NN-*.md layers, exactly like a
-  // conversation's turn-boundary seeding does — else both pointer cards tell a room's
-  // brain to read ./identity.d/ and find nothing there.
-  it('/rooms create SEEDS identity.d/ with the room template layers — not just an empty folder', async () => {
+  // populate directives/ with the room template's SHARED NN-*.md layers, exactly like a
+  // conversation's turn-boundary seeding does — else the pointers card tells a room's
+  // brain to read ./directives/ and it finds nothing there.
+  // 00-identity.md is NOT among them since 2026-09-10: the personality is fed in context,
+  // never filed (see conversations-state._sharedLayers).
+  it('/rooms create SEEDS directives/ with the SHARED room template layers — not just an empty folder', async () => {
     const named = captureIo();
     const cmds = createCommands({
       getConfig: () => ({ whatsapp: { chat_id: '!self' } }),
@@ -107,12 +109,12 @@ describe('ONE owner of the Room tree — both creation paths make the SAME tree'
 
     const room = ROOM();
     const layerNames = Object.keys(named.writes)
-      .map((p) => relative(room.identityDir, p))
+      .map((p) => relative(room.directivesDir, p))
       .filter((rel) => rel && !rel.startsWith('..'))
       .sort();
-    expect(layerNames).toEqual(['00-identity.md', '10-actions.md', '30-pointers.md', '40-rules.md']);
+    expect(layerNames).toEqual(['10-actions.md', '30-pointers.md', '40-rules.md']);
     for (const [p, body] of Object.entries(named.writes)) {
-      if (relative(room.identityDir, p).startsWith('..')) continue;
+      if (relative(room.directivesDir, p).startsWith('..')) continue;
       expect(body.trim()).not.toBe('');
     }
   });

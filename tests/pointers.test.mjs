@@ -4,7 +4,7 @@
 // the tests here guarded a corpse while the live card rotted. src/pointers.mjs was deleted
 // 2026-07-25 and this file now guards the surviving card.
 //
-// WHAT ROTS: the card is fed at kickoff AND copied to <conv>/identity.d/30-pointers.md, and
+// WHAT ROTS: the card is fed at kickoff AND copied to <conv>/directives/30-pointers.md, and
 // E reads it while confined to its conversation folder. So every `./path` it names must be a
 // path a conversation folder ACTUALLY has. It listed `./transcripts/` — a directory nothing
 // in the codebase has ever created — sending E to a dead end.
@@ -27,8 +27,15 @@ const REAL_PATHS = new Set([
 ]);
 
 describe('the pointers card (config/skeletons/room/30-pointers.md)', () => {
-  it('points at ./identity.d/ — the folder the layers are actually seeded into', () => {
-    expect(CARD).toContain('./identity.d/');
+  // 2026-09-10: the folder is `directives/`, and the identity is NOT in it — it is fed in
+  // context (operator: "models get fed their identity in the beginning and on compaction, but
+  // the file is not placed in identity.d. that folder needs to change name. directives/ ?").
+  // The card must name the folder that exists and describe what is really in it; the old
+  // "who I am here" gloss became a lie the moment the identity stopped being written.
+  it('points at ./directives/ — the folder the layers are actually seeded into', () => {
+    expect(CARD).toContain('./directives/');
+    expect(CARD).not.toContain('identity.d');
+    expect(CARD).not.toMatch(/who I am here/);
   });
 
   // Operator 2026-07-26: "an *.x.md goes in the scripts/ folder of a Room, so I can tell E,

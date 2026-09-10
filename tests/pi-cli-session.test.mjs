@@ -212,7 +212,7 @@ describe('pi cli session (rpc mode)', () => {
 
   it('forwards eGPT persona + action vocabulary as the system prompt', () => {
     // Without it pi has no idea it is in a chat: it invented an upload_image
-    // API rather than using identity.d's /media action.
+    // API rather than using the 10-actions layer's /media action.
     const proc = fakePi();
     const spawn = spawnFake(proc);
     createPiCliSession({ spawn, appendSystemPrompt: 'I am eGPT. /media <path> sends a file.' }).turn('x');

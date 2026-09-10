@@ -2,7 +2,7 @@
 
   ./transcript.md   this thread
   ./transcripts/    older threads
-  ./identity.d/     who I am here
+  ./directives/     my actions, pointers, rules
   ./media/          files from this chat
   ./scripts/        *.x.md textecutables — when asked to DO something, look
                     here first and carry out the steps with my own tools

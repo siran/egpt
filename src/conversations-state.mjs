@@ -87,8 +87,10 @@ function assertPathSafeSurface(surface, fnName) {
 //     transcript.md                ← per-thread play-script log
 //     daily-YYYY-MM-DD.md (opt)    ← optional daily summaries written by @e
 //     media/                       ← per-chat media downloads
-//     identity.d/NN-*.md           ← copies of the room template layers E was fed, so a
-//                                    cwd-confined E can re-consult them (seedIdentityLayers)
+//     directives/NN-*.md           ← copies of the SHARED room template layers E was fed
+//                                    (actions/pointers/rules — never the identity, which is
+//                                    fed in context only), so a cwd-confined E can re-consult
+//                                    them (seedIdentityLayers)
 //
 // Surface separation lets WA / TG / Signal / shell each be backed up,
 // wiped, or moved without touching the others. Pre-2026-05-21 the
@@ -1423,6 +1425,13 @@ function _entryByJidOrSlug(state, surface, jidOrSlug) {
   return _findByslug(state, surface, jidOrSlug)?.entry ?? null;
 }
 
+// DEAD PAIR — identityDir/readIdentityDir have had NO callers since the old spine died, and
+// they are STALE as of 2026-09-10: the live folder is `<slug>/directives/` (Room.directivesDir,
+// room-core.mjs), holds only the SHARED layers, and is written by seedIdentityLayers. These two
+// still name the pre-rename `identity.d/`, which now exists only in conversations seeded before
+// the rename (no migration, by operator ruling). Left in place deliberately — deleting dead code
+// was not part of that change — but do NOT reach for them: they are not the live path.
+//
 // <slug>/identity.d/ — the ordered set of files fed to conversation-e. Files
 // sort lexically; numeric prefixes give order + insertion gaps so the operator
 // (or E) can drop extras (e.g. 30-project.md) and they're fed too — no schema.
@@ -1537,12 +1546,19 @@ async function _identityLayers(name) {
   return layers;
 }
 
-// Seed the room's identity layers into a Room's OWN folder — a chat conversation or an
-// operator-named room alike, since both ARE Rooms (operator 2026-07-25: "they
+// The subset of those layers that is WRITTEN to a room's directives/ — the SHARED ones, i.e.
+// everything except the 00-identity SLOT (operator 2026-09-10: the identity is fed in
+// context, at kickoff and on compaction, and is not a file in that folder). The FEED keeps
+// every layer; this narrows only the copy. ONE definition, shared by the seeder and by
+// skeletonIdentityFiles, so "what gets written" and "what counts as the skeleton" cannot drift.
+const _sharedLayers = (layers) => layers.filter(({ file }) => file !== IDENTITY_SLOT);
+
+// Seed the room's SHARED directive layers into a Room's OWN folder — a chat conversation or
+// an operator-named room alike, since both ARE Rooms (operator 2026-07-25: "they
 // all get to model at the beginning, but should also be copied for local consult, since by
 // default conversation-e has only access to it's folder"). A brain confined to a Room's own
-// tree can't read a layer that was never copied there — and both pointer cards tell it to
-// read ./identity.d/.
+// tree can't read a layer that was never copied there — and the pointers card tells it to
+// read ./directives/.
 //
 // RE-KEYED ON THE ROOM (operator 2026-07-26: "why an empty identity.d in namedrooms? fix,
 // please.") — this used to take (surface, slug) and could only ever resolve
@@ -1550,21 +1566,33 @@ async function _identityLayers(name) {
 // The caller now hands in the Room instance it already has (from the persona turn, or from
 // /rooms create), and every path below reads off IT.
 //
-// DESTINATION `<room>/identity.d/<NN-name>.md`: the path both cards name and the one
-// Room.identityDir already defines ("NN-*.md fed to the room's brain(s)"). ALL layers are
-// copied, 10-actions included — the retired installIdentity deliberately skipped it ("the
-// limbs live only in-context"); the operator's instruction supersedes that.
+// DESTINATION `<room>/directives/<NN-name>.md`: the path the pointers card names and the one
+// Room.directivesDir defines. The folder was `identity.d/` until 2026-09-10, when the operator
+// ruled the name off ("models get fed their identity in the beginning and on compaction, but
+// the file is not placed in identity.d. that folder needs to change name. directives/ ?").
+//
+// THE IDENTITY SLOT IS NOT WRITTEN. `_identityLayers` still builds the WHOLE ordered set —
+// that is what readIdentityFeed puts in the model's context, personality first, on kickoff
+// and on compaction — but only the SHARED layers (10-actions / 30-pointers / 40-rules) are
+// filed here. A copy of the personality on disk was never the source of anything; the source
+// is config/agents/identities/<name>.md. 10-actions IS filed — the retired installIdentity
+// deliberately skipped it ("the limbs live only in-context") and the operator's 2026-07-25
+// instruction superseded that. Because nothing per-agent lands here any more, directives/ is
+// ONE folder per room, never one per agent.
+//
+// NO MIGRATION (operator 2026-09-10): a conversation seeded before today keeps its
+// identity.d/ on disk, untouched — no shim, no dual read. New and reset rooms get directives/.
 //
 // COPY-IF-MISSING by default, the house skeleton convention (seed.mjs). `overwrite` (the
 // brainpool passes it on a REFRESH — a thread being instanced) re-copies every layer instead:
 // operator 2026-07-26, "all skeleton files are copied on refresh thread". That is the
 // capabilities refresher — an edited template (10-actions.md learning /ask) could otherwise
 // never reach a conversation that was seeded once, months ago. THE TRADE: a hand-edit to
-// <room>/identity.d/ is discarded on the next refresh. Intended — these are consult COPIES;
-// the sources are the room template and config/agents/identities/<name>.md. /rooms create passes no
-// overwrite (copy-if-missing): a brand-new room's identity.d is already empty, so there is
-// nothing to refresh — and copy-if-missing is the same never-clobber default every other
-// seed path uses, in case creation is ever retried against a room that already has layers.
+// <room>/directives/ is discarded on the next refresh. Intended — these are consult COPIES;
+// the source is the room template. /rooms create passes no overwrite (copy-if-missing): a
+// brand-new room's directives/ is already empty, so there is nothing to refresh — and
+// copy-if-missing is the same never-clobber default every other seed path uses, in case
+// creation is ever retried against a room that already has layers.
 //
 // NEVER throws — a seeding hiccup must not break a turn (or a /rooms create). Returns the
 // filenames it wrote.
@@ -1574,9 +1602,9 @@ export async function seedIdentityLayers(room, name, { io = {}, overwrite = fals
   const mkdirFn = io.mkdir ?? mkdir;
   const wrote = [];
   try {
-    const layers = await _identityLayers(name);
-    const dir = room.identityDir;
-    // The Room's WHOLE tree — identity.d/ AND media/ files/ scripts/ — through the
+    const layers = _sharedLayers(await _identityLayers(name));
+    const dir = room.directivesDir;
+    // The Room's WHOLE tree — directives/ AND media/ files/ scripts/ — through the
     // abstraction's own ensureTree, the SAME call /rooms create makes (operator 2026-07-26:
     // "the work is for the Room abstraction, it is then for free in a room or conversation
     // on any network"). Before this the list was duplicated here and had drifted from /rooms
@@ -1602,13 +1630,14 @@ export async function seedIdentityLayers(room, name, { io = {}, overwrite = fals
   return wrote;
 }
 
-// The identity.d/ FILENAMES a fresh seedIdentityLayers(room, name) would write — i.e. what
-// "just the seeded skeleton" means for a room's identity.d/, straight from the same source
-// seedIdentityLayers reads (_identityLayers), never a hand-kept list that could drift from
-// it. Used by /rooms <slug> delete (spine/commands.mjs) to tell "still just the skeleton"
-// apart from "something was added" without re-deriving the skeleton's contents itself.
+// The directives/ FILENAMES a fresh seedIdentityLayers(room, name) would write — i.e. what
+// "just the seeded skeleton" means for a room's directives/, straight from the same source
+// seedIdentityLayers reads (_identityLayers, narrowed by the SAME _sharedLayers filter),
+// never a hand-kept list that could drift from it. Used by /rooms <slug> delete
+// (spine/commands.mjs) to tell "still just the skeleton" apart from "something was added"
+// without re-deriving the skeleton's contents itself.
 export async function skeletonIdentityFiles(name = 'egpt') {
-  const layers = await _identityLayers(name);
+  const layers = _sharedLayers(await _identityLayers(name));
   return new Set(layers.filter(({ text }) => text.trim()).map(({ file }) => file));
 }
 
@@ -1653,7 +1682,7 @@ export async function readAutoModeLayer() {
   return (await _readFileOr(preferNewer(profile, shipped))).trim();
 }
 
-// Full-install announcement: the whole identity.d bundle (manifest +
+// Full-install announcement: the whole LAYER bundle (manifest +
 // personality + rules + pointers + any extras), re-grounding the model.
 export function buildIdentityAnnouncement(personalityName, feed) {
   // Feed ONLY the identity text — no "Reboot complete / Installing persona" preamble
@@ -1662,7 +1691,7 @@ export function buildIdentityAnnouncement(personalityName, feed) {
 }
 
 // Legacy frame kept for slash/egpt.mjs (the cross-chat @egpt variant) until it
-// migrates to identity.d. Embeds the manifest first when present.
+// migrates to the layer feed. Embeds the manifest first when present.
 export function buildRebootAnnouncement(personalityName, bundle) {
   const { manifest = '', identity = '', rules = '', pointers = '' } = bundle;
   return [

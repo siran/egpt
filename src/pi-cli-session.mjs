@@ -183,7 +183,7 @@ export function createPiCliSession(options = {}) {
     // design -- a sandboxed turn must not write into the operator's config. The
     // conversation folder is the one place it holds Modify, so point pi there.
     // Without this: EPERM mkdir on .../agent/sessions/... and pi exits 1.
-    // -nc: no AGENTS.md / CLAUDE.md discovery. A being's brief is its identity.d
+    // -nc: no AGENTS.md / CLAUDE.md discovery. A being's brief is its room-template
     // layers, delivered below via --append-system-prompt; letting pi also scoop up
     // whatever AGENTS.md happens to sit in the conversation folder or above it
     // just spends prefill on someone else's instructions (operator 2026-08-27).
@@ -203,7 +203,7 @@ export function createPiCliSession(options = {}) {
     else if (asked.length) {
       onLog(`pi-cli: allowed_tools is not a pi tool list (${options.allowedTools.join(',')}) — leaving pi's defaults enabled`);
     }
-    // eGPT's persona + node identity + the ACTION vocabulary from identity.d
+    // eGPT's persona + node identity + the ACTION vocabulary from 10-actions
     // (/media, /react, /reply ...). Without this pi runs on its stock coding
     // prompt with no idea it is in a chat at all -- asked to send an image it
     // INVENTED an `upload_image` API and narrated calling it, because nothing

@@ -26,7 +26,7 @@
 // process needed (same mechanism the existing spine-v1-boot / beeper-log-path tests use).
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { promises as fs } from 'node:fs';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import os from 'node:os';
 import * as YAML from 'yaml';
@@ -57,7 +57,7 @@ const P = {
   ingestDir:     join(HOME, 'state', 'ingest'),
   oldIngestDir:  join(HOME, 'ingest'),                    // the RETIRED location
   transcript:    join(HOME, 'conversations', 'whatsapp', SLUG, 'transcript.md'),
-  identityD:     join(HOME, 'conversations', 'whatsapp', SLUG, 'identity.d'),
+  directives:    join(HOME, 'conversations', 'whatsapp', SLUG, 'directives'),
   logsDir:       join(HOME, 'config', 'logs'),
 };
 
@@ -278,12 +278,25 @@ describe('GUARD 1 — boot reads the canonical layout (real constants, hermetic 
   //     conversation-e has only access to it's folder." The COPY half regressed on
   //     2026-07-15 (installIdentity's only caller died with the old spine), leaving E —
   //     which runs confineToDirs:[<conv>] — with nothing to consult after kickoff, while
-  //     BOTH pointer cards told it to read ./identity.d/. ALL layers land, 10-actions
+  //     the pointer card told it to read that folder. Every SHARED layer lands, 10-actions
   //     included (the old "limbs live only in-context" carve-out is superseded).
-  it('(g) every NN-*.md room layer is COPIED into <conv>/identity.d, not just fed', async () => {
+  //
+  //     2026-09-10 SPLIT (operator, verbatim): "models get fed their identity in the
+  //     beginning and on compaction, but the file is not placed in identity.d. that folder
+  //     needs to change name. directives/ ?" So the folder is `directives/` and the
+  //     00-identity SLOT is NOT written there — the personality reaches the model in
+  //     context (test (h) below still proves it is in the feed, leading it). No migration:
+  //     conversations seeded before today keep their identity.d/ untouched.
+  it('(g) every SHARED NN-*.md room layer is COPIED into <conv>/directives — but NOT the identity', async () => {
     for (const [file, body] of Object.entries(LAYERS)) {
-      expect(await fs.readFile(join(P.identityD, file), 'utf8')).toBe(body);
+      if (file === '00-identity.md') continue;
+      expect(await fs.readFile(join(P.directives, file), 'utf8')).toBe(body);
     }
+    expect(existsSync(join(P.directives, '00-identity.md'))).toBe(false);
+    expect((await fs.readdir(P.directives)).sort())
+      .toEqual(['10-actions.md', '30-pointers.md', '40-rules.md', '50-extra.md']);
+    // …and the OLD folder is not created beside it.
+    expect(existsSync(join(HOME, 'conversations', 'whatsapp', SLUG, 'identity.d'))).toBe(false);
   });
 
   // (h) ENUMERATED, not a hardcoded 00/10/30/40 quartet: `50-extra.md` exists only in the
@@ -294,6 +307,6 @@ describe('GUARD 1 — boot reads the canonical layout (real constants, hermetic 
       .map((s) => feed.indexOf(s));
     expect(idx.filter((i) => i < 0)).toEqual([]);           // every layer reached the feed
     expect(idx).toEqual([...idx].sort((a, b) => a - b));    // …in numeric-prefix order
-    expect((await fs.stat(join(P.identityD, '50-extra.md'))).isFile()).toBe(true);
+    expect((await fs.stat(join(P.directives, '50-extra.md'))).isFile()).toBe(true);
   });
 });
