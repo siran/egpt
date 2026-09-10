@@ -836,16 +836,55 @@ export async function boot({
     const a = agents()[String(being ?? '').toLowerCase()];
     return (a && typeof a === 'object' && a.agent_signature_close != null) ? a.agent_signature_close : (cfg.agent_signature_close ?? '');
   };
+  // Every CONNECTION declared under `beeper:`, in declaration order — the keys whose value is a
+  // BLOCK, so the `use:` selector (a bare string) is never one of them. Same predicate
+  // connectionBlock (below) uses to look one up, so any name this list yields is guaranteed to
+  // resolve to a block there.
+  const declaredConnections = (() => {
+    const b = cfg.beeper;
+    if (!b || typeof b !== 'object' || Array.isArray(b)) return [];
+    return Object.keys(b).filter((k) => b[k] && typeof b[k] === 'object');
+  })();
+  // THE NODE'S DEFAULT OUTBOUND CONNECTION — which connection an agent that names none of its own
+  // SPEAKS on. THE CONNECTION NAMES CARRY THE MEANING NOW (operator 2026-09-10): *"we dropped the
+  // `use:`, defaulting to primary for ingest and secondary for output when available"*, which
+  // encodes his older standing rule, *"primary doesn't speak if secondary is present. simple
+  // rule."* Until then this was `cfg.beeper?.use ?? null` and nothing else, so a `beeper:` block
+  // that declared connections but named none of them with `use:` resolved to NOTHING and fell
+  // through to the legacy beeper_token/env path — on a profile that sets neither (both live ones
+  // do not) that is a bridge with no token: deaf and mute, with only the limb's own generic "NO
+  // TOKEN" line to say why. Precedence, highest first:
+  //
+  //   (2) `beeper.use`  — BACK-COMPAT and returned VERBATIM, so a node that ships it (~/.egpt2,
+  //       node kg2) is byte-identical to before, right down to a `use:` naming a block that does
+  //       not exist still landing on the legacy path. An explicit operator statement also has to
+  //       beat an inferred default, or the inference could never be overridden.
+  //   (3) `secondary` — the mouth when it exists.
+  //   (4) `primary`   — which therefore speaks only when there is no secondary.
+  //   (5) the ONE connection, if exactly one is declared, WHATEVER it is named. Not a
+  //       convenience: INTENT.md requires a fresh clone to work on one account with no ceremony,
+  //       so a lone connection is unambiguous and must need neither a selector nor a blessed name.
+  //   (6) null ⇒ the legacy beeper_token / BEEPER_ACCESS_TOKEN path, unchanged.
+  //
+  // (1) is the per-agent pin below, which still beats all of this. Computed ONCE: the `beeper:`
+  // block cannot change while the process runs (there is no config watcher), and this is asked
+  // once per being on the bridge-construction path.
+  const defaultConnection = (() => {
+    const b = cfg.beeper;
+    if (!b || typeof b !== 'object' || Array.isArray(b)) return null;
+    if (b.use != null) return b.use;
+    if (declaredConnections.includes('secondary')) return 'secondary';
+    if (declaredConnections.includes('primary')) return 'primary';
+    if (declaredConnections.length === 1) return declaredConnections[0];
+    return null;
+  })();
   // Per-agent Beeper CONNECTION selection (operator 2026-08-30): names which connection (a key
   // under beeper:, resolved below by tokenFor) this agent's own outbound sends ride. Same
-  // resolver shape as bodyEmojiOf/labelOf/agentSignature*Of above. ABSENT ⇒ this node's existing
-  // single-connection resolution (beeper.use) — deliberately NOT the literal 'main': a
-  // `beeper: { main: {...} }` block with no `use` key falls through to beeper_token/env today
-  // (tokenFor, below), and an absent per-agent field must keep landing there too, never on a
-  // guessed 'main' entry.
+  // resolver shape as bodyEmojiOf/labelOf/agentSignature*Of above. ABSENT ⇒ this node's default
+  // connection, resolved just above.
   const connectionOf = (being) => {
     const a = agents()[String(being ?? '').toLowerCase()];
-    return (a && typeof a === 'object' && a.beeper_connection) ? a.beeper_connection : (cfg.beeper?.use ?? null);
+    return (a && typeof a === 'object' && a.beeper_connection) ? a.beeper_connection : defaultConnection;
   };
 
   // conv-state YAML IO — default to the real file, missing = empty state.
@@ -1242,6 +1281,20 @@ export async function boot({
     log.line?.(`[bridge] connection '${name}' → ${hits[0].url} — 200, this install answers to this connection's token`);
     return hits[0].url;
   };
+
+  // NOTHING RESOLVED, SAID OUT LOUD. A `beeper:` block that declares connections but selects none
+  // of them leaves this node on the legacy beeper_token / BEEPER_ACCESS_TOKEN path — which the
+  // live profiles do not set, so the bridge comes up INERT: it hears nothing, says nothing, and
+  // the only word about it is the limb's own "NO TOKEN" line, which names env vars rather than the
+  // config that actually decided it. Half-alive is worse than down (INTENT.md), so the reason is
+  // named here, once, before the first bridge is built. It BOOTS anyway, for the same reason the
+  // dead-endpoint fallback below does: refusing to start would take the node down over a config
+  // the operator can fix while it is running.
+  if ((declaredConnections.length || cfg.beeper?.use != null) && !connectionBlock(defaultConnection)) {
+    log.line?.(cfg.beeper?.use != null
+      ? `[bridge] beeper.use names '${cfg.beeper.use}' but there is no '${cfg.beeper.use}:' block under beeper: — NO connection resolved, so this node has no outbound of its own; falling back to beeper_token / BEEPER_ACCESS_TOKEN, and the bridge is inert if neither is set`
+      : `[bridge] beeper: declares ${declaredConnections.map((n) => `'${n}'`).join(', ')} but none is named 'secondary' or 'primary' and no 'use:' picks one — NO connection resolved, so this node has no outbound of its own; falling back to beeper_token / BEEPER_ACCESS_TOKEN, and the bridge is inert if neither is set`);
+  }
 
   // THE OBSERVATION. Runs ONCE per connection an agent actually rides, here, before any endpoint
   // is asked for.
