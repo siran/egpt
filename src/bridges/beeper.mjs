@@ -51,6 +51,7 @@
 import WebSocket from 'ws';
 import { transcribeAudioFile } from '../tools/transcribe.mjs';
 import { transcribeVoiceNote, voiceTranscriptBody, POSTS_BACK_DELAY_MS, ECHO_MARKER } from '../incoming-media.mjs';
+import { makeSerialByKey } from '../serial-by-key.mjs';
 import { htmlToMarkdown } from '../html-to-markdown.mjs';
 import { normalizeTokens, similarity } from '../text-similarity.mjs';
 import { makeWrapPersona } from './persona-wrap.mjs';
@@ -1500,6 +1501,20 @@ export async function startBeeperBridge(opts = {}) {
     catch (e) { onLog(`beeper: edit onIncoming threw — ${e?.message ?? e}`); }
   }
 
+  // TRANSCRIPTION IS OFF THE DISPATCH PATH (operator 2026-09-10: "a transcription in other
+  // channel shouldn't have any bearing on whether a model is prompted" / "a model can be
+  // prompted even though a transcription is running"). Dispatch used to be ONE global promise
+  // chain (`_processing`) with the transcribe awaited INSIDE it, so every chat on the node
+  // waited out every whisper run: measured 2026-09-09, twelve consecutive notes took 36s…281s
+  // and an operator's own text in the SAME chat was still uningested seven minutes later.
+  // The chain existed for exactly one reason — "a slow transcribe must not overlap the next" —
+  // so that reason moves HERE, onto the transcribe itself: ONE key, so whisper's single slot
+  // still runs one note at a time in arrival order, and nothing else waits behind it. The
+  // limiter is the repo's existing one (serial-by-key.mjs, whose own header describes this very
+  // use); no new queue, no second dispatch route. COST, accepted by the ruling: a text message
+  // no longer stays ordered behind an earlier voice note in its chat.
+  const _transcribing = makeSerialByKey();
+
   // --- dispatch one incoming message ---
   async function dispatchMessage(msg) {
     const chatID = msg.chatID;
@@ -1593,7 +1608,7 @@ export async function startBeeperBridge(opts = {}) {
         catch (e) { onLog(`beeper: audio-hash failed for echo plan [${info.title}] — falling back to msg.id (${e?.message ?? e})`); }
         const plan = echoPlan(audioHash ?? msg.id);
         const echoOn = plan.rank >= 1 && !tooOldForEcho;   // is an echo POSSIBLE at all for this note on this node?
-        const transcript = await transcribeVoiceNote({
+        const transcript = await _transcribing('whisper', () => transcribeVoiceNote({
           localPath: path, transcribe, audioCfg,
           // The SHARED wrap (persona-wrap.mjs) brackets the '👂 <transcript>' core with the bridge +
           // transcription layers — the same machinery a persona reply renders through (covers
@@ -1632,7 +1647,7 @@ export async function startBeeperBridge(opts = {}) {
           postsBackDelayMs: svc.postsBackDelayMs ?? postsBackDelayMs,
                     onLog: (m) => onLog(`beeper: ${m}`),
           meta: vmeta,
-        });
+        }));
         if (transcript) {
           // Mark the body AS audio (GENOME §4 / C7.6) so the model + reader can
           // tell a voice note arrived — not an ordinary message. Duration comes
@@ -1824,13 +1839,15 @@ export async function startBeeperBridge(opts = {}) {
             onLog(`beeper: 🔊 ack send FAILED to confirm ↩${replyToId} [${info.title}] — falling through to @e→E`);
           }
         }
-        // No transcript entry for the quoted id (voice OR text). Arrival transcription is SYNCHRONOUS
-        // (awaited at ~L1096) and its transcript.md write rides the fire-and-forget onIncoming, so by
-        // the time a human replies @e the line exists in all but a sub-second race. There is no clean
-        // seam to force/await that SAME pending arrival transcription from the bridge WITHOUT
-        // re-transcribing (which this rework exists to remove), so a miss falls through to normal
-        // @e→E. FOLLOW-UP: a transcription store keyed by message id (or awaiting the pending arrival)
-        // would close the race.
+        // No transcript entry for the quoted id (voice OR text). The arrival transcription is
+        // awaited inside dispatch (the voice branch above) and its transcript.md write rides the
+        // fire-and-forget onIncoming — but since 2026-09-10 this reply NO LONGER queues behind
+        // that transcription (see `_transcribing`), so the miss window is now as long as the note
+        // still being transcribed, not sub-second: reply @e to a note whisper is still chewing on
+        // and you land HERE. There is no clean seam to force/await that SAME pending arrival
+        // transcription from the bridge WITHOUT re-transcribing (which this rework exists to
+        // remove), so a miss falls through to normal @e→E. FOLLOW-UP: a transcription store keyed
+        // by message id (or awaiting the pending arrival) would close the race.
         onLog(`beeper: 👂 no voice-transcript entry for ↩${replyToId} [${info.title}] — falling through to @e→E`);
       }
     }
@@ -1878,12 +1895,13 @@ export async function startBeeperBridge(opts = {}) {
     };
     onLog(`beeper: incoming [${info.title}] ${msg.senderName}: ${JSON.stringify((text || '').slice(0, 60))} (atE=${st.atEAnywhere}${replyToBot ? ' replyToBot' : ''}${replyToId ? ` ↩${replyToId}` : ''}${isVoice ? ' voice' : ''})`);
     // Hand off to the host WITHOUT awaiting the reply turn. The host (spine) enqueues
-    // this message synchronously — so this dispatch chain's ORDER into the spine is
-    // preserved — and then owns per-conversation serialization, cross-conversation
-    // concurrency, and placeholder-on-arrival. Awaiting the turn here would chain
-    // every conversation's turn behind this transcription-ordering `_processing`
-    // chain (a mid-train mention's placeholder would not appear until the prior turn
-    // finished). The returned promise settles, never rejects; log any rejection.
+    // this message synchronously — so the order messages REACH here is the order the
+    // spine sees (dispatches now run concurrently, so that is arrival order only up to
+    // what each message's own lookups cost) — and then owns per-conversation
+    // serialization, cross-conversation concurrency, and placeholder-on-arrival.
+    // Awaiting the turn here would chain every conversation's turn behind this dispatch
+    // (a mid-train mention's placeholder would not appear until the prior turn finished).
+    // The returned promise settles, never rejects; log any rejection.
     try { Promise.resolve(onIncoming?.(text, from)).catch((e) => onLog(`beeper: onIncoming threw — ${e?.message ?? e}`)); }
     catch (e) { onLog(`beeper: onIncoming threw — ${e?.message ?? e}`); }
   }
@@ -1891,7 +1909,6 @@ export async function startBeeperBridge(opts = {}) {
   // --- WebSocket afferent (subscribe '*', handle message.upserted) ---
   let ws = null, _stopped = false, _wsReady = false, _reconnectTimer = null;
   let _reconnectMs = RECONNECT_MIN_MS;   // backs off to RECONNECT_MAX_MS while Beeper is down
-  let _processing = Promise.resolve();   // serialize dispatch (slow transcribe must not interleave)
 
   // --- THE EAR PROBE (operator 2026-07-07 / redesigned 2026-07-26; ROADMAP §3) -------
   // The full rationale — why an ACTIVE check, why the sender is OUT OF BAND (Telegram's own
@@ -1948,8 +1965,10 @@ export async function startBeeperBridge(opts = {}) {
           // (a null check otherwise) — it decides nothing about any other message, and the
           // message still rides on into dispatch exactly as it would have.
           _earProbe.heard(msg.text);
-          // serialize: chain dispatch so a 20s transcribe doesn't overlap the next
-          _processing = _processing.then(() => dispatchMessage(msg)).catch(e => onLog(`beeper: dispatch error — ${e?.message ?? e}`));
+          // Dispatch IMMEDIATELY — never behind another message's transcription (see
+          // `_transcribing` above dispatchMessage: the serialization that used to live here
+          // now sits on the transcribe itself). Errors are logged, never swallowed.
+          dispatchMessage(msg).catch(e => onLog(`beeper: dispatch error — ${e?.message ?? e}`));
         }
       }
       // chat.upserted → refresh cache (title/mute may change). Preserve the

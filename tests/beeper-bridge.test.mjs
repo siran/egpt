@@ -674,6 +674,73 @@ describe('beeper bridge', () => {
     expect(media[0].caption).toBe('fake transcript');          // sidecar caption = bare transcription (no marker)
   });
 
+  // A RUNNING TRANSCRIPTION MUST NOT HOLD THE EAR (operator 2026-09-10: "a transcription in
+  // other channel shouldn't have any bearing on whether a model is prompted" / "a model can be
+  // prompted even though a transcription is running").
+  //
+  // REPRODUCE-FIRST: dispatch used to be ONE global promise chain with the transcribe awaited
+  // inside it. Measured live 2026-09-09 — twelve consecutive notes at 36s…281s (the whisper
+  // remote timing out, then a local large-v3 fallback), ~18 minutes of blocked ingestion — and
+  // the operator's own '@e …' in the SAME chat was still uningested seven minutes later. This
+  // test hangs ONE transcription and then asserts that plain text, in that chat AND in another,
+  // still reaches the host; on the chained code neither text arrives and this times out.
+  it('a hanging transcription does not delay a text message (same chat or another)', async () => {
+    let release;
+    const hung = new Promise((r) => { release = r; });
+    let started = 0;
+    const { incoming } = await startBridge({
+      transcribe: async () => { started += 1; await hung; return 'fake transcript'; },
+    });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({
+      id: 'note-slow', text: null, type: 'VOICE',
+      attachments: [{ id: 'a-slow', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+    })] });
+    await waitFor(() => started === 1, 3000);   // the transcription is IN FLIGHT and will not finish
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'txt-same', text: '@e felix tiene razon?' })] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'txt-other', chatID: CHAT('chat-2'), text: '@e y aqui?' })] });
+    await waitFor(() => incoming.length === 2, 3000);
+    expect(incoming.map((i) => i.text).sort()).toEqual(['@e felix tiene razon?', '@e y aqui?']);
+    expect(incoming.every((i) => i.from.atEStart)).toBe(true);   // …and they arrive able to wake E
+    release();
+    await waitFor(() => incoming.length === 3, 3000);            // the note lands when ITS transcription finishes
+    expect(incoming[2].text).toBe('(voice transcription) fake transcript');
+  });
+
+  // The cap the old global chain gave for free must survive: whisper has ONE slot, so two notes
+  // arriving together are transcribed one at a time (in arrival order), never in parallel.
+  it('two voice notes are still transcribed one at a time', async () => {
+    let inFlight = 0, maxInFlight = 0;
+    const order = [];
+    const gates = new Map();
+    const { incoming } = await startBridge({
+      transcribe: async (p) => {
+        const name = String(p).includes('one') ? 'one' : 'two';
+        order.push(name);
+        inFlight += 1; maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((r) => gates.set(name, r));
+        inFlight -= 1;
+        return `transcript ${name}`;
+      },
+    });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({
+      id: 'note-one', text: null, type: 'VOICE',
+      attachments: [{ id: 'a-one', isVoiceNote: true, srcURL: 'file:///tmp/one.ogg' }],
+    })] });
+    await waitFor(() => order.length === 1, 3000);   // note one holds the slot
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({
+      id: 'note-two', chatID: CHAT('chat-2'), text: null, type: 'VOICE',
+      attachments: [{ id: 'a-two', isVoiceNote: true, srcURL: 'file:///tmp/two.ogg' }],
+    })] });
+    await new Promise((r) => setTimeout(r, 100));
+    expect(order).toEqual(['one']);                  // note two waits for the slot, in ANOTHER chat
+    gates.get('one')();
+    await waitFor(() => order.length === 2, 3000);
+    gates.get('two')();
+    await waitFor(() => incoming.length === 2, 3000);
+    expect(maxInFlight).toBe(1);
+    expect(order).toEqual(['one', 'two']);           // …and in arrival order
+  });
+
   // GENOME §4 / C7.6: a voice note's body is marked "(voice transcription, Ns)"
   // so the model can tell audio arrived — with the duration the transcriber reads
   // off the ffmpeg WAV (operator 2026-06-16, the morgan thread: Beeper omitted the
