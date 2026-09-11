@@ -405,7 +405,10 @@ describe('the outbound connection is resolved in exactly one place', () => {
       'through src/spine/sender.mjs makeOutbound instead, or the ack and the reply will disagree again',
     ).toHaveLength(1);
     expect(hits[0].rel).toBe('src/spine/sender.mjs');
-    expect(hits[0].line).toBe('bridge: bridgeOf ? (bridgeOf(being) ?? bridge) : bridge,');
+    // `chatId` is part of the question since 2026-09-11 (the resolver answers with the connection
+    // that HEARD this chat when the being's own cannot reach it), which is exactly why there must
+    // still be only one of these: two copies would be two different answers about one reply.
+    expect(hits[0].line).toBe('bridge: bridgeOf ? (bridgeOf(being, chatId) ?? bridge) : bridge,');
   });
 
   it('every call site that resolves a bridge imports that one resolver', () => {

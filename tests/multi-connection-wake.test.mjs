@@ -38,9 +38,12 @@
 //      above fixes that, and nothing can: the handle says "wake, always". boot warns about it at
 //      startup (src/spine/boot.mjs, "wakes on 2 connections"); see THE HAZARD below.
 //
-//   3. Recorded in passing, NOT fixed here: outbound is per-BEING, not per-arrival, so a reply to
-//      a message heard on one connection is posted on the addressed being's own connection — a
-//      chat id the other account may not even have. See THE HAZARD below.
+//   3. Recorded in passing here, FIXED 2026-09-11: outbound was per-BEING and not per-arrival, so
+//      a reply to a message heard on one connection was posted on the addressed being's own
+//      connection — a chat id the other account may not even have. A locally placed reply now goes
+//      back out the connection that heard it whenever the being's own is a different Beeper
+//      account (src/spine/boot.mjs outboundConnectionFor; the rule is
+//      tests/reply-follows-the-arrival.test.mjs). THE HAZARD below shows both halves.
 //
 // WHAT THE FAKE DESKTOPS MODEL, and why each is a measured fact and not an assumption:
 //   · one real group is a DIFFERENT chatId per account — src/bridges/beeper.mjs
@@ -360,13 +363,14 @@ describe('ONE spine, TWO connections — the merged-config shape (operator 2026-
     await deliver(byConnection.secondary, SHARED_ON_SECONDARY, '@ken hola', { atE: true });
 
     // ONE message, typed once, by one person, in one group. TWO answers.
-    // …and note the SECOND line: outbound is per-BEING, not per-arrival (createSender's
-    // `bridgeOf(being) ?? bridge`, src/spine/sender.mjs), so the reply to RODZ'S room is posted on
-    // AN's connection — a chat id An's account does not have. NODE-SHAPE.md says the spine
-    // "answers on whichever one heard the message"; it does not, and this is where that shows.
+    // …and note the SECOND line: it read `main:${SHARED_ON_SECONDARY}` until 2026-09-11 — outbound
+    // was per-BEING and not per-arrival, so the reply to RODZ'S room was posted on AN's connection,
+    // a chat id An's account does not have. NODE-SHAPE.md's "answers on whichever one heard the
+    // message" is now true (src/spine/boot.mjs outboundConnectionFor). The DOUBLE ANSWER is what
+    // this case is still about, and it is untouched: two ears, an unconditional handle, two turns.
     expect(replies().map((r) => `${r.connection}:${r.chatId}`)).toEqual([
       `main:${SHARED_ON_MAIN}`,
-      `main:${SHARED_ON_SECONDARY}`,
+      `secondary:${SHARED_ON_SECONDARY}`,
     ]);
 
     app.stop();
@@ -447,10 +451,11 @@ describe('ONE spine, TWO connections — the merged-config shape (operator 2026-
     await deliver(byConnection.secondary, RODZ_ONLY, '@ken hola');
 
     // The shared group: answered once (on the main arrival, where An is absent from his own
-    // roster). The Rodz-only group: answered. Both replies ride the persona's own connection,
-    // which is `secondary` here — see THE HAZARD above on why that is a separate defect.
+    // roster). The Rodz-only group: answered. Each reply rides the connection that HEARD it
+    // (2026-09-11) rather than the persona's own `secondary` — which is what makes flipping the
+    // default genuinely change nothing about who answers OR where the answer lands.
     expect(replies().map((r) => `${r.connection}:${r.chatId}`)).toEqual([
-      `secondary:${SHARED_ON_MAIN}`,
+      `main:${SHARED_ON_MAIN}`,
       `secondary:${RODZ_ONLY}`,
     ]);
 

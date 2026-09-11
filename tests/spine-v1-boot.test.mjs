@@ -488,13 +488,20 @@ describe('boot() — config-shape migration', () => {
       userId: 'u-1', senderName: 'An', authorized: true, msgKey: 'm2',
     });
 
-    expect(mainSpy.streams).toHaveLength(1);
+    // BOTH replies leave on `main` — REWRITTEN 2026-09-11 (operator: *"if rodz is not in, reply
+    // flows back from primary"*). `!room1` and `!room2` are rooms on main's account, heard on
+    // main's socket; `rodz` is a DIFFERENT Beeper account (c@d), so its install does not have
+    // `!room2` at all and the reply this case used to assert there went into a room that does not
+    // exist. The PIN is not gone — it still dials rodz's bridge (byToken.size above), it is what
+    // the peer mouth is offered against, and it is where a chat this node has never heard is
+    // spoken into. The rule is tests/reply-follows-the-arrival.test.mjs.
+    expect(mainSpy.streams).toHaveLength(2);
     expect(mainSpy.streams[0].finals[0]).toContain('hola egpt');
     expect(mainSpy.streams[0].chatId).toBe('!room1:beeper.com');
-    expect(rodzSpy.streams).toHaveLength(1);
-    expect(rodzSpy.streams[0].finals[0]).toContain('hola rodz');
-    expect(rodzSpy.streams[0].chatId).toBe('!room2:beeper.com');
-    // no cross-talk: neither connection carries the other being's reply
+    expect(mainSpy.streams[1].finals[0]).toContain('hola rodz');
+    expect(mainSpy.streams[1].chatId).toBe('!room2:beeper.com');
+    expect(rodzSpy.streams).toHaveLength(0);
+    // …and nothing is posted fresh beside the trains, on either connection.
     expect(mainSpy.sent).toHaveLength(0);
     expect(rodzSpy.sent).toHaveLength(0);
 
@@ -548,13 +555,16 @@ describe('boot() — config-shape migration', () => {
     });
 
     // THE TURN RAN. Before this, a message on a non-default connection woke nothing at all.
-    // egpt is the DEFAULT being, so its reply rides its OWN connection (main) — the per-being
-    // outbound routing that already worked. Inbound and outbound are separate decisions.
+    // egpt is the DEFAULT being, so its MOUTH is `main` — and REWRITTEN 2026-09-11, its reply
+    // nonetheless leaves on `rodz`: `!rodz-view` is a room on rodz's account (c@d), heard on
+    // rodz's socket, and main's install does not have it. This case used to assert the reply on
+    // main, which is the defect the operator's *"reply flows back from primary"* ruling names —
+    // "answered INTO the chat it arrived in" is only true if it goes out where the chat lives.
     const mainSpy = byToken.get('tok-main');
-    expect(mainSpy.streams).toHaveLength(1);
-    expect(mainSpy.streams[0].finals[0]).toContain('hola egpt');
-    expect(mainSpy.streams[0].chatId).toBe('!rodz-view:beeper.com');   // answered INTO the chat it arrived in
-    expect(rodzSpy.streams).toHaveLength(0);
+    expect(mainSpy.streams).toHaveLength(0);
+    expect(rodzSpy.streams).toHaveLength(1);
+    expect(rodzSpy.streams[0].finals[0]).toContain('hola egpt');
+    expect(rodzSpy.streams[0].chatId).toBe('!rodz-view:beeper.com');
 
     // …and the operator's actual design: a being whose beeper_connection IS rodz both HEARS
     // and ANSWERS there — mind and mouth in one process, no relay agent, no mesh round trip.
@@ -562,9 +572,9 @@ describe('boot() — config-shape migration', () => {
       chatId: '!rodz-view:beeper.com', chatName: 'famR', network: 'whatsapp',
       userId: 'u-1', senderName: 'An', authorized: true, msgKey: 'mR2',
     });
-    expect(rodzSpy.streams).toHaveLength(1);
-    expect(rodzSpy.streams[0].finals[0]).toContain('hola');
-    expect(rodzSpy.streams[0].chatId).toBe('!rodz-view:beeper.com');
+    expect(rodzSpy.streams).toHaveLength(2);
+    expect(rodzSpy.streams[1].finals[0]).toContain('hola');
+    expect(rodzSpy.streams[1].chatId).toBe('!rodz-view:beeper.com');
     app.stop();
   });
 

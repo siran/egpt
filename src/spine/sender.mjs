@@ -167,10 +167,26 @@ export const RETAINED_SEAM = '\n\n— ↓ reply —\n\n';
  * cannot act on the answer (the limbs, the media attach, and mode:auto below, which is never
  * routed) must not pay the membership read to receive it. Nullish peerMouth ⇒ null ⇒ no peer was
  * ever consulted, which is the whole additivity requirement in one expression.
+ *
+ * …AND THE CHAT IS PART OF THE QUESTION (operator 2026-09-11): *"inter-spine messaging chat-group
+ * matching is first done by name and members. if rodz is not in, reply flows back from primary."*
+ * `bridgeOf` was asked about the BEING alone, so a reply the peer mouth could not place went out
+ * on the being's own `use:` — and one real chat is a DIFFERENT Matrix room per Beeper account
+ * (crossAccountChatKey's header, measured live), so a chatId heard on one connection names a room
+ * the other install is not in. That is not the wrong voice, it is a room that does not exist.
+ *
+ * So the chat goes to the resolver too. Boot's answer (src/spine/boot.mjs outboundConnectionFor)
+ * is: the being's own connection whenever it CAN REACH this chat — the same Beeper account, or a
+ * chat this node has never heard at all (a synthesized turn, a heartbeat, the console) — and the
+ * connection that HEARD the chat otherwise. A one-argument `bridgeOf` — every test that injects
+ * one — simply ignores the extra argument and answers exactly as it did before.
+ *
+ * IT MOVES ONLY THE LOCAL HALF. `route()` below is untouched, so which mouth SAYS the reply is
+ * decided exactly as it was; this is where the reply lands when no peer takes it.
  */
 export function makeOutbound({ bridge, bridgeOf = null, peerMouth = null, onLog = () => {} } = {}) {
   return (being, chatId = null) => ({
-    bridge: bridgeOf ? (bridgeOf(being) ?? bridge) : bridge,
+    bridge: bridgeOf ? (bridgeOf(being, chatId) ?? bridge) : bridge,
     route: () => (peerMouth ? Promise.resolve().then(() => peerMouth.route(chatId)).catch((e) => { onLog(`mouth: could not decide the route for ${chatId} — posting locally: ${e?.message ?? e}`); return null; }) : null),
   });
 }

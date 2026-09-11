@@ -165,12 +165,18 @@ describe('the DEFAULT outbound connection — the names carry the meaning (opera
     app.stop();
   });
 
-  // …and it is the connection the reply actually LEAVES ON, not merely the one that got dialled —
-  // the arrival comes in on the EAR and the answer goes out on the MOUTH.
-  it('the persona\'s reply goes out on secondary', async () => {
+  // …AND WHAT THE MOUTH IS *NOT* (operator 2026-09-11, *"if rodz is not in, reply flows back from
+  // primary"*). This case asserted `['secondary']` until then — the answer to a message heard on
+  // the ear leaving on the mouth — and that was the defect, not the contract: `secondary` is a
+  // DIFFERENT Beeper account, and a chatId minted by primary's Desktop names a Matrix room
+  // secondary's install is not in. So the mouth is what gets DIALLED (above), what the peer link
+  // is offered against, and what a chat this node has never heard is spoken into; a reply this
+  // node places itself goes back out the connection that heard it.
+  // The whole rule, both halves, is tests/reply-follows-the-arrival.test.mjs.
+  it('a reply into a chat heard on the EAR goes back out the ear, not on secondary', async () => {
     const { byConnection, replies, app } = await bootWith({ agents: AG(), beeper: LIVE_BEEPER() });
     await deliver(byConnection.primary, '@e hola');
-    expect(replies().map((r) => r.connection)).toEqual(['secondary']);
+    expect(replies().map((r) => r.connection)).toEqual(['primary']);
     app.stop();
   });
 
@@ -228,8 +234,10 @@ describe('the DEFAULT outbound connection — the names carry the meaning (opera
     // because it is this node's ear, which no longer depends on any agent riding it.
     expect(built.map((s) => s.connection).sort()).toEqual(['primary', 'primary_gui', 'secondary']);
 
+    // The PIN is what this case is about, and it is intact — the dial above is the assertion.
+    // E's own reply flows back out the ear, because its mouth is another account (2026-09-11).
     await deliver(byConnection.primary, '@e hola');
-    expect(replies().map((r) => r.connection)).toEqual(['secondary']);
+    expect(replies().map((r) => r.connection)).toEqual(['primary']);
     app.stop();
   });
 
@@ -297,8 +305,10 @@ describe('the DEFAULT outbound connection — the names carry the meaning (opera
     expect(built.map((s) => s.connection).sort()).toEqual(['primary', 'secondary']);
     // …and an arrival on the NON-default connection reaches the spine (bridge-fanout registers
     // inbound on every bridge), which is what makes a second connection an ear and not just a mouth.
+    // The answer leaves on the connection that HEARD it (2026-09-11) — `secondary` is another
+    // account and does not have `!room-on-primary` at all.
     await deliver(byConnection.primary, '@e hola', '!room-on-primary');
-    expect(replies().map((r) => r.connection)).toEqual(['secondary']);
+    expect(replies().map((r) => r.connection)).toEqual(['primary']);
     app.stop();
   });
 });

@@ -146,18 +146,25 @@ describe('the ear and the mouth are two answers (operator 2026-09-10)', () => {
   // The smallest shape that failed: `primary` and `secondary` declared, no `use:` anywhere. The
   // single binding resolved to `secondary` for BOTH directions, so `primary` was never dialled and
   // an `@e` typed on the operator's own account reached nothing at all.
-  it('primary + secondary, no use: anywhere → the node HEARS on primary and SPEAKS on secondary', async () => {
+  it('primary + secondary, no use: anywhere → the node HEARS on primary and its MOUTH is secondary', async () => {
     const { byConnection, dialled, replies, app } = await bootWith({
       agents: AG(),
       beeper: { primary: { account: 'an@example.com', token: T_PRIMARY }, secondary: { account: 'rodz@example.com', token: T_SECONDARY } },
     });
     // BOTH are dialled — the ear because it is the ear, the mouth because someone speaks on it.
+    // THAT is what the split delivers, and it is what this case is for.
     expect(dialled()).toEqual(['primary', 'secondary']);
 
     await deliver(byConnection.primary, '@e hola');
 
-    // …and the answer leaves on the OTHER one.
-    expect(replies().map((r) => r.connection)).toEqual(['secondary']);
+    // …AND THE REPLY GOES BACK OUT THE EAR (operator 2026-09-11: *"if rodz is not in, reply flows
+    // back from primary"*). This assertion read `['secondary']` until then, and that was the
+    // defect the crutch in the live config was hiding: `secondary` is a DIFFERENT Beeper account,
+    // so `!room` — a chatId minted by primary's Desktop — names a Matrix room secondary's install
+    // is not in. The reply did not come out of the wrong mouth, it came out into nowhere. The
+    // MOUTH still means what it meant: it is what the peer link is offered against, and it is what
+    // a chat this node has never heard is spoken into. See tests/reply-follows-the-arrival.test.mjs.
+    expect(replies().map((r) => r.connection)).toEqual(['primary']);
     app.stop();
   });
 
@@ -183,12 +190,19 @@ describe('the ear and the mouth are two answers (operator 2026-09-10)', () => {
     expect(byConnection['primary-gui']).toBeUndefined();
 
     await deliver(byConnection.primary, '@e hola');
-    expect(replies().map((r) => r.connection)).toEqual(['secondary']);
+    // …and the reply flows back out the ear, because `secondary` is another account (2026-09-11).
+    expect(replies().map((r) => r.connection)).toEqual(['primary']);
     app.stop();
   });
 
   // …and it stays out of the EAR set even when an agent deliberately SPEAKS on it. The pin moves
   // the mouth and only the mouth.
+  //
+  // AND THE PIN IS STILL HONOURED HERE, which is the other half of the 2026-09-11 rule: a locally
+  // placed reply goes back out the ear only when the being's own connection CANNOT REACH the chat.
+  // `primary_gui` is the SAME Beeper ACCOUNT as `primary` on a second Desktop install, so it sees
+  // the same Matrix rooms under the same ids and the pin costs nothing. (Same-account is also
+  // precisely why the ear rules above refuse to claim both.)
   it('an agent pinned to primary_gui speaks there and the node still hears only on primary', async () => {
     const { dialled, byConnection, replies, app } = await bootWith({
       agents: { ...AG(), gui: { configuration: 'egpt', handles: ['gui'], use: 'primary_gui', conversation_defaults: { access_level: 'regular' } } },
@@ -218,8 +232,10 @@ describe('the ear and the mouth are two answers (operator 2026-09-10)', () => {
     // Both beings are addressed on the ONE ear…
     await deliver(byConnection.primary, '@e hola', '!c1');
     await deliver(byConnection.primary, '@gui hola', '!c2');
-    // …and each answers on its own mouth: the node default for E, the pin for @gui.
-    expect(replies().map((r) => r.connection)).toEqual(['secondary', 'primary-gui']);
+    // …and each answers on the connection that can actually reach the chat: E's mouth is
+    // `secondary`, ANOTHER account, so its reply flows back out the ear (2026-09-11); @gui's pin is
+    // the same account as the ear on a second install, so the pin stands.
+    expect(replies().map((r) => r.connection)).toEqual(['primary', 'primary-gui']);
     app.stop();
   });
 
@@ -284,7 +300,10 @@ describe('the ear and the mouth are two answers (operator 2026-09-10)', () => {
     expect(dialled()).toEqual(['primary', 'secondary']);
     await deliver(byConnection.primary, '@e hola', '!c1');
     await deliver(byConnection.secondary, '@e hola', '!c2');
-    expect(replies().map((r) => r.connection)).toEqual(['secondary', 'secondary']);   // two ears, one mouth
+    // TWO EARS, and each conversation is answered where it lives (2026-09-11). `!c1` and `!c2` are
+    // rooms on two different accounts; before that rule both replies left on E's own `secondary`
+    // and the `!c1` one addressed a room that account does not have.
+    expect(replies().map((r) => r.connection)).toEqual(['primary', 'secondary']);
     app.stop();
   });
 

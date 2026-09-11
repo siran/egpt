@@ -1644,6 +1644,46 @@ export async function boot({
   const outboundOnly = (port) => new Proxy(port, {
     get: (t, k) => ((k === 'onMessage' || k === 'onEdit' || k === 'onMedia') ? (() => {}) : Reflect.get(t, k, t)),
   });
+  // ── AN EAR REMEMBERS WHAT IT HEARD (operator 2026-09-11) ──────────────────────────────────
+  // *"inter-spine messaging chat-group matching is first done by name and members. if rodz is not
+  // in, reply flows back from primary."* A reply the peer mouth cannot place must go back out on
+  // the connection the message ARRIVED on — and that is a hard requirement, not a preference about
+  // voices: one real chat is a DIFFERENT Matrix room per Beeper account (beeper.crossAccountChatKey's
+  // header, measured live), so a chatId heard on `primary` names a room the `secondary` install is
+  // not in. Posting it there is a room that does not exist, and it is exactly what removing kg's
+  // TEMPORARY `beeper: { use: primary }` exposes: the names alone resolve OUTPUT to `secondary`
+  // while INGEST stays on `primary`.
+  //
+  // WHERE THE FACT IS TAKEN, and why it is not re-derived. bridge-fanout already stamps
+  // `from.connection` on every arrival — the one registration that still has the delivering bridge
+  // in hand — but that stamp lives on the EVENT, and the reply path is handed a chatId and nothing
+  // else (sender.open). So the SAME stamp is read here and kept per CHAT, which is the granularity
+  // the reply actually needs: a chatId belongs to exactly one account, permanently.
+  //
+  // BOUNDED, FIFO, NEVER PERSISTED, and honest about all three: an evicted or never-heard chat
+  // reads as UNKNOWN and the being's own outbound connection answers, which is precisely today's
+  // behaviour. A fresh boot knows nothing until the first arrival — and a reply always follows one.
+  const ARRIVAL_MAX = 500;
+  const arrivalConnection = new Map();   // chatId -> the CONNECTION NAME the arrival was stamped with
+  const rememberArrival = (chatId, name) => {
+    const c = String(chatId ?? '');
+    if (!c || !name) return;
+    if (arrivalConnection.has(c)) arrivalConnection.delete(c);                                          // …re-insert so the busiest chats are the last evicted
+    else if (arrivalConnection.size >= ARRIVAL_MAX) arrivalConnection.delete(arrivalConnection.keys().next().value);
+    arrivalConnection.set(c, name);
+  };
+  // The recorder itself, over the FAN-OUT FACADE and never over a bare bridge — which is what
+  // keeps a single-connection node not merely equivalent but IDENTICAL (bridge-fanout's own
+  // promise, locked in tests/single-account-node.test.mjs). It is applied below only where the
+  // facade actually exists, i.e. only where there is more than one connection to choose between;
+  // with one, there is nothing to remember and nothing is wrapped. Same Proxy shape outboundOnly
+  // uses, and its mirror image: that one takes the three inbound registrations AWAY, this one lets
+  // onMessage through and notes what came past it.
+  const remembering = (facade) => new Proxy(facade, {
+    get: (t, k) => (k === 'onMessage'
+      ? (cb) => Reflect.get(t, k, t)((msg) => { rememberArrival(msg?.from?.chatId, msg?.from?.connection); return cb(msg); })
+      : Reflect.get(t, k, t)),
+  });
   // `ear` (operator 2026-09-10) is the INGEST half of the binding, decided by inboundConnections
   // above and passed in rather than re-derived: a bridge is cached by ENDPOINT, so this decision
   // is made ONCE per endpoint and the dial loop below is what guarantees the ear asks first.
@@ -1706,11 +1746,50 @@ export async function boot({
   // to defaultBridge — and a node with ONE connection gets that bridge back identically, not a
   // wrapper. See bridge-fanout.mjs for why wasSentByUs must ask every connection (it is the echo
   // gate, and it is per-ACCOUNT) and why nothing here deduplicates.
-  const bridge = fanoutInbound(defaultBridge, [...bridgeByEndpoint.values()], connectionOfBridge);
-  // rawBridgeOf(being): the RAW (non-shell-aware) bridge for a given being's own connection.
-  // Fallback to the default `bridge` is defensive only — every being in agents() was already
-  // enumerated above, so this should never miss.
-  const rawBridgeOf = (being) => bridgeByEndpoint.get(endpointKey(endpointFor(outboundOf(being)))) ?? defaultBridge;
+  // …and WHICH CONNECTION HEARD WHICH CHAT is read off that same stamp (rememberArrival, above),
+  // so a reply the peer mouth cannot place goes back out the ear it came in on. Only where there
+  // is a choice: with one connection the facade IS the bridge and nothing wraps it.
+  const fanned = fanoutInbound(defaultBridge, [...bridgeByEndpoint.values()], connectionOfBridge);
+  const bridge = bridgeByEndpoint.size > 1 ? remembering(fanned) : fanned;
+  // ── WHICH CONNECTION AN OUTBOUND INTO *THIS CHAT* RIDES (operator 2026-09-11) ─────────────
+  // The being's own mouth (outboundOf) speaks whenever it CAN REACH the chat; when it cannot, the
+  // connection that HEARD the chat does. That is the whole rule, and the reachability test is not
+  // a guess: a chatId is a Matrix room on an ACCOUNT, so two connection names declaring the same
+  // `account:` see the same rooms under the same ids (the operator's `primary` and `primary_gui`
+  // — one account, two Desktop installs — which is exactly why the ear dedup above refuses to
+  // claim both), while a DIFFERENT account cannot address the chat at all: posting there is not
+  // the wrong voice, it is a room that does not exist.
+  //
+  // FAIL TOWARD THE EAR. Not provably the same account (either side undeclared) ⇒ the arrival
+  // wins, because the ear is guaranteed to reach the chat and the other connection is not.
+  //
+  // AND IT MOVES ONLY WHERE A REPLY IS PLACED LOCALLY. An agent's `use:` still names its mouth,
+  // still decides which bridges are dialled, and is still what the peer mouth is offered against —
+  // the peer link is how a reply reaches the OTHER account's view of a chat (by name and members,
+  // src/shell/peer-mouth.mjs), and it is untouched by this.
+  const accountOf = (name) => String(connectionBlock(name)?.account ?? '').trim().toLowerCase();
+  const reachesTheSameChats = (a, b) => a === b || (!!accountOf(a) && accountOf(a) === accountOf(b));
+  const toldAboutArrival = new Set();
+  const outboundConnectionFor = (being, chatId) => {
+    const mouth = outboundOf(being);
+    const heard = arrivalConnection.get(String(chatId ?? ''));
+    if (heard == null || reachesTheSameChats(heard, mouth)) return mouth;
+    // Never silent: an operator reading a reply that came out of an account they did not pin has
+    // to be able to find out why. Once per chat — this fires on every frame otherwise.
+    const told = `${chatId}→${mouth}`;
+    if (!toldAboutArrival.has(told)) {
+      if (toldAboutArrival.size >= ARRIVAL_MAX) toldAboutArrival.clear();
+      toldAboutArrival.add(told);
+      log.line?.(`[bridge] ${shortChatId(chatId)} was heard on '${heard}' and '${mouth}' is a different Beeper account — replies placed by this node go back out on '${heard}', because that chat id does not exist on '${mouth}'. The peer mouth is what reaches the other account's view of this chat.`);
+    }
+    return heard;
+  };
+  // rawBridgeOf(being, chatId): the RAW (non-shell-aware) bridge that outbound rides. The second
+  // argument arrives from sender.mjs's makeOutbound, the ONE outbound resolver; a caller with no
+  // chat in hand (reply-actions' limbs, spine's media attach) passes none and gets the being's own
+  // connection exactly as before. Fallback to the default `bridge` is defensive only — every being
+  // in agents() was already enumerated above, so this should never miss.
+  const rawBridgeOf = (being, chatId = null) => bridgeByEndpoint.get(endpointKey(endpointFor(outboundConnectionFor(being, chatId)))) ?? defaultBridge;
 
   // ── ONE MENTION, TWO ANSWERS (operator 2026-09-07) ────────────────────────────────────────
   // A node that wakes on more than one connection hears a chat BOTH its accounts are in twice —
@@ -1864,7 +1943,12 @@ export async function boot({
   // map's defaultKey entry; shellAwareBridgeOf mirrors rawBridgeOf's per-being lookup.
   const shellAwareBridgeByEndpoint = new Map([...bridgeByEndpoint].map(([key, b]) => [key, makeShellAwareBridge(b, shellPort)]));
   const shellAwareBridge = shellAwareBridgeByEndpoint.get(endpointKey(endpointFor(outboundOf(defaultKey))));
-  const shellAwareBridgeOf = (being) => shellAwareBridgeByEndpoint.get(endpointKey(endpointFor(outboundOf(being)))) ?? shellAwareBridge;
+  // …and it asks the SAME question rawBridgeOf does (outboundConnectionFor, operator 2026-09-11):
+  // the reply path asks this one, so this is the resolver that actually puts a locally placed
+  // reply back out the ear it came in on. A shell-owned chat never reaches the arrival map (the
+  // console does not arrive on a Beeper connection) and is redirected by the facade itself, so
+  // nothing there changes.
+  const shellAwareBridgeOf = (being, chatId = null) => shellAwareBridgeByEndpoint.get(endpointKey(endpointFor(outboundConnectionFor(being, chatId)))) ?? shellAwareBridge;
 
   // --- lifecycle announce: "restarting…" to Self before exit, "back up! <commit>"
   //     on the next boot. The bounce is otherwise invisible to the operator. ---
