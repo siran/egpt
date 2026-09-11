@@ -161,7 +161,10 @@ if (-not $EgptHome) {
 # machine can carry several nodes; they must not collide on one Run value name.
 if (-not $EntryName) {
   $base = (Split-Path $EgptHome -Leaf) -replace '^\.', ''
-  if (-not $base) { $base = 'egpt' }
+  # THROW, never fall back to 'egpt' (2026-09-11): an empty leaf means EgptHome arrived
+  # empty or mangled, and silently resolving that to the PRIMARY node's service is how
+  # `uninstall -EgptHome <mangled>` removed egpt-daemon instead of the node it named.
+  if (-not $base) { throw "cannot derive a service name: -EgptHome is empty or has no leaf ('$EgptHome'). Pass -ServiceName explicitly." }
   $EntryName = "$base-session1"
 }
 if (-not $LogPath) { $LogPath = Join-Path $EgptHome 'config\logs\session1-spine.log' }

@@ -29,7 +29,10 @@ $ErrorActionPreference = 'Stop'
 # ~/.egpt2 -> egpt2-daemon. Keeps nodes from colliding on one machine.
 if (-not $ServiceName) {
   $base = (Split-Path $EgptHome -Leaf) -replace '^\.', ''   # ".egpt2" -> "egpt2"
-  if (-not $base) { $base = 'egpt' }
+  # THROW, never fall back to 'egpt' (2026-09-11): an empty leaf means EgptHome arrived
+  # empty or mangled, and silently resolving that to the PRIMARY node's service is how
+  # `uninstall -EgptHome <mangled>` removed egpt-daemon instead of the node it named.
+  if (-not $base) { throw "cannot derive a service name: -EgptHome is empty or has no leaf ('$EgptHome'). Pass -ServiceName explicitly." }
   $ServiceName = "$base-daemon"
 }
 
