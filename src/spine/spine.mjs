@@ -954,14 +954,37 @@ export function createSpine({
       //
       // The steered message is NOT pushed into the cycle either: the cycle exists for lines
       // the model has NOT yet seen, and this one went straight into its live prompt.
-      if (await steerLiveTurn({ to, ev, turnKey })) return withRelay();
+      //
+      // AND THE STEERED LINE LOSES THE ADDRESSING HANDLE TOO (operator 2026-09-11). 6634a76 took
+      // it off the turn OPENER and named this path as the one it had left: turns.steerLiveTurn →
+      // brain.steer → brainpool's `pool.steer(k, ev.line ?? ev.body)` writes straight into the
+      // live CLI session, so `e también revisa X` woven into a running turn still reached the
+      // model with `e` on the front. Same defect, same message, a second door.
+      //
+      // ONE trigger, computed ONCE here and handed to BOTH doors — triggerFor is the same call
+      // openAndRunReply's argument used to make inline, moved up rather than repeated.
+      //
+      // NULL PASSES `ev` ITSELF, deliberately. `triggerFor` answers null when nothing was taken
+      // off (no address, or a handle mid-sentence, which is content), and `{ ...ev, line: null }`
+      // would NOT be a no-op: brainpool's `ev.line ?? ev.body` would then fall through to the bare
+      // body, dropping the dispatch head (who/where/when/`#id`) AND leaving the handle on. The
+      // fallback has to stay the untouched event.
+      //
+      // NOTHING ELSE DOWNSTREAM READS `line`: admitsNewInput reads chatId/senderId, the 📩/👀
+      // reactions read chatId/msgId/msgHash/msgTs, the log lines read senderName/senderId/chatId —
+      // the spread carries all of them unchanged. And the CLI's ingestion ack follows whatever was
+      // written rather than the event: warm-cli-session.inject records `rec.text` as the exact
+      // string it puts on stdin and matches the `--replay-user-messages` echo against THAT, so it
+      // acks the stripped line without knowing anything changed.
+      const trigger = triggerFor(ev, targets[0]);
+      if (await steerLiveTurn({ to, ev: trigger == null ? ev : { ...ev, line: trigger }, turnKey })) return withRelay();
       // Reply branch (the reply train). Open THIS message's OWN placeholder NOW, on
       // arrival — the per-message ack + streaming target, quoting the triggering message
       // (operator: "mentions should always be replied to the message" — now EVERY reply,
       // not just mentions; see openAndRunReply). If a train is already in flight for this
       // conversation, the placeholder opens in the QUEUED state and the turn WAITS its turn
       // on turnBy; when it reaches the front it activates and streams.
-      const turn = openAndRunReply({ to, ev, d, turnKey, pinned, trigger: triggerFor(ev, targets[0]) });
+      const turn = openAndRunReply({ to, ev, d, turnKey, pinned, trigger });
       return withRelay(turn);
     }
 

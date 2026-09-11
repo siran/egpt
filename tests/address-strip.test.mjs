@@ -30,7 +30,8 @@ import { withoutAddress } from '../src/auto-mode.mjs';
 // --- the live chat, as fakes -------------------------------------------------
 const T = Date.UTC(2026, 8, 11, 8, 7);                       // → "(08:07)", the operator's own line
 const CHAT_NAME = 'HFM - high frequency masturbation';
-const HEAD = `An@[${CHAT_NAME}].wa (08:07) #4709: `;         // what identity.build puts before the body
+const headOf = (id) => `An@[${CHAT_NAME}].wa (08:07) #${id}: `;   // what identity.build puts before the body
+const HEAD = headOf('4709');                                 // the operator's own message id
 // The persona as the live node declares it: the KEY is the being-id, the HANDLES are the address
 // set, and `perro` is a SPOKEN-only alias (voice_handles — no '@', start of the transcript).
 const AGENTS = { e: { default: true, handles: ['e', 'egpt'], voice_handles: ['perro'] } };
@@ -60,9 +61,8 @@ function fakeTranscript() {
 // `addressedReplies` mirrors the live gate: send_to_egpt:'mode', so a turn runs only on a message
 // this being would answer. The default (every test but the accum one) answers everything, which
 // is the simplest shape for asserting the prompt.
-function build({ mode = 'mention', agents = AGENTS, mayReply = () => true } = {}) {
+function build({ mode = 'mention', agents = AGENTS, mayReply = () => true, brain = fakeBrain() } = {}) {
   const bridge = fakeBridge();
-  const brain = fakeBrain();
   const transcript = fakeTranscript();
   const spine = createSpine({
     bridge, brain,
@@ -227,5 +227,106 @@ describe('withoutAddress', () => {
     expect(withoutAddress('e hi', '')).toBe('e hi');
     expect(withoutAddress('e hi', null)).toBe('e hi');
     expect(withoutAddress('`x` e hi', 'e')).toBe('`x` e hi');       // the code-fence case: nothing is guessed
+  });
+});
+
+// ── THE SAME DEFECT, THE SECOND DOOR (operator 2026-09-11) ───────────────────────────────────
+//
+// 6634a76 fixed the turn OPENER and named what it had left, in its own commit message:
+//
+//     NOT FIXED, same defect second path: turns.steerLiveTurn writes `ev.line` raw into a live
+//     session, so a steer still carries its wake word.
+//
+// A message that arrives while the being's turn is ALREADY streaming is not queued behind it —
+// `allow_new_input` WEAVES it into the running turn (turns.steerLiveTurn → brain.steer →
+// brainpool's `pool.steer(k, ev.line ?? ev.body)` → warm-cli-session.inject → the live stdin).
+// That write took the RAW dispatch line, so `e también revisa X` reached the model mid-thought
+// with `e` on the front: exactly the input the operator objected to, through a different door.
+//
+// `steer` below records `ev?.line ?? ev?.body ?? ''` — brainpool's own expression, verbatim — so
+// the fake stands precisely where the pool stands and what it records is the text that would have
+// been written into the live CLI session.
+const flush = () => new Promise((r) => setTimeout(r, 0));
+
+function steeringBrain() {
+  const calls = [], steered = [];
+  let release = null;
+  return {
+    calls, steered,
+    release: () => release?.(),
+    async turn(being, ev) {
+      const first = calls.length === 0;
+      calls.push({ being, ev });
+      if (first) await new Promise((r) => { release = r; });   // turn #1 HANGS — so #2 genuinely arrives mid-turn
+      return { text: 'ok', being };
+    },
+    async allowNewInput() { return 'any'; },
+    // `{ ack }`, not a bare true: the pool hands back the session's later word on whether the
+    // MODEL took the line, and only that places the 👀 (turns.mjs).
+    steer(_being, ev) { steered.push(ev?.line ?? ev?.body ?? ''); return { ack: Promise.resolve({ ok: true }) }; },
+  };
+}
+
+// Open a live turn on the conversation, then deliver `second` INTO it. Returns what the pool
+// would have written to the live session.
+async function steerInto(second, from = {}) {
+  const brain = steeringBrain();
+  const { bridge } = build({ brain });
+  const first = bridge.emit(msg('e dame una opinion', { msgKey: 'm1' }));   // hangs inside brain.turn
+  await flush();
+  expect(brain.calls).toHaveLength(1);                                     // …so a turn really is live
+  await bridge.emit(msg(second, { msgKey: 'm2', ...from }));
+  brain.release();
+  await first;
+  return brain;
+}
+
+describe('REPRODUCE — the STEER path feeds the being its own wake word', () => {
+  it('a message woven into a live turn arrives WITHOUT the leading handle', async () => {
+    const brain = await steerInto('e también revisa X');
+    // ← was `${headOf('m2')}e también revisa X`: the wake word rode into the live session
+    expect(brain.steered).toEqual([`${headOf('m2')}también revisa X`]);
+    expect(brain.calls).toHaveLength(1);                 // no second turn: it was woven, not queued
+  });
+
+  it('`@egpt` and the bare forms all lose the handle on the way into the live turn', async () => {
+    for (const body of ['@egpt sigue', 'egpt sigue', '@e sigue', 'e sigue']) {
+      const brain = await steerInto(body);
+      expect([body, brain.steered]).toEqual([body, [`${headOf('m2')}sigue`]]);
+    }
+  });
+});
+
+describe('LOCKS — the steer path keeps everything else', () => {
+  it('a steer that was never addressed is unchanged — the RAW dispatch line, head and all', async () => {
+    const brain = await steerInto('también revisa X', { atEStart: false, atEAnywhere: false });
+    expect(brain.steered).toEqual([`${headOf('m2')}también revisa X`]);
+  });
+
+  it('a handle MID-SENTENCE is content here too, and stays', async () => {
+    const brain = await steerInto('pregúntale a @e sobre esto', { atEStart: false });
+    expect(brain.steered).toEqual([`${headOf('m2')}pregúntale a @e sobre esto`]);
+  });
+
+  // The failure mode the null case has to avoid: `{ ...ev, line: null }` would make brainpool's
+  // `ev.line ?? ev.body` fall through to the BARE BODY — dropping the head that tells the model
+  // who hailed it, where and when, AND leaving the handle on. Nothing addressed ⇒ `ev` itself
+  // goes down, so the head survives.
+  it('the un-addressed steer still carries its dispatch HEAD (never the bare body)', async () => {
+    const brain = await steerInto('también revisa X', { atEStart: false, atEAnywhere: false });
+    expect(brain.steered[0]).toContain('An@[');
+    expect(brain.steered[0]).toContain('#m2');
+    expect(brain.steered[0]).not.toBe('también revisa X');
+  });
+
+  it('the RECORD keeps the raw steered line — the log was never wrong', async () => {
+    const brain = steeringBrain();
+    const { bridge, transcript } = build({ brain });
+    const first = bridge.emit(msg('e dame una opinion', { msgKey: 'm1' }));
+    await flush();
+    await bridge.emit(msg('e también revisa X', { msgKey: 'm2' }));
+    brain.release();
+    await first;
+    expect(transcript.text).toContain(`${headOf('m2')}e también revisa X`);
   });
 });

@@ -588,13 +588,57 @@ export function createMemberResolver({ resolveConvRoom, readRooms = readRoomsFil
   };
 }
 
+// EVERY EMITTED LINE CARRIES THE CLOCK (operator 2026-09-11) ────────────────────────────────
+//
+// config/logs/service-stderr.log had NO timestamp on any line — 112,000 lines of `[heartbeat]
+// alive: ok in 18ms` and `[bridge] beeper: incoming …` that could not be placed on a clock. So
+// "E stops responding when the screensaver is on" could not be investigated AT ALL: not one line
+// in the file could be lined up against a Windows wake timer, an event-log entry, or the
+// operator's own recollection of when he wrote.
+//
+// THIS IS THE ONE PLACE. boot builds ONE `log` object and threads `log.line` into every service's
+// onLog (bridge, heartbeat, warm, mouth, transcribe, brain, actions, lasso, mesh, spine…), so
+// every line in that file arrives here. Nothing stamps at a call site, and there is no second
+// logger: a caller that injects its own `log` (every test, the shell) still gets exactly what it
+// asked for, unstamped.
+//
+// THE SHAPE — `2026-09-11 13:25:07-04:00 ` then the line, unchanged:
+//   · LOCAL time, because it is read beside Windows Event Viewer and Task Scheduler, which are
+//     local, and beside the operator's memory of his own evening.
+//   · WITH THE UTC OFFSET (6 chars). Local alone is ambiguous for one hour every autumn — the
+//     hour repeats and `sort` misorders it — and says nothing about which machine's zone wrote
+//     it. It also buys the correlation across the two files: egpt-daemon.mjs stamps
+//     service-stdout.log in UTC (`[egpt-daemon <ISO>]`), so pairing a respawn with the spine
+//     lines around it needs the offset in the file rather than in someone's head.
+//   · WITH THE DATE, because the file is append-only across service restarts and NSSM rotations
+//     (10 MB) and spans days; a time-only stamp repeats every midnight, which is precisely the
+//     part of the night this was added to investigate.
+//   · FIRST, fixed width, one space: `sort` orders the file, the eye reads a column, and
+//     `grep '^2026-09-11 03:'` selects an hour.
+// `Date.parse()` reads it back as written.
+//
+// THE WALL CLOCK, not boot's `now` seam: this records when the line was WRITTEN. A caller that
+// freezes `now` to replay a fixture day must never make a live log claim that day.
+const pad2 = (n) => String(n).padStart(2, '0');
+export function logStamp(d = new Date()) {
+  const off = -d.getTimezoneOffset();                      // minutes EAST of UTC
+  const abs = Math.abs(off);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} `
+       + `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`
+       + `${off < 0 ? '-' : '+'}${pad2(Math.floor(abs / 60))}:${pad2(abs % 60)}`;
+}
+// THE SINK. Exported so a test can drive the real one rather than a copy of it. The catch is the
+// pre-existing one and stays empty on purpose: this IS the reporting channel, so a console that
+// throws leaves nowhere to report it to.
+export function stderrLine(s) { try { console.error(`${logStamp()} ${s}`); } catch { /* stderr is gone */ } }
+
 export async function boot({
   readConfig = readConfigSync,
   startBridge = null,                 // createBeeperBridgePort's `start` seam (null = real beeper)
   makeSession = (opts) => (opts.sandboxed ? createSandboxCliSession(opts) : createBrainSession(opts)),   // engine-dispatching session factory (ccode remains default); sandboxed:true wraps the ccode session in setup/sandbox-logon-launcher.ps1's OS-level isolation
   loadState = null, writeState = null,// conv-state IO (null = real CONV_YAML_PATH)
   io = {},                            // fs seam for transcript + brainpool + contacts ({appendFile,mkdir,existsSync,rename}); real fs by default. Tests inject in-memory so they never touch the profile.
-  log = { line: (s) => { try { console.error(s); } catch {} } },
+  log = { line: stderrLine },         // THE stderr sink — it STAMPS every line (see stderrLine above). A caller that injects its own log is untouched.
   now = () => Date.now(),
   // The tick is the loop's PULSE now — every registered heartbeat's cadence rides
   // on it, so tickMs must be finer than the finest cadence. 30s lets the 60s alive
