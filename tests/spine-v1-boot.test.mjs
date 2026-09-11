@@ -477,12 +477,13 @@ describe('boot() — config-shape migration', () => {
       chatId: '!room1:beeper.com', chatName: 'fam1', network: 'whatsapp',
       userId: 'u-1', senderName: 'An', authorized: true, msgKey: 'm1',
     });
-    // rodz (beeper_connection: 'rodz') answers an @rodz-addressed message — delivered over ITS
-    // OWN connection. It used to arrive on mainSpy, back when only the default connection's
-    // onMessage was wired at all; since the CONNECTION GATE (operator 2026-09-08, router.mjs) an
-    // agent wakes on the arrival ITS OWN `beeper_connection` delivered, so which socket it comes
-    // in on is now part of the setup rather than an incidental convenience.
-    await rodzSpy.onIncoming('@rodz hola rodz', {
+    // rodz (beeper_connection: 'rodz') answers an @rodz-addressed message — delivered on the
+    // node's EAR, which is `main`. It briefly had to arrive on rodz's own socket, back when an
+    // agent's connection binding decided ingest as well as output; since the INGEST/OUTPUT SPLIT
+    // (operator 2026-09-10, boot's inboundConnections) `beeper_connection` names the MOUTH and
+    // nothing else, so this node hears everything on `main` — and that is what this case is for:
+    // one ear, two mouths, and the reply going out on the being's own one.
+    await mainSpy.onIncoming('@rodz hola rodz', {
       chatId: '!room2:beeper.com', chatName: 'fam2', network: 'whatsapp',
       userId: 'u-1', senderName: 'An', authorized: true, msgKey: 'm2',
     });
@@ -509,6 +510,12 @@ describe('boot() — config-shape migration', () => {
   // NOTHING DEDUPLICATES, deliberately. Each account has its own Matrix room, so one real chat is
   // a different chatId per connection - a different conversation, not a duplicate message. Which
   // one ANSWERS is decided by addressing, exactly as it already is across two nodes.
+  //
+  // TWO EARS ARE NOW DECLARED, not inferred (operator 2026-09-10). Riding a connection makes it a
+  // MOUTH; waking on one is `owner_node`, the key that already meant "which node WAKES on this
+  // connection". Both blocks name this node, so this spine holds two ears — which is what this
+  // case has always been about, now said rather than obtained as a side effect of `rodz` having
+  // an agent pointed at it.
   it('a message arriving on the NON-default connection drives a turn', async () => {
     const { start, byToken } = fakeMultiStart();
     const config = {
@@ -516,8 +523,8 @@ describe('boot() — config-shape migration', () => {
       whatsapp: {},
       beeper: {
         use: 'main',
-        main: { account: 'a@b', token: 'tok-main' },
-        rodz: { account: 'c@d', token: 'tok-rodz' },
+        main: { account: 'a@b', token: 'tok-main', owner_node: 'kg' },
+        rodz: { account: 'c@d', token: 'tok-rodz', owner_node: 'kg' },
       },
       agents: {
         egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true, conversation_defaults: { access_level: 'regular' } },

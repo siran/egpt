@@ -1,17 +1,21 @@
-// bridge-fanout.mjs — ONE spine, listening on EVERY Beeper connection it holds.
+// bridge-fanout.mjs — ONE spine, listening on every Beeper connection it holds AS AN EAR.
 //
-// WHY (operator 2026-09-02). Outbound has been per-connection since 2026-08-30: an agent's
-// `beeper_connection` names which connection its own sends ride, and base_url (2026-09-02) let
-// those connections reach DIFFERENT Beeper Desktops — the agent's in Session 0, the operator's
+// WHY (operator 2026-09-02). Outbound has been per-connection since 2026-08-30: an agent's `use:`
+// (older spelling `beeper_connection`) names which connection its own sends ride, and base_url
+// (2026-09-02) let those connections reach DIFFERENT Beeper Desktops — the agent's in Session 0, the operator's
 // in Session 1. Inbound never caught up: the spine registered on the DEFAULT connection's
 // bridge alone, so a message arriving on any other connection woke nothing. The multi-connection
 // work called that "a documented gap for a follow-up"; this is the follow-up.
 //
 // It closes the loop the operator described: with both accounts on one machine, "e hi" arriving
 // on Rodz's connection is heard by the spine that HAS E, and E's reply goes back out on Rodz's
-// connection by its own `beeper_connection`. Mind and mouth in one process — no relay agent, no
-// envelope, no cross-node round trip. The mesh stays for what it is uniquely good at: reaching a
-// node you cannot dial.
+// connection by its own `use:`. Mind and mouth in one process — no relay agent, no envelope, no
+// cross-node round trip. The mesh stays for what it is uniquely good at: reaching a node you
+// cannot dial.
+//
+// THAT REQUIRES TWO EARS, and since 2026-09-10 two ears must be DECLARED (`owner_node` naming this
+// node on each connection). The default is one — `primary` ingests — because inferring the second
+// from an agent's outbound pin is what took the live node deaf on the operator's own account.
 //
 // NO DEDUPLICATION, DELIBERATELY (operator's ruling). Two accounts in one real group do not see
 // "the same message twice": Beeper is Matrix, each account has its own room, so one real chat is
@@ -20,9 +24,12 @@
 // addressing (`fallback_handle`), exactly as it already is across two nodes. A content hash here
 // would have been a patch laid over a question the architecture already answers.
 //
-// OWNERSHIP STILL HOLDS. A connection this node does not own is wrapped outbound-only by boot
-// (its onMessage/onEdit/onMedia are no-ops), so registering across every bridge automatically
-// respects `owner_node` without this module knowing the rule exists.
+// OWNERSHIP STILL HOLDS, AND SO DOES THE EAR/MOUTH SPLIT. Every connection this node holds that
+// is NOT one of its ears — another node's account (`owner_node`), or simply a connection it only
+// SPEAKS on (operator 2026-09-10: `primary` ingests, `secondary` outputs) — is wrapped
+// outbound-only by boot, its onMessage/onEdit/onMedia reduced to no-ops. So registering across
+// every bridge automatically respects both rules without this module knowing either exists, and
+// `all` may safely be every bridge boot built.
 
 // The three registrations that must reach EVERY connection, and the three questions that must be
 // asked of ALL of them rather than of the default one.
@@ -32,11 +39,12 @@ const FANOUT_REGISTER = new Set(['onMessage', 'onEdit', 'onMedia']);
  * @param {object} primary  the DEFAULT connection's bridge — every non-inbound call still lands
  *   here untouched, so every existing outbound call site behaves exactly as before.
  * @param {object[]} all    every bridge this node holds, INCLUDING the primary.
- * @param {Map<object,string>} [connectionOf]  bridge instance -> the CONNECTION NAME boot dialled
- *   it for. Empty/absent ⇒ nothing is stamped and every arrival is exactly the object it was.
+ * @param {Map<object,string>} [connectionNameOf]  bridge instance -> the CONNECTION NAME boot
+ *   dialled it for. Empty/absent ⇒ nothing is stamped and every arrival is exactly the object it
+ *   was. NOT boot's per-agent resolvers (outboundOf/inboundOf) — a different question entirely.
  * @returns {object} a bridge-shaped facade
  */
-export function fanoutInbound(primary, all = [], connectionOf = null) {
+export function fanoutInbound(primary, all = [], connectionNameOf = null) {
   const bridges = (Array.isArray(all) ? all : []).filter(Boolean);
   // A single connection is the overwhelmingly common case and must cost nothing: hand back the
   // bridge itself, so a node with one Beeper account is not merely equivalent but IDENTICAL.
@@ -51,9 +59,10 @@ export function fanoutInbound(primary, all = [], connectionOf = null) {
         //
         // WHICH CONNECTION DELIVERED IT (operator 2026-09-08). This is the ONLY point in the
         // process that knows: one callback is registered on every bridge, so by the time the
-        // spine sees the arrival the bridge that produced it is gone. An agent is bound to a
-        // connection (`beeper_connection`, boot's connectionOf) and must wake on ITS OWN
-        // connection's arrival, so the fact has to ride the arrival — STAMPED HERE, at the one
+        // spine sees the arrival the bridge that produced it is gone. On a node holding more
+        // than one EAR the router still has to decide which arrival wakes an agent (boot's
+        // inboundOf, read by router.mjs's connection gate), so the fact has to ride the arrival
+        // — STAMPED HERE, at the one
         // registration that knows it, rather than re-derived downstream from a chatId (which is
         // per-account and would need a lookup per message to say the same thing).
         //
@@ -66,7 +75,7 @@ export function fanoutInbound(primary, all = [], connectionOf = null) {
         // spread leaves `from`'s own fields untouched (identity.build reads it field by field).
         return (cb) => {
           for (const b of bridges) {
-            const conn = key === 'onMessage' ? (connectionOf?.get?.(b) ?? null) : null;
+            const conn = key === 'onMessage' ? (connectionNameOf?.get?.(b) ?? null) : null;
             b?.[key]?.(conn ? (msg) => cb({ ...msg, from: { ...msg?.from, connection: conn } }) : cb);
           }
         };

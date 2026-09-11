@@ -170,18 +170,28 @@ function fakeSession(opts) {
 // which is all this file needs (it never asserts on discovery).
 const fakeProbe = async () => ({ ok: false, status: 0 });
 
-// TWO CONNECTIONS, HELD. boot constructs one bridge per connection an AGENT actually rides
-// (`for (const being of Object.keys(agents())) await bridgeForEndpoint(...)`), so a second
-// `beeper:` block alone holds nothing: some agent has to name it. `mouth` is that agent and
-// nothing else — `handles: []` is a COMPLETE wake list that happens to be empty, so it is
-// addressable by nothing and cannot enter any routing decision here.
+// TWO EARS, DECLARED (operator 2026-09-10). Until the ingest/output split this file got its
+// second ear for free: boot dialled one bridge per connection an AGENT RODE, and `mouth` — an
+// agent addressable by nothing, riding the other connection — was enough to make that connection
+// an ear as a side effect of being a mouth. That coupling is exactly what took the live node deaf
+// on the operator's own account, and it is gone: `use:`/`beeper_connection` now name where an
+// agent SPEAKS and nothing else.
+//
+// A node that wants to wake on two accounts must now SAY SO, and the key for it already existed —
+// `owner_node`, "which node WAKES on this connection". Both blocks name this node, so both are
+// ears. That is the honest form of what this file has always been testing: a node deliberately
+// holding two ears, and every hazard that follows from it.
+//
+// `mouth` STAYS, unchanged, and now means only what its name says: an agent that speaks on the
+// other connection. `handles: []` is a COMPLETE wake list that happens to be empty, so it is
+// addressable by nothing and enters no routing decision here.
 const NODE = (persona, { use = 'main' } = {}) => ({
   node_name: 'kg',
   user_name: 'An',
   beeper: {
     use,
-    main: { account: 'an@example.com', token: MAIN },
-    secondary: { account: 'rodz@example.com', token: SECONDARY },
+    main: { account: 'an@example.com', token: MAIN, owner_node: 'kg' },
+    secondary: { account: 'rodz@example.com', token: SECONDARY, owner_node: 'kg' },
   },
   agents: {
     egpt: { configuration: 'egpt', default: true, ...persona },
@@ -248,17 +258,55 @@ describe('ONE spine, TWO connections — the merged-config shape (operator 2026-
     app.stop();
   });
 
-  // …AND THE CONNECTION HAS TO BE RIDDEN TO BE HELD. NODE-SHAPE.md describes the migration as
-  // "fold the second account into one `beeper:` block" — that alone holds nothing. boot builds one
-  // bridge per connection an AGENT names (`for (const being of Object.keys(agents()))
-  // await bridgeForEndpoint(endpointFor(connectionOf(being)))`), so a `secondary:` block no agent
-  // rides is a token that is never dialled and an account that is never heard.
-  it('a declared connection NO agent rides is never opened', async () => {
+  // …AND A CONNECTION HAS TO BE ONE OF THE TWO THINGS TO BE HELD AT ALL.
+  //
+  // REWRITTEN 2026-09-10, deliberately. This case used to read "a declared connection NO AGENT
+  // RIDES is never opened", and it was the lock on the very coupling the ingest/output split
+  // removes: it deleted `mouth` and asserted that `secondary` therefore went undialled, which is
+  // only true while an agent's outbound binding is also what opens the node's ears. That sentence
+  // can no longer be written, because riding is now about the MOUTH alone — and it should not be,
+  // because it is the sentence that made a declared `primary` nobody speaks on unreachable, and
+  // took the live node deaf on the operator's own account.
+  //
+  // WHAT REPLACES IT is the true statement of the same discipline — boot still opens the SMALLEST
+  // set of bridges the config asks for, never one per declared block — now stated over BOTH
+  // directions: a connection is dialled if it is an EAR (claimed here by `owner_node`) or if some
+  // agent SPEAKS on it, and a block that is neither is a token that is never dialled and an
+  // account that is never touched. `spare` below is exactly that block. Deleting `mouth` is kept
+  // in the same case, because it is now the interesting half: `secondary` stays open, and stays an
+  // ear, with no agent riding it at all — which is the whole point of the split.
+  it('a declared connection that is neither an ear nor any agent\'s mouth is never opened', async () => {
     const config = MERGED_UNGUARDED();
-    delete config.agents.mouth;                 // the second account is still declared under beeper:
-    const { app, built, lines } = await bootWith(config);
-    expect(built.map((s) => s.connection)).toEqual(['main']);
-    // …and one connection is one connection: the double-answer warning must stay silent.
+    config.beeper.spare = { account: 'spare@example.com', token: 'TOK-spare' };   // declared, claimed by nobody
+    delete config.agents.mouth;                 // …and nobody SPEAKS on `secondary` any more either
+    const { app, built, byConnection, replies, lines } = await bootWith(config);
+
+    // `spare` is never dialled. `secondary` still is — it is a declared EAR, and that no longer
+    // depends on an agent riding it.
+    expect(built.map((s) => s.connection).sort()).toEqual(['main', 'secondary']);
+
+    // …and it is a real ear, not merely an open socket.
+    await deliver(byConnection.secondary, SHARED_ON_SECONDARY, '@ken hola', { atE: true });
+    expect(replies()).toHaveLength(1);
+
+    // Two ears is two ears: the double-answer warning is exactly as loud as before.
+    expect(lines.filter((l) => /wakes on 2 connections/.test(l))).toHaveLength(1);
+    app.stop();
+  });
+
+  // THE OTHER HALF OF THE SPLIT, stated here because this file is where the two-ear shape lives:
+  // an agent's `use:` / `beeper_connection` moves its MOUTH and can no longer make an ear. With
+  // `owner_node` taken off `secondary`, `mouth` still speaks there and the node still holds the
+  // connection — and nothing arriving on it can wake anything.
+  it('an agent riding a connection makes it a MOUTH, never an ear', async () => {
+    const config = MERGED_UNGUARDED();
+    delete config.beeper.secondary.owner_node;  // no longer claimed as an ear; `mouth` still rides it
+    const { app, built, byConnection, replies, lines } = await bootWith(config);
+
+    expect(built.map((s) => s.connection).sort()).toEqual(['main', 'secondary']);
+    await deliver(byConnection.secondary, SHARED_ON_SECONDARY, '@ken hola', { atE: true });
+    expect(replies()).toEqual([]);
+    // …one ear is one ear: no double-answer warning, because there is no second arrival to be had.
     expect(lines.filter((l) => /wakes on \d+ connections/.test(l))).toEqual([]);
     app.stop();
   });
@@ -411,8 +459,9 @@ describe('ONE spine, TWO connections — the merged-config shape (operator 2026-
 });
 
 // ── THE CONNECTION GATE (operator 2026-09-08) ────────────────────────────────────────────────
-// The merged shape binds an AGENT to a CONNECTION (`beeper_connection`, resolved by boot's
-// connectionOf). The operator's ruling on what one real message typed into a chat BOTH accounts
+// A node holding TWO EARS (declared above with `owner_node`) hears one real message twice, and
+// the router's gate decides which arrival wakes an agent (boot's inboundOf). The operator's ruling
+// on what one real message typed into a chat BOTH accounts
 // are in must do: "received by primary, logs, recognized agent, produces reply… received by
 // secondary, logs, K is not an agent. continue." — both arrivals ingest and log, only the arrival
 // on the connection that CARRIES the agent produces a turn. NOT deduplication: the second arrival

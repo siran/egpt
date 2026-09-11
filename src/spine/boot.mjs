@@ -869,22 +869,40 @@ export async function boot({
   // (1) is the per-agent pin below, which still beats all of this. Computed ONCE: the `beeper:`
   // block cannot change while the process runs (there is no config watcher), and this is asked
   // once per being on the bridge-construction path.
-  const defaultConnection = (() => {
-    const b = cfg.beeper;
-    if (!b || typeof b !== 'object' || Array.isArray(b)) return null;
-    if (b.use != null) return b.use;
+  // Split out of defaultConnection so the `use:`-less answer can be NAMED — the boot line beside
+  // inboundConnections below tells the operator what removing an explicit `use:` would do, and it
+  // can only do that if the inferred answer is computable separately.
+  const nameDerivedConnection = (() => {
     if (declaredConnections.includes('secondary')) return 'secondary';
     if (declaredConnections.includes('primary')) return 'primary';
     if (declaredConnections.length === 1) return declaredConnections[0];
     return null;
   })();
+  const defaultConnection = (() => {
+    const b = cfg.beeper;
+    if (!b || typeof b !== 'object' || Array.isArray(b)) return null;
+    if (b.use != null) return b.use;
+    return nameDerivedConnection;
+  })();
+  // ── THE MOUTH, PER AGENT ──────────────────────────────────────────────────────────────────
   // Per-agent Beeper CONNECTION selection (operator 2026-08-30): names which connection (a key
   // under beeper:, resolved below by tokenFor) this agent's own outbound sends ride. Same
   // resolver shape as bodyEmojiOf/labelOf/agentSignature*Of above. ABSENT ⇒ this node's default
   // connection, resolved just above.
-  const connectionOf = (being) => {
+  //
+  // SPELLED `use:` NOW (operator 2026-09-10): *"agent could `use:` a configuration for it's
+  // output"*. `beeper_connection` is the older spelling of the identical thing, it is in both live
+  // configs and in the tests, and it stays an ALIAS — but `use:` is the name going forward, so it
+  // WINS when an agent carries both: a newer explicit statement must not be overruled by a legacy
+  // one it was written to replace.
+  //
+  // OUTPUT ONLY. This is HALF of what used to be one `connectionOf` — see inboundConnections
+  // below for the other half and for why the two had to come apart. NOTHING an agent declares
+  // here can move this node's ear; that is the whole point of the split.
+  const outboundOf = (being) => {
     const a = agents()[String(being ?? '').toLowerCase()];
-    return (a && typeof a === 'object' && a.beeper_connection) ? a.beeper_connection : defaultConnection;
+    if (!a || typeof a !== 'object') return defaultConnection;
+    return a.use || a.beeper_connection || defaultConnection;
   };
 
   // conv-state YAML IO — default to the real file, missing = empty state.
@@ -1155,10 +1173,11 @@ export async function boot({
   };
   // Beeper token resolution — GENERALIZED (operator 2026-08-30) from the old single-connection
   // lookup (operator 2026-07-09, `beeper[beeper.use].token`) into a per-CONNECTION-NAME one, so
-  // more than one Beeper account can be wired into this node — connectionOf (above) picks the
-  // name per agent; `name` may be null (no beeper: block / no per-agent field / no `use`), which
-  // falls straight through to back-compat. BYTE-IDENTICAL to the old resolution when called as
-  // tokenFor(cfg.beeper?.use ?? null) — today's only shape.
+  // more than one Beeper account can be wired into this node — outboundOf (above) picks the name
+  // per agent for OUTPUT and inboundConnections (below) picks the node's EARS; `name` may be null
+  // (no beeper: block / no per-agent field / no `use`), which falls straight through to
+  // back-compat. BYTE-IDENTICAL to the old resolution when called as tokenFor(cfg.beeper?.use ??
+  // null).
   // A connection's ENDPOINT — its token, WHERE that Beeper Desktop is, and WHO wakes on it.
   // GENERALIZED from the token-only lookup (operator 2026-09-02) because a node now hosts TWO
   // Beeper Desktops at once: the agent's, in Session 0 under its own Windows account, and the
@@ -1245,6 +1264,123 @@ export async function boot({
   // The token ALONE, for callers that only need the identity and not the address.
   const tokenFor = (name) => endpointFor(name).token;
 
+  // ── THE EAR, PER NODE (operator 2026-09-10) ───────────────────────────────────────────────
+  // *"do not use `use:`, instead `primary` is the one to 'use' and `secondary` is the one to use
+  // as output"*. INGEST and OUTPUT are two different answers, and until now ONE binding gave
+  // both: boot dialled a bridge per connection an agent SPEAKS on, and router.mjs's connection
+  // gate compared an arrival against that same speaking binding. So the moment the default output
+  // became `secondary` (60ff004 — the connection names carry the meaning), this node stopped
+  // dialling `primary` at all and went DEAF on the operator's own account, the Self-DM command
+  // channel included. The live config has been carrying a hand-added `use: primary`, marked
+  // TEMPORARY, for no reason other than to hold that ear open.
+  //
+  // TWO MEASURED FACTS this rule is shaped around, both on the operator's own machine:
+  //   · `primary` and `primary_gui` are the SAME ACCOUNT (anrodz42) on two different Beeper
+  //     installs, so they carry two DIFFERENT tokens and nothing downstream collapses them.
+  //     Dialling both as ears would ingest every message on that account TWICE.
+  //   · `~/.egpt`'s `secondary` token is BYTE-IDENTICAL to `~/.egpt2`'s `main` token — one
+  //     install, held by two nodes. If kg both heard and spoke there, kg and kg2 would both wake
+  //     on it and double-answer wherever An's number is absent.
+  //
+  // PRECEDENCE, highest first. This is a NODE-level answer and no agent can move it (an agent's
+  // `use:` is its MOUTH, above) — which is exactly what makes the two directions independent.
+  //
+  //   (1) every connection whose `owner_node` names THIS node — the EXPLICIT claim, made with
+  //       the key that already asks this question ("which node WAKES on this connection"; every
+  //       other node still SENDS on it). SEVERAL may be claimed: that is how a node deliberately
+  //       holds two ears, and holding two has to be SAID rather than inferred, because the cost
+  //       of inferring it wrongly is one typed line answered twice from two visible numbers.
+  //   (2) `primary` — the operator's rule, and the reason this split exists at all.
+  //   (3) the ONE connection, if exactly one is declared, whatever it is named. INTENT.md's
+  //       baseline: a fresh clone on one account needs no naming convention and no selector.
+  //   (4) the node's DEFAULT OUTPUT connection — BACK-COMPAT, and the old coupling in its last
+  //       honest form: before this split the ear always followed the mouth, so where the names
+  //       give no answer it still does and a node that worked yesterday works today. This is the
+  //       branch that carries `beeper: { use: main, main: …, alt: … }`.
+  //   (5) nothing — said OUT LOUD below, because a node that hears nothing looks exactly like a
+  //       quiet day from the outside.
+  //
+  // EXCLUDED FROM EVERY BRANCH:
+  //   · `primary_gui`, BY NAME. It is the operator's own Beeper WINDOW — a second install of an
+  //     account another connection already is. A node ingesting through the operator's GUI is
+  //     never what was meant, and a config that does want that install as the ear can call it
+  //     `primary`. The general form of this rule is the account/token dedup below; the name rule
+  //     exists because the two installs carry different TOKENS, so the dedup alone cannot see
+  //     that they are one account when `account:` is absent.
+  //   · a connection whose `owner_node` names ANOTHER node. Already true at bridge construction
+  //     (wakesOn, below, wraps such a bridge outbound-only); applied HERE too so the ear list
+  //     never claims something the bridge will refuse to listen on, and so "this node has no ear"
+  //     is computable before a single bridge exists.
+  //   · a connection whose ACCOUNT, or whose TOKEN, already belongs to a claimed ear.
+  //     Declaration order decides, matching the bridge map's own first-name-wins collapse.
+  const INGEST_NEVER_BY_NAME = new Set(['primary_gui']);
+  const isOwnNode = (owner) => !owner || ownNodeNamesOf(cfg).has(String(owner).trim().toLowerCase());
+  const inboundConnections = (() => {
+    // No `beeper:` connections at all ⇒ the ONE unnamed legacy bridge (beeper_token /
+    // BEEPER_ACCESS_TOKEN) is the ear, exactly as it always was. `null` is the same name every
+    // other resolver in this file already uses for it, so nothing downstream learns a special case.
+    if (!declaredConnections.length) return [null];
+    const claimed = declaredConnections.filter((n) => connectionBlock(n)?.owner_node && isOwnNode(connectionBlock(n).owner_node));
+    const pool = claimed.length ? claimed
+      : declaredConnections.includes('primary') ? ['primary']
+      : declaredConnections.length === 1 ? declaredConnections
+      : connectionBlock(defaultConnection) ? [defaultConnection]
+      : [];
+    const seenAccount = new Set();
+    const seenToken = new Set();
+    const ears = [];
+    for (const n of pool) {
+      const acct = connectionBlock(n);
+      if (INGEST_NEVER_BY_NAME.has(n)) {
+        // Never silent: a config that put this connection in the pool asked for something it is
+        // not going to get, and the remedy is one word.
+        log.line?.(`[bridge] connection '${n}' is NEVER an ear — that name means the operator's own Beeper window, a second install of an account another connection already is, and ingesting there would hear every message twice. It is still dialled if an agent speaks on it. To make this install the ear, name it 'primary'.`);
+        continue;
+      }
+      if (!isOwnNode(acct?.owner_node)) continue;
+      const account = String(acct?.account ?? '').trim().toLowerCase();
+      const token = String(endpointFor(n).token ?? '');
+      if ((account && seenAccount.has(account)) || (token && seenToken.has(token))) {
+        log.line?.(`[bridge] connection '${n}' is the same Beeper account as an ear this node already claimed — dialling it as a second ear would hear every message twice, so it is held for outbound only`);
+        continue;
+      }
+      if (account) seenAccount.add(account);
+      if (token) seenToken.add(token);
+      ears.push(n);
+    }
+    return ears;
+  })();
+  // HALF-ALIVE IS WORSE THAN DOWN (INTENT.md). A node with no ear hears NOTHING and looks from
+  // the outside exactly like a node nobody happened to address. It BOOTS anyway — for the same
+  // reason the dead-endpoint fallback below does: refusing to start would take the node down over
+  // a config the operator can fix while it is running — but it says so, once, naming what it
+  // looked for and the two ways to answer it.
+  if (declaredConnections.length && !inboundConnections.length) {
+    log.line?.(`[bridge] beeper: declares ${declaredConnections.map((n) => `'${n}'`).join(', ')} but this node resolves no INGEST connection — nothing survives the ear rules (owner_node naming this node, then 'primary', then a lone connection, then the default output connection). THIS NODE HEARS NOTHING: every bridge it opens is outbound-only. Name one connection 'primary', or put owner_node: ${node_name || '<this node>'} on the one this node should wake on.`);
+  }
+  // `beeper.use` IS NOW HALF OF WHAT IT WAS (operator 2026-09-10): it selects this node's default
+  // OUTPUT connection and nothing else — the ear is decided above, and no `use:`, node-level or
+  // per-agent, can move it. Said out loud ONLY when it is actually overriding the name-derived
+  // answer, because that is the only case where removing the key would change anything. That is
+  // exactly the operator's live kg config, which carries `use: primary` marked TEMPORARY for no
+  // reason other than to hold the ear open — a job it no longer has. Silent on ~/.egpt2, whose
+  // lone connection resolves to the same answer with the key or without it.
+  if (cfg.beeper?.use != null && nameDerivedConnection && nameDerivedConnection !== cfg.beeper.use) {
+    log.line?.(`[bridge] beeper.use names '${cfg.beeper.use}' — it now selects this node's OUTPUT connection ONLY, and ingest (${inboundConnections.map((n) => `'${n}'`).join(', ') || 'NOTHING'}) is decided without it. Remove it and this node would SPEAK on '${nameDerivedConnection}' instead, hearing on exactly the same connection it hears on now.`);
+  }
+  // The per-agent half of the ear, and the ONLY thing the router's connection gate asks. An agent
+  // does not CHOOSE its ear — the node does — but on a node holding SEVERAL ears the gate still
+  // has to decide which arrival wakes it, or one line typed into a chat both accounts are in
+  // wakes it twice, from two visibly different numbers (the live bug tests/multi-connection-wake
+  // exists for). The rule is the OLD coupling, kept precisely where it is still the only answer
+  // available: if the agent's MOUTH is itself one of this node's ears, that is its ear; otherwise
+  // the node's first ear. On a one-ear node — every node the operator runs — it is that one ear
+  // for everybody, and the gate is inert anyway (the fan-out stamps no connection).
+  const inboundOf = (being) => {
+    const mouth = outboundOf(being);
+    return inboundConnections.includes(mouth) ? mouth : (inboundConnections[0] ?? null);
+  };
+
   // THE RANGE. 23373 is Beeper's documented base and it walks UP to the first free port, so the
   // highest an install can be pushed to is that base plus however many listeners already squat
   // the range — six on this machine (four Beeper installs, plus the egpt shell/console on 23375
@@ -1307,7 +1443,11 @@ export async function boot({
   // NOTHING alive ⇒ the endpoint we already had, loudly. Booting against a dead endpoint is
   // already what a misconfigured node does; refusing to boot would take the whole node down
   // because Beeper was merely slow to start.
-  for (const name of new Set(Object.keys(agents()).map((being) => connectionOf(being)))) {
+  // EARS FIRST, then every connection an agent SPEAKS on — the same union the bridge loop below
+  // dials, so every endpoint this node will hold is probed exactly once and none is probed that
+  // it will not hold. Before the ingest/output split this was the speaking set alone, which is
+  // why a `primary` nobody spoke on was never even looked for.
+  for (const name of new Set([...inboundConnections, ...Object.keys(agents()).map((being) => outboundOf(being))])) {
     const acct = connectionBlock(name);
     const candidates = candidatesOf(acct);
     if (candidates) {
@@ -1504,36 +1644,58 @@ export async function boot({
   const outboundOnly = (port) => new Proxy(port, {
     get: (t, k) => ((k === 'onMessage' || k === 'onEdit' || k === 'onMedia') ? (() => {}) : Reflect.get(t, k, t)),
   });
-  const bridgeForEndpoint = async (ep) => {
+  // `ear` (operator 2026-09-10) is the INGEST half of the binding, decided by inboundConnections
+  // above and passed in rather than re-derived: a bridge is cached by ENDPOINT, so this decision
+  // is made ONCE per endpoint and the dial loop below is what guarantees the ear asks first.
+  // Everything else this node holds is a MOUTH — it sends and its three inbound registrations are
+  // no-ops, the same shape `owner_node` already produced.
+  const bridgeForEndpoint = async (ep, { ear = false, name = null } = {}) => {
     const key = endpointKey(ep);
     if (!bridgeByEndpoint.has(key)) {
       // baseUrl/wsUrl are spread in ONLY when set: absent must leave startBeeperBridge's own
       // defaults standing, never an explicit undefined that would override them.
       const opts = { ...sharedBridgeOpts, beeperToken: ep.token, ...(ep.baseUrl ? { baseUrl: ep.baseUrl } : {}), ...(ep.wsUrl ? { wsUrl: ep.wsUrl } : {}), ...(ep.rediscover ? { rediscover: ep.rediscover } : {}) };
       const port = lasso.wrap(await createBeeperBridgePort(opts, startBridge ? { start: startBridge } : {}));
-      const owned = wakesOn(ep);
-      if (!owned) log.line?.(`[bridge] connection is owned by node '${ep.ownerNode}' — this node sends on it, never wakes on it`);
+      const owned = ear && wakesOn(ep);
+      // Named at the ONE moment it is decided. Silent on a single-connection node, because there
+      // the sole connection is the ear and this branch is never taken. The owner_node wording is
+      // the line that has always been printed for that case and is left exactly as it was — it
+      // says something more specific than "not an ear": another node IS the ear.
+      if (!owned) log.line?.(!wakesOn(ep)
+        ? `[bridge] connection is owned by node '${ep.ownerNode}' — this node sends on it, never wakes on it`
+        : `[bridge] connection ${name ? `'${name}' ` : ''}is a MOUTH on this node, not an ear — it sends, and nothing arriving on it can wake anything`);
       if (owned) inboundOwned.add(key);
       bridgeByEndpoint.set(key, owned ? port : outboundOnly(port));
     }
     return bridgeByEndpoint.get(key);
   };
-  // Construct exactly one bridge per ENDPOINT actually referenced by an agent in the registry —
-  // on a node where no agent names a beeper_connection, every one of these resolves to the SAME
-  // token (connectionOf's fallback), so this loop constructs exactly one bridge, exactly as
-  // before. defaultKey is always among agents() (personaAgent(), above, guarantees it).
+  // Construct exactly one bridge per ENDPOINT this node actually holds — the EARS it wakes on,
+  // and every connection an agent SPEAKS on. On a node where no agent names a `use:` and the ear
+  // is the mouth (every single-account node, and kg while it still carries `use: primary`) all of
+  // these resolve to the SAME endpoint, so this constructs exactly one bridge, exactly as before.
+  // defaultKey is always among agents() (personaAgent(), above, guarantees it).
   // …and remember WHICH CONNECTION each bridge was dialled for (operator 2026-09-08). The bridge
   // map is keyed by ENDPOINT (base_url + TOKEN) precisely so two connection names pointing at one
   // Desktop collapse to one instance — which also means the endpoint key cannot serve as the
   // connection's name downstream, and it carries a token, which must never reach an event or a
   // log. FIRST name wins, matching the collapse: two names on one endpoint are one ear.
   const connectionOfBridge = new Map();   // bridge instance -> the CONNECTION NAME it was dialled for
-  for (const being of Object.keys(agents())) {
-    const name = connectionOf(being);
-    const b = await bridgeForEndpoint(endpointFor(name));
+  // EARS FIRST, and the ordering is load-bearing twice over: bridgeForEndpoint decides
+  // outbound-only ONCE per endpoint, and connectionOfBridge's first-name-wins must stamp an
+  // arrival with the EAR's name rather than an outbound alias that happens to share the endpoint.
+  // This loop is also the whole reason a declared `primary` no agent speaks on is now DIALLED —
+  // before the split, an unspoken-on connection was never opened and therefore never heard.
+  for (const name of inboundConnections) {
+    const b = await bridgeForEndpoint(endpointFor(name), { ear: true, name });
     if (!connectionOfBridge.has(b)) connectionOfBridge.set(b, name);
   }
-  const defaultBridge = bridgeByEndpoint.get(endpointKey(endpointFor(connectionOf(defaultKey))));   // the default/persona connection's bridge — every node-level (non-per-being) OUTBOUND call site below rides THIS, unchanged
+  // …then the MOUTHS. Each adds a bridge only if its endpoint is not already open.
+  for (const being of Object.keys(agents())) {
+    const name = outboundOf(being);
+    const b = await bridgeForEndpoint(endpointFor(name), { ear: false, name });
+    if (!connectionOfBridge.has(b)) connectionOfBridge.set(b, name);
+  }
+  const defaultBridge = bridgeByEndpoint.get(endpointKey(endpointFor(outboundOf(defaultKey))));   // the default/persona connection's bridge — every node-level (non-per-being) OUTBOUND call site below rides THIS, unchanged
   // INBOUND ON EVERY CONNECTION (operator 2026-09-02), closing the gap the multi-connection work
   // left open: outbound has been per-connection since 2026-08-30, but the spine registered
   // onMessage/onEdit/onMedia on the DEFAULT bridge alone, so a message arriving on any other
@@ -1548,7 +1710,7 @@ export async function boot({
   // rawBridgeOf(being): the RAW (non-shell-aware) bridge for a given being's own connection.
   // Fallback to the default `bridge` is defensive only — every being in agents() was already
   // enumerated above, so this should never miss.
-  const rawBridgeOf = (being) => bridgeByEndpoint.get(endpointKey(endpointFor(connectionOf(being)))) ?? defaultBridge;
+  const rawBridgeOf = (being) => bridgeByEndpoint.get(endpointKey(endpointFor(outboundOf(being)))) ?? defaultBridge;
 
   // ── ONE MENTION, TWO ANSWERS (operator 2026-09-07) ────────────────────────────────────────
   // A node that wakes on more than one connection hears a chat BOTH its accounts are in twice —
@@ -1701,8 +1863,8 @@ export async function boot({
   // connection's facade — the same object mesh/memberSender rode before this change) is this
   // map's defaultKey entry; shellAwareBridgeOf mirrors rawBridgeOf's per-being lookup.
   const shellAwareBridgeByEndpoint = new Map([...bridgeByEndpoint].map(([key, b]) => [key, makeShellAwareBridge(b, shellPort)]));
-  const shellAwareBridge = shellAwareBridgeByEndpoint.get(endpointKey(endpointFor(connectionOf(defaultKey))));
-  const shellAwareBridgeOf = (being) => shellAwareBridgeByEndpoint.get(endpointKey(endpointFor(connectionOf(being)))) ?? shellAwareBridge;
+  const shellAwareBridge = shellAwareBridgeByEndpoint.get(endpointKey(endpointFor(outboundOf(defaultKey))));
+  const shellAwareBridgeOf = (being) => shellAwareBridgeByEndpoint.get(endpointKey(endpointFor(outboundOf(being)))) ?? shellAwareBridge;
 
   // --- lifecycle announce: "restarting…" to Self before exit, "back up! <commit>"
   //     on the next boot. The bounce is otherwise invisible to the operator. ---
@@ -1794,10 +1956,12 @@ export async function boot({
       // true | false | null(unknown). A port with no watcher returns null rather than a
       // guess, and the router reads anything but a definite false as "stay silent".
       isPeerAlive: (port) => peerLiveness.get(Number(port))?.isAlive() ?? null,
-      // WHICH CONNECTION AN AGENT IS BOUND TO (operator 2026-09-08) — connectionOf, above, the
-      // SAME resolver that already decides which bridge an agent's outbound rides and which
-      // bridges boot builds at all. The router asks it; it does not learn a second rule.
-      connectionOf,
+      // WHICH CONNECTION AN AGENT WAKES ON (operator 2026-09-08; split from output 2026-09-10) —
+      // inboundOf, above. It is the INGEST half of the one resolver that also decides which
+      // bridges boot opens as ears, so the router asks it and does not learn a second rule. It is
+      // deliberately NOT the output half: an agent's `use:` moves its mouth and must never move
+      // what it can hear, which is the entire point of the split.
+      inboundOf,
       onLog: (m) => log.line?.(`[router] ${m}`),
     }),
     // currentRoomOf: a lazy thunk, not `commands.currentRoomOf` directly — `commands` (below)

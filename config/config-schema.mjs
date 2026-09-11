@@ -686,15 +686,33 @@ export const CONFIG_SCHEMA = {
     list at all; a list that repeats ONE token across several ports collapses to
     plain account + token. Boot logs a line naming any connection still on it.
 
-    A node's default token = beeper[beeper.use].token — switch the default by
-    changing use, no re-typing tokens. This REPLACES the top-level beeper_token.
+    INGEST AND OUTPUT ARE TWO ANSWERS (operator 2026-09-10): "primary is the one
+    to 'use' and secondary is the one to use as output".
+
+      THE EAR — which connection this node WAKES on. In order:
+        1. every connection whose owner_node names THIS node (the explicit
+           claim, and the only way to hold TWO ears);
+        2. 'primary';
+        3. the ONE connection, if exactly one is declared, whatever its name;
+        4. the default OUTPUT connection below (back-compat: a node carrying
+           use: and several blocks keeps the ear it had).
+      NEVER an ear: 'primary_gui' (the operator's own Beeper window — a second
+      install of an account another connection already is), a connection owned
+      by another node, and a connection whose account or token duplicates an ear
+      already claimed. A node that resolves NO ear boots and says so loudly.
+
+      THE MOUTH — which connection an agent SPEAKS on. In order: the agent's own
+      use: (alias: beeper_connection), then beeper.use, then 'secondary',
+      then 'primary', then the lone connection, then the legacy beeper_token.
+
+    Neither can move the other. An agent's pin names its mouth and cannot make
+    an ear; the ear is a node-level answer no agent participates in.
 
     MORE THAN ONE <name> block may be declared — e.g. a second Beeper Desktop
     login/WhatsApp number for a second being on the SAME node. One bridge
-    instance is opened per DISTINCT TOKEN actually referenced (by use or by
-    some agent's beeper_connection); an agent that never sets beeper_connection
-    still rides use exactly as before. See agents.beeper_connection below for
-    how an agent picks a NON-default one.
+    instance is opened per DISTINCT (base_url, token) actually referenced — as
+    an ear, or by some agent's use: — so a block that is neither is never
+    dialled, and a node where the ear IS the mouth opens exactly one bridge.
 
     BACK-COMPAT: with no beeper: block (or no use), the bridge falls back to the
     top-level beeper_token key, then the BEEPER_ACCESS_TOKEN env var (unchanged).
@@ -1506,10 +1524,13 @@ export const CONFIG_SCHEMA = {
         answers).
       body_emoji
         Prefixes this agent's outbound messages.
-      beeper_connection
-        OPTIONAL (operator 2026-08-30) — names a <name> block under the top-
-        level beeper: (above) this agent's outbound replies ride, for a node
-        wired to MORE THAN ONE Beeper account. ABSENT ⇒ this node's ordinary
+      use   (alias, older spelling: beeper_connection)
+        OPTIONAL (operator 2026-08-30; spelled use: since 2026-09-10) — names
+        a <name> block under the top-level beeper: (above) this agent's outbound
+        replies ride, for a node wired to MORE THAN ONE Beeper account. use:
+        wins if an agent carries both. OUTPUT ONLY: it cannot make that
+        connection an ear, and the node still hears where beeper:'s ear rules
+        say it does. ABSENT ⇒ this node's ordinary
         single-connection resolution (beeper.use) — NOT the literal 'main':
         a beeper: { main: {...} } block with no use key falls through to
         beeper_token/the BEEPER_ACCESS_TOKEN env var today, and an absent

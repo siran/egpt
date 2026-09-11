@@ -140,6 +140,12 @@ export const RETAINED_SEAM = '\n\n— ↓ reply —\n\n';
 // connection routes each being's reply through its OWN bridge. Absent, or returning nullish for
 // a given being, falls straight back to the single `bridge` above — BYTE-IDENTICAL to before for
 // every caller that only passes `bridge` (memberSender, every existing test).
+//
+// PURELY OUTBOUND, and now provably so (operator 2026-09-10): boot resolves this from `outboundOf`
+// — an agent's own `use:` (alias `beeper_connection`), else the node's default output connection
+// — which is one HALF of what used to be a single binding that also decided what the node could
+// HEAR. Nothing here can move an ear; boot's inboundConnections/inboundOf is the other half, and
+// the router's connection gate is its only reader.
 
 /**
  * WHICH CONNECTION DOES THIS OUTBOUND GO OUT ON — THE ONE ANSWER (operator 2026-09-07).

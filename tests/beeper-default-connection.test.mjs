@@ -11,9 +11,9 @@
 // ones do not) that is a bridge with no token at all: deaf and mute, the "half-alive is worse than
 // down" failure INTENT.md names.
 //
-// THE CONNECTION NAMES NOW CARRY THE MEANING. The precedence, in boot's connectionOf:
+// THE CONNECTION NAMES NOW CARRY THE MEANING. The precedence, in boot's outboundOf:
 //
-//   1. the agent's own `beeper_connection`  — unchanged, wins over everything
+//   1. the agent's own `use:` (alias `beeper_connection`) — wins over everything
 //   2. an explicit `beeper.use`             — BACK-COMPAT (~/.egpt2 still ships it)
 //   3. `secondary`, if declared             — "primary doesn't speak if secondary is present"
 //   4. `primary`, if declared
@@ -24,14 +24,16 @@
 // one account and no ceremony, so a single-connection block must need no naming convention and no
 // selector key.
 //
-// WHAT THIS FILE DOES NOT DECIDE — read this before using it as evidence about ingest. Boot builds
-// one bridge per connection an AGENT RIDES (`for (const being of Object.keys(agents()))
-// await bridgeForEndpoint(endpointFor(connectionOf(being)))`), so the set of connections this node
-// LISTENS on is derived from the very resolver above, and a declared connection nobody rides is
-// never dialled — locked, deliberately, in tests/multi-connection-wake.test.mjs ("a declared
-// connection NO agent rides is never opened"). Changing the default therefore MOVES THE EAR as
-// well as the mouth. The cases at the foot of this file record that coupling exactly as it is, so
-// the next reader does not have to rediscover it.
+// WHAT THIS FILE DECIDES, AND WHAT IT NO LONGER DOES. It is about the MOUTH only.
+//
+// It used to carry a warning that the coupling ran the other way too: boot built one bridge per
+// connection an AGENT RODE, so the set of connections this node LISTENED on was derived from the
+// very resolver above and "changing the default MOVES THE EAR as well as the mouth". That was
+// true, and it was the defect — on the live profile it moved the ear off the operator's own
+// account. The ingest half is SPLIT OUT as of 2026-09-10 (boot's inboundConnections/inboundOf,
+// locked in tests/beeper-inbound-outbound.test.mjs): the ear is `primary`, or an `owner_node`
+// claim, and no agent's outbound pin can move it. The cases at the foot of this file record the
+// two directions side by side, so the next reader sees that they are now independent.
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 
 // A PRIVATE profile for this file — egpt-home.mjs freezes EGPT_HOME at module load, so it must be
@@ -153,18 +155,21 @@ describe('the DEFAULT outbound connection — the names carry the meaning (opera
   // This is the operator's LIVE ~/.egpt/config/config.yaml. Before the fix connectionOf returned
   // `cfg.beeper?.use ?? null` → null → the legacy beeper_token/env path, which this profile does
   // not set: `opts.beeperToken` came back UNDEFINED and the node had no outbound at all.
-  it('primary + secondary + primary_gui and NO use: → the default is SECONDARY', async () => {
-    const { built, app } = await bootWith({ agents: AG(), beeper: LIVE_BEEPER() });
-    expect(built).toHaveLength(1);                 // nobody names a beeper_connection ⇒ one bridge
-    expect(built[0].token).toBe(T_SECONDARY);
-    expect(built[0].connection).toBe('secondary');
+  it('primary + secondary + primary_gui and NO use: → the default MOUTH is SECONDARY', async () => {
+    const { built, byConnection, app } = await bootWith({ agents: AG(), beeper: LIVE_BEEPER() });
+    // TWO bridges, and they are the two DIRECTIONS, not two agents: `primary` because it is this
+    // node's ear, `secondary` because it is the mouth nobody had to name. `primary_gui` is
+    // neither, so it is not dialled at all.
+    expect(built.map((s) => s.connection).sort()).toEqual(['primary', 'secondary']);
+    expect(byConnection.secondary.token).toBe(T_SECONDARY);
     app.stop();
   });
 
-  // …and it is the connection the reply actually LEAVES ON, not merely the one that got dialled.
+  // …and it is the connection the reply actually LEAVES ON, not merely the one that got dialled —
+  // the arrival comes in on the EAR and the answer goes out on the MOUTH.
   it('the persona\'s reply goes out on secondary', async () => {
-    const { built, replies, app } = await bootWith({ agents: AG(), beeper: LIVE_BEEPER() });
-    await deliver(built[0], '@e hola');
+    const { byConnection, replies, app } = await bootWith({ agents: AG(), beeper: LIVE_BEEPER() });
+    await deliver(byConnection.primary, '@e hola');
     expect(replies().map((r) => r.connection)).toEqual(['secondary']);
     app.stop();
   });
@@ -219,10 +224,11 @@ describe('the DEFAULT outbound connection — the names carry the meaning (opera
       },
       beeper: LIVE_BEEPER(),
     });
-    // TWO bridges: the pinned one and the default one. primary is declared and ridden by nobody.
-    expect(built.map((s) => s.connection).sort()).toEqual(['primary_gui', 'secondary']);
+    // THREE bridges: the pinned mouth, the default mouth, and the ear. `primary` is dialled
+    // because it is this node's ear, which no longer depends on any agent riding it.
+    expect(built.map((s) => s.connection).sort()).toEqual(['primary', 'primary_gui', 'secondary']);
 
-    await deliver(byConnection.secondary, '@e hola');
+    await deliver(byConnection.primary, '@e hola');
     expect(replies().map((r) => r.connection)).toEqual(['secondary']);
     app.stop();
   });
@@ -261,15 +267,23 @@ describe('the DEFAULT outbound connection — the names carry the meaning (opera
     app.stop();
   });
 
-  // ── INGEST: STILL ONE BRIDGE PER CONNECTION AN AGENT RIDES ────────────────────────────────
-  // NOT "per DECLARED connection" — that is the thing this file exists to state plainly. The rule
-  // is unchanged by the precedence above (it is the same resolver feeding the same loop), but the
-  // ANSWER moves with the default, so on the live profile the ear moves from the legacy path to
-  // `secondary`, and `primary` — the operator's own account — is not dialled by anything.
-  it('a declared connection no agent rides is STILL never opened, default or not', async () => {
-    const { built, app } = await bootWith({ agents: AG(), beeper: LIVE_BEEPER() });
-    expect(built.map((s) => s.connection)).toEqual(['secondary']);   // not primary, not primary_gui
-    app.stop();
+  // ── INGEST IS NOT THIS FILE'S ANSWER ANY MORE ─────────────────────────────────────────────
+  // REWRITTEN 2026-09-10 alongside the split. This case read "a declared connection no agent rides
+  // is STILL never opened, default or not", and asserted that the live profile dialled `secondary`
+  // ALONE — which is precisely the state in which this node could not hear the operator. The rule
+  // it was locking (boot opens the smallest set of bridges the config asks for, never one per
+  // declared block) survives; what changed is that the set has two reasons in it now, and the
+  // default OUTBOUND connection is only one of them.
+  it('changing the default MOUTH no longer moves the ear', async () => {
+    const live = await bootWith({ agents: AG(), beeper: LIVE_BEEPER() });
+    expect(live.built.map((s) => s.connection).sort()).toEqual(['primary', 'secondary']);
+    live.app.stop();
+
+    // The same three connections with the mouth pinned the other way: the ear does not move, and
+    // the only difference is which connection stops being dialled.
+    const pinned = await bootWith({ agents: AG(), beeper: { use: 'primary', ...LIVE_BEEPER() } });
+    expect(pinned.built.map((s) => s.connection)).toEqual(['primary']);   // ear and mouth are one endpoint
+    pinned.app.stop();
   });
 
   it('every connection an agent DOES ride is opened, and each is a separate ear', async () => {

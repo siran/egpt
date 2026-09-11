@@ -298,7 +298,7 @@ export function addressed(text, agents, { addressWithoutAt = true, isVoice = fal
 // today: a guarded token nobody can evaluate must not be addressable.
 // `onLog` — the router's diagnostic sink; the ONLY thing it says is the fallback membership
 // failure below, which must never be silent.
-export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', addressWithoutAt = true, loadState = null, isPresent = null, isPeerAlive = null, connectionOf = null, onLog = () => {} } = {}) {
+export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', addressWithoutAt = true, loadState = null, isPresent = null, isPeerAlive = null, inboundOf = null, onLog = () => {} } = {}) {
   // ONE addressed agent → the routing target it resolves to. Per-kind semantics are
   // UNCHANGED; only the caller changed (every hit, not just the first).
   function targetFor({ name, agent, atStart, unlessPresent, unlessPeerAlive }, ev) {
@@ -501,16 +501,21 @@ export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', addre
           // a drop falls through exactly as if the @token had never matched (the message is still
           // received, still recorded, still read as back-context — only the wake is withheld).
           //
-          // WHY. One spine now holds BOTH accounts as two connections, and one real WhatsApp group
-          // is a DIFFERENT room per account, so the spine hears one typed line TWICE — deliberately
-          // undeduplicated (bridge-fanout.mjs). An agent is bound to a connection already
-          // (`beeper_connection`, boot's connectionOf), and the operator's ruling is that the
-          // binding decides: "received by primary, logs, recognized agent, produces reply …
-          // received by secondary, logs, K is not an agent. continue."
+          // WHY. One spine can hold BOTH accounts as two EARS, and one real WhatsApp group is a
+          // DIFFERENT room per account, so the spine hears one typed line TWICE — deliberately
+          // undeduplicated (bridge-fanout.mjs). The operator's ruling is that the binding decides:
+          // "received by primary, logs, recognized agent, produces reply … received by secondary,
+          // logs, K is not an agent. continue."
           //
-          // `ev.connection` is stamped at the fan-out registration and is NULL on a one-connection
+          // THE INGEST HALF, AND ONLY THAT (operator 2026-09-10). This asks boot's `inboundOf`,
+          // never its `outboundOf`: an agent's `use:` names where it SPEAKS, and letting that move
+          // what it can HEAR is exactly the coupling that took the live node deaf on the
+          // operator's own account. On a node with ONE ear inboundOf answers that ear for every
+          // agent, so nothing here can withhold a wake that the single ear delivered.
+          //
+          // `ev.connection` is stamped at the fan-out registration and is NULL on a one-bridge
           // node (fanoutInbound hands back the bridge itself there), so this whole gate is inert
-          // for every node that dials one Beeper account — which is every node today.
+          // for every node that holds one Beeper endpoint.
           //
           // A GUARDED HIT IS EXEMPT, and that is the CONDITIONAL, not an escape hatch. The gate
           // can only compare two connection NAMES; it cannot ask "is my own connection in this
@@ -532,9 +537,9 @@ export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', addre
           // base_url. Until one exists, an UNCONDITIONAL handle bound to a connection reaches
           // nobody in a chat only the OTHER connection is in (locked as a gap in
           // tests/multi-connection-wake.test.mjs).
-          if (ev?.connection && typeof connectionOf === 'function'
+          if (ev?.connection && typeof inboundOf === 'function'
               && hit.unlessPresent == null && hit.unlessPeerAlive == null) {
-            const own = connectionOf(hit.name);
+            const own = inboundOf(hit.name);
             if (own && own !== ev.connection) continue;
           }
           // FALLBACK-HANDLE GUARD (operator 2026-08-31) — the LAST post-match filter here, and
