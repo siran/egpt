@@ -26,6 +26,10 @@ import { createIdentity } from '../src/spine/identity.mjs';
 import { createRouter, addressed } from '../src/spine/router.mjs';
 import { replyLine } from '../src/transcript-log.mjs';
 import { withoutAddress } from '../src/auto-mode.mjs';
+// The FAR HALF of a mesh hop, for the end-to-end assertions at the bottom: the real responder
+// service and the real envelope codec, so 'what the far being was handed' is measured, not modelled.
+import { createMeshService } from '../src/spine/mesh.mjs';
+import { encodeMesh } from '../src/mesh/relay.mjs';
 
 // --- the live chat, as fakes -------------------------------------------------
 const T = Date.UTC(2026, 8, 11, 8, 7);                       // → "(08:07)", the operator's own line
@@ -61,17 +65,24 @@ function fakeTranscript() {
 // `addressedReplies` mirrors the live gate: send_to_egpt:'mode', so a turn runs only on a message
 // this being would answer. The default (every test but the accum one) answers everything, which
 // is the simplest shape for asserting the prompt.
-function build({ mode = 'mention', agents = AGENTS, mayReply = () => true, brain = fakeBrain() } = {}) {
+// `sendToEgpt`, `mesh`, `timers` and `rng` are the seams the three doors at the bottom of this
+// file need: a paused chat that still READS (send_to_egpt: 'always'), a mesh target's forward,
+// and the auto dwell's randomized pre-turn timer. Every caller above passes none of them and
+// builds exactly the spine it always did.
+function build({ mode = 'mention', agents = AGENTS, mayReply = () => true, brain = fakeBrain(), sendToEgpt = 'mode', mesh = null, timers = null, rng = null } = {}) {
   const bridge = fakeBridge();
   const transcript = fakeTranscript();
   const spine = createSpine({
     bridge, brain,
     identity: createIdentity({ now: () => T }),
     router: createRouter({ getAgents: () => agents, defaultBeing: 'e' }),
-    gating: { async decide(_being, ev) { return { mode, receives: true, mayReply: mayReply(ev), sendToEgpt: 'mode' }; }, surfaces: () => true },
+    gating: { async decide(_being, ev) { return { mode, receives: true, mayReply: mayReply(ev), sendToEgpt }; }, surfaces: () => true },
     sender: fakeSender(bridge), transcript, heartbeats: { runDue() {} },
     readTranscript: async () => transcript.text,
     clock: { now: () => T },
+    ...(mesh ? { mesh } : {}),
+    ...(timers ? { setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout } : {}),
+    ...(rng ? { rng } : {}),
   });
   spine.start();
   return { bridge, brain, transcript };
@@ -328,5 +339,247 @@ describe('LOCKS — the steer path keeps everything else', () => {
     brain.release();
     await first;
     expect(transcript.text).toContain(`${headOf('m2')}e también revisa X`);
+  });
+});
+
+// ── THE THREE DOORS 6634a76/298750d LEFT OPEN (operator 2026-09-11) ──────────────────────────
+//
+// The turn OPENER and the STEER above were the two paths that ran `triggerFor`. Three others
+// reached a model with the handle still on:
+//
+//   1. THE MESH FORWARD, and it is the significant one. `mesh.forward` puts `ev.body` on the wire
+//      RAW; the responder's `relayDispatch` builds its synthetic event straight out of that
+//      prompt (`{ body: prompt, line: prompt }`) and calls `brain.turn` — and `turns.steerLiveTurn`
+//      — with it. NO router runs on a relayed body at EITHER end: the far node resolves which
+//      being answers from the envelope's own `to:` tail, never from the text. So `@don hola`
+//      reached `don` as `@don hola`, and router.mjs's own comment claimed the opposite.
+//   2. THE AUTO DWELL. An auto chat does not answer instantly — it accumulates the arriving line
+//      into this conversation's CYCLE and fires ONE burst turn when the dwell expires, prompted
+//      with the drained cycle verbatim. The line went into the cycle raw.
+//   3. THE CONTEXT TURN — `send_to_egpt: always` in a chat the being may not reply in. It runs to
+//      stay current, prompted with the event itself.
+//
+// The strip is the SAME one, reached the same way: the router's `address` on the target, and
+// `withoutAddress` through the spine's `triggerFor`/`addressedBody`. Nothing re-scans a body.
+
+// A relay agent (`relay_channel:`) is how this node reaches another one. The router resolves
+// `@don …` to a MESH target — `{ being: null, mesh: {…}, address: 'don' }` — and the spine
+// forwards it instead of running a local turn.
+const RELAY_AGENTS = {
+  e: { default: true, handles: ['e', 'egpt'] },
+  don: { relay_channel: 'egpt-mesh-kg-mo', to: 'don.mo' },
+};
+function fakeMesh() {
+  return { forwards: [], async forward(ev, target, opts = {}) { this.forwards.push({ ev, target, opts }); return true; } };
+}
+// WHAT CROSSES THE WIRE. relay.relayOut is called with `body: ev.body` — the envelope carries a
+// BODY, never a dispatch line — so this is the exact string the far node's brain.turn is handed.
+const wireBody = (mesh) => mesh.forwards[0].ev.body;
+
+describe('REPRODUCE — the MESH FORWARD hands the far being its own handle', () => {
+  it('`@don hola` crosses as `hola` — the envelope carries what was SAID, not how it was addressed', async () => {
+    const mesh = fakeMesh();
+    const { bridge } = build({ agents: RELAY_AGENTS, mesh });
+    await bridge.emit(msg('@don hola'));
+    expect(mesh.forwards).toHaveLength(1);
+    expect(wireBody(mesh)).toBe('hola');                 // ← was '@don hola'
+  });
+
+  it('the bare form crosses the same way', async () => {
+    const mesh = fakeMesh();
+    const { bridge } = build({ agents: RELAY_AGENTS, mesh });
+    await bridge.emit(msg('don hola'));
+    expect(wireBody(mesh)).toBe('hola');                 // ← was 'don hola'
+  });
+
+  it('a message that is ONLY the handle crosses empty — a hail with nothing said after it', async () => {
+    const mesh = fakeMesh();
+    const { bridge } = build({ agents: RELAY_AGENTS, mesh });
+    await bridge.emit(msg('@don'));
+    expect(wireBody(mesh)).toBe('');
+  });
+});
+
+describe('LOCKS — the mesh forward keeps everything else', () => {
+  it('the ORIGIN transcript keeps the raw line — the record is what he typed', async () => {
+    const mesh = fakeMesh();
+    const { bridge, transcript } = build({ agents: RELAY_AGENTS, mesh });
+    await bridge.emit(msg('@don hola'));
+    expect(transcript.text.split('\n\n')[0]).toBe(`${HEAD}@don hola`);
+  });
+
+  it('a handle MID-SENTENCE still routes to the relay agent and crosses UNTOUCHED', async () => {
+    const mesh = fakeMesh();
+    const { bridge } = build({ agents: RELAY_AGENTS, mesh });
+    await bridge.emit(msg('pregúntale a @don si viene'));
+    expect(wireBody(mesh)).toBe('pregúntale a @don si viene');
+  });
+
+  it('the return address the envelope rides on is untouched — same chat, same sender, same target', async () => {
+    const mesh = fakeMesh();
+    const { bridge } = build({ agents: RELAY_AGENTS, mesh });
+    await bridge.emit(msg('@don hola'));
+    const { ev, target } = mesh.forwards[0];
+    expect(ev.chatId).toBe('!hfm:beeper.com');
+    expect(ev.chatName).toBe(CHAT_NAME);
+    expect(ev.senderName).toBe('An');
+    expect(target).toMatchObject({ being: 'don', to: 'don.mo', route: { room_id: 'egpt-mesh-kg-mo' } });
+  });
+
+  // KNOWN RESIDUE, MEASURED, NOT INTRODUCED HERE. `@don.mo` is still a typeable form (router.mjs's
+  // header: "the @token match below stops at the dot and finds the agent"), and the matcher
+  // resolves the token `don` — the `.mo` is not part of it. So withoutAddress, which is anchored
+  // and handed exactly that token, takes `@don` off and leaves `.mo`. The LOCAL path has done the
+  // identical thing since 6634a76; this is locked so a future change to it is deliberate, not so
+  // that it is blessed.
+  it('the dotted form leaves the node suffix behind — the matcher never claimed it', async () => {
+    const mesh = fakeMesh();
+    const { bridge } = build({ agents: RELAY_AGENTS, mesh });
+    await bridge.emit(msg('@don.mo hola'));
+    expect(wireBody(mesh)).toBe('.mo hola');
+  });
+});
+
+// A controllable fake timer — the spine's own injected seam (the same shape
+// tests/spine-auto-dwell.test.mjs uses), so the dwell and the typing delay are deterministic.
+function fakeTimers() {
+  let seq = 0;
+  const pending = new Map();
+  return {
+    setTimeout: (fn, delay = 0) => { const id = ++seq; pending.set(id, { fn, delay }); return { __id: id, unref() {} }; },
+    clearTimeout: (t) => { if (t && t.__id != null) pending.delete(t.__id); },
+    size: () => pending.size,
+    flush() { const es = [...pending.values()]; pending.clear(); for (const { fn } of es) fn(); },
+  };
+}
+async function settle(timers, rounds = 20) {
+  for (let i = 0; i < rounds; i++) { await flush(); if (timers.size() === 0) break; timers.flush(); }
+  await flush();
+}
+
+describe('REPRODUCE — the AUTO DWELL burst hands the being its own handle', () => {
+  it('the burst the dwell fires is prompted WITHOUT the handle', async () => {
+    const timers = fakeTimers();
+    const brain = fakeBrain();
+    const { bridge } = build({ mode: 'auto', brain, timers, rng: () => 0.5 });
+    await bridge.emit(msg('e dame una opinion'));
+    expect(brain.calls).toHaveLength(0);                       // dwelling — a person does not pounce
+    await settle(timers);
+    expect(brain.calls).toHaveLength(1);
+    expect(promptOf(brain)).toBe(`${HEAD}dame una opinion`);   // ← was `${HEAD}e dame una opinion`
+  });
+
+  it('a burst of several lines: only the addressed one loses its handle', async () => {
+    const timers = fakeTimers();
+    const brain = fakeBrain();
+    const { bridge } = build({ mode: 'auto', brain, timers, rng: () => 0.5 });
+    await bridge.emit(msg('las celulas de la piel se renuevan', { msgKey: 'm1', atEStart: false, atEAnywhere: false }));
+    await bridge.emit(msg('e y las neuronas?', { msgKey: 'm2' }));
+    await settle(timers);
+    expect(brain.calls).toHaveLength(1);
+    expect(promptOf(brain)).toBe(`${headOf('m1')}las celulas de la piel se renuevan\n\n${headOf('m2')}y las neuronas?`);
+  });
+
+  it('the RECORD keeps the raw line', async () => {
+    const timers = fakeTimers();
+    const { bridge, transcript } = build({ mode: 'auto', timers, rng: () => 0.5 });
+    await bridge.emit(msg('e dame una opinion'));
+    await settle(timers);
+    expect(transcript.text.split('\n\n')[0]).toBe(`${HEAD}e dame una opinion`);
+  });
+});
+
+describe('REPRODUCE — the CONTEXT TURN hands the being its own handle', () => {
+  // send_to_egpt: 'always' in a chat the being may NOT reply in: it runs to stay current, with no
+  // UI and a recorded-but-unsent reply. It prompted with the raw event.
+  it('a paused-but-read chat prompts WITHOUT the handle', async () => {
+    const brain = fakeBrain();
+    const { bridge } = build({ brain, mayReply: () => false, sendToEgpt: 'always' });
+    await bridge.emit(msg('e dame una opinion'));
+    expect(brain.calls).toHaveLength(1);
+    expect(promptOf(brain)).toBe(`${HEAD}dame una opinion`);   // ← was `${HEAD}e dame una opinion`
+  });
+
+  it('an UNADDRESSED message in the same chat is unchanged, and the record stays raw either way', async () => {
+    const brain = fakeBrain();
+    const { bridge, transcript } = build({ brain, mayReply: () => false, sendToEgpt: 'always' });
+    await bridge.emit(msg('las celulas de la piel se renuevan', { atEStart: false, atEAnywhere: false }));
+    expect(promptOf(brain)).toBe(`${HEAD}las celulas de la piel se renuevan`);
+    expect(transcript.text.split('\n\n')[0]).toBe(`${HEAD}las celulas de la piel se renuevan`);
+  });
+});
+
+// ── AND WHAT THE FAR MODEL IS ACTUALLY HANDED ────────────────────────────────────────────────
+//
+// The wire assertions above are only half the question. The RESPONDER does its own rewrite before
+// it builds the turn — src/mesh/relay.mjs line ~548:
+//
+//     const prompt = prov.body.replace(MENTION_RE, '').trim() || prov.body.trim();
+//     const MENTION_RE = /(?:^|\s)@([a-z0-9_-]+)\b/i;
+//
+// That is a FOURTH mention system (router.mjs's own header is emphatic that this repo has already
+// accumulated three and evicted two), and it is neither anchored, nor boundary-correct, nor aware
+// of the bare form. Measured, on the body as it left the origin BEFORE this change:
+//
+//     '@don hola'                  -> 'hola'                     ← it did strip this one
+//     'don hola'                   -> 'don hola'                 ← the BARE form: the handle arrived
+//     '@don'                       -> '@don'                     ← the `||` fallback puts it BACK
+//     '@don.mo hola'               -> '.mo hola'
+//     'pregúntale a @don si viene' -> 'pregúntale a si viene'    ← it EATS content, mid-sentence
+//
+// So these tests run the REAL responder (createMeshService on node `mo`) over the body the origin
+// actually put on the wire, and assert what `brain.turn` is handed on the far side.
+function responderBridge() {
+  const b = {
+    sent: [], streams: [],
+    async resolveChatId(n) { return n; },
+    send(chat, text) { b.sent.push({ chat, text }); return { ok: true }; },
+    async postStatus() { return 'p1'; },
+    startStream(chat, init, opts = {}) {
+      const h = { chat, init, opts, updates: [], finals: [] };
+      h.update = (t) => h.updates.push(t);
+      h.finish = async (t) => { h.finals.push(t); };
+      b.streams.push(h);
+      return h;
+    },
+  };
+  return b;
+}
+// Deliver an envelope carrying `body` to node `mo`, whose local being is `don`. Returns its brain.
+async function deliverToFarNode(body) {
+  const brain = { calls: [], async turn(being, ev) { this.calls.push({ being, ev }); return { text: 'ok', being }; } };
+  const mesh = createMeshService({
+    bridge: responderBridge(), brain,
+    getConfig: () => ({ node_name: 'mo', agents: { don: { configuration: 'sonnet-high' } } }),
+  });
+  await mesh.handle({
+    surface: 'whatsapp', chatId: 'RELAY', msgId: 'w1',
+    body: encodeMesh({ by: 'An', body, from: CHAT_NAME, from_node: 'kg', to: 'don.mo', post_id: 'p1' }),
+  });
+  await flush(); await flush();
+  return brain;
+}
+// Origin → wire → far node, in one call. Returns the prompt the far being's brain.turn received.
+async function acrossTheMesh(typed) {
+  const mesh = fakeMesh();
+  const { bridge } = build({ agents: RELAY_AGENTS, mesh });
+  await bridge.emit(msg(typed));
+  const brain = await deliverToFarNode(wireBody(mesh));
+  expect(brain.calls).toHaveLength(1);
+  expect(brain.calls[0].being).toBe('don');
+  return brain.calls[0].ev.body;
+}
+
+describe('REPRODUCE — end to end, what the FAR being is handed', () => {
+  it('the BARE form: `don hola` reaches don as `hola`', async () => {
+    expect(await acrossTheMesh('don hola')).toBe('hola');       // ← was 'don hola': MENTION_RE needs an '@'
+  });
+
+  it('the `@` form reaches don as `hola` too — and now WITHOUT depending on the responder rewrite', async () => {
+    expect(await acrossTheMesh('@don hola')).toBe('hola');
+  });
+
+  it('a hail with nothing after it does not put the handle back', async () => {
+    expect(await acrossTheMesh('@don')).toBe('');               // ← was '@don': the `|| prov.body` fallback
   });
 });

@@ -356,10 +356,12 @@ export function createSpine({
     dwellBy.set(turnKey, { ...ctx, timer, firstAt });
   }
   // A message arriving mid-dwell (incl. the operator's own accumulated line) re-arms the
-  // timer, keeping the SAME trigger — no-op when no dwell is pending.
+  // timer, keeping the SAME trigger — no-op when no dwell is pending. `trigger` rides with the
+  // ev it belongs to (the handle-stripped dispatch line, 2026-09-11): it is a property of THAT
+  // message, so re-arming must carry it or the fired burst falls back to the raw line.
   function extendDwell(turnKey) {
     const cur = dwellBy.get(turnKey);
-    if (cur) armDwell(turnKey, { to: cur.to, ev: cur.ev, mention: cur.mention, pinned: cur.pinned });
+    if (cur) armDwell(turnKey, { to: cur.to, ev: cur.ev, mention: cur.mention, pinned: cur.pinned, trigger: cur.trigger });
   }
   // The dwell expired: re-read the gate (a mid-dwell /agents auto flip AWAY from auto cancels the
   // pending dwell cleanly — the timer fires but dispatches NO turn; the accumulated cycle
@@ -371,7 +373,7 @@ export function createSpine({
     const entry = dwellBy.get(turnKey);
     if (!entry) return;
     dwellBy.delete(turnKey);
-    const { to, ev, mention, pinned } = entry;
+    const { to, ev, mention, pinned, trigger = null } = entry;
     let d;
     try { d = await gating.decide(to, ev, mention); }
     catch (e) { note(`dwell ${turnKey}: re-decide failed — ${e?.message ?? e}`); return; }
@@ -379,7 +381,11 @@ export function createSpine({
     const replyTo = ev.msgId ?? null;                 // quote UNIFORMLY — including auto (see openAndRunReply)
     const ahead = bumpTrain(turnKey);
     const out = sender.open(ev.chatId, { being: to, replyTo, auto: true });
-    turnBy(turnKey, () => runReplyTurn({ to, ev, d, out, replyTo, turnKey, queued: ahead > 0, burst: true, pinned }));
+    // `trigger` (operator 2026-09-11) — the handle-stripped dispatch line of the message that
+    // armed this dwell. It is the BASE only when the drained cycle came back empty (a burst with
+    // lines prompts with those verbatim), and each of those lines was already stripped on its way
+    // into the cycle; this closes the one case that is not.
+    turnBy(turnKey, () => runReplyTurn({ to, ev, d, out, replyTo, turnKey, queued: ahead > 0, burst: true, pinned, trigger }));
   }
 
   // enqueue resolves when THIS message's turn (if any) completes, so a caller — and
@@ -879,13 +885,33 @@ export function createSpine({
     // dispatch sites; nothing else in the pipe reads it.
     const { key: turnKey, pinned } = await turns.keyOf(to, ev);
 
+    // THE ADDRESSING HANDLE COMES OFF ONCE, HERE, FOR EVERY DOOR OUT OF THIS FUNCTION (operator
+    // 2026-09-11). 6634a76/298750d closed two of them — the turn opener and the steer — by
+    // computing this inside the `d.mayReply` branch. The branches ABOVE that branch are the rest
+    // of the doors and they each fed the handle straight in:
+    //   · THE CYCLE. An accumulated line is PROMPT MATERIAL the moment a burst or a queued turn
+    //     drains it (runReplyTurn joins `pending` verbatim), so a raw addressed line in the
+    //     cycle is the same defect one turn later. All three pushes take it.
+    //   · THE MESH FORWARD — see its own branch below.
+    //   · THE CONTEXT TURN, at the bottom.
+    // Hoisted rather than repeated: ONE triggerFor call, the same one the steer and the opener
+    // already shared, so there is exactly one place that decides what a handle is.
+    //
+    // NULL IS THE UNTOUCHED VALUE, everywhere. `triggerFor` answers null when nothing was taken
+    // off (no address, or a handle mid-sentence, which is content), so `cycleLine` is the raw
+    // dispatch line and every branch below is byte-identical to before for an unaddressed
+    // message. The RECORD is untouched on every one of these paths: ingestion wrote it before
+    // dispatchChat ran, and runReplyTurn's accum `exclude` still names the RAW line.
+    const trigger = triggerFor(ev, targets[0]);
+    const cycleLine = trigger ?? (ev.line ?? ev.body);
+
     // mode:auto is an IMPERSONATION of the operator: E replies to OTHER people AS the
     // operator, and the operator's OWN messages (isSender) here NEVER prompt E. Accumulate
     // the line into this conversation's cycle so the NEXT other-person turn is prompted WITH
     // it (full context), and run no turn. Only the operator's genuinely-typed lines reach
     // here — E's own auto replies come back isSender too but are dropped upstream by the
     // bridge's sent-id guard (wasSentByUs), never re-entering the spine.
-    if (d.mode === 'auto' && ev.isSender) { pushCycle(turnKey, ev.line ?? ev.body); extendDwell(turnKey); return withRelay(); }
+    if (d.mode === 'auto' && ev.isSender) { pushCycle(turnKey, cycleLine); extendDwell(turnKey); return withRelay(); }
 
     // Does E actually RUN on this message? It runs when its reply could surface
     // (mayReply), OR when the chat is send_to_egpt:'always' (E stays in context
@@ -894,7 +920,7 @@ export function createSpine({
     // the line joins the conversation's cycle, so a queued mention arriving next sees
     // this ambient chatter in its accumulated prompt.
     const runE = d.mayReply || d.sendToEgpt === 'always';
-    if (!runE) { pushCycle(turnKey, ev.line ?? ev.body); return withRelay(); }
+    if (!runE) { pushCycle(turnKey, cycleLine); return withRelay(); }
 
     // mesh-target forwarding (Phase 4b): an @being.node that lives on ANOTHER node is
     // not a local brain. Once gating has decided this chat is received+replyable, relay
@@ -921,7 +947,20 @@ export function createSpine({
     if (meshTarget && mesh && d.mayReply) {
       const relayBeing = gateAs(targets[0], to);          // THE relay agent whose mode governs this forward
       const quiet = await turns.steerRelayedTurn({ to: relayBeing, ev, live: mesh.relayInFlight?.(ev, relayBeing) ?? null });
-      await mesh.forward(ev, meshTarget, { quiet });
+      // AND THE ENVELOPE LOSES THE ADDRESSING HANDLE TOO, AT THE ORIGIN (operator 2026-09-11).
+      // The wire carries a BODY (relay.relayOut takes `body: ev.body`), and the far node's
+      // relayDispatch makes its synthetic event out of that prompt — `{ body: prompt, line:
+      // prompt }` — and hands it straight to brain.turn and to turns.steerLiveTurn. No router
+      // runs on a relayed body at either end: the responder resolves WHICH being answers from
+      // the envelope's own `to:` tail, never from the text. So `@don hola` arrived over there as
+      // `@don hola`.
+      //
+      // THE ORIGIN IS ALSO THE ONLY NODE THAT CAN DO IT: the token is THIS node's relay-agent
+      // handle, resolved by THE matcher here, and the far node has no vocabulary for it.
+      // addressedBody, not triggerFor — a dispatch line never crosses — and the rewritten event
+      // is the same `{ ...ev, body }` shape forwardCommand already forwards under (mesh.mjs).
+      const body = addressedBody(ev, targets[0]);
+      await mesh.forward(body == null ? ev : { ...ev, body }, meshTarget, { quiet });
       return withRelay();
     }
 
@@ -934,8 +973,8 @@ export function createSpine({
     // paused auto chat has mayReply=false and falls to the record-only/context branches —
     // no reply to delay).
     if (d.mayReply && d.mode === 'auto') {
-      pushCycle(turnKey, ev.line ?? ev.body);
-      armDwell(turnKey, { to, ev, mention, pinned });
+      pushCycle(turnKey, cycleLine);
+      armDwell(turnKey, { to, ev, mention, pinned, trigger });
       return withRelay();
     }
 
@@ -961,8 +1000,11 @@ export function createSpine({
       // live CLI session, so `e también revisa X` woven into a running turn still reached the
       // model with `e` on the front. Same defect, same message, a second door.
       //
-      // ONE trigger, computed ONCE here and handed to BOTH doors — triggerFor is the same call
-      // openAndRunReply's argument used to make inline, moved up rather than repeated.
+      // ONE trigger, computed ONCE and handed to BOTH doors — triggerFor is the same call
+      // openAndRunReply's argument used to make inline. It moved up again on 2026-09-11, to the
+      // top of dispatchChat, because the branches ABOVE this one need the same answer (the mesh
+      // forward, the cycle, the context turn) and a second call here would be a second place
+      // that decides what a handle is.
       //
       // NULL PASSES `ev` ITSELF, deliberately. `triggerFor` answers null when nothing was taken
       // off (no address, or a handle mid-sentence, which is content), and `{ ...ev, line: null }`
@@ -976,7 +1018,6 @@ export function createSpine({
       // written rather than the event: warm-cli-session.inject records `rec.text` as the exact
       // string it puts on stdin and matches the `--replay-user-messages` echo against THAT, so it
       // acks the stripped line without knowing anything changed.
-      const trigger = triggerFor(ev, targets[0]);
       if (await steerLiveTurn({ to, ev: trigger == null ? ev : { ...ev, line: trigger }, turnKey })) return withRelay();
       // Reply branch (the reply train). Open THIS message's OWN placeholder NOW, on
       // arrival — the per-message ack + streaming target, quoting the triggering message
@@ -993,7 +1034,7 @@ export function createSpine({
     // per-conversation queue as reply turns (it holds the same warm key), so a later
     // mention correctly queues behind it.
     bumpTrain(turnKey);
-    const turn = turnBy(turnKey, () => runContextTurn({ to, ev, turnKey }));
+    const turn = turnBy(turnKey, () => runContextTurn({ to, ev, turnKey, trigger }));
     return withRelay(turn);
   }
 
@@ -1042,11 +1083,22 @@ export function createSpine({
   // ends with ev.body, so the stripped body goes back on the SAME head — byte-identical sender,
   // chat, surface, clock, `#<id>` and `[re #<id>]`. A line that does NOT end with the body (a
   // reaction/edit stage-direction, which is bracket-wrapped) is left alone rather than guessed at.
-  function triggerFor(ev, target) {
+  //
+  // THE STRIP AND THE SPLICE ARE TWO FUNCTIONS because one door does not want the splice: a MESH
+  // envelope carries a BODY, never a dispatch line (relay.relayOut takes `body: ev.body`), so
+  // the forward needs the stripped body on its own. ONE call to withoutAddress either way —
+  // addressedBody IS the strip and triggerFor is built on it, which is the opposite of a second
+  // stripper. Both answer null for "nothing to take off", so every caller's fallback is the
+  // untouched value it used before.
+  function addressedBody(ev, target) {
     const address = target?.address;
     if (!address || typeof ev?.body !== 'string') return null;
     const body = withoutAddress(ev.body, address);
-    if (body === ev.body) return null;                                   // nothing to take off
+    return body === ev.body ? null : body;                               // nothing to take off
+  }
+  function triggerFor(ev, target) {
+    const body = addressedBody(ev, target);
+    if (body == null) return null;
     if (ev.line == null) return body;
     if (!ev.line.endsWith(ev.body)) return null;
     return ev.line.slice(0, ev.line.length - ev.body.length) + body;
@@ -1086,7 +1138,10 @@ export function createSpine({
       try {
         const d = await gating.decide(gateAs(t, being), ev, t.mention ?? ev.mention);
         if (!d.receives || !d.mayReply) return;
-        if (t.mesh) { if (mesh) await mesh.forward(ev, t.mesh); return; }
+        // …and a relay target reached by FAN-OUT loses its handle exactly as the primary one does
+        // (see the mesh branch in dispatchChat): `@e y @don, vengan` forwards `y @don, vengan` on
+        // E's turn and, for don, the same body its own leading handle would have opened.
+        if (t.mesh) { if (mesh) { const body = addressedBody(ev, t); await mesh.forward(body == null ? ev : { ...ev, body }, t.mesh); } return; }
         // The SAME instance resolution the primary target's key gets above (operator
         // 2026-08-31). A fan-out target takes an ordinary turn on its own queue, so a queue
         // keyed NARROWER than the warm key it guards is the corruption case for it too. ONE
@@ -1354,9 +1409,14 @@ export function createSpine({
     } finally { dropTrain(turnKey); turns.clearLive(turnKey); }
   }
 
-  async function runContextTurn({ to, ev, turnKey }) {
+  // `trigger` (operator 2026-09-11): the dispatch line with the addressing handle off, decided
+  // ONCE in dispatchChat. The PROMPT event only — `ev` itself still goes to runTurnWithTimeout's
+  // first argument (the eviction/log identity) and to transcript.log, which keeps the raw record.
+  // Null (nothing addressed this being) ⇒ `ev` itself, which is what this always passed: a
+  // `{ ...ev, line: null }` would make brainpool fall through to the bare body and drop the head.
+  async function runContextTurn({ to, ev, turnKey, trigger = null }) {
     try {
-      const reply = await runTurnWithTimeout(to, ev, ev, undefined);
+      const reply = await runTurnWithTimeout(to, ev, trigger == null ? ev : { ...ev, line: trigger }, undefined);
       await transcript.log(ev, { ...reply, surfaced: false });   // reply only — the message is already recorded
       await store?.recordThread?.({ ev, reply, being: to });
     } catch (e) {

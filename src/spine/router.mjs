@@ -321,9 +321,19 @@ export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', addre
     // how the sender addressed this agent, not something the sender said to it — so the spine
     // takes it off the trigger it hands the model (auto-mode.withoutAddress). POSITION is the
     // whole test, the same one `atStart` already answers for the gate: mid-sentence, a handle is
-    // content and this stays null. Every kind of target carries it uniformly — a mesh forward
-    // does not consume it (the far node's own router addresses the envelope and strips there),
-    // but a target that means one thing on one branch and nothing on another is how fields rot.
+    // content and this stays null. Every kind of target carries it uniformly, and every kind
+    // CONSUMES it, at the origin — a target that means one thing on one branch and nothing on
+    // another is how fields rot.
+    //
+    // THIS COMMENT USED TO SAY THE OPPOSITE about the mesh — *"a mesh forward does not consume
+    // it (the far node's own router addresses the envelope and strips there)"* — and that was
+    // never true of the code (operator 2026-09-11). NO ROUTER EVER SEES A RELAYED BODY: the
+    // responder resolves which being answers from the envelope's own `to:` tail and hands
+    // relayDispatch's `prompt` straight to brain.turn, so `@don.mo hola` reached `don` with the
+    // handle on. Nor COULD the far node strip it — the token is the ORIGIN's relay-agent handle,
+    // in the origin's vocabulary, resolved by the one matcher here. So the origin takes it off
+    // the body it puts on the wire (spine.dispatchChat → addressedBody), the same field
+    // mesh.forwardCommand already rewrites before forwarding.
     const address = atStart ? (token ?? null) : null;
     // MULTIPATH (operator 2026-07-06: multipath is configuration — an agent declares a list of
     // paths, every message through every path). An agent carrying `paths:` is a relay whose every
