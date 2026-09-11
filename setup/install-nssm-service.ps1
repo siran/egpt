@@ -76,10 +76,20 @@ $serviceBinDir = Join-Path $PSScriptRoot 'bin'
 if (-not (Test-Path $serviceBinDir)) { New-Item -ItemType Directory -Path $serviceBinDir -Force | Out-Null }
 $serviceBin = Join-Path $serviceBinDir 'egpt-service.exe'
 $nssmReal = (Get-Item $nssm).FullName
+# EVERY node on this checkout shares this ONE host exe, so installing a SECOND node while
+# the first is running finds it locked -- the copy below then died with 'used by another
+# process' and the second service was never created (2026-09-11, installing
+# egpt-secondary-daemon while egpt-daemon ran). A refresh is an optimisation; an existing
+# copy is already a working nssm. So: try, and if it is locked, say so and use what is there.
 if (-not (Test-Path $serviceBin) -or
     (Get-Item $serviceBin).Length -ne (Get-Item $nssmReal).Length -or
     (Get-Item $serviceBin).LastWriteTime -lt (Get-Item $nssmReal).LastWriteTime) {
-  Copy-Item -Path $nssmReal -Destination $serviceBin -Force
+  try {
+    Copy-Item -Path $nssmReal -Destination $serviceBin -Force -ErrorAction Stop
+  } catch {
+    if (-not (Test-Path $serviceBin)) { throw }   # nothing to fall back to -- a real failure
+    Write-Host "note: $serviceBin is in use by an already-installed node, so it was not refreshed -- using the existing copy" -ForegroundColor DarkYellow
+  }
 }
 
 # --- 3. resolve paths (THIS repo checkout runs the node) ---
