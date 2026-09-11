@@ -38,6 +38,24 @@ try {
   # the JS does NOT -- it sits under the operator's profile, which denies Users.
   # One grant on the npm root therefore covers both engines. Global npm packages
   # are public code; no credential lives here (pi's auth.json is in ~/.pi).
+  # THE RUNNING eGPT TREE -- read/write (operator 2026-09-10: "read-write in bin/egpt (the
+  # running copy). it's all in the repo. let E modify itself.").
+  #
+  # Modify, not ReadAndExecute, and DELIBERATELY inside the operator's profile -- which is the
+  # line Grant-SandboxPoolModify avoided until today. Know what it buys and what it costs:
+  # bin/egpt is the tree the daemon EXECUTES, so a being writing here changes the code of the
+  # next restart with no deploy step in between. That is the operator's explicit call.
+  #
+  # An ACE is the WHOLE gate for these beings: confinementFor returns {} for the `sandbox` and
+  # `all` tiers, so the CLI-layer path confinement is off for them and no allowed_paths entry
+  # is needed (or would help).
+  $runningTree = Join-Path $env:USERPROFILE 'bin\egpt'
+  if (Test-Path -LiteralPath $runningTree) {
+    Grant-SandboxPoolModify -Path $runningTree
+  } else {
+    Write-Host "note: $runningTree not present  - skipping the running-tree grant on this node"
+  }
+
   $npmGlobalDir = Join-Path $env:APPDATA 'npm'
   if (Test-Path -LiteralPath $npmGlobalDir) {
     Grant-SandboxPoolAccess -Path $npmGlobalDir

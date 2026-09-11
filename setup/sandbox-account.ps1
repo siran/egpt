@@ -274,9 +274,10 @@ function Grant-SandboxPoolAccess {
   Log "granted ReadAndExecute to $SandboxPoolGroup on $Path"
 }
 
-# Modify (read+write) for the pool on a directory it OWNS -- used for the
-# pool's own pi config dir under ProgramData. Deliberately NOT used on anything
-# inside the operator's profile.
+# Modify (read+write) for the pool on a directory it OWNS -- the pool's own pi
+# config dir under ProgramData, and (2026-09-10) ~/bin/egpt, the RUNNING eGPT
+# tree, so a being can change the code it runs. That second one IS inside the
+# operator's profile, which this function avoided until the operator ruled it.
 function Grant-SandboxPoolModify {
   param(
     [Parameter(Mandatory = $true)][string]$Path
