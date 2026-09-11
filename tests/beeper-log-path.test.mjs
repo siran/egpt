@@ -1,6 +1,6 @@
 // Locks the beeper bridge's log path to EGPT_HOME (the profile root), NOT a
 // hardcoded ~/.egpt. Two nodes on one box (prod ~/.egpt + a v2 test node
-// ~/.egpt2) must never interleave writes into the SAME beeper.log.
+// ~/.egpt-secondary) must never interleave writes into the SAME beeper.log.
 //
 // The path is computed at MODULE LOAD from EGPT_HOME (itself read once from
 // process.env at ITS load), so the test sets a custom EGPT_HOME and then

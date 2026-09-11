@@ -45,7 +45,7 @@ fatal:
 So: **exactly one spine holds the profile at any moment.** This rules out the
 other muting design already in the tree — `unless_peer_alive`, which keeps both
 alive and silences one — because that assumes two *separate* profiles, which is
-what `kg` (`.egpt`) and `kg2` (`.egpt2`) are today.
+what `kg` (`.egpt`) and `kg2` (`.egpt-secondary`) are today.
 
 ## Detection is the wrong problem
 
@@ -78,7 +78,7 @@ double answer.
 
 ```
 forced restart
-    Session 0: an-spine (holds .egpt)   +   rodz-spine (holds .egpt2)
+    Session 0: an-spine (holds .egpt)   +   rodz-spine (holds .egpt-secondary)
     no browser is possible — nobody is logged in, so nothing is lost
 
 logon

@@ -5,7 +5,7 @@
 #   .\setup\register-session1-daemon-task.ps1 -Status         # read-only: is it registered, and to what
 #   .\setup\register-session1-daemon-task.ps1 -Remove         # remove exactly what was added
 #   .\setup\register-session1-daemon-task.ps1 -DryRun         # print what would be registered, register nothing
-#   .\setup\register-session1-daemon-task.ps1 -EgptHome "$env:USERPROFILE\.egpt2"
+#   .\setup\register-session1-daemon-task.ps1 -EgptHome "$env:USERPROFILE\.egpt-secondary"
 #
 # ASCII ONLY (PowerShell 5.1 reads a BOM-less UTF-8 script as ANSI).
 #

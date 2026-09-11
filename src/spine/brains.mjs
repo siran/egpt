@@ -15,7 +15,7 @@
 // Resolution merges layers, most-specific LAST (so it wins), so an override file
 // can set just the fields it cares about:
 //   src/brains/             shipped built-ins
-//   ~/.egpt2/config/agents/ the canonical profile home for TYPE files
+//   ~/.egpt-secondary/config/agents/ the canonical profile home for TYPE files
 //   <slug>/brains/          one conversation only
 // config/agents overrides the built-in — UNLESS the built-in is NEWER, since the profile
 // file is a seeded copy of it and every seeded file resolves by prefer-newer (see resolve

@@ -12,7 +12,7 @@
 // Usage:  node setup/verify-install.mjs [serviceName] [egptHome]
 //   serviceName defaults to egpt-daemon; egptHome is taken from the service's own
 //   NSSM AppEnvironmentExtra when readable (the source of truth for which profile the
-//   service uses), else the arg / $EGPT_HOME / ~/.egpt2.
+//   service uses), else the arg / $EGPT_HOME / ~/.egpt-secondary.
 //
 // Dependency-light: node builtins + the repo's `yaml`.
 import { spawnSync } from 'node:child_process';
@@ -201,7 +201,7 @@ export function runChecks({ service, egptHome, out = console.log } = {}) {
 
 function resolveEgptHome(service, argHome) {
   const fromNssm = egptHomeFromEnvExtra(nssmGet(service, 'AppEnvironmentExtra'));
-  return fromNssm || argHome || process.env.EGPT_HOME || join(homedir(), '.egpt2');
+  return fromNssm || argHome || process.env.EGPT_HOME || join(homedir(), '.egpt-secondary');
 }
 
 function main() {

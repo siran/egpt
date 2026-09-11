@@ -941,7 +941,7 @@ export async function boot({
   // do not) that is a bridge with no token: deaf and mute, with only the limb's own generic "NO
   // TOKEN" line to say why. Precedence, highest first:
   //
-  //   (2) `beeper.use`  — BACK-COMPAT and returned VERBATIM, so a node that ships it (~/.egpt2,
+  //   (2) `beeper.use`  — BACK-COMPAT and returned VERBATIM, so a node that ships it (~/.egpt-secondary,
   //       node kg2) is byte-identical to before, right down to a `use:` naming a block that does
   //       not exist still landing on the legacy path. An explicit operator statement also has to
   //       beat an inferred default, or the inference could never be overridden.
@@ -1364,7 +1364,7 @@ export async function boot({
   //   · `primary` and `primary_gui` are the SAME ACCOUNT (anrodz42) on two different Beeper
   //     installs, so they carry two DIFFERENT tokens and nothing downstream collapses them.
   //     Dialling both as ears would ingest every message on that account TWICE.
-  //   · `~/.egpt`'s `secondary` token is BYTE-IDENTICAL to `~/.egpt2`'s `main` token — one
+  //   · `~/.egpt`'s `secondary` token is BYTE-IDENTICAL to `~/.egpt-secondary`'s `main` token — one
   //     install, held by two nodes. If kg both heard and spoke there, kg and kg2 would both wake
   //     on it and double-answer wherever An's number is absent.
   //
@@ -2228,7 +2228,7 @@ export async function boot({
     // — driven by refreshConfig on message arrival, see below — can register/clear onto it.
     heartbeats: createHeartbeats({ onLog: (m) => log.line?.(`[heartbeat] ${m}`) }),
   };
-  // Brain registry: resolves the agent-type file (YAML defs in src/brains ← ~/.egpt2/config
+  // Brain registry: resolves the agent-type file (YAML defs in src/brains ← ~/.egpt-secondary/config
   // /agents ← <slug>/brains) a fresh conversation is instanced from, named by the persona
   // agent's `configuration`.
   const brains = createBrains({ onLog: (m) => log.line?.(`[brains] ${m}`) });

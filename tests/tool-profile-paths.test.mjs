@@ -1,7 +1,7 @@
 // Locks the OFF-boot-graph tool modules' profile paths to EGPT_HOME (the
 // profile root), NOT a hardcoded ~/.egpt. These modules run in brain
 // subprocesses / standalone CLIs that INHERIT the spine's env, so a test node
-// (~/.egpt2) must derive its paths from EGPT_HOME — a regression to
+// (~/.egpt-secondary) must derive its paths from EGPT_HOME — a regression to
 // join(homedir(), '.egpt', ...) would silently read/write the production
 // profile.
 //

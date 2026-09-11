@@ -7,7 +7,7 @@ REM Double-click restarts the DEFAULT node, egpt-daemon (profile ~/.egpt).
 REM To restart another node, pass its service name as the only argument:
 REM
 REM   restart-egpt-service.cmd                 (= egpt-daemon,  ~/.egpt)
-REM   restart-egpt-service.cmd egpt2-daemon    (=              ~/.egpt2)
+REM   restart-egpt-service.cmd egpt-secondary-daemon    (=              ~/.egpt-secondary)
 REM
 REM A shortcut is the double-click way to the second one: point it at this file
 REM with the service name appended in the Target box.

@@ -153,16 +153,23 @@ Run it before saying yes.
 
 ## What is deployed today
 
-Not this. The running arrangement is the older one: two spines on two profiles
-(`~/.egpt`, `~/.egpt2`), one per account, joined by the `peer_spine` mouth link
-— the primary is ear and brain, the secondary says the finished line on the
-other account. It works, and the machinery for keying one group's two chatIds
-across accounts lives there.
+This, as of 2026-09-11. `kg` is one spine holding both accounts as connections:
+`primary` is the EAR, `secondary` is the MOUTH, and `primary_gui` is declared and
+never dialled. One rule decides every send — if the mouth can reach the chat the
+mouth speaks, and if it cannot the ear does — so a Self-DM, which only the
+operator's account has, is answered on the ear without a special case.
 
-Moving to the shape above is config, not code: fold the second account into one
-`beeper:` block, drop `peer_spine`, retire the second profile. The inbound half
-has been in the tree since 2026-09-02 (`src/spine/bridge-fanout.mjs`), the
-outbound half since 2026-08-30 (`beeper_connection`, `bridgeOf`).
+`kg2` is NOT that second account. It is a second NODE on its own profile
+(`~/.egpt-secondary`), with its own conversations and its own memory, and
+`peer_spine` still joins the two so a reply can be SAID by Rodz in a chat both
+accounts are in. That link stays.
+
+So the multiplicity that got collected was the SUPERVISOR, not the account. One
+`egpt-daemon` carries every profile in its session (`EGPT_HOMES`);
+`egpt-secondary-daemon` folded into it. The axis is the session, because only a
+Session 1 process can supervise a Session 1 spine.
+
+What is NOT yet exercised: the S0→S1 handover across a real logoff/logon.
 
 
 ## Mirroring to another machine

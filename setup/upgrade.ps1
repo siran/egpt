@@ -12,7 +12,7 @@
 # non-ASCII character here (an em-dash, an arrow) mangles into bytes that break the parser.
 #
 #   powershell -ExecutionPolicy Bypass -File setup\upgrade.ps1
-#   powershell -ExecutionPolicy Bypass -File setup\upgrade.ps1 -EgptHome "$env:USERPROFILE\.egpt2"
+#   powershell -ExecutionPolicy Bypass -File setup\upgrade.ps1 -EgptHome "$env:USERPROFILE\.egpt-secondary"
 #   powershell -ExecutionPolicy Bypass -File setup\upgrade.ps1 -Peer an@192.168.1.102
 [CmdletBinding()]
 param(

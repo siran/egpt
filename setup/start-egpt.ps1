@@ -13,7 +13,7 @@
 #
 # Run from an ELEVATED PowerShell if you prefer the command line:
 #   powershell -ExecutionPolicy Bypass -File .\setup\start-egpt.ps1
-#   powershell -ExecutionPolicy Bypass -File .\setup\start-egpt.ps1 -EgptHome "$env:USERPROFILE\.egpt2"
+#   powershell -ExecutionPolicy Bypass -File .\setup\start-egpt.ps1 -EgptHome "$env:USERPROFILE\.egpt-secondary"
 
 param(
   [string]$EgptHome    = $(if ($env:EGPT_HOME) { $env:EGPT_HOME } else { Join-Path $env:USERPROFILE '.egpt' }),
@@ -31,7 +31,7 @@ if (-not $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
 
 # --- 2. same profile -> service-name derivation the installer uses ---
 if (-not $ServiceName) {
-  $base = (Split-Path $EgptHome -Leaf) -replace '^\.', ''   # ".egpt2" -> "egpt2"
+  $base = (Split-Path $EgptHome -Leaf) -replace '^\.', ''   # ".egpt-secondary" -> "egpt-secondary"
   # THROW, never fall back to 'egpt' (2026-09-11): an empty leaf means EgptHome arrived
   # empty or mangled, and silently resolving that to the PRIMARY node's service is how
   # `uninstall -EgptHome <mangled>` removed egpt-daemon instead of the node it named.

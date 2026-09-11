@@ -1,6 +1,6 @@
 // seed.mjs — make the PROFILE the operator-facing home (operator 2026-07-02). At
-// boot we copy the repo's shipped skeletons into ~/.egpt2/config/skeletons/, the shipped
-// brain defs + personalities (config/skeletons/agents/) into ~/.egpt2/config/agents/, and
+// boot we copy the repo's shipped skeletons into ~/.egpt-secondary/config/skeletons/, the shipped
+// brain defs + personalities (config/skeletons/agents/) into ~/.egpt-secondary/config/agents/, and
 // drop a commented example agent-type file there too, so an operator editing their profile
 // has the paste-ready templates right there.
 //

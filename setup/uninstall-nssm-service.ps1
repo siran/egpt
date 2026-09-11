@@ -6,7 +6,7 @@
 #
 # Self-elevates (approve the UAC prompt); output is echoed back to the calling shell:
 #   powershell -ExecutionPolicy Bypass -File .\setup\uninstall-nssm-service.ps1
-#   powershell -ExecutionPolicy Bypass -File .\setup\uninstall-nssm-service.ps1 -ServiceName egpt2-daemon
+#   powershell -ExecutionPolicy Bypass -File .\setup\uninstall-nssm-service.ps1 -ServiceName egpt-secondary-daemon
 
 # NO DEFAULT (2026-09-11). It used to default to 'egpt-daemon' -- the PRIMARY node's
 # service. A caller who passed a wrong or unrecognised switch (e.g. -EgptHome, which this

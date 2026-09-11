@@ -21,8 +21,8 @@
 # Run from THIS repo checkout, as the operator (the same user the service runs as, so the
 # profile + login match). No elevation needed to register a task that runs as yourself.
 #   powershell -ExecutionPolicy Bypass -File .\setup\register-chrome-task.ps1
-#   # a second, isolated node on profile ~/.egpt2:
-#   powershell -ExecutionPolicy Bypass -File .\setup\register-chrome-task.ps1 -EgptHome "$env:USERPROFILE\.egpt2"
+#   # a second, isolated node on profile ~/.egpt-secondary:
+#   powershell -ExecutionPolicy Bypass -File .\setup\register-chrome-task.ps1 -EgptHome "$env:USERPROFILE\.egpt-secondary"
 
 param(
   [string]$EgptHome = $(if ($env:EGPT_HOME) { $env:EGPT_HOME } else { Join-Path $env:USERPROFILE '.egpt' }),

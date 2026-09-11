@@ -2,7 +2,7 @@
 # key; uses your existing `claude` login). config.yaml's agents.egpt.configuration: egpt
 # points here; a fresh conversation is INSTANCED from it (frozen into conversations.yaml
 # `readonly`), re-pointable later with `/e`. Override without touching the repo in
-# ~/.egpt2/config/agents/egpt.yaml (profile) or <slug>/brains/egpt.yaml (one conversation).
+# ~/.egpt-secondary/config/agents/egpt.yaml (profile) or <slug>/brains/egpt.yaml (one conversation).
 type: ccode           # engine: ccode | codex | chatgpt-cdp | claude-cdp | llama (only ccode wired in v2)
 model: sonnet         # concrete model the engine runs (PINNED = deterministic per conversation)
 effort: high          # reasoning effort (engine-dependent)

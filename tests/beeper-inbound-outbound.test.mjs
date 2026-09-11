@@ -23,7 +23,7 @@
 // thing keeping it alive was a hand-added `use: primary` in the live config, marked TEMPORARY.
 //
 // TWO MEASURED FACTS THIS FILE ENCODES:
-//   1. `~/.egpt`'s `secondary` token is BYTE-IDENTICAL to `~/.egpt2`'s `main` token (md5 of the
+//   1. `~/.egpt`'s `secondary` token is BYTE-IDENTICAL to `~/.egpt-secondary`'s `main` token (md5 of the
 //      token string agrees, e2dbc018c2c6 both) — they are one Beeper install. A node must never
 //      dial one endpoint twice as two ears.
 //   2. `primary` and `primary_gui` are the SAME ACCOUNT on two different installs (two different
@@ -269,7 +269,7 @@ describe('the ear and the mouth are two answers (operator 2026-09-10)', () => {
 
   // ── ONE ENDPOINT IS ONE EAR ───────────────────────────────────────────────────────────────
   // Two connection NAMES on one token is one Beeper install. It is dialled ONCE, and the second
-  // name never becomes a second ear — which is the shape `~/.egpt`'s `secondary` and `~/.egpt2`'s
+  // name never becomes a second ear — which is the shape `~/.egpt`'s `secondary` and `~/.egpt-secondary`'s
   // `main` already are on the operator's machine (byte-identical tokens, one install).
   it('a connection whose token duplicates an ear already claimed is not dialled twice', async () => {
     const { built, dialled, app } = await bootWith({
@@ -342,8 +342,8 @@ describe('the ear and the mouth are two answers (operator 2026-09-10)', () => {
     app.stop();
   });
 
-  // ~/.egpt2 (node kg2) ships exactly this and gets the same deploy.
-  it('~/.egpt2\'s `use: main` over a lone `main` block is untouched — one bridge, ear and mouth', async () => {
+  // ~/.egpt-secondary (node kg2) ships exactly this and gets the same deploy.
+  it('~/.egpt-secondary\'s `use: main` over a lone `main` block is untouched — one bridge, ear and mouth', async () => {
     const { built, replies, app } = await bootWith({
       node_name: 'kg2',
       agents: AG(),

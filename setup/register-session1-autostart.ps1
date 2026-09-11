@@ -6,7 +6,7 @@
 #   .\setup\register-session1-autostart.ps1 -Status         # read-only: is it registered, and to what
 #   .\setup\register-session1-autostart.ps1 -Remove         # remove exactly what was added
 #   .\setup\register-session1-autostart.ps1 -DryRun         # print the exact writes, perform none
-#   .\setup\register-session1-autostart.ps1 -EgptHome "$env:USERPROFILE\.egpt2"   # a second node
+#   .\setup\register-session1-autostart.ps1 -EgptHome "$env:USERPROFILE\.egpt-secondary"   # a second node
 #
 # NO ELEVATION. HKCU is the current user's own hive and this writes one string
 # value into it. That is half the reason the plan chose it over Task Scheduler -
@@ -146,7 +146,7 @@ if (-not $EgptHome) {
   else { $EgptHome = Join-Path $env:USERPROFILE '.egpt' }
 }
 # Derived from the profile folder exactly like install-nssm-service.ps1 derives
-# its service name: ~/.egpt -> egpt-session1, ~/.egpt2 -> egpt2-session1. One
+# its service name: ~/.egpt -> egpt-session1, ~/.egpt-secondary -> egpt-secondary-session1. One
 # machine can carry several nodes; they must not collide on one Run value name.
 if (-not $EntryName) {
   $base = (Split-Path $EgptHome -Leaf) -replace '^\.', ''

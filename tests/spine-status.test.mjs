@@ -14,13 +14,13 @@ const READONLY_YAML = `heartbeats:
     frequency: 60s
     frequency_ms: 60000
     action: 'command: echo beat > state/alive.txt'
-    cwd: /home/x/.egpt2
+    cwd: /home/x/.egpt-secondary
   - name: whatsapp/fam:daily
     source: conversations/whatsapp/fam/config.yaml
     frequency: 1h
     frequency_ms: 3600000
     action: 'command: node summarize.js'
-    cwd: /home/x/.egpt2/conversations/whatsapp/fam
+    cwd: /home/x/.egpt-secondary/conversations/whatsapp/fam
 `;
 
 // Three contacts, ONE an alias → non-alias slugged count = 2.

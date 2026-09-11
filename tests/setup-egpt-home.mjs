@@ -19,7 +19,7 @@
 //     (re)import egpt-home fresh AFTER this runs, so this default is already superseded.
 //
 // Rooted UNDER the user's home (a sibling of ~/.egpt), NOT os.tmpdir(): every REAL
-// profile (~/.egpt, ~/.egpt2) lives under home, so home-relative derivations
+// profile (~/.egpt, ~/.egpt-secondary) lives under home, so home-relative derivations
 // (conversations-state.conversationPathOf) resolve the same way they do in production.
 // Not created on disk — the bridge's log append harmlessly no-ops on the missing
 // config/logs dir, so nothing accumulates here; tests that need dirs create their own.

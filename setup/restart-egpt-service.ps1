@@ -17,7 +17,7 @@
 # scope and the transcript path are both derived from it.
 #
 #   .\setup\restart-egpt-service.ps1                            # egpt-daemon  (~/.egpt)
-#   .\setup\restart-egpt-service.ps1 -ServiceName egpt2-daemon  # egpt2-daemon (~/.egpt2)
+#   .\setup\restart-egpt-service.ps1 -ServiceName egpt-secondary-daemon  # egpt-secondary-daemon (~/.egpt-secondary)
 #
 # ASCII ONLY (PowerShell 5.1 reads a BOM-less UTF-8 script as ANSI).
 param(
@@ -63,7 +63,7 @@ function Get-TreePids([int] $root) {
 }
 
 # Transcript goes under THIS node's profile: elevated windows close with their
-# output, and restarting egpt2 must not write into egpt's logs. NSSM keeps the
+# output, and restarting egpt-secondary must not write into egpt's logs. NSSM keeps the
 # service environment in ...\<name>\Parameters\AppEnvironmentExtra (REG_MULTI_SZ
 # of NAME=VALUE). AppDirectory is NOT a usable fallback - it is the shared
 # checkout, identical for every node - so fall back to the historical ~/.egpt.

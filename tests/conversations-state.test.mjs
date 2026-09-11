@@ -205,7 +205,7 @@ describe('ensureContact — surface-aware, new contact, multi-JID merge', () => 
 
 describe('conversation_path (stored) backfill', () => {
   it('conversationPathOf is home-relative, includes the profile + surface, basename = slug', () => {
-    // The stored path now includes the PROFILE dir (operator 2026-07-02: `.egpt2/conversations/…`)
+    // The stored path now includes the PROFILE dir (operator 2026-07-02: `.egpt-secondary/conversations/…`)
     // and is relative to home_dir — a relocatable pointer. Asserted structurally so it holds
     // whatever EGPT_HOME the suite runs under.
     const p = conversationPathOf(WA, 'diego-2606101647');

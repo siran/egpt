@@ -14,7 +14,7 @@
 // THE CONNECTION NAMES NOW CARRY THE MEANING. The precedence, in boot's outboundOf:
 //
 //   1. the agent's own `use:` (alias `beeper_connection`) — wins over everything
-//   2. an explicit `beeper.use`             — BACK-COMPAT (~/.egpt2 still ships it)
+//   2. an explicit `beeper.use`             — BACK-COMPAT (~/.egpt-secondary still ships it)
 //   3. `secondary`, if declared             — "primary doesn't speak if secondary is present"
 //   4. `primary`, if declared
 //   5. the ONE connection, if exactly one is declared, whatever it is named
@@ -181,7 +181,7 @@ describe('the DEFAULT outbound connection — the names carry the meaning (opera
   });
 
   // ── BACK-COMPAT: `use:` still wins ────────────────────────────────────────────────────────
-  // MANDATORY. ~/.egpt2 (node kg2, the second spine on this machine) still ships
+  // MANDATORY. ~/.egpt-secondary (node kg2, the second spine on this machine) still ships
   // `beeper: { use: main, main: {...} }` and gets the same deploy. An explicit operator
   // statement also has to beat an inferred default, or the inference could not be overridden.
   it('an explicit use: wins over secondary', async () => {
@@ -190,7 +190,7 @@ describe('the DEFAULT outbound connection — the names carry the meaning (opera
     app.stop();
   });
 
-  it('~/.egpt2\'s exact shape — use: main over a single `main` block — is untouched', async () => {
+  it('~/.egpt-secondary\'s exact shape — use: main over a single `main` block — is untouched', async () => {
     const { built, app } = await bootWith({
       node_name: 'kg2',
       agents: AG(),

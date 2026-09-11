@@ -21,8 +21,8 @@
 #   powershell -ExecutionPolicy Bypass -File .\setup\install-nssm-service.ps1
 #   # one service supervising BOTH session 0 profiles:
 #   powershell -ExecutionPolicy Bypass -File .\setup\install-nssm-service.ps1 -EgptHomes "$env:USERPROFILE\.egpt;$env:USERPROFILE\.egpt-secondary"
-#   # a second, isolated node on profile ~/.egpt2 (service 'egpt2-daemon'):
-#   powershell -ExecutionPolicy Bypass -File .\setup\install-nssm-service.ps1 -EgptHome "$env:USERPROFILE\.egpt2"
+#   # a second, isolated node on profile ~/.egpt-secondary (service 'egpt-secondary-daemon'):
+#   powershell -ExecutionPolicy Bypass -File .\setup\install-nssm-service.ps1 -EgptHome "$env:USERPROFILE\.egpt-secondary"
 #
 # Remove:  setup\uninstall-nssm-service.ps1 -ServiceName <name>
 #
@@ -51,9 +51,9 @@ param(
 $ErrorActionPreference = 'Stop'
 
 # Derive the service name from the profile folder: ~/.egpt -> egpt-daemon,
-# ~/.egpt2 -> egpt2-daemon. Keeps nodes from colliding on one machine.
+# ~/.egpt-secondary -> egpt-secondary-daemon. Keeps nodes from colliding on one machine.
 if (-not $ServiceName) {
-  $base = (Split-Path $EgptHome -Leaf) -replace '^\.', ''   # ".egpt2" -> "egpt2"
+  $base = (Split-Path $EgptHome -Leaf) -replace '^\.', ''   # ".egpt-secondary" -> "egpt-secondary"
   # THROW, never fall back to 'egpt' (2026-09-11): an empty leaf means EgptHome arrived
   # empty or mangled, and silently resolving that to the PRIMARY node's service is how
   # `uninstall -EgptHome <mangled>` removed egpt-daemon instead of the node it named.

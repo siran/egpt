@@ -119,11 +119,11 @@ const OAUTH_REMEDY = [
   '       claude setup-token',
   '     That is a SUBSCRIPTION token. An `sk-ant-api...` API key will NOT work here.',
   '  2. Paste it as the TOP-LEVEL `sandbox_oauth_token:` key of EACH node\'s own config. The two nodes on this',
-  '     machine keep separate profiles: ~/.egpt/config/config.yaml (kg) and ~/.egpt2/config/config.yaml (kg2).',
+  '     machine keep separate profiles: ~/.egpt/config/config.yaml (kg) and ~/.egpt-secondary/config/config.yaml (kg2).',
   '  3. Make it take effect, once per node, from the repo. setup/upgrade.ps1 drops an /upgrade the running',
   '     spine consumes; the daemon then pulls, rebuilds and respawns it, and the new config is read on the way up:',
   '       powershell -ExecutionPolicy Bypass -File setup\\upgrade.ps1',
-  '       powershell -ExecutionPolicy Bypass -File setup\\upgrade.ps1 -EgptHome "$env:USERPROFILE\\.egpt2"',
+  '       powershell -ExecutionPolicy Bypass -File setup\\upgrade.ps1 -EgptHome "$env:USERPROFILE\\.egpt-secondary"',
 ].join('\n');
 
 // CASE B — THE CREDENTIAL IS THERE AND THE API REFUSED IT. MEASURED on 2026-09-06 against

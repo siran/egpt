@@ -538,9 +538,9 @@ describe('sandbox-cli-session — a missing or rejected sandbox_oauth_token tell
     expect(text, 'nothing says it is a subscription token, not an API key').toContain('sk-ant-api');
     expect(text, 'the config key is not named').toContain('sandbox_oauth_token');
     expect(text, "node 1's config path is missing").toContain('~/.egpt/config/config.yaml');
-    expect(text, "node 2's config path is missing").toContain('~/.egpt2/config/config.yaml');
+    expect(text, "node 2's config path is missing").toContain('~/.egpt-secondary/config/config.yaml');
     expect(text, 'the redeploy command is missing').toContain('powershell -ExecutionPolicy Bypass -File setup\\upgrade.ps1');
-    expect(text, "the second node's redeploy is missing").toContain('-EgptHome "$env:USERPROFILE\\.egpt2"');
+    expect(text, "the second node's redeploy is missing").toContain('-EgptHome "$env:USERPROFILE\\.egpt-secondary"');
     expect(text, 'nothing explains WHY it happened (a static credential that cannot refresh)').toMatch(/STATIC and cannot refresh/);
   }
 

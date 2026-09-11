@@ -74,7 +74,7 @@ import { shortChatId, fullChatId } from './chat-id.mjs';
 import { createEarProbe, injectViaTelegram } from '../ear-probe.mjs';
 
 // Profile-aware (NOT hardcoded ~/.egpt): EGPT_HOME selects the node, so two
-// nodes on one box (prod ~/.egpt + a v2 test node ~/.egpt2) never interleave
+// nodes on one box (prod ~/.egpt + a v2 test node ~/.egpt-secondary) never interleave
 // writes into the SAME bridge log. Exported so a test can lock the derivation.
 export const _BEEPER_LOG = join(EGPT_HOME, 'config', 'logs', 'beeper.log');
 const SEEN_PROCESSED_CAP = 3000;
