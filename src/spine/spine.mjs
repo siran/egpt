@@ -28,7 +28,7 @@ import { makeOutbound } from './sender.mjs';
 import { isBrainFailureResult } from '../brain-errors.mjs';
 import { replyLine, contextSinceLastTurn, promptWithRecentContext, bodyForMessageId, promptWithQuotedMessage, RECENT_CONTEXT_MAX_CHARS } from '../transcript-log.mjs';
 import { isHumanTurn, parseStopWord } from '../stop-guard.mjs';
-import { mentionHits } from '../auto-mode.mjs';
+import { mentionHits, withoutAddress } from '../auto-mode.mjs';
 import { lifecycleExit } from './ingest.mjs';
 import { cleanForSpeech } from '../speech-clean.mjs';
 
@@ -961,7 +961,7 @@ export function createSpine({
       // not just mentions; see openAndRunReply). If a train is already in flight for this
       // conversation, the placeholder opens in the QUEUED state and the turn WAITS its turn
       // on turnBy; when it reaches the front it activates and streams.
-      const turn = openAndRunReply({ to, ev, d, turnKey, pinned });
+      const turn = openAndRunReply({ to, ev, d, turnKey, pinned, trigger: triggerFor(ev, targets[0]) });
       return withRelay(turn);
     }
 
@@ -1000,6 +1000,35 @@ export function createSpine({
   // train count and the live-turn identity it reads — the mesh responder needs the same weave,
   // and one steer means one place it can be decided. Aliased as `steerLiveTurn` above.)
 
+  // THE TRIGGER, WITH THE ADDRESSING HANDLE OFF (operator 2026-09-11, measured live: he wrote
+  // `e e` and the model was handed `…#4709: e e` under `THIS LINE IS THE PROMPT — answer THIS:`;
+  // it replied `…` because that reads as a bare repetition of its own name. *"model should only
+  // receive a Hi! … the log is correct, i wrote `e e`"*).
+  //
+  // `target.address` is the handle that OPENED the message, decided by THE mention matcher and
+  // carried out here by the router (router.targetFor) — nothing re-scans the body. null (no
+  // address, or a handle mid-sentence, which is content) ⇒ null ⇒ every caller falls back to the
+  // dispatch line exactly as it always has.
+  //
+  // THE RECORD IS NOT TOUCHED, and that is the operator's ruling: transcript.md keeps the raw
+  // text (ingestion wrote it before any of this ran), and runReplyTurn's accum `exclude` still
+  // names the RAW line, so the trigger keeps matching its own recorded block and can never also
+  // appear inside the accumulated context.
+  //
+  // SPLICED, NEVER RE-FORMATTED: ev.line was built ONCE at ingestion (identity.mjs, C7.6e) and
+  // ends with ev.body, so the stripped body goes back on the SAME head — byte-identical sender,
+  // chat, surface, clock, `#<id>` and `[re #<id>]`. A line that does NOT end with the body (a
+  // reaction/edit stage-direction, which is bracket-wrapped) is left alone rather than guessed at.
+  function triggerFor(ev, target) {
+    const address = target?.address;
+    if (!address || typeof ev?.body !== 'string') return null;
+    const body = withoutAddress(ev.body, address);
+    if (body === ev.body) return null;                                   // nothing to take off
+    if (ev.line == null) return body;
+    if (!ev.line.endsWith(ev.body)) return null;
+    return ev.line.slice(0, ev.line.length - ev.body.length) + body;
+  }
+
   // Open THIS mention's placeholder + enqueue its reply turn on the per-conversation FIFO.
   // Returns the turn's completion promise.
   //
@@ -1010,11 +1039,11 @@ export function createSpine({
   // exist. Quoting from the START is also what removes the delete+repost churn for the common
   // case: E's /reply at the message it is answering is now GENUINELY redundant, so it strips
   // instead of tearing the placeholder down and posting a fresh quote in its place.
-  function openAndRunReply({ to, ev, d, turnKey, pinned = false }) {
+  function openAndRunReply({ to, ev, d, turnKey, pinned = false, trigger = null }) {
     const replyTo = ev.msgId ?? null;
     const ahead = bumpTrain(turnKey);
     const out = sender.open(ev.chatId, { being: to, replyTo, queued: ahead > 0, queuedAhead: ahead, auto: d.mode === 'auto' });
-    return turnBy(turnKey, () => runReplyTurn({ to, ev, d, out, replyTo, turnKey, queued: ahead > 0, pinned }));
+    return turnBy(turnKey, () => runReplyTurn({ to, ev, d, out, replyTo, turnKey, queued: ahead > 0, pinned, trigger }));
   }
 
   // The spine's FAN-OUT (operator 2026-07-25): dispatch the agents addressed BESIDE the one
@@ -1040,7 +1069,7 @@ export function createSpine({
         // keyed NARROWER than the warm key it guards is the corruption case for it too. ONE
         // derivation now (turns.keyOf) — this used to be a second copy of the line above it.
         const scope = await turns.keyOf(being, ev);
-        await openAndRunReply({ to: being, ev, d, turnKey: scope.key, pinned: scope.pinned });
+        await openAndRunReply({ to: being, ev, d, turnKey: scope.key, pinned: scope.pinned, trigger: triggerFor(ev, t) });
       } catch (e) { note(`fan-out ${being}/${ev.chatId}: ${e?.message ?? e}`); }
     })).then(() => {});
   }
@@ -1058,7 +1087,7 @@ export function createSpine({
   // `burst` (the auto-dwell fire): this turn answers a whole accumulated burst, so it prompts
   // with the drained cycle verbatim instead of appending its own trigger line. A PROMPT
   // concern only — it says nothing about the record.
-  async function runReplyTurn({ to, ev, d, out, replyTo = null, turnKey, queued, burst = false, pinned = false }) {
+  async function runReplyTurn({ to, ev, d, out, replyTo = null, turnKey, queued, burst = false, pinned = false, trigger = null }) {
     try {
       // THIS turn is now the live one on this key, and this is whose message it answers —
       // the identity the same_sender tier of allow_new_input compares against (2026-08-30) —
@@ -1132,7 +1161,12 @@ export function createSpine({
       // wrong test. drainCycle above still RAN either way: draining is what advances the baseline
       // the next turn's cycle starts from, and skipping it would be a different bug.
       const prepend = !pinned && (burst || ((queued || d.mode === 'auto') && pending.length));
-      const base = ev.line ?? ev.body;
+      // THE TRIGGER (triggerFor, above): the dispatch line with THIS being's addressing handle
+      // taken off, because a handle at the start is how it was addressed, not something said to
+      // it. Absent — no address, a handle mid-sentence, the dwell/burst path — ⇒ the dispatch
+      // line, unchanged. The `exclude` above deliberately stays the RAW line: that is what is on
+      // the record, and it is what must be kept out of the accumulated context.
+      const base = trigger ?? (ev.line ?? ev.body);
       let line = recent
         ? promptWithRecentContext(base, recent)
         : prepend
@@ -1144,7 +1178,11 @@ export function createSpine({
       // that one check enough (it sees everything the prompt already holds), and the block's
       // label names the id instead of a position for exactly that reason.
       if (quoted && bodyForMessageId(line, quoted.id) == null) line = promptWithQuotedMessage(line, quoted);
-      const promptEv = line === base ? ev : { ...ev, line };
+      // `ev` ITSELF only when the prompt is byte-for-byte the event's own dispatch line — the
+      // identity check has to be against THAT, not against `base`: since 2026-09-11 `base` can
+      // already be the addressing-handle-stripped trigger, and comparing to it would hand the
+      // brain the untouched `ev` and put the handle straight back into the prompt.
+      const promptEv = line === (ev.line ?? ev.body) ? ev : { ...ev, line };
       // STREAM THE PROSE ONLY (operator 2026-07-15). The raw partial used to go straight to
       // the chat, so E's action tokens RENDERED live — the operator watched `/reply #<id> …`
       // appear and then vanish once the completed text was parsed below. partialProse applies

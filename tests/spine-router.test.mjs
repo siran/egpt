@@ -303,7 +303,7 @@ describe('addressed() — a bare handle opening the message (operator 2026-07-27
   };
 
   it('REPRODUCE-FIRST: `d hola` addresses DOLLY`s persona, atStart — same as @d hola', () => {
-    expect(addressed('d hola', DOLLY)).toEqual([{ name: 'egpt', agent: DOLLY.egpt, atStart: true, anywhere: true }]);
+    expect(addressed('d hola', DOLLY)).toEqual([{ name: 'egpt', agent: DOLLY.egpt, token: 'd', atStart: true, anywhere: true }]);
     expect(addressed('d hola', DOLLY)).toEqual(addressed('@d hola', DOLLY));
   });
   it('REPRODUCE-FIRST: `d, ya vi` addresses it — a comma is a boundary', () => {
@@ -316,7 +316,7 @@ describe('addressed() — a bare handle opening the message (operator 2026-07-27
     expect(addressed('vamos d luego', DOLLY)).toEqual([]);
   });
   it('REPRODUCE-FIRST: `@d hola` is unchanged', () => {
-    expect(addressed('@d hola', DOLLY)).toEqual([{ name: 'egpt', agent: DOLLY.egpt, atStart: true, anywhere: true }]);
+    expect(addressed('@d hola', DOLLY)).toEqual([{ name: 'egpt', agent: DOLLY.egpt, token: 'd', atStart: true, anywhere: true }]);
   });
 
   it('longest-token-first across AGENTS: on kg `don ...` picks the don relay, not the persona`s e', () => {
@@ -339,7 +339,7 @@ describe('addressed() — a bare handle opening the message (operator 2026-07-27
   it('a surface-pinned agent still drops out: kg`s `don Pedro…` on beeper falls through to the persona', async () => {
     const router = createRouter({ getAgents: () => KG, defaultBeing: 'egpt' });
     const beeper = await router.resolve({ ...ev('don Pedro me dijo que sí'), surface: 'beeper' });
-    expect(beeper.targets).toEqual([{ being: 'egpt', mention: ev('x').mention }]);   // unmentioned persona → gated silent
+    expect(beeper.targets).toEqual([{ being: 'egpt', mention: ev('x').mention, address: null }]);   // unmentioned persona → gated silent
     const shell = await router.resolve({ ...ev('don Pedro me dijo que sí'), surface: SHELL_SURFACE });
     expect(shell.mesh?.being).toBe('don');
   });
@@ -357,12 +357,12 @@ describe('addressed() — a bare handle opening the message (operator 2026-07-27
       expect(addressed('d hola', DOLLY, OFF)).toEqual([]);
       expect(addressed('d, ya vi', DOLLY, OFF)).toEqual([]);
       expect(addressed('@d hola', DOLLY, OFF))
-        .toEqual([{ name: 'egpt', agent: DOLLY.egpt, atStart: true, anywhere: true }]);
+        .toEqual([{ name: 'egpt', agent: DOLLY.egpt, token: 'd', atStart: true, anywhere: true }]);
       expect(addressed('@d hola', DOLLY, OFF)).toEqual(addressed('@d hola', DOLLY));
     });
     it('REPRODUCE-FIRST: the ROUTER carries it — `wren ping` falls through to the persona, `@wren ping` does not', async () => {
       const off = createRouter({ getAgents: () => KG, defaultBeing: 'egpt', addressWithoutAt: false });
-      expect((await off.resolve(ev('wren ping'))).targets).toEqual([{ being: 'egpt', mention: ev('x').mention }]);
+      expect((await off.resolve(ev('wren ping'))).targets).toEqual([{ being: 'egpt', mention: ev('x').mention, address: null }]);
       expect((await off.resolve(ev('@wren ping'))).mesh?.being).toBe('wren');
       // …and ON (the default) is untouched: no option = today's live behaviour.
       const on = createRouter({ getAgents: () => KG, defaultBeing: 'egpt' });
@@ -393,7 +393,7 @@ describe('router.resolve — allowed_users gate (operator 2026-08-15)', () => {
     const arouter = createRouter({ getAgents: () => agents, defaultBeing: 'egpt' });
     const r = await arouter.resolve({ ...ev('@wren do X'), senderId: 'stranger' });
     expect(r.being).toBe('egpt');                                  // falls through to the persona
-    expect(r.targets).toEqual([{ being: 'egpt', mention: ev('x').mention }]);   // no refusal, no trace of @wren
+    expect(r.targets).toEqual([{ being: 'egpt', mention: ev('x').mention, address: null }]);   // no refusal, no trace of @wren
   });
 
   it('a sender ON the GLOBAL allowed_users reaches the being directly', async () => {
@@ -518,18 +518,18 @@ describe('addressed({ isVoice }) — a spoken alias wakes only at the START (ope
 
   it('the SAME alias at the START still wakes, carrying atStart:true — a voice hit IS a start hit', () => {
     expect(addressed('rey, hola', agents, { isVoice: true }))
-      .toEqual([{ name: 'ken', agent: agents.ken, atStart: true, anywhere: true }]);
+      .toEqual([{ name: 'ken', agent: agents.ken, token: 'rey', atStart: true, anywhere: true }]);
     expect(addressed('perrito ven', agents, { isVoice: true }))
-      .toEqual([{ name: 'egpt', agent: agents.egpt, atStart: true, anywhere: true }]);
+      .toEqual([{ name: 'egpt', agent: agents.egpt, token: 'perrito', atStart: true, anywhere: true }]);
     expect(addressed('ren revisá esto', agents, { isVoice: true }))
-      .toEqual([{ name: 'wren', agent: agents.wren, atStart: true, anywhere: true }]);
+      .toEqual([{ name: 'wren', agent: agents.wren, token: 'ren', atStart: true, anywhere: true }]);
   });
 
   it("the START is the TRANSCRIPT's — the `(voice transcription, Ns)` marker never hides it", () => {
     expect(addressed(mark('rey, hola'), agents, { isVoice: true }))
-      .toEqual([{ name: 'ken', agent: agents.ken, atStart: true, anywhere: true }]);
+      .toEqual([{ name: 'ken', agent: agents.ken, token: 'rey', atStart: true, anywhere: true }]);
     expect(addressed('(voice transcription) perrito ven', agents, { isVoice: true }))
-      .toEqual([{ name: 'egpt', agent: agents.egpt, atStart: true, anywhere: true }]);
+      .toEqual([{ name: 'egpt', agent: agents.egpt, token: 'perrito', atStart: true, anywhere: true }]);
     expect(addressed(mark('el rey de españa fue famoso'), agents, { isVoice: true })).toEqual([]);
     expect(addressed(mark('tengo un perro grande'), agents, { isVoice: true })).toEqual([]);
   });
@@ -537,23 +537,23 @@ describe('addressed({ isVoice }) — a spoken alias wakes only at the START (ope
   it('the boundary rules ride along unchanged — a spoken name glued into a longer word is not an address', () => {
     expect(addressed('reyes magos vienen', agents, { isVoice: true })).toEqual([]);
     expect(addressed('perrito', agents, { isVoice: true }))
-      .toEqual([{ name: 'egpt', agent: agents.egpt, atStart: true, anywhere: true }]);
+      .toEqual([{ name: 'egpt', agent: agents.egpt, token: 'perrito', atStart: true, anywhere: true }]);
   });
 
   it('an agent with NO voice_handles is untouched — silence by default, and its @handle still works', () => {
     expect(addressed('plain hola', agents, { isVoice: true })).toEqual([]);   // the map KEY is not a token (handles: [p])
     expect(addressed('p hola', agents, { isVoice: true }))
-      .toEqual([{ name: 'plain', agent: agents.plain, atStart: true, anywhere: true }]);
+      .toEqual([{ name: 'plain', agent: agents.plain, token: 'p', atStart: true, anywhere: true }]);
   });
 
   it('a text handle (@wren) and a voice alias (ren) in the same message dedup to ONE entry, atStart true', () => {
     expect(addressed('@wren and also ren are you there', agents, { isVoice: true }))
-      .toEqual([{ name: 'wren', agent: agents.wren, atStart: true, anywhere: true }]);
+      .toEqual([{ name: 'wren', agent: agents.wren, token: 'wren', atStart: true, anywhere: true }]);
   });
 
   it('REGRESSION: isVoice omitted/false is byte-identical — the @/bare handle path never consults voice_handles', () => {
-    expect(addressed('@wren ping', agents)).toEqual([{ name: 'wren', agent: agents.wren, atStart: true, anywhere: true }]);
-    expect(addressed('@wren ping', agents, { isVoice: false })).toEqual([{ name: 'wren', agent: agents.wren, atStart: true, anywhere: true }]);
+    expect(addressed('@wren ping', agents)).toEqual([{ name: 'wren', agent: agents.wren, token: 'wren', atStart: true, anywhere: true }]);
+    expect(addressed('@wren ping', agents, { isVoice: false })).toEqual([{ name: 'wren', agent: agents.wren, token: 'wren', atStart: true, anywhere: true }]);
     expect(addressed('ren ping', agents, { isVoice: false })).toEqual([]);
     expect(addressed('ren ping', agents)).toEqual([]);
     expect(addressed('rey, hola', agents)).toEqual([]);
@@ -716,7 +716,7 @@ describe('fallback_handle — a conditional wake token gated on membership (oper
 
   it('the fallback token rides THE ONE matcher: withFallback:true puts @e in the vocabulary, carrying its guard', () => {
     expect(addressed('@e hola', KG, { withFallback: true }))
-      .toEqual([{ name: 'egpt', agent: KG.egpt, atStart: true, anywhere: true, unlessPresent: '+13472576794' }]);
+      .toEqual([{ name: 'egpt', agent: KG.egpt, token: 'e', atStart: true, anywhere: true, unlessPresent: '+13472576794' }]);
     // …and it inherits every protection a real handle has (bare form, mid-sentence, glued-token, case)
     expect(addressed('e hola', KG, { withFallback: true }).map((h) => h.name)).toEqual(['egpt']);
     expect(addressed('please @E look', KG, { withFallback: true }).map((h) => h.name)).toEqual(['egpt']);
@@ -802,9 +802,9 @@ describe('fallback_handle — `handle:` accepts a LIST of tokens (operator 2026-
 
   it('both tokens ride THE ONE matcher, each carrying the guard (no parallel scan)', () => {
     expect(addressed('@d hola', AGENTS, { withFallback: true }))
-      .toEqual([{ name: 'don', agent: AGENTS.don, atStart: true, anywhere: true, unlessPresent: PEER }]);
+      .toEqual([{ name: 'don', agent: AGENTS.don, token: 'd', atStart: true, anywhere: true, unlessPresent: PEER }]);
     expect(addressed('@don hola', AGENTS, { withFallback: true }))
-      .toEqual([{ name: 'don', agent: AGENTS.don, atStart: true, anywhere: true, unlessPresent: PEER }]);
+      .toEqual([{ name: 'don', agent: AGENTS.don, token: 'don', atStart: true, anywhere: true, unlessPresent: PEER }]);
     // …and each inherits every protection a declared handle has (bare form, mid-sentence, glued)
     expect(addressed('d hola', AGENTS, { withFallback: true }).map((h) => h.name)).toEqual(['don']);
     expect(addressed('please @D look', AGENTS, { withFallback: true }).map((h) => h.name)).toEqual(['don']);
@@ -1001,7 +1001,7 @@ describe('fallback_handle — unless_peer_alive (operator 2026-09-02)', () => {
 
   it('the token rides THE ONE matcher and carries its liveness guard', () => {
     expect(addressed('@e hola', AGENTS, { withFallback: true }))
-      .toEqual([{ name: 'egpt', agent: AGENTS.egpt, atStart: true, anywhere: true, unlessPeerAlive: 23376 }]);
+      .toEqual([{ name: 'egpt', agent: AGENTS.egpt, token: 'e', atStart: true, anywhere: true, unlessPeerAlive: 23376 }]);
   });
 
   // THE RESTART CASE: no S1 process, so S0 answers.

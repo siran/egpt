@@ -208,6 +208,50 @@ export function mentionHitsAnywhere(text, tokens) {
   const re = new RegExp(`${_NOT_GLUED_BEFORE}(${alt})${_NOT_GLUED}`, 'giu');
   return [...t.matchAll(re)].map((m) => ({ token: m[1].toLowerCase() }));
 }
+// THE ADDRESS IS NOT CONTENT — the counterpart to the START form above (operator 2026-09-11,
+// measured live). He wrote `e e` in a group and the model was handed, verbatim:
+//
+//   THIS LINE IS THE PROMPT — answer THIS:
+//   An@[HFM - high frequency masturbation].wa (08:07) #4709: e e
+//
+// It answered `…` — the polite silence config/skeletons/room/40-rules.md defines — because it was
+// handed what reads as a bare repetition of its own name and reasonably found nothing to answer.
+// The operator: *"The model is receiving its own wake word, should happen on a `@egpt hi` or
+// `e hi`, model should only receive a Hi! … the log is correct, i wrote `e e`"*. So the RECORD
+// keeps the raw text (transcript.md is append-only and was never wrong); only the trigger handed
+// to the model loses the handle.
+//
+// Given the token the matcher ALREADY resolved — router.addressed carries it out on the hit and
+// the spine strips with it — this takes that opening handle, '@'-form or bare, off the front and
+// returns the rest. NOT a second mention scan: the vocabulary is the caller's, the escape and the
+// boundary are THIS module's (_escapeWake / _NOT_GLUED, the same ones mentionHits uses), and the
+// match is anchored to ^ — so a handle MID-SENTENCE is content and can never be touched, which is
+// the same position rule the bare form and (since 2026-09-09) the spoken form already wake on.
+//
+// WHAT THE MODEL GETS: `e e` → `e` (the first token addressed, the second is what was said),
+// `e hi` / `@egpt hi` → `hi`, and a message that is ONLY the handle → '' — there was nothing but
+// the address, and the dispatch line's head still says who hailed it, when and where.
+//
+// ONLY the handle and the whitespace after it come off. A vocative comma (`e, hola` → `, hola`)
+// stays: eating punctuation is a guess about content, and this function does not guess.
+//
+// THE VOICE MARKER IS HEAD, NOT CONTENT, and comes off first for exactly the reason
+// router.addressed takes it off before the spoken scan — a spoken alias sits at the start of the
+// TRANSCRIPT, not of the marked body. It is put straight back, so the model still knows it was
+// spoken and how long it was.
+//
+// UNCHANGED when the text does not open with that token, which is the stripCode case: a code
+// fence before the handle makes `atStart` true against the STRIPPED text while the raw text opens
+// with a backtick. Nothing is guessed and nothing is removed there.
+export function withoutAddress(text, token) {
+  const t = String(text ?? '');
+  const w = String(token ?? '');
+  if (!w) return t;
+  const mark = t.match(VOICE_MARK)?.[0] ?? '';
+  const rest = t.slice(mark.length);
+  const m = rest.match(new RegExp(`^\\s*@?${_escapeWake(w)}${_NOT_GLUED}\\s*`, 'iu'));
+  return m ? mark + rest.slice(m[0].length) : t;
+}
 // A fenced or inline CODE region must never contribute a live wake match — e.g.
 // the /status command emits a fenced ```yaml block whose version line quotes a
 // git commit SUBJECT ("...@e voice-note transcript..."), a changelog line, not

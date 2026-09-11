@@ -181,7 +181,15 @@ export function fallbackWake(agent) {
 // Returns EVERY addressed agent in TEXT ORDER, deduped by agent, each carrying its OWN
 // { atStart, anywhere } — real per-agent flags, never a blanket constant, because the auto-modes
 // rest on exactly that distinction (`mention-direct` wakes on atStart, `mention` on anywhere).
-// @returns {{name: string, agent: object, atStart: boolean, anywhere: boolean}[]}
+//
+// …and `token`, THE HANDLE THAT WON THE HIT (operator 2026-09-11). An agent's handles are not its
+// name (`e` is woken by `ekg`, `egptkg`, `perro`), so "which token addressed it" is knowledge only
+// this scan has — and the prompt path needs it: a handle at the START is ADDRESSING, and must come
+// off the trigger the model is asked to answer (auto-mode.withoutAddress, applied by the spine
+// through targetFor's `address` below). Carrying the token out is what keeps that ONE matcher the
+// only thing that ever decides what a handle is; re-scanning the body downstream would be the
+// fourth mention system this file exists to prevent.
+// @returns {{name: string, agent: object, token: string, atStart: boolean, anywhere: boolean}[]}
 //
 // `addressWithoutAt` (DEFAULT true) is the node's `dispatch.address_without_at` — THE switch for
 // the bare form, handed straight to the matcher. It arrives the SAME way the wake list does:
@@ -265,7 +273,7 @@ export function addressed(text, agents, { addressWithoutAt = true, isVoice = fal
     // The guard rides ALONG, it is not applied here: answering it needs the chat's roster (IO),
     // and this function is sync + pure. The key is ABSENT on an ordinary hit, so an unguarded
     // hit is the same object it always was.
-    out.push({ name: hit.name, agent: hit.agent, atStart, anywhere: true, ...(guardOf.has(token) ? guardOf.get(token) : {}) });
+    out.push({ name: hit.name, agent: hit.agent, token, atStart, anywhere: true, ...(guardOf.has(token) ? guardOf.get(token) : {}) });
   }
   if (isVoice) {
     // The transcript, marker off (see the isVoice header) — then THE matcher, start hits only.
@@ -275,7 +283,7 @@ export function addressed(text, agents, { addressWithoutAt = true, isVoice = fal
       const hit = byVoiceToken.get(token);
       if (!hit || seen.has(hit.name)) continue;
       seen.add(hit.name);
-      out.push({ name: hit.name, agent: hit.agent, atStart: true, anywhere: true });
+      out.push({ name: hit.name, agent: hit.agent, token, atStart: true, anywhere: true });
     }
   }
   return out;
@@ -301,7 +309,7 @@ export function addressed(text, agents, { addressWithoutAt = true, isVoice = fal
 export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', addressWithoutAt = true, loadState = null, isPresent = null, isPeerAlive = null, inboundOf = null, onLog = () => {} } = {}) {
   // ONE addressed agent → the routing target it resolves to. Per-kind semantics are
   // UNCHANGED; only the caller changed (every hit, not just the first).
-  function targetFor({ name, agent, atStart, unlessPresent, unlessPeerAlive }, ev) {
+  function targetFor({ name, agent, token, atStart, unlessPresent, unlessPeerAlive }, ev) {
     // The mention an addressed agent hands its own gate. NOT a constant: the flags are the
     // matcher's REAL per-agent findings (operator 2026-07-25: "respect the mode, if it's
     // mention-direct not the same as mention … nothing has changed"). replyAllowed() already
@@ -309,6 +317,14 @@ export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', addre
     // an agent named mid-sentence in a mention-direct chat correctly stays silent. A LEADING
     // @name still yields { atEStart: true, atEAnywhere: true }, exactly the old constant.
     const mention = { atEStart: atStart, atEAnywhere: true, replyToBot: false };
+    // THE ADDRESSING HANDLE, or null (operator 2026-09-11). The token that OPENED the message is
+    // how the sender addressed this agent, not something the sender said to it — so the spine
+    // takes it off the trigger it hands the model (auto-mode.withoutAddress). POSITION is the
+    // whole test, the same one `atStart` already answers for the gate: mid-sentence, a handle is
+    // content and this stays null. Every kind of target carries it uniformly — a mesh forward
+    // does not consume it (the far node's own router addresses the envelope and strips there),
+    // but a target that means one thing on one branch and nothing on another is how fields rot.
+    const address = atStart ? (token ?? null) : null;
     // MULTIPATH (operator 2026-07-06: multipath is configuration — an agent declares a list of
     // paths, every message through every path). An agent carrying `paths:` is a relay whose every
     // element posts the SAME message into its own relay_channel with its own network pin.
@@ -321,7 +337,7 @@ export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', addre
         ...(String(p.to ?? '').trim() ? { to: String(p.to).trim() } : {}),
         label: p.label,
       }));
-      return { being: null, mesh: { being: name, paths }, mention };
+      return { being: null, mesh: { being: name, paths }, mention, address };
     }
     // A RELAY agent is one carrying a `relay_channel:` (or the legacy explicit
     // `configuration: relay`). It forwards rather than answers: the message goes
@@ -335,7 +351,7 @@ export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', addre
       // can exist on several networks under one Beeper account; carry an optional
       // `network:` beside room_id so the bridge resolves the name to the pinned one.
       const mesh = { being: name, route: { room_id: agent.relay_channel, ...(agent.network ? { network: String(agent.network).toLowerCase() } : {}) }, ...(to ? { to } : {}) };
-      return { being: null, mesh, mention };
+      return { being: null, mesh, mention, address };
     }
     // The DEFAULT (persona) agent routes to its own key (= defaultBeing), keeping
     // the bridge-computed ev.mention. Matched by key OR the `default: true` marker —
@@ -370,11 +386,11 @@ export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', addre
     // in a group, from two visibly different accounts. Silence under the guard has to stay the
     // default that costs no code, not a second suppression kept in sync with this one.
     if (name === defaultBeing || agent.default === true) {
-      if (unlessPresent == null && unlessPeerAlive == null) return { being: defaultBeing, mention: ev?.mention };
-      return { being: defaultBeing, mention: { replyToBot: false, ...(ev?.mention ?? {}), atEStart: !!ev?.mention?.atEStart || atStart, atEAnywhere: true } };
+      if (unlessPresent == null && unlessPeerAlive == null) return { being: defaultBeing, mention: ev?.mention, address };
+      return { being: defaultBeing, mention: { replyToBot: false, ...(ev?.mention ?? {}), atEStart: !!ev?.mention?.atEStart || atStart, atEAnywhere: true }, address };
     }
     // Any other LOCAL agent → being = its name, gated on its own mention.
-    return { being: name, mention };
+    return { being: name, mention, address };
   }
 
   return {
@@ -589,8 +605,10 @@ export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', addre
         }
       }
       // Nobody addressed (or every hit was surface-pinned/allowed-users away): an @token that
-      // matched no agent is the persona's, and so is a bare message.
-      if (!targets.length) targets.push({ being: defaultBeing, mention: ev?.mention });
+      // matched no agent is the persona's, and so is a bare message. `address: null` explicitly —
+      // nothing addressed this being, so there is no handle to take off the prompt, and every
+      // target this function can return carries the field (see targetFor).
+      if (!targets.length) targets.push({ being: defaultBeing, mention: ev?.mention, address: null });
       return { ...targets[0], targets };
     },
   };
