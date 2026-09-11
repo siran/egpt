@@ -66,11 +66,14 @@ function fakeTimers() {
 const EMOJI = { don: '🤝', wren: '🐦' };
 const bodyEmojiOf = (b) => EMOJI[String(b).toLowerCase()] ?? '';
 
-function svc({ node, aliases = [], agents = {}, meshCfg = {}, brain, timers, logs, chatIds = {}, selfChatId = null, sig = {}, loadState } = {}) {
-  const bridge = fakeBridge({ chatIds });
+// `injectedBridge`/`bridgeOf` (operator 2026-09-11) — the multi-connection shape. Absent, this is
+// the single-bridge harness every case below it already was: ONE fakeBridge, no resolver, and
+// createMeshService's own `bridgeOf = null` default.
+function svc({ node, aliases = [], agents = {}, meshCfg = {}, brain, timers, logs, chatIds = {}, selfChatId = null, sig = {}, loadState, bridge: injectedBridge = null, bridgeOf = null } = {}) {
+  const bridge = injectedBridge ?? fakeBridge({ chatIds });
   const cfg = { node_name: node, node_alias: aliases, agents, mesh: meshCfg, ...sig };   // sig = this node's bridge_signature_* (the keys boot hands the ports)
   const mesh = createMeshService({
-    bridge, brain: brain ?? fakeBrain(),
+    bridge, bridgeOf, brain: brain ?? fakeBrain(),
     getConfig: () => cfg, bodyEmojiOf,
     getSelfChatId: () => selfChatId,
     setTimer: timers?.setTimer, clearTimer: timers?.clearTimer,
@@ -204,12 +207,14 @@ describe('mesh service — responder (a request arrives at the owning node)', ()
   it('(b) runs the target local being (brain.turn) and edit-streams the reply as an envelope (re/post_id/done), mirrored', async () => {
     const brain = fakeBrain({ reply: 'aquí', partials: ['aq', 'aquí'] });
     const { bridge, mesh } = svc({ node: 'do', agents: { don: { configuration: 'sonnet-high', name: 'don' } }, brain });
-    const req = encodeMesh({ by: 'An', body: '@don hola', from: 'HFM', from_node: 'kg', to: 'don.do', post_id: 'p1' });
+    // The body as it leaves an ORIGIN: the addressing handle came off there (8edffe9), and the
+    // responder hands over what arrived without rewriting it (2026-09-11).
+    const req = encodeMesh({ by: 'An', body: 'hola', from: 'HFM', from_node: 'kg', to: 'don.do', post_id: 'p1' });
 
     await mesh.handle({ surface: 'whatsapp', chatId: 'RELAY', msgId: 'm1', body: req });
     await flush();
 
-    // ran the being (mention stripped → prompt 'hola'), not the persona
+    // ran the being named by the tail's `to:`, not the persona
     expect(brain.calls).toHaveLength(1);
     expect(brain.calls[0].being).toBe('don');
     expect(brain.calls[0].ev.body).toBe('hola');
@@ -1196,5 +1201,173 @@ describe('mesh service — allowed_users gate (operator 2026-08-15)', () => {
     await mesh.handle({ surface: 'whatsapp', chatId: 'RELAY', msgId: 'm1', body: req, senderId: 'boss' });
     await flush();
     expect(brain.calls).toHaveLength(1);
+  });
+});
+
+// ── THE MESH FOLLOWS THE CHAT TOO (operator 2026-09-11) ────────────────────────────────────────
+// THE UNIFORM RULE, one sentence: IF THE MOUTH CAN REACH THE CHAT, THE MOUTH SPEAKS; IF IT CANNOT,
+// THE EAR DOES. 32aa5c1 built it for replies (src/spine/boot.mjs outboundConnectionFor), the
+// node-level announces joined, then the advice ask. createMeshService was the LAST constructor in
+// boot.mjs handed `bridge` with no `bridgeOf`, so EVERY line the mesh placed rode one frozen
+// bridge: this node's DEFAULT MOUTH.
+//
+// WHY THAT IS NOT COSMETIC. One real chat is a DIFFERENT Matrix room per Beeper account
+// (src/bridges/beeper.mjs crossAccountChatKey; mesh.mjs's own originConv header records two pairs
+// measured live). On the kg node the mouth is `secondary` (dolly.egpt) and the ear is `primary`
+// (anrodz42), so an ear id handed to the mouth is not the wrong voice — it is a room that does not
+// exist, and the send is dropped. Three families of mesh send carry exactly such an id:
+//
+//   · THE ORIGIN CHAT — a human TYPED there, so it is a room on the ear by definition. The 🤔
+//     placeholder, the living mirror that is the whole visible output of a mesh hop, the
+//     "⏱️ … did not answer" notice and forwardCommand's "no agent routes" refusal all go there.
+//   · THE ARRIVING ENVELOPE'S OWN CHAT — mesh.handle builds `route.room_id = ev.chatId`, the id
+//     the EAR delivered, and the RESPONDER streams its reply straight back into it.
+//   · THE SELF CHAT — the unresolved-channel notice's target, and the one id provably on the ear.
+//
+// AND THE TRANSPORT MUST NOT MOVE. A relay_channel is configured by NAME, and a name is a chat
+// this node cannot place at all — which the rule itself answers with THE MOUTH. So the resolved id
+// and the envelope that follows it stay exactly where they are today; that half is locked here as
+// carefully as the half that moves.
+describe('mesh service — every line the mesh places follows the chat, not the frozen mouth', () => {
+  const RELAY = 'egpt-mesh-do-kg';                      // the relay_channel AS CONFIGURED: a name
+  const RELAY_ON_MOUTH = '!relay-as-secondary-sees-it';
+  const RELAY_ON_EAR = '!relay-as-primary-sees-it';
+  const ORIGIN = '!origin-as-primary-sees-it';          // a human typed here ⇒ a room on the ear
+  const SELF = '!self-dm-as-primary-sees-it';
+
+  // boot's resolver (outboundConnectionFor) reduced to the one fact a service-level fake can
+  // hold: the set of chats the EAR holds — what ARRIVED there plus the declared Self chat.
+  // Everything else is unplaceable, which is exactly connectionHolding's `null`, and answers with
+  // the mouth. Each connection resolves NAMES out of its OWN chat list, because that is what a
+  // Beeper account is: `null` models "no chat matches (searched ALL chat pages)".
+  function twoConnections({ onEar = [], earIds = {}, mouthIds = {} } = {}) {
+    const ear = fakeBridge({ chatIds: earIds });
+    const mouth = fakeBridge({ chatIds: mouthIds });
+    const held = new Set(onEar.map(String));
+    return { ear, mouth, bridgeOf: (being, chatId = null) => (chatId != null && held.has(String(chatId)) ? ear : mouth) };
+  }
+  const kg = () => twoConnections({
+    onEar: [ORIGIN, RELAY_ON_EAR, SELF],
+    earIds: { [RELAY]: RELAY_ON_EAR },
+    mouthIds: { [RELAY]: RELAY_ON_MOUTH },
+  });
+  const originEv = { surface: 'whatsapp', chatId: ORIGIN, chatName: 'HFM', senderName: 'An', body: 'hola' };
+  const target = { being: 'don', route: { room_id: RELAY }, to: 'don.do' };
+  const envelopes = (b) => b.sent.filter((s) => parseMesh(s.text));
+  const notices = (b) => b.sent.filter((s) => !parseMesh(s.text));
+
+  it('REPRODUCE-FIRST: the 🤔 placeholder and the living mirror land on the connection that holds the ORIGIN chat', async () => {
+    const { ear, mouth, bridgeOf } = kg();
+    const { mesh } = svc({ node: 'kg', bridge: mouth, bridgeOf });
+
+    await mesh.forward(originEv, target);
+    expect(ear.statusPosts.map((p) => p.chat)).toEqual([ORIGIN]);       // the operator's only sign the hop happened
+    expect(mouth.statusPosts).toHaveLength(0);
+
+    // …and the mirror that fills that placeholder in resolves it on the SAME connection.
+    await mesh.handle({ surface: 'whatsapp', chatId: RELAY_ON_EAR, msgId: 'r1',
+      body: encodeMesh({ by: 'don.do', body: '🤝 hey', re: 'HFM.kg', post_id: 'post-1', done: true }) });
+    const mirror = ear.streams.find((s) => s.opts?.existingMsgId === 'post-1');
+    expect(mirror?.chat).toBe(ORIGIN);
+    expect(mirror.finals).toContain('🤝 hey');
+    expect(mouth.streams).toHaveLength(0);
+  });
+
+  it('REPRODUCE-FIRST: the "⏱️ did not answer" notice goes home on the origin\'s connection', async () => {
+    const timers = fakeTimers();
+    const { ear, mouth, bridgeOf } = kg();
+    const { mesh } = svc({ node: 'kg', bridge: mouth, bridgeOf, timers, meshCfg: { timeout_ms: 30000 } });
+    await mesh.forward(originEv, target);
+    timers.timers[0].fn();
+    await flush();
+    expect(notices(ear).map((s) => ({ chat: s.chat, said: /don\.do did not answer/.test(s.text) }))).toEqual([{ chat: ORIGIN, said: true }]);
+    expect(notices(mouth)).toHaveLength(0);
+  });
+
+  it('REPRODUCE-FIRST: forwardCommand\'s "no agent routes" refusal goes to the chat the operator typed in', async () => {
+    const { ear, mouth, bridgeOf } = kg();
+    const { mesh } = svc({ node: 'kg', bridge: mouth, bridgeOf });
+    expect(await mesh.forwardCommand({ surface: 'whatsapp', chatId: ORIGIN, body: '/tabs' }, 'zz')).toBe(false);
+    expect(ear.sent).toHaveLength(1);
+    expect(ear.sent[0].chat).toBe(ORIGIN);
+    expect(ear.sent[0].text).toContain('no agent routes to node "zz"');
+    expect(mouth.sent).toHaveLength(0);
+  });
+
+  it('REPRODUCE-FIRST: the RESPONDER answers on the connection the envelope ARRIVED on', async () => {
+    // mesh.handle's route IS the arrival (`room_id: ev.chatId`), and an arrival only ever comes in
+    // on an ear. Streamed at the mouth, the whole reply — every frame and the final — is dropped
+    // into a room that account is not in, and the asking node waits out its timeout for nothing.
+    const brain = fakeBrain({ reply: 'aquí' });
+    const { ear, mouth, bridgeOf } = kg();
+    const { mesh } = svc({ node: 'do', agents: { don: { configuration: 'sonnet-high', name: 'don' } }, brain, bridge: mouth, bridgeOf });
+    await mesh.handle({ surface: 'whatsapp', chatId: RELAY_ON_EAR, msgId: 'm1',
+      body: encodeMesh({ by: 'An', body: 'hola', from: 'HFM', from_node: 'kg', to: 'don.do', post_id: 'p1' }) });
+    await flush();
+    expect(ear.streams).toHaveLength(1);
+    expect(ear.streams[0].chat).toBe(RELAY_ON_EAR);
+    expect(parseMesh(ear.streams[0].finals.at(-1))).toMatchObject({ by: 'don.do', re: 'HFM.kg', post_id: 'p1', done: true });
+    expect(mouth.streams).toHaveLength(0);
+  });
+
+  it('REPRODUCE-FIRST: a relay_channel the EAR holds is never called "unreachable" — the connection that will SEND is the one asked', async () => {
+    // A raw-id relay_channel minted on the ear's account cannot be resolved by the mouth at all
+    // (beeper.mjs: "no chat matches (searched ALL chat pages)" ⇒ null). Asking the mouth answered
+    // NO, so the mesh posted "⚠️ relay channel … is unreachable (did not resolve)" and relayed
+    // through Self — about a room that was reachable the whole time. Nothing may lie about what
+    // it did, so the question goes to the connection that would carry the send.
+    const { ear, mouth, bridgeOf } = twoConnections({
+      onEar: [ORIGIN, RELAY_ON_EAR, SELF],
+      earIds: { [RELAY_ON_EAR]: RELAY_ON_EAR },
+      mouthIds: { [RELAY_ON_EAR]: null },                             // the mouth's account is not in that room
+    });
+    const { mesh } = svc({ node: 'kg', bridge: mouth, bridgeOf, selfChatId: SELF });
+    expect(await mesh.forward(originEv, { being: 'don', route: { room_id: RELAY_ON_EAR }, to: 'don.do' })).toBe(true);
+    expect(notices(ear)).toHaveLength(0);                             // nothing was unreachable
+    expect(envelopes(ear).map((s) => s.chat)).toEqual([RELAY_ON_EAR]);
+    expect(mouth.sent).toHaveLength(0);
+  });
+
+  it('THE TRANSPORT DOES NOT MOVE: a relay_channel NAME is asked of the mouth and the envelope rides it, exactly as today', async () => {
+    // A scalar forward posts the channel AS CONFIGURED and lets the bridge resolve at send time
+    // (mesh.mjs's forward), so what is locked here is WHICH ACCOUNT'S chat list is consulted and
+    // WHICH account carries the envelope — the name itself is what goes on the wire, as before.
+    const { ear, mouth, bridgeOf } = kg();
+    const { mesh } = svc({ node: 'kg', bridge: mouth, bridgeOf });
+    await mesh.forward(originEv, target);
+    expect(mouth.resolveCalls.map((c) => c.nameOrId)).toContain(RELAY);
+    expect(ear.resolveCalls.map((c) => c.nameOrId)).not.toContain(RELAY);
+    expect(envelopes(mouth).map((s) => s.chat)).toEqual([RELAY]);
+    expect(envelopes(ear)).toHaveLength(0);
+  });
+
+  it('THE TRANSPORT DOES NOT MOVE: a relay-record HOP out of an arriving envelope still rides the mouth', async () => {
+    // The chain hop: the envelope arrives on the ear and leaves through a relay_channel NAME.
+    // Both halves in one case — the arrival is answered where it arrived, the hop goes out where
+    // the name resolves — because that is the pair a chain gets wrong if either half is frozen.
+    const { ear, mouth, bridgeOf } = kg();
+    const { mesh } = svc({ node: 'kg', aliases: ['do'], agents: { don: { relay_channel: RELAY, to: 'wren.kg' } }, bridge: mouth, bridgeOf });
+    await mesh.handle({ surface: 'wa', chatId: RELAY_ON_EAR, msgId: 'a1',
+      body: encodeMesh({ by: 'An', body: 'hi', from: 'HFM', from_node: 'kg', to: 'don.do' }) });
+    expect(envelopes(mouth).map((s) => s.chat)).toEqual([RELAY_ON_MOUTH]);
+    expect(parseMesh(envelopes(mouth)[0].text)).toMatchObject({ to: 'wren.kg' });
+    expect(mouth.resolveCalls.map((c) => c.nameOrId)).toContain(RELAY);
+  });
+
+  it('the Self fallback and its ⚠️ notice both ride the connection that holds Self', async () => {
+    const { ear, mouth, bridgeOf } = twoConnections({ onEar: [ORIGIN, SELF], mouthIds: { [RELAY]: null } });
+    const { mesh } = svc({ node: 'kg', bridge: mouth, bridgeOf, selfChatId: SELF });
+    expect(await mesh.forward(originEv, { being: 'don', route: { room_id: RELAY, network: 'whatsapp' }, to: 'don.do' })).toBe(true);
+    expect(notices(ear).map((s) => s.chat)).toEqual([SELF]);
+    expect(notices(ear)[0].text).toContain(RELAY);
+    expect(envelopes(ear).map((s) => s.chat)).toEqual([SELF]);
+    expect(mouth.sent).toHaveLength(0);
+  });
+
+  it('NO bridgeOf — the one-connection node, and every case above this block — is byte-identical', async () => {
+    const { bridge, mesh } = svc({ node: 'kg', chatIds: { [RELAY]: 'ID' } });
+    await mesh.forward(originEv, target);
+    expect(bridge.statusPosts.map((p) => p.chat)).toEqual([ORIGIN]);
+    expect(envelopes(bridge).map((s) => s.chat)).toEqual([RELAY]);
   });
 });

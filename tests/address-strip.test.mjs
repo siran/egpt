@@ -511,21 +511,27 @@ describe('REPRODUCE — the CONTEXT TURN hands the being its own handle', () => 
 
 // ── AND WHAT THE FAR MODEL IS ACTUALLY HANDED ────────────────────────────────────────────────
 //
-// The wire assertions above are only half the question. The RESPONDER does its own rewrite before
-// it builds the turn — src/mesh/relay.mjs line ~548:
+// The wire assertions above are only half the question. The RESPONDER used to do its own rewrite
+// before it built the turn — src/mesh/relay.mjs, until 2026-09-11:
 //
 //     const prompt = prov.body.replace(MENTION_RE, '').trim() || prov.body.trim();
 //     const MENTION_RE = /(?:^|\s)@([a-z0-9_-]+)\b/i;
 //
-// That is a FOURTH mention system (router.mjs's own header is emphatic that this repo has already
-// accumulated three and evicted two), and it is neither anchored, nor boundary-correct, nor aware
-// of the bare form. Measured, on the body as it left the origin BEFORE this change:
+// That was a FOURTH mention system (router.mjs's own header is emphatic that this repo has already
+// accumulated three and evicted two), and it was neither anchored, nor boundary-correct, nor aware
+// of the bare form. Measured, on the body as it left the origin BEFORE 8edffe9:
 //
 //     '@don hola'                  -> 'hola'                     ← it did strip this one
 //     'don hola'                   -> 'don hola'                 ← the BARE form: the handle arrived
 //     '@don'                       -> '@don'                     ← the `||` fallback puts it BACK
 //     '@don.mo hola'               -> '.mo hola'
 //     'pregúntale a @don si viene' -> 'pregúntale a si viene'    ← it EATS content, mid-sentence
+//
+// IT IS GONE (operator 2026-09-11: "double-check whether it is even needed or intended"). Its one
+// correct case is the one 8edffe9 moved to the ORIGIN — the only node whose vocabulary the handle
+// is in — so what was left was the four wrong ones. The responder now hands the body over as it
+// arrived; MENTION_RE stays only inside `mentionedBeing`, which FINDS the being of a `to:`-less
+// open-channel envelope and strips nothing.
 //
 // So these tests run the REAL responder (createMeshService on node `mo`) over the body the origin
 // actually put on the wire, and assert what `brain.turn` is handed on the far side.
@@ -581,5 +587,13 @@ describe('REPRODUCE — end to end, what the FAR being is handed', () => {
 
   it('a hail with nothing after it does not put the handle back', async () => {
     expect(await acrossTheMesh('@don')).toBe('');               // ← was '@don': the `|| prov.body` fallback
+  });
+
+  // REPRODUCE-FIRST for the removal (2026-09-11). The origin keeps a mid-sentence handle on
+  // purpose — it is content, not an address — and the responder's own scan then ate it, so the
+  // model was handed a sentence with a word missing. This is the whole case in one line, from the
+  // typed message to what the far model reads.
+  it('a handle MID-SENTENCE reaches the far being intact — the responder eats nothing', async () => {
+    expect(await acrossTheMesh('pregúntale a @don si viene')).toBe('pregúntale a @don si viene');
   });
 });

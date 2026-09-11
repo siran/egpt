@@ -47,6 +47,10 @@ import { addressed } from './router.mjs';
 // the per-conversation override, allowedUsersPermits (shared with router.mjs, operator
 // 2026-08-16) does the sender-id match, including the "*" wildcard.
 import { getBeing, allowedUsersPermits } from '../conversations-state.mjs';
+// WHICH CONNECTION AN OUTBOUND GOES OUT ON — the ONE resolver (sender.mjs makeOutbound), not a
+// local copy of `bridgeOf(being, chatId) ?? bridge`. Every send, stream and status this service
+// places asks it; see the createMeshService header below for what each one passes.
+import { makeOutbound } from './sender.mjs';
 
 const PLACEHOLDER = '🤔 thinking…';
 // A relayed turn that lands BEHIND another turn on the same key says so, instead of showing a
@@ -59,6 +63,39 @@ const textOf = (v) => (typeof v === 'string' ? v : v?.text ?? '');
 
 export function createMeshService({
   bridge,                              // the Bridge port (send, startStream, postStatus, onEdit)
+  // ── WHICH CONNECTION EACH MESH LINE RIDES (operator 2026-09-11) ─────────────────────────────
+  // THE UNIFORM RULE: *if the mouth can reach the chat, the mouth speaks; if it cannot, the ear
+  // does.* `bridgeOf(being, chatId)` is the SAME per-chat resolver the reply path, the steer 👀,
+  // the limbs, the member sender, the advice ask and every node-level announce already ask
+  // (src/spine/boot.mjs outboundConnectionFor). This service was the LAST constructor in boot.mjs
+  // handed `bridge` alone, so every line it placed rode ONE frozen bridge: the node's DEFAULT
+  // MOUTH.
+  //
+  // AND IT IS NOT COSMETIC, because one real chat is a DIFFERENT Matrix room per Beeper account
+  // (originConv's header below records two pairs measured live). On the kg node the mouth is
+  // `secondary` (dolly.egpt) and the ear is `primary` (anrodz42), and THREE families of mesh send
+  // carry an id that only the ear's account has:
+  //   · THE ORIGIN CHAT — a human TYPED there, so it is a room on the ear by definition. The 🤔
+  //     placeholder, the living mirror that is the entire visible output of a mesh hop, the
+  //     "⏱️ … did not answer" notice and forwardCommand's "no agent routes" refusal all land there.
+  //   · THE ARRIVING ENVELOPE'S OWN CHAT — `handle` builds `route.room_id = ev.chatId`, the id the
+  //     EAR delivered, and the RESPONDER streams its whole reply back into exactly that id.
+  //   · THE SELF CHAT — selfRoute's notice target, the one id provably on the ear.
+  // On the mouth each of those is not the wrong voice, it is a room that does not exist, and the
+  // send is dropped in silence.
+  //
+  // WHAT EACH CALL PASSES: the origin's RELAY BEING on the origin side (it rides home on the
+  // origin record as `relayBeing`), the ANSWERING being on the responder side, and `null` for a
+  // node-level notice or for transport — the same `null` the announces and the advice ask pass.
+  //
+  // THE TRANSPORT DOES NOT MOVE, and that is the rule agreeing with itself rather than an
+  // exception: a relay_channel is configured by NAME, a name is a chat this node cannot place at
+  // all, and the rule answers an unplaceable chat with the mouth. What DOES move is a channel
+  // configured as a raw id the EAR holds — see chatResolves below, which used to ask an account
+  // that could not see the room and then said out loud that the room was unreachable.
+  //
+  // Absent (every unit test, every one-connection node) ⇒ the injected `bridge`, byte for byte.
+  bridgeOf = null,
   brain,                               // the Brain port (turn) — runs the local being for the responder
   // The command service (createCommands). A node-addressed command can travel as an envelope
   // (operator 2026-07-26 — egpt as a remote control for the network); at the RESPONDER the
@@ -100,6 +137,11 @@ export function createMeshService({
   onLog = () => {},
 } = {}) {
   if (!bridge) throw new Error('createMeshService: bridge is required');
+  // No peerMouth: the mesh is a TRANSPORT between spines, and `route()` — "should the peer's
+  // account say this instead?" — is a question about a REPLY. Nothing here consults it, so the
+  // thunk is never built and no membership read is ever paid for.
+  const outbound = makeOutbound({ bridge, bridgeOf });
+  const bridgeFor = (being, chatId) => outbound(being, chatId).bridge;
   const cfg = () => getConfig() ?? {};
   const node = String(cfg().node_name ?? 'node').toLowerCase();   // this spine's node (boot-stable)
   // SELF-set: node_name ∪ node_alias (operator 2026-07-05) — the identities THIS one
@@ -200,15 +242,26 @@ export function createMeshService({
     if (!noticedChannels.has(chat)) {
       noticedChannels.add(chat);
       onLog(`relay channel ${JSON.stringify(chat)} did not resolve — relaying through Self`);
-      try { await bridge.send(self, `⚠️ relay channel "${chat}" is unreachable (did not resolve) — create group ${chat} for relay. Relaying through this chat meanwhile.`); } catch {}
+      // A node-level notice, in the Self chat — `null` being, the same argument the boot/STOP
+      // announces pass, and the Self chat is on the ear whether or not anything has arrived yet.
+      try { await bridgeFor(null, self).send(self, `⚠️ relay channel "${chat}" is unreachable (did not resolve) — create group ${chat} for relay. Relaying through this chat meanwhile.`); } catch {}
     }
     return { ...route, room_id: self };
   };
   // Can the bridge reach this chat? A bridge with no resolver (test fakes) is treated as
   // reachable so raw-id configs stay untouched; a throwing resolver likewise (fail safe).
+  //
+  // ASKED OF THE CONNECTION THAT WOULD CARRY THE SEND (operator 2026-09-11), not of a frozen
+  // mouth — because this question decides whether the mesh POSTS A NOTICE SAYING THE CHANNEL IS
+  // UNREACHABLE. A relay_channel configured as a raw room id minted on the ear's account cannot
+  // be resolved by the mouth at all (beeper.mjs resolveChatId: "no chat matches (searched ALL
+  // chat pages)" ⇒ null, and `_knownChatIds` is per-connection), so the mouth answered NO about a
+  // room the ear was sitting in, and the operator was told a reachable group did not resolve.
+  // A NAME is unplaceable and still resolves on the mouth, exactly as before.
   const chatResolves = async (chat, network) => {
-    if (!bridge.resolveChatId) return true;
-    try { return !!(await bridge.resolveChatId(chat, network ? { network } : undefined)); }
+    const b = bridgeFor(null, chat);
+    if (!b.resolveChatId) return true;
+    try { return !!(await b.resolveChatId(chat, network ? { network } : undefined)); }
     catch { return true; }
   };
   // Resolve a route's room to the CANONICAL short chat id the bridge delivers under.
@@ -227,9 +280,12 @@ export function createMeshService({
     const c = chatOf(route);
     if (c == null) return route;
     const network = route.network ? String(route.network).toLowerCase() : null;
+    // Same connection chatResolves asks, and for the same reason: an unresolvable answer here
+    // routes the hop through Self and posts that notice. A NAME ⇒ the mouth, unchanged.
+    const b = bridgeFor(null, c);
     try {
-      if (!bridge.resolveChatId) return route;
-      const id = await bridge.resolveChatId(c, network ? { network } : undefined);
+      if (!b.resolveChatId) return route;
+      const id = await b.resolveChatId(c, network ? { network } : undefined);
       if (id) return { ...route, room_id: id };
       return (await selfRoute(route, c)) ?? route;              // unresolved → Self transport (+ one-time notice)
     }
@@ -253,7 +309,9 @@ export function createMeshService({
     const t = setTimer(() => {
       pending.delete(key);
       inFlight.delete(inFlightKey(surface, chatId, being));   // gave up waiting — nothing is in flight to weave into
-      Promise.resolve(bridge.send(String(chatId), `⏱️ ${targetLabel} did not answer`)).catch(() => {});
+      // Home, into the chat the human typed in — so it rides that chat's connection, under the
+      // relay being armTimeout was already given.
+      Promise.resolve(bridgeFor(being, String(chatId)).send(String(chatId), `⏱️ ${targetLabel} did not answer`)).catch(() => {});
     }, timeoutMs());
     pending.set(key, t);
   }
@@ -340,6 +398,16 @@ export function createMeshService({
   // envelope says nothing about the origin's, and the route's pin describes the TRANSPORT. An
   // ambiguous title therefore resolves the way every other name does here (bridge logs it, first
   // match wins) rather than by a pin invented on this side.
+  // DELIBERATELY NOT bridgeFor (operator 2026-09-11). This is the ONE resolveChatId in this file
+  // that is not deciding where something is SENT — its answer is a CONVERSATION IDENTITY (the
+  // thread, the warm key, the a569ada scope, access_level), and the reply still goes into the
+  // relay channel. The outbound rule has nothing to say about it: `from` is a NAME, which the rule
+  // calls unplaceable and answers with the mouth, i.e. exactly the bridge already injected here.
+  // Left where it is, and named as a finding rather than moved: on a node whose ear and mouth are
+  // DIFFERENT accounts this resolves the origin's title in the MOUTH's chat list, so a relayed
+  // turn can key a different id than a message typed locally in that same group would (which
+  // arrives on the ear). Fixing that needs "the EAR's bridge", which is a second rule and not
+  // this one — it is reported, not invented here.
   const originConv = async (name) => {
     const n = String(name ?? '').trim();
     if (!n || !bridge.resolveChatId) return null;              // no name / no resolver (test fakes, raw-id configs) — unchanged
@@ -485,7 +553,11 @@ export function createMeshService({
     send: async (route, text) => {
       const chat = chatOf(route);
       if (chat == null) throw new Error('mesh: route has no chat');
-      await bridge.send(chat, text);
+      // TRANSPORT — `null` being, and the chat decides. It arrives here in BOTH shapes: a
+      // relay_channel (a name, or an id canonRoute resolved) on the way out, and the ARRIVING
+      // envelope's own room on the way back ("no <being> here", the relay-record hop's source).
+      // The second is an id the ear delivered, and on the mouth it was dropped.
+      await bridgeFor(null, chat).send(chat, text);
     },
     // ORIGIN one-shot (no stream primitive) OR an error/status home. A being reply arrives
     // RENDERED — the node that ran the being stamped and signed it before encoding — so this
@@ -495,7 +567,9 @@ export function createMeshService({
       const chat = returnTo?.chat_id ?? returnTo?.chatId ?? (typeof returnTo === 'string' ? returnTo : null);
       if (chat != null) clearTimeoutFor(returnTo?.waitKey ?? chat);
       clearInFlight(returnTo);                                    // answered one-shot — nothing is running over there any more
-      if (chat != null) await bridge.send(String(chat), text);
+      // The ORIGIN chat, under the relay being the origin record carries (`relayBeing`, set by
+      // forward). A bare-string returnTo (a caller with no record) has none — node-level, null.
+      if (chat != null) await bridgeFor(returnTo?.relayBeing ?? null, String(chat)).send(String(chat), text);
     },
     // ORIGIN placeholder: post "🤔 thinking…" and return its confirmed id. That id
     // rides the request as post_id; the responder echoes it in every reply frame so
@@ -503,7 +577,7 @@ export function createMeshService({
     ackWithPostId: async (origin, text) => {
       const chat = origin?.chat_id ?? origin?.chatId ?? (typeof origin === 'string' ? origin : null);
       if (chat == null) return null;
-      try { return await bridge.postStatus(String(chat), text); } catch { return null; }
+      try { return await bridgeFor(origin?.relayBeing ?? null, String(chat)).postStatus(String(chat), text); } catch { return null; }
     },
     // RESPONDER: run the local being (brain.turn) and edit-stream its reply into the
     // relay channel as ONE message wrapped in the mesh tail (by/emoji/re/post_id). The
@@ -588,7 +662,7 @@ export function createMeshService({
             // does. This is the fix: the two envelopes used to run brain.turn concurrently and both
             // showed a bare placeholder.
             const ahead = turns?.bump(turnKey) ?? 0;
-            stream = bridge.startStream(chat, wrap('', false, ahead), {});
+            stream = bridgeFor(being, chat).startStream(chat, wrap('', false, ahead), {});
             const runTurn = async () => {
               // THIS turn is now the live one on this key, and this is whose message it answers,
               // and IN WHICH CHAT (2026-09-01: a shared scope puts several chats on one key).
@@ -608,7 +682,8 @@ export function createMeshService({
       } catch (e) { final = `(${being}.${node} error: ${e?.message ?? e})`; }
       final = String(final ?? '').trim() || '…';
       if (stream) await stream.finish(wrap(final, true));
-      else await bridge.send(chat, wrap(final, true));
+      // RESPONDER — the ANSWERING being, into the chat the envelope arrived in (an ear id).
+      else await bridgeFor(being, chat).send(chat, wrap(final, true));
     },
     // ORIGIN mirror: edit the origin placeholder (post_id) in place as the reply
     // streams home. The body already carries the being's body_emoji (stamped by the
@@ -622,7 +697,7 @@ export function createMeshService({
       if (chat == null) return null;
       clearTimeoutFor(returnTo?.waitKey ?? chat);                 // the reply is streaming — the wait is over
       const render = (body) => { const b = String(body ?? '').trim(); return b || PLACEHOLDER; };
-      const stream = bridge.startStream(String(chat), '', { existingMsgId: info.msgId || null, showThink: !info.structural });
+      const stream = bridgeFor(returnTo?.relayBeing ?? null, String(chat)).startStream(String(chat), '', { existingMsgId: info.msgId || null, showThink: !info.structural });
       if (!stream) return null;
       return {
         update: (body) => stream.update(render(body)),
@@ -730,7 +805,7 @@ export function createMeshService({
       const target = routeToNode(node, ev.surface);
       if (!target) {
         onLog(`no agent routes to node "${node}" on surface ${ev.surface}`);
-        await bridge.send(ev.chatId, `⚠️ no agent routes to node "${node}" — add an agent with a relay_channel and "to: <being>.${node}" to reach it.`);
+        await bridgeFor(null, ev.chatId).send(ev.chatId, `⚠️ no agent routes to node "${node}" — add an agent with a relay_channel and "to: <being>.${node}" to reach it.`);
         return false;
       }
       // Resolution happens ONCE, here at the origin, and must travel EXPLICITLY (operator

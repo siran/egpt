@@ -170,6 +170,17 @@ export function parseMesh(text) {
   return { body, from: prov.from || '', from_node: prov.from_node || '', by: prov.by || '', to: prov.to || '', re: prov.re || '', sig: prov.sig || '', done: prov.done === 'true', enc: prov.enc || '', post_id: prov.post_id || '', via: normalizeVia(prov.via) };
 }
 
+// THE ONLY REMAINING USE OF MENTION_RE, and it FINDS rather than strips: an OPEN-CHANNEL envelope
+// (no `to:`) names nobody in its tail, so the being it is for has to be read out of the body. That
+// is a genuine need and it stays.
+//
+// MEASURED, AND REPORTED RATHER THAN FIXED HERE (2026-09-11): since 8edffe9 the ORIGIN strips its
+// own relay-agent handle from the body, so an open-channel envelope from an upgraded origin now
+// arrives with nothing for this to find and onRoomMessage's `if (!being) return true` drops it in
+// silence. The addressed (`to:`) path is unaffected — it resolves from the tail — and both live
+// nodes route by `to:`. Closing it means the origin keeping the handle when (and only when) the
+// forward is open-channel, which is a change to src/spine/spine.mjs's forward branch, not to this
+// file.
 export function mentionedBeing(text) {
   const m = MENTION_RE.exec(String(text ?? ''));
   return m ? m[1].toLowerCase() : null;
@@ -545,7 +556,20 @@ export function createMeshRelay({
     // runs the canonical persona being `e`; a local sibling's handle runs that sibling. The
     // reply is still STAMPED with the addressed-as identity (`by: <being>.<asNode>`).
     const runB = resolveLocalBeing(being);
-    const prompt = prov.body.replace(MENTION_RE, '').trim() || prov.body.trim();
+    // THE RESPONDER DOES NOT REWRITE THE BODY (operator 2026-09-11). This was
+    // `prov.body.replace(MENTION_RE, '').trim() || prov.body.trim()` — a FOURTH mention system,
+    // unanchored, boundary-blind and blind to the bare form. What it was FOR is legible in its
+    // ancestor: before 6757d5c the origin PREPENDED `@<being>.<node>` to the body and LEAD_ADDR_RE
+    // (anchored) took that remnant back off. 6757d5c stopped prepending — "stop rewriting the
+    // human's message" — and turned the anchored strip into a free scan, which nothing needed.
+    // Since 8edffe9 the ORIGIN takes its own handle off before the body goes on the wire (the only
+    // node with the vocabulary for it), so its one correct case is handled upstream.
+    // Measured on real bodies, the rest of what it did was wrong: 'don hola' (the bare form) kept
+    // the handle, '@don' got it PUT BACK by the `|| prov.body` fallback, '@don.mo hola' left '.mo',
+    // and 'pregúntale a @don si viene' lost the '@don' — content, which the origin deliberately
+    // keeps (tests/address-strip.test.mjs, "a handle MID-SENTENCE … crosses UNTOUCHED").
+    // MENTION_RE stays for mentionedBeing, which FINDS rather than strips.
+    const prompt = prov.body.trim();
     // RESPONDER: edit-stream the being's reply into the relay room as ONE message
     // wrapped in the mesh tail (re/by/post_id, NO done). The responder's own edits
     // are suppressed locally by the bridge but propagate to the origin, which mirrors

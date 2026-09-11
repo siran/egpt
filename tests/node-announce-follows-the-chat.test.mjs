@@ -355,4 +355,52 @@ describe('every sender boot builds resolves its bridge per chat', () => {
 ${call}`).toContain('bridgeOf');
     }
   });
+
+  // …AND THE SAME MISS, IN THE SAME SHAPE, IN THE LAST SERVICE THAT HAD IT (operator 2026-09-11).
+  // createMeshService was constructed with `bridge:` alone, so every line the mesh placed — the 🤔
+  // placeholder in the ORIGIN chat, the living mirror that is a mesh hop's whole visible output,
+  // the origin-wait notice, and the RESPONDER's reply into the room the envelope arrived in — rode
+  // the node's default mouth carrying ids that only the ear's account has. Structural, like the
+  // one above: the argument was simply absent.
+  it('createMeshService in boot.mjs is built with bridgeOf too', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const src = readFileSync(fileURLToPath(new URL('../src/spine/boot.mjs', import.meta.url)), 'utf8');
+    const calls = [...src.matchAll(/createMeshService\(\{[\s\S]*?\}\)/g)].map((m) => m[0]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0], `createMeshService without bridgeOf:
+${calls[0]}`).toContain('bridgeOf');
+  });
+
+  // …AND THE WHOLE HOP, THROUGH THE REAL BOOT. A relay agent, a human's `@don hola` arriving on
+  // the EAR, and every byte the node then places measured per connection. Nothing here is a
+  // service-level fake: this is boot's own resolver answering about a chat it learned from a real
+  // arrival. (The relay_channel NAME cannot resolve in this harness — the chat list is an HTTP
+  // walk the fake transport does not serve — so the hop takes the Self fallback, which is the
+  // same ear path. That a NAME resolves and rides the MOUTH is locked at the service level, in
+  // tests/spine-mesh.test.mjs "THE TRANSPORT DOES NOT MOVE", and by the sidecar case above:
+  // an unplaceable chat rides the mouth, and a name is unplaceable.)
+  it('a whole mesh hop: the origin chat is placed on the EAR, and the mouth carries nothing', async () => {
+    const cfg = KG();
+    cfg.agents.don = { relay_channel: 'rodz1', to: 'don.do', handles: ['don'] };
+    const ORIGIN = '!group-on-primary';
+    const { byConnection, posted, lines } = await bootWith(cfg, { ingest: true });
+    await deliver(byConnection.primary, ORIGIN, '@don hola');
+    await waitFor(() => posted().some((p) => p.text.startsWith('```')));
+
+    // NOTHING on the mouth — before this, all of it went there, carrying primary's ids.
+    expect(byConnection.secondary.sent).toEqual([]);
+    expect(byConnection.secondary.streams).toEqual([]);
+
+    // boot's resolver was ASKED about the origin chat, and answered with the connection it
+    // arrived on. This line is the whole change in one sentence, and it never used to be said.
+    expect(lines.filter((l) => l.includes(`${ORIGIN} is a chat on 'primary'`)).join('|')).toContain('(it arrived there)');
+
+    // the envelope itself, on primary, carrying the body the ORIGIN stripped its own handle from
+    // (8edffe9) and which the responder no longer rewrites: base64('hola'), not '@don hola'.
+    const envelope = posted().find((p) => p.text.startsWith('```'));
+    expect(envelope.connection).toBe('primary');
+    expect(envelope.text).toContain(Buffer.from('hola').toString('base64'));
+    expect(envelope.text).not.toContain(Buffer.from('@don hola').toString('base64'));
+  });
 });

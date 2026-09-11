@@ -82,17 +82,20 @@ describe('mesh relay — YAML provenance over a shared channel', () => {
     // origin placeholder is a lone 🤔 (renders big; edited in place into the reply)
     expect(h.acks.kg[0].text).toBe('🤔 thinking…');
 
-    // both observe; only `do` owns don → it runs (mention stripped) and replies
+    // both observe; only `do` owns don → it runs and replies. THE BODY IS HANDED OVER VERBATIM
+    // (operator 2026-09-11): '@don' here sits MID-SENTENCE, which the origin deliberately keeps
+    // because a handle in the middle of a line is content — and the responder used to eat it
+    // (`you said: hi`), which is what removing relay.mjs's own mention scan fixes.
     await h.deliver(h.channel[0]);
     expect(h.channel).toHaveLength(2);
-    expect(parseMesh(h.channel[1])).toMatchObject({ by: 'don.do', re: 'HFM.kg', body: 'you said: hi' });
+    expect(parseMesh(h.channel[1])).toMatchObject({ by: 'don.do', re: 'HFM.kg', body: 'you said: hi @don' });
 
     // both observe the reply; kg correlates via re:HFM.kg and surfaces home with the being's identity (by)
     await h.deliver(h.channel[1]);
     expect(h.surfaced.kg).toEqual([
       // waitKey is the NEW stash relay.mjs stamps onto the caller's own origin object (operator
       // 2026-07-28) — here, the legacy no-ackWithPostId fallback, so it's the fromName ('HFM').
-      { origin: { chat_id: 'HFM-id', name: 'HFM', waitKey: 'HFM' }, text: 'you said: hi', info: { by: 'don.do' } },
+      { origin: { chat_id: 'HFM-id', name: 'HFM', waitKey: 'HFM' }, text: 'you said: hi @don', info: { by: 'don.do' } },
     ]);
     expect(h.surfaced.do).toHaveLength(0);
   });
@@ -189,7 +192,9 @@ describe('mesh relay — YAML provenance over a shared channel', () => {
       isLocalBeing: (b) => b === 'don',
       relayDispatch: async (d) => { dispatched = d; },
     });
-    await doSpine.onRoomMessage({ route: { room_id: 'C' }, text: encodeMesh({ by: 'An', body: '@don hola', from: 'HFM', to: 'don.do' }), msgId: 'm1' });
+    // `hola`, not `@don hola`: the ORIGIN takes its own handle off before the body goes on the
+    // wire (8edffe9), and the responder hands over what arrived, unrewritten (2026-09-11).
+    await doSpine.onRoomMessage({ route: { room_id: 'C' }, text: encodeMesh({ by: 'An', body: 'hola', from: 'HFM', to: 'don.do' }), msgId: 'm1' });
     expect(ranBeing).toBe(false);                                                 // routed, not run locally
     expect(dispatched).toMatchObject({ being: 'don', prompt: 'hola', re: 'HFM', by: 'don.do' });
     expect(dispatched.route).toMatchObject({ room_id: 'C' });
@@ -621,7 +626,9 @@ describe('mesh relay — reply home (origin present in the terminal room)', () =
 
   it('REPRODUCE-FIRST: carol→don→wren→ed (a HANDLE of egpt) answers and the reply surfaces home', async () => {
     const c = chain();
-    await c.engines.kg.relayOut({ being: 'carol', route: { room_id: 'rodz1' }, to: 'don.do', body: '@carol hi', origin: { chat_id: 'SELF', name: 'HFM' }, sender: 'An' });
+    // `hi` — what the origin puts on the wire for a typed `@carol hi` (8edffe9: the addressing
+    // handle comes off at the origin, the only node whose vocabulary `carol` is in).
+    await c.engines.kg.relayOut({ being: 'carol', route: { room_id: 'rodz1' }, to: 'don.do', body: 'hi', origin: { chat_id: 'SELF', name: 'HFM' }, sender: 'An' });
     await c.drain();                                          // request forwards through the chain; ed answers; reply comes home
     // Part A: `ed` resolved to the canonical persona being `e` (not run as the literal handle)
     expect(c.ranAs).toBe('e');
@@ -706,5 +713,56 @@ describe('mesh relay — telegram fence-glue transmutation', () => {
     // encode/parse of a via flow-list is unaffected by the trailing-junk tolerance
     const w = encodeMesh({ by: 'ed.do', body: 'hi', re: 'HFM.kg', via: 'don.do,wren.kg', done: true });
     expect(parseMesh(w)).toMatchObject({ via: 'don.do,wren.kg', by: 'ed.do', body: 'hi', done: true });
+  });
+});
+
+// ── THE RESPONDER'S OWN MENTION SCAN IS GONE (operator 2026-09-11) ─────────────────────────────
+//
+// relay.mjs carried `prov.body.replace(MENTION_RE, '').trim() || prov.body.trim()` — a FOURTH
+// mention system beside the router's, unanchored, boundary-blind, blind to the bare form. Its
+// ancestor LEAD_ADDR_RE existed because the origin used to PREPEND `@<being>.<node>` to the body;
+// 6757d5c stopped prepending and widened the anchored strip into a free scan, and since 8edffe9
+// the ORIGIN takes its own handle off — the only node whose vocabulary that handle is in. So the
+// single case it got right is handled upstream, and everything else it did was damage.
+describe('mesh relay — the responder hands the body over, it does not rewrite it', () => {
+  const promptFor = async (body, to = 'don.do') => {
+    let got = null;
+    const doSpine = createMeshRelay({
+      node: 'do', send: async () => {}, surface: async () => {},
+      isLocalBeing: (b) => b === 'don',
+      relayDispatch: async (d) => { got = d.prompt; },
+    });
+    await doSpine.onRoomMessage({ route: { room_id: 'C' }, text: encodeMesh({ by: 'An', body, from: 'HFM', to }), msgId: `m${Math.random()}` });
+    return got;
+  };
+
+  it('REPRODUCE-FIRST: a handle MID-SENTENCE is content and survives the hop', async () => {
+    // The origin keeps it deliberately (tests/address-strip.test.mjs, "a handle MID-SENTENCE still
+    // routes to the relay agent and crosses UNTOUCHED"); the responder then ate it.
+    expect(await promptFor('pregúntale a @don si viene')).toBe('pregúntale a @don si viene');
+  });
+
+  it('REPRODUCE-FIRST: the dotted form is not half-eaten into a stray suffix', async () => {
+    expect(await promptFor('@don.mo hola')).toBe('@don.mo hola');       // ← was '.mo hola'
+  });
+
+  it('an envelope from a PRE-FIX origin now arrives with the handle ON — named, not silently fixed', async () => {
+    // A node that has not been upgraded still puts `@don hola` on the wire. Nothing here undoes
+    // that any more: the strip is the ORIGIN's job and a node that skips it is visibly skipping
+    // it, rather than being papered over by a scan that got the bare form wrong anyway.
+    expect(await promptFor('@don hola')).toBe('@don hola');
+    expect(await promptFor('don hola')).toBe('don hola');               // the bare form: unchanged, it never was stripped
+  });
+
+  it('the ordinary post-8edffe9 body is handed over exactly as it arrived', async () => {
+    expect(await promptFor('hola')).toBe('hola');
+    expect(await promptFor('')).toBe('');                               // a hail with nothing after it stays empty
+  });
+
+  it('MENTION_RE STAYS: an OPEN-CHANNEL envelope (no `to:`) still resolves its being out of the body', async () => {
+    // mentionedBeing is a FINDER, not a stripper, and it is the only being resolution a `to:`-less
+    // envelope has. The body reaches the being intact now — including the handle it was found by.
+    expect(await promptFor('@don hola', '')).toBe('@don hola');
+    expect(await promptFor('hola', '')).toBeNull();                     // nothing to find ⇒ nobody answers (see mentionedBeing's header)
   });
 });

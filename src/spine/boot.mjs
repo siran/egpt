@@ -2354,7 +2354,15 @@ export async function boot({
   // loadState: the SAME conversations-state IO the router/gating DI already share (operator
   // 2026-08-15, allowed_users) — one reference, threaded to every call site that needs a
   // per-conversation override, never re-derived.
-  const mesh = createMeshService({ bridge: shellAwareBridge, brain, commands, getConfig, bodyEmojiOf, labelOf, getSelfChatId: selfChatId, loadState: _loadState, turns, onLog: (m) => log.line?.(`[mesh] ${m}`) });
+  // bridgeOf (operator 2026-09-11) — the LAST constructor in this file holding one frozen bridge.
+  // Every line the mesh places asks the same question every other outbound asks
+  // (outboundConnectionFor): the mouth wherever the mouth can reach the chat, the connection the
+  // chat lives on when it cannot. It matters most for the two chats the mesh cannot choose — the
+  // ORIGIN chat a human typed in, and the room an envelope ARRIVED in — both of which are rooms
+  // on this node's EAR, and neither of which exists on the mouth's account when the two are
+  // different Beeper accounts. shellAwareBridgeOf, not rawBridgeOf, to match the `bridge` above:
+  // a mesh reply into a shell-owned chat must still reach the console.
+  const mesh = createMeshService({ bridge: shellAwareBridge, bridgeOf: shellAwareBridgeOf, brain, commands, getConfig, bodyEmojiOf, labelOf, getSelfChatId: selfChatId, loadState: _loadState, turns, onLog: (m) => log.line?.(`[mesh] ${m}`) });
   bridge.onEdit((e) => mesh.onEdit({ msgId: e.msgId, newText: e.newText }));
 
   // Conversation-E LIMBS (ROADMAP §3): a reply may carry own-line action commands
