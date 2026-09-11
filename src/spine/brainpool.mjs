@@ -209,21 +209,49 @@ async function defaultLoadManifest(getConfig) {
   } catch { return ''; }
 }
 
-// The persona agent's KEY and its `configuration` (config.yaml's `agents:` block) — the def a
-// persona conversation runs on, as a type-file name OR an inline map — or nulls when no default
-// agent is declared. The persona is the
+// The persona agent's KEY, its ENTRY and its `configuration` (config.yaml's `agents:` block) —
+// the def a persona conversation runs on, as a type-file name OR an inline map — or nulls when no
+// default agent is declared. The persona is the
 // single `default: true` agent (operator 2026-07-10 — no e/egpt handle test); new-config-only
 // (operator 2026-07-02): reads `configuration`, never the retired `type` back-read. Pure, given
 // getConfig. The KEY comes back too so brains.resolve can NAME the agent when a `configuration`
-// is unusable — an error that says which agent is misconfigured is the whole point of it being loud.
+// is unusable — an error that says which agent is misconfigured is the whole point of it being
+// loud. The ENTRY comes back for the personality ladder below, which reads an AGENT-LEVEL
+// `personality:` that lives on the entry and not on the def (operator 2026-09-10).
 function personaAgentConfigurationFrom(getConfig) {
   const agents = (getConfig?.() ?? {}).agents ?? {};
   for (const [key, a] of Object.entries(agents)) {
     if (!a || typeof a !== 'object' || Array.isArray(a)) continue;
-    if (a.default === true) return { key, configuration: a.configuration ?? null };
+    if (a.default === true) return { key, agent: a, configuration: a.configuration ?? null };
   }
-  return { key: null, configuration: null };
+  return { key: null, agent: null, configuration: null };
 }
+
+// ── THE PERSONALITY LADDER, in ONE place (operator 2026-09-10) ────────────────────────────────
+// "egpt is a personality/identity, not a brain config." A brain def is named for WHAT IT IS —
+// `haiku-low`, `opus-xhigh`, fifteen of them ship — and is SHARED by every being pointed at it; a
+// personality is a file, config/agents/identities/<name>.md. A being COMPOSES one of each, so
+// `personality:` is read at the AGENT level in config.yaml, sibling of `configuration:`:
+//
+//   ken:
+//     configuration: opus-xhigh   # a SHARED def — no per-being file needed
+//     personality: ken            # config/agents/identities/ken.md
+//
+// Until this rung that was impossible, and the impossibility had a file to show for it: a STRING
+// `configuration:` resolves to a SHARED type file, and brains.mjs merges an inline map with
+// nothing — so the only way to give one being its own identity on a shared engine was a PRIVATE
+// COPY of the shared def with `personality:` bolted on.
+//
+// THE RUNGS, most specific first: the agent entry, then the resolved def. The last rung — 'egpt'
+// — is deliberately NOT here: it belongs to whoever is about to USE the name (turn(), /status),
+// and resolveIdentityFile applies the same default again to a blank one. `undefined` when neither
+// tier states one, so a shaped def still looks exactly as it did to every `?? 'egpt'` downstream.
+//
+// ONE DEFINITION, TWO CALLERS — shapeDef (every being's live def, which turn() feeds from) and
+// resolveDefaultBrainDef (the persona preview /status prints). That is one ladder named once, not
+// a second lookup: a status view that resolved the personality its own way would eventually print
+// something the turn it claims to preview does not run.
+const personalityFor = (agent, def) => agent?.personality ?? def?.personality ?? undefined;
 
 // THE persona brain def, resolved FRESH from config (operator 2026-08-14, phase 1: no more
 // per-conversation freeze — this is the ONLY path now, used on EVERY turn, not just a never-
@@ -236,13 +264,22 @@ function personaAgentConfigurationFrom(getConfig) {
 // retired (2026-08-15) — /agents' own status/access_level views resolve through
 // resolveBeingDef instead, since they must cover any being, not just the persona.
 export function resolveDefaultBrainDef({ getConfig = () => ({}), brains = null, convDir, brainType = 'ccode' } = {}) {
-  const { key, configuration } = personaAgentConfigurationFrom(getConfig);
+  const { key, agent, configuration } = personaAgentConfigurationFrom(getConfig);
+  // The persona's personality reads the SAME ladder every other being's does (personalityFor,
+  // operator 2026-09-10). OVERLAID, not shaped: this returns the def RAW — /status prints its
+  // `name`, and running it through shapeDef would start printing the agent entry's name instead —
+  // and the overlay is skipped entirely when the ladder yields nothing, so a def that states no
+  // personality still comes back without the key, byte-for-byte as before. WHY IT MATTERS: the
+  // /status block prints `personality: <x>` and calls it "exactly what brainpool.mjs's turn()
+  // feeds a fresh thread's kickoff". With the rung only in shapeDef that sentence would become
+  // false the first time an operator wrote `personality:` beside `configuration:`.
+  const withPersonality = (def) => { const p = personalityFor(agent, def); return p === undefined ? def : { ...def, personality: p }; };
   if (configuration) {                                       // an INLINE MAP is truthy too — both forms land here
     const def = brains?.resolve?.(configuration, { convDir, agent: key });
-    if (def) return def;                                     // persona configuration wins
+    if (def) return withPersonality(def);                    // persona configuration wins
     // named but unresolvable → fall through to the shipped 'egpt' type
   }
-  return brains?.resolve?.('egpt', { convDir }) ?? { name: 'egpt', type: brainType };
+  return withPersonality(brains?.resolve?.('egpt', { convDir }) ?? { name: 'egpt', type: brainType });
 }
 
 // Shape a resolved registry def into the brainpool's def contract, letting the agent
@@ -266,7 +303,11 @@ function shapeDef(name, def, agent = {}, brainType = 'ccode') {
     // shapeDef only ever shaped SIBLING defs, which never consulted it (no identity kickoff).
     // Now that resolveBeingDef shapes the PERSONA's def too, an unshaped personality pin
     // would silently stop reaching loadFeed — carried through here instead.
-    personality: def?.personality ?? undefined,
+    // SINCE 2026-09-10 the agent's OWN `personality:` outranks that pin, which is why this reads
+    // the ladder (personalityFor) rather than the def alone: `agent` was already a parameter here
+    // — shapeDef has always let the config.yaml entry override the def's `name` — so the being's
+    // identity is decided in the same place, from the same two objects, as its display name.
+    personality: personalityFor(agent, def),
     dangerously_skip_permissions: def?.dangerously_skip_permissions === true,   // carried so an unconfined type file survives shaping
     // verbose_thinking (operator 2026-08-29 ruling, wren's "see your full chain of thought"):
     // carried the same way dangerously_skip_permissions is, so a type file's opt-in survives shaping.
@@ -322,6 +363,12 @@ export function resolveBeingDef(being, convDir, { getConfig = () => ({}), brains
     model: null,
     effort: null,
     allowed_tools: DEFAULT_ALLOWED_TOOLS,
+    // The AGENT's own `personality:` survives the bare fallback (operator 2026-09-10). What is
+    // missing on this path is the DEF — a `configuration:` naming a file that does not resolve —
+    // and the identity was never the def's to begin with. Dropping it here would answer a typo in
+    // `configuration:` by silently running the being as eGPT while config.yaml plainly says
+    // otherwise. `undefined` when the entry states none, i.e. exactly the shape this object had.
+    personality: personalityFor(agent, null),
   };
 }
 
@@ -364,7 +411,7 @@ export function createBrainPool({
   seedLayers = seedIdentityLayers,  // (room, personality, {io}) -> copy the SHARED fed layers into <room>/directives
   loadAutoLayer = readAutoModeLayer,// () -> the `mode: auto` operator-role instruction layer (appended to an auto conversation's kickoff)
   loadManifest = null,              // () -> e_identity.md fallback (default below)
-  afterTurn = null,                 // ({key, sessionId, model, cwd, allowedTools}) — post-turn hook (auto-compaction)
+  afterTurn = null,                 // ({key, sessionId, model, cwd, allowedTools, compaction, armIdentityRefresh}) — post-turn hook (auto-compaction). `armIdentityRefresh` is a CALLBACK the service invokes after a compact that succeeded — see the arming block at the end of turn()
   loadPermission = loadPermissionLevel,  // (level) -> {dangerouslySkipPermissions, allowedTools}|null — config/permissions/<level>.md for /agents ... access_level; injectable (tests), NO caching in the real implementation (see permission-levels.mjs)
   // THE PLATFORM THIS NODE RUNS ON, injected rather than read off the global, so a test can
   // drive win32 AND posix in one run without redefining process.platform (same options-DI
@@ -753,8 +800,10 @@ export function createBrainPool({
       }
       const engine = def.type ?? brainType;
       // The identity-feed selector (operator 2026-07-02): a property of the resolved
-      // agent-type def, NOT the conversation. A type file may pin `personality: <name>`;
-      // absent, it's 'egpt' (the shipped default).
+      // agent-type def, NOT the conversation. `def.personality` is ALREADY the whole ladder by
+      // the time it gets here (personalityFor, applied in shapeDef): config.yaml's agent-level
+      // `personality:` first, then a type file's own pin. Absent at both, it's 'egpt' (the
+      // shipped default) — the last rung, and the only one this line owns.
       const personality = def.personality ?? 'egpt';
       // E works inside the conversation's own folder unless the brain pins a
       // workspace. The dir must exist before the CLI spawns (warm-cli throws on a
@@ -1005,11 +1054,33 @@ export function createBrainPool({
           await writeState(patchBeing(await loadState(), scope.surface, scope.chatId, being, { identityInjectedAt: nowIsoString() }));
         });
       }
+      // ARMING THE IDENTITY FEED ON COMPACTION (operator 2026-09-10). The ruling is that the
+      // identity feeds at START, REFRESH, RETHREAD and COMPACTION; e4c299e built the first three
+      // and left this one open. A native /compact rewrites this session's context IN PLACE, so
+      // the kickoff feed can be summarised away — the being keeps its thread and loses who it is.
+      //
+      // THE GESTURE IS THE REFRESH ONE, deliberately, so there is no second feed path: write this
+      // being's `identityInjectedAt` to an EXPLICIT null, which getBeing reads back as
+      // identityRefreshArmed and turn() consumes above as `identityRefresh` — the next real turn
+      // re-wraps through wrapFresh on the SAME session and stamps itself back. The state is also
+      // literally true meanwhile: a threadId with a null injected-at says this thread is running
+      // without its identity in context, which after a compact it is.
+      //
+      // HANDED OUT, NOT CALLED HERE — and it is NOT invoked on this turn. Only compaction.mjs
+      // knows whether a compact actually SUCCEEDED (it fires a cooling period later, and only if
+      // the session is over ratio); only this module owns conversations.yaml. So the state write
+      // travels to the decision instead of teaching the compaction service about being blocks.
+      // Same scope/being addressing as the REFRESH STAMP just above, for the same reason.
+      const armIdentityRefresh = async () => {
+        await mutateState(writeState, async () => {
+          await writeState(patchBeing(await loadState(), scope.surface, scope.chatId, being, { identityInjectedAt: null }));
+        });
+      };
       // Auto-compaction hook: after a cooling period the service /compacts this
       // session in place if it grew past ratio. Fire-and-forget — never block the reply.
       // `compaction` rides along so the service applies THIS conversation's own policy
       // (operator 2026-09-03). null ⇒ the node-global block, i.e. today's behaviour exactly.
-      try { afterTurn?.({ key, sessionId: newSession ?? sessionId ?? null, model: def.model, cwd, allowedTools: baseOpts.allowedTools, compaction: compactionOver }); } catch { /* non-fatal */ }
+      try { afterTurn?.({ key, sessionId: newSession ?? sessionId ?? null, model: def.model, cwd, allowedTools: baseOpts.allowedTools, compaction: compactionOver, armIdentityRefresh }); } catch { /* non-fatal */ }
       return { text, sessionId: newSession ?? sessionId ?? null, being };
     },
 

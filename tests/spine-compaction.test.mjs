@@ -56,3 +56,70 @@ describe('compaction service', () => {
     expect(pool.runs).toHaveLength(0);
   });
 });
+
+// ── ARMING THE IDENTITY FEED ON COMPACTION (operator 2026-09-10) ─────────────────────────────
+// The ruling is that the identity feeds at START, REFRESH, RETHREAD and COMPACTION. The first
+// three were built on 2026-09-10 (e4c299e); this is the fourth. A native /compact rewrites the
+// session's context IN PLACE, so the kickoff feed can be summarised away and a being keeps its
+// thread while losing who it is.
+//
+// WHO DOES WHAT: this service is the only place that knows a compact actually SUCCEEDED, so it
+// arms; brainpool owns conversations.yaml, so it hands the arming gesture in on afterTurn as
+// `armIdentityRefresh` (frozen onto the target beside ratio/window, for the same reason those
+// are frozen). The gesture itself is `/agents refresh`'s — an explicit null identityInjectedAt —
+// so there is no second feed path.
+//
+// ONLY ON SUCCESS. Arming after a compact that did not happen costs a re-feed for nothing and,
+// worse, leaves the log saying one thing and the state another.
+describe('compaction: arming the identity re-feed', () => {
+  it('arms after a compact that actually ran', async () => {
+    const pool = fakePool(), sched = makeScheduler();
+    let armed = 0;
+    const c = createCompaction({ pool, getConfig: () => ({}), scheduler: sched, dueFor: () => ({ due: true, tokens: 50000, threshold: 40000 }) });
+    c.afterTurn({ ...TARGET, armIdentityRefresh: async () => { armed++; } });
+    await sched.fire();
+    expect(pool.runs).toHaveLength(1);
+    expect(armed).toBe(1);
+  });
+
+  it('does NOT arm when the session is under ratio — nothing was compacted', async () => {
+    const pool = fakePool(), sched = makeScheduler();
+    let armed = 0;
+    const c = createCompaction({ pool, getConfig: () => ({}), scheduler: sched, dueFor: () => ({ due: false, tokens: 1000, threshold: 40000 }) });
+    c.afterTurn({ ...TARGET, armIdentityRefresh: async () => { armed++; } });
+    await sched.fire();
+    expect(pool.runs).toHaveLength(0);
+    expect(armed).toBe(0);
+  });
+
+  it('does NOT arm when the /compact itself THREW', async () => {
+    const sched = makeScheduler();
+    const logs = [];
+    let armed = 0;
+    const pool = { run: async () => { throw new Error('session is gone'); } };
+    const c = createCompaction({ pool, getConfig: () => ({}), scheduler: sched, dueFor: () => ({ due: true, tokens: 50000, threshold: 40000 }), onLog: (m) => logs.push(m) });
+    c.afterTurn({ ...TARGET, armIdentityRefresh: async () => { armed++; } });
+    await sched.fire();
+    expect(armed).toBe(0);
+    expect(logs.join('\n')).toMatch(/session is gone/);   // loud, never swallowed
+  });
+
+  it('an arming that fails is LOGGED as such — the compact still happened, and the log says both', async () => {
+    const pool = fakePool(), sched = makeScheduler();
+    const logs = [];
+    const c = createCompaction({ pool, getConfig: () => ({}), scheduler: sched, dueFor: () => ({ due: true, tokens: 50000, threshold: 40000 }), onLog: (m) => logs.push(m) });
+    c.afterTurn({ ...TARGET, armIdentityRefresh: async () => { throw new Error('state is locked'); } });
+    await sched.fire();
+    expect(pool.runs).toHaveLength(1);                                       // the compact DID run
+    expect(logs.join('\n')).toMatch(/identity re-feed/i);
+    expect(logs.join('\n')).toMatch(/state is locked/);
+  });
+
+  it('a target with NO armIdentityRefresh compacts exactly as before (nothing to arm)', async () => {
+    const pool = fakePool(), sched = makeScheduler();
+    const c = createCompaction({ pool, getConfig: () => ({}), scheduler: sched, dueFor: () => ({ due: true, tokens: 50000, threshold: 40000 }) });
+    c.afterTurn(TARGET);
+    await expect(sched.fire()).resolves.toBeUndefined();
+    expect(pool.runs).toHaveLength(1);
+  });
+});

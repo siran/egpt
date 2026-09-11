@@ -10,6 +10,13 @@
 // timer. When the conversation goes quiet for the cooling period, we read the
 // session's live token size and /compact only if it's over threshold. /compact
 // queues behind any in-flight turn in the warm pool (never woven into one).
+//
+// AND THE IDENTITY IS RE-FED AFTERWARDS (operator 2026-09-10): the feed rides start, refresh,
+// rethread and compaction. A native /compact rewrites the context in place, so the kickoff feed
+// can be summarised away and a being would keep its thread while losing who it is. A compact that
+// SUCCEEDS calls back into brainpool's `armIdentityRefresh` (handed in on afterTurn) — which is
+// the same explicit-null gesture `/agents refresh` writes, so the re-feed rides the being's next
+// real turn on the same session and there is no second feed path here. See fire() below.
 import { dueForCompaction, windowForModel } from '../tools/compact-being.mjs';
 
 const DEFAULT_COOLING_MS = 120_000;   // 2 min of quiet after the last reply
@@ -78,13 +85,28 @@ export function createCompaction({
       // native /compact through the SAME warm session (in place, same id). brainOptions
       // match the turn's so a live entry is reused (never a second session on the jsonl).
       await pool.run(key, '/compact', () => {}, { brainOptions: target.brainOptions, klass: 'conversation' });
+      // …AND THE IDENTITY GOES BACK IN (operator 2026-09-10: the feed rides start, refresh,
+      // rethread AND compaction). /compact rewrote this session's context in place, so the
+      // kickoff feed can have been summarised away; arming re-feeds it on the being's next real
+      // turn, on the same session, through the mechanism `/agents refresh` already uses. The
+      // callback is brainpool's — it owns conversations.yaml; this function owns the one fact
+      // brainpool cannot know, which is whether the compact happened.
+      //
+      // AFTER the run, NEVER before or around it. A compact that threw leaves the being unarmed:
+      // a re-feed nobody needed costs a kickoff for nothing, and a state saying "identity gone"
+      // beside a log saying "compact failed" is two records disagreeing about one event.
+      //
+      // ITS OWN catch, so the two failures stay distinguishable in the log rather than both
+      // reading as a failed compact — here the compact SUCCEEDED and only the arming was lost.
+      try { await target.armIdentityRefresh?.(); }
+      catch (e) { onLog(`compact ${key}: compacted, but arming the identity re-feed failed: ${e?.message ?? e}`); }
     } catch (e) { onLog(`compact ${key}: ${e?.message ?? e}`); }
   }
 
   return {
     // Called after every bot turn. (Re)arms the cooling timer for this conversation;
     // the check + /compact run only once it goes quiet for the cooling period.
-    afterTurn({ key, sessionId, model, cwd, allowedTools, compaction } = {}) {
+    afterTurn({ key, sessionId, model, cwd, allowedTools, compaction, armIdentityRefresh } = {}) {
       const over = _obj(compaction);
       if (!enabledFor(over) || !pool || !key || !sessionId) return;
       const prev = pending.get(key);
@@ -93,7 +115,10 @@ export function createCompaction({
       // policy that armed this compaction is the one that should run it, and the alternative is
       // a conversation compacted under whichever config happened to be loaded a cooling period
       // later. `window` was already frozen here for the same reason.
-      const target = { sessionId, model, window: windowFor(model, over), ratio: ratioFor(over), brainOptions: { sessionId, cwd, model, allowedTools } };
+      // `armIdentityRefresh` is frozen onto the target for the same reason the ratio and the
+      // window are: the turn that armed this compaction is the turn whose being should get its
+      // identity back, and it closes over that turn's scope/being (operator 2026-09-10).
+      const target = { sessionId, model, window: windowFor(model, over), ratio: ratioFor(over), armIdentityRefresh, brainOptions: { sessionId, cwd, model, allowedTools } };
       const h = scheduler.set(() => fire(key, target), coolingFor(over));
       h?.unref?.();
       pending.set(key, h);

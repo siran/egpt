@@ -2019,3 +2019,119 @@ describe('configuration: inline map vs. type-file name (both forms, one resolver
     expect(() => resolveBeingDef('ken', null, { getConfig: () => pathish, brains })).toThrow(/ken/);
   });
 });
+
+// ── `personality:` AT THE AGENT LEVEL (operator 2026-09-10) ─────────────────────────────────
+// "egpt is a personality/identity, not a brain config." A brain def is named for what it IS
+// (`haiku-low`, `opus-xhigh` — 15 of them ship) and is SHARED; a personality is
+// config/agents/identities/<name>.md. A being COMPOSES one of each, so `personality:` has to be
+// writable in config.yaml beside `configuration:`, not only inside the def.
+//
+// Before this rung it could not be: a STRING configuration resolves to a shared file, and
+// brains.mjs never merges an inline map with anything — so the only way to give one being its
+// own identity on a shared engine was a PRIVATE COPY of that shared def with a personality
+// bolted on (~/.egpt/config/agents/ken.yaml is opus-xhigh.yaml plus two lines, and exists for
+// no other reason).
+//
+// THE LADDER, decided in ONE place (brainpool's personalityFor): agent-level `personality:`,
+// then the resolved def's, then turn()'s own `?? 'egpt'`.
+describe('personality: at the AGENT level in config.yaml, beside configuration:', () => {
+  it('a SHARED string configuration + an agent-level personality: the being gets that identity', () => {
+    const brains = { resolve: vi.fn(() => ({ name: 'opus-xhigh', type: 'ccode', model: 'opus', effort: 'xhigh' })) };
+    const config = { agents: { ken: { configuration: 'opus-xhigh', personality: 'ken', name: 'King Ken' } } };
+    const def = resolveBeingDef('ken', null, { getConfig: () => config, brains });
+    expect(def.personality).toBe('ken');
+    // …and the shared def still reaches the being whole — no per-being file was needed.
+    expect(def).toMatchObject({ name: 'King Ken', type: 'ccode', model: 'opus', effort: 'xhigh' });
+  });
+
+  it('the agent-level personality BEATS a personality: written inside the brain def', () => {
+    const brains = { resolve: vi.fn(() => ({ name: 'shared', type: 'ccode', personality: 'from-the-def' })) };
+    const config = { agents: { ken: { configuration: 'shared', personality: 'ken' } } };
+    expect(resolveBeingDef('ken', null, { getConfig: () => config, brains }).personality).toBe('ken');
+  });
+
+  it('a def-level personality: still decides when the agent declares none (llama/pi/codex/wren keep working)', () => {
+    const brains = { resolve: vi.fn(() => ({ name: 'wren', type: 'ccode', personality: 'wren' })) };
+    const config = { agents: { wren: { configuration: 'wren' } } };
+    expect(resolveBeingDef('wren', null, { getConfig: () => config, brains }).personality).toBe('wren');
+  });
+
+  it('an agent-level personality also reaches an INLINE-map configuration (both forms, one ladder)', () => {
+    const brains = createBrains({ builtinDir: '/nonexistent-builtin', agentsDir: '/nonexistent-agents' });
+    const config = { agents: { ken: { configuration: { type: 'ccode', model: 'opus', personality: 'from-the-def' }, personality: 'ken' } } };
+    expect(resolveBeingDef('ken', null, { getConfig: () => config, brains }).personality).toBe('ken');
+  });
+
+  it('neither tier declares one → undefined here, and turn()\'s own `?? egpt` decides', () => {
+    const brains = { resolve: vi.fn(() => ({ name: 'plain', type: 'ccode' })) };
+    const config = { agents: { plain: { configuration: 'plain' } } };
+    expect(resolveBeingDef('plain', null, { getConfig: () => config, brains }).personality).toBeUndefined();
+  });
+
+  // /status previews the persona through resolveDefaultBrainDef and PRINTS `personality: <x>`,
+  // claiming it is "exactly what brainpool.mjs's turn() feeds". With the agent-level rung only
+  // in resolveBeingDef that line would print the def's answer while the turn fed another —
+  // a status view lying about the running config. Same ladder, same helper.
+  it('the persona preview (/status, resolveDefaultBrainDef) reads the SAME ladder', () => {
+    const brains = { resolve: vi.fn(() => ({ name: 'haiku-default', type: 'ccode', model: 'haiku' })) };
+    const config = { agents: { egpt: { configuration: 'haiku-default', personality: 'don', default: true } } };
+    expect(resolveDefaultBrainDef({ getConfig: () => config, brains }).personality).toBe('don');
+  });
+
+  // END TO END: what actually reaches loadFeed (the identity feed) and seedLayers on a kickoff.
+  it('turn(): the identity FED to a fresh thread is the agent-level one, not the def\'s', async () => {
+    const brains = { resolve: () => ({ name: 'opus-xhigh', type: 'ccode', model: 'opus', effort: 'xhigh', personality: 'from-the-def' }) };
+    const fedTo = [], seededFor = [];
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's-1' }], {
+      config: { agents: { e: { configuration: 'opus-xhigh', personality: 'ken', conversation_defaults: { access_level: 'regular' } } } },
+      brains,
+      loadFeed: async (name) => { fedTo.push(name); return `I am ${name}.`; },
+      seedLayers: async (_room, name) => { seededFor.push(name); return []; },
+    });
+    await brain.turn('e', ev);
+    expect(fedTo).toEqual(['ken']);
+    expect(seededFor).toEqual(['ken']);
+    expect(pool.calls[0].message).toContain('I am ken.');
+  });
+});
+
+// ── THE IDENTITY FEED ON COMPACTION (operator 2026-09-10) ────────────────────────────────────
+// The ruling: the identity feeds at START, REFRESH, RETHREAD and COMPACTION. A native /compact
+// rewrites the session's context IN PLACE — the kickoff feed can be summarised away and the
+// being keeps its thread while losing who it is. compaction.mjs owns "did the compact succeed";
+// the STATE write is brainpool's, so brainpool hands the arming gesture out on the afterTurn
+// hook rather than teaching the compaction service about conversations.yaml.
+//
+// The gesture is the one `/agents refresh` already uses — an EXPLICIT null identityInjectedAt —
+// so there is no second feed path: the next real turn re-wraps through wrapFresh exactly as a
+// refresh does.
+describe('brainpool.turn: the compaction arming hook', () => {
+  it('afterTurn carries armIdentityRefresh, and calling it writes an EXPLICIT null identityInjectedAt', async () => {
+    const seen = [];
+    const { brain, getState } = harness([{ text: 'ok', sessionId: 'sid-c' }], { afterTurn: (x) => seen.push(x) });
+    await brain.turn('e', ev);
+    expect(typeof seen[0].armIdentityRefresh).toBe('function');
+    await seen[0].armIdentityRefresh();
+    const block = getContact(getState(), ev.surface, ev.chatId).entry.agents.e;
+    expect(Object.hasOwn(block, 'identityInjectedAt')).toBe(true);   // PRESENT…
+    expect(block.identityInjectedAt).toBeNull();                     // …and null: that is the arming
+    expect(block.threadId).toBe('sid-c');                            // the thread is untouched
+  });
+
+  it('after arming, the being\'s NEXT turn re-feeds the identity on the SAME session', async () => {
+    const seen = [];
+    const { brain, pool, getState } = harness([{ text: 'ok', sessionId: 'sid-c' }, { text: 'ok2', sessionId: 'sid-c' }], {
+      afterTurn: (x) => seen.push(x),
+      loadFeed: async () => 'I am eGPT.',
+    });
+    await brain.turn('e', ev);
+    expect(pool.calls[0].message).toContain('I am eGPT.');     // the kickoff feed
+    await seen[0].armIdentityRefresh();                        // ← what a successful /compact does
+    await brain.turn('e', ev);
+    expect(pool.calls[1].brainOptions.sessionId).toBe('sid-c');// same thread: nothing was rethreaded
+    expect(pool.calls[1].message).toContain('I am eGPT.');     // …and the identity is back in context
+    expect(pool.calls[1].message.endsWith(ev.line)).toBe(true);
+    // …and it disarms: a third turn is an ordinary one again.
+    expect(getContact(getState(), ev.surface, ev.chatId).entry.agents.e.identityInjectedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+});

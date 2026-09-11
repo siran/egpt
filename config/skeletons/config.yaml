@@ -142,8 +142,11 @@ agents:
       personality: egpt           # identity feed: config/agents/identities/egpt.md
     #                             # THE OTHER FORM: `configuration: haiku-low` - the bare NAME of a
     #                             # config/agents/<name>.yaml. The shipped grid is <model>-<effort>.yaml
-    #                             # for haiku|sonnet|opus x low|medium|high|xhigh|max. Those files carry
-    #                             # no personality:, so an agent that needs its own writes the map inline.
+    #                             # for haiku|sonnet|opus x low|medium|high|xhigh|max. Those files are
+    #                             # SHARED and carry no personality: - so write `personality:` HERE, at
+    #                             # the AGENT level beside `configuration:` (operator 2026-09-10), and a
+    #                             # being keeps its own identity on a shared engine with no per-being
+    #                             # file at all. An agent-level personality: outranks one inside the def.
     handles: [e, egpt, ekg]       # THE wake list: @e / @egpt / @ekg reach this node's persona.
     #                             # Declared handles are COMPLETE — the map key does NOT wake.
     #                             # Omit handles and the key wakes instead; [] means nothing does.
