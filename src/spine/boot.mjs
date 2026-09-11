@@ -2279,6 +2279,15 @@ export async function boot({
     transcript: services.transcript,
     onLog: (m) => log.line?.(`[transcript] ${m}`),
   });
+  // WHICH ACCOUNT A TYPED CHAT NAME MEANS (operator 2026-09-11): THE EAR. `/members add group
+  // <name>` takes a name the OPERATOR typed, so the chat it names is one the operator can see,
+  // and the operator's account is the one this node HEARS on. Not outboundConnectionFor's
+  // question -- there is no chatId yet to ask reachability about, and no config declaration to
+  // lean on. `bridge` is the fan-out facade and delegates both reads to the DEFAULT MOUTH, which
+  // on kg (ear 'primary', mouth 'secondary') resolved names in dolly.egpt's chat list and wrote
+  // an id the group's own arrivals -- which come in on the EAR -- can never match. inboundOf is
+  // the ear resolver this file already has; `?? bridge` keeps a node with no ear exactly as it was.
+  const earBridge = bridgeByEndpoint.get(endpointKey(endpointFor(inboundOf(defaultKey)))) ?? bridge;
   const commands = createCommands({
     getConfig,
     send: commandTranscript.send,
@@ -2299,12 +2308,12 @@ export async function boot({
     // it through the §2b port (src/bridges/beeper-port.mjs) — the note that used to stand here
     // said this was `null` and the verb inert, and that stopped being true on 2026-08-31. Same
     // degrade convention as canonRoute: no resolver → the name is refused, never guessed at.
-    resolveChatId: bridge.resolveChatId ?? null,
+    resolveChatId: earBridge.resolveChatId ? ((nameOrId, opts) => earBridge.resolveChatId(nameOrId, opts)) : null,
     // The chat LIST off the same bridge — MESSAGES only (see the seam in commands.mjs).
     // /members' two dead-end errors read it: "no chat named" offers near-misses off the very
     // list resolveChatId just walked, and "no member" names a wa-group member beside its id
     // (operator 2026-08-31, after a one-letter group-name typo cost four attempts).
-    listChats: bridge.listChats ? ((opts) => bridge.listChats(opts)) : null,
+    listChats: earBridge.listChats ? ((opts) => earBridge.listChats(opts)) : null,
     brains,                                           // /agents' status + access_level resolve a being's agent type through the registry
     defaultKey,                                       // the persona being-id (its map key) — /agents + /status key their per-conversation reads/writes/evictions off this, never 'e' (operator 2026-07-10)
     evictWarm: (key) => pool.evict(key),              // drop a re-pointed conversation's warm session so it respawns fresh
