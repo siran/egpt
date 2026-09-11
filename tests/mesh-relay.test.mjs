@@ -725,14 +725,15 @@ describe('mesh relay — telegram fence-glue transmutation', () => {
 // the ORIGIN takes its own handle off — the only node whose vocabulary that handle is in. So the
 // single case it got right is handled upstream, and everything else it did was damage.
 describe('mesh relay — the responder hands the body over, it does not rewrite it', () => {
+  const logs = [];
   const promptFor = async (body, to = 'don.do') => {
     let got = null;
     const doSpine = createMeshRelay({
-      node: 'do', send: async () => {}, surface: async () => {},
+      node: 'do', send: async () => {}, surface: async () => {}, log: (m) => logs.push(m),
       isLocalBeing: (b) => b === 'don',
       relayDispatch: async (d) => { got = d.prompt; },
     });
-    await doSpine.onRoomMessage({ route: { room_id: 'C' }, text: encodeMesh({ by: 'An', body, from: 'HFM', to }), msgId: `m${Math.random()}` });
+    await doSpine.onRoomMessage({ route: { room_id: 'C' }, text: encodeMesh({ by: 'An', body, from: 'HFM', ...(to ? { to } : {}) }), msgId: `m${Math.random()}` });
     return got;
   };
 
@@ -759,10 +760,65 @@ describe('mesh relay — the responder hands the body over, it does not rewrite 
     expect(await promptFor('')).toBe('');                               // a hail with nothing after it stays empty
   });
 
-  it('MENTION_RE STAYS: an OPEN-CHANNEL envelope (no `to:`) still resolves its being out of the body', async () => {
-    // mentionedBeing is a FINDER, not a stripper, and it is the only being resolution a `to:`-less
-    // envelope has. The body reaches the being intact now — including the handle it was found by.
-    expect(await promptFor('@don hola', '')).toBe('@don hola');
-    expect(await promptFor('hola', '')).toBeNull();                     // nothing to find ⇒ nobody answers (see mentionedBeing's header)
+  // ── …EXCEPT THE ONE BODY THAT IS ALSO AN ADDRESS (operator 2026-09-11) ──────────────────────
+  // An OPEN-CHANNEL envelope carries no `to:`, so `mentionedBeing(prov.body)` is the only routing
+  // it has and the origin now keeps the handle on for exactly that hop. The token then has to come
+  // off HERE, and here is the only place it can: this node just resolved the being FROM it, in its
+  // own vocabulary. It comes off with `withoutAddress` — the SAME anchored stripper the origin
+  // uses, handed the token that was matched. That is not the deleted MENTION_RE scan returning: it
+  // is anchored, it knows the bare form, and it never touches an ADDRESSED envelope's body.
+  it('REPRODUCE-FIRST: an OPEN-CHANNEL envelope routes by the handle and the being is not fed it', async () => {
+    expect(await promptFor('@don hola', '')).toBe('hola');
+    expect(await promptFor('@don', '')).toBe('');                       // …and no `|| prov.body` fallback putting it back
+  });
+
+  // A STANDING LIMIT, MEASURED AND NAMED — not introduced here and not fixed here. `mentionedBeing`
+  // requires an '@' (the regex is byte-identical at 8edffe9^), while the ORIGIN's matcher accepts
+  // the BARE form when `address_without_at` is on — which it is, in kg's live config. So a human
+  // typing `don hola` at an open-channel relay produces a body no responder can route, and never
+  // could. It is at least loud now instead of silent. THIS IS THE EVIDENCE that carrying the being
+  // in the BODY is structurally incomplete: the origin can address in a form the wire cannot
+  // express. Closing it properly means the tail carrying the being, which is a wire-format change.
+  it('the BARE form on an open channel is unroutable — as it always was, but no longer in silence', async () => {
+    logs.length = 0;
+    expect(await promptFor('don hola', '')).toBeNull();
+    expect(logs.join('|')).toMatch(/names no being/);
+  });
+
+  it('the open channel leaves a MID-SENTENCE handle alone — anchored, so content is still content', async () => {
+    expect(await promptFor('pregúntale a @don si viene', '')).toBe('pregúntale a @don si viene');
+  });
+
+  it('the LEGACY `to: <node>` form reads its being out of the body too, and strips the same way', async () => {
+    // One segment in `to:` means NODE, not being (relay.mjs's REQUEST comment) — so the body is
+    // the address there as well, and it gets the identical treatment.
+    expect(await promptFor('@don hola', 'do')).toBe('hola');
+  });
+
+  it('REPRODUCE-FIRST: an envelope no node can answer is DROPPED, but never silently', async () => {
+    // `to:`-less and naming nobody: no node in the channel can ever answer it, so consuming it is
+    // correct — saying nothing about it is not. It is logged at every node that sees it, and the
+    // ORIGIN still tells the human through the origin-wait timer it already armed. It is NOT
+    // posted into the channel: an open channel is a broadcast, and the "no <being>.<node> here"
+    // reply is deliberately scoped to the ADDRESSED case, where exactly one node is on the hook.
+    logs.length = 0;
+    expect(await promptFor('hola', '')).toBeNull();
+    expect(logs.join('|')).toMatch(/names no being/);
+    expect(logs.join('|')).toContain('HFM');                            // …and says which origin's message was thrown away
+  });
+
+  it('a being this node does not host stays SILENT — that is the open channel working, not a drop', async () => {
+    // Every non-owner node sees the same envelope; only the owner answers. Logging here would fire
+    // on every node for every envelope, so this one is deliberately quiet.
+    logs.length = 0;
+    let got = null;
+    const other = createMeshRelay({
+      node: 'zz', send: async () => {}, surface: async () => {}, log: (m) => logs.push(m),
+      isLocalBeing: () => false,
+      relayDispatch: async (d) => { got = d.prompt; },
+    });
+    await other.onRoomMessage({ route: { room_id: 'C' }, text: encodeMesh({ by: 'An', body: '@don hola', from: 'HFM' }), msgId: 'q1' });
+    expect(got).toBeNull();
+    expect(logs.filter((l) => /names no being/.test(l))).toHaveLength(0);
   });
 });

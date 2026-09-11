@@ -959,7 +959,10 @@ export function createSpine({
       // handle, resolved by THE matcher here, and the far node has no vocabulary for it.
       // addressedBody, not triggerFor — a dispatch line never crosses — and the rewritten event
       // is the same `{ ...ev, body }` shape forwardCommand already forwards under (mesh.mjs).
-      const body = addressedBody(ev, targets[0]);
+      //
+      // meshBody, not addressedBody (operator 2026-09-11): the OPEN CHANNEL keeps its handle,
+      // because there the handle IS the routing. See meshBody's header.
+      const body = meshBody(ev, targets[0]);
       await mesh.forward(body == null ? ev : { ...ev, body }, meshTarget, { quiet });
       return withRelay();
     }
@@ -1104,6 +1107,34 @@ export function createSpine({
     return ev.line.slice(0, ev.line.length - ev.body.length) + body;
   }
 
+  // ── …EXCEPT THE ONE FORWARD WHOSE BODY IS ALSO ITS ROUTING (operator 2026-09-11) ────────────
+  // A relay agent with a `relay_channel:` and NO `to:` is an OPEN CHANNEL: the envelope leaves
+  // with an EMPTY `to:` tail and the far end self-selects on `mentionedBeing(body)` — the body is
+  // the only address it has (src/mesh/relay.mjs's REQUEST comment, and mentionedBeing's header).
+  //
+  // SO 8edffe9 BROKE IT. Stripping the handle is right for the ADDRESSED path, where `to:
+  // <being>.<node>` carries the routing and the handle is only how the message was addressed. On
+  // an open channel it removes the routing itself: the envelope crossed, no node could resolve a
+  // being from it, and relay.mjs's `if (!being) return true` consumed it without a word.
+  //
+  // THE HANDLE STAYS ON FOR THAT HOP, AND THE RESPONDER TAKES IT OFF — the only node that can,
+  // because it is the one that just resolved the being FROM that token, in its own vocabulary. It
+  // uses this same anchored `withoutAddress`, handed the token it matched.
+  //
+  // MULTIPATH mixes the two in principle: `paths:` is a list and each element carries its own
+  // `to:`. ONE body goes to every path, so the tie breaks toward the OPEN one — an addressed path
+  // that arrives with the handle still on is degraded, an open path without it is undeliverable.
+  // No live config mixes them (kg's `carol` declares `to: don.do` on both of its paths).
+  const openChannel = (m) => (Array.isArray(m?.paths)
+    ? m.paths.some((p) => !String(p?.to ?? '').trim())
+    : !String(m?.to ?? '').trim());
+  // The body a MESH forward puts on the wire. `null` means "nothing to take off" — the same answer
+  // addressedBody gives — so both forward sites keep the one `body == null ? ev : { ...ev, body }`
+  // shape they already had, and an addressed forward is byte-identical to before.
+  function meshBody(ev, target) {
+    return openChannel(target?.mesh) ? null : addressedBody(ev, target);
+  }
+
   // Open THIS mention's placeholder + enqueue its reply turn on the per-conversation FIFO.
   // Returns the turn's completion promise.
   //
@@ -1138,10 +1169,11 @@ export function createSpine({
       try {
         const d = await gating.decide(gateAs(t, being), ev, t.mention ?? ev.mention);
         if (!d.receives || !d.mayReply) return;
-        // …and a relay target reached by FAN-OUT loses its handle exactly as the primary one does
-        // (see the mesh branch in dispatchChat): `@e y @don, vengan` forwards `y @don, vengan` on
-        // E's turn and, for don, the same body its own leading handle would have opened.
-        if (t.mesh) { if (mesh) { const body = addressedBody(ev, t); await mesh.forward(body == null ? ev : { ...ev, body }, t.mesh); } return; }
+        // …and a relay target reached by FAN-OUT is treated exactly as the primary one is (see the
+        // mesh branch in dispatchChat): `@e y @don, vengan` forwards `y @don, vengan` on E's turn
+        // and, for don, the same body its own leading handle would have opened — unless don is an
+        // OPEN CHANNEL, whose routing is that handle and which therefore keeps it (meshBody).
+        if (t.mesh) { if (mesh) { const body = meshBody(ev, t); await mesh.forward(body == null ? ev : { ...ev, body }, t.mesh); } return; }
         // The SAME instance resolution the primary target's key gets above (operator
         // 2026-08-31). A fan-out target takes an ordinary turn on its own queue, so a queue
         // keyed NARROWER than the warm key it guards is the corruption case for it too. ONE

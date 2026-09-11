@@ -552,17 +552,21 @@ function responderBridge() {
   return b;
 }
 // Deliver an envelope carrying `body` to node `mo`, whose local being is `don`. Returns its brain.
-async function deliverToFarNode(body) {
+// `to` is a parameter because the OPEN CHANNEL sends an empty one (see the open-channel block at
+// the bottom of this file); every caller that does not say otherwise gets the addressed form.
+async function deliverToFarNode(body, to = 'don.mo') {
   const brain = { calls: [], async turn(being, ev) { this.calls.push({ being, ev }); return { text: 'ok', being }; } };
+  const logs = [];
   const mesh = createMeshService({
-    bridge: responderBridge(), brain,
+    bridge: responderBridge(), brain, onLog: (m) => logs.push(m),
     getConfig: () => ({ node_name: 'mo', agents: { don: { configuration: 'sonnet-high' } } }),
   });
   await mesh.handle({
     surface: 'whatsapp', chatId: 'RELAY', msgId: 'w1',
-    body: encodeMesh({ by: 'An', body, from: CHAT_NAME, from_node: 'kg', to: 'don.mo', post_id: 'p1' }),
+    body: encodeMesh({ by: 'An', body, from: CHAT_NAME, from_node: 'kg', ...(to ? { to } : {}), post_id: 'p1' }),
   });
   await flush(); await flush();
+  brain.logs = logs;
   return brain;
 }
 // Origin → wire → far node, in one call. Returns the prompt the far being's brain.turn received.
@@ -595,5 +599,105 @@ describe('REPRODUCE — end to end, what the FAR being is handed', () => {
   // typed message to what the far model reads.
   it('a handle MID-SENTENCE reaches the far being intact — the responder eats nothing', async () => {
     expect(await acrossTheMesh('pregúntale a @don si viene')).toBe('pregúntale a @don si viene');
+  });
+});
+
+// ── THE OPEN CHANNEL: THE ONE FORWARD WHOSE BODY IS ALSO ITS ROUTING (operator 2026-09-11) ────
+//
+// A relay agent with a `relay_channel:` and NO `to:` is an OPEN CHANNEL: the envelope goes into a
+// shared room with an EMPTY `to:` tail and "the owner of that being on the far end answers"
+// (router.mjs targetFor; relay.mjs's own REQUEST comment). With no `to:`, the responder has one
+// place left to learn who the envelope is for — `mentionedBeing(prov.body)`, the body itself.
+//
+// SO 8edffe9 BROKE IT, and this file is where the break was born. It made the ORIGIN strip its own
+// handle off every mesh forward, which is right for the addressed path (the `to:` tail carries the
+// routing) and fatal here: it removes the only routing an open-channel envelope has. Measured
+// before the fix, `@don hola` typed at the origin crossed as `hola`, `mentionedBeing` found
+// nothing, and relay.mjs's `if (!being) return true` consumed it without a word.
+//
+// THE FIX, AND WHY IT IS SPLIT ACROSS THE TWO NODES. The origin keeps the handle when — and only
+// when — the forward is open-channel, because for that hop the handle is not decoration, it is the
+// address. The RESPONDER then takes it off, and it is the only node that can: it just resolved the
+// being FROM that token, in its OWN vocabulary. It uses the same anchored `withoutAddress` the
+// origin uses, handed the token it matched — not a rescan, and not the unanchored MENTION_RE scan
+// deleted in 38cf057, which is still gone.
+const OPEN_RELAY_AGENTS = {
+  e: { default: true, handles: ['e', 'egpt'] },
+  don: { relay_channel: 'egpt-mesh-kg-mo' },          // no `to:` — the far end self-selects
+};
+// Origin → wire → far node, open-channel: the envelope leaves with an EMPTY `to:`.
+async function acrossTheOpenChannel(typed) {
+  const mesh = fakeMesh();
+  const { bridge } = build({ agents: OPEN_RELAY_AGENTS, mesh });
+  await bridge.emit(msg(typed));
+  expect(mesh.forwards).toHaveLength(1);
+  expect(mesh.forwards[0].target).toMatchObject({ being: 'don', route: { room_id: 'egpt-mesh-kg-mo' } });
+  expect(mesh.forwards[0].target.to).toBeUndefined();   // it really is the open-channel shape
+  return { wire: wireBody(mesh), far: await deliverToFarNode(wireBody(mesh), '') };
+}
+
+describe('REPRODUCE — an open-channel forward keeps the handle, and the RESPONDER takes it off', () => {
+  it('`@don hola` crosses WITH the handle and reaches don as `hola`', async () => {
+    const { wire, far } = await acrossTheOpenChannel('@don hola');
+    expect(wire).toBe('@don hola');                     // ← was 'hola': the routing was stripped away
+    expect(far.calls).toHaveLength(1);                  // ← was 0: nothing could answer it
+    expect(far.calls[0].being).toBe('don');
+    expect(far.calls[0].ev.body).toBe('hola');          // …and the being is still not fed its own handle
+  });
+
+  // THE LIMIT OF DOING IT THIS WAY, measured end to end and named rather than papered over. The
+  // ORIGIN's matcher accepts the BARE form (`address_without_at`, on in kg's live config) and
+  // routes `don hola` to the relay agent — but the RESPONDER's finder is `mentionedBeing`, which
+  // requires an '@' and always has (the regex is byte-identical at 8edffe9^). So the body crosses
+  // intact and no node can read a being out of it. It is dropped, and now said out loud. This is
+  // the case that shows the body cannot be the routing channel: closing it means putting the being
+  // in the TAIL, which is a wire-format change and is proposed, not shipped.
+  it('the BARE form crosses intact but no node can route it — dropped, and no longer in silence', async () => {
+    const { wire, far } = await acrossTheOpenChannel('don hola');
+    expect(wire).toBe('don hola');                      // the origin kept it — it is an open channel
+    expect(far.calls).toHaveLength(0);                  // …and the far node has no '@' to find
+    expect(far.logs.join('|')).toMatch(/names no being/);
+  });
+
+  it('a hail with nothing after it routes and arrives empty, never with the handle put back', async () => {
+    const { wire, far } = await acrossTheOpenChannel('@don');
+    expect(wire).toBe('@don');
+    expect(far.calls).toHaveLength(1);
+    expect(far.calls[0].ev.body).toBe('');              // MENTION_RE's `|| prov.body` put '@don' back
+  });
+
+  it('a handle MID-SENTENCE is content at BOTH ends here too', async () => {
+    const { wire, far } = await acrossTheOpenChannel('pregúntale a @don si viene');
+    expect(wire).toBe('pregúntale a @don si viene');
+    expect(far.calls[0].ev.body).toBe('pregúntale a @don si viene');
+  });
+
+  it('AND THE ADDRESSED PATH IS UNTOUCHED: a `to:` relay agent still strips at the origin', async () => {
+    // The whole point of the discriminator. kg's live relays (carol, cara, don) all declare `to:`.
+    const mesh = fakeMesh();
+    const { bridge } = build({ agents: RELAY_AGENTS, mesh });
+    await bridge.emit(msg('@don hola'));
+    expect(wireBody(mesh)).toBe('hola');
+    expect(mesh.forwards[0].target).toMatchObject({ to: 'don.mo' });
+  });
+
+  // MULTIPATH is the other half of the target shape, and it can hold both kinds at once: `paths:`
+  // is a list and each element carries its OWN `to:`. ONE body goes to every path, so the rule is
+  // stated here rather than assumed — a fully addressed list strips, and ONE open path keeps the
+  // handle for the whole envelope (an addressed path that gets it is degraded; an open path that
+  // loses it is undeliverable). kg's live `carol` is the all-addressed shape.
+  const multipath = (paths) => ({ e: { default: true, handles: ['e'] }, carol: { handles: ['carol'], paths } });
+  it('MULTIPATH, every path addressed: strips, exactly like the scalar addressed case', async () => {
+    const mesh = fakeMesh();
+    const { bridge } = build({ agents: multipath([{ p1: { relay_channel: 'rodz1', to: 'don.mo' } }, { p2: { relay_channel: 'rodz2', to: 'don.mo' } }]), mesh });
+    await bridge.emit(msg('@carol hola'));
+    expect(wireBody(mesh)).toBe('hola');
+  });
+
+  it('MULTIPATH with ONE open path: the whole envelope keeps the handle', async () => {
+    const mesh = fakeMesh();
+    const { bridge } = build({ agents: multipath([{ p1: { relay_channel: 'rodz1', to: 'don.mo' } }, { p2: { relay_channel: 'rodz2' } }]), mesh });
+    await bridge.emit(msg('@carol hola'));
+    expect(wireBody(mesh)).toBe('@carol hola');
   });
 });

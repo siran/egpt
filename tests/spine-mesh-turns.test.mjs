@@ -105,9 +105,13 @@ describe('PART 1 — a relayed turn runs on the SPINE\'S OWN turn machinery', ()
     const brain = countingBrain({ allow: 'none' });
     const { bridge, mesh } = responder({ brain });
 
-    await mesh.handle({ surface: 'whatsapp', chatId: CHANNEL, msgId: 'm1', body: req('@e pon musica', 'p1') });
+    // Handle-free bodies, because this is the one case here that asserts the PROMPT: the origin
+    // takes its own handle off before the body goes on the wire (8edffe9) and the responder no
+    // longer rewrites what arrives (2026-09-11). The other cases below assert counts and
+    // placeholder frames, never the prompt, so their bodies are left as they were.
+    await mesh.handle({ surface: 'whatsapp', chatId: CHANNEL, msgId: 'm1', body: req('pon musica', 'p1') });
     await flush();
-    await mesh.handle({ surface: 'whatsapp', chatId: CHANNEL, msgId: 'm2', body: req('@e y sube el volumen', 'p2') });
+    await mesh.handle({ surface: 'whatsapp', chatId: CHANNEL, msgId: 'm2', body: req('y sube el volumen', 'p2') });
     await flush();
 
     expect(brain.counts.turn).toBe(1);                 // was 2, both in flight

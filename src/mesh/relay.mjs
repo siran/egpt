@@ -25,6 +25,12 @@
 //   - On relay, the origin gets an HONEST "↪ relayed — waiting…" — not a faked
 //     "thinking…" the relayer can't actually know.
 
+// THE ONE ADDRESS STRIPPER (src/auto-mode.mjs), the same one the origin's spine calls through
+// `addressedBody`. It is imported rather than re-derived for the ONE body this engine may rewrite:
+// an OPEN-CHANNEL envelope, whose being was read out of the body itself (see `prompt` below).
+// Anchored, bare-form aware, boundary-correct — everything the deleted MENTION_RE scan was not.
+import { withoutAddress } from '../auto-mode.mjs';
+
 // ── provenance encode / parse ─────────────────────────────────────────────
 const DIVIDER = /\n[ \t]*---[ \t]*\n/;
 // 'done' marks the final frame. The being's body_emoji is stamped INTO the body by
@@ -500,15 +506,32 @@ export function createMeshRelay({
     // Build return address before the target check so "no being here" carries it.
     const reAddress = prov.from && prov.from_node ? `${prov.from}.${prov.from_node}` : prov.from;
     const toParts = (prov.to || '').split('.');
-    let being, target;
+    // `addressedInBody` — was the being read out of the BODY rather than off the tail? True for the
+    // OPEN CHANNEL (no `to:`) and for the legacy `to: <node>` form, both of which land in the else
+    // branch. It is the one thing that decides whether this node may take a handle off the prompt
+    // below: it may, exactly when the token is one it resolved itself.
+    let being, target, addressedInBody = false;
     if (prov.to && toParts.length >= 2) {
       being = toParts[0].toLowerCase();
       target = toParts[toParts.length - 1].toLowerCase();
     } else {
       being = mentionedBeing(prov.body);
+      addressedInBody = true;
       target = (prov.to || '').toLowerCase();
     }
-    if (!being) return true;
+    if (!being) {
+      // DROPPED, BUT NEVER SILENTLY (operator 2026-09-11). An envelope naming nobody cannot be
+      // answered by ANY node, so consuming it is right and saying nothing about it is not — this
+      // is the exact hole 8edffe9 opened and nothing reported it.
+      //
+      // LOGGED, NOT POSTED, and that is deliberate: a `to:`-less envelope is a BROADCAST, so every
+      // node in the channel would post the same complaint into the same room. The engine's "never
+      // silence" REPLY (`no <being>.<node> here`, below) stays scoped to the ADDRESSED case, where
+      // exactly one node is on the hook. The human is not left guessing either — the ORIGIN armed
+      // an origin-wait timer and surfaces "⏱️ … did not answer" when nothing comes home.
+      log(`mesh: envelope from ${prov.from || '?'}${prov.from_node ? `.${prov.from_node}` : ''} names no being (to:${JSON.stringify(prov.to || '')}) — no node can answer it; dropped`);
+      return true;
+    }
     // The self-name we were ADDRESSED AS: the `to`-node when it's ours (guaranteed self by
     // the check below), else node_name for open-channel (no `to`). This is what the reply is
     // stamped `by: <being>.<asNode>` with, so the wire story stays coherent per-identity when
@@ -569,7 +592,16 @@ export function createMeshRelay({
     // and 'pregúntale a @don si viene' lost the '@don' — content, which the origin deliberately
     // keeps (tests/address-strip.test.mjs, "a handle MID-SENTENCE … crosses UNTOUCHED").
     // MENTION_RE stays for mentionedBeing, which FINDS rather than strips.
-    const prompt = prov.body.trim();
+    //
+    // …WITH ONE EXCEPTION, AND IT IS THE ONE BODY THIS NODE IS ENTITLED TO REWRITE (operator
+    // 2026-09-11). When the being was read out of the BODY — the OPEN CHANNEL, or the legacy
+    // `to: <node>` form — the origin could not take the handle off, because that handle is the
+    // envelope's only routing; it is kept on purpose (src/spine/spine.mjs meshBody). THIS node
+    // resolved the being from that token, in its own vocabulary, so this is the only place it can
+    // come off — and it comes off through `withoutAddress`, the SAME anchored stripper the origin
+    // uses, handed the exact token that matched. An ADDRESSED envelope is not touched: its tail
+    // carried the routing and the origin already stripped (8edffe9).
+    const prompt = (addressedInBody ? withoutAddress(prov.body, being) : prov.body).trim();
     // RESPONDER: edit-stream the being's reply into the relay room as ONE message
     // wrapped in the mesh tail (re/by/post_id, NO done). The responder's own edits
     // are suppressed locally by the bridge but propagate to the origin, which mirrors
