@@ -14,6 +14,14 @@
 // `fallback_handle`'s `unless_present` (same rule, different predicate) and as
 // whisper-server.mjs's adoption probe (look at the port, believe what answers).
 //
+// THE OBSERVATION IS THE CALLER'S, not this module's — `probe` is injected and this module only
+// owns the hysteresis over it. tcpProbe below is the one the fallback-handle watcher uses, and
+// "does anything serve there" is the right question for it: a spine that would refuse our token
+// is still a spine that will answer the chat. It is the WRONG question for the daemon's
+// stand-down watch, which asks "is this profile held" — a spine that is alive but could not bind
+// its console port holds the profile and answers nothing — so that caller composes state/
+// spine.pid liveness with the port probe and passes the pair in here (src/daemon-runtime.mjs).
+//
 // ASYMMETRIC HYSTERESIS, and this is the whole safety argument. The two directions are NOT
 // equally dangerous:
 //   - Believing the peer is alive when it is dead costs SILENCE. Nobody answers for a moment.
@@ -41,6 +49,9 @@ const DEFAULT_CLAIM_AFTER = 3;
  * @param {number} [deps.everyMs]      probe interval. Default 5s.
  * @param {number} [deps.claimAfter]   consecutive DEAD probes before claiming the handle.
  *   Yielding always takes exactly ONE live probe — see the asymmetry above.
+ * @param {string} [deps.subject]      what is yielded and claimed, named in the log lines. The
+ *   default is the fallback handle this was written for; the daemon's stand-down watch claims
+ *   THE PROFILE, and a line telling it that it had claimed a handle would be a lie.
  * @param {typeof setInterval} [deps.setIntervalFn]   test seams; real timers by default.
  * @param {typeof clearInterval} [deps.clearIntervalFn]
  * @param {(m: string) => void} [deps.onLog]
@@ -53,6 +64,7 @@ export function createPeerLiveness({
   probe,
   everyMs = DEFAULT_EVERY_MS,
   claimAfter = DEFAULT_CLAIM_AFTER,
+  subject = 'its fallback handle',
   setIntervalFn = setInterval,
   clearIntervalFn = clearInterval,
   onLog = () => {},
@@ -75,14 +87,14 @@ export function createPeerLiveness({
     if (up) {
       deadStreak = 0;
       // YIELD EAGERLY: one live probe is enough to hand the handle straight back.
-      if (!alive) { alive = true; onLog('peer is back — yielding its fallback handle'); }
+      if (!alive) { alive = true; onLog(`peer is back — yielding ${subject}`); }
       return;
     }
 
     deadStreak += 1;
     if (alive && deadStreak >= needed) {
       alive = false;
-      onLog(`peer has not answered ${deadStreak} consecutive probes — claiming its fallback handle`);
+      onLog(`peer has not answered ${deadStreak} consecutive probes — claiming ${subject}`);
     }
   };
 
@@ -105,11 +117,15 @@ export function createPeerLiveness({
 }
 
 /**
- * The real observation: does anything answer on the peer's console port?
+ * ONE real observation: does anything answer on the peer's console port?
  *
- * A bare TCP connect, NOT the console handshake — this asks "is a spine serving there", and a
+ * A bare TCP connect, NOT the console handshake — this asks "is a spine SERVING there", and a
  * spine that is up but would refuse our token is still a spine that will answer the chat. It
  * also means the probe needs no secret, so a liveness check can never leak one.
+ *
+ * It does NOT ask "is this profile held": a spine whose port was squatted before it could bind
+ * holds its profile and serves nothing here. A caller that needs the second question composes
+ * this with the profile's own spine.pid — see standDownAndWatch in src/daemon-runtime.mjs.
  *
  * @param {object} o
  * @param {number} o.port                  the peer's console port (its `shell.port`)

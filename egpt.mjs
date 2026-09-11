@@ -1,17 +1,18 @@
 #!/usr/bin/env node
 // egpt.mjs — the operator SHELL EDITOR entry (egpt v2).
 //
-// A standalone Ink app that DIALS ws://127.0.0.1:23375, which the running spine's `shell-port`
-// limb (src/bridges/shell-port.mjs) serves and holds from boot — the spine is the server, this
-// editor is the client (operator ruling 2026-08-26, inverting the original plan §1; see the
-// shell-port header for why). Composed lines forward to the spine as `{ text }`; the spine's
-// replies arrive as `{ text, chatId }` and render in the transcript. Closing this editor NEVER
-// touches the spine — the socket just closes and the spine keeps serving the console port.
+// A standalone Ink app that DIALS ws://127.0.0.1:<shell.port> (23475 by default), which the
+// running spine's `shell-port` limb (src/bridges/shell-port.mjs) serves and holds from boot —
+// the spine is the server, this editor is the client (operator ruling 2026-08-26, inverting
+// the original plan §1; see the shell-port header for why). Composed lines forward to the
+// spine as `{ text }`; the spine's replies arrive as `{ text, chatId }` and render in the
+// transcript. Closing this editor NEVER touches the spine — the socket just closes and the
+// spine keeps serving the console port.
 //
 // No build step: v1's Ink shell used React.createElement in plain .mjs, so this runs with
 // `node egpt.mjs` — no bundler, no JSX.
 //
-//   Usage: node egpt.mjs [--port 23375] [--theme catppuccin]
+//   Usage: node egpt.mjs [--port 23475] [--theme catppuccin]
 import process from 'node:process';
 import { createSpineLink } from './src/shell/spine-link.mjs';
 import { shellTokenFrom } from './src/shell/auth.mjs';

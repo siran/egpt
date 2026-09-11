@@ -117,7 +117,7 @@ user_name: "John"                  # the human here; shown as <user_name>@<surfa
 # is refused. A single-account node needs none of this and pays nothing for it.
 #
 #   console_port   the PEER node's shell.port (its console listener; default
-#                  23375). The link rides that port - the token handshake and the
+#                  23475). The link rides that port - the token handshake and the
 #                  bind-at-boot-and-hold property are already solved there - on
 #                  the path /peer, which is what marks the dial as a peer spine
 #                  rather than the operator's editor asking for the console seat.

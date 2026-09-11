@@ -57,7 +57,8 @@
 # WHAT THIS SCRIPT'S SHAPE COSTS, unchanged and still true of a bare spine: the
 # lifecycle exit codes. daemon-runtime.mjs turns 42/43/44 (/upgrade, /restart,
 # /rewind) into a respawn; nothing here does. From Session 1 each becomes a plain
-# process exit, the port goes quiet, and the Session 0 daemon takes the profile
+# process exit; nothing holds the profile any more (no live state/spine.pid, and
+# the console port quiet), and the Session 0 daemon takes the profile
 # back - a working spine, in Session 0, losing the browser until the next logon.
 # That is precisely what the daemon task fixes.
 #
@@ -83,7 +84,8 @@
 #   - LOGOFF does end it. The session manager sends WM_QUERYENDSESSION /
 #     WM_ENDSESSION to top-level windows and then TERMINATES every process in the
 #     session. A hidden console process with no message loop is simply killed.
-#     The port goes quiet and the Session 0 daemon resumes. Windows has no nohup:
+#     The spine's pid dies with it and the port goes quiet - which is what the
+#     Session 0 daemon waits for, both of them - and it resumes. Windows has no nohup:
 #     nothing started inside a session survives that session's logoff.
 #
 # HONESTY ABOUT WHAT WAS NOT VERIFIED: this was written without logging out or

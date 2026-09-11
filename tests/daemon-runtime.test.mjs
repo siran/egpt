@@ -106,6 +106,20 @@ function makeRuntime(extra = {}) {
   return { runtime, children, logs, processObj, spawnSync };
 }
 
+// The clock every fake world here runs on — the same instant makeRuntime's default `now`
+// returns, so a test can compute an alive.txt mtime that is exactly N ms old.
+const CLOCK = Date.UTC(2026, 5, 18, 12, 0, 0);
+
+// A faithful stand-in for the real liveDaemonPid: any parsable positive pid is LIVE, and the
+// beat gate is the real 120s one. Keeps the tests off real pids while preserving the predicate.
+// Shared by the singleton suite and the stand-down watch, because they now ask the SAME
+// question of the SAME file — "is anybody holding this profile?" — and a second stand-in that
+// drifted from this one would let the two disagree in tests while agreeing in production.
+const fakeLive = ({ pidFileContent, beatAgeMs }) => {
+  const n = Number(String(pidFileContent ?? '').trim());
+  return Number.isInteger(n) && n > 0 && beatAgeMs < 120_000 ? n : null;
+};
+
 describe('daemon runtime fake-world harness', () => {
   it('refuses to start when the singleton guard sees another live daemon', () => {
     const { runtime, children, processObj } = makeRuntime({ liveDaemonPid: () => 777 });
@@ -916,8 +930,11 @@ describe('daemon runtime: a sleep is not a wedge', () => {
 describe('daemon runtime: the stand-down watch (exit 45 — a peer took the profile)', () => {
   // A world where the probe's answer is a test-mutable boolean and the watch interval is
   // captured rather than armed, so every observation is driven by hand.
-  function makeStandingDown({ answers = true, sidecar = null, configPort = null, extra = {} } = {}) {
-    const state = { answers };
+  // `answers` is what the PORT says; `state.spinePid` is who state/spine.pid names. Both are
+  // test-mutable, because the two signals must be able to disagree — that disagreement is the
+  // whole subject of this suite now.
+  function makeStandingDown({ answers = true, sidecar = null, configPort = null, spinePid = null, beatAgeMs = 10_000, extra = {} } = {}) {
+    const state = { answers, spinePid };
     const intervals = [];         // every setInterval the runtime armed
     const cleared = [];
     const probedPorts = [];
@@ -935,8 +952,17 @@ describe('daemon runtime: the stand-down watch (exit 45 — a peer took the prof
           return sidecar;
         }
         if (path.includes('config.yaml') && configPort != null) return `shell:\n  port: ${configPort}\n`;
+        // WHO HOLDS THE PROFILE. Absent unless a test puts a pid there, so every case written
+        // before the pid became half of the answer still models "nobody is holding it".
+        if (path.includes('spine.pid') && state.spinePid != null) return `${state.spinePid}\n`;
         const e = new Error('missing'); e.code = 'ENOENT'; throw e;
       },
+      // alive.txt's mtime — the OTHER half of livePidIn, and fresh by default so a test that
+      // moves state.spinePid mid-run gets a LIVE pid rather than a live pid behind a dead beat.
+      // A profile with no pid file is unheld whatever the beat says, so this changes nothing
+      // for the cases written before the pid became half of the answer.
+      statSync: () => ({ mtimeMs: CLOCK - beatAgeMs }),
+      liveDaemonPid: fakeLive,
       peerProbe: ({ port }) => { probedPorts.push(port); return async () => state.answers; },
       ...extra,
     });
@@ -996,6 +1022,109 @@ describe('daemon runtime: the stand-down watch (exit 45 — a peer took the prof
     expect(h.children).toHaveLength(2);
   });
 
+  // =====================================================================================
+  // THE PORT IS NOT THE MUTEX (reve, 2026-09-11 logon — two spines on one profile, ~2 min).
+  // =====================================================================================
+  // The S0→S1 handover worked: exit 45, the S0 daemon stood down, the S1 spine took ~/.egpt.
+  // Then Beeper — which claims the first free port upward from 23373 — took 23375 the instant
+  // the departing spine released it, so the successor never bound its console port at all
+  // (`SPINE 11924 session=1 listening=-`). The watch asked the PORT "has the peer released the
+  // profile?", the port eventually said yes, and spawnShell() started a SECOND spine onto a
+  // profile that was already held. A spine that is alive but cannot bind its port must not be
+  // invisible to the mutex — so the watch reads state/spine.pid through the same liveDaemonPid
+  // predicate checkSingleton uses, and claims only when BOTH signals say nobody is there.
+  describe('what "the peer released the profile" means', () => {
+    it('a LIVE spine.pid holds the profile even while the console port is dead silent — no second spine', async () => {
+      const h = makeStandingDown({ sidecar: '23475', answers: false, spinePid: 11924 });
+      h.runtime.spawnShell();
+      await h.children[0].child.handlers.exit(STANDDOWN_EXIT_CODE, null);
+
+      await h.tick(20);                                  // six times over the claim streak
+
+      expect(h.children).toHaveLength(1);                // the S0 spine stayed down
+      expect(h.runtime.state.standingDown).toBe(true);
+      expect(h.logs.join('')).toContain('names LIVE pid 11924');
+    });
+
+    it('says which signal is holding it — the line names the quiet port AND the live pid', async () => {
+      const h = makeStandingDown({ sidecar: '23475', answers: false, spinePid: 11924 });
+      h.runtime.spawnShell();
+      await h.children[0].child.handlers.exit(STANDDOWN_EXIT_CODE, null);
+
+      await h.tick(1);
+      const said = h.logs.join('');
+      expect(said).toContain('127.0.0.1:23475 is quiet');
+      expect(said).toContain('the profile IS held');
+
+      // …once, on the transition — a stand-down can last a workday and this must not become
+      // the log's whole texture.
+      const before = h.logs.length;
+      await h.tick(5);
+      expect(h.logs.length).toBe(before);
+    });
+
+    // The reverse disagreement. Respawning here is arguably right — it is a squatter, not the
+    // peer — but a dead pid is a routine FALSE negative: beatAge is wall-clock, so every pid on
+    // the profile reads dead the moment the machine wakes from sleep. Claiming on that alone
+    // would put a second spine onto a live peer after every suspend. So: still held, said out
+    // loud, because a squatter on the port keeps this daemon stood down until a human moves it.
+    it('a busy port with NO live spine.pid is a squatter — still not claimed, and it says so', async () => {
+      const h = makeStandingDown({ sidecar: '23475', answers: true, spinePid: null });
+      h.runtime.spawnShell();
+      await h.children[0].child.handlers.exit(STANDDOWN_EXIT_CODE, null);
+
+      await h.tick(10);
+
+      expect(h.children).toHaveLength(1);
+      expect(h.logs.join('')).toContain('that is a squatter, not the peer');
+    });
+
+    // LOCK: a genuinely departed peer is still claimed, on the same three misses as before.
+    it('both signals gone claims after three misses, exactly as before', async () => {
+      const h = makeStandingDown({ sidecar: '23475', answers: true, spinePid: 11924 });
+      h.runtime.spawnShell();
+      await h.children[0].child.handlers.exit(STANDDOWN_EXIT_CODE, null);
+      await h.tick(3);
+      expect(h.children).toHaveLength(1);                // held by both — nothing happens
+
+      h.state.answers = false;
+      h.state.spinePid = null;                           // the session ended and took the spine
+      await h.tick(2);
+      expect(h.children).toHaveLength(1);                // two misses still prove nothing
+      await h.tick(1);
+      expect(h.children).toHaveLength(2);                // the third claims
+    });
+
+    // LOCK: one live observation still yields instantly, and now the PID is enough to be that
+    // observation — a peer whose port never comes back but whose pid reappears resets the streak.
+    it('a live pid mid-streak yields instantly, exactly as a live port does', async () => {
+      const h = makeStandingDown({ sidecar: '23475', answers: false, spinePid: null });
+      h.runtime.spawnShell();
+      await h.children[0].child.handlers.exit(STANDDOWN_EXIT_CODE, null);
+
+      await h.tick(2);                                   // two misses
+      h.state.spinePid = 11924;                          // the successor's pid write lands
+      await h.tick(1);                                   // one live observation
+      h.state.spinePid = null;
+      await h.tick(2);                                   // two fresh misses — short of three
+      expect(h.children).toHaveLength(1);
+      await h.tick(1);
+      expect(h.children).toHaveLength(2);
+    });
+
+    // LOCK: pid reuse. liveDaemonPid pairs the pid with the beat for exactly this reason, and
+    // the watch must inherit that — a pid file left behind by a spine that died an hour ago
+    // names a number the OS has since handed to something else.
+    it('a stale spine.pid with a stale beat is dead, and the profile is claimed', async () => {
+      const h = makeStandingDown({ sidecar: '23475', answers: false, spinePid: 11924, beatAgeMs: 200_000 });
+      h.runtime.spawnShell();
+      await h.children[0].child.handlers.exit(STANDDOWN_EXIT_CODE, null);
+
+      await h.tick(3);
+      expect(h.children).toHaveLength(2);
+    });
+  });
+
   it('the port going quiet respawns EXACTLY ONCE and tears the watch down — no storm', async () => {
     const h = makeStandingDown({ sidecar: '23375', answers: false });
     h.runtime.spawnShell();
@@ -1006,7 +1135,10 @@ describe('daemon runtime: the stand-down watch (exit 45 — a peer took the prof
     expect(h.children).toHaveLength(2);                 // the Session 0 spine is back
     expect(h.cleared).toContain(watchId);               // …and the watch is gone
     expect(h.runtime.state.standingDown).toBe(false);
-    expect(h.logs.join('')).toContain('127.0.0.1:23375 went quiet');
+    // The line reports BOTH observations rather than asserting a story about one of them: the
+    // old text ("went quiet — the peer released the profile") was the very inference that put
+    // two spines on one profile.
+    expect(h.logs.join('')).toContain('names no live spine and 127.0.0.1:23375 is quiet');
 
     await h.tick(10);                                   // late ticks must not spawn a second
     expect(h.children).toHaveLength(2);
@@ -1034,11 +1166,13 @@ describe('daemon runtime: the stand-down watch (exit 45 — a peer took the prof
       expect(h.probedPorts).toEqual([24001]);
     });
 
-    it('falls back to 23375 when neither the exit nor the config names one', async () => {
+    // The fallback must be the number the SPINE binds when it configures nothing
+    // (shell-port.mjs's SHELL_WS_PORT), or the supervisor watches a port nothing serves.
+    it('falls back to 23475 when neither the exit nor the config names one', async () => {
       const h = makeStandingDown({ sidecar: null });
       h.runtime.spawnShell();
       await h.children[0].child.handlers.exit(STANDDOWN_EXIT_CODE, null);
-      expect(h.probedPorts).toEqual([23375]);
+      expect(h.probedPorts).toEqual([23475]);
     });
 
     it('a garbage sidecar is consumed and ignored rather than probed', async () => {
@@ -1097,15 +1231,6 @@ describe('daemon runtime: the stand-down watch (exit 45 — a peer took the prof
 // the SAME session on the SAME profile — that is the invariant protecting one EGPT_HOME from
 // two supervisors, and through them from two spines.
 describe('daemon runtime: the singleton is session-scoped', () => {
-  const CLOCK = Date.UTC(2026, 5, 18, 12, 0, 0);
-
-  // A faithful stand-in for the real liveDaemonPid: any parsable positive pid is LIVE, and the
-  // beat gate is the real 120s one. Keeps the test off real pids while preserving the predicate.
-  const fakeLive = ({ pidFileContent, beatAgeMs }) => {
-    const n = Number(String(pidFileContent ?? '').trim());
-    return Number.isInteger(n) && n > 0 && beatAgeMs < 120_000 ? n : null;
-  };
-
   function makeSessioned({ session1 = false, files = {}, beatAgeMs = 10_000, extra = {} } = {}) {
     const processObj = makeProcess();
     processObj.pid = 4242;
@@ -1236,16 +1361,14 @@ describe('daemon runtime: the singleton is session-scoped', () => {
       expect(h.children).toHaveLength(0);                    // no second spine on this EGPT_HOME
       expect(h.processObj.exits).toEqual([]);                // and the daemon did NOT exit
       expect(h.runtime.state.standingDown).toBe(true);
-      expect(h.probedPorts).toEqual([23375]);
+      expect(h.probedPorts).toEqual([23475]);
       expect(h.logs.join('')).toContain('9500');
     });
 
-    it('that watch respawns on the same terms as a stand-down: only after the port goes quiet', async () => {
+    it('that watch respawns on the same terms as a stand-down: only once NOTHING holds the profile', async () => {
       const answers = { up: true };
-      const h = makeSessioned({
-        files: { 'state/spine.pid': '9500\n' },
-        extra: { peerProbe: () => async () => answers.up },
-      });
+      const files = { 'state/spine.pid': '9500\n' };
+      const h = makeSessioned({ files, extra: { peerProbe: () => async () => answers.up } });
       h.runtime.start();
       // start() arms the watch first and the liveness sweep after it; the watch is the one on
       // peer-liveness's 5s cadence.
@@ -1255,7 +1378,13 @@ describe('daemon runtime: the singleton is session-scoped', () => {
       await tick(5);
       expect(h.children).toHaveLength(0);                    // it answers: never displaced
 
+      // The port going quiet is NO LONGER ENOUGH — pid 9500 is still on the profile, and that
+      // is the incident this watch was rebuilt around (reve, 2026-09-11).
       answers.up = false;
+      await tick(5);
+      expect(h.children).toHaveLength(0);
+
+      delete files['state/spine.pid'];                       // the session ended, the spine with it
       await tick(2);
       expect(h.children).toHaveLength(0);                    // two misses prove nothing
       await tick(1);

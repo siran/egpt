@@ -186,14 +186,16 @@ export async function report({ cfg = readConfigSync(), extraPorts = [], deps = {
 // by Application path rather than by a service name that differs on every install.
 const API_SCAN = { from: 23373, to: 23385 };  // Beeper takes the NEXT FREE port from 23373 up
 const CDP_SCAN = { from: 9222, to: 9230 };    // the Chrome/Electron debugger — the number a driver is aimed at
-const DEFAULT_SHELL_PORT = 23375;
+// Must equal shell-port's SHELL_WS_PORT. Moved off 23375 on 2026-09-11: it was inside API_SCAN
+// above, i.e. inside the range Beeper itself takes the next free port from.
+const DEFAULT_SHELL_PORT = 23475;
 // 426 Upgrade Required — a WebSocket server's answer to a plain HTTP GET, and therefore the
 // SIGNATURE OF A SPINE CONSOLE sitting inside the API scan range. See apiState.
 const WS_UPGRADE_REQUIRED = 426;
 const SCAN_TIMEOUT_MS = 2500;                 // a scan is ~25 loopback ports; a black hole must not hold the table
 const range = ({ from, to }) => Array.from({ length: to - from + 1 }, (_, i) => from + i);
 
-// The spine console's port (config `shell.port`, else 23375). Read HERE rather than imported
+// The spine console's port (config `shell.port`, else 23475). Read HERE rather than imported
 // from src/bridges/shell-port.mjs, which owns shellPortFrom(): that module imports reap-port,
 // which imports node:child_process AT TOP LEVEL — and boot.mjs imports THIS file, so borrowing
 // the accessor would hand the spine a platform at import time and trip tests/integrity.test.mjs

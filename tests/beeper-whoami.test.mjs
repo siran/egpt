@@ -267,7 +267,7 @@ describe('beeper-whoami — the topology table', () => {
     const { rows } = await topology({ cfg: table, deps: tableDeps() });
     const at = rows.filter((r) => r.port === 23375 && r.host === 'node-one');
     expect(at.map((r) => r.role)).toEqual(['console']);
-    expect(shellPortOf({}), 'a node that configures nothing keeps the old default').toBe(23375);
+    expect(shellPortOf({}), "a node that configures nothing gets shell-port's default").toBe(23475);
     expect(shellPortOf({ shell: { port: 23385 } })).toBe(23385);
   });
 

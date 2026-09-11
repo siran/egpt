@@ -659,7 +659,7 @@ describe('shell editor — delivery-failure notice', () => {
 // Resolution is DELIBERATELY forgiving: a node that sets nothing must behave exactly
 // as before, and a typo must not stop the spine from serving a console at all.
 describe('shellPortFrom - the console port a node serves', () => {
-  it('absent config falls back to 23375', () => {
+  it('absent config falls back to SHELL_WS_PORT', () => {
     expect(shellPortFrom(undefined)).toBe(SHELL_WS_PORT);
     expect(shellPortFrom({})).toBe(SHELL_WS_PORT);
     expect(shellPortFrom({ shell: {} })).toBe(SHELL_WS_PORT);

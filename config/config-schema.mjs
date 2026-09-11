@@ -903,7 +903,7 @@ export const CONFIG_SCHEMA = {
   `,
 
   shell: `
-    The operator console — the spine's shell-port limb SERVES ws://127.0.0.1:23375
+    The operator console — the spine's shell-port limb SERVES ws://127.0.0.1:23475
     from boot and holds it; the egpt editor dials in as a client (direction
     inverted 2026-08-26: the durable process serves, and a held port has no
     unbound window for a local squatter to take).
@@ -923,7 +923,7 @@ export const CONFIG_SCHEMA = {
     the socket used to trust the LOOPBACK itself, treating whatever answered as
     the operator, i.e. a peer authorized to run /upgrade (git pull + npm install,
     unsandboxed). Windows has no per-user loopback namespace and does not filter
-    loopback, so a sandboxed CLI account (egpt-sbx-NN) can bind and dial 23375
+    loopback, so a sandboxed CLI account (egpt-sbx-NN) can bind and dial the console
     freely — and back when the EDITOR served it, the port was usually UNBOUND,
     since the editor is only up when the operator opens it. A squatter could
     therefore take the port and wait for the spine to dial it. Loopback is not an
@@ -954,7 +954,7 @@ export const CONFIG_SCHEMA = {
 
     KEYS:
       console_port
-              The PEER's console port — its shell.port (default 23375). The link
+              The PEER's console port — its shell.port (default 23475). The link
               rides the peer's console listener rather than a port of its own:
               the handshake, the bind-at-boot-and-HOLD property and the squatter
               protection are already solved there (see shell). A peer dials it on

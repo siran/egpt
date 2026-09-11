@@ -2054,7 +2054,8 @@ export async function boot({
     // — `/upgrade` and all (src/shell/auth.mjs). Fail closed, never auto-generate.
     token: shellTokenFrom(cfg),
     // The console PORT (config `shell.port`), read here for the same reason the token is:
-    // the limb never reads config. Absent ⇒ 23375, so a node that sets nothing is unchanged.
+    // the limb never reads config. Absent ⇒ shell-port's SHELL_WS_PORT (23475 since 2026-09-11,
+    // when 23375 turned out to sit inside the range Beeper takes its next free port from).
     // It exists so a SECOND spine can run on this machine — Session 0 and Session 1 cannot
     // both bind one port, and that collision was the only thing making two spines impossible.
     port: shellPortFrom(cfg),

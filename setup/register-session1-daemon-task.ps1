@@ -55,8 +55,9 @@
 #
 # And one that decides how it fails: RestartCount. Task Scheduler restarts a FAILED task
 # (nonzero exit) up to N times, N below. When it gives up, the node is not down: the session 1
-# spine dies with its daemon, port 23375 goes quiet, and the session 0 daemon - which has been
-# watching that port since it stood down - brings the session 0 spine back. What is lost is
+# spine dies with its daemon, state/spine.pid stops naming a live process and the console port
+# goes quiet, and the session 0 daemon - which has been watching BOTH since it stood down, and
+# claims only when neither says anybody is there - brings the session 0 spine back. What is lost is
 # the browser until the next logon. That is the safety net, and it is worth knowing it is
 # there rather than assuming the restart count is the last line of defence.
 
@@ -204,7 +205,7 @@ if ($Remove) {
   # checkout and the log is the operator's record of past handovers; neither is ours to delete.
   Write-Host "Left alone (never created by this script): the shim $Shim, and the log $LogPath."
   Write-Host "NOTE: removing this task does NOT stop a session 1 daemon that is running right now."
-  Write-Host "      Log off, or kill it - the session 0 daemon takes the profile back when 23375 goes quiet."
+  Write-Host "      Log off, or kill it - the session 0 daemon takes the profile back once state/spine.pid names no live spine and the console port is quiet."
   return
 }
 

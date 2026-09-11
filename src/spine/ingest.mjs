@@ -8,7 +8,8 @@
 //   /upgrade        -> exit 42  (daemon git pull + npm + build, then respawn)
 //   /rewind <ref>   -> exit 44  (daemon checks out <ref>, then respawn)
 //   /standdown [p]  -> exit 45  (the Session 0 → Session 1 handover: the daemon does NOT
-//                                respawn — it watches port p until it goes quiet. THE ONLY
+//                                respawn — it watches state/spine.pid AND port p, and comes
+//                                back only once neither holds the profile. THE ONLY
 //                                DEFERRED ONE: boot routes 45 through spine.standdown(), which
 //                                stops admitting turns, drains the ones in flight and only THEN
 //                                exits — see spine.mjs. The other three leave immediately.)

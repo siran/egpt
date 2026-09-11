@@ -51,7 +51,12 @@ const DEFAULT_ROOT = dirname(fileURLToPath(new URL('../egpt-daemon.mjs', import.
 // module graph with the spine (egpt-daemon.mjs imports this file and nothing else), and
 // shell-port pulls in ws + half the surface — a module-load failure there would then take the
 // watchdog down with the thing it watches, which is the 33-minute incident with no survivor.
-const DEFAULT_CONSOLE_PORT = 23375;
+// 23475, not 23375: Beeper Desktop takes the next free port from 23373 upward, so the old
+// default sat four ports inside a range another program helps itself to — and did collide, at
+// the 2026-09-11 logon described in standDownAndWatch below. Moved in lockstep with
+// shell-port.mjs's SHELL_WS_PORT (and its two other re-statements), because a supervisor
+// watching a different number from the one its spine binds is worse than either number.
+const DEFAULT_CONSOLE_PORT = 23475;
 const validPort = (n) => (Number.isInteger(n) && n > 0 && n < 65536 ? n : null);
 
 // --- the supervision axis is the SESSION, not the account (operator 2026-09-11) -----------
@@ -606,17 +611,56 @@ export function createDaemonRuntime(opts = {}) {
 
   // --- the stand-down watch (the Session 0 → Session 1 handover) ---------------------------
   // A peer has taken the profile. The daemon is the only thing alive across the handover, so it
-  // does the waiting: no respawn while the successor answers on the console port, one respawn
-  // when that port goes quiet (logoff, crash — the session ended and took the spine with it).
+  // does the waiting: no respawn while the peer still HOLDS the profile, one respawn when it
+  // lets go (logoff, crash — the session ended and took the spine with it).
   //
-  // The observation is peer-liveness's, NOT a second probe. Its predicate ("does anything serve
-  // there") and its ASYMMETRIC HYSTERESIS carry over unchanged, and the asymmetry is if anything
-  // more important here than where it was written: believing the peer dead when it is alive would
-  // start a SECOND spine on one EGPT_HOME — two Beeper connections, two answers, both writing
-  // conversations.yaml — which is the one unrecoverable failure in this design. Believing it
-  // alive when it is dead only costs a few more seconds of silence. So this loop drives the
-  // module's tick() on the module's own cadence and adds exactly one thing: respawn when it
-  // finally claims.
+  // The observation is peer-liveness's, NOT a second probe. Its ASYMMETRIC HYSTERESIS carries
+  // over unchanged, and the asymmetry is if anything more important here than where it was
+  // written: believing the peer dead when it is alive would start a SECOND spine on one
+  // EGPT_HOME — two Beeper connections, two answers, both writing conversations.yaml — which is
+  // the one unrecoverable failure in this design. Believing it alive when it is dead only costs
+  // a few more seconds of silence. So this loop drives the module's tick() on the module's own
+  // cadence and adds exactly one thing: respawn when it finally claims.
+  //
+  // --- WHAT "HOLDS" MEANS, AND WHY IT IS NOT A PORT (reve, 2026-09-11 logon) ----------------
+  // THE INCIDENT. The handover worked — exit 45, the S0 daemon stood down, the S1 spine took
+  // ~/.egpt — and then two spines sat on one profile for about two minutes. This watch used to
+  // ask ONE question, tcpProbe on the console port, and read the answer as "has the peer
+  // released the profile?". Those are different questions. Beeper claims the first free port
+  // upward from 23373 and took 23375 the instant the departing spine released it, so the
+  // successor — alive, holding ~/.egpt, beating alive.txt — never bound its console port at all
+  // (`SPINE 11924 session=1 listening=-`). The port went quiet, the watch claimed, spawnShell()
+  // put a second spine onto a profile that was already held. A spine that is alive but cannot
+  // bind its port must not be invisible to the mutex.
+  //
+  // THE FIX IS TO ASK THE QUESTION checkSingleton ALREADY ASKS, over the same two facts and
+  // through the same predicate: livePidIn(spinePidPath) — identity from state/spine.pid (which
+  // the spine writes and which is visible across the session boundary, unlike a child handle),
+  // liveness from alive.txt's mtime via liveDaemonPid's 120s gate. Pids are reused by the OS, so
+  // the pid ALONE is never the answer; that pairing is exactly why liveDaemonPid takes both.
+  // One source of truth, reused — no second watcher, no second cadence, no new predicate.
+  //
+  // NEITHER SIGNAL OVERRIDES THE OTHER. Both are evidence of a HOLDER, so the peer is presumed
+  // present while EITHER answers and it takes BOTH saying "nobody" to claim:
+  //   • LIVE PID, QUIET PORT — the incident. The pid is direct evidence of the holder; the port
+  //     only ever stood in for it. HELD, and the watch must not claim.
+  //   • DEAD PID, BUSY PORT — a squatter (Beeper), or a spine whose pid file we could not read,
+  //     or one whose beat is stale for a reason that is not death: beatAge is WALL-CLOCK, so
+  //     after a suspend every pid on the profile reads dead until the next beat (the same trap
+  //     checkLiveness's resume grace exists for). Claiming on a dead pid alone would therefore
+  //     respawn onto a live peer after every sleep — the unrecoverable direction — so this is
+  //     HELD too. TIME_WAIT is NOT the reason: a socket in TIME_WAIT has no listener and refuses
+  //     a connect, so it can only ever make a port read QUIET, never busy. The cost is real and
+  //     is said out loud below: a squatter on the console port keeps this daemon stood down
+  //     until a human moves it.
+  //
+  // THE ONE WINDOW WHERE spine.pid CAN NAME A DEAD PROCESS, and why the hysteresis covers it:
+  // the successor writes spine.pid immediately after announcing the stand-down (src/spine/
+  // boot.mjs — the announce is the block right before the write), so by the time exit 45 reaches
+  // us the file normally already names the LIVE successor. Only if the incumbent drains and
+  // exits faster than the successor's own mkdir+write lands does the file name the departing pid
+  // — for those milliseconds, and with the port not yet bound either. Three consecutive misses
+  // at 5s is ~15s of cover for a sub-second window.
   function standdownPort() {
     let named = null;
     try {
@@ -634,11 +678,29 @@ export function createDaemonRuntime(opts = {}) {
 
   function standDownAndWatch() {
     const port = standdownPort();
+    const serving = peerProbe({ port });
+    // The disagreement already said out loud, or null while the two signals agree. Said on the
+    // TRANSITION, not every tick: a stand-down can last a whole workday and this must not become
+    // the log's texture — but it must be there, because both disagreements mean the daemon is
+    // staying down for a reason a human may need to act on.
+    let announced = null;
+    const probe = async () => {
+      const pid = livePidIn(spinePidPath);
+      const answers = await serving();
+      const disagreement = pid != null && !answers ? 'pid' : (pid == null && answers ? 'port' : null);
+      if (disagreement !== announced) {
+        announced = disagreement;
+        if (disagreement === 'pid') log(`stand-down watch: 127.0.0.1:${port} is quiet, but ${spinePidPath} names LIVE pid ${pid} and alive.txt is fresh — the profile IS held. A spine that is alive but could not bind its console port is still a spine; not claiming.`);
+        if (disagreement === 'port') log(`stand-down watch: something answers on 127.0.0.1:${port} but ${spinePidPath} names no live spine — that is a squatter, not the peer. Not claiming (a dead pid alone is also what a machine looks like the moment it wakes from sleep), so this profile stays down until whatever holds that port is moved off it.`);
+      }
+      return pid != null || answers;
+    };
     const watcher = createPeerLiveness({
-      probe: peerProbe({ port }),
+      probe,
+      subject: 'the profile',
       onLog: (m) => log(`stand-down watch: ${m}`),
     });
-    log(`stood down — a peer has taken the profile on 127.0.0.1:${port}; NOT respawning, watching that port every ${Math.round(PEER_PROBE_EVERY_MS / 1000)}s until it goes quiet`);
+    log(`stood down — a peer has taken the profile on 127.0.0.1:${port}; NOT respawning while ${spinePidPath} names a live spine or that port answers, re-checked every ${Math.round(PEER_PROBE_EVERY_MS / 1000)}s`);
     let respawned = false;   // a slow probe can overlap the next tick; only ONE respawn ever
     standdownTimer = setIntervalFn(async () => {
       if (respawned || stopping) return;
@@ -646,7 +708,7 @@ export function createDaemonRuntime(opts = {}) {
       if (respawned || stopping || !watcher.isClaiming()) return;
       respawned = true;
       if (standdownTimer) { clearIntervalFn(standdownTimer); standdownTimer = null; }
-      log(`127.0.0.1:${port} went quiet — the peer released the profile; respawning the spine`);
+      log(`${spinePidPath} names no live spine and 127.0.0.1:${port} is quiet — nothing holds the profile now; respawning the spine`);
       backoff = RESTART_MIN_MS;   // a handover is not a failure; the next boot starts clean
       spawnShell();
     }, PEER_PROBE_EVERY_MS);
@@ -905,8 +967,9 @@ export function createDaemonRuntime(opts = {}) {
     // stand-down on the console port and the incumbent drains and leaves (chunk 3). Anyone else
     // spawning here would put a SECOND spine on one profile, which is the one unrecoverable
     // failure in this design. So a non-successor takes the seat the departing daemon takes: it
-    // watches the port and comes back the moment it goes quiet. Same watch, same hysteresis, no
-    // second mechanism — and it does NOT exit, so a logoff is recovered from without a restart.
+    // watches the profile and comes back the moment nothing holds it. Same watch, same predicate
+    // (this very livePidIn call, re-asked every 5s), same hysteresis, no second mechanism — and
+    // it does NOT exit, so a logoff is recovered from without a restart.
     const incumbent = session1 ? null : livePidIn(spinePidPath);
     let c = null;
     if (incumbent) {
@@ -991,7 +1054,7 @@ export function startProfileDaemons({ profiles, createRuntime = createDaemonRunt
     let child = null;
     try { child = runtime.start(); } catch (e) { say(`profile ${home} threw while starting: ${e?.message ?? e}`); }
     // A runtime that stood down IS supervising — the watch is the supervision, and it will
-    // spawn the moment the peer holding that profile goes quiet.
+    // spawn the moment nothing holds that profile any more.
     if (child == null && runtime.state?.standingDown !== true) failed.push(home);
   }
   // "Half-alive is worse than down" (INTENT.md): a node asked for two profiles that came up

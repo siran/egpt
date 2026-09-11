@@ -1,5 +1,5 @@
 // shell-port.mjs — the operator-console LIMB: a WebSocket SERVER the spine binds AT BOOT and
-// HOLDS on 127.0.0.1:23375. The external interactive EDITOR (the "shell") is the CLIENT: it
+// HOLDS on 127.0.0.1:<shell.port>, 23475 by default. The EDITOR (the "shell") is the CLIENT: it
 // dials in and PROVES it holds the node's shell token before this limb accepts a byte from it
 // or sends it one. A text frame the editor sends becomes an inbound event on the `shell`
 // surface, handed to the SAME dispatch the spine runs for Beeper messages; the reply is pushed
@@ -66,7 +66,18 @@ import { MOUTH_PATH, isMouthDial, parseMouthFrame, sayResultFrame, sayOpenedFram
 
 // The spine serves this port; the editor dials in. Exported so boot + tests share the
 // one number (plan §3, §9 — a KNOWN port, not discovery).
-export const SHELL_WS_PORT = 23375;
+//
+// 23375 UNTIL 2026-09-11, AND IT WAS INSIDE BEEPER'S SCAN RANGE. Beeper Desktop takes the next
+// free port from 23373 upward (src/tools/beeper-whoami.mjs scans 23373..23385), so this default
+// sat four ports into a range another program helps itself to. At the S0→S1 logon that night
+// Beeper grabbed 23375 the instant the departing spine released it, the arriving spine could not
+// bind its console at all, and the daemon's stand-down watch — which read that port as "is the
+// profile held" — put a second spine on a held profile. The watch no longer trusts a port for
+// that question (src/daemon-runtime.mjs), but a default that collides with a program on every
+// one of these machines is still wrong. 23475 is the number the live nodes were moved to that
+// night (kg 23475, kg2 23477), so the code default and the deployment now say the same thing —
+// including when config.yaml is unreadable and the daemon falls back to this number.
+export const SHELL_WS_PORT = 23475;
 // ...but the number is no longer FIXED (operator 2026-09-02). Two spines can now run on one
 // machine — one in Session 0 holding the agent's Beeper, one in Session 1 holding the
 // operator's — and they cannot both bind 23375. The transcriptor and synthesizer ports were
@@ -76,7 +87,7 @@ export const SHELL_WS_PORT = 23375;
 //
 // Read HERE rather than in the limb: shell-port never touches config, boot hands it every
 // option (see the token, same shape). A missing / malformed / out-of-range value falls back to
-// 23375 rather than throwing — a node with no shell.port must keep behaving exactly as before,
+// SHELL_WS_PORT rather than throwing — a node with no shell.port must still serve a console,
 // and a typo must not stop the spine from serving a console at all.
 export function shellPortFrom(cfg) {
   const n = Number(cfg?.shell?.port);
@@ -112,7 +123,7 @@ const SHELL_USER = 'operator';
 
 /**
  * @param {object} opts
- * @param {number} [opts.port]                the port to SERVE (default 23375; tests pass 0 for an ephemeral port)
+ * @param {number} [opts.port]                the port to SERVE (default 23475; tests pass 0 for an ephemeral port)
  * @param {typeof WSS} [opts.WebSocketServer] INJECTION SEAM — the `ws` server constructor (default the real import; tests pass a fake so NO real socket opens)
  * @param {string[]} [opts.wakeWords]         the persona's wake-word set (its declared handles, else its map key — router.mjs wakeTokens), SAME set boot hands the beeper bridge. Undefined → mentionStatus' built-in e/egpt defaults.
  * @param {boolean} [opts.addressWithoutAt]   the node's dispatch.address_without_at (DEFAULT true): may a BARE leading handle ("d hola") address, or is the '@' required? Rides beside wakeWords into the SAME mentionStatus call — the same value boot hands the beeper bridge and the router.
@@ -218,7 +229,7 @@ export function createShellPort({
     const f = parseAuthFrame(raw);
     if (!f || f.auth !== 'response') return false;               // pre-auth noise → dropped on the floor
     if (!macMatches(f.mac, authMac(_token, nonce))) {
-      onLog(`shell: A CLIENT FAILED THE AUTH CHALLENGE${mouth ? ` (on ${MOUTH_PATH}, so it claimed to be a peer spine)` : ''} — refusing to trust whatever just dialed 127.0.0.1:23375. `
+      onLog(`shell: A CLIENT FAILED THE AUTH CHALLENGE${mouth ? ` (on ${MOUTH_PATH}, so it claimed to be a peer spine)` : ''} — refusing to trust whatever just dialed 127.0.0.1:${port}. `
         + 'Most likely an IMPOSTOR (a sandboxed account can dial loopback freely); otherwise the editor is '
         + 'running with a different shell.token. Dropping that connection; the console stays served.');
       dropPending(ws);
@@ -453,7 +464,7 @@ export function createShellPort({
     // Returns the underlying listener so a caller/test can await 'listening' and read the bound
     // port (ephemeral when `port: 0`); null when the limb is disabled.
     start() {
-      if (!_token) { onLog(`shell: DISABLED — no shell token configured, so the operator console cannot be authenticated (an unauthenticated 127.0.0.1:23375 is dialable by any local account). To enable it, ${SHELL_TOKEN_HELP}.`); return null; }
+      if (!_token) { onLog(`shell: DISABLED — no shell token configured, so the operator console cannot be authenticated (an unauthenticated 127.0.0.1:${port} is dialable by any local account). To enable it, ${SHELL_TOKEN_HELP}.`); return null; }
       reapPortFn(port, onLog);
       return bind();
     },

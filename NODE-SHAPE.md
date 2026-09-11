@@ -86,7 +86,7 @@ to you, not reachability for the spine.
 config, same `EGPT_HOME`, same tokens — which is why they take turns instead of
 coexisting. Both live at once would open two connections per token (every
 message ingested twice, answered twice), race `config/conversations.yaml` and
-`state/ingest/`, and collide on console port 23375.
+`state/ingest/`, and collide on the console port (23475 by default).
 
 Session 1 exists for one reason: a spine there can **spawn and supervise a
 browser as an ordinary child process**. A session 0 browser is invisible to you
@@ -95,8 +95,14 @@ browser as an ordinary child process**. A session 0 browser is invisible to you
 **The S0→S1 flip** is the handover. After a restart the spine runs in session 0.
 At logon the HKCU Run key starts the session 1 spine, which asks the incumbent
 for the profile; the incumbent finishes the turn it is writing and exits
-(`STANDDOWN_EXIT_CODE = 45`), and its daemon respawns only once port 23375 goes
-quiet. One port is the mutex on one shared profile.
+(`STANDDOWN_EXIT_CODE = 45`), and its daemon respawns only once **nothing holds
+the profile** — `state/spine.pid` names no live process (paired with a fresh
+`state/alive.txt` beat, as the singleton has always done) and the console port
+is quiet. The pid is the mutex; the port is a second witness, not the answer.
+Reading the port alone put two spines on one profile on 2026-09-11: Beeper takes
+the next free port from 23373 up, grabbed the console the instant the departing
+spine released it, and the arriving spine — alive and holding the profile —
+could not bind and so was invisible.
 
 Built, never exercised across a real logoff/logon — see
 `plans/2609061200-SESSION-0-TO-1-HANDOVER-PLAN.md`.

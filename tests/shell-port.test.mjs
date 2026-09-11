@@ -86,7 +86,10 @@ function dialAuthed(server, token = TOKEN) {
 
 describe('shell-port limb', () => {
   it('exports the fixed console port (the spine SERVES it; the editor dials in)', () => {
-    expect(SHELL_WS_PORT).toBe(23375);
+    // Moved off 23375 on 2026-09-11: that number is inside Beeper's 23373-up scan range, and
+    // the collision put two spines on one profile. Must stay equal to src/shell/spine-link.mjs's
+    // copy (the editor dials it) and src/daemon-runtime.mjs's DEFAULT_CONSOLE_PORT.
+    expect(SHELL_WS_PORT).toBe(23475);
   });
 
   // REPRODUCE-FIRST for the inversion: the limb must BIND, not dial. On the old dial-out code

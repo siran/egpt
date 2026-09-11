@@ -28,8 +28,10 @@ import { EGPT_HOME } from '../egpt-home.mjs';
 // trusted — by design.
 import { parseAuthFrame, responseFrame, SHELL_TOKEN_HELP } from './auth.mjs';
 
-// The fixed port the SPINE serves; this editor dials it (shell-port SHELL_WS_PORT).
-export const SHELL_WS_PORT = 23375;
+// The default port the SPINE serves; this editor dials it. Must equal shell-port's
+// SHELL_WS_PORT — moved off 23375 on 2026-09-11 because that number sits inside the range
+// Beeper Desktop takes the next free port from (23373 up), and it collided at a logon.
+export const SHELL_WS_PORT = 23475;
 // Content the spine's ingest handle recognizes (src/spine/ingest.mjs isShellConnectMarker).
 const SHELL_CONNECT_MARKER = '/shell-connect';
 // Reconnect backoff — a spine that is down (or restarting) must not spin the dial (or the log)
@@ -39,7 +41,7 @@ const RECONNECT_MAX_MS = 60_000;
 
 /**
  * @param {object} opts
- * @param {number} [opts.port]                  the spine's console port (default 23375)
+ * @param {number} [opts.port]                  the spine's console port (default 23475)
  * @param {string} [opts.url]                   the spine's ws endpoint (default ws://127.0.0.1:<port>) — tests point it at an ephemeral port
  * @param {string} [opts.token]                 the node's SHELL TOKEN (cfg.shell.token) — the shared secret this editor answers the spine's auth challenge with. UNSET → the challenge goes unanswered and the spine refuses this editor (fail closed); the log line says what to add.
  * @param {typeof WS} [opts.WebSocket]          INJECTION SEAM — the `ws` client constructor (default the real import)
