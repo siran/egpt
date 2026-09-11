@@ -393,3 +393,43 @@ describe('warm-session pool', () => {
     expect(factory.made.length).toBe(2);
   });
 });
+
+// AN EVICTION LINE MUST NOT OVERSTATE WHAT WENT WRONG (operator 2026-09-11). The
+// commonest eviction on the live node is a cold spawn whose `--resume` target the CLI no
+// longer has: the process dies BEFORE the model is reached, no turn ran, nothing the human
+// said was lost, and brainpool.mjs resets the thread and retries fresh on the spot. Logging
+// that as `turn failed` said the being had failed when it had not — and it is the ONE line
+// the operator sees for it. The primitive MARKS that error (warm-cli-session.mjs sets
+// `resumeTargetMissing`) instead of this pool sniffing a vendor string, so a brain that
+// resumes nothing is untouched.
+describe('warm pool — an eviction says what actually went wrong', () => {
+  const rejectingPool = (err) => {
+    const logs = [];
+    const pool = createWarmPool({
+      onLog: (l) => logs.push(l),
+      makeSession: () => ({ close() {}, turn() { return Promise.reject(err); } }),
+    });
+    return { pool, logs, evictions: () => logs.filter((l) => l.includes('warm: evicted')) };
+  };
+
+  it('a --resume target that is gone is NOT reported as a failed turn', async () => {
+    const err = Object.assign(
+      new Error('claude: error_during_execution — No conversation found with session ID: dead-1'),
+      { resumeTargetMissing: true },
+    );
+    const { pool, evictions } = rejectingPool(err);
+    await expect(pool.run('k', 'a')).rejects.toThrow(/No conversation found/);
+    expect(evictions().length).toBe(1);
+    expect(evictions()[0]).not.toMatch(/turn failed/);   // the turn never ran
+    expect(evictions()[0]).toContain('--resume');
+    expect(evictions()[0]).toContain('dead-1');
+  });
+
+  it('a genuine turn failure still says the turn failed, and now names the error', async () => {
+    const { pool, evictions } = rejectingPool(new Error('session boom'));
+    await expect(pool.run('k', 'a')).rejects.toThrow(/boom/);
+    expect(evictions().length).toBe(1);
+    expect(evictions()[0]).toMatch(/turn failed/);
+    expect(evictions()[0]).toContain('session boom');
+  });
+});

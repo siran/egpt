@@ -56,6 +56,23 @@ export function createWarmPool({
     onLog(`warm: evicted ${key} (${why}); size=${_s.size}/${max}`);
   }
 
+  // WHY THE ENTRY IS BEING THROWN AWAY, and it is NOT always "the turn failed" (operator
+  // 2026-09-11). The commonest eviction on the live node is a cold spawn whose `--resume`
+  // target the CLI no longer has: the process dies BEFORE the model is reached, so no turn ran,
+  // nothing the human said was lost, and brainpool.mjs resets the thread and retries fresh on
+  // the spot. `turn failed` claimed the being had failed when it had not, in the one line the
+  // operator ever sees about it — and it also dropped the error's own text, so the log said a
+  // turn had failed and never said why. Both are fixed here.
+  //
+  // THE SESSION MARKS IT, NOT THIS POOL. warm-cli-session.mjs sets `resumeTargetMissing` on
+  // that one error; nothing here sniffs a vendor sentence, so a brain that resumes nothing
+  // (llama's HTTP, pi) keeps exactly today's wording.
+  function _whyEvicted(err) {
+    const msg = String(err?.message ?? err ?? '').trim();
+    if (err?.resumeTargetMissing) return `the --resume target is gone, so no turn ran${msg ? `: ${msg}` : ''}`;
+    return msg ? `turn failed: ${msg}` : 'turn failed';
+  }
+
   function _armIdle(key) {
     const e = _s.get(key);
     if (!e) return;
@@ -101,11 +118,13 @@ export function createWarmPool({
       return res;
     } catch (err) {
       e.errored = true;
+      e.failure = err;   // kept only so the eviction below can say WHAT went wrong
       throw err;
     } finally {
       e.busy = false;
       e.inFlight = null;
-      if (_s.get(key)?.errored) _evict(key, 'turn failed'); else _armIdle(key);
+      const failed = _s.get(key);
+      if (failed?.errored) _evict(key, _whyEvicted(failed.failure)); else _armIdle(key);
     }
   }
 

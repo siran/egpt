@@ -66,6 +66,9 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { buildClaudeArgs } from './claude-args.mjs';
+// ONE definition of "the CLI no longer has that session", shared with brainpool.mjs's retry
+// so the two can never drift apart on the sentence they are both keyed to.
+import { isDeadSessionError } from './brain-errors.mjs';
 
 // THE stream-json wire format for ONE user message, in one place. turn() and inject()
 // write byte-identical lines to the same stdin — the CLI cannot tell them apart, and the
@@ -386,8 +389,31 @@ export function createWarmCliSession(options = {}) {
             : (typeof ev.result === 'string' ? ev.result : (pending?.acc ?? ''));
           resolvePending(text);
         } else {
-          const detail = stderrBuf.trim() ? ` — ${stderrBuf.trim().slice(-300)}` : '';
-          failPending(new Error(`claude: ${ev.subtype}${detail}`));
+          // THE CLI'S OWN STRUCTURED REASON FIRST, stderr second (operator 2026-09-11).
+          // MEASURED against claude.exe on this box with a `--resume` whose target is gone:
+          // exit 1, stderr carries "No conversation found with session ID: <id>", and the
+          // SAME sentence arrives HERE, on stdout, as this event's `errors: [...]`. Only the
+          // stdout copy is ORDERED against this line — stderr is a different pipe, so whether
+          // its chunk has reached stderrBuf yet is a scheduler race. That matters because
+          // brainpool.mjs classifies a dead session BY THIS MESSAGE (isDeadSessionError) and
+          // only then resets the thread and retries fresh: a message that loses the race loses
+          // the retry with it, and the being fails hard where it would have self-healed.
+          // stderr is still appended, for everything the CLI does not put in `errors`.
+          const errs = (Array.isArray(ev.errors) ? ev.errors : [])
+            .filter((e) => typeof e === 'string' && e.trim()).join('; ');
+          const tail = stderrBuf.trim().slice(-300);
+          // The CLI writes the SAME sentence to both pipes, so when it did arrive on stderr in
+          // time, say it once. Only ever a dedup between two non-empty strings: with `errs`
+          // empty this must fall through to exactly today's stderr-only detail.
+          const echoed = errs && tail && (errs.includes(tail) || tail.includes(errs));
+          const detail = [errs, echoed ? '' : tail].filter(Boolean).join(' — ');
+          const err = new Error(`claude: ${ev.subtype}${detail ? ` — ${detail}` : ''}`);
+          // …AND SAY IT STRUCTURALLY, not only in prose. warm-sessions.mjs has to report WHY it
+          // evicted, and "the resume target is gone" is not "the turn failed" — no turn ran. A
+          // flag keeps that pool brain-agnostic: it never has to sniff a vendor sentence, and a
+          // primitive that resumes nothing simply never sets this.
+          if (isDeadSessionError(err.message)) err.resumeTargetMissing = true;
+          failPending(err);
         }
       }
     }

@@ -6,6 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { createWarmCliSession, renderToolUse, redactSecrets } from '../src/warm-cli-session.mjs';
+import { isDeadSessionError } from '../src/brain-errors.mjs';
 
 function fakeClaude({ failOn = null, hang = false, sessionId = 'sess-123' } = {}) {
   let spawnCount = 0;
@@ -603,5 +604,78 @@ describe('redactSecrets — every pattern (a leaked stub cannot be unposted)', (
     expect(out).not.toContain('hunter2');
     expect(out).toContain('***');
     expect(out.endsWith('…)')).toBe(true);   // still truncated, on the redacted text
+  });
+});
+
+// A `--resume` WHOSE TARGET THE CLI NO LONGER HAS (operator 2026-09-11). MEASURED against
+// claude.exe 2.1.x on this box with a bogus id: exit 1, stderr carries
+// "No conversation found with session ID: <id>", and the SAME sentence arrives on STDOUT
+// inside the failing result event, as `errors: [...]`:
+//   {"type":"result","subtype":"error_during_execution","is_error":true,
+//    "session_id":"<id>","errors":["No conversation found with session ID: <id>"], ...}
+// Only the stdout copy is ORDERED against that event — stderr is a different pipe, so
+// whether its chunk has reached stderrBuf by the time this line is parsed is a scheduler
+// race. brainpool.mjs classifies a dead session BY THE THROWN MESSAGE (isDeadSessionError)
+// and only then resets the thread and retries fresh, so a message that loses the race
+// loses the retry with it and the being fails hard where it should have self-healed.
+// These fakes therefore WITHHOLD the stderr copy: the honest worst case.
+describe('warm-cli-session — a --resume the CLI cannot honour', () => {
+  function deadResumeClaude(id, { alsoOnStderr = false } = {}) {
+    let lastProc = null;
+    const spawn = () => {
+      const proc = new EventEmitter();
+      proc.stdout = new EventEmitter(); proc.stdout.setEncoding = () => {};
+      proc.stderr = new EventEmitter(); proc.stderr.setEncoding = () => {};
+      proc.kill = () => {};
+      proc.stdin = {
+        write: () => {
+          setImmediate(() => {
+            if (alsoOnStderr) proc.stderr.emit('data', `No conversation found with session ID: ${id}\n`);
+            proc.stdout.emit('data', JSON.stringify({
+              type: 'result', subtype: 'error_during_execution', is_error: true,
+              session_id: id, errors: [`No conversation found with session ID: ${id}`],
+            }) + '\n');
+          });
+        },
+        end: () => {},
+      };
+      lastProc = proc;
+      return proc;
+    };
+    return { spawn, getProc: () => lastProc };
+  }
+
+  const DEAD = '00000000-1111-2222-3333-444444444444';
+
+  it('names the missing session from the CLI own stdout errors[], not from a stderr chunk that may not have arrived', async () => {
+    const f = deadResumeClaude(DEAD);
+    const s = createWarmCliSession({ spawn: f.spawn, sessionId: DEAD });
+    const err = await s.turn('hola').then(() => null, (e) => e);
+    s.close();
+    expect(err).toBeTruthy();
+    // THE contract brainpool.mjs depends on to retry fresh instead of failing the being.
+    expect(isDeadSessionError(err.message)).toBe(true);
+    expect(err.message).toContain(DEAD);
+    // …and structurally, so warm-sessions.mjs can report it without sniffing a vendor string.
+    expect(err.resumeTargetMissing).toBe(true);
+  });
+
+  it('does not duplicate the sentence when stderr DID arrive in time', async () => {
+    const f = deadResumeClaude(DEAD, { alsoOnStderr: true });
+    const s = createWarmCliSession({ spawn: f.spawn, sessionId: DEAD });
+    const err = await s.turn('hola').then(() => null, (e) => e);
+    s.close();
+    expect(isDeadSessionError(err.message)).toBe(true);
+    expect(err.message.match(/No conversation found/g).length).toBe(1);
+  });
+
+  it('an ORDINARY failure is not mislabelled a missing resume', async () => {
+    const f = fakeClaude({ failOn: 'BAD' });
+    const s = createWarmCliSession({ spawn: f.spawn });
+    const err = await s.turn('a BAD one').then(() => null, (e) => e);
+    s.close();
+    expect(err.message).toMatch(/error_during_execution/);
+    expect(err.message).toContain('boom');            // the stderr detail is still carried
+    expect(err.resumeTargetMissing).toBeFalsy();
   });
 });
