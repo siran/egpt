@@ -29,6 +29,11 @@
 #   d) grant that SID a read/write (Modify) ACE on exactly TargetFolder -
 #      never Everyone, never a parent dir - and the SAME ACE on each -SharePath
 #      entry, if any were passed. Still never broader: each is one named path.
+#      Each is written into the lease lock file FIRST, as this lease's ACE
+#      LEDGER, so that a turn killed before (g) can still be cleaned up: the
+#      reclaim in (a) revokes whatever the dead turn's ledger names before that
+#      account runs anything again. See sandbox-account.ps1's lease-ledger
+#      block for why the lock file is the right place for that list.
 #   e) create a PRIVATE per-turn desktop and grant that SID access to it (see
 #      New-SandboxDesktop) - nothing on the operator's own WinSta0\Default.
 #   f) CreateProcessWithLogonW launches AS that account, twice, through the one
@@ -1328,15 +1333,34 @@ $preferredName = Get-SandboxPoolAccountForFolder -Folder $TargetFolder
 $leasedName = $null
 $lockStream = $null
 $lockPath = $null
+# Whatever a RECLAIM below could NOT revoke. Those paths are still granted to
+# the account this turn is about to lease, so they join this turn's own revoke
+# list and get one more attempt in the finally. Declared out here because the
+# reclaim happens inside the loop and the list is built after it.
+$reclaimCarryOver = @()
 $maxLeaseAttempts = 40   # ~10s total at 250ms between full-pool sweeps
 for ($attempt = 1; $attempt -le $maxLeaseAttempts -and -not $leasedName; $attempt++) {
   $sweepOrder = Get-SandboxPoolLeaseOrder -Folder $TargetFolder
   foreach ($name in $sweepOrder) {
     $candidatePath = Join-Path $locksDir "$name.lock"
     try {
-      $lockStream = [System.IO.File]::Open($candidatePath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write)
+      # ReadWrite, not Write: the lock file is also this lease's ACE LEDGER (see
+      # the lease-ledger block in sandbox-account.ps1), and a reclaim has to be
+      # able to READ the dead turn's list back off it. The share mode is
+      # untouched - File.Open's 3-arg overload is still FileShare::None, so the
+      # CreateNew is still the atomic "first caller wins" it has always been.
+      $lockStream = [System.IO.File]::Open($candidatePath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::ReadWrite)
       $leasedName = $name
       $lockPath = $candidatePath
+      # Stamp the empty ledger's header so a human who finds this file knows
+      # what it is. NON-FATAL, but LOUD: a lease whose ledger cannot be written
+      # still runs, it just cannot be cleaned up after a hard kill, and that has
+      # to be said rather than discovered later as a leaked ACE.
+      try {
+        Write-SandboxLeaseLedger -Stream $lockStream
+      } catch {
+        Log "WARNING: could not stamp the ACE ledger into $candidatePath  - $($_.Exception.Message). The turn runs, but if it is HARD-KILLED the reclaim of '$name' will not know which ACEs to revoke."
+      }
       break
     } catch [System.IO.IOException] {
       # The lock FILE exists. That is not yet a lease - see WHAT "LEASED" MEANS
@@ -1346,10 +1370,52 @@ for ($attempt = 1; $attempt -le $maxLeaseAttempts -and -not $leasedName; $attemp
       # vanished under us because its owner's release ran in between; or it is
       # unreadable), fall through to the next pool name exactly as before.
       try {
-        $lockStream = [System.IO.File]::Open($candidatePath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        $lockStream = [System.IO.File]::Open($candidatePath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
         $leasedName = $name
         $lockPath = $candidatePath
         Log "RECLAIMED stale lease lock $candidatePath  - the file existed but NO process held it open, i.e. a previous turn on '$name' was hard-killed before its release ran. Frequent reclaims mean turns are dying badly."
+        # ---- (a2) ...AND THE DEAD TURN'S ACEs GO WITH IT. This is the one
+        # moment we KNOW a finally was skipped, and it is the last moment before
+        # this account runs something again - for a DIFFERENT conversation than
+        # the one that leaked. Without this the pool account keeps Modify on the
+        # dead turn's conversation folder and on its ~/.egpt-jsonl/<thread>
+        # store forever, which is the cross-conversation leak the scrub exists
+        # to prevent arriving through the ACL instead of the profile. Measured
+        # on this node before the fix: 42 such ACEs live, one conversation
+        # folder carrying twelve different pool accounts.
+        #
+        # It rides the reclaim rather than a sweeper of its own precisely
+        # BECAUSE the reclaim already is the hard-kill detector. Clear-
+        # SandboxStaleLease reads the ledger off the handle we just took,
+        # revokes each path, and leaves the ledger holding only what it could
+        # NOT revoke, so the next reclaim retries instead of forgetting.
+        #
+        # NEVER FATAL, and never silent: we already own this lease, and refusing
+        # the turn over a cleanup failure would trade a leak for an outage. Each
+        # outcome is logged by name, and a FAILED revoke says the ACE is still
+        # there.
+        try {
+          $reclaimed = @(Clear-SandboxStaleLease -Stream $lockStream -AccountName $name)
+          $reclaimCarryOver = @($reclaimed | Where-Object { $_.Status -eq 'failed' } | ForEach-Object { $_.Path })
+          # AN EMPTY LEDGER IS NOT A CLEAN BILL OF HEALTH, and must not read like
+          # one. Every lock file written before 2026-09-11 is 0 bytes, so a
+          # reclaim of one of those knows nothing about what that turn granted
+          # and revokes nothing. Say so, rather than logging silence.
+          if ($reclaimed.Count -eq 0) {
+            Log "reclaim of $candidatePath found NO ACE ledger in it  - either that turn granted nothing, or the lock predates the ledger (locks written before 2026-09-11 are empty). Nothing was revoked, and any ACE it did leave cannot be identified from here."
+          }
+          foreach ($rec in $reclaimed) {
+            if ($rec.Status -eq 'revoked') {
+              Log "reclaim revoked the hard-killed turn's ACE for $($rec.Sid) ($name) on $($rec.Path)  - $($rec.Message)"
+            } elseif ($rec.Status -eq 'failed') {
+              Log "WARNING: reclaim could NOT revoke the hard-killed turn's ACE for '$name' on $($rec.Path)  - $($rec.Message). That account STILL has Modify there; the path stays in this lock's ledger so the next reclaim retries it."
+            } else {
+              Log "reclaim found nothing to revoke for '$name' on $($rec.Path)  - $($rec.Status): $($rec.Message)"
+            }
+          }
+        } catch {
+          Log "WARNING: reclaim of $candidatePath could not process its ACE ledger  - $($_.Exception.Message). Whatever ACEs the hard-killed turn left are STILL granted to '$name'."
+        }
         break
       } catch {
         # genuinely leased by another concurrent turn  - try the next pool name
@@ -1370,13 +1436,25 @@ if ($leasedName -eq $preferredName) {
 }
 
 $plainPwd = $null
-$aceGranted = $false
-# The -SharePath entries whose ACE actually LANDED, in the order they landed.
-# The finally purges exactly these and nothing else: a path that was missing, or
-# whose Set-Acl threw, must not be touched on the way out - re-ACLing a folder
-# this turn never modified is how a cleanup path turns into a bug. Declared out
-# here, before the try, so the finally can always see it.
-$sharesGranted = New-Object System.Collections.Generic.List[string]
+# EVERY path this turn grants an ACE on, TargetFolder first and then whichever
+# -SharePath entries got one, in the order they were attempted. Declared out
+# here, before the try, so the finally can always see it - and mirrored line for
+# line into the lock file, which is what a RECLAIM reads when this process is
+# killed before the finally runs (see the lease-ledger block in
+# sandbox-account.ps1).
+#
+# RECORDED BEFORE THE Set-Acl, not after, which is the one thing that changed
+# about this list: a crash log must be a SUPERSET of what landed, or the crash
+# it exists for is the case it misses. The old "only what actually landed" rule
+# is now enforced where it belongs - Revoke-SandboxLeaseAces looks before it
+# writes and reports 'clean' for a path that carries no ACE of ours, so a path
+# whose Set-Acl threw is still never re-ACLed on the way out.
+$acesGranted = New-Object System.Collections.Generic.List[string]
+# Seeded with anything the reclaim above could not clear: those ACEs belong to
+# THIS account and are still live, so the finally gets one more go at them. Not
+# re-appended to the file - Clear-SandboxStaleLease already wrote them back into
+# the ledger, so a second hard kill still finds them.
+foreach ($carried in $reclaimCarryOver) { [void]$acesGranted.Add($carried) }
 $leasedSid = $null
 $hSandboxDesk = [IntPtr]::Zero
 try {
@@ -1391,12 +1469,20 @@ try {
   $leasedSid = (New-Object System.Security.Principal.NTAccount($leasedName)).Translate([System.Security.Principal.SecurityIdentifier])
 
   # ---- (d) grant read/write on exactly TargetFolder  - never broader ----
+  # Ledger first, ACE second. If this process dies between the two lines the
+  # reclaim revokes a path that carries nothing, which costs one Get-Acl; the
+  # other order would leak the ACE it failed to record.
+  [void]$acesGranted.Add($TargetFolder)
+  try {
+    Add-SandboxLeaseLedgerPath -Stream $lockStream -Path $TargetFolder
+  } catch {
+    Log "WARNING: could not record $TargetFolder in the ACE ledger at $lockPath  - $($_.Exception.Message). This turn's own revoke is unaffected, but a HARD KILL will leave '$leasedName' holding Modify there with nothing to find it by."
+  }
   $acl = Get-Acl -LiteralPath $TargetFolder
   $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
     $leasedSid, 'Modify', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
   $acl.AddAccessRule($rule)
   Set-Acl -LiteralPath $TargetFolder -AclObject $acl
-  $aceGranted = $true
   Log "granted Modify to $($leasedSid.Value) ($leasedName) on $TargetFolder"
 
   # ---- (d2) the SAME ACE on each -SharePath entry. WHY THIS EXISTS: a being's
@@ -1441,14 +1527,21 @@ try {
         continue
       }
       $shareInherit = if (Test-Path -LiteralPath $sp -PathType Container) { 'ContainerInherit,ObjectInherit' } else { 'None' }
+      # Ledger first, ACE second - the same order and the same reason as step
+      # (d). The failure to RECORD is warned about but does not skip the grant:
+      # a being losing a share path it was promised is a worse outcome than a
+      # crash-path cleanup gap, and this says which one happened.
+      [void]$acesGranted.Add($sp)
+      try {
+        Add-SandboxLeaseLedgerPath -Stream $lockStream -Path $sp
+      } catch {
+        Log "WARNING: could not record shared path $sp in the ACE ledger at $lockPath  - $($_.Exception.Message). This turn's own revoke is unaffected, but a HARD KILL will leave '$leasedName' holding Modify there with nothing to find it by."
+      }
       $shareAcl = Get-Acl -LiteralPath $sp
       $shareRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
         $leasedSid, 'Modify', $shareInherit, 'None', 'Allow')
       $shareAcl.AddAccessRule($shareRule)
       Set-Acl -LiteralPath $sp -AclObject $shareAcl
-      # Recorded only AFTER Set-Acl returned, so the revoke list is what was
-      # actually written, not what was attempted.
-      [void]$sharesGranted.Add($sp)
       Log "granted Modify to $($leasedSid.Value) ($leasedName) on shared path $sp"
     } catch {
       Log "WARNING: could not grant Modify to $($leasedSid.Value) ($leasedName) on shared path $sp  - $($_.Exception.Message) (continuing: the other share paths and the launch are unaffected)"
@@ -1502,40 +1595,37 @@ try {
   # lease is released below, so no other turn can lease this account name while
   # a desktop named after it from THIS turn is still alive.
   if ($hSandboxDesk -ne [IntPtr]::Zero) { [SandboxLogon]::CloseDesktop($hSandboxDesk) | Out-Null }
-  # NOTE: of the ACEs, only the per-turn FILESYSTEM ones are revoked here -
-  # TargetFolder from step (d), and whichever -SharePath entries step (d2)
-  # actually granted. The WINDOW
+  # NOTE: of the ACEs, only the per-turn FILESYSTEM ones are revoked here - the
+  # ones this turn recorded in $acesGranted, i.e. TargetFolder from step (d) and
+  # the -SharePath entries step (d2) reached. The WINDOW
   # STATION ACE from step (e) is deliberately LEFT IN PLACE: it is granted to
   # the pool GROUP (not per-turn, not per-account) and is shared by every
   # concurrent turn, so revoking it here would race sessions still running. It
   # is volatile anyway  - winsta DACLs die with the logon session.
-  # ---- (g, part 2) best-effort revoke the ACE  - never let cleanup failure
-  # mask the inner process's own result. ----
-  if ($aceGranted -and $leasedSid) {
-    try {
-      $acl2 = Get-Acl -LiteralPath $TargetFolder
-      $acl2.PurgeAccessRules($leasedSid)
-      Set-Acl -LiteralPath $TargetFolder -AclObject $acl2
-      Log "revoked ACE for $($leasedSid.Value) ($leasedName) on $TargetFolder"
-    } catch {
-      Log "WARNING: could not revoke the ACE for $($leasedSid.Value) ($leasedName) on $TargetFolder  - $($_.Exception.Message)"
-    }
-  }
-  # ...and the same for every extra shared path that actually GOT an ACE, one
-  # try EACH for the same reason the grant loop has one each: a path that cannot
-  # be purged now (someone re-ACL'd it mid-turn, a drive went away) must not
-  # leave the ACEs on all the paths after it in the list behind. Same
-  # best-effort contract as above too - a cleanup failure is logged, never
-  # allowed to mask the inner process's own result.
-  if ($leasedSid -and $sharesGranted -and $sharesGranted.Count -gt 0) {
-    foreach ($sp in $sharesGranted) {
-      try {
-        $shareAcl2 = Get-Acl -LiteralPath $sp
-        $shareAcl2.PurgeAccessRules($leasedSid)
-        Set-Acl -LiteralPath $sp -AclObject $shareAcl2
-        Log "revoked ACE for $($leasedSid.Value) ($leasedName) on shared path $sp"
-      } catch {
-        Log "WARNING: could not revoke the ACE for $($leasedSid.Value) ($leasedName) on shared path $sp  - $($_.Exception.Message)"
+  # ---- (g, part 2) best-effort revoke every ACE this turn granted  - never let
+  # cleanup failure mask the inner process's own result. ----
+  # THE SAME FUNCTION THE RECLAIM USES, deliberately: the normal path and the
+  # hard-kill path must not be able to drift into disagreeing about what
+  # "revoked" means, and a second copy of a purge loop here is exactly how that
+  # would happen. It keeps one try EACH internally, for the reason the grant
+  # loop has one each - a path that cannot be purged now (someone re-ACL'd it
+  # mid-turn, a drive went away) must not leave the ACEs on every path after it
+  # in the list behind - and it looks before it writes, so a path whose grant
+  # threw is reported 'clean' rather than re-ACLed.
+  #
+  # THE RECLAIM IS A BACKSTOP, NOT A REPLACEMENT. This still runs on every
+  # ordinary turn, and it runs BEFORE the lease is released below, so no other
+  # turn can claim this account while its ACEs from THIS turn are still being
+  # cleaned up. What the reclaim adds is the case this block cannot reach at
+  # all: the one where this process is killed and never gets here.
+  if ($acesGranted -and $acesGranted.Count -gt 0) {
+    foreach ($rec in @(Revoke-SandboxLeaseAces -AccountName $leasedName -Paths $acesGranted.ToArray())) {
+      if ($rec.Status -eq 'revoked') {
+        Log "revoked ACE for $($rec.Sid) ($leasedName) on $($rec.Path)  - $($rec.Message)"
+      } elseif ($rec.Status -eq 'failed') {
+        Log "WARNING: could not revoke the ACE for '$leasedName' on $($rec.Path)  - $($rec.Message). That account STILL has Modify there; the next reclaim of this lease will retry it."
+      } else {
+        Log "nothing to revoke for '$leasedName' on $($rec.Path)  - $($rec.Status): $($rec.Message)"
       }
     }
   }

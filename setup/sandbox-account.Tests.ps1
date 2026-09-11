@@ -228,3 +228,199 @@ Describe 'Get-SandboxPoolLeaseOrder (the order the launcher walks the pool in)' 
     (@($tails | Select-Object -Unique).Count -gt 1) | Should Be $true
   }
 }
+
+# ---------------------------------------------------------------------------
+# THE LEASE LEDGER AND THE ACE REVOKE (2026-09-11). This is the REAL coverage
+# for the hard-kill ACE leak: tests/sandbox-ace-reclaim.test.mjs can only lock
+# the launcher's SOURCE (it is a .ps1 with a param block, so vitest cannot run
+# it), and everything below actually grants, kills and revokes.
+#
+# Everything here runs UNELEVATED against a throwaway directory under $env:TEMP
+# and against the CURRENT user's own SID. It never touches a pool account, the
+# real C:\ProgramData\egpt, or any conversation folder.
+$script:LedgerTempRoot = Join-Path $env:TEMP ("egpt-ledger-test-" + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $script:LedgerTempRoot -Force | Out-Null
+$script:MeName = ([System.Security.Principal.WindowsIdentity]::GetCurrent()).Name
+$script:MeSid  = ([System.Security.Principal.WindowsIdentity]::GetCurrent()).User
+
+function New-LedgerTempDir {
+  $p = Join-Path $script:LedgerTempRoot ([guid]::NewGuid().ToString('N'))
+  New-Item -ItemType Directory -Path $p -Force | Out-Null
+  return $p
+}
+function Grant-TestModify([string]$Path) {
+  $acl = Get-Acl -LiteralPath $Path
+  $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+    $script:MeSid, 'Modify', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))
+  Set-Acl -LiteralPath $Path -AclObject $acl
+}
+function Get-TestExplicitAceCount([string]$Path) {
+  $acl = Get-Acl -LiteralPath $Path
+  return @($acl.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]) |
+    Where-Object { $_.IdentityReference.Value -eq $script:MeSid.Value }).Count
+}
+function New-TestLock([string]$Path) {
+  return [System.IO.File]::Open($Path, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::ReadWrite)
+}
+
+Describe 'the lease ledger (the lock file doubles as the list of ACEs this turn granted)' {
+  It 'round-trips paths and hides its own header from readers' {
+    $lock = Join-Path $script:LedgerTempRoot 'a.lock'
+    $s = New-TestLock $lock
+    try {
+      Write-SandboxLeaseLedger -Stream $s
+      (@(Read-SandboxLeaseLedger -Stream $s).Count) | Should Be 0
+      Add-SandboxLeaseLedgerPath -Stream $s -Path 'C:\one'
+      Add-SandboxLeaseLedgerPath -Stream $s -Path 'C:\two dir\with space'
+      ((Read-SandboxLeaseLedger -Stream $s) -join '|') | Should Be 'C:\one|C:\two dir\with space'
+    } finally { $s.Close(); Remove-Item -LiteralPath $lock -Force }
+  }
+
+  It 'reads a PRE-LEDGER lock file (every lock written before this change is 0 bytes) as zero paths, not as an error' {
+    $lock = Join-Path $script:LedgerTempRoot 'legacy.lock'
+    [System.IO.File]::WriteAllBytes($lock, (New-Object byte[] 0))
+    $s = [System.IO.File]::Open($lock, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+    try { (@(Read-SandboxLeaseLedger -Stream $s).Count) | Should Be 0 }
+    finally { $s.Close(); Remove-Item -LiteralPath $lock -Force }
+  }
+
+  It 'Write-SandboxLeaseLedger REPLACES the list, so a reclaim can drop what it cleaned' {
+    $lock = Join-Path $script:LedgerTempRoot 'b.lock'
+    $s = New-TestLock $lock
+    try {
+      Write-SandboxLeaseLedger -Stream $s -Paths @('C:\x', 'C:\y', 'C:\z')
+      Write-SandboxLeaseLedger -Stream $s -Paths @('C:\y')
+      ((Read-SandboxLeaseLedger -Stream $s) -join '|') | Should Be 'C:\y'
+    } finally { $s.Close(); Remove-Item -LiteralPath $lock -Force }
+  }
+
+  It 'SURVIVES A REAL HARD KILL: entries written by a process that is then TerminateProcess-d are still on disk' {
+    # THE WHOLE POINT OF Flush($true). A child powershell takes the lock exactly
+    # the way the launcher does, records two paths, and is then killed with
+    # Stop-Process -Force -- no finally, no flush, no close. The parent then
+    # takes the lock exclusively (which is how the launcher's reclaim detects a
+    # dead turn in the first place) and must still find both paths.
+    $lock = Join-Path $script:LedgerTempRoot 'killed.lock'
+    $ready = Join-Path $script:LedgerTempRoot 'killed.ready'
+    $lib = $script:SandboxAccountScript
+    $cmd = ". '$lib'; " +
+      "`$s = [System.IO.File]::Open('$lock', [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::ReadWrite); " +
+      "Write-SandboxLeaseLedger -Stream `$s; " +
+      "Add-SandboxLeaseLedgerPath -Stream `$s -Path 'C:\dead-turn\conversation'; " +
+      "Add-SandboxLeaseLedgerPath -Stream `$s -Path 'C:\dead-turn\jsonl-store'; " +
+      "Set-Content -LiteralPath '$ready' -Value 'go'; " +
+      "while (`$true) { Start-Sleep -Seconds 5 }"
+    $child = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-NonInteractive', '-Command', $cmd) -PassThru -WindowStyle Hidden
+    try {
+      $waited = 0
+      while (-not (Test-Path -LiteralPath $ready) -and $waited -lt 300) { Start-Sleep -Milliseconds 100; $waited++ }
+      (Test-Path -LiteralPath $ready) | Should Be $true
+      Stop-Process -Id $child.Id -Force
+      $child.WaitForExit(15000) | Out-Null
+      # Exactly the reclaim's own test: an exclusive open succeeds only because
+      # no process holds the file any more.
+      $s2 = $null
+      $waited = 0
+      while ($null -eq $s2 -and $waited -lt 100) {
+        try { $s2 = [System.IO.File]::Open($lock, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None) }
+        catch { Start-Sleep -Milliseconds 100; $waited++ }
+      }
+      ($null -ne $s2) | Should Be $true
+      try { ((Read-SandboxLeaseLedger -Stream $s2) -join '|') | Should Be 'C:\dead-turn\conversation|C:\dead-turn\jsonl-store' }
+      finally { $s2.Close() }
+    } finally {
+      try { Stop-Process -Id $child.Id -Force -ErrorAction SilentlyContinue } catch { }
+      Remove-Item -LiteralPath $lock -Force -ErrorAction SilentlyContinue
+      Remove-Item -LiteralPath $ready -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
+Describe 'Revoke-SandboxLeaseAces (the ONE revoke both the finally and the reclaim go through)' {
+  It 'purges a real explicit ACE off a real directory and reports it revoked' {
+    $d = New-LedgerTempDir
+    (Get-TestExplicitAceCount $d) | Should Be 0
+    Grant-TestModify $d
+    (Get-TestExplicitAceCount $d) | Should Be 1
+    $recs = @(Revoke-SandboxLeaseAces -AccountName $script:MeName -Paths @($d))
+    $recs.Count | Should Be 1
+    $recs[0].Status | Should Be 'revoked'
+    (Get-TestExplicitAceCount $d) | Should Be 0
+  }
+
+  It 'reports CLEAN and writes nothing when the path carries no ACE of ours' {
+    $d = New-LedgerTempDir
+    $recs = @(Revoke-SandboxLeaseAces -AccountName $script:MeName -Paths @($d))
+    $recs[0].Status | Should Be 'clean'
+  }
+
+  It 'reports MISSING for a path that is gone, rather than throwing' {
+    $recs = @(Revoke-SandboxLeaseAces -AccountName $script:MeName -Paths @((Join-Path $script:LedgerTempRoot 'never-existed')))
+    $recs[0].Status | Should Be 'missing'
+  }
+
+  It 'keeps going after a bad entry, so one unpurgeable path cannot cost the others their cleanup' {
+    $d1 = New-LedgerTempDir; Grant-TestModify $d1
+    $d2 = New-LedgerTempDir; Grant-TestModify $d2
+    $recs = @(Revoke-SandboxLeaseAces -AccountName $script:MeName -Paths @($d1, (Join-Path $script:LedgerTempRoot 'gone'), $d2))
+    $recs.Count | Should Be 3
+    (Get-TestExplicitAceCount $d1) | Should Be 0
+    (Get-TestExplicitAceCount $d2) | Should Be 0
+  }
+
+  It 'reports every path FAILED when the account cannot even be named  - never a silent skip' {
+    $d = New-LedgerTempDir; Grant-TestModify $d
+    $recs = @(Revoke-SandboxLeaseAces -AccountName 'egpt-no-such-account-zzz' -Paths @($d, 'C:\whatever'))
+    $recs.Count | Should Be 2
+    (@($recs | Where-Object { $_.Status -eq 'failed' }).Count) | Should Be 2
+    # ...and it did NOT quietly purge somebody else's ACE to make itself succeed.
+    (Get-TestExplicitAceCount $d) | Should Be 1
+  }
+
+  It 'is a no-op on an empty list' {
+    (@(Revoke-SandboxLeaseAces -AccountName $script:MeName -Paths @()).Count) | Should Be 0
+  }
+}
+
+Describe 'Clear-SandboxStaleLease (what a RECLAIM does to a hard-killed turns leftovers)' {
+  It 'revokes every ACE the dead turn recorded and empties the ledger' {
+    $conv = New-LedgerTempDir; Grant-TestModify $conv
+    $store = New-LedgerTempDir; Grant-TestModify $store
+    $lock = Join-Path $script:LedgerTempRoot 'reclaim.lock'
+    $s = New-TestLock $lock
+    try {
+      Write-SandboxLeaseLedger -Stream $s -Paths @($conv, $store)
+      $recs = @(Clear-SandboxStaleLease -Stream $s -AccountName $script:MeName)
+      (@($recs | Where-Object { $_.Status -eq 'revoked' }).Count) | Should Be 2
+      (Get-TestExplicitAceCount $conv) | Should Be 0
+      (Get-TestExplicitAceCount $store) | Should Be 0
+      (@(Read-SandboxLeaseLedger -Stream $s).Count) | Should Be 0
+    } finally { $s.Close(); Remove-Item -LiteralPath $lock -Force }
+  }
+
+  It 'CARRIES OVER what it could not revoke, so the leak is not forgotten' {
+    $d = New-LedgerTempDir; Grant-TestModify $d
+    $lock = Join-Path $script:LedgerTempRoot 'carry.lock'
+    $s = New-TestLock $lock
+    try {
+      Write-SandboxLeaseLedger -Stream $s -Paths @($d)
+      $recs = @(Clear-SandboxStaleLease -Stream $s -AccountName 'egpt-no-such-account-zzz')
+      $recs[0].Status | Should Be 'failed'
+      # Still granted, and still on the list for the next reclaim to retry.
+      (Get-TestExplicitAceCount $d) | Should Be 1
+      ((Read-SandboxLeaseLedger -Stream $s) -join '|') | Should Be $d
+    } finally { $s.Close(); Remove-Item -LiteralPath $lock -Force }
+  }
+
+  It 'leaves a fresh, headed ledger behind, so the turn that now owns the lock can append to it' {
+    $conv = New-LedgerTempDir; Grant-TestModify $conv
+    $lock = Join-Path $script:LedgerTempRoot 'fresh.lock'
+    $s = New-TestLock $lock
+    try {
+      Write-SandboxLeaseLedger -Stream $s -Paths @($conv)
+      Clear-SandboxStaleLease -Stream $s -AccountName $script:MeName | Out-Null
+      Add-SandboxLeaseLedgerPath -Stream $s -Path 'C:\this-turn'
+      ((Read-SandboxLeaseLedger -Stream $s) -join '|') | Should Be 'C:\this-turn'
+    } finally { $s.Close(); Remove-Item -LiteralPath $lock -Force }
+  }
+}

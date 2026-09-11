@@ -361,3 +361,202 @@ function Protect-SandboxCredDir {
 # profile's CONTENTS as the leased account itself and needs no privilege at all.
 # Do not resurrect an admin-only wipe here: nothing on the launch path can call
 # it.
+
+# ---- THE LEASE LEDGER, and the ACE revoke that rides the stale-lease reclaim
+# (operator 2026-09-11). These five functions live HERE, beside
+# Get-SandboxPoolLeaseOrder, because they are lease machinery and because
+# sandbox-account.ps1 is the only half of the sandbox that is dot-sourceable -
+# sandbox-logon-launcher.ps1 has a param block and runs, so nothing can unit
+# test it. setup/sandbox-account.Tests.ps1 exercises all five for real.
+#
+# THE PROBLEM THEY CLOSE. The launcher grants the leased pool account a Modify
+# ACE on TargetFolder and on each -SharePath entry, and revokes them in its
+# finally. A HARD-killed turn (taskkill /F, crash, reboot) never runs that
+# finally, so the ACE stays forever - and pool accounts are REUSED across
+# different conversations, so the next lease of that same account by a DIFFERENT
+# conversation still holds Modify on the first one's folder and on its
+# ~/.egpt-jsonl/<thread> store. That is the cross-conversation leak the whole
+# scrub design exists to prevent, arriving through the ACL instead of through
+# the profile. MEASURED unelevated on this node 2026-09-11, before the fix: all
+# 15 lease locks stale (no handle on any of them) and 42 explicit egpt-sbx-NN
+# Modify ACEs surviving across the live conversation folders, one folder
+# carrying TWELVE pool accounts at once.
+#
+# WHY THE RECLAIM AND NOT A SWEEPER. The launcher ALREADY has a mechanism for
+# exactly this class of problem: the stale-lease-lock reclaim, which takes a
+# lock file no process holds and logs "RECLAIMED stale lease lock ... was
+# hard-killed before its release ran". A lease being reclaimed is precisely the
+# moment we know a finally was skipped, and it is the moment BEFORE that account
+# runs anything again. So the revoke rides it. No second lifecycle, no timer, no
+# separate sweeper to go stale on its own.
+#
+# WHY THE LOCK FILE IS THE LEDGER. The reclaim has to know WHAT to revoke, and
+# the lock file is the only artifact that already (a) survives the hard kill,
+# (b) is created and deleted with the lease, (c) is per-ACCOUNT, which is
+# exactly the key the leak is indexed by, and (d) is what the reclaim already
+# has in its hand. It holds PATHS ONLY, one per line - never a credential, never
+# an environment value - and it is unreadable by anyone else for the life of the
+# lease because the launcher holds it FileShare::None.
+$SandboxLeaseLedgerHeader = '# egpt sandbox lease ledger - one path per line, each granted a Modify ACE to this lock''s pool account by the turn holding it. A RECLAIM of this lock revokes them: the turn that wrote them was hard-killed before its own release ran. Deleted with the lock on a clean release.'
+
+# Read the ledger back. Comment lines and blanks are skipped, so an EMPTY or
+# pre-ledger lock file (every lock written before 2026-09-11 is 0 bytes) reads
+# as zero paths rather than as an error - honest: those turns' ACEs were never
+# recorded and this cannot invent them.
+#
+# Leaves the stream positioned at the end, so an Add- straight afterwards
+# appends rather than overwrites. NO leading comma on the return, for the same
+# reason Get-SandboxPoolLeaseOrder documents above: `return ,$out` puts a NESTED
+# array on the pipeline, and every call site here is an @(...) that would then
+# collect ONE element - the whole list as a single object. Callers wrap in @().
+function Read-SandboxLeaseLedger {
+  param([Parameter(Mandatory = $true)][System.IO.FileStream]$Stream)
+  $Stream.Position = 0
+  $len = [int]$Stream.Length
+  $text = ''
+  if ($len -gt 0) {
+    $bytes = New-Object byte[] $len
+    $read = 0
+    while ($read -lt $len) {
+      $n = $Stream.Read($bytes, $read, $len - $read)
+      if ($n -le 0) { break }
+      $read += $n
+    }
+    $text = [System.Text.Encoding]::UTF8.GetString($bytes, 0, $read)
+  }
+  $Stream.Position = $Stream.Length
+  $out = @($text -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -and -not $_.StartsWith('#') })
+  return $out
+}
+
+# Replace the whole ledger: truncate, header, then these paths. Used twice - to
+# stamp a header on a freshly CreateNew'd lock, and to rewrite a reclaimed one
+# with whatever the revoke could NOT clear (see Clear-SandboxStaleLease).
+#
+# Flush($true) is flush-TO-DISK, not flush-to-cache, and it is the whole point:
+# the reader of this file is the launcher that runs after this process was
+# killed, so anything still sitting in a buffer is anything still leaking.
+function Write-SandboxLeaseLedger {
+  param(
+    [Parameter(Mandatory = $true)][System.IO.FileStream]$Stream,
+    [string[]]$Paths = @()
+  )
+  $lines = @($SandboxLeaseLedgerHeader) + @($Paths | Where-Object { $_ -and $_.Trim() } | ForEach-Object { $_.Trim() })
+  $bytes = [System.Text.Encoding]::UTF8.GetBytes((($lines -join "`r`n") + "`r`n"))
+  $Stream.SetLength(0)
+  $Stream.Position = 0
+  $Stream.Write($bytes, 0, $bytes.Length)
+  $Stream.Flush($true)
+}
+
+# Append ONE path. The launcher calls this BEFORE the matching Set-Acl, so the
+# ledger is a SUPERSET of what actually landed - the safe direction for a crash
+# log. A Set-Acl that threw leaves no ACE behind, and Revoke-SandboxLeaseAces
+# skips a path that carries none, so the superset costs a read and never a stray
+# write.
+function Add-SandboxLeaseLedgerPath {
+  param(
+    [Parameter(Mandatory = $true)][System.IO.FileStream]$Stream,
+    [Parameter(Mandatory = $true)][string]$Path
+  )
+  $bytes = [System.Text.Encoding]::UTF8.GetBytes(($Path.Trim() + "`r`n"))
+  $Stream.Position = $Stream.Length
+  $Stream.Write($bytes, 0, $bytes.Length)
+  $Stream.Flush($true)
+}
+
+# THE ONE REVOKE IMPLEMENTATION. Both callers go through it - the launcher's
+# finally on the normal path and the reclaim on the hard-kill path - so the two
+# can never drift into disagreeing about what "revoked" means.
+#
+# RETURNS RECORDS, LOGS NOTHING. The "sandbox-logon-launcher:" prefix belongs to
+# the launcher, and a function that writes to a host's stderr cannot be asserted
+# on in Pester. Each record is { Path, Account, Sid, Status, Message } with
+# Status one of:
+#   revoked  explicit ACEs for this account were found and purged
+#   clean    the path exists and carried none - nothing was written
+#   missing  the path is gone, so no ACE can survive on it
+#   failed   it could not be done, and the ACE may well still be there
+# A 'failed' is the only one a caller must act on, and it must never be
+# swallowed: the path is still granted.
+#
+# EXPLICIT RULES ONLY ($false for the inherited ones), and matched BY SID, not
+# by name: an orphaned SID that no longer resolves to an account must still be
+# countable, the same reason Protect-SandboxCredDir enumerates by SID. Purging
+# is left to PurgeAccessRules, which is what the launcher's finally has always
+# used - this moves it, it does not change it.
+#
+# THE PRESENCE CHECK IS THE DOCTRINE, not an optimisation: "a path that was
+# missing, or whose Set-Acl threw, must not be touched on the way out - re-ACLing
+# a folder this turn never modified is how a cleanup path turns into a bug."
+function Revoke-SandboxLeaseAces {
+  param(
+    [Parameter(Mandatory = $true)][string]$AccountName,
+    [string[]]$Paths = @()
+  )
+  $wanted = @($Paths | Where-Object { $_ -and $_.Trim() } | ForEach-Object { $_.Trim() })
+  $records = New-Object System.Collections.Generic.List[object]
+  if ($wanted.Count -eq 0) { return @() }
+  $sid = $null
+  try {
+    $sid = (New-Object System.Security.Principal.NTAccount($AccountName)).Translate([System.Security.Principal.SecurityIdentifier])
+  } catch {
+    # Cannot name the principal => cannot purge it. Every path is reported
+    # 'failed' rather than quietly skipped, because every one of them is still
+    # granted to an account that exists as far as the filesystem is concerned.
+    $why = $_.Exception.Message
+    foreach ($p in $wanted) {
+      [void]$records.Add([pscustomobject]@{ Path = $p; Account = $AccountName; Sid = $null; Status = 'failed'; Message = "could not resolve the SID of '$AccountName' - $why" })
+    }
+    return $records.ToArray()
+  }
+  foreach ($p in $wanted) {
+    # ONE try EACH, deliberately, and for the reason the grant loop has one
+    # each: a path that cannot be purged now must not cost the paths after it in
+    # the list their cleanup.
+    try {
+      if (-not (Test-Path -LiteralPath $p)) {
+        [void]$records.Add([pscustomobject]@{ Path = $p; Account = $AccountName; Sid = $sid.Value; Status = 'missing'; Message = 'the path no longer exists, so no ACE can survive on it' })
+        continue
+      }
+      $acl = Get-Acl -LiteralPath $p
+      $mine = @($acl.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]) | Where-Object { $_.IdentityReference.Value -eq $sid.Value })
+      if ($mine.Count -eq 0) {
+        [void]$records.Add([pscustomobject]@{ Path = $p; Account = $AccountName; Sid = $sid.Value; Status = 'clean'; Message = 'no explicit ACE for this account was on it - nothing written' })
+        continue
+      }
+      $acl.PurgeAccessRules($sid)
+      Set-Acl -LiteralPath $p -AclObject $acl
+      [void]$records.Add([pscustomobject]@{ Path = $p; Account = $AccountName; Sid = $sid.Value; Status = 'revoked'; Message = "$($mine.Count) explicit ACE(s) purged" })
+    } catch {
+      [void]$records.Add([pscustomobject]@{ Path = $p; Account = $AccountName; Sid = $sid.Value; Status = 'failed'; Message = $_.Exception.Message })
+    }
+  }
+  return $records.ToArray()
+}
+
+# THE RECLAIM'S HALF, in one call: read the dead turn's ledger off the lock we
+# just took, revoke every path on it, and then rewrite the ledger with the ones
+# that FAILED.
+#
+# THE CARRY-OVER IS THE POINT of rewriting rather than just truncating. A path
+# the revoke could not clear is still leaking; dropping it here would forget the
+# leak forever, and the next reclaim of this account would have nothing to
+# retry. So it stays on the list, and the turn that now owns this lock will also
+# try it again in its own finally.
+#
+# Everything else - 'revoked', 'clean', 'missing' - is resolved and leaves. The
+# caller gets every record, including those, because a reclaim that revoked
+# nothing and a reclaim that revoked eleven ACEs must not look the same in the
+# log.
+function Clear-SandboxStaleLease {
+  param(
+    [Parameter(Mandatory = $true)][System.IO.FileStream]$Stream,
+    [Parameter(Mandatory = $true)][string]$AccountName
+  )
+  $ledger = @(Read-SandboxLeaseLedger -Stream $Stream)
+  $records = @(Revoke-SandboxLeaseAces -AccountName $AccountName -Paths $ledger)
+  $carry = @($records | Where-Object { $_.Status -eq 'failed' } | ForEach-Object { $_.Path })
+  Write-SandboxLeaseLedger -Stream $Stream -Paths $carry
+  return $records
+}
