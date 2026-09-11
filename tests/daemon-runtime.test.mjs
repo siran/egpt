@@ -12,6 +12,8 @@ import {
   STANDDOWN_EXIT_CODE,
   UPGRADE_EXIT_CODE,
   createDaemonRuntime,
+  resolveProfiles,
+  startProfileDaemons,
 } from '../src/daemon-runtime.mjs';
 
 let _nextFakePid = 1000;
@@ -109,18 +111,26 @@ describe('daemon runtime fake-world harness', () => {
     expect(children).toHaveLength(0);
   });
 
-  it('checkSingleton feeds liveDaemonPid the spine.pid content + the alive.txt beat age', () => {
-    let captured = null;
+  it('feeds liveDaemonPid a pid file content + the alive.txt beat age — for its own session marker, then for the incumbent spine', () => {
+    const captured = [];
     const clock = Date.UTC(2026, 5, 18, 12, 0, 0);
     const { runtime } = makeRuntime({
       now: () => clock,
-      // spine.pid → "4242"; anything else (alive.txt content) is absent
-      readFileSync: (p) => { if (String(p).includes('spine.pid')) return '4242\n'; const e = new Error('missing'); e.code = 'ENOENT'; throw e; },
+      // this session's daemon marker → "77"; spine.pid → "4242"; anything else is absent
+      readFileSync: (p) => {
+        const path = String(p);
+        if (path.includes('daemon-s0.pid')) return '77\n';
+        if (path.includes('spine.pid')) return '4242\n';
+        const e = new Error('missing'); e.code = 'ENOENT'; throw e;
+      },
       statSync: () => ({ mtimeMs: clock - 10_000 }),   // a 10s-old beat
-      liveDaemonPid: (facts) => { captured = facts; return null; },   // observe, then allow start
+      liveDaemonPid: (facts) => { captured.push(facts); return null; },   // observe, then allow start
     });
     runtime.start();
-    expect(captured).toEqual({ pidFileContent: '4242\n', beatAgeMs: 10_000 });
+    expect(captured).toEqual([
+      { pidFileContent: '77\n', beatAgeMs: 10_000 },      // checkSingleton: my session, this profile
+      { pidFileContent: '4242\n', beatAgeMs: 10_000 },    // start(): is somebody already holding it?
+    ]);
   });
 
   it('spawns the v2 entry (node egpt-spine.mjs) from the fixed root — no role flags, stdio inherit', () => {
@@ -1068,5 +1078,326 @@ describe('daemon runtime: the stand-down watch (exit 45 — a peer took the prof
       expect(crash.probedPorts).toEqual([]);
       expect(crash.runtime.state.standingDown).toBe(false);
     });
+  });
+});
+
+// =====================================================================================
+// THE SINGLETON IS SCOPED TO THE SESSION, NOT TO THE PROFILE.
+// =====================================================================================
+// The Session 0 -> Session 1 handover needs TWO daemons alive on ONE EGPT_HOME: the NSSM
+// service in session 0 and the logon daemon in session 1. The old guard read state/spine.pid
+// under the SHARED profile, so at logon the successor's daemon always met a fresh beat and a
+// live pid and exited before spawning anything (setup/register-session1-autostart.ps1's
+// DECISION 1 is a page about exactly this). What must STILL be refused is a second daemon in
+// the SAME session on the SAME profile — that is the invariant protecting one EGPT_HOME from
+// two supervisors, and through them from two spines.
+describe('daemon runtime: the singleton is session-scoped', () => {
+  const CLOCK = Date.UTC(2026, 5, 18, 12, 0, 0);
+
+  // A faithful stand-in for the real liveDaemonPid: any parsable positive pid is LIVE, and the
+  // beat gate is the real 120s one. Keeps the test off real pids while preserving the predicate.
+  const fakeLive = ({ pidFileContent, beatAgeMs }) => {
+    const n = Number(String(pidFileContent ?? '').trim());
+    return Number.isInteger(n) && n > 0 && beatAgeMs < 120_000 ? n : null;
+  };
+
+  function makeSessioned({ session1 = false, files = {}, beatAgeMs = 10_000, extra = {} } = {}) {
+    const processObj = makeProcess();
+    processObj.pid = 4242;
+    if (session1) processObj.env.EGPT_SESSION1 = '1';
+    const written = [];
+    const unlinked = [];
+    const read = [];
+    const probedPorts = [];
+    const intervals = [];
+    const timers = [];
+    const h = makeRuntime({
+      processObj,
+      now: () => CLOCK,
+      statSync: () => ({ mtimeMs: CLOCK - beatAgeMs }),
+      readFileSync: (p) => {
+        const path = String(p).replace(/\\/g, '/');
+        read.push(path);
+        for (const [suffix, body] of Object.entries(files)) if (path.endsWith(suffix)) return body;
+        const e = new Error('missing'); e.code = 'ENOENT'; throw e;
+      },
+      writeFileSync: (p, body) => written.push({ path: String(p).replace(/\\/g, '/'), body: String(body) }),
+      unlinkSync: (p) => unlinked.push(String(p).replace(/\\/g, '/')),
+      mkdirSync: () => {},
+      liveDaemonPid: fakeLive,
+      setInterval: (fn, ms) => { intervals.push({ fn, ms }); return intervals.length; },
+      setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; },
+      peerProbe: ({ port }) => { probedPorts.push(port); return async () => true; },
+      ...extra,
+    });
+    return { ...h, processObj, written, unlinked, read, probedPorts, intervals, timers };
+  }
+
+  describe('what is still refused', () => {
+    it('a SECOND daemon in the SAME session on the SAME profile is refused', () => {
+      const h = makeSessioned({ files: { 'state/daemon-s0.pid': '9001\n' } });
+
+      expect(h.runtime.start()).toBeNull();
+
+      expect(h.children).toHaveLength(0);
+      expect(h.processObj.exits).toEqual([0]);
+      expect(h.logs.join('')).toContain('another egpt daemon is already alive');
+      expect(h.logs.join('')).toContain('9001');
+    });
+
+    it('two SESSION 1 daemons refuse each other too — the rule is per session, not "s0 only"', () => {
+      const h = makeSessioned({ session1: true, files: { 'state/daemon-s1.pid': '9002\n' } });
+
+      expect(h.runtime.start()).toBeNull();
+      expect(h.children).toHaveLength(0);
+      expect(h.processObj.exits).toEqual([0]);
+    });
+
+    it('a stale beat still clears the field, exactly as before', () => {
+      const h = makeSessioned({ files: { 'state/daemon-s0.pid': '9001\n' }, beatAgeMs: 200_000 });
+      h.runtime.start();
+      expect(h.children).toHaveLength(1);
+    });
+  });
+
+  describe('what is now allowed — and it is the whole point', () => {
+    it('a daemon in a DIFFERENT session on the same profile starts', () => {
+      // The logon daemon: session 0's daemon marker is live and the profile is beating.
+      const h = makeSessioned({
+        session1: true,
+        files: { 'state/daemon-s0.pid': '9001\n', 'state/spine.pid': '9500\n' },
+      });
+
+      const child = h.runtime.start();
+
+      expect(child).not.toBeNull();
+      expect(h.children).toHaveLength(1);
+      expect(h.processObj.exits).toEqual([]);
+    });
+
+    it("the successor's daemon is not blocked by the incumbent SPINE either", () => {
+      const h = makeSessioned({ session1: true, files: { 'state/spine.pid': '9500\n' } });
+      h.runtime.start();
+      expect(h.children).toHaveLength(1);
+      expect(h.probedPorts).toEqual([]);          // it spawns; it does not stand down
+      expect(h.runtime.state.standingDown).toBe(false);
+    });
+  });
+
+  describe('the marker each daemon writes for its own session', () => {
+    it('is read and written under state/daemon-s0.pid in the service session', () => {
+      const h = makeSessioned();
+      h.runtime.start();
+      expect(h.read.some((p) => p.endsWith('state/daemon-s0.pid'))).toBe(true);
+      expect(h.written.map((w) => w.path)).toContain('C:/home/.egpt/state/daemon-s0.pid');
+      expect(h.written.find((w) => w.path.endsWith('daemon-s0.pid')).body).toBe('4242');
+    });
+
+    it('is state/daemon-s1.pid in the logon session — different file, different session', () => {
+      const h = makeSessioned({ session1: true });
+      h.runtime.start();
+      expect(h.read.some((p) => p.endsWith('state/daemon-s1.pid'))).toBe(true);
+      expect(h.written.map((w) => w.path)).toContain('C:/home/.egpt/state/daemon-s1.pid');
+      expect(h.read.some((p) => p.endsWith('state/daemon-s0.pid'))).toBe(false);
+    });
+
+    it('is removed on shutdown, so the next daemon in this session is not blocked by a ghost', () => {
+      const h = makeSessioned();
+      h.runtime.start();
+      h.runtime.shutdown('SIGTERM');
+      expect(h.unlinked.some((p) => p.endsWith('state/daemon-s0.pid'))).toBe(true);
+    });
+
+    it('says so — never silently — when the marker cannot be written', () => {
+      const h = makeSessioned({ extra: { writeFileSync: () => { throw new Error('EACCES'); } } });
+      h.runtime.start();
+      expect(h.logs.join('')).toContain('would NOT be refused');
+      expect(h.children).toHaveLength(1);        // …and it still supervises
+    });
+  });
+
+  // The session scoping opens a door the profile-scoped guard used to hold shut: a daemon
+  // arriving while somebody ELSE already holds this profile. Only the SUCCESSOR may do that
+  // (its spine announces the stand-down and takes the port). Anyone else must not put a second
+  // spine on the profile — so it takes the seat the departing daemon would have taken: it
+  // watches the port and comes back when it goes quiet.
+  describe('arriving into a profile somebody else is holding', () => {
+    it('a non-successor daemon does NOT spawn beside a live incumbent spine — it stands down and watches', () => {
+      const h = makeSessioned({ files: { 'state/spine.pid': '9500\n' } });
+
+      const child = h.runtime.start();
+
+      expect(child).toBeNull();
+      expect(h.children).toHaveLength(0);                    // no second spine on this EGPT_HOME
+      expect(h.processObj.exits).toEqual([]);                // and the daemon did NOT exit
+      expect(h.runtime.state.standingDown).toBe(true);
+      expect(h.probedPorts).toEqual([23375]);
+      expect(h.logs.join('')).toContain('9500');
+    });
+
+    it('that watch respawns on the same terms as a stand-down: only after the port goes quiet', async () => {
+      const answers = { up: true };
+      const h = makeSessioned({
+        files: { 'state/spine.pid': '9500\n' },
+        extra: { peerProbe: () => async () => answers.up },
+      });
+      h.runtime.start();
+      // start() arms the watch first and the liveness sweep after it; the watch is the one on
+      // peer-liveness's 5s cadence.
+      const watch = h.intervals.find((i) => i.ms === 5_000);
+      const tick = async (n) => { for (let k = 0; k < n; k += 1) await watch.fn(); };
+
+      await tick(5);
+      expect(h.children).toHaveLength(0);                    // it answers: never displaced
+
+      answers.up = false;
+      await tick(2);
+      expect(h.children).toHaveLength(0);                    // two misses prove nothing
+      await tick(1);
+      expect(h.children).toHaveLength(1);                    // the third claims
+    });
+
+    it('an ordinary boot with no live spine spawns immediately, as it always did', () => {
+      const h = makeSessioned({ files: { 'state/spine.pid': '9500\n' }, beatAgeMs: 200_000 });
+      expect(h.runtime.start()).not.toBeNull();
+      expect(h.children).toHaveLength(1);
+      expect(h.probedPorts).toEqual([]);
+    });
+  });
+
+  it('every spawned spine carries ITS OWN profile in EGPT_HOME', () => {
+    const h = makeSessioned();
+    h.runtime.start();
+    expect(h.children[0].opts.env).toMatchObject({ EGPT_HOME: 'C:/home/.egpt', EGPT_SUPERVISED: '1' });
+  });
+});
+
+// =====================================================================================
+// ONE DAEMON, N PROFILES — the supervision axis is the SESSION, so the session 0 daemon
+// supervises every session 0 profile (kg's ~/.egpt AND kg2's ~/.egpt-secondary) instead of
+// there being one service per account.
+// =====================================================================================
+describe('resolveProfiles', () => {
+  it('is a one-element list from EGPT_HOME when EGPT_HOMES says nothing', () => {
+    expect(resolveProfiles({ EGPT_HOME: 'C:/home/.egpt' })).toEqual(['C:/home/.egpt']);
+  });
+
+  it('splits EGPT_HOMES on ; and trims', () => {
+    expect(resolveProfiles({ EGPT_HOMES: ' C:/a ; C:/b ' })).toEqual(['C:/a', 'C:/b']);
+  });
+
+  it('drops empties and duplicates rather than supervising one profile twice', () => {
+    expect(resolveProfiles({ EGPT_HOMES: 'C:/a;;C:/a/;C:/b' })).toEqual(['C:/a', 'C:/b']);
+  });
+
+  it('falls back to EGPT_HOME when EGPT_HOMES is present but empty', () => {
+    expect(resolveProfiles({ EGPT_HOMES: '   ;  ', EGPT_HOME: 'C:/home/.egpt' })).toEqual(['C:/home/.egpt']);
+  });
+});
+
+describe('startProfileDaemons: one daemon, several profiles', () => {
+  function fakeRuntime(opts, script = {}) {
+    const r = {
+      opts,
+      started: 0,
+      state: { standingDown: false },
+      start() { r.started += 1; return script.start === undefined ? {} : script.start; },
+      shutdown() {},
+    };
+    if (script.standingDown) r.state.standingDown = true;
+    return r;
+  }
+
+  function harness({ env = {}, profiles, script = () => ({}) } = {}) {
+    const logs = [];
+    const exits = [];
+    const made = [];
+    const processObj = { env, pid: 7, on: () => {}, exit: (c) => exits.push(c) };
+    const result = startProfileDaemons({
+      profiles,
+      processObj,
+      stdout: { write: (m) => logs.push(m) },
+      now: () => Date.UTC(2026, 5, 18, 12, 0, 0),
+      createRuntime: (o) => { const r = fakeRuntime(o, script(o.egptHome)); made.push(r); return r; },
+    });
+    return { result, logs, exits, made, processObj };
+  }
+
+  it('creates one runtime per profile, each pinned to its own EGPT_HOME', () => {
+    const h = harness({ profiles: ['C:/a', 'C:/b'] });
+    expect(h.made.map((r) => r.opts.egptHome)).toEqual(['C:/a', 'C:/b']);
+    expect(h.made.every((r) => r.started === 1)).toBe(true);
+    expect(h.logs.join('')).toContain('supervising 2 profile(s): C:/a, C:/b');
+  });
+
+  it('reads the profile list off the environment when it is not told one', () => {
+    const h = harness({ env: { EGPT_HOMES: 'C:/a;C:/b' } });
+    expect(h.made.map((r) => r.opts.egptHome)).toEqual(['C:/a', 'C:/b']);
+  });
+
+  it('a clean exit on ONE profile does not take the process (and the other profile) down', () => {
+    const h = harness({ profiles: ['C:/a', 'C:/b'] });
+    h.made[0].opts.processObj.exit(0);
+    expect(h.exits).toEqual([]);
+    expect(h.logs.join('')).toContain('C:/a is no longer supervised');
+    expect(h.logs.join('')).toContain('still supervising C:/b');
+  });
+
+  it('the process exits only when the LAST profile is gone', () => {
+    const h = harness({ profiles: ['C:/a', 'C:/b'] });
+    h.made[0].opts.processObj.exit(0);
+    h.made[1].opts.processObj.exit(0);
+    expect(h.exits).toEqual([0]);
+  });
+
+  it('each profile gets its own exit seam — one refusing does not retire the other twice', () => {
+    const h = harness({ profiles: ['C:/a', 'C:/b'] });
+    h.made[0].opts.processObj.exit(0);
+    h.made[0].opts.processObj.exit(0);
+    expect(h.exits).toEqual([]);
+  });
+
+  // INTENT.md: half-alive is worse than down. A node asked for two profiles that came up with
+  // one must not look healthy.
+  it('says LOUDLY when it comes up supervising fewer profiles than it was asked for', () => {
+    const h = harness({
+      profiles: ['C:/a', 'C:/b'],
+      script: (home) => (home === 'C:/b' ? { start: null } : {}),
+    });
+    const out = h.logs.join('');
+    expect(out).toContain('!!');
+    expect(out).toContain('C:/b');
+    expect(out).toContain('supervising 1 of 2');
+  });
+
+  it('a profile that STOOD DOWN counts as supervised — the watch is the supervision', () => {
+    const h = harness({
+      profiles: ['C:/a', 'C:/b'],
+      script: (home) => (home === 'C:/b' ? { start: null, standingDown: true } : {}),
+    });
+    expect(h.logs.join('')).not.toContain('!!');
+  });
+
+  it('a runtime that THROWS is reported and the other profiles still come up', () => {
+    const logs = [];
+    const made = [];
+    const result = startProfileDaemons({
+      profiles: ['C:/a', 'C:/b'],
+      processObj: { env: {}, pid: 7, on: () => {}, exit: () => {} },
+      stdout: { write: (m) => logs.push(m) },
+      now: () => 0,
+      createRuntime: (o) => {
+        const r = {
+          opts: o,
+          state: { standingDown: false },
+          start() { if (o.egptHome === 'C:/a') throw new Error('boom'); return {}; },
+        };
+        made.push(r);
+        return r;
+      },
+    });
+    expect(made).toHaveLength(2);
+    expect(logs.join('')).toContain('boom');
+    expect(result.failed).toEqual(['C:/a']);
   });
 });

@@ -20,61 +20,50 @@
 # ASCII ONLY (PowerShell 5.1 reads a BOM-less UTF-8 script as ANSI).
 #
 # =====================================================================================
-# DECISION 1 - THE RUN ENTRY LAUNCHES THE SPINE, NOT A SECOND DAEMON.
+# DECISION 1 - THIS ENTRY LAUNCHES A BARE SPINE. THERE IS NOW A BETTER OPTION.
 # =====================================================================================
-# The Session 0 node runs `node egpt-daemon.mjs` under NSSM (read back from
-# HKLM\SYSTEM\CurrentControlSet\Services\egpt-daemon\Parameters on reve
-# 2026-09-06: Application = C:\Program Files\nodejs\node.exe, AppParameters =
-# C:\Users\an\bin\egpt\egpt-daemon.mjs, AppDirectory = C:\Users\an\bin\egpt,
-# AppEnvironmentExtra = EGPT_HOME=C:\Users\an\.egpt). The symmetric-looking move
-# is to point this Run entry at that same egpt-daemon.mjs so the successor is
-# supervised too. It does not work, and the reasons are in the code:
+# SUPERSEDED 2026-09-11, and the reason it was written is gone. Use
+# setup/register-session1-daemon-task.ps1 unless you specifically want the
+# no-supervisor shape below; this script is kept as the fallback.
 #
-#   1. THE DAEMON REFUSES TO START IN PRECISELY THIS SITUATION.
-#      daemon-runtime.mjs's checkSingleton() reads state/spine.pid and the
-#      state/alive.txt mtime - both under the SHARED EGPT_HOME - and exits 0 with
-#      "another egpt daemon is already alive ... refusing to start a second
-#      daemon" whenever the beat is fresh (liveDaemonPid's staleMs = 120_000) and
-#      that pid is live. At logon the Session 0 spine is alive and beating every
-#      60s (egpt-spine.mjs boots with aliveMs: 60_000), so the successor daemon
-#      meets a fresh beat and a live pid EVERY time.
-#      It would see it across the session boundary, too: daemon-singleton.mjs's
-#      defaultIsAlive falls back to `tasklist` for exactly this case, because a
-#      Session 1 process probing a Session 0 pid gets ESRCH from process.kill,
-#      and tasklist "can see any pid owned by the current user regardless of
-#      session". Both spines run as the same operator account, so the fallback
-#      resolves the Session 0 pid as ALIVE and the Run-launched daemon exits
-#      before spawning anything. A supervisor that self-refuses at the only
-#      moment it is ever launched is not a supervisor.
+# WHAT CHANGED. The original decision here was that the Run entry could not
+# launch a DAEMON, because daemon-runtime.mjs's checkSingleton() read
+# state/spine.pid and the state/alive.txt mtime - both under the SHARED
+# EGPT_HOME - and exited 0 with "another egpt daemon is already alive ...
+# refusing to start a second daemon" whenever the beat was fresh (liveDaemonPid's
+# staleMs = 120_000) and that pid was live. At logon the Session 0 spine is alive
+# and beating every 60s, so the successor's daemon met a fresh beat EVERY time. A
+# supervisor that self-refuses at the only moment it is ever launched is not a
+# supervisor.
 #
-#   2. A SECOND DAEMON WOULD WRITE THE SAME PROFILE FILES.
-#      Even with the singleton somehow silenced, one EGPT_HOME has exactly one
-#      state/spine.pid, state/alive.txt, state/restart-announce.json,
-#      state/last-good.json and rewind-target.txt - and daemon-runtime.mjs's
-#      boot-failure ladder acts on the CHECKOUT (archive to a rescue branch, then
-#      roll back to last-known-good). Two supervisors doing that to one profile
-#      and one working tree is the overlap the plan calls the only real hazard.
+# The singleton is scoped to the SESSION now, not to the profile: each daemon
+# reads and writes state/daemon-s0.pid or state/daemon-s1.pid according to
+# EGPT_SESSION1, so one daemon per profile PER SESSION is allowed and a second
+# daemon in the SAME session on the SAME profile is still refused. The other two
+# objections went with it:
 #
-#   3. IT WOULD BE DEAD WEIGHT AT THE ONE MOMENT SUPERVISION MATTERS.
-#      A Run-launched daemon lives in the interactive session, so it dies at
-#      logoff together with its own child. The handback is by design the SESSION
-#      0 daemon's job (plan chunk 2: do not respawn, poll the port, respawn on
-#      silence), and that daemon is a service - it survives the logoff that kills
-#      everything started from here.
+#   - THE PROFILE FILES. state/spine.pid, alive.txt, restart-announce.json,
+#     last-good.json and rewind-target.txt are written by whichever spine holds
+#     the profile, and exactly one spine holds it at a time - the console port is
+#     the mutex. The one file that was genuinely per-supervisor is the singleton
+#     marker, and that is now per session by name.
+#   - THE BOOT-FAILURE LADDER acts on the CHECKOUT (archive to a rescue branch,
+#     roll back to last-known-good). Two daemons could still reach for one
+#     working tree, but only after three consecutive boots that never beat -
+#     and a session 1 daemon in that state has a session 0 daemon holding the
+#     profile beside it, which is the recoverable half of the trade the operator
+#     accepted when he asked for a second daemon at all.
 #
-# So: `node egpt-spine.mjs`, directly. It is not unsupervised in the sense that
-# matters. The Session 0 daemon is watching the console port, and a Session 1
-# spine that crashes, exits or is killed makes that port go quiet - which is
-# exactly the condition that brings the Session 0 spine back. The port IS the
-# mutex, as the plan puts it, and it is the liveness signal as well.
+# WHAT THIS SCRIPT'S SHAPE COSTS, unchanged and still true of a bare spine: the
+# lifecycle exit codes. daemon-runtime.mjs turns 42/43/44 (/upgrade, /restart,
+# /rewind) into a respawn; nothing here does. From Session 1 each becomes a plain
+# process exit, the port goes quiet, and the Session 0 daemon takes the profile
+# back - a working spine, in Session 0, losing the browser until the next logon.
+# That is precisely what the daemon task fixes.
 #
-# WHAT IS GENUINELY LOST, stated now rather than discovered later: the lifecycle
-# exit codes. daemon-runtime.mjs turns 42/43/44 (/upgrade, /restart, /rewind)
-# into a respawn; nothing here does. From Session 1 each becomes a plain process
-# exit, the port goes quiet, and the Session 0 daemon takes the profile back. The
-# operator still gets a working spine - in Session 0, losing the browser until
-# the next logon. That is a real consequence of this shape, and it belongs to
-# chunks 2 and 6, not to the autostart.
+# WHAT IT IS STILL GOOD FOR: no supervisor to keep up, no Task Scheduler, one
+# registry value. If the task mechanism ever misbehaves, this is the way back to
+# a Session 1 spine in one command.
 #
 # =====================================================================================
 # DECISION 2 - LOCK DOES NOT HAND BACK. LOGOFF DOES.
@@ -174,7 +163,11 @@ if (-not $Node) {
   else { $Node = 'C:\Program Files\nodejs\node.exe' }   # the same fallback install-nssm-service.ps1 hardcodes
 }
 
-$Shim    = Join-Path $PSScriptRoot 'session1-logon-launcher.vbs'
+# The shim comes from -Repo, NOT from $PSScriptRoot (2026-09-11): running this
+# script out of an editable checkout to register an entry against the DEPLOYED
+# one is the ordinary case, and the shim is what sets EGPT_SESSION1 and names the
+# entry point - it must ship with the code it launches.
+$Shim    = Join-Path (Join-Path $Repo 'setup') 'session1-logon-launcher.vbs'
 $Spine   = Join-Path $Repo 'egpt-spine.mjs'
 $WScript = Join-Path $env:SystemRoot 'System32\wscript.exe'
 
@@ -247,14 +240,25 @@ function Test-Alignment {
     Write-Host "note: no readable NSSM registration for service '$svcName' - skipping the Session 0 cross-check."
     return
   }
-  $svcHome = $null
+  $svcHome  = $null
+  $svcHomes = $null
   foreach ($e in @($sp.AppEnvironmentExtra)) {
-    if ($e -like 'EGPT_HOME=*') { $svcHome = $e.Substring('EGPT_HOME='.Length); break }
+    if ($e -like 'EGPT_HOME=*')  { $svcHome  = $e.Substring('EGPT_HOME='.Length) }
+    if ($e -like 'EGPT_HOMES=*') { $svcHomes = $e.Substring('EGPT_HOMES='.Length) }
   }
-  if ($svcHome -and $svcHome -ne $EgptHome) {
-    Write-Warning "profile mismatch: service '$svcName' serves EGPT_HOME=$svcHome, this entry would serve $EgptHome. Different profiles means there is NO handover - the Run entry would start a second, independent node. Pass -EgptHome '$svcHome' unless that is deliberate."
+  # Separators normalised before comparing (2026-09-11): the service is registered with
+  # EGPT_HOME=C:/Users/... and this script builds C:\Users\... - the same directory, and
+  # warning that they differ would be a false alarm on the ONE thing this check exists to
+  # catch. EGPT_HOMES, when present, is the list the merged session 0 daemon supervises.
+  $norm = { param($p) ($p -replace '/', '\').TrimEnd('\').ToLowerInvariant() }
+  $carried = @()
+  if ($svcHomes) { $carried = @($svcHomes.Split(';') | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
+  elseif ($svcHome) { $carried = @($svcHome) }
+  $hit = @($carried | Where-Object { (& $norm $_) -eq (& $norm $EgptHome) })
+  if ($carried.Count -and -not $hit.Count) {
+    Write-Warning "profile mismatch: service '$svcName' supervises $($carried -join ', '), this entry would serve $EgptHome. Different profiles means there is NO handover - the Run entry would start a second, independent node."
   }
-  if ($sp.AppDirectory -and $sp.AppDirectory -ne $Repo) {
+  if ($sp.AppDirectory -and (& $norm $sp.AppDirectory) -ne (& $norm $Repo)) {
     Write-Warning "checkout mismatch: service '$svcName' runs from $($sp.AppDirectory), this entry would run from $Repo. Both spines share one profile, so they must agree on the stand-down token format and the config schema. Pass -Repo '$($sp.AppDirectory)' unless you are deliberately testing a second checkout."
   }
 }

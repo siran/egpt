@@ -10,17 +10,42 @@
 # IS the node. EGPT_HOME is set in the service environment and inherited by the
 # spine, so the whole node follows the one profile.
 #
+# ONE SERVICE CAN CARRY SEVERAL PROFILES. The supervision axis is the SESSION, not the
+# account (operator 2026-09-11): egpt-daemon.mjs reads EGPT_HOMES (';'-separated) and runs one
+# supervisor per profile inside the one process, so the session 0 service carries every session
+# 0 profile instead of there being one service per account. Pass -EgptHomes for that; -EgptHome
+# alone keeps the one-profile shape it always had.
+#
 # Run from any PowerShell, from the repo root - it SELF-ELEVATES (one UAC prompt):
 #   # production node (default profile ~/.egpt, service 'egpt-daemon'):
 #   powershell -ExecutionPolicy Bypass -File .\setup\install-nssm-service.ps1
+#   # one service supervising BOTH session 0 profiles:
+#   powershell -ExecutionPolicy Bypass -File .\setup\install-nssm-service.ps1 -EgptHomes "$env:USERPROFILE\.egpt;$env:USERPROFILE\.egpt-secondary"
 #   # a second, isolated node on profile ~/.egpt2 (service 'egpt2-daemon'):
 #   powershell -ExecutionPolicy Bypass -File .\setup\install-nssm-service.ps1 -EgptHome "$env:USERPROFILE\.egpt2"
 #
 # Remove:  setup\uninstall-nssm-service.ps1 -ServiceName <name>
-
+#
+# =====================================================================================
+# WHICH CHECKOUT THE SERVICE RUNS, AND WHY THIS SCRIPT NOW REFUSES TO GUESS
+# =====================================================================================
+# This script used to derive the repo from $PSScriptRoot\.. and say nothing about it. Run
+# once from ~/src/egpt - the checkout people EDIT - and the service silently becomes that
+# tree. THAT HAPPENED ON reve 2026-09-11: both daemons were pointed at C:\Users\an\src\egpt,
+# so every uncommitted edit (including background agents' in-flight work) was live code on a
+# serving node, and setup\upgrade.ps1 reported "NO HEARTBEAT" because it health-checks
+# ~/bin/egpt. The operator repointed both services by hand.
+#
+# The repo already names the two trees, in setup\upgrade.ps1's own defaults: ~/bin/egpt is
+# the RUNNING copy and ~/src/egpt is "the CHECKOUT people edit and run by hand". So this
+# script refuses to install a service pointing anywhere but the deployed checkout while a
+# deployed checkout exists, and -AllowThisTree is the deliberate, typed-out override.
 param(
   [string]$EgptHome    = $(if ($env:EGPT_HOME) { $env:EGPT_HOME } else { Join-Path $env:USERPROFILE '.egpt' }),
-  [string]$ServiceName = ''
+  [string]$EgptHomes   = '',
+  [string]$ServiceName = '',
+  [string]$Repo        = '',
+  [switch]$AllowThisTree
 )
 
 $ErrorActionPreference = 'Stop'
@@ -36,7 +61,79 @@ if (-not $ServiceName) {
   $ServiceName = "$base-daemon"
 }
 
-# --- 1. ensure elevated -----------------------------------------------------------------------
+# --- 1. resolve paths, and REFUSE to make a development tree the running node ---
+#        Deliberately BEFORE the elevation below: a wrong checkout must be refused without
+#        costing a UAC prompt, and the refusal is more readable in the shell you typed in
+#        than in an elevated console that closes itself.
+if ($Repo) { $repoRoot = (Resolve-Path $Repo).Path }
+else       { $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path }
+$daemonPath = Join-Path $repoRoot 'egpt-daemon.mjs'
+$node       = 'C:\Program Files\nodejs\node.exe'
+if (-not (Test-Path $daemonPath)) { throw "egpt-daemon.mjs not found at $daemonPath" }
+if (-not (Test-Path $node))       { throw "node.exe not found at $node - install Node.js or edit the node path in this script" }
+
+$deployedRoot = Join-Path $env:USERPROFILE 'bin\egpt'
+$deployedOk   = Test-Path (Join-Path $deployedRoot 'egpt-daemon.mjs')
+$sameTree     = $false
+if ($deployedOk) { $sameTree = ((Resolve-Path $deployedRoot).Path -eq $repoRoot) }
+
+if (-not $sameTree) {
+  if ($deployedOk -and -not $AllowThisTree) {
+    Write-Host ""
+    Write-Host "REFUSING: this would point '$ServiceName' at a checkout that is NOT the deployed one." -ForegroundColor Red
+    Write-Host "  would run : $repoRoot"
+    Write-Host "  deployed  : $deployedRoot   (what setup\upgrade.ps1 and setup\deploy.ps1 health-check)"
+    Write-Host ""
+    Write-Host "A service pointed at an editable checkout makes every uncommitted edit live code on a" -ForegroundColor Yellow
+    Write-Host "serving node - that happened on 2026-09-11 and both daemons had to be repointed by hand." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "Install from the deployed checkout instead:"
+    Write-Host "  powershell -ExecutionPolicy Bypass -File `"$deployedRoot\setup\install-nssm-service.ps1`" -EgptHome `"$EgptHome`""
+    Write-Host "or say you mean it:  -AllowThisTree"
+    exit 1
+  }
+  if (-not $deployedOk) {
+    Write-Host ""
+    Write-Host "WARNING: there is no deployed checkout at $deployedRoot, so this service will run from" -ForegroundColor Yellow
+    Write-Host "         $repoRoot. If that is a tree you EDIT, every uncommitted change is live code" -ForegroundColor Yellow
+    Write-Host "         on a serving node. Deploy to $deployedRoot and re-run when you can." -ForegroundColor Yellow
+  } else {
+    Write-Host "-AllowThisTree given: installing from $repoRoot rather than the deployed $deployedRoot." -ForegroundColor Yellow
+  }
+}
+
+# Whatever tree wins, SAY what is in it. A dirty tree is not fatal here (deploy.ps1 keeps the
+# deployed copy clean with reset --hard), but a service quietly serving 9 uncommitted files is
+# the shape of the 2026-08-30 boot-failure incident, so it is never left unsaid.
+$gitExe = (Get-Command git -ErrorAction SilentlyContinue).Source
+$repoHead = '?'
+$repoDirty = @()
+if ($gitExe) {
+  $repoHead = (& $gitExe -C $repoRoot rev-parse --short HEAD 2>$null)
+  if ($LASTEXITCODE -ne 0 -or -not $repoHead) { $repoHead = '?' } else { $repoHead = ([string]$repoHead).Trim() }
+  $repoDirty = @(& $gitExe -C $repoRoot status --porcelain 2>$null)
+}
+
+# EGPT_HOMES is the multi-profile knob; EGPT_HOME stays the single-profile one and the
+# fallback the daemon uses when EGPT_HOMES says nothing.
+$profileList = @($EgptHome)
+if ($EgptHomes) { $profileList = @($EgptHomes.Split(';') | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
+
+Write-Host ""
+Write-Host "About to install node:" -ForegroundColor Cyan
+Write-Host "  service : $ServiceName"
+Write-Host "  repo    : $repoRoot   (HEAD $repoHead)"
+if ($repoDirty.Count -gt 0) {
+  Write-Host "  tree    : DIRTY - $($repoDirty.Count) uncommitted path(s); this service will run them" -ForegroundColor Yellow
+  foreach ($ln in ($repoDirty | Select-Object -First 10)) { Write-Host "            $ln" -ForegroundColor DarkYellow }
+} else {
+  Write-Host "  tree    : clean"
+}
+Write-Host "  profile : $EgptHome   (EGPT_HOME)"
+if ($EgptHomes) { Write-Host "  profiles: $($profileList -join ', ')   (EGPT_HOMES - one supervisor each, in this one service)" }
+Write-Host ""
+
+# --- 2. ensure elevated -----------------------------------------------------------------------
 # SELF-ELEVATES rather than refusing (operator 2026-09-05). Refusing made this a two-step dance
 # from an ordinary shell, and the second step is easy to get wrong: an MSYS/git-bash prompt eats
 # the backslashes out of a Windows path, so the retyped command fails with a mangled filename
@@ -58,7 +155,7 @@ if (-not $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
   exit 0
 }
 
-# --- 2. ensure NSSM is on the system ---
+# --- 3. ensure NSSM is on the system ---
 $nssm = (Get-Command nssm -ErrorAction SilentlyContinue).Source
 if (-not $nssm) {
   Write-Host "NSSM not found. Installing via winget..." -ForegroundColor Yellow
@@ -69,7 +166,7 @@ if (-not $nssm) {
 }
 Write-Host "NSSM: $nssm" -ForegroundColor Cyan
 
-# --- 2b. host the service from a renamed nssm copy so Task Manager shows a
+# --- 3b. host the service from a renamed nssm copy so Task Manager shows a
 #         friendly name (egpt-service.exe) instead of nssm.exe. The copy lives in
 #         the repo (setup/bin, gitignored), not in the profile dir. ---
 $serviceBinDir = Join-Path $PSScriptRoot 'bin'
@@ -92,20 +189,6 @@ if (-not (Test-Path $serviceBin) -or
   }
 }
 
-# --- 3. resolve paths (THIS repo checkout runs the node) ---
-$repoRoot   = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$daemonPath = Join-Path $repoRoot 'egpt-daemon.mjs'
-$node       = 'C:\Program Files\nodejs\node.exe'
-if (-not (Test-Path $daemonPath)) { throw "egpt-daemon.mjs not found at $daemonPath" }
-if (-not (Test-Path $node))       { throw "node.exe not found at $node - install Node.js or edit the node path in this script" }
-
-Write-Host ""
-Write-Host "About to install node:" -ForegroundColor Cyan
-Write-Host "  service : $ServiceName"
-Write-Host "  repo    : $repoRoot"
-Write-Host "  profile : $EgptHome   (EGPT_HOME)"
-Write-Host ""
-
 # --- 4. credentials: the service runs as you, so it can read the profile + your
 #        `claude` login. ---
 $svcUser = "$env:USERDOMAIN\$env:USERNAME"
@@ -120,17 +203,30 @@ if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) {
 }
 
 # --- 6. install + configure ---
+# One process, one stdout: the service log lives under the FIRST profile even when several are
+# supervised. Every profile still gets its state/ dir made, because the daemon writes its own
+# session marker there before it spawns anything.
 $logDir = Join-Path (Join-Path $EgptHome 'config') 'logs'   # logs live under config/ now (operator 2026-07-03)
 if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+foreach ($p in $profileList) {
+  $sd = Join-Path $p 'state'
+  if (-not (Test-Path $sd)) { New-Item -ItemType Directory -Path $sd -Force | Out-Null }
+}
 $stdoutLog = Join-Path $logDir 'service-stdout.log'
 $stderrLog = Join-Path $logDir 'service-stderr.log'
 
 Write-Host "Installing $ServiceName (host: $serviceBin)..." -ForegroundColor Cyan
 & $serviceBin install $ServiceName $node "$daemonPath"
 & $nssm set $ServiceName AppDirectory        $repoRoot
-& $nssm set $ServiceName AppEnvironmentExtra  "EGPT_HOME=$EgptHome"      # the one knob that selects the profile
+# EGPT_HOME selects the profile; EGPT_HOMES, when given, selects several and EGPT_HOME stays
+# as the fallback the daemon uses if EGPT_HOMES is ever cleared.
+if ($EgptHomes) {
+  & $nssm set $ServiceName AppEnvironmentExtra "EGPT_HOME=$EgptHome" "EGPT_HOMES=$EgptHomes"
+} else {
+  & $nssm set $ServiceName AppEnvironmentExtra "EGPT_HOME=$EgptHome"
+}
 & $nssm set $ServiceName DisplayName          "egpt node ($ServiceName)"
-& $nssm set $ServiceName Description           "egpt v2 node - node egpt-daemon.mjs (supervisor) -> egpt-spine.mjs (boot). Profile $EgptHome."
+& $nssm set $ServiceName Description           "egpt v2 node - node egpt-daemon.mjs (supervisor) -> egpt-spine.mjs (boot). Profile(s) $($profileList -join ', ')."
 & $nssm set $ServiceName Start                SERVICE_AUTO_START
 & $nssm set $ServiceName ObjectName           $cred.UserName $cred.GetNetworkCredential().Password
 & $nssm set $ServiceName AppStdout            $stdoutLog
@@ -158,7 +254,11 @@ Write-Host "Service state: $($svc.Status)" -ForegroundColor $(if ($svc.Status -e
 
 if ($svc.Status -eq 'Running') {
   Write-Host ""
-  Write-Host "Done. '$ServiceName' is running egpt from $repoRoot on profile $EgptHome." -ForegroundColor Green
+  Write-Host "Done. '$ServiceName' is running egpt from $repoRoot on profile(s) $($profileList -join ', ')." -ForegroundColor Green
+  if ($profileList.Count -gt 1) {
+    Write-Host "  Confirm it came up with ALL of them - the daemon prints 'supervising N profile(s): ...'" -ForegroundColor Cyan
+    Write-Host "  and shouts if fewer came up than were asked for."
+  }
   Write-Host "  Get-Content `"$stdoutLog`" -Tail 20 -Wait"
   Write-Host "  Stop:   Stop-Service $ServiceName"
   Write-Host "  Remove: setup\uninstall-nssm-service.ps1 -ServiceName $ServiceName"

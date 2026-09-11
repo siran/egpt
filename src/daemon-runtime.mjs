@@ -1,5 +1,5 @@
 import { spawn as nodeSpawn, spawnSync as nodeSpawnSync } from 'node:child_process';
-import { existsSync as nodeExistsSync, readFileSync as nodeReadFileSync, statSync as nodeStatSync, unlinkSync as nodeUnlinkSync, writeFileSync as nodeWriteFileSync } from 'node:fs';
+import { existsSync as nodeExistsSync, mkdirSync as nodeMkdirSync, readFileSync as nodeReadFileSync, statSync as nodeStatSync, unlinkSync as nodeUnlinkSync, writeFileSync as nodeWriteFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -54,6 +54,49 @@ const DEFAULT_ROOT = dirname(fileURLToPath(new URL('../egpt-daemon.mjs', import.
 const DEFAULT_CONSOLE_PORT = 23375;
 const validPort = (n) => (Number.isInteger(n) && n > 0 && n < 65536 ? n : null);
 
+// --- the supervision axis is the SESSION, not the account (operator 2026-09-11) -----------
+// THE ONE THING THAT BLOCKED THE HANDOVER. checkSingleton used to read state/spine.pid under
+// the SHARED EGPT_HOME, so a daemon starting at logon always met a live pid and a fresh beat
+// (the incumbent spine beats every 60s, staleMs is 120s) and exited before spawning anything.
+// A supervisor that self-refuses at the only moment it is ever launched is not a supervisor —
+// setup/register-session1-autostart.ps1's DECISION 1 is a page about exactly that. So the
+// singleton is keyed by (profile, SESSION) now: one daemon per profile PER SESSION.
+//
+// THE SESSION KEY IS EGPT_SESSION1, not a number from the OS. It is already this node's
+// per-process session marker — set by the logon launcher, read by the spine
+// (src/spine/successor-announce.mjs) to know it is the successor — and it is STABLE across
+// logons, which a Windows session id is not (log out and back in and the interactive session
+// is 2, then 3). The name is re-stated here rather than imported for the same reason
+// DEFAULT_CONSOLE_PORT is: successor-announce.mjs pulls in `ws` and the shell auth surface,
+// and a module-load failure there must never take the watchdog down with the thing it watches.
+const SESSION1_ENV = 'EGPT_SESSION1';
+// TRIMMED, not `=== '1'`: cmd yields "1 " for the unquoted `set A=1 && …` form (measured on
+// reve 2026-09-06), and successor-announce.mjs compares defensively for that reason. The two
+// must agree — a daemon that read itself as s0 while its spine read itself as the successor
+// would key its marker to the wrong session.
+const isSession1 = (env) => String(env?.[SESSION1_ENV] ?? '').trim() === '1';
+
+// Profiles this process supervises: EGPT_HOMES (';'-separated) if set, else the single
+// EGPT_HOME. Pure over the environment so the fan-out below and its tests share one rule.
+export function resolveProfiles(env = process.env, platform = process.platform) {
+  const single = () => [env?.EGPT_HOME || join(homedir(), '.egpt')];
+  const raw = String(env?.EGPT_HOMES ?? '').trim();
+  if (!raw) return single();
+  const seen = new Set();
+  const out = [];
+  for (const entry of raw.split(';').map((s) => s.trim()).filter(Boolean)) {
+    // Dedupe on a normalised form so `C:/a` and `C:/a/` are not supervised twice — two
+    // supervisors on one profile is the failure the singleton exists to prevent, and it must
+    // not be reachable by a typo in one environment variable.
+    let key = entry.replace(/\\/g, '/').replace(/\/+$/, '');
+    if (platform === 'win32') key = key.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(entry);
+  }
+  return out.length ? out : single();
+}
+
 export function createDaemonRuntime(opts = {}) {
   const root = opts.root ?? DEFAULT_ROOT;
   // Profile-aware: EGPT_HOME selects the node, so independent nodes (each its own
@@ -68,6 +111,7 @@ export function createDaemonRuntime(opts = {}) {
   const unlinkSync = opts.unlinkSync ?? nodeUnlinkSync;
   const existsSync = opts.existsSync ?? nodeExistsSync;
   const writeFileSync = opts.writeFileSync ?? nodeWriteFileSync;
+  const mkdirSync = opts.mkdirSync ?? nodeMkdirSync;
   const liveDaemonPid = opts.liveDaemonPid ?? defaultLiveDaemonPid;
   const processObj = opts.processObj ?? process;
   const stdout = opts.stdout ?? process.stdout;
@@ -86,6 +130,17 @@ export function createDaemonRuntime(opts = {}) {
   const peerProbe = opts.peerProbe ?? tcpProbe;
   const alivePath = opts.alivePath ?? join(egptHome, 'state', 'alive.txt');
   const spinePidPath = opts.spinePidPath ?? join(egptHome, 'state', 'spine.pid');
+  // WHICH SESSION THIS DAEMON SUPERVISES (see the SESSION1_ENV block above). s0 = the service
+  // session, s1 = the logon session. The successor's spine reads the same flag out of the same
+  // environment, so the daemon and the spine it spawns can never disagree about which they are.
+  const session1 = opts.session1 ?? isSession1(processObj.env);
+  const sessionKey = session1 ? 's1' : 's0';
+  const sessionLabel = session1 ? 'the s1 (logon) session' : 'the s0 (service) session';
+  // The singleton's own file, written by the DAEMON, one per session. Distinct from
+  // state/spine.pid, which the spine writes and which is shared by whichever spine holds the
+  // profile — that file cannot say which session a supervisor is in, and it is why the old
+  // guard could only ever be profile-scoped.
+  const daemonPidPath = opts.daemonPidPath ?? join(egptHome, 'state', `daemon-${sessionKey}.pid`);
   // The SAME sidecar boot.mjs's read-back block reads (join(EGPT_HOME, 'state',
   // 'restart-announce.json')) — the daemon writes a fallback here ONLY for the two exit
   // paths where the dying spine never got a chance to write its own (a crash, or a
@@ -559,7 +614,11 @@ export function createDaemonRuntime(opts = {}) {
     child = spawn('node', args, {
       cwd: root,
       stdio: 'inherit',   // NSSM captures stdout/stderr to the service logs
-      env: { ...processObj.env, EGPT_SUPERVISED: '1' },
+      // EGPT_HOME is stated EXPLICITLY rather than inherited: one process now supervises
+      // several profiles (see startProfileDaemons), and the ambient EGPT_HOME can only name
+      // one of them. A spine that inherited the wrong one would be a second node on somebody
+      // else's profile. Identical to today's value when there is only one profile.
+      env: { ...processObj.env, EGPT_HOME: egptHome, EGPT_SUPERVISED: '1' },
     });
 
     child.on('exit', async (code, signal) => {
@@ -657,6 +716,7 @@ export function createDaemonRuntime(opts = {}) {
   function shutdown(sig) {
     stopping = true;
     log(`${sig} received — stopping egpt-daemon`);
+    releaseSession();
     if (livenessTimer) { clearIntervalFn(livenessTimer); livenessTimer = null; }
     if (standdownTimer) { clearIntervalFn(standdownTimer); standdownTimer = null; }
     if (child) {
@@ -665,19 +725,41 @@ export function createDaemonRuntime(opts = {}) {
     setTimeoutFn(() => processObj.exit(0), 500);
   }
 
-  function checkSingleton() {
-    // Identity from state/spine.pid (written once at boot), liveness from the
-    // alive.txt mtime — the two facts liveDaemonPid decides over.
+  // Is a live pid recorded in `path`, by the same two facts liveDaemonPid has always decided
+  // over: identity from a pid file, liveness from the alive.txt mtime.
+  function livePidIn(path) {
     let pidFileContent = '';
-    try { pidFileContent = readFileSync(spinePidPath, 'utf8'); } catch {}
-    const otherPid = liveDaemonPid({ pidFileContent, beatAgeMs: beatAge() });
+    try { pidFileContent = readFileSync(path, 'utf8'); } catch { /* absent = clear field */ }
+    return liveDaemonPid({ pidFileContent, beatAgeMs: beatAge() });
+  }
+
+  function checkSingleton() {
+    const otherPid = livePidIn(daemonPidPath);
     if (otherPid) {
-      log(`another egpt daemon is already alive (spine pid ${otherPid}, alive.txt fresh) — refusing to start a second daemon that would fight over WhatsApp. Exiting.`);
+      log(`another egpt daemon is already alive in ${sessionLabel} on this profile (daemon pid ${otherPid}, alive.txt fresh) — refusing to start a second daemon that would fight over WhatsApp. Exiting.`);
       log('to open an interactive shell instead, run `node egpt.mjs` — it opens the operator shell, which SERVES a WS the running spine dials into (no pidfile handshake, no WA handback; the shell and the spine run as independent processes).');
       processObj.exit(0);
       return false;
     }
     return true;
+  }
+
+  // Claim the session. Written before the first spawn and removed on shutdown, so the next
+  // daemon in THIS session on THIS profile is refused and one in the other session is not.
+  function claimSession() {
+    try {
+      mkdirSync(dirname(daemonPidPath), { recursive: true });
+      writeFileSync(daemonPidPath, String(processObj.pid ?? process.pid));
+    } catch (e) {
+      // Never silent: without this file the singleton has nothing to read, so a second daemon
+      // started in this session would NOT be refused — and two supervisors on one EGPT_HOME is
+      // how two spines get onto it.
+      log(`could not write ${daemonPidPath} (${e.message}) — a second daemon started in ${sessionLabel} on this profile would NOT be refused. Fix the profile's state/ directory.`);
+    }
+  }
+
+  function releaseSession() {
+    try { unlinkSync(daemonPidPath); } catch { /* never written, or already gone */ }
   }
 
   function registerSignals() {
@@ -689,10 +771,27 @@ export function createDaemonRuntime(opts = {}) {
   function start() {
     registerSignals();
     if (!checkSingleton()) return null;
+    claimSession();
     const v = gitVersion(root);
-    log(`egpt-daemon up — running app from ${root} (profile ${egptHome})`);
+    log(`egpt-daemon up — running app from ${root} (profile ${egptHome}, ${sessionLabel})`);
     log(`version: ${v.sha} (${v.tag}, branch ${v.branch})`);
-    const c = spawnShell();
+    // ARRIVING INTO A PROFILE SOMEBODY ELSE IS HOLDING. Session-scoping the singleton opens a
+    // door the profile-scoped guard used to hold shut: this daemon may now start while another
+    // session's spine — or an orphan our own crashed predecessor left behind — still holds this
+    // EGPT_HOME. Only the SUCCESSOR is entitled to spawn into that: its spine announces the
+    // stand-down on the console port and the incumbent drains and leaves (chunk 3). Anyone else
+    // spawning here would put a SECOND spine on one profile, which is the one unrecoverable
+    // failure in this design. So a non-successor takes the seat the departing daemon takes: it
+    // watches the port and comes back the moment it goes quiet. Same watch, same hysteresis, no
+    // second mechanism — and it does NOT exit, so a logoff is recovered from without a restart.
+    const incumbent = session1 ? null : livePidIn(spinePidPath);
+    let c = null;
+    if (incumbent) {
+      log(`spine pid ${incumbent} is already holding this profile and this daemon is not its successor (${SESSION1_ENV} is unset) — NOT spawning a second spine on one EGPT_HOME`);
+      standDownAndWatch();
+    } else {
+      c = spawnShell();
+    }
     if (livenessIntervalMs > 0 && !livenessTimer) {
       livenessTimer = setIntervalFn(checkLiveness, livenessIntervalMs);
       livenessTimer?.unref?.();
@@ -712,6 +811,61 @@ export function createDaemonRuntime(opts = {}) {
     spawnShell,
     start,
     get child() { return child; },
-    get state() { return { stopping, backoff, wedgeStreak, neverHealthyStreak, standingDown: standdownTimer != null, shellArgs: [...shellArgs] }; },
+    get state() { return { stopping, backoff, wedgeStreak, neverHealthyStreak, standingDown: standdownTimer != null, session: sessionKey, egptHome, shellArgs: [...shellArgs] }; },
   };
+}
+
+// --- one daemon, N profiles (operator 2026-09-11) ------------------------------------------
+// "egpt-daemon supervises both s0-primary and s0-secondary … an s1 can only be monitored by an
+// s1. so we need this other daemon in s1. egpt-daemon should monitor all the configured
+// accounts for that session level."
+//
+// This is a FAN-OUT, not a second supervisor: createDaemonRuntime is already the whole
+// supervisor and is already keyed by EGPT_HOME, so N profiles are N runtimes in one process.
+// The only thing this owns is the process exit — a runtime calls processObj.exit() when the
+// operator's /exit lands or when the singleton refuses, and with several profiles in one
+// process that must retire ONE profile, not take the others down with it. Each runtime is
+// therefore handed its own exit seam and the real process exits when the last one is gone.
+export function startProfileDaemons({ profiles, createRuntime = createDaemonRuntime, ...opts } = {}) {
+  const processObj = opts.processObj ?? process;
+  const stdout = opts.stdout ?? process.stdout;
+  const now = opts.now ?? Date.now;
+  const homes = profiles ?? resolveProfiles(processObj.env);
+  const say = (m) => stdout.write(`[egpt-daemon ${new Date(now()).toISOString()}] ${m}\n`);
+
+  const live = new Set(homes);
+  const retire = (home, code) => {
+    if (!live.delete(home)) return;   // already retired; a second exit() is a no-op
+    if (live.size === 0) { processObj.exit(code); return; }
+    say(`profile ${home} is no longer supervised (exit ${code}) — still supervising ${[...live].join(', ')}`);
+  };
+  const seamFor = (home) => ({
+    get env() { return processObj.env; },
+    get pid() { return processObj.pid; },
+    on: (...a) => processObj.on(...a),
+    exit: (code) => retire(home, code),
+  });
+
+  say(`supervising ${homes.length} profile(s): ${homes.join(', ')}`);
+  const runtimes = [];
+  const failed = [];
+  for (const home of homes) {
+    const runtime = createRuntime({ ...opts, egptHome: home, processObj: seamFor(home) });
+    runtimes.push({ egptHome: home, runtime });
+    let child = null;
+    try { child = runtime.start(); } catch (e) { say(`profile ${home} threw while starting: ${e?.message ?? e}`); }
+    // A runtime that stood down IS supervising — the watch is the supervision, and it will
+    // spawn the moment the peer holding that profile goes quiet.
+    if (child == null && runtime.state?.standingDown !== true) failed.push(home);
+  }
+  // "Half-alive is worse than down" (INTENT.md): a node asked for two profiles that came up
+  // with one must not look healthy. The banner is the ladder's alarm() shape, for the same
+  // reason — a log whose normal texture is one line per profile hides a missing one.
+  if (failed.length) {
+    const rule = '!'.repeat(78);
+    say(rule);
+    say(`!! asked to supervise ${homes.length} profile(s) but ${failed.length} did not come up: ${failed.join(', ')} — this node is supervising ${homes.length - failed.length} of ${homes.length}`);
+    say(rule);
+  }
+  return { profiles: homes, runtimes, failed };
 }
