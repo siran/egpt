@@ -334,3 +334,25 @@ describe('…and the mouth still speaks wherever the mouth can reach', () => {
     app.stop();
   });
 });
+
+// EVERY sender boot builds must carry the per-chat resolver, not one frozen bridge.
+//
+// `memberSender` was constructed with `bridge:` alone and NO `bridgeOf:` -- so it held the
+// node's default mouth for every chat, and a @member reply into a chat heard on the ear posted
+// on the mouth, naming a room that account does not have. The persona sender got
+// shellAwareBridgeOf in 32aa5c1; this one was missed, and the defect stayed live for members
+// only. A source-shape lock rather than a behavioural one because the miss is STRUCTURAL: the
+// argument was simply absent, and no amount of exercising that sender would have said so.
+describe('every sender boot builds resolves its bridge per chat', () => {
+  it('no createSender( in boot.mjs passes `bridge:` without `bridgeOf:`', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const src = readFileSync(fileURLToPath(new URL('../src/spine/boot.mjs', import.meta.url)), 'utf8');
+    const calls = [...src.matchAll(/createSender\(\{[\s\S]*?\}\)/g)].map((m) => m[0]);
+    expect(calls.length).toBeGreaterThan(0);            // the scan itself must not silently find nothing
+    for (const call of calls) {
+      expect(call, `a createSender without bridgeOf:
+${call}`).toContain('bridgeOf');
+    }
+  });
+});

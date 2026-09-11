@@ -2401,7 +2401,11 @@ export async function boot({
   // — plus, on `.tunnelRooms`, the name of any room that INVITED this chat in as a `wa-group`
   // member, which the relay re-enters the message into as a turn (see createMemberResolver's
   // header and room-relay.mjs's).
-  const memberSender = createSender({ bridge: shellAwareBridge, bodyEmojiOf: () => '🤖', labelOf: (id) => id, defaultKey });
+  // bridgeOf, like the persona sender's (32aa5c1). Without it this sender held ONE bridge --
+  // the node's default mouth -- so a @member reply into a chat heard on the ear posted on the
+  // mouth, naming a room that account does not have. The persona sender got the per-chat
+  // resolver; this one was missed, and the defect stayed live for members only.
+  const memberSender = createSender({ bridge: shellAwareBridge, bridgeOf: shellAwareBridgeOf, bodyEmojiOf: () => '🤖', labelOf: (id) => id, defaultKey });
   const _adapterMods = new Map();
   const roomRelay = createRoomRelay({
     resolveMembers: memberResolver,
