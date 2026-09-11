@@ -159,6 +159,29 @@ export function buildClaudeArgs(options = {}) {
   }
 
   if (options.sessionId) args.push('--resume', String(options.sessionId));
+  // ...ELSE THE THREAD ID THE CALLER MINTED ITSELF (operator ruling 2026-09-11). `--resume`
+  // REUSES a session; `--session-id` CREATES one under an id we chose — MEASURED against
+  // claude.exe 2.1.265: the CLI adopts the uuid verbatim (its stream-json `session_id` comes
+  // back equal to it) and writes the transcript to <config>/projects/<slug>/<uuid>.jsonl, and
+  // a later COLD process resuming that uuid reads it back. Passing one that already exists is
+  // refused ("Session ID <id> is already in use.", exit 1), which is why the two are an
+  // either/or and never both.
+  //
+  // WHY A CALLER WOULD WANT IT: a sandboxed turn's store now lives at ~/.egpt-jsonl/<threadId>
+  // (see sandbox-cli-session.mjs), and that directory has to exist, and be ACL'd to the leased
+  // pool account, BEFORE the CLI writes its first byte. Letting the CLI mint the id leaves
+  // turn 1 of a fresh thread with nowhere to put its transcript. The alternative — a staging
+  // directory renamed once the id is known — was measured on 2026-09-11 and SILENTLY SPLITS
+  // the store: the rename succeeds, the running CLI re-creates the staging path, and one
+  // session ends with two transcript files in two directories and no error anywhere.
+  //
+  // pi-cli-session.mjs:110 already does exactly this for the `pi` engine, and for the same
+  // reason (a client that never learns its own thread id re-seeds identity on every turn).
+  //
+  // UNSET IS THE COMMON CASE and contributes NOTHING: with neither field set the argv is
+  // byte-identical to what it was before this branch existed, so a non-sandboxed being — and
+  // every other caller of buildClaudeArgs — is untouched.
+  else if (options.newSessionId) args.push('--session-id', String(options.newSessionId));
 
   return args;
 }

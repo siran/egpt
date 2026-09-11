@@ -6,8 +6,11 @@
 // here plays the launcher's role (it's the direct spawn target), speaking
 // the identical stream-json protocol claude.exe would, since the launcher's
 // whole job is to proxy that protocol through untouched.
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
 import { EventEmitter } from 'node:events';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createSandboxCliSession } from '../src/sandbox-cli-session.mjs';
 
 // Hoisted to module scope 2026-09-06: a sandboxed CCODE session now REFUSES to be created
@@ -15,6 +18,19 @@ import { createSandboxCliSession } from '../src/sandbox-cli-session.mjs';
 // ccode fixture here has to carry one. codex/pi are deliberately not guarded and still build
 // with no token at all.
 const TOKEN = 'sk-ant-oat01-FAKE-TEST-TOKEN-NOT-REAL';
+
+// ...and since 2026-09-11 a ccode fixture also has to carry a STORE ROOT, for the same reason:
+// creating the session now CREATES ~/.egpt-jsonl/<threadId> before anything is spawned (see
+// sandbox-cli-session.mjs's CONFIG_DIR_ENV). Without an override every run of this file would
+// litter the operator's real store with a directory per test. Every ccode fixture below passes
+// this; codex/pi build no store at all and are unaffected.
+const STORE = mkdtempSync(join(tmpdir(), 'egpt-jsonl-fixture-'));
+// A PINNED thread for the argv helpers. Left unpinned, each build mints its own uuid and the
+// store path — which is now part of the argv — would differ between two builds the byte-equality
+// tests below are comparing.
+const THREAD = 'thread-fixed';
+const THREAD_STORE = join(STORE, THREAD);
+afterAll(() => { try { rmSync(STORE, { recursive: true, force: true }); } catch { /* best effort */ } });
 
 function fakeLauncherSpawn({ failOn = null, hang = false, sessionId = 'sess-123' } = {}) {
   let turnNo = 0;
@@ -72,7 +88,7 @@ describe('sandbox-cli-session — wraps warm-cli-session with the OS-isolation l
   it('spawns powershell.exe running the launcher with TargetFolder/InnerBin, not claude.exe directly', async () => {
     const f = fakeLauncherSpawn();
     const cwd = process.cwd();   // must exist — warm-cli-session.mjs's spawnProc validates it
-    const s = createSandboxCliSession({ spawn: f.spawn, cwd, platform: 'win32', sandboxOauthToken: TOKEN });
+    const s = createSandboxCliSession({ spawn: f.spawn, cwd, platform: 'win32', sandboxOauthToken: TOKEN, jsonlStoreRoot: STORE });
     await s.turn('hi');
 
     expect(f.spawnCount()).toBe(1);
@@ -111,7 +127,7 @@ describe('sandbox-cli-session — wraps warm-cli-session with the OS-isolation l
 
   it('still satisfies turn()/sessionId/streaming exactly like a plain warm-cli-session (thin wrapper)', async () => {
     const f = fakeLauncherSpawn();
-    const s = createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), platform: 'win32', sandboxOauthToken: TOKEN });
+    const s = createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), platform: 'win32', sandboxOauthToken: TOKEN, jsonlStoreRoot: STORE });
     const updates = [];
     const r1 = await s.turn('ONE', (t) => updates.push(t));
     const r2 = await s.turn('TWO');
@@ -230,7 +246,7 @@ describe('sandbox-cli-session — wraps warm-cli-session with the OS-isolation l
 
   it('the platform seam DEFAULTS to the real process.platform (injection is for tests, not a requirement)', () => {
     const f = fakeLauncherSpawn();
-    const make = () => createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), sandboxOauthToken: TOKEN });
+    const make = () => createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), sandboxOauthToken: TOKEN, jsonlStoreRoot: STORE });
     if (process.platform === 'win32') {
       const s = make();                 // the operator's own node: created exactly as before...
       expect(f.spawnCount()).toBe(0);   // ...and still lazy — the launcher spawns on the first turn()
@@ -258,7 +274,7 @@ describe('sandbox-cli-session — -SetEnv CLAUDE_CODE_OAUTH_TOKEN (config sandbo
   // One turn through the fake launcher; returns the psArgs it was spawned with.
   async function argvFor(extra = {}) {
     const f = fakeLauncherSpawn();
-    const s = createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), platform: 'win32', sandboxOauthToken: TOKEN, ...extra });
+    const s = createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), platform: 'win32', sandboxOauthToken: TOKEN, jsonlStoreRoot: STORE, sessionId: THREAD, ...extra });
     await s.turn('hi');
     s.close();
     expect(f.spawnCount()).toBe(1);
@@ -315,9 +331,15 @@ describe('sandbox-cli-session — -SetEnv CLAUDE_CODE_OAUTH_TOKEN (config sandbo
     expect(innerArgvOf(withTok)).toEqual(innerArgvOf(plain));
   });
 
-  it('the ccode argv carries the same one -SetEnv element, and its inner argv is still the stream-json one', async () => {
+  it('the ccode argv carries ONE -SetEnv element — the token AND this thread\'s store — and its inner argv is still the stream-json one', async () => {
     const args = await argvFor();
-    expect(jsonArgOf(args, '-SetEnv')).toEqual([`CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}`]);
+    // TWO entries since 2026-09-11, still ONE argv element: a ccode turn is handed its
+    // credential and the CLAUDE_CONFIG_DIR of its own jsonl store (see sandbox-cli-session.mjs).
+    // A second -SetEnv FLAG would be the bug; a second entry inside the one JSON array is not.
+    expect(jsonArgOf(args, '-SetEnv')).toEqual([
+      `CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}`,
+      `CLAUDE_CONFIG_DIR=${THREAD_STORE}`,
+    ]);
     expect(args[args.indexOf('-SetEnv') + 2]).toBe('-InnerBin');
     expect(innerArgvOf(args)[0]).toBe('--input-format');
   });
@@ -332,7 +354,7 @@ describe('sandbox-cli-session — -SetEnv CLAUDE_CODE_OAUTH_TOKEN (config sandbo
   it('THE VALUE IS NEVER LOGGED: nothing the session emits through onLog contains the token', async () => {
     const f = fakeLauncherSpawn();
     const logs = [];
-    const s = createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), platform: 'win32', sandboxOauthToken: TOKEN, onLog: (l) => logs.push(String(l)) });
+    const s = createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), platform: 'win32', sandboxOauthToken: TOKEN, jsonlStoreRoot: STORE, onLog: (l) => logs.push(String(l)) });
     await s.turn('hi');
     s.close();
     expect(logs.length).toBeGreaterThan(0);                              // the spawn line really was emitted...
@@ -353,7 +375,7 @@ describe('sandbox-cli-session — -SetEnv CLAUDE_CODE_OAUTH_TOKEN (config sandbo
         proc.kill = () => {};
         return proc;
       };
-      const s = createSandboxCliSession({ spawn, cwd: process.cwd(), engine, platform: 'win32', sandboxOauthToken: TOKEN });
+      const s = createSandboxCliSession({ spawn, cwd: process.cwd(), engine, platform: 'win32', sandboxOauthToken: TOKEN, jsonlStoreRoot: STORE });
       s.turn('hi').catch(() => {});
       const seIdx = calls[0].args.indexOf('-SetEnv');
       expect(seIdx, `engine ${engine} lost the -SetEnv`).toBeGreaterThanOrEqual(0);
@@ -387,7 +409,7 @@ describe('sandbox-cli-session — the launcher argument contract (one argv eleme
   // "changed the argv" comparisons below still isolate the thing each test is about.
   async function argvFor(extra = {}) {
     const f = fakeLauncherSpawn();
-    const s = createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), platform: 'win32', sandboxOauthToken: TOKEN, ...extra });
+    const s = createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), platform: 'win32', sandboxOauthToken: TOKEN, jsonlStoreRoot: STORE, sessionId: THREAD, ...extra });
     await s.turn('hi');
     s.close();
     expect(f.spawnCount()).toBe(1);
@@ -410,7 +432,10 @@ describe('sandbox-cli-session — the launcher argument contract (one argv eleme
 
   it('defect 2: TWO share paths ride in ONE -SharePath element, and neither spills into the inner argv', async () => {
     const args = await argvFor({ sandboxSharePaths: ['C:\\shared\\one', 'C:\\shared\\two'] });
-    expect(jsonArgOf(args, '-SharePath')).toEqual(['C:\\shared\\one', 'C:\\shared\\two']);
+    // The thread's own store is a THIRD entry in the same one element, appended after the
+    // being's own paths (2026-09-11) — it needs the identical per-path ACE, so it rides the
+    // identical list rather than growing a second mechanism.
+    expect(jsonArgOf(args, '-SharePath')).toEqual(['C:\\shared\\one', 'C:\\shared\\two', THREAD_STORE]);
     const inner = innerArgvOf(args);
     expect(inner).not.toContain('C:\\shared\\two');   // the old shape dropped it exactly here
     expect(inner[0]).toBe('--input-format');
@@ -444,17 +469,31 @@ describe('sandbox-cli-session — the launcher argument contract (one argv eleme
     expect(args[args.length - 2]).toBe('-InnerArgs');   // the inner argv is the LAST element, and it is one element
   });
 
-  it('REPRODUCE-FIRST: with no share paths there is no -SharePath at all, and junk is not a share path either', async () => {
+  it('REPRODUCE-FIRST: with no share paths of its own a ccode turn shares ONLY its thread store, and junk is not a share path either', async () => {
+    // WAS "no -SharePath at all" until 2026-09-11. A ccode turn now always has exactly one
+    // shared path — the jsonl store its own memory lives in — so the invariant this test exists
+    // for moved rather than went away: junk in `sandboxSharePaths` still contributes NOTHING,
+    // and the argv is byte-identical whichever flavour of junk is passed.
     const plain = await argvFor();
-    expect(plain).not.toContain('-SharePath');
+    expect(jsonArgOf(plain, '-SharePath')).toEqual([THREAD_STORE]);
     for (const junk of [undefined, [], ['', '   '], 'C:\\not-an-array', null, [null, 42, {}]]) {
       expect(await argvFor({ sandboxSharePaths: junk }), `sandboxSharePaths=${JSON.stringify(junk)} changed the argv`).toEqual(plain);
     }
   });
 
+  it("the store ROOT is never shared — only this thread's own directory under it", async () => {
+    // Granting ~/.egpt-jsonl itself would hand every lease every OTHER thread's transcripts,
+    // which is the one thing the per-thread ACE exists to prevent. VERIFIED against the real
+    // launcher on 2026-09-11: a pool account granted one thread's directory read it, and got
+    // "Access is denied" on a sibling thread and "File Not Found" listing the root.
+    const shares = jsonArgOf(await argvFor(), '-SharePath');
+    expect(shares).toEqual([THREAD_STORE]);
+    expect(shares).not.toContain(STORE);
+  });
+
   it('share paths are trimmed and de-duplicated, in declaration order (one ACE per path, never two on the same one)', async () => {
     const args = await argvFor({ sandboxSharePaths: ['  C:\\a  ', 'C:\\b', 'C:\\a', '', 42] });
-    expect(jsonArgOf(args, '-SharePath')).toEqual(['C:\\a', 'C:\\b']);
+    expect(jsonArgOf(args, '-SharePath')).toEqual(['C:\\a', 'C:\\b', THREAD_STORE]);
   });
 
   it("engine: 'codex' and 'pi' route through the SAME sandboxSpawn, so both get -SharePath and -InnerArgs in the same shape", () => {
@@ -588,7 +627,7 @@ describe('sandbox-cli-session — a missing or rejected sandbox_oauth_token tell
 
   it("REPRODUCE-FIRST: a 401-rejected sandboxed turn comes back with the remedy stapled to the CLI's own sentence", async () => {
     const f = fakeApiResult(rejectedEvent);
-    const s = createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), platform: 'win32', sandboxOauthToken: TOKEN });
+    const s = createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), platform: 'win32', sandboxOauthToken: TOKEN, jsonlStoreRoot: STORE });
     const r = await s.turn('hi');
     expect(r.text.startsWith(REJECTED), 'the vendor sentence was replaced instead of appended to').toBe(true);
     expectRemedy(r.text);
@@ -605,7 +644,7 @@ describe('sandbox-cli-session — a missing or rejected sandbox_oauth_token tell
       'OAuth is a delegated authorization framework.',       // OAuth, no 401
     ]) {
       const f = fakeApiResult({ type: 'result', subtype: 'success', session_id: 's', result });
-      const s = createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), platform: 'win32', sandboxOauthToken: TOKEN });
+      const s = createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), platform: 'win32', sandboxOauthToken: TOKEN, jsonlStoreRoot: STORE });
       expect((await s.turn('hi')).text, `a remedy was appended to an innocent reply: ${result}`).toBe(result);
       s.close();
     }
@@ -613,9 +652,9 @@ describe('sandbox-cli-session — a missing or rejected sandbox_oauth_token tell
 
   it('NEITHER message ever contains the token VALUE — only its length', async () => {
     let caseA = '';
-    try { createSandboxCliSession({ spawn: fakeLauncherSpawn().spawn, cwd: process.cwd(), platform: 'win32' }); } catch (e) { caseA = e.message; }
+    try { createSandboxCliSession({ spawn: fakeLauncherSpawn().spawn, cwd: process.cwd(), platform: 'win32', jsonlStoreRoot: STORE }); } catch (e) { caseA = e.message; }
     const f = fakeApiResult(rejectedEvent);
-    const s = createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), platform: 'win32', sandboxOauthToken: TOKEN });
+    const s = createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), platform: 'win32', sandboxOauthToken: TOKEN, jsonlStoreRoot: STORE });
     const caseB = (await s.turn('hi')).text;
     s.close();
     for (const [name, text] of [['case A', caseA], ['case B', caseB]]) {

@@ -264,7 +264,20 @@ export function createWarmCliSession(options = {}) {
     // is unconditional because without it `inject` has no evidence to return. Additive to the
     // OUTPUT stream only — it adds `user`/isReplay events, which onStdout routes to the ack
     // below and nothing else reads, so every existing turn parses byte-identically.
-    const args = ['--input-format', 'stream-json', '--replay-user-messages', ...buildClaudeArgs(options)];
+    // `{ ...options, sessionId }` — THE LIVE ID, NOT THE ONE THIS SESSION WAS BUILT WITH
+    // (2026-09-11). spawnProc runs again whenever the process died between turns (onClose sets
+    // `proc = null` and the next turn() re-spawns), and it used to rebuild the argv from the
+    // ORIGINAL options — so a process that died after turn 1 of a FRESH thread re-spawned with
+    // no `--resume` at all and silently started a second thread, throwing away everything turn 1
+    // had said. `sessionId` is the first-wins capture below, initialised from options.sessionId,
+    // so on the very first spawn this is exactly what it always was.
+    //
+    // It also decides which of the two mutually-exclusive flags claude-args.mjs emits: null on a
+    // fresh thread, so `--session-id <newSessionId>` CREATES the session under the id the caller
+    // minted; set afterwards, so a re-spawn `--resume`s it. That either/or is not cosmetic —
+    // `--session-id` on an id that already exists is refused outright ("Session ID <id> is
+    // already in use.", exit 1), which is precisely what a re-spawn would hit otherwise.
+    const args = ['--input-format', 'stream-json', '--replay-user-messages', ...buildClaudeArgs({ ...options, sessionId })];
     const cwd = normalizeCwd(options.cwd);
     // A non-existent cwd makes Node's spawn fail with a MISLEADING `spawn <bin>
     // ENOENT` — it names the binary, not the missing dir (operator 2026-06-14:
