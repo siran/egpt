@@ -129,7 +129,13 @@ export async function report({ cfg = readConfigSync(), extraPorts = [], deps = {
   const p = deps.probe ?? probe;
 
   const lines = [];
-  lines.push(`node ${cfg.node_name ?? '?'} — beeper.use = ${cfg.beeper?.use ?? '(none)'}`);
+  // `beeper.use` IS NOT A REQUIRED SELECTOR and its absence is not a fault (operator 2026-09-11):
+  // it OVERRIDES this node's default MOUTH, nothing else. Absent, the connection NAMES decide
+  // ('secondary', else 'primary', else the lone connection), the ear is decided without it either
+  // way, and each outbound rides whichever connection can actually reach that chat. So it is
+  // printed only when it is set — `beeper.use = (none)` read as a missing key, and (none) is now
+  // the ordinary shape.
+  lines.push(`node ${cfg.node_name ?? '?'}${cfg.beeper?.use != null ? ` — beeper.use = ${cfg.beeper.use} (overrides the default MOUTH; the ear is decided without it)` : ''}`);
   lines.push('');
   for (const port of ports) {
     const o = owners.get(port);

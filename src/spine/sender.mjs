@@ -177,9 +177,12 @@ export const RETAINED_SEAM = '\n\n— ↓ reply —\n\n';
  *
  * So the chat goes to the resolver too. Boot's answer (src/spine/boot.mjs outboundConnectionFor)
  * is: the being's own connection whenever it CAN REACH this chat — the same Beeper account, or a
- * chat this node has never heard at all (a synthesized turn, a heartbeat, the console) — and the
- * connection that HEARD the chat otherwise. A one-argument `bridgeOf` — every test that injects
- * one — simply ignores the extra argument and answers exactly as it did before.
+ * chat this node cannot place at all (a synthesized turn, a heartbeat, the console) — and the
+ * connection the chat LIVES ON otherwise. Boot knows that from two facts: the connection the chat
+ * ARRIVED on, and this node's own declared Self chat, which is a room on its ear whether anything
+ * has arrived yet or not (which is what lets a node-level announce ask the same question at boot).
+ * A one-argument `bridgeOf` — every test that injects one — simply ignores the extra argument and
+ * answers exactly as it did before.
  *
  * IT MOVES ONLY THE LOCAL HALF. `route()` below is untouched, so which mouth SAYS the reply is
  * decided exactly as it was; this is where the reply lands when no peer takes it.

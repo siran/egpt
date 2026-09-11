@@ -708,6 +708,18 @@ export const CONFIG_SCHEMA = {
     Neither can move the other. An agent's pin names its mouth and cannot make
     an ear; the ear is a node-level answer no agent participates in.
 
+    …AND THE MOUTH SPEAKS ONLY WHERE IT CAN REACH (operator 2026-09-11: "self
+    doesn't have mouth. if mouth is available always use mouth"). A chatId is a
+    Matrix room on ONE account: two connection names declaring the same account:
+    see the same rooms under the same ids, a different account cannot address
+    that chat at all. So every outbound this node places — an agent's reply and
+    the node's own announces alike — rides the mouth when the mouth can reach
+    the chat, and otherwise the connection that holds it (the one it arrived on,
+    or the ear for this node's own networks.<surface>.chat_ids). One rule, no
+    exception for node-level sends. beeper.use is therefore an OPTIONAL override
+    of the default mouth, never a requirement: with it absent the names decide,
+    and no chat becomes unreachable either way.
+
     MORE THAN ONE <name> block may be declared — e.g. a second Beeper Desktop
     login/WhatsApp number for a second being on the SAME node. One bridge
     instance is opened per DISTINCT (base_url, token) actually referenced — as

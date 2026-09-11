@@ -31,8 +31,12 @@
 # exactly as it did before those features existed, and the test suite locks that
 # (tests/single-account-node.test.mjs).
 #
-# Store one or MANY accounts (each account + its token together); `use` selects
-# the one this node connects with - switch by changing `use`, no re-typing tokens.
+# Store one or MANY accounts (each account + its token together). NOTHING SELECTS
+# ONE: with a single connection it is both the ear and the mouth, whatever it is
+# named. With several, the NAMES decide - `primary` is the ear, `secondary` is the
+# default mouth when it exists - and each outbound then goes out on whichever
+# connection can actually REACH that chat, because a chat id is a Matrix room on
+# ONE account and does not exist on the others.
 # Keep this file private. Token: Beeper Desktop > Settings > Developer > Desktop API.
 #
 # THE OPTIONAL KEYS, and what each one is FOR - do not add them speculatively:
@@ -44,18 +48,22 @@
 #   owner_node         WHICH node wakes on this connection, when the SAME account
 #                      is live on several nodes. Every other node still SENDS on
 #                      it. Absent = every node wakes, which is right for one node.
+#   use                On `beeper:` ITSELF, not inside a connection. OVERRIDES the
+#                      default MOUTH the names derive. OUTPUT ONLY: it can never
+#                      move the ear, and it cannot put a message into a chat its
+#                      connection is not in. You need it only to override.
 #   endpoints          DEPRECATED - a list of (base_url, token) candidates tried
 #                      in order. The token lookup above answers the same question
 #                      without a port list; a list repeating one token across
 #                      several ports collapses to plain account + token.
 beeper:
-  use: main                       # which account below this node connects with
   main:
     account: "you@example.com"    # the account this token belongs to (label)
     token: "PASTE_YOUR_TOKEN_HERE"
   # alt:
   #   account: "other@example.com"
   #   token: "PASTE_YOUR_TOKEN_HERE"
+  # use: main                     # OPTIONAL override of the default mouth - see above
 
 # --- This node's identity ----------------------------------------------------
 node_name: kg                     # REQUIRED - this node's name on the network, and the

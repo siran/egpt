@@ -711,10 +711,16 @@ export async function boot({
       // WARN IN THE CHAT IT CAME FROM (operator 2026-07-26: "STOP on any chat created the
       // file and emits warning in the chat that action was taken") — the operator must SEE
       // that it landed instead of wondering whether it registered. Routed through
-      // shellAwareBridge so a STOP typed at the operator console is answered on the console,
+      // shellAwareBridgeOf so a STOP typed at the operator console is answered on the console,
       // not posted to Beeper. Declared far below but only READ here at call time (post-boot,
       // from the spine) — the same call-time-safe forward reference as readTranscript's
       // resolveConvDir.
+      //
+      // …and it asks WHICH CONNECTION REACHES THIS CHAT (outboundConnectionFor, operator
+      // 2026-09-11) rather than riding the default mouth: STOP is typed in a chat this node
+      // HEARD, and on a node whose mouth is another Beeper account that chat id does not exist
+      // there. `null` for the being because there is none — the resolver then reads this node's
+      // default mouth, which is exactly what `shellAwareBridge` was.
       //
       // ⚠ CAPPED, exactly like announceAndExit's going-down line: the send races a 3s timer,
       // so a slow or wedged POST can never wedge the stop. If it fails or times out the node
@@ -726,7 +732,7 @@ export async function boot({
       if (why.chatId) {
         try {
           await Promise.race([
-            shellAwareBridge.send(why.chatId, `🛑 STOP received — egpt is stopping (the service will not respawn).\nTo start it again:  rm ${STOP_FILE}`, { bypassLasso: true }),
+            shellAwareBridgeOf(null, why.chatId).send(why.chatId, `🛑 STOP received — egpt is stopping (the service will not respawn).\nTo start it again:  rm ${STOP_FILE}`, { bypassLasso: true }),
             new Promise((r) => setTimeoutFn(r, 3000)),
           ]);
         } catch (e) { log.line?.(`[stop] could not post the warning (${e?.message ?? e}) — stopping anyway`); }
@@ -1402,15 +1408,21 @@ export async function boot({
   if (declaredConnections.length && !inboundConnections.length) {
     log.line?.(`[bridge] beeper: declares ${declaredConnections.map((n) => `'${n}'`).join(', ')} but this node resolves no INGEST connection — nothing survives the ear rules (owner_node naming this node, then 'primary', then a lone connection, then the default output connection). THIS NODE HEARS NOTHING: every bridge it opens is outbound-only. Name one connection 'primary', or put owner_node: ${node_name || '<this node>'} on the one this node should wake on.`);
   }
-  // `beeper.use` IS NOW HALF OF WHAT IT WAS (operator 2026-09-10): it selects this node's default
-  // OUTPUT connection and nothing else — the ear is decided above, and no `use:`, node-level or
-  // per-agent, can move it. Said out loud ONLY when it is actually overriding the name-derived
-  // answer, because that is the only case where removing the key would change anything. That is
-  // exactly the operator's live kg config, which carries `use: primary` marked TEMPORARY for no
-  // reason other than to hold the ear open — a job it no longer has. Silent on ~/.egpt2, whose
-  // lone connection resolves to the same answer with the key or without it.
+  // `beeper.use` IS NOW A THIRD OF WHAT IT WAS. (2026-09-10) it stopped deciding the ear, which is
+  // resolved above and which no `use:` — node-level or per-agent — can move. (2026-09-11) it
+  // stopped deciding where an outbound actually goes: it names this node's DEFAULT MOUTH, and the
+  // mouth speaks only where it can REACH the chat (outboundConnectionFor, below); a chat on
+  // another Beeper account is answered on the connection that holds it, node-level announces
+  // included. What is left is an OPTIONAL override of the name-derived default, and it stays
+  // supported precisely as an override (~/.egpt-secondary carries `use: primary`).
+  //
+  // Said out loud ONLY when it is actually overriding the name-derived answer, because that is the
+  // only case where removing the key would change anything at all — and the line has to be honest
+  // about how little that now is, or an operator reads it as "removing this moves my traffic to a
+  // Desktop that has never seen these chats", which was true yesterday and is not true today.
+  // Silent on a lone-connection node, which resolves to the same answer with the key or without it.
   if (cfg.beeper?.use != null && nameDerivedConnection && nameDerivedConnection !== cfg.beeper.use) {
-    log.line?.(`[bridge] beeper.use names '${cfg.beeper.use}' — it now selects this node's OUTPUT connection ONLY, and ingest (${inboundConnections.map((n) => `'${n}'`).join(', ') || 'NOTHING'}) is decided without it. Remove it and this node would SPEAK on '${nameDerivedConnection}' instead, hearing on exactly the same connection it hears on now.`);
+    log.line?.(`[bridge] beeper.use names '${cfg.beeper.use}' — it selects this node's DEFAULT MOUTH and nothing else: ingest (${inboundConnections.map((n) => `'${n}'`).join(', ') || 'NOTHING'}) is decided without it, and so is any chat that mouth cannot reach. Remove it and the default mouth becomes '${nameDerivedConnection}', this node hears on exactly the same connection it hears on now, and every chat only ${inboundConnections.map((n) => `'${n}'`).join(' / ') || 'the ear'} can reach — the Self-DM included — is still answered there.`);
   }
   // The per-agent half of the ear, and the ONLY thing the router's connection gate asks. An agent
   // does not CHOOSE its ear — the node does — but on a node holding SEVERAL ears the gate still
@@ -1779,7 +1791,7 @@ export async function boot({
     const b = await bridgeForEndpoint(endpointFor(name), { ear: false, name });
     if (!connectionOfBridge.has(b)) connectionOfBridge.set(b, name);
   }
-  const defaultBridge = bridgeByEndpoint.get(endpointKey(endpointFor(outboundOf(defaultKey))));   // the default/persona connection's bridge — every node-level (non-per-being) OUTBOUND call site below rides THIS, unchanged
+  const defaultBridge = bridgeByEndpoint.get(endpointKey(endpointFor(outboundOf(defaultKey))));   // the default/persona connection's bridge — this node's DEFAULT MOUTH, and what outboundConnectionFor(null, …) resolves to whenever that mouth can reach the chat
   // INBOUND ON EVERY CONNECTION (operator 2026-09-02), closing the gap the multi-connection work
   // left open: outbound has been per-connection since 2026-08-30, but the spine registered
   // onMessage/onEdit/onMedia on the DEFAULT bridge alone, so a message arriving on any other
@@ -1796,37 +1808,73 @@ export async function boot({
   const fanned = fanoutInbound(defaultBridge, [...bridgeByEndpoint.values()], connectionOfBridge);
   const bridge = bridgeByEndpoint.size > 1 ? remembering(fanned) : fanned;
   // ── WHICH CONNECTION AN OUTBOUND INTO *THIS CHAT* RIDES (operator 2026-09-11) ─────────────
-  // The being's own mouth (outboundOf) speaks whenever it CAN REACH the chat; when it cannot, the
-  // connection that HEARD the chat does. That is the whole rule, and the reachability test is not
-  // a guess: a chatId is a Matrix room on an ACCOUNT, so two connection names declaring the same
-  // `account:` see the same rooms under the same ids (the operator's `primary` and `primary_gui`
-  // — one account, two Desktop installs — which is exactly why the ear dedup above refuses to
-  // claim both), while a DIFFERENT account cannot address the chat at all: posting there is not
-  // the wrong voice, it is a room that does not exist.
+  // *"self doesn't have mouth. if mouth is available always use mouth."* ONE rule for every
+  // outbound this node places, with no exception for the node's own announces: the being's mouth
+  // (outboundOf) speaks whenever it CAN REACH the chat; when it cannot, the connection the chat
+  // actually LIVES ON does. The reachability test is not a guess: a chatId is a Matrix room on an
+  // ACCOUNT, so two connection names declaring the same `account:` see the same rooms under the
+  // same ids (the operator's `primary` and `primary_gui` — one account, two Desktop installs —
+  // which is exactly why the ear dedup above refuses to claim both), while a DIFFERENT account
+  // cannot address the chat at all: posting there is not the wrong voice, it is a room that does
+  // not exist.
   //
-  // FAIL TOWARD THE EAR. Not provably the same account (either side undeclared) ⇒ the arrival
-  // wins, because the ear is guaranteed to reach the chat and the other connection is not.
+  // FAIL TOWARD THE CHAT'S OWN CONNECTION. Not provably the same account (either side undeclared)
+  // ⇒ the chat's connection wins, because that one is guaranteed to reach it and the mouth is not.
   //
-  // AND IT MOVES ONLY WHERE A REPLY IS PLACED LOCALLY. An agent's `use:` still names its mouth,
-  // still decides which bridges are dialled, and is still what the peer mouth is offered against —
-  // the peer link is how a reply reaches the OTHER account's view of a chat (by name and members,
+  // A NODE-LEVEL SEND ASKS THE SAME QUESTION and gets it the same way — it carries no being, so
+  // outboundOf hands back this node's DEFAULT mouth and the rest of the rule runs unchanged. There
+  // is no second path and no special case for it; see goDown / the boot announce / the STOP
+  // confirmation below, which pass `null` where a reply passes a being.
+  //
+  // AND THE MOUTH IS STILL THE MOUTH. An agent's `use:` still names it, still decides which
+  // bridges are dialled, and is still what the peer mouth is offered against — the peer link is
+  // how a reply reaches the OTHER account's view of a chat (by name and members,
   // src/shell/peer-mouth.mjs), and it is untouched by this.
   const accountOf = (name) => String(connectionBlock(name)?.account ?? '').trim().toLowerCase();
   const reachesTheSameChats = (a, b) => a === b || (!!accountOf(a) && accountOf(a) === accountOf(b));
-  const toldAboutArrival = new Set();
+  // WHICH CONNECTION A CHAT LIVES ON — TWO SOURCES FOR ONE FACT, neither of them a guess:
+  //   · the ARRIVAL stamp (rememberArrival, above): a chat this node HEARD is a room on the
+  //     connection that heard it, permanently — a chatId belongs to exactly one account.
+  //   · THE SELF CHAT (selfChatId, above — `networks.<surface>.chat_ids[0]`), declared in this
+  //     node's OWN config as the operator command channel. A command channel is by definition a
+  //     chat this node HEARS, so that id was minted by the install this node's EAR is: it is a
+  //     room on the ear whether or not anything has arrived yet.
+  // The second source is what makes the BOOT ANNOUNCE resolvable. It fires before the first
+  // message of the process, so the arrival map is necessarily empty and no fallback that waits for
+  // an arrival could ever fire for it — but reachability is answered from the account a connection
+  // DECLARES, not from history, so nothing has to have happened yet.
+  // Several ears ⇒ the first, the same tie-break inboundOf makes. A legacy node whose one ear is
+  // the unnamed `null` connection reads as UNKNOWN here and answers with its mouth, which is that
+  // same single bridge.
+  //
+  // ANYTHING ELSE IS UNKNOWN and the mouth answers, exactly as before: a synthesized turn, a
+  // heartbeat, the shell surface, a chat only the mouth's account is in (a mouth-only connection
+  // is deaf, so its chats never reach the arrival map and must not be dragged onto the ear).
+  const connectionHolding = (chatId) => {
+    const c = String(chatId ?? '');
+    if (!c) return null;
+    const heard = arrivalConnection.get(c);
+    if (heard != null) return heard;
+    const self = selfChatId();
+    return self && shortChatId(c) === shortChatId(self) ? (inboundConnections[0] ?? null) : null;
+  };
+  const toldAboutHome = new Set();
   const outboundConnectionFor = (being, chatId) => {
     const mouth = outboundOf(being);
-    const heard = arrivalConnection.get(String(chatId ?? ''));
-    if (heard == null || reachesTheSameChats(heard, mouth)) return mouth;
-    // Never silent: an operator reading a reply that came out of an account they did not pin has
-    // to be able to find out why. Once per chat — this fires on every frame otherwise.
+    const home = connectionHolding(chatId);
+    if (home == null || reachesTheSameChats(home, mouth)) return mouth;
+    // Never silent: an operator reading a line that came out of an account they did not pin has
+    // to be able to find out why — and WHICH of the two facts above answered it, because one is
+    // measured and the other is read off the config. Once per chat: this fires on every frame
+    // otherwise.
     const told = `${chatId}→${mouth}`;
-    if (!toldAboutArrival.has(told)) {
-      if (toldAboutArrival.size >= ARRIVAL_MAX) toldAboutArrival.clear();
-      toldAboutArrival.add(told);
-      log.line?.(`[bridge] ${shortChatId(chatId)} was heard on '${heard}' and '${mouth}' is a different Beeper account — replies placed by this node go back out on '${heard}', because that chat id does not exist on '${mouth}'. The peer mouth is what reaches the other account's view of this chat.`);
+    if (!toldAboutHome.has(told)) {
+      if (toldAboutHome.size >= ARRIVAL_MAX) toldAboutHome.clear();
+      toldAboutHome.add(told);
+      const why = arrivalConnection.has(String(chatId ?? '')) ? 'it arrived there' : `it is this node's Self chat, declared in config, and '${home}' is the ear`;
+      log.line?.(`[bridge] ${shortChatId(chatId)} is a chat on '${home}' (${why}) and '${mouth}' is a different Beeper account — sends this node places locally go out on '${home}', because that chat id does not exist on '${mouth}'. The peer mouth is what reaches the other account's view of this chat.`);
     }
-    return heard;
+    return home;
   };
   // rawBridgeOf(being, chatId): the RAW (non-shell-aware) bridge that outbound rides. The second
   // argument arrives from sender.mjs's makeOutbound, the ONE outbound resolver; a caller with no
@@ -1989,9 +2037,11 @@ export async function boot({
   const shellAwareBridge = shellAwareBridgeByEndpoint.get(endpointKey(endpointFor(outboundOf(defaultKey))));
   // …and it asks the SAME question rawBridgeOf does (outboundConnectionFor, operator 2026-09-11):
   // the reply path asks this one, so this is the resolver that actually puts a locally placed
-  // reply back out the ear it came in on. A shell-owned chat never reaches the arrival map (the
-  // console does not arrive on a Beeper connection) and is redirected by the facade itself, so
-  // nothing there changes.
+  // reply back out the connection the chat lives on. The STOP confirmation (stopSwitch.pull, far
+  // above) asks it too, with `null` for the being — it is a node-level send and there is no second
+  // rule for those. A shell-owned chat is neither in the arrival map nor the Self chat (the
+  // console does not arrive on a Beeper connection), so it resolves UNKNOWN, rides the default
+  // mouth's facade, and is redirected to the console by that facade exactly as before.
   const shellAwareBridgeOf = (being, chatId = null) => shellAwareBridgeByEndpoint.get(endpointKey(endpointFor(outboundConnectionFor(being, chatId)))) ?? shellAwareBridge;
 
   // --- lifecycle announce: "restarting…" to Self before exit, "back up! <commit>"
@@ -2005,8 +2055,14 @@ export async function boot({
   async function goDown(code) {
     const selfDm = selfChatId();   // the Self chat (above) = the Self-DM announce target
     try { await mkdir(join(EGPT_HOME, 'state'), { recursive: true }); await writeFile(sidecar, JSON.stringify({ chatId: selfDm, kind: KIND_OF[code] ?? '?', preSha: shortSha(), pid: process.pid })); } catch {}
-    // best-effort going-down — names the PID going down (capped so a slow POST can't wedge the exit)
-    try { if (selfDm) await Promise.race([bridge.send(selfDm, `↻ ${KIND_OF[code] ?? 'restart'}… (pid ${process.pid})`), new Promise((r) => setTimeout(r, 3000))]); } catch {}
+    // best-effort going-down — names the PID going down (capped so a slow POST can't wedge the
+    // exit). rawBridgeOf, not the default `bridge`: the Self-DM is a room on this node's EAR, and
+    // where the mouth is another Beeper account that id does not exist there (operator
+    // 2026-09-11). No being, so the resolver reads the node's default mouth — what this was.
+    // The failure is SAID rather than swallowed: a restart line that never landed leaves the
+    // operator watching a silent chat, and this is the last thing the process does.
+    try { if (selfDm) await Promise.race([rawBridgeOf(null, selfDm).send(selfDm, `↻ ${KIND_OF[code] ?? 'restart'}… (pid ${process.pid})`), new Promise((r) => setTimeout(r, 3000))]); }
+    catch (e) { log.line?.(`[announce] could not post the going-down line (${e?.message ?? e}) — leaving anyway`); }
     exit(code);
   }
   // THE STAND-DOWN IS DEFERRED, NEVER ABRUPT (operator's ruling, plans/2609061200-SESSION-0-TO-1-
@@ -2149,7 +2205,14 @@ export async function boot({
     // beeper chat and rides the beeper bridge. This is the one seam that lets `/status`,
     // `/chrome kg`, … round-trip on the shell with ZERO duplicated dispatch — the same
     // commands service, two surfaces.
-    send: (chatId, text) => (shellPort.owns(chatId) ? shellPort.send(chatId, text) : bridge.send(chatId, text)),
+    //
+    // WHICH beeper bridge is the SAME question every other outbound asks (outboundConnectionFor,
+    // operator 2026-09-11) and it is asked here for the same reason: a command reply lands in the
+    // chat the command was TYPED in — overwhelmingly the Self-DM — and on a node whose default
+    // mouth is another Beeper account that chat id does not exist there, so `/status` would answer
+    // into a room that is not real. No being: a command reply is the NODE speaking, so the
+    // resolver reads the default mouth, which is exactly what plain `bridge` was.
+    send: (chatId, text) => (shellPort.owns(chatId) ? shellPort.send(chatId, text) : rawBridgeOf(null, chatId).send(chatId, text)),
     transcript: services.transcript,
     onLog: (m) => log.line?.(`[transcript] ${m}`),
   });
@@ -2395,6 +2458,13 @@ export async function boot({
   // either gap the fallback couldn't resolve a chat id for either) still gets a plain
   // "started" line below — the operator must never be silently in the dark about a restart.
   // Gated on the real-node flag so tests don't read/send through it.
+  //
+  // BOTH LINES RIDE rawBridgeOf, NOT THE DEFAULT `bridge` (operator 2026-09-11). This is the
+  // earliest outbound of the process — nothing has arrived yet — but it does not need an arrival:
+  // the target is this node's Self chat, declared in its own config, therefore a room on its EAR
+  // (outboundConnectionFor / connectionHolding, above). Where the mouth is a different Beeper
+  // account, "back up!" posted on the mouth is a room that does not exist. No being to pass, so
+  // the resolver reads this node's default mouth — byte-identical wherever the mouth can reach.
   if (ingest) (async () => {
     let sc; try { sc = JSON.parse(await readFile(sidecar, 'utf8')); } catch { sc = null; }
     if (sc) {
@@ -2408,7 +2478,7 @@ export async function boot({
       // way the recovery reaches a human: it names what the daemon did on its own and, for a
       // dirty-tree rescue, which rescue/<ts> branch the operator's uncommitted work is on.
       // Absent on every other sidecar, which therefore renders byte-for-byte as before.
-      try { await bridge.send(sc.chatId, `✅ egpt back up! (${head}) ${pids}${sc.note ? `\n\n⚠️ ${sc.note}` : ''}${subject ? `\n\n${subject}` : ''}`); }
+      try { await rawBridgeOf(null, sc.chatId).send(sc.chatId, `✅ egpt back up! (${head}) ${pids}${sc.note ? `\n\n⚠️ ${sc.note}` : ''}${subject ? `\n\n${subject}` : ''}`); }
       catch (e) { log.line?.(`[announce] ${e?.message ?? e}`); }
       return;
     }
@@ -2416,7 +2486,7 @@ export async function boot({
     if (!selfDm) return;
     const nowSha = shortSha();
     const subject = gitOut(['log', '-1', '--format=%s']);
-    try { await bridge.send(selfDm, `✅ egpt started (${nowSha}) pid ${process.pid}${subject ? `\n\n${subject}` : ''}`); }
+    try { await rawBridgeOf(null, selfDm).send(selfDm, `✅ egpt started (${nowSha}) pid ${process.pid}${subject ? `\n\n${subject}` : ''}`); }
     catch (e) { log.line?.(`[announce] ${e?.message ?? e}`); }
   })();
 

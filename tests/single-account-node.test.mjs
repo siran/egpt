@@ -319,10 +319,18 @@ describe('config/skeletons/config.yaml — the file a new user copies actually b
     // The three structural requirements boot throws on, checked as claims about the FILE first so
     // a failure names which one rotted rather than surfacing as an opaque boot error.
     expect(String(cfg.node_name ?? '').trim(), 'skeleton must set node_name — boot refuses to start without one').toBeTruthy();
-    const use = cfg.beeper?.use;
-    expect(use, 'skeleton must name which connection this node uses').toBeTruthy();
-    expect(cfg.beeper?.[use], `beeper.use names "${use}" but no such block exists`).toBeTypeOf('object');
-    expect(cfg.beeper[use].token, `beeper.${use} must carry a token`).toBe(TOKEN);
+    // AND IT SHIPS NO `beeper.use` (operator 2026-09-11). This asserted the opposite until then —
+    // that the file must NAME which connection the node uses — and that was the last thing making
+    // the key look required. It is not: a lone connection is the ear and the mouth whatever it is
+    // called (boot's nameDerivedConnection), `use:` only OVERRIDES the default mouth, and it can no
+    // longer decide where an outbound actually lands (outboundConnectionFor: the mouth speaks where
+    // it can reach the chat, and the connection holding the chat speaks where it cannot). Shipping
+    // it would teach a new user a key they do not need and hide the one-connection baseline behind
+    // a selector. ONE TOKEN IS THE WHOLE REQUIREMENT, which is what the file's own header says.
+    expect(cfg.beeper?.use, 'the skeleton must NOT ship beeper.use — a lone connection needs no selector').toBeUndefined();
+    const declared = Object.keys(cfg.beeper ?? {}).filter((k) => cfg.beeper[k] && typeof cfg.beeper[k] === 'object');
+    expect(declared, 'skeleton must declare exactly one beeper connection').toHaveLength(1);
+    expect(cfg.beeper[declared[0]].token, `beeper.${declared[0]} must carry a token`).toBe(TOKEN);
     const personas = Object.entries(cfg.agents ?? {}).filter(([, a]) => a?.default === true);
     expect(personas, 'skeleton must declare exactly one `default: true` persona agent').toHaveLength(1);
 
@@ -366,7 +374,9 @@ describe('config/skeletons/config.yaml — the file a new user copies actually b
 
   it('ships NONE of the multi-account expansion keys — a fresh install starts on the simple path', async () => {
     const cfg = filled();
-    const conn = cfg.beeper[cfg.beeper.use];
+    // The lone declared connection — read by NAME rather than through `use:`, which the shipped
+    // file no longer carries (see above).
+    const conn = Object.values(cfg.beeper).find((v) => v && typeof v === 'object');
     // Uncommenting one of these is a deliberate step a node takes when it grows into a second
     // Beeper Desktop or a second node on one account. Shipping any of them SET would hand every
     // new user the expanded path (and, for `endpoints:`, a boot-time HTTP probe) by default.
