@@ -86,9 +86,22 @@ const CONFIG_DIR_ENV = 'CLAUDE_CONFIG_DIR';
 // a pool account), so it survives both the scrub and `/agents reset`. Injectable purely for
 // tests, the same DI convention as `spawn` and `platform` — nothing in production overrides it,
 // and a blank/non-string override falls back rather than resolving to a bare relative path.
-function jsonlStoreRootOf(options) {
+export function jsonlStoreRootOf(options = {}) {
   const override = typeof options.jsonlStoreRoot === 'string' ? options.jsonlStoreRoot.trim() : '';
   return override || join(homedir(), '.egpt-jsonl');
+}
+
+// THE ONE FORMULA for "where does THIS thread's store live", exported (operator 2026-09-11) so the
+// two verbs that RETIRE a thread can move it instead of orphaning it — `/agents rethread` files it
+// beside the transcript it rolls, `/agents reset` sends it into the folder it archives (see
+// src/spine/commands.mjs moveCliStore). It has to be shared rather than re-derived: a second
+// expression of this path that drifted would leave the mover looking for a directory nothing
+// writes, and it would fail SILENTLY — an absent store is indistinguishable from a being that
+// never ran. Null when there is no thread (a codex/pi turn, or a caller with no id), which is
+// exactly the "there is no store" answer both callers already handle.
+export function jsonlStoreDirOf(threadId, options = {}) {
+  const id = String(threadId ?? '').trim();
+  return id ? join(jsonlStoreRootOf(options), id) : null;
 }
 
 // THE REMEDY, WORD FOR WORD, IN BOTH FAILURES BELOW (operator 2026-09-06). This is the one
@@ -200,7 +213,7 @@ export function createSandboxCliSession(options = {}) {
   const isCcode = engine === 'ccode' || engine === 'claude-code';
   const threadId = !isCcode ? null
     : ((typeof options.sessionId === 'string' && options.sessionId.trim()) ? options.sessionId.trim() : randomUUID());
-  const jsonlStoreDir = threadId ? join(jsonlStoreRootOf(options), threadId) : null;
+  const jsonlStoreDir = jsonlStoreDirOf(threadId, options);
   if (jsonlStoreDir) {
     // LOUD, AND BEFORE ANY SPAWN — same discipline as the three guards above. The tempting
     // alternative (log it and carry on with CLAUDE_CONFIG_DIR unset) is not a fallback, it is

@@ -12,6 +12,10 @@ import { lifecycleExit } from './ingest.mjs';
 import { isAutoMode, AUTO_MODES, DEFAULT_AUTO_MODE } from '../auto-mode.mjs';
 import { patchBeing, deleteBeing, getContact, getBeing, residentsOf, slugDir, statsPath, conversationPathOf, seedIdentityLayers, skeletonIdentityFiles, slugSuffix, rollTranscript, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS, LOBBY_SLUG } from '../conversations-state.mjs';
 import { stripFrontMatter } from '../transcript-meta.mjs';
+// WHERE A SANDBOXED BEING'S CLI STORE LIVES — the ONE formula, taken from the module that
+// CREATES it (src/sandbox-cli-session.mjs) rather than rebuilt here, so the two verbs that retire
+// a thread can move the store instead of orphaning it. See moveCliStore below.
+import { jsonlStoreDirOf } from '../sandbox-cli-session.mjs';
 import { coerceAllowedTools, resolveDefaultBrainDef, resolveBeingDef } from './brainpool.mjs';
 import { loadPermissionLevel, ACCESS_LEVELS, isAccessLevel } from './permission-levels.mjs';
 import { stat as fsStat, readFile as fsReadFile, writeFile as fsWriteFile, mkdir as fsMkdir, readdir as fsReaddir, rm as fsRm, rename as fsRename } from 'node:fs/promises';
@@ -480,6 +484,11 @@ export function createCommands({
   // whose stored id is the only thing on disk about it. Same degrade convention as
   // resolveChatId: absent (or throwing) simply makes those two messages shorter.
   listChats = null,
+  // The root the sandboxed CLI stores sit under (~/.egpt-jsonl). Injectable purely for tests, the
+  // SAME DI convention — and the same resolver — src/sandbox-cli-session.mjs uses for the write
+  // side, so the mover and the writer can never disagree about the path. Nothing in production
+  // overrides it. Only /agents rethread + /agents reset read it, through moveCliStore.
+  jsonlStoreRoot = null,
   // THE LAUNCH SEAM for /chrome, and WHICH ONE a spine gets is decided by its Windows session —
   // in boot.mjs, once, never here (see the banner over the chrome() dispatch). The DEFAULT is the
   // Session 0 task hop: `schtasks /run /tn egpt-chrome`, defaultLaunchChromeTask. A SESSION 1
@@ -1323,6 +1332,74 @@ export function createCommands({
     await send?.(ev.chatId, agentsStatus(surface, jid, handles, state));
   }
 
+  // ── A RETIRING THREAD'S CLI STORE MOVES WITH ITS RECORD (operator 2026-09-11) ─────────────
+  // 1087b63 put every sandboxed being's CLI session store at ~/.egpt-jsonl/<threadId> (see
+  // src/sandbox-cli-session.mjs's CONFIG_DIR_ENV note for why it had to leave the scrubbed pool
+  // profile). Nothing then ever moved it, so the two verbs that RETIRE a thread each left a bare
+  // UUID behind with no link back to any conversation: the directory grew monotonically, and —
+  // the real defect — an operator looking at one could not tell whose memory it was.
+  //
+  // MOVED, NEVER DELETED. `reset` archives and never deletes, and this file is not a copy of
+  // transcript.md: it is the MODEL's own memory of the thread, the transcript a resumed turn
+  // would have read. Nothing is destroyed here; if the disk is ever reclaimed that becomes one
+  // retention decision about conversations/archive/, not a deletion hidden inside a verb.
+  //
+  // ONE MOVER, TWO DESTINATIONS, and both are the room's own transcripts/ — the folder that
+  // already holds retired threads, so the store sits beside the transcript of the very same
+  // thread and is findable by the same id:
+  //   · rethread → <room>/transcripts/<threadId>.cli/   (beside the <threadId>.md it just rolled)
+  //   · reset    → <archived folder>/transcripts/<threadId>.cli/   (the same place, carried off
+  //     with the folder — an operator finds it in the same spot either way)
+  //
+  // AFTER THE VERB'S REAL WORK, ALWAYS, and that ORDER is the whole reason it can never break a
+  // verb: rolling the transcript and archiving the folder both complete BEFORE this is called, so
+  // a store that cannot be moved costs the operator a store, never the verb. It also makes both
+  // destinations real by the time they are used — rollTranscript's ensureTree has just made
+  // transcripts/, and reset's rename has just put the archived folder where it belongs.
+  //
+  // IT NEVER THROWS AND IT NEVER LIES. An ABSENT store is not a failure — a non-sandboxed being,
+  // or a thread that never spawned a turn, simply has none — and says nothing, because a line
+  // about a store that never existed on every rethread is noise. A store that IS there and could
+  // NOT be moved says so, in the reply AND in the log, naming where it was left so it can be
+  // found by hand.
+  //
+  // Returns null (nothing to move), { dest } or { error }; the CALLER words the reply, because
+  // only it knows which verb and which being the operator is looking at.
+  async function moveCliStore(threadId, destDir) {
+    const src = jsonlStoreDirOf(threadId, { jsonlStoreRoot });
+    if (!src) return null;                                    // no thread id → no store was ever minted
+    try { await stat(src); } catch { return null; }           // nothing on disk → not a sandboxed being, or it never ran
+    if (!destDir) {
+      const detail = `${src} — the conversation folder was not archived, so there is nowhere beside it to put the store`;
+      onLog(`/agents: CLI store NOT moved — ${detail}`);
+      return { error: detail };
+    }
+    // basename, not the raw id: it is the id in every real case, and it cannot climb out of
+    // destDir in the one where the id is not a bare path segment.
+    const dest = join(destDir, `${basename(src)}.cli`);
+    try {
+      await mkdir(destDir, { recursive: true });
+      await rename(src, dest);
+      return { dest };
+    } catch (e) {
+      const detail = `${src} → ${dest}: ${e?.message ?? e}`;
+      onLog(`/agents: CLI store NOT moved — ${detail}`);
+      return { error: detail };
+    }
+  }
+
+  // The one sentence both verbs append when — and ONLY when — there is something to say about a
+  // store. Built here so the two replies word it identically. `where` names WHOSE transcripts/ it
+  // is, because the two verbs mean different folders by the same relative path and the reply must
+  // not leave the operator looking in the live tree for a store that went into the archived one —
+  // it is a QUALIFIER, not the archive path (operator 2026-08-15: reset's confirmation never
+  // renders that).
+  const cliStoreNote = (results, where = '') => (results.length
+    ? ` ${results.map(([h, r]) => (r.error
+      ? `⚠️ ${h}'s CLI store was NOT moved (${r.error}) — it is still where it was`
+      : `${h}'s CLI store moved to ${where}transcripts/${basename(r.dest)}`)).join('; ')}.`
+    : '');
+
   // /agents[=<slug>] <handle>|all reset — was /e reset, generalized to any being (or every
   // resident): restart a conversation from scratch — archive its whole folder aside (never
   // delete), wipe the TARGET being(s)' registry state, reseed a pristine tree at the SAME
@@ -1366,7 +1443,11 @@ export function createCommands({
     const base = room.baseDir();
     // A contact with no folder ever created (edge case: no turn has run yet) has nothing to
     // archive — tolerate a missing source and proceed to reseed rather than crash.
-    try { await mkdir(archiveRoot, { recursive: true }); await rename(base, archivedDir); } catch { /* nothing to archive yet */ }
+    // WHETHER IT MOVED IS NOW REMEMBERED (operator 2026-09-11): the retiring beings' CLI stores go
+    // INTO that archived folder (moveCliStore, above), so there is somewhere to put them only if
+    // this succeeded. A store held with nowhere to go is reported rather than dropped.
+    let archived = false;
+    try { await mkdir(archiveRoot, { recursive: true }); await rename(base, archivedDir); archived = true; } catch { /* nothing to archive yet */ }
 
     // Wipe EACH target being's registry state OUTRIGHT (deleteBeing, not a merge) — the WHOLE
     // `agents.<handle>` block (mode, threadId, threadCreatedAt, identityInjectedAt,
@@ -1378,6 +1459,10 @@ export function createCommands({
     // brainpool.mjs's turn() to run a being at all, so silently downgrading it here previously
     // could strand a being with no access). A resident being NOT in `handles` is untouched
     // (see the scoping-fix comment above).
+    // …and the RETIRING THREAD per handle, read here for exactly the reason access_level is:
+    // deleteBeing below throws the whole block away, and ~/.egpt-jsonl/<threadId> is keyed by
+    // that id and by nothing else. Read before the wipe or it is unrecoverable.
+    const retiring = handles.map((h) => [h, getBeing(state, surface, jid, h)?.threadId ?? null]);
     const preserved = handles.map((h) => {
       const b = getBeing(state, surface, jid, h);
       const fields = {};
@@ -1398,11 +1483,22 @@ export function createCommands({
     await room.ensureTree({ io: { mkdir } });
     await seedIdentityLayers(room, 'egpt', { io: { mkdir, readFile, writeFile } });
 
+    // EACH RETIRING BEING'S CLI STORE GOES IN WITH THE FOLDER (operator 2026-09-11) — LAST, after
+    // the archive rename and the reseed, so the verb's own work is already done and complete
+    // whatever this manages. Into the ARCHIVED folder's transcripts/, never the pristine one just
+    // reseeded at the original path: the store belongs to the thread that just ended.
+    const stores = [];
+    for (const [h, tid] of retiring) {
+      const r = await moveCliStore(tid, archived ? join(archivedDir, 'transcripts') : null);
+      if (r) stores.push([h, r]);
+    }
+
     // Operator ruling (2026-08-15): "if you moved the folder the operation was successful or
     // not" — the confirmation reports success/failure ONLY, never the archive destination
     // (dropped the old `archiveNote`/`archived` plumbing that used to build a path string
-    // into this reply).
-    await send?.(ev.chatId, `✅ ${room.slug} reset ${where === 'here' ? '' : where + ' '}— ${handles.join(', ')} state cleared (access_level/allowed_users preserved), next message starts fresh.`);
+    // into this reply). The store clause is not that path: it appears only when a store was
+    // actually there, and a store left behind has to be findable by hand.
+    await send?.(ev.chatId, `✅ ${room.slug} reset ${where === 'here' ? '' : where + ' '}— ${handles.join(', ')} state cleared (access_level/allowed_users preserved), next message starts fresh.${cliStoreNote(stores, 'the archived folder\'s ')}`);
   }
 
   // /agents[=<slug>] <handle>|all refresh — the verb that changes NO lifecycle at all
@@ -1500,18 +1596,31 @@ export function createCommands({
     const room = (where === 'here') ? await convRoomOf(ev) : await resolveConvRoom(surface, jid);
     if (!room) { await send?.(ev.chatId, "can't resolve this conversation's room"); return; }
     try {
+      // THE RETIRING THREADS, read BEFORE patchBeing nulls them: ~/.egpt-jsonl/<threadId> is keyed
+      // by that id, so once the block says null the store's own name is the only thing left that
+      // knows which conversation it belonged to — which is the orphan this fixes.
+      const retiring = handles.map((h) => [h, getBeing(state, surface, jid, h)?.threadId ?? null]);
       let next = state;
       for (const h of handles) next = patchBeing(next, surface, jid, h, { threadId: null });
       await writeState(next);
       // THE ROLL, through the shared mover. Reported by its result, never assumed.
       const dest = await rollTranscript(room.surface, room.slug, { io: { readFile, writeFile, rename, mkdir } });
+      // …AND THE CLI STORE GOES BESIDE IT (operator 2026-09-11) — <threadId>.cli/ next to the
+      // <threadId>.md the roll just filed. AFTER the roll, so the transcript half is already done
+      // and transcripts/ already exists (rollTranscript's ensureTree made it), and so a store that
+      // cannot be moved costs a store and not the rethread.
+      const stores = [];
+      for (const [h, tid] of retiring) {
+        const r = await moveCliStore(tid, room.transcriptsDir);
+        if (r) stores.push([h, r]);
+      }
       // The roll's outcome leads its own clause and is never folded into the ✅: "but ... was
       // NOT moved" has to be readable at a glance, because the operator's next move depends on
       // it. The ✅ says the command ran; this says what it managed.
       const rolled = dest
         ? `and transcript.md moved to transcripts/${basename(dest)}`
         : 'but transcript.md was NOT moved (nothing written there yet, or it names no thread to file it under)';
-      await send?.(ev.chatId, `✅ ${handles.join(', ')} rethread ${where} — threadId cleared, ${rolled}. An accum boundary is marked in transcript.md, so nothing said before now is fed back; the next message starts a fresh session (mode/access_level unchanged, the conversation folder stays where it is — /agents reset is what archives).`);
+      await send?.(ev.chatId, `✅ ${handles.join(', ')} rethread ${where} — threadId cleared, ${rolled}.${cliStoreNote(stores)} An accum boundary is marked in transcript.md, so nothing said before now is fed back; the next message starts a fresh session (mode/access_level unchanged, the conversation folder stays where it is — /agents reset is what archives).`);
       await rethreadBoundary(ev, surface, jid, handles, state);
     } catch (e) { onLog(`/agents rethread ${ev.chatId}: ${e?.message ?? e}`); await send?.(ev.chatId, `/agents: rethread failed — ${e?.message ?? e}`); }
   }
