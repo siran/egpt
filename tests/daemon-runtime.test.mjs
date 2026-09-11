@@ -97,6 +97,11 @@ function makeRuntime(extra = {}) {
     importModule: extra.importModule ?? (async () => ({})),
     peerProbe: extra.peerProbe,
     now: extra.now ?? (() => Date.UTC(2026, 5, 18, 12, 0, 0)),
+    // Anything not named above reaches the runtime as-is. Without this the list was an
+    // ALLOWLIST that silently dropped seams a test passed — and a dropped fs seam is not an
+    // inert test bug: mkdirSync fell through to the real one and made C:\home\.egpt\state on
+    // the developer's disk. Spread LAST so an explicit key above is the default, not the law.
+    ...extra,
   });
   return { runtime, children, logs, processObj, spawnSync };
 }
@@ -1399,5 +1404,230 @@ describe('startProfileDaemons: one daemon, several profiles', () => {
     expect(made).toHaveLength(2);
     expect(logs.join('')).toContain('boom');
     expect(result.failed).toEqual(['C:/a']);
+  });
+});
+
+// =====================================================================================
+// EACH SUPERVISED PROFILE GETS ITS OWN LOG AGAIN.
+// =====================================================================================
+// `stdio: 'inherit'` hands the child the SERVICE's handles, which is exactly right for one
+// node — NSSM captures them, rotates them at 10 MB, and the file is that node's log. With two
+// profiles in one process it stops being true: both children inherit the same two handles, so
+// kg2's lines land in ~/.egpt/config/logs/service-stderr.log under kg's name and
+// ~/.egpt-secondary's log goes dead. MEASURED on reve 2026-09-11 after the merge: two
+// `connection 'primary'` lines on two different ports in one file, and the secondary's file
+// frozen at 16:23. A file carrying another node's lines under this node's name is the same
+// diagnostic hole 298750d closed with timestamps, reopened from the other side.
+//
+// So: only in the multi-profile case, the daemon opens <EGPT_HOME>/config/logs/service-
+// {stdout,stderr}.log itself and hands THOSE to the child. One node keeps 'inherit' and NSSM,
+// byte for byte.
+describe('daemon runtime: per-profile child logs', () => {
+  const CLOCK = Date.UTC(2026, 5, 18, 12, 0, 0);
+  const MB = 1024 * 1024;
+
+  function makeLogged({ perProfileLogs = true, logTag = null, sizes = {}, extra = {} } = {}) {
+    const opened = [];
+    const closed = [];
+    const renamed = [];
+    let nextFd = 100;
+    const h = makeRuntime({
+      now: () => CLOCK,
+      perProfileLogs,
+      logTag,
+      statSync: (p) => {
+        const path = String(p).replace(/\\/g, '/');
+        for (const [suffix, size] of Object.entries(sizes)) if (path.endsWith(suffix)) return { size, mtimeMs: CLOCK - 10_000 };
+        if (path.endsWith('.log')) { const e = new Error('missing'); e.code = 'ENOENT'; throw e; }
+        return { mtimeMs: CLOCK - 10_000 };
+      },
+      openSync: (p, flags) => { opened.push({ path: String(p).replace(/\\/g, '/'), flags }); return nextFd++; },
+      closeSync: (fd) => closed.push(fd),
+      renameSync: (from, to) => renamed.push({ from: String(from).replace(/\\/g, '/'), to: String(to).replace(/\\/g, '/') }),
+      mkdirSync: () => {},
+      liveDaemonPid: () => null,
+      setInterval: () => 1,
+      setTimeout: () => 1,
+      ...extra,
+    });
+    return { ...h, opened, closed, renamed };
+  }
+
+  // THE LOCK. One profile must be untouched: the child keeps the service's own handles, NSSM
+  // keeps capturing and rotating them, and the daemon opens nothing at all.
+  it('a single-profile node still inherits the service handles and opens no file of its own', () => {
+    const h = makeLogged({ perProfileLogs: false });
+    h.runtime.spawnShell();
+    expect(h.children[0].opts.stdio).toBe('inherit');
+    expect(h.opened).toEqual([]);
+    expect(h.closed).toEqual([]);
+  });
+
+  it("hands the child THIS profile's own two files, opened for append", () => {
+    const h = makeLogged();
+    h.runtime.spawnShell();
+    expect(h.opened.map((o) => o.path)).toEqual([
+      'C:/home/.egpt/config/logs/service-stdout.log',
+      'C:/home/.egpt/config/logs/service-stderr.log',
+    ]);
+    expect(h.opened.every((o) => o.flags === 'a')).toBe(true);
+    // stdin is dropped: a supervised spine never reads a console, and inheriting fd 0 from a
+    // service is how you get a child blocked on a handle nobody owns.
+    expect(h.children[0].opts.stdio).toEqual(['ignore', 100, 101]);
+  });
+
+  it('does not accumulate a handle per respawn — the previous pair is closed before the next open', async () => {
+    const h = makeLogged();
+    h.runtime.spawnShell();
+    await h.children[0].child.handlers.exit(RESTART_EXIT_CODE, null);
+    expect(h.children).toHaveLength(2);
+
+    expect(h.opened).toHaveLength(4);              // two spawns, two files each
+    expect(h.closed).toEqual([100, 101]);          // …and exactly the first pair closed
+    expect(h.children[1].opts.stdio).toEqual(['ignore', 102, 103]);
+  });
+
+  it('closes them on shutdown', () => {
+    const h = makeLogged();
+    h.runtime.spawnShell();
+    h.runtime.shutdown('SIGTERM');
+    expect(h.closed).toEqual([100, 101]);
+  });
+
+  // NSSM rotated what it captured; a file the daemon opens itself is rotated by nothing. So
+  // the daemon does it, at the one moment it safely can — while no child holds the handle —
+  // and to NSSM's own naming, so the rotated files sit in the same directory looking the same.
+  describe('rotation', () => {
+    it('rolls a file past the cap before opening it, using NSSM\u2019s naming', () => {
+      const h = makeLogged({ sizes: { 'config/logs/service-stderr.log': 11 * MB } });
+      h.runtime.spawnShell();
+      expect(h.renamed).toHaveLength(1);
+      expect(h.renamed[0].from).toBe('C:/home/.egpt/config/logs/service-stderr.log');
+      expect(h.renamed[0].to).toMatch(/config\/logs\/service-stderr-\d{8}T\d{6}\.\d{3}\.log$/);
+      expect(h.logs.join('')).toContain('rolled');
+    });
+
+    it('leaves a file under the cap alone', () => {
+      const h = makeLogged({ sizes: { 'config/logs/service-stderr.log': 3 * MB } });
+      h.runtime.spawnShell();
+      expect(h.renamed).toEqual([]);
+    });
+
+    it('says so ONCE when the live file passes the cap between respawns — nothing rotates it until then', () => {
+      const h = makeLogged({
+        sizes: { 'config/logs/service-stdout.log': 40 * MB },
+        extra: { aliveGraceMs: 0 },
+      });
+      // alive.txt fresh so the wedge check does not fire; the log file is oversize.
+      h.runtime.spawnShell();
+      h.runtime.checkLiveness();
+      h.runtime.checkLiveness();
+      const said = h.logs.join('').split('nothing rotates it').length - 1;
+      expect(said).toBe(1);
+    });
+  });
+
+  // THE COLLISION. Under the merged service NSSM captures the DAEMON's stdout into the primary
+  // profile's service-stdout.log. If the daemon then opened that same file for the primary's
+  // spine there would be two appenders on one file, and NSSM's rotation would rename it out
+  // from under our handle — every later line silently going to a file nobody tails.
+  it('refuses to open a second handle on the file the service is already capturing into, and says why', () => {
+    const h = makeLogged({
+      extra: {
+        statSync: (p) => (String(p).endsWith('.log') ? { size: 10, ino: 4242, dev: 7 } : { mtimeMs: CLOCK - 10_000 }),
+        fstatSync: () => ({ ino: 4242, dev: 7 }),
+      },
+    });
+    h.runtime.spawnShell();
+    expect(h.opened).toEqual([]);
+    expect(h.children[0].opts.stdio).toBe('inherit');
+    expect(h.logs.join('')).toContain('already capturing');
+  });
+
+  it('falls back to the service handles — loudly — when its own log cannot be opened', () => {
+    const h = makeLogged({ extra: { openSync: () => { throw new Error('EACCES'); } } });
+    h.runtime.spawnShell();
+    expect(h.children[0].opts.stdio).toBe('inherit');
+    expect(h.logs.join('')).toContain('EACCES');
+    expect(h.logs.join('')).toContain('mixed in with the other profiles');
+  });
+
+  // The supervisor's own narrative stays in ONE place (it is about the supervisor), so every
+  // line of it has to name the profile it is about.
+  describe('the daemon\u2019s own lines', () => {
+    it('carry the profile tag when this daemon shares a process with others', () => {
+      const h = makeLogged({ logTag: 'egpt-secondary' });
+      h.runtime.spawnShell();
+      expect(h.logs.join('')).toContain('] [egpt-secondary] starting node egpt-spine.mjs');
+    });
+
+    it('are byte-for-byte unchanged when it does not', () => {
+      const h = makeLogged({ perProfileLogs: false });
+      h.runtime.spawnShell();
+      // exactly one bracket group, the timestamp one — no tag wedged in after it
+      expect(h.logs.join('')).toMatch(/\[egpt-daemon [^\]]+\] starting node egpt-spine\.mjs/);
+    });
+  });
+});
+
+describe('startProfileDaemons: a line from each profile lands in that profile\u2019s own file', () => {
+  it('opens each profile\u2019s own two files and gives each child only its own', () => {
+    const opened = [];
+    const spawned = [];
+    let nextFd = 200;
+    startProfileDaemons({
+      profiles: ['C:/a', 'C:/b'],
+      root: 'C:/repo',
+      processObj: { env: {}, pid: 7, on: () => {}, exit: () => {} },
+      stdout: { write: () => {} },
+      now: () => 0,
+      spawn: (cmd, args, opts) => { spawned.push(opts); return { on: () => {} }; },
+      spawnSync: () => ({ status: 0, stdout: Buffer.from('') }),
+      readFileSync: () => { const e = new Error('missing'); e.code = 'ENOENT'; throw e; },
+      statSync: () => { const e = new Error('missing'); e.code = 'ENOENT'; throw e; },
+      openSync: (p) => { opened.push(String(p).replace(/\\/g, '/')); return nextFd++; },
+      closeSync: () => {},
+      mkdirSync: () => {},
+      writeFileSync: () => {},
+      liveDaemonPid: () => null,
+      setInterval: () => 1,
+      setTimeout: () => 1,
+      livenessIntervalMs: 0,
+    });
+
+    expect(opened).toEqual([
+      'C:/a/config/logs/service-stdout.log',
+      'C:/a/config/logs/service-stderr.log',
+      'C:/b/config/logs/service-stdout.log',
+      'C:/b/config/logs/service-stderr.log',
+    ]);
+    // …and no child was handed a handle belonging to the other profile.
+    expect(spawned.map((o) => o.stdio)).toEqual([['ignore', 200, 201], ['ignore', 202, 203]]);
+  });
+
+  it('one profile alone keeps inherit — the merge is the only thing that changes', () => {
+    const opened = [];
+    const spawned = [];
+    startProfileDaemons({
+      profiles: ['C:/a'],
+      root: 'C:/repo',
+      processObj: { env: {}, pid: 7, on: () => {}, exit: () => {} },
+      stdout: { write: () => {} },
+      now: () => 0,
+      spawn: (cmd, args, opts) => { spawned.push(opts); return { on: () => {} }; },
+      spawnSync: () => ({ status: 0, stdout: Buffer.from('') }),
+      readFileSync: () => { const e = new Error('missing'); e.code = 'ENOENT'; throw e; },
+      statSync: () => { const e = new Error('missing'); e.code = 'ENOENT'; throw e; },
+      openSync: (p) => { opened.push(String(p)); return 1; },
+      closeSync: () => {},
+      mkdirSync: () => {},
+      writeFileSync: () => {},
+      liveDaemonPid: () => null,
+      setInterval: () => 1,
+      setTimeout: () => 1,
+      livenessIntervalMs: 0,
+    });
+    expect(opened).toEqual([]);
+    expect(spawned[0].stdio).toBe('inherit');
   });
 });

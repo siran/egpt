@@ -207,17 +207,37 @@ if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) {
 }
 
 # --- 6. install + configure ---
-# One process, one stdout: the service log lives under the FIRST profile even when several are
-# supervised. Every profile still gets its state/ dir made, because the daemon writes its own
-# session marker there before it spawns anything.
+# WHO OWNS service-{stdout,stderr}.log, and it depends on how many profiles there are.
+#
+# ONE PROFILE: nothing changes. NSSM captures the whole process - supervisor and spine, since
+# the spine inherits the service handles - into <EGPT_HOME>/config/logs/service-*.log and
+# rotates it at 10 MB. That is what it has always been and what every reader expects.
+#
+# SEVERAL: the spines can no longer inherit those handles, because they are ONE pair shared by
+# every profile - kg2's lines landed in kg's file with nothing to tell them apart and kg2's own
+# file went dead (measured on reve 2026-09-11, the day the merge shipped). So daemon-runtime
+# opens <profile>/config/logs/service-*.log itself, one pair per profile, and NSSM must not be
+# pointed at the primary's pair as well: two appenders on one file, and NSSM's own rotation
+# would rename it out from under the daemon's handle. NSSM therefore captures the SUPERVISOR's
+# own narrative - which is about the supervisor, and names the profile on every line - into
+# daemon-*.log beside them.
 $logDir = Join-Path (Join-Path $EgptHome 'config') 'logs'   # logs live under config/ now (operator 2026-07-03)
 if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+# Every profile gets its config/logs and its state/ made here: the daemon writes its session
+# marker into one and opens its child log in the other, both before it spawns anything.
 foreach ($p in $profileList) {
-  $sd = Join-Path $p 'state'
-  if (-not (Test-Path $sd)) { New-Item -ItemType Directory -Path $sd -Force | Out-Null }
+  foreach ($sub in @('state', 'config\logs')) {
+    $d = Join-Path $p $sub
+    if (-not (Test-Path $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
+  }
 }
-$stdoutLog = Join-Path $logDir 'service-stdout.log'
-$stderrLog = Join-Path $logDir 'service-stderr.log'
+if ($profileList.Count -gt 1) {
+  $stdoutLog = Join-Path $logDir 'daemon-stdout.log'
+  $stderrLog = Join-Path $logDir 'daemon-stderr.log'
+} else {
+  $stdoutLog = Join-Path $logDir 'service-stdout.log'
+  $stderrLog = Join-Path $logDir 'service-stderr.log'
+}
 
 Write-Host "Installing $ServiceName (host: $serviceBin)..." -ForegroundColor Cyan
 & $serviceBin install $ServiceName $node "$daemonPath"
@@ -262,6 +282,13 @@ if ($svc.Status -eq 'Running') {
   if ($profileList.Count -gt 1) {
     Write-Host "  Confirm it came up with ALL of them - the daemon prints 'supervising N profile(s): ...'" -ForegroundColor Cyan
     Write-Host "  and shouts if fewer came up than were asked for."
+    Write-Host ""
+    Write-Host "  Logs, one node per file:" -ForegroundColor Cyan
+    foreach ($p in $profileList) {
+      Write-Host "    $(Join-Path (Join-Path $p 'config\logs') 'service-stderr.log')"
+    }
+    Write-Host "  The supervisor's own narrative (every line tagged with the profile it is about):"
+    Write-Host "    $stderrLog"
   }
   Write-Host "  Get-Content `"$stdoutLog`" -Tail 20 -Wait"
   Write-Host "  Stop:   Stop-Service $ServiceName"

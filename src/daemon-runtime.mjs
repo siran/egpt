@@ -1,7 +1,7 @@
 import { spawn as nodeSpawn, spawnSync as nodeSpawnSync } from 'node:child_process';
-import { existsSync as nodeExistsSync, mkdirSync as nodeMkdirSync, readFileSync as nodeReadFileSync, statSync as nodeStatSync, unlinkSync as nodeUnlinkSync, writeFileSync as nodeWriteFileSync } from 'node:fs';
+import { closeSync as nodeCloseSync, existsSync as nodeExistsSync, fstatSync as nodeFstatSync, mkdirSync as nodeMkdirSync, openSync as nodeOpenSync, readFileSync as nodeReadFileSync, renameSync as nodeRenameSync, statSync as nodeStatSync, unlinkSync as nodeUnlinkSync, writeFileSync as nodeWriteFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as YAML from 'yaml';
 import { liveDaemonPid as defaultLiveDaemonPid } from './daemon-singleton.mjs';
@@ -76,15 +76,30 @@ const SESSION1_ENV = 'EGPT_SESSION1';
 // would key its marker to the wrong session.
 const isSession1 = (env) => String(env?.[SESSION1_ENV] ?? '').trim() === '1';
 
-// Profiles this process supervises: EGPT_HOMES (';'-separated) if set, else the single
-// EGPT_HOME. Pure over the environment so the fan-out below and its tests share one rule.
+// The cap a per-profile child log is rolled at, and the shape of the rolled name. Both are
+// NSSM's: AppRotateBytes 10485760 and `service-stderr-20260911T204353.610.log`. Matched rather
+// than invented so the rotated files keep sitting in the same directory looking the same to
+// whoever tails them — and so the cost is identical to the one this replaces.
+export const CHILD_LOG_MAX_BYTES = 10 * 1024 * 1024;
+const humanBytes = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${n} bytes`);
+const rolledName = (path, at) => {
+  const stamp = new Date(at).toISOString().replace(/[-:]/g, '').replace(/Z$/, '');
+  return path.replace(/\.log$/, '') + `-${stamp}.log`;
+};
+
+// Profiles this process supervises: EGPT_HOMES if set, else the single EGPT_HOME. Pure over
+// the environment so the fan-out below and its tests share one rule.
 export function resolveProfiles(env = process.env, platform = process.platform) {
   const single = () => [env?.EGPT_HOME || join(homedir(), '.egpt')];
   const raw = String(env?.EGPT_HOMES ?? '').trim();
   if (!raw) return single();
   const seen = new Set();
   const out = [];
-  for (const entry of raw.split(';').map((s) => s.trim()).filter(Boolean)) {
+  // COMMA OR SEMICOLON, matching what install-nssm-service.ps1 accepts on -EgptHomes (05d7236:
+  // a `;` is a statement separator in bash, so an unquoted paste loses the argument). The
+  // installer normalises to `;` before writing the variable, but the two parsers disagreeing
+  // would be worse than either rule, so this takes both.
+  for (const entry of raw.split(/[;,]/).map((s) => s.trim()).filter(Boolean)) {
     // Dedupe on a normalised form so `C:/a` and `C:/a/` are not supervised twice — two
     // supervisors on one profile is the failure the singleton exists to prevent, and it must
     // not be reachable by a typo in one environment variable.
@@ -112,6 +127,10 @@ export function createDaemonRuntime(opts = {}) {
   const existsSync = opts.existsSync ?? nodeExistsSync;
   const writeFileSync = opts.writeFileSync ?? nodeWriteFileSync;
   const mkdirSync = opts.mkdirSync ?? nodeMkdirSync;
+  const openSync = opts.openSync ?? nodeOpenSync;
+  const closeSync = opts.closeSync ?? nodeCloseSync;
+  const renameSync = opts.renameSync ?? nodeRenameSync;
+  const fstatSync = opts.fstatSync ?? nodeFstatSync;
   const liveDaemonPid = opts.liveDaemonPid ?? defaultLiveDaemonPid;
   const processObj = opts.processObj ?? process;
   const stdout = opts.stdout ?? process.stdout;
@@ -141,6 +160,25 @@ export function createDaemonRuntime(opts = {}) {
   // profile — that file cannot say which session a supervisor is in, and it is why the old
   // guard could only ever be profile-scoped.
   const daemonPidPath = opts.daemonPidPath ?? join(egptHome, 'state', `daemon-${sessionKey}.pid`);
+  // --- where this profile's spine writes (operator 2026-09-11) ----------------------------
+  // `stdio: 'inherit'` gives the child the SERVICE's own handles. For one node that is exactly
+  // right and stays: NSSM captures them into <EGPT_HOME>/config/logs/service-{stdout,stderr}.log
+  // and rotates them at 10 MB. For TWO profiles in one process it is a lie — both children
+  // inherit the same two handles, so kg2's lines land in kg's file with nothing to tell them
+  // apart and kg2's own file goes dead (measured on reve the day the merge shipped). So when
+  // this daemon shares a process, it opens the profile's own pair itself and hands those over.
+  // Same paths NSSM used, because that is where every reader of this node already looks.
+  const perProfileLogs = opts.perProfileLogs ?? false;
+  // Named in the daemon's OWN lines, which stay in one place (the supervisor's narrative is
+  // about the supervisor) and therefore have to say which profile each line is about.
+  const logTag = opts.logTag ?? null;
+  const childLogPaths = opts.childLogPaths ?? {
+    stdout: join(egptHome, 'config', 'logs', 'service-stdout.log'),
+    stderr: join(egptHome, 'config', 'logs', 'service-stderr.log'),
+  };
+  const childLogMaxBytes = opts.childLogMaxBytes ?? CHILD_LOG_MAX_BYTES;
+  let childLogFds = null;      // the pair the CURRENT child holds, or null
+  let childLogWarned = false;  // one oversize warning per child, not one per liveness tick
   // The SAME sidecar boot.mjs's read-back block reads (join(EGPT_HOME, 'state',
   // 'restart-announce.json')) — the daemon writes a fallback here ONLY for the two exit
   // paths where the dying spine never got a chance to write its own (a crash, or a
@@ -209,7 +247,7 @@ export function createDaemonRuntime(opts = {}) {
   let lastGoodRecorded = false;   // once per child; reset in spawnShell
 
   function log(msg) {
-    stdout.write(`[egpt-daemon ${new Date(now()).toISOString()}] ${msg}\n`);
+    stdout.write(`[egpt-daemon ${new Date(now()).toISOString()}]${logTag ? ` [${logTag}]` : ''} ${msg}\n`);
   }
 
   // An escalation must be impossible to miss in a log whose normal texture is one line per
@@ -316,6 +354,20 @@ export function createDaemonRuntime(opts = {}) {
     }
     wedgeStreak = 0;   // a fresh beat — heartbeat restored, clear the escalation
     recordLastGood();  // …and the only place we KNOW the child is past grace and beating
+    warnIfLogOversize();
+  }
+
+  // NSSM rotated online; we can only roll between children (see rollIfOversize). A spine that
+  // runs for months therefore grows one file for months, and an unbounded log on an always-on
+  // node is a real cost — so it is said out loud rather than left to be discovered by a full
+  // disk. Once per child, not once per tick.
+  function warnIfLogOversize() {
+    if (!childLogFds || childLogWarned) return;
+    let size;
+    try { size = statSync(childLogPaths.stdout).size; } catch { return; }
+    if (!(size >= childLogMaxBytes)) return;
+    childLogWarned = true;
+    log(`${childLogPaths.stdout} is ${humanBytes(size)} and nothing rotates it while this spine is up — it rolls on the next respawn. Restart the spine, or move the file aside, if that is too big.`);
   }
 
   // A narrow reimplementation of boot.mjs's selfChatId()/surfaceCfg() lookup — the daemon
@@ -601,6 +653,67 @@ export function createDaemonRuntime(opts = {}) {
     standdownTimer?.unref?.();
   }
 
+  // --- the per-profile child log ------------------------------------------------------------
+  // Is `path` the very file our OWN stdout/stderr is already being captured into? Under the
+  // merged service NSSM captures the DAEMON's output into the PRIMARY profile's
+  // service-stdout.log, which is also where that profile's spine belongs. Opening a second
+  // handle on it would give one file two appenders, and NSSM's own rotation would then rename
+  // it out from under ours — every later line going to a file nobody tails. Cheap to detect
+  // (same inode, same device) and the honest answer is to not do it and say so.
+  function isOurOwnCapture(path, fd) {
+    try {
+      const a = statSync(path);
+      const b = fstatSync(fd);
+      if (a?.ino == null || b?.ino == null) return false;   // no inode = no answer, so no claim
+      if (!a.ino && !b.ino) return false;                   // Windows reports 0 for some handles
+      return a.ino === b.ino && a.dev === b.dev;
+    } catch { return false; }
+  }
+
+  // Roll at the same size and to the same name NSSM used. Done here, at spawn time, because it
+  // is the one moment no child holds the handle: renaming a file a live child is writing to
+  // just moves the bytes it is still producing into the rolled copy.
+  function rollIfOversize(path) {
+    let size;
+    try { size = statSync(path).size; } catch { return; }   // absent is the ordinary first boot
+    if (!(size >= childLogMaxBytes)) return;
+    try {
+      renameSync(path, rolledName(path, now()));
+      log(`rolled ${path} (${humanBytes(size)}) — a fresh one starts now`);
+    } catch (e) {
+      log(`could not roll ${path} at ${humanBytes(size)} (${e.message}) — it keeps growing`);
+    }
+  }
+
+  function closeChildLogs() {
+    if (!childLogFds) return;
+    for (const fd of [childLogFds.out, childLogFds.err]) { try { closeSync(fd); } catch { /* already gone */ } }
+    childLogFds = null;
+  }
+
+  // The pair for the next child, or null meaning "inherit, like a single-profile node".
+  function openChildLogs() {
+    if (!perProfileLogs) return null;
+    const selfOut = processObj.stdout?.fd ?? 1;
+    if (isOurOwnCapture(childLogPaths.stdout, selfOut)) {
+      log(`${childLogPaths.stdout} is the file this service is already capturing my own output into, so I will NOT open a second handle on it — this profile's spine keeps writing to the service handles, mixed in with the other profiles. Re-run the service installer with -EgptHomes so the service captures its own output into daemon-{stdout,stderr}.log instead.`);
+      return null;
+    }
+    try { mkdirSync(dirname(childLogPaths.stdout), { recursive: true }); } catch { /* the open below reports it */ }
+    const fds = {};
+    try {
+      for (const [key, path] of [['out', childLogPaths.stdout], ['err', childLogPaths.stderr]]) {
+        rollIfOversize(path);
+        fds[key] = openSync(path, 'a');
+      }
+    } catch (e) {
+      for (const fd of Object.values(fds)) { try { closeSync(fd); } catch { /* partial open */ } }
+      log(`could not open this profile's own log files under ${dirname(childLogPaths.stdout)} (${e.message}) — its spine will write to the service handles, mixed in with the other profiles. Nothing is lost, but nothing distinguishes it either.`);
+      return null;
+    }
+    return fds;
+  }
+
   function spawnShell() {
     if (stopping) return null;
     const appPath = join(root, 'egpt-spine.mjs');
@@ -611,9 +724,18 @@ export function createDaemonRuntime(opts = {}) {
     // spine could not boot" from "the spine ran and then died" when the child exits.
     spawnBeatMtime = beatMtime();
     lastGoodRecorded = false;
+    // Close the pair the PREVIOUS child held before opening the next: one open, one close, so a
+    // spine that respawns on 42/43/44 or after a stand-down never leaks a handle. Nothing
+    // writes to these between the two — the daemon's own lines go to its own stdout — so the
+    // gap costs no lines.
+    closeChildLogs();
+    childLogWarned = false;
+    childLogFds = openChildLogs();
     child = spawn('node', args, {
       cwd: root,
-      stdio: 'inherit',   // NSSM captures stdout/stderr to the service logs
+      // One profile: the service's own handles, and NSSM's capture and rotation, untouched.
+      // Several: this profile's own two files (stdin dropped — a supervised spine reads none).
+      stdio: childLogFds ? ['ignore', childLogFds.out, childLogFds.err] : 'inherit',
       // EGPT_HOME is stated EXPLICITLY rather than inherited: one process now supervises
       // several profiles (see startProfileDaemons), and the ambient EGPT_HOME can only name
       // one of them. A spine that inherited the wrong one would be a second node on somebody
@@ -717,6 +839,7 @@ export function createDaemonRuntime(opts = {}) {
     stopping = true;
     log(`${sig} received — stopping egpt-daemon`);
     releaseSession();
+    closeChildLogs();
     if (livenessTimer) { clearIntervalFn(livenessTimer); livenessTimer = null; }
     if (standdownTimer) { clearIntervalFn(standdownTimer); standdownTimer = null; }
     if (child) {
@@ -832,6 +955,14 @@ export function startProfileDaemons({ profiles, createRuntime = createDaemonRunt
   const now = opts.now ?? Date.now;
   const homes = profiles ?? resolveProfiles(processObj.env);
   const say = (m) => stdout.write(`[egpt-daemon ${new Date(now()).toISOString()}] ${m}\n`);
+  // THE ONLY THING SHARING A PROCESS CHANGES about a runtime: its child can no longer inherit
+  // the service's handles (they belong to every profile at once), and its own log lines can no
+  // longer be read without knowing which profile they are about. One profile changes neither.
+  const shared = homes.length > 1;
+  const perProfileLogs = opts.perProfileLogs ?? shared;
+  // ~/.egpt -> egpt, ~/.egpt-secondary -> egpt-secondary. The same name the service and the
+  // session-1 task are derived from, so one word finds all three.
+  const tagFor = (home) => (shared ? basename(home.replace(/[\\/]+$/, '')).replace(/^\./, '') : null);
 
   const live = new Set(homes);
   const retire = (home, code) => {
@@ -842,6 +973,9 @@ export function startProfileDaemons({ profiles, createRuntime = createDaemonRunt
   const seamFor = (home) => ({
     get env() { return processObj.env; },
     get pid() { return processObj.pid; },
+    // Forwarded so each runtime can ask what THIS process's stdout is already going into,
+    // which is how it avoids opening a second handle on the file the service is capturing.
+    get stdout() { return processObj.stdout; },
     on: (...a) => processObj.on(...a),
     exit: (code) => retire(home, code),
   });
@@ -850,7 +984,9 @@ export function startProfileDaemons({ profiles, createRuntime = createDaemonRunt
   const runtimes = [];
   const failed = [];
   for (const home of homes) {
-    const runtime = createRuntime({ ...opts, egptHome: home, processObj: seamFor(home) });
+    const runtime = createRuntime({
+      ...opts, perProfileLogs, logTag: opts.logTag ?? tagFor(home), egptHome: home, processObj: seamFor(home),
+    });
     runtimes.push({ egptHome: home, runtime });
     let child = null;
     try { child = runtime.start(); } catch (e) { say(`profile ${home} threw while starting: ${e?.message ?? e}`); }
