@@ -117,7 +117,11 @@ if ($gitExe) {
 # EGPT_HOMES is the multi-profile knob; EGPT_HOME stays the single-profile one and the
 # fallback the daemon uses when EGPT_HOMES says nothing.
 $profileList = @($EgptHome)
-if ($EgptHomes) { $profileList = @($EgptHomes.Split(';') | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
+# COMMA OR SEMICOLON (2026-09-11). A `;` is a statement separator in bash, so the documented
+# semicolon form has to be quoted, and an unquoted or line-wrapped paste silently loses the
+# argument and then tries to RUN the second path -- which is exactly what happened to the
+# operator. A comma costs nothing and survives an unquoted paste.
+if ($EgptHomes) { $profileList = @($EgptHomes.Split(@(';', ','), [StringSplitOptions]::RemoveEmptyEntries) | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
 
 Write-Host ""
 Write-Host "About to install node:" -ForegroundColor Cyan
@@ -221,7 +225,7 @@ Write-Host "Installing $ServiceName (host: $serviceBin)..." -ForegroundColor Cya
 # EGPT_HOME selects the profile; EGPT_HOMES, when given, selects several and EGPT_HOME stays
 # as the fallback the daemon uses if EGPT_HOMES is ever cleared.
 if ($EgptHomes) {
-  & $nssm set $ServiceName AppEnvironmentExtra "EGPT_HOME=$EgptHome" "EGPT_HOMES=$EgptHomes"
+  & $nssm set $ServiceName AppEnvironmentExtra "EGPT_HOME=$EgptHome" "EGPT_HOMES=$($profileList -join ';')"
 } else {
   & $nssm set $ServiceName AppEnvironmentExtra "EGPT_HOME=$EgptHome"
 }

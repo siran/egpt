@@ -12,7 +12,14 @@
 # service. A caller who passed a wrong or unrecognised switch (e.g. -EgptHome, which this
 # script does not take) therefore removed the primary daemon instead of failing. A
 # destructive script must name its target explicitly.
-param([Parameter(Mandatory = $true)][string]$ServiceName)
+# -LogPath is passed to the ELEVATED CHILD explicitly. It must not be defaulted on both sides:
+# an elevated process gets a DIFFERENT %TEMP% than an MSYS shell (C:\msys64	mp here), so parent
+# and child each computed their own path, the child wrote one file and the parent read another,
+# and the parent reported 'left no log' on a run that had actually succeeded.
+param(
+  [Parameter(Mandatory = $true)][string]$ServiceName,
+  [string]$LogPath = (Join-Path $env:TEMP 'egpt-uninstall-service.log')
+)
 
 $ErrorActionPreference = 'Stop'
 
@@ -25,7 +32,6 @@ $ErrorActionPreference = 'Stop'
 # script ends -- on 2026-09-11 an install died on a locked file and the operator saw nothing at
 # all, because the window carrying the error was already gone. So the child logs to a file and
 # the parent prints it. -Wait is required or the parent returns before the child has run.
-$LogPath = Join-Path $env:TEMP 'egpt-uninstall-service.log'
 $me = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
   Write-Host "Not elevated - relaunching as administrator (approve the UAC prompt)..." -ForegroundColor Yellow
@@ -34,6 +40,7 @@ if (-not $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     if ($kv.Value -is [switch]) { if ($kv.Value.IsPresent) { $a += "-$($kv.Key)" } }
     else { $a += @("-$($kv.Key)", ('"' + $kv.Value + '"')) }
   }
+  if (-not $PSBoundParameters.ContainsKey('LogPath')) { $a += @('-LogPath', ('"' + $LogPath + '"')) }
   try { Start-Process powershell -Verb RunAs -ArgumentList $a -Wait }
   catch { Write-Host "Elevation was refused or cancelled." -ForegroundColor Red; exit 1 }
   if (Test-Path -LiteralPath $LogPath) { Write-Host ''; Get-Content -LiteralPath $LogPath }
