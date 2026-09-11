@@ -49,7 +49,9 @@ import { createGating } from './gating.mjs';
 // wake set boot hands the ports and the router's own @token scan can never disagree again.
 import { createRouter, wakeTokens, voiceWakeTokens, fallbackWake } from './router.mjs';
 import { createTranscript } from './transcript.mjs';
-import { createSender } from './sender.mjs';
+// createSender: the reply path. makeOutbound: the ONE answer to "which connection does this
+// outbound go out on" (sender.mjs's header), asked by makePeerMouth below rather than copied.
+import { createSender, makeOutbound } from './sender.mjs';
 import { createBrainPool } from './brainpool.mjs';
 import { createRoomRelay } from './room-relay.mjs';
 import { createIdentityScope } from './identity-scope.mjs';
@@ -236,18 +238,52 @@ export function makeShellAwareBridge(bridge, shellPort) {
 // THE CONSOLE IS NEVER ROUTED. A shell/room chat id is not a Beeper chat, so asking Beeper about
 // its roster is a wasted (and failing) GET on every reply typed at the editor. `owns` is the SAME
 // ownership signal the shell-aware bridge already routes outbound on — no second rule.
-export function makePeerMouth({ peer, bridge, owns = () => false, speak = speakThroughPeer, stream = startPeerStream, reactor = reactThroughPeer, onLog = () => {} } = {}) {
+//
+// …AND BOTH READS ASK THE CONNECTION THAT HOLDS THE CHAT (operator 2026-09-11). *"self doesn't
+// have mouth. if mouth is available always use mouth."* This object held ONE frozen bridge — the
+// fan-out facade, which delegates everything but its three inbound registrations to the node's
+// DEFAULT MOUTH. The facade fans `chatHasParticipant` (per-account, bridge-fanout.mjs) and does
+// NOT fan `chatRaw`, so on a two-account node the two reads answered about two different
+// accounts: the membership came from the connection that HAS the chat, and the payload was then
+// demanded of one that does not. chatRaw came back empty, route() gave up, and the peer link was
+// dead for every chat heard on the ear — quietly, because "the payload came back empty" reads
+// like a Beeper hiccup rather than a question asked of the wrong install.
+//
+// `bridgeOf(being, chatId)` is the SAME per-chat resolver the reply path already asks
+// (outboundConnectionFor, below): the mouth wherever the mouth can reach the chat, the connection
+// the chat lives on where it cannot. ONE bridge is resolved per route() and BOTH reads go to it,
+// because they are two halves of one question about one room. No being — routing is a question
+// about a CHAT, not about who is speaking — so `null` is passed, as every node-level send does.
+//
+// NOTHING IS LOST BY UN-FANNING chatHasParticipant here. Where the resolver has no answer (a chat
+// this node never heard) it hands back the mouth, which is the bridge the facade delegated
+// chatRaw to anyway — so the fan could see one connection further than the very next line could
+// act on, and route() refused either way. Where it does have an answer, asking the one connection
+// that holds the room is strictly more precise than a vote (bridge-fanout's own words: "at most
+// one connection ever holds a definite answer").
+//
+// SPEAKING IS UNTOUCHED. startStream and react go over the PEER CONSOLE (startPeerStream /
+// reactThroughPeer) and never over a bridge on this node — that is the whole point of the link,
+// and no bridge, resolved or frozen, appears in either.
+export function makePeerMouth({ peer, bridge, bridgeOf = null, owns = () => false, speak = speakThroughPeer, stream = startPeerStream, reactor = reactThroughPeer, onLog = () => {} } = {}) {
   if (!peer) return null;                     // no peer_spine ⇒ no mouth ⇒ createSender is handed none ⇒ nothing changes
+  // THE ONE RESOLVER (sender.mjs makeOutbound), built once. No peerMouth is handed to it, so its
+  // own route thunk is inert — this IS the peer mouth, and all that is wanted here is which of
+  // THIS node's connections holds the room. Absent bridgeOf (a one-connection node, and every
+  // unit test) ⇒ the injected bridge, byte-identical to before.
+  const outbound = makeOutbound({ bridge, bridgeOf });
   return {
     async route(chatId) {
       if (owns(chatId)) return null;
+      // The connection this chat lives on, asked ONCE and read twice (header).
+      const on = outbound(null, chatId).bridge;
       for (const account of peer.accounts) {
         let present = null;
-        try { present = await bridge?.chatHasParticipant?.(chatId, account); }
+        try { present = await on?.chatHasParticipant?.(chatId, account); }
         catch (e) { onLog(`could not read the roster of ${chatId} — this node will say the reply itself: ${e?.message ?? e}`); return null; }
         if (present !== true) continue;       // false = the peer is not here; null = UNKNOWN → local (above)
         let raw = null;
-        try { raw = await bridge?.chatRaw?.(chatId); }
+        try { raw = await on?.chatRaw?.(chatId); }
         catch (e) { onLog(`the peer's account is in ${chatId} but its chat payload could not be read — this node will say the reply itself: ${e?.message ?? e}`); return null; }
         if (!raw) { onLog(`the peer's account is in ${chatId} but its chat payload came back empty — this node will say the reply itself`); return null; }
         return raw;
@@ -1832,13 +1868,23 @@ export async function boot({
   // src/shell/peer-mouth.mjs), and it is untouched by this.
   const accountOf = (name) => String(connectionBlock(name)?.account ?? '').trim().toLowerCase();
   const reachesTheSameChats = (a, b) => a === b || (!!accountOf(a) && accountOf(a) === accountOf(b));
-  // WHICH CONNECTION A CHAT LIVES ON — TWO SOURCES FOR ONE FACT, neither of them a guess:
+  // WHICH CONNECTION A CHAT LIVES ON — THREE SOURCES FOR ONE FACT, none of them a guess:
   //   · the ARRIVAL stamp (rememberArrival, above): a chat this node HEARD is a room on the
   //     connection that heard it, permanently — a chatId belongs to exactly one account.
   //   · THE SELF CHAT (selfChatId, above — `networks.<surface>.chat_ids[0]`), declared in this
   //     node's OWN config as the operator command channel. A command channel is by definition a
   //     chat this node HEARS, so that id was minted by the install this node's EAR is: it is a
   //     room on the ear whether or not anything has arrived yet.
+  //   · THE ADVICE CHANNEL (`advice_channel`, config/config-schema.mjs), declared in this node's
+  //     own config as the chat E's /ask posts to AND the operator answers in (operator
+  //     2026-09-11). The same kind of fact as the Self chat, and true for a sharper reason:
+  //     src/spine/advice.mjs routes the answer home by matching the operator's quote-reply
+  //     against the message id postStatus handed back, and an inbound only ever arrives on an EAR
+  //     (every other connection boot opens is outbound-only, its onMessage a no-op). An ask
+  //     posted anywhere else is unanswerable by construction — the ids belong to another account,
+  //     in another Matrix room. It is matched AS CONFIGURED, because the schema allows a chat
+  //     NAME as well as a raw room id and a name is not something the arrival map could ever
+  //     hold: the declaration is the only thing that can answer for that form.
   // The second source is what makes the BOOT ANNOUNCE resolvable. It fires before the first
   // message of the process, so the arrival map is necessarily empty and no fallback that waits for
   // an arrival could ever fire for it — but reachability is answered from the account a connection
@@ -1850,29 +1896,41 @@ export async function boot({
   // ANYTHING ELSE IS UNKNOWN and the mouth answers, exactly as before: a synthesized turn, a
   // heartbeat, the shell surface, a chat only the mouth's account is in (a mouth-only connection
   // is deaf, so its chats never reach the arrival map and must not be dragged onto the ear).
+
+  // The declared advice channel, read the SAME way src/spine/advice.mjs reads it (getConfig() →
+  // `advice_channel`, trimmed, empty ⇒ unset) so the two can never disagree about what the
+  // channel IS while agreeing about where it lives.
+  const adviceChannelDeclared = () => { const c = getConfig()?.advice_channel; const s = c == null ? '' : String(c).trim(); return s || null; };
+  // …and it hands back the PROVENANCE with the name, because the log line below has to say which
+  // of the three facts answered — one is measured and two are read off the config, and an
+  // operator chasing a line that came out of an unpinned account needs to know which.
   const connectionHolding = (chatId) => {
     const c = String(chatId ?? '');
     if (!c) return null;
     const heard = arrivalConnection.get(c);
-    if (heard != null) return heard;
+    if (heard != null) return { name: heard, why: 'it arrived there' };
+    const ear = inboundConnections[0] ?? null;
     const self = selfChatId();
-    return self && shortChatId(c) === shortChatId(self) ? (inboundConnections[0] ?? null) : null;
+    if (self && shortChatId(c) === shortChatId(self)) return { name: ear, why: `it is this node's Self chat, declared in config, and '${ear}' is the ear` };
+    const advice = adviceChannelDeclared();
+    if (advice && shortChatId(c) === shortChatId(advice)) return { name: ear, why: `it is this node's advice channel, declared in config, and '${ear}' is the ear` };
+    return null;
   };
   const toldAboutHome = new Set();
   const outboundConnectionFor = (being, chatId) => {
     const mouth = outboundOf(being);
-    const home = connectionHolding(chatId);
+    const holder = connectionHolding(chatId);
+    const home = holder?.name ?? null;
     if (home == null || reachesTheSameChats(home, mouth)) return mouth;
     // Never silent: an operator reading a line that came out of an account they did not pin has
-    // to be able to find out why — and WHICH of the two facts above answered it, because one is
-    // measured and the other is read off the config. Once per chat: this fires on every frame
-    // otherwise.
+    // to be able to find out why — and WHICH of the three facts above answered it, because one is
+    // measured and the other two are read off the config. Once per chat: this fires on every
+    // frame otherwise.
     const told = `${chatId}→${mouth}`;
     if (!toldAboutHome.has(told)) {
       if (toldAboutHome.size >= ARRIVAL_MAX) toldAboutHome.clear();
       toldAboutHome.add(told);
-      const why = arrivalConnection.has(String(chatId ?? '')) ? 'it arrived there' : `it is this node's Self chat, declared in config, and '${home}' is the ear`;
-      log.line?.(`[bridge] ${shortChatId(chatId)} is a chat on '${home}' (${why}) and '${mouth}' is a different Beeper account — sends this node places locally go out on '${home}', because that chat id does not exist on '${mouth}'. The peer mouth is what reaches the other account's view of this chat.`);
+      log.line?.(`[bridge] ${shortChatId(chatId)} is a chat on '${home}' (${holder.why}) and '${mouth}' is a different Beeper account — sends this node places locally go out on '${home}', because that chat id does not exist on '${mouth}'. The peer mouth is what reaches the other account's view of this chat.`);
     }
     return home;
   };
@@ -2022,7 +2080,12 @@ export async function boot({
   // THE SPEAKING HALF, built after the limb because it asks the limb which chat ids are the
   // console's (a shell/room id is not a Beeper chat and is never routed). Handed to createSender
   // below — the ONE place the mouth decision is made.
-  const peerMouth = makePeerMouth({ peer: peerSpine, bridge, owns: (c) => shellPort.owns(c), onLog: mouthLog });
+  // rawBridgeOf, not the frozen `bridge` (operator 2026-09-11): route()'s two roster reads are
+  // about ONE room, and a room lives on one account (see makePeerMouth's header). The RAW
+  // resolver, not the shell-aware one, because these are reads and the shell-aware facade only
+  // wraps send/startStream/postStatus — and route() refuses a console-owned chat before it asks
+  // anything at all.
+  const peerMouth = makePeerMouth({ peer: peerSpine, bridge, bridgeOf: rawBridgeOf, owns: (c) => shellPort.owns(c), onLog: mouthLog });
 
   // Shell-aware bridge facade (makeShellAwareBridge, top of file): the STREAMING senders
   // (E's persona sender + the brain-member relay sender) render through their injected
@@ -2309,7 +2372,11 @@ export async function boot({
   // to config.advice_channel through this service, which also routes the operator's
   // quote-reply answer back into the origin conversation (dispatch bound after the spine
   // exists). Fail-closed when advice_channel is unset.
-  const advice = createAdvice({ bridge, getConfig, onLog: (m) => log.line?.(`[advice] ${m}`) });
+  // bridgeOf (operator 2026-09-11), the last outbound in this file that held one frozen bridge:
+  // the ask rode the default mouth, and the advice channel MUST be a channel this node HEARS or
+  // the operator's answer can never be matched back to it (src/spine/advice.mjs's header, and
+  // connectionHolding's third source above, which is what makes a NAMED channel resolvable).
+  const advice = createAdvice({ bridge, bridgeOf: rawBridgeOf, getConfig, onLog: (m) => log.line?.(`[advice] ${m}`) });
   const actions = createReplyActions({ bridge, bridgeOf: rawBridgeOf, bodyEmojiOf, labelOf, resolveConvDir, askAdvice: (a) => advice.ask(a), defaultKey, onLog: (m) => log.line?.(`[actions] ${m}`) });
 
   // Heartbeats are DECLARATIVE now (operator 2026-07-01): the loader collects

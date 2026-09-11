@@ -26,12 +26,46 @@
 // its answer simply loses the routing — the operator's reply then falls through to normal
 // gating in the advice channel (harmless), never a wrong route.
 
-export function createAdvice({ bridge, getConfig = () => ({}), onLog = () => {} } = {}) {
+// WHICH CONNECTION AN OUTBOUND GOES OUT ON — the ONE resolver (sender.mjs makeOutbound), not a
+// local copy of `bridgeOf(being, chatId) ?? bridge`. The ask is an outbound like any other and
+// asks the same question; see the header on createAdvice below for why the answer matters more
+// here than anywhere else.
+import { makeOutbound } from './sender.mjs';
+
+// ── WHICH CONNECTION THE ASK RIDES (operator 2026-09-11) ──────────────────────────────────────
+// *"self doesn't have mouth. if mouth is available always use mouth."* This service held ONE
+// frozen bridge — boot's fan-out facade, which delegates postStatus to the node's DEFAULT MOUTH —
+// and asked nothing. `bridgeOf(being, chatId)` is the SAME per-chat resolver the reply path, the
+// limbs, the member sender and every node-level announce already ask (src/spine/boot.mjs
+// outboundConnectionFor): the mouth whenever it can reach the chat, the connection the chat lives
+// on when it cannot. No being — an ask is the NODE consulting its operator, not a persona
+// speaking — so `null` is passed, exactly as the announces do.
+//
+// AND THIS ONE IS NOT COSMETIC, because the ADVICE CHANNEL MUST BE A CHANNEL THIS NODE HEARS.
+// `ask` stores the id postStatus hands back; `isAnswer(ev)` matches an INBOUND event's replyToId
+// against those ids. An inbound only ever arrives on one of this node's EARS — every other
+// connection boot opens is wrapped outbound-only and its onMessage is a no-op (boot's
+// outboundOnly). So an ask posted on a connection this node does not hear can never be answered:
+// the operator's quote-reply carries ids minted by a different account, in a different Matrix
+// room, and the routing map can never match. On the live kg node — ear `primary` (anrodz42),
+// default mouth `secondary` (dolly.egpt) — the frozen bridge posted every ask into an account
+// whose answers this node is deaf to, so the whole mode:auto consult loop was open-circuit.
+//
+// Absent (every unit test, and any caller that has not been rewired) ⇒ the injected `bridge`, so
+// nothing changes for a node with one connection, which is every node that has ever had one.
+export function createAdvice({ bridge, bridgeOf = null, getConfig = () => ({}), onLog = () => {} } = {}) {
   if (!bridge) throw new Error('createAdvice: bridge is required');
   const cfg = () => getConfig() ?? {};
   // The advice channel: a chat NAME or a raw Beeper room id — bridge.send/postStatus
   // resolve names for us (same as agents.relay_channel). Empty/absent → not configured.
   const channel = () => { const c = cfg().advice_channel; const s = c == null ? '' : String(c).trim(); return s || null; };
+  // …and the bridge that channel is posted on, asked per POST rather than frozen at construction:
+  // `advice_channel` is re-read from config on every ask (a hot reload may change it), so the
+  // connection question has to be re-asked with it. `route` is never consulted — no peerMouth is
+  // passed and an ask is never said by the peer: it is this node consulting its own operator, in
+  // a chat this node must HEAR the answer in.
+  const outbound = makeOutbound({ bridge, bridgeOf });
+  const bridgeFor = (to) => outbound(null, to).bridge;
 
   let _dispatch = null;                          // late-bound spine.handleInbound
 
@@ -63,7 +97,7 @@ export function createAdvice({ bridge, getConfig = () => ({}), onLog = () => {} 
       // quote-reply will carry as replyToId) — the routing key. A name resolves to a
       // room id inside the bridge; a plain send can't hand back the confirmed id.
       let id = null;
-      try { id = await bridge.postStatus(to, text); } catch (e) { onLog(`ask: post to advice channel failed — ${e?.message ?? e}`); return false; }
+      try { id = await bridgeFor(to).postStatus(to, text); } catch (e) { onLog(`ask: post to advice channel failed — ${e?.message ?? e}`); return false; }
       if (id == null) { onLog(`ask: advice channel post returned no id (chat ${JSON.stringify(to)}) — not routable`); return false; }
       remember(id, { surface, chatId: ev?.chatId, chatName: ev?.chatName ?? ev?.chatId });
       onLog(`ask: posted from «${originName}» → advice channel (#${id})`);
