@@ -6,7 +6,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join, dirname } from 'node:path';
-import { seedSkeletons, EXAMPLE_TYPE_FILE, EGPT_TYPE_FILE, REPO_SKELETONS_DIR } from '../src/spine/seed.mjs';
+import { seedSkeletons, REPO_SKELETONS_DIR } from '../src/spine/seed.mjs';
 
 // Built with join so keys + the dirs passed to seedSkeletons share the platform separator.
 const REPO = join('/repo', 'skeletons'), SKEL = join('/prof', 'config', 'skeletons'), AGENTS = join('/prof', 'config', 'agents'), IDS = join('/prof', 'config', 'agents', 'identities');
@@ -69,16 +69,7 @@ describe('seedSkeletons', () => {
     expect(files[join(SKEL, 'script.x.md')]).toBe('C');
   });
 
-  it('seeds the commented example agent-type file config/agents/sonnet-high.yaml', () => {
-    const files = run({ [join(REPO, 'config.yaml')]: 'A' });
-    expect(files[join(AGENTS, 'sonnet-high.yaml')]).toBe(EXAMPLE_TYPE_FILE);
-  });
 
-  it('seeds the WORKING egpt agent-type file config/agents/egpt.yaml (so agents.egpt.configuration: egpt resolves), and NOT the old default.yaml', () => {
-    const files = run({ [join(REPO, 'config.yaml')]: 'A' });
-    expect(files[join(AGENTS, 'egpt.yaml')]).toBe(EGPT_TYPE_FILE);
-    expect(files[join(AGENTS, 'default.yaml')]).toBeUndefined();   // renamed 2026-07-02 — never recreated
-  });
 
   it('NEVER touches an existing file (operator edits are sacred)', () => {
     const files = run({
@@ -92,23 +83,12 @@ describe('seedSkeletons', () => {
     expect(files[join(AGENTS, 'egpt.yaml')]).toBe('MY OWN EGPT');
   });
 
-  it('the example type file is inert (all comments → YAML parses to null, so the registry ignores it)', async () => {
-    const YAML = await import('yaml');
-    expect(YAML.parse(EXAMPLE_TYPE_FILE)).toBeNull();
-  });
 
-  it('the egpt type file is a LIVE def (parses to { type: ccode, ... }, allowed_tools a LIST = confined), unlike the commented example', async () => {
-    const YAML = await import('yaml');
-    const def = YAML.parse(EGPT_TYPE_FILE);
-    expect(def).toMatchObject({ type: 'ccode', model: 'sonnet', effort: 'high' });
-    expect(Array.isArray(def.allowed_tools)).toBe(true);            // a LIST → confined-by-default
-    expect(def.allowed_tools).toContain('Read');
-    expect(def.allowed_paths).toBeNull();                           // the block is all-commented (conversation dir is implicit)
-  });
 
-  it('a missing repo dir is tolerated (still seeds the example type file)', () => {
+  it('a missing repo dir is tolerated — nothing is seeded and nothing throws', () => {
     const files = run({});   // no repo skeletons present
-    expect(files[join(AGENTS, 'sonnet-high.yaml')]).toBe(EXAMPLE_TYPE_FILE);
+    expect(files[join(AGENTS, 'sonnet-high.yaml')]).toBeUndefined();
+    expect(files[join(AGENTS, 'egpt.yaml')]).toBeUndefined();      // `egpt` is a PERSONALITY, never a brain config
   });
 
   it('copies the shipped brain defs (config/skeletons/agents/*.yaml) into config/agents/', () => {
@@ -233,15 +213,12 @@ describe('the shipped agents/ skeleton is the ONLY channel for brain defs + pers
     expect(files[join(IDS, 'detective.md')]).toBe(readFileSync(join(SHIPPED_IDS_DIR, 'detective.md'), 'utf8'));
   });
 
-  // sonnet-high is BOTH a shipped brain def and the name of the old commented EXAMPLE_TYPE_FILE.
-  // They collide at config/agents/sonnet-high.yaml, and copy-if-missing means order decides.
-  // The LIVE def wins: a file that parses to null there would make `configuration: sonnet-high`
-  // resolve to nothing on a fresh profile.
-  it('the LIVE sonnet-high brain def wins over the commented example at the same path', () => {
+  // sonnet-high used to collide: it is a shipped brain def AND was the name of the retired
+  // commented EXAMPLE_TYPE_FILE. With that constant gone the shipped def is the only writer.
+  it('sonnet-high comes from the shipped brain def, and nothing else writes that path', () => {
     const files = runAgainstRepo();
     expect(files[join(AGENTS, 'sonnet-high.yaml')])
       .toBe(readFileSync(join(SHIPPED_AGENTS_DIR, 'sonnet-high.yaml'), 'utf8'));
-    expect(files[join(AGENTS, 'sonnet-high.yaml')]).not.toBe(EXAMPLE_TYPE_FILE);
   });
 });
 
@@ -265,47 +242,4 @@ const GRANTABLE = [
   'Artifact', 'EnterWorktree', 'ExitWorktree', 'EnterPlanMode', 'ExitPlanMode',
 ];
 
-const BUILTIN_EGPT_YAML = readFileSync(fileURLToPath(new URL('../src/brains/egpt.yaml', import.meta.url)), 'utf8');
 
-describe('the egpt agent-type file spells out the whole grantable tool vocabulary', () => {
-  it('lists every grantable tool COMMENTED OUT, so configuring is uncommenting', () => {
-    for (const tool of GRANTABLE) {
-      expect(EGPT_TYPE_FILE, `no commented "#- ${tool}" line`).toContain(`#- ${tool}`);
-    }
-  });
-
-  it('still GRANTS exactly the eight defaults — the commented lines change nothing', async () => {
-    const YAML = await import('yaml');
-    expect(YAML.parse(EGPT_TYPE_FILE).allowed_tools)
-      .toEqual(['Read', 'Write', 'Edit', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'Task']);
-  });
-
-  // The `all`/`*` coercion (brainpool.mjs coerceAllowedTools → DEFAULT_ALLOWED_TOOLS) is
-  // INVISIBLE: the old comment read "TRUSTED/unconfined, every tool, no prompts, full
-  // filesystem", which is what `all` USED to mean and has not meant since 2026-07-03.
-  it('says on the line that `all`/`*` is COERCED to the default list, not a superpower', () => {
-    expect(EGPT_TYPE_FILE).toMatch(/COERCED to exactly the eight/);
-    expect(EGPT_TYPE_FILE).not.toMatch(/TRUSTED\/unconfined/);
-    expect(EXAMPLE_TYPE_FILE).toMatch(/COERCED/);
-    expect(EXAMPLE_TYPE_FILE).not.toMatch(/TRUSTED\/unconfined/);
-  });
-
-  it('keeps the house rule visible: scoped Bash(<bin>:*), never a bare Bash grant', () => {
-    expect(EGPT_TYPE_FILE).toMatch(/NEVER bare Bash/);
-    expect(EGPT_TYPE_FILE).not.toMatch(/^\s*-\s*Bash\s*(#.*)?$/m);   // bare Bash is never granted
-  });
-
-  // The read-only grant has no other documentation: a per-path allowed_tools list that omits
-  // the write-class tools IS the whole mechanism (brainpool confinementFor → readOnlyDirs).
-  it('explains that a per-path list with no write tool means READ-ONLY, and names the write class', () => {
-    expect(EGPT_TYPE_FILE).toMatch(/READ-ONLY — a per-path list with NO write-class tool/);
-    expect(EGPT_TYPE_FILE).toMatch(/Edit \/ Write \/ MultiEdit \/ NotebookEdit/);
-  });
-
-  // src/brains/egpt.yaml is the FALLBACK the seeded copy mirrors. They drifted apart silently
-  // once already; an operator reading the repo must see the same vocabulary the profile gets.
-  it('the repo built-in src/brains/egpt.yaml mirrors the seeded file from allowed_tools down', () => {
-    const block = (s) => s.slice(s.indexOf('allowed_tools:'));
-    expect(block(BUILTIN_EGPT_YAML)).toBe(block(EGPT_TYPE_FILE));
-  });
-});
