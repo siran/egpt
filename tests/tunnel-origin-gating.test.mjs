@@ -17,6 +17,11 @@
 // The fix is not a new gate (there is ONE membership guard, router.mjs's `unlessPresent`, and it
 // stays the only one). It is `ev.origin`, carried across the re-addressing the way `fromNode` and
 // `fromMember` already are, and read by exactly those two existing post-match filters.
+//
+// …and the LAST BLOCK below is the same defect in a second field (operator 2026-09-12): the tunnel
+// rebuilds `from` from scratch, so a VOICE NOTE arrived in the room as ordinary text and no agent's
+// `voice_handles` could wake there. Same shape, same fix — the one flag the node already carries,
+// handed across, never re-derived from the transcript marker downstream.
 import { describe, it, expect } from 'vitest';
 import { createRouter } from '../src/spine/router.mjs';
 import { createIdentity, SHELL_SURFACE } from '../src/spine/identity.mjs';
@@ -141,6 +146,61 @@ describe('the tunnel carries the origin, and nothing else changes', () => {
     const r = await router.resolve(ev);
     expect(r.mention.atEAnywhere).toBe(true);      // woken by the fallback, no lookup at all
     expect(asked).toEqual([]);
+  });
+});
+
+// ── THE TUNNEL CARRIES THE VOICE FLAG TOO (operator 2026-09-12) ──────────────────────────────
+//
+// A spoken alias is the ONLY way a non-persona agent wakes on a voice note (router.mjs's isVoice
+// scan), and it runs only when `ev.isVoice` is set. identity.build stamps that from the bridge's
+// `from.isTranscriptFromVoice`, which is why a GENUINE arrival has always worked — but tunnelOf
+// mints its own `from` and never wrote the key, so the copy that re-enters the room was, by
+// construction, not a voice note. Nothing logged it: the transcript body still read
+// `(voice transcription, Ns) …`, so the record looked exactly right while the wake was silently
+// impossible.
+//
+// The FIX is one field on the payload the tunnel already builds — never a second flag, and never
+// a downstream re-match of the marker against the body (a second source of truth for a fact the
+// bridge settled at arrival). ──
+describe('REPRODUCE-FIRST — a tunnelled VOICE NOTE is still a voice note', () => {
+  // ken's live shape: a NON-persona agent whose only match here is a `voice_handles` entry.
+  const WITH_KEN = { ...KG, ken: { configuration: 'opus-xhigh', handles: ['king', 'ken', 'k'], voice_handles: ['king', 'ken', 'kenny', 'rey', 'mirey'] } };
+  // The real arrival shape: the bridge's flag, and the body already marked by voiceTranscriptBody.
+  const spokenInGroup = () => identity.build({
+    body: '(voice transcription, 3s) Rey, ¿estás por ahí, Ken?',
+    from: { network: 'whatsapp', chatId: GROUP, chatName: 'perrito traducciones', userId: 'u-an', senderName: 'An', msgKey: 'v1', isTranscriptFromVoice: true },
+  });
+
+  it('the spoken alias wakes ken through the tunnel, exactly as it does on the genuine arrival', async () => {
+    const { isPresent } = presenceSeam();
+    const router = createRouter({ getAgents: () => WITH_KEN, defaultBeing: 'egpt', isPresent });
+
+    // 1. THE CONTROL — the genuine arrival in the group. This half has always worked.
+    const direct = spokenInGroup();
+    expect(direct.isVoice).toBe(true);
+    expect((await router.resolve(direct)).being).toBe('ken');
+
+    // 2. The tunnelled copy of that SAME note. On HEAD it arrives with isVoice false, the spoken
+    //    vocabulary is never scanned, and the message falls through to the persona: nobody woke.
+    const { payload, ev } = await tunnelled(direct);
+    expect(payload.from.isTranscriptFromVoice).toBe(true);
+    expect(ev.isVoice).toBe(true);
+    const viaRoom = await router.resolve(ev);
+    expect(viaRoom.being).toBe('ken');
+    expect(viaRoom.address).toBe('rey');            // the handle that won, taken off the prompt
+    expect(viaRoom.mention.atEStart).toBe(true);    // a voice hit IS a start hit
+  });
+
+  it('a TEXT message tunnels as text — the flag is carried, never invented', async () => {
+    const { payload, ev } = await tunnelled(inGroup());
+    expect(payload.from.isTranscriptFromVoice).toBe(false);
+    expect(ev.isVoice).toBe(false);
+    // …and with no voice turn there is no spoken wake: `rey` in prose reaches nobody.
+    const router = createRouter({ getAgents: () => WITH_KEN, defaultBeing: 'egpt', isPresent: presenceSeam().isPresent });
+    const { ev: prose } = await tunnelled(identity.build({
+      body: 'rey, mirá esto', from: { network: 'whatsapp', chatId: GROUP, chatName: 'perrito traducciones', userId: 'u-x', senderName: 'Vero', msgKey: 'g2' },
+    }));
+    expect((await router.resolve(prose)).being).toBe('egpt');
   });
 });
 

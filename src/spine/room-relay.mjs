@@ -150,6 +150,18 @@ export function createRoomRelay({
       // invited to wake.
       fromMember: { id: ev.chatId, kind: 'wa-group' },
       fromNode: ev.fromNode,
+      // …AND WHETHER IT WAS SPOKEN (operator 2026-09-12), carried for exactly the reason `fromNode`
+      // above and `origin`/`connection` below are: this payload is rebuilt from scratch, so a fact
+      // only the BRIDGE could know is destroyed unless it rides across. It is the SAME field, not a
+      // second one — identity.build stamps ev.isVoice from `from.isTranscriptFromVoice`, so handing
+      // the flag back under its payload name is the re-addressing writing the one key it already
+      // read. Re-deriving it downstream from the `(voice transcription, Ns)` marker on the body
+      // would be a second source of truth for something the bridge decided at arrival.
+      // WITHOUT IT a voice note in an invited wa-group reaches the room as ordinary text: the
+      // room's agents' `voice_handles` can never wake there (router.mjs only scans the spoken
+      // vocabulary when ev.isVoice), and the room's turn neither airs on the radio nor answers in
+      // voice (spine.mjs's two readings of the same flag).
+      isTranscriptFromVoice: ev.isVoice,
       // WHERE IT ACTUALLY ARRIVED (operator 2026-08-31). The re-addressing above is right for
       // IDENTITY — the turn runs on the ROOM's thread, warm process, queue and access_level,
       // which is a569ada's whole point and does not change. It is WRONG for GATING, and one

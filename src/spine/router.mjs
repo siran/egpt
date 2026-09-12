@@ -464,10 +464,15 @@ export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', addre
         return presence.get(identity);
       };
       if (agents && typeof agents === 'object') {
-        // isVoice rides off the SAME ev already in scope (spine.mjs sets it; identity.mjs stamps
-        // it from the bridge's isTranscriptFromVoice) — no new field, the one this node already
-        // carries for a voice-note turn. Absent/false → addressed() runs its @/bare-only path,
-        // byte-identical to before.
+        // isVoice rides off the SAME ev already in scope — no new field, the one this node already
+        // carries for a voice-note turn. STAMPED IN EXACTLY ONE PLACE: identity.build (identity.mjs),
+        // off the bridge's `from.isTranscriptFromVoice`. spine.mjs only ever READS it (the radio
+        // relay, and whether the reply is spoken) and this comment used to claim spine.mjs SET it —
+        // a false lead that cost a whole session's trace, so it is named precisely here. The one
+        // payload that is not a bridge's own, room-relay.mjs's tunnelOf, re-mints that same key off
+        // ev.isVoice, so an invited wa-group's voice note is still a voice note in the room it
+        // tunnels into. Absent/false → addressed() runs its @/bare-only path, byte-identical to
+        // before.
         // withFallback rides off the membership seam being WIRED (operator 2026-08-31): the
         // conditional token exists exactly where its condition can be evaluated, so a node/test
         // with no `isPresent` resolves precisely as it did before this feature existed.
