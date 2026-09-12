@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { spawn as spawnProcess } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   CLEAN_EXIT_CODE,
@@ -1563,6 +1566,36 @@ describe('daemon runtime: the singleton is session-scoped', () => {
       expect(h.children).toHaveLength(1);                    // the third miss claims anyway
     });
 
+    // THE WATCH HAS TO HOLD THE PROCESS OPEN (dolly, 2026-09-12 — session 0 down all day).
+    // Standing down is the ONLY state in which this daemon has no child, and a child handle is
+    // what normally keeps a supervisor's event loop alive. The watch was armed and immediately
+    // unref'd, so node drained and exited 0 between one log line and the next: "stood down — a
+    // peer has taken the profile", then nothing, ~200ms after the service started. NSSM read a
+    // sub-throttle exit as a FAILED START and parked the service Paused, so it never retried
+    // either. reve ran this identical branch the same morning and lived only because a second
+    // profile in the same process had a live spine holding the loop open.
+    //
+    // A fake world has no event loop to drain, so this asks the one thing the runtime actually
+    // decides: whether it lets go of its own timer. The real-process proof is at the bottom of
+    // this file.
+    it('never unrefs the watch — it is the only thing on a stood-down daemon’s event loop', () => {
+      const armed = [];
+      const fakeTimer = (ms) => ({ ms, calls: [], ref() { this.calls.push('ref'); }, unref() { this.calls.push('unref'); } });
+      const h = makeSessioned({
+        files: { 'state/spine.pid': '9500\n' },
+        extra: { setInterval: (fn, ms) => { const t = fakeTimer(ms); armed.push(t); return t; } },
+      });
+
+      h.runtime.start();
+
+      const watch = armed.find((t) => t.ms === 5_000);
+      expect(watch).toBeDefined();                                   // it did stand down
+      expect(watch.calls).not.toContain('unref');
+      // …and the 30s liveness sweep stays unref'd, as it always was: a watchdog timer must never
+      // be the reason a supervisor with nothing to supervise stays up. Only the watch is.
+      expect(armed.find((t) => t.ms === 30_000).calls).toContain('unref');
+    });
+
     it('an ordinary boot with no live spine spawns immediately, as it always did', () => {
       const h = makeSessioned({ files: { 'state/spine.pid': '9500\n' }, beatAgeMs: 200_000 });
       expect(h.runtime.start()).not.toBeNull();
@@ -1931,4 +1964,96 @@ describe('startProfileDaemons: a line from each profile lands in that profile\u2
     expect(opened).toEqual([]);
     expect(spawned[0].stdio).toBe('inherit');
   });
+});
+
+// =====================================================================================
+// A STOOD-DOWN DAEMON MUST STAY UP — in a REAL process, on a REAL event loop.
+// =====================================================================================
+// THE INCIDENT (dolly, 2026-09-12). The NSSM service booted, correctly refused to put a second
+// spine on a profile the session-1 spine already held, logged "stood down", and was gone about
+// 200ms later. NSSM reads an exit that fast as a failed start, so it parked the service Paused
+// and stopped retrying — and session 0 was then left with NOTHING that would bring the node
+// back when the operator logged off. Every fake-world test above passed throughout: the daemon
+// never called exit(), it just ran out of things to wait for. Its watch timer was unref'd, it
+// had no child (that is what standing down means), and an empty loop is an exit.
+//
+// So this one runs the real runtime in a real node process. Everything that would touch the
+// world is still injected — nothing may spawn a spine, read git, or open a socket from a test —
+// but the timers, the filesystem and the event loop are the real ones, because the event loop
+// is the whole subject. The watch's 5s cadence is compressed to 40ms so three misses take a
+// tenth of a second instead of fifteen; the timer object is still a real Timeout, so ref/unref
+// mean exactly what they mean in production.
+const STANDDOWN_DRIVER = (runtimeUrl) => `
+import { createDaemonRuntime } from ${JSON.stringify(runtimeUrl)};
+
+const say = (m) => process.stdout.write(m + '\\n');
+const runtime = createDaemonRuntime({
+  root: 'C:/nowhere',
+  egptHome: process.argv[2],
+  // If the watch claims we say so and keep the process up for the test to kill. A test must
+  // never be able to launch a real spine, so this is where that stops.
+  spawn: () => { say('CLAIMED'); setInterval(() => {}, 1000); return { on: () => {}, kill: () => {} }; },
+  spawnSync: () => ({ status: 0, stdout: Buffer.from('test\\n') }),
+  peerProbe: () => async () => false,              // the console port is quiet; spine.pid decides
+  setInterval: (fn, ms) => setInterval(fn, ms === 5000 ? 40 : ms),
+  stdout: { write: (m) => process.stderr.write(m) },   // the daemon's narration, out of the way
+});
+runtime.start();
+say(runtime.state.standingDown ? 'STOOD-DOWN' : 'SPAWNED');
+`;
+
+describe('the stand-down watch keeps the daemon alive (real process, real timers)', () => {
+  function watchOutput(child) {
+    let out = '';
+    let err = '';
+    let ended = null;
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (d) => { out += d; });
+    child.stderr.on('data', (d) => { err += d; });
+    // 'close', not 'exit': it fires only once the stdio has been drained, so a marker written
+    // just before the process ends is never missed by a race.
+    child.on('close', (code) => { ended = code ?? 0; });
+    const waitFor = async (marker, timeoutMs) => {
+      const until = Date.now() + timeoutMs;
+      for (;;) {
+        if (out.includes(marker)) return;
+        if (ended != null) throw new Error(`the daemon EXITED (code ${ended}) before it said ${marker}. stdout=${JSON.stringify(out)}\n${err}`);
+        if (Date.now() > until) throw new Error(`timed out waiting for ${marker}. stdout=${JSON.stringify(out)}\n${err}`);
+        await new Promise((r) => setTimeout(r, 20));
+      }
+    };
+    return { waitFor, get ended() { return ended; }, get err() { return err; } };
+  }
+
+  it('a daemon that cold-starts into a held profile does NOT exit — it watches, then claims', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'egpt-standdown-'));
+    const spinePid = join(home, 'state', 'spine.pid');
+    mkdirSync(join(home, 'state'), { recursive: true });
+    writeFileSync(join(home, 'state', 'alive.txt'), 'beat\n');   // fresh: the peer is beating
+    // THIS test process is the peer. A live pid and a fresh beat is exactly what livePidIn
+    // reads as "somebody holds this profile", and it is the state dolly's service booted into.
+    writeFileSync(spinePid, String(process.pid));
+    const driver = join(home, 'driver.mjs');
+    writeFileSync(driver, STANDDOWN_DRIVER(new URL('../src/daemon-runtime.mjs', import.meta.url).href));
+
+    const child = spawnProcess(process.execPath, [driver, home], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const seen = watchOutput(child);
+    try {
+      await seen.waitFor('STOOD-DOWN', 15_000);
+
+      // ~12 watch ticks. THIS is the assertion that failed: the process was already gone.
+      await new Promise((r) => setTimeout(r, 500));
+      expect(seen.ended).toBeNull();
+      expect(seen.err).toContain('stood down — a peer has taken the profile');
+
+      rmSync(spinePid);                          // the peer's session ended and took its spine
+      await seen.waitFor('CLAIMED', 15_000);     // three misses, and the profile is taken back
+      expect(seen.ended).toBeNull();             // …by the same watch, still in the same process
+    } finally {
+      child.kill();
+      await new Promise((r) => { child.once('close', r); setTimeout(r, 2_000).unref?.(); });
+      try { rmSync(home, { recursive: true, force: true }); } catch { /* Windows may still hold the driver */ }
+    }
+  }, 40_000);
 });

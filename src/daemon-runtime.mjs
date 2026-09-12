@@ -789,7 +789,20 @@ export function createDaemonRuntime(opts = {}) {
       backoff = RESTART_MIN_MS;   // a handover is not a failure; the next boot starts clean
       spawnShell();
     }, PEER_PROBE_EVERY_MS);
-    standdownTimer?.unref?.();
+    // THIS TIMER IS REF'D, AND IT IS THE ONLY THING HOLDING THE PROCESS OPEN (dolly, 2026-09-12).
+    // A stood-down daemon has nothing else on its event loop: no child handle — not having one
+    // is the entire point of standing down — and the liveness sweep below is unref'd, as is
+    // peer-liveness's own timer ("never hold the process open for a liveness probe", which is
+    // right for a SPINE that is serving anyway and exactly wrong for a daemon whose whole job
+    // right now IS this probe). Unref'd on an otherwise empty loop, node drains and exits 0
+    // immediately: dolly's service wrote the line above and was gone ~200ms later, NSSM read
+    // that sub-throttle exit as a failed start and parked the service Paused, and session 0 was
+    // left with nothing to bring the node back when the logon session ended. reve ran the
+    // identical branch the same morning and survived only because a SECOND profile in the same
+    // process had a live spine holding the loop open — which is what hid this. THE WATCH IS THE
+    // SUPERVISION, so it has to be the thing that keeps the supervisor alive. shutdown() clears
+    // it, which is what still lets a SIGTERM out.
+    standdownTimer?.ref?.();
   }
 
   // --- the per-profile child log ------------------------------------------------------------
