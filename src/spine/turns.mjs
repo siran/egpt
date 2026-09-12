@@ -65,10 +65,11 @@ const STEER_ACK_EMOJI = '👀';
  *                    are read here; a Brain without them can never steer and never re-scopes,
  *                    which is byte-identical to the pre-extraction spine.
  *        bridge /  — the steer ACK's send path, resolved through the ONE outbound resolver
- *        bridgeOf /   (sender.mjs makeOutbound): the being's own connection, and — when a peer
- *        peerMouth    spine is the mouth for this chat — the chat payload that lets the PEER place
- *                     the ack instead (peerMouth.react). Absent peerMouth (every single-account
- *                     node, every test fake) ⇒ the peer is never consulted and this is
+ *        bridgeOf /   (sender.mjs makeOutbound): the being's own connection, and — when another
+ *        peerMouth    account is the mouth for this chat — whatever lets THAT mouth place the ack
+ *                     instead (peerMouth.react), whether it is a peer spine across a socket or a
+ *                     second connection on this node. Absent peerMouth (every single-account
+ *                     node, every test fake) ⇒ no mouth is ever consulted and this is
  *                     byte-identical to before.
  */
 export function createTurns({ brain, bridge = null, bridgeOf = null, peerMouth = null, log = null } = {}) {
@@ -171,15 +172,18 @@ export function createTurns({ brain, bridge = null, bridgeOf = null, peerMouth =
   // 👀 came from the PRIMARY and the answer from the SECONDARY, which is precisely what betrays
   // which account is doing the listening. Both now ask makeOutbound.
   //
-  // WHEN THE PEER SAYS THE REPLY, THE PEER PLACES THE REACTION (operator 2026-09-07). It sits ON
-  // the inbound message, and the two accounts see one real message as two different Matrix events
-  // in two different rooms — id 2901 here, 1118 there, measured — so for one release this was
-  // SUPPRESSED: the peer had no way to be told which message and this account must not react when
-  // it is not the one answering. The link now has a verb that names a message the same way it has
-  // always named a chat, by a key both accounts compute alike (src/shell/mouth.mjs `say: react`),
-  // so the ack goes where the answer goes.
+  // WHICHEVER MOUTH SAYS THE REPLY PLACES THE REACTION (operator 2026-09-07). It sits ON the
+  // inbound message, and the two accounts see one real message as two different Matrix events in
+  // two different rooms — id 2901 here, 1118 there, measured — so for one release this was
+  // SUPPRESSED: the mouth had no way to be told which message and this account must not react
+  // when it is not the one answering. A message is now named the same way a chat has always been
+  // named, by a key both accounts compute alike (beeper.crossAccountMsgKey), so the ack goes
+  // where the answer goes — over the link when the mouth is a peer spine (src/shell/mouth.mjs
+  // `say: react`), and straight onto that connection's own bridge when the mouth is a second
+  // connection on THIS node (src/spine/boot.mjs makePeerMouth, reactLocally). Nothing here has to
+  // know which: route() answers, react() serves whichever it answered.
   //
-  // SUPPRESSION IS THE FALLBACK, NOT THE ANSWER. Every way the peer can fail to place it — it
+  // SUPPRESSION IS THE FALLBACK, NOT THE ANSWER. Every way the mouth can fail to place it — it
   // cannot key the message, the link is down, it finds no match, it finds two — ends with NO
   // REACTION ANYWHERE and a log line naming the reason. That is the OLD behaviour, kept exactly,
   // as the floor: a missing reaction is cosmetic, a reaction from the wrong account is the bug.
@@ -188,15 +192,16 @@ export function createTurns({ brain, bridge = null, bridgeOf = null, peerMouth =
   // already landed, and never becomes an unhandled rejection on the 👀's deferred path below.
   async function placeReaction(to, ev, emoji) {
     const { bridge: mouth, route } = outbound(to, ev.chatId);
-    const peerSays = route();                         // null with no peer wired — never awaited, so that path is untouched
-    const peerChat = peerSays ? await peerSays : null;
-    if (peerChat) {
-      // The peer's own refusals are logged by name inside the link; this line says what it cost.
+    const says = route();                             // null with no mouth wired — never awaited, so that path is untouched
+    const mouthChat = says ? await says : null;
+    if (mouthChat) {
+      // The mouth's own refusals are logged by name where they happen; this line says what it cost.
+      const who = mouthChat.connection ? `'${mouthChat.connection}'` : 'the peer';
       let r = null;
-      try { r = await peerMouth.react?.(peerChat, { msgKey: ev.msgHash, timestamp: ev.msgTs, emoji }); }
-      catch (e) { note(`steer-ack ${to}/${ev.chatId}: asking the peer to react threw — ${e?.message ?? e}`); }
-      if (r?.ok) note(`steer-ack ${to}/${ev.chatId}: the PEER is saying this reply and placed the ${emoji} on its own copy (its chat ${r.chatId})`);
-      else note(`steer-ack ${to}/${ev.chatId}: the PEER is saying this reply but could not place the ${emoji} (${r?.reason ?? 'no answer'}${r?.detail ? `: ${r.detail}` : ''}) — no reaction from this account either, it is not the one answering`);
+      try { r = await peerMouth.react?.(mouthChat, { msgKey: ev.msgHash, timestamp: ev.msgTs, emoji }); }
+      catch (e) { note(`steer-ack ${to}/${ev.chatId}: asking ${who} to react threw — ${e?.message ?? e}`); }
+      if (r?.ok) note(`steer-ack ${to}/${ev.chatId}: ${who} is saying this reply and placed the ${emoji} on its own copy (its chat ${r.chatId})`);
+      else note(`steer-ack ${to}/${ev.chatId}: ${who} is saying this reply but could not place the ${emoji} (${r?.reason ?? 'no answer'}${r?.detail ? `: ${r.detail}` : ''}) — no reaction from this account either, it is not the one answering`);
     } else {
       try { await mouth.react?.(ev.chatId, ev.msgId, emoji); }
       catch (e) { note(`steer-ack ${to}/${ev.chatId}: ${e?.message ?? e}`); }

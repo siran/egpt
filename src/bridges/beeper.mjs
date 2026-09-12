@@ -592,14 +592,33 @@ export async function startBeeperBridge(opts = {}) {
   // fetch has settled — it never rejects and nothing awaits it on the boot path, so start
   // stays non-blocking. The whole beeper-bridge test file used to race a 50ms sleep here.
   const _ownerNameByAccount = new Map();   // lowercased accountID -> owner's fullName
+  // ── THIS CONNECTION'S OWN IDENTITIES (operator 2026-09-12) ────────────────────────────
+  // The phone numbers THIS install answers as, off the very payload above. Measured live
+  // 2026-09-12 on both of the operator's installs: every `/v1/accounts` entry carries
+  // `user.isSelf: true` and, for a phone-shaped network (WhatsApp, Telegram), `user.phoneNumber`
+  // in full international form — anrodz42's install reports +16468217865, dolly.egpt's reports
+  // +13472576794, which is exactly the pair `peer_spine.accounts` names by hand.
+  //
+  // WHY IT MATTERS HERE. crossAccountChatKey below can only make two accounts' views of one chat
+  // key alike if BOTH accounts' identities are excluded (its header carries the measurement), and
+  // until now the only source for them was that configured pair — which a node holding both
+  // connections in ONE spine has no reason to declare, and dolly's `do` does not. This is the
+  // same fact, MEASURED rather than declared, and it costs nothing: no new endpoint, no new
+  // request, just a second field read off a GET the bridge already makes at startup.
+  //
+  // A NETWORK WITH NO PHONE contributes nothing (the Matrix account entry above has no
+  // phoneNumber), which is right: a key is built from phone identities alone.
+  const _selfIdentities = [];
   const _startupReady = (async () => {
     try {
       const accounts = await api('GET', '/v1/accounts');
       for (const a of Array.isArray(accounts) ? accounts : []) {
         const name = a?.user?.fullName;
         if (a?.accountID && name) _ownerNameByAccount.set(String(a.accountID).toLowerCase(), name);
+        const phone = a?.user?.isSelf ? String(a?.user?.phoneNumber ?? '').trim() : '';
+        if (phone && !_selfIdentities.includes(phone)) _selfIdentities.push(phone);
       }
-      onLog(`beeper: owner names loaded for ${_ownerNameByAccount.size} account(s)`);
+      onLog(`beeper: owner names loaded for ${_ownerNameByAccount.size} account(s)${_selfIdentities.length ? `; this install answers as ${_selfIdentities.join(', ')}` : ''}`);
     } catch (e) {
       onLog(`beeper: /v1/accounts fetch failed — ${e?.message ?? e}`);
     }
@@ -2075,6 +2094,13 @@ export async function startBeeperBridge(opts = {}) {
     // MEMBERSHIP (operator 2026-08-31, router.mjs fallback_handle): true | false | null (UNKNOWN).
     // Cached + TTL'd + free for a 1:1 — see chatHasParticipant above.
     chatHasParticipant: (chatId, identity) => chatHasParticipant(chatId, identity),
+    // WHO THIS INSTALL IS (operator 2026-09-12) — the phone identities read off the startup
+    // `/v1/accounts` payload (see _selfIdentities above). Awaits that one fetch rather than
+    // racing it, so the FIRST reply of a process gets the same answer as the thousandth; it has
+    // already settled by the time any message has arrived. [] when the fetch failed or the
+    // account is phone-less, which every caller reads as "this connection cannot be excluded"
+    // and refuses on rather than guessing.
+    selfIdentities: async () => { await _startupReady; return [..._selfIdentities]; },
     getChatName: (id) => _chatCache.get(shortChatId(id))?.title ?? null,
     getChatSlug: (id) => { const t = _chatCache.get(shortChatId(id))?.title; return t ? chatSlug(t) : null; },
     resolveChatId,

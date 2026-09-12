@@ -720,6 +720,35 @@ export const CONFIG_SCHEMA = {
     of the default mouth, never a requirement: with it absent the names decide,
     and no chat becomes unreachable either way.
 
+    …AND "CAN REACH" IS RESOLVED, NOT INFERRED, FOR A REPLY (operator 2026-09-12:
+    "whatever it is, if secondary is present it should be used as mouth. all
+    agents have different wake words, but they all use secondary to speak, when
+    present"). Comparing the two account: strings answers only whether one
+    connection can be handed the OTHER's chat id — it cannot, ever. It does not
+    answer whether the mouth's account is IN that chat, and usually it is: one
+    real group is a different Matrix room per account, with its own id on each.
+    So before a reply falls back to the connection holding the chat, the mouth
+    is asked whether its account is a participant, and if it is, the chat is
+    TRANSLATED to that account's own room id (matched by chat type + participant
+    phone numbers with both accounts excluded — the same key the peer link uses,
+    src/bridges/beeper.mjs crossAccountChatKey). The two identities are MEASURED,
+    not configured: each install reports its own phone number on /v1/accounts.
+    Nothing to declare, and nothing changes on a node with one connection or one
+    account.
+
+      the mouth is in the chat  → the reply goes out on the mouth, in the
+                                  mouth's own room id.
+      the mouth is NOT in it    → the connection holding the chat replies. The
+                                  Self-DM is this case permanently: it is a
+                                  1:1 on the ear's account and the mouth's
+                                  account is not a participant.
+      it IS in it but its room  → the connection holding the chat replies, and
+      cannot be resolved           the [mouth] log says which refusal it was.
+                                  Never a post into a room resolved by guess.
+
+    Node-level announces are unchanged: they carry the arrival's own chat id and
+    are not translated, so they ride the connection that holds the chat.
+
     MORE THAN ONE <name> block may be declared — e.g. a second Beeper Desktop
     login/WhatsApp number for a second being on the SAME node. One bridge
     instance is opened per DISTINCT (base_url, token) actually referenced — as

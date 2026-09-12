@@ -19,7 +19,11 @@ import { createShellPort, shellPortFrom } from '../bridges/shell-port.mjs';
 import { shellTokenFrom } from '../shell/auth.mjs';
 // THE MOUTH LINK (operator 2026-09-05): the peer spine holding the OTHER Beeper account, the
 // receiving half this node offers on its own console, and the speaking half the reply path uses.
-import { peerSpineFrom, createMouthReceiver, speakThroughPeer, startPeerStream, reactThroughPeer } from '../shell/peer-mouth.mjs';
+import { peerSpineFrom, createMouthReceiver, speakThroughPeer, startPeerStream, reactThroughPeer, findChatByKey, findMessageByKey } from '../shell/peer-mouth.mjs';
+// The cross-account chat key itself — minted in the bridge, beside the payloads it reads. The
+// LOCAL mouth below keys with the same primitive the peer link keys with; there is one definition
+// of "which of MY chats is that ONE real chat" and both transports ask it.
+import { crossAccountChatKey } from '../bridges/beeper.mjs';
 import { createWarmPool } from '../warm-sessions.mjs';
 import { createBrainSession } from '../brain-session.mjs';
 import { createSandboxCliSession } from '../sandbox-cli-session.mjs';
@@ -262,21 +266,147 @@ export function makeShellAwareBridge(bridge, shellPort) {
 // that holds the room is strictly more precise than a vote (bridge-fanout's own words: "at most
 // one connection ever holds a definite answer").
 //
-// SPEAKING IS UNTOUCHED. startStream and react go over the PEER CONSOLE (startPeerStream /
-// reactThroughPeer) and never over a bridge on this node — that is the whole point of the link,
-// and no bridge, resolved or frozen, appears in either.
-export function makePeerMouth({ peer, bridge, bridgeOf = null, owns = () => false, speak = speakThroughPeer, stream = startPeerStream, reactor = reactThroughPeer, onLog = () => {} } = {}) {
-  if (!peer) return null;                     // no peer_spine ⇒ no mouth ⇒ createSender is handed none ⇒ nothing changes
+// SPEAKING GOES WHEREVER THE MOUTH IS. Through a PEER SPINE it is the peer console and never a
+// bridge on this node (startPeerStream / reactThroughPeer) — that is the whole point of that link.
+// Through a LOCAL mouth (below) it is that connection's own bridge and never a socket. One
+// decision, two transports; the caller cannot tell them apart and does not have to.
+//
+// ── THE MOUTH IS USUALLY ON THIS VERY NODE (operator 2026-09-12) ──────────────────────────
+// *"whatever it is, if secondary is present it should be used as mouth. all agents have different
+// wake words, but they all use secondary to speak, when present."*
+//
+// 32aa5c1 answered "can the mouth reach this chat?" by COMPARING THE `account:` STRINGS of two
+// connections, and dolly proved that wrong on 2026-09-12: node `do` holds `primary` = anrodz42 as
+// its ear and `secondary` = dolly.egpt as its mouth, a message arrived on the ear in a group BOTH
+// accounts are in, and D answered from the operator's own number. Every clause of the log line it
+// printed was true — the chat id really is primary's, secondary really is another account, that
+// id really does not exist there — and the conclusion was still wrong, because ONE REAL CHAT IS
+// TWO MATRIX ROOMS, one per account, and secondary has its own id for it and is a member of it.
+//
+// So the question is not a string comparison, it is: DOES THE MOUTH'S ACCOUNT ACTUALLY HAVE THIS
+// CHAT? — resolved, never inferred. And that is precisely what the peer link has been doing
+// across a socket since 2026-09-05: crossAccountChatKey to name the chat by its people, then
+// findChatByKey to find the other account's own room with that name. The only reason it lived
+// behind a socket is that the other account used to belong to another SPINE. Here it belongs to
+// this one, so the same two primitives run in-process, against the mouth connection's own bridge.
+// No second matcher, no second sender: `localMouth` below is the same resolution with the wire
+// taken out.
+//
+// THE ORDER IS LOCAL FIRST, PEER SECOND, and a local refusal does NOT skip the peer: a node that
+// declares both keeps every path it had. A local mouth that resolves is strictly better than a
+// peer that would — same account, no dial, no second process — so it wins when it can answer.
+//
+// AND A FAILED TRANSLATION FALLS BACK TO THE EAR, LOUDLY. Never a post into a room resolved by
+// guess, never a dropped reply: every refusal below names the connection, the reason, and which
+// connection is going to speak instead. The Self-DM is the honest, permanent case — Rodz is not a
+// participant, there is no room on that account to translate to, and the ear answers forever.
+export function makePeerMouth({ peer, bridge, bridgeOf = null, owns = () => false, localMouth = null, speak = speakThroughPeer, stream = startPeerStream, reactor = reactThroughPeer, onLog = () => {} } = {}) {
+  if (!peer && !localMouth) return null;      // no peer_spine and no second account ⇒ no mouth ⇒ createSender is handed none ⇒ nothing changes
   // THE ONE RESOLVER (sender.mjs makeOutbound), built once. No peerMouth is handed to it, so its
   // own route thunk is inert — this IS the peer mouth, and all that is wanted here is which of
   // THIS node's connections holds the room. Absent bridgeOf (a one-connection node, and every
   // unit test) ⇒ the injected bridge, byte-identical to before.
   const outbound = makeOutbound({ bridge, bridgeOf });
+  // A connection that reports no identity of its own can never be keyed against, and saying so
+  // once is the difference between an operator finding out and an operator reading it per reply.
+  const toldAboutIdentity = new Set();
+
+  // THE LOCAL TRANSLATION, whole. Returns the mouth's OWN room for this chat, or null — and null
+  // always means "the connection holding the chat says this reply", which is what the caller then
+  // does. Every exit logs; none of them guesses.
+  const routeLocally = async (chatId, being, on) => {
+    const here = localMouth?.(being, chatId) ?? null;
+    if (!here) return null;                   // one connection, one account, or an unplaceable chat
+    const short = shortChatId(chatId);
+    // WHO THE MOUTH IS, MEASURED, not declared: the phone identity its install reports for itself
+    // (/v1/accounts — src/bridges/beeper.mjs selfIdentities). This is the field `peer_spine.accounts`
+    // has been naming by hand, and a node holding both connections in one spine has no reason to
+    // declare it.
+    let mine = [];
+    try { mine = (await here.bridge?.selfIdentities?.()) ?? []; }
+    catch (e) { onLog(`'${here.name}' could not say which account it is — '${here.home}' says this reply: ${e?.message ?? e}`); return null; }
+    if (!mine.length) {
+      if (!toldAboutIdentity.has(here.name)) {
+        toldAboutIdentity.add(here.name);
+        onLog(`'${here.name}' reports no phone identity of its own, so no chat can be keyed across it — every reply in a chat it does not already share an id with will go out on the connection that holds the chat`);
+      }
+      return null;
+    }
+    // IS THE MOUTH IN THIS CHAT — asked of the connection that HOLDS it, which is the only one
+    // that has this room. UNKNOWN (null) reads exactly like ABSENT, for the reason in the header.
+    let present = null;
+    for (const id of mine) {
+      try { present = await on?.chatHasParticipant?.(chatId, id); }
+      catch (e) { onLog(`could not read the roster of ${short} — '${here.home}' says this reply: ${e?.message ?? e}`); return null; }
+      if (present === true) break;
+    }
+    if (present !== true) {
+      onLog(`'${here.name}' is not a member of ${short}${present == null ? ' (its roster could not be read, which is treated the same way)' : ''} — there is no room on that account to translate to, so '${here.home}' says this reply`);
+      return null;
+    }
+    let raw = null;
+    try { raw = await on?.chatRaw?.(chatId); }
+    catch (e) { onLog(`'${here.name}' is in ${short} but its payload could not be read — '${here.home}' says this reply: ${e?.message ?? e}`); return null; }
+    if (!raw) { onLog(`'${here.name}' is in ${short} but its payload came back empty — '${here.home}' says this reply`); return null; }
+    // BOTH ACCOUNTS ARE EXCLUDED OR THE TWO VIEWS CANNOT KEY ALIKE (crossAccountChatKey's header):
+    // each account sees the OTHER as an ordinary member WITH a phone number and itself as the
+    // phone-less self entry, so dropping self is automatic and dropping the co-account is not.
+    let theirs = [];
+    try { theirs = (await on?.selfIdentities?.()) ?? []; }
+    catch { /* the mouth's own identity is the load-bearing half; a missing holder identity only narrows the match */ }
+    const exclude = [...new Set([...mine, ...theirs])];
+    const key = crossAccountChatKey(raw, exclude);
+    if (!key) { onLog(`'${here.name}' is in ${short} but that chat cannot be keyed across the two accounts (no roster, or too few phone identities left after the exclusions) — '${here.home}' says this reply`); return null; }
+    // PAGE ONE FIRST, THE WHOLE ACCOUNT ONLY ON A MISS — the same two-step the peer's receiver
+    // makes (peer-mouth.mjs whichChat) and for the same reason: /v1/chats is paginated by RECENT
+    // ACTIVITY and the chat being replied in has just had a message in it. Both pages sit behind
+    // the bridge's own 60s cache, so a burst of replies pays the walk once for the whole node.
+    let found;
+    try {
+      found = findChatByKey(await here.bridge.listChatsRaw(), key, exclude);
+      if (found.reason === 'no-match') found = findChatByKey(await here.bridge.listChatsRaw({ full: true }), key, exclude);
+    } catch (e) { onLog(`could not read '${here.name}'s own chat list — '${here.home}' says this reply: ${e?.message ?? e}`); return null; }
+    if (!found.ok) { onLog(`'${here.name}' is in ${short} but its OWN room for it could not be resolved (${found.reason}: ${found.detail}) — '${here.home}' says this reply`); return null; }
+    onLog(`${short} on '${here.home}' is ${shortChatId(found.chatId)} on '${here.name}' — the mouth says this reply, in its own room`);
+    return { connection: here.name, home: here.home, bridge: here.bridge, chatId: found.chatId };
+  };
+
+  // THE 👀 ON A LOCAL MOUTH — the same question one level down, answered with the same primitive
+  // the peer's receiver answers it with (findMessageByKey). It is here rather than in the sender
+  // because a reaction needs nothing the sender holds: an emoji and a message. A STREAM does —
+  // the being's persona tag — which is why that one is minted by the sender instead (see
+  // startStream below).
+  const reactLocally = async ({ bridge: on, chatId, connection }, { msgKey, timestamp = 0, emoji }) => {
+    const key = String(emoji ?? '');
+    const want = String(msgKey ?? '').trim();
+    if (!key) return { ok: false, reason: 'no-text', detail: 'nothing to react with' };
+    if (!want) return { ok: false, reason: 'no-key', detail: 'the message carries no cross-account key' };
+    if (!on?.listMessagesRaw || !on?.react) return { ok: false, reason: 'no-react', detail: `'${connection}' cannot list its messages or cannot react` };
+    let messages = [];
+    try { messages = await on.listMessagesRaw(chatId); }
+    catch (e) { return { ok: false, reason: 'unavailable', detail: e?.message ?? String(e) }; }
+    const hit = findMessageByKey(messages, want, timestamp);
+    if (!hit.ok) return hit;                  // no-match / ambiguous → NO reaction anywhere, as on the link
+    try {
+      const r = await on.react(chatId, hit.msgId, key);
+      if (r === false || r == null) return { ok: false, reason: 'send-failed', detail: `the reaction on ${chatId}/${hit.msgId} was not accepted` };
+    } catch (e) { return { ok: false, reason: 'send-failed', detail: e?.message ?? String(e) }; }
+    return { ok: true, chatId };
+  };
+
   return {
-    async route(chatId) {
+    // WHICH MOUTH SAYS THIS REPLY, and where. Three answers:
+    //   null                       — nobody but the connection holding the chat; it says it.
+    //   { bridge, chatId, … }      — a LOCAL connection on the other account, and ITS OWN room id.
+    //   a RAW chat payload         — the PEER SPINE; the key is computed from it on the wire.
+    // The two non-null answers are told apart by `.bridge`, which only the local one has.
+    async route(chatId, being = null) {
       if (owns(chatId)) return null;
-      // The connection this chat lives on, asked ONCE and read twice (header).
+      // The connection this chat lives on, asked ONCE and read by every step below (header).
       const on = outbound(null, chatId).bridge;
+      const local = await routeLocally(chatId, being, on);
+      if (local) return local;
+      if (!peer) return null;
       for (const account of peer.accounts) {
         let present = null;
         try { present = await on?.chatHasParticipant?.(chatId, account); }
@@ -302,6 +432,13 @@ export function makePeerMouth({ peer, bridge, bridgeOf = null, owns = () => fals
     // to the being being replied as, and only the sender knows which being that is. Passed
     // straight through — this object decides nothing about it. Absent (undefined) ⇒ startPeerStream's
     // identity default ⇒ the frames cross the wire raw, which is what they did before it existed.
+    //
+    // A LOCAL MOUTH NEVER REACHES HERE. Its stream is minted by the sender, from the sender's own
+    // local-stream factory with the mouth's bridge and the mouth's room id — because a stream
+    // carries the being's persona tag and only the sender knows which being is replying. That is
+    // also why the wrap is not applied twice: the local factory hands the RAW text to the port,
+    // which wraps for itself, exactly as an ordinary reply does. `render` exists only for the
+    // wire, where there is no port on the far side to do it.
     startStream(chat, init, { fallback = null, render } = {}) { return stream({ peer, chat, init, render, fallback, say: speak, onLog }); },
     // THE 👀 THROUGH THE PEER (operator 2026-09-07), and it takes the SAME `chat` payload route()
     // handed back — the one this object's other method already takes — because a reaction is
@@ -312,7 +449,14 @@ export function makePeerMouth({ peer, bridge, bridgeOf = null, owns = () => fals
     // NO FALLBACK, unlike startStream's three tiers. A reply must arrive somewhere; a read receipt
     // from the account that is NOT answering is the fault this exists to fix, so a refusal means
     // no reaction at all and the caller says so in the log (src/spine/turns.mjs).
-    react(chat, { msgKey, timestamp = 0, emoji } = {}) { return reactor({ peer, chat, msgKey, timestamp, emoji, onLog }); },
+    //
+    // A LOCAL MOUTH *DOES* reach here, and takes the branch above (reactLocally): same refusal
+    // vocabulary, same "no reaction anywhere" floor, no socket.
+    react(chat, { msgKey, timestamp = 0, emoji } = {}) {
+      if (chat?.bridge) return reactLocally(chat, { msgKey, timestamp, emoji });
+      if (!peer) return Promise.resolve({ ok: false, reason: 'no-peer', detail: 'no peer spine configured' });
+      return reactor({ peer, chat, msgKey, timestamp, emoji, onLog });
+    },
   };
 }
 
@@ -1930,9 +2074,28 @@ export async function boot({
     if (!toldAboutHome.has(told)) {
       if (toldAboutHome.size >= ARRIVAL_MAX) toldAboutHome.clear();
       toldAboutHome.add(told);
-      log.line?.(`[bridge] ${shortChatId(chatId)} is a chat on '${home}' (${holder.why}) and '${mouth}' is a different Beeper account — sends this node places locally go out on '${home}', because that chat id does not exist on '${mouth}'. The peer mouth is what reaches the other account's view of this chat.`);
+      log.line?.(`[bridge] ${shortChatId(chatId)} is a chat on '${home}' (${holder.why}) and '${mouth}' is a different Beeper account — THIS id names a room only '${home}' has, so anything addressed by it goes out on '${home}'. A reply is not addressed by it: the mouth resolves its OWN room for this chat first (the [mouth] lines say whether it could), and this is where it lands when it cannot.`);
     }
     return home;
+  };
+  // ── …AND WHICH CONNECTION IS THE MOUTH WHEN IT IS A DIFFERENT ACCOUNT (operator 2026-09-12) ──
+  // *"whatever it is, if secondary is present it should be used as mouth."* The line above is the
+  // FALLBACK answer — correct for anything addressed by the arrival's own chat id, and wrong as a
+  // final word on a REPLY, because the mouth's account has its own id for the same real chat when
+  // it is in it. This names the connection that has to be asked, and makePeerMouth does the
+  // asking (its header carries the measurement and the failure modes).
+  //
+  // IT IS EXACTLY THE BRANCH ABOVE. Same mouth, same holder, same reachability test — so there is
+  // one definition of "the mouth is elsewhere" and two things done with it: fall back here,
+  // translate there. A chat this node cannot place, a one-connection node, and two connections on
+  // ONE account all answer null, because for all three the mouth already speaks with the id it
+  // was handed and there is nothing to translate.
+  const localMouthFor = (being, chatId) => {
+    const mouth = outboundOf(being);
+    const home = connectionHolding(chatId)?.name ?? null;
+    if (home == null || reachesTheSameChats(home, mouth)) return null;
+    const b = bridgeByEndpoint.get(endpointKey(endpointFor(mouth)));
+    return b ? { name: mouth, home, bridge: b } : null;
   };
   // rawBridgeOf(being, chatId): the RAW (non-shell-aware) bridge that outbound rides. The second
   // argument arrives from sender.mjs's makeOutbound, the ONE outbound resolver; a caller with no
@@ -2086,7 +2249,14 @@ export async function boot({
   // resolver, not the shell-aware one, because these are reads and the shell-aware facade only
   // wraps send/startStream/postStatus — and route() refuses a console-owned chat before it asks
   // anything at all.
-  const peerMouth = makePeerMouth({ peer: peerSpine, bridge, bridgeOf: rawBridgeOf, owns: (c) => shellPort.owns(c), onLog: mouthLog });
+  //
+  // …and `localMouth` (operator 2026-09-12) is the OTHER transport the same mouth can use: a
+  // connection THIS node holds, on the other account. Handed over only when this node actually
+  // holds two accounts — otherwise it could never answer, and a mouth that can never answer must
+  // read as ABSENT (a one-connection node still gets `peerMouth === null`, which is what turns
+  // the whole feature off for it).
+  const localMouthAvailable = [...connectionOfBridge.values()].some((a, i, all) => all.some((b, j) => j !== i && !reachesTheSameChats(a, b)));
+  const peerMouth = makePeerMouth({ peer: peerSpine, bridge, bridgeOf: rawBridgeOf, owns: (c) => shellPort.owns(c), localMouth: localMouthAvailable ? localMouthFor : null, onLog: mouthLog });
 
   // Shell-aware bridge facade (makeShellAwareBridge, top of file): the STREAMING senders
   // (E's persona sender + the brain-member relay sender) render through their injected

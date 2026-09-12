@@ -55,6 +55,7 @@ const NAME_OF = { [PRIMARY]: 'primary', [SECONDARY]: 'secondary' };
 const AN = '+16468217865';
 const RODZ = '+13472576794';
 const DANDO = '+34658515045';
+const KEN = '+15551230000';
 
 // An account's OWN entry: a matrix id and NO phoneNumber. A member's entry carries the number.
 const self = (id) => ({ id });
@@ -67,13 +68,49 @@ const SELF_DM = '!self-dm-as-primary-sees-it';
 // …and an ordinary group on the same account, for the same reason stated without the 1:1 quirk.
 const AN_GROUP = '!an-group-as-primary-sees-it';
 
+// ── ONE REAL CHAT BOTH ACCOUNTS ARE IN — the case this file had no fixture for ────────────────
+// Beeper is Matrix: the same WhatsApp group is a DIFFERENT room per account, so it has TWO ids
+// and the two payloads share nothing but the PEOPLE (beeper.crossAccountChatKey's header,
+// measured live). Each account sees ITSELF as the phone-less self entry and the OTHER as an
+// ordinary member WITH a phone number — which is why both identities must be excluded before the
+// two views key alike.
+const BOTH_AS_PRIMARY = '!both-accounts-as-primary-sees-it';
+const BOTH_AS_SECONDARY = '!both-accounts-as-secondary-sees-it';
+// …and a group Rodz IS in on primary that has NO counterpart on secondary's install: membership
+// says "translate", the roster walk then finds nothing, and the ear must answer. The TRANSLATION
+// FAILURE case, which is not the same as "the mouth is not a member".
+const ORPHAN_GROUP = '!rodz-group-with-no-room-on-secondary';
+
+// A chat's TYPE is the first field of the cross-account key and both accounts report it alike.
+const TYPE_OF = {
+  [SELF_DM]: 'single',
+  [AN_GROUP]: 'group',
+  [BOTH_AS_PRIMARY]: 'group',
+  [BOTH_AS_SECONDARY]: 'group',
+  [ORPHAN_GROUP]: 'group',
+};
+
 const DESKTOPS = {
   [PRIMARY]: {
     [SELF_DM]: [self('an@beeper.local')],
     [AN_GROUP]: [self('an@beeper.local'), member('dando@beeper.local', DANDO)],
+    [BOTH_AS_PRIMARY]: [self('an@beeper.local'), member('rodz@beeper.local', RODZ), member('dando@beeper.local', DANDO)],
+    // A DIFFERENT third member, deliberately: same membership would key the same, and two groups
+    // with one membership are the documented limit of the key, not the case under test here.
+    [ORPHAN_GROUP]: [self('an@beeper.local'), member('rodz@beeper.local', RODZ), member('ken@beeper.local', KEN)],
   },
-  [SECONDARY]: {},   // dolly.egpt has neither room — that is the whole point
+  [SECONDARY]: {
+    // dolly.egpt has neither the Self-DM nor AN_GROUP — that is the whole point of those cases —
+    // and it has its OWN room for the one group both accounts really are in.
+    [BOTH_AS_SECONDARY]: [self('rodz@dolly.local'), member('an@dolly.local', AN), member('dando@dolly.local', DANDO)],
+  },
 };
+
+// What each install reports as its OWN account's identity — `/v1/accounts`, the `phoneNumber` on
+// the `isSelf` user entry (measured live 2026-09-12 on both installs: +16468217865 on anrodz42's,
+// +13472576794 on dolly.egpt's). This is where the two exclusion identities come from: they are
+// MEASURED per connection, not configured.
+const SELF_IDENTITY = { [PRIMARY]: [AN], [SECONDARY]: [RODZ] };
 
 const digits = (v) => String(v ?? '').replace(/\D/g, '');
 
@@ -98,11 +135,19 @@ function fakeTransport() {
         if (!roster) return null;                     // a chat this account does not have is UNKNOWN
         return roster.some((p) => p.phoneNumber && digits(p.phoneNumber) === digits(identity));
       },
+      // THE THREE READS THE MOUTH MAKES, all of them of this account's OWN copies.
+      async selfIdentities() { return SELF_IDENTITY[token] ?? []; },
+      async chatRaw(chat) { return world[chat] ? rawChat(chat, world[chat]) : null; },
+      async listChatsRaw() { return Object.entries(world).map(([id, roster]) => rawChat(id, roster)); },
       isAlive: () => true, stop() {},
     };
   };
   return { start, built };
 }
+
+// The raw /v1/chats payload shape crossAccountChatKey reads: the TYPE and the roster itself,
+// never the normalized listChats() item.
+const rawChat = (id, roster) => ({ id, type: TYPE_OF[id] ?? 'single', participants: { items: roster } });
 
 // Complete in-memory fs seam — same shape as tests/multi-connection-wake.test.mjs.
 function memIo() {
@@ -190,6 +235,18 @@ const deliver = (spy, chatId, body, { atE = true } = {}) => spy.onIncoming(body,
   atEStart: atE, atEAnywhere: atE,
 });
 
+// A routed reply settles on an ASYNC resolution (the mouth's roster walk), so poll rather than
+// guess a number of microtask ticks.
+async function waitFor(check, { timeoutMs = 2000, stepMs = 5 } = {}) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const v = check();
+    if (v) return v;
+    await new Promise((r) => setTimeout(r, stepMs));
+  }
+  return check();
+}
+
 describe('a locally placed reply goes out on the connection the message ARRIVED on', () => {
   // THE REPRODUCTION. Two connections, the being's own output resolving to `secondary`, the
   // message heard on `primary`, and no peer mouth at all. Before the fix the reply left on
@@ -230,12 +287,110 @@ describe('a locally placed reply goes out on the connection the message ARRIVED 
     app.stop();
   });
 
+  // …AND THE LOG SAYS WHICH FACT ANSWERED. The ear answering is now a REFUSAL by the mouth, not
+  // a property of the chat id, so the line that explains it has to name the mouth and the reason.
+  it('says the mouth is not in the chat, and that the ear is therefore answering', async () => {
+    const { app, byConnection, lines } = await bootWith(KG());
+    await deliver(byConnection.primary, SELF_DM, 'e hola');
+    const said = lines.filter((l) => l.includes('[mouth]') && l.includes(SELF_DM.slice(1)));
+    expect(said.join('\n')).toContain("'secondary' is not a member of");
+    expect(said.join('\n')).toContain("'primary' says this reply");
+    app.stop();
+  });
+
   // THE LOCK ON THE BASELINE: one connection, one bridge, nothing to choose between. Unchanged.
   it('a ONE-connection node is untouched', async () => {
     const { app, built, byConnection, replies } = await bootWith(SINGLE());
     expect(built.map((s) => s.connection)).toEqual(['primary']);
     await deliver(byConnection.primary, AN_GROUP, 'e hola');
     expect(replies()).toEqual([{ connection: 'primary', chatId: AN_GROUP }]);
+    app.stop();
+  });
+});
+
+// ── …AND THE OTHER HALF: WHEN THE MOUTH *IS* IN THE CHAT, THE MOUTH SPEAKS ─────────────────────
+// THE OPERATOR'S RULE (2026-09-12, verbatim): *"whatever it is, if secondary is present it should
+// be used as mouth. all agents have different wake words, but they all use secondary to speak,
+// when present."*
+//
+// THE REPRODUCTION (measured on dolly, node `do`, 2026-09-12). `primary` = anrodz42 is the ear,
+// `secondary` = dolly.egpt is the mouth, a message arrived on the ear in a group BOTH accounts
+// are in — and D answered from the operator's OWN number. The old test asked whether the mouth's
+// declared `account:` STRING equalled the ear's, found it did not, and concluded "that chat id
+// does not exist on secondary". Every clause of that was true and the conclusion was still wrong:
+// secondary has its OWN id for the same real chat and is a member of it. The right question is
+// not a string comparison, it is "does the mouth's account actually HAVE this chat?" — answered
+// by resolving it, exactly as the peer mouth already resolves one across a socket.
+describe('a chat the mouth\'s account is ALSO in is answered by the MOUTH, in the mouth\'s own room', () => {
+  it('the reply goes out on secondary, carrying SECONDARY\'s chat id — not the ear\'s', async () => {
+    const { app, byConnection, replies } = await bootWith(KG());
+    expect(Object.keys(byConnection).sort()).toEqual(['primary', 'secondary']);
+
+    await deliver(byConnection.primary, BOTH_AS_PRIMARY, 'e hola');
+    await waitFor(() => replies().length > 0);
+
+    expect(replies()).toEqual([{ connection: 'secondary', chatId: BOTH_AS_SECONDARY }]);
+    // …and NOTHING on the ear: the whole reply lives on the other account.
+    expect(byConnection.primary.streams).toEqual([]);
+    expect(byConnection.primary.sent).toEqual([]);
+    app.stop();
+  });
+
+  it('says so, naming both rooms and both connections', async () => {
+    const { app, byConnection, replies, lines } = await bootWith(KG());
+    await deliver(byConnection.primary, BOTH_AS_PRIMARY, 'e hola');
+    await waitFor(() => replies().length > 0);
+
+    const said = lines.filter((l) => l.includes('[mouth]') && l.includes('is'));
+    expect(said.join('\n')).toContain(BOTH_AS_PRIMARY.slice(1));
+    expect(said.join('\n')).toContain(BOTH_AS_SECONDARY.slice(1));
+    expect(said.join('\n')).toContain("'secondary'");
+    app.stop();
+  });
+
+  // A TRANSLATION THAT FAILS FALLS BACK TO THE EAR AND SAYS SO — never a post into a wrong room
+  // and never a dropped reply. Membership says yes (Rodz is in the group as primary sees it) and
+  // the roster walk then finds no room on secondary keyed alike.
+  it('membership yes but NO room to translate to: the ear answers, loudly', async () => {
+    const { app, byConnection, replies, lines } = await bootWith(KG());
+    await deliver(byConnection.primary, ORPHAN_GROUP, 'e hola');
+    await waitFor(() => replies().length > 0);
+
+    expect(replies()).toEqual([{ connection: 'primary', chatId: ORPHAN_GROUP }]);
+    expect(byConnection.secondary.streams).toEqual([]);
+    expect(byConnection.secondary.sent).toEqual([]);
+    const said = lines.filter((l) => l.includes('[mouth]')).join('\n');
+    expect(said).toContain('no-match');
+    expect(said).toContain("'primary' says this reply");
+    app.stop();
+  });
+
+  // AN AGENT'S OWN `use:` STILL WINS. Pinned to the ear, the being speaks on the ear even in a
+  // chat the mouth is in — the mouth is whichever connection outboundOf names, and nothing here
+  // moves that.
+  it('an agent pinned with `use: primary` still speaks on primary', async () => {
+    const cfg = KG();
+    cfg.agents.egpt.use = 'primary';
+    const { app, byConnection, replies } = await bootWith(cfg);
+
+    await deliver(byConnection.primary, BOTH_AS_PRIMARY, 'e hola');
+    await waitFor(() => replies().length > 0);
+
+    expect(replies()).toEqual([{ connection: 'primary', chatId: BOTH_AS_PRIMARY }]);
+    app.stop();
+  });
+
+  // TWO CONNECTIONS ON ONE ACCOUNT are not a translation at all: the same rooms under the same
+  // ids, so the mouth speaks with the id it was handed and nothing is resolved.
+  it('two connections on the SAME account speak with the id they were handed', async () => {
+    const cfg = KG();
+    cfg.beeper.secondary.account = 'anrodz42@example.com';
+    const { app, byConnection, replies } = await bootWith(cfg);
+
+    await deliver(byConnection.primary, AN_GROUP, 'e hola');
+    await waitFor(() => replies().length > 0);
+
+    expect(replies()).toEqual([{ connection: 'secondary', chatId: AN_GROUP }]);
     app.stop();
   });
 });

@@ -282,8 +282,15 @@ describe('a node-level send rides the connection that can REACH the chat, not th
   // ── NEVER SILENT, AND NEVER VAGUE ─────────────────────────────────────────────────────────
   // A line that came out of an account the operator did not pin has to be findable, and the log
   // has to say WHICH of the two facts answered it — one is measured (the message arrived there),
-  // the other is read off the config (this is the node's own Self chat). The resolver is the same
-  // for replies; only the provenance clause differs, so it is the clause this locks.
+  // the other is read off the config (this is the node's own Self chat).
+  //
+  // …AND IT MUST NOT OVERSTATE WHAT IT DECIDED (operator 2026-09-12). The line used to end "sends
+  // this node places locally go out on 'primary', because that chat id does not exist on
+  // 'secondary'. The peer mouth is what reaches the other account's view of this chat." The first
+  // half is still true and the second half became false: a REPLY is no longer addressed by this
+  // chat id at all — the mouth resolves its own room for the same real chat first, in-process, and
+  // only lands here when it has none (src/spine/boot.mjs makePeerMouth). So this resolver answers
+  // for anything carrying THIS id, and the line now says exactly that and no more.
   it('says out loud that the Self chat is on the ear and the mouth is another account', async () => {
     const { app, posted, lines } = await bootWith(KG(), { ingest: true });
     await waitFor(() => posted().length > 0);
@@ -293,6 +300,10 @@ describe('a node-level send rides the connection that can REACH the chat, not th
     expect(said[0]).toContain("is a chat on 'primary'");
     expect(said[0]).toContain("this node's Self chat, declared in config");
     expect(said[0]).toContain("'secondary' is a different Beeper account");
+    // scoped to what it actually decides…
+    expect(said[0]).toContain("THIS id names a room only 'primary' has");
+    // …and it no longer claims the peer link is the only way to the other account's view.
+    expect(said[0]).not.toContain('The peer mouth is what reaches');
     app.stop();
   });
 });

@@ -184,13 +184,19 @@ export const RETAINED_SEAM = '\n\n— ↓ reply —\n\n';
  * A one-argument `bridgeOf` — every test that injects one — simply ignores the extra argument and
  * answers exactly as it did before.
  *
- * IT MOVES ONLY THE LOCAL HALF. `route()` below is untouched, so which mouth SAYS the reply is
- * decided exactly as it was; this is where the reply lands when no peer takes it.
+ * IT MOVES ONLY THE LOCAL HALF. `route()` is the mouth's own answer and is decided in
+ * src/spine/boot.mjs makePeerMouth; this is where the reply lands when no mouth takes it.
+ *
+ * …AND THE BEING GOES TO `route()` TOO (operator 2026-09-12): *"if secondary is present it should
+ * be used as mouth… all agents use secondary to speak, when present."* WHICH connection is the
+ * mouth is a per-AGENT fact (its `use:`, else the node's default output), so the mouth cannot be
+ * resolved without knowing who is replying. It was not passed, and could not have been, while the
+ * only mouth was a peer spine — that one is a property of the node.
  */
 export function makeOutbound({ bridge, bridgeOf = null, peerMouth = null, onLog = () => {} } = {}) {
   return (being, chatId = null) => ({
     bridge: bridgeOf ? (bridgeOf(being, chatId) ?? bridge) : bridge,
-    route: () => (peerMouth ? Promise.resolve().then(() => peerMouth.route(chatId)).catch((e) => { onLog(`mouth: could not decide the route for ${chatId} — posting locally: ${e?.message ?? e}`); return null; }) : null),
+    route: () => (peerMouth ? Promise.resolve().then(() => peerMouth.route(chatId, being)).catch((e) => { onLog(`mouth: could not decide the route for ${chatId} — posting locally: ${e?.message ?? e}`); return null; }) : null),
   });
 }
 
@@ -288,17 +294,29 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
       // from every other queued one, which is what keeps two coexisting placeholders resolvable to
       // their own message ids (see QUEUED).
       const placeholderText = () => ((queued && !activated) ? QUEUED(queuedAhead) : THINKING);
-      // THIS ACCOUNT'S OWN STREAM — and also the LAST RESORT the peer stream falls back to when it
-      // can neither stream nor speak through the peer (peer-mouth.startPeerStream, tier 3), which
-      // is why it is a factory rather than an inline call: only this file knows the chat, the tag
-      // and the placeholder, so it is this file that hands the fallback over.
-      const openLocalStream = () => bridgeForThisBeing.startStream?.(chatId, placeholderText(), { ...tag, persona: being });
-      // THE ONE DECISION (header): which factory mints the stream. Both hand back the same surface,
-      // so nothing below this line knows or cares which mouth it is driving.
-      const openStream = (peerChat = null) => {
+      // A STREAM ON A CONNECTION THIS NODE HOLDS — this being's own by default, and also the LAST
+      // RESORT the peer stream falls back to when it can neither stream nor speak through the peer
+      // (peer-mouth.startPeerStream, tier 3), which is why it is a factory rather than an inline
+      // call: only this file knows the chat, the tag and the placeholder, so it is this file that
+      // hands the fallback over. Tier 3 calls it with NO arguments and therefore gets exactly the
+      // stream it always got.
+      //
+      // THE TWO ARGUMENTS ARE FOR THE LOCAL MOUTH (operator 2026-09-12). When the mouth is another
+      // connection ON THIS NODE, the reply is an ORDINARY local stream — opened on that
+      // connection's bridge, in that account's OWN room id for this chat (boot's route() resolves
+      // it; src/spine/boot.mjs makePeerMouth). Same factory, same tag, same wrap one layer down in
+      // beeper-port: there is no second sender and no second definition of what a reply looks
+      // like, only a different bridge and a different room.
+      const openLocalStream = (on = bridgeForThisBeing, room = chatId) => on.startStream?.(room, placeholderText(), { ...tag, persona: being });
+      // THE ONE DECISION (header): which factory mints the stream. All three hand back the same
+      // surface, so nothing below this line knows or cares which mouth it is driving. A LOCAL
+      // mouth is told apart from a PEER one by `.bridge`, which only the local answer carries.
+      const openStream = (mouthChat = null) => {
         if (streamOpened) return stream;
         streamOpened = true;
-        stream = peerChat ? peerMouth.startStream(peerChat, placeholderText(), { fallback: openLocalStream, render: renderForPeer }) : openLocalStream();
+        stream = mouthChat?.bridge
+          ? openLocalStream(mouthChat.bridge, mouthChat.chatId)
+          : mouthChat ? peerMouth.startStream(mouthChat, placeholderText(), { fallback: openLocalStream, render: renderForPeer }) : openLocalStream();
         const already = shown();
         if (already) stream?.update?.(`${already} ${LIVE_FRAME_MARK}`);
         return stream;
@@ -403,6 +421,12 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
         // one consumer threads a follow-up voice note as a reply to the text — with no local id
         // that follow-up simply goes out unthreaded, which is the same thing it already does
         // whenever a stream fails to resolve its placeholder.
+        //
+        // A LOCAL-MOUTH reply DOES hand one back, and it is honest: the message lives on the
+        // other account but in a room THIS node holds a bridge to, so the id is addressable here
+        // — by that bridge, in that room. (The voice-out attach reaches for the being's own
+        // connection and the ARRIVAL's chat id, which was already the wrong pair on a two-account
+        // node before any of this; it is untouched here.)
         get confirmedId() { return fallbackResult ? (fallbackResult?.confirmedId ?? null) : (stream?.confirmedId ?? null); },
       };
     },

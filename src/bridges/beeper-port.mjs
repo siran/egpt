@@ -267,6 +267,17 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
       return real.chatHasParticipant ? await real.chatHasParticipant(chat, identity) : null;
     },
 
+    // WHO THIS CONNECTION IS (operator 2026-09-12) — forwarded for exactly the reason
+    // chatHasParticipant is: a READ of this account's own `/v1/accounts` payload, never an
+    // outbound. It is what lets a node holding TWO connections exclude BOTH accounts when it
+    // keys one real chat across them (src/bridges/beeper.mjs crossAccountChatKey), without the
+    // operator declaring by hand what the install already knows. A bridge without it (a test
+    // fake) answers [], which the mouth reads as "this connection cannot be keyed against" and
+    // falls back from.
+    async selfIdentities() {
+      return real.selfIdentities ? await real.selfIdentities() : [];
+    },
+
     // NAME->ID (operator 2026-08-31) — `/members add group <chat name>` shipped in c63cdd6 and
     // has been INERT ever since, because this port exposed only the loop's Bridge interface and
     // the command's resolver seam therefore resolved to null: every name was refused with "give

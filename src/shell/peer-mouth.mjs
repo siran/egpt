@@ -25,6 +25,12 @@
 //   primary   sees it as  !6ljZ…:beeper.local   localChatID 211
 //   secondary sees it as  !HuXF…:beeper.local   localChatID 3
 //
+// (AND THIS IS NOT ONLY A LINK PROBLEM — operator 2026-09-12. A single spine holding BOTH
+// connections faces the identical question, because the two accounts are two Beeper installs
+// whichever process holds them. src/spine/boot.mjs makePeerMouth therefore runs findChatByKey
+// below against the mouth connection's own bridge, with no socket in the path. The resolution is
+// shared; only the transport differs.)
+//
 // So a chatId cannot cross the link. beeper.crossAccountChatKey() is the primitive that can: the
 // chat's TYPE plus the sorted set of participant PHONE NUMBERS, digits-normalised, excluding the
 // identities the caller holds — byte-identical across both accounts' views of one group when BOTH
@@ -170,7 +176,10 @@ export function peerSpineFrom(cfg, onLog = () => {}) {
  *   NOT the bridge's listChats() items, which normalize `participants` away, and NOT chatInfo's
  *   cached `participants` (already reduced to keys). crossAccountChatKey needs the roster itself.
  * @param {string} chatKey
- * @param {string|string[]} exclude   peer_spine.accounts — both accounts' identities.
+ * @param {string|string[]} exclude   BOTH accounts' identities. Over the link that is
+ *   peer_spine.accounts; in-process (src/spine/boot.mjs makePeerMouth, where the other account is
+ *   a second connection on this very node rather than another spine) it is what the two installs
+ *   report for themselves on /v1/accounts. Same function, same rule, two sources for one fact.
  */
 export function findChatByKey(chats, chatKey, exclude = []) {
   const want = String(chatKey ?? '').trim();
