@@ -1715,14 +1715,26 @@ export async function startBeeperBridge(opts = {}) {
         // exactly ONE rank-1 posts now, a lower rank promotes only if the higher ranks are silent (NOT
         // dedup). We key on the AUDIO, NOT msg.id (node-LOCAL — that very divergence is why the old HRW
         // double-echoed) and NOT the transcript text (whisper engines can differ). crypto lives HERE,
-        // never in the pure echo-priority module. A hashing failure (e.g. the file vanished) FALLS BACK
-        // to msg.id instead of throwing on the hot path — a degraded key beats a dropped note. rank 0 =
-        // echo:false hard opt-out. The age bound is ORTHOGONAL — tooOldForEcho suppresses ANY
-        // post/promotion regardless of rank.
+        // never in the pure echo-priority module. rank 0 = echo:false hard opt-out. The age bound is
+        // ORTHOGONAL — tooOldForEcho suppresses ANY post/promotion regardless of rank.
+        //
+        // NO KEY ⇒ NO ECHO (operator 2026-09-12). This FELL BACK to msg.id, i.e. to the node-LOCAL key
+        // the audio hash exists to replace — so the failure path silently reinstated the double-👂 the
+        // design prevents. Live cause: the S0 PRIMARY Beeper runs as LocalSystem, its media sits in
+        // LocalSystem's profile, and the session-1 spine reads it as EPERM — ONE node's hash fails while
+        // the peer's works. There is no honest substitute: a fallback key would have to be node-stable
+        // AND CHOSEN alike on both nodes, and "could I read the audio?" is itself node-local, so the peer
+        // keys on the audio and diverges whatever we pick (the payload timestamp included, node-stable
+        // though it is). crossAccountMsgKey is no help either — it hashes the message BODY, which a bare
+        // voice note has none of (it returns null). So we REFUSE, the discipline crossAccountChatKey and
+        // crossAccountMsgKey already use for a key that is not evidence: rank 0, i.e. the echo:false
+        // verdict — still transcribed + logged, never posted, never promoted. The cost is a DELAY, not
+        // the note: a peer that CAN read the audio still echoes on its own rank, and a rank>1 peer's
+        // ordered failover posts it ~echoTimeoutMs later (incoming-media.mjs).
         let audioHash = null;
         try { audioHash = createHash('sha256').update(await readFile(path)).digest('hex'); }
-        catch (e) { onLog(`beeper: audio-hash failed for echo plan [${info.title}] — falling back to msg.id (${e?.message ?? e})`); }
-        const plan = echoPlan(audioHash ?? msg.id);
+        catch (e) { onLog(`beeper: 👂 NOT echoed [${info.title}] — the note's audio is unreadable, so this node cannot compute the co-account-stable echo key, and echoing on a node-local one double-👂s. Still transcribed + logged; a peer that can read the audio echoes it (${e?.message ?? e})`); }
+        const plan = audioHash == null ? { rank: 0, winner: false } : echoPlan(audioHash);
         const echoOn = plan.rank >= 1 && !tooOldForEcho;   // is an echo POSSIBLE at all for this note on this node?
         const transcript = await _transcribing('whisper', () => transcribeVoiceNote({
           localPath: path, transcribe, audioCfg,

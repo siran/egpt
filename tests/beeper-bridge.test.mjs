@@ -20,11 +20,13 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { createHash } from 'node:crypto';
 import { startBeeperBridge, newerMsgId, transcriptionForNoteId, crossAccountMsgKey } from '../src/bridges/beeper.mjs';
 import { EGPT_HOME } from '../src/egpt-home.mjs';
 import { encodeMesh } from '../src/mesh/relay.mjs';
 import { surfaceOf } from '../src/spine/identity.mjs';
 import { _resetPromotions } from '../src/incoming-media.mjs';
+import { echoRank } from '../src/spine/echo-priority.mjs';
 
 const CHATS_PER_PAGE = 2;   // fake /v1/chats page size (live it's 25) — small so page 2 is readable
 
@@ -305,6 +307,17 @@ function fakeAttachment({ name = 'blob.bin', mimeType = '', isVoiceNote = false 
   const p = join(stateDir, name);
   writeFileSync(p, 'fake-bytes');
   return { id: `att-${Math.random().toString(36).slice(2)}`, srcURL: pathToFileURL(p).href, fileName: name, mimeType, isVoiceNote };
+}
+
+// A VOICE NOTE’s attachment, with REAL BYTES on disk. The 👂 echo plan keys on the sha256 of the
+// DOWNLOADED AUDIO (src/bridges/beeper.mjs), and a note whose audio cannot be READ is not echoed at
+// all — so a fixture pointing at a path that does not exist exercises the REFUSAL, never the echo.
+// Distinct `bytes` ⇒ a distinct key ⇒ a distinct HRW rank: that is how a test names one note over
+// another. (Every echo test below rode `file:///tmp/note.ogg`, which exists on no machine.)
+function voiceAtt(bytes = 'fake-ogg-bytes', name = `voice-${Math.random().toString(36).slice(2)}.ogg`) {
+  const p = join(stateDir, name);
+  writeFileSync(p, bytes);
+  return { id: `a-${Math.random().toString(36).slice(2)}`, isVoiceNote: true, srcURL: pathToFileURL(p).href };
 }
 
 // Real Beeper chatIDs are Matrix room ids ('!xxx:beeper.local'); tests
@@ -618,7 +631,7 @@ describe('beeper bridge', () => {
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       isSender: false, type: 'VOICE', text: null,
       senderName: 'Ricki Mejia amigo diana real estate', senderPushName: 'Ricki Mejia',
-      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+      attachments: [voiceAtt()],
     })] });
     await waitFor(() => incoming.length === 1);
     await waitFor(() => fake.posts.length === 1);
@@ -650,7 +663,7 @@ describe('beeper bridge', () => {
       isSender: false, type: 'VOICE', text: null,
       senderID: '@whatsapp_lid-85555832479795:beeper.local',
       senderName: 'le_moi',
-      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+      attachments: [voiceAtt()],
     })] });
     await waitFor(() => incoming.length === 1);
     await waitFor(() => fake.posts.length === 1);
@@ -693,7 +706,7 @@ describe('beeper bridge', () => {
     });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       id: 'note-slow', text: null, type: 'VOICE',
-      attachments: [{ id: 'a-slow', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+      attachments: [voiceAtt()],
     })] });
     await waitFor(() => started === 1, 3000);   // the transcription is IN FLIGHT and will not finish
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'txt-same', text: '@e felix tiene razon?' })] });
@@ -724,12 +737,12 @@ describe('beeper bridge', () => {
     });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       id: 'note-one', text: null, type: 'VOICE',
-      attachments: [{ id: 'a-one', isVoiceNote: true, srcURL: 'file:///tmp/one.ogg' }],
+      attachments: [voiceAtt('one-ogg-bytes', 'one.ogg')],
     })] });
     await waitFor(() => order.length === 1, 3000);   // note one holds the slot
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       id: 'note-two', chatID: CHAT('chat-2'), text: null, type: 'VOICE',
-      attachments: [{ id: 'a-two', isVoiceNote: true, srcURL: 'file:///tmp/two.ogg' }],
+      attachments: [voiceAtt('two-ogg-bytes', 'two.ogg')],
     })] });
     await new Promise((r) => setTimeout(r, 100));
     expect(order).toEqual(['one']);                  // note two waits for the slot, in ANOTHER chat
@@ -968,7 +981,7 @@ describe('beeper bridge', () => {
     const { incoming } = await startBridge({ resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }) });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       text: null, type: 'VOICE', timestamp: Date.now() - 60_000,   // older than bridge start → backlog
-      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+      attachments: [voiceAtt()],
     })] });
     await waitFor(() => incoming.length === 1);
     expect(incoming[0].from.backlog).toBe(true);                              // backfilled, never dispatched
@@ -989,7 +1002,7 @@ describe('beeper bridge', () => {
     });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       text: null, type: 'VOICE',
-      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+      attachments: [voiceAtt()],
     })] });
     await waitFor(() => incoming.length === 1);
     expect(incoming[0].text).toBe('(voice transcription) fake transcript');   // HEARD (transcribed + logged)
@@ -1003,27 +1016,28 @@ describe('beeper bridge', () => {
     });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       text: null, type: 'VOICE',
-      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+      attachments: [voiceAtt()],
     })] });
     await waitFor(() => incoming.length === 1);
     await waitFor(() => fake.posts.length === 1);
     expect(fake.posts[0].text).toBe('👂 fake transcript');
   });
 
-  // The bridge feeds the note's SHARED Beeper message id (msg.id) to echoPlan — that shared identity
-  // is what makes the two co-account nodes agree on the rank. Lock it: a rank keyed on the id posts
-  // (rank 1) for exactly the note it names, and BOTH notes are still transcribed + logged.
-  it('echoPlan is keyed on the note\'s Beeper message id — exactly the rank-1 note posts, both are transcribed', async () => {
+  // The bridge feeds the note's AUDIO HASH to echoPlan — the sha256 of the downloaded bytes is the one
+  // identity both co-account nodes compute alike, and that agreement is the whole winner-selection. It
+  // is NOT msg.id: that is node-LOCAL, and keying on it is what double-echoed (the refusal test below).
+  // Lock it: a rank keyed on the AUDIO posts (rank 1) for exactly the note whose bytes it names, and
+  // BOTH notes are still transcribed + logged.
+  it('echoPlan is keyed on the note\'s AUDIO HASH — exactly the rank-1 note posts, both are transcribed', async () => {
+    const WIN = 'winner-ogg-bytes', LOSE = 'loser-ogg-bytes';
+    const sha = (b) => createHash('sha256').update(Buffer.from(b)).digest('hex');
     const { incoming } = await startBridge({
-      echoPlan: (noteId) => ({ rank: noteId === 'note-win' ? 1 : 0, winner: noteId === 'note-win' }),
+      echoPlan: (noteKey) => ({ rank: noteKey === sha(WIN) ? 1 : 0, winner: noteKey === sha(WIN) }),
       resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }),
     });
-    const voice = (id) => liveMsg({
-      id, text: null, type: 'VOICE',
-      attachments: [{ id: `a-${id}`, isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
-    });
-    fake.emit({ type: 'message.upserted', entries: [voice('note-lose')] });
-    fake.emit({ type: 'message.upserted', entries: [voice('note-win')] });
+    const voice = (id, audio) => liveMsg({ id, text: null, type: 'VOICE', attachments: [voiceAtt(audio)] });
+    fake.emit({ type: 'message.upserted', entries: [voice('note-lose', LOSE)] });
+    fake.emit({ type: 'message.upserted', entries: [voice('note-win', WIN)] });
     await waitFor(() => incoming.length === 2);
     // Both HEARD (transcribed + logged) …
     expect(incoming.map((i) => i.text)).toEqual(['(voice transcription) fake transcript', '(voice transcription) fake transcript']);
@@ -1032,6 +1046,51 @@ describe('beeper bridge', () => {
     expect(fake.posts).toHaveLength(1);
     expect(fake.posts[0].replyToMessageID).toBe('note-win');
     expect(fake.posts[0].text).toBe('👂 fake transcript');
+  });
+
+  // 👂 THE FALLBACK KEY THAT WAS NOT A KEY (live, 2026-09-12) — REPRODUCE-FIRST.
+  // When the audio could not be hashed the bridge FELL BACK to msg.id — node-LOCAL, the exact key the
+  // audio hash exists to replace, so the failure path silently reinstated the double-👂 the design
+  // prevents. Live cause: the S0 PRIMARY Beeper runs as LocalSystem, so its media sits in LocalSystem’s
+  // profile and the session-1 spine reads it as EPERM. Here BOTH nodes fall back, each under its OWN
+  // per-account sequence id (the two measured live for ONE message, 2901 / 1118 — which node sees which
+  // is arbitrary): on the old code both compute rank 1 and BOTH post. After the fix neither echoes,
+  // each SAYS so, and both still transcribe + log.
+  it('audio unreadable → NEITHER co-account node echoes (a node-local key is not a key); both still transcribe + log', async () => {
+    const PEERS = ['kg', 'do'];
+    const planFor = (self) => (noteKey) => { const rank = echoRank(self, PEERS, noteKey); return { rank, winner: rank === 1 }; };
+    // The divergence itself, on the pure function: each node’s OWN msg.id makes IT the winner —
+    // two rank-1s for ONE real note.
+    expect(echoRank('kg', PEERS, '1118')).toBe(1);
+    expect(echoRank('do', PEERS, '2901')).toBe(1);
+    // …and the audio key they SHOULD have agreed on is unavailable: this file is never written.
+    const unreadable = { id: 'att-gone', isVoiceNote: true, srcURL: pathToFileURL(join(stateDir, 'never-written.ogg')).href };
+    const note = (id) => liveMsg({ id, isSender: false, text: null, type: 'VOICE', attachments: [unreadable] });
+    const svc = async () => ({ enabled: true, postsBack: true });
+    const logs = [];
+
+    const kg = await startBridge({ echoPlan: planFor('kg'), resolveTranscriptionService: svc, onLog: (m) => logs.push(m) });
+    fake.emit({ type: 'message.upserted', entries: [note('1118')] });
+    await waitFor(() => kg.incoming.length === 1);
+    await new Promise((r) => setTimeout(r, 30));
+    // …then the co-account node, seeing the SAME note under ITS own id (one live node at a time, so
+    // the shared fake delivers each view to exactly the node that holds it).
+    kg.bridge.stop();
+    fake.dropSockets();
+    const dolly = await startBridge({ echoPlan: planFor('do'), resolveTranscriptionService: svc, onLog: (m) => logs.push(m) });
+    fake.emit({ type: 'message.upserted', entries: [note('2901')] });
+    await waitFor(() => dolly.incoming.length === 1);
+    await new Promise((r) => setTimeout(r, 30));
+
+    expect(fake.posts).toHaveLength(0);                      // was 2 — one 👂 per node for ONE real note
+    // HEARD on both: only the echo is refused.
+    expect(kg.incoming[0].text).toBe('(voice transcription) fake transcript');
+    expect(dolly.incoming[0].text).toBe('(voice transcription) fake transcript');
+    // …and each node SAYS it is not echoing this note, and why — not a routine downgrade.
+    const refused = logs.filter((m) => m.includes('👂 NOT echoed'));
+    expect(refused).toHaveLength(2);
+    expect(refused[0]).toMatch(/audio is unreadable/);
+    expect(refused[0]).toMatch(/transcribed \+ logged/);
   });
 
   // ORDERED FAILOVER (Phase 3b) at the bridge, fake-clock driven:
@@ -1048,7 +1107,7 @@ describe('beeper bridge', () => {
     });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       id: 'note-p', isSender: false, text: null, type: 'VOICE',
-      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+      attachments: [voiceAtt()],
     })] });
     await waitFor(() => incoming.length === 1);
     expect(incoming[0].text).toBe('(voice transcription) fake transcript');   // HEARD …
@@ -1069,7 +1128,7 @@ describe('beeper bridge', () => {
     // the voice note → this (rank-2) node arms a promotion (held, no post; coverage empty at arm time)
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       id: 'note-o', isSender: false, text: null, type: 'VOICE',
-      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+      attachments: [voiceAtt()],
     })] });
     await waitFor(() => incoming.some((i) => i.from.msgKey === 'note-o'));
     // rank-1 (the co-account peer) posted its 👂 as a quoted reply to the note — now present in the chat.
@@ -1093,7 +1152,7 @@ describe('beeper bridge', () => {
     });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       id: 'note-delay', isSender: false, text: null, type: 'VOICE',
-      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+      attachments: [voiceAtt()],
     })] });
     await waitFor(() => incoming.length === 1);
     expect(incoming[0].text).toBe('(voice transcription) fake transcript');   // HEARD immediately …
@@ -1112,7 +1171,7 @@ describe('beeper bridge', () => {
     });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       text: null, type: 'VOICE',
-      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+      attachments: [voiceAtt()],
     })] });
     await waitFor(() => quiet.incoming.length === 1);
     expect(quiet.incoming[0].text).toBe('(voice transcription) fake transcript');   // HEARD
@@ -1124,7 +1183,7 @@ describe('beeper bridge', () => {
     });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       chatID: CHAT('chat-2'), text: null, type: 'VOICE',
-      attachments: [{ id: 'a2', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+      attachments: [voiceAtt()],
     })] });
     await waitFor(() => loud.incoming.length === 1);
     await waitFor(() => fake.posts.length === 1);
@@ -1143,7 +1202,7 @@ describe('beeper bridge', () => {
     });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       text: null, type: 'VOICE',   // fresh (Date.now()) → rank-1 default posts immediately
-      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+      attachments: [voiceAtt()],
     })] });
     await waitFor(() => incoming.length === 1);
     await waitFor(() => fake.posts.length === 1);
@@ -1159,7 +1218,7 @@ describe('beeper bridge', () => {
     });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       text: null, type: 'VOICE',
-      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+      attachments: [voiceAtt()],
     })] });
     await waitFor(() => incoming.length === 1);
     await waitFor(() => fake.posts.length === 1);
@@ -1182,7 +1241,7 @@ describe('beeper bridge', () => {
     // rank-2 → this node arms a promotion for the note (held, no post)
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       id: 'note-sig', isSender: false, text: null, type: 'VOICE',
-      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+      attachments: [voiceAtt()],
     })] });
     await waitFor(() => incoming.some((i) => i.from.msgKey === 'note-sig'));
     // the peer's 👂 for the same note, WRAPPED — leading opens (BO/TO) + trailing closes (TC/💸) around the
@@ -1200,7 +1259,7 @@ describe('beeper bridge', () => {
     });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       text: null, type: 'VOICE',
-      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+      attachments: [voiceAtt()],
     })] });
     await waitFor(() => incoming.length === 1);
     await waitFor(() => fake.posts.length === 1);
@@ -1217,7 +1276,7 @@ describe('beeper bridge', () => {
     });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       text: null, type: 'VOICE',
-      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+      attachments: [voiceAtt()],
     })] });
     await waitFor(() => incoming.length === 1);
     await waitFor(() => fake.posts.length === 1);
@@ -1234,7 +1293,7 @@ describe('beeper bridge', () => {
     });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       id: 'note-u', isSender: false, text: null, type: 'VOICE',
-      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+      attachments: [voiceAtt()],
     })] });
     await waitFor(() => incoming.some((i) => i.from.msgKey === 'note-u'));
     // the chat holds a prose reply to THIS note (no token overlap with 'fake transcript') and a matching
@@ -1258,7 +1317,7 @@ describe('beeper bridge', () => {
     });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       text: null, type: 'VOICE', timestamp: Date.now() - 2 * 3_600_000,   // 2h old — past the bound
-      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+      attachments: [voiceAtt()],
     })] });
     await waitFor(() => incoming.length === 1);
     expect(incoming[0].text).toBe('(voice transcription) fake transcript');   // still HEARD
@@ -1272,7 +1331,7 @@ describe('beeper bridge', () => {
   // transcript-logging are unaffected. REPRODUCE: before this fix, the 👂 posted here too.
   const voiceNoteAt = (ageMs) => liveMsg({
     text: null, type: 'VOICE', timestamp: Date.now() - ageMs,
-    attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+    attachments: [voiceAtt()],
   });
   it('a 12-day-old voice note is transcribed + logged, but the 👂 is NOT posted (age bound)', async () => {
     const { incoming } = await startBridge({ resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }) });
@@ -1315,7 +1374,7 @@ describe('beeper bridge', () => {
     const { incoming } = await startBridge({ resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }) });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       text: null, type: 'VOICE', timestamp: undefined,
-      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+      attachments: [voiceAtt()],
     })] });
     await waitFor(() => incoming.length === 1);
     await waitFor(() => fake.posts.length === 1);
@@ -1336,7 +1395,7 @@ describe('beeper bridge', () => {
     fake.messages.set(CHAT('chat-1'), [{ id: 'peer-echo', text: '👂 fake transcript', linkedMessageID: 'note-cov', isSender: false }]);
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       id: 'note-cov', text: null, type: 'VOICE',
-      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+      attachments: [voiceAtt()],
     })] });
     await waitFor(() => incoming.some((i) => i.from.msgKey === 'note-cov'));
     expect(incoming.find((i) => i.from.msgKey === 'note-cov').text).toBe('(voice transcription) fake transcript');   // HEARD
@@ -1356,7 +1415,7 @@ describe('beeper bridge', () => {
     fake.messages.set(CHAT('chat-1'), [{ id: 'peer', text: '<p>TO 👂 fake transcript see <a href="http://don.do">don.do</a></p>', linkedMessageID: 'note-h', isSender: false }]);
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       id: 'note-h', text: null, type: 'VOICE',
-      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+      attachments: [voiceAtt()],
     })] });
     await waitFor(() => incoming.some((i) => i.from.msgKey === 'note-h'));
     await new Promise((r) => setTimeout(r, 30));
@@ -1374,7 +1433,7 @@ describe('beeper bridge', () => {
     ]);
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       id: 'note-x', text: null, type: 'VOICE',
-      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+      attachments: [voiceAtt()],
     })] });
     await waitFor(() => incoming.some((i) => i.from.msgKey === 'note-x'));
     await waitFor(() => fake.posts.length === 1);                // uncovered → posts
@@ -1389,7 +1448,7 @@ describe('beeper bridge', () => {
     fake.messages.set(CHAT('chat-1'), () => { throw new Error('boom'); });   // the coverage GET 500s
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       id: 'note-fo', text: null, type: 'VOICE',
-      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+      attachments: [voiceAtt()],
     })] });
     await waitFor(() => incoming.some((i) => i.from.msgKey === 'note-fo'));
     await waitFor(() => fake.posts.length === 1);                // GET failed → fail-open → posts (a rare double beats a missed echo)
@@ -1407,7 +1466,7 @@ describe('beeper bridge', () => {
     fake.messages.set(CHAT('chat-1'), [{ id: 'survivor-echo', text: '👂 fake transcript', linkedMessageID: 'note-rc', isSender: false }]);
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       id: 'note-rc', text: null, type: 'VOICE', timestamp: Date.now() - 60_000,   // an old replay — irrelevant to coverage
-      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+      attachments: [voiceAtt()],
     })] });
     await waitFor(() => incoming.some((i) => i.from.msgKey === 'note-rc'));
     await new Promise((r) => setTimeout(r, 30));
@@ -1444,7 +1503,7 @@ describe('beeper bridge', () => {
     const { incoming } = await startBridge({ resolveTranscriptionService: async (id) => ({ enabled: true, postsBack: id === 'chat-enrolled' }) });
     const voice = (chatID) => liveMsg({
       chatID, text: null, type: 'VOICE',
-      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+      attachments: [voiceAtt()],
     });
     fake.emit({ type: 'message.upserted', entries: [voice(CHAT('chat-quiet'))] });
     fake.emit({ type: 'message.upserted', entries: [voice(CHAT('chat-enrolled'))] });
@@ -1469,7 +1528,7 @@ describe('beeper bridge', () => {
     const { incoming } = await startBridge({
       resolveTranscriptionService: async (...args) => { seen.push(args); return { enabled: true, postsBack: false }; },
     });
-    fake.emit({ type: 'message.upserted', entries: [liveMsg({ chatID: CHAT('room9'), text: null, type: 'VOICE', attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/n.ogg' }] })] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ chatID: CHAT('room9'), text: null, type: 'VOICE', attachments: [voiceAtt()] })] });
     await waitFor(() => incoming.length === 1);
     expect(fake.posts).toHaveLength(0);                 // posts_back false → no ack
     expect(seen).toEqual([['room9']]);                  // verdict got the id ALONE, SHORT form — no name/slug to match on
@@ -1478,7 +1537,7 @@ describe('beeper bridge', () => {
   it('posts_back by stable id → ack fires regardless of the chat title', async () => {
     fake.chats.set(CHAT('room9'), { title: 'anything at all', type: 'single', isMuted: false, accountID: 'whatsapp' });
     const { incoming } = await startBridge({ resolveTranscriptionService: async (id) => ({ enabled: true, postsBack: id === 'room9' }) });
-    fake.emit({ type: 'message.upserted', entries: [liveMsg({ chatID: CHAT('room9'), text: null, type: 'VOICE', attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/n.ogg' }] })] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ chatID: CHAT('room9'), text: null, type: 'VOICE', attachments: [voiceAtt()] })] });
     await waitFor(() => incoming.length === 1);
     expect(fake.posts).toHaveLength(1);
     expect(fake.posts[0].chatID).toBe(CHAT('room9'));
@@ -1520,7 +1579,7 @@ describe('beeper bridge', () => {
 
   it('default verdict never surfaces: no resolver wired → transcribes but no 👂', async () => {
     const { incoming } = await startBridge();
-    fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: null, type: 'VOICE', attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/n.ogg' }] })] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: null, type: 'VOICE', attachments: [voiceAtt()] })] });
     await waitFor(() => incoming.length === 1);
     expect(incoming[0].text).toBe('(voice transcription) fake transcript');  // enabled by default → E still hears (marked audio)
     expect(fake.posts).toHaveLength(0);                 // postsBack false by default → silent
@@ -1816,7 +1875,7 @@ describe('beeper bridge — voice wake alias (voice_handles, at the start of the
     });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       text: null, type: 'VOICE',
-      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+      attachments: [voiceAtt()],
     })] });
     await waitFor(() => incoming.length === 1);
     expect(incoming[0].text).toBe('(voice transcription) oye perrito estás ahí');
@@ -1832,7 +1891,7 @@ describe('beeper bridge — voice wake alias (voice_handles, at the start of the
     });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       text: null, type: 'VOICE',
-      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+      attachments: [voiceAtt()],
     })] });
     await waitFor(() => incoming.length === 1);
     expect(incoming[0].text).toBe('(voice transcription) perrito ven');   // the body the matcher sees, marker and all
@@ -1870,7 +1929,7 @@ describe('beeper bridge — voice wake alias (voice_handles, at the start of the
     });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       text: null, type: 'VOICE',
-      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+      attachments: [voiceAtt()],
     })] });
     await waitFor(() => incoming.length === 1);
     expect(incoming[0].from.atEAnywhere).toBe(false);
