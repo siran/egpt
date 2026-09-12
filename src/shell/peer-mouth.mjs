@@ -248,6 +248,78 @@ export function findMessageByKey(messages, msgKey, timestamp = 0) {
 }
 
 /**
+ * THE SAME MAPPING AGAIN, BY WHAT WAS LAST SAID rather than by who is in it (operator 2026-09-12).
+ *
+ * *"dont over complicate, if there's Rodz, use it, always... primary is last and surest
+ * fallback"*. findChatByKey answers "which of MY chats is that one real chat?" from the ROSTER,
+ * and there are chats it refuses ON PURPOSE: the 1:1 between the two accounts (its title is the
+ * other party's display name and differs per account) and the UNNAMED two-account group (each
+ * side synthesises the name from the other member). The mouth is plainly a member of both, so
+ * under the rule above those refusals cannot be where the search stops.
+ *
+ * WHAT THE TWO VIEWS STILL SHARE IS THE CONVERSATION. One real message is two Matrix events with
+ * no id in common, but crossAccountMsgKey already hashes the one thing both accounts hold
+ * identically — the body. Measured 2026-09-12 over both live installs: of the 9 most recent
+ * messages in the operator's own "eGPT Admin" chat, 8 hashed ALIKE on the two accounts.
+ *
+ * IT COSTS NO EXTRA REQUEST ON EITHER SIDE. Every `/v1/chats` item carries its LAST message as
+ * `preview` (the single-chat GET does NOT — measured), so the page each side already fetches for
+ * findChatByKey is also the whole of the evidence here: one message per chat, nothing per
+ * candidate.
+ *
+ * IT IS `preview` AGAINST `preview`, AND THAT IS NOT PEDANTRY. The SAME message on the SAME
+ * account renders DIFFERENTLY depending on which endpoint served it: `/messages` gave
+ * '<pre><code>…' where the chat page gave a literal '\`\`\`' fence, and after htmlToMarkdown those
+ * two differ from each other at the third character. Comparing a message list against a preview
+ * is comparing two renderings, so it is not done: both sides of this hand in the same field.
+ *
+ * THE TIMESTAMP IS A GUARD HERE, NOT A TIE-BREAK — the opposite of findMessageByKey above, and
+ * for a reason. There the CONTENT had already identified the message within one chat; here the
+ * content is being asked to identify a CHAT out of a whole account, where short bodies are not
+ * rare: of 154 chats on the operator's primary, 11 had a `preview` byte-identical to another
+ * chat's ("ok", ":)", "Hello", "Started a call"). So a body match only counts at the same WHOLE
+ * SECOND. That granularity is measured too: each account keeps full precision on messages it sent
+ * and truncates the ones it received (…:05.086Z against …:05.000Z, four times over in the nine),
+ * so two views of one message always agree on the second and never round into the next.
+ *
+ * WHAT IT REACHES, measured across the operator's whole live accounts rather than guessed: five
+ * of the chats both accounts hold identified each other, each to EXACTLY ONE room, every one of
+ * them correct — no false match and no ambiguity anywhere in the sweep. What it does NOT reach is
+ * a chat whose last message is RICH: the same code block carried one trailing newline more on one
+ * account than the other, and a MENTION renders through each account's own id namespace
+ * ('@whatsapp_lid-694…' against '@dolly-egpt:beeper.com'). Those cost a MISS, never a wrong
+ * match, which is the only direction a failure here may fall.
+ *
+ * AND IT REFUSES THE SAME WAY findChatByKey does. Zero matches: nothing. More than one: nothing,
+ * named. The caller's fallback is a reply on the ear, which is strictly better than one in the
+ * wrong room.
+ *
+ * @param {object[]} chats  RAW Beeper chat payloads — the same `/v1/chats` list findChatByKey
+ *   takes, read here for `preview` instead of for the roster.
+ * @param {object} lastMessage  the `preview` off the ASKING account's own `/v1/chats` item for
+ *   the chat being replied in. Same field, same endpoint, same rendering.
+ */
+export function findChatByLastMessage(chats, lastMessage) {
+  const want = crossAccountMsgKey(lastMessage);
+  const ms = _msgTimestampMs(lastMessage);
+  if (!want || ms == null) return { ok: false, reason: 'no-key', detail: 'the last message in this chat cannot be keyed across accounts' };
+  const at = Math.floor(ms / 1000);
+  const hits = new Map();
+  for (const c of Array.isArray(chats) ? chats : []) {
+    const last = c?.preview;
+    const seen = _msgTimestampMs(last);
+    if (seen == null || Math.floor(seen / 1000) !== at) continue;   // a different second is a different message
+    if (crossAccountMsgKey(last) !== want) continue;
+    const id = shortChatId(c?.id ?? '');
+    if (id) hits.set(id, c);                           // the same chat listed twice is ONE chat
+  }
+  const ids = [...hits.keys()];
+  if (ids.length === 0) return { ok: false, reason: 'no-match', detail: 'no chat on this account last heard that message' };
+  if (ids.length > 1) return { ok: false, reason: 'ambiguous', detail: `${ids.length} chats last heard the same thing at the same second (${ids.join(', ')}) — refusing to pick` };
+  return { ok: true, chatId: ids[0] };
+}
+
+/**
  * THE RECEIVING HALF — the VERB TABLE src/bridges/shell-port.mjs dispatches an AUTHENTICATED peer
  * connection's frames into. One entry per wire verb (mouth.mjs), plus `gone`, which is not a verb
  * at all: it is the limb telling this table that a connection went away, and it is the whole

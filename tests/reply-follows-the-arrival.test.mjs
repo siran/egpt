@@ -36,6 +36,9 @@ const _PRIVATE_HOME = vi.hoisted(() => {
 import { promises as fs } from 'node:fs';
 import { dirname } from 'node:path';
 import { createSender } from '../src/spine/sender.mjs';
+// Read back rather than re-derived: a test that computed its own key would pass while the two
+// ends drifted. Used only to PROVE the 1:1 below really is a chat the participant key refuses.
+import { crossAccountChatKey } from '../src/bridges/beeper.mjs';
 
 let boot, emptyState;
 beforeAll(async () => {
@@ -81,6 +84,19 @@ const BOTH_AS_SECONDARY = '!both-accounts-as-secondary-sees-it';
 // FAILURE case, which is not the same as "the mouth is not a member".
 const ORPHAN_GROUP = '!rodz-group-with-no-room-on-secondary';
 
+// ── THE 1:1 BETWEEN THE TWO ACCOUNTS (operator 2026-09-12) ────────────────────────────────────
+// *"if there's Rodz, use it, always... primary is last and surest fallback"*. The mouth is
+// obviously a member of its own 1:1, and the participant key refuses this chat ON PURPOSE
+// (tests/cross-account-chat-key.test.mjs: a 1:1's title is the other party's display name and
+// differs per account, so a title key cannot cross it, and its only phone-carrying member IS an
+// account we hold). Under the rule above, refusing to key it is NOT permission to answer on the
+// ear — it only means the room has to be found another way.
+const DM_AS_PRIMARY = '!dm-with-rodz-as-primary-sees-it';
+const DM_AS_SECONDARY = '!dm-with-an-as-secondary-sees-it';
+// …and a DECOY on the mouth's account whose last message reads exactly like the 1:1's. Two rooms
+// answering to one identification is an ambiguity, and an ambiguity must refuse, not pick.
+const DECOY_ON_SECONDARY = '!decoy-that-said-the-same-thing';
+
 // A chat's TYPE is the first field of the cross-account key and both accounts report it alike.
 const TYPE_OF = {
   [SELF_DM]: 'single',
@@ -88,6 +104,9 @@ const TYPE_OF = {
   [BOTH_AS_PRIMARY]: 'group',
   [BOTH_AS_SECONDARY]: 'group',
   [ORPHAN_GROUP]: 'group',
+  [DM_AS_PRIMARY]: 'single',
+  [DM_AS_SECONDARY]: 'single',
+  [DECOY_ON_SECONDARY]: 'single',
 };
 
 const DESKTOPS = {
@@ -103,14 +122,37 @@ const DESKTOPS = {
     // dolly.egpt has neither the Self-DM nor AN_GROUP — that is the whole point of those cases —
     // and it has its OWN room for the one group both accounts really are in.
     [BOTH_AS_SECONDARY]: [self('rodz@dolly.local'), member('an@dolly.local', AN), member('dando@dolly.local', DANDO)],
+    [DM_AS_SECONDARY]: [self('rodz@dolly.local'), member('an@dolly.local', AN)],
+    [DECOY_ON_SECONDARY]: [self('rodz@dolly.local'), member('lulu@dolly.local', KEN)],
   },
 };
+// The primary's half of the 1:1, added beside its own rosters rather than inside them so the
+// three cases above read unchanged.
+DESKTOPS[PRIMARY][DM_AS_PRIMARY] = [self('an@beeper.local'), member('rodz@beeper.local', RODZ)];
 
-// What each install reports as its OWN account's identity — `/v1/accounts`, the `phoneNumber` on
-// the `isSelf` user entry (measured live 2026-09-12 on both installs: +16468217865 on anrodz42's,
-// +13472576794 on dolly.egpt's). This is where the two exclusion identities come from: they are
-// MEASURED per connection, not configured.
-const SELF_IDENTITY = { [PRIMARY]: [AN], [SECONDARY]: [RODZ] };
+// ── WHAT EACH ACCOUNT HAS HEARD IN EACH ROOM ──────────────────────────────────────────────────
+// The measured cross-account fact (beeper.crossAccountMsgKey, and re-measured 2026-09-12 against
+// both live installs' views of the real "eGPT Admin" chat): ONE real message is two Matrix events
+// sharing NO id, but the BODY is byte-identical and the timestamps agree to the second — each
+// account keeps full precision on its own sends and truncates the ones it received, so
+// 13:45:05.086Z on one side is 13:45:05.000Z on the other and never a different second.
+const SAID = {
+  [DM_AS_PRIMARY]: [{ id: 'p-1', text: 'buenas', timestamp: '2026-09-11T14:00:00.086Z' }],
+  [DM_AS_SECONDARY]: [{ id: 's-1', text: 'buenas', timestamp: '2026-09-11T14:00:00.000Z' }],
+  // the decoy really did say the same thing — but a second later, which is what tells them apart
+  [DECOY_ON_SECONDARY]: [{ id: 'd-1', text: 'buenas', timestamp: '2026-09-11T14:00:01.000Z' }],
+  [ORPHAN_GROUP]: [{ id: 'o-1', text: 'nobody else heard this', timestamp: '2026-09-11T13:00:00.000Z' }],
+};
+
+// What each install reports as its OWN account's identities — `/v1/accounts`, every identifier on
+// the `isSelf` user entries (measured live 2026-09-12 on both installs: the phone
+// (+16468217865 / +13472576794), the Beeper user id (@anrodriguez / @dolly-egpt:beeper.com) and
+// the email). This is where the exclusion identities come from: MEASURED per connection, never
+// configured — and the mouth is looked for under every one of them, not the phone alone.
+const SELF_IDENTITY = {
+  [PRIMARY]: [AN, '@anrodriguez:beeper.com', 'anrodz42@example.com'],
+  [SECONDARY]: [RODZ, '@dolly-egpt:beeper.com', 'dolly.egpt@example.com'],
+};
 
 const digits = (v) => String(v ?? '').replace(/\D/g, '');
 
@@ -133,9 +175,12 @@ function fakeTransport() {
       async chatHasParticipant(chat, identity) {
         const roster = world[chat];
         if (!roster) return null;                     // a chat this account does not have is UNKNOWN
-        return roster.some((p) => p.phoneNumber && digits(p.phoneNumber) === digits(identity));
+        // The real reader keys a roster by BOTH phoneNumber AND id (beeper.participantKeys), which
+        // is what lets an install be recognised by an identifier that is not a phone.
+        return roster.some((p) => (p.phoneNumber && digits(p.phoneNumber) === digits(identity)) || p.id === identity);
       },
-      // THE THREE READS THE MOUTH MAKES, all of them of this account's OWN copies.
+      // THE THREE READS THE MOUTH MAKES, all of them of this account's OWN copies. The last
+      // message is not a fourth read: it rides `preview` on the chat list, both ways.
       async selfIdentities() { return SELF_IDENTITY[token] ?? []; },
       async chatRaw(chat) { return world[chat] ? rawChat(chat, world[chat]) : null; },
       async listChatsRaw() { return Object.entries(world).map(([id, roster]) => rawChat(id, roster)); },
@@ -146,8 +191,13 @@ function fakeTransport() {
 }
 
 // The raw /v1/chats payload shape crossAccountChatKey reads: the TYPE and the roster itself,
-// never the normalized listChats() item.
-const rawChat = (id, roster) => ({ id, type: TYPE_OF[id] ?? 'single', participants: { items: roster } });
+// never the normalized listChats() item. `preview` is the LAST MESSAGE, which the live payload
+// carries on every chat in the page (measured 2026-09-12) — so identifying a room by what was
+// said in it costs no extra request on the mouth's side.
+const rawChat = (id, roster) => ({
+  id, type: TYPE_OF[id] ?? 'single', participants: { items: roster },
+  preview: (SAID[id] ?? []).at(-1) ?? null,
+});
 
 // Complete in-memory fs seam — same shape as tests/multi-connection-wake.test.mjs.
 function memIo() {
@@ -391,6 +441,101 @@ describe('a chat the mouth\'s account is ALSO in is answered by the MOUTH, in th
     await waitFor(() => replies().length > 0);
 
     expect(replies()).toEqual([{ connection: 'secondary', chatId: AN_GROUP }]);
+    app.stop();
+  });
+});
+
+// ── THE MOUTH SPEAKS WHENEVER IT IS PRESENT, NOT ONLY WHEN THE CHAT CAN BE KEYED ──────────────
+// *"dont over complicate, if there's Rodz, use it, always... primary is last and surest
+// fallback"* (operator 2026-09-12). MEMBERSHIP and TRANSLATION are two different questions, and
+// failing the second must not silently answer the first. The participant key refuses a 1:1
+// between the two accounts on purpose, and until now that refusal ended the matter: the ear
+// answered, in a chat the mouth is trivially a member of. The translation itself does NOT go away
+// — Beeper exposes no shared id and to post AS Rodz you need Rodz's room id — so the fix is to
+// stop giving up after one attempt.
+describe('the mouth is present but the chat cannot be KEYED — the room is found another way', () => {
+  // THE REPRODUCTION. A 1:1 between the two accounts: crossAccountChatKey returns null for it
+  // (deliberately), so on HEAD the reply falls back to the ear. Both accounts hold the same last
+  // message, which is what identifies the room instead.
+  it('the 1:1 between the two accounts: the reply still goes out on SECONDARY, in its own room', async () => {
+    const { app, byConnection, replies } = await bootWith(KG());
+
+    await deliver(byConnection.primary, DM_AS_PRIMARY, 'e hola');
+    await waitFor(() => replies().length > 0);
+
+    expect(replies()).toEqual([{ connection: 'secondary', chatId: DM_AS_SECONDARY }]);
+    expect(byConnection.primary.streams).toEqual([]);
+    expect(byConnection.primary.sent).toEqual([]);
+    app.stop();
+  });
+
+  // …and the participant key really is refusing it, so the case above is not passing by accident.
+  it('the participant key really does refuse that chat — the other way is what answered', () => {
+    const raw = { id: DM_AS_PRIMARY, type: 'single', participants: { items: DESKTOPS[PRIMARY][DM_AS_PRIMARY] } };
+    expect(crossAccountChatKey(raw, [AN, RODZ])).toBeNull();
+  });
+
+  // TWO ROOMS THAT SAID THE SAME THING refuse rather than pick — the message-sized version of
+  // findChatByKey's `ambiguous`. The decoy's copy is one second off, so it is normally told apart;
+  // move it onto the same second and the identification stops being evidence.
+  it('two of the mouth\'s rooms answering alike is an ambiguity — the ear answers, and says so', async () => {
+    const restore = SAID[DECOY_ON_SECONDARY];
+    SAID[DECOY_ON_SECONDARY] = [{ id: 'd-1', text: 'buenas', timestamp: '2026-09-11T14:00:00.000Z' }];
+    try {
+      const { app, byConnection, replies, lines } = await bootWith(KG());
+      await deliver(byConnection.primary, DM_AS_PRIMARY, 'e hola');
+      await waitFor(() => replies().length > 0);
+
+      expect(replies()).toEqual([{ connection: 'primary', chatId: DM_AS_PRIMARY }]);
+      expect(byConnection.secondary.streams).toEqual([]);
+      expect(byConnection.secondary.sent).toEqual([]);
+      expect(lines.filter((l) => l.includes('[mouth]')).join('\n')).toContain('ambiguous');
+      app.stop();
+    } finally { SAID[DECOY_ON_SECONDARY] = restore; }
+  });
+
+  // THE TIMESTAMP IS THE GUARD, and it is the measured one: two views of ONE message agree to the
+  // SECOND (one side truncates the milliseconds the other kept). A body that matches at a
+  // different second is a different message, and a different message is not an identification.
+  it('the same words at a different second are not the same message — no match, the ear answers', async () => {
+    const restore = SAID[DM_AS_SECONDARY];
+    SAID[DM_AS_SECONDARY] = [{ id: 's-1', text: 'buenas', timestamp: '2026-09-11T14:00:09.000Z' }];
+    try {
+      const { app, byConnection, replies } = await bootWith(KG());
+      await deliver(byConnection.primary, DM_AS_PRIMARY, 'e hola');
+      await waitFor(() => replies().length > 0);
+      expect(replies()).toEqual([{ connection: 'primary', chatId: DM_AS_PRIMARY }]);
+      app.stop();
+    } finally { SAID[DM_AS_SECONDARY] = restore; }
+  });
+
+  // AND WHEN EVERY WAY FAILS IT READS LIKE A FAILURE. Under the old rule the ear answering was
+  // routine; under this one the mouth was PRESENT and could not be reached, which is notable —
+  // the line has to say so, name both ways that were tried, and name who is speaking instead.
+  it('every way exhausted: the log says the mouth WAS present, what was tried, and who spoke', async () => {
+    const { app, byConnection, replies, lines } = await bootWith(KG());
+    await deliver(byConnection.primary, ORPHAN_GROUP, 'e hola');
+    await waitFor(() => replies().length > 0);
+
+    expect(replies()).toEqual([{ connection: 'primary', chatId: ORPHAN_GROUP }]);
+    const said = lines.filter((l) => l.includes('[mouth]')).join('\n');
+    expect(said).toContain('MOUTH UNREACHABLE');
+    expect(said).toContain("'secondary'");            // …was present
+    expect(said).toContain('participants:');          // the key tier, tried
+    expect(said).toContain('last message:');          // the message tier, tried
+    expect(said).toContain("'primary' says this reply");
+    app.stop();
+  });
+
+  // THE MOUTH THAT IS NOT A MEMBER IS STILL ROUTINE. The loud line above must not fire for the
+  // Self-DM, which is the honest permanent case: Rodz is not in it and never will be.
+  it('a chat the mouth is NOT in is not reported as unreachable — it is simply not its chat', async () => {
+    const { app, byConnection, replies, lines } = await bootWith(KG());
+    await deliver(byConnection.primary, SELF_DM, 'e hola');
+    await waitFor(() => replies().length > 0);
+
+    expect(replies()).toEqual([{ connection: 'primary', chatId: SELF_DM }]);
+    expect(lines.join('\n')).not.toContain('MOUTH UNREACHABLE');
     app.stop();
   });
 });

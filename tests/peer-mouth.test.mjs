@@ -26,7 +26,7 @@
 import { describe, it, expect } from 'vitest';
 import { createShellPort } from '../src/bridges/shell-port.mjs';
 import { MOUTH_PATH, sayFrame, sayReactFrame, parseMouthFrame } from '../src/shell/mouth.mjs';
-import { peerSpineFrom, findChatByKey, findMessageByKey, createMouthReceiver, speakThroughPeer, startPeerStream, reactThroughPeer } from '../src/shell/peer-mouth.mjs';
+import { peerSpineFrom, findChatByKey, findChatByLastMessage, findMessageByKey, createMouthReceiver, speakThroughPeer, startPeerStream, reactThroughPeer } from '../src/shell/peer-mouth.mjs';
 // The message key is minted in the BRIDGE, beside the echo plan's audioHash, and read back here
 // rather than re-derived: a test that hashed its own fixtures would pass while the two ends drifted.
 import { crossAccountMsgKey } from '../src/bridges/beeper.mjs';
@@ -1185,6 +1185,110 @@ describe('findChatByKey — the mapping, on its own', () => {
     const unnamedOnMouth = { ...ONLY_US, id: '!unnamed:beeper.local', title: 'The Primary' };
     const askedWith = 'group,title:the-secondary';        // what the EAR derived from ITS own view
     expect(findChatByKey([unnamedOnMouth, OTHER_CHAT], askedWith, ACCOUNTS).reason).toBe('no-match');
+  });
+});
+
+// ── 4a-bis. THE SAME MAPPING, BY WHAT WAS LAST SAID (operator 2026-09-12) ──────────────────────
+//
+// *"if there's Rodz, use it, always... primary is last and surest fallback"*. findChatByKey
+// refuses the 1:1 between the two accounts and the unnamed two-account group ON PURPOSE, and the
+// mouth is obviously in both — so the refusal cannot be where the search stops. What the two
+// views still share is the CONVERSATION.
+//
+// THE FIXTURES ARE THE LIVE PAYLOAD, measured 2026-09-12 across both of the operator's installs'
+// views of the same real chat. Three facts came out of that sweep and all three are asserted:
+//   · one message's BODY is byte-identical on the two accounts (8 of the 9 most recent were)
+//   · the two TIMESTAMPS agree to the second and differ inside it — each account keeps full
+//     precision on what it sent and truncates what it received (…:05.086Z / …:05.000Z)
+//   · the SAME message renders DIFFERENTLY per endpoint, so both sides must hand in `preview`
+describe('findChatByLastMessage — which of MY chats last heard that, on its own', () => {
+  // `preview` off the ASKING account's own /v1/chats item for the chat being replied in.
+  const HEARD_ON_EAR = { id: '5391', text: 'Conectado y listo', timestamp: '2026-09-12T13:45:05.086Z' };
+  // …and the mouth's own chat page. Only `id` and `preview` matter here: no roster is read.
+  const chat = (id, text, timestamp) => ({ id, type: 'single', preview: text == null ? null : { id: `${id}-last`, text, timestamp } });
+  const THE_SAME_CHAT = chat('!dm-on-the-mouth:beeper.local', 'Conectado y listo', '2026-09-12T13:45:05.000Z');
+  const ANOTHER_CHAT = chat('!someone-else:beeper.local', 'nothing to do with it', '2026-09-12T13:40:00.000Z');
+
+  it("finds the one chat and returns it in the MOUTH's own id namespace", () => {
+    expect(findChatByLastMessage([ANOTHER_CHAT, THE_SAME_CHAT], HEARD_ON_EAR))
+      .toEqual({ ok: true, chatId: 'dm-on-the-mouth' });
+  });
+
+  // THE MEASURED SUB-SECOND DIVERGENCE, asserted rather than assumed: the two copies of one
+  // message are 86ms apart and must still be one message.
+  it('the two views of one message differ inside the second and still match', () => {
+    expect(THE_SAME_CHAT.preview.timestamp).not.toBe(HEARD_ON_EAR.timestamp);
+    expect(findChatByLastMessage([THE_SAME_CHAT], HEARD_ON_EAR).ok).toBe(true);
+  });
+
+  // …and a DIFFERENT second is a different message. This is the guard that makes a short body
+  // ("ok", ":)") safe to key a whole account on — 11 of the operator's 154 chats had a `preview`
+  // byte-identical to another chat's.
+  it('the same words at a different second are not the same message', () => {
+    const later = chat('!dm-on-the-mouth:beeper.local', 'Conectado y listo', '2026-09-12T13:45:06.000Z');
+    expect(findChatByLastMessage([later], HEARD_ON_EAR).reason).toBe('no-match');
+  });
+
+  it('no chat that heard it: no-match, and nothing is picked', () => {
+    expect(findChatByLastMessage([ANOTHER_CHAT], HEARD_ON_EAR)).toEqual({
+      ok: false, reason: 'no-match', detail: 'no chat on this account last heard that message',
+    });
+  });
+
+  // TWO ROOMS ANSWERING ALIKE REFUSE, exactly as findChatByKey does. A reply in the wrong room is
+  // the failure this whole path exists to prevent.
+  it('two chats that last heard the same thing at the same second refuse rather than pick', () => {
+    const twin = chat('!a-different-room:beeper.local', 'Conectado y listo', '2026-09-12T13:45:05.500Z');
+    const out = findChatByLastMessage([THE_SAME_CHAT, twin], HEARD_ON_EAR);
+    expect(out.ok).toBe(false);
+    expect(out.reason).toBe('ambiguous');
+    expect(out.detail).toContain('dm-on-the-mouth');
+    expect(out.detail).toContain('a-different-room');
+  });
+
+  // The same chat listed twice (page one and the full walk both hold it) is ONE chat, not two.
+  it('the same chat listed twice is one chat, not an ambiguity', () => {
+    expect(findChatByLastMessage([THE_SAME_CHAT, { ...THE_SAME_CHAT }], HEARD_ON_EAR).ok).toBe(true);
+  });
+
+  // NOTHING TO KEY ON IS NOT A MATCH FOR EVERYTHING — the same refusal crossAccountChatKey makes.
+  // A chat whose last message is a bare voice note identifies no room.
+  it("nothing keyable in the asking account's own copy refuses outright", () => {
+    expect(findChatByLastMessage([THE_SAME_CHAT], null).reason).toBe('no-key');
+    expect(findChatByLastMessage([THE_SAME_CHAT], { id: '1', text: '', timestamp: '2026-09-12T13:45:05.000Z' }).reason).toBe('no-key');
+    // …and a body with NO timestamp is no evidence either: the guard cannot run.
+    expect(findChatByLastMessage([THE_SAME_CHAT], { id: '1', text: 'Conectado y listo' }).reason).toBe('no-key');
+  });
+
+  // A chat with no last message at all (the mouth's freshly-created room) is skipped, not matched.
+  it('a chat carrying no preview is skipped', () => {
+    expect(findChatByLastMessage([chat('!brand-new:beeper.local', null)], HEARD_ON_EAR).reason).toBe('no-match');
+  });
+
+  // THE TWO MEASURED DIVERGENCES, both of which must cost a MISS and never a wrong match — the
+  // only direction a failure here may fall. A MENTION renders through each account's own id
+  // namespace; a CODE BLOCK carried one trailing newline more on one account than the other.
+  it('a body that renders per-account (a mention, a code block) simply misses', () => {
+    const mention = chat('!same-room:beeper.local', '<a href="https://matrix.to/#/@dolly-egpt:beeper.com">Rodz</a> ping', '2026-09-12T13:39:43.000Z');
+    const earSawMention = { id: '9', text: '<a href="https://matrix.to/#/@whatsapp_lid-69433129173200:beeper.local">Rodz</a> ping', timestamp: '2026-09-12T13:39:43.000Z' };
+    expect(findChatByLastMessage([mention], earSawMention).reason).toBe('no-match');
+    const fence = chat('!same-room:beeper.local', '```\nqwinsta\n```', '2026-09-07T21:41:46.460Z');
+    const earSawFence = { id: '9', text: '```\nqwinsta\n\n```', timestamp: '2026-09-07T21:41:46.000Z' };
+    expect(findChatByLastMessage([fence], earSawFence).reason).toBe('no-match');
+  });
+
+  // AND THE REASON BOTH SIDES HAND IN `preview`: the SAME message off /messages and off the chat
+  // page are two different renderings. This is that measurement, kept where it will be noticed if
+  // a future caller is tempted to feed a message list in.
+  it('the same message off /messages and off the chat page do NOT key alike', () => {
+    const fromMessages = { id: '3002', text: '<pre><code>\nqwinsta\n</code></pre>', timestamp: '2026-09-07T21:41:46.000Z' };
+    const fromChatPage = { id: '3002', text: '```\nqwinsta\n```', timestamp: '2026-09-07T21:41:46.000Z' };
+    expect(crossAccountMsgKey(fromMessages)).not.toBe(crossAccountMsgKey(fromChatPage));
+  });
+
+  it('a junk argument is a refusal, not a throw', () => {
+    expect(findChatByLastMessage(null, HEARD_ON_EAR).reason).toBe('no-match');
+    expect(findChatByLastMessage([THE_SAME_CHAT], undefined).reason).toBe('no-key');
   });
 });
 

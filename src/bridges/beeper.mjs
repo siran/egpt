@@ -660,21 +660,60 @@ export async function startBeeperBridge(opts = {}) {
   // stays non-blocking. The whole beeper-bridge test file used to race a 50ms sleep here.
   const _ownerNameByAccount = new Map();   // lowercased accountID -> owner's fullName
   // ── THIS CONNECTION'S OWN IDENTITIES (operator 2026-09-12) ────────────────────────────
-  // The phone numbers THIS install answers as, off the very payload above. Measured live
-  // 2026-09-12 on both of the operator's installs: every `/v1/accounts` entry carries
-  // `user.isSelf: true` and, for a phone-shaped network (WhatsApp, Telegram), `user.phoneNumber`
-  // in full international form — anrodz42's install reports +16468217865, dolly.egpt's reports
-  // +13472576794, which is exactly the pair `peer_spine.accounts` names by hand.
+  // *"if 'Rodz' or the number or de beeper user, or email, then that account (secondary) is used
+  // to talk"* — so EVERY stable identifier this install answers to, not the phone alone. All of
+  // them come off the very payload above. Measured live 2026-09-12 on both of the operator's
+  // installs: five `/v1/accounts` entries (matrix + whatsapp on dolly.egpt's, matrix + whatsapp +
+  // telegram on anrodz42's), all five `user.isSelf: true`, carrying between them
+  //
+  //   user.phoneNumber  full international form, on the phone-shaped networks only
+  //                     (+16468217865 / +13472576794 — the pair `peer_spine.accounts` names by
+  //                     hand); ABSENT on the matrix entry.
+  //   user.id           '@dolly-egpt:beeper.com' on the matrix entry — the Beeper user id — and
+  //                     the network's own id elsewhere ('13472576794', telegram's '88164392').
+  //   user.email        ONLY on the matrix entry, and it is the address
+  //                     `config.beeper.<name>.account` already records.
+  //   accountID         the NETWORK name ('matrix' | 'whatsapp' | 'telegram'). Not an identity.
+  //   loginID           byte-identical to `user.id` in all five entries, so it is not read twice.
+  //
+  // ALL THREE, because participantKeys above keys a roster by BOTH `phoneNumber` AND `id`: the
+  // mouth can be a member under any of them and could until now only ever be found under one.
+  // idKey normalises them exactly as it normalises the roster, and the list dedupes ON THAT KEY —
+  // WhatsApp's `user.id` IS its own number and collapses into the phone it already reported.
+  //
+  // ONE OF THEM IS PHONE-SHAPED AND IS NOT A PHONE: Telegram's `user.id` is a bare number
+  // ('88164392'), so idKey stamps it '#88164392' exactly as it stamps a real number. It is still
+  // a true identity of this install, and it can only ever skip ITSELF — a Telegram roster names
+  // its people '@telegram_<id>:beeper.local', which idKey does NOT read as a phone, and no
+  // participant across both installs (620 entries) carries a number whose digits are those. So
+  // it is inert rather than dangerous; a future reader should know it is there on purpose.
+  //
+  // WHAT THE SWEEP ALSO SAID, and it is worth writing down: across both installs' whole chat
+  // lists (620 participant entries, 268 distinct ids) NEITHER account appears in the OTHER's
+  // roster by its Beeper id, and NO participant id anywhere is email-shaped. Every chat those two
+  // accounts really share is a WhatsApp/Telegram room, where each sees the other through its own
+  // '@whatsapp_lid-…' namespace WITH the phone attached. So TODAY the phone is still the
+  // identifier that finds the mouth; the other two are what a Beeper-native room would need, and
+  // they cost one more field read off a GET the bridge already makes at startup.
+  //
+  // user.fullName IS DELIBERATELY NOT HERE, and it is the one the operator's list starts with
+  // ("Rodz" — really is `fullName` on dolly.egpt's WhatsApp self entry). It is also the only
+  // identifier a stranger can set to whatever they like, and participantKeys does not key it: it
+  // would be inert without ALSO widening the roster reader, and widening that would let any
+  // participant who calls themselves Rodz make this node speak as the wrong account. Here a false
+  // positive is a reply in someone else's voice, so the weakest signal is left out.
   //
   // WHY IT MATTERS HERE. crossAccountChatKey below can only make two accounts' views of one chat
   // key alike if BOTH accounts' identities are excluded (its header carries the measurement), and
   // until now the only source for them was that configured pair — which a node holding both
   // connections in ONE spine has no reason to declare, and dolly's `do` does not. This is the
-  // same fact, MEASURED rather than declared, and it costs nothing: no new endpoint, no new
-  // request, just a second field read off a GET the bridge already makes at startup.
+  // same fact, MEASURED rather than declared.
   //
-  // A NETWORK WITH NO PHONE contributes nothing (the Matrix account entry above has no
-  // phoneNumber), which is right: a key is built from phone identities alone.
+  // NONE OF IT WIDENS THE KEY. PHONE_KEY_RE still picks the phone-shaped keys alone, because a
+  // Beeper/network id names the SAME person differently on each account and a key holding one
+  // could never match across the two. These are for MEMBERSHIP and for EXCLUSION only. A network
+  // that reports no identifier at all contributes nothing, which is right: an identity that was
+  // not measured must not be guessed.
   const _selfIdentities = [];
   const _startupReady = (async () => {
     try {
@@ -682,8 +721,11 @@ export async function startBeeperBridge(opts = {}) {
       for (const a of Array.isArray(accounts) ? accounts : []) {
         const name = a?.user?.fullName;
         if (a?.accountID && name) _ownerNameByAccount.set(String(a.accountID).toLowerCase(), name);
-        const phone = a?.user?.isSelf ? String(a?.user?.phoneNumber ?? '').trim() : '';
-        if (phone && !_selfIdentities.includes(phone)) _selfIdentities.push(phone);
+        if (!a?.user?.isSelf) continue;
+        for (const v of [a.user.phoneNumber, a.user.id, a.user.email]) {
+          const id = String(v ?? '').trim();
+          if (id && !_selfIdentities.some((held) => idKey(held) === idKey(id))) _selfIdentities.push(id);
+        }
       }
       onLog(`beeper: owner names loaded for ${_ownerNameByAccount.size} account(s)${_selfIdentities.length ? `; this install answers as ${_selfIdentities.join(', ')}` : ''}`);
     } catch (e) {
@@ -2149,12 +2191,12 @@ export async function startBeeperBridge(opts = {}) {
     // MEMBERSHIP (operator 2026-08-31, router.mjs fallback_handle): true | false | null (UNKNOWN).
     // Cached + TTL'd + free for a 1:1 — see chatHasParticipant above.
     chatHasParticipant: (chatId, identity) => chatHasParticipant(chatId, identity),
-    // WHO THIS INSTALL IS (operator 2026-09-12) — the phone identities read off the startup
-    // `/v1/accounts` payload (see _selfIdentities above). Awaits that one fetch rather than
-    // racing it, so the FIRST reply of a process gets the same answer as the thousandth; it has
-    // already settled by the time any message has arrived. [] when the fetch failed or the
-    // account is phone-less, which every caller reads as "this connection cannot be excluded"
-    // and refuses on rather than guessing.
+    // WHO THIS INSTALL IS (operator 2026-09-12) — EVERY identifier it answers to (phone, Beeper
+    // user id, email) read off the startup `/v1/accounts` payload (see _selfIdentities above).
+    // Awaits that one fetch rather than racing it, so the FIRST reply of a process gets the same
+    // answer as the thousandth; it has already settled by the time any message has arrived. []
+    // when the fetch failed or the install reported nothing at all, which every caller reads as
+    // "this connection cannot be excluded" and refuses on rather than guessing.
     selfIdentities: async () => { await _startupReady; return [..._selfIdentities]; },
     getChatName: (id) => _chatCache.get(shortChatId(id))?.title ?? null,
     getChatSlug: (id) => { const t = _chatCache.get(shortChatId(id))?.title; return t ? chatSlug(t) : null; },

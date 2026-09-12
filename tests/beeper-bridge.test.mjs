@@ -2836,6 +2836,101 @@ describe('beeper bridge — startupReady', () => {
   });
 });
 
+// ═══ THIS INSTALL'S OWN IDENTITIES (operator 2026-09-12) ════════════════════════════
+//
+// *"if 'Rodz' or the number or de beeper user, or email, then that account (secondary) is used to
+// talk"* — the mouth has to be recognisable in a chat by ANY identifier its account answers to,
+// not only by its phone. selfIdentities() reads them off the SAME startup GET /v1/accounts the
+// owner-name map above rides; the fixtures below are the LIVE payload measured 2026-09-12 on both
+// of the operator's installs, field for field.
+describe("beeper bridge — selfIdentities: every identifier this install answers to", () => {
+  // dolly.egpt's install, verbatim shape: a matrix entry carrying the Beeper user id and the
+  // email, and a whatsapp entry carrying the phone. `loginID` duplicated `user.id` in all five
+  // measured entries; it is here so a reading that preferred it would still be exercised.
+  const DOLLY = () => ([
+    { accountID: 'matrix', loginID: '@dolly-egpt:beeper.com', network: 'Beeper',
+      user: { id: '@dolly-egpt:beeper.com', email: 'dolly.egpt@gmail.com', fullName: 'Beeper User', username: 'dolly-egpt:beeper.com', isSelf: true } },
+    { accountID: 'whatsapp', loginID: '13472576794', network: 'WhatsApp',
+      user: { id: '13472576794', fullName: 'rodz', phoneNumber: '+13472576794', displayText: '+1 347-257-6794', isSelf: true } },
+  ]);
+
+  it('reports the phone, the Beeper user id AND the email — the three the payload actually carries', async () => {
+    fake.accounts.push(...DOLLY());
+    const { bridge } = await startBridge();
+    expect(await bridge.selfIdentities()).toEqual(
+      expect.arrayContaining(['+13472576794', '@dolly-egpt:beeper.com', 'dolly.egpt@gmail.com']),
+    );
+  });
+
+  // WhatsApp's `user.id` IS its own number, so it keys to the phone already reported. The list
+  // dedupes on idKey, not on the string, or the same identity would be asked for twice.
+  it("WhatsApp's user.id collapses into the phone it already reported — no duplicate identity", async () => {
+    fake.accounts.push(...DOLLY());
+    const { bridge } = await startBridge();
+    const mine = await bridge.selfIdentities();
+    expect(mine).toHaveLength(3);
+    expect(mine.filter((v) => v.replace(/\D/g, '') === '13472576794')).toHaveLength(1);
+  });
+
+  // THE DISPLAY NAME IS OUT, deliberately (see _selfIdentities' header). "Rodz" is what the
+  // operator's own list starts with and it really is `fullName` here — and it is also the one
+  // identifier any participant can set to whatever they like, while participantKeys does not key
+  // it at all. This is the lock on that decision, so overruling it has to be done on purpose.
+  it("does NOT report the display name, even though it is exactly the operator's 'Rodz'", async () => {
+    fake.accounts.push(...DOLLY());
+    const { bridge } = await startBridge();
+    expect(await bridge.selfIdentities()).not.toContain('rodz');
+  });
+
+  // isSelf is the correctness guard: an entry describing somebody else is not this install.
+  it('an entry that is not isSelf contributes nothing', async () => {
+    fake.accounts.push({ accountID: 'whatsapp', user: { id: '15550001111', phoneNumber: '+15550001111', email: 'someone@else.example', isSelf: false } });
+    const { bridge } = await startBridge();
+    expect(await bridge.selfIdentities()).toEqual([]);
+  });
+
+  // ── THE REPRODUCTION (operator 2026-09-12) ──────────────────────────────────────────────────
+  // A Beeper-NATIVE room: every participant is a '@name:beeper.com' Matrix user and NOBODY
+  // carries a phoneNumber (the live shape of the operator's own "Beeper Updates" room). The mouth
+  // is in it — as '@dolly-egpt:beeper.com', the id its own /v1/accounts payload reports — and
+  // before this change selfIdentities() offered only the phone, so the membership loop in
+  // src/spine/boot.mjs routeLocally asked the one question the roster could not answer and
+  // concluded the mouth was absent.
+  it('a chat that carries the mouth ONLY by its Beeper id is found through the identities it reports', async () => {
+    fake.accounts.push(...DOLLY());
+    fake.chats.set(CHAT('beeper-native'), { title: 'Beeper Updates', type: 'group', isMuted: false, accountID: 'matrix',
+      participants: { items: [
+        { id: '@anrodriguez:beeper.com', isSelf: true },     // the viewing account — no phone, as always
+        { id: '@dolly-egpt:beeper.com' },                    // THE MOUTH, and no phone anywhere on it
+        { id: '@help:beeper.com', fullName: 'Beeper Help' },
+      ] } });
+    const { bridge } = await startBridge();
+    const mine = await bridge.selfIdentities();
+    const answers = [];
+    for (const id of mine) answers.push(await bridge.chatHasParticipant('beeper-native', id));
+    expect(answers).toContain(true);
+  });
+
+  // EMAIL, same loop. The 2026-09-12 sweep of both installs (620 participant entries, 268
+  // distinct ids) found NO email-shaped participant id, so this is not a live case — it locks the
+  // READING, because participantKeys keys `p.id` whatever shape it has and a network that names
+  // its people by address would land here.
+  it('an email-shaped participant id is matched by the email the payload reports', async () => {
+    fake.accounts.push(...DOLLY());
+    fake.chats.set(CHAT('by-email'), { title: 'Addressed', type: 'group', isMuted: false, accountID: 'matrix',
+      participants: { items: [
+        { id: '@anrodriguez:beeper.com', isSelf: true },
+        { id: 'dolly.egpt@gmail.com' },
+        { id: 'someone@else.example' },
+      ] } });
+    const { bridge } = await startBridge();
+    const mine = await bridge.selfIdentities();
+    const answers = [];
+    for (const id of mine) answers.push(await bridge.chatHasParticipant('by-email', id));
+    expect(answers).toContain(true);
+  });
+});
+
 // ── CHAT MEMBERSHIP (operator 2026-08-31) — "is <identity> a participant of this chat?", the ONE
 //    question a `fallback_handle:` asks before waking (src/spine/router.mjs fallbackWake). kg and do
 //    stopped sharing a Beeper account: `e` is now a handle on do's account (+1 347…, "Rodz") only,

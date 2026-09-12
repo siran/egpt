@@ -319,6 +319,35 @@ describe('crossAccountChatKey — the group whose ONLY members are the two accou
     expect(crossAccountChatKey(ADMIN_AS_SECONDARY)).toBe('group,#15550000001');
   });
 
+  // ── THE EXCLUSIONS ARE NO LONGER PHONE-ONLY (operator 2026-09-12) ───────────────────────────
+  // selfIdentities() now reports every identifier an install answers to — its phone, its Beeper
+  // user id, its email — so `exclude` arrives carrying entries that are not phone-shaped. The
+  // title branch's trigger is `allPhones.length && !phones.length` over PHONE keys only, and a
+  // non-phone skip entry (idKey leaves it without the leading '#') cannot match one. Reasoning
+  // said that made it unaffected; this asserts it.
+  it('a non-phone exclusion (Beeper id, email) changes nothing — the title branch still fires', () => {
+    const wide = [...OWN_ACCOUNTS, '@primary:beeper.com', '@secondary:beeper.com', 'anrodz42@example.com', 'dolly.egpt@example.com'];
+    expect(crossAccountChatKey(ADMIN_AS_PRIMARY, wide)).toBe('group,title:egpt-admin');
+    expect(crossAccountChatKey(ADMIN_AS_SECONDARY, wide)).toBe('group,title:egpt-admin');
+  });
+
+  // …and the ordinary member key is equally untouched: a Beeper id in `exclude` can only ever
+  // skip a Beeper id in the roster, which PHONE_KEY_RE never let into the key in the first place.
+  it('a non-phone exclusion cannot remove a member from an ordinary member key', () => {
+    const wide = [...OWN_ACCOUNTS, '@primary:beeper.com', 'dolly.egpt@example.com'];
+    for (const chat of [AS_PRIMARY, AS_SECONDARY, LIVE_GROUP_AS_PRIMARY, LIVE_GROUP_AS_SECONDARY]) {
+      expect(crossAccountChatKey(chat, wide)).toBe(crossAccountChatKey(chat, OWN_ACCOUNTS));
+    }
+  });
+
+  // The self entry in a roster IS the account's Beeper id (measured live: '@dolly-egpt:beeper.com'
+  // with no phoneNumber at all), so a wide exclusion set now really does skip it. It carried no
+  // phone, so nothing it could have contributed was ever in the key — the two views still agree.
+  it('excluding the viewing account by its own Beeper id leaves both views keying alike', () => {
+    const wide = [...OWN_ACCOUNTS, '@primary:beeper.com', '@secondary:beeper.com'];
+    expect(crossAccountChatKey(AS_PRIMARY, wide)).toBe(crossAccountChatKey(AS_SECONDARY, wide));
+  });
+
   // `single` IS DELIBERATELY LEFT OUT. The 1:1 between the two held accounts is the same degenerate
   // shape, but its title is the OTHER party's display name and therefore DIFFERS per account, so a
   // title key cannot work there — and a CONSTANT key ("the 1:1 between us") would be derived from

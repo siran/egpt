@@ -19,7 +19,7 @@ import { createShellPort, shellPortFrom } from '../bridges/shell-port.mjs';
 import { shellTokenFrom } from '../shell/auth.mjs';
 // THE MOUTH LINK (operator 2026-09-05): the peer spine holding the OTHER Beeper account, the
 // receiving half this node offers on its own console, and the speaking half the reply path uses.
-import { peerSpineFrom, createMouthReceiver, speakThroughPeer, startPeerStream, reactThroughPeer, findChatByKey, findMessageByKey } from '../shell/peer-mouth.mjs';
+import { peerSpineFrom, createMouthReceiver, speakThroughPeer, startPeerStream, reactThroughPeer, findChatByKey, findChatByLastMessage, findMessageByKey } from '../shell/peer-mouth.mjs';
 // The cross-account chat key itself — minted in the bridge, beside the payloads it reads. The
 // LOCAL mouth below keys with the same primitive the peer link keys with; there is one definition
 // of "which of MY chats is that ONE real chat" and both transports ask it.
@@ -328,7 +328,7 @@ export function makePeerMouth({ peer, bridge, bridgeOf = null, owns = () => fals
     if (!mine.length) {
       if (!toldAboutIdentity.has(here.name)) {
         toldAboutIdentity.add(here.name);
-        onLog(`'${here.name}' reports no phone identity of its own, so no chat can be keyed across it — every reply in a chat it does not already share an id with will go out on the connection that holds the chat`);
+        onLog(`'${here.name}' reports no identity of its own — not a phone, not a Beeper id, not an email — so it can be neither found in a chat nor keyed across one; every reply will go out on the connection that holds the chat`);
       }
       return null;
     }
@@ -355,18 +355,63 @@ export function makePeerMouth({ peer, bridge, bridgeOf = null, owns = () => fals
     try { theirs = (await on?.selfIdentities?.()) ?? []; }
     catch { /* the mouth's own identity is the load-bearing half; a missing holder identity only narrows the match */ }
     const exclude = [...new Set([...mine, ...theirs])];
-    const key = crossAccountChatKey(raw, exclude);
-    if (!key) { onLog(`'${here.name}' is in ${short} but that chat cannot be keyed across the two accounts (no roster, or too few phone identities left after the exclusions) — '${here.home}' says this reply`); return null; }
-    // PAGE ONE FIRST, THE WHOLE ACCOUNT ONLY ON A MISS — the same two-step the peer's receiver
-    // makes (peer-mouth.mjs whichChat) and for the same reason: /v1/chats is paginated by RECENT
-    // ACTIVITY and the chat being replied in has just had a message in it. Both pages sit behind
-    // the bridge's own 60s cache, so a burst of replies pays the walk once for the whole node.
-    let found;
+    // ── THE WAYS TO REACH THE MOUTH'S OWN ROOM, TRIED IN ORDER (operator 2026-09-12) ──────────
+    // *"dont over complicate, if there's Rodz, use it, always... primary is last and surest
+    // fallback"*. PRESENCE IS THE RULE — the mouth is in this chat, so the mouth says the reply —
+    // and everything below is only HOW that is carried out. A translation that fails is therefore
+    // not permission to answer on the ear; it is a reason to try the next way. That is the bug
+    // the operator named: membership and translation are different questions, and failing the
+    // second was silently answering the first.
+    //
+    // THE TRANSLATION ITSELF DOES NOT GO AWAY, and it cannot. Beeper is Matrix: the two accounts
+    // hold DIFFERENT room ids for one real chat and the payloads share nothing addressable
+    // (checked field by field against both live endpoints — beeper.crossAccountChatKey's header).
+    // To post AS the mouth you need the mouth's own room id. So the answer is not to delete the
+    // resolution, it is to stop giving up after one attempt:
+    //
+    //   1. WHO IS IN IT — crossAccountChatKey. The ordinary group, and (1de2298) the NAMED group
+    //      whose only members are the two accounts, keyed by its title.
+    //   2. WHAT WAS LAST SAID IN IT — findChatByLastMessage. The tier that reaches what the key
+    //      refuses ON PURPOSE: the 1:1 between the two accounts, and the unnamed two-account
+    //      group. Both sides of it are the `preview` every /v1/chats item carries, so it adds no
+    //      request the two accounts' own chat pages have not already paid for — and it must be
+    //      that field on BOTH sides, because the same message renders differently through
+    //      /messages than through the chat page (findChatByLastMessage's header measures it).
+    //
+    // BOUNDED, in that order, for the same reason the two-step below is: page one is where a chat
+    // that has just had a message in it lives. Tier 2 reads whatever page tier 1 already put in
+    // the bridge's 60s cache — page one alone when there was no key to walk for, the full account
+    // when tier 1 had already paid for the walk — and never asks for more than that.
+    //
+    // BOTH TIERS REFUSE RATHER THAN PICK. no-match and ambiguous alike fall to the ear: a reply
+    // in the wrong room is worse than a reply in the right room from the wrong mouth.
+    const tried = [];
+    let found = null;
     try {
-      found = findChatByKey(await here.bridge.listChatsRaw(), key, exclude);
-      if (found.reason === 'no-match') found = findChatByKey(await here.bridge.listChatsRaw({ full: true }), key, exclude);
-    } catch (e) { onLog(`could not read '${here.name}'s own chat list — '${here.home}' says this reply: ${e?.message ?? e}`); return null; }
-    if (!found.ok) { onLog(`'${here.name}' is in ${short} but its OWN room for it could not be resolved (${found.reason}: ${found.detail}) — '${here.home}' says this reply`); return null; }
+      const key = crossAccountChatKey(raw, exclude);
+      if (!key) tried.push('participants: no cross-account key for this chat (no roster, or too few phone identities left after the exclusions)');
+      else {
+        // PAGE ONE FIRST, THE WHOLE ACCOUNT ONLY ON A MISS — the same two-step the peer's receiver
+        // makes (peer-mouth.mjs whichChat) and for the same reason: /v1/chats is paginated by
+        // RECENT ACTIVITY and the chat being replied in has just had a message in it. Both pages
+        // sit behind the bridge's own 60s cache, so a burst of replies pays the walk once.
+        found = findChatByKey(await here.bridge.listChatsRaw(), key, exclude);
+        if (found.reason === 'no-match') found = findChatByKey(await here.bridge.listChatsRaw({ full: true }), key, exclude);
+        if (!found.ok) tried.push(`participants: ${found.reason} (${found.detail})`);
+      }
+      if (!found?.ok) {
+        // The ASKING account's own page, for the one field that is comparable — the single-chat
+        // GET the payload above came from does not carry `preview` (measured), so the chat has to
+        // be found in the list. Its own bridge caches that page for 60s like the mouth's does.
+        const mineHere = ((await on?.listChatsRaw?.()) ?? []).find((c) => shortChatId(c?.id ?? '') === short);
+        found = findChatByLastMessage(await here.bridge.listChatsRaw(), mineHere?.preview);
+        if (!found.ok) tried.push(`last message: ${found.reason} (${found.detail})`);
+      }
+    } catch (e) { onLog(`could not read what '${here.name}' holds — '${here.home}' says this reply: ${e?.message ?? e}`); return null; }
+    // THE MOUTH WAS PRESENT AND STILL COULD NOT BE REACHED. Under the rule above this is no longer
+    // the routine outcome it used to read as — it is the one thing this whole path exists to
+    // prevent — so it says so, names every way that was tried, and names who is speaking instead.
+    if (!found.ok) { onLog(`MOUTH UNREACHABLE: '${here.name}' IS in ${short} but none of the ways to find its own room worked — ${tried.join('; ')} — '${here.home}' says this reply`); return null; }
     onLog(`${short} on '${here.home}' is ${shortChatId(found.chatId)} on '${here.name}' — the mouth says this reply, in its own room`);
     return { connection: here.name, home: here.home, bridge: here.bridge, chatId: found.chatId };
   };
