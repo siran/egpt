@@ -7,7 +7,10 @@
 // optimization. Config: whatsapp.media.audio_transcribe
 //   { command (whisper-cli path), model_path (REQUIRED), language, ffmpeg_command }.
 import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { unlink, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 // A 16kHz · mono · 16-bit PCM WAV (whisper's input, produced by convertToWav16k)
 // has a fixed byte rate, so its duration is exact arithmetic on the file size —
@@ -59,10 +62,25 @@ export function _run(cmd, args, { captureStdout = false } = {}) {
  * PCM WAV — whisper's required input. Returns the temp wav path; the
  * caller owns cleanup (unlink). Shared by the whisper-cli path here and
  * the whisper-server path in whisper-server.mjs.
+ *
+ * The wav goes to the OS temp dir, NEVER beside the source: the source sits in the
+ * messaging client's own media store, which this process does not own. Measured on
+ * reve 2026-09-12 — a LocalSystem Beeper keeps that store under the system profile,
+ * where the spine user can be granted write yet STILL not delete, so every scratch
+ * wav stayed behind (one was 4.8 days old). The name is random rather than derived
+ * from the source, because two notes can transcode at once and the same basename
+ * recurs across accounts.
  */
 export async function convertToWav16k(audioPath, ffmpeg = 'ffmpeg') {
-  const wav = `${audioPath}.tmp.wav`;
-  await _run(ffmpeg, ['-y', '-i', audioPath, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wav]);
+  const wav = join(tmpdir(), `egpt-transcribe-${randomBytes(8).toString('hex')}.wav`);
+  try {
+    await _run(ffmpeg, ['-y', '-i', audioPath, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wav]);
+  } catch (e) {
+    // ffmpeg can die with a partial wav already written, and a path we never returned
+    // has no owner to unlink it — so the failing call cleans up after itself.
+    try { await unlink(wav); } catch { /* ignore */ }
+    throw e;
+  }
   return wav;
 }
 
