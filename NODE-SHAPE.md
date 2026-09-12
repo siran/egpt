@@ -146,15 +146,24 @@ Run it before saying yes.
 1. One Beeper service per account, **Running** and **Auto**
 2. One spine Running, in whichever session — two live is the failure, not the
    goal
-3. One `config.yaml`, one block per account, `account` + `token` — no ports, no
-   `endpoints:`, no `peer_spine`
+3. One `config.yaml`, one block per account, `account` + `token` — **no Beeper
+   ports** and no `endpoints:`. The console port IS pinned, and must be: Beeper
+   claims the first free port upward from 23373 and will take an unpinned
+   console the moment a spine releases it.
 4. The spine logs `connection '<name>' → ... 200` for every connection, and
    `subscribed to all chats`
-5. A message on each number wakes the spine, and its reply goes out on that same
-   number
+5. Every EAR wakes the spine, and a reply goes out on a connection that can
+   actually reach that chat — the mouth where it can, the ear where it cannot.
+   A mouth-only connection is deliberately deaf: nothing arriving on it wakes
+   anything, and that is not a fault to chase.
 6. Handles disjoint between accounts, and no other node claiming them
 7. **It survives a reboot** — services come back, discovery finds the installs
    cold, the spine subscribes untouched
+8. `peer_spine` is present and correct when a SECOND NODE shares the machine. It
+   is how a reply is SAID by the other account in a chat both are in, and it is
+   not something to remove. Absent on a one-node machine, which is also correct.
+9. One supervisor per SESSION, carrying every profile in it (`EGPT_HOMES`) — not
+   one per account. Only a Session 1 process can supervise a Session 1 spine.
 
 
 ## What is deployed today
