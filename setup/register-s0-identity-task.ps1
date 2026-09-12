@@ -43,7 +43,10 @@ if (-not (New-Object Security.Principal.WindowsPrincipal($id)).IsInRole([Securit
 }
 
 if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
-  Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+  # -ErrorAction Stop, explicitly: the preference above is NOT enough for these cmdlets. Measured
+  # on dolly 2026-09-12 (register-session1-daemon-task.ps1, same preference set): the failure came
+  # back NON-TERMINATING and the script announced work it had not done.
+  Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction Stop
   Write-Host "[s0-identity] removed existing task $TaskName"
 }
 if ($Remove) { Write-Host "[s0-identity] done (removed)"; if ($Pause) { Read-Host 'Press Enter' | Out-Null }; return }
@@ -67,7 +70,8 @@ $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoi
 
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger @($atBoot, $atLogon) `
   -Settings $settings -User 'SYSTEM' -RunLevel Highest `
-  -Description 'Keeps the Session 0 Beeper on the right identity: the primary account when nobody is logged in, the secondary once the operator GUI is up.' | Out-Null
+  -Description 'Keeps the Session 0 Beeper on the right identity: the primary account when nobody is logged in, the secondary once the operator GUI is up.' `
+  -ErrorAction Stop | Out-Null
 
 Write-Host "[s0-identity] registered $TaskName - at boot, at logon, every $IntervalMin min, as SYSTEM"
 Write-Host "[s0-identity] log: C:\Users\an\.egpt\config\logs\s0-identity.log"

@@ -82,7 +82,11 @@ $principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
   -ExecutionTimeLimit ([TimeSpan]::Zero)
 
-Register-ScheduledTask -TaskName $TaskName -Action $action -Principal $principal -Settings $settings -Force | Out-Null
+# -ErrorAction Stop, explicitly: $ErrorActionPreference = 'Stop' above is NOT enough for this
+# cmdlet. Measured on dolly 2026-09-12 in register-session1-daemon-task.ps1, which sets the same
+# preference: Register-ScheduledTask failed with 0x80070534 as a NON-TERMINATING error and the
+# script printed its green "Registered" line for a task Windows did not have.
+Register-ScheduledTask -TaskName $TaskName -Action $action -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
 
 Write-Host "Registered scheduled task '$TaskName':" -ForegroundColor Green
 Write-Host "  runs as   : $userId  (LogonType Interactive -> Session 1 desktop)"
