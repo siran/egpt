@@ -70,7 +70,9 @@ if (Test-Path $stopFile) {
 } else {
   # === MIRROR OF writeStopFile() in src/stop-guard.mjs - keep byte-compatible ======
   $when  = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
-  $who   = "$env:USERDOMAIN\$env:USERNAME"
+  # NOT "$env:USERDOMAIN\$env:USERNAME": USERDOMAIN is WORKGROUP on a workgroup machine and over
+  # ssh, so this named WORKGROUP\an rather than the real account. WindowsIdentity is authoritative.
+  $who   = [Security.Principal.WindowsIdentity]::GetCurrent().Name
   $where = "$env:COMPUTERNAME / setup\stop-egpt.ps1"
   $lines = @(
     'egpt is STOPPED.',

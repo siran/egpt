@@ -106,7 +106,9 @@ if (-not $Node) {
 $Shim    = Join-Path (Join-Path $Repo 'setup') 'session1-daemon-launcher.vbs'
 $Daemon  = Join-Path $Repo 'egpt-daemon.mjs'
 $WScript = Join-Path $env:SystemRoot 'System32\wscript.exe'
-$User    = "$env:USERDOMAIN\$env:USERNAME"
+# NOT "$env:USERDOMAIN\$env:USERNAME": USERDOMAIN is WORKGROUP on a workgroup machine and over
+# ssh, and WORKGROUP\an maps to no SID (0x80070534, dolly 2026-09-12). WindowsIdentity is authoritative.
+$User    = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 
 $q = [char]34
 $Arguments = "$q$Shim$q $q$Node$q $q$Repo$q $q$EgptHome$q $q$LogPath$q"
@@ -198,7 +200,9 @@ if ($Remove) {
   } elseif ($DryRun) {
     Write-Host "[dry run] would Unregister-ScheduledTask -TaskName '$TaskName' -Confirm:`$false"
   } else {
-    Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+    # -ErrorAction Stop for the same reason as the registration below: a non-terminating failure
+    # here would fall through to the green "Removed" line and report a task that is still there.
+    Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction Stop
     Write-Host "Removed scheduled task '$TaskName'." -ForegroundColor Green
   }
   # The task is the ONLY thing this script ever creates. The shim is a tracked file in the
@@ -267,9 +271,12 @@ if ($DryRun) {
   return
 }
 
+# -ErrorAction Stop, explicitly: on dolly 2026-09-12 this failed with 0x80070534 as a
+# NON-TERMINATING error, walked straight past the catch below, and the script printed
+# "Registered scheduled task" in green for a task Get-ScheduledTask could not find.
 try {
   Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
-    -Principal $principal -Settings $settings -Force | Out-Null
+    -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
 } catch {
   Write-Host "Register-ScheduledTask failed: $($_.Exception.Message)" -ForegroundColor Red
   Write-Host "Registering a task for yourself usually needs no elevation. If this is an access" -ForegroundColor Yellow

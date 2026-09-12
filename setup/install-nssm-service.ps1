@@ -195,7 +195,9 @@ if (-not (Test-Path $serviceBin) -or
 
 # --- 4. credentials: the service runs as you, so it can read the profile + your
 #        `claude` login. ---
-$svcUser = "$env:USERDOMAIN\$env:USERNAME"
+# NOT "$env:USERDOMAIN\$env:USERNAME": USERDOMAIN is WORKGROUP on a workgroup machine and over
+# ssh, and NSSM's ObjectName needs a principal that resolves. WindowsIdentity is authoritative.
+$svcUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 $cred = Get-Credential -UserName $svcUser -Message "Password for $svcUser (the service runs as you so it can read $EgptHome and your claude login)"
 
 # --- 5. clean reinstall of THIS service only (never touches other nodes/processes) ---
