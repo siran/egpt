@@ -334,22 +334,41 @@ export function createDaemonRuntime(opts = {}) {
   // routes through the normal exit handler → respawn. Honors a boot grace window
   // so a just-spawned (still-booting) child is never killed for not-yet-beating.
   function checkLiveness() {
-    if (stopping || !child) return;
+    if (stopping) return;
     const at = now();
+    // --- THE RESUME OBSERVATION, ABOVE THE CHILD GUARD (operator, 2026-09-11 night) --------
+    // This measures whether OUR OWN loop stopped ticking, which is a fact about THIS DAEMON's
+    // clock and not about the child — exactly what the note above argues, and exactly what the
+    // `!child` guard used to contradict. With `child` null for the whole of a stand-down, the
+    // one mechanism built for wall-clock staleness was unreachable from the caller that needs
+    // it most: standDownAndWatch, where a resume makes the PEER's pid read dead and a claim
+    // would put a second spine onto a live peer. Timers do not fire in Modern Standby, so on
+    // resume the 5s stand-down tick and this 30s sweep are BOTH overdue and libuv runs them by
+    // due time — the 5s one first, claiming at ~+10s, well before this sweep would ever speak.
+    // So the stand-down watch calls checkLiveness() itself, and the measurement had to move.
+    //
+    // WHAT lastLivenessTickAt MEANS NOW: "when this daemon last looked at anything", not "when
+    // the sweep last ran". While stood down the 5s watch keeps it fresh, so this sweep measures
+    // ~5s gaps and never detects the resume itself — the watch does, which is the point. While
+    // supervising a child nothing else calls in, so it measures ~30s exactly as before. The
+    // threshold stays livenessIntervalMs * 3 (90s) for both cadences, which on the 5s one means
+    // 18 skipped ticks — conservative on purpose: load must never read as sleep.
     const sinceTick = lastLivenessTickAt == null ? 0 : at - lastLivenessTickAt;
     lastLivenessTickAt = at;
+    if (livenessIntervalMs > 0 && sinceTick > livenessIntervalMs * 3) {
+      resumeGraceUntil = at + aliveGraceMs;
+      log(child
+        ? `resumed after ~${Math.round(sinceTick / 1000)}s without a liveness tick (the machine slept) — not a wedge; giving the spine ${Math.round(aliveGraceMs / 1000)}s to beat again`
+        : `resumed after ~${Math.round(sinceTick / 1000)}s without a liveness tick (the machine slept). This daemon has no spine of its own right now, so there is nothing to excuse — the ${Math.round(aliveGraceMs / 1000)}s grace is held open for the stand-down watch, which must not read a peer whose beat is merely frozen as a peer that departed.`);
+    }
+    if (!child) return;
     noteBeatObserved();   // a beat inside the grace window already proves this child booted
     if (at - childStartedAt < aliveGraceMs) return;
     const age = beatAge();
     if (age > aliveStaleMs) {
-      // STALE — but a sleep explains staleness perfectly well, so ask that first. Our own
-      // loop skipping is the tell (see the note above); a fresh beat never reaches here, so
-      // a long gap with a healthy child still takes the ordinary path below.
-      if (livenessIntervalMs > 0 && sinceTick > livenessIntervalMs * 3) {
-        resumeGraceUntil = at + aliveGraceMs;
-        log(`resumed after ~${Math.round(sinceTick / 1000)}s without a liveness tick (the machine slept) — not a wedge; giving the spine ${Math.round(aliveGraceMs / 1000)}s to beat again`);
-        return;
-      }
+      // STALE — but a sleep explains staleness perfectly well, and the block above has already
+      // asked that question and opened the grace if the answer was yes. A fresh beat never
+      // reaches here, so a long gap with a healthy child still takes the ordinary path below.
       if (at < resumeGraceUntil) return;   // still inside the post-resume grace
       const tail = lastBeatLine();
       log(`spine wedged — alive beat ${age === Infinity ? 'absent' : `${Math.round(age / 1000)}s old`} (> ${Math.round(aliveStaleMs / 1000)}s)${tail ? ` — last beat: ${tail}` : ''} — restarting`);
@@ -640,19 +659,58 @@ export function createDaemonRuntime(opts = {}) {
   // the pid ALONE is never the answer; that pairing is exactly why liveDaemonPid takes both.
   // One source of truth, reused — no second watcher, no second cadence, no new predicate.
   //
-  // NEITHER SIGNAL OVERRIDES THE OTHER. Both are evidence of a HOLDER, so the peer is presumed
-  // present while EITHER answers and it takes BOTH saying "nobody" to claim:
-  //   • LIVE PID, QUIET PORT — the incident. The pid is direct evidence of the holder; the port
-  //     only ever stood in for it. HELD, and the watch must not claim.
-  //   • DEAD PID, BUSY PORT — a squatter (Beeper), or a spine whose pid file we could not read,
-  //     or one whose beat is stale for a reason that is not death: beatAge is WALL-CLOCK, so
-  //     after a suspend every pid on the profile reads dead until the next beat (the same trap
-  //     checkLiveness's resume grace exists for). Claiming on a dead pid alone would therefore
-  //     respawn onto a live peer after every sleep — the unrecoverable direction — so this is
-  //     HELD too. TIME_WAIT is NOT the reason: a socket in TIME_WAIT has no listener and refuses
-  //     a connect, so it can only ever make a port read QUIET, never busy. The cost is real and
-  //     is said out loud below: a squatter on the console port keeps this daemon stood down
-  //     until a human moves it.
+  // --- spine.pid DECIDES; THE PORT DOES NOT GET A VETO (operator, later the same night) -----
+  // The first version of the fix above went one step too far. It made the two signals SYMMETRIC
+  // — held while EITHER answers — which also meant a busy port with NO live spine anywhere kept
+  // this daemon stood down. The operator's verdict on that consequence: *"A squatter on the
+  // console port now keeps the daemon stood down indefinitely?! we are at the mercy of a
+  // squatter?"* He is right, and the reasoning behind the symmetry does not survive contact
+  // with two measurements from that same night:
+  //   1. THE SUSPEND CASE ALREADY HAS A MECHANISM. The stated reason for believing a busy port
+  //      over a dead pid was that beatAge() is wall-clock, so after a resume every pid on the
+  //      profile reads dead until the next beat. That is true, and checkLiveness's resume grace
+  //      above is the thing built for exactly it ("45 restarts in one night"). A hazard that
+  //      already has a named mechanism is not an argument for a second, worse one here — it is
+  //      an argument for REACHING the first, which the probe below does.
+  //   2. THE CONSOLE PORT IS NOT LOAD-BEARING FOR SERVING. That night the S1 spine logged
+  //      EADDRINUSE on its console port 16 times and served 6 real turns in the same window.
+  //      The console is the operator's shell; the messaging path never touches it. A number
+  //      another program can take must not be able to decide whether this node exists.
+  // So the port is EVIDENCE, not a holder. It is still probed every tick, and every line this
+  // watch writes names what it saw there — and it decides nothing. THE RULE IS ONE SENTENCE:
+  // no live spine ⇒ CLAIM AND RESPAWN,
+  // whatever is on the port. A live spine ⇒ held, exactly as above.
+  //
+  // THE FOUR COMBINATIONS, and what each one does:
+  //   • LIVE pid, QUIET port — HELD. The incident. Said once, on the transition.
+  //   • LIVE pid, BUSY port  — HELD. The two agree; there is nothing to explain, so nothing
+  //     beyond the "stood down" line is said.
+  //   • DEAD pid, BUSY port  — NOT HELD. A squatter, or a stale port; said once, and the
+  //     three-miss streak runs to a respawn. The new spine will probably fail to bind its
+  //     console — that is a NORMAL outcome now, not an error, and the claim line says so.
+  //     Its other half is said by the spine itself (src/bridges/shell-port.mjs's NO CONSOLE
+  //     line, which names the squatter). TIME_WAIT is not a factor either way: a socket in
+  //     TIME_WAIT has no listener and refuses a connect, so it can only make a port read QUIET.
+  //   • DEAD pid, QUIET port — NOT HELD. The ordinary departed peer.
+  // The ASYMMETRY IS UNCHANGED: one live observation yields instantly, three consecutive dead
+  // ones (~15s) claim. Driving it from one signal instead of two makes it STRICTER, not looser
+  // — the pid is the only thing that was ever direct evidence of a holder.
+  //
+  // THE RESUME GRACE IS REUSED, NOT RE-DERIVED, AND THIS WATCH TAKES THE OBSERVATION ITSELF.
+  // A dead-looking pid in the seconds after a resume is the one false negative that matters —
+  // beatAge is wall-clock, so a peer that slept reads dead until its heartbeat lands — and it
+  // is exactly the trap checkLiveness's `resumeGraceUntil` was built for. So the probe below
+  // refuses to believe a dead pid while that grace is open: the SAME variable, the same clock,
+  // one mechanism.
+  //
+  // The tick calls checkLiveness() to ARM it, and that call is load-bearing rather than tidy.
+  // Timers do not fire in Modern Standby, so on resume both this 5s watch and the 30s liveness
+  // sweep are overdue; libuv runs expired timers by due time, so this one goes first — three
+  // misses at ~+10s, the sweep's first tick at ~+30s. A grace that only the sweep could arm
+  // would therefore arrive after the claim it was supposed to prevent. checkLiveness's gap
+  // measurement was moved above its `!child` guard for this (see the block at the top of it):
+  // "our own loop stopped ticking" is a fact about this daemon's clock, not about a child it
+  // does not have while stood down.
   //
   // THE ONE WINDOW WHERE spine.pid CAN NAME A DEAD PROCESS, and why the hysteresis covers it:
   // the successor writes spine.pid immediately after announcing the stand-down (src/spine/
@@ -679,36 +737,55 @@ export function createDaemonRuntime(opts = {}) {
   function standDownAndWatch() {
     const port = standdownPort();
     const serving = peerProbe({ port });
-    // The disagreement already said out loud, or null while the two signals agree. Said on the
-    // TRANSITION, not every tick: a stand-down can last a whole workday and this must not become
-    // the log's texture — but it must be there, because both disagreements mean the daemon is
-    // staying down for a reason a human may need to act on.
+    // The state already said out loud, or null when there is nothing to explain (the two agree,
+    // or the pid alone answers). Said on the TRANSITION, not every tick: a stand-down can last a
+    // whole workday and this must not become the log's texture — but it must be there, because
+    // each of these means the daemon is doing something a human may need to know about.
     let announced = null;
+    // The LAST observation of the port, so the respawn line reports what was actually seen
+    // rather than asserting the story the old line told ("went quiet — the peer released it"),
+    // which is the very inference that put two spines on one profile.
+    let portBusy = false;
     const probe = async () => {
       const pid = livePidIn(spinePidPath);
       const answers = await serving();
-      const disagreement = pid != null && !answers ? 'pid' : (pid == null && answers ? 'port' : null);
-      if (disagreement !== announced) {
-        announced = disagreement;
-        if (disagreement === 'pid') log(`stand-down watch: 127.0.0.1:${port} is quiet, but ${spinePidPath} names LIVE pid ${pid} and alive.txt is fresh — the profile IS held. A spine that is alive but could not bind its console port is still a spine; not claiming.`);
-        if (disagreement === 'port') log(`stand-down watch: something answers on 127.0.0.1:${port} but ${spinePidPath} names no live spine — that is a squatter, not the peer. Not claiming (a dead pid alone is also what a machine looks like the moment it wakes from sleep), so this profile stays down until whatever holds that port is moved off it.`);
+      portBusy = answers;
+      // beatAge is wall-clock, so a resume makes every pid on this profile read dead. While
+      // checkLiveness's grace is open that reading is expected, not evidence of a departure.
+      const inResumeGrace = pid == null && now() < resumeGraceUntil;
+      const state = pid != null ? (answers ? null : 'pid')
+        : inResumeGrace ? 'resume'
+          : (answers ? 'port' : null);
+      if (state !== announced) {
+        announced = state;
+        if (state === 'pid') log(`stand-down watch: 127.0.0.1:${port} is quiet, but ${spinePidPath} names LIVE pid ${pid} and alive.txt is fresh — the profile IS held. A spine that is alive but could not bind its console port is still a spine; not claiming.`);
+        if (state === 'port') log(`stand-down watch: something answers on 127.0.0.1:${port} but ${spinePidPath} names no live spine — that is a squatter, not the peer, and it does not get a vote. The console port is the operator's shell; a spine serves messages without it. Counting this as NOBODY HOLDING the profile, so the claim streak is running.`);
+        if (state === 'resume') log(`stand-down watch: ${spinePidPath} names no live spine, but this machine has just resumed and checkLiveness's resume grace is still open — alive.txt's age is wall-clock, so every pid on this profile reads dead for a moment after a wake. Not believing it; the claim streak stays at zero until the grace lapses.`);
       }
-      return pid != null || answers;
+      return pid != null || inResumeGrace;
     };
     const watcher = createPeerLiveness({
       probe,
       subject: 'the profile',
       onLog: (m) => log(`stand-down watch: ${m}`),
     });
-    log(`stood down — a peer has taken the profile on 127.0.0.1:${port}; NOT respawning while ${spinePidPath} names a live spine or that port answers, re-checked every ${Math.round(PEER_PROBE_EVERY_MS / 1000)}s`);
+    log(`stood down — a peer has taken the profile on 127.0.0.1:${port}; NOT respawning while ${spinePidPath} names a live spine, re-checked every ${Math.round(PEER_PROBE_EVERY_MS / 1000)}s. That port is watched too, but only to say what is on it: it does not decide.`);
     let respawned = false;   // a slow probe can overlap the next tick; only ONE respawn ever
     standdownTimer = setIntervalFn(async () => {
       if (respawned || stopping) return;
+      // THE RESUME OBSERVATION, TAKEN ON THIS CADENCE. checkLiveness owns "did our own loop
+      // stop ticking" and does nothing else when there is no child (see the block at the top
+      // of it). Calling it here is what makes resumeGraceUntil reachable from this watch at
+      // all — and it must be THIS loop that takes it, because on a resume this 5s tick runs
+      // before the 30s sweep and would otherwise have claimed before the sweep ever looked.
+      checkLiveness();
       await watcher.tick();
       if (respawned || stopping || !watcher.isClaiming()) return;
       respawned = true;
       if (standdownTimer) { clearIntervalFn(standdownTimer); standdownTimer = null; }
-      log(`${spinePidPath} names no live spine and 127.0.0.1:${port} is quiet — nothing holds the profile now; respawning the spine`);
+      log(portBusy
+        ? `${spinePidPath} names no live spine — nothing holds the profile now; respawning the spine. 127.0.0.1:${port} is still BUSY, and it does not get a vote: the console port is the operator's shell, not the mutex. The new spine will most likely fail to bind it, in which case it will say so and keep serving — that is expected here, not a fault.`
+        : `${spinePidPath} names no live spine and 127.0.0.1:${port} is quiet — nothing holds the profile now; respawning the spine`);
       backoff = RESTART_MIN_MS;   // a handover is not a failure; the next boot starts clean
       spawnShell();
     }, PEER_PROBE_EVERY_MS);

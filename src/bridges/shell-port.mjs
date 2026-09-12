@@ -46,10 +46,18 @@ import { mentionStatus } from '../auto-mode.mjs';
 import { makeWrapPersona } from './persona-wrap.mjs';
 // Free the port before binding it — the SERVER-role recovery, moved here with the server role
 // (it used to live in src/shell/server.mjs, back when the editor bound this port). A stale
-// prior spine still holding :23375 on Windows would otherwise leave the console dead with no
-// self-healing; and a SQUATTER holding it is exactly the attack this inversion closes, so
-// evicting it is the correct response, not a warning.
-import { reapPort } from '../tools/reap-port.mjs';
+// prior spine still holding this port on Windows would otherwise leave the console dead with
+// no self-healing, and that spine is still reaped.
+// A SQUATTER IS NO LONGER EVICTED, and the sentence that used to stand here — "a SQUATTER
+// holding it is exactly the attack this inversion closes, so evicting it is the correct
+// response, not a warning" — was retired by the operator on 2026-09-11. Beeper Desktop claims
+// ports upward from 23373 and is the squatter on this machine, so that reap would taskkill the
+// messaging backend to reclaim a port the daemon has just been told the spine does not need in
+// order to serve. reap-port.mjs's `mine` guard is where that decision lives now.
+// …and, from the same module and the same parser, the READ-ONLY half: who is holding it. A
+// bind that fails must be able to NAME the squatter, or the operator is back to running
+// netstat by hand (see noteUnbound below — that is exactly what happened on 2026-09-11).
+import { reapPort, portHolders, isOwnSpine, OWN_SPINE_LABEL, PORT_LOOKUP_TOOL } from '../tools/reap-port.mjs';
 // The shell socket's ONE authentication definition (src/shell/auth.mjs — header there for the
 // vulnerability this closes). Loopback is NOT an authenticator: the sandboxed CLI accounts can
 // dial 127.0.0.1:23375 as freely as the operator's editor can. The peer that dials this port
@@ -147,6 +155,7 @@ const SHELL_USER = 'operator';
  *   on its own account.
  * @param {(m: string) => void} [opts.onLog]
  * @param {typeof reapPort} [opts.reapPort]   port-killer seam (see start()) — real reapPort by default; tests inject a fake so no real netstat/taskkill runs
+ * @param {typeof portHolders} [opts.portHolders]   port-OWNER lookup seam, used ONLY on a failed bind to name the squatter in the log; real portHolders by default, tests inject a fake so no real netstat runs
  * @param {typeof globalThis.setTimeout} [opts.setTimeout]     re-listen timer seam (tests inject a fake clock so no real wait blocks)
  * @param {typeof globalThis.clearTimeout} [opts.clearTimeout]
  */
@@ -163,6 +172,7 @@ export function createShellPort({
   onPeerSay = null,
   onLog = () => {},
   reapPort: reapPortFn = reapPort,
+  portHolders: portHoldersFn = portHolders,
   setTimeout: setTimeoutFn = globalThis.setTimeout,
   clearTimeout: clearTimeoutFn = globalThis.clearTimeout,
 } = {}) {
@@ -188,6 +198,10 @@ export function createShellPort({
   // without a single extra branch of its own.
   let wss = null, sock = null, _stopped = false, _listening = false, _relistenTimer = null;
   let _relistenMs = RELISTEN_MIN_MS;   // backs off to RELISTEN_MAX_MS while the port cannot be held
+  // Consecutive bind attempts that never reached 'listening', reset the moment one does. It is
+  // in every NO-CONSOLE line because the count is the whole point: attempt 1 is an accident,
+  // attempt 40 is a standing state nobody has been told about.
+  let _bindFailures = 0;
   // Connections that have dialed in but not yet authenticated. Tracked ONLY so the winner of
   // the handshake can shut the door behind it — a stranger must not keep a foot in it.
   const _pending = new Set();
@@ -403,8 +417,15 @@ export function createShellPort({
   function bind() {
     _listening = false;
     try { wss = new WebSocketServer({ host: SHELL_WS_HOST, port }); }
-    catch (e) { wss = null; onLog(`shell: bind threw — ${e?.message ?? e}`); scheduleRelisten(); return; }
-    wss.on('listening', () => { _listening = true; _relistenMs = RELISTEN_MIN_MS; onLog(`shell: serving ws://${SHELL_WS_HOST}:${port} — waiting for the operator's editor to dial in`); });
+    catch (e) { wss = null; noteUnbound(`the bind threw — ${e?.message ?? e}`); return; }
+    wss.on('listening', () => {
+      _listening = true; _relistenMs = RELISTEN_MIN_MS;
+      // The recovery is as much news as the failure was: a node that has been consoleless for
+      // an hour must say when the console came back, and after how many tries.
+      if (_bindFailures) onLog(`shell: CONSOLE BACK — bound ws://${SHELL_WS_HOST}:${port} after ${_bindFailures} failed attempt${_bindFailures === 1 ? '' : 's'}. The operator's editor can dial in again.`);
+      _bindFailures = 0;
+      onLog(`shell: serving ws://${SHELL_WS_HOST}:${port} — waiting for the operator's editor to dial in`);
+    });
     wss.on('connection', onConnection);
     wss.on('error', (e) => {
       onLog(`shell: WS SERVER ERROR — ${e?.message ?? e}`);
@@ -412,7 +433,7 @@ export function createShellPort({
       // else holds the port) — the console is down and the port is unheld, which is exactly the
       // state this limb exists to prevent, so retry. An error once already listening is logged
       // only: the listener itself is still up.
-      if (!_stopped && !_listening) scheduleRelisten();
+      if (!_stopped && !_listening) noteUnbound(String(e?.message ?? e));
     });
     wss.on('close', () => {
       sock = null; _pending.clear(); _mouths.clear(); _listening = false;
@@ -425,10 +446,49 @@ export function createShellPort({
 
   // Exponential backoff for the re-listen: schedule the next attempt at the current backoff,
   // then double it (capped); the reset to MIN happens on a successful 'listening' in bind().
+  // Returns the delay it ARMED, or null when an attempt was already pending — so a caller can
+  // state the real wait instead of guessing at it.
   function scheduleRelisten() {
-    if (_relistenTimer) return;   // an attempt is already scheduled
-    _relistenTimer = setTimeoutFn(() => { _relistenTimer = null; bind(); }, _relistenMs);
+    if (_relistenTimer) return null;   // an attempt is already scheduled
+    const armedMs = _relistenMs;
+    _relistenTimer = setTimeoutFn(() => { _relistenTimer = null; bind(); }, armedMs);
     _relistenMs = Math.min(_relistenMs * 2, RELISTEN_MAX_MS);
+    return armedMs;
+  }
+
+  // --- A BIND THAT FAILS IS A STANDING STATE, NOT A TRANSIENT ERROR ------------------------
+  // (reve, the night of 2026-09-11 — the silent half of the stand-down bug.)
+  //
+  // WHAT HAPPENED. Beeper Desktop claims the first free port upward from 23373 and took this
+  // spine's console number. The limb did the right thing — it retried, and it kept retrying —
+  // but every attempt logged the same bare `WS SERVER ERROR — listen EADDRINUSE`, 16 of them,
+  // while the spine served 6 real turns in the same window. Nothing anywhere said the three
+  // things a human needed: that this node HAS NO CONSOLE, that it is still answering messages
+  // regardless, and WHAT is holding the port. A forever-loop that never states its own
+  // condition is indistinguishable from a hang.
+  //
+  // AND IT IS NOW A NORMAL OUTCOME. The daemon's stand-down watch no longer lets a squatted
+  // console port veto a respawn (src/daemon-runtime.mjs — spine.pid decides), so a spine being
+  // started deliberately INTO a squatted port is the expected case, not a fault. This line is
+  // the spine's half of that decision: it is a loud statement of fact, not an alarm.
+  //
+  // THE HOLDER LOOKUP is the read-only half of the reap the limb already does at start(), and
+  // it runs only on a FAILED bind — never on a schedule — so at steady state it costs one
+  // netstat per re-listen, i.e. one a minute once the backoff caps. When it comes back empty
+  // the line SAYS it came back empty, and which tool it asked; it never renders as a blank.
+  function describeHolder() {
+    let who = [];
+    try { who = portHoldersFn(port) ?? []; }
+    catch (e) { return `and looking up what holds it FAILED (${e?.message ?? e}), so it cannot be named here`; }
+    if (!who.length) return `and I could not name what holds it — ${PORT_LOOKUP_TOOL} reported no LISTENING owner for :${port}, so look by hand`;
+    return `held by ${who.map((h) => (h?.name ? `pid ${h.pid} (${h.name})` : `pid ${h?.pid}`)).join(', ')}`;
+  }
+
+  function noteUnbound(reason) {
+    _bindFailures += 1;
+    const armedMs = scheduleRelisten();
+    const next = armedMs == null ? 'a retry is already pending' : `retrying in ${Math.round(armedMs / 1000)}s`;
+    onLog(`shell: NO CONSOLE — could not bind ws://${SHELL_WS_HOST}:${port} (attempt ${_bindFailures}: ${reason}), ${describeHolder()}. THE SPINE IS STILL SERVING: messages, the heartbeat and the mouth link do not touch this port — only the operator's editor does. ${next}, and I will not stop.`);
   }
 
   // One outbound frame to the seated editor. Drops (never throws) when no editor holds the seat
@@ -453,9 +513,9 @@ export function createShellPort({
 
   return {
     // BIND the console port and hold it (idempotent-enough for boot: called once). Reaps
-    // whatever already holds it FIRST — a stale prior spine orphans this exact port on Windows,
-    // and a SQUATTER holding it is the attack this limb's whole shape exists to close, so
-    // evicting it is the right answer either way. Runs once, before the FIRST bind only: the
+    // A STALE PRIOR SPINE OF OURS off it FIRST — that one orphans this exact port on Windows,
+    // where a child outlives its parent — and reaps nothing else: see the guard below and
+    // reap-port.mjs's `mine`. Runs once, before the FIRST bind only: the
     // re-listen backoff handles any other reason a later attempt fails and needn't re-reap
     // (reapPort's own port===0 guard makes it a no-op for tests' ephemeral `port: 0`).
     // FAIL CLOSED with no token: the limb does not serve AT ALL and says exactly what to add.
@@ -465,7 +525,14 @@ export function createShellPort({
     // port (ephemeral when `port: 0`); null when the limb is disabled.
     start() {
       if (!_token) { onLog(`shell: DISABLED — no shell token configured, so the operator console cannot be authenticated (an unauthenticated 127.0.0.1:${port} is dialable by any local account). To enable it, ${SHELL_TOKEN_HELP}.`); return null; }
-      reapPortFn(port, onLog);
+      // THE REAP ONLY EVICTS ONE OF OUR OWN (operator, the night of 2026-09-11). This line used
+      // to be `reapPortFn(port, onLog)`, which killed WHATEVER was listening — and on this
+      // machine that is Beeper Desktop, the messaging backend, which claims ports upward from
+      // 23373. It would have been taskkill'd to reclaim a number the daemon has just been told
+      // the spine does not need in order to serve. So: a stale prior spine of ours is still
+      // reaped, and anything else is named and left alone. Whatever survives ends up in
+      // noteUnbound's NO CONSOLE line a moment later, by name.
+      reapPortFn(port, onLog, { mine: isOwnSpine, mineLabel: OWN_SPINE_LABEL });
       return bind();
     },
     // The operator's editor just announced itself (ingest marker, right before it starts

@@ -14,6 +14,7 @@
 //   3. a second client CANNOT displace an authenticated seat, and is sent nothing at all.
 import { describe, it, expect } from 'vitest';
 import { createShellPort, SHELL_WS_PORT } from '../src/bridges/shell-port.mjs';
+import { PORT_LOOKUP_TOOL, isOwnSpine, OWN_SPINE_LABEL } from '../src/tools/reap-port.mjs';
 import { responseFrame, authMac } from '../src/shell/auth.mjs';
 import { createIdentity } from '../src/spine/identity.mjs';
 import { createCommands } from '../src/spine/commands.mjs';
@@ -31,7 +32,10 @@ const TOKEN = 'test-shell-token';
 // The real `ws` emits them on a later tick, but bind() registers every handler in one straight
 // line right after construction, so firing at registration is both faithful enough and keeps
 // every assertion below free of awaits.
+// `failBind` may be a boolean OR a function, read at bind time — a test that needs the port to
+// be squatted and then freed flips the flag between attempts.
 function makeFakeWss({ failBind = false } = {}) {
+  const fails = () => (typeof failBind === 'function' ? failBind() : failBind);
   const servers = [];
   class FakeSocket {
     constructor() { this.sent = []; this._h = {}; this.closed = false; this.readyState = 1; }
@@ -44,8 +48,8 @@ function makeFakeWss({ failBind = false } = {}) {
     constructor(opts) { this.opts = opts; this._h = {}; this.closed = false; this.listening = false; servers.push(this); }
     on(ev, cb) {
       (this._h[ev] ||= []).push(cb);
-      if (ev === 'listening' && !failBind) { this.listening = true; cb(); }
-      if (ev === 'error' && failBind) cb(new Error('EADDRINUSE'));
+      if (ev === 'listening' && !fails()) { this.listening = true; cb(); }
+      if (ev === 'error' && fails()) cb(new Error('listen EADDRINUSE: address already in use 127.0.0.1:23475'));
       return this;
     }
     fire(ev, ...a) { for (const cb of (this._h[ev] || [])) cb(...a); }
@@ -67,10 +71,10 @@ function makeFakeClock() {
   return { timers, cleared, setTimeout, clearTimeout };
 }
 
-// Construct a limb with the real port-killer REPLACED — every test must inject it, or a
-// default-port construction would netstat/taskkill for real.
+// Construct a limb with the real port-killer AND the real port-owner lookup REPLACED — either
+// one would netstat (and taskkill) for real on a default-port construction.
 function mk(opts = {}) {
-  return createShellPort({ token: TOKEN, reapPort: () => 0, ...opts });
+  return createShellPort({ token: TOKEN, reapPort: () => 0, portHolders: () => [], ...opts });
 }
 
 // Dial a fake editor in AND pass the auth handshake — the editor's half of src/shell/auth.mjs,
@@ -746,12 +750,30 @@ describe('shell-port LISTENER recovery — a failed bind / dead listener is loud
     expect(servers).toHaveLength(2);
   });
 
+  // THE REAP MUST NOT EVICT A STRANGER (operator, the night of 2026-09-11). This limb reaps
+  // the port before its first bind, and until now it killed WHATEVER was listening. On this
+  // machine that is Beeper Desktop — the messaging backend — and it would have been terminated
+  // to reclaim a port the daemon has just been told the spine does not need in order to serve.
+  // reap-port.mjs owns the guard; this asserts the limb actually asks for it.
+  it('asks reapPort to spare anything that is not one of our own spines', () => {
+    const { WebSocketServer } = makeFakeWss();
+    const calls = [];
+    const port = mk({ WebSocketServer, reapPort: (p, log, opts) => { calls.push({ p, opts }); return 0; } });
+
+    port.start();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].p).toBe(SHELL_WS_PORT);
+    expect(calls[0].opts?.mine).toBe(isOwnSpine);
+    expect(calls[0].opts?.mineLabel).toBe(OWN_SPINE_LABEL);
+  });
+
   it('repeated failures back off exponentially (3s → 6s), and the retry does NOT re-reap the port', () => {
     const { WebSocketServer } = makeFakeWss({ failBind: true });
     const clock = makeFakeClock();
     const reapCalls = [];
     const port = createShellPort({
-      WebSocketServer, token: TOKEN, reapPort: (p) => { reapCalls.push(p); return 0; },
+      WebSocketServer, token: TOKEN, reapPort: (p) => { reapCalls.push(p); return 0; }, portHolders: () => [],
       setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout,
     });
 
@@ -781,6 +803,82 @@ describe('shell-port LISTENER recovery — a failed bind / dead listener is loud
     clock.timers[0].fn();
     expect(servers).toHaveLength(2);              // a fresh listener bound
     expect(servers[1].listening).toBe(true);
+  });
+
+  // ── NO CONSOLE IS A STANDING STATE, SAID OUT LOUD ─────────────────────────────────────────
+  // (reve, the night of 2026-09-11 — the silent half of the stand-down bug.)
+  // Beeper took this spine's console number; the limb retried 16 times over the same window in
+  // which the spine served 6 real turns, and every attempt logged the same bare EADDRINUSE. A
+  // forever-loop that never states its own condition is indistinguishable from a hang. Now that
+  // the daemon deliberately respawns INTO a squatted port (src/daemon-runtime.mjs — spine.pid
+  // decides, the port has no veto), this is a NORMAL outcome and must read like one.
+  describe('a squatted console port says what it is, names who has it, and keeps serving', () => {
+    function squatted({ portHolders = () => [{ pid: 8412, name: 'Beeper.exe' }], failBind = true } = {}) {
+      const { WebSocketServer, servers } = makeFakeWss({ failBind });
+      const clock = makeFakeClock();
+      const logs = [];
+      const port = mk({ WebSocketServer, portHolders, onLog: (m) => logs.push(m), setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout });
+      return { port, servers, clock, logs, said: () => logs.join('\n') };
+    }
+
+    it('states the condition, the holder, that the spine still serves, and the retry', () => {
+      const h = squatted();
+      h.port.start();
+
+      expect(h.said()).toMatch(/NO CONSOLE/);
+      expect(h.said()).toContain('ws://127.0.0.1:23475');
+      expect(h.said()).toContain('attempt 1');
+      expect(h.said()).toContain('address already in use');      // the OBSERVATION, not a paraphrase
+      expect(h.said()).toContain('pid 8412 (Beeper.exe)');       // …and who has it
+      expect(h.said()).toMatch(/THE SPINE IS STILL SERVING/);
+      expect(h.said()).toContain('retrying in 3s');
+      expect(h.said()).toContain('I will not stop');
+    });
+
+    it('keeps saying it, with a climbing attempt count — the loop is never silent', () => {
+      const h = squatted();
+      h.port.start();
+      h.clock.timers[0].fn();
+      h.clock.timers[1].fn();
+
+      expect(h.said()).toContain('attempt 2');
+      expect(h.said()).toContain('attempt 3');
+      expect(h.said()).toContain('retrying in 6s');
+      expect(h.said()).toContain('retrying in 12s');
+      expect(h.servers).toHaveLength(3);                          // …and it really is still trying
+    });
+
+    it('says plainly that it could not name the holder, and which tool it asked', () => {
+      const h = squatted({ portHolders: () => [] });
+      h.port.start();
+
+      expect(h.said()).toContain('could not name what holds it');
+      expect(h.said()).toContain(PORT_LOOKUP_TOOL);
+      expect(h.said()).toMatch(/NO CONSOLE/);                     // …and the rest of the line still stands
+    });
+
+    it('a lookup that THROWS is reported in the line, never swallowed into a blank', () => {
+      const h = squatted({ portHolders: () => { throw new Error('netstat is not on PATH'); } });
+      h.port.start();
+
+      expect(h.said()).toContain('looking up what holds it FAILED');
+      expect(h.said()).toContain('netstat is not on PATH');
+      expect(h.said()).toMatch(/NO CONSOLE/);
+    });
+
+    it('says when the console comes back, and after how many tries', () => {
+      let squatting = true;
+      const h = squatted({ failBind: () => squatting });
+      h.port.start();
+      h.clock.timers[0].fn();                                     // attempt 2, still squatted
+      squatting = false;
+      h.clock.timers[1].fn();                                     // attempt 3 binds
+
+      expect(h.said()).toContain('CONSOLE BACK');
+      expect(h.said()).toContain('after 2 failed attempts');
+      expect(h.port.isConnected).toBe(false);                     // no editor yet — but the port is held
+      expect(h.servers[2].listening).toBe(true);
+    });
   });
 
   it('stop() never triggers a re-listen: the pending timer is cancelled and no second listener is built', () => {

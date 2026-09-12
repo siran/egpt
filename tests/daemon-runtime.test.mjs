@@ -986,8 +986,12 @@ describe('daemon runtime: the stand-down watch (exit 45 — a peer took the prof
     expect(h.logs.join('')).toContain('stood down — a peer has taken the profile on 127.0.0.1:23999');
   });
 
-  it('a peer that keeps answering is never displaced, however long the watch runs', async () => {
-    const h = makeStandingDown({ sidecar: '23375', answers: true });
+  // "THE PEER ANSWERING" IS ITS spine.pid, not its port. These two were written when the port
+  // WAS the question; the observation they are about — an alive peer is never displaced, and it
+  // takes three consecutive dead readings to claim — is unchanged, it is just being asked of the
+  // signal that actually names a holder.
+  it('a peer that keeps holding the profile is never displaced, however long the watch runs', async () => {
+    const h = makeStandingDown({ sidecar: '23375', answers: true, spinePid: 11924 });
     h.runtime.spawnShell();
     await h.children[0].child.handlers.exit(STANDDOWN_EXIT_CODE, null);
 
@@ -1001,20 +1005,20 @@ describe('daemon runtime: the stand-down watch (exit 45 — a peer took the prof
   // is alive would put TWO spines on one EGPT_HOME — two Beeper connections, two answers, both
   // writing conversations.yaml. So one missed probe, or two, proves nothing.
   it('a single missed probe does not respawn — it takes claimAfter CONSECUTIVE misses', async () => {
-    const h = makeStandingDown({ sidecar: '23375', answers: true });
+    const h = makeStandingDown({ sidecar: '23375', answers: false, spinePid: 11924 });
     h.runtime.spawnShell();
     await h.children[0].child.handlers.exit(STANDDOWN_EXIT_CODE, null);
 
     await h.tick(1);                    // alive
-    h.state.answers = false;
+    h.state.spinePid = null;
     await h.tick(1);                    // one miss
     expect(h.children).toHaveLength(1);
     await h.tick(1);                    // two misses — still not enough
     expect(h.children).toHaveLength(1);
 
-    h.state.answers = true;             // it answered again: the dead streak resets
+    h.state.spinePid = 11924;           // it is back: the dead streak resets
     await h.tick(1);
-    h.state.answers = false;
+    h.state.spinePid = null;
     await h.tick(2);                    // two fresh misses — still not enough
     expect(h.children).toHaveLength(1);
 
@@ -1063,20 +1067,169 @@ describe('daemon runtime: the stand-down watch (exit 45 — a peer took the prof
       expect(h.logs.length).toBe(before);
     });
 
-    // The reverse disagreement. Respawning here is arguably right — it is a squatter, not the
-    // peer — but a dead pid is a routine FALSE negative: beatAge is wall-clock, so every pid on
-    // the profile reads dead the moment the machine wakes from sleep. Claiming on that alone
-    // would put a second spine onto a live peer after every suspend. So: still held, said out
-    // loud, because a squatter on the port keeps this daemon stood down until a human moves it.
-    it('a busy port with NO live spine.pid is a squatter — still not claimed, and it says so', async () => {
+    // ===================================================================================
+    // THE REVERSE DISAGREEMENT — AND THE PORT DOES NOT GET A VETO (operator, that same night).
+    // ===================================================================================
+    // 03be7c0 read a busy port with no live pid as "still held", on the argument that a dead
+    // pid is a routine false negative after a suspend (beatAge is wall-clock). The operator
+    // rejected the consequence — "A squatter on the console port now keeps the daemon stood
+    // down indefinitely?! we are at the mercy of a squatter?" — and two measurements say the
+    // argument was wrong: the suspend case already has checkLiveness's resume grace, and the
+    // console port is not load-bearing for serving (the S1 spine logged EADDRINUSE 16 times
+    // and served 6 real turns in the same window). So: spine.pid decides, the port reports.
+    it('a busy port with NO live spine is CLAIMED — a squatter cannot keep this node down', async () => {
       const h = makeStandingDown({ sidecar: '23475', answers: true, spinePid: null });
       h.runtime.spawnShell();
       await h.children[0].child.handlers.exit(STANDDOWN_EXIT_CODE, null);
 
-      await h.tick(10);
+      await h.tick(2);
+      expect(h.children).toHaveLength(1);                // the asymmetry is unchanged: two prove nothing
+      await h.tick(1);
+      expect(h.children).toHaveLength(2);                // the third claims, busy port and all
+      expect(h.runtime.state.standingDown).toBe(false);
+    });
 
+    it('says what it saw on the port and that it respawned anyway — not that the port was quiet', async () => {
+      const h = makeStandingDown({ sidecar: '23475', answers: true, spinePid: null });
+      h.runtime.spawnShell();
+      await h.children[0].child.handlers.exit(STANDDOWN_EXIT_CODE, null);
+
+      await h.tick(3);
+      const said = h.logs.join('');
+      expect(said).toContain('that is a squatter, not the peer');       // observed, on the transition
+      expect(said).toContain('does not get a vote');                    // and what was done about it
+      expect(said).toContain('is still BUSY');
+      expect(said).not.toContain('23475 is quiet');                     // the claim line must not lie
+    });
+
+    // The other half of the same honesty: the respawned spine walking into a squatted console
+    // is a NORMAL outcome now, so the line that starts it says so rather than leaving a human
+    // to discover it in the spine's log.
+    it('warns that the respawned spine will probably not get its console, and that this is expected', async () => {
+      const h = makeStandingDown({ sidecar: '23475', answers: true, spinePid: null });
+      h.runtime.spawnShell();
+      await h.children[0].child.handlers.exit(STANDDOWN_EXIT_CODE, null);
+
+      await h.tick(3);
+      expect(h.logs.join('')).toContain('will say so and keep serving');
+    });
+
+    // A LIVE pid with a BUSY port is the ordinary held case — the two signals agree, so there
+    // is nothing to explain and the watch must not invent a disagreement line for it.
+    it('a live pid with a busy port is held silently — no disagreement to report', async () => {
+      const h = makeStandingDown({ sidecar: '23475', answers: true, spinePid: 11924 });
+      h.runtime.spawnShell();
+      await h.children[0].child.handlers.exit(STANDDOWN_EXIT_CODE, null);
+
+      const before = h.logs.length;
+      await h.tick(10);
       expect(h.children).toHaveLength(1);
-      expect(h.logs.join('')).toContain('that is a squatter, not the peer');
+      expect(h.logs.length).toBe(before);
+    });
+
+    // THE RESUME GRACE IS REUSED, NOT RE-DERIVED. checkLiveness owns the "the machine slept"
+    // observation (its comment: 45 restarts in one night), and while its grace is open a
+    // dead-looking pid is the expected reading of a healthy peer, not evidence of a departure.
+    // The grace is armed by the child-liveness sweep, so what this covers is a stand-down
+    // entered while a grace opened by the OUTGOING child is still running.
+    it('does not believe a dead pid while checkLiveness\'s resume grace is still open', async () => {
+      let clock = CLOCK;
+      const h = makeStandingDown({
+        sidecar: '23475', answers: false, spinePid: null,
+        extra: { now: () => clock, aliveGraceMs: 90_000, aliveStaleMs: 150_000, livenessIntervalMs: 30_000 },
+      });
+      h.runtime.spawnShell();
+      // The machine slept: the sweep's own loop skipped, so it arms the grace instead of
+      // killing a healthy spine. This is the ONLY writer of that grace — one ordinary tick to
+      // set the mark, then the gap.
+      h.runtime.checkLiveness();
+      clock += 3_600_000;
+      h.runtime.checkLiveness();
+      expect(h.logs.join('')).toContain('the machine slept');
+
+      await h.children[0].child.handlers.exit(STANDDOWN_EXIT_CODE, null);
+      // Ticks advance the clock the way real ones do — 5s apart. A test that jumped the clock
+      // between ticks would be staging a SECOND sleep, and the watch would rightly re-arm the
+      // grace forever; that is behaviour, not a test artefact, so the test has to tick.
+      const step = async (n) => { for (let k = 0; k < n; k += 1) { clock += 5_000; await h.tick(1); } };
+
+      await step(5);                                     // well past the three-miss streak
+      expect(h.children).toHaveLength(1);                // …but the grace says do not believe it
+      expect(h.logs.join('')).toContain('resume grace');
+
+      await step(25);                                    // the 90s grace lapses, then three misses
+      expect(h.children).toHaveLength(2);                // and now a dead pid is believed
+    });
+
+    // =====================================================================================
+    // A SLEEP THAT SPANS THE WHOLE STAND-DOWN — the case the port veto used to cover.
+    // =====================================================================================
+    // Timers do not fire in Modern Standby, so on resume the 5s stand-down tick and the 30s
+    // liveness sweep are BOTH overdue; libuv runs expired timers by due time, so the 5s one
+    // goes first. Three of its misses land at ~+10s, the sweep's first tick at ~+30s. With the
+    // resume observation reachable only from the sweep, the watch would claim before the sweep
+    // ever spoke — onto a peer that is alive and whose overdue heartbeat has not landed yet.
+    // That is the unrecoverable direction, and until 03be7c0's port veto was removed it was
+    // covered only by the peer happening to hold its console port.
+    it('a sleep spanning the whole stand-down does not claim — the WATCH takes the resume observation', async () => {
+      let clock = CLOCK;
+      const h = makeStandingDown({
+        sidecar: '23475', answers: false, spinePid: 11924,
+        extra: { now: () => clock, aliveGraceMs: 90_000, aliveStaleMs: 150_000, livenessIntervalMs: 30_000 },
+      });
+      h.runtime.spawnShell();
+      await h.children[0].child.handlers.exit(STANDDOWN_EXIT_CODE, null);
+      await h.tick(1);                                   // one ordinary tick: the peer holds it
+
+      // An hour of Modern Standby. Nothing ticks — not this watch, not the liveness sweep.
+      // On resume alive.txt is an hour old, so pid 11924 reads DEAD even though it is alive.
+      clock += 3_600_000;
+      await h.tick(3);                                   // the three misses that would claim
+
+      expect(h.children).toHaveLength(1);                // no second spine onto the live peer
+      expect(h.logs.join('')).toContain('the machine slept');
+      expect(h.logs.join('')).toContain('resume grace');
+    });
+
+    // …and it is a GRACE, not an amnesty: a peer that really did depart over the sleep is
+    // still claimed, just one grace-length later.
+    it('a peer that really is gone is still claimed once the resume grace lapses', async () => {
+      let clock = CLOCK;
+      const h = makeStandingDown({
+        sidecar: '23475', answers: false, spinePid: null,
+        extra: { now: () => clock, aliveGraceMs: 90_000, aliveStaleMs: 150_000, livenessIntervalMs: 30_000 },
+      });
+      h.runtime.spawnShell();
+      await h.children[0].child.handlers.exit(STANDDOWN_EXIT_CODE, null);
+      await h.tick(1);
+      clock += 3_600_000;
+      await h.tick(3);
+      expect(h.children).toHaveLength(1);                // held open by the grace
+
+      // …and then the clock runs normally again, 5s per tick, so nothing looks like a second
+      // sleep. The 90s grace lapses and the three misses land.
+      for (let k = 0; k < 25; k += 1) { clock += 5_000; await h.tick(1); }
+      expect(h.children).toHaveLength(2);
+    });
+
+    // The resume line must not describe a spine this daemon does not have. It supervises no
+    // child at all while stood down — that is the whole reason the measurement had to move.
+    it('the resume line says what is actually true when there is no child to excuse', async () => {
+      let clock = CLOCK;
+      const h = makeStandingDown({
+        sidecar: '23475', answers: false, spinePid: 11924,
+        extra: { now: () => clock, aliveGraceMs: 90_000, aliveStaleMs: 150_000, livenessIntervalMs: 30_000 },
+      });
+      h.runtime.spawnShell();
+      await h.children[0].child.handlers.exit(STANDDOWN_EXIT_CODE, null);
+      await h.tick(1);
+      clock += 3_600_000;
+      await h.tick(1);
+
+      const said = h.logs.join('');
+      expect(said).toContain('the machine slept');
+      expect(said).toContain('no spine of its own');            // …not "giving the spine 90s to beat again"
+      expect(said).not.toContain('giving the spine 90s to beat again');
     });
 
     // LOCK: a genuinely departed peer is still claimed, on the same three misses as before.
@@ -1389,6 +1542,25 @@ describe('daemon runtime: the singleton is session-scoped', () => {
       expect(h.children).toHaveLength(0);                    // two misses prove nothing
       await tick(1);
       expect(h.children).toHaveLength(1);                    // the third claims
+    });
+
+    // …and the port has no veto here either. Same watch, same rule: a daemon that arrives into
+    // a profile nobody holds must come up even if some other program owns the console number.
+    it('a squatted console port does not keep an arriving daemon down when no spine holds the profile', async () => {
+      const files = { 'state/spine.pid': '9500\n' };
+      // The port answers for the WHOLE run — a squatter took the console number and is never
+      // going to let go of it.
+      const h = makeSessioned({ files, extra: { peerProbe: () => async () => true } });
+      h.runtime.start();
+      const watch = h.intervals.find((i) => i.ms === 5_000);
+      const tick = async (n) => { for (let k = 0; k < n; k += 1) await watch.fn(); };
+      expect(h.children).toHaveLength(0);                    // pid 9500 holds it: stood down
+
+      delete files['state/spine.pid'];                       // the incumbent is gone; only the squatter is left
+      await tick(2);
+      expect(h.children).toHaveLength(0);
+      await tick(1);
+      expect(h.children).toHaveLength(1);                    // the third miss claims anyway
     });
 
     it('an ordinary boot with no live spine spawns immediately, as it always did', () => {

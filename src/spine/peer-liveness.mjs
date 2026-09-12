@@ -18,9 +18,10 @@
 // owns the hysteresis over it. tcpProbe below is the one the fallback-handle watcher uses, and
 // "does anything serve there" is the right question for it: a spine that would refuse our token
 // is still a spine that will answer the chat. It is the WRONG question for the daemon's
-// stand-down watch, which asks "is this profile held" — a spine that is alive but could not bind
-// its console port holds the profile and answers nothing — so that caller composes state/
-// spine.pid liveness with the port probe and passes the pair in here (src/daemon-runtime.mjs).
+// stand-down watch, which asks "is this profile HELD" — a spine that is alive but could not bind
+// its console port holds the profile and answers nothing, and a squatter that took the port
+// holds nothing and answers — so that caller passes in a probe over state/spine.pid instead, and
+// uses the port only to say what is on it (src/daemon-runtime.mjs's standDownAndWatch).
 //
 // ASYMMETRIC HYSTERESIS, and this is the whole safety argument. The two directions are NOT
 // equally dangerous:
@@ -123,9 +124,11 @@ export function createPeerLiveness({
  * spine that is up but would refuse our token is still a spine that will answer the chat. It
  * also means the probe needs no secret, so a liveness check can never leak one.
  *
- * It does NOT ask "is this profile held": a spine whose port was squatted before it could bind
- * holds its profile and serves nothing here. A caller that needs the second question composes
- * this with the profile's own spine.pid — see standDownAndWatch in src/daemon-runtime.mjs.
+ * It does NOT ask "is this profile held", and it cannot be made to: a spine whose port was
+ * squatted before it could bind holds its profile and serves nothing here, and a squatter that
+ * took the port answers while holding nothing. A caller that needs the second question asks
+ * state/spine.pid instead — see standDownAndWatch in src/daemon-runtime.mjs, which keeps this
+ * probe only to REPORT what is on the port.
  *
  * @param {object} o
  * @param {number} o.port                  the peer's console port (its `shell.port`)
