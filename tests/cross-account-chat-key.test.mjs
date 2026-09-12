@@ -209,6 +209,136 @@ describe('crossAccountChatKey — the smallest real group: two accounts and one 
   });
 });
 
+// ── THE CHAT THAT IS ONLY US (operator 2026-09-12, live: "eGPT Admin") ──────────────────────
+// The operator made a WhatsApp group whose ONLY members are the two accounts this node holds —
+// nobody else at all. Measured the same day with read-only GETs against BOTH installs; roles
+// substituted for people as everywhere else in this file, but the TYPES, the TITLES and the
+// isSelf/phone shape are verbatim:
+//
+//   primary   !trYqoMoH7jETBozvcOQh   type group   title "eGPT Admin"   [ SECONDARY, self(no phone) ]
+//   secondary !nG3zZhXhJ0mZfmCu6s2f   type group   title "eGPT Admin"   [ PRIMARY,   self(no phone) ]
+//
+// Each account sees the OTHER as the only phone-carrying member and ITSELF as the phone-less self
+// entry, so once BOTH held identities are excluded the surviving phone set is EMPTY on BOTH sides.
+// The membership key refused four times live ("this chat cannot be keyed across accounts") and
+// every reply went out on the EAR's account — the operator answering himself, the one thing the
+// second account exists to prevent.
+//
+// THE TITLE is what the two views provably agree on here, and only because the group is NAMED: an
+// explicitly-named group's name is Matrix room state, so it is a property of the REAL chat rather
+// than of a view — the same standing `type` has, and the same reason it can be keyed on.
+const ADMIN_AS_PRIMARY = {
+  id: '!trYqoMoH7jETBozvcOQh:beeper.local', title: 'eGPT Admin', type: 'group',
+  participants: { items: [
+    member('p-secondary@beeper.local', SECONDARY_NUM),
+    self('@primary:beeper.com'),
+  ] },
+};
+const ADMIN_AS_SECONDARY = {
+  id: '!nG3zZhXhJ0mZfmCu6s2f:beeper.local', title: 'eGPT Admin', type: 'group',
+  participants: { items: [
+    member('s-primary@beeper.local', PRIMARY_NUM),
+    self('@secondary:beeper.com'),
+  ] },
+};
+
+describe('crossAccountChatKey — the group whose ONLY members are the two accounts', () => {
+  // THE OPERATOR'S SYMPTOM, as an assertion: on HEAD both of these are null and the mouth refuses.
+  it('BOTH accounts derive the SAME key for the two-account group', () => {
+    const a = crossAccountChatKey(ADMIN_AS_PRIMARY, OWN_ACCOUNTS);
+    const b = crossAccountChatKey(ADMIN_AS_SECONDARY, OWN_ACCOUNTS);
+    expect(a).toBeTruthy();
+    expect(a).toBe(b);
+    // Readable, like the member key — a failure says WHICH field moved, not that a hash changed.
+    expect(a).toBe('group,title:egpt-admin');
+  });
+
+  // NAMESPACED, so the two kinds of key live in disjoint spaces. idKey stamps every phone identity
+  // with a leading '#', so a title segment can never be read as a member and no title-keyed chat
+  // can ever answer to a membership key.
+  it('a title key can never collide with a member key', () => {
+    const title = crossAccountChatKey(ADMIN_AS_PRIMARY, OWN_ACCOUNTS);
+    expect(title).not.toMatch(/#/);
+    for (const members of [AS_PRIMARY, AS_SECONDARY, LIVE_GROUP_AS_PRIMARY, LIVE_GROUP_AS_SECONDARY]) {
+      expect(crossAccountChatKey(members, OWN_ACCOUNTS)).not.toBe(title);
+    }
+  });
+
+  // …and the title is doing real work: TWO groups of exactly the two accounts are told apart by it.
+  it('two DIFFERENT two-account groups key differently', () => {
+    const other = { ...ADMIN_AS_PRIMARY, id: '!other:beeper.local', title: 'eGPT Lab' };
+    expect(crossAccountChatKey(other, OWN_ACCOUNTS)).toBe('group,title:egpt-lab');
+    expect(crossAccountChatKey(other, OWN_ACCOUNTS)).not.toBe(crossAccountChatKey(ADMIN_AS_PRIMARY, OWN_ACCOUNTS));
+  });
+
+  // The title is normalised the way every other title in this bridge is (chatSlug), so casing and
+  // punctuation cannot split one chat into two keys.
+  it('the title is slug-normalised, so case and spacing cannot break the match', () => {
+    const loud = { ...ADMIN_AS_SECONDARY, title: '  EGPT   admin  ' };
+    expect(crossAccountChatKey(loud, OWN_ACCOUNTS)).toBe(crossAccountChatKey(ADMIN_AS_PRIMARY, OWN_ACCOUNTS));
+  });
+
+  // AN UNNAMED two-account group. Beeper SYNTHESISES a title out of the members, so each account
+  // names the room after the OTHER one and the two titles differ. There is nothing here both sides
+  // agree on, so there must be NO match — and a no-match falls the reply cleanly back to the ear,
+  // which is correct. What must never happen is a WRONG match.
+  it('an UNNAMED two-account group does not key alike — no match, and no wrong match', () => {
+    const unnamedPrimary = { ...ADMIN_AS_PRIMARY, title: 'The Secondary' };    // primary names it after the secondary
+    const unnamedSecondary = { ...ADMIN_AS_SECONDARY, title: 'The Primary' };  // …and vice versa
+    const a = crossAccountChatKey(unnamedPrimary, OWN_ACCOUNTS);
+    const b = crossAccountChatKey(unnamedSecondary, OWN_ACCOUNTS);
+    expect(a).not.toBe(b);
+    // …and neither of them accidentally answers to the NAMED group's key either
+    const named = crossAccountChatKey(ADMIN_AS_PRIMARY, OWN_ACCOUNTS);
+    expect(a).not.toBe(named);
+    expect(b).not.toBe(named);
+  });
+
+  // THE DISTINCTION THAT MAKES THIS SAFE. The new case is "emptied BY the exclusions", i.e. every
+  // phone-carrying member is an account we hold. It is NOT "empty to begin with", which stays the
+  // non-evidence it always was.
+  it('a group with NO phone-carrying member at all is still refused, titled or not', () => {
+    const matrixOnly = {
+      id: '!m:beeper.local', title: 'eGPT Admin', type: 'group',
+      participants: { items: [self('@primary:beeper.com'), { id: '@matrix-only:beeper.com' }] },
+    };
+    expect(crossAccountChatKey(matrixOnly, OWN_ACCOUNTS)).toBeNull();
+    expect(crossAccountChatKey({ ...ADMIN_AS_PRIMARY, participants: { items: [] } }, OWN_ACCOUNTS)).toBeNull();
+    expect(crossAccountChatKey({ ...ADMIN_AS_PRIMARY, participants: undefined }, OWN_ACCOUNTS)).toBeNull();
+  });
+
+  it('a BLANK title is not evidence either — an emptied group with no name is still refused', () => {
+    expect(crossAccountChatKey({ ...ADMIN_AS_PRIMARY, title: '   ' }, OWN_ACCOUNTS)).toBeNull();
+    expect(crossAccountChatKey({ ...ADMIN_AS_PRIMARY, title: undefined }, OWN_ACCOUNTS)).toBeNull();
+    // a title of pure punctuation slugs to nothing, which is the same non-evidence
+    expect(crossAccountChatKey({ ...ADMIN_AS_PRIMARY, title: '!!!' }, OWN_ACCOUNTS)).toBeNull();
+  });
+
+  it('with NO exclusions the member key still wins — the title case cannot be reached', () => {
+    expect(crossAccountChatKey(ADMIN_AS_PRIMARY)).toBe('group,#15550000002');
+    expect(crossAccountChatKey(ADMIN_AS_SECONDARY)).toBe('group,#15550000001');
+  });
+
+  // `single` IS DELIBERATELY LEFT OUT. The 1:1 between the two held accounts is the same degenerate
+  // shape, but its title is the OTHER party's display name and therefore DIFFERS per account, so a
+  // title key cannot work there — and a CONSTANT key ("the 1:1 between us") would be derived from
+  // nothing about the chat at all, which is exactly the non-evidence the refusals above exist to
+  // reject: Beeper is multi-network, so a WhatsApp 1:1 and a Signal 1:1 with the same co-account
+  // number would both answer to it. It stays refused, and the ear speaks.
+  it('the 1:1 BETWEEN the two accounts stays refused — a title cannot cross it', () => {
+    const dmAsPrimary = {
+      id: '!dm-p:beeper.local', title: 'The Secondary', type: 'single',
+      participants: { items: [member('p-secondary@beeper.local', SECONDARY_NUM), self('@primary:beeper.com')] },
+    };
+    const dmAsSecondary = {
+      id: '!dm-s:beeper.local', title: 'The Primary', type: 'single',
+      participants: { items: [member('s-primary@beeper.local', PRIMARY_NUM), self('@secondary:beeper.com')] },
+    };
+    expect(crossAccountChatKey(dmAsPrimary, OWN_ACCOUNTS)).toBeNull();
+    expect(crossAccountChatKey(dmAsSecondary, OWN_ACCOUNTS)).toBeNull();
+  });
+});
+
 // ── REFUSALS: a key that is not EVIDENCE must not be a key at all ───────────────────────────
 // Returning something for these would make every chat that produces the same non-evidence
 // "match" every other one — the opposite of identifying a chat.

@@ -1146,6 +1146,46 @@ describe('findChatByKey — the mapping, on its own', () => {
     // drops peer_spine.accounts fails here instead of in a live chat.
     expect(findChatByKey([AS_SECONDARY], KEY_OF_GROUP, []).reason).toBe('no-match');
   });
+
+  // ── THE TITLE KEY, same mapping, same refusals (operator 2026-09-12) ────────────────────────
+  // A group whose ONLY members are the two accounts leaves NO phone identity once both are
+  // excluded, so crossAccountChatKey keys it by its NAME instead (its "THE CHAT THAT IS ONLY US").
+  // That key arrives here like any other and must obey the same two refusals.
+  const ONLY_US = {
+    id: '!admin:beeper.local', title: 'eGPT Admin', type: 'group',
+    participants: { items: [member('s-primary', PRIMARY_NUM), self('@secondary:beeper.com')] },
+  };
+  const KEY_OF_ONLY_US = 'group,title:egpt-admin';
+
+  it('finds the two-account group by its TITLE key', () => {
+    expect(findChatByKey([OTHER_CHAT, ONLY_US], KEY_OF_ONLY_US, ACCOUNTS)).toEqual({ ok: true, chatId: 'admin' });
+  });
+
+  // THE LOCK the title key needs most: its honest limit is two DIFFERENT two-account groups NAMED
+  // ALIKE, and the answer must be the one a duplicate membership already gets — refuse, never pick.
+  it('TWO two-account groups NAMED ALIKE are ambiguous — it still never picks one', () => {
+    const twin = { ...ONLY_US, id: '!admin2:beeper.local' };
+    const r = findChatByKey([ONLY_US, twin], KEY_OF_ONLY_US, ACCOUNTS);
+    expect(r.ok).toBe(false);
+    expect(r.reason).toBe('ambiguous');
+    expect(r.detail).toMatch(/2 chats key alike/);
+    expect(r.detail).toContain('admin');
+    expect(r.detail).toContain('admin2');
+  });
+
+  it('a TITLE key and a MEMBER key can never answer for each other', () => {
+    expect(findChatByKey([ONLY_US], KEY_OF_GROUP, ACCOUNTS).reason).toBe('no-match');
+    expect(findChatByKey([AS_SECONDARY, OTHER_CHAT], KEY_OF_ONLY_US, ACCOUNTS).reason).toBe('no-match');
+  });
+
+  // AN UNNAMED two-account group: Beeper synthesises the title out of the members, so the EAR asks
+  // with the name IT sees and the mouth's own room carries the other one. No match is the correct
+  // outcome (the reply falls back to the ear); a WRONG match is the thing that must not happen.
+  it('an UNNAMED two-account group answers to nothing the other account asks for', () => {
+    const unnamedOnMouth = { ...ONLY_US, id: '!unnamed:beeper.local', title: 'The Primary' };
+    const askedWith = 'group,title:the-secondary';        // what the EAR derived from ITS own view
+    expect(findChatByKey([unnamedOnMouth, OTHER_CHAT], askedWith, ACCOUNTS).reason).toBe('no-match');
+  });
 });
 
 // ── 4b. THE SAME MAPPING ONE LEVEL DOWN, PURE ──────────────────────────────────────────────────

@@ -159,11 +159,12 @@ export function transcriptionForNoteId(doc, noteId) {
 
 // ── CROSS-ACCOUNT CHAT IDENTITY ───────────────────────────────────────────
 // PURE, and deliberately so: everything below reads a chat payload and nothing else, closes
-// over nothing but shortChatId, and is therefore callable with no live bridge. idKey and
-// participantKeys were LIFTED here verbatim from inside startBeeperBridge (they were always
-// pure) so crossAccountChatKey could be written beside the ONE roster reader instead of
-// growing a second one. Nothing about their behaviour changed; the membership tests in
-// tests/beeper-bridge.test.mjs cover them unaltered.
+// over nothing but shortChatId, and is therefore callable with no live bridge. idKey,
+// participantKeys and (2026-09-12, for the title key) chatSlug were LIFTED here verbatim from
+// inside startBeeperBridge (they were always pure) so crossAccountChatKey could be written
+// beside the ONE roster reader and the ONE title normaliser instead of growing a second of
+// either. Nothing about their behaviour changed; the membership tests in
+// tests/beeper-bridge.test.mjs and the slug tests cover them unaltered.
 //
 // IDENTITY KEY: `participants.items[]` carries `phoneNumber`, the one identifier that means the
 // same thing on BOTH accounts (a matrix/participant id does not: each account sees the other
@@ -186,6 +187,18 @@ function participantKeys(c) {
   const out = new Set();
   for (const p of items) for (const v of [p?.phoneNumber, p?.id]) { const k = idKey(v); if (k) out.add(k); }
   return [...out];
+}
+
+// Deterministic chat slug (operator 2026-06-10: "conversations should be
+// a deterministic contact name"). Beeper chatIDs are opaque Matrix room
+// ids; nobody should have to chase them. The slug of a chat TITLE is the
+// stable, human-meaningful key: lowercase, diacritics stripped, runs of
+// non-alphanumerics collapsed to single dashes. 'Dando Ruiz' →
+// 'dando-ruiz'; config lists may then hold names/slugs instead of ids.
+function chatSlug(title) {
+  return String(title ?? '')
+    .normalize('NFKD').replace(/[̀-ͯ]/g, '')
+    .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
 }
 
 // ── THE CROSS-ACCOUNT CHAT KEY (operator 2026-09-05) ────────────────────────────
@@ -227,9 +240,11 @@ function participantKeys(c) {
 // chat. Two refusals, both returning null:
 //   · NO ROSTER in the payload (participantKeys → null). UNKNOWN is never "empty" — the same
 //     reading chatHasParticipant takes on a failed GET.
-//   · FEWER THAN THE FLOOR phone identities left. Zero is always refused — the matrix-only
-//     chat, where nothing was learned and every such chat would collide with every other. ONE
-//     is refused for a `single` and ACCEPTED for a `group`, which is what CHAT TYPE below buys.
+//   · FEWER THAN THE FLOOR phone identities left. Zero BEFORE the exclusions is always refused —
+//     the matrix-only chat, where nothing was learned and every such chat would collide with
+//     every other. Zero only AFTER them is the one case that falls through to a title instead
+//     (THE CHAT THAT IS ONLY US below). ONE is refused for a `single` and ACCEPTED for a
+//     `group`, which is what CHAT TYPE below buys.
 //
 // CHAT TYPE IS THE FIRST FIELD OF THE KEY (operator 2026-09-06, live: "An y Dando"). Membership
 // alone cannot separate a group from the 1:1 nested inside it — a 1:1 with X reduces to {X}, and
@@ -251,6 +266,45 @@ function participantKeys(c) {
 // field against both live endpoints — and participant ids are per-account `@whatsapp_lid-…`
 // namespaced forms carrying nothing the phone does not. There is no truer key to reach for.)
 //
+// THE CHAT THAT IS ONLY US (operator 2026-09-12, live: "eGPT Admin"). A group whose ONLY members
+// are the two accounts this node holds — nobody else in it at all. Measured on both installs:
+//
+//   primary   !trYqoMoH7jETBozvcOQh   group  "eGPT Admin"  [ self(no phone), the SECONDARY's number ]
+//   secondary !nG3zZhXhJ0mZfmCu6s2f   group  "eGPT Admin"  [ self(no phone), the PRIMARY's number   ]
+//
+// Self carries no phone and the co-account is excluded, so the surviving set is EMPTY on BOTH
+// sides: the refusal above fired four times in the live log and every reply went out on the EAR's
+// account. The very exclusion that MAKES two views comparable is what erases this one — it is the
+// chat whose entire membership IS the exclusion set, a case the rule above was not written for.
+//
+// SO THE KEY FALLS BACK TO THE TITLE, here and nowhere else. An explicitly-named group's name is
+// Matrix ROOM STATE, so both accounts report it identically (measured: byte-identical above) —
+// exactly the property that makes `type` usable and `id` useless. It is normalised through
+// chatSlug, the ONE title normaliser this file has, and carried in its OWN namespace (`title:…`)
+// so it can never be read as a member: idKey stamps every phone identity with a leading '#', so
+// the two spaces are disjoint by construction rather than by convention.
+//
+// THE TRIGGER IS "EMPTIED BY THE EXCLUSIONS", NEVER "EMPTY". Phones non-empty BEFORE them and
+// empty AFTER means every phone-carrying member is an account we hold. Phones empty BEFORE them
+// is the matrix-only chat, which learned nothing and stays refused. That distinction is the whole
+// of the safety, and it also means a caller passing NO exclusions can never reach this branch. A
+// BLANK (or punctuation-only) title is refused for the same reason: it is not evidence.
+//
+// `single` IS DELIBERATELY LEFT OUT. The 1:1 between the two held accounts is the same degenerate
+// shape, but its title is the OTHER party's DISPLAY NAME and so differs per account — a title
+// cannot cross it. The tempting alternative is ONE CONSTANT key, on the argument that there is
+// exactly one 1:1 between any two given accounts and a constant is therefore provably unique for
+// it. Rejected: a key derived from nothing about the chat is precisely the non-evidence the
+// refusals above exist to reject, and the uniqueness argument does not survive Beeper being
+// MULTI-NETWORK — a WhatsApp 1:1 and a Signal 1:1 with the same co-account number would both
+// answer to it, which is a wrong match waiting rather than a missing one. It stays refused; the
+// ear speaks in that chat, forever, and says so.
+//
+// AN UNNAMED group of exactly the two accounts falls SHORT rather than matching wrong: Beeper
+// synthesises its title from the members, so each account names the room after the OTHER one, the
+// two title keys differ, and the receiver reports no-match — the reply falls back to the ear,
+// loudly. That is the correct outcome, and it is the one the unnamed case is locked to.
+//
 // HONEST LIMIT, not fixable at this layer: two DIFFERENT groups with the SAME membership key
 // identically. A participant set cannot tell them apart and no threshold changes that — a
 // caller needing certainty must confirm some other way (an id it just posted, say). Excluding
@@ -259,28 +313,41 @@ function participantKeys(c) {
 // [self, X, Y] already did — and the receiving half refuses rather than guesses when two of its
 // own chats key alike (src/shell/peer-mouth.mjs findChatByKey, `ambiguous`).
 const MIN_KEY_IDENTITIES = 2;
-// The floor for a `group`, per CHAT TYPE above. Zero is still refused: a chat that yielded no
-// phone identity at all is not evidence of anything.
+// The floor for a `group`, per CHAT TYPE above. Zero is still refused HERE: a chat that yielded no
+// phone identity AT ALL is not evidence of anything. A group the EXCLUSIONS emptied is the one
+// that goes on to the title instead of returning null (THE CHAT THAT IS ONLY US above).
 const MIN_GROUP_KEY_IDENTITIES = 1;
 // idKey's own marker for "this value was phone-shaped": '#' + digits only. Read rather than
 // re-derived, so the phone/not-phone judgement is made in exactly one place.
 const PHONE_KEY_RE = /^#\d+$/;
+// The namespace that keeps a TITLE-derived key out of the member key's space (THE CHAT THAT IS
+// ONLY US above). PHONE_KEY_RE's leading '#' already makes the two disjoint; spelling the prefix
+// out keeps the key readable — `group,title:egpt-admin` — the same reason the member key is a
+// sorted list of numbers and not a hash. A slug carries no comma, so the join stays unambiguous.
+const TITLE_KEY_PREFIX = 'title:';
 /**
  * @param {object} chat  a Beeper chat payload (the /v1/chats shape participantKeys reads).
  * @param {string|string[]} [exclude]  identities to leave out — the accounts the CALLER holds.
  *   Normalised the same way the roster is, so any phone form works.
  * @returns {string|null} `<type>,<phone>,<phone>…` — the chat's type, then the sorted member
- *   phone set — or null when it refuses (above). A payload with no `type` at all keys with an
+ *   phone set — or `<type>,title:<slug>` for the group the exclusions emptied (THE CHAT THAT IS
+ *   ONLY US above) — or null when it refuses. A payload with no `type` at all keys with an
  *   empty leading field and keeps the floor of two, i.e. exactly what it did before type existed.
  */
 export function crossAccountChatKey(chat, exclude = []) {
   const keys = participantKeys(chat);
   if (!keys) return null;                                   // no roster ⇒ UNKNOWN, never "nobody"
   const skip = new Set((Array.isArray(exclude) ? exclude : [exclude]).map(idKey).filter(Boolean));
-  const phones = keys.filter((k) => PHONE_KEY_RE.test(k) && !skip.has(k)).sort();
+  const allPhones = keys.filter((k) => PHONE_KEY_RE.test(k));   // BEFORE the exclusions — see the trigger below
+  const phones = allPhones.filter((k) => !skip.has(k)).sort();
   const type = String(chat?.type ?? '').trim().toLowerCase();
   const floor = type === 'group' ? MIN_GROUP_KEY_IDENTITIES : MIN_KEY_IDENTITIES;
-  return phones.length >= floor ? [type, ...phones].join(',') : null;
+  if (phones.length >= floor) return [type, ...phones].join(',');
+  // THE CHAT THAT IS ONLY US: the exclusions took EVERY phone-carrying member, so the membership
+  // is exactly the accounts this caller holds. Only a NAMED group survives that — the one thing
+  // two such views still agree on — and a blank slug is refused like any other non-evidence.
+  const slug = type === 'group' && allPhones.length && !phones.length ? chatSlug(chat?.title) : '';
+  return slug ? [type, `${TITLE_KEY_PREFIX}${slug}`].join(',') : null;
 }
 
 // ── THE CROSS-ACCOUNT MESSAGE KEY (operator 2026-09-07) ─────────────────────────
@@ -716,18 +783,6 @@ export async function startBeeperBridge(opts = {}) {
     const fresh = info?.raw && (info.type === 'single' || Date.now() - (info.at ?? 0) < PARTICIPANTS_TTL_MS);
     if (!fresh) info = await chatInfo(id, { refresh: true });
     return info?.raw ?? null;
-  }
-
-  // Deterministic chat slug (operator 2026-06-10: "conversations should be
-  // a deterministic contact name"). Beeper chatIDs are opaque Matrix room
-  // ids; nobody should have to chase them. The slug of a chat TITLE is the
-  // stable, human-meaningful key: lowercase, diacritics stripped, runs of
-  // non-alphanumerics collapsed to single dashes. 'Dando Ruiz' →
-  // 'dando-ruiz'; config lists may then hold names/slugs instead of ids.
-  function chatSlug(title) {
-    return String(title ?? '')
-      .normalize('NFKD').replace(/[̀-ͯ]/g, '')
-      .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
   }
 
   // GET /v1/chats is CURSOR-PAGINATED (verified live 2026-07-25). One page is 25 items
