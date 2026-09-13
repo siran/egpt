@@ -20,6 +20,11 @@
 // exposes exactly this defect: the connection names alone resolve OUTPUT to `secondary`
 // (src/spine/boot.mjs nameDerivedConnection) while INGEST stays on `primary`, and every locally
 // placed reply then goes out on a connection that has never seen the chat.
+//
+// …AND THE MIRROR QUESTION, on the same fixture (operator 2026-09-13): WHICH CONNECTION HEARS.
+// *"secondary only hears if primary is not present."* That is the same two accounts, the same two
+// installs and the same rosters, asked one step earlier — so the last block of this file lives
+// here rather than building a second two-account world to ask it in.
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 
 // A PRIVATE profile for this file — egpt-home.mjs freezes EGPT_HOME at module load, so it must be
@@ -53,7 +58,11 @@ afterAll(async () => {
 // ── THE TWO CONNECTIONS, named the way the live node names them ─────────────────────────────
 const PRIMARY = 'TOK-primary';       // anrodz42 — the EAR (boot's ear rule: 'primary' by name)
 const SECONDARY = 'TOK-secondary';   // dolly.egpt — the MOUTH the names resolve output to
-const NAME_OF = { [PRIMARY]: 'primary', [SECONDARY]: 'secondary' };
+// The operator's own Beeper WINDOW: a SECOND INSTALL of the account `primary` already is, so it
+// carries its own token and sees the SAME rooms under the SAME ids. It exists here only to be
+// refused (INGEST_NEVER_BY_NAME) — waking on it answers every message twice.
+const GUI = 'TOK-primary-gui';
+const NAME_OF = { [PRIMARY]: 'primary', [SECONDARY]: 'secondary', [GUI]: 'primary_gui' };
 
 const AN = '+16468217865';
 const RODZ = '+13472576794';
@@ -84,6 +93,19 @@ const BOTH_AS_SECONDARY = '!both-accounts-as-secondary-sees-it';
 // FAILURE case, which is not the same as "the mouth is not a member".
 const ORPHAN_GROUP = '!rodz-group-with-no-room-on-secondary';
 
+// ── AND A CHAT THE EAR'S ACCOUNT IS NOT IN AT ALL ─────────────────────────────────────────────
+// Someone DMs the SECONDARY account directly. There is no second arrival of this message anywhere
+// — An's account is not a party to it — so if `secondary` does not wake on it, nothing does.
+const SECONDARY_ONLY = '!dm-straight-to-secondary';
+// …and a room the secondary's own install cannot produce a roster for (a failed GET →
+// `participants: null` → UNKNOWN, beeper.mjs chatInfo). Membership is then unanswerable, which is
+// NOT permission to wake.
+const ROSTER_UNREADABLE = '!secondary-room-with-no-roster';
+// A chat on the operator's own account, seen through the GUI install. Both installs are one
+// account, so this is the SAME room the ear holds — and the ear's own phone is absent from it,
+// because an account's own entry in its own roster carries no number.
+const GUI_GROUP = '!an-group-as-the-gui-sees-it';
+
 // ── THE 1:1 BETWEEN THE TWO ACCOUNTS (operator 2026-09-12) ────────────────────────────────────
 // *"if there's Rodz, use it, always... primary is last and surest fallback"*. The mouth is
 // obviously a member of its own 1:1, and the participant key refuses this chat ON PURPOSE
@@ -107,6 +129,8 @@ const TYPE_OF = {
   [DM_AS_PRIMARY]: 'single',
   [DM_AS_SECONDARY]: 'single',
   [DECOY_ON_SECONDARY]: 'single',
+  [SECONDARY_ONLY]: 'single',
+  [GUI_GROUP]: 'group',
 };
 
 const DESKTOPS = {
@@ -124,6 +148,12 @@ const DESKTOPS = {
     [BOTH_AS_SECONDARY]: [self('rodz@dolly.local'), member('an@dolly.local', AN), member('dando@dolly.local', DANDO)],
     [DM_AS_SECONDARY]: [self('rodz@dolly.local'), member('an@dolly.local', AN)],
     [DECOY_ON_SECONDARY]: [self('rodz@dolly.local'), member('lulu@dolly.local', KEN)],
+    // An is NOT here, under any of the three identifiers his install answers to.
+    [SECONDARY_ONLY]: [self('rodz@dolly.local'), member('ken@dolly.local', KEN)],
+  },
+  // The GUI install's world is the EAR's world — same account, same rooms, same ids.
+  [GUI]: {
+    [GUI_GROUP]: [self('an@beeper.local'), member('dando@beeper.local', DANDO)],
   },
 };
 // The primary's half of the 1:1, added beside its own rosters rather than inside them so the
@@ -152,6 +182,9 @@ const SAID = {
 const SELF_IDENTITY = {
   [PRIMARY]: [AN, '@anrodriguez:beeper.com', 'anrodz42@example.com'],
   [SECONDARY]: [RODZ, '@dolly-egpt:beeper.com', 'dolly.egpt@example.com'],
+  // The same account, measured through the other install — which is exactly why it must never
+  // be an ear: it would answer as the connection this node already hears on.
+  [GUI]: [AN, '@anrodriguez:beeper.com', 'anrodz42@example.com'],
 };
 
 const digits = (v) => String(v ?? '').replace(/\D/g, '');
@@ -244,6 +277,33 @@ const KG_WITH_PEER = () => {
   c.peer_spine = { console_port: 23377, console_token: 'shared-secret', accounts: [AN, RODZ] };
   return c;
 };
+
+// The same node with a SECOND, NON-DEFAULT agent. It exists to reach the router's connection
+// gate, which the persona never does: an unaddressed message falls through to the default being
+// with the bridge's own atE (router.mjs, "Nobody addressed"), so a gate that DROPPED the persona's
+// hit produces a reply anyway. Only a hit for another agent can show whether the gate let it
+// through. `k` is not in the bridge's wake words for this arrival — atE stays false, exactly as it
+// is live for a token the bridge does not know (multi-connection-wake's deliver models the same).
+const KG_WITH_K = () => {
+  const c = KG();
+  c.agents.ken = { configuration: 'egpt', handles: ['k'], name: 'K' };
+  return c;
+};
+
+// The operator's own machine: the ear, plus the SECOND INSTALL of that same account it keeps a
+// window on. An agent rides the GUI install as its mouth, which is the only reason boot dials it
+// at all (a connection nothing speaks on and nothing hears on is never opened).
+const KG_WITH_GUI = () => ({
+  node_name: 'kg',
+  user_name: 'An',
+  beeper: {
+    primary: { account: 'anrodz42@example.com', token: PRIMARY },
+    primary_gui: { account: 'anrodz42@example.com', token: GUI },
+  },
+  agents: {
+    egpt: { configuration: 'egpt', default: true, handles: ['e'], name: 'E', use: 'primary_gui' },
+  },
+});
 
 // A ONE-CONNECTION NODE — the INTENT.md baseline, and the lock that this change costs it nothing.
 const SINGLE = () => ({
@@ -536,6 +596,136 @@ describe('the mouth is present but the chat cannot be KEYED — the room is foun
 
     expect(replies()).toEqual([{ connection: 'primary', chatId: SELF_DM }]);
     expect(lines.join('\n')).not.toContain('MOUTH UNREACHABLE');
+    app.stop();
+  });
+});
+
+// ── THE OTHER DIRECTION: WHICH CONNECTION *HEARS* (operator 2026-09-13) ───────────────────────
+// *"secondary only hears if primary is not present."*
+//
+// Everything above is about the MOUTH. This is the EAR, and the operator's sentence makes it a
+// PER-CHAT question rather than a per-node one: in a chat the ear's account is a member of, the
+// ear's own arrival is the one that dispatches and the other connection stays silent; in a chat
+// the ear is NOT in — someone DMs the second account directly — that connection is the only ear
+// there will ever be, and until now it was deaf (boot wrapped it outbound-only, so its onMessage
+// was a no-op: the bridge received the DM, transcribed the voice note, and dropped it).
+//
+// EXACTLY ONE CONNECTION EVER WAKES for a given chat, which is why nothing here deduplicates:
+// the two ears are made MUTUALLY EXCLUSIVE per chat, so the same human message is never
+// dispatched twice and there is nothing to compare content hashes about.
+describe('the ear is a PER-CHAT question — the second connection hears only what the ear is not in', () => {
+  // ONE real message in a group BOTH accounts are in. Beeper is Matrix, so it arrives TWICE —
+  // once per account, in each account's own room. Exactly one of those arrivals may dispatch.
+  it('a chat BOTH accounts are in: exactly ONE dispatch, and it is the EAR\'s', async () => {
+    const { app, byConnection, replies } = await bootWith(KG());
+
+    await deliver(byConnection.primary, BOTH_AS_PRIMARY, 'e hola');
+    await deliver(byConnection.secondary, BOTH_AS_SECONDARY, 'e hola');
+    await waitFor(() => replies().length > 0);
+    // …and give a SECOND dispatch every chance to show up before declaring there wasn't one.
+    await waitFor(() => replies().length > 1, { timeoutMs: 200 });
+
+    // One reply. It is the EAR's arrival, spoken by the mouth in the mouth's own room (the rule
+    // the block above locks) — not two, which is what a second dispatch would look like here.
+    expect(replies()).toEqual([{ connection: 'secondary', chatId: BOTH_AS_SECONDARY }]);
+    app.stop();
+  });
+
+  // THE LIVE DEFECT. A DM straight to the second account: the ear is not a party to it, so no
+  // other arrival of this message exists anywhere. Deaf here means the message is simply lost.
+  it('a chat ONLY the second connection is in: it wakes, and answers there', async () => {
+    const { app, byConnection, replies } = await bootWith(KG());
+
+    await deliver(byConnection.secondary, SECONDARY_ONLY, 'e hola');
+    await waitFor(() => replies().length > 0);
+
+    expect(replies()).toEqual([{ connection: 'secondary', chatId: SECONDARY_ONLY }]);
+    expect(byConnection.primary.streams).toEqual([]);
+    expect(byConnection.primary.sent).toEqual([]);
+    app.stop();
+  });
+
+  // AGENTS ARE PER SPINE, NOT PER CONNECTION. The persona hides this: an unaddressed message falls
+  // through to the default being carrying the bridge's own atE, so it answers whatever connection
+  // eared it. Any OTHER agent goes through the router's connection gate, which compares the
+  // arrival's connection against the node's ear — and would silence every agent but the persona in
+  // exactly the chats only this connection can hear. There is nothing for that gate to arbitrate
+  // here: the arrival IS the only one, by construction.
+  it('an addressed NON-persona agent wakes on it too — the ear is per chat, not per agent', async () => {
+    const { app, byConnection, replies } = await bootWith(KG_WITH_K());
+
+    await deliver(byConnection.secondary, SECONDARY_ONLY, 'k hola', { atE: false });
+    await waitFor(() => replies().length > 0);
+
+    expect(replies()).toEqual([{ connection: 'secondary', chatId: SECONDARY_ONLY }]);
+    app.stop();
+  });
+
+  // …and the same agent, in the chat BOTH accounts are in, still answers ONCE — from the ear's
+  // arrival. The gate that arbitrates two DECLARED ears is untouched; this connection simply never
+  // produces a second arrival to arbitrate.
+  it('that agent is not woken twice in a chat both accounts are in', async () => {
+    const { app, byConnection, replies } = await bootWith(KG_WITH_K());
+
+    await deliver(byConnection.primary, BOTH_AS_PRIMARY, 'k hola', { atE: false });
+    await deliver(byConnection.secondary, BOTH_AS_SECONDARY, 'k hola', { atE: false });
+    await waitFor(() => replies().length > 0);
+    await waitFor(() => replies().length > 1, { timeoutMs: 200 });
+
+    expect(replies()).toEqual([{ connection: 'secondary', chatId: BOTH_AS_SECONDARY }]);
+    app.stop();
+  });
+
+  // UNKNOWN FAILS CLOSED, AND CLOSED HERE IS THE OPPOSITE OF THE MOUTH'S. For the mouth, an
+  // unreadable roster reads as "not a member" so the ear speaks — safe, because the reply is
+  // going out either way. Here it must read as "the ear IS present": waking on a guess risks the
+  // same human message being dispatched twice, which is the one failure this rule prevents.
+  it('UNKNOWN membership does NOT wake it — a guess here costs a double answer', async () => {
+    const { app, byConnection, replies } = await bootWith(KG());
+
+    await deliver(byConnection.secondary, ROSTER_UNREADABLE, 'e hola');
+    await waitFor(() => replies().length > 0, { timeoutMs: 200 });
+
+    expect(replies()).toEqual([]);
+    app.stop();
+  });
+
+  // `primary_gui` IS NEVER AN EAR, and the membership question cannot see why: it is a second
+  // install of the account the ear already is, so it holds the SAME room under the SAME id — and
+  // an account's own entry in its own roster carries no phone number, so asking "is the ear in
+  // this chat" of the GUI's own copy answers a definite NO. Waking on that answer would genuinely
+  // double every message. The refusal has to be structural, and it is: by name, and by the
+  // account it declares.
+  it('a second install of the EAR\'s OWN account never wakes, however the roster reads', async () => {
+    const { app, byConnection, replies } = await bootWith(KG_WITH_GUI());
+    expect(Object.keys(byConnection).sort()).toEqual(['primary', 'primary_gui']);
+
+    await deliver(byConnection.primary_gui, GUI_GROUP, 'e hola');
+    await waitFor(() => replies().length > 0, { timeoutMs: 200 });
+
+    expect(replies()).toEqual([]);
+    app.stop();
+  });
+
+  // THE BOOT-TIME EAR IS UNTOUCHED — no gate, no membership question, no new latency: a chat the
+  // ear hears is dispatched exactly as it was, including one the second account is not in at all.
+  it('the ear itself is ungated — a chat only IT is in is answered as before', async () => {
+    const { app, byConnection, replies } = await bootWith(KG());
+
+    await deliver(byConnection.primary, AN_GROUP, 'e hola');
+    await waitFor(() => replies().length > 0);
+
+    expect(replies()).toEqual([{ connection: 'primary', chatId: AN_GROUP }]);
+    app.stop();
+  });
+
+  // …AND THE BOOT LINE SAYS WHAT THE CONNECTION NOW IS. It used to say nothing arriving on it
+  // could wake anything, which stopped being true.
+  it('boot says the second connection is a mouth AND a conditional ear, not a deaf one', async () => {
+    const { app, lines } = await bootWith(KG());
+    const said = lines.filter((l) => l.includes("'secondary'")).join('\n');
+    expect(said).not.toContain('nothing arriving on it can wake anything');
+    expect(said).toContain("'primary'");
     app.stop();
   });
 });

@@ -568,9 +568,23 @@ export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', addre
           // base_url. Until one exists, an UNCONDITIONAL handle bound to a connection reaches
           // nobody in a chat only the OTHER connection is in (locked as a gap in
           // tests/multi-connection-wake.test.mjs).
+          //
+          // AND IT ARBITRATES BETWEEN TWO ARRIVALS, NOTHING ELSE (operator 2026-09-13, "secondary
+          // only hears if primary is not present"). Ear-ness is a PER-CHAT fact now: a connection
+          // this node holds that is not one of its ears still wakes in the chats the ear's account
+          // is NOT in, and boot's bridge gate drops everything else before the spine ever sees it
+          // (src/spine/boot.mjs perChatEars / theEarIsAbsentFrom). Such an arrival is therefore the
+          // ONLY one this node will get for that message — there is no second arrival to choose
+          // between, and dropping it here would silence every agent but the persona in exactly the
+          // chats only that connection can hear (the persona hides it: a dropped hit falls through
+          // to "nobody addressed" below, which wakes the default being on the bridge's own atE).
+          // So the arrival's own connection is handed to `inboundOf`, which is the one place that
+          // knows whether it is a per-chat ear; a caller with no arrival in hand still asks the
+          // node-level question, unchanged. AGENTS ARE PER SPINE, not per connection — this gate
+          // may decide WHICH ARRIVAL wakes an agent, never which connections an agent may hear.
           if (ev?.connection && typeof inboundOf === 'function'
               && hit.unlessPresent == null && hit.unlessPeerAlive == null) {
-            const own = inboundOf(hit.name);
+            const own = inboundOf(hit.name, ev.connection);
             if (own && own !== ev.connection) continue;
           }
           // FALLBACK-HANDLE GUARD (operator 2026-08-31) — the LAST post-match filter here, and

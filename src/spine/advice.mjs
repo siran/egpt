@@ -43,9 +43,10 @@ import { makeOutbound } from './sender.mjs';
 //
 // AND THIS ONE IS NOT COSMETIC, because the ADVICE CHANNEL MUST BE A CHANNEL THIS NODE HEARS.
 // `ask` stores the id postStatus hands back; `isAnswer(ev)` matches an INBOUND event's replyToId
-// against those ids. An inbound only ever arrives on one of this node's EARS — every other
-// connection boot opens is wrapped outbound-only and its onMessage is a no-op (boot's
-// outboundOnly). So an ask posted on a connection this node does not hear can never be answered:
+// against those ids. An inbound only ever arrives on a connection this node HEARS on — one of its
+// ears, or (2026-09-13) a connection that is the ear of the chats those are not in; every other
+// one boot opens is wrapped outbound-only and its onMessage is a no-op (boot's outboundOnly and
+// its sibling). So an ask posted on a connection this node does not hear can never be answered:
 // the operator's quote-reply carries ids minted by a different account, in a different Matrix
 // room, and the routing map can never match. On the live kg node — ear `primary` (anrodz42),
 // default mouth `secondary` (dolly.egpt) — the frozen bridge posted every ask into an account

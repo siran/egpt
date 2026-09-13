@@ -1590,6 +1590,12 @@ export async function boot({
   //     Declaration order decides, matching the bridge map's own first-name-wins collapse.
   const INGEST_NEVER_BY_NAME = new Set(['primary_gui']);
   const isOwnNode = (owner) => !owner || ownNodeNamesOf(cfg).has(String(owner).trim().toLowerCase());
+  // The Beeper ACCOUNT a connection declares, normalized — the one fact that says two connection
+  // names are two installs of ONE account (the same rooms, under the same ids). Declared here
+  // beside the ear rules because the per-chat ear below is its first reader; outboundConnectionFor
+  // reads the SAME helper further down for the mirror-image question ("can the mouth reach this
+  // chat"), rather than keeping a second copy of what an account is.
+  const accountOf = (name) => String(connectionBlock(name)?.account ?? '').trim().toLowerCase();
   const inboundConnections = (() => {
     // No `beeper:` connections at all ⇒ the ONE unnamed legacy bridge (beeper_token /
     // BEEPER_ACCESS_TOKEN) is the ear, exactly as it always was. `null` is the same name every
@@ -1633,6 +1639,41 @@ export async function boot({
   if (declaredConnections.length && !inboundConnections.length) {
     log.line?.(`[bridge] beeper: declares ${declaredConnections.map((n) => `'${n}'`).join(', ')} but this node resolves no INGEST connection — nothing survives the ear rules (owner_node naming this node, then 'primary', then a lone connection, then the default output connection). THIS NODE HEARS NOTHING: every bridge it opens is outbound-only. Name one connection 'primary', or put owner_node: ${node_name || '<this node>'} on the one this node should wake on.`);
   }
+  // ── …AND THE SAME QUESTION, ASKED PER CHAT (operator 2026-09-13) ─────────────────────────────
+  // *"secondary only hears if primary is not present."* The rule above resolves the ear ONCE, at
+  // boot, for the whole node — and that is the wrong granularity for the sentence. WHICH ACCOUNT
+  // IS THE EAR IS A PER-CHAT FACT. In a chat the ear's account is a member of, the ear's own
+  // arrival is the one that dispatches and every other connection must stay silent. In a chat the
+  // ear is NOT in — someone DMs the second account directly — there is no other arrival anywhere,
+  // and a connection that cannot wake there simply LOSES the message. That was live: the bridge
+  // received the DM, transcribed the voice note, and the outbound-only wrapper dropped it.
+  //
+  // EXACTLY ONE CONNECTION WAKES PER CHAT, which is why nothing deduplicates and nothing may: the
+  // two ears are made MUTUALLY EXCLUSIVE (theEarIsAbsentFrom, below, at the ONE place ear-ness is
+  // decided), so the same human message is never dispatched twice and there is nothing to compare.
+  //
+  // THESE ARE THE CONNECTIONS ALLOWED TO ASK IT. Everything else this node holds stays
+  // outbound-only, exactly as before:
+  //   · NO EAR AT ALL ⇒ nobody is conditional. "THIS NODE HEARS NOTHING" (the line above) stays
+  //     literally true; a node must not acquire an ear by having none.
+  //   · a connection whose `owner_node` names ANOTHER node — that node IS its ear, and ITS arrival
+  //     is the one that dispatches. The same exclusion wakesOn already makes at the bridge.
+  //   · `primary_gui` BY NAME (INGEST_NEVER_BY_NAME, above) and, generally, ANY connection
+  //     declaring an ACCOUNT an ear already holds. A second install of one account sees the SAME
+  //     rooms under the SAME ids, so an arrival there is the ear's own arrival a second time — and
+  //     the membership question cannot see that: an account's own entry in its own roster carries
+  //     no phone number (measured — beeper.crossAccountChatKey), so asking "is the ear in this
+  //     chat" of that install's own copy answers a definite NO and would wake on EVERY message.
+  //     The token needs no test of its own — one token is one endpoint is one bridge, and that
+  //     bridge already IS the ear's. Two installs of one account with no `account:` declared stay
+  //     invisible here, the same limit the account/token dedup above documents and the whole
+  //     reason the name rule exists.
+  const perChatEars = new Set(!inboundConnections.length ? [] : declaredConnections.filter((n) => (
+    !inboundConnections.includes(n)
+    && !INGEST_NEVER_BY_NAME.has(n)
+    && isOwnNode(connectionBlock(n)?.owner_node)
+    && !(accountOf(n) && inboundConnections.some((ear) => accountOf(ear) === accountOf(n)))
+  )));
   // `beeper.use` IS NOW A THIRD OF WHAT IT WAS. (2026-09-10) it stopped deciding the ear, which is
   // resolved above and which no `use:` — node-level or per-agent — can move. (2026-09-11) it
   // stopped deciding where an outbound actually goes: it names this node's DEFAULT MOUTH, and the
@@ -1657,7 +1698,15 @@ export async function boot({
   // available: if the agent's MOUTH is itself one of this node's ears, that is its ear; otherwise
   // the node's first ear. On a one-ear node — every node the operator runs — it is that one ear
   // for everybody, and the gate is inert anyway (the fan-out stamps no connection).
-  const inboundOf = (being) => {
+  //
+  // …AND ITS PER-CHAT HALF (2026-09-13). `arrivedOn` is the connection the message actually came
+  // in on. A PER-CHAT ear (perChatEars, above) only ever delivers a message the node's ear is
+  // ABSENT from — the bridge gate drops everything else before the spine sees it — so that
+  // arrival is the ONLY one this node will ever get for that message. There is no second arrival
+  // to arbitrate against, and answering anything else here would withhold the only wake there is.
+  // Absent (every caller with no arrival in hand) ⇒ the node-level answer, unchanged.
+  const inboundOf = (being, arrivedOn = null) => {
+    if (arrivedOn && perChatEars.has(arrivedOn)) return arrivedOn;
     const mouth = outboundOf(being);
     return inboundConnections.includes(mouth) ? mouth : (inboundConnections[0] ?? null);
   };
@@ -1965,11 +2014,84 @@ export async function boot({
       ? (cb) => Reflect.get(t, k, t)((msg) => { rememberArrival(msg?.from?.chatId, msg?.from?.connection); return cb(msg); })
       : Reflect.get(t, k, t)),
   });
+  // ── IS THE EAR IN THIS CHAT? (operator 2026-09-13) ────────────────────────────────────────────
+  // THE GATE ITSELF, asked once per message arriving on a PER-CHAT ear (perChatEars, above) and
+  // nowhere else — the boot-time ear never asks it, pays nothing for it, and behaves exactly as it
+  // did. It is the MIRROR IMAGE of the question makePeerMouth/routeLocally already asks about the
+  // mouth, made of the same two primitives and no new ones: `selfIdentities()` on the EAR's bridge
+  // says who the ear's account is (measured off the startup /v1/accounts payload, never declared),
+  // and `chatHasParticipant` on the RECEIVING connection's own bridge — the only install that has
+  // this room — says whether that account is in it. Both are cached, TTL'd, and free for a 1:1.
+  //
+  // UNKNOWN FAILS CLOSED, AND CLOSED HERE IS THE OPPOSITE OF THE MOUTH'S. `chatHasParticipant`
+  // answers true | false | null(UNKNOWN). For the MOUTH, null reads as "not a member" so the ear
+  // speaks — safe there, because the reply is going out either way and only the voice is at stake.
+  // HERE null must read as "the ear IS present", i.e. DO NOT WAKE. The asymmetry is deliberate and
+  // will look like a bug: waking on a guess risks the same human message being dispatched TWICE,
+  // which is the single failure this whole rule exists to prevent, while the cost of the opposite
+  // mistake is one message this node stays quiet in — recoverable, and visible in the log below.
+  // An ear that cannot say who it is (no identities, or a read that threw) is the same UNKNOWN.
+  const earPorts = () => inboundConnections.map((n) => bridgeByEndpoint.get(endpointKey(endpointFor(n)))).filter(Boolean);
+  const gateTold = new Set();
+  const gateSays = (line, once) => { if (gateTold.has(once)) return; if (gateTold.size >= ARRIVAL_MAX) gateTold.clear(); gateTold.add(once); log.line?.(line); };
+  const theEarIsAbsentFrom = async (chatId, on, name) => {
+    const chat = String(chatId ?? '');
+    if (!chat) return false;
+    let earIds = [];
+    try { for (const ear of earPorts()) earIds.push(...((await ear.selfIdentities?.()) ?? [])); }
+    catch (e) { gateSays(`[bridge] '${name}' could not ask which account this node's ear is, so it cannot know whether the ear is in ${shortChatId(chat)} — it stays silent there: ${e?.message ?? e}`, `who:${name}`); return false; }
+    if (!earIds.length) {
+      gateSays(`[bridge] this node's ear (${inboundConnections.map((n) => `'${n}'`).join(', ')}) reports no identity of its own — not a phone, not a Beeper id, not an email — so it cannot be looked for in a chat, and '${name}' can never know it is alone in one. '${name}' hears nothing until the ear can say who it is.`, `who:${name}`);
+      return false;
+    }
+    let unknown = false;
+    for (const id of earIds) {
+      let present = null;
+      try { present = await on?.chatHasParticipant?.(chat, id); }
+      catch { present = null; }
+      if (present === true) return false;                     // the ear is here — ITS arrival of this same message is the one that dispatches
+      if (present !== false) unknown = true;
+    }
+    if (unknown) {
+      gateSays(`[bridge] '${name}' cannot read the roster of ${shortChatId(chat)}, so it cannot tell whether this node's ear is in it — and an unreadable roster is treated as PRESENT, because waking on a guess is how one message gets answered twice. '${name}' stays silent there.`, `unk:${name}:${chat}`);
+      return false;
+    }
+    gateSays(`[bridge] ${shortChatId(chat)} is a chat this node's ear is NOT in, so '${name}' is the ear THERE and wakes on it — the only arrival of that message this node will ever get.`, `ear:${name}:${chat}`);
+    return true;
+  };
+  // …AND THE WRAPPER THAT ASKS IT. outboundOnly's sibling, and deliberately not a second ingest
+  // path: the connection RECEIVES exactly as an ear does and the arrival is dropped per message,
+  // one decision at one place, rather than a parallel route into the spine that would have to be
+  // kept in step with this one. onEdit/onMedia stay no-ops, as they are on any mouth: the wake is
+  // decided on onMessage alone (bridge-fanout says the same, at the registration that stamps it),
+  // an edit carries no `from` to decide anything about, and onMedia is a SAVE hook — letting it
+  // through would persist attachments for every chat this gate then drops. The cost is named:
+  // an attachment DM'd straight to this connection wakes with its voice TRANSCRIPT (that happens
+  // inside the bridge, with or without a media gate) but its file is not copied into the chat's
+  // folder.
+  //
+  // IN ARRIVAL ORDER, and that is not incidental. The gate is async where an ear's registration is
+  // synchronous, and its two reads are cached — so a second message in a chat already asked about
+  // resolves in microtasks while the first still waits on a roster GET, and the spine would enqueue
+  // them backwards. Chaining the DECISIONS (never the turns: `cb` is called off the chain, so a
+  // slow reply never delays the next arrival's gate) restores the order the port promises.
+  const earWhereTheEarIsAbsent = (port, name) => {
+    let inOrder = Promise.resolve();
+    return new Proxy(port, {
+      get: (t, k) => (k === 'onMessage'
+        ? (cb) => Reflect.get(t, k, t)((msg) => {
+          const decided = inOrder.then(() => theEarIsAbsentFrom(msg?.from?.chatId, port, name));
+          inOrder = decided.catch(() => false);
+          return decided.then((wake) => (wake ? cb(msg) : undefined));
+        })
+        : (k === 'onEdit' || k === 'onMedia') ? (() => {}) : Reflect.get(t, k, t)),
+    });
+  };
   // `ear` (operator 2026-09-10) is the INGEST half of the binding, decided by inboundConnections
   // above and passed in rather than re-derived: a bridge is cached by ENDPOINT, so this decision
   // is made ONCE per endpoint and the dial loop below is what guarantees the ear asks first.
-  // Everything else this node holds is a MOUTH — it sends and its three inbound registrations are
-  // no-ops, the same shape `owner_node` already produced.
+  // Everything else this node holds is a MOUTH — it sends, and it wakes on nothing at all unless
+  // it is a PER-CHAT ear, in which case it wakes only where this node's ear is absent (above).
   const bridgeForEndpoint = async (ep, { ear = false, name = null } = {}) => {
     const key = endpointKey(ep);
     if (!bridgeByEndpoint.has(key)) {
@@ -1978,15 +2100,25 @@ export async function boot({
       const opts = { ...sharedBridgeOpts, beeperToken: ep.token, ...(ep.baseUrl ? { baseUrl: ep.baseUrl } : {}), ...(ep.wsUrl ? { wsUrl: ep.wsUrl } : {}), ...(ep.rediscover ? { rediscover: ep.rediscover } : {}) };
       const port = lasso.wrap(await createBeeperBridgePort(opts, startBridge ? { start: startBridge } : {}));
       const owned = ear && wakesOn(ep);
+      // A PER-CHAT ear: not one of the node's ears, but a connection allowed to be the ear of the
+      // chats that ear is not in (perChatEars, above). Decided by NAME because that is what the
+      // rules there are written in, and `owned` still wins — an endpoint that is already an ear
+      // is never also a conditional one.
+      const conditional = !owned && wakesOn(ep) && !!name && perChatEars.has(name);
       // Named at the ONE moment it is decided. Silent on a single-connection node, because there
       // the sole connection is the ear and this branch is never taken. The owner_node wording is
       // the line that has always been printed for that case and is left exactly as it was — it
       // says something more specific than "not an ear": another node IS the ear.
       if (!owned) log.line?.(!wakesOn(ep)
         ? `[bridge] connection is owned by node '${ep.ownerNode}' — this node sends on it, never wakes on it`
+        : conditional
+        ? `[bridge] connection '${name}' is a MOUTH on this node, and the EAR of every chat ${inboundConnections.map((n) => `'${n}'`).join(' / ')} is not in — a message arriving on it wakes something only where the ear's account is absent, so one message is never answered twice`
         : `[bridge] connection ${name ? `'${name}' ` : ''}is a MOUTH on this node, not an ear — it sends, and nothing arriving on it can wake anything`);
+      // NOT counted as an ear (the double-answer warning below counts this set): a per-chat ear
+      // cannot be half of a double answer — being silent wherever the ear is present is the whole
+      // of what it is.
       if (owned) inboundOwned.add(key);
-      bridgeByEndpoint.set(key, owned ? port : outboundOnly(port));
+      bridgeByEndpoint.set(key, owned ? port : conditional ? earWhereTheEarIsAbsent(port, name) : outboundOnly(port));
     }
     return bridgeByEndpoint.get(key);
   };
@@ -2055,7 +2187,8 @@ export async function boot({
   // bridges are dialled, and is still what the peer mouth is offered against — the peer link is
   // how a reply reaches the OTHER account's view of a chat (by name and members,
   // src/shell/peer-mouth.mjs), and it is untouched by this.
-  const accountOf = (name) => String(connectionBlock(name)?.account ?? '').trim().toLowerCase();
+  // accountOf is declared with the ear rules above — the same declared-account fact answers this
+  // direction and the ear's, so there is one definition of what an account is, not two.
   const reachesTheSameChats = (a, b) => a === b || (!!accountOf(a) && accountOf(a) === accountOf(b));
   // WHICH CONNECTION A CHAT LIVES ON — THREE SOURCES FOR ONE FACT, none of them a guess:
   //   · the ARRIVAL stamp (rememberArrival, above): a chat this node HEARD is a room on the
@@ -2069,8 +2202,10 @@ export async function boot({
   //     2026-09-11). The same kind of fact as the Self chat, and true for a sharper reason:
   //     src/spine/advice.mjs routes the answer home by matching the operator's quote-reply
   //     against the message id postStatus handed back, and an inbound only ever arrives on an EAR
-  //     (every other connection boot opens is outbound-only, its onMessage a no-op). An ask
-  //     posted anywhere else is unanswerable by construction — the ids belong to another account,
+  //     (every other connection boot opens is outbound-only, or a PER-CHAT ear that hears only
+  //     what the node's ear is absent from — and the advice channel is a chat the ear is in, by
+  //     the same argument the Self chat is). An ask posted anywhere else is unanswerable by
+  //     construction — the ids belong to another account,
   //     in another Matrix room. It is matched AS CONFIGURED, because the schema allows a chat
   //     NAME as well as a raw room id and a name is not something the arrival map could ever
   //     hold: the declaration is the only thing that can answer for that form.
@@ -2083,8 +2218,10 @@ export async function boot({
   // same single bridge.
   //
   // ANYTHING ELSE IS UNKNOWN and the mouth answers, exactly as before: a synthesized turn, a
-  // heartbeat, the shell surface, a chat only the mouth's account is in (a mouth-only connection
-  // is deaf, so its chats never reach the arrival map and must not be dragged onto the ear).
+  // heartbeat, the shell surface, a chat only the mouth's account is in and nothing has arrived in
+  // (a mouth is deaf to it, so it never reaches the arrival map and must not be dragged onto the
+  // ear). A chat a PER-CHAT ear really HEARD is not that case: it is stamped like any arrival, and
+  // the connection that heard it is the only one that has the room — which is the right answer.
 
   // The declared advice channel, read the SAME way src/spine/advice.mjs reads it (getConfig() →
   // `advice_channel`, trimmed, empty ⇒ unset) so the two can never disagree about what the

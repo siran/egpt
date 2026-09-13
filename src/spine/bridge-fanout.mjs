@@ -26,10 +26,13 @@
 //
 // OWNERSHIP STILL HOLDS, AND SO DOES THE EAR/MOUTH SPLIT. Every connection this node holds that
 // is NOT one of its ears — another node's account (`owner_node`), or simply a connection it only
-// SPEAKS on (operator 2026-09-10: `primary` ingests, `secondary` outputs) — is wrapped
-// outbound-only by boot, its onMessage/onEdit/onMedia reduced to no-ops. So registering across
-// every bridge automatically respects both rules without this module knowing either exists, and
-// `all` may safely be every bridge boot built.
+// SPEAKS on (operator 2026-09-10: `primary` ingests, `secondary` outputs) — is wrapped by boot
+// before it ever reaches this module: outbound-only (all three registrations no-ops), or, where
+// the connection is allowed to be the ear of the chats the node's ear is not in (operator
+// 2026-09-13, boot's perChatEars), a wrapper that answers that question per arriving message and
+// drops the rest. So registering across every bridge automatically respects every one of those
+// rules without this module knowing any of them exists, and `all` may safely be every bridge boot
+// built.
 
 // The three registrations that must reach EVERY connection, and the three questions that must be
 // asked of ALL of them rather than of the default one.
@@ -53,9 +56,10 @@ export function fanoutInbound(primary, all = [], connectionNameOf = null) {
   return new Proxy(primary, {
     get(target, key, receiver) {
       if (FANOUT_REGISTER.has(key)) {
-        // Register the SAME callback on every connection. Bridges that are outbound-only
-        // (not owned by this node) implement these as no-ops, so ownership is honoured here
-        // by construction rather than by a second rule kept in sync with the first.
+        // Register the SAME callback on every connection. A bridge this node does not wake on
+        // implements these as no-ops, and one that wakes only where the ear is absent decides
+        // that per message — both wrappers are boot's (see the header), so ownership is honoured
+        // here by construction rather than by a second rule kept in sync with the first.
         //
         // WHICH CONNECTION DELIVERED IT (operator 2026-09-08). This is the ONLY point in the
         // process that knows: one callback is registered on every bridge, so by the time the
