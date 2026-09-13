@@ -343,6 +343,13 @@ function Grant-SandboxPoolModify {
 # on one of these directories (':r' would replace it) - the same additive
 # character every grant in this file has, and narrowing one stays a hand
 # operation, as it is for ~\bin\egpt.
+#
+# IT IS SLOW ON A BIG TREE AND IS NOT HUNG. Measured on reve 2026-09-13:
+# ~\src took about five minutes, with no /T and a NON-inheritable ACE. Writing
+# any DACL on a container makes Windows re-run inheritance propagation over the
+# whole subtree to recompute what the children inherit, and ~\src is full of
+# node_modules. ~ is the same. The re-run cost is paid again on every
+# re-provision, since the ACE is rewritten even when identical.
 function Grant-SandboxPoolTraverse {
   param(
     [Parameter(Mandatory = $true)][string]$Path

@@ -176,6 +176,13 @@ and against `C:\Users\an` it *hung* twice and had to be killed. Like every grant
 in `sandbox-account.ps1` it is additive — it never narrows an existing ACE — and
 re-running converges rather than accumulating.
 
+**The provisioner will look hung on `~` and `~\src`, and is not.** Writing any
+DACL on a container makes Windows re-run inheritance propagation over the entire
+subtree to recompute what the children inherit — even here, where the ACE is not
+inheritable and there is no `/T`. `~\src` measured about five minutes on reve
+(2026-09-13); it is full of `node_modules`. The cost is paid again on every
+re-provision, because the ACE is rewritten even when it is already identical.
+
 Everything else under the operator's profile — `.claude/.credentials.json`,
 `.egpt/config/config.yaml`, `Documents`, and the *contents* of every directory
 in the chain above — is unreachable from a pool account because nothing grants
