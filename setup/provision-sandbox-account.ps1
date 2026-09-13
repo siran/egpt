@@ -35,9 +35,11 @@ try {
   # node where two live features silently did not work.
   #
   # Every ACE the launcher writes per turn is on a LEAF  - a conversation
-  # folder, a share path  - and a leaf ACE buys nothing unless the pool can walk
-  # the directories above it: the kernel checks FILE_TRAVERSE on each one, and
-  # bypass-traverse does not cover these logon tokens. (X,RA,RC) each, on the
+  # folder, a share path  - and a leaf ACE buys nothing unless the pool can OPEN
+  # each directory above it. Not WALK it: the pool token's bypass-traverse covers
+  # the walk, measured. It is the per-component lstat that Node  - and so Claude
+  # Code  - does on the way that needs a real ACE; Grant-SandboxPoolTraverse
+  # carries the measurement. (X,RA,RC) each, on the
   # directory itself, never inherited, and deliberately NOT list  - a sandboxed
   # being reaches a folder it was granted by name and still cannot enumerate the
   # operator's home or the names of other conversations. Grant-SandboxPoolTraverse

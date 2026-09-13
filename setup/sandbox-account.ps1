@@ -302,17 +302,35 @@ function Grant-SandboxPoolModify {
 # itself, NOT inherited by anything under it. Additive, like its two siblings
 # above: never removes or replaces an existing ACE.
 #
-# WHY IT EXISTS (measured twice on 2026-09-13, hand-applied both times before it
-# was written down here). A per-turn ACE on a leaf folder is USELESS on its own:
-# to open C:\Users\an\.egpt\conversations\whatsapp\<slug> the kernel walks the
-# chain and needs FILE_TRAVERSE on every directory above it. The
-# SeChangeNotifyPrivilege "bypass traverse checking" that normally makes this
-# invisible does NOT cover these logon tokens. Two symptoms it produced: a being
-# could not read an image inside its own conversation folder for two days
-# (Claude Code reported it confusingly as its symlink resolution changing after
-# the permission check), and a being could not write a shared path it plainly
-# held an ACE on. Granting traverse on the PARENTS fixed both, verified as
-# reve\egpt-sbx-13.
+# WHY IT EXISTS. Two symptoms, both on 2026-09-13: a being could not read an
+# image inside its own conversation folder for two days (Claude Code reported it
+# confusingly as its symlink resolution changing after the permission check), and
+# a being could not write a shared path it plainly held an ACE on. Granting
+# traverse on the PARENTS fixed both.
+#
+# AND IT IS NOT WHAT IT LOOKS LIKE. The obvious reading  - the kernel needs
+# FILE_TRAVERSE to walk the chain, and these tokens lack bypass-traverse  - is
+# WRONG, and this comment asserted it until it was measured end to end as a real
+# pool account against a purpose-built tree (2026-09-13). The pool token DOES
+# hold SeChangeNotifyPrivilege, Enabled, and it works: reading a leaf file
+# through TWO ACE-free ancestors succeeds. What the privilege does not cover is
+# OPENING an ancestor directory AS AN OBJECT IN ITS OWN RIGHT. On an ungranted
+# ancestor every raw CreateFileW failed win32=5  - FILE_TRAVERSE, READ_CONTROL,
+# FILE_READ_ATTRIBUTES, and even a ZERO-ACCESS query-only open.
+#
+# That is exactly what Node does, and Claude Code is Node. Same tree:
+#   readFileSync   leaf   -> OK      implicit walk, the privilege covers it
+#   lstatSync      parent -> EPERM   explicit open of the ancestor
+#   realpathSync   leaf   -> EPERM   and it names the ANCESTOR it tripped on
+#   realpathSync.native   -> OK      resolves via a handle on the target
+# The per-component lstat guard is the whole failure. Granting (X,RA,RC) on the
+# ancestor flipped exactly those and nothing else: opendirSync on it still
+# EPERMs, because RD is still withheld.
+#
+# UNTESTED INFERENCE, recorded as such: the load-bearing bit is probably RA, not
+# X  - X duplicates what the privilege already gives, RA is what it withholds. RA
+# was never isolated from X, so the mask stays (X,RA,RC) rather than being pruned
+# on a guess.
 #
 # WHAT IS WITHHELD ON PURPOSE: RD, list-directory. A sandboxed being can walk
 # THROUGH the operator's home and through the conversations tree to a folder it

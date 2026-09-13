@@ -152,15 +152,33 @@ Access is therefore **opt-in and narrow**, and the whole list is:
 | each `-SharePathReadOnly` | leased account, ReadAndExecute | a being's read-only `allowed_paths`; granted at launch, revoked at exit |
 
 **The traverse chain, and why it is its own kind of grant.** A per-turn ACE on a
-conversation folder is *useless on its own*: to open
-`~\.egpt\conversations\whatsapp\<slug>` the kernel checks `FILE_TRAVERSE` on
-every directory above it, and the "bypass traverse checking" privilege that
-normally hides this does **not** cover these logon tokens — measured twice on
-2026-09-13. It had broken a being reading an image inside its own conversation
-folder for two days (Claude Code reported it as its symlink resolution changing
-after the permission check) and a being writing to a shared path it plainly held
-an ACE on. Granting traverse on the parents fixed both, verified as
-`reve\egpt-sbx-13`.
+conversation folder is *useless on its own* — but not for the reason it looks
+like. This document said the pool's logon tokens lack "bypass traverse checking";
+that was wrong, and it was settled by measurement on 2026-09-13, run as a real
+pool account against a purpose-built tree.
+
+The token **does** hold `SeChangeNotifyPrivilege`, Enabled, and it works: reading
+a leaf file through two ACE-free ancestors succeeds. What the privilege does not
+give is the right to **open an ancestor directory as an object in its own
+right**. On an ungranted ancestor every raw `CreateFileW` failed `win32=5` —
+`FILE_TRAVERSE`, `READ_CONTROL`, `FILE_READ_ATTRIBUTES`, and even a zero-access
+query-only open.
+
+That is precisely what Node does, and Claude Code is Node. On the same tree:
+
+| call | ungranted ancestor in the way | why |
+|---|---|---|
+| `readFileSync` on the leaf | **OK** | implicit walk; the privilege covers it |
+| `lstatSync` on the ancestor | `EPERM` | explicit open of the directory |
+| `realpathSync` on the leaf | `EPERM` | walks components, and names the *ancestor* it tripped on |
+| `realpathSync.native` on the leaf | **OK** | resolves via a handle on the target |
+
+So the two symptoms were one bug: a being could not read an image inside its own
+conversation folder for two days (Claude Code reported it as its symlink
+resolution changing after the permission check), and a being could not write a
+shared path it plainly held an ACE on. Granting `(X,RA,RC)` on the ancestors
+flipped exactly those calls and nothing else — `opendirSync` on the ancestor
+still `EPERM`s, because `RD` is still withheld.
 
 `(X,RA,RC)` is traverse + read-attributes + read-permissions, and the important
 part is what is **missing**: `RD`, list-directory. A pool account can walk
@@ -169,6 +187,11 @@ cannot enumerate the home, or `.egpt`, or the names of other conversations. The
 ACEs are also **not inheritable** — each directory of the chain is granted on
 its own, because an `(OI)(CI)` ACE here would hand traverse to everything below
 the profile.
+
+Recorded as an inference and not a measurement: the load-bearing bit in that mask
+is probably `RA`, not `X` — `X` duplicates what the privilege already gives, and
+`RA` is what the privilege withholds. `RA` was never isolated from `X`, so the
+mask stays `(X,RA,RC)` rather than being pruned on a guess.
 
 `Grant-SandboxPoolTraverse` uses **`icacls`, not `Set-Acl`**: `Set-Acl` persists
 the SACL (the `PrivilegeNotHeldException` documented on `Protect-SandboxCredDir`)
