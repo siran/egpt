@@ -38,20 +38,33 @@ try {
   # the JS does NOT -- it sits under the operator's profile, which denies Users.
   # One grant on the npm root therefore covers both engines. Global npm packages
   # are public code; no credential lives here (pi's auth.json is in ~/.pi).
-  # THE RUNNING eGPT TREE -- read/write (operator 2026-09-10: "read-write in bin/egpt (the
-  # running copy). it's all in the repo. let E modify itself.").
+  # THE RUNNING eGPT TREE -- READ ONLY (operator 2026-09-13, reversing 2026-09-10).
   #
-  # Modify, not ReadAndExecute, and DELIBERATELY inside the operator's profile -- which is the
-  # line Grant-SandboxPoolModify avoided until today. Know what it buys and what it costs:
-  # bin/egpt is the tree the daemon EXECUTES, so a being writing here changes the code of the
-  # next restart with no deploy step in between. That is the operator's explicit call.
+  # It was Modify, on the ruling "read-write in bin/egpt (the running copy). it's all in the
+  # repo. let E modify itself." The cost of that was named here and accepted at the time, then
+  # seen for what it is: "since egpt is executed by 'an' then it could actually nuke my
+  # computer". bin/egpt is the tree the daemon EXECUTES AS THE OPERATOR, so a being writing
+  # here places code that runs outside the sandbox at the next restart, with no deploy step in
+  # between. A standing group Modify ACE handed that to all 16 pool accounts at once.
+  #
+  # Beings that need to change their own code get the EDITABLE checkout instead, per-turn and
+  # per-being, via allowed_paths -> the launcher's -SharePath (~/src/egpt on this node). An
+  # edit there reaches a running node only after a human commits, pushes and deploys.
   #
   # An ACE is the WHOLE gate for these beings: confinementFor returns {} for the `sandbox` and
   # `all` tiers, so the CLI-layer path confinement is off for them and no allowed_paths entry
-  # is needed (or would help).
+  # would restrain what an ACE already permits. That cuts both ways, and it is why this one is
+  # ReadAndExecute: Windows UNIONS Allow ACEs, so a per-turn read-only grant cannot subtract
+  # write that a standing grant gives.
+  #
+  # THIS FUNCTION IS ADDITIVE AND NEVER REMOVES. Changing the line below stops a re-provision
+  # from re-granting Modify; it does NOT revoke one already written. A node provisioned before
+  # 2026-09-13 must have the old ACE removed by hand:
+  #   icacls "%USERPROFILE%\bin\egpt" /remove:g egpt-sandbox-pool
+  #   .\setup\provision-sandbox-account.ps1        # re-adds ReadAndExecute
   $runningTree = Join-Path $env:USERPROFILE 'bin\egpt'
   if (Test-Path -LiteralPath $runningTree) {
-    Grant-SandboxPoolModify -Path $runningTree
+    Grant-SandboxPoolAccess -Path $runningTree
   } else {
     Write-Host "note: $runningTree not present  - skipping the running-tree grant on this node"
   }

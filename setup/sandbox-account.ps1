@@ -275,9 +275,15 @@ function Grant-SandboxPoolAccess {
 }
 
 # Modify (read+write) for the pool on a directory it OWNS -- the pool's own pi
-# config dir under ProgramData, and (2026-09-10) ~/bin/egpt, the RUNNING eGPT
-# tree, so a being can change the code it runs. That second one IS inside the
-# operator's profile, which this function avoided until the operator ruled it.
+# config dir under ProgramData.
+#
+# ~/bin/egpt USED to be granted here too (2026-09-10, "let E modify itself") and
+# no longer is (2026-09-13): that tree is executed BY THE OPERATOR, so a standing
+# group Modify ACE on it let any of the 16 pool accounts place code that runs
+# outside the sandbox at the next restart. It is ReadAndExecute now, and a being
+# that must change its own code is pointed at the editable checkout per-turn.
+# See provision-sandbox-account.ps1, which also carries the hand-removal step:
+# this function is additive and never revokes what an earlier run wrote.
 function Grant-SandboxPoolModify {
   param(
     [Parameter(Mandatory = $true)][string]$Path
