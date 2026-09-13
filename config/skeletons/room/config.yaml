@@ -43,10 +43,13 @@
 
 # Voice notes here. ONE key for the whole concern - engines, paths and the
 # post-back variables all live under transcription_service:, at whichever rung
-# you put them (node config.yaml, the registry entry, or here). Flags default
-# true; only an explicit false turns one off.
+# you put them (node config.yaml, the registry entry, or here). The two flags do
+# NOT default alike: hearing is on unless you turn it off, speaking is off unless
+# you turn it on (operator 2026-09-13).
 #   enabled              transcribe at all (HEARD - model + transcript.md get it)
+#                        DEFAULT true; only an explicit false turns it off
 #   posts_back           also echo the 👂 transcript into the chat (SPOKEN)
+#                        DEFAULT false; needs an explicit true
 #   posts_back_delay_ms  trailing debounce before the echo; negative = never
 #                        echo (still HEARD, never SPOKEN); 0 = echo immediately
 #transcription_service:

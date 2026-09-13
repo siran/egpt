@@ -18,10 +18,11 @@
 // Hardening pass (2026-06-10, review follow-up):
 //   - voice handling runs the room transcription service via the host's
 //     per-chat verdict (resolveTranscriptionService → { enabled, postsBack };
-//     a per-entity policy, default-on per conversation — see
-//     src/transcription-service.mjs), AND honors Beeper's mute flag (a muted
-//     chat never acks). The verdict defaults to NEVER surface here, so a bridge
-//     with no host wired can never announce egpt — the host decides the policy.
+//     a per-entity policy: HEARD by default, SPOKEN only where a rung opts in
+//     with posts_back: true — see src/transcription-service.mjs), AND honors
+//     Beeper's mute flag (a muted chat never acks). The verdict defaults to
+//     NEVER surface here, so a bridge with no host wired can never announce
+//     egpt — the host decides the policy.
 //   - Backlog gate: messages older than bridge start (minus holdGraceMs)
 //     are marked seen but never dispatched — same hold-on-reconnect
 //     semantic as the baileys/TG bridges. Without it, a Beeper replay

@@ -1,6 +1,9 @@
 // Locks the per-ENTITY transcription service config (operator 2026-06-15):
-// transcription is a surface-independent ROOM service — enabled=heard,
-// posts_back=spoken, both default ON (auto-enroll), only explicit false disables.
+// transcription is a surface-independent ROOM service — enabled=heard, posts_back=spoken.
+// They do NOT default alike: `enabled` is opt-OUT (default ON, only an explicit false
+// disables), `posts_back` is opt-IN (default OFF, only an explicit true enables) — operator
+// 2026-09-13: "postback must default to false, `true` is an 'unsafe' default, as we just
+// experienced".
 //
 // ONE KEY across THREE RUNGS (operator ruling 2026-07-26): `transcription_service:` is
 // the single name, resolved config/config.yaml < config/conversations.yaml < the entity
@@ -20,27 +23,54 @@ const DEFAULTS = { ...DEFAULT_SERVICE, postsBackDelayMs: null };
 const doc = (yaml) => parseEntityConfig(yaml);
 
 describe('parseTranscriptionConfig — defaults + explicit-false', () => {
-  it('absent / empty / malformed / unrelated block → both flags ON (auto-enroll), no delay', () => {
+  it('absent / empty / malformed / unrelated block → HEARD but SILENT, no delay', () => {
     expect(parseTranscriptionConfig(doc(null))).toEqual(DEFAULTS);
     expect(parseTranscriptionConfig(doc(''))).toEqual(DEFAULTS);
     expect(parseTranscriptionConfig(doc(': : not yaml : :'))).toEqual(DEFAULTS);
     expect(parseTranscriptionConfig(doc('heartbeats:\n  a: {}\n'))).toEqual(DEFAULTS);
-    // the RETIRED name is just an unrelated block now — ONE key, and this isn't it
+    // the RETIRED name is just an unrelated block now — ONE key, and this isn't it, so it
+    // can neither disable hearing nor (the half that matters) switch the 👂 echo on
     expect(parseTranscriptionConfig(doc('transcription:\n  posts_back: false\n'))).toEqual(DEFAULTS);
+    expect(parseTranscriptionConfig(doc('transcription:\n  posts_back: true\n'))).toEqual(DEFAULTS);
   });
 
-  it('only explicit false disables a flag; the other stays ON', () => {
+  // THE UNSAFE DEFAULT (operator 2026-09-13: "postback must default to false, `true` is an
+  // 'unsafe' default, as we just experienced"). The second profile on the machine carried
+  // no `transcription_service:` block at all, auto-enrolled, and posted 👂 transcripts into
+  // the operator's real group chats — in fact `[voice note — transcription failed]`, since a
+  // profile with no block also has no engine. Written LITERALLY rather than against
+  // DEFAULT_SERVICE: this is the lock ON the constant, so it must not move with it.
+  it('a config with NO posts_back key yields postsBack:false — and hearing is untouched', () => {
+    expect(DEFAULT_SERVICE).toEqual({ enabled: true, postsBack: false });
+    for (const yaml of [null, '', 'transcription_service:\n  enabled: true\n',
+      'transcription_service:\n  posts_back_delay_ms: 8000\n']) {
+      expect(parseTranscriptionConfig(doc(yaml))).toMatchObject({ enabled: true, postsBack: false });
+    }
+  });
+
+  it('posts_back is OPT-IN: an explicit true still speaks, an explicit false stays quiet', () => {
+    expect(parseTranscriptionConfig(doc('transcription_service:\n  posts_back: true\n'))).toEqual({ ...DEFAULTS, postsBack: true });
     expect(parseTranscriptionConfig(doc('transcription_service:\n  posts_back: false\n'))).toEqual({ ...DEFAULTS, postsBack: false });
+  });
+
+  it('enabled is OPT-OUT and the ruling did not touch it: only an explicit false disables', () => {
     expect(parseTranscriptionConfig(doc('transcription_service:\n  enabled: false\n'))).toEqual({ ...DEFAULTS, enabled: false });
+    expect(parseTranscriptionConfig(doc('transcription_service:\n  enabled: true\n'))).toEqual({ ...DEFAULTS, enabled: true });
   });
 
   it('both explicit', () => {
     expect(parseTranscriptionConfig(doc('transcription_service:\n  enabled: false\n  posts_back: false\n'))).toEqual({ enabled: false, postsBack: false, postsBackDelayMs: null });
-    expect(parseTranscriptionConfig(doc('transcription_service:\n  enabled: true\n  posts_back: true\n'))).toEqual(DEFAULTS);
+    expect(parseTranscriptionConfig(doc('transcription_service:\n  enabled: true\n  posts_back: true\n'))).toEqual({ enabled: true, postsBack: true, postsBackDelayMs: null });
   });
 
-  it('non-false truthy values keep the flag ON (default-on semantics)', () => {
-    expect(parseTranscriptionConfig(doc('transcription_service:\n  posts_back: yes\n'))).toEqual(DEFAULTS);
+  // Each test is strict, and each strictness is the FAIL-CLOSED side of its own flag: `yes`
+  // and `no` parse as the STRINGS "yes"/"no" under YAML 1.2, so neither switches the echo on
+  // nor switches hearing off.
+  it('a non-boolean is not a boolean: `yes` does not enable posts_back, `no` does not disable enabled', () => {
+    // literal, not DEFAULTS: DEFAULTS follows DEFAULT_SERVICE, and these two assert the
+    // FLAG's own reading of a stringy value, not the constant
+    expect(parseTranscriptionConfig(doc('transcription_service:\n  posts_back: yes\n')).postsBack).toBe(false);
+    expect(parseTranscriptionConfig(doc('transcription_service:\n  enabled: no\n')).enabled).toBe(true);
   });
 
   it('posts_back_delay_ms joins the SAME key; a non-number reads as unset', () => {
@@ -68,9 +98,16 @@ describe('the entity folder as a rung — through the real resolver', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   };
 
-  it('no config.yaml in the folder → the node rung stands', async () => {
-    await withDir('egpt-tsvc-', null, { transcription_service: { posts_back_delay_ms: 300 } },
+  it('no config.yaml in the folder → the node rung stands (its posts_back: true included)', async () => {
+    await withDir('egpt-tsvc-', null, { transcription_service: { posts_back: true, posts_back_delay_ms: 300 } },
       (v) => expect(v).toEqual({ enabled: true, postsBack: true, postsBackDelayMs: 300 }));
+  });
+
+  // The other half of the same case: a node rung that opts nobody in leaves every folder
+  // that says nothing SILENT — the shape the 2026-09-13 ruling is about.
+  it('no config.yaml AND no node posts_back → HEARD but SILENT at the node delay', async () => {
+    await withDir('egpt-tsvc-', null, { transcription_service: { posts_back_delay_ms: 300 } },
+      (v) => expect(v).toEqual({ enabled: true, postsBack: false, postsBackDelayMs: 300 }));
   });
 
   it('the folder file BEATS the node rung, leaf by leaf', async () => {
@@ -81,6 +118,6 @@ describe('the entity folder as a rung — through the real resolver', () => {
 
   it('surface-independent: the same shape works for a room folder', async () => {
     await withDir('egpt-room-', 'transcription_service:\n  enabled: false\n', {},
-      (v) => expect(v).toEqual({ enabled: false, postsBack: true, postsBackDelayMs: null }));
+      (v) => expect(v).toEqual({ enabled: false, postsBack: false, postsBackDelayMs: null }));
   });
 });

@@ -1248,8 +1248,13 @@ export const CONFIG_SCHEMA = {
       enabled
         On/off at this rung. DEFAULT: on. HEARD — transcribe at all.
       posts_back
-        SPOKEN — echo the 👂 transcript into the chat. DEFAULT: on. Typically
-        set at an entity rung; only an explicit false disables.
+        SPOKEN — echo the 👂 transcript into the chat. DEFAULT: OFF, OPT-IN —
+        only an explicit true (the boolean; a stringy yes is not one) turns it
+        on. Typically set at an entity rung. Operator ruling 2026-09-13
+        ("postback must default to false, true is an 'unsafe' default"): it used
+        to default on, and a profile carrying no transcription_service: block at
+        all auto-enrolled and posted 👂 transcripts into real group chats.
+        Hearing is invisible and stays default-on; speaking into a chat is not.
       posts_back_delay_ms
         Trailing debounce before the echo. Negative = never echo (still HEARD).
         0 = immediate. Absent = the rung above, then the shared floor.

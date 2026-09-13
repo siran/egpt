@@ -82,8 +82,10 @@ export function createTranscription({
 
   // per-chat HEARD/SPOKEN verdict + 👂 echo delay, from the ONE key resolved across the
   // three rungs. enabled = transcribe at all (HEARD); postsBack = surface the 👂 echo
-  // (SPOKEN); posts_back_delay_ms = the trailing debounce, NEGATIVE = never echo. Both
-  // flags default ON; only an explicit false disables. Cost: one state read + one in-memory
+  // (SPOKEN); posts_back_delay_ms = the trailing debounce, NEGATIVE = never echo. The two
+  // flags do NOT default alike: `enabled` is opt-OUT (default ON), `posts_back` is opt-IN
+  // (default OFF, operator 2026-09-13 — see src/transcription-service.mjs), so an entity
+  // that configures nothing is HEARD but SILENT. Cost: one state read + one in-memory
   // lookup per VOICE NOTE (not per message).
   async function resolveTranscriptionService(chatId) {
     const nodeRung = { ...DEFAULT_SERVICE, postsBackDelayMs: Math.max(0, globalDelayMs) };

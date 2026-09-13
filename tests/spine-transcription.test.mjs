@@ -25,9 +25,12 @@ describe('createTranscription', () => {
     expect(tx.cliCfg.ffmpeg_command).toBe('C:/ff/ffmpeg.exe');
   });
 
-  it('defaults the per-chat verdict to transcribe AND echo back (with the global delay)', async () => {
+  // HEARD but SILENT is the default verdict (operator 2026-09-13: "postback must default to
+  // false, `true` is an 'unsafe' default"). The node rung this falls back to is
+  // DEFAULT_SERVICE + the global delay, so an unconfigured chat transcribes and never posts.
+  it('defaults the per-chat verdict to transcribe but NOT echo back (with the global delay)', async () => {
     const tx = createTranscription({ getConfig: () => config });
-    expect(await tx.resolveTranscriptionService()).toEqual({ enabled: true, postsBack: true, postsBackDelayMs: 12345 });
+    expect(await tx.resolveTranscriptionService()).toEqual({ enabled: true, postsBack: false, postsBackDelayMs: 12345 });
   });
 
   // Per-conversation policy: resolve chatId → contact slug (loadState) → folder
@@ -65,7 +68,7 @@ describe('createTranscription', () => {
       loadState: async () => ({ contacts: {} }),
       resolveConfig: () => { readCalled = true; return { transcription_service: { enabled: false, posts_back: false } }; },
     });
-    expect(await tx.resolveTranscriptionService('!unknown:beeper.local')).toEqual({ enabled: true, postsBack: true, postsBackDelayMs: 12345 });
+    expect(await tx.resolveTranscriptionService('!unknown:beeper.local')).toEqual({ enabled: true, postsBack: false, postsBackDelayMs: 12345 });
     expect(readCalled).toBe(false);   // no contact → no entity lookup
   });
 
@@ -111,24 +114,34 @@ describe('resolveTranscriptionService — posts_back_delay_ms, one key across th
     resolveConfig: resolvedWith(svc),
   });
 
+  // Every case below carries an explicit `posts_back: true`: since the 2026-09-13 ruling the
+  // flag is OPT-IN, so without it the verdict would be silent for that reason and these would
+  // stop testing the DELAY at all. The one exception is the last pair, whose subject IS
+  // posts_back: false.
   it('-1 → NEVER echo (postsBack:false) but still HEARD (enabled:true); delay clamps to 0', async () => {
-    expect(await mk({ posts_back_delay_ms: -1 }).resolveTranscriptionService('!r:beeper.local'))
+    expect(await mk({ posts_back: true, posts_back_delay_ms: -1 }).resolveTranscriptionService('!r:beeper.local'))
       .toEqual({ enabled: true, postsBack: false, postsBackDelayMs: 0 });
   });
 
   it('0 → echo immediately (postsBack:true, postsBackDelayMs:0)', async () => {
-    expect(await mk({ posts_back_delay_ms: 0 }).resolveTranscriptionService('!r:beeper.local'))
+    expect(await mk({ posts_back: true, posts_back_delay_ms: 0 }).resolveTranscriptionService('!r:beeper.local'))
       .toEqual({ enabled: true, postsBack: true, postsBackDelayMs: 0 });
   });
 
   it('N (8000) → echo after N ms trailing-debounce', async () => {
-    expect(await mk({ posts_back_delay_ms: 8000 }).resolveTranscriptionService('!r:beeper.local'))
+    expect(await mk({ posts_back: true, posts_back_delay_ms: 8000 }).resolveTranscriptionService('!r:beeper.local'))
       .toEqual({ enabled: true, postsBack: true, postsBackDelayMs: 8000 });
   });
 
   it('unset → the node rung delay stands', async () => {
-    expect(await mk({}).resolveTranscriptionService('!r:beeper.local'))
+    expect(await mk({ posts_back: true }).resolveTranscriptionService('!r:beeper.local'))
       .toEqual({ enabled: true, postsBack: true, postsBackDelayMs: 12345 });
+  });
+
+  // A delay does not opt a chat IN either — the two are independent in both directions.
+  it('a delay alone does NOT enable posts_back: an opted-out chat stays silent at N ms', async () => {
+    expect(await mk({ posts_back_delay_ms: 8000 }).resolveTranscriptionService('!r:beeper.local'))
+      .toEqual({ enabled: true, postsBack: false, postsBackDelayMs: 8000 });
   });
 
   // THE PRECEDENCE DISSOLVED (operator ruling 2026-07-26, "do not keep maintaining legacy
