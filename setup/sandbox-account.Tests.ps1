@@ -254,6 +254,12 @@ function Grant-TestModify([string]$Path) {
     $script:MeSid, 'Modify', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))
   Set-Acl -LiteralPath $Path -AclObject $acl
 }
+function Grant-TestReadAndExecute([string]$Path) {
+  $acl = Get-Acl -LiteralPath $Path
+  $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+    $script:MeSid, 'ReadAndExecute', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))
+  Set-Acl -LiteralPath $Path -AclObject $acl
+}
 function Get-TestExplicitAceCount([string]$Path) {
   $acl = Get-Acl -LiteralPath $Path
   return @($acl.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]) |
@@ -344,6 +350,20 @@ Describe 'Revoke-SandboxLeaseAces (the ONE revoke both the finally and the recla
     (Get-TestExplicitAceCount $d) | Should Be 1
     $recs = @(Revoke-SandboxLeaseAces -AccountName $script:MeName -Paths @($d))
     $recs.Count | Should Be 1
+    $recs[0].Status | Should Be 'revoked'
+    (Get-TestExplicitAceCount $d) | Should Be 0
+  }
+
+  It 'purges a READ-ONLY (ReadAndExecute) ACE too - the revoke is by SID, not by rights' {
+    # THE NEW CLASS (2026-09-13): a -SharePathReadOnly entry gets ReadAndExecute
+    # instead of Modify. It rides the SAME ledger and the SAME revoke, and this
+    # is what proves the revoke does not quietly only understand Modify - a
+    # read-only ACE nobody ever revokes is the identical leak this ledger exists
+    # to prevent, and pool accounts are REUSED across conversations.
+    $d = New-LedgerTempDir
+    Grant-TestReadAndExecute $d
+    (Get-TestExplicitAceCount $d) | Should Be 1
+    $recs = @(Revoke-SandboxLeaseAces -AccountName $script:MeName -Paths @($d))
     $recs[0].Status | Should Be 'revoked'
     (Get-TestExplicitAceCount $d) | Should Be 0
   }

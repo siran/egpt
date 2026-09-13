@@ -496,6 +496,57 @@ describe('sandbox-cli-session — the launcher argument contract (one argv eleme
     expect(jsonArgOf(args, '-SharePath')).toEqual(['C:\\a', 'C:\\b', THREAD_STORE]);
   });
 
+  // ── READ-ONLY SHARE PATHS (operator 2026-09-13). brainpool.mjs's allowedPathsFor already sorts
+  //    every declared `allowed_paths` grant into TWO classes — full access, and read-only (a grant
+  //    listing no write-class tool). Both classes used to arrive here as ONE list, and the
+  //    launcher's only ACE mode was Modify, so a path declared READ-ONLY got a WRITE-capable OS
+  //    grant: the sandboxed beings on this node hold Bash/PowerShell, so a shell command wrote
+  //    straight past the CLI layer's deny rule and "read-only" was advisory.
+  //
+  //    THE SHAPE, and why it is a SECOND FLAG rather than one flag carrying {path, access}
+  //    objects: the launcher's ConvertFrom-JsonArgv is THE ONE PARSER for -InnerArgs/-SharePath/
+  //    -SetEnv, all three of which mean "a JSON array of STRINGS" and must fail identically when
+  //    they are not one. Objects would make it a union type at the exact boundary whose whole
+  //    purpose is that nothing a caller supplies is ever interpreted. A fourth flag of the SAME
+  //    shape keeps the contract intact — and an old caller that passes only -SharePath still gets
+  //    byte-identical behaviour, because the new parameter's default is "no entries". ──
+  it('REPRODUCE-FIRST: a READ-ONLY declared path is distinguishable from a writable one — it rides its own -SharePathReadOnly', async () => {
+    const args = await argvFor({ sandboxSharePaths: ['C:\\rw'], sandboxSharePathsReadOnly: ['C:\\ro'] });
+    // the WRITE-ACE list carries the writable paths only (plus this thread's own CLI store, which
+    // the sandboxed CLI must be able to write) ...
+    expect(jsonArgOf(args, '-SharePath')).toEqual(['C:\\rw', THREAD_STORE]);
+    // ... and the read-only one travels in its own list, never merged into the write-ACE list.
+    expect(jsonArgOf(args, '-SharePathReadOnly')).toEqual(['C:\\ro']);
+    expect(jsonArgOf(args, '-SharePath')).not.toContain('C:\\ro');
+  });
+
+  it('the read-only list keeps the SAME argument contract: one flag, ONE argv element holding a JSON array', async () => {
+    const args = await argvFor({ sandboxSharePathsReadOnly: ['C:\\ro one', 'C:\\ro two'] });
+    expect(args.filter((a) => a === '-SharePathReadOnly'), '-SharePathReadOnly appears more than once').toHaveLength(1);
+    const i = args.indexOf('-SharePathReadOnly');
+    expect(args[i + 2].startsWith('-'), '-SharePathReadOnly carries more than one argv value').toBe(true);
+    expect(jsonArgOf(args, '-SharePathReadOnly')).toEqual(['C:\\ro one', 'C:\\ro two']);
+    // ...and nothing new is loose where PowerShell's binder can reach it.
+    expect(args.filter((a) => typeof a === 'string' && a.startsWith('--'))).toEqual([]);
+  });
+
+  it('WITH NO READ-ONLY PATHS the flag is absent entirely, so the argv is byte-identical to what it was', async () => {
+    const plain = await argvFor();
+    expect(plain).not.toContain('-SharePathReadOnly');
+    for (const junk of [undefined, [], ['', '   '], 'C:\\not-an-array', null, [null, 42, {}]]) {
+      expect(await argvFor({ sandboxSharePathsReadOnly: junk }), `sandboxSharePathsReadOnly=${JSON.stringify(junk)} changed the argv`).toEqual(plain);
+    }
+  });
+
+  it('read-only paths are trimmed and de-duplicated, and a path that is ALSO writable stays writable ONLY', async () => {
+    // allowedPathsFor puts each declared path in exactly ONE bucket, so the overlap cannot arise
+    // from a being's config. The filter is here so the launcher is never handed two classes for
+    // one path and never has to choose between them.
+    const args = await argvFor({ sandboxSharePaths: ['C:\\both'], sandboxSharePathsReadOnly: ['  C:\\ro  ', 'C:\\ro', 'C:\\both', '', 42] });
+    expect(jsonArgOf(args, '-SharePath')).toEqual(['C:\\both', THREAD_STORE]);
+    expect(jsonArgOf(args, '-SharePathReadOnly')).toEqual(['C:\\ro']);
+  });
+
   it("engine: 'codex' and 'pi' route through the SAME sandboxSpawn, so both get -SharePath and -InnerArgs in the same shape", () => {
     for (const engine of ['codex', 'pi']) {
       const calls = [];

@@ -148,8 +148,18 @@ function confinementFor(def, cwd, onLog) {
 }
 
 // THE OS-LAYER CONSUMER of the same walk: every path a being's `allowed_paths` declares, for
-// sandbox-cli-session.mjs to hand the launcher as `-SharePath` so the leased pool account gets
-// a real ACE on each. Flat array, declaration order, add-dirs before read-only ones.
+// sandbox-cli-session.mjs to hand the launcher so the leased pool account gets a real ACE on
+// each. `{ writable, readOnly }`, each in declaration order — the SAME two classes
+// confinementFor gets, kept apart all the way down to the launcher's `-SharePath` and
+// `-SharePathReadOnly`, which grant Modify and ReadAndExecute respectively.
+//
+// TWO LISTS, NOT ONE, and that is the whole point of this function (rewritten 2026-09-13). It
+// used to return `[...addDirs, ...readOnlyDirs]` and the launcher had exactly ONE ACE mode,
+// Modify — so a path declared read-only was read-only at the CLI layer (readOnlyDenyRules) and
+// WRITABLE at the filesystem layer. The sandboxed beings on this node hold Bash and PowerShell,
+// so one shell command wrote straight past the deny rule; and under the `all`/`sandbox` tiers,
+// where there is no CLI layer at all, nothing enforced it anywhere. Flattening the classes HERE
+// is what made the two layers disagree, which is the one thing this walk exists to prevent.
 //
 // NO dangerously_skip_permissions EARLY RETURN, and that is the entire reason this is a
 // separate function rather than a field of confinementFor's return. confinementFor returns {}
@@ -161,16 +171,12 @@ function confinementFor(def, cwd, onLog) {
 // The allowed_tools guard is dropped for the same reason: a being with no allowed_tools list
 // still has an `allowed_paths` block that says which folders it is meant to reach.
 //
-// ONE HONEST CAVEAT, and it is why read-only paths are included rather than silently dropped:
-// the launcher has exactly ONE ACE mode, `Modify`. A path declared read-only therefore gets a
-// WRITE-capable OS grant, and its read-only-ness stays a CLI-layer property — enforced under a
-// confined tier (readOnlyDenyRules), enforced by nothing at all under a skip-permissions tier,
-// which already has full filesystem access at the CLI layer anyway. Excluding them instead
-// would reproduce the original defect for exactly those paths: permitted by Claude Code,
-// unreadable to the kernel. Recorded in setup/SANDBOX.md's Known gaps.
+// READ-ONLY PATHS ARE INCLUDED, in their own list, never dropped: excluding them would
+// reproduce the original defect for exactly those paths — permitted by Claude Code, unreadable
+// to the kernel. Read access is the point of declaring them.
 export function sandboxSharePathsFor(def) {
   const { addDirs, readOnlyDirs } = allowedPathsFor(def);   // no onLog: confinementFor already emitted that line this turn
-  return [...addDirs, ...readOnlyDirs];
+  return { writable: addDirs, readOnly: readOnlyDirs };
 }
 
 // Pure: a conversation's RESOLVED config doc → { idleTtlMs }. The `warm: { idle_ttl }`
@@ -864,7 +870,11 @@ export function createBrainPool({
       // the resolved `sandboxed` for the same reason the credential above is: a NON-sandboxed
       // turn runs as the operator's own Windows account, which already reaches these folders,
       // so handing it a share list would be a no-op field on every ordinary turn.
-      const sandboxSharePaths = sandboxed === true ? sandboxSharePathsFor(def) : [];
+      //
+      // TWO LISTS, because the two classes get two different ACEs (Modify / ReadAndExecute) and
+      // must stay distinguishable all the way to the launcher — see sandboxSharePathsFor.
+      const { writable: sandboxSharePaths, readOnly: sandboxSharePathsReadOnly } =
+        sandboxed === true ? sandboxSharePathsFor(def) : { writable: [], readOnly: [] };
       const baseOpts = {
         engine,
         cwd,
@@ -921,11 +931,14 @@ export function createBrainPool({
         // spread in only when there are any, exactly like the credential above. Resolved from
         // the SAME def the confinementFor spread above reads, through the SAME walk
         // (sandboxSharePathsFor / allowedPathsFor), so the two layers cannot disagree about
-        // which folders this being was told it may use. sandbox-cli-session.mjs turns it into
-        // the launcher's `-SharePath` JSON array and each path gets a per-turn ACE, granted and
-        // revoked with the lease. Sandboxed turns only: a non-sandboxed turn runs as the
-        // operator's own account and already reaches every one of these paths.
+        // which folders this being was told it may use — nor, since 2026-09-13, about WHICH WAY:
+        // sandbox-cli-session.mjs turns these into the launcher's `-SharePath` and
+        // `-SharePathReadOnly` JSON arrays, and each path gets a per-turn ACE of its own class
+        // (Modify / ReadAndExecute), granted and revoked with the lease. Sandboxed turns only: a
+        // non-sandboxed turn runs as the operator's own account and already reaches every one of
+        // these paths.
         ...(sandboxSharePaths.length ? { sandboxSharePaths } : {}),
+        ...(sandboxSharePathsReadOnly.length ? { sandboxSharePathsReadOnly } : {}),
       };
 
       // Identity kickoff: prefix the first turn of a fresh thread with the feed,

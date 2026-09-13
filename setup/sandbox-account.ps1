@@ -369,8 +369,9 @@ function Protect-SandboxCredDir {
 # sandbox-logon-launcher.ps1 has a param block and runs, so nothing can unit
 # test it. setup/sandbox-account.Tests.ps1 exercises all five for real.
 #
-# THE PROBLEM THEY CLOSE. The launcher grants the leased pool account a Modify
-# ACE on TargetFolder and on each -SharePath entry, and revokes them in its
+# THE PROBLEM THEY CLOSE. The launcher grants the leased pool account an ACE on
+# TargetFolder and on each shared path (Modify, or ReadAndExecute for a
+# -SharePathReadOnly entry), and revokes them in its
 # finally. A HARD-killed turn (taskkill /F, crash, reboot) never runs that
 # finally, so the ACE stays forever - and pool accounts are REUSED across
 # different conversations, so the next lease of that same account by a DIFFERENT
@@ -397,7 +398,7 @@ function Protect-SandboxCredDir {
 # has in its hand. It holds PATHS ONLY, one per line - never a credential, never
 # an environment value - and it is unreadable by anyone else for the life of the
 # lease because the launcher holds it FileShare::None.
-$SandboxLeaseLedgerHeader = '# egpt sandbox lease ledger - one path per line, each granted a Modify ACE to this lock''s pool account by the turn holding it. A RECLAIM of this lock revokes them: the turn that wrote them was hard-killed before its own release ran. Deleted with the lock on a clean release.'
+$SandboxLeaseLedgerHeader = '# egpt sandbox lease ledger - one path per line, each granted an explicit ACE (Modify, or ReadAndExecute for a read-only share path) to this lock''s pool account by the turn holding it. A RECLAIM of this lock revokes them - by SID, whatever rights they carry: the turn that wrote them was hard-killed before its own release ran. Deleted with the lock on a clean release.'
 
 # Read the ledger back. Comment lines and blanks are skipped, so an EMPTY or
 # pre-ledger lock file (every lock written before 2026-09-11 is 0 bytes) reads

@@ -148,10 +148,13 @@ describe('the locks this fix must not break', () => {
     expect(fin.indexOf('Revoke-SandboxLeaseAces')).toBeLessThan(fin.indexOf('$lockStream.Close()'));
   });
 
-  it('LOCK: the grant itself is unchanged — per-path Modify for the leased SID only, never a broader principal', () => {
+  it('LOCK: the grant itself is unchanged — a per-path ACE for the leased SID only, never a broader principal', () => {
     const src = launcher();
+    // TargetFolder is always the conversation's own folder and always read/write.
     expect(src).toMatch(/New-Object System\.Security\.AccessControl\.FileSystemAccessRule\(\s*\$leasedSid, 'Modify'/);
-    expect(src).toMatch(/\$leasedSid, 'Modify', \$shareInherit/);
+    // A share path's rights come from its CLASS (see the read-only describe below), but the
+    // principal and the inheritance flags are what they always were.
+    expect(src).toMatch(/\$leasedSid, \$shareRights, \$shareInherit/);
     // Nothing here may widen to the pool GROUP or to Everyone.
     expect(src).not.toMatch(/FileSystemAccessRule\(\s*\$poolGroupSid/);
   });
@@ -163,5 +166,83 @@ describe('the locks this fix must not break', () => {
     for (const a of adds) {
       expect(a, 'something other than a path is being written into the lease ledger').not.toMatch(/SetEnv|Password|plainPwd|Token/i);
     }
+  });
+});
+
+// ── A READ-ONLY SHARE PATH IS READ-ONLY AT THE OS LAYER TOO (operator 2026-09-13).
+//
+//    THE DEFECT. brainpool.mjs's allowedPathsFor sorts a being's declared `allowed_paths` into
+//    two classes — full access, and read-only (a grant whose allowed_tools names no write-class
+//    tool). sandboxSharePathsFor CONCATENATED them into one list, and this launcher had exactly
+//    one ACE mode: step (d2) granted Modify on every -SharePath entry. So a path the CLI layer
+//    treats as read-only (readOnlyDenyRules) was WRITABLE to the kernel, and the sandboxed beings
+//    on this node hold Bash and PowerShell — one shell command wrote past the deny rule. Under
+//    the `all`/`sandbox` tiers there is no CLI layer at all (confinementFor returns {}), so there
+//    the ACE was the only gate and it granted write.
+//
+//    THE FIX. The two classes stay two lists all the way down: -SharePath keeps Modify,
+//    -SharePathReadOnly gets ReadAndExecute. Same JSON-array-of-strings shape, same one parser,
+//    same one grant loop, same ledger — a read-only ACE that outlived its turn would be exactly
+//    the leak the ledger above exists to prevent.
+//
+//    BEHAVIOUR (a real ReadAndExecute ACE, really revoked) is exercised for real in
+//    setup/sandbox-account.Tests.ps1's Revoke-SandboxLeaseAces describe; a real DENIED write by a
+//    real pool account is section 5 of setup/test-sandbox-logon-launcher.ps1 (manual, unelevated).
+describe('read-only share paths get a READ-ONLY ACE, not a write-capable one', () => {
+  // The share-path grant step: from the (d2) banner to the (e) desktop step.
+  function shareGrantStep(src) {
+    const i = src.indexOf('# ---- (d2)');
+    expect(i, 'the share-path grant step (d2) is gone').toBeGreaterThan(0);
+    const end = src.indexOf('# ---- (e)', i);
+    expect(end).toBeGreaterThan(i);
+    return src.slice(i, end);
+  }
+
+  it('REPRODUCE-FIRST: the launcher takes a SECOND, read-only class of share path', () => {
+    const src = launcher();
+    // Same shape as the other three lists — ONE argv element holding a JSON array — and parsed by
+    // the SAME parser, so it fails identically when it is not one. A {path, access} OBJECT list
+    // would have made ConvertFrom-JsonArgv a union type at the one boundary that must not blur.
+    expect(src, 'the launcher has no read-only share-path parameter at all').toMatch(/\[string\]\$SharePathReadOnly = ''/);
+    expect(src).toMatch(/ConvertFrom-JsonArgv -ParamName 'SharePathReadOnly' -Raw \$SharePathReadOnly/);
+  });
+
+  it('REPRODUCE-FIRST: a read-only path gets ReadAndExecute while a writable one keeps Modify', () => {
+    const step = shareGrantStep(launcher());
+    // ONE loop over the two classes, not a copied second loop: the class supplies the rights.
+    expect(step, 'the read-only list is not granted at all').toMatch(/\$SharePathReadOnlyList/);
+    expect(step, 'a read-only share path still gets a WRITE-capable ACE').toMatch(/Rights = 'ReadAndExecute'/);
+    expect(step).toMatch(/Rights = 'Modify'/);
+    expect(step).toMatch(/\$leasedSid, \$shareRights, \$shareInherit/);
+    // ...and nothing in this step hardcodes Modify onto a share path any more.
+    expect(step, "the share grant still pins 'Modify' regardless of class").not.toMatch(/\$leasedSid, 'Modify'/);
+  });
+
+  it('REPRODUCE-FIRST: the read-only class rides the SAME ledger and the SAME revoke', () => {
+    const src = launcher();
+    const step = shareGrantStep(src);
+    // ONE ledger append and ONE $acesGranted append in the whole share step — i.e. the second
+    // class went through the existing loop rather than a copy of it. A read-only ACE the ledger
+    // does not name is a leak the reclaim cannot find after a hard kill.
+    expect((step.match(/Add-SandboxLeaseLedgerPath/g) || []).length, 'the share grant loop was copied instead of parameterised').toBe(1);
+    expect((step.match(/\$acesGranted\.Add\(\$sp\)/g) || []).length).toBe(1);
+    // Ledger BEFORE Set-Acl still holds for both classes. (Call sites, not the prose above them:
+    // the step's own comments mention Set-Acl.)
+    expect(step.indexOf('Add-SandboxLeaseLedgerPath -Stream')).toBeLessThan(step.indexOf('Set-Acl -LiteralPath $sp'));
+    // And the revoke is untouched — it purges by SID, so it takes a ReadAndExecute ACE off
+    // exactly as it takes a Modify one. (Locked for real in setup/sandbox-account.Tests.ps1.)
+    expect(accountLib()).toMatch(/PurgeAccessRules\(\$sid\)/);
+  });
+
+  it('LOCK: a caller that passes only the OLD -SharePath is unaffected', () => {
+    const src = launcher();
+    // The new parameter defaults to '' = "no entries", exactly like -SharePath and -SetEnv, so an
+    // invocation without it runs the read-only pass over an empty list: no ACL write, no ledger
+    // entry, no log line.
+    expect(src).toMatch(/\[string\]\$SharePath = ''/);
+    expect(src).toMatch(/\[string\]\$SharePathReadOnly = ''/);
+    // De-duplication is SHARED across the two classes, so one path can never collect two ACEs.
+    const step = shareGrantStep(src);
+    expect((step.match(/\$sharesSeen/g) || []).length).toBeGreaterThanOrEqual(2);
   });
 });

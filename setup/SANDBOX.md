@@ -45,7 +45,8 @@ The launcher's parameters:
 | `-TargetFolder` | required — the conversation folder, ACE'd for the lease |
 | `-InnerBin` | required — the binary to launch as the leased account, an absolute path |
 | `-InnerArgs` | required — the inner argv as **one argv element holding a JSON array**, e.g. `'["--print","--verbose",""]'` |
-| `-SharePath` | optional — extra paths to ACE alongside `TargetFolder`, granted and revoked independently. **One JSON array**, any number of paths: `'["C:\\a","C:\\b"]'` |
+| `-SharePath` | optional — extra paths to ACE **Modify** alongside `TargetFolder`, granted and revoked independently. **One JSON array**, any number of paths: `'["C:\\a","C:\\b"]'` |
+| `-SharePathReadOnly` | optional — the same, but each entry gets a **ReadAndExecute** ACE. Same JSON-array shape, same parser, same ledger and revoke. Omitted = no entries, so a caller that passes only `-SharePath` behaves exactly as before. |
 | `-SetEnv` | optional — `NAME=VALUE` entries overlaid onto a per-user environment block, as **one JSON array**. Values are never logged, only names. |
 
 **One argv element per parameter, and every list is a JSON array.** The launcher
@@ -56,7 +57,7 @@ turn; see *Known gaps* 3. Malformed JSON throws, naming the parameter. Omitting
 an optional flag and passing `'[]'` mean the same thing.
 
 `src/sandbox-cli-session.mjs`'s `sandboxSpawn` is the only production caller and
-`JSON.stringify()`s all three.
+`JSON.stringify()`s every one of them.
 
 **A PowerShell caller cannot do this** (measured, PS 5.1): passing a JSON string
 to a native exe strips every quote; `\"`-escaping keeps the quotes but splits the
@@ -135,7 +136,10 @@ Access is therefore **opt-in and narrow**, and the whole list is:
 | `~\.local\bin` | Pool group, ReadAndExecute | `claude.exe` |
 | `%APPDATA%\npm` | Pool group, ReadAndExecute | pi / codex entry JS |
 | `~\.pi\agent` | Pool group, Modify | pi writes there; missing it wedges the turn |
+| `~\bin\egpt` | Pool group, Modify | the RUNNING tree — operator 2026-09-10, *"let E modify itself"*. Permanent, not per-turn. See *Known gaps* 7 before treating this path as read-only for anyone. |
 | the conversation folder | leased account, Modify | granted at launch, revoked at exit |
+| each `-SharePath` | leased account, Modify | a being's full-access `allowed_paths`, plus its thread's CLI store; granted at launch, revoked at exit |
+| each `-SharePathReadOnly` | leased account, ReadAndExecute | a being's read-only `allowed_paths`; granted at launch, revoked at exit |
 
 Everything else under the operator's profile — `.claude/.credentials.json`,
 `.egpt/config/config.yaml`, `src/`, `Documents` — is unreachable from a pool
@@ -292,23 +296,27 @@ Real, current, and worth knowing before relying on any of this.
    `--setting-sources` value did its job), and fails only on authentication —
    which is gap 1's territory, well past the model gate.
 
-4. **Shared paths are wired end to end, and read-only ones get a *write* ACE.**
-   `brainpool.mjs`'s `allowedPathsFor` is now one walk with two consumers:
-   `confinementFor` (the CLI layer — `--add-dir` and read-only deny rules) and
-   `sandboxSharePathsFor` (the OS layer). The second has **no
-   `dangerously_skip_permissions` early return**, deliberately: under the `all`
-   and `sandbox` tiers `confinementFor` returns `{}`, so the CLI layer is off and
-   the ACE is the *only* way a shared folder is reachable — exactly the tiers most
-   likely to declare one.
+4. **Shared paths are wired end to end, in two classes.** `brainpool.mjs`'s
+   `allowedPathsFor` is one walk with two consumers: `confinementFor` (the CLI
+   layer — `--add-dir` and read-only deny rules) and `sandboxSharePathsFor` (the
+   OS layer). The second has **no `dangerously_skip_permissions` early return**,
+   deliberately: under the `all` and `sandbox` tiers `confinementFor` returns
+   `{}`, so the CLI layer is off and the ACE is the *only* way a shared folder is
+   reachable — exactly the tiers most likely to declare one.
 
-   **The caveat.** The launcher has one ACE mode, `Modify`. A path declared
-   read-only in `allowed_paths` therefore gets a *write-capable* OS grant, and its
-   read-only-ness remains a CLI-layer property: enforced under a confined tier
-   (`readOnlyDenyRules`), enforced by nothing under a skip-permissions tier —
-   which already has full filesystem access at the CLI layer regardless. Excluding
-   read-only paths instead would reproduce the original defect for exactly those
-   paths: permitted by Claude Code, unreadable to the kernel. A real fix means
-   teaching the launcher a `ReadAndExecute` ACE mode, and nothing needs it yet.
+   **Read-only is real at the OS layer since 2026-09-13.** It was not before:
+   `sandboxSharePathsFor` concatenated the two classes and the launcher had one
+   ACE mode, `Modify`, so a path declared read-only got a *write-capable* OS
+   grant. With `Bash`/`PowerShell` in a being's tool list that was a shell command
+   away from writing past `readOnlyDenyRules`, and under a skip-permissions tier
+   nothing enforced it anywhere. Now the two classes stay two lists all the way
+   down — `-SharePath` (Modify) and `-SharePathReadOnly` (ReadAndExecute) — and
+   both ride the same lease ledger, so a read-only ACE is revoked by the turn's
+   `finally` or by the next reclaim, exactly like a writable one.
+
+   **What is still not covered:** an *explicit deny*. A `ReadAndExecute` ACE grants
+   no write, but it does not subtract write granted by some *other* applicable ACE
+   on the same path — see gap 7.
 
 5. **pi's tool list is not enforceable.** `access_level` overwrites
    `allowed_tools` with ccode tool names, which are not pi tool names, so
@@ -318,6 +326,23 @@ Real, current, and worth knowing before relying on any of this.
 6. **No deny on pi's `auth.json`.** Deliberate: an EPERM there wedges pi rather
    than failing it. A sandboxed turn can read whatever credentials pi stores, so
    keep cloud logins out of pi.
+
+7. **A read-only share path does not override a standing grant, and `~/bin/egpt`
+   has one.** `-SharePathReadOnly` adds a `ReadAndExecute` ACE; Windows *unions*
+   every applicable Allow ACE, so it cannot subtract write that some other ACE
+   already grants. One such ACE exists by design:
+   `provision-sandbox-account.ps1` gives the pool **group** (`egpt-sandbox-pool`,
+   all 16 accounts) a permanent `Modify` ACE on `~/bin/egpt`, the running tree —
+   operator ruling 2026-09-10, *"let E modify itself"*. Verified live: that
+   explicit group ACE is on the folder today.
+
+   So declaring `~/bin/egpt` read-only in a being's `allowed_paths` gets it a
+   read-only *per-turn* ACE and changes nothing — the being still writes there
+   through the group. Making it genuinely read-only means reversing that ruling:
+   swap `Grant-SandboxPoolModify` for `Grant-SandboxPoolAccess` in
+   `provision-sandbox-account.ps1` **and** remove the existing group ACE from the
+   live folder (the provisioner is additive; it never removes). That is an
+   operator decision, not a code fix.
 
 ## Troubleshooting
 

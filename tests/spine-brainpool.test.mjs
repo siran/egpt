@@ -1894,8 +1894,10 @@ describe('brainpool.turn — allowed_paths reach the OS layer as brainOptions.sa
     expect(opts.addDirs).toBeUndefined();
     expect(opts.readOnlyDirs).toBeUndefined();
     expect(buildClaudeArgs(opts).filter((a) => a === '--add-dir')).toEqual([]);
-    // ... so the ACE is the ONLY reachability this being has, and it is now there:
-    expect(opts.sandboxSharePaths).toEqual(['C:/work/project', 'C:/work/reference']);
+    // ... so the ACE is the ONLY reachability this being has, and it is now there — in the CLASS
+    // each path was declared in, because at this tier the ACE is also the only ENFORCEMENT:
+    expect(opts.sandboxSharePaths).toEqual(['C:/work/project']);
+    expect(opts.sandboxSharePathsReadOnly).toEqual(['C:/work/reference']);
   });
 
   it('a CONFINED sandboxed being gets BOTH layers from the one walk, and they agree on the path list', async () => {
@@ -1908,10 +1910,31 @@ describe('brainpool.turn — allowed_paths reach the OS layer as brainOptions.sa
     const opts = pool.calls[0].brainOptions;
     expect(opts.addDirs).toEqual(['C:/work/project']);
     expect(opts.readOnlyDirs).toEqual(['C:/work/reference']);
-    // the OS layer covers EVERY declared path, read-only ones included: the launcher's only ACE
-    // mode is Modify, and leaving a read-only path out would reproduce the original defect for
-    // exactly that path (permitted by Claude Code, unreadable to the kernel). See SANDBOX.md.
-    expect(opts.sandboxSharePaths).toEqual([...opts.addDirs, ...opts.readOnlyDirs]);
+    // REPRODUCE-FIRST (operator 2026-09-13): the OS layer covers EVERY declared path — leaving a
+    // read-only one out would reproduce the original defect for exactly that path (permitted by
+    // Claude Code, unreadable to the kernel) — but it covers it IN ITS OWN CLASS. Concatenating
+    // the two lists here is what made "read-only" advisory: the launcher granted Modify on every
+    // -SharePath entry, so a being holding Bash wrote straight past readOnlyDenyRules.
+    expect(opts.sandboxSharePaths).toEqual(opts.addDirs);
+    expect(opts.sandboxSharePathsReadOnly).toEqual(opts.readOnlyDirs);
+    // The two layers still agree about WHICH folders this being was told it may use...
+    expect([...opts.sandboxSharePaths, ...opts.sandboxSharePathsReadOnly]).toEqual([...opts.addDirs, ...opts.readOnlyDirs]);
+    // ...and no path is in both classes, which is what would hand the launcher two ACEs for one path.
+    expect(opts.sandboxSharePaths.filter((p) => opts.sandboxSharePathsReadOnly.includes(p))).toEqual([]);
+  });
+
+  it('a being whose paths are ALL read-only carries no writable share list at all', async () => {
+    const brains = { resolve: () => ({
+      name: 'egpt', type: 'ccode', allowed_tools: ['Read'],
+      allowed_paths: { '/c/bin/egpt': { allowed_tools: ['Read', 'Glob', 'Grep'] } },
+    }) };
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
+      brains, platform: 'win32', seedAgents: { e: { access_level: 'regular', sandboxed: true } },
+    });
+    await brain.turn('e', ev);
+    const opts = pool.calls[0].brainOptions;
+    expect(opts).not.toHaveProperty('sandboxSharePaths');   // nothing gets a write-capable ACE...
+    expect(opts.sandboxSharePathsReadOnly).toEqual(['C:/bin/egpt']);   // ...and the read one still travels
   });
 
   it('THE COMMON CASE: a being with no allowed_paths carries no sandboxSharePaths at all, so the launcher argv is unchanged', async () => {
@@ -1922,6 +1945,7 @@ describe('brainpool.turn — allowed_paths reach the OS layer as brainOptions.sa
     await brain.turn('e', ev);
     expect(pool.calls[0].brainOptions.sandboxed).toBe(true);
     expect(pool.calls[0].brainOptions).not.toHaveProperty('sandboxSharePaths');
+    expect(pool.calls[0].brainOptions).not.toHaveProperty('sandboxSharePathsReadOnly');
   });
 
   it('sandboxed:false → no sandboxSharePaths even with allowed_paths set (the operator\'s own account already reaches them)', async () => {
@@ -1934,6 +1958,7 @@ describe('brainpool.turn — allowed_paths reach the OS layer as brainOptions.sa
     expect(opts.sandboxed).toBe(false);
     expect(opts.addDirs).toEqual(['C:/work/project']);            // the CLI layer is untouched...
     expect(opts).not.toHaveProperty('sandboxSharePaths');         // ...and nothing extra travels
+    expect(opts).not.toHaveProperty('sandboxSharePathsReadOnly');
   });
 
   it('the shared walk logs the write-tools line ONCE, not once per consumer', async () => {

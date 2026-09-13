@@ -15,8 +15,9 @@
 // straight through. See setup/sandbox-logon-launcher.ps1's header for the
 // full mechanism + the verified deviations from the original spec
 // (CreateProcessWithLogonW over CreateProcessAsUser; and the ARGUMENT CONTRACT —
-// -InnerArgs, -SharePath and -SetEnv are each exactly ONE argv element holding a
-// JSON array, so PowerShell's parameter binder never tokenizes caller data).
+// -InnerArgs, -SharePath, -SharePathReadOnly and -SetEnv are each exactly ONE argv
+// element holding a JSON array, so PowerShell's parameter binder never tokenizes
+// caller data).
 //
 // warm-cli-session.mjs's spawnProc() already resolves `bin` (full claude.exe
 // path) and `args` (the full stream-json argv, via buildClaudeArgs) itself,
@@ -233,8 +234,9 @@ export function createSandboxCliSession(options = {}) {
     }
   }
 
-  // THE OS-LAYER HALF OF A BEING'S `allowed_paths` (brainpool.mjs's sandboxSharePathsFor,
-  // handed here as options.sandboxSharePaths). Same normalisation discipline as the token
+  // THE OS-LAYER, FULL-ACCESS HALF OF A BEING'S `allowed_paths` (brainpool.mjs's
+  // sandboxSharePathsFor, handed here as options.sandboxSharePaths — the read-only half is the
+  // block below). Same normalisation discipline as the token
   // above, and for the same reason — sandboxSpawn must stay a pure argv build: anything that
   // is not a non-blank string is dropped, duplicates are dropped, and an empty result
   // contributes ZERO argv elements so the no-share argv is byte-identical to what it was.
@@ -261,6 +263,31 @@ export function createSandboxCliSession(options = {}) {
       .map((p) => p.trim()),
   )];
 
+  // ...AND THE READ-ONLY HALF OF THE SAME `allowed_paths` (operator 2026-09-13), normalised the
+  // identical way and kept in its OWN list because the launcher grants it a DIFFERENT ACE:
+  // ReadAndExecute, against Modify for the list above. Until this existed both classes rode
+  // `sharePaths` and the launcher's one ACE mode made every declared path writable, so a being
+  // holding Bash wrote past the CLI layer's read-only deny rule (brainpool.mjs's
+  // sandboxSharePathsFor carries the full account).
+  //
+  // TWO FLAGS, NOT ONE FLAG OF {path, access} OBJECTS: the launcher's ConvertFrom-JsonArgv is
+  // ONE parser for every list it takes — "a JSON array of strings", and anything else
+  // throws by name — and that parser is the reason no caller data ever reaches PowerShell's
+  // parameter binder. A second element TYPE inside it would be a union at exactly the boundary
+  // that must stay dumb. A fourth flag of the same shape costs the contract nothing, and a
+  // launcher invoked with only -SharePath behaves as it always did (the new parameter's default
+  // is "no entries").
+  //
+  // A PATH THAT IS ALSO WRITABLE IS DROPPED FROM HERE, so the launcher is never handed two
+  // classes for one path. allowedPathsFor puts each declared path in exactly one bucket, so this
+  // cannot come from a being's config; the thread store above is the only other contributor and
+  // it must stay writable.
+  const sharePathsReadOnly = [...new Set(
+    (Array.isArray(options.sandboxSharePathsReadOnly) ? options.sandboxSharePathsReadOnly : [])
+      .filter((p) => typeof p === 'string' && p.trim())
+      .map((p) => p.trim()),
+  )].filter((p) => !sharePaths.includes(p));
+
   // The -SetEnv payload, built ONCE beside the share list rather than inside sandboxSpawn, for
   // the same reason everything else here is: sandboxSpawn stays a pure argv build.
   const setEnv = [
@@ -275,8 +302,8 @@ export function createSandboxCliSession(options = {}) {
     // with no cwd at all.
     const targetFolder = spawnOpts?.cwd ?? options.cwd;
     // ONE ARGV ELEMENT PER LAUNCHER PARAMETER, AND EVERY LIST IS A JSON ARRAY. This is THE one
-    // place psArgs is built and the contract is the launcher's own PARAMS header. The three
-    // JSON.stringify()s below are LOAD-BEARING, not tidiness — passed as bare tokens instead,
+    // place psArgs is built and the contract is the launcher's own PARAMS header. Every
+    // JSON.stringify() below is LOAD-BEARING, not tidiness — passed as bare tokens instead,
     // PowerShell's parameter binder:
     //   * ATE the inner argv's `--verbose`, prefix-matching [CmdletBinding()]'s common
     //     -Verbose switch, which made `--print --output-format stream-json` illegal and killed
@@ -284,7 +311,7 @@ export function createSandboxCliSession(options = {}) {
     //   * bound only the FIRST value of a multi-value flag and spilled the rest into the inner
     //     argv, silently (`-SharePath A B` -> SharePath=[A], InnerArgs=[B, ...]);
     //   * rejected the empty `--setting-sources ''` element outright.
-    // Inside a JSON string none of the three is a token the binder can see.
+    // Inside a JSON string none of the three defects has a token the binder can see.
     //
     // ORDER: the optional flags stay BEFORE -InnerBin and -InnerArgs comes last. Nothing binds
     // by position any more, so this is purely for readers — the argv reads in the same order
@@ -296,6 +323,9 @@ export function createSandboxCliSession(options = {}) {
       // WITH NO SHARE PATHS AND NO TOKEN both spreads are EMPTY and the launcher's own
       // defaults ('' = "no entries") apply. That is the common case and it must stay unchanged.
       ...(sharePaths.length ? ['-SharePath', JSON.stringify(sharePaths)] : []),
+      // The read-only class, same shape, its own flag. Absent entirely when there are none, so
+      // the argv of every being that declares no read-only path is byte-identical to before.
+      ...(sharePathsReadOnly.length ? ['-SharePathReadOnly', JSON.stringify(sharePathsReadOnly)] : []),
       // ONE -SetEnv element carrying every NAME=VALUE this turn needs, exactly as before — the
       // store's CLAUDE_CONFIG_DIR is a second ENTRY in that one JSON array, not a second flag.
       // (The launcher's Set-EnvBlockEntry re-sorts the block itself, so the order here is only

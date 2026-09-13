@@ -27,8 +27,11 @@
 #   c) resolve that account's own fixed user SID - always present in its own
 #      token, unlike the broken per-call logon-session SID.
 #   d) grant that SID a read/write (Modify) ACE on exactly TargetFolder -
-#      never Everyone, never a parent dir - and the SAME ACE on each -SharePath
-#      entry, if any were passed. Still never broader: each is one named path.
+#      never Everyone, never a parent dir - and one ACE on each shared path, if
+#      any were passed: Modify for a -SharePath entry, ReadAndExecute for a
+#      -SharePathReadOnly one, because a path a being declared read-only must be
+#      read-only to the KERNEL and not only to Claude Code's own deny rules.
+#      Still never broader: each is one named path.
 #      Each is written into the lease lock file FIRST, as this lease's ACE
 #      LEDGER, so that a turn killed before (g) can still be cleaned up: the
 #      reclaim in (a) revokes whatever the dead turn's ledger names before that
@@ -83,13 +86,13 @@
 # and lpDesktop does land the child on its private desktop.
 #
 # PARAMS - ONE ARGV ELEMENT PER PARAMETER, AND THAT ELEMENT IS A JSON ARRAY.
-# Every caller-supplied LIST (-InnerArgs, -SharePath, -SetEnv) arrives as a
-# SINGLE [string] holding a JSON array, which this script parses itself (see
-# ConvertFrom-JsonArgv below). NOTHING A CALLER SUPPLIES IS EVER SEEN BY
-# POWERSHELL'S PARAMETER BINDER AS A TOKEN, and that is the entire point: the
-# binder is what broke all three of the following. All three were MEASURED on
-# this machine 2026-09-05 against the previous param block, not theorised, and
-# all three are ONE root cause.
+# Every caller-supplied LIST (-InnerArgs, -SharePath, -SharePathReadOnly,
+# -SetEnv) arrives as a SINGLE [string] holding a JSON array, which this script
+# parses itself (see ConvertFrom-JsonArgv below). NOTHING A CALLER SUPPLIES IS
+# EVER SEEN BY POWERSHELL'S PARAMETER BINDER AS A TOKEN, and that is the entire
+# point: the binder is what broke all three of the following. All three were
+# MEASURED on this machine 2026-09-05 against the previous param block, not
+# theorised, and all three are ONE root cause.
 #
 # 1) THE BINDER ATE --verbose, AND THAT KILLED EVERY SANDBOXED ccode TURN.
 #    [CmdletBinding()] enables PowerShell's COMMON parameters, and PowerShell
@@ -134,10 +137,11 @@
 #
 # ONE WAY TO INVOKE. The parameter NAMES are unchanged:
 #   powershell.exe -NoProfile -ExecutionPolicy Bypass -File sandbox-logon-launcher.ps1 `
-#     -TargetFolder <dir> [-SharePath '["<dir>","<dir>"]'] [-SetEnv '["NAME=VALUE"]'] `
+#     -TargetFolder <dir> [-SharePath '["<dir>","<dir>"]'] `
+#     [-SharePathReadOnly '["<dir>"]'] [-SetEnv '["NAME=VALUE"]'] `
 #     -InnerBin <absolute exe> -InnerArgs '["--print","--verbose",""]'
 # src/sandbox-cli-session.mjs's sandboxSpawn is THE one builder of that argv and
-# it JSON.stringify()s all three. There is no second shape to support.
+# it JSON.stringify()s every one of them. There is no second shape to support.
 #
 # WHAT SURVIVED THE REWRITE, and why - the two attributes the old shape needed:
 #  - PositionalBinding = $false: KEPT, but it now guards something DIFFERENT and
@@ -170,6 +174,21 @@ param(
   # neither flag passed this script does exactly what it did before they existed:
   # no extra ACL write, and no environment block built at all.
   [string]$SharePath = '',
+  # THE SAME THING, READ-ONLY (operator 2026-09-13). Each entry gets a
+  # ReadAndExecute ACE instead of -SharePath's Modify, and step (d2) below is one
+  # loop over both classes. A being's `allowed_paths` already classifies every
+  # declared path (brainpool.mjs's allowedPathsFor: a grant naming no write-class
+  # tool is read-only), and the two classes used to arrive here CONCATENATED into
+  # -SharePath - so a read-only path got a WRITE-capable ACE and, for a being
+  # holding Bash or PowerShell, "read-only" meant nothing below the CLI layer.
+  #
+  # A SECOND FLAG, not objects inside -SharePath: ConvertFrom-JsonArgv below is
+  # the ONE parser for every list here and it means "a JSON array of STRINGS".
+  # Teaching it a second element type would put a union at the exact boundary
+  # whose entire purpose is that nothing a caller sends is ever interpreted. The
+  # default keeps every existing caller byte-identical: no entries, no read-only
+  # pass, no ACL write.
+  [string]$SharePathReadOnly = '',
   # A JSON array of NAME=VALUE strings. A VALUE may legitimately be empty
   # ("FOO="); it lives inside the JSON, so nothing out here has to allow for it.
   [string]$SetEnv = ''
@@ -183,9 +202,10 @@ $ErrorActionPreference = 'Stop'
 # shared with provision-sandbox-account.ps1's self-elevating one-time setup.
 . (Join-Path $PSScriptRoot 'sandbox-account.ps1')
 
-# ---- THE ONE PARSER for the three JSON-array parameters (see PARAMS above).
-# Three consumers, ONE implementation: -InnerArgs, -SharePath and -SetEnv all
-# mean "a JSON array of strings" and must fail identically when they are not one.
+# ---- THE ONE PARSER for the JSON-array parameters (see PARAMS above).
+# Four consumers, ONE implementation: -InnerArgs, -SharePath, -SharePathReadOnly
+# and -SetEnv all mean "a JSON array of strings" and must fail identically when
+# they are not one.
 #
 # PS 5.1 TRAP, and this repo has been bitten by it before, so it is spelled out
 # rather than trusted to memory. ConvertFrom-Json on a TOP-LEVEL ARRAY writes the
@@ -236,12 +256,13 @@ function ConvertFrom-JsonArgv {
   return ,$out.ToArray()
 }
 
-# Parsed ONCE, here, into the three arrays the rest of this script already
+# Parsed ONCE, here, into the arrays the rest of this script already
 # expects. Every use below is unchanged from when these were [string[]]
 # parameters - the ONLY difference is that PowerShell's parameter binder never
 # saw the contents.
 $InnerArgsList = ConvertFrom-JsonArgv -ParamName 'InnerArgs' -Raw $InnerArgs
 $SharePathList = ConvertFrom-JsonArgv -ParamName 'SharePath' -Raw $SharePath
+$SharePathReadOnlyList = ConvertFrom-JsonArgv -ParamName 'SharePathReadOnly' -Raw $SharePathReadOnly
 $SetEnvList    = ConvertFrom-JsonArgv -ParamName 'SetEnv'    -Raw $SetEnv
 
 if (-not (Test-Path -LiteralPath $TargetFolder -PathType Container)) {
@@ -1408,7 +1429,7 @@ for ($attempt = 1; $attempt -le $maxLeaseAttempts -and -not $leasedName; $attemp
             if ($rec.Status -eq 'revoked') {
               Log "reclaim revoked the hard-killed turn's ACE for $($rec.Sid) ($name) on $($rec.Path)  - $($rec.Message)"
             } elseif ($rec.Status -eq 'failed') {
-              Log "WARNING: reclaim could NOT revoke the hard-killed turn's ACE for '$name' on $($rec.Path)  - $($rec.Message). That account STILL has Modify there; the path stays in this lock's ledger so the next reclaim retries it."
+              Log "WARNING: reclaim could NOT revoke the hard-killed turn's ACE for '$name' on $($rec.Path)  - $($rec.Message). That account STILL has an explicit ACE there; the path stays in this lock's ledger so the next reclaim retries it."
             } else {
               Log "reclaim found nothing to revoke for '$name' on $($rec.Path)  - $($rec.Status): $($rec.Message)"
             }
@@ -1485,12 +1506,24 @@ try {
   Set-Acl -LiteralPath $TargetFolder -AclObject $acl
   Log "granted Modify to $($leasedSid.Value) ($leasedName) on $TargetFolder"
 
-  # ---- (d2) the SAME ACE on each -SharePath entry. WHY THIS EXISTS: a being's
-  # `allowed_paths` currently produce a `--add-dir` at the CLI layer and NOTHING
-  # at the OS layer, so under the sandbox the folder is permitted by Claude Code
-  # and denied by the kernel - the being is told it may use a directory that
-  # then refuses it. This closes that one gap and only that gap: with no
-  # -SharePath the loop body never executes and this step costs a turn nothing.
+  # ---- (d2) ONE ACE PER SHARE PATH, IN THE CLASS ITS CALLER DECLARED IT IN.
+  # WHY THIS EXISTS: a being's `allowed_paths` produce a `--add-dir` at the CLI
+  # layer and NOTHING at the OS layer, so under the sandbox the folder is
+  # permitted by Claude Code and denied by the kernel - the being is told it may
+  # use a directory that then refuses it. This closes that one gap and only that
+  # gap: with no share paths neither loop body executes and this step costs a
+  # turn nothing.
+  #
+  # TWO CLASSES, ONE LOOP (operator 2026-09-13). -SharePath gets Modify;
+  # -SharePathReadOnly gets ReadAndExecute. Until then this step had exactly one
+  # ACE mode and both classes arrived concatenated in -SharePath, so a path the
+  # CLI layer treats as read-only was WRITABLE to the kernel - and these beings
+  # hold Bash and PowerShell, so one shell command wrote past the deny rule.
+  # Under the `all`/`sandbox` tiers there is no CLI layer at all, so there the
+  # ACE was the only gate and it granted write. The rights come from the class
+  # table below rather than from a copied second loop: a copy is how the two
+  # would drift into disagreeing about ledgers, de-duplication or failure
+  # handling, and the ledger half of that is a leaked ACE.
   #
   # EACH PATH INDEPENDENTLY, deliberately, and that is the whole design of this
   # block: one unshareable path must not cost the turn its OTHER paths or its
@@ -1505,46 +1538,59 @@ try {
   # ContainerInherit,ObjectInherit because TargetFolder is always a directory. A
   # share path may be a single FILE, and those flags are illegal on a leaf (.NET
   # throws "This flag may not be set on a leaf object"), so a file gets the same
-  # Modify ACE with no inheritance instead.
+  # ACE with no inheritance instead.
   $sharesSeen = New-Object 'System.Collections.Generic.HashSet[string]' -ArgumentList ([System.StringComparer]::OrdinalIgnoreCase)
-  # Seeded with TargetFolder so that a -SharePath entry naming the conversation
+  # Seeded with TargetFolder so that a share entry naming the conversation
   # folder is recognised as already covered by (d) - otherwise it would mean a
   # second Set-Acl for an ACE that is already there, and a second purge on the
   # way out, both pointless writes to the folder the turn is actually using.
+  # SHARED ACROSS BOTH CLASSES, so one path can never collect two ACEs; the
+  # writable pass runs first, so a path in both lists keeps its Modify and the
+  # read-only pass logs it as a duplicate. src/sandbox-cli-session.mjs drops
+  # such a path from the read-only list before it ever gets here.
   [void]$sharesSeen.Add([System.IO.Path]::GetFullPath($TargetFolder).TrimEnd('\'))
-  foreach ($sp in $SharePathList) {
-    if ([string]::IsNullOrWhiteSpace($sp)) { continue }
-    try {
-      if (-not (Test-Path -LiteralPath $sp)) {
-        Log "share path does not exist  - skipping, no ACE granted: $sp"
-        continue
-      }
-      # Pure string math on a path that was just shown to exist, so it cannot
-      # throw, and it is used ONLY as a de-duplication key - every ACL call
-      # below still uses the caller's own spelling of the path.
-      if (-not $sharesSeen.Add([System.IO.Path]::GetFullPath($sp).TrimEnd('\'))) {
-        Log "share path already granted this turn  - skipping duplicate: $sp"
-        continue
-      }
-      $shareInherit = if (Test-Path -LiteralPath $sp -PathType Container) { 'ContainerInherit,ObjectInherit' } else { 'None' }
-      # Ledger first, ACE second - the same order and the same reason as step
-      # (d). The failure to RECORD is warned about but does not skip the grant:
-      # a being losing a share path it was promised is a worse outcome than a
-      # crash-path cleanup gap, and this says which one happened.
-      [void]$acesGranted.Add($sp)
+  foreach ($shareClass in @(
+    @{ Rights = 'Modify';         Paths = $SharePathList },
+    @{ Rights = 'ReadAndExecute'; Paths = $SharePathReadOnlyList }
+  )) {
+    $shareRights = $shareClass.Rights
+    foreach ($sp in $shareClass.Paths) {
+      if ([string]::IsNullOrWhiteSpace($sp)) { continue }
       try {
-        Add-SandboxLeaseLedgerPath -Stream $lockStream -Path $sp
+        if (-not (Test-Path -LiteralPath $sp)) {
+          Log "share path does not exist  - skipping, no ACE granted: $sp"
+          continue
+        }
+        # Pure string math on a path that was just shown to exist, so it cannot
+        # throw, and it is used ONLY as a de-duplication key - every ACL call
+        # below still uses the caller's own spelling of the path.
+        if (-not $sharesSeen.Add([System.IO.Path]::GetFullPath($sp).TrimEnd('\'))) {
+          Log "share path already granted this turn  - skipping duplicate: $sp"
+          continue
+        }
+        $shareInherit = if (Test-Path -LiteralPath $sp -PathType Container) { 'ContainerInherit,ObjectInherit' } else { 'None' }
+        # Ledger first, ACE second - the same order and the same reason as step
+        # (d), and for BOTH classes: a read-only ACE nothing recorded is exactly
+        # the leak the ledger exists to prevent, since the revoke purges by SID
+        # and neither knows nor cares which rights the ACE carried. The failure
+        # to RECORD is warned about but does not skip the grant: a being losing
+        # a share path it was promised is a worse outcome than a crash-path
+        # cleanup gap, and this says which one happened.
+        [void]$acesGranted.Add($sp)
+        try {
+          Add-SandboxLeaseLedgerPath -Stream $lockStream -Path $sp
+        } catch {
+          Log "WARNING: could not record shared path $sp in the ACE ledger at $lockPath  - $($_.Exception.Message). This turn's own revoke is unaffected, but a HARD KILL will leave '$leasedName' holding $shareRights there with nothing to find it by."
+        }
+        $shareAcl = Get-Acl -LiteralPath $sp
+        $shareRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+          $leasedSid, $shareRights, $shareInherit, 'None', 'Allow')
+        $shareAcl.AddAccessRule($shareRule)
+        Set-Acl -LiteralPath $sp -AclObject $shareAcl
+        Log "granted $shareRights to $($leasedSid.Value) ($leasedName) on shared path $sp"
       } catch {
-        Log "WARNING: could not record shared path $sp in the ACE ledger at $lockPath  - $($_.Exception.Message). This turn's own revoke is unaffected, but a HARD KILL will leave '$leasedName' holding Modify there with nothing to find it by."
+        Log "WARNING: could not grant $shareRights to $($leasedSid.Value) ($leasedName) on shared path $sp  - $($_.Exception.Message) (continuing: the other share paths and the launch are unaffected)"
       }
-      $shareAcl = Get-Acl -LiteralPath $sp
-      $shareRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-        $leasedSid, 'Modify', $shareInherit, 'None', 'Allow')
-      $shareAcl.AddAccessRule($shareRule)
-      Set-Acl -LiteralPath $sp -AclObject $shareAcl
-      Log "granted Modify to $($leasedSid.Value) ($leasedName) on shared path $sp"
-    } catch {
-      Log "WARNING: could not grant Modify to $($leasedSid.Value) ($leasedName) on shared path $sp  - $($_.Exception.Message) (continuing: the other share paths and the launch are unaffected)"
     }
   }
 
@@ -1597,7 +1643,8 @@ try {
   if ($hSandboxDesk -ne [IntPtr]::Zero) { [SandboxLogon]::CloseDesktop($hSandboxDesk) | Out-Null }
   # NOTE: of the ACEs, only the per-turn FILESYSTEM ones are revoked here - the
   # ones this turn recorded in $acesGranted, i.e. TargetFolder from step (d) and
-  # the -SharePath entries step (d2) reached. The WINDOW
+  # every shared path step (d2) reached, of EITHER class - the revoke purges by
+  # SID, so a ReadAndExecute ACE comes off exactly like a Modify one. The WINDOW
   # STATION ACE from step (e) is deliberately LEFT IN PLACE: it is granted to
   # the pool GROUP (not per-turn, not per-account) and is shared by every
   # concurrent turn, so revoking it here would race sessions still running. It
@@ -1623,7 +1670,7 @@ try {
       if ($rec.Status -eq 'revoked') {
         Log "revoked ACE for $($rec.Sid) ($leasedName) on $($rec.Path)  - $($rec.Message)"
       } elseif ($rec.Status -eq 'failed') {
-        Log "WARNING: could not revoke the ACE for '$leasedName' on $($rec.Path)  - $($rec.Message). That account STILL has Modify there; the next reclaim of this lease will retry it."
+        Log "WARNING: could not revoke the ACE for '$leasedName' on $($rec.Path)  - $($rec.Message). That account STILL has an explicit ACE there; the next reclaim of this lease will retry it."
       } else {
         Log "nothing to revoke for '$leasedName' on $($rec.Path)  - $($rec.Status): $($rec.Message)"
       }

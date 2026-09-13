@@ -14,22 +14,23 @@
 # this script REFUSES to run from one rather than reporting a false failure.
 #
 # THE ARGUMENT CONTRACT this exercises (rewritten 2026-09-05, and the reason for
-# sections 3 and 4). -InnerArgs, -SharePath and -SetEnv are each exactly ONE argv
-# element holding a JSON ARRAY, which the launcher parses itself, so PowerShell's
-# parameter binder never sees caller data as a token. Before that, the binder ATE
-# the inner argv's `--verbose` into [CmdletBinding()]'s common -Verbose switch
-# (every sandboxed ccode turn then died on "When using --print,
-# --output-format=stream-json requires --verbose"), bound only the FIRST value of
-# a multi-value flag and spilled the rest into the inner argv, and rejected the
-# empty `--setting-sources ''` element outright. See the launcher's PARAMS header.
+# sections 3 and 4). -InnerArgs, -SharePath, -SharePathReadOnly and -SetEnv are
+# each exactly ONE argv element holding a JSON ARRAY, which the launcher parses
+# itself, so PowerShell's parameter binder never sees caller data as a token.
+# Before that, the binder ATE the inner argv's `--verbose` into
+# [CmdletBinding()]'s common -Verbose switch (every sandboxed ccode turn then
+# died on "When using --print, --output-format=stream-json requires --verbose"),
+# bound only the FIRST value of a multi-value flag and spilled the rest into the
+# inner argv, and rejected the empty `--setting-sources ''` element outright. See
+# the launcher's PARAMS header.
 #
 # SECTIONS:
 #   1-2  per-account ACL confinement: two sessions, each reads its OWN folder's
 #        marker and is DENIED the other's.
-#   3    -SharePath with TWO paths in ONE invocation: both get an ACE, both are
-#        read AND written by the child, a control folder that was NOT passed is
-#        denied, the operator's ~/.claude/.credentials.json is denied, and every
-#        ACE is gone afterwards.
+#   3    share paths in ONE invocation: TWO -SharePath entries, both read AND
+#        written by the child; ONE -SharePathReadOnly entry, read but DENIED the
+#        write; a control folder that was NOT passed, denied both; the operator's
+#        ~/.claude/.credentials.json denied; and every ACE gone afterwards.
 #   4    -InnerArgs round-trip: `--verbose`, an EMPTY element, a spaced element
 #        and an embedded quote all reach the child's own $args verbatim.
 #
@@ -77,13 +78,15 @@ $dirA = Join-Path $root 'folder-a'
 $dirB = Join-Path $root 'folder-b'
 $shareX = Join-Path $root 'share-x'
 $shareY = Join-Path $root 'share-y'
-$shareZ = Join-Path $root 'share-z'   # CONTROL: never passed as -SharePath
-foreach ($d in @($dirA, $dirB, $shareX, $shareY, $shareZ)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
+$shareZ = Join-Path $root 'share-z'   # CONTROL: never passed as a share path at all
+$shareR = Join-Path $root 'share-r'   # READ-ONLY: passed as -SharePathReadOnly
+foreach ($d in @($dirA, $dirB, $shareX, $shareY, $shareZ, $shareR)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
 Set-Content -LiteralPath (Join-Path $dirA 'marker.txt') -Value 'MARKER-A-CONTENT' -NoNewline
 Set-Content -LiteralPath (Join-Path $dirB 'marker.txt') -Value 'MARKER-B-CONTENT' -NoNewline
 Set-Content -LiteralPath (Join-Path $shareX 'marker.txt') -Value 'MARKER-X-CONTENT' -NoNewline
 Set-Content -LiteralPath (Join-Path $shareY 'marker.txt') -Value 'MARKER-Y-CONTENT' -NoNewline
 Set-Content -LiteralPath (Join-Path $shareZ 'marker.txt') -Value 'MARKER-Z-CONTENT' -NoNewline
+Set-Content -LiteralPath (Join-Path $shareR 'marker.txt') -Value 'MARKER-R-CONTENT' -NoNewline
 
 $launcher = Join-Path $PSScriptRoot 'sandbox-logon-launcher.ps1'
 $psExe = Join-Path $PSHOME 'powershell.exe'
@@ -98,12 +101,13 @@ $spawnJs = 'const f=require(''fs''),c=require(''child_process'');' +
            'process.stdout.write(String(r.stderr||''''));' +
            'process.exit(r.status===null?1:r.status);'
 
-function Invoke-Launcher([string]$TargetFolder, [string[]]$InnerArgv, [string[]]$Shares = @()) {
+function Invoke-Launcher([string]$TargetFolder, [string[]]$InnerArgv, [string[]]$Shares = @(), [string[]]$SharesReadOnly = @()) {
   # ONE argv element per launcher parameter, each a JSON array - the whole contract.
   # InnerBin must be an absolute path (operator 2026-08-21): the launcher passes it
   # as CreateProcessWithLogonW's lpApplicationName, which does not search PATH.
   $psArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $launcher, '-TargetFolder', $TargetFolder)
   if ($Shares.Count -gt 0) { $psArgs += @('-SharePath', (ConvertTo-JsonArgv $Shares)) }
+  if ($SharesReadOnly.Count -gt 0) { $psArgs += @('-SharePathReadOnly', (ConvertTo-JsonArgv $SharesReadOnly)) }
   $psArgs += @('-InnerBin', $psExe, '-InnerArgs', (ConvertTo-JsonArgv $InnerArgv))
   # WriteAllText with an explicit BOM-LESS UTF8Encoding, not Set-Content -Encoding
   # UTF8: PS 5.1's UTF8 writes a BYTE ORDER MARK and JSON.parse then fails with
@@ -172,22 +176,29 @@ function Test-Result([string[]]$Out, [string]$ExpectOwn, [string]$ExpectCwd, [st
 $passA = Test-Result -Out $outA -ExpectOwn 'MARKER-A-CONTENT' -ExpectCwd $dirA -Label 'folder-a session'
 $passB = Test-Result -Out $outB -ExpectOwn 'MARKER-B-CONTENT' -ExpectCwd $dirB -Label 'folder-b session'
 
-# ==== section 3: TWO -SharePath entries in ONE invocation ==================
+# ==== section 3: share paths - two writable, one READ-ONLY, one control =====
 # The old [string[]] parameter could not carry two: `-SharePath X Y` bound only X
 # and dropped Y into the inner argv, silently. One JSON array element carries any
 # number, and each still gets its own independent grant/revoke.
+#
+# AND THE READ-ONLY CLASS (2026-09-13), which is the whole reason share-r is here:
+# -SharePathReadOnly grants ReadAndExecute instead of Modify, so this one child
+# sees THREE different outcomes in one run - a writable share reads AND writes, a
+# read-only share reads and is DENIED the write, and a folder that was never
+# passed is denied both. Before it, every declared path got Modify and a being
+# holding a shell wrote straight past the CLI layer's read-only deny rule.
 Write-Host ""
-Write-Host "=== session with TWO share paths (plus one control folder that gets none) ==="
+Write-Host "=== session with TWO writable share paths, ONE read-only, and one control folder that gets none ==="
 $credPath = Join-Path $env:USERPROFILE '.claude\.credentials.json'
 $shareInner =
-  "foreach (`$d in @('$shareX','$shareY','$shareZ')) { " +
+  "foreach (`$d in @('$shareX','$shareY','$shareR','$shareZ')) { " +
   "  `$name = Split-Path `$d -Leaf; " +
   "  try { `$r = 'READ:' + (Get-Content -LiteralPath (Join-Path `$d 'marker.txt') -Raw -ErrorAction Stop) } catch { `$r = 'DENIED' } " +
   "  try { Set-Content -LiteralPath (Join-Path `$d 'written-by-child.txt') -Value 'child wrote here' -ErrorAction Stop; `$w = 'WROTE' } catch { `$w = 'DENIED' } " +
   "  Write-Output ('SHARE=' + `$name + ' ' + `$r + ' ' + `$w) }; " +
   "try { `$n = (Get-Content -LiteralPath '$credPath' -Raw -ErrorAction Stop).Length; Write-Output ('CREDS=READ:' + `$n) } " +
   "catch { Write-Output 'CREDS=DENIED' }"
-$outS = Invoke-Launcher -TargetFolder $dirA -Shares @($shareX, $shareY) `
+$outS = Invoke-Launcher -TargetFolder $dirA -Shares @($shareX, $shareY) -SharesReadOnly @($shareR) `
   -InnerArgv @('-NoProfile', '-NonInteractive', '-Command', $shareInner)
 $outS | ForEach-Object { Write-Host "  $_" }
 
@@ -196,28 +207,35 @@ function Get-ShareLine([string[]]$Out, [string]$Name) {
 }
 $xLine = Get-ShareLine $outS 'share-x'
 $yLine = Get-ShareLine $outS 'share-y'
+$rLine = Get-ShareLine $outS 'share-r'
 $zLine = Get-ShareLine $outS 'share-z'
 $credLine = $outS | Where-Object { $_ -match '^CREDS=' } | Select-Object -First 1
 $xOk = $xLine -eq 'SHARE=share-x READ:MARKER-X-CONTENT WROTE'
 $yOk = $yLine -eq 'SHARE=share-y READ:MARKER-Y-CONTENT WROTE'
+# THE ASSERTION THIS SECTION EXISTS FOR NOW: read yes, write NO. A 'WROTE' here
+# means the read-only class is granting a write-capable ACE again, i.e. the whole
+# point of -SharePathReadOnly is gone and "read-only" is advisory once more.
+$rOk = $rLine -eq 'SHARE=share-r READ:MARKER-R-CONTENT DENIED'
 $zOk = $zLine -eq 'SHARE=share-z DENIED DENIED'
 $credOk = $credLine -eq 'CREDS=DENIED'
 # EVERY ACE must be gone: the finally purges TargetFolder and each share path that
-# actually got one. A leftover here is a real leak, not cosmetic.
+# actually got one, of EITHER class - the revoke matches by SID, not by rights. A
+# leftover here is a real leak, not cosmetic.
 $residue = @()
-foreach ($d in @($dirA, $dirB, $shareX, $shareY, $shareZ)) {
+foreach ($d in @($dirA, $dirB, $shareX, $shareY, $shareZ, $shareR)) {
   foreach ($ace in (Get-Acl -LiteralPath $d).Access) {
     if ($ace.IdentityReference.Value -match 'egpt-sbx') { $residue += ("$d -> " + $ace.IdentityReference.Value) }
   }
 }
 Write-Host ""
-Write-Host "--- two share paths in one invocation ---"
+Write-Host "--- share paths in one invocation ---"
 Write-Host "  first share ACE'd:     $(if ($xOk) {'PASS'} else {'FAIL'})  ($xLine)"
 Write-Host "  second share ACE'd:    $(if ($yOk) {'PASS'} else {'FAIL'})  ($yLine)"
+Write-Host "  read-only share R/O:   $(if ($rOk) {'PASS'} else {'FAIL'})  ($rLine)"
 Write-Host "  control NOT ACE'd:     $(if ($zOk) {'PASS'} else {'FAIL'})  ($zLine)"
 Write-Host "  operator creds denied: $(if ($credOk) {'PASS'} else {'FAIL'})  ($credLine)"
 Write-Host "  zero leftover ACEs:    $(if ($residue.Count -eq 0) {'PASS'} else {'FAIL'})  ($($residue.Count) found$(if ($residue.Count) { ': ' + ($residue -join '; ') }))"
-$passS = $xOk -and $yOk -and $zOk -and $credOk -and ($residue.Count -eq 0)
+$passS = $xOk -and $yOk -and $rOk -and $zOk -and $credOk -and ($residue.Count -eq 0)
 
 # ==== section 4: the inner argv round-trip ================================
 # THE REGRESSION THAT KILLED PRODUCTION: `--verbose` must arrive as an ordinary
@@ -243,7 +261,7 @@ Write-Host "  verbatim, --verbose included: $(if ($passR) {'PASS'} else {'FAIL'}
 
 Write-Host ""
 if ($passA -and $passB -and $passS -and $passR) {
-  Write-Host "OVERALL: PASS - confinement holds, two share paths were granted and revoked, and the inner argv survived verbatim"
+  Write-Host "OVERALL: PASS - confinement holds, share paths were granted in their own class (write / read-only) and revoked, and the inner argv survived verbatim"
 } else {
   Write-Host "OVERALL: FAIL - see per-section results above"
 }
