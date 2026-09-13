@@ -444,3 +444,114 @@ Describe 'Clear-SandboxStaleLease (what a RECLAIM does to a hard-killed turns le
     } finally { $s.Close(); Remove-Item -LiteralPath $lock -Force }
   }
 }
+
+# ---------------------------------------------------------------------------
+# THE TRAVERSE CHAIN (2026-09-13). Grant-SandboxPoolTraverse is what makes the
+# five ancestor directories above a conversation folder WALKABLE by the pool
+# without making them LISTABLE - the property the whole grant exists for, and
+# the one an eyeball on an icacls line gets wrong easily, since (Rc,X,RA) and
+# (RX) look alike and differ by exactly the read-data bit.
+#
+# These grant FOR REAL, against a throwaway directory under $env:TEMP, with
+# $SandboxPoolGroup pointed at the CURRENT USER's own account - the same
+# substitution the credential tests make with $CredDir, for the same reason:
+# nothing here may touch the real pool group, the operator's profile, or any
+# live ACL. Unelevated, like everything else below the ledger banner.
+#
+# WHAT THIS CANNOT COVER, and no in-process test can: that the real
+# egpt-sandbox-pool group resolves on a real node, that the chain in
+# provision-sandbox-account.ps1 names the right five directories, and that a
+# leased egpt-sbx-NN can then actually walk them. Those are a provisioner run
+# and an icacls read on a live node; see setup/SANDBOX.md's "Checking it".
+$script:TraverseSavedGroup = $null
+
+function Get-TestExplicitAces([string]$Path) {
+  $acl = Get-Acl -LiteralPath $Path
+  return @($acl.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]) |
+    Where-Object { $_.IdentityReference.Value -eq $script:MeSid.Value })
+}
+
+# ExecuteFile (32, the traverse bit) | ReadAttributes (128) | ReadPermissions
+# (131072). Spelled as a number because that is what the assertions compare, and
+# spelled out here so a future reader does not have to decode it.
+$script:TraverseRights = 131232
+
+Describe 'Grant-SandboxPoolTraverse (walk through the directory, do not list it)' {
+  BeforeEach {
+    $script:TraverseSavedGroup = $SandboxPoolGroup
+    $script:SandboxPoolGroup = $script:MeName
+  }
+
+  AfterEach {
+    $script:SandboxPoolGroup = $script:TraverseSavedGroup
+  }
+
+  It 'writes exactly (X,RA,RC) and nothing else' {
+    $d = New-LedgerTempDir
+    (Get-TestExplicitAceCount $d) | Should Be 0
+    Grant-SandboxPoolTraverse -Path $d
+    $aces = @(Get-TestExplicitAces $d)
+    $aces.Count | Should Be 1
+    ([int]$aces[0].FileSystemRights) | Should Be $script:TraverseRights
+    ($aces[0].AccessControlType.ToString()) | Should Be 'Allow'
+  }
+
+  It 'does NOT grant list-directory, so the operator home and the chat-folder names stay unenumerable' {
+    # THE SECURITY PROPERTY. ListDirectory is the same bit as ReadData (1); if
+    # this ever comes back non-zero, a sandboxed being can enumerate every
+    # conversation slug on the box, which is precisely what the chain is shaped
+    # to prevent while still letting it reach the one folder it was granted.
+    $d = New-LedgerTempDir
+    Grant-SandboxPoolTraverse -Path $d
+    $rights = [int](@(Get-TestExplicitAces $d)[0].FileSystemRights)
+    ($rights -band [int][System.Security.AccessControl.FileSystemRights]::ListDirectory) | Should Be 0
+    ($rights -band [int][System.Security.AccessControl.FileSystemRights]::WriteData) | Should Be 0
+    ($rights -band [int][System.Security.AccessControl.FileSystemRights]::ExecuteFile) | Should Not Be 0
+  }
+
+  It 'is NOT inheritable, so nothing under the directory picks the grant up' {
+    $d = New-LedgerTempDir
+    Grant-SandboxPoolTraverse -Path $d
+    (@(Get-TestExplicitAces $d)[0].InheritanceFlags.ToString()) | Should Be 'None'
+    $child = Join-Path $d 'child'
+    New-Item -ItemType Directory -Path $child | Out-Null
+    $inheritedHere = @((Get-Acl -LiteralPath $child).GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]) |
+      Where-Object { [int]$_.FileSystemRights -eq $script:TraverseRights })
+    $inheritedHere.Count | Should Be 0
+  }
+
+  It 'converges instead of accumulating: three runs leave exactly one ACE' {
+    $d = New-LedgerTempDir
+    foreach ($i in 1..3) { Grant-SandboxPoolTraverse -Path $d }
+    (@(Get-TestExplicitAces $d).Count) | Should Be 1
+    ([int](@(Get-TestExplicitAces $d)[0].FileSystemRights)) | Should Be $script:TraverseRights
+  }
+
+  It 'is ADDITIVE - a broader ACE already on the directory survives, and still nothing accumulates' {
+    # icacls folds the grant into an existing ACE when the inheritance flags
+    # match and writes a SEPARATE one when they do not, which is this case:
+    # (OI)(CI)(RX) already there, traverse-only added beside it. Two ACEs after
+    # the first run and still two after the third. This function never narrows -
+    # the same additive character Grant-SandboxPoolAccess and
+    # Grant-SandboxPoolModify have, and the reason ~\bin\egpt needed a hand
+    # removal when its grant was reversed.
+    $d = New-LedgerTempDir
+    Grant-TestReadAndExecute $d
+    foreach ($i in 1..3) { Grant-SandboxPoolTraverse -Path $d }
+    $aces = @(Get-TestExplicitAces $d)
+    $aces.Count | Should Be 2
+    (@($aces | Where-Object { $_.InheritanceFlags.ToString() -ne 'None' }).Count) | Should Be 1
+    (@($aces | Where-Object { [int]$_.FileSystemRights -eq $script:TraverseRights }).Count) | Should Be 1
+  }
+
+  It 'throws on a path that is not there, rather than reporting a grant it never made' {
+    { Grant-SandboxPoolTraverse -Path (Join-Path $script:LedgerTempRoot 'never-existed-traverse') } | Should Throw
+  }
+
+  It 'fails loudly when the group cannot be resolved, instead of letting icacls pick a principal' {
+    $d = New-LedgerTempDir
+    $script:SandboxPoolGroup = 'egpt-no-such-group-zzz'
+    { Grant-SandboxPoolTraverse -Path $d } | Should Throw
+    (Get-TestExplicitAceCount $d) | Should Be 0
+  }
+}

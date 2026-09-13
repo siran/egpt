@@ -93,13 +93,18 @@ or if you are unsure. What it does:
    `C:\ProgramData\egpt`.
 2. `Ensure-SandboxPoolGroup` — creates `egpt-sandbox-pool` and puts all of them
    in it. One group means one grant instead of sixteen.
-3. Grants the group `ReadAndExecute` on `~\.local\bin` (where `claude.exe`
-   lives) and on `%APPDATA%\npm` (pi and codex are npm globals launched via
-   `node.exe`, and the JS sits under the operator's profile).
-4. Grants `Modify` on `~\.pi\agent` and sets `PI_CODING_AGENT_DIR` at **Machine**
+3. `Grant-SandboxPoolTraverse` on the **ancestor chain** — `~`, `~\.egpt`,
+   `~\.egpt\conversations`, `~\.egpt\conversations\whatsapp` and `~\src`, each
+   skipped if absent. Traverse only, and via `icacls`, not `Set-Acl`. See *The
+   ACL model*.
+4. Grants the group `ReadAndExecute` on `~\.local\bin` (where `claude.exe`
+   lives), on `%APPDATA%\npm` (pi and codex are npm globals launched via
+   `node.exe`, and the JS sits under the operator's profile), and on
+   `~\bin\egpt`, the running tree.
+5. Grants `Modify` on `~\.pi\agent` and sets `PI_CODING_AGENT_DIR` at **Machine**
    scope, because the launcher cannot pass a per-spawn environment (see
    *Known gaps*).
-5. `Protect-SandboxCredDir` — breaks inheritance on `C:\ProgramData\egpt` so
+6. `Protect-SandboxCredDir` — breaks inheritance on `C:\ProgramData\egpt` so
    only SYSTEM, Administrators and the operator can read the credential blobs.
 
 **Why LocalMachine DPAPI scope.** CurrentUser ciphertext is decryptable only by
@@ -133,18 +138,49 @@ Access is therefore **opt-in and narrow**, and the whole list is:
 
 | Path | Grant | Why |
 |---|---|---|
+| `~` | Pool group, **traverse only** — `(X,RA,RC)`, not inherited | the ancestor chain above a conversation folder; see below |
+| `~\.egpt` | Pool group, traverse only | same chain |
+| `~\.egpt\conversations` | Pool group, traverse only | same chain |
+| `~\.egpt\conversations\whatsapp` | Pool group, traverse only | same chain |
+| `~\src` | Pool group, traverse only | same chain; skipped where absent |
 | `~\.local\bin` | Pool group, ReadAndExecute | `claude.exe` |
 | `%APPDATA%\npm` | Pool group, ReadAndExecute | pi / codex entry JS |
 | `~\.pi\agent` | Pool group, Modify | pi writes there; missing it wedges the turn |
-| `~\bin\egpt` | Pool group, Modify | the RUNNING tree — operator 2026-09-10, *"let E modify itself"*. Permanent, not per-turn. See *Known gaps* 7 before treating this path as read-only for anyone. |
+| `~\bin\egpt` | Pool group, ReadAndExecute | the RUNNING tree. Was Modify (operator 2026-09-10, *"let E modify itself"*); reversed 2026-09-13 — it executes **as the operator**, so a standing group write there is code outside the sandbox at the next restart. Permanent, not per-turn. See *Known gaps* 7. |
 | the conversation folder | leased account, Modify | granted at launch, revoked at exit |
 | each `-SharePath` | leased account, Modify | a being's full-access `allowed_paths`, plus its thread's CLI store; granted at launch, revoked at exit |
 | each `-SharePathReadOnly` | leased account, ReadAndExecute | a being's read-only `allowed_paths`; granted at launch, revoked at exit |
 
+**The traverse chain, and why it is its own kind of grant.** A per-turn ACE on a
+conversation folder is *useless on its own*: to open
+`~\.egpt\conversations\whatsapp\<slug>` the kernel checks `FILE_TRAVERSE` on
+every directory above it, and the "bypass traverse checking" privilege that
+normally hides this does **not** cover these logon tokens — measured twice on
+2026-09-13. It had broken a being reading an image inside its own conversation
+folder for two days (Claude Code reported it as its symlink resolution changing
+after the permission check) and a being writing to a shared path it plainly held
+an ACE on. Granting traverse on the parents fixed both, verified as
+`reve\egpt-sbx-13`.
+
+`(X,RA,RC)` is traverse + read-attributes + read-permissions, and the important
+part is what is **missing**: `RD`, list-directory. A pool account can walk
+*through* the operator's home to a folder it was granted **by name**, and still
+cannot enumerate the home, or `.egpt`, or the names of other conversations. The
+ACEs are also **not inheritable** — each directory of the chain is granted on
+its own, because an `(OI)(CI)` ACE here would hand traverse to everything below
+the profile.
+
+`Grant-SandboxPoolTraverse` uses **`icacls`, not `Set-Acl`**: `Set-Acl` persists
+the SACL (the `PrivilegeNotHeldException` documented on `Protect-SandboxCredDir`)
+and against `C:\Users\an` it *hung* twice and had to be killed. Like every grant
+in `sandbox-account.ps1` it is additive — it never narrows an existing ACE — and
+re-running converges rather than accumulating.
+
 Everything else under the operator's profile — `.claude/.credentials.json`,
-`.egpt/config/config.yaml`, `src/`, `Documents` — is unreachable from a pool
-account because nothing grants it. Pool profiles are likewise isolated from each
-other: `C:\Users\egpt-sbx-NN` carries no pool-group or `Users` ACE, so one
+`.egpt/config/config.yaml`, `Documents`, and the *contents* of every directory
+in the chain above — is unreachable from a pool account because nothing grants
+it. Pool profiles are likewise isolated from each other:
+`C:\Users\egpt-sbx-NN` carries no pool-group or `Users` ACE, so one
 conversation's residue is not readable by another's.
 
 **There is no deny-list, and that is deliberate.** A pool account can read
@@ -171,13 +207,26 @@ Get-LocalGroupMember egpt-sandbox-pool | Select-Object Name
 # the credential store is closed to everyone else
 icacls C:\ProgramData\egpt
 
-# the operator's profile is NOT reachable  (expect: no pool group, no Users)
+# the operator's profile is not READABLE  (expect: no Users; no pool group at
+# all on .claude, and on .egpt only the traverse ACE below — never (RX), never
+# (M), never (OI)/(CI))
 icacls C:\Users\$env:USERNAME\.claude
 icacls C:\Users\$env:USERNAME\.egpt
 
-# the two intended grants ARE present  (expect: egpt-sandbox-pool:(OI)(CI)(RX))
+# the traverse chain  (expect on each: egpt-sandbox-pool:(Rc,X,RA), no (OI)(CI).
+# An extra S -- (Rc,S,X,RA) -- is the same grant: SYNCHRONIZE, which .NET adds to
+# every rule it writes, so paths granted by hand before the provisioner carried
+# this carry it and paths icacls granted do not. Neither bit is list.)
+icacls C:\Users\$env:USERNAME
+icacls C:\Users\$env:USERNAME\.egpt
+icacls C:\Users\$env:USERNAME\.egpt\conversations
+icacls C:\Users\$env:USERNAME\.egpt\conversations\whatsapp
+icacls C:\Users\$env:USERNAME\src
+
+# the read-and-execute grants ARE present  (expect: egpt-sandbox-pool:(OI)(CI)(RX))
 icacls C:\Users\$env:USERNAME\.local\bin
 icacls $env:APPDATA\npm
+icacls C:\Users\$env:USERNAME\bin\egpt
 
 # a live or leftover per-conversation grant
 icacls C:\Users\$env:USERNAME\.egpt\conversations\whatsapp\<slug>
@@ -187,6 +236,10 @@ Reading `icacls` output: the first bracket says where the ACE came from —
 `(I)` is inherited from the parent, no `(I)` means it was set directly here. The
 rest is the right: `(F)` full control, `(M)` modify, `(RX)` read and execute.
 `(OI)` propagates to files in the folder, `(CI)` to subfolders.
+
+`(Rc,X,RA)` is the traverse grant, and it is easy to misread as a small `(RX)`.
+It is not: `(RX)` includes `RD`, the list bit, and `(Rc,X,RA)` deliberately does
+not. Walk through versus read the contents is the whole difference.
 
 ## Leases and residue
 
@@ -327,22 +380,28 @@ Real, current, and worth knowing before relying on any of this.
    than failing it. A sandboxed turn can read whatever credentials pi stores, so
    keep cloud logins out of pi.
 
-7. **A read-only share path does not override a standing grant, and `~/bin/egpt`
-   has one.** `-SharePathReadOnly` adds a `ReadAndExecute` ACE; Windows *unions*
-   every applicable Allow ACE, so it cannot subtract write that some other ACE
-   already grants. One such ACE exists by design:
-   `provision-sandbox-account.ps1` gives the pool **group** (`egpt-sandbox-pool`,
-   all 16 accounts) a permanent `Modify` ACE on `~/bin/egpt`, the running tree —
-   operator ruling 2026-09-10, *"let E modify itself"*. Verified live: that
-   explicit group ACE is on the folder today.
+7. **A read-only share path cannot subtract a standing grant.**
+   `-SharePathReadOnly` adds a `ReadAndExecute` ACE; Windows *unions* every
+   applicable Allow ACE, so it cannot take away write that some other ACE
+   already gives. The case this was written about was `~/bin/egpt`, which the
+   pool **group** held `Modify` on — operator ruling 2026-09-10, *"let E modify
+   itself"*.
 
-   So declaring `~/bin/egpt` read-only in a being's `allowed_paths` gets it a
-   read-only *per-turn* ACE and changes nothing — the being still writes there
-   through the group. Making it genuinely read-only means reversing that ruling:
-   swap `Grant-SandboxPoolModify` for `Grant-SandboxPoolAccess` in
-   `provision-sandbox-account.ps1` **and** remove the existing group ACE from the
-   live folder (the provisioner is additive; it never removes). That is an
-   operator decision, not a code fix.
+   **That ruling was reversed on 2026-09-13** and the provisioner now grants
+   `ReadAndExecute` there (`Grant-SandboxPoolAccess`), because `~/bin/egpt` is
+   executed **as the operator**: a standing group write ACE let any of the 16
+   pool accounts place code that runs outside the sandbox at the next restart. A
+   being that must change its own code is pointed at the editable checkout
+   per-turn instead, through `allowed_paths` → `-SharePath`.
+
+   **The general shape of the gap stands**, and so does its operational tail:
+   these helpers are **additive and never remove**, so changing the provisioner
+   stops a re-provision from re-granting `Modify` but does not revoke one an
+   earlier run already wrote. A node provisioned before 2026-09-13 still has it
+   until someone runs
+   `icacls "%USERPROFILE%\bin\egpt" /remove:g egpt-sandbox-pool` and
+   re-provisions. Same rule for any future standing grant: a per-turn read-only
+   ACE will not narrow it.
 
 ## Troubleshooting
 

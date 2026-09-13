@@ -297,6 +297,75 @@ function Grant-SandboxPoolModify {
   Log "granted Modify to $SandboxPoolGroup on $Path"
 }
 
+# Grant the pool group TRAVERSE-ONLY on ONE directory of an ancestor chain:
+# (X,RA,RC)  - traverse, read-attributes, read-permissions  - on that directory
+# itself, NOT inherited by anything under it. Additive, like its two siblings
+# above: never removes or replaces an existing ACE.
+#
+# WHY IT EXISTS (measured twice on 2026-09-13, hand-applied both times before it
+# was written down here). A per-turn ACE on a leaf folder is USELESS on its own:
+# to open C:\Users\an\.egpt\conversations\whatsapp\<slug> the kernel walks the
+# chain and needs FILE_TRAVERSE on every directory above it. The
+# SeChangeNotifyPrivilege "bypass traverse checking" that normally makes this
+# invisible does NOT cover these logon tokens. Two symptoms it produced: a being
+# could not read an image inside its own conversation folder for two days
+# (Claude Code reported it confusingly as its symlink resolution changing after
+# the permission check), and a being could not write a shared path it plainly
+# held an ACE on. Granting traverse on the PARENTS fixed both, verified as
+# reve\egpt-sbx-13.
+#
+# WHAT IS WITHHELD ON PURPOSE: RD, list-directory. A sandboxed being can walk
+# THROUGH the operator's home and through the conversations tree to a folder it
+# was granted BY NAME, and still cannot ENUMERATE either  - not the operator's
+# home, not the names of other conversations. That distinction is the whole
+# reason this is not just Grant-SandboxPoolAccess with a narrower path list.
+#
+# AND NOT INHERITABLE: no (OI)(CI). Each directory of the chain is granted on
+# its own; an inheritable ACE here would hand traverse to every descendant of
+# the operator's profile, which is the opposite of what is wanted.
+#
+# icacls, NOT Get-Acl/Set-Acl, and that is not a style choice (measured
+# 2026-09-13): Set-Acl persists the SACL  - see Protect-SandboxCredDir's note on
+# PrivilegeNotHeldException  - and against C:\Users\an itself it HUNG twice and
+# had to be killed. icacls edits the DACL only and returns at once. The two
+# sibling helpers' Set-Acl is fine on the paths THEY target; do not "simplify"
+# this one to match them, and do not reach for Set-Acl on the profile root.
+#
+# PLAIN /grant, NOT /grant:r, so this stays additive like the siblings, and it
+# converges anyway. Measured 2026-09-13, three runs each:
+#   clean directory                 -> one ACE, (X,RA,RC), no inheritance flags
+#   group already has (OI)(CI)(RX)  -> that ACE is left alone and ONE more is
+#                                      written, non-inheritable; still two after
+#                                      the third run
+# icacls folds the grant into an existing ACE when the inheritance flags match
+# and writes a separate one when they do not, so neither case accumulates. What
+# plain /grant will NOT do is NARROW a broader grant already made to this group
+# on one of these directories (':r' would replace it) - the same additive
+# character every grant in this file has, and narrowing one stays a hand
+# operation, as it is for ~\bin\egpt.
+function Grant-SandboxPoolTraverse {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path
+  )
+  if (-not (Test-Path -LiteralPath $Path)) {
+    throw "sandbox-logon-launcher: cannot grant pool traverse -- path does not exist: $Path"
+  }
+  # By SID, like the siblings. Translating first means a missing pool group
+  # fails loudly right here instead of letting icacls resolve some other
+  # principal that happens to carry the same name. '*' is icacls's prefix for a
+  # SID literal.
+  $groupSid = (New-Object System.Security.Principal.NTAccount($SandboxPoolGroup)).Translate([System.Security.Principal.SecurityIdentifier])
+  # No 2>&1: PS 5.1 turns a redirected native stderr into NativeCommandError
+  # records, which under the provisioner's $ErrorActionPreference='Stop' throws
+  # something unrelated to what went wrong. icacls's own reason goes to the
+  # console; the exit code is what this branches on.
+  $out = & icacls.exe $Path '/grant' ("*$($groupSid.Value):(X,RA,RC)")
+  if ($LASTEXITCODE -ne 0) {
+    throw "sandbox-logon-launcher: icacls could not grant traverse to $SandboxPoolGroup on $Path  - exit $LASTEXITCODE ($($out -join ' '))"
+  }
+  Log "granted traverse-only (X,RA,RC), not inherited, to $SandboxPoolGroup on $Path"
+}
+
 # Lock down $CredDir  - C:\ProgramData\egpt, which holds one DPAPI-encrypted
 # password file per pool account plus the sandbox-pool-locks lease directory.
 #

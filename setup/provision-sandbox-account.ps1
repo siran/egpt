@@ -28,6 +28,39 @@ if (-not $isElevated) {
 try {
   $result = Ensure-SandboxPool
   Ensure-SandboxPoolGroup
+
+  # THE ANCESTOR CHAIN, TRAVERSE ONLY (operator 2026-09-13, "nothing should be
+  # hand-applied, everything structural"). These five were applied BY HAND on
+  # both nodes and existed in no script, so a rebuild from this file produced a
+  # node where two live features silently did not work.
+  #
+  # Every ACE the launcher writes per turn is on a LEAF  - a conversation
+  # folder, a share path  - and a leaf ACE buys nothing unless the pool can walk
+  # the directories above it: the kernel checks FILE_TRAVERSE on each one, and
+  # bypass-traverse does not cover these logon tokens. (X,RA,RC) each, on the
+  # directory itself, never inherited, and deliberately NOT list  - a sandboxed
+  # being reaches a folder it was granted by name and still cannot enumerate the
+  # operator's home or the names of other conversations. Grant-SandboxPoolTraverse
+  # carries what was measured and why it is icacls and not Set-Acl.
+  #
+  # Skip-if-absent, per path: ~\src is on a dev node and not on a plain one, and
+  # the whatsapp folder only appears once a chat has landed. A node that grows
+  # one later picks it up the next time this runs.
+  $traverseChain = @(
+    $env:USERPROFILE,
+    (Join-Path $env:USERPROFILE '.egpt'),
+    (Join-Path $env:USERPROFILE '.egpt\conversations'),
+    (Join-Path $env:USERPROFILE '.egpt\conversations\whatsapp'),
+    (Join-Path $env:USERPROFILE 'src')
+  )
+  foreach ($traversePath in $traverseChain) {
+    if (Test-Path -LiteralPath $traversePath) {
+      Grant-SandboxPoolTraverse -Path $traversePath
+    } else {
+      Write-Host "note: $traversePath not present  - skipping its traverse grant on this node"
+    }
+  }
+
   # ccode: claude.exe (warm-cli-session's resolveClaudeBin prefers ~/.local/bin).
   $claudeBinDir = Join-Path $env:USERPROFILE '.local\bin'
   Grant-SandboxPoolAccess -Path $claudeBinDir
@@ -132,7 +165,7 @@ try {
   # files this locks down. Needs admin, which is exactly why it lives here and
   # not in the (unelevated) launcher.
   Protect-SandboxCredDir
-  Write-Host "OK: sandbox pool ready  - created $($result.Created), already existed $($result.Existed). Group '$SandboxPoolGroup' granted ReadAndExecute on $claudeBinDir and $npmGlobalDir. Credential dir $CredDir hardened (no BUILTIN\Users access)."
+  Write-Host "OK: sandbox pool ready  - created $($result.Created), already existed $($result.Existed). Group '$SandboxPoolGroup' granted ReadAndExecute on $claudeBinDir and $npmGlobalDir, and traverse-only on the ancestor chain above the conversation folders. Credential dir $CredDir hardened (no BUILTIN\Users access)."
 } catch {
   Write-Host "FAILED: $($_.Exception.Message)"
   exit 1
