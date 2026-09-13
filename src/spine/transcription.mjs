@@ -32,7 +32,6 @@ import { startWhisperServer, makeWhisperServerTranscriber } from '../tools/whisp
 import { parseTranscriptionConfig } from '../transcription-service.mjs';
 import { POSTS_BACK_DELAY_MS } from '../incoming-media.mjs';
 import { readState, CONV_YAML_PATH, getContact, slugDir } from '../conversations-state.mjs';
-import { DEFAULT_SERVICE } from '../transcription-service.mjs';
 
 export function createTranscription({
   getConfig = () => ({}),
@@ -88,7 +87,23 @@ export function createTranscription({
   // that configures nothing is HEARD but SILENT. Cost: one state read + one in-memory
   // lookup per VOICE NOTE (not per message).
   async function resolveTranscriptionService(chatId) {
-    const nodeRung = { ...DEFAULT_SERVICE, postsBackDelayMs: Math.max(0, globalDelayMs) };
+    // THE NODE RUNG IS THE NODE'S OWN SETTING — read from cfg.transcription_service through the
+    // SAME parser the entity rung uses below, so the two rungs cannot drift. It was the literal
+    // DEFAULT_SERVICE, which made the name a lie for this path: a node that had switched
+    // transcription OFF still transcribed the first note from every chat not yet in the registry
+    // (operator 2026-09-13, after switching `enabled` off in both live profiles changed nothing:
+    // "fix it. me touching enable was a desperate attempt"). DEFAULT_SERVICE is still the FLOOR,
+    // now via parseTranscriptionConfig, whose own defaults ARE that constant (locked in
+    // tests/transcription-service.test.mjs) — a node declaring nothing is still HEARD but SILENT.
+    // Same value semantics as the entity rung, for the same reason: a NEGATIVE delay is a hard
+    // mute, carried out as postsBack:false (a raw -1 would post IMMEDIATELY downstream, since
+    // transcribeVoiceNote debounces only while postsBackDelayMs > 0) and clamped to 0.
+    const { enabled: nodeEnabled, postsBack: nodePostsBack } = parseTranscriptionConfig(cfg);
+    const nodeRung = {
+      enabled: nodeEnabled,
+      postsBack: nodeEnabled && nodePostsBack && globalDelayMs >= 0,
+      postsBackDelayMs: Math.max(0, globalDelayMs),
+    };
     if (!chatId) return nodeRung;
     let hit = null, surface = null;
     try {

@@ -3,6 +3,7 @@
 // tests/transcription-pipeline.test.mjs; this covers the config wiring.)
 import { describe, it, expect } from 'vitest';
 import { createTranscription } from '../src/spine/transcription.mjs';
+import { POSTS_BACK_DELAY_MS } from '../src/incoming-media.mjs';
 
 const config = {
   transcription_service: {
@@ -70,6 +71,44 @@ describe('createTranscription', () => {
     });
     expect(await tx.resolveTranscriptionService('!unknown:beeper.local')).toEqual({ enabled: true, postsBack: false, postsBackDelayMs: 12345 });
     expect(readCalled).toBe(false);   // no contact → no entity lookup
+  });
+
+  // …AND THAT FALLBACK IS THE NODE'S OWN SETTING (operator 2026-09-13: "fix it. me touching
+  // enable was a desperate attempt"). It used to be the literal DEFAULT_SERVICE, which made the
+  // name "node rung" a lie: a node whose config.yaml said `enabled: false` STILL transcribed the
+  // first note from every chat not yet in the registry, so switching transcription off in the
+  // live profiles changed nothing for a brand-new chat. Same parser as the entity rung now.
+  const nodeSaying = (svc) => createTranscription({
+    getConfig: () => ({ ...config, transcription_service: { ...config.transcription_service, ...svc } }),
+    loadState: async () => ({ contacts: {} }),
+  });
+
+  it('the node rung honors the node\'s own enabled:false for a chat with NO registry row', async () => {
+    expect(await nodeSaying({ enabled: false }).resolveTranscriptionService('!unknown:beeper.local'))
+      .toEqual({ enabled: false, postsBack: false, postsBackDelayMs: 12345 });
+  });
+
+  it('…and its own posts_back:true — the fallback reads the node in both directions', async () => {
+    expect(await nodeSaying({ posts_back: true }).resolveTranscriptionService('!unknown:beeper.local'))
+      .toEqual({ enabled: true, postsBack: true, postsBackDelayMs: 12345 });
+  });
+
+  // The node rung carries the same VALUE SEMANTICS the entity rung always had: a NEGATIVE
+  // posts_back_delay_ms is a hard mute (HEARD, never SPOKEN), folded into postsBack and clamped
+  // to 0 on the way out. It cannot ride out as a raw -1 instead: transcribeVoiceNote debounces
+  // only when `postsBackDelayMs > 0` and posts IMMEDIATELY otherwise, so a negative surviving
+  // into the verdict would echo at once — the exact opposite of never-echo. ~/.egpt sets -1.
+  it('a NEGATIVE node delay stays never-echo for a registry-less chat (not an immediate one)', async () => {
+    expect(await nodeSaying({ posts_back: true, posts_back_delay_ms: -1 }).resolveTranscriptionService('!unknown:beeper.local'))
+      .toEqual({ enabled: true, postsBack: false, postsBackDelayMs: 0 });
+  });
+
+  // The converse lock: DEFAULT_SERVICE is still the FLOOR — a node that declares no
+  // transcription_service at all gets HEARD but SILENT, at the shared delay.
+  it('node declaring nothing → the DEFAULT_SERVICE floor + the shared delay', async () => {
+    const tx = createTranscription({ getConfig: () => ({}), loadState: async () => ({ contacts: {} }) });
+    expect(await tx.resolveTranscriptionService('!unknown:beeper.local'))
+      .toEqual({ enabled: true, postsBack: false, postsBackDelayMs: POSTS_BACK_DELAY_MS });
   });
 
   it('ONE key: the post-back delay is read from transcription_service ONLY — the legacy transcription.posts_back_delay_ms is not a name any more', () => {
