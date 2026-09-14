@@ -119,12 +119,12 @@ const OAUTH_REMEDY = [
   '     NEVER as a pool account (egpt-sbx-NN) — those profiles are empty and have no login, by design.',
   '       claude setup-token',
   '     That is a SUBSCRIPTION token. An `sk-ant-api...` API key will NOT work here.',
-  '  2. Paste it as the TOP-LEVEL `sandbox_oauth_token:` key of EACH node\'s own config. The two nodes on this',
-  '     machine keep separate profiles: ~/.egpt/config/config.yaml (kg) and ~/.egpt-secondary/config/config.yaml (kg2).',
-  '  3. Make it take effect, once per node, from the repo. setup/upgrade.ps1 drops an /upgrade the running',
+  "  2. Paste it as the TOP-LEVEL `sandbox_oauth_token:` key of THIS node's own config",
+  '     (~/.egpt/config/config.yaml). It is PER NODE: kg and do each hold their own, and one',
+  "     node's token does nothing for the other.",
+  '  3. Make it take effect, from the repo. setup/upgrade.ps1 drops an /upgrade the running',
   '     spine consumes; the daemon then pulls, rebuilds and respawns it, and the new config is read on the way up:',
-  '       powershell -ExecutionPolicy Bypass -File setup\\upgrade.ps1',
-  '       powershell -ExecutionPolicy Bypass -File setup\\upgrade.ps1 -EgptHome "$env:USERPROFILE\\.egpt-secondary"',
+  '       powershell -ExecutionPolicy Bypass -File setup/upgrade.ps1',
 ].join('\n');
 
 // CASE B — THE CREDENTIAL IS THERE AND THE API REFUSED IT. MEASURED on 2026-09-06 against
