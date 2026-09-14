@@ -2298,10 +2298,14 @@ export async function boot({
     return b ? { name: mouth, home, bridge: b } : null;
   };
   // rawBridgeOf(being, chatId): the RAW (non-shell-aware) bridge that outbound rides. The second
-  // argument arrives from sender.mjs's makeOutbound, the ONE outbound resolver; a caller with no
-  // chat in hand (reply-actions' limbs, spine's media attach) passes none and gets the being's own
-  // connection exactly as before. Fallback to the default `bridge` is defensive only — every being
-  // in agents() was already enumerated above, so this should never miss.
+  // argument arrives from sender.mjs's makeOutbound, the ONE outbound resolver. A caller with no
+  // chat in hand passes none and gets the being's own connection — but "no chat in hand" turned out
+  // to name nobody: the limbs (reply-actions) and the media attach (spine) were listed here as such
+  // and BOTH hold `ev`, so both were handing back the mouth for a room only the ear has and their
+  // sends were dropped (2026-09-12 → 2026-09-14). Every remaining caller that passes none genuinely
+  // has no chat — a node-level announce before the first arrival, a heartbeat, the console.
+  // Fallback to the default `bridge` is defensive only — every being in agents() was already
+  // enumerated above, so this should never miss.
   const rawBridgeOf = (being, chatId = null) => bridgeByEndpoint.get(endpointKey(endpointFor(outboundConnectionFor(being, chatId)))) ?? defaultBridge;
 
   // ── ONE MENTION, TWO ANSWERS (operator 2026-09-07) ────────────────────────────────────────

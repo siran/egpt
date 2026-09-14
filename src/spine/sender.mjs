@@ -424,9 +424,11 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
         //
         // A LOCAL-MOUTH reply DOES hand one back, and it is honest: the message lives on the
         // other account but in a room THIS node holds a bridge to, so the id is addressable here
-        // — by that bridge, in that room. (The voice-out attach reaches for the being's own
-        // connection and the ARRIVAL's chat id, which was already the wrong pair on a two-account
-        // node before any of this; it is untouched here.)
+        // — by that bridge, in that room. (The voice-out attach now asks the SAME resolver with the
+        // ARRIVAL's chat id, so its bridge and its chat agree — 2026-09-14. What it still cannot
+        // translate is THIS id when a local mouth said the text: the audio then lands in the
+        // arrival's room quoting a message id from the mouth's. Attaching unthreaded is the
+        // existing degradation for that, and it is what happens.)
         get confirmedId() { return fallbackResult ? (fallbackResult?.confirmedId ?? null) : (stream?.confirmedId ?? null); },
       };
     },

@@ -141,7 +141,26 @@ function parseOne(verb, args, ev, opts = {}) {
     case 'reply': {
       // #<id> <text>
       const m = ID_TEXT_RE.exec(raw);
-      if (!m) return { ok: false, reason: 'reply: expected "#<id> <text>"' };
+      // MALFORMED — no id, no text after one, or an id that is not '#<word>' ('/reply 1108 x').
+      // The TARGET is what is broken; the WORDS after the verb are E's actual answer, and /reply is
+      // the only limb whose malformed form CARRIES one. Stripping the line ate it whenever the whole
+      // reply WAS that line: run=0 with no prose is neither actionOnly nor deliverable, so the
+      // placeholder resolved to '⚠️ no reply (turn failed/empty)' (src/spine/sender.mjs) and the
+      // answer survived only in the onLog below — live on both nodes, operator 2026-09-14.
+      //
+      // So it DEMOTES, through the SAME field the redundancy guard below uses: the text becomes
+      // prose VERBATIM, never re-parsed, and the line is STILL reported malformed (`reason` rides
+      // along) because the limb really did not fire and the log must still say so. The unusable
+      // target token rides along as prose — it is the model's own text, and guessing which half of
+      // a broken line to keep is the accident this module exists to prevent.
+      //
+      // A DOC/HELP ECHO is the one malformed shape with nothing to rescue: '<'/'>' is the same
+      // placeholder tell /react, /ask and /media already refuse on, so a card quoting itself strips
+      // whole rather than surfacing '#<id> <text>  quote-reply to…' as prose.
+      if (!m) {
+        const bad = { ok: false, reason: 'reply: expected "#<id> <text>"' };
+        return (raw && !/[<>]/.test(raw)) ? { ...bad, demote: raw } : bad;
+      }
       // REDUNDANCY GUARD (operator 2026-07-08, Zohykar rogue-twin; made HONEST + demoting
       // 2026-07-15). When the message E is ALREADY posting quotes the target, a /reply at that
       // same target would only duplicate the train as a second, un-stamped post — the rogue twin.
@@ -204,7 +223,11 @@ function weldedAction(line, ev, opts) {
     const verb = m ? m[1].toLowerCase() : null;
     if (!verb || !ACTION_VERBS.has(verb)) continue;          // not a verb of ours — keep looking
     const r = parseOne(verb, m[2] ?? '', ev, opts);
-    return (r.ok || r.demote != null) ? { head: s.slice(0, i), r } : null;
+    // A MALFORMED verdict carries a `reason` even when it demotes, and it must NOT split a line
+    // here: inside a sentence a half-shaped command is indistinguishable from prose about one, so
+    // the line stays whole (parseReplyActions' note below). Only a well-formed tail — or the
+    // redundancy demote, which is not malformed — splits it.
+    return (r.ok || (r.demote != null && r.reason == null)) ? { head: s.slice(0, i), r } : null;
   }
   return null;
 }
@@ -229,11 +252,15 @@ export function parseReplyActions(text, ev = {}, opts = {}) {
     const verb = m ? m[1].toLowerCase() : null;
     if (verb && ACTION_VERBS.has(verb)) {
       const r = parseOne(verb, m[2] ?? '', ev, opts);
-      // DEMOTE (redundant /reply): the action is dropped but its TEXT is content — it becomes
-      // prose VERBATIM, never re-parsed, so an action-shaped payload can't smuggle a live limb.
+      // DEMOTE (a redundant /reply, or a malformed one): the action is dropped but its TEXT is
+      // content — it becomes prose VERBATIM, never re-parsed, so an action-shaped payload can't
+      // smuggle a live limb. A verdict may carry BOTH: a malformed limb demotes its words AND is
+      // still logged as the malformed limb it is.
       if (r.ok) run.push(r.action);
-      else if (r.demote != null) proseLines.push(r.demote);
-      else stripped.push({ raw: line.trim(), reason: r.reason });
+      else {
+        if (r.demote != null) proseLines.push(r.demote);
+        if (r.reason) stripped.push({ raw: line.trim(), reason: r.reason });
+      }
       continue;
     }
     // ...then the LOST NEWLINE (weldStarts). RESTORING it is the whole treatment: the sentence
@@ -335,7 +362,19 @@ export function partialProse(partial, ev = {}, opts = {}) {
 export function createReplyActions({ bridge, bridgeOf = null, bodyEmojiOf = () => null, labelOf = () => null, resolveConvDir = async () => null, askAdvice = null, defaultKey = 'e', onLog = () => {} } = {}) {
   if (!bridge) throw new Error('createReplyActions: bridge is required');
   const outbound = makeOutbound({ bridge, bridgeOf });
-  const bridgeForBeing = (being) => outbound(being).bridge;
+  // …AND THE CHAT IS PART OF THE QUESTION (operator 2026-09-11, sharpened 2026-09-12). This site
+  // asked the resolver about the BEING alone, which answers with the being's MOUTH — and since the
+  // mouth became the SECOND account, ev.chatId named a room only the EAR has. resolveChatId missed,
+  // the send was DROPPED, ok=false, the limb never entered `ran`, no stage-direction was written
+  // and the text was lost (measured: reve's last landed 'replied to #' is 2026-09-09; dolly has
+  // zero in 1516 placeholders). Every limb already holds `ev`, so it hands the chat over exactly
+  // as sender.mjs does — boot's rawBridgeOf then answers with the connection that HOLDS the chat.
+  //
+  // That is also what keeps the IDS honest: ev.chatId, the '#<id>' the model emitted (this node's
+  // own transcript ids) and the bridge all name the same account. A limb is never routed through
+  // the peer/local MOUTH — no peerMouth is passed here — precisely because it is addressed by those
+  // ids, and the mouth's account has different ones (sender.mjs makeOutbound's header).
+  const bridgeForBeing = (being, chatId) => outbound(being, chatId).bridge;
   // The /ask limb delegates the sole sanctioned cross-chat post to the advice service
   // (createAdvice.ask). Absent (unit tests, no advice wiring) → fail-closed: log + drop,
   // never a bridge send. Keeps reply-actions' "every direct bridge action targets
@@ -350,7 +389,7 @@ export function createReplyActions({ bridge, bridgeOf = null, bodyEmojiOf = () =
     // Belt-and-suspenders confinement: the resolved path must stay INSIDE convDir.
     if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) { onLog(`media: "${a.path}" escapes the conversation dir — rejected (fail-closed)`); return false; }
     if (!existsSync(abs)) { onLog(`media: file not found "${a.path}" in ${convDir} — skipped`); return false; }
-    const ok = await bridgeForBeing(being).sendMedia?.(ev.chatId, abs, { caption: a.caption, bodyEmoji: bodyEmojiOf(being), label: labelOf(being) });
+    const ok = await bridgeForBeing(being, ev.chatId).sendMedia?.(ev.chatId, abs, { caption: a.caption, bodyEmoji: bodyEmojiOf(being), label: labelOf(being) });
     if (!ok) onLog(`media: send failed "${a.path}"`);
     return !!ok;
   }
@@ -361,13 +400,13 @@ export function createReplyActions({ bridge, bridgeOf = null, bodyEmojiOf = () =
   async function runOne(a, ev, being) {
     switch (a.type) {
       case 'react': {
-        const ok = await bridgeForBeing(being).react?.(ev.chatId, a.targetId, a.emoji);
+        const ok = await bridgeForBeing(being, ev.chatId).react?.(ev.chatId, a.targetId, a.emoji);
         if (!ok) onLog(`react: ${a.emoji} → #${a.targetId} failed`);
         return !!ok;
       }
       case 'reply': {
         // A persona-stamped quote-reply (reuses the bridge's send + replyTo threading).
-        const r = await bridgeForBeing(being).send?.(ev.chatId, a.text, { replyTo: a.targetId, bodyEmoji: bodyEmojiOf(being), label: labelOf(being) });
+        const r = await bridgeForBeing(being, ev.chatId).send?.(ev.chatId, a.text, { replyTo: a.targetId, bodyEmoji: bodyEmojiOf(being), label: labelOf(being) });
         const ok = !(r?.blocked || r == null);
         if (!ok) onLog(`reply: → #${a.targetId} not delivered`);
         return ok;
@@ -383,8 +422,8 @@ export function createReplyActions({ bridge, bridgeOf = null, bodyEmojiOf = () =
       }
       case 'media': return runMedia(a, ev, being);
       case 'edit': {
-        if (!(await bridgeForBeing(being).wasSentByUs?.(ev.chatId, a.targetId))) { onLog(`edit: #${a.targetId} is not one of our messages — rejected (fail-closed)`); return false; }
-        const ok = await bridgeForBeing(being).editOwn?.(ev.chatId, a.targetId, a.text, { bodyEmoji: bodyEmojiOf(being), label: labelOf(being) });
+        if (!(await bridgeForBeing(being, ev.chatId).wasSentByUs?.(ev.chatId, a.targetId))) { onLog(`edit: #${a.targetId} is not one of our messages — rejected (fail-closed)`); return false; }
+        const ok = await bridgeForBeing(being, ev.chatId).editOwn?.(ev.chatId, a.targetId, a.text, { bodyEmoji: bodyEmojiOf(being), label: labelOf(being) });
         if (!ok) onLog(`edit: #${a.targetId} failed`);
         return !!ok;
       }

@@ -195,7 +195,11 @@ export function createSpine({
   }
   const note = (s) => { try { log.line?.(s); } catch {} };
   const outbound = makeOutbound({ bridge, bridgeOf });
-  const bridgeFor = (being) => outbound(being).bridge;
+  // The chat goes to the resolver too (operator 2026-09-11/09-12) — the same argument sender.mjs
+  // and reply-actions.mjs pass. Asked about the being alone it answers with the being's MOUTH, so
+  // on a node whose mouth is the second account the voice attach rode a connection that does not
+  // have ev.chatId's room at all and the send was DROPPED. Its one caller holds `ev`.
+  const bridgeFor = (being, chatId) => outbound(being, chatId).bridge;
   // The shared turn machinery, or our own private one (see the option's note above). Built with
   // the SAME bridge/bridgeOf pair `bridgeFor` uses, because the steer-ack react it owns is one of
   // the spine's own direct bridge sends and must ride the acked being's connection.
@@ -1410,7 +1414,7 @@ export function createSpine({
             const tmpPath = join(tmpdir(), `egpt-voice-reply-${randomBytes(8).toString('hex')}.ogg`);
             try {
               await writeFile(tmpPath, audio);
-              try { await bridgeFor(to).sendMedia(ev.chatId, tmpPath, { replyTo: textId }); }
+              try { await bridgeFor(to, ev.chatId).sendMedia(ev.chatId, tmpPath, { replyTo: textId }); }
               catch (e) { note(`voice-send ${to}/${ev.chatId}: ${e?.message ?? e}`); }
             } finally { try { await unlink(tmpPath); } catch {} }
           }

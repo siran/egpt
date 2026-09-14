@@ -503,6 +503,23 @@ describe('spine — voice-reply pipeline (chunk 2)', () => {
     expect(bridge.media).toHaveLength(0);        // …and nothing on the default connection
   });
 
+  // …AND THE CHAT IS PART OF THAT QUESTION (operator 2026-09-11/09-12). bridgeOf takes the chat,
+  // and boot's rawBridgeOf answers with the being's MOUTH when there is no chat to place and with
+  // the connection that HOLDS the chat otherwise. This site asked without it, so on a two-account
+  // node the attach rode the mouth while ev.chatId named a room only the ear has — the same
+  // DROPPED send that killed the /reply limb, one call site over (src/spine/reply-actions.mjs).
+  it("the voice note rides the connection that HOLDS the chat, not the being's own mouth", async () => {
+    const synthesize = async () => Buffer.from('AUDIO');
+    const ear = fakeVoiceBridge(), mouth = fakeVoiceBridge();
+    const { spine, bridge } = buildVoice({ synthesize, bridgeOf: (_being, chatId = null) => (chatId ? ear : mouth) });
+    spine.start();
+    await bridge.emit({ ...MSG, isVoice: true });
+
+    expect(ear.media).toHaveLength(1);
+    expect(ear.media[0]).toMatchObject({ chat: MSG.chatId, opts: { replyTo: 'text-conf-1' } });
+    expect(mouth.media).toHaveLength(0);        // the mouth has no such room — this is where it was DROPPED
+  });
+
   it('no synthesize/voice wired: byte-identical to before — no synth attempted, no media, plain text-out', async () => {
     const { spine, bridge } = buildVoice({ synthesize: null, voice: null });
     spine.start();
@@ -791,6 +808,11 @@ describe('spine — /reply handled BEFORE posting (no visible token, no delete+r
   // nothing from the model, in the one case where the model had said everything it had to say.
   // A reply that cannot be delivered must SURFACE, never vanish behind a silence that did not
   // happen (operator: nothing in eGPT is allowed to lie).
+  //
+  // …AND THE MARKER WAS STILL THE WRONG ANSWER (operator 2026-09-14). "Meant to reply, nothing
+  // deliverable" was false: the sentence inside the malformed limb WAS the deliverable, and the
+  // chat got a warning instead of it. Only the TARGET is broken, so the words now demote to prose
+  // (src/spine/reply-actions.mjs parseOne) — the limb still never fires and is still logged.
   it('a reply that is ONE malformed action line resolves VISIBLY — never as a silence that did not happen', async () => {
     const { bridge } = buildStreaming({ replyText: '/reply #operator@[shell].room No pude abrir Chrome en esta sesión.' });
     await bridge.emit(MSG);
@@ -800,7 +822,8 @@ describe('spine — /reply handled BEFORE posting (no visible token, no delete+r
     expect(settled).not.toContain('received silence');                   // the model spoke — the bridge must not claim it heard nothing
     expect(settled.trim()).not.toBe('');                                 // …and must not resolve to an empty message either
     expect(settled).not.toContain('/reply');                             // the malformed command is still never surfaced
-    expect(settled).toBe('⚠️ no reply (turn failed/empty)');             // the marker this branch already has for "meant to reply, nothing deliverable"
+    expect(settled).toContain('No pude abrir Chrome en esta sesión.');   // …and the ANSWER inside the malformed limb is what it says (2026-09-14)
+    expect(settled).not.toBe('⚠️ no reply (turn failed/empty)');         // the marker is for a turn with nothing to say — this turn had everything to say
     expect(bridge.sent).toHaveLength(0);                                 // nothing runnable → no limb fired
   });
 

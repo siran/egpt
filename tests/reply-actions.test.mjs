@@ -84,12 +84,61 @@ describe('parseReplyActions — the pure split', () => {
     expect(prose).toBe('/react #7 🔥');      // it is just text
   });
 
-  // MALFORMED still STRIPS (the 2026-07-08 decision stands where it belongs): no id, nothing
-  // to demote, nothing to quote — there is no content-bearing reading to preserve.
+  // MALFORMED is still LOGGED as malformed (the 2026-07-08 decision stands where it belongs):
+  // the target is unusable, so the limb never fires and the stripped line still reaches the log.
   it('reply: a MALFORMED /reply is still stripped, demote or not', () => {
     const ev = { ...EV, msgId: '159710' };
     expect(parseReplyActions('/reply #159710', ev, { quotedId: '159710' }).stripped).toHaveLength(1);
     expect(parseReplyActions('/reply hola', ev, { quotedId: '159710' }).stripped).toHaveLength(1);
+  });
+
+  // …BUT ITS WORDS ARE NOT LOST WITH IT (operator 2026-09-14; live on both nodes). /reply is the
+  // only limb whose malformed form CARRIES the model's own answer, and the whole reply is often
+  // that one line — run=0 with no prose is neither actionOnly nor deliverable, so the placeholder
+  // resolved to '⚠️ no reply (turn failed/empty)' and the answer survived only in a log line. The
+  // TARGET is what is broken; the WORDS are content, so they DEMOTE through the same field the
+  // redundancy guard already uses, verbatim and never re-parsed.
+  it('reply: a malformed /reply DEMOTES its words to prose — no id, an id without #, or an empty body', () => {
+    expect(parseReplyActions('/reply hola, ya lo miro', EV).prose).toBe('hola, ya lo miro');   // no id at all
+    expect(parseReplyActions('/reply 1108 x', EV).prose).toBe('1108 x');                       // an id without '#'
+    expect(parseReplyActions('/reply #1108', EV).prose).toBe('#1108');                         // empty body
+    for (const bad of ['/reply hola, ya lo miro', '/reply 1108 x', '/reply #1108']) {
+      expect(parseReplyActions(bad, EV).run).toEqual([]);            // nothing ever fires on a guess
+      expect(parseReplyActions(bad, EV).stripped).toHaveLength(1);   // …and the malformation is still logged
+      expect(parseReplyActions(bad, EV).prose).not.toContain('/reply');   // the verb never reaches the chat
+    }
+    expect(parseReplyActions('/reply', EV).prose).toBe('');          // nothing after the verb → nothing to rescue
+  });
+
+  it('reply: the live shape — a whole reply that is ONE malformed /reply still says something', () => {
+    // service-stderr.log, both nodes: '#operator@[shell].room' is not '#<word>' followed by a
+    // space, so the limb cannot fire — but that sentence WAS the turn's entire answer.
+    const line = '/reply #operator@[shell].room No pude abrir Chrome en esta sesión.';
+    const { prose, run, stripped } = parseReplyActions(line, EV);
+    expect(run).toEqual([]);
+    expect(stripped).toHaveLength(1);
+    expect(prose).toContain('No pude abrir Chrome en esta sesión.');
+    expect(prose).not.toContain('/reply');
+  });
+
+  // The ONE malformed shape with no content to rescue: a card quoting itself. '<'/'>' is the same
+  // placeholder tell /react, /ask and /media already strip on, so a doc echo stays stripped whole
+  // rather than surfacing '#<id> <text>   quote-reply to…' as prose.
+  it('reply: a DOC/HELP echo carries no content — stripped whole, never demoted', () => {
+    const { prose, run, stripped } = parseReplyActions('/reply #<id> <text>        quote-reply to a specific message', EV);
+    expect(run).toEqual([]);
+    expect(stripped).toHaveLength(1);
+    expect(prose).toBe('');
+  });
+
+  // The weld rule is UNTOUCHED by the demotion: a half-shaped command inside a sentence is
+  // indistinguishable from prose about one, so the line stays whole rather than being split at a
+  // guess (only a WELL-FORMED tail, or the redundancy demote, still splits it).
+  it('reply: a MALFORMED welded fragment still leaves the line WHOLE — demotion never splits a guess', () => {
+    const line = 'no lo veo claro./reply 1108 x';
+    const { prose, run, stripped } = parseReplyActions(line, EV);
+    expect(prose).toBe(line);
+    expect(run).toEqual([]); expect(stripped).toEqual([]);
   });
 
   // The live 2026-07-15 defect, locked: the trigger is NOT quoted (no quotedId — the reply
@@ -445,5 +494,71 @@ describe('createReplyActions.execute — bridgeOf: per-being connection routing 
     const a = createReplyActions({ bridge: b, bridgeOf: () => null, bodyEmojiOf: () => '🐶', labelOf: () => 'e', resolveConvDir: async () => null, onLog: () => {} });
     await a.execute(a.parse('/react #7 🔥', EV).run, [], EV, { being: 'e' });
     expect(b.calls.react).toEqual([{ chat: EV.chatId, id: '7', emoji: '🔥' }]);
+  });
+});
+
+// …AND THE CHAT IS PART OF THAT QUESTION (operator 2026-09-11, sharpened 2026-09-12; the /reply
+// limb was undeliverable on BOTH nodes from that day until 2026-09-14). `bridgeOf` takes the chat
+// since 2026-09-11 — boot's rawBridgeOf answers with the being's MOUTH when there is no chat to
+// place, and with the connection that HOLDS the chat when the mouth is another account that cannot
+// reach it. THIS call site asked without the chat, so every limb resolved to the mouth while
+// ev.chatId named a room only the ear has: resolveChatId missed, the send was DROPPED, ok=false,
+// the limb never entered `ran`, no stage-direction was written and the text was simply lost.
+//
+// Riding the HOLDER is also what makes the message ids line up: ev.chatId, the '#<id>' the model
+// emitted (this node's own transcript ids) and the bridge are then all in ONE namespace. That is
+// why the limbs are — deliberately — never routed through the mouth (src/spine/sender.mjs's
+// makeOutbound header: they cannot act on `route()`, so they never pay for it).
+describe('createReplyActions.execute — a limb rides the connection that HOLDS the chat', () => {
+  // The live two-account shape at the resolver seam, exactly as boot answers it: a chat in hand
+  // ⇒ the connection holding it; no chat ⇒ the being's own mouth.
+  const rawBridgeOf = (ear, mouth) => (_being, chatId = null) => (chatId ? ear : mouth);
+  const mkTwo = (ear, mouth, over = {}) => createReplyActions({
+    bridge: mouth, bridgeOf: rawBridgeOf(ear, mouth),
+    bodyEmojiOf: () => '🐶', labelOf: () => 'e', resolveConvDir: async () => null, onLog: () => {}, ...over,
+  });
+
+  it("a chat heard on the EAR is answered on the ear — never blindly on the being's own mouth", async () => {
+    const ear = fakeBridge(), mouth = fakeBridge();
+    const a = mkTwo(ear, mouth);
+    const { ran } = await a.execute(a.parse('/reply #9 hola', EV).run, [], EV, { being: 'e' });
+    expect(ear.calls.send).toEqual([{ chat: EV.chatId, text: 'hola', opts: { replyTo: '9', bodyEmoji: '🐶', label: 'e' } }]);
+    expect(mouth.calls.send).toEqual([]);          // the mouth has no such room — this is where it was DROPPED
+    expect(ran).toHaveLength(1);                   // …so the limb LANDS, and the spine writes its stage-direction
+  });
+
+  it('every limb asks the same question — react, media and edit follow the chat too', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'egpt-limb-chat-'));
+    writeFileSync(join(dir, 'pic.png'), 'bytes');
+    const ear = fakeBridge({ wasSentByUs: () => true }), mouth = fakeBridge({ wasSentByUs: () => true });
+    const a = mkTwo(ear, mouth, { resolveConvDir: async () => dir });
+    const { run } = a.parse('/react #7 🔥\n/media pic.png\n/edit #5 fixed', EV);
+    const { ran } = await a.execute(run, [], EV, { being: 'e' });
+    expect(ran).toHaveLength(3);
+    expect(ear.calls.react).toHaveLength(1);
+    expect(ear.calls.media).toHaveLength(1);
+    expect(ear.calls.edit).toHaveLength(1);
+    expect(mouth.calls).toMatchObject({ react: [], media: [], edit: [] });
+  });
+
+  it('two /reply limbs in one turn both run, in order, on that same connection', async () => {
+    const ear = fakeBridge(), mouth = fakeBridge();
+    const a = mkTwo(ear, mouth);
+    const { run } = a.parse('/reply #9 primero\n/reply #11 segundo', EV);
+    const { ran } = await a.execute(run, [], EV, { being: 'e' });
+    expect(ran.map((x) => x.targetId)).toEqual(['9', '11']);
+    expect(ear.calls.send.map((s) => [s.opts.replyTo, s.text])).toEqual([['9', 'primero'], ['11', 'segundo']]);
+    expect(mouth.calls.send).toEqual([]);
+  });
+
+  // THE CONSTRAINT: a node whose ear and mouth are the same connection is untouched — and a
+  // resolver that only reads the being (every test above this block, and every one-connection
+  // node) simply ignores the second argument and answers exactly as it did.
+  it('ear and mouth are the SAME connection: byte-identical — the extra argument is ignored', async () => {
+    const only = fakeBridge(), never = fakeBridge();
+    const a = createReplyActions({ bridge: never, bridgeOf: (being) => (being === 'e' ? only : null), bodyEmojiOf: () => '🐶', labelOf: () => 'e', resolveConvDir: async () => null, onLog: () => {} });
+    await a.execute(a.parse('/reply #9 hola', EV).run, [], EV, { being: 'e' });
+    expect(only.calls.send).toEqual([{ chat: EV.chatId, text: 'hola', opts: { replyTo: '9', bodyEmoji: '🐶', label: 'e' } }]);
+    expect(never.calls.send).toEqual([]);
   });
 });
