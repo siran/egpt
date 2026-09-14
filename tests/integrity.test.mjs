@@ -211,6 +211,16 @@ const PORTABLE_BY_DESIGN = [
   },
   {
     file: 'src/sandbox-cli-session.mjs',
+    code: "const GIT_BASH_CANDIDATES = ['C:\\\\msys64\\\\usr\\\\bin\\\\bash.exe', 'C:\\\\Program Files\\\\Git\\\\bin\\\\bash.exe']",
+    why: 'THE CANDIDATE LIST FOR CLAUDE_CODE_GIT_BASH_PATH (added 2026-09-14). Absolute Windows paths are what this constant IS: the variable is only ever put in the -SetEnv of a SANDBOXED spawn, and createSandboxCliSession throws "Windows-only on this build" two guards before any of that, so the list is unreachable off win32. resolveSandboxGitBash existsSync-checks every entry and contributes NOTHING when none is there, so a node without either path — which includes every POSIX one — gets the argv it had before this existed. Deriving them buys nothing: C:\\msys64 has no environment variable at all, and Claude Code itself hardcodes the Git for Windows path as its own auto-detect candidate.',
+  },
+  {
+    file: 'src/sandbox-cli-session.mjs',
+    code: 'const WSL_BASH = /[\\\\/]system32[\\\\/]bash\\.exe$/i',
+    why: 'THE ONE BASH THAT MUST NEVER BE CHOSEN (added 2026-09-14). C:\\Windows\\System32\\bash.exe is the WSL launcher; it sits on the pool accounts\' machine PATH ahead of msys64 and, with no distro installed, exits 1 ("Windows Subsystem for Linux has no installed distributions" — measured under the real launcher as reve\\egpt-sbx-06). This is an EXCLUSION, not a path being used: it names a Windows binary in order to refuse it, the same shape as warm-cli-session.mjs\'s allowlisted portability guard above. Off win32 nothing reaches it, and no candidate could match it anyway.',
+  },
+  {
+    file: 'src/sandbox-cli-session.mjs',
     code: 'powershell -ExecutionPolicy Bypass -File setup',
     why: 'ERROR-MESSAGE TEXT, not a spawn (added 2026-09-06 — both redeploy lines of OAUTH_REMEDY match this snippet). Nothing here executes: it is the copy-pasteable fix printed when `sandbox_oauth_token` is missing or rejected, and the whole sandbox feature ALREADY refuses to run off win32 two guards earlier in the same function ("Windows-only on this build"), so the string is unreachable on a POSIX node. Naming the exact command is the point — the failure this text exists for takes every sandboxed being on the node down at once, and a message that said "redeploy somehow" is precisely what was wrong before.',
   },

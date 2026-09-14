@@ -8,10 +8,10 @@
 // whole job is to proxy that protocol through untouched.
 import { describe, it, expect, afterAll } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { createSandboxCliSession } from '../src/sandbox-cli-session.mjs';
+import { dirname, join } from 'node:path';
+import { createSandboxCliSession, resolveSandboxGitBash, GIT_BASH_CANDIDATES } from '../src/sandbox-cli-session.mjs';
 
 // Hoisted to module scope 2026-09-06: a sandboxed CCODE session now REFUSES to be created
 // without the operator's subscription credential (see the last describe in this file), so every
@@ -30,6 +30,21 @@ const STORE = mkdtempSync(join(tmpdir(), 'egpt-jsonl-fixture-'));
 // tests below are comparing.
 const THREAD = 'thread-fixed';
 const THREAD_STORE = join(STORE, THREAD);
+
+// ...and a THIRD fixture since 2026-09-14: a ccode turn is also handed CLAUDE_CODE_GIT_BASH_PATH,
+// which sandbox-cli-session.mjs resolves by existsSync against a candidate list of REAL paths.
+// Left to the production list, every argv below would depend on which bashes the box running this
+// suite happens to have installed. So the ccode helpers pin the list to one file that certainly
+// exists: this one, created here inside the store that afterAll already removes.
+const BASH = join(STORE, 'bash.exe');
+writeFileSync(BASH, '');
+const BASH_CANDIDATES = [BASH];
+// A candidate whose path ENDS in system32\bash.exe — the WSL launcher's shape. Real enough to
+// exist, so the exclusion below is tested against a file that existsSync really does find.
+const SYS32_BASH = join(STORE, 'System32', 'bash.exe');
+mkdirSync(dirname(SYS32_BASH), { recursive: true });
+writeFileSync(SYS32_BASH, '');
+
 afterAll(() => { try { rmSync(STORE, { recursive: true, force: true }); } catch { /* best effort */ } });
 
 function fakeLauncherSpawn({ failOn = null, hang = false, sessionId = 'sess-123' } = {}) {
@@ -274,7 +289,7 @@ describe('sandbox-cli-session — -SetEnv CLAUDE_CODE_OAUTH_TOKEN (config sandbo
   // One turn through the fake launcher; returns the psArgs it was spawned with.
   async function argvFor(extra = {}) {
     const f = fakeLauncherSpawn();
-    const s = createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), platform: 'win32', sandboxOauthToken: TOKEN, jsonlStoreRoot: STORE, sessionId: THREAD, ...extra });
+    const s = createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), platform: 'win32', sandboxOauthToken: TOKEN, jsonlStoreRoot: STORE, sessionId: THREAD, gitBashCandidates: BASH_CANDIDATES, ...extra });
     await s.turn('hi');
     s.close();
     expect(f.spawnCount()).toBe(1);
@@ -331,14 +346,16 @@ describe('sandbox-cli-session — -SetEnv CLAUDE_CODE_OAUTH_TOKEN (config sandbo
     expect(innerArgvOf(withTok)).toEqual(innerArgvOf(plain));
   });
 
-  it('the ccode argv carries ONE -SetEnv element — the token AND this thread\'s store — and its inner argv is still the stream-json one', async () => {
+  it('the ccode argv carries ONE -SetEnv element — the token, this thread\'s store AND its bash — and its inner argv is still the stream-json one', async () => {
     const args = await argvFor();
-    // TWO entries since 2026-09-11, still ONE argv element: a ccode turn is handed its
-    // credential and the CLAUDE_CONFIG_DIR of its own jsonl store (see sandbox-cli-session.mjs).
-    // A second -SetEnv FLAG would be the bug; a second entry inside the one JSON array is not.
+    // THREE entries since 2026-09-14, still ONE argv element: a ccode turn is handed its
+    // credential, the CLAUDE_CONFIG_DIR of its own jsonl store, and the CLAUDE_CODE_GIT_BASH_PATH
+    // its Bash tool spawns (see sandbox-cli-session.mjs). A second -SetEnv FLAG would be the bug;
+    // another entry inside the one JSON array is not.
     expect(jsonArgOf(args, '-SetEnv')).toEqual([
       `CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}`,
       `CLAUDE_CONFIG_DIR=${THREAD_STORE}`,
+      `CLAUDE_CODE_GIT_BASH_PATH=${BASH}`,
     ]);
     expect(args[args.indexOf('-SetEnv') + 2]).toBe('-InnerBin');
     expect(innerArgvOf(args)[0]).toBe('--input-format');
@@ -386,6 +403,113 @@ describe('sandbox-cli-session — -SetEnv CLAUDE_CODE_OAUTH_TOKEN (config sandbo
   });
 });
 
+// ── -SetEnv CLAUDE_CODE_GIT_BASH_PATH — THE SANDBOXED Bash TOOL (operator 2026-09-14).
+//
+//    THE DEFECT, REPRODUCED as a real leased pool account (reve\egpt-sbx-06, driven through
+//    setup/sandbox-logon-launcher.ps1 exactly the way sandboxSpawn drives it): Claude Code does
+//    NOT resolve `bash` from PATH — it takes CLAUDE_CODE_GIT_BASH_PATH when set and valid, else
+//    the HARDCODED C:\Program Files\Git\bin\bash.exe. Under the sandbox that Git bash dies:
+//      bash: *** fatal error - NtCreateDirectoryObject(\Sessions\BNOLINKS\1\msys-2.0S5-<key>): 0xC0000022
+//      exit 0xC0000142
+//    because a pool account may OPEN an msys installation's object directory but never CREATE
+//    one (measured DACL of \Sessions\BNOLINKS\1: Everyone gets QUERY|TRAVERSE, the operator gets
+//    CREATE_SUBDIRECTORY), and that directory only exists while a process of that SAME
+//    installation is alive in session 1. C:\msys64\usr\bin\bash.exe was measured WORKING from
+//    the sandbox for exactly that reason, which is why it is the first candidate.
+//
+//    THESE LOCK THE CALLER'S HALF: the entry is present for ccode, absent for codex/pi, absent
+//    when the node has no bash at all (and then the argv is what it was before this existed), and
+//    System32's WSL launcher is never chosen. ──
+describe('sandbox-cli-session — -SetEnv CLAUDE_CODE_GIT_BASH_PATH (the sandboxed Bash tool)', () => {
+  async function ccodeArgv(extra = {}) {
+    const f = fakeLauncherSpawn();
+    const s = createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), platform: 'win32', sandboxOauthToken: TOKEN, jsonlStoreRoot: STORE, sessionId: THREAD, gitBashCandidates: BASH_CANDIDATES, ...extra });
+    await s.turn('hi');
+    s.close();
+    expect(f.spawnCount()).toBe(1);
+    return f.calls[0].args;
+  }
+
+  function otherEngineArgv(engine) {
+    const calls = [];
+    const spawn = (bin, args, opts) => {
+      calls.push({ bin, args, opts });
+      const proc = new EventEmitter();
+      proc.stdout = new EventEmitter(); proc.stdout.setEncoding = () => {};
+      proc.stderr = new EventEmitter(); proc.stderr.setEncoding = () => {};
+      proc.stdin = { write: () => {}, end: () => {} };
+      proc.kill = () => {};
+      return proc;
+    };
+    const s = createSandboxCliSession({ spawn, cwd: process.cwd(), platform: 'win32', engine, sessionId: 'sess-pinned', gitBashCandidates: BASH_CANDIDATES });
+    s.turn('hi').catch(() => {});
+    s.close();
+    expect(calls.length).toBe(1);
+    return calls[0].args;
+  }
+
+  it('REPRODUCE-FIRST: a ccode turn is handed CLAUDE_CODE_GIT_BASH_PATH, in the ONE -SetEnv element', async () => {
+    const args = await ccodeArgv();
+    expect(args.filter((a) => a === '-SetEnv'), 'a second -SetEnv FLAG is the bug this rides inside the array to avoid').toHaveLength(1);
+    expect(jsonArgOf(args, '-SetEnv')).toContain(`CLAUDE_CODE_GIT_BASH_PATH=${BASH}`);
+    // ...and nothing of it is loose where PowerShell's binder could reach it.
+    expect(args).not.toContain('CLAUDE_CODE_GIT_BASH_PATH');
+    expect(args).not.toContain(BASH);
+  });
+
+  it('codex and pi never get it — CLAUDE_CODE_GIT_BASH_PATH is a Claude Code variable', () => {
+    for (const engine of ['codex', 'pi']) {
+      const args = otherEngineArgv(engine);
+      // Neither engine has a credential or a store here, so the whole flag is absent — and it
+      // must stay absent: the bash is the only thing that could have conjured one.
+      expect(args, `engine ${engine} gained a -SetEnv out of nowhere`).not.toContain('-SetEnv');
+      expect(args.join('\u0000'), `engine ${engine} was handed a git bash`).not.toContain('CLAUDE_CODE_GIT_BASH_PATH');
+    }
+  });
+
+  it('NO candidate on the node contributes NOTHING — the argv is what it was before this existed', async () => {
+    const none = await ccodeArgv({ gitBashCandidates: [] });
+    expect(jsonArgOf(none, '-SetEnv')).toEqual([
+      `CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}`,
+      `CLAUDE_CONFIG_DIR=${THREAD_STORE}`,
+    ]);
+    // Byte-identical everywhere else: the bash rides INSIDE the one -SetEnv value, so the two
+    // argvs differ in that single element and in nothing at all besides.
+    const withBash = await ccodeArgv();
+    const seValueIdx = none.indexOf('-SetEnv') + 1;
+    const blank = (a) => a.map((v, i) => (i === seValueIdx ? '<setenv>' : v));
+    expect(blank(withBash)).toEqual(blank(none));
+  });
+
+  it('a candidate list of paths that do not exist resolves to null, same as an empty one', () => {
+    expect(resolveSandboxGitBash([])).toBe(null);
+    expect(resolveSandboxGitBash([join(STORE, 'no-such-dir', 'bash.exe')])).toBe(null);
+    // Junk entries are skipped rather than thrown on, and a real one after them still wins.
+    expect(resolveSandboxGitBash(['', '   ', join(STORE, 'no-such-dir', 'bash.exe'), BASH])).toBe(BASH);
+  });
+
+  it('FIRST candidate that exists wins — that ordering IS the fix', () => {
+    const second = join(STORE, 'second-bash.exe');
+    writeFileSync(second, '');
+    expect(resolveSandboxGitBash([BASH, second])).toBe(BASH);
+    expect(resolveSandboxGitBash([second, BASH])).toBe(second);
+    // ...and in production msys64 is that first candidate, DELIBERATELY ahead of Git for Windows:
+    // Git for Windows is already Claude Code's own first auto-detect candidate, so naming it here
+    // would change nothing and fix nothing, and it is the one measured DYING under the sandbox.
+    expect(GIT_BASH_CANDIDATES[0]).toContain('msys64');
+    expect(GIT_BASH_CANDIDATES.some((c) => c.includes('Git'))).toBe(true);
+  });
+
+  it('System32\'s bash.exe is NEVER chosen, even when it exists and is offered first', () => {
+    // The WSL launcher. It is on the pool accounts' machine PATH ahead of msys64 and, with no
+    // distro installed, exits 1 ("Windows Subsystem for Linux has no installed distributions" —
+    // measured under the real launcher). SYS32_BASH is a real file, so this is not vacuous.
+    expect(resolveSandboxGitBash([SYS32_BASH])).toBe(null);
+    expect(resolveSandboxGitBash([SYS32_BASH, BASH])).toBe(BASH);
+    expect(GIT_BASH_CANDIDATES.some((c) => /system32/i.test(c)), 'the WSL launcher is a production candidate').toBe(false);
+  });
+});
+
 // ── THE ARGUMENT CONTRACT (operator 2026-09-05). THREE DEFECTS, ONE ROOT CAUSE: caller-supplied
 //    data was reaching PowerShell's PARAMETER BINDER, which then interpreted it. Every list the
 //    caller supplies is now exactly ONE argv element holding a JSON array, so the binder sees a
@@ -409,7 +533,7 @@ describe('sandbox-cli-session — the launcher argument contract (one argv eleme
   // "changed the argv" comparisons below still isolate the thing each test is about.
   async function argvFor(extra = {}) {
     const f = fakeLauncherSpawn();
-    const s = createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), platform: 'win32', sandboxOauthToken: TOKEN, jsonlStoreRoot: STORE, sessionId: THREAD, ...extra });
+    const s = createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), platform: 'win32', sandboxOauthToken: TOKEN, jsonlStoreRoot: STORE, sessionId: THREAD, gitBashCandidates: BASH_CANDIDATES, ...extra });
     await s.turn('hi');
     s.close();
     expect(f.spawnCount()).toBe(1);

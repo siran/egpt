@@ -147,11 +147,25 @@ try {
   # pi's bash tool: WARN, never rewrite. pi owns its own settings.json; this
   # just points out the one setting that silently breaks every tool turn here.
   #
-  # `where bash` on these boxes finds C:\Windows\System32\bash.exe FIRST -- the
-  # WSL launcher -- and with no distro installed it exits 1 (or 0xC0000022 under
-  # the sandbox's restricted token). pi then reports a confusing "access denied"
-  # for what looks like a plain ls. settings.json's shellPath fixes it, and the
-  # operator's own terminal pi needs it just as much.
+  # TWO DIFFERENT FAILURES, and the second one is the one that bites (measured
+  # 2026-09-14 as a real leased pool account; this comment used to name only the
+  # first and blamed it for both).
+  #
+  # 1. `where bash` on these boxes finds C:\Windows\System32\bash.exe FIRST -- the WSL
+  #    launcher -- and with no distro installed it exits 1. Confusing, but plain.
+  #
+  # 2. A REAL bash can still die 0xC0000022, and that is NOT the restricted token
+  #    refusing the exe. An msys2/cygwin runtime keeps its shared memory in a
+  #    per-INSTALLATION object directory under \Sessions\BNOLINKS\<session>, and on
+  #    that directory the pool account holds QUERY|TRAVERSE and nothing else: it can
+  #    OPEN an installation's directory that is already there, never CREATE one. So a
+  #    bash whose installation has no process alive in the spine's session fails,
+  #    and the same bash works the moment one is. Git for Windows has none; the
+  #    operator's own msys2 shell keeps C:\msys64 warm, which is why that one works.
+  #
+  # For pi, settings.json's shellPath is still the fix -- point it at a bash whose
+  # installation is warm. src/sandbox-cli-session.mjs carries the full measurement
+  # and does the same job for Claude Code via CLAUDE_CODE_GIT_BASH_PATH.
   $piSettings = Join-Path $piDir 'settings.json'
   $shell = $null
   try { $shell = (Get-Content -LiteralPath $piSettings -Raw | ConvertFrom-Json).shellPath } catch { }

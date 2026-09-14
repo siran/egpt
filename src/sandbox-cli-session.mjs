@@ -30,7 +30,7 @@
 // stdio to be, and it runs from the same cwd).
 import { spawn as nodeSpawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -103,6 +103,65 @@ export function jsonlStoreRootOf(options = {}) {
 export function jsonlStoreDirOf(threadId, options = {}) {
   const id = String(threadId ?? '').trim();
   return id ? join(jsonlStoreRootOf(options), id) : null;
+}
+
+// THE THIRD, AND LAST, VARIABLE A SANDBOXED TURN IS HANDED (operator 2026-09-14) — and the fix for
+// a Bash tool that was dead on every sandboxed being on both nodes, which then silently fell back
+// to PowerShell.
+//
+// WHAT CLAUDE CODE ACTUALLY DOES, read out of the shipped bundle (claude.exe 2.1.265/269/270, all
+// three identical): it does NOT resolve `bash` from PATH. It takes CLAUDE_CODE_GIT_BASH_PATH when
+// that is set, its basename is one of bash.exe/sh.exe/bash/sh, and the file exists; otherwise the
+// HARDCODED C:\Program Files\Git\bin\bash.exe, then the (x86) one, then <git>\..\..\bin\bash.exe;
+// otherwise "Git Bash not found; BashTool will be unavailable".
+//
+// THE DEFECT, REPRODUCED 2026-09-14 as a real leased pool account (reve\egpt-sbx-06, driven
+// through setup/sandbox-logon-launcher.ps1 the way sandboxSpawn drives it). Git for Windows' bash
+// — Claude Code's own first pick — dies under the sandbox:
+//     bash: *** fatal error - NtCreateDirectoryObject(\Sessions\BNOLINKS\1\msys-2.0S5-<key>): 0xC0000022
+//     exit 0xC0000142 (STATUS_DLL_INIT_FAILED)
+// That 0xC0000022 is the one in the live transcripts. It is NOT the WSL launcher: System32's
+// bash.exe was measured under the same sandbox exiting 1 with "Windows Subsystem for Linux has no
+// installed distributions".
+//
+// WHY, AND IT IS WHAT DECIDES THE ORDER BELOW. An msys2/cygwin runtime keeps its shared memory in
+// a per-INSTALLATION object directory under \Sessions\BNOLINKS\<session>. Measured DACL of
+// \Sessions\BNOLINKS\1 on reve: the operator and the operator's logon SID hold
+// CREATE_SUBDIRECTORY; Everyone holds QUERY|TRAVERSE and nothing else. A pool account is neither,
+// so it can OPEN an installation's directory that is already there and can NEVER create one — and
+// that directory exists only while some process of THAT SAME installation is alive in session 1.
+//   C:\msys64      the operator's own shell is msys2, so its directory is up. MEASURED WORKING.
+//   Git for Windows  nothing keeps a Git-bash process alive. MEASURED FAILING.
+// Proven both ways: holding one operator-owned Git bash open made Git bash work from the sandbox
+// too, and a third msys install that had never run failed identically — then still failed after an
+// operator run of it had exited. It is not "which bash", it is "is that installation warm".
+//
+// SO msys64 IS FIRST, deliberately against the intuition the variable's NAME invites: Git for
+// Windows is ALREADY Claude Code's own first auto-detect candidate, so naming it here would change
+// nothing and fix nothing. It stays as the second candidate for a node that has no msys2 at all.
+//
+// RESIDUAL, NOT FIXED HERE: on a node where nothing keeps an msys2 process alive, msys64's bash
+// will fail the same way. The real cure is the BNOLINKS DACL, which is per-session, set by the
+// session manager, and outside this module's reach.
+const GIT_BASH_ENV = 'CLAUDE_CODE_GIT_BASH_PATH';
+
+// FIRST ONE THAT EXISTS WINS; when NEITHER does this contributes nothing at all, so a node with no
+// bash keeps today's argv byte for byte. NEVER System32's bash.exe — that is the WSL launcher, it
+// sits on the machine PATH ahead of msys64, and it is excluded by name below rather than merely
+// left out of the list.
+export const GIT_BASH_CANDIDATES = ['C:\\msys64\\usr\\bin\\bash.exe', 'C:\\Program Files\\Git\\bin\\bash.exe'];
+const WSL_BASH = /[\\/]system32[\\/]bash\.exe$/i;
+
+// Same shape as warm-cli-session.mjs's resolveClaudeBin and codex-cli-session.mjs's
+// resolveCodexCommand: walk a candidate list, hand back the first that is really on disk, else
+// null. `candidates` is injectable purely for tests — the same DI convention as jsonlStoreRoot
+// above, and nothing in production passes it.
+export function resolveSandboxGitBash(candidates = GIT_BASH_CANDIDATES) {
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string' || !candidate.trim() || WSL_BASH.test(candidate)) continue;
+    try { if (existsSync(candidate)) return candidate; } catch { /* unreadable — try the next one */ }
+  }
+  return null;
 }
 
 // THE REMEDY, WORD FOR WORD, IN BOTH FAILURES BELOW (operator 2026-09-06). This is the one
@@ -288,11 +347,25 @@ export function createSandboxCliSession(options = {}) {
       .map((p) => p.trim()),
   )].filter((p) => !sharePaths.includes(p));
 
+  // THE BASH THE CLI'S OWN Bash TOOL WILL SPAWN — see GIT_BASH_ENV above for the measured defect
+  // and for why msys64 is the first candidate. ccode ONLY, exactly like CLAUDE_CONFIG_DIR:
+  // CLAUDE_CODE_GIT_BASH_PATH is a Claude Code variable, so a codex/pi turn is untouched. Null
+  // when the node has neither candidate, and then the spread below contributes ZERO elements.
+  //
+  // PER-SPAWN, NOT MACHINE SCOPE, and that is the whole point of routing it through -SetEnv:
+  // provision-sandbox-account.ps1's PI_CODING_AGENT_DIR comment records the cost of the other way
+  // ("redirects EVERY pi on the box, including the operator's own terminal. Not eGPT's call to
+  // make"). It had no per-spawn channel; this one does.
+  const gitBash = isCcode ? resolveSandboxGitBash(options.gitBashCandidates) : null;
+
   // The -SetEnv payload, built ONCE beside the share list rather than inside sandboxSpawn, for
-  // the same reason everything else here is: sandboxSpawn stays a pure argv build.
+  // the same reason everything else here is: sandboxSpawn stays a pure argv build. THREE entries
+  // at most, still ONE argv element — a second -SetEnv FLAG would be the bug, a third entry in
+  // the one JSON array is not.
   const setEnv = [
     ...(oauthToken ? [`${OAUTH_ENV_NAME}=${oauthToken}`] : []),
     ...(jsonlStoreDir ? [`${CONFIG_DIR_ENV}=${jsonlStoreDir}`] : []),
+    ...(gitBash ? [`${GIT_BASH_ENV}=${gitBash}`] : []),
   ];
 
   function sandboxSpawn(bin, args, spawnOpts) {
