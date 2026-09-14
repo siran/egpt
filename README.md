@@ -150,7 +150,8 @@ wins: `config/config.yaml` < `config/conversations.yaml` (the entry) <
 the entity's own `conversations/<slug>/config.yaml` or `rooms/<name>/config.yaml`.
 The spine dumps what it resolved, and the file each value came from, to those
 three `*.readonly.yaml` aggregates at the profile root. See [`MANUAL.md`](MANUAL.md) for the full operator
-reference and [`TESTING.md`](TESTING.md) for the manual verification tiers.
+reference, [`OPERATIONS.md`](OPERATIONS.md) for deploying to the live nodes and getting a shell that can,
+and [`TESTING.md`](TESTING.md) for the manual verification tiers.
 
 ## Requirements
 

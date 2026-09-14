@@ -9,7 +9,12 @@ extension/dist-firefox/
 coverage/
 
 
-.claude/
+# Machine-local Claude Code state - settings.local.json, worktrees, lock files.
+# SKILLS ARE THE EXCEPTION: a skill is shared operator knowledge, versioned with the code
+# it describes, and is useless sitting on one machine. The directory itself has to stay
+# un-ignored for git to reach anything under it, hence `.claude/*` rather than `.claude/`.
+.claude/*
+!.claude/skills/
 
 # scratch / probe scripts — not for the repo
 tmp/
