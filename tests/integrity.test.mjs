@@ -428,3 +428,36 @@ describe('the outbound connection is resolved in exactly one place', () => {
     }
   });
 });
+
+// A NATIVE EXE'S STDERR IS NOT AN ERROR (found the hard way 2026-09-14). Windows PowerShell 5.1
+// wraps every stderr line of a native executable in a NativeCommandError ErrorRecord, and under
+// $ErrorActionPreference='Stop' that is TERMINATING. git writes its progress meter to stderr, so
+// `git reset --hard 2>&1 | ...` in setup/deploy.ps1 aborted a live deploy MID-CHECKOUT the first
+// time the checkout was big enough to print "Updating files: 25% (129/506)" -- leaving the node's
+// prod tree holding files from the new commit under the old HEAD, and the service never
+// restarted. The logged failure read as `ERROR: Updating files: 25% (129/506)`: a progress line
+// reported as a fault.
+//
+// The scan is deliberately narrow -- `2>&1` on the SAME line as a git invocation -- because that
+// is the exact shape that bit, and a broad ban on `2>&1` would fail on the many places a .cmd
+// legitimately redirects.
+describe('no setup script treats git stderr as failure', () => {
+  const PS_DIR = join(ROOT, 'setup');
+  it('pipes git through 2>&1 ONLY where ErrorActionPreference has been dropped first', () => {
+    const offenders = [];
+    for (const f of readdirSync(PS_DIR).filter((n) => n.endsWith('.ps1'))) {
+      const lines = readFileSync(join(PS_DIR, f), 'utf8').split('\n');
+      lines.forEach((line, i) => {
+        if (line.trim().startsWith('#')) return;
+        if (!/\bgit\b|\$git\b/.test(line) || !/2>&1/.test(line)) return;
+        // The ONE safe form: the preference is dropped just above the call, so a stderr line is
+        // ordinary output instead of a terminating error. setup/upgrade.ps1's remote probe does
+        // exactly this ON PURPOSE -- it WANTS git's stderr, to name why the remote is unreachable.
+        const guarded = lines.slice(Math.max(0, i - 6), i)
+          .some((l) => /ErrorActionPreference\s*=\s*['"]Continue['"]/.test(l));
+        if (!guarded) offenders.push(`${f}:${i + 1}: ${line.trim()}`);
+      });
+    }
+    expect(offenders).toEqual([]);
+  });
+});

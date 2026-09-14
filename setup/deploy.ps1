@@ -43,10 +43,27 @@ if (-not $git) { Log "ERROR: git not found"; Start-Sleep 4; exit 1 }
 try {
   $before = (& $git -C $Repo rev-parse --short HEAD).Trim()
   Log "prod at $before. fetch + reset --hard origin/main"
-  & $git -C $Repo fetch origin --quiet 2>&1 | ForEach-Object { Log "git: $_" }
-  (& $git -C $Repo reset --hard origin/main 2>&1) | ForEach-Object { Log "git: $_" }
-  $after = (& $git -C $Repo rev-parse --short HEAD).Trim()
-  Log "prod now $after"
+  # NO `2>&1` ON GIT, and that is the whole reason this deploy failed on 2026-09-14.
+  # Windows PowerShell 5.1 wraps EVERY stderr line of a native exe in a NativeCommandError
+  # ErrorRecord; with $ErrorActionPreference='Stop' that is TERMINATING. git writes its
+  # progress meter to stderr, so a checkout large enough to print one ("Updating files:
+  # 25% (129/506)") aborted the deploy mid-reset -- the tree was left with files from the
+  # new commit under the OLD HEAD, and the service was never restarted. The error even
+  # read as `ERROR: Updating files: 25% (129/506)`, which is a progress line, not a fault.
+  # --no-progress silences the meter at the source; the exit code is what is checked.
+  & $git -C $Repo fetch origin --quiet --no-progress
+  if ($LASTEXITCODE -ne 0) { throw "git fetch failed (exit $LASTEXITCODE)" }
+  & $git -C $Repo reset --hard --quiet origin/main
+  if ($LASTEXITCODE -ne 0) { throw "git reset --hard origin/main failed (exit $LASTEXITCODE)" }
+  $after  = (& $git -C $Repo rev-parse --short HEAD).Trim()
+  $target = (& $git -C $Repo rev-parse --short origin/main).Trim()
+  Log "prod now $after (origin/main $target)"
+  # THE TREE IS CHECKED, NOT ASSUMED. A reset that dies partway leaves a working tree that
+  # does not match its own HEAD -- which is what a half-deployed node IS, and the state the
+  # failure above left dolly in. Restarting onto that is the one outcome worth refusing.
+  if ($after -ne $target) { throw "prod HEAD $after is not origin/main $target -- refusing to restart" }
+  $dirty = & $git -C $Repo status --porcelain
+  if ($dirty) { throw "prod tree is dirty after reset -- refusing to restart:`n$($dirty -join "`n")" }
 
   Log "restarting service $Service ..."
   Restart-Service $Service -Force
