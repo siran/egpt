@@ -62,7 +62,11 @@ try {
   # does not match its own HEAD -- which is what a half-deployed node IS, and the state the
   # failure above left dolly in. Restarting onto that is the one outcome worth refusing.
   if ($after -ne $target) { throw "prod HEAD $after is not origin/main $target -- refusing to restart" }
-  $dirty = & $git -C $Repo status --porcelain
+  # TRACKED CHANGES ONLY. A prod tree legitimately carries untracked scratch (reve has three
+  # loose plans/ and setup/ files), and refusing to deploy over those would turn this guard
+  # into the thing that blocks every deploy. What must never be tolerated is a TRACKED file
+  # that does not match HEAD -- which is exactly what a half-applied reset leaves behind.
+  $dirty = & $git -C $Repo status --porcelain --untracked-files=no
   if ($dirty) { throw "prod tree is dirty after reset -- refusing to restart:`n$($dirty -join "`n")" }
 
   Log "restarting service $Service ..."
