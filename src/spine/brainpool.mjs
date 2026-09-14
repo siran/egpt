@@ -474,11 +474,23 @@ export function createBrainPool({
   // convention as io/loadPermission above). Read by exactly one thing: the PLATFORM-AWARE
   // `sandboxed` default in resolveConv below.
   platform = process.platform,
+  // A RECOVERY THE OPERATOR MUST HEAR ABOUT (operator 2026-09-14: "no error can go silent").
+  // The two backstops below - context overflow and a dead resume target - both RECOVER by
+  // throwing the thread away and answering from a blank one, and until this existed the only
+  // trace was an onLog line in the daemon log. The being then replied normally, so from the
+  // chat there was no error at all: on 2026-09-14 E answered three people from a wiped thread
+  // and the operator found out by noticing it had stopped following the conversation.
+  //
+  // SEPARATE FROM onLog on purpose: onLog is the running commentary, this is the small set of
+  // events worth waking someone for, and boot routes it to the operator's Self chat. Default is
+  // a no-op rather than onLog, so an unwired caller (every test) logs exactly what it did before.
+  onAlert = () => {},
   onLog = () => {},
 } = {}) {
   if (!pool || typeof pool.run !== 'function') throw new Error('createBrainPool: pool (createWarmPool) is required');
   if (typeof contacts?.resolve !== 'function') throw new Error('createBrainPool: contacts (createContacts) is required');
   if (typeof loadState !== 'function' || typeof writeState !== 'function') throw new Error('createBrainPool: loadState + writeState are required');
+  const alert = (m) => { try { onAlert(m); } catch (e) { onLog(`brainpool: alert failed: ${e?.message ?? e}`); } };
   const mkdir = io.mkdir ?? fsMkdir;
   const readFile = io.readFile ?? fsReadFile;
   const _loadManifest = loadManifest ?? (() => defaultLoadManifest(getConfig));
@@ -1057,10 +1069,12 @@ export function createBrainPool({
       if (!overflow && !deadSession && isDeadSession(typeof r === 'string' ? r : r?.text)) deadSession = true;
       if (overflow) {
         onLog(`brainpool: context overflow on ${key} — reset + retry once fresh`);
+        alert(`⚠️ ${labelOf(being) || being} overflowed its context in ${slug} — thread reset, it is answering from a blank one. History is in transcript.md.`);
         pool.evict?.(key);
         r = await run(await wrapFresh(), { ...baseOpts, sessionId: null });
       } else if (deadSession) {
         onLog(`brainpool: dead session ${sessionId} for ${key} — retrying fresh`);
+        alert(`⚠️ ${labelOf(being) || being} lost its thread in ${slug} — the resume target ${sessionId} is gone, so it is answering from a blank one. History is in transcript.md.`);
         pool.evict?.(key);
         r = await run(await wrapFresh(), { ...baseOpts, sessionId: null });
       }

@@ -2494,6 +2494,10 @@ export const CONFIG_SCHEMA = {
     if the session has grown past the configured ratio of the model window,
     native /compact it IN PLACE so warm turns + the first --resume after a
     restart stay fast (the full record lives in transcript.md, nothing lost).
+    TWO triggers since 2026-09-14: that cooling wait, and critical_ratio —
+    a session already near the window is compacted immediately, because the
+    cooling timer re-arms on every turn and a busy conversation would otherwise
+    never reach quiet.
 
     KEYS:
       enabled
@@ -2504,6 +2508,15 @@ export const CONFIG_SCHEMA = {
       cooling_ms
         DEFAULT: 120000 — quiet period after the last reply before the size
         check runs.
+      critical_ratio
+        DEFAULT: unset — disabled, and the cooling wait is the only trigger.
+        When set, a session ALREADY past this (higher) fraction of the window is
+        compacted with NO wait at all. The cooling timer is re-armed on every
+        turn, so a conversation that never goes quiet never compacts — and
+        overshooting is not "compacted late", it is LOST: brainpool's overflow
+        backstop RESETS to a fresh session. The probe reads a bounded tail of
+        the session jsonl (compact-being.mjs criticallyOver), because unlike the
+        cooling check it runs after every turn.
       context_window
         Override the per-model window token count.
         DEFAULT: windowForModel(model)

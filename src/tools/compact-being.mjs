@@ -31,7 +31,9 @@
 // CLI (`node src/tools/compact-being.mjs`) is now READ-ONLY diagnostics — it
 // reports token sizes + what's over threshold; the spine does the compacting.
 
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync,
+         openSync as _openSync, fstatSync as _fstatSync,
+         readSync as _readSync, closeSync as _closeSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -78,6 +80,80 @@ export function latestContextTokens(jsonlText) {
   }
   if (lastBoundary > lastUsage) return 0;   // compacted since the last measured turn → effectively small
   return lastUsageTokens;                    // 0 if no usage yet (fresh/empty session)
+}
+
+// THE BOUNDED READ the CRITICAL probe uses (operator 2026-09-14). The ordinary compaction
+// check runs once per cooling period and can afford readFileSync on the whole jsonl; the
+// critical probe runs after EVERY turn, and a long-lived being's session is already megabytes
+// (wren's was 4.2 MB the day this was written), so a full synchronous read there would put a
+// multi-MB blocking read on the bridge's event loop once per reply -- on a bridge whose
+// latency the operator had already flagged.
+//
+// BOUNDED IS SOUND HERE, not a shortcut: latestContextTokens needs only the LAST usage record
+// and any compact boundary NEWER than it, and if the last usage is inside the tail then every
+// boundary after it is inside the tail too. What the tail cannot answer is a session whose
+// last usage is further back than TAIL_PROBE_BYTES -- and that answer is UNKNOWN, never zero.
+// tailContextTokens returns null there and the caller falls back to the ordinary cooling wait,
+// so a probe that cannot see is a probe that does not act.
+export const TAIL_PROBE_BYTES = 2 * 1024 * 1024;
+
+export function tailContextTokens(file, { bytes = TAIL_PROBE_BYTES, io = {} } = {}) {
+  const open = io.openSync ?? _openSync, fstat = io.fstatSync ?? _fstatSync;
+  const read = io.readSync ?? _readSync, close = io.closeSync ?? _closeSync;
+  let fd;
+  try { fd = open(file, 'r'); } catch { return null; }
+  let text, from;
+  try {
+    const size = fstat(fd).size;
+    from = Math.max(0, size - bytes);
+    const len = size - from;
+    const buf = Buffer.alloc(len);
+    let got = 0;
+    while (got < len) {
+      const n = read(fd, buf, got, len - got, from + got);
+      if (!n) break;
+      got += n;
+    }
+    text = buf.subarray(0, got).toString('utf8');
+  } catch { return null; }
+  finally { try { close(fd); } catch { /* already gone */ } }
+
+  // A tail that did not start at byte 0 opens mid-line; that fragment is not JSON and must go,
+  // or the first real record is silently skipped by the parse-and-continue below.
+  if (from > 0) {
+    const nl = text.indexOf('\n');
+    if (nl === -1) return null;       // the tail is one unterminated line -- nothing readable
+    text = text.slice(nl + 1);
+  }
+
+  const lines = text.split('\n');
+  let lastUsage = -1, lastUsageTokens = 0, lastBoundary = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i]) continue;
+    let o; try { o = JSON.parse(lines[i]); } catch { continue; }
+    if (o.isCompactSummary === true) lastBoundary = i;
+    const u = o?.message?.usage;
+    if (u) {
+      const t = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+      if (t > 0) { lastUsage = i; lastUsageTokens = t; }
+    }
+  }
+  if (lastUsage === -1) return null;          // UNKNOWN, not zero -- see the note above
+  if (lastBoundary > lastUsage) return 0;     // compacted since the last measured turn
+  return lastUsageTokens;
+}
+
+// Is this session ALREADY past the critical ratio, i.e. too big to keep waiting for quiet?
+// Same decision gate as dueForCompaction, over the bounded tail read instead of the whole file,
+// and FALSE on every uncertainty (no session file, unreadable, tail too short to hold a usage
+// record) -- the ordinary cooling path is the fallback and it reads the file properly.
+export function criticallyOver(target, { ratio, resolveFile = findSessionFile, bytes = TAIL_PROBE_BYTES, io = {} } = {}) {
+  if (!(Number.isFinite(ratio) && ratio > 0)) return false;
+  const file = resolveFile(target?.sessionId);
+  if (!file) return false;
+  const tokens = tailContextTokens(file, { bytes, io });
+  if (tokens == null) return false;
+  return needsCompaction(tokens, { window: target.window || windowForModel(target.model), ratio });
 }
 
 // ── pure: decision gate. ──

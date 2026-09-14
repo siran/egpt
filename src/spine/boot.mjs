@@ -2619,7 +2619,24 @@ export async function boot({
   // labelOf rides along (operator 2026-09-01): the kickoff feed hands the card THIS being's own
   // display name as {{agent_name}}, so one shipped 00-identity template reads correctly for every
   // agent on every node. Same resolver the sender/transcript/mesh already take — one definition.
-  const brain = createBrainPool({ pool, getConfig, contacts, loadState: _loadState, writeState: _writeState, brains, defaultKey, labelOf, afterTurn: compaction.afterTurn, resolveConfig: configResolver.configFor, resolveScope: createIdentityScope({ resolveMembers: memberResolver, getConfig, onLog: (m) => log.line?.(`[scope] ${m}`) }), io, onLog: (m) => log.line?.(`[brain] ${m}`) });
+  // THE ALERT CHANNEL for the recoveries that used to be silent (operator 2026-09-14: "no error
+  // can go silent"). brainpool's overflow and dead-session backstops both answer from a blank
+  // thread; the chat cannot tell, so the operator is told here instead. The Self chat, reached
+  // exactly the way goDown's restart line reaches it -- rawBridgeOf(null, ...), NOT the default
+  // bridge, because the Self-DM is a room on this node's EAR and that id does not exist on
+  // another account's mouth.
+  //
+  // FIRE AND FORGET, AND ALWAYS LOGGED FIRST: the log line is the record that does not depend on
+  // a network, and a send that fails must never take down the turn it is reporting on -- the
+  // being has already recovered by the time this runs.
+  const alertOperator = (text) => {
+    log.line?.(`[alert] ${text}`);
+    const selfDm = selfChatId();
+    if (!selfDm) return;
+    try { rawBridgeOf(null, selfDm).send(selfDm, text).catch((e) => log.line?.(`[alert] could not reach the Self chat: ${e?.message ?? e}`)); }
+    catch (e) { log.line?.(`[alert] could not reach the Self chat: ${e?.message ?? e}`); }
+  };
+  const brain = createBrainPool({ pool, getConfig, contacts, loadState: _loadState, writeState: _writeState, brains, defaultKey, labelOf, afterTurn: compaction.afterTurn, onAlert: alertOperator, resolveConfig: configResolver.configFor, resolveScope: createIdentityScope({ resolveMembers: memberResolver, getConfig, onLog: (m) => log.line?.(`[scope] ${m}`) }), io, onLog: (m) => log.line?.(`[brain] ${m}`) });
 
   // ONE turn machinery for the whole node (see the import note). Built here because it needs
   // `brain` (its scopeOf/allowNewInput/steer seams) and the bridge pair the steer-ack rides —

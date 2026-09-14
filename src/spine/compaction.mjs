@@ -17,7 +17,7 @@
 // SUCCEEDS calls back into brainpool's `armIdentityRefresh` (handed in on afterTurn) — which is
 // the same explicit-null gesture `/agents refresh` writes, so the re-feed rides the being's next
 // real turn on the same session and there is no second feed path here. See fire() below.
-import { dueForCompaction, windowForModel } from '../tools/compact-being.mjs';
+import { dueForCompaction, windowForModel, criticallyOver } from '../tools/compact-being.mjs';
 
 const DEFAULT_COOLING_MS = 120_000;   // 2 min of quiet after the last reply
 export const DEFAULT_RATIO = 0.20;    // compact at 20% of the model window (operator 2026-06-30)
@@ -39,6 +39,7 @@ export function createCompaction({
   getConfig = () => ({}),
   scheduler = { set: (fn, ms) => setTimeout(fn, ms), clear: (h) => clearTimeout(h) },
   dueFor = dueForCompaction,          // injectable for tests
+  criticalOver = criticallyOver,      // injectable for tests
   onLog = () => {},
 } = {}) {
   const cfg = () => getConfig()?.compaction ?? {};
@@ -72,6 +73,19 @@ export function createCompaction({
   const ratioFor = (o) => { const n = _pos(o?.ratio); return n && n <= 1 ? n : ratio(); };
   const coolingFor = (o) => _pos(o?.cooling_ms) ?? coolingMs();
   const windowFor = (model, o) => _pos(o?.context_window) ?? windowOf(model);
+  // THE CRITICAL RATIO (operator 2026-09-14: "10 minutes of quiet or a critical .9"). The
+  // cooling wait exists so a compact lands in a gap between turns instead of mid-exchange --
+  // but the timer is RE-ARMED on every turn, so a conversation that stays busy never goes
+  // quiet and never compacts, which is the one case where waiting is the dangerous choice.
+  // A session that overshoots the window is not compacted late, it is LOST: brainpool's
+  // overflow backstop RESETS it to a fresh session. So past this second, higher ratio the
+  // compaction is armed with NO wait at all.
+  //
+  // Unset at both tiers => null => disabled, and the cooling wait is the only trigger, exactly
+  // as before this existed. Validated like every other read here: booleans rejected, zero and
+  // negatives rejected, and a ratio above 1 rejected (it could never fire, so it is a typo).
+  const criticalRatio = () => { const n = _pos(cfg().critical_ratio); return n && n <= 1 ? n : null; };
+  const criticalFor = (o) => { const n = _pos(o?.critical_ratio); return (n && n <= 1) ? n : criticalRatio(); };
   // enabled: false at EITHER tier disables. The per-conversation tier can also turn compaction
   // back ON for one being while the node has it off, which is why this is `??` and not an AND.
   const enabledFor = (o) => (o?.enabled ?? cfg().enabled) !== false;
@@ -119,7 +133,23 @@ export function createCompaction({
       // window are: the turn that armed this compaction is the turn whose being should get its
       // identity back, and it closes over that turn's scope/being (operator 2026-09-10).
       const target = { sessionId, model, window: windowFor(model, over), ratio: ratioFor(over), armIdentityRefresh, brainOptions: { sessionId, cwd, model, allowedTools } };
-      const h = scheduler.set(() => fire(key, target), coolingFor(over));
+      // ALREADY CRITICAL? Then do not wait for a quiet that may never come. The probe reads a
+      // BOUNDED TAIL of the session jsonl rather than the whole file (compact-being's
+      // criticallyOver): this runs after every single turn, and the ordinary check's
+      // readFileSync would be a multi-MB blocking read per reply on a being whose thread has
+      // been alive for weeks.
+      //
+      // ITS OWN try/catch, and the fallback is the ordinary wait rather than nothing: a probe
+      // that throws must not cost this conversation its cooling timer, which is the trigger
+      // that worked before the critical ratio existed.
+      const critical = criticalFor(over);
+      let urgent = false;
+      if (critical != null) {
+        try { urgent = criticalOver(target, { ratio: critical }) === true; }
+        catch (e) { onLog(`compact ${key}: critical probe failed, falling back to the cooling wait: ${e?.message ?? e}`); }
+      }
+      if (urgent) onLog(`${key} is past the critical ratio ${critical} - compacting now, not waiting for quiet`);
+      const h = scheduler.set(() => fire(key, target), urgent ? 0 : coolingFor(over));
       h?.unref?.();
       pending.set(key, h);
     },

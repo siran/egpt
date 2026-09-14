@@ -38,7 +38,7 @@ function fakePool(scriptedResults, { steerTakes = true } = {}) {
 
 const ev = { surface: 'whatsapp', chatId: '!room:beeper.com', chatName: 'SPOILER', line: 'An@[SPOILER].wa (14:05) #m1: hola', body: 'hola' };
 
-function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, loadFeed, loadManifest, loadAutoLayer, labelOf, seedSession, seedMode, seedAgents, brains, afterTurn, io, seedLayers, resolveConfig, loadPermission, skipAccessLevelDefault, poolOverride, onLog, steerTakes, platform } = {}) {
+function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, loadFeed, loadManifest, loadAutoLayer, labelOf, seedSession, seedMode, seedAgents, brains, afterTurn, io, seedLayers, resolveConfig, loadPermission, skipAccessLevelDefault, poolOverride, onLog, onAlert, steerTakes, platform } = {}) {
   let state = emptyState();
   if (seedSession || seedMode || seedAgents) {   // pre-register the contact (WITH a stored thread, an E mode, and/or per-being pins)
     const ens = ensureContact(state, ev.surface, ev.chatId, { pushedName: ev.chatName, slugHint: ev.chatName });
@@ -117,6 +117,7 @@ function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, load
     // loadPermissionLevel itself.
     loadPermission: loadPermission ?? (() => null),
     ...(onLog ? { onLog } : {}),                   // the diagnostic sink (allow_new_input validation)
+    ...(onAlert ? { onAlert } : {}),               // the OPERATOR channel — the small set of events worth waking someone for (thread loss)
     ...(platform ? { platform } : {}),             // 'win32' | 'linux' | ... — drives the PLATFORM-AWARE `sandboxed` default below (omit → this host's real process.platform)
   });
   return { brain, pool, getState: () => state, setState: (s) => { state = s; } };
@@ -587,6 +588,54 @@ describe('brainpool.turn', () => {
       () => Promise.reject(new Error('No conversation found with session ID: e78d812a-1234')),
     ], { seedSession: 'dead-sid' });
     await expect(brain.turn('e', ev)).rejects.toThrow(/No conversation found/);
+  });
+
+  // --- the recoveries must not be silent (operator 2026-09-14: "no error can go silent") ---
+  // Both backstops above RECOVER by discarding the thread and answering from a blank one, and the
+  // chat cannot tell: the being simply replies, having lost everything it knew. On 2026-09-14 E
+  // answered three people from a wiped thread and the operator found out by noticing it had
+  // stopped following the conversation. The alert is how that stops being invisible.
+  it('dead session raises an operator alert naming the being, the conversation and the lost id', async () => {
+    const alerts = [];
+    const { brain } = harness([
+      () => Promise.reject(new Error('No conversation found with session ID: dead-sid')),
+      { text: 'fresh ok', sessionId: 'sid-new' },
+    ], { seedSession: 'dead-sid', labelOf: () => 'E', onAlert: (m) => alerts.push(m) });
+    await brain.turn('e', ev);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toMatch(/lost its thread/);
+    expect(alerts[0]).toContain('E');
+    expect(alerts[0]).toContain('dead-sid');
+    expect(alerts[0]).toContain('transcript.md');   // points at the record that DID survive
+  });
+
+  it('overflow raises an operator alert too', async () => {
+    const alerts = [];
+    const { brain } = harness([
+      () => Promise.reject(new Error('Prompt is too long')),
+      { text: 'fresh ok', sessionId: 'sid-2' },
+    ], { seedSession: 'huge', labelOf: () => 'E', onAlert: (m) => alerts.push(m) });
+    await brain.turn('e', ev);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toMatch(/overflowed its context/);
+  });
+
+  it('an ordinary turn raises no alert', async () => {
+    const alerts = [];
+    const { brain } = harness([{ text: 'hi', sessionId: 'sid-1' }], { onAlert: (m) => alerts.push(m) });
+    await brain.turn('e', ev);
+    expect(alerts).toEqual([]);
+  });
+
+  it('an alert that THROWS does not cost the being its recovery', async () => {
+    // The thread is already lost; a broken notifier must not also swallow the retry.
+    const { brain, pool } = harness([
+      () => Promise.reject(new Error('No conversation found with session ID: dead-sid')),
+      { text: 'fresh ok', sessionId: 'sid-new' },
+    ], { seedSession: 'dead-sid', onAlert: () => { throw new Error('bridge down'); } });
+    const out = await brain.turn('e', ev);
+    expect(out.text).toBe('fresh ok');
+    expect(pool.calls).toHaveLength(2);
   });
 
   // --- per-conversation warm idle_ttl override (operator 2026-07-02) ---
