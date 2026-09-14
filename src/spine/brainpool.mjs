@@ -399,6 +399,56 @@ function withOrigin(ev) {
   return `THIS LINE ARRIVED IN "${name}" (${ev?.surface ?? '?'}) — one of the several chats that share this thread, not the conversation the thread is named for. Your reply to it is delivered THERE, to the people in that chat.\n${line}`;
 }
 
+// ── THE `sandboxed` RESOLUTION ─────────────────────────────────────────────────────────────
+// OS-level process isolation (setup/sandbox-logon-launcher.ps1) layered on top of
+// accessLevel:'all''s CLI-flag-level unconfinement. FOUR RUNGS, highest first, one per line —
+// extracted 2026-09-13 from a single-line ternary-plus-`??`-chain whose precedence was legible
+// only in the prose above it, which is how a live config's `sandboxed: false` going DEAD under
+// `access_level: sandbox` stayed invisible to everyone reading the code. Same answers, same
+// order: `!= null` is exactly `??`'s fall-through condition, and a tier's value is returned
+// VERBATIM, never coerced, so a rung that answered still answers exactly what it answered.
+//
+// DEFAULT-ON (operator 2026-08-20): unset at both tiers resolves true, not null — every being
+// runs OS-sandboxed unless a tier explicitly opts out with `false`.
+//
+// AND THE DEFAULT IS PLATFORM-AWARE (operator 2026-09-04: "egpt is meant to be run in an OS
+// agnostic way. im on windows so i want it work for me to the fullest. but a beeper account +
+// whatsapp account is enough to unleash all agents, like it has always been"). The isolation
+// this flag buys is Windows machinery (LogonUser + a per-folder ACE), so unset resolves `true`
+// on win32 — byte-identical to the 2026-08-20 default-on, Windows loses nothing — and `false`
+// everywhere else, where that same default failed a fresh clone on its FIRST turn with a bare
+// spawn ENOENT that named a shell binary instead of the feature.
+//
+// A DEFAULT MAY BE PLATFORM-AWARE BECAUSE IT IS A DEFAULT — nobody asked for it, so it is ours
+// to pick per node. AN EXPLICIT REQUEST MAY NOT BE: a tier that says `sandboxed: true` resolves
+// true on EVERY platform. Downgrading it here would make the config key a lie — "sandboxed:
+// true" while running unsandboxed — so sandbox-cli-session.mjs refuses the session loudly on a
+// non-win32 node instead, naming the feature and the fix. RESOLUTION HERE; REFUSAL THERE.
+//
+// AND access_level:'sandbox' FORCES IT TRUE (operator 2026-09-05) — which is why it is rung 1.
+// That tier means "all's capability, but only inside the OS box": the kernel-enforced boundary
+// REPLACES the CLI-enforced one rather than layering over it, so a rung answering false would
+// leave the being unconfined at BOTH levels and make the level's own name a lie. It is an
+// EXPLICIT REQUEST in precisely the sense the paragraph above defends, so it is platform-blind
+// for the same reason — resolution here, refusal in sandbox-cli-session.mjs.
+export function resolveSandboxed({ accessLevel, conversationValue, agentDefaultValue, platform }) {
+  if (accessLevel === 'sandbox') return true;               // 1. the LEVEL forces the box (2026-09-05)
+  if (conversationValue != null) return conversationValue;  // 2. this being, in THIS conversation (conversations.yaml)
+  if (agentDefaultValue != null) return agentDefaultValue;  // 3. agents.<being>.conversation_defaults.sandboxed (config.yaml)
+  return platform === 'win32';                              // 4. nobody asked → the platform-aware default (2026-09-04)
+}
+
+// THE ONE CONTRADICTION those rungs can be handed: `access_level: sandbox` (rung 1, which forces
+// the box) beside a lower rung asking to be UNBOXED. Rung 1 wins, so that `sandboxed: false` is
+// DEAD config that reads as though it did something — the exact misreading this extraction was
+// ordered over. Named ONCE here so the two places that refuse to hold it quietly cannot disagree
+// about what it IS: boot.mjs makes it fatal for the config.yaml tier (cfg is read once at boot,
+// so boot is the moment), and resolveConv logs it every turn for the conversations.yaml tier
+// (hand-edited per conversation, never fixed at boot, so the turn is the only honest moment).
+export function isSandboxContradiction(accessLevel, sandboxedValue) {
+  return accessLevel === 'sandbox' && sandboxedValue != null && !sandboxedValue;
+}
+
 export function createBrainPool({
   pool,                              // a createWarmPool instance ({ run, evict })
   getConfig = () => ({}),
@@ -550,6 +600,19 @@ export function createBrainPool({
     // same 'regular' fallback, still decided in exactly one place — see the ACCESS LEVEL comment
     // block on the field itself below, which is where this is documented.
     const accessLevel = b?.accessLevel ?? getConfig()?.agents?.[being]?.conversation_defaults?.access_level ?? 'regular';
+    // SANDBOXED, resolved by resolveSandboxed above — the four rungs, and the history behind
+    // each, are documented there. Hoisted out of the literal for the same reason accessLevel is:
+    // the contradiction check needs both values before the object exists.
+    //
+    // AND THE CONTRADICTION IS LOUD (operator 2026-09-13). `access_level: sandbox` + an explicit
+    // `sandboxed: false` makes that second line DEAD, not an override. config.yaml's tier is
+    // FATAL at boot (boot.mjs, this same predicate); conversations.yaml's is hand-edited and
+    // never fixed at boot, so it is logged EVERY turn instead — the same "loud at the point of
+    // use" shape normalizeAllowNewInput uses in the literal below.
+    const convSandboxed = b?.sandboxed ?? null;
+    if (isSandboxContradiction(accessLevel, convSandboxed)) {
+      onLog(`brainpool: ${being} access_level 'sandbox' FORCES the OS sandbox on — this conversation's sandboxed:${JSON.stringify(convSandboxed)} is dead config, not an override (conversations.yaml). Remove it, or set this conversation's access_level to 'all'/'regular' to run unboxed.`);
+    }
     return {
       scope,
       slug,
@@ -596,40 +659,15 @@ export function createBrainPool({
       // capability + unrestricted reachability is an unsafe combination the operator wants caught
       // structurally (see the STRUCTURAL SAFETY GATES block below).
       allowedUsers: b?.allowedUsers ?? getConfig()?.agents?.[being]?.conversation_defaults?.allowed_users ?? null,
-      // SANDBOXED, same two-tier resolution as accessLevel/allowedUsers above (operator
-      // 2026-08-20) — OS-level process isolation (setup/sandbox-logon-launcher.ps1) layered
-      // on top of accessLevel:'all''s existing CLI-flag-level unconfinement. DEFAULT-ON
-      // (operator 2026-08-20, same day): unset at both tiers now resolves to true, not null
-      // — every being runs OS-sandboxed unless a tier explicitly opts out with `false`. `??`
-      // only falls through on null/undefined, so an explicit `sandboxed: false` at either
-      // tier still short-circuits before reaching this fallback.
-      //
-      // AND THE DEFAULT IS PLATFORM-AWARE (operator 2026-09-04: "egpt is meant to be run in an
-      // OS agnostic way. im on windows so i want it work for me to the fullest. but a beeper
-      // account + whatsapp account is enough to unleash all agents, like it has always been").
-      // The isolation this flag buys is Windows machinery (setup/sandbox-logon-launcher.ps1 —
-      // LogonUser + a per-folder ACE), so an unset value resolves to `true` on win32 —
-      // byte-identical to the 2026-08-20 default-on above, Windows loses nothing — and to
-      // `false` everywhere else, where that same default failed a fresh clone on its FIRST turn
-      // with a bare spawn ENOENT that named a shell binary instead of the feature.
-      //
-      // A DEFAULT MAY BE PLATFORM-AWARE BECAUSE IT IS A DEFAULT — nobody asked for it, so it is
-      // ours to pick per node. AN EXPLICIT REQUEST MAY NOT BE: a tier that says
-      // `sandboxed: true` short-circuits the `??` walk above and resolves to true on EVERY
-      // platform. Downgrading it here would make the config key a lie — "sandboxed: true" while
-      // running unsandboxed — so instead sandbox-cli-session.mjs refuses the session loudly on a
-      // non-win32 node, naming the feature and the fix. Resolution here; refusal there.
-      //
-      // AND access_level:'sandbox' FORCES IT TRUE, ahead of the entire walk (operator
-      // 2026-09-05). That tier means "all's capability, but only inside the OS box": the
-      // kernel-enforced boundary REPLACES the CLI-enforced one rather than layering over it, so
-      // a rung answering `sandboxed: false` would leave the being unconfined at BOTH levels and
-      // make the level's own name a lie. This is an EXPLICIT REQUEST in precisely the sense the
-      // paragraph above defends — it lands on the same side of that argument as an explicit
-      // `sandboxed: true`, and so it resolves true on EVERY platform for the same reason:
-      // downgrading it here would be the silent lie that argument forbids. sandbox-cli-session.mjs
-      // still refuses the session loudly on a non-win32 node. Resolution here; refusal there.
-      sandboxed: accessLevel === 'sandbox' ? true : (b?.sandboxed ?? getConfig()?.agents?.[being]?.conversation_defaults?.sandboxed ?? (platform === 'win32')),
+      // SANDBOXED — the whole precedence is resolveSandboxed (above), which is the ONE thing that
+      // answers this field for every caller. Rungs 2 and 3 are the same two-tier read
+      // accessLevel/allowedUsers use above; rung 1 is the level, rung 4 this node's OS.
+      sandboxed: resolveSandboxed({
+        accessLevel,
+        conversationValue: convSandboxed,
+        agentDefaultValue: getConfig()?.agents?.[being]?.conversation_defaults?.sandboxed ?? null,
+        platform,
+      }),
       // VERBOSE_THINKING, same two-tier resolution as accessLevel/allowedUsers/sandboxed above
       // (operator 2026-08-30: "verbose thinking should be controlled from config.yaml rather
       // than the agent.yaml"). It shipped the day before as a TYPE-FILE-ONLY field, which made

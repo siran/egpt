@@ -3,7 +3,7 @@
 // (fresh thread → first turn wrapped with the feed; resumed thread → raw).
 // Against a fake warm pool + in-memory conv-state. No claude, no spawn.
 import { describe, it, expect, vi } from 'vitest';
-import { createBrainPool, parseWarmBlock, resolveBeingDef, resolveDefaultBrainDef } from '../src/spine/brainpool.mjs';
+import { createBrainPool, parseWarmBlock, resolveBeingDef, resolveDefaultBrainDef, resolveSandboxed } from '../src/spine/brainpool.mjs';
 import { createWarmPool } from '../src/warm-sessions.mjs';
 import { createPiCliSession } from '../src/pi-cli-session.mjs';
 import { EventEmitter } from 'node:events';
@@ -1262,6 +1262,121 @@ describe("brainpool.turn — access_level 'sandbox' (operator 2026-09-05)", () =
     });
     await optOut.brain.turn('e', ev);
     expect(optOut.pool.calls[0].brainOptions.sandboxed).toBe(false);
+  });
+});
+
+// ── THE `sandboxed` RESOLUTION AS ONE NAMED FUNCTION (operator 2026-09-13: "don't use a
+//    ternaric hallucination.. you got to be more clear in the coding"). resolveSandboxed IS the
+//    precedence — one rung per line — and it is the only thing resolveConv calls for this field.
+//    These are unit locks on every rung, so the extraction can never quietly move one.
+//
+//    THE DEFECT THAT ORDERED IT: `access_level: sandbox` + an explicit `sandboxed: false` is a
+//    config a hand-edit can write today. Rung 1 forces true, so that second line is DEAD —
+//    unreachable, not overridden — and NOTHING SAID SO; the operator's live dolly config was
+//    misread off exactly this. It is loud now: FATAL at boot for the config.yaml tier
+//    (tests/spine-v1-boot.test.mjs), and a per-turn log line for the conversations.yaml tier,
+//    which is hand-edited and has no boot moment to be caught at. ──
+describe('resolveSandboxed — the precedence, one rung per line (operator 2026-09-13)', () => {
+  // Every rung silent, on a platform whose default is FALSE, so any `true` below is a rung firing.
+  const R = (o) => resolveSandboxed({ accessLevel: 'regular', conversationValue: null, agentDefaultValue: null, platform: 'linux', ...o });
+
+  it("RUNG 1 — access_level 'sandbox' forces true ahead of everything, on EVERY platform", () => {
+    expect(R({ accessLevel: 'sandbox' })).toBe(true);
+    expect(R({ accessLevel: 'sandbox', platform: 'win32' })).toBe(true);
+    expect(R({ accessLevel: 'sandbox', platform: 'darwin' })).toBe(true);
+    // ...and neither lower tier can unbox it (the contradiction — see the loud paths below).
+    expect(R({ accessLevel: 'sandbox', conversationValue: false })).toBe(true);
+    expect(R({ accessLevel: 'sandbox', agentDefaultValue: false })).toBe(true);
+    expect(R({ accessLevel: 'sandbox', conversationValue: false, agentDefaultValue: false })).toBe(true);
+  });
+
+  it('RUNG 2 — the conversation tier answers when it is set, and BEATS the agent tier', () => {
+    expect(R({ conversationValue: false })).toBe(false);
+    expect(R({ conversationValue: true })).toBe(true);
+    expect(R({ conversationValue: false, agentDefaultValue: true })).toBe(false);
+    expect(R({ conversationValue: true, agentDefaultValue: false })).toBe(true);
+  });
+
+  it('RUNG 3 — the agent tier (config.yaml conversation_defaults) answers when the conversation is silent', () => {
+    expect(R({ agentDefaultValue: false })).toBe(false);
+    expect(R({ agentDefaultValue: true })).toBe(true);
+  });
+
+  it('RUNG 4 — nobody asked → the PLATFORM-AWARE default: true on win32, false everywhere else', () => {
+    expect(R({ platform: 'win32' })).toBe(true);
+    expect(R({ platform: 'linux' })).toBe(false);
+    expect(R({ platform: 'darwin' })).toBe(false);
+  });
+
+  it('AN EXPLICIT REQUEST IS NEVER DOWNGRADED TO THE PLATFORM — true on POSIX stays true (refusal is sandbox-cli-session.mjs\'s job)', () => {
+    expect(R({ conversationValue: true, platform: 'linux' })).toBe(true);
+    expect(R({ agentDefaultValue: true, platform: 'darwin' })).toBe(true);
+  });
+
+  it('only null/undefined falls through — exactly what the `??` chain this replaced fell through on', () => {
+    expect(R({ conversationValue: null, agentDefaultValue: false })).toBe(false);        // null at rung 2 → rung 3 answers
+    expect(R({ conversationValue: undefined, platform: 'win32' })).toBe(true);           // undefined → rung 4
+    expect(R({ conversationValue: false, platform: 'win32' })).toBe(false);              // false is an ANSWER, not a fall-through
+  });
+});
+
+// THE CONTRADICTION IS NEVER HELD QUIETLY (operator 2026-09-13). Two tiers, two lifetimes, one
+// predicate (isSandboxContradiction): config.yaml is frozen at boot, so boot.mjs REFUSES to start
+// on it; conversations.yaml is hand-edited per conversation and never fixed at boot, so the only
+// honest moment is the turn itself — logged there, every turn, the same "loud at the point of
+// use" shape normalizeAllowNewInput already uses in this file.
+describe("brainpool.turn — access_level 'sandbox' + an explicit sandboxed:false is LOUD, not silent", () => {
+  const brains = { resolve: () => ({ name: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: ['Read'] }) };
+
+  it('REPRODUCE-FIRST: the per-conversation contradiction used to resolve true with NOTHING said — it now says so, and still resolves true', async () => {
+    const logs = [];
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
+      brains, seedAgents: { e: { access_level: 'sandbox', sandboxed: false } }, platform: 'win32', onLog: (l) => logs.push(String(l)),
+    });
+    await brain.turn('e', ev);
+    expect(pool.calls[0].brainOptions.sandboxed).toBe(true);              // behaviour UNCHANGED — the level still forces the box
+    const line = logs.find((l) => /sandboxed/.test(l) && /sandbox/.test(l));
+    expect(line, 'the dead sandboxed:false line was dropped silently').toBeTruthy();
+    expect(line).toMatch(/\be\b/);                                        // names the being
+    expect(line).toMatch(/conversations\.yaml/);                          // names the file to fix
+    expect(line).toMatch(/access_level/);                                 // names the other half of the contradiction
+  });
+
+  it('it fires on a NON-win32 node too — the contradiction is about the config, not the platform', async () => {
+    const logs = [];
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
+      brains, seedAgents: { e: { access_level: 'sandbox', sandboxed: false } }, platform: 'linux', onLog: (l) => logs.push(String(l)),
+    });
+    await brain.turn('e', ev);
+    expect(pool.calls[0].brainOptions.sandboxed).toBe(true);
+    expect(logs.some((l) => /conversations\.yaml/.test(l))).toBe(true);
+  });
+
+  it('NO FALSE POSITIVES: a clean sandbox being, and a sandboxed:false under a NON-sandbox level, say nothing', async () => {
+    const clean = [];
+    const a = harness([{ text: 'ok', sessionId: 's' }], {
+      brains, seedAgents: { e: { access_level: 'sandbox' } }, platform: 'win32', onLog: (l) => clean.push(String(l)),
+    });
+    await a.brain.turn('e', ev);
+    expect(a.pool.calls[0].brainOptions.sandboxed).toBe(true);
+    expect(clean.filter((l) => /sandboxed/.test(l))).toEqual([]);
+
+    // A redundant-but-honest `sandboxed: true` under 'sandbox' is not a contradiction either.
+    const redundant = [];
+    const b = harness([{ text: 'ok', sessionId: 's' }], {
+      brains, seedAgents: { e: { access_level: 'sandbox', sandboxed: true } }, platform: 'win32', onLog: (l) => redundant.push(String(l)),
+    });
+    await b.brain.turn('e', ev);
+    expect(redundant.filter((l) => /sandboxed/.test(l))).toEqual([]);
+
+    // And the real opt-out — sandboxed:false under 'all' — is an override, not a dead line.
+    const optOut = [];
+    const c = harness([{ text: 'ok', sessionId: 's' }], {
+      brains, seedAgents: { e: { access_level: 'all', allowed_users: ['123'], sandboxed: false } }, platform: 'win32', onLog: (l) => optOut.push(String(l)),
+    });
+    await c.brain.turn('e', ev);
+    expect(c.pool.calls[0].brainOptions.sandboxed).toBe(false);
+    expect(optOut.filter((l) => /sandboxed/.test(l))).toEqual([]);
   });
 });
 

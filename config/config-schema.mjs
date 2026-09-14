@@ -1720,6 +1720,15 @@ export const CONFIG_SCHEMA = {
             that level forces true ahead of both tiers, because a 'sandbox'
             being running unboxed would make the level's name a lie.
 
+            WRITING IT THERE ANYWAY IS A FATAL BOOT (operator 2026-09-13):
+            access_level 'sandbox' + sandboxed: false in one
+            conversation_defaults block is a DEAD line that reads exactly like
+            an override, which is how this field got explained wrongly twice in
+            one session, so the spine refuses to start until the line is removed
+            or the level is changed. conversations.yaml's per-conversation copy
+            of the same field cannot be caught at boot (hand-edited, never
+            frozen) - brainpool logs that contradiction on every turn instead.
+
             The isolation below is Windows machinery, so a default of true
             failed a fresh clone on macOS/Linux on its FIRST turn. A DEFAULT
             may be platform-aware because nobody asked for it; an EXPLICIT true

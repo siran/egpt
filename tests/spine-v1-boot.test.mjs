@@ -1441,3 +1441,62 @@ describe('boot() — beeper connection ENDPOINT and ownership', () => {
     app.stop();
   });
 });
+
+// THE ONE CONTRADICTION a `sandboxed` config can hold (operator 2026-09-13). access_level
+// 'sandbox' FORCES the OS box on (brainpool.mjs resolveSandboxed, rung 1), so a `sandboxed: false`
+// beside it in the SAME conversation_defaults block is DEAD config — unreachable, not an override
+// — while reading exactly as though it turned the box off. cfg is read ONCE at boot, so this tier
+// is knowable here and nowhere later: fatal at boot, the same shape as the echo peer-set assertion
+// above, so the silent-dead-line class is impossible. (conversations.yaml's tier of the same field
+// is hand-edited and not fixed at boot; brainpool logs that one per turn instead.)
+describe("boot() — access_level:'sandbox' beside sandboxed:false is FATAL", () => {
+  const persona = { configuration: 'egpt', handles: ['e'], default: true };
+  const bootWith = (agents) => {
+    const { start } = fakeStart();
+    return boot({
+      readConfig: () => ({ whatsapp: {}, node_name: 'kg', agents }),
+      startBridge: start, makeSession: fakeSession,
+      loadState: async () => emptyState(), writeState: async () => {},
+      io: memIo(), ingest: false, tickMs: 0, log: { line: () => {} },
+    });
+  };
+
+  it('REPRODUCE-FIRST: the contradiction refuses to boot', async () => {
+    await expect(bootWith({ egpt: { ...persona, conversation_defaults: { access_level: 'sandbox', sandboxed: false } } }))
+      .rejects.toThrow(/sandbox/);
+  });
+
+  it('the message names the AGENT, the bad VALUE, the FILE, and BOTH ways out', async () => {
+    const agents = { egpt: persona, dolly: { configuration: 'egpt', handles: ['d'], conversation_defaults: { access_level: 'sandbox', sandboxed: false } } };
+    await expect(bootWith(agents)).rejects.toThrow(/"dolly"/);            // the agent — NOT just "some agent"
+    await expect(bootWith(agents)).rejects.toThrow(/sandboxed: false/);   // the value as written
+    await expect(bootWith(agents)).rejects.toThrow(/config\/config\.yaml/);
+    await expect(bootWith(agents)).rejects.toThrow(/Remove the/);         // fix 1: drop the dead line
+    await expect(bootWith(agents)).rejects.toThrow(/access_level: all/);  // fix 2: mean it, and say so
+  });
+
+  it('a NON-persona agent is checked too — the walk covers every agent in the block', async () => {
+    await expect(bootWith({ egpt: persona, wren: { configuration: 'egpt', handles: ['w'], conversation_defaults: { access_level: 'sandbox', sandboxed: false } } }))
+      .rejects.toThrow(/"wren"/);
+  });
+
+  it('CLEAN CONFIGS STILL BOOT: sandbox with no sandboxed key, a redundant sandboxed:true, and sandboxed:false under a NON-sandbox level', async () => {
+    for (const cd of [
+      { access_level: 'sandbox' },                          // the shape the operator should write
+      { access_level: 'sandbox', sandboxed: true },         // redundant, but honest — not a contradiction
+      { access_level: 'all', allowed_users: ['*'], sandboxed: false },   // a REAL opt-out, at a level that permits one
+      { access_level: 'regular', sandboxed: false },
+      { sandboxed: false },                                 // no level stated at all
+    ]) {
+      const app = await bootWith({ egpt: { ...persona, conversation_defaults: cd } });
+      expect(app, `refused a clean config: ${JSON.stringify(cd)}`).toBeTruthy();
+      app.stop();
+    }
+  });
+
+  it('an agents block with no conversation_defaults at all is untouched by the check', async () => {
+    const app = await bootWith({ egpt: persona, wren: { configuration: 'egpt', handles: ['w'] } });
+    expect(app).toBeTruthy();
+    app.stop();
+  });
+});

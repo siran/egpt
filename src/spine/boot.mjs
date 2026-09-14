@@ -56,7 +56,7 @@ import { createTranscript } from './transcript.mjs';
 // createSender: the reply path. makeOutbound: the ONE answer to "which connection does this
 // outbound go out on" (sender.mjs's header), asked by makePeerMouth below rather than copied.
 import { createSender, makeOutbound } from './sender.mjs';
-import { createBrainPool } from './brainpool.mjs';
+import { createBrainPool, isSandboxContradiction } from './brainpool.mjs';
 import { createRoomRelay } from './room-relay.mjs';
 import { createIdentityScope } from './identity-scope.mjs';
 import { createPeerLiveness, tcpProbe } from './peer-liveness.mjs';
@@ -1052,6 +1052,24 @@ export async function boot({
   // ONCE here and injected into the pure modules (router/gating/brainpool) that can't read
   // config. Every persona check downstream compares against this, never against 'e'/'egpt'.
   const defaultKey = personaAgent().name.toLowerCase();
+
+  // BOOT ASSERTION (operator 2026-09-13): access_level 'sandbox' FORCES the OS sandbox on
+  // (brainpool.mjs resolveSandboxed, rung 1), so a `sandboxed: false` sitting beside it in the
+  // SAME conversation_defaults block is DEAD config — unreachable, not an override — while
+  // reading exactly as though it turned the box off. That is not hypothetical: it is how a live
+  // agent's config was explained wrongly, twice, in one session. `cfg` is read ONCE at boot, so
+  // this tier is knowable here and nowhere later. Fail loudly so the operator fixes the config —
+  // this makes the silent-dead-line class impossible, the same way the echo peer-set assertion
+  // below kills the silent-divergence one. (The per-conversation tier of the same field lives in
+  // conversations.yaml, is hand-edited and is NOT fixed at boot; brainpool logs that one on every
+  // turn instead — same predicate, so the two can never disagree about what a contradiction is.)
+  for (const [name, a] of Object.entries(agents())) {
+    if (!a || typeof a !== 'object' || Array.isArray(a)) continue;
+    const cd = a.conversation_defaults;
+    if (!cd || typeof cd !== 'object' || Array.isArray(cd)) continue;
+    if (!isSandboxContradiction(cd.access_level, cd.sandboxed)) continue;
+    throw new Error(`boot: agent "${name}" declares access_level: sandbox together with sandboxed: ${JSON.stringify(cd.sandboxed)} in conversation_defaults — 'sandbox' means "all's capability, but only inside the OS box", so it forces the sandbox ON and that \`sandboxed\` line is dead config, not an override (${CONFIG_FILE}). Remove the \`sandboxed\` line to keep the OS box, or set \`access_level: all\` (with allowed_users) / \`access_level: regular\` if this agent is really meant to run unboxed.`);
+  }
 
   // === THE STRUCTURAL NODE SIGNATURE (operator 2026-07-26) ==============================
   // "spine doesn't boot without the invisible ones. the visible one are prescindable, there are
