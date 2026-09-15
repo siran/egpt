@@ -11,7 +11,7 @@
 # tunnel fail to bind, and then the driver lists a target that looks like dolly's and is not.
 # Driving the wrong computer, silently, is the exact failure that tool was built to avoid.
 #
-#   powershell -File setup/set-beeper-s0-cdp-port.ps1 -ServiceName BeeperRodz -CdpPort 9225
+#   powershell -File setup/set-beeper-s0-cdp-port.ps1 -ServiceName egpt-beeper-secondary -CdpPort 9225
 #
 # ASCII ONLY (PowerShell 5.1 reads a BOM-less UTF-8 script as ANSI).
 [CmdletBinding()]

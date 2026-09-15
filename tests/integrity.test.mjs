@@ -461,3 +461,100 @@ describe('no setup script treats git stderr as failure', () => {
     expect(offenders).toEqual([]);
   });
 });
+
+// A Beeper Desktop must never again be named so that it reads like a spine.
+//
+// `Get-Service egpt-*` listed egpt-daemon, egpt-primary and egpt-secondary. Two of those three
+// are nssm-wrapped Beeper Desktops, and the operator reasonably read the list as three spines.
+// Stopping `egpt-primary` does not stop a spine -- it takes a WhatsApp account offline, which is
+// the worst thing to learn mid-incident. The shipped names now say what the process IS:
+// `egpt-beeper-primary` / `egpt-beeper-secondary` (setup/beeper-s0-naming.ps1). This guards the
+// rename against half-landing in a consumer nobody grepped for.
+//
+// WHY THE RULES ARE SHAPED LIKE THIS, and not a flat string ban: `egpt-secondary` IS OVERLOADED
+// and two of its three meanings are legitimate. It is the profile dir `~/.egpt-secondary`; it is
+// the derived name-base for that profile's OWN node (`egpt-secondary-daemon`, the
+// `[egpt-secondary]` daemon log tag); and it WAS the Beeper service. Only the third is retired,
+// so the scan bans the two unambiguous forms -- `egpt-primary`, which nothing derives and which
+// only ever named the Beeper service, and any line pairing a bare `egpt-secondary` with
+// `Beeper` -- plus the pre-generalisation hand names.
+//
+// reports/ and plans/ are excluded on purpose: they are DATED records of what was observed or
+// proposed on a given day, and editing an old measurement to match today's names falsifies it.
+describe('the retired Beeper Desktop service names are gone from the tree', () => {
+  const RETIRED_HAND_NAMES = /\bBeeper(An|Rodz)\b/;
+  // Not preceded by `.` (the profile dir ~/.egpt-primary) and not followed by `-` or a word
+  // character (the derived node names egpt-secondary-daemon / egpt-secondary-session1).
+  const BARE_PRIMARY = /(?<![.\w])egpt-primary(?![-\w])/;
+  const BARE_SECONDARY = /(?<![.\w])egpt-secondary(?![-\w])/;
+
+  // THE MIGRATION ITSELF HAS TO SPELL THE OLD NAMES -- you cannot tell someone to rename a
+  // service without naming it. These four are the only files allowed to, and each is allowed
+  // for one reason. When every node has been migrated, all four entries go away with the
+  // migration; until then the list is the complete inventory of where the old names survive.
+  const MAY_NAME_THE_OLD_SERVICES = new Set([
+    'setup/beeper-s0-naming.ps1',            // the old -> new map the detection reads
+    'setup/rename-beeper-s0-service.ps1',    // the tool that performs the rename
+    'OPERATIONS.md',                         // the runbook that tells the operator to run it
+    'tests/integrity.test.mjs',              // this scan
+  ]);
+
+  const files = execSync('git ls-files', { cwd: ROOT, encoding: 'utf8' })
+    .split('\n')
+    .map((f) => f.trim())
+    .filter(Boolean)
+    // reports/ and plans/ are DATED records of what was observed or proposed on a given day.
+    // Editing an old measurement so it matches today's names falsifies it.
+    .filter((f) => !f.startsWith('reports/') && !f.startsWith('plans/'))
+    .filter((f) => !MAY_NAME_THE_OLD_SERVICES.has(f))
+    .filter((f) => !/\.(png|jpg|jpeg|gif|ico|woff2?|zip|wav|mp3|ogg|opus|m4a)$/i.test(f));
+
+  it('finds at least the known tracked files (sanity)', () => {
+    expect(files.length).toBeGreaterThan(100);
+  });
+
+  it('no file names the Beeper services egpt-primary / egpt-secondary, or BeeperAn / BeeperRodz', () => {
+    const offenders = [];
+    for (const f of files) {
+      let src;
+      try { src = readFileSync(join(ROOT, f), 'utf8'); } catch { continue; }
+      src.split('\n').forEach((line, i) => {
+        const at = `${f}:${i + 1}: ${line.trim()}`;
+        if (RETIRED_HAND_NAMES.test(line)) offenders.push(at);
+        else if (BARE_PRIMARY.test(line)) offenders.push(at);
+        // A bare `egpt-secondary` is only an offence when the line is about the Beeper service;
+        // on its own it is the second node's name-base and its daemon log tag.
+        else if (BARE_SECONDARY.test(line) && /Beeper/i.test(line)) offenders.push(at);
+      });
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  // The scan is only worth anything if the NEW names are actually what the scripts install --
+  // otherwise deleting every mention of the old ones would pass it.
+  it('the installers and the naming module ship the new names', () => {
+    const naming = readFileSync(join(ROOT, 'setup/beeper-s0-naming.ps1'), 'utf8');
+    expect(naming).toContain('egpt-beeper-primary');
+    expect(naming).toContain('egpt-beeper-secondary');
+    // The legacy map is the migration's only record of what the old names were, so it is the one
+    // place allowed to spell them -- keep it honest.
+    expect(naming).toMatch(/'egpt-primary'\s*=\s*'egpt-beeper-primary'/);
+    expect(naming).toMatch(/'egpt-secondary'\s*=\s*'egpt-beeper-secondary'/);
+
+    for (const f of ['setup/install-beeper-s0-service.ps1', 'setup/rename-beeper-s0-service.ps1']) {
+      const src = readFileSync(join(ROOT, f), 'utf8');
+      expect(src, `${f} must take its labels from the one naming module, not hardcode them`)
+        .toContain("'beeper-s0-naming.ps1'");
+    }
+  });
+
+  // The allowlist is a migration artefact, so it has to shrink when the migration does. An entry
+  // whose file no longer spells an old name is stale: delete the entry, not the assertion.
+  it('every allowlisted file still actually needs to be allowlisted', () => {
+    const stale = [...MAY_NAME_THE_OLD_SERVICES].filter((f) => {
+      const src = readFileSync(join(ROOT, f), 'utf8');
+      return !BARE_PRIMARY.test(src) && !BARE_SECONDARY.test(src) && !RETIRED_HAND_NAMES.test(src);
+    });
+    expect(stale, 'these no longer name a retired service - drop them from MAY_NAME_THE_OLD_SERVICES').toEqual([]);
+  });
+});

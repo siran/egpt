@@ -204,7 +204,10 @@ if ($want -eq 'secondary' -and -not $ready) {
   # egpt-beeper-secondary is deliberately NOT stopped here: while the gate is closed it is the install a
   # human is logging IN to, and pulling it out from under that is the one unhelpful thing to do.
   if ((Get-Service $PrimaryService -ErrorAction SilentlyContinue).Status -ne 'Running') {
-    Say "egpt-beeper-primary is not running while blocked - starting it"
+    # The RESOLVED name, never the configured default: Resolve-ServiceName may have discovered a
+    # differently-named service, and a log line naming a service that was not the one acted on is
+    # exactly the confusion this rename exists to end.
+    Say "$PrimaryService is not running while blocked - starting it"
     if (-not $WhatIf) { Start-Service $PrimaryService }
   }
   $state.last = 'blocked'; Save-State

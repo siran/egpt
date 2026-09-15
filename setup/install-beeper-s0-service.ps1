@@ -11,6 +11,13 @@
 # logins, separate tokens, separate ports: one for the PRIMARY account (the operator's own) and
 # one for the SECONDARY (the account the agents wear).
 #
+# THE NAME SAYS WHAT THE PROCESS IS: `egpt-beeper-primary` / `egpt-beeper-secondary`. A name
+# that omits `beeper` reads like an eGPT spine sitting beside `egpt-daemon`, and this is not one
+# - stopping it does not stop a spine, it takes a WhatsApp account offline. setup\beeper-s0-
+# naming.ps1 owns the names and the one-line labels. An install still sitting under one of the
+# retired names is a RENAME, and this script refuses and says so rather than building a second
+# Desktop beside it.
+#
 # Run ELEVATED, from the repo root:
 #   .\setup\install-beeper-s0-service.ps1 -ServiceName egpt-beeper-secondary `
 #       -UserDataDir $env:USERPROFILE\.egpt\state\beeper-secondary\userdata -CdpPort 9225
@@ -35,6 +42,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# The names and the one-line labels live in ONE file, shared with rename-beeper-s0-service.ps1.
+. (Join-Path $PSScriptRoot 'beeper-s0-naming.ps1')
+
 $id = [Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not (New-Object Security.Principal.WindowsPrincipal($id)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
   $a = @('-NoProfile','-ExecutionPolicy','Bypass','-File',"`"$PSCommandPath`"")
@@ -55,6 +65,27 @@ if (-not $nssm) { $nssm = Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Links\ns
 if (-not (Test-Path $nssm)) { throw "nssm not found - winget install nssm" }
 
 if (Get-Service $ServiceName -ErrorAction SilentlyContinue) { throw "service $ServiceName already exists - remove it first: nssm remove $ServiceName confirm" }
+
+# AN OLD-NAMED INSTALL IS A RENAME, AND THIS SCRIPT WILL NOT DO IT.
+#
+# It deliberately does not migrate, for two reasons. First, it is not idempotent by design (the
+# throw above): installing beside a live Desktop would leave two services fighting for the same
+# CDP port, the same user-data-dir and the same account. Second, THIS SCRIPT ONLY KNOWS THE
+# PARAMETERS IT SETS - the services on this node were created by hand, so anything hand-set on
+# them would be silently dropped by a reinstall from these defaults. setup\rename-beeper-s0-
+# service.ps1 exists for exactly this, carries the old service's whole configuration across, and
+# says plainly that the Desktop is DOWN in between so the idle one goes first.
+$legacyMap = Get-BeeperS0LegacyNameMap
+foreach ($oldName in $legacyMap.Keys) {
+  if ($legacyMap[$oldName] -ne $ServiceName) { continue }
+  if (-not (Get-Service $oldName -ErrorAction SilentlyContinue)) { continue }
+  throw @"
+'$oldName' already exists - that is this same Beeper Desktop under its old name, so what you want is a RENAME, not an install.
+Renaming is remove-and-reinstall (sc.exe has no rename verb) and the Desktop is DOWN in between, so do the IDLE one first:
+  .\setup\rename-beeper-s0-service.ps1 -From $oldName -To $ServiceName -WhatIf
+  .\setup\rename-beeper-s0-service.ps1 -From $oldName -To $ServiceName
+"@
+}
 
 # A CDP port already in use would silently give this Desktop NO debugger, which is the one way
 # back into a window nobody can see.
@@ -97,7 +128,8 @@ Say "installing $ServiceName"
 $startConst = @{ auto = 'SERVICE_AUTO_START'; manual = 'SERVICE_DEMAND_START'; disabled = 'SERVICE_DISABLED' }[$StartMode]
 & $nssm set $ServiceName Start $startConst             | Out-Null
 & $nssm set $ServiceName ObjectName LocalSystem        | Out-Null
-& $nssm set $ServiceName DisplayName "Beeper Desktop (Session 0) - $ServiceName" | Out-Null
+& $nssm set $ServiceName DisplayName (Get-BeeperS0DisplayName $ServiceName) | Out-Null
+& $nssm set $ServiceName Description (Get-BeeperS0Description $ServiceName) | Out-Null
 
 Say "installed ($StartMode start). user-data-dir: $UserDataDir"
 Say "               CDP port: $CdpPort"

@@ -51,6 +51,11 @@ Beeper Desktop instances, one per account, each with its own `--user-data-dir` a
 port (9223 and 9225; 9222 is the Chrome profile). They are the ear and the mouth of the
 one spine, and removing them would take an account offline.
 
+> **2026-09-15.** Because that misreading was the reasonable one, the names were changed
+> to say what the process is: `egpt-beeper-primary` and `egpt-beeper-secondary`
+> (`setup/beeper-s0-naming.ps1`, migrate with `setup/rename-beeper-s0-service.ps1`).
+> The names below are what was observed on 2026-09-14 and are left as measured.
+
 ## Evidence
 
 Supervision map, reve, 2026-09-14 19:03:

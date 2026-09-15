@@ -95,7 +95,8 @@ if ($newVer -and $newVer -le $installed -and -not $Force) { Say "already at $ins
 
 # --- who is holding the tree -------------------------------------------------------------------
 # The S0 Desktop is a service, found by its Application path rather than by a name, because the
-# service is called BeeperAn on one node and BeeperRodz on the other.
+# name is whatever whoever installed it chose - these were hand-created and have been renamed
+# twice since (the shipped names are now egpt-beeper-primary / egpt-beeper-secondary).
 $svc = Get-CimInstance Win32_Service | Where-Object {
   $_.PathName -match 'nssm' -and (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\$($_.Name)\Parameters" -ErrorAction SilentlyContinue).Application -like '*BeeperTexts\Beeper.exe'
 }

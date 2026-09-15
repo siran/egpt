@@ -17,11 +17,32 @@ heartbeat and shell port. No "kg2": both reve profiles declare `node_name: kg`.
 
 reve's `172.25.64.1` / `172.19.160.1` are Hyper-V/WSL switches — never deploy there.
 
-`Get-Service *egpt*` misleads: **`egpt-daemon`** is the supervisor, but
-**`egpt-primary`/`egpt-secondary` are NOT eGPT** — nssm-wrapped Beeper Desktop
-instances, one per connection, own `--user-data-dir` and CDP port (reve 9223 +
-9225, 9222 = Chrome profile; dolly 9223). reve's second spine comes from the
+`Get-Service *egpt*` lists **one spine service and two Beeper Desktops**. The name
+says which is which:
+
+| service | what it is | stopping it |
+|---|---|---|
+| `egpt-daemon` | the spine supervisor — `node egpt-daemon.mjs` → `egpt-spine.mjs` | this node goes silent |
+| `egpt-beeper-primary` | Beeper Desktop, primary account (the ear), CDP 9223 | that account goes offline |
+| `egpt-beeper-secondary` | Beeper Desktop, secondary account (the mouth), CDP 9225 | the agents cannot reply |
+
+A Beeper Desktop is **not** a spine — it is one nssm-wrapped Electron app per
+connection, with its own `--user-data-dir` and CDP port (reve 9223 + 9225, 9222 =
+Chrome profile; dolly 9223). reve's second spine comes from the
 `egpt-session1-daemon` scheduled task, not a service.
+
+**Renaming, once per node.** The two Beeper services were hand-created and still
+carry the old names `egpt-primary`/`egpt-secondary` on a node that has not been
+migrated. There is no rename verb in `sc.exe`, so it is delete-and-recreate and the
+Desktop is **down in between** — do the idle one first:
+
+```
+powershell -File setup\rename-beeper-s0-service.ps1 -From egpt-primary   -To egpt-beeper-primary   -WhatIf
+powershell -File setup\rename-beeper-s0-service.ps1 -From egpt-secondary -To egpt-beeper-secondary
+```
+
+`setup\s0-identity-reconcile.ps1` finds these by **start mode**, not by name, so it
+keeps working across the rename either way.
 
 ## Deploying
 

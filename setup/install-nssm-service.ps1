@@ -251,8 +251,16 @@ if ($EgptHomes) {
 } else {
   & $nssm set $ServiceName AppEnvironmentExtra "EGPT_HOME=$EgptHome"
 }
-& $nssm set $ServiceName DisplayName          "egpt node ($ServiceName)"
-& $nssm set $ServiceName Description           "egpt v2 node - node egpt-daemon.mjs (supervisor) -> egpt-spine.mjs (boot). Profile(s) $($profileList -join ', ')."
+# ONE SHORT LINE EACH (operator 2026-09-15). The Services console shows a single truncated line,
+# so a prose paragraph loses exactly the part worth reading. What it is, whose profile, and what
+# stopping it costs - in that order, because truncation eats the tail. The long-form explanation
+# is the comment block at the top of this file, not the registry.
+#
+# The DisplayName carries $ServiceName rather than a constant "(S0)": this script installs one
+# service PER PROFILE, so a fixed string would make two nodes indistinguishable in the list -
+# and every Windows service runs in session 0 anyway, so "(S0)" would add nothing.
+& $nssm set $ServiceName DisplayName          "eGPT node supervisor ($ServiceName)"
+& $nssm set $ServiceName Description           "eGPT spine supervisor (egpt-daemon.mjs) for profile(s) $($profileList -join ', '). Stop it and this node goes silent."
 & $nssm set $ServiceName Start                SERVICE_AUTO_START
 & $nssm set $ServiceName ObjectName           $cred.UserName $cred.GetNetworkCredential().Password
 & $nssm set $ServiceName AppStdout            $stdoutLog
