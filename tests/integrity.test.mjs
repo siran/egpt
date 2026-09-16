@@ -507,6 +507,10 @@ describe('the retired Beeper Desktop service names are gone from the tree', () =
     // The meta-test below forces this entry out once the migration renames them and the table
     // is updated to match.
     'NODE-SHAPE.md',
+    // The migration that performs the rename on each node, and its tests. The migration takes
+    // the names from the naming module's map; its header names do's services as measured.
+    'migrations/0001-beeper-services-carry-role.mjs',
+    'tests/migrations-0001-beeper-services.test.mjs',
   ]);
 
   const files = execSync('git ls-files', { cwd: ROOT, encoding: 'utf8' })
@@ -550,6 +554,9 @@ describe('the retired Beeper Desktop service names are gone from the tree', () =
     // place allowed to spell them -- keep it honest.
     expect(naming).toMatch(/'egpt-primary'\s*=\s*'egpt-beeper-primary'/);
     expect(naming).toMatch(/'egpt-secondary'\s*=\s*'egpt-beeper-secondary'/);
+    // The account-named hand installs are in the same one map, not special-cased in a migration.
+    expect(naming).toMatch(/'BeeperAn'\s*=\s*'egpt-beeper-primary'/);
+    expect(naming).toMatch(/'BeeperRodz'\s*=\s*'egpt-beeper-secondary'/);
 
     for (const f of ['setup/install-beeper-s0-service.ps1', 'setup/rename-beeper-s0-service.ps1']) {
       const src = readFileSync(join(ROOT, f), 'utf8');
@@ -566,5 +573,56 @@ describe('the retired Beeper Desktop service names are gone from the tree', () =
       return !BARE_PRIMARY.test(src) && !BARE_SECONDARY.test(src) && !RETIRED_HAND_NAMES.test(src);
     });
     expect(stale, 'these no longer name a retired service - drop them from MAY_NAME_THE_OLD_SERVICES').toEqual([]);
+  });
+});
+
+// The session 1 logon task is `egpt-daemon` (NODE-SHAPE.md), no longer `egpt-session1-daemon`.
+//
+// That task drives the S0 -> S1 handover, and a rename that misses one consumer breaks the
+// handover SILENTLY - a status check that looks for the old name reports "not registered", a
+// registration under the old name puts a second logon task beside the new one. So the old name
+// is scanned for like the retired Beeper names above. The pattern catches the literal and the
+// derived form ("$base-session1-daemon") but not the script and file names that merely contain
+// the words (register-session1-daemon-task.ps1, session1-daemon-launcher.vbs, session1-daemon.log).
+describe('the retired session 1 task name is gone from the tree', () => {
+  const OLD_TASK_NAME = /-session1-daemon(?![-\w.])/;
+  const MAY_NAME_THE_OLD_TASK = new Set([
+    'migrations/0002-session1-task-is-egpt-daemon.mjs',  // the migration that renames it
+    'tests/migrations-0002-session1-task.test.mjs',      // its tests
+    'setup/register-session1-daemon-task.ps1',           // refuses to register beside the old name
+    'tests/integrity.test.mjs',                          // this scan
+    'NODE-SHAPE.md',                                     // "What is deployed today" names it until both nodes migrate
+  ]);
+  const files = execSync('git ls-files', { cwd: ROOT, encoding: 'utf8' })
+    .split('\n').map((f) => f.trim()).filter(Boolean)
+    .filter((f) => !f.startsWith('reports/') && !f.startsWith('plans/'))
+    .filter((f) => !MAY_NAME_THE_OLD_TASK.has(f))
+    .filter((f) => !/\.(png|jpg|jpeg|gif|ico|woff2?|zip|wav|mp3|ogg|opus|m4a)$/i.test(f));
+
+  it('the pattern is alive, and blind to the file names that only contain the words', () => {
+    expect(OLD_TASK_NAME.test('`egpt-session1-daemon` scheduled task')).toBe(true);
+    expect(OLD_TASK_NAME.test('$TaskName = "$base-session1-daemon"')).toBe(true);
+    for (const innocent of ['setup/register-session1-daemon-task.ps1', 'setup\\session1-daemon-launcher.vbs', 'config\\logs\\session1-daemon.log']) {
+      expect(OLD_TASK_NAME.test(innocent), innocent).toBe(false);
+    }
+  });
+
+  it('no file outside the allowlist names egpt-session1-daemon', () => {
+    const offenders = [];
+    for (const f of files) {
+      let src;
+      try { src = readFileSync(join(ROOT, f), 'utf8'); } catch { continue; }
+      src.split('\n').forEach((line, i) => { if (OLD_TASK_NAME.test(line)) offenders.push(`${f}:${i + 1}: ${line.trim()}`); });
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('the registration script derives the new name', () => {
+    expect(readFileSync(join(ROOT, 'setup/register-session1-daemon-task.ps1'), 'utf8')).toContain('$TaskName = "$base-daemon"');
+  });
+
+  it('every allowlisted file still actually needs to be allowlisted', () => {
+    const stale = [...MAY_NAME_THE_OLD_TASK].filter((f) => !OLD_TASK_NAME.test(readFileSync(join(ROOT, f), 'utf8')));
+    expect(stale, 'these no longer name the old task - drop them from MAY_NAME_THE_OLD_TASK').toEqual([]);
   });
 });

@@ -29,12 +29,13 @@ says which is which:
 A Beeper Desktop is **not** a spine — it is one nssm-wrapped Electron app per
 connection, with its own `--user-data-dir` and CDP port (reve 9223 + 9225, 9222 =
 Chrome profile; dolly 9223). reve's second spine comes from the
-`egpt-session1-daemon` scheduled task, not a service.
+`egpt-daemon` scheduled task, not a service.
 
 **Renaming, once per node.** The two Beeper services were hand-created and still
 carry the old names `egpt-primary`/`egpt-secondary` on a node that has not been
-migrated. There is no rename verb in `sc.exe`, so it is delete-and-recreate and the
-Desktop is **down in between** — do the idle one first:
+migrated. Migration `0001` does it (see *Migrations* below); by hand, there is no
+rename verb in `sc.exe`, so it is delete-and-recreate and the Desktop is **down in
+between** — do the idle one first:
 
 ```
 powershell -File setup\rename-beeper-s0-service.ps1 -From egpt-primary   -To egpt-beeper-primary   -WhatIf
@@ -76,6 +77,27 @@ lock (`Get-Process git`), then reset:
 ```
 ssh -p 2222 an@dolly "rm -f ~/bin/egpt/.git/index.lock && git -C ~/bin/egpt reset --hard --quiet"
 ```
+
+### Migrations
+
+A structural change to a node — a service or task name, a config shape — ships as
+`migrations/NNNN-<slug>.mjs` and is never hand-applied. After a deploy lands,
+`upgrade.ps1` runs `setup/migrate.mjs` from prod against the profile it deployed.
+What a node has applied lives in `<profile>/state/migrations-applied.json`, not in
+git. Each migration first checks whether the node is already there, and records
+"already satisfied" without acting.
+
+```
+node setup\migrate.mjs --dry-run      # what each pending migration would change; changes nothing
+node setup\migrate.mjs                # apply what is pending (setup\migrate.cmd to double-click)
+```
+
+A failure stops the chain and is not recorded. A migration that needs elevation, run
+unelevated, prints **PENDING** with the exact command and does not block the rest —
+so on reve's UAC-filtered shell an elevated migration stays pending until run from
+an admin shell.
+**`-Peer an@dolly` runs dolly's migrations over ssh, which is elevated** (below):
+elevated ones apply there during the deploy, Beeper downtime included.
 
 ## The admin ssh hop
 

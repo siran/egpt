@@ -111,6 +111,15 @@ Describe 'Get-BeeperS0LegacyNameMap' {
   It 'maps egpt-secondary to the name that says it is a Beeper' {
     $map['egpt-secondary'] | Should Be 'egpt-beeper-secondary'
   }
+  It 'maps the account-named hand installs too - do still carries BeeperRodz' {
+    # A GUESS from the account (An is the ear, Rodz the mouth). migrations\0001 takes the role
+    # from each service's own CDP port and refuses when that evidence disagrees with this.
+    $map['BeeperAn']   | Should Be 'egpt-beeper-primary'
+    $map['BeeperRodz'] | Should Be 'egpt-beeper-secondary'
+  }
+  It 'lists every retired name exactly once, keyed by the exact spelling the SCM shows' {
+    @($map.Keys) -join ',' | Should BeExactly 'egpt-primary,egpt-secondary,BeeperAn,BeeperRodz'
+  }
   It 'does not claim egpt-daemon needs renaming - that name is accurate' {
     $map.Contains('egpt-daemon') | Should Be $false
   }

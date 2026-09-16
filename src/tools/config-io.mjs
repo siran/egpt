@@ -9,6 +9,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { EGPT_HOME } from "../egpt-home.mjs";
 import { homedir } from 'node:os';
+import { isDeepStrictEqual } from 'node:util';
 import * as YAML from 'yaml';
 
 // Canonical config lives under ~/.egpt/config/ (operator 2026-06-23).
@@ -136,6 +137,106 @@ export async function writeConfigKey(path, dottedKey, value) {
   const nl = at > 0 && text[at - 1] !== '\n' ? '\n' : '';
   const block = `${nl}${lines.join('\n')}\n`;
   await writeFile(path, text.slice(0, at) + block + text.slice(at), 'utf8');
+}
+
+// ─── THE SPLICE: edit config TEXT by replacing only the bytes of ONE node ─────────────────
+//
+// For migrations (migrations/NNNN-*.mjs), which rewrite an operator's config on a live node.
+// Those configs are roughly half comments, and the comments are the operator's recorded
+// rulings. MEASURED 2026-09-16 on the kg config with yaml 2.9.0: a no-op
+// `parseDocument(src).toString()` already rewrites the file (255 lines came back as 274):
+// end-of-line comments move onto their own line and long flow lists explode, and tuning
+// toString's options made it worse (261 differing lines). So nothing here ever serializes a
+// document. It parses only to find a node's source range, then replaces exactly those
+// characters; CRLF, alignment, comments and every other byte are untouched because they are
+// never re-emitted.
+//
+// Every edit is ASSERTED on both sides: before, the node must be what the caller says it is
+// (otherwise refuse, naming the path); after, the edited text must re-parse to exactly the old
+// data with that one change and nothing else (otherwise refuse - e.g. a new plain value that
+// YAML would read as a number). A refusal throws YamlSpliceRefusal and returns no text, so a
+// caller can never write a half-checked edit.
+//
+// What a splice CANNOT do is insert structure (a new key, a new block): that is new text with
+// an indentation and a place to live, not a range to replace. There is deliberately no
+// toString() fallback for it.
+export class YamlSpliceRefusal extends Error {
+  constructor(message) { super(message); this.name = 'YamlSpliceRefusal'; }
+}
+
+const pathLabel = (path) => (path.length ? path.map(String).join('.') : '(root)');
+
+function parseForSplice(src, label) {
+  const doc = YAML.parseDocument(src, { keepSourceTokens: true });
+  if (doc.errors.length) throw new YamlSpliceRefusal(`refusing to edit ${label}: the YAML does not parse (${doc.errors[0].message})`);
+  return doc;
+}
+
+// The new value written in the SAME scalar style as the text it replaces, so a plain value
+// stays plain and a quoted one stays quoted. Block scalars (| and >) span lines and are refused.
+function renderLike(node, value, label) {
+  if (!['string', 'number', 'boolean'].includes(typeof value)) {
+    throw new YamlSpliceRefusal(`refusing to edit ${label}: only a string, number or boolean can be spliced, got ${typeof value}`);
+  }
+  const s = String(value);
+  if (node.type === 'PLAIN') return s;
+  if (node.type === 'QUOTE_DOUBLE') return JSON.stringify(s);
+  if (node.type === 'QUOTE_SINGLE') return `'${s.replace(/'/g, "''")}'`;
+  throw new YamlSpliceRefusal(`refusing to edit ${label}: it is a ${node.type} scalar; only plain and quoted scalars are spliced`);
+}
+
+function verifySplice(next, expectedData, label) {
+  const doc = YAML.parseDocument(next);
+  if (doc.errors.length) throw new YamlSpliceRefusal(`refusing to edit ${label}: the edited text no longer parses (${doc.errors[0].message})`);
+  if (!isDeepStrictEqual(doc.toJS(), expectedData)) {
+    throw new YamlSpliceRefusal(`refusing to edit ${label}: the edited text does not re-parse to the intended change alone`);
+  }
+  return next;
+}
+
+// Replace the scalar VALUE at `path` (map keys and sequence indexes, e.g.
+// ['transcription_service', 'reve', 'fallback_order', 0]). `expect` is what it must hold now;
+// anything else is refused by name. expect === to returns `src` unchanged, byte for byte.
+export function spliceYamlScalar(src, path, { expect, to }) {
+  const label = pathLabel(path);
+  const doc = parseForSplice(src, label);
+  const node = doc.getIn(path, true);
+  if (node === undefined) throw new YamlSpliceRefusal(`refusing to edit ${label}: there is no such node`);
+  if (!YAML.isScalar(node)) throw new YamlSpliceRefusal(`refusing to edit ${label}: it is a ${node?.constructor?.name ?? typeof node}, not a scalar`);
+  if (node.value !== expect) {
+    throw new YamlSpliceRefusal(`refusing to edit ${label}: expected ${JSON.stringify(expect)}, found ${JSON.stringify(node.value)}`);
+  }
+  if (to === expect) return src;
+  const text = renderLike(node, to, label);
+  const [start, end] = node.range;
+  const expected = doc.toJS();
+  let parent = expected;
+  for (const k of path.slice(0, -1)) parent = parent[k];
+  parent[path[path.length - 1]] = to;
+  return verifySplice(src.slice(0, start) + text + src.slice(end), expected, label);
+}
+
+// Rename the KEY `from` to `to` inside the mapping at `mapPath` ([] is the document root). A
+// key is a node with its own range, so this is the same splice: the value, its comments and
+// the key's position in the map are untouched. Refused when `from` is absent or `to` exists.
+export function spliceYamlKey(src, mapPath, { from, to }) {
+  const label = `${pathLabel([...mapPath, from])} -> ${to}`;
+  const doc = parseForSplice(src, label);
+  const map = mapPath.length ? doc.getIn(mapPath, true) : doc.contents;
+  if (!YAML.isMap(map)) throw new YamlSpliceRefusal(`refusing to rename ${label}: ${pathLabel(mapPath)} is not a mapping`);
+  const keyOf = (pair) => (YAML.isScalar(pair.key) ? pair.key.value : undefined);
+  const pair = map.items.find((p) => keyOf(p) === from);
+  if (!pair) throw new YamlSpliceRefusal(`refusing to rename ${label}: ${pathLabel(mapPath)} has no key ${JSON.stringify(from)}`);
+  if (map.items.some((p) => keyOf(p) === to)) {
+    throw new YamlSpliceRefusal(`refusing to rename ${label}: ${pathLabel(mapPath)} already has a key ${JSON.stringify(to)}`);
+  }
+  const text = renderLike(pair.key, to, label);
+  const [start, end] = pair.key.range;
+  const expected = doc.toJS();
+  const parent = mapPath.reduce((o, k) => o[k], expected);
+  parent[to] = parent[from];
+  delete parent[from];
+  return verifySplice(src.slice(0, start) + text + src.slice(end), expected, label);
 }
 
 // Per-sibling files live under ~/.egpt/config/agents/<name>.yaml (operator 2026-06-23).

@@ -84,13 +84,18 @@ if (-not $EgptHome) {
   else { $EgptHome = Join-Path $env:USERPROFILE '.egpt' }
 }
 # Derived from the profile folder exactly like install-nssm-service.ps1 derives its service
-# name: ~/.egpt -> egpt-session1-daemon. One machine can carry several nodes; they must not
-# collide on one task name.
+# name: ~/.egpt -> egpt-daemon. One machine can carry several nodes; they must not collide on
+# one task name. The task and the service share the name (NODE-SHAPE.md): Task Scheduler and
+# the SCM are separate namespaces, and nothing carries a session in its name.
+$base = (Split-Path $EgptHome -Leaf) -replace '^\.', ''
 if (-not $TaskName) {
-  $base = (Split-Path $EgptHome -Leaf) -replace '^\.', ''
   if (-not $base) { throw "cannot derive a task name: -EgptHome is empty or has no leaf ('$EgptHome'). Pass -TaskName explicitly." }
-  $TaskName = "$base-session1-daemon"
+  $TaskName = "$base-daemon"
 }
+# The name this task carried until migrations\0002 renamed it. A node that has not run 0002
+# still has it, and registering the new name beside it would put TWO logon tasks on the node -
+# two session 1 daemons at every logon. So registering refuses while it exists.
+$LegacyTaskName = if ($base) { "$base-session1-daemon" } else { '' }
 if (-not $LogPath) { $LogPath = Join-Path $EgptHome 'config\logs\session1-daemon.log' }
 if (-not $Node) {
   $found = Get-Command node.exe -ErrorAction SilentlyContinue
@@ -117,12 +122,20 @@ function Get-Task {
   try { return Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop } catch { return $null }
 }
 
+function Get-LegacyTask {
+  if (-not $LegacyTaskName -or $LegacyTaskName -eq $TaskName) { return $null }
+  try { return Get-ScheduledTask -TaskName $LegacyTaskName -ErrorAction Stop } catch { return $null }
+}
+
 function Show-Status {
   Write-Host "scheduled task : $TaskName"
   $t = Get-Task
   if (-not $t) {
     Write-Host "  registered   : no" -ForegroundColor Yellow
     Write-Host "  would run    : $WScript $Arguments"
+    if (Get-LegacyTask) {
+      Write-Host "  NOTE: this task is registered under its old name '$LegacyTaskName' - this node has not run migrations\0002. Run: node setup\migrate.mjs" -ForegroundColor Yellow
+    }
     return
   }
   Write-Host "  registered   : YES" -ForegroundColor Green
@@ -233,6 +246,9 @@ if (-not (Test-Path -LiteralPath $WScript)) {
 if (-not (Test-Path -LiteralPath $Shim))   { throw "launcher shim not found: $Shim - the checkout at $Repo does not carry setup\session1-daemon-launcher.vbs. Deploy it there (setup\deploy.ps1) before registering a task that points at it." }
 if (-not (Test-Path -LiteralPath $Node))   { throw "node.exe not found: $Node (pass -Node <path>)" }
 if (-not (Test-Path -LiteralPath $Daemon)) { throw "egpt-daemon.mjs not found: $Daemon (pass -Repo <checkout>)" }
+if (Get-LegacyTask) {
+  throw "'$LegacyTaskName' is registered - that is this same task under its old name, so '$TaskName' beside it would start TWO session 1 daemons at logon. Rename it losslessly instead: node setup\migrate.mjs (migrations\0002)"
+}
 
 # cmd's `>>` creates the FILE but not the DIRECTORY: a missing log dir kills the whole `&&`
 # chain before node ever starts, silently, because the error goes to a hidden console.

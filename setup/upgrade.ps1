@@ -6,7 +6,9 @@
 #
 # Use setup/deploy.ps1 INSTEAD when the change alters what the SUPERVISOR spawns (an
 # entry-point rename, daemon-runtime appPath). That one restarts the service and needs UAC.
-# This one never elevates -- it writes one file into your own profile.
+# This one never elevates -- it writes one file into your own profile, and once the deploy
+# lands it runs the pending migrations (setup/migrate.mjs), which report the ones that need
+# elevation as PENDING rather than asking for it.
 #
 # ASCII ONLY, deliberately: PowerShell 5.1 decodes a BOM-less UTF-8 script as ANSI, so a
 # non-ASCII character here (an em-dash, an arrow) mangles into bytes that break the parser.
@@ -264,6 +266,40 @@ if ($ok -and $target -and $after -ne $target) {
   exit 1
 }
 
+# --- MIGRATIONS: the structural half of a deploy. Only now, once prod verifiably holds the new
+#     code, so the migrations that run are the ones that just shipped. Here and NOT at boot: boot
+#     is what the watchdog retries in a loop, so a broken migration there is a crash loop, while
+#     here it is one red line. The runner reads THIS profile's ledger, skips what is recorded,
+#     and says PENDING for what needs elevation - this script never elevates, so those wait for
+#     an admin shell (see setup\migrate.mjs). A failure does not undo the deploy that already
+#     landed; it stops the migration chain, lets the peer still deploy, and fails this script
+#     at the end. ---
+$migrationsFailed = $false
+$runner = Join-Path $Repo 'setup\migrate.mjs'
+$nodeExe = (Get-Command node -ErrorAction SilentlyContinue).Source
+Write-Host ""
+if (-not (Test-Path $runner)) {
+  Write-Host "  migrations SKIPPED -- prod has no $runner" -ForegroundColor Yellow
+} elseif (-not $nodeExe) {
+  Write-Host "  migrations NOT RUN -- node is not on PATH" -ForegroundColor Red
+  $migrationsFailed = $true
+} else {
+  # Same PS 5.1 trap as the git probes above: if this host captures a native stderr line (a
+  # PowerShell script the runner calls can throw), 'Stop' would turn it into a terminating
+  # error and kill the report of the very failure it describes. Drop it for the call.
+  $prevEAP = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  & $nodeExe $runner --egpt-home $EgptHome
+  $migrateRc = $LASTEXITCODE
+  $ErrorActionPreference = $prevEAP
+  if ($migrateRc -eq 2) {
+    Write-Host "=== MIGRATIONS PENDING ELEVATION -- the node is not converged until they run (see above) ===" -ForegroundColor Yellow
+  } elseif ($migrateRc -ne 0) {
+    Write-Host "=== MIGRATIONS FAILED (exit $migrateRc) -- the deploy landed, the migration chain stopped ===" -ForegroundColor Red
+    $migrationsFailed = $true
+  }
+}
+
 # --- the peer, by running THIS SAME SCRIPT there over ssh: the remote copy does its own
 #     drop + heartbeat proof, so there is one deploy procedure, never a second one that
 #     drifts. `~` resolves on the REMOTE shell, so no path is hardcoded here. ---
@@ -285,3 +321,5 @@ if ($Peer) {
   & ssh -o ConnectTimeout=8 $Peer $remote
   if ($LASTEXITCODE -ne 0) { Write-Host "PEER DEPLOY FAILED (exit $LASTEXITCODE)" -ForegroundColor Red; exit 1 }
 }
+
+if ($migrationsFailed) { exit 1 }

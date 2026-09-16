@@ -27,14 +27,23 @@
 
 # The hand-created names this node shipped with, mapped to what each one is now.
 #
-# Used ONLY to DETECT an old install and point at the rename. Never to rename silently: sc.exe
-# has no rename verb, so renaming a Windows service is delete-and-recreate, and between the two
-# the Desktop is DOWN and that account is off the air. That is a decision for a human at a
-# keyboard, not a side effect of running an installer.
+# Used to DETECT an old install and point at the rename, and by migrations\0001 to find what to
+# rename. Never to rename silently: sc.exe has no rename verb, so renaming a Windows service is
+# delete-and-recreate, and between the two the Desktop is DOWN and that account is off the air.
+# The installer refuses and names the rename; the migration renames only at a deploy that
+# the operator runs, elevated.
+#
+# BeeperAn / BeeperRodz are the pre-generalisation hand names, named after the ACCOUNT - do still
+# carries BeeperRodz on 2026-09-16. Their targets here are a GUESS from the account (An's number
+# is the ear on both nodes, Rodz's the mouth), and an account name is exactly what a service name
+# must never encode. So the migration takes the ROLE from no row of this map: it reads each
+# service's own --remote-debugging-port and refuses when that evidence and this column disagree.
 function Get-BeeperS0LegacyNameMap {
   return [ordered]@{
     'egpt-primary'   = 'egpt-beeper-primary'
     'egpt-secondary' = 'egpt-beeper-secondary'
+    'BeeperAn'       = 'egpt-beeper-primary'
+    'BeeperRodz'     = 'egpt-beeper-secondary'
   }
 }
 
