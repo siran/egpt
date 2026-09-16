@@ -21,11 +21,11 @@ import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
-import { startBeeperBridge, newerMsgId, transcriptionForNoteId, crossAccountMsgKey } from '../src/bridges/beeper.mjs';
+import { startBeeperBridge, newerMsgId, transcriptionForNoteId, crossAccountMsgKey, LISTENING_REACTION } from '../src/bridges/beeper.mjs';
 import { EGPT_HOME } from '../src/egpt-home.mjs';
 import { encodeMesh } from '../src/mesh/relay.mjs';
 import { surfaceOf } from '../src/spine/identity.mjs';
-import { _resetPromotions } from '../src/incoming-media.mjs';
+import { _resetPromotions, ECHO_MARKER } from '../src/incoming-media.mjs';
 import { echoRank } from '../src/spine/echo-priority.mjs';
 
 const CHATS_PER_PAGE = 2;   // fake /v1/chats page size (live it's 25) — small so page 2 is readable
@@ -35,7 +35,12 @@ async function startFakeBeeper() {
   let confirmedSeq = 1000;   // the per-chat sequence Beeper assigns; NEVER equal to the pending id
   const edits = [];   // PUTs to /v1/chats/:id/messages/:msgId (in-place stream edits)
   const deletes = [];   // DELETEs to /v1/chats/:id/messages/:msgId (trigger cleanup, e.g. the text→voice mirror)
-  const reactions = [];   // POSTs to /v1/chats/:id/messages/:msgId/reactions (E's react limb)
+  const reactions = [];   // POSTs to /v1/chats/:id/messages/:msgId/reactions (E's react limb + the bridge's 🎧 ack)
+  const unreactions = []; // DELETEs to /v1/chats/:id/messages/:msgId/reactions/:key (the 🎧 ack's own removal)
+  // Fault injection for the 🎧 listening ack: a non-zero status makes the fake REFUSE that half of
+  // the ack (it still records the attempt). A box where the react — or the un-react — 4xxs must
+  // still transcribe the note; that is the whole 'best-effort, never fatal' clause.
+  const reactOpts = { postStatus: 0, deleteStatus: 0 };
   const uploads = [];     // POSTs to /v1/assets/upload (E's media limb)
   const chats = new Map();   // chatID -> chat info served by GET
   const messages = new Map();   // chatID -> recent-message list served by GET /messages (resolveSentMessageId)
@@ -69,6 +74,17 @@ async function startFakeBeeper() {
       const react = req.url.match(/^\/v1\/chats\/([^/]+)\/messages\/([^/?]+)\/reactions$/);
       if (req.method === 'POST' && react) {
         reactions.push({ chatID: decodeURIComponent(react[1]), messageID: decodeURIComponent(react[2]), ...JSON.parse(body) });
+        if (reactOpts.postStatus) { res.writeHead(reactOpts.postStatus); res.end('react refused'); return; }
+        res.end(JSON.stringify({ success: true }));
+        return;
+      }
+      // UN-REACT: DELETE /v1/chats/:c/messages/:id/reactions/:reactionKey — the removal half of the
+      // bridge's 🎧 listening ack. Distinct from the message DELETE below (two extra path segments),
+      // so the two routes never shadow each other.
+      const unreact = req.url.match(/^\/v1\/chats\/([^/]+)\/messages\/([^/?]+)\/reactions\/([^/?]+)$/);
+      if (req.method === 'DELETE' && unreact) {
+        unreactions.push({ chatID: decodeURIComponent(unreact[1]), messageID: decodeURIComponent(unreact[2]), reactionKey: decodeURIComponent(unreact[3]) });
+        if (reactOpts.deleteStatus) { res.writeHead(reactOpts.deleteStatus); res.end('un-react refused'); return; }
         res.end(JSON.stringify({ success: true }));
         return;
       }
@@ -187,7 +203,7 @@ async function startFakeBeeper() {
     ws.send(JSON.stringify({ type: 'ready' }));
   });
   return {
-    port, posts, edits, deletes, reactions, uploads, chats, messages, accounts, chatsOpts, serverOpts, telegram, chatGets,
+    port, posts, edits, deletes, reactions, unreactions, reactOpts, uploads, chats, messages, accounts, chatsOpts, serverOpts, telegram, chatGets,
     msgListGets: () => msgListGets,
     accountsGets: () => accountsGets,
     chatListGets: () => chatListGets,
@@ -3333,5 +3349,131 @@ describe('the install moved: the redial asks WHERE before it dials', () => {
     await waitFor(() => fake.subscribed() > subsBefore, 15_000);
     await sendSettled(bridge, 'same place', { chatId: CHAT('chat-1') });
     expect(fake.posts.map((p) => p.text)).toContain('same place');
+  });
+});
+
+// 🎧 LISTENING ACK (operator 2026-09-15: "put a reaction on voice message when listening, then
+// remove reaction when done" / "bridge can react to ack, not model. model can't delete").
+//
+// REPRODUCE-FIRST: transcription runs in the bridge BEFORE the spine ever sees the message, and
+// whisper-cli spends ~10s+ loading its model per note — so a long voice note left the chat looking
+// completely dead for tens of seconds with nothing to say the node had even heard it. The ack is
+// bridge-side machinery on purpose: the hand that ADDS the reaction is the hand that REMOVES it, so
+// there is nothing for a model to emit, forget, or be unable to delete.
+describe('beeper bridge — 🎧 listening ack on a voice note', () => {
+  // THE CONSTANT. One module-level definition so turning the ack into a sequence later is a
+  // one-place change — and NOT 👂, which is already the transcript ECHO. The two must not look
+  // alike: one says "I am listening", the other IS the transcript.
+  it('LISTENING_REACTION is 🎧 and is NOT the 👂 echo marker', () => {
+    expect(LISTENING_REACTION).toBe('🎧');
+    expect(LISTENING_REACTION).not.toBe(ECHO_MARKER);
+  });
+
+  // The ordering IS the feature: on BEFORE whisper spends its first second, off AFTER it resolves.
+  it('reacts BEFORE whisper starts and removes the reaction AFTER the transcript resolves', async () => {
+    let release, seenAtStart = null;
+    const held = new Promise((r) => { release = r; });
+    const { incoming } = await startBridge({
+      transcribe: async () => {
+        seenAtStart = { reacted: fake.reactions.length, removed: fake.unreactions.length };
+        await held;
+        return 'fake transcript';
+      },
+    });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({
+      id: 'note-ack', isSender: false, text: null, type: 'VOICE', attachments: [voiceAtt()],
+    })] });
+    await waitFor(() => seenAtStart !== null, 3000);
+    expect(seenAtStart).toEqual({ reacted: 1, removed: 0 });   // ON before a single whisper byte
+    expect(fake.reactions[0]).toMatchObject({ chatID: CHAT('chat-1'), messageID: 'note-ack', reactionKey: LISTENING_REACTION });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(fake.unreactions).toHaveLength(0);                  // …and STILL on while whisper runs
+    release();
+    await waitFor(() => incoming.length === 1, 3000);
+    await waitFor(() => fake.unreactions.length === 1, 3000);  // OFF once the transcript is in
+    expect(fake.unreactions[0]).toMatchObject({ chatID: CHAT('chat-1'), messageID: 'note-ack', reactionKey: LISTENING_REACTION });
+    expect(fake.reactions).toHaveLength(1);                    // exactly one on, exactly one off
+    expect(incoming[0].text).toBe('(voice transcription) fake transcript');
+  });
+
+  // A transcription that produces NOTHING still loses its mark (the transcriber threw; the shared
+  // processor swallows that into a null transcript, so the note lands as a failure body).
+  it('removes the reaction when the transcriber fails and the note produces no transcript', async () => {
+    const { incoming } = await startBridge({
+      transcribe: async () => { throw new Error('whisper exploded'); },
+    });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({
+      id: 'note-nul', isSender: false, text: null, type: 'VOICE', attachments: [voiceAtt()],
+    })] });
+    await waitFor(() => incoming.length === 1, 3000);
+    expect(incoming[0].text).toBe('[voice note — transcription failed]');
+    await waitFor(() => fake.unreactions.length === 1, 3000);
+    expect(fake.unreactions[0]).toMatchObject({ messageID: 'note-nul', reactionKey: LISTENING_REACTION });
+  });
+
+  // THE `finally` ITSELF. The case above returns normally, so it passes with or without one; this is
+  // the case that does not. The awaited transcription REJECTS — dispatch of this message is abandoned
+  // (the WS handler logs it and moves on), no transcript, no body, no later code runs — and the 🎧
+  // must come off anyway. A stuck 'listening' mark on someone's voice note is worse than no mark.
+  // The reachable rejection is the echo's DEBOUNCE ARM: reply+postsBack+rank-1+a delay window puts
+  // the ack on the injected scheduler, and an exploding scheduler is the one un-caught call in the
+  // shared processor. (A throwing `transcribe` cannot reach it — that one is caught, see above.)
+  it('removes the reaction when the transcription THROWS', async () => {
+    const logs = [];
+    const { incoming } = await startBridge({
+      echoPlan: () => ({ rank: 1, winner: true }),
+      resolveTranscriptionService: async () => ({ enabled: true, postsBack: true, postsBackDelayMs: 5_000 }),
+      scheduler: { set() { throw new Error('scheduler exploded'); }, clear() {} },
+      onLog: (m) => logs.push(m),
+    });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({
+      id: 'note-throw', isSender: false, text: null, type: 'VOICE', attachments: [voiceAtt()],
+    })] });
+    await waitFor(() => logs.some((m) => /dispatch error/.test(m)), 3000);   // the transcription REJECTED
+    expect(incoming).toHaveLength(0);                                        // …and nothing downstream ran
+    await waitFor(() => fake.unreactions.length === 1, 3000);                // …but the ack still came off
+    expect(fake.unreactions[0]).toMatchObject({ messageID: 'note-throw', reactionKey: LISTENING_REACTION });
+  });
+
+  // BEST-EFFORT, NEVER FATAL (the add half): on a box where the reaction endpoint 4xxs, the note is
+  // still transcribed. An indicator that cannot be drawn costs nothing.
+  it('a react that 4xxs does not cost the transcript', async () => {
+    const { incoming } = await startBridge();
+    fake.reactOpts.postStatus = 403;
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({
+      id: 'note-403', isSender: false, text: null, type: 'VOICE', attachments: [voiceAtt()],
+    })] });
+    await waitFor(() => incoming.length === 1, 3000);
+    expect(incoming[0].text).toBe('(voice transcription) fake transcript');
+    expect(fake.reactions).toHaveLength(1);     // attempted …
+    expect(fake.unreactions).toHaveLength(0);   // … refused, so there is nothing to take back off
+  });
+
+  // BEST-EFFORT, NEVER FATAL (the remove half): a refused DELETE is swallowed, not thrown.
+  it('a remove that 5xxs is swallowed and the transcript still lands', async () => {
+    const { incoming } = await startBridge();
+    fake.reactOpts.deleteStatus = 500;
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({
+      id: 'note-500', isSender: false, text: null, type: 'VOICE', attachments: [voiceAtt()],
+    })] });
+    await waitFor(() => incoming.length === 1, 3000);
+    expect(incoming[0].text).toBe('(voice transcription) fake transcript');
+    expect(fake.reactions).toHaveLength(1);
+    await waitFor(() => fake.unreactions.length === 1, 3000);   // attempted, refused, swallowed
+  });
+
+  // NO ACK WHEN THERE IS NOTHING TO ACK: the room's transcription service is off, so this node is not
+  // going to transcribe this note — reacting would promise a transcript that is never coming.
+  it('does NOT react when the transcription service is disabled for the chat', async () => {
+    const { incoming } = await startBridge({
+      resolveTranscriptionService: async () => ({ enabled: false, postsBack: false }),
+    });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({
+      id: 'note-off', isSender: false, text: null, type: 'VOICE', attachments: [voiceAtt()],
+    })] });
+    await waitFor(() => incoming.length === 1, 3000);
+    expect(incoming[0].text).toBe('[voice note]');
+    expect(fake.reactions).toHaveLength(0);
+    expect(fake.unreactions).toHaveLength(0);
   });
 });

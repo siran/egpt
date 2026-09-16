@@ -87,6 +87,19 @@ const RECONNECT_MAX_MS = 60_000;
 // (_awaitSends). Comfortably above resolveSentMessageId's own bound (6 polls × 500ms
 // + the GETs); it only ever bites when a REST call is wedged.
 const SEND_GATE_MAX_MS = 15_000;
+// 🎧 THE LISTENING ACK (operator 2026-09-15: "put a reaction on voice message when listening, then
+// remove reaction when done"). Transcription runs HERE, in the bridge, before the spine ever sees
+// the message, and whisper-cli spends ~10s+ loading its model per note — so until this, a long
+// voice note left the chat with nothing on it at all for tens of seconds. ONE module-level
+// constant, so turning the ack into a SEQUENCE later is a one-place change.
+//
+// NOT 👂 (ECHO_MARKER, imported above): that is the transcript echo, a committed message saying
+// what was heard. This says only "I am listening", and comes off the moment it is no longer true.
+// The two must not look alike.
+//
+// Wholly BRIDGE-SIDE (operator: "bridge can react to ack, not model. model can't delete") — the
+// hand that adds it is the hand that removes it, so there is nothing a model can emit or forget.
+export const LISTENING_REACTION = '🎧';
 
 // Normalize a body so a message WE posted can be FOUND AGAIN in the chat's message
 // list — the one text compare left in this file (_matchKey → resolveSentMessageId),
@@ -1251,6 +1264,17 @@ export async function startBeeperBridge(opts = {}) {
     try { await api('POST', `/v1/chats/${encodeURIComponent(fullChatId(chatID))}/messages/${encodeURIComponent(messageID)}/reactions`, { reactionKey: String(reactionKey) }); return true; }
     catch (e) { onLog(`beeper: reaction failed [${chatID}/${messageID}] — ${e?.message ?? e}`); return false; }
   }
+  // UN-REACT: DELETE /v1/chats/{c}/messages/{id}/reactions/{reactionKey} (present in the live
+  // Desktop OpenAPI spec). The removal half of the 🎧 listening ack — its ONLY caller, because the
+  // ack is bridge-side machinery and no model gets a delete limb. Same chokepoint and the same
+  // resolve-then-log-and-return-false discipline as sendReaction above: a mark that cannot be taken
+  // back off must never become an exception on the transcription path.
+  async function removeReaction(chatIDOrName, messageID, reactionKey) {
+    const chatID = await resolveChatId(chatIDOrName);
+    if (!chatID || !messageID || !reactionKey) { onLog(`beeper: un-reaction DROPPED — chat=${JSON.stringify(chatIDOrName)} resolved=${chatID} msg=${messageID} key=${JSON.stringify(reactionKey)}`); return false; }
+    try { await api('DELETE', `/v1/chats/${encodeURIComponent(fullChatId(chatID))}/messages/${encodeURIComponent(messageID)}/reactions/${encodeURIComponent(reactionKey)}`); return true; }
+    catch (e) { onLog(`beeper: un-reaction failed [${chatID}/${messageID}] — ${e?.message ?? e}`); return false; }
+  }
   // Beeper's attachment `type` enum hint, derived from the upload's mimeType.
   function attachmentType(mime) {
     const m = String(mime ?? '').toLowerCase();
@@ -1737,7 +1761,14 @@ export async function startBeeperBridge(opts = {}) {
         catch (e) { onLog(`beeper: 👂 NOT echoed [${info.title}] — the note's audio is unreadable, so this node cannot compute the co-account-stable echo key, and echoing on a node-local one double-👂s. Still transcribed + logged; a peer that can read the audio echoes it (${e?.message ?? e})`); }
         const plan = audioHash == null ? { rank: 0, winner: false } : echoPlan(audioHash);
         const echoOn = plan.rank >= 1 && !tooOldForEcho;   // is an echo POSSIBLE at all for this note on this node?
-        const transcript = await _transcribing('whisper', () => transcribeVoiceNote({
+        // 🎧 ON. Hung off `svc.enabled` — the verdict the surrounding code ALREADY reached for this
+        // chat, and the same one transcribeVoiceNote itself gates on: no transcription, no ack
+        // promising one. AWAITED, so the mark is up before whisper spends its first second (that is
+        // the whole point) and so the removal below can never race ahead of it and strand the note
+        // marked forever. Best-effort: sendReaction already swallows a 4xx into `false`, and the
+        // catch covers the chat resolve — neither half can become the exception that eats the note.
+        const acked = svc.enabled && await sendReaction(chatID, msg.id, LISTENING_REACTION).catch(() => false);
+        const _transcription = _transcribing('whisper', () => transcribeVoiceNote({
           localPath: path, transcribe, audioCfg,
           // The SHARED wrap (persona-wrap.mjs) brackets the '👂 <transcript>' core with the bridge +
           // transcription layers — the same machinery a persona reply renders through (covers
@@ -1777,6 +1808,13 @@ export async function startBeeperBridge(opts = {}) {
                     onLog: (m) => onLog(`beeper: ${m}`),
           meta: vmeta,
         }));
+        // 🎧 OFF, in a `finally`: a transcription that throws, times out or returns nothing must
+        // still lose its mark — a permanent "listening" reaction on someone's voice note is worse
+        // than no indicator at all. Only when the mark is known to have gone ON (nothing to take
+        // back off otherwise), and never fatal, for the same two reasons as the add.
+        let transcript;
+        try { transcript = await _transcription; }
+        finally { if (acked) await removeReaction(chatID, msg.id, LISTENING_REACTION).catch(() => false); }
         if (transcript) {
           // Mark the body AS audio (GENOME §4 / C7.6) so the model + reader can
           // tell a voice note arrived — not an ordinary message. Duration comes

@@ -497,6 +497,11 @@ describe('the retired Beeper Desktop service names are gone from the tree', () =
     'setup/rename-beeper-s0-service.ps1',    // the tool that performs the rename
     'OPERATIONS.md',                         // the runbook that tells the operator to run it
     'tests/integrity.test.mjs',              // this scan
+    // The Pester suite for the naming module. It ASSERTS the old -> new mapping, so it must
+    // spell both sides. It was missed when this scan landed because the scan walks
+    // `git ls-files` and the file was still untracked in the same change - it only started
+    // failing once both were committed. Verify an integrity scan AFTER staging, not before.
+    'setup/beeper-s0-naming.Tests.ps1',
   ]);
 
   const files = execSync('git ls-files', { cwd: ROOT, encoding: 'utf8' })
