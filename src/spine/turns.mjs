@@ -190,22 +190,13 @@ export function createTurns({ brain, bridge = null, bridgeOf = null, peerMouth =
   //
   // Best-effort by contract: it never throws, so a reaction fault can never undo a steer that
   // already landed, and never becomes an unhandled rejection on the 👀's deferred path below.
+  //
+  // THE PLACEMENT ITSELF LIVES IN sender.mjs makeOutbound `react` (2026-09-16), shared with the
+  // /react limb, which reacted from the ear's account because it answered the question for itself.
+  // The inbound message already carries its cross-account key, so it is handed over as is.
   async function placeReaction(to, ev, emoji) {
-    const { bridge: mouth, route } = outbound(to, ev.chatId);
-    const says = route();                             // null with no mouth wired — never awaited, so that path is untouched
-    const mouthChat = says ? await says : null;
-    if (mouthChat) {
-      // The mouth's own refusals are logged by name where they happen; this line says what it cost.
-      const who = mouthChat.connection ? `'${mouthChat.connection}'` : 'the peer';
-      let r = null;
-      try { r = await peerMouth.react?.(mouthChat, { msgKey: ev.msgHash, timestamp: ev.msgTs, emoji }); }
-      catch (e) { note(`steer-ack ${to}/${ev.chatId}: asking ${who} to react threw — ${e?.message ?? e}`); }
-      if (r?.ok) note(`steer-ack ${to}/${ev.chatId}: ${who} is saying this reply and placed the ${emoji} on its own copy (its chat ${r.chatId})`);
-      else note(`steer-ack ${to}/${ev.chatId}: ${who} is saying this reply but could not place the ${emoji} (${r?.reason ?? 'no answer'}${r?.detail ? `: ${r.detail}` : ''}) — no reaction from this account either, it is not the one answering`);
-    } else {
-      try { await mouth.react?.(ev.chatId, ev.msgId, emoji); }
-      catch (e) { note(`steer-ack ${to}/${ev.chatId}: ${e?.message ?? e}`); }
-    }
+    try { await outbound(to, ev.chatId).react(ev.msgId, emoji, () => ({ msgKey: ev.msgHash, timestamp: ev.msgTs }), 'steer-ack'); }
+    catch (e) { note(`steer-ack ${to}/${ev.chatId}: ${e?.message ?? e}`); }
   }
 
   // STEER THE LIVE TURN (operator's ruling 2026-08-30, `allow_new_input`). A message that

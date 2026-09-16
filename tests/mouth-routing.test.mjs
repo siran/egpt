@@ -42,6 +42,7 @@ import { promises as fs } from 'node:fs';
 import { dirname } from 'node:path';
 import { createSender } from '../src/spine/sender.mjs';
 import { createTurns } from '../src/spine/turns.mjs';
+import { createReplyActions } from '../src/spine/reply-actions.mjs';
 import { boot, makePeerMouth } from '../src/spine/boot.mjs';
 import { createMouthReceiver } from '../src/shell/peer-mouth.mjs';
 import { crossAccountChatKey, crossAccountMsgKey } from '../src/bridges/beeper.mjs';
@@ -1137,5 +1138,104 @@ describe('the steer ack rides the same mouth the reply does', () => {
       { chatId: CHAT_ID, msgId: STEERED_ON_PRIMARY.id, emoji: '👀' },
     ]);
     expect(main.reactions).toEqual([]);
+  });
+});
+
+// ── 8. THE /react LIMB RIDES THE MOUTH THE STEER ACK RIDES (live 2026-09-16) ──────────────────
+// THE LIVE FAULT, node kg, "conversas con favel": the operator wrote "e gracias" and E's whole
+// turn was `/react #7530 👍`. The 👍 landed from the OPERATOR'S OWN account on his own message,
+// while the same turn's placeholder correctly went out on the mouth ("[mouth] … the mouth says
+// this reply, in its own room"). The limb reacted on the EAR with the ear's id; the steer ack
+// already knew how to hand a reaction to the mouth. Both now go through one placement
+// (sender.mjs makeOutbound's `react`). The limb names its target by the EAR's id, so the mouth is
+// told the target's cross-account key, read off the ear's own copy of that message.
+//
+// Everything here is real except the two bridges: boot's makePeerMouth with a LOCAL mouth (one
+// node, two connections — kg's shape), its routeLocally/reactLocally, the real chat and message
+// keys, and the real createReplyActions.
+describe('the /react limb is placed by the MOUTH, on its own copy — never from the ear\'s account', () => {
+  const EV = { surface: 'wa', chatId: CHAT_ID, chatName: 'Group' };
+  const LIMB = `/react #${STEERED_ON_PRIMARY.id} 👍`;
+
+  function earAndMouth({ earMessages = [STEERED_ON_PRIMARY], mouthMessages = [STEERED_ON_SECONDARY], mouthIsMember = true, withMouth = true } = {}) {
+    const logs = [];
+    const earListed = [];
+    // `primary`: the connection that HOLDS the chat (the ear) — the operator's account.
+    const ear = {
+      ...fakeBridge(),
+      async selfIdentities() { return [PRIMARY_NUM]; },
+      async chatHasParticipant(_chatId, identity) { return mouthIsMember && identity === SECONDARY_NUM; },
+      async chatRaw() { return AS_PRIMARY; },
+      async listMessagesRaw(chatId) { earListed.push(chatId); return earMessages; },
+    };
+    // `secondary`: the MOUTH — its own room id and its own ids for the same messages.
+    const mouthBridge = {
+      ...fakeBridge(),
+      async selfIdentities() { return [SECONDARY_NUM]; },
+      async listChatsRaw() { return [AS_SECONDARY]; },
+      async listMessagesRaw() { return mouthMessages; },
+    };
+    const peerMouth = withMouth
+      ? makePeerMouth({ peer: null, bridge: ear, localMouth: () => ({ name: 'secondary', home: 'primary', bridge: mouthBridge }), onLog: (m) => logs.push(`[mouth] ${m}`) })
+      : null;
+    const actions = createReplyActions({ bridge: ear, peerMouth, bodyEmojiOf: () => '🐶', labelOf: () => 'e', onLog: (m) => logs.push(`[actions] ${m}`) });
+    const react = async () => actions.execute(actions.parse(LIMB, EV).run, [], EV, { being: 'e' });
+    return { ear, mouthBridge, earListed, logs, react };
+  }
+
+  it('THE REPRODUCTION: the 👍 lands on the MOUTH\'s copy (its room, its id) and the ear reacts to nothing', async () => {
+    const { ear, mouthBridge, logs, react } = earAndMouth();
+    const { ran } = await react();
+
+    expect(mouthBridge.reactions).toEqual([{ chatId: SECONDARY_CHAT_ID, msgId: STEERED_ON_SECONDARY.id, emoji: '👍' }]);
+    expect(ear.reactions).toEqual([]);
+    expect(ran).toHaveLength(1);                     // it LANDED — the transcript stage-direction is truthful
+    expect(logs.join('\n')).toMatch(/'secondary' is saying this reply and placed the 👍 on its own copy/);
+  });
+
+  it('a PEER mouth is told the target by the key of the ear\'s copy — the same frame the steer ack sends', async () => {
+    const { calls, mouth } = fakeMouth();
+    const ear = { ...fakeBridge(), async listMessagesRaw() { return [STEERED_ON_PRIMARY]; } };
+    const actions = createReplyActions({ bridge: ear, peerMouth: mouth, onLog: () => {} });
+    const { ran } = await actions.execute(actions.parse(LIMB, EV).run, [], EV, { being: 'e' });
+
+    expect(calls.reacts).toEqual([{ chat: AS_PRIMARY, msgKey: STEERED_KEY, timestamp: STEERED_TS, emoji: '👍' }]);
+    expect(ear.reactions).toEqual([]);
+    expect(ran).toHaveLength(1);
+  });
+
+  // REGRESSION LOCK 1: a chat the ear's own account answers in is byte-identical to before — the
+  // ear reacts with the ear's id, and the ear's message list is never even read.
+  it('NO mouth for this chat: the ear reacts with its own id, exactly as before, and nothing extra is read', async () => {
+    for (const shape of [{ withMouth: false }, { mouthIsMember: false }]) {
+      const { ear, mouthBridge, earListed, react } = earAndMouth(shape);
+      const { ran } = await react();
+      expect(ear.reactions, JSON.stringify(shape)).toEqual([{ chatId: CHAT_ID, msgId: STEERED_ON_PRIMARY.id, emoji: '👍' }]);
+      expect(mouthBridge.reactions).toEqual([]);
+      expect(earListed).toEqual([]);
+      expect(ran).toHaveLength(1);
+    }
+  });
+
+  // REGRESSION LOCK 2: the mouth is present and the target cannot be named or found on its side.
+  // SUPPRESSION IS THE FLOOR — no reaction on EITHER account, the limb does not land, and the log
+  // names why. Never a fallback to the ear's account.
+  it('mouth present but the target is unkeyable or unmatched: nobody reacts, the limb does not land, the reason is logged', async () => {
+    const other = { id: '1117', text: 'something else', timestamp: STEERED_TS };
+    for (const [reason, shape] of [
+      ['no-key', { earMessages: [] }],                                                        // not on the ear's list at all
+      ['no-key', { earMessages: [{ ...STEERED_ON_PRIMARY, text: '' }] }],                     // a bare voice note: no body to key
+      ['no-match', { mouthMessages: [other] }],                                               // the mouth has no such message
+      ['ambiguous', { mouthMessages: [STEERED_ON_SECONDARY, { ...STEERED_ON_SECONDARY, id: '1200' }] }],
+    ]) {
+      const { ear, mouthBridge, logs, react } = earAndMouth(shape);
+      const { ran } = await react();
+      expect(ear.reactions, reason).toEqual([]);
+      expect(mouthBridge.reactions, reason).toEqual([]);
+      expect(ran, reason).toEqual([]);
+      const line = logs.find((l) => /could not place the 👍/.test(l));
+      expect(line, reason).toContain(reason);
+      expect(line).toMatch(/no reaction from this account either/);
+    }
   });
 });

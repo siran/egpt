@@ -56,6 +56,8 @@ import { existsSync } from 'node:fs';
 // WHICH CONNECTION AN OUTBOUND GOES OUT ON — the ONE resolver (sender.mjs makeOutbound), not a
 // fourth local copy of `bridgeOf(being) ?? bridge`.
 import { makeOutbound } from './sender.mjs';
+// The /react target's cross-account key — the SAME two functions the bridge mints ev.msgHash/msgTs with.
+import { crossAccountMsgKey, _msgTimestampMs } from '../bridges/beeper.mjs';
 
 // The reserved action verbs. A line is an ACTION-family line iff (trimmed) it starts
 // with '/' + one of these + whitespace-or-EOL — nothing else is ever touched, so
@@ -359,9 +361,9 @@ export function partialProse(partial, ev = {}, opts = {}) {
 // wired to more than one Beeper connection runs a being's own limbs (react/reply/media/edit)
 // against ITS OWN bridge. Absent, or returning nullish for a given being, falls straight back
 // to the single `bridge` below — BYTE-IDENTICAL to before for every existing caller.
-export function createReplyActions({ bridge, bridgeOf = null, bodyEmojiOf = () => null, labelOf = () => null, resolveConvDir = async () => null, askAdvice = null, defaultKey = 'e', onLog = () => {} } = {}) {
+export function createReplyActions({ bridge, bridgeOf = null, peerMouth = null, bodyEmojiOf = () => null, labelOf = () => null, resolveConvDir = async () => null, askAdvice = null, defaultKey = 'e', onLog = () => {} } = {}) {
   if (!bridge) throw new Error('createReplyActions: bridge is required');
-  const outbound = makeOutbound({ bridge, bridgeOf });
+  const outbound = makeOutbound({ bridge, bridgeOf, peerMouth, onLog });
   // …AND THE CHAT IS PART OF THE QUESTION (operator 2026-09-11, sharpened 2026-09-12). This site
   // asked the resolver about the BEING alone, which answers with the being's MOUTH — and since the
   // mouth became the SECOND account, ev.chatId named a room only the EAR has. resolveChatId missed,
@@ -371,9 +373,11 @@ export function createReplyActions({ bridge, bridgeOf = null, bodyEmojiOf = () =
   // as sender.mjs does — boot's rawBridgeOf then answers with the connection that HOLDS the chat.
   //
   // That is also what keeps the IDS honest: ev.chatId, the '#<id>' the model emitted (this node's
-  // own transcript ids) and the bridge all name the same account. A limb is never routed through
-  // the peer/local MOUTH — no peerMouth is passed here — precisely because it is addressed by those
-  // ids, and the mouth's account has different ones (sender.mjs makeOutbound's header).
+  // own transcript ids) and the bridge all name the same account. /reply, /media and /edit are
+  // never routed through the peer/local MOUTH precisely because they are addressed by those ids,
+  // and the mouth's account has different ones (sender.mjs makeOutbound's header). /react IS
+  // (2026-09-16): a reaction from the ear's account is the operator's own 👍, so it goes through
+  // the one placement the steer ack uses, and the mouth is told the target by content, not id.
   const bridgeForBeing = (being, chatId) => outbound(being, chatId).bridge;
   // The /ask limb delegates the sole sanctioned cross-chat post to the advice service
   // (createAdvice.ask). Absent (unit tests, no advice wiring) → fail-closed: log + drop,
@@ -400,7 +404,15 @@ export function createReplyActions({ bridge, bridgeOf = null, bodyEmojiOf = () =
   async function runOne(a, ev, being) {
     switch (a.type) {
       case 'react': {
-        const ok = await bridgeForBeing(being, ev.chatId).react?.(ev.chatId, a.targetId, a.emoji);
+        // The target is named by the EAR's id, so the key is read off the ear's own copy — and only
+        // when a mouth is actually going to place it (sender.mjs makeOutbound `react`).
+        const out = outbound(being, ev.chatId);
+        const keyOf = async () => {
+          const m = ((await out.bridge.listMessagesRaw?.(ev.chatId)) ?? []).find((x) => x?.id != null && String(x.id) === String(a.targetId));
+          if (!m) onLog(`react: #${a.targetId} is not among the recent messages of ${ev.chatId} on this account — the mouth cannot be told which message`);
+          return { msgKey: m ? crossAccountMsgKey(m) : null, timestamp: m ? _msgTimestampMs(m) : null };
+        };
+        const ok = await out.react(a.targetId, a.emoji, keyOf);
         if (!ok) onLog(`react: ${a.emoji} → #${a.targetId} failed`);
         return !!ok;
       }

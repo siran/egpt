@@ -2786,7 +2786,7 @@ export async function boot({
   // the operator's answer can never be matched back to it (src/spine/advice.mjs's header, and
   // connectionHolding's third source above, which is what makes a NAMED channel resolvable).
   const advice = createAdvice({ bridge, bridgeOf: rawBridgeOf, getConfig, onLog: (m) => log.line?.(`[advice] ${m}`) });
-  const actions = createReplyActions({ bridge, bridgeOf: rawBridgeOf, bodyEmojiOf, labelOf, resolveConvDir, askAdvice: (a) => advice.ask(a), defaultKey, onLog: (m) => log.line?.(`[actions] ${m}`) });
+  const actions = createReplyActions({ bridge, bridgeOf: rawBridgeOf, peerMouth, bodyEmojiOf, labelOf, resolveConvDir, askAdvice: (a) => advice.ask(a), defaultKey, onLog: (m) => log.line?.(`[actions] ${m}`) });
 
   // Heartbeats are DECLARATIVE now (operator 2026-07-01): the loader collects
   // them from the node config.heartbeats block + every conversation/room entity's

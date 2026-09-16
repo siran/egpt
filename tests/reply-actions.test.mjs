@@ -507,8 +507,10 @@ describe('createReplyActions.execute — bridgeOf: per-being connection routing 
 //
 // Riding the HOLDER is also what makes the message ids line up: ev.chatId, the '#<id>' the model
 // emitted (this node's own transcript ids) and the bridge are then all in ONE namespace. That is
-// why the limbs are — deliberately — never routed through the mouth (src/spine/sender.mjs's
-// makeOutbound header: they cannot act on `route()`, so they never pay for it).
+// why the id-addressed limbs (/reply, /media, /edit) are — deliberately — never routed through the
+// mouth (src/spine/sender.mjs's makeOutbound header: they cannot act on `route()`, so they never pay
+// for it). /react IS, since 2026-09-16: a reaction from the ear's account is the operator's own 👍,
+// so it names its target to the mouth by content — tests/mouth-routing.test.mjs, the /react limb block.
 describe('createReplyActions.execute — a limb rides the connection that HOLDS the chat', () => {
   // The live two-account shape at the resolver seam, exactly as boot answers it: a chat in hand
   // ⇒ the connection holding it; no chat ⇒ the being's own mouth.

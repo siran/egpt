@@ -164,7 +164,7 @@ export const RETAINED_SEAM = '\n\n— ↓ reply —\n\n';
  *
  * `bridge` is the connection THIS being's own sends ride — the operator's fail-safe half, which
  * can never be wrong. `route()` is the peer question, and it is a THUNK on purpose: a caller that
- * cannot act on the answer (the limbs, the media attach, and mode:auto below, which is never
+ * cannot act on the answer (every limb but /react, the media attach, and mode:auto below, which is never
  * routed) must not pay the membership read to receive it. Nullish peerMouth ⇒ null ⇒ no peer was
  * ever consulted, which is the whole additivity requirement in one expression.
  *
@@ -192,12 +192,42 @@ export const RETAINED_SEAM = '\n\n— ↓ reply —\n\n';
  * mouth is a per-AGENT fact (its `use:`, else the node's default output), so the mouth cannot be
  * resolved without knowing who is replying. It was not passed, and could not have been, while the
  * only mouth was a peer spine — that one is a property of the node.
+ *
+ * `react()` IS THE ONE PLACEMENT OF A REACTION (2026-09-16), shared by the steer 📩/👀
+ * (turns.mjs) and the /react limb (reply-actions.mjs). Live on kg the limb reacted on the EAR —
+ * `bridge` above — so the 👍 came from the operator's own account while the reply came from the
+ * mouth; the steer ack already asked route() first. Moved here from turns.mjs so both ask it:
+ *   no mouth    ⇒ `bridge` reacts with the local `msgId`, exactly as before. A throw propagates:
+ *                 each caller already had its own handling for that.
+ *   a mouth     ⇒ the mouth reacts on ITS OWN copy, named by the cross-account key `keyOf()`
+ *                 yields — a THUNK for the same reason route() is: the no-mouth path must not pay
+ *                 for a read it cannot use. Every failure ends with NO REACTION ANYWHERE and a line
+ *                 naming why: a missing reaction is cosmetic, one from the wrong account is the bug.
+ * Returns whether it landed (the limb's `ran` is written from it).
  */
 export function makeOutbound({ bridge, bridgeOf = null, peerMouth = null, onLog = () => {} } = {}) {
-  return (being, chatId = null) => ({
-    bridge: bridgeOf ? (bridgeOf(being, chatId) ?? bridge) : bridge,
-    route: () => (peerMouth ? Promise.resolve().then(() => peerMouth.route(chatId, being)).catch((e) => { onLog(`mouth: could not decide the route for ${chatId} — posting locally: ${e?.message ?? e}`); return null; }) : null),
-  });
+  return (being, chatId = null) => {
+    const out = {
+      bridge: bridgeOf ? (bridgeOf(being, chatId) ?? bridge) : bridge,
+      route: () => (peerMouth ? Promise.resolve().then(() => peerMouth.route(chatId, being)).catch((e) => { onLog(`mouth: could not decide the route for ${chatId} — posting locally: ${e?.message ?? e}`); return null; }) : null),
+      async react(msgId, emoji, keyOf, what = 'react') {
+        const says = out.route();                         // null with no mouth wired — never awaited, so that path is untouched
+        const mouthChat = says ? await says : null;
+        if (!mouthChat) return out.bridge.react?.(chatId, msgId, emoji);
+        // The mouth's own refusals are logged by name where they happen; this line says what it cost.
+        const who = mouthChat.connection ? `'${mouthChat.connection}'` : 'the peer';
+        let r = null;
+        try {
+          const { msgKey, timestamp } = await keyOf();
+          r = await peerMouth.react?.(mouthChat, { msgKey, timestamp, emoji });
+        } catch (e) { onLog(`${what} ${being}/${chatId}: asking ${who} to react threw — ${e?.message ?? e}`); }
+        if (r?.ok) onLog(`${what} ${being}/${chatId}: ${who} is saying this reply and placed the ${emoji} on its own copy (its chat ${r.chatId})`);
+        else onLog(`${what} ${being}/${chatId}: ${who} is saying this reply but could not place the ${emoji} (${r?.reason ?? 'no answer'}${r?.detail ? `: ${r.detail}` : ''}) — no reaction from this account either, it is not the one answering`);
+        return r?.ok === true;
+      },
+    };
+    return out;
+  };
 }
 
 export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null, labelOf = () => null, agentSignatureOpenOf = () => '', agentSignatureCloseOf = () => '', defaultKey = 'e', peerMouth = null, onLog = () => {} } = {}) {
