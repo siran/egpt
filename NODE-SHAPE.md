@@ -201,16 +201,37 @@ Run it before saying yes.
 
 ## What is deployed today
 
-As of 2026-09-16, `kg` and `do` are each one spine holding two accounts. They are
-converging on the names above and are **not there yet**:
+As of 2026-09-16, `kg` and `do` are each one spine holding two accounts, and
+**they match on everything this document names**:
 
-| | Beeper services | session 1 task |
+| | `kg` | `do` |
 |---|---|---|
-| `kg` | `egpt-beeper-primary`, `egpt-beeper-secondary` — **done** | `egpt-session1-daemon` |
-| `do` | `egpt-primary`, `BeeperRodz` | `egpt-session1-daemon` |
+| `egpt-daemon` service | Running · Auto · labelled | Running · Auto · labelled |
+| `egpt-daemon` task | at logon · described | at logon · described |
+| `egpt-beeper-primary` | Running · Auto · the ear | Running · Auto · the ear |
+| `egpt-beeper-secondary` | Running · Auto · the mouth | Running · Auto · the mouth |
 
-`kg`'s Beeper services already match; `do`'s and both session 1 tasks do not. The rename is being delivered as a
-migration applied to each node, so the two cannot drift again by hand.
+They got there by **migrations** (`migrations/0001`–`0005`), not by hand: each
+change is written once in the repo, `setup/upgrade.ps1` applies whatever is
+pending after every deploy, and each node records what it has applied in
+`state/migrations-applied.json`. `do`'s Beeper services and both nodes' session 1
+task carried legacy names until then. A change to either node that is not a
+migration is how the two drift apart again.
+
+What still differs, measured, and why it is not being changed:
+
+- **`kg`'s primary Beeper has no `--user-data-dir`.** It runs from the LocalSystem
+  profile, where `do`'s lives in `~/.egpt/state/an-beeper`. By this document's own
+  rule the data folder IS the install's identity, so this is a real difference —
+  but converging it means moving a live, logged-in install's data, which risks
+  re-linking that account.
+- **`do`'s `egpt-daemon` service is an older install**: its binary sits inside
+  the profile and it logs under a different name. Converging it is a reinstall,
+  and the service runs as `.\an`, so a reinstall needs that account's password at
+  a real console.
+- **The helper tasks differ by purpose, not by drift.** `kg` has `egpt-chrome-radio`
+  and an enabled `egpt-wake-duty`; `do` has a disabled `egpt-lock-on-logon` and a
+  disabled `egpt-wake-duty`.
 
 `~/.egpt-secondary` on `kg` was a second profile running a second spine. It was
 never a second node — there is no "kg2". It was retired on 2026-09-15 behind a

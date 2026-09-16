@@ -502,11 +502,6 @@ describe('the retired Beeper Desktop service names are gone from the tree', () =
     // `git ls-files` and the file was still untracked in the same change - it only started
     // failing once both were committed. Verify an integrity scan AFTER staging, not before.
     'setup/beeper-s0-naming.Tests.ps1',
-    // The node-shape doc's "What is deployed today" table names each node's CURRENT services,
-    // legacy ones included, because a reader mid-incident has to find what is really installed.
-    // The meta-test below forces this entry out once the migration renames them and the table
-    // is updated to match.
-    'NODE-SHAPE.md',
     // The migration that performs the rename on each node, and its tests. The migration takes
     // the names from the naming module's map; its header names do's services as measured.
     'migrations/0001-beeper-services-carry-role.mjs',
@@ -591,7 +586,6 @@ describe('the retired session 1 task name is gone from the tree', () => {
     'tests/migrations-0002-session1-task.test.mjs',      // its tests
     'setup/register-session1-daemon-task.ps1',           // refuses to register beside the old name
     'tests/integrity.test.mjs',                          // this scan
-    'NODE-SHAPE.md',                                     // "What is deployed today" names it until both nodes migrate
   ]);
   const files = execSync('git ls-files', { cwd: ROOT, encoding: 'utf8' })
     .split('\n').map((f) => f.trim()).filter(Boolean)
