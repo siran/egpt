@@ -1033,3 +1033,57 @@ describe('a scheduled send with NO arrival since boot: the chat is placed at reg
     }
   });
 });
+
+// ── THE NODE'S OWN LINES OBEY THE MOUTH TOO (operator 2026-09-16) ────────────────────────────────
+// *"every output of the spine comes through the mouth."* A command reply and the lifecycle lines
+// carry no being, and rode `rawBridgeOf(null, chat)` — the connection HOLDING the chat, which is the
+// ear for every chat the ear heard. In the Self-DM that is the rule (the mouth is not in it); in a
+// chat the mouth IS in — a group, or a Self chat that is the operator's admin group with the mouth
+// in it — the operator's own account answered its own command. They now go through the placement
+// every other line takes (sender.mjs makeOutbound `say`), with `null` for the being.
+describe('a node-level line in a chat the mouth is in is said by the MOUTH, in its own room', () => {
+  // The Self chat is the group both accounts are in — the admin-group shape.
+  const ADMIN_SELF = () => { const c = KG(); c.networks = { whatsapp: { chat_ids: [BOTH_AS_PRIMARY] } }; return c; };
+  const SELF_IS_DM = () => { const c = KG(); c.networks = { whatsapp: { chat_ids: [SELF_DM] } }; return c; };
+
+  it('a COMMAND reply typed in a chat both accounts are in goes out on secondary, in secondary\'s room', async () => {
+    const { app, byConnection } = await bootWith(KG());
+    await deliver(byConnection.primary, BOTH_AS_PRIMARY, '/status');
+    await waitFor(() => byConnection.secondary.sent.length > 0);
+
+    expect(byConnection.secondary.sent.length).toBeGreaterThan(0);
+    expect(new Set(byConnection.secondary.sent.map((m) => m.chatId))).toEqual(new Set([BOTH_AS_SECONDARY]));
+    expect(byConnection.primary.sent).toEqual([]);
+    app.stop();
+  });
+
+  it('the going-down "↻ /restart…" line, in a Self chat the mouth is in, goes out on secondary', async () => {
+    const exits = [];
+    const { app, byConnection } = await bootWith(ADMIN_SELF(), { exit: (code) => exits.push(code) });
+    await deliver(byConnection.primary, BOTH_AS_PRIMARY, '/restart');
+    await waitFor(() => exits.length > 0);
+
+    const going = byConnection.secondary.sent.filter((m) => m.text.includes('↻'));
+    expect(going.map((m) => m.chatId)).toEqual([BOTH_AS_SECONDARY]);
+    expect(byConnection.primary.sent.filter((m) => m.text.includes('↻'))).toEqual([]);
+    expect(exits).toEqual([43]);
+    app.stop();
+  });
+
+  // THE LOCK: the Self-DM, which only the operator's account has. Membership is measured and says
+  // no, so the ear speaks — the rule itself, not a special case for Self.
+  it('in the Self-DM (the mouth is not in it) the command reply and the going-down line stay on primary', async () => {
+    const exits = [];
+    const { app, byConnection } = await bootWith(SELF_IS_DM(), { exit: (code) => exits.push(code) });
+    await deliver(byConnection.primary, SELF_DM, '/status');
+    await waitFor(() => byConnection.primary.sent.length > 0);
+    await deliver(byConnection.primary, SELF_DM, '/restart');
+    await waitFor(() => exits.length > 0);
+
+    expect(new Set(byConnection.primary.sent.map((m) => m.chatId))).toEqual(new Set([SELF_DM]));
+    expect(byConnection.primary.sent.some((m) => m.text.includes('↻'))).toBe(true);
+    expect(byConnection.secondary.sent).toEqual([]);
+    expect(exits).toEqual([43]);
+    app.stop();
+  });
+});

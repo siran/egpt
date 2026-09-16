@@ -975,7 +975,8 @@ export async function boot({
       if (why.chatId) {
         try {
           await Promise.race([
-            shellAwareBridgeOf(null, why.chatId).send(why.chatId, `🛑 STOP received — egpt is stopping (the service will not respawn).\nTo start it again:  rm ${STOP_FILE}`, { bypassLasso: true }),
+            // Said through the one placement (sayOnce, declared below — read at call time).
+            sayOnce({ chatId: why.chatId, text: `🛑 STOP received — egpt is stopping (the service will not respawn).\nTo start it again:  rm ${STOP_FILE}`, opts: { bypassLasso: true }, what: 'stop' }),
             new Promise((r) => setTimeoutFn(r, 3000)),
           ]);
         } catch (e) { log.line?.(`[stop] could not post the warning (${e?.message ?? e}) — stopping anyway`); }
@@ -2510,6 +2511,23 @@ export async function boot({
   // mouth's facade, and is redirected to the console by that facade exactly as before.
   const shellAwareBridgeOf = (being, chatId = null) => shellAwareBridgeByEndpoint.get(endpointKey(endpointFor(outboundConnectionFor(being, chatId)))) ?? shellAwareBridge;
 
+  // ── BOOT'S OWN LINES GO THROUGH THE ONE PLACEMENT (operator 2026-09-16) ─────────────────────
+  // *"every output of the spine comes through the mouth."* A command reply, the lifecycle lines
+  // (↻ going down, ✅ back up / started), the STOP confirmation and the Self alert rode
+  // `rawBridgeOf`/`shellAwareBridgeOf` — the connection HOLDING the chat, which is the ear for every
+  // chat the ear heard. Right for the Self-DM (the mouth is not in it), wrong in any chat the mouth
+  // IS in: the operator's own account answered his command. Each is now ONE send said through
+  // makeOutbound `say` — the mouth's own room where it can reach the chat, else this chat's own
+  // connection, and a mouth that cannot say it falls back here loudly — the placement /reply takes,
+  // and the one a heartbeat's post already took (heartbeatSay, below, which shares this helper).
+  // `being` is null for a node line (the default mouth), the being for a heartbeat turn's reply.
+  // Shell-owned chats: the shell-aware resolver, and route() refuses them before asking anything.
+  const outbound = makeOutbound({ bridge: shellAwareBridge, bridgeOf: shellAwareBridgeOf, peerMouth, onLog: mouthLog });
+  const sayOnce = ({ being = null, chatId, text, opts, tag = {}, what }) => outbound(being, chatId).say(
+    async (on, room) => { const r = await on.send?.(room, text, opts); return !(r?.blocked || r == null); },
+    { text, tag, what },
+  );
+
   // --- lifecycle announce: "restarting…" to Self before exit, "back up! <commit>"
   //     on the next boot. The bounce is otherwise invisible to the operator. ---
   const sidecar = join(EGPT_HOME, 'state', 'restart-announce.json');
@@ -2522,12 +2540,13 @@ export async function boot({
     const selfDm = selfChatId();   // the Self chat (above) = the Self-DM announce target
     try { await mkdir(join(EGPT_HOME, 'state'), { recursive: true }); await writeFile(sidecar, JSON.stringify({ chatId: selfDm, kind: KIND_OF[code] ?? '?', preSha: shortSha(), pid: process.pid })); } catch {}
     // best-effort going-down — names the PID going down (capped so a slow POST can't wedge the
-    // exit). rawBridgeOf, not the default `bridge`: the Self-DM is a room on this node's EAR, and
-    // where the mouth is another Beeper account that id does not exist there (operator
-    // 2026-09-11). No being, so the resolver reads the node's default mouth — what this was.
+    // exit). Said through the one placement (sayOnce, above, 2026-09-16): the mouth, in its own room,
+    // where the Self chat is one it is in; otherwise the connection holding it — never the default
+    // `bridge`, because the Self-DM is a room on this node's EAR and where the mouth is another
+    // Beeper account that id does not exist there (operator 2026-09-11).
     // The failure is SAID rather than swallowed: a restart line that never landed leaves the
     // operator watching a silent chat, and this is the last thing the process does.
-    try { if (selfDm) await Promise.race([rawBridgeOf(null, selfDm).send(selfDm, `↻ ${KIND_OF[code] ?? 'restart'}… (pid ${process.pid})`), new Promise((r) => setTimeout(r, 3000))]); }
+    try { if (selfDm) await Promise.race([sayOnce({ chatId: selfDm, text: `↻ ${KIND_OF[code] ?? 'restart'}… (pid ${process.pid})`, what: 'announce' }), new Promise((r) => setTimeout(r, 3000))]); }
     catch (e) { log.line?.(`[announce] could not post the going-down line (${e?.message ?? e}) — leaving anyway`); }
     exit(code);
   }
@@ -2650,9 +2669,8 @@ export async function boot({
   // THE ALERT CHANNEL for the recoveries that used to be silent (operator 2026-09-14: "no error
   // can go silent"). brainpool's overflow and dead-session backstops both answer from a blank
   // thread; the chat cannot tell, so the operator is told here instead. The Self chat, reached
-  // exactly the way goDown's restart line reaches it -- rawBridgeOf(null, ...), NOT the default
-  // bridge, because the Self-DM is a room on this node's EAR and that id does not exist on
-  // another account's mouth.
+  // exactly the way goDown's restart line reaches it -- sayOnce, NOT the default bridge, because
+  // the Self-DM is a room on this node's EAR and that id does not exist on another account's mouth.
   //
   // FIRE AND FORGET, AND ALWAYS LOGGED FIRST: the log line is the record that does not depend on
   // a network, and a send that fails must never take down the turn it is reporting on -- the
@@ -2661,7 +2679,7 @@ export async function boot({
     log.line?.(`[alert] ${text}`);
     const selfDm = selfChatId();
     if (!selfDm) return;
-    try { rawBridgeOf(null, selfDm).send(selfDm, text).catch((e) => log.line?.(`[alert] could not reach the Self chat: ${e?.message ?? e}`)); }
+    try { sayOnce({ chatId: selfDm, text, what: 'alert' }).catch((e) => log.line?.(`[alert] could not reach the Self chat: ${e?.message ?? e}`)); }
     catch (e) { log.line?.(`[alert] could not reach the Self chat: ${e?.message ?? e}`); }
   };
   const brain = createBrainPool({ pool, getConfig, contacts, loadState: _loadState, writeState: _writeState, brains, defaultKey, labelOf, afterTurn: compaction.afterTurn, onAlert: alertOperator, resolveConfig: configResolver.configFor, resolveScope: createIdentityScope({ resolveMembers: memberResolver, getConfig, onLog: (m) => log.line?.(`[scope] ${m}`) }), io, onLog: (m) => log.line?.(`[brain] ${m}`) });
@@ -2695,7 +2713,9 @@ export async function boot({
     // mouth is another Beeper account that chat id does not exist there, so `/status` would answer
     // into a room that is not real. No being: a command reply is the NODE speaking, so the
     // resolver reads the default mouth, which is exactly what plain `bridge` was.
-    send: (chatId, text) => (shellPort.owns(chatId) ? shellPort.send(chatId, text) : rawBridgeOf(null, chatId).send(chatId, text)),
+    // …and it is SAID through the one placement (sayOnce, above, 2026-09-16): in a chat the mouth is
+    // in, `/status` is answered by the mouth, in its own room; in the Self-DM, by the ear.
+    send: (chatId, text) => (shellPort.owns(chatId) ? shellPort.send(chatId, text) : sayOnce({ chatId, text, what: 'command' })),
     transcript: services.transcript,
     onLog: (m) => log.line?.(`[transcript] ${m}`),
   });
@@ -2871,17 +2891,15 @@ export async function boot({
     await heartbeatSay({ being: null, ns, ev: { surface: target.surface, chatId: target.chatId }, text, tag: {}, recordAs: 'system', what: 'post' });
   };
 
-  // WHAT BOTH SAY THROUGH: ONE send via THE outbound resolver's `say` (sender.mjs makeOutbound) —
-  // the placement the /reply limb uses: the mouth says it in its own room, else the connection
-  // holding the chat. NOT the reply train: its eager "⏳ Thinking…" placeholder resolves its id by
-  // matching text, so one posted while a being streams in the same chat could bind to that being's
-  // message. Recorded first: the record does not depend on the network. Not said → throws, and the
-  // beat's outcome line says FAILED.
-  const heartbeatOutbound = makeOutbound({ bridge: shellAwareBridge, bridgeOf: shellAwareBridgeOf, peerMouth, onLog: mouthLog });
+  // WHAT BOTH SAY THROUGH: ONE send via THE outbound resolver's `say` (sayOnce, above — every line
+  // boot places itself) — the placement the /reply limb uses: the mouth says it in its own room,
+  // else the connection holding the chat. NOT the reply train: its eager "⏳ Thinking…" placeholder
+  // resolves its id by matching text, so one posted while a being streams in the same chat could
+  // bind to that being's message. Recorded first: the record does not depend on the network. Not
+  // said → throws, and the beat's outcome line says FAILED.
   const heartbeatSay = async ({ being, ns, ev, text, tag, recordAs, what }) => {
     await services.transcript.log(ev, { text, being: recordAs });
-    const send = async (on, room) => { const r = await on.send?.(room, text, tag); return !(r?.blocked || r == null); };
-    if (!(await heartbeatOutbound(being, ev.chatId).say(send, { text, tag, what }))) throw new Error(`not delivered to ${ns}`);
+    if (!(await sayOnce({ being, chatId: ev.chatId, text, opts: tag, tag, what }))) throw new Error(`not delivered to ${ns}`);
   };
 
   // WHICH CONNECTION HOLDS A HEARTBEAT'S CHAT, recorded BEFORE it is needed (2026-09-16). Every
@@ -2968,7 +2986,10 @@ export async function boot({
   // the node's default mouth -- so a @member reply into a chat heard on the ear posted on the
   // mouth, naming a room that account does not have. The persona sender got the per-chat
   // resolver; this one was missed, and the defect stayed live for members only.
-  const memberSender = createSender({ bridge: shellAwareBridge, bridgeOf: shellAwareBridgeOf, bodyEmojiOf: () => '🤖', labelOf: (id) => id, defaultKey });
+  // …and peerMouth, like the persona sender's (operator 2026-09-16, "every output of the spine comes
+  // through the mouth"): without it a member's reply in a chat the mouth is in still came from the
+  // operator's own account while E's reply beside it came from the mouth.
+  const memberSender = createSender({ bridge: shellAwareBridge, bridgeOf: shellAwareBridgeOf, bodyEmojiOf: () => '🤖', labelOf: (id) => id, defaultKey, peerMouth, onLog: mouthLog });
   const _adapterMods = new Map();
   const roomRelay = createRoomRelay({
     resolveMembers: memberResolver,
@@ -2992,7 +3013,7 @@ export async function boot({
   // agent's relay_channel is TRANSIT (no record, no chat dispatch — the messages live in Beeper),
   // and a frame carrying ANOTHER node's signature wakes nobody here. Own-node frames are
   // untouched: the room relay's tunnel carries this node's own fromNode across deliberately.
-  const spine = createSpine({ bridge, bridgeOf: rawBridgeOf, brain, turns, ...services, commands, mesh, actions, advice, guard, guardOverride, stopSwitch, isSelfChat, isTransit: (ev) => isRelayChannelChat(getConfig(), ev), roomRelay, readTranscript, refreshConfig: heartbeatLoader.reload, radioRelay: radioRelay.relay, synthesize: vx.synthesize, voice: vx.voice, defaultBeing: defaultKey, labelOf, timeZone: transcriptTimeZone, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
+  const spine = createSpine({ bridge, bridgeOf: rawBridgeOf, peerMouth, brain, turns, ...services, commands, mesh, actions, advice, guard, guardOverride, stopSwitch, isSelfChat, isTransit: (ev) => isRelayChannelChat(getConfig(), ev), roomRelay, readTranscript, refreshConfig: heartbeatLoader.reload, radioRelay: radioRelay.relay, synthesize: vx.synthesize, voice: vx.voice, defaultBeing: defaultKey, labelOf, timeZone: transcriptTimeZone, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
   // Bind the advice service's answer-routing dispatch now that the spine exists: an
   // operator answer in the advice channel re-enters the pipe as a turn in the origin chat.
   advice.useDispatch(spine.handleInbound);
@@ -3026,12 +3047,14 @@ export async function boot({
   // "started" line below — the operator must never be silently in the dark about a restart.
   // Gated on the real-node flag so tests don't read/send through it.
   //
-  // BOTH LINES RIDE rawBridgeOf, NOT THE DEFAULT `bridge` (operator 2026-09-11). This is the
+  // BOTH LINES ARE SAID THROUGH sayOnce, NOT THE DEFAULT `bridge` (operator 2026-09-11; the
+  // placement since 2026-09-16). This is the
   // earliest outbound of the process — nothing has arrived yet — but it does not need an arrival:
   // the target is this node's Self chat, declared in its own config, therefore a room on its EAR
   // (outboundConnectionFor / connectionHolding, above). Where the mouth is a different Beeper
-  // account, "back up!" posted on the mouth is a room that does not exist. No being to pass, so
-  // the resolver reads this node's default mouth — byte-identical wherever the mouth can reach.
+  // account, "back up!" posted on the mouth WITH THAT ID is a room that does not exist — so the
+  // mouth speaks only in its own room for the chat, when it is in it. No being to pass, so the
+  // resolver reads this node's default mouth — byte-identical wherever the mouth can reach.
   if (ingest) (async () => {
     let sc; try { sc = JSON.parse(await readFile(sidecar, 'utf8')); } catch { sc = null; }
     if (sc) {
@@ -3045,7 +3068,7 @@ export async function boot({
       // way the recovery reaches a human: it names what the daemon did on its own and, for a
       // dirty-tree rescue, which rescue/<ts> branch the operator's uncommitted work is on.
       // Absent on every other sidecar, which therefore renders byte-for-byte as before.
-      try { await rawBridgeOf(null, sc.chatId).send(sc.chatId, `✅ egpt back up! (${head}) ${pids}${sc.note ? `\n\n⚠️ ${sc.note}` : ''}${subject ? `\n\n${subject}` : ''}`); }
+      try { await sayOnce({ chatId: sc.chatId, text: `✅ egpt back up! (${head}) ${pids}${sc.note ? `\n\n⚠️ ${sc.note}` : ''}${subject ? `\n\n${subject}` : ''}`, what: 'announce' }); }
       catch (e) { log.line?.(`[announce] ${e?.message ?? e}`); }
       return;
     }
@@ -3053,7 +3076,7 @@ export async function boot({
     if (!selfDm) return;
     const nowSha = shortSha();
     const subject = gitOut(['log', '-1', '--format=%s']);
-    try { await rawBridgeOf(null, selfDm).send(selfDm, `✅ egpt started (${nowSha}) pid ${process.pid}${subject ? `\n\n${subject}` : ''}`); }
+    try { await sayOnce({ chatId: selfDm, text: `✅ egpt started (${nowSha}) pid ${process.pid}${subject ? `\n\n${subject}` : ''}`, what: 'announce' }); }
     catch (e) { log.line?.(`[announce] ${e?.message ?? e}`); }
   })();
 

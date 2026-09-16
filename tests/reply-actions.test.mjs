@@ -506,12 +506,11 @@ describe('createReplyActions.execute — bridgeOf: per-being connection routing 
 // the limb never entered `ran`, no stage-direction was written and the text was simply lost.
 //
 // Riding the HOLDER is also what makes the message ids line up: ev.chatId, the '#<id>' the model
-// emitted (this node's own transcript ids) and the bridge are then all in ONE namespace. That is
-// why /edit is — deliberately — never routed through the mouth (src/spine/sender.mjs's makeOutbound
-// header: it cannot act on `route()`, so it never pays for it). /react, /reply and /media ARE, since
-// 2026-09-16: a limb from the ear's account is the operator's own, so the mouth acts in its own room
-// and is told a target by content — tests/mouth-routing.test.mjs §8 and §9. With no mouth (every
-// test here) they ride the holder exactly as below.
+// emitted (this node's own transcript ids) and the bridge are then all in ONE namespace. With a
+// mouth, every limb — /react, /reply, /media and /edit, since 2026-09-16 — acts from the mouth in
+// its own room and is told a target by content: a limb from the ear's account is the operator's
+// own (tests/mouth-routing.test.mjs §8–§10). With no mouth (every test here) they ride the holder
+// exactly as below.
 describe('createReplyActions.execute — a limb rides the connection that HOLDS the chat', () => {
   // The live two-account shape at the resolver seam, exactly as boot answers it: a chat in hand
   // ⇒ the connection holding it; no chat ⇒ the being's own mouth.

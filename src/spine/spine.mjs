@@ -123,6 +123,10 @@ export function createSpine({
   // node's default one. Absent, or returning nullish for a given being, falls straight back to
   // `bridge` above — BYTE-IDENTICAL to before for every existing caller/test.
   bridgeOf = null,
+  // boot's makePeerMouth — the mouth the sender and the limbs are handed (operator 2026-09-16:
+  // "every output of the spine comes through the mouth"). The voice attach asks it through
+  // makeOutbound `say`, as /media does. Null (every one-number node, every test) ⇒ never asked.
+  peerMouth = null,
   // THE TURN MACHINERY (src/spine/turns.mjs, operator 2026-08-31): the per-conversation FIFO, the
   // in-flight/queued count, the live-turn identity, the key derivation and the allow_new_input
   // steer. OPTIONAL, and boot.mjs ALWAYS passes it — because it must be THE SAME INSTANCE the
@@ -194,14 +198,14 @@ export function createSpine({
     if (!dep) throw new Error(`createSpine: missing required dependency '${name}'`);
   }
   const note = (s) => { try { log.line?.(s); } catch {} };
-  const outbound = makeOutbound({ bridge, bridgeOf });
   // The chat goes to the resolver too (operator 2026-09-11/09-12) — the same argument sender.mjs
   // and reply-actions.mjs pass. Asked about the being alone it answers with the being's MOUTH, so
   // on a node whose mouth is the second account the voice attach rode a connection that does not
   // have ev.chatId's room at all and the send was DROPPED. Its one caller holds `ev`.
-  const bridgeFor = (being, chatId) => outbound(being, chatId).bridge;
+  // …and the MOUTH is asked too (2026-09-16): the attach is said through makeOutbound `say`.
+  const outbound = makeOutbound({ bridge, bridgeOf, peerMouth, onLog: note });
   // The shared turn machinery, or our own private one (see the option's note above). Built with
-  // the SAME bridge/bridgeOf pair `bridgeFor` uses, because the steer-ack react it owns is one of
+  // the SAME bridge/bridgeOf pair `outbound` uses, because the steer-ack react it owns is one of
   // the spine's own direct bridge sends and must ride the acked being's connection.
   const turns = injectedTurns ?? createTurns({ brain, bridge, bridgeOf, log });
 
@@ -1414,7 +1418,12 @@ export function createSpine({
             const tmpPath = join(tmpdir(), `egpt-voice-reply-${randomBytes(8).toString('hex')}.ogg`);
             try {
               await writeFile(tmpPath, audio);
-              try { await bridgeFor(to, ev.chatId).sendMedia(ev.chatId, tmpPath, { replyTo: textId }); }
+              // Said like /media (makeOutbound `say`), replying to the text. That text's id lives
+              // where the sender put it (`confirmedIn`: a local mouth's room, else this chat's own
+              // connection), so its key is read off that copy and the id itself is handed on only there.
+              const o = outbound(to, ev.chatId);
+              const heldBy = out.confirmedIn ?? null;
+              try { await o.say((on, room, replyTo) => on.sendMedia(room, tmpPath, { replyTo }), { msgId: heldBy ? null : textId, keyOf: o.keyOf(textId, 'voice', heldBy), what: 'voice' }); }
               catch (e) { note(`voice-send ${to}/${ev.chatId}: ${e?.message ?? e}`); }
             } finally { try { await unlink(tmpPath); } catch {} }
           }

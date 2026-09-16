@@ -56,8 +56,6 @@ import { existsSync } from 'node:fs';
 // WHICH CONNECTION AN OUTBOUND GOES OUT ON — the ONE resolver (sender.mjs makeOutbound), not a
 // fourth local copy of `bridgeOf(being) ?? bridge`.
 import { makeOutbound } from './sender.mjs';
-// The /react target's cross-account key — the SAME two functions the bridge mints ev.msgHash/msgTs with.
-import { crossAccountMsgKey, _msgTimestampMs } from '../bridges/beeper.mjs';
 
 // The reserved action verbs. A line is an ACTION-family line iff (trimmed) it starts
 // with '/' + one of these + whitespace-or-EOL — nothing else is ever touched, so
@@ -373,22 +371,13 @@ export function createReplyActions({ bridge, bridgeOf = null, peerMouth = null, 
   // as sender.mjs does — boot's rawBridgeOf then answers with the connection that HOLDS the chat.
   //
   // That is also what keeps the IDS honest: ev.chatId, the '#<id>' the model emitted (this node's
-  // own transcript ids) and the bridge all name the same account. /edit is never routed through
-  // the peer/local MOUTH precisely because it is addressed by those ids, and the mouth's account
-  // has different ones (sender.mjs makeOutbound's header). /react IS (2026-09-16): a reaction from
-  // the ear's account is the operator's own 👍, so it goes through the one placement the steer ack
-  // uses, and the mouth is told the target by content, not id. /reply and /media ARE too (same
-  // day): a being's line from the ear's account reads as the operator's, so they go through
-  // makeOutbound `say`, and /reply's quote is named to the mouth the same way /react's target is.
-  const bridgeForBeing = (being, chatId) => outbound(being, chatId).bridge;
-  // THE TARGET'S CROSS-ACCOUNT KEY, read off the EAR's own copy — the '#<id>' a limb names is the
-  // ear's — and only when a mouth is actually going to act on it (a thunk: the no-mouth path never
-  // reads). Shared by /react and /reply.
-  const keyOfTarget = (out, ev, targetId, verb) => async () => {
-    const m = ((await out.bridge.listMessagesRaw?.(ev.chatId)) ?? []).find((x) => x?.id != null && String(x.id) === String(targetId));
-    if (!m) onLog(`${verb}: #${targetId} is not among the recent messages of ${ev.chatId} on this account — the mouth cannot be told which message`);
-    return { msgKey: m ? crossAccountMsgKey(m) : null, timestamp: m ? _msgTimestampMs(m) : null };
-  };
+  // own transcript ids) and the bridge all name the same account. So no limb hands the MOUTH that
+  // id: each names its target to the mouth by content, with the key read off the ear's own copy
+  // (sender.mjs makeOutbound `keyOf` — a thunk: the no-mouth path never reads). /react (2026-09-16)
+  // goes through the one placement the steer ack uses; /reply and /media (same day) through
+  // makeOutbound `say`, because a being's line from the ear's account reads as the operator's; and
+  // /edit too, by the ruling "every output of the spine comes through the mouth" — the account
+  // that said the line is the one that edits it, and only if IT sent it.
   // The /ask limb delegates the sole sanctioned cross-chat post to the advice service
   // (createAdvice.ask). Absent (unit tests, no advice wiring) → fail-closed: log + drop,
   // never a bridge send. Keeps reply-actions' "every direct bridge action targets
@@ -418,7 +407,7 @@ export function createReplyActions({ bridge, bridgeOf = null, peerMouth = null, 
         // The target is named by the EAR's id, so the key is read off the ear's own copy — and only
         // when a mouth is actually going to place it (sender.mjs makeOutbound `react`).
         const out = outbound(being, ev.chatId);
-        const ok = await out.react(a.targetId, a.emoji, keyOfTarget(out, ev, a.targetId, 'react'));
+        const ok = await out.react(a.targetId, a.emoji, out.keyOf(a.targetId, 'react'));
         if (!ok) onLog(`react: ${a.emoji} → #${a.targetId} failed`);
         return !!ok;
       }
@@ -429,7 +418,7 @@ export function createReplyActions({ bridge, bridgeOf = null, peerMouth = null, 
         const out = outbound(being, ev.chatId);
         const tag = { bodyEmoji: bodyEmojiOf(being), label: labelOf(being) };
         const send = async (on, room, replyTo) => { const r = await on.send?.(room, a.text, { replyTo, ...tag }); return !(r?.blocked || r == null); };
-        const ok = await out.say(send, { msgId: a.targetId, keyOf: keyOfTarget(out, ev, a.targetId, 'reply'), text: a.text, tag });
+        const ok = await out.say(send, { msgId: a.targetId, keyOf: out.keyOf(a.targetId, 'reply'), text: a.text, tag });
         if (!ok) onLog(`reply: → #${a.targetId} not delivered`);
         return ok;
       }
@@ -444,10 +433,18 @@ export function createReplyActions({ bridge, bridgeOf = null, peerMouth = null, 
       }
       case 'media': return runMedia(a, ev, being);
       case 'edit': {
-        if (!(await bridgeForBeing(being, ev.chatId).wasSentByUs?.(ev.chatId, a.targetId))) { onLog(`edit: #${a.targetId} is not one of our messages — rejected (fail-closed)`); return false; }
-        const ok = await bridgeForBeing(being, ev.chatId).editOwn?.(ev.chatId, a.targetId, a.text, { bodyEmoji: bodyEmojiOf(being), label: labelOf(being) });
-        if (!ok) onLog(`edit: #${a.targetId} failed`);
-        return !!ok;
+        // Made by whoever says this being's lines in this chat, on ITS OWN copy of the target
+        // (sender.mjs makeOutbound `say`) — and only if THAT account sent it: the fail-closed check
+        // is asked in the namespace of the account editing. A copy it cannot identify arrives as a
+        // null id, which is refused. No `text` is handed over: a peer mouth has no verb that edits.
+        const out = outbound(being, ev.chatId);
+        const edit = async (on, room, id) => {
+          if (id == null || !(await on.wasSentByUs?.(room, id))) { onLog(`edit: #${a.targetId} is not one of our messages — rejected (fail-closed)`); return false; }
+          const ok = await on.editOwn?.(room, id, a.text, { bodyEmoji: bodyEmojiOf(being), label: labelOf(being) });
+          if (!ok) onLog(`edit: #${a.targetId} failed`);
+          return !!ok;
+        };
+        return out.say(edit, { msgId: a.targetId, keyOf: out.keyOf(a.targetId, 'edit'), what: 'edit' });
       }
       default: onLog(`action: unknown type ${a?.type}`); return false;
     }

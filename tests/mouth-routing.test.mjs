@@ -44,6 +44,7 @@ import { dirname, join } from 'node:path';
 import { createSender } from '../src/spine/sender.mjs';
 import { createTurns } from '../src/spine/turns.mjs';
 import { createReplyActions } from '../src/spine/reply-actions.mjs';
+import { createSpine } from '../src/spine/spine.mjs';
 import { boot, makePeerMouth } from '../src/spine/boot.mjs';
 import { createMouthReceiver } from '../src/shell/peer-mouth.mjs';
 import { crossAccountChatKey, crossAccountMsgKey } from '../src/bridges/beeper.mjs';
@@ -102,9 +103,14 @@ const settled = () => new Promise((r) => setTimeout(r, 0));
 // means exactly what it means there: a `startStream` handle (the ⏳ placeholder edited in place)
 // or a fresh `send`.
 function fakeBridge() {
-  const streams = [], sent = [], renders = [], reactions = [], media = [];
+  const streams = [], sent = [], renders = [], reactions = [], media = [], edits = [];
+  // `own`: the '<chat>|<id>' pairs THIS account sent — the bridge's id-exact own-send memory
+  // (beeper.mjs wasSentByUs), which /edit's fail-closed check reads (§10).
+  const own = new Set();
   return {
-    streams, sent, renders, reactions, media,
+    streams, sent, renders, reactions, media, edits, own,
+    wasSentByUs(chat, msgId) { return own.has(`${chat}|${msgId}`); },
+    editOwn(chat, msgId, text, opts) { edits.push({ chat, msgId, text, opts }); return true; },
     // The steer ack's primitive (src/spine/turns.mjs, and the /react limb's). It lives on the same
     // fake as `send`/`startStream` because it is the same question — WHICH ACCOUNT SAYS THIS —
     // and §6 below is the case where the two used to answer differently.
@@ -1181,7 +1187,7 @@ function earAndMouth({ earMessages = [STEERED_ON_PRIMARY], mouthMessages = [STEE
     : null;
   const actions = createReplyActions({ bridge: ear, peerMouth, bodyEmojiOf: () => '🐶', labelOf: () => 'e', resolveConvDir, onLog: (m) => logs.push(`[actions] ${m}`) });
   const run = async (line) => actions.execute(actions.parse(line, LIMB_EV).run, [], LIMB_EV, { being: 'e' });
-  return { ear, mouthBridge, earListed, logs, run, react: () => run(`/react #${STEERED_ON_PRIMARY.id} 👍`) };
+  return { ear, mouthBridge, peerMouth, earListed, logs, run, react: () => run(`/react #${STEERED_ON_PRIMARY.id} 👍`) };
 }
 
 describe('the /react limb is placed by the MOUTH, on its own copy — never from the ear\'s account', () => {
@@ -1268,7 +1274,7 @@ describe('/reply and /media are said by the MOUTH, in its own room — never fro
     expect(mouthBridge.sent).toEqual([{ chat: SECONDARY_CHAT_ID, text: 'exacto', opts: { replyTo: STEERED_ON_SECONDARY.id, ...stamp } }]);
     expect(ear.sent).toEqual([]);
     expect(ran).toHaveLength(1);                     // it LANDED — the stage-direction is truthful
-    expect(logs.join('\n')).toMatch(/'secondary' said it in its own room \(its chat HuXFQeZSY1X4khNDWTzz\), quoting its own #1118/);
+    expect(logs.join('\n')).toMatch(/'secondary' said it in its own room \(its chat HuXFQeZSY1X4khNDWTzz\), naming its own #1118/);
   });
 
   it('the mouth cannot find the target: the SAME text goes out UNQUOTED from the mouth, never from the ear, and the log says why', async () => {
@@ -1284,9 +1290,9 @@ describe('/reply and /media are said by the MOUTH, in its own room — never fro
       expect(mouthBridge.sent, reason).toEqual([{ chat: SECONDARY_CHAT_ID, text: 'exacto', opts: { replyTo: null, ...stamp } }]);
       expect(ear.sent, reason).toEqual([]);
       expect(ran, reason).toHaveLength(1);
-      const line = logs.find((l) => /cannot quote #2901 on its own copy/.test(l));
+      const line = logs.find((l) => /cannot find #2901 on its own copy/.test(l));
       expect(line, reason).toContain(reason);
-      expect(line).toMatch(/UNQUOTED/);
+      expect(logs.join('\n')).toMatch(/'secondary' said it in its own room \(its chat HuXFQeZSY1X4khNDWTzz\), UNQUOTED/);
     }
   });
 
@@ -1363,5 +1369,191 @@ describe('/reply and /media are said by the MOUTH, in its own room — never fro
     const { ran } = await actions.execute(actions.parse(REPLY, LIMB_EV).run, [], LIMB_EV, { being: 'e' });
     expect(ear.sent).toEqual([{ chat: CHAT_ID, text: 'exacto', opts: { replyTo: TARGET, ...stamp } }]);
     expect(ran).toHaveLength(1);
+  });
+});
+
+// ── 10. /edit IS MADE BY THE ACCOUNT THAT SAID THE LINE (operator 2026-09-16) ────────────────────
+// *"every output of the spine comes through the mouth … I doubt edits come out of the ear, since it
+// is Rodz who is replying."* A being's lines are sent BY THE MOUTH, so the '#<id>' the model names
+// for one of them is the EAR's copy of a message the MOUTH sent — and the ear's own-send memory,
+// correctly, has never heard of it. /edit asked the ear, so on a two-account node every edit of a
+// being's own line was refused: not misrouted, broken. It now goes through the placement /reply
+// uses (sender.mjs makeOutbound `say`): the mouth finds ITS OWN copy by the cross-account key and
+// edits it only if IT sent it — the fail-closed check asked in the namespace of the account editing.
+//
+// THE FLOOR IS THE OLD ONE: never an edit on a message that is not ours. A mouth that cannot name its
+// own copy has nothing to edit; the ear is then asked the same question of ITS id, which refuses a
+// line the mouth said and edits only a line the ear itself sent (the §7 fallback's, say).
+const SAID_TEXT = '🐶 e: hola a todos';
+const SAID_TS = Date.parse('2026-09-16T18:00:00.000Z');
+const SAID_ON_PRIMARY = { id: '2950', text: SAID_TEXT, timestamp: SAID_TS };     // the ear's view — the '#<id>' the model reads
+const SAID_ON_SECONDARY = { id: '1150', text: SAID_TEXT, timestamp: SAID_TS };   // the mouth's own
+
+describe('/edit is made by the MOUTH on its own message — and never lands on one that is not ours', () => {
+  const EDIT = `/edit #${SAID_ON_PRIMARY.id} hola, corregido`;
+  const stamp = { bodyEmoji: '🐶', label: 'e' };
+  const edited = (chat, msgId) => [{ chat, msgId, text: 'hola, corregido', opts: stamp }];
+  // The ordinary two-account shape: the mouth said the line, so the MOUTH's memory holds it.
+  const node = (shape = {}) => {
+    const n = earAndMouth({ earMessages: [SAID_ON_PRIMARY], mouthMessages: [SAID_ON_SECONDARY], ...shape });
+    n.mouthBridge.own.add(`${SECONDARY_CHAT_ID}|${SAID_ON_SECONDARY.id}`);
+    return n;
+  };
+
+  it('THE REPRODUCTION: the mouth edits ITS OWN copy (1150, its room), and the ear edits nothing', async () => {
+    const { ear, mouthBridge, logs, run } = node();
+    const { ran } = await run(EDIT);
+
+    expect(mouthBridge.edits).toEqual(edited(SECONDARY_CHAT_ID, SAID_ON_SECONDARY.id));
+    expect(ear.edits).toEqual([]);
+    expect(ran).toHaveLength(1);                     // it LANDED — the stage-direction is truthful
+    expect(logs.join('\n')).toMatch(/edit e\/chat-1: 'secondary' said it in its own room \(its chat HuXFQeZSY1X4khNDWTzz\), naming its own #1150/);
+  });
+
+  it('the mouth cannot identify its own copy: NOTHING is edited on either account, the limb does not land, and the log says why', async () => {
+    const other = { id: '1149', text: 'otra cosa', timestamp: SAID_TS };
+    for (const [reason, shape] of [
+      ['no-key', { earMessages: [] }],                                                    // not on the ear's recent list
+      ['no-key', { earMessages: [{ ...SAID_ON_PRIMARY, text: '' }] }],                    // no body to key
+      ['no-match', { mouthMessages: [other] }],                                           // the mouth holds no such message
+      ['ambiguous', { mouthMessages: [SAID_ON_SECONDARY, { ...SAID_ON_SECONDARY, id: '1151' }] }],
+    ]) {
+      const { ear, mouthBridge, logs, run } = node(shape);
+      const { ran } = await run(EDIT);
+      expect(mouthBridge.edits, reason).toEqual([]);
+      expect(ear.edits, reason).toEqual([]);
+      expect(ran, reason).toEqual([]);
+      const line = logs.find((l) => /edit e\/chat-1: 'secondary' cannot find #2950 on its own copy/.test(l));
+      expect(line, `${reason}\n${logs.join('\n')}`).toContain(reason);
+      expect(logs.join('\n'), reason).toMatch(/edit: #2950 is not one of our messages — rejected \(fail-closed\)/);
+    }
+  });
+
+  // The mouth FINDS a copy — but the line was never its own: the ear said it (the sender's §7
+  // fallback). The mouth refuses by its own memory, and the ear, asked the same question, edits
+  // ITS own line by its own id. Nothing is edited that the editing account did not send.
+  it('a line the EAR said: the mouth refuses its copy, and the ear edits its own line by its own id', async () => {
+    const { ear, mouthBridge, run } = earAndMouth({ earMessages: [SAID_ON_PRIMARY], mouthMessages: [SAID_ON_SECONDARY] });
+    ear.own.add(`${CHAT_ID}|${SAID_ON_PRIMARY.id}`);
+    const { ran } = await run(EDIT);
+    expect(mouthBridge.edits).toEqual([]);
+    expect(ear.edits).toEqual(edited(CHAT_ID, SAID_ON_PRIMARY.id));
+    expect(ran).toHaveLength(1);
+  });
+
+  // REGRESSION LOCK: no mouth, or a chat the mouth cannot reach (a Self-DM) — the ear, its own id,
+  // its own ownership check, exactly as before, and no message list is read.
+  it('NO mouth, or one that cannot reach the chat: the ear edits its own line by its own id, exactly as before', async () => {
+    for (const shape of [{ withMouth: false }, { mouthIsMember: false }]) {
+      const { ear, mouthBridge, earListed, run } = node(shape);
+      ear.own.add(`${CHAT_ID}|${SAID_ON_PRIMARY.id}`);
+      const { ran } = await run(EDIT);
+      expect(ear.edits, JSON.stringify(shape)).toEqual(edited(CHAT_ID, SAID_ON_PRIMARY.id));
+      expect(mouthBridge.edits).toEqual([]);
+      expect(earListed).toEqual([]);
+      expect(ran).toHaveLength(1);
+    }
+  });
+
+  // THE PEER SPINE: the link has no verb that edits (mouth.mjs), so /edit stays where /media stays —
+  // on this account, under this account's own ownership check. A documented limit, not a new one.
+  it('a PEER mouth: /edit stays on the ear, under the ear\'s own ownership check', async () => {
+    const { mouth } = fakeMouth();
+    const ear = { ...fakeBridge(), async listMessagesRaw() { return [SAID_ON_PRIMARY]; } };
+    ear.own.add(`${CHAT_ID}|${SAID_ON_PRIMARY.id}`);
+    const actions = createReplyActions({ bridge: ear, peerMouth: mouth, bodyEmojiOf: () => '🐶', labelOf: () => 'e', onLog: () => {} });
+    const { ran } = await actions.execute(actions.parse(EDIT, LIMB_EV).run, [], LIMB_EV, { being: 'e' });
+    expect(ear.edits).toEqual(edited(CHAT_ID, SAID_ON_PRIMARY.id));
+    expect(ran).toHaveLength(1);
+  });
+});
+
+// ── 11. THE VOICE NOTE A REPLY ATTACHES IS SAID BY THE MOUTH TOO (operator 2026-09-16) ───────────
+// A voice-triggered turn attaches synthesized audio as a reply TO the text just delivered
+// (src/spine/spine.mjs, VOICE-OUT). The text rides the mouth; the attach rode the EAR — so the
+// operator's own account posted the being's voice. It now goes through makeOutbound `say`, as /media
+// does, and the text it quotes is named to the mouth by the key of the copy its id actually lives on:
+// the mouth's own room when the mouth said it, this chat's connection when the §7 fallback did.
+describe('the voice attach is said by the MOUTH, replying to the text in its own room', () => {
+  const VOICE_EV = { surface: 'wa', node: 'wa', chatId: CHAT_ID, chatName: 'Group', senderId: 'u-1', senderName: 'An', msgId: 'm1', ts: 1000, body: 'hola', kind: 'text', raw: {}, isVoice: true };
+  // THE WHOLE TURN, real: createSpine + createSender + makePeerMouth with a local mouth (kg's shape).
+  // Only the two bridges and the brain are fakes. Each stream settles with the id its own account
+  // gave the delivered text: 'mouth-said' on the mouth, 'ear-said' on the ear.
+  const voiceNode = ({ mouthDelivers = true, ...shape } = {}) => {
+    const n = earAndMouth(shape);
+    let cb = null;
+    Object.assign(n.ear, { onMessage(fn) { cb = fn; }, emit: (m) => cb(m), stop() {} });
+    const settle = (bridge, id, delivers = true) => {
+      const open = bridge.startStream;
+      bridge.startStream = (...a) => {
+        const h = open(...a);
+        const finish = h.finish;
+        h.finish = async (t) => { await finish(t); h.delivered = delivers; h.confirmedId = delivers ? id : null; };
+        return h;
+      };
+    };
+    settle(n.mouthBridge, 'mouth-said', mouthDelivers);
+    settle(n.ear, 'ear-said');
+    const sender = createSender({ bridge: n.ear, bodyEmojiOf: () => '🐶', peerMouth: n.peerMouth, onLog: (m) => n.logs.push(`[mouth] ${m}`) });
+    const spine = createSpine({
+      bridge: n.ear, peerMouth: n.peerMouth,
+      brain: { async turn() { return { text: 'hola a todos', sessionId: 's1' }; } },
+      identity: { build: (msg) => ({ ...msg, line: msg.body }) }, router: { resolve: () => 'e' },
+      gating: { async decide() { return { mode: 'on', receives: true, mayReply: true, sendToEgpt: 'mode' }; }, surfaces: (d) => d.mayReply },
+      sender, transcript: { log() {}, logAction() {} }, heartbeats: { runDue() {} }, store: { recordThread() {} },
+      clock: { now: () => 1000 }, synthesize: async () => Buffer.from('AUDIO'), voice: 'v',
+      log: { line: (m) => n.logs.push(m) },
+    });
+    spine.start();
+    return { ...n, say: () => n.ear.emit(VOICE_EV) };
+  };
+  const SAID_BY_MOUTH = { id: 'mouth-said', text: SAID_TEXT, timestamp: SAID_TS };
+  const SAID_BY_EAR = { id: 'local-1', text: SAID_TEXT, timestamp: SAID_TS };       // fakeBridge.send's confirmedId
+  const COPY_ON_MOUTH = { id: 'mouth-copy', text: SAID_TEXT, timestamp: SAID_TS };
+
+  it('THE REPRODUCTION: the mouth said the text, and the mouth attaches the voice in its own room, replying to ITS own text', async () => {
+    const { ear, mouthBridge, say } = voiceNode({ mouthMessages: [SAID_BY_MOUTH] });
+    await say();
+
+    expect(mouthBridge.media).toHaveLength(1);
+    expect(mouthBridge.media[0]).toMatchObject({ chat: SECONDARY_CHAT_ID, opts: { replyTo: 'mouth-said' } });
+    expect(ear.media).toEqual([]);
+  });
+
+  it('the mouth cannot find the text on its own copy: the voice still goes out from the MOUTH, UNQUOTED, and the log says why', async () => {
+    const { ear, mouthBridge, logs, say } = voiceNode({ mouthMessages: [] });
+    await say();
+
+    expect(mouthBridge.media).toHaveLength(1);
+    expect(mouthBridge.media[0]).toMatchObject({ chat: SECONDARY_CHAT_ID, opts: { replyTo: null } });
+    expect(ear.media).toEqual([]);
+    expect(logs.join('\n')).toMatch(/voice: #mouth-said is not among the recent messages of HuXFQeZSY1X4khNDWTzz on 'secondary'/);
+    expect(logs.join('\n')).toMatch(/voice e\/chat-1: 'secondary' cannot find its target on its own copy \(no-key/);
+  });
+
+  // The mouth's stream did not deliver, so the §7 fallback said the text on the ear, with the ear's
+  // id. The voice is still the mouth's to say — quoting the mouth's own copy of that text, keyed off
+  // the ear's copy, where that id actually lives.
+  it('the text fell back to the ear: the voice goes from the MOUTH, replying to its own copy of that text', async () => {
+    const { ear, mouthBridge, say } = voiceNode({ mouthDelivers: false, earMessages: [SAID_BY_EAR], mouthMessages: [COPY_ON_MOUTH] });
+    await say();
+
+    expect(ear.sent.map((s) => s.chat)).toEqual([CHAT_ID]);                             // the §7 fallback, as before
+    expect(mouthBridge.media).toHaveLength(1);
+    expect(mouthBridge.media[0]).toMatchObject({ chat: SECONDARY_CHAT_ID, opts: { replyTo: 'mouth-copy' } });
+    expect(ear.media).toEqual([]);
+  });
+
+  // REGRESSION LOCK: no mouth, or a chat the mouth cannot reach (a Self-DM) — the ear attaches to its
+  // own text by its own id, exactly as before, and no message list is read.
+  it('NO mouth, or one that cannot reach the chat: the ear attaches the voice to its own text, exactly as before', async () => {
+    for (const shape of [{ withMouth: false }, { mouthIsMember: false }]) {
+      const { ear, mouthBridge, earListed, say } = voiceNode(shape);
+      await say();
+      expect(ear.media, JSON.stringify(shape)).toHaveLength(1);
+      expect(ear.media[0]).toMatchObject({ chat: CHAT_ID, opts: { replyTo: 'ear-said' } });
+      expect(mouthBridge.media).toEqual([]);
+      expect(earListed).toEqual([]);
+    }
   });
 });

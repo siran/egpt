@@ -18,6 +18,8 @@
 // independent literals, so changing either silently stopped the guard recognising real
 // frames while every fixture-built test stayed green.
 import { LIVE_FRAME_MARK } from '../dispatch-line.mjs';
+// A target is named to the mouth by the SAME two functions the bridge mints ev.msgHash/msgTs with (makeOutbound `keyOf`).
+import { crossAccountMsgKey, _msgTimestampMs } from '../bridges/beeper.mjs';
 
 const FAIL_SUFFIX = '… ❌ Sending failed.';
 // A turn that was MEANT to surface but produced no deliverable text (brainpool
@@ -161,12 +163,14 @@ export const RETAINED_SEAM = '\n\n— ↓ reply —\n\n';
  *   src/spine/sender.mjs       the reply (below)
  *   src/spine/reply-actions.mjs  the limbs (/react, /reply, /media, /edit)
  *   src/spine/spine.mjs        the voice-out media attach
+ * …and boot's own lines (command replies, the lifecycle announces, the STOP line, the Self alert,
+ * heartbeat posts) ask it too, through `say` (src/spine/boot.mjs `sayOnce`).
  *
  * `bridge` is the connection THIS being's own sends ride — the operator's fail-safe half, which
  * can never be wrong. `route()` is the peer question, and it is a THUNK on purpose: a caller that
- * cannot act on the answer (/edit, the media attach, and mode:auto below, which is never
- * routed) must not pay the membership read to receive it. Nullish peerMouth ⇒ null ⇒ no peer was
- * ever consulted, which is the whole additivity requirement in one expression.
+ * cannot act on the answer (mode:auto below, which is never routed) must not pay the membership
+ * read to receive it. Nullish peerMouth ⇒ null ⇒ no peer was ever consulted, which is the whole
+ * additivity requirement in one expression.
  *
  * …AND THE CHAT IS PART OF THE QUESTION (operator 2026-09-11): *"inter-spine messaging chat-group
  * matching is first done by name and members. if rodz is not in, reply flows back from primary."*
@@ -205,21 +209,32 @@ export const RETAINED_SEAM = '\n\n— ↓ reply —\n\n';
  *                 naming why: a missing reaction is cosmetic, one from the wrong account is the bug.
  * Returns whether it landed (the limb's `ran` is written from it).
  *
- * `say()` IS THE SAME PLACEMENT FOR A LIMB THAT SAYS SOMETHING (2026-09-16) — /reply and /media.
- * Live in a WhatsApp group: being-stamped /reply quotes went out from the OPERATOR's account,
- * because they rode `bridge` (the ear) with the ear's id. `act(on, room, replyTo)` is the limb's
- * own send, handed whichever account says it:
+ * `say()` IS THE SAME PLACEMENT FOR A LIMB THAT SAYS SOMETHING (2026-09-16) — /reply and /media;
+ * and, by the ruling "every output of the spine comes through the mouth" (same day), /edit, the
+ * voice attach and boot's own lines. Live in a WhatsApp group: being-stamped /reply quotes went out
+ * from the OPERATOR's account, because they rode `bridge` (the ear) with the ear's id.
+ * `act(on, room, id)` is the output's own send, handed whichever account says it and the target's
+ * id IN THAT ACCOUNT'S ROOM:
  *   no mouth    ⇒ `bridge`, this chat, the local `msgId` — exactly as before. A throw propagates.
- *   local mouth ⇒ the mouth's bridge, ITS OWN room (route() resolved it, as for a reply), quoting
- *                 its own copy of `msgId` found by the key `keyOf()` yields (boot's `quote`).
- *                 THE FLOOR IS NOT /react's: a reply carries TEXT, so a quote that cannot be
- *                 placed (unkeyable, no match, ambiguous, past the lookback) sends the same text
- *                 UNQUOTED from the mouth, and says why. Never dropped, never from this account.
- *   peer mouth  ⇒ the link has no verb that quotes and none for media: a reply's `text` is said
- *                 unquoted through the same reply train the sender opens, rendered with the
- *                 sender's wrap; media (no `text`) is a line this mouth cannot say.
+ *   local mouth ⇒ the mouth's bridge, ITS OWN room (route() resolved it, as for a reply), and its
+ *                 own copy of the target, found by the key `keyOf()` yields (boot's `quote`).
+ *                 `msgId` is the target's id on `bridge` and may be null where the target lives
+ *                 only on the mouth (the voice attach's text); `keyOf` is what the mouth is told.
+ *                 THE FLOOR IS NOT /react's: a target that cannot be found (unkeyable, no match,
+ *                 ambiguous, past the lookback) hands `act` a null id and says why — a reply or a
+ *                 voice note then goes UNQUOTED from the mouth, never dropped; an /edit, which
+ *                 needs the message itself, refuses it (reply-actions.mjs).
+ *   peer mouth  ⇒ the link has no verb that quotes and none for media or edits: a line's `text` is
+ *                 said unquoted through the same reply train the sender opens, rendered with the
+ *                 sender's wrap; anything without `text` is a line this mouth cannot say.
  * A mouth that cannot say it at all ends where the sender's §7 fallback ends an ordinary reply:
  * this account says it, as before, loudly. Returns whether it landed.
+ *
+ * `keyOf(msgId, what, at)` IS HOW AN OUTPUT NAMES ITS TARGET TO THE MOUTH — the target's
+ * cross-account key, read off the copy held by `at` ({ bridge, chatId, connection }: a local
+ * mouth's room) or, by default, off this chat's own connection, where the '#<id>' a limb emits
+ * lives. A THUNK, so the no-mouth path never reads a message list. Shared by /react, /reply, /edit
+ * and the voice attach.
  */
 export function makeOutbound({ bridge, bridgeOf = null, peerMouth = null, onLog = () => {} } = {}) {
   return (being, chatId = null) => {
@@ -241,6 +256,13 @@ export function makeOutbound({ bridge, bridgeOf = null, peerMouth = null, onLog 
         else onLog(`${what} ${being}/${chatId}: ${who} is saying this reply but could not place the ${emoji} (${r?.reason ?? 'no answer'}${r?.detail ? `: ${r.detail}` : ''}) — no reaction from this account either, it is not the one answering`);
         return r?.ok === true;
       },
+      keyOf(msgId, what = 'reply', at = null) {
+        return async () => {
+          const m = ((await (at?.bridge ?? out.bridge).listMessagesRaw?.(at?.chatId ?? chatId)) ?? []).find((x) => x?.id != null && String(x.id) === String(msgId));
+          if (!m) onLog(`${what}: #${msgId} is not among the recent messages of ${at?.chatId ?? chatId} on ${at?.connection ? `'${at.connection}'` : 'this account'} — the mouth cannot be told which message`);
+          return { msgKey: m ? crossAccountMsgKey(m) : null, timestamp: m ? _msgTimestampMs(m) : null };
+        };
+      },
       async say(act, { msgId = null, keyOf = null, text = null, tag = {}, what = 'reply' } = {}) {
         const says = out.route();                         // null with no mouth wired — never awaited, so that path is untouched
         const mouthChat = says ? await says : null;
@@ -249,16 +271,16 @@ export function makeOutbound({ bridge, bridgeOf = null, peerMouth = null, onLog 
         const who = mouthChat.connection ? `'${mouthChat.connection}'` : 'the peer';
         try {
           if (mouthChat.bridge) {
-            let quote = null;
-            if (msgId != null) {
+            let own = null;
+            if (keyOf) {
               let hit = null;
               try { hit = await peerMouth.quote?.(mouthChat, await keyOf()); }
               catch (e) { hit = { ok: false, reason: 'threw', detail: e?.message ?? String(e) }; }
-              if (hit?.ok) quote = hit.msgId;
-              else onLog(`${at}: ${who} cannot quote #${msgId} on its own copy (${hit?.reason ?? 'no answer'}${hit?.detail ? `: ${hit.detail}` : ''}) — it says the text UNQUOTED rather than lose it, and not from this account`);
+              if (hit?.ok) own = hit.msgId;
+              else onLog(`${at}: ${who} cannot find ${msgId != null ? `#${msgId}` : 'its target'} on its own copy (${hit?.reason ?? 'no answer'}${hit?.detail ? `: ${hit.detail}` : ''}) — it acts with no target of its own, never with this account's id`);
             }
-            if (await act(mouthChat.bridge, mouthChat.chatId, quote)) {
-              onLog(`${at}: ${who} said it in its own room (its chat ${mouthChat.chatId})${quote != null ? `, quoting its own #${quote}` : ''}`);
+            if (await act(mouthChat.bridge, mouthChat.chatId, own)) {
+              onLog(`${at}: ${who} said it in its own room (its chat ${mouthChat.chatId})${keyOf ? (own != null ? `, naming its own #${own}` : ', UNQUOTED') : ''}`);
               return true;
             }
           } else if (text != null) {
@@ -366,6 +388,7 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
       let activated = false;
       let stream = null;
       let streamOpened = false;
+      let streamMouth = null;                          // the LOCAL mouth's route answer, when the stream was opened in its room (confirmedIn)
       // The text the placeholder opens with. A QUEUED one differs from THINKING and, via `ahead`,
       // from every other queued one, which is what keeps two coexisting placeholders resolvable to
       // their own message ids (see QUEUED).
@@ -390,6 +413,7 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
       const openStream = (mouthChat = null) => {
         if (streamOpened) return stream;
         streamOpened = true;
+        if (mouthChat?.bridge) streamMouth = mouthChat;
         stream = mouthChat?.bridge
           ? openLocalStream(mouthChat.bridge, mouthChat.chatId)
           : mouthChat ? peerMouth.startStream(mouthChat, placeholderText(), { fallback: openLocalStream, render: renderForPeer }) : openLocalStream();
@@ -500,12 +524,13 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
         //
         // A LOCAL-MOUTH reply DOES hand one back, and it is honest: the message lives on the
         // other account but in a room THIS node holds a bridge to, so the id is addressable here
-        // — by that bridge, in that room. (The voice-out attach now asks the SAME resolver with the
-        // ARRIVAL's chat id, so its bridge and its chat agree — 2026-09-14. What it still cannot
-        // translate is THIS id when a local mouth said the text: the audio then lands in the
-        // arrival's room quoting a message id from the mouth's. Attaching unthreaded is the
-        // existing degradation for that, and it is what happens.)
+        // — by that bridge, in that room. `confirmedIn` says WHICH: that mouth's route answer
+        // ({ bridge, chatId, connection }), or null when the id is this chat's own connection's
+        // (no mouth, or the §7 fallback said it). The voice attach (spine.mjs) reads its target's
+        // key off exactly that copy (makeOutbound `keyOf`), so one account's id is never read in
+        // the other account's room (2026-09-16).
         get confirmedId() { return fallbackResult ? (fallbackResult?.confirmedId ?? null) : (stream?.confirmedId ?? null); },
+        get confirmedIn() { return fallbackResult ? null : streamMouth; },
       };
     },
   };

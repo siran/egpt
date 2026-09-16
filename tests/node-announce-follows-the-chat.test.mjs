@@ -367,6 +367,22 @@ ${call}`).toContain('bridgeOf');
     }
   });
 
+  // …AND THE MOUTH, BY THE SAME STRUCTURAL MISS (operator 2026-09-16: "every output of the spine
+  // comes through the mouth"). `memberSender` — the room relay's 🤖 member replies — was built with
+  // the per-chat resolver but no `peerMouth`, so in a chat the mouth is in, a member's reply still
+  // went out from the operator's own account while E's reply beside it came from the mouth.
+  it('no createSender( in boot.mjs is built without the mouth', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const src = readFileSync(fileURLToPath(new URL('../src/spine/boot.mjs', import.meta.url)), 'utf8');
+    const calls = [...src.matchAll(/createSender\(\{[\s\S]*?\}\)/g)].map((m) => m[0]);
+    expect(calls.length).toBeGreaterThan(1);            // the persona sender AND the member sender
+    for (const call of calls) {
+      expect(call, `a createSender without peerMouth:
+${call}`).toContain('peerMouth');
+    }
+  });
+
   // …AND THE SAME MISS, IN THE SAME SHAPE, IN THE LAST SERVICE THAT HAD IT (operator 2026-09-11).
   // createMeshService was constructed with `bridge:` alone, so every line the mesh placed — the 🤔
   // placeholder in the ORIGIN chat, the living mirror that is a mesh hop's whole visible output,
