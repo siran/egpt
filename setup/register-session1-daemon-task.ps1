@@ -76,6 +76,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# The task's one-line Description lives in ONE file, shared with migrations\0005.
+. (Join-Path $PSScriptRoot 'egpt-daemon-task-labels.ps1')
+
 # --- resolve every input once, then print it; nothing below guesses twice ------------
 
 if (-not $Repo) { $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path }
@@ -92,6 +95,7 @@ if (-not $TaskName) {
   if (-not $base) { throw "cannot derive a task name: -EgptHome is empty or has no leaf ('$EgptHome'). Pass -TaskName explicitly." }
   $TaskName = "$base-daemon"
 }
+$Description = Get-EgptDaemonTaskDescription -Name $TaskName
 # The name this task carried until migrations\0002 renamed it. A node that has not run 0002
 # still has it, and registering the new name beside it would put TWO logon tasks on the node -
 # two session 1 daemons at every logon. So registering refuses while it exists.
@@ -284,6 +288,7 @@ if ($DryRun) {
   Write-Host "[dry run]   trigger   : AtLogOn ($User)"
   Write-Host "[dry run]   principal : $User Interactive/Limited"
   Write-Host "[dry run]   settings  : ExecutionTimeLimit=0 (unlimited), RestartCount=$RestartCount every ${RestartMinutes}m, MultipleInstances=IgnoreNew"
+  Write-Host "[dry run]   describe  : $Description"
   return
 }
 
@@ -292,7 +297,7 @@ if ($DryRun) {
 # "Registered scheduled task" in green for a task Get-ScheduledTask could not find.
 try {
   Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
-    -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
+    -Principal $principal -Settings $settings -Description $Description -Force -ErrorAction Stop | Out-Null
 } catch {
   Write-Host "Register-ScheduledTask failed: $($_.Exception.Message)" -ForegroundColor Red
   Write-Host "Registering a task for yourself usually needs no elevation. If this is an access" -ForegroundColor Yellow

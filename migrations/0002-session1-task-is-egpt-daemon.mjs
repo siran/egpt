@@ -68,7 +68,7 @@ export const unregisterScript = (name) => `# egpt-0002:unregister ${name}
 Unregister-ScheduledTask -TaskName ${q(name)} -TaskPath '\\' -Confirm:$false -ErrorAction Stop
 `;
 
-function firstDifference(a, b) {
+export function firstDifference(a, b) {
   const la = a.split(/\r?\n/);
   const lb = b.split(/\r?\n/);
   for (let i = 0; i < Math.max(la.length, lb.length); i++) {
