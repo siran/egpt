@@ -421,17 +421,25 @@ export function makePeerMouth({ peer, bridge, bridgeOf = null, owns = () => fals
   // because a reaction needs nothing the sender holds: an emoji and a message. A STREAM does —
   // the being's persona tag — which is why that one is minted by the sender instead (see
   // startStream below).
-  const reactLocally = async ({ bridge: on, chatId, connection }, { msgKey, timestamp = 0, emoji }) => {
-    const key = String(emoji ?? '');
+  //
+  // THE LOOKUP ITSELF is shared with the /reply limb's quote (2026-09-16, `quote` below): which of
+  // the mouth's OWN messages a cross-account key names. One lookup, two things done with the id.
+  const ownCopy = async ({ bridge: on, chatId, connection }, { msgKey, timestamp = 0 } = {}) => {
     const want = String(msgKey ?? '').trim();
-    if (!key) return { ok: false, reason: 'no-text', detail: 'nothing to react with' };
     if (!want) return { ok: false, reason: 'no-key', detail: 'the message carries no cross-account key' };
-    if (!on?.listMessagesRaw || !on?.react) return { ok: false, reason: 'no-react', detail: `'${connection}' cannot list its messages or cannot react` };
+    if (!on?.listMessagesRaw) return { ok: false, reason: 'no-list', detail: `'${connection}' cannot list its messages` };
     let messages = [];
     try { messages = await on.listMessagesRaw(chatId); }
     catch (e) { return { ok: false, reason: 'unavailable', detail: e?.message ?? String(e) }; }
-    const hit = findMessageByKey(messages, want, timestamp);
-    if (!hit.ok) return hit;                  // no-match / ambiguous → NO reaction anywhere, as on the link
+    return findMessageByKey(messages, want, timestamp);
+  };
+  const reactLocally = async (chat, { msgKey, timestamp = 0, emoji }) => {
+    const { bridge: on, chatId, connection } = chat;
+    const key = String(emoji ?? '');
+    if (!key) return { ok: false, reason: 'no-text', detail: 'nothing to react with' };
+    if (!on?.react) return { ok: false, reason: 'no-react', detail: `'${connection}' cannot react` };
+    const hit = await ownCopy(chat, { msgKey, timestamp });
+    if (!hit.ok) return hit;                  // no-key / no-match / ambiguous → NO reaction anywhere, as on the link
     try {
       const r = await on.react(chatId, hit.msgId, key);
       if (r === false || r == null) return { ok: false, reason: 'send-failed', detail: `the reaction on ${chatId}/${hit.msgId} was not accepted` };
@@ -501,6 +509,14 @@ export function makePeerMouth({ peer, bridge, bridgeOf = null, owns = () => fals
       if (chat?.bridge) return reactLocally(chat, { msgKey, timestamp, emoji });
       if (!peer) return Promise.resolve({ ok: false, reason: 'no-peer', detail: 'no peer spine configured' });
       return reactor({ peer, chat, msgKey, timestamp, emoji, onLog });
+    },
+    // THE /reply LIMB'S QUOTE (2026-09-16): the mouth's OWN id for the message a key names, so the
+    // reply it says in its own room quotes its own copy (sender.mjs makeOutbound `say`). A LOCAL
+    // mouth only — the link has no verb that names a message to quote (mouth.mjs), so a peer answers
+    // `no-verb` and the text goes out unquoted rather than from the wrong account.
+    quote(chat, { msgKey, timestamp = 0 } = {}) {
+      if (chat?.bridge) return ownCopy(chat, { msgKey, timestamp });
+      return Promise.resolve({ ok: false, reason: 'no-verb', detail: 'the mouth link has no verb that quotes a message' });
     },
   };
 }

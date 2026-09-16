@@ -164,7 +164,7 @@ export const RETAINED_SEAM = '\n\n— ↓ reply —\n\n';
  *
  * `bridge` is the connection THIS being's own sends ride — the operator's fail-safe half, which
  * can never be wrong. `route()` is the peer question, and it is a THUNK on purpose: a caller that
- * cannot act on the answer (every limb but /react, the media attach, and mode:auto below, which is never
+ * cannot act on the answer (/edit, the media attach, and mode:auto below, which is never
  * routed) must not pay the membership read to receive it. Nullish peerMouth ⇒ null ⇒ no peer was
  * ever consulted, which is the whole additivity requirement in one expression.
  *
@@ -204,6 +204,22 @@ export const RETAINED_SEAM = '\n\n— ↓ reply —\n\n';
  *                 for a read it cannot use. Every failure ends with NO REACTION ANYWHERE and a line
  *                 naming why: a missing reaction is cosmetic, one from the wrong account is the bug.
  * Returns whether it landed (the limb's `ran` is written from it).
+ *
+ * `say()` IS THE SAME PLACEMENT FOR A LIMB THAT SAYS SOMETHING (2026-09-16) — /reply and /media.
+ * Live in a WhatsApp group: being-stamped /reply quotes went out from the OPERATOR's account,
+ * because they rode `bridge` (the ear) with the ear's id. `act(on, room, replyTo)` is the limb's
+ * own send, handed whichever account says it:
+ *   no mouth    ⇒ `bridge`, this chat, the local `msgId` — exactly as before. A throw propagates.
+ *   local mouth ⇒ the mouth's bridge, ITS OWN room (route() resolved it, as for a reply), quoting
+ *                 its own copy of `msgId` found by the key `keyOf()` yields (boot's `quote`).
+ *                 THE FLOOR IS NOT /react's: a reply carries TEXT, so a quote that cannot be
+ *                 placed (unkeyable, no match, ambiguous, past the lookback) sends the same text
+ *                 UNQUOTED from the mouth, and says why. Never dropped, never from this account.
+ *   peer mouth  ⇒ the link has no verb that quotes and none for media: a reply's `text` is said
+ *                 unquoted through the same reply train the sender opens, rendered with the
+ *                 sender's wrap; media (no `text`) is a line this mouth cannot say.
+ * A mouth that cannot say it at all ends where the sender's §7 fallback ends an ordinary reply:
+ * this account says it, as before, loudly. Returns whether it landed.
  */
 export function makeOutbound({ bridge, bridgeOf = null, peerMouth = null, onLog = () => {} } = {}) {
   return (being, chatId = null) => {
@@ -224,6 +240,36 @@ export function makeOutbound({ bridge, bridgeOf = null, peerMouth = null, onLog 
         if (r?.ok) onLog(`${what} ${being}/${chatId}: ${who} is saying this reply and placed the ${emoji} on its own copy (its chat ${r.chatId})`);
         else onLog(`${what} ${being}/${chatId}: ${who} is saying this reply but could not place the ${emoji} (${r?.reason ?? 'no answer'}${r?.detail ? `: ${r.detail}` : ''}) — no reaction from this account either, it is not the one answering`);
         return r?.ok === true;
+      },
+      async say(act, { msgId = null, keyOf = null, text = null, tag = {}, what = 'reply' } = {}) {
+        const says = out.route();                         // null with no mouth wired — never awaited, so that path is untouched
+        const mouthChat = says ? await says : null;
+        if (!mouthChat) return act(out.bridge, chatId, msgId);
+        const at = `${what} ${being}/${chatId}`;
+        const who = mouthChat.connection ? `'${mouthChat.connection}'` : 'the peer';
+        try {
+          if (mouthChat.bridge) {
+            let quote = null;
+            if (msgId != null) {
+              let hit = null;
+              try { hit = await peerMouth.quote?.(mouthChat, await keyOf()); }
+              catch (e) { hit = { ok: false, reason: 'threw', detail: e?.message ?? String(e) }; }
+              if (hit?.ok) quote = hit.msgId;
+              else onLog(`${at}: ${who} cannot quote #${msgId} on its own copy (${hit?.reason ?? 'no answer'}${hit?.detail ? `: ${hit.detail}` : ''}) — it says the text UNQUOTED rather than lose it, and not from this account`);
+            }
+            if (await act(mouthChat.bridge, mouthChat.chatId, quote)) {
+              onLog(`${at}: ${who} said it in its own room (its chat ${mouthChat.chatId})${quote != null ? `, quoting its own #${quote}` : ''}`);
+              return true;
+            }
+          } else if (text != null) {
+            onLog(`${at}: the peer says it UNQUOTED — the mouth link has no verb that quotes a message`);
+            const stream = peerMouth.startStream(mouthChat, text, { render: (t) => (out.bridge.renderFrame ? out.bridge.renderFrame(tag, t) : t) });
+            await stream?.finish?.(text);
+            if (stream?.delivered) return true;
+          } else onLog(`${at}: the mouth link has no verb for this`);
+        } catch (e) { onLog(`${at}: ${who} threw saying it — ${e?.message ?? e}`); }
+        onLog(`${at}: FALLING BACK TO THIS ACCOUNT — ${who} did not say it`);
+        return act(out.bridge, chatId, msgId);
       },
     };
     return out;

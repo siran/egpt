@@ -373,12 +373,22 @@ export function createReplyActions({ bridge, bridgeOf = null, peerMouth = null, 
   // as sender.mjs does — boot's rawBridgeOf then answers with the connection that HOLDS the chat.
   //
   // That is also what keeps the IDS honest: ev.chatId, the '#<id>' the model emitted (this node's
-  // own transcript ids) and the bridge all name the same account. /reply, /media and /edit are
-  // never routed through the peer/local MOUTH precisely because they are addressed by those ids,
-  // and the mouth's account has different ones (sender.mjs makeOutbound's header). /react IS
-  // (2026-09-16): a reaction from the ear's account is the operator's own 👍, so it goes through
-  // the one placement the steer ack uses, and the mouth is told the target by content, not id.
+  // own transcript ids) and the bridge all name the same account. /edit is never routed through
+  // the peer/local MOUTH precisely because it is addressed by those ids, and the mouth's account
+  // has different ones (sender.mjs makeOutbound's header). /react IS (2026-09-16): a reaction from
+  // the ear's account is the operator's own 👍, so it goes through the one placement the steer ack
+  // uses, and the mouth is told the target by content, not id. /reply and /media ARE too (same
+  // day): a being's line from the ear's account reads as the operator's, so they go through
+  // makeOutbound `say`, and /reply's quote is named to the mouth the same way /react's target is.
   const bridgeForBeing = (being, chatId) => outbound(being, chatId).bridge;
+  // THE TARGET'S CROSS-ACCOUNT KEY, read off the EAR's own copy — the '#<id>' a limb names is the
+  // ear's — and only when a mouth is actually going to act on it (a thunk: the no-mouth path never
+  // reads). Shared by /react and /reply.
+  const keyOfTarget = (out, ev, targetId, verb) => async () => {
+    const m = ((await out.bridge.listMessagesRaw?.(ev.chatId)) ?? []).find((x) => x?.id != null && String(x.id) === String(targetId));
+    if (!m) onLog(`${verb}: #${targetId} is not among the recent messages of ${ev.chatId} on this account — the mouth cannot be told which message`);
+    return { msgKey: m ? crossAccountMsgKey(m) : null, timestamp: m ? _msgTimestampMs(m) : null };
+  };
   // The /ask limb delegates the sole sanctioned cross-chat post to the advice service
   // (createAdvice.ask). Absent (unit tests, no advice wiring) → fail-closed: log + drop,
   // never a bridge send. Keeps reply-actions' "every direct bridge action targets
@@ -393,7 +403,8 @@ export function createReplyActions({ bridge, bridgeOf = null, peerMouth = null, 
     // Belt-and-suspenders confinement: the resolved path must stay INSIDE convDir.
     if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) { onLog(`media: "${a.path}" escapes the conversation dir — rejected (fail-closed)`); return false; }
     if (!existsSync(abs)) { onLog(`media: file not found "${a.path}" in ${convDir} — skipped`); return false; }
-    const ok = await bridgeForBeing(being, ev.chatId).sendMedia?.(ev.chatId, abs, { caption: a.caption, bodyEmoji: bodyEmojiOf(being), label: labelOf(being) });
+    // No target, so nothing to key: whoever says this being's lines in this chat posts it (sender.mjs makeOutbound `say`).
+    const ok = await outbound(being, ev.chatId).say((on, room) => on.sendMedia?.(room, abs, { caption: a.caption, bodyEmoji: bodyEmojiOf(being), label: labelOf(being) }), { what: 'media' });
     if (!ok) onLog(`media: send failed "${a.path}"`);
     return !!ok;
   }
@@ -407,19 +418,18 @@ export function createReplyActions({ bridge, bridgeOf = null, peerMouth = null, 
         // The target is named by the EAR's id, so the key is read off the ear's own copy — and only
         // when a mouth is actually going to place it (sender.mjs makeOutbound `react`).
         const out = outbound(being, ev.chatId);
-        const keyOf = async () => {
-          const m = ((await out.bridge.listMessagesRaw?.(ev.chatId)) ?? []).find((x) => x?.id != null && String(x.id) === String(a.targetId));
-          if (!m) onLog(`react: #${a.targetId} is not among the recent messages of ${ev.chatId} on this account — the mouth cannot be told which message`);
-          return { msgKey: m ? crossAccountMsgKey(m) : null, timestamp: m ? _msgTimestampMs(m) : null };
-        };
-        const ok = await out.react(a.targetId, a.emoji, keyOf);
+        const ok = await out.react(a.targetId, a.emoji, keyOfTarget(out, ev, a.targetId, 'react'));
         if (!ok) onLog(`react: ${a.emoji} → #${a.targetId} failed`);
         return !!ok;
       }
       case 'reply': {
-        // A persona-stamped quote-reply (reuses the bridge's send + replyTo threading).
-        const r = await bridgeForBeing(being, ev.chatId).send?.(ev.chatId, a.text, { replyTo: a.targetId, bodyEmoji: bodyEmojiOf(being), label: labelOf(being) });
-        const ok = !(r?.blocked || r == null);
+        // A persona-stamped quote-reply (reuses the bridge's send + replyTo threading), said by
+        // whoever says this being's lines in this chat — quoting ITS OWN copy of the target
+        // (sender.mjs makeOutbound `say`).
+        const out = outbound(being, ev.chatId);
+        const tag = { bodyEmoji: bodyEmojiOf(being), label: labelOf(being) };
+        const send = async (on, room, replyTo) => { const r = await on.send?.(room, a.text, { replyTo, ...tag }); return !(r?.blocked || r == null); };
+        const ok = await out.say(send, { msgId: a.targetId, keyOf: keyOfTarget(out, ev, a.targetId, 'reply'), text: a.text, tag });
         if (!ok) onLog(`reply: → #${a.targetId} not delivered`);
         return ok;
       }
