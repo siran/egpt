@@ -39,11 +39,12 @@ const _PRIVATE_HOME = vi.hoisted(() => {
 });
 
 import { promises as fs } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { createSender } from '../src/spine/sender.mjs';
 // Read back rather than re-derived: a test that computed its own key would pass while the two
 // ends drifted. Used only to PROVE the 1:1 below really is a chat the participant key refuses.
 import { crossAccountChatKey } from '../src/bridges/beeper.mjs';
+import { encodeNodeSignature } from '../src/node-signature.mjs';
 
 let boot, emptyState;
 beforeAll(async () => {
@@ -197,10 +198,11 @@ function fakeTransport() {
   const start = async (opts) => {
     const token = opts.beeperToken;
     const world = DESKTOPS[token] ?? {};
-    const spy = { connection: NAME_OF[token] ?? token, token, opts, onIncoming: opts.onIncoming, sent: [], streams: [] };
+    const spy = { connection: NAME_OF[token] ?? token, token, opts, onIncoming: opts.onIncoming, sent: [], streams: [], edits: [] };
     built.push(spy);
     return {
       async send(text, o) { spy.sent.push({ text, chatId: o?.chatId }); return { ok: true }; },
+      async editMessage(chatId, msgId, text) { spy.edits.push({ chatId, msgId, text }); return true; },
       startStreamMessage(init, o) {
         const h = { delivered: false, finals: [], chatId: o?.chatId, update() {}, async finish(t) { this.finals.push(t); this.delivered = true; } };
         spy.streams.push(h); return h;
@@ -313,11 +315,11 @@ const SINGLE = () => ({
   agents: { egpt: { configuration: 'egpt', default: true, handles: ['e'], name: 'E' } },
 });
 
-async function bootWith(config) {
+async function bootWith(config, { state: seedState, ...extra } = {}) {
   const { start, built } = fakeTransport();
   const lines = [];
   const io = memIo();
-  let convState = emptyState();
+  let convState = seedState ?? emptyState();
   const app = await boot({
     readConfig: () => config,
     startBridge: start,
@@ -328,6 +330,7 @@ async function bootWith(config) {
     io, ingest: false, tickMs: 0,
     now: () => Date.UTC(2026, 8, 11, 14, 5),
     log: { line: (s) => lines.push(s) },
+    ...extra,
   });
   const byConnection = Object.fromEntries(built.map((s) => [s.connection, s]));
   // EVERY reply that left the node, whichever connection it went out on — streams (the ⏳ train)
@@ -336,7 +339,7 @@ async function bootWith(config) {
     ...s.streams.map((h) => ({ connection: s.connection, chatId: h.chatId })),
     ...s.sent.map((m) => ({ connection: s.connection, chatId: m.chatId })),
   ]);
-  return { app, built, byConnection, replies, lines, io };
+  return { app, built, byConnection, replies, lines, io, state: () => convState };
 }
 
 const deliver = (spy, chatId, body, { atE = true } = {}) => spy.onIncoming(body, {
@@ -825,5 +828,208 @@ describe('makeOutbound hands the CHAT to the bridge resolver', () => {
     expect(ear.sent).toEqual([]);
     expect(own.streams).toEqual([]);
     expect(own.sent).toEqual([]);
+  });
+});
+
+// ── A HEARTBEAT'S `post:` IS SAID BY THE MOUTH TOO (2026-09-16) ─────────────────────────────────
+// The prime-of-the-day: a command beat declared for a group both accounts are in posts its stdout
+// into that group. It is the NODE speaking, not a being — so it is ONE send through the outbound
+// resolver's `say` (boot.mjs dispatchHeartbeatPost → sender.mjs makeOutbound), never the reply
+// train: no "⏳ Thinking…" placeholder that could bind to a being's message streaming in the same
+// chat, and no edit. The mouth says it in ITS OWN room, the port signs it, nothing stamps it, and
+// the transcript records it under 'system'. Same two-account world as above; the beat is declared
+// where the resolver really reads it (config/rooms.yaml, keyed by the entity's namespace, with the
+// entity folder on disk for the walk).
+describe('a heartbeat `post:` in a chat both accounts are in is said ONCE by the MOUTH, unstamped and signed', () => {
+  const TEXT = 'Hola muchachas y muchachos, el primo del día es 1637';
+
+  // A command child that prints the prime and exits 0 — the runner's shape either way (win32 POSIX
+  // bash: (bash, ['-c', cmd], opts); elsewhere (cmd, { shell: true })).
+  const fakeSpawn = (calls) => (file, a, b) => {
+    const [cmd, opts] = Array.isArray(a) ? [a[1], b] : [file, a];
+    const on = {}, out = {};
+    const child = { stdout: { setEncoding() {}, on(ev, cb) { out[ev] = cb; } }, on(ev, cb) { on[ev] = cb; return child; } };
+    calls.push({ cmd, opts });
+    setTimeout(() => { if (cmd.includes('nth_prime')) out.data?.('1637\n'); on.exit?.(0, null); on.close?.(0, null); }, 0);
+    return child;
+  };
+
+  it('posted ONCE, by the mouth, in its own room — node signature, no stamp, no placeholder, no edit, recorded; the ear sends nothing', async () => {
+    const calls = [];
+    const { app, byConnection, io, state } = await bootWith(KG(), { spawn: fakeSpawn(calls) });
+
+    // an ordinary, unaddressed line in the group: the chat becomes known (conversations.yaml) and
+    // its arrival on the ear is on record — which is what the mouth translates from
+    await deliver(byConnection.primary, BOTH_AS_PRIMARY, 'buenos días', { atE: false });
+    const [, contact] = Object.entries(state().contacts.whatsapp ?? {}).find(([, c]) => c?.slug) ?? [];
+    expect(contact?.slug, JSON.stringify(state())).toBeTruthy();
+    const ns = `whatsapp/${contact.slug}`;
+
+    await fs.mkdir(join(_PRIVATE_HOME, 'conversations', 'whatsapp', contact.slug), { recursive: true });
+    await fs.mkdir(join(_PRIVATE_HOME, 'config'), { recursive: true });
+    await fs.writeFile(join(_PRIVATE_HOME, 'config', 'rooms.yaml'), [
+      'rooms:',
+      `  "${ns}":`,
+      '    heartbeats:',
+      '      primo-del-dia:',
+      '        frequency: 24h',
+      `        command: '"$BASH" scripts/nth_prime.sh 259'`,
+      '        post: "Hola muchachas y muchachos, el primo del día es {stdout}"',
+      '',
+    ].join('\n'));
+
+    // the next arrival refreshes config (spine.mjs handleFast → the loader's reload), then a tick fires it
+    await deliver(byConnection.primary, BOTH_AS_PRIMARY, 'qué tal', { atE: false });
+    const before = { sent: byConnection.primary.sent.length, streams: byConnection.primary.streams.length };
+    app.spine.tick();
+    await waitFor(() => byConnection.secondary.sent.length > 0);
+    await new Promise((r) => setTimeout(r, 20));   // room for a second send or an edit to show up, if there were one
+
+    expect(calls.some((c) => c.cmd.includes('nth_prime.sh 259'))).toBe(true);
+    expect(byConnection.secondary.sent).toEqual([{ chatId: BOTH_AS_SECONDARY, text: `${TEXT}${encodeNodeSignature('kg')}` }]);   // once, its OWN room; only the node signature
+    expect(byConnection.secondary.streams).toEqual([]);                  // no ⏳ placeholder
+    expect(byConnection.primary.streams.length).toBe(before.streams);
+    expect(byConnection.secondary.edits).toEqual([]);                    // no edit on either bridge
+    expect(byConnection.primary.edits).toEqual([]);
+    expect(byConnection.primary.sent.length).toBe(before.sent);          // the ear says nothing
+
+    const transcript = [...io.files.entries()].find(([p]) => p.endsWith('transcript.md') && p.includes(contact.slug))?.[1] ?? '';
+    expect(transcript).toContain(TEXT);
+    app.stop();
+  });
+});
+
+// ── …AND WITH NO ARRIVAL AT ALL: THE CHAT IS PLACED WHEN THE BEAT IS REGISTERED (2026-09-16) ──────
+// A scheduled send has no arrival to learn its chat's connection from: after a restart the chat is
+// unknown, the mouth is chosen, and it would post on the mouth's account with the EAR's room id. So
+// the loader has boot place every chat a beat sends into, once, at registration: each connection is
+// asked for the chat (chatRaw, the read the mouth makes) and the holder goes into the record an
+// arrival writes. NOT "a registered chat is the ear's": a per-chat ear registers chats with the
+// SECOND account's ids (the SECONDARY_ONLY case above), so the holder is asked, never assumed.
+// And an `agent:` beat's REPLY is posted — as that being, stamped, from the mouth, once.
+describe('a scheduled send with NO arrival since boot: the chat is placed at registration', () => {
+  const TEXT = 'Hola muchachas y muchachos, el primo del día es 1637';
+  const SLUG = 'primos';
+
+  // the chat is KNOWN (conversations.yaml) but nothing has arrived in it since this boot
+  const known = (chatId, slug = SLUG) => ({ ...emptyState(), contacts: { whatsapp: { [chatId]: { slug } } } });
+  async function declare(rows) {
+    await fs.mkdir(join(_PRIVATE_HOME, 'config'), { recursive: true });
+    const text = ['rooms:'];
+    for (const [slug, beats] of Object.entries(rows)) {
+      await fs.mkdir(join(_PRIVATE_HOME, 'conversations', 'whatsapp', slug), { recursive: true });
+      text.push(`  "whatsapp/${slug}":`, '    heartbeats:', ...beats.map((l) => `      ${l}`));
+    }
+    await fs.writeFile(join(_PRIVATE_HOME, 'config', 'rooms.yaml'), `${text.join('\n')}\n`);
+  }
+  const printsPrime = (file, a, b) => {
+    const [cmd] = Array.isArray(a) ? [a[1]] : [file];
+    const on = {}, out = {};
+    const child = { stdout: { setEncoding() {}, on(ev, cb) { out[ev] = cb; } }, on(ev, cb) { on[ev] = cb; return child; } };
+    setTimeout(() => { if (cmd.includes('nth_prime')) out.data?.('1637\n'); on.exit?.(0, null); on.close?.(0, null); }, 0);
+    return child;
+  };
+  // THE SEAL IS STRUCTURAL TO THE BRIDGE (operator 2026-09-16: "it can go out without body emoji, but
+  // structurally it must be guaranteed that it is signed by the bridge"). The port brackets EVERY send
+  // with the node's bridge layers (persona-wrap.mjs, applyLayers joins with ' ') and appends the
+  // invisible node id; only the persona stamp is conditional. A visible close is configured here so
+  // both halves are proven on the wire: signed with no stamp (post:) and signed with one (a being).
+  const SEAL = '🏰';
+  const sealed = (core) => `${core} ${SEAL}${encodeNodeSignature('kg')}`;
+  const kgSealed = () => ({ ...KG(), bridge_signature_close: SEAL });
+  // a fake GAUSS: its own stamp, no handles shared with anyone, speaking through the default mouth
+  const withGauss = () => { const c = kgSealed(); c.agents.gauss = { configuration: 'egpt', handles: ['gauss'], name: 'Gauss', body_emoji: '📐' }; return c; };
+  const scriptedSession = (script) => (opts) => ({
+    sessionId: opts.sessionId ?? 'sess-g',
+    async turn(m) { script.prompts.push(m); return script.reply(m); },
+    close() {},
+  });
+  const quiet = (ms = 30) => new Promise((r) => setTimeout(r, ms));
+
+  it('post: — NO arrival since boot, and it still lands from the MOUTH in its own room', async () => {
+    await declare({ [SLUG]: ['primo-del-dia:', '  frequency: 24h', `  command: '"$BASH" scripts/nth_prime.sh 259'`, '  post: "Hola muchachas y muchachos, el primo del día es {stdout}"'] });
+    const { app, byConnection, lines } = await bootWith(kgSealed(), { state: known(BOTH_AS_PRIMARY), spawn: printsPrime });
+
+    expect(lines.join('\n')).toContain(`[heartbeat] whatsapp/${SLUG}:primo-del-dia: ${BOTH_AS_PRIMARY} is a chat on 'primary'`);
+    app.spine.tick();
+    await waitFor(() => byConnection.secondary.sent.length > 0);
+    await quiet();
+
+    expect(byConnection.secondary.sent).toEqual([{ chatId: BOTH_AS_SECONDARY, text: sealed(TEXT) }]);   // no stamp, but the bridge's seal + node id
+    expect(byConnection.primary.sent).toEqual([]);
+    expect(byConnection.primary.streams).toEqual([]);
+    expect(byConnection.secondary.streams).toEqual([]);
+    app.stop();
+  });
+
+  it('a chat NO connection holds: said loudly at registration, and nothing is recorded as its holder', async () => {
+    const NOWHERE = '!a-room-neither-account-has';
+    await declare({ nadie: ['primo-del-dia:', '  frequency: 24h', `  command: '"$BASH" scripts/nth_prime.sh 259'`, '  post: "{stdout}"'] });
+    const { app, lines } = await bootWith(KG(), { state: known(NOWHERE, 'nadie'), spawn: printsPrime });
+
+    const loud = lines.filter((l) => l.includes('NO CONNECTION HOLDS'));
+    expect(loud).toHaveLength(1);
+    expect(loud[0]).toContain(NOWHERE);
+    expect(loud[0]).toContain("'primary'");
+    expect(loud[0]).toContain("'secondary'");
+    expect(lines.some((l) => l.includes('is a chat on'))).toBe(false);
+    app.stop();
+  });
+
+  it('prompt: — the turn gets the one-liner, and its reply is posted ONCE from the mouth, stamped as the being, with no placeholder', async () => {
+    const LINE = 'Di en una frase por qué 1637 es primo.';
+    const script = { prompts: [], reply: () => ({ text: 'Porque ningún primo hasta 40 lo divide.' }) };
+    await declare({ [SLUG]: ['el-porque:', '  frequency: 24h', '  agent: gauss', `  prompt: "${LINE}"`] });
+    const { app, byConnection, lines, io } = await bootWith(withGauss(), { state: known(BOTH_AS_PRIMARY), makeSession: scriptedSession(script) });
+
+    expect(lines.join('\n')).toContain(`[heartbeat] whatsapp/${SLUG}:el-porque: ${BOTH_AS_PRIMARY} is a chat on 'primary'`);   // A applies to turn beats too
+    app.spine.tick();
+    await waitFor(() => byConnection.secondary.sent.length > 0);
+    await quiet();
+
+    expect(script.prompts).toHaveLength(1);
+    expect(script.prompts[0]).toContain(LINE);
+    expect(byConnection.secondary.sent).toEqual([{ chatId: BOTH_AS_SECONDARY, text: sealed('📐 Gauss: Porque ningún primo hasta 40 lo divide.') }]);   // the being's stamp AND the bridge's seal + node id
+    expect(byConnection.secondary.streams).toEqual([]);
+    expect(byConnection.secondary.edits).toEqual([]);
+    expect(byConnection.primary.sent).toEqual([]);
+    expect(byConnection.primary.streams).toEqual([]);
+    const transcript = [...io.files.entries()].find(([p]) => p.endsWith('transcript.md') && p.includes(SLUG))?.[1] ?? '';
+    expect(transcript).toContain('Porque ningún primo hasta 40 lo divide.');
+    expect(lines.some((l) => l.includes('el-porque: ok in'))).toBe(true);
+    app.stop();
+  });
+
+  it('prompt: — a silent reply ("…", "...", empty) posts NOTHING', async () => {
+    for (const silence of ['…', '...', '']) {
+      const script = { prompts: [], reply: () => ({ text: silence }) };
+      await declare({ [SLUG]: ['el-porque:', '  frequency: 24h', '  agent: gauss', '  prompt: "Di algo solo si hace falta."'] });
+      const { app, byConnection, lines } = await bootWith(withGauss(), { state: known(BOTH_AS_PRIMARY), makeSession: scriptedSession(script) });
+      app.spine.tick();
+      await waitFor(() => lines.some((l) => l.includes('el-porque: ok in')));
+      await quiet();
+      expect(script.prompts, JSON.stringify(silence)).toHaveLength(1);
+      expect(byConnection.secondary.sent, JSON.stringify(silence)).toEqual([]);
+      expect(byConnection.primary.sent).toEqual([]);
+      expect(byConnection.secondary.streams).toEqual([]);
+      app.stop();
+    }
+  });
+
+  it('prompt: — a FAILED turn posts nothing and the beat logs FAILED', async () => {
+    for (const reply of [() => { throw new Error('model unavailable'); }, () => ({ text: '!! claude exit 1: rate limit' })]) {
+      const script = { prompts: [], reply };
+      await declare({ [SLUG]: ['el-porque:', '  frequency: 24h', '  agent: gauss', '  prompt: "Di en una frase por qué 1637 es primo."'] });
+      const { app, byConnection, lines } = await bootWith(withGauss(), { state: known(BOTH_AS_PRIMARY), makeSession: scriptedSession(script) });
+      app.spine.tick();
+      await waitFor(() => lines.some((l) => l.includes('el-porque: FAILED in')));
+      await quiet();
+      expect(lines.some((l) => l.includes('el-porque: FAILED in'))).toBe(true);
+      expect(byConnection.secondary.sent).toEqual([]);
+      expect(byConnection.primary.sent).toEqual([]);
+      expect(byConnection.secondary.streams).toEqual([]);
+      expect(byConnection.primary.streams).toEqual([]);
+      app.stop();
+    }
   });
 });

@@ -5,6 +5,7 @@
 #
 # Each entry has ONE trigger and ONE action:
 #   trigger — `when:` (a one-shot wall-clock time) OR `frequency:` (recurring)
+#             OR `daily:` (every day at a wall-clock time)
 #   action  — `script_path:` (a *.x.md textecutable) OR `command:` (a shell line)
 #
 # `script_path:` is relative to THE FOLDER THIS BLOCK LIVES IN (the chat/room
@@ -33,6 +34,28 @@
 #   7/2/2026 8:20a   (12-hour am/pm)   7/2/2026 08:20   (24-hour)
 #   2026-07-02T08:20 (ISO, optional :seconds)
 #
+# `daily: "HH:MM"` (24-hour) fires EVERY day at that time in `time_zone:` (an
+# IANA name like Atlantic/Canary, or an alias like "ET"; absent → config
+# `default_time_zone`; an invalid zone skips the entry). `frequency: 24h` is NOT
+# the same thing: a cadence starts counting when the beat is registered, so it
+# fires at every boot and every config reload. daily: fires at most once per
+# day in that zone, within 2 minutes after the time — a node that was down
+# through that window skips the day rather than firing late. DST follows the
+# zone. The last day each beat fired is kept in
+# ~/.egpt/state/heartbeats-daily.json, so a restart inside the window never
+# fires it twice.
+#
+# `command:` runs under POSIX bash on Windows (msys64's bash.exe, never
+# System32's WSL bash; the resolved path is `shell:` in heartbeats.readonly
+# .yaml) and under /bin/sh elsewhere. Inside that bash, call bash again as
+# "$BASH", not `bash` — PATH can still reach the WSL launcher first. The
+# default alive command stays on the native shell (liveness never depends on msys).
+#
+# `post: "<template>"` beside a `command:` posts the command's output into THIS
+# chat: on exit 0 with non-empty output, `{stdout}` (trimmed) is replaced into
+# the template and sent. A failed or silent command posts nothing (the log says
+# why). Needs a `command:`, and a chat/room config.yaml — never a node-level beat.
+#
 # HOT RELOAD: delete ANY of ~/.egpt/{config,conversations,heartbeats}.readonly
 # .yaml and the spine re-scans every config rung within ~30s — no restart. New
 # chat folders are picked up too.
@@ -48,6 +71,14 @@ heartbeats:
     frequency: 24h
     command: echo swept > last-sweep.txt
 
+  # daily: every day at 14:00 Tenerife time. In a chat's config.yaml, add
+  #   post: "El primo del día es {stdout}"
+  # to post the output into that chat.
+  primo-del-dia:
+    daily: "14:00"
+    time_zone: Atlantic/Canary
+    command: '"$BASH" scripts/nth_prime.sh "$(TZ=Atlantic/Canary date +%-j)"'
+
   # recurring, run BY A BEING: the script is a turn for whoever answers to `pd`
   # (its handle, not its map key). Left commented because it only loads from a
   # chat/room config.yaml — uncomment it there, not in the node config.
@@ -55,3 +86,11 @@ heartbeats:
   #   frequency: 30m
   #   agent: pd
   #   script_path: dj.x.md
+
+  # …or a ONE-LINE instruction instead of a script (`prompt:`). A turn beat's reply
+  # is posted into the chat as that being; an empty or "…" reply posts nothing.
+  # el-porque:
+  #   daily: "14:05"
+  #   time_zone: Atlantic/Canary
+  #   agent: pd
+  #   prompt: "Explica en una frase por qué el número de hoy es primo."

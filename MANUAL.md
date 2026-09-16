@@ -238,12 +238,17 @@ room's own `config.yaml`.
 
 - **Trigger** — `frequency: <ms|"30s"|"5m"|"1.5h">` (recurring) OR `when: <one-shot
   wall-clock time>` (`7/2/2026 8:20a`, `2026-07-02T08:20`, ...; zone from
-  `default_time_zone`). Both set = invalid, skipped.
+  `default_time_zone`) OR `daily: "HH:MM"` (every day at that 24-hour time in
+  `time_zone:`, default `default_time_zone`; once per local day, a missed window
+  is skipped; last fire kept in `state/heartbeats-daily.json`). More than one set =
+  invalid, skipped.
 - **Action** — `command: <shell line>` OR `script_path: <script.x.md>` (sugar that
   runs a textecutable). Both set = invalid, skipped. The path is relative to the
   folder the beat was declared in — the chat/room folder, or the checkout for a
   node-level beat — **not** to a `scripts/` subfolder. (This key was `ai_run:`
   until 2026-08-22; an entry still carrying it is invalid, skipped + logged.)
+  With `agent: <handle>`, a `script_path:` or a one-line `prompt:` runs as that
+  being's turn, and its reply is posted into the chat (empty or "…" posts nothing).
 
 The spine materializes the resolved set to `~/.egpt/heartbeats.readonly.yaml` —
 at the profile root, beside `config.readonly.yaml` and

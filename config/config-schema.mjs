@@ -181,7 +181,18 @@ export const CONFIG_SCHEMA = {
         "500ms", "1s", "30s", "5m", "1.5h"). An unparseable frequency skips the
         entry (logged, never fatal).
       command
-        A SHELL line spawned on each due tick.
+        A SHELL line spawned on each due tick. POSIX: on Windows it runs as
+        <bash> -c <command> with msys64's (else Git's) bash — never System32's
+        WSL bash; no POSIX bash installed → cmd.exe, logged loudly. Elsewhere
+        /bin/sh. The bash in use is  shell:  in heartbeats.readonly.yaml.
+        The default alive command (boot's, or a declared alive: with no command:)
+        stays on the native shell: liveness never depends on msys starting in the
+        daemon's session.
+      post
+        "<template>" beside command: — on exit 0 with non-empty stdout, posts
+        the template with {stdout} (trimmed) into the chat the beat was declared
+        in. Failure or empty stdout posts nothing (logged). Invalid without
+        command:, with agent:/script_path:, or on a node-level beat.
           cwd = the checkout for node-level beats (the entity folder for entity
                 beats)
           env = inherit + EGPT_HOME + EGPT_QUEUE_DEPTH / EGPT_QUEUE_OLDEST_MS
@@ -200,6 +211,15 @@ export const CONFIG_SCHEMA = {
       frequency: — a ONE-SHOT that fires once at/after that wall-clock time then
       never again. Timezone from default_time_zone, else machine local. Both
       frequency + when set → invalid, skipped.
+      Or  daily: "HH:MM"  (24-hour, operator 2026-09-16) — EVERY day at that
+      wall-clock time in  time_zone:  (IANA name or a default_time_zone alias;
+      absent → default_time_zone; invalid → entry skipped). At most once per
+      local day, within the same 2-minute grace as when: — a node down through
+      the window skips the day. DST follows the zone. The date each beat last
+      fired lives in state/heartbeats-daily.json, so a restart or reload inside
+      the window never re-fires. (frequency: 24h is anchored to registration: it
+      fires at every boot and reload.) More than one trigger set → invalid,
+      skipped; time_zone: without daily: → invalid, skipped.
 
     ACTION:
       script_path: <script.x.md>  may replace  command:  — sugar the loader
@@ -228,14 +248,20 @@ export const CONFIG_SCHEMA = {
       in the conversation/room the beat was declared in, so every confinement
       gate that guards a message turn guards this one.
       The PROMPT is identical either way (textecute's own framing + the script),
-      so a *.x.md script behaves the same whichever runs it. The reply is
-      logged, not posted — the script itself says what to do with its output.
+      so a *.x.md script behaves the same whichever runs it.
+      prompt: "<one line>"  (2026-09-16) may replace script_path: — the line is the
+      turn's trigger text as is, no script file, no textecute frame. agent: needs
+      exactly one of script_path: / prompt:.
+      THE REPLY IS POSTED (2026-09-16) into the conversation/room, as that being
+      (its stamp), said by the mouth, once — no ⏳ placeholder. An empty or "…"
+      reply posts nothing; a failed turn posts nothing and logs FAILED.
       A turn beat is NOT an inbound message: it never touches gating, so a
       being with  mode: mention  runs its own beat without that making it answer
       un-addressed messages.
       INVALID (skipped + logged, like every other malformed entry):
         agent: + command:            a shell line has no being
-        agent: without script_path:  agent: names WHO runs the script_path script
+        agent: without script_path: or prompt:
+        prompt: with command: or script_path:, or without agent:
         agent: naming an unknown being
         agent: on a NODE-level beat  a turn needs an entity to run in — declare
                                      the beat in that conversation/room's own

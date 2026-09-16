@@ -22,10 +22,64 @@
 //
 // TRIGGERS (operator 2026-07-02): an entry declares EITHER `frequency:` (recurring)
 // OR `when:` (a ONE-SHOT wall-clock time — fires once at/after it, then never
-// again; both set → invalid, skipped + logged). ACTIONS: EITHER `command:` (a
-// shell line) OR `script_path:` (sugar the loader expands to `node <textecute.mjs>
-// <script.x.md>`; both set → invalid, skipped + logged). Timezone-less `when:`
-// times resolve in config `default_time_zone` (else the machine's local zone).
+// again) OR `daily:` (below); more than one set → invalid, skipped + logged.
+// ACTIONS: EITHER `command:` (a shell line) OR `script_path:` (sugar the loader
+// expands to `node <textecute.mjs> <script.x.md>`; both set → invalid, skipped +
+// logged). Timezone-less `when:` times resolve in config `default_time_zone` (else
+// the machine's local zone).
+//
+// `daily: "HH:MM"` (operator 2026-09-16: "being E runs a script and tells us the prime of
+// the day … post it at 11:00 Tenerife time"). frequency: cannot say this — the registry
+// anchors a cadence to REGISTRATION, so `frequency: 24h` fires at every boot and every
+// reload — and when: is one-shot. daily: fires EVERY day at that 24-hour wall-clock time in
+// `time_zone:` (IANA name or an alias, through resolveTimeZone; absent → default_time_zone,
+// as for when:; INVALID → the entry is skipped + logged, never silently local). It mirrors
+// when: on purpose: at most once per calendar day in that zone, at/after HH:MM, within the
+// same _WHEN_GRACE_MS — a node that was down through the whole window SKIPS that day rather
+// than firing at 15:00. The instant is recomputed per day through zonedWallClockToEpoch, so
+// DST moves with the zone and no fixed offset exists anywhere. NO DOUBLE FIRE across a
+// restart or reload: the local date each beat last fired for is kept in a small ledger,
+// state/heartbeats-daily.json (`{ "<entity ns>:<name>": "YYYY-MM-DD" }`, keyed by the full
+// beat name, so two chats both declaring `prime-of-the-day` never share a row), read through
+// the io seam before any daily beat registers and written BEFORE the beat fires.
+// `time_zone:` on an entry with no `daily:` is invalid (when: has no per-entry zone — it
+// would be silently ignored).
+//
+// WHICH SHELL RUNS `command:` (operator 2026-09-16: "mejor usa bash posix. la tienes en KG y en
+// DO"). Off win32, `shell: true` = /bin/sh, unchanged. On win32 `shell: true` is cmd.exe and
+// `bash` on PATH is System32's WSL launcher, so a command beat runs as `<bash> -c <command>`
+// with the bash from THE resolver (sandbox-cli-session.mjs resolveSandboxGitBash: msys64 first,
+// never WSL), resolved once per collect() and shown as `shell:` in the readonly view. No POSIX
+// bash on the machine → a LOUD log line and today's `shell: true`: the alive beat must never
+// depend on msys being installed. Inside that bash, PATH still reaches System32's bash before
+// /usr/bin's — a command that needs bash again should say "$BASH", not `bash`.
+// LIVENESS IS EXEMPT (operator 2026-09-16): a beat running BOOT'S DEFAULT alive command keeps
+// `shell: true` even with a bash resolved — the one boot injects, and a declared `alive:` with no
+// `command:` of its own (it falls back to that same command). alive.txt is what the watchdog and
+// the stand-down handover read, and msys is documented to fail to start under other
+// accounts/sessions (sandbox-cli-session.mjs, the \Sessions\BNOLINKS object directory) — a
+// Session 0 service or a Session 1 task must never lose its heartbeat to that. Keyed on boot having SUPPLIED the command (`nativeShell` on the action),
+// never on the name: a command the operator writes, under `alive` or any name, runs under the bash.
+//
+// `post: "<template>"` on a `command:` beat (operator 2026-09-16: "a minimal .yaml with the
+// specification, structural, not dependent on the robot") posts the command's output into the
+// chat of the entity the beat was declared in: on exit 0 with non-empty trimmed stdout, the
+// template with `{stdout}` replaced by that text goes to boot's injected `dispatchPost`. A
+// nonzero exit, empty stdout, a spawn error or a throwing post posts nothing and says why in the
+// run's outcome line. `post:` without `command:`, with `agent:`/`script_path:`, or on a
+// NODE-level beat (no chat to post to) is invalid, skipped + logged.
+//
+// `prompt: "<one line>"` (operator 2026-09-16: "don't use a textecutable for this either. just
+// prompt the model with the one-liner instruction") is the third ACTION, for `agent:` beats only:
+// the line IS the turn's trigger text, through the same dispatchTurn a script beat uses, never
+// wrapped in textecute's frame. `agent:` needs exactly one of `script_path:` / `prompt:`;
+// `prompt:` with `command:` or `script_path:`, or without `agent:`, is invalid.
+//
+// A TURN BEAT'S REPLY IS POSTED (2026-09-16) — boot's dispatchTurn says it into the entity's chat
+// as that being (its stamp, the mouth, the node signature, the transcript), one send, no
+// placeholder; an empty or "…" reply posts nothing. And every beat that SENDS (`post:`, `agent:`)
+// has its chat PLACED once at registration (placeChat): a scheduled send has no arrival to learn
+// the chat's connection from, which after a restart left it on the wrong account.
 //
 // THE KEY WAS `ai_run:` UNTIL 2026-08-22. It named neither a path nor its type, while
 // house style names paths explicitly (model_path, conversation_path, home_dir) — and now
@@ -118,7 +172,7 @@
 // switch; one broken entry must never take the boot (or its siblings) down.
 
 import { writeFile as fsWriteFile, mkdir as fsMkdir, readFile as fsReadFile } from 'node:fs/promises';
-import { basename, dirname, resolve as resolvePath } from 'node:path';
+import { basename, dirname, join, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as YAML from 'yaml';
 import { EGPT_HOME } from '../egpt-home.mjs';
@@ -132,6 +186,9 @@ import { framePrompt, isTextecutable } from '../tools/textecute.mjs';
 // single-token lookup (src/spine/mesh.mjs's findAgentByToken does exactly this for an envelope's
 // `<being>` half); `wakeTokens` is imported only to LIST the valid handles in the skip message.
 import { addressed, wakeTokens } from './router.mjs';
+// THE POSIX-bash resolver (msys64 first, never System32's WSL launcher) — command beats run under it
+// on win32 (operator 2026-09-16: "mejor usa bash posix"). One candidate list, owned there.
+import { resolveSandboxGitBash, GIT_BASH_CANDIDATES } from '../sandbox-cli-session.mjs';
 
 // The loader owns the script_path sugar, so it resolves textecute.mjs itself (relative
 // to this file: src/spine/ → src/tools/). Absolute path, so the expanded command
@@ -205,17 +262,23 @@ export function resolveTimeZone(value, { onLog } = {}) {
   return local;
 }
 
-// How far ahead of UTC (ms) the named zone is at instant `epochMs`. Read back the
-// wall-clock the zone shows for that instant and diff it against the instant.
-function _offsetMs(epochMs, timeZone) {
+// The wall-clock the named zone shows at instant `epochMs`, as numeric parts (month 1-12).
+function _zonedParts(epochMs, timeZone) {
   const dtf = new Intl.DateTimeFormat('en-US', {
     timeZone, hourCycle: 'h23',
     year: 'numeric', month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit', second: '2-digit',
   });
   const map = {};
-  for (const p of dtf.formatToParts(new Date(epochMs))) if (p.type !== 'literal') map[p.type] = p.value;
-  const asUTC = Date.UTC(+map.year, +map.month - 1, +map.day, +map.hour, +map.minute, +map.second);
+  for (const p of dtf.formatToParts(new Date(epochMs))) if (p.type !== 'literal') map[p.type] = +p.value;
+  return map;
+}
+
+// How far ahead of UTC (ms) the named zone is at instant `epochMs`. Read back the
+// wall-clock the zone shows for that instant and diff it against the instant.
+function _offsetMs(epochMs, timeZone) {
+  const map = _zonedParts(epochMs, timeZone);
+  const asUTC = Date.UTC(map.year, map.month - 1, map.day, map.hour, map.minute, map.second);
   return asUTC - epochMs;
 }
 
@@ -269,6 +332,32 @@ export function parseWhen(str, { timeZone } = {}) {
   return null;
 }
 
+// ── daily parser + slot math (pure) ─────────────────────────────────────────
+// `daily:` is a 24-hour "HH:MM" (or "H:MM") string; anything else → null (skipped + logged).
+function _parseDaily(v) {
+  if (typeof v !== 'string') return null;
+  const m = v.trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!m || +m[1] > 23 || +m[2] > 59) return null;
+  return { hour: +m[1], minute: +m[2] };
+}
+
+// HH:MM on local calendar day {year, month, day} in the zone. The day is normalized through
+// Date.UTC first, so day ± 1 rolls over months/years (calendar arithmetic, never an offset).
+// `date` ("YYYY-MM-DD") is what the ledger records for the slot.
+function _dailySlotOn({ year, month, day }, { hour, minute }, timeZone) {
+  const d = new Date(Date.UTC(year, month - 1, day));
+  const ymd = { year: d.getUTCFullYear(), month: d.getUTCMonth() + 1, day: d.getUTCDate() };
+  const date = `${ymd.year}-${String(ymd.month).padStart(2, '0')}-${String(ymd.day).padStart(2, '0')}`;
+  return { ymd, date, at: zonedWallClockToEpoch({ ...ymd, hour, minute }, timeZone) };
+}
+
+// The most recent slot at/before nowMs: today's (local date in the zone), or yesterday's when
+// today's has not come yet — so a window that crosses local midnight still belongs to its day.
+function _lastDailySlot(daily, timeZone, nowMs) {
+  const today = _dailySlotOn(_zonedParts(nowMs, timeZone), daily, timeZone);
+  return nowMs >= today.at ? today : _dailySlotOn({ ...today.ymd, day: today.ymd.day - 1 }, daily, timeZone);
+}
+
 // (parseHeartbeatsBlock lived here — a config.yaml TEXT → its heartbeats: map. The
 // resolver parses each entity file ONCE into its whole doc now (parseEntityConfig) and
 // hands this loader the block already layered across the rungs, so the block-specific
@@ -307,10 +396,29 @@ function _resolveAction({ name, raw, isAlive, aliveCommand, cwd, aliveCwd, ns, a
   // through textecute's unconfined session instead, exactly the failure this key exists to fix.
   if (raw?.agent != null && !hasAgent) { onLog(`${name}: agent ${JSON.stringify(raw.agent)} is not a being-id — skipped`); return _INVALID_ACTION; }
   if (hasCommand && hasScriptPath) { onLog(`${name}: both command and script_path set — skipped (use one action)`); return _INVALID_ACTION; }
+  // `prompt:` is a one-line instruction to the being named by `agent:` (see the header) — the third
+  // action, exclusive with the other two, and meaningless without a being.
+  const hasPrompt = typeof raw?.prompt === 'string' && raw.prompt.trim();
+  if (raw?.prompt != null) {
+    if (!hasPrompt) { onLog(`${name}: prompt ${JSON.stringify(raw.prompt)} is not an instruction — skipped`); return _INVALID_ACTION; }
+    if (hasCommand) { onLog(`${name}: both prompt and command set — skipped (use one action)`); return _INVALID_ACTION; }
+    if (hasScriptPath) { onLog(`${name}: both prompt and script_path set — skipped (use one action)`); return _INVALID_ACTION; }
+    if (!hasAgent) { onLog(`${name}: prompt without agent — skipped (prompt: is an instruction to a being; agent: names which)`); return _INVALID_ACTION; }
+  }
+  // `post:` posts a COMMAND's stdout into the entity's chat (see the header) — so it needs a
+  // command, cannot ride a turn or a textecute spawn, and needs an entity to post into.
+  if (raw?.post != null) {
+    if (typeof raw.post !== 'string' || !raw.post.trim()) { onLog(`${name}: post ${JSON.stringify(raw.post)} is not a message template — skipped`); return _INVALID_ACTION; }
+    if (hasAgent) { onLog(`${name}: both post and agent set — skipped (post: sends a command's stdout; a being's turn is not a command)`); return _INVALID_ACTION; }
+    if (hasScriptPath) { onLog(`${name}: both post and script_path set — skipped (post: sends a command's stdout)`); return _INVALID_ACTION; }
+    if (!hasCommand) { onLog(`${name}: post without command — skipped (post: sends a command's stdout)`); return _INVALID_ACTION; }
+    if (!ns) { onLog(`${name}: post on a node-level beat — skipped (there is no chat to post to; declare the beat in that conversation/room's config.yaml)`); return _INVALID_ACTION; }
+    return { kind: 'command', command: raw.command, cwd, post: raw.post, ns };
+  }
   if (hasAgent && hasCommand) { onLog(`${name}: both agent and command set — skipped (a shell line has no being; agent: runs a script_path script)`); return _INVALID_ACTION; }
   if (hasAgent) {
     const handle = raw.agent.trim().toLowerCase();
-    if (!hasScriptPath) { onLog(`${name}: agent ${JSON.stringify(raw.agent)} without script_path — skipped (agent: names WHO runs the script_path script)`); return _INVALID_ACTION; }
+    if (!hasScriptPath && !hasPrompt) { onLog(`${name}: agent ${JSON.stringify(raw.agent)} without script_path or prompt — skipped (agent: names WHO runs the script_path script or the prompt)`); return _INVALID_ACTION; }
     if (!ns) { onLog(`${name}: agent ${JSON.stringify(raw.agent)} on a node-level beat — skipped (a turn runs in a conversation/room; declare the beat in that entity's config.yaml)`); return _INVALID_ACTION; }
     // WHO IS `pd`? THE wake vocabulary answers, never a lookup of our own: `addressed` over the
     // one handle, exactly as mesh.mjs resolves an envelope's `<being>` token. It returns the map
@@ -321,6 +429,7 @@ function _resolveAction({ name, raw, isAlive, aliveCommand, cwd, aliveCwd, ns, a
     // the node's `dispatch.address_without_at` switch — about typed chat text — never governs it.)
     const being = addressed(handle, agents, { addressWithoutAt: true })[0]?.name;
     if (!being) { onLog(`${name}: unknown agent ${JSON.stringify(raw.agent)} — skipped (agent: is a HANDLE, the way you'd @address it; known: ${_knownHandles(agents).join(' ') || '(none)'})`); return _INVALID_ACTION; }
+    if (hasPrompt) return { kind: 'turn', being, prompt: raw.prompt.trim(), cwd, ns };
     const script = raw.script_path.trim();
     if (!isTextecutable(script)) { onLog(`${name}: script_path ${JSON.stringify(script)} is not a textecutable — skipped (must end in .x.md)`); return _INVALID_ACTION; }
     return { kind: 'turn', being, script, cwd, ns, scriptPath: script };
@@ -332,7 +441,7 @@ function _resolveAction({ name, raw, isAlive, aliveCommand, cwd, aliveCwd, ns, a
   if (hasCommand) return { kind: 'command', command: raw.command, cwd };
   // The DEFAULT alive one-liner writes state/alive.txt relative to the profile,
   // so it runs with cwd = EGPT_HOME (aliveCwd). Non-alive with no action → null.
-  if (isAlive) return { kind: 'command', command: aliveCommand, cwd: aliveCwd };
+  if (isAlive) return { kind: 'command', command: aliveCommand, cwd: aliveCwd, nativeShell: true };   // boot's liveness command — native shell (header)
   return null;
 }
 
@@ -340,12 +449,30 @@ function _resolveAction({ name, raw, isAlive, aliveCommand, cwd, aliveCwd, ns, a
 // when a trigger/action is missing, unparseable, or the two triggers/actions
 // collide. `isAlive` gives the deadman its defaults (aliveFallbackMs + aliveCommand).
 function _normalizeEntry({ name, source, cwd, raw, isAlive, aliveFallbackMs, aliveCommand, aliveCwd, ns, agents, timeZone, nowMs, onLog }) {
-  const hasFrequency = raw?.frequency != null;
+  const triggers = ['frequency', 'when', 'daily'].filter((k) => raw?.[k] != null);
+  if (triggers.length > 1) { onLog(`${name}: ${triggers.length === 2 ? 'both' : 'all of'} ${triggers.slice(0, -1).join(', ')} and ${triggers.at(-1)} set — skipped (use one trigger)`); return null; }
   const hasWhen = raw?.when != null;
-  if (hasFrequency && hasWhen) { onLog(`${name}: both frequency and when set — skipped (use one trigger)`); return null; }
+  const hasDaily = raw?.daily != null;
+  if (raw?.time_zone != null && !hasDaily) { onLog(`${name}: time_zone without daily — skipped (time_zone: is the zone of a daily: time; when: uses default_time_zone)`); return null; }
 
   const action = _resolveAction({ name, raw, isAlive, aliveCommand, cwd, aliveCwd, ns, agents, onLog });
   if (action === _INVALID_ACTION) return null;
+
+  // ── daily: every day at a wall-clock time in a zone (see the header) ──
+  if (hasDaily) {
+    if (!action) { onLog(`${name}: no command or script_path — skipped`); return null; }
+    const daily = _parseDaily(raw.daily);
+    if (!daily) { onLog(`${name}: invalid daily ${JSON.stringify(raw.daily)} — skipped (24-hour "HH:MM")`); return null; }
+    let zone = timeZone;
+    if (raw.time_zone != null) {
+      // resolveTimeZone's only log is its invalid-zone fallback to machine local — here that is
+      // the signal to REFUSE the entry instead: a daily beat must never silently run local.
+      let invalid = typeof raw.time_zone !== 'string' || !raw.time_zone.trim();
+      if (!invalid) zone = resolveTimeZone(raw.time_zone, { onLog: () => { invalid = true; } });
+      if (invalid) { onLog(`${name}: invalid time_zone ${JSON.stringify(raw.time_zone)} — skipped (an IANA name like Atlantic/Canary, or an alias like ET)`); return null; }
+    }
+    return { name, source, daily, rawDaily: raw.daily, timeZone: zone, action };
+  }
 
   // ── when: a one-shot at a wall-clock time ──
   if (hasWhen) {
@@ -372,10 +499,14 @@ function _normalizeEntry({ name, source, cwd, raw, isAlive, aliveFallbackMs, ali
  * @param {() => number} [deps.now]                     clock for the stale-`when` check at load time AND for each run's elapsed time
  * @param {(cmd:string, opts:object) => any} deps.spawn                        child_process.spawn seam (shell:true)
  * @param {(t:{being:string, ns:string, prompt:string, name:string}) => Promise<{text?:string}>} [deps.dispatchTurn]   an `agent:` beat's TURN, injected by boot (ns → the conversation, then brainpool.turn). The loader never imports the brain: it hands over the being, the entity and the framed prompt and lets boot run it through the ONE turn path. It RETURNS the turn result; the loader puts a prefix of `text` in the run's outcome line.
+ * @param {(p:{ns:string, name:string, text:string}) => Promise<any>} [deps.dispatchPost]   a `post:` beat's message into its entity's chat, injected by boot. Throws → the run logs FAILED.
+ * @param {(p:{ns:string, name:string}) => Promise<any>} [deps.placeChat]   boot's seeding of which connection holds an entity's chat, asked once per entity when a beat that SENDS into it (post:, agent:) is registered — so a scheduled send finds the holder a message arrival would have recorded
+ * @param {string} [deps.platform]                      process.platform seam — win32 runs command beats under POSIX bash
+ * @param {() => string|null} [deps.resolvePosixBash]   the POSIX bash resolver seam (sandbox-cli-session.mjs resolveSandboxGitBash)
  * @param {object} [deps.env]                           base env commands inherit (boot: process.env)
  * @param {string} [deps.egptHome]                      EGPT_HOME (spawn env + the alive beat's cwd)
  * @param {string} [deps.procCwd]                       cwd for node-level command heartbeats (the checkout)
- * @param {{writeFile?:Function, mkdir?:Function}} [deps.io]                   readonly.yaml IO seam
+ * @param {{writeFile?:Function, mkdir?:Function, readFile?:Function}} [deps.io]   IO seam: readonly.yaml, an agent: beat's script, the daily: ledger (state/heartbeats-daily.json)
  * @param {(m:string) => void} [deps.onLog]
  */
 export function createHeartbeatLoader({
@@ -385,6 +516,10 @@ export function createHeartbeatLoader({
   now = () => Date.now(),
   spawn,
   dispatchTurn = null,
+  dispatchPost = null,
+  placeChat = null,
+  platform = process.platform,
+  resolvePosixBash = resolveSandboxGitBash,
   env = {},
   egptHome = EGPT_HOME,
   procCwd = process.cwd(),
@@ -400,6 +535,7 @@ export function createHeartbeatLoader({
   // procCwd (the checkout).
   const aliveCwd = egptHome;
   const readonlyPath = resolver.paths.heartbeats;
+  const ledgerPath = join(egptHome, 'state', 'heartbeats-daily.json');
 
   let _entries = null;    // set by collect(), consumed by activate()
   let _registry = null;   // bound in wrapRegistry() — the real registry reload replaces entries on
@@ -407,6 +543,10 @@ export function createHeartbeatLoader({
   let _bootTickMs = 0;    // bound in activate() — the fixed boot tick, for the finer-cadence warning
   let _reloading = false; // reentrancy guard: a reload in flight blocks another
   let _activated = false; // flipped by activate() — before it, reload() is a no-op (nothing loaded yet)
+  let _ledger = null;     // daily: beat name → local date last fired ("YYYY-MM-DD"); read from disk once, then authoritative in-process
+  let _ledgerWrite = Promise.resolve();   // serializes ledger writes (two beats can fire on one tick)
+  const _placed = new Set();   // entity ns whose chat placeChat has already been asked about — once per process
+  let _bash;              // win32: the POSIX bash command beats run under (null = none found → shell: true); resolved per collect()
 
   // finestMs is the min RECURRING cadence — `when:` one-shots ride the tick and
   // must not tighten it (a 30s tick fires them within 30s of the time, which is fine).
@@ -420,6 +560,14 @@ export function createHeartbeatLoader({
     // ONE walk, owned by the resolver. It hands back the node rung and every entity's
     // UNION-merged heartbeats block already layered across the registry + folder rungs.
     const set = await resolver.collect();
+    // WHICH SHELL RUNS A COMMAND BEAT, once per load/reload. Off win32 `shell: true` is /bin/sh
+    // already. On win32 it is POSIX bash; with none installed it falls back to cmd.exe LOUDLY
+    // (once per change, not per reload) — the alive beat must never depend on msys being there.
+    if (platform === 'win32') {
+      const bash = resolvePosixBash() ?? null;
+      if (!bash && _bash !== null) onLog(`NO POSIX BASH: none of ${GIT_BASH_CANDIDATES.join(', ')} exists — command beats FALL BACK to the platform shell (shell: true = cmd), where a POSIX command line will not run`);
+      _bash = bash;
+    }
     const nodeConfig = set.node.config ?? {};
     const timeZone = resolveTimeZone(nodeConfig.default_time_zone, { onLog });
     const nowMs = now();
@@ -454,9 +602,10 @@ export function createHeartbeatLoader({
     //    resolves into the profile) when the node config declares no `alive` AND
     //    boot asked for it (aliveMs > 0). aliveMs === 0 (tests) means "don't
     //    inject" — but an explicit config alive above still loads. No builtin:
-    //    the readonly view will show this real command.
+    //    the readonly view will show this real command. `nativeShell`: this beat is
+    //    LIVENESS and runs on the platform shell, never the POSIX bash (see the header).
     if (!aliveDeclared && aliveMs > 0) {
-      entries.push({ name: 'alive', source: NODE_FILE, everyMs: aliveMs, rawFrequency: aliveMs, action: { kind: 'command', command: aliveCommand, cwd: aliveCwd } });
+      entries.push({ name: 'alive', source: NODE_FILE, everyMs: aliveMs, rawFrequency: aliveMs, action: { kind: 'command', command: aliveCommand, cwd: aliveCwd, nativeShell: true } });
     }
 
     // 3. Entity entries: each conversation/room's resolved heartbeats block (its
@@ -483,22 +632,45 @@ export function createHeartbeatLoader({
   // the real reason (the exit code, the signal, the spawn error). A failure is still only
   // logged — never thrown, never fatal. The latch matters because a failed spawn can emit
   // BOTH 'error' and 'exit': one outcome per run, and onSettle exactly once.
+  //
+  // A `post:` beat also collects stdout and, on exit 0 with non-empty trimmed stdout, hands the
+  // template (`{stdout}` → that text) to the injected dispatchPost BEFORE the outcome line, which
+  // then says what was posted or why nothing was. It settles on 'close', not 'exit': stdout can
+  // still be draining when 'exit' fires.
   function _spawnAction(entry, stats, startedMs, onSettle) {
     const { queueDepth = 0, oldestMs = 0 } = stats?.() ?? {};
     const childEnv = { ...env, EGPT_HOME: egptHome, EGPT_QUEUE_DEPTH: String(queueDepth), EGPT_QUEUE_OLDEST_MS: String(oldestMs) };
+    const { command, cwd, post, ns } = entry.action;
     let settled = false;
-    const settle = (failure) => {
+    let stdout = '';
+    const settle = async (failure) => {
       if (settled) return;
       settled = true;
+      let posted = '';
+      if (!failure && post) {
+        const out = stdout.trim();
+        const text = post.replaceAll('{stdout}', out);
+        if (!out) failure = 'empty stdout — nothing posted';
+        else if (typeof dispatchPost !== 'function') failure = 'no post dispatcher wired — boot injects dispatchPost';
+        else {
+          try { await dispatchPost({ ns, name: entry.name, text }); posted = ` — posted: ${_replyPrefix(text)}`; }
+          catch (e) { failure = `post failed: ${e?.message ?? e}`; }
+        }
+      }
       const el = _elapsed(now() - startedMs);
-      onLog(failure ? `${entry.name}: FAILED in ${el} — ${failure}` : `${entry.name}: ok in ${el}`);
+      onLog(failure ? `${entry.name}: FAILED in ${el} — ${failure}` : `${entry.name}: ok in ${el}${posted}`);
       onSettle?.();
     };
     let child;
-    try { child = spawn(entry.action.command, { shell: true, cwd: entry.action.cwd, env: childEnv }); }
+    // win32 + a resolved POSIX bash → `bash -c <command>` for a DECLARED beat; the injected
+    // liveness beat and every other case → the platform shell (/bin/sh, or cmd.exe — for a
+    // declared beat that is the loud fallback collect() already logged).
+    const bash = entry.action.nativeShell ? null : _bash;
+    try { child = bash ? spawn(bash, ['-c', command], { cwd, env: childEnv }) : spawn(command, { shell: true, cwd, env: childEnv }); }
     catch (e) { settle(`spawn failed: ${e?.message ?? e}`); return; }
+    if (post) { child?.stdout?.setEncoding?.('utf8'); child?.stdout?.on?.('data', (d) => { stdout += d; }); }
     child?.on?.('error', (e) => settle(e?.message ?? e));
-    child?.on?.('exit', (code, signal) => settle(code === 0 ? null : (signal ? `killed by ${signal}` : `exited ${code}`)));
+    child?.on?.(post ? 'close' : 'exit', (code, signal) => settle(code === 0 ? null : (signal ? `killed by ${signal}` : `exited ${code}`)));
   }
 
   // An `agent:` action: read the script FRESH (an edited *.x.md takes effect on the next
@@ -509,12 +681,16 @@ export function createHeartbeatLoader({
   // logs the run's ONE outcome line; on success with a prefix of the dispatcher's reply,
   // which is the only trace a turn otherwise leaves (its output is the script's business).
   async function _dispatchTurn(entry, startedMs, onSettle) {
-    const { being, script, cwd, ns } = entry.action;
+    const { being, script, prompt: line, cwd, ns } = entry.action;
     try {
       if (typeof dispatchTurn !== 'function') throw new Error('no turn dispatcher wired — boot injects dispatchTurn');
-      const path = resolvePath(cwd, script);
-      const content = await readFile(path, 'utf8');
-      const res = await dispatchTurn({ being, ns, name: entry.name, prompt: framePrompt(basename(path), content) });
+      // A `prompt:` beat hands its one-liner over AS the trigger text — textecute's frame is for scripts.
+      let prompt = line;
+      if (prompt == null) {
+        const path = resolvePath(cwd, script);
+        prompt = framePrompt(basename(path), await readFile(path, 'utf8'));
+      }
+      const res = await dispatchTurn({ being, ns, name: entry.name, prompt });
       const reply = _replyPrefix(res?.text);
       onLog(`${entry.name}: ok in ${_elapsed(now() - startedMs)}${reply ? ` — ${reply}` : ''}`);
     } catch (e) {
@@ -529,7 +705,7 @@ export function createHeartbeatLoader({
   // fire line belongs here for that reason; the outcome differs per kind, so it does not.
   function _fire(entry, stats, onSettle) {
     const a = entry.action;
-    onLog(a.kind === 'turn' ? `${entry.name}: fire turn — ${a.being} ${a.script}` : `${entry.name}: fire command — ${a.command}`);
+    onLog(a.kind === 'turn' ? `${entry.name}: fire turn — ${a.being} ${a.script ?? `prompt: ${_replyPrefix(a.prompt)}`}` : `${entry.name}: fire command — ${a.command}`);
     const startedMs = now();
     if (a.kind === 'turn') { _dispatchTurn(entry, startedMs, onSettle); return; }
     _spawnAction(entry, stats, startedMs, onSettle);
@@ -560,11 +736,74 @@ export function createHeartbeatLoader({
     };
   }
 
+  // The daily ledger: read ONCE (a missing file is an empty ledger), then the in-memory copy is
+  // the truth for this process — a reload keeps it, a restart re-reads what the last fire wrote.
+  async function _ensureLedger() {
+    if (_ledger) return;
+    try {
+      const j = JSON.parse(await readFile(ledgerPath, 'utf8'));
+      _ledger = (j && typeof j === 'object' && !Array.isArray(j)) ? j : {};
+    } catch (e) {
+      if (e?.code !== 'ENOENT') onLog(`daily ledger read: ${e?.message ?? e} — starting empty`);
+      _ledger = {};
+    }
+  }
+  function _writeLedger() {
+    _ledgerWrite = _ledgerWrite.then(async () => {
+      try {
+        await mkdir(dirname(ledgerPath), { recursive: true });
+        await writeFile(ledgerPath, `${JSON.stringify(_ledger, null, 2)}\n`, 'utf8');
+      } catch (e) { onLog(`daily ledger write: ${e?.message ?? e}`); }
+    });
+    return _ledgerWrite;
+  }
+
+  // The next instant a daily entry fires, from nowMs: the most recent slot while its window is
+  // still open and unfired, else the following day's.
+  function _nextDailyMs(entry, nowMs) {
+    const slot = _lastDailySlot(entry.daily, entry.timeZone, nowMs);
+    if (nowMs - slot.at <= _WHEN_GRACE_MS && _ledger?.[entry.name] !== slot.date) return slot.at;
+    return _dailySlotOn({ ...slot.ymd, day: slot.ymd.day + 1 }, entry.daily, entry.timeZone).at;
+  }
+
+  // A daily action: on the tick at/after today's HH:MM (in the entry's zone), within the grace
+  // window, once per local date. The ledger row is set BEFORE the fire (a re-entrant tick can
+  // never double-fire it, as with when:'s `fired`) and written before the fire starts, so a
+  // restart right after it still sees today as done. A stale slot is skipped silently.
+  function _makeDailyBeat(entry, stats) {
+    return async (nowTick) => {
+      const slot = _lastDailySlot(entry.daily, entry.timeZone, nowTick);
+      if (nowTick - slot.at > _WHEN_GRACE_MS) return;
+      if (_ledger[entry.name] === slot.date) return;
+      _ledger[entry.name] = slot.date;
+      await _writeLedger();
+      _fire(entry, stats);
+    };
+  }
+
+  // A beat that SENDS into its entity's chat — a `post:` command or an `agent:` turn, whose reply
+  // is posted — must not depend on a message having arrived there since boot: that arrival is what
+  // records which connection holds the chat, and a scheduled send has none. So each such entity is
+  // placed ONCE, here, where registration is already async (boot's placeChat asks the connections
+  // and records the answer where an arrival would). Never fatal.
+  async function _placeChats(entries) {
+    if (typeof placeChat !== 'function') return;
+    for (const e of entries) {
+      const a = e.action;
+      if (!a?.ns || !(a.post != null || a.kind === 'turn') || _placed.has(a.ns)) continue;
+      _placed.add(a.ns);
+      try { await placeChat({ ns: a.ns, name: e.name }); }
+      catch (err) { onLog(`${e.name}: could not place its chat — ${err?.message ?? err}`); }
+    }
+  }
+
   function _registerBeat(entry) {
     if (entry.whenMs != null) {
       // A one-shot rides the tick (everyMs 0 = evaluated every runDue); the beat
       // gates on now >= whenMs && !fired, so it cannot tighten the boot tick.
       _registry.register(entry.name, 0, _makeWhenBeat(entry, _stats));
+    } else if (entry.daily) {
+      _registry.register(entry.name, 0, _makeDailyBeat(entry, _stats));   // rides the tick, like when:
     } else {
       _registry.register(entry.name, entry.everyMs, _makeRecurringBeat(entry, _stats));
     }
@@ -578,6 +817,7 @@ export function createHeartbeatLoader({
     _reloading = true;
     try {
       const { entries, finestMs } = await collect();   // collect() re-runs the resolver's walk
+      if (entries.some((e) => e.daily)) await _ensureLedger();
       _registry.clear();   // drop the whole old set — the fresh collect() rebuilds it
       for (const entry of entries) _registerBeat(entry);
       if (finestMs != null && _bootTickMs > 0 && finestMs < _bootTickMs) {
@@ -585,6 +825,7 @@ export function createHeartbeatLoader({
       }
       await _writeReadonly(entries);
       await resolver.writeReadonly();   // all three land together, on every reload
+      await _placeChats(entries);
     } catch (e) {
       onLog(`reload failed: ${e?.message ?? e}`);   // never let a reload error break the message path
     } finally {
@@ -606,9 +847,11 @@ export function createHeartbeatLoader({
     const entries = _entries ?? (await collect()).entries;
     _stats = stats;
     _bootTickMs = tickMs;
+    if (entries.some((e) => e.daily)) await _ensureLedger();   // before any daily beat can fire
     for (const entry of entries) _registerBeat(entry);
     await _writeReadonly(entries);
     await resolver.writeReadonly();   // the other two aggregates land with this one
+    await _placeChats(entries);
     _activated = true;
     return { entries, finestMs: _finestMs(entries) };
   }
@@ -616,14 +859,17 @@ export function createHeartbeatLoader({
   function _readonlyRow(e) {
     const row = { name: e.name, source: e.source };
     if (e.whenMs != null) row.when = e.rawWhen;
+    else if (e.daily) { row.daily = e.rawDaily; row.time_zone = e.timeZone; row.next_fire = new Date(_nextDailyMs(e, now())).toISOString(); }
     else { row.frequency = e.rawFrequency; row.frequency_ms = e.everyMs; }
     // A script_path entry shows BOTH the sugar and the resolved command; a plain
     // command shows just the command. Neither hides anything behind a label.
     // An `agent:` entry has no command at all — it shows the sugar and WHO runs it, which
     // is the whole of what happens (a turn for that being in this entity).
-    if (e.action.kind === 'turn') { row.action = `script_path: ${e.action.scriptPath}`; row.agent = e.action.being; }
+    if (e.action.kind === 'turn') { row.action = e.action.prompt != null ? `prompt: ${e.action.prompt}` : `script_path: ${e.action.scriptPath}`; row.agent = e.action.being; }
     else if (e.action.scriptPath) { row.action = `script_path: ${e.action.scriptPath}`; row.command = e.action.command; }
     else row.action = `command: ${e.action.command}`;
+    if (e.action.post) row.post = e.action.post;
+    if (e.action.nativeShell && _bash) row.shell = 'native (liveness never runs under the POSIX bash)';
     row.cwd = e.action.cwd;
     return row;
   }
@@ -638,9 +884,11 @@ export function createHeartbeatLoader({
       '# message (or at boot/restart). This file is purely informational: deleting or\n' +
       '# editing it does nothing special, and it is regenerated on every boot + refresh.\n\n';
     const list = entries.map(_readonlyRow);
+    // What runs every command: beat below, so the operator never has to guess which bash.
+    const shell = _bash ? `${_bash} -c` : (platform === 'win32' ? 'cmd (shell: true) — NO POSIX BASH found' : '/bin/sh');
     try {
       await mkdir(dirname(readonlyPath), { recursive: true });
-      await writeFile(readonlyPath, header + YAML.stringify({ heartbeats: list }, { lineWidth: 0 }), 'utf8');
+      await writeFile(readonlyPath, header + YAML.stringify({ shell, heartbeats: list }, { lineWidth: 0 }), 'utf8');
     } catch (e) { onLog(`readonly write: ${e?.message ?? e}`); }
   }
 

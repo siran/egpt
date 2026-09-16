@@ -97,6 +97,8 @@ import { createHeartbeatLoader, parseFrequency, resolveTimeZone } from './heartb
 import { createConfigResolver, parseEntityConfig } from './config-resolver.mjs';
 import { seedSkeletons } from './seed.mjs';
 import { readRoomConfig, readRoomsFile } from '../rooms-file.mjs';
+import { isSilenceReply } from '../auto-mode.mjs';
+import { isBrainFailureResult } from '../brain-errors.mjs';
 
 // STRAY WHISPER-SERVER REAP (operator 2026-07-10): dropping `local` from a
 // transcription profile's fallback_order (e.g. → [remote, cli] so this node leans on
@@ -2836,21 +2838,80 @@ export async function boot({
   // dispatches through THE turn path instead — brainpool.turn, the same one an inbound
   // message runs — so every one of those gates applies unchanged. The loader hands over the
   // being, the entity ns and the framed prompt; this closure does the ns → conversation
-  // lookup and nothing else. Deliberately NOT routed through spine.handleInbound: a beat is
+  // lookup, the turn, and the post of its reply. Deliberately NOT routed through spine.handleInbound: a beat is
   // not an inbound message, and gating.mjs (mode: mention et al) decides who may answer
   // MESSAGES — a scheduled turn has no sender to be addressed by and never touches it.
-  // The reply is logged, not posted: the script says what to do with its own output. It is
-  // the LOADER that logs it, in the run's one outcome line (with elapsed, next to the fire
-  // line) — this closure just hands the turn result back so there is a single place that
-  // formats + truncates a beat's outcome, for both action kinds.
+  // THE REPLY IS POSTED (2026-09-16 — it used to be only logged, so nobody saw a scheduled turn's
+  // result): said into the chat as THAT being — its own stamp and agent signature layers, the tag
+  // the reply train hands the port — through the same one-shot placement a `post:` beat uses
+  // (heartbeatSay below), recorded under the being. An empty or "…" reply is the being declining:
+  // nothing posted. A failure-shaped result (isBrainFailureResult, the spine's own test) is not a
+  // reply: it throws, so nothing is posted and the beat's outcome line says FAILED. The LOADER still
+  // logs the run's one outcome line from the returned result.
   const dispatchHeartbeatTurn = async ({ being, ns, prompt }) => {
     const target = chatIdForEntity(await _loadState(), ns);
     if (!target) throw new Error(`no conversation for ${ns} — not registered in conversations.yaml`);
-    return brain.turn(being, { surface: target.surface, chatId: target.chatId, line: prompt, body: prompt });
+    const ev = { surface: target.surface, chatId: target.chatId };
+    const res = await brain.turn(being, { ...ev, line: prompt, body: prompt });
+    const text = String(res?.text ?? '').trim();
+    if (isBrainFailureResult(text)) throw new Error(`the turn failed: ${text.slice(0, 200)}`);
+    if (isSilenceReply(text)) return res;
+    const tag = { bodyEmoji: bodyEmojiOf(being), label: labelOf(being), agentSigOpen: agentSignatureOpenOf(being), agentSigClose: agentSignatureCloseOf(being) };
+    await heartbeatSay({ being, ns, ev, text, tag, recordAs: being, what: 'turn' });
+    return res;
+  };
+
+  // A `post:` HEARTBEAT (2026-09-16): a command's stdout, said into the chat the beat was declared
+  // in, in the NODE's own voice: no tag — no body emoji, no label — so the port adds only the node
+  // signature. Recorded under 'system', the label a command reply is recorded under
+  // (wrapCommandsForTranscript).
+  const dispatchHeartbeatPost = async ({ ns, text }) => {
+    const target = chatIdForEntity(await _loadState(), ns);
+    if (!target) throw new Error(`no conversation for ${ns} — not registered in conversations.yaml`);
+    await heartbeatSay({ being: null, ns, ev: { surface: target.surface, chatId: target.chatId }, text, tag: {}, recordAs: 'system', what: 'post' });
+  };
+
+  // WHAT BOTH SAY THROUGH: ONE send via THE outbound resolver's `say` (sender.mjs makeOutbound) —
+  // the placement the /reply limb uses: the mouth says it in its own room, else the connection
+  // holding the chat. NOT the reply train: its eager "⏳ Thinking…" placeholder resolves its id by
+  // matching text, so one posted while a being streams in the same chat could bind to that being's
+  // message. Recorded first: the record does not depend on the network. Not said → throws, and the
+  // beat's outcome line says FAILED.
+  const heartbeatOutbound = makeOutbound({ bridge: shellAwareBridge, bridgeOf: shellAwareBridgeOf, peerMouth, onLog: mouthLog });
+  const heartbeatSay = async ({ being, ns, ev, text, tag, recordAs, what }) => {
+    await services.transcript.log(ev, { text, being: recordAs });
+    const send = async (on, room) => { const r = await on.send?.(room, text, tag); return !(r?.blocked || r == null); };
+    if (!(await heartbeatOutbound(being, ev.chatId).say(send, { text, tag, what }))) throw new Error(`not delivered to ${ns}`);
+  };
+
+  // WHICH CONNECTION HOLDS A HEARTBEAT'S CHAT, recorded BEFORE it is needed (2026-09-16). Every
+  // outbound decision reads connectionHolding (above), which knows a chat once something has
+  // ARRIVED in it — and a scheduled send has no arrival: after a restart the chat is unknown, the
+  // mouth is chosen, and the post goes out on the mouth's account addressed by the ear's room id,
+  // a room that does not exist there. The resolution chain is synchronous, so it is not resolved
+  // inline: the loader calls this once per entity when it registers a beat that sends into it, and
+  // the answer goes into the SAME record an arrival writes (rememberArrival). The question asked
+  // of each connection is the read the mouth itself makes of a chat (chatRaw): null = not a chat
+  // this account holds. Ears first, as connectionOfBridge is ordered. Only where there is a choice:
+  // one connection holds everything this node can say. Nobody holds it → the record is left alone
+  // and the log says so, loudly; the send then fails as it would have.
+  const placeHeartbeatChat = async ({ ns, name }) => {
+    if (connectionOfBridge.size < 2) return;
+    const target = chatIdForEntity(await _loadState(), ns);
+    if (!target || shellPort.owns(target.chatId) || connectionHolding(target.chatId)) return;
+    for (const [b, connection] of connectionOfBridge) {
+      let raw = null;
+      try { raw = await b.chatRaw?.(target.chatId); } catch { /* unreadable on this connection — ask the next */ }
+      if (!raw) continue;
+      rememberArrival(target.chatId, connection);
+      log.line?.(`[heartbeat] ${name}: ${target.chatId} is a chat on '${connection}' — recorded, so the beat's sends start there`);
+      return;
+    }
+    log.line?.(`[heartbeat] ${name}: NO CONNECTION HOLDS ${target.chatId} (${ns}) — asked ${[...connectionOfBridge.values()].map((c) => `'${c}'`).join(', ')}; its sends will fail until the chat is reachable`);
   };
 
   const heartbeatLoader = createHeartbeatLoader({
-    resolver: configResolver, aliveMs, aliveCommand, now, dispatchTurn: dispatchHeartbeatTurn,
+    resolver: configResolver, aliveMs, aliveCommand, now, dispatchTurn: dispatchHeartbeatTurn, dispatchPost: dispatchHeartbeatPost, placeChat: placeHeartbeatChat,
     // Command beats inherit process.env + EGPT_HOME + the queue-stats vars (the
     // loader adds those). The spine pid is no longer an env var — identity lives in
     // state/spine.pid now, and liveness is the alive.txt mtime, so a custom beat
