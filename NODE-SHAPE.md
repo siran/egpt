@@ -48,22 +48,24 @@ costs a WhatsApp re-link and buys nothing.
 
 ## What runs on a node
 
-One egpt per session type, so **nothing carries a session in its name**, and
-Beeper is named after the **account**, never after its role:
+One egpt per session type, so **nothing carries a session in its name**. Beeper
+is named for its **role** — the same word as its config key:
 
 | name | kind | job |
 |---|---|---|
 | `egpt-daemon` | Windows service (nssm, Auto) | keeps the node loop alive in **session 0** |
 | `egpt-daemon` | scheduled task (at logon) | keeps the node loop alive in **session 1** |
-| `egpt-beeper-an` | Windows service (nssm, Auto) | Beeper for account `an` |
-| `egpt-beeper-rodz` | Windows service (nssm, Auto) | Beeper for account `rodz` — two-number nodes only |
+| `egpt-beeper-primary` | Windows service (nssm, Auto) | Beeper for the primary account — the ear |
+| `egpt-beeper-secondary` | Windows service (nssm, Auto) | Beeper for the secondary account — the mouth; two-number nodes only |
 
 The service and the task share `egpt-daemon`: Windows keeps services and
 scheduled tasks in separate namespaces, and there is only one of each.
 
-**No `-primary` / `-secondary` in any service name.** Stopping a Beeper service
-takes an ACCOUNT offline, not a spine, and a name that hides that is worst
-during an incident — which is exactly when the services list gets read.
+**Never an account name in a service name.** The role is what the spine reads,
+so `egpt-beeper-primary` is the install behind `beeper.primary` on every node,
+whichever human's number that is. And the `egpt-beeper-` prefix says what
+stopping it costs: an ACCOUNT goes offline, not a spine — which matters most
+during an incident, exactly when the services list gets read.
 
 ### The processes you will find
 
@@ -82,8 +84,8 @@ JavaScript Runtime* and nssm as *The non-sucking service manager* — both label
 come from the executables themselves, so no name eGPT sets changes them. The
 **Details** tab is the reliable view: add the **Session ID** and **Command line**
 columns, and `egpt-spine.mjs` versus `egpt-daemon.mjs`, 0 versus 1, tell you
-which is which. `Beeper.exe` always shows as *Beeper*; what is named after the
-account is the service hosting it.
+which is which. `Beeper.exe` always shows as *Beeper*; what carries the role is
+the service hosting it.
 
 
 ## One Beeper install per account
@@ -150,9 +152,10 @@ beeper:
     token: bdapi_...
 ```
 
-**Here the role names are load-bearing.** The spine resolves the ear from the key
-`primary` and the mouth from the key `secondary` (`src/spine/boot.mjs`), so in
-config — unlike in service names — these words are not labels you can change.
+**The role names are load-bearing.** The spine resolves the ear from the key
+`primary` and the mouth from the key `secondary` (`src/spine/boot.mjs`), and each
+Beeper service carries the same word, so config and services name one thing
+once.
 With no `secondary` block, `primary` is both ear and mouth: the one-number shape.
 
 `primary_gui` may also be declared, for your own logged-in Beeper window. It is
@@ -176,8 +179,8 @@ one profile, so there is no second profile to carry.
 
 Run it before saying yes.
 
-1. One Beeper service per account, named after the account, **Running** and
-   **Auto**
+1. One Beeper service per account, named for its role (`egpt-beeper-primary`,
+   `egpt-beeper-secondary`), **Running** and **Auto**
 2. One `egpt-daemon` Windows service (Auto) and one `egpt-daemon` logon task
 3. Exactly **one** spine live, in whichever session — two live is the failure,
    not the goal
@@ -203,10 +206,10 @@ converging on the names above and are **not there yet**:
 
 | | Beeper services | session 1 task |
 |---|---|---|
-| `kg` | `egpt-beeper-primary`, `egpt-beeper-secondary` | `egpt-session1-daemon` |
+| `kg` | `egpt-beeper-primary`, `egpt-beeper-secondary` — **done** | `egpt-session1-daemon` |
 | `do` | `egpt-primary`, `BeeperRodz` | `egpt-session1-daemon` |
 
-Both still carry role or legacy names. The rename is being delivered as a
+`kg`'s Beeper services already match; `do`'s and both session 1 tasks do not. The rename is being delivered as a
 migration applied to each node, so the two cannot drift again by hand.
 
 `~/.egpt-secondary` on `kg` was a second profile running a second spine. It was
