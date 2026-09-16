@@ -502,6 +502,11 @@ describe('the retired Beeper Desktop service names are gone from the tree', () =
     // `git ls-files` and the file was still untracked in the same change - it only started
     // failing once both were committed. Verify an integrity scan AFTER staging, not before.
     'setup/beeper-s0-naming.Tests.ps1',
+    // The node-shape doc's "What is deployed today" table names each node's CURRENT services,
+    // legacy ones included, because a reader mid-incident has to find what is really installed.
+    // The meta-test below forces this entry out once the migration renames them and the table
+    // is updated to match.
+    'NODE-SHAPE.md',
   ]);
 
   const files = execSync('git ls-files', { cwd: ROOT, encoding: 'utf8' })
