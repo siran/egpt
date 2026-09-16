@@ -194,9 +194,17 @@ const idKey = (v) => {
   const digits = s.replace(/\D/g, '');
   return (/^\+?[\d\s().-]+$/.test(s) && digits.length >= 7) ? `#${digits}` : shortChatId(s);
 };
-function participantKeys(c) {
-  const items = Array.isArray(c?.participants?.items) ? c.participants.items
+// A matrix.to anchor as htmlToMarkdown renders it: `[<text>](https://matrix.to/#/<id>)`.
+const MENTION_ANCHOR_G = /\[([^\]]*)\]\(https:\/\/matrix\.to\/#\/([^)\s]+)\)/g;
+// The roster's ENTRIES, in either shape the payload carries them — null when there is no roster.
+// Split out of participantKeys so a reader that needs to know WHICH member carries an identity
+// (mouthMentionsAsAddresses, inside the bridge) reads the same roster, not a second reading of it.
+function participantItems(c) {
+  return Array.isArray(c?.participants?.items) ? c.participants.items
     : Array.isArray(c?.participants) ? c.participants : null;
+}
+function participantKeys(c) {
+  const items = participantItems(c);
   if (!items) return null;                        // shape absent ⇒ UNKNOWN, not empty
   const out = new Set();
   for (const p of items) for (const v of [p?.phoneNumber, p?.id]) { const k = idKey(v); if (k) out.add(k); }
@@ -523,6 +531,12 @@ export async function startBeeperBridge(opts = {}) {
     // shell limb and to the router, so the persona gate and the agent registry switch together.
     // It rides beside wakeWords into the SAME mentionStatus call below; nothing else consults it.
     addressWithoutAt = true,
+    // WHO THIS NODE SPEAKS AS (operator 2026-09-16): every identity the accounts this node's beings
+    // post through report for themselves (/v1/accounts — selfIdentities, one per mouth connection),
+    // resolved by boot because only boot holds the other connections. Read ONLY to decide whether a
+    // picker @-mention names the mouth (mouthMentionsAsAddresses, below). async () => string[].
+    // Default [] → no anchor is ever rewritten, byte-identical to before.
+    speakingIdentities = async () => [],
     // 👂 ECHO PLAN (operator 2026-07-11, Phase 3b HRW ordered failover; plans/2607101713-HRW-ECHO-PLAN.md):
     // (noteId) => { rank, winner } — this node's 1-indexed failover RANK for the note. rank 1 = the
     // rendezvous-hash winner, posts now; rank>1 = a lower rank that HOLDS its 👂 and posts only if the
@@ -839,6 +853,47 @@ export async function startBeeperBridge(opts = {}) {
     const fresh = info?.raw && (info.type === 'single' || Date.now() - (info.at ?? 0) < PARTICIPANTS_TTL_MS);
     if (!fresh) info = await chatInfo(id, { refresh: true });
     return info?.raw ?? null;
+  }
+
+  // ── A PICKER @-MENTION OF THE MOUTH IS AN ADDRESS (operator 2026-09-16) ─────────────────────
+  // Live on kg, group "Reencuentro CRC 1991-2026": picking "Rodz" from WhatsApp's @-mention picker
+  // woke nothing; typing `@rodz` woke the being. The picker sends an ANCHOR, htmlToMarkdown renders
+  // it `[@Rodz](https://matrix.to/#/<id>)` (or `[Rodz](…)`), and mentionHits' '@' must follow
+  // whitespace — so no matcher on the node could see it.
+  //
+  // ONLY THE MOUTH'S ANCHOR IS REWRITTEN, to `@<anchor text>`, and only at the body boundary in
+  // dispatchMessage, so mentionStatus there and the router (ev.body) read the one result and no
+  // second mention scan exists. Every other anchor stays exactly as it renders: a structured
+  // mention of a PERSON is not an address to a bot, and this node has one-letter handles — "Carol"
+  // or "E. Pérez" rewritten to `@…` would wake a being on a human's name.
+  //
+  // TWO PROOFS, both measured, neither a display name:
+  //   · it IS a mention — its id is in Beeper's `msg.mentions`. A pasted matrix.to link is not.
+  //   · it IS the mouth — the id is itself one of `speakingIdentities` (the mouth's OWN view: its
+  //     Beeper user id), or THIS account's roster entry for that id carries one (any other view:
+  //     the primary sees Rodz as '@whatsapp_lid-…' with Rodz's phone attached). The same
+  //     identities, idKey and roster the mouth-presence check already reads (boot.mjs routeLocally).
+  // Anything unknown — no identities, no roster, the id not in it — leaves the text as it is.
+  async function mouthMentionsAsAddresses(text, msg) {
+    const mentioned = new Set((Array.isArray(msg?.mentions) ? msg.mentions : []).map(idKey).filter(Boolean));
+    const anchors = mentioned.size ? [...text.matchAll(MENTION_ANCHOR_G)].filter((m) => mentioned.has(idKey(m[2]))) : [];
+    if (!anchors.length) return text;
+    let ids = [];
+    try { ids = (await speakingIdentities()) ?? []; }
+    catch (e) { onLog(`beeper: could not read which accounts this node speaks through — picker mentions left as anchors: ${e?.message ?? e}`); }
+    const mouth = new Set(ids.map(idKey).filter(Boolean));
+    if (!mouth.size) return text;
+    let roster = null;
+    const ours = new Set();
+    for (const key of new Set(anchors.map((m) => idKey(m[2])))) {
+      if (!mouth.has(key)) {
+        roster ??= participantItems(await chatRaw(msg.chatID)) ?? [];
+        const p = roster.find((q) => idKey(q?.id) === key);
+        if (!p || !mouth.has(idKey(p.phoneNumber))) continue;
+      }
+      ours.add(key);
+    }
+    return text.replace(MENTION_ANCHOR_G, (whole, name, id) => (ours.has(idKey(id)) ? `@${name.replace(/^@+/, '')}` : whole));
   }
 
   // GET /v1/chats is CURSOR-PAGINATED (verified live 2026-07-25). One page is 25 items
@@ -1685,6 +1740,9 @@ export async function startBeeperBridge(opts = {}) {
     // Dedup: message.upserted re-fires for the same id (delivery/seen/reaction
     // updates). Process each message once — across restarts (persisted).
     if (msg.id) { if (_processedIds.has(msgKeyOf(chatID, msg.id))) return; markProcessed(chatID, msg.id); }
+    // A picker @-mention of the account this node speaks through becomes `@<name>` HERE, before
+    // anything reads the body (mouthMentionsAsAddresses, above). Every other anchor is untouched.
+    if (text) text = await mouthMentionsAsAddresses(text, msg);
 
     const info = await chatInfo(chatID);
     // SCOPE (fail-closed): with a network scope active, a message whose

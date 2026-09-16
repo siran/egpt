@@ -730,6 +730,24 @@ describe('the ear is a PER-CHAT question — the second connection hears only wh
   });
 });
 
+// ── …AND WHO THE NODE SPEAKS AS, handed to the connection that hears (operator 2026-09-16) ──────
+// A picker @-mention of Rodz arrives on the EAR, which cannot know on its own that Rodz is this
+// node's mouth (src/bridges/beeper.mjs mouthMentionsAsAddresses). Boot holds both connections, so
+// boot hands every bridge the MEASURED identities of the accounts its beings post through.
+describe('every bridge is told which accounts this node speaks through', () => {
+  it('two connections: the EAR is handed the MOUTH\'s identities, never its own', async () => {
+    const { app, byConnection } = await bootWith(KG());
+    expect(await byConnection.primary.opts.speakingIdentities()).toEqual(SELF_IDENTITY[SECONDARY]);
+    app.stop();
+  });
+
+  it('one connection: ear and mouth are one account, so it is handed its own', async () => {
+    const { app, byConnection } = await bootWith(SINGLE());
+    expect(await byConnection.primary.opts.speakingIdentities()).toEqual(SELF_IDENTITY[PRIMARY]);
+    app.stop();
+  });
+});
+
 // ── THE RESOLVER'S HALF OF IT ──────────────────────────────────────────────────────────────────
 // boot answers "which bridge" and the sender asks; these lock the ASKING, which is the whole of
 // src/spine/sender.mjs's diff — makeOutbound hands the chat to `bridgeOf` so an arrival-aware

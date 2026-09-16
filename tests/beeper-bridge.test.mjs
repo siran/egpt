@@ -27,6 +27,7 @@ import { encodeMesh } from '../src/mesh/relay.mjs';
 import { surfaceOf } from '../src/spine/identity.mjs';
 import { _resetPromotions, ECHO_MARKER } from '../src/incoming-media.mjs';
 import { echoRank } from '../src/spine/echo-priority.mjs';
+import { addressed } from '../src/spine/router.mjs';
 
 const CHATS_PER_PAGE = 2;   // fake /v1/chats page size (live it's 25) — small so page 2 is readable
 
@@ -1871,6 +1872,99 @@ describe('beeper bridge — wake words (own handles only, no injection)', () => 
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ isSender: false, text: 'sentinel-own' })] });
     await waitFor(() => incoming.some((m) => m.text === 'sentinel-own'));
     expect(incoming.map((m) => m.text)).not.toContain('🐶 egpt\nmy own reply');   // dropped: we sent that id
+  });
+});
+
+// ── A PICKER MENTION OF THE ACCOUNT THIS NODE SPEAKS THROUGH IS AN ADDRESS (live, kg, 2026-09-16) ──
+// WhatsApp group "Reencuentro CRC 1991-2026": the operator picked "Rodz" from the @-mention picker
+// and nothing woke; typing `@rodz` woke the being `rodz`. The picker sends an ANCHOR, which
+// htmlToMarkdown renders `[@Rodz](https://matrix.to/#/…)` — and mentionHits' '@' must follow
+// whitespace, so `[@Rodz]` never matched and `[Rodz]` has no '@' at all. The payloads below are the
+// ones captured from the Beeper API on the PRIMARY (the ear), verbatim ids and mentions arrays.
+//
+// ONLY THE MOUTH'S ANCHOR BECOMES AN ADDRESS. This node has one-letter and short handles, so a picker
+// mention of a PERSON named "Carol" or "E" must stay exactly the anchor it is today. The proof that
+// an anchor is a real mention is Beeper's `mentions` list (a pasted matrix.to link is not one); the
+// proof that it is the mouth is the mentioned participant's identity in this account's roster.
+describe('beeper bridge — a picker @-mention addresses only when it names the account this node speaks through', () => {
+  const RODZ_LID = '@whatsapp_lid-69433129173200:beeper.local';     // Rodz, as the PRIMARY sees it
+  const ROGER_LID = '@whatsapp_lid-246741777563674:beeper.local';   // a HUMAN
+  const CAROL_LID = '@whatsapp_lid-111122223333444:beeper.local';   // a HUMAN whose name IS a handle
+  const E_LID = '@whatsapp_lid-555566667777888:beeper.local';       // …and one whose name is a ONE-LETTER handle
+  // What the MOUTH's install reports for itself (/v1/accounts, the DOLLY fixture above) — handed to
+  // the ear's bridge by boot, never guessed from a display name.
+  const MOUTH = ['+13472576794', '@dolly-egpt:beeper.com', 'dolly.egpt@gmail.com'];
+  const GROUP = CHAT('reencuentro');
+  const AGENTS = {
+    egpt: { handles: ['e', 'egpt'] },
+    rodz: { handles: ['rodz', 'r'] },
+    carol: { handles: ['carol'] },
+  };
+  beforeEach(() => {
+    fake.chats.set(GROUP, { title: 'Reencuentro CRC 1991-2026', type: 'group', isMuted: false, accountID: 'whatsapp',
+      participants: { items: [
+        { id: '@anrodriguez:beeper.com', isSelf: true },                        // the viewing account — no phone
+        { id: RODZ_LID, phoneNumber: '+13472576794', fullName: 'Rodz' },       // THE MOUTH, as this account sees it
+        { id: ROGER_LID, phoneNumber: '+584141112233', fullName: 'Roger Vzla' },
+        { id: CAROL_LID, phoneNumber: '+15550001234', fullName: 'Carol' },
+        { id: E_LID, phoneNumber: '+15550005678', fullName: 'E' },
+      ] } });
+  });
+  // wakeWords [rodz, r]: the bridge's own gate (mentionStatus) reads the SAME body the router does.
+  const arrive = async (text, mentions) => {
+    const { incoming } = await startBridge({ wakeWords: ['rodz', 'r'], speakingIdentities: async () => MOUTH });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ chatID: GROUP, text, mentions })] });
+    await waitFor(() => incoming.length === 1);
+    return incoming[0];
+  };
+  const who = (m) => addressed(m.text, AGENTS).map((h) => h.name);
+
+  it('REPRODUCE: the picker\'s `[@Rodz](…)` with mentions=[the mouth\'s id] addresses the being rodz', async () => {
+    const m = await arrive(`no sé si <a href="https://matrix.to/#/${RODZ_LID}" rel="noop…">@Rodz</a>`, [RODZ_LID]);
+    expect(who(m)).toEqual(['rodz']);
+    expect(m.from.atEAnywhere).toBe(true);
+    expect(m.text).toBe('no sé si @Rodz');
+  });
+
+  it('REPRODUCE: the no-@ anchor form `[Rodz](…)` addresses it too', async () => {
+    const m = await arrive(`[re #6480] por que no respondiste <a href="https://matrix.to/#/${RODZ_LID}">Rodz</a>`, [RODZ_LID]);
+    expect(who(m)).toEqual(['rodz']);
+    expect(m.from.atEAnywhere).toBe(true);
+    expect(m.text).toBe('[re #6480] por que no respondiste @Rodz');
+  });
+
+  // The SAME mention seen from the mouth's own account: a different id (its own Beeper user id) and a
+  // different display name. Its own identity is reported directly, no roster needed.
+  it('the mouth\'s OWN view of that mention (`[@rodz.b](…@dolly-egpt…)`) addresses rodz as well', async () => {
+    const m = await arrive('no sé si <a href="https://matrix.to/#/@dolly-egpt:beeper.com">@rodz.b</a>', ['@dolly-egpt:beeper.com']);
+    expect(who(m)).toEqual(['rodz']);
+  });
+
+  it('LOCK: a picker mention of a HUMAN (Roger Vzla) addresses nobody, and its anchor is recorded as today', async () => {
+    const m = await arrive(`<a href="https://matrix.to/#/${ROGER_LID}">@Roger Vzla</a> pilla como…`, [ROGER_LID]);
+    expect(who(m)).toEqual([]);
+    expect(m.from.atEAnywhere).toBe(false);
+    expect(m.text).toBe(`[@Roger Vzla](https://matrix.to/#/${ROGER_LID}) pilla como…`);
+  });
+
+  it('LOCK: a HUMAN whose picker name equals a handle ("Carol", "E") addresses nobody', async () => {
+    const carol = await arrive(`hola <a href="https://matrix.to/#/${CAROL_LID}">@Carol</a> y <a href="https://matrix.to/#/${E_LID}">E</a>`, [CAROL_LID, E_LID]);
+    expect(who(carol)).toEqual([]);
+    expect(carol.text).toBe(`hola [@Carol](https://matrix.to/#/${CAROL_LID}) y [E](https://matrix.to/#/${E_LID})`);
+  });
+
+  it('LOCK: a pasted matrix.to link with mentions=[] addresses nobody — even one naming the mouth', async () => {
+    const url = `https://matrix.to/#/${RODZ_LID}`;
+    const m = await arrive(`mira <a href="${url}">${url}</a> y <a href="${url}">@Rodz</a>`, []);
+    expect(who(m)).toEqual([]);
+    expect(m.from.atEAnywhere).toBe(false);
+  });
+
+  it('LOCK: plain typed `@rodz ?` still addresses rodz exactly as today', async () => {
+    const m = await arrive('@rodz ?', []);
+    expect(who(m)).toEqual(['rodz']);
+    expect(m.from.atEStart).toBe(true);
+    expect(m.text).toBe('@rodz ?');
   });
 });
 

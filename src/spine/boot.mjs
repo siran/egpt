@@ -1949,6 +1949,16 @@ export async function boot({
     synthesize: vx.synthesize,            // TTS for the bare-@wakeword-reply-to-TEXT mirror (operator 2026-08-10) — same fn createSpine gets below; null on a node with no voice_service (e.g. `do`), where the branch simply no-ops.
     voice: vx.voice,                      // the persona's own voice name, paired with synthesize above.
     addressWithoutAt,                     // dispatch.address_without_at (default true): may a BARE leading handle address, or is '@' required? Same value the shell limb + the router get.
+    // WHO THIS NODE SPEAKS AS (operator 2026-09-16): what each being's OUTBOUND connection reports
+    // for itself (selfIdentities, measured off /v1/accounts). A picker @-mention of one of those
+    // accounts is an address (beeper.mjs mouthMentionsAsAddresses) — and it arrives on the EAR,
+    // which holds only its own identities. Read at call time: the bridges it asks are dialled below.
+    speakingIdentities: async () => {
+      const mouths = new Set(Object.keys(agents()).map((being) => bridgeByEndpoint.get(endpointKey(endpointFor(outboundOf(being))))));
+      const ids = [];
+      for (const b of mouths) ids.push(...((await b?.selfIdentities?.()) ?? []));
+      return ids;
+    },
     echoPlan,                             // 👂 echo PLAN: (audioHash) => { rank, winner } — PER-NOTE HRW over the co-account peer set, keyed on the note's node-stable audio hash (operator 2026-07-24; revives HRW). rank 1 posts now; rank>1 arms a promotion at (rank-1)*echoTimeoutMs that re-checks coverage at fire; rank 0 (echo:false opt-out) never posts/promotes.
     echoTimeoutMs,                        // 👂 per-rank promotion step (ms); GENEROUS default so a SLOW rank-1 isn't mistaken for a DOWN one (double-👂 hazard).
     coverageThreshold,                    // 👂 word-token overlap fraction for the on-demand noteCovered query (operator 2026-07-12) — replaced the observed-set + arrival-lag/reconnect scaffold
