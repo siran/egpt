@@ -18,6 +18,12 @@ import { stripFrontMatter } from '../transcript-meta.mjs';
 import { jsonlStoreDirOf } from '../sandbox-cli-session.mjs';
 import { coerceAllowedTools, resolveDefaultBrainDef, resolveBeingDef } from './brainpool.mjs';
 import { loadPermissionLevel, ACCESS_LEVELS, isAccessLevel } from './permission-levels.mjs';
+// THE wake vocabulary (router.mjs) — `/agents <verb> <handle>` takes a HANDLE, so it resolves
+// through the SAME scan a typed @mention goes through, never a matcher of its own. `addressed`
+// over a single already-extracted token is the house single-token lookup (src/spine/mesh.mjs's
+// findAgentByToken, src/spine/heartbeat-loader.mjs's `agent:`); `addressableTokens` LISTS the
+// valid handles in the refusal. See agentsCmd's HANDLE → KEY block.
+import { addressed, addressableTokens } from './router.mjs';
 import { stat as fsStat, readFile as fsReadFile, writeFile as fsWriteFile, mkdir as fsMkdir, readdir as fsReaddir, rm as fsRm, rename as fsRename } from 'node:fs/promises';
 import { readdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -1245,10 +1251,13 @@ export function createCommands({
   // tokenized args ([handle-or-'all', subcommand?, value?] — the regex above split them),
   // validates the subcommand + its value up front, resolves the target conversation through
   // slugArg (bare = HERE, given = resolveTarget — identical to /e auto/reset's <target>), then
-  // resolves the handle set (a single being, or every residentsOf() entry for `all`, ordered
-  // defaultKey-first when resident so the persona reads first in a multi-being reply/status),
-  // and routes to the per-subcommand handler. Every handler below takes the ALREADY-resolved
-  // (surface, jid, where, handles[, state]) — none of them re-parse or re-resolve.
+  // resolves the handle set — a typed HANDLE resolved to its being KEY through the wake
+  // vocabulary (see the HANDLE → KEY block below), or every residentsOf() entry for `all`,
+  // ordered defaultKey-first when resident so the persona reads first in a multi-being
+  // reply/status — and routes to the per-subcommand handler. Every handler below takes the
+  // ALREADY-resolved (surface, jid, where, handles[, …, state, named]) — none of them re-parse
+  // or re-resolve. `named` is the reply's word for the being(s): the keys for `all`, and for a
+  // single target the operator's own token plus the key when the two differ.
   async function agentsCmd(ev, slugArg, args) {
     const [handleArg, subRaw, valueRaw] = args;
     if (!handleArg) { await send?.(ev.chatId, AGENTS_USAGE); return; }
@@ -1314,22 +1323,82 @@ export function createCommands({
     // entry.agents.<being> blocks, conversations-state.mjs). Ordered defaultKey-first (when
     // resident) so the persona is always the first block/reply in a multi-being result; the
     // rest keep residentsOf()'s own order.
-    let handles;
+    // ── THE ARGUMENT IS A HANDLE, THE RECORD IS KEYED BY THE KEY (operator 2026-09-17: "for
+    // rethread the handles work to identify agent, so e and egpt are the same") ──────────────
+    // It used to be `handles = [handleArg]` — whatever the operator typed became the being KEY
+    // every verb below writes. On kg, where E is KEYED `egpt` and declares
+    // `handles: [e, egpt, ekg, egptkg]`, `/agents rethread e` therefore cleared `threadId` on a
+    // record named `e` that patchBeing invented on the spot, rolled the chat's transcript.md into
+    // transcripts/ and answered ✅ — while E kept its thread. The chat lost its transcript and
+    // gained nothing. Same for refresh/reset/auto/access_level and for the bare status view. The
+    // fingerprint was live in kg's rooms.yaml: a stray `e:` block under room/lobby.agents holding
+    // only `threadId: null` (migrations/0010-stray-handle-records.mjs removes it).
+    //
+    // Resolved through THE wake vocabulary, never a matcher of our own: `addressed` over the one
+    // already-extracted token — the house single-token lookup (mesh.mjs's findAgentByToken,
+    // heartbeat-loader's `agent:`), case-insensitive like every @mention, and a token TWO agents
+    // claim is decided exactly the way the ROUTER decides it (first agent in map order wins — see
+    // `byToken` in router.mjs's addressed), so /agents can never name a different being than the
+    // one that same token would wake. `addressWithoutAt` is passed EXPLICITLY, as mesh.mjs and
+    // heartbeat-loader do: a typed argument is bare, so the node's `dispatch.address_without_at`
+    // switch (about chat prose) never governs it.
+    //
+    // THREE more arms, each a target that IS real but which the wake vocabulary deliberately does
+    // not cover — none of them a second handle matcher:
+    //   · the KEY itself. wakeTokens drops the key once `handles:` is declared, and that rule is
+    //     about who a MESSAGE wakes; here the key is the RECORD NAME the verbs write, so it works.
+    //   · defaultKey — the persona is real by definition, even with an empty agents: map (the same
+    //     exemption agentsBeingBlock already makes).
+    //   · a RESIDENT record — a being seeded by an earlier turn with no config.yaml entry is real,
+    //     just unconfigured on this node (agentsBeingBlock says exactly that).
+    // Order matters and this is the order: a CLAIMED handle beats residency, so kg's stray `e:`
+    // record can never win `e` back from egpt and re-create the very bug above.
+    //
+    // Anything else is not a being here: REFUSED by name, with what IS addressable, and returned
+    // before a single write or transcript roll. `named` is what the REPLY calls the being — as
+    // typed, plus the key when they differ, because "✅ e rethread" while the record says `egpt`
+    // is how this went unnoticed.
+    let handles, named;
     if (handleArg === 'all') {
+      // `all` = every being residentsOf() finds on that conversation's entry — the exact
+      // registry-block owner /rooms's members roster is silent on (residentsOf reads
+      // entry.agents.<being> blocks, conversations-state.mjs). Ordered defaultKey-first (when
+      // resident) so the persona is always the first block/reply in a multi-being result; the
+      // rest keep residentsOf()'s own order. These are KEYS already — nothing to resolve.
       const entry = getContact(state, surface, jid)?.entry;
       handles = residentsOf(entry);
       if (handles.includes(defaultKey)) handles = [defaultKey, ...handles.filter((h) => h !== defaultKey)];
       if (!handles.length) { await send?.(ev.chatId, `/agents: no resident beings ${where}`); return; }
+      named = handles.join(', ');
     } else {
-      handles = [handleArg];
+      const typed = handleArg.toLowerCase();
+      const agentsMap = (cfg() ?? {}).agents ?? {};
+      const residents = residentsOf(getContact(state, surface, jid)?.entry);
+      const key = addressed(typed, agentsMap, { addressWithoutAt: true })[0]?.name
+        ?? Object.entries(agentsMap).find(([n, a]) => a && typeof a === 'object' && !n.startsWith('_') && n.toLowerCase() === typed)?.[0]
+        ?? (typed === String(defaultKey).toLowerCase() ? defaultKey : null)
+        ?? residents.find((h) => String(h).toLowerCase() === typed)
+        ?? null;
+      if (!key) {
+        const known = [...new Set([
+          ...addressableTokens(agentsMap),
+          ...Object.keys(agentsMap).filter((n) => !n.startsWith('_')).map((n) => n.toLowerCase()),
+          String(defaultKey).toLowerCase(),
+          ...residents.map((h) => String(h).toLowerCase()),
+        ])];
+        await send?.(ev.chatId, `/agents: no being ${where} answers to "${handleArg}" — nothing was changed. addressable: ${known.join(', ')}, all`);
+        return;
+      }
+      handles = [key];
+      named = typed === String(key).toLowerCase() ? key : `${handleArg} (${key})`;
     }
 
-    if (sub === 'refresh') { await agentsRefresh(ev, surface, jid, where, handles, state); return; }
-    if (sub === 'reset') { await agentsReset(ev, surface, jid, where, handles, state); return; }
-    if (sub === 'rethread') { await agentsRethread(ev, surface, jid, where, handles, state); return; }
-    if (sub === 'auto') { await agentsAuto(ev, surface, jid, where, handles, valueRaw.toLowerCase(), state); return; }
-    if (sub === 'access_level') { await agentsAccessLevel(ev, surface, jid, where, handles, valueRaw.toLowerCase(), state); return; }
-    await send?.(ev.chatId, agentsStatus(surface, jid, handles, state));
+    if (sub === 'refresh') { await agentsRefresh(ev, surface, jid, where, handles, state, named); return; }
+    if (sub === 'reset') { await agentsReset(ev, surface, jid, where, handles, state, named); return; }
+    if (sub === 'rethread') { await agentsRethread(ev, surface, jid, where, handles, state, named); return; }
+    if (sub === 'auto') { await agentsAuto(ev, surface, jid, where, handles, valueRaw.toLowerCase(), state, named); return; }
+    if (sub === 'access_level') { await agentsAccessLevel(ev, surface, jid, where, handles, valueRaw.toLowerCase(), state, named); return; }
+    await send?.(ev.chatId, agentsStatus(surface, jid, handles, state, named));
   }
 
   // ── A RETIRING THREAD'S CLI STORE MOVES WITH ITS RECORD (operator 2026-09-11) ─────────────
@@ -1425,7 +1494,7 @@ export function createCommands({
   // etc, not the access_level, nor allowed_users". Captured per handle via getBeing BEFORE the
   // wipe, reapplied via patchBeing AFTER deleteBeing + reseed. A being with neither set has
   // nothing to reapply and is wiped exactly as before.
-  async function agentsReset(ev, surface, jid, where, handles, state) {
+  async function agentsReset(ev, surface, jid, where, handles, state, named = handles.join(', ')) {
     const room = (where === 'here') ? await convRoomOf(ev) : await resolveConvRoom(surface, jid);
     if (!room) { await send?.(ev.chatId, "can't resolve this conversation's room"); return; }
 
@@ -1498,7 +1567,7 @@ export function createCommands({
     // (dropped the old `archiveNote`/`archived` plumbing that used to build a path string
     // into this reply). The store clause is not that path: it appears only when a store was
     // actually there, and a store left behind has to be findable by hand.
-    await send?.(ev.chatId, `✅ ${room.slug} reset ${where === 'here' ? '' : where + ' '}— ${handles.join(', ')} state cleared (access_level/allowed_users preserved), next message starts fresh.${cliStoreNote(stores, 'the archived folder\'s ')}`);
+    await send?.(ev.chatId, `✅ ${room.slug} reset ${where === 'here' ? '' : where + ' '}— ${named} state cleared (access_level/allowed_users preserved), next message starts fresh.${cliStoreNote(stores, 'the archived folder\'s ')}`);
   }
 
   // /agents[=<slug>] <handle>|all refresh — the verb that changes NO lifecycle at all
@@ -1533,7 +1602,7 @@ export function createCommands({
   // laziness: the argument selects only the 00-identity SLOT, which _sharedLayers filters out
   // before anything is written. What lands on disk is identical for every persona, so there is
   // no per-being def to resolve here and no second resolution path to keep in step.
-  async function agentsRefresh(ev, surface, jid, where, handles, state) {
+  async function agentsRefresh(ev, surface, jid, where, handles, state, named = handles.join(', ')) {
     const room = (where === 'here') ? await convRoomOf(ev) : await resolveConvRoom(surface, jid);
     if (!room) { await send?.(ev.chatId, "can't resolve this conversation's room"); return; }
     let wrote = [];
@@ -1548,7 +1617,7 @@ export function createCommands({
     // Names the two halves separately, and never claims a thread was minted. An empty `wrote`
     // is reported as such — a refresh that copied nothing must not read like one that did.
     const copied = wrote.length ? `directives/ re-copied (${wrote.join(', ')})` : 'directives/ re-copied: NOTHING was written (no layer had content to copy)';
-    await send?.(ev.chatId, `✅ ${handles.join(', ')} refresh ${where} — ${copied}; identity re-feeds into the RUNNING thread on its next turn (threadId unchanged, nothing moved, context kept).`);
+    await send?.(ev.chatId, `✅ ${named} refresh ${where} — ${copied}; identity re-feeds into the RUNNING thread on its next turn (threadId unchanged, nothing moved, context kept).`);
   }
 
   // /agents[=<slug>] <handle>|all rethread — NARROWER than reset (operator 2026-08-15 ruling,
@@ -1592,7 +1661,7 @@ export function createCommands({
   // re-copies the layers with `overwrite: fresh` on the next real turn, and duplicating that
   // would just race the proven path. The transcript move is different precisely because it is
   // the operator's stated definition of the verb, not a side effect of the next turn.
-  async function agentsRethread(ev, surface, jid, where, handles, state) {
+  async function agentsRethread(ev, surface, jid, where, handles, state, named = handles.join(', ')) {
     const room = (where === 'here') ? await convRoomOf(ev) : await resolveConvRoom(surface, jid);
     if (!room) { await send?.(ev.chatId, "can't resolve this conversation's room"); return; }
     try {
@@ -1620,7 +1689,7 @@ export function createCommands({
       const rolled = dest
         ? `and transcript.md moved to transcripts/${basename(dest)}`
         : 'but transcript.md was NOT moved (nothing written there yet, or it names no thread to file it under)';
-      await send?.(ev.chatId, `✅ ${handles.join(', ')} rethread ${where} — threadId cleared, ${rolled}.${cliStoreNote(stores)} An accum boundary is marked in transcript.md, so nothing said before now is fed back; the next message starts a fresh session (mode/access_level unchanged, the conversation folder stays where it is — /agents reset is what archives).`);
+      await send?.(ev.chatId, `✅ ${named} rethread ${where} — threadId cleared, ${rolled}.${cliStoreNote(stores)} An accum boundary is marked in transcript.md, so nothing said before now is fed back; the next message starts a fresh session (mode/access_level unchanged, the conversation folder stays where it is — /agents reset is what archives).`);
       await rethreadBoundary(ev, surface, jid, handles, state);
     } catch (e) { onLog(`/agents rethread ${ev.chatId}: ${e?.message ?? e}`); await send?.(ev.chatId, `/agents: rethread failed — ${e?.message ?? e}`); }
   }
@@ -1672,12 +1741,12 @@ export function createCommands({
   // `agents.<being>.mode`, merged over the block's existing fields via patchBeing — siblings
   // survive). Bare (`where === 'here'`): this chat. `=<slug>`-resolved: a DIFFERENT known
   // chat, same resolveTarget reach /e auto's <target> already had.
-  async function agentsAuto(ev, surface, jid, where, handles, mode, state) {
+  async function agentsAuto(ev, surface, jid, where, handles, mode, state, named = handles.join(', ')) {
     try {
       let next = state;
       for (const h of handles) next = patchBeing(next, surface, jid, h, { mode });
       await writeState(next);
-      await send?.(ev.chatId, `✅ ${handles.join(', ')} mode ${where} → ${mode}`);
+      await send?.(ev.chatId, `✅ ${named} mode ${where} → ${mode}`);
     } catch (e) { onLog(`/agents auto ${ev.chatId}: ${e?.message ?? e}`); await send?.(ev.chatId, `/agents: auto failed — ${e?.message ?? e}`); }
   }
 
@@ -1692,7 +1761,7 @@ export function createCommands({
   // dangerously_skip_permissions, so editing either file changes behavior immediately with
   // no re-run needed.
   // Agent/model/effort/engine are never touched.
-  async function agentsAccessLevel(ev, surface, jid, where, handles, target, state) {
+  async function agentsAccessLevel(ev, surface, jid, where, handles, target, state, named = handles.join(', ')) {
     const perm = loadPermissionLevel(target);
     if (!perm) { await send?.(ev.chatId, `/agents: permissions file for "${target}" not found or unparseable`); return; }
     try {
@@ -1723,16 +1792,22 @@ export function createCommands({
       all: 'unconfined: full filesystem, bare Bash',
       sandbox: "all's capability, but only ever inside the OS sandbox",
     }[target] ?? `see config/permissions/${target}.md`;
-    await send?.(ev.chatId, `✅ ${handles.join(', ')} access ${where} → ${target} (${blurb})`);
+    await send?.(ev.chatId, `✅ ${named} access ${where} → ${target} (${blurb})`);
   }
 
   // /agents[=<slug>] <handle>|all (bare) — the LIVE status view (never a stale snapshot; see
   // agentsBeingBlock). Fenced-yaml, one block per handle, joined with a `---` document
   // separator when `all` covers more than one resident being. Never throws (every probe
   // degrades to '?'/'unknown', matching statusTarget's own convention).
-  function agentsStatus(surface, jid, handles, state) {
+  //
+  // One line ABOVE the fence when the operator's word is not the being's key (`e (egpt)`) — the
+  // block itself is keyed `being: egpt`, and without this the answer to `/agents e` silently
+  // looks like it is about some other being. Absent when the two agree, so the bare form is
+  // byte-identical to what it always was.
+  function agentsStatus(surface, jid, handles, state, named = handles.join(', ')) {
     const blocks = handles.map((h) => agentsBeingBlock(surface, jid, h, state));
-    return '```yaml\n' + blocks.join('\n---\n') + '\n```';
+    const head = (handles.length === 1 && named !== handles[0]) ? `${named}\n` : '';
+    return head + '```yaml\n' + blocks.join('\n---\n') + '\n```';
   }
 
   // ONE being's status block — statusTarget's own preview is PERSONA-ONLY (resolveDefaultBrainDef,

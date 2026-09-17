@@ -184,8 +184,9 @@ import { framePrompt, isTextecutable } from '../tools/textecute.mjs';
 // THE wake vocabulary (router.mjs) — `agent:` is a HANDLE, so it resolves through the SAME scan a
 // typed @mention goes through. `addressed` over a single already-extracted token is the house
 // single-token lookup (src/spine/mesh.mjs's findAgentByToken does exactly this for an envelope's
-// `<being>` half); `wakeTokens` is imported only to LIST the valid handles in the skip message.
-import { addressed, wakeTokens } from './router.mjs';
+// `<being>` half); `addressableTokens` is imported only to LIST the valid handles in the skip
+// message (it was _knownHandles here until commands.mjs needed the same sentence).
+import { addressed, addressableTokens } from './router.mjs';
 // THE POSIX-bash resolver (msys64 first, never System32's WSL launcher) — command beats run under it
 // on win32 (operator 2026-09-16: "mejor usa bash posix"). One candidate list, owned there.
 import { resolveSandboxGitBash, GIT_BASH_CANDIDATES } from '../sandbox-cli-session.mjs';
@@ -367,16 +368,6 @@ function _lastDailySlot(daily, timeZone, nowMs) {
 // mistaken for "no action") — the entry is invalid and skipped.
 const _INVALID_ACTION = Symbol('invalid-action');
 
-// Every handle the node answers to — for the unknown-agent SKIP MESSAGE only (an operator whose
-// beat named the map key has to see what to write instead). Same guard `addressed`'s own scan
-// applies (`_`-prefixed comment keys and non-map values are not agents), so it can never advertise
-// a token that would not resolve.
-function _knownHandles(agents) {
-  return Object.entries(agents ?? {})
-    .filter(([n, a]) => a && typeof a === 'object' && !n.startsWith('_'))
-    .flatMap(([n, a]) => wakeTokens(n, a));
-}
-
 // Resolve the ACTION for a raw entry: `command:` (verbatim shell line), `script_path:`
 // (expanded to `node "<textecute.mjs>" "<script>"`, script relative → the entry cwd), or
 // `agent:` + `script_path:` (a TURN for that being, dispatched through brainpool — see the
@@ -428,7 +419,7 @@ function _resolveAction({ name, raw, isAlive, aliveCommand, cwd, aliveCwd, ns, a
     // (addressWithoutAt is passed EXPLICITLY, as mesh.mjs does: a config key is written bare, so
     // the node's `dispatch.address_without_at` switch — about typed chat text — never governs it.)
     const being = addressed(handle, agents, { addressWithoutAt: true })[0]?.name;
-    if (!being) { onLog(`${name}: unknown agent ${JSON.stringify(raw.agent)} — skipped (agent: is a HANDLE, the way you'd @address it; known: ${_knownHandles(agents).join(' ') || '(none)'})`); return _INVALID_ACTION; }
+    if (!being) { onLog(`${name}: unknown agent ${JSON.stringify(raw.agent)} — skipped (agent: is a HANDLE, the way you'd @address it; known: ${addressableTokens(agents).join(' ') || '(none)'})`); return _INVALID_ACTION; }
     if (hasPrompt) return { kind: 'turn', being, prompt: raw.prompt.trim(), cwd, ns };
     const script = raw.script_path.trim();
     if (!isTextecutable(script)) { onLog(`${name}: script_path ${JSON.stringify(script)} is not a textecutable — skipped (must end in .x.md)`); return _INVALID_ACTION; }
