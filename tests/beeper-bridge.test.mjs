@@ -18,7 +18,7 @@ import { createServer } from 'node:http';
 import { WebSocketServer } from 'ws';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { startBeeperBridge, newerMsgId, transcriptionForNoteId, crossAccountMsgKey, LISTENING_REACTION } from '../src/bridges/beeper.mjs';
@@ -32,7 +32,10 @@ import { echoRank } from '../src/spine/echo-priority.mjs';
 import { addressed, createRouter } from '../src/spine/router.mjs';
 import { buildTranscriptionPipeline } from '../src/transcription-pipeline.mjs';
 import { makeOutbound } from '../src/spine/sender.mjs';
-import { makePeerMouth } from '../src/spine/boot.mjs';
+import { boot, makePeerMouth } from '../src/spine/boot.mjs';
+import { emptyState } from '../src/conversations-state.mjs';
+import { startTranscriptorServer } from '../src/tools/transcriptor.mjs';
+import { startSynthesizerServer } from '../src/tools/synthesizer.mjs';
 
 const CHATS_PER_PAGE = 2;   // fake /v1/chats page size (live it's 25) — small so page 2 is readable
 
@@ -3764,5 +3767,207 @@ describe('beeper bridge — 🎧 listening mark: placed where the decode runs, t
     expect(incoming[0].text).toBe('[voice note]');
     expect(fake.reactions).toHaveLength(0);
     expect(fake.unreactions).toHaveLength(0);
+  });
+});
+
+// ═══ REPLYING `e` READS A MESSAGE BACK — THROUGH THE WHOLE NODE (operator 2026-09-17) ═══════════
+//
+// "Replying `e` to a voice note should return its transcription … something regressed and was not
+// caught on a test." Every reply-gate case above hands the bridge a HAND-WRITTEN transcript.md and
+// one connection. These drive the real node instead: boot() with REAL beeper bridges on two fake
+// Desktops — the EAR (An's account, `primary`) and the MOUTH (Rodz's, `secondary`) — the spine's own
+// transcript writer and boot's own readTranscript over one in-memory fs, and REAL signed transcriptor
+// and synthesizer endpoints on ephemeral ports with only whisper and piper faked. kg's chains are
+// single remote rungs, as live. Nothing hand-writes the record: the message arrives, the node
+// decodes and records it, and the operator's `e` is answered from that record.
+//
+// Two chats, the two shapes the operator named: a 1:1 on the ear the mouth is not in (Favel), and
+// a group both accounts are in, which is two rooms with two ids and so two arrivals of every message.
+describe('the whole node — replying `e` reads the message back (ear, mouth, record, workers)', () => {
+  const KEY = 'dGVzdC1rZXktdGVzdC1rZXktdGVzdC1rZXktMDA';
+  const AN = '+15550000001', RODZ = '+15550000002', FAVEL = '+15550000003', DON = '+15550000004';
+  const FAVEL_CHAT = CHAT('favel-an-only');
+  const SHARED_ON_EAR = CHAT('shared-as-an-sees-it');
+  const SHARED_ON_MOUTH = CHAT('shared-as-rodz-sees-it');
+  // An account's OWN roster entry carries no phoneNumber, only its matrix id (measured; see
+  // crossAccountChatKey's header). Members carry their number.
+  const selfEntry = (id) => ({ id, isSelf: true });
+  const memberEntry = (id, phoneNumber) => ({ id, phoneNumber, fullName: id });
+
+  function memIo() {
+    const files = new Map();
+    const dirs = new Set();
+    const missing = (p) => Object.assign(new Error(`ENOENT: ${p}`), { code: 'ENOENT' });
+    return {
+      files,
+      appendFile: async (p, data) => files.set(p, `${files.get(p) ?? ''}${data}`),
+      writeFile: async (p, data) => files.set(p, String(data)),
+      readFile: async (p) => { if (!files.has(p)) throw missing(p); return files.get(p); },
+      mkdir: async (p) => { dirs.add(p); },
+      existsSync: (p) => files.has(p) || dirs.has(p),
+      readdir: async (p) => [...files.keys()].filter((f) => dirname(f) === p).map((f) => f.slice(p.length + 1)),
+      rename: async (from, to) => { if (!files.has(from)) throw missing(from); files.set(to, files.get(from)); files.delete(from); },
+    };
+  }
+  const fakeSession = (opts) => ({ sessionId: opts.sessionId ?? 'sess-1', async turn(m, onUpdate) { onUpdate?.(`↩ ${m}`); return { text: `↩ ${m}`, sessionId: this.sessionId }; }, close() {} });
+
+  async function bootKg() {
+    const mouth = await startFakeBeeper();
+    fake.accounts.push({ accountID: 'whatsapp', user: { isSelf: true, fullName: 'An', phoneNumber: AN, id: '@an:beeper.com' } });
+    mouth.accounts.push({ accountID: 'whatsapp', user: { isSelf: true, fullName: 'Rodz', phoneNumber: RODZ, id: '@rodz:beeper.com' } });
+    fake.chats.set(FAVEL_CHAT, { title: 'Favel "Elena" Konefka', type: 'single', isMuted: false, accountID: 'whatsapp',
+      participants: { items: [selfEntry('@an:beeper.com'), memberEntry('favel-as-an-sees-her', FAVEL)] } });
+    fake.chats.set(SHARED_ON_EAR, { title: 'Familia', type: 'group', isMuted: false, accountID: 'whatsapp',
+      participants: { items: [selfEntry('@an:beeper.com'), memberEntry('rodz-as-an-sees-him', RODZ), memberEntry('favel-as-an-sees-her', FAVEL)] } });
+    mouth.chats.set(SHARED_ON_MOUTH, { title: 'Familia', type: 'group', isMuted: false, accountID: 'whatsapp',
+      participants: { items: [memberEntry('favel-as-rodz-sees-her', FAVEL), selfEntry('@rodz:beeper.com'), memberEntry('an-as-rodz-sees-him', AN)] } });
+
+    // dolly's two workers, real endpoints: only the engines behind them are fakes.
+    const heard = [], spoken = [];
+    const transcriptor = await startTranscriptorServer({ port: 0, keyB64: KEY, transcribe: async (p) => { heard.push(p); return 'hola desde la nota'; } });
+    const voicesDir = mkdtempSync(join(stateDir, 'voices-'));
+    writeFileSync(join(voicesDir, 'ona.onnx'), 'model');
+    const synthesizer = await startSynthesizerServer({ port: 0, keyB64: KEY, pythonPath: 'python.exe', voicesDir, synthesize: async (text) => { spoken.push(text); return Buffer.from('OGG-AUDIO'); } });
+
+    const config = {
+      node_name: 'kg',
+      user_name: 'An',
+      whatsapp: { allowed_users: [AN] },
+      beeper: {
+        primary: { account: 'an@example.com', token: 'TOK-ear', base_url: `http://127.0.0.1:${fake.port}` },
+        secondary: { account: 'rodz@example.com', token: 'TOK-mouth', base_url: `http://127.0.0.1:${mouth.port}` },
+      },
+      agents: { egpt: { configuration: 'egpt', default: true, name: 'E', handles: ['ekg', 'egptkg'], fallback_handle: { handle: ['e', 'egpt'], unless_present: DON } } },
+      transcription_service: { use_config: 'reve', reve: { fallback_order: ['worker'], worker: { type: 'whisper-server-remote', endpoint: `http://127.0.0.1:${transcriptor.port}`, token: KEY } } },
+      voice_service: { use_config: 'reve', reve: { fallback_order: ['gpu'], gpu: { type: 'piper-server-remote', endpoint: `http://127.0.0.1:${synthesizer.port}`, token: KEY }, voice: 'ona' } },
+    };
+    const io = memIo();
+    const lines = [];
+    let convState = emptyState();
+    const earBase = fake.subscribed(), mouthBase = mouth.subscribed();
+    const app = await boot({
+      readConfig: () => config, makeSession: fakeSession, probeEndpoint: async () => ({ ok: false, status: 0 }),
+      loadState: async () => convState, writeState: async (s) => { convState = s; },
+      io, ingest: false, tickMs: 0, log: { line: (s) => lines.push(s) },
+    });
+    await waitFor(() => fake.subscribed() > earBase && mouth.subscribed() > mouthBase);
+    await waitFor(() => fake.accountsGets() > 0 && mouth.accountsGets() > 0);
+    const transcriptWith = (needle) => [...io.files].find(([p, t]) => /transcript\.md$/.test(p) && t.includes(needle))?.[1] ?? null;
+    const close = async () => { app.stop(); transcriptor.close(); synthesizer.close(); await mouth.close(); };
+    return { mouth, lines, heard, spoken, transcriptWith, close };
+  }
+
+  // boot's bridges keep their seen-ids in the profile's state/, which outlives a run: ids are unique per run.
+  const RUN = Math.random().toString(36).slice(2, 8);
+  const I = (id) => `${id}-${RUN}`;
+  // One real message as each account's Desktop delivers it: its own id, the same timestamp.
+  const voiceNote = (id, chatID, att, ts, over = {}) => ({ id, chatID, type: 'VOICE', text: null, attachments: [att], isSender: false, senderName: 'Favel', senderID: 'favel', timestamp: ts, ...over });
+  const textFrom = (id, chatID, text, ts, over = {}) => ({ id, chatID, text, isSender: false, senderName: 'Favel', senderID: 'favel', timestamp: ts, ...over });
+  const replyE = (id, chatID, quoted, over = {}) => ({ id, chatID, text: 'e', isSender: true, senderName: 'An', senderID: '@an:beeper.com', linkedMessageID: quoted, timestamp: Date.now(), ...over });
+  const upsert = (desk, ...entries) => desk.emit({ type: 'message.upserted', entries });
+  const isReveal = (p) => (p.text ?? '').startsWith(ECHO_MARKER);
+  const BOOTS_A_NODE = { timeout: 15_000 };   // a whole boot, two bridges and two workers per case
+
+  it('Favel shape — a 1:1 on the ear the mouth is not in: `e` on a VOICE NOTE returns its transcript as a reply to the note', BOOTS_A_NODE, async () => {
+    const node = await bootKg();
+    try {
+      upsert(fake, voiceNote(I('fv-note-1'), FAVEL_CHAT, voiceAtt('bytes of the favel note'), Date.now()));
+      await waitFor(() => node.transcriptWith(`#${I('fv-note-1')}:`));
+      expect(node.transcriptWith(`#${I('fv-note-1')}:`)).toContain(`#${I('fv-note-1')}: (voice transcription`);
+      upsert(fake, replyE(I('fv-reply-1'), FAVEL_CHAT, I('fv-note-1')));
+      await waitFor(() => fake.posts.some(isReveal));
+      const reveal = fake.posts.filter(isReveal);
+      expect(reveal).toHaveLength(1);
+      expect(reveal[0].text).toBe(`${ECHO_MARKER} hola desde la nota`);
+      expect(reveal[0].replyToMessageID).toBe(I('fv-note-1'));
+      expect(node.mouth.posts).toEqual([]);
+      expect(node.heard).toHaveLength(1);   // decoded once, on arrival — the reply reuses the record
+    } finally { await node.close(); }
+  });
+
+  it('Favel shape — `e` on a WRITTEN message: the 🔊 reading goes out as audio replying to it, and the ack is cleaned up', BOOTS_A_NODE, async () => {
+    const node = await bootKg();
+    try {
+      upsert(fake, textFrom(I('fv-text-1'), FAVEL_CHAT, 'nos vemos a las cinco', Date.now()));
+      await waitFor(() => node.transcriptWith(`#${I('fv-text-1')}:`));
+      upsert(fake, replyE(I('fv-reply-2'), FAVEL_CHAT, I('fv-text-1')));
+      await waitFor(() => fake.posts.some((p) => p.attachment));
+      expect(node.spoken).toEqual(['nos vemos a las cinco']);
+      expect(fake.posts.find((p) => p.attachment).replyToMessageID).toBe(I('fv-text-1'));
+      const ack = fake.posts.find((p) => p.text === '🔊 reading…');
+      await waitFor(() => fake.deletes.some((d) => d.messageID === ack.confirmedID));
+      expect(fake.deletes.some((d) => d.messageID === I('fv-reply-2'))).toBe(false);
+      expect(node.mouth.posts).toEqual([]);
+    } finally { await node.close(); }
+  });
+
+  it('a group BOTH accounts are in — the note and the `e` arrive on both: ONE transcript, from the ear, replying to the ear\'s copy of the note', BOOTS_A_NODE, async () => {
+    const node = await bootKg();
+    try {
+      const ts = Date.now();
+      const att = voiceAtt('bytes of the shared note');
+      upsert(fake, voiceNote(I('sh-note-ear'), SHARED_ON_EAR, att, ts));
+      upsert(node.mouth, voiceNote(I('sh-note-mouth'), SHARED_ON_MOUTH, att, ts, { senderID: 'favel-as-rodz-sees-her' }));
+      await waitFor(() => node.transcriptWith(`#${I('sh-note-ear')}:`));
+      await waitFor(() => node.lines.some((l) => /voice transcribed \[shared-as-rodz-sees-it\]/.test(l)));
+      // The operator's `e`, as each account sees it: his own send on the ear, a member's message on the
+      // mouth — under an id on allowed_users, so the mouth's own bridge runs the reply gate too.
+      upsert(fake, replyE(I('sh-reply-ear'), SHARED_ON_EAR, I('sh-note-ear')));
+      upsert(node.mouth, replyE(I('sh-reply-mouth'), SHARED_ON_MOUTH, I('sh-note-mouth'), { isSender: false, senderID: AN }));
+      await waitFor(() => fake.posts.some(isReveal));
+      await waitFor(() => node.lines.some((l) => l.includes(`no voice-transcript entry for ↩${I('sh-note-mouth')} `)));
+      const reveal = fake.posts.filter(isReveal);
+      expect(reveal).toHaveLength(1);
+      expect(reveal[0].text).toBe(`${ECHO_MARKER} hola desde la nota`);
+      expect(reveal[0].replyToMessageID).toBe(I('sh-note-ear'));
+      expect(node.mouth.posts).toEqual([]);   // the mouth's copy has no record under ITS id, and says nothing
+      expect(node.heard).toHaveLength(1);     // one decode for both arrivals
+    } finally { await node.close(); }
+  });
+
+  // The operator's `e` on a written message in a shared group. `mouthSeesOperatorAs` is the id the
+  // MOUTH's Desktop delivers his message under: on allowed_users or not decides whether the mouth's
+  // own bridge runs the reply gate at all (its `isSender || isAllowedUser` check).
+  async function sharedTextReply(node, tag, mouthSeesOperatorAs) {
+    const ts = Date.now();
+    upsert(fake, textFrom(I(`${tag}-text-ear`), SHARED_ON_EAR, 'llego tarde', ts));
+    upsert(node.mouth, textFrom(I(`${tag}-text-mouth`), SHARED_ON_MOUTH, 'llego tarde', ts, { senderID: 'favel-as-rodz-sees-her' }));
+    await waitFor(() => node.transcriptWith(`#${I(`${tag}-text-ear`)}:`));
+    upsert(fake, replyE(I(`${tag}-reply-ear`), SHARED_ON_EAR, I(`${tag}-text-ear`)));
+    upsert(node.mouth, replyE(I(`${tag}-reply-mouth`), SHARED_ON_MOUTH, I(`${tag}-text-mouth`), { isSender: false, senderID: mouthSeesOperatorAs }));
+    await waitFor(() => node.lines.some((l) => l.includes(`#${I(`${tag}-reply-mouth`)}`) || l.includes(`↩${I(`${tag}-text-mouth`)}`)));
+    await waitFor(() => fake.posts.some((p) => p.attachment));
+    const ack = fake.posts.find((p) => p.text === '🔊 reading…');
+    await waitFor(() => fake.deletes.some((d) => d.messageID === ack.confirmedID));
+  }
+
+  it('a group BOTH accounts are in — `e` on a WRITTEN message: the 🔊 reading goes out from the ear, replying to the ear\'s copy', BOOTS_A_NODE, async () => {
+    const node = await bootKg();
+    try {
+      await sharedTextReply(node, 'txt', 'an-as-rodz-sees-him');
+      expect(fake.posts.filter((p) => p.attachment)).toHaveLength(1);
+      expect(fake.posts.find((p) => p.attachment).replyToMessageID).toBe(I('txt-text-ear'));
+      expect(node.spoken).toEqual(['llego tarde']);
+      expect(node.mouth.posts).toEqual([]);
+    } finally { await node.close(); }
+  });
+
+  // ⚠️ A HAZARD, LOCKED AS ONE (found 2026-09-17 by the case above; not the reported failure). The
+  // reply gate runs INSIDE each bridge (beeper.mjs dispatchMessage), below boot's per-chat ear
+  // decision (earWhereTheEarIsAbsent), so in a chat both accounts are in the MOUTH's bridge runs it
+  // too. For a voice note that is harmless: the record holds the note under the ear's id only, and
+  // the mouth's _seenText holds no body for it. For a WRITTEN message the mouth's _seenText holds
+  // the text under its own id, so when the mouth's view of the operator is on allowed_users the
+  // same `e` is read aloud TWICE, once from each account. Flip this when the gate is made to run
+  // only on the connection that is the ear for the chat.
+  it('⚠️ HAZARD: a group BOTH accounts are in, the mouth sees the operator under an allow-listed id — the text is read aloud from BOTH accounts', BOOTS_A_NODE, async () => {
+    const node = await bootKg();
+    try {
+      await sharedTextReply(node, 'hz', AN);
+      await waitFor(() => node.mouth.posts.some((p) => p.attachment));
+      expect(fake.posts.find((p) => p.attachment).replyToMessageID).toBe(I('hz-text-ear'));
+      expect(node.mouth.posts.find((p) => p.attachment).replyToMessageID).toBe(I('hz-text-mouth'));
+      expect(node.spoken).toEqual(['llego tarde', 'llego tarde']);
+    } finally { await node.close(); }
   });
 });
