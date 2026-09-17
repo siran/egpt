@@ -78,7 +78,7 @@ describe('sender — single-message reply train', () => {
     await out.finish({ text: 'reply' });
     // The tag now also carries the per-agent signature-wrap slots (empty by default → the port adds nothing).
     // The core is the BARE reply — no inline ∎ / end-marker (2026-07-12); any agent close is a port-side layer.
-    expect(bridge.sent).toEqual([{ chat: '!c', text: 'reply', opts: { bodyEmoji: '🐶', label: null, replyTo: 'm1', agentSigOpen: '', agentSigClose: '' } }]);
+    expect(bridge.sent).toEqual([{ chat: '!c', text: 'reply', opts: { bodyEmoji: '🐶', label: null, replyTo: 'm1', agentSigOpen: '', agentSigClose: '', persona: 'e' } }]);
   });
 
   it('send failure ends the message with ❌', async () => {

@@ -16,6 +16,18 @@
 // metadata beside text (RGI emoji tag sequences use exactly this, terminated by the same
 // U+E007F), so nothing renders.
 //
+// A BEING'S POST NAMES THE BEING TOO (operator 2026-09-16, "make it wake structurally, not by
+// reading the body (or maybe using the invisible characters)"): the interior is `<node>/<being>`,
+// e.g. `kg/egpt`, so a quote-reply can tell which being wrote the quoted message from the frame
+// alone (bridges/beeper.mjs replyToBeing). A line no being speaks (a system line, a `post:` beat,
+// a 👂 echo) keeps the node-only frame. THE NODE HALF IS WHAT EVERY EXISTING READER GETS:
+// decodeNodeSignature returns the node alone, so renderNodeSignature still writes `<kg>` and
+// node-names.mjs fromOtherNode still recognises our own frames; the being is read only by
+// decodeBeingSignature. The separator is '/' because it cannot occur in either half: the one name
+// grammar here (mesh/names.mjs PART_RE, [a-z0-9][a-z0-9_-]*) admits neither '/' nor '.', and '.'
+// is already that grammar's separator with the OPPOSITE order (`<being>.<node>`), so `kg.egpt`
+// would read as being `kg` on node `egpt`.
+//
 // WHY THIS BLOCK. 20 candidate invisible characters were sent through the live Beeper Self chat
 // and read back (operator probe, 2026-07-26): 19 of 20 survived byte-for-byte — including TAG
 // LANGUAGE U+E0001 and TAG LATIN A U+E0041, the two members of this block that were tested. The
@@ -35,29 +47,44 @@ const TAG_CANCEL = '\u{E007F}';   // CANCEL TAG — the terminator
 const FRAME_SOURCE = '\u{E0001}[\u{E0020}-\u{E007E}]*\u{E007F}';
 const FRAME_G = new RegExp(FRAME_SOURCE, 'gu');
 const FRAME_1 = new RegExp(FRAME_SOURCE, 'u');    // same frame, non-global: .test() must not carry lastIndex
+const BEING_SEP = '/';                            // `<node>/<being>` — see the header for why '/'
 
 /**
- * The invisible frame for `node`. '' when there is no node name — the CODEC is tolerant so a
- * directly-constructed port stays byte-identical to before; boot is where a missing node_name is
- * FATAL (src/spine/boot.mjs). Non-ASCII characters are dropped (the tags block encodes ASCII).
+ * The invisible frame for `node`, naming `being` too when one speaks (`<node>/<being>`). '' when
+ * there is no node name — the CODEC is tolerant so a directly-constructed port stays byte-identical
+ * to before; boot is where a missing node_name is FATAL (src/spine/boot.mjs). Non-ASCII characters
+ * are dropped (the tags block encodes ASCII).
  */
-export function encodeNodeSignature(node) {
+export function encodeNodeSignature(node, being = null) {
   const name = String(node ?? '').trim();
+  const who = String(being ?? '').trim();
   let out = '';
-  for (const ch of name) {
+  for (const ch of (name && who ? `${name}${BEING_SEP}${who}` : name)) {
     const c = ch.codePointAt(0);
     if (c >= 0x20 && c <= 0x7E) out += String.fromCodePoint(TAG_BASE + c);
   }
   return out ? `${TAG_BEGIN}${out}${TAG_CANCEL}` : '';
 }
 
-/** The node name carried by the FIRST frame in `text`, or null when there is none (the ordinary case). */
-export function decodeNodeSignature(text) {
+// The decoded interior of the FIRST frame in `text` (`kg`, or `kg/egpt`), or null when there is none.
+function frameInterior(text) {
   const m = String(text ?? '').match(FRAME_G);
   if (!m?.length) return null;
   let out = '';
   for (const ch of m[0].slice(TAG_BEGIN.length, -TAG_CANCEL.length)) out += String.fromCodePoint(ch.codePointAt(0) - TAG_BASE);
-  return out || null;
+  return out;
+}
+
+/** The node name carried by the FIRST frame in `text`, or null when there is none (the ordinary case). */
+export function decodeNodeSignature(text) {
+  return frameInterior(text)?.split(BEING_SEP)[0] || null;
+}
+
+/** The being key carried by the FIRST frame in `text`, or null when it names none (a node-only frame, or no frame). */
+export function decodeBeingSignature(text) {
+  const s = frameInterior(text);
+  const i = s ? s.indexOf(BEING_SEP) : -1;
+  return i >= 0 ? (s.slice(i + 1) || null) : null;
 }
 
 /**

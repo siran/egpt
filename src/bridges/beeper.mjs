@@ -56,7 +56,7 @@ import { makeSerialByKey } from '../serial-by-key.mjs';
 import { htmlToMarkdown } from '../html-to-markdown.mjs';
 import { normalizeTokens, similarity } from '../text-similarity.mjs';
 import { makeWrapPersona } from './persona-wrap.mjs';
-import { stripNodeSignature } from '../node-signature.mjs';
+import { stripNodeSignature, decodeNodeSignature, decodeBeingSignature } from '../node-signature.mjs';
 import { reactionAction, editAction, isLiveStreamFrame } from '../dispatch-line.mjs';
 import { bodyForMessageId } from '../transcript-log.mjs';
 import { mentionStatus } from '../auto-mode.mjs';
@@ -1979,8 +1979,27 @@ export async function startBeeperBridge(opts = {}) {
     //      operator's complaint "when I reply to E it isn't notified, I have to include
     //      @e". Since the quoted content isn't inlined, the persona-marker check isn't
     //      possible; the sent-id set IS the signal. auto-mode already gates on it.
+    //   3. `replyToBeing` names WHICH BEING wrote the quoted message, read off its invisible
+    //      frame, never its prose (operator 2026-09-16: "make it wake structurally, not by
+    //      reading the body (or maybe using the invisible characters)"). The beings speak
+    //      through the MOUTH account, and ids are per account, so on the EAR the quoted id is
+    //      not one we sent: live, a quote-reply to E's #7143 with no handle woke nothing — only
+    //      the mouth's arrival said replyToBot, and the per-chat ear gate rightly discards that
+    //      one. The frame travels inside the body, so this account's own copy still carries
+    //      `<node>/<being>` (src/node-signature.mjs). Read by id from what the bridge already
+    //      holds — _seenText, seeded on first sight of every upsert (the 🔊 path below reads it
+    //      the same way) — else the chat's recent list. Only THIS node's frame names one of our
+    //      beings; a co-account peer's is that spine's to wake. Any miss is null and changes
+    //      nothing; a hit also makes replyToBot true. Not looked up for a backlog replay, which
+    //      is never dispatched.
     const replyToId = msg.linkedMessageID ?? msg.replyToMessageID ?? msg.quotedMessageID ?? null;
-    const replyToBot = !!(replyToId && wasSentByUs(chatID, replyToId));
+    let replyToBeing = null;
+    if (replyToId && !isBacklog) {
+      const quoted = _seenText.get(msgKeyOf(chatID, replyToId))
+        ?? (await listMessagesRaw(chatID)).find((m) => m?.id != null && String(m.id) === String(replyToId))?.text;
+      if (decodeNodeSignature(quoted) === String(nodeName).trim()) replyToBeing = decodeBeingSignature(quoted);
+    }
+    const replyToBot = !!(replyToId && wasSentByUs(chatID, replyToId)) || !!replyToBeing;
 
     // BARE @e REPLY TO A VOICE NOTE → 👂 transcript, sent as a NEW message replying to the
     // ORIGINAL voice note (operator 2026-07-18, reworked 2026-07-20, reworked again 2026-08-10:
@@ -2141,6 +2160,7 @@ export async function startBeeperBridge(opts = {}) {
       backlog: isBacklog,                   // older than bridge start (a woken node's replay) → transcript-only, never dispatched
       replyToBot,                           // true when this is a reply to a message WE sent (gates a reply without @e)
       replyToId,                            // the quoted message id (→ `↩#<id>` in the dispatch line), null when not a reply
+      replyToBeing,                         // the being key in the quoted message's frame (this node's), null otherwise — the router addresses it
       isReaction: false,
       isTranscriptFromVoice: isVoice,
       msgKey: msg.id || null,
@@ -2152,7 +2172,7 @@ export async function startBeeperBridge(opts = {}) {
       msgHash: crossAccountMsgKey(msg),
       msgTs: tsMs,
     };
-    onLog(`beeper: incoming [${info.title}] ${msg.senderName}: ${JSON.stringify((text || '').slice(0, 60))} (atE=${st.atEAnywhere}${replyToBot ? ' replyToBot' : ''}${replyToId ? ` ↩${replyToId}` : ''}${isVoice ? ' voice' : ''})`);
+    onLog(`beeper: incoming [${info.title}] ${msg.senderName}: ${JSON.stringify((text || '').slice(0, 60))} (atE=${st.atEAnywhere}${replyToBot ? ' replyToBot' : ''}${replyToBeing ? ` replyToBeing=${replyToBeing}` : ''}${replyToId ? ` ↩${replyToId}` : ''}${isVoice ? ' voice' : ''})`);
     // Hand off to the host WITHOUT awaiting the reply turn. The host (spine) enqueues
     // this message synchronously — so the order messages REACH here is the order the
     // spine sees (dispatches now run concurrently, so that is arrival order only up to

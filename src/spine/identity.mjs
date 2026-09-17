@@ -118,6 +118,7 @@ export function createIdentity({ formatLine = formatDispatchLine, now = () => Da
         msgHash: f.msgHash ?? null,
         msgTs: f.msgTs ?? null,
         replyToId: f.replyToId ?? null,   // the quoted message id (→ `↩#<id>`), null when not a reply
+        replyToBeing: f.replyToBeing ?? null,   // the being whose post is quoted, read off its invisible frame by the bridge — router.mjs addresses it
         ts, body, kind,
         // mention status the bridge already computed — the gating service's input.
         mention: { atEStart: !!f.atEStart, atEAnywhere: !!f.atEAnywhere, replyToBot: !!f.replyToBot },

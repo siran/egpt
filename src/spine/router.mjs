@@ -232,7 +232,13 @@ export function fallbackWake(agent) {
 // exist: mesh.mjs (resolving an envelope's `<being>.<node>`) and heartbeat-loader.mjs (resolving a
 // configured handle) both name an agent with NO chat in hand, so their vocabulary is unchanged —
 // and so is resolve()'s on a node that wired no membership seam.
-export function addressed(text, agents, { addressWithoutAt = true, isVoice = false, withFallback = false } = {}) {
+//
+// `replyToBeing` (DEFAULT null, operator 2026-09-16): the being whose post this message QUOTES, as
+// the bridge read it off that post's invisible frame (ev.replyToBeing, src/bridges/beeper.mjs) —
+// never off prose. When it names an agent it is ONE MORE HIT in this same list, so resolve() puts it
+// through every post-match filter a handle hit passes. Deduplicated like any two hits; when the
+// being was also named, that one hit carries `reply` too, so its gate sees the reply either way.
+export function addressed(text, agents, { addressWithoutAt = true, isVoice = false, withFallback = false, replyToBeing = null } = {}) {
   const byToken = new Map();                       // WAKE TOKEN -> { name, agent }; first agent wins a shared handle
   const byVoiceToken = new Map();                   // VOICE TOKEN -> { name, agent }; same convention, voice-only
   const guardOf = new Map();                        // FALLBACK TOKEN -> the GUARD that silences it ({ unlessPresent, unlessPeerAlive })
@@ -286,6 +292,13 @@ export function addressed(text, agents, { addressWithoutAt = true, isVoice = fal
       out.push({ name: hit.name, agent: hit.agent, token, atStart: true, anywhere: true });
     }
   }
+  if (replyToBeing != null) {
+    const want = String(replyToBeing).toLowerCase();
+    const named = out.find((h) => h.name === want);
+    const entry = Object.entries(agents ?? {}).find(([name, agent]) => agent && typeof agent === 'object' && !name.startsWith('_') && name.toLowerCase() === want);
+    if (named) named.reply = true;
+    else if (entry) out.push({ name: want, agent: entry[1], token: null, atStart: false, anywhere: false, reply: true });
+  }
   return out;
 }
 
@@ -309,14 +322,16 @@ export function addressed(text, agents, { addressWithoutAt = true, isVoice = fal
 export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', addressWithoutAt = true, loadState = null, isPresent = null, isPeerAlive = null, inboundOf = null, onLog = () => {} } = {}) {
   // ONE addressed agent → the routing target it resolves to. Per-kind semantics are
   // UNCHANGED; only the caller changed (every hit, not just the first).
-  function targetFor({ name, agent, token, atStart, unlessPresent, unlessPeerAlive }, ev) {
+  function targetFor({ name, agent, token, atStart, unlessPresent, unlessPeerAlive, reply }, ev) {
     // The mention an addressed agent hands its own gate. NOT a constant: the flags are the
     // matcher's REAL per-agent findings (operator 2026-07-25: "respect the mode, if it's
     // mention-direct not the same as mention … nothing has changed"). replyAllowed() already
     // knows what they mean — `mention` wakes on anywhere, `mention-direct` only on atStart — so
     // an agent named mid-sentence in a mention-direct chat correctly stays silent. A LEADING
     // @name still yields { atEStart: true, atEAnywhere: true }, exactly the old constant.
-    const mention = { atEStart: atStart, atEAnywhere: true, replyToBot: false };
+    // `replyToBot` is the matcher's finding too: true for a hit won by quoting this being's own
+    // post (addressed() `replyToBeing`), so a mention-mode chat admits the reply without a handle.
+    const mention = { atEStart: atStart, atEAnywhere: true, replyToBot: !!reply };
     // THE ADDRESSING HANDLE, or null (operator 2026-09-11). The token that OPENED the message is
     // how the sender addressed this agent, not something the sender said to it — so the spine
     // takes it off the trigger it hands the model (auto-mode.withoutAddress). POSITION is the
@@ -476,7 +491,9 @@ export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', addre
         // withFallback rides off the membership seam being WIRED (operator 2026-08-31): the
         // conditional token exists exactly where its condition can be evaluated, so a node/test
         // with no `isPresent` resolves precisely as it did before this feature existed.
-        for (const hit of addressed(ev?.body ?? '', agents, { addressWithoutAt, isVoice: ev?.isVoice, withFallback: !!isPresent || !!isPeerAlive })) {
+        // replyToBeing likewise rides off ev (identity.build, from the bridge): a quote-reply to a
+        // being's own post is one more hit in this loop, filtered exactly like a handle hit.
+        for (const hit of addressed(ev?.body ?? '', agents, { addressWithoutAt, isVoice: ev?.isVoice, withFallback: !!isPresent || !!isPeerAlive, replyToBeing: ev?.replyToBeing })) {
           // SURFACE PIN (operator 2026-07-25): an agent may carry `surface: <name>` so it is an
           // agent ONLY on that surface; on any OTHER surface the @mention falls through (as if
           // unmatched). Co-account CORRECTNESS, not convenience: `do` and `kg` share ONE Beeper

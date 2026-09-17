@@ -1075,3 +1075,57 @@ describe('fallback_handle — unless_peer_alive (operator 2026-09-02)', () => {
     expect(l.asked).toEqual([]);
   });
 });
+
+// A QUOTE-REPLY TO A BEING'S OWN POST ADDRESSES THAT BEING (operator 2026-09-16, "make it wake
+// structurally, not by reading the body"). The bridge reads the quoted post's invisible frame
+// (`kg/ken`) into ev.replyToBeing; the router turns it into ONE MORE HIT in addressed()'s list, so it
+// is filtered exactly like a handle hit — never a second branch beside the "nobody addressed"
+// fall-through. The persona's own case is proven end to end in beeper-bridge.test.mjs, since for
+// the persona a hit and the fall-through resolve to the same target.
+describe('router.resolve — a quote-reply to a being\'s own post addresses that being (operator 2026-09-16)', () => {
+  const agents = {
+    egpt: { configuration: 'sonnet-high', handles: ['e', 'egpt'], default: true },
+    ken: { configuration: 'sonnet-high', handles: ['ken'], name: 'Ken' },
+    _note: 'a comment key, never routable',
+  };
+  const router = (over = {}, reg = agents) => createRouter({ getAgents: () => reg, defaultBeing: 'egpt', ...over });
+  const quoting = (being, body = 'qué opinas?', over = {}) => ({
+    body, surface: 'whatsapp', chatId: '!g', senderId: 'op', replyToBeing: being,
+    mention: { atEStart: false, atEAnywhere: false, replyToBot: being != null }, ...over,
+  });
+  const beings = (r) => r.targets.map((t) => t.being);
+
+  it('THE REPRODUCTION: a reply to ken\'s post with no handle wakes ken — even in a mention-direct chat', async () => {
+    const r = await router().resolve(quoting('ken'));
+    expect(beings(r)).toEqual(['ken']);
+    expect(r.mention.replyToBot).toBe(true);                   // targetFor used to hardcode false for every non-persona hit
+    expect(r.address).toBe(null);                              // nothing to take off the prompt: no handle opened it
+    expect(replyAllowed('mention-direct', r.mention)).toBe(true);
+    expect(replyAllowed('mention', r.mention)).toBe(true);
+  });
+
+  it('a reply to ken AND a handle for E: both addressed; a reply to ken that also names ken is ONE target carrying the reply', async () => {
+    expect(beings(await router().resolve(quoting('ken', '@egpt y vos?')))).toEqual(['egpt', 'ken']);
+    const once = await router().resolve(quoting('ken', 'gracias ken'));   // named mid-sentence: alone, a mention-direct gate stays silent
+    expect(beings(once)).toEqual(['ken']);
+    expect(replyAllowed('mention-direct', once.mention)).toBe(true);
+  });
+
+  it('the reply hit passes the SAME post-match filters a handle hit does: connection gate, allowed_users, surface pin', async () => {
+    const otherEar = await router({ inboundOf: () => 'primary' }).resolve(quoting('ken', 'x', { connection: 'secondary' }));
+    expect(beings(otherEar)).not.toContain('ken');
+    const restricted = { ...agents, ken: { ...agents.ken, conversation_defaults: { allowed_users: ['someone-else'] } } };
+    expect(beings(await router({}, restricted).resolve(quoting('ken')))).not.toContain('ken');
+    const pinned = { ...agents, ken: { ...agents.ken, surface: 'shell' } };
+    expect(beings(await router({}, pinned).resolve(quoting('ken')))).not.toContain('ken');
+  });
+
+  it('LOCK: a reply to a human or a system line (no being), or to a being with no agent here, addresses nobody new', async () => {
+    const human = await router().resolve(quoting(null));
+    expect(beings(human)).toEqual(['egpt']);                   // the ordinary fall-through…
+    expect(replyAllowed('mention', human.mention)).toBe(false); // …which a mention gate keeps silent, exactly as before
+    expect(beings(await router().resolve(quoting('zed', 'x', { mention: { atEStart: false, atEAnywhere: false, replyToBot: false } })))).toEqual(['egpt']);
+    expect(beings(await router().resolve(quoting('_note')))).toEqual(['egpt']);
+    expect(addressed('qué opinas?', agents)).toEqual([]);      // no replyToBeing → the matcher is unchanged
+  });
+});

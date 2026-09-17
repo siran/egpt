@@ -2903,7 +2903,7 @@ export async function boot({
     const text = String(res?.text ?? '').trim();
     if (isBrainFailureResult(text)) throw new Error(`the turn failed: ${text.slice(0, 200)}`);
     if (isSilenceReply(text)) return res;
-    const tag = { bodyEmoji: bodyEmojiOf(being), label: labelOf(being), agentSigOpen: agentSignatureOpenOf(being), agentSigClose: agentSignatureCloseOf(being) };
+    const tag = { bodyEmoji: bodyEmojiOf(being), label: labelOf(being), agentSigOpen: agentSignatureOpenOf(being), agentSigClose: agentSignatureCloseOf(being), persona: being };
     await heartbeatSay({ being, ns, ev, text, tag, recordAs: being, what: 'turn' });
     return res;
   };

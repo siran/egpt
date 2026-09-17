@@ -623,7 +623,7 @@ describe('the mid-stream drop — a half-written message is never left stranded,
 describe('a peer-said reply is stamped by the BRAIN that wrote it, exactly once', () => {
   const BRAIN = { bodyEmoji: '🤴', label: 'King Ken', bridgeSignatureClose: '🏰', nodeName: 'kg' };
   const MOUTH = { bodyEmoji: '🤖', label: 'Rodz Bot', bridgeSignatureClose: '🏯', nodeName: 'kg2' };
-  const KG = encodeNodeSignature(BRAIN.nodeName);
+  const KG = encodeNodeSignature(BRAIN.nodeName, 'e');   // the being speaking rides the frame (kg/e)
 
   // A fake real-bridge behind createBeeperBridgePort — the same seam tests/beeper-port.test.mjs
   // uses, kept to the two outbounds this file exercises. `sent` / `streams` are the BYTES that
