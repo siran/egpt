@@ -41,7 +41,7 @@ const _PRIVATE_HOME = vi.hoisted(() => {
 import { promises as fs, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { createSender } from '../src/spine/sender.mjs';
+import { createSender, makeOutbound } from '../src/spine/sender.mjs';
 import { createTurns } from '../src/spine/turns.mjs';
 import { createReplyActions } from '../src/spine/reply-actions.mjs';
 import { createSpine } from '../src/spine/spine.mjs';
@@ -103,7 +103,7 @@ const settled = () => new Promise((r) => setTimeout(r, 0));
 // means exactly what it means there: a `startStream` handle (the ⏳ placeholder edited in place)
 // or a fresh `send`.
 function fakeBridge() {
-  const streams = [], sent = [], renders = [], reactions = [], media = [], edits = [];
+  const streams = [], sent = [], renders = [], reactions = [], unreactions = [], media = [], edits = [];
   // `own`: the '<chat>|<id>' pairs THIS account sent — the bridge's id-exact own-send memory
   // (beeper.mjs wasSentByUs), which /edit's fail-closed check reads (§10).
   const own = new Set();
@@ -115,6 +115,9 @@ function fakeBridge() {
     // fake as `send`/`startStream` because it is the same question — WHICH ACCOUNT SAYS THIS —
     // and §6 below is the case where the two used to answer differently.
     async react(chatId, msgId, emoji) { reactions.push({ chatId, msgId, emoji }); return true; },
+    // …and its removal (the 🎧 listening mark comes back off, §11).
+    unreactions,
+    async unreact(chatId, msgId, emoji) { unreactions.push({ chatId, msgId, emoji }); return true; },
     // THIS NODE'S OWN PERSONA WRAP, as the real port hands it out (beeper-port.renderFrame): the
     // reply path renders a frame through it before handing it to the PEER, and must never touch it
     // on any other path — the local stream is wrapped one layer down, inside the port, so a
@@ -1061,8 +1064,8 @@ describe('the steer ack rides the same mouth the reply does', () => {
     expect(notes.join('\n')).toMatch(/could not place the 👀/);
   });
 
-  it('a message with NO cross-account key (a bare voice note) is refused by the link, and nobody reacts', async () => {
-    // The bridge mints null for a message with no body, so there is nothing to name. The transport
+  it('a message with NO cross-account key (no body, no sized attachment) is refused by the link, and nobody reacts', async () => {
+    // The bridge mints null for a message with no body and no sized attachment, so there is nothing to name. The transport
     // refuses before it dials (tests/peer-mouth.test.mjs); here the sender must not paper over it
     // by reacting locally instead.
     const { calls, mouth } = fakeMouth({ reacted: { ok: false, reason: 'no-key', detail: 'the message carries no cross-account key' } });
@@ -1235,7 +1238,7 @@ describe('the /react limb is placed by the MOUTH, on its own copy — never from
     const other = { id: '1117', text: 'something else', timestamp: STEERED_TS };
     for (const [reason, shape] of [
       ['no-key', { earMessages: [] }],                                                        // not on the ear's list at all
-      ['no-key', { earMessages: [{ ...STEERED_ON_PRIMARY, text: '' }] }],                     // a bare voice note: no body to key
+      ['no-key', { earMessages: [{ ...STEERED_ON_PRIMARY, text: '' }] }],                     // no body and no attachment: nothing to key
       ['no-match', { mouthMessages: [other] }],                                               // the mouth has no such message
       ['ambiguous', { mouthMessages: [STEERED_ON_SECONDARY, { ...STEERED_ON_SECONDARY, id: '1200' }] }],
     ]) {
@@ -1281,7 +1284,7 @@ describe('/reply and /media are said by the MOUTH, in its own room — never fro
     const other = { id: '1117', text: 'something else', timestamp: STEERED_TS };
     for (const [reason, shape] of [
       ['no-key', { earMessages: [] }],                                                        // not on the ear's recent list
-      ['no-key', { earMessages: [{ ...STEERED_ON_PRIMARY, text: '' }] }],                     // a bare voice note: no body to key
+      ['no-key', { earMessages: [{ ...STEERED_ON_PRIMARY, text: '' }] }],                     // no body and no attachment: nothing to key
       ['no-match', { mouthMessages: [other] }],                                               // the mouth has no such message (or it is past the lookback)
       ['ambiguous', { mouthMessages: [STEERED_ON_SECONDARY, { ...STEERED_ON_SECONDARY, id: '1200' }] }],
     ]) {
@@ -1555,5 +1558,103 @@ describe('the voice attach is said by the MOUTH, replying to the text in its own
       expect(mouthBridge.media).toEqual([]);
       expect(earListed).toEqual([]);
     }
+  });
+});
+
+// ── 11. A REACTION THAT COMES BACK OFF (2026-09-16, the 🎧 listening mark) ───────────────────────
+// THE LIVE FAULT, node kg: `reaction 🎧 by An → #7780` — the listening mark on a voice note came from
+// the operator's own account, because the bridge placed it on whichever connection received the note.
+// It now goes through the one placement (sender.mjs makeOutbound `react`), which could only ADD. A
+// mark has to come back off, from the same account, on the same copy — so the placement and the
+// mouth's react verb take `remove`, and a mark that could not come back off (a PEER mouth: the link
+// has no verb for it) is never placed.
+describe('the one placement takes a reaction back off, on the account that placed it', () => {
+  // The inbound voice note as the two accounts' APIs serve it: no body, the same attachment.
+  const NOTE_TS = '2026-09-15T15:33:38.000Z';
+  const att = (id) => ({ type: 'audio', mimeType: 'audio/ogg; codecs=opus', fileName: 'Voice message.ogg', fileSize: 22740, isVoiceNote: true, id: `mxc://local.beeper.com/${id}` });
+  const NOTE_ON_EAR = { id: '7004', timestamp: NOTE_TS, type: 'VOICE', text: null, attachments: [att('ear')] };
+  const NOTE_ON_MOUTH = { id: '2404', timestamp: NOTE_TS, type: 'VOICE', text: null, attachments: [att('mouth')] };
+
+  it('THE MOUTH REMOVES a reaction on its OWN copy (makePeerMouth.react with remove)', async () => {
+    const { mouthBridge, ear, peerMouth } = earAndMouth({ earMessages: [NOTE_ON_EAR], mouthMessages: [NOTE_ON_MOUTH] });
+    const chat = { connection: 'secondary', home: 'primary', bridge: mouthBridge, chatId: SECONDARY_CHAT_ID };
+    const r = await peerMouth.react(chat, { msgKey: crossAccountMsgKey(NOTE_ON_EAR), timestamp: Date.parse(NOTE_TS), emoji: '🎧', remove: true });
+    expect(r).toEqual({ ok: true, chatId: SECONDARY_CHAT_ID });
+    expect(mouthBridge.unreactions).toEqual([{ chatId: SECONDARY_CHAT_ID, msgId: '2404', emoji: '🎧' }]);
+    expect(mouthBridge.reactions).toEqual([]);
+    expect(ear.unreactions).toEqual([]);
+  });
+
+  it('through the one placement: the mouth places the 🎧 on its own copy and takes it back off there; the ear does neither', async () => {
+    const { ear, mouthBridge, peerMouth, logs } = earAndMouth({ earMessages: [NOTE_ON_EAR], mouthMessages: [NOTE_ON_MOUTH] });
+    const out = makeOutbound({ bridge: ear, peerMouth, onLog: (m) => logs.push(m) })(null, CHAT_ID);
+    const keyOf = out.keyOf(NOTE_ON_EAR.id, 'listening');
+    expect(await out.react(NOTE_ON_EAR.id, '🎧', keyOf, 'listening', { temporary: true })).toBe(true);
+    expect(await out.react(NOTE_ON_EAR.id, '🎧', keyOf, 'listening', { remove: true })).toBe(true);
+    expect(mouthBridge.reactions).toEqual([{ chatId: SECONDARY_CHAT_ID, msgId: '2404', emoji: '🎧' }]);
+    expect(mouthBridge.unreactions).toEqual([{ chatId: SECONDARY_CHAT_ID, msgId: '2404', emoji: '🎧' }]);
+    expect(ear.reactions).toEqual([]);
+    expect(ear.unreactions).toEqual([]);
+    expect(logs.join('\n')).toMatch(/took the 🎧 off its own copy/);
+  });
+
+  // REGRESSION LOCK: no mouth ⇒ the connection's own bridge, by its own id, exactly as react() adds.
+  it('NO mouth: the connection\'s own bridge places and removes it, and no message list is read', async () => {
+    for (const shape of [{ withMouth: false }, { mouthIsMember: false }]) {
+      const { ear, mouthBridge, peerMouth, earListed } = earAndMouth({ ...shape, earMessages: [NOTE_ON_EAR], mouthMessages: [NOTE_ON_MOUTH] });
+      const out = makeOutbound({ bridge: ear, peerMouth })(null, CHAT_ID);
+      const keyOf = out.keyOf(NOTE_ON_EAR.id, 'listening');
+      expect(await out.react(NOTE_ON_EAR.id, '🎧', keyOf, 'listening', { temporary: true })).toBe(true);
+      expect(await out.react(NOTE_ON_EAR.id, '🎧', keyOf, 'listening', { remove: true })).toBe(true);
+      expect(ear.reactions, JSON.stringify(shape)).toEqual([{ chatId: CHAT_ID, msgId: '7004', emoji: '🎧' }]);
+      expect(ear.unreactions).toEqual([{ chatId: CHAT_ID, msgId: '7004', emoji: '🎧' }]);
+      expect(mouthBridge.reactions).toEqual([]);
+      expect(earListed).toEqual([]);
+    }
+  });
+
+  // THE FLOOR: a mouth that cannot find its copy places nothing, and the ear places nothing either.
+  it('the mouth cannot find its own copy: no 🎧 on either account, and the log says why', async () => {
+    const other = { ...NOTE_ON_MOUTH, id: '2390', attachments: [{ ...att('mouth'), fileSize: 46699 }] };
+    const { ear, mouthBridge, peerMouth, logs } = earAndMouth({ earMessages: [NOTE_ON_EAR], mouthMessages: [other] });
+    const out = makeOutbound({ bridge: ear, peerMouth, onLog: (m) => logs.push(m) })(null, CHAT_ID);
+    expect(await out.react(NOTE_ON_EAR.id, '🎧', out.keyOf(NOTE_ON_EAR.id, 'listening'), 'listening', { temporary: true })).toBe(false);
+    expect(mouthBridge.reactions).toEqual([]);
+    expect(ear.reactions).toEqual([]);
+    expect(logs.join('\n')).toMatch(/could not place the 🎧 \(no-match/);
+  });
+
+  // A PEER-SPINE mouth: the link has a verb that adds a reaction and none that removes one. A mark
+  // placed there could never come off, so it is not placed at all, and nothing is dialled.
+  it('a PEER mouth: a temporary mark is not placed anywhere, and a removal is refused, both named', async () => {
+    const { calls, mouth } = fakeMouth();
+    const bridge = fakeBridge();
+    const logs = [];
+    const out = makeOutbound({ bridge, peerMouth: mouth, onLog: (m) => logs.push(m) })(null, CHAT_ID);
+    const keyOf = () => ({ msgKey: 'k', timestamp: 1 });
+    expect(await out.react('7004', '🎧', keyOf, 'listening', { temporary: true })).toBe(false);
+    expect(calls.reacts).toEqual([]);
+    expect(bridge.reactions).toEqual([]);
+    expect(logs.join('\n')).toMatch(/no verb that takes a reaction back/);
+
+    let dialled = 0;
+    const real = makePeerMouth({ peer: PEER, bridge, reactor: async () => { dialled += 1; return { ok: true, chatId: 'x' }; } });
+    expect(await real.react(AS_PRIMARY, { msgKey: 'k', timestamp: 1, emoji: '🎧', remove: true })).toMatchObject({ ok: false, reason: 'no-verb' });
+    expect(dialled).toBe(0);
+  });
+
+  // REGRESSION LOCK: the steer 👀 and /react on a TEXT message ask the mouth exactly what they asked
+  // before — no `remove` on the frame, and nothing is ever taken back off.
+  it('/react and the steer ack on a text message are unchanged: added once, never removed', async () => {
+    const { ear, mouthBridge, react } = earAndMouth();
+    await react();
+    expect(mouthBridge.reactions).toEqual([{ chatId: SECONDARY_CHAT_ID, msgId: STEERED_ON_SECONDARY.id, emoji: '👍' }]);
+    expect(mouthBridge.unreactions).toEqual([]);
+    expect(ear.reactions).toEqual([]);
+
+    const { calls, mouth } = fakeMouth();
+    const out = makeOutbound({ bridge: fakeBridge(), peerMouth: mouth })('e', CHAT_ID);
+    await out.react(STEERED_ON_PRIMARY.id, '👀', () => ({ msgKey: STEERED_KEY, timestamp: STEERED_TS }), 'steer-ack');
+    expect(calls.reacts).toEqual([{ chat: AS_PRIMARY, msgKey: STEERED_KEY, timestamp: STEERED_TS, emoji: '👀' }]);
   });
 });

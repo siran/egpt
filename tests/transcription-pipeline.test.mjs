@@ -356,3 +356,137 @@ describe('transcription pipeline — the same bytes are decoded once', () => {
     expect(m1.durationSec).toBe(7.2);
   });
 });
+
+// ── THE 🎧 GOES UP WHERE THE DECODE RUNS (operator 2026-09-16) ──
+// kg, 2026-09-16: `reaction 🎧 by An → #7780`. Every connection that received the voice note placed a
+// listening mark — on a node whose chain sends every note to dolly's worker and decodes nothing
+// itself. The mark belongs to the DECODE: transcribe()'s caller hands a hook, the chain calls it when
+// a decode starts ON THIS NODE — a whisper-cli rung, a whisper-server-local rung, or a
+// whisper-server-remote rung whose endpoint is this node's own transcriptor (routesToOwnTranscriptor,
+// handed in as `ownTranscriptor`) — and calls what the hook returned when that decode ends. Once per
+// walk, and the walk is once per bytes: a joining arrival's hook is never called.
+describe('transcription pipeline — the decode says when it runs on this node', () => {
+  let dir;
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'egpt-pipeline-mark-')); });
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
+  const file = (name, bytes = `bytes of ${name}`) => { const p = join(dir, name); writeFileSync(p, bytes); return p; };
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const CLI = { type: 'whisper-cli', command: 'wc', model_path: 'm' };
+  // kg's chain: dolly's worker, then its own cli.
+  const KG = { fallback_order: ['worker', 'cli'], worker: { type: 'whisper-server-remote', endpoint: 'http://192.168.1.102:23390', token: 'k', cooldown_ms: 1000 }, cli: CLI };
+  // do's chain: its OWN worker, then its own cli.
+  const DO = { fallback_order: ['worker', 'cli'], worker: { type: 'whisper-server-remote', endpoint: 'http://127.0.0.1:23390', token: 'k', cooldown_ms: 1000 }, cli: CLI };
+  const DO_OWN = { at: 'transcription_service.do.worker', endpoint: 'http://127.0.0.1:23390' };
+  // The caller's hook: records up/down in order with the engine calls it brackets.
+  const marks = () => {
+    const events = [];
+    return { events, hook: async () => { events.push('up'); return async () => { events.push('down'); }; } };
+  };
+
+  it('a note decoded by ANOTHER node\'s worker: nothing goes up', async () => {
+    for (const own of [null, DO_OWN]) {
+      const m = marks();
+      const { pipe } = mk({ profile: KG, ownTranscriptor: own, transcribeViaEndpoint: async () => { m.events.push('remote'); return 'REMOTE'; } });
+      expect(await pipe.transcribe(file(`kg-${!!own}.ogg`), {}, () => {}, {}, m.hook)).toBe('REMOTE');
+      expect(m.events).toEqual(['remote']);
+    }
+  });
+
+  it('this node\'s OWN worker rung: up before the decode, down after it', async () => {
+    const m = marks();
+    const { pipe } = mk({ profile: DO, ownTranscriptor: DO_OWN, transcribeViaEndpoint: async () => { m.events.push('remote'); return 'REMOTE'; } });
+    expect(await pipe.transcribe(file('do.ogg'), {}, () => {}, {}, m.hook)).toBe('REMOTE');
+    expect(m.events).toEqual(['up', 'remote', 'down']);
+  });
+
+  it('the other node\'s worker fails and the chain falls to this node\'s cli: up when the cli starts, down after', async () => {
+    const m = marks();
+    const { pipe } = mk({
+      profile: KG,
+      transcribeViaEndpoint: async () => { m.events.push('remote'); throw new Error('down'); },
+      cli: async () => { m.events.push('cli'); return 'CLI'; },
+    });
+    expect(await pipe.transcribe(file('fall.ogg'), {}, () => {}, {}, m.hook)).toBe('CLI');
+    expect(m.events).toEqual(['remote', 'up', 'cli', 'down']);
+  });
+
+  it('a whisper-server-local rung that fails this note, then the cli: ONE up, ONE down across both', async () => {
+    const m = marks();
+    let warm = true;
+    const { pipe } = mk({
+      profile: { fallback_order: ['local', 'cli'], local: { type: 'whisper-server-local', command: 'ws', model: 'm' }, cli: CLI },
+      makeWhisperServerTranscriber: () => async () => { if (warm) return 'LOCAL'; m.events.push('local'); return null; },
+      cli: async () => { if (!warm) m.events.push('cli'); return 'CLI'; },
+    });
+    await pipe.transcribe(file('warm.ogg')); await tick();       // lazy spawn: the server is resident after this
+    warm = false;
+    expect(await pipe.transcribe(file('local.ogg'), {}, () => {}, {}, m.hook)).toBe('CLI');
+    expect(m.events).toEqual(['up', 'local', 'cli', 'down']);
+  });
+
+  it('a rung that decodes nothing places nothing: an unreachable own worker, a warming local, a declining cli', async () => {
+    const m = marks();
+    const { pipe } = mk({
+      profile: { fallback_order: ['worker', 'local', 'cli'], worker: DO.worker, local: { type: 'whisper-server-local', command: 'ws', model: 'm' }, cli: CLI },
+      ownTranscriptor: DO_OWN,
+      reachable: async () => false,                                          // own worker unreachable → cooldown, no POST
+      residentServing: () => ({ url: 'http://127.0.0.1:8089' }),             // the cli declines beside a resident model
+    });
+    expect(await pipe.transcribe(file('none.ogg'), {}, () => {}, {}, m.hook)).toBe(null);   // local is only warming
+    expect(m.events).toEqual([]);
+  });
+
+  it('a cli that THROWS still takes the mark down', async () => {
+    const m = marks();
+    const { pipe } = mk({ profile: { fallback_order: ['cli'], cli: CLI }, cli: async () => { m.events.push('cli'); throw new Error('whisper exploded'); } });
+    expect(await pipe.transcribe(file('throw.ogg'), {}, () => {}, {}, m.hook)).toBe(null);
+    expect(m.events).toEqual(['up', 'cli', 'down']);
+  });
+
+  it('a throw that escapes the chain still takes the mark down, and the caller sees the throw', async () => {
+    const m = marks();
+    let remoteUp = true;
+    const { pipe } = mk({
+      profile: KG,
+      transcribeViaEndpoint: async () => { if (remoteUp) return 'REMOTE'; throw new Error('down'); },
+      onTransition: () => { throw new Error('the Self alert exploded'); },
+    });
+    await pipe.transcribe(file('first.ogg'));                              // the worker wins once
+    remoteUp = false;
+    await expect(pipe.transcribe(file('second.ogg'), {}, () => {}, {}, m.hook)).rejects.toThrow('the Self alert exploded');
+    expect(m.events).toEqual(['up', 'down']);
+  });
+
+  it('the same bytes on two connections at once: ONE up and ONE down — the joining arrival places nothing', async () => {
+    const ear = marks(), mouth = marks();
+    let release; const gate = new Promise((r) => { release = r; });
+    let posts = 0;
+    const { pipe } = mk({ profile: DO, ownTranscriptor: DO_OWN, transcribeViaEndpoint: async () => { posts += 1; await gate; return 'REMOTE'; } });
+    const both = Promise.all([
+      pipe.transcribe(file('ear.ogg', 'one note'), {}, () => {}, {}, ear.hook),
+      pipe.transcribe(file('mouth.ogg', 'one note'), {}, () => {}, {}, mouth.hook),
+    ]);
+    await sleep(50);
+    release();
+    expect(await both).toEqual(['REMOTE', 'REMOTE']);
+    expect(posts).toBe(1);
+    expect([...ear.events, ...mouth.events]).toEqual(['up', 'down']);
+  });
+
+  it('an arrival answered from a recent result places nothing', async () => {
+    const first = marks(), again = marks();
+    const { pipe } = mk({ profile: DO, ownTranscriptor: DO_OWN });
+    await pipe.transcribe(file('a.ogg', 'one note'), {}, () => {}, {}, first.hook);
+    await pipe.transcribe(file('b.ogg', 'one note'), {}, () => {}, {}, again.hook);
+    expect(first.events).toEqual(['up', 'down']);
+    expect(again.events).toEqual([]);
+  });
+
+  it('a hook that throws or places nothing costs neither the transcript nor a stray removal', async () => {
+    const logs = [];
+    const { pipe } = mk({ profile: DO, ownTranscriptor: DO_OWN, onLog: (m) => logs.push(m) });
+    expect(await pipe.transcribe(file('t.ogg'), {}, () => {}, {}, async () => { throw new Error('no mouth'); })).toBe('REMOTE');
+    expect(logs.join('\n')).toMatch(/no mouth/);
+    expect(await pipe.transcribe(file('n.ogg'), {}, () => {}, {}, async () => null)).toBe('REMOTE');
+  });
+});

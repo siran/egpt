@@ -181,9 +181,10 @@ export function sayFinishFrame({ stream, text }) {
  *   the same thing (beeper.crossAccountChatKey). Resolved first: a message is only ever looked for
  *   inside the one chat that key identifies.
  * @param {string} o.msgKey     the cross-account MESSAGE key (beeper.crossAccountMsgKey): a sha256
- *   over the message body, minted in the bridge beside the echo plan's audioHash and by the same
- *   discipline. Deliberately general — /reply threading and /edit are blocked on the same missing
- *   identity and will name a message the same way.
+ *   over the message body (or, with none, its attachments' type and size), minted in the bridge
+ *   beside the echo plan's audioHash and by the same discipline. Deliberately general — /reply
+ *   threading and /edit are blocked on the same missing identity and will name a message the same
+ *   way.
  * @param {number} o.timestamp  the message's OWN timestamp in epoch ms — identical on both
  *   accounts (measured). It is what tells two same-text messages apart, and two identical texts in
  *   one chat is not exotic ("ok", "👍"), which is why it is on the frame rather than assumed away.

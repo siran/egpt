@@ -105,6 +105,18 @@ describe('beeper-port adapter', () => {
     expect(spy.streams[0].deleted).toBe(false);
   });
 
+  // The 🎧 listening mark comes back off (2026-09-16): react and its removal both reach the real bridge.
+  it('react → real sendReaction; unreact → real removeReaction, same arguments', async () => {
+    const calls = [];
+    const port = await createBeeperBridgePort({}, { start: async () => ({
+      sendReaction: async (...a) => { calls.push(['add', ...a]); return true; },
+      removeReaction: async (...a) => { calls.push(['remove', ...a]); return true; },
+    }) });
+    expect(await port.react('!room', '7004', '🎧')).toBe(true);
+    expect(await port.unreact('!room', '7004', '🎧')).toBe(true);
+    expect(calls).toEqual([['add', '!room', '7004', '🎧'], ['remove', '!room', '7004', '🎧']]);
+  });
+
   it('A status: postStatus posts + returns id; editStatus edits; deleteStatus deletes', async () => {
     const { start, spy } = fakeStart();
     const port = await createBeeperBridgePort({}, { start });

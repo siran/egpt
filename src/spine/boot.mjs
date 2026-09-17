@@ -435,16 +435,18 @@ export function makePeerMouth({ peer, bridge, bridgeOf = null, owns = () => fals
     catch (e) { return { ok: false, reason: 'unavailable', detail: e?.message ?? String(e) }; }
     return findMessageByKey(messages, want, timestamp);
   };
-  const reactLocally = async (chat, { msgKey, timestamp = 0, emoji }) => {
+  // `remove` takes a reaction back OFF the mouth's own copy, found the same way (the 🎧 listening
+  // mark, 2026-09-16 — sender.mjs makeOutbound `react`).
+  const reactLocally = async (chat, { msgKey, timestamp = 0, emoji, remove = false }) => {
     const { bridge: on, chatId, connection } = chat;
     const key = String(emoji ?? '');
     if (!key) return { ok: false, reason: 'no-text', detail: 'nothing to react with' };
-    if (!on?.react) return { ok: false, reason: 'no-react', detail: `'${connection}' cannot react` };
+    if (!(remove ? on?.unreact : on?.react)) return { ok: false, reason: 'no-react', detail: `'${connection}' cannot ${remove ? 'remove a reaction' : 'react'}` };
     const hit = await ownCopy(chat, { msgKey, timestamp });
     if (!hit.ok) return hit;                  // no-key / no-match / ambiguous → NO reaction anywhere, as on the link
     try {
-      const r = await on.react(chatId, hit.msgId, key);
-      if (r === false || r == null) return { ok: false, reason: 'send-failed', detail: `the reaction on ${chatId}/${hit.msgId} was not accepted` };
+      const r = await (remove ? on.unreact(chatId, hit.msgId, key) : on.react(chatId, hit.msgId, key));
+      if (r === false || r == null) return { ok: false, reason: 'send-failed', detail: `the reaction ${remove ? 'removal ' : ''}on ${chatId}/${hit.msgId} was not accepted` };
     } catch (e) { return { ok: false, reason: 'send-failed', detail: e?.message ?? String(e) }; }
     return { ok: true, chatId };
   };
@@ -507,9 +509,13 @@ export function makePeerMouth({ peer, bridge, bridgeOf = null, owns = () => fals
     //
     // A LOCAL MOUTH *DOES* reach here, and takes the branch above (reactLocally): same refusal
     // vocabulary, same "no reaction anywhere" floor, no socket.
-    react(chat, { msgKey, timestamp = 0, emoji } = {}) {
-      if (chat?.bridge) return reactLocally(chat, { msgKey, timestamp, emoji });
+    //
+    // `remove` (2026-09-16): a LOCAL mouth takes the reaction off its own copy. The link has no verb
+    // for that and none is added, so a peer refuses it — never by placing one instead.
+    react(chat, { msgKey, timestamp = 0, emoji, remove = false } = {}) {
+      if (chat?.bridge) return reactLocally(chat, { msgKey, timestamp, emoji, remove });
       if (!peer) return Promise.resolve({ ok: false, reason: 'no-peer', detail: 'no peer spine configured' });
+      if (remove) return Promise.resolve({ ok: false, reason: 'no-verb', detail: 'the mouth link has no verb that takes a reaction back' });
       return reactor({ peer, chat, msgKey, timestamp, emoji, onLog });
     },
     // THE /reply LIMB'S QUOTE (2026-09-16): the mouth's OWN id for the message a key names, so the
@@ -2154,7 +2160,17 @@ export async function boot({
     if (!bridgeByEndpoint.has(key)) {
       // baseUrl/wsUrl are spread in ONLY when set: absent must leave startBeeperBridge's own
       // defaults standing, never an explicit undefined that would override them.
-      const opts = { ...sharedBridgeOpts, beeperToken: ep.token, ...(ep.baseUrl ? { baseUrl: ep.baseUrl } : {}), ...(ep.wsUrl ? { wsUrl: ep.wsUrl } : {}), ...(ep.rediscover ? { rediscover: ep.rediscover } : {}) };
+      const opts = { ...sharedBridgeOpts, beeperToken: ep.token, ...(ep.baseUrl ? { baseUrl: ep.baseUrl } : {}), ...(ep.wsUrl ? { wsUrl: ep.wsUrl } : {}), ...(ep.rediscover ? { rediscover: ep.rediscover } : {}),
+        // THE 🎧 LISTENING MARK goes through the one placement boot's own lines use (`outbound`,
+        // below — makeOutbound with the mouth), as a node line (`being` null), so it comes from the
+        // mouth on its own copy (operator 2026-09-16). Read at call time, as speakingIdentities is:
+        // `outbound` is built after the bridges, and a decode that starts before it exists gets no
+        // mark (the chain logs why). Per connection, because the mark is placed while the note is
+        // still being DECODED — before its arrival is stamped (`remembering`, above) — so after a
+        // restart the chat would be unknown and the mouth could not find its room. The connection
+        // that received the note holds that room, so it is recorded here first, into the same
+        // record an arrival writes, as placeHeartbeatChat does for a send with no arrival.
+        outboundFor: (chatId) => { rememberArrival(chatId, name); return outbound(null, chatId); } };
       const port = lasso.wrap(await createBeeperBridgePort(opts, startBridge ? { start: startBridge } : {}));
       const owned = ear && wakesOn(ep);
       // A PER-CHAT ear: not one of the node's ears, but a connection allowed to be the ear of the
@@ -2532,6 +2548,7 @@ export async function boot({
   // and the one a heartbeat's post already took (heartbeatSay, below, which shares this helper).
   // `being` is null for a node line (the default mouth), the being for a heartbeat turn's reply.
   // Shell-owned chats: the shell-aware resolver, and route() refuses them before asking anything.
+  // The bridges' 🎧 listening mark reacts through it too (`outboundFor`, bridgeForEndpoint above).
   const outbound = makeOutbound({ bridge: shellAwareBridge, bridgeOf: shellAwareBridgeOf, peerMouth, onLog: mouthLog });
   const sayOnce = ({ being = null, chatId, text, opts, tag = {}, what }) => outbound(being, chatId).say(
     async (on, room) => { const r = await on.send?.(room, text, opts); return !(r?.blocked || r == null); },
