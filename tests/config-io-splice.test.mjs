@@ -91,6 +91,33 @@ describe('spliceYamlScalar', () => {
     ]);
   });
 
+  // `comment`: a value that NAMES something is documented by its own trailing comment, so a
+  // repoint that leaves the comment naming the old thing ships a comment that lies (migrations/
+  // 0012). Still ONE line: the gap before the `#` is kept, and no other comment moves.
+  it('rewrites the trailing comment on the SAME line, keeping the whitespace before the `#`', () => {
+    const out = spliceYamlScalar(FIXTURE, ['transcription_service', 'enabled'], { expect: false, to: true, comment: 'on again 2026-09-17' });
+    expect(diffLines(FIXTURE, out)).toEqual([
+      [3, '  enabled: false   # off on kg by operator decision 2026-09-13 — NOT part of the shape',
+        '  enabled: true   # on again 2026-09-17'],
+    ]);
+    expect(YAML.parse(out).transcription_service.enabled).toBe(true);
+  });
+
+  it('rewrites the comment alone when the value is already what it should be', () => {
+    const out = spliceYamlScalar(FIXTURE, ['transcription_service', 'enabled'], { expect: false, to: false, comment: 'still off' });
+    expect(diffLines(FIXTURE, out)).toEqual([
+      [3, '  enabled: false   # off on kg by operator decision 2026-09-13 — NOT part of the shape',
+        '  enabled: false   # still off'],
+    ]);
+  });
+
+  it('refuses to INVENT a comment on a line that carries none, and refuses one that is not one line', () => {
+    expect(() => spliceYamlScalar(FIXTURE, ['transcription_service', 'use_config'], { expect: 'reve', to: 'kg', comment: 'now kg' }))
+      .toThrow(/use_config: its line carries no trailing comment to rewrite/);
+    expect(() => spliceYamlScalar(FIXTURE, ['transcription_service', 'enabled'], { expect: false, to: true, comment: 'two\nlines' }))
+      .toThrow(/enabled: a trailing comment is one line of text/);
+  });
+
   it('REFUSES by name when the current value is not what the caller expects, and returns nothing', () => {
     let err;
     try { spliceYamlScalar(FIXTURE, [...PROFILE, 'remote', 'endpoint'], { expect: 'http://127.0.0.1:23390', to: 'http://10.0.0.1:23390' }); } catch (e) { err = e; }
