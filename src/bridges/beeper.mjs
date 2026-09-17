@@ -165,6 +165,24 @@ const _VOICE_MARK = /^\(voice transcription(?:,[^)]*)?\)\s*/;
 // bare-@e TEXT-mirror branch below can tell a real quoted PROSE reply apart from a quoted
 // image/video/audio/document announcement (which must never be synthesized to audio verbatim).
 const _MEDIA_MARK = /^\((?:image|video|audio|document)(?: [^)]*)?\) \[saved: /;
+// THE VOICE-NOTE PLACEHOLDERS — what the arrival path records when a voice note produced NO
+// transcript: the transcriber failed, or transcription is not running on this node (~L1919). ONE
+// definition, used at BOTH ends: the arrival WRITES these strings and the bare-wake-word reply
+// gate (~L2090) READS them, so the two can never drift into disagreeing about what a placeholder
+// looks like.
+//
+// THE BUG THIS CLOSES: neither placeholder carries _VOICE_MARK, so the gate's text-mirror branch
+// took `[voice note — transcription failed]` for ordinary PROSE and had the synthesizer read that
+// bookkeeping line aloud — the exact failure its own comment forbids ("a voice note … must never
+// be read aloud as if it were plain text"). A quoted placeholder IS a voice note with no
+// transcript, so it falls through to the normal @e→E turn on the existing "no voice-transcript
+// entry" line, the same way a quoted id with no entry at all does.
+const VOICE_NOTE_PLACEHOLDER = '[voice note]';
+const VOICE_NOTE_FAILED_PLACEHOLDER = '[voice note — transcription failed]';
+const _isVoicePlaceholder = (body) => {
+  const t = String(body ?? '').trim();
+  return t === VOICE_NOTE_PLACEHOLDER || t === VOICE_NOTE_FAILED_PLACEHOLDER;
+};
 
 export function transcriptionForNoteId(doc, noteId) {
   const body = bodyForMessageId(doc, noteId);
@@ -1916,8 +1934,8 @@ export async function startBeeperBridge(opts = {}) {
           text = voiceTranscriptBody(transcript, { durationSec: vmeta.durationSec });
           _voiceCaption = transcript;
           onLog(`beeper: voice transcribed [${chatID}] → ${JSON.stringify(transcript.slice(0, 80))}`);
-        } else { text = svc.enabled ? '[voice note — transcription failed]' : '[voice note]'; }
-      } else { text = '[voice note]'; }
+        } else { text = svc.enabled ? VOICE_NOTE_FAILED_PLACEHOLDER : VOICE_NOTE_PLACEHOLDER; }
+      } else { text = VOICE_NOTE_PLACEHOLDER; }
     }
 
     // CONTRACT C2: persist EVERY attachment to the chat's media/ folder BEFORE
@@ -2087,7 +2105,13 @@ export async function startBeeperBridge(opts = {}) {
           // carried atE=true and is unaffected either way.
           text = `${(text || '').trim()} Describe what you see in the message you're replying to.`;
           onLog(`beeper: 👁 quoted media announcement ↩${replyToId} [${info.title}] — falling through to @e→E with a describe instruction`);
-        } else if (quotedText && !_VOICE_MARK.test(quotedText) && synthesize && voice) {
+        // _isVoicePlaceholder is the SECOND half of the same rule _VOICE_MARK states: a voice note
+        // must never be read aloud as text. A note whose transcription FAILED (or that arrived on a
+        // node with transcription off) is recorded as a bare `[voice note …]` line carrying no
+        // mark, so without this the synthesizer read that placeholder out loud instead of the note.
+        // It is a voice note with no transcript — nothing to mirror — so it falls to the
+        // "no voice-transcript entry" line below and becomes a normal @e→E turn.
+        } else if (quotedText && !_VOICE_MARK.test(quotedText) && !_isVoicePlaceholder(quotedText) && synthesize && voice) {
           const ack = await sendMessage(chatID, '🔊 reading…', { replyToMessageID: replyToId });
           const ackId = ack ? await ack.confirmedId : null;
           if (ackId) {
