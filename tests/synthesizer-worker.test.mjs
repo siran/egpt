@@ -98,6 +98,73 @@ describe('synthesizer worker — start wiring', () => {
   });
 });
 
+// do, 2026-09-17 07:28 and 12:36: both deploys started the spine while the one it replaces still
+// held :23391; the one listen failed with EADDRINUSE and nothing tried again, so every 🔊 reading
+// from kg (whose only synthesis rung is this endpoint) failed until a manual restart at 13:28.
+// The same bind retry as the transcriptor worker's (src/spine/bind-retry.mjs).
+describe('synthesizer worker — the bind retries while the port is taken', () => {
+  const CFG = { synthesizer: { enabled: true, bind: '0.0.0.0', port: 23391, server: { token: 'K' } } };
+  const inUse = () => Object.assign(new Error('listen EADDRINUSE: address already in use 0.0.0.0:23391'), { code: 'EADDRINUSE' });
+  // listen seam: the first `fails` attempts throw `err()`, then the fake server binds
+  function listenFailing(f, fails, err = inUse) {
+    const l = { attempts: 0 };
+    l.fn = async (opts) => { l.attempts += 1; if (l.attempts <= fails) throw err(); return f.startSynthesizerServer(opts); };
+    return l;
+  }
+  // timer seam: records each armed delay; fires it at once unless `hold`
+  function timers({ hold = false } = {}) {
+    const t = { delays: [], cleared: 0 };
+    t.setTimeout = (fn, ms) => { t.delays.push(ms); if (!hold) queueMicrotask(fn); return t.delays.length; };
+    t.clearTimeout = () => { t.cleared += 1; };
+    return t;
+  }
+
+  it('do as measured: EADDRINUSE on the first listen → retries and binds once the port frees; the attempt is logged', async () => {
+    const f = fakes(); const t = timers(); const l = listenFailing(f, 1); const logs = [];
+    const w = createSynthesizerWorker({ getConfig: () => CFG, ...f, startSynthesizerServer: l.fn, setTimeout: t.setTimeout, clearTimeout: t.clearTimeout, onLog: (m) => logs.push(m) });
+    await w.start();
+    expect(l.attempts).toBe(2);
+    expect(t.delays).toEqual([3000]);
+    expect(logs).toContain('synthesizer: could not bind 0.0.0.0:23391 — EADDRINUSE (attempt 1); retrying in 3s. Text sent to this endpoint falls past it until it binds.');
+    expect(logs).toContain('synthesizer: worker role up on 0.0.0.0:23391');
+    expect(logs.some((m) => /failed to start/.test(m))).toBe(false);
+    w.stop();
+    expect(f.calls.serverClosed).toBe(1);
+  });
+
+  it('backs off 3s → 60s while the port stays taken', async () => {
+    const f = fakes(); const t = timers(); const l = listenFailing(f, 7);
+    const w = createSynthesizerWorker({ getConfig: () => CFG, ...f, startSynthesizerServer: l.fn, setTimeout: t.setTimeout, clearTimeout: t.clearTimeout });
+    await w.start();
+    expect(t.delays).toEqual([3000, 6000, 12000, 24000, 48000, 60000, 60000]);
+    expect(l.attempts).toBe(8);
+  });
+
+  it('stop() during the backoff ends it: no further listen, start() returns, nothing bound', async () => {
+    const f = fakes(); const t = timers({ hold: true }); const l = listenFailing(f, 1); const logs = [];
+    const w = createSynthesizerWorker({ getConfig: () => CFG, ...f, startSynthesizerServer: l.fn, setTimeout: t.setTimeout, clearTimeout: t.clearTimeout, onLog: (m) => logs.push(m) });
+    const started = w.start();
+    for (let i = 0; i < 50 && !t.delays.length; i++) await new Promise((r) => setTimeout(r, 1));
+    expect(t.delays).toEqual([3000]);
+    w.stop();
+    await started;
+    expect(t.cleared).toBe(1);
+    expect(l.attempts).toBe(1);
+    expect(f.calls.server).toHaveLength(0);
+    expect(logs.some((m) => /worker role up|failed to start/.test(m))).toBe(false);
+  });
+
+  it('any other listen error stays fatal: one attempt, logged, no retry', async () => {
+    const f = fakes(); const t = timers(); const logs = [];
+    const l = listenFailing(f, 1, () => Object.assign(new Error('listen EACCES: permission denied 0.0.0.0:23391'), { code: 'EACCES' }));
+    const w = createSynthesizerWorker({ getConfig: () => CFG, ...f, startSynthesizerServer: l.fn, setTimeout: t.setTimeout, clearTimeout: t.clearTimeout, onLog: (m) => logs.push(m) });
+    await w.start();
+    expect(l.attempts).toBe(1);
+    expect(t.delays).toEqual([]);
+    expect(logs).toContain('!! synthesizer failed to start: listen EACCES: permission denied 0.0.0.0:23391');
+  });
+});
+
 describe('synthesizer worker — teardown', () => {
   it('stop() closes the synthesizer endpoint', async () => {
     const f = fakes();

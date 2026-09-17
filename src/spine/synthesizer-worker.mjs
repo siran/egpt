@@ -17,6 +17,7 @@
 
 import { join } from 'node:path';
 import { startSynthesizerServer as realStartSynthesizerServer, SYNTHESIZER_DEFAULT_PORT } from '../tools/synthesizer.mjs';
+import { listenRetrying } from './bind-retry.mjs';
 
 // ── config resolution (mirrors transcriptor-worker.mjs's resolveToken shape — pure +
 //    exported so the fallback ladder is test-locked). `synthesizer:` is the WORKER-role
@@ -40,9 +41,12 @@ export function createSynthesizerWorker({
   // process-boundary seam — defaults to the real spawner; tests inject a fake so no real
   // port is bound (piper/ffmpeg spawn per-request inside startSynthesizerServer itself).
   startSynthesizerServer = realStartSynthesizerServer,
+  setTimeout: setTimeoutFn = globalThis.setTimeout,       // the bind retry's timer seams
+  clearTimeout: clearTimeoutFn = globalThis.clearTimeout,
   onLog = () => {},
 } = {}) {
   let server = null, closed = false;
+  const stopping = new AbortController();   // stop() ends a pending bind retry (src/spine/bind-retry.mjs)
 
   async function start() {
     const cfg = getConfig() ?? {};
@@ -70,7 +74,11 @@ export function createSynthesizerWorker({
     const bind = scfg.bind || '127.0.0.1';   // default 127.0.0.1 — set synthesizer.bind to the LAN ip to expose
     const port = Number(scfg.port) > 0 ? Number(scfg.port) : SYNTHESIZER_DEFAULT_PORT;
     try {
-      const s = await startSynthesizerServer({ port, bind, keyB64, pythonPath, voicesDir, ffmpegCommand, onLog });
+      const s = await listenRetrying(() => startSynthesizerServer({ port, bind, keyB64, pythonPath, voicesDir, ffmpegCommand, onLog }), {
+        signal: stopping.signal, setTimeout: setTimeoutFn, clearTimeout: clearTimeoutFn,
+        onRetry: (attempt, delay) => onLog(`synthesizer: could not bind ${bind}:${port} — EADDRINUSE (attempt ${attempt}); retrying in ${Math.round(delay / 1000)}s. Text sent to this endpoint falls past it until it binds.`),
+      });
+      if (!s) return;                      // stopped during a bind retry
       if (closed) { s.close(); return; }   // stopped mid-start
       server = s;
       onLog(`synthesizer: worker role up on ${bind}:${s.port}`);
@@ -83,6 +91,7 @@ export function createSynthesizerWorker({
   // mid-start `closed` check catches it). boot.stop() calls this.
   function stop() {
     closed = true;
+    stopping.abort();
     try { server?.close(); } catch { /* already gone */ }
   }
 

@@ -22,12 +22,9 @@
 import { networkInterfaces } from 'node:os';
 import { startWhisperServer as realStartWhisperServer, makeWhisperServerTranscriber as realMakeTranscriber } from '../tools/whisper-server.mjs';
 import { startTranscriptorServer as realStartTranscriptorServer, TRANSCRIPTOR_DEFAULT_PORT } from '../tools/transcriptor.mjs';
+import { listenRetrying } from './bind-retry.mjs';
 
 const WHISPER_DEFAULT_PORT = 8089;   // mirrors src/tools/whisper-server.mjs (port = 8089)
-// The bind retry's backoff — the same 3s → 60s shape as the console limb's re-listen
-// (src/bridges/shell-port.mjs RELISTEN_MIN_MS / RELISTEN_MAX_MS).
-const BIND_RETRY_MIN_MS = 3_000;
-const BIND_RETRY_MAX_MS = 60_000;
 
 // ── IS THIS NODE ITS OWN WORKER? ─────────────────────────────────────────────────────────────
 // True-ish when this node's ACTIVE transcription profile (transcription_service[use_config])
@@ -98,27 +95,7 @@ export function createTranscriptorWorker({
   onLog = () => {},
 } = {}) {
   let server = null, whisper = null, closed = false;
-  let retryTimer = null, wake = null;   // a pending bind retry, ended early by stop()
-
-  // THE BIND RETRIES WHILE THE PORT IS TAKEN (dolly, 2026-09-15 13:27 and 14:11). The session-1
-  // spine started while the spine it replaces still held :23390, the one listen failed with
-  // EADDRINUSE, and the worker never tried again. It re-listens with the console limb's backoff
-  // until it binds or stop(); any other listen error stays fatal. Resolves null when stopped.
-  async function listen(opts) {
-    for (let attempt = 1, delay = BIND_RETRY_MIN_MS; ; attempt += 1) {
-      try { return await startTranscriptorServer(opts); }
-      catch (e) {
-        if (e?.code !== 'EADDRINUSE' || closed) throw e;
-        onLog(`transcriptor: could not bind ${opts.bind}:${opts.port} — EADDRINUSE (attempt ${attempt}); retrying in ${Math.round(delay / 1000)}s. Notes sent to this endpoint fall past it until it binds.`);
-        await new Promise((resolve) => {
-          wake = resolve;
-          retryTimer = setTimeoutFn(() => { retryTimer = null; wake = null; resolve(); }, delay);
-        });
-        if (closed) return null;
-        delay = Math.min(delay * 2, BIND_RETRY_MAX_MS);
-      }
-    }
-  }
+  const stopping = new AbortController();   // stop() ends a pending bind retry (src/spine/bind-retry.mjs)
 
   async function start() {
     const cfg = getConfig() ?? {};
@@ -159,7 +136,10 @@ export function createTranscriptorWorker({
         if (closed) { whisper.stop(); return; }   // stopped mid-start
         transcribe = makeWhisperServerTranscriber({ url: whisper.url, ffmpeg: audioCfg.ffmpeg_command, language: audioCfg.language });
       }
-      const s = await listen({ port, bind, keyB64, audioCfg, transcribe, stateDir, onLog });
+      const s = await listenRetrying(() => startTranscriptorServer({ port, bind, keyB64, audioCfg, transcribe, stateDir, onLog }), {
+        signal: stopping.signal, setTimeout: setTimeoutFn, clearTimeout: clearTimeoutFn,
+        onRetry: (attempt, delay) => onLog(`transcriptor: could not bind ${bind}:${port} — EADDRINUSE (attempt ${attempt}); retrying in ${Math.round(delay / 1000)}s. Notes sent to this endpoint fall past it until it binds.`),
+      });
       if (!s) return;                                        // stopped during a bind retry (stop() already stopped whisper)
       if (closed) { s.close(); whisper?.stop(); return; }   // stopped mid-start
       server = s;
@@ -174,8 +154,7 @@ export function createTranscriptorWorker({
   // `closed` checks catch it). boot.stop() calls this.
   function stop() {
     closed = true;
-    if (retryTimer) { clearTimeoutFn(retryTimer); retryTimer = null; }
-    if (wake) { const w = wake; wake = null; w(); }
+    stopping.abort();
     try { server?.close(); } catch { /* already gone */ }
     try { whisper?.stop(); } catch { /* already gone */ }
   }
