@@ -486,7 +486,7 @@ describe('createReplyActions.execute — bridgeOf: per-being connection routing 
     expect(mainBridge.calls.react).toEqual([{ chat: EV.chatId, id: '7', emoji: '🔥' }]);
     expect(mainBridge.calls.send).toEqual([]);           // egpt's /reply never landed here
     expect(rodzBridge.calls.react).toEqual([]);           // rodz's bridge never saw egpt's /react
-    expect(rodzBridge.calls.send).toEqual([{ chat: EV.chatId, text: 'hola', opts: { replyTo: '9', bodyEmoji: '🐶', label: 'rodz' } }]);
+    expect(rodzBridge.calls.send).toEqual([{ chat: EV.chatId, text: 'hola', opts: { replyTo: '9', bodyEmoji: '🐶', label: 'rodz', persona: 'rodz' } }]);
   });
 
   it('bridgeOf absent or nullish for a being: falls back to the default `bridge`, never throws', async () => {
@@ -524,7 +524,7 @@ describe('createReplyActions.execute — a limb rides the connection that HOLDS 
     const ear = fakeBridge(), mouth = fakeBridge();
     const a = mkTwo(ear, mouth);
     const { ran } = await a.execute(a.parse('/reply #9 hola', EV).run, [], EV, { being: 'e' });
-    expect(ear.calls.send).toEqual([{ chat: EV.chatId, text: 'hola', opts: { replyTo: '9', bodyEmoji: '🐶', label: 'e' } }]);
+    expect(ear.calls.send).toEqual([{ chat: EV.chatId, text: 'hola', opts: { replyTo: '9', bodyEmoji: '🐶', label: 'e', persona: 'e' } }]);
     expect(mouth.calls.send).toEqual([]);          // the mouth has no such room — this is where it was DROPPED
     expect(ran).toHaveLength(1);                   // …so the limb LANDS, and the spine writes its stage-direction
   });
@@ -560,7 +560,7 @@ describe('createReplyActions.execute — a limb rides the connection that HOLDS 
     const only = fakeBridge(), never = fakeBridge();
     const a = createReplyActions({ bridge: never, bridgeOf: (being) => (being === 'e' ? only : null), bodyEmojiOf: () => '🐶', labelOf: () => 'e', resolveConvDir: async () => null, onLog: () => {} });
     await a.execute(a.parse('/reply #9 hola', EV).run, [], EV, { being: 'e' });
-    expect(only.calls.send).toEqual([{ chat: EV.chatId, text: 'hola', opts: { replyTo: '9', bodyEmoji: '🐶', label: 'e' } }]);
+    expect(only.calls.send).toEqual([{ chat: EV.chatId, text: 'hola', opts: { replyTo: '9', bodyEmoji: '🐶', label: 'e', persona: 'e' } }]);
     expect(never.calls.send).toEqual([]);
   });
 });

@@ -24,10 +24,12 @@ import { createHash } from 'node:crypto';
 import { startBeeperBridge, newerMsgId, transcriptionForNoteId, crossAccountMsgKey, LISTENING_REACTION } from '../src/bridges/beeper.mjs';
 import { EGPT_HOME } from '../src/egpt-home.mjs';
 import { encodeMesh } from '../src/mesh/relay.mjs';
-import { surfaceOf } from '../src/spine/identity.mjs';
+import { surfaceOf, createIdentity } from '../src/spine/identity.mjs';
+import { encodeNodeSignature } from '../src/node-signature.mjs';
+import { replyAllowed } from '../src/auto-mode.mjs';
 import { _resetPromotions, ECHO_MARKER } from '../src/incoming-media.mjs';
 import { echoRank } from '../src/spine/echo-priority.mjs';
-import { addressed } from '../src/spine/router.mjs';
+import { addressed, createRouter } from '../src/spine/router.mjs';
 import { buildTranscriptionPipeline } from '../src/transcription-pipeline.mjs';
 import { makeOutbound } from '../src/spine/sender.mjs';
 import { makePeerMouth } from '../src/spine/boot.mjs';
@@ -2144,6 +2146,86 @@ describe('beeper bridge — E limbs + reply-to-E notification', () => {
     const m = incoming.find((i) => i.text === 'hola');
     expect(m.from.replyToBot).toBe(false);
     expect(m.from.replyToId).toBe(null);
+  });
+});
+
+// A QUOTE-REPLY NAMES THE BEING WHOSE POST IT QUOTES — STRUCTURALLY (operator 2026-09-16: "make it
+// wake structurally, not by reading the body (or maybe using the invisible characters)"). LIVE, in
+// "SPOILER ALERT: chat de EyAy" (daemon log 16:34:19): the operator quote-replied to E's #7143 with
+// no handle and nothing woke. The beings post through the MOUTH account and ids are per account, so
+// on the EAR the quoted id is not one we sent (replyToBot=false), while the mouth's arrival — the one
+// that said replyToBot — is discarded by the per-chat ear gate. The frame travels INSIDE the body, so
+// the ear's own copy of E's post still says `kg/egpt`. Every bridge here is node `kg`.
+describe('beeper bridge — a quote-reply to a being\'s post names that being (operator 2026-09-16)', () => {
+  const E_POST = `🐶 E: un número voip no es fraudulento por sí mismo${encodeNodeSignature('kg', 'egpt')}`;
+  const KEN_POST = `🎩 Ken: depende del uso${encodeNodeSignature('kg', 'ken')}`;
+  const QUESTION = 'qué tiene de fraudulento un númerp voip?';
+  const quoteReply = (quotedId, text = QUESTION) => ({ type: 'message.upserted', entries: [liveMsg({ isSender: true, senderName: 'An', text, linkedMessageID: quotedId })] });
+  const arrival = async (incoming, text) => { await waitFor(() => incoming.some((i) => i.text === text)); return incoming.find((i) => i.text === text); };
+
+  it('THE REPRODUCTION: the ear saw the mouth\'s post go by, and the reply to it names E (read from _seenText)', async () => {
+    const { incoming } = await startBridge({ nodeName: 'kg' });
+    // The mouth account's post, as the EAR receives it: another participant's message, not ours.
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: '7143', isSender: false, senderName: 'Rodz', text: E_POST })] });
+    await arrival(incoming, E_POST);
+    // The chat's list is EMPTY, so the only place the frame can have come from is the bridge's memory.
+    fake.emit(quoteReply('7143'));
+    const m = await arrival(incoming, QUESTION);
+    expect(m.from.replyToBeing).toBe('egpt');
+    expect(m.from.replyToBot).toBe(true);
+    expect(m.from.replyToId).toBe('7143');
+  });
+
+  it('a post the bridge never saw (a restart): the chat\'s recent list is read, and names the being', async () => {
+    const { incoming } = await startBridge({ nodeName: 'kg' });
+    fake.messages.set(CHAT('chat-1'), [{ id: '7150', text: KEN_POST, isSender: false }]);
+    fake.emit(quoteReply('7150'));
+    const m = await arrival(incoming, QUESTION);
+    expect(m.from.replyToBeing).toBe('ken');
+    expect(m.from.replyToBot).toBe(true);
+  });
+
+  it('END TO END: the arrival, the envelope, the router and the gate wake E — and ken, in a mention-direct chat', async () => {
+    const { incoming } = await startBridge({ nodeName: 'kg' });
+    fake.messages.set(CHAT('chat-1'), [{ id: '7143', text: E_POST }, { id: '7150', text: KEN_POST }]);
+    const agents = { egpt: { handles: ['e', 'egpt'], default: true, name: 'E' }, ken: { handles: ['ken'], name: 'Ken' } };
+    const router = createRouter({ getAgents: () => agents, defaultBeing: 'egpt' });
+    const identity = createIdentity();
+    fake.emit(quoteReply('7143', 'a E'));
+    fake.emit(quoteReply('7150', 'a Ken'));
+    const resolve = async (text) => { const m = await arrival(incoming, text); return router.resolve(identity.build({ body: m.text, from: m.from })); };
+    const toE = await resolve('a E');
+    expect(toE.targets.map((t) => t.being)).toEqual(['egpt']);
+    expect(replyAllowed('mention', toE.mention)).toBe(true);
+    const toKen = await resolve('a Ken');
+    expect(toKen.targets.map((t) => t.being)).toEqual(['ken']);
+    expect(replyAllowed('mention-direct', toKen.mention)).toBe(true);
+  });
+
+  it('LOCK: a reply to a human, to a node-only line (a `post:` beat), or to a PEER node\'s being names nobody', async () => {
+    const { incoming } = await startBridge({ nodeName: 'kg' });
+    fake.messages.set(CHAT('chat-1'), [
+      { id: '1', text: 'lo dijo una persona' },
+      { id: '2', text: `el primo del día es 1637${encodeNodeSignature('kg')}` },
+      { id: '3', text: `🤝 don: aquí${encodeNodeSignature('do', 'egpt')}` },   // a co-account spine's being: that spine's to wake
+    ]);
+    for (const id of ['1', '2', '3']) {
+      fake.emit(quoteReply(id, `re ${id}`));
+      const m = await arrival(incoming, `re ${id}`);
+      expect(m.from.replyToBeing ?? null, id).toBe(null);
+      expect(m.from.replyToBot, id).toBe(false);
+      expect(m.from.replyToId, id).toBe(id);
+    }
+  });
+
+  it('LOCK: a message that quotes nothing reads nothing', async () => {
+    const { incoming } = await startBridge({ nodeName: 'kg' });
+    const gets = fake.msgListGets();
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ isSender: false, senderName: 'Bea', text: 'hola' })] });
+    const m = await arrival(incoming, 'hola');
+    expect(m.from.replyToBeing ?? null).toBe(null);
+    expect(m.from.replyToBot).toBe(false);
+    expect(fake.msgListGets()).toBe(gets);
   });
 });
 

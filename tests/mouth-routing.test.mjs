@@ -1267,7 +1267,7 @@ describe('the /react limb is placed by the MOUTH, on its own copy — never from
 describe('/reply and /media are said by the MOUTH, in its own room — never from the ear\'s account', () => {
   const TARGET = STEERED_ON_PRIMARY.id;
   const REPLY = `/reply #${TARGET} exacto`;
-  const stamp = { bodyEmoji: '🐶', label: 'e' };
+  const stamp = { bodyEmoji: '🐶', label: 'e', persona: 'e' };
   const convDir = () => { const d = mkdtempSync(join(tmpdir(), 'egpt-mouth-media-')); writeFileSync(join(d, 'pic.png'), 'bytes'); return d; };
 
   it('THE REPRODUCTION: the mouth says the /reply in its own room, quoting ITS OWN copy (1118), and the ear sends nothing', async () => {
@@ -1394,7 +1394,7 @@ const SAID_ON_SECONDARY = { id: '1150', text: SAID_TEXT, timestamp: SAID_TS };  
 
 describe('/edit is made by the MOUTH on its own message — and never lands on one that is not ours', () => {
   const EDIT = `/edit #${SAID_ON_PRIMARY.id} hola, corregido`;
-  const stamp = { bodyEmoji: '🐶', label: 'e' };
+  const stamp = { bodyEmoji: '🐶', label: 'e', persona: 'e' };
   const edited = (chat, msgId) => [{ chat, msgId, text: 'hola, corregido', opts: stamp }];
   // The ordinary two-account shape: the mouth said the line, so the MOUTH's memory holds it.
   const node = (shape = {}) => {

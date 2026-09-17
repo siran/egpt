@@ -9,8 +9,10 @@
 //   3. the persona stamp — unchanged (persona-wrap.test.mjs)
 import { describe, it, expect } from 'vitest';
 import {
-  encodeNodeSignature, decodeNodeSignature, stripNodeSignature, renderNodeSignature,
+  encodeNodeSignature, decodeNodeSignature, stripNodeSignature, renderNodeSignature, decodeBeingSignature,
 } from '../src/node-signature.mjs';
+import { fromOtherNode } from '../src/spine/node-names.mjs';
+import { isHumanTurn } from '../src/stop-guard.mjs';
 import { makeWrapPersona } from '../src/bridges/persona-wrap.mjs';
 import { encodeMesh, parseMesh } from '../src/mesh/relay.mjs';
 import { createIdentity } from '../src/spine/identity.mjs';
@@ -198,5 +200,48 @@ describe('the marker never reaches the brain', () => {
     const ev = identity.build({ body: `tres${KG}`, from: FROM });
     const file = transcriptAppend({ existing: false, body: ev.line, name: 'fam', surface: 'whatsapp', slug: 'fam' });
     expect(RAW_TAG.test(stripFrontMatter(file))).toBe(false);
+  });
+});
+
+// A BEING'S POST NAMES THE BEING IN THE SAME FRAME (operator 2026-09-16, "make it wake structurally,
+// not by reading the body (or maybe using the invisible characters)"): `<node>/<being>`, so a
+// quote-reply can tell which being wrote the quoted message. Every existing reader still gets the
+// NODE alone — the record, the provenance guard and fromOtherNode must not move.
+describe('node-signature — a being\'s post names the being (operator 2026-09-16)', () => {
+  const KG_EGPT = encodeNodeSignature('kg', 'egpt');
+  const tags = (s) => [...s].map((c) => String.fromCodePoint(0xE0000 + c.codePointAt(0))).join('');
+
+  it('encodes <node>/<being> inside the one frame, and decodeBeingSignature reads the being back', () => {
+    expect(KG_EGPT).toBe(`\u{E0001}${tags('kg/egpt')}\u{E007F}`);
+    expect(decodeBeingSignature(`🐶 egpt: hola${KG_EGPT}`)).toBe('egpt');
+  });
+
+  it('a node-only frame, no frame, or no being names nobody — and encodes exactly as before', () => {
+    expect(decodeBeingSignature(`hola${KG}`)).toBe(null);
+    expect(decodeBeingSignature('hola')).toBe(null);
+    expect(encodeNodeSignature('kg', null)).toBe(KG);
+    expect(encodeNodeSignature('kg', '')).toBe(KG);
+    expect(encodeNodeSignature('', 'egpt')).toBe('');
+  });
+
+  it('LOCK: decodeNodeSignature returns the NODE ALONE; render and strip are byte-identical', () => {
+    expect(decodeNodeSignature(`hola${KG_EGPT}`)).toBe('kg');
+    expect(renderNodeSignature(`hola${KG_EGPT}`)).toBe('hola<kg>');
+    expect(renderNodeSignature(`hola${KG_EGPT}`)).toBe(renderNodeSignature(`hola${KG}`));
+    expect(stripNodeSignature(`hola${KG_EGPT}`)).toBe('hola');
+  });
+
+  it('LOCK: our own being\'s post is still OUR node to fromOtherNode, and still not a human turn', () => {
+    const ev = createIdentity().build({ body: `🐶 egpt: hola${KG_EGPT}`, from: { chatId: '!r:beeper.com', chatName: 'fam', network: 'whatsapp', userId: 'u', senderName: 'An' } });
+    expect(ev.fromNode).toBe('kg');
+    expect(ev.body).toBe('🐶 egpt: hola<kg>');
+    expect(fromOtherNode({ node_name: 'kg' }, ev)).toBe(false);
+    expect(isHumanTurn(ev)).toBe(false);
+  });
+
+  it('the wrap names the being only when one speaks; a system line keeps the node-only frame', () => {
+    const wrap = makeWrapPersona({ nodeName: 'kg' });
+    expect(wrap({ bodyEmoji: '🐶', label: 'egpt', persona: 'egpt' }, 'hola')).toBe(`🐶 egpt: hola${KG_EGPT}`);
+    expect(wrap({}, 'primo del día')).toBe(`primo del día${KG}`);
   });
 });

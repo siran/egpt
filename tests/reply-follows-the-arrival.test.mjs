@@ -1003,7 +1003,7 @@ describe('a scheduled send with NO arrival since boot: the chat is placed at reg
 
     expect(script.prompts).toHaveLength(1);
     expect(script.prompts[0]).toContain(LINE);
-    expect(byConnection.secondary.sent).toEqual([{ chatId: BOTH_AS_SECONDARY, text: sealed('📐 Gauss: Porque ningún primo hasta 40 lo divide.') }]);   // the being's stamp AND the bridge's seal + node id
+    expect(byConnection.secondary.sent).toEqual([{ chatId: BOTH_AS_SECONDARY, text: `📐 Gauss: Porque ningún primo hasta 40 lo divide. ${SEAL}${encodeNodeSignature('kg', 'gauss')}` }]);   // the being's stamp AND the bridge's seal + node id, naming the being (kg/gauss)
     expect(byConnection.secondary.streams).toEqual([]);
     expect(byConnection.secondary.edits).toEqual([]);
     expect(byConnection.primary.sent).toEqual([]);

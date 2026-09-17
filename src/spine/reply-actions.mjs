@@ -393,7 +393,7 @@ export function createReplyActions({ bridge, bridgeOf = null, peerMouth = null, 
     if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) { onLog(`media: "${a.path}" escapes the conversation dir — rejected (fail-closed)`); return false; }
     if (!existsSync(abs)) { onLog(`media: file not found "${a.path}" in ${convDir} — skipped`); return false; }
     // No target, so nothing to key: whoever says this being's lines in this chat posts it (sender.mjs makeOutbound `say`).
-    const ok = await outbound(being, ev.chatId).say((on, room) => on.sendMedia?.(room, abs, { caption: a.caption, bodyEmoji: bodyEmojiOf(being), label: labelOf(being) }), { what: 'media' });
+    const ok = await outbound(being, ev.chatId).say((on, room) => on.sendMedia?.(room, abs, { caption: a.caption, bodyEmoji: bodyEmojiOf(being), label: labelOf(being), persona: being }), { what: 'media' });
     if (!ok) onLog(`media: send failed "${a.path}"`);
     return !!ok;
   }
@@ -416,7 +416,7 @@ export function createReplyActions({ bridge, bridgeOf = null, peerMouth = null, 
         // whoever says this being's lines in this chat — quoting ITS OWN copy of the target
         // (sender.mjs makeOutbound `say`).
         const out = outbound(being, ev.chatId);
-        const tag = { bodyEmoji: bodyEmojiOf(being), label: labelOf(being) };
+        const tag = { bodyEmoji: bodyEmojiOf(being), label: labelOf(being), persona: being };
         const send = async (on, room, replyTo) => { const r = await on.send?.(room, a.text, { replyTo, ...tag }); return !(r?.blocked || r == null); };
         const ok = await out.say(send, { msgId: a.targetId, keyOf: out.keyOf(a.targetId, 'reply'), text: a.text, tag });
         if (!ok) onLog(`reply: → #${a.targetId} not delivered`);
@@ -440,7 +440,7 @@ export function createReplyActions({ bridge, bridgeOf = null, peerMouth = null, 
         const out = outbound(being, ev.chatId);
         const edit = async (on, room, id) => {
           if (id == null || !(await on.wasSentByUs?.(room, id))) { onLog(`edit: #${a.targetId} is not one of our messages — rejected (fail-closed)`); return false; }
-          const ok = await on.editOwn?.(room, id, a.text, { bodyEmoji: bodyEmojiOf(being), label: labelOf(being) });
+          const ok = await on.editOwn?.(room, id, a.text, { bodyEmoji: bodyEmojiOf(being), label: labelOf(being), persona: being });
           if (!ok) onLog(`edit: #${a.targetId} failed`);
           return !!ok;
         };

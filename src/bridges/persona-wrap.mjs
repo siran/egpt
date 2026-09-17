@@ -69,11 +69,10 @@ const isMeshEnvelope = (t) => {
  *   to a bare stamp (boot, not this module, is where a missing node_name is fatal).
  * @returns {(o: object, text: string) => string}  wrapPersona(o, text): stamps the core (when there
  *   is an identity to stamp), then wraps [bridge, inner] concentrically and appends the structural
- *   node id — ALWAYS, except around a mesh envelope. `o` carries bodyEmoji, label, and the inner
- *   agentSigOpen/agentSigClose.
+ *   node id — ALWAYS, except around a mesh envelope. `o` carries bodyEmoji, label, the inner
+ *   agentSigOpen/agentSigClose, and `persona`: the key of the being speaking, if one is.
  */
 export function makeWrapPersona({ bridgeSignatureOpen = '', bridgeSignatureClose = '', nodeName = '' } = {}) {
-  const nodeSig = encodeNodeSignature(nodeName);
   return (o, text) => {
     // Nothing to sign is not a message: an empty body (the mesh origin mirror opens its stream
     // with '') must stay empty, never become a signature with no content under it.
@@ -91,6 +90,10 @@ export function makeWrapPersona({ bridgeSignatureOpen = '', bridgeSignatureClose
     // commits it to the surface, so that older marker is replaced, never stacked. Appended
     // (not prepended) so the leading edge stays exactly as before: the 👂 observe-cancel query
     // and the persona stamp both read the START of a message.
-    return stripNodeSignature(wrapped) + nodeSig;
+    // The being speaking rides the same frame (`<node>/<being>`, operator 2026-09-16), so a
+    // quote-reply to this message names its author structurally (bridges/beeper.mjs
+    // replyToBeing). `o.persona` is the being key the reply train already hands the stream
+    // (src/spine/sender.mjs `tag`); a send with none keeps the node-only frame.
+    return stripNodeSignature(wrapped) + encodeNodeSignature(nodeName, o.persona);
   };
 }

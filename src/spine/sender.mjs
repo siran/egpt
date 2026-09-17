@@ -351,7 +351,7 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
       // SOLE agent close now — the historical inline signature end-marker was removed 2026-07-12.
       const agentSigOpen = agentSignatureOpenOf(being);
       const agentSigClose = agentSignatureCloseOf(being);
-      const tag = { bodyEmoji, label, replyTo, agentSigOpen, agentSigClose };   // the bridge enforces the persona stamp (emoji + label) + wraps the layers from these
+      const tag = { bodyEmoji, label, replyTo, agentSigOpen, agentSigClose, persona: being };   // the bridge enforces the persona stamp (emoji + label) + wraps the layers from these; `persona` names the being in the invisible frame (persona-wrap.mjs)
       // WHOSE STAMP A PEER-SAID REPLY CARRIES: THIS node's, the BRAIN's (operator 2026-09-05, "if
       // an receives 'e hi' if Rodz is present let him reply as the king"). A routed reply used to
       // cross the wire as bare text and be posted bare, because the mouth posts VERBATIM by
@@ -417,7 +417,7 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
       // it; src/spine/boot.mjs makePeerMouth). Same factory, same tag, same wrap one layer down in
       // beeper-port: there is no second sender and no second definition of what a reply looks
       // like, only a different bridge and a different room.
-      const openLocalStream = (on = bridgeForThisBeing, room = chatId) => on.startStream?.(room, placeholderText(), { ...tag, persona: being });
+      const openLocalStream = (on = bridgeForThisBeing, room = chatId) => on.startStream?.(room, placeholderText(), tag);
       // THE ONE DECISION (header): which factory mints the stream. All three hand back the same
       // surface, so nothing below this line knows or cares which mouth it is driving. A LOCAL
       // mouth is told apart from a PEER one by `.bridge`, which only the local answer carries.
