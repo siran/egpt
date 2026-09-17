@@ -167,13 +167,18 @@ describe('(B) command turns pass through the loop guard', () => {
 
     const statusRuns = () => ran.filter((b) => b === '/status').length;
     const before = statusRuns();                 // the 3 that ran before the guard tripped
+    await spine.handleInbound(echoed('/status'));
+    expect(statusRuns()).toBe(before);           // …while re-entered commands stay suppressed
+    // …and the operator's own typed command runs (operator 2026-09-16: "all chats should accept
+    // commands from the operator"), without lifting the stop
     await spine.handleInbound(opCmd('/status'));
-    expect(statusRuns()).toBe(before);           // …while ordinary commands stay suppressed
+    expect(statusRuns()).toBe(before + 1);
+    expect(guard.blocked('wa:self')).toBe(true);
 
     await spine.handleInbound(opCmd('RESUME'));  // the operator's way back
     expect(guard.blocked('wa:self')).toBe(false);
     await spine.handleInbound(opCmd('/status'));
-    expect(statusRuns()).toBe(before + 1);
+    expect(statusRuns()).toBe(before + 2);
   });
 
   // The incident's missing recovery: mid-flood the operator types STOP. Before 2026-07-25 STOP
@@ -206,7 +211,7 @@ describe('(B) command turns pass through the loop guard', () => {
     const guard = createStopGuard({ turns: 1 });   // the first non-human command turn stops the channel
     const { spine, transcript } = buildSpine({ guard });
     await spine.handleInbound(echoed('/status'));  // trips the counter
-    await spine.handleInbound(opCmd('/status'));   // suppressed…
+    await spine.handleInbound(echoed('/status'));  // suppressed…
     expect(guard.blocked('wa:self')).toBe(true);
     expect(transcript.logged.map((e) => e.body)).toEqual(['/status', '/status']);   // …but recorded
   });

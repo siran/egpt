@@ -46,6 +46,7 @@ import { cleanForSpeech } from '../speech-clean.mjs';
  * @property {(being: string, ev: InboundEvent) => Promise<'none'|'same_sender'|'any'>} [allowNewInput]  this conversation's resolved steer policy (operator 2026-08-30). OPTIONAL — absent ⇒ never steer
  * @property {(being: string, ev: InboundEvent) => Promise<false|{ack: Promise<{ok: boolean, reason?: string}>}>} [steer]  hand this message to the turn already streaming. FALSE = nothing happened (queue as usual); otherwise `{ack}`, the session's later word on whether the MODEL took it — the only thing the 👀 may be placed on (operator 2026-09-09; see src/spine/turns.mjs). OPTIONAL — absent ⇒ never steer
  * @property {(being: string, ev: InboundEvent) => Promise<{surface: string, chatId: string, pinned?: boolean}>} [scopeOf]  WHICH conversation this being's INSTANCE lives in — its thread, warm process and run config (src/spine/identity-scope.mjs, operator 2026-08-31). The address the per-conversation turn FIFO must key on, since that FIFO is what keeps one warm entry to one turn. `pinned` marks a being PINNED node-wide, as opposed to one whose chats share a scope by membership — only the pin suppresses the cycle prepend (2026-09-01, runReplyTurn). OPTIONAL — absent ⇒ the event's own address, i.e. every conversation is its own instance
+ * @property {(being: string, ev: InboundEvent) => Promise<string>} [accessLevel]  this conversation's RESOLVED access_level for this agent — the level its turn runs at. The per-chat loop guard only compares it to 'all': a META ENGINEER is beyond that guard (operator 2026-09-16, isMetaEngineer). OPTIONAL — absent ⇒ no meta engineers, the guard is unchanged
  *
  * @typedef {object} Store   contact ops + thread/state persistence (conversations-state).
  * @property {(rec: {ev: InboundEvent, reply: any, being: string}) => void} [recordThread]
@@ -230,6 +231,20 @@ export function createSpine({
   // path itself dispatches on — no second list of "which commands are lifecycle" — and is
   // side-effect-free here (no writeRewindTarget passed, so /rewind writes nothing).
   const isLifecycle = (ev) => lifecycleExit(String(ev?.body ?? '').trim()) != null;
+  // Is this routed target a META ENGINEER? (operator 2026-09-16: "meta engineers are beyond the
+  // bridge" / "a meta engineer is an `access_level: all`, all-powerful agent" — GENOME I8, "E is
+  // gated; meta-engineers are not".) The level is the one a TURN runs at, so it is asked of the
+  // Brain — brainpool's resolveConv walks per-conversation → conversation_defaults → 'regular' —
+  // and only compared here: no list of names, no flag. 'sandbox' is not 'all'. The agent asked
+  // about is the one the target is GATED as (gateAs), so a relay target asks about its relay
+  // agent. OPTIONAL seam: a Brain without it has no meta engineers and the guard is unchanged. An
+  // unreadable level is not a meta engineer — the guard keeps applying.
+  async function isMetaEngineer(t, ev) {
+    if (typeof brain.accessLevel !== 'function') return false;
+    const agent = gateAs(t, t?.being ?? defaultBeing);
+    try { return (await brain.accessLevel(agent, ev)) === 'all'; }
+    catch (e) { note(`guard: access level of ${agent} unreadable — guarded as usual: ${e?.message ?? e}`); return false; }
+  }
   // Count a NON-HUMAN turn toward the loop cap (resolving any per-conversation override)
   // and auto-STOP the channel when the cap trips. The tripping turn still runs; the STOP
   // pauses the NEXT one (blocked() is checked at the top of every dispatch path).
@@ -735,8 +750,16 @@ export function createSpine({
       // command replies could only be ended by killing the service. Same three lines as the
       // chat path: a stopped channel suppresses it, and PROVENANCE decides reset-vs-count (an
       // operator who genuinely typed the command resets, our own output re-entering counts).
+      //
+      // …EXCEPT THE OPERATOR'S OWN (operator 2026-09-16: "all chats should accept commands from
+      // the operator"). kg's admin group auto-STOPped on a heartbeat's posts and then swallowed
+      // his `/agents wren refresh`. The lifecycle exemption above, widened to every command the
+      // command path itself admits (isCommand — its own authority, so a group member still cannot
+      // type one past the stop) when a HUMAN typed it: what the 2026-07-25 flood re-entered was
+      // authorized-looking machine output, and that stays suppressed. It does NOT lift the stop —
+      // only RESUME does; the command runs and the beings stay paused.
       if (guard) {
-        if (guard.blocked(channel)) return () => { note(`guard: ${channel} stopped — command suppressed`); };
+        if (guard.blocked(channel) && !humanTurn(ev)) return () => { note(`guard: ${channel} stopped — command suppressed`); };
         if (humanTurn(ev)) guard.noteHuman(channel);
         else await guardCountNonHuman(ev, channel);
       }
@@ -795,9 +818,31 @@ export function createSpine({
     // fan out beside it (fanOutExtras). A bare-string or single `{ being, mention }` return
     // (older/other fakes) normalizes to a one-target list, so those callers are unchanged.
     const routed = await router.resolve(ev);
-    const targets = (Array.isArray(routed?.targets) && routed.targets.length)
+    let targets = (Array.isArray(routed?.targets) && routed.targets.length)
       ? routed.targets
       : [typeof routed === 'string' ? { being: routed } : { being: routed?.being, mesh: routed?.mesh ?? null, mention: routed?.mention }];
+
+    // META ENGINEERS ARE BEYOND THE GUARD (operator 2026-09-16; isMetaEngineer above). The routed
+    // targets ARE the addressees, known here and nowhere earlier, so this is where it is decided —
+    // before the gate, because in a stopped channel the targets that remain are the ones gated:
+    //   · a STOPPED channel runs ONLY its meta engineers — "@e and @wren" still reaches wren, and
+    //     e stays paused. No meta engineer addressed ⇒ nothing changes, suppressed below as before.
+    //   · a NON-HUMAN turn whose every target is a meta engineer is that engineer's own turn and is
+    //     not counted, so one working in a chat cannot stop it for the others. Any non-meta target
+    //     makes it that being's turn too, and it counts. "Own" is the turn the engineer TAKES: the
+    //     envelope names no authoring being (fromNode is a node, fromMember a roster member).
+    // ACCEPTED (operator's decision): two meta engineers trading turns have no automatic brake
+    // here — the operator is the brake (the kill switch still stops everyone). Asked only when the
+    // answer can change something, so a human turn in a running channel reads no access level.
+    let beyondGuard = false;
+    if (guard && (guard.blocked(channel) || !humanTurn(ev))) {
+      const meta = await Promise.all(targets.map((t) => isMetaEngineer(t, ev)));
+      if (guard.blocked(channel) && meta.some(Boolean)) {
+        if (!meta.every(Boolean)) note(`guard: ${channel} stopped — prompt suppressed except for its meta engineer(s)`);
+        targets = targets.filter((_, i) => meta[i]);
+      }
+      beyondGuard = guard.blocked(channel) ? meta.some(Boolean) : meta.every(Boolean);
+    }
     const meshTarget = targets[0].mesh ?? null;
     const to = targets[0].being ?? defaultBeing;
     const mention = targets[0].mention ?? ev.mention;
@@ -820,9 +865,9 @@ export function createSpine({
     // never by a mere human turn. Runs before the reply/dwell/context branches so every
     // received message resets or counts exactly once.
     if (guard) {
-      if (guard.blocked(channel)) return () => { note(`guard: ${channel} stopped — prompt suppressed`); };
+      if (guard.blocked(channel) && !beyondGuard) return () => { note(`guard: ${channel} stopped — prompt suppressed`); };
       if (humanTurn(ev)) guard.noteHuman(channel);
-      else await guardCountNonHuman(ev, channel);
+      else if (!beyondGuard) await guardCountNonHuman(ev, channel);
     }
 
     // A BEING DOES NOT WAKE ON A FRAME ANOTHER NODE'S SPINE COMMITTED (operator 2026-08-31, on a

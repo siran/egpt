@@ -1622,6 +1622,40 @@ describe('brainpool — allow_new_input (operator 2026-08-30)', () => {
   });
 });
 
+// ── brain.accessLevel (operator 2026-09-16): what the spine's per-chat loop guard reads to
+//    recognise a META ENGINEER — an `access_level: all` being, which is beyond that guard
+//    ("meta engineers are beyond the bridge"; GENOME I8). Run against the REAL brainpool, not a
+//    fake, because the guard's own tests stub this method and only the real resolveConv proves
+//    the tier order they assume. ──
+describe('brainpool — accessLevel, the resolved level the per-chat guard compares to "all" (operator 2026-09-16)', () => {
+  it("unset at both tiers → 'regular', so nobody is a meta engineer by default", async () => {
+    const { brain } = harness([{ text: 'ok', sessionId: 's' }]);
+    expect(await brain.accessLevel('e', ev)).toBe('regular');
+  });
+
+  it("tier 2: agents.<being>.conversation_defaults.access_level applies with no per-conversation override", async () => {
+    const config = { agents: { e: { conversation_defaults: { access_level: 'all', allowed_users: ['123'] } } } };
+    const { brain } = harness([{ text: 'ok', sessionId: 's' }], { config });
+    expect(await brain.accessLevel('e', ev)).toBe('all');
+  });
+
+  it('tier 1: a per-conversation access_level applies with nothing set at the global tier', async () => {
+    const { brain } = harness([{ text: 'ok', sessionId: 's' }], { seedAgents: { e: { access_level: 'all', allowed_users: ['123'] } } });
+    expect(await brain.accessLevel('e', ev)).toBe('all');
+  });
+
+  it("tier 1 OUTRANKS tier 2: 'regular' in THIS conversation is not a meta engineer, whatever the node default says", async () => {
+    const config = { agents: { e: { conversation_defaults: { access_level: 'all', allowed_users: ['123'] } } } };
+    const { brain } = harness([{ text: 'ok', sessionId: 's' }], { config, seedAgents: { e: { access_level: 'regular' } } });
+    expect(await brain.accessLevel('e', ev)).toBe('regular');
+  });
+
+  it("'sandbox' is not 'all' — a sandboxed being is not a meta engineer", async () => {
+    const { brain } = harness([{ text: 'ok', sessionId: 's' }], { seedAgents: { e: { access_level: 'sandbox' } } });
+    expect(await brain.accessLevel('e', ev)).toBe('sandbox');
+  });
+});
+
 // ── accessLevel GLOBAL-DEFAULT TIER (operator 2026-08-15): access_level used to ONLY have a
 //    per-conversation override (getBeing(...).accessLevel) — no node-level default at all. Now
 //    config.yaml's agents.<being>.conversation_defaults.access_level is a fallback, read via

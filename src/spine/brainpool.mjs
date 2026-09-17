@@ -1184,6 +1184,15 @@ export function createBrainPool({
       return (await resolveConv(ev, being)).allowNewInput;
     },
 
+    // This conversation's resolved access_level (operator 2026-09-16). The spine's per-chat loop
+    // guard needs it for ONE comparison: a META ENGINEER is an `access_level: all` being, and meta
+    // engineers are beyond that guard ("meta engineers are beyond the bridge"; GENOME I8). Same
+    // shape and same reason as allowNewInput above - the spine cannot resolve config, so it asks;
+    // resolution stays in resolveConv, read per call, never cached.
+    async accessLevel(being, ev) {
+      return (await resolveConv(ev, being)).accessLevel;
+    },
+
     // Weave this message into the turn ALREADY streaming for this being+conversation
     // (operator 2026-08-30). `false` means NOTHING happened and the caller must queue an
     // ordinary turn (see warm-sessions `steer`'s injected-or-nothing contract; that is what
