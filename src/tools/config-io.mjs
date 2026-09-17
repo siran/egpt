@@ -197,7 +197,16 @@ function verifySplice(next, expectedData, label) {
 // Replace the scalar VALUE at `path` (map keys and sequence indexes, e.g.
 // ['transcription_service', 'reve', 'fallback_order', 0]). `expect` is what it must hold now;
 // anything else is refused by name. expect === to returns `src` unchanged, byte for byte.
-export function spliceYamlScalar(src, path, { expect, to }) {
+//
+// `comment`, when given, rewrites the END-OF-LINE COMMENT on that same line to `# <comment>`.
+// A value that NAMES something - `configuration: haiku-low # config/agents/haiku-low.yaml` - is
+// documented by its own trailing comment, so repointing the value alone leaves a comment naming
+// the OLD thing, and a comment that lies is worse than none (migrations/0012). It stays the same
+// ONE-LINE edit: the whitespace before the `#` is kept, everything outside that line is untouched,
+// and because a comment is not part of the parse the re-parse check below still proves the DATA
+// change is the one scalar and nothing else. A line carrying no trailing comment is refused - this
+// rewrites a comment, it does not invent one.
+export function spliceYamlScalar(src, path, { expect, to, comment }) {
   const label = pathLabel(path);
   const doc = parseForSplice(src, label);
   const node = doc.getIn(path, true);
@@ -206,14 +215,29 @@ export function spliceYamlScalar(src, path, { expect, to }) {
   if (node.value !== expect) {
     throw new YamlSpliceRefusal(`refusing to edit ${label}: expected ${JSON.stringify(expect)}, found ${JSON.stringify(node.value)}`);
   }
-  if (to === expect) return src;
+  if (to === expect && comment === undefined) return src;
   const text = renderLike(node, to, label);
   const [start, end] = node.range;
+  // Where the bytes this edit does not touch resume, and what takes their place before that: the
+  // value's own line up to its newline when a comment is being rewritten, nothing otherwise.
+  let tail = end;
+  let tailText = '';
+  if (comment !== undefined) {
+    if (typeof comment !== 'string' || /[\r\n]/.test(comment)) {
+      throw new YamlSpliceRefusal(`refusing to edit ${label}: a trailing comment is one line of text, got ${JSON.stringify(comment)}`);
+    }
+    const nl = src.indexOf('\n', end);
+    const lineEnd = nl === -1 ? src.length : (src[nl - 1] === '\r' ? nl - 1 : nl);
+    const gap = /^([ \t]*)#/.exec(src.slice(end, lineEnd));
+    if (!gap) throw new YamlSpliceRefusal(`refusing to edit ${label}: its line carries no trailing comment to rewrite`);
+    tail = lineEnd;
+    tailText = `${gap[1]}# ${comment}`;
+  }
   const expected = doc.toJS();
   let parent = expected;
   for (const k of path.slice(0, -1)) parent = parent[k];
   parent[path[path.length - 1]] = to;
-  return verifySplice(src.slice(0, start) + text + src.slice(end), expected, label);
+  return verifySplice(src.slice(0, start) + text + tailText + src.slice(tail), expected, label);
 }
 
 // Rename the KEY `from` to `to` inside the mapping at `mapPath` ([] is the document root). A
