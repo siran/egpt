@@ -18,9 +18,10 @@
 // vocabulary — never re-implemented here.
 //
 // `allowed_users` IS NOT INVENTED HERE. It is copied from the node's own config: the default
-// persona's `conversation_defaults.allowed_users`, else the `wren` agent's. If neither node-local
-// list exists, this REFUSES and names both places it looked — an ungated E+ is exactly what the
-// operator ruled against, and a migration that guesses an id is worse than one that stops.
+// persona's `conversation_defaults.allowed_users`, else the `wren` agent's. A node with neither
+// list, or without `config/agents/opus-high.yaml`, is NOT a node E+ belongs on: those read
+// satisfied with a note, never a refusal. An ungated E+ is what the operator ruled against, and
+// a chain stopped forever over a being that node never asked for is the 0003/0007 mistake.
 //
 // SATISFIED FIRST: `agents.eplus` already carrying these handles on this configuration. Then "not
 // this node" — the persona does not answer to `e`, or there is no persona at all (no agent carries
@@ -32,8 +33,7 @@
 // IT REFUSES, NAMING THE PLACE, when: `agents.eplus` is there in a DIFFERENT shape (a hand-edit
 // this migration must not silently overwrite); any existing agent already answers to `+` or `e+`
 // (its handles, voice_handles or fallback_handle — two beings on one token is the double-answer
-// bug again); `config/agents/opus-high.yaml` is not in the profile (the configuration would name
-// nothing); or MORE THAN ONE agent carries `default: true` — a node that has personas but cannot
+// bug again); or MORE THAN ONE agent carries `default: true` — a node that has personas but cannot
 // say which one is THE persona may well be E's, and neither "which node" nor "after which block"
 // can be answered by guessing.
 //
@@ -91,7 +91,9 @@ function personaOf(agents) {
   return keys[0] ?? null;
 }
 
-// The id list, taken from the node's own config or not at all.
+// The id list, taken from the node's own config or not at all. NOT FOUND IS NOT A REFUSAL: a node
+// that lists nobody has nothing to gate E+ with, so E+ is not for it - and a refusal would stop
+// every later migration on that node over a being it never asked for (the 0003/0007 lesson).
 function allowedUsersFrom(agents, persona) {
   const looked = [];
   for (const key of [persona, 'wren']) {
@@ -99,7 +101,7 @@ function allowedUsersFrom(agents, persona) {
     const v = agents?.[key]?.conversation_defaults?.allowed_users;
     if (Array.isArray(v) && v.length) return { users: v, from: looked[looked.length - 1] };
   }
-  refuse(`E+ must be gated to the operator and this migration does not invent who that is - no non-empty list at ${looked.join(' or ')}`);
+  return { users: null, looked };
 }
 
 // Every agent that already answers to one of E+'s handles, by whichever declaration claims it.
@@ -147,9 +149,17 @@ export async function plan(ctx) {
 
   const taken = claimants(agents);
   if (taken.length) refuse(`another being already answers to E+'s handles in ${file}: ${taken.join('; ')}`);
+  // THE TWO THINGS E+ NEEDS FROM THE NODE, and neither is a refusal when absent: a node without
+  // the type file or without a list of trusted ids is simply not a node E+ belongs on, and
+  // stopping its migration chain over that would be the 0003/0007 mistake again.
   const configuration = join(ctx.egptHome, 'config', 'agents', `${CONFIGURATION}.yaml`);
-  if (!existsSync(configuration)) refuse(`there is no ${configuration}, so \`configuration: ${CONFIGURATION}\` would name nothing`);
-  const { users, from } = allowedUsersFrom(agents, persona);
+  if (!existsSync(configuration)) {
+    return { satisfied: true, notes: [`there is no ${configuration} on this node, so there is no ${CONFIGURATION} for E+ to run on - not added here`] };
+  }
+  const { users, from, looked } = allowedUsersFrom(agents, persona);
+  if (!users) {
+    return { satisfied: true, notes: [`this node lists no trusted ids (${looked.join(' or ')}), and E+ is not added ungated - not added here`] };
+  }
 
   const next = spliceYamlInsertKey(text, ['agents'], { key: AGENT, text: blockText(users), after: persona });
   const a = text.split('\n');

@@ -201,9 +201,12 @@ describe('0011 refuses, naming the place', () => {
       .toThrow(/agents\.rodz\.fallback_handle claims "\+"/);
   });
 
-  it('config/agents/opus-high.yaml is not in the profile', async () => {
-    await expect(plan(ctxFor(home({ configuration: false })))).rejects
-      .toThrow(/0011 refuses: there is no .*opus-high\.yaml, so `configuration: opus-high` would name nothing/);
+  // NOT A REFUSAL (2026-09-17): a node without the type file is not a node E+ belongs on, and a
+  // refusal would stop its whole chain over a being it never asked for.
+  it('config/agents/opus-high.yaml is not in the profile: satisfied, and says so', async () => {
+    const p = await plan(ctxFor(home({ configuration: false })));
+    expect(p.satisfied).toBe(true);
+    expect(p.notes.join(' ')).toMatch(/there is no .*opus-high\.yaml on this node/);
   });
 
   // MORE THAN ONE persona, only: such a node may well be E's, and nothing here can say which block
@@ -213,12 +216,14 @@ describe('0011 refuses, naming the place', () => {
       .toThrow(/0011 refuses: the default persona cannot be identified: 2 agents carry `default: true` \(egpt, ken\)/);
   });
 
-  it('neither the persona nor wren gives an allowed_users list - an ungated E+ is what the operator ruled against', async () => {
-    await expect(plan(ctxFor(home({ config: withoutPersonaUsers(KG) })))).rejects
-      .toThrow(/0011 refuses: E\+ must be gated to the operator and this migration does not invent who that is - no non-empty list at agents\.egpt\.conversation_defaults\.allowed_users or agents\.wren\.conversation_defaults\.allowed_users/);
+  // An ungated E+ is what the operator ruled against, so it is not written - but the node is left
+  // alone rather than refused, or every later migration would stop behind it.
+  it('neither the persona nor wren gives an allowed_users list: satisfied, nothing written', async () => {
+    const p = await plan(ctxFor(home({ config: withoutPersonaUsers(KG) })));
+    expect(p.satisfied).toBe(true);
+    expect(p.notes.join(' ')).toMatch(/lists no trusted ids \(agents\.egpt\.conversation_defaults\.allowed_users or agents\.wren\.conversation_defaults\.allowed_users\)/);
     // Present but EMPTY gates nobody, so it is not a list to copy either.
-    await expect(plan(ctxFor(home({ config: KG.replace('[ "+15551234567" ]', '[]') })))).rejects
-      .toThrow(/no non-empty list at agents\.egpt/);
+    expect((await plan(ctxFor(home({ config: KG.replace('[ "+15551234567" ]', '[]') })))).satisfied).toBe(true);
   });
 
   it('a config.yaml that does not parse', async () => {
