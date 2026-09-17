@@ -1,7 +1,9 @@
 // Worker-spine transcription: HMAC auth, byte round-trip, and the
 // remote-first / local-fallback contract on the main-spine side.
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { createServer, request as httpRequest } from 'node:http';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -372,6 +374,268 @@ describe('transcriptor server — the same bytes are decoded once', () => {
     g.gates[2].resolve('text X');
     expect((await (await x3).json()).transcript).toBe('text X');
     expect(g.started).toEqual(['A', 'C', 'X']);
+  });
+});
+
+// ── "DO YOU HAVE THIS SHA?" FIRST, AND A MEMORY THAT OUTLIVES THE WORKER (operator 2026-09-17) ──
+// "the initial request is handshake of 'do you have this sha?': if no then 'sending audio', if yes then
+// 'response is transcript'". do's log, 2026-09-17: do decoded notes for its own chats between 05:45 and
+// 07:03; kg's bridge came back at 07:09 and sent the same notes, and do DECODED FIVE AGAIN (12600b first
+// at 05:45:39, again at 07:09:40), because they were older than the 10-minute memory. kg also resent the
+// whole audio every time, an 11.5 MB video included.
+describe('transcriptor — "do you have this sha?" first, and a memory that outlives the worker', () => {
+  const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
+  const until = async (cond, ms = 3000) => {
+    const end = Date.now() + ms;
+    while (!cond()) { if (Date.now() > end) throw new Error('timed out waiting'); await new Promise((r) => setTimeout(r, 5)); }
+  };
+  const fileOf = (tag, bytes = Buffer.from(tag)) => { const p = join(dir, `${tag}-${Math.random().toString(36).slice(2)}.ogg`); writeFileSync(p, bytes); return p; };
+  const memoryFile = (stateDir) => join(stateDir, 'transcriptor-decoded.json');
+  const post = (endpoint, tag) => {
+    const body = Buffer.from(tag); const ts = Date.now();
+    return fetch(`${endpoint}/v1/transcribe`, { method: 'POST', headers: { 'x-egpt-ts': String(ts), 'x-egpt-sig': signAudio(KEY, ts, body) }, body });
+  };
+  // The lookup is signed exactly as a POST of those bytes would be: HMAC over `${ts}.${sha256(bytes)}`.
+  const lookup = (endpoint, bytes) => {
+    const ts = Date.now();
+    return fetch(`${endpoint}/v1/transcript/${sha(bytes)}`, { headers: { 'x-egpt-ts': String(ts), 'x-egpt-sig': signAudio(KEY, ts, bytes) } });
+  };
+  // Every decode yields a transcript naming its turn, so a second decode of the same bytes shows.
+  const counting = () => {
+    const c = { decodes: 0 };
+    c.transcribe = async (_p, _cfg, _log, meta) => { c.decodes += 1; if (meta) meta.durationSec = 2.5; return `transcript #${c.decodes}`; };
+    return c;
+  };
+  function gated() {
+    const g = { started: [], gates: [] };
+    g.transcribe = async (path) => { g.started.push(readFileSync(path, 'utf8')); return new Promise((resolve, reject) => g.gates.push({ resolve, reject })); };
+    return g;
+  }
+  const served = (logs) => logs.filter((m) => /served from an existing decode/.test(m)).length;
+  const queuePositions = (logs) => logs.filter((m) => m.includes('queue position')).map((m) => m.replace(/.* from \S+ /, ''));
+  // An HTTP proxy in front of a worker: records each request the client sent (method, path, the body
+  // bytes that crossed the wire, the worker's status) and forwards it unchanged.
+  async function recorder(port) {
+    const seen = [];
+    const srv = createServer((req, res) => {
+      const r = { method: req.method, path: req.url, bytes: 0, status: null };
+      seen.push(r);
+      const up = httpRequest({ host: '127.0.0.1', port, method: req.method, path: req.url, headers: req.headers, agent: false }, (ur) => {
+        r.status = ur.statusCode; res.writeHead(ur.statusCode, ur.headers); ur.pipe(res);
+      });
+      up.on('error', () => res.destroy());
+      req.on('data', (c) => { r.bytes += c.length; });
+      req.pipe(up);
+    });
+    await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve));
+    servers.push({ close: () => { srv.closeAllConnections?.(); srv.close(); } });
+    return { seen, endpoint: `http://127.0.0.1:${srv.address().port}` };
+  }
+
+  it('a second request for the same bytes after the worker RESTARTS is answered without decoding', async () => {
+    const c = counting(); const stateDir = join(dir, 'state');
+    const note = fileOf('note', Buffer.from('opus-voice-note-bytes-'.repeat(40)));
+    const first = await startServer({ transcribe: c.transcribe, stateDir });
+    expect(await transcribeViaEndpoint(note, { endpoint: first.endpoint, keyB64: KEY })).toBe('transcript #1');
+    first.s.close();
+
+    const again = await startServer({ transcribe: c.transcribe, stateDir });
+    const meta = {};
+    expect(await transcribeViaEndpoint(note, { endpoint: again.endpoint, keyB64: KEY }, () => {}, meta)).toBe('transcript #1');
+    expect(c.decodes).toBe(1);
+    expect(meta.durationSec).toBe(2.5);
+  });
+
+  it('the same bytes 84 minutes later (do: 12600b at 05:45:39, again at 07:09:40; fake clock) are answered without decoding', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const c = counting();
+      const { endpoint } = await startServer({ transcribe: c.transcribe, stateDir: join(dir, 'state') });
+      const note = fileOf('note', Buffer.from('opus-voice-note-bytes-'.repeat(40)));
+      expect(await transcribeViaEndpoint(note, { endpoint, keyB64: KEY })).toBe('transcript #1');
+      vi.setSystemTime(Date.now() + 84 * 60_000);
+      expect(await transcribeViaEndpoint(note, { endpoint, keyB64: KEY })).toBe('transcript #1');
+      expect(c.decodes).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a KNOWN sha is answered to the lookup: no audio is uploaded', async () => {
+    const c = counting();
+    const w = await startServer({ transcribe: c.transcribe });
+    const bytes = Buffer.alloc(256 * 1024, 3);                    // stands in for kg's 11.5 MB video
+    const video = fileOf('video', bytes);
+    expect(await transcribeViaEndpoint(video, { endpoint: w.endpoint, keyB64: KEY })).toBe('transcript #1');
+
+    const rec = await recorder(w.s.port);
+    const meta = {};
+    expect(await transcribeViaEndpoint(fileOf('same-video', bytes), { endpoint: rec.endpoint, keyB64: KEY }, () => {}, meta)).toBe('transcript #1');
+    expect(rec.seen).toEqual([{ method: 'GET', path: `/v1/transcript/${sha(bytes)}`, bytes: 0, status: 200 }]);
+    expect(meta.durationSec).toBe(2.5);
+    expect(c.decodes).toBe(1);
+  });
+
+  it('an UNKNOWN sha: the lookup says so, then the audio is POSTed exactly once', async () => {
+    const c = counting(); const logs = [];
+    const w = await startServer({ transcribe: c.transcribe, onLog: (m) => logs.push(m) });
+    const rec = await recorder(w.s.port);
+    const bytes = Buffer.from('a note this worker never saw '.repeat(20));
+    expect(await transcribeViaEndpoint(fileOf('new', bytes), { endpoint: rec.endpoint, keyB64: KEY })).toBe('transcript #1');
+    expect(rec.seen).toEqual([
+      { method: 'GET', path: `/v1/transcript/${sha(bytes)}`, bytes: 0, status: 404 },
+      { method: 'POST', path: '/v1/transcribe', bytes: bytes.length, status: 200 },
+    ]);
+    expect(logs.some((m) => m.includes(`lookup ${sha(bytes).slice(0, 12)} from `) && /unknown — the audio follows/.test(m))).toBe(true);
+    expect(c.decodes).toBe(1);
+  });
+
+  it('a lookup while that decode RUNS gets its transcript and queues nothing', async () => {
+    const g = gated(); const logs = [];
+    const w = await startServer({ transcribe: g.transcribe, onLog: (m) => logs.push(m) });
+    const x1 = post(w.endpoint, 'X');                             // one node's POST is decoding
+    await until(() => g.started.length === 1);
+    const rec = await recorder(w.s.port);
+    const x2 = transcribeViaEndpoint(fileOf('X'), { endpoint: rec.endpoint, keyB64: KEY });   // the other node asks
+    await until(() => served(logs) === 1);
+    g.gates[0].resolve('text X');
+    expect(await x2).toBe('text X');
+    expect((await (await x1).json()).transcript).toBe('text X');
+    expect(rec.seen.map((r) => r.method)).toEqual(['GET']);
+    expect(g.started).toEqual(['X']);
+    expect(queuePositions(logs)).toEqual([]);
+    expect(logs.some((m) => /lookup [0-9a-f]{12} from \S+ served from an existing decode \(already queued or decoding\)/.test(m))).toBe(true);
+  });
+
+  it('a lookup of bytes decoded a moment ago is answered from memory, and says so', async () => {
+    const c = counting(); const logs = [];
+    const w = await startServer({ transcribe: c.transcribe, onLog: (m) => logs.push(m) });
+    const bytes = readFileSync(audioPath);
+    expect(await transcribeViaEndpoint(audioPath, { endpoint: w.endpoint, keyB64: KEY })).toBe('transcript #1');
+    const r = await lookup(w.endpoint, bytes);
+    expect(r.status).toBe(200);
+    expect(await r.json()).toMatchObject({ ok: true, transcript: 'transcript #1', durationSec: 2.5 });
+    expect(logs.some((m) => m.includes(`lookup ${sha(bytes).slice(0, 12)} from `) && /served from an existing decode \(a recent result\)/.test(m))).toBe(true);
+    expect(c.decodes).toBe(1);
+  });
+
+  it('a new client against an OLD worker (no lookup route: 404 not found) still gets its transcript through the POST', async () => {
+    // The old worker's routing as deployed (958e88b): POST /v1/transcribe, anything else 404 not found.
+    const seen = [];
+    const old = createServer((req, res) => {
+      const json = (code, obj) => { seen.push({ method: req.method, path: req.url, status: code }); res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
+      if (req.method !== 'POST' || req.url !== '/v1/transcribe') return json(404, { ok: false, error: 'not found' });
+      req.resume();
+      req.on('end', () => json(200, { ok: true, transcript: 'hola desde el worker viejo', durationSec: 1.5, ms: 3 }));
+    });
+    await new Promise((resolve) => old.listen(0, '127.0.0.1', resolve));
+    servers.push({ close: () => { old.closeAllConnections?.(); old.close(); } });
+    const meta = {};
+    const t = await transcribeViaEndpoint(audioPath, { endpoint: `http://127.0.0.1:${old.address().port}`, keyB64: KEY }, () => {}, meta);
+    expect(t).toBe('hola desde el worker viejo');
+    expect(meta.durationSec).toBe(1.5);
+    expect(seen).toEqual([
+      { method: 'GET', path: `/v1/transcript/${sha(readFileSync(audioPath))}`, status: 404 },
+      { method: 'POST', path: '/v1/transcribe', status: 200 },
+    ]);
+  });
+
+  it('a bad or stale signature on the lookup is refused 401, even for a sha the worker knows', async () => {
+    const c = counting();
+    const w = await startServer({ transcribe: c.transcribe });
+    const bytes = readFileSync(audioPath);
+    await transcribeViaEndpoint(audioPath, { endpoint: w.endpoint, keyB64: KEY });
+    const get = (headers) => fetch(`${w.endpoint}/v1/transcript/${sha(bytes)}`, { headers });
+
+    expect((await get({})).status).toBe(401);                                                                   // unsigned
+    const ts = Date.now();
+    expect((await get({ 'x-egpt-ts': String(ts), 'x-egpt-sig': signAudio(OTHER_KEY, ts, bytes) })).status).toBe(401);   // wrong key
+    const stale = Date.now() - 120_000;
+    expect((await get({ 'x-egpt-ts': String(stale), 'x-egpt-sig': signAudio(KEY, stale, bytes) })).status).toBe(401);   // stale
+    expect((await get({ 'x-egpt-ts': String(ts), 'x-egpt-sig': signAudio(KEY, ts, Buffer.from('other')) })).status).toBe(401);   // signed for other bytes
+    // ONE signing scheme: the signature a POST of these bytes carries opens the lookup.
+    const ok = await get({ 'x-egpt-ts': String(ts), 'x-egpt-sig': signAudio(KEY, ts, bytes) });
+    expect(ok.status).toBe(200);
+    expect((await ok.json()).transcript).toBe('transcript #1');
+    expect(c.decodes).toBe(1);
+  });
+
+  it('a corrupt memory file does not stop the worker: it starts empty, says so once, and keeps the next result', async () => {
+    const c = counting(); const logs = []; const stateDir = join(dir, 'state');
+    mkdirSync(stateDir);
+    writeFileSync(memoryFile(stateDir), '[["half-written", {"at": 17');
+    const w = await startServer({ transcribe: c.transcribe, stateDir, onLog: (m) => logs.push(m) });
+    expect(logs.filter((m) => /starting empty/.test(m))).toHaveLength(1);
+    expect(logs.some((m) => /listening on/.test(m))).toBe(true);
+    expect(await transcribeViaEndpoint(audioPath, { endpoint: w.endpoint, keyB64: KEY })).toBe('transcript #1');
+    expect(JSON.parse(readFileSync(memoryFile(stateDir), 'utf8')).map(([k]) => k)).toEqual([sha(readFileSync(audioPath))]);
+    expect(logs.filter((m) => /starting empty/.test(m))).toHaveLength(1);
+  });
+
+  it('a missing memory file: the worker starts empty and says so once', async () => {
+    const c = counting(); const logs = [];
+    const w = await startServer({ transcribe: c.transcribe, stateDir: join(dir, 'never-made'), onLog: (m) => logs.push(m) });
+    expect(logs.filter((m) => /starting empty/.test(m))).toHaveLength(1);
+    expect(await transcribeViaEndpoint(audioPath, { endpoint: w.endpoint, keyB64: KEY })).toBe('transcript #1');
+    expect(logs.filter((m) => /starting empty/.test(m))).toHaveLength(1);
+  });
+
+  // REGRESSION LOCK: an empty result is remembered nowhere: not for a lookup, not on disk, not after a restart.
+  it('LOCK: an EMPTY result is not remembered — the lookup stays unknown, across a restart too, and the bytes decode again', async () => {
+    let n = 0;
+    const transcribe = async () => (++n === 1 ? null : 'second try');
+    const stateDir = join(dir, 'state'); const X = Buffer.from('X');
+    const first = await startServer({ transcribe, stateDir });
+    expect((await post(first.endpoint, 'X')).status).toBe(422);
+    expect((await lookup(first.endpoint, X)).status).toBe(404);
+    first.s.close();
+    const again = await startServer({ transcribe, stateDir });
+    expect((await lookup(again.endpoint, X)).status).toBe(404);
+    const r = await post(again.endpoint, 'X');
+    expect(r.status).toBe(200);
+    expect((await r.json()).transcript).toBe('second try');
+    expect(n).toBe(2);
+  });
+
+  // REGRESSION LOCK: FIFO. A lookup that joins the running decode takes no queue turn of its own.
+  it('LOCK: FIFO — different bytes keep their turns while a lookup joins the running decode', async () => {
+    const g = gated(); const logs = [];
+    const { endpoint } = await startServer({ transcribe: g.transcribe, onLog: (m) => logs.push(m) });
+    const a = post(endpoint, 'A');
+    await until(() => g.started.length === 1);
+    const b = post(endpoint, 'B');
+    await until(() => queuePositions(logs).length === 1);
+    const a2 = lookup(endpoint, Buffer.from('A'));
+    await until(() => served(logs) === 1 || queuePositions(logs).length === 2);
+    const c = post(endpoint, 'C');
+    await until(() => queuePositions(logs).length === 2);
+
+    g.gates[0].resolve('text A');
+    expect((await (await a).json()).transcript).toBe('text A');
+    const r2 = await a2;
+    expect(r2.status).toBe(200);
+    expect((await r2.json()).transcript).toBe('text A');
+    await until(() => g.started.length === 2);
+    g.gates[1].resolve('text B');
+    expect((await (await b).json()).transcript).toBe('text B');
+    await until(() => g.started.length === 3);
+    g.gates[2].resolve('text C');
+    expect((await (await c).json()).transcript).toBe('text C');
+    expect(g.started).toEqual(['A', 'B', 'C']);
+    expect(queuePositions(logs)).toEqual(['waits — queue position 1', 'waits — queue position 2']);
+  });
+
+  // REGRESSION LOCK: a file over the cap still comes back as a 413 the pipeline reads as "this file", with
+  // the lookup in front of it.
+  it('LOCK: a file over the cap — unknown to the lookup, then 413 carrying status 413; the next note is served', async () => {
+    const c = counting(); const logs = [];
+    const w = await startServer({ transcribe: c.transcribe, onLog: (m) => logs.push(m) });
+    const big = fileOf('video', Buffer.alloc(32 * 1024 * 1024 + 1, 7));
+    const err = await transcribeViaEndpoint(big, { endpoint: w.endpoint, keyB64: KEY }).catch((e) => e);
+    expect(err.status).toBe(413);
+    expect(logs.some((m) => /lookup [0-9a-f]{12} from \S+ unknown — the audio follows/.test(m))).toBe(true);
+    expect(c.decodes).toBe(0);
+    expect(await transcribeViaEndpoint(audioPath, { endpoint: w.endpoint, keyB64: KEY })).toBe('transcript #1');
   });
 });
 

@@ -1334,6 +1334,7 @@ export async function boot({
     getConfig,
     startWhisperServer: startWhisperServerFn,
     startTranscriptorServer: startTranscriptorServerFn,
+    stateDir: join(EGPT_HOME, 'state'),
     onLog: (m) => log.line?.(`[transcriptor] ${m}`),
   });
   if (ingest) transcriptorWorker.start();

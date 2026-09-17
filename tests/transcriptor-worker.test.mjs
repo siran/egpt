@@ -83,6 +83,18 @@ describe('transcriptor worker — engine branch', () => {
     expect(f.calls.server[0].transcribe).toBeUndefined();
   });
 
+  // The worker's decode memory lives in the node's state/ folder (operator 2026-09-17): boot hands the folder in.
+  it('hands the endpoint the node\'s state folder, where its memory of decoded transcripts lives', async () => {
+    const f = fakes();
+    const w = createTranscriptorWorker({
+      getConfig: () => ({ transcriptor: { enabled: true }, transcription: { server: { token: 'K' } } }),
+      stateDir: '/egpt-home/state',
+      ...f,
+    });
+    await w.start();
+    expect(f.calls.server[0].stateDir).toBe('/egpt-home/state');
+  });
+
   it('resident server (CANONICAL transcriptor.server) → spawns whisper-server with resolved args; endpoint gets a transcribe', async () => {
     const f = fakes();
     const w = createTranscriptorWorker({
