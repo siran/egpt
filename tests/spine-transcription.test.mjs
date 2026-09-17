@@ -2,6 +2,10 @@
 // and exposes the fallback-chain transcriber. (The chain logic itself is locked by
 // tests/transcription-pipeline.test.mjs; this covers the config wiring.)
 import { describe, it, expect } from 'vitest';
+import { createServer } from 'node:http';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createTranscription } from '../src/spine/transcription.mjs';
 import { POSTS_BACK_DELAY_MS } from '../src/incoming-media.mjs';
 
@@ -197,5 +201,39 @@ describe('resolveTranscriptionService — posts_back_delay_ms, one key across th
   it('posts_back:false with no delay stays quiet at the node-rung delay', async () => {
     expect(await mk({ posts_back: false }).resolveTranscriptionService('!r:beeper.local'))
       .toEqual({ enabled: true, postsBack: false, postsBackDelayMs: 12345 });
+  });
+});
+
+// THE 🎧 IS PLACED BY THE NODE THAT DECODES (2026-09-16). Which worker rung is "this node's own"
+// is routesToOwnTranscriptor's answer (src/spine/transcriptor-worker.mjs), and this is where it is
+// handed to the chain. A real worker endpoint on loopback: on this node's transcriptor port it is
+// this node decoding, on any other port it is another node's worker.
+describe('createTranscription — the own-transcriptor rung is the one routesToOwnTranscriptor names', () => {
+  it('a worker rung on this node\'s transcriptor port calls the decode hook; the same rung on another port does not', async () => {
+    const server = createServer((req, res) => {
+      if (req.method !== 'POST') { res.end('ok'); return; }
+      req.resume();
+      req.on('end', () => res.end(JSON.stringify({ ok: true, transcript: 'hola' })));
+    });
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    const port = server.address().port;
+    const dir = mkdtempSync(join(tmpdir(), 'egpt-tx-own-'));
+    const cfgFor = (transcriptorPort) => ({
+      transcriptor: { port: transcriptorPort },
+      transcription_service: { use_config: 'do', do: { fallback_order: ['worker'], worker: { type: 'whisper-server-remote', endpoint: `http://127.0.0.1:${port}`, token: Buffer.alloc(32, 7).toString('base64url') } } },
+    });
+    try {
+      for (const [transcriptorPort, want] of [[port, ['up', 'down']], [port === 65535 ? port - 1 : port + 1, []]]) {
+        const note = join(dir, `n-${transcriptorPort}.ogg`);
+        writeFileSync(note, `note ${transcriptorPort}`);
+        const events = [];
+        const tx = createTranscription({ getConfig: () => cfgFor(transcriptorPort) });
+        expect(await tx.transcribe(note, {}, () => {}, {}, async () => { events.push('up'); return () => { events.push('down'); }; })).toBe('hola');
+        expect(events, `transcriptor.port ${transcriptorPort}`).toEqual(want);
+      }
+    } finally {
+      server.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

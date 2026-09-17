@@ -697,14 +697,14 @@ export async function reactThroughPeer({
   clearTimeout: clearTimeoutFn = globalThis.clearTimeout,
 } = {}) {
   // THE FOUR REFUSALS THAT NEVER TOUCH THE NETWORK, the same three speakThroughPeer makes plus the
-  // one this verb adds: a message this node could not key (a voice note, an attachment with no
-  // caption) can never be named on the other account, so there is nothing to dial for.
+  // one this verb adds: a message this node could not key (no body, and no attachment with a size to
+  // key on) can never be named on the other account, so there is nothing to dial for.
   if (!peer) return { ok: false, reason: 'no-peer', detail: 'no peer spine configured' };
   const key = String(emoji ?? '');
   if (!key) return { ok: false, reason: 'no-text', detail: 'nothing to react with' };
   const wantMsg = String(msgKey ?? '').trim();
   if (!wantMsg) {
-    onLog('mouth: this message cannot be keyed across accounts (no body to hash) — the peer cannot be told which message, so NOBODY reacts');
+    onLog('mouth: this message cannot be keyed across accounts (no body or attachment to hash) — the peer cannot be told which message, so NOBODY reacts');
     return { ok: false, reason: 'no-key', detail: 'the message carries no cross-account key' };
   }
   const chatKey = crossAccountChatKey(chat, peer.accounts);

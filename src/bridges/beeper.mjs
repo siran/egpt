@@ -99,6 +99,8 @@ const SEND_GATE_MAX_MS = 15_000;
 //
 // Wholly BRIDGE-SIDE (operator: "bridge can react to ack, not model. model can't delete") — the
 // hand that adds it is the hand that removes it, so there is nothing a model can emit or forget.
+// Since 2026-09-16 that hand says it through the mouth, and only where the decode runs
+// (`listening`, in the voice path below).
 export const LISTENING_REACTION = '🎧';
 
 // Normalize a body so a message WE posted can be FOUND AGAIN in the chat's message
@@ -395,9 +397,21 @@ export function crossAccountChatKey(chat, exclude = []) {
 // IT IS THE BODY, NOT THE DISPATCH TEXT. `htmlToMarkdown(msg.text)` is what BOTH nodes derive from
 // the same wire bytes. The dispatch `text` a voice note ends up with is a TRANSCRIPT, and two
 // whisper engines can differ — the same reason the echo plan keys on the audio and not on what was
-// heard in it. A message with no body (a bare voice note, an attachment with no caption) has no
-// content to key on and returns NULL: a key that is not EVIDENCE must not be a key at all, the
-// same refusal crossAccountChatKey makes.
+// heard in it.
+//
+// NO BODY, AN ATTACHMENT: ITS TYPE AND SIZE (2026-09-16). A bare voice note has no body, and the 🎧
+// listening mark is placed by the mouth on ITS OWN copy of one. Measured on one real note
+// (2026-09-15) through both accounts' APIs: the chat, the id, the attachment's mxc id and its local
+// srcURL all differ; the timestamp, the message type, the (null) text and the attachment's mimeType,
+// fileName and fileSize are identical, and a second note differed in fileSize. So a bodiless message
+// keys on its type plus each attachment's mimeType and fileSize — never the mxc id or srcURL, which
+// are account-local. Two notes of one size and type in one chat still key alike; the timestamp
+// tie-break (peer-mouth.mjs findMessageByKey) is what tells those apart, as for two same-text
+// messages. A message with a body keys on the body alone, caption or not, exactly as before.
+//
+// A message with neither — no body, or an attachment that carries no fileSize — has nothing to key
+// on and returns NULL: a key that is not EVIDENCE must not be a key at all, the same refusal
+// crossAccountChatKey makes.
 //
 // NOT THE SAME THING AS `from.msgKey`, which is this node's LOCAL message id (dispatchMessage
 // below) and reaches the spine as `ev.msgId`. The two live one hop apart, so this one is carried
@@ -409,12 +423,19 @@ export function crossAccountChatKey(chat, exclude = []) {
 /**
  * @param {object} msg  a RAW Beeper message payload — the WS upsert or a /v1/chats/{c}/messages
  *   item. Both carry `text` as HTML; the same conversion runs on both.
- * @returns {string|null} sha256 hex of the message body, or null when there is no body to key on.
+ * @returns {string|null} sha256 hex of the message body — or, for a message with no body, of its
+ *   type and its attachments' mimeType and fileSize — or null when there is nothing to key on.
  */
 export function crossAccountMsgKey(msg) {
   const body = htmlToMarkdown(msg?.text).trim();
-  if (!body) return null;
-  try { return createHash('sha256').update(body, 'utf8').digest('hex'); }
+  let content = body;
+  if (!body) {
+    const atts = Array.isArray(msg?.attachments) ? msg.attachments : [];
+    if (!atts.length || !atts.every((a) => Number.isFinite(a?.fileSize))) return null;
+    // NUL-separated, so no typed body can hash the same as an attachment's description.
+    content = ['\0attachment', String(msg?.type ?? ''), ...atts.map((a) => `${a.mimeType ?? ''}\0${a.fileSize}`)].join('\0');
+  }
+  try { return createHash('sha256').update(content, 'utf8').digest('hex'); }
   catch { return null; }
 }
 
@@ -629,6 +650,11 @@ export async function startBeeperBridge(opts = {}) {
     // folder and `transcripts/` is inside it, which is what the pointers card sends it to.
     readTranscript = async () => null,
     transcribe = transcribeAudioFile,
+    // THE ONE PLACEMENT for the 🎧 listening mark (2026-09-16): (chatId) => makeOutbound(...)(null,
+    // chatId) — src/spine/sender.mjs, the object the steer ack and the /react limb place through, so
+    // the mark comes from the mouth on its own copy. Late-bound by boot (the mouth is built after the
+    // bridges). Default null → no mark at all: there is no second placement in this limb.
+    outboundFor = null,
     // Whisper binary/model config — now sourced from transcription.whisper (the
     // host resolves it; falls back to the legacy whatsapp.media.audio_transcribe
     // during migration). Transcription is its own concern, not a media subkey.
@@ -1320,8 +1346,9 @@ export async function startBeeperBridge(opts = {}) {
     catch (e) { onLog(`beeper: reaction failed [${chatID}/${messageID}] — ${e?.message ?? e}`); return false; }
   }
   // UN-REACT: DELETE /v1/chats/{c}/messages/{id}/reactions/{reactionKey} (present in the live
-  // Desktop OpenAPI spec). The removal half of the 🎧 listening ack — its ONLY caller, because the
-  // ack is bridge-side machinery and no model gets a delete limb. Same chokepoint and the same
+  // Desktop OpenAPI spec). The removal half of the 🎧 listening mark — its ONLY caller, reached
+  // through the port's `unreact` from the one placement (src/spine/sender.mjs makeOutbound `react`,
+  // 2026-09-16); no model gets a delete limb. Same chokepoint and the same
   // resolve-then-log-and-return-false discipline as sendReaction above: a mark that cannot be taken
   // back off must never become an exception on the transcription path.
   async function removeReaction(chatIDOrName, messageID, reactionKey) {
@@ -1808,8 +1835,9 @@ export async function startBeeperBridge(opts = {}) {
         // the peer's works. There is no honest substitute: a fallback key would have to be node-stable
         // AND CHOSEN alike on both nodes, and "could I read the audio?" is itself node-local, so the peer
         // keys on the audio and diverges whatever we pick (the payload timestamp included, node-stable
-        // though it is). crossAccountMsgKey is no help either — it hashes the message BODY, which a bare
-        // voice note has none of (it returns null). So we REFUSE, the discipline crossAccountChatKey and
+        // though it is). crossAccountMsgKey is no help either — for a bare voice note it keys on the
+        // attachment's size and type, which is not the audio hash the peer ranks on, so the two nodes
+        // would still order differently. So we REFUSE, the discipline crossAccountChatKey and
         // crossAccountMsgKey already use for a key that is not evidence: rank 0, i.e. the echo:false
         // verdict — still transcribed + logged, never posted, never promoted. The cost is a DELAY, not
         // the note: a peer that CAN read the audio still echoes on its own rank, and a rank>1 peer's
@@ -1819,15 +1847,27 @@ export async function startBeeperBridge(opts = {}) {
         catch (e) { onLog(`beeper: 👂 NOT echoed [${info.title}] — the note's audio is unreadable, so this node cannot compute the co-account-stable echo key, and echoing on a node-local one double-👂s. Still transcribed + logged; a peer that can read the audio echoes it (${e?.message ?? e})`); }
         const plan = audioHash == null ? { rank: 0, winner: false } : echoPlan(audioHash);
         const echoOn = plan.rank >= 1 && !tooOldForEcho;   // is an echo POSSIBLE at all for this note on this node?
-        // 🎧 ON. Hung off `svc.enabled` — the verdict the surrounding code ALREADY reached for this
-        // chat, and the same one transcribeVoiceNote itself gates on: no transcription, no ack
-        // promising one. AWAITED, so the mark is up before whisper spends its first second (that is
-        // the whole point) and so the removal below can never race ahead of it and strand the note
-        // marked forever. Best-effort: sendReaction already swallows a 4xx into `false`, and the
-        // catch covers the chat resolve — neither half can become the exception that eats the note.
-        const acked = svc.enabled && await sendReaction(chatID, msg.id, LISTENING_REACTION).catch(() => false);
+        // 🎧 LISTENING (operator 2026-09-15; re-homed 2026-09-16, kg: `reaction 🎧 by An`). NOT placed
+        // by this connection because it RECEIVED the note: the mark belongs to the node that DECODES
+        // it, and it comes from the mouth. The transcriber calls `listening` when a decode starts ON
+        // THIS NODE (src/transcription-pipeline.mjs `walk`) — never for another node's worker, never
+        // for a second connection's arrival that joins the same decode — and calls what it returns
+        // when that decode ends, a throw included. Placement and removal both go through THE one
+        // placement (outboundFor → src/spine/sender.mjs makeOutbound `react`): the mouth on its own
+        // copy, named by the note's cross-account key; no mouth → this connection's own bridge. A
+        // mark the mouth cannot place is no mark anywhere, and says why there. A chat with
+        // transcription off never reaches the transcriber, so it gets no mark either.
+        const listening = async () => {
+          const out = outboundFor?.(chatID);
+          if (!out) return null;
+          let key = null;
+          const keyOf = () => (key ??= out.keyOf(msg.id, 'listening')());   // read once, for both halves
+          if (!(await out.react(msg.id, LISTENING_REACTION, keyOf, 'listening', { temporary: true }))) return null;
+          return () => out.react(msg.id, LISTENING_REACTION, keyOf, 'listening', { remove: true });
+        };
         const _transcription = _transcribing('whisper', () => transcribeVoiceNote({
-          localPath: path, transcribe, audioCfg,
+          localPath: path, audioCfg,
+          transcribe: (p, c, l, m) => transcribe(p, c, l, m, listening),
           // The SHARED wrap (persona-wrap.mjs) brackets the '👂 <transcript>' core with the bridge +
           // transcription layers — the same machinery a persona reply renders through (covers
           // immediate/debounced/promoted echoes). The coverage query matches on WORD TOKENS, so it is
@@ -1866,13 +1906,7 @@ export async function startBeeperBridge(opts = {}) {
                     onLog: (m) => onLog(`beeper: ${m}`),
           meta: vmeta,
         }));
-        // 🎧 OFF, in a `finally`: a transcription that throws, times out or returns nothing must
-        // still lose its mark — a permanent "listening" reaction on someone's voice note is worse
-        // than no indicator at all. Only when the mark is known to have gone ON (nothing to take
-        // back off otherwise), and never fatal, for the same two reasons as the add.
-        let transcript;
-        try { transcript = await _transcription; }
-        finally { if (acked) await removeReaction(chatID, msg.id, LISTENING_REACTION).catch(() => false); }
+        const transcript = await _transcription;
         if (transcript) {
           // Mark the body AS audio (GENOME §4 / C7.6) so the model + reader can
           // tell a voice note arrived — not an ordinary message. Duration comes
@@ -2280,6 +2314,7 @@ export async function startBeeperBridge(opts = {}) {
     // fail-closed ownership probe (also drives inbound replyToBot). Reply-to already
     // rides send()'s replyToMessageID.
     sendReaction:  (chatId, messageId, key)  => sendReaction(chatId, messageId, key),
+    removeReaction: (chatId, messageId, key) => removeReaction(chatId, messageId, key),   // the 🎧 mark's removal (port `unreact`)
     sendMedia:     (chatId, filePath, opts)  => sendMedia(chatId, filePath, opts),
     wasSentByUs:   (chatId, messageId)       => wasSentByUs(chatId, messageId),
     // Deterministic-name surface (operator 2026-06-10): callers and slash

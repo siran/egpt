@@ -15,6 +15,13 @@
 // Per-note re-try from the top means a recovered remote is used again with no /restart.
 // onTransition fires ONLY when the winning engine changes (degrade or recover) — so a busy
 // voice-note chat doesn't flood Self. All side-effecting deps are injected (testable).
+//
+// WHERE THE DECODE RUNS (2026-09-16). transcribe()'s caller may hand a hook, `onDecodeHere`: the
+// chain calls it when a decode starts ON THIS NODE — a whisper-cli rung, a whisper-server-local rung,
+// or a whisper-server-remote rung whose endpoint is this node's own transcriptor — and calls the
+// function it returned when the walk ends, a throw included. At most once per walk, and the walk is
+// once per bytes (decode-once), so a caller that joins a decode never has its hook called. The
+// bridge's 🎧 listening mark hangs off it (src/bridges/beeper.mjs).
 import { readFile } from 'node:fs/promises';
 import { residentWhisperServer } from './tools/whisper-server.mjs';
 import { createDecodeOnce } from './tools/decode-once.mjs';
@@ -27,6 +34,9 @@ export function buildTranscriptionPipeline({
   makeWhisperServerTranscriber,   // ({url, ffmpeg, language}) -> (audioPath, cfg, log, meta) -> transcript
   cli,                            // transcribeAudioFile(audioPath, cfg, log, meta) -> transcript
   residentServing = residentWhisperServer,   // () -> {url} of a whisper-server serving in this process, or null
+  // routesToOwnTranscriptor(cfg) (src/spine/transcriptor-worker.mjs) — { at, endpoint } of the remote
+  // rung that is THIS node's own transcriptor, or null. The one definition, handed in, not re-derived.
+  ownTranscriptor = null,
   now = () => Date.now(),
   onTransition = () => {},        // ({from, to, recovered}) -> void
   onLog = () => {},
@@ -41,7 +51,7 @@ export function buildTranscriptionPipeline({
   const decodeOnce = createDecodeOnce({ now });
   let lastWinner = null;
 
-  async function tryRemote(eng, audioPath, log, meta) {
+  async function tryRemote(eng, audioPath, log, meta, decodingHere) {
     const downUntil = breaker.get(eng.name);
     if (downUntil && downUntil > now()) return null;            // in cooldown — skip fast
     // Liveness probe: fail FAST on a down endpoint (connect_timeout_ms) instead of
@@ -53,6 +63,7 @@ export function buildTranscriptionPipeline({
       onLog(`pipeline: remote "${eng.name}" unreachable — cooldown ${eng.cooldown_ms ?? 30_000}ms`);
       return null;
     }
+    if (ownTranscriptor && eng.endpoint === ownTranscriptor.endpoint) await decodingHere();   // this node's own worker
     try {
       const t = await transcribeViaEndpoint(
         audioPath, { endpoint: eng.endpoint, keyB64: eng.token, timeoutMs: eng.timeout_ms ?? 120_000 }, log, meta);
@@ -72,7 +83,7 @@ export function buildTranscriptionPipeline({
     }
   }
 
-  async function tryLocal(eng, audioPath, cfg, log, meta) {
+  async function tryLocal(eng, audioPath, cfg, log, meta, decodingHere) {
     let h = local.get(eng.name);
     if (!h) {                                                    // first time reached → lazy spawn
       h = { server: null, transcribe: null, starting: true, error: null };
@@ -99,6 +110,7 @@ export function buildTranscriptionPipeline({
     let release;
     h.tail = new Promise((r) => { release = r; });
     try {
+      await decodingHere();                                      // its place in the queue is taken: queued here is decoding here
       await prev.catch(() => {});                                // wait our turn (ignore prior outcome)
       // The transcriber swallows its error (null) but LOGS "transcribe failed — <why>"
       // (we don't change its contract — the worker relies on null-on-error). Tap that
@@ -124,7 +136,7 @@ export function buildTranscriptionPipeline({
   // model beside it, and the 15.9 GB box ran out of memory. While a resident server is serving
   // (this pipeline's own local engine, or any server this process started or adopted), the cli
   // rung DECLINES, loudly, instead. It still runs when none is serving.
-  async function tryCli(eng, audioPath, log, meta) {
+  async function tryCli(eng, audioPath, log, meta, decodingHere) {
     const own = [...local.values()].find((h) => h.server?.isAlive?.());
     const resident = own ? { url: own.server.url } : residentServing();
     if (resident) {
@@ -132,6 +144,7 @@ export function buildTranscriptionPipeline({
       onLog(`!! pipeline: cli "${eng.name}" DECLINED — a resident whisper-server is serving at ${resident.url} on this node, and whisper-cli would load a second model beside it. This note stays untranscribed; the rung above it is what failed.`);
       return null;
     }
+    await decodingHere();
     try { return (await cli(audioPath, eng, log, meta)) || null; }
     catch (e) { onLog(`pipeline: cli "${eng.name}" failed: ${e?.message ?? e}`); return null; }
   }
@@ -142,12 +155,14 @@ export function buildTranscriptionPipeline({
   // this process cannot read has no key: it walks the chain as before, and the engines say why.
   // (The bytes live only inside the .then callback, so a long video is not held in memory for the
   // whole decode.)
-  async function transcribe(audioPath, cfg = {}, log = () => {}, meta = null) {
+  // `onDecodeHere` (header) rides with the walk this call STARTS; a call that joins a running or
+  // recent decode never passes it on, which is what makes the mark once per note per node.
+  async function transcribe(audioPath, cfg = {}, log = () => {}, meta = null, onDecodeHere = null) {
     const once = await readFile(audioPath).then((bytes) => decodeOnce(bytes, () => {
       const decoded = {};
-      return { result: walk(audioPath, cfg, log, decoded).then((transcript) => ({ transcript, meta: decoded })) };
+      return { result: walk(audioPath, cfg, log, decoded, onDecodeHere).then((transcript) => ({ transcript, meta: decoded })) };
     }), () => null);
-    if (!once) return walk(audioPath, cfg, log, meta);
+    if (!once) return walk(audioPath, cfg, log, meta, onDecodeHere);
     const { served, job } = once;
     if (served) log(`transcribe: ${audioPath.split(/[\\/]/).pop()} served from an existing decode of the same bytes (${served})`);
     const { transcript, meta: decoded } = await job.result;
@@ -155,26 +170,43 @@ export function buildTranscriptionPipeline({
     return transcript;
   }
 
-  async function walk(audioPath, cfg, log, meta) {
-    for (const eng of engines) {
-      let t = null;
-      if (eng.type === 'whisper-server-remote') t = await tryRemote(eng, audioPath, log, meta);
-      else if (eng.type === 'whisper-server-local') t = await tryLocal(eng, audioPath, cfg, log, meta);
-      else if (eng.type === 'whisper-cli') t = await tryCli(eng, audioPath, log, meta);
-      else { onLog(`pipeline: "${eng.name}" has unknown type "${eng.type}" — skipping`); continue; }
-      if (t) {
-        if (lastWinner && lastWinner !== eng.name) {
-          const recovered = idxOf(eng.name) < idxOf(lastWinner);
-          // On a fall-BACK, surface WHY the prior engine failed this note (the
-          // timeout/error), not just "engine unavailable" — operator wants the
-          // reason on Self, not buried in egpt.log.
-          onTransition({ from: lastWinner, to: eng.name, recovered, reason: recovered ? null : (failReason.get(lastWinner) ?? null) });
+  async function walk(audioPath, cfg, log, meta, onDecodeHere = null) {
+    // The hook is AWAITED before the first on-node decode starts, so whatever it puts up is up
+    // before that decode spends its first second, and its end can never run ahead of it. Neither
+    // half may cost the transcript: a throw is logged and the decode goes on.
+    let asked = false, end = null;
+    const decodingHere = async () => {
+      if (asked || !onDecodeHere) return;
+      asked = true;
+      try { end = await onDecodeHere(); }
+      catch (e) { onLog(`pipeline: the decode-start hook threw — ${e?.message ?? e}`); }
+    };
+    try {
+      for (const eng of engines) {
+        let t = null;
+        if (eng.type === 'whisper-server-remote') t = await tryRemote(eng, audioPath, log, meta, decodingHere);
+        else if (eng.type === 'whisper-server-local') t = await tryLocal(eng, audioPath, cfg, log, meta, decodingHere);
+        else if (eng.type === 'whisper-cli') t = await tryCli(eng, audioPath, log, meta, decodingHere);
+        else { onLog(`pipeline: "${eng.name}" has unknown type "${eng.type}" — skipping`); continue; }
+        if (t) {
+          if (lastWinner && lastWinner !== eng.name) {
+            const recovered = idxOf(eng.name) < idxOf(lastWinner);
+            // On a fall-BACK, surface WHY the prior engine failed this note (the
+            // timeout/error), not just "engine unavailable" — operator wants the
+            // reason on Self, not buried in egpt.log.
+            onTransition({ from: lastWinner, to: eng.name, recovered, reason: recovered ? null : (failReason.get(lastWinner) ?? null) });
+          }
+          lastWinner = eng.name;
+          return t;
         }
-        lastWinner = eng.name;
-        return t;
+      }
+      return null;                                               // every engine declined (transcript stays empty)
+    } finally {
+      if (typeof end === 'function') {
+        try { await end(); }
+        catch (e) { onLog(`pipeline: the decode-end hook threw — ${e?.message ?? e}`); }
       }
     }
-    return null;                                                 // every engine declined (transcript stays empty)
   }
 
   function stop() { for (const h of local.values()) { try { h.server?.stop(); } catch { /* best effort */ } } }

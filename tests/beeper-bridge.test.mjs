@@ -28,6 +28,9 @@ import { surfaceOf } from '../src/spine/identity.mjs';
 import { _resetPromotions, ECHO_MARKER } from '../src/incoming-media.mjs';
 import { echoRank } from '../src/spine/echo-priority.mjs';
 import { addressed } from '../src/spine/router.mjs';
+import { buildTranscriptionPipeline } from '../src/transcription-pipeline.mjs';
+import { makeOutbound } from '../src/spine/sender.mjs';
+import { makePeerMouth } from '../src/spine/boot.mjs';
 
 const CHATS_PER_PAGE = 2;   // fake /v1/chats page size (live it's 25) — small so page 2 is readable
 
@@ -3368,20 +3371,25 @@ describe('beeper bridge — the cross-account message key (the mouth link names 
     expect(of('html-1').msgHash).toBe(crossAccountMsgKey({ text: 'hola **mundo**' }));
   });
 
-  it('a VOICE NOTE is keyed by its PAYLOAD body, not by what was heard in it — so it keys to nothing', async () => {
+  it('a VOICE NOTE is keyed by its PAYLOAD (its attachment), never by what was heard in it', async () => {
     // The dispatch `text` of a voice note is a TRANSCRIPT, and two whisper engines can differ —
     // the same reason the 👂 echo plan keys on the audio bytes and not on the words. The key is
-    // minted from `msg.text`, which a voice note leaves empty, so it comes back NULL: the message
-    // cannot be named across accounts and the mouth link refuses to react rather than guessing.
+    // minted from the payload: a voice note has no body, so it keys on its type and its
+    // attachment's size and mimeType (2026-09-16) — and an attachment that carries no size is no
+    // evidence, so that note still cannot be named across accounts.
     const { incoming } = await startBridge();
-    fake.emit({ type: 'message.upserted', entries: [liveMsg({
-      id: 'note-key', type: 'VOICE', text: '', senderName: 'Bea', isSender: false,
-      attachments: [fakeAttachment({ name: 'v.ogg', mimeType: 'audio/ogg', isVoiceNote: true })],
-    })] });
-    await waitFor(() => incoming.some((i) => i.from.msgKey === 'note-key'));
+    const sized = { ...fakeAttachment({ name: 'v.ogg', mimeType: 'audio/ogg', isVoiceNote: true }), fileSize: 22740 };
+    fake.emit({ type: 'message.upserted', entries: [
+      liveMsg({ id: 'note-key', type: 'VOICE', text: '', senderName: 'Bea', isSender: false, attachments: [sized] }),
+      liveMsg({ id: 'note-nosize', type: 'VOICE', text: '', senderName: 'Bea', isSender: false, attachments: [fakeAttachment({ name: 'w.ogg', mimeType: 'audio/ogg', isVoiceNote: true })] }),
+    ] });
+    await waitFor(() => ['note-key', 'note-nosize'].every((id) => incoming.some((i) => i.from.msgKey === id)));
     const { from, text } = incoming.find((i) => i.from.msgKey === 'note-key');
     expect(text).toContain('fake transcript');        // it WAS heard…
-    expect(from.msgHash).toBeNull();                  // …and still cannot be named across accounts
+    expect(from.msgHash).toMatch(/^[0-9a-f]{64}$/);   // …and is named by its attachment…
+    expect(from.msgHash).toBe(crossAccountMsgKey({ id: 'another-account-id', type: 'VOICE', text: null, attachments: [{ mimeType: 'audio/ogg', fileSize: 22740, id: 'mxc://other' }] }));
+    expect(from.msgHash).not.toBe(crossAccountMsgKey({ text: 'fake transcript' }));   // …never by the transcript
+    expect(incoming.find((i) => i.from.msgKey === 'note-nosize').from.msgHash).toBeNull();
   });
 
   it('listMessagesRaw hands back the chat\'s own recent payloads, and [] when the GET fails', async () => {
@@ -3446,125 +3454,230 @@ describe('the install moved: the redial asks WHERE before it dials', () => {
   });
 });
 
-// 🎧 LISTENING ACK (operator 2026-09-15: "put a reaction on voice message when listening, then
+// 🎧 LISTENING MARK (operator 2026-09-15: "put a reaction on voice message when listening, then
 // remove reaction when done" / "bridge can react to ack, not model. model can't delete").
 //
-// REPRODUCE-FIRST: transcription runs in the bridge BEFORE the spine ever sees the message, and
-// whisper-cli spends ~10s+ loading its model per note — so a long voice note left the chat looking
-// completely dead for tens of seconds with nothing to say the node had even heard it. The ack is
-// bridge-side machinery on purpose: the hand that ADDS the reaction is the hand that REMOVES it, so
-// there is nothing for a model to emit, forget, or be unable to delete.
-describe('beeper bridge — 🎧 listening ack on a voice note', () => {
-  // THE CONSTANT. One module-level definition so turning the ack into a sequence later is a
-  // one-place change — and NOT 👂, which is already the transcript ECHO. The two must not look
-  // alike: one says "I am listening", the other IS the transcript.
+// RE-HOMED 2026-09-16. THE LIVE FAULT, kg: `reaction 🎧 by An → #7780` — the mark came from the
+// operator's own account, placed by EVERY connection that received the note, on a node whose chain
+// sends every note to dolly's worker and decodes nothing itself. The rulings: every output of the
+// spine comes through the mouth, reactions included; the 🎧 is placed by the node actually
+// transcribing, and removed by it afterwards.
+//
+// So the bridge no longer reacts on the connection that received the note. It hands the transcriber
+// a hook; the chain (src/transcription-pipeline.mjs) calls it when a decode starts ON THIS NODE and
+// calls what it returned when that decode ends; the hook places and removes the mark through the one
+// placement (src/spine/sender.mjs makeOutbound `react`), which asks the mouth. Real here: the bridge,
+// the chain and its decode-once, makeOutbound, boot's makePeerMouth.react, the cross-account key.
+// Faked: the engines, the ear's Beeper (the fake above) and the mouth's bridge.
+describe('beeper bridge — 🎧 listening mark: placed where the decode runs, through the one placement', () => {
+  // THE CONSTANT. NOT 👂, which is already the transcript ECHO: one says "I am listening", the other
+  // IS the transcript.
   it('LISTENING_REACTION is 🎧 and is NOT the 👂 echo marker', () => {
     expect(LISTENING_REACTION).toBe('🎧');
     expect(LISTENING_REACTION).not.toBe(ECHO_MARKER);
   });
 
-  // The ordering IS the feature: on BEFORE whisper spends its first second, off AFTER it resolves.
-  it('reacts BEFORE whisper starts and removes the reaction AFTER the transcript resolves', async () => {
-    let release, seenAtStart = null;
-    const held = new Promise((r) => { release = r; });
-    const { incoming } = await startBridge({
-      transcribe: async () => {
-        seenAtStart = { reacted: fake.reactions.length, removed: fake.unreactions.length };
-        await held;
-        return 'fake transcript';
-      },
-    });
-    fake.emit({ type: 'message.upserted', entries: [liveMsg({
-      id: 'note-ack', isSender: false, text: null, type: 'VOICE', attachments: [voiceAtt()],
-    })] });
-    await waitFor(() => seenAtStart !== null, 3000);
-    expect(seenAtStart).toEqual({ reacted: 1, removed: 0 });   // ON before a single whisper byte
-    expect(fake.reactions[0]).toMatchObject({ chatID: CHAT('chat-1'), messageID: 'note-ack', reactionKey: LISTENING_REACTION });
-    await new Promise((r) => setTimeout(r, 50));
-    expect(fake.unreactions).toHaveLength(0);                  // …and STILL on while whisper runs
-    release();
-    await waitFor(() => incoming.length === 1, 3000);
-    await waitFor(() => fake.unreactions.length === 1, 3000);  // OFF once the transcript is in
-    expect(fake.unreactions[0]).toMatchObject({ chatID: CHAT('chat-1'), messageID: 'note-ack', reactionKey: LISTENING_REACTION });
-    expect(fake.reactions).toHaveLength(1);                    // exactly one on, exactly one off
-    expect(incoming[0].text).toBe('(voice transcription) fake transcript');
+  const NOTE_TS = '2026-09-15T15:33:38.000Z';
+  const MOUTH_ROOM = 'lHZ44tI32W0eEtbwMutM';
+  // The note's attachment as a Beeper API lists it (measured 2026-09-15): the mxc id is per account.
+  const listedAtt = (id) => ({ type: 'audio', mimeType: 'audio/ogg; codecs=opus', fileName: 'Voice message.ogg', fileSize: 22740, isVoiceNote: true, id: `mxc://local.beeper.com/${id}` });
+  const CLI = { type: 'whisper-cli', command: 'wc', model_path: 'm' };
+  // kg's chain: dolly's worker, then its own cli. do's chain: ITS OWN worker, then its own cli.
+  const KG = { fallback_order: ['worker', 'cli'], worker: { type: 'whisper-server-remote', endpoint: 'http://192.168.1.102:23390', token: 'k', cooldown_ms: 1000 }, cli: CLI };
+  const DO = { fallback_order: ['worker', 'cli'], worker: { type: 'whisper-server-remote', endpoint: 'http://127.0.0.1:23390', token: 'k', cooldown_ms: 1000 }, cli: CLI };
+  const DO_OWN = { at: 'transcription_service.do.worker', endpoint: 'http://127.0.0.1:23390' };
+  const chain = ({ profile, own = null, remote = async () => 'fake transcript', cli = async () => 'fake transcript' }) => buildTranscriptionPipeline({
+    profile, ownTranscriptor: own, transcribeViaEndpoint: remote, reachable: async () => true, cli, residentServing: () => null,
   });
 
-  // A transcription that produces NOTHING still loses its mark (the transcriber threw; the shared
-  // processor swallows that into a null transcript, so the note lands as a failure body).
-  it('removes the reaction when the transcriber fails and the note produces no transcript', async () => {
-    const { incoming } = await startBridge({
-      transcribe: async () => { throw new Error('whisper exploded'); },
+  // The MOUTH: a connection on the other account, holding ITS OWN copy of the note (its own id 2404).
+  function mouthBridge({ holdsNote = true } = {}) {
+    const reactions = [], unreactions = [];
+    return {
+      reactions, unreactions,
+      async listMessagesRaw() { return holdsNote ? [{ id: '2404', timestamp: NOTE_TS, type: 'VOICE', text: null, attachments: [listedAtt('dolly-egpt_2404')] }] : []; },
+      async react(chatId, msgId, emoji) { reactions.push({ chatId, msgId, emoji }); return true; },
+      async unreact(chatId, msgId, emoji) { unreactions.push({ chatId, msgId, emoji }); return true; },
+    };
+  }
+
+  // THE ONE PLACEMENT as boot hands it to the bridge for a node line (`being` null): makeOutbound over
+  // the receiving connection's own surface, with boot's makePeerMouth when there is a mouth. Its route
+  // is fixed here — the mouth is in this chat, in MOUTH_ROOM; how that room is found is locked in
+  // tests/mouth-routing.test.mjs. `ref.bridge` is read at call time, as boot's late binding is.
+  function placementFor(ref, mouth = null, logs = []) {
+    const ear = {
+      react: (c, m, e) => ref.bridge.sendReaction(c, m, e),
+      unreact: (c, m, e) => ref.bridge.removeReaction(c, m, e),
+      listMessagesRaw: (c, o) => ref.bridge.listMessagesRaw(c, o),
+    };
+    const peerMouth = mouth
+      ? { ...makePeerMouth({ peer: null, bridge: ear, localMouth: () => null }), route: async () => ({ connection: 'secondary', home: 'primary', bridge: mouth, chatId: MOUTH_ROOM }) }
+      : null;
+    return (chatId) => makeOutbound({ bridge: ear, peerMouth, onLog: (m) => logs.push(m) })(null, chatId);
+  }
+
+  // One connection receiving the note, wired to `tx` and to the placement. The ear's own list serves
+  // the note (the key the mouth is told is read off it).
+  async function ear({ tx, mouth = null, logs = [], extra = {} } = {}) {
+    const ref = {};
+    const started = await startBridge({ transcribe: tx.transcribe, outboundFor: placementFor(ref, mouth, logs), ...extra });
+    ref.bridge = started.bridge;
+    return started;
+  }
+  const emitNote = (id) => {
+    fake.messages.set(CHAT('chat-1'), [{ id, timestamp: NOTE_TS, type: 'VOICE', text: null, attachments: [listedAtt(`anrodriguez_${id}`)] }]);
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id, isSender: false, text: null, type: 'VOICE', attachments: [voiceAtt(`bytes of ${id}`)] })] });
+  };
+
+  // THE REPRODUCTION, kg's shape: the note is decoded on ANOTHER node's worker. This node decodes
+  // nothing, so it places nothing — on either account, mouth or no mouth.
+  it('the chain decodes on another node\'s worker: this node places no 🎧 anywhere', async () => {
+    const mouth = mouthBridge();
+    const { incoming } = await ear({ tx: chain({ profile: KG }), mouth });
+    emitNote('note-kg');
+    await waitFor(() => incoming.length === 1, 3000);
+    expect(incoming[0].text).toBe('(voice transcription) fake transcript');
+    expect(fake.reactions).toEqual([]);
+    expect(mouth.reactions).toEqual([]);
+  });
+
+  // do's shape, and kg's when dolly's worker is down: the decode runs HERE. The MOUTH places ONE 🎧 on
+  // its own copy before the decode spends its first second, keeps it up while the decode runs, and
+  // takes it off after — and the account that received the note never reacts.
+  for (const [shape, profile, own, engine] of [
+    ['this node\'s OWN worker rung', DO, DO_OWN, 'remote'],
+    ['the other node\'s worker fails and this node\'s cli runs', KG, null, 'cli'],
+  ]) {
+    it(`${shape}: the MOUTH places one 🎧 on its own copy around the decode, and the ear places none`, async () => {
+      const mouth = mouthBridge();
+      let release, seenAtStart = null;
+      const held = new Promise((r) => { release = r; });
+      const decode = async () => { seenAtStart = { reacted: mouth.reactions.length, removed: mouth.unreactions.length }; await held; return 'fake transcript'; };
+      const tx = chain({ profile, own, remote: engine === 'remote' ? decode : async () => { throw new Error('dolly is down'); }, cli: decode });
+      const { incoming } = await ear({ tx, mouth });
+      emitNote(`note-${engine}`);
+      await waitFor(() => seenAtStart !== null, 3000);
+      expect(seenAtStart).toEqual({ reacted: 1, removed: 0 });                   // up before the decode
+      expect(mouth.reactions).toEqual([{ chatId: MOUTH_ROOM, msgId: '2404', emoji: LISTENING_REACTION }]);
+      await new Promise((r) => setTimeout(r, 50));
+      expect(mouth.unreactions).toEqual([]);                                     // …and up while it runs
+      release();
+      await waitFor(() => incoming.length === 1, 3000);
+      await waitFor(() => mouth.unreactions.length === 1, 3000);                 // down once it ends
+      expect(mouth.unreactions).toEqual([{ chatId: MOUTH_ROOM, msgId: '2404', emoji: LISTENING_REACTION }]);
+      expect(mouth.reactions).toHaveLength(1);
+      expect(fake.reactions).toEqual([]);                                        // the ear's account: nothing
+      expect(fake.unreactions).toEqual([]);
     });
-    fake.emit({ type: 'message.upserted', entries: [liveMsg({
-      id: 'note-nul', isSender: false, text: null, type: 'VOICE', attachments: [voiceAtt()],
-    })] });
+  }
+
+  it('the decode THROWS: the mouth still takes its 🎧 back off, and the note lands as a failure', async () => {
+    const mouth = mouthBridge();
+    const tx = chain({ profile: { fallback_order: ['cli'], cli: CLI }, cli: async () => { throw new Error('whisper exploded'); } });
+    const { incoming } = await ear({ tx, mouth });
+    emitNote('note-throw');
     await waitFor(() => incoming.length === 1, 3000);
     expect(incoming[0].text).toBe('[voice note — transcription failed]');
-    await waitFor(() => fake.unreactions.length === 1, 3000);
-    expect(fake.unreactions[0]).toMatchObject({ messageID: 'note-nul', reactionKey: LISTENING_REACTION });
+    await waitFor(() => mouth.unreactions.length === 1, 3000);
+    expect(mouth.reactions).toHaveLength(1);
+    expect(fake.reactions).toEqual([]);
   });
 
-  // THE `finally` ITSELF. The case above returns normally, so it passes with or without one; this is
-  // the case that does not. The awaited transcription REJECTS — dispatch of this message is abandoned
-  // (the WS handler logs it and moves on), no transcript, no body, no later code runs — and the 🎧
-  // must come off anyway. A stuck 'listening' mark on someone's voice note is worse than no mark.
-  // The reachable rejection is the echo's DEBOUNCE ARM: reply+postsBack+rank-1+a delay window puts
-  // the ack on the injected scheduler, and an exploding scheduler is the one un-caught call in the
-  // shared processor. (A throwing `transcribe` cannot reach it — that one is caught, see above.)
-  it('removes the reaction when the transcription THROWS', async () => {
+  // ONE NOTE, TWO CONNECTIONS: both deliver it, the decode runs once (decode-once), so ONE mark goes
+  // up and ONE comes down — the mark is tied to the decode, not to each connection's handler.
+  it('the same note delivered on two connections: ONE placement and ONE removal', async () => {
+    const mouth = mouthBridge();
+    let decodes = 0, release;
+    const held = new Promise((r) => { release = r; });
+    const tx = chain({ profile: DO, own: DO_OWN, remote: async () => { decodes += 1; await held; return 'fake transcript'; } });
+    const first = await ear({ tx, mouth });
+    const second = await ear({ tx, mouth, extra: { stateDir: mkdtempSync(join(stateDir, 'second-connection-')) } });
+    emitNote('note-twice');
+    await waitFor(() => decodes === 1, 3000);
+    await new Promise((r) => setTimeout(r, 100));                                // both arrivals are in
+    release();
+    await waitFor(() => first.incoming.length === 1 && second.incoming.length === 1, 3000);
+    await waitFor(() => mouth.unreactions.length === 1, 3000);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(decodes).toBe(1);
+    expect(mouth.reactions).toHaveLength(1);
+    expect(mouth.unreactions).toHaveLength(1);
+    expect(fake.reactions).toEqual([]);
+  });
+
+  // THE FLOOR: the mouth cannot find its own copy. No 🎧 anywhere — never from the ear instead — the
+  // log says why, and the transcript is not touched.
+  it('the mouth cannot find its copy: no 🎧 on either account, the reason is logged, the transcript lands', async () => {
+    const mouth = mouthBridge({ holdsNote: false });
     const logs = [];
-    const { incoming } = await startBridge({
-      echoPlan: () => ({ rank: 1, winner: true }),
-      resolveTranscriptionService: async () => ({ enabled: true, postsBack: true, postsBackDelayMs: 5_000 }),
-      scheduler: { set() { throw new Error('scheduler exploded'); }, clear() {} },
-      onLog: (m) => logs.push(m),
-    });
-    fake.emit({ type: 'message.upserted', entries: [liveMsg({
-      id: 'note-throw', isSender: false, text: null, type: 'VOICE', attachments: [voiceAtt()],
-    })] });
-    await waitFor(() => logs.some((m) => /dispatch error/.test(m)), 3000);   // the transcription REJECTED
-    expect(incoming).toHaveLength(0);                                        // …and nothing downstream ran
-    await waitFor(() => fake.unreactions.length === 1, 3000);                // …but the ack still came off
-    expect(fake.unreactions[0]).toMatchObject({ messageID: 'note-throw', reactionKey: LISTENING_REACTION });
+    const { incoming } = await ear({ tx: chain({ profile: DO, own: DO_OWN }), mouth, logs });
+    emitNote('note-lost');
+    await waitFor(() => incoming.length === 1, 3000);
+    expect(incoming[0].text).toBe('(voice transcription) fake transcript');
+    expect(mouth.reactions).toEqual([]);
+    expect(fake.reactions).toEqual([]);
+    expect(logs.join('\n')).toMatch(/could not place the 🎧 \(no-match/);
   });
 
-  // BEST-EFFORT, NEVER FATAL (the add half): on a box where the reaction endpoint 4xxs, the note is
-  // still transcribed. An indicator that cannot be drawn costs nothing.
+  // REGRESSION LOCK, the one-connection node: no mouth, so the connection's own bridge places and
+  // removes the mark on its own id — exactly as react() already does without a mouth.
+  it('NO mouth: the receiving connection places and removes the 🎧 on its own id', async () => {
+    const { incoming } = await ear({ tx: chain({ profile: DO, own: DO_OWN }) });
+    emitNote('note-solo');
+    await waitFor(() => incoming.length === 1, 3000);
+    await waitFor(() => fake.unreactions.length === 1, 3000);
+    expect(fake.reactions).toHaveLength(1);
+    expect(fake.reactions[0]).toMatchObject({ chatID: CHAT('chat-1'), messageID: 'note-solo', reactionKey: LISTENING_REACTION });
+    expect(fake.unreactions[0]).toMatchObject({ chatID: CHAT('chat-1'), messageID: 'note-solo', reactionKey: LISTENING_REACTION });
+  });
+
+  // A failure AFTER the decode (the echo's debounce arm throws, abandoning this message's dispatch)
+  // leaves no mark behind: the mark came down when the decode ended.
+  it('a failure after the decode leaves no mark behind', async () => {
+    const logs = [];
+    const { incoming } = await ear({
+      tx: chain({ profile: DO, own: DO_OWN }),
+      extra: {
+        echoPlan: () => ({ rank: 1, winner: true }),
+        resolveTranscriptionService: async () => ({ enabled: true, postsBack: true, postsBackDelayMs: 5_000 }),
+        scheduler: { set() { throw new Error('scheduler exploded'); }, clear() {} },
+        onLog: (m) => logs.push(m),
+      },
+    });
+    emitNote('note-after');
+    await waitFor(() => logs.some((m) => /dispatch error/.test(m)), 3000);
+    expect(incoming).toHaveLength(0);
+    await waitFor(() => fake.unreactions.length === 1, 3000);
+    expect(fake.reactions).toHaveLength(1);
+  });
+
+  // BEST-EFFORT, NEVER FATAL: a refused add costs nothing and leaves nothing to take back off…
   it('a react that 4xxs does not cost the transcript', async () => {
-    const { incoming } = await startBridge();
     fake.reactOpts.postStatus = 403;
-    fake.emit({ type: 'message.upserted', entries: [liveMsg({
-      id: 'note-403', isSender: false, text: null, type: 'VOICE', attachments: [voiceAtt()],
-    })] });
+    const { incoming } = await ear({ tx: chain({ profile: DO, own: DO_OWN }) });
+    emitNote('note-403');
     await waitFor(() => incoming.length === 1, 3000);
     expect(incoming[0].text).toBe('(voice transcription) fake transcript');
     expect(fake.reactions).toHaveLength(1);     // attempted …
     expect(fake.unreactions).toHaveLength(0);   // … refused, so there is nothing to take back off
   });
 
-  // BEST-EFFORT, NEVER FATAL (the remove half): a refused DELETE is swallowed, not thrown.
+  // …and a refused removal is swallowed, not thrown.
   it('a remove that 5xxs is swallowed and the transcript still lands', async () => {
-    const { incoming } = await startBridge();
     fake.reactOpts.deleteStatus = 500;
-    fake.emit({ type: 'message.upserted', entries: [liveMsg({
-      id: 'note-500', isSender: false, text: null, type: 'VOICE', attachments: [voiceAtt()],
-    })] });
+    const { incoming } = await ear({ tx: chain({ profile: DO, own: DO_OWN }) });
+    emitNote('note-500');
     await waitFor(() => incoming.length === 1, 3000);
     expect(incoming[0].text).toBe('(voice transcription) fake transcript');
-    expect(fake.reactions).toHaveLength(1);
     await waitFor(() => fake.unreactions.length === 1, 3000);   // attempted, refused, swallowed
+    expect(fake.reactions).toHaveLength(1);
   });
 
-  // NO ACK WHEN THERE IS NOTHING TO ACK: the room's transcription service is off, so this node is not
-  // going to transcribe this note — reacting would promise a transcript that is never coming.
+  // NO DECODE, NO MARK: the room's transcription service is off, so nothing is decoded here.
   it('does NOT react when the transcription service is disabled for the chat', async () => {
-    const { incoming } = await startBridge({
-      resolveTranscriptionService: async () => ({ enabled: false, postsBack: false }),
-    });
-    fake.emit({ type: 'message.upserted', entries: [liveMsg({
-      id: 'note-off', isSender: false, text: null, type: 'VOICE', attachments: [voiceAtt()],
-    })] });
+    const { incoming } = await ear({ tx: chain({ profile: DO, own: DO_OWN }), extra: { resolveTranscriptionService: async () => ({ enabled: false, postsBack: false }) } });
+    emitNote('note-off');
     await waitFor(() => incoming.length === 1, 3000);
     expect(incoming[0].text).toBe('[voice note]');
     expect(fake.reactions).toHaveLength(0);

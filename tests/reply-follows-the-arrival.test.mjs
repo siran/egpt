@@ -175,6 +175,15 @@ const SAID = {
   [ORPHAN_GROUP]: [{ id: 'o-1', text: 'nobody else heard this', timestamp: '2026-09-11T13:00:00.000Z' }],
 };
 
+// ONE VOICE NOTE in the chat both accounts are in, as each account's /messages lists it (measured
+// shape, 2026-09-15): no body, one attachment; the id and the mxc id are per account, the size,
+// mimeType and timestamp are not. The 🎧 listening mark is placed on the MOUTH's copy of it.
+const voiceNote = (id) => ({ id, timestamp: '2026-09-11T14:04:00.000Z', type: 'VOICE', text: null, attachments: [{ type: 'audio', mimeType: 'audio/ogg; codecs=opus', fileSize: 22740, isVoiceNote: true, id: `mxc://local.beeper.com/${id}` }] });
+const LISTED = {
+  [BOTH_AS_PRIMARY]: [voiceNote('ear-note')],
+  [BOTH_AS_SECONDARY]: [voiceNote('mouth-note')],
+};
+
 // What each install reports as its OWN account's identities — `/v1/accounts`, every identifier on
 // the `isSelf` user entries (measured live 2026-09-12 on both installs: the phone
 // (+16468217865 / +13472576794), the Beeper user id (@anrodriguez / @dolly-egpt:beeper.com) and
@@ -198,7 +207,7 @@ function fakeTransport() {
   const start = async (opts) => {
     const token = opts.beeperToken;
     const world = DESKTOPS[token] ?? {};
-    const spy = { connection: NAME_OF[token] ?? token, token, opts, onIncoming: opts.onIncoming, sent: [], streams: [], edits: [] };
+    const spy = { connection: NAME_OF[token] ?? token, token, opts, onIncoming: opts.onIncoming, sent: [], streams: [], edits: [], reactions: [], unreactions: [] };
     built.push(spy);
     return {
       async send(text, o) { spy.sent.push({ text, chatId: o?.chatId }); return { ok: true }; },
@@ -217,6 +226,11 @@ function fakeTransport() {
       // THE THREE READS THE MOUTH MAKES, all of them of this account's OWN copies. The last
       // message is not a fourth read: it rides `preview` on the chat list, both ways.
       async selfIdentities() { return SELF_IDENTITY[token] ?? []; },
+      // THE 🎧 LISTENING MARK's reads and writes (2026-09-16): this account's own copies of a chat's
+      // recent messages, and a reaction placed on / taken off one of them.
+      async listMessagesRaw(chat) { return LISTED[chat] ?? []; },
+      async sendReaction(chat, id, key) { spy.reactions.push({ chatId: chat, id, key }); return true; },
+      async removeReaction(chat, id, key) { spy.unreactions.push({ chatId: chat, id, key }); return true; },
       async chatRaw(chat) { return world[chat] ? rawChat(chat, world[chat]) : null; },
       async listChatsRaw() { return Object.entries(world).map(([id, roster]) => rawChat(id, roster)); },
       isAlive: () => true, stop() {},
@@ -1084,6 +1098,58 @@ describe('a node-level line in a chat the mouth is in is said by the MOUTH, in i
     expect(byConnection.primary.sent.some((m) => m.text.includes('↻'))).toBe(true);
     expect(byConnection.secondary.sent).toEqual([]);
     expect(exits).toEqual([43]);
+    app.stop();
+  });
+});
+
+// ── THE 🎧 LISTENING MARK IS PLACED THROUGH THE ONE PLACEMENT (2026-09-16) ─────────────────────────
+// kg, live: `reaction 🎧 by An → #7780` — the mark came from the operator's own account, because the
+// bridge reacted on the connection that received the note. boot now hands every connection the one
+// placement boot's own lines use (`outboundFor`, makeOutbound with the mouth, being null), and the
+// bridge places and removes the mark through it while the note is being DECODED — which is BEFORE the
+// note's arrival is stamped. So a note that is the first thing heard in a chat since boot must still
+// reach the mouth's own room: the connection that received it is recorded as the chat's holder first.
+describe('the 🎧 listening mark: boot hands each connection the one placement', () => {
+  const place = async (spy, chatId, msgId) => {
+    const out = spy.opts.outboundFor(chatId);
+    const keyOf = out.keyOf(msgId, 'listening');
+    const up = await out.react(msgId, '🎧', keyOf, 'listening', { temporary: true });
+    const down = up ? await out.react(msgId, '🎧', keyOf, 'listening', { remove: true }) : false;
+    return { up, down };
+  };
+
+  it('NO arrival since boot, a chat both accounts are in: the MOUTH places and removes it on its own copy; the ear does neither', async () => {
+    const { app, byConnection } = await bootWith(KG());
+    expect(await place(byConnection.primary, BOTH_AS_PRIMARY, 'ear-note')).toEqual({ up: true, down: true });
+    expect(byConnection.secondary.reactions).toEqual([{ chatId: BOTH_AS_SECONDARY, id: 'mouth-note', key: '🎧' }]);
+    expect(byConnection.secondary.unreactions).toEqual([{ chatId: BOTH_AS_SECONDARY, id: 'mouth-note', key: '🎧' }]);
+    expect(byConnection.primary.reactions).toEqual([]);
+    expect(byConnection.primary.unreactions).toEqual([]);
+    app.stop();
+  });
+
+  it('the Self-DM (the mouth is not in it): the ear places and removes it on its own id', async () => {
+    const { app, byConnection } = await bootWith(KG());
+    expect(await place(byConnection.primary, SELF_DM, 'self-note')).toEqual({ up: true, down: true });
+    expect(byConnection.primary.reactions).toEqual([{ chatId: SELF_DM, id: 'self-note', key: '🎧' }]);
+    expect(byConnection.primary.unreactions).toEqual([{ chatId: SELF_DM, id: 'self-note', key: '🎧' }]);
+    expect(byConnection.secondary.reactions).toEqual([]);
+    app.stop();
+  });
+
+  it('the note delivered on the MOUTH\'s own connection: the mouth places it with its own id', async () => {
+    const { app, byConnection } = await bootWith(KG());
+    expect(await place(byConnection.secondary, BOTH_AS_SECONDARY, 'mouth-note')).toEqual({ up: true, down: true });
+    expect(byConnection.secondary.reactions).toEqual([{ chatId: BOTH_AS_SECONDARY, id: 'mouth-note', key: '🎧' }]);
+    expect(byConnection.primary.reactions).toEqual([]);
+    app.stop();
+  });
+
+  it('a ONE-connection node: its own bridge places and removes it', async () => {
+    const { app, byConnection } = await bootWith(SINGLE());
+    expect(await place(byConnection.primary, AN_GROUP, 'solo-note')).toEqual({ up: true, down: true });
+    expect(byConnection.primary.reactions).toEqual([{ chatId: AN_GROUP, id: 'solo-note', key: '🎧' }]);
+    expect(byConnection.primary.unreactions).toEqual([{ chatId: AN_GROUP, id: 'solo-note', key: '🎧' }]);
     app.stop();
   });
 });

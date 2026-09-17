@@ -250,6 +250,11 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
     react(chat, msgId, emoji) {
       return real.sendReaction?.(chat, msgId, emoji);
     },
+    // …and taking one back off: only the 🎧 listening mark does, through the one placement
+    // (src/spine/sender.mjs makeOutbound `react` with `remove`). Still no limb a model can emit.
+    unreact(chat, msgId, emoji) {
+      return real.removeReaction?.(chat, msgId, emoji);
+    },
     // A caption and an edit are E speaking to a surface, so they carry the node signature like
     // every other outbound (C13, 2026-07-26 — both used to stamp without wrapping).
     sendMedia(chat, filePath, opts = {}) {

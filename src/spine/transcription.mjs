@@ -32,6 +32,7 @@ import { startWhisperServer, makeWhisperServerTranscriber } from '../tools/whisp
 import { parseTranscriptionConfig } from '../transcription-service.mjs';
 import { POSTS_BACK_DELAY_MS } from '../incoming-media.mjs';
 import { readState, CONV_YAML_PATH, getContact, slugDir } from '../conversations-state.mjs';
+import { routesToOwnTranscriptor } from './transcriptor-worker.mjs';
 
 export function createTranscription({
   getConfig = () => ({}),
@@ -60,6 +61,8 @@ export function createTranscription({
     startWhisperServer,
     makeWhisperServerTranscriber,
     cli: transcribeAudioFile,
+    // Which remote rung is THIS node decoding (the 🎧 listening mark goes up only where the decode runs).
+    ownTranscriptor: routesToOwnTranscriptor(cfg),
     onTransition,
     onLog,
   });

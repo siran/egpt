@@ -1020,14 +1020,14 @@ describe('the mouth refuses rather than guessing — and always says so', () => 
   });
 
   it('A MESSAGE THAT COULD NOT BE KEYED refuses BEFORE the frame is sent — no dial at all', async () => {
-    // A voice note / a captionless attachment has no body to hash, so the bridge mints null and
+    // A message with no body and no sized attachment has nothing to hash, so the bridge mints null and
     // the peer can never be told which message. Nothing to dial for.
     const { poke, dialled, reacted, logs, port } = rig();
     expect(await poke({ msgKey: '' })).toEqual({ ok: false, reason: 'no-key', detail: 'the message carries no cross-account key' });
     expect(await poke({ msgKey: null })).toMatchObject({ reason: 'no-key' });
     expect(dialled).toEqual([]);
     expect(reacted).toEqual([]);
-    expect(logs.join('\n')).toMatch(/no body to hash.*NOBODY reacts/);
+    expect(logs.join('\n')).toMatch(/no body or attachment to hash.*NOBODY reacts/);
     port.stop();
   });
 
@@ -1252,7 +1252,7 @@ describe('findChatByLastMessage — which of MY chats last heard that, on its ow
   });
 
   // NOTHING TO KEY ON IS NOT A MATCH FOR EVERYTHING — the same refusal crossAccountChatKey makes.
-  // A chat whose last message is a bare voice note identifies no room.
+  // A chat whose last message has no body and no attachment identifies no room.
   it("nothing keyable in the asking account's own copy refuses outright", () => {
     expect(findChatByLastMessage([THE_SAME_CHAT], null).reason).toBe('no-key');
     expect(findChatByLastMessage([THE_SAME_CHAT], { id: '1', text: '', timestamp: '2026-09-12T13:45:05.000Z' }).reason).toBe('no-key');
@@ -1307,7 +1307,7 @@ describe('findMessageByKey — which of MY messages is that one, on its own', ()
     expect(STEERED_ON_PRIMARY.id).not.toBe(STEERED_ON_SECONDARY.id);
   });
 
-  it('a body with NOTHING in it is not a key at all — a bare voice note cannot be named', () => {
+  it('a body with NOTHING in it and no attachment is not a key at all', () => {
     expect(crossAccountMsgKey({ id: '9', text: '' })).toBeNull();
     expect(crossAccountMsgKey({ id: '9', text: '   ' })).toBeNull();
     expect(crossAccountMsgKey({ id: '9' })).toBeNull();
@@ -1348,6 +1348,77 @@ describe('findMessageByKey — which of MY messages is that one, on its own', ()
 
   it('a message with no id is skipped — there would be nothing to react to', () => {
     expect(findMessageByKey([{ text: STEERED_TEXT, timestamp: STEERED_TS_ISO }], STEERED_KEY, STEERED_TS).reason).toBe('no-match');
+  });
+});
+
+// ── 4c. A MESSAGE WITH NO BODY IS NAMED BY ITS ATTACHMENT (2026-09-16) ─────────────────────────
+// The 🎧 listening mark is placed by the mouth on ITS OWN copy of a voice note, and a bare voice
+// note has no body — so the key used to be null and the mouth could never be told which message.
+// THE FIXTURES ARE ONE REAL NOTE (2026-09-15) as the two accounts' Beeper APIs serve it: different
+// chat, id, mxc id and local srcURL; identical timestamp, type, text (null), mimeType, fileName
+// and fileSize. A second real note differed in fileSize (46699) and timestamp.
+describe('crossAccountMsgKey — a bodiless message is keyed by its attachment', () => {
+  const VOICE_TS = '2026-09-15T15:33:38.000Z';
+  const VOICE_ON_EAR = {
+    chatID: '!JwvpZvGK8H8DLDuPa89w:beeper.local', id: '7004', timestamp: VOICE_TS, type: 'VOICE', senderName: 'Contact', text: null,
+    attachments: [{ type: 'audio', mimeType: 'audio/ogg; codecs=opus', fileName: 'Voice message.ogg', fileSize: 22740, isVoiceNote: true, id: 'mxc://local.beeper.com/anrodriguez_ear7004', srcURL: 'file:///C:/ear/media/7004.ogg' }],
+  };
+  const VOICE_ON_MOUTH = {
+    chatID: '!lHZ44tI32W0eEtbwMutM:beeper.local', id: '2404', timestamp: VOICE_TS, type: 'VOICE', senderName: 'Contact', text: null,
+    attachments: [{ type: 'audio', mimeType: 'audio/ogg; codecs=opus', fileName: 'Voice message.ogg', fileSize: 22740, isVoiceNote: true, id: 'mxc://local.beeper.com/dolly-egpt_mouth2404', srcURL: 'file:///C:/mouth/media/2404.ogg' }],
+  };
+  const OTHER_NOTE_ON_MOUTH = {
+    ...VOICE_ON_MOUTH, id: '2390', timestamp: '2026-09-15T14:51:28.000Z',
+    attachments: [{ ...VOICE_ON_MOUTH.attachments[0], fileSize: 46699, id: 'mxc://local.beeper.com/dolly-egpt_mouth2390', srcURL: 'file:///C:/mouth/media/2390.ogg' }],
+  };
+
+  it('the two accounts\' views of one voice note key alike', () => {
+    const key = crossAccountMsgKey(VOICE_ON_EAR);
+    expect(key).toMatch(/^[0-9a-f]{64}$/);
+    expect(crossAccountMsgKey(VOICE_ON_MOUTH)).toBe(key);
+  });
+
+  it('a different fileSize is a different message', () => {
+    expect(crossAccountMsgKey(OTHER_NOTE_ON_MOUTH)).not.toBe(crossAccountMsgKey(VOICE_ON_EAR));
+  });
+
+  it('the mxc id and the local srcURL are account-local and never part of the key', () => {
+    const att = VOICE_ON_EAR.attachments[0];
+    const moved = { ...VOICE_ON_EAR, attachments: [{ ...att, id: 'mxc://local.beeper.com/someone-else_1', srcURL: 'file:///D:/elsewhere.ogg' }] };
+    const key = crossAccountMsgKey(VOICE_ON_EAR);
+    expect(key).not.toBeNull();
+    expect(crossAccountMsgKey(moved)).toBe(key);
+  });
+
+  it('the mimeType and the message type are part of the key', () => {
+    const att = VOICE_ON_EAR.attachments[0];
+    expect(crossAccountMsgKey({ ...VOICE_ON_EAR, attachments: [{ ...att, mimeType: 'audio/mpeg' }] })).not.toBe(crossAccountMsgKey(VOICE_ON_EAR));
+    expect(crossAccountMsgKey({ ...VOICE_ON_EAR, type: 'AUDIO' })).not.toBe(crossAccountMsgKey(VOICE_ON_EAR));
+  });
+
+  // No size, no evidence: an attachment that carries no fileSize is not a key.
+  it('a bodiless message whose attachment has no fileSize is still not a key', () => {
+    const { fileSize, ...noSize } = VOICE_ON_EAR.attachments[0];
+    expect(crossAccountMsgKey({ ...VOICE_ON_EAR, attachments: [noSize] })).toBeNull();
+    expect(crossAccountMsgKey({ ...VOICE_ON_EAR, attachments: [] })).toBeNull();
+  });
+
+  // REGRESSION LOCK: a message WITH a body keys on the body, exactly as before, caption or not.
+  it('a message with a body still keys on the body alone', () => {
+    expect(crossAccountMsgKey({ ...VOICE_ON_EAR, text: 'mira esto' })).toBe(crossAccountMsgKey({ text: 'mira esto' }));
+  });
+
+  it('the mouth finds its own copy of the note among its neighbours (findMessageByKey)', () => {
+    expect(findMessageByKey([OTHER_NOTE_ON_MOUTH, VOICE_ON_MOUTH, LATER_ON_SECONDARY], crossAccountMsgKey(VOICE_ON_EAR), Date.parse(VOICE_TS)))
+      .toEqual({ ok: true, msgId: '2404' });
+  });
+
+  // THE LAST-MESSAGE TIER (findChatByLastMessage) now reaches a chat whose last message is a voice
+  // note — which is exactly the chat a 🎧 is placed in.
+  it('a chat whose last message is that voice note is found by its last message', () => {
+    const mouthChat = { id: '!lHZ44tI32W0eEtbwMutM:beeper.local', type: 'single', preview: VOICE_ON_MOUTH };
+    const otherChat = { id: '!other:beeper.local', type: 'single', preview: OTHER_NOTE_ON_MOUTH };
+    expect(findChatByLastMessage([otherChat, mouthChat], VOICE_ON_EAR)).toEqual({ ok: true, chatId: 'lHZ44tI32W0eEtbwMutM' });
   });
 });
 

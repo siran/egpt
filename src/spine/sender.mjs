@@ -208,6 +208,10 @@ export const RETAINED_SEAM = '\n\n— ↓ reply —\n\n';
  *                 for a read it cannot use. Every failure ends with NO REACTION ANYWHERE and a line
  *                 naming why: a missing reaction is cosmetic, one from the wrong account is the bug.
  * Returns whether it landed (the limb's `ran` is written from it).
+ * `{ remove: true }` TAKES ONE BACK OFF the same way — the connection's own bridge, or the mouth on
+ * its own copy — and `{ temporary: true }` places one that will be: the 🎧 listening mark
+ * (src/bridges/beeper.mjs, 2026-09-16), the only reaction the spine removes. A peer-spine mouth has
+ * no verb that removes, so a temporary mark is not placed there at all.
  *
  * `say()` IS THE SAME PLACEMENT FOR A LIMB THAT SAYS SOMETHING (2026-09-16) — /reply and /media;
  * and, by the ruling "every output of the spine comes through the mouth" (same day), /edit, the
@@ -241,18 +245,25 @@ export function makeOutbound({ bridge, bridgeOf = null, peerMouth = null, onLog 
     const out = {
       bridge: bridgeOf ? (bridgeOf(being, chatId) ?? bridge) : bridge,
       route: () => (peerMouth ? Promise.resolve().then(() => peerMouth.route(chatId, being)).catch((e) => { onLog(`mouth: could not decide the route for ${chatId} — posting locally: ${e?.message ?? e}`); return null; }) : null),
-      async react(msgId, emoji, keyOf, what = 'react') {
+      async react(msgId, emoji, keyOf, what = 'react', { remove = false, temporary = false } = {}) {
         const says = out.route();                         // null with no mouth wired — never awaited, so that path is untouched
         const mouthChat = says ? await says : null;
-        if (!mouthChat) return out.bridge.react?.(chatId, msgId, emoji);
+        if (!mouthChat) return remove ? out.bridge.unreact?.(chatId, msgId, emoji) : out.bridge.react?.(chatId, msgId, emoji);
         // The mouth's own refusals are logged by name where they happen; this line says what it cost.
         const who = mouthChat.connection ? `'${mouthChat.connection}'` : 'the peer';
+        // A TEMPORARY mark must come back off from the account that placed it, and a peer spine's link
+        // has no verb that removes a reaction (src/shell/mouth.mjs) — so it is not placed at all.
+        if (temporary && !mouthChat.bridge) {
+          onLog(`${what} ${being}/${chatId}: ${who} is saying this reply but the mouth link has no verb that takes a reaction back — no ${emoji} from either account, since it could never come off`);
+          return false;
+        }
         let r = null;
         try {
           const { msgKey, timestamp } = await keyOf();
-          r = await peerMouth.react?.(mouthChat, { msgKey, timestamp, emoji });
+          r = await peerMouth.react?.(mouthChat, { msgKey, timestamp, emoji, ...(remove ? { remove } : {}) });
         } catch (e) { onLog(`${what} ${being}/${chatId}: asking ${who} to react threw — ${e?.message ?? e}`); }
-        if (r?.ok) onLog(`${what} ${being}/${chatId}: ${who} is saying this reply and placed the ${emoji} on its own copy (its chat ${r.chatId})`);
+        if (remove) onLog(r?.ok ? `${what} ${being}/${chatId}: ${who} took the ${emoji} off its own copy (its chat ${r.chatId})` : `${what} ${being}/${chatId}: ${who} could not take the ${emoji} off its own copy (${r?.reason ?? 'no answer'}${r?.detail ? `: ${r.detail}` : ''})`);
+        else if (r?.ok) onLog(`${what} ${being}/${chatId}: ${who} is saying this reply and placed the ${emoji} on its own copy (its chat ${r.chatId})`);
         else onLog(`${what} ${being}/${chatId}: ${who} is saying this reply but could not place the ${emoji} (${r?.reason ?? 'no answer'}${r?.detail ? `: ${r.detail}` : ''}) — no reaction from this account either, it is not the one answering`);
         return r?.ok === true;
       },
