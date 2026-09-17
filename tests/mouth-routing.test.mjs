@@ -1600,17 +1600,27 @@ describe('the one placement takes a reaction back off, on the account that place
 
   // REGRESSION LOCK: no mouth ⇒ the connection's own bridge, by its own id, exactly as react() adds.
   it('NO mouth: the connection\'s own bridge places and removes it, and no message list is read', async () => {
-    for (const shape of [{ withMouth: false }, { mouthIsMember: false }]) {
-      const { ear, mouthBridge, peerMouth, earListed } = earAndMouth({ ...shape, earMessages: [NOTE_ON_EAR], mouthMessages: [NOTE_ON_MOUTH] });
-      const out = makeOutbound({ bridge: ear, peerMouth })(null, CHAT_ID);
-      const keyOf = out.keyOf(NOTE_ON_EAR.id, 'listening');
-      expect(await out.react(NOTE_ON_EAR.id, '🎧', keyOf, 'listening', { temporary: true })).toBe(true);
-      expect(await out.react(NOTE_ON_EAR.id, '🎧', keyOf, 'listening', { remove: true })).toBe(true);
-      expect(ear.reactions, JSON.stringify(shape)).toEqual([{ chatId: CHAT_ID, msgId: '7004', emoji: '🎧' }]);
-      expect(ear.unreactions).toEqual([{ chatId: CHAT_ID, msgId: '7004', emoji: '🎧' }]);
-      expect(mouthBridge.reactions).toEqual([]);
-      expect(earListed).toEqual([]);
-    }
+    const { ear, mouthBridge, peerMouth, earListed } = earAndMouth({ withMouth: false, earMessages: [NOTE_ON_EAR], mouthMessages: [NOTE_ON_MOUTH] });
+    const out = makeOutbound({ bridge: ear, peerMouth })(null, CHAT_ID);
+    const keyOf = out.keyOf(NOTE_ON_EAR.id, 'listening');
+    expect(await out.react(NOTE_ON_EAR.id, '🎧', keyOf, 'listening', { temporary: true })).toBe(true);
+    expect(await out.react(NOTE_ON_EAR.id, '🎧', keyOf, 'listening', { remove: true })).toBe(true);
+    expect(ear.reactions).toEqual([{ chatId: CHAT_ID, msgId: '7004', emoji: '🎧' }]);
+    expect(ear.unreactions).toEqual([{ chatId: CHAT_ID, msgId: '7004', emoji: '🎧' }]);
+    expect(mouthBridge.reactions).toEqual([]);
+    expect(earListed).toEqual([]);
+  });
+
+  // THE LIVE FAULT, node do, 2026-09-17: `reaction 🎧 by An → #2838 [Maria (Mom) Palma]`. The mouth was
+  // wired but not a member of that 1:1 chat, so route() found no room and the mark fell back to the ear.
+  it('a mouth that is NOT A MEMBER of the chat: no 🎧 from either account, and the log says why', async () => {
+    const logs = [];
+    const { ear, mouthBridge, peerMouth } = earAndMouth({ mouthIsMember: false, earMessages: [NOTE_ON_EAR], mouthMessages: [NOTE_ON_MOUTH] });
+    const out = makeOutbound({ bridge: ear, peerMouth, onLog: (m) => logs.push(m) })(null, CHAT_ID);
+    expect(await out.react(NOTE_ON_EAR.id, '🎧', out.keyOf(NOTE_ON_EAR.id, 'listening'), 'listening', { temporary: true })).toBe(false);
+    expect(ear.reactions).toEqual([]);
+    expect(mouthBridge.reactions).toEqual([]);
+    expect(logs.join('\n')).toMatch(/the mouth has no room in this chat — no 🎧 from either account/);
   });
 
   // THE FLOOR: a mouth that cannot find its copy places nothing, and the ear places nothing either.

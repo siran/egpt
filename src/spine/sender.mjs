@@ -248,6 +248,14 @@ export function makeOutbound({ bridge, bridgeOf = null, peerMouth = null, onLog 
       async react(msgId, emoji, keyOf, what = 'react', { remove = false, temporary = false } = {}) {
         const says = out.route();                         // null with no mouth wired — never awaited, so that path is untouched
         const mouthChat = says ? await says : null;
+        // A TEMPORARY mark where the mouth is a different account from the chat's holder but has no
+        // room here (not a member, or its route could not be decided) is not placed at all. Live on
+        // do, 2026-09-17: the 🎧 on voice notes in 1:1 chats Rodz is not in came from the operator's
+        // own account. A holder that IS the mouth, or a node with no mouth, marks from its own bridge.
+        if (!mouthChat && temporary && peerMouth?.mouthIsElsewhere?.(chatId, being)) {
+          onLog(`${what} ${being}/${chatId}: the mouth has no room in this chat — no ${emoji} from either account`);
+          return false;
+        }
         if (!mouthChat) return remove ? out.bridge.unreact?.(chatId, msgId, emoji) : out.bridge.react?.(chatId, msgId, emoji);
         // The mouth's own refusals are logged by name where they happen; this line says what it cost.
         const who = mouthChat.connection ? `'${mouthChat.connection}'` : 'the peer';
