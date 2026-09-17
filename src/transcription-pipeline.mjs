@@ -15,7 +15,9 @@
 // Per-note re-try from the top means a recovered remote is used again with no /restart.
 // onTransition fires ONLY when the winning engine changes (degrade or recover) — so a busy
 // voice-note chat doesn't flood Self. All side-effecting deps are injected (testable).
+import { readFile } from 'node:fs/promises';
 import { residentWhisperServer } from './tools/whisper-server.mjs';
+import { createDecodeOnce } from './tools/decode-once.mjs';
 
 export function buildTranscriptionPipeline({
   profile,
@@ -36,6 +38,7 @@ export function buildTranscriptionPipeline({
   const breaker = new Map();       // remote name -> downUntil (ms)
   const local = new Map();         // local name -> { server, transcribe, starting, error }
   const failReason = new Map();    // engine name -> last failure reason (surfaced to Self on fallback)
+  const decodeOnce = createDecodeOnce({ now });
   let lastWinner = null;
 
   async function tryRemote(eng, audioPath, log, meta) {
@@ -56,8 +59,14 @@ export function buildTranscriptionPipeline({
       breaker.delete(eng.name); failReason.delete(eng.name);     // healthy again
       return t || null;
     } catch (e) {
-      breaker.set(eng.name, now() + (eng.cooldown_ms ?? 30_000));
       failReason.set(eng.name, e?.message ?? String(e));
+      // A 413 refuses THIS file (over the worker's body cap), not the worker: no cooldown, so the
+      // notes behind a long video still reach it.
+      if (e?.status === 413) {
+        onLog(`pipeline: remote "${eng.name}" refused this file (${e.message}) — next rung, no cooldown`);
+        return null;
+      }
+      breaker.set(eng.name, now() + (eng.cooldown_ms ?? 30_000));
       onLog(`pipeline: remote "${eng.name}" failed (${e?.message ?? e}) — cooldown ${eng.cooldown_ms ?? 30_000}ms`);
       return null;
     }
@@ -127,7 +136,26 @@ export function buildTranscriptionPipeline({
     catch (e) { onLog(`pipeline: cli "${eng.name}" failed: ${e?.message ?? e}`); return null; }
   }
 
+  // ONE DECODE PER BYTES (src/tools/decode-once.mjs). Both connections, voice notes and videos all
+  // come through here, and the same note arrives once per connection whose account is in the chat.
+  // The decode writes into its own meta, which every caller sharing it copies into theirs. A file
+  // this process cannot read has no key: it walks the chain as before, and the engines say why.
+  // (The bytes live only inside the .then callback, so a long video is not held in memory for the
+  // whole decode.)
   async function transcribe(audioPath, cfg = {}, log = () => {}, meta = null) {
+    const once = await readFile(audioPath).then((bytes) => decodeOnce(bytes, () => {
+      const decoded = {};
+      return { result: walk(audioPath, cfg, log, decoded).then((transcript) => ({ transcript, meta: decoded })) };
+    }), () => null);
+    if (!once) return walk(audioPath, cfg, log, meta);
+    const { served, job } = once;
+    if (served) log(`transcribe: ${audioPath.split(/[\\/]/).pop()} served from an existing decode of the same bytes (${served})`);
+    const { transcript, meta: decoded } = await job.result;
+    if (meta) Object.assign(meta, decoded);
+    return transcript;
+  }
+
+  async function walk(audioPath, cfg, log, meta) {
     for (const eng of engines) {
       let t = null;
       if (eng.type === 'whisper-server-remote') t = await tryRemote(eng, audioPath, log, meta);

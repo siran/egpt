@@ -87,6 +87,42 @@ describe('media.save', () => {
     expect(txCalls).toHaveLength(1);                              // audio transcribed
   });
 
+  // VIDEOS ON THE SAME PATH AS VOICE NOTES (operator 2026-09-16). A voice note is transcribed only when
+  // resolveTranscriptionService(chatID).enabled (beeper.mjs); a video's audio was transcribed whatever
+  // the chat's verdict. Same resolver, same verdict, and the keyframes are not the transcriber's business.
+  describe('a video obeys the chat\'s transcription verdict, the one voice notes gate on', () => {
+    const video = { ...META, kind: 'video', mime: 'video/mp4', fileName: 'clip.mp4', localPath: '/tmp/clip.mp4' };
+    const build = (verdict) => {
+      let state = emptyState();
+      const io = { copyFile: async () => {}, mkdir: async () => {}, appendFile: async () => {} };
+      const seen = { asked: [], tx: 0 };
+      const media = createMedia({
+        contacts: createContacts({ loadState: async () => state, writeState: async (s) => { state = s; }, io }), io,
+        extractFrames: async (_p, opts) => [`${opts.outDir}/v-frame-01.jpg`],
+        transcribe: async () => { seen.tx++; return '(video) gol de Enciso'; },
+        resolveTranscriptionService: async (chatID) => { seen.asked.push(chatID); return verdict; },
+      });
+      return { media, seen };
+    };
+
+    it('transcription OFF for the chat: keyframes still extracted, the audio is not transcribed', async () => {
+      const { media, seen } = build({ enabled: false, postsBack: false, postsBackDelayMs: 0 });
+      const r = await media.save(video);
+      expect(seen.asked).toEqual(['!room:beeper.com']);
+      expect(seen.tx).toBe(0);
+      expect(r.transcript).toBe(null);
+      expect(r.framePaths).toHaveLength(1);
+    });
+
+    it('transcription ON for the chat: transcribed, as before', async () => {
+      const { media, seen } = build({ enabled: true, postsBack: false, postsBackDelayMs: 0 });
+      const r = await media.save(video);
+      expect(seen.asked).toEqual(['!room:beeper.com']);
+      expect(seen.tx).toBe(1);
+      expect(r.transcript).toBe('(video) gol de Enciso');
+    });
+  });
+
   it('swallows a copy failure → null (media must never block text)', async () => {
     let state = emptyState();
     const io = { copyFile: async () => { throw new Error('disk full'); }, mkdir: async () => {}, appendFile: async () => {} };
