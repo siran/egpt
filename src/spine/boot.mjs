@@ -2378,7 +2378,7 @@ export async function boot({
 
   // Persist incoming attachments into the chat's media/ folder + surface them to E.
   // For a video: keyframes (ffmpeg) + audio transcript (via the same chain) — Route A.
-  const media = createMedia({ contacts, io, transcribe: tx.transcribe, transcribeCfg: tx.cliCfg, onLog: (m) => log.line?.(`[media] ${m}`) });
+  const media = createMedia({ contacts, io, transcribe: tx.transcribe, resolveTranscriptionService: tx.resolveTranscriptionService, transcribeCfg: tx.cliCfg, onLog: (m) => log.line?.(`[media] ${m}`) });
   // radio relay (createRadioNoteRelay, above) piggybacks on the SAME onMedia callback to stash
   // a voice note's already-downloaded local path — see that function's header for why it needs
   // both this AND the spine's ev, and how the two are correlated. gate: lasso.gate — the SAME

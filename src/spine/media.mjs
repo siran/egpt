@@ -14,6 +14,7 @@ import { surfaceOf } from './identity.mjs';
 import { mediaFileName, mediaIndexLine } from '../media-save.mjs';
 import { extractKeyframes } from '../video-frames.mjs';
 import { transcribeAudioFile } from '../tools/transcribe.mjs';
+import { DEFAULT_SERVICE } from '../transcription-service.mjs';
 import { copyFile as fsCopyFile, mkdir as fsMkdir, appendFile as fsAppendFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -21,6 +22,7 @@ export function createMedia({
   contacts, surface = 'whatsapp',       // shared contact-resolver + fallback surface when a save's meta carries no network
   transcribeCfg = {},                   // whisper-cli profile (ffmpeg_command, command, model_path, language)
   transcribe = transcribeAudioFile,     // (path, cfg, log) -> transcript (reads video audio too)
+  resolveTranscriptionService = async () => DEFAULT_SERVICE,   // (chatID) -> { enabled, ... } — the per-chat verdict voice notes gate on
   extractFrames = extractKeyframes,     // (path, { ffmpeg, outDir, baseName, count, log }) -> [absolute frame paths]
   frameCount = 3,
   io = {}, onLog = () => {},
@@ -62,9 +64,13 @@ export function createMedia({
           let framePaths = [];
           try { framePaths = await extractFrames(dest, { ffmpeg, outDir: dir, baseName, count: frameCount, log: (x) => onLog(`video-frames: ${x}`) }); }
           catch (e) { onLog(`video frames ${meta.chatID}: ${e?.message ?? e}`); }
+          // The audio is transcribed only where the chat's verdict says HEARD — the same
+          // resolveTranscriptionService(chatID).enabled a voice note gates on. Keyframes are not gated.
           let transcript = null;
-          try { transcript = await transcribe(dest, transcribeCfg, (x) => onLog(`video-transcribe: ${x}`)); }
-          catch (e) { onLog(`video transcribe ${meta.chatID}: ${e?.message ?? e}`); }
+          try {
+            if ((await resolveTranscriptionService(meta.chatID)).enabled) transcript = await transcribe(dest, transcribeCfg, (x) => onLog(`video-transcribe: ${x}`));
+            else onLog(`video transcribe ${meta.chatID}: transcription service disabled for this chat — video audio not transcribed`);
+          } catch (e) { onLog(`video transcribe ${meta.chatID}: ${e?.message ?? e}`); }
           return { savedPath: dest, framePaths, transcript };
         }
         return dest;

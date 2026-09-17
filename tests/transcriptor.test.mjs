@@ -195,6 +195,186 @@ describe('transcriptor server — one decode at a time', () => {
   });
 });
 
+// A 413 REFUSES ONE FILE (operator 2026-09-16). The worker used to destroy the request the moment it
+// crossed the 32 MB cap, so its documented 413 was never written: the client saw a connection reset
+// ("fetch failed", ECONNRESET) - indistinguishable from a worker that is down.
+describe('transcriptor server — a body over the cap', () => {
+  it('is answered 413, not a connection reset, and the client error carries status 413; the next note is served', async () => {
+    const { calls, endpoint } = await startServer();
+    const big = join(dir, 'video.mp4');
+    writeFileSync(big, Buffer.alloc(32 * 1024 * 1024 + 1, 7));
+    const err = await transcribeViaEndpoint(big, { endpoint, keyB64: KEY }).catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toMatch(/413/);
+    expect(err.status).toBe(413);
+    expect(calls).toHaveLength(0);
+    expect(await transcribeViaEndpoint(audioPath, { endpoint, keyB64: KEY })).toBe('hola desde el worker');
+  });
+
+  // REGRESSION LOCK: every other refusal carries its status the same way.
+  it('an empty transcription carries status 422', async () => {
+    const { endpoint } = await startServer({ transcribe: async () => null });
+    const err = await transcribeViaEndpoint(audioPath, { endpoint, keyB64: KEY }).catch((e) => e);
+    expect(err.status).toBe(422);
+  });
+});
+
+// ONE DECODE PER BYTES (operator 2026-09-16). One note reaches dolly's worker from both nodes, and
+// from each node once per connection whose account is in the chat; the bytes are identical. On
+// 2026-09-15 the worker decoded one 22,740-byte note twice back to back (24.4 s + 10.3 s).
+describe('transcriptor server — the same bytes are decoded once', () => {
+  function gated() {
+    const g = { started: [], gates: [], inFlight: 0, maxInFlight: 0 };
+    g.transcribe = async (path, _cfg, _log, meta) => {
+      g.started.push(readFileSync(path, 'utf8'));
+      g.inFlight += 1; g.maxInFlight = Math.max(g.maxInFlight, g.inFlight);
+      try {
+        const t = await new Promise((resolve, reject) => g.gates.push({ resolve, reject }));
+        if (meta) meta.durationSec = 4.5;
+        return t;
+      } finally { g.inFlight -= 1; }
+    };
+    return g;
+  }
+  const until = async (cond, ms = 3000) => {
+    const end = Date.now() + ms;
+    while (!cond()) { if (Date.now() > end) throw new Error('timed out waiting'); await new Promise((r) => setTimeout(r, 5)); }
+  };
+  const post = (endpoint, tag) => {
+    const body = Buffer.from(tag); const ts = Date.now();
+    return fetch(`${endpoint}/v1/transcribe`, { method: 'POST', headers: { 'x-egpt-ts': String(ts), 'x-egpt-sig': signAudio(KEY, ts, body) }, body });
+  };
+  const queuedAt = (logs, n) => logs.some((m) => m.includes(`queue position ${n}`));
+  const served = (logs) => logs.filter((m) => /served from an existing decode/.test(m)).length;
+  const fileOf = (tag) => { const p = join(dir, `${tag}-${Math.random().toString(36).slice(2)}.ogg`); writeFileSync(p, tag); return p; };
+
+  it('bytes already QUEUED: the second request takes no queue slot, and both get the one decode\'s transcript and durationSec', async () => {
+    const g = gated(); const logs = [];
+    const { endpoint } = await startServer({ transcribe: g.transcribe, onLog: (m) => logs.push(m) });
+    const a = post(endpoint, 'A');
+    await until(() => g.started.length === 1);
+    const x1 = post(endpoint, 'X');
+    await until(() => queuedAt(logs, 1));
+    const x2 = post(endpoint, 'X');
+    await until(() => served(logs) === 1 || queuedAt(logs, 2));
+    expect(queuedAt(logs, 2)).toBe(false);                       // no slot of its own
+
+    g.gates[0].resolve('text A');
+    expect((await (await a).json()).transcript).toBe('text A');
+    await until(() => g.started.length === 2);
+    g.gates[1].resolve('text X');
+    const j1 = await (await x1).json();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(g.started).toEqual(['A', 'X']);                       // X decoded once
+    const j2 = await (await x2).json();
+    expect([j1.transcript, j2.transcript]).toEqual(['text X', 'text X']);
+    expect([j1.durationSec, j2.durationSec]).toEqual([4.5, 4.5]);
+    expect(g.maxInFlight).toBe(1);
+  });
+
+  it('bytes decoded a moment ago: answered from that result, without decoding', async () => {
+    const g = gated(); const logs = [];
+    const { endpoint } = await startServer({ transcribe: g.transcribe, onLog: (m) => logs.push(m) });
+    const x1 = post(endpoint, 'X');
+    await until(() => g.started.length === 1);
+    g.gates[0].resolve('text X');
+    expect((await (await x1).json()).transcript).toBe('text X');
+
+    const x2 = post(endpoint, 'X');
+    await until(() => served(logs) === 1 || g.started.length === 2);
+    expect(g.started).toEqual(['X']);
+    const r2 = await x2;
+    expect(r2.status).toBe(200);
+    expect(await r2.json()).toMatchObject({ ok: true, transcript: 'text X', durationSec: 4.5 });
+  });
+
+  it('an EMPTY result is not remembered: the same bytes are decoded again', async () => {
+    let n = 0;
+    const { endpoint } = await startServer({ transcribe: async () => (++n === 1 ? null : 'second try') });
+    expect((await post(endpoint, 'X')).status).toBe(422);
+    const r = await post(endpoint, 'X');
+    expect(r.status).toBe(200);
+    expect((await r.json()).transcript).toBe('second try');
+    expect(n).toBe(2);
+  });
+
+  // REGRESSION LOCK: FIFO order. A request joining the decode in flight does not reorder the queue.
+  it('different bytes keep their FIFO turns while a duplicate of the running decode joins it', async () => {
+    const g = gated(); const logs = [];
+    const { endpoint } = await startServer({ transcribe: g.transcribe, onLog: (m) => logs.push(m) });
+    const a = post(endpoint, 'A');
+    await until(() => g.started.length === 1);
+    const b = post(endpoint, 'B');
+    await until(() => queuedAt(logs, 1));
+    const a2 = post(endpoint, 'A');
+    await until(() => served(logs) === 1 || queuedAt(logs, 2));
+    const c = post(endpoint, 'C');
+    await until(() => queuedAt(logs, 2) && logs.filter((m) => m.includes('queue position')).length >= 2);
+
+    g.gates[0].resolve('text A');
+    expect((await (await a).json()).transcript).toBe('text A');
+    expect((await (await a2).json()).transcript).toBe('text A');
+    await until(() => g.started.length === 2);
+    g.gates[1].resolve('text B');
+    expect((await (await b).json()).transcript).toBe('text B');
+    await until(() => g.started.length === 3);
+    g.gates[2].resolve('text C');
+    expect((await (await c).json()).transcript).toBe('text C');
+    expect(g.started).toEqual(['A', 'B', 'C']);
+    expect(logs.filter((m) => m.includes('queue position')).map((m) => m.replace(/.* from \S+ /, ''))).toEqual(['waits — queue position 1', 'waits — queue position 2']);
+    expect(g.maxInFlight).toBe(1);
+  });
+
+  it('the first requester gives up while queued, but a duplicate still waits: the decode runs for it', async () => {
+    const g = gated(); const logs = [];
+    const { endpoint } = await startServer({ transcribe: g.transcribe, onLog: (m) => logs.push(m) });
+    const a = post(endpoint, 'A');
+    await until(() => g.started.length === 1);
+    const gaveUp = transcribeViaEndpoint(fileOf('X'), { endpoint, keyB64: KEY, timeoutMs: 400 }).catch((e) => e);
+    await until(() => queuedAt(logs, 1));
+    const x2 = post(endpoint, 'X');
+    await until(() => served(logs) === 1 || queuedAt(logs, 2));
+    expect((await gaveUp).message).toMatch(/timeout|abort/i);
+    await until(() => logs.some((m) => /left after \d+ms queued/.test(m)));
+
+    g.gates[0].resolve('text A');
+    expect((await a).status).toBe(200);
+    await until(() => g.started.length === 2);
+    g.gates[1].resolve('text X');
+    const r2 = await x2;
+    expect(r2.status).toBe(200);
+    expect((await r2.json()).transcript).toBe('text X');
+    expect(g.started).toEqual(['A', 'X']);
+  });
+
+  it('every requester of those bytes gives up while queued: the decode never runs, and the next arrival starts afresh', async () => {
+    const g = gated(); const logs = [];
+    const { endpoint } = await startServer({ transcribe: g.transcribe, onLog: (m) => logs.push(m) });
+    const a = post(endpoint, 'A');
+    await until(() => g.started.length === 1);
+    const x1 = transcribeViaEndpoint(fileOf('X'), { endpoint, keyB64: KEY, timeoutMs: 400 }).catch((e) => e);
+    await until(() => queuedAt(logs, 1));
+    const x2 = transcribeViaEndpoint(fileOf('X'), { endpoint, keyB64: KEY, timeoutMs: 400 }).catch((e) => e);
+    await until(() => served(logs) === 1 || queuedAt(logs, 2));
+    expect((await x1).message).toMatch(/timeout|abort/i);
+    expect((await x2).message).toMatch(/timeout|abort/i);
+    await until(() => logs.some((m) => /its decode will not run/.test(m)));
+
+    g.gates[0].resolve('text A');
+    expect((await a).status).toBe(200);
+    const c = post(endpoint, 'C');
+    await until(() => g.started.length === 2);
+    expect(g.started).toEqual(['A', 'C']);                       // X's turn was skipped
+    const x3 = post(endpoint, 'X');
+    g.gates[1].resolve('text C');
+    expect((await c).status).toBe(200);
+    await until(() => g.started.length === 3);
+    g.gates[2].resolve('text X');
+    expect((await (await x3).json()).transcript).toBe('text X');
+    expect(g.started).toEqual(['A', 'C', 'X']);
+  });
+});
+
 describe('makeRemoteFirstTranscriber (main-spine side)', () => {
   it('uses the worker when healthy; local is never called', async () => {
     const { endpoint } = await startServer();

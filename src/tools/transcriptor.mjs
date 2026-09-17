@@ -36,6 +36,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { keyFromString } from './bus-sign.mjs';
 import { transcribeAudioFile } from './transcribe.mjs';
+import { createDecodeOnce } from './decode-once.mjs';
 
 export const TRANSCRIPTOR_DEFAULT_PORT = 23390;
 const MAX_BODY_BYTES = 32 * 1024 * 1024;   // voice notes are <1MB; 32MB is a generous ceiling
@@ -78,8 +79,55 @@ export async function startTranscriptorServer({
   // behind `tail`; `waiting` counts the ones in flight or queued (a request's arrival position).
   // A caller that gives up while queued (its timeoutMs counts the wait) loses its turn: its
   // decode never starts.
+  //
+  // ONE DECODE PER BYTES (src/tools/decode-once.mjs). The same note arrives from both nodes, and from
+  // each node once per connection whose account is in the chat. A request whose bytes are already
+  // queued or decoding takes no turn of its own: it waits for that decode. Bytes decoded a moment ago
+  // are answered from that result. A queued decode is skipped only once EVERY request waiting for it
+  // has given up.
   let tail = Promise.resolve();
   let waiting = 0;
+  const decodeOnce = createDecodeOnce();
+
+  // One body's decode, queued behind `tail`. job.waiters counts the requests waiting for it; when the
+  // last of them leaves before its turn, job.cancel() settles it empty, so nothing joins it any more.
+  function enqueue(body, from, t0) {
+    const job = { waiters: 0, started: false, cancelled: false };
+    const position = waiting;
+    waiting += 1;
+    if (position > 0) onLog(`transcriptor: ${body.length}b from ${from} waits — queue position ${position}`);
+    const prev = tail;
+    let release;
+    tail = new Promise((r) => { release = r; });
+    job.result = new Promise((resolve, reject) => {
+      job.cancel = () => { job.cancelled = true; resolve(null); };
+      (async () => {
+        await prev;
+        if (job.cancelled) { release(); return null; }
+        job.started = true;
+        const waited = Date.now() - t0;
+        // Extension is irrelevant — ffmpeg sniffs the container from content.
+        const tmp = join(tmpdir(), `egpt-transcriptor-${randomBytes(8).toString('hex')}.audio`);
+        const t1 = Date.now();
+        try {
+          await writeFile(tmp, body);
+          const vmeta = {};
+          const transcript = await transcribe(tmp, audioCfg, onLog, vmeta);
+          if (!transcript) onLog(`transcriptor: transcription EMPTY (${body.length}b, waited ${waited}ms, decoded in ${Date.now() - t1}ms) — caller will fall back`);
+          else onLog(`transcriptor: ${body.length}b → ${transcript.length}ch for ${from} (waited ${waited}ms, decoded in ${Date.now() - t1}ms)`);
+          return { transcript, meta: vmeta };
+        } catch (e) {
+          onLog(`transcriptor: ERROR — ${e?.message ?? e}`);
+          throw e;
+        } finally {
+          waiting -= 1;
+          release();
+          unlink(tmp).catch(() => { /* tmp cleanup is best-effort */ });
+        }
+      })().then(resolve, reject);
+    });
+    return job;
+  }
 
   const server = createServer((req, res) => {
     const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
@@ -95,12 +143,15 @@ export async function startTranscriptorServer({
     let size = 0, overflow = false;
     req.on('data', (c) => {
       size += c.length;
-      if (size > MAX_BODY_BYTES) { overflow = true; req.destroy(); return; }
+      // Over the cap: answer 413 now and drain the rest unread. Destroying the request instead reset
+      // the connection before the 413 was written, so the caller saw a transport failure - a worker
+      // that looked down - rather than one file that is too big.
+      if (size > MAX_BODY_BYTES) { if (!overflow) json(413, { ok: false, error: 'body too large' }); overflow = true; return; }
       chunks.push(c);
     });
-    req.on('error', () => { /* destroyed on overflow / client drop — response below or never */ });
+    req.on('error', () => { /* client drop — response below or never */ });
     req.on('end', async () => {
-      if (overflow) return json(413, { ok: false, error: 'body too large' });
+      if (overflow) return;                                      // answered 413 when it crossed the cap
       const body = Buffer.concat(chunks);
       const ts = req.headers['x-egpt-ts'];
       const sig = req.headers['x-egpt-sig'];
@@ -110,46 +161,26 @@ export async function startTranscriptorServer({
       }
       const from = req.socket.remoteAddress;
       const t0 = Date.now();
-      const position = waiting;
-      waiting += 1;
-      if (position > 0) onLog(`transcriptor: ${body.length}b from ${from} waits — queue position ${position}`);
-      let started = false, left = false;
-      res.on('close', () => {
-        if (started || res.writableFinished) return;
-        left = true;
-        waiting -= 1;
-        onLog(`transcriptor: ${from} left after ${Date.now() - t0}ms queued — its decode will not run`);
-      });
-      const prev = tail;
-      let release;
-      tail = new Promise((r) => { release = r; });
-      await prev;
-      if (left) { release(); return; }
-      started = true;
-      const waited = Date.now() - t0;
-      // Extension is irrelevant — ffmpeg sniffs the container from content.
-      const tmp = join(tmpdir(), `egpt-transcriptor-${randomBytes(8).toString('hex')}.audio`);
-      const t1 = Date.now();
-      try {
-        await writeFile(tmp, body);
-        const vmeta = {};
-        const transcript = await transcribe(tmp, audioCfg, onLog, vmeta);
-        const ms = Date.now() - t0;
-        if (!transcript) {
-          onLog(`transcriptor: transcription EMPTY (${body.length}b, waited ${waited}ms, decoded in ${Date.now() - t1}ms) — caller will fall back`);
-          return json(422, { ok: false, error: 'transcription produced nothing', ms });
-        }
-        onLog(`transcriptor: ${body.length}b → ${transcript.length}ch for ${from} (waited ${waited}ms, decoded in ${Date.now() - t1}ms)`);
-        // durationSec rides back so the main spine can mark the voice note (#3).
-        return json(200, { ok: true, transcript, durationSec: vmeta.durationSec, ms });
-      } catch (e) {
-        onLog(`transcriptor: ERROR — ${e?.message ?? e}`);
-        return json(500, { ok: false, error: String(e?.message ?? e) });
-      } finally {
-        waiting -= 1;
-        release();
-        try { await unlink(tmp); } catch { /* tmp cleanup is best-effort */ }
+      const { served, job } = decodeOnce(body, () => enqueue(body, from, t0));
+      if (served) onLog(`transcriptor: ${body.length}b from ${from} served from an existing decode (${served === 'recent' ? 'a recent result' : 'already queued or decoding'})`);
+      if (served !== 'recent') {
+        job.waiters += 1;
+        res.on('close', () => {
+          if (job.started || res.writableFinished) return;
+          job.waiters -= 1;
+          if (job.waiters > 0) return onLog(`transcriptor: ${from} left after ${Date.now() - t0}ms queued — ${job.waiters} other request(s) still wait for the same bytes`);
+          job.cancel();
+          waiting -= 1;
+          onLog(`transcriptor: ${from} left after ${Date.now() - t0}ms queued — its decode will not run`);
+        });
       }
+      let decoded;
+      try { decoded = await job.result; } catch (e) { return json(500, { ok: false, error: String(e?.message ?? e) }); }
+      if (!decoded) return;                                      // every request for it left before its turn
+      const ms = Date.now() - t0;
+      if (!decoded.transcript) return json(422, { ok: false, error: 'transcription produced nothing', ms });
+      // durationSec rides back so the main spine can mark the voice note (#3).
+      return json(200, { ok: true, transcript: decoded.transcript, durationSec: decoded.meta.durationSec, ms });
     });
   });
 
@@ -184,7 +215,8 @@ export async function transcribeViaEndpoint(audioPath, { endpoint, keyB64, timeo
   });
   const j = await res.json().catch(() => ({}));
   if (!res.ok || !j.ok || !j.transcript) {
-    throw new Error(`worker ${res.status}: ${j.error ?? 'no transcript'}`);
+    // status rides on the error so the pipeline can tell a refused FILE (413) from a failing worker.
+    throw Object.assign(new Error(`worker ${res.status}: ${j.error ?? 'no transcript'}`), { status: res.status });
   }
   if (meta && Number.isFinite(j.durationSec)) meta.durationSec = j.durationSec;   // duration from the worker's WAV (#3)
   log(`transcribe: remote worker → ${j.transcript.length}ch in ${j.ms ?? '?'}ms`);
