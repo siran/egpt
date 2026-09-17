@@ -239,6 +239,34 @@ export function spliceYamlKey(src, mapPath, { from, to }) {
   return verifySplice(src.slice(0, start) + text + src.slice(end), expected, label);
 }
 
+// ── WHOLE-LINE geometry, shared by the two splices below that work in LINES rather than in node
+// ranges (remove and insert). One definition each, so "where does this entry's block end" has the
+// same answer whichever direction the edit goes.
+//
+// lineEndAt: just past the newline that ends the line containing `i`.
+// commentColAt: the column of a comment that is the ONLY thing on the line src[from..to), else -1.
+// contentEnd: just past a node's last CONTENT character — a node's own range runs on through the
+//   trailing comments up to the next key, so the end is the last content node's value end.
+const lineEndAt = (src, i) => { const n = src.indexOf('\n', i); return n === -1 ? src.length : n + 1; };
+const commentColAt = (src, from, to) => { const m = /^( *)#/.exec(src.slice(from, to)); return m ? m[1].length : -1; };
+const contentEnd = (node) => {
+  if (YAML.isPair(node)) return contentEnd(node.value ?? node.key);
+  if ((YAML.isMap(node) || YAML.isSeq(node)) && !node.flow && node.items.length) return contentEnd(node.items[node.items.length - 1]);
+  return node.range[1];
+};
+// Where `pair`'s own LINES end: the line its last content sits on (so an end-of-line comment goes
+// with it), plus the comment lines indented INSIDE the block (deeper than `col`, the column its key
+// sits at). A blank line, and a comment at the key's own column, describe what comes NEXT.
+const blockLinesEnd = (src, pair, col) => {
+  let end = lineEndAt(src, contentEnd(pair) - 1);
+  while (end < src.length) {
+    const next = lineEndAt(src, end);
+    if (!(commentColAt(src, end, next) > col)) break;
+    end = next;
+  }
+  return end;
+};
+
 // Remove the KEY `key` from the block mapping at `mapPath` ([] is the document root), as the entry
 // reads in the file: the comment lines directly above the key at its own column (what describes
 // it - YAML hands those same lines to the key as its commentBefore), the key's line, every line of
@@ -261,31 +289,79 @@ export function spliceYamlRemoveKey(src, mapPath, { key }) {
   if (!pair) throw new YamlSpliceRefusal(`refusing to remove ${label}: ${pathLabel(mapPath)} has no key ${JSON.stringify(key)}`);
 
   const lineStart = (i) => src.lastIndexOf('\n', i - 1) + 1;
-  const lineEnd = (i) => { const n = src.indexOf('\n', i); return n === -1 ? src.length : n + 1; };
-  const commentCol = (from, to) => { const m = /^( *)#/.exec(src.slice(from, to)); return m ? m[1].length : -1; };
-  const contentEnd = (node) => {
-    if (YAML.isPair(node)) return contentEnd(node.value ?? node.key);
-    if ((YAML.isMap(node) || YAML.isSeq(node)) && !node.flow && node.items.length) return contentEnd(node.items[node.items.length - 1]);
-    return node.range[1];
-  };
 
   let start = lineStart(pair.key.range[0]);
   const col = pair.key.range[0] - start;
   while (start > 0) {
     const prev = lineStart(start - 1);
-    if (commentCol(prev, start) !== col) break;
+    if (commentColAt(src, prev, start) !== col) break;
     start = prev;
   }
-  let end = lineEnd(contentEnd(pair) - 1);
-  while (end < src.length) {
-    const next = lineEnd(end);
-    if (!(commentCol(end, next) > col)) break;
-    end = next;
-  }
+  const end = blockLinesEnd(src, pair, col);
 
   const expected = doc.toJS();
   delete mapPath.reduce((o, k) => o[k], expected)[key];
   return verifySplice(src.slice(0, start) + src.slice(end), expected, label);
+}
+
+// ─── THE INSERTION: add ONE key to a block mapping, as the TEXT the caller wrote ─────────────
+//
+// The three splices above REPLACE a range; this one adds a key that is not there yet. That is new
+// text with an indentation and a place to live, not a range to replace - so the CALLER writes the
+// lines: its comment block, its alignment, its quoting, exactly as they are to read in the
+// operator's file. Nothing here is serialized from data, for the reason the splice header gives.
+//
+// It exists because without it a config ADDITION is hand-applied on every node, one node at a time
+// and forgotten on the other - the drift setup/migrate.mjs was written to end (operator
+// 2026-09-16: "nothing should be hand-applied, everything structural").
+//
+// `text` is the block AS IT WILL READ - comment lines, the key line, its value lines - ALREADY
+// indented for this map. It must parse ON ITS OWN to exactly the one key `key`, and every line of
+// it must sit at this map's column or deeper. A block indented for a different map is how an
+// insertion silently nests a being inside its neighbour, so that is refused, not fixed up.
+//
+// `after` names the sibling it goes behind; null (the default) means last. The point is the end of
+// that sibling's own LINES - its last content line, plus the comment lines indented inside it: the
+// SAME reading spliceYamlRemoveKey uses, so where one takes a block out is where the other puts one
+// back. A blank line, and a comment at the siblings' own column, describe what comes NEXT and stay
+// after the inserted block.
+//
+// Line endings are the file's own (CRLF on kg), nothing outside the inserted lines moves, and the
+// result must re-parse to the whole document plus exactly this one key.
+export function spliceYamlInsertKey(src, mapPath, { key, text, after = null }) {
+  const label = pathLabel([...mapPath, key]);
+  const doc = parseForSplice(src, label);
+  const map = mapPath.length ? doc.getIn(mapPath, true) : doc.contents;
+  if (!YAML.isMap(map)) throw new YamlSpliceRefusal(`refusing to insert ${label}: ${pathLabel(mapPath)} is not a mapping`);
+  if (map.flow) throw new YamlSpliceRefusal(`refusing to insert ${label}: ${pathLabel(mapPath)} is a flow mapping`);
+  const keyOf = (pair) => (YAML.isScalar(pair.key) ? pair.key.value : undefined);
+  if (map.items.some((p) => keyOf(p) === key)) {
+    throw new YamlSpliceRefusal(`refusing to insert ${label}: ${pathLabel(mapPath)} already has a key ${JSON.stringify(key)}`);
+  }
+  const sibling = after == null ? map.items[map.items.length - 1] : map.items.find((p) => keyOf(p) === after);
+  if (!sibling) throw new YamlSpliceRefusal(`refusing to insert ${label}: ${pathLabel(mapPath)} has no key ${JSON.stringify(after)} to insert after`);
+
+  const indent = blockIndent(map, src);
+  const lines = String(text).replace(/\r\n/g, '\n').replace(/\n+$/, '').split('\n');
+  const blockText = `${lines.join('\n')}\n`;
+  const blockDoc = YAML.parseDocument(blockText);
+  if (blockDoc.errors.length) throw new YamlSpliceRefusal(`refusing to insert ${label}: the text does not parse (${blockDoc.errors[0].message})`);
+  if (!YAML.isMap(blockDoc.contents) || blockDoc.contents.items.length !== 1 || keyOf(blockDoc.contents.items[0]) !== key) {
+    throw new YamlSpliceRefusal(`refusing to insert ${label}: the text must be exactly the one key ${JSON.stringify(key)}`);
+  }
+  const keyAt = blockDoc.contents.items[0].key.range[0];
+  const keyCol = keyAt - (blockText.lastIndexOf('\n', keyAt - 1) + 1);
+  if (keyCol !== indent || lines.some((l) => l.trim() && /^ */.exec(l)[0].length < indent)) {
+    throw new YamlSpliceRefusal(`refusing to insert ${label}: the text must be indented ${indent} spaces for ${pathLabel(mapPath)}, not ${keyCol}`);
+  }
+
+  const nl = src.includes('\r\n') ? '\r\n' : '\n';
+  const at = blockLinesEnd(src, sibling, indent);
+  const lead = at > 0 && src[at - 1] !== '\n' ? nl : '';
+  const expected = doc.toJS();
+  const parent = mapPath.reduce((o, k) => o[k], expected);
+  parent[key] = blockDoc.toJS()[key];
+  return verifySplice(src.slice(0, at) + lead + lines.join(nl) + nl + src.slice(at), expected, label);
 }
 
 // Per-sibling files live under ~/.egpt/config/agents/<name>.yaml (operator 2026-06-23).
