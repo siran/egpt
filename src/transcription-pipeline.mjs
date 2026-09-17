@@ -24,7 +24,7 @@
 // bridge's 🎧 listening mark hangs off it (src/bridges/beeper.mjs).
 import { readFile } from 'node:fs/promises';
 import { residentWhisperServer } from './tools/whisper-server.mjs';
-import { createDecodeOnce } from './tools/decode-once.mjs';
+import { createDecodeOnce, sha256Hex } from './tools/decode-once.mjs';
 
 export function buildTranscriptionPipeline({
   profile,
@@ -158,7 +158,7 @@ export function buildTranscriptionPipeline({
   // `onDecodeHere` (header) rides with the walk this call STARTS; a call that joins a running or
   // recent decode never passes it on, which is what makes the mark once per note per node.
   async function transcribe(audioPath, cfg = {}, log = () => {}, meta = null, onDecodeHere = null) {
-    const once = await readFile(audioPath).then((bytes) => decodeOnce(bytes, () => {
+    const once = await readFile(audioPath).then((bytes) => decodeOnce(sha256Hex(bytes), () => {
       const decoded = {};
       return { result: walk(audioPath, cfg, log, decoded, onDecodeHere).then((transcript) => ({ transcript, meta: decoded })) };
     }), () => null);

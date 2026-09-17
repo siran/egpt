@@ -24,37 +24,47 @@
 //
 // Protocol:
 //   GET  /v1/health                → 200 { ok, role: 'transcriptor' }   (no auth)
+//   GET  /v1/transcript/<sha256>   → 200 { ok, transcript, durationSec, ms }: the worker decoded those
+//        bytes, or is decoding them (the answer waits for that decode) · 404 { ok: false, error: 'unknown' }:
+//        send the audio · 401 bad/missing/stale signature. Signed like the POST, over the sha it asks
+//        about, so the audio never travels twice (operator 2026-09-17).
 //   POST /v1/transcribe  <bytes>   → 200 { ok, transcript, ms }
 //        headers: x-egpt-ts (epoch ms), x-egpt-sig (base64url HMAC)
 //        401 bad/missing/stale signature · 413 too big · 422 transcription
 //        produced nothing (caller falls back to local whisper)
 
 import { createServer } from 'node:http';
-import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFile, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { keyFromString } from './bus-sign.mjs';
 import { transcribeAudioFile } from './transcribe.mjs';
-import { createDecodeOnce } from './decode-once.mjs';
+import { createDecodeOnce, fileStore, sha256Hex } from './decode-once.mjs';
 
 export const TRANSCRIPTOR_DEFAULT_PORT = 23390;
 const MAX_BODY_BYTES = 32 * 1024 * 1024;   // voice notes are <1MB; 32MB is a generous ceiling
 const SIG_MAX_AGE_MS = 60_000;
 const CLIENT_TIMEOUT_MS = 45_000;          // GPU whisper is seconds; 45s covers a long note
+const MEMORY_FILE = 'transcriptor-decoded.json';   // the worker's decoded transcripts, in the node's state/
 
 // ── signing (shared by client + server; exported for tests) ──────────
 export function signAudio(keyB64, tsMs, bodyBytes) {
-  const bodyHash = createHash('sha256').update(bodyBytes).digest('hex');
+  return _signSha(keyB64, tsMs, sha256Hex(bodyBytes));
+}
+
+// The one HMAC, over `${ts}.${sha256(audio)}`. A POST signs the audio it carries; the lookup carries no
+// audio and signs the sha it asks about, which is the same signature.
+function _signSha(keyB64, tsMs, sha) {
   return createHmac('sha256', Buffer.from(keyFromString(keyB64)))
-    .update(`${tsMs}.${bodyHash}`)
+    .update(`${tsMs}.${sha}`)
     .digest('base64url');
 }
 
-function _sigOk(keyB64, tsMs, bodyBytes, sig) {
+function _sigOk(keyB64, tsMs, sha, sig) {
   if (!sig || !tsMs) return false;
   if (Math.abs(Date.now() - Number(tsMs)) > SIG_MAX_AGE_MS) return false;
-  const expect = Buffer.from(signAudio(keyB64, tsMs, bodyBytes));
+  const expect = Buffer.from(_signSha(keyB64, tsMs, sha));
   const got = Buffer.from(String(sig));
   return expect.length === got.length && timingSafeEqual(expect, got);
 }
@@ -69,6 +79,7 @@ export async function startTranscriptorServer({
   keyB64,
   audioCfg = {},
   transcribe = transcribeAudioFile,
+  stateDir = null,                          // the node's state/ folder: where the memory of decoded transcripts lives
   onLog = () => {},
 } = {}) {
   if (!keyB64) throw new Error('startTranscriptorServer: keyB64 (bus.key) is required');
@@ -85,9 +96,13 @@ export async function startTranscriptorServer({
   // queued or decoding takes no turn of its own: it waits for that decode. Bytes decoded a moment ago
   // are answered from that result. A queued decode is skipped only once EVERY request waiting for it
   // has given up.
+  //
+  // THAT MEMORY OUTLIVES THE WORKER (operator 2026-09-17). With the node's state/ folder it is kept in
+  // one file there (decode-once.mjs owns its bounds), so a node catching up after sleep or a restart is
+  // answered without a decode, and a lookup (GET /v1/transcript/<sha256>) answers without the audio.
   let tail = Promise.resolve();
   let waiting = 0;
-  const decodeOnce = createDecodeOnce();
+  const decodeOnce = createDecodeOnce({ store: stateDir ? fileStore(join(stateDir, MEMORY_FILE), (m) => onLog(`transcriptor: ${m}`)) : null });
 
   // One body's decode, queued behind `tail`. job.waiters counts the requests waiting for it; when the
   // last of them leaves before its turn, job.cancel() settles it empty, so nothing joins it any more.
@@ -131,9 +146,51 @@ export async function startTranscriptorServer({
 
   const server = createServer((req, res) => {
     const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
+    const from = req.socket.remoteAddress;
+
+    // Answers a request with the decode it is served by. While that decode is still queued the request
+    // holds a claim on it; when the last claim leaves before its turn, the decode never runs.
+    const answer = async (served, job, t0) => {
+      if (served !== 'recent') {
+        job.waiters += 1;
+        res.on('close', () => {
+          if (job.started || res.writableFinished) return;
+          job.waiters -= 1;
+          if (job.waiters > 0) return onLog(`transcriptor: ${from} left after ${Date.now() - t0}ms queued — ${job.waiters} other request(s) still wait for the same bytes`);
+          job.cancel();
+          waiting -= 1;
+          onLog(`transcriptor: ${from} left after ${Date.now() - t0}ms queued — its decode will not run`);
+        });
+      }
+      let decoded;
+      try { decoded = await job.result; } catch (e) { return json(500, { ok: false, error: String(e?.message ?? e) }); }
+      if (!decoded) return;                                      // every request for it left before its turn
+      const ms = Date.now() - t0;
+      if (!decoded.transcript) return json(422, { ok: false, error: 'transcription produced nothing', ms });
+      // durationSec rides back so the main spine can mark the voice note (#3).
+      return json(200, { ok: true, transcript: decoded.transcript, durationSec: decoded.meta.durationSec, ms });
+    };
 
     if (req.method === 'GET' && req.url === '/v1/health') {
       return json(200, { ok: true, role: 'transcriptor' });
+    }
+    // THE HANDSHAKE (operator 2026-09-17): "do you have this sha?" A sha this worker has decoded, or is
+    // decoding, is answered with that transcript and no audio travels; an unknown one is answered 404,
+    // and the caller POSTs the audio. decode-once decides which.
+    const lookup = req.method === 'GET' ? /^\/v1\/transcript\/([0-9a-f]{64})$/.exec(req.url) : null;
+    if (lookup) {
+      const sha = lookup[1];
+      if (!_sigOk(keyB64, req.headers['x-egpt-ts'], sha, req.headers['x-egpt-sig'])) {
+        onLog(`transcriptor: REJECTED unsigned/stale lookup from ${from}`);
+        return json(401, { ok: false, error: 'bad signature' });
+      }
+      const { served, job } = decodeOnce(sha);
+      if (!served) {
+        onLog(`transcriptor: lookup ${sha.slice(0, 12)} from ${from} unknown — the audio follows`);
+        return json(404, { ok: false, error: 'unknown' });
+      }
+      onLog(`transcriptor: lookup ${sha.slice(0, 12)} from ${from} served from an existing decode (${served === 'recent' ? 'a recent result' : 'already queued or decoding'}) — nothing uploaded`);
+      return answer(served, job, Date.now());
     }
     if (req.method !== 'POST' || req.url !== '/v1/transcribe') {
       return json(404, { ok: false, error: 'not found' });
@@ -153,34 +210,17 @@ export async function startTranscriptorServer({
     req.on('end', async () => {
       if (overflow) return;                                      // answered 413 when it crossed the cap
       const body = Buffer.concat(chunks);
+      const sha = sha256Hex(body);
       const ts = req.headers['x-egpt-ts'];
       const sig = req.headers['x-egpt-sig'];
-      if (!_sigOk(keyB64, ts, body, sig)) {
+      if (!_sigOk(keyB64, ts, sha, sig)) {
         onLog(`transcriptor: REJECTED unsigned/stale request from ${req.socket.remoteAddress} (${body.length}b)`);
         return json(401, { ok: false, error: 'bad signature' });
       }
-      const from = req.socket.remoteAddress;
       const t0 = Date.now();
-      const { served, job } = decodeOnce(body, () => enqueue(body, from, t0));
+      const { served, job } = decodeOnce(sha, () => enqueue(body, from, t0));
       if (served) onLog(`transcriptor: ${body.length}b from ${from} served from an existing decode (${served === 'recent' ? 'a recent result' : 'already queued or decoding'})`);
-      if (served !== 'recent') {
-        job.waiters += 1;
-        res.on('close', () => {
-          if (job.started || res.writableFinished) return;
-          job.waiters -= 1;
-          if (job.waiters > 0) return onLog(`transcriptor: ${from} left after ${Date.now() - t0}ms queued — ${job.waiters} other request(s) still wait for the same bytes`);
-          job.cancel();
-          waiting -= 1;
-          onLog(`transcriptor: ${from} left after ${Date.now() - t0}ms queued — its decode will not run`);
-        });
-      }
-      let decoded;
-      try { decoded = await job.result; } catch (e) { return json(500, { ok: false, error: String(e?.message ?? e) }); }
-      if (!decoded) return;                                      // every request for it left before its turn
-      const ms = Date.now() - t0;
-      if (!decoded.transcript) return json(422, { ok: false, error: 'transcription produced nothing', ms });
-      // durationSec rides back so the main spine can mark the voice note (#3).
-      return json(200, { ok: true, transcript: decoded.transcript, durationSec: decoded.meta.durationSec, ms });
+      return answer(served, job, t0);
     });
   });
 
@@ -200,26 +240,39 @@ export async function startTranscriptorServer({
 // POST one audio file to a worker. Returns the transcript string.
 // Throws on transport/auth/server errors and on empty transcription —
 // every throw is the wrapper's signal to fall back to local whisper.
+//
+// HANDSHAKE FIRST (operator 2026-09-17): "the initial request is handshake of 'do you have this sha?': if
+// no then 'sending audio', if yes then 'response is transcript'". A lookup that is not a transcript (the
+// worker's 404 unknown, an older worker's 404 not found, any failure) reads as unknown and the audio is
+// POSTed as before, so a lookup never costs the transcript. One timeout covers both requests.
 export async function transcribeViaEndpoint(audioPath, { endpoint, keyB64, timeoutMs = CLIENT_TIMEOUT_MS }, log = () => {}, meta = null) {
   const body = await readFile(audioPath);
-  const ts = Date.now();
-  const res = await fetch(`${endpoint.replace(/\/+$/, '')}/v1/transcribe`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/octet-stream',
-      'x-egpt-ts': String(ts),
-      'x-egpt-sig': signAudio(keyB64, ts, body),
-    },
-    body,
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  const j = await res.json().catch(() => ({}));
-  if (!res.ok || !j.ok || !j.transcript) {
-    // status rides on the error so the pipeline can tell a refused FILE (413) from a failing worker.
-    throw Object.assign(new Error(`worker ${res.status}: ${j.error ?? 'no transcript'}`), { status: res.status });
+  const sha = sha256Hex(body);
+  const url = endpoint.replace(/\/+$/, '');
+  const signal = AbortSignal.timeout(timeoutMs);
+  const signed = () => { const ts = Date.now(); return { 'x-egpt-ts': String(ts), 'x-egpt-sig': _signSha(keyB64, ts, sha) }; };
+  const known = await fetch(`${url}/v1/transcript/${sha}`, { headers: signed(), signal })
+    .then(async (r) => { const k = await r.json(); return r.ok && k.ok && k.transcript ? k : null; })
+    .catch(() => null);
+  let j = known;
+  if (!j) {
+    const res = await fetch(`${url}/v1/transcribe`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        ...signed(),
+      },
+      body,
+      signal,
+    });
+    j = await res.json().catch(() => ({}));
+    if (!res.ok || !j.ok || !j.transcript) {
+      // status rides on the error so the pipeline can tell a refused FILE (413) from a failing worker.
+      throw Object.assign(new Error(`worker ${res.status}: ${j.error ?? 'no transcript'}`), { status: res.status });
+    }
   }
   if (meta && Number.isFinite(j.durationSec)) meta.durationSec = j.durationSec;   // duration from the worker's WAV (#3)
-  log(`transcribe: remote worker → ${j.transcript.length}ch in ${j.ms ?? '?'}ms`);
+  log(`transcribe: remote worker → ${j.transcript.length}ch in ${j.ms ?? '?'}ms${known ? ' (it knew these bytes: nothing uploaded)' : ''}`);
   return j.transcript;
 }
 

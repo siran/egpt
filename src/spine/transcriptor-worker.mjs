@@ -94,6 +94,7 @@ export function createTranscriptorWorker({
   startTranscriptorServer = realStartTranscriptorServer,
   setTimeout: setTimeoutFn = globalThis.setTimeout,       // the bind retry's timer seams
   clearTimeout: clearTimeoutFn = globalThis.clearTimeout,
+  stateDir = null,                                        // EGPT_HOME/state: the endpoint keeps its memory of decoded transcripts there
   onLog = () => {},
 } = {}) {
   let server = null, whisper = null, closed = false;
@@ -158,7 +159,7 @@ export function createTranscriptorWorker({
         if (closed) { whisper.stop(); return; }   // stopped mid-start
         transcribe = makeWhisperServerTranscriber({ url: whisper.url, ffmpeg: audioCfg.ffmpeg_command, language: audioCfg.language });
       }
-      const s = await listen({ port, bind, keyB64, audioCfg, transcribe, onLog });
+      const s = await listen({ port, bind, keyB64, audioCfg, transcribe, stateDir, onLog });
       if (!s) return;                                        // stopped during a bind retry (stop() already stopped whisper)
       if (closed) { s.close(); whisper?.stop(); return; }   // stopped mid-start
       server = s;

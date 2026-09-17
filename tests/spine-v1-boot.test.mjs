@@ -1094,6 +1094,7 @@ describe('boot() — transcriptor worker role', () => {
     expect(captured).toHaveLength(1);                                       // REPRODUCE: pre-port this was [] (worker never started)
     expect(captured[0]).toMatchObject({ port: 23390, bind: '0.0.0.0', keyB64: 'BUSKEY' });
     expect(captured[0].transcribe).toBeUndefined();                        // whisper-cli per-note
+    expect(captured[0].stateDir).toBe(join(tmpHome, 'state'));             // the worker's decode memory lives in this node's state/
     app.stop();
   });
 
