@@ -9,7 +9,7 @@
 // the bytes are.
 import { describe, it, expect } from 'vitest';
 import * as YAML from 'yaml';
-import { spliceYamlScalar, spliceYamlKey, spliceYamlRemoveKey, YamlSpliceRefusal } from '../src/tools/config-io.mjs';
+import { spliceYamlScalar, spliceYamlKey, spliceYamlRemoveKey, spliceYamlInsertKey, YamlSpliceRefusal } from '../src/tools/config-io.mjs';
 
 const FIXTURE = `# config.yaml — kg (fixture), the operator's rulings live in comments like these
 transcription_service:
@@ -236,5 +236,124 @@ describe('spliceYamlRemoveKey', () => {
 
   it('refuses YAML that does not parse', () => {
     expect(() => spliceYamlRemoveKey('a: [1, 2\n', [], { key: 'a' })).toThrow(/does not parse/);
+  });
+});
+
+// spliceYamlInsertKey — the one splice that ADDS. The caller hands it the block's own TEXT, already
+// indented for the map; this asserts the file comes back byte-identical except exactly those lines,
+// in exactly the place asked for, and that a block that does not belong is refused rather than
+// fixed up.
+describe('spliceYamlInsertKey', () => {
+  // kg's real `agents:` shape: the persona's block ends with a trailing end-of-line comment AND a
+  // continuation comment line indented inside it, then a BLANK line, then the comment block that
+  // describes the NEXT being. A new sibling goes after the continuation comment, before the blank.
+  const KG = [
+    '# config.yaml - kg (fixture)',
+    'agents:',
+    '  egpt:',
+    '    configuration: sonnet-default # config/agents/sonnet-default.yaml',
+    '    handles: [ e, egpt, ekg ]',
+    '    default: true',
+    '    conversation_defaults:',
+    '      access_level: sandbox',
+    '      verbose_thinking: true # this tier outranks the brain def,',
+    '      # and stays on for every conversation on this node',
+    '',
+    '  # KING KEN - the operator\'s second being',
+    '  ken:',
+    '    configuration: opus-xhigh',
+    '    handles: [ ken ]',
+    '',
+  ].join('\n');
+  const BLOCK = [
+    '  # E+ - E\'s own voice on a bigger model',
+    '  eplus:',
+    '    configuration: opus-high # config/agents/opus-high.yaml',
+    '    handles: [ "+", "e+" ] # quoted: bare + and e+ are not plain YAML scalars',
+    '    conversation_defaults:',
+    '      allowed_users: [ "1234" ]',
+  ].join('\n');
+
+  it('inserts after a NAMED sibling: every other byte is identical, and the block lands after that sibling\'s trailing comment line, before the blank line and the next being\'s comment', () => {
+    const out = spliceYamlInsertKey(KG, ['agents'], { key: 'eplus', text: BLOCK, after: 'egpt' });
+    expect(out).toBe(KG.replace('\n\n  # KING KEN', `\n${BLOCK}\n\n  # KING KEN`));
+    expect(Object.keys(YAML.parse(out).agents)).toEqual(['egpt', 'eplus', 'ken']);
+    expect(YAML.parse(out).agents.eplus.handles).toEqual(['+', 'e+']);
+    expect(commentsOf(out)).toEqual([...commentsOf(KG).slice(0, 4), ...commentsOf(BLOCK), ...commentsOf(KG).slice(4)]);
+  });
+
+  it('`after` omitted means LAST', () => {
+    const out = spliceYamlInsertKey(KG, ['agents'], { key: 'eplus', text: BLOCK });
+    expect(out).toBe(`${KG.replace(/\n$/, '')}\n${BLOCK}\n`);
+    expect(Object.keys(YAML.parse(out).agents)).toEqual(['egpt', 'ken', 'eplus']);
+  });
+
+  it('LAST, when the map\'s last entry ends in a trailing comment: the end-of-line comment and the comment lines indented inside the block stay with it', () => {
+    const src = `${KG.replace(/\n$/, '')}\n    mode: mention # never unaddressed\n    # …not even when the operator is talking to someone else\n`;
+    expect(spliceYamlInsertKey(src, ['agents'], { key: 'eplus', text: BLOCK })).toBe(`${src}${BLOCK}\n`);
+  });
+
+  it('keeps CRLF line endings - the live kg config is CRLF - whatever the caller\'s text uses', () => {
+    const crlf = (s) => s.replace(/\n/g, '\r\n');
+    const expected = crlf(KG.replace('\n\n  # KING KEN', `\n${BLOCK}\n\n  # KING KEN`));
+    expect(spliceYamlInsertKey(crlf(KG), ['agents'], { key: 'eplus', text: BLOCK, after: 'egpt' })).toBe(expected);
+    expect(spliceYamlInsertKey(crlf(KG), ['agents'], { key: 'eplus', text: crlf(BLOCK), after: 'egpt' })).toBe(expected);
+  });
+
+  it('inserts at the document ROOT, and after a last entry with no trailing newline', () => {
+    expect(spliceYamlInsertKey('a: 1 # one\nb: 2\n', [], { key: 'c', text: 'c: 3 # three', after: 'a' }))
+      .toBe('a: 1 # one\nc: 3 # three\nb: 2\n');
+    expect(spliceYamlInsertKey('a: 1\nb:\n  c: 2', [], { key: 'd', text: 'd: 4' })).toBe('a: 1\nb:\n  c: 2\nd: 4\n');
+  });
+
+  it('REFUSES by name when the key is already there - never two blocks of one name', () => {
+    let err;
+    try { spliceYamlInsertKey(KG, ['agents'], { key: 'ken', text: '  ken:\n    configuration: opus-high' }); } catch (e) { err = e; }
+    expect(err).toBeInstanceOf(YamlSpliceRefusal);
+    expect(err.message).toMatch(/agents\.ken: agents already has a key "ken"/);
+  });
+
+  it('refuses when the map is missing, is not a mapping, or is a flow mapping', () => {
+    expect(() => spliceYamlInsertKey(KG, ['siblings'], { key: 'eplus', text: '  eplus: 1' }))
+      .toThrow(/siblings\.eplus: siblings is not a mapping/);
+    expect(() => spliceYamlInsertKey(KG, ['agents', 'ken', 'handles'], { key: 'eplus', text: '  eplus: 1' }))
+      .toThrow(/handles is not a mapping/);
+    expect(() => spliceYamlInsertKey('a: { x: 1 }\n', ['a'], { key: 'y', text: 'y: 2' }))
+      .toThrow(/a\.y: a is a flow mapping/);
+  });
+
+  it('refuses when the sibling to insert after does not exist', () => {
+    expect(() => spliceYamlInsertKey(KG, ['agents'], { key: 'eplus', text: BLOCK, after: 'gauss' }))
+      .toThrow(/agents\.eplus: agents has no key "gauss" to insert after/);
+  });
+
+  it('refuses text that is not exactly the one key: two keys, a different key, or unparseable', () => {
+    expect(() => spliceYamlInsertKey(KG, ['agents'], { key: 'eplus', text: '  eplus: 1\n  eminus: 2' }))
+      .toThrow(/agents\.eplus: the text must be exactly the one key "eplus"/);
+    expect(() => spliceYamlInsertKey(KG, ['agents'], { key: 'eplus', text: '  eminus: 2' }))
+      .toThrow(/the text must be exactly the one key "eplus"/);
+    expect(() => spliceYamlInsertKey(KG, ['agents'], { key: 'eplus', text: '  eplus: [ 1, 2' }))
+      .toThrow(/agents\.eplus: the text does not parse/);
+  });
+
+  it('refuses text indented for a DIFFERENT map - the way an insertion nests a being inside its neighbour', () => {
+    expect(() => spliceYamlInsertKey(KG, ['agents'], { key: 'eplus', text: 'eplus:\n  configuration: opus-high' }))
+      .toThrow(/agents\.eplus: the text must be indented 2 spaces for agents, not 0/);
+    expect(() => spliceYamlInsertKey(KG, ['agents'], { key: 'eplus', text: '    eplus:\n      configuration: opus-high' }))
+      .toThrow(/the text must be indented 2 spaces for agents, not 4/);
+    // The key is at the right column but a COMMENT line above it is not.
+    expect(() => spliceYamlInsertKey(KG, ['agents'], { key: 'eplus', text: '# E+\n  eplus: 1' }))
+      .toThrow(/the text must be indented 2 spaces for agents/);
+  });
+
+  it('refuses rather than write a result that re-parses to anything but the document plus that key', () => {
+    // A duplicate key ONE LEVEL DOWN: the text is one key, indented right, and still lands a
+    // document the caller did not ask for.
+    expect(() => spliceYamlInsertKey('a:\n  x: 1\n', ['a'], { key: 'y', text: '  y:\n    q: 1\n    q: 2' }))
+      .toThrow(YamlSpliceRefusal);
+  });
+
+  it('refuses YAML that does not parse', () => {
+    expect(() => spliceYamlInsertKey('a: [1, 2\n', [], { key: 'b', text: 'b: 1' })).toThrow(/does not parse/);
   });
 });

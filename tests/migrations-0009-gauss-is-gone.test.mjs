@@ -21,7 +21,10 @@ const KG_BEFORE = [
   '  egpt:',
   '    configuration: sonnet-default',
   '    handles: [ e ]',
-  '    default: true',
+  // No `default: true`: this miniature declares no persona, which keeps the LATER migrations that
+  // act on the persona (0011, E+) reading it as "not my node" instead of refusing over a profile
+  // this fixture never meant to describe - a refusal stops the chain and would fail the runner test
+  // below for reasons that have nothing to do with gauss.
   '  ken:',
   '    configuration: opus-xhigh # config/agents/opus-xhigh.yaml',
   '    personality: ken',
