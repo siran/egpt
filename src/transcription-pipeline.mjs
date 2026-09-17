@@ -9,11 +9,13 @@
 //   whisper-server-local  — resident whisper.cpp server. LAZY-spawned the first time it's
 //                           reached (i.e. an earlier engine failed); resident after. While
 //                           it warms, this engine "fails" and the chain falls through.
-//   whisper-cli           — per-note binary spawn; the always-available floor.
+//   whisper-cli           — per-note binary spawn; the floor — EXCEPT while a resident
+//                           whisper-server is serving on this node (see tryCli).
 //
 // Per-note re-try from the top means a recovered remote is used again with no /restart.
 // onTransition fires ONLY when the winning engine changes (degrade or recover) — so a busy
 // voice-note chat doesn't flood Self. All side-effecting deps are injected (testable).
+import { residentWhisperServer } from './tools/whisper-server.mjs';
 
 export function buildTranscriptionPipeline({
   profile,
@@ -22,6 +24,7 @@ export function buildTranscriptionPipeline({
   startWhisperServer,             // async ({command, model, host, port, language, extraArgs, antiRepetition, onLog}) -> {url, stop}
   makeWhisperServerTranscriber,   // ({url, ffmpeg, language}) -> (audioPath, cfg, log, meta) -> transcript
   cli,                            // transcribeAudioFile(audioPath, cfg, log, meta) -> transcript
+  residentServing = residentWhisperServer,   // () -> {url} of a whisper-server serving in this process, or null
   now = () => Date.now(),
   onTransition = () => {},        // ({from, to, recovered}) -> void
   onLog = () => {},
@@ -106,7 +109,20 @@ export function buildTranscriptionPipeline({
     }
   }
 
+  // ONE MODEL PER NODE (dolly, 2026-09-15). whisper-cli loads its OWN model per note. When the
+  // rungs above failed while a resident whisper-server still held its model — do's worker rung
+  // was down, the WhisperServer service's large-v3 was loaded — every note spawned a second
+  // model beside it, and the 15.9 GB box ran out of memory. While a resident server is serving
+  // (this pipeline's own local engine, or any server this process started or adopted), the cli
+  // rung DECLINES, loudly, instead. It still runs when none is serving.
   async function tryCli(eng, audioPath, log, meta) {
+    const own = [...local.values()].find((h) => h.server?.isAlive?.());
+    const resident = own ? { url: own.server.url } : residentServing();
+    if (resident) {
+      failReason.set(eng.name, `declined: a resident whisper-server is serving at ${resident.url}`);
+      onLog(`!! pipeline: cli "${eng.name}" DECLINED — a resident whisper-server is serving at ${resident.url} on this node, and whisper-cli would load a second model beside it. This note stays untranscribed; the rung above it is what failed.`);
+      return null;
+    }
     try { return (await cli(audioPath, eng, log, meta)) || null; }
     catch (e) { onLog(`pipeline: cli "${eng.name}" failed: ${e?.message ?? e}`); return null; }
   }

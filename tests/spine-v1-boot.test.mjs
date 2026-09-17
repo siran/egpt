@@ -1009,10 +1009,41 @@ describe('boot() — stray whisper-server reap', () => {
       io: memIo(), ingest: true,                                            // real-node flag → the reap side effect runs
       spawn: () => ({ on(ev, cb) { if (ev === 'exit') cb(0); return this; } }),
       reapPort: (port) => { reaped.push(port); return 1; },                 // fake killer — observe, never taskkill
+      startWhisperServer: async () => ({ url: 'http://127.0.0.1:8089', isAlive: () => false, stop() {} }),   // the adopt-only watch — never a real probe
       now: () => Date.UTC(2026, 5, 29, 14, 5), tickMs: 0, log: { line: () => {} },
     });
     expect(reaped).toEqual([8089]);   // REPRODUCE: without the boot reap this is [] (never called)
     app.stop();
+  });
+
+  // ── dolly, 2026-09-16: the reap "killed" the WhisperServer service's process on every boot ──
+  // It now carries the stray-whisper guard (a service's whisper-server is never a stray), and
+  // boot watches the port adopt-only so whatever still serves there is known to the cli rung.
+  it('wiring: the stray reap carries the whisper guard, and boot WATCHES the port adopt-only — never a spawn; stop() ends the watch', async () => {
+    const { isStrayWhisperServer } = await import('../src/tools/whisper-server.mjs');
+    const { start } = fakeStart();
+    let state = seedMode(emptyState(), 'on');
+    const config = { whatsapp: {}, node_name: 'kg', ...profile({ fallback_order: ['remote', 'cli'] }) };
+    const reaps = [], starts = [];
+    let watchStopped = 0;
+    const app = await boot({
+      readConfig: () => config, startBridge: start, makeSession: fakeSession,
+      loadState: async () => state, writeState: async (s) => { state = s; },
+      io: memIo(), ingest: true,
+      spawn: () => ({ on(ev, cb) { if (ev === 'exit') cb(0); return this; } }),
+      reapPort: (port, _log, opts) => { reaps.push({ port, opts }); return 0; },
+      startWhisperServer: async (opts) => { starts.push(opts); return { url: 'http://127.0.0.1:8089', isAlive: () => true, stop: () => { watchStopped++; } }; },
+      now: () => Date.UTC(2026, 5, 29, 14, 5), tickMs: 0, log: { line: () => {} },
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(reaps).toHaveLength(1);
+    expect(reaps[0].port).toBe(8089);
+    expect(reaps[0].opts?.mine).toBe(isStrayWhisperServer);   // REPRODUCE: pre-fix the reap passed no guard at all
+    expect(starts).toHaveLength(1);
+    expect(starts[0]).toMatchObject({ adoptOnly: true, host: '127.0.0.1', port: 8089 });
+    app.stop();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(watchStopped).toBe(1);
   });
 
   it('wiring: a node that DOES run a resident local whisper never touches the port', async () => {
@@ -1078,6 +1109,72 @@ describe('boot() — transcriptor worker role', () => {
       startTranscriptorServer: async (opts) => { captured.push(opts); return { port: opts.port, close() {} }; },
     });
     expect(captured).toHaveLength(0);   // gate holds: existing ingest:false boot tests never bind a real port
+    app.stop();
+  });
+
+  // do's profile, as measured on dolly 2026-09-16 (tokens elided).
+  const DO_TX = { enabled: true, use_config: 'do', do: {
+    fallback_order: ['worker', 'cli'],
+    worker: { type: 'whisper-server-remote', endpoint: 'http://127.0.0.1:23390', token: 'K', connect_timeout_ms: 3000, timeout_ms: 120000, cooldown_ms: 30000 },
+    cli: { type: 'whisper-cli', command: 'whisper-cli.exe', model_path: '/m/ggml-base.bin' },
+  } };
+  const DO_SERVER = { command: 'whisper-server.exe', host: '127.0.0.1', port: 8089 };
+  const bootDo = async (config) => {
+    const { start } = fakeStart();
+    const lines = [], reaps = [], whisperStarts = [], binds = [];
+    const app = await boot({
+      readConfig: () => config, startBridge: start, makeSession: fakeSession,
+      loadState: async () => emptyState(), writeState: async () => {},
+      io: memIo(), ingest: true,
+      spawn: () => ({ on(ev, cb) { if (ev === 'exit') cb(0); return this; } }),
+      reapPort: (port, _log, opts) => { reaps.push({ port, opts }); return 0; },
+      startWhisperServer: async (opts) => { whisperStarts.push(opts); return { url: 'http://127.0.0.1:8089', isAlive: () => true, isAdopted: () => true, stop() {} }; },
+      startTranscriptorServer: async (opts) => { binds.push(opts); return { port: opts.port, close() {} }; },
+      now: () => Date.UTC(2026, 5, 29, 14, 5), tickMs: 0, log: { line: (m) => lines.push(m) },
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    return { app, lines, reaps, whisperStarts, binds };
+  };
+
+  it('do AS MEASURED (transcriptor.enabled false, worker rung at 127.0.0.1:23390): nothing binds :23390, boot SAYS so; the reap is guarded; the port is only watched', async () => {
+    const config = { whatsapp: {}, node_name: 'do', agents: AG,
+      transcriptor: { enabled: false, bind: '0.0.0.0', port: 23390, server: { enabled: false, ...DO_SERVER } },
+      transcription: { server: { token: 'K' }, cli: { model_path: '/m/ggml-large-v3.bin' } },
+      transcription_service: DO_TX };
+    const { app, lines, reaps, whisperStarts, binds } = await bootDo(config);
+    expect(binds).toEqual([]);                                             // the live defect: no endpoint
+    expect(lines.some((m) => /!! transcriptor: transcription_service\.do\.worker .*127\.0\.0\.1:23390.*transcriptor\.enabled/.test(m))).toBe(true);   // REPRODUCE: pre-fix, silence
+    expect(reaps).toHaveLength(1);
+    expect(typeof reaps[0].opts?.mine).toBe('function');
+    expect(whisperStarts).toHaveLength(1);
+    expect(whisperStarts[0].adoptOnly).toBe(true);                         // watched, never spawned
+    app.stop();
+  });
+
+  it('do AFTER the flag flip (transcriptor + server enabled): no reap, no watch; the worker fronts the resident on :8089 and binds :23390', async () => {
+    const config = { whatsapp: {}, node_name: 'do', agents: AG,
+      transcriptor: { enabled: true, bind: '0.0.0.0', port: 23390, server: { enabled: true, ...DO_SERVER } },
+      transcription: { server: { token: 'K' }, cli: { model_path: '/m/ggml-large-v3.bin' } },
+      transcription_service: DO_TX };
+    const { app, lines, reaps, whisperStarts, binds } = await bootDo(config);
+    expect(reaps).toEqual([]);
+    expect(whisperStarts).toHaveLength(1);
+    expect(whisperStarts[0].adoptOnly).toBeUndefined();                    // the worker's own start, which ADOPTS a serving port
+    expect(whisperStarts[0]).toMatchObject({ command: 'whisper-server.exe', host: '127.0.0.1', port: 8089 });
+    expect(binds).toHaveLength(1);
+    expect(binds[0]).toMatchObject({ port: 23390, bind: '0.0.0.0', keyB64: 'K' });
+    expect(binds[0].transcribe).toBeTypeOf('function');
+    expect(lines.some((m) => /!! transcriptor:/.test(m))).toBe(false);
+    app.stop();
+  });
+
+  it('REGRESSION: a node with no transcription configuration at all boots, binds nothing, and warns about nothing', async () => {
+    const config = { whatsapp: {}, node_name: 'kg', agents: AG };
+    const { app, lines, reaps, whisperStarts, binds } = await bootDo(config);
+    expect(binds).toEqual([]);
+    expect(lines.some((m) => /!! transcriptor:/.test(m))).toBe(false);
+    expect(reaps).toHaveLength(1);
+    expect(whisperStarts.every((o) => o.adoptOnly === true)).toBe(true);
     app.stop();
   });
 

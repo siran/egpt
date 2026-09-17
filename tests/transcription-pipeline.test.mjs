@@ -26,6 +26,7 @@ function mk({ profile = FULL, ...overrides } = {}) {
     cli: async () => { calls.cli++; return 'CLI'; },
     startWhisperServer: async () => { calls.spawn++; return { url: 'http://local', stop() {} }; },
     makeWhisperServerTranscriber: () => async () => { calls.local++; return 'LOCAL'; },
+    residentServing: () => null,   // no resident whisper-server in this process unless a test says so
     ...overrides,
   };
   return { pipe: buildTranscriptionPipeline(deps), calls, transitions, advance: (d) => { clock += d; } };
@@ -139,6 +140,76 @@ describe('transcription pipeline (declarative fallback chain)', () => {
     failNow = true;
     expect(await pipe.transcribe('b')).toBe('CLI');       // local times out → cli
     expect(transitions.pop()).toEqual({ from: 'local', to: 'cli', recovered: false, reason: 'The operation was aborted due to timeout' });
+  });
+
+  // ── THE CLI RUNG MUST NOT LOAD A SECOND MODEL BESIDE A RESIDENT ONE (dolly, 2026-09-15) ──
+  // do's worker rung failed, every note fell through to whisper-cli, and whisper-cli loaded its
+  // OWN large-v3 beside the 2.68 GB the resident whisper-server already held: a 15.9 GB box ran
+  // out of memory, and do's cli model was hand-switched to base to survive it.
+  const DO_PROFILE = {
+    fallback_order: ['worker', 'cli'],
+    worker: { type: 'whisper-server-remote', endpoint: 'http://127.0.0.1:23390', token: 'k', cooldown_ms: 1000 },
+    cli: { type: 'whisper-cli', command: 'wc', model_path: 'ggml-large-v3.bin' },
+  };
+
+  it('worker rung down + a resident whisper-server SERVING on this node → cli DECLINES loudly, no second model', async () => {
+    const logs = [];
+    const { pipe, calls } = mk({
+      profile: DO_PROFILE,
+      transcribeViaEndpoint: async () => { throw new Error('down'); },
+      residentServing: () => ({ url: 'http://127.0.0.1:8089', adopted: true }),
+      onLog: (m) => logs.push(m),
+    });
+    expect(await pipe.transcribe('a')).toBe(null);
+    expect(calls.cli).toBe(0);                                  // whisper-cli never spawned
+    const said = logs.join('\n');
+    expect(said).toMatch(/cli "cli" DECLINED/);
+    expect(said).toContain('http://127.0.0.1:8089');
+  });
+
+  it('worker rung down + NO resident server serving → cli still runs (the floor is intact)', async () => {
+    const { pipe, calls } = mk({
+      profile: DO_PROFILE,
+      transcribeViaEndpoint: async () => { throw new Error('down'); },
+      residentServing: () => null,
+    });
+    expect(await pipe.transcribe('a')).toBe('CLI');
+    expect(calls.cli).toBe(1);
+  });
+
+  it('this pipeline\'s own local engine, resident and serving, also blocks a second model on the cli rung', async () => {
+    let failNow = false;
+    const { pipe, calls } = mk({
+      profile: LOCAL_CLI,
+      residentServing: () => null,
+      startWhisperServer: async () => { await tick(); return { url: 'http://127.0.0.1:8089', isAlive: () => true, stop() {} }; },   // resolves after the warm note, like a real model load
+      makeWhisperServerTranscriber: () => async () => (failNow ? null : 'LOCAL'),
+    });
+    await pipe.transcribe('warm'); await tick();                // warming: not serving yet → cli covers the gap
+    expect(calls.cli).toBe(1);
+    expect(await pipe.transcribe('a')).toBe('LOCAL');
+    failNow = true;
+    expect(await pipe.transcribe('b')).toBe(null);              // local failed this note, but its model is loaded
+    expect(calls.cli).toBe(1);
+  });
+
+  // REGRESSION LOCK: the guard sits on the cli rung only — the order and earlier rungs are untouched.
+  it('fallback order is unchanged: the worker rung still wins first even while a resident server serves', async () => {
+    let residentAsked = 0;
+    const { pipe, calls } = mk({ profile: DO_PROFILE, residentServing: () => { residentAsked++; return { url: 'http://127.0.0.1:8089' }; } });
+    expect(await pipe.transcribe('a')).toBe('REMOTE');
+    expect(calls.remote).toBe(1);
+    expect(calls.cli).toBe(0);
+    expect(residentAsked).toBe(0);                              // the guard is not consulted unless cli is reached
+  });
+
+  // REGRESSION LOCK: a node with no transcription at all.
+  it('a node with no transcription profile at all: nothing runs, nothing is asked, null', async () => {
+    let residentAsked = 0;
+    const { pipe, calls } = mk({ profile: {}, residentServing: () => { residentAsked++; return null; } });
+    expect(await pipe.transcribe('a')).toBe(null);
+    expect(calls).toEqual({ remote: 0, cli: 0, spawn: 0, local: 0 });
+    expect(residentAsked).toBe(0);
   });
 
   it('returns null when every engine declines', async () => {

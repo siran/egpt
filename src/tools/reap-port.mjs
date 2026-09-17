@@ -120,19 +120,31 @@ export function isOwnSpine({ name = null, cmdline = null } = {}) {
 // node runs without an operator console), killing a stranger is not. `mineLabel` is the noun
 // phrase for what the guard wanted, so the refusal says what the holder failed to be.
 //
-// WITHOUT `mine` the old behaviour stands: whatever LISTENS is killed. That is deliberate and
-// it has exactly one caller left — src/spine/boot.mjs's stray-whisper-server reap, which is a
-// different question about a different port with its own config-level gate
-// (shouldReapStrayWhisper) and is not this ruling's subject.
+// WITHOUT `mine` the old behaviour stands: whatever LISTENS is killed. No caller relies on that
+// any more — the stray-whisper-server reap (src/spine/boot.mjs, and whisper-server.mjs before a
+// spawn) carries its own guard, STRAY_WHISPER_REAP, since dolly 2026-09-16 (see below).
 //
-// `holders` and `kill` are injection seams so the guard can be tested without a real netstat,
-// tasklist or taskkill. The default `holders` resolves the (expensive) command line ONLY when
-// a guard is present, so the unguarded whisper reap pays nothing it did not pay before.
+// `explain` (optional, holder → sentence) replaces the console limb's "what happens instead"
+// wording in a refusal, so a guard that is not the console's does not talk about a console.
+//
+// A KILL IS COUNTED ONLY WHEN THE PROCESS IS GONE (dolly, 2026-09-15/16). The killer used to
+// run taskkill and count the pid without looking: a session-1 spine cannot terminate the
+// WhisperServer service's LocalSystem process, so the reap logged `killed 1` on every boot —
+// the same pid 12712 twice on 09-15, pid 6716 six times on 09-16 — while that process served
+// on, untouched. After a kill we now wait up to `settleMs` for the pid to disappear (`alive`),
+// and a survivor is reported as NOT killed, loudly, and not counted.
+//
+// `holders`, `kill` and `alive` are injection seams so the guard can be tested without a real
+// netstat, tasklist or taskkill. The default `holders` resolves the (expensive) command line ONLY
+// when a guard is present, so an unguarded reap pays nothing it did not pay before.
 export function reapPort(port, log = () => {}, {
   mine = null,
   mineLabel = 'ours',
+  explain = null,
   holders = null,
   kill = killPid,
+  alive = pidAlive,
+  settleMs = 2_000,
 } = {}) {
   const p = Number(port);
   if (!p) return 0;
@@ -147,21 +159,67 @@ export function reapPort(port, log = () => {}, {
       // verdict is carefully "nothing establishes that it is ours" rather than "it is not
       // ours": a holder whose arguments could not be read has not been ruled out, only left
       // unvouched-for, and either way it is not killed.
-      const who = `pid ${h?.pid} (image ${name ?? 'UNKNOWN'}, command line ${cmd ? `\`${cmd}\`` : 'UNREADABLE'})`;
+      const svc = typeof h?.service === 'string' ? `, service ${h.service}` : '';
+      const who = `pid ${h?.pid} (image ${name ?? 'UNKNOWN'}, command line ${cmd ? `\`${cmd}\`` : 'UNREADABLE'}${svc})`;
       if (mine && !mine(h)) {
-        log(name == null && cmd == null
+        if (explain) log(`reap-port: :${p} is held by ${who} — nothing observed about it establishes that it is ${mineLabel}, so NOT killing it: ${explain(h)}`);
+        else log(name == null && cmd == null
           ? `reap-port: :${p} is held by ${who} — it could not be identified at all, and an unidentified process is never killed here: running without an operator console is recoverable, terminating a stranger is not.`
           : `reap-port: :${p} is held by ${who} — nothing observed about it establishes that it is ${mineLabel}, so NOT killing it. This node will run without an operator console rather than terminate a process it cannot vouch for.`);
         continue;
       }
       log(`reap-port: killing stale pid ${h?.pid}${h?.name ? ` (${h.name})` : ''} on :${p}`);
-      try { kill(h?.pid); killed += 1; }
-      catch (e) { log(`reap-port: could not kill pid ${h?.pid} on :${p} — ${e?.message ?? e}; the port stays held.`); }
+      try { kill(h?.pid); }
+      catch (e) { log(`reap-port: could not kill pid ${h?.pid} on :${p} — ${e?.message ?? e}; the port stays held.`); continue; }
+      if (gone(h?.pid, alive, settleMs)) { killed += 1; continue; }
+      log(`!! reap-port: pid ${h?.pid}${h?.name ? ` (${h.name})` : ''} on :${p} is STILL RUNNING after the kill — it was NOT killed (this process may lack the right to terminate it, e.g. a service's process), and the port stays held.`);
     }
   } catch (e) {
     log(`reap-port(${p}): ${e?.message ?? e}`);
   }
   return killed;
+}
+
+// Is `pid` a running process? Signal 0 only asks. EPERM means it exists and we may not touch
+// it (on Windows: a LocalSystem service's process seen from a user session), which is alive.
+export function pidAlive(pid) {
+  const n = Number(pid);
+  if (!Number.isInteger(n) || n <= 0) return false;
+  try { process.kill(n, 0); return true; }
+  catch (e) { return e?.code === 'EPERM'; }
+}
+
+// Wait (synchronously — reapPort is sync) up to `ms` for `pid` to disappear. Termination is
+// asynchronous after taskkill returns, so one immediate look could call a dying process alive.
+function gone(pid, alive, ms) {
+  const end = Date.now() + ms;
+  while (alive(pid)) {
+    if (Date.now() >= end) return false;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+  }
+  return true;
+}
+
+// Which Windows service owns `pid`: the service's name when the process IS a service's process
+// or its direct child (nssm runs the real binary as its child — dolly's WhisperServer), false
+// when neither is, null when it could not be read (and on other platforms, where this is not
+// implemented: an unreadable owner is never vouched for). As expensive as processCommandLine
+// (a PowerShell CIM query), so only a guard that needs it asks.
+export function processService(pid) {
+  const n = Number(pid);
+  if (!Number.isInteger(n) || n <= 0 || process.platform !== 'win32') return null;
+  try {
+    const script = [
+      `$p = Get-CimInstance Win32_Process -Filter 'ProcessId=${n}'`,
+      `if (-not $p) { 'UNKNOWN'; exit }`,
+      `$f = 'ProcessId=${n}'; if ($p.ParentProcessId -gt 0) { $f = $f + ' OR ProcessId=' + $p.ParentProcessId }`,
+      `$s = Get-CimInstance Win32_Service -Filter $f | Select-Object -First 1`,
+      `if ($s) { 'SERVICE ' + $s.Name } else { 'NONE' }`,
+    ].join('; ');
+    const out = (spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8', windowsHide: true }).stdout || '').trim();
+    if (out.startsWith('SERVICE ')) return out.slice(8).trim() || null;
+    return out === 'NONE' ? false : null;
+  } catch { return null; }
 }
 
 function killPid(pid) {

@@ -79,7 +79,7 @@ import { createVoiceSynthesis } from './synthesis.mjs';
 import { uploadNote, radioNoteFilename, pickSpeaker } from '../radio-relay.mjs';
 import { extFromMeta } from '../media-save.mjs';
 import { createTranscriptorWorker } from './transcriptor-worker.mjs';
-import { startWhisperServer } from '../tools/whisper-server.mjs';
+import { startWhisperServer, STRAY_WHISPER_REAP } from '../tools/whisper-server.mjs';
 import { startTranscriptorServer } from '../tools/transcriptor.mjs';
 import { createSynthesizerWorker } from './synthesizer-worker.mjs';
 import { startSynthesizerServer } from '../tools/synthesizer.mjs';
@@ -1288,11 +1288,21 @@ export async function boot({
   // when `local` was dropped from the active profile's fallback_order, the old chain's
   // whisper-server is orphaned — reap it (see shouldReapStrayWhisper). Real-node only
   // (ingest-gated) so tests never invoke the real killer; best-effort (reapPort never throws).
+  //
+  // GUARDED (dolly, 2026-09-16): only a stray no service owns — STRAY_WHISPER_REAP. This reap
+  // targeted the WhisperServer service's process on every boot and logged `killed 1` while it
+  // served on. What it leaves serving is still a loaded model on this node, so boot WATCHES the
+  // port (adopt-only, never a spawn): a server that answers there reaches the resident registry
+  // the transcription pipeline's cli rung asks before loading a second model.
+  let whisperWatch = null;
   if (ingest) {
     const wport = whisperPortOf(cfg);
     if (shouldReapStrayWhisper(cfg)) {
-      const killed = reapPortFn(wport, (m) => log.line?.(`[whisper-reap] ${m}`));
-      log.line?.(`[whisper-reap] no resident whisper-server on this node — reaped stray on :${wport} (killed ${killed})`);
+      const killed = reapPortFn(wport, (m) => log.line?.(`[whisper-reap] ${m}`), STRAY_WHISPER_REAP);
+      log.line?.(`[whisper-reap] no resident whisper-server configured on this node — reaped strays on :${wport} (killed ${killed})`);
+      whisperWatch = Promise.resolve()
+        .then(() => startWhisperServerFn({ adoptOnly: true, host: '127.0.0.1', port: wport, onLog: (m) => log.line?.(`[whisper-watch] ${m}`) }))
+        .catch((e) => { log.line?.(`[whisper-watch] could not watch :${wport}: ${e?.message ?? e}`); return null; });
     } else {
       log.line?.(`[whisper-reap] this node runs a resident whisper-server — leaving :${wport} untouched`);
     }
@@ -3118,6 +3128,7 @@ export async function boot({
       ingestWatcher?.stop();
       compaction.stop();
       transcriptorWorker.stop();   // stops BOTH the resident whisper-server + the :23390 endpoint
+      whisperWatch?.then((h) => h?.stop());   // stops watching :8089 (never stops the server it watched)
       synthesizerWorker.stop();    // stops the :23391 endpoint
       shellPort.stop();            // close the console listener + the seated editor's socket
       for (const w of peerLiveness.values()) w.stop();   // stop probing the peer spines
