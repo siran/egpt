@@ -452,6 +452,11 @@ export function makePeerMouth({ peer, bridge, bridgeOf = null, owns = () => fals
   };
 
   return {
+    // IS THE MOUTH A DIFFERENT ACCOUNT FROM THE ONE HOLDING THIS CHAT — localMouth's own answer, the
+    // one definition of "the mouth is elsewhere". route() below answers null both when the holder IS
+    // the mouth and when the mouth is elsewhere but has no room here; a temporary mark (the 🎧) must
+    // tell those apart, because only the first may be placed from the holder (sender.mjs `react`).
+    mouthIsElsewhere(chatId, being = null) { return !owns(chatId) && localMouth?.(being, chatId) != null; },
     // WHICH MOUTH SAYS THIS REPLY, and where. Three answers:
     //   null                       — nobody but the connection holding the chat; it says it.
     //   { bridge, chatId, … }      — a LOCAL connection on the other account, and ITS OWN room id.

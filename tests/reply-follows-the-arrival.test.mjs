@@ -1128,11 +1128,13 @@ describe('the 🎧 listening mark: boot hands each connection the one placement'
     app.stop();
   });
 
-  it('the Self-DM (the mouth is not in it): the ear places and removes it on its own id', async () => {
+  // do, live 2026-09-17: `reaction 🎧 by An → #2838 [Maria (Mom) Palma]` — a 1:1 chat the mouth is not
+  // in. The Self-DM is the same shape: the mouth is a different account and has no room there, so the
+  // mark is not placed from the operator's account instead.
+  it('the Self-DM (the mouth is not in it): no 🎧 from either account', async () => {
     const { app, byConnection } = await bootWith(KG());
-    expect(await place(byConnection.primary, SELF_DM, 'self-note')).toEqual({ up: true, down: true });
-    expect(byConnection.primary.reactions).toEqual([{ chatId: SELF_DM, id: 'self-note', key: '🎧' }]);
-    expect(byConnection.primary.unreactions).toEqual([{ chatId: SELF_DM, id: 'self-note', key: '🎧' }]);
+    expect(await place(byConnection.primary, SELF_DM, 'self-note')).toEqual({ up: false, down: false });
+    expect(byConnection.primary.reactions).toEqual([]);
     expect(byConnection.secondary.reactions).toEqual([]);
     app.stop();
   });
