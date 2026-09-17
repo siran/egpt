@@ -9,7 +9,7 @@
 // the bytes are.
 import { describe, it, expect } from 'vitest';
 import * as YAML from 'yaml';
-import { spliceYamlScalar, spliceYamlKey, YamlSpliceRefusal } from '../src/tools/config-io.mjs';
+import { spliceYamlScalar, spliceYamlKey, spliceYamlRemoveKey, YamlSpliceRefusal } from '../src/tools/config-io.mjs';
 
 const FIXTURE = `# config.yaml — kg (fixture), the operator's rulings live in comments like these
 transcription_service:
@@ -147,5 +147,94 @@ describe('spliceYamlKey', () => {
   it('refuses when the path is not a mapping', () => {
     expect(() => spliceYamlKey(FIXTURE, [...PROFILE, 'fallback_order'], { from: 'remote', to: 'worker' }))
       .toThrow(/fallback_order is not a mapping/);
+  });
+});
+
+// spliceYamlRemoveKey — the entry as it READS in the file goes: the comment lines directly above
+// the key at its own column (what describes it), its line, every line of its value, and comment
+// lines indented inside the block after its last value. The next key, ITS comment, blank lines and
+// every other byte stay.
+describe('spliceYamlRemoveKey', () => {
+  const AGENTS = [
+    'agents:',
+    '  ken:',
+    '    configuration: opus-xhigh # shared',
+    '    conversation_defaults:',
+    '      verbose_thinking: true # rescued from ken.yaml',
+    '  # GAUSS - what it was for,',
+    '  # in two lines',
+    '  gauss:',
+    '    configuration: opus-xhigh # SHARED with ken',
+    '    handles: [ gauss ] # NOT primo',
+    '    name: "Gauss"',
+    '    conversation_defaults:',
+    '      access_level: sandbox',
+    '  codex:',
+    '    configuration: codex',
+    '',
+  ].join('\n');
+  const WITHOUT = [
+    'agents:',
+    '  ken:',
+    '    configuration: opus-xhigh # shared',
+    '    conversation_defaults:',
+    '      verbose_thinking: true # rescued from ken.yaml',
+    '  codex:',
+    '    configuration: codex',
+    '',
+  ].join('\n');
+
+  it('removes the key, its whole block and the comment above it; every other byte is kept', () => {
+    const out = spliceYamlRemoveKey(AGENTS, ['agents'], { key: 'gauss' });
+    expect(out).toBe(WITHOUT);
+    expect(Object.keys(YAML.parse(out).agents)).toEqual(['ken', 'codex']);
+  });
+
+  it('keeps CRLF line endings', () => {
+    const crlf = (s) => s.replace(/\n/g, '\r\n');
+    expect(spliceYamlRemoveKey(crlf(AGENTS), ['agents'], { key: 'gauss' })).toBe(crlf(WITHOUT));
+  });
+
+  it('TRAILING COMMENTS: an end-of-line comment on the last line and comment lines indented inside the block go; the next key\'s own comment stays', () => {
+    const src = AGENTS.replace(
+      '      access_level: sandbox\n  codex:',
+      '      access_level: sandbox # the last line\n      # inside conversation_defaults\n    # inside gauss\n  # CODEX - describes codex\n  codex:',
+    );
+    expect(spliceYamlRemoveKey(src, ['agents'], { key: 'gauss' }))
+      .toBe(WITHOUT.replace('  codex:', '  # CODEX - describes codex\n  codex:'));
+  });
+
+  it('the LAST key of the document: a trailing column-0 comment and a missing final newline are handled', () => {
+    const src = '# head\na: 1\nb:\n  c: 2 # end of b\n# tail comment';
+    expect(spliceYamlRemoveKey(src, [], { key: 'b' })).toBe('# head\na: 1\n# tail comment');
+    expect(spliceYamlRemoveKey('a: 1\nb:\n  c: 2', [], { key: 'b' })).toBe('a: 1\n');
+  });
+
+  it('a blank line after the block, and a comment separated from the key by a blank line, are kept', () => {
+    const src = 'a:\n  # about the section, not about x\n\n  x: 1\n\n  y: 2\n';
+    expect(spliceYamlRemoveKey(src, ['a'], { key: 'x' })).toBe('a:\n  # about the section, not about x\n\n\n  y: 2\n');
+  });
+
+  it('a block scalar and a multi-line flow list inside the block are removed whole', () => {
+    const src = 'a:\n  x:\n    note: |\n      one\n      two\n    list: [\n      p,\n      q ]\n  y: 2\n';
+    expect(spliceYamlRemoveKey(src, ['a'], { key: 'x' })).toBe('a:\n  y: 2\n');
+  });
+
+  it('refuses by name when the key is absent, the path is not a mapping, or the map is a flow map', () => {
+    expect(() => spliceYamlRemoveKey(AGENTS, ['agents'], { key: 'gaus' })).toThrow(/agents\.gaus: agents has no key "gaus"/);
+    expect(() => spliceYamlRemoveKey(AGENTS, ['agents', 'gauss', 'handles'], { key: 'gauss' })).toThrow(/agents\.gauss\.handles is not a mapping/);
+    expect(() => spliceYamlRemoveKey('a: { x: 1, y: 2 }\n', ['a'], { key: 'x' })).toThrow(/a is a flow mapping/);
+  });
+
+  it('refuses rather than leave a result that re-parses to anything but the document without that key', () => {
+    // The only key: removing it leaves `agents:` - null, not an empty map.
+    let err;
+    try { spliceYamlRemoveKey('agents:\n  gauss:\n    name: Gauss\n', ['agents'], { key: 'gauss' }); } catch (e) { err = e; }
+    expect(err).toBeInstanceOf(YamlSpliceRefusal);
+    expect(err.message).toMatch(/agents\.gauss: the edited text does not re-parse to the intended change alone/);
+  });
+
+  it('refuses YAML that does not parse', () => {
+    expect(() => spliceYamlRemoveKey('a: [1, 2\n', [], { key: 'a' })).toThrow(/does not parse/);
   });
 });

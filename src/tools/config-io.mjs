@@ -239,6 +239,55 @@ export function spliceYamlKey(src, mapPath, { from, to }) {
   return verifySplice(src.slice(0, start) + text + src.slice(end), expected, label);
 }
 
+// Remove the KEY `key` from the block mapping at `mapPath` ([] is the document root), as the entry
+// reads in the file: the comment lines directly above the key at its own column (what describes
+// it - YAML hands those same lines to the key as its commentBefore), the key's line, every line of
+// its value, and comment lines indented inside the block after its last value. The cut is whole
+// lines, so an end-of-line comment goes with its line. Kept: blank lines, a comment separated from
+// the key by one, and everything after the block at or left of the key's column - the next key and
+// the comment that describes IT.
+//
+// Where the value ENDS is read off the parse, not the text: a node's own range runs on through the
+// trailing comments up to the next key, so the end is the last CONTENT node's value end. A flow map
+// is refused (its entries share a line), and so is a result that does not re-parse to the document
+// minus that key - removing a map's only key leaves `null`, not `{}`.
+export function spliceYamlRemoveKey(src, mapPath, { key }) {
+  const label = pathLabel([...mapPath, key]);
+  const doc = parseForSplice(src, label);
+  const map = mapPath.length ? doc.getIn(mapPath, true) : doc.contents;
+  if (!YAML.isMap(map)) throw new YamlSpliceRefusal(`refusing to remove ${label}: ${pathLabel(mapPath)} is not a mapping`);
+  if (map.flow) throw new YamlSpliceRefusal(`refusing to remove ${label}: ${pathLabel(mapPath)} is a flow mapping`);
+  const pair = map.items.find((p) => YAML.isScalar(p.key) && p.key.value === key);
+  if (!pair) throw new YamlSpliceRefusal(`refusing to remove ${label}: ${pathLabel(mapPath)} has no key ${JSON.stringify(key)}`);
+
+  const lineStart = (i) => src.lastIndexOf('\n', i - 1) + 1;
+  const lineEnd = (i) => { const n = src.indexOf('\n', i); return n === -1 ? src.length : n + 1; };
+  const commentCol = (from, to) => { const m = /^( *)#/.exec(src.slice(from, to)); return m ? m[1].length : -1; };
+  const contentEnd = (node) => {
+    if (YAML.isPair(node)) return contentEnd(node.value ?? node.key);
+    if ((YAML.isMap(node) || YAML.isSeq(node)) && !node.flow && node.items.length) return contentEnd(node.items[node.items.length - 1]);
+    return node.range[1];
+  };
+
+  let start = lineStart(pair.key.range[0]);
+  const col = pair.key.range[0] - start;
+  while (start > 0) {
+    const prev = lineStart(start - 1);
+    if (commentCol(prev, start) !== col) break;
+    start = prev;
+  }
+  let end = lineEnd(contentEnd(pair) - 1);
+  while (end < src.length) {
+    const next = lineEnd(end);
+    if (!(commentCol(end, next) > col)) break;
+    end = next;
+  }
+
+  const expected = doc.toJS();
+  delete mapPath.reduce((o, k) => o[k], expected)[key];
+  return verifySplice(src.slice(0, start) + src.slice(end), expected, label);
+}
+
 // Per-sibling files live under ~/.egpt/config/agents/<name>.yaml (operator 2026-06-23).
 // Loaded at boot + merged into EGPT_CONFIG.siblings — every reader uses that unchanged.
 export const AGENT_DIR = join(EGPT_HOME, 'config', 'agents');
