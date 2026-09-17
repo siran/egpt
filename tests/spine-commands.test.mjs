@@ -12,6 +12,9 @@ import { COMMANDS } from '../src/interpreter.mjs';
 import { Room } from '../src/room-core.mjs';
 import { EGPT_HOME } from '../src/egpt-home.mjs';
 import { emptyState, ensureContact, getBeing, getContact, patchContact } from '../src/conversations-state.mjs';
+// THE mention matcher itself — imported so the ambiguity test can assert that /agents and the
+// ROUTER pick the same being for a token two agents claim, instead of restating the rule by hand.
+import { addressed } from '../src/spine/router.mjs';
 
 function harness({ config = {}, state = null, brains, io = {}, cdp, launch, clock, resolveConvRoom, onRoomChange, logTranscript } = {}) {
   const sent = [], exits = [], rewinds = [], writes = [], evicts = [], roomChanges = [], logged = [];
@@ -1490,6 +1493,143 @@ describe('loop intercept', () => {
   });
 });
 
+// ── THE ARGUMENT IS A HANDLE, NOT A RECORD KEY (operator 2026-09-17: "for rethread the
+// handles work to identify agent, so e and egpt are the same") ───────────────────────────
+// agentsCmd did `handles = [handleArg]`, so the operator's word BECAME the being key every verb
+// writes. On kg — E is KEYED `egpt` and declares `handles: [e, egpt, ekg, egptkg]` — `/agents
+// rethread e` cleared threadId on a record named `e` that patchBeing invented on the spot, rolled
+// the chat's transcript.md into transcripts/ and answered ✅, while E kept its thread: the chat
+// lost its transcript and gained nothing. The fingerprint was live in kg's config/rooms.yaml, a
+// stray `e:` block under room/lobby.agents holding only `threadId: null` (removed by
+// migrations/0010-stray-handle-records.mjs).
+//
+// EVERY `e` case below FAILED before the fix, each the same way: `egpt` untouched, an `e` record
+// created. Resolution rides THE wake vocabulary (router.mjs addressed/wakeTokens) — the same scan
+// a typed @mention goes through — so /agents can never name a being the message router would not.
+describe('/agents <verb> <handle> — the HANDLE names the being, the KEY is what gets written', () => {
+  const SURFACE = 'whatsapp', JID = '1234@s.whatsapp.net', CTX = { pushedName: 'diego', slugHint: 'diego' };
+  // kg's own shape. defaultKey stays createCommands' 'e' and is DELIBERATELY not egpt's key —
+  // that is precisely the situation in which `e` used to become a record of its own.
+  const KG = { agents: {
+    egpt: { handles: ['e', 'egpt', 'ekg', 'egptkg'], configuration: 'mytype' },
+    wren: { handles: ['w', 'wren'] },
+  } };
+  const seed = (extra = {}) => patchContact(
+    ensureContact(emptyState(), SURFACE, JID, CTX).state, SURFACE, JID,
+    { agents: { egpt: { mode: 'mention', threadId: 'thread-abc', threadCreatedAt: '2026-08-01T00:00:00Z', identityInjectedAt: '2026-08-01T00:00:00Z', access_level: 'all' }, ...extra } },
+  );
+  const enoent = () => Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+  const fakeIo = (renames) => ({
+    readFile: async () => { throw enoent(); },
+    writeFile: async () => {},
+    rename: async (from, to) => { renames?.push([from, to]); },
+    mkdir: async () => {},
+  });
+  const run = async (body, { state = seed(), config = KG, renames } = {}) => {
+    const h = harness({ state, config, io: fakeIo(renames) });
+    await h.cmds.run({ chatId: JID, surface: SURFACE, body });
+    return h;
+  };
+  // THE fingerprint: a being record keyed by the HANDLE the operator typed. Its absence is what
+  // every case below is really about.
+  const strayRecord = (st) => getContact(st, SURFACE, JID)?.entry?.agents?.e;
+
+  it('/agents rethread e clears E\'s OWN thread — no `e` record is invented (THE reproduce)', async () => {
+    const { sent, getState } = await run('/agents rethread e');
+    expect(getBeing(getState(), SURFACE, JID, 'egpt').threadId).toBeNull();
+    expect(strayRecord(getState())).toBeUndefined();
+    expect(sent.at(-1).text).toMatch(/e \(egpt\) rethread/);              // typed AND key, because they differ
+  });
+
+  it('/agents refresh e arms E\'s OWN re-feed — egpt.identityInjectedAt cleared, thread kept, no `e` record', async () => {
+    const { getState } = await run('/agents refresh e');
+    const entry = getContact(getState(), SURFACE, JID).entry;
+    expect(entry.agents.egpt.identityInjectedAt).toBeNull();
+    expect(entry.agents.egpt.threadId).toBe('thread-abc');
+    expect(strayRecord(getState())).toBeUndefined();
+  });
+
+  it('/agents reset e wipes E\'s OWN registry block — no `e` record', async () => {
+    const { getState } = await run('/agents reset e');
+    const e = getBeing(getState(), SURFACE, JID, 'egpt');
+    expect(e.mode).toBeNull();                 // wiped
+    expect(e.threadId).toBeNull();             // wiped
+    expect(e.accessLevel).toBe('all');         // the durable grant survives (operator 2026-08-17)
+    expect(strayRecord(getState())).toBeUndefined();
+  });
+
+  it('/agents auto on e sets E\'s OWN mode — no `e` record', async () => {
+    const { getState } = await run('/agents auto on e');
+    expect(getBeing(getState(), SURFACE, JID, 'egpt').mode).toBe('on');
+    expect(strayRecord(getState())).toBeUndefined();
+  });
+
+  it('/agents access_level regular e points E\'s OWN grant — no `e` record', async () => {
+    const { getState } = await run('/agents access_level regular e');
+    expect(getBeing(getState(), SURFACE, JID, 'egpt').accessLevel).toBe('regular');
+    expect(strayRecord(getState())).toBeUndefined();
+  });
+
+  it('/agents e (status) shows E, keyed egpt, headed by the word the operator typed', async () => {
+    const { sent } = await run('/agents e');
+    expect(sent[0].text).toMatch(/^e \(egpt\)\n```yaml\n/);
+    expect(sent[0].text).toMatch(/being: egpt/);
+    expect(sent[0].text).toMatch(/thread_id: thread-abc/);
+  });
+
+  // The WHOLE declared list, plus the key, plus case — one scan, exactly like an @mention.
+  for (const token of ['e', 'egpt', 'ekg', 'egptkg', 'EKG', 'Egpt']) {
+    it(`/agents rethread ${token} reaches egpt`, async () => {
+      const { getState } = await run(`/agents rethread ${token}`);
+      expect(getBeing(getState(), SURFACE, JID, 'egpt').threadId).toBeNull();
+      expect(strayRecord(getState())).toBeUndefined();
+    });
+  }
+
+  // A handle NOBODY claims: refused BY NAME, with what is addressable, and — the property that
+  // actually cost a transcript — nothing written and nothing rolled.
+  it('/agents rethread zzz is refused by name; nothing is written, nothing is rolled', async () => {
+    const renames = [];
+    const { sent, writes, getState } = await run('/agents rethread zzz', { renames });
+    expect(sent[0].text).toMatch(/no being here answers to "zzz"/);
+    expect(sent[0].text).toMatch(/addressable: e, egpt, ekg, egptkg, w, wren/);
+    expect(writes).toHaveLength(0);
+    expect(renames).toEqual([]);
+    expect(getBeing(getState(), SURFACE, JID, 'egpt').threadId).toBe('thread-abc');   // E untouched
+    expect(getContact(getState(), SURFACE, JID)?.entry?.agents?.zzz).toBeUndefined();
+  });
+
+  // A being with per-conversation residency but no config.yaml entry is still a real record
+  // (the case agentsBeingBlock exempts) — the wake vocabulary does not know it, residency does.
+  it('a RESIDENT being with no config.yaml entry is still addressable by its record key', async () => {
+    const { getState } = await run('/agents rethread carol', { state: seed({ carol: { threadId: 'carol-t' } }) });
+    expect(getBeing(getState(), SURFACE, JID, 'carol').threadId).toBeNull();
+  });
+
+  // REGRESSION LOCK: `all` never went through a handle at all, and still doesn't.
+  it('/agents rethread all still covers every resident being, keys unchanged', async () => {
+    const { sent, getState } = await run('/agents rethread all', { state: seed({ wren: { threadId: 'wren-t' } }) });
+    expect(getBeing(getState(), SURFACE, JID, 'egpt').threadId).toBeNull();
+    expect(getBeing(getState(), SURFACE, JID, 'wren').threadId).toBeNull();
+    expect(sent.at(-1).text).toMatch(/egpt, wren rethread/);              // keys, no "(…)" qualifier
+  });
+
+  // AMBIGUITY is decided the way the ROUTER decides it — first agent in map order wins the shared
+  // token (`byToken` in router.mjs's addressed) — and this asserts the two AGREE rather than
+  // restating the rule: /agents must write to whichever being that same @token would have woken.
+  it('two agents claiming one token: /agents writes to the being the ROUTER picks for it', async () => {
+    const config = { agents: { alpha: { handles: ['x', 'alpha'] }, beta: { handles: ['x', 'beta'] } } };
+    const state = patchContact(
+      ensureContact(emptyState(), SURFACE, JID, CTX).state, SURFACE, JID,
+      { agents: { alpha: { threadId: 'a-t' }, beta: { threadId: 'b-t' } } },
+    );
+    const routerPick = addressed('x', config.agents, { addressWithoutAt: true })[0].name;
+    const { getState } = await run('/agents rethread x', { state, config });
+    expect(getBeing(getState(), SURFACE, JID, routerPick).threadId).toBeNull();
+    expect(getBeing(getState(), SURFACE, JID, routerPick === 'alpha' ? 'beta' : 'alpha').threadId).not.toBeNull();
+  });
+});
+
 // The re-point WIZARD that used to arm on bare `/e`/`/e <fragment>` was retired (operator
 // 2026-08-14, phase 1): there was no more per-conversation freeze for it to configure —
 // engine/model/effort/tools always resolve fresh from config.yaml every turn (brainpool.mjs's
@@ -1571,11 +1711,17 @@ describe('/agents <handle>|all — bare status view, usage, and /e/egpt retireme
   // OWN fallback ("no agent entry -> a bare def, keeps it runnable") let that fallback dress
   // itself up as a real status. Neither configured (no config.agents entry) nor resident (no
   // per-conversation being block) -> refuse plainly instead of fabricating one.
+  //
+  // The refusal MOVED (2026-09-17, the handle->key resolution): it used to be rendered by
+  // agentsBeingBlock as a fenced `being: wren / not configured on this node` — status-only, so
+  // `/agents rethread wren` still wrote a record for it. It is now agentsCmd's ONE refusal, ahead
+  // of every verb, and it lists what the operator could have typed. The property this test
+  // guards is unchanged: wren is named, and no status is fabricated for it.
   it('/agents <unconfigured handle> refuses plainly rather than fabricating a status for a being not on this node', async () => {
     const state = ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state;
     const { cmds, sent } = harness({ state });
     await cmds.run({ chatId: '!room', surface: 'whatsapp', body: '/agents wren' });
-    expect(sent[0].text).toMatch(/being: wren\nnot configured on this node/);
+    expect(sent[0].text).toMatch(/no being here answers to "wren"/);
     expect(sent[0].text).not.toMatch(/thread_id/);
   });
 

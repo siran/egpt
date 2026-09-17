@@ -70,6 +70,19 @@ export function wakeTokens(name, agent) {
   return hs.map((h) => String(h ?? '').toLowerCase()).filter(Boolean);
 }
 
+// EVERY token the node's AGENTS block answers to — wakeTokens above run over the whole map, for
+// the REFUSAL MESSAGES that have to tell an operator what they could have typed instead. It
+// applies `addressed`'s OWN two guards (`_`-prefixed comment keys and non-map values are not
+// agents), so it can never advertise a token that would not actually resolve. Deduped, in map
+// order. Two callers: heartbeat-loader.mjs's unknown-`agent:` skip line and commands.mjs's
+// unknown-`/agents <handle>` refusal — it lived privately in the former until the latter needed
+// the same sentence.
+export function addressableTokens(agents) {
+  return [...new Set(Object.entries(agents ?? {})
+    .filter(([n, a]) => a && typeof a === 'object' && !n.startsWith('_'))
+    .flatMap(([n, a]) => wakeTokens(n, a)))];
+}
+
 // THE SPOKEN counterpart to wakeTokens, above — voice_handles is a SEPARATE, opt-in list (a
 // whisper transcript never carries '@', so these are matched as a BARE token — and since
 // 2026-09-09 only at the START, the same rule a bare @handle follows; see addressed()).
