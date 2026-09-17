@@ -16,7 +16,12 @@ import { emptyState, ensureContact, getBeing, getContact, patchContact } from '.
 // ROUTER pick the same being for a token two agents claim, instead of restating the rule by hand.
 import { addressed } from '../src/spine/router.mjs';
 
-function harness({ config = {}, state = null, brains, io = {}, cdp, launch, clock, resolveConvRoom, onRoomChange, logTranscript } = {}) {
+// THE NODE'S OWN `agents:` BLOCK is part of every harness, because /agents resolves the word the
+// operator typed through the router's wake vocabulary (2026-09-17: a handle, never a bare key), and
+// a real node always declares its beings. `e` and `d` declare no `handles:`, so each answers to its
+// own key, exactly as wakeTokens says. A test that passes its own `config` merges into this.
+const AGENTS = { agents: { e: {}, d: {} } };
+function harness({ config = AGENTS, state = null, brains, io = {}, cdp, launch, clock, resolveConvRoom, onRoomChange, logTranscript } = {}) {
   const sent = [], exits = [], rewinds = [], writes = [], evicts = [], roomChanges = [], logged = [];
   const files = {};   // any command-authored files (e.g. /rooms create's config.yaml)
   let st = state;
@@ -52,7 +57,7 @@ function harness({ config = {}, state = null, brains, io = {}, cdp, launch, cloc
 
 describe('commands.isCommand', () => {
   it('recognizes a slash command in the Self DM', () => {
-    const { cmds } = harness({ config: { whatsapp: { chat_id: '!self' } } });
+    const { cmds } = harness({ config: { ...AGENTS,  whatsapp: { chat_id: '!self' } } });
     expect(cmds.isCommand({ body: '/restart', chatId: '!self' })).toBe(true);
   });
   it('recognizes a slash command from an authorized sender / own send anywhere', () => {
@@ -61,19 +66,19 @@ describe('commands.isCommand', () => {
     expect(cmds.isCommand({ body: '/restart', chatId: '!group', isSender: true })).toBe(true);
   });
   it('does NOT recognize a slash command from a random chat/sender', () => {
-    const { cmds } = harness({ config: { whatsapp: { chat_id: '!self' } } });
+    const { cmds } = harness({ config: { ...AGENTS,  whatsapp: { chat_id: '!self' } } });
     expect(cmds.isCommand({ body: '/restart', chatId: '!group' })).toBe(false);
   });
   it('recognizes a slash command in the TELEGRAM surface Self DM (per-surface chat_id)', () => {
-    const { cmds } = harness({ config: { whatsapp: { chat_id: '!self' }, telegram: { chat_id: '!tg-self' } } });
+    const { cmds } = harness({ config: { ...AGENTS,  whatsapp: { chat_id: '!self' }, telegram: { chat_id: '!tg-self' } } });
     expect(cmds.isCommand({ body: '/restart', chatId: '!tg-self', surface: 'telegram' })).toBe(true);
   });
   it('does NOT recognize a slash command from a random telegram chat', () => {
-    const { cmds } = harness({ config: { telegram: { chat_id: '!tg-self' } } });
+    const { cmds } = harness({ config: { ...AGENTS,  telegram: { chat_id: '!tg-self' } } });
     expect(cmds.isCommand({ body: '/restart', chatId: '!tg-group', surface: 'telegram' })).toBe(false);
   });
   it('the whatsapp Self chat_id does NOT authorize the same id on the telegram surface (namespace)', () => {
-    const { cmds } = harness({ config: { whatsapp: { chat_id: '!self' } } });
+    const { cmds } = harness({ config: { ...AGENTS,  whatsapp: { chat_id: '!self' } } });
     expect(cmds.isCommand({ body: '/restart', chatId: '!self', surface: 'telegram' })).toBe(false);
   });
   it('does NOT treat plain text (or @e) as a command', () => {
@@ -1599,6 +1604,18 @@ describe('/agents <verb> <handle> — the HANDLE names the being, the KEY is wha
     expect(getContact(getState(), SURFACE, JID)?.entry?.agents?.zzz).toBeUndefined();
   });
 
+  // THE OTHER NODE'S BEING, live 2026-09-17: `/agents rethread egpt` was answered TWICE, once per
+  // node, because both key their persona `egpt` — kg's answers to `e`, do's to `d`/`don`. A word
+  // that is a KEY here but not a handle here is that other node's business: this node does nothing
+  // and says nothing, rather than acting on a different being and talking over the node that did.
+  it('a word that is a KEY here but not a handle here: silent, nothing written', async () => {
+    const config = { agents: { egpt: { handles: ['d', 'don'], default: true }, wren: { handles: ['w', 'wren'] } } };
+    const { sent, writes, getState } = await run('/agents rethread egpt', { config });
+    expect(sent).toEqual([]);
+    expect(writes).toHaveLength(0);
+    expect(getBeing(getState(), SURFACE, JID, 'egpt').threadId).toBe('thread-abc');
+  });
+
   // A being with per-conversation residency but no config.yaml entry is still a real record
   // (the case agentsBeingBlock exempts) — the wake vocabulary does not know it, residency does.
   it('a RESIDENT being with no config.yaml entry is still addressable by its record key', async () => {
@@ -1842,7 +1859,7 @@ describe('/chrome <node>', () => {
   };
 
   it('/chrome kg on the kg node with Chrome reachable reports attached + the host + tab info', async () => {
-    const { cmds, sent } = harness({ config: kg, cdp: reachable });
+    const { cmds, sent } = harness({ config: { ...AGENTS, ...kg }, cdp: reachable });
     await cmds.run({ ...self, body: '/chrome kg' });
     expect(sent).toHaveLength(1);
     expect(sent[0].text).toMatch(/attached/i);
@@ -1854,20 +1871,20 @@ describe('/chrome <node>', () => {
 
   // The whole point of the gate: `do` must not answer a question addressed to `kg`.
   it('/chrome kg on the `do` node replies NOTHING AT ALL (silent — only the addressed node answers)', async () => {
-    const { cmds, sent } = harness({ config: { node_name: 'do', whatsapp: { chat_id: '!self' } }, cdp: reachable });
+    const { cmds, sent } = harness({ config: { ...AGENTS,  node_name: 'do', whatsapp: { chat_id: '!self' } }, cdp: reachable });
     await cmds.run({ ...self, body: '/chrome kg' });
     expect(sent).toHaveLength(0);
   });
 
   it('a node_alias matches too (the addressed name is any of node_name ∪ node_alias)', async () => {
-    const { cmds, sent } = harness({ config: { node_name: 'kg', node_alias: ['reve'], whatsapp: { chat_id: '!self' } }, cdp: reachable });
+    const { cmds, sent } = harness({ config: { ...AGENTS,  node_name: 'kg', node_alias: ['reve'], whatsapp: { chat_id: '!self' } }, cdp: reachable });
     await cmds.run({ ...self, body: '/chrome reve' });
     expect(sent).toHaveLength(1);
     expect(sent[0].text).toMatch(/attached/i);
   });
 
   it('the node match is case-insensitive', async () => {
-    const { cmds, sent } = harness({ config: kg, cdp: reachable });
+    const { cmds, sent } = harness({ config: { ...AGENTS, ...kg }, cdp: reachable });
     await cmds.run({ ...self, body: '/chrome KG' });
     expect(sent).toHaveLength(1);
     expect(sent[0].text).toMatch(/attached/i);
@@ -1877,7 +1894,7 @@ describe('/chrome <node>', () => {
   // open one itself (Session 0 service — an invisible browser), so it hands the
   // operator the exact command line to run in THEIR session.
   it('/chrome kg with Chrome NOT reachable reports the launch command line (no throw, not a failure)', async () => {
-    const { cmds, sent } = harness({ config: kg, cdp: unreachable });
+    const { cmds, sent } = harness({ config: { ...AGENTS, ...kg }, cdp: unreachable });
     await cmds.run({ ...self, body: '/chrome kg' });
     expect(sent).toHaveLength(1);
     expect(sent[0].text).toMatch(/no chrome/i);
@@ -1901,7 +1918,7 @@ describe('/chrome <node>', () => {
   // the discovery path: it tells the operator the valid args). The expensive status
   // payload stays strictly single-node.
   it('bare /chrome shows a short usage line naming THIS node', async () => {
-    const { cmds, sent } = harness({ config: { node_name: 'kg', node_alias: ['reve'], whatsapp: { chat_id: '!self' } }, cdp: reachable });
+    const { cmds, sent } = harness({ config: { ...AGENTS,  node_name: 'kg', node_alias: ['reve'], whatsapp: { chat_id: '!self' } }, cdp: reachable });
     await cmds.run({ ...self, body: '/chrome' });
     expect(sent).toHaveLength(1);
     expect(sent[0].text).toMatch(/`\/chrome` <node>/);   // token quoted — the reply is not itself a command
@@ -1914,13 +1931,13 @@ describe('/chrome <node>', () => {
   // ignoring `/chrome kg`. If every node answered "unknown node" the operator would
   // get exactly the double-answer the gate exists to prevent.
   it('/chrome <unknown node> is silent (a non-match is a non-match, on every node)', async () => {
-    const { cmds, sent } = harness({ config: kg, cdp: reachable });
+    const { cmds, sent } = harness({ config: { ...AGENTS, ...kg }, cdp: reachable });
     await cmds.run({ ...self, body: '/chrome zzz' });
     expect(sent).toHaveLength(0);
   });
 
   it('/chrome is gated on the operator exactly like the other commands', () => {
-    const { cmds } = harness({ config: kg, cdp: reachable });
+    const { cmds } = harness({ config: { ...AGENTS, ...kg }, cdp: reachable });
     expect(cmds.isCommand({ body: '/chrome kg', chatId: '!self', surface: 'whatsapp' })).toBe(true);
     expect(cmds.isCommand({ body: '/chrome kg', chatId: '!group', surface: 'whatsapp' })).toBe(false);
     expect(cmds.isCommand({ body: '/chrome kg', chatId: '!group', surface: 'whatsapp', authorized: true })).toBe(true);
@@ -1940,7 +1957,7 @@ describe('/chrome <node>', () => {
 
   // Regression lock: /chrome must not fall through to the "recognized" catch-all.
   it('/chrome kg is NOT answered by the unwired-command catch-all', async () => {
-    const { cmds, sent } = harness({ config: kg, cdp: reachable });
+    const { cmds, sent } = harness({ config: { ...AGENTS, ...kg }, cdp: reachable });
     await cmds.run({ ...self, body: '/chrome kg' });
     expect(sent[0].text).not.toMatch(/recognized/);
   });
@@ -1963,7 +1980,7 @@ describe('/chrome <node>', () => {
       ]),
     };
     const launch = () => { launched.push('fire'); return { ok: true }; };
-    const { cmds, sent } = harness({ config: kg, cdp, launch });
+    const { cmds, sent } = harness({ config: { ...AGENTS, ...kg }, cdp, launch });
     await cmds.run({ ...self, body: '/chrome kg' });
     expect(launched).toHaveLength(1);             // the launch task WAS fired (schtasks recorded)
     expect(polls).toBeGreaterThanOrEqual(2);      // it polled CDP, not just checked once
@@ -1978,7 +1995,7 @@ describe('/chrome <node>', () => {
   it('/chrome kg unreachable + launch task NOT registered (schtasks non-zero) → command-line fallback + setup note, no throw', async () => {
     const launched = [];
     const launch = () => { launched.push('fire'); return { ok: false }; };
-    const { cmds, sent } = harness({ config: kg, cdp: unreachable, launch });
+    const { cmds, sent } = harness({ config: { ...AGENTS, ...kg }, cdp: unreachable, launch });
     await expect(cmds.run({ ...self, body: '/chrome kg' })).resolves.toBeUndefined();
     expect(launched).toHaveLength(1);                  // it TRIED (fired the task) …
     expect(sent).toHaveLength(1);
@@ -1992,7 +2009,7 @@ describe('/chrome <node>', () => {
     const launched = [];
     const launch = () => { launched.push('fire'); return { ok: true }; };
     // unreachable.isRunning is always false; the advancing fake clock makes the ~20s poll instant.
-    const { cmds, sent } = harness({ config: kg, cdp: unreachable, launch });
+    const { cmds, sent } = harness({ config: { ...AGENTS, ...kg }, cdp: unreachable, launch });
     await expect(cmds.run({ ...self, body: '/chrome kg' })).resolves.toBeUndefined();
     expect(launched).toHaveLength(1);
     expect(sent).toHaveLength(1);
@@ -2003,7 +2020,7 @@ describe('/chrome <node>', () => {
   it('/chrome kg reachable attaches immediately and NEVER fires the launch task', async () => {
     const launched = [];
     const launch = () => { launched.push('fire'); return { ok: true }; };
-    const { cmds, sent } = harness({ config: kg, cdp: reachable, launch });
+    const { cmds, sent } = harness({ config: { ...AGENTS, ...kg }, cdp: reachable, launch });
     await cmds.run({ ...self, body: '/chrome kg' });
     expect(launched).toHaveLength(0);                 // Chrome already up → no launch fired
     expect(sent[0].text).toMatch(/attached/i);
@@ -2013,7 +2030,7 @@ describe('/chrome <node>', () => {
   it('/chrome kg on the `do` node fires NO launch and stays silent (gate before any launch)', async () => {
     const launched = [];
     const launch = () => { launched.push('fire'); return { ok: true }; };
-    const { cmds, sent } = harness({ config: { node_name: 'do', whatsapp: { chat_id: '!self' } }, cdp: unreachable, launch });
+    const { cmds, sent } = harness({ config: { ...AGENTS,  node_name: 'do', whatsapp: { chat_id: '!self' } }, cdp: unreachable, launch });
     await cmds.run({ ...self, body: '/chrome kg' });
     expect(sent).toHaveLength(0);
     expect(launched).toHaveLength(0);
@@ -2054,7 +2071,7 @@ describe('/chrome: the Session 0 hop and the Session 1 direct spawn', () => {
 
   it('with no chrome: block it falls back to the discovered brain profile and lets the launcher find the binary', async () => {
     const calls = [];
-    const { cmds } = harness({ config: kg, cdp: unreachable, launch: (o) => { calls.push(o); return { ok: false }; } });
+    const { cmds } = harness({ config: { ...AGENTS, ...kg }, cdp: unreachable, launch: (o) => { calls.push(o); return { ok: false }; } });
     await cmds.run({ ...self, body: '/chrome kg' });
     expect(calls[0]).toEqual({ port: '9221', userDataDir: CHROME_BRAIN_PROFILE, bin: null });
   });
@@ -2062,14 +2079,14 @@ describe('/chrome: the Session 0 hop and the Session 1 direct spawn', () => {
   it('a Session 1 direct launch reports the pid — the one fact `schtasks /run` could never return', async () => {
     // async on purpose: the direct launcher returns a promise, and the call site must await it.
     const launch = async () => ({ ok: true, direct: true, pid: 4242, detail: 'chrome.exe --remote-debugging-port=9333' });
-    const { cmds, sent } = harness({ config: kg, cdp: comesUp(), launch });
+    const { cmds, sent } = harness({ config: { ...AGENTS, ...kg }, cdp: comesUp(), launch });
     await cmds.run({ ...self, body: '/chrome kg' });
     expect(sent[0].text).toMatch(/attached: localhost:9333/);
     expect(sent[0].text).toMatch(/launched: pid 4242/);
   });
 
   it('the Session 0 task hop reports exactly what it always did — no pid line, because it has none', async () => {
-    const { cmds, sent } = harness({ config: kg, cdp: comesUp(), launch: () => ({ ok: true }) });
+    const { cmds, sent } = harness({ config: { ...AGENTS, ...kg }, cdp: comesUp(), launch: () => ({ ok: true }) });
     await cmds.run({ ...self, body: '/chrome kg' });
     expect(sent[0].text).toMatch(/attached: localhost:9333/);
     expect(sent[0].text).not.toMatch(/launched:/);
@@ -2077,7 +2094,7 @@ describe('/chrome: the Session 0 hop and the Session 1 direct spawn', () => {
 
   it('a direct launch that fails degrades to the hint and does NOT send the operator off to register a scheduled task', async () => {
     const launch = async () => ({ ok: false, direct: true, detail: 'Chrome executable not found in standard locations' });
-    const { cmds, sent } = harness({ config: kg, cdp: unreachable, launch });
+    const { cmds, sent } = harness({ config: { ...AGENTS, ...kg }, cdp: unreachable, launch });
     await cmds.run({ ...self, body: '/chrome kg' });
     expect(sent[0].text).toMatch(/no Chrome is listening/);
     expect(sent[0].text).toMatch(/I tried to open one myself/);
@@ -2089,7 +2106,7 @@ describe('/chrome: the Session 0 hop and the Session 1 direct spawn', () => {
   });
 
   it('a direct launch whose browser never binds the port says THAT, rather than blaming a missing task', async () => {
-    const { cmds, sent } = harness({ config: kg, cdp: unreachable, launch: async () => ({ ok: true, direct: true, pid: 7 }) });
+    const { cmds, sent } = harness({ config: { ...AGENTS, ...kg }, cdp: unreachable, launch: async () => ({ ok: true, direct: true, pid: 7 }) });
     await cmds.run({ ...self, body: '/chrome kg' });
     expect(sent[0].text).toMatch(/never bound :9221/);
     expect(sent[0].text).not.toMatch(/register-chrome-task\.ps1/);
@@ -2098,7 +2115,7 @@ describe('/chrome: the Session 0 hop and the Session 1 direct spawn', () => {
   // The Session 0 wording is load-bearing and unchanged: it is what tells the operator WHY the
   // node is asking them to run a command line instead of just opening a browser.
   it('the Session 0 fallback keeps its own sentence and its setup note (regression lock)', async () => {
-    const { cmds, sent } = harness({ config: kg, cdp: unreachable, launch: () => ({ ok: false }) });
+    const { cmds, sent } = harness({ config: { ...AGENTS, ...kg }, cdp: unreachable, launch: () => ({ ok: false }) });
     await cmds.run({ ...self, body: '/chrome kg' });
     expect(sent[0].text).toMatch(/I can't open it myself — I run as a service in another Windows session/);
     expect(sent[0].text).toMatch(/register-chrome-task\.ps1/);
@@ -2244,7 +2261,7 @@ describe('/rooms create <name>', () => {
   // (operator 2026-08-29). With nothing to list it still names the verb that makes one, so
   // the command stays self-teaching rather than answering with a dead end.
   it('/rooms (bare) lists rooms, and with none still names the verb that creates one', async () => {
-    const { cmds, sent } = harness({ config: { whatsapp: { chat_id: '!self' } } });
+    const { cmds, sent } = harness({ config: { ...AGENTS,  whatsapp: { chat_id: '!self' } } });
     await cmds.run({ ...self, body: '/rooms' });
     expect(sent[0].text).toMatch(/no rooms yet/);
     expect(sent[0].text).toMatch(/\/rooms create/);

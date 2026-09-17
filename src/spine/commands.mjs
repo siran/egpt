@@ -1374,19 +1374,28 @@ export function createCommands({
       const typed = handleArg.toLowerCase();
       const agentsMap = (cfg() ?? {}).agents ?? {};
       const residents = residentsOf(getContact(state, surface, jid)?.entry);
+      // A HANDLE, NEVER A KEY (operator 2026-09-17: "it's not the key, is the handle, we said").
+      // `addressed` IS the resolution — the router's own lookup over each agent's wake vocabulary,
+      // which already falls back to the map key for an agent that declares no `handles:`. Nothing
+      // else resolves: a key that its own agent does not answer to belongs to ANOTHER NODE's being
+      // of the same name (both nodes key their persona `egpt`; kg's answers to `e`, do's to `d`),
+      // and both nodes hear every operator command — so `/agents rethread egpt` answered TWICE
+      // live on 2026-09-17, each node rethreading a different being.
+      // ...and the one thing a handle cannot name: a being with NO config.yaml entry, seeded into
+      // this conversation by a turn. It has no handles to declare, so its record name is the only
+      // name it has. A being config DOES declare is never reachable this way — it is addressed by
+      // the handles it answers to, which is what keeps another node's `egpt` out of this.
+      const configKey = (n) => Object.keys(agentsMap).some((k) => !k.startsWith('_') && k.toLowerCase() === n);
       const key = addressed(typed, agentsMap, { addressWithoutAt: true })[0]?.name
-        ?? Object.entries(agentsMap).find(([n, a]) => a && typeof a === 'object' && !n.startsWith('_') && n.toLowerCase() === typed)?.[0]
-        ?? (typed === String(defaultKey).toLowerCase() ? defaultKey : null)
-        ?? residents.find((h) => String(h).toLowerCase() === typed)
+        ?? (!configKey(typed) ? residents.find((h) => String(h).toLowerCase() === typed) : null)
         ?? null;
       if (!key) {
-        const known = [...new Set([
-          ...addressableTokens(agentsMap),
-          ...Object.keys(agentsMap).filter((n) => !n.startsWith('_')).map((n) => n.toLowerCase()),
-          String(defaultKey).toLowerCase(),
-          ...residents.map((h) => String(h).toLowerCase()),
-        ])];
-        await send?.(ev.chatId, `/agents: no being ${where} answers to "${handleArg}" — nothing was changed. addressable: ${known.join(', ')}, all`);
+        // NOT MINE, SO NOT MY ANSWER: the word names a being that exists here only as a key (or as
+        // a record some turn seeded), so the node that answers to it is another one. It stays
+        // silent rather than talking over the node that is doing the work.
+        const elsewhere = configKey(typed) || String(defaultKey).toLowerCase() === typed;
+        if (elsewhere) { onLog(`/agents: "${handleArg}" is a being KEY here, not a handle this node answers to — left for the node whose being answers to it`); return; }
+        await send?.(ev.chatId, `/agents: no being ${where} answers to "${handleArg}" — nothing was changed. addressable: ${[...new Set(addressableTokens(agentsMap))].join(', ')}, all`);
         return;
       }
       handles = [key];
