@@ -13,12 +13,84 @@
 // egpt-spine.mjs) so the GPU box answers in ~encode+decode time, not +model-
 // load. The main spine's LOCAL fallback stays whisper-cli (rare path; no
 // reason to hold a resident model there).
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
 import { readFile, unlink } from 'node:fs/promises';
 import { convertToWav16k, wavDurationSec } from './transcribe.mjs';
-import { reapPort } from './reap-port.mjs';
+import { reapPort, portHolders, processService } from './reap-port.mjs';
 
 const READY_POLL_MS = 500;
+const WHISPER_CPP_DEFAULT_PORT = 8080;   // whisper.cpp's server listens here when given no --port
+
+// ── WHO MAY BE KILLED ON THE WHISPER PORT (dolly, 2026-09-16) ─────────────────────────────────
+// dolly runs whisper-server as the WhisperServer service (nssm, Auto, LocalSystem), outside the
+// eGPT profile, deliberately — the same way it runs its other model servers. The boot-time
+// stray reap targeted that process on every boot, and only failed to kill it because a
+// session-1 spine lacks the right to. A whisper-server is a STRAY — killable — only when it is a
+// whisper-server image AND a service is known NOT to own it. A service's server, a holder whose
+// owner could not be read, and anything that is not a whisper-server are left alone.
+export function isStrayWhisperServer({ name = null, service } = {}) {
+  return /^whisper-server(\.exe)?$/i.test(String(name ?? '')) && service === false;
+}
+
+// The reapPort options every whisper-port reap passes (boot's stray reap, and the reap before a
+// spawn below): the guard, the owner facts it needs, and a refusal that says why.
+export const STRAY_WHISPER_REAP = Object.freeze({
+  mine: isStrayWhisperServer,
+  mineLabel: 'a stray whisper-server that no service owns',
+  holders: (port) => portHolders(port).map((h) => ({ ...h, service: processService(h.pid) })),
+  explain: (h) => {
+    if (!/^whisper-server(\.exe)?$/i.test(String(h?.name ?? ''))) return 'it is not a whisper-server, and a stranger on the whisper port is never killed.';
+    if (typeof h?.service === 'string') return `the ${h.service} service owns it. This node adopts a service's whisper-server; it never kills one.`;
+    return 'whether a service owns it could not be read, and a whisper-server that may be a service\'s is never killed.';
+  },
+});
+
+// Which Windows service runs whisper-server on `port` — { name, commandLine } or null — read
+// from the service registry (ImagePath, plus nssm's Parameters\Application/AppParameters), so
+// it answers even while that service's server is between lives and nothing listens: nssm
+// restarts it after an exit and large-v3 loads for seconds before whisper-server binds.
+// Measured ~0.3s for the scan on dolly, plus PowerShell's start. Asked only when nothing
+// answers on the port, before a spawn. Other platforms: null (not implemented).
+const SERVICES_SCRIPT = [
+  "Get-ChildItem 'HKLM:\\SYSTEM\\CurrentControlSet\\Services' -ErrorAction SilentlyContinue | ForEach-Object {",
+  "try { $k = $_; $l = [string]$k.GetValue('ImagePath'); $pk = $k.OpenSubKey('Parameters');",
+  "if ($pk) { $l = $l + ' ' + [string]$pk.GetValue('Application') + ' ' + [string]$pk.GetValue('AppParameters'); $pk.Close() }",
+  "if ($l -match 'whisper-server') { $k.PSChildName + [char]9 + $l } } catch {} }",
+].join(' ');
+
+export function whisperServiceFor(port) {
+  if (process.platform !== 'win32') return Promise.resolve(null);
+  return new Promise((resolve) => {
+    execFile('powershell', ['-NoProfile', '-NonInteractive', '-Command', SERVICES_SCRIPT],
+      { windowsHide: true, timeout: 20_000 },
+      (_err, stdout) => resolve(parseWhisperServices(stdout, port)));
+  });
+}
+
+// Pure: the scan's "<service>\t<command line>" lines → the service whose whisper-server
+// listens on `port` (its --port, else whisper.cpp's default), or null.
+export function parseWhisperServices(text, port) {
+  for (const line of String(text ?? '').split(/\r?\n/)) {
+    const tab = line.indexOf('\t');
+    if (tab <= 0) continue;
+    const name = line.slice(0, tab).trim();
+    const commandLine = line.slice(tab + 1).trim();
+    if (!/whisper-server/i.test(commandLine)) continue;
+    const m = commandLine.match(/--port\s+(\d+)/);
+    if (Number(m ? m[1] : WHISPER_CPP_DEFAULT_PORT) === Number(port)) return { name, commandLine };
+  }
+  return null;
+}
+
+// THE RESIDENT REGISTRY: every server this process started or adopted, until stop(). The
+// transcription pipeline's cli rung asks it before loading a model of its own
+// (src/transcription-pipeline.mjs): two large-v3 models in one 15.9 GB box is what ran dolly out
+// of memory on 2026-09-15. Returns { url, adopted } of one that is serving now, or null.
+const residents = new Set();
+export function residentWhisperServer() {
+  for (const r of residents) if (r.isAlive()) return { url: r.url, adopted: r.isAdopted() };
+  return null;
+}
 
 // Spawn + supervise a resident whisper-server. Returns { url, stop,
 // isAlive }. Respawns on crash with backoff; stop() is idempotent.
@@ -40,6 +112,16 @@ const READY_POLL_MS = 500;
 // transcription chain falls through to whisper-cli, its always-available floor.
 // That is the "not sine qua non" half: the spine reports the truth about a
 // server it does not own rather than fighting the service manager for it.
+//
+// A SERVICE BETWEEN LIVES IS STILL A SERVICE (dolly, 2026-09-16). The probe alone cannot see a
+// service's server that is restarting or still loading its model, and treated that as "nobody"
+// — reap and spawn a second model. When nothing answers, the service registry is asked first
+// (whisperServiceFor); a service that runs whisper-server on this port is WAITED FOR and
+// adopted, never spawned beside.
+//
+// adoptOnly: watch the port without ever spawning (no command or model needed) — boot uses it
+// on a node that configures no resident server, so a service's server there still reaches the
+// resident registry the cli rung asks. Returns at once; the monitor adopts when one answers.
 export async function startWhisperServer({
   command,                 // path to whisper-server(.exe)
   model,                   // GGUF model path (-m)
@@ -50,16 +132,18 @@ export async function startWhisperServer({
   antiRepetition = true,   // -mc 0 -sns at launch (the server owns the loop, op 2026-06-16)
   readyTimeoutMs = 120_000,
   onLog = () => {},
+  adoptOnly = false,
   // INJECTION SEAMS (default to the real thing) — the adoption path has to be
   // provable without a whisper binary on the box running the tests.
   spawn: spawnFn = spawn,
   reap: reapFn = reapPort,
+  serviceFor: serviceForFn = whisperServiceFor,
   // How often an ADOPTED server is re-probed. Only used when adopted: a server we
   // spawned reports liveness from its own process handle, which needs no polling.
   adoptedProbeMs = 15_000,
 } = {}) {
-  if (!command) throw new Error('startWhisperServer: command (whisper-server path) required');
-  if (!model) throw new Error('startWhisperServer: model path required');
+  if (!adoptOnly && !command) throw new Error('startWhisperServer: command (whisper-server path) required');
+  if (!adoptOnly && !model) throw new Error('startWhisperServer: model path required');
   const url = `http://${host}:${port}`;
 
   let proc = null, stopped = false, backoff = 1000, ready = false, stableTimer = null;
@@ -79,8 +163,8 @@ export async function startWhisperServer({
     args.push(...extraArgs.map(String));
     // Free the port first: a prior whisper-server orphaned by a soft restart
     // (Windows doesn't kill the child with the parent) would still hold it and
-    // block this bind. The daemon is elevated, so it can reap it. See reap-port.mjs.
-    reapFn(port, onLog);
+    // block this bind. GUARDED: only a stray whisper-server no service owns. See reap-port.mjs.
+    reapFn(port, onLog, STRAY_WHISPER_REAP);
     onLog(`whisper-server: spawning ${command} ${args.join(' ')}`);
     proc = spawnFn(command, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     proc.stdout?.on('data', (d) => { const s = d.toString().trim(); if (s) onLog(`whisper-server: ${s.slice(0, 200)}`); });
@@ -106,12 +190,9 @@ export async function startWhisperServer({
     } catch { return false; }
   };
 
-  // PROBE FIRST. An answer here means a whisper-server is already serving this port —
-  // a service, or a previous spine's resident server — so adopt it rather than reap it.
-  if (await pingReady()) {
+  const adopt = (line) => {
     adopted = true;
-    ready = true;
-    onLog(`whisper-server: ADOPTED the server already serving ${url} — monitoring it, not supervising it`);
+    onLog(line);
     // Monitor: keep `ready` honest so isAlive stops lying the moment it goes away.
     // unref so this timer never holds the process open.
     adoptedTimer = setInterval(async () => {
@@ -121,18 +202,31 @@ export async function startWhisperServer({
       ready = up;
     }, adoptedProbeMs);
     adoptedTimer.unref?.();
-  } else {
-    spawnOnce();
-  }
-  const deadline = Date.now() + readyTimeoutMs;
-  while (!ready && Date.now() < deadline && !stopped) {
-    if (await pingReady()) { ready = true; break; }
-    await new Promise((r) => setTimeout(r, READY_POLL_MS));
-  }
-  if (!ready) onLog(`whisper-server: NOT ready within ${readyTimeoutMs}ms — first request will retry the readiness check`);
-  else onLog(`whisper-server: ready at ${url}`);
+  };
 
-  return {
+  // PROBE FIRST. An answer here means a whisper-server is already serving this port —
+  // a service, or a previous spine's resident server — so adopt it rather than reap it.
+  if (await pingReady()) {
+    ready = true;
+    adopt(`whisper-server: ADOPTED the server already serving ${url} — monitoring it, not supervising it`);
+  } else if (adoptOnly) {
+    adopt(`whisper-server: nothing serves ${url} yet — watching it; adopted the moment something answers, never spawned`);
+  } else {
+    const svc = await Promise.resolve().then(() => serviceForFn(port)).catch(() => null);
+    if (svc) adopt(`whisper-server: nothing answers on ${url} yet, but the ${svc.name} service runs whisper-server on :${port} — waiting to ADOPT it. A service's server is never reaped and never doubled by a spawn.`);
+    else spawnOnce();
+  }
+  if (!adoptOnly) {
+    const deadline = Date.now() + readyTimeoutMs;
+    while (!ready && Date.now() < deadline && !stopped) {
+      if (await pingReady()) { ready = true; break; }
+      await new Promise((r) => setTimeout(r, READY_POLL_MS));
+    }
+    if (!ready) onLog(`whisper-server: NOT ready within ${readyTimeoutMs}ms — first request will retry the readiness check`);
+    else onLog(`whisper-server: ready at ${url}`);
+  }
+
+  const handle = {
     url,
     // An adopted server has no `proc` of ours — its liveness is the probe's verdict.
     isAlive: () => ready && (adopted || !!proc),
@@ -140,6 +234,7 @@ export async function startWhisperServer({
     isAdopted: () => adopted,
     stop: () => {
       stopped = true;
+      residents.delete(handle);
       if (stableTimer) { clearTimeout(stableTimer); stableTimer = null; }
       if (adoptedTimer) { clearInterval(adoptedTimer); adoptedTimer = null; }
       // NEVER kill an adopted server: we did not start it, and on a service-managed
@@ -148,6 +243,8 @@ export async function startWhisperServer({
       proc = null;
     },
   };
+  residents.add(handle);
+  return handle;
 }
 
 // Transcribe one audio file via a running whisper-server's /inference.

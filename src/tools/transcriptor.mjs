@@ -72,6 +72,15 @@ export async function startTranscriptorServer({
 } = {}) {
   if (!keyB64) throw new Error('startTranscriptorServer: keyB64 (bus.key) is required');
 
+  // ONE DECODE AT A TIME (operator 2026-09-16). This endpoint is the machine's chokepoint: on
+  // 2026-09-14 dolly ran three whisper-cli at once and paged until none finished, and a resident
+  // whisper-server corrupts its state when two decodes overlap. Signed requests queue FIFO
+  // behind `tail`; `waiting` counts the ones in flight or queued (a request's arrival position).
+  // A caller that gives up while queued (its timeoutMs counts the wait) loses its turn: its
+  // decode never starts.
+  let tail = Promise.resolve();
+  let waiting = 0;
+
   const server = createServer((req, res) => {
     const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
 
@@ -99,25 +108,46 @@ export async function startTranscriptorServer({
         onLog(`transcriptor: REJECTED unsigned/stale request from ${req.socket.remoteAddress} (${body.length}b)`);
         return json(401, { ok: false, error: 'bad signature' });
       }
+      const from = req.socket.remoteAddress;
+      const t0 = Date.now();
+      const position = waiting;
+      waiting += 1;
+      if (position > 0) onLog(`transcriptor: ${body.length}b from ${from} waits — queue position ${position}`);
+      let started = false, left = false;
+      res.on('close', () => {
+        if (started || res.writableFinished) return;
+        left = true;
+        waiting -= 1;
+        onLog(`transcriptor: ${from} left after ${Date.now() - t0}ms queued — its decode will not run`);
+      });
+      const prev = tail;
+      let release;
+      tail = new Promise((r) => { release = r; });
+      await prev;
+      if (left) { release(); return; }
+      started = true;
+      const waited = Date.now() - t0;
       // Extension is irrelevant — ffmpeg sniffs the container from content.
       const tmp = join(tmpdir(), `egpt-transcriptor-${randomBytes(8).toString('hex')}.audio`);
-      const t0 = Date.now();
+      const t1 = Date.now();
       try {
         await writeFile(tmp, body);
         const vmeta = {};
         const transcript = await transcribe(tmp, audioCfg, onLog, vmeta);
         const ms = Date.now() - t0;
         if (!transcript) {
-          onLog(`transcriptor: transcription EMPTY (${body.length}b, ${ms}ms) — caller will fall back`);
+          onLog(`transcriptor: transcription EMPTY (${body.length}b, waited ${waited}ms, decoded in ${Date.now() - t1}ms) — caller will fall back`);
           return json(422, { ok: false, error: 'transcription produced nothing', ms });
         }
-        onLog(`transcriptor: ${body.length}b → ${transcript.length}ch in ${ms}ms for ${req.socket.remoteAddress}`);
+        onLog(`transcriptor: ${body.length}b → ${transcript.length}ch for ${from} (waited ${waited}ms, decoded in ${Date.now() - t1}ms)`);
         // durationSec rides back so the main spine can mark the voice note (#3).
         return json(200, { ok: true, transcript, durationSec: vmeta.durationSec, ms });
       } catch (e) {
         onLog(`transcriptor: ERROR — ${e?.message ?? e}`);
         return json(500, { ok: false, error: String(e?.message ?? e) });
       } finally {
+        waiting -= 1;
+        release();
         try { await unlink(tmp); } catch { /* tmp cleanup is best-effort */ }
       }
     });

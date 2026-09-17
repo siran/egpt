@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { reapPort, isOwnSpine, OWN_SPINE_LABEL } from '../src/tools/reap-port.mjs';
+import { reapPort, isOwnSpine, OWN_SPINE_LABEL, pidAlive } from '../src/tools/reap-port.mjs';
 
 // reapPort kills real processes, so the only safe deterministic assertions against the REAL
 // scanner are the no-op paths: a free port (nothing to kill) and invalid input (no scan).
@@ -49,6 +49,7 @@ describe('reapPort only kills a holder its caller vouches for', () => {
       reap: (opts = {}) => reapPort(REAP_TEST_PORT, (m) => logs.push(m), {
         holders: () => holders,
         kill: (pid) => { killed.push(pid); return true; },
+        alive: (pid) => !killed.includes(pid),   // a kill that returned took the process with it
         ...opts,
       }),
     };
@@ -116,10 +117,77 @@ describe('reapPort only kills a holder its caller vouches for', () => {
     const n = reapPort(REAP_TEST_PORT, (m) => logs.push(m), {
       holders: () => [OUR_SPINE],
       kill: () => { throw new Error('Access is denied'); },
+      alive: () => true,
       mine: isOwnSpine, mineLabel: OWN_SPINE_LABEL,
     });
     expect(n).toBe(0);
     expect(logs.join('\n')).toContain('Access is denied');
+  });
+});
+
+// ── A KILL IS COUNTED ONLY WHEN THE PROCESS IS GONE (dolly, 2026-09-15/16) ─────────────────
+// The session-1 spine "killed" the WhisperServer service's whisper-server on every boot and
+// logged `killed 1` each time, while the process stayed alive: the same pid 12712 was
+// "killed" at 15:04:18 and again at 20:03:36 on 09-15, and pid 6716 six times on 09-16. The
+// old killer ran taskkill and never looked at the result, so a refusal (a user-session process
+// cannot terminate a LocalSystem one) came back as success.
+describe('reapPort counts a kill only after the process is verified gone', () => {
+  const STRAY = { pid: '12712', name: 'whisper-server.exe', cmdline: 'whisper-server.exe --port 8089', service: false };
+
+  it('a kill that RETURNS but leaves the process running is not counted, and the log says so loudly', () => {
+    const logs = [];
+    const n = reapPort(REAP_TEST_PORT, (m) => logs.push(m), {
+      holders: () => [STRAY],
+      kill: () => true,            // taskkill "succeeded" as far as the caller could tell
+      alive: () => true,           // ...and the process is still there
+      settleMs: 0,
+    });
+    expect(n).toBe(0);
+    const said = logs.join('\n');
+    expect(said).toContain('12712');
+    expect(said).toMatch(/STILL RUNNING/);
+    expect(said).not.toMatch(/killed 1/);
+  });
+
+  it('a kill that returns and the process is gone is counted', () => {
+    let dead = false;
+    const n = reapPort(REAP_TEST_PORT, () => {}, {
+      holders: () => [STRAY],
+      kill: () => { dead = true; },
+      alive: () => !dead,
+      settleMs: 0,
+    });
+    expect(n).toBe(1);
+  });
+});
+
+// ── ownership facts ride on each holder when a guard asks (the whisper reap's guard needs to
+// know whether a SERVICE owns the process; the console guard never did). ───────────────────
+describe('reapPort passes each holder\'s owner facts to the guard and names them in the refusal', () => {
+  it('the guard sees `service`, the refusal line names the service, and `explain` replaces the console-limb wording', () => {
+    const logs = []; const seen = [];
+    const n = reapPort(REAP_TEST_PORT, (m) => logs.push(m), {
+      holders: () => [{ pid: '6716', name: 'whisper-server.exe', cmdline: null, service: 'WhisperServer' }],
+      kill: () => { throw new Error('must not be called'); },
+      alive: () => true,
+      mine: (h) => { seen.push(h); return false; },
+      mineLabel: 'a stray whisper-server',
+      explain: () => 'the WhisperServer service owns it and restarts it on exit',
+    });
+    expect(n).toBe(0);
+    expect(seen[0]).toMatchObject({ pid: '6716', service: 'WhisperServer' });
+    const said = logs.join('\n');
+    expect(said).toContain('service WhisperServer');
+    expect(said).toContain('the WhisperServer service owns it');
+    expect(said).not.toMatch(/operator console/);
+  });
+});
+
+describe('pidAlive', () => {
+  it('is true for this process and false for a pid nothing runs as', () => {
+    expect(pidAlive(process.pid)).toBe(true);
+    expect(pidAlive(987654321)).toBe(false);
+    expect(pidAlive(null)).toBe(false);
   });
 });
 
