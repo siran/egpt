@@ -2634,6 +2634,34 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
     expect(turn.text).toBe("@e Describe what you see in the message you're replying to.");
   });
 
+  // A VOICE NOTE WITH NO TRANSCRIPT IS STILL A VOICE NOTE (operator 2026-09-17). When the
+  // transcriber fails — or transcription is off on this node — the arrival records the note as a
+  // bare `[voice note — transcription failed]` / `[voice note]` line, which carries no
+  // `(voice transcription, Ns)` mark. The mirror therefore read the placeholder as PROSE and had
+  // the synthesizer say "voice note, transcription failed" out loud — the exact thing this
+  // branch’s own comment forbids ("a voice note … must never be read aloud as if it were plain
+  // text"). REPRODUCE: before the fix both cases below had synthesize.calls === 1, lastText === the
+  // placeholder, and a "🔊 reading…" ack in the chat.
+  for (const [id, placeholder] of [['vn-failed', '[voice note — transcription failed]'], ['vn-plain', '[voice note]']]) {
+    it(`a bare @e reply to a quoted "${placeholder}" does NOT synthesize — it falls through to a normal @e→E turn`, async () => {
+      const synthesize = countingSynthesize();
+      const logs = [];
+      const doc = transcriptDoc(textLine(id, placeholder));
+      const { incoming } = await startBridge({ readTranscript: async () => doc, synthesize, voice: 'ona', onLog: (m) => logs.push(m) });
+      fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: `reply-${id}`, text: '@e', isSender: true, linkedMessageID: id })] });
+      // EITHER outcome ends the wait, so the pre-fix failure is the ASSERTION below ("expected 1
+      // to be 0") rather than a 5s timeout that reads like this file's known flake.
+      await waitFor(() => synthesize.calls > 0 || incoming.some((i) => i.from.msgKey === `reply-${id}`));
+      expect(synthesize.calls).toBe(0);                                          // never attempted — nothing to read aloud
+      expect(fake.uploads).toHaveLength(0);                                      // no audio sent
+      expect(fake.posts.find((p) => p.text === '🔊 reading…')).toBeFalsy();       // no ack — the synthesis path was never entered
+      const turn = incoming.find((i) => i.from.msgKey === `reply-${id}`);
+      expect(turn.text).toBe('@e');                                              // handed on UNCHANGED (no describe instruction: this is not media)
+      expect(turn.from.atEStart).toBe(true);                                     // …so E takes the turn
+      expect(logs.some((m) => m.includes(`👂 no voice-transcript entry for ↩${id}`))).toBe(true);   // the existing miss line
+    });
+  }
+
   // BARE FORM ACCEPTED TOO (operator 2026-08-10): unlike @ev voice-out (which needs '@' to avoid
   // matching "ev" inside ordinary prose), this gate already requires the WHOLE reply to be
   // nothing but the wake-word, so a bare 'e' (no '@') carries the same negligible false-positive
