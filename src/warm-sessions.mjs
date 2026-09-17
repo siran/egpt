@@ -155,6 +155,22 @@ export function createWarmPool({
         e = null;
       }
     }
+    // CONFIGURATION GUARD (operator 2026-09-17), the same shape one field over. A warm process
+    // takes its model and effort at SPAWN, and the key does not carry them — so a conversation
+    // repointed at another configuration (conversations.yaml agents.<being>.configuration, or a
+    // config.yaml edit) kept running on the old one for as long as its process stayed warm. If the
+    // caller now asks for a model or effort other than the one this entry was opened with, evict
+    // and reopen: the same sessionId is passed again, so the thread resumes on the new engine.
+    // Idle-only, like the guard above. Gated on a STATED value: a caller that names none
+    // (compaction's `/compact` passes no effort, and a null model when the def has none) is asking
+    // for whatever is warm, not for "unset".
+    if (e && !e.errored && !e.busy) {
+      const changed = ['model', 'effort'].filter((k) => brainOptions[k] != null && brainOptions[k] !== e.opened[k]);
+      if (changed.length) {
+        _evict(key, `configuration changed: ${changed.map((k) => `${k} ${e.opened[k] ?? 'unset'}→${brainOptions[k]}`).join(', ')}`);
+        e = null;
+      }
+    }
     // The INJECT-INTO-RUNNING-TURN block that used to sit HERE (operator 2026-06-13) now
     // lives in `steer()` below — MOVED, not duplicated, and for one reason: it fired on
     // `e.busy` alone, i.e. on WHO GOT THERE SECOND rather than on anyone's intent. That was
@@ -167,7 +183,9 @@ export function createWarmPool({
     // for, by name, once policy (conversation_defaults.allow_new_input) has said it may.
     if (!e) {
       _lruEvictIfFull(key);
-      e = { session: makeSession({ ...brainOptions, onLog }), klass, lastUsed: Date.now(), idleTimer: null, busy: false, errored: false, chain: Promise.resolve(), idleTtlMs: undefined };
+      // `opened` is what the CONFIGURATION GUARD above compares against: the model/effort this
+      // process was spawned with, kept on the entry because not every session exposes its own.
+      e = { session: makeSession({ ...brainOptions, onLog }), klass, lastUsed: Date.now(), idleTimer: null, busy: false, errored: false, chain: Promise.resolve(), idleTtlMs: undefined, opened: { model: brainOptions.model ?? null, effort: brainOptions.effort ?? null } };
       _s.set(key, e);
       onLog(`warm: opened ${key} (klass=${klass}); size=${_s.size}/${max}`);
     }

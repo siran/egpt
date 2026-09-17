@@ -1507,6 +1507,12 @@ export const CONFIG_SCHEMA = {
         A configuration that is neither — a list, a number, an empty map, a
         path-shaped string — THROWS at resolution, naming the agent. It is
         never silently swapped for a default.
+
+        OVERRIDDEN PER CONVERSATION (operator 2026-09-17) in conversations.yaml:
+        contacts.<surface>[<id>].agents.<name>.configuration, in either form.
+        It joins the room scope like access_level. An unusable value there (the
+        refusals above, or a name with no file) is logged on every turn and
+        the agent runs on this configuration instead.
       handles
         ["e","egpt",...] — the @<token>s that WAKE this agent (operator
         2026-07-26: "the yaml key can be discarded, an agent reacts if its

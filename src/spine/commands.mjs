@@ -1705,7 +1705,7 @@ export function createCommands({
         // The engine the LIVE warm session is keyed under, PER HANDLE (a sibling can run a
         // different engine than the persona) — resolveBeingDef is the SAME resolver
         // brainpool.mjs's turn() itself calls for this being (name-the-existing-thing).
-        const engine = resolveBeingDef(h, convDir, { getConfig: cfg, brains, brainType: CCODE })?.type ?? CCODE;
+        const engine = resolveBeingDef(h, convDir, { getConfig: cfg, brains, brainType: CCODE, configuration: getBeing(next, surface, jid, h)?.configuration, onLog })?.type ?? CCODE;
         // Evict the warm session: a warm `claude` process bakes its allowedTools/confinement
         // into its spawn args ONCE, at open, and never re-reads brainOptions on later turns of
         // the same warm session — so a live warm session must be closed for the new
@@ -1778,7 +1778,9 @@ export function createCommands({
       try { convDir = slugDir(surface, slug); } catch { /* non-default surface */ }
 
       let def = null;
-      try { def = resolveBeingDef(handle, convDir, { getConfig: cfg, brains, brainType: CCODE }); } catch { def = null; }
+      // `configuration` — THIS conversation's own (conversations.yaml, operator 2026-09-17), the
+      // same value brainpool's resolveConv hands this resolver on the being's next turn.
+      try { def = resolveBeingDef(handle, convDir, { getConfig: cfg, brains, brainType: CCODE, configuration: b?.configuration, onLog }); } catch { def = null; }
       // isAccessLevel, not a copy of the level list: this preview claims to show what the
       // being's NEXT turn will run with, so it must recognise exactly the levels brainpool's
       // own override recognises. While it did not, a 'sandbox' being previewed its type file's
@@ -1800,6 +1802,13 @@ export function createCommands({
       const toolsVal = Array.isArray(toolsRaw) ? `[${toolsRaw.join(', ')}]` : (toolsRaw ?? '?');
       // def.cwd ?? convDir — the SAME derivation turn() uses for the being's actual run cwd.
       const homeDir = previewDef?.cwd ?? convDir ?? '?';
+      // WHERE the def came from: this conversation's `configuration:` when it states one, else
+      // config.yaml's. Raw as written (an inline map as a JSON flow map, which is valid YAML); the
+      // model/effort lines below are what it resolved to.
+      const confOf = (c) => (c && typeof c === 'object' ? JSON.stringify(c) : String(c));
+      const confVal = b?.configuration != null
+        ? `${confOf(b.configuration)} (this conversation)`
+        : `${confOf(((cfg() ?? {}).agents ?? {})[handle]?.configuration ?? 'none')} (config.yaml)`;
 
       return [
         `being: ${handle}`,
@@ -1808,6 +1817,7 @@ export function createCommands({
         `slug: ${slug}`,
         `mode: ${b?.mode ?? 'default'}`,
         `access_level: ${b?.accessLevel ?? 'unset'}`,
+        `configuration: ${confVal}`,
         `engine: ${previewDef?.type ?? CCODE}`,
         `model: ${modelVal ?? 'inherit (CLI default)'}`,
         `effort: ${effortVal ?? 'inherit (CLI default)'}`,

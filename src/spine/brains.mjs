@@ -77,10 +77,15 @@ export function createBrains({
     // caller quietly swaps for a bare ccode def. `agent` is the config.yaml key, passed in for
     // that message only. An ABSENT configuration (null/undefined — a relay declares none) is
     // not a mistake and still returns null quietly.
-    resolve(configuration, { convDir = null, agent = null } = {}) {
+    //
+    // `source` names the FILE the value was written in, for that message only (operator
+    // 2026-09-17): conversations.yaml's `agents.<being>.configuration` takes the same two forms and
+    // is refused by this same code, and a refusal that blamed config.yaml would send the operator
+    // to the wrong file.
+    resolve(configuration, { convDir = null, agent = null, source = 'config.yaml' } = {}) {
       const who = agent ? `agent '${agent}'` : 'an agent';
       const bad = (why) => new Error(
-        `brains: ${who} has an unusable \`configuration\` in config.yaml — ${why}. `
+        `brains: ${who} has an unusable \`configuration\` in ${source} — ${why}. `
         + `Write it as an inline map (type/model/effort/verbose_thinking/personality) or as the bare name of a config/agents/<name>.yaml file.`);
       if (configuration === null || configuration === undefined) return null;   // none declared (a relay) — nothing to resolve
       if (typeof configuration === 'object') {
