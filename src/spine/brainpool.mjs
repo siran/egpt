@@ -351,7 +351,7 @@ function shapeDef(name, def, agent = {}, brainType = 'ccode') {
 // view calls this SAME resolver instead of re-deriving the algorithm a second time
 // (name-the-existing-thing). createBrainPool's turn() below now calls this exported version,
 // passing its own closure vars, in place of the private closure this used to be.
-export function resolveBeingDef(being, convDir, { getConfig = () => ({}), brains = null, brainType = 'ccode' } = {}) {
+export function resolveBeingDef(being, convDir, { getConfig = () => ({}), brains = null, brainType = 'ccode', configuration = null, onLog = () => {} } = {}) {
   const agent = ((getConfig() ?? {}).agents ?? {})[being];
   // `configuration: relay` is a WORD, so only a STRING can be it (operator 2026-09-07). The old
   // `String(agent.configuration ?? '')` coercion happened to give the right answer for the new
@@ -359,7 +359,31 @@ export function resolveBeingDef(being, convDir, { getConfig = () => ({}), brains
   // which is exactly the kind of accident that stops being right later. Ask the question directly.
   const isRelay = typeof agent?.configuration === 'string' && agent.configuration.toLowerCase() === 'relay';
   if (agent && typeof agent === 'object' && !Array.isArray(agent) && !isRelay) {
-    const def = brains?.resolve?.(agent.configuration, { convDir, agent: being }) ?? null;
+    // THE CONVERSATION'S OWN `configuration:` (operator 2026-09-17: "we need to honor the key in
+    // conversations.yaml"). `configuration` is conversations.yaml's agents.<being>.configuration
+    // for the conversation this being's instance lives in — read by resolveConv beside
+    // accessLevel, so it joins the scope — or null where none is stated, which leaves this
+    // function exactly as it was. SAME two forms, SAME brains.resolve, so a bad value is refused
+    // by the very code that refuses a bad config.yaml one.
+    //
+    // What differs is what the refusal COSTS. conversations.yaml is hand-edited and never checked
+    // at boot, so it must not take the being down: it is logged every turn it is read (the "loud
+    // at the point of use" shape of resolveConv's sandbox contradiction) and the being runs on its
+    // config.yaml configuration, the answer it had before that line was written. A NAME with no
+    // type file is refused too: config.yaml's tier drops to the bare def below for that, but a
+    // typo in one chat must not quietly swap the being's model for the CLI default.
+    let def = null;
+    if (configuration != null) {
+      const own = agent.configuration;
+      const instead = `running on config.yaml's configuration (${typeof own === 'string' ? own : (own ? 'an inline map' : 'none')}) instead`;
+      try {
+        def = brains?.resolve?.(configuration, { convDir, agent: being, source: 'conversations.yaml' }) ?? null;
+        if (!def) onLog(`brainpool: agent '${being}' has an unusable \`configuration\` in conversations.yaml — '${configuration}' names no config/agents/${configuration}.yaml (${convDir}); ${instead}`);
+      } catch (e) {
+        onLog(`brainpool: ${e?.message ?? e} (${convDir}); ${instead}`);
+      }
+    }
+    def ??= brains?.resolve?.(agent.configuration, { convDir, agent: being }) ?? null;
     if (def) return shapeDef(being, def, agent, brainType);
     // configuration named but no file → fall through to the bare def (keeps the being runnable)
   }
@@ -726,6 +750,12 @@ export function createBrainPool({
       // same rule allowed_users follows: a half-overridden compaction policy assembled from two
       // files is far harder to reason about than one that says what it means where it is written.
       compaction: b?.compaction ?? getConfig()?.agents?.[being]?.conversation_defaults?.compaction ?? null,
+      // CONFIGURATION for THIS conversation (operator 2026-09-17), read from the scope's block like
+      // everything above except `mode`. RAW, and ONE tier here: the fallback is not
+      // conversation_defaults but agents.<being>.configuration itself, and resolveBeingDef — the
+      // one resolver turn() and /agents share — is where the two are resolved and a bad value
+      // refused. null = this conversation states none.
+      configuration: b?.configuration ?? null,
     };
   }
 
@@ -737,7 +767,7 @@ export function createBrainPool({
       // derives from it and none from `ev`: thread, warm key, conv dir, run config, transcript
       // roll, thread stats. `ev` still owns what belongs to the MESSAGE — its line, its reply,
       // its own transcript (see resolveConv above).
-      const { scope, slug, sessionId, identityRefreshArmed, mode, accessLevel, allowedUsers, sandboxed, verboseThinking, compaction: compactionOver } = await resolveConv(ev, being);
+      const { scope, slug, sessionId, identityRefreshArmed, mode, accessLevel, allowedUsers, sandboxed, verboseThinking, compaction: compactionOver, configuration } = await resolveConv(ev, being);
       if (!slug) throw new Error(`brainpool: no slug for ${scope.surface}/${scope.chatId}`);
 
       // STRUCTURAL SAFETY GATE (operator 2026-08-16; refined 2026-08-20). Refuses the ENTIRE
@@ -799,7 +829,8 @@ export function createBrainPool({
       // dangerously_skip_permissions:true skips coercion (see confinementFor's comment above) —
       // the type file's allowed_tools (which may legitimately include bare Bash/Agent) passes
       // through verbatim rather than being capped to DEFAULT_ALLOWED_TOOLS.
-      const rawDef = resolveBeingDef(being, convDir, { getConfig, brains, brainType });
+      // `configuration` is this conversation's own (resolveConv) — null where it states none.
+      const rawDef = resolveBeingDef(being, convDir, { getConfig, brains, brainType, configuration, onLog });
       let def = rawDef.dangerously_skip_permissions === true ? rawDef : coerceAllowedTools(rawDef);   // 'all' → explicit list (rejected)
       let runModel, runEffort;
       if (being === defaultKey) {

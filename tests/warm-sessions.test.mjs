@@ -338,6 +338,75 @@ describe('warm-session pool', () => {
     expect(made.length).toBe(1);
   });
 
+  // THE CONFIGURATION GUARD (operator 2026-09-17), beside the session-identity one and shaped
+  // like it. A warm process takes its model/effort at spawn, so a conversation repointed to
+  // another configuration (conversations.yaml agents.<being>.configuration) would keep running
+  // on the old one for as long as it stays warm. Idle-only; never mid-turn.
+  function heldFactory() {
+    const made = [];
+    const makeSession = (opts) => {
+      const s = {
+        opts, closed: false, turns: [], pending: null,
+        get sessionId() { return opts.sessionId ?? null; },
+        close() { this.closed = true; },
+        turn(msg) { this.turns.push(msg); if (!this.hold) return Promise.resolve({ text: `echo:${msg}`, sessionId: this.sessionId }); return new Promise((r) => { this.pending = r; }); },
+        finish(v) { const r = this.pending; this.pending = null; r?.(v); },
+      };
+      made.push(s);
+      return s;
+    };
+    return { makeSession, made };
+  }
+
+  it('evicts + reopens an IDLE session when the next turn asks for a different model, and says so', async () => {
+    const { makeSession, made } = heldFactory();
+    const logs = [];
+    const pool = createWarmPool({ makeSession, onLog: (m) => logs.push(m) });
+    await pool.run('egpt:ccode:whatsapp:crc', 'a', () => {}, { brainOptions: { sessionId: 'SID00001', model: 'sonnet', effort: 'high' } });
+    await pool.run('egpt:ccode:whatsapp:crc', 'b', () => {}, { brainOptions: { sessionId: 'SID00001', model: 'opus', effort: 'high' } });
+    expect(made.length).toBe(2);
+    expect(made[0].closed).toBe(true);
+    expect(made[1].opts).toMatchObject({ sessionId: 'SID00001', model: 'opus', effort: 'high' });   // same thread, new model
+    expect(logs.some((l) => /evicted egpt:ccode:whatsapp:crc \(configuration changed: model sonnet→opus\)/.test(l))).toBe(true);
+  });
+
+  it('evicts + reopens an IDLE session when only the effort changes', async () => {
+    const { makeSession, made } = heldFactory();
+    const pool = createWarmPool({ makeSession });
+    await pool.run('k', 'a', () => {}, { brainOptions: { sessionId: 'SID00001', model: 'opus', effort: 'high' } });
+    await pool.run('k', 'b', () => {}, { brainOptions: { sessionId: 'SID00001', model: 'opus', effort: 'xhigh' } });
+    expect(made.length).toBe(2);
+    expect(made[1].opts.effort).toBe('xhigh');
+  });
+
+  it('does NOT evict a BUSY session — the new configuration waits for the turn in flight', async () => {
+    const { makeSession, made } = heldFactory();
+    const pool = createWarmPool({ makeSession });
+    await pool.run('k', 'a', () => {}, { brainOptions: { sessionId: 'SID00001', model: 'sonnet', effort: 'high' } });
+    made[0].hold = true;
+    const busy = pool.run('k', 'b', () => {}, { brainOptions: { sessionId: 'SID00001', model: 'sonnet', effort: 'high' } });
+    await sleep(2);                                          // turn 'b' is now in flight
+    const queued = pool.run('k', 'c', () => {}, { brainOptions: { sessionId: 'SID00001', model: 'opus', effort: 'high' } });
+    expect(made.length).toBe(1);
+    expect(made[0].closed).toBe(false);                      // never guillotined mid-turn
+    made[0].hold = false;
+    made[0].finish({ text: 'b', sessionId: 'SID00001' });
+    await Promise.all([busy, queued]);
+    expect(made[0].turns).toEqual(['a', 'b', 'c']);
+  });
+
+  it('no churn when the model/effort are unchanged, or when a caller states none (compaction\'s /compact omits effort)', async () => {
+    const { makeSession, made } = heldFactory();
+    const pool = createWarmPool({ makeSession });
+    await pool.run('k', 'a', () => {}, { brainOptions: { sessionId: 'SID00001', model: 'opus', effort: 'high' } });
+    await pool.run('k', 'b', () => {}, { brainOptions: { sessionId: 'SID00001', model: 'opus', effort: 'high' } });
+    await pool.run('k', '/compact', () => {}, { brainOptions: { sessionId: 'SID00001', cwd: '/c', model: 'opus', allowedTools: [] } });
+    await pool.run('k', '/compact', () => {}, { brainOptions: { sessionId: 'SID00001', cwd: '/c', model: null, allowedTools: [] } });
+    await pool.run('k', 'c');
+    expect(made.length).toBe(1);
+    expect(made[0].turns).toEqual(['a', 'b', '/compact', '/compact', 'c']);
+  });
+
   // TTL CONVENTION (operator 2026-07-26: "'never evict' should be -1, 0 always,
   // right?"). Warm now speaks the house dialect used by posts_back_delay_ms and
   // guard.turns: -1 = never idle-evict, 0 = always evict (immediately, never kept

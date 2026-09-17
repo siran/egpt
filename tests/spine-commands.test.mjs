@@ -1619,6 +1619,35 @@ describe('/agents <handle>|all — bare status view, usage, and /e/egpt retireme
     expect(tools(sent[0].text)).toBe(tools(sentAll[0].text));
   });
 
+  // conversations.yaml agents.<being>.configuration (operator 2026-09-17): the status view claims
+  // to show what the being's NEXT turn runs with, so it resolves through the SAME resolveBeingDef
+  // with the SAME per-conversation value turn() hands it — and names where the answer came from.
+  it("/agents <handle> shows THIS conversation's configuration, and the model/effort it resolves to", async () => {
+    const config = { agents: { egpt: { configuration: 'sonnet-default', default: true } } };
+    const defs = { 'sonnet-default': { type: 'ccode', model: 'sonnet', effort: 'high' }, 'opus-high': { type: 'ccode', model: 'opus', effort: 'high' } };
+    const brains = { resolve: (c) => (typeof c === 'object' ? { name: null, ...c } : (defs[c] ? { name: c, ...defs[c] } : null)) };
+    const room = (fields) => patchContact(
+      ensureContact(emptyState(), 'whatsapp', '!crc', { pushedName: 'Reencuentro CRC', slugHint: 'crc' }).state,
+      'whatsapp', '!crc', { agents: { egpt: fields } },
+    );
+
+    const { cmds, sent } = harness({ state: room({ configuration: 'opus-high' }), config, brains });
+    await cmds.run({ chatId: '!crc', surface: 'whatsapp', body: '/agents egpt' });
+    expect(sent[0].text).toMatch(/configuration: opus-high \(this conversation\)/);
+    expect(sent[0].text).toMatch(/model: opus\neffort: high/);
+
+    const inline = harness({ state: room({ configuration: { type: 'ccode', model: 'haiku', effort: 'low' } }), config, brains });
+    await inline.cmds.run({ chatId: '!crc', surface: 'whatsapp', body: '/agents egpt' });
+    expect(inline.sent[0].text).toMatch(/configuration: \{"type":"ccode","model":"haiku","effort":"low"\} \(this conversation\)/);
+    expect(inline.sent[0].text).toMatch(/model: haiku\neffort: low/);
+
+    // No per-conversation key → config.yaml's, named as such.
+    const plain = harness({ state: room({ mode: 'on' }), config, brains });
+    await plain.cmds.run({ chatId: '!crc', surface: 'whatsapp', body: '/agents egpt' });
+    expect(plain.sent[0].text).toMatch(/configuration: sonnet-default \(config\.yaml\)/);
+    expect(plain.sent[0].text).toMatch(/model: sonnet\neffort: high/);
+  });
+
   it("REGRESSION: a being with NO access_level still previews its own type file's tools — the override fires only for a real level", async () => {
     let state = ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state;
     state = patchContact(state, 'whatsapp', '!room', { agents: { e: { mode: 'on' } } });

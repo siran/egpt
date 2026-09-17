@@ -999,6 +999,12 @@ export function getBeing(state, surface, jid, being) {
     // brainpool's resolveConv — getBeing reports what the file SAYS, one place decides what it
     // MEANS. null = no override at this tier, fall to conversation_defaults and then the node.
     compaction:         _obj(b?.compaction)     ?? null,
+    // WHICH BRAIN DEF this being runs on in THIS conversation (operator 2026-09-17: "we need to
+    // honor the key in conversations.yaml") — the same two forms config.yaml's
+    // agents.<being>.configuration takes: a bare type name (config/agents/<name>.yaml) or an
+    // inline map. RAW, like allowNewInput: brainpool's resolveBeingDef resolves and validates it.
+    // null = no override, the config.yaml configuration applies.
+    configuration:      b?.configuration        ?? null,
   };
 }
 
