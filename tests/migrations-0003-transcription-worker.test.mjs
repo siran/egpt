@@ -48,7 +48,15 @@ const KG = [
   '',
 ].join('\r\n');
 
-const DO = `transcription_service:
+const DO = `transcriptor:
+  enabled: true
+  port: 23390
+  server:
+    enabled: true
+transcription:
+  cli:
+    model_path: C:\\Users\\an\\bin\\whisper.cpp\\models\\ggml-large-v3.bin
+transcription_service:
   enabled: true
   use_config: do
   echo:
@@ -136,8 +144,9 @@ describe('0003 on do - already there', () => {
   it('through the runner, on a Windows node already migrated by hand: recorded, file untouched, no backup', async () => {
     const h = home(DO);
     const dir = join(import.meta.dirname, '..', 'migrations');
-    // Stub the Windows probes of 0001/0002 to "nothing there", so this exercises 0003 only.
-    const ctx = { ps: () => JSON.stringify({ map: [], services: [], from: { exists: false }, to: { exists: false } }) };
+    // Stub the Windows probes of 0001/0002 to "nothing there", and the fixture carries do's transcriptor
+    // block already on, so 0007 reads satisfied: this exercises 0003 only.
+    const ctx = { ps: () => JSON.stringify({ map: [], services: [], from: { exists: false }, to: { exists: false } }), localAddresses: new Set() };
     const { exitCode } = await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     const ledger = JSON.parse(readFileSync(join(h, 'state', 'migrations-applied.json'), 'utf8'));
@@ -149,7 +158,8 @@ describe('0003 on do - already there', () => {
   it('through the runner, DRY RUN on kg: prints the two lines and writes nothing at all', async () => {
     const h = home(KG);
     const lines = [];
-    const ctx = { ps: () => JSON.stringify({ map: [], services: [], from: { exists: false }, to: { exists: false } }) };
+    // localAddresses empty: on dolly itself, kg's worker address would otherwise read as this node's own.
+    const ctx = { ps: () => JSON.stringify({ map: [], services: [], from: { exists: false }, to: { exists: false } }), localAddresses: new Set() };
     const { exitCode } = await runMigrations({ dir: join(import.meta.dirname, '..', 'migrations'), egptHome: h, dryRun: true, elevated: false, platform: 'win32', ctx, log: (l) => lines.push(l) });
     expect(exitCode).toBe(0);
     expect(lines.join('\n')).toContain('+     worker:');
