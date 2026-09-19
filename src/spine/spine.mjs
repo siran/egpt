@@ -644,12 +644,18 @@ export function createSpine({
     // channel records the message, notes the refusal, and says nothing in the chat.
     //
     // THE OPERATOR'S TWO RECOVERY PATHS ARE EXEMPT, through the SAME predicates that already
-    // exempt them from the guard: the lifecycle commands (isLifecycle — "the operator's way back
-    // out of a broken node") and the STOP/RESUME control words. A stand-down whose drain wedges
-    // must not also swallow the /restart that would clear it.
-    if (standingDown && !isLifecycle(ev) && !(ev.authorized && parseStopWord(ev.body))) {
-      note(`standdown: refusing ${ev.surface}/${ev.chatId} — recorded, not dispatched`);
-      return;
+    // exempt them from the guard: an admitted lifecycle command, or a STOP/RESUME word that
+    // actually acts as a control here. Outside Self, "stop" is text and cannot start a new turn
+    // during the drain. A stand-down whose drain wedges must still accept /restart.
+    if (standingDown) {
+      const word = ev.authorized ? parseStopWord(ev.body) : null;
+      const lifecycle = isLifecycle(ev) && commands?.isCommand?.(ev);
+      const control = (word === 'stop' && stopSwitch && humanTurn(ev) && isSelfChat(ev))
+        || (guard && (word === 'resume' || word === 'resume_all'));
+      if (!lifecycle && !control) {
+        note(`standdown: refusing ${ev.surface}/${ev.chatId} — recorded, not dispatched`);
+        return;
+      }
     }
     // Radio relay: a genuine inbound voice note, in a room joined to a radio, airs on the
     // station (createRadioNoteRelay owns the rest of the gate — joined+enabled, sender→speaker,

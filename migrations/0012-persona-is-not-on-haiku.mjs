@@ -7,12 +7,12 @@
 // "please change as in KG, sonnet high".
 //
 // THE RULE, AS A PROPERTY OF THE NODE, not as "edit do": the default persona does not answer on
-// haiku. Where the persona's `configuration` names a type file whose `model` is `haiku`, it is
-// repointed to `sonnet-high`. kg's persona is on `sonnet-default`, whose model is sonnet, so kg
-// reads SATISFIED and is left alone — the same one rule, asked of each node.
+// haiku. A named Haiku type is repointed to `sonnet-high`; an inline Haiku definition has its
+// model and effort changed in place. kg's persona is on `sonnet-default`, whose model is sonnet,
+// so kg reads SATISFIED and is left alone — the same one rule, asked of each node.
 //
-// THE MODEL IS READ, NEVER GUESSED FROM THE NAME: `configuration` names a file, and the file says
-// what model it is. config/agents/<name>.yaml in the node's own profile is the only thing asked.
+// THE MODEL IS READ, NEVER GUESSED FROM THE NAME: a named configuration reads its type file; an
+// inline configuration reads its own model. A named target must declare sonnet/high before any edit.
 //
 // WHICH NODE: the one agent carrying `default: true` — the persona, whose key boot injects as
 // defaultBeing (0011's personaOf, same shape). None means this node has no persona, which is
@@ -21,30 +21,23 @@
 //
 // SATISFIED, NOT REFUSED — a refusal STOPS THE WHOLE CHAIN (setup/migrate.mjs), so a migration
 // only refuses about a node it actually applies to (the 0003/0007/0011 lesson): no `agents:`
-// mapping; no persona; no config/agents/sonnet-high.yaml in the profile (nothing to repoint TO, so
-// this is not a node this migration can act on — said in the note, and checked BEFORE anything it
-// could refuse over); the persona's type file already resolves to a non-haiku model.
+// mapping; no persona; no config/agents/sonnet-high.yaml for a named configuration (nothing to
+// repoint TO, checked before refusals); the persona's model is already non-haiku.
 //
-// IT REFUSES, NAMING THE PLACE, when: more than one agent carries `default: true`; the persona's
-// `configuration` is an inline map rather than a name (a splice repoints a scalar, it cannot
-// rewrite a map into a name); the persona has no `configuration` key at all; or the named type
-// file is missing or does not parse — that node is ALREADY broken, and a silent repoint would hide
-// it behind a migration that claims to have fixed something.
+// IT REFUSES, NAMING THE PLACE, when: more than one agent carries `default: true`; the persona has
+// no `configuration`; a Haiku inline map has no scalar effort; or a named type file is missing or
+// invalid. A named target with the wrong model/effort is refused before config.yaml is written.
 //
-// THE EDIT is one scalar through the splice (src/tools/config-io.mjs spliceYamlScalar), plus that
-// line's own trailing comment: on do the line documents itself with `# config/agents/haiku-low.yaml
-// (SHIPPED; ...)`, and repointing the value alone would leave a comment naming the file the node no
-// longer uses — worse than no comment. Same line, same splice, one `comment:` option. Verified on
-// both sides: the splice itself proves the edited text re-parses to the old document with only that
-// scalar changed, and the line count/line diff below proves the FILE is byte-identical apart from
-// that one line. A line with no trailing comment gets none invented for it.
+// THE EDIT uses spliceYamlScalar (src/tools/config-io.mjs). A named configuration changes one
+// scalar and its trailing comment, if present. An inline definition changes its model and effort
+// scalars, preserving its personality and every other field. Reparse and line diffs verify each.
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import * as YAML from 'yaml';
 import { spliceYamlScalar } from '../src/tools/config-io.mjs';
 
 export const elevated = false;
-export const summary = "the node's default persona does not answer on haiku - its `configuration` is repointed to sonnet-high";
+export const summary = "the node's default persona moves from haiku to sonnet high";
 
 const TARGET = 'sonnet-high';
 const HAIKU = 'haiku';
@@ -90,49 +83,63 @@ export async function plan(ctx) {
   const persona = personaOf(agents);
   if (persona === null) return { satisfied: true, notes: [`no agent in ${file} carries \`default: true\`, so this node has no persona`] };
 
-  // Checked before anything below it: a node without the type file to repoint TO is not a node
-  // this migration can act on, and refusing it over that node's other state would stop its whole
-  // chain over something none of this migration's business.
+  const def = agents[persona];
+  const inline = def?.configuration && typeof def.configuration === 'object' && !Array.isArray(def.configuration);
+  // A named configuration needs the target file. An inline definition can be edited in place.
   const target = join(ctx.egptHome, 'config', 'agents', `${TARGET}.yaml`);
-  if (!existsSync(target)) {
+  if (!inline && !existsSync(target)) {
     return { satisfied: true, notes: [`there is no ${target} on this node, so there is nothing for agents.${persona}.configuration to be repointed to - left alone`] };
   }
 
-  const def = agents[persona];
   if (!Object.hasOwn(def, 'configuration')) refuse(`agents.${persona} in ${file} has no \`configuration\` key, so there is nothing to repoint`);
   const current = def.configuration;
-  if (current && typeof current === 'object') {
-    refuse(`agents.${persona}.configuration in ${file} is an inline ${Array.isArray(current) ? 'list' : 'map'}, not the name of a type file - a splice repoints a name, it cannot rewrite a map`);
-  }
-  if (typeof current !== 'string') refuse(`agents.${persona}.configuration in ${file} is ${JSON.stringify(current)}, not the name of a type file`);
+  if (Array.isArray(current)) refuse(`agents.${persona}.configuration in ${file} is a list, not a type file name or inline map`);
+  if (!inline && typeof current !== 'string') refuse(`agents.${persona}.configuration in ${file} is ${JSON.stringify(current)}, not the name of a type file`);
 
-  const { file: typeFile, model } = typeFileModel(ctx.egptHome, current);
+  const { file: typeFile, model } = inline
+    ? { file: null, model: current.model }
+    : typeFileModel(ctx.egptHome, current);
   if (model !== HAIKU) {
-    return { satisfied: true, notes: [`agents.${persona}.configuration is ${current}, and ${typeFile} is model ${JSON.stringify(model ?? null)} - this node's persona does not answer on ${HAIKU}`] };
+    const where = inline ? `agents.${persona}.configuration is an inline map` : `agents.${persona}.configuration is ${current}, and ${typeFile}`;
+    return { satisfied: true, notes: [`${where} is model ${JSON.stringify(model ?? null)} - this node's persona does not answer on ${HAIKU}`] };
   }
 
-  // Does THAT line carry a trailing comment for the splice to rewrite? Read off the line, not off
-  // `node.comment`: the parser also fills that field from a comment on the NEXT line when the next
-  // line is indented deeper than the key.
-  const valueEnd = doc.getIn(['agents', persona, 'configuration'], true).range[1];
-  const nl = text.indexOf('\n', valueEnd);
-  const documented = /^[ \t]*#/.test(text.slice(valueEnd, nl === -1 ? text.length : nl));
-
-  const next = spliceYamlScalar(text, ['agents', persona, 'configuration'], {
-    expect: current, to: TARGET, ...(documented ? { comment: COMMENT } : {}),
-  });
+  let next;
+  if (inline) {
+    if (typeof current.effort !== 'string') refuse(`agents.${persona}.configuration.effort in ${file} is ${JSON.stringify(current.effort)}, not a scalar effort`);
+    next = spliceYamlScalar(text, ['agents', persona, 'configuration', 'model'], { expect: HAIKU, to: 'sonnet' });
+    next = spliceYamlScalar(next, ['agents', persona, 'configuration', 'effort'], { expect: current.effort, to: 'high' });
+  } else {
+    let targetDef;
+    try { targetDef = YAML.parse(readFileSync(target, 'utf8')); } catch (e) { refuse(`${target} does not parse: ${e.message}`); }
+    if (!targetDef || typeof targetDef !== 'object' || Array.isArray(targetDef)
+      || targetDef.model !== 'sonnet' || targetDef.effort !== 'high') {
+      refuse(`${target} must declare model: sonnet and effort: high before repointing agents.${persona}.configuration`);
+    }
+    // Read the comment off the line: node.comment can also include a comment on the next line.
+    const valueEnd = doc.getIn(['agents', persona, 'configuration'], true).range[1];
+    const nl = text.indexOf('\n', valueEnd);
+    const documented = /^[ \t]*#/.test(text.slice(valueEnd, nl === -1 ? text.length : nl));
+    next = spliceYamlScalar(text, ['agents', persona, 'configuration'], {
+      expect: current, to: TARGET, ...(documented ? { comment: COMMENT } : {}),
+    });
+  }
 
   // The splice already proved the edit re-parses to this document with only that scalar changed.
   // The comment is not part of that parse, so the BYTES are checked too: one line, and no other.
   const a = text.split('\n');
   const b = next.split('\n');
   const at = a.length === b.length ? a.flatMap((l, i) => (l === b[i] ? [] : [i])) : null;
-  if (at === null || at.length !== 1) refuse(`the edit would change ${at === null ? 'the line count' : `${at.length} lines`} of ${file}, not one line`);
+  if (at === null || at.length < 1 || at.length > (inline ? 2 : 1)) refuse(`the edit would change ${at === null ? 'the line count' : `${at.length} lines`} of ${file}, not ${inline ? 'one or two' : 'one'} line`);
   const i = at[0];
 
   return {
     satisfied: false,
-    changes: [
+    changes: inline ? [
+      ...at.flatMap((line) => [`${file}:${line + 1}`, `  - ${a[line].replace(/\r$/, '')}`, `  + ${b[line].replace(/\r$/, '')}`]),
+      `inline model ${HAIKU} and effort ${current.effort} become sonnet and high`,
+      'backup first, beside it: config.yaml.bak-0012-<timestamp>',
+    ] : [
       `${file}:${i + 1}`,
       `  - ${a[i].replace(/\r$/, '')}`,
       `  + ${b[i].replace(/\r$/, '')}`,
