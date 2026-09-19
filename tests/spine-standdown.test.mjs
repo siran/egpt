@@ -56,14 +56,14 @@ const fakeRouter = { resolve: () => ({ being: 'e', mention: { atEStart: true, at
 const fakeGating = { async decide() { return { mode: 'mention', receives: true, mayReply: true, sendToEgpt: 'mode' }; }, surfaces: () => true };
 const fakeHeartbeats = { runDue() {} };
 
-function build({ commands = null } = {}) {
+function build({ commands = null, stopSwitch = null, isSelfChat = () => false } = {}) {
   const bridge = fakeBridge();
   const sender = recordingSender();
   const brain = gatedBrain();
   const logged = [];
   const transcript = { async log(ev) { logged.push(ev.body); } };
   const spine = createSpine({
-    bridge, brain, commands,
+    bridge, brain, commands, stopSwitch, isSelfChat,
     identity: fakeIdentity, router: fakeRouter, gating: fakeGating,
     sender, transcript, heartbeats: fakeHeartbeats,
     clock: { now: () => 1000 },
@@ -131,6 +131,60 @@ describe('spine — the deferred stand-down', () => {
     await bridge.emit(mention('/status', 'm2'));    // an ORDINARY command is refused like any other turn
     await flush();
     expect(ran).toEqual(['/restart']);
+  });
+
+  it('treats stop outside Self as text, so it cannot start a turn during standdown', async () => {
+    const { spine, bridge, brain, logged } = build();
+    const first = bridge.emit(mention('one', 'm1'));
+    await flush();
+    spine.standdown(() => {});
+
+    const second = bridge.emit(mention('stop', 'm2', { authorized: true }));
+    await flush();
+    expect(brain.calls.map((c) => c.body)).toEqual(['one']);
+    expect(logged).toEqual(['one', 'stop']);
+
+    brain.releaseFirst();
+    await Promise.all([first, second]);
+    expect(brain.calls.map((c) => c.body)).toEqual(['one']);
+  });
+
+  it('still accepts an authorized human stop in Self during standdown', async () => {
+    const pulled = [];
+    const { spine, bridge, brain } = build({
+      stopSwitch: { pull: async (reason) => pulled.push(reason) },
+      isSelfChat: () => true,
+    });
+    const first = bridge.emit(mention('one', 'm1'));
+    await flush();
+    spine.standdown(() => {});
+
+    await bridge.emit(mention('stop', 'm2', { authorized: true }));
+    expect(pulled).toHaveLength(1);
+    expect(brain.calls.map((c) => c.body)).toEqual(['one']);
+
+    brain.releaseFirst();
+    await first;
+  });
+
+  it('does not admit an unauthorized lifecycle word as a turn during standdown', async () => {
+    const ran = [];
+    const commands = {
+      isCommand: (ev) => ev.authorized === true && String(ev.body).startsWith('/'),
+      run: async (ev) => ran.push(ev.body),
+    };
+    const { spine, bridge, brain } = build({ commands });
+    const first = bridge.emit(mention('one', 'm1'));
+    await flush();
+    spine.standdown(() => {});
+
+    const second = bridge.emit(mention('/restart', 'm2'));
+    await flush();
+    expect(brain.calls.map((c) => c.body)).toEqual(['one']);
+    expect(ran).toEqual([]);
+
+    brain.releaseFirst();
+    await Promise.all([first, second]);
   });
 
   it('(d) a second token while one is pending is ignored (the successor retries the PORT, it does not re-announce)', async () => {

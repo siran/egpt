@@ -166,7 +166,7 @@ describe('config/skeletons/config.yaml', () => {
     const doc = YAML.parse(text);
     // agents is the shipped centerpiece now (operator 2026-07-02) — the persona agent
     expect(doc.agents?.egpt).toMatchObject({
-      configuration: { type: 'ccode', model: 'haiku', effort: 'low', personality: 'egpt' },
+      configuration: { type: 'ccode', model: 'sonnet', effort: 'high', personality: 'egpt' },
       handles: ['e', 'egpt', 'ekg'],
       default: true,
     });

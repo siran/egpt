@@ -166,10 +166,35 @@ describe('0012 refuses, naming the place', () => {
       .toThrow(/0012 refuses: the default persona cannot be identified: 2 agents carry `default: true` \(egpt, e\)/);
   });
 
-  it('the persona\'s `configuration` is an inline map, which a splice cannot repoint', async () => {
+  it('changes an inline Haiku definition to Sonnet high without replacing its other fields', async () => {
     const inline = DO.replace(DO_LINES[DO_LINE_NO - 1], '    configuration: { type: ccode, model: haiku, effort: low }');
-    await expect(plan(ctxFor(home({ config: inline })))).rejects
-      .toThrow(/0012 refuses: agents\.egpt\.configuration in .* is an inline map, not the name of a type file - a splice repoints a name/);
+    const h = home({ config: inline });
+    await (await plan(ctxFor(h))).apply();
+    expect(readFileSync(cfgPath(h), 'utf8')).toBe(inline.replace('model: haiku, effort: low', 'model: sonnet, effort: high'));
+    expect(await plan(ctxFor(h))).toMatchObject({ satisfied: true });
+  });
+
+  it('changes the shipped block-style inline definition without touching its personality', async () => {
+    const inline = DO.replace(DO_LINES[DO_LINE_NO - 1], [
+      '    configuration:',
+      '      type: ccode',
+      '      model: haiku',
+      '      effort: low',
+      '      personality: egpt',
+    ].join('\r\n'));
+    const h = home({ config: inline, types: without('sonnet-high') });
+    await (await plan(ctxFor(h))).apply();
+    expect(readFileSync(cfgPath(h), 'utf8')).toBe(inline.replace('model: haiku', 'model: sonnet').replace('effort: low', 'effort: high'));
+    expect(await plan(ctxFor(h))).toMatchObject({ satisfied: true });
+  });
+
+  it('refuses a named target that is not Sonnet high before writing config.yaml', async () => {
+    for (const target of ['model: haiku\neffort: high\n', 'model: sonnet\neffort: low\n']) {
+      const h = home({ types: { ...TYPES, 'sonnet-high': target } });
+      await expect(plan(ctxFor(h))).rejects.toThrow(/sonnet-high\.yaml must declare model: sonnet and effort: high/);
+      expect(readFileSync(cfgPath(h), 'utf8')).toBe(DO);
+      expect(readdirSync(join(h, 'config')).filter((f) => f.includes('.bak-'))).toEqual([]);
+    }
   });
 
   it('the persona has no `configuration` key at all', async () => {

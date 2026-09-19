@@ -144,8 +144,8 @@ agents:
   egpt:
     configuration:                # the brain, written INLINE. An inline map is the WHOLE def and is
       type: ccode                 # merged with nothing, which is how each agent below carries its own
-      model: haiku                # personality while sharing one engine.
-      effort: low
+      model: sonnet               # personality while sharing one engine.
+      effort: high
       verbose_thinking: true
       personality: egpt           # identity feed: config/agents/identities/egpt.md
     #                             # THE OTHER FORM: `configuration: haiku-low` - the bare NAME of a
