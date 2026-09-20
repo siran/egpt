@@ -37,7 +37,9 @@ const CONV = join(HOME, 'conversations', SURFACE, SLUG);
 // A directory in NEITHER class is a pointer to nothing. `transcripts/` — the original offender
 // — joined SEEDED_NOW on 2026-07-26: it is part of the tree now (Room.treeDirs), which is what
 // let the card name it again, and line 72 below still checks that against DISK.
-const SEEDED_NOW = ['directives', 'scripts', 'media', 'transcripts'];
+// desktop/ joined SEEDED_NOW on 2026-09-20, the same way transcripts/ did: it is part of
+// Room.treeDirs, so the card may name it, and the disk check below is what keeps that honest.
+const SEEDED_NOW = ['directives', 'scripts', 'media', 'transcripts', 'desktop'];
 const ON_DEMAND = [];
 
 let seeded;

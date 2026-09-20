@@ -143,6 +143,7 @@ Access is therefore **opt-in and narrow**, and the whole list is:
 | `~\.egpt\conversations` | Pool group, traverse only | same chain |
 | `~\.egpt\conversations\whatsapp` | Pool group, traverse only | same chain |
 | `~\src` | Pool group, traverse only | same chain; skipped where absent |
+| `~\src` | Pool group, **ReadAndExecute**, inherited | the operator's whole source tree, read-only, **standing**. Every pool profile carries a `src` directory junction pointing here (planted by the launcher's scrub pass), and a junction is only a name — what may be done through it is decided by the DACL of the target. Operator 2026-09-20, asked for explicitly: *"can we make that sandbox account's sbx/src/ path points to src/an read-only?"* Permanent, not per-turn, and that is a decision — see below. |
 | `~\.local\bin` | Pool group, ReadAndExecute | `claude.exe` |
 | `%APPDATA%\npm` | Pool group, ReadAndExecute | pi / codex entry JS |
 | `~\.pi\agent` | Pool group, Modify | pi writes there; missing it wedges the turn |
@@ -150,6 +151,22 @@ Access is therefore **opt-in and narrow**, and the whole list is:
 | the conversation folder | leased account, Modify | granted at launch, revoked at exit |
 | each `-SharePath` | leased account, Modify | a being's full-access `allowed_paths`, plus its thread's CLI store; granted at launch, revoked at exit |
 | each `-SharePathReadOnly` | leased account, ReadAndExecute | a being's read-only `allowed_paths`; granted at launch, revoked at exit |
+
+**Two kinds of ACE live on `~\src`, and telling them apart is the whole skill of
+reading an `icacls` dump of that tree.** An ACE naming the **group**
+(`egpt-sandbox-pool`) is one of the standing grants in the table above — it is
+meant to be there. An ACE naming an **individual** `egpt-sbx-NN` is a *lease*
+ACE, granted at launch from some being's `allowed_paths` and supposed to be
+revoked at exit; one still standing is litter. Twelve of them were found on
+`~\src\egpt` on 2026-09-20, one per pool account — see *Leases and residue*.
+
+**Why the `~\src` read grant is standing rather than per-turn.** The `src`
+junction is part of the *shape* of a pool profile: it is there between turns as
+well as during them. A link that only resolved while a lease was held would be
+exactly the failure the per-turn share ACEs exist to close — a directory the
+being is told it may use and that then refuses it. The cost is stated rather
+than hidden: all sixteen pool accounts can read all of the operator's source, at
+all times. That was the ask.
 
 **The traverse chain, and why it is its own kind of grant.** A per-turn ACE on a
 conversation folder is *useless on its own* — but not for the reason it looks
@@ -198,6 +215,18 @@ the SACL (the `PrivilegeNotHeldException` documented on `Protect-SandboxCredDir`
 and against `C:\Users\an` it *hung* twice and had to be killed. Like every grant
 in `sandbox-account.ps1` it is additive — it never narrows an existing ACE — and
 re-running converges rather than accumulating.
+
+The `~\src` **ReadAndExecute** grant goes through `Set-Acl`
+(`Grant-SandboxPoolAccess`), not `icacls`, and that is the one part of it that
+has not been measured on a real node. `Set-Acl` hung twice against
+`C:\Users\an` (see below); the paths it is known-good on — `~\.local\bin`,
+`%APPDATA%\npm`, `~\bin\egpt` — are all far smaller than `~\src`. If a
+provisioner run sits on `~\src` for much more than ten minutes, kill it, grant
+it by hand and re-run — everything else in that script is idempotent:
+
+```powershell
+icacls "$env:USERPROFILE\src" /grant egpt-sandbox-pool:"(OI)(CI)(RX)"
+```
 
 **The provisioner will look hung on `~` and `~\src`, and is not.** Writing any
 DACL on a container makes Windows re-run inheritance propagation over the entire
@@ -257,6 +286,12 @@ icacls C:\Users\$env:USERNAME\src
 icacls C:\Users\$env:USERNAME\.local\bin
 icacls $env:APPDATA\npm
 icacls C:\Users\$env:USERNAME\bin\egpt
+icacls C:\Users\$env:USERNAME\src          # ...alongside the (Rc,X,RA) traverse ACE
+
+# every pool profile has a src junction pointing at it  (expect: <SYMLINKD>-style
+# junction rows; a profile that has not run a turn since 2026-09-20 has none yet)
+Get-ChildItem C:\Users\egpt-sbx-* -Force -Filter src -ErrorAction SilentlyContinue |
+  Select-Object FullName, Target
 
 # a live or leftover per-conversation grant
 icacls C:\Users\$env:USERNAME\.egpt\conversations\whatsapp\<slug>
@@ -279,12 +314,41 @@ lock file that no process holds open is a crashed turn's litter and is reclaimed
 in place. It is taken when the warm session spawns its CLI process and held for
 that process's lifetime, not per turn.
 
-Two kinds of residue are normal to find and worth sweeping occasionally:
+**The hard-kill path is the NORMAL path, not the exceptional one.** The launcher
+revokes its ACEs in a `finally`, and that `finally` does not run at the ordinary
+end of a sandboxed session: `warm-cli-session.mjs`'s `close()` ends the CLI
+process with `proc.kill()`, which on Windows is `TerminateProcess` whatever the
+signal, and a PowerShell `finally` does not survive it. So the **reclaim** —
+taking a lock file no process holds, and revoking whatever its ledger names — is
+what actually does the cleaning.
 
-- **Leftover ACEs.** The revoke is best-effort inside a `finally`, so a turn that
-  dies hard leaves its `Modify` ACE on the conversation folder. Harmless, but
-  they accumulate silently — check with `icacls` on the conversations tree.
-- **Orphaned lock files.** Reclaimed automatically on the next lease attempt.
+The reclaim is keyed to one account and fires when **that account is leased
+again**. An account nothing leases again keeps its ACEs indefinitely, and a path
+that many conversations share collects one per pool account that ever ran. That
+is how `~\src\egpt` came to carry twelve standing `(OI)(CI)(RX)` ACEs
+(2026-09-20), one per pool account, while `~\Documents` and `~\bin\egpt` carried
+none.
+
+Two kinds of residue are therefore normal to find:
+
+- **Leftover ACEs.** Cleared for the whole pool by re-running the provisioner,
+  which sweeps every lock nothing holds through the same reclaim
+  (`Clear-SandboxAbandonedLeases`). It reads each dead lease's own ledger, so it
+  revokes exactly what was granted and never goes hunting through the
+  filesystem; a lock a running turn still holds is left alone. A revoke that
+  fails leaves its path on the ledger and the lock file in place, so the next
+  reclaim retries instead of forgetting — that now holds on the launcher's clean
+  release path too, which used to delete the lock (and its ledger) regardless.
+- **Orphaned lock files.** Reclaimed automatically on the next lease attempt, or
+  by the provisioner sweep above.
+
+```powershell
+# the sweep, and everything else the provisioner does — idempotent, UAC prompt
+powershell -ExecutionPolicy Bypass -File setup\provision-sandbox-account.ps1
+
+# what is left afterwards: group ACEs are meant to be there, egpt-sbx-NN ones are not
+icacls C:\Users\$env:USERNAME\src\egpt | Select-String 'egpt-sbx-'
+```
 
 ## Known gaps
 

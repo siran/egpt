@@ -87,8 +87,16 @@ describe('ONE owner of the Room tree — both creation paths make the SAME tree'
     });
     await cmds.run({ chatId: '!self', surface: SURFACE, body: `/rooms create ${ROOM_NAME}` });
     // '' is the base folder; the rest are the dir getters room-core.mjs declares.
-    expect(treeOf(named.mkdirs, ROOM())).toEqual(['', 'directives', 'files', 'media', 'scripts', 'transcripts']);
+    // desktop/ joined on 2026-09-20 — the being's OWN surface, as opposed to media/ (what
+    // the chat sent), files/ (the operator's shelf) and directives/ + scripts/ (what it was
+    // given). It is here rather than in the sandbox pool profile because that profile is
+    // scratch and is wiped on every lease; the conversation folder is the being's cwd and
+    // the one place it can durably write.
+    expect(treeOf(named.mkdirs, ROOM())).toEqual(['', 'desktop', 'directives', 'files', 'media', 'scripts', 'transcripts']);
   });
+
+  // (The pointers card naming these folders is guarded in tests/pointers.test.mjs, which
+  // derives its set from Room.treeDirs — not duplicated here.)
 
   // REPRODUCE-FIRST (operator 2026-07-26: "why an empty identity.d in namedrooms? fix,
   // please."): the tree existing is not the same as it being SEEDED. /rooms create must

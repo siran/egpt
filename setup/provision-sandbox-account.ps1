@@ -104,6 +104,53 @@ try {
     Write-Host "note: $runningTree not present  - skipping the running-tree grant on this node"
   }
 
+  # THE OPERATOR'S ~\src, READ-ONLY TO THE POOL - AND A DELIBERATELY STANDING GRANT
+  # (operator 2026-09-20: "can we make that sandbox account's sbx/src/ path points to
+  # src/an read-only?").
+  #
+  # This is the other half of the `src` junction the launcher plants in every pool
+  # profile (see Clear-SandboxProfileContents). A junction is only a name: what a leased
+  # account may do through it is decided entirely by the DACL of the TARGET, so without
+  # this grant every pool profile would carry a ~\src the being can see and cannot open.
+  #
+  # STANDING, NOT PER-TURN, AND THAT IS THE DECISION RATHER THAN AN ACCIDENT. Every other
+  # read grant in this file is standing too, but each of those covers one tool's
+  # directory; this one covers ALL of the operator's source, for all 16 pool accounts, at
+  # all times, whether a turn is running or not. It cannot be per-turn: the junction is
+  # part of the profile SHAPE, present on every account between turns as well as during
+  # them, and a link that only resolves while a lease is held would be exactly the "the
+  # being is told it may use a directory that then refuses it" failure that the per-turn
+  # share ACEs exist to close. The operator asked for the pool to see their src; the
+  # honest way to give it is to say so here.
+  #
+  # KEEP THE TWO KINDS APART when reading an icacls dump of this tree. THIS ACE names the
+  # GROUP (egpt-sandbox-pool) and is permanent. An ACE naming an individual egpt-sbx-NN is
+  # a LEASE ACE from a being's `allowed_paths`, granted at launch and revoked at exit; one
+  # of those still standing is litter, and Clear-SandboxAbandonedLeases below is what
+  # clears it.
+  #
+  # ReadAndExecute and nothing more. Windows UNIONS Allow ACEs, so this can never be
+  # narrowed by anything granted later - the same reasoning that made ~\bin\egpt
+  # read-only, and the same reason narrowing it again would be a hand operation.
+  #
+  # SLOW, NOT HUNG - AND THE ONE THING IN THIS CHANGE THAT IS NOT MEASURED. ~\src already
+  # costs about five minutes under Grant-SandboxPoolTraverse on this node (see its header:
+  # writing any DACL on a container makes Windows re-run inheritance propagation over the
+  # whole subtree, and ~\src is full of node_modules). This writes a SECOND DACL on the same
+  # directory, through Set-Acl rather than icacls, and Grant-SandboxPoolTraverse's header
+  # records that Set-Acl HUNG twice against C:\Users\an and had to be killed. It has not hung
+  # on ~\src, but nor has it been tried there: the sibling grants Set-Acl is known-good on
+  # (~\.local\bin, %APPDATA%\npm, ~\bin\egpt) are all far smaller. If this run sits on ~\src
+  # for much more than ten minutes, kill it and grant it by hand instead, then re-run - the
+  # rest of this script is idempotent:
+  #   icacls "%USERPROFILE%\src" /grant egpt-sandbox-pool:(OI)(CI)(RX)
+  $srcDir = Join-Path $env:USERPROFILE 'src'
+  if (Test-Path -LiteralPath $srcDir) {
+    Grant-SandboxPoolAccess -Path $srcDir
+  } else {
+    Write-Host "note: $srcDir not present  - skipping the read-only src grant on this node (the pool profiles' src junction will dangle until it exists)"
+  }
+
   $npmGlobalDir = Join-Path $env:APPDATA 'npm'
   if (Test-Path -LiteralPath $npmGlobalDir) {
     Grant-SandboxPoolAccess -Path $npmGlobalDir
@@ -181,7 +228,30 @@ try {
   # files this locks down. Needs admin, which is exactly why it lives here and
   # not in the (unelevated) launcher.
   Protect-SandboxCredDir
-  Write-Host "OK: sandbox pool ready  - created $($result.Created), already existed $($result.Existed). Group '$SandboxPoolGroup' granted ReadAndExecute on $claudeBinDir and $npmGlobalDir, and traverse-only on the ancestor chain above the conversation folders. Credential dir $CredDir hardened (no BUILTIN\Users access)."
+
+  # THE LEASE LITTER, CLEARED (operator 2026-09-20, measured on kg: twelve standing
+  # `(OI)(CI)(RX)` ACEs on ~\src\egpt, one per pool account). Those are LEASE ACEs from
+  # `allowed_paths` share paths whose turn was killed before its revoke ran - the normal
+  # end of a sandboxed session, not a rare crash, because the warm pool ends a CLI process
+  # with TerminateProcess and a PowerShell `finally` does not survive that. The launcher
+  # revokes them when it next leases the SAME account; an account nothing leases again
+  # keeps them forever, which is how twelve piled up on one shared path.
+  #
+  # This is that same reclaim, over every lock at once, from the one place that is already
+  # operator-run and already idempotent. It reads each dead lease's own ledger, so it
+  # revokes exactly what was granted and never goes hunting through the filesystem. A lock
+  # a running turn still holds is left alone. AFTER Protect-SandboxCredDir, deliberately:
+  # that call rewrites the ACL of the directory these locks live in.
+  $reclaimed = @(Clear-SandboxAbandonedLeases)
+  foreach ($rec in $reclaimed) {
+    if ($rec.Status -eq 'held') { continue }
+    Write-Host "lease $($rec.Account): $($rec.Status)  - $($rec.Message)"
+  }
+  $heldCount = @($reclaimed | Where-Object { $_.Status -eq 'held' }).Count
+  $aceCount = @($reclaimed | ForEach-Object { $_.Aces } | Where-Object { $_.Status -eq 'revoked' }).Count
+  Write-Host "OK: abandoned leases swept  - $(@($reclaimed | Where-Object { $_.Status -eq 'reclaimed' }).Count) lock(s) released, $aceCount leaked ACE(s) revoked, $heldCount lease(s) left alone because a turn still holds them."
+
+  Write-Host "OK: sandbox pool ready  - created $($result.Created), already existed $($result.Existed). Group '$SandboxPoolGroup' granted ReadAndExecute on $claudeBinDir, $npmGlobalDir and $srcDir (the standing read-only view every pool profile's src junction points at), and traverse-only on the ancestor chain above the conversation folders. Credential dir $CredDir hardened (no BUILTIN\Users access)."
 } catch {
   Write-Host "FAILED: $($_.Exception.Message)"
   exit 1

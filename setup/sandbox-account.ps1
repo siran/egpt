@@ -23,6 +23,11 @@ $SandboxPoolGroup = 'egpt-sandbox-pool'
 # (operator 2026-08-30). LocalMachine scope decrypts from any logon session on
 # THIS machine; it is still not portable off the box.
 $CredDir = Join-Path $env:ProgramData 'egpt'
+# The lease locks live under $CredDir (which is why Protect-SandboxCredDir's
+# hardening covers them). Derived HERE rather than in the launcher so that the
+# provisioner's pool-wide reclaim (Clear-SandboxAbandonedLeases, below) and the
+# launcher's per-lease one cannot end up looking in two different directories.
+$SandboxLocksDir = Join-Path $CredDir 'sandbox-pool-locks'
 
 # Every diagnostic goes to STDERR ONLY. The inner process's stdout is wired
 # straight through to THIS script's own stdout handle (step f)  - anything
@@ -660,4 +665,87 @@ function Clear-SandboxStaleLease {
   $carry = @($records | Where-Object { $_.Status -eq 'failed' } | ForEach-Object { $_.Path })
   Write-SandboxLeaseLedger -Stream $Stream -Paths $carry
   return $records
+}
+
+# THE SAME RECLAIM, OVER THE WHOLE LOCKS DIRECTORY AT ONCE - and the answer to
+# the one case Clear-SandboxStaleLease above structurally cannot reach.
+#
+# THE HOLE IT CLOSES (measured on kg 2026-09-20: TWELVE standing
+# `(OI)(CI)(RX)` ACEs on ~\src\egpt, one per pool account). A sandboxed lease is
+# held for the lifetime of the warm CLI process, and that process is ENDED BY
+# TerminateProcess - warm-cli-session.mjs's close() calls proc.kill(), and on
+# Windows every signal is TerminateProcess. So the launcher's `finally` does NOT
+# run at the ordinary end of a sandboxed session: the hard-kill path is the
+# NORMAL path here, not the exceptional one, and the reclaim is what actually
+# does the revoking.
+#
+# But the reclaim is keyed to ONE account and fires only when THAT account is
+# leased again. A conversation that goes quiet - or a being that is retired, or a
+# pool name a shuffle simply does not reach - leaves its lock and its ACEs
+# standing indefinitely. A path shared by MANY conversations (a being's
+# `allowed_paths` entry, e.g. ~\src\egpt) therefore collects one ACE per pool
+# account that ever ran that being, which is exactly what was found.
+#
+# NOT A SWEEPER, AND NOT ON THE TURN PATH. This runs from
+# provision-sandbox-account.ps1 - operator-run, elevated, already idempotent -
+# and it is the SAME function the launcher's reclaim uses, applied to every lock
+# instead of to one. There is no timer, no second lifecycle and no new definition
+# of "revoked". It is deliberately kept OFF the lease-acquire path: revoking on a
+# big shared tree costs minutes (see Grant-SandboxPoolTraverse's note on
+# inheritance re-propagation), and a turn must not pay that for litter that is
+# not its own.
+#
+# A LIVE LEASE IS NEVER TOUCHED. The staleness test is the launcher's own and is
+# exact in both directions: an exclusive open (FileShare::None) succeeds only
+# when no handle is on the file. A lock a running turn holds fails that open and
+# is reported 'held', untouched - and while THIS process holds one, a launcher
+# racing for the same account sees it as live and walks on to the next name.
+#
+# The lock FILE is removed only when the revoke left nothing behind. A lock whose
+# ledger still names a path that could NOT be revoked is kept, ledger and all, so
+# the next reclaim - here or in the launcher - retries instead of forgetting.
+function Clear-SandboxAbandonedLeases {
+  param([string]$LocksDir = $SandboxLocksDir)
+  $records = New-Object System.Collections.Generic.List[object]
+  if (-not (Test-Path -LiteralPath $LocksDir)) { return @() }
+  foreach ($file in @(Get-ChildItem -LiteralPath $LocksDir -Filter '*.lock' -File -ErrorAction SilentlyContinue)) {
+    $account = [System.IO.Path]::GetFileNameWithoutExtension($file.Name)
+    # The lock's NAME is what the revoke is aimed at, so it is guarded before it
+    # is used - the same prefix guard Get-SandboxProfilePath puts first, for the
+    # same reason: nothing reachable from here may purge ACEs belonging to 'an',
+    # 'Administrator', or anything else that is not a pool account.
+    if (-not $account.StartsWith($SandboxPoolPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+      [void]$records.Add([pscustomobject]@{ Account = $account; Lock = $file.FullName; Status = 'skipped'; Message = "not a pool lease lock - its name does not start with '$SandboxPoolPrefix'"; Aces = @() })
+      continue
+    }
+    $stream = $null
+    try {
+      $stream = [System.IO.File]::Open($file.FullName, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+    } catch {
+      [void]$records.Add([pscustomobject]@{ Account = $account; Lock = $file.FullName; Status = 'held'; Message = 'a process still holds this lease open - left alone'; Aces = @() })
+      continue
+    }
+    $aces = @()
+    $stuck = @()
+    try {
+      $aces = @(Clear-SandboxStaleLease -Stream $stream -AccountName $account)
+      $stuck = @($aces | Where-Object { $_.Status -eq 'failed' })
+    } catch {
+      [void]$records.Add([pscustomobject]@{ Account = $account; Lock = $file.FullName; Status = 'failed'; Message = $_.Exception.Message; Aces = @() })
+      continue
+    } finally {
+      $stream.Close()
+    }
+    if ($stuck.Count -gt 0) {
+      [void]$records.Add([pscustomobject]@{ Account = $account; Lock = $file.FullName; Status = 'partial'; Message = "$($stuck.Count) path(s) still granted - the lock is KEPT so the next reclaim retries them"; Aces = $aces })
+      continue
+    }
+    try {
+      Remove-Item -LiteralPath $file.FullName -Force -ErrorAction Stop
+      [void]$records.Add([pscustomobject]@{ Account = $account; Lock = $file.FullName; Status = 'reclaimed'; Message = "$(@($aces | Where-Object { $_.Status -eq 'revoked' }).Count) ACE(s) revoked, lock released"; Aces = $aces })
+    } catch {
+      [void]$records.Add([pscustomobject]@{ Account = $account; Lock = $file.FullName; Status = 'failed'; Message = "the ACEs were cleared but the lock file could not be removed - $($_.Exception.Message)"; Aces = $aces })
+    }
+  }
+  return $records.ToArray()
 }
