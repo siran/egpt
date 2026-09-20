@@ -88,6 +88,10 @@ function harness({ members = [], eGating, turns = 6, tunnelRooms = null, tunnelE
 
   const spine = createSpine({
     bridge, brain, identity, router, gating, sender, transcript, heartbeats,
+    // THIS NODE IS `kg`, wired the way boot wires it (fromOtherNode over ownNodeNamesOf). Without
+    // it every frame — ours and a peer's alike — would read as somebody else's turn, and the
+    // echo cases below would pass here while being dead on a real node (operator 2026-09-20).
+    fromThisNode: (ev) => ev.fromNode != null && String(ev.fromNode).toLowerCase() === 'kg',
     guard, roomRelay, clock: { now: () => 1000 }, turnTimeoutMs: 0,
   });
   return { spine, bridge, brain, transcript, guard, relayCalls, activateCalls, callOrder, posts, channel: 'whatsapp:room-1' };
@@ -414,15 +418,26 @@ describe('room relay — LOOP SAFETY: every cycle built, and the thing that stop
     // Build the cycle anyway, with that gate deliberately failed: hand the escaped echo straight
     // back in. It carries this node's structural signature, and the tunnel synthetic carries
     // `fromNode` ACROSS the re-addressing (identity has already rendered the frame away, so it
-    // cannot be re-read from the body) — so the room turn is NON-HUMAN, counts, and the guard
-    // bounds it instead of a human-looking line resetting the counter on every lap.
+    // cannot be re-read from the body) — so the room turn is NON-HUMAN and cannot reset the
+    // counter on every lap the way a human-looking line would.
+    //
+    // WHAT CHANGED 2026-09-20: it no longer COUNTS either. An escaped echo of our own send is
+    // bookkeeping, not an utterance — "🌴FAMILIA PALMA🌴" was paused for eight hours by six of
+    // them in five seconds. A PEER node's line is a different fact: that is real chatter and it
+    // still counts, which is what keeps this cycle bounded.
     const { spine, guard } = harness({ members: pairOf(), tunnelRooms: [R], turns: 4 });
-    const SIG = encodeNodeSignature('kg');
+    const SIG = encodeNodeSignature('kg');    // OURS
+    const PEER = encodeNodeSignature('do');   // another node's spine
+
+    await spine.handleInbound(human(`otro nodo habla${PEER}`, { chatId: B, msgId: 'peer-1' }));
+    expect(guard.countOf('whatsapp:group-B')).toBe(1);   // another node's line: counted
+    expect(guard.countOf(`room:${R}`)).toBe(1);          // …and counted inside the room too
 
     await spine.handleInbound(human(`hola${SIG}`, { chatId: B, msgId: 'echo-1' }));
 
-    expect(guard.countOf('whatsapp:group-B')).toBe(1);   // the escaped echo itself: non-human
-    expect(guard.countOf(`room:${R}`)).toBe(1);          // …and STILL non-human inside the room
+    expect(guard.countOf('whatsapp:group-B')).toBe(1);   // our own echo: no slot consumed…
+    expect(guard.countOf(`room:${R}`)).toBe(1);          // …and none cleared — the carried
+    //                                                      fromNode is what keeps it non-human
   });
 
   it('2b — ONE HOP: a turn the relay re-entered never tunnels onward, even if the resolver offers it a room', async () => {
@@ -461,17 +476,22 @@ describe('room relay — LOOP SAFETY: every cycle built, and the thing that stop
     expect(pair.relayCalls).toHaveLength(4);
   });
 
-  it("4 — OUR OWN SEND COMING BACK: the bridge's id-exact suppression is the stop; the spine's belt classifies whatever escapes it", async () => {
+  it("4 — OUR OWN SEND COMING BACK: the bridge's id-exact suppression is the stop; whatever escapes it is BOOKKEEPING", async () => {
     // beeper.mjs drops an inbound whose (chat, id) is in `_sentIds`, after awaiting that chat's
     // in-flight sends so the confirmed id is known — the message never reaches the spine at all.
-    // The spine keeps the belt: `bridge.wasSentByUs(chatId, msgId)` in isHumanTurn. Wire it true
-    // and the echo is counted, not treated as a human resetting the loop.
+    // The spine keeps the belt: `bridge.wasSentByUs(chatId, msgId)`, read by turnKind. Wire it
+    // true and the echo is NEITHER counted NOR a reset (operator 2026-09-20) — our own output is
+    // not an utterance. It used to be counted, and that is what filled PALMA's cap.
     const h = harness({ members: pairOf(), tunnelRooms: [R] });
     h.bridge.wasSentByUs = (chatId, msgId) => msgId === 'ours-1';
+    const PEER = encodeNodeSignature('do');
+
+    await h.spine.handleInbound(human(`otro nodo habla${PEER}`, { chatId: B, msgId: 'peer-1' }));
+    expect(h.guard.countOf('whatsapp:group-B')).toBe(1);
 
     await h.spine.handleInbound(human('our own words', { chatId: B, msgId: 'ours-1' }));
 
-    expect(h.guard.countOf('whatsapp:group-B')).toBe(1);   // counted, never a reset
+    expect(h.guard.countOf('whatsapp:group-B')).toBe(1);   // no slot consumed, and none cleared
   });
 });
 

@@ -322,7 +322,7 @@ networks:
 # default_time_zone: "America/New_York"                       # timezone-less heartbeat times
 # warm: { max: 6, idle_ttl_by_class: { conversation: 15m } }  # -1 = never evict, 0 = always
 # compaction: { enabled: true, ratio: 0.20, cooling_ms: 120000 }
-# guard: { turns: 6, window: -1 }   # loop-breaker: N consecutive non-human turns pause a channel (a human msg resets); -1 turns = off, -1 window = pure consecutive count
+# guard: { turns: 6, window: 2 }    # loop-breaker, two triggers: RATE (N non-human turns within `window` MINUTES) and REPETITION (the same line 3× in 10 min, or A,B,A,B). A human msg resets both; a pause is announced in the chat with `resume`. -1 turns = off, -1 window = pure consecutive count
 # lasso: { messages: 18, window_ms: 10000, edits: 4000 }   # outbound ceiling: an over-ceiling emit STOPS the node (config/config-schema.mjs: lasso)
 # advice_channel: "EGPT AUTO"     # mode:auto consult chat (fail-closed if unset)
 # aliases: { "@whatsapp_5215512345678:beeper.local": An }     # /status display labels

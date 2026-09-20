@@ -64,7 +64,7 @@ import { fanoutInbound } from './bridge-fanout.mjs';
 // THE routing table's own two readings (operator 2026-08-31): which chats are TRANSIT (a
 // relay_channel, so not a conversation at all) and whether a frame was committed by ANOTHER
 // node's spine. Both derive from the SAME agents block / node identity every other gate reads.
-import { isRelayChannelChat, ownNodeNamesOf } from './node-names.mjs';
+import { fromOtherNode, isRelayChannelChat, ownNodeNamesOf } from './node-names.mjs';
 import { createIngest, lifecycleExit, isShellConnectMarker } from './ingest.mjs';
 // THE SESSION 1 SUCCESSOR'S ANNOUNCE (chunk 3 of plans/2609061200-SESSION-0-TO-1-HANDOVER-PLAN.md).
 // Absent EGPT_SESSION1 this is one `false` and nothing else runs — every Session 0 spine, every
@@ -2987,21 +2987,29 @@ export async function boot({
   const { finestMs } = await heartbeatLoader.collect();
   const effectiveTickMs = tickMs > 0 ? Math.max(500, Math.min(tickMs, finestMs ?? tickMs)) : tickMs;
 
-  // The SINGLE guard (C7.7, plans/260722-COMMAND-SURFACE-ROADMAP.md phase 3): N consecutive
-  // NON-HUMAN turns pause a channel; a genuine human message resets it (provenance, not display
-  // name — a mesh envelope posted AS the operator counts). Replaces the flood-guard + mesh
-  // breaker. Config `guard: { turns, window }` (turns -1 = off, window minutes -1 = pure
-  // consecutive). guardOverride reads the conversation's own `guard:` block (conversations.yaml)
-  // so a busy relay room can loosen/disable it — else the node defaults apply.
+  // The SINGLE guard (C7.7, plans/260722-COMMAND-SURFACE-ROADMAP.md phase 3), ONE guard with TWO
+  // TRIGGERS since 2026-09-20: a RATE (`turns` non-human turns inside `window` MINUTES) and
+  // REPETITION (the same line said again — "pause on repetition, not chatter"). A genuine human
+  // message resets both; provenance decides who is human, not the display name (a mesh envelope
+  // posted AS the operator counts). Replaces the flood-guard + mesh breaker. Config
+  // `guard: { turns, window }` (turns -1 = the whole guard off, window minutes -1 = pure
+  // consecutive count). guardOverride reads the conversation's own `guard:` block
+  // (conversations.yaml) so a busy relay room can loosen/disable it — else the node defaults apply.
   const guard = createStopGuard({
     turns: Number.isFinite(cfg.guard?.turns) ? cfg.guard.turns : 6,
-    window: Number.isFinite(cfg.guard?.window) ? cfg.guard.window : -1,
+    window: Number.isFinite(cfg.guard?.window) ? cfg.guard.window : 2,
     onLog: (m) => log.line?.(`[guard] ${m}`),
   });
   const guardOverride = async (surface, chatId) => {
     try { const g = getContact(await _loadState(), surface, chatId)?.entry?.guard; return (g && typeof g === 'object') ? g : null; }
     catch { return null; }
   };
+  // OUR OWN FRAME, told apart from a peer's — the guard's third bucket (stop-guard turnKind
+  // 'echo'). THE EXISTING definition of "who are we": node-names.mjs fromOtherNode over
+  // ownNodeNamesOf, read through getConfig() so a hot reload moves it like everything else. The
+  // `!= null` is the unsigned case (a person): fromOtherNode is false for those too, and they are
+  // not our echo.
+  const fromThisNode = (ev) => ev?.fromNode != null && !fromOtherNode(getConfig(), ev);
 
   // PHASE 4 — room brain-member relay (design B: re-entry). Deliver a received room message to
   // each brain member (config.yaml members[]) whose mode admits it; each reply streams into the
@@ -3046,7 +3054,7 @@ export async function boot({
   // agent's relay_channel is TRANSIT (no record, no chat dispatch — the messages live in Beeper),
   // and a frame carrying ANOTHER node's signature wakes nobody here. Own-node frames are
   // untouched: the room relay's tunnel carries this node's own fromNode across deliberately.
-  const spine = createSpine({ bridge, bridgeOf: rawBridgeOf, peerMouth, brain, turns, ...services, commands, mesh, actions, advice, guard, guardOverride, stopSwitch, isSelfChat, isTransit: (ev) => isRelayChannelChat(getConfig(), ev), roomRelay, readTranscript, refreshConfig: heartbeatLoader.reload, radioRelay: radioRelay.relay, synthesize: vx.synthesize, voice: vx.voice, defaultBeing: defaultKey, labelOf, timeZone: transcriptTimeZone, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
+  const spine = createSpine({ bridge, bridgeOf: rawBridgeOf, peerMouth, brain, turns, ...services, commands, mesh, actions, advice, guard, guardOverride, fromThisNode, say: sayOnce, stopSwitch, isSelfChat, isTransit: (ev) => isRelayChannelChat(getConfig(), ev), roomRelay, readTranscript, refreshConfig: heartbeatLoader.reload, radioRelay: radioRelay.relay, synthesize: vx.synthesize, voice: vx.voice, defaultBeing: defaultKey, labelOf, timeZone: transcriptTimeZone, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
   // Bind the advice service's answer-routing dispatch now that the spine exists: an
   // operator answer in the advice channel re-enters the pipe as a turn in the origin chat.
   advice.useDispatch(spine.handleInbound);

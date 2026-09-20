@@ -35,8 +35,9 @@ contacts:
       # default: config.yaml transcription_service.posts_back_delay_ms
       #posts_back_delay_ms: -1
 
-      # loop-breaker override; node default config.yaml guard: {turns: 6, window: -1}
-      # turns = consecutive non-human turns before pausing (-1/0 off), window = minutes
+      # loop-breaker override; node default config.yaml guard: {turns: 6, window: 2}
+      # turns = non-human turns within `window` MINUTES before pausing; turns -1/0 turns
+      # the WHOLE guard off here, repetition included. window -1 = pure consecutive count.
       #guard: { turns: -1 }
 
       # one block per resident agent, keyed by its config.yaml agents: name.

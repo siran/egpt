@@ -27,7 +27,7 @@ import { createTurns } from './turns.mjs';
 import { makeOutbound } from './sender.mjs';
 import { isBrainFailureResult } from '../brain-errors.mjs';
 import { replyLine, contextSinceLastTurn, promptWithRecentContext, bodyForMessageId, promptWithQuotedMessage, RECENT_CONTEXT_MAX_CHARS } from '../transcript-log.mjs';
-import { isHumanTurn, parseStopWord } from '../stop-guard.mjs';
+import { isHumanTurn, turnKind, parseStopWord } from '../stop-guard.mjs';
 import { mentionHits, withoutAddress } from '../auto-mode.mjs';
 import { lifecycleExit } from './ingest.mjs';
 import { cleanForSpeech } from '../speech-clean.mjs';
@@ -154,6 +154,8 @@ export function createSpine({
   isTransit = () => false,
   // A BEING DOES NOT WAKE ON A FRAME ANOTHER NODE'S SPINE COMMITTED (operator 2026-08-31).
   guardOverride = null,                // optional (surface, chatId) => { turns?, window? } | null — the conversation's per-channel guard override (conversations.yaml). Null = node defaults only.
+  fromThisNode = () => false,          // (ev) => did THIS node's own spine commit this text? boot: `ev.fromNode != null && !fromOtherNode(getConfig(), ev)` — the SAME ownNodeNamesOf set every other "who are we" question reads. The guard's third bucket (stop-guard turnKind 'echo'): our own ⏳ placeholder coming back through Beeper is bookkeeping, so it neither counts toward the loop cap nor resets it (kg 2026-09-20, "🌴FAMILIA PALMA🌴"). Default false = never our own frame, byte-identical to before.
+  say = null,                          // optional ({ chatId, text, what }) => Promise<boolean> — boot's sayOnce, i.e. THE outbound placement (sender.mjs makeOutbound `say`), the same one the STOP confirmation and the lifecycle lines go through. The ONE thing the spine says on its own account: the loop guard's pause notice (operator 2026-09-20: "if the bridge pauses, it must emit warning in the channel with instructions on how to recover, instead of leaving everybody hanging"). Null (tests, a bare pipe) ⇒ a pause is logged and nothing is posted.
   // RECENT CONTEXT read seam (operator 2026-07-26) — `(chatId, {chatName, network}) =>
   // Promise<string|null>`, the conversation's transcript.md. THE SAME function boot
   // already wires into the beeper bridge for the voice-note reuse path, handed here
@@ -222,10 +224,12 @@ export function createSpine({
   // human turn), and by handleFast's guard-channel derivation (an envelope carries no channel at
   // all). Hoisted rather than repeated, because those two answers must never be able to disagree.
   const isEnvelope = (ev) => !!mesh?.isEnvelope?.(ev);
-  const humanTurn = (ev) => isHumanTurn(ev, {
-    isEnvelope,
-    wasSentByUs: (e) => !!bridge.wasSentByUs?.(e.chatId, e.msgId),
-  });
+  const wasSentByUs = (e) => !!bridge.wasSentByUs?.(e.chatId, e.msgId);
+  const humanTurn = (ev) => isHumanTurn(ev, { isEnvelope, wasSentByUs });
+  // …and the THREE-WAY reading the loop guard needs (stop-guard turnKind): 'human' resets,
+  // 'being' counts, and 'echo' — THIS node's own output re-entering — does neither. Built from
+  // the same two predicates humanTurn is, plus fromThisNode, so the two can never disagree.
+  const kindOf = (ev) => turnKind(ev, { isEnvelope, wasSentByUs, fromThisNode });
   // Is this message a LIFECYCLE command (/restart, /upgrade, /rewind)? The operator's
   // recovery path, exempt from the guard (see classify). Reuses the ONE mapping the command
   // path itself dispatches on — no second list of "which commands are lifecycle" — and is
@@ -245,18 +249,42 @@ export function createSpine({
     try { return (await brain.accessLevel(agent, ev)) === 'all'; }
     catch (e) { note(`guard: access level of ${agent} unreadable — guarded as usual: ${e?.message ?? e}`); return false; }
   }
-  // Count a NON-HUMAN turn toward the loop cap (resolving any per-conversation override)
-  // and auto-STOP the channel when the cap trips. The tripping turn still runs; the STOP
-  // pauses the NEXT one (blocked() is checked at the top of every dispatch path).
+  // Count a NON-HUMAN turn toward the loop guard (resolving any per-conversation override) and
+  // auto-STOP the channel when either trigger — the RATE or REPETITION — trips. The tripping
+  // turn still runs; the STOP pauses the NEXT one (blocked() is checked at the top of every
+  // dispatch path).
   async function guardCountNonHuman(ev, channel) {
     // NO CHANNEL, NO COUNT — an ENVELOPE (see handleFast). Without this the count would pile up
     // under a literal `null` key shared by every relay channel on the node, and stopChannel(null)
     // refuses it, so it could only ever log a stop that never happened.
     if (channel == null) return;
+    // OUR OWN ECHO IS NOT A TURN (operator 2026-09-20). E's ⏳ placeholders, posted through the
+    // mouth account and re-entering on the ear, filled PALMA's cap in five seconds. Bookkeeping
+    // neither counts nor resets — ANOTHER node's being still counts, because that is real chatter.
+    if (kindOf(ev) === 'echo') return;
     const override = guardOverride ? await Promise.resolve(guardOverride(ev.surface, ev.chatId)).catch(() => null) : null;
-    const action = guard.noteBeing(channel, override);
-    if (action === 'stop') { guard.stopChannel(channel); note(`guard: ${channel} auto-STOP — ${guard.countOf(channel)} consecutive non-human turns`); }
-    else if (action === 'warn') note(`guard: ${channel} nearing the loop cap (${guard.countOf(channel)})`);
+    const action = guard.noteBeing(channel, override, { body: ev.body, author: ev.senderId ?? ev.senderName ?? '' });
+    if (action === 'stop') {
+      guard.stopChannel(channel);
+      const why = guard.reasonOf(channel);
+      note(`guard: ${channel} auto-STOP — ${why}`);
+      // …AND SAY SO WHERE IT HAPPENED, once, with the way out (operator 2026-09-20: "if the
+      // bridge pauses, it must emit warning in the channel with instructions on how to recover,
+      // instead of leaving everybody hanging"). Only the STOP, never the warn. Through the ONE
+      // placement (boot's sayOnce); a channel nobody can speak to still has the log line above.
+      // ⚠ bypassLasso, and a 3s cap, for the same two reasons the STOP confirmation has both
+      // (boot.mjs): the notice announces a flood, so it must not QUEUE behind that flood at the
+      // outbound ceiling — an unseen pause notice is the hanging this ruling exists to end — and
+      // the fast pump must not wait on a send that is slow to come back.
+      if (say) {
+        try {
+          await Promise.race([
+            say({ chatId: ev.chatId, text: `⏸️ egpt paused this chat — ${why}.\nSay \`resume\` here to let it speak again, or \`resume all\` to clear every paused chat.`, opts: { bypassLasso: true }, what: 'guard' }),
+            new Promise((r) => { const t = setTimeoutFn(r, 3000); t?.unref?.(); }),
+          ]);
+        } catch (e) { note(`guard: could not announce the pause in ${channel}: ${e?.message ?? e}`); }
+      }
+    } else if (action === 'warn') note(`guard: ${channel} nearing the loop cap (${guard.countOf(channel)})`);
   }
 
   // --- the inbound queue (event-driven half). Bridge callbacks push; ONE async
