@@ -1283,3 +1283,205 @@ Describe 'the pool profile junctions (as the launcher scrub really plants them)'
     ($src -match '-ItemType Junction') | Should Be $false
   }
 }
+
+# ---------------------------------------------------------------------------
+# THE LAUNCHER'S TWO PER-LEASE GRANTS (2026-09-20). Told that the launcher still
+# wrote ACLs with Set-Acl while the provisioner had already moved to icacls, the
+# operator ruled: "i think we can use always the fast way". These two are the
+# DACL writes on the HOT TURN PATH - Modify on the conversation folder, and one
+# per read-only share from a being's allowed_paths - so the check-first rule
+# (write only what is missing or wrong) matters here more than anywhere else.
+#
+# THE LAUNCHER CANNOT BE DOT-SOURCED: loading it leases a pool account and
+# launches a process. So the two statements are EXTRACTED from its source and
+# RUN, the same trick the junction test above used before its generator moved
+# into the library. A copy pasted in here would pass while the shipped launcher
+# still wrote the old way, which is the exact defect this covers.
+#
+# Everything below runs UNELEVATED against throwaway paths under $env:TEMP and
+# against the CURRENT user's own SID, standing in for the leased account. It
+# never touches a pool account or a conversation folder.
+function Get-LauncherStatement([string]$Pattern) {
+  $hits = @(Get-Content -LiteralPath $script:LauncherScript | Where-Object { $_ -match $Pattern })
+  if ($hits.Count -ne 1) { throw "expected exactly ONE launcher line matching /$Pattern/, found $($hits.Count)" }
+  return $hits[0]
+}
+# Mask + inheritance + propagation + Allow/Deny, for every EXPLICIT ACE this
+# user holds on the path. That tuple IS the ACE as far as the filesystem is
+# concerned, so two paths with the same fingerprint are granted the same thing
+# down to the bit - which is the guarantee the conversion owes.
+function Get-TestAceFingerprint([string]$Path) {
+  return ((Get-TestExplicitAces $Path | ForEach-Object {
+        '{0}|{1}|{2}|{3}' -f [int]$_.FileSystemRights, $_.InheritanceFlags, $_.PropagationFlags, $_.AccessControlType
+      }) -join ';')
+}
+function New-LedgerTempFile {
+  $p = Join-Path $script:LedgerTempRoot (([guid]::NewGuid().ToString('N')) + '.txt')
+  Set-Content -LiteralPath $p -Value 'a shared file, not a directory' -Encoding Ascii
+  return $p
+}
+
+Describe 'the launcher per-lease grants (the statements the launcher really runs)' {
+  $stmtTarget = $null
+  $stmtShare = $null
+  $leasedSid = $null
+  $leasedLabel = $null
+
+  BeforeEach {
+    $stmtTarget = Get-LauncherStatement 'Grant-SandboxPoolAce -Path \$TargetFolder'
+    $stmtShare = Get-LauncherStatement 'Grant-SandboxPoolAce -Path \$sp'
+    # The two names the extracted statements close over, besides the path.
+    $leasedSid = $script:MeSid
+    $leasedLabel = "$($script:MeSid.Value) (egpt-sbx-test)"
+  }
+
+  AfterEach {
+    $script:IcaclsSpy = $null
+  }
+
+  It 'the conversation folder is granted Modify in ONE icacls call, by SID, never /grant:r' {
+    $TargetFolder = New-LedgerTempDir
+    $script:IcaclsSpy = New-Object System.Collections.Generic.List[object]
+
+    Invoke-Expression $stmtTarget
+
+    $script:IcaclsSpy.Count | Should Be 1
+    $callArgs = @($script:IcaclsSpy[0])
+    $callArgs[0] | Should Be $TargetFolder
+    ($callArgs -contains '/grant') | Should Be $true
+    ($callArgs -contains "*$($script:MeSid.Value):(OI)(CI)(M)") | Should Be $true
+    ($callArgs -contains '/grant:r') | Should Be $false
+  }
+
+  It 'REPRODUCE-FIRST: a conversation folder whose Modify is already exactly right costs ZERO writes' {
+    # The property the ruling is actually about. A DACL write on a container
+    # makes Windows re-run inheritance propagation over the whole subtree, and
+    # this is a per-TURN path.
+    $TargetFolder = New-LedgerTempDir
+    Invoke-Expression $stmtTarget
+    $script:IcaclsSpy = New-Object System.Collections.Generic.List[object]
+
+    Invoke-Expression $stmtTarget
+
+    $script:IcaclsSpy.Count | Should Be 0
+    (Get-TestExplicitAceCount $TargetFolder) | Should Be 1
+  }
+
+  It 'REPRODUCE-FIRST: a share whose ACE is already exactly right costs ZERO writes' {
+    $sp = New-LedgerTempDir
+    $shareGrant = 'Read'
+    Invoke-Expression $stmtShare
+    $script:IcaclsSpy = New-Object System.Collections.Generic.List[object]
+
+    Invoke-Expression $stmtShare
+
+    $script:IcaclsSpy.Count | Should Be 0
+    (Get-TestExplicitAceCount $sp) | Should Be 1
+  }
+
+  It 'a DIRECTORY share gets (OI)(CI) - the subtree is the point' {
+    $sp = New-LedgerTempDir
+    $shareGrant = 'Read'
+    $script:IcaclsSpy = New-Object System.Collections.Generic.List[object]
+
+    Invoke-Expression $stmtShare
+
+    (@($script:IcaclsSpy[0]) -contains "*$($script:MeSid.Value):(OI)(CI)(RX)") | Should Be $true
+  }
+
+  It 'a FILE share gets the SAME mask WITHOUT (OI)(CI) - icacls takes those flags on a leaf, exits 0 and writes nothing at all' {
+    # The old .NET path threw "This flag may not be set on a leaf object", which
+    # was at least loud. icacls is silent: measured 2026-09-20, `(OI)(CI)(M)` on
+    # a file returns 0, prints "Successfully processed 1 files", and leaves the
+    # DACL untouched. So the leaf case is not cosmetic - getting it wrong means
+    # a being is promised a file it cannot open, with nothing in the log.
+    $sp = New-LedgerTempFile
+    $shareGrant = 'Read'
+    $script:IcaclsSpy = New-Object System.Collections.Generic.List[object]
+
+    Invoke-Expression $stmtShare
+
+    (@($script:IcaclsSpy[0]) -contains "*$($script:MeSid.Value):(RX)") | Should Be $true
+  }
+
+  It 'NOT ONE BIT: the conversation folder ACE is identical to the one the old Get-Acl/AddAccessRule/Set-Acl wrote' {
+    # Grant-TestModify IS the old step (d), line for line:
+    # FileSystemAccessRule($sid,'Modify','ContainerInherit,ObjectInherit','None','Allow')
+    # added to a Get-Acl and pushed back with Set-Acl.
+    $TargetFolder = New-LedgerTempDir
+    Invoke-Expression $stmtTarget
+    $viaSetAcl = New-LedgerTempDir
+    Grant-TestModify $viaSetAcl
+
+    (@(Get-TestExplicitAces $TargetFolder).Count) | Should Be 1
+    (Get-TestAceFingerprint $TargetFolder) | Should Be (Get-TestAceFingerprint $viaSetAcl)
+  }
+
+  It 'NOT ONE BIT: a DIRECTORY share ACE is identical to the one the old Set-Acl wrote' {
+    $sp = New-LedgerTempDir
+    $shareGrant = 'Read'
+    Invoke-Expression $stmtShare
+    $viaSetAcl = New-LedgerTempDir
+    Grant-TestReadAndExecute $viaSetAcl
+
+    (@(Get-TestExplicitAces $sp).Count) | Should Be 1
+    (Get-TestAceFingerprint $sp) | Should Be (Get-TestAceFingerprint $viaSetAcl)
+  }
+
+  It 'NOT ONE BIT: a FILE share ACE is identical to the one the old Set-Acl wrote with no inheritance' {
+    $sp = New-LedgerTempFile
+    $shareGrant = 'Read'
+    Invoke-Expression $stmtShare
+    $viaSetAcl = New-LedgerTempFile
+    Grant-TestReadAndExecuteNotInherited $viaSetAcl
+
+    (@(Get-TestExplicitAces $sp).Count) | Should Be 1
+    (Get-TestAceFingerprint $sp) | Should Be (Get-TestAceFingerprint $viaSetAcl)
+  }
+
+  It 'a WRITABLE share still gets Modify and not the read-only mask - the two classes did not collapse into one' {
+    $sp = New-LedgerTempDir
+    $shareGrant = 'Modify'
+    Invoke-Expression $stmtShare
+
+    $writable = @(Get-TestExplicitAces $sp | Where-Object {
+        ([int]$_.FileSystemRights -band [int][System.Security.AccessControl.FileSystemRights]::WriteData) -ne 0
+      })
+    $writable.Count | Should Be 1
+  }
+
+  It 'the revoke still clears exactly what these grants write - a directory and a file alike' {
+    $TargetFolder = New-LedgerTempDir
+    Invoke-Expression $stmtTarget
+    $sp = New-LedgerTempFile
+    $shareGrant = 'Read'
+    Invoke-Expression $stmtShare
+    (Get-TestExplicitAceCount $TargetFolder) | Should Be 1
+    (Get-TestExplicitAceCount $sp) | Should Be 1
+
+    $records = @(Revoke-SandboxPathAces -Path $TargetFolder -AccountNames @($script:MeName)) +
+    @(Revoke-SandboxPathAces -Path $sp -AccountNames @($script:MeName))
+
+    (@($records | Where-Object { $_.Status -eq 'revoked' }).Count) | Should Be 2
+    (Get-TestExplicitAceCount $TargetFolder) | Should Be 0
+    (Get-TestExplicitAceCount $sp) | Should Be 0
+  }
+
+  It 'ONE ACL TOOL: the launcher writes no DACL of its own any more' {
+    # The whole point of the conversion. If either write came back as a second
+    # implementation beside Grant-SandboxPoolAce, it would show up here.
+    $src = Get-Content -LiteralPath $script:LauncherScript -Raw
+    ($src -match 'Set-Acl') | Should Be $false
+    ($src -match 'AddAccessRule') | Should Be $false
+    ($src -match 'SetAccessControl') | Should Be $false
+  }
+
+  It 'ONE ACL TOOL: Protect-SandboxCredDir is the only .NET DACL WRITE left in the library' {
+    # It stays on the .NET API deliberately - it strips EVERY explicit ACE,
+    # orphaned SIDs included, and icacls has no verb for that. Reading a DACL
+    # with .NET is fine everywhere; the ruling is about writes.
+    $src = Get-Content -LiteralPath $script:SandboxAccountScript -Raw
+    (@([regex]::Matches($src, 'SetAccessControl\(')).Count) | Should Be 1
+    (@([regex]::Matches($src, '(?m)^\s*Set-Acl ')).Count) | Should Be 0
+  }
+}

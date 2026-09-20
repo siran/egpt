@@ -288,8 +288,8 @@ describe('a lease share is released with the lease', () => {
     // what it already has and leaves one more ACE for a hard kill to leak. The writable class
     // is NOT skippable: a conversation folder's Modify is real and per-lease.
     const src = launcher();
-    expect(src).toMatch(/@\{ Rights = 'Modify';\s*SkipIfPoolReadCovered = \$false;/);
-    expect(src).toMatch(/@\{ Rights = 'ReadAndExecute'; SkipIfPoolReadCovered = \$true;/);
+    expect(src).toMatch(/@\{ Grant = 'Modify';\s*SkipIfPoolReadCovered = \$false;/);
+    expect(src).toMatch(/@\{ Grant = 'Read';\s*SkipIfPoolReadCovered = \$true;/);
     expect(src).toMatch(/if \(\$shareClass\.SkipIfPoolReadCovered -and \(Test-SandboxPoolReadCovered -Path \$sp -LeasedSid \$leasedSid\)\)/);
     // It says so — a skipped grant that logged nothing would be indistinguishable from a
     // share the launcher silently forgot.

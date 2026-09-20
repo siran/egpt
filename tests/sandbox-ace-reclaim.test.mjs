@@ -87,12 +87,12 @@ describe('a hard-killed turn no longer leaks its ACE — the revoke rides the st
     expect(opens[1]).toMatch(/FileShare\]::None/);
   });
 
-  it('REPRODUCE-FIRST: every grant is written to the ledger BEFORE its Set-Acl', () => {
+  it('REPRODUCE-FIRST: every grant is written to the ledger BEFORE the ACE is written', () => {
     // BEFORE, deliberately: the ledger exists for the crash case, so it must be a SUPERSET of
-    // what actually landed. A Set-Acl that threw leaves no ACE, and the revoke skips a path that
+    // what actually landed. A grant that threw leaves no ACE, and the revoke skips a path that
     // carries none — so the superset costs a read and never a stray write.
     const src = launcher();
-    for (const [step, anchor] of [['(d) TargetFolder', '$acl.AddAccessRule($rule)'], ['(d2) share path', '$shareAcl.AddAccessRule($shareRule)']]) {
+    for (const [step, anchor] of [['(d) TargetFolder', 'Grant-SandboxPoolAce -Path $TargetFolder'], ['(d2) share path', 'Grant-SandboxPoolAce -Path $sp']]) {
       const at = src.indexOf(anchor);
       expect(at, `step ${step} is gone`).toBeGreaterThan(0);
       const before = src.slice(Math.max(0, at - 1200), at);
@@ -154,13 +154,19 @@ describe('the locks this fix must not break', () => {
 
   it('LOCK: the grant itself is unchanged — a per-path ACE for the leased SID only, never a broader principal', () => {
     const src = launcher();
+    // Both writes go through the provisioner's Grant-SandboxPoolAce since 2026-09-20 ("i think
+    // we can use always the fast way"), which is check-then-icacls. What they GRANT did not
+    // move: the same table, and -Sid is the leased account, never the pool group.
     // TargetFolder is always the conversation's own folder and always read/write.
-    expect(src).toMatch(/New-Object System\.Security\.AccessControl\.FileSystemAccessRule\(\s*\$leasedSid, 'Modify'/);
+    expect(src).toMatch(/Grant-SandboxPoolAce -Path \$TargetFolder -Grant 'Modify' -Sid \$leasedSid\b/);
     // A share path's rights come from its CLASS (see the read-only describe below), but the
-    // principal and the inheritance flags are what they always were.
-    expect(src).toMatch(/\$leasedSid, \$shareRights, \$shareInherit/);
+    // principal is what it always was; the inheritance flags come off the path itself, in the
+    // one helper, because (OI)(CI) is illegal on a leaf.
+    expect(src).toMatch(/Grant-SandboxPoolAce -Path \$sp -Grant \$shareGrant -Sid \$leasedSid\b/);
     // Nothing here may widen to the pool GROUP or to Everyone.
-    expect(src).not.toMatch(/FileSystemAccessRule\(\s*\$poolGroupSid/);
+    expect(src).not.toMatch(/Grant-SandboxPoolAce[^\n]*-Sid \$poolGroupSid/);
+    // ...and the launcher writes no DACL of its own any more — one ACL tool, in one place.
+    expect(src).not.toMatch(/Set-Acl|AddAccessRule/);
   });
 
   it('LOCK: the ledger holds PATHS ONLY — the lock file never becomes a place a credential lands', () => {
@@ -215,11 +221,14 @@ describe('read-only share paths get a READ-ONLY ACE, not a write-capable one', (
     const step = shareGrantStep(launcher());
     // ONE loop over the two classes, not a copied second loop: the class supplies the rights.
     expect(step, 'the read-only list is not granted at all').toMatch(/\$SharePathReadOnlyList/);
-    expect(step, 'a read-only share path still gets a WRITE-capable ACE').toMatch(/Rights = 'ReadAndExecute'/);
-    expect(step).toMatch(/Rights = 'Modify'/);
-    expect(step).toMatch(/\$leasedSid, \$shareRights, \$shareInherit/);
+    // 'Read' is the grant table's name for (OI)(CI)(RX), i.e. ReadAndExecute — see
+    // $SandboxPoolGrants in setup/sandbox-account.ps1, which is now the only place any of the
+    // three masks is spelled.
+    expect(step, 'a read-only share path still gets a WRITE-capable ACE').toMatch(/Grant = 'Read'/);
+    expect(step).toMatch(/Grant = 'Modify'/);
+    expect(step).toMatch(/Grant-SandboxPoolAce -Path \$sp -Grant \$shareGrant\b/);
     // ...and nothing in this step hardcodes Modify onto a share path any more.
-    expect(step, "the share grant still pins 'Modify' regardless of class").not.toMatch(/\$leasedSid, 'Modify'/);
+    expect(step, "the share grant still pins 'Modify' regardless of class").not.toMatch(/-Path \$sp -Grant 'Modify'/);
   });
 
   it('REPRODUCE-FIRST: the read-only class rides the SAME ledger and the SAME revoke', () => {
@@ -230,9 +239,8 @@ describe('read-only share paths get a READ-ONLY ACE, not a write-capable one', (
     // does not name is a leak the reclaim cannot find after a hard kill.
     expect((step.match(/Add-SandboxLeaseLedgerPath/g) || []).length, 'the share grant loop was copied instead of parameterised').toBe(1);
     expect((step.match(/\$acesGranted\.Add\(\$sp\)/g) || []).length).toBe(1);
-    // Ledger BEFORE Set-Acl still holds for both classes. (Call sites, not the prose above them:
-    // the step's own comments mention Set-Acl.)
-    expect(step.indexOf('Add-SandboxLeaseLedgerPath -Stream')).toBeLessThan(step.indexOf('Set-Acl -LiteralPath $sp'));
+    // Ledger BEFORE the ACE still holds for both classes.
+    expect(step.indexOf('Add-SandboxLeaseLedgerPath -Stream')).toBeLessThan(step.indexOf('Grant-SandboxPoolAce -Path $sp'));
     // And the revoke is untouched in the way that matters — it removes by SID, so it takes a
     // ReadAndExecute ACE off exactly as it takes a Modify one. ('/remove:g' + a SID literal
     // since 2026-09-20; locked for real in setup/sandbox-account.Tests.ps1.)

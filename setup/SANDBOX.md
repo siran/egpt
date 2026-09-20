@@ -215,10 +215,16 @@ is probably `RA`, not `X` — `X` duplicates what the privilege already gives, a
 `RA` is what the privilege withholds. `RA` was never isolated from `X`, so the
 mask stays `(X,RA,RC)` rather than being pruned on a guess.
 
-**One grant function, one ACL tool.** Every pool grant goes through
-`Grant-SandboxPoolAce -Path <p> -Grant Traverse|Read|Modify`; the three masks and
-their inheritance flags are a table at the top of that function and are spelled
-nowhere else. It writes with **`icacls`, not `Set-Acl`** — `Set-Acl` persists the
+**One grant function, one ACL tool.** Every grant in the sandbox goes through
+`Grant-SandboxPoolAce -Path <p> -Grant Traverse|Read|Modify [-Sid <s>]`; the three
+masks and their inheritance flags are a table at the top of that function and are
+spelled nowhere else. The provisioner's standing grants go to the pool group (the
+default); the launcher's two per-lease grants pass the leased account's own `-Sid`
+— same table, same check, same tool (operator 2026-09-20, told the launcher still
+used `Set-Acl`: *"i think we can use always the fast way"*). A path that is a
+single **file** takes the same mask without `(OI)(CI)`, derived in the helper:
+`icacls` accepts those flags on a leaf, exits 0 and writes **nothing**.
+It writes with **`icacls`, not `Set-Acl`** — `Set-Acl` persists the
 SACL (the `PrivilegeNotHeldException` documented on `Protect-SandboxCredDir`) and
 against `C:\Users\an` it *hung* twice and had to be killed. Plain `/grant`, never
 `/grant:r`, so a grant is additive: it never narrows an existing ACE, and
@@ -231,7 +237,9 @@ do not cover what the grant asks for. A broader ACE with the same flags already
 satisfies it (Allow ACEs union, and plain `/grant` could not narrow it anyway).
 Explicit ACEs only: an inherited one is a fact about a parent, and the fact this
 converges on is an ACE on the object itself. So on an already-provisioned node
-the provisioner writes nothing and prints `already granted` per path. That is the
+the provisioner writes nothing and prints `already granted` per path, and a turn
+whose share ACE survived from an earlier lease costs the tree no re-propagation
+either. That is the
 difference between a re-provision measured in seconds and one measured in
 minutes: on 2026-09-20 all five ancestors and `~\src` were already correct and
 were rewritten anyway.

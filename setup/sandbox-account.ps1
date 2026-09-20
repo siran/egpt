@@ -266,8 +266,8 @@ function Ensure-SandboxPoolGroup {
   }
 }
 
-# EVERY ACE THE POOL GROUP IS EVER GRANTED, AS ONE TABLE. Three of them, and
-# this is the only place any is spelled:
+# EVERY ACE THE SANDBOX EVER GRANTS, AS ONE TABLE. Three of them, and this is
+# the only place any is spelled:
 #
 #   Traverse  (X,RA,RC), NOT inheritable, on each directory of the ancestor chain
 #             above a conversation folder. Walk THROUGH it; do not LIST it. RD is
@@ -284,10 +284,21 @@ function Ensure-SandboxPoolGroup {
 #   Modify    (OI)(CI)(M), inheritable, on a directory the pool OWNS - pi's
 #             config dir, which pi WRITES to.
 #
+# THE LAUNCHER'S TWO PER-LEASE GRANTS COME OUT OF THIS SAME TABLE, to the LEASED
+# ACCOUNT's SID instead of the group's: Modify on the conversation folder, Read
+# on a read-only share from a being's allowed_paths. There is no second table and
+# no second writer (operator 2026-09-20, told the launcher still used Set-Acl
+# while the provisioner had moved: "i think we can use always the fast way").
+#
 # Rights is the mask the ACE LANDS AS on disk, which is what the check below
-# compares. Measured 2026-09-20: icacls and Set-Acl write byte-identical masks
-# for all three, so moving these writes to icacls changed nothing about WHAT is
-# granted.
+# compares. Measured 2026-09-20 on reve, every combination this table can
+# produce, icacls against Set-Acl, mask + inheritance + propagation + type:
+#   (OI)(CI)(M)  -> 1245631 ContainerInherit,ObjectInherit   identical
+#   (OI)(CI)(RX) -> 1179817 ContainerInherit,ObjectInherit   identical
+#   (M)          -> 1245631 None                             identical
+#   (RX)         -> 1179817 None                             identical
+#   (X,RA,RC)    ->  131232 None                             identical
+# So moving these writes to icacls changed nothing about WHAT is granted.
 $SandboxPoolGrants = @{
   Traverse = @{ Spec = '(X,RA,RC)';    Rights = [int][System.Security.AccessControl.FileSystemRights]'ExecuteFile, ReadAttributes, ReadPermissions'; Inherit = [System.Security.AccessControl.InheritanceFlags]'None' }
   Read     = @{ Spec = '(OI)(CI)(RX)'; Rights = [int][System.Security.AccessControl.FileSystemRights]'ReadAndExecute, Synchronize';                  Inherit = [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit' }
@@ -310,14 +321,14 @@ $SandboxPoolGrants = @{
 # the SACL as well - see Protect-SandboxCredDir's note on
 # PrivilegeNotHeldException - and is the one that hung on the profile root.
 # icacls edits the DACL only and returns at once. Plain /grant, never /grant:r,
-# so this stays ADDITIVE: it never narrows a broader grant already made to this
-# group, and narrowing one stays a hand operation (as it was for ~\bin\egpt:
+# so this stays ADDITIVE: it never narrows a broader grant already made to that
+# principal, and narrowing one stays a hand operation (as it was for ~\bin\egpt:
 # `icacls "%USERPROFILE%\bin\egpt" /remove:g egpt-sandbox-pool`, then re-run the
 # provisioner).
 #
 # WHAT "ALREADY GRANTED" MEANS, exactly: an EXPLICIT Allow ACE on THIS object,
-# for the pool GROUP's SID, with exactly this grant's inheritance flags and
-# carrying at least its rights.
+# for the granted principal's SID, with exactly this grant's inheritance flags
+# and carrying at least its rights.
 #  - EXPLICIT ONLY. An inherited ACE is a fact about a parent; the fact this
 #    converges on is an ACE here. (Test-SandboxPoolReadCovered answers the other
 #    question - "can the pool already read this?" - and does accept inherited.)
@@ -327,41 +338,62 @@ $SandboxPoolGrants = @{
 #    writing the right one beside it.
 #  - AT LEAST, NOT EXACTLY, on the rights. Allow ACEs union, so a broader ACE
 #    already satisfies the grant - and plain /grant could not narrow it anyway.
+#
+# A LEAF TAKES THE SAME MASK WITHOUT THE INHERITANCE FLAGS. A share path from a
+# being's allowed_paths may be a single FILE, and (OI)(CI) is meaningless on one:
+# .NET throws 'This flag may not be set on a leaf object', and icacls does
+# something worse - it ACCEPTS (OI)(CI) on a file, exits 0, and writes no ACE at
+# all (measured 2026-09-20). So the leaf case is derived here, once, rather than
+# left to each caller: strip the inheritance from the spec and from the flags the
+# check compares, and the two agree by construction.
 function Grant-SandboxPoolAce {
   param(
     [Parameter(Mandatory = $true)][string]$Path,
-    [Parameter(Mandatory = $true)][ValidateSet('Traverse', 'Read', 'Modify')][string]$Grant
+    [Parameter(Mandatory = $true)][ValidateSet('Traverse', 'Read', 'Modify')][string]$Grant,
+    # WHO. Defaults to the pool GROUP - the standing grants the provisioner
+    # writes. The launcher passes the LEASED ACCOUNT's own SID for its two
+    # per-lease grants; same table, same check-first rule, same tool.
+    [System.Security.Principal.SecurityIdentifier]$Sid,
+    # How that principal is NAMED in the log, nothing more.
+    [string]$Principal
   )
+  if (-not $Sid) {
+    # By SID. Translating first means a missing pool group fails loudly right
+    # here instead of letting icacls resolve some other principal that happens to
+    # carry the same name. '*' is icacls's prefix for a SID literal.
+    $Sid = (New-Object System.Security.Principal.NTAccount($SandboxPoolGroup)).Translate([System.Security.Principal.SecurityIdentifier])
+    if (-not $Principal) { $Principal = $SandboxPoolGroup }
+  }
+  if (-not $Principal) { $Principal = $Sid.Value }
   if (-not (Test-Path -LiteralPath $Path)) {
-    throw "sandbox-logon-launcher: cannot grant $Grant to the pool -- path does not exist: $Path"
+    throw "sandbox-logon-launcher: cannot grant $Grant to $Principal -- path does not exist: $Path"
   }
   $want = $SandboxPoolGrants[$Grant]
-  # By SID. Translating first means a missing pool group fails loudly right here
-  # instead of letting icacls resolve some other principal that happens to carry
-  # the same name. '*' is icacls's prefix for a SID literal.
-  $groupSid = (New-Object System.Security.Principal.NTAccount($SandboxPoolGroup)).Translate([System.Security.Principal.SecurityIdentifier])
+  $isLeaf = -not (Test-Path -LiteralPath $Path -PathType Container)
+  $spec    = if ($isLeaf) { $want.Spec -replace '^\(OI\)\(CI\)', '' } else { $want.Spec }
+  $inherit = if ($isLeaf) { [System.Security.AccessControl.InheritanceFlags]::None } else { $want.Inherit }
   # -ErrorAction Stop: a DACL this process cannot read must not come back as an
   # empty rule set and be mistaken for "not granted yet".
   $present = @((Get-Acl -LiteralPath $Path -ErrorAction Stop).GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]) | Where-Object {
       $_.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow -and
-      $_.IdentityReference.Value -eq $groupSid.Value -and
-      $_.InheritanceFlags -eq $want.Inherit -and
+      $_.IdentityReference.Value -eq $Sid.Value -and
+      $_.InheritanceFlags -eq $inherit -and
       $_.PropagationFlags -eq [System.Security.AccessControl.PropagationFlags]::None -and
       ([int]$_.FileSystemRights -band $want.Rights) -eq $want.Rights
     })
   if ($present.Count -gt 0) {
-    Log "already granted $Grant $($want.Spec) to $SandboxPoolGroup on $Path  - nothing written"
+    Log "already granted $Grant $spec to $Principal on $Path  - nothing written"
     return 'already granted'
   }
   # No 2>&1: PS 5.1 turns a redirected native stderr into NativeCommandError
   # records, which under the provisioner's $ErrorActionPreference='Stop' throws
   # something unrelated to what went wrong. icacls's own reason goes to the
   # console; the exit code is what this branches on.
-  $out = & icacls.exe $Path '/grant' "*$($groupSid.Value):$($want.Spec)"
+  $out = & icacls.exe $Path '/grant' "*$($Sid.Value):$spec"
   if ($LASTEXITCODE -ne 0) {
-    throw "sandbox-logon-launcher: icacls could not grant $Grant $($want.Spec) to $SandboxPoolGroup on $Path  - exit $LASTEXITCODE ($($out -join ' '))"
+    throw "sandbox-logon-launcher: icacls could not grant $Grant $spec to $Principal on $Path  - exit $LASTEXITCODE ($($out -join ' '))"
   }
-  Log "granted $Grant $($want.Spec) to $SandboxPoolGroup on $Path"
+  Log "granted $Grant $spec to $Principal on $Path"
   return 'granted'
 }
 
@@ -445,9 +477,14 @@ function Test-SandboxPoolReadCovered {
 # accumulating. Existing credential files and sandbox-pool-locks are covered by
 # ContainerInherit,ObjectInherit -- they inherit, so they pick the new set up.
 #
-# NOT Get-Acl/Set-Acl, deliberately (measured 2026-08-21, do not "simplify" it
-# back): Set-Acl persists the SACL as well, so the SECOND run against an
-# already-protected directory dies with PrivilegeNotHeldException
+# THE ONE .NET DACL WRITER LEFT, and the exemption from "always the fast way"
+# (operator 2026-09-20) is this: it strips EVERY explicit ACE including orphaned
+# SIDs that no longer resolve to a name, and icacls has no verb for that -
+# /remove needs a principal to name and /grant:r only replaces the one it names.
+#
+# NOT Get-Acl/Set-Acl either, deliberately (measured 2026-08-21, do not
+# "simplify" it back): Set-Acl persists the SACL as well, so the SECOND run
+# against an already-protected directory dies with PrivilegeNotHeldException
 # ('SeSecurityPrivilege'). Going through DirectoryInfo with an explicit
 # AccessControlSections::Access on BOTH the read and the write touches only the
 # DACL, needs no privilege beyond WRITE_DAC, and re-runs cleanly - verified by
@@ -624,9 +661,9 @@ function Write-SandboxLeaseLedger {
   $Stream.Flush($true)
 }
 
-# Append ONE path. The launcher calls this BEFORE the matching Set-Acl, so the
+# Append ONE path. The launcher calls this BEFORE the matching grant, so the
 # ledger is a SUPERSET of what actually landed - the safe direction for a crash
-# log. A Set-Acl that threw leaves no ACE behind, and Revoke-SandboxLeaseAces
+# log. A grant that threw leaves no ACE behind, and Revoke-SandboxLeaseAces
 # skips a path that carries none, so the superset costs a read and never a stray
 # write.
 function Add-SandboxLeaseLedgerPath {
@@ -657,9 +694,10 @@ function Add-SandboxLeaseLedgerPath {
 # HAND on reve the same day, same tree, same twelve accounts:
 #   icacls ~\src\egpt /remove:g egpt-sbx-00 ... egpt-sbx-15 /C  -> 2 s, all 12 gone
 # One pass, every account named on it. That is this function, and it is why
-# Set-Acl is gone from the revoke: icacls expresses the change exactly, and the
-# grant helpers keep Set-Acl only because they write an ACE with specific
-# inheritance flags, which is the one thing plain icacls spells clumsily.
+# Set-Acl is gone from the revoke: icacls expresses the change exactly. The
+# grants converged on the same tool afterwards (see Grant-SandboxPoolAce), so
+# every DACL write in the sandbox is now one icacls call, and
+# Protect-SandboxCredDir is the only .NET writer left.
 #
 # NO /T, deliberately: a lease ACE is explicit and on the named object only, so
 # recursing would re-walk the tree for nothing. /remove:g and not /remove:
