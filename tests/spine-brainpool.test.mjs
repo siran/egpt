@@ -2173,6 +2173,95 @@ describe('brainpool.turn — allowed_paths reach the OS layer as brainOptions.sa
   });
 });
 
+// ── THE NODE-LEVEL `allowed_paths:` (operator 2026-09-20: "all agents see an src/ directory …
+//    we can 'leak' my own src/ to the agent (read-only for now)"). A read grant used to be
+//    per TYPE FILE, so granting one folder to a second being meant writing the block into a
+//    second file — and revoking it meant finding every copy. config.yaml's own top-level
+//    `allowed_paths:` is merged into every being's def by resolveBeingDef (withNodeAllowedPaths),
+//    UNDER the def's own entries, so the ONE walk (allowedPathsFor) still has one map and the two
+//    consumers — confinementFor's CLI lists and sandboxSharePathsFor's OS share lists — cannot
+//    disagree about what the node granted. ──
+describe('brainpool — a NODE-LEVEL allowed_paths reaches every being', () => {
+  const SRC = 'C:/Users/an/src';
+  const NODE = { [SRC]: { allowed_tools: ['Read', 'Glob', 'Grep'] } };
+
+  it('REPRODUCE-FIRST: a being whose type file declares NO allowed_paths is granted the node\'s — at BOTH layers, and they agree', async () => {
+    const brains = { resolve: () => ({ name: 'egpt', type: 'ccode', allowed_tools: ['Read', 'Edit'] }) };
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
+      brains, platform: 'win32',
+      config: { allowed_paths: NODE, agents: { e: {} } },
+      seedAgents: { e: { access_level: 'regular', sandboxed: true } },
+    });
+    await brain.turn('e', ev);
+    const opts = pool.calls[0].brainOptions;
+    expect(opts.readOnlyDirs).toEqual([SRC]);                     // the CLI layer confines but PERMITS it...
+    expect(opts.sandboxSharePathsReadOnly).toEqual([SRC]);        // ...and the kernel gets the same folder, same class
+    expect(opts).not.toHaveProperty('addDirs');
+    expect(opts).not.toHaveProperty('sandboxSharePaths');
+  });
+
+  it('THE DEF WINS: a being that names the same path keeps its OWN grant, and the path is not granted twice', async () => {
+    // The node grants src/ READ-ONLY; this being's type file claims the same folder with write
+    // tools. Two spellings of one folder landing in two classes is the double-ACE the launcher
+    // must never be handed — so the def's entry is the only one that survives.
+    const brains = { resolve: () => ({ name: 'egpt', type: 'ccode', allowed_tools: ['Read', 'Edit'], allowed_paths: { '/c/Users/an/src': null } }) };
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
+      brains, platform: 'win32',
+      config: { allowed_paths: NODE, agents: { e: {} } },
+      seedAgents: { e: { access_level: 'regular', sandboxed: true } },
+    });
+    await brain.turn('e', ev);
+    const opts = pool.calls[0].brainOptions;
+    expect(opts.addDirs).toEqual([SRC]);                          // full access, the DEF's class — msys form normalized
+    expect(opts).not.toHaveProperty('readOnlyDirs');              // …and the node's read-only entry did not also land
+    expect(opts.sandboxSharePaths).toEqual([SRC]);
+    expect(opts).not.toHaveProperty('sandboxSharePathsReadOnly');
+  });
+
+  it('a NARROWER path of the being\'s own is kept BESIDE the node grant — its own entries first', async () => {
+    // E's live shape: the type file grants src/egpt read-only, the node grants all of src/.
+    const brains = { resolve: () => ({
+      name: 'egpt', type: 'ccode', allowed_tools: ['Read', 'Edit'],
+      allowed_paths: { 'C:/Users/an/src/egpt': { allowed_tools: ['Read', 'Glob', 'Grep'] } },
+    }) };
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
+      brains, platform: 'win32',
+      config: { allowed_paths: NODE, agents: { e: {} } },
+      seedAgents: { e: { access_level: 'regular', sandboxed: true } },
+    });
+    await brain.turn('e', ev);
+    const opts = pool.calls[0].brainOptions;
+    expect(opts.readOnlyDirs).toEqual(['C:/Users/an/src/egpt', SRC]);
+    expect(opts.sandboxSharePathsReadOnly).toEqual(opts.readOnlyDirs);
+  });
+
+  it('the widest tier gets it too: a skip-permissions being has no CLI layer at all, and the ACE is the only reachability there is', async () => {
+    const brains = { resolve: () => ({ name: 'wren', type: 'ccode', allowed_tools: ['Read'] }) };
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
+      brains, platform: 'win32',
+      config: { allowed_paths: NODE, agents: { e: {} } },
+      seedAgents: { e: { access_level: 'all', allowed_users: ['123'], sandboxed: true } },
+      loadPermission: (level) => (level === 'all' ? { dangerouslySkipPermissions: true, allowedTools: ['Read', 'Write', 'Bash'] } : null),
+    });
+    await brain.turn('e', ev);
+    const opts = pool.calls[0].brainOptions;
+    expect(opts.readOnlyDirs).toBeUndefined();
+    expect(opts.sandboxSharePathsReadOnly).toEqual([SRC]);
+  });
+
+  it('resolveBeingDef: the BARE fallback def carries it too — a being whose configuration resolves to nothing is granted the same folders', () => {
+    const brains = { resolve: () => null };
+    const config = { allowed_paths: NODE, agents: { ken: { configuration: 'missing' } } };
+    expect(resolveBeingDef('ken', null, { getConfig: () => config, brains }).allowed_paths).toEqual(NODE);
+  });
+
+  it('a node that grants nothing leaves the def byte-for-byte as it was — no allowed_paths key invented', () => {
+    const brains = { resolve: () => ({ name: 'egpt', type: 'ccode', allowed_tools: ['Read'] }) };
+    const def = resolveBeingDef('e', null, { getConfig: () => ({ agents: { e: { configuration: 'x' } } }), brains });
+    expect(def.allowed_paths).toBeUndefined();
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // `agents.<name>.configuration` has TWO forms (operator 2026-09-07): a STRING naming
 // config/agents/<name>.yaml, or an INLINE MAP written straight into config.yaml. Both go
