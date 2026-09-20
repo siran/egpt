@@ -1514,12 +1514,12 @@ $plainPwd = $null
 # killed before the finally runs (see the lease-ledger block in
 # sandbox-account.ps1).
 #
-# RECORDED BEFORE THE Set-Acl, not after, which is the one thing that changed
+# RECORDED BEFORE THE GRANT, not after, which is the one thing that changed
 # about this list: a crash log must be a SUPERSET of what landed, or the crash
 # it exists for is the case it misses. The old "only what actually landed" rule
 # is now enforced where it belongs - Revoke-SandboxLeaseAces looks before it
 # writes and reports 'clean' for a path that carries no ACE of ours, so a path
-# whose Set-Acl threw is still never re-ACLed on the way out.
+# whose grant threw is still never re-ACLed on the way out.
 $acesGranted = New-Object System.Collections.Generic.List[string]
 # Seeded with anything the reclaim above could not clear: those ACEs belong to
 # THIS account and are still live, so the finally gets one more go at them. Not
@@ -1538,6 +1538,9 @@ try {
   # ---- (c) resolve this account's own fixed user SID  - always present in
   # its own token, unlike the broken per-call logon-session SID. ----
   $leasedSid = (New-Object System.Security.Principal.NTAccount($leasedName)).Translate([System.Security.Principal.SecurityIdentifier])
+  # How this turn's principal is named in every grant log line below. The SID is
+  # what is actually written; the name is what an operator reads.
+  $leasedLabel = "$($leasedSid.Value) ($leasedName)"
 
   # ---- (d) grant read/write on exactly TargetFolder  - never broader ----
   # Ledger first, ACE second. If this process dies between the two lines the
@@ -1549,12 +1552,13 @@ try {
   } catch {
     Log "WARNING: could not record $TargetFolder in the ACE ledger at $lockPath  - $($_.Exception.Message). This turn's own revoke is unaffected, but a HARD KILL will leave '$leasedName' holding Modify there with nothing to find it by."
   }
-  $acl = Get-Acl -LiteralPath $TargetFolder
-  $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-    $leasedSid, 'Modify', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
-  $acl.AddAccessRule($rule)
-  Set-Acl -LiteralPath $TargetFolder -AclObject $acl
-  Log "granted Modify to $($leasedSid.Value) ($leasedName) on $TargetFolder"
+  # THE SAME WRITER THE PROVISIONER USES, and the same check-first rule: the
+  # grant table lives in sandbox-account.ps1 and this passes the LEASED
+  # ACCOUNT's SID instead of the pool group's. Nothing is written when the ACE
+  # is already exactly right, which on this path - the hot one, once per turn -
+  # is the whole point (operator 2026-09-20: "i think we can use always the
+  # fast way").
+  Grant-SandboxPoolAce -Path $TargetFolder -Grant 'Modify' -Sid $leasedSid -Principal $leasedLabel | Out-Null
 
   # ---- (d2) ONE ACE PER SHARE PATH, IN THE CLASS ITS CALLER DECLARED IT IN.
   # WHY THIS EXISTS: a being's `allowed_paths` produce a `--add-dir` at the CLI
@@ -1565,15 +1569,16 @@ try {
   # turn nothing.
   #
   # TWO CLASSES, ONE LOOP (operator 2026-09-13). -SharePath gets Modify;
-  # -SharePathReadOnly gets ReadAndExecute. Until then this step had exactly one
-  # ACE mode and both classes arrived concatenated in -SharePath, so a path the
-  # CLI layer treats as read-only was WRITABLE to the kernel - and these beings
-  # hold Bash and PowerShell, so one shell command wrote past the deny rule.
-  # Under the `all`/`sandbox` tiers there is no CLI layer at all, so there the
-  # ACE was the only gate and it granted write. The rights come from the class
-  # table below rather than from a copied second loop: a copy is how the two
-  # would drift into disagreeing about ledgers, de-duplication or failure
-  # handling, and the ledger half of that is a leaked ACE.
+  # -SharePathReadOnly gets Read, the grant table's name for (OI)(CI)(RX), i.e.
+  # ReadAndExecute. Until then this step had exactly one ACE mode and both
+  # classes arrived concatenated in -SharePath, so a path the CLI layer treats
+  # as read-only was WRITABLE to the kernel - and these beings hold Bash and
+  # PowerShell, so one shell command wrote past the deny rule. Under the
+  # `all`/`sandbox` tiers there is no CLI layer at all, so there the ACE was the
+  # only gate and it granted write. The grant name comes from the class table
+  # below rather than from a copied second loop: a copy is how the two would
+  # drift into disagreeing about ledgers, de-duplication or failure handling,
+  # and the ledger half of that is a leaked ACE.
   #
   # EACH PATH INDEPENDENTLY, deliberately, and that is the whole design of this
   # block: one unshareable path must not cost the turn its OTHER paths or its
@@ -1584,11 +1589,10 @@ try {
   # that being over it would be a far worse outcome than the being not seeing
   # one directory.
   #
-  # ON THE INHERITANCE FLAGS: step (d) above hardcodes
-  # ContainerInherit,ObjectInherit because TargetFolder is always a directory. A
-  # share path may be a single FILE, and those flags are illegal on a leaf (.NET
-  # throws "This flag may not be set on a leaf object"), so a file gets the same
-  # ACE with no inheritance instead.
+  # ON THE INHERITANCE FLAGS: a share path may be a single FILE, where (OI)(CI)
+  # is illegal, so a file gets the same mask with no inheritance instead.
+  # Grant-SandboxPoolAce derives that from the path itself - see its header for
+  # why a leaf must never be handed (OI)(CI) through icacls either.
   #
   # AND A READ-ONLY SHARE THE POOL GROUP CAN ALREADY READ GETS NOTHING AT ALL
   # (operator 2026-09-20). ~\src now carries a standing (OI)(CI)(RX) for
@@ -1603,18 +1607,18 @@ try {
   $sharesSeen = New-Object 'System.Collections.Generic.HashSet[string]' -ArgumentList ([System.StringComparer]::OrdinalIgnoreCase)
   # Seeded with TargetFolder so that a share entry naming the conversation
   # folder is recognised as already covered by (d) - otherwise it would mean a
-  # second Set-Acl for an ACE that is already there, and a second purge on the
-  # way out, both pointless writes to the folder the turn is actually using.
+  # second grant for an ACE that is already there, and a second purge on the
+  # way out, both pointless work on the folder the turn is actually using.
   # SHARED ACROSS BOTH CLASSES, so one path can never collect two ACEs; the
   # writable pass runs first, so a path in both lists keeps its Modify and the
   # read-only pass logs it as a duplicate. src/sandbox-cli-session.mjs drops
   # such a path from the read-only list before it ever gets here.
   [void]$sharesSeen.Add([System.IO.Path]::GetFullPath($TargetFolder).TrimEnd('\'))
   foreach ($shareClass in @(
-    @{ Rights = 'Modify';         SkipIfPoolReadCovered = $false; Paths = $SharePathList },
-    @{ Rights = 'ReadAndExecute'; SkipIfPoolReadCovered = $true;  Paths = $SharePathReadOnlyList }
+    @{ Grant = 'Modify'; SkipIfPoolReadCovered = $false; Paths = $SharePathList },
+    @{ Grant = 'Read';   SkipIfPoolReadCovered = $true;  Paths = $SharePathReadOnlyList }
   )) {
-    $shareRights = $shareClass.Rights
+    $shareGrant = $shareClass.Grant
     foreach ($sp in $shareClass.Paths) {
       if ([string]::IsNullOrWhiteSpace($sp)) { continue }
       try {
@@ -1623,7 +1627,7 @@ try {
           continue
         }
         if ($shareClass.SkipIfPoolReadCovered -and (Test-SandboxPoolReadCovered -Path $sp -LeasedSid $leasedSid)) {
-          Log "share path is already readable by $SandboxPoolGroup (standing group grant, inherited or explicit)  - skipping the per-account $shareRights ACE, nothing to grant and nothing to revoke: $sp"
+          Log "share path is already readable by $SandboxPoolGroup (standing group grant, inherited or explicit)  - skipping the per-account $shareGrant ACE, nothing to grant and nothing to revoke: $sp"
           continue
         }
         # Pure string math on a path that was just shown to exist, so it cannot
@@ -1633,7 +1637,6 @@ try {
           Log "share path already granted this turn  - skipping duplicate: $sp"
           continue
         }
-        $shareInherit = if (Test-Path -LiteralPath $sp -PathType Container) { 'ContainerInherit,ObjectInherit' } else { 'None' }
         # Ledger first, ACE second - the same order and the same reason as step
         # (d), and for BOTH classes: a read-only ACE nothing recorded is exactly
         # the leak the ledger exists to prevent, since the revoke purges by SID
@@ -1645,16 +1648,11 @@ try {
         try {
           Add-SandboxLeaseLedgerPath -Stream $lockStream -Path $sp
         } catch {
-          Log "WARNING: could not record shared path $sp in the ACE ledger at $lockPath  - $($_.Exception.Message). This turn's own revoke is unaffected, but a HARD KILL will leave '$leasedName' holding $shareRights there with nothing to find it by."
+          Log "WARNING: could not record shared path $sp in the ACE ledger at $lockPath  - $($_.Exception.Message). This turn's own revoke is unaffected, but a HARD KILL will leave '$leasedName' holding $shareGrant there with nothing to find it by."
         }
-        $shareAcl = Get-Acl -LiteralPath $sp
-        $shareRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-          $leasedSid, $shareRights, $shareInherit, 'None', 'Allow')
-        $shareAcl.AddAccessRule($shareRule)
-        Set-Acl -LiteralPath $sp -AclObject $shareAcl
-        Log "granted $shareRights to $($leasedSid.Value) ($leasedName) on shared path $sp"
+        Grant-SandboxPoolAce -Path $sp -Grant $shareGrant -Sid $leasedSid -Principal $leasedLabel | Out-Null
       } catch {
-        Log "WARNING: could not grant $shareRights to $($leasedSid.Value) ($leasedName) on shared path $sp  - $($_.Exception.Message) (continuing: the other share paths and the launch are unaffected)"
+        Log "WARNING: could not grant $shareGrant to $leasedLabel on shared path $sp  - $($_.Exception.Message) (continuing: the other share paths and the launch are unaffected)"
       }
     }
   }
