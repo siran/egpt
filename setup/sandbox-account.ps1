@@ -1,4 +1,4 @@
-# sandbox-account.ps1  - one-time idempotent provisioning of the POOL of
+﻿# sandbox-account.ps1  - one-time idempotent provisioning of the POOL of
 # disposable unprivileged local accounts (egpt-sbx-00..NN) used by
 # sandbox-logon-launcher.ps1's per-turn leasing flow. New-LocalUser/
 # Set-LocalUser require local-Administrator rights. Dot-sourced by
@@ -250,8 +250,8 @@ function Ensure-SandboxPool {
 
 # Ensure the shared pool group exists and every pool account is a member  -
 # idempotent (checks membership before adding, not exception-message
-# matching). This group is what Grant-SandboxPoolAccess below grants
-# ReadAndExecute to, once, instead of granting each account individually.
+# matching). This group is what Grant-SandboxPoolAce below grants to, once,
+# instead of granting each account individually.
 function Ensure-SandboxPoolGroup {
   if (-not (Get-LocalGroup -Name $SandboxPoolGroup -ErrorAction SilentlyContinue)) {
     Log "creating local group '$SandboxPoolGroup'"
@@ -266,25 +266,103 @@ function Ensure-SandboxPoolGroup {
   }
 }
 
-# Grant the pool group ReadAndExecute on a CLI binary's directory (recurses to
-# files/subdirs via inheritance) so a leased account can actually launch it --
-# CreateProcessWithLogonW otherwise fails with ERROR_ACCESS_DENIED against a
-# path only the operator's own account can read (e.g. ~/.local/bin). Additive
-# only: never removes or replaces existing ACEs.
-function Grant-SandboxPoolAccess {
+# EVERY ACE THE POOL GROUP IS EVER GRANTED, AS ONE TABLE. Three of them, and
+# this is the only place any is spelled:
+#
+#   Traverse  (X,RA,RC), NOT inheritable, on each directory of the ancestor chain
+#             above a conversation folder. Walk THROUGH it; do not LIST it. RD is
+#             withheld on purpose, so a sandboxed being reaches the one folder it
+#             was granted BY NAME and still cannot enumerate the operator's home
+#             or the names of other conversations. The mask is not what it looks
+#             like: measured end to end as a real pool account (2026-09-13), the
+#             token DOES hold SeChangeNotify so the kernel walk is already
+#             covered - what fails without an ACE is Node's per-component lstat,
+#             i.e. OPENING an ancestor as an object in its own right.
+#   Read      (OI)(CI)(RX), inheritable, on a CLI binary's directory or on ~\src.
+#             The whole subtree is the point - CreateProcessWithLogonW otherwise
+#             fails ERROR_ACCESS_DENIED on a path only the operator can read.
+#   Modify    (OI)(CI)(M), inheritable, on a directory the pool OWNS - pi's
+#             config dir, which pi WRITES to.
+#
+# Rights is the mask the ACE LANDS AS on disk, which is what the check below
+# compares. Measured 2026-09-20: icacls and Set-Acl write byte-identical masks
+# for all three, so moving these writes to icacls changed nothing about WHAT is
+# granted.
+$SandboxPoolGrants = @{
+  Traverse = @{ Spec = '(X,RA,RC)';    Rights = [int][System.Security.AccessControl.FileSystemRights]'ExecuteFile, ReadAttributes, ReadPermissions'; Inherit = [System.Security.AccessControl.InheritanceFlags]'None' }
+  Read     = @{ Spec = '(OI)(CI)(RX)'; Rights = [int][System.Security.AccessControl.FileSystemRights]'ReadAndExecute, Synchronize';                  Inherit = [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit' }
+  Modify   = @{ Spec = '(OI)(CI)(M)';  Rights = [int][System.Security.AccessControl.FileSystemRights]'Modify, Synchronize';                          Inherit = [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit' }
+}
+
+# A GRANT IS A FACT TO CONVERGE ON, NOT A COMMAND TO RE-ISSUE (operator
+# 2026-09-20, watching the provisioner sit on the ancestor chain: "the script is
+# doing something slow and perhaps weird with the ACLs.... it shouldn't be
+# complicated, it has to be easy to review").
+#
+# SO: READ THE DACL FIRST, WRITE ONLY WHAT IS MISSING OR WRONG. Writing a DACL on
+# a container makes Windows re-run inheritance propagation over the whole
+# subtree, so re-issuing a grant that is already correct is not free - ~\src
+# measured 307 s for ONE pass on reve, and Set-Acl HUNG twice against
+# C:\Users\an and had to be killed. All five ancestors and ~\src were already
+# correct before the run the operator watched, so it should have been seconds.
+#
+# icacls, NEVER Set-Acl, for the write (measured 2026-09-13): Set-Acl persists
+# the SACL as well - see Protect-SandboxCredDir's note on
+# PrivilegeNotHeldException - and is the one that hung on the profile root.
+# icacls edits the DACL only and returns at once. Plain /grant, never /grant:r,
+# so this stays ADDITIVE: it never narrows a broader grant already made to this
+# group, and narrowing one stays a hand operation (as it was for ~\bin\egpt:
+# `icacls "%USERPROFILE%\bin\egpt" /remove:g egpt-sandbox-pool`, then re-run the
+# provisioner).
+#
+# WHAT "ALREADY GRANTED" MEANS, exactly: an EXPLICIT Allow ACE on THIS object,
+# for the pool GROUP's SID, with exactly this grant's inheritance flags and
+# carrying at least its rights.
+#  - EXPLICIT ONLY. An inherited ACE is a fact about a parent; the fact this
+#    converges on is an ACE here. (Test-SandboxPoolReadCovered answers the other
+#    question - "can the pool already read this?" - and does accept inherited.)
+#  - THE FLAGS ARE PART OF THE FACT. An inheritable (OI)(CI)(RX) does not satisfy
+#    the non-inheritable traverse grant, and vice versa: they are different ACEs
+#    on purpose, and a grant present with the wrong inheritance is corrected by
+#    writing the right one beside it.
+#  - AT LEAST, NOT EXACTLY, on the rights. Allow ACEs union, so a broader ACE
+#    already satisfies the grant - and plain /grant could not narrow it anyway.
+function Grant-SandboxPoolAce {
   param(
-    [Parameter(Mandatory = $true)][string]$Path
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][ValidateSet('Traverse', 'Read', 'Modify')][string]$Grant
   )
   if (-not (Test-Path -LiteralPath $Path)) {
-    throw "sandbox-logon-launcher: cannot grant pool access -- path does not exist: $Path"
+    throw "sandbox-logon-launcher: cannot grant $Grant to the pool -- path does not exist: $Path"
   }
+  $want = $SandboxPoolGrants[$Grant]
+  # By SID. Translating first means a missing pool group fails loudly right here
+  # instead of letting icacls resolve some other principal that happens to carry
+  # the same name. '*' is icacls's prefix for a SID literal.
   $groupSid = (New-Object System.Security.Principal.NTAccount($SandboxPoolGroup)).Translate([System.Security.Principal.SecurityIdentifier])
-  $acl = Get-Acl -LiteralPath $Path
-  $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-    $groupSid, 'ReadAndExecute', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
-  $acl.AddAccessRule($rule)
-  Set-Acl -LiteralPath $Path -AclObject $acl
-  Log "granted ReadAndExecute to $SandboxPoolGroup on $Path"
+  # -ErrorAction Stop: a DACL this process cannot read must not come back as an
+  # empty rule set and be mistaken for "not granted yet".
+  $present = @((Get-Acl -LiteralPath $Path -ErrorAction Stop).GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]) | Where-Object {
+      $_.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow -and
+      $_.IdentityReference.Value -eq $groupSid.Value -and
+      $_.InheritanceFlags -eq $want.Inherit -and
+      $_.PropagationFlags -eq [System.Security.AccessControl.PropagationFlags]::None -and
+      ([int]$_.FileSystemRights -band $want.Rights) -eq $want.Rights
+    })
+  if ($present.Count -gt 0) {
+    Log "already granted $Grant $($want.Spec) to $SandboxPoolGroup on $Path  - nothing written"
+    return 'already granted'
+  }
+  # No 2>&1: PS 5.1 turns a redirected native stderr into NativeCommandError
+  # records, which under the provisioner's $ErrorActionPreference='Stop' throws
+  # something unrelated to what went wrong. icacls's own reason goes to the
+  # console; the exit code is what this branches on.
+  $out = & icacls.exe $Path '/grant' "*$($groupSid.Value):$($want.Spec)"
+  if ($LASTEXITCODE -ne 0) {
+    throw "sandbox-logon-launcher: icacls could not grant $Grant $($want.Spec) to $SandboxPoolGroup on $Path  - exit $LASTEXITCODE ($($out -join ' '))"
+  }
+  Log "granted $Grant $($want.Spec) to $SandboxPoolGroup on $Path"
+  return 'granted'
 }
 
 # IS THIS PATH ALREADY READABLE BY THE WHOLE POOL? (operator 2026-09-20: "~/src
@@ -308,7 +386,7 @@ function Grant-SandboxPoolAccess {
 #    operator named is the inherited one from ~\src, and an explicit one on this
 #    very path is the same fact one directory up. Neither is written per turn.
 #  - THE WHOLE MASK, not a bit of it: ($rights -band RX) -eq RX. A grant of, say,
-#    traverse-only (X,RA,RC) from Grant-SandboxPoolTraverse must NOT satisfy this
+#    traverse-only (X,RA,RC) from Grant-SandboxPoolAce must NOT satisfy this
 #    - it deliberately withholds read-data, and that is the difference between a
 #    being that can open the tree and one that can only walk through it.
 #  - ANY DENY IS A NO. An explicit Allow for the leased ACCOUNT beats an
@@ -341,123 +419,6 @@ function Test-SandboxPoolReadCovered {
   } catch {
     return $false
   }
-}
-
-# Modify (read+write) for the pool on a directory it OWNS -- the pool's own pi
-# config dir under ProgramData.
-#
-# ~/bin/egpt USED to be granted here too (2026-09-10, "let E modify itself") and
-# no longer is (2026-09-13): that tree is executed BY THE OPERATOR, so a standing
-# group Modify ACE on it let any of the 16 pool accounts place code that runs
-# outside the sandbox at the next restart. It is ReadAndExecute now, and a being
-# that must change its own code is pointed at the editable checkout per-turn.
-# See provision-sandbox-account.ps1, which also carries the hand-removal step:
-# this function is additive and never revokes what an earlier run wrote.
-function Grant-SandboxPoolModify {
-  param(
-    [Parameter(Mandatory = $true)][string]$Path
-  )
-  $groupSid = (New-Object System.Security.Principal.NTAccount($SandboxPoolGroup)).Translate([System.Security.Principal.SecurityIdentifier])
-  $acl = Get-Acl -LiteralPath $Path
-  $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-    $groupSid, 'Modify', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
-  $acl.AddAccessRule($rule)
-  Set-Acl -LiteralPath $Path -AclObject $acl
-  Log "granted Modify to $SandboxPoolGroup on $Path"
-}
-
-# Grant the pool group TRAVERSE-ONLY on ONE directory of an ancestor chain:
-# (X,RA,RC)  - traverse, read-attributes, read-permissions  - on that directory
-# itself, NOT inherited by anything under it. Additive, like its two siblings
-# above: never removes or replaces an existing ACE.
-#
-# WHY IT EXISTS. Two symptoms, both on 2026-09-13: a being could not read an
-# image inside its own conversation folder for two days (Claude Code reported it
-# confusingly as its symlink resolution changing after the permission check), and
-# a being could not write a shared path it plainly held an ACE on. Granting
-# traverse on the PARENTS fixed both.
-#
-# AND IT IS NOT WHAT IT LOOKS LIKE. The obvious reading  - the kernel needs
-# FILE_TRAVERSE to walk the chain, and these tokens lack bypass-traverse  - is
-# WRONG, and this comment asserted it until it was measured end to end as a real
-# pool account against a purpose-built tree (2026-09-13). The pool token DOES
-# hold SeChangeNotifyPrivilege, Enabled, and it works: reading a leaf file
-# through TWO ACE-free ancestors succeeds. What the privilege does not cover is
-# OPENING an ancestor directory AS AN OBJECT IN ITS OWN RIGHT. On an ungranted
-# ancestor every raw CreateFileW failed win32=5  - FILE_TRAVERSE, READ_CONTROL,
-# FILE_READ_ATTRIBUTES, and even a ZERO-ACCESS query-only open.
-#
-# That is exactly what Node does, and Claude Code is Node. Same tree:
-#   readFileSync   leaf   -> OK      implicit walk, the privilege covers it
-#   lstatSync      parent -> EPERM   explicit open of the ancestor
-#   realpathSync   leaf   -> EPERM   and it names the ANCESTOR it tripped on
-#   realpathSync.native   -> OK      resolves via a handle on the target
-# The per-component lstat guard is the whole failure. Granting (X,RA,RC) on the
-# ancestor flipped exactly those and nothing else: opendirSync on it still
-# EPERMs, because RD is still withheld.
-#
-# UNTESTED INFERENCE, recorded as such: the load-bearing bit is probably RA, not
-# X  - X duplicates what the privilege already gives, RA is what it withholds. RA
-# was never isolated from X, so the mask stays (X,RA,RC) rather than being pruned
-# on a guess.
-#
-# WHAT IS WITHHELD ON PURPOSE: RD, list-directory. A sandboxed being can walk
-# THROUGH the operator's home and through the conversations tree to a folder it
-# was granted BY NAME, and still cannot ENUMERATE either  - not the operator's
-# home, not the names of other conversations. That distinction is the whole
-# reason this is not just Grant-SandboxPoolAccess with a narrower path list.
-#
-# AND NOT INHERITABLE: no (OI)(CI). Each directory of the chain is granted on
-# its own; an inheritable ACE here would hand traverse to every descendant of
-# the operator's profile, which is the opposite of what is wanted.
-#
-# icacls, NOT Get-Acl/Set-Acl, and that is not a style choice (measured
-# 2026-09-13): Set-Acl persists the SACL  - see Protect-SandboxCredDir's note on
-# PrivilegeNotHeldException  - and against C:\Users\an itself it HUNG twice and
-# had to be killed. icacls edits the DACL only and returns at once. The two
-# sibling helpers' Set-Acl is fine on the paths THEY target; do not "simplify"
-# this one to match them, and do not reach for Set-Acl on the profile root.
-#
-# PLAIN /grant, NOT /grant:r, so this stays additive like the siblings, and it
-# converges anyway. Measured 2026-09-13, three runs each:
-#   clean directory                 -> one ACE, (X,RA,RC), no inheritance flags
-#   group already has (OI)(CI)(RX)  -> that ACE is left alone and ONE more is
-#                                      written, non-inheritable; still two after
-#                                      the third run
-# icacls folds the grant into an existing ACE when the inheritance flags match
-# and writes a separate one when they do not, so neither case accumulates. What
-# plain /grant will NOT do is NARROW a broader grant already made to this group
-# on one of these directories (':r' would replace it) - the same additive
-# character every grant in this file has, and narrowing one stays a hand
-# operation, as it is for ~\bin\egpt.
-#
-# IT IS SLOW ON A BIG TREE AND IS NOT HUNG. Measured on reve 2026-09-13:
-# ~\src took about five minutes, with no /T and a NON-inheritable ACE. Writing
-# any DACL on a container makes Windows re-run inheritance propagation over the
-# whole subtree to recompute what the children inherit, and ~\src is full of
-# node_modules. ~ is the same. The re-run cost is paid again on every
-# re-provision, since the ACE is rewritten even when identical.
-function Grant-SandboxPoolTraverse {
-  param(
-    [Parameter(Mandatory = $true)][string]$Path
-  )
-  if (-not (Test-Path -LiteralPath $Path)) {
-    throw "sandbox-logon-launcher: cannot grant pool traverse -- path does not exist: $Path"
-  }
-  # By SID, like the siblings. Translating first means a missing pool group
-  # fails loudly right here instead of letting icacls resolve some other
-  # principal that happens to carry the same name. '*' is icacls's prefix for a
-  # SID literal.
-  $groupSid = (New-Object System.Security.Principal.NTAccount($SandboxPoolGroup)).Translate([System.Security.Principal.SecurityIdentifier])
-  # No 2>&1: PS 5.1 turns a redirected native stderr into NativeCommandError
-  # records, which under the provisioner's $ErrorActionPreference='Stop' throws
-  # something unrelated to what went wrong. icacls's own reason goes to the
-  # console; the exit code is what this branches on.
-  $out = & icacls.exe $Path '/grant' ("*$($groupSid.Value):(X,RA,RC)")
-  if ($LASTEXITCODE -ne 0) {
-    throw "sandbox-logon-launcher: icacls could not grant traverse to $SandboxPoolGroup on $Path  - exit $LASTEXITCODE ($($out -join ' '))"
-  }
-  Log "granted traverse-only (X,RA,RC), not inherited, to $SandboxPoolGroup on $Path"
 }
 
 # Lock down $CredDir  - C:\ProgramData\egpt, which holds one DPAPI-encrypted
@@ -688,7 +649,7 @@ function Add-SandboxLeaseLedgerPath {
 # account that leaked an ACE onto it.
 #
 # WHY THE PATH IS THE KEY. Writing a DACL on a container makes Windows re-run
-# inheritance propagation over the whole subtree (see Grant-SandboxPoolTraverse's
+# inheritance propagation over the whole subtree (see Grant-SandboxPoolAce's
 # header for the measurement), so the cost of a revoke is the TREE, not the ACE.
 # The old shape was one Set-Acl per ACCOUNT, and the sweep found fifteen
 # abandoned leases with twelve of them naming ~\src\egpt - so it walked that tree
@@ -772,7 +733,7 @@ function Revoke-SandboxPathAces {
     if ($targets.Count -eq 0) { return $records.ToArray() }
     # No 2>&1: PS 5.1 turns a redirected native stderr into NativeCommandError
     # records, which under the provisioner's $ErrorActionPreference='Stop' throws
-    # something unrelated to what went wrong (the same note Grant-SandboxPoolTraverse
+    # something unrelated to what went wrong (the same note Grant-SandboxPoolAce
     # carries). Capturing stdout also keeps icacls's chatter off the launcher's
     # stdout, which is the inner process's stream-json pipe.
     $icaclsArgs = @($Path, '/remove:g') + @($targets | ForEach-Object { "*$($sids[$_].Value)" }) + @('/C')
@@ -867,7 +828,7 @@ function Clear-SandboxStaleLease {
 # and it is the SAME function the launcher's reclaim uses, applied to every lock
 # instead of to one. There is no timer, no second lifecycle and no new definition
 # of "revoked". It is deliberately kept OFF the lease-acquire path: revoking on a
-# big shared tree costs minutes (see Grant-SandboxPoolTraverse's note on
+# big shared tree costs minutes (see Grant-SandboxPoolAce's note on
 # inheritance re-propagation), and a turn must not pay that for litter that is
 # not its own.
 #

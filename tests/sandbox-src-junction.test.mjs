@@ -31,7 +31,7 @@
 // documents. The launcher is PowerShell with a param block, so nothing can dot-source it:
 // these are STRUCTURAL locks on its source. The BEHAVIOUR — real junctions on a real
 // directory, a real ACE really granted and really revoked — is exercised for real in
-// setup/sandbox-account.Tests.ps1 ('Grant-SandboxPoolAccess', 'Revoke-SandboxPathAces',
+// setup/sandbox-account.Tests.ps1 ('Grant-SandboxPoolAce', 'Revoke-SandboxPathAces',
 // 'Clear-SandboxAbandonedLeases', 'Test-SandboxPoolReadCovered' and 'the pool profile
 // junctions'), run with:
 //   Invoke-Pester -Script setup\sandbox-account.Tests.ps1
@@ -148,18 +148,50 @@ describe('the OTHER half: a standing read grant on the junction target', () => {
   it('the provisioner grants the pool group ReadAndExecute on ~\\src, never Modify', () => {
     const p = provisioner();
     expect(p).toMatch(/\$srcDir = Join-Path \$env:USERPROFILE 'src'/);
-    expect(p).toMatch(/Grant-SandboxPoolAccess -Path \$srcDir/);
-    // Grant-SandboxPoolAccess is the ReadAndExecute helper; Grant-SandboxPoolModify is the
-    // read-write one and must never be the thing pointed at the operator's whole source tree.
-    expect(p).not.toMatch(/Grant-SandboxPoolModify -Path \$srcDir/);
+    // ~\src rides the read-only list, which is granted with -Grant 'Read' — the
+    // (OI)(CI)(RX) row of Grant-SandboxPoolAce's table.
+    const readStep = p.slice(p.indexOf('$readOnly = [ordered]@{'), p.indexOf("-Grant 'Read'") + 20);
+    expect(readStep).toMatch(/= \$srcDir/);
+    expect(readStep).toMatch(/Grant-PoolOn -Targets \$readOnly -Grant 'Read'/);
+    // 'Modify' is the read-write row and must never be the thing pointed at the operator's
+    // whole source tree.
+    expect(p).not.toMatch(/Grant-PoolOn -Targets \$readOnly -Grant 'Modify'/);
   });
 
   it('it is granted to the GROUP, which is what keeps it distinguishable from lease litter', () => {
     // An ACE naming egpt-sandbox-pool on ~\src is this standing grant. An ACE naming an
     // individual egpt-sbx-NN anywhere under it is a lease ACE that should have been revoked.
     // Reading an icacls dump depends on the two never being written by the same code path.
-    expect(accountLib()).toMatch(/function Grant-SandboxPoolAccess[\s\S]{0,900}NTAccount\(\$SandboxPoolGroup\)/);
-    expect(accountLib()).toMatch(/function Grant-SandboxPoolAccess[\s\S]{0,900}'ReadAndExecute', 'ContainerInherit,ObjectInherit'/);
+    expect(accountLib()).toMatch(/function Grant-SandboxPoolAce[\s\S]{0,1200}NTAccount\(\$SandboxPoolGroup\)/);
+    // The Read row of the one grant table: inheritable ReadAndExecute, nothing more.
+    expect(accountLib()).toMatch(/Read\s+= @\{ Spec = '\(OI\)\(CI\)\(RX\)';[\s\S]{0,200}'ReadAndExecute, Synchronize'/);
+  });
+
+  it('the grant CHECKS the DACL before it writes — a grant is a fact to converge on', () => {
+    // Operator 2026-09-20, after watching the provisioner rewrite five ancestor DACLs that
+    // were already correct: "the script is doing something slow and perhaps weird with the
+    // ACLs…. it shouldn't be complicated, it has to be easy to review". A DACL write on a
+    // container re-propagates inheritance over the whole subtree — 307 s for one pass over
+    // ~\src — so re-issuing a correct grant is not free. The BEHAVIOUR is proved for real in
+    // setup/sandbox-account.Tests.ps1 ('Grant-SandboxPoolAce check-first'); this locks the
+    // order, which is the part a refactor could quietly lose.
+    const lib = accountLib();
+    const fn = lib.slice(lib.indexOf('function Grant-SandboxPoolAce'), lib.indexOf('function Test-SandboxPoolReadCovered'));
+    const read = fn.indexOf('$present = @((Get-Acl');
+    const write = fn.indexOf('& icacls.exe');
+    expect(read).toBeGreaterThan(0);
+    expect(write).toBeGreaterThan(read);
+    expect(fn).toMatch(/return 'already granted'/);
+    // ONE ACL tool for every grant, the same one the revoke uses. Set-Acl is what hung twice
+    // on C:\Users\an, and it persists the SACL as well as the DACL.
+    expect(fn).not.toMatch(/Set-Acl/);
+    // Plain /grant, never /grant:r — the grants stay additive and never narrow.
+    expect(fn).not.toMatch(/\/grant:r/);
+    expect((fn.match(/icacls\.exe/g) || []).length).toBe(1);
+    // ...and the three superseded Set-Acl grant helpers are gone, not kept beside it.
+    expect(lib).not.toMatch(/function Grant-SandboxPoolAccess/);
+    expect(lib).not.toMatch(/function Grant-SandboxPoolModify/);
+    expect(lib).not.toMatch(/function Grant-SandboxPoolTraverse/);
   });
 
   it('the standing-vs-per-turn choice is stated in the header, not left to be inferred', () => {
@@ -228,8 +260,8 @@ describe('a lease share is released with the lease', () => {
     expect(fn).not.toMatch(/'\/T'/);
     // Exactly one icacls invocation in the function body: the batching is the whole point.
     expect((fn.match(/icacls\.exe/g) || []).length).toBe(1);
-    // ...and Set-Acl is gone from the revoke entirely. The grant helpers keep it (they write
-    // an ACE with specific inheritance flags); taking one away is what icacls does in 2 s.
+    // ...and Set-Acl is gone from the revoke entirely — as it now is from the grant
+    // (Grant-SandboxPoolAce). One ACL tool, on both sides of the ledger.
     expect(fn).not.toMatch(/Set-Acl/);
   });
 

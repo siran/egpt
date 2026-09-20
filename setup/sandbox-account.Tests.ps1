@@ -594,10 +594,10 @@ Describe 'Clear-SandboxStaleLease (what a RECLAIM does to a hard-killed turns le
 }
 
 # ---------------------------------------------------------------------------
-# THE TRAVERSE CHAIN (2026-09-13). Grant-SandboxPoolTraverse is what makes the
-# five ancestor directories above a conversation folder WALKABLE by the pool
-# without making them LISTABLE - the property the whole grant exists for, and
-# the one an eyeball on an icacls line gets wrong easily, since (Rc,X,RA) and
+# THE TRAVERSE CHAIN (2026-09-13). Grant-SandboxPoolAce -Grant 'Traverse' is what
+# makes the five ancestor directories above a conversation folder WALKABLE by the
+# pool without making them LISTABLE - the property the whole grant exists for,
+# and the one an eyeball on an icacls line gets wrong easily, since (Rc,X,RA) and
 # (RX) look alike and differ by exactly the read-data bit.
 #
 # These grant FOR REAL, against a throwaway directory under $env:TEMP, with
@@ -624,7 +624,7 @@ function Get-TestExplicitAces([string]$Path) {
 # spelled out here so a future reader does not have to decode it.
 $script:TraverseRights = 131232
 
-Describe 'Grant-SandboxPoolTraverse (walk through the directory, do not list it)' {
+Describe "Grant-SandboxPoolAce -Grant 'Traverse' (walk through the directory, do not list it)" {
   BeforeEach {
     $script:TraverseSavedGroup = $SandboxPoolGroup
     $script:SandboxPoolGroup = $script:MeName
@@ -637,7 +637,7 @@ Describe 'Grant-SandboxPoolTraverse (walk through the directory, do not list it)
   It 'writes exactly (X,RA,RC) and nothing else' {
     $d = New-LedgerTempDir
     (Get-TestExplicitAceCount $d) | Should Be 0
-    Grant-SandboxPoolTraverse -Path $d
+    Grant-SandboxPoolAce -Path $d -Grant 'Traverse'
     $aces = @(Get-TestExplicitAces $d)
     $aces.Count | Should Be 1
     ([int]$aces[0].FileSystemRights) | Should Be $script:TraverseRights
@@ -650,7 +650,7 @@ Describe 'Grant-SandboxPoolTraverse (walk through the directory, do not list it)
     # conversation slug on the box, which is precisely what the chain is shaped
     # to prevent while still letting it reach the one folder it was granted.
     $d = New-LedgerTempDir
-    Grant-SandboxPoolTraverse -Path $d
+    Grant-SandboxPoolAce -Path $d -Grant 'Traverse'
     $rights = [int](@(Get-TestExplicitAces $d)[0].FileSystemRights)
     ($rights -band [int][System.Security.AccessControl.FileSystemRights]::ListDirectory) | Should Be 0
     ($rights -band [int][System.Security.AccessControl.FileSystemRights]::WriteData) | Should Be 0
@@ -659,7 +659,7 @@ Describe 'Grant-SandboxPoolTraverse (walk through the directory, do not list it)
 
   It 'is NOT inheritable, so nothing under the directory picks the grant up' {
     $d = New-LedgerTempDir
-    Grant-SandboxPoolTraverse -Path $d
+    Grant-SandboxPoolAce -Path $d -Grant 'Traverse'
     (@(Get-TestExplicitAces $d)[0].InheritanceFlags.ToString()) | Should Be 'None'
     $child = Join-Path $d 'child'
     New-Item -ItemType Directory -Path $child | Out-Null
@@ -670,7 +670,7 @@ Describe 'Grant-SandboxPoolTraverse (walk through the directory, do not list it)
 
   It 'converges instead of accumulating: three runs leave exactly one ACE' {
     $d = New-LedgerTempDir
-    foreach ($i in 1..3) { Grant-SandboxPoolTraverse -Path $d }
+    foreach ($i in 1..3) { Grant-SandboxPoolAce -Path $d -Grant 'Traverse' }
     (@(Get-TestExplicitAces $d).Count) | Should Be 1
     ([int](@(Get-TestExplicitAces $d)[0].FileSystemRights)) | Should Be $script:TraverseRights
   }
@@ -680,12 +680,11 @@ Describe 'Grant-SandboxPoolTraverse (walk through the directory, do not list it)
     # match and writes a SEPARATE one when they do not, which is this case:
     # (OI)(CI)(RX) already there, traverse-only added beside it. Two ACEs after
     # the first run and still two after the third. This function never narrows -
-    # the same additive character Grant-SandboxPoolAccess and
-    # Grant-SandboxPoolModify have, and the reason ~\bin\egpt needed a hand
-    # removal when its grant was reversed.
+    # the same additive character the Read and Modify grants have, and the
+    # reason ~\bin\egpt needed a hand removal when its grant was reversed.
     $d = New-LedgerTempDir
     Grant-TestReadAndExecute $d
-    foreach ($i in 1..3) { Grant-SandboxPoolTraverse -Path $d }
+    foreach ($i in 1..3) { Grant-SandboxPoolAce -Path $d -Grant 'Traverse' }
     $aces = @(Get-TestExplicitAces $d)
     $aces.Count | Should Be 2
     (@($aces | Where-Object { $_.InheritanceFlags.ToString() -ne 'None' }).Count) | Should Be 1
@@ -693,20 +692,20 @@ Describe 'Grant-SandboxPoolTraverse (walk through the directory, do not list it)
   }
 
   It 'throws on a path that is not there, rather than reporting a grant it never made' {
-    { Grant-SandboxPoolTraverse -Path (Join-Path $script:LedgerTempRoot 'never-existed-traverse') } | Should Throw
+    { Grant-SandboxPoolAce -Path (Join-Path $script:LedgerTempRoot 'never-existed-traverse') -Grant 'Traverse' } | Should Throw
   }
 
   It 'fails loudly when the group cannot be resolved, instead of letting icacls pick a principal' {
     $d = New-LedgerTempDir
     $script:SandboxPoolGroup = 'egpt-no-such-group-zzz'
-    { Grant-SandboxPoolTraverse -Path $d } | Should Throw
+    { Grant-SandboxPoolAce -Path $d -Grant 'Traverse' } | Should Throw
     (Get-TestExplicitAceCount $d) | Should Be 0
   }
 }
 
 # ---------------------------------------------------------------------------
-# THE STANDING READ GRANT (2026-09-20). Grant-SandboxPoolAccess is what
-# provision-sandbox-account.ps1 now puts on the operator's ~\src, so that the
+# THE STANDING READ GRANT (2026-09-20). Grant-SandboxPoolAce -Grant 'Read' is
+# what provision-sandbox-account.ps1 puts on the operator's ~\src, so that the
 # `src` junction the launcher plants in every pool profile resolves to something
 # the leased account may actually open. The function had no coverage at all, and
 # the one property that matters here is the one an eyeball gets wrong:
@@ -716,7 +715,7 @@ Describe 'Grant-SandboxPoolTraverse (walk through the directory, do not list it)
 # Same substitution as the traverse describe above - $SandboxPoolGroup points at
 # the current user and the target is a throwaway directory under $env:TEMP - so
 # nothing here touches the real pool group, the real ~\src, or any live ACL.
-Describe 'Grant-SandboxPoolAccess (the standing read grant behind the src junction)' {
+Describe "Grant-SandboxPoolAce -Grant 'Read' (the standing read grant behind the src junction)" {
   BeforeEach {
     $script:TraverseSavedGroup = $SandboxPoolGroup
     $script:SandboxPoolGroup = $script:MeName
@@ -728,7 +727,7 @@ Describe 'Grant-SandboxPoolAccess (the standing read grant behind the src juncti
 
   It 'grants ReadAndExecute and NOT Modify' {
     $d = New-LedgerTempDir
-    Grant-SandboxPoolAccess -Path $d
+    Grant-SandboxPoolAce -Path $d -Grant 'Read'
     $aces = @(Get-TestExplicitAces $d)
     $aces.Count | Should Be 1
     $rights = [int]$aces[0].FileSystemRights
@@ -742,7 +741,7 @@ Describe 'Grant-SandboxPoolAccess (the standing read grant behind the src juncti
 
   It 'IS inheritable, unlike the traverse grant - the whole subtree under ~\src is the point' {
     $d = New-LedgerTempDir
-    Grant-SandboxPoolAccess -Path $d
+    Grant-SandboxPoolAce -Path $d -Grant 'Read'
     (@(Get-TestExplicitAces $d)[0].InheritanceFlags.ToString()) | Should Be 'ContainerInherit, ObjectInherit'
     $child = Join-Path $d 'child'
     New-Item -ItemType Directory -Path $child | Out-Null
@@ -753,12 +752,193 @@ Describe 'Grant-SandboxPoolAccess (the standing read grant behind the src juncti
 
   It 'is idempotent: three runs leave exactly one ACE' {
     $d = New-LedgerTempDir
-    foreach ($i in 1..3) { Grant-SandboxPoolAccess -Path $d }
+    foreach ($i in 1..3) { Grant-SandboxPoolAce -Path $d -Grant 'Read' }
     (@(Get-TestExplicitAces $d).Count) | Should Be 1
   }
 
   It 'throws on a path that is not there, rather than reporting a grant it never made' {
-    { Grant-SandboxPoolAccess -Path (Join-Path $script:LedgerTempRoot 'never-existed-access') } | Should Throw
+    { Grant-SandboxPoolAce -Path (Join-Path $script:LedgerTempRoot 'never-existed-access') -Grant 'Read' } | Should Throw
+  }
+}
+
+# ---------------------------------------------------------------------------
+# CHECK FIRST, WRITE ONLY WHEN WRONG (operator 2026-09-20, watching the
+# provisioner sit on step 3 of 10: "the script is doing something slow and
+# perhaps weird with the ACLs.... it shouldn't be complicated, it has to be easy
+# to review").
+#
+# THE DEFECT THESE REPRODUCE: all five ancestors already carried their exact ACE
+# before that run, and the script rewrote every one of them anyway. A DACL write
+# on a container makes Windows re-run inheritance propagation over the whole
+# subtree - 307 s for one pass over ~\src, measured by hand on reve the same day
+# - so "re-issue the grant, it is idempotent anyway" cost minutes for nothing. An
+# outcome test cannot tell a converged run from a rewritten one (the ACE is
+# identical either way), so the WRITE is observed directly through the same
+# icacls spy the revoke tests use.
+#
+# The other half is the one that makes skipping safe: a grant that is present but
+# WRONG - different rights, or the right rights with the wrong inheritance - must
+# still be written. A wrong skip here is a pool that silently cannot reach a
+# directory the model says it can.
+#
+# Same substitution as the two describes above: $SandboxPoolGroup points at the
+# current user and every target is a throwaway directory under $env:TEMP.
+function Grant-TestReadAndExecuteNotInherited([string]$Path) {
+  $acl = Get-Acl -LiteralPath $Path
+  $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+    $script:MeSid, 'ReadAndExecute', 'None', 'None', 'Allow')))
+  Set-Acl -LiteralPath $Path -AclObject $acl
+}
+
+Describe 'Grant-SandboxPoolAce check-first (a grant is a fact to converge on, not a command to re-issue)' {
+  BeforeEach {
+    $script:TraverseSavedGroup = $SandboxPoolGroup
+    $script:SandboxPoolGroup = $script:MeName
+  }
+
+  AfterEach {
+    $script:SandboxPoolGroup = $script:TraverseSavedGroup
+    $script:IcaclsSpy = $null
+  }
+
+  It 'REPRODUCE-FIRST: a Traverse ACE that is already exactly right costs ZERO writes' {
+    # THE FIVE ANCESTORS. Every one of them was already (Rc,X,RA) for the pool
+    # when the operator watched this step take minutes.
+    $d = New-LedgerTempDir
+    (Grant-SandboxPoolAce -Path $d -Grant 'Traverse') | Should Be 'granted'
+    $script:IcaclsSpy = New-Object System.Collections.Generic.List[object]
+
+    (Grant-SandboxPoolAce -Path $d -Grant 'Traverse') | Should Be 'already granted'
+
+    $script:IcaclsSpy.Count | Should Be 0
+    ([int](@(Get-TestExplicitAces $d)[0].FileSystemRights)) | Should Be $script:TraverseRights
+  }
+
+  It 'REPRODUCE-FIRST: a Read ACE that is already exactly right costs ZERO writes' {
+    # ~\src. The expensive one: 307 s a pass, and it was already (OI)(CI)(RX).
+    $d = New-LedgerTempDir
+    Grant-SandboxPoolAce -Path $d -Grant 'Read' | Out-Null
+    $script:IcaclsSpy = New-Object System.Collections.Generic.List[object]
+
+    (Grant-SandboxPoolAce -Path $d -Grant 'Read') | Should Be 'already granted'
+
+    $script:IcaclsSpy.Count | Should Be 0
+  }
+
+  It 'REPRODUCE-FIRST: a Modify ACE that is already exactly right costs ZERO writes' {
+    $d = New-LedgerTempDir
+    Grant-SandboxPoolAce -Path $d -Grant 'Modify' | Out-Null
+    $script:IcaclsSpy = New-Object System.Collections.Generic.List[object]
+
+    (Grant-SandboxPoolAce -Path $d -Grant 'Modify') | Should Be 'already granted'
+
+    $script:IcaclsSpy.Count | Should Be 0
+  }
+
+  It 'a FIRST grant does write, and writes exactly once through icacls /grant' {
+    # The other side of the spy assertions above: "zero writes" must mean the
+    # check skipped it, not that the function stopped granting.
+    $d = New-LedgerTempDir
+    $script:IcaclsSpy = New-Object System.Collections.Generic.List[object]
+
+    (Grant-SandboxPoolAce -Path $d -Grant 'Read') | Should Be 'granted'
+
+    $script:IcaclsSpy.Count | Should Be 1
+    $callArgs = @($script:IcaclsSpy[0])
+    $callArgs[0] | Should Be $d
+    ($callArgs -contains '/grant') | Should Be $true
+    # By SID, and never /grant:r - plain /grant is what keeps this additive.
+    ($callArgs -contains "*$($script:MeSid.Value):(OI)(CI)(RX)") | Should Be $true
+    ($callArgs -contains '/grant:r') | Should Be $false
+  }
+
+  It 'CORRECTS a grant that is there with the WRONG INHERITANCE - non-inheritable where the model says inheritable' {
+    # A ReadAndExecute for the right principal, on the right directory, that
+    # covers the directory and NOTHING under it. Skipping on this would leave the
+    # pool able to open ~\src and unable to open anything in it.
+    $d = New-LedgerTempDir
+    Grant-TestReadAndExecuteNotInherited $d
+
+    (Grant-SandboxPoolAce -Path $d -Grant 'Read') | Should Be 'granted'
+
+    $inheritable = @(Get-TestExplicitAces $d | Where-Object { $_.InheritanceFlags.ToString() -eq 'ContainerInherit, ObjectInherit' })
+    $inheritable.Count | Should Be 1
+    ([int]$inheritable[0].FileSystemRights -band [int][System.Security.AccessControl.FileSystemRights]::ReadData) | Should Not Be 0
+  }
+
+  It 'CORRECTS a grant that is there with the WRONG RIGHTS - an (OI)(CI)(RX) does not satisfy Modify' {
+    # THE DIRECTION THAT MATTERS. RX and M carry the same inheritance flags, so
+    # the flags alone cannot tell them apart; pi WRITES to its config dir and
+    # fails the turn on a read-only ACE.
+    $d = New-LedgerTempDir
+    Grant-TestReadAndExecute $d
+
+    (Grant-SandboxPoolAce -Path $d -Grant 'Modify') | Should Be 'granted'
+
+    $writable = @(Get-TestExplicitAces $d | Where-Object {
+        ([int]$_.FileSystemRights -band [int][System.Security.AccessControl.FileSystemRights]::WriteData) -ne 0
+      })
+    $writable.Count | Should Be 1
+  }
+
+  It 'CORRECTS a traverse grant on a directory that only carries the inheritable read - the flags are part of the fact' {
+    # ~\src carries BOTH: (Rc,X,RA) on itself and (OI)(CI)(RX) for the subtree.
+    # They are different ACEs on purpose, and the broader one must not suppress
+    # the narrower one.
+    $d = New-LedgerTempDir
+    Grant-TestReadAndExecute $d
+
+    (Grant-SandboxPoolAce -Path $d -Grant 'Traverse') | Should Be 'granted'
+
+    (@(Get-TestExplicitAces $d).Count) | Should Be 2
+    (@(Get-TestExplicitAces $d | Where-Object { [int]$_.FileSystemRights -eq $script:TraverseRights }).Count) | Should Be 1
+  }
+
+  It 'a BROADER ACE with the same inheritance already satisfies the grant, and is left alone' {
+    # Allow ACEs UNION, and plain /grant could not narrow this one anyway - so
+    # re-writing an (OI)(CI)(RX) beside an existing (OI)(CI)(M) would change
+    # nothing about what the pool may do and cost the whole subtree a
+    # re-propagation. Modify is a strict superset of ReadAndExecute.
+    $d = New-LedgerTempDir
+    Grant-SandboxPoolAce -Path $d -Grant 'Modify' | Out-Null
+    $script:IcaclsSpy = New-Object System.Collections.Generic.List[object]
+
+    (Grant-SandboxPoolAce -Path $d -Grant 'Read') | Should Be 'already granted'
+
+    $script:IcaclsSpy.Count | Should Be 0
+  }
+
+  It 'an INHERITED ACE does not satisfy it - the fact this converges on is an ACE on THIS object' {
+    # Deliberately different from Test-SandboxPoolReadCovered, which DOES accept
+    # an inherited ACE: that one answers "can the pool already read this?" for a
+    # per-turn skip. This one answers "is the standing grant written here?", and
+    # an inherited ACE is a fact about a parent that a change upstairs can undo.
+    $parent = New-LedgerTempDir
+    Grant-SandboxPoolAce -Path $parent -Grant 'Read' | Out-Null
+    $child = Join-Path $parent 'child'
+    New-Item -ItemType Directory -Path $child | Out-Null
+    (Test-SandboxPoolReadCovered -Path $child -LeasedSid $script:MeSid) | Should Be $true
+
+    (Grant-SandboxPoolAce -Path $child -Grant 'Read') | Should Be 'granted'
+
+    (@(Get-TestExplicitAces $child).Count) | Should Be 1
+  }
+
+  It 'never writes with Set-Acl - one ACL tool for every grant, the same one the revoke uses' {
+    # The spy shadows icacls.exe only. If a grant still went through Set-Acl the
+    # ACE would appear with the spy armed and zero icacls calls recorded, which is
+    # exactly what this catches.
+    $d = New-LedgerTempDir
+    $script:IcaclsSpy = New-Object System.Collections.Generic.List[object]
+
+    Grant-SandboxPoolAce -Path $d -Grant 'Read' | Out-Null
+
+    $script:IcaclsSpy.Count | Should Be 1
+    (Get-TestExplicitAceCount $d) | Should Be 0
+  }
+
+  It 'rejects a grant name that is not in the table, rather than writing something unintended' {
+    { Grant-SandboxPoolAce -Path (New-LedgerTempDir) -Grant 'FullControl' } | Should Throw
   }
 }
 
@@ -957,7 +1137,7 @@ Describe 'Test-SandboxPoolReadCovered (is a per-turn read ACE redundant here?)' 
 
   It 'says YES on a child that INHERITS the group (OI)(CI)(RX) - the case the operator named' {
     $parent = New-LedgerTempDir
-    Grant-SandboxPoolAccess -Path $parent
+    Grant-SandboxPoolAce -Path $parent -Grant 'Read'
     $child = Join-Path $parent 'egpt'
     New-Item -ItemType Directory -Path $child | Out-Null
     (Test-SandboxPoolReadCovered -Path $child -LeasedSid $script:MeSid) | Should Be $true
@@ -965,7 +1145,7 @@ Describe 'Test-SandboxPoolReadCovered (is a per-turn read ACE redundant here?)' 
 
   It 'says YES on the granted directory itself - an explicit standing group grant is the same fact' {
     $d = New-LedgerTempDir
-    Grant-SandboxPoolAccess -Path $d
+    Grant-SandboxPoolAce -Path $d -Grant 'Read'
     (Test-SandboxPoolReadCovered -Path $d -LeasedSid $script:MeSid) | Should Be $true
   }
 
@@ -974,7 +1154,7 @@ Describe 'Test-SandboxPoolReadCovered (is a per-turn read ACE redundant here?)' 
     # and differ by exactly the read-data bit. Skipping on a traverse grant would
     # hand a being a directory it can walk through and cannot open.
     $d = New-LedgerTempDir
-    Grant-SandboxPoolTraverse -Path $d
+    Grant-SandboxPoolAce -Path $d -Grant 'Traverse'
     (Test-SandboxPoolReadCovered -Path $d -LeasedSid $script:MeSid) | Should Be $false
   }
 
@@ -992,7 +1172,7 @@ Describe 'Test-SandboxPoolReadCovered (is a per-turn read ACE redundant here?)' 
     # An explicit Allow for the leased ACCOUNT beats an inherited Deny for the
     # group, so where a Deny exists the per-account grant is NOT redundant.
     $d = New-LedgerTempDir
-    Grant-SandboxPoolAccess -Path $d
+    Grant-SandboxPoolAce -Path $d -Grant 'Read'
     (Test-SandboxPoolReadCovered -Path $d -LeasedSid $script:MeSid) | Should Be $true
     $acl = Get-Acl -LiteralPath $d
     $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
@@ -1004,7 +1184,7 @@ Describe 'Test-SandboxPoolReadCovered (is a per-turn read ACE redundant here?)' 
   It 'says NO rather than throwing when the path is gone or the group does not resolve' {
     (Test-SandboxPoolReadCovered -Path (Join-Path $script:LedgerTempRoot 'never-existed-cover') -LeasedSid $script:MeSid) | Should Be $false
     $d = New-LedgerTempDir
-    Grant-SandboxPoolAccess -Path $d
+    Grant-SandboxPoolAce -Path $d -Grant 'Read'
     $script:SandboxPoolGroup = 'egpt-no-such-group-zzz'
     (Test-SandboxPoolReadCovered -Path $d -LeasedSid $script:MeSid) | Should Be $false
   }

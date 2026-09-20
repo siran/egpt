@@ -93,19 +93,24 @@ or if you are unsure. What it does:
    `C:\ProgramData\egpt`.
 2. `Ensure-SandboxPoolGroup` — creates `egpt-sandbox-pool` and puts all of them
    in it. One group means one grant instead of sixteen.
-3. `Grant-SandboxPoolTraverse` on the **ancestor chain** — `~`, `~\.egpt`,
-   `~\.egpt\conversations`, `~\.egpt\conversations\whatsapp` and `~\src`, each
-   skipped if absent. Traverse only, and via `icacls`, not `Set-Acl`. See *The
-   ACL model*.
-4. Grants the group `ReadAndExecute` on `~\.local\bin` (where `claude.exe`
-   lives), on `%APPDATA%\npm` (pi and codex are npm globals launched via
-   `node.exe`, and the JS sits under the operator's profile), and on
-   `~\bin\egpt`, the running tree.
-5. Grants `Modify` on `~\.pi\agent` and sets `PI_CODING_AGENT_DIR` at **Machine**
-   scope, because the launcher cannot pass a per-spawn environment (see
-   *Known gaps*).
+3. `Grant-SandboxPoolAce -Grant 'Traverse'` on the **ancestor chain** — `~`,
+   `~\.egpt`, `~\.egpt\conversations`, `~\.egpt\conversations\whatsapp` and
+   `~\src`, each skipped if absent. Traverse only. See *The ACL model*.
+4. `-Grant 'Read'` on the standing read-only list — `~\.local\bin` (where
+   `claude.exe` lives), `~\bin\egpt` (the running tree), `~\src` (the whole
+   read-only view the pool profiles' `src` and `my-code` junctions point at) and
+   `%APPDATA%\npm` (pi and codex are npm globals launched via `node.exe`, and
+   the JS sits under the operator's profile). Each skipped if absent.
+5. `-Grant 'Modify'` on `~\.pi\agent`, and sets `PI_CODING_AGENT_DIR` at
+   **Machine** scope, because the launcher cannot pass a per-spawn environment
+   (see *Known gaps*).
 6. `Protect-SandboxCredDir` — breaks inheritance on `C:\ProgramData\egpt` so
    only SYSTEM, Administrators and the operator can read the credential blobs.
+7. `Clear-SandboxAbandonedLeases` — the repair path for lease ACEs a hard-killed
+   turn left behind. See *The ACL model*.
+
+Steps 3–5 write nothing when the ACE is already right, so a re-provision of a
+healthy node is seconds and prints `already granted` per path.
 
 **Why LocalMachine DPAPI scope.** CurrentUser ciphertext is decryptable only by
 the logon session that wrote it, which broke the moment the daemon started
@@ -210,21 +215,34 @@ is probably `RA`, not `X` — `X` duplicates what the privilege already gives, a
 `RA` is what the privilege withholds. `RA` was never isolated from `X`, so the
 mask stays `(X,RA,RC)` rather than being pruned on a guess.
 
-`Grant-SandboxPoolTraverse` uses **`icacls`, not `Set-Acl`**: `Set-Acl` persists
-the SACL (the `PrivilegeNotHeldException` documented on `Protect-SandboxCredDir`)
-and against `C:\Users\an` it *hung* twice and had to be killed. Like every grant
-in `sandbox-account.ps1` it is additive — it never narrows an existing ACE — and
-re-running converges rather than accumulating.
+**One grant function, one ACL tool.** Every pool grant goes through
+`Grant-SandboxPoolAce -Path <p> -Grant Traverse|Read|Modify`; the three masks and
+their inheritance flags are a table at the top of that function and are spelled
+nowhere else. It writes with **`icacls`, not `Set-Acl`** — `Set-Acl` persists the
+SACL (the `PrivilegeNotHeldException` documented on `Protect-SandboxCredDir`) and
+against `C:\Users\an` it *hung* twice and had to be killed. Plain `/grant`, never
+`/grant:r`, so a grant is additive: it never narrows an existing ACE, and
+narrowing one stays a hand operation.
 
-The `~\src` **ReadAndExecute** grant goes through `Set-Acl`
-(`Grant-SandboxPoolAccess`), not `icacls`, and it is the slowest thing the
-provisioner does. `icacls` buys nothing here: the equivalent one-pass grant was
-measured by hand on reve 2026-09-20 at **307 s**, because the cost is
-inheritance re-propagation over a tree full of `node_modules` and not the API
-that writes the ACE. The provisioner now announces that cost before it starts
-and prints its elapsed seconds after. If a run sits on `~\src` for much more
-than ten minutes, kill it, grant it by hand and re-run — everything else in that
-script is idempotent:
+**A grant is a fact to converge on, not a command to re-issue.**
+`Grant-SandboxPoolAce` reads the DACL first and writes only when the ACE it wants
+is missing or wrong — wrong meaning different inheritance flags, or rights that
+do not cover what the grant asks for. A broader ACE with the same flags already
+satisfies it (Allow ACEs union, and plain `/grant` could not narrow it anyway).
+Explicit ACEs only: an inherited one is a fact about a parent, and the fact this
+converges on is an ACE on the object itself. So on an already-provisioned node
+the provisioner writes nothing and prints `already granted` per path. That is the
+difference between a re-provision measured in seconds and one measured in
+minutes: on 2026-09-20 all five ancestors and `~\src` were already correct and
+were rewritten anyway.
+
+The `~\src` **ReadAndExecute** grant is still the slowest thing the provisioner
+does on a node that does not have it yet — measured by hand on reve 2026-09-20 at
+**307 s** for one pass, because the cost is inheritance re-propagation over a
+tree full of `node_modules` and not the API that writes the ACE. The provisioner
+announces that cost before it starts and prints its elapsed seconds after. If a
+run sits on `~\src` for much more than ten minutes, kill it, grant it by hand and
+re-run — everything else in that script is idempotent:
 
 ```powershell
 icacls "$env:USERPROFILE\src" /grant egpt-sandbox-pool:"(OI)(CI)(RX)"
@@ -492,7 +510,7 @@ Real, current, and worth knowing before relying on any of this.
    itself"*.
 
    **That ruling was reversed on 2026-09-13** and the provisioner now grants
-   `ReadAndExecute` there (`Grant-SandboxPoolAccess`), because `~/bin/egpt` is
+   `ReadAndExecute` there (`-Grant 'Read'`), because `~/bin/egpt` is
    executed **as the operator**: a standing group write ACE let any of the 16
    pool accounts place code that runs outside the sandbox at the next restart. A
    being that must change its own code is pointed at the editable checkout

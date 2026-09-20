@@ -8,6 +8,29 @@
 # Launchable non-interactively (e.g. `powershell -File provision-sandbox-account.ps1`
 # from another process): the only prompt is the OS's native UAC consent dialog
 # when relaunching elevated.
+#
+# A GRANT IS A FACT TO CONVERGE ON, NOT A COMMAND TO RE-ISSUE (operator
+# 2026-09-20, after watching this script sit on the ancestor chain: "the script
+# is doing something slow and perhaps weird with the ACLs.... it shouldn't be
+# complicated, it has to be easy to review"). Every ACL step below goes through
+# Grant-SandboxPoolAce, which READS the DACL and writes only when the ACE it
+# wants is missing or wrong. On an already-provisioned node this whole run is
+# seconds and every path says "already granted" - all five ancestors and ~\src
+# were already correct on the run he watched. The FIRST run on a node is the slow
+# one: writing a DACL on a container makes Windows re-run inheritance propagation
+# over the whole subtree, and ~\src measured 307 s for a single pass on reve.
+# Grant-SandboxPoolAce carries the rest of the measurements and the
+# icacls-not-Set-Acl reason.
+#
+# WHAT IS GRANTED TO WHOM  - the model, which is not what changed:
+#   traverse-only (X,RA,RC), NOT inheritable, to the pool GROUP on each ancestor
+#     directory above the conversation folders;
+#   inheritable ReadAndExecute to the pool GROUP on the CLI tool dirs and ~\src;
+#   inheritable Modify to the pool GROUP on pi's own config dir;
+#   per-lease Modify to ONE pool ACCOUNT on ONE conversation folder  - NOT here;
+#     that is the launcher's, granted at launch and revoked with the lease. The
+#     last step of this script is the repair path for the ones a hard-killed turn
+#     left behind.
 
 $ErrorActionPreference = 'Stop'
 
@@ -25,19 +48,12 @@ if (-not $isElevated) {
 
 . (Join-Path $PSScriptRoot 'sandbox-account.ps1')
 
-# PROGRESS, BECAUSE THIS SCRIPT IS SLOW AND USED TO LOOK HUNG (operator
-# 2026-09-20: it printed nothing for minutes, "script seem to have hung", then
-# "oh i closed the window... please make script show progress"). It had not hung:
-# it was writing DACLs on ~\src and revoking fifteen abandoned leases, and a DACL
-# write on a container makes Windows re-run inheritance propagation over the
-# whole subtree - 307 s for one pass over ~\src, measured by hand on reve.
-#
-# THE RULE THIS ENCODES: a step that can take minutes SAYS SO BEFORE IT STARTS,
-# not after. Each one announces its number, what it is about to touch and any
-# expected cost, then reports its own elapsed seconds. Same Write-Host shape the
-# rest of this file already uses; the library half (sandbox-account.ps1) logs
-# through Log, to stderr, and both land in this window.
-$StepCount = 10
+# PROGRESS, BECAUSE THIS SCRIPT USED TO LOOK HUNG (operator 2026-09-20: it
+# printed nothing for minutes, "script seem to have hung", then "oh i closed the
+# window... please make script show progress"). Each step announces its number
+# and what it is about to touch before it starts, then reports its own elapsed
+# seconds. A step that finds nothing to do says so in one line.
+$StepCount = 7
 $script:StepIndex = 0
 function Start-Step {
   param([Parameter(Mandatory = $true)][string]$What, [string]$Warn = '')
@@ -52,11 +68,45 @@ function Stop-Step {
   Write-Host ("         {0}  - {1:n1}s" -f $Result, $Watch.Elapsed.TotalSeconds)
 }
 
+# ONE STEP'S WORTH OF GRANTS: the same ACE on each path of a named list, one
+# short line per path saying what happened to it, and a one-line tally for the
+# step. Grant-SandboxPoolAce decides whether anything is written; this only
+# reports, and skips a path that is not on this node.
+#
+# SKIP-IF-ABSENT IS PER PATH, deliberately: ~\src is on a dev node and not on a
+# plain one, the whatsapp folder only appears once a chat has landed, and pi's
+# config dir only after pi has run once. A node that grows one later picks it up
+# the next time this runs.
+function Grant-PoolOn {
+  param(
+    [Parameter(Mandatory = $true)]$Targets,
+    [Parameter(Mandatory = $true)][ValidateSet('Traverse', 'Read', 'Modify')][string]$Grant
+  )
+  $written = 0; $already = 0; $absent = 0
+  foreach ($label in $Targets.Keys) {
+    $path = $Targets[$label]
+    if (-not (Test-Path -LiteralPath $path)) {
+      Write-Host "         $label ($path): not on this node  - skipped"
+      $absent++
+      continue
+    }
+    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    if ((Grant-SandboxPoolAce -Path $path -Grant $Grant) -eq 'already granted') {
+      Write-Host "         $label ($path): already granted"
+      $already++
+    } else {
+      Write-Host ("         {0} ({1}): granted  - {2:n1}s" -f $label, $path, $watch.Elapsed.TotalSeconds)
+      $written++
+    }
+  }
+  return "$written written, $already already correct, $absent not on this node"
+}
+
 $runWatch = [System.Diagnostics.Stopwatch]::StartNew()
 try {
   $step = Start-Step "ensuring the $SandboxPoolSize-account sandbox pool exists (one line per account below)"
-  $result = Ensure-SandboxPool
-  Stop-Step $step "created $($result.Created), already existed $($result.Existed)"
+  $pool = Ensure-SandboxPool
+  Stop-Step $step "created $($pool.Created), already existed $($pool.Existed)"
 
   $step = Start-Step "ensuring the '$SandboxPoolGroup' group exists and holds all $SandboxPoolSize accounts"
   Ensure-SandboxPoolGroup
@@ -67,206 +117,105 @@ try {
   # both nodes and existed in no script, so a rebuild from this file produced a
   # node where two live features silently did not work.
   #
-  # Every ACE the launcher writes per turn is on a LEAF  - a conversation
-  # folder, a share path  - and a leaf ACE buys nothing unless the pool can OPEN
-  # each directory above it. Not WALK it: the pool token's bypass-traverse covers
-  # the walk, measured. It is the per-component lstat that Node  - and so Claude
-  # Code  - does on the way that needs a real ACE; Grant-SandboxPoolTraverse
-  # carries the measurement. (X,RA,RC) each, on the
-  # directory itself, never inherited, and deliberately NOT list  - a sandboxed
-  # being reaches a folder it was granted by name and still cannot enumerate the
-  # operator's home or the names of other conversations. Grant-SandboxPoolTraverse
-  # carries what was measured and why it is icacls and not Set-Acl.
-  #
-  # Skip-if-absent, per path: ~\src is on a dev node and not on a plain one, and
-  # the whatsapp folder only appears once a chat has landed. A node that grows
-  # one later picks it up the next time this runs.
-  $traverseChain = @(
-    $env:USERPROFILE,
-    (Join-Path $env:USERPROFILE '.egpt'),
-    (Join-Path $env:USERPROFILE '.egpt\conversations'),
-    (Join-Path $env:USERPROFILE '.egpt\conversations\whatsapp'),
-    (Join-Path $env:USERPROFILE 'src')
-  )
-  $step = Start-Step "traverse-only grants on the $($traverseChain.Count) ancestor directories above the conversation folders" `
-    'SLOW: each one rewrites a DACL, and Windows then re-runs inheritance propagation over that whole subtree. ~\src alone took about 5 minutes on reve. Not hung.'
-  $traverseNo = 0
-  foreach ($traversePath in $traverseChain) {
-    $traverseNo++
-    if (Test-Path -LiteralPath $traversePath) {
-      Write-Host "         path $traverseNo/$($traverseChain.Count): $traversePath"
-      $pathWatch = [System.Diagnostics.Stopwatch]::StartNew()
-      Grant-SandboxPoolTraverse -Path $traversePath
-      $pathWatch.Stop()
-      Write-Host ("         path {0}/{1} granted  - {2:n1}s" -f $traverseNo, $traverseChain.Count, $pathWatch.Elapsed.TotalSeconds)
-    } else {
-      Write-Host "         path $traverseNo/$($traverseChain.Count): $traversePath not present  - skipping its traverse grant on this node"
-    }
+  # Every ACE the launcher writes per turn is on a LEAF - a conversation folder,
+  # a share path - and a leaf ACE buys nothing unless the pool can OPEN each
+  # directory above it. See Grant-SandboxPoolAce's table for what (X,RA,RC) buys,
+  # what it deliberately withholds (list-directory: a being reaches the folder it
+  # was granted BY NAME and still cannot enumerate the operator's home or the
+  # names of other conversations), and why it is not inherited.
+  $ancestors = [ordered]@{
+    'the operator home'   = $env:USERPROFILE
+    'the eGPT state dir'  = Join-Path $env:USERPROFILE '.egpt'
+    'the conversations'   = Join-Path $env:USERPROFILE '.egpt\conversations'
+    'the whatsapp chats'  = Join-Path $env:USERPROFILE '.egpt\conversations\whatsapp'
+    'the operator source' = Join-Path $env:USERPROFILE 'src'
   }
-  Stop-Step $step "all $($traverseChain.Count) ancestor(s) processed"
+  $step = Start-Step "traverse-only grants on the $($ancestors.Count) ancestor directories above the conversation folders"
+  Stop-Step $step (Grant-PoolOn -Targets $ancestors -Grant 'Traverse')
 
-  # ccode: claude.exe (warm-cli-session's resolveClaudeBin prefers ~/.local/bin).
-  $claudeBinDir = Join-Path $env:USERPROFILE '.local\bin'
-  $step = Start-Step "read-only grant for the pool group on the Claude Code bin dir: $claudeBinDir"
-  Grant-SandboxPoolAccess -Path $claudeBinDir
-  Stop-Step $step
-  # pi AND codex: both are npm globals, and neither is launched as its own .exe --
-  # the .cmd shims are not PE images, so the launcher runs node.exe against the
-  # package's JS entry (codex-cli-session's resolveCodexCommand already does
-  # exactly this). node.exe itself lives in Program Files and is world-readable;
-  # the JS does NOT -- it sits under the operator's profile, which denies Users.
-  # One grant on the npm root therefore covers both engines. Global npm packages
-  # are public code; no credential lives here (pi's auth.json is in ~/.pi).
-  # THE RUNNING eGPT TREE -- READ ONLY (operator 2026-09-13, reversing 2026-09-10).
+  # THE STANDING READ GRANTS. All four go to the pool GROUP, ReadAndExecute and
+  # never more, inheritable because the subtree is the point. Windows UNIONS
+  # Allow ACEs, so none of them can be narrowed by anything granted later -
+  # narrowing one is a hand operation (`icacls <path> /remove:g egpt-sandbox-pool`,
+  # then re-run this script).
   #
-  # It was Modify, on the ruling "read-write in bin/egpt (the running copy). it's all in the
-  # repo. let E modify itself." The cost of that was named here and accepted at the time, then
-  # seen for what it is: "since egpt is executed by 'an' then it could actually nuke my
-  # computer". bin/egpt is the tree the daemon EXECUTES AS THE OPERATOR, so a being writing
-  # here places code that runs outside the sandbox at the next restart, with no deploy step in
-  # between. A standing group Modify ACE handed that to all 16 pool accounts at once.
+  #   ~\.local\bin   ccode: claude.exe (warm-cli-session's resolveClaudeBin
+  #                  prefers ~/.local/bin).
+  #   ~\bin\egpt     the RUNNING eGPT tree, READ ONLY (operator 2026-09-13,
+  #                  reversing 2026-09-10's Modify: "since egpt is executed by
+  #                  'an' then it could actually nuke my computer"). The daemon
+  #                  EXECUTES this tree AS THE OPERATOR, so a group Modify ACE
+  #                  here let any of the 16 pool accounts place code that runs
+  #                  outside the sandbox at the next restart, with no deploy step
+  #                  in between. A being that must change its own code gets the
+  #                  EDITABLE checkout under ~\src instead, where an edit reaches
+  #                  a running node only after a human commits, pushes, deploys.
+  #   %APPDATA%\npm  pi AND codex: both are npm globals, and neither is launched
+  #                  as its own .exe - the .cmd shims are not PE images, so the
+  #                  launcher runs node.exe against the package's JS entry. That
+  #                  JS sits under the operator's profile, which denies Users, so
+  #                  one grant on the npm root covers both engines. Global npm
+  #                  packages are public code; no credential lives here (pi's
+  #                  auth.json is in ~\.pi).
   #
-  # Beings that need to change their own code get the EDITABLE checkout instead, per-turn and
-  # per-being, via allowed_paths -> the launcher's -SharePath (~/src/egpt on this node). An
-  # edit there reaches a running node only after a human commits, pushes and deploys.
+  # ~\src IS STANDING, NOT PER-TURN, and that is a decision rather than an
+  # accident (operator 2026-09-20: "can we make that sandbox account's sbx/src/
+  # path points to src/an read-only?"). It is the other half of the `src`
+  # junction the launcher plants in every pool profile: a junction is only a
+  # name, and the TARGET's DACL decides what a leased account may do through it.
+  # It cannot be per-turn - the junction is part of the profile SHAPE, present
+  # between turns as well as during them, and a link that only resolved while a
+  # lease was held would be exactly the "told it may use a directory that then
+  # refuses it" failure the share ACEs exist to close. The cost, stated rather
+  # than left to be inferred: all 16 pool accounts can read ALL of the operator's
+  # source, at all times.
   #
-  # An ACE is the WHOLE gate for these beings: confinementFor returns {} for the `sandbox` and
-  # `all` tiers, so the CLI-layer path confinement is off for them and no allowed_paths entry
-  # would restrain what an ACE already permits. That cuts both ways, and it is why this one is
-  # ReadAndExecute: Windows UNIONS Allow ACEs, so a per-turn read-only grant cannot subtract
-  # write that a standing grant gives.
-  #
-  # THIS FUNCTION IS ADDITIVE AND NEVER REMOVES. Changing the line below stops a re-provision
-  # from re-granting Modify; it does NOT revoke one already written. A node provisioned before
-  # 2026-09-13 must have the old ACE removed by hand:
-  #   icacls "%USERPROFILE%\bin\egpt" /remove:g egpt-sandbox-pool
-  #   .\setup\provision-sandbox-account.ps1        # re-adds ReadAndExecute
-  $runningTree = Join-Path $env:USERPROFILE 'bin\egpt'
-  $step = Start-Step "read-only grant on the RUNNING eGPT tree: $runningTree" `
-    'a node_modules tree, so expect tens of seconds to a few minutes.'
-  if (Test-Path -LiteralPath $runningTree) {
-    Grant-SandboxPoolAccess -Path $runningTree
-    Stop-Step $step
-  } else {
-    Stop-Step $step 'not present on this node  - skipped'
-  }
-
-  # THE OPERATOR'S ~\src, READ-ONLY TO THE POOL - AND A DELIBERATELY STANDING GRANT
-  # (operator 2026-09-20: "can we make that sandbox account's sbx/src/ path points to
-  # src/an read-only?").
-  #
-  # This is the other half of the `src` junction the launcher plants in every pool
-  # profile (see Clear-SandboxProfileContents). A junction is only a name: what a leased
-  # account may do through it is decided entirely by the DACL of the TARGET, so without
-  # this grant every pool profile would carry a ~\src the being can see and cannot open.
-  #
-  # STANDING, NOT PER-TURN, AND THAT IS THE DECISION RATHER THAN AN ACCIDENT. Every other
-  # read grant in this file is standing too, but each of those covers one tool's
-  # directory; this one covers ALL of the operator's source, for all 16 pool accounts, at
-  # all times, whether a turn is running or not. It cannot be per-turn: the junction is
-  # part of the profile SHAPE, present on every account between turns as well as during
-  # them, and a link that only resolves while a lease is held would be exactly the "the
-  # being is told it may use a directory that then refuses it" failure that the per-turn
-  # share ACEs exist to close. The operator asked for the pool to see their src; the
-  # honest way to give it is to say so here.
-  #
-  # KEEP THE TWO KINDS APART when reading an icacls dump of this tree. THIS ACE names the
-  # GROUP (egpt-sandbox-pool) and is permanent. An ACE naming an individual egpt-sbx-NN is
-  # a LEASE ACE from a being's `allowed_paths`, granted at launch and revoked at exit; one
-  # of those still standing is litter, and Clear-SandboxAbandonedLeases below is what
-  # clears it.
-  #
-  # ReadAndExecute and nothing more. Windows UNIONS Allow ACEs, so this can never be
-  # narrowed by anything granted later - the same reasoning that made ~\bin\egpt
-  # read-only, and the same reason narrowing it again would be a hand operation.
-  #
-  # SLOW, NOT HUNG - AND THE ONE THING IN THIS CHANGE THAT IS NOT MEASURED. ~\src already
-  # costs about five minutes under Grant-SandboxPoolTraverse on this node (see its header:
-  # writing any DACL on a container makes Windows re-run inheritance propagation over the
-  # whole subtree, and ~\src is full of node_modules). This writes a SECOND DACL on the same
-  # directory, through Set-Acl rather than icacls, and Grant-SandboxPoolTraverse's header
-  # records that Set-Acl HUNG twice against C:\Users\an and had to be killed. It has not hung
-  # on ~\src, but nor has it been tried there: the sibling grants Set-Acl is known-good on
-  # (~\.local\bin, %APPDATA%\npm, ~\bin\egpt) are all far smaller. If this run sits on ~\src
-  # for much more than ten minutes, kill it and grant it by hand instead, then re-run - the
-  # rest of this script is idempotent:
-  #   icacls "%USERPROFILE%\src" /grant egpt-sandbox-pool:(OI)(CI)(RX)
+  # KEEP THE TWO KINDS APART when reading an icacls dump of this tree: an ACE
+  # naming the GROUP (egpt-sandbox-pool) is this permanent grant; one naming an
+  # individual egpt-sbx-NN is lease litter, and the last step of this script is
+  # what clears it.
   $srcDir = Join-Path $env:USERPROFILE 'src'
-  $step = Start-Step "read-only grant on ALL of the operator's source: $srcDir" `
-    'THE SLOWEST STEP ON THIS NODE. Measured by hand on reve 2026-09-20: 307 s for one pass. It is full of node_modules and every DACL write re-propagates inheritance over the lot. If it sits here for much more than ten minutes, kill it, grant it by hand with `icacls "%USERPROFILE%\src" /grant egpt-sandbox-pool:(OI)(CI)(RX)` and re-run - the rest of this script is idempotent.'
-  if (Test-Path -LiteralPath $srcDir) {
-    Grant-SandboxPoolAccess -Path $srcDir
-    Stop-Step $step
-  } else {
-    Stop-Step $step "not present on this node  - skipped (the pool profiles' src and my-code junctions will dangle until it exists)"
+  $readOnly = [ordered]@{
+    'the Claude Code bin dir'      = Join-Path $env:USERPROFILE '.local\bin'
+    'the RUNNING eGPT tree'        = Join-Path $env:USERPROFILE 'bin\egpt'
+    "ALL of the operator's source" = $srcDir
+    'the npm global root'          = Join-Path $env:APPDATA 'npm'
   }
+  $step = Start-Step "standing read-only grants for '$SandboxPoolGroup' on $($readOnly.Count) tool and source directories" `
+    'A FIRST run writes these, and ~\src alone takes about five minutes: it is full of node_modules and every DACL write re-propagates inheritance over the lot. Not hung. A node already provisioned writes nothing and says "already granted".'
+  Stop-Step $step (Grant-PoolOn -Targets $readOnly -Grant 'Read')
 
-  $npmGlobalDir = Join-Path $env:APPDATA 'npm'
-  $step = Start-Step "read-only grant on the npm global root (pi and codex): $npmGlobalDir"
-  if (Test-Path -LiteralPath $npmGlobalDir) {
-    Grant-SandboxPoolAccess -Path $npmGlobalDir
-    Stop-Step $step
-  } else {
-    Stop-Step $step 'not present on this node  - skipped'
-  }
   # pi (@p): LET PI KEEP ITS OWN DEFAULT CONFIG DIR (~/.pi/agent) and point the
   # sandbox at it, rather than relocating pi to a directory eGPT invented
-  # (operator 2026-08-27). PI_CODING_AGENT_DIR is MACHINE scope -- the launcher
-  # passes lpEnvironment = NULL so it cannot be per-spawn -- which means setting
-  # it redirects EVERY pi on the box, including the operator's own terminal. Not
-  # eGPT's call to make.
+  # (operator 2026-08-27). PI_CODING_AGENT_DIR is MACHINE scope - the launcher
+  # passes lpEnvironment = NULL, so it cannot be handed over per-spawn - which
+  # means setting it redirects EVERY pi on the box, including the operator's own
+  # terminal; pointing it at pi's OWN default is what makes that a no-op for
+  # them. It is REQUIRED for a sandboxed turn: under the launcher the being runs
+  # as a pool account whose USERPROFILE is C:\Users\egpt-sbx-NN, so pi's
+  # "default" would resolve to a profile with no config and the turn dies with
+  # 'Model "..." not found'.
   #
-  # So: no env var, and the pool gets Modify on pi's real config dir. Modify, not
-  # read: pi WRITES there (settings lock, runtime creation) and fails the turn
-  # without it.
-  #
-  # NOTE, deliberately no deny on auth.json. An earlier version granted the dir
-  # and denied that one file; pi reads auth.json during provider resolution and
-  # handles a MISSING file fine, but an EPERM wedges it -- it accepts the prompt
-  # and never starts the agent. A sandboxed turn can therefore read whatever
-  # credentials pi stores. Keep cloud logins out of pi if that matters.
-  # Set to PI'S OWN DEFAULT PATH, not to a directory eGPT invented. For the
-  # operator this is a no-op -- ~/.pi/agent is where their pi already looks --
-  # but it is REQUIRED for a sandboxed turn: under the launcher the being runs as
-  # a pool account whose USERPROFILE is C:\Users\egpt-sbx-NN, so pi's "default"
-  # resolves to a profile with no config and the turn dies with
-  # 'Model "..." not found'. Granting the pool read on the operator's ~/.pi does
-  # nothing on its own, because pi never looks there without being told.
-  #
-  # Machine scope is forced: sandbox-logon-launcher passes lpEnvironment = NULL,
-  # so it cannot be handed over per-spawn.
+  # Modify, not read: pi WRITES there (settings lock, runtime creation) and fails
+  # the turn without it. Deliberately NO deny on auth.json - pi handles a MISSING
+  # file fine, but an EPERM wedges it (it accepts the prompt and never starts the
+  # agent), so a sandboxed turn can read whatever credentials pi stores there.
+  # Keep cloud logins out of pi if that matters.
   $piDir = Join-Path (Join-Path $env:USERPROFILE '.pi') 'agent'
-  $step = Start-Step "PI_CODING_AGENT_DIR (machine scope) and read-write grant on pi's own config dir: $piDir"
+  $step = Start-Step "PI_CODING_AGENT_DIR (machine scope) and a read-write grant on pi's own config dir"
   [Environment]::SetEnvironmentVariable('PI_CODING_AGENT_DIR', $piDir, 'Machine')
-  if (Test-Path -LiteralPath $piDir) {
-    Grant-SandboxPoolModify -Path $piDir
-    Stop-Step $step
-  } else {
-    Stop-Step $step 'not present - run pi once, then re-run this'
-  }
+  Stop-Step $step (Grant-PoolOn -Targets ([ordered]@{ "pi's config dir (run pi once if it is missing)" = $piDir }) -Grant 'Modify')
 
-  # pi's bash tool: WARN, never rewrite. pi owns its own settings.json; this
-  # just points out the one setting that silently breaks every tool turn here.
-  #
-  # TWO DIFFERENT FAILURES, and the second one is the one that bites (measured
-  # 2026-09-14 as a real leased pool account; this comment used to name only the
-  # first and blamed it for both).
-  #
-  # 1. `where bash` on these boxes finds C:\Windows\System32\bash.exe FIRST -- the WSL
-  #    launcher -- and with no distro installed it exits 1. Confusing, but plain.
-  #
-  # 2. A REAL bash can still die 0xC0000022, and that is NOT the restricted token
-  #    refusing the exe. An msys2/cygwin runtime keeps its shared memory in a
-  #    per-INSTALLATION object directory under \Sessions\BNOLINKS\<session>, and on
-  #    that directory the pool account holds QUERY|TRAVERSE and nothing else: it can
-  #    OPEN an installation's directory that is already there, never CREATE one. So a
-  #    bash whose installation has no process alive in the spine's session fails,
-  #    and the same bash works the moment one is. Git for Windows has none; the
-  #    operator's own msys2 shell keeps C:\msys64 warm, which is why that one works.
-  #
-  # For pi, settings.json's shellPath is still the fix -- point it at a bash whose
-  # installation is warm. src/sandbox-cli-session.mjs carries the full measurement
-  # and does the same job for Claude Code via CLAUDE_CODE_GIT_BASH_PATH.
+  # pi's bash tool: WARN, never rewrite - pi owns its own settings.json. Two
+  # failures this one setting avoids, both measured as a real leased pool account
+  # (2026-09-14): `where bash` finds C:\Windows\System32\bash.exe first, the WSL
+  # launcher, which exits 1 with no distro installed; and a REAL bash can still
+  # die 0xC0000022, because an msys2/cygwin runtime needs to CREATE its shared
+  # memory object directory under \Sessions\BNOLINKS and a pool account may only
+  # OPEN one that is already there - so such a bash works only while some process
+  # keeps that installation warm in the spine's session. Point shellPath at one
+  # that is. src/sandbox-cli-session.mjs carries the full measurement and does the
+  # same job for Claude Code via CLAUDE_CODE_GIT_BASH_PATH.
   $piSettings = Join-Path $piDir 'settings.json'
   $shell = $null
   try { $shell = (Get-Content -LiteralPath $piSettings -Raw | ConvertFrom-Json).shellPath } catch { }
@@ -285,26 +234,19 @@ try {
   Protect-SandboxCredDir
   Stop-Step $step
 
-  # THE LEASE LITTER, CLEARED (operator 2026-09-20, measured on kg: twelve standing
-  # `(OI)(CI)(RX)` ACEs on ~\src\egpt, one per pool account). Those are LEASE ACEs from
-  # `allowed_paths` share paths whose turn was killed before its revoke ran - the normal
-  # end of a sandboxed session, not a rare crash, because the warm pool ends a CLI process
-  # with TerminateProcess and a PowerShell `finally` does not survive that. The launcher
-  # revokes them when it next leases the SAME account; an account nothing leases again
-  # keeps them forever, which is how twelve piled up on one shared path.
+  # THE LEASE LITTER, CLEARED (operator 2026-09-20, measured on kg: twelve
+  # standing (OI)(CI)(RX) ACEs on ~\src\egpt, one per pool account). Those are
+  # LEASE ACEs from `allowed_paths` share paths whose turn was killed before its
+  # revoke ran - the NORMAL end of a sandboxed session, not a rare crash, because
+  # the warm pool ends a CLI process with TerminateProcess and a PowerShell
+  # `finally` does not survive that. The launcher revokes them when it next leases
+  # the SAME account; an account nothing leases again keeps them forever, which is
+  # how twelve piled up on one shared path.
   #
-  # This is that same reclaim, over every lock at once, from the one place that is already
-  # operator-run and already idempotent. It reads each dead lease's own ledger, so it
-  # revokes exactly what was granted and never goes hunting through the filesystem. A lock
-  # a running turn still holds is left alone. AFTER Protect-SandboxCredDir, deliberately:
-  # that call rewrites the ACL of the directory these locks live in.
-  #
-  # ONE icacls PASS PER PATH, not per account (2026-09-20). The sweep groups the
-  # dead leases by PATH and names every account on one command line, because the
-  # cost of a revoke is the TREE, not the ACE: twelve Set-Acl passes over
-  # ~\src\egpt took minutes, and `icacls ... /remove:g egpt-sbx-00 ... /C` took
-  # 2 s for the same twelve. It logs each path, its account count and its elapsed
-  # seconds as it goes - see Clear-SandboxAbandonedLeases.
+  # It reads each dead lease's own ledger, so it revokes exactly what was granted
+  # and never goes hunting through the filesystem, and it leaves a lock a running
+  # turn still holds alone. AFTER Protect-SandboxCredDir, deliberately: that call
+  # rewrites the ACL of the directory these locks live in.
   $step = Start-Step "sweeping abandoned lease locks in $SandboxLocksDir" `
     'one icacls pass per distinct path; a lease whose ACEs are already gone reconciles to clean and costs no write at all.'
   $reclaimed = @(Clear-SandboxAbandonedLeases)
@@ -316,7 +258,7 @@ try {
   $aceCount = @($reclaimed | ForEach-Object { $_.Aces } | Where-Object { $_.Status -eq 'revoked' }).Count
   Stop-Step $step "$(@($reclaimed | Where-Object { $_.Status -eq 'reclaimed' }).Count) lock(s) released, $aceCount leaked ACE(s) revoked, $heldCount lease(s) left alone because a turn still holds them"
 
-  Write-Host ("OK: sandbox pool ready in {0:n1}s  - created {1}, already existed {2}. Group '{3}' granted ReadAndExecute on {4}, {5} and {6} (the standing read-only view every pool profile's src and my-code junctions point at), and traverse-only on the ancestor chain above the conversation folders. Credential dir {7} hardened (no BUILTIN\Users access)." -f $runWatch.Elapsed.TotalSeconds, $result.Created, $result.Existed, $SandboxPoolGroup, $claudeBinDir, $npmGlobalDir, $srcDir, $CredDir)
+  Write-Host ("OK: sandbox pool ready in {0:n1}s  - created {1}, already existed {2}. Group '{3}' holds traverse-only on the ancestor chain above the conversation folders, ReadAndExecute on the CLI tool dirs and on {4} (the standing read-only view every pool profile's src and my-code junctions point at), and Modify on pi's config dir. Credential dir {5} hardened (no BUILTIN\Users access)." -f $runWatch.Elapsed.TotalSeconds, $pool.Created, $pool.Existed, $SandboxPoolGroup, $srcDir, $CredDir)
 } catch {
   Write-Host ("FAILED after {0:n1}s at step {1}/{2}: {3}" -f $runWatch.Elapsed.TotalSeconds, $script:StepIndex, $StepCount, $_.Exception.Message)
   exit 1
