@@ -25,9 +25,42 @@ if (-not $isElevated) {
 
 . (Join-Path $PSScriptRoot 'sandbox-account.ps1')
 
+# PROGRESS, BECAUSE THIS SCRIPT IS SLOW AND USED TO LOOK HUNG (operator
+# 2026-09-20: it printed nothing for minutes, "script seem to have hung", then
+# "oh i closed the window... please make script show progress"). It had not hung:
+# it was writing DACLs on ~\src and revoking fifteen abandoned leases, and a DACL
+# write on a container makes Windows re-run inheritance propagation over the
+# whole subtree - 307 s for one pass over ~\src, measured by hand on reve.
+#
+# THE RULE THIS ENCODES: a step that can take minutes SAYS SO BEFORE IT STARTS,
+# not after. Each one announces its number, what it is about to touch and any
+# expected cost, then reports its own elapsed seconds. Same Write-Host shape the
+# rest of this file already uses; the library half (sandbox-account.ps1) logs
+# through Log, to stderr, and both land in this window.
+$StepCount = 10
+$script:StepIndex = 0
+function Start-Step {
+  param([Parameter(Mandatory = $true)][string]$What, [string]$Warn = '')
+  $script:StepIndex++
+  Write-Host "[$script:StepIndex/$StepCount] $What"
+  if ($Warn) { Write-Host "         $Warn" }
+  return [System.Diagnostics.Stopwatch]::StartNew()
+}
+function Stop-Step {
+  param([Parameter(Mandatory = $true)][System.Diagnostics.Stopwatch]$Watch, [string]$Result = 'done')
+  $Watch.Stop()
+  Write-Host ("         {0}  - {1:n1}s" -f $Result, $Watch.Elapsed.TotalSeconds)
+}
+
+$runWatch = [System.Diagnostics.Stopwatch]::StartNew()
 try {
+  $step = Start-Step "ensuring the $SandboxPoolSize-account sandbox pool exists (one line per account below)"
   $result = Ensure-SandboxPool
+  Stop-Step $step "created $($result.Created), already existed $($result.Existed)"
+
+  $step = Start-Step "ensuring the '$SandboxPoolGroup' group exists and holds all $SandboxPoolSize accounts"
   Ensure-SandboxPoolGroup
+  Stop-Step $step
 
   # THE ANCESTOR CHAIN, TRAVERSE ONLY (operator 2026-09-13, "nothing should be
   # hand-applied, everything structural"). These five were applied BY HAND on
@@ -55,17 +88,28 @@ try {
     (Join-Path $env:USERPROFILE '.egpt\conversations\whatsapp'),
     (Join-Path $env:USERPROFILE 'src')
   )
+  $step = Start-Step "traverse-only grants on the $($traverseChain.Count) ancestor directories above the conversation folders" `
+    'SLOW: each one rewrites a DACL, and Windows then re-runs inheritance propagation over that whole subtree. ~\src alone took about 5 minutes on reve. Not hung.'
+  $traverseNo = 0
   foreach ($traversePath in $traverseChain) {
+    $traverseNo++
     if (Test-Path -LiteralPath $traversePath) {
+      Write-Host "         path $traverseNo/$($traverseChain.Count): $traversePath"
+      $pathWatch = [System.Diagnostics.Stopwatch]::StartNew()
       Grant-SandboxPoolTraverse -Path $traversePath
+      $pathWatch.Stop()
+      Write-Host ("         path {0}/{1} granted  - {2:n1}s" -f $traverseNo, $traverseChain.Count, $pathWatch.Elapsed.TotalSeconds)
     } else {
-      Write-Host "note: $traversePath not present  - skipping its traverse grant on this node"
+      Write-Host "         path $traverseNo/$($traverseChain.Count): $traversePath not present  - skipping its traverse grant on this node"
     }
   }
+  Stop-Step $step "all $($traverseChain.Count) ancestor(s) processed"
 
   # ccode: claude.exe (warm-cli-session's resolveClaudeBin prefers ~/.local/bin).
   $claudeBinDir = Join-Path $env:USERPROFILE '.local\bin'
+  $step = Start-Step "read-only grant for the pool group on the Claude Code bin dir: $claudeBinDir"
   Grant-SandboxPoolAccess -Path $claudeBinDir
+  Stop-Step $step
   # pi AND codex: both are npm globals, and neither is launched as its own .exe --
   # the .cmd shims are not PE images, so the launcher runs node.exe against the
   # package's JS entry (codex-cli-session's resolveCodexCommand already does
@@ -98,10 +142,13 @@ try {
   #   icacls "%USERPROFILE%\bin\egpt" /remove:g egpt-sandbox-pool
   #   .\setup\provision-sandbox-account.ps1        # re-adds ReadAndExecute
   $runningTree = Join-Path $env:USERPROFILE 'bin\egpt'
+  $step = Start-Step "read-only grant on the RUNNING eGPT tree: $runningTree" `
+    'a node_modules tree, so expect tens of seconds to a few minutes.'
   if (Test-Path -LiteralPath $runningTree) {
     Grant-SandboxPoolAccess -Path $runningTree
+    Stop-Step $step
   } else {
-    Write-Host "note: $runningTree not present  - skipping the running-tree grant on this node"
+    Stop-Step $step 'not present on this node  - skipped'
   }
 
   # THE OPERATOR'S ~\src, READ-ONLY TO THE POOL - AND A DELIBERATELY STANDING GRANT
@@ -145,17 +192,22 @@ try {
   # rest of this script is idempotent:
   #   icacls "%USERPROFILE%\src" /grant egpt-sandbox-pool:(OI)(CI)(RX)
   $srcDir = Join-Path $env:USERPROFILE 'src'
+  $step = Start-Step "read-only grant on ALL of the operator's source: $srcDir" `
+    'THE SLOWEST STEP ON THIS NODE. Measured by hand on reve 2026-09-20: 307 s for one pass. It is full of node_modules and every DACL write re-propagates inheritance over the lot. If it sits here for much more than ten minutes, kill it, grant it by hand with `icacls "%USERPROFILE%\src" /grant egpt-sandbox-pool:(OI)(CI)(RX)` and re-run - the rest of this script is idempotent.'
   if (Test-Path -LiteralPath $srcDir) {
     Grant-SandboxPoolAccess -Path $srcDir
+    Stop-Step $step
   } else {
-    Write-Host "note: $srcDir not present  - skipping the read-only src grant on this node (the pool profiles' src junction will dangle until it exists)"
+    Stop-Step $step "not present on this node  - skipped (the pool profiles' src and my-code junctions will dangle until it exists)"
   }
 
   $npmGlobalDir = Join-Path $env:APPDATA 'npm'
+  $step = Start-Step "read-only grant on the npm global root (pi and codex): $npmGlobalDir"
   if (Test-Path -LiteralPath $npmGlobalDir) {
     Grant-SandboxPoolAccess -Path $npmGlobalDir
+    Stop-Step $step
   } else {
-    Write-Host "note: $npmGlobalDir not present  - skipping the pi/codex grant on this node"
+    Stop-Step $step 'not present on this node  - skipped'
   }
   # pi (@p): LET PI KEEP ITS OWN DEFAULT CONFIG DIR (~/.pi/agent) and point the
   # sandbox at it, rather than relocating pi to a directory eGPT invented
@@ -184,11 +236,13 @@ try {
   # Machine scope is forced: sandbox-logon-launcher passes lpEnvironment = NULL,
   # so it cannot be handed over per-spawn.
   $piDir = Join-Path (Join-Path $env:USERPROFILE '.pi') 'agent'
+  $step = Start-Step "PI_CODING_AGENT_DIR (machine scope) and read-write grant on pi's own config dir: $piDir"
   [Environment]::SetEnvironmentVariable('PI_CODING_AGENT_DIR', $piDir, 'Machine')
   if (Test-Path -LiteralPath $piDir) {
     Grant-SandboxPoolModify -Path $piDir
+    Stop-Step $step
   } else {
-    Write-Host "note: $piDir not present - run pi once, then re-run this"
+    Stop-Step $step 'not present - run pi once, then re-run this'
   }
 
   # pi's bash tool: WARN, never rewrite. pi owns its own settings.json; this
@@ -227,7 +281,9 @@ try {
   # Must come AFTER Ensure-SandboxPool: that is what creates the credential
   # files this locks down. Needs admin, which is exactly why it lives here and
   # not in the (unelevated) launcher.
+  $step = Start-Step "hardening the credential dir (no BUILTIN\Users access): $CredDir"
   Protect-SandboxCredDir
+  Stop-Step $step
 
   # THE LEASE LITTER, CLEARED (operator 2026-09-20, measured on kg: twelve standing
   # `(OI)(CI)(RX)` ACEs on ~\src\egpt, one per pool account). Those are LEASE ACEs from
@@ -242,17 +298,26 @@ try {
   # revokes exactly what was granted and never goes hunting through the filesystem. A lock
   # a running turn still holds is left alone. AFTER Protect-SandboxCredDir, deliberately:
   # that call rewrites the ACL of the directory these locks live in.
+  #
+  # ONE icacls PASS PER PATH, not per account (2026-09-20). The sweep groups the
+  # dead leases by PATH and names every account on one command line, because the
+  # cost of a revoke is the TREE, not the ACE: twelve Set-Acl passes over
+  # ~\src\egpt took minutes, and `icacls ... /remove:g egpt-sbx-00 ... /C` took
+  # 2 s for the same twelve. It logs each path, its account count and its elapsed
+  # seconds as it goes - see Clear-SandboxAbandonedLeases.
+  $step = Start-Step "sweeping abandoned lease locks in $SandboxLocksDir" `
+    'one icacls pass per distinct path; a lease whose ACEs are already gone reconciles to clean and costs no write at all.'
   $reclaimed = @(Clear-SandboxAbandonedLeases)
   foreach ($rec in $reclaimed) {
     if ($rec.Status -eq 'held') { continue }
-    Write-Host "lease $($rec.Account): $($rec.Status)  - $($rec.Message)"
+    Write-Host "         lease $($rec.Account): $($rec.Status)  - $($rec.Message)"
   }
   $heldCount = @($reclaimed | Where-Object { $_.Status -eq 'held' }).Count
   $aceCount = @($reclaimed | ForEach-Object { $_.Aces } | Where-Object { $_.Status -eq 'revoked' }).Count
-  Write-Host "OK: abandoned leases swept  - $(@($reclaimed | Where-Object { $_.Status -eq 'reclaimed' }).Count) lock(s) released, $aceCount leaked ACE(s) revoked, $heldCount lease(s) left alone because a turn still holds them."
+  Stop-Step $step "$(@($reclaimed | Where-Object { $_.Status -eq 'reclaimed' }).Count) lock(s) released, $aceCount leaked ACE(s) revoked, $heldCount lease(s) left alone because a turn still holds them"
 
-  Write-Host "OK: sandbox pool ready  - created $($result.Created), already existed $($result.Existed). Group '$SandboxPoolGroup' granted ReadAndExecute on $claudeBinDir, $npmGlobalDir and $srcDir (the standing read-only view every pool profile's src junction points at), and traverse-only on the ancestor chain above the conversation folders. Credential dir $CredDir hardened (no BUILTIN\Users access)."
+  Write-Host ("OK: sandbox pool ready in {0:n1}s  - created {1}, already existed {2}. Group '{3}' granted ReadAndExecute on {4}, {5} and {6} (the standing read-only view every pool profile's src and my-code junctions point at), and traverse-only on the ancestor chain above the conversation folders. Credential dir {7} hardened (no BUILTIN\Users access)." -f $runWatch.Elapsed.TotalSeconds, $result.Created, $result.Existed, $SandboxPoolGroup, $claudeBinDir, $npmGlobalDir, $srcDir, $CredDir)
 } catch {
-  Write-Host "FAILED: $($_.Exception.Message)"
+  Write-Host ("FAILED after {0:n1}s at step {1}/{2}: {3}" -f $runWatch.Elapsed.TotalSeconds, $script:StepIndex, $StepCount, $_.Exception.Message)
   exit 1
 }

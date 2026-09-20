@@ -1261,29 +1261,30 @@ function Clear-SandboxProfileContents {
   #    re-creation below, deliberately: that count is "what the wipe could not
   #    delete", and counting anything this pass then creates would make a healthy
   #    scrub and a stuck one report the same non-zero number.
-  #  - RE-PLANT THE src JUNCTION (operator 2026-09-20), see the WHY below.
+  #  - RE-PLANT THE JUNCTIONS (operator 2026-09-20), see the WHY below.
   # Keep this SHORT: the whole command line must fit in 1024 characters, see
   # Invoke-AsLeasedAccount's BUDGET note. MEASURED 2026-09-20 with the real
   # values (profile C:\Users\egpt-sbx-07, target C:\Users\an\src): 677-character
-  # script, 775-character command line. That is why the added statement is terse,
-  # why it uses an alias, and why NONE of this uses a double quote:
-  # Format-Win32Arg escapes every `"` as `\"`, so each one costs two characters
-  # of a budget that is already two thirds spent. Join-Path instead of "$r\src",
-  # single quotes throughout. The only part that varies by node is the junction
-  # target, so a node whose operator home is much longer than C:\Users\an is the
-  # one thing that could eat that margin.
+  # script, 775-character command line with ONE junction. Both junctions ride a
+  # single `foreach` statement for that reason - see
+  # Get-SandboxProfileJunctionStatement, which owns the budget note and is the
+  # only place either link is named. The only part that varies by node is the
+  # junction target, so a node whose operator home is much longer than
+  # C:\Users\an is the one thing that could eat that margin.
   #
   # `src` IS THE OPERATOR'S OWN ~\src, READ-ONLY (operator 2026-09-20: "can we
-  # make that sandbox account's sbx/src/ path points to src/an read-only?"). A
-  # directory JUNCTION, which needs no privilege to create (unlike a symlink) -
-  # and it is only half the feature. The OTHER half is a STANDING ReadAndExecute
-  # grant to the pool group on the target, written by
-  # provision-sandbox-account.ps1, which carries the reasoning for why that one
-  # is standing rather than per-turn. Without it this link is a directory the
-  # being can see and cannot open. A THIRD thing is needed before a CONFINED
-  # being can use it - `C:/Users/an/src` in that being's own `allowed_paths` -
-  # because the CLI layer refuses paths the kernel would allow; that is per-being
-  # config and deliberately not decided here.
+  # make that sandbox account's sbx/src/ path points to src/an read-only?"), and
+  # `my-code` is the eGPT checkout under it ("it is actually interesting to have
+  # a my-code/ pointing to src/egpt"). Directory JUNCTIONS, which need no
+  # privilege to create (unlike a symlink) - and they are only half the feature.
+  # The OTHER half is a STANDING ReadAndExecute grant to the pool group on ~\src,
+  # written by provision-sandbox-account.ps1, which carries the reasoning for why
+  # that one is standing rather than per-turn; my-code is under it and inherits
+  # it. Without that grant these links are directories the being can see and
+  # cannot open. A THIRD thing is needed before a CONFINED being can use them -
+  # `C:/Users/an/src` in that being's own `allowed_paths` - because the CLI layer
+  # refuses paths the kernel would allow; that is per-being config and
+  # deliberately not decided here.
   #
   # WHY IT IS RE-PLANTED HERE RATHER THAN PROVISIONED ONCE. This scrub empties
   # the profile on every lease acquire, so anything the provisioner put in there
@@ -1296,11 +1297,9 @@ function Clear-SandboxProfileContents {
   # read-only tree, which carries nothing between conversations. Existing pool
   # accounts need no repair step - their next turn plants it.
   #
-  # -EA 0 AND NOTHING ELSE ON FAILURE, deliberately: on a node with no ~\src,
-  # New-Item refuses a junction whose target does not exist and NOTHING is
-  # created (measured 2026-09-20 - no dangling link is left behind). A missing
-  # convenience link must not cost the turn, and the provisioner already says on
-  # its own run that the node has no ~\src to grant.
+  # A missing convenience link must not cost the turn, and the provisioner
+  # already says on its own run that the node has no ~\src to grant - see
+  # Get-SandboxProfileJunctionStatement's -EA 0 note.
   #
   # THE BEING'S OWN HOME-LIKE FOLDERS ARE NOT HERE (operator ruling 2026-09-20,
   # revising the first cut of this): Desktop/Documents/Downloads in the pool
@@ -1314,7 +1313,7 @@ function Clear-SandboxProfileContents {
     "if (`$env:USERNAME -ne '$AccountName' -or `$env:USERPROFILE -ne `$r) { [Console]::Error.WriteLine('sandbox-logon-launcher: scrub REFUSED - running as ' + `$env:USERNAME + ' at ' + `$env:USERPROFILE); exit 11 }"
     "Get-ChildItem -LiteralPath `$r -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue"
     "[Console]::Error.WriteLine('sandbox-logon-launcher: scrubbed ' + `$r + ', ' + @(Get-ChildItem -LiteralPath `$r -Force -Recurse -ErrorAction SilentlyContinue).Count + ' locked entries left')"
-    "`$s=Join-Path `$r 'src'; if(!(Test-Path -LiteralPath `$s)){ni -ItemType Junction -Path `$s -Target '$srcRoot' -EA 0 >`$null}"
+    (Get-SandboxProfileJunctionStatement -OperatorSrc $srcRoot)
   ) -join '; '
 
   # NON-FATAL: the scrub is a HYGIENE step, not a security gate. Warn on stderr
@@ -1590,6 +1589,17 @@ try {
   # share path may be a single FILE, and those flags are illegal on a leaf (.NET
   # throws "This flag may not be set on a leaf object"), so a file gets the same
   # ACE with no inheritance instead.
+  #
+  # AND A READ-ONLY SHARE THE POOL GROUP CAN ALREADY READ GETS NOTHING AT ALL
+  # (operator 2026-09-20). ~\src now carries a standing (OI)(CI)(RX) for
+  # egpt-sandbox-pool, written by the provisioner, so every read-only share under
+  # it - which is most of them, ~\src\egpt above all - was a DACL write on a big
+  # tree that granted the being exactly what it already had, and left behind one
+  # more per-account ACE for a hard kill to leak. Windows UNIONS Allow ACEs, so
+  # the skipped grant subtracts nothing. Test-SandboxPoolReadCovered carries what
+  # makes that check safe to act on; it is deliberately NOT applied to the
+  # WRITABLE class, whose Modify is real, per-lease, and covered by no standing
+  # grant anywhere.
   $sharesSeen = New-Object 'System.Collections.Generic.HashSet[string]' -ArgumentList ([System.StringComparer]::OrdinalIgnoreCase)
   # Seeded with TargetFolder so that a share entry naming the conversation
   # folder is recognised as already covered by (d) - otherwise it would mean a
@@ -1601,8 +1611,8 @@ try {
   # such a path from the read-only list before it ever gets here.
   [void]$sharesSeen.Add([System.IO.Path]::GetFullPath($TargetFolder).TrimEnd('\'))
   foreach ($shareClass in @(
-    @{ Rights = 'Modify';         Paths = $SharePathList },
-    @{ Rights = 'ReadAndExecute'; Paths = $SharePathReadOnlyList }
+    @{ Rights = 'Modify';         SkipIfPoolReadCovered = $false; Paths = $SharePathList },
+    @{ Rights = 'ReadAndExecute'; SkipIfPoolReadCovered = $true;  Paths = $SharePathReadOnlyList }
   )) {
     $shareRights = $shareClass.Rights
     foreach ($sp in $shareClass.Paths) {
@@ -1610,6 +1620,10 @@ try {
       try {
         if (-not (Test-Path -LiteralPath $sp)) {
           Log "share path does not exist  - skipping, no ACE granted: $sp"
+          continue
+        }
+        if ($shareClass.SkipIfPoolReadCovered -and (Test-SandboxPoolReadCovered -Path $sp -LeasedSid $leasedSid)) {
+          Log "share path is already readable by $SandboxPoolGroup (standing group grant, inherited or explicit)  - skipping the per-account $shareRights ACE, nothing to grant and nothing to revoke: $sp"
           continue
         }
         # Pure string math on a path that was just shown to exist, so it cannot
