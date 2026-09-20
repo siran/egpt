@@ -79,6 +79,24 @@ describe('warm-session pool', () => {
     expect(made[0].closed).toBe(true);
   });
 
+  // WHY IDLING OUT IS CHEAP (operator 2026-09-20: "let them idle out, 12h", the ruling
+  // migrations/0013 and the boot defaults carry). The pool holds no thread state of its own: the
+  // session id lives in the conversation record and comes back down as brainOptions, so the turn
+  // after an eviction opens a NEW process on the SAME session and resumes it.
+  it('a turn after the class TTL evicted the session reopens on the same session id', async () => {
+    const { makeSession, made } = fakeFactory();
+    const pool = createWarmPool({ makeSession, idleTtlByClass: { conversation: 20 } });
+    const opts = { brainOptions: { sessionId: 'thread-1' }, klass: 'conversation' };
+    await pool.run('k', 'a', () => {}, opts);
+    await sleep(60);
+    expect(pool.has('k')).toBe(false);
+    expect(made[0].closed).toBe(true);
+    await pool.run('k', 'b', () => {}, opts);
+    expect(made.length).toBe(2);                     // a new process, not the evicted one
+    expect(made[1].opts.sessionId).toBe('thread-1'); // resuming the same thread
+    expect(made[1].turns).toEqual(['b']);
+  });
+
   it('never idle-evicts a class with ttl -1 (system persistent)', async () => {
     const { makeSession } = fakeFactory();
     const pool = createWarmPool({ makeSession, idleTtlByClass: { system: -1 } });
