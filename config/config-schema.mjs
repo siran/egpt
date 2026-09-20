@@ -2390,19 +2390,43 @@ export const CONFIG_SCHEMA = {
     chokepoint src/spine/spine.mjs; replaces the old flood-guard + mesh circuit
     breaker).
 
-    N consecutive NON-HUMAN turns on a channel pause it; a genuine human message
-    resets the count. "human" is decided by PROVENANCE, not display name — a
-    mesh message posted AS the operator parses as relay traffic (an envelope) and
-    is NON-human, so it counts toward the cap instead of resetting it (closes the
-    2026-06-19 hole).
+    ONE GUARD, TWO TRIGGERS (operator 2026-09-20, after "🌴FAMILIA PALMA🌴" sat
+    paused for eight hours):
+
+      · RATE — \`turns\` non-human turns within \`window\` MINUTES. "a hard limit of
+        turns is only effective on a rapid succession … six spread over a day is
+        the kind of conservatism we must avoid."
+      · REPETITION — "pause on repetition, not chatter." The same normalized line
+        said 3× by the same author within 10 minutes, or two lines alternating
+        A,B,A,B. Bots saying NEW things never trip it: "a chatter between bots is
+        desired, and even encouraged."
+
+    A genuine human message resets both. "human" is decided by PROVENANCE, not
+    display name — a mesh message posted AS the operator parses as relay traffic
+    (an envelope) and is NON-human, so it counts toward the cap instead of
+    resetting it (closes the 2026-06-19 hole).
+
+    THIS NODE'S OWN ECHO IS NEITHER. A frame this spine committed (its own node
+    signature, or a send the bridge knows by id) coming back through the bridge is
+    BOOKKEEPING: it does not count and does not reset. E's own "⏳ Thinking…" /
+    "⏳ Queued…" placeholders, posted through the mouth account, are what filled
+    PALMA's cap in five seconds. ANOTHER node's being still counts — that is real
+    chatter.
+
+    A PAUSE ANNOUNCES ITSELF in the channel, once, naming what tripped it (the
+    repeated line, or the rate with its numbers) and how to recover — \`resume\`
+    there, or \`resume all\`. Only the stop; the warn stays in the log.
 
     KEYS:
       turns
-        DEFAULT: 6 — consecutive non-human turns that pause the channel.
-        -1 or 0 = off.
+        DEFAULT: 6 — non-human turns within \`window\` that pause the channel.
+        -1 or 0 = the WHOLE guard off (repetition included).
       window
-        DEFAULT: -1 = pure consecutive count. A positive value is MINUTES — only
-        count turns within that span, an optional belt.
+        DEFAULT: 2 — MINUTES the rate is measured over. -1 or 0 = pure
+        consecutive count, whatever the elapsed time.
+
+    Repetition's own numbers (3 repeats / 10 minutes) are not config: they are
+    what "said the same thing again" means, not a tuning knob.
 
     PER-CONVERSATION OVERRIDE: a contact/room entry in conversations.yaml may
     carry its own  guard: { turns: -1 }  to loosen or disable it for that channel

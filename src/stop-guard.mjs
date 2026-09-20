@@ -30,15 +30,28 @@
 //      operator does not know cannot be a second name for the most destructive word on the
 //      node, so it parses as nothing and reads as ordinary text.
 //
-//   2. THE LOOP COUNTER (unchanged) still pauses a CHANNEL on its own: per channel, count
-//      consecutive NON-HUMAN turns with no genuine human turn between them (a "…" silence
-//      still consumes a slot). At the soft limit → warn; at the hard limit (`turns`) →
-//      auto-STOP the channel (stopChannel). A human turn resets the count, so normal
-//      human↔bot talk never trips it. RESUME / RESUME ALL clear that pause — which is why
-//      those two words KEEP their old meaning: they are the only way back from an
-//      auto-stop short of a restart. RESUME ALL survives the STOP ALL removal on its own
-//      merits: the counter can auto-stop SEVERAL channels independently, so clearing them
-//      one at a time is not the same job (it never was STOP ALL's counterpart).
+//   2. THE LOOP GUARD still pauses a CHANNEL on its own. ONE guard, TWO TRIGGERS (operator
+//      2026-09-20, after the "🌴FAMILIA PALMA🌴" outage below):
+//        · RATE — `turns` non-human turns inside `window` MINUTES. "a hard limit of turns is
+//          only effective on a rapid succession … six spread over a day is the kind of
+//          conservatism we must avoid". At two below the hard limit → warn; at it → auto-STOP.
+//        · REPETITION — "pause on repetition, not chatter". The same normalized line said
+//          `repeats` times by the same author inside `repeatWindow` minutes, or two lines
+//          alternating A,B,A,B. Bots that keep saying NEW things never trip it, which is the
+//          point: "a chatter between bots is desired, and even encouraged".
+//      A human turn resets both, so normal human↔bot talk never trips either. RESUME /
+//      RESUME ALL clear the pause — which is why those two words KEEP their old meaning: they
+//      are the only way back from an auto-stop short of a restart. RESUME ALL survives the
+//      STOP ALL removal on its own merits: the guard can auto-stop SEVERAL channels
+//      independently, so clearing them one at a time is not the same job.
+//
+// THE LOOP THIS GUARD DID NOT CATCH, AND THE ONE IT CAUSED (kg, 2026-09-20). "🌴FAMILIA PALMA🌴"
+// was auto-STOPped at 00:35:50 and nobody noticed until 08:21 — eight hours of `stopped — prompt
+// suppressed`, the operator's own `@ken @don @e están?` among them. The six turns that filled the
+// cap arrived in FIVE SECONDS and were THIS NODE'S OWN BOOKKEEPING: E's `⏳ Thinking…` and
+// `⏳ Queued (1 ahead)…` placeholders, posted through the mouth account, came back through Beeper
+// carrying this node's own signature and each consumed a slot. Hence THREE changes, all here:
+// our own echo is not a turn at all (turnKind), the cap is a rate, and a pause announces itself.
 //
 // THE CRUX (what makes turn-counter-ONLY safe, closing the 2026-06-19 hole): "human"
 // is decided by PROVENANCE, not display name (isHumanTurn). A turn resets the counter
@@ -52,7 +65,7 @@ import { join } from 'node:path';
 import { EGPT_HOME } from './egpt-home.mjs';
 // THE codec, imported — never a second copy of the frame regex here (src/node-signature.mjs
 // is the one definition the outbound wrap, the inbound envelope and this gate all share).
-import { hasNodeSignature } from './node-signature.mjs';
+import { hasNodeSignature, stripNodeSignature, stripRenderedNodeSignature } from './node-signature.mjs';
 
 // THE KILL SWITCH, as a file. Profile ROOT — beside config/ and state/, deliberately
 // visible — so `ls ~/.egpt` shows a stopped node at a glance and `rm ~/.egpt/STOP` is the
@@ -164,13 +177,99 @@ export function isHumanTurn(ev, { isEnvelope = () => false, wasSentByUs = () => 
   return true;
 }
 
-// `turns`  — consecutive NON-HUMAN turns that pause the channel (the hard limit). -1/0 = off.
-// `window` — MINUTES; optional belt that only counts turns within this span (-1/0 = pure
-//            consecutive count). A human turn always resets regardless of the window.
+// turnKind — THREE KINDS OF TURN, because "not human" was one bucket too few (operator
+// 2026-09-20). isHumanTurn above answers "may this reset the counter / pull the kill switch",
+// and for that a boolean is right. The COUNTER needs a third answer:
+//
+//   'human' — a genuine inbound person. Resets the count.
+//   'echo'  — THIS NODE'S OWN OUTPUT coming back to it: a send the bridge recognises by id
+//             (wasSentByUs) or a frame THIS node's spine committed (fromThisNode). It is
+//             bookkeeping, not an utterance — so it NEITHER counts toward the cap NOR resets
+//             it. This is the whole PALMA bug: E's own ⏳ placeholders, posted through the
+//             mouth account and re-entering on the ear, filled the cap in five seconds.
+//   'being' — somebody else's machine turn: ANOTHER node's being, a relay envelope, a brain
+//             member's reply. That is real chatter and it counts, exactly as before.
+//
+// `fromThisNode` is injected rather than derived here, for the same reason `isEnvelope` and
+// `wasSentByUs` are: "who are we" lives in ONE place (node-names.mjs ownNodeNamesOf, read
+// through its fromOtherNode counterpart — boot wires it). Absent ⇒ never our own frame, which
+// is byte-identical to the old two-bucket behaviour.
+export function turnKind(ev, { isEnvelope = () => false, wasSentByUs = () => false, fromThisNode = () => false } = {}) {
+  if (isHumanTurn(ev, { isEnvelope, wasSentByUs })) return 'human';
+  if (wasSentByUs(ev) || fromThisNode(ev)) return 'echo';
+  return 'being';
+}
+
+// THE PERSONA STAMP the bridge puts at the head of a being's post (bridges/persona-wrap.mjs
+// personaStamp): "<body_emoji> <label>: ". Stripped so the SAME sentence from two different
+// beings compares equal — which is exactly the A,B,A,B case. NARROW ON PURPOSE: the leading
+// glyph must be non-letter/non-digit and the label a single bare word, so ordinary prose
+// ("nota: mañana", "Juan: dijo que sí") keeps its prefix and two genuinely different messages
+// stay different.
+const BEING_STAMP = /^\s*[^\p{L}\p{N}\s]{1,4}\s+[\p{L}\p{N}_-]{1,24}\s*[:：]\s*/u;
+
+/**
+ * The COMPARABLE LINE of a message body: what was said, with the machinery around it removed.
+ * Exactly four operations, and no more — normalization that folds two genuinely different
+ * messages together would pause a live conversation for saying two different things:
+ *   1. the invisible node frame (stripNodeSignature — the raw wire form), and
+ *   2. its RENDERED form `<kg>` (stripRenderedNodeSignature — what identity.build leaves
+ *      behind, which is what the guard actually sees), because the same line from two nodes
+ *      is one line;
+ *   3. the being stamp above, for the same reason;
+ *   4. trim + collapse whitespace, so a re-wrapped repeat is still a repeat.
+ * NOT stripped: the visible bridge_signature_* decoration, emoji, punctuation, case. Those are
+ * constant per node anyway (so they never hide a repeat) and folding them could hide a
+ * difference. '' for a message with no text — a silence is not a LINE (see noteBeing).
+ */
+export function normalizeLine(text) {
+  return stripRenderedNodeSignature(stripNodeSignature(String(text ?? '')))
+    .replace(BEING_STAMP, '')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+// A line, clipped for a chat notice / a log line.
+const clip = (s, n = 80) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+
+// TRIGGER 2 — REPETITION. Given this channel's recent non-human turns (already filtered to the
+// repeat window), is the channel saying the same thing over and over? Two forms of ONE fact:
+//   (a) one author repeating one line `reps` times — the classic stuck bot;
+//   (b) two lines alternating A,B,A,B — the two-party form of the same thing, which (a) can
+//       never see because each side has only said its line twice.
+// Returns the REASON (naming the repeated text, which the channel notice must carry) or null.
+// A turn with no text cannot be a repeated LINE, so bodiless entries are skipped entirely.
+function repeatReason(entries, reps, windowMin) {
+  if (!(reps > 1)) return null;
+  const lines = entries.filter((e) => e.line);
+  const seen = new Map();
+  for (const e of lines) {
+    const k = `${e.author.length}:${e.author}${e.line}`;   // length-prefixed: author and line cannot bleed into each other
+    const n = (seen.get(k) ?? 0) + 1;
+    seen.set(k, n);
+    if (n >= reps) return `the same line ${n}× in ${windowMin} min: “${clip(e.line)}”`;
+  }
+  if (lines.length >= 4) {
+    const [a, b, c, d] = lines.slice(-4).map((e) => e.line);
+    if (a === c && b === d && a !== b) return `two lines alternating in ${windowMin} min: “${clip(a, 40)}” ↔ “${clip(b, 40)}”`;
+  }
+  return null;
+}
+
+// `turns`        — NON-HUMAN turns inside `window` that pause the channel (the hard limit).
+//                  -1/0 = THE WHOLE GUARD OFF for that channel, repetition included.
+// `window`       — MINUTES the rate is measured over. DEFAULT 2: six turns in two minutes is the
+//                  out-of-control case; six across a day is normal life (operator 2026-09-20).
+//                  -1/0 = pure consecutive count, as before.
+// `repeats`      — times one line may be repeated inside `repeatWindow` before the channel pauses.
+// `repeatWindow` — MINUTES the repetition detector looks back over.
 // The soft (warn-once) limit sits a couple below the hard cap. `now` is injected for tests.
-export function createStopGuard({ turns = 6, window = -1, now = Date.now, onLog = () => {} } = {}) {
-  const counts = new Map();           // channel -> [ts] of consecutive non-human turns
-  const stoppedChannels = new Set();  // channels the loop counter auto-stopped
+// The per-conversation override ({ turns, window } from conversations.yaml) still wins on the
+// rate, and `turns: -1` there still disables this guard for that channel — both triggers.
+export function createStopGuard({ turns = 6, window = 2, repeats = 3, repeatWindow = 10, now = Date.now, onLog = () => {} } = {}) {
+  const counts = new Map();           // channel -> [{ t, line, author }] recent non-human turns
+  const stoppedChannels = new Set();  // channels the loop guard auto-stopped
+  const reasons = new Map();          // channel -> why the last auto-stop tripped (the notice says it)
 
   const blocked = (channel) => stoppedChannels.has(channel);
 
@@ -190,32 +289,59 @@ export function createStopGuard({ turns = 6, window = -1, now = Date.now, onLog 
     // override, cleared only by RESUME.
     noteHuman(channel) { counts.set(channel, []); },
 
-    // A NON-HUMAN turn (a real reply OR a '…' silence — both consume a slot, so a silent
-    // ping-pong can't run forever). `override` is the channel's per-conversation guard
-    // config ({ turns?, window? }) or null for the node defaults. Returns the action:
-    // 'warn' once at the soft limit, 'stop' at/after the hard limit, else 'none'. `turns`
-    // <= 0 (a -1 disable, global or per-conversation) never trips.
-    noteBeing(channel, override = null) {
+    // A NON-HUMAN turn — SOMEBODY ELSE'S (turnKind 'being'; our own 'echo' must never reach
+    // here). A real reply OR a '…' silence: both consume a rate slot, so a silent ping-pong
+    // can't run forever, but a silence carries no LINE so it can never trip repetition.
+    // `override` is the channel's per-conversation guard config ({ turns?, window? }) or null
+    // for the node defaults; `turn` is what was said ({ body, author }) — the repetition
+    // detector's whole input, and omitting it simply leaves that trigger silent.
+    // Returns 'stop' (either trigger), 'warn' once at the soft rate limit, else 'none'.
+    // `turns` <= 0 (a -1 disable, global or per-conversation) turns the whole guard off.
+    noteBeing(channel, override = null, { body = '', author = '' } = {}) {
       const { hard, windowMin } = limitsOf(override);
-      if (!(hard > 0)) return 'none';                 // -1 / 0 → disabled
+      if (!(hard > 0)) return 'none';                 // -1 / 0 → disabled, both triggers
       const soft = Math.max(1, hard - 2);
       const t = now();
-      let arr = counts.get(channel) || [];
-      if (windowMin > 0) { const span = windowMin * 60_000; arr = arr.filter((x) => t - x < span); }
-      arr.push(t);
+      // ONE history feeds both triggers. Aged out only when the rate has a window of its own
+      // (with `window: -1` the count is "consecutive, forever", exactly as it always was), and
+      // then by the LONGER of the two spans, so the rate's short window cannot blind the
+      // repetition detector to a slow loop.
+      const keepMs = windowMin > 0 ? Math.max(windowMin, repeats > 1 ? repeatWindow : 0) * 60_000 : Infinity;
+      const arr = (counts.get(channel) || []).filter((e) => t - e.t < keepMs);
+      arr.push({ t, line: normalizeLine(body), author: String(author ?? '') });
       counts.set(channel, arr);
-      const n = arr.length;
-      if (n >= hard) return 'stop';
+
+      // TRIGGER 1 — REPETITION. First, because it is the one the operator actually asked for:
+      // "pause on repetition, not chatter".
+      const rep = repeatReason(arr.filter((e) => t - e.t < repeatWindow * 60_000), repeats, repeatWindow);
+      if (rep) { reasons.set(channel, rep); return 'stop'; }
+
+      // TRIGGER 2 — RATE. N non-human turns inside the window, not N ever.
+      const n = windowMin > 0 ? arr.filter((e) => t - e.t < windowMin * 60_000).length : arr.length;
+      if (n >= hard) {
+        reasons.set(channel, windowMin > 0 ? `${n} non-human turns in ${windowMin} min` : `${n} consecutive non-human turns`);
+        return 'stop';
+      }
       if (n === soft) return 'warn';
       return 'none';
     },
 
-    // Current consecutive non-human count for a channel (diagnostics/logging).
-    countOf(channel) { return (counts.get(channel) || []).length; },
+    // Current non-human count for a channel, over the node's own rate window (diagnostics/
+    // logging; a per-conversation override is the caller's business, not this reading's).
+    countOf(channel) {
+      const t = now();
+      const arr = counts.get(channel) || [];
+      return window > 0 ? arr.filter((e) => t - e.t < window * 60_000).length : arr.length;
+    },
+
+    // WHY this channel was last auto-stopped — the repeated line, or the rate with its numbers.
+    // The log line and the notice the channel gets both say it: a pause nobody can explain is
+    // how PALMA stayed silent for eight hours.
+    reasonOf(channel) { return reasons.get(channel) ?? 'a loop'; },
 
     stopChannel(channel) { if (channel != null) { stoppedChannels.add(channel); onLog(`STOP ${channel}`); } },
-    resumeChannel(channel) { stoppedChannels.delete(channel); counts.set(channel, []); onLog(`RESUME ${channel}`); },
-    resumeAll() { stoppedChannels.clear(); counts.clear(); onLog('RESUME ALL'); },
+    resumeChannel(channel) { stoppedChannels.delete(channel); counts.set(channel, []); reasons.delete(channel); onLog(`RESUME ${channel}`); },
+    resumeAll() { stoppedChannels.clear(); counts.clear(); reasons.clear(); onLog('RESUME ALL'); },
 
     // Apply a parsed control word in a channel context. RESUME only: STOP is the KILL
     // SWITCH now (the spine routes it to the STOP file + exit, never here), so the only
