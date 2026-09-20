@@ -1937,6 +1937,40 @@ export const CONFIG_SCHEMA = {
         don:  { configuration: relay, relay_channel: Rodz } }
   `,
 
+  allowed_paths: `
+    The NODE-WIDE read/write grant (operator 2026-09-20: "all agents see an
+    src/ directory ... we can 'leak' my own src/ to the agent (read-only for
+    now)"). One place to grant a folder to EVERY being on this node, and one
+    place to revoke it.
+
+      DEFAULT: unset - no being is granted anything it did not declare
+      itself, which is exactly the behaviour before this key existed.
+
+    SAME SHAPE as a type file's own allowed_paths (see agents above):
+
+      allowed_paths:
+        C:/Users/an/src:
+          allowed_tools: [ Read, Glob, Grep ]   # read-only
+        C:/shared/scratch:                      # empty value = full access
+
+    HOW IT APPLIES: src/spine/brainpool.mjs's resolveBeingDef merges this map
+    into EVERY being's resolved def (withNodeAllowedPaths), UNDER the def's
+    own entries. So both consumers of the one allowed_paths walk see the
+    merged result and cannot disagree: confinementFor (the CLI layer -
+    --add-dir and read-only deny rules) and sandboxSharePathsFor (the OS
+    layer - the launcher's per-turn -SharePath / -SharePathReadOnly ACE).
+
+    THE DEF WINS. A being whose type file names the SAME path keeps its own,
+    possibly narrower, grant - a node-wide line added later never widens it.
+    Paths are compared as the walk reads them (msys /c/Users/.. and windows
+    forms are one path, not two).
+
+    THE OS HALF IS SEPARATE. Under the sandbox the leased pool account also
+    needs a real filesystem ACE on the folder; that is what the share list
+    above grants per turn, but the folder must still be reachable by the pool
+    group at all (setup/SANDBOX.md).
+  `,
+
   sandbox_oauth_token: `
     The Claude credential a SANDBOXED turn runs on (operator 2026-09-05) - a
     long-lived OAuth token from "claude setup-token", i.e. the operator's own

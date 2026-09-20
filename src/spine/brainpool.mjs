@@ -123,6 +123,13 @@ export function normalizeAllowNewInput(v, being = '?', onLog = () => {}) {
 //
 // onLog defaults to a no-op so the second consumer does not double-log the one line this walk
 // emits: confinementFor passes the real logger, the share-path accessor deliberately does not.
+//
+// IT STILL READS ONE PLACE — `def.allowed_paths` — and that is deliberate after the node-level
+// grant landed (2026-09-20). The node's own `allowed_paths:` is merged INTO the def by
+// withNodeAllowedPaths, at resolveBeingDef, so by the time either consumer runs there is nothing
+// left to merge: one walk, one map, and the CLI list and the share list cannot disagree about
+// what the node granted. Teaching this walk about config.yaml instead would have given
+// sandboxSharePathsFor (which is handed a def and nothing else) a second answer to the question.
 function allowedPathsFor(def, onLog = () => {}) {
   const addDirs = [], readOnlyDirs = [];
   const paths = (def?.allowed_paths && typeof def.allowed_paths === 'object' && !Array.isArray(def.allowed_paths)) ? def.allowed_paths : {};
@@ -325,6 +332,45 @@ function shapeDef(name, def, agent = {}, brainType = 'ccode') {
   };
 }
 
+// ── THE NODE-LEVEL `allowed_paths:` (operator 2026-09-20) ────────────────────────────────────
+// "all agents see an src/ directory, it is actually interesting to have a my-code/ pointing to
+// src/egpt, we can 'leak' my own src/ to the agent (read-only for now)".
+//
+// A read grant used to be per TYPE FILE: config/agents/sonnet-default.yaml carried E's
+// `allowed_paths: { C:/Users/an/src/egpt: { allowed_tools: [Read, Glob, Grep] } }`, and granting
+// the same folder to a second being meant writing that block into a second file. That is the
+// drift this repo keeps paying for — and REVOKING it meant finding every copy. config.yaml's own
+// top-level `allowed_paths:` is the one place to grant and the one place to revoke: it is merged
+// into EVERY being's def here, at resolution, so both consumers of the one walk (allowedPathsFor
+// → confinementFor's CLI `--add-dir`/deny rules, and sandboxSharePathsFor's OS-layer ACE list)
+// read the merged map from the SAME `def` field they already read. No second resolution path, and
+// therefore no way for the two layers to disagree about what the node granted — which is the bug
+// class this whole walk exists to prevent.
+//
+// THE DEF WINS. A being that names the SAME path keeps its own entry, whatever its class: the
+// node grant sits UNDER the def's own, so a narrower per-being grant is never widened by a
+// node-wide one written later. Paths are compared EXACTLY AS allowedPathsFor will read them
+// (trimmed, normalizeCwd'd), so a def writing `/c/Users/an/src` and a node writing
+// `C:/Users/an/src` are ONE path, not two — two spellings of one folder landing in two grant
+// classes is exactly the double-ACE the launcher must never be handed. It is the walk's own
+// reading and nothing more: a config that spells one folder two ways in CASE (`c:/users` vs
+// `C:/Users`) still declares two paths here, exactly as it already does inside a single
+// allowed_paths block — case folding would be a Windows answer in an OS-agnostic file.
+//
+// UNTOUCHED WHEN THERE IS NOTHING TO MERGE: no node block, or every node path already claimed by
+// the def, returns the def OBJECT ITSELF — a being on a node that grants nothing keeps the def
+// shape it had, `allowed_paths` key and all (absent stays absent).
+function withNodeAllowedPaths(def, config) {
+  const pathMap = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : null);
+  const node = pathMap(config?.allowed_paths);
+  if (!node) return def;
+  const own = pathMap(def?.allowed_paths) ?? {};
+  const claimed = new Set(Object.keys(own).map((k) => normalizeCwd(String(k).trim())));
+  const extra = Object.entries(node).filter(([k]) => !claimed.has(normalizeCwd(String(k).trim())));
+  if (!extra.length) return def;
+  return { ...def, allowed_paths: { ...own, ...Object.fromEntries(extra) } };
+}
+
 // THE ONE agent-def resolver (operator 2026-08-14: "remove the concept of siblings" —
 // every agent under agents[<name>], defaultKey included, resolves the SAME way; was
 // `siblingDef`, and renamed because it no longer is). Its
@@ -352,7 +398,12 @@ function shapeDef(name, def, agent = {}, brainType = 'ccode') {
 // (name-the-existing-thing). createBrainPool's turn() below now calls this exported version,
 // passing its own closure vars, in place of the private closure this used to be.
 export function resolveBeingDef(being, convDir, { getConfig = () => ({}), brains = null, brainType = 'ccode', configuration = null, onLog = () => {} } = {}) {
-  const agent = ((getConfig() ?? {}).agents ?? {})[being];
+  // The node's own config, read ONCE: its `agents:` map names this being, and its top-level
+  // `allowed_paths:` is the node-wide read grant every def leaves here carrying
+  // (withNodeAllowedPaths, above — applied at BOTH returns, so a being with no resolvable
+  // configuration is granted the same folders as one with).
+  const config = getConfig() ?? {};
+  const agent = (config.agents ?? {})[being];
   // `configuration: relay` is a WORD, so only a STRING can be it (operator 2026-09-07). The old
   // `String(agent.configuration ?? '')` coercion happened to give the right answer for the new
   // inline-map form — '[object Object]' is not 'relay' — but it got there by stringifying a def,
@@ -384,10 +435,10 @@ export function resolveBeingDef(being, convDir, { getConfig = () => ({}), brains
       }
     }
     def ??= brains?.resolve?.(agent.configuration, { convDir, agent: being }) ?? null;
-    if (def) return shapeDef(being, def, agent, brainType);
+    if (def) return withNodeAllowedPaths(shapeDef(being, def, agent, brainType), config);
     // configuration named but no file → fall through to the bare def (keeps the being runnable)
   }
-  return {
+  return withNodeAllowedPaths({
     name: (agent && typeof agent === 'object' ? agent.name : null) ?? being,
     type: brainType,
     model: null,
@@ -399,7 +450,7 @@ export function resolveBeingDef(being, convDir, { getConfig = () => ({}), brains
     // `configuration:` by silently running the being as eGPT while config.yaml plainly says
     // otherwise. `undefined` when the entry states none, i.e. exactly the shape this object had.
     personality: personalityFor(agent, null),
-  };
+  }, config);
 }
 
 // THE PROVENANCE FRAME a SCOPED turn's prompt carries (operator 2026-08-31). One instance now
