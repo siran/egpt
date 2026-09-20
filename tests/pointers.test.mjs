@@ -71,4 +71,15 @@ describe('the pointers card (config/skeletons/room/30-pointers.md)', () => {
     expect(CONV.treeDirs().map((d) => basename(d))).toContain('transcripts');
   });
 
+  // 2026-09-20: the being's OWN surface. Everything else the card names belongs to someone
+  // else — ./media/ is what the chat sent, ./directives/ and ./scripts/ are what it was
+  // given, ./transcripts/ is its past — and a folder it is never told about is a folder it
+  // does not have. The operator asked for this to sit in the CONVERSATION folder rather than
+  // in the sandbox pool profile, because that profile is scratch (wiped on every lease) and
+  // is not where the being works.
+  it('names ./desktop/ — the being own working surface, and a real folder', () => {
+    expect(CARD).toMatch(/\.\/desktop\//);
+    expect(CONV.treeDirs().map((d) => basename(d))).toContain('desktop');
+  });
+
 });

@@ -555,3 +555,226 @@ Describe 'Grant-SandboxPoolTraverse (walk through the directory, do not list it)
     (Get-TestExplicitAceCount $d) | Should Be 0
   }
 }
+
+# ---------------------------------------------------------------------------
+# THE STANDING READ GRANT (2026-09-20). Grant-SandboxPoolAccess is what
+# provision-sandbox-account.ps1 now puts on the operator's ~\src, so that the
+# `src` junction the launcher plants in every pool profile resolves to something
+# the leased account may actually open. The function had no coverage at all, and
+# the one property that matters here is the one an eyeball gets wrong:
+# ReadAndExecute and NOT Modify. Windows UNIONS Allow ACEs, so a slip here could
+# never be narrowed again by anything granted per-turn afterwards.
+#
+# Same substitution as the traverse describe above - $SandboxPoolGroup points at
+# the current user and the target is a throwaway directory under $env:TEMP - so
+# nothing here touches the real pool group, the real ~\src, or any live ACL.
+Describe 'Grant-SandboxPoolAccess (the standing read grant behind the src junction)' {
+  BeforeEach {
+    $script:TraverseSavedGroup = $SandboxPoolGroup
+    $script:SandboxPoolGroup = $script:MeName
+  }
+
+  AfterEach {
+    $script:SandboxPoolGroup = $script:TraverseSavedGroup
+  }
+
+  It 'grants ReadAndExecute and NOT Modify' {
+    $d = New-LedgerTempDir
+    Grant-SandboxPoolAccess -Path $d
+    $aces = @(Get-TestExplicitAces $d)
+    $aces.Count | Should Be 1
+    $rights = [int]$aces[0].FileSystemRights
+    ($rights -band [int][System.Security.AccessControl.FileSystemRights]::WriteData) | Should Be 0
+    ($rights -band [int][System.Security.AccessControl.FileSystemRights]::AppendData) | Should Be 0
+    ($rights -band [int][System.Security.AccessControl.FileSystemRights]::Delete) | Should Be 0
+    ($rights -band [int][System.Security.AccessControl.FileSystemRights]::ReadData) | Should Not Be 0
+    ($rights -band [int][System.Security.AccessControl.FileSystemRights]::ExecuteFile) | Should Not Be 0
+    ($aces[0].AccessControlType.ToString()) | Should Be 'Allow'
+  }
+
+  It 'IS inheritable, unlike the traverse grant - the whole subtree under ~\src is the point' {
+    $d = New-LedgerTempDir
+    Grant-SandboxPoolAccess -Path $d
+    (@(Get-TestExplicitAces $d)[0].InheritanceFlags.ToString()) | Should Be 'ContainerInherit, ObjectInherit'
+    $child = Join-Path $d 'child'
+    New-Item -ItemType Directory -Path $child | Out-Null
+    $inherited = @((Get-Acl -LiteralPath $child).GetAccessRules($false, $true, [System.Security.Principal.SecurityIdentifier]) |
+      Where-Object { $_.IdentityReference.Value -eq $script:MeSid.Value })
+    $inherited.Count | Should Not Be 0
+  }
+
+  It 'is idempotent: three runs leave exactly one ACE' {
+    $d = New-LedgerTempDir
+    foreach ($i in 1..3) { Grant-SandboxPoolAccess -Path $d }
+    (@(Get-TestExplicitAces $d).Count) | Should Be 1
+  }
+
+  It 'throws on a path that is not there, rather than reporting a grant it never made' {
+    { Grant-SandboxPoolAccess -Path (Join-Path $script:LedgerTempRoot 'never-existed-access') } | Should Throw
+  }
+}
+
+# ---------------------------------------------------------------------------
+# THE POOL-WIDE RECLAIM (2026-09-20) - the repair path for the leak measured on
+# kg: twelve standing (OI)(CI)(RX) ACEs on ~\src\egpt, one per pool account,
+# because the launcher's per-account reclaim only fires when THAT account is
+# leased again and several of them never were.
+#
+# The current user stands in for a pool account throughout: $SandboxPoolPrefix
+# is pointed at $env:USERNAME (the same substitution the two describes above
+# make with $SandboxPoolGroup) so the lock file can be named after an account
+# whose SID really resolves, and -LocksDir always points at a throwaway
+# directory, never at C:\ProgramData\egpt\sandbox-pool-locks.
+$script:MeUser = $env:USERNAME
+$script:PrefixSaved = $null
+
+Describe 'Clear-SandboxAbandonedLeases (the repair path for leases nothing will lease again)' {
+  $locks = $null
+
+  BeforeEach {
+    $script:PrefixSaved = $SandboxPoolPrefix
+    $script:SandboxPoolPrefix = $script:MeUser
+    $locks = Join-Path $script:LedgerTempRoot ([guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $locks -Force | Out-Null
+  }
+
+  AfterEach {
+    $script:SandboxPoolPrefix = $script:PrefixSaved
+    Remove-Item -LiteralPath $locks -Recurse -Force -ErrorAction SilentlyContinue
+  }
+
+  It 'revokes what a dead lease ledger names and releases the lock' {
+    $shared = New-LedgerTempDir; Grant-TestReadAndExecute $shared
+    $conv = New-LedgerTempDir; Grant-TestModify $conv
+    $lock = Join-Path $locks "$($script:MeUser).lock"
+    $s = New-TestLock $lock
+    try { Write-SandboxLeaseLedger -Stream $s -Paths @($shared, $conv) } finally { $s.Close() }
+
+    $recs = @(Clear-SandboxAbandonedLeases -LocksDir $locks)
+
+    $recs.Count | Should Be 1
+    $recs[0].Status | Should Be 'reclaimed'
+    (Get-TestExplicitAceCount $shared) | Should Be 0
+    (Get-TestExplicitAceCount $conv) | Should Be 0
+    (Test-Path -LiteralPath $lock) | Should Be $false
+  }
+
+  It 'LEAVES A LIVE LEASE ALONE - an open handle is the lease, exactly as the launcher reads it' {
+    $conv = New-LedgerTempDir; Grant-TestModify $conv
+    $lock = Join-Path $locks "$($script:MeUser).lock"
+    $s = New-TestLock $lock
+    try {
+      Write-SandboxLeaseLedger -Stream $s -Paths @($conv)
+      $recs = @(Clear-SandboxAbandonedLeases -LocksDir $locks)
+      $recs.Count | Should Be 1
+      $recs[0].Status | Should Be 'held'
+      # Still granted and still locked: a running turn must not have its ACE
+      # pulled out from under it, and must not lose its lease either.
+      (Get-TestExplicitAceCount $conv) | Should Be 1
+      (Test-Path -LiteralPath $lock) | Should Be $true
+    } finally { $s.Close() }
+  }
+
+  It 'KEEPS the lock when a revoke failed, so the leak is not forgotten' {
+    # The account the lock is named after does not resolve to a SID, so every
+    # path on its ledger comes back 'failed'. The lock must survive, holding
+    # exactly those paths, for the next reclaim to retry.
+    $script:SandboxPoolPrefix = 'egpt-no-such-account-zzz'
+    $d = New-LedgerTempDir; Grant-TestModify $d
+    $lock = Join-Path $locks 'egpt-no-such-account-zzz-01.lock'
+    $s = New-TestLock $lock
+    try { Write-SandboxLeaseLedger -Stream $s -Paths @($d) } finally { $s.Close() }
+
+    $recs = @(Clear-SandboxAbandonedLeases -LocksDir $locks)
+
+    $recs[0].Status | Should Be 'partial'
+    (Get-TestExplicitAceCount $d) | Should Be 1
+    (Test-Path -LiteralPath $lock) | Should Be $true
+    $s2 = [System.IO.File]::Open($lock, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+    try { ((Read-SandboxLeaseLedger -Stream $s2) -join '|') | Should Be $d } finally { $s2.Close() }
+  }
+
+  It 'refuses a lock whose name is not a pool account, rather than purging ACEs for whoever it names' {
+    $lock = Join-Path $locks 'Administrator.lock'
+    $s = New-TestLock $lock
+    try { Write-SandboxLeaseLedger -Stream $s -Paths @('C:\Windows') } finally { $s.Close() }
+
+    $recs = @(Clear-SandboxAbandonedLeases -LocksDir $locks)
+
+    $recs[0].Status | Should Be 'skipped'
+    (Test-Path -LiteralPath $lock) | Should Be $true
+  }
+
+  It 'is a no-op on a locks directory that is not there' {
+    (@(Clear-SandboxAbandonedLeases -LocksDir (Join-Path $script:LedgerTempRoot 'no-such-locks-dir')).Count) | Should Be 0
+  }
+}
+
+# ---------------------------------------------------------------------------
+# THE src JUNCTION IN A POOL PROFILE (2026-09-20). The statement under test is
+# NOT copied here - it is read out of sandbox-logon-launcher.ps1 and run
+# verbatim, because a copy would pass while the shipped one was broken. That is
+# not hypothetical: the first version of it read `-EA 0>$null` without the space,
+# which PowerShell binds as part of a PARAMETER NAME, and no structural test
+# would have caught it.
+#
+# It runs against a throwaway directory under $env:TEMP with $r bound to it, so
+# nothing here touches a real pool profile. The junction target is substituted
+# too - the launcher interpolates the operator's own ~\src there.
+$script:LauncherScript = Join-Path $PSScriptRoot 'sandbox-logon-launcher.ps1'
+
+function Get-JunctionStatement {
+  $lines = @(Get-Content -LiteralPath $script:LauncherScript | Where-Object { $_ -match '-ItemType Junction' })
+  # Loud rather than vacuous: a rename that stops this matching must FAIL the
+  # test, not quietly leave it asserting nothing. A `throw` and not a `Should`:
+  # Should writes to the PIPELINE, and inside a function that output joins the
+  # return value - the statement would come back as @($true, '<statement>').
+  if ($lines.Count -ne 1) {
+    throw "expected exactly ONE '-ItemType Junction' line in $script:LauncherScript, found $($lines.Count) - the scrub's junction statement was renamed or removed"
+  }
+  $t = $lines[0].Trim()
+  # The launcher holds the statement as a double-quoted PowerShell string whose
+  # own $ signs are backtick-escaped. Strip the quotes and the escapes and what
+  # is left is what the leased account really runs.
+  return $t.Substring(1, $t.Length - 2).Replace('`', '')
+}
+
+Describe 'the pool profile src junction (as the launcher scrub really writes it)' {
+  $fakeProfile = $null
+  $target = $null
+  $stmt = $null
+
+  BeforeEach {
+    $fakeProfile = New-LedgerTempDir
+    $target = New-LedgerTempDir
+    New-Item -ItemType Directory -Path (Join-Path $target 'marker') -Force | Out-Null
+    $stmt = (Get-JunctionStatement).Replace("'`$srcRoot'", "'$target'")
+  }
+
+  It 'creates src as a junction pointing at the operator src, and says nothing on stdout' {
+    $r = $fakeProfile
+    Invoke-Expression $stmt | Should BeNullOrEmpty
+    $link = Get-Item -LiteralPath (Join-Path $r 'src') -Force
+    ([bool]($link.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) | Should Be $true
+    $link.Target | Should Be $target
+    (Test-Path -LiteralPath (Join-Path (Join-Path $r 'src') 'marker')) | Should Be $true
+  }
+
+  It 'is idempotent: three passes leave one junction and throw nothing' {
+    $r = $fakeProfile
+    foreach ($i in 1..3) { Invoke-Expression $stmt | Out-Null }
+    (@(Get-ChildItem -LiteralPath $r -Force).Count) | Should Be 1
+    (Get-Item -LiteralPath (Join-Path $r 'src') -Force).Target | Should Be $target
+  }
+
+  It 'is wiped as a LINK by the scrub that precedes it - the junction target survives' {
+    # The scrub deletes the profile children before the junction is re-planted,
+    # and Remove-Item must take the link itself rather than recursing into the
+    # operator's src. That is the assertion that keeps the two safe together.
+    $r = $fakeProfile
+    Invoke-Expression $stmt | Out-Null
+    Get-ChildItem -LiteralPath $r -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    (@(Get-ChildItem -LiteralPath $r -Force).Count) | Should Be 0
+    (Test-Path -LiteralPath (Join-Path $target 'marker')) | Should Be $true
+  }
+}

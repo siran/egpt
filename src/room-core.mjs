@@ -142,6 +142,20 @@ export class Room {
   get directivesDir()  { return join(this.baseDir(), 'directives'); }      // NN-*.md the room's brain(s) can re-read
   get scriptsDir()     { return join(this.baseDir(), 'scripts'); }         // *.x.md TEXTECUTABLES the room's brain(s) can be asked to carry out
   get transcriptsDir() { return join(this.baseDir(), 'transcripts'); }     // finished threads: transcript.md is archived here as <thread_id>.md when the thread changes
+  // The being's OWN surface — whatever it is working on right now, in the open (operator
+  // 2026-09-20: "perhaps in a conversations/<slug>/{desktop, transcripts, media,
+  // directives...}/ folder as part of Room. I think it would help the model feel more at
+  // home"). Every other folder here belongs to someone else or to a process: media/ is what
+  // the chat sent, files/ is the operator's shelf, directives/ and scripts/ are given to it,
+  // transcripts/ is its past. Nothing was the being's own working space, so it had none.
+  //
+  // IT IS THE CONVERSATION FOLDER, NOT THE WINDOWS PROFILE, and that was a ruling, not a
+  // detail. A sandboxed turn runs as a leased pool account whose profile is SCRATCH —
+  // sandbox-logon-launcher.ps1 empties it on every lease acquire — and which is not the cwd
+  // and not reachable from the conversation. A Desktop there would be wiped between turns and
+  // invisible from where the being actually works. Here it is the cwd, it is durable, and it
+  // is the one directory a confined being can always write.
+  get desktopDir()     { return join(this.baseDir(), 'desktop'); }         // the being's own working surface — its, not a process's
 
   // ── the tree, ENSURED (ONE owner) ─────────────────────────────────────────
   // The list used to be written out twice — /rooms create's mkdir loop (spine/commands.mjs)
@@ -157,14 +171,20 @@ export class Room {
   // a changed thread's transcript.md gets archived (conversations-state.rollTranscript — see
   // its header, not wired yet), so the pointers card lands E in a folder that exists.
   //
-  // ALL FIVE dirs, for both roots. media/ and files/ were NamedRoom-only in practice, but a
+  // ALL SIX dirs, for both roots. media/ and files/ were NamedRoom-only in practice, but a
   // conversation IS a Room: the shipped pointers card already tells every brain to look in
   // ./media/, and /inject's shelf must land somewhere in a conversation too. An empty folder
   // is the honest answer ("nothing here yet") — the same reasoning that created scripts/
   // eagerly; a card naming a folder nothing creates is the ./transcripts/ dead-end of
   // 2026-07-25.
+  //
+  // desktop/ JOINED on 2026-09-20 and rides exactly the same reasoning transcripts/ did: it is
+  // created eagerly, for every room and every conversation, so that the pointers card can name
+  // a folder that is really there. An existing conversation picks it up on its next turn —
+  // seedLayers calls ensureTree on every turn, not only at kickoff — so there is no migration
+  // and no second code path.
   treeDirs() {
-    return [this.baseDir(), this.mediaDir, this.filesDir, this.directivesDir, this.scriptsDir, this.transcriptsDir];
+    return [this.baseDir(), this.mediaDir, this.filesDir, this.directivesDir, this.scriptsDir, this.transcriptsDir, this.desktopDir];
   }
 
   // Create the tree. Idempotent (mkdir -p on every call). `io.mkdir` is the seam both

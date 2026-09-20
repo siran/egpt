@@ -41,9 +41,10 @@
 #      New-SandboxDesktop) - nothing on the operator's own WinSta0\Default.
 #   f) CreateProcessWithLogonW launches AS that account, twice, through the one
 #      shared Invoke-AsLeasedAccount helper: FIRST a short scrub pass that
-#      empties the account's scratch profile (see Clear-SandboxProfileContents -
-#      it must run as the account itself, which is the only principal that can
-#      delete those files without being an Administrator), THEN InnerBin, with
+#      empties the account's scratch profile and re-plants its `src` junction
+#      onto the operator's read-only ~\src (see Clear-SandboxProfileContents - it
+#      must run as the account itself, which is the only principal that can
+#      delete or create those files without being an Administrator), THEN InnerBin, with
 #      the launcher's OWN stdio handles passed straight through
 #      (STARTF_USESTDHANDLES) so the inner process's stdin/stdout/stderr ARE the
 #      same pipes Node's child_process.spawn of THIS script sees.
@@ -1256,14 +1257,64 @@ function Clear-SandboxProfileContents {
   #    junction a previous turn planted here cannot steer the scrub outside
   #    this profile.
   #  - report what is left, so a scrub that silently stops working is visible in
-  #    the log instead of having to be discovered by listing C:\Users.
+  #    the log instead of having to be discovered by listing C:\Users. BEFORE the
+  #    re-creation below, deliberately: that count is "what the wipe could not
+  #    delete", and counting anything this pass then creates would make a healthy
+  #    scrub and a stuck one report the same non-zero number.
+  #  - RE-PLANT THE src JUNCTION (operator 2026-09-20), see the WHY below.
   # Keep this SHORT: the whole command line must fit in 1024 characters, see
-  # Invoke-AsLeasedAccount's BUDGET note.
+  # Invoke-AsLeasedAccount's BUDGET note. MEASURED 2026-09-20 with the real
+  # values (profile C:\Users\egpt-sbx-07, target C:\Users\an\src): 677-character
+  # script, 775-character command line. That is why the added statement is terse,
+  # why it uses an alias, and why NONE of this uses a double quote:
+  # Format-Win32Arg escapes every `"` as `\"`, so each one costs two characters
+  # of a budget that is already two thirds spent. Join-Path instead of "$r\src",
+  # single quotes throughout. The only part that varies by node is the junction
+  # target, so a node whose operator home is much longer than C:\Users\an is the
+  # one thing that could eat that margin.
+  #
+  # `src` IS THE OPERATOR'S OWN ~\src, READ-ONLY (operator 2026-09-20: "can we
+  # make that sandbox account's sbx/src/ path points to src/an read-only?"). A
+  # directory JUNCTION, which needs no privilege to create (unlike a symlink) -
+  # and it is only half the feature. The OTHER half is a STANDING ReadAndExecute
+  # grant to the pool group on the target, written by
+  # provision-sandbox-account.ps1, which carries the reasoning for why that one
+  # is standing rather than per-turn. Without it this link is a directory the
+  # being can see and cannot open. A THIRD thing is needed before a CONFINED
+  # being can use it - `C:/Users/an/src` in that being's own `allowed_paths` -
+  # because the CLI layer refuses paths the kernel would allow; that is per-being
+  # config and deliberately not decided here.
+  #
+  # WHY IT IS RE-PLANTED HERE RATHER THAN PROVISIONED ONCE. This scrub empties
+  # the profile on every lease acquire, so anything the provisioner put in there
+  # would survive exactly until the next turn. The link therefore belongs on the
+  # acquire path, after the wipe, in the same child that does the wiping - the
+  # only principal that can write inside that profile without being an
+  # Administrator. No second logon, no second script, and NO EXEMPTION IN THE
+  # SCRUB: the wipe stays total (Remove-Item takes a junction as a LINK, so the
+  # operator's src is never walked), and what is rebuilt is one link to a
+  # read-only tree, which carries nothing between conversations. Existing pool
+  # accounts need no repair step - their next turn plants it.
+  #
+  # -EA 0 AND NOTHING ELSE ON FAILURE, deliberately: on a node with no ~\src,
+  # New-Item refuses a junction whose target does not exist and NOTHING is
+  # created (measured 2026-09-20 - no dangling link is left behind). A missing
+  # convenience link must not cost the turn, and the provisioner already says on
+  # its own run that the node has no ~\src to grant.
+  #
+  # THE BEING'S OWN HOME-LIKE FOLDERS ARE NOT HERE (operator ruling 2026-09-20,
+  # revising the first cut of this): Desktop/Documents/Downloads in the pool
+  # profile would be scratch - wiped every acquire, unreachable from the
+  # conversation the being actually works in. They live in the CONVERSATION
+  # folder instead, which is the being's cwd, is durable, and is the one place it
+  # can write. See Room.treeDirs in src/room-core.mjs.
+  $srcRoot = Join-Path $env:USERPROFILE 'src'
   $scrubScript = @(
     "`$r = '$profilePath'"
     "if (`$env:USERNAME -ne '$AccountName' -or `$env:USERPROFILE -ne `$r) { [Console]::Error.WriteLine('sandbox-logon-launcher: scrub REFUSED - running as ' + `$env:USERNAME + ' at ' + `$env:USERPROFILE); exit 11 }"
     "Get-ChildItem -LiteralPath `$r -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue"
     "[Console]::Error.WriteLine('sandbox-logon-launcher: scrubbed ' + `$r + ', ' + @(Get-ChildItem -LiteralPath `$r -Force -Recurse -ErrorAction SilentlyContinue).Count + ' locked entries left')"
+    "`$s=Join-Path `$r 'src'; if(!(Test-Path -LiteralPath `$s)){ni -ItemType Junction -Path `$s -Target '$srcRoot' -EA 0 >`$null}"
   ) -join '; '
 
   # NON-FATAL: the scrub is a HYGIENE step, not a security gate. Warn on stderr
@@ -1333,7 +1384,7 @@ function Clear-SandboxProfileContents {
 # CreateNew and both attempt the exclusive open; the kernel's share-mode check
 # is atomic, so exactly one gets a handle and the loser takes the IOException
 # path to the next pool name, exactly as against a live lease. ----
-$locksDir = Join-Path (Join-Path $env:ProgramData 'egpt') 'sandbox-pool-locks'
+$locksDir = $SandboxLocksDir
 New-Item -ItemType Directory -Path $locksDir -Force -ErrorAction Stop | Out-Null
 
 # STICKY, THEN FREE (operator ruling 2026-09-06). ONLY THE ORDER the pool is
@@ -1665,11 +1716,22 @@ try {
   # turn can claim this account while its ACEs from THIS turn are still being
   # cleaned up. What the reclaim adds is the case this block cannot reach at
   # all: the one where this process is killed and never gets here.
+  #
+  # ...AND A FAILED REVOKE IS CARRIED, NOT FORGOTTEN (2026-09-20). The revoke
+  # message below has always said "the next reclaim of this lease will retry it",
+  # and until now that was not true on THIS path: part 3 deleted the lock file
+  # unconditionally, ledger and all, so a path the purge could not clear had
+  # nothing left naming it and no reclaim could ever find it again. The reclaim
+  # path got this right from the start - Clear-SandboxStaleLease rewrites the
+  # ledger with exactly what it could not revoke - so this is that same carry-over
+  # discipline applied to the clean path, not a second idea about it.
+  $stillGranted = New-Object System.Collections.Generic.List[string]
   if ($acesGranted -and $acesGranted.Count -gt 0) {
     foreach ($rec in @(Revoke-SandboxLeaseAces -AccountName $leasedName -Paths $acesGranted.ToArray())) {
       if ($rec.Status -eq 'revoked') {
         Log "revoked ACE for $($rec.Sid) ($leasedName) on $($rec.Path)  - $($rec.Message)"
       } elseif ($rec.Status -eq 'failed') {
+        [void]$stillGranted.Add($rec.Path)
         Log "WARNING: could not revoke the ACE for '$leasedName' on $($rec.Path)  - $($rec.Message). That account STILL has an explicit ACE there; the next reclaim of this lease will retry it."
       } else {
         Log "nothing to revoke for '$leasedName' on $($rec.Path)  - $($rec.Status): $($rec.Message)"
@@ -1679,16 +1741,35 @@ try {
   # ---- (g, part 3) release the lease  - ACE revoke happens first (above),
   # so no other turn can claim this account while its ACE from THIS turn
   # might still be getting cleaned up. ----
+  #
+  # UNLESS SOMETHING IS STILL GRANTED, in which case the lock file STAYS, holding
+  # only the paths that are still leaking. That does not starve the account: a
+  # lock no process holds is exactly what step (a)'s reclaim takes in place, and
+  # the reclaim is what will retry the revoke. Deleting it would be the one move
+  # that makes the leak unfindable.
   if ($lockStream) {
+    $keepLock = $stillGranted.Count -gt 0
+    if ($keepLock) {
+      try {
+        Write-SandboxLeaseLedger -Stream $lockStream -Paths $stillGranted.ToArray()
+      } catch {
+        $keepLock = $false
+        Log "WARNING: could not write the unrevoked paths back into the ACE ledger at $lockPath  - $($_.Exception.Message). Releasing the lease anyway; '$leasedName' keeps $($stillGranted.Count) ACE(s) that nothing now names."
+      }
+    }
     try {
       $lockStream.Close()
     } catch {
       Log "WARNING: could not close lease lock stream for '$leasedName'  - $($_.Exception.Message)"
     }
-    try {
-      Remove-Item -LiteralPath $lockPath -Force -ErrorAction Stop
-    } catch {
-      Log "WARNING: could not remove lease lock file $lockPath for '$leasedName'  - $($_.Exception.Message)"
+    if ($keepLock) {
+      Log "KEEPING lease lock $lockPath for '$leasedName'  - $($stillGranted.Count) ACE(s) could not be revoked and stay on its ledger. Nothing holds the lock, so the next lease of this account reclaims it and retries: $($stillGranted -join ', ')"
+    } else {
+      try {
+        Remove-Item -LiteralPath $lockPath -Force -ErrorAction Stop
+      } catch {
+        Log "WARNING: could not remove lease lock file $lockPath for '$leasedName'  - $($_.Exception.Message)"
+      }
     }
   }
 }
