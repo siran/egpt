@@ -143,14 +143,14 @@ Access is therefore **opt-in and narrow**, and the whole list is:
 | `~\.egpt\conversations` | Pool group, traverse only | same chain |
 | `~\.egpt\conversations\whatsapp` | Pool group, traverse only | same chain |
 | `~\src` | Pool group, traverse only | same chain; skipped where absent |
-| `~\src` | Pool group, **ReadAndExecute**, inherited | the operator's whole source tree, read-only, **standing**. Every pool profile carries a `src` directory junction pointing here (planted by the launcher's scrub pass), and a junction is only a name — what may be done through it is decided by the DACL of the target. Operator 2026-09-20, asked for explicitly: *"can we make that sandbox account's sbx/src/ path points to src/an read-only?"* Permanent, not per-turn, and that is a decision — see below. |
+| `~\src` | Pool group, **ReadAndExecute**, inherited | the operator's whole source tree, read-only, **standing**. Every pool profile carries a `src` directory junction pointing here and a `my-code` one pointing at `~\src\egpt` (both planted by the launcher's scrub pass, from one generator — `Get-SandboxProfileJunctionStatement`), and a junction is only a name: what may be done through it is decided by the DACL of the target. `my-code` is *under* `src`, so this one inherited grant covers both and there is no second grant to write. Operator 2026-09-20, asked for explicitly: *"can we make that sandbox account's sbx/src/ path points to src/an read-only?"* and *"it is actually interesting to have a my-code/ pointing to src/egpt"*. Permanent, not per-turn, and that is a decision — see below. |
 | `~\.local\bin` | Pool group, ReadAndExecute | `claude.exe` |
 | `%APPDATA%\npm` | Pool group, ReadAndExecute | pi / codex entry JS |
 | `~\.pi\agent` | Pool group, Modify | pi writes there; missing it wedges the turn |
 | `~\bin\egpt` | Pool group, ReadAndExecute | the RUNNING tree. Was Modify (operator 2026-09-10, *"let E modify itself"*); reversed 2026-09-13 — it executes **as the operator**, so a standing group write there is code outside the sandbox at the next restart. Permanent, not per-turn. See *Known gaps* 7. |
 | the conversation folder | leased account, Modify | granted at launch, revoked at exit |
 | each `-SharePath` | leased account, Modify | a being's full-access `allowed_paths`, plus its thread's CLI store; granted at launch, revoked at exit |
-| each `-SharePathReadOnly` | leased account, ReadAndExecute | a being's read-only `allowed_paths`; granted at launch, revoked at exit |
+| each `-SharePathReadOnly` | leased account, ReadAndExecute | a being's read-only `allowed_paths`; granted at launch, revoked at exit — **unless the pool group can already read that path**, inherited or explicit, in which case nothing is granted and the launcher logs the skip (`Test-SandboxPoolReadCovered`). Since `~\src` carries the standing group read, most read-only shares now fall under it: the per-account ACE would grant what the being already has and leave one more thing for a hard kill to leak. Writable shares are never skipped. |
 
 **Two kinds of ACE live on `~\src`, and telling them apart is the whole skill of
 reading an `icacls` dump of that tree.** An ACE naming the **group**
@@ -217,12 +217,14 @@ in `sandbox-account.ps1` it is additive — it never narrows an existing ACE —
 re-running converges rather than accumulating.
 
 The `~\src` **ReadAndExecute** grant goes through `Set-Acl`
-(`Grant-SandboxPoolAccess`), not `icacls`, and that is the one part of it that
-has not been measured on a real node. `Set-Acl` hung twice against
-`C:\Users\an` (see below); the paths it is known-good on — `~\.local\bin`,
-`%APPDATA%\npm`, `~\bin\egpt` — are all far smaller than `~\src`. If a
-provisioner run sits on `~\src` for much more than ten minutes, kill it, grant
-it by hand and re-run — everything else in that script is idempotent:
+(`Grant-SandboxPoolAccess`), not `icacls`, and it is the slowest thing the
+provisioner does. `icacls` buys nothing here: the equivalent one-pass grant was
+measured by hand on reve 2026-09-20 at **307 s**, because the cost is
+inheritance re-propagation over a tree full of `node_modules` and not the API
+that writes the ACE. The provisioner now announces that cost before it starts
+and prints its elapsed seconds after. If a run sits on `~\src` for much more
+than ten minutes, kill it, grant it by hand and re-run — everything else in that
+script is idempotent:
 
 ```powershell
 icacls "$env:USERPROFILE\src" /grant egpt-sandbox-pool:"(OI)(CI)(RX)"
@@ -288,10 +290,11 @@ icacls $env:APPDATA\npm
 icacls C:\Users\$env:USERNAME\bin\egpt
 icacls C:\Users\$env:USERNAME\src          # ...alongside the (Rc,X,RA) traverse ACE
 
-# every pool profile has a src junction pointing at it  (expect: <SYMLINKD>-style
-# junction rows; a profile that has not run a turn since 2026-09-20 has none yet)
-Get-ChildItem C:\Users\egpt-sbx-* -Force -Filter src -ErrorAction SilentlyContinue |
-  Select-Object FullName, Target
+# every pool profile has src and my-code junctions pointing at it  (expect:
+# <SYMLINKD>-style junction rows; a profile that has not run a turn since
+# 2026-09-20 has neither yet)
+Get-ChildItem C:\Users\egpt-sbx-* -Force -ErrorAction SilentlyContinue |
+  Where-Object { $_.Name -in 'src', 'my-code' } | Select-Object FullName, Target
 
 # a live or leftover per-conversation grant
 icacls C:\Users\$env:USERNAME\.egpt\conversations\whatsapp\<slug>
@@ -332,13 +335,20 @@ none.
 Two kinds of residue are therefore normal to find:
 
 - **Leftover ACEs.** Cleared for the whole pool by re-running the provisioner,
-  which sweeps every lock nothing holds through the same reclaim
-  (`Clear-SandboxAbandonedLeases`). It reads each dead lease's own ledger, so it
-  revokes exactly what was granted and never goes hunting through the
-  filesystem; a lock a running turn still holds is left alone. A revoke that
-  fails leaves its path on the ledger and the lock file in place, so the next
-  reclaim retries instead of forgetting — that now holds on the launcher's clean
-  release path too, which used to delete the lock (and its ledger) regardless.
+  which sweeps every lock nothing holds (`Clear-SandboxAbandonedLeases`). It
+  reads each dead lease's own ledger, so it revokes exactly what was granted and
+  never goes hunting through the filesystem; a lock a running turn still holds
+  is left alone. It groups the dead leases **by path** and takes every account
+  off one path in a single `icacls /remove:g a b c … /C` pass, because the cost
+  of a revoke is the tree, not the ACE — twelve accounts off `~\src\egpt`
+  measured **2 s** that way against minutes for twelve separate `Set-Acl`
+  passes. **A revoke of an ACE that is already gone is success:** the DACL is
+  read first, an account that carries none is reconciled to *clean* without a
+  single write, and the lock is released. Only an ACE still standing afterwards
+  is a failure — that path stays on the ledger and the lock file stays in place,
+  so the next reclaim retries instead of forgetting. That holds on the
+  launcher's clean release path too, which used to delete the lock (and its
+  ledger) regardless.
 - **Orphaned lock files.** Reclaimed automatically on the next lease attempt, or
   by the provisioner sweep above.
 

@@ -110,10 +110,14 @@ describe('a hard-killed turn no longer leaks its ACE — the revoke rides the st
     expect(src).toMatch(/Revoke-SandboxLeaseAces/);
     // ...and it lives with the other lease helpers, where Pester can reach it.
     const lib = accountLib();
-    for (const fn of ['Revoke-SandboxLeaseAces', 'Clear-SandboxStaleLease', 'Add-SandboxLeaseLedgerPath', 'Read-SandboxLeaseLedger', 'Write-SandboxLeaseLedger']) {
+    for (const fn of ['Revoke-SandboxPathAces', 'Revoke-SandboxLeaseAces', 'Clear-SandboxStaleLease', 'Add-SandboxLeaseLedgerPath', 'Read-SandboxLeaseLedger', 'Write-SandboxLeaseLedger']) {
       expect(lib, `${fn} is not in setup/sandbox-account.ps1`).toMatch(new RegExp(`^function ${fn}\\b`, 'm'));
     }
-    expect(lib).toMatch(/PurgeAccessRules/);
+    // ONE place in the whole library performs the ACL edit (2026-09-20: it is now an icacls
+    // /remove:g pass keyed by PATH, so N accounts come off a shared tree in one go instead of
+    // N Set-Acl passes). Revoke-SandboxLeaseAces is a grouping over it, not a second one.
+    expect((lib.match(/icacls\.exe @icaclsArgs/g) || []).length).toBe(1);
+    expect(lib, 'a hand-rolled purge came back beside the shared revoke').not.toMatch(/PurgeAccessRules/);
   });
 
   it('REPRODUCE-FIRST: a revoke that FAILED is logged as a WARNING and kept in the ledger', () => {
@@ -229,9 +233,11 @@ describe('read-only share paths get a READ-ONLY ACE, not a write-capable one', (
     // Ledger BEFORE Set-Acl still holds for both classes. (Call sites, not the prose above them:
     // the step's own comments mention Set-Acl.)
     expect(step.indexOf('Add-SandboxLeaseLedgerPath -Stream')).toBeLessThan(step.indexOf('Set-Acl -LiteralPath $sp'));
-    // And the revoke is untouched — it purges by SID, so it takes a ReadAndExecute ACE off
-    // exactly as it takes a Modify one. (Locked for real in setup/sandbox-account.Tests.ps1.)
-    expect(accountLib()).toMatch(/PurgeAccessRules\(\$sid\)/);
+    // And the revoke is untouched in the way that matters — it removes by SID, so it takes a
+    // ReadAndExecute ACE off exactly as it takes a Modify one. ('/remove:g' + a SID literal
+    // since 2026-09-20; locked for real in setup/sandbox-account.Tests.ps1.)
+    expect(accountLib()).toMatch(/'\/remove:g'/);
+    expect(accountLib()).toMatch(/"\*\$\(\$sids\[\$_\]\.Value\)"/);
   });
 
   it('LOCK: a caller that passes only the OLD -SharePath is unaffected', () => {

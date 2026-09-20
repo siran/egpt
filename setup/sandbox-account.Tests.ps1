@@ -42,6 +42,30 @@ function Set-LocalUser {
   $script:SetLocalUserCalls++
 }
 
+# THE icacls SPY (2026-09-20). The revoke is now ONE icacls pass per PATH naming
+# every account that leaked an ACE onto it, and "one pass" is the whole property
+# - twelve Set-Acl passes over ~\src\egpt cost minutes, one icacls pass over the
+# same twelve accounts cost 2 s. An outcome test cannot tell the two apart, so
+# the COMMAND is observed directly.
+#
+# A FUNCTION shadows an external command in PowerShell's resolution order
+# (Alias > Function > Cmdlet > External), and it has to be declared up here for
+# the same lexical-scope reason the Get-LocalUser shadow above does, or the
+# dot-sourced library resolves the real binary instead.
+#
+# OFF BY DEFAULT: with no spy list set it forwards to the real icacls.exe and
+# leaves $LASTEXITCODE alone, so every other test below still edits a real DACL
+# for real. Set $script:IcaclsSpy to a list to intercept.
+$script:IcaclsSpy = $null
+function icacls.exe {
+  if ($null -ne $script:IcaclsSpy) {
+    [void]$script:IcaclsSpy.Add(@($args))
+    $global:LASTEXITCODE = 0
+    return 'icacls spy: not executed'
+  }
+  & (Join-Path $env:SystemRoot 'System32\icacls.exe') @args
+}
+
 . (Join-Path $PSScriptRoot 'sandbox-account.ps1')
 
 # Kept in a script-scoped variable for the cross-process determinism test at the
@@ -268,6 +292,24 @@ function Get-TestExplicitAceCount([string]$Path) {
 function New-TestLock([string]$Path) {
   return [System.IO.File]::Open($Path, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::ReadWrite)
 }
+# A SECOND and THIRD principal for the grouped revoke, so "N accounts off ONE
+# path in ONE pass" can be tested at all. Both are well-known SIDs that resolve
+# on any Windows box, and they are only ever granted on a throwaway directory
+# under $env:TEMP that this file created and deletes.
+$script:OtherNames = @('Everyone', 'BUILTIN\Guests')
+function Grant-TestModifyTo([string]$Path, [string]$AccountName) {
+  $sid = (New-Object System.Security.Principal.NTAccount($AccountName)).Translate([System.Security.Principal.SecurityIdentifier])
+  $acl = Get-Acl -LiteralPath $Path
+  $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+    $sid, 'Modify', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))
+  Set-Acl -LiteralPath $Path -AclObject $acl
+}
+function Get-TestExplicitAceCountFor([string]$Path, [string]$AccountName) {
+  $sid = (New-Object System.Security.Principal.NTAccount($AccountName)).Translate([System.Security.Principal.SecurityIdentifier])
+  $acl = Get-Acl -LiteralPath $Path
+  return @($acl.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]) |
+    Where-Object { $_.IdentityReference.Value -eq $sid.Value }).Count
+}
 
 Describe 'the lease ledger (the lock file doubles as the list of ACEs this turn granted)' {
   It 'round-trips paths and hides its own header from readers' {
@@ -339,6 +381,112 @@ Describe 'the lease ledger (the lock file doubles as the list of ACEs this turn 
       Remove-Item -LiteralPath $lock -Force -ErrorAction SilentlyContinue
       Remove-Item -LiteralPath $ready -Force -ErrorAction SilentlyContinue
     }
+  }
+}
+
+# THE GROUPED REVOKE (operator 2026-09-20). Revoke-SandboxPathAces is now the one
+# ACL edit in the sandbox, and it is keyed by PATH: every account that leaked an
+# ACE onto a path comes off it in a SINGLE icacls pass, because the cost of a
+# revoke is the tree (inheritance re-propagation), not the ACE. Measured by hand
+# on reve that day: twelve Set-Acl passes over ~\src\egpt = minutes and looked
+# like a hang; `icacls ~\src\egpt /remove:g egpt-sbx-00 ... /C` = 2 s for all
+# twelve.
+Describe 'Revoke-SandboxPathAces (one path, every account on it, ONE icacls pass)' {
+  AfterEach { $script:IcaclsSpy = $null }
+
+  It 'takes THREE accounts off one directory and reports each of them revoked' {
+    $d = New-LedgerTempDir
+    $accounts = @($script:MeName) + $script:OtherNames
+    foreach ($a in $accounts) { Grant-TestModifyTo $d $a }
+    foreach ($a in $accounts) { (Get-TestExplicitAceCountFor $d $a) | Should Be 1 }
+
+    $recs = @(Revoke-SandboxPathAces -Path $d -AccountNames $accounts)
+
+    $recs.Count | Should Be 3
+    (@($recs | Where-Object { $_.Status -eq 'revoked' }).Count) | Should Be 3
+    foreach ($a in $accounts) { (Get-TestExplicitAceCountFor $d $a) | Should Be 0 }
+  }
+
+  It 'REPRODUCE-FIRST: it is ONE command for the path, naming every account - not one command per account' {
+    # The defect this locks: the sweep used to call Set-Acl once per ACCOUNT, so
+    # fifteen abandoned leases on one shared tree walked that tree fifteen times.
+    $d = New-LedgerTempDir
+    $accounts = @($script:MeName) + $script:OtherNames
+    foreach ($a in $accounts) { Grant-TestModifyTo $d $a }
+    $script:IcaclsSpy = New-Object System.Collections.Generic.List[object]
+
+    Revoke-SandboxPathAces -Path $d -AccountNames $accounts | Out-Null
+
+    $script:IcaclsSpy.Count | Should Be 1
+    $callArgs = @($script:IcaclsSpy[0])
+    $callArgs[0] | Should Be $d
+    ($callArgs -contains '/remove:g') | Should Be $true
+    # Every account is on that ONE command line, as a SID literal.
+    foreach ($a in $accounts) {
+      $sid = (New-Object System.Security.Principal.NTAccount($a)).Translate([System.Security.Principal.SecurityIdentifier])
+      ($callArgs -contains "*$($sid.Value)") | Should Be $true
+    }
+    # No /T: a lease ACE is explicit and on the named object only, so recursing
+    # would re-walk the very tree this change exists to stop re-walking.
+    ($callArgs -contains '/T') | Should Be $false
+  }
+
+  It 'AN ACE THAT IS ALREADY GONE IS SUCCESS, AND COSTS NO WRITE AT ALL' {
+    # Operator 2026-09-20, after removing the twelve leaked ACEs by hand: "a
+    # revoke of an ACE that is already gone is SUCCESS, not failure". It must
+    # reconcile to 'clean' - and it must not run icacls at all, which is what
+    # makes the fifteen already-cleared locks sweep in milliseconds.
+    $d = New-LedgerTempDir
+    $script:IcaclsSpy = New-Object System.Collections.Generic.List[object]
+
+    $recs = @(Revoke-SandboxPathAces -Path $d -AccountNames @($script:MeName, 'Everyone'))
+
+    $recs.Count | Should Be 2
+    (@($recs | Where-Object { $_.Status -eq 'clean' }).Count) | Should Be 2
+    $script:IcaclsSpy.Count | Should Be 0
+  }
+
+  It 'names only the accounts that actually carry an ACE, and calls the others clean' {
+    $d = New-LedgerTempDir
+    Grant-TestModifyTo $d 'Everyone'
+    $script:IcaclsSpy = New-Object System.Collections.Generic.List[object]
+
+    $recs = @(Revoke-SandboxPathAces -Path $d -AccountNames @($script:MeName, 'Everyone'))
+
+    $script:IcaclsSpy.Count | Should Be 1
+    $everyone = (New-Object System.Security.Principal.NTAccount('Everyone')).Translate([System.Security.Principal.SecurityIdentifier])
+    (@($script:IcaclsSpy[0]) -contains "*$($everyone.Value)") | Should Be $true
+    (@($script:IcaclsSpy[0]) -contains "*$($script:MeSid.Value)") | Should Be $false
+    (@($recs | Where-Object { $_.Account -eq $script:MeName }).Status) | Should Be 'clean'
+  }
+
+  It 'reports FAILED, not revoked, when the ACE is still standing afterwards - the DACL decides, not the exit code' {
+    # The spy returns exit 0 without touching anything. A revoke that trusted the
+    # exit code would call that success and forget a live leak.
+    $d = New-LedgerTempDir
+    Grant-TestModifyTo $d $script:MeName
+    $script:IcaclsSpy = New-Object System.Collections.Generic.List[object]
+
+    $recs = @(Revoke-SandboxPathAces -Path $d -AccountNames @($script:MeName))
+
+    $recs[0].Status | Should Be 'failed'
+    (Get-TestExplicitAceCount $d) | Should Be 1
+  }
+
+  It 'reports MISSING for every account when the path is gone, and FAILED for an account nobody can name' {
+    $recs = @(Revoke-SandboxPathAces -Path (Join-Path $script:LedgerTempRoot 'never-existed-grouped') -AccountNames @($script:MeName, 'Everyone'))
+    (@($recs | Where-Object { $_.Status -eq 'missing' }).Count) | Should Be 2
+
+    $d = New-LedgerTempDir; Grant-TestModifyTo $d $script:MeName
+    $mixed = @(Revoke-SandboxPathAces -Path $d -AccountNames @('egpt-no-such-account-zzz', $script:MeName))
+    (@($mixed | Where-Object { $_.Status -eq 'failed' }).Count) | Should Be 1
+    (@($mixed | Where-Object { $_.Status -eq 'revoked' }).Count) | Should Be 1
+    # One unnameable principal must not cost the nameable one its cleanup.
+    (Get-TestExplicitAceCount $d) | Should Be 0
+  }
+
+  It 'is a no-op on an empty account list' {
+    (@(Revoke-SandboxPathAces -Path (New-LedgerTempDir) -AccountNames @()).Count) | Should Be 0
   }
 }
 
@@ -640,6 +788,7 @@ Describe 'Clear-SandboxAbandonedLeases (the repair path for leases nothing will 
 
   AfterEach {
     $script:SandboxPoolPrefix = $script:PrefixSaved
+    $script:IcaclsSpy = $null
     Remove-Item -LiteralPath $locks -Recurse -Force -ErrorAction SilentlyContinue
   }
 
@@ -708,73 +857,249 @@ Describe 'Clear-SandboxAbandonedLeases (the repair path for leases nothing will 
   It 'is a no-op on a locks directory that is not there' {
     (@(Clear-SandboxAbandonedLeases -LocksDir (Join-Path $script:LedgerTempRoot 'no-such-locks-dir')).Count) | Should Be 0
   }
+
+  # ---- THE SHAPE OF THE LEAK AS IT WAS ACTUALLY FOUND (operator 2026-09-20):
+  # fifteen abandoned locks, twelve of them naming the SAME path, ~\src\egpt.
+  # $SandboxPoolPrefix is widened to '' here so that more than one lock name can
+  # be a "pool account" - a prefix every string starts with - which is the only
+  # way to get two DIFFERENT resolvable principals into one sweep.
+  It 'REPRODUCE-FIRST: two dead leases on ONE shared path are revoked in ONE icacls pass' {
+    # THE SHAPE OF THE LEAK AS IT WAS ACTUALLY FOUND: fifteen abandoned locks,
+    # twelve of them naming the SAME path, ~\src\egpt. The old sweep walked that
+    # tree once per ACCOUNT. $SandboxPoolPrefix is widened to '' - a prefix every
+    # string starts with - because that is the only way to get two DIFFERENT
+    # resolvable principals into one sweep on a box with one real user.
+    $script:SandboxPoolPrefix = ''
+    $shared = New-LedgerTempDir
+    Grant-TestModifyTo $shared $script:MeName
+    Grant-TestModifyTo $shared 'Everyone'
+    foreach ($a in @($script:MeUser, 'Everyone')) {
+      $s = New-TestLock (Join-Path $locks "$a.lock")
+      try { Write-SandboxLeaseLedger -Stream $s -Paths @($shared) } finally { $s.Close() }
+    }
+
+    $script:IcaclsSpy = New-Object System.Collections.Generic.List[object]
+    Clear-SandboxAbandonedLeases -LocksDir $locks | Out-Null
+
+    # ONE pass for the ONE path, both accounts named on it - not one pass each.
+    $script:IcaclsSpy.Count | Should Be 1
+    $callArgs = @($script:IcaclsSpy[0])
+    $callArgs[0] | Should Be $shared
+    foreach ($a in @($script:MeName, 'Everyone')) {
+      $sid = (New-Object System.Security.Principal.NTAccount($a)).Translate([System.Security.Principal.SecurityIdentifier])
+      ($callArgs -contains "*$($sid.Value)") | Should Be $true
+    }
+  }
+
+  It 'REPRODUCE-FIRST: the same two leases really do come off, and both locks are released' {
+    # The spy off: the end-to-end version of the test above.
+    $script:SandboxPoolPrefix = ''
+    $shared = New-LedgerTempDir
+    Grant-TestModifyTo $shared $script:MeName
+    Grant-TestModifyTo $shared 'Everyone'
+    foreach ($a in @($script:MeUser, 'Everyone')) {
+      $s = New-TestLock (Join-Path $locks "$a.lock")
+      try { Write-SandboxLeaseLedger -Stream $s -Paths @($shared) } finally { $s.Close() }
+    }
+
+    $recs = @(Clear-SandboxAbandonedLeases -LocksDir $locks)
+
+    (@($recs | Where-Object { $_.Status -eq 'reclaimed' }).Count) | Should Be 2
+    (Get-TestExplicitAceCountFor $shared $script:MeName) | Should Be 0
+    (Get-TestExplicitAceCountFor $shared 'Everyone') | Should Be 0
+    (@(Get-ChildItem -LiteralPath $locks -Filter '*.lock' -File).Count) | Should Be 0
+  }
+
+  It 'ACCEPTANCE: locks whose ACEs are ALREADY gone clear cleanly, with no icacls run at all' {
+    # THE FIFTEEN. The operator removed the twelve leaked ACEs by hand and left
+    # the locks behind; the next sweep must reconcile them to "not granted",
+    # release every lock, and cost nothing. A revoke of an absent ACE is SUCCESS.
+    $script:SandboxPoolPrefix = ''
+    $gone = New-LedgerTempDir
+    foreach ($a in @($script:MeUser, 'Everyone')) {
+      $s = New-TestLock (Join-Path $locks "$a.lock")
+      try { Write-SandboxLeaseLedger -Stream $s -Paths @($gone) } finally { $s.Close() }
+    }
+    $script:IcaclsSpy = New-Object System.Collections.Generic.List[object]
+
+    $recs = @(Clear-SandboxAbandonedLeases -LocksDir $locks)
+
+    (@($recs | Where-Object { $_.Status -eq 'reclaimed' }).Count) | Should Be 2
+    (@($recs | ForEach-Object { $_.Aces } | Where-Object { $_.Status -eq 'clean' }).Count) | Should Be 2
+    (@(Get-ChildItem -LiteralPath $locks -Filter '*.lock' -File).Count) | Should Be 0
+    $script:IcaclsSpy.Count | Should Be 0
+  }
 }
 
 # ---------------------------------------------------------------------------
-# THE src JUNCTION IN A POOL PROFILE (2026-09-20). The statement under test is
-# NOT copied here - it is read out of sandbox-logon-launcher.ps1 and run
-# verbatim, because a copy would pass while the shipped one was broken. That is
-# not hypothetical: the first version of it read `-EA 0>$null` without the space,
-# which PowerShell binds as part of a PARAMETER NAME, and no structural test
-# would have caught it.
+# THE SKIP-WHEN-ALREADY-COVERED RULE (operator 2026-09-20). ~\src now carries a
+# standing (OI)(CI)(RX) for the pool GROUP, so a per-turn read-only share ACE
+# under it grants a being what it already has and leaves one more ACE for a hard
+# kill to leak. Test-SandboxPoolReadCovered is what the launcher asks before it
+# skips one, and a WRONG SKIP means a being silently loses read access mid-turn -
+# so every one of its four conditions is pinned here against a real DACL.
 #
-# It runs against a throwaway directory under $env:TEMP with $r bound to it, so
-# nothing here touches a real pool profile. The junction target is substituted
-# too - the launcher interpolates the operator's own ~\src there.
-$script:LauncherScript = Join-Path $PSScriptRoot 'sandbox-logon-launcher.ps1'
-
-function Get-JunctionStatement {
-  $lines = @(Get-Content -LiteralPath $script:LauncherScript | Where-Object { $_ -match '-ItemType Junction' })
-  # Loud rather than vacuous: a rename that stops this matching must FAIL the
-  # test, not quietly leave it asserting nothing. A `throw` and not a `Should`:
-  # Should writes to the PIPELINE, and inside a function that output joins the
-  # return value - the statement would come back as @($true, '<statement>').
-  if ($lines.Count -ne 1) {
-    throw "expected exactly ONE '-ItemType Junction' line in $script:LauncherScript, found $($lines.Count) - the scrub's junction statement was renamed or removed"
+# Same substitution as the grant describes above: $SandboxPoolGroup points at the
+# current user, so "the group" is a principal these tests can really grant.
+Describe 'Test-SandboxPoolReadCovered (is a per-turn read ACE redundant here?)' {
+  BeforeEach {
+    $script:TraverseSavedGroup = $SandboxPoolGroup
+    $script:SandboxPoolGroup = $script:MeName
   }
-  $t = $lines[0].Trim()
-  # The launcher holds the statement as a double-quoted PowerShell string whose
-  # own $ signs are backtick-escaped. Strip the quotes and the escapes and what
-  # is left is what the leased account really runs.
-  return $t.Substring(1, $t.Length - 2).Replace('`', '')
+
+  AfterEach {
+    $script:SandboxPoolGroup = $script:TraverseSavedGroup
+  }
+
+  It 'says NO on a bare directory - nothing is covered, so the grant must still happen' {
+    (Test-SandboxPoolReadCovered -Path (New-LedgerTempDir) -LeasedSid $script:MeSid) | Should Be $false
+  }
+
+  It 'says YES on a child that INHERITS the group (OI)(CI)(RX) - the case the operator named' {
+    $parent = New-LedgerTempDir
+    Grant-SandboxPoolAccess -Path $parent
+    $child = Join-Path $parent 'egpt'
+    New-Item -ItemType Directory -Path $child | Out-Null
+    (Test-SandboxPoolReadCovered -Path $child -LeasedSid $script:MeSid) | Should Be $true
+  }
+
+  It 'says YES on the granted directory itself - an explicit standing group grant is the same fact' {
+    $d = New-LedgerTempDir
+    Grant-SandboxPoolAccess -Path $d
+    (Test-SandboxPoolReadCovered -Path $d -LeasedSid $script:MeSid) | Should Be $true
+  }
+
+  It 'says NO to a TRAVERSE-only grant - (X,RA,RC) withholds read-data on purpose' {
+    # THE ONE THAT MATTERS MOST. (X,RA,RC) and (RX) look alike in an icacls dump
+    # and differ by exactly the read-data bit. Skipping on a traverse grant would
+    # hand a being a directory it can walk through and cannot open.
+    $d = New-LedgerTempDir
+    Grant-SandboxPoolTraverse -Path $d
+    (Test-SandboxPoolReadCovered -Path $d -LeasedSid $script:MeSid) | Should Be $false
+  }
+
+  It 'says NO when a lease ACE for the ACCOUNT is the only read there - litter never satisfies it' {
+    # An ACE naming an individual pool account is exactly what the sweep exists
+    # to remove. If it could satisfy this check, one leaked ACE would suppress
+    # the grant that replaces it.
+    $d = New-LedgerTempDir
+    $script:SandboxPoolGroup = 'Everyone'
+    Grant-TestReadAndExecute $d
+    (Test-SandboxPoolReadCovered -Path $d -LeasedSid $script:MeSid) | Should Be $false
+  }
+
+  It 'says NO when a DENY touches either principal, even with the group read in place' {
+    # An explicit Allow for the leased ACCOUNT beats an inherited Deny for the
+    # group, so where a Deny exists the per-account grant is NOT redundant.
+    $d = New-LedgerTempDir
+    Grant-SandboxPoolAccess -Path $d
+    (Test-SandboxPoolReadCovered -Path $d -LeasedSid $script:MeSid) | Should Be $true
+    $acl = Get-Acl -LiteralPath $d
+    $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+      $script:MeSid, 'Write', 'ContainerInherit,ObjectInherit', 'None', 'Deny')))
+    Set-Acl -LiteralPath $d -AclObject $acl
+    (Test-SandboxPoolReadCovered -Path $d -LeasedSid $script:MeSid) | Should Be $false
+  }
+
+  It 'says NO rather than throwing when the path is gone or the group does not resolve' {
+    (Test-SandboxPoolReadCovered -Path (Join-Path $script:LedgerTempRoot 'never-existed-cover') -LeasedSid $script:MeSid) | Should Be $false
+    $d = New-LedgerTempDir
+    Grant-SandboxPoolAccess -Path $d
+    $script:SandboxPoolGroup = 'egpt-no-such-group-zzz'
+    (Test-SandboxPoolReadCovered -Path $d -LeasedSid $script:MeSid) | Should Be $false
+  }
 }
 
-Describe 'the pool profile src junction (as the launcher scrub really writes it)' {
+# ---------------------------------------------------------------------------
+# THE TWO JUNCTIONS IN A POOL PROFILE (2026-09-20). The statement under test is
+# NOT copied here - Get-SandboxProfileJunctionStatement is asked for the very
+# string the launcher puts in the scrub payload, and that string is then RUN,
+# because a copy would pass while the shipped one was broken. That is not
+# hypothetical: the first version of it read `-EA 0>$null` without the space,
+# which PowerShell binds as part of a PARAMETER NAME, and no structural test
+# would have caught it. (It used to be scraped out of the launcher by line match;
+# the generator moved into sandbox-account.ps1 when `my-code` joined `src`, so
+# the test can now just call it.)
+#
+# It runs against a throwaway directory under $env:TEMP with $r bound to it, so
+# nothing here touches a real pool profile, and -OperatorSrc is a throwaway tree
+# rather than the operator's own ~\src.
+$script:LauncherScript = Join-Path $PSScriptRoot 'sandbox-logon-launcher.ps1'
+
+Describe 'the pool profile junctions (as the launcher scrub really plants them)' {
   $fakeProfile = $null
   $target = $null
   $stmt = $null
 
   BeforeEach {
     $fakeProfile = New-LedgerTempDir
+    # Stands in for ~\src, with an `egpt` child standing in for the checkout.
     $target = New-LedgerTempDir
     New-Item -ItemType Directory -Path (Join-Path $target 'marker') -Force | Out-Null
-    $stmt = (Get-JunctionStatement).Replace("'`$srcRoot'", "'$target'")
+    New-Item -ItemType Directory -Path (Join-Path $target 'egpt') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $target 'egpt\src') -Force | Out-Null
+    $stmt = Get-SandboxProfileJunctionStatement -OperatorSrc $target
   }
 
-  It 'creates src as a junction pointing at the operator src, and says nothing on stdout' {
+  It 'plants BOTH junctions - src at the operator src, my-code at the eGPT checkout - and says nothing on stdout' {
     $r = $fakeProfile
     Invoke-Expression $stmt | Should BeNullOrEmpty
-    $link = Get-Item -LiteralPath (Join-Path $r 'src') -Force
-    ([bool]($link.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) | Should Be $true
-    $link.Target | Should Be $target
+    $src = Get-Item -LiteralPath (Join-Path $r 'src') -Force
+    ([bool]($src.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) | Should Be $true
+    $src.Target | Should Be $target
     (Test-Path -LiteralPath (Join-Path (Join-Path $r 'src') 'marker')) | Should Be $true
+
+    $mine = Get-Item -LiteralPath (Join-Path $r 'my-code') -Force
+    ([bool]($mine.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) | Should Be $true
+    $mine.Target | Should Be (Join-Path $target 'egpt')
+    (Test-Path -LiteralPath (Join-Path (Join-Path $r 'my-code') 'src')) | Should Be $true
   }
 
-  It 'is idempotent: three passes leave one junction and throw nothing' {
+  It 'is idempotent: three passes leave exactly the two junctions and throw nothing' {
     $r = $fakeProfile
     foreach ($i in 1..3) { Invoke-Expression $stmt | Out-Null }
-    (@(Get-ChildItem -LiteralPath $r -Force).Count) | Should Be 1
+    (@(Get-ChildItem -LiteralPath $r -Force).Count) | Should Be 2
     (Get-Item -LiteralPath (Join-Path $r 'src') -Force).Target | Should Be $target
+    (Get-Item -LiteralPath (Join-Path $r 'my-code') -Force).Target | Should Be (Join-Path $target 'egpt')
   }
 
-  It 'is wiped as a LINK by the scrub that precedes it - the junction target survives' {
-    # The scrub deletes the profile children before the junction is re-planted,
-    # and Remove-Item must take the link itself rather than recursing into the
+  It 'both are wiped as LINKS by the scrub that precedes them - the targets survive' {
+    # The scrub deletes the profile children before the junctions are re-planted,
+    # and Remove-Item must take each link itself rather than recursing into the
     # operator's src. That is the assertion that keeps the two safe together.
     $r = $fakeProfile
     Invoke-Expression $stmt | Out-Null
     Get-ChildItem -LiteralPath $r -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
     (@(Get-ChildItem -LiteralPath $r -Force).Count) | Should Be 0
     (Test-Path -LiteralPath (Join-Path $target 'marker')) | Should Be $true
+    (Test-Path -LiteralPath (Join-Path $target 'egpt\src')) | Should Be $true
+  }
+
+  It 'creates NOTHING - not even a dangling link - when the target is not there' {
+    # A node with no ~\src. -EA 0 and no repair: the turn must not pay for a
+    # missing convenience link.
+    $r = New-LedgerTempDir
+    Invoke-Expression (Get-SandboxProfileJunctionStatement -OperatorSrc (Join-Path $script:LedgerTempRoot 'no-such-src')) | Out-Null
+    (@(Get-ChildItem -LiteralPath $r -Force).Count) | Should Be 0
+  }
+
+  It 'the whole scrub payload still fits the 1024-character CreateProcessWithLogonW budget' {
+    # MSDN's lpCommandLine limit is real and ENFORCED (see Invoke-AsLeasedAccount's
+    # BUDGET note) - a long command line fails with E_INVALIDARG rather than
+    # truncating - and the whole payload is ONE argv element. The three scrub
+    # lines measured 677 characters with one junction; this is the real statement
+    # against the real profile and target lengths, with headroom left for them.
+    $real = Get-SandboxProfileJunctionStatement -OperatorSrc (Join-Path $env:USERPROFILE 'src')
+    ($real.Length -lt 320) | Should Be $true
+    # Not one double quote in it: Format-Win32Arg escapes every " as \", costing
+    # two characters of a budget that is already two thirds spent.
+    ($real -match '"') | Should Be $false
+  }
+
+  It 'is the statement the LAUNCHER actually uses - not a second copy of it' {
+    $src = Get-Content -LiteralPath $script:LauncherScript -Raw
+    ($src -match '\(Get-SandboxProfileJunctionStatement -OperatorSrc \$srcRoot\)') | Should Be $true
+    # ...and the launcher no longer spells a junction out for itself.
+    ($src -match '-ItemType Junction') | Should Be $false
   }
 }
