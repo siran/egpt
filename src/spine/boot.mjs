@@ -2613,9 +2613,13 @@ export async function boot({
     // default (commit 4eaceaf "E is a persistent background agent — never idle-evict
     // conversations", which set conversation: 0 — never-evict under the OLD dialect): a conversation now goes cold 15m
     // after its last turn, and the transcript + `--resume` make the next turn
-    // correct, just colder. system/resident stay NEVER-EVICT, and so does `sibling` — the
-    // operator only ruled on conversations. Those three read `-1` since the 2026-07-26 dialect
-    // flip (-1 never, 0 ALWAYS evict); they were written `0` when 0 meant never.
+    // correct, just colder. system/resident/sibling used to stay NEVER-EVICT (`-1` since the
+    // 2026-07-26 dialect flip — -1 never, 0 ALWAYS evict; they were written `0` when 0 meant
+    // never), which is how kg ended up holding 13 live claude.exe processes at once: nothing
+    // ever idled out. Operator 2026-09-20: "let them idle out, 12h" — so those three now default
+    // to 12h. Evicting is cheap: the thread id lives in the conversation record, so the next turn
+    // resumes the same session. migrations/0013 asks the same of a node that already has a
+    // `warm:` block, which this default does not reach.
     //
     // `warm.max` is the "keep a number — or, with a high max, all — agents warm"
     // knob the operator likes: the LRU cap bounds how many warm sessions live at
@@ -2623,7 +2627,7 @@ export async function boot({
     // folder's own config.yaml `warm: { idle_ttl }` beats the class TTL (resolved in
     // brainpool, passed per-run to the pool); a negative there = keep THAT conversation warm.
     idleTtlMs: cfg.warm?.idle_ttl_ms ?? 1_800_000,   // fallback for any unlisted class
-    idleTtlByClass: cfg.warm?.idle_ttl_by_class ?? { system: -1, resident: -1, conversation: 900_000, sibling: -1 },
+    idleTtlByClass: cfg.warm?.idle_ttl_by_class ?? { system: 43_200_000, resident: 43_200_000, conversation: 900_000, sibling: 43_200_000 },
     onLog: (m) => log.line?.(`[warm] ${m}`),
   });
 

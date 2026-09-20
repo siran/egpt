@@ -2486,7 +2486,8 @@ export const CONFIG_SCHEMA = {
         DEFAULT: 1800000 — ms-of-idle before an unlisted class is evicted.
       idle_ttl_by_class
         Per-class idle TTL.
-        DEFAULT: { system: -1, resident: -1, conversation: 900000, sibling: -1 }
+        DEFAULT: { system: 43200000, resident: 43200000, conversation: 900000,
+                   sibling: 43200000 }
 
     TTL DIALECT (operator 2026-07-26 — the same one posts_back_delay_ms and
     guard.turns speak): -1 = never idle-evict (warm forever), 0 = always evict
@@ -2498,8 +2499,14 @@ export const CONFIG_SCHEMA = {
     background agent 15m after the last message, configurable"): a conversation
     goes cold 15 min after its last turn, then idle-evicts (the transcript +
     --resume make the next turn correct, just colder). This SUPERSEDES the
-    earlier never-evict default. system/resident stay persistent (-1); sibling
-    stays -1.
+    earlier never-evict default.
+
+    EVERYTHING ELSE IDLES OUT AT 12h (operator 2026-09-20: "let them idle out,
+    12h"). system/resident/sibling used to default to -1 — never — which left
+    one live claude.exe per warm session (13 of them on kg) until the pool hit
+    max, or the spine restarted. Evicting is cheap: the thread id lives in the
+    conversation record, so the next turn resumes the same session. A node whose
+    config.yaml already spells these out is brought forward by migrations/0013.
 
     PER-CONVERSATION OVERRIDE: a conversation folder's own config.yaml (the same
     file that carries the transcription: / heartbeats: blocks) may set
