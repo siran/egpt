@@ -1497,8 +1497,14 @@ export async function startBeeperBridge(opts = {}) {
     try {
       const up = await uploadAsset(filePath);
       if (!up?.uploadID) { onLog(`beeper: media upload returned no uploadID [${filePath}]`); return false; }
+      // A CAPTION IS A LINE A BEING WROTE, so it carries `@Nombre` like any other — the same
+      // conversion through the same rosterNamesAsMentions above, resolved once here and used for
+      // BOTH the body and the match text below (the _matchKey reason sendMessage states: matching
+      // the pre-conversion caption would never find our own send). NO caption is untouched — null
+      // in, null out, and the roster is never read.
+      const captionText = caption ? await rosterNamesAsMentions(caption, chatID) : null;
       const body = { attachment: { uploadID: up.uploadID, type: attachmentType(up.mimeType), ...(up.mimeType ? { mimeType: up.mimeType } : {}), ...(up.fileName ? { fileName: up.fileName } : {}) } };
-      if (caption) body.text = String(caption);
+      if (captionText) body.text = captionText;
       if (replyTo) body.replyToMessageID = String(replyTo);
       // A captioned media send is re-findable by its caption, so it gets the same
       // CONFIRMED-id treatment as a text send. CAPTIONLESS (e.g. every voice-reply
@@ -1506,7 +1512,7 @@ export async function startBeeperBridge(opts = {}) {
       // ALWAYS resolves and rememberSent always runs; without it, a captionless
       // send's own WS echo re-enters dispatch as a genuine new incoming message (a
       // live self-reply loop, observed 2026-08-10).
-      const { r, confirmedId } = await postAndConfirm(chatID, body, caption ? String(caption) : null, { matchFileName: caption ? null : up.fileName });
+      const { r, confirmedId } = await postAndConfirm(chatID, body, captionText, { matchFileName: caption ? null : up.fileName });
       onLog(`beeper: media sent [${chatID}] ${basename(filePath)} (${up.mimeType || 'unknown'})`);
       return { ok: true, chatId: chatID, pendingMessageID: r?.pendingMessageID, confirmedId };
     } catch (e) { onLog(`beeper: media send failed [${chatID}/${filePath}] — ${e?.message ?? e}`); return false; }
