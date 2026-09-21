@@ -2079,6 +2079,34 @@ describe('beeper bridge — an outbound `@Nombre` leaves as a real mention of th
     expect(fake.edits.at(-1).text).toBe(`ya casi [Favel](https://matrix.to/#/${FAVEL})`);
   });
 
+  // A CAPTION IS THE SAME TEXT (2026-09-21): sendMedia builds its OWN body rather than going
+  // through sendMessage, so without its own call a being captioning a photo `@Favel mira` would
+  // post a dead `@Favel` while the identical line sent on its own became a mention.
+  const pic = () => { const p = join(stateDir, `pic-${Math.random().toString(36).slice(2)}.png`); writeFileSync(p, 'fake-image-bytes'); return p; };
+
+  it('a media CAPTION converts exactly like a sent line — and the media send still confirms its id', async () => {
+    const { bridge } = await start();
+    const r = await bridge.sendMedia(GRP, pic(), { caption: 'mira esto @Favel' });
+    expect(fake.posts.at(-1).text).toBe(`mira esto [Favel](https://matrix.to/#/${FAVEL})`);
+    expect(await r.confirmedId).toBe(fake.posts.at(-1).confirmedID);   // matched on the CONVERTED caption
+  });
+
+  it('an ambiguous caption stays the literal text the being wrote', async () => {
+    const { bridge } = await start();
+    await bridge.sendMedia(GRP, pic(), { caption: '@Daniel mira esto' });
+    expect(fake.posts.at(-1).text).toBe('@Daniel mira esto');
+    expect(logs.join('\n')).toMatch(/"@daniel" stays plain text/);
+  });
+
+  it('NO caption behaves exactly as before — no text on the body, no roster read, id still confirmed by fileName', async () => {
+    const { bridge } = await start();
+    const before = fake.chatGets.length;
+    const r = await bridge.sendMedia(GRP, pic(), {});
+    expect(fake.posts.at(-1).text).toBeUndefined();
+    expect(fake.chatGets.length).toBe(before);
+    await expect(r.confirmedId).resolves.toEqual(expect.any(String));
+  });
+
   it('a line with no `@name` in it never reads the roster — no new network call on the common path', async () => {
     const { bridge } = await start();
     const before = fake.chatGets.length;
