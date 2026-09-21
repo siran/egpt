@@ -268,8 +268,9 @@ describe('0011 through the runner', () => {
     const { exitCode } = await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(JSON.parse(readFileSync(join(h, 'state', 'migrations-applied.json'), 'utf8'))['0011-eplus-is-e-on-opus'].outcome).toBe('already-satisfied');
-    expect(readFileSync(cfgPath(h), 'utf8')).toBe(DO);
-    expect(readdirSync(join(h, 'config')).filter((f) => f.includes('.bak-'))).toEqual([]);
+    // 0020, later in the chain, hands do's persona the `rodz` handle. What 0011 itself left is nothing.
+    expect(readFileSync(cfgPath(h), 'utf8')).toBe(DO.replace('[ d, don ]', '[ d, don, rodz ]'));
+    expect(readdirSync(join(h, 'config')).filter((f) => f.includes('.bak-0011-'))).toEqual([]);
     expect(existsSync(join(h, 'config', 'agents', 'opus-high.yaml'))).toBe(false);
   });
 });

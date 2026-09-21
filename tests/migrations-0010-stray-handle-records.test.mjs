@@ -215,6 +215,8 @@ describe('0010 through the runner', () => {
     expect(exitCode).toBe(0);
     const ledger = JSON.parse(readFileSync(join(h, 'state', 'migrations-applied.json'), 'utf8'));
     expect(ledger['0010-stray-handle-records'].outcome).toBe('already-satisfied');
-    expect(readdirSync(join(h, 'config')).sort()).toEqual(['config.yaml']);
+    // 0020, later in the chain, hands do's persona the `rodz` handle and backs the file up for it.
+    // What 0010 itself left is nothing.
+    expect(readdirSync(join(h, 'config')).filter((f) => f.includes('.bak-0010-'))).toEqual([]);
   });
 });

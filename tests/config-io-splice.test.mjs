@@ -9,7 +9,7 @@
 // the bytes are.
 import { describe, it, expect } from 'vitest';
 import * as YAML from 'yaml';
-import { spliceYamlScalar, spliceYamlKey, spliceYamlRemoveKey, spliceYamlInsertKey, YamlSpliceRefusal } from '../src/tools/config-io.mjs';
+import { spliceYamlScalar, spliceYamlKey, spliceYamlRemoveKey, spliceYamlInsertKey, spliceYamlSeqAppend, YamlSpliceRefusal } from '../src/tools/config-io.mjs';
 
 const FIXTURE = `# config.yaml — kg (fixture), the operator's rulings live in comments like these
 transcription_service:
@@ -382,5 +382,71 @@ describe('spliceYamlInsertKey', () => {
 
   it('refuses YAML that does not parse', () => {
     expect(() => spliceYamlInsertKey('a: [1, 2\n', [], { key: 'b', text: 'b: 1' })).toThrow(/does not parse/);
+  });
+});
+
+describe('spliceYamlSeqAppend', () => {
+  // do's persona, the shape 0020 appends to: an inline list with a trailing comment on its line.
+  const HANDLES = 'agents:\n  egpt:\n    handles: [ d, don ]   # the worker answers to both\n    default: true\n';
+
+  it('adds one item to an inline flow list: a ONE-LINE diff, brackets, spacing and trailing comment kept', () => {
+    const out = spliceYamlSeqAppend(HANDLES, ['agents', 'egpt', 'handles'], { expect: ['d', 'don'], add: 'rodz' });
+    expect(diffLines(HANDLES, out)).toEqual([
+      [3, '    handles: [ d, don ]   # the worker answers to both',
+        '    handles: [ d, don, rodz ]   # the worker answers to both'],
+    ]);
+    expect(YAML.parse(out).agents.egpt.handles).toEqual(['d', 'don', 'rodz']);
+  });
+
+  it('keeps CRLF line endings - the live kg config is CRLF', () => {
+    const crlf = HANDLES.replace(/\n/g, '\r\n');
+    const out = spliceYamlSeqAppend(crlf, ['agents', 'egpt', 'handles'], { expect: ['d', 'don'], add: 'rodz' });
+    expect(out).toBe(crlf.replace('[ d, don ]', '[ d, don, rodz ]'));
+  });
+
+  it('renders the new item in the style of the item before it', () => {
+    const quoted = 'handles: [ "d", "don" ]\n';
+    expect(spliceYamlSeqAppend(quoted, ['handles'], { expect: ['d', 'don'], add: 'rodz' })).toBe('handles: [ "d", "don", "rodz" ]\n');
+    const one = 'handles: [ don ]\n';
+    expect(spliceYamlSeqAppend(one, ['handles'], { expect: ['don'], add: 'rodz' })).toBe('handles: [ don, rodz ]\n');
+  });
+
+  it('a list spread over more than one line grows at its last item, not at its bracket', () => {
+    const wrapped = 'handles: [ alpha,\n  bravo ]\n';
+    expect(spliceYamlSeqAppend(wrapped, ['handles'], { expect: ['alpha', 'bravo'], add: 'rodz' })).toBe('handles: [ alpha,\n  bravo, rodz ]\n');
+  });
+
+  it('REFUSES by name when the list is not what the caller expects - never appended to twice', () => {
+    expect(() => spliceYamlSeqAppend(HANDLES, ['agents', 'egpt', 'handles'], { expect: ['d'], add: 'rodz' }))
+      .toThrow(/refusing to edit agents\.egpt\.handles: expected \["d"\], found \["d","don"\]/);
+    const already = HANDLES.replace('[ d, don ]', '[ d, don, rodz ]');
+    expect(() => spliceYamlSeqAppend(already, ['agents', 'egpt', 'handles'], { expect: ['d', 'don'], add: 'rodz' }))
+      .toThrow(YamlSpliceRefusal);
+  });
+
+  it('refuses a BLOCK list, an absent path, and a path that is not a sequence', () => {
+    const block = 'handles:\n  - d\n  - don\n';
+    expect(() => spliceYamlSeqAppend(block, ['handles'], { expect: ['d', 'don'], add: 'rodz' }))
+      .toThrow(/it is a block list; only an inline flow list is appended to/);
+    expect(() => spliceYamlSeqAppend(HANDLES, ['agents', 'ken', 'handles'], { expect: [], add: 'x' }))
+      .toThrow(/refusing to edit agents\.ken\.handles: there is no such node/);
+    expect(() => spliceYamlSeqAppend(HANDLES, ['agents', 'egpt'], { expect: {}, add: 'x' }))
+      .toThrow(/refusing to edit agents\.egpt: it is a YAMLMap, not a sequence/);
+  });
+
+  it('refuses an empty list and a list whose last item is not a scalar', () => {
+    expect(() => spliceYamlSeqAppend('handles: []\n', ['handles'], { expect: [], add: 'rodz' }))
+      .toThrow(/it is empty, so there is no item to append after/);
+    expect(() => spliceYamlSeqAppend('handles: [ { a: 1 } ]\n', ['handles'], { expect: [{ a: 1 }], add: 'rodz' }))
+      .toThrow(/its last item is a YAMLMap, not a scalar/);
+  });
+
+  it('refuses a plain item that would re-parse as something else, rather than silently quoting it', () => {
+    expect(() => spliceYamlSeqAppend('handles: [ d, don ]\n', ['handles'], { expect: ['d', 'don'], add: 'a, b' }))
+      .toThrow(/does not re-parse to the intended change alone/);
+  });
+
+  it('refuses YAML that does not parse', () => {
+    expect(() => spliceYamlSeqAppend('a: [1, 2\n', ['a'], { expect: [1, 2], add: 3 })).toThrow(/does not parse/);
   });
 });

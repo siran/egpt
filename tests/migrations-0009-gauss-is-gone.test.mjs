@@ -232,7 +232,8 @@ describe('0009 through the runner', () => {
     expect(exitCode).toBe(0);
     const ledger = JSON.parse(readFileSync(join(h, 'state', 'migrations-applied.json'), 'utf8'));
     expect(ledger['0009-gauss-is-gone'].outcome).toBe('already-satisfied');
-    expect(readFileSync(cfgPath(h), 'utf8')).toBe(DO);
-    expect(readdirSync(join(h, 'config')).sort()).toEqual(['agents', 'config.yaml']);
+    // 0020, later in the chain, hands do's persona the `rodz` handle. What 0009 itself left is nothing.
+    expect(readFileSync(cfgPath(h), 'utf8')).toBe(DO.replace('[ d, don ]', '[ d, don, rodz ]'));
+    expect(readdirSync(join(h, 'config')).filter((f) => f.includes('.bak-0009-'))).toEqual([]);
   });
 });

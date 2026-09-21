@@ -388,6 +388,45 @@ export function spliceYamlInsertKey(src, mapPath, { key, text, after = null }) {
   return verifySplice(src.slice(0, at) + lead + lines.join(nl) + nl + src.slice(at), expected, label);
 }
 
+// ─── THE APPEND: add ONE item to the end of an inline flow list ──────────────────────────────
+//
+// `handles: [ d, don ]` grows by one token. That is neither a range to REPLACE (the list is longer
+// than it was) nor a KEY to insert, so none of the four splices above can express it. The way
+// around it - remove the key and re-insert it carrying the new list - would make the CALLER re-type
+// the operator's comment lines above that key, which is the one thing this layer exists to never
+// do; so the append is its own splice rather than a caller's workaround.
+//
+// It is still ONE edit and nothing is re-emitted: the item's text goes in just past the last item's
+// last content character, so `[ d, don ] # comment` becomes `[ d, don, rodz ] # comment` with the
+// brackets, the spacing and the comment untouched. `expect` is the list as it must read NOW
+// (deep-equal), so a list a hand edit has changed - or one already carrying this item - is refused
+// by name rather than appended to twice. The new item is rendered in the SAME scalar style as the
+// item before it, and the result must re-parse to the document with exactly that one item more.
+//
+// FLOW ONLY. A BLOCK list's item is a whole line with its own indent and its own comment lines -
+// that is the different question spliceYamlInsertKey answers for a mapping, and nothing needs it
+// for a sequence yet. A block list is refused by name, not guessed at.
+export function spliceYamlSeqAppend(src, path, { expect, add }) {
+  const label = pathLabel(path);
+  const doc = parseForSplice(src, label);
+  const node = doc.getIn(path, true);
+  if (node === undefined) throw new YamlSpliceRefusal(`refusing to edit ${label}: there is no such node`);
+  if (!YAML.isSeq(node)) throw new YamlSpliceRefusal(`refusing to edit ${label}: it is a ${node?.constructor?.name ?? typeof node}, not a sequence`);
+  if (!node.flow) throw new YamlSpliceRefusal(`refusing to edit ${label}: it is a block list; only an inline flow list is appended to`);
+  const last = node.items[node.items.length - 1];
+  if (!last) throw new YamlSpliceRefusal(`refusing to edit ${label}: it is empty, so there is no item to append after`);
+  if (!YAML.isScalar(last)) throw new YamlSpliceRefusal(`refusing to edit ${label}: its last item is a ${last?.constructor?.name ?? typeof last}, not a scalar`);
+  const current = node.toJSON();
+  if (!isDeepStrictEqual(current, expect)) {
+    throw new YamlSpliceRefusal(`refusing to edit ${label}: expected ${JSON.stringify(expect)}, found ${JSON.stringify(current)}`);
+  }
+  const text = renderLike(last, add, label);
+  const at = last.range[1];
+  const expected = doc.toJS();
+  path.reduce((o, k) => o[k], expected).push(add);
+  return verifySplice(`${src.slice(0, at)}, ${text}${src.slice(at)}`, expected, label);
+}
+
 // Per-sibling files live under ~/.egpt/config/agents/<name>.yaml (operator 2026-06-23).
 // Loaded at boot + merged into EGPT_CONFIG.siblings — every reader uses that unchanged.
 export const AGENT_DIR = join(EGPT_HOME, 'config', 'agents');

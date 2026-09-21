@@ -275,7 +275,13 @@ describe('0016 through the runner', () => {
     const { exitCode } = await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(ledger(h)).toBe('applied');
-    expect(readFileSync(cfgPath(h), 'utf8')).toBe(DO_AFTER);
+    // 0019 then REMOVES the being 0016 just promoted ("dron needs not to exist") and 0020 hands do's
+    // persona the `rodz` handle, so what is left of 0016 at the end of the chain is the ledger entry
+    // and its own backup - the promoted block itself is gone with the being.
+    expect(readFileSync(cfgPath(h), 'utf8')).toBe(crlf(DO_LINES.slice(0, 12)).replace('[ d, don ]', '[ d, don, rodz ]'));
+    // 0019's own backup is what 0016 wrote, byte for byte - the proof both of its edits landed.
+    const bak0019 = readdirSync(join(h, 'config')).find((f) => f.startsWith('config.yaml.bak-0019-'));
+    expect(readFileSync(join(h, 'config', bak0019), 'utf8')).toBe(DO_AFTER);
     expect(readdirSync(join(h, 'config')).filter((f) => f.startsWith('config.yaml.bak-0016-'))).toHaveLength(1);
   });
 
