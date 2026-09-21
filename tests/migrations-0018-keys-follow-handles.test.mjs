@@ -187,7 +187,7 @@ const ROOM = {
 const ROOM_ENTRIES = ['directives', 'files', 'identity.d', 'media', 'scripts', 'transcript.md', 'transcripts'];
 
 // ── kg: nothing here answers to don / den / dren ─────────────────────────────────────────────────
-const KG = crlf([
+const KG_LINES = [
   '# config.yaml - kg (fixture)',
   'node_name: kg',
   'agents:',
@@ -212,7 +212,8 @@ const KG = crlf([
   '  rodz:',
   '    configuration: sonnet-high',
   '    handles: [ rodz ]',
-]);
+];
+const KG = crlf(KG_LINES);
 // kg has the same SHAPES in the same files - it is left alone because of the handles, not because
 // there is nothing here to move.
 const KG_CONV = crlf([
@@ -566,7 +567,9 @@ describe('0018 through the runner', () => {
     const { exitCode } = await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(ledger(h)).toBe('applied');
-    expect(readFileSync(cfgPath(h), 'utf8')).toBe(DO_AFTER);
+    // 0020 runs later in the same chain and hands the being answering `don` the `rodz` handle -
+    // not 0018's doing, and the only difference between the chain's end state and 0018's own.
+    expect(readFileSync(cfgPath(h), 'utf8')).toBe(DO_AFTER.replace('[ d, don ]', '[ d, don, rodz ]'));
     expect(readFileSync(convPath(h), 'utf8')).toBe(DO_CONV_AFTER);
     expect(readFileSync(roomsPath(h), 'utf8')).toBe(DO_ROOMS_AFTER);
     expect(readFileSync(agentsPath(h), 'utf8')).toBe(DO_AGENTS_AFTER);
@@ -581,9 +584,13 @@ describe('0018 through the runner', () => {
     const { exitCode } = await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(ledger(h)).toBe('already-satisfied');
-    expect(readFileSync(cfgPath(h), 'utf8')).toBe(KG);
+    // 0020 runs later and evicts kg's `rodz` being - the mouth is an account, not a being - which
+    // is the last block of this fixture (the blank line above it stays - a removal takes the key's
+    // own lines, not its neighbour's). Everything else kg has is untouched by the whole chain, and
+    // 0018 itself left no backup.
+    expect(readFileSync(cfgPath(h), 'utf8')).toBe(crlf(KG_LINES.slice(0, -3)));
     expect(readFileSync(convPath(h), 'utf8')).toBe(KG_CONV);
     expect(readFileSync(agentsPath(h), 'utf8')).toBe(KG_AGENTS);
-    expect(baks(h)).toEqual([]);
+    expect(baks(h).filter((f) => f.includes('.bak-0018-'))).toEqual([]);
   });
 });

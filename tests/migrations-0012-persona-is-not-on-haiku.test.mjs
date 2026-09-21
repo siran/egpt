@@ -230,9 +230,9 @@ describe('0012 through the runner', () => {
     const { exitCode } = await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(ledger(h)).toBe('applied');
-    // 0018 runs later in the same chain and keys this fixture's persona by its handle (`don`), so
-    // the chain leaves that rename on top of 0012's own one-line edit.
-    expect(readFileSync(cfgPath(h), 'utf8')).toBe(DO_AFTER.replace('  egpt:', '  don:'));
+    // 0018 keys do's persona by its handle (`don`) and 0020 hands it `rodz`, both later in the
+    // chain, so both land on top of 0012's own one-line edit.
+    expect(readFileSync(cfgPath(h), 'utf8')).toBe(DO_AFTER.replace('  egpt:', '  don:').replace('[ d, don ]', '[ d, don, rodz ]'));
     expect(readdirSync(join(h, 'config')).filter((f) => f.startsWith('config.yaml.bak-0012-'))).toHaveLength(1);
   });
 
