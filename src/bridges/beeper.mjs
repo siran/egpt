@@ -59,7 +59,7 @@ import { makeWrapPersona } from './persona-wrap.mjs';
 import { stripNodeSignature, decodeNodeSignature, decodeBeingSignature } from '../node-signature.mjs';
 import { reactionAction, editAction, isLiveStreamFrame } from '../dispatch-line.mjs';
 import { bodyForMessageId } from '../transcript-log.mjs';
-import { mentionStatus } from '../auto-mode.mjs';
+import { mentionStatus, mentionHits } from '../auto-mode.mjs';
 import { mediaKind } from '../media-kind.mjs';
 import { shouldDownload } from '../media-save.mjs';
 import { relMediaPath } from '../media-path.mjs';
@@ -940,6 +940,76 @@ export async function startBeeperBridge(opts = {}) {
     return text.replace(MENTION_ANCHOR_G, (whole, name, id) => (ours.has(idKey(id)) ? `@${name.replace(/^@+/, '')}` : whole));
   }
 
+  // ── `@Nombre` ON THE WAY OUT IS A REAL MENTION (operator 2026-09-21) ────────────────────────
+  // THE OUTBOUND TWIN of mouthMentionsAsAddresses above, over the SAME anchor. Measured live
+  // 2026-09-16 from the Rodz account: posting the plain text `[Nombre](https://matrix.to/#/<id>)`
+  // IS the mention — WhatsApp resolved it and the recipient's copy came back carrying
+  // `mentions: ["@anrodriguez:beeper.com"]`. So nothing new is SENT here: no field on the body,
+  // no second send path, sendMessage still posts `{ text }`.
+  //
+  // WHAT WAS MISSING WAS THE ID, not the mechanism. The id that works is the person AS THE
+  // SENDING ACCOUNT SEES THEM — the same human has a different id per account (see THE
+  // CROSS-ACCOUNT CHAT KEY above) — so a being cannot be handed one to copy, and putting rosters
+  // of raw ids in a model's context was refused. It writes `@Nombre`; this resolves that name
+  // against the roster OF THE CHAT IT IS POSTING TO, which is by construction that account's own
+  // view, so the id is the right one without anyone choosing it.
+  //
+  // WHO IS ADDRESSED IS mentionHits' QUESTION (src/auto-mode.mjs) — the SAME matcher the wake gate
+  // runs, here with the ROSTER's names as its token list instead of the wake words. That buys, all
+  // already-decided: '@' only after start-or-whitespace (so an email, a `…/@user` URL and the
+  // `#/@id` inside an anchor that is ALREADY a mention are untouched — and so is the `[@Name](…)`
+  // form, whose '@' follows a bracket), the same `\p{L}\p{N}` boundary, code spans stripped, and
+  // longest-token-first, which is what lets a two-word roster name match ahead of its first word.
+  //
+  // NEVER GUESS A PERSON — wrong-person is the one failure this must not have. A UNIQUE match
+  // converts; everything else stays exactly the literal text the being wrote:
+  //   · no roster (participantItems → null is UNKNOWN, the reading chatHasParticipant documents),
+  //   · two members answering to one name (two "Daniel"),
+  //   · a name this node itself wakes on — `@e` in a chat that also holds a human named "E"
+  //     addresses the BEING, the mirror of the rule mouthMentionsAsAddresses states above.
+  // An EXACT full-name match beats a first-word one, so "@Ana" is Ana even when "Ana María" is in
+  // the room too; two members in the SAME tier is ambiguous, logged, and left alone (§2: no silent
+  // fallback). No match at all is silent on purpose — every `@handle` a being writes is one.
+  const _nameKey = (v) => String(v ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
+  async function rosterNamesAsMentions(text, chatID) {
+    const s = String(text);
+    // Cheap gate, and the reason this costs nothing on the common path: a line with no `@name` in
+    // it never reads a roster at all. When there IS one, chatRaw serves it from the SAME cache and
+    // the SAME freshness rule chatHasParticipant uses — the arrival path has already paid for that
+    // GET in any chat we are replying in.
+    if (!/(^|\s)@\p{L}/u.test(s)) return s;
+    const items = participantItems(await chatRaw(chatID));
+    if (!items) { onLog(`beeper: an '@name' in this send stays plain text [${chatID}] — no roster in the chat payload, so a mention cannot be resolved`); return s; }
+    const exact = new Map(), first = new Map();   // name -> Set(participant id, as THIS account sees them)
+    for (const p of items) {
+      const name = _nameKey(p?.fullName);
+      const id = String(p?.id ?? '').trim();
+      if (!name || !id) continue;
+      for (const [m, k] of [[exact, name], [first, name.split(' ')[0]]]) {
+        if (m === first && k === name) continue;   // single-word name: the first word IS the name
+        if (!m.has(k)) m.set(k, new Set());
+        m.get(k).add(id);
+      }
+    }
+    if (!exact.size) return s;
+    const handles = new Set([...wakeWords, ...replyWake, ...voiceWakeWords].map(_nameKey));
+    const ids = new Map();   // the token as mentionHits lowercased it -> the ONE id it names
+    for (const { token } of mentionHits(s, [...exact.keys(), ...first.keys()], { addressWithoutAt: false })) {
+      if (ids.has(token)) continue;
+      const hit = exact.get(token) ?? first.get(token);
+      if (!hit) continue;
+      if (handles.has(token)) { onLog(`beeper: "@${token}" stays plain text [${chatID}] — this node wakes on that handle, so it addresses a being, not the member of this chat who is also called that`); continue; }
+      if (hit.size > 1) { onLog(`beeper: "@${token}" stays plain text [${chatID}] — ${hit.size} members of this chat answer to that name; a mention must not guess which`); continue; }
+      ids.set(token, [...hit][0]);
+    }
+    if (!ids.size) return s;
+    const alt = [...ids.keys()].sort((a, b) => b.length - a.length).map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+    return s.replace(new RegExp(`(^|\\s)@(${alt})(?![\\p{L}\\p{N}_-])`, 'giu'), (whole, lead, name) => {
+      const id = ids.get(_nameKey(name));
+      return id ? `${lead}[${name}](https://matrix.to/#/${id})` : whole;
+    });
+  }
+
   // GET /v1/chats is CURSOR-PAGINATED (verified live 2026-07-25). One page is 25 items
   // ordered by recent activity — `?limit=100`/`500` are IGNORED — plus { hasMore,
   // oldestCursor, newestCursor }; the next page is `?cursor=<previous oldestCursor>`.
@@ -1325,9 +1395,15 @@ export async function startBeeperBridge(opts = {}) {
     const chatID = await resolveChatId(chatIdOrName);
     if (!chatID || !text) { onLog(`beeper: send DROPPED — chat=${JSON.stringify(chatIdOrName)} resolved=${chatID} textLen=${(text || '').length}`); return null; }
     try {
-      const body = { text: String(text) };
+      // `@Nombre` -> a real mention, resolved against THIS chat's roster (rosterNamesAsMentions,
+      // above). Here rather than in any caller, so /reply, a media caption's sibling text, a node
+      // line and src/spine/sender.mjs all get it without one of them knowing about it. The
+      // CONVERTED text is also what postAndConfirm matches on: _matchKey collapses `[t](url)` to
+      // `t` on both sides, so matching the pre-conversion text would never find our own send and
+      // every mention-carrying message would log SEND ID UNCONFIRMED.
+      const body = { text: await rosterNamesAsMentions(text, chatID) };
       if (replyToMessageID) body.replyToMessageID = String(replyToMessageID);
-      const { r, confirmedId } = await postAndConfirm(chatID, body, String(text));
+      const { r, confirmedId } = await postAndConfirm(chatID, body, body.text);
       return { ok: true, chatId: chatID, pendingMessageID: r?.pendingMessageID, confirmedId };
     } catch (e) { onLog(`beeper: send failed [${chatID}] — ${e?.message ?? e}`); return null; }
   }
@@ -1339,7 +1415,10 @@ export async function startBeeperBridge(opts = {}) {
   // the confirmed id is resolved separately (resolveSentMessageId).
   async function editMessage(chatID, messageID, text) {
     if (!chatID || !messageID || !text) return false;
-    try { await api('PUT', `/v1/chats/${encodeURIComponent(fullChatId(chatID))}/messages/${encodeURIComponent(messageID)}`, { text: String(text) }); return true; }
+    // An edit RE-SENDS the text, so it runs the same `@Nombre` conversion — otherwise a streamed
+    // reply would lose the mention the moment its final frame landed (every frame after the
+    // placeholder arrives here, not at sendMessage).
+    try { await api('PUT', `/v1/chats/${encodeURIComponent(fullChatId(chatID))}/messages/${encodeURIComponent(messageID)}`, { text: await rosterNamesAsMentions(text, chatID) }); return true; }
     catch (e) { onLog(`beeper: edit failed [${chatID}/${messageID}] — ${e?.message ?? e}`); return false; }
   }
   async function deleteMessage(chatID, messageID) {

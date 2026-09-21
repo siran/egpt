@@ -1976,6 +1976,121 @@ describe('beeper bridge — a picker @-mention addresses only when it names the 
   });
 });
 
+// ── THE OUTBOUND TWIN: A BEING WRITES `@Nombre`, THE BRIDGE SENDS A REAL MENTION (2026-09-21) ──
+// Measured live 2026-09-16 from the Rodz account: the plain text `[Nombre](https://matrix.to/#/<id>)`
+// IS the mention — WhatsApp resolved it and the recipient's copy came back with `mentions: [...]`.
+// So there is no new send mechanism to test; what is tested is the RESOLUTION — that the id put in
+// the anchor is the roster's, for the chat being POSTED TO (the sending account's own view of that
+// human), and that anything short of a unique match is left as the literal text the being wrote.
+describe('beeper bridge — an outbound `@Nombre` leaves as a real mention of that chat member', () => {
+  const FAVEL = '@whatsapp_lid-100000000000001:beeper.local';   // Favel, AS THIS ACCOUNT SEES HER
+  const ROGER = '@whatsapp_lid-100000000000002:beeper.local';   // a two-word roster name
+  const DAN_A = '@whatsapp_lid-100000000000003:beeper.local';   // two members, one name…
+  const DAN_B = '@whatsapp_lid-100000000000004:beeper.local';   // …the "two Daniels" case
+  const HUMAN_E = '@whatsapp_lid-100000000000005:beeper.local'; // a human whose name IS a handle this node wakes on
+  const GRP = CHAT('familia');
+  const ROSTER = { items: [
+    { id: '@anrodriguez:beeper.com', isSelf: true },            // the viewing account — no phone, no fullName, as live
+    { id: FAVEL, phoneNumber: '+15550001111', fullName: 'Favel' },
+    { id: ROGER, phoneNumber: '+15550002222', fullName: 'Roger Vzla' },
+    { id: DAN_A, phoneNumber: '+15550003333', fullName: 'Daniel' },
+    { id: DAN_B, phoneNumber: '+15550004444', fullName: 'Daniel' },
+    { id: HUMAN_E, phoneNumber: '+15550005555', fullName: 'E' },
+  ] };
+  let logs;
+  beforeEach(() => {
+    logs = [];
+    fake.chats.set(GRP, { title: 'Familia', type: 'group', isMuted: false, accountID: 'whatsapp', participants: ROSTER });
+  });
+  const start = () => startBridge({ onLog: (m) => logs.push(m) });
+  // What actually went over the wire, through the REAL send path (no private entry point).
+  const sent = async (text, chatId = GRP) => {
+    const { bridge } = await start();
+    await sendSettled(bridge, text, { chatId });
+    return fake.posts.at(-1).text;
+  };
+
+  it('a UNIQUE roster name converts, carrying that member\'s id — and the send still confirms its own id', async () => {
+    const { bridge } = await start();
+    const r = await sendSettled(bridge, 'gracias @Favel 🙏', { chatId: GRP });
+    expect(fake.posts.at(-1).text).toBe(`gracias [Favel](https://matrix.to/#/${FAVEL}) 🙏`);
+    // The confirmed-id resolution matches on what was SENT: _matchKey collapses `[t](url)`→`t` on
+    // both sides, so a mention-carrying send is still recognized as ours (no SEND ID UNCONFIRMED).
+    expect(await r.confirmedId).toBe(fake.posts.at(-1).confirmedID);
+  });
+
+  it('the match is case-insensitive, and the text the being typed is what stays visible', async () => {
+    expect(await sent('@favel ya vienes?')).toBe(`[favel](https://matrix.to/#/${FAVEL}) ya vienes?`);
+  });
+
+  it('a two-word roster name matches whole, and its FIRST WORD alone matches it too', async () => {
+    expect(await sent('@Roger Vzla pilla esto')).toBe(`[Roger Vzla](https://matrix.to/#/${ROGER}) pilla esto`);
+    expect(await sent('@Roger pilla esto')).toBe(`[Roger](https://matrix.to/#/${ROGER}) pilla esto`);
+  });
+
+  it('NO MATCH is left exactly as typed — nobody in this chat is called that', async () => {
+    expect(await sent('@Mariana no está aquí')).toBe('@Mariana no está aquí');
+  });
+
+  it('AMBIGUOUS (two Daniels) is left as typed and SAID OUT LOUD — a mention must never guess a person', async () => {
+    expect(await sent('@Daniel ven')).toBe('@Daniel ven');
+    expect(logs.join('\n')).toMatch(/"@daniel" stays plain text .*2 members/);
+  });
+
+  it('NO ROSTER is UNKNOWN, not "nobody": left as typed and logged', async () => {
+    fake.chats.set(CHAT('sinroster'), { title: 'Sin roster', type: 'group', isMuted: false, accountID: 'whatsapp' });
+    expect(await sent('@Favel hola', CHAT('sinroster'))).toBe('@Favel hola');
+    expect(logs.join('\n')).toMatch(/no roster in the chat payload/);
+  });
+
+  it('a name this node WAKES ON addresses the being, never the human of that name in the chat', async () => {
+    expect(await sent('@e responde tú')).toBe('@e responde tú');   // wakeWords default ['e','egpt']; "E" is also a human here
+    expect(logs.join('\n')).toMatch(/"@e" stays plain text .*wakes on that handle/);
+  });
+
+  it('text that is ALREADY an anchor passes through untouched — in both forms, never double-converted', async () => {
+    const already = `mira [Favel](https://matrix.to/#/${FAVEL}) y [@Favel](https://matrix.to/#/${FAVEL})`;
+    expect(await sent(already)).toBe(already);
+  });
+
+  it('an `@` that is not a mention is not touched: email, `@here`, a URL path', async () => {
+    const line = 'escríbele a favel@casa.com — @here no aplica — https://ejemplo.com/@Favel';
+    expect(await sent(line)).toBe(line);
+  });
+
+  it('a code span / fence is left alone (mentionHits strips code before it answers)', async () => {
+    expect(await sent('usa `@Favel` así')).toBe('usa `@Favel` así');
+    expect(await sent('```\n@Favel\n```')).toBe('```\n@Favel\n```');
+  });
+
+  it('THE ID IS THE ONE FROM THE ROSTER OF THE CHAT BEING POSTED TO — the sending account\'s view, not another', async () => {
+    // The SAME human, seen under a DIFFERENT id in a second chat (which is what a per-account
+    // namespace does). Posting into that chat must use THAT chat's id, with nobody choosing it.
+    const FAVEL_OTRA = '@whatsapp_lid-999999999999999:beeper.local';
+    fake.chats.set(CHAT('otra'), { title: 'Otra', type: 'group', isMuted: false, accountID: 'whatsapp',
+      participants: { items: [{ id: '@anrodriguez:beeper.com', isSelf: true }, { id: FAVEL_OTRA, phoneNumber: '+15550001111', fullName: 'Favel' }] } });
+    expect(await sent('@Favel aquí', CHAT('otra'))).toBe(`[Favel](https://matrix.to/#/${FAVEL_OTRA}) aquí`);
+    expect(await sent('@Favel allá', GRP)).toBe(`[Favel](https://matrix.to/#/${FAVEL}) allá`);
+  });
+
+  it('an EDIT re-sends the text, so it converts the same way — a streamed reply cannot lose its mention', async () => {
+    const { bridge } = await start();
+    expect(await bridge.editMessage(GRP, 'm-77', 'ya casi @Favel')).toBe(true);
+    expect(fake.edits.at(-1).text).toBe(`ya casi [Favel](https://matrix.to/#/${FAVEL})`);
+  });
+
+  it('a line with no `@name` in it never reads the roster — no new network call on the common path', async () => {
+    const { bridge } = await start();
+    const before = fake.chatGets.length;
+    await sendSettled(bridge, 'listo, nos vemos', { chatId: GRP });
+    expect(fake.chatGets.length).toBe(before);
+    await sendSettled(bridge, 'gracias @Favel', { chatId: GRP });          // …and the one that does pays ONE GET,
+    expect(fake.chatGets.length).toBe(before + 1);
+    await sendSettled(bridge, 'otra vez @Favel', { chatId: GRP });          // …cached from then on (chatRaw's TTL)
+    expect(fake.chatGets.length).toBe(before + 1);
+  });
+});
+
 // SPOKEN wake alias (operator 2026-08-09; narrowed to the START 2026-09-09): voiceWakeWords gates
 // a voice note's whisper TRANSCRIPT via mentionStatus' `voiceWake` — the SAME matcher as an
 // @handle, counted only where a bare handle counts, at the START of the transcript, never '@'.
