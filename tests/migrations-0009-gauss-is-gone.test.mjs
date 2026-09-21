@@ -232,7 +232,10 @@ describe('0009 through the runner', () => {
     expect(exitCode).toBe(0);
     const ledger = JSON.parse(readFileSync(join(h, 'state', 'migrations-applied.json'), 'utf8'));
     expect(ledger['0009-gauss-is-gone'].outcome).toBe('already-satisfied');
-    expect(readFileSync(cfgPath(h), 'utf8')).toBe(DO);
-    expect(readdirSync(join(h, 'config')).sort()).toEqual(['agents', 'config.yaml']);
+    // 0018 runs later in the same chain and keys this fixture's persona by its handle (`don`), so
+    // the config comes back renamed with a 0018 backup beside it. Neither is 0009's doing: what is
+    // asserted here is that 0009 itself left no mark.
+    expect(readFileSync(cfgPath(h), 'utf8')).toBe(DO.replace('  egpt:', '  don:'));
+    expect(readdirSync(join(h, 'config')).sort().filter((f) => !f.startsWith('config.yaml.bak-0018-'))).toEqual(['agents', 'config.yaml']);
   });
 });

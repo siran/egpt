@@ -275,7 +275,10 @@ describe('0016 through the runner', () => {
     const { exitCode } = await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(ledger(h)).toBe('applied');
-    expect(readFileSync(cfgPath(h), 'utf8')).toBe(DO_AFTER);
+    // 0018 runs later in the same chain and keys this fixture's persona by its handle (`don`), so
+    // the chain leaves that rename on top of 0016's two edits. `rodz` answers to `dron`, which is
+    // not one of 0018's three handles, so it keeps its key.
+    expect(readFileSync(cfgPath(h), 'utf8')).toBe(DO_AFTER.replace('  egpt:', '  don:'));
     expect(readdirSync(join(h, 'config')).filter((f) => f.startsWith('config.yaml.bak-0016-'))).toHaveLength(1);
   });
 
