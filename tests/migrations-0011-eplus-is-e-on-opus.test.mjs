@@ -268,10 +268,10 @@ describe('0011 through the runner', () => {
     const { exitCode } = await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(JSON.parse(readFileSync(join(h, 'state', 'migrations-applied.json'), 'utf8'))['0011-eplus-is-e-on-opus'].outcome).toBe('already-satisfied');
-    // 0018 runs later in the same chain and keys this fixture's persona by its handle (`don`), so
-    // the config comes back renamed with a 0018 backup beside it - neither is 0011's doing.
-    expect(readFileSync(cfgPath(h), 'utf8')).toBe(DO.replace('  egpt:', '  don:'));
-    expect(readdirSync(join(h, 'config')).filter((f) => f.includes('.bak-') && !f.startsWith('config.yaml.bak-0018-'))).toEqual([]);
+    // 0018 keys do's persona by its handle (`don`) and 0020 hands it `rodz`, both later in the same
+    // chain and each with its own backup. What is asserted here is that 0011 left no mark.
+    expect(readFileSync(cfgPath(h), 'utf8')).toBe(DO.replace('  egpt:', '  don:').replace('[ d, don ]', '[ d, don, rodz ]'));
+    expect(readdirSync(join(h, 'config')).filter((f) => f.includes('.bak-0011-'))).toEqual([]);
     expect(existsSync(join(h, 'config', 'agents', 'opus-high.yaml'))).toBe(false);
   });
 });

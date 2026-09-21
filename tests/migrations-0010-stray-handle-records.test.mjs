@@ -215,8 +215,9 @@ describe('0010 through the runner', () => {
     expect(exitCode).toBe(0);
     const ledger = JSON.parse(readFileSync(join(h, 'state', 'migrations-applied.json'), 'utf8'));
     expect(ledger['0010-stray-handle-records'].outcome).toBe('already-satisfied');
-    // 0018 runs later in the same chain and keys this fixture's persona by its handle (`don`),
-    // leaving its own backup beside the config. What is asserted here is that 0010 left no mark.
-    expect(readdirSync(join(h, 'config')).sort().filter((f) => !f.startsWith('config.yaml.bak-0018-'))).toEqual(['config.yaml']);
+    // 0018 and 0020 both act on this fixture later in the chain (the key rename, then the `rodz`
+    // handle), each leaving its own backup. What is asserted here is that 0010 left no mark.
+    expect(readdirSync(join(h, 'config')).filter((f) => !f.includes('.bak-')).sort()).toEqual(['config.yaml']);
+    expect(readdirSync(join(h, 'config')).filter((f) => f.includes('.bak-0010-'))).toEqual([]);
   });
 });
