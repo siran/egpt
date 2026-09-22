@@ -92,7 +92,11 @@ describe('ONE owner of the Room tree — both creation paths make the SAME tree'
     // given). It is here rather than in the sandbox pool profile because that profile is
     // scratch and is wiped on every lease; the conversation folder is the being's cwd and
     // the one place it can durably write.
-    expect(treeOf(named.mkdirs, ROOM())).toEqual(['', 'desktop', 'directives', 'files', 'media', 'scripts', 'transcripts']);
+    // outbox/ joined on 2026-09-22 — what the being hands OUT. It is created eagerly for the
+    // same reason desktop/ is, and with one more: the drain (src/room-outbox.mjs) deliberately
+    // creates nothing at all, so a being confined to this folder would have no way to make the
+    // one folder the feature is addressed at.
+    expect(treeOf(named.mkdirs, ROOM())).toEqual(['', 'desktop', 'directives', 'files', 'media', 'outbox', 'scripts', 'transcripts']);
   });
 
   // (The pointers card naming these folders is guarded in tests/pointers.test.mjs, which

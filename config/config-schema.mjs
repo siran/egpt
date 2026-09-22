@@ -1971,6 +1971,60 @@ export const CONFIG_SCHEMA = {
     group at all (setup/SANDBOX.md).
   `,
 
+  outbox_targets: `
+    THE APPROVED DESTINATIONS a room's outbox/ may be drained to (operator
+    2026-09-22: "we have to configure a map: acim-drive -> G:/My Drive/
+    jose-lorenzo/ACIM-ES.v2 ... key -> path/ per conversation, configured by
+    meta engineer or by hand"). A map of NAME -> absolute path.
+
+      DEFAULT: unset - no conversation can drain anywhere, which is the
+      behaviour before this key existed. There is NO default destination.
+
+      outbox_targets:
+        acim-drive: G:/My Drive/jose-lorenzo/ACIM-ES.v2
+
+    WHY IT EXISTS. A sandboxed being runs as a leased pool account, and the
+    folder it was asked to deliver to can be absent from that account's world
+    entirely - measured 2026-09-22: a FAT32 volume (no ACL exists to grant)
+    whose drive letter lives in the operator's own session (GoogleDriveFS.exe
+    runs as the logged-in user), so the pool account has no G: at all. There
+    was no permission to grant, so the copy moved to the side that already has
+    one: the being writes files into its room's own outbox/ (src/room-core.mjs
+    - part of the Room tree, so every room and conversation has one) and the
+    SPINE, running as the operator, drains it (src/room-outbox.mjs).
+
+    THIS MAP IS THE ONLY PLACE A PATH IS EVER WRITTEN, and that is the whole
+    point of it. A conversation SELECTS a target by name -
+    outbox_to: <key> on the room's per-being block in config/rooms.yaml (see
+    agents above; same rung compaction uses) - and the key is used as a LOOKUP
+    and nothing else: it never contributes a fragment, a suffix or a '..' to
+    the answer. With a raw path there, anything able to write a conversation
+    record could name any directory on this disk; with a key it can only
+    choose among the folders named here, and an unrecognised name resolves to
+    nothing rather than to a traversal.
+
+      unset outbox_to        the feature is off for that conversation
+      unknown key            the drain does not run AND says so, naming the
+                             key - a typo must be visible, not mysterious
+      known key              drained to EXACTLY the path written here
+
+    SIBLING OF allowed_paths BELOW, deliberately: one place the node grants a
+    folder, one place to revoke it.
+
+    THE KEY IS WHAT THE CHAT IS TOLD; THE PATH GOES IN THE LOG (operator
+    2026-09-22). A room can hold people who are not the operator - the first
+    room this ships to has an invited WhatsApp group in it - so a line there
+    says "delivered 3 files to \`acim-drive\`" and never where that is on disk.
+    The spine log carries the resolved path, the per-file detail and the whole
+    error, for every drain including the boot sweep.
+
+    THE PATH IS NEVER CREATED. A target that is missing, is not a directory or
+    cannot be written refuses the WHOLE drain and names itself; nothing moves.
+    Files are moved (not copied) one level, files only - a directory, symlink
+    or junction in an outbox is skipped, never followed - and a name already
+    present at the destination is never overwritten.
+  `,
+
   sandbox_oauth_token: `
     The Claude credential a SANDBOXED turn runs on (operator 2026-09-05) - a
     long-lived OAuth token from "claude setup-token", i.e. the operator's own

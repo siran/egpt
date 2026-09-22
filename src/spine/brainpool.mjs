@@ -31,6 +31,10 @@ import { slugDir, getBeing, recordThread, patchBeing, readIdentityFeed, seedIden
 // CONDITIONAL fallback_handle, exactly as the mention matcher resolves them, so what the card
 // tells an agent it answers to can never drift from what actually wakes it (feedConfig below).
 import { Room } from '../room-core.mjs';
+// WHICH APPROVED TARGET a room's outbox/ is drained to, resolved by the ONE owner of that walk
+// (the boot sweep is the other reader) — see src/room-outbox.mjs. The conversation names a KEY;
+// only config.yaml's `outbox_targets:` map ever holds a path.
+import { resolveOutboxTarget } from '../room-outbox.mjs';
 import { isContextOverflowError, isDeadSessionError } from '../brain-errors.mjs';
 import { parseFrequency } from './heartbeat-loader.mjs';
 import { WRITE_TOOLS } from '../claude-args.mjs';
@@ -542,7 +546,7 @@ export function createBrainPool({
   seedLayers = seedIdentityLayers,  // (room, personality, {io}) -> copy the SHARED fed layers into <room>/directives
   loadAutoLayer = readAutoModeLayer,// () -> the `mode: auto` operator-role instruction layer (appended to an auto conversation's kickoff)
   loadManifest = null,              // () -> e_identity.md fallback (default below)
-  afterTurn = null,                 // ({key, sessionId, model, cwd, allowedTools, compaction, armIdentityRefresh}) — post-turn hook (auto-compaction). `armIdentityRefresh` is a CALLBACK the service invokes after a compact that succeeded — see the arming block at the end of turn()
+  afterTurn = null,                 // ({key, sessionId, model, cwd, allowedTools, compaction, outbox, armIdentityRefresh}) — THE post-turn hook (auto-compaction AND the room-outbox drain ride this one, never a second). `armIdentityRefresh` is a CALLBACK the service invokes after a compact that succeeded — see the arming block at the end of turn(); `outbox` is {target:{key,to,unknown}, surface, slug, being, chatId} or null (src/room-outbox.mjs)
   loadPermission = loadPermissionLevel,  // (level) -> {dangerouslySkipPermissions, allowedTools}|null — config/permissions/<level>.md for /agents ... access_level; injectable (tests), NO caching in the real implementation (see permission-levels.mjs)
   // THE PLATFORM THIS NODE RUNS ON, injected rather than read off the global, so a test can
   // drive win32 AND posix in one run without redefining process.platform (same options-DI
@@ -801,6 +805,19 @@ export function createBrainPool({
       // same rule allowed_users follows: a half-overridden compaction policy assembled from two
       // files is far harder to reason about than one that says what it means where it is written.
       compaction: b?.compaction ?? getConfig()?.agents?.[being]?.conversation_defaults?.compaction ?? null,
+      // WHICH APPROVED TARGET THIS ROOM'S outbox/ GOES TO (operator 2026-09-22). The key itself
+      // takes the SAME two-tier walk as `compaction` directly above, deliberately, because it is
+      // the same rung: for a room the per-conversation block is its row in config/rooms.yaml.
+      //
+      // AND IT IS A KEY, NOT A PATH. The conversation names one of the destinations config.yaml's
+      // root `outbox_targets:` map already approved; that map is the only place a real path is
+      // ever written. With a raw path here, anything able to write the conversation record could
+      // name any directory on the operator's disk — with a key it can only SELECT among folders
+      // the operator granted, and an unrecognised name resolves to no path at all rather than to
+      // a traversal. Resolution lives in room-outbox.resolveOutboxTarget because the BOOT SWEEP
+      // reads it too and two copies of a `??` chain drift. null ⇒ this conversation names no
+      // target and the feature is off for it; there is no default.
+      outboxTarget: resolveOutboxTarget(b, being, getConfig()),
       // CONFIGURATION for THIS conversation (operator 2026-09-17), read from the scope's block like
       // everything above except `mode`. RAW, and ONE tier here: the fallback is not
       // conversation_defaults but agents.<being>.configuration itself, and resolveBeingDef — the
@@ -818,7 +835,7 @@ export function createBrainPool({
       // derives from it and none from `ev`: thread, warm key, conv dir, run config, transcript
       // roll, thread stats. `ev` still owns what belongs to the MESSAGE — its line, its reply,
       // its own transcript (see resolveConv above).
-      const { scope, slug, sessionId, identityRefreshArmed, mode, accessLevel, allowedUsers, sandboxed, verboseThinking, compaction: compactionOver, configuration } = await resolveConv(ev, being);
+      const { scope, slug, sessionId, identityRefreshArmed, mode, accessLevel, allowedUsers, sandboxed, verboseThinking, compaction: compactionOver, outboxTarget, configuration } = await resolveConv(ev, being);
       if (!slug) throw new Error(`brainpool: no slug for ${scope.surface}/${scope.chatId}`);
 
       // STRUCTURAL SAFETY GATE (operator 2026-08-16; refined 2026-08-20). Refuses the ENTIRE
@@ -1227,7 +1244,17 @@ export function createBrainPool({
       // session in place if it grew past ratio. Fire-and-forget — never block the reply.
       // `compaction` rides along so the service applies THIS conversation's own policy
       // (operator 2026-09-03). null ⇒ the node-global block, i.e. today's behaviour exactly.
-      try { afterTurn?.({ key, sessionId: newSession ?? sessionId ?? null, model: def.model, cwd, allowedTools: baseOpts.allowedTools, compaction: compactionOver, armIdentityRefresh }); } catch { /* non-fatal */ }
+      // `outbox` rides the SAME hook rather than a second post-turn mechanism (operator
+      // 2026-09-22): one descriptor, null unless this conversation states a destination, so the
+      // compaction service — which destructures only what it needs — is untouched by it. It
+      // carries the ROOM (the scope: the outbox belongs to the conversation the being's instance
+      // lives in, which for an invited group is the room, not the group) and, separately, the
+      // chat this turn's REPLY went to, which is where the drain says what it did.
+      //
+      // A RESOLVED TARGET RIDES EVEN WHEN ITS KEY NAMED NOTHING — `{ key, to: null, unknown }` —
+      // so a typo in `outbox_to:` is reported by name instead of behaving exactly like "off".
+      const outbox = outboxTarget ? { target: outboxTarget, surface: scope.surface, slug, being, chatId: ev.chatId } : null;
+      try { afterTurn?.({ key, sessionId: newSession ?? sessionId ?? null, model: def.model, cwd, allowedTools: baseOpts.allowedTools, compaction: compactionOver, outbox, armIdentityRefresh }); } catch { /* non-fatal */ }
       return { text, sessionId: newSession ?? sessionId ?? null, being };
     },
 

@@ -156,6 +156,20 @@ export class Room {
   // invisible from where the being actually works. Here it is the cwd, it is durable, and it
   // is the one directory a confined being can always write.
   get desktopDir()     { return join(this.baseDir(), 'desktop'); }         // the being's own working surface — its, not a process's
+  // WHAT LEAVES THE ROOM — and ONLY what, never where (operator 2026-09-22). A sandboxed being
+  // runs as a leased pool account: the destination it was asked to deliver to (a Google Drive
+  // folder on the operator's own session, on a FAT32 volume with no ACLs to grant and no drive
+  // letter in that account's session) is not merely unreadable to it, it is ABSENT from its
+  // world. There was no permission to grant, so the copy moved to the side that already has one:
+  // the spine, running as the operator, drains this folder to a destination the OPERATOR
+  // configured (config/rooms.yaml, a file the being cannot write — see src/room-outbox.mjs).
+  //
+  // THE FOLDER IS THE WHOLE INTERFACE, and that is what makes it safe. The being chooses which
+  // files go in it; it can never name, influence or escape where they go, because the
+  // destination never travels through anything it wrote. An emptied outbox is also the shared
+  // record: what is still sitting here is what has NOT been delivered, and both the being and
+  // the operator read that off the same folder.
+  get outboxDir()      { return join(this.baseDir(), 'outbox'); }          // files the being is handing OUT — the spine drains it to the operator's destination
 
   // ── the tree, ENSURED (ONE owner) ─────────────────────────────────────────
   // The list used to be written out twice — /rooms create's mkdir loop (spine/commands.mjs)
@@ -171,7 +185,7 @@ export class Room {
   // a changed thread's transcript.md gets archived (conversations-state.rollTranscript — see
   // its header, not wired yet), so the pointers card lands E in a folder that exists.
   //
-  // ALL SIX dirs, for both roots. media/ and files/ were NamedRoom-only in practice, but a
+  // ALL SEVEN dirs, for both roots. media/ and files/ were NamedRoom-only in practice, but a
   // conversation IS a Room: the shipped pointers card already tells every brain to look in
   // ./media/, and /inject's shelf must land somewhere in a conversation too. An empty folder
   // is the honest answer ("nothing here yet") — the same reasoning that created scripts/
@@ -183,8 +197,15 @@ export class Room {
   // a folder that is really there. An existing conversation picks it up on its next turn —
   // seedLayers calls ensureTree on every turn, not only at kickoff — so there is no migration
   // and no second code path.
+  //
+  // outbox/ JOINED on 2026-09-22 on exactly that reasoning again, and it needs it MORE than
+  // desktop/ did: a being confined to this folder cannot mkdir its way out of a missing one, and
+  // the drain deliberately creates NOTHING (not the outbox, not the destination) — so if the
+  // tree did not make it eagerly, the one folder the feature is addressed at would not exist
+  // until someone made it by hand. Created for every room and every conversation whether or not
+  // a destination is configured: an empty folder is the honest "nothing pending here".
   treeDirs() {
-    return [this.baseDir(), this.mediaDir, this.filesDir, this.directivesDir, this.scriptsDir, this.transcriptsDir, this.desktopDir];
+    return [this.baseDir(), this.mediaDir, this.filesDir, this.directivesDir, this.scriptsDir, this.transcriptsDir, this.desktopDir, this.outboxDir];
   }
 
   // Create the tree. Idempotent (mkdir -p on every call). `io.mkdir` is the seam both
