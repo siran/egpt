@@ -21,7 +21,7 @@ import { addressed } from '../src/spine/router.mjs';
 // a real node always declares its beings. `e` and `d` declare no `handles:`, so each answers to its
 // own key, exactly as wakeTokens says. A test that passes its own `config` merges into this.
 const AGENTS = { agents: { e: {}, d: {} } };
-function harness({ config = AGENTS, state = null, brains, io = {}, cdp, launch, clock, resolveConvRoom, onRoomChange, logTranscript } = {}) {
+function harness({ config = AGENTS, state = null, brains, io = {}, cdp, launch, clock, resolveConvRoom, onRoomChange, logTranscript, scopeOf } = {}) {
   const sent = [], exits = [], rewinds = [], writes = [], evicts = [], roomChanges = [], logged = [];
   const files = {};   // any command-authored files (e.g. /rooms create's config.yaml)
   let st = state;
@@ -43,7 +43,13 @@ function harness({ config = AGENTS, state = null, brains, io = {}, cdp, launch, 
     loadState: state ? async () => st : null,
     writeState: state ? async (s) => { writes.push(s); st = s; } : null,
     brains: brains ?? { resolve: (name) => ({ name, type: 'ccode', allowed_tools: 'all' }) },
-    evictWarm: (key) => evicts.push(key),
+    // THE BRAIN'S OWN TWO SEAMS (brainpool.mjs scopeOf/evict), faked. `scopeOf` is left OUT by
+    // default, which is the unscoped answer — a conversation is its own scope — so every test
+    // that does not model an invited group keeps the exact addresses it always had. `evictWarm`
+    // is now (being, ev), an ADDRESS and not a rebuilt warm-key string, so what is recorded here
+    // is what brain.evict would look the live key up by.
+    ...(scopeOf ? { scopeOf } : {}),
+    evictWarm: (being, at) => evicts.push({ being, surface: at?.surface, chatId: at?.chatId }),
     io: { writeFile: async (p, c) => { files[p] = c; }, mkdir: async () => {}, ...io },
     ...(resolveConvRoom ? { resolveConvRoom } : {}),
     // The transcript service's reply writer (boot injects services.transcript.log) — captured
@@ -1249,12 +1255,17 @@ describe('/agents access_level all|regular <handle>|all — points access_level 
     });
   }
 
-  it('/agents access_level evicts e the warm session keyed on the FRESH-resolved engine (resolveBeingDef, same function turn() calls)', async () => {
+  // THE EVICTION GOES THROUGH THE BRAIN'S OWN SEAM (2026-09-22). It used to hand the pool a
+  // key this file rebuilt — `<handle>:<engine>:<surface>:<slug>`, with a per-handle
+  // resolveBeingDef lookup existing only to guess the engine half — and a rebuilt key is a
+  // second derivation that can (and did, live) disagree with the one the turn opened under.
+  // brain.evict is handed the ADDRESS and looks the last key that being+conversation actually
+  // ran up itself (lastKeyByConv), so there is nothing left here to get wrong.
+  it('/agents access_level evicts e through brain.evict — by ADDRESS, not by a warm-key string rebuilt here', async () => {
     const state = seedAccessState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
-    const { cmds, evicts, getState } = harness({ state });
+    const { cmds, evicts } = harness({ state });
     await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents access_level all e' });
-    const slug = getContact(getState(), 'whatsapp', '1234@s.whatsapp.net').slug;
-    expect(evicts).toEqual([`e:ccode:whatsapp:${slug}`]);
+    expect(evicts).toEqual([{ being: 'e', surface: 'whatsapp', chatId: '1234@s.whatsapp.net' }]);
   });
 
   // THE scoping generalization: access_level is no longer defaultKey-only — `all` writes
@@ -1266,8 +1277,10 @@ describe('/agents access_level all|regular <handle>|all — points access_level 
     });
     const { cmds, evicts, getState } = harness({ state });
     await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents access_level regular all' });
-    const slug = getContact(getState(), 'whatsapp', '1234@s.whatsapp.net').slug;
-    expect(evicts).toEqual(expect.arrayContaining([`e:ccode:whatsapp:${slug}`, `wren:ccode:whatsapp:${slug}`]));
+    expect(evicts).toEqual(expect.arrayContaining([
+      { being: 'e', surface: 'whatsapp', chatId: '1234@s.whatsapp.net' },
+      { being: 'wren', surface: 'whatsapp', chatId: '1234@s.whatsapp.net' },
+    ]));
     expect(getBeing(getState(), 'whatsapp', '1234@s.whatsapp.net', 'e').accessLevel).toBe('regular');
     expect(getBeing(getState(), 'whatsapp', '1234@s.whatsapp.net', 'wren').accessLevel).toBe('regular');
   });
@@ -1329,6 +1342,230 @@ describe('/agents access_level all|regular <handle>|all — points access_level 
     await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents' });
     expect(sent[0].text).toBe(AGENTS_USAGE);
     expect(sent[0].text).toMatch(/sandbox/);
+  });
+});
+
+// ── THE SCOPE FIX (operator 2026-09-22, MEASURED LIVE) ─────────────────────────────────────
+// `/agents access_level all e` was typed in the WhatsApp group "perrito traduciones"
+// (whatsapp/0MP97ovrD6XvVovMVx6v). It answered `✅ e (egpt) access here → all` and DID
+// NOTHING. That group is a `wa-group` member of room/acim, and identity-scope.mjs exists to
+// make exactly that mean ONE being: *"room/acim's E and the 'perrito traducciones' group's E
+// are one being: one thread, one warm CLI, one queue, one access_level"* — the live warm log
+// line read `warm: opened egpt:ccode:room:acim`. Every /agents verb, though, wrote and evicted
+// against the RAW TYPED CHAT:
+//   · patchBeing(surface, jid, …) filed the grant in the group's own `agents.egpt`, a record
+//     the being never reads (it reads rooms.yaml's room/acim block), and
+//   · evictWarm built `egpt:ccode:whatsapp:perrito traducciones-2608311934` by hand, which
+//     matched no open entry — so the warm CLI that MUST close for a new access_level to take
+//     effect stayed open with the old permissions baked into its spawn args.
+// Both halves are now asked of the brain: `scopeOf` for the address (the SAME seam
+// createTurns asks for the turn key) and `evict` for the warm entry (a lastKeyByConv lookup of
+// the key that being+conversation actually ran, never a second derivation).
+describe('/agents writes, evicts and REPORTS where the being actually lives (scope fix, operator 2026-09-22)', () => {
+  const GROUP = '0MP97ovrD6XvVovMVx6v';
+  const ACIM = Room.forChat('room', 'acim');
+
+  // The live resolver's answer, faked at the brain's own seam: this ONE group is a `wa-group`
+  // member of room/acim; every other conversation is its own scope (null — identity-scope.mjs's
+  // own default, and the only answer an unscoped node can give).
+  const joinedToAcim = (being, ev) => ((ev.surface === 'whatsapp' && ev.chatId === GROUP) ? { surface: 'room', chatId: 'acim' } : null);
+
+  // E's REAL record is on the ROOM — thread, grant and identity stamp all live there. The group
+  // carries a `mode` of its own, and only a mode: that is the one field brainpool's resolveConv
+  // deliberately reads back at the ORIGIN ("MODE STAYS WITH THE CHAT, alone among the fields
+  // read here"), so it is also the one field these verbs must keep writing to the typed chat.
+  function seedJoined() {
+    let state = ensureContact(emptyState(), 'room', 'acim', {}).state;
+    state = ensureContact(state, 'whatsapp', GROUP, { pushedName: 'perrito traduciones', slugHint: 'perrito traduciones' }).state;
+    state = patchContact(state, 'room', 'acim', {
+      agents: { e: { mode: 'mention', threadId: 'thread-acim', threadCreatedAt: '2026-08-01T00:00:00Z', access_level: 'regular', identityInjectedAt: '2026-08-01T00:00:00Z' } },
+    });
+    return patchContact(state, 'whatsapp', GROUP, { agents: { e: { mode: 'on' } } });
+  }
+
+  // No real ~/.egpt-jsonl probe from any test here: moveCliStore stats the store dir, and an
+  // absent one is simply "nothing to move" (its own contract).
+  const noStore = { stat: async () => { throw new Error('ENOENT'); } };
+
+  it("access_level: the level lands on ROOM/acim, the group's own record is NOT written, and the eviction is addressed at the room", async () => {
+    const { cmds, sent, evicts, getState } = harness({ state: seedJoined(), scopeOf: joinedToAcim });
+    await cmds.run({ chatId: GROUP, surface: 'whatsapp', body: '/agents access_level all e' });
+
+    expect(getBeing(getState(), 'room', 'acim', 'e').accessLevel).toBe('all');
+    // THE RECORD NOBODY READS IS NEVER WRITTEN: the group's block still holds its mode and
+    // nothing else — no access_level was invented there.
+    const onGroup = getBeing(getState(), 'whatsapp', GROUP, 'e');
+    expect(onGroup.accessLevel).toBeNull();
+    expect(onGroup.mode).toBe('on');
+    // ...and the warm session was dropped through the BRAIN's seam, by the room's address —
+    // the live key `egpt:ccode:room:acim` is looked up there, never rebuilt here.
+    expect(evicts).toEqual([{ being: 'e', surface: 'room', chatId: 'acim' }]);
+    // THE CONFIRMATION NAMES THE PLACE IT WROTE. "access here → all" about a write that landed
+    // on room/acim is the same lie one layer up, and it is what let this go unnoticed live.
+    expect(sent[0].text).toMatch(/e access on room\/acim → all/);
+    expect(sent[0].text).not.toMatch(/access here/);
+  });
+
+  it("rethread: ROOM/acim's threadId is nulled and ROOM/acim's transcript is rolled — the group's block and transcript are untouched", async () => {
+    const renames = [];
+    const { cmds, sent, getState, logged } = harness({
+      state: seedJoined(), scopeOf: joinedToAcim,
+      io: {
+        ...noStore,
+        mkdir: async () => {},
+        rename: async (from, to) => { renames.push([from, to]); },
+        // Only the ROOM's transcript exists and only it is stamped — so a roll of the GROUP's
+        // transcript could not even be mistaken for success here.
+        readFile: async (p) => { if (p === ACIM.transcriptPath) return '---\nthread_id: thread-acim\n---\n\nhola\n'; throw new Error('ENOENT'); },
+      },
+    });
+    await cmds.run({ chatId: GROUP, surface: 'whatsapp', body: '/agents rethread e' });
+
+    expect(getBeing(getState(), 'room', 'acim', 'e').threadId).toBeNull();
+    expect(getBeing(getState(), 'room', 'acim', 'e').accessLevel).toBe('regular');   // still narrow
+    expect(getBeing(getState(), 'whatsapp', GROUP, 'e').mode).toBe('on');            // group block untouched
+    expect(renames).toEqual([[ACIM.transcriptPath, join(ACIM.transcriptsDir, 'thread-acim.md')]]);
+    expect(sent[0].text).toMatch(/transcript\.md moved to transcripts\/thread-acim\.md/);
+    expect(sent[0].text).toMatch(/rethread on room\/acim/);
+    // THE ACCUM BOUNDARY STAYS WITH THE TYPED CHAT, and on purpose: spine.mjs reads the accum
+    // window out of `readTranscript(ev.chatId)`, the ORIGIN's transcript, so the withheld line
+    // has to land where it is read.
+    expect(logged.map((l) => l.ev.chatId)).toEqual([GROUP]);
+  });
+
+  it("reset: ROOM/acim's folder is archived and ROOM/acim's record wiped — the group's folder is never renamed", async () => {
+    const renames = [];
+    const { cmds, sent, getState } = harness({
+      state: seedJoined(), scopeOf: joinedToAcim,
+      io: { ...noStore, mkdir: async () => {}, rename: async (from, to) => { renames.push([from, to]); } },
+    });
+    await cmds.run({ chatId: GROUP, surface: 'whatsapp', body: '/agents reset e' });
+
+    expect(renames).toHaveLength(1);
+    expect(renames[0][0]).toBe(ACIM.baseDir());
+    expect(renames[0][1].startsWith(join(EGPT_HOME, 'conversations', 'archive', 'acim-archived-'))).toBe(true);
+    const onRoom = getBeing(getState(), 'room', 'acim', 'e');
+    expect(onRoom.threadId).toBeNull();
+    expect(onRoom.mode).toBeNull();
+    expect(onRoom.accessLevel).toBe('regular');       // the durable grant is reapplied, at the ROOM
+    expect(getBeing(getState(), 'whatsapp', GROUP, 'e').mode).toBe('on');   // the group is not a party to this
+    expect(sent[0].text).toMatch(/acim reset on room\/acim/);
+  });
+
+  it("refresh: the identity re-feed is armed on ROOM/acim and directives/ are re-copied into the ROOM's folder", async () => {
+    const { cmds, sent, files, getState } = harness({
+      state: seedJoined(), scopeOf: joinedToAcim,
+      io: { ...noStore, mkdir: async () => {} },
+    });
+    await cmds.run({ chatId: GROUP, surface: 'whatsapp', body: '/agents refresh e' });
+
+    // ARMED = an EXPLICIT null identityInjectedAt, at the scope — the flag brainpool reads off
+    // getBeing(state, scope.surface, scope.chatId, being).
+    expect(getBeing(getState(), 'room', 'acim', 'e').identityRefreshArmed).toBe(true);
+    expect(getBeing(getState(), 'whatsapp', GROUP, 'e').identityRefreshArmed).toBe(false);
+    expect(Object.keys(files).length).toBeGreaterThan(0);
+    expect(Object.keys(files).every((p) => p.startsWith(ACIM.directivesDir))).toBe(true);
+    expect(sent[0].text).toMatch(/refresh on room\/acim/);
+  });
+
+  it('auto: mode is the ONE field that stays with the typed chat — it is written to the GROUP, never to room/acim', async () => {
+    const { cmds, sent, getState } = harness({ state: seedJoined(), scopeOf: joinedToAcim });
+    await cmds.run({ chatId: GROUP, surface: 'whatsapp', body: '/agents auto accum e' });
+
+    expect(getBeing(getState(), 'whatsapp', GROUP, 'e').mode).toBe('accum');
+    expect(getBeing(getState(), 'room', 'acim', 'e').mode).toBe('mention');   // the room's own mode is not touched
+    expect(sent[0].text).toMatch(/e mode here → accum/);
+  });
+
+  it("status: the bare read REPORTS room/acim's record — the same lie in the other direction if it read the typed chat", async () => {
+    const { cmds, sent } = harness({ state: seedJoined(), scopeOf: joinedToAcim });
+    await cmds.run({ chatId: GROUP, surface: 'whatsapp', body: '/agents e' });
+
+    const text = sent[0].text;
+    expect(text).toMatch(/^surface: room$/m);
+    expect(text).toMatch(/^slug: acim$/m);
+    expect(text).toMatch(/^access_level: regular$/m);       // the room's grant, not 'unset'
+    expect(text).toMatch(/^thread_id: thread-acim$/m);      // the room's thread, not 'not started'
+    expect(text).not.toMatch(/^thread_id: not started$/m);
+    // ...and `mode` alone is read back at the TYPED chat, matching resolveConv's own `b0`.
+    expect(text).toMatch(/^mode: on$/m);
+  });
+
+  // ── THE REGRESSION LOCK ───────────────────────────────────────────────────────────────────
+  // A conversation that is NOT invited anywhere resolves to itself, which is the only answer an
+  // unscoped node can give. Every verb must then behave BYTE-IDENTICALLY to a run with no
+  // scopeOf injected at all — same replies, same state, same eviction address.
+  describe('a NON-invited chat (scope === the typed chat) is byte-identical to a node with no scope at all', () => {
+    const OWN = '1234@s.whatsapp.net';
+    function seedOwn() {
+      const state = ensureContact(emptyState(), 'whatsapp', OWN, { pushedName: 'diego', slugHint: 'diego' }).state;
+      return patchContact(state, 'whatsapp', OWN, {
+        agents: { e: { mode: 'on', threadId: 'thread-own', access_level: 'regular', identityInjectedAt: '2026-08-01T00:00:00Z' } },
+      });
+    }
+
+    for (const body of ['/agents access_level all e', '/agents rethread e', '/agents reset e', '/agents refresh e', '/agents auto accum e', '/agents e']) {
+      it(`${body} — same reply, same state, same evictions with and without the scope seam`, async () => {
+        const io = { ...noStore, mkdir: async () => {}, rename: async () => {}, readFile: async () => { throw new Error('ENOENT'); } };
+        const withSeam = harness({ state: seedOwn(), scopeOf: joinedToAcim, io });
+        const without = harness({ state: seedOwn(), io });
+        await withSeam.cmds.run({ chatId: OWN, surface: 'whatsapp', body });
+        await without.cmds.run({ chatId: OWN, surface: 'whatsapp', body });
+
+        expect(withSeam.sent).toEqual(without.sent);
+        expect(withSeam.evicts).toEqual(without.evicts);
+        expect(JSON.stringify(withSeam.getState())).toBe(JSON.stringify(without.getState()));
+        expect(withSeam.sent[0].text).not.toMatch(/room\/acim/);
+      });
+    }
+  });
+
+  // A node-wide `agents.<being>.scope:` PIN is declared per BEING (identity-scope.mjs's first
+  // rule), so `all` can straddle two conversations. The three FOLDER verbs act on ONE folder —
+  // they archive it, roll its transcript.md, move CLI stores into its transcripts/ — so a split
+  // is refused BY NAME before a single write or roll, rather than half-done across two.
+  it('a verb that acts on a FOLDER refuses an `all` whose beings live in different conversations — nothing is written, nothing is rolled', async () => {
+    let state = seedJoined();
+    state = patchContact(state, 'whatsapp', GROUP, { agents: { e: { mode: 'on' }, wren: { mode: 'on' } } });
+    const renames = [];
+    const { cmds, sent, writes } = harness({
+      config: { agents: { e: {}, wren: {} } },
+      state,
+      io: { ...noStore, mkdir: async () => {}, rename: async (f, t) => { renames.push([f, t]); } },
+      // e joins room/acim from this group; wren is PINNED node-wide to room/wren.
+      scopeOf: (being, ev) => (being === 'wren' ? { surface: 'room', chatId: 'wren', pinned: true }
+        : ((ev.surface === 'whatsapp' && ev.chatId === GROUP) ? { surface: 'room', chatId: 'acim' } : null)),
+    });
+    await cmds.run({ chatId: GROUP, surface: 'whatsapp', body: '/agents reset all' });
+
+    expect(sent[0].text).toMatch(/e lives in room\/acim/);
+    expect(sent[0].text).toMatch(/wren lives in room\/wren/);
+    expect(sent[0].text).toMatch(/name them one at a time/);
+    expect(renames).toEqual([]);
+    expect(writes).toEqual([]);
+  });
+
+  // ...while the per-BEING field write has no such problem: access_level is filed on each
+  // being's own scope and each is evicted at its own address.
+  it("access_level DOES cover a split `all` — each being's grant lands on its own scope, each eviction at its own address", async () => {
+    let state = seedJoined();
+    state = ensureContact(state, 'room', 'wren', {}).state;
+    state = patchContact(state, 'whatsapp', GROUP, { agents: { e: { mode: 'on' }, wren: { mode: 'on' } } });
+    const { cmds, sent, evicts, getState } = harness({
+      config: { agents: { e: {}, wren: {} } },
+      state,
+      scopeOf: (being, ev) => (being === 'wren' ? { surface: 'room', chatId: 'wren', pinned: true }
+        : ((ev.surface === 'whatsapp' && ev.chatId === GROUP) ? { surface: 'room', chatId: 'acim' } : null)),
+    });
+    await cmds.run({ chatId: GROUP, surface: 'whatsapp', body: '/agents access_level all all' });
+
+    expect(getBeing(getState(), 'room', 'acim', 'e').accessLevel).toBe('all');
+    expect(getBeing(getState(), 'room', 'wren', 'wren').accessLevel).toBe('all');
+    expect(getBeing(getState(), 'whatsapp', GROUP, 'e').accessLevel).toBeNull();
+    expect(getBeing(getState(), 'whatsapp', GROUP, 'wren').accessLevel).toBeNull();
+    expect(evicts).toEqual([{ being: 'e', surface: 'room', chatId: 'acim' }, { being: 'wren', surface: 'room', chatId: 'wren' }]);
+    // BOTH places are named, because both were written — the reply never claims one address for two.
+    expect(sent[0].text).toMatch(/on room\/acim, room\/wren/);
   });
 });
 
