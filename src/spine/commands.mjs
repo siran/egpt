@@ -445,7 +445,13 @@ export function createCommands({
   loadState = null, writeState = null,   // conv-state IO — lets /agents auto persist a mode
   brains = null,                         // the brain registry (createBrains) — /agents' status + access_level, and /status's own preview, resolve a being's live def through it (brainpool.mjs's resolveBeingDef / resolveDefaultBrainDef)
   defaultKey = 'e',                      // the persona being-id (its map key), injected by boot from the single `default:true` agent — the persona's per-conversation mode/state reads+writes and its warm-key prefix all key off this, never a hardcoded 'e' (operator 2026-07-10)
-  evictWarm = () => {},                  // (warmKey) -> drop that conversation's warm session so /agents access_level's re-point respawns fresh
+  // ── THE BRAIN'S OWN TWO SEAMS (brainpool.mjs `scopeOf` / `evict`) ─────────────────────────
+  // Injected from boot as the SAME brain instance createTurns takes, so a command can never
+  // resolve a being's address — or its warm entry — differently from the turn that will run it.
+  // Both are OPTIONAL: absent (standalone construction, a test that needs neither) a conversation
+  // is its own scope and nothing is evicted, byte-identical to an unscoped node.
+  scopeOf = null,                        // (being, ev) -> { surface, chatId } — WHERE this being's instance lives; a chat invited into a room as a `wa-group` member resolves to THAT ROOM
+  evictWarm = () => {},                  // (being, ev) -> drop that being+conversation's warm session so /agents access_level's re-point respawns fresh. brain.evict: a lastKeyByConv LOOKUP of the last warm key this pair actually ran — never a key string rebuilt here
   configPath = CONFIG_YAML_PATH,         // where /config <key>=<value> writes — the real profile config.yaml by default (injected in tests, so no test ever touches the real profile)
   io = {},                               // { stat, readFile, writeFile, mkdir, readdir, rm } — real fs by default; /status probes files + the custom branch authors through here
   // CDP seam for /chrome, /tabs, /open, /tab, /close — the real localhost probe by
@@ -1407,8 +1413,54 @@ export function createCommands({
     if (sub === 'rethread') { await agentsRethread(ev, surface, jid, where, handles, state, named); return; }
     if (sub === 'auto') { await agentsAuto(ev, surface, jid, where, handles, valueRaw.toLowerCase(), state, named); return; }
     if (sub === 'access_level') { await agentsAccessLevel(ev, surface, jid, where, handles, valueRaw.toLowerCase(), state, named); return; }
-    await send?.(ev.chatId, agentsStatus(surface, jid, handles, state, named));
+    await send?.(ev.chatId, await agentsStatus(ev, surface, jid, handles, state, named));
   }
+
+  // ── A BEING'S STATE LIVES AT ITS SCOPE, NOT AT THE CHAT THE COMMAND WAS TYPED IN ──────────
+  // (operator 2026-09-22, measured live.) `/agents access_level all e` typed in the WhatsApp
+  // group "perrito traduciones" answered `✅ e (egpt) access here → all` AND DID NOTHING: that
+  // group is a `wa-group` member of room/acim, so — by identity-scope.mjs's whole reason for
+  // existing — room/acim's E and the group's E are ONE being: one thread, one warm CLI, one
+  // queue, one access_level. The write went into the group's own `agents.egpt` block, a record
+  // the being never reads, and the eviction named a key (`egpt:ccode:whatsapp:perrito…`) that
+  // was never open — the live one was `egpt:ccode:room:acim`.
+  //
+  // THE ADDRESS IS ASKED FOR, NEVER DERIVED. `scopeOf` is the brain's own seam (brainpool.mjs),
+  // the SAME one createTurns asks for the turn key, so a command and the turn it is about can
+  // never disagree. No scopeOf injected → the conversation IS its scope, `moved:false`, and
+  // every verb below behaves exactly as it did before this existed.
+  //
+  // NEVER THROWS, and a scope that will not resolve falls back to the conversation itself — the
+  // same safe direction identity-scope.mjs and brainpool's own scopeAddr take: being your own
+  // instance is never WRONG, only narrower than the operator asked for.
+  async function scopeAt(being, ev, surface, jid) {
+    let s = null;
+    try { s = await scopeOf?.(being, { ...ev, surface, chatId: jid }); }
+    catch (e) { onLog(`/agents: scope ${being} ${surface}/${jid}: ${e?.message ?? e}`); }
+    const moved = !!s?.surface && s.chatId != null && !(s.surface === surface && String(s.chatId) === String(jid));
+    return moved ? { surface: s.surface, chatId: s.chatId, moved: true } : { surface, chatId: jid, moved: false };
+  }
+
+  // THE CONVERSATION-LEVEL VERBS (refresh/rethread/reset) act on ONE folder — they archive it,
+  // roll its transcript.md, move CLI stores into its transcripts/. So they need ONE scope, and
+  // `all` can in principle straddle two: a scope is per BEING as well as per chat (a node-wide
+  // `agents.<being>.scope:` PIN, identity-scope.mjs's first rule). A split is REFUSED by name,
+  // before a single write or transcript roll, rather than half-done across two folders.
+  async function oneScope(handles, ev, surface, jid) {
+    const scopes = [];
+    for (const h of handles) scopes.push([h, await scopeAt(h, ev, surface, jid)]);
+    const addrs = new Set(scopes.map(([, s]) => `${s.surface}/${s.chatId}`));
+    if (addrs.size > 1) return { error: `${scopes.map(([h, s]) => `${h} lives in ${s.surface}/${s.chatId}`).join(', ')} — name them one at a time` };
+    return scopes[0][1];
+  }
+
+  // WHAT THE CONFIRMATION CALLS THE PLACE. `here` after a write that landed on room/acim is the
+  // very lie this fix is about, one layer up — so the moment ANY scope differs from the chat the
+  // command was typed in, the reply names the address(es) it actually wrote instead. Unmoved (the
+  // only possible answer on an unscoped node) it is the caller's own `where`, byte-for-byte.
+  const whereWrote = (scopes, where) => (scopes.some((s) => s.moved)
+    ? `on ${[...new Set(scopes.map((s) => `${s.surface}/${s.chatId}`))].join(', ')}`
+    : where);
 
   // ── A RETIRING THREAD'S CLI STORE MOVES WITH ITS RECORD (operator 2026-09-11) ─────────────
   // 1087b63 put every sandboxed being's CLI session store at ~/.egpt-jsonl/<threadId> (see
@@ -1503,9 +1555,20 @@ export function createCommands({
   // etc, not the access_level, nor allowed_users". Captured per handle via getBeing BEFORE the
   // wipe, reapplied via patchBeing AFTER deleteBeing + reseed. A being with neither set has
   // nothing to reapply and is wiped exactly as before.
+  //
+  // …AND IT RESETS THE CONVERSATION THE BEING ACTUALLY LIVES IN (operator 2026-09-22, see
+  // scopeAt): typed in a group invited into room/acim, this archives room/acim's folder and
+  // wipes room/acim's `agents.<handle>` — the record holding the thread, the access_level and
+  // the identity stamp. Wiping the group's own block instead cleared nothing the being reads
+  // and left the live thread running. Unmoved (every unscoped conversation) the room resolution
+  // and every write below are byte-for-byte what they were.
   async function agentsReset(ev, surface, jid, where, handles, state, named = handles.join(', ')) {
-    const room = (where === 'here') ? await convRoomOf(ev) : await resolveConvRoom(surface, jid);
+    const sc = await oneScope(handles, ev, surface, jid);
+    if (sc.error) { await send?.(ev.chatId, `/agents: reset — ${sc.error}`); return; }
+    const room = sc.moved ? await resolveConvRoom(sc.surface, sc.chatId)
+      : (where === 'here') ? await convRoomOf(ev) : await resolveConvRoom(surface, jid);
     if (!room) { await send?.(ev.chatId, "can't resolve this conversation's room"); return; }
+    where = whereWrote([sc], where);
 
     // Archive location (operator 2026-08-15 ruling): a FLAT conversations/archive/ subtree
     // directly under EGPT_HOME — `conversations/archive/<slug>-archived-<slugSuffix>/` — NOT
@@ -1540,9 +1603,9 @@ export function createCommands({
     // …and the RETIRING THREAD per handle, read here for exactly the reason access_level is:
     // deleteBeing below throws the whole block away, and ~/.egpt-jsonl/<threadId> is keyed by
     // that id and by nothing else. Read before the wipe or it is unrecoverable.
-    const retiring = handles.map((h) => [h, getBeing(state, surface, jid, h)?.threadId ?? null]);
+    const retiring = handles.map((h) => [h, getBeing(state, sc.surface, sc.chatId, h)?.threadId ?? null]);
     const preserved = handles.map((h) => {
-      const b = getBeing(state, surface, jid, h);
+      const b = getBeing(state, sc.surface, sc.chatId, h);
       const fields = {};
       if (b?.accessLevel != null) fields.access_level = b.accessLevel;
       if (b?.allowedUsers != null) fields.allowed_users = b.allowedUsers;
@@ -1551,7 +1614,7 @@ export function createCommands({
     let next = state;
     for (const h of handles) next = deleteBeing(next, room.surface, room.slug, h);
     for (const [h, fields] of preserved) {
-      if (Object.keys(fields).length) next = patchBeing(next, surface, jid, h, fields);
+      if (Object.keys(fields).length) next = patchBeing(next, sc.surface, sc.chatId, h, fields);
     }
     try { await writeState(next); } catch (e) { onLog(`/agents reset ${ev.chatId}: ${e?.message ?? e}`); }
 
@@ -1611,16 +1674,26 @@ export function createCommands({
   // laziness: the argument selects only the 00-identity SLOT, which _sharedLayers filters out
   // before anything is written. What lands on disk is identical for every persona, so there is
   // no per-being def to resolve here and no second resolution path to keep in step.
+  //
+  // BOTH HALVES BELONG TO THE SCOPE (operator 2026-09-22, see scopeAt). brainpool.mjs seeds the
+  // layers into `Room.forChat(scope.surface, slug)` and reads `identityRefreshArmed` off
+  // `getBeing(state, scope.surface, scope.chatId, being)` — so a refresh filed against the chat
+  // the command was typed in re-copied a folder the being never runs out of and armed a flag it
+  // never reads. Unmoved, this is byte-for-byte what it was.
   async function agentsRefresh(ev, surface, jid, where, handles, state, named = handles.join(', ')) {
-    const room = (where === 'here') ? await convRoomOf(ev) : await resolveConvRoom(surface, jid);
+    const sc = await oneScope(handles, ev, surface, jid);
+    if (sc.error) { await send?.(ev.chatId, `/agents: refresh — ${sc.error}`); return; }
+    const room = sc.moved ? await resolveConvRoom(sc.surface, sc.chatId)
+      : (where === 'here') ? await convRoomOf(ev) : await resolveConvRoom(surface, jid);
     if (!room) { await send?.(ev.chatId, "can't resolve this conversation's room"); return; }
+    where = whereWrote([sc], where);
     let wrote = [];
     try {
       // Best-effort by contract (seedIdentityLayers never throws); it RETURNS what it wrote,
       // which is what the reply reports rather than a claim assembled here.
       wrote = await seedIdentityLayers(room, 'egpt', { io: { mkdir, readFile, writeFile }, overwrite: true });
       let next = state;
-      for (const h of handles) next = patchBeing(next, surface, jid, h, { identityInjectedAt: null });
+      for (const h of handles) next = patchBeing(next, sc.surface, sc.chatId, h, { identityInjectedAt: null });
       await writeState(next);
     } catch (e) { onLog(`/agents refresh ${ev.chatId}: ${e?.message ?? e}`); await send?.(ev.chatId, `/agents: refresh failed — ${e?.message ?? e}`); return; }
     // Names the two halves separately, and never claims a thread was minted. An empty `wrote`
@@ -1670,16 +1743,29 @@ export function createCommands({
   // re-copies the layers with `overwrite: fresh` on the next real turn, and duplicating that
   // would just race the proven path. The transcript move is different precisely because it is
   // the operator's stated definition of the verb, not a side effect of the next turn.
+  //
+  // THE THREAD IT RETIRES IS THE SCOPE'S (operator 2026-09-22, see scopeAt), and so is the
+  // transcript it rolls: brainpool.mjs reads `threadId` off `getBeing(state, scope.surface,
+  // scope.chatId, …)` and rolls `rollTranscript(scope.surface, slug)` on a fresh thread. Filed
+  // against the chat the command was typed in, an invited group's rethread nulled a threadId
+  // nothing reads and rolled the GROUP's transcript.md while the room's live thread ran on —
+  // the wrong transcript for the wrong thread. Unmoved, byte-for-byte what it was.
+  // The accum boundary below is the one thing that stays with the TYPED chat: spine.mjs reads
+  // `readTranscript(ev.chatId)` for the accum window, so that line has to land where it reads.
   async function agentsRethread(ev, surface, jid, where, handles, state, named = handles.join(', ')) {
-    const room = (where === 'here') ? await convRoomOf(ev) : await resolveConvRoom(surface, jid);
+    const sc = await oneScope(handles, ev, surface, jid);
+    if (sc.error) { await send?.(ev.chatId, `/agents: rethread — ${sc.error}`); return; }
+    const room = sc.moved ? await resolveConvRoom(sc.surface, sc.chatId)
+      : (where === 'here') ? await convRoomOf(ev) : await resolveConvRoom(surface, jid);
     if (!room) { await send?.(ev.chatId, "can't resolve this conversation's room"); return; }
+    where = whereWrote([sc], where);
     try {
       // THE RETIRING THREADS, read BEFORE patchBeing nulls them: ~/.egpt-jsonl/<threadId> is keyed
       // by that id, so once the block says null the store's own name is the only thing left that
       // knows which conversation it belonged to — which is the orphan this fixes.
-      const retiring = handles.map((h) => [h, getBeing(state, surface, jid, h)?.threadId ?? null]);
+      const retiring = handles.map((h) => [h, getBeing(state, sc.surface, sc.chatId, h)?.threadId ?? null]);
       let next = state;
-      for (const h of handles) next = patchBeing(next, surface, jid, h, { threadId: null });
+      for (const h of handles) next = patchBeing(next, sc.surface, sc.chatId, h, { threadId: null });
       await writeState(next);
       // THE ROLL, through the shared mover. Reported by its result, never assumed.
       const dest = await rollTranscript(room.surface, room.slug, { io: { readFile, writeFile, rename, mkdir } });
@@ -1750,6 +1836,16 @@ export function createCommands({
   // `agents.<being>.mode`, merged over the block's existing fields via patchBeing — siblings
   // survive). Bare (`where === 'here'`): this chat. `=<slug>`-resolved: a DIFFERENT known
   // chat, same resolveTarget reach /e auto's <target> already had.
+  //
+  // THE ONE VERB THAT IS NOT SCOPED, AND DELIBERATELY (audited 2026-09-22 against scopeAt
+  // above, which moved every other write onto the being's scope). `mode` is the single field
+  // brainpool.mjs's resolveConv reads back at the ORIGIN and not at the scope — its own words:
+  // "MODE STAYS WITH THE CHAT, alone among the fields read here", because gating.decide resolves
+  // the very same field for the very same message on the origin conversation, and two readings
+  // of one field would have a group dwelling per the origin while its kickoff layer was chosen
+  // per the room. So `surface, jid` here is the RIGHT address, not an oversight: a group invited
+  // into room/acim gets its OWN mode, exactly as it is read. It also evicts nothing, and needs
+  // to: a mode change does not alter a warm process's spawn args.
   async function agentsAuto(ev, surface, jid, where, handles, mode, state, named = handles.join(', ')) {
     try {
       let next = state;
@@ -1773,23 +1869,31 @@ export function createCommands({
   async function agentsAccessLevel(ev, surface, jid, where, handles, target, state, named = handles.join(', ')) {
     const perm = loadPermissionLevel(target);
     if (!perm) { await send?.(ev.chatId, `/agents: permissions file for "${target}" not found or unparseable`); return; }
+    const scopes = [];
     try {
       let next = state;
-      const slug = getContact(next, surface, jid)?.slug ?? jid;
-      let convDir = null;
-      try { convDir = slugDir(surface, slug); } catch { /* non-default surface */ }
       for (const h of handles) {
-        next = patchBeing(next, surface, jid, h, { access_level: target });
-        // The engine the LIVE warm session is keyed under, PER HANDLE (a sibling can run a
-        // different engine than the persona) — resolveBeingDef is the SAME resolver
-        // brainpool.mjs's turn() itself calls for this being (name-the-existing-thing).
-        const engine = resolveBeingDef(h, convDir, { getConfig: cfg, brains, brainType: CCODE, configuration: getBeing(next, surface, jid, h)?.configuration, onLog })?.type ?? CCODE;
+        // WHERE THIS BEING'S access_level IS READ FROM (see scopeAt above) — brainpool.mjs's
+        // resolveConv reads it off `getBeing(state, scope.surface, scope.chatId, being)`, so
+        // this is the one record that matters. PER HANDLE, because a node-wide `scope:` pin is
+        // declared per being.
+        const sc = await scopeAt(h, ev, surface, jid);
+        scopes.push(sc);
+        next = patchBeing(next, sc.surface, sc.chatId, h, { access_level: target });
         // Evict the warm session: a warm `claude` process bakes its allowedTools/confinement
         // into its spawn args ONCE, at open, and never re-reads brainOptions on later turns of
         // the same warm session — so a live warm session must be closed for the new
         // access_level to actually take effect on the NEXT turn, even though nothing here is
         // frozen.
-        evictWarm(`${h}:${engine}:${surface}:${slug}`);
+        // THROUGH THE BRAIN'S OWN evict, by ADDRESS (operator 2026-09-22): it looks up the last
+        // warm key this being+conversation actually ran (lastKeyByConv, registered under BOTH
+        // the origin's and the scope's address) instead of rebuilding one here. The rebuilt
+        // string — `<handle>:<engine>:<typed surface>:<typed slug>` — was the defect: for an
+        // invited group it named `egpt:ccode:whatsapp:perrito…` while the live entry was
+        // `egpt:ccode:room:acim`, so nothing closed and the old permissions ran on. It also
+        // retires the per-handle resolveBeingDef lookup that existed ONLY to guess the engine
+        // half of that string.
+        await evictWarm(h, { ...ev, surface: sc.surface, chatId: sc.chatId });
       }
       await writeState(next);
     } catch (e) { onLog(`/agents access_level ${ev.chatId}: ${e?.message ?? e}`); await send?.(ev.chatId, `/agents: access_level failed — ${e?.message ?? e}`); return; }
@@ -1801,7 +1905,7 @@ export function createCommands({
       all: 'unconfined: full filesystem, bare Bash',
       sandbox: "all's capability, but only ever inside the OS sandbox",
     }[target] ?? `see config/permissions/${target}.md`;
-    await send?.(ev.chatId, `✅ ${named} access ${where} → ${target} (${blurb})`);
+    await send?.(ev.chatId, `✅ ${named} access ${whereWrote(scopes, where)} → ${target} (${blurb})`);
   }
 
   // /agents[=<slug>] <handle>|all (bare) — the LIVE status view (never a stale snapshot; see
@@ -1813,8 +1917,15 @@ export function createCommands({
   // block itself is keyed `being: egpt`, and without this the answer to `/agents e` silently
   // looks like it is about some other being. Absent when the two agree, so the bare form is
   // byte-identical to what it always was.
-  function agentsStatus(surface, jid, handles, state, named = handles.join(', ')) {
-    const blocks = handles.map((h) => agentsBeingBlock(surface, jid, h, state));
+  //
+  // AND IT READS THE RECORD THE BEING READS (operator 2026-09-22, the same defect as the write
+  // verbs, in the other direction): asked in a group invited into room/acim, this used to render
+  // the GROUP's own `agents.egpt` block — reporting `access_level: unset` and `thread_id: not
+  // started` for a being that has had both on room/acim for weeks. Scoped per handle, like
+  // access_level, because a node-wide `scope:` pin is declared per being.
+  async function agentsStatus(ev, surface, jid, handles, state, named = handles.join(', ')) {
+    const blocks = [];
+    for (const h of handles) blocks.push(agentsBeingBlock(await scopeAt(h, ev, surface, jid), surface, jid, h, state));
     const head = (handles.length === 1 && named !== handles[0]) ? `${named}\n` : '';
     return head + '```yaml\n' + blocks.join('\n---\n') + '\n```';
   }
@@ -1829,7 +1940,13 @@ export function createCommands({
   // `dangerouslySkipPermissions ? raw : coerceAllowedTools(raw)` coercion statusTarget already
   // applies to its own preview. Resolved FRESH on every call (no caching anywhere in this chain), so editing
   // config between two calls changes the NEXT call's tools/model/effort with nothing to evict.
-  function agentsBeingBlock(surface, jid, handle, state) {
+  //
+  // `sc` is THE ADDRESS this being's instance lives at (agentsStatus resolved it through
+  // scopeAt). Every field below reads from it — record, slug, conv dir, thread — for the same
+  // reason brainpool.mjs derives all of them from `scope`. The ONE exception is `mode`, read
+  // back at the TYPED chat, because that is the one field resolveConv itself reads at the
+  // origin ("MODE STAYS WITH THE CHAT, alone among the fields read here").
+  function agentsBeingBlock(sc, surface, jid, handle, state) {
     try {
       // NOT configured on THIS node (operator 2026-08-29: dolly answered `/agents wren` with a
       // plausible-looking status even though wren exists nowhere in dolly's config — every node
@@ -1841,7 +1958,7 @@ export function createCommands({
       // agents: map first, and say so plainly when there is none, rather than falling through
       // resolveBeingDef's every `??` and rendering a config-shaped answer for a being that is
       // not here.
-      const b = getBeing(state, surface, jid, handle);
+      const b = getBeing(state, sc.surface, sc.chatId, handle);
       // defaultKey is exempt: the persona is real by definition even with an empty agents:
       // map (resolveDefaultBrainDef's own shipped-'egpt'-type fallback). Any OTHER handle is
       // real here iff it is either configured at the node level (agents: in config.yaml) or
@@ -1856,10 +1973,10 @@ export function createCommands({
       if (handle !== defaultKey && !((cfg() ?? {}).agents ?? {})[handle] && !b?.present) {
         return `being: ${handle}\nnot configured on this node`;
       }
-      const c = getContact(state, surface, jid);
-      const slug = c?.slug ?? jid;
+      const c = getContact(state, sc.surface, sc.chatId);
+      const slug = c?.slug ?? sc.chatId;
       let convDir = null;
-      try { convDir = slugDir(surface, slug); } catch { /* non-default surface */ }
+      try { convDir = slugDir(sc.surface, slug); } catch { /* non-default surface */ }
 
       let def = null;
       // `configuration` — THIS conversation's own (conversations.yaml, operator 2026-09-17), the
@@ -1897,9 +2014,11 @@ export function createCommands({
       return [
         `being: ${handle}`,
         `name: ${previewDef?.name ?? handle}`,
-        `surface: ${surface}`,
+        `surface: ${sc.surface}`,
         `slug: ${slug}`,
-        `mode: ${b?.mode ?? 'default'}`,
+        // MODE IS THE TYPED CHAT'S — see the docblock. getBeing is pure over state already in
+        // hand, so this second view costs no second read (resolveConv's own `b0` reasoning).
+        `mode: ${getBeing(state, surface, jid, handle)?.mode ?? 'default'}`,
         `access_level: ${b?.accessLevel ?? 'unset'}`,
         `configuration: ${confVal}`,
         `engine: ${previewDef?.type ?? CCODE}`,
