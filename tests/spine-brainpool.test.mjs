@@ -1971,6 +1971,96 @@ describe('brainpool — compaction overrides, two-tier (operator 2026-09-03)', (
   });
 });
 
+// ── outbox_to (operator 2026-09-22) — WHICH APPROVED TARGET a room's outbox/ is drained to,
+//    resolved HERE with every other per-conversation key and riding OUT on the SAME afterTurn
+//    hook compaction uses.
+//
+//    THE INVARIANT THIS LOCKS: the being chooses WHAT leaves the room, never WHERE it goes. The
+//    conversation names a KEY (`outbox_to: acim-drive`); config.yaml's root `outbox_targets:` map
+//    is the only place a real path is ever written. With a raw path here, anything able to write
+//    a conversation record could name any directory on the operator's disk — with a key it can
+//    only SELECT among folders the operator already approved, and an unrecognised name resolves
+//    to nothing rather than to a traversal.
+//
+//    UNSET IS OFF, and it is off by being ABSENT from the hook's payload entirely — so a node
+//    that configures nothing hands the drain nothing to do and makes no filesystem call at all.
+//    An UNKNOWN key is NOT off: it rides out with a null path so the typo is reported by name. ──
+describe('brainpool — outbox_to names a KEY into outbox_targets, and rides the ONE afterTurn hook', () => {
+  const ACIM = 'G:/My Drive/jose-lorenzo/ACIM-ES.v2';
+  const TARGETS = { 'acim-drive': ACIM, 'scratch': 'D:/scratch' };
+  const ranWith = async (opts) => {
+    const seen = [];
+    const { brain } = harness([{ text: 'ok', sessionId: 'sid-o' }], { ...opts, afterTurn: (x) => seen.push(x) });
+    await brain.turn('e', ev);
+    expect(seen).toHaveLength(1);
+    return seen[0];
+  };
+  const node = (extra = {}, agentDefaults = {}) => ({
+    outbox_targets: TARGETS,
+    agents: { e: { conversation_defaults: { access_level: 'regular', ...agentDefaults } } },
+    ...extra,
+  });
+
+  it('a known key rides out as a descriptor carrying the MAPPED path, the ROOM, and the chat to report in', async () => {
+    const t = await ranWith({ config: node(), seedAgents: { e: { outbox_to: 'acim-drive' } } });
+    expect(t.outbox).toEqual({
+      target: { key: 'acim-drive', to: ACIM, unknown: null },
+      surface: 'whatsapp',
+      slug: expect.any(String),
+      being: 'e',
+      chatId: ev.chatId,
+    });
+  });
+
+  it('tier 2: agents.<being>.conversation_defaults.outbox_to names the key when the conversation states none', async () => {
+    expect((await ranWith({ config: node({}, { outbox_to: 'scratch' }) })).outbox.target.to).toBe('D:/scratch');
+  });
+
+  it('tier 1 outranks tier 2, exactly as compaction does', async () => {
+    const t = await ranWith({ config: node({}, { outbox_to: 'scratch' }), seedAgents: { e: { outbox_to: 'acim-drive' } } });
+    expect(t.outbox.target.to).toBe(ACIM);
+  });
+
+  it('UNSET AT BOTH TIERS → no descriptor at all, so the drain never runs (no default destination, ever)', async () => {
+    expect((await ranWith({ config: node() })).outbox).toBe(null);
+  });
+
+  it('a blank or non-string value is UNSET, not a key', async () => {
+    expect((await ranWith({ config: node(), seedAgents: { e: { outbox_to: '   ' } } })).outbox).toBe(null);
+    expect((await ranWith({ config: node(), seedAgents: { e: { outbox_to: 42 } } })).outbox).toBe(null);
+  });
+
+  it('an UNKNOWN key still rides out — with NO path — so the typo is reported instead of vanishing', async () => {
+    const t = await ranWith({ config: node(), seedAgents: { e: { outbox_to: 'acim-drve' } } });
+    expect(t.outbox.target.to).toBe(null);
+    expect(t.outbox.target.key).toBe('acim-drve');
+    expect(t.outbox.target.unknown).toContain('acim-drve');
+  });
+
+  // THE SECURITY PROPERTY AT THE SPINE'S OWN BOUNDARY: a path written where the KEY goes never
+  // becomes a destination. This is the case the key indirection exists for — under the raw-path
+  // model each of these WOULD have been a real place on the operator's disk.
+  it('a PATH or TRAVERSAL written into the conversation record resolves to NO destination', async () => {
+    for (const attempt of ['../../../Windows/System32', 'G:/My Drive/jose-lorenzo/ACIM-ES.v2', 'acim-drive/sub', 'C:/Users/an/.egpt', '__proto__']) {
+      const t = await ranWith({ config: node(), seedAgents: { e: { outbox_to: attempt } } });
+      expect(t.outbox.target.to, `"${attempt}" must not resolve to a path`).toBe(null);
+    }
+  });
+
+  it('a node with NO outbox_targets map resolves every key to nothing — it never falls back to the text', async () => {
+    const t = await ranWith({ config: { agents: { e: { conversation_defaults: { access_level: 'regular' } } } }, seedAgents: { e: { outbox_to: 'acim-drive' } } });
+    expect(t.outbox.target.to).toBe(null);
+  });
+
+  it('REGRESSION: the hook still carries everything compaction reads — one hook, two riders', async () => {
+    const t = await ranWith({ config: node(), seedAgents: { e: { outbox_to: 'acim-drive', compaction: { ratio: 0.4 } } } });
+    expect(t.compaction).toEqual({ ratio: 0.4 });
+    expect(t.key).toBeTruthy();
+    expect(t.sessionId).toBe('sid-o');
+    expect(typeof t.armIdentityRefresh).toBe('function');
+  });
+});
+
 // parseWarmBlock takes the RESOLVED doc, not config.yaml text — `warm:` is one
 // rung-resolved block of the one namespace, and the resolver already did the parsing.
 describe('parseWarmBlock', () => {

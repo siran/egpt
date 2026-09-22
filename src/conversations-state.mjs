@@ -1005,6 +1005,21 @@ export function getBeing(state, surface, jid, being) {
     // inline map. RAW, like allowNewInput: brainpool's resolveBeingDef resolves and validates it.
     // null = no override, the config.yaml configuration applies.
     configuration:      b?.configuration        ?? null,
+    // WHICH APPROVED TARGET THIS ROOM'S outbox/ IS DRAINED TO (operator 2026-09-22) — the NAME
+    // of an entry in config.yaml's root `outbox_targets:` map, NEVER a path. Same shape/tier as
+    // the overrides above, and for a ROOM the block this reads is its row in config/rooms.yaml
+    // (rooms-file.mergeRoomBeings hydrates it here).
+    //
+    // THE INDIRECTION IS THE SAFETY PROPERTY, not decoration: a raw path here would let anything
+    // that can write a conversation record name any directory on the operator's disk, while a
+    // key can only SELECT among folders the operator already approved in a file no conversation
+    // owns. So a value like `../../x` or `G:\anywhere` is not a traversal to sanitise — it is a
+    // name the map does not have, and it resolves to nothing.
+    //
+    // RAW here, like allowNewInput and configuration: getBeing reports what the file SAYS;
+    // room-outbox.resolveOutboxTarget is the one place that decides what it MEANS (unset ⇒ the
+    // feature is OFF; unknown ⇒ off AND reported by name, never silently).
+    outboxTo:           b?.outbox_to            ?? null,
   };
 }
 

@@ -92,6 +92,10 @@ import { createMeshService } from './mesh.mjs';
 // meet on the SAME queue.
 import { createTurns } from './turns.mjs';
 import { createCompaction } from './compaction.mjs';
+// The room OUTBOX drain — the other rider on brainpool's ONE post-turn hook (see where the two
+// are composed below). Unrelated to src/tools/outbox-send.mjs's ~/.egpt/state/outbox, which is
+// the daemon's JSON event drop and only shares the word.
+import { createOutboxDrain } from '../room-outbox.mjs';
 import { createHeartbeats } from './heartbeats.mjs';
 import { createHeartbeatLoader, parseFrequency, resolveTimeZone } from './heartbeat-loader.mjs';
 import { createConfigResolver, parseEntityConfig } from './config-resolver.mjs';
@@ -2719,7 +2723,29 @@ export async function boot({
     try { sayOnce({ chatId: selfDm, text, what: 'alert' }).catch((e) => log.line?.(`[alert] could not reach the Self chat: ${e?.message ?? e}`)); }
     catch (e) { log.line?.(`[alert] could not reach the Self chat: ${e?.message ?? e}`); }
   };
-  const brain = createBrainPool({ pool, getConfig, contacts, loadState: _loadState, writeState: _writeState, brains, defaultKey, labelOf, afterTurn: compaction.afterTurn, onAlert: alertOperator, resolveConfig: configResolver.configFor, resolveScope: createIdentityScope({ resolveMembers: memberResolver, getConfig, onLog: (m) => log.line?.(`[scope] ${m}`) }), io, onLog: (m) => log.line?.(`[brain] ${m}`) });
+  // THE ROOM OUTBOX DRAIN (operator 2026-09-22). A sandboxed being cannot reach the operator's
+  // Google Drive folder — no ACL to grant on a FAT32 volume, and no `G:` in a pool account's
+  // session at all — so it hands files out through its room's own outbox/ and the SPINE, which
+  // already runs as the operator, carries them the last step. The being chooses WHAT; the
+  // destination comes from config/rooms.yaml, which it cannot write (src/room-outbox.mjs).
+  //
+  // IT SAYS WHAT IT DID THROUGH sayOnce — the ONE placement (sender.mjs makeOutbound) every
+  // reaction, reply and node line already takes. The drain itself posts nothing; it returns a
+  // result and this caller says it, in the chat the turn's reply went to.
+  //
+  // AND WHAT IT SAYS THERE IS THE TARGET KEY, NEVER THE PATH. That chat can hold people who are
+  // not the operator — room/acim's invited group does — so the resolved folder goes to THIS log
+  // sink and nowhere else (src/room-outbox.mjs carries the ruling and the case).
+  const outboxDrain = createOutboxDrain({
+    say: (chatId, text) => sayOnce({ chatId, text, what: 'outbox' }),
+    loadState: _loadState, getConfig, onLog: (m) => log.line?.(`[outbox] ${m}`),
+  });
+  // ONE post-turn hook, two riders — NOT a second mechanism. brainpool fires `afterTurn` exactly
+  // once per turn and wraps the call in its own try/catch; composing here is what keeps that
+  // single shape. The drain goes FIRST because it cannot throw (createOutboxDrain guarantees it),
+  // so compaction's behaviour on this hook is byte-for-byte what it was.
+  const afterEveryTurn = (t) => { outboxDrain.afterTurn(t); compaction.afterTurn(t); };
+  const brain = createBrainPool({ pool, getConfig, contacts, loadState: _loadState, writeState: _writeState, brains, defaultKey, labelOf, afterTurn: afterEveryTurn, onAlert: alertOperator, resolveConfig: configResolver.configFor, resolveScope: createIdentityScope({ resolveMembers: memberResolver, getConfig, onLog: (m) => log.line?.(`[scope] ${m}`) }), io, onLog: (m) => log.line?.(`[brain] ${m}`) });
 
   // ONE turn machinery for the whole node (see the import note). Built here because it needs
   // `brain` (its scopeOf/allowNewInput/steer seams) and the bridge pair the steer-ack rides —
@@ -3129,6 +3155,14 @@ export async function boot({
     try { await sayOnce({ chatId: selfDm, text: `✅ egpt started (${nowSha}) pid ${process.pid}${subject ? `\n\n${subject}` : ''}`, what: 'announce' }); }
     catch (e) { log.line?.(`[announce] ${e?.message ?? e}`); }
   })();
+
+  // ONCE AT BOOT — the second of the drain's two moments (the other is after every turn). What a
+  // being handed out while the spine was down would otherwise sit in its outbox until it happened
+  // to take another turn, and a destination that was unreachable last time gets its retry here.
+  // Gated on `ingest` like the announce above so a test's boot() never sweeps, fire-and-forget so
+  // it cannot hold up the boot, and it says what it did in the Self chat — where every other boot
+  // line already lands — through the same one placement.
+  if (ingest) Promise.resolve().then(() => outboxDrain.atBoot({ chatId: selfChatId() })).catch((e) => log.line?.(`[outbox] boot sweep: ${e?.message ?? e}`));
 
   // Command ingest: drop /restart, /upgrade, /rewind <ref> or /standdown [port] into
   // EGPT_HOME/state/ingest (operator 2026-07-03: the ingest box lives under state/ now).
