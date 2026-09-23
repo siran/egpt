@@ -136,6 +136,8 @@ $script:LaunchPattern = '-WorkingDirectory \$sandboxCwd'
 $script:ScrubCallPattern = '\$sandboxCwd = Clear-SandboxProfileContents'
 $script:CwdGuardPattern = 'if \(-not \$sandboxCwd\)'
 $script:SummaryPattern = 'Log \(Get-SandboxLaunchSummary '
+# The guard that keeps PWD pointed at the `egpt` mount and off the Room.
+$script:CwdInsideProfilePattern = 'if \(-not \$WorkingDirectory\.StartsWith\('
 
 Describe 'REPRODUCE: the 2026-09-23 turn that launched into a cwd its leased account could not enter' {
   AfterEach { $script:IcaclsSpy.Clear() }
@@ -555,6 +557,10 @@ function Get-LauncherRebaseKeys {
   $localAppData = Join-Path $profilePath 'AppData\Local'
   $userTemp = Join-Path $localAppData 'Temp'
   $homeDrive = [System.IO.Path]::GetPathRoot($profilePath).TrimEnd('\')
+  # The mount, i.e. what Clear-SandboxProfileContents returns and what
+  # Invoke-AsLeasedAccount passes through as -WorkingDirectory. Set here because
+  # the shipped table closes over it for its PWD row.
+  $WorkingDirectory = Join-Path $profilePath 'egpt'
   Invoke-Expression (Get-LauncherStatementBlock $script:PerUserTablePattern)
   return @($perUser.Keys)
 }
@@ -664,13 +670,15 @@ Describe 'the rebase is the sole authority for every per-user name (the launcher
   $table = $null
 
   BeforeEach {
-    # The shipped table, run with a stand-in profile. The three locals it closes
-    # over are set exactly as the launcher sets them, three lines above it.
+    # The shipped table, run with a stand-in profile. The locals it closes over
+    # are set exactly as the launcher sets them - the four profile-derived ones
+    # three lines above it, plus the cwd the function is handed as a parameter.
     $AccountName = 'egpt-sbx-08'
     $profilePath = 'C:\Users\egpt-sbx-08'
     $localAppData = Join-Path $profilePath 'AppData\Local'
     $userTemp = Join-Path $localAppData 'Temp'
     $homeDrive = [System.IO.Path]::GetPathRoot($profilePath).TrimEnd('\')
+    $WorkingDirectory = Join-Path $profilePath 'egpt'
     Invoke-Expression (Get-LauncherStatementBlock $script:PerUserTablePattern)
     $table = $perUser
   }
@@ -712,6 +720,182 @@ Describe 'the rebase is the sole authority for every per-user name (the launcher
     $rebase = (Get-LauncherLineIndex 'foreach \(\$n in \$perUser\.Keys\)')
     $overlay = (Get-LauncherLineIndex 'foreach \(\$pair in \$SetEnv\)')
     $overlay | Should BeGreaterThan $rebase
+  }
+}
+
+# ---------------------------------------------------------------------------
+# PWD: THE BEING'S OWN ANSWER TO `pwd` (2026-09-23).
+#
+# THE DEFECT THESE LOCK. The `egpt` mount below already made the CWD neutral,
+# and at the OS level it worked: bash does not resolve a junction cwd, so with
+# PWD unset it reports the junction. But Claude Code RESOLVES ITS CWD AT STARTUP
+# and hands its Bash tool the resolved path, so a being asked to run `pwd` in a
+# WhatsApp group answered
+#   /c/Users/an/.egpt/conversations/whatsapp/<slug>
+# - the operator's username and, in the slug, the name of the person the
+# conversation is with, to everyone else in the room. An INHERITED PWD overrides
+# that resolution and is the only lever that does, so the launcher sets one.
+#
+# THE FORM WAS MEASURED, NOT PICKED. Spawned with cwd on a real junction:
+#   PWD unset       bash prints the junction; claude.exe prints the TARGET
+#   windows form    echoed verbatim -> C:\...\tmp/x/link, MIXED separators
+#   msys form       echoed verbatim by bash AND by claude.exe's Bash tool
+# so both consumers want the msys form and there is no trade-off to settle.
+#
+# NOTHING HERE TOUCHES THE OS either: the shipped table and the shipped guard are
+# EXTRACTED from the launcher and run against a stand-in profile path. No pool
+# account, no junction and no environment block is created.
+Describe 'PWD names the mount, so `pwd` in a chat quotes a pool account and nothing else' {
+  $table = $null
+  $script:MountForTests = 'C:\Users\egpt-sbx-08\egpt'
+
+  BeforeEach {
+    $AccountName = 'egpt-sbx-08'
+    $profilePath = 'C:\Users\egpt-sbx-08'
+    $localAppData = Join-Path $profilePath 'AppData\Local'
+    $userTemp = Join-Path $localAppData 'Temp'
+    $homeDrive = [System.IO.Path]::GetPathRoot($profilePath).TrimEnd('\')
+    $WorkingDirectory = $script:MountForTests
+    Invoke-Expression (Get-LauncherStatementBlock $script:PerUserTablePattern)
+    $table = $perUser
+  }
+
+  It 'the block carries a PWD row at all - that row IS the fix' {
+    ($table.Contains('PWD')) | Should Be $true
+  }
+
+  It 'its value is the MOUNT, rendered msys-style - the one form both consumers echo verbatim' {
+    $table['PWD'] | Should Be '/c/Users/egpt-sbx-08/egpt'
+  }
+
+  It 'it is NOT a Windows path - that form is echoed verbatim too, with MIXED separators' {
+    # The failure mode this rules out is WORSE than doing nothing: bash renders
+    # an inherited C:\a\b as C:\a/b. Measured 2026-09-23.
+    ([string]$table['PWD'] -match '\\') | Should Be $false
+    ([string]$table['PWD']).StartsWith('/') | Should Be $true
+  }
+
+  It 'it names neither the operator nor a conversation - the whole point of the mount' {
+    ([string]$table['PWD'] -match '(?i)/Users/an(/|$)') | Should Be $false
+    ([string]$table['PWD'] -match '(?i)conversations') | Should Be $false
+    ([string]$table['PWD'] -match '(?i)\.egpt') | Should Be $false
+  }
+
+  It 'it FOLLOWS -WorkingDirectory rather than being recomputed from the profile' {
+    # THE LOCK THAT MATTERS. A table that derived the mount itself -
+    # Join-Path $profilePath 'egpt', which looks identical on the shipped path -
+    # would ignore the parameter and still answer /c/Users/egpt-sbx-08/egpt here.
+    # Two places computing one path is the bug this repo keeps re-finding.
+    $AccountName = 'egpt-sbx-08'
+    $profilePath = 'C:\Users\egpt-sbx-08'
+    $localAppData = Join-Path $profilePath 'AppData\Local'
+    $userTemp = Join-Path $localAppData 'Temp'
+    $homeDrive = [System.IO.Path]::GetPathRoot($profilePath).TrimEnd('\')
+    $WorkingDirectory = 'C:\Users\egpt-sbx-08\somewhere-else'
+    Invoke-Expression (Get-LauncherStatementBlock $script:PerUserTablePattern)
+
+    $perUser['PWD'] | Should Be '/c/Users/egpt-sbx-08/somewhere-else'
+  }
+
+  It 'and the mount is still derived in exactly ONE place in the launcher' {
+    # PROSE MAY NAME EITHER - the comments above both sites do, deliberately -
+    # so only NON-COMMENT lines are counted, the same distinction the LogonUser
+    # and junction-statement locks in this file already draw.
+    $code = @($script:LauncherLines | Where-Object { $_ -notmatch '^\s*#' })
+    # The scrub's own return, which is the value -WorkingDirectory is then given.
+    (@($code | Where-Object { $_ -match "Join-Path \`$profilePath 'egpt'" }).Count) | Should Be 1
+    # One conversion, at the one row that needs it.
+    (@($code | Where-Object { $_ -match 'ConvertTo-MsysPath' }).Count) | Should Be 1
+  }
+
+  It 'the block is handed the SAME variable CreateProcessWithLogonW is handed' {
+    # Not "a path that agrees with it" - the same name, in the same call frame,
+    # so nothing can come between the two.
+    $src = Get-Content -LiteralPath $script:LauncherScript -Raw
+    ($src -match 'New-SandboxEnvironmentBlock -AccountName \$AccountName -SetEnv \$SetEnv -WorkingDirectory \$WorkingDirectory') | Should Be $true
+    ($src -match '\$envBlock, \$WorkingDirectory, \[ref\]\$si') | Should Be $true
+    # ...and the function really takes it, rather than reading some global.
+    $fnStart = @(0..($script:LauncherLines.Count - 1) | Where-Object { $script:LauncherLines[$_] -match '^function New-SandboxEnvironmentBlock \{' })[0]
+    $close = @(($fnStart + 1)..($script:LauncherLines.Count - 1) | Where-Object { $script:LauncherLines[$_] -match '^\s*\)\s*$' })[0]
+    (($script:LauncherLines[$fnStart..$close] -join "`n") -match '\$WorkingDirectory') | Should Be $true
+  }
+
+  It 'PWD is the ONLY row added - every name that was in the table still is, in order' {
+    # The other half of the brief: the existing rows are unchanged. Membership
+    # AND order, so a row cannot be quietly dropped or reshuffled either.
+    (@(Get-LauncherRebaseKeys) -join ',') | Should Be 'USERPROFILE,APPDATA,LOCALAPPDATA,TEMP,TMP,HOMEDRIVE,HOMEPATH,USERNAME,USERDOMAIN,USERDOMAIN_ROAMINGPROFILE,LOGONSERVER,PWD'
+  }
+
+  # ---- the guard, extracted and run. It is a SEPARATE statement from the table
+  # (the table renders whatever it is given, which is what the test above needs),
+  # so it is exercised on its own.
+  It 'a cwd inside the account profile is accepted' {
+    $stmt = Get-LauncherStatementBlock $script:CwdInsideProfilePattern
+    $AccountName = 'egpt-sbx-08'
+    $profilePath = 'C:\Users\egpt-sbx-08'
+    $WorkingDirectory = $script:MountForTests
+
+    { Invoke-Expression $stmt } | Should Not Throw
+  }
+
+  It 'a cwd that is the ROOM is REFUSED - the disclosure cannot come back through PWD' {
+    # The exact regression this feature exists to prevent, arriving through an
+    # environment variable instead of through a cwd. bash accepts ANY true name
+    # for the directory it is in - measured 2026-09-23, the junction target is
+    # echoed as happily as the junction - so the Room must be refused here.
+    $stmt = Get-LauncherStatementBlock $script:CwdInsideProfilePattern
+    $AccountName = 'egpt-sbx-08'
+    $profilePath = 'C:\Users\egpt-sbx-08'
+    $WorkingDirectory = 'C:\Users\an\.egpt\conversations\whatsapp\a-person-name-1234'
+
+    $threw = $null
+    try { Invoke-Expression $stmt } catch { $threw = $_.Exception.Message }
+
+    ($null -ne $threw) | Should Be $true
+    $threw | Should Match 'refusing'
+    $threw | Should Match 'PWD'
+    $threw | Should Match ([regex]::Escape($AccountName))
+  }
+
+  It 'and a lookalike sibling of the profile does not sneak past the prefix test' {
+    # C:\Users\egpt-sbx-08-evil starts with the profile path as a STRING. The
+    # guard compares against the path plus its separator, so it does not.
+    $stmt = Get-LauncherStatementBlock $script:CwdInsideProfilePattern
+    $AccountName = 'egpt-sbx-08'
+    $profilePath = 'C:\Users\egpt-sbx-08'
+    $WorkingDirectory = 'C:\Users\egpt-sbx-08-evil\egpt'
+
+    { Invoke-Expression $stmt } | Should Throw
+  }
+}
+
+# The Windows->msys renderer the PWD row uses. It lives in sandbox-account.ps1
+# (the dot-sourceable half) and MIRRORS src\conversations-state.mjs's
+# toMsysPath, which cannot be called from PowerShell. These are the same
+# examples tests\conversations-state.test.mjs asserts the original against, so
+# the pair cannot drift apart without one of the two suites going red.
+Describe 'ConvertTo-MsysPath (the renderer, and its parity with the JS original)' {
+  It 'renders a Windows path msys-style and leaves posix alone' {
+    ConvertTo-MsysPath 'C:\Users\an' | Should Be '/c/Users/an'
+    ConvertTo-MsysPath 'D:/work/x' | Should Be '/d/work/x'
+    ConvertTo-MsysPath '/already/posix' | Should Be '/already/posix'
+  }
+
+  It 'is idempotent, so a value that has been through it once is safe to pass again' {
+    $once = ConvertTo-MsysPath 'C:\Users\egpt-sbx-08\egpt'
+    ConvertTo-MsysPath $once | Should Be $once
+  }
+
+  It 'lowercases the drive letter only - the rest of the path keeps its case' {
+    # The pool account name is the whole value of this path, so mangling it
+    # would defeat the log line and the being would quote a name that is not its
+    # own.
+    ConvertTo-MsysPath 'C:\Users\egpt-sbx-08\egpt' | Should Be '/c/Users/egpt-sbx-08/egpt'
+  }
+
+  It 'leaves a UNC path and an empty string alone rather than inventing a drive' {
+    ConvertTo-MsysPath '\\server\share\x' | Should Be '//server/share/x'
+    ConvertTo-MsysPath '' | Should Be ''
   }
 }
 
