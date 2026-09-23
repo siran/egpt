@@ -135,6 +135,7 @@ $script:GateFPattern = "Assert-SandboxPathReachable -Path \`$TargetFolder .*-Sta
 $script:LaunchPattern = '-WorkingDirectory \$sandboxCwd'
 $script:ScrubCallPattern = '\$sandboxCwd = Clear-SandboxProfileContents'
 $script:CwdGuardPattern = 'if \(-not \$sandboxCwd\)'
+$script:SummaryPattern = 'Log \(Get-SandboxLaunchSummary '
 
 Describe 'REPRODUCE: the 2026-09-23 turn that launched into a cwd its leased account could not enter' {
   AfterEach { $script:IcaclsSpy.Clear() }
@@ -704,6 +705,33 @@ Describe 'the working directory is the mount, never the Room (the launcher wirin
     # Prose may name the generator; exactly one line may CALL it.
     (@([regex]::Matches($src, '\(Get-SandboxProfileJunctionStatement -OperatorSrc')).Count) | Should Be 1
     (@([regex]::Matches($src, '(?m)^\s*\$sandboxCwd = ')).Count) | Should Be 1
+  }
+}
+
+# The launch summary is the ONE launcher line sandbox-cli-session.mjs forwards to
+# the daemon log on a successful turn. Its content is locked in
+# sandbox-account.Tests.ps1 (Get-SandboxLaunchSummary); these lock that the
+# launcher really emits it, once, about the cwd it then launches in.
+Describe 'the launch summary line (the launcher wiring)' {
+  It 'is logged AFTER the cwd guard and BEFORE the launch - once the mount is known, while the turn can still be seen' {
+    $guard = Get-LauncherLineIndex $script:CwdGuardPattern
+    $summary = Get-LauncherLineIndex $script:SummaryPattern
+    $launch = Get-LauncherLineIndex $script:LaunchPattern
+    $summary | Should BeGreaterThan $guard
+    $launch | Should BeGreaterThan $summary
+  }
+
+  It 'the extracted statement names the LEASED account and the cwd the launch uses, read back off the disk' {
+    $stmt = Get-LauncherStatement $script:SummaryPattern
+    $logged = New-Object System.Collections.Generic.List[string]
+    function Log([string]$msg) { $logged.Add($msg) }
+    $leasedName = 'egpt-sbx-08'
+    $sandboxCwd = Join-Path (New-GateTempDir) 'egpt'   # nothing planted there
+
+    Invoke-Expression $stmt
+
+    $logged.Count | Should Be 1
+    $logged[0] | Should Be "launch account=egpt-sbx-08 cwd=$sandboxCwd junction=missing target=-"
   }
 }
 

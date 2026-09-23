@@ -792,6 +792,38 @@ function Get-SandboxProfileJunctionStatement {
   return "foreach(`$j in @($pairs)){`$s=Join-Path `$r `$j[0];ri -LiteralPath `$s -Recurse -Force -EA 0;ni -ItemType Junction -Path `$s -Target `$j[1] -EA 0 >`$null}"
 }
 
+# THE LAUNCH SUMMARY (2026-09-23): the one launcher line sandbox-cli-session.mjs
+# forwards to the daemon log on a SUCCESSFUL turn - every other launcher line
+# reaches the log only when a turn fails. Leased account, the cwd the launch is
+# handed, and what is REALLY at that cwd, read back here: the statement above
+# plants with -EA 0, so a mount that did not land is silent everywhere else.
+#   ok             a junction; target= is where it points
+#   missing        nothing there
+#   not-a-junction something there that is not the mount (target=-)
+#   unreadable     THIS process cannot look. The launcher runs as the operator,
+#                  and a pool profile is normally the account's alone (measured
+#                  on reve 2026-09-23: Access is denied on C:\Users\egpt-sbx-08),
+#                  so this is an honest "not known from here", never a guess.
+# Paths and the account name only - nothing from -SetEnv ever reaches it.
+function Get-SandboxLaunchSummary {
+  param(
+    [Parameter(Mandatory = $true)][string]$AccountName,
+    [Parameter(Mandatory = $true)][string]$Cwd
+  )
+  $junction = 'missing'
+  $target = '-'
+  try {
+    $item = Get-Item -LiteralPath $Cwd -Force -ErrorAction Stop
+    if ($item.LinkType -eq 'Junction') { $junction = 'ok'; $target = "$($item.Target)" } else { $junction = 'not-a-junction' }
+  } catch [System.Management.Automation.ItemNotFoundException] {
+    # 'missing', as initialised
+  } catch {
+    $junction = 'unreadable'
+    $target = "- ($($_.Exception.Message))"
+  }
+  return "launch account=$AccountName cwd=$Cwd junction=$junction target=$target"
+}
+
 # ---- THE LEASE LEDGER, and the ACE revoke that rides the stale-lease reclaim
 # (operator 2026-09-11). These five functions live HERE, beside
 # Get-SandboxPoolLeaseOrder, because they are lease machinery and because

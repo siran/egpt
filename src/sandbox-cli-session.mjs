@@ -34,6 +34,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import { createWarmCliSession } from './warm-cli-session.mjs';
 import { createCodexCliSession } from './codex-cli-session.mjs';
 import { createPiCliSession } from './pi-cli-session.mjs';
@@ -231,6 +232,9 @@ export function createSandboxCliSession(options = {}) {
   }
 
   const _spawn = options.spawn || nodeSpawn;   // injectable for tests, same DI convention as warm-cli-session.mjs
+  // The same hook every engine session already logs through (warm-sessions.mjs hands it to
+  // makeSession); sandboxSpawn uses it only for the launcher's launch line, see tapLaunchLine.
+  const onLog = typeof options.onLog === 'function' ? options.onLog : null;
 
   // Normalised ONCE, here, so sandboxSpawn stays a pure argv build: a non-string, an empty
   // string and an all-whitespace string all collapse to '' = "no credential", and the psArgs
@@ -411,7 +415,9 @@ export function createSandboxCliSession(options = {}) {
       // CreateProcessWithLogonW one array slot each.
       '-InnerArgs', JSON.stringify(Array.isArray(args) ? args : []),
     ];
-    return _spawn('powershell.exe', psArgs, spawnOpts);
+    const proc = _spawn('powershell.exe', psArgs, spawnOpts);
+    if (onLog) tapLaunchLine(proc?.stderr, onLog);
+    return proc;
   }
 
   if (engine === 'codex') return createCodexCliSession({ ...options, spawn: sandboxSpawn });
@@ -425,6 +431,34 @@ export function createSandboxCliSession(options = {}) {
     createWarmCliSession({ ...options, spawn: sandboxSpawn, ...(threadId ? { newSessionId: threadId } : {}) }),
     oauthToken.length,
   );
+}
+
+// THE LAUNCHER'S ONE SUCCESS-PATH LINE, FORWARDED TO THE DAEMON LOG (2026-09-23). The launcher
+// logs to stderr only, and every engine keeps stderr in a failure-tail buffer that is printed only
+// when a turn FAILS — so on a successful turn the line naming the leased account, the cwd and the
+// state of the `egpt` mount was discarded, and a being quoting the wrong `pwd` could not be
+// diagnosed. This is an EXTRA listener beside the engine's own: an EventEmitter hands every
+// listener the same chunk, so the engine's buffer is byte-identical with or without it.
+// ONE line: only the launcher's `launch` summary (sandbox-account.ps1's Get-SandboxLaunchSummary),
+// never the rest of its stderr; the listener detaches once it has it, so a long-lived warm CLI
+// pays nothing once the launch line has passed. Chunks are Buffers for pi (it never sets an encoding),
+// hence the decoder: a Room path is often a person's name, and a split multi-byte character must
+// not mangle it.
+const LAUNCH_LINE = 'sandbox-logon-launcher: launch ';
+function tapLaunchLine(stderr, onLog) {
+  if (typeof stderr?.on !== 'function') return;
+  const decoder = new StringDecoder('utf8');
+  let buf = '';
+  const tap = (chunk) => {
+    buf += typeof chunk === 'string' ? chunk : decoder.write(chunk);
+    const lines = buf.split('\n');
+    buf = lines.pop().slice(-4000);   // bounded: until the line arrives this is the CLI's stderr too
+    const hit = lines.map((l) => l.trim()).find((l) => l.startsWith(LAUNCH_LINE));
+    if (!hit) return;
+    stderr.removeListener('data', tap);
+    onLog(hit);
+  };
+  stderr.on('data', tap);
 }
 
 // Case B's other half: the resolved text of a turn the API refused gets the remedy stapled to

@@ -1365,6 +1365,63 @@ Describe 'the pool profile junctions (as the launcher scrub really plants them)'
 }
 
 # ---------------------------------------------------------------------------
+# THE LAUNCH SUMMARY LINE (2026-09-23) - the one launcher line that reaches the
+# daemon log on a SUCCESSFUL turn (sandbox-cli-session.mjs forwards it). It must
+# report what is ON DISK at the cwd, read back, never what the scrub intended:
+# the junction statement is -EA 0, so a mount that was not planted is silent
+# everywhere else. Run against a throwaway profile, planted by the real
+# statement.
+Describe 'Get-SandboxLaunchSummary (the launch line, read back off the disk)' {
+  $fakeProfile = $null
+  $room = $null
+
+  BeforeEach {
+    $fakeProfile = New-LedgerTempDir
+    $room = New-LedgerTempDir
+  }
+
+  It 'a planted mount reads junction=ok and names its REAL target' {
+    $r = $fakeProfile
+    Invoke-Expression (Get-SandboxProfileJunctionStatement -OperatorSrc (Join-Path $script:LedgerTempRoot 'no-such-src') -RoomTarget $room) | Out-Null
+    $cwd = Join-Path $fakeProfile 'egpt'
+    Get-SandboxLaunchSummary -AccountName 'egpt-sbx-08' -Cwd $cwd |
+      Should Be "launch account=egpt-sbx-08 cwd=$cwd junction=ok target=$room"
+  }
+
+  It 'NOTHING planted reads junction=missing - the silent -EA 0 failure made visible' {
+    $cwd = Join-Path $fakeProfile 'egpt'
+    Get-SandboxLaunchSummary -AccountName 'egpt-sbx-08' -Cwd $cwd |
+      Should Be "launch account=egpt-sbx-08 cwd=$cwd junction=missing target=-"
+  }
+
+  It 'a plain DIRECTORY at the cwd reads junction=not-a-junction - it is not the Room' {
+    $cwd = Join-Path $fakeProfile 'egpt'
+    New-Item -ItemType Directory -Path $cwd -Force | Out-Null
+    Get-SandboxLaunchSummary -AccountName 'egpt-sbx-08' -Cwd $cwd |
+      Should Be "launch account=egpt-sbx-08 cwd=$cwd junction=not-a-junction target=-"
+  }
+
+  It 'a cwd the CALLER cannot read says so - never missing, never ok' {
+    # The launcher runs as the operator, and a pool profile is normally not
+    # readable by the operator (measured on reve 2026-09-23: Access is denied on
+    # C:\Users\egpt-sbx-08). Reproduced here with a deny on a throwaway dir;
+    # the real icacls, not the spy, and the deny is lifted before cleanup.
+    $cwd = Join-Path $fakeProfile 'egpt'
+    New-Item -ItemType Directory -Path $cwd -Force | Out-Null
+    $icacls = Join-Path $env:SystemRoot 'System32\icacls.exe'
+    & $icacls $cwd /deny "$($env:USERNAME):(RA,REA,RD,RC)" | Out-Null
+    & $icacls $fakeProfile /deny "$($env:USERNAME):(RD)" | Out-Null
+    try {
+      Get-SandboxLaunchSummary -AccountName 'egpt-sbx-08' -Cwd $cwd |
+        Should Match ('^launch account=egpt-sbx-08 cwd=' + [regex]::Escape($cwd) + ' junction=unreadable target=- \(.+\)$')
+    } finally {
+      & $icacls $fakeProfile /remove:d $env:USERNAME | Out-Null
+      & $icacls $cwd /remove:d $env:USERNAME | Out-Null
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------
 # THE LAUNCHER'S TWO PER-LEASE GRANTS (2026-09-20). Told that the launcher still
 # wrote ACLs with Set-Acl while the provisioner had already moved to icacls, the
 # operator ruled: "i think we can use always the fast way". These two are the
