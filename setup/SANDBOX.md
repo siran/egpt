@@ -535,6 +535,22 @@ Real, current, and worth knowing before relying on any of this.
    `{}`, so the CLI layer is off and the ACE is the *only* way a shared folder is
    reachable — exactly the tiers most likely to declare one.
 
+   **A sandboxed turn gets no cwd root at all since 2026-09-23.** `confinementFor`
+   sends `osConfined: true` instead of `confineToDirs: [cwd]`. The mount alone did
+   not fix the disclosure: `--add-dir` still named the Room's real path, and the
+   CLI reports the spelling it was *told* about, so a being asked `pwd` still
+   answered `/c/Users/an/.egpt/conversations/whatsapp/<slug>`. The junction path
+   cannot replace it — it contains the leased account name, known only inside the
+   launcher, long after the spine builds argv — and it does not need to: for a
+   sandboxed being the OS box **is** the boundary, and these beings hold bare
+   `Bash`, so `--add-dir` was advisory all along. `addDirs`/`readOnlyDirs` stay,
+   because they name genuinely other locations no junction covers. Off win32
+   nothing is boxed, so the cwd root stays exactly as it was. `--setting-sources
+   ''` is retired for a sandboxed turn too (a pool account's `~` is its own
+   scrubbed profile, and `CLAUDE_CONFIG_DIR` already points elsewhere); both
+   halves of the 2026-07-03 Read-leak fix — `--permission-mode default` and file
+   tools *not* pre-approved — are kept.
+
    **Read-only is real at the OS layer since 2026-09-13.** It was not before:
    `sandboxSharePathsFor` concatenated the two classes and the launcher had one
    ACE mode, `Modify`, so a path declared read-only got a *write-capable* OS
