@@ -151,11 +151,49 @@ function allowedPathsFor(def, onLog = () => {}) {
   return { addDirs, readOnlyDirs };
 }
 
-function confinementFor(def, cwd, onLog) {
+// A SANDBOXED TURN GETS NO CWD ROOT (operator ruling 2026-09-23). The turn's cwd is a per-lease
+// junction, C:\Users\egpt-sbx-NN\egpt, that the launcher plants AFTER leasing an account — a name
+// the spine cannot know when it builds argv, and must not learn: making these two teach each
+// other about the pool would couple the CLI layer to the lease.
+//
+// WHY THE ROOT HAD TO GO, measured live 2026-09-23. The `egpt` mount landed and a sandboxed being
+// asked `pwd` still answered
+//   /c/Users/an/.egpt/conversations/whatsapp/Reencuentro CRC 1991-2026-2607161314
+// The process cwd really WAS the junction; the leak was the ARGV. `confineToDirs: [cwd]` carried
+// the Room's real path, claude-args unions every confine root into `--add-dir`, and the CLI
+// reports the spelling it was TOLD about. So the being was handed the operator's username and a
+// third party's conversation name and quoted them into a group chat - which is the whole thing
+// the mount exists to stop.
+//
+// AND DROPPING IT COSTS NOTHING, because for a sandboxed being the OS box IS the boundary
+// (operator, same day): the leased account holds an ACE on exactly the Room and its declared
+// share paths and nothing else, enforced by the kernel on every open. `--add-dir` was never a
+// boundary here anyway - these beings hold bare Bash.
+//
+// ONLY THE ROOT. `addDirs`/`readOnlyDirs` stay, because they name GENUINELY OTHER locations (the
+// node-level ~\src read-only grant) that no junction covers. Dropping them would re-create the
+// 2026-09-05 defect in reverse: the OS grants access the CLI then refuses to use. The mount is
+// the OS half of "the being may use this folder"; these are the CLI half. Either alone is a lie.
+//
+// PLATFORM FALLS OUT OF `sandboxed` FOR FREE, and that is the point of keying on it: on a
+// non-win32 node the default resolves false (see resolveSandboxed), there is no OS box, and the
+// cwd root stays exactly as it was - the CLI confinement is the only boundary there and it keeps
+// being it.
+//
+// `osConfined` IS AN EXPLICIT FIELD, not the absence of confineToDirs, for the same reason
+// `dangerouslySkipPermissions` was made one (see baseOpts): buildClaudeArgs derives "confined"
+// from it, so a sandboxed turn still gets --permission-mode default and still does NOT
+// pre-approve file tools. Only `--setting-sources ''` is retired there, deliberately - see
+// claude-args.mjs.
+function confinementFor(def, cwd, onLog, sandboxed = false) {
   if (def?.dangerously_skip_permissions === true) return {};   // the unconfined tier — no confineToDirs/addDirs/readOnlyDirs, ever
   if (!Array.isArray(def?.allowed_tools)) return {};   // defensive: post-coercion this is always a list
   const { addDirs, readOnlyDirs } = allowedPathsFor(def, onLog);
-  return { confineToDirs: [cwd], ...(addDirs.length ? { addDirs } : {}), ...(readOnlyDirs.length ? { readOnlyDirs } : {}) };
+  return {
+    ...(sandboxed === true ? { osConfined: true } : { confineToDirs: [cwd] }),
+    ...(addDirs.length ? { addDirs } : {}),
+    ...(readOnlyDirs.length ? { readOnlyDirs } : {}),
+  };
 }
 
 // THE OS-LAYER CONSUMER of the same walk: every path a being's `allowed_paths` declares, for
@@ -1038,7 +1076,10 @@ export function createBrainPool({
         sessionId: sessionId ?? null,
         // Confine-by-default: a LIST allowed_tools sandboxes file tools to the conversation
         // dir (cwd) + the def's allowed_paths; 'all' stays trusted/unconfined ({} spread).
-        ...confinementFor(def, cwd, onLog),
+        // `sandboxed` is passed because it decides WHICH confinement this turn gets: the OS box
+        // (no cwd root in argv - the cwd is a mount only the launcher can name) or the CLI's own
+        // root. Resolved above, from the same rungs everything else on this turn reads.
+        ...confinementFor(def, cwd, onLog, sandboxed === true),
         // EXPLICIT field (operator 2026-08-17, "make access_level: all finally mean what it
         // says"): buildClaudeArgs reads this to add the actual bypass flags. Named explicitly
         // rather than inferred from the absence of confineToDirs (an existing but ambiguous

@@ -95,7 +95,7 @@ describe('the pool profile gets read-only src and my-code junctions', () => {
     // $env:USERPROFILE inside the scrub payload would be the POOL ACCOUNT's home — the
     // target has to be interpolated by the launcher, which runs as the operator.
     expect(src).toMatch(/\$srcRoot = Join-Path \$env:USERPROFILE 'src'/);
-    expect(scrubScript(src)).toMatch(/\(Get-SandboxProfileJunctionStatement -OperatorSrc \$srcRoot\)/);
+    expect(scrubScript(src)).toMatch(/\(Get-SandboxProfileJunctionStatement -OperatorSrc \$srcRoot -RoomTarget \$RoomTarget\)/);
     // ...and the launcher does not spell a junction out for itself any more.
     expect(src).not.toMatch(/-ItemType Junction/);
   });
@@ -115,9 +115,20 @@ describe('the pool profile gets read-only src and my-code junctions', () => {
     expect(junction).toBeGreaterThan(report);
   });
 
-  it('each is guarded, so a second acquire is a no-op rather than an error', () => {
+  it('each is REMOVED then re-created, so a second acquire re-points rather than erroring', () => {
+    // WAS an existence guard (`if(!(Test-Path ...))`) until the `egpt` mount joined the table
+    // (2026-09-23). src and my-code have a CONSTANT target, so leaving a survivor alone was
+    // harmless; egpt's target is a different Room every lease, and a link that outlived the wipe
+    // would hand this conversation the previous one's Room. Still idempotent — three passes
+    // leave exactly three junctions, proven for real in setup/sandbox-account.Tests.ps1.
     // The payload's own $ signs are backtick-escaped in the generator's source.
-    expect(junctionGenerator(accountLib())).toMatch(/if\(!\(Test-Path -LiteralPath `\$s\)\)/);
+    const g = junctionGenerator(accountLib());
+    expect(g).toMatch(/ri -LiteralPath `\$s -Recurse -Force -EA 0/);
+    expect(g).not.toMatch(/if\(!\(Test-Path -LiteralPath `\$s\)\)/);
+    // -Recurse takes the LINK, never the target (measured 2026-08-26, re-measured 2026-09-23);
+    // without it Remove-Item PROMPTS on a junction with a non-empty target and the
+    // -NonInteractive scrub child throws instead. Both halves are locked in the Pester suite.
+    expect((g.match(/ri -LiteralPath/g) || []).length).toBe(1);
   });
 
   it('the payload stays inside the 1024-character CreateProcessWithLogonW budget', () => {

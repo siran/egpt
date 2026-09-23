@@ -732,10 +732,32 @@ describe('brainpool.turn — appendSystemPrompt is the def system_prompt alone',
 // Read every value that follows a given flag in a flat argv.
 const argVals = (args, flag) => args.reduce((acc, a, i) => (a === flag ? [...acc, args[i + 1]] : acc), []);
 
+// A CONFINED TURN IS CONFINED EITHER WAY; WHICH way is the node's business, not the tier's
+// (2026-09-23). On a boxed node the OS is the boundary and there is no cwd root to name — the
+// junction the turn actually runs in is a per-lease path the spine cannot know — so the tier is
+// declared by `osConfined` instead. Off win32 nothing boxes the turn and the CLI root is still
+// the boundary. Tests whose subject is "this tier is CONFINED, not the unconfined one" assert
+// through here, so they keep testing exactly that and nothing about the platform they run on;
+// the two spellings themselves are pinned, per platform, in the 2026-09-23 describe below.
+const expectConfined = (opts) => {
+  if (opts.sandboxed) {
+    expect(opts.osConfined).toBe(true);
+    expect(opts.confineToDirs).toBeUndefined();
+  } else {
+    expect(opts.confineToDirs).toEqual([opts.cwd]);
+    expect(opts.osConfined).toBeUndefined();
+  }
+};
+
 describe('brainpool.turn — confine-by-default (allowed_tools list) + allowed_paths', () => {
+  // PLATFORM PINNED TO AN UNBOXED NODE throughout this describe (2026-09-23). These four assert
+  // the CLI-ROOT argv end to end, which is what a node with no OS box still gets and must go on
+  // getting. The BOXED shape of the same cases — where the cwd root is deliberately absent — is
+  // asserted in its own describe below; before that describe existed these read process.platform
+  // and silently asserted whichever shape the machine running them happened to produce.
   it('a LIST allowed_tools def → brainOptions carry confineToDirs [the conversation dir]; buildClaudeArgs sandboxes it', async () => {
     const brains = { resolve: () => ({ name: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: ['Read', 'Grep', 'WebFetch'] }) };
-    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains });
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains, platform: 'linux' });
     await brain.turn('e', ev);
     const opts = pool.calls[0].brainOptions;
     expect(opts.confineToDirs).toEqual([opts.cwd]);            // confined to the conversation dir
@@ -759,7 +781,7 @@ describe('brainpool.turn — confine-by-default (allowed_tools list) + allowed_p
         '/c/work/reference': { allowed_tools: ['Read', 'Glob', 'Grep'] },   // READ-ONLY (omits write tools)
       },
     }) };
-    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains });
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains, platform: 'linux' });
     await brain.turn('e', ev);
     const opts = pool.calls[0].brainOptions;
     expect(opts.confineToDirs).toEqual([opts.cwd]);
@@ -791,7 +813,7 @@ describe('brainpool.turn — confine-by-default (allowed_tools list) + allowed_p
 
   it("'all' def is REJECTED → coerced to the explicit list, CONFINED, no bypass (operator 2026-07-03)", async () => {
     const brains = { resolve: () => ({ name: 'egpt', type: 'ccode', allowed_tools: 'all' }) };
-    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains });
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains, platform: 'linux' });
     await brain.turn('e', ev);
     const opts = pool.calls[0].brainOptions;
     // 'all' now behaves exactly like the default list: confined to the conversation dir,
@@ -801,6 +823,159 @@ describe('brainpool.turn — confine-by-default (allowed_tools list) + allowed_p
     const args = buildClaudeArgs(opts);
     expect(args).not.toContain('--dangerously-skip-permissions');
     expect(argVals(args, '--add-dir')).toEqual([opts.cwd]);    // confined — the conversation dir is a root
+  });
+});
+
+// ── AN OS-SANDBOXED TURN NAMES NO CWD IN ITS ARGV (operator ruling 2026-09-23).
+//
+//    THE LIVE FAILURE. The `egpt` mount shipped, and a sandboxed being asked `pwd` in WhatsApp
+//    still answered
+//      /c/Users/an/.egpt/conversations/whatsapp/Reencuentro CRC 1991-2026-2607161314
+//    The lease really happened and the process cwd really WAS the junction — the leak was the
+//    ARGV. confinementFor sent `confineToDirs: [cwd]` with the Room's REAL path, claude-args
+//    unions every confine root into `--add-dir`, and the CLI reports the spelling it was told
+//    about. So the being was handed the operator's username and a third party's conversation
+//    name, and quoted them into a group chat.
+//
+//    WHY THE ROOT CANNOT SIMPLY BE RESPELLED: the junction path contains the LEASED ACCOUNT
+//    NAME, known only inside the launcher, long after the spine built this argv.
+//
+//    WHAT REPLACES IT: nothing, because nothing was holding. For a sandboxed being the OS box IS
+//    the boundary — the leased account's ACE covers the Room and its declared share paths and
+//    nothing else, on every open — and these beings hold bare Bash, so `--add-dir` was advisory
+//    all along. `addDirs`/`readOnlyDirs` STAY: those name genuinely other locations no junction
+//    covers, and dropping them would re-create the 2026-09-05 defect in reverse.
+//
+//    EVERY TEST HERE PINS `platform` EXPLICITLY, because that is what decides whether a turn is
+//    boxed at all: unset resolves win32-only (resolveSandboxed rung 4), so the same def is
+//    OS-sandboxed on reve and CLI-confined on a posix node, and both shapes are asserted. ──
+describe('brainpool.turn — a sandboxed turn hands the CLI no path it should not quote (2026-09-23)', () => {
+  // The node-level read-only grant from migration 0015 is the realistic case: a path that IS
+  // under the operator's profile and IS deliberately declared, beside a cwd that is neither.
+  const declaresSrc = { resolve: () => ({
+    name: 'egpt', type: 'ccode', allowed_tools: ['Read', 'Grep', 'WebFetch'],
+    allowed_paths: { '/c/Users/an/src': { allowed_tools: ['Read', 'Glob', 'Grep'] } },
+  }) };
+  const declaresNothing = { resolve: () => ({ name: 'egpt', type: 'ccode', allowed_tools: ['Read', 'Grep', 'WebFetch'] }) };
+  // Every argv element that names somewhere under a user profile. The assertion the ruling is
+  // actually about: the ONLY such paths may be ones the being's own allowed_paths declared.
+  const userPaths = (args) => args.filter((a) => typeof a === 'string' && /^[A-Za-z]:[\\/]Users[\\/]/i.test(a));
+
+  it('REPRODUCE: the conversation folder appears NOWHERE in a sandboxed turn\'s argv', async () => {
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains: declaresNothing, platform: 'win32' });
+    await brain.turn('e', ev);
+    const opts = pool.calls[0].brainOptions;
+    expect(opts.sandboxed).toBe(true);
+    expect(opts.confineToDirs).toBeUndefined();     // the leaking value is simply not produced
+    expect(opts.osConfined).toBe(true);             // ...and the permission tier is still declared
+
+    const args = buildClaudeArgs(opts);
+    expect(argVals(args, '--add-dir')).not.toContain(opts.cwd);
+    // Not merely absent as an --add-dir VALUE: absent from the argv altogether.
+    expect(args.some((a) => typeof a === 'string' && a.includes(opts.cwd))).toBe(false);
+    // With nothing declared, the argv names no user profile at all.
+    expect(userPaths(args)).toEqual([]);
+  });
+
+  it('REPRODUCE: a declared allowed_path still reaches --add-dir — and is the ONLY user path there', async () => {
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains: declaresSrc, platform: 'win32' });
+    await brain.turn('e', ev);
+    const opts = pool.calls[0].brainOptions;
+    const args = buildClaudeArgs(opts);
+
+    // The CLI half of the node-level grant survives...
+    expect(argVals(args, '--add-dir')).toEqual(['C:/Users/an/src']);
+    // ...and it is the only thing under a profile the being is told about. The cwd is not.
+    expect(userPaths(args)).toEqual(['C:/Users/an/src']);
+    expect(args.some((a) => typeof a === 'string' && a.includes(opts.cwd))).toBe(false);
+  });
+
+  it('a FULL-ACCESS allowed_path still reaches --add-dir inside the box, and still carries no deny rule', async () => {
+    // The other grant class, kept because the launcher ACEs it Modify: the CLI must agree that
+    // the being may use it. Only the cwd root went.
+    const both = { resolve: () => ({
+      name: 'egpt', type: 'ccode', allowed_tools: ['Read', 'Edit'],
+      allowed_paths: { '/c/work/project': null, '/c/Users/an/src': { allowed_tools: ['Read', 'Glob', 'Grep'] } },
+    }) };
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains: both, platform: 'win32' });
+    await brain.turn('e', ev);
+    const opts = pool.calls[0].brainOptions;
+    expect(opts.addDirs).toEqual(['C:/work/project']);
+    const args = buildClaudeArgs(opts);
+    expect(argVals(args, '--add-dir')).toEqual(['C:/work/project', 'C:/Users/an/src']);
+    expect(args.some((a) => typeof a === 'string' && a.includes(opts.cwd))).toBe(false);
+    const deny = JSON.parse(argVals(args, '--settings')[0]).permissions.deny;
+    expect(deny.some((r) => r.includes('C:/work/project'))).toBe(false);
+  });
+
+  it('a read-only grant keeps its deny rules inside the box — the OS half and the CLI half agree', async () => {
+    // Dropping addDirs/readOnlyDirs would re-create 0015's failure in reverse: the launcher ACEs
+    // the path ReadAndExecute while the CLI refuses to use it.
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains: declaresSrc, platform: 'win32' });
+    await brain.turn('e', ev);
+    const opts = pool.calls[0].brainOptions;
+    expect(opts.readOnlyDirs).toEqual(['C:/Users/an/src']);
+    const deny = JSON.parse(argVals(buildClaudeArgs(opts), '--settings')[0]).permissions.deny;
+    expect(deny).toContain('Write(C:/Users/an/src/**)');
+    expect(deny).toContain('Edit(C:/Users/an/src/**)');
+  });
+
+  it('BOTH HALVES OF THE 2026-07-03 READ-LEAK FIX SURVIVE the sandboxed tier', async () => {
+    // --permission-mode default, and file tools NOT pre-approved (an allow-list entry bypasses
+    // the path check, which is exactly how Read once leaked). Only --setting-sources '' is
+    // retired, and that on purpose.
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains: declaresNothing, platform: 'win32' });
+    await brain.turn('e', ev);
+    const args = buildClaudeArgs(pool.calls[0].brainOptions);
+
+    expect(argVals(args, '--permission-mode')).toEqual(['default']);
+    const allow = argVals(args, '--allowedTools')[0].split(' ');
+    expect(allow).toContain('WebFetch');          // non-file tool pre-approved
+    expect(allow).not.toContain('Read');          // file tool stays engine-checked
+    expect(allow).not.toContain('Grep');
+    expect(args).not.toContain('--dangerously-skip-permissions');
+    // The one retirement, deliberate: a pool account's ~ is its own scrubbed profile.
+    expect(argVals(args, '--setting-sources')).toEqual([]);
+  });
+
+  it('REGRESSION: an UNBOXED node is untouched — the CLI root is still the boundary there', async () => {
+    // resolveSandboxed rung 4 answers false off win32, there is no OS box, and every flag is
+    // exactly what it was before this change.
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains: declaresSrc, platform: 'linux' });
+    await brain.turn('e', ev);
+    const opts = pool.calls[0].brainOptions;
+    expect(opts.sandboxed).toBe(false);
+    expect(opts.confineToDirs).toEqual([opts.cwd]);
+    expect(opts.osConfined).toBeUndefined();
+
+    const args = buildClaudeArgs(opts);
+    expect(argVals(args, '--add-dir')).toEqual([opts.cwd, 'C:/Users/an/src']);
+    expect(argVals(args, '--setting-sources')).toEqual(['']);
+    expect(argVals(args, '--permission-mode')).toEqual(['default']);
+  });
+
+  it('REGRESSION: the unconfined tier is byte-identical, boxed or not', async () => {
+    // dangerously_skip_permissions returns {} from confinementFor, so it never sees osConfined
+    // and never picks up --permission-mode default from the confined branch.
+    const unconfined = { resolve: () => ({ name: 'egpt', type: 'ccode', dangerously_skip_permissions: true, allowed_tools: ['Bash', 'Agent'] }) };
+    const boxed = harness([{ text: 'ok', sessionId: 's' }], { brains: unconfined, platform: 'win32' });
+    await boxed.brain.turn('e', ev);
+    const unboxed = harness([{ text: 'ok', sessionId: 's' }], { brains: unconfined, platform: 'linux' });
+    await unboxed.brain.turn('e', ev);
+
+    for (const pool of [boxed.pool, unboxed.pool]) {
+      const opts = pool.calls[0].brainOptions;
+      expect(opts.confineToDirs).toBeUndefined();
+      expect(opts.osConfined).toBeUndefined();
+      const args = buildClaudeArgs(opts);
+      expect(args).toContain('--dangerously-skip-permissions');
+      expect(argVals(args, '--permission-mode')).toEqual(['bypassPermissions']);
+      expect(argVals(args, '--setting-sources')).toEqual([]);
+      expect(argVals(args, '--add-dir')).toEqual([]);
+      expect(argVals(args, '--allowedTools')).toEqual(['Bash Agent']);
+    }
+    expect(buildClaudeArgs(boxed.pool.calls[0].brainOptions))
+      .toEqual(buildClaudeArgs(unboxed.pool.calls[0].brainOptions));
   });
 });
 
@@ -855,7 +1030,7 @@ describe('brainpool.turn — dangerously_skip_permissions:true skips coercion + 
     await brain.turn('e', ev);
     const opts = pool.calls[0].brainOptions;
     expect(opts.allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);   // 'all' still rejected → coerced
-    expect(opts.confineToDirs).toEqual([opts.cwd]);              // still confined
+    expectConfined(opts);                                        // still confined
   });
 
   it('REGRESSION: dangerously_skip_permissions: false (explicit) behaves exactly like absent — coerced + confined', async () => {
@@ -864,7 +1039,7 @@ describe('brainpool.turn — dangerously_skip_permissions:true skips coercion + 
     await brain.turn('e', ev);
     const opts = pool.calls[0].brainOptions;
     expect(opts.allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);
-    expect(opts.confineToDirs).toEqual([opts.cwd]);
+    expectConfined(opts);
   });
 });
 
@@ -901,7 +1076,7 @@ describe('brainpool.turn — accessLevel override (operator 2026-08-14, was /e a
     await brain.turn('e', ev);
     const opts = pool.calls[0].brainOptions;
     expect(opts.allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);   // overrides the instanced dangerously_skip_permissions:true def entirely
-    expect(opts.confineToDirs).toEqual([opts.cwd]);             // confined, not the def's own unconfined tier
+    expectConfined(opts);                                        // confined, not the def's own unconfined tier
     expect(opts.dangerouslySkipPermissions).toBe(false);        // the override's dangerouslySkipPermissions:false wins, not the def's own true
   });
 
@@ -917,7 +1092,7 @@ describe('brainpool.turn — accessLevel override (operator 2026-08-14, was /e a
     expect(pool.calls[0].brainOptions.allowedTools).toEqual(['Read', 'Bash']);
     expect(pool.calls[0].brainOptions.confineToDirs).toBeUndefined();
     expect(pool.calls[1].brainOptions.allowedTools).toEqual(['Read', 'Grep']);
-    expect(pool.calls[1].brainOptions.confineToDirs).toEqual([pool.calls[1].brainOptions.cwd]);
+    expectConfined(pool.calls[1].brainOptions);
   });
 
   // REWRITTEN (operator 2026-08-16 structural gate): the old premise — a sibling with NO
@@ -937,7 +1112,7 @@ describe('brainpool.turn — accessLevel override (operator 2026-08-14, was /e a
     await brain.turn('wren', ev);
     const opts = pool.calls[0].brainOptions;
     expect(opts.allowedTools).toEqual(['Read', 'Grep']);          // wren's OWN 'regular' grant, not the persona's 'all' one
-    expect(opts.confineToDirs).toEqual([opts.cwd]);                // confined — never the persona's unconfined tier
+    expectConfined(opts);                                          // confined — never the persona's unconfined tier
   });
 
   // REPRODUCE-FIRST (phase 2): before this change, the accessLevel override was gated on
@@ -975,7 +1150,7 @@ describe('brainpool.turn — accessLevel override (operator 2026-08-14, was /e a
     expect(seenLevel).toBe('regular');     // the override block DOES run now, on the resolved default
     expect(pool.calls).toHaveLength(1);    // the turn reaches the engine
     expect(pool.calls[0].brainOptions.allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);
-    expect(pool.calls[0].brainOptions.confineToDirs).toEqual([pool.calls[0].brainOptions.cwd]);   // confined
+    expectConfined(pool.calls[0].brainOptions);                  // confined
   });
 
   it('end-to-end with the REAL config/permissions/*.md files (no injected loadPermission): all → dangerously_skip_permissions + bare Bash/Agent, regular → confined DEFAULT_ALLOWED_TOOLS', async () => {
@@ -995,7 +1170,7 @@ describe('brainpool.turn — accessLevel override (operator 2026-08-14, was /e a
     await regular.brain.turn('e', ev);
     const optsRegular = regular.pool.calls[0].brainOptions;
     expect(optsRegular.allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);
-    expect(optsRegular.confineToDirs).toEqual([optsRegular.cwd]);
+    expectConfined(optsRegular);
     expect(optsRegular.dangerouslySkipPermissions).toBe(false); // regular.md's dangerously_skip_permissions: false
     expect(buildClaudeArgs(optsRegular)).not.toContain('--dangerously-skip-permissions');
   });
@@ -1024,7 +1199,7 @@ describe('brainpool.turn — STRUCTURAL SAFETY GATE (operator 2026-08-16, refine
     const out = await brain.turn('e', ev);   // AFTER: no longer throws
     expect(out.text).toBe('ok');
     expect(pool.calls).toHaveLength(1);      // the engine WAS invoked, confined as 'regular'
-    expect(pool.calls[0].brainOptions.confineToDirs).toEqual([pool.calls[0].brainOptions.cwd]);
+    expectConfined(pool.calls[0].brainOptions);
   });
 
   it("accessLevel 'all' with NO allowed_users at either tier → refuses", async () => {
@@ -1293,7 +1468,7 @@ describe("brainpool.turn — access_level 'sandbox' (operator 2026-09-05)", () =
     const opts = pool.calls[0].brainOptions;
     expect(opts.allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);
     expect(opts.dangerouslySkipPermissions).toBe(false);
-    expect(opts.confineToDirs).toEqual([opts.cwd]);
+    expectConfined(opts);
   });
 
   it("REGRESSION: the platform-aware `sandboxed` default is untouched for every level that is not 'sandbox'", async () => {
@@ -1691,7 +1866,7 @@ describe('brainpool.turn — accessLevel GLOBAL-DEFAULT tier (operator 2026-08-1
     await brain.turn('e', ev);
     const opts = pool.calls[0].brainOptions;
     expect(opts.allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);   // per-conversation 'regular' wins, NOT the global 'all'
-    expect(opts.confineToDirs).toEqual([opts.cwd]);             // confined, not the global tier's unconfined grant
+    expectConfined(opts);                                        // confined, not the global tier's unconfined grant
   });
 
   // REWRITTEN (operator 2026-08-20): "neither tier set" used to REFUSE outright (the 2026-08-16
@@ -1739,7 +1914,10 @@ describe('brainpool.turn — dangerously_skip_permissions:true escalation hole i
 
     const spy = vi.spyOn(ConversationRoom.prototype, 'baseDir').mockReturnValue(convDir);
     try {
-      const { brain, pool } = harness([{ text: 'ok', sessionId: 'w1' }], { brains: realBrains, config });
+      // platform pinned: this asserts the CLI-root argv, which is the unboxed node's shape.
+      // The hole it guards — a conv-local dangerously_skip_permissions must never unconfine —
+      // is platform-independent and is what the assertions below are actually about.
+      const { brain, pool } = harness([{ text: 'ok', sessionId: 'w1' }], { brains: realBrains, config, platform: 'linux' });
       await brain.turn('wren', ev);
       const opts = pool.calls[0].brainOptions;
       // the hole: dangerously_skip_permissions:true from the conv-local layer must NOT reach

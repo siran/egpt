@@ -224,8 +224,10 @@ describe('sandboxed CLI memory — the jsonl store lives at ~/.egpt-jsonl/<threa
 describe('sandboxed CLI memory — the locks this fix must not break', () => {
   it('LOCK: the scrub stays TOTAL — step (f) still runs on every lease acquire and still deletes every child of the pool profile', () => {
     const ps1 = readFileSync(join(REPO, 'setup', 'sandbox-logon-launcher.ps1'), 'utf8');
-    // Called unconditionally, in the acquire path, before InnerBin.
-    expect(ps1).toMatch(/^\s*Clear-SandboxProfileContents -AccountName \$leasedName/m);
+    // Called unconditionally, in the acquire path, before InnerBin. Its RETURN is captured
+    // since 2026-09-23: the same pass plants the `egpt` mount that is the turn's working
+    // directory, so the cwd and the scrub cannot drift apart.
+    expect(ps1).toMatch(/^\s*\$sandboxCwd = Clear-SandboxProfileContents -AccountName \$leasedName/m);
     // ...and it still empties EVERYTHING: Get-ChildItem -Force piped straight into Remove-Item,
     // with no -Exclude and no per-path exemption. An exemption here is the one fix that was
     // explicitly ruled out — pool accounts are reused across conversations, so anything spared

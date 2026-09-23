@@ -12,6 +12,13 @@
 //                                     --add-dir <roots>; file tools are NOT
 //                                     pre-approved (so they stay path-confined),
 //                                     only non-file tools are allow-listed.
+//   osConfined (the OS box IS the   → the SAME tier minus the two things the box
+//     boundary; no cwd root exists    makes meaningless: no --add-dir for a cwd
+//     to name)                        (it is a per-lease junction the spine cannot
+//                                     name) and no --setting-sources "" (the
+//                                     account's ~ is its own scrubbed profile).
+//                                     --permission-mode default and the
+//                                     file-tools-not-pre-approved rule BOTH stay.
 //   allowedTools 'all'|'*'          → REJECTED (operator 2026-07-03): coerced to
 //                                     DEFAULT_ALLOWED_TOOLS and routed through the
 //                                     list path — NO bypass tier, no bare Bash/Agent.
@@ -88,7 +95,16 @@ export function buildClaudeArgs(options = {}) {
 
   const readOnlyDirs = _cleanList(options.readOnlyDirs);
   const confineRoots = _cleanList(options.confineToDirs);
-  const confined = confineRoots.length > 0;
+  // CONFINED IN THE PERMISSION SENSE, WITH NO ROOT TO NAME (operator ruling 2026-09-23). An
+  // OS-sandboxed turn runs as a leased pool account whose cwd is a per-lease junction the spine
+  // cannot know, so brainpool's confinementFor sends `osConfined: true` INSTEAD of
+  // `confineToDirs: [cwd]` - naming that cwd is what leaked the operator's username and a third
+  // party's conversation name into group chats. An EXPLICIT field, not the absence of roots, for
+  // the same reason `dangerouslySkipPermissions` is one: this decides the permission tier, and a
+  // tier must not be inferred from a missing value. The unconfined tier never sets it
+  // (confinementFor returns {} for dangerously_skip_permissions), so a bypass turn is untouched.
+  const osConfined = options.osConfined === true;
+  const confined = confineRoots.length > 0 || osConfined;
 
   // dangerouslySkipPermissions:true (see the header mapping above) — the actual bypass, IN
   // ADDITION to whatever --allowedTools push happens below. Only ever set true by
@@ -120,7 +136,22 @@ export function buildClaudeArgs(options = {}) {
       // the path check, exactly how Read once leaked); pre-approve only non-file
       // tools. --setting-sources '' so beings don't inherit the operator's personal
       // ~/.claude (esp. its MCP servers, whose schemas bloat every turn).
-      args.push('--setting-sources', '');
+      //
+      // ...AND IT IS RETIRED FOR AN OS-SANDBOXED TURN (operator ruling 2026-09-23), deliberately
+      // and not as collateral. It was added 2026-06-23, two and a half months BEFORE the OS
+      // sandbox, when beings ran AS THE OPERATOR and `~/.claude` really was the operator's. A
+      // leased pool account's `~` is its own scrubbed profile, and a sandboxed turn also gets
+      // CLAUDE_CONFIG_DIR pointed at ~/.egpt-jsonl/<threadId>, so there is nothing of the
+      // operator's left to inherit - all this still blocked was the being's own project/local
+      // settings. The operator ruled a being configuring itself from a non-`an` account
+      // acceptable: whatever it adds runs as the pool account, which already has Bash and
+      // network, and it cannot use settings to defeat a read-only grant because those paths are
+      // ACE'd ReadAndExecute at the kernel too.
+      if (!osConfined) args.push('--setting-sources', '');
+      // BOTH HALVES OF THE 2026-07-03 READ-LEAK FIX STAY, sandboxed or not: --permission-mode
+      // default (the engine enforces rather than auto-approving) and file tools NOT pre-approved
+      // below (an allow-list entry bypasses the path check, which is exactly how Read once
+      // leaked). Retiring those is not what the cwd-root ruling asked for and would re-open it.
       args.push('--permission-mode', 'default');
       const preApprove = list.filter((t) => !FILE_TOOLS.has(t.toLowerCase()));
       if (preApprove.length) args.push('--allowedTools', preApprove.join(' '));
