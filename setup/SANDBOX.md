@@ -401,10 +401,24 @@ Real, current, and worth knowing before relying on any of this.
    `Not logged in · Please run /login` — which is this gap, not a launcher fault.
 
 2. **`-SetEnv` and the environment block.** The launcher builds a per-user
-   environment block (`LogonUser` → `CreateEnvironmentBlock` → overlay →
+   environment block (`CreateEnvironmentBlock(NULL)` → rebase → overlay →
    `CREATE_UNICODE_ENVIRONMENT`), so a per-turn credential such as
    `CLAUDE_CODE_OAUTH_TOKEN` is injected without touching disk or a machine-wide
    variable. Values are never logged, only names.
+
+   **There is no second `LogonUser` any more** — removed 2026-09-23, after turns
+   started dying with `CreateEnvironmentBlock ... Win32 error 5`
+   (`ERROR_ACCESS_DENIED`) on a different pool account each time. Rendering a
+   block *from that account's token* means reading `HKEY_USERS\<their SID>` once
+   their hive is loaded, and the unelevated launcher may not: its
+   `BUILTIN\Administrators` is deny-only, and the two ways in need
+   `SeImpersonatePrivilege` or `SeBackup`/`SeRestore`, none of which it holds.
+   So the call succeeded only while the hive happened to be *unloaded* (userenv
+   then fell back to the Default profile — the very corruption the rebase below
+   exists to undo) and failed whenever it was loaded, which the scrub pass makes
+   likely and random. The block is now rendered with `hToken = NULL`: system
+   variables only, no user hive read, no privilege, no logon. Everything
+   per-user comes from the rebase, which was already the authority for it.
 
    **The block is rebased on the account's own profile** — fixed 2026-09-05
    after the first smoke test caught it corrupting the environment. Worth
@@ -424,9 +438,18 @@ Real, current, and worth knowing before relying on any of this.
    `C:\Users\Default`.
 
    The fix overlays `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `TEMP`, `TMP`,
-   `HOMEDRIVE`, `HOMEPATH`, `USERNAME`, `USERDOMAIN` onto the block, derived from
+   `HOMEDRIVE`, `HOMEPATH`, `USERNAME`, `USERDOMAIN` — and, since the token went,
+   `USERDOMAIN_ROAMINGPROFILE` and `LOGONSERVER`, both this machine's own name
+   because a pool account is local — onto the block, derived from
    the profile path `Get-SandboxProfilePath` resolves — the same guarded
    `Win32_UserProfile` lookup the scrub uses, now shared rather than copied.
+   Measured 2026-09-23, the `NULL` block against a real user token's: `NULL`
+   carried 29 entries, every one of them also in the token block; the token
+   block's extra 11 were those names plus `SESSIONNAME` and three values out of
+   that user's own `HKCU\Environment`. **`SESSIONNAME` is the one name the child
+   no longer gets** — it is not derivable here and is deliberately not invented.
+   Losing the `HKCU\Environment` values is a gain: that hive survives the scrub
+   by design, so a `setx` in one conversation used to reach the next one.
    **Not** `LoadUserProfile`: that needs `SE_RESTORE_NAME`/`SE_BACKUP_NAME`, and
    this launcher's premise is that it needs no privilege at all. That premise was
    confirmed the same day — with those two privileges stripped from the caller's
@@ -538,6 +561,13 @@ Real, current, and worth knowing before relying on any of this.
 **`ERROR_ACCESS_DENIED` from `CreateProcessWithLogonW`** — the pool group has
 lost `ReadAndExecute` on the binary's directory. Re-run
 `provision-sandbox-account.ps1`.
+
+**`CreateEnvironmentBlock for 'egpt-sbx-NN' failed, Win32 error 5`** — the
+pre-2026-09-23 shape: the block was rendered from a second `LogonUser` token,
+which means reading that account's registry hive, which an unelevated caller may
+not do once the hive is loaded. Gone — the block is rendered with `hToken = NULL`
+now. If this reappears, the launcher on that node is stale; see gap 2. It is
+never a reason to elevate the daemon or to grant it a privilege.
 
 **`Win32 error 267` from `CreateProcessWithLogonW`** — `ERROR_DIRECTORY`: the
 `lpCurrentDirectory` handed to the call is not reachable **by the target

@@ -335,6 +335,288 @@ Describe 'the launcher wiring (the statements the launcher really runs)' {
   }
 }
 
+# ---------------------------------------------------------------------------
+# THE -SetEnv ENVIRONMENT BLOCK (2026-09-23). Second live failure, different
+# from the 267 above and NOT a regression of it:
+#   2026-09-23 12:35:44  turn ken/o1TO4f1is79x0uJ3eYEv: claude exited 1 mid-turn
+#     + FullyQualifiedErrorId : sandbox-logon-launcher:
+#       CreateEnvironmentBlock for 'egpt-sbx-08' failed, Win32 error 5
+# A DIFFERENT pool account each time - egpt-sbx-12, then -05, then -08 - so not
+# one broken account. 5 is ERROR_ACCESS_DENIED, raised inside userenv.
+#
+# THE CAUSE, measured on reve 2026-09-23, unelevated and read-only:
+#   HKU\S-1-5-21-...-1013 (= reve\egpt-sbx-09, its hive loaded at that moment)
+#     -> "Requested registry access is not allowed"
+#   the operator's OWN hive, same call  -> opened, 6 values
+#   this session's privileges: SeShutdown, SeChangeNotify, SeUndock,
+#     SeIncreaseWorkingSet, SeTimeZone - no SeImpersonate, no SeBackup/SeRestore
+#   IsInRole(Administrator) -> False  (unelevated: Administrators is deny-only)
+# CreateEnvironmentBlock(hToken) has to read HKEY_USERS\<that SID> once the
+# account's hive is LOADED. This caller may not, and may not impersonate or
+# load its way in either. Hive not loaded -> userenv falls back to the DEFAULT
+# profile and the call succeeds (which is the C:\Users\Default measurement the
+# launcher already carried); hive loaded -> ACCESS_DENIED and the turn dies.
+# The scrub pass is a LOGON_WITH_PROFILE logon as that same account moments
+# earlier, and its unload is not instant - hence random, hence any account.
+#
+# THE FIX under test: the second logon is gone and the block is rendered with
+# hToken = NULL, which reads no user hive at all. Every per-user name is
+# supplied by the rebase that already existed.
+#
+# HOW THIS IS TESTED WITHOUT A LOGON. Two seams, both honest:
+#  - the P/Invoke seam is FAKED by a [SandboxLogon] type defined here whose
+#    CreateEnvironmentBlock encodes the measured rule: a NULL token succeeds, a
+#    USER token is refused. The launcher's own statement is then EXTRACTED from
+#    its source and run against it, so a copy pasted in here could not pass
+#    while the shipped script still asked for a user token.
+#  - the facts the fix RESTS on are measured against the REAL userenv in this
+#    process: CreateEnvironmentBlock(NULL) needs no logon, no account and no
+#    privilege, and writes nothing, so calling it touches nothing.
+if (-not ([System.Management.Automation.PSTypeName]'SandboxLogon').Type) {
+  Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+// A STAND-IN for the launcher's inline P/Invoke class, with the same three
+// signatures the environment-block path uses. It never calls Windows.
+public static class SandboxLogon {
+  public static List<IntPtr> EnvBlockTokensSeen = new List<IntPtr>();
+  public static int LogonUserCalls = 0;
+  // THE MEASURED RULE, encoded: rendering a block from a USER token means
+  // reading that user's hive, which the unelevated launcher may not do.
+  public static bool CreateEnvironmentBlock(out IntPtr lpEnvironment, IntPtr hToken, bool bInherit) {
+    EnvBlockTokensSeen.Add(hToken);
+    if (hToken != IntPtr.Zero) { lpEnvironment = IntPtr.Zero; return false; }
+    lpEnvironment = Marshal.StringToHGlobalUni("SystemRoot=C:\\WINDOWS\0USERPROFILE=C:\\Users\\Default\0\0");
+    return true;
+  }
+  public static bool DestroyEnvironmentBlock(IntPtr p) { if (p != IntPtr.Zero) Marshal.FreeHGlobal(p); return true; }
+  public static bool LogonUser(string u, string d, string p, int t, int pr, out IntPtr tok) {
+    LogonUserCalls++; tok = new IntPtr(1234); return true;
+  }
+}
+'@
+}
+# The REAL userenv, under its own name so the fake above can keep the
+# launcher's. Used only for the two measurements the fix rests on.
+if (-not ([System.Management.Automation.PSTypeName]'SandboxEnvProbe').Type) {
+  Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class SandboxEnvProbe {
+  [DllImport("userenv.dll", SetLastError = true)]
+  public static extern bool CreateEnvironmentBlock(out IntPtr lpEnvironment, IntPtr hToken, bool bInherit);
+  [DllImport("userenv.dll", SetLastError = true)]
+  public static extern bool DestroyEnvironmentBlock(IntPtr lpEnvironment);
+}
+'@
+}
+# Walk a Win32 environment block: NUL-terminated UTF-16 NAME=VALUE runs, one
+# extra NUL closing the block. The same walk the launcher does.
+function Read-EnvBlock([IntPtr]$Block) {
+  $o = 0
+  $out = New-Object System.Collections.Generic.List[string]
+  while ($true) {
+    $s = [Runtime.InteropServices.Marshal]::PtrToStringUni([IntPtr]::Add($Block, $o))
+    if ([string]::IsNullOrEmpty($s)) { break }
+    [void]$out.Add($s)
+    $o += ($s.Length + 1) * 2
+  }
+  return $out
+}
+# The REAL system-variables block, read once. No token, no logon, no write.
+function Get-RealSystemEnvBlock {
+  $b = [IntPtr]::Zero
+  if (-not [SandboxEnvProbe]::CreateEnvironmentBlock([ref]$b, [IntPtr]::Zero, $false)) { return $null }
+  try { return @(Read-EnvBlock $b) } finally { [SandboxEnvProbe]::DestroyEnvironmentBlock($b) | Out-Null }
+}
+# A MULTI-LINE extraction, because these statements are not one line. Starts at
+# the single line matching $Pattern and takes following lines until the
+# accumulated text PARSES as a complete statement - so it is the shipped code
+# and never a guess about where it ends.
+function Get-LauncherStatementBlock([string]$Pattern) {
+  $start = @(0..($script:LauncherLines.Count - 1) | Where-Object { $script:LauncherLines[$_] -match $Pattern })
+  if ($start.Count -ne 1) { throw "expected exactly ONE launcher line matching /$Pattern/, found $($start.Count)" }
+  $i = $start[0]
+  for ($n = 1; $n -le 60; $n++) {
+    if (($i + $n - 1) -ge $script:LauncherLines.Count) { break }
+    $text = ($script:LauncherLines[$i..($i + $n - 1)]) -join "`r`n"
+    $errs = $null
+    [void][System.Management.Automation.Language.Parser]::ParseInput($text, [ref]$null, [ref]$errs)
+    if (@($errs).Count -eq 0) { return $text }
+  }
+  throw "could not complete a statement starting at launcher line $($i + 1) for /$Pattern/"
+}
+$script:EnvBlockCallPattern = 'CreateEnvironmentBlock\(\[ref\]\$block'
+$script:PerUserTablePattern = '\$perUser = \[ordered\]@\{'
+# The names the launcher's rebase overwrites, taken by RUNNING its own table
+# with a stand-in profile rather than by listing them here a second time.
+function Get-LauncherRebaseKeys {
+  $AccountName = 'egpt-sbx-08'
+  $profilePath = 'C:\Users\egpt-sbx-08'
+  $localAppData = Join-Path $profilePath 'AppData\Local'
+  $userTemp = Join-Path $localAppData 'Temp'
+  $homeDrive = [System.IO.Path]::GetPathRoot($profilePath).TrimEnd('\')
+  Invoke-Expression (Get-LauncherStatementBlock $script:PerUserTablePattern)
+  return @($perUser.Keys)
+}
+
+Describe 'REPRODUCE: CreateEnvironmentBlock ACCESS_DENIED on the -SetEnv path' {
+  BeforeEach {
+    [SandboxLogon]::EnvBlockTokensSeen.Clear()
+    [SandboxLogon]::LogonUserCalls = 0
+  }
+
+  It 'a USER token is refused by the faked seam - that refusal IS the live failure' {
+    # The model the rest of this describe rests on, asserted directly so it
+    # cannot quietly stop meaning anything.
+    $p = [IntPtr]::Zero
+    [SandboxLogon]::CreateEnvironmentBlock([ref]$p, (New-Object IntPtr 1234), $false) | Should Be $false
+  }
+
+  It 'the SHIPPED statement asks for the block with NO user token, and therefore succeeds' {
+    # Pre-fix this same extraction hands the fake the token from LogonUser and
+    # throws; post-fix it hands it IntPtr::Zero and returns.
+    $stmt = Get-LauncherStatementBlock $script:EnvBlockCallPattern
+    $block = [IntPtr]::Zero
+    $AccountName = 'egpt-sbx-08'
+    # A token in scope, non-zero, as if LogonUser had SUCCEEDED - which is
+    # exactly what happened live: the logon worked and the RENDER was denied.
+    # So a statement that still reaches for $token fails here, and one that
+    # asks for IntPtr::Zero does not.
+    $token = New-Object IntPtr 1234
+
+    { Invoke-Expression $stmt } | Should Not Throw
+
+    @([SandboxLogon]::EnvBlockTokensSeen).Count | Should Be 1
+    [SandboxLogon]::EnvBlockTokensSeen[0] | Should Be ([IntPtr]::Zero)
+  }
+
+  It 'no second logon is performed for the environment block' {
+    $stmt = Get-LauncherStatementBlock $script:EnvBlockCallPattern
+    $block = [IntPtr]::Zero
+    $AccountName = 'egpt-sbx-08'
+    $token = New-Object IntPtr 1234
+    Invoke-Expression $stmt
+
+    [SandboxLogon]::LogonUserCalls | Should Be 0
+  }
+
+  It 'and there is no LogonUser left in the launcher to perform one' {
+    # Prose may still explain why it went; a CALL or an IMPORT must not exist.
+    $src = Get-Content -LiteralPath $script:LauncherScript -Raw
+    ($src -match '\[SandboxLogon\]::LogonUser\(') | Should Be $false
+    ($src -match 'extern bool LogonUser') | Should Be $false
+    ($src -match 'LOGON32_LOGON_INTERACTIVE = ') | Should Be $false
+  }
+
+  It 'the block function is no longer handed the account password' {
+    $src = Get-Content -LiteralPath $script:LauncherScript -Raw
+    ($src -match 'New-SandboxEnvironmentBlock -AccountName \$AccountName -SetEnv \$SetEnv') | Should Be $true
+    ($src -match 'New-SandboxEnvironmentBlock -AccountName \$AccountName -Password') | Should Be $false
+    # ...and its own param block does not take one either.
+    $fnStart = @(0..($script:LauncherLines.Count - 1) | Where-Object { $script:LauncherLines[$_] -match '^function New-SandboxEnvironmentBlock \{' })[0]
+    $close = @(($fnStart + 1)..($script:LauncherLines.Count - 1) | Where-Object { $script:LauncherLines[$_] -match '^\s*\)\s*$' })[0]
+    (($script:LauncherLines[$fnStart..$close] -join "`n") -match '\$Password') | Should Be $false
+  }
+
+  It 'THE TRAP still holds: bInherit is $false, so the operator environment is never folded in' {
+    # The single most load-bearing argument in this feature, and untouched by
+    # this change: $true here would fold the OPERATOR's environment into the
+    # block and point a pool account at C:\Users\an. A lock, not a reproduce -
+    # it held before and must go on holding.
+    (Get-LauncherStatementBlock $script:EnvBlockCallPattern) | Should Match ',\s*\$false\)'
+  }
+}
+
+Describe 'the system-variables block is enough (measured against the REAL userenv, nothing touched)' {
+  It 'CreateEnvironmentBlock(NULL) succeeds for an unelevated caller with no logon at all' {
+    # The fact the whole fix rests on, so it is measured rather than faked.
+    $entries = Get-RealSystemEnvBlock
+    ($null -ne $entries) | Should Be $true
+    ($entries.Count -gt 0) | Should Be $true
+  }
+
+  It 'it carries the machine half a child actually needs' {
+    $names = @(Get-RealSystemEnvBlock | ForEach-Object { $_.Substring(0, $_.IndexOf('=')) })
+    foreach ($n in @('Path', 'SystemRoot', 'ComSpec', 'PATHEXT', 'ProgramFiles', 'windir')) {
+      ($names -contains $n) | Should Be $true
+    }
+  }
+
+  It 'EVERY name in it that carries a USER is one the rebase overwrites - nothing user-shaped survives' {
+    # THE REAL RISK OF THIS FIX, locked: the NULL block is not user-free, it is
+    # SYSTEM/Default-shaped (USERPROFILE=C:\Users\Default, USERNAME=SYSTEM,
+    # TEMP=C:\WINDOWS\TEMP). If a node's block carried some other such name that
+    # the rebase does not set, the child would run pointed at it. This fails
+    # then, by name.
+    $keys = @(Get-LauncherRebaseKeys)
+    $leaky = @(Get-RealSystemEnvBlock | Where-Object {
+        $v = $_.Substring($_.IndexOf('=') + 1)
+        $v -match '(?i)\\Users\\Default' -or $v -eq 'SYSTEM' -or $v -match '(?i)^%?SystemRoot%?\\TEMP$' -or $v -match '(?i)^C:\\WINDOWS\\TEMP$'
+      } | ForEach-Object { $_.Substring(0, $_.IndexOf('=')) })
+    # There IS at least one on any normal node - if there were none, this test
+    # would be passing vacuously and proving nothing.
+    ($leaky.Count -gt 0) | Should Be $true
+    foreach ($n in $leaky) { ($keys -contains $n) | Should Be $true }
+  }
+}
+
+Describe 'the rebase is the sole authority for every per-user name (the launcher table, extracted and run)' {
+  $table = $null
+
+  BeforeEach {
+    # The shipped table, run with a stand-in profile. The three locals it closes
+    # over are set exactly as the launcher sets them, three lines above it.
+    $AccountName = 'egpt-sbx-08'
+    $profilePath = 'C:\Users\egpt-sbx-08'
+    $localAppData = Join-Path $profilePath 'AppData\Local'
+    $userTemp = Join-Path $localAppData 'Temp'
+    $homeDrive = [System.IO.Path]::GetPathRoot($profilePath).TrimEnd('\')
+    Invoke-Expression (Get-LauncherStatementBlock $script:PerUserTablePattern)
+    $table = $perUser
+  }
+
+  It 'covers every per-user name the removed user token used to contribute' {
+    # MEASURED 2026-09-23: a real user token's block carried exactly these
+    # beyond the NULL block, besides that user's own HKCU\Environment values.
+    foreach ($n in @('USERPROFILE', 'USERNAME', 'TEMP', 'TMP', 'APPDATA', 'LOCALAPPDATA',
+        'HOMEDRIVE', 'HOMEPATH', 'USERDOMAIN', 'USERDOMAIN_ROAMINGPROFILE', 'LOGONSERVER')) {
+      ($table.Contains($n)) | Should Be $true
+    }
+  }
+
+  It 'points them at the LEASED ACCOUNT - never C:\Users\Default, never the operator' {
+    $table['USERPROFILE'] | Should Be 'C:\Users\egpt-sbx-08'
+    $table['USERNAME'] | Should Be 'egpt-sbx-08'
+    $table['TEMP'] | Should Be 'C:\Users\egpt-sbx-08\AppData\Local\Temp'
+    $table['APPDATA'] | Should Be 'C:\Users\egpt-sbx-08\AppData\Roaming'
+    foreach ($v in $table.Values) { ([string]$v -match '(?i)\\Users\\Default') | Should Be $false }
+    foreach ($v in $table.Values) { ([string]$v -match '(?i)\\Users\\an(\\|$)') | Should Be $false }
+  }
+
+  It 'derives the two logon-session names from this machine, as a LOCAL account requires' {
+    $table['USERDOMAIN'] | Should Be ([System.Environment]::MachineName)
+    $table['USERDOMAIN_ROAMINGPROFILE'] | Should Be ([System.Environment]::MachineName)
+    $table['LOGONSERVER'] | Should Be ("\\" + [System.Environment]::MachineName)
+  }
+
+  It 'SESSIONNAME is the ONE name that is gone, and it is NOT invented' {
+    # The whole difference the fix makes to the child's environment. It is not
+    # derivable from here, so it is left out rather than guessed - and said out
+    # loud in the source rather than discovered later.
+    ($table.Contains('SESSIONNAME')) | Should Be $false
+    $src = Get-Content -LiteralPath $script:LauncherScript -Raw
+    ($src -match 'SESSIONNAME') | Should Be $true
+  }
+
+  It 'the -SetEnv overlay still runs AFTER the rebase, so an explicit caller outranks it' {
+    $rebase = (Get-LauncherLineIndex 'foreach \(\$n in \$perUser\.Keys\)')
+    $overlay = (Get-LauncherLineIndex 'foreach \(\$pair in \$SetEnv\)')
+    $overlay | Should BeGreaterThan $rebase
+  }
+}
+
 # Everything this suite made lives under one throwaway root, as in
 # provision-service-account.Tests.ps1. Nothing outside it was created or
 # modified, and no DACL anywhere was written.

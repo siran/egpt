@@ -300,8 +300,7 @@ public static class SandboxLogon {
     // ANSI unless this flag is set, so a UTF-16 block without it reaches the
     // child as garbage. Only ever OR'd in on the -SetEnv path.
     public const int CREATE_UNICODE_ENVIRONMENT = 0x00000400;
-    public const int LOGON32_LOGON_INTERACTIVE = 2;
-    public const int LOGON32_PROVIDER_DEFAULT = 0;
+    // The LOGON32_* pair that lived here went with the second logon (2026-09-23).
 
     // ---- window station / desktop security (see New-SandboxDesktop) ----
     public const uint READ_CONTROL = 0x00020000;
@@ -420,31 +419,24 @@ public static class SandboxLogon {
         IntPtr lpEnvironment, string lpCurrentDirectory,
         ref STARTUPINFO lpStartupInfo, out PROCESS_INFORMATION lpProcessInformation);
 
-    // ---- the three below exist ONLY to build a per-spawn environment block,
-    // i.e. only on the -SetEnv path; with no -SetEnv none of them is ever
-    // called and lpEnvironment above stays NULL exactly as before.
+    // ---- the two below exist ONLY to build a per-spawn environment block,
+    // i.e. only on the -SetEnv path; with no -SetEnv neither is ever called and
+    // lpEnvironment above stays NULL exactly as before.
     //
-    // LogonUser here does NOT reopen the settled question at the top of this
-    // file. That WHY is about LAUNCHING from a token (CreateProcessAsUser needs
-    // SeAssignPrimaryTokenPrivilege, CreateProcessWithTokenW needs
-    // SeImpersonatePrivilege, and the unelevated daemon holds neither). Merely
-    // OBTAINING and HOLDING a token needs no privilege at all, and nothing is
-    // launched from this one - it is only the thing CreateEnvironmentBlock
-    // renders a user's own environment from. VERIFIED 2026-09-05 on this
-    // machine from a token deliberately stripped by CreateRestrictedToken
-    // (DISABLE_MAX_PRIVILEGE) down to SeChangeNotifyPrivilege alone, i.e.
-    // strictly weaker than the daemon's: LogonUser came back 1326
-    // ERROR_LOGON_FAILURE (it got all the way to checking the password), never
-    // 1314 ERROR_PRIVILEGE_NOT_HELD, and CreateEnvironmentBlock succeeded.
-    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "LogonUserW")]
-    public static extern bool LogonUser(string lpszUsername, string lpszDomain, string lpszPassword,
-        int dwLogonType, int dwLogonProvider, out IntPtr phToken);
-
-    // userenv.dll, not kernel32: this is the API that renders ONE USER'S OWN
-    // environment - their USERPROFILE/APPDATA/LOCALAPPDATA and their
-    // HKCU\Environment values - from a token for that user. bInherit=false
-    // means "do not fold the CALLING process's environment in", which is the
-    // single most load-bearing argument in this whole feature; see THE TRAP in
+    // THERE IS NO LogonUser HERE ANY MORE (2026-09-23). It existed to render a
+    // block FROM THAT USER'S OWN TOKEN, and that is precisely what failed in
+    // production with ERROR_ACCESS_DENIED whenever the account's hive happened
+    // to be loaded: rendering a loaded hive means reading HKEY_USERS\<their
+    // SID>, which an unelevated caller may not do and may not impersonate its
+    // way into. Every name that token contributed is derived instead in
+    // New-SandboxEnvironmentBlock's rebase - see NO SECOND LOGON there for the
+    // measurements and for the one name (SESSIONNAME) that is genuinely gone.
+    // Do not reintroduce it: it cannot produce anything the rebase does not.
+    //
+    // userenv.dll, not kernel32. Called with hToken = NULL, which renders the
+    // SYSTEM variables and touches no user hive at all. bInherit=false means
+    // "do not fold the CALLING process's environment in", which is the single
+    // most load-bearing argument in this whole feature; see THE TRAP in
     // New-SandboxEnvironmentBlock.
     [DllImport("userenv.dll", SetLastError = true)]
     public static extern bool CreateEnvironmentBlock(out IntPtr lpEnvironment, IntPtr hToken, bool bInherit);
@@ -872,11 +864,13 @@ function New-SandboxEnvironmentBlock {
   # way that matters: the child would get the OPERATOR'S USERPROFILE, APPDATA,
   # TEMP and PATH, i.e. a pool account running pointed at the operator's own
   # profile. That is precisely the isolation this entire script exists to
-  # create. Do NOT "simplify" it that way. The block has to be built FOR THE
-  # TARGET USER:
-  #     LogonUser(account)          -> a token that IS that account
-  #     CreateEnvironmentBlock(tok) -> that account's own variables
-  # and only then are $SetEnv's pairs overlaid on the result.
+  # create. Do NOT "simplify" it that way. The block is built from the MACHINE's
+  # own environment and then rebased onto the leased account's real profile:
+  #     CreateEnvironmentBlock(NULL) -> the system variables, no user in them
+  #     the REBASE below             -> every per-user name, from that account's
+  #                                     own profile path
+  # and only then are $SetEnv's pairs overlaid on the result. There is NO second
+  # logon here any more; see NO SECOND LOGON below for what removed it.
   #
   # THE GAP THAT WAS ONCE ONLY SUSPECTED HERE IS REAL, AND IS FIXED BELOW.
   # MEASURED 2026-09-05 by running this launcher: same account, same inner
@@ -912,28 +906,75 @@ function New-SandboxEnvironmentBlock {
   # this bug at all; the runs that found it were made from a token cut down to
   # exactly those five privileges. The rebase below needs none of that either
   # way: it is string math over a block we already have.
+  #
+  # ---- NO SECOND LOGON. hToken IS NULL, DELIBERATELY (2026-09-23).
+  #
+  # THE LIVE FAILURE THAT ENDED IT. Turns died, on a DIFFERENT pool account each
+  # time (egpt-sbx-12 09-23 07:44, then -05, then -08 at 12:35), with:
+  #   sandbox-logon-launcher: CreateEnvironmentBlock for 'egpt-sbx-08' failed,
+  #   Win32 error 5
+  # 5 is ERROR_ACCESS_DENIED, and it is raised INSIDE userenv, not by us.
+  #
+  # WHY. CreateEnvironmentBlock(hToken) renders that user's variables, and once
+  # the user's hive is LOADED it must read HKEY_USERS\<their SID>. That key is
+  # granted to the user, SYSTEM and Administrators - and this launcher runs as
+  # the operator, UNELEVATED, so its filtered token carries BUILTIN\Administrators
+  # as a DENY-ONLY SID and is not an effective administrator at all. Reading
+  # another account's loaded hive from here is ACCESS_DENIED, and reaching it the
+  # two legitimate ways is barred by the same premise the whole file rests on:
+  # impersonating that token needs SeImpersonatePrivilege and loading the hive
+  # needs SeBackup/SeRestore, and the five privileges listed above are all there
+  # are. MEASURED on reve 2026-09-23, unelevated, read-only:
+  #   HKU\S-1-5-21-...-1013 (= reve\egpt-sbx-09, hive loaded at that moment)
+  #     -> "Requested registry access is not allowed"
+  #   the operator's OWN hive, same call  -> opened, 6 values
+  # So the outcome depended entirely on whether that account's hive happened to
+  # be loaded: not loaded, userenv fell back to the DEFAULT profile and the call
+  # SUCCEEDED (which is exactly the C:\Users\Default measurement above); loaded,
+  # ACCESS_DENIED and the turn died. The scrub pass is a LOGON_WITH_PROFILE logon
+  # as that same account moments earlier and its hive unload is not instant, so
+  # this fired at random, on whichever account a turn had leased.
+  #
+  # WHY NULL IS NOT A DOWNGRADE. With hToken NULL the call returns the SYSTEM
+  # variables only - and every per-user name it does carry is already one the
+  # REBASE below overwrites. MEASURED on reve 2026-09-23, the NULL block against
+  # a real user token's block: NULL carried 29 entries, all of them also in the
+  # token block; the token block's extra 11 were APPDATA, HOMEDRIVE, HOMEPATH,
+  # LOCALAPPDATA, USERDOMAIN (all rebased below), LOGONSERVER and
+  # USERDOMAIN_ROAMINGPROFILE (now rebased below too - for a LOCAL account both
+  # are this machine's own name, which is how USERDOMAIN was already derived),
+  # SESSIONNAME, and three values out of that user's own HKCU\Environment. The
+  # three NULL carries with a user in them - USERPROFILE=C:\Users\Default,
+  # USERNAME=SYSTEM, TEMP/TMP=C:\WINDOWS\TEMP - are all rebased.
+  # SO THE CHILD DIFFERS BY EXACTLY ONE NAME: SESSIONNAME, which is not
+  # derivable here and is deliberately NOT invented. And it no longer inherits
+  # the leased account's HKCU\Environment, which is a GAIN: that hive survives
+  # the scrub by design ("KNOWN RESIDUE, accepted"), so a `setx` by one
+  # conversation used to reach the next one through this block.
+  #
+  # AND NO FALLBACK. There is no "try the token, fall back to NULL" here: the
+  # token path cannot produce anything this one does not, so a second path would
+  # be a second thing to go wrong and a per-turn coin flip over which
+  # environment a being got.
   param(
     [Parameter(Mandatory = $true)][string]$AccountName,
-    [Parameter(Mandatory = $true)][string]$Password,
+    # NO -Password. Nothing here authenticates any more, so the credential is not
+    # passed to this function at all - one fewer place a per-turn password
+    # exists. Invoke-AsLeasedAccount still holds it for CreateProcessWithLogonW.
     # AllowEmptyString for the same reason as -BinArgs below: a Mandatory
     # [string[]] rejects an empty element in the BINDER, and a malformed pair
     # should come back as this function's own explicit error, not as a
     # parameter-binding exception the caller cannot act on.
     [Parameter(Mandatory = $true)][AllowEmptyString()][string[]]$SetEnv
   )
-  $token = [IntPtr]::Zero
   $block = [IntPtr]::Zero
   try {
-    # Domain '.' = this machine's local account database, same as the launch
-    # call - the pool accounts are local, never domain.
-    if (-not [SandboxLogon]::LogonUser($AccountName, '.', $Password,
-            [SandboxLogon]::LOGON32_LOGON_INTERACTIVE, [SandboxLogon]::LOGON32_PROVIDER_DEFAULT, [ref]$token)) {
-      throw "sandbox-logon-launcher: LogonUser('$AccountName') for the environment block failed, Win32 error $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
-    }
+    # hToken = NULL: the SYSTEM variables, rendered without reading any user's
+    # hive, so nothing here can be ACCESS_DENIED by one (see NO SECOND LOGON).
     # bInherit = $false. See THE TRAP: $true would fold THIS process's (the
     # operator's) environment into the result.
-    if (-not [SandboxLogon]::CreateEnvironmentBlock([ref]$block, $token, $false)) {
-      throw "sandbox-logon-launcher: CreateEnvironmentBlock for '$AccountName' failed, Win32 error $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+    if (-not [SandboxLogon]::CreateEnvironmentBlock([ref]$block, [IntPtr]::Zero, $false)) {
+      throw "sandbox-logon-launcher: CreateEnvironmentBlock (system variables, no user token) for '$AccountName' failed, Win32 error $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
     }
 
     # ---- read it. An environment block is NUL-terminated UTF-16 "NAME=VALUE"
@@ -993,6 +1034,13 @@ function New-SandboxEnvironmentBlock {
       # file), so their USERDOMAIN is this machine's own name.
       USERNAME     = $AccountName
       USERDOMAIN   = [System.Environment]::MachineName
+      # THE TWO THE REMOVED SECOND LOGON USED TO SUPPLY (2026-09-23), derived
+      # the same way and for the same reason: a LOCAL account is authenticated
+      # by this machine, so its logon server and roaming-profile domain are both
+      # this machine. Listed so dropping the token costs the child nothing it
+      # was getting - see NO SECOND LOGON for the one name that IS gone.
+      USERDOMAIN_ROAMINGPROFILE = [System.Environment]::MachineName
+      LOGONSERVER  = "\\$([System.Environment]::MachineName)"
     }
     foreach ($n in $perUser.Keys) { Set-EnvBlockEntry -Entries $entries -Name $n -Value ([string]$perUser[$n]) }
     # Paths and an account name, never a secret - and the scrub already logs
@@ -1027,12 +1075,11 @@ function New-SandboxEnvironmentBlock {
     [Runtime.InteropServices.Marshal]::Copy($chars, 0, $ptr, $chars.Length)
     return [PSCustomObject]@{ Ptr = $ptr; Names = $names.ToArray() }
   } finally {
-    # Both of these are released HERE and not by the caller: the block has
-    # already been copied into our own HGlobal above, and the token was only
-    # ever the thing that block was rendered from. The caller therefore owns
-    # exactly one resource, Ptr - which is the whole point of returning it alone.
+    # Released HERE and not by the caller: the block has already been copied into
+    # our own HGlobal above. The caller therefore owns exactly one resource, Ptr
+    # - which is the whole point of returning it alone. (There is no token to
+    # close any more; see NO SECOND LOGON.)
     if ($block -ne [IntPtr]::Zero) { [SandboxLogon]::DestroyEnvironmentBlock($block) | Out-Null }
-    if ($token -ne [IntPtr]::Zero) { [SandboxLogon]::CloseHandle($token) | Out-Null }
   }
 }
 
@@ -1128,7 +1175,7 @@ function Invoke-AsLeasedAccount {
   $creationFlags = [SandboxLogon]::CREATE_NO_WINDOW
   $envBlock = [IntPtr]::Zero
   if ($SetEnv -and $SetEnv.Count -gt 0) {
-    $envInfo = New-SandboxEnvironmentBlock -AccountName $AccountName -Password $Password -SetEnv $SetEnv
+    $envInfo = New-SandboxEnvironmentBlock -AccountName $AccountName -SetEnv $SetEnv
     $envBlock = $envInfo.Ptr
     $creationFlags = $creationFlags -bor [SandboxLogon]::CREATE_UNICODE_ENVIRONMENT
     Log "$Label under ${AccountName}: injecting $($envInfo.Names.Count) env var(s) into the child: $($envInfo.Names -join ', ') (names only - values are never logged)"
