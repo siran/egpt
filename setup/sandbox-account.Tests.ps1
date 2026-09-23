@@ -1476,7 +1476,10 @@ Describe 'Get-SandboxLaunchSummary (the launch line, read back off the disk)' {
 
   It 'a planted mount reads junction=ok and names its REAL target' {
     $r = $fakeProfile
-    Invoke-Expression (Get-SandboxProfileJunctionStatement -OperatorSrc (Join-Path $script:LedgerTempRoot 'no-such-src') -RoomTarget $room) | Out-Null
+    # -OperatorSrc became -RepoRoot when the blanket ~\src grant was retired (2026-09-23): the
+    # `src` junction now names the REPO, not the operator's whole src tree. The rename was
+    # deliberate so a stale call site fails to bind rather than silently mounting the old target.
+    Invoke-Expression (Get-SandboxProfileJunctionStatement -RepoRoot (Join-Path $script:LedgerTempRoot 'no-such-src') -RoomTarget $room) | Out-Null
     $cwd = Join-Path $fakeProfile 'egpt'
     Get-SandboxLaunchSummary -AccountName 'egpt-sbx-08' -Cwd $cwd |
       Should Be "launch account=egpt-sbx-08 cwd=$cwd junction=ok target=$room"
