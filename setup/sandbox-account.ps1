@@ -816,6 +816,35 @@ function Get-SandboxProfileJunctionStatement {
   return "foreach(`$j in @($pairs)){`$s=Join-Path `$r `$j[0];ri -LiteralPath `$s -Recurse -Force -EA 0;ni -ItemType Junction -Path `$s -Target `$j[1] -EA 0 >`$null}"
 }
 
+# Render a Windows path msys-style: C:\Users\egpt-sbx-09\egpt becomes
+# /c/Users/egpt-sbx-09/egpt (drive letter lowercased, backslashes turned into
+# forward slashes). Pure. An already-posix path, a UNC path, or anything else
+# that is not <letter>:<sep> is returned unchanged.
+#
+# A SECOND IMPLEMENTATION OF ONE RULE, KNOWINGLY, and the only reason it is
+# acceptable: src\conversations-state.mjs's toMsysPath is the original (migration
+# 0023 renders home_dir with it), but that is JavaScript and this is the only
+# PowerShell in the launch path - there is no runtime the two share, so nothing
+# can be imported here. It mirrors that function line for line rather than
+# inventing a second rule, and setup\sandbox-logon-launcher.Tests.ps1 asserts it
+# against the SAME examples tests\conversations-state.test.mjs asserts the
+# original against, so the pair cannot drift without a red test.
+#
+# WHO NEEDS IT: New-SandboxEnvironmentBlock's PWD row. A being's shell echoes
+# $PWD verbatim (measured 2026-09-23), so a Windows-form value would be quoted
+# into the chat as C:\Users\egpt-sbx-09/egpt - mixed separators, worse than the
+# junction path bash computes on its own.
+function ConvertTo-MsysPath {
+  param(
+    # AllowEmptyString: '' is a legitimate input that must come back as '',
+    # not as a parameter-binding exception the caller cannot act on.
+    [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path
+  )
+  $s = $Path -replace '\\', '/'
+  if ($s -match '^([A-Za-z]):/(.*)$') { return "/$($Matches[1].ToLowerInvariant())/$($Matches[2])" }
+  return $s
+}
+
 # THE LAUNCH SUMMARY (2026-09-23): the one launcher line sandbox-cli-session.mjs
 # forwards to the daemon log on a SUCCESSFUL turn - every other launcher line
 # reaches the log only when a turn fails. Leased account, the cwd the launch is

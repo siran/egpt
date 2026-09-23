@@ -970,7 +970,19 @@ function New-SandboxEnvironmentBlock {
     # [string[]] rejects an empty element in the BINDER, and a malformed pair
     # should come back as this function's own explicit error, not as a
     # parameter-binding exception the caller cannot act on.
-    [Parameter(Mandatory = $true)][AllowEmptyString()][string[]]$SetEnv
+    [Parameter(Mandatory = $true)][AllowEmptyString()][string[]]$SetEnv,
+    # THE CHILD'S CWD, and the ONLY input here that is not derived from the
+    # account. It is threaded from Invoke-AsLeasedAccount's own
+    # -WorkingDirectory - the very variable CreateProcessWithLogonW is handed,
+    # in the same call frame - so the PWD row below cannot disagree with the
+    # directory the process actually starts in.
+    # NOT RECOMPUTED HERE as "$profilePath\egpt", which would look identical and
+    # be a second derivation of one path: the mount is planted by the scrub pass,
+    # which is the only thing that CAN plant it (it runs as the leased account),
+    # and Clear-SandboxProfileContents returns the value it planted for exactly
+    # this reason. Mandatory, so a caller that forgets fails in the binder rather
+    # than shipping a child with no PWD at all.
+    [Parameter(Mandatory = $true)][string]$WorkingDirectory
   )
   $block = [IntPtr]::Zero
   try {
@@ -1022,11 +1034,58 @@ function New-SandboxEnvironmentBlock {
       # does it), after which this path is resolvable forever.
       throw "sandbox-logon-launcher: refusing to build a -SetEnv environment block for '$AccountName'  - it has no Win32_UserProfile entry yet, so there is no profile path to point USERPROFILE/APPDATA/LOCALAPPDATA/TEMP at and the child would silently get the DEFAULT profile. Run one turn on this account without -SetEnv first (any LOGON_WITH_PROFILE launch creates the profile)."
     }
+    # ---- THE CWD MUST BE INSIDE THIS ACCOUNT'S OWN PROFILE, i.e. the `egpt`
+    # mount and never the Room it points at. The PWD row below is echoed
+    # VERBATIM by the being's shell (measured 2026-09-23), so a -WorkingDirectory
+    # that named the Room would put the operator's username and the conversation
+    # slug straight back into the group chat - the exact disclosure the mount
+    # exists to close, arriving through an environment variable instead of
+    # through a cwd. Both sides of this comparison come from ONE derivation:
+    # Get-SandboxProfilePath above, and Clear-SandboxProfileContents' own
+    # `Join-Path $profilePath 'egpt'` off the same function. So it cannot fire on
+    # the shipped path at all; it fires for a NEW caller, loudly, before the
+    # child is spawned rather than after a path has been read out in a chat.
+    if (-not $WorkingDirectory.StartsWith("$profilePath\", [System.StringComparison]::OrdinalIgnoreCase)) {
+      throw "sandbox-logon-launcher: refusing to build a -SetEnv environment block for '$AccountName' with a working directory of '$WorkingDirectory'  - it is not inside that account's own profile at '$profilePath', so PWD would name a directory outside the sandbox mount. A being's shell echoes PWD verbatim, so that path is what it quotes into the conversation; the mount ('$profilePath\egpt') is the only cwd this may be."
+    }
     $localAppData = Join-Path $profilePath 'AppData\Local'
     $userTemp = Join-Path $localAppData 'Temp'
     # 'C:' from 'C:\Users\egpt-sbx-NN\', so HOMEDRIVE/HOMEPATH re-concatenate to
     # exactly USERPROFILE, which is what Windows itself guarantees about them.
     $homeDrive = [System.IO.Path]::GetPathRoot($profilePath).TrimEnd('\')
+    # ---- THE PWD ROW (2026-09-23), the one entry in the table below that is
+    # NOT derived from the profile. It is the cwd, and it lives in that table
+    # rather than in a second overlay because this is the ONE place a -SetEnv
+    # child's environment is written; a second overlay would be a second thing
+    # to keep correct.
+    #
+    # WHY IT IS NEEDED AT ALL. The `egpt` mount already works at the OS level:
+    # bash does NOT resolve a junction cwd, and with PWD unset it reports the
+    # junction. The leak is one layer up - CLAUDE CODE RESOLVES ITS OWN CWD AT
+    # STARTUP and hands its Bash tool the resolved path - so a being asked to run
+    # `pwd` in a group chat answered with the ROOM,
+    # /c/Users/an/.egpt/conversations/whatsapp/<slug>, naming the operator and,
+    # in the slug, the person the conversation is with. An INHERITED PWD
+    # overrides that resolution and is the only lever that does.
+    #
+    # THE FORM IS MSYS, AND IT WAS MEASURED RATHER THAN CHOSEN. Each consumer
+    # spawned with its cwd on a real junction, three PWD values, 2026-09-23:
+    #   unset          bash prints the junction; claude.exe prints the TARGET
+    #   windows form   ECHOED VERBATIM, and bash renders it C:\...\tmp/x/link -
+    #                  MIXED separators, worse than doing nothing
+    #   msys form      ECHOED VERBATIM by bash, and claude.exe's Bash tool
+    #                  prints the same - /c/Users/egpt-sbx-NN/egpt, the mount
+    # Both consumers agree, so there is one form and no trade-off to make.
+    # Rendered by ConvertTo-MsysPath (sandbox-account.ps1), which mirrors
+    # src\conversations-state.mjs's toMsysPath; the note there says why the rule
+    # has to exist in two languages.
+    #
+    # AND IT CANNOT LIE ABOUT WHERE THE CHILD IS. bash VALIDATES an inherited
+    # PWD against the directory it is really in (measured the same day: a bogus
+    # value is discarded and `pwd` falls back to computing the junction), so a
+    # wrong value costs nothing. What a wrong value CAN do is name a DIFFERENT
+    # TRUE name for the same directory - the Room resolves as happily as the
+    # mount does - which is exactly what the guard above refuses.
     $perUser = [ordered]@{
       USERPROFILE  = $profilePath
       APPDATA      = (Join-Path $profilePath 'AppData\Roaming')
@@ -1046,6 +1105,8 @@ function New-SandboxEnvironmentBlock {
       # was getting - see NO SECOND LOGON for the one name that IS gone.
       USERDOMAIN_ROAMINGPROFILE = [System.Environment]::MachineName
       LOGONSERVER  = "\\$([System.Environment]::MachineName)"
+      # The cwd, msys-rendered. NOT profile-derived - see THE PWD ROW above.
+      PWD          = (ConvertTo-MsysPath $WorkingDirectory)
     }
     foreach ($n in $perUser.Keys) { Set-EnvBlockEntry -Entries $entries -Name $n -Value ([string]$perUser[$n]) }
     # Paths and an account name, never a secret - and the scrub already logs
@@ -1180,7 +1241,10 @@ function Invoke-AsLeasedAccount {
   $creationFlags = [SandboxLogon]::CREATE_NO_WINDOW
   $envBlock = [IntPtr]::Zero
   if ($SetEnv -and $SetEnv.Count -gt 0) {
-    $envInfo = New-SandboxEnvironmentBlock -AccountName $AccountName -SetEnv $SetEnv
+    # -WorkingDirectory is passed on VERBATIM - the same variable, the same call
+    # frame, the one CreateProcessWithLogonW gets below - so the child's PWD and
+    # its real cwd are one value, not two that happen to agree.
+    $envInfo = New-SandboxEnvironmentBlock -AccountName $AccountName -SetEnv $SetEnv -WorkingDirectory $WorkingDirectory
     $envBlock = $envInfo.Ptr
     $creationFlags = $creationFlags -bor [SandboxLogon]::CREATE_UNICODE_ENVIRONMENT
     Log "$Label under ${AccountName}: injecting $($envInfo.Names.Count) env var(s) into the child: $($envInfo.Names -join ', ') (names only - values are never logged)"
