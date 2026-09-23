@@ -32,6 +32,10 @@
 #      -SharePathReadOnly one, because a path a being declared read-only must be
 #      read-only to the KERNEL and not only to Claude Code's own deny rules.
 #      Still never broader: each is one named path.
+#      THE DACL IS THEN READ BACK (see Assert-SandboxPathReachable): icacls
+#      can exit 0 and write no ACE at all, and a grant nobody read back is a
+#      promise, not a fact. A TargetFolder the leased SID cannot reach ends the
+#      turn HERE, loudly, instead of at (f) as a Win32 267 nobody can explain.
 #      Each is written into the lease lock file FIRST, as this lease's ACE
 #      LEDGER, so that a turn killed before (g) can still be cleaned up: the
 #      reclaim in (a) revokes whatever the dead turn's ledger names before that
@@ -39,8 +43,10 @@
 #      block for why the lock file is the right place for that list.
 #   e) create a PRIVATE per-turn desktop and grant that SID access to it (see
 #      New-SandboxDesktop) - nothing on the operator's own WinSta0\Default.
-#   f) CreateProcessWithLogonW launches AS that account, twice, through the one
-#      shared Invoke-AsLeasedAccount helper: FIRST a short scrub pass that
+#   f) the reachability of TargetFolder is verified ONCE MORE - the scrub pass
+#      below is a whole logon round trip, and an ACE can go away in it - and
+#      then CreateProcessWithLogonW launches AS that account, twice, through the
+#      one shared Invoke-AsLeasedAccount helper: FIRST a short scrub pass that
 #      empties the account's scratch profile and re-plants its `src` junction
 #      onto the operator's read-only ~\src (see Clear-SandboxProfileContents - it
 #      must run as the account itself, which is the only principal that can
@@ -1559,6 +1565,22 @@ try {
   # is the whole point (operator 2026-09-20: "i think we can use always the
   # fast way").
   Grant-SandboxPoolAce -Path $TargetFolder -Grant 'Modify' -Sid $leasedSid -Principal $leasedLabel | Out-Null
+  # ---- (d1) READ THE DACL BACK. THE DACL DECIDES, NOT THE EXIT CODE.
+  # THE BUG THIS CLOSES, measured on kg 2026-09-23: a turn was leased
+  # egpt-sbx-05, the line above reported a grant, and CreateProcessWithLogonW
+  # then died with Win32 error 267 - ERROR_DIRECTORY, which for
+  # lpCurrentDirectory means "not reachable BY THE TARGET USER". icacls on that
+  # conversation folder carried explicit Modify for egpt-sbx-07, -12 and -13 and
+  # NOTHING for egpt-sbx-05. The grant had not landed, nothing ever looked, and
+  # the launch went ahead into a cwd the account could not enter.
+  # Grant-SandboxPoolAce branches on icacls's EXIT CODE, and this repo's own
+  # measurement (2026-09-20) is that icacls can exit 0, print success and write
+  # no ACE at all. Its sibling Revoke-SandboxPathAces was given the opposite
+  # rule the same day - the explicit DACL is read BEFORE and AFTER, "THE DACL
+  # DECIDES, NOT THE EXIT CODE" - and the grant half never got it. This is that
+  # rule, applied where the cost of missing it is a dead turn.
+  # It costs ONE Get-Acl per turn on the folder the turn is about to use.
+  Assert-SandboxPathReachable -Path $TargetFolder -Sid $leasedSid -AccountName $leasedName -Stage 'step (d), reading back the grant on the conversation folder' | Out-Null
 
   # ---- (d2) ONE ACE PER SHARE PATH, IN THE CLASS ITS CALLER DECLARED IT IN.
   # WHY THIS EXISTS: a being's `allowed_paths` produce a `--add-dir` at the CLI
@@ -1684,6 +1706,18 @@ try {
   # through. CreateProcessWithLogonW does the logon itself from the name +
   # password, so there is no separate LogonUser step and no token handle to
   # own: it needs no privilege in THIS process (see the WHY at the top). ----
+  # ---- LAST GATE BEFORE THE ONE LAUNCH THAT USES TargetFolder AS ITS cwd, and
+  # it is deliberately a SECOND read rather than a repeat of (d1). Real work
+  # happens between them - every -SharePath ACE, the private desktop, and a
+  # whole CreateProcessWithLogonW round trip for the profile scrub, which is
+  # seconds - and an ACE that was there at (d1) can be gone by here: a
+  # concurrent reclaim or revoke purges by SID over a path, and the lease lock
+  # is what keeps two turns off one ACCOUNT, not off one FOLDER. So the question
+  # is asked again at the last moment it can still be acted on.
+  # The scrub above launches with cwd=%SystemRoot%, which every account can
+  # enter, so it is not gated; THIS is the call whose cwd is the conversation
+  # folder. ----
+  Assert-SandboxPathReachable -Path $TargetFolder -Sid $leasedSid -AccountName $leasedName -Stage 'step (f), the last check before launching InnerBin with the conversation folder as its cwd' | Out-Null
   # ---- (g, part 1) ...and wait for it, capturing its real exit code. Both the
   # launch and the wait live in Invoke-AsLeasedAccount, shared with the scrub
   # pass above. ----

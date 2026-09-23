@@ -453,6 +453,164 @@ function Test-SandboxPoolReadCovered {
   }
 }
 
+# ---- CAN THIS ACCOUNT ACTUALLY REACH THIS DIRECTORY? (2026-09-23)
+#
+# THE FAILURE THIS EXISTS FOR, measured on kg 2026-09-23. A turn died with
+#   sandbox-logon-launcher: CreateProcessWithLogonW('egpt-sbx-05') failed for
+#   launching, Win32 error 267
+# and Win32 267 is ERROR_DIRECTORY: for CreateProcessWithLogonW that is what
+# lpCurrentDirectory returns when the directory is not reachable BY THE TARGET
+# USER. icacls on that conversation folder showed explicit ACEs for
+# egpt-sbx-07, -12 and -13 - and NONE for egpt-sbx-05, the account the turn had
+# leased and just "granted" Modify on it. So step (d) reported a grant that was
+# not on the object, and step (f) launched into a cwd the account could not
+# enter.
+#
+# WHY THAT WAS POSSIBLE AT ALL, and it is one line of missing discipline:
+# Grant-SandboxPoolAce reads the DACL BEFORE the write (its check-first fast
+# path) and never reads it back AFTER. It branches on icacls's EXIT CODE, and
+# this same file already records, in capitals, that the exit code is not the
+# fact: `icacls` accepts (OI)(CI) on a leaf, EXITS 0, prints "Successfully
+# processed 1 files" and writes no ACE at all (measured 2026-09-20). Its
+# sibling Revoke-SandboxPathAces was given the opposite rule the same day -
+# "THE DACL DECIDES, NOT THE EXIT CODE", read before and after - and the grant
+# half never got it. A write nobody read back is a promise, not a fact.
+#
+# SO THIS IS THE READ-BACK, and it answers exactly one question: does this SID
+# hold an Allow ACE on THIS object that carries at least ReadAndExecute, with
+# nothing denying it. That is the mask entering a directory as a cwd needs -
+# deliberately NOT Modify, because "can enter" and "may write" are two
+# different promises and only the first one is what 267 is about. The other
+# half, "did the exact (OI)(CI)(M) step (d) promised land", stays
+# Grant-SandboxPoolAce's own check.
+#
+# EXPLICIT OR INHERITED, both count ($true, $true), unlike Grant-SandboxPoolAce
+# and like Test-SandboxPoolReadCovered: the question here is what the kernel
+# will do with this object, and an inherited Allow is as real to the kernel as
+# an explicit one.
+#
+# ANY DENY FOR THIS SID IS A NO. A Deny that touches any of the bits reach
+# needs beats every Allow, wherever it came from.
+#
+# WHAT IT IS NOT, said plainly: this is a DACL check for ONE SID, not an
+# access check against a token. A principal that could enter only through a
+# GROUP it belongs to reads as unreachable here. That is exact for the case it
+# guards and not a general-purpose answer: a conversation folder lives under
+# the operator's home, whose DACL is SYSTEM / Administrators / the operator
+# plus whatever the launcher granted - no BUILTIN\Users, no Authenticated
+# Users, and the pool group is granted traverse on the ANCESTORS and never on
+# the folder itself. So a pool account's only way in is its own ACE, which is
+# the one this looks for. Anywhere else it would be too strict.
+#
+# AND IT FAILS CLOSED, which is the one place it deliberately disagrees with
+# Test-SandboxPoolReadCovered. There, an unreadable DACL answers $false and the
+# safe direction is to GRANT. Here, an unreadable DACL answers "not reachable"
+# and the safe direction is to REFUSE THE TURN: the whole point is that a turn
+# which cannot be sandboxed fails saying so rather than launching into a
+# directory nobody verified.
+#
+# RETURNS A RECORD, LOGS NOTHING - the same shape and the same reason as
+# Revoke-SandboxPathAces: { Path, Sid, Principal, Reachable, Reason }. A
+# function that writes to a host's stderr cannot be asserted on in Pester.
+#
+# -Acl IS INJECTABLE so the whole predicate is testable against a
+# FileSecurity built in memory, with no path, no DACL write and no elevation -
+# the same trick provision-service-account.ps1's Get-SshAclPlan uses. Left out,
+# it is read off $Path.
+function Test-SandboxPathReachable {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][System.Security.Principal.SecurityIdentifier]$Sid,
+    # How the principal is NAMED in the reason string, nothing more.
+    [string]$Principal,
+    [System.Security.AccessControl.FileSystemSecurity]$Acl
+  )
+  if (-not $Principal) { $Principal = $Sid.Value }
+  $verdict = {
+    param([bool]$Reachable, [string]$Reason)
+    [pscustomobject]@{ Path = $Path; Sid = $Sid.Value; Principal = $Principal; Reachable = $Reachable; Reason = $Reason }
+  }
+  if (-not $Acl) {
+    if (-not (Test-Path -LiteralPath $Path)) {
+      return (& $verdict $false 'the path does not exist, so nothing can be reachable on it')
+    }
+    try {
+      $Acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+    } catch {
+      return (& $verdict $false "its DACL could not be read, so nothing here is verified  - $($_.Exception.Message)")
+    }
+  }
+  try {
+    $rules = @($Acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
+  } catch {
+    return (& $verdict $false "its access rules could not be enumerated, so nothing here is verified  - $($_.Exception.Message)")
+  }
+  $need = [int][System.Security.AccessControl.FileSystemRights]::ReadAndExecute
+  foreach ($rule in $rules) {
+    if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Deny) { continue }
+    if ($rule.IdentityReference.Value -ne $Sid.Value) { continue }
+    if (([int]$rule.FileSystemRights -band $need) -ne 0) {
+      return (& $verdict $false "a Deny ACE for this SID takes back part of ReadAndExecute here (rights $([int]$rule.FileSystemRights), inherited=$($rule.IsInherited)), and a Deny beats every Allow")
+    }
+  }
+  foreach ($rule in $rules) {
+    if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
+    if ($rule.IdentityReference.Value -ne $Sid.Value) { continue }
+    if (([int]$rule.FileSystemRights -band $need) -eq $need) {
+      $how = if ($rule.IsInherited) { 'inherited' } else { 'explicit' }
+      return (& $verdict $true "an $how Allow ACE for this SID carries ReadAndExecute (rights $([int]$rule.FileSystemRights))")
+    }
+  }
+  # NOT REACHABLE, and the useful half of saying so is WHO is on it instead:
+  # on the folder that produced the 2026-09-23 failure this would have printed
+  # egpt-sbx-07, -12 and -13, i.e. three other pool accounts' leaked ACEs and
+  # not the leased one. Names are best-effort - a leaked ACE can name a SID
+  # that no longer resolves, which must not turn a diagnostic into a throw.
+  $others = @($rules | Where-Object { $_.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow } |
+      ForEach-Object { $_.IdentityReference.Value } | Select-Object -Unique | ForEach-Object {
+      $named = $_
+      try { $named = "$_ (" + (New-Object System.Security.Principal.SecurityIdentifier($_)).Translate([System.Security.Principal.NTAccount]).Value + ')' } catch { }
+      $named
+    })
+  $who = if ($others.Count -gt 0) { $others -join ', ' } else { 'no Allow ACE at all' }
+  return (& $verdict $false "no Allow ACE for this SID carries ReadAndExecute here; the DACL allows: $who")
+}
+
+# THE SAME VERDICT, AS A GATE - one call site shape for every point in the
+# launcher that must not proceed without it, so the message a turn dies with
+# is written once.
+#
+# THROWS, which in the launcher means: the try's finally still revokes and
+# releases the lease, and the script exits non-zero with this on stderr. That
+# is the whole ruling - src/sandbox-cli-session.mjs already states it for
+# engine and platform ("a misconfigured being fails loudly instead of silently
+# running unsandboxed", "AN EXPLICIT REQUEST MAY NOT BE SILENTLY DOWNGRADED")
+# and the working directory is no different: a turn that cannot be sandboxed
+# fails saying so. It is NEVER run somewhere else instead, and the grant is
+# NEVER widened to make it pass - not Everyone, not a parent directory, not a
+# broader mask. The named path only.
+function Assert-SandboxPathReachable {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][System.Security.Principal.SecurityIdentifier]$Sid,
+    [Parameter(Mandatory = $true)][string]$AccountName,
+    # Where in the launcher this gate sits, so the log says which of the two
+    # fired: the grant did not land, or something took it away afterwards.
+    [Parameter(Mandatory = $true)][string]$Stage
+  )
+  $verdict = Test-SandboxPathReachable -Path $Path -Sid $Sid -Principal "$($Sid.Value) ($AccountName)"
+  if ($verdict.Reachable) {
+    Log "verified at $Stage that '$AccountName' ($($Sid.Value)) can reach $Path  - $($verdict.Reason)"
+    return $verdict
+  }
+  throw ("sandbox-logon-launcher: REFUSING at $Stage  - the leased account '$AccountName' ($($Sid.Value)) cannot reach $Path, " +
+    "which is the working directory this turn was about to be given. EXPECTED: an Allow ACE for that SID on exactly that folder " +
+    "carrying at least ReadAndExecute  - step (d) writes (OI)(CI)(M) there, to that SID, on that one named path. FOUND: $($verdict.Reason). " +
+    "Proceeding is how a turn dies at CreateProcessWithLogonW with Win32 error 267 (ERROR_DIRECTORY: lpCurrentDirectory not reachable BY THE " +
+    "TARGET USER), because icacls can exit 0 and write no ACE at all. A turn that cannot be sandboxed fails here saying so; it is never run " +
+    "somewhere else, and the grant is never widened to make this pass.")
+}
+
 # Lock down $CredDir  - C:\ProgramData\egpt, which holds one DPAPI-encrypted
 # password file per pool account plus the sandbox-pool-locks lease directory.
 #
