@@ -530,8 +530,15 @@ describe('0022 refuses, naming the place, only on what it cannot honestly edit',
 
 describe('0022 through the runner', () => {
   // The Windows probes of 0001/0002/0004/0005 are told "nothing there", and localAddresses is
-  // empty so 0007 reads nothing as this node's own (as tests/migrations-0021-*).
-  const ctx = { ps: () => JSON.stringify({ map: [], services: [], from: { exists: false }, to: { exists: false } }), localAddresses: new Set() };
+  // empty so 0007 reads nothing as this node's own (as tests/migrations-0021-*). `isDirectory`
+  // says this fixture node does NOT hold 0024's Drive folder - without it the chain would stat a
+  // real `G:` and this fixture would gain an outbox target on the one machine that has it, which
+  // is exactly the machine-dependence these seams exist to keep out of the suite.
+  const ctx = {
+    ps: () => JSON.stringify({ map: [], services: [], from: { exists: false }, to: { exists: false } }),
+    localAddresses: new Set(),
+    isDirectory: () => false,
+  };
   const dir = join(import.meta.dirname, '..', 'migrations');
   const ledgerOf = (h) => JSON.parse(readFileSync(join(h, 'state', 'migrations-applied.json'), 'utf8'));
   const ID = '0022-a-room-that-carries-every-chat-compacts-sooner';

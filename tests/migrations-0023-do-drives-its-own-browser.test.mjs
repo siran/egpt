@@ -716,10 +716,14 @@ describe('0023 refuses, naming the place, only on what it cannot honestly edit',
 describe('0023 through the runner', () => {
   // The Windows probes of 0001/0002/0004/0005 are told "nothing there", localAddresses is empty so
   // 0007 reads nothing as this node's own, and Chrome is handed in (as tests/migrations-0021-*).
+  // `isDirectory` says neither fixture node holds 0024's Drive folder - without it the chain would
+  // stat a real `G:` and the kg fixture below would gain an outbox target on the one machine that
+  // has that folder, which is exactly the machine-dependence these seams exist to keep out.
   const ctx = {
     ps: () => JSON.stringify({ map: [], services: [], from: { exists: false }, to: { exists: false } }),
     localAddresses: new Set(),
     findChrome: () => CHROME_EXE,
+    isDirectory: () => false,
   };
   const dir = join(import.meta.dirname, '..', 'migrations');
   const ledgerOf = (h) => JSON.parse(readFileSync(join(h, 'state', 'migrations-applied.json'), 'utf8'));
