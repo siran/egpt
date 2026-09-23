@@ -156,6 +156,72 @@ describe('passthrough: model, effort, resume, append-system-prompt, add-dir', ()
   });
 });
 
+// ── THE THREE PERMISSION TIERS, SIDE BY SIDE (operator ruling 2026-09-23: "and so
+//    --permission-mode [should] be none at all. free roam inside the sandbox", and, asked whether
+//    the coherent end state is that a sandboxed being also gets bypassPermissions, "yes").
+//
+//    WHAT CHANGED: `osConfined` used to be the CONFINED tier minus two flags. It is now the
+//    UNCONFINED tier, because for an OS-sandboxed turn the Windows account is the boundary — the
+//    leased pool account holds an ACE on its Room, its thread store and its read-only mounts and
+//    on nothing else, and the kernel checks every open. The 2026-07-03 Read leak that the middle
+//    tier was built around ("an allow-list entry bypasses the path check") has no consequence
+//    there: a Read that escapes its root escapes into a directory with no ACE for that account.
+//    And the middle tier never actually bounded these beings anyway — they hold bare Bash, which
+//    was never path-gated, so the being could always `cat` a file it was not allowed to `Read`.
+//
+//    THE GUARD IS `osConfined` ALONE. A being with no OS box — access_level regular on a node
+//    that does not sandbox, or any non-win32 node — has nothing but this argv between it and the
+//    filesystem, and every flag it had it still has. That is the middle case below, and it is
+//    the one that must never move. ──
+describe('the three permission tiers (2026-09-23)', () => {
+  const opts = { allowedTools: ['Read', 'Grep', 'WebFetch'], addDirs: ['/c/work'], readOnlyDirs: ['/c/ro'] };
+
+  it('osConfined (the OS box) — bypass, the WHOLE tool list, and not one path in argv', () => {
+    const a = buildClaudeArgs({ ...opts, osConfined: true });
+    expect(has(a, '--dangerously-skip-permissions')).toBe(true);
+    expect(valsOf(a, '--permission-mode')).toEqual(['bypassPermissions']);
+    expect(valsOf(a, '--allowedTools')).toEqual(['Read Grep WebFetch']);   // file tools included
+    // NO roots at all: not the declared addDirs, not the read-only ones. Those paths are real
+    // locations under the operator's profile, and naming them is what put the operator's
+    // username into every sandboxed being's argv.
+    expect(addDirs(a)).toEqual([]);
+    // ...and no deny rules and no settings isolation: a CLI gate this tier does not have.
+    expect(has(a, '--settings')).toBe(false);
+    expect(has(a, '--setting-sources')).toBe(false);
+  });
+
+  it('confineToDirs (no OS box) — UNCHANGED: default mode, roots named, file tools withheld', () => {
+    // THE GUARD. This is the tier for a being whose only boundary is this argv. If a change to
+    // the sandboxed tier ever reaches here, the being it belongs to has just been un-confined.
+    const a = buildClaudeArgs({ ...opts, confineToDirs: ['/c/conv'] });
+    expect(has(a, '--dangerously-skip-permissions')).toBe(false);
+    expect(valsOf(a, '--permission-mode')).toEqual(['default']);
+    expect(valsOf(a, '--setting-sources')).toEqual(['']);
+    expect(addDirs(a)).toEqual(['/c/work', '/c/conv', '/c/ro']);
+    expect(valsOf(a, '--allowedTools')).toEqual(['WebFetch']);             // non-file tools only
+    expect(JSON.parse(valsOf(a, '--settings')[0]).permissions.deny).toContain('Write(/c/ro/**)');
+  });
+
+  it('dangerouslySkipPermissions — UNCHANGED, and the boxed tier is now its twin', () => {
+    const a = buildClaudeArgs({ ...opts, dangerouslySkipPermissions: true });
+    expect(has(a, '--dangerously-skip-permissions')).toBe(true);
+    expect(valsOf(a, '--permission-mode')).toEqual(['bypassPermissions']);
+    expect(valsOf(a, '--allowedTools')).toEqual(['Read Grep WebFetch']);
+    // The one thing that still differs from osConfined, and it is not a tier decision: an
+    // unconfined turn is not in a box, so its declared roots are still the only thing telling
+    // the CLI where it may work.
+    expect(addDirs(a)).toEqual(['/c/work', '/c/ro']);
+  });
+
+  it('osConfined and dangerouslySkipPermissions together emit the pair ONCE, not twice', () => {
+    // Both routes now push the same two flags. A being at access_level `all` on a boxed node
+    // takes both paths, and a doubled --permission-mode is an argv the CLI reads as ambiguous.
+    const a = buildClaudeArgs({ ...opts, osConfined: true, dangerouslySkipPermissions: true });
+    expect(a.filter((x) => x === '--dangerously-skip-permissions')).toHaveLength(1);
+    expect(valsOf(a, '--permission-mode')).toEqual(['bypassPermissions']);
+  });
+});
+
 describe('FILE_TOOLS sanity', () => {
   it('covers the write/read-class tools', () => {
     for (const t of ['read', 'write', 'edit', 'glob', 'grep']) expect(FILE_TOOLS.has(t)).toBe(true);

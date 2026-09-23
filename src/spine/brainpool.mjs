@@ -170,10 +170,18 @@ function allowedPathsFor(def, onLog = () => {}) {
 // share paths and nothing else, enforced by the kernel on every open. `--add-dir` was never a
 // boundary here anyway - these beings hold bare Bash.
 //
-// ONLY THE ROOT. `addDirs`/`readOnlyDirs` stay, because they name GENUINELY OTHER locations (the
-// node-level ~\src read-only grant) that no junction covers. Dropping them would re-create the
-// 2026-09-05 defect in reverse: the OS grants access the CLI then refuses to use. The mount is
-// the OS half of "the being may use this folder"; these are the CLI half. Either alone is a lie.
+// AND SINCE 2026-09-23 THE WHOLE CLI GATE GOES, not just the root (operator: "and so
+// --permission-mode [should] be none at all. free roam inside the sandbox"). `addDirs` and
+// `readOnlyDirs` are still RETURNED here — they are what the def declared, and they are read by
+// the def's other consumer — but claude-args.mjs emits no argv for them under `osConfined`. That
+// is deliberately decided THERE, in the one function that expresses the permission tier, rather
+// than by withholding fields here: sandboxSharePathsFor reads the SAME walk for the OS half, and
+// a second place that decides what `allowed_paths` means is how the two layers drift.
+//
+// IT IS NOT THE 2026-09-05 DEFECT IN REVERSE. That defect was the OS granting a path the CLI
+// then refused to use. Here the OS still grants it — the per-lease ACE is untouched — and the
+// CLI refuses nothing at all. See claude-args.mjs for why a bypass on a sandboxed being is not a
+// widening: the account is the boundary, and bare Bash was never path-gated anyway.
 //
 // PLATFORM FALLS OUT OF `sandboxed` FOR FREE, and that is the point of keying on it: on a
 // non-win32 node the default resolves false (see resolveSandboxed), there is no OS box, and the
@@ -377,6 +385,13 @@ function shapeDef(name, def, agent = {}, brainType = 'ccode') {
 // ── THE NODE-LEVEL `allowed_paths:` (operator 2026-09-20) ────────────────────────────────────
 // "all agents see an src/ directory, it is actually interesting to have a my-code/ pointing to
 // src/egpt, we can 'leak' my own src/ to the agent (read-only for now)".
+//
+// THE PATH THAT ASK PRODUCED — `C:/Users/an/src` — WAS RETIRED ON 2026-09-23 (operator: "dismiss
+// mounting ~/src always, that was a faux-pas"). A sandboxed being now reaches the eGPT checkout
+// through the `src` junction in its own pool profile, backed by a STANDING group ACE on
+// ~\src\egpt, so it needs no allowed_paths entry to see its own code. THE MECHANISM BELOW IS
+// UNCHANGED and is still how a node grants a path to every being at once; it is the one ENTRY
+// that went, and it goes from config, not from here (setup/migrations owns that).
 //
 // A read grant used to be per TYPE FILE: config/agents/sonnet-default.yaml carried E's
 // `allowed_paths: { C:/Users/an/src/egpt: { allowed_tools: [Read, Glob, Grep] } }`, and granting

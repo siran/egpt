@@ -843,8 +843,24 @@ describe('brainpool.turn — confine-by-default (allowed_tools list) + allowed_p
 //    WHAT REPLACES IT: nothing, because nothing was holding. For a sandboxed being the OS box IS
 //    the boundary — the leased account's ACE covers the Room and its declared share paths and
 //    nothing else, on every open — and these beings hold bare Bash, so `--add-dir` was advisory
-//    all along. `addDirs`/`readOnlyDirs` STAY: those name genuinely other locations no junction
-//    covers, and dropping them would re-create the 2026-09-05 defect in reverse.
+//    all along.
+//
+//    ...AND ON 2026-09-23 THE REST OF THE CLI GATE WENT THE SAME WAY (operator: "and so
+//    --permission-mode [should] be none at all. free roam inside the sandbox", and, asked whether
+//    the coherent end state is that a sandboxed being also gets bypassPermissions, "yes"). A
+//    sandboxed turn now takes the SAME argv tier as the unconfined one — bypassPermissions, the
+//    full tool list, NO --add-dir for anything including a declared allowed_path, no
+//    --setting-sources '' and no readOnlyDirs deny rules. The half that stayed is the one that
+//    was ever load-bearing: `allowed_paths` still produces a REAL per-lease ACE through
+//    sandboxSharePathsFor, asserted below on every one of these cases.
+//
+//    THAT IS NOT 0015 IN REVERSE, which is the thing to check when reading this: 0015's defect
+//    was the OS permitting a path the CLI then refused. Here the CLI refuses nothing at all, and
+//    what the being can open is decided by the pool account's ACEs on every syscall.
+//
+//    THE GUARD IS `sandboxed === true`, nothing else — not the access level. A being with no OS
+//    box keeps the CLI-root tier byte for byte; the REGRESSION test at the end of this describe
+//    is that guard, and the describe above owns the unboxed shapes.
 //
 //    EVERY TEST HERE PINS `platform` EXPLICITLY, because that is what decides whether a turn is
 //    boxed at all: unset resolves win32-only (resolveSandboxed rung 4), so the same def is
@@ -877,22 +893,29 @@ describe('brainpool.turn — a sandboxed turn hands the CLI no path it should no
     expect(userPaths(args)).toEqual([]);
   });
 
-  it('REPRODUCE: a declared allowed_path still reaches --add-dir — and is the ONLY user path there', async () => {
+  it("REPRODUCE: a declared allowed_path reaches the OS layer and NOTHING in argv — no operator path is quotable", async () => {
+    // THE LEAK THIS CLOSES, and the reason the 2026-09-23 ruling finished the job the cwd root
+    // started: `C:/Users/an/src` was the node-level grant on this machine, so EVERY sandboxed
+    // being's argv carried the operator's username — the last one that did.
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains: declaresSrc, platform: 'win32' });
     await brain.turn('e', ev);
     const opts = pool.calls[0].brainOptions;
     const args = buildClaudeArgs(opts);
 
-    // The CLI half of the node-level grant survives...
-    expect(argVals(args, '--add-dir')).toEqual(['C:/Users/an/src']);
-    // ...and it is the only thing under a profile the being is told about. The cwd is not.
-    expect(userPaths(args)).toEqual(['C:/Users/an/src']);
+    // NOT ONE user-profile path anywhere in the argv — not the cwd, not the declared root.
+    expect(userPaths(args)).toEqual([]);
+    expect(argVals(args, '--add-dir')).toEqual([]);
     expect(args.some((a) => typeof a === 'string' && a.includes(opts.cwd))).toBe(false);
+
+    // ...and the OS half is untouched, which is what keeps this from being 0015 in reverse: the
+    // launcher still gets the path and still ACEs it ReadAndExecute for the leased account.
+    expect(opts.sandboxSharePathsReadOnly).toEqual(['C:/Users/an/src']);
   });
 
-  it('a FULL-ACCESS allowed_path still reaches --add-dir inside the box, and still carries no deny rule', async () => {
-    // The other grant class, kept because the launcher ACEs it Modify: the CLI must agree that
-    // the being may use it. Only the cwd root went.
+  it('a FULL-ACCESS allowed_path is granted at the kernel and named in no flag', async () => {
+    // The other grant class. It used to need `--add-dir` for the CLI to agree the being may use
+    // it; with no CLI gate left there is nothing to agree with, and the Modify ACE is the whole
+    // of the permission.
     const both = { resolve: () => ({
       name: 'egpt', type: 'ccode', allowed_tools: ['Read', 'Edit'],
       allowed_paths: { '/c/work/project': null, '/c/Users/an/src': { allowed_tools: ['Read', 'Glob', 'Grep'] } },
@@ -900,41 +923,42 @@ describe('brainpool.turn — a sandboxed turn hands the CLI no path it should no
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains: both, platform: 'win32' });
     await brain.turn('e', ev);
     const opts = pool.calls[0].brainOptions;
+    // The def's own classification still happens — it is what the two ACE classes come from.
     expect(opts.addDirs).toEqual(['C:/work/project']);
+    expect(opts.sandboxSharePaths).toEqual(['C:/work/project']);          // -SharePath  -> Modify
+    expect(opts.sandboxSharePathsReadOnly).toEqual(['C:/Users/an/src']);  // -SharePathReadOnly -> RX
     const args = buildClaudeArgs(opts);
-    expect(argVals(args, '--add-dir')).toEqual(['C:/work/project', 'C:/Users/an/src']);
+    expect(argVals(args, '--add-dir')).toEqual([]);
     expect(args.some((a) => typeof a === 'string' && a.includes(opts.cwd))).toBe(false);
-    const deny = JSON.parse(argVals(args, '--settings')[0]).permissions.deny;
-    expect(deny.some((r) => r.includes('C:/work/project'))).toBe(false);
   });
 
-  it('a read-only grant keeps its deny rules inside the box — the OS half and the CLI half agree', async () => {
-    // Dropping addDirs/readOnlyDirs would re-create 0015's failure in reverse: the launcher ACEs
-    // the path ReadAndExecute while the CLI refuses to use it.
+  it('a read-only grant emits NO deny rules in the box — the ACE is what makes it read-only', async () => {
+    // A deny rule is a CLI gate and this tier has none. It also subtracts nothing: the path is
+    // ACE'd ReadAndExecute, so the write it would have refused fails at the syscall — and these
+    // beings hold bare Bash, which the deny rule never covered anyway.
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains: declaresSrc, platform: 'win32' });
     await brain.turn('e', ev);
     const opts = pool.calls[0].brainOptions;
-    expect(opts.readOnlyDirs).toEqual(['C:/Users/an/src']);
-    const deny = JSON.parse(argVals(buildClaudeArgs(opts), '--settings')[0]).permissions.deny;
-    expect(deny).toContain('Write(C:/Users/an/src/**)');
-    expect(deny).toContain('Edit(C:/Users/an/src/**)');
+    expect(opts.readOnlyDirs).toEqual(['C:/Users/an/src']);   // still classified...
+    expect(opts.sandboxSharePathsReadOnly).toEqual(['C:/Users/an/src']);  // ...and still ACE'd
+    expect(argVals(buildClaudeArgs(opts), '--settings')).toEqual([]);     // ...and silent in argv
   });
 
-  it('BOTH HALVES OF THE 2026-07-03 READ-LEAK FIX SURVIVE the sandboxed tier', async () => {
-    // --permission-mode default, and file tools NOT pre-approved (an allow-list entry bypasses
-    // the path check, which is exactly how Read once leaked). Only --setting-sources '' is
-    // retired, and that on purpose.
+  it('THE CLI GATE IS GONE ENTIRELY: bypassPermissions, the whole tool list, no --setting-sources', async () => {
+    // Operator ruling 2026-09-23. The middle tier this replaces existed for the 2026-07-03 Read
+    // leak ("an allow-list entry bypasses the path check"), and under the OS box that leak has
+    // no consequence: a Read that escapes its root escapes into a directory the pool account
+    // holds no ACE on. Keeping it was a weaker second opinion on a question the kernel answers —
+    // and bare Bash walked past it anyway, so the being could `cat` what it could not `Read`.
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains: declaresNothing, platform: 'win32' });
     await brain.turn('e', ev);
     const args = buildClaudeArgs(pool.calls[0].brainOptions);
 
-    expect(argVals(args, '--permission-mode')).toEqual(['default']);
+    expect(args).toContain('--dangerously-skip-permissions');
+    expect(argVals(args, '--permission-mode')).toEqual(['bypassPermissions']);
+    // The FULL list, file tools included — no more withholding Read/Grep from the allow-list.
     const allow = argVals(args, '--allowedTools')[0].split(' ');
-    expect(allow).toContain('WebFetch');          // non-file tool pre-approved
-    expect(allow).not.toContain('Read');          // file tool stays engine-checked
-    expect(allow).not.toContain('Grep');
-    expect(args).not.toContain('--dangerously-skip-permissions');
-    // The one retirement, deliberate: a pool account's ~ is its own scrubbed profile.
+    expect(allow).toEqual(['Read', 'Grep', 'WebFetch']);
     expect(argVals(args, '--setting-sources')).toEqual([]);
   });
 
@@ -952,6 +976,19 @@ describe('brainpool.turn — a sandboxed turn hands the CLI no path it should no
     expect(argVals(args, '--add-dir')).toEqual([opts.cwd, 'C:/Users/an/src']);
     expect(argVals(args, '--setting-sources')).toEqual(['']);
     expect(argVals(args, '--permission-mode')).toEqual(['default']);
+    // THE GUARD (operator 2026-09-23, in capitals): the bypass belongs to the OS box and to
+    // nothing else. With no box, the argv IS the boundary and every part of it stays.
+    expect(args).not.toContain('--dangerously-skip-permissions');
+    // ...including the half the 2026-07-03 Read leak was fixed with: file tools are NOT
+    // pre-approved, only the non-file ones are.
+    const allow = argVals(args, '--allowedTools')[0].split(' ');
+    expect(allow).toContain('WebFetch');
+    expect(allow).not.toContain('Read');
+    expect(allow).not.toContain('Grep');
+    // ...and the read-only deny rules, which the boxed tier drops, are still written here.
+    const deny = JSON.parse(argVals(args, '--settings')[0]).permissions.deny;
+    expect(deny).toContain('Write(C:/Users/an/src/**)');
+    expect(deny).toContain('Edit(C:/Users/an/src/**)');
   });
 
   it('REGRESSION: the unconfined tier is byte-identical, boxed or not', async () => {
@@ -1166,13 +1203,37 @@ describe('brainpool.turn — accessLevel override (operator 2026-08-14, was /e a
     expect(optsAll.dangerouslySkipPermissions).toBe(true);      // all.md's dangerously_skip_permissions: true reaches brainOptions verbatim
     expect(buildClaudeArgs(optsAll)).toContain('--dangerously-skip-permissions');
 
-    const regular = harness([{ text: 'ok', sessionId: 's' }], { brains, seedAgents: { e: { access_level: 'regular' } }, loadPermission: loadPermissionLevel });
+    // PLATFORM PINNED TO AN UNBOXED NODE (2026-09-23). This half is about the ACCESS LEVEL —
+    // regular.md grants the confined DEFAULT tool list and dangerously_skip_permissions: false —
+    // and off win32 that is the whole story, so the argv assertion means what its name says.
+    // The SAME being on a boxed node is the case right below, and it is a different argv for a
+    // reason that has nothing to do with its access level.
+    const regular = harness([{ text: 'ok', sessionId: 's' }], { brains, seedAgents: { e: { access_level: 'regular' } }, loadPermission: loadPermissionLevel, platform: 'linux' });
     await regular.brain.turn('e', ev);
     const optsRegular = regular.pool.calls[0].brainOptions;
     expect(optsRegular.allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);
     expectConfined(optsRegular);
     expect(optsRegular.dangerouslySkipPermissions).toBe(false); // regular.md's dangerously_skip_permissions: false
     expect(buildClaudeArgs(optsRegular)).not.toContain('--dangerously-skip-permissions');
+  });
+
+  it("the SAME regular being on a BOXED node keeps access_level 'regular' and takes the OS tier — the bypass comes from the BOX, never from the level", async () => {
+    // The distinction the 2026-09-23 ruling turns on, and the one a reader is most likely to get
+    // wrong: `regular` does not mean "CLI-confined". On win32 resolveSandboxed rung 4 answers
+    // true, so a regular being IS boxed, and a boxed being's boundary is its Windows account.
+    // dangerously_skip_permissions stays FALSE on the def — the access level is unchanged and
+    // grants nothing extra; the flag pair comes from `osConfined` alone.
+    const brains = { resolve: () => ({ name: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: ['Read'] }) };
+    const boxed = harness([{ text: 'ok', sessionId: 's' }], { brains, seedAgents: { e: { access_level: 'regular' } }, loadPermission: loadPermissionLevel, platform: 'win32' });
+    await boxed.brain.turn('e', ev);
+    const opts = boxed.pool.calls[0].brainOptions;
+    expect(opts.sandboxed).toBe(true);
+    expect(opts.osConfined).toBe(true);
+    expect(opts.dangerouslySkipPermissions).toBe(false);
+    const args = buildClaudeArgs(opts);
+    expect(args).toContain('--dangerously-skip-permissions');
+    expect(argVals(args, '--permission-mode')).toEqual(['bypassPermissions']);
+    expect(argVals(args, '--add-dir')).toEqual([]);
   });
 });
 

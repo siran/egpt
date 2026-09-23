@@ -339,6 +339,100 @@ Describe 'the launcher wiring (the statements the launcher really runs)' {
 }
 
 # ---------------------------------------------------------------------------
+# THE POOL-WIDE RECLAIM ON THE LEASE PATH (2026-09-23) - the shipped statement,
+# extracted and RUN, in the same style as the two gates above.
+#
+# WHY IT IS HERE AT ALL. The revoke mechanism was never broken; it was never
+# reached. warm-cli-session.mjs ends a session with proc.kill() = TerminateProcess,
+# so the launcher's `finally` does not run at the ORDINARY end of a sandboxed
+# session, and the per-account reclaim at step (a2) only fires when THAT account
+# is leased again. Measured on kg 2026-09-23 from the live artefacts: 14 of the
+# 16 pool locks existed, NOT ONE was held, and all 14 ACEs their ledgers named
+# were still on disk - nine conversations' thread stores, one of them granted to
+# three pool accounts at once, the oldest lock two days old.
+#
+# NOTHING HERE TOUCHES THE OS, the same hard constraint as the rest of this file:
+# the ledger names directories that carry NO ACE for anyone, so the revoke
+# reconciles them to 'clean' and does not run icacls at all - which the spy (which
+# NEVER forwards) then proves by staying empty. The locks live under $env:TEMP.
+Describe 'the lease-path pool reclaim (the statement the launcher really runs)' {
+  $locks = $null
+  BeforeEach {
+    $script:IcaclsSpy.Clear()
+    $locks = New-GateTempDir
+  }
+
+  It 'is wired AFTER the lease and BEFORE the grant - litter must never cost this turn its account' {
+    # While the sweep holds another account's stale lock, a launcher racing for
+    # that account sees a live lease and walks on. Sweeping before our own lease
+    # is taken could therefore cost THIS turn its preferred account.
+    $sweep = Get-LauncherLineIndex 'Clear-SandboxAbandonedLeases -LocksDir \$locksDir'
+    $sweep | Should BeGreaterThan (Get-LauncherLineIndex "leased pool account '\`$leasedName'  - fell back")
+    $sweep | Should BeLessThan (Get-LauncherLineIndex $script:GrantPattern)
+  }
+
+  It 'the extracted statement really reclaims an abandoned lease, and writes no ACL to do it' {
+    $stmt = Get-LauncherStatement 'Clear-SandboxAbandonedLeases -LocksDir \$locksDir'
+    $locksDir = $locks
+    $sweepBudget = 10
+    $dead = New-GateTempDir
+    # The lock is named after THIS user, and the prefix guard is pointed at that
+    # name - the same substitution sandbox-account.Tests.ps1 makes, so the sweep
+    # is aimed at a principal that resolves and is nobody's pool account.
+    $savedPrefix = $SandboxPoolPrefix
+    $script:SandboxPoolPrefix = $env:USERNAME
+    try {
+      $lock = Join-Path $locksDir "$($env:USERNAME).lock"
+      $s = [System.IO.File]::Open($lock, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::ReadWrite)
+      try { Write-SandboxLeaseLedger -Stream $s -Paths @($dead) } finally { $s.Close() }
+
+      $sweptRecs = $null
+      Invoke-Expression $stmt | Out-Null
+
+      @($sweptRecs).Count | Should Be 1
+      $sweptRecs[0].Status | Should Be 'reclaimed'
+      (Test-Path -LiteralPath $lock) | Should Be $false
+      # THE ACL PROOF: the ledger path carries no ACE for that account, so the
+      # revoke reconciles it to 'clean' and never reaches icacls.
+      $script:IcaclsSpy.Count | Should Be 0
+    } finally { $script:SandboxPoolPrefix = $savedPrefix }
+  }
+
+  It 'A LIVE LEASE IS LEFT ALONE by the shipped statement - our own lock included' {
+    # The launcher holds its own lock FileShare::None, which is exactly why it
+    # needs no exemption: the sweep cannot open it and reports it 'held'. Here
+    # that same fact stands in for a concurrent turn's lease.
+    $stmt = Get-LauncherStatement 'Clear-SandboxAbandonedLeases -LocksDir \$locksDir'
+    $locksDir = $locks
+    $sweepBudget = 10
+    $savedPrefix = $SandboxPoolPrefix
+    $script:SandboxPoolPrefix = $env:USERNAME
+    try {
+      $lock = Join-Path $locksDir "$($env:USERNAME).lock"
+      $s = [System.IO.File]::Open($lock, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::ReadWrite)
+      try {
+        Write-SandboxLeaseLedger -Stream $s -Paths @((New-GateTempDir))
+        $sweptRecs = $null
+        Invoke-Expression $stmt | Out-Null
+        $sweptRecs[0].Status | Should Be 'held'
+        (Test-Path -LiteralPath $lock) | Should Be $true
+        $script:IcaclsSpy.Count | Should Be 0
+      } finally { $s.Close() }
+    } finally { $script:SandboxPoolPrefix = $savedPrefix }
+  }
+
+  It 'a sweep that THROWS does not take the turn down - we already hold the lease' {
+    # Refusing a turn over someone else's litter would trade a leak for an
+    # outage. The whole block is one try/catch that only logs.
+    $src = Get-Content -LiteralPath $script:LauncherScript -Raw
+    $block = $src.Substring($src.IndexOf('# ---- (a3)'), $src.IndexOf('$plainPwd = $null') - $src.IndexOf('# ---- (a3)'))
+    ($block -match 'try \{') | Should Be $true
+    ($block -match 'catch \{') | Should Be $true
+    ($block -match 'throw') | Should Be $false
+  }
+}
+
+# ---------------------------------------------------------------------------
 # THE -SetEnv ENVIRONMENT BLOCK (2026-09-23). Second live failure, different
 # from the 267 above and NOT a regression of it:
 #   2026-09-23 12:35:44  turn ken/o1TO4f1is79x0uJ3eYEv: claude exited 1 mid-turn
@@ -702,7 +796,11 @@ Describe 'the working directory is the mount, never the Room (the launcher wirin
     $src = Get-Content -LiteralPath $script:LauncherScript -Raw
     ($src -match '-ItemType Junction') | Should Be $false
     # Prose may name the generator; exactly one line may CALL it.
-    (@([regex]::Matches($src, '\(Get-SandboxProfileJunctionStatement -OperatorSrc')).Count) | Should Be 1
+    (@([regex]::Matches($src, '\(Get-SandboxProfileJunctionStatement -RepoRoot')).Count) | Should Be 1
+    # ...and the wide ~\src mount is not reachable from here any more: the
+    # parameter was renamed with its meaning, so an old call site fails to bind
+    # rather than silently mounting all of the operator's source (2026-09-23).
+    ($src -match '-OperatorSrc') | Should Be $false
     (@([regex]::Matches($src, '(?m)^\s*\$sandboxCwd = ')).Count) | Should Be 1
   }
 }
