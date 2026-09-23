@@ -1802,6 +1802,9 @@ try {
       "materialises one), or the pass itself did not finish. The turn is NOT run in the conversation folder instead: that path " +
       "names the operator and the person this conversation is with, and keeping it out of the being's cwd is the whole point.")
   }
+  # The ONE line of this launch that reaches the daemon log on SUCCESS
+  # (sandbox-cli-session.mjs forwards it; see Get-SandboxLaunchSummary).
+  Log (Get-SandboxLaunchSummary -AccountName $leasedName -Cwd $sandboxCwd)
 
   # ---- (f) launch InnerBin AS the leased account, stdio proxied straight
   # through. CreateProcessWithLogonW does the logon itself from the name +

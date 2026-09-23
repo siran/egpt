@@ -47,7 +47,9 @@ writeFileSync(SYS32_BASH, '');
 
 afterAll(() => { try { rmSync(STORE, { recursive: true, force: true }); } catch { /* best effort */ } });
 
-function fakeLauncherSpawn({ failOn = null, hang = false, sessionId = 'sess-123' } = {}) {
+// `stderr`: chunks the fake LAUNCHER writes to its stderr right after it is spawned, before any
+// turn — the way the real launcher logs its lease/scrub/launch lines ahead of the CLI's first byte.
+function fakeLauncherSpawn({ failOn = null, hang = false, sessionId = 'sess-123', stderr = [] } = {}) {
   let turnNo = 0;
   const calls = [];   // { bin, args, opts }
   const spawn = (bin, args, opts) => {
@@ -55,6 +57,7 @@ function fakeLauncherSpawn({ failOn = null, hang = false, sessionId = 'sess-123'
     const proc = new EventEmitter();
     proc.stdout = new EventEmitter(); proc.stdout.setEncoding = () => {};
     proc.stderr = new EventEmitter(); proc.stderr.setEncoding = () => {};
+    if (stderr.length) setImmediate(() => { for (const c of stderr) proc.stderr.emit('data', c); });
     proc.killed = false;
     proc.kill = () => { proc.killed = true; };
     proc.stdin = {
@@ -839,6 +842,66 @@ describe('sandbox-cli-session — a missing or rejected sandbox_oauth_token tell
       expect(text.length, `${name} produced no message`).toBeGreaterThan(0);
       expect(text, `${name} leaked the token value`).not.toContain(TOKEN);
       expect(text, `${name} leaked a slice of the token value`).not.toContain(TOKEN.slice(0, 16));
+    }
+  });
+});
+
+// ── THE LAUNCH LINE REACHES THE DAEMON LOG ON A SUCCESSFUL TURN (2026-09-23). The launcher logs to
+//    stderr, and every engine keeps stderr only in a failure-tail buffer that is printed when a turn
+//    FAILS — so on the success path the line naming the leased account, the cwd and the mount was
+//    discarded, and a being quoting the wrong `pwd` could not be diagnosed from the log. sandboxSpawn
+//    owns the launcher for all three engines, so it taps the launcher's stderr and forwards the ONE
+//    `launch` summary line to onLog, leaving the engine's own stderr handling exactly as it was. ──
+describe('sandbox-cli-session — the launcher\'s launch summary line reaches onLog', () => {
+  const LAUNCH = String.raw`sandbox-logon-launcher: launch account=egpt-sbx-08 cwd=C:\Users\egpt-sbx-08\egpt junction=ok target=C:\Users\an\.egpt\conversations\whatsapp\Some One-2608141626`;
+  const NOISE = String.raw`sandbox-logon-launcher: environment block for 'egpt-sbx-08' rebased on its own profile at C:\Users\egpt-sbx-08: APPDATA` + '\r\n';
+  // The launch line split mid-line across two chunks, CRLF-terminated as PowerShell writes it.
+  const CHUNKS = [NOISE, LAUNCH.slice(0, 40), `${LAUNCH.slice(40)}\r\n`, 'sandbox-logon-launcher: launching exited 0\r\n'];
+
+  it('REPRODUCE-FIRST: on a SUCCESSFUL ccode turn the launch line is forwarded to onLog — and nothing else from stderr is', async () => {
+    const f = fakeLauncherSpawn({ stderr: CHUNKS });
+    const logs = [];
+    const s = createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), platform: 'win32', sandboxOauthToken: TOKEN, jsonlStoreRoot: STORE, onLog: (l) => logs.push(String(l)) });
+    const r = await s.turn('hi');
+    s.close();
+    expect(r.text).toBe('echo:hi');
+    const fromStderr = logs.filter((l) => l.startsWith('sandbox-logon-launcher:'));
+    expect(fromStderr).toEqual([LAUNCH]);
+  });
+
+  it("the engine's OWN stderr handling still sees the whole stream — a failed turn's tail carries every line, the launch line included", async () => {
+    const f = fakeLauncherSpawn({ stderr: CHUNKS, failOn: 'BAD' });
+    const s = createSandboxCliSession({ spawn: f.spawn, cwd: process.cwd(), platform: 'win32', sandboxOauthToken: TOKEN, jsonlStoreRoot: STORE, onLog: () => {} });
+    let err = null;
+    try { await s.turn('BAD'); } catch (e) { err = e; }
+    s.close();
+    expect(err, 'the turn was meant to fail').toBeTruthy();
+    // warm-cli-session's tail is the last 300 chars of its stderr buffer: the launch line and what
+    // followed it are all in there, byte for byte — the tap consumed nothing.
+    expect(err.message).toContain(LAUNCH.slice(-150));
+    expect(err.message).toContain('launching exited 0');
+    expect(err.message).toContain('boom');
+  });
+
+  it("engine: 'codex' and 'pi' forward it too — one sandboxSpawn, and pi's stderr arrives as Buffers", async () => {
+    for (const engine of ['codex', 'pi']) {
+      const logs = [];
+      const spawn = (bin, args, opts) => {
+        const proc = new EventEmitter();
+        proc.stdout = new EventEmitter(); proc.stdout.setEncoding = () => {};
+        proc.stderr = new EventEmitter();
+        if (engine === 'codex') proc.stderr.setEncoding = () => {};
+        proc.stdin = { write: () => {}, end: () => {} };
+        proc.kill = () => {};
+        setImmediate(() => { for (const c of CHUNKS) proc.stderr.emit('data', engine === 'pi' ? Buffer.from(c, 'utf8') : c); });
+        return proc;
+      };
+      const s = createSandboxCliSession({ spawn, cwd: process.cwd(), engine, platform: 'win32', onLog: (l) => logs.push(String(l)) });
+      s.turn('hi').catch(() => {});   // fires the spawn; nothing ever replies
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+      s.close();
+      expect(logs.filter((l) => l.startsWith('sandbox-logon-launcher:')), engine).toEqual([LAUNCH]);
     }
   });
 });
