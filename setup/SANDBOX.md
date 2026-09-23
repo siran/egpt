@@ -36,7 +36,7 @@ warm session spawns
 | `setup/provision-sandbox-account.ps1` | **The operator entry point.** Self-elevates via UAC, dot-sources the above, provisions everything. Idempotent. |
 | `setup/sandbox-logon-launcher.ps1` | The per-session launcher. Leases, ACLs, scrubs, launches, cleans up. Invoked by the daemon, not by hand. |
 | `src/sandbox-cli-session.mjs` | Wraps the warm CLI session so its `spawn` goes through the launcher. |
-| `setup/sandbox-account.Tests.ps1`, `setup/test-sandbox-logon-launcher.ps1` | Their tests. |
+| `setup/sandbox-account.Tests.ps1`, `setup/sandbox-logon-launcher.Tests.ps1`, `setup/test-sandbox-logon-launcher.ps1` | Their tests. |
 
 The launcher's parameters:
 
@@ -538,6 +538,22 @@ Real, current, and worth knowing before relying on any of this.
 **`ERROR_ACCESS_DENIED` from `CreateProcessWithLogonW`** — the pool group has
 lost `ReadAndExecute` on the binary's directory. Re-run
 `provision-sandbox-account.ps1`.
+
+**`Win32 error 267` from `CreateProcessWithLogonW`** — `ERROR_DIRECTORY`: the
+`lpCurrentDirectory` handed to the call is not reachable **by the target
+user**, i.e. the conversation folder carries no ACE for the leased account.
+Measured on kg 2026-09-23, where the folder held Modify for three *other* pool
+accounts and nothing for the one that was running. The cause is that a grant
+can silently not land — `icacls` accepts some specs, exits 0, prints success
+and writes no ACE — and nothing read the DACL back. It cannot reach a launch
+any more: the launcher now re-reads the DACL right after the grant and again
+immediately before the launch (`Assert-SandboxPathReachable`), and a turn whose
+folder the leased account cannot reach ends there with `REFUSING at step (d)…`
+or `REFUSING at step (f)…`, naming the account, the folder and what was
+expected. That message means the sandbox could not be established — it is never
+a reason to widen a grant. Check the folder's DACL, then re-run
+`provision-sandbox-account.ps1` if the *ancestor* traverse chain is what is
+missing.
 
 **`Model "..." not found` from pi** — `PI_CODING_AGENT_DIR` is unset at Machine
 scope, so pi resolved its config against `C:\Users\egpt-sbx-NN` instead. Re-run
