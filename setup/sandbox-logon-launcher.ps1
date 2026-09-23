@@ -1338,26 +1338,38 @@ function Clear-SandboxProfileContents {
   # Keep this SHORT: the whole command line must fit in 1024 characters, see
   # Invoke-AsLeasedAccount's BUDGET note. MEASURED 2026-09-20 with the real
   # values (profile C:\Users\egpt-sbx-07, target C:\Users\an\src): 677-character
-  # script, 775-character command line with ONE junction. Both junctions ride a
+  # script, 775-character command line with ONE junction. Every link rides a
   # single `foreach` statement for that reason - see
   # Get-SandboxProfileJunctionStatement, which owns the budget note and is the
-  # only place either link is named. The only part that varies by node is the
-  # junction target, so a node whose operator home is much longer than
-  # C:\Users\an is the one thing that could eat that margin.
+  # only place any link is named. Retiring `my-code` (2026-09-23) took a whole
+  # table row back out of this payload, which is about 34 characters of a margin
+  # that was measured at roughly 40 with an 80-character conversation slug. The
+  # only part that varies by node is the junction target, so a node whose
+  # operator home is much longer than C:\Users\an is the one thing that could eat
+  # what is left.
   #
-  # `src` IS THE OPERATOR'S OWN ~\src, READ-ONLY (operator 2026-09-20: "can we
-  # make that sandbox account's sbx/src/ path points to src/an read-only?"), and
-  # `my-code` is the eGPT checkout under it ("it is actually interesting to have
-  # a my-code/ pointing to src/egpt"). Directory JUNCTIONS, which need no
-  # privilege to create (unlike a symlink) - and they are only half the feature.
-  # The OTHER half is a STANDING ReadAndExecute grant to the pool group on ~\src,
-  # written by provision-sandbox-account.ps1, which carries the reasoning for why
-  # that one is standing rather than per-turn; my-code is under it and inherits
-  # it. Without that grant these links are directories the being can see and
-  # cannot open. A THIRD thing is needed before a CONFINED being can use them -
-  # `C:/Users/an/src` in that being's own `allowed_paths` - because the CLI layer
-  # refuses paths the kernel would allow; that is per-being config and
-  # deliberately not decided here.
+  # `src` IS THE eGPT CHECKOUT, ~\src\egpt, READ-ONLY (operator 2026-09-23:
+  # "dismiss mounting ~/src always, that was a faux-pas" and "in the same way
+  # that the conversation directory is mounted in the sandbox account, the
+  # src/egpt can also be mounted as src/"). It used to be the operator's WHOLE
+  # ~\src, and the `my-code` link beside it was the checkout; one name now does
+  # the job of both and the wider target is retired. See
+  # Get-SandboxProfileJunctionStatement, which owns that decision.
+  # Directory JUNCTIONS, which need no privilege to create (unlike a symlink) -
+  # and they are only half the feature. The OTHER half is a STANDING
+  # ReadAndExecute grant to the pool group on ~\src\egpt, written by
+  # provision-sandbox-account.ps1, which carries the reasoning for why that one
+  # is standing rather than per-turn. Without it this link is a directory the
+  # being can see and cannot open.
+  # NOTHING IS NEEDED AT THE CLI LAYER ANY MORE (operator ruling 2026-09-23:
+  # "--permission-mode [should] be none at all. free roam inside the sandbox").
+  # A sandboxed being's argv carries no `--add-dir` and no permission mode but
+  # bypass, so there is no second gate to teach about this mount - see
+  # src/claude-args.mjs, which holds that tier and the reasoning for it. Until
+  # then the being needed `C:/Users/an/src` in its own `allowed_paths`, which put
+  # the operator's username into every sandboxed being's argv; that is the leak
+  # this ruling closed, and it closed it by removing the gate rather than by
+  # renaming the path.
   #
   # WHY IT IS RE-PLANTED HERE RATHER THAN PROVISIONED ONCE. This scrub empties
   # the profile on every lease acquire, so anything the provisioner put in there
@@ -1380,13 +1392,13 @@ function Clear-SandboxProfileContents {
   # conversation the being actually works in. They live in the CONVERSATION
   # folder instead, which is the being's cwd, is durable, and is the one place it
   # can write. See Room.treeDirs in src/room-core.mjs.
-  $srcRoot = Join-Path $env:USERPROFILE 'src'
+  $repoRoot = Join-Path (Join-Path $env:USERPROFILE 'src') 'egpt'
   $scrubScript = @(
     "`$r = '$profilePath'"
     "if (`$env:USERNAME -ne '$AccountName' -or `$env:USERPROFILE -ne `$r) { [Console]::Error.WriteLine('sandbox-logon-launcher: scrub REFUSED - running as ' + `$env:USERNAME + ' at ' + `$env:USERPROFILE); exit 11 }"
     "Get-ChildItem -LiteralPath `$r -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue"
     "[Console]::Error.WriteLine('sandbox-logon-launcher: scrubbed ' + `$r + ', ' + @(Get-ChildItem -LiteralPath `$r -Force -Recurse -ErrorAction SilentlyContinue).Count + ' locked entries left')"
-    (Get-SandboxProfileJunctionStatement -OperatorSrc $srcRoot -RoomTarget $RoomTarget)
+    (Get-SandboxProfileJunctionStatement -RepoRoot $repoRoot -RoomTarget $RoomTarget)
   ) -join '; '
 
   # IT STOPPED BEING PURELY HYGIENE when `egpt` joined the junction statement
@@ -1587,6 +1599,61 @@ if ($leasedName -eq $preferredName) {
   Log "leased pool account '$leasedName' (this conversation's preferred account)"
 } else {
   Log "leased pool account '$leasedName'  - fell back: preferred '$preferredName' was already leased. Normal under concurrency; account-bound per-conversation state (e.g. a browser profile) does not carry over to this turn."
+}
+
+# ---- (a3) ...AND THE REST OF THE POOL'S DEAD LEASES GO TOO. THE FIX FOR THE
+# LEAK, and the reason it is here and not in a sweeper (2026-09-23).
+#
+# WHAT WAS ACTUALLY WRONG, measured on kg from the live artefacts rather than
+# reasoned about: the revoke mechanism is correct and is simply never reached.
+# warm-cli-session.mjs's close() ends the session with proc.kill(), which on
+# Windows is TerminateProcess, so the `finally` at the bottom of this file does
+# not run at the ORDINARY end of a sandboxed session - the hard-kill path is the
+# NORMAL path. (a2) above is the only thing that then revokes, and it is keyed to
+# ONE account and fires only when THAT account is leased again. An account that
+# leaks and then goes quiet keeps its ACEs indefinitely. On the day this was
+# written, 14 of the 16 pool locks existed, NOT ONE of them was held by any
+# process, and all 14 of the ACEs their ledgers named were still on disk - nine
+# different conversations' thread stores, one of them granted to three pool
+# accounts at once. Two of those locks were two days old.
+#
+# SO THE RECLAIM STOPS BEING PER-ACCOUNT. The same function the provisioner runs
+# for repair, called here, over every OTHER lock in the pool. It is not a second
+# mechanism: Clear-SandboxAbandonedLeases is the same ledger read, the same
+# Revoke-SandboxPathAces and the same staleness test as (a2), only grouped across
+# locks so that one icacls pass covers every account that leaked onto one path.
+#
+# OUR OWN LOCK NEEDS NO EXEMPTION, and deliberately gets none: this process holds
+# it FileShare::None, so the sweep's own exclusive open fails on it and it is
+# reported 'held' and left alone - the launcher's staleness test applied to the
+# launcher. A concurrent turn's live lease is protected by exactly the same fact.
+#
+# AFTER THE LEASE, NEVER BEFORE IT: while the sweep holds another account's stale
+# lock, a launcher racing for that account sees a live lease and walks on. Doing
+# this before our own lease could therefore cost this turn its preferred account
+# (or, under 16 concurrent sweeps, its turn), and litter that is not ours must
+# never do that.
+#
+# BUDGETED, because the old argument for keeping this off the turn path was real:
+# a DACL write on a big tree re-propagates inheritance and was measured at 307 s
+# for ~\src. That tree is no longer reachable from a ledger - ~\src\egpt is a
+# STANDING group grant now and is never granted per lease - so what is left is
+# Rooms and thread stores. The budget is the guarantee rather than the
+# expectation: whatever is not reached stays on its ledger with its lock, and the
+# next turn or setup\sweep-sandbox-leases.ps1 finishes it.
+#
+# NEVER FATAL. We hold the lease; refusing the turn over someone else's litter
+# would trade a leak for an outage.
+try {
+  $sweepBudget = 10
+  $sweptRecs = @(Clear-SandboxAbandonedLeases -LocksDir $locksDir -TimeBudgetSeconds $sweepBudget)
+  $sweptAces = @($sweptRecs | ForEach-Object { $_.Aces } | Where-Object { $_.Status -eq 'revoked' }).Count
+  $sweptLocks = @($sweptRecs | Where-Object { $_.Status -eq 'reclaimed' }).Count
+  if ($sweptAces -gt 0 -or $sweptLocks -gt 0) {
+    Log "pool reclaim on lease: revoked $sweptAces ACE(s) left by $sweptLocks abandoned lease(s) that nothing was going to lease again"
+  }
+} catch {
+  Log "WARNING: the pool-wide reclaim could not run  - $($_.Exception.Message). This turn is unaffected; ACEs other dead leases left are still granted."
 }
 
 $plainPwd = $null

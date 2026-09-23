@@ -1,4 +1,4 @@
-# THROWAWAY unit coverage (operator 2026-08-30) for the DPAPI LocalMachine-
+﻿# THROWAWAY unit coverage (operator 2026-08-30) for the DPAPI LocalMachine-
 # scope credential rewrite in sandbox-account.ps1. Covers what CAN be tested
 # in-process: the byte-level protect/unprotect round trip, the on-disk
 # wrapper format, and Get-SandboxCredential's self-heal branches with
@@ -1090,6 +1090,87 @@ Describe 'Clear-SandboxAbandonedLeases (the repair path for leases nothing will 
     (@(Get-ChildItem -LiteralPath $locks -Filter '*.lock' -File).Count) | Should Be 0
   }
 
+  # ---- THE BUDGET (2026-09-23). This sweep is now also what the LAUNCHER calls,
+  # once, right after it takes its own lease - because the per-account reclaim
+  # only ever fires when that same account is leased again, and on kg 14 of the
+  # 16 pool locks were abandoned with all 14 of their ACEs still standing, one
+  # of them two days old. The budget is what makes that safe on a turn's path:
+  # whatever it does not reach is DEFERRED, never forgotten.
+  It 'REPRODUCE: a budget that has run out DEFERS the rest - ledger kept, lock kept, ACE kept' {
+    # A budget of -1 second is already spent before the first path, so nothing is
+    # revoked and everything is carried. That is the exact state a real overrun
+    # produces, and the one where a dropped path would delete the only record of
+    # a live grant.
+    $script:SandboxPoolPrefix = $script:MeUser
+    $d = New-LedgerTempDir; Grant-TestModify $d
+    $lock = Join-Path $locks "$($script:MeUser).lock"
+    $s = New-TestLock $lock
+    try { Write-SandboxLeaseLedger -Stream $s -Paths @($d) } finally { $s.Close() }
+    $script:IcaclsSpy = New-Object System.Collections.Generic.List[object]
+
+    $recs = @(Clear-SandboxAbandonedLeases -LocksDir $locks -TimeBudgetSeconds -1)
+
+    $recs[0].Status | Should Be 'partial'
+    (@($recs[0].Aces | Where-Object { $_.Status -eq 'deferred' }).Count) | Should Be 1
+    # Nothing was written, the ACE is untouched, and the lock still names it.
+    $script:IcaclsSpy.Count | Should Be 0
+    (Get-TestExplicitAceCount $d) | Should Be 1
+    (Test-Path -LiteralPath $lock) | Should Be $true
+    $s2 = [System.IO.File]::Open($lock, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+    try { ((Read-SandboxLeaseLedger -Stream $s2) -join '|') | Should Be $d } finally { $s2.Close() }
+  }
+
+  It 'and the NEXT run, unbudgeted, finishes exactly what the deferred one left' {
+    # The promise the carry-over is for: a budgeted sweep is not a lossy one, it
+    # is a slower one. Same lock, same ledger, no operator intervention.
+    $script:SandboxPoolPrefix = $script:MeUser
+    $d = New-LedgerTempDir; Grant-TestModify $d
+    $lock = Join-Path $locks "$($script:MeUser).lock"
+    $s = New-TestLock $lock
+    try { Write-SandboxLeaseLedger -Stream $s -Paths @($d) } finally { $s.Close() }
+
+    (@(Clear-SandboxAbandonedLeases -LocksDir $locks -TimeBudgetSeconds -1))[0].Status | Should Be 'partial'
+    $recs = @(Clear-SandboxAbandonedLeases -LocksDir $locks)
+
+    $recs[0].Status | Should Be 'reclaimed'
+    (Get-TestExplicitAceCount $d) | Should Be 0
+    (Test-Path -LiteralPath $lock) | Should Be $false
+  }
+
+  It 'A LIVE LEASE IS STILL UNTOUCHED WITH A BUDGET IN PLAY - the guarantee does not depend on it' {
+    $script:SandboxPoolPrefix = $script:MeUser
+    $conv = New-LedgerTempDir; Grant-TestModify $conv
+    $lock = Join-Path $locks "$($script:MeUser).lock"
+    $s = New-TestLock $lock
+    try {
+      Write-SandboxLeaseLedger -Stream $s -Paths @($conv)
+      $recs = @(Clear-SandboxAbandonedLeases -LocksDir $locks -TimeBudgetSeconds 30)
+      $recs[0].Status | Should Be 'held'
+      (Get-TestExplicitAceCount $conv) | Should Be 1
+      (Test-Path -LiteralPath $lock) | Should Be $true
+    } finally { $s.Close() }
+  }
+
+  It 'a ledger path that VANISHED is reported as such, not as clean, and the lock still releases' {
+    # THE RENAME HOLE, found in the live ledgers on 2026-09-23 (two locks named
+    # ...\Favel Konefka-2608141626 while three named ...\Favel Elena
+    # Konefka-2608141626 - one conversation, renamed slug). NTFS carries a DACL
+    # through a rename, so the ACE outlives the name. This cannot follow it; what
+    # it must not do is call the outcome clean.
+    $script:SandboxPoolPrefix = $script:MeUser
+    $gone = Join-Path $script:LedgerTempRoot ([guid]::NewGuid().ToString('N'))
+    $lock = Join-Path $locks "$($script:MeUser).lock"
+    $s = New-TestLock $lock
+    try { Write-SandboxLeaseLedger -Stream $s -Paths @($gone) } finally { $s.Close() }
+
+    $recs = @(Clear-SandboxAbandonedLeases -LocksDir $locks)
+
+    $recs[0].Status | Should Be 'reclaimed'
+    $recs[0].Aces[0].Status | Should Be 'missing'
+    ($recs[0].Aces[0].Message -match 'RENAMED or MOVED') | Should Be $true
+    ($recs[0].Aces[0].Message -match 'cannot tell the two apart') | Should Be $true
+  }
+
   It 'ACCEPTANCE: locks whose ACEs are ALREADY gone clear cleanly, with no icacls run at all' {
     # THE FIFTEEN. The operator removed the twelve leaked ACEs by hand and left
     # the locks behind; the next sweep must reconcile them to "not granted",
@@ -1202,8 +1283,14 @@ Describe 'Test-SandboxPoolReadCovered (is a per-turn read ACE redundant here?)' 
 # the test can now just call it.)
 #
 # It runs against a throwaway directory under $env:TEMP with $r bound to it, so
-# nothing here touches a real pool profile, and -OperatorSrc is a throwaway tree
-# rather than the operator's own ~\src.
+# nothing here touches a real pool profile, and -RepoRoot is a throwaway tree
+# rather than the operator's own checkout.
+#
+# THE TABLE IS TWO LINKS SINCE 2026-09-23, not three. `src` used to point at the
+# operator's WHOLE ~\src with `my-code` beside it aimed at the checkout; the
+# operator retired the wide mount ("dismiss mounting ~/src always, that was a
+# faux-pas") and asked for the checkout to be mounted the way the Room is ("the
+# src/egpt can also be mounted as src/"), so one name now does both jobs.
 $script:LauncherScript = Join-Path $PSScriptRoot 'sandbox-logon-launcher.ps1'
 
 Describe 'the pool profile junctions (as the launcher scrub really plants them)' {
@@ -1215,11 +1302,10 @@ Describe 'the pool profile junctions (as the launcher scrub really plants them)'
 
   BeforeEach {
     $fakeProfile = New-LedgerTempDir
-    # Stands in for ~\src, with an `egpt` child standing in for the checkout.
+    # Stands in for ~\src\egpt, the eGPT checkout.
     $target = New-LedgerTempDir
     New-Item -ItemType Directory -Path (Join-Path $target 'marker') -Force | Out-Null
-    New-Item -ItemType Directory -Path (Join-Path $target 'egpt') -Force | Out-Null
-    New-Item -ItemType Directory -Path (Join-Path $target 'egpt\src') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $target 'setup') -Force | Out-Null
     # Stands in for the durable Room: subdirectories AND root-level FILES, which
     # is the whole reason this is ONE mount at `egpt` and not one per subdir.
     $room = New-LedgerTempDir
@@ -1227,25 +1313,32 @@ Describe 'the pool profile junctions (as the launcher scrub really plants them)'
     New-Item -ItemType Directory -Path (Join-Path $room 'outbox') -Force | Out-Null
     Set-Content -LiteralPath (Join-Path $room 'transcript.md') -Value 'the live transcript' -Encoding Ascii
     Set-Content -LiteralPath (Join-Path $room 'transcripts\older.md') -Value 'an archived one' -Encoding Ascii
-    $stmt = Get-SandboxProfileJunctionStatement -OperatorSrc $target -RoomTarget $room
+    $stmt = Get-SandboxProfileJunctionStatement -RepoRoot $target -RoomTarget $room
   }
 
-  It 'plants ALL THREE junctions - src, my-code, and the Room at egpt - and says nothing on stdout' {
+  It 'plants BOTH junctions - src onto the checkout and the Room at egpt - and says nothing on stdout' {
     $r = $fakeProfile
     Invoke-Expression $stmt | Should BeNullOrEmpty
     $src = Get-Item -LiteralPath (Join-Path $r 'src') -Force
     ([bool]($src.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) | Should Be $true
     $src.Target | Should Be $target
     (Test-Path -LiteralPath (Join-Path (Join-Path $r 'src') 'marker')) | Should Be $true
-
-    $mine = Get-Item -LiteralPath (Join-Path $r 'my-code') -Force
-    ([bool]($mine.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) | Should Be $true
-    $mine.Target | Should Be (Join-Path $target 'egpt')
-    (Test-Path -LiteralPath (Join-Path (Join-Path $r 'my-code') 'src')) | Should Be $true
+    (Test-Path -LiteralPath (Join-Path (Join-Path $r 'src') 'setup')) | Should Be $true
 
     $mount = Get-Item -LiteralPath (Join-Path $r 'egpt') -Force
     ([bool]($mount.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) | Should Be $true
     $mount.Target | Should Be $room
+  }
+
+  It 'REPRODUCE: my-code is GONE, and the profile carries exactly the two names' {
+    # The retirement, asserted as an absence rather than left to be inferred from
+    # a count. `my-code` pointed at the very target `src` now points at; a second
+    # name for one target is a table row that buys nothing and costs the scrub
+    # payload about 34 characters of a budget that REFUSES THE TURN when crossed.
+    $r = $fakeProfile
+    Invoke-Expression $stmt | Out-Null
+    (Test-Path -LiteralPath (Join-Path $r 'my-code')) | Should Be $false
+    ((@(Get-ChildItem -LiteralPath $r -Force).Name | Sort-Object) -join ',') | Should Be 'egpt,src'
   }
 
   It 'THE ROOM READS THROUGH THE MOUNT EXACTLY AS IT DOES DIRECTLY - root-level FILES included' {
@@ -1267,18 +1360,17 @@ Describe 'the pool profile junctions (as the launcher scrub really plants them)'
       Should Be ((@(Get-ChildItem -LiteralPath $room -Force).Name | Sort-Object) -join ',')
   }
 
-  It 'is idempotent: three passes leave exactly the three junctions and throw nothing' {
+  It 'is idempotent: three passes leave exactly the two junctions and throw nothing' {
     $r = $fakeProfile
     foreach ($i in 1..3) { Invoke-Expression $stmt | Out-Null }
-    (@(Get-ChildItem -LiteralPath $r -Force).Count) | Should Be 3
+    (@(Get-ChildItem -LiteralPath $r -Force).Count) | Should Be 2
     (Get-Item -LiteralPath (Join-Path $r 'src') -Force).Target | Should Be $target
-    (Get-Item -LiteralPath (Join-Path $r 'my-code') -Force).Target | Should Be (Join-Path $target 'egpt')
     (Get-Item -LiteralPath (Join-Path $r 'egpt') -Force).Target | Should Be $room
   }
 
   It 'RE-POINTS a surviving egpt link instead of leaving it on the PREVIOUS conversation' {
-    # WHY remove-then-create replaced "create only if absent". src and my-code
-    # have a constant target, so leaving a survivor was harmless; egpt's target
+    # WHY remove-then-create replaced "create only if absent". src has a
+    # constant target, so leaving a survivor was harmless; egpt's target
     # is a different Room every lease. A link the wipe could not delete - an
     # orphan still holding it as its cwd - would otherwise hand this turn the
     # last conversation's Room, which is the exact cross-conversation leak the
@@ -1289,7 +1381,7 @@ Describe 'the pool profile junctions (as the launcher scrub really plants them)'
 
     $otherRoom = New-LedgerTempDir
     Set-Content -LiteralPath (Join-Path $otherRoom 'transcript.md') -Value 'someone else' -Encoding Ascii
-    Invoke-Expression (Get-SandboxProfileJunctionStatement -OperatorSrc $target -RoomTarget $otherRoom) | Out-Null
+    Invoke-Expression (Get-SandboxProfileJunctionStatement -RepoRoot $target -RoomTarget $otherRoom) | Out-Null
 
     (Get-Item -LiteralPath (Join-Path $r 'egpt') -Force).Target | Should Be $otherRoom
     (Get-Content -LiteralPath (Join-Path $r 'egpt\transcript.md')) | Should Be 'someone else'
@@ -1297,7 +1389,7 @@ Describe 'the pool profile junctions (as the launcher scrub really plants them)'
     (Get-Content -LiteralPath (Join-Path $room 'transcript.md')) | Should Be 'the live transcript'
   }
 
-  It 'all three are wiped as LINKS by the scrub that precedes them - the targets survive' {
+  It 'both are wiped as LINKS by the scrub that precedes them - the targets survive' {
     # The scrub deletes the profile children before the junctions are re-planted,
     # and Remove-Item must take each link itself rather than recursing into the
     # operator's src OR INTO THE ROOM. The second one is the difference between a
@@ -1309,7 +1401,7 @@ Describe 'the pool profile junctions (as the launcher scrub really plants them)'
     Get-ChildItem -LiteralPath $r -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
     (@(Get-ChildItem -LiteralPath $r -Force).Count) | Should Be 0
     (Test-Path -LiteralPath (Join-Path $target 'marker')) | Should Be $true
-    (Test-Path -LiteralPath (Join-Path $target 'egpt\src')) | Should Be $true
+    (Test-Path -LiteralPath (Join-Path $target 'setup')) | Should Be $true
     (Get-Content -LiteralPath (Join-Path $room 'transcript.md')) | Should Be 'the live transcript'
     (Get-Content -LiteralPath (Join-Path $room 'transcripts\older.md')) | Should Be 'an archived one'
     (@(Get-ChildItem -LiteralPath $room -Force).Count) | Should Be 3
@@ -1335,7 +1427,7 @@ Describe 'the pool profile junctions (as the launcher scrub really plants them)'
     # before this runs.)
     $r = New-LedgerTempDir
     Invoke-Expression (Get-SandboxProfileJunctionStatement `
-        -OperatorSrc (Join-Path $script:LedgerTempRoot 'no-such-src') `
+        -RepoRoot (Join-Path $script:LedgerTempRoot 'no-such-repo') `
         -RoomTarget (Join-Path $script:LedgerTempRoot 'no-such-room')) | Out-Null
     (@(Get-ChildItem -LiteralPath $r -Force).Count) | Should Be 0
   }
@@ -1344,13 +1436,15 @@ Describe 'the pool profile junctions (as the launcher scrub really plants them)'
     # MSDN's lpCommandLine limit is real and ENFORCED (see Invoke-AsLeasedAccount's
     # BUDGET note) - a long command line fails with E_INVALIDARG rather than
     # truncating - and the whole payload is ONE argv element. MEASURED 2026-09-23
-    # with the third junction and the real profile/src lengths, whole command
-    # line: 935 at a 30-character conversation slug, 942 at 37, 985 at 80. This
-    # bound is the statement's own share of that.
+    # with THREE junctions and the real profile/src lengths, whole command line:
+    # 935 at a 30-character conversation slug, 942 at 37, 985 at 80 - roughly 40
+    # characters of margin at the wide end. Retiring `my-code` (2026-09-23) took a
+    # whole table row back out, which is about 34 of those characters returned,
+    # and the bound below moved with it. This is the statement's own share.
     $real = Get-SandboxProfileJunctionStatement `
-      -OperatorSrc (Join-Path $env:USERPROFILE 'src') `
+      -RepoRoot (Join-Path $env:USERPROFILE 'src\egpt') `
       -RoomTarget (Join-Path $env:USERPROFILE '.egpt\conversations\whatsapp\a-conversation-slug-of-ordinary-length')
-    ($real.Length -lt 340) | Should Be $true
+    ($real.Length -lt 306) | Should Be $true
     # Not one double quote in it: Format-Win32Arg escapes every " as \", costing
     # two characters of a budget that is already two thirds spent.
     ($real -match '"') | Should Be $false
@@ -1358,7 +1452,7 @@ Describe 'the pool profile junctions (as the launcher scrub really plants them)'
 
   It 'is the statement the LAUNCHER actually uses - not a second copy of it' {
     $src = Get-Content -LiteralPath $script:LauncherScript -Raw
-    ($src -match '\(Get-SandboxProfileJunctionStatement -OperatorSrc \$srcRoot -RoomTarget \$RoomTarget\)') | Should Be $true
+    ($src -match '\(Get-SandboxProfileJunctionStatement -RepoRoot \$repoRoot -RoomTarget \$RoomTarget\)') | Should Be $true
     # ...and the launcher no longer spells a junction out for itself.
     ($src -match '-ItemType Junction') | Should Be $false
   }

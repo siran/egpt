@@ -98,16 +98,21 @@ or if you are unsure. What it does:
    `~\.egpt`, `~\.egpt\conversations`, `~\.egpt\conversations\whatsapp` and
    `~\src`, each skipped if absent. Traverse only. See *The ACL model*.
 4. `-Grant 'Read'` on the standing read-only list — `~\.local\bin` (where
-   `claude.exe` lives), `~\bin\egpt` (the running tree), `~\src` (the whole
-   read-only view the pool profiles' `src` and `my-code` junctions point at) and
+   `claude.exe` lives), `~\bin\egpt` (the running tree), `~\src\egpt` (the
+   editable checkout the pool profiles' `src` junction points at) and
    `%APPDATA%\npm` (pi and codex are npm globals launched via `node.exe`, and
    the JS sits under the operator's profile). Each skipped if absent.
-5. `-Grant 'Modify'` on `~\.pi\agent`, and sets `PI_CODING_AGENT_DIR` at
+5. `Revoke-SandboxPathAces` on `~\src` for the pool **group** — retiring the
+   old standing grant on the operator's *whole* source tree (operator
+   2026-09-23: *"dismiss mounting ~/src always, that was a faux-pas"*). Nothing
+   to do on a node already narrowed; on one that is not, removing an inheritable
+   ACE re-propagates over the tree and takes minutes.
+6. `-Grant 'Modify'` on `~\.pi\agent`, and sets `PI_CODING_AGENT_DIR` at
    **Machine** scope, because the launcher cannot pass a per-spawn environment
    (see *Known gaps*).
-6. `Protect-SandboxCredDir` — breaks inheritance on `C:\ProgramData\egpt` so
+7. `Protect-SandboxCredDir` — breaks inheritance on `C:\ProgramData\egpt` so
    only SYSTEM, Administrators and the operator can read the credential blobs.
-7. `Clear-SandboxAbandonedLeases` — the repair path for lease ACEs a hard-killed
+8. `Clear-SandboxAbandonedLeases` — the repair path for lease ACEs a hard-killed
    turn left behind. See *The ACL model*.
 
 Steps 3–5 write nothing when the ACE is already right, so a re-provision of a
@@ -149,17 +154,17 @@ Access is therefore **opt-in and narrow**, and the whole list is:
 | `~\.egpt\conversations` | Pool group, traverse only | same chain |
 | `~\.egpt\conversations\whatsapp` | Pool group, traverse only | same chain |
 | `~\src` | Pool group, traverse only | same chain; skipped where absent |
-| `~\src` | Pool group, **ReadAndExecute**, inherited | the operator's whole source tree, read-only, **standing**. Every pool profile carries a `src` directory junction pointing here and a `my-code` one pointing at `~\src\egpt` (both planted by the launcher's scrub pass, from one generator — `Get-SandboxProfileJunctionStatement`), and a junction is only a name: what may be done through it is decided by the DACL of the target. `my-code` is *under* `src`, so this one inherited grant covers both and there is no second grant to write. Operator 2026-09-20, asked for explicitly: *"can we make that sandbox account's sbx/src/ path points to src/an read-only?"* and *"it is actually interesting to have a my-code/ pointing to src/egpt"*. Permanent, not per-turn, and that is a decision — see below. |
+| `~\src\egpt` | Pool group, **ReadAndExecute**, inherited | the editable eGPT checkout, read-only, **standing**. Every pool profile carries a `src` directory junction pointing here (planted by the launcher's scrub pass, from `Get-SandboxProfileJunctionStatement`), and a junction is only a name: what may be done through it is decided by the DACL of the target. Permanent, not per-turn — it cannot be per-turn, because a DACL write on this tree re-propagates inheritance through `node_modules` (the parent `~\src` measured 307 s for one pass). **It used to be `~\src`, all of it**, and that was retired on 2026-09-23 (operator: *"dismiss mounting ~/src always, that was a faux-pas"*, and *"in the same way that the conversation directory is mounted in the sandbox account, the src/egpt can also be mounted as src/"*). The provisioner **removes** that old grant as its own step — narrowing the junction while leaving the wide inherited ACE would have been cosmetic. `my-code` went with it: it pointed at the very target `src` now points at. |
 | `~\.local\bin` | Pool group, ReadAndExecute | `claude.exe` |
 | `%APPDATA%\npm` | Pool group, ReadAndExecute | pi / codex entry JS |
 | `~\.pi\agent` | Pool group, Modify | pi writes there; missing it wedges the turn |
 | `~\bin\egpt` | Pool group, ReadAndExecute | the RUNNING tree. Was Modify (operator 2026-09-10, *"let E modify itself"*); reversed 2026-09-13 — it executes **as the operator**, so a standing group write there is code outside the sandbox at the next restart. Permanent, not per-turn. See *Known gaps* 7. |
 | the conversation folder | leased account, Modify | granted at launch, revoked at exit. The being reaches it through the `egpt` junction in its own profile — the ACE stays on **this** path, because a junction is a name and the target's DACL is what the kernel reads |
 | each `-SharePath` | leased account, Modify | a being's full-access `allowed_paths`, plus its thread's CLI store; granted at launch, revoked at exit |
-| each `-SharePathReadOnly` | leased account, ReadAndExecute | a being's read-only `allowed_paths`; granted at launch, revoked at exit — **unless the pool group can already read that path**, inherited or explicit, in which case nothing is granted and the launcher logs the skip (`Test-SandboxPoolReadCovered`). Since `~\src` carries the standing group read, most read-only shares now fall under it: the per-account ACE would grant what the being already has and leave one more thing for a hard kill to leak. Writable shares are never skipped. |
+| each `-SharePathReadOnly` | leased account, ReadAndExecute | a being's read-only `allowed_paths`; granted at launch, revoked at exit — **unless the pool group can already read that path**, inherited or explicit, in which case nothing is granted and the launcher logs the skip (`Test-SandboxPoolReadCovered`). A read-only share under `~\src\egpt` falls under the standing group read: the per-account ACE would grant what the being already has and leave one more thing for a hard kill to leak. Since the wide `~\src` grant was retired, a read-only share **elsewhere** under `~\src` is no longer covered and does get its own per-lease ACE. Writable shares are never skipped. |
 
 **The cwd is a mount, not the Room** (operator ruling 2026-09-23). The scrub
-plants a third junction beside `src` and `my-code`:
+plants a second junction beside `src`:
 
 ```
 C:\Users\an\.egpt\conversations\whatsapp\<slug>\   the durable Room, the operator's
@@ -339,13 +344,22 @@ icacls C:\Users\$env:USERNAME\src
 icacls C:\Users\$env:USERNAME\.local\bin
 icacls $env:APPDATA\npm
 icacls C:\Users\$env:USERNAME\bin\egpt
-icacls C:\Users\$env:USERNAME\src          # ...alongside the (Rc,X,RA) traverse ACE
+icacls C:\Users\$env:USERNAME\src\egpt
 
-# every pool profile has src and my-code junctions pointing at it  (expect:
-# <SYMLINKD>-style junction rows; a profile that has not run a turn since
-# 2026-09-20 has neither yet)
+# ...and ~\src itself carries the (Rc,X,RA) TRAVERSE ace and NOT a read one.
+# An egpt-sandbox-pool:(OI)(CI)(RX) row here is the retired wide grant; re-run
+# provision-sandbox-account.cmd to take it off.
+icacls C:\Users\$env:USERNAME\src
+
+# every pool profile has src and egpt junctions  (expect: <SYMLINKD>-style
+# junction rows; a profile that has not run a turn since 2026-09-23 may still
+# carry a stale `my-code`, which the next scrub deletes and does not re-plant)
 Get-ChildItem C:\Users\egpt-sbx-* -Force -ErrorAction SilentlyContinue |
-  Where-Object { $_.Name -in 'src', 'my-code' } | Select-Object FullName, Target
+  Where-Object { $_.Name -in 'src', 'egpt', 'my-code' } | Select-Object FullName, Target
+
+# WHAT IS STILL LEAKED RIGHT NOW, and clearing it (no elevation needed):
+setup\sweep-sandbox-leases.cmd --whatif
+setup\sweep-sandbox-leases.cmd
 
 # a live or leftover per-conversation grant
 icacls C:\Users\$env:USERNAME\.egpt\conversations\whatsapp\<slug>
@@ -376,17 +390,65 @@ signal, and a PowerShell `finally` does not survive it. So the **reclaim** —
 taking a lock file no process holds, and revoking whatever its ledger names — is
 what actually does the cleaning.
 
-The reclaim is keyed to one account and fires when **that account is leased
-again**. An account nothing leases again keeps its ACEs indefinitely, and a path
-that many conversations share collects one per pool account that ever ran. That
-is how `~\src\egpt` came to carry twelve standing `(OI)(CI)(RX)` ACEs
-(2026-09-20), one per pool account, while `~\Documents` and `~\bin\egpt` carried
+The reclaim **used to be keyed to one account**, and fired only when that
+account was leased again. An account that leaked and then went quiet kept its
+ACEs indefinitely, and a path many conversations share collected one per pool
+account that ever ran — which is how `~\src\egpt` came to carry twelve standing
+`(OI)(CI)(RX)` ACEs (2026-09-20) while `~\Documents` and `~\bin\egpt` carried
 none.
+
+**That gap was measured, and closed, on 2026-09-23.** Read off the live lock
+directory and the thread stores, before the fix:
+
+- 14 of the 16 pool locks existed and **not one was held** — every one opened
+  exclusively, i.e. every one was a turn that died without running its `finally`;
+- each of those 14 ledgers named exactly two paths (a Room and a
+  `~\.egpt-jsonl\<thread>` store), and **all 14 of those ACEs were still on
+  disk**: nine distinct thread stores carrying 14 explicit `egpt-sbx-NN` ACEs,
+  one store granted to three different pool accounts at once;
+- the oldest lock was two days old. Nothing on the box was going to clear it.
+
+So **the launcher now runs the pool-wide reclaim itself**, once, immediately
+after it takes its own lease — the same `Clear-SandboxAbandonedLeases` the
+provisioner runs, not a second mechanism. Every abandoned lease is therefore
+cleared by the next turn *on the box* rather than by the next turn *on that
+account*. Three things make that safe on a turn's path:
+
+- **After the lease, never before it.** While the sweep holds another account's
+  stale lock, a launcher racing for that account sees a live lease and walks on;
+  sweeping first could cost this very turn its preferred account.
+- **Our own lock needs no exemption.** The launcher holds it `FileShare::None`,
+  so the sweep's exclusive open fails on it and it is reported `held` — the
+  launcher's own staleness test, applied to the launcher. A concurrent turn's
+  lease is protected by exactly the same fact.
+- **A time budget** (`-TimeBudgetSeconds`, checked before each path is *started*,
+  never during one). Whatever is not reached is `deferred`: it stays on its
+  ledger, its lock is kept, and the next turn or the operator sweep retries it.
+  The old objection — a DACL write on a big tree costs minutes — no longer
+  applies to what is on a ledger, because `~\src\egpt` is a standing *group*
+  grant and is never granted per lease.
+
+**One residue this cannot clear, and does not pretend to.** A ledger holds a
+path, and a path is a name. Rename a conversation folder and NTFS carries its
+DACL with it, so the leaked ACE is alive at the new name while the ledger line
+resolves to nothing. That outcome is reported `missing` and is **not** counted as
+clean — both the sweep and `setup\sweep-sandbox-leases.ps1` say so in as many
+words. Found in the live ledgers the same day: `egpt-sbx-08` and `-13` named
+`…\Favel Konefka-2608141626` while `-03`, `-04` and `-10` named `…\Favel Elena
+Konefka-2608141626` — the same conversation (identical `-2608141626` id), renamed
+slug. Following a moved folder would need its NTFS file id recorded at grant
+time, which nothing does.
 
 Two kinds of residue are therefore normal to find:
 
-- **Leftover ACEs.** Cleared for the whole pool by re-running the provisioner,
-  which sweeps every lock nothing holds (`Clear-SandboxAbandonedLeases`). It
+- **Leftover ACEs.** Cleared by the next sandboxed turn on the box, and on
+  demand by **`setup\sweep-sandbox-leases.cmd`** — operator-runnable, **no
+  elevation and no UAC prompt** (the operator already owns the folders these
+  ACEs are on, and removing an ACE needs nothing more), safe to run mid-turn,
+  safe to run repeatedly, and it prints every path it took an ACE off.
+  `--whatif` reads the ledgers and touches nothing. Re-running the provisioner
+  does the same sweep as its last step. All three are the one function
+  (`Clear-SandboxAbandonedLeases`), which
   reads each dead lease's own ledger, so it revokes exactly what was granted and
   never goes hunting through the filesystem; a lock a running turn still holds
   is left alone. It groups the dead leases **by path** and takes every account
@@ -404,6 +466,10 @@ Two kinds of residue are therefore normal to find:
   by the provisioner sweep above.
 
 ```powershell
+# just the sweep — no elevation, safe at any time, idempotent
+setup\sweep-sandbox-leases.cmd --whatif     # what it WOULD revoke; writes nothing
+setup\sweep-sandbox-leases.cmd              # do it
+
 # the sweep, and everything else the provisioner does — idempotent, UAC prompt
 powershell -ExecutionPolicy Bypass -File setup\provision-sandbox-account.ps1
 
@@ -535,21 +601,45 @@ Real, current, and worth knowing before relying on any of this.
    `{}`, so the CLI layer is off and the ACE is the *only* way a shared folder is
    reachable — exactly the tiers most likely to declare one.
 
-   **A sandboxed turn gets no cwd root at all since 2026-09-23.** `confinementFor`
-   sends `osConfined: true` instead of `confineToDirs: [cwd]`. The mount alone did
-   not fix the disclosure: `--add-dir` still named the Room's real path, and the
-   CLI reports the spelling it was *told* about, so a being asked `pwd` still
-   answered `/c/Users/an/.egpt/conversations/whatsapp/<slug>`. The junction path
-   cannot replace it — it contains the leased account name, known only inside the
-   launcher, long after the spine builds argv — and it does not need to: for a
-   sandboxed being the OS box **is** the boundary, and these beings hold bare
-   `Bash`, so `--add-dir` was advisory all along. `addDirs`/`readOnlyDirs` stay,
-   because they name genuinely other locations no junction covers. Off win32
-   nothing is boxed, so the cwd root stays exactly as it was. `--setting-sources
-   ''` is retired for a sandboxed turn too (a pool account's `~` is its own
-   scrubbed profile, and `CLAUDE_CONFIG_DIR` already points elsewhere); both
-   halves of the 2026-07-03 Read-leak fix — `--permission-mode default` and file
-   tools *not* pre-approved — are kept.
+   **A sandboxed turn has NO CLI confinement at all since 2026-09-23.** It began
+   with the cwd root: `confinementFor` sends `osConfined: true` instead of
+   `confineToDirs: [cwd]`, because the mount alone did not fix the disclosure —
+   `--add-dir` still named the Room's real path, the CLI reports the spelling it
+   was *told* about, and a being asked `pwd` still answered
+   `/c/Users/an/.egpt/conversations/whatsapp/<slug>`. The junction path cannot
+   replace it (it contains the leased account name, known only inside the
+   launcher, long after the spine builds argv).
+
+   The same day the operator took the rest — *"and so --permission-mode [should]
+   be none at all. free roam inside the sandbox"*, and, asked whether the coherent
+   end state is that a sandboxed being also gets `bypassPermissions`, **yes**. So
+   `osConfined` now takes the **same argv tier as the unconfined one**:
+   `--dangerously-skip-permissions` + `--permission-mode bypassPermissions`, the
+   whole `--allowedTools` list (file tools included), **no `--add-dir` for
+   anything**, no `--setting-sources ''` and no `readOnlyDirs` deny rules.
+
+   **Why that is not a widening.** The account is the boundary. A `Read` that
+   escapes its root escapes into a directory the pool account holds no ACE on and
+   fails at the syscall, so the 2026-07-03 Read leak (*an allow-list entry
+   bypasses the path check*) has no consequence under the box. And the middle tier
+   never bounded these beings anyway: they hold bare `Bash`, which was never
+   path-gated, so the being could always `cat` a file it was not allowed to
+   `Read`. Keeping `--permission-mode default` was a second, weaker opinion on a
+   question the kernel already answers.
+
+   **It also closed the last operator path in a sandboxed being's argv.** The
+   node-level `allowed_paths: C:/Users/an/src` grant reached `--add-dir` on every
+   such turn; now nothing does.
+
+   **`allowed_paths` still produces a real ACE** — `sandboxSharePathsFor` and the
+   launcher's `-SharePath`/`-SharePathReadOnly` are untouched. This is *not*
+   migration 0015 in reverse: 0015's defect was the OS permitting a path the CLI
+   then refused, and here the CLI refuses nothing.
+
+   **The guard is `sandboxed === true`, not the access level.** A being with no OS
+   box — `sandboxed: false`, or any non-win32 node — keeps `confineToDirs`,
+   `--permission-mode default`, `--setting-sources ''`, the roots and the deny
+   rules, byte for byte: there, the argv *is* the boundary.
 
    **Read-only is real at the OS layer since 2026-09-13.** It was not before:
    `sandboxSharePathsFor` concatenated the two classes and the launcher had one
