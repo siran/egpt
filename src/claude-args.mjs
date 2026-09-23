@@ -12,13 +12,24 @@
 //                                     --add-dir <roots>; file tools are NOT
 //                                     pre-approved (so they stay path-confined),
 //                                     only non-file tools are allow-listed.
-//   osConfined (the OS box IS the   → the SAME tier minus the two things the box
-//     boundary; no cwd root exists    makes meaningless: no --add-dir for a cwd
-//     to name)                        (it is a per-lease junction the spine cannot
-//                                     name) and no --setting-sources "" (the
-//                                     account's ~ is its own scrubbed profile).
-//                                     --permission-mode default and the
-//                                     file-tools-not-pre-approved rule BOTH stay.
+//   osConfined (the OS box IS the   → NO CLI CONFINEMENT AT ALL (operator ruling
+//     boundary)                       2026-09-23): the same
+//                                     --dangerously-skip-permissions +
+//                                     --permission-mode bypassPermissions pair the
+//                                     unconfined tier gets, the full --allowedTools
+//                                     list, NO --add-dir (not the cwd, not an
+//                                     allowed_paths root), no --setting-sources ""
+//                                     and no readOnlyDirs deny rules. The leased
+//                                     pool account's ACEs are the boundary and are
+//                                     checked by the kernel on every open; a CLI
+//                                     gate on top was a weaker second opinion that
+//                                     bare Bash walked past anyway. `allowed_paths`
+//                                     still produces a real per-lease ACE — that is
+//                                     the OS half and it is untouched.
+//                                     THE GUARD IS THIS FLAG ONLY: a being with no
+//                                     OS box (access_level regular, or a non-win32
+//                                     node) takes the confineToDirs tier above,
+//                                     unchanged.
 //   allowedTools 'all'|'*'          → REJECTED (operator 2026-07-03): coerced to
 //                                     DEFAULT_ALLOWED_TOOLS and routed through the
 //                                     list path — NO bypass tier, no bare Bash/Agent.
@@ -104,13 +115,40 @@ export function buildClaudeArgs(options = {}) {
   // tier must not be inferred from a missing value. The unconfined tier never sets it
   // (confinementFor returns {} for dangerously_skip_permissions), so a bypass turn is untouched.
   const osConfined = options.osConfined === true;
-  const confined = confineRoots.length > 0 || osConfined;
+  // ── AN OS-SANDBOXED TURN IS NOT CLI-CONFINED AT ALL (operator ruling 2026-09-23: "and so
+  // --permission-mode [should] be none at all. free roam inside the sandbox", and, asked whether
+  // the coherent end state is that a sandboxed being also gets bypassPermissions, "yes").
+  // `osConfined` used to make `confined` true and take the middle tier — --permission-mode
+  // default, file tools withheld from --allowedTools, every root spelled into --add-dir. It now
+  // takes the SAME tier as dangerouslySkipPermissions, and `confined` is about CLI roots only.
+  //
+  // WHY THIS IS NOT A WIDENING, which is the question a reader finds alarming:
+  // --dangerously-skip-permissions on a SANDBOXED being. THE ACCOUNT IS THE BOUNDARY. The turn
+  // runs as a leased pool account that holds an ACE on its Room, on its thread store and on the
+  // read-only mounts, and on nothing else; every open is checked by the kernel. The 2026-07-03
+  // defect this middle tier was built around — "an allow-list entry bypasses the path check,
+  // which is exactly how Read once leaked" — has no consequence here, because a Read that
+  // escapes its root escapes into a directory the account has no ACE on and fails at the
+  // syscall.
+  //
+  // AND THE MIDDLE TIER WAS NEVER ACTUALLY A BOUNDARY FOR THESE BEINGS. They hold bare Bash,
+  // which was never path-gated: the being could always `cat` a file it was not allowed to
+  // `Read`. Keeping --permission-mode default was a second, weaker opinion on a question the
+  // kernel already answers, and its only reliable effect was to make the being ask permission
+  // for things it was entitled to do.
+  //
+  // THE GUARD IS `osConfined`, NOTHING ELSE. A being at access_level `regular` (codex, llama)
+  // is NOT sandboxed, has NO OS box, and CLI confinement is the only boundary it has — it keeps
+  // `confineToDirs` and the middle tier below, byte for byte. Same for any node where
+  // resolveSandboxed answers false, which is every non-win32 one. See brainpool's confinementFor:
+  // it is what decides which of the two a being gets, and it keys on `sandboxed` alone.
+  const confined = confineRoots.length > 0;
 
   // dangerouslySkipPermissions:true (see the header mapping above) — the actual bypass, IN
   // ADDITION to whatever --allowedTools push happens below. Only ever set true by
   // brainpool.mjs's turn(), after its own structural gates have already run — see the
-  // header comment.
-  if (options.dangerouslySkipPermissions === true) {
+  // header comment. `osConfined` joins it here, and ONLY here: see the block above.
+  if (options.dangerouslySkipPermissions === true || osConfined) {
     args.push('--dangerously-skip-permissions');
     args.push('--permission-mode', 'bypassPermissions');
   }
@@ -137,21 +175,15 @@ export function buildClaudeArgs(options = {}) {
       // tools. --setting-sources '' so beings don't inherit the operator's personal
       // ~/.claude (esp. its MCP servers, whose schemas bloat every turn).
       //
-      // ...AND IT IS RETIRED FOR AN OS-SANDBOXED TURN (operator ruling 2026-09-23), deliberately
-      // and not as collateral. It was added 2026-06-23, two and a half months BEFORE the OS
-      // sandbox, when beings ran AS THE OPERATOR and `~/.claude` really was the operator's. A
-      // leased pool account's `~` is its own scrubbed profile, and a sandboxed turn also gets
-      // CLAUDE_CONFIG_DIR pointed at ~/.egpt-jsonl/<threadId>, so there is nothing of the
-      // operator's left to inherit - all this still blocked was the being's own project/local
-      // settings. The operator ruled a being configuring itself from a non-`an` account
-      // acceptable: whatever it adds runs as the pool account, which already has Bash and
-      // network, and it cannot use settings to defeat a read-only grant because those paths are
-      // ACE'd ReadAndExecute at the kernel too.
-      if (!osConfined) args.push('--setting-sources', '');
-      // BOTH HALVES OF THE 2026-07-03 READ-LEAK FIX STAY, sandboxed or not: --permission-mode
-      // default (the engine enforces rather than auto-approving) and file tools NOT pre-approved
-      // below (an allow-list entry bypasses the path check, which is exactly how Read once
-      // leaked). Retiring those is not what the cwd-root ruling asked for and would re-open it.
+      // A SANDBOXED TURN NEVER REACHES THIS BRANCH ANY MORE (see the osConfined block at the
+      // top): it is the unconfined tier's now. Everything here is for a being whose ONLY
+      // boundary is this argv — `access_level: regular`, or any non-win32 node — and it is
+      // byte-identical to what it has always been.
+      args.push('--setting-sources', '');
+      // BOTH HALVES OF THE 2026-07-03 READ-LEAK FIX STAY for a being with no OS box:
+      // --permission-mode default (the engine enforces rather than auto-approving) and file
+      // tools NOT pre-approved below (an allow-list entry bypasses the path check, which is
+      // exactly how Read once leaked). Here they really are the boundary.
       args.push('--permission-mode', 'default');
       const preApprove = list.filter((t) => !FILE_TOOLS.has(t.toLowerCase()));
       if (preApprove.length) args.push('--allowedTools', preApprove.join(' '));
@@ -173,19 +205,38 @@ export function buildClaudeArgs(options = {}) {
 
   // Allowed dirs = explicit addDirs ∪ confineRoots ∪ readOnlyDirs (RO dirs must be
   // READABLE — their WRITES are denied below). Deduped, order-stable.
-  const dirs = [];
-  const seen = new Set();
-  for (const d of [..._cleanList(options.addDirs), ...confineRoots, ...readOnlyDirs]) {
-    if (!seen.has(d)) { seen.add(d); dirs.push(d); }
+  //
+  // AN OS-SANDBOXED TURN GETS NONE OF THEM, and that is the whole of the argv change the
+  // 2026-09-23 ruling asked for. `--add-dir` grants nothing there — the pool account's ACEs
+  // decide what opens — and every root it could name is a REAL path under the operator's
+  // profile, which is what put `C:/Users/an/src/egpt` into every sandboxed being's argv and
+  // from there into whatever the being quoted in a group chat. The mounts it would have named
+  // (`egpt`, `src`) live at C:\Users\egpt-sbx-NN, which the spine cannot know: the account is
+  // leased after the argv is built.
+  //
+  // THE OS HALF STILL RUNS. `allowed_paths` still produces a real per-lease ACE through
+  // brainpool's sandboxSharePathsFor and the launcher's -SharePath/-SharePathReadOnly. This is
+  // NOT migration 0015 in reverse: 0015's defect was the OS permitting a path the CLI then
+  // refused, and here the CLI refuses nothing at all.
+  if (!osConfined) {
+    const dirs = [];
+    const seen = new Set();
+    for (const d of [..._cleanList(options.addDirs), ...confineRoots, ...readOnlyDirs]) {
+      if (!seen.has(d)) { seen.add(d); dirs.push(d); }
+    }
+    for (const d of dirs) args.push('--add-dir', d);
   }
-  for (const d of dirs) args.push('--add-dir', d);
 
   // Read-only grants — NATIVE deny rules (operator 2026-06-12: use Claude's CLI
   // options, NOT a hand-rolled hook). `permissions.deny` blocks the write-class
   // tools under each RO dir; passed via --settings, which loads even with
   // --setting-sources '' (explicit additional settings), so the grant holds
   // inside the sandbox — equivalent to the SDK's programmatic PreToolUse hook.
-  if (readOnlyDirs.length) {
+  // ...and they go with the roots for an OS-sandboxed turn, for the same reason and in the same
+  // ruling: a deny rule is a CLI gate, and that tier has none. It also subtracts nothing there —
+  // a read-only `allowed_paths` entry is granted ReadAndExecute at the kernel, so the write the
+  // rule would have refused fails at the syscall whether Claude Code asks about it or not.
+  if (readOnlyDirs.length && !osConfined) {
     args.push('--settings', JSON.stringify({ permissions: { deny: readOnlyDenyRules(readOnlyDirs) } }));
   }
 
