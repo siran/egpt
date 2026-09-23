@@ -1,16 +1,21 @@
-// sandbox-src-junction.test.mjs — THE POOL PROFILE'S ~/src AND ~/my-code, AND THE
-// LEASE-ACE LEAK (operator 2026-09-20).
+// sandbox-src-junction.test.mjs — THE POOL PROFILE'S ~/src MOUNT, AND THE LEASE-ACE LEAK.
 //
 // TWO ASKS, ONE FILE, because they are two halves of the same thing:
 //
-//   1. "can we make that sandbox account's sbx/src/ path points to src/an read-only?" and,
-//      the same day, "all agents see an src/ directory, it is actually interesting to have
-//      a my-code/ pointing to src/egpt". TWO directory JUNCTIONS in every pool profile,
-//      planted by ONE statement generator, plus a STANDING ReadAndExecute grant on ~/src
-//      that my-code inherits. BOTH halves or the feature is a lie: a junction whose target
-//      denies the leased account is a directory the being can see and cannot open, which is
-//      exactly the "permitted by Claude Code, refused by the kernel" failure the share ACEs
-//      exist to close.
+//   1. THE MOUNT. Operator 2026-09-20 asked for "that sandbox account's sbx/src/ path points
+//      to src/an read-only" and "a my-code/ pointing to src/egpt", and on 2026-09-23 REVERSED
+//      the wide half: "dismiss mounting ~/src always, that was a faux-pas", and "in the same
+//      way that the conversation directory is mounted in the sandbox account, the src/egpt can
+//      also be mounted as src/". So there is now ONE name, `src`, pointing at ~\src\egpt, and
+//      `my-code` is gone — it pointed at the same target, nothing outside this repo named it,
+//      and its table row cost about 34 characters of a command-line budget that REFUSES THE
+//      TURN when it overruns.
+//      BOTH halves or the feature is a lie: a junction whose target denies the leased account
+//      is a directory the being can see and cannot open, which is exactly the "permitted by
+//      Claude Code, refused by the kernel" failure the share ACEs exist to close. The other
+//      half is a STANDING ReadAndExecute for the pool GROUP on ~\src\egpt — and the retirement
+//      of the one that used to be on all of ~\src, which is asserted here too: narrowing the
+//      junction while leaving the wide ACE would be cosmetic.
 //
 //   2. The leak that made half of #1 dangerous to reason about: twelve standing
 //      `(OI)(CI)(RX)` ACEs on ~\src\egpt, one per pool account, measured on kg 2026-09-20.
@@ -36,7 +41,7 @@
 // junctions'), run with:
 //   Invoke-Pester -Script setup\sandbox-account.Tests.ps1
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -44,6 +49,7 @@ const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 const launcher = () => readFileSync(join(REPO, 'setup', 'sandbox-logon-launcher.ps1'), 'utf8');
 const accountLib = () => readFileSync(join(REPO, 'setup', 'sandbox-account.ps1'), 'utf8');
 const provisioner = () => readFileSync(join(REPO, 'setup', 'provision-sandbox-account.ps1'), 'utf8');
+const sweepScript = () => readFileSync(join(REPO, 'setup', 'sweep-sandbox-leases.ps1'), 'utf8');
 
 // The scrub pass's inline -Command payload: the array literal Clear-SandboxProfileContents
 // builds and joins with '; '. Everything the leased account runs on lease acquire is in here.
@@ -62,16 +68,29 @@ function junctionGenerator(lib) {
   return lib.slice(i, lib.indexOf('\n}', i));
 }
 
-describe('the pool profile gets read-only src and my-code junctions', () => {
-  it('BOTH links come out of ONE generator, not two copies of a statement', () => {
+describe('the pool profile gets a read-only src junction onto the eGPT checkout', () => {
+  it('EVERY link comes out of ONE generator, not copies of a statement', () => {
     // Operator 2026-09-20: "Both junctions are planted by the same statement-generator." A
     // copy is how the two would drift into disagreeing about the existence guard or the
     // error handling — the same failure mode the (d2) share loop is shaped to avoid.
     const g = junctionGenerator(accountLib());
-    expect(g).toMatch(/'src'\s*=\s*\$OperatorSrc/);
-    expect(g).toMatch(/'my-code'\s*=\s*\(Join-Path \$OperatorSrc 'egpt'\)/);
+    expect(g).toMatch(/'src'\s*=\s*\$RepoRoot/);
+    expect(g).toMatch(/'egpt'\s*=\s*\$RoomTarget/);
     // ONE New-Item in the whole generator: the payload loops over the table.
     expect((g.match(/-ItemType Junction/g) || []).length).toBe(1);
+  });
+
+  it('REPRODUCE: the operator\'s whole ~\\src is NOT mounted any more, and cannot be by accident', () => {
+    // Operator 2026-09-23: "dismiss mounting ~/src always, that was a faux-pas". The parameter
+    // was RENAMED with the meaning (-OperatorSrc -> -RepoRoot), so a caller that still passes
+    // the wide target fails to bind rather than silently re-mounting all of the operator's
+    // source under a name that now advertises something narrower.
+    const g = junctionGenerator(accountLib());
+    expect(g).not.toMatch(/\$OperatorSrc/);
+    expect(accountLib()).toMatch(/function Get-SandboxProfileJunctionStatement[\s\S]{0,600}\[string\]\$RepoRoot/);
+    expect(launcher()).not.toMatch(/-OperatorSrc/);
+    // `my-code` is gone with it — one name for one target.
+    expect(g).not.toMatch(/'my-code'/);
   });
 
   it('they are JUNCTIONS, not copies and not symlinks', () => {
@@ -82,20 +101,23 @@ describe('the pool profile gets read-only src and my-code junctions', () => {
     expect(g).not.toMatch(/-ItemType SymbolicLink/);
   });
 
-  it('my-code points INSIDE src, so the standing ~\\src grant covers it with no second grant', () => {
-    // The target is $OperatorSrc\egpt, which inherits the pool group's (OI)(CI)(RX). A
-    // my-code aimed anywhere else would need a grant of its own that nothing writes.
-    const g = junctionGenerator(accountLib());
-    expect(g).toMatch(/Join-Path \$OperatorSrc 'egpt'/);
-    expect(provisioner()).not.toMatch(/Grant-SandboxPool\w+ -Path \$myCode/);
+  it('the target is the CHECKOUT, and it is granted where the ACE actually has to be', () => {
+    // A junction is only a name; the target's DACL decides. The repo is what the provisioner
+    // grants the pool GROUP ReadAndExecute on, standing — it cannot be per-lease, because a
+    // DACL write on that tree re-propagates inheritance through node_modules.
+    const p = provisioner();
+    expect(p).toMatch(/\$repoDir = Join-Path \$srcDir 'egpt'/);
+    const readStep = p.slice(p.indexOf('$readOnly = [ordered]@{'), p.indexOf("-Grant 'Read'") + 20);
+    expect(readStep).toMatch(/= \$repoDir/);
+    expect(readStep).not.toMatch(/= \$srcDir\b/);
   });
 
   it('the target is resolved in the LAUNCHER own context, never inside the payload', () => {
     const src = launcher();
     // $env:USERPROFILE inside the scrub payload would be the POOL ACCOUNT's home — the
     // target has to be interpolated by the launcher, which runs as the operator.
-    expect(src).toMatch(/\$srcRoot = Join-Path \$env:USERPROFILE 'src'/);
-    expect(scrubScript(src)).toMatch(/\(Get-SandboxProfileJunctionStatement -OperatorSrc \$srcRoot -RoomTarget \$RoomTarget\)/);
+    expect(src).toMatch(/\$repoRoot = Join-Path \(Join-Path \$env:USERPROFILE 'src'\) 'egpt'/);
+    expect(scrubScript(src)).toMatch(/\(Get-SandboxProfileJunctionStatement -RepoRoot \$repoRoot -RoomTarget \$RoomTarget\)/);
     // ...and the launcher does not spell a junction out for itself any more.
     expect(src).not.toMatch(/-ItemType Junction/);
   });
@@ -156,17 +178,38 @@ describe('the pool profile gets read-only src and my-code junctions', () => {
 });
 
 describe('the OTHER half: a standing read grant on the junction target', () => {
-  it('the provisioner grants the pool group ReadAndExecute on ~\\src, never Modify', () => {
+  it('the provisioner grants the pool group ReadAndExecute on ~\\src\\egpt, never Modify', () => {
     const p = provisioner();
     expect(p).toMatch(/\$srcDir = Join-Path \$env:USERPROFILE 'src'/);
-    // ~\src rides the read-only list, which is granted with -Grant 'Read' — the
+    // The repo rides the read-only list, which is granted with -Grant 'Read' — the
     // (OI)(CI)(RX) row of Grant-SandboxPoolAce's table.
     const readStep = p.slice(p.indexOf('$readOnly = [ordered]@{'), p.indexOf("-Grant 'Read'") + 20);
-    expect(readStep).toMatch(/= \$srcDir/);
+    expect(readStep).toMatch(/= \$repoDir/);
     expect(readStep).toMatch(/Grant-PoolOn -Targets \$readOnly -Grant 'Read'/);
     // 'Modify' is the read-write row and must never be the thing pointed at the operator's
-    // whole source tree.
+    // source.
     expect(p).not.toMatch(/Grant-PoolOn -Targets \$readOnly -Grant 'Modify'/);
+  });
+
+  it('REPRODUCE: the WIDE ~\\src grant is actively REMOVED, not merely stopped being written', () => {
+    // BOTH HALVES OR IT IS THE SAME BUG IN A MIRROR. Every node provisioned before 2026-09-23
+    // carries egpt-sandbox-pool:(OI)(CI)(RX) on ~\src, and that ACE is INHERITED by every
+    // sibling checkout in it. Narrowing only the junction would leave the whole of the
+    // operator's source readable by all 16 accounts through a link that no longer says so —
+    // strictly worse than the state being retired, because it is no longer visible.
+    const p = provisioner();
+    expect(p).toMatch(/Revoke-SandboxPathAces -Path \$srcDir -AccountNames @\(\$SandboxPoolGroup\)/);
+    // THE GROUP, never an account: an ACE naming an individual egpt-sbx-NN under ~\src is lease
+    // litter and belongs to the sweep at the end of the script, which is a different step.
+    expect(p).not.toMatch(/Revoke-SandboxPathAces -Path \$srcDir -AccountNames @\(Get-SandboxPoolAccountNames/);
+    // It goes through the ONE revoke, which reads the DACL first — so a node already narrowed
+    // costs nothing, and this stays as idempotent as every other step here. (The header still
+    // MENTIONS the hand `icacls /remove:g` for the grants this script does not retire; what it
+    // must not have is an icacls INVOCATION of its own.)
+    expect(p).not.toMatch(/&\s*icacls/);
+    // ~\src keeps its TRAVERSE ace (walk through, do not list) — that is what still lets the
+    // pool reach the checkout by name without enumerating what else is in there.
+    expect(p).toMatch(/'the operator source' = Join-Path \$env:USERPROFILE 'src'/);
   });
 
   it('it is granted to the GROUP, which is what keeps it distinguishable from lease litter', () => {
@@ -241,8 +284,9 @@ describe('a lease share is released with the lease', () => {
     expect(fn).toMatch(/Write-SandboxLeaseLedger -Stream \$lease\.Stream/);
     expect(fn).not.toMatch(/PurgeAccessRules/);
     expect(fn).not.toMatch(/Set-Acl/);
-    // Exactly one call site, i.e. the grouping is the only thing this function adds.
-    expect((fn.match(/Revoke-SandboxPathAces/g) || []).length).toBe(1);
+    // Exactly one CALL SITE (a mention in the header is not one), i.e. the grouping is the only
+    // thing this function adds.
+    expect((fn.match(/^\s*\$recs = @\(Revoke-SandboxPathAces/gm) || []).length).toBe(1);
   });
 
   it('REPRODUCE-FIRST: the sweep groups by PATH, so it is O(paths) and not O(accounts × tree)', () => {
@@ -351,5 +395,154 @@ describe('a lease share is released with the lease', () => {
 
   it('the provisioner runs that sweep, which is the repair path for the 16 existing accounts', () => {
     expect(provisioner()).toMatch(/Clear-SandboxAbandonedLeases/);
+  });
+});
+
+// ── THE REVOKE THAT DID NOT HAPPEN (measured on kg 2026-09-23, from the live artefacts).
+//
+//    THE MECHANISM WAS NEVER BROKEN; IT WAS NEVER REACHED. warm-cli-session.mjs's close() ends
+//    the session with proc.kill() = TerminateProcess, so the launcher's `finally` does not run at
+//    the ORDINARY end of a sandboxed session. The only revoke that then fires is the per-account
+//    reclaim at step (a2), and it is keyed to ONE account and fires only when THAT account is
+//    leased again. An account that leaks and then goes quiet keeps its ACEs indefinitely.
+//
+//    THE EVIDENCE, read off C:\ProgramData\egpt\sandbox-pool-locks and the thread stores:
+//      * 14 of the 16 pool locks existed and NOT ONE was held — every one opened exclusively,
+//        i.e. every one was a turn that died without running its finally.
+//      * each of those 14 ledgers named exactly 2 paths (a Room and a ~\.egpt-jsonl\<thread>),
+//        and all 14 of those ACEs were still on disk: 9 distinct thread stores carrying 14
+//        explicit egpt-sbx-NN ACEs, one store granted to THREE pool accounts at once.
+//      * the oldest lock was two days old. Nothing was going to clear it.
+//
+//    THE FIX: the reclaim stops being per-account. The launcher runs the SAME pool-wide function
+//    the provisioner runs, once, right after it has taken its own lease — so every abandoned
+//    lease is cleared by the next turn on the box rather than by the next turn on that account.
+//
+//    A SECOND DEFECT, FOUND IN THE SAME LEDGERS AND NOT FIXABLE FROM A PATH: egpt-sbx-08 and -13
+//    named ...\Favel Konefka-2608141626 while -03, -04 and -10 named ...\Favel Elena
+//    Konefka-2608141626 — the SAME conversation (identical -2608141626 id), renamed slug. NTFS
+//    carries a DACL through a rename, so those two ledgers pointed at nothing while the ACEs they
+//    were written to revoke were alive at the new name. The revoke called that 'missing' and both
+//    callers treated it as resolved. It cannot be followed without a file id recorded at grant
+//    time; what it must not do is read like success. ──
+describe('the reclaim reaches accounts nothing will lease again', () => {
+  it('REPRODUCE: the launcher sweeps the WHOLE POOL on lease, not just the account it took', () => {
+    const src = launcher();
+    const lease = src.indexOf("leased pool account '$leasedName'");
+    const sweep = src.indexOf('Clear-SandboxAbandonedLeases -LocksDir $locksDir');
+    expect(lease).toBeGreaterThan(0);
+    expect(sweep).toBeGreaterThan(0);
+    // AFTER the lease, never before it: while the sweep holds another account's stale lock, a
+    // launcher racing for that account sees a live lease and walks on. Sweeping first could cost
+    // this very turn its preferred account.
+    expect(sweep).toBeGreaterThan(lease);
+    // ...and before the grant, so a turn never runs beside litter it could have cleared.
+    expect(sweep).toBeLessThan(src.indexOf('# ---- (d) grant read/write'));
+  });
+
+  it('it is the SAME function, not a second sweeper the launcher grew of its own', () => {
+    const src = launcher();
+    // No second staleness test, no second ledger reader, no second purge loop in the launcher.
+    expect(src).not.toMatch(/function Clear-Sandbox\w*Sweep/);
+    // Exactly one CALL SITE (the header names it too, which is not one).
+    expect((src.match(/@\(Clear-SandboxAbandonedLeases/g) || []).length).toBe(1);
+    // The per-account reclaim at (a2) stays — it is what makes the ONE account this turn is
+    // about to run as clean before it runs, which the pool sweep cannot promise for a lock it
+    // does not hold.
+    expect(src).toMatch(/Clear-SandboxStaleLease -Stream \$lockStream -AccountName \$name/);
+  });
+
+  it('OUR OWN LEASE IS NOT EXEMPTED — it is protected by the same test as everyone else\'s', () => {
+    // The launcher holds its lock FileShare::None, so the sweep's exclusive open fails on it and
+    // it is reported 'held'. An explicit "skip my account" parameter would be a second opinion
+    // about what a live lease is, and the one that could be wrong.
+    const src = launcher();
+    const sweep = src.slice(src.indexOf('# ---- (a3)'), src.indexOf('$plainPwd = $null'));
+    expect(sweep).not.toMatch(/-ExcludeAccount/);
+    expect(sweep).toMatch(/held/);
+    expect(accountLib()).toMatch(/function Clear-SandboxAbandonedLeases[\s\S]{0,4000}\[System\.IO\.FileShare\]::None/);
+  });
+
+  it('it is BUDGETED on the turn path and UNBUDGETED for the operator', () => {
+    // The old reason to keep this off the lease path was real: a DACL write on a big tree
+    // re-propagates inheritance, 307 s measured for ~\src. The budget is the guarantee, not the
+    // expectation — and the trees themselves are gone from the ledgers now that the checkout is
+    // a standing GROUP grant rather than a per-lease one.
+    expect(launcher()).toMatch(/Clear-SandboxAbandonedLeases -LocksDir \$locksDir -TimeBudgetSeconds \$sweepBudget/);
+    expect(accountLib()).toMatch(/\[double\]\$TimeBudgetSeconds = 0/);
+    // The provisioner and the operator script pass none, so they finish the job.
+    expect(provisioner()).not.toMatch(/Clear-SandboxAbandonedLeases[^\n]*TimeBudgetSeconds/);
+    expect(sweepScript()).not.toMatch(/Clear-SandboxAbandonedLeases[^\n]*TimeBudgetSeconds/);
+  });
+
+  it('WHAT THE BUDGET SKIPS IS CARRIED, NEVER FORGOTTEN — the one move that makes a leak unfindable', () => {
+    const lib = accountLib();
+    const fn = lib.slice(lib.indexOf('function Clear-SandboxAbandonedLeases'));
+    // The budget is checked BEFORE a pass starts, never during one: an icacls call cannot be
+    // abandoned half way and leave a DACL anything can reason about.
+    expect(fn).toMatch(/if \(\$TimeBudgetSeconds -ne 0 -and \$budget\.Elapsed\.TotalSeconds -ge \$TimeBudgetSeconds\)/);
+    // A path with no record is DEFERRED, and deferred joins failed in the carry-over — so the
+    // ledger keeps it and the lock is kept with it.
+    expect(fn).toMatch(/Status = 'deferred'/);
+    expect(fn).toMatch(/\$_\.Status -eq 'failed' -or \$_\.Status -eq 'deferred'/);
+  });
+
+  it("REPRODUCE: a ledger path that VANISHED is no longer reported as if it were clean", () => {
+    // The rename case, straight out of the live ledgers. The revoke cannot follow a moved
+    // folder; it must stop calling the outcome success.
+    const lib = accountLib();
+    const revoke = lib.slice(lib.indexOf('function Revoke-SandboxPathAces'), lib.indexOf('function Revoke-SandboxLeaseAces'));
+    expect(revoke).toMatch(/Status = 'missing'; Message = 'nothing is at that path any more\./);
+    expect(revoke).toMatch(/RENAMED or MOVED, NTFS carried its DACL along/);
+    // ...and it is said out loud where an operator reads it, not only in a record field.
+    const fn = lib.slice(lib.indexOf('function Clear-SandboxAbandonedLeases'));
+    expect(fn).toMatch(/\$vanished = @\(\$aces \| Where-Object \{ \$_\.Status -eq 'missing' \}\)/);
+    expect(sweepScript()).toMatch(/PATH GONE/);
+  });
+});
+
+describe('the operator can actually run the sweep', () => {
+  it('there is a standalone script, and a double-clickable launcher beside it', () => {
+    // WHAT WAS MISSING was never the sweep — it was a way to RUN it. Its only caller was the
+    // provisioner's last step, which self-elevates and re-does the pool, the group, every
+    // standing grant and the credential-dir hardening. Nobody runs that to clear litter.
+    expect(existsSync(join(REPO, 'setup', 'sweep-sandbox-leases.ps1'))).toBe(true);
+    expect(existsSync(join(REPO, 'setup', 'sweep-sandbox-leases.cmd'))).toBe(true);
+    expect(readFileSync(join(REPO, 'setup', 'sweep-sandbox-leases.cmd'), 'utf8')).toMatch(/sweep-sandbox-leases\.ps1/);
+  });
+
+  it('it adds no mechanism: it dot-sources the one library and calls the one sweep', () => {
+    const s = sweepScript();
+    expect(s).toMatch(/\. \(Join-Path \$PSScriptRoot 'sandbox-account\.ps1'\)/);
+    expect(s).toMatch(/Clear-SandboxAbandonedLeases -LocksDir \$LocksDir/);
+    // No second definition of stale, of revoked, or of what a lock is.
+    expect(s).not.toMatch(/icacls/);
+    expect(s).not.toMatch(/Set-Acl/);
+    expect(s).not.toMatch(/Remove-Item -LiteralPath \$lock/);
+  });
+
+  it('it REPORTS what it removed, per path — "3 locks released" is not the answer to the question', () => {
+    const s = sweepScript();
+    expect(s).toMatch(/REVOKED/);
+    expect(s).toMatch(/STILL GRANTED/);
+    expect(s).toMatch(/leaked ACE\(s\) revoked/);
+    // A leak it could not clear is not a successful run.
+    expect(s).toMatch(/exit \(\[int\]\(\$stillThere -gt 0\)\)/);
+  });
+
+  it('-WhatIf takes each lock only to READ it, and writes no DACL at all', () => {
+    const s = sweepScript();
+    const whatIf = s.slice(s.indexOf('if ($WhatIf) {'), s.indexOf('# NO -TimeBudgetSeconds'));
+    expect(whatIf).toMatch(/Read-SandboxLeaseLedger -Stream \$stream/);
+    expect(whatIf).not.toMatch(/Revoke-/);
+    expect(whatIf).not.toMatch(/Remove-Item/);
+    expect(whatIf).not.toMatch(/Write-SandboxLeaseLedger/);
+    // ...and it reads a LIVE lease exactly as the sweep does: the exclusive open is the test.
+    expect(whatIf).toMatch(/\[System\.IO\.FileShare\]::None/);
+  });
+
+  it('it needs no elevation, and says why — that is the whole reason it is not the provisioner', () => {
+    expect(sweepScript()).toMatch(/NO ELEVATION|IT NEEDS NO ELEVATION/);
+    expect(sweepScript()).not.toMatch(/-Verb RunAs/);
   });
 });

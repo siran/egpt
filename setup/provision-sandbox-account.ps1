@@ -1,4 +1,4 @@
-# provision-sandbox-account.ps1  - operator-run, one-time (idempotent)
+﻿# provision-sandbox-account.ps1  - operator-run, one-time (idempotent)
 # provisioning of the POOL of disposable local accounts used by
 # sandbox-logon-launcher.ps1. New-LocalUser/Set-LocalUser need local-
 # Administrator rights, which the launcher's own daemon process does NOT run
@@ -25,7 +25,9 @@
 # WHAT IS GRANTED TO WHOM  - the model, which is not what changed:
 #   traverse-only (X,RA,RC), NOT inheritable, to the pool GROUP on each ancestor
 #     directory above the conversation folders;
-#   inheritable ReadAndExecute to the pool GROUP on the CLI tool dirs and ~\src;
+#   inheritable ReadAndExecute to the pool GROUP on the CLI tool dirs and on
+#     ~\src\egpt  - the eGPT checkout, and since 2026-09-23 NOT all of ~\src;
+#     the step after that one takes the old wide grant back off;
 #   inheritable Modify to the pool GROUP on pi's own config dir;
 #   per-lease Modify to ONE pool ACCOUNT on ONE conversation folder  - NOT here;
 #     that is the launcher's, granted at launch and revoked with the lease. The
@@ -53,7 +55,7 @@ if (-not $isElevated) {
 # window... please make script show progress"). Each step announces its number
 # and what it is about to touch before it starts, then reports its own elapsed
 # seconds. A step that finds nothing to do says so in one line.
-$StepCount = 7
+$StepCount = 8
 $script:StepIndex = 0
 function Start-Step {
   param([Parameter(Mandatory = $true)][string]$What, [string]$Warn = '')
@@ -136,8 +138,10 @@ try {
   # THE STANDING READ GRANTS. All four go to the pool GROUP, ReadAndExecute and
   # never more, inheritable because the subtree is the point. Windows UNIONS
   # Allow ACEs, so none of them can be narrowed by anything granted later -
-  # narrowing one is a hand operation (`icacls <path> /remove:g egpt-sandbox-pool`,
-  # then re-run this script).
+  # narrowing one means REMOVING it, which is what the step after this does for
+  # the one grant this script has actually retired (~\src). For any other, that
+  # is still a hand operation (`icacls <path> /remove:g egpt-sandbox-pool`, then
+  # re-run this script).
   #
   #   ~\.local\bin   ccode: claude.exe (warm-cli-session's resolveClaudeBin
   #                  prefers ~/.local/bin).
@@ -158,32 +162,65 @@ try {
   #                  packages are public code; no credential lives here (pi's
   #                  auth.json is in ~\.pi).
   #
-  # ~\src IS STANDING, NOT PER-TURN, and that is a decision rather than an
-  # accident (operator 2026-09-20: "can we make that sandbox account's sbx/src/
-  # path points to src/an read-only?"). It is the other half of the `src`
-  # junction the launcher plants in every pool profile: a junction is only a
-  # name, and the TARGET's DACL decides what a leased account may do through it.
-  # It cannot be per-turn - the junction is part of the profile SHAPE, present
-  # between turns as well as during them, and a link that only resolved while a
-  # lease was held would be exactly the "told it may use a directory that then
-  # refuses it" failure the share ACEs exist to close. The cost, stated rather
-  # than left to be inferred: all 16 pool accounts can read ALL of the operator's
-  # source, at all times.
+  # ~\src\egpt IS STANDING, NOT PER-TURN, and that is a decision rather than an
+  # accident. It is the other half of the `src` junction the launcher plants in
+  # every pool profile: a junction is only a name, and the TARGET's DACL decides
+  # what a leased account may do through it. It cannot be per-turn - the junction
+  # is part of the profile SHAPE, present between turns as well as during them,
+  # and a link that only resolved while a lease was held would be exactly the
+  # "told it may use a directory that then refuses it" failure the share ACEs
+  # exist to close. Nor can it be afforded per-turn: a DACL write on this tree
+  # re-propagates inheritance through node_modules, and the parent ~\src measured
+  # 307 s for one pass. The cost, stated rather than left to be inferred: all 16
+  # pool accounts can read the whole eGPT checkout, at all times.
+  #
+  # IT IS ~\src\egpt AND NO LONGER ~\src (operator 2026-09-23: "dismiss mounting
+  # ~/src always, that was a faux-pas"). The 2026-09-20 shape granted the pool
+  # ReadAndExecute on EVERY line of source the operator has ever checked out,
+  # standing, for the sake of one checkout. The junction narrowed to the checkout
+  # (Get-SandboxProfileJunctionStatement) and this narrowed with it; ~\src keeps
+  # only the traverse-only ACE from the ancestor chain above, which is walk-
+  # through and not read - so the pool can reach ~\src\egpt by name and still
+  # cannot enumerate what else is in ~\src. Removing the old wide grant is the
+  # step right after this one: leaving it would make the narrowing cosmetic.
   #
   # KEEP THE TWO KINDS APART when reading an icacls dump of this tree: an ACE
   # naming the GROUP (egpt-sandbox-pool) is this permanent grant; one naming an
   # individual egpt-sbx-NN is lease litter, and the last step of this script is
   # what clears it.
   $srcDir = Join-Path $env:USERPROFILE 'src'
+  $repoDir = Join-Path $srcDir 'egpt'
   $readOnly = [ordered]@{
-    'the Claude Code bin dir'      = Join-Path $env:USERPROFILE '.local\bin'
-    'the RUNNING eGPT tree'        = Join-Path $env:USERPROFILE 'bin\egpt'
-    "ALL of the operator's source" = $srcDir
-    'the npm global root'          = Join-Path $env:APPDATA 'npm'
+    'the Claude Code bin dir' = Join-Path $env:USERPROFILE '.local\bin'
+    'the RUNNING eGPT tree'   = Join-Path $env:USERPROFILE 'bin\egpt'
+    'the EDITABLE eGPT checkout (what every pool profile mounts as ~\src)' = $repoDir
+    'the npm global root'     = Join-Path $env:APPDATA 'npm'
   }
   $step = Start-Step "standing read-only grants for '$SandboxPoolGroup' on $($readOnly.Count) tool and source directories" `
-    'A FIRST run writes these, and ~\src alone takes about five minutes: it is full of node_modules and every DACL write re-propagates inheritance over the lot. Not hung. A node already provisioned writes nothing and says "already granted".'
+    'A FIRST run writes these, and ~\src\egpt alone takes minutes: it is full of node_modules and every DACL write re-propagates inheritance over the lot. Not hung. A node already provisioned writes nothing and says "already granted".'
   Stop-Step $step (Grant-PoolOn -Targets $readOnly -Grant 'Read')
+
+  # ---- AND THE OLD WIDE GRANT COMES OFF. BOTH HALVES OR IT IS A MIRROR OF THE
+  # BUG (operator 2026-09-23). The junction no longer points at ~\src, but a node
+  # provisioned before today still carries `egpt-sandbox-pool:(OI)(CI)(RX)` there,
+  # and that ACE is inherited by every sibling checkout in it - so the pool would
+  # keep read access to all of the operator's source through a link that no longer
+  # advertises it, which is worse than the state being retired, not better.
+  #
+  # Revoke-SandboxPathAces, not a second icacls line: it is the ONE revoke in this
+  # sandbox, it reads the DACL first, and on a node that has already been narrowed
+  # it finds nothing and costs not one write. The first run on a node that has the
+  # ACE pays one re-propagation over ~\src, which is minutes - said here rather
+  # than discovered as a hang.
+  #
+  # THE GROUP, NEVER AN ACCOUNT: an ACE naming an individual egpt-sbx-NN under
+  # ~\src is lease litter and belongs to the sweep at the end of this script; this
+  # step takes off exactly the standing grant this script used to write.
+  $step = Start-Step "retiring the old standing grant for '$SandboxPoolGroup' on $srcDir" `
+    'This is the OTHER half of narrowing the src mount to the eGPT checkout. Nothing to do on a node already narrowed; on one that is not, removing an inheritable ACE re-propagates over the whole tree and takes minutes.'
+  $retired = @(Revoke-SandboxPathAces -Path $srcDir -AccountNames @($SandboxPoolGroup))
+  foreach ($rec in $retired) { Write-Host "         $srcDir : $($rec.Status)  - $($rec.Message)" }
+  Stop-Step $step (@($retired | Where-Object { $_.Status -eq 'revoked' }).Count.ToString() + ' wide grant(s) removed')
 
   # pi (@p): LET PI KEEP ITS OWN DEFAULT CONFIG DIR (~/.pi/agent) and point the
   # sandbox at it, rather than relocating pi to a directory eGPT invented
@@ -258,7 +295,7 @@ try {
   $aceCount = @($reclaimed | ForEach-Object { $_.Aces } | Where-Object { $_.Status -eq 'revoked' }).Count
   Stop-Step $step "$(@($reclaimed | Where-Object { $_.Status -eq 'reclaimed' }).Count) lock(s) released, $aceCount leaked ACE(s) revoked, $heldCount lease(s) left alone because a turn still holds them"
 
-  Write-Host ("OK: sandbox pool ready in {0:n1}s  - created {1}, already existed {2}. Group '{3}' holds traverse-only on the ancestor chain above the conversation folders, ReadAndExecute on the CLI tool dirs and on {4} (the standing read-only view every pool profile's src and my-code junctions point at), and Modify on pi's config dir. Credential dir {5} hardened (no BUILTIN\Users access)." -f $runWatch.Elapsed.TotalSeconds, $pool.Created, $pool.Existed, $SandboxPoolGroup, $srcDir, $CredDir)
+  Write-Host ("OK: sandbox pool ready in {0:n1}s  - created {1}, already existed {2}. Group '{3}' holds traverse-only on the ancestor chain above the conversation folders (including {4}, walk-through and NOT read), ReadAndExecute on the CLI tool dirs and on {5} (the standing read-only view every pool profile's src junction points at), and Modify on pi's config dir. Credential dir {6} hardened (no BUILTIN\Users access)." -f $runWatch.Elapsed.TotalSeconds, $pool.Created, $pool.Existed, $SandboxPoolGroup, $srcDir, $repoDir, $CredDir)
 } catch {
   Write-Host ("FAILED after {0:n1}s at step {1}/{2}: {3}" -f $runWatch.Elapsed.TotalSeconds, $script:StepIndex, $StepCount, $_.Exception.Message)
   exit 1

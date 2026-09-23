@@ -690,17 +690,39 @@ function Protect-SandboxCredDir {
 # THE JUNCTIONS EVERY POOL PROFILE GETS, AS ONE STATEMENT - the tail of the
 # payload Clear-SandboxProfileContents runs as the leased account after the wipe.
 #
-# TWO LINKS, ONE GENERATOR (operator 2026-09-20: "all agents see an src/
-# directory, it is actually interesting to have a my-code/ pointing to
-# src/egpt"). Adding the second by copying the first is how the two would drift
-# into disagreeing about the existence guard or the error handling, so the table
-# below is the only place either is named:
-#   src      -> the operator's own ~\src, the whole read-only view
-#   my-code  -> ~\src\egpt, the EDITABLE eGPT checkout, which is where a being
-#               that must change its own code is pointed
-# Both are read-only by exactly the same standing (OI)(CI)(RX) the provisioner
-# grants the pool group on ~\src - my-code is UNDER src, so it inherits it and
-# needs no grant of its own. A junction is only a name; the target's DACL decides.
+# TWO LINKS, ONE GENERATOR. The table below is the only place either is named,
+# because adding one by copying the other is how the two would drift into
+# disagreeing about the existence guard or the error handling:
+#   src   -> ~\src\egpt, the EDITABLE eGPT checkout, read-only
+#   egpt  -> this lease's Room (see below - not a convenience)
+#
+# `src` IS THE REPO, AND IT USED TO BE THE OPERATOR'S WHOLE ~\src (operator
+# ruling 2026-09-23: "dismiss mounting ~/src always, that was a faux-pas", and
+# "in the same way that the conversation directory is mounted in the sandbox
+# account, the src/egpt can also be mounted as src/"). What that retires, in one
+# move, is a STANDING (OI)(CI)(RX) for the whole pool on every line of source the
+# operator has ever checked out - which was the stated cost of the 2026-09-20
+# shape and is now judged too high. The mount mechanism is unchanged; only the
+# target narrowed, from ~\src to ~\src\egpt.
+#
+# AND `my-code` IS GONE, folded into this one name. It pointed at ~\src\egpt -
+# exactly what `src` now points at - so keeping it would be a second name for one
+# target. The ask it came from ("keep my-code/ so egpt can see itself") is
+# satisfied by `src`: the being still reaches its own checkout, under the name the
+# operator's later ruling gave it. Nothing outside this repo ever named it (no
+# identity card, no skeleton, no config key - grepped 2026-09-23), and dropping
+# the row buys about 34 characters of the scrub payload's 1024-character ceiling,
+# which is a ceiling that REFUSES THE TURN when it is crossed. One row is easy to
+# add back if the operator wants the alias; that is the only thing this decision
+# costs.
+#
+# BOTH HALVES OR IT IS A LIE, and the other half is NOT here: a junction is only
+# a name, and the target's DACL decides. ~\src\egpt carries a STANDING
+# (OI)(CI)(RX) for the pool GROUP, written by provision-sandbox-account.ps1,
+# which carries the reasoning for why that one is standing rather than per-turn.
+# It must NOT be per-lease: a DACL write on that tree re-propagates inheritance
+# through node_modules and was measured at minutes, and the turn path cannot pay
+# that (see Grant-SandboxPoolAce's header and Revoke-SandboxPathAces's).
 #
 # IT LIVES HERE, not inline in the launcher, for the reason the lease-ledger
 # block below gives: sandbox-logon-launcher.ps1 has a param block and runs, so
@@ -728,11 +750,11 @@ function Protect-SandboxCredDir {
 # the real ceiling between 1024 and the measured 3074 failure is unknown, and
 # guessing one would refuse turns that work.
 #
-# -EA 0 AND NOTHING ELSE ON FAILURE, deliberately: on a node with no ~\src,
+# -EA 0 AND NOTHING ELSE ON FAILURE, deliberately: on a node with no ~\src\egpt,
 # New-Item refuses a junction whose target does not exist and creates nothing
 # (measured 2026-09-20 - no dangling link is left behind). A missing convenience
-# link must not cost the turn. That is true of `src` and `my-code`; it is NOT
-# true of `egpt` below, and the launcher acts on the difference.
+# link must not cost the turn. That is true of `src`; it is NOT true of `egpt`
+# below, and the launcher acts on the difference.
 #
 # ---- `egpt` IS THE THIRD LINK, AND IT IS NOT A CONVENIENCE (operator ruling
 # 2026-09-23). It is THE BEING'S WORKING DIRECTORY, and the reason it exists is
@@ -758,8 +780,8 @@ function Protect-SandboxCredDir {
 # No slug segment either: a lease is ONE conversation, so there is nothing to
 # disambiguate.
 #
-# REMOVE-THEN-CREATE, which replaced "create only if absent" for ALL three links
-# when `egpt` arrived. src and my-code have a CONSTANT target, so leaving a
+# REMOVE-THEN-CREATE, which replaced "create only if absent" for ALL the links
+# when `egpt` arrived. src has a CONSTANT target, so leaving a
 # surviving link alone was harmless; egpt's target is a DIFFERENT Room every
 # lease, so a stale one that outlived the wipe - a link the scrub could not
 # delete because some orphan still had it as its cwd - would silently hand this
@@ -778,15 +800,17 @@ function Protect-SandboxCredDir {
 # this is a conversation-history shredder - stop rather than adjust it.
 function Get-SandboxProfileJunctionStatement {
   param(
-    [Parameter(Mandatory = $true)][string]$OperatorSrc,
+    # THE REPO, not the operator's ~\src: C:\Users\an\src\egpt. Named -RepoRoot
+    # rather than -OperatorSrc so that a caller still passing the old, wider
+    # target fails to bind instead of silently re-mounting all of ~\src.
+    [Parameter(Mandatory = $true)][string]$RepoRoot,
     # MANDATORY on purpose: a caller that forgot it would silently produce a
     # profile with no `egpt` mount, i.e. a turn with nowhere to run.
     [Parameter(Mandatory = $true)][string]$RoomTarget
   )
   $links = [ordered]@{
-    'src'     = $OperatorSrc
-    'my-code' = (Join-Path $OperatorSrc 'egpt')
-    'egpt'    = $RoomTarget
+    'src'  = $RepoRoot
+    'egpt' = $RoomTarget
   }
   $pairs = @($links.Keys | ForEach-Object { "@('$_','$($links[$_])')" }) -join ','
   return "foreach(`$j in @($pairs)){`$s=Join-Path `$r `$j[0];ri -LiteralPath `$s -Recurse -Force -EA 0;ni -ItemType Junction -Path `$s -Target `$j[1] -EA 0 >`$null}"
@@ -973,7 +997,8 @@ function Add-SandboxLeaseLedgerPath {
 # with Status one of:
 #   revoked  explicit ACEs for this account were there and are gone
 #   clean    the path exists and carried none - nothing was written
-#   missing  the path is gone, so no ACE can survive on it
+#   missing  the path is gone FROM THAT NAME. See the warning below - this is
+#            only equivalent to "no ACE survives" when the folder was DELETED.
 #   failed   it could not be done, and the ACE may well still be there
 # A 'failed' is the only one a caller must act on, and it must never be
 # swallowed: the path is still granted.
@@ -981,6 +1006,25 @@ function Add-SandboxLeaseLedgerPath {
 # EXPLICIT RULES ONLY ($false for the inherited ones) on both reads: an inherited
 # ACE is not this lease's to remove and icacls could not take it off the child
 # anyway.
+#
+# ---- 'missing' IS NOT ALWAYS CLEAN, AND THAT IS A REAL HOLE, NAMED RATHER THAN
+# PAPERED OVER (found 2026-09-23 while diagnosing why the reclaim was not
+# keeping up). A ledger holds a path, and a path is a NAME. Rename the folder and
+# NTFS carries its DACL with it - so the leaked ACE is alive at the new name
+# while the only record of it, this ledger line, resolves to nothing. Both
+# callers then treat 'missing' as resolved, drop the line and release the lock,
+# and the ACE becomes UNFINDABLE: nothing on the box still names it.
+# MEASURED on kg 2026-09-23, straight out of the live lock ledgers:
+#   egpt-sbx-08.lock, egpt-sbx-13.lock -> ...\conversations\whatsapp\Favel Konefka-2608141626
+#   egpt-sbx-03/-04/-10.lock           -> ...\conversations\whatsapp\Favel Elena Konefka-2608141626
+# Same conversation (the -2608141626 id is identical), renamed display slug. Two
+# of those five ledgers name a folder that is not there any more, and the ACEs
+# they were written to revoke rode the rename.
+# THIS FUNCTION CANNOT FIX IT - a name is all it is given, and following a moved
+# folder would need its NTFS file id recorded at grant time, which is a bigger
+# change than this one. What it does instead is STOP CALLING IT CLEAN: the
+# message says which of the two happened is unknown, so the log of a reclaim that
+# quietly forgot a leak no longer reads like the log of one that cleared it.
 function Revoke-SandboxPathAces {
   param(
     [Parameter(Mandatory = $true)][string]$Path,
@@ -1002,7 +1046,7 @@ function Revoke-SandboxPathAces {
   try {
     if (-not (Test-Path -LiteralPath $Path)) {
       foreach ($n in $named) {
-        [void]$records.Add([pscustomobject]@{ Path = $Path; Account = $n; Sid = $sids[$n].Value; Status = 'missing'; Message = 'the path no longer exists, so no ACE can survive on it' })
+        [void]$records.Add([pscustomobject]@{ Path = $Path; Account = $n; Sid = $sids[$n].Value; Status = 'missing'; Message = 'nothing is at that path any more. If the folder was DELETED its ACEs went with it and this is clean; if it was RENAMED or MOVED, NTFS carried its DACL along and this account is STILL granted at the new name, which nothing now records. This cannot tell the two apart.' })
       }
       return $records.ToArray()
     }
@@ -1112,14 +1156,43 @@ function Clear-SandboxStaleLease {
 # `allowed_paths` entry, e.g. ~\src\egpt) therefore collects one ACE per pool
 # account that ever ran that being, which is exactly what was found.
 #
-# NOT A SWEEPER, AND NOT ON THE TURN PATH. This runs from
-# provision-sandbox-account.ps1 - operator-run, elevated, already idempotent -
-# and it is the SAME function the launcher's reclaim uses, applied to every lock
-# instead of to one. There is no timer, no second lifecycle and no new definition
-# of "revoked". It is deliberately kept OFF the lease-acquire path: revoking on a
-# big shared tree costs minutes (see Grant-SandboxPoolAce's note on
-# inheritance re-propagation), and a turn must not pay that for litter that is
-# not its own.
+# ---- IT IS NOW ALSO WHAT THE LAUNCHER CALLS, ONCE, PER LEASE (2026-09-23), and
+# that is the actual fix for the leak rather than a bigger broom. WHY IT CHANGED:
+# the per-account reclaim above is keyed to one account and fires only when THAT
+# account is leased again, so the accounts that leak and then go quiet keep their
+# ACEs for ever. MEASURED on kg 2026-09-23, before this change, from the live
+# artefacts and not from reasoning:
+#   * 14 of the 16 pool locks exist and NOT ONE is held - every one opens
+#     exclusively, i.e. every one is a turn that died without running its finally.
+#   * each of those 14 ledgers names exactly 2 paths (a Room and a
+#     ~\.egpt-jsonl\<thread> store), and every one of those 14 ACEs is STILL on
+#     disk: 9 distinct thread stores carrying 14 explicit egpt-sbx-NN ACEs, one
+#     store carrying three different pool accounts at once.
+# So the reclaim is not broken - it is never reached. Nothing was going to
+# revoke those 14 until the same account happened to be leased again, and two of
+# the locks had been sitting for two days.
+#
+# AND IT STILL MUST NOT PUT AN ACL WALK ON THE TURN PATH, which is what kept it
+# off there before. Two things make that safe now, and they are the price of the
+# ruling that retired the ~\src grant (see Get-SandboxProfileJunctionStatement):
+#   * the big trees are GONE from the ledgers. ~\src\egpt is reached through a
+#     STANDING group grant, so it is never granted per lease and never written
+#     into one. What is left on a ledger is a Room and a thread store - small
+#     folders, measured in milliseconds, not the 307 s ~\src cost.
+#   * -TimeBudgetSeconds. Phase 2 checks it before it STARTS each path (never in
+#     the middle of one - an icacls pass is not interruptible), and whatever it
+#     did not reach is DEFERRED: carried in the ledger, lock kept, retried by the
+#     next turn or by the operator sweep. A turn can therefore be slow once; it
+#     cannot be slow without limit.
+# The launcher runs this AFTER its own lease is taken, so a sweep can never cost
+# a turn its account - and its own lock is held FileShare::None, so this reports
+# it 'held' and steps over it with no special case (the same staleness test, used
+# on ourselves).
+#
+# IT IS ALSO STILL THE OPERATOR'S REPAIR PATH, unchanged and unbudgeted:
+# setup/sweep-sandbox-leases.ps1 (and provision-sandbox-account.ps1's last step)
+# call it with no budget, so they finish the job however long it takes. Same
+# function, same definition of "revoked", no second lifecycle.
 #
 # A LIVE LEASE IS NEVER TOUCHED. The staleness test is the launcher's own and is
 # exact in both directions: an exclusive open (FileShare::None) succeeds only
@@ -1141,7 +1214,8 @@ function Clear-SandboxStaleLease {
 # read and rewrite are still Read-/Write-SandboxLeaseLedger.
 #   1. take every stale lock exclusively and read its ledger  (no ACL writes yet)
 #   2. one icacls pass per PATH, naming every account that leaked onto it
-#   3. per lock: rewrite the ledger with what failed, release it if nothing did
+#   3. per lock: rewrite the ledger with what failed OR was not reached, release
+#      it only when neither
 # Phase 1 holds all the locks open until phase 3 finishes, which is exactly the
 # same promise a single reclaim makes: while this process holds a lock, a
 # launcher racing for that account sees a live lease and walks on to another name.
@@ -1151,8 +1225,18 @@ function Clear-SandboxStaleLease {
 # elapsed seconds BEFORE and AFTER, because one of these can be a tree that takes
 # minutes and silence there is what got read as a hang.
 function Clear-SandboxAbandonedLeases {
-  param([string]$LocksDir = $SandboxLocksDir)
+  param(
+    [string]$LocksDir = $SandboxLocksDir,
+    # 0 (the default) = no budget, finish the job - what the provisioner and the
+    # operator sweep want. Any other value caps how long phase 2 may keep
+    # STARTING new paths, which is what makes this callable from the lease path.
+    # It is not a timeout: a pass already running is always allowed to finish,
+    # because an icacls call cannot be abandoned half way and leave a DACL in a
+    # state anything could reason about.
+    [double]$TimeBudgetSeconds = 0
+  )
   $records = New-Object System.Collections.Generic.List[object]
+  $budget = [System.Diagnostics.Stopwatch]::StartNew()
   if (-not (Test-Path -LiteralPath $LocksDir)) { return @() }
   $lockFiles = @(Get-ChildItem -LiteralPath $LocksDir -Filter '*.lock' -File -ErrorAction SilentlyContinue)
   if ($lockFiles.Count -eq 0) {
@@ -1210,10 +1294,26 @@ function Clear-SandboxAbandonedLeases {
     }
     $aceByKey = @{}
     $pathNo = 0
+    $deferred = 0
     if ($byPath.Count -gt 0) { Log "lease sweep: revoking across $($byPath.Count) distinct path(s) - one icacls pass each, whatever the number of accounts on it" }
     foreach ($key in @($byPath.Keys)) {
       $pathNo++
       $entry = $byPath[$key]
+      # THE BUDGET IS CHECKED HERE AND NOWHERE ELSE - before a pass starts, never
+      # during one. A path not reached records NOTHING in $aceByKey, and phase 3
+      # reads that absence as 'deferred': it stays on its lock's ledger and the
+      # lock is kept, so the next turn (or the unbudgeted operator sweep) picks it
+      # up. Forgetting it here would be the one move that makes the leak
+      # unfindable, which is the whole failure mode this file exists around.
+      # -ne 0, not -gt 0: 0 is the "no budget" sentinel and every OTHER value gets
+      # its literal meaning, a NEGATIVE one included - elapsed is never below it,
+      # so it reads as "already spent". That is a degenerate budget rather than a
+      # special case, and it is what lets a test exercise this branch without
+      # racing a stopwatch.
+      if ($TimeBudgetSeconds -ne 0 -and $budget.Elapsed.TotalSeconds -ge $TimeBudgetSeconds) {
+        $deferred++
+        continue
+      }
       Log "lease sweep: path $pathNo/$($byPath.Count) - revoking $($entry.Accounts.Count) account(s) from $($entry.Path) (a big tree can take minutes)"
       $watch = [System.Diagnostics.Stopwatch]::StartNew()
       $recs = @(Revoke-SandboxPathAces -Path $entry.Path -AccountNames $entry.Accounts.ToArray())
@@ -1223,11 +1323,29 @@ function Clear-SandboxAbandonedLeases {
       $stillThere = @($recs | Where-Object { $_.Status -eq 'failed' }).Count
       Log ("lease sweep: path {0}/{1} done in {2:n1}s - {3} revoked, {4} already clear, {5} still granted" -f $pathNo, $byPath.Count, $watch.Elapsed.TotalSeconds, $revoked, ($recs.Count - $revoked - $stillThere), $stillThere)
     }
+    if ($deferred -gt 0) {
+      Log ("lease sweep: {0} of {1} path(s) NOT reached - the {2:n1}s budget ran out. Their locks are KEPT with those paths still on the ledger; the next lease of this pool, or setup\sweep-sandbox-leases.ps1, retries them." -f $deferred, $byPath.Count, $TimeBudgetSeconds)
+    }
 
-    # ---- phase 3: carry over what is still granted, release what is finished.
+    # ---- phase 3: carry over what is still granted OR was never reached, and
+    # release only a lock with neither.
     foreach ($lease in $leases) {
-      $aces = @($lease.Paths | ForEach-Object { $aceByKey["$($lease.Account)|$($_.ToLowerInvariant().TrimEnd('\'))" ] } | Where-Object { $_ })
-      $stuck = @($aces | Where-Object { $_.Status -eq 'failed' })
+      # A path with NO record is one phase 2 skipped for budget. Synthesised here
+      # rather than left to fall out of the Where-Object below, because the old
+      # filter DROPPED an unmatched path silently - which, with a budget in play,
+      # would truncate the ledger and delete the lock for an ACE nobody touched.
+      $aces = @($lease.Paths | ForEach-Object {
+          $rec = $aceByKey["$($lease.Account)|$($_.ToLowerInvariant().TrimEnd('\'))"]
+          if ($rec) { $rec }
+          else { [pscustomobject]@{ Path = $_; Account = $lease.Account; Sid = $null; Status = 'deferred'; Message = 'not reached before the sweep budget ran out - still granted, still on this ledger' } }
+        })
+      $stuck = @($aces | Where-Object { $_.Status -eq 'failed' -or $_.Status -eq 'deferred' })
+      # SAID OUT LOUD, because it is the one outcome that looks like success and
+      # is not necessarily one - see Revoke-SandboxPathAces's 'missing' note.
+      $vanished = @($aces | Where-Object { $_.Status -eq 'missing' })
+      if ($vanished.Count -gt 0) {
+        Log "lease sweep: WARNING - $($lease.Account) has $($vanished.Count) ledger path(s) that nothing is at any more: $(@($vanished | ForEach-Object { $_.Path }) -join ', '). Deleted folders took their ACEs with them; a RENAMED one did not, and that ACE is now at a name nothing records. This cannot tell which happened."
+      }
       # THE CARRY-OVER IS THE POINT of rewriting rather than truncating - the same
       # discipline Clear-SandboxStaleLease applies on the launcher's path. A path
       # the revoke could not clear stays on the list so the next reclaim retries.
