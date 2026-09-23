@@ -132,7 +132,9 @@ function Get-LauncherLineIndex([string]$Pattern) {
 $script:GrantPattern = 'Grant-SandboxPoolAce -Path \$TargetFolder'
 $script:GateDPattern = "Assert-SandboxPathReachable -Path \`$TargetFolder .*-Stage 'step \(d\)"
 $script:GateFPattern = "Assert-SandboxPathReachable -Path \`$TargetFolder .*-Stage 'step \(f\)"
-$script:LaunchPattern = '-WorkingDirectory \$TargetFolder'
+$script:LaunchPattern = '-WorkingDirectory \$sandboxCwd'
+$script:ScrubCallPattern = '\$sandboxCwd = Clear-SandboxProfileContents'
+$script:CwdGuardPattern = 'if \(-not \$sandboxCwd\)'
 
 Describe 'REPRODUCE: the 2026-09-23 turn that launched into a cwd its leased account could not enter' {
   AfterEach { $script:IcaclsSpy.Clear() }
@@ -313,13 +315,14 @@ Describe 'the launcher wiring (the statements the launcher really runs)' {
     { Invoke-Expression $stmt } | Should Throw
   }
 
-  It 'the gate checks the SAME path the launch is given - one variable, no second spelling' {
-    # The third way this could have failed: grant one directory, enter another
-    # (a trailing separator, a short name, a junction). Both gates and the
-    # launch name $TargetFolder itself, so there is nothing to disagree about.
+  It 'BOTH gates ask about the durable Room, which is where every ACE actually lives' {
+    # Since 2026-09-23 the launch cwd is the `egpt` MOUNT, not the Room - but an
+    # ACE on a junction would be an ACE on nothing, so the grant, the ledger, the
+    # revoke and both gates still name $TargetFolder. A gate that followed the
+    # cwd would be verifying a name instead of the fact behind it.
     (Get-LauncherStatement $script:GateDPattern) | Should Match '-Path \$TargetFolder'
     (Get-LauncherStatement $script:GateFPattern) | Should Match '-Path \$TargetFolder'
-    (Get-LauncherStatement $script:LaunchPattern) | Should Match '-WorkingDirectory \$TargetFolder'
+    (Get-LauncherStatement $script:GrantPattern) | Should Match '-Path \$TargetFolder'
   }
 
   It 'the scrub pass is NOT gated, because its cwd is %SystemRoot% and every account can enter that' {
@@ -614,6 +617,93 @@ Describe 'the rebase is the sole authority for every per-user name (the launcher
     $rebase = (Get-LauncherLineIndex 'foreach \(\$n in \$perUser\.Keys\)')
     $overlay = (Get-LauncherLineIndex 'foreach \(\$pair in \$SetEnv\)')
     $overlay | Should BeGreaterThan $rebase
+  }
+}
+
+# ---------------------------------------------------------------------------
+# THE `egpt` MOUNT AS THE BEING'S CWD (operator ruling 2026-09-23).
+#
+# WHAT IT IS FOR. A sandboxed being's cwd used to be the durable Room,
+# C:\Users\an\.egpt\conversations\whatsapp\<slug>, and it quoted that path into
+# group chats all day - verbose tool lines read
+#   Bash(cd "C:/Users/an/.egpt/conversations/whatsapp/Reencuentro CR...")
+# disclosing the OPERATOR's username and profile layout and, because a slug is
+# usually a PERSON'S NAME, a third party's private conversation name, to
+# everyone else in the room. The cwd is now C:\Users\egpt-sbx-NN\egpt, a
+# junction onto that same Room: a disposable account number and nothing else.
+#
+# TWO NAMES THAT MUST NOT COLLAPSE, which is what these lock:
+#   $TargetFolder - the Room. EVERY ACL names it: the grant, the ledger, the
+#                   revoke, and both reachability gates. A junction is a name;
+#                   the target's DACL is the fact the kernel reads.
+#   $sandboxCwd   - the mount. The cwd, and nothing else.
+# The mount itself - that it carries the Room's ROOT-LEVEL FILES, that it is
+# re-pointed per lease, and that deleting it never recurses into the Room - is
+# locked where the statement lives, in setup\sandbox-account.Tests.ps1.
+Describe 'the working directory is the mount, never the Room (the launcher wiring)' {
+  It 'the launch cwd is $sandboxCwd - the Room path is not what the being is given' {
+    (Get-LauncherStatement $script:LaunchPattern) | Should Match '-WorkingDirectory \$sandboxCwd'
+    $src = Get-Content -LiteralPath $script:LauncherScript -Raw
+    # Exactly one -WorkingDirectory names the Room... none. The scrub uses
+    # %SystemRoot%, the launch uses the mount.
+    ($src -match '-WorkingDirectory \$TargetFolder') | Should Be $false
+  }
+
+  It 'the cwd comes from the SCRUB, because only the scrub can plant it' {
+    # The scrub runs AS the leased account, the one principal allowed to write
+    # inside that profile. Deriving the cwd anywhere else would be a second
+    # source of truth for one path, and the two would drift.
+    (Get-LauncherStatementBlock $script:ScrubCallPattern) | Should Match '-RoomTarget \$TargetFolder'
+  }
+
+  It 'PLANTED AFTER THE SCRUB AND BEFORE THE LAUNCH - the ordering the design requires' {
+    $grant = Get-LauncherLineIndex $script:GrantPattern
+    $scrub = Get-LauncherLineIndex $script:ScrubCallPattern
+    $guard = Get-LauncherLineIndex $script:CwdGuardPattern
+    $gateF = Get-LauncherLineIndex $script:GateFPattern
+    $launch = Get-LauncherLineIndex $script:LaunchPattern
+
+    $scrub | Should BeGreaterThan $grant
+    $guard | Should BeGreaterThan $scrub
+    $gateF | Should BeGreaterThan $guard
+    $launch | Should BeGreaterThan $gateF
+  }
+
+  It 'a scrub that planted NOTHING refuses the turn - it never falls back to the Room path' {
+    # The one downgrade that would defeat the whole feature: running in the
+    # conversation folder anyway. $null in, refusal out.
+    $stmt = Get-LauncherStatementBlock $script:CwdGuardPattern
+    $sandboxCwd = $null
+    $leasedName = 'egpt-sbx-08'
+    $TargetFolder = 'C:\Users\an\.egpt\conversations\whatsapp\a-person-name-1234'
+
+    $threw = $null
+    try { Invoke-Expression $stmt } catch { $threw = $_.Exception.Message }
+
+    ($null -ne $threw) | Should Be $true
+    $threw | Should Match 'REFUSING'
+    $threw | Should Match ([regex]::Escape($leasedName))
+    # It says what is missing and how to fix it, and says why the obvious
+    # fallback is not taken.
+    $threw | Should Match 'egpt'
+    $threw | Should Match 'profile'
+  }
+
+  It 'a scrub that DID plant one lets the turn through' {
+    $stmt = Get-LauncherStatementBlock $script:CwdGuardPattern
+    $sandboxCwd = 'C:\Users\egpt-sbx-08\egpt'
+    $leasedName = 'egpt-sbx-08'
+    $TargetFolder = 'C:\Users\an\.egpt\conversations\whatsapp\a-person-name-1234'
+
+    { Invoke-Expression $stmt } | Should Not Throw
+  }
+
+  It 'THE SCRUB IS STILL THE ONLY PLANTER - the launcher grew no junction code of its own' {
+    $src = Get-Content -LiteralPath $script:LauncherScript -Raw
+    ($src -match '-ItemType Junction') | Should Be $false
+    # Prose may name the generator; exactly one line may CALL it.
+    (@([regex]::Matches($src, '\(Get-SandboxProfileJunctionStatement -OperatorSrc')).Count) | Should Be 1
+    (@([regex]::Matches($src, '(?m)^\s*\$sandboxCwd = ')).Count) | Should Be 1
   }
 }
 

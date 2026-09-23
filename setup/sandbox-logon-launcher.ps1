@@ -47,13 +47,18 @@
 #      below is a whole logon round trip, and an ACE can go away in it - and
 #      then CreateProcessWithLogonW launches AS that account, twice, through the
 #      one shared Invoke-AsLeasedAccount helper: FIRST a short scrub pass that
-#      empties the account's scratch profile and re-plants its `src` junction
-#      onto the operator's read-only ~\src (see Clear-SandboxProfileContents - it
+#      empties the account's scratch profile and re-plants its junctions - `src`
+#      onto the operator's read-only ~\src, and `egpt` onto THIS conversation's
+#      TargetFolder (see Clear-SandboxProfileContents - it
 #      must run as the account itself, which is the only principal that can
 #      delete or create those files without being an Administrator), THEN InnerBin, with
 #      the launcher's OWN stdio handles passed straight through
 #      (STARTF_USESTDHANDLES) so the inner process's stdin/stdout/stderr ARE the
-#      same pipes Node's child_process.spawn of THIS script sees.
+#      same pipes Node's child_process.spawn of THIS script sees. InnerBin's cwd
+#      is that `egpt` MOUNT, never TargetFolder itself: a being quotes its cwd
+#      into group chats, and the Room's own path names the operator and, in its
+#      slug, the person the conversation is with. Every ACL above still names
+#      TargetFolder - a junction is a name, the target's DACL is the fact.
 #   g) wait for the inner process, destroy the desktop, best-effort revoke the
 #      ACEs from (d), THEN release the lease (revoke before lock release, so no
 #      other turn can claim this account while an ACE from THIS turn might still
@@ -1275,8 +1280,20 @@ function Clear-SandboxProfileContents {
   param(
     [Parameter(Mandatory = $true)][string]$AccountName,
     [Parameter(Mandatory = $true)][string]$Password,
-    [Parameter(Mandatory = $true)][string]$LpDesktop
+    [Parameter(Mandatory = $true)][string]$LpDesktop,
+    # The durable Room this lease is for. Planted here as the `egpt` junction -
+    # see Get-SandboxProfileJunctionStatement - and NOT used for anything else:
+    # every ACL in this script still names the Room itself, never the mount.
+    [Parameter(Mandatory = $true)][string]$RoomTarget
   )
+  # RETURNS THE WORKING DIRECTORY THIS PASS PLANTED, or $null if it planted
+  # none. That is the whole reason this stopped being a void hygiene step
+  # (2026-09-23): the `egpt` junction IS the being's cwd, only this pass can
+  # create it - it runs AS the account, the one principal that may write inside
+  # that profile - so the cwd cannot be derived anywhere else without the two
+  # drifting apart. A caller that gets $null has no sandboxed cwd and must
+  # refuse the turn rather than fall back to the Room's own path, which is the
+  # path this whole feature exists to keep out of a group chat.
   # WHERE: Get-SandboxProfilePath, which is the SINGLE derivation of a pool
   # account's profile path in this script and carries every guard this function
   # used to carry inline (pool-name prefix; exactly one Win32_UserProfile match
@@ -1287,11 +1304,14 @@ function Clear-SandboxProfileContents {
   # runs before anything else can touch $AccountName, because this call is the
   # first statement in the function.
   $profilePath = Get-SandboxProfilePath -AccountName $AccountName
-  # NORMAL CASE, not an error: first-ever use of this account (or an account
-  # that does not exist yet). There is nothing to scrub AND no profile directory
-  # yet, so skip the extra logon entirely - step (f)'s own LOGON_WITH_PROFILE
-  # will create it fresh.
-  if (-not $profilePath) { return }
+  # FIRST-EVER USE of this account (or an account that does not exist yet):
+  # nothing to scrub and no profile directory to scrub it in, so the extra logon
+  # is skipped. It used to be a plain "normal case" because step (f)'s own
+  # LOGON_WITH_PROFILE creates the profile - but there is now nowhere to plant
+  # `egpt`, so this returns $null and the caller refuses the turn. The remedy is
+  # the one New-SandboxEnvironmentBlock already names for the same precondition:
+  # one launch on this account materialises its profile for ever.
+  if (-not $profilePath) { return $null }
 
   # The scrub itself, run by the account that owns these files. Both values
   # interpolated below are launcher-derived and already prefix-guarded above -
@@ -1366,12 +1386,18 @@ function Clear-SandboxProfileContents {
     "if (`$env:USERNAME -ne '$AccountName' -or `$env:USERPROFILE -ne `$r) { [Console]::Error.WriteLine('sandbox-logon-launcher: scrub REFUSED - running as ' + `$env:USERNAME + ' at ' + `$env:USERPROFILE); exit 11 }"
     "Get-ChildItem -LiteralPath `$r -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue"
     "[Console]::Error.WriteLine('sandbox-logon-launcher: scrubbed ' + `$r + ', ' + @(Get-ChildItem -LiteralPath `$r -Force -Recurse -ErrorAction SilentlyContinue).Count + ' locked entries left')"
-    (Get-SandboxProfileJunctionStatement -OperatorSrc $srcRoot)
+    (Get-SandboxProfileJunctionStatement -OperatorSrc $srcRoot -RoomTarget $RoomTarget)
   ) -join '; '
 
-  # NON-FATAL: the scrub is a HYGIENE step, not a security gate. Warn on stderr
-  # (stdout is the inner process's own stream-json pipe, see Log's comment) and
-  # let the turn proceed.
+  # IT STOPPED BEING PURELY HYGIENE when `egpt` joined the junction statement
+  # (2026-09-23): this pass is the only thing that plants the being's working
+  # directory, so a pass that did not finish leaves the turn with nowhere to run.
+  # The WIPE half is still best-effort - every delete in the payload carries
+  # -EA 0, so a locked hive does not fail it - which means a non-zero exit is
+  # the child's own REFUSAL guard or a launch that never happened, and both of
+  # those mean no junction. Either way this returns $null and the caller refuses
+  # the turn, loudly, by name. Warnings go to stderr (stdout is the inner
+  # process's stream-json pipe, see Log's comment).
   try {
     # stdin/stdout deliberately left NULL: this pass must not be able to touch
     # the stream-json pipes. Its stdout is pointed at the launcher's own STDERR
@@ -1400,10 +1426,14 @@ function Clear-SandboxProfileContents {
       -WorkingDirectory $env:SystemRoot -LpDesktop $LpDesktop -Label 'profile scrub' `
       -StdOut $errHandle -StdError $errHandle
     if ($rc -ne 0) {
-      Log "WARNING: the scratch-profile scrub for '$AccountName' at $profilePath exited $rc (continuing anyway: hygiene step, not a security gate)"
+      Log "WARNING: the scratch-profile scrub for '$AccountName' at $profilePath exited $rc, so its junctions were not planted and this turn has no working directory"
+      return $null
     }
+    # The mount the payload just planted, and the value the launch runs in.
+    return (Join-Path $profilePath 'egpt')
   } catch {
-    Log "WARNING: could not scrub the scratch profile for '$AccountName' at $profilePath  - $($_.Exception.Message) (continuing anyway: hygiene step, not a security gate)"
+    Log "WARNING: could not scrub the scratch profile for '$AccountName' at $profilePath  - $($_.Exception.Message) (so its junctions were not planted and this turn has no working directory)"
+    return $null
   }
 }
 
@@ -1747,14 +1777,40 @@ try {
   # previous turn ended. It needs the desktop from step (e) - powershell.exe
   # imports USER32 like any other InnerBin - which is why it runs here and not
   # earlier. ----
-  Clear-SandboxProfileContents -AccountName $leasedName -Password $plainPwd -LpDesktop $sandboxDesk.LpDesktop
+  # ...AND IT PLANTS THE BEING'S WORKING DIRECTORY, which is why its return
+  # value is captured (operator ruling 2026-09-23). $sandboxCwd is
+  # C:\Users\egpt-sbx-NN\egpt, a junction onto $TargetFolder planted by the same
+  # payload that just wiped the profile, and it is the ONLY thing the inner
+  # process is ever told about where it is. TWO NAMES FOR TWO DIFFERENT JOBS,
+  # kept apart on purpose and never collapsed:
+  #   $TargetFolder - the durable Room. EVERY ACL names this: the grant at (d),
+  #                   the ledger, the revoke in the finally, and both
+  #                   reachability gates. An ACE on a junction would be an ACE
+  #                   on nothing; the target's DACL is what the kernel reads.
+  #   $sandboxCwd   - the mount. The cwd, and NOTHING else.
+  # WHY: process.cwd() and `pwd` return the JUNCTION (measured 2026-09-23), so
+  # this is the path a being quotes into a group chat all day. The Room's own
+  # path names the operator's account and, in its slug, usually a third party -
+  # see Get-SandboxProfileJunctionStatement for the disclosure this closes.
+  $sandboxCwd = Clear-SandboxProfileContents -AccountName $leasedName -Password $plainPwd `
+    -LpDesktop $sandboxDesk.LpDesktop -RoomTarget $TargetFolder
+  if (-not $sandboxCwd) {
+    throw ("sandbox-logon-launcher: REFUSING to launch  - the scrub pass planted no working directory for '$leasedName', " +
+      "so there is no $($leasedName)\egpt mount onto $TargetFolder to run in. The scrub is the only thing that can create it: " +
+      "it runs AS the leased account, the one principal allowed to write inside that profile. Its own WARNING above says which " +
+      "of the two happened  - the account has no Windows profile yet (run one turn on it first; any LOGON_WITH_PROFILE launch " +
+      "materialises one), or the pass itself did not finish. The turn is NOT run in the conversation folder instead: that path " +
+      "names the operator and the person this conversation is with, and keeping it out of the being's cwd is the whole point.")
+  }
 
   # ---- (f) launch InnerBin AS the leased account, stdio proxied straight
   # through. CreateProcessWithLogonW does the logon itself from the name +
   # password, so there is no separate LogonUser step and no token handle to
   # own: it needs no privilege in THIS process (see the WHY at the top). ----
-  # ---- LAST GATE BEFORE THE ONE LAUNCH THAT USES TargetFolder AS ITS cwd, and
-  # it is deliberately a SECOND read rather than a repeat of (d1). Real work
+  # ---- LAST GATE BEFORE THE LAUNCH, and it still asks about $TargetFolder and
+  # not about the mount: the ACE lives on the Room, a junction is only a name,
+  # and a mount onto a folder the account cannot reach fails exactly as before.
+  # It is deliberately a SECOND read rather than a repeat of (d1). Real work
   # happens between them - every -SharePath ACE, the private desktop, and a
   # whole CreateProcessWithLogonW round trip for the profile scrub, which is
   # seconds - and an ACE that was there at (d1) can be gone by here: a
@@ -1770,7 +1826,7 @@ try {
   # pass above. ----
   $finalExit = Invoke-AsLeasedAccount -AccountName $leasedName -Password $plainPwd `
     -Bin $InnerBin -BinArgs $InnerArgsList `
-    -WorkingDirectory $TargetFolder -LpDesktop $sandboxDesk.LpDesktop -Label 'launching' `
+    -WorkingDirectory $sandboxCwd -LpDesktop $sandboxDesk.LpDesktop -Label 'launching' `
     -SetEnv $SetEnvList `
     -StdIn ([SandboxLogon]::GetStdHandle([SandboxLogon]::STD_INPUT_HANDLE)) `
     -StdOut ([SandboxLogon]::GetStdHandle([SandboxLogon]::STD_OUTPUT_HANDLE)) `

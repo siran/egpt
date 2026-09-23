@@ -1211,6 +1211,8 @@ Describe 'the pool profile junctions (as the launcher scrub really plants them)'
   $target = $null
   $stmt = $null
 
+  $room = $null
+
   BeforeEach {
     $fakeProfile = New-LedgerTempDir
     # Stands in for ~\src, with an `egpt` child standing in for the checkout.
@@ -1218,10 +1220,17 @@ Describe 'the pool profile junctions (as the launcher scrub really plants them)'
     New-Item -ItemType Directory -Path (Join-Path $target 'marker') -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $target 'egpt') -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $target 'egpt\src') -Force | Out-Null
-    $stmt = Get-SandboxProfileJunctionStatement -OperatorSrc $target
+    # Stands in for the durable Room: subdirectories AND root-level FILES, which
+    # is the whole reason this is ONE mount at `egpt` and not one per subdir.
+    $room = New-LedgerTempDir
+    New-Item -ItemType Directory -Path (Join-Path $room 'transcripts') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $room 'outbox') -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $room 'transcript.md') -Value 'the live transcript' -Encoding Ascii
+    Set-Content -LiteralPath (Join-Path $room 'transcripts\older.md') -Value 'an archived one' -Encoding Ascii
+    $stmt = Get-SandboxProfileJunctionStatement -OperatorSrc $target -RoomTarget $room
   }
 
-  It 'plants BOTH junctions - src at the operator src, my-code at the eGPT checkout - and says nothing on stdout' {
+  It 'plants ALL THREE junctions - src, my-code, and the Room at egpt - and says nothing on stdout' {
     $r = $fakeProfile
     Invoke-Expression $stmt | Should BeNullOrEmpty
     $src = Get-Item -LiteralPath (Join-Path $r 'src') -Force
@@ -1233,44 +1242,115 @@ Describe 'the pool profile junctions (as the launcher scrub really plants them)'
     ([bool]($mine.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) | Should Be $true
     $mine.Target | Should Be (Join-Path $target 'egpt')
     (Test-Path -LiteralPath (Join-Path (Join-Path $r 'my-code') 'src')) | Should Be $true
+
+    $mount = Get-Item -LiteralPath (Join-Path $r 'egpt') -Force
+    ([bool]($mount.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) | Should Be $true
+    $mount.Target | Should Be $room
   }
 
-  It 'is idempotent: three passes leave exactly the two junctions and throw nothing' {
+  It 'THE ROOM READS THROUGH THE MOUNT EXACTLY AS IT DOES DIRECTLY - root-level FILES included' {
+    # THE load-bearing property of using ONE junction at `egpt` rather than one
+    # per subdirectory: a single reparse point carries transcript.md across.
+    # Per-directory mounting cannot carry a file, and a hardlink would follow
+    # rollTranscript's RENAME into transcripts/<thread>.md and go stale for ever.
+    $r = $fakeProfile
+    Invoke-Expression $stmt | Out-Null
+    $mount = Join-Path $r 'egpt'
+
+    (Get-Content -LiteralPath (Join-Path $mount 'transcript.md')) | Should Be 'the live transcript'
+    (Get-Content -LiteralPath (Join-Path $mount 'transcripts\older.md')) | Should Be 'an archived one'
+    # ...and it is a two-way mount: what the being writes lands in the Room.
+    Set-Content -LiteralPath (Join-Path $mount 'outbox\note.md') -Value 'written through' -Encoding Ascii
+    (Get-Content -LiteralPath (Join-Path $room 'outbox\note.md')) | Should Be 'written through'
+    # The listing a being sees is the Room's own.
+    (@(Get-ChildItem -LiteralPath $mount -Force).Name | Sort-Object) -join ',' |
+      Should Be ((@(Get-ChildItem -LiteralPath $room -Force).Name | Sort-Object) -join ',')
+  }
+
+  It 'is idempotent: three passes leave exactly the three junctions and throw nothing' {
     $r = $fakeProfile
     foreach ($i in 1..3) { Invoke-Expression $stmt | Out-Null }
-    (@(Get-ChildItem -LiteralPath $r -Force).Count) | Should Be 2
+    (@(Get-ChildItem -LiteralPath $r -Force).Count) | Should Be 3
     (Get-Item -LiteralPath (Join-Path $r 'src') -Force).Target | Should Be $target
     (Get-Item -LiteralPath (Join-Path $r 'my-code') -Force).Target | Should Be (Join-Path $target 'egpt')
+    (Get-Item -LiteralPath (Join-Path $r 'egpt') -Force).Target | Should Be $room
   }
 
-  It 'both are wiped as LINKS by the scrub that precedes them - the targets survive' {
+  It 'RE-POINTS a surviving egpt link instead of leaving it on the PREVIOUS conversation' {
+    # WHY remove-then-create replaced "create only if absent". src and my-code
+    # have a constant target, so leaving a survivor was harmless; egpt's target
+    # is a different Room every lease. A link the wipe could not delete - an
+    # orphan still holding it as its cwd - would otherwise hand this turn the
+    # last conversation's Room, which is the exact cross-conversation leak the
+    # scrub exists to prevent, arriving through a name instead of a file.
+    $r = $fakeProfile
+    Invoke-Expression $stmt | Out-Null
+    (Get-Item -LiteralPath (Join-Path $r 'egpt') -Force).Target | Should Be $room
+
+    $otherRoom = New-LedgerTempDir
+    Set-Content -LiteralPath (Join-Path $otherRoom 'transcript.md') -Value 'someone else' -Encoding Ascii
+    Invoke-Expression (Get-SandboxProfileJunctionStatement -OperatorSrc $target -RoomTarget $otherRoom) | Out-Null
+
+    (Get-Item -LiteralPath (Join-Path $r 'egpt') -Force).Target | Should Be $otherRoom
+    (Get-Content -LiteralPath (Join-Path $r 'egpt\transcript.md')) | Should Be 'someone else'
+    # ...and re-pointing did not touch either Room's contents.
+    (Get-Content -LiteralPath (Join-Path $room 'transcript.md')) | Should Be 'the live transcript'
+  }
+
+  It 'all three are wiped as LINKS by the scrub that precedes them - the targets survive' {
     # The scrub deletes the profile children before the junctions are re-planted,
     # and Remove-Item must take each link itself rather than recursing into the
-    # operator's src. That is the assertion that keeps the two safe together.
+    # operator's src OR INTO THE ROOM. The second one is the difference between a
+    # feature and a conversation-history shredder: a Room holds the only copy of
+    # a transcript. Both the pipeline wipe and the statement's own `ri` are
+    # exercised here, because both now run over these links.
     $r = $fakeProfile
     Invoke-Expression $stmt | Out-Null
     Get-ChildItem -LiteralPath $r -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
     (@(Get-ChildItem -LiteralPath $r -Force).Count) | Should Be 0
     (Test-Path -LiteralPath (Join-Path $target 'marker')) | Should Be $true
     (Test-Path -LiteralPath (Join-Path $target 'egpt\src')) | Should Be $true
+    (Get-Content -LiteralPath (Join-Path $room 'transcript.md')) | Should Be 'the live transcript'
+    (Get-Content -LiteralPath (Join-Path $room 'transcripts\older.md')) | Should Be 'an archived one'
+    (@(Get-ChildItem -LiteralPath $room -Force).Count) | Should Be 3
   }
 
-  It 'creates NOTHING - not even a dangling link - when the target is not there' {
+  It "the statement's OWN remove takes the link and not the Room behind it" {
+    # -Recurse is REQUIRED (without it Remove-Item PROMPTS on a junction whose
+    # target is non-empty, and the scrub child is -NonInteractive, so the stale
+    # link would survive) - and -Recurse must still not walk through. Running
+    # the statement twice is exactly that remove, over a live link.
+    $r = $fakeProfile
+    Invoke-Expression $stmt | Out-Null
+    Invoke-Expression $stmt | Out-Null
+    (Get-Item -LiteralPath (Join-Path $r 'egpt') -Force).Target | Should Be $room
+    (Get-Content -LiteralPath (Join-Path $room 'transcript.md')) | Should Be 'the live transcript'
+    (@(Get-ChildItem -LiteralPath $room -Force -Recurse).Count) | Should Be 4
+  }
+
+  It 'creates NOTHING - not even a dangling link - when the targets are not there' {
     # A node with no ~\src. -EA 0 and no repair: the turn must not pay for a
-    # missing convenience link.
+    # missing convenience link. (A missing ROOM is not the same thing - the
+    # launcher already refuses a TargetFolder that is not a directory, long
+    # before this runs.)
     $r = New-LedgerTempDir
-    Invoke-Expression (Get-SandboxProfileJunctionStatement -OperatorSrc (Join-Path $script:LedgerTempRoot 'no-such-src')) | Out-Null
+    Invoke-Expression (Get-SandboxProfileJunctionStatement `
+        -OperatorSrc (Join-Path $script:LedgerTempRoot 'no-such-src') `
+        -RoomTarget (Join-Path $script:LedgerTempRoot 'no-such-room')) | Out-Null
     (@(Get-ChildItem -LiteralPath $r -Force).Count) | Should Be 0
   }
 
   It 'the whole scrub payload still fits the 1024-character CreateProcessWithLogonW budget' {
     # MSDN's lpCommandLine limit is real and ENFORCED (see Invoke-AsLeasedAccount's
     # BUDGET note) - a long command line fails with E_INVALIDARG rather than
-    # truncating - and the whole payload is ONE argv element. The three scrub
-    # lines measured 677 characters with one junction; this is the real statement
-    # against the real profile and target lengths, with headroom left for them.
-    $real = Get-SandboxProfileJunctionStatement -OperatorSrc (Join-Path $env:USERPROFILE 'src')
-    ($real.Length -lt 320) | Should Be $true
+    # truncating - and the whole payload is ONE argv element. MEASURED 2026-09-23
+    # with the third junction and the real profile/src lengths, whole command
+    # line: 935 at a 30-character conversation slug, 942 at 37, 985 at 80. This
+    # bound is the statement's own share of that.
+    $real = Get-SandboxProfileJunctionStatement `
+      -OperatorSrc (Join-Path $env:USERPROFILE 'src') `
+      -RoomTarget (Join-Path $env:USERPROFILE '.egpt\conversations\whatsapp\a-conversation-slug-of-ordinary-length')
+    ($real.Length -lt 340) | Should Be $true
     # Not one double quote in it: Format-Win32Arg escapes every " as \", costing
     # two characters of a budget that is already two thirds spent.
     ($real -match '"') | Should Be $false
@@ -1278,7 +1358,7 @@ Describe 'the pool profile junctions (as the launcher scrub really plants them)'
 
   It 'is the statement the LAUNCHER actually uses - not a second copy of it' {
     $src = Get-Content -LiteralPath $script:LauncherScript -Raw
-    ($src -match '\(Get-SandboxProfileJunctionStatement -OperatorSrc \$srcRoot\)') | Should Be $true
+    ($src -match '\(Get-SandboxProfileJunctionStatement -OperatorSrc \$srcRoot -RoomTarget \$RoomTarget\)') | Should Be $true
     # ...and the launcher no longer spells a junction out for itself.
     ($src -match '-ItemType Junction') | Should Be $false
   }

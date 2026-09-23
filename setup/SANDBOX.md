@@ -24,7 +24,8 @@ warm session spawns
    ├─ grant that SID Modify      on the conversation folder, and nothing else
    ├─ create a private desktop   ACE'd to that SID alone
    ├─ scrub the scratch profile  run as the pool account itself
-   ├─ CreateProcessWithLogonW    claude.exe, stdio wired straight through
+   ├─ ...and plant its junctions  C:\Users\egpt-sbx-NN\egpt → the conversation folder
+   ├─ CreateProcessWithLogonW    claude.exe, cwd = that mount, stdio straight through
    └─ on exit: destroy desktop, revoke the ACE, release the lease
 ```
 
@@ -42,7 +43,7 @@ The launcher's parameters:
 
 | Parameter | |
 |---|---|
-| `-TargetFolder` | required — the conversation folder, ACE'd for the lease |
+| `-TargetFolder` | required — the conversation folder. **ACE'd for the lease, and mounted at `C:\Users\egpt-sbx-NN\egpt`, which is the cwd the being actually gets.** Every ACL names this path; the mount is only a name. |
 | `-InnerBin` | required — the binary to launch as the leased account, an absolute path |
 | `-InnerArgs` | required — the inner argv as **one argv element holding a JSON array**, e.g. `'["--print","--verbose",""]'` |
 | `-SharePath` | optional — extra paths to ACE **Modify** alongside `TargetFolder`, granted and revoked independently. **One JSON array**, any number of paths: `'["C:\\a","C:\\b"]'` |
@@ -153,9 +154,33 @@ Access is therefore **opt-in and narrow**, and the whole list is:
 | `%APPDATA%\npm` | Pool group, ReadAndExecute | pi / codex entry JS |
 | `~\.pi\agent` | Pool group, Modify | pi writes there; missing it wedges the turn |
 | `~\bin\egpt` | Pool group, ReadAndExecute | the RUNNING tree. Was Modify (operator 2026-09-10, *"let E modify itself"*); reversed 2026-09-13 — it executes **as the operator**, so a standing group write there is code outside the sandbox at the next restart. Permanent, not per-turn. See *Known gaps* 7. |
-| the conversation folder | leased account, Modify | granted at launch, revoked at exit |
+| the conversation folder | leased account, Modify | granted at launch, revoked at exit. The being reaches it through the `egpt` junction in its own profile — the ACE stays on **this** path, because a junction is a name and the target's DACL is what the kernel reads |
 | each `-SharePath` | leased account, Modify | a being's full-access `allowed_paths`, plus its thread's CLI store; granted at launch, revoked at exit |
 | each `-SharePathReadOnly` | leased account, ReadAndExecute | a being's read-only `allowed_paths`; granted at launch, revoked at exit — **unless the pool group can already read that path**, inherited or explicit, in which case nothing is granted and the launcher logs the skip (`Test-SandboxPoolReadCovered`). Since `~\src` carries the standing group read, most read-only shares now fall under it: the per-account ACE would grant what the being already has and leave one more thing for a hard kill to leak. Writable shares are never skipped. |
+
+**The cwd is a mount, not the Room** (operator ruling 2026-09-23). The scrub
+plants a third junction beside `src` and `my-code`:
+
+```
+C:\Users\an\.egpt\conversations\whatsapp\<slug>\   the durable Room, the operator's
+C:\Users\egpt-sbx-NN\egpt\                         → junction to it, re-planted per lease
+```
+
+and **that** is what the launcher passes as the working directory. The reason is
+disclosure, not access: a being quotes its cwd into group chats all day —
+`Bash(cd "C:/Users/an/.egpt/conversations/whatsapp/Reencuentro CR…")` leaks the
+operator's username and profile layout, and a slug is usually a *person's name*,
+so it also leaks a third party's private conversation name to everyone else in
+the room. Through the mount the same line reads
+`Bash(ls /c/Users/egpt-sbx-02/egpt/transcripts/…)`. Measured: `process.cwd()` and
+`pwd` both return the junction path; only `fs.realpathSync` and `pwd -P` resolve
+it. **ONE junction at `egpt`, not one per subdirectory** — a single reparse point
+carries the Room's root-level *files* across, so `transcript.md` needs no special
+handling (a per-directory mount cannot carry a file, and a hardlink would follow
+`rollTranscript`'s rename into `transcripts/<thread>.md` and go stale for ever).
+It is **re-pointed** every lease rather than left if present, because its target
+is a different Room each time. Nothing about the ACL changes: `$TargetFolder` is
+what is granted, ledgered, revoked and reachability-checked.
 
 **Two kinds of ACE live on `~\src`, and telling them apart is the whole skill of
 reading an `icacls` dump of that tree.** An ACE naming the **group**
@@ -561,6 +586,15 @@ Real, current, and worth knowing before relying on any of this.
 **`ERROR_ACCESS_DENIED` from `CreateProcessWithLogonW`** — the pool group has
 lost `ReadAndExecute` on the binary's directory. Re-run
 `provision-sandbox-account.ps1`.
+
+**`REFUSING to launch - the scrub pass planted no working directory`** — the
+`egpt` mount is the being's cwd and only the scrub can create it (it runs *as*
+the leased account, the one principal allowed to write in that profile). Two
+causes, and the scrub's own `WARNING` above it says which: the account has no
+Windows profile yet — one launch on it materialises one for ever — or the scrub
+pass itself did not finish. The turn is deliberately **not** run in the
+conversation folder instead; that is the path this mount exists to keep out of a
+group chat.
 
 **`CreateEnvironmentBlock for 'egpt-sbx-NN' failed, Win32 error 5`** — the
 pre-2026-09-23 shape: the block was rendered from a second `LogonUser` token,

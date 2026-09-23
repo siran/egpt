@@ -716,19 +716,80 @@ function Protect-SandboxCredDir {
 # rather than one statement per link, why it uses aliases, and why NOTHING here
 # uses a double quote: Format-Win32Arg escapes every `"` as `\"`, costing two
 # characters each.
+# WHAT THE THIRD LINK COSTS, measured 2026-09-23 against the real profile and
+# ~\src lengths on reve, whole command line including the exe and the flags:
+#   slug  30 chars -> 935     slug 37 -> 942     slug 80 -> 985
+# i.e. roughly 40 characters of headroom at an 80-character conversation slug.
+# A much longer slug overruns, and then CreateProcessWithLogonW fails outright
+# with E_INVALIDARG rather than truncating. THAT IS NOT SILENT: the scrub is the
+# only thing that plants `egpt`, so a scrub that did not run returns no working
+# directory and the launcher refuses the turn by name (see the guard after
+# Clear-SandboxProfileContents). No invented character limit is enforced here -
+# the real ceiling between 1024 and the measured 3074 failure is unknown, and
+# guessing one would refuse turns that work.
 #
 # -EA 0 AND NOTHING ELSE ON FAILURE, deliberately: on a node with no ~\src,
 # New-Item refuses a junction whose target does not exist and creates nothing
 # (measured 2026-09-20 - no dangling link is left behind). A missing convenience
-# link must not cost the turn.
+# link must not cost the turn. That is true of `src` and `my-code`; it is NOT
+# true of `egpt` below, and the launcher acts on the difference.
+#
+# ---- `egpt` IS THE THIRD LINK, AND IT IS NOT A CONVENIENCE (operator ruling
+# 2026-09-23). It is THE BEING'S WORKING DIRECTORY, and the reason it exists is
+# privacy of the path itself. A sandboxed being's cwd used to be the durable
+# Room, `C:\Users\an\.egpt\conversations\whatsapp\<slug>`, and it QUOTED that
+# path into group chats all day - verbose tool lines read
+#   Bash(cd "C:/Users/an/.egpt/conversations/whatsapp/Reencuentro CR...")
+# which discloses two things to everyone in the room: the OPERATOR's username
+# and profile layout, and - because a slug is usually a PERSON'S NAME - a third
+# party's private conversation name. Through the junction the same line reads
+#   Bash(ls /c/Users/egpt-sbx-02/egpt/transcripts/...)
+# a disposable pool account number and nothing else. MEASURED 2026-09-23:
+# process.cwd() and `pwd` both return the JUNCTION path; only fs.realpathSync
+# and `pwd -P` resolve to the target, so the neutral name is the one that gets
+# quoted.
+#
+# ONE JUNCTION AT `egpt`, NOT ONE PER SUBDIRECTORY, and that is load-bearing: a
+# single reparse point carries the Room's ROOT-LEVEL FILES across, so
+# transcript.md needs no special handling. Per-directory mounting cannot carry a
+# file, and hardlinking transcript.md would break silently because rollTranscript
+# RENAMES it into transcripts/<thread>.md and writes a fresh one - the hardlink
+# would follow the archive and the being would read a stale transcript for ever.
+# No slug segment either: a lease is ONE conversation, so there is nothing to
+# disambiguate.
+#
+# REMOVE-THEN-CREATE, which replaced "create only if absent" for ALL three links
+# when `egpt` arrived. src and my-code have a CONSTANT target, so leaving a
+# surviving link alone was harmless; egpt's target is a DIFFERENT Room every
+# lease, so a stale one that outlived the wipe - a link the scrub could not
+# delete because some orphan still had it as its cwd - would silently hand this
+# conversation the PREVIOUS conversation's Room. That is the cross-conversation
+# leak the whole scrub exists to prevent, arriving through a name instead of
+# through a file. One `ri` before the `ni` closes it for every link at once.
+#
+# THE `ri` IS THE SAME CALL THE WIPE ONE LINE ABOVE ALREADY MAKES OVER THESE
+# VERY LINKS, and it deletes a junction as a LINK, never through it (measured
+# 2026-08-26, re-verified 2026-09-23 against a Room-shaped target with
+# root-level files and a nested subtree: the link goes, the target is untouched).
+# -Recurse is REQUIRED and is not a hazard here: WITHOUT it, Remove-Item on a
+# junction whose target is non-empty PROMPTS, and the scrub child runs
+# -NonInteractive, so it throws and the stale link survives (measured
+# 2026-09-23). If anything here ever starts recursing THROUGH a reparse point,
+# this is a conversation-history shredder - stop rather than adjust it.
 function Get-SandboxProfileJunctionStatement {
-  param([Parameter(Mandatory = $true)][string]$OperatorSrc)
+  param(
+    [Parameter(Mandatory = $true)][string]$OperatorSrc,
+    # MANDATORY on purpose: a caller that forgot it would silently produce a
+    # profile with no `egpt` mount, i.e. a turn with nowhere to run.
+    [Parameter(Mandatory = $true)][string]$RoomTarget
+  )
   $links = [ordered]@{
     'src'     = $OperatorSrc
     'my-code' = (Join-Path $OperatorSrc 'egpt')
+    'egpt'    = $RoomTarget
   }
   $pairs = @($links.Keys | ForEach-Object { "@('$_','$($links[$_])')" }) -join ','
-  return "foreach(`$j in @($pairs)){`$s=Join-Path `$r `$j[0]; if(!(Test-Path -LiteralPath `$s)){ni -ItemType Junction -Path `$s -Target `$j[1] -EA 0 >`$null}}"
+  return "foreach(`$j in @($pairs)){`$s=Join-Path `$r `$j[0];ri -LiteralPath `$s -Recurse -Force -EA 0;ni -ItemType Junction -Path `$s -Target `$j[1] -EA 0 >`$null}"
 }
 
 # ---- THE LEASE LEDGER, and the ACE revoke that rides the stale-lease reclaim
