@@ -23,7 +23,8 @@ import { shapeOf, diffShapes, dropPerNode } from '../src/tools/config-shape.mjs'
 const argv = process.argv.slice(2);
 const peerArg = argv[argv.indexOf('--peer') + 1];
 // The peer must present a POSIX shell: `ssh dolly` lands in Windows cmd, where
-// `cat` and `||` do not exist. Dolly runs an MSYS2 sshd on 2222 — that is the
+// `cat` and `||` do not exist. Dolly's 2222 is Windows OpenSSH (C:\Program Files\OpenSSH\sshd.exe,
+// session 0 - measured 2026-09-24) handing out an msys2 bash as its shell — that is the
 // endpoint to name. Override with --peer or EGPT_PEER.
 const PEER = (argv.includes('--peer') && peerArg) || process.env.EGPT_PEER || '-p 2222 an@192.168.1.102';
 const PEER_LABEL = (PEER.split('@')[1] || PEER.split(' ').pop() || PEER).trim();   // short, for the report

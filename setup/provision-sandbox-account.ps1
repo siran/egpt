@@ -297,11 +297,12 @@ try {
   # (2026-09-14): `where bash` finds C:\Windows\System32\bash.exe first, the WSL
   # launcher, which exits 1 with no distro installed; and a REAL bash can still
   # die 0xC0000022, because an msys2/cygwin runtime needs to CREATE its shared
-  # memory object directory under \Sessions\BNOLINKS and a pool account may only
-  # OPEN one that is already there - so such a bash works only while some process
-  # keeps that installation warm in the spine's session. Point shellPath at one
-  # that is. src/sandbox-cli-session.mjs carries the full measurement and does the
-  # same job for Claude Code via CLAUDE_CODE_GIT_BASH_PATH.
+  # memory object directory under \Sessions\BNOLINKS and a pool account could only
+  # OPEN one that was already there. Since 2026-09-24 the launcher grants the pool
+  # group that right per launch (THE SESSION NAMESPACE GRANT in sandbox-account.ps1),
+  # so any real bash starts; the WSL launcher is still the trap. src/sandbox-cli-session.mjs
+  # carries the full measurement and does the same job for Claude Code via
+  # CLAUDE_CODE_GIT_BASH_PATH.
   $piSettings = Join-Path $piDir 'settings.json'
   $shell = $null
   try { $shell = (Get-Content -LiteralPath $piSettings -Raw | ConvertFrom-Json).shellPath } catch { }

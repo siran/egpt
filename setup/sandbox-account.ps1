@@ -1867,3 +1867,110 @@ function Clear-SandboxAbandonedLeases {
   }
   return $records.ToArray()
 }
+
+# ---- THE SESSION NAMESPACE GRANT (operator ruling 2026-09-24) ----
+# The pool group is a MEMBER of the logon session it is launched into: it gets
+# exactly the rows the session's own logon SID holds on the session's named-object
+# directory, so a being may name events, mutexes, sections and object directories
+# there, and open what the session's programs create from then on. Before this it
+# could only OPEN what already existed, and only where Everyone may.
+#
+# WHY, MEASURED 2026-09-24 on both nodes. \Sessions\BNOLINKS\<n> is a symbolic
+# link to \Sessions\<n>\BaseNamedObjects, the session's named-object directory
+# (NtQuerySymbolicLinkObject). Its DACL, identical on kg and do but for the
+# logon SID:
+#   the operator                0x000F000F  everything, WRITE_DAC included
+#   the session's logon SID     0x0002000F  READ_CONTROL|QUERY|TRAVERSE|CREATE_OBJECT|CREATE_SUBDIRECTORY
+#                               0x10000000  GENERIC_ALL, OI|CI|INHERIT_ONLY: full access to what is created inside
+#   SYSTEM, CREATOR OWNER       0x10000000  the same inheritable row
+#   BUILTIN\Administrators      0x0002000F
+#   Everyone                    0x00000003  QUERY|TRAVERSE: open what exists, create nothing
+# A pool account was only Everyone there. An msys2/cygwin runtime must CREATE a
+# per-installation directory under it the first time it starts in a session, so
+# msys bash in a box died 0xC0000022 unless an operator msys process already held
+# that directory open (2026-09-14, src/sandbox-cli-session.mjs). kg had 37 such
+# processes in session 1 - the operator's terminals - and do had none, so the
+# Bash tool was dead in every box on do. Reproduced on kg the same day with Git
+# for Windows' bash, which nothing keeps running: 0xC0000022 through the old
+# launcher, `BASH-STARTED as egpt-sbx-00` through this one.
+#
+# BOTH ROWS, NOT ONE, by operator ruling ("there is no real reason to choose a more
+# restrictive option"): the pool accounts are the operator's own, not an adversary,
+# and a program in a box needs to open what the session creates as much as to
+# create. Not an msys special case either ("it isn't only msys"). The operator's
+# own row - WRITE_DAC/WRITE_OWNER/DELETE on the directory itself - is not copied:
+# no program needs to re-permission the session namespace to run.
+#
+# The inheritable row reaches objects created AFTER it lands; an object created
+# earlier keeps the DACL it was born with.
+#
+# NOT PERSISTENT: the directory and its DACL are rebuilt at every logon, so the
+# launcher applies this per launch (step e). Additive and idempotent, one set of
+# group ACEs for all accounts, never revoked - the window-station ACE's shape.
+# This half is PURE (bytes in, bytes out) so it is tested without touching a live
+# session; the OS half is Grant-SandboxSessionNamespace in the launcher.
+$SandboxSessionNamespaceAces = @(
+  @{ Flags = [System.Security.AccessControl.AceFlags]::None; Mask = 0x0002000F },
+  @{ Flags = [System.Security.AccessControl.AceFlags]'ObjectInherit,ContainerInherit,InheritOnly'; Mask = 0x10000000 }
+)
+
+function Test-SandboxSessionNamespaceAceRow {
+  # True when $Acl has an allow ACE for $Sid with exactly these inheritance
+  # flags and every bit of $Mask. Flags are compared EXACTLY: a row that applies
+  # to the directory itself and a row that applies only to what is created inside
+  # are different grants, and one never stands in for the other.
+  param($Acl, [System.Security.Principal.SecurityIdentifier]$Sid, [int]$Flags, [int]$Mask)
+  foreach ($ace in $Acl) {
+    if (($ace -is [System.Security.AccessControl.CommonAce]) -and
+        ($ace.AceType -eq [System.Security.AccessControl.AceType]::AccessAllowed) -and
+        ($ace.SecurityIdentifier -eq $Sid) -and
+        (([int]$ace.AceFlags -band 0x1F) -eq ($Flags -band 0x1F)) -and
+        (($ace.AccessMask -band $Mask) -eq $Mask)) {
+      return $true
+    }
+  }
+  return $false
+}
+
+function Test-SandboxSessionNamespaceAce {
+  # True when the DACL in $SdBytes already carries every row of $Aces for $Sid.
+  # A NULL DACL already lets anyone do anything.
+  param(
+    [Parameter(Mandatory = $true)][byte[]]$SdBytes,
+    [Parameter(Mandatory = $true)][System.Security.Principal.SecurityIdentifier]$Sid,
+    [hashtable[]]$Aces = $SandboxSessionNamespaceAces
+  )
+  $sd = New-Object System.Security.AccessControl.RawSecurityDescriptor($SdBytes, 0)
+  if ($null -eq $sd.DiscretionaryAcl) { return $true }
+  foreach ($row in $Aces) {
+    if (-not (Test-SandboxSessionNamespaceAceRow -Acl $sd.DiscretionaryAcl -Sid $Sid -Flags ([int]$row.Flags) -Mask ([int]$row.Mask))) { return $false }
+  }
+  return $true
+}
+
+function Add-SandboxSessionNamespaceAce {
+  # The self-relative SD in $SdBytes with each MISSING row of $Aces appended as
+  # an allow ACE for $Sid, or $null when none is missing (nothing to write).
+  # Strictly additive: nothing already in the DACL is replaced, reordered or
+  # removed, and a row already there is not added twice.
+  param(
+    [Parameter(Mandatory = $true)][byte[]]$SdBytes,
+    [Parameter(Mandatory = $true)][System.Security.Principal.SecurityIdentifier]$Sid,
+    [hashtable[]]$Aces = $SandboxSessionNamespaceAces
+  )
+  $sd = New-Object System.Security.AccessControl.RawSecurityDescriptor($SdBytes, 0)
+  if ($null -eq $sd.DiscretionaryAcl) { return $null }
+  $acl = $sd.DiscretionaryAcl
+  $added = 0
+  foreach ($row in $Aces) {
+    if (Test-SandboxSessionNamespaceAceRow -Acl $acl -Sid $Sid -Flags ([int]$row.Flags) -Mask ([int]$row.Mask)) { continue }
+    $acl.InsertAce($acl.Count, (New-Object System.Security.AccessControl.CommonAce(
+          [System.Security.AccessControl.AceFlags]$row.Flags, [System.Security.AccessControl.AceQualifier]::AccessAllowed,
+          [int]$row.Mask, $Sid, $false, $null)))
+    $added++
+  }
+  if ($added -eq 0) { return $null }
+  $out = New-Object byte[] ($sd.BinaryLength)
+  $sd.GetBinaryForm($out, 0)
+  return , $out
+}
