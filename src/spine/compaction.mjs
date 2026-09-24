@@ -38,12 +38,18 @@ const DEFAULT_COOLING_MS = 120_000;   // 2 min of quiet after the last reply
 // service applies), re-exported here so every existing importer keeps its import.
 export { compactionRatio, DEFAULT_RATIO } from '../tools/compact-being.mjs';
 
-// THE LINE A CHAT GETS when the spine compacts a being in it (operator 2026-09-24). `label` is the
-// being's display name (brainpool's labelOf, the same one its "lost its thread" alert uses);
-// `tokens` is the size the compaction was decided at. Pure, so the wording is pinned by a test.
-export function compactedNotice(label, tokens) {
+// THE LINE THE ADMIN CHANNEL GETS when the spine compacts a being (operator 2026-09-24: "can the
+// bridge emit notice of this when it happens?", then "make it's posted on admin channel, eGPT
+// Admin"). Every node posts into that one channel, so the line names the NODE and the CHAT as well
+// as the being: `node` is config's node_name, `label` the being's display name (brainpool's labelOf,
+// the one its "lost its thread" alert uses), `chat` the conversation it was compacted in, `tokens`
+// the size the compaction was decided at. A part that is unknown is left out, never invented. Pure,
+// so the wording is pinned by a test.
+export function compactedNotice({ node = null, label, chat = null, tokens } = {}) {
   const was = Number.isFinite(tokens) && tokens > 0 ? ` (was ${Math.round(tokens / 1000)}k tokens)` : '';
-  return `🗜️ ${label} compacted its context${was}. The full history stays in transcript.md.`;
+  const who = node ? `${node} · ${label}` : label;
+  const where = chat ? ` in ${chat}` : '';
+  return `🗜️ ${who}${where} compacted its context${was}. The full history stays in its transcript.md.`;
 }
 
 export function createCompaction({
@@ -126,13 +132,14 @@ export function createCompaction({
       // reading as a failed compact — here the compact SUCCEEDED and only the arming was lost.
       try { await target.armIdentityRefresh?.(); }
       catch (e) { onLog(`compact ${key}: compacted, but arming the identity re-feed failed: ${e?.message ?? e}`); }
-      // …AND THE CHAT IS TOLD (operator 2026-09-24: "i'll just let the conversations compact on its
-      // own. can the bridge emit notice of this when it happens?"). brainpool's closure, bound to
-      // the chat of the turn that armed this compaction; it says the line through boot's one
-      // placement. Only here, after a compact that SUCCEEDED, and in its own catch: a notice that
-      // could not be said is logged and is never a failed compact.
+      // …AND THE ADMIN CHANNEL IS TOLD (operator 2026-09-24: "can the bridge emit notice of this
+      // when it happens?", then "make it's posted on admin channel, eGPT Admin"). brainpool's
+      // closure, bound to the being and the conversation of the turn that armed this compaction;
+      // boot says the line in config.yaml's admin_channel through its one placement. Only here,
+      // after a compact that SUCCEEDED, and in its own catch: a notice that could not be said is
+      // logged and is never a failed compact.
       try { await target.noticeCompacted?.({ tokens }); }
-      catch (e) { onLog(`compact ${key}: compacted, but the chat notice failed: ${e?.message ?? e}`); }
+      catch (e) { onLog(`compact ${key}: compacted, but the admin-channel notice failed: ${e?.message ?? e}`); }
     } catch (e) { onLog(`compact ${key}: ${e?.message ?? e}`); }
   }
 
@@ -151,8 +158,8 @@ export function createCompaction({
       // `armIdentityRefresh` is frozen onto the target for the same reason the ratio and the
       // window are: the turn that armed this compaction is the turn whose being should get its
       // identity back, and it closes over that turn's scope/being (operator 2026-09-10).
-      // `noticeCompacted` is frozen onto the target for the same reason: it is bound to the chat of
-      // the turn that armed this compaction, and that is the chat told it happened.
+      // `noticeCompacted` is frozen onto the target for the same reason: it is bound to the being
+      // and the conversation of the turn that armed this compaction, which is what the line names.
       const { window, ratio: frozenRatio } = compactionPolicy(getConfig(), model, over);
       const target = { sessionId, model, window, ratio: frozenRatio, armIdentityRefresh, noticeCompacted, brainOptions: { sessionId, cwd, model, allowedTools } };
       // ALREADY CRITICAL? Then do not wait for a quiet that may never come. The probe reads a

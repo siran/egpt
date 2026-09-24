@@ -644,10 +644,11 @@ export function createBrainPool({
   // events worth waking someone for, and boot routes it to the operator's Self chat. Default is
   // a no-op rather than onLog, so an unwired caller (every test) logs exactly what it did before.
   onAlert = () => {},
-  // SAYS ONE LINE INTO A CHAT, from the being's own mouth: (chatId, text, being) -> Promise. Boot
-  // hands its sayOnce - the ONE placement every node line takes - so this module never holds a
-  // sender. Read by exactly one thing: the compaction notice handed out on afterTurn below
-  // (operator 2026-09-24). null (every test that wires none) means no notice, nothing else.
+  // SAYS ONE LINE IN THE ADMIN CHANNEL, from the being's own mouth: (text, being) -> Promise. Boot
+  // resolves config.yaml's admin_channel and says it through sayOnce - the ONE placement every node
+  // line takes - so this module never holds a sender or a channel. Read by exactly one thing: the
+  // compaction notice handed out on afterTurn below (operator 2026-09-24). null (every test that
+  // wires none) means no notice, nothing else.
   noticeTo = null,
   onLog = () => {},
 } = {}) {
@@ -1391,10 +1392,17 @@ export function createBrainPool({
       // THE COMPACTION NOTICE (operator 2026-09-24: "can the bridge emit notice of this when it
       // happens?"), handed out on the SAME hook and for the same reason as armIdentityRefresh:
       // only compaction.mjs knows whether a compact succeeded, a cooling period from now, and only
-      // this turn knows which chat it came from and what the being is called. Bound to the chat
-      // this turn's REPLY went to - which, for a chat invited into a room, is that chat, not the room.
+      // this turn knows which conversation it came from and what the being is called. The line goes
+      // to the ADMIN CHANNEL (operator: "make it's posted on admin channel, eGPT Admin"), never into
+      // the chat, so it names the conversation instead: the ROOM for a chat invited into one - the
+      // room's thread is the one compacted - else the chat's own name.
       const noticeCompacted = typeof noticeTo === 'function'
-        ? ({ tokens } = {}) => noticeTo(ev.chatId, compactedNotice(labelOf(being) || being, tokens), being)
+        ? ({ tokens } = {}) => noticeTo(compactedNotice({
+          node: getConfig()?.node_name ?? null,
+          label: labelOf(being) || being,
+          chat: scope.scoped ? slug : (ev.chatName || slug),
+          tokens,
+        }), being)
         : null;
       try { afterTurn?.({ key, sessionId: newSession ?? sessionId ?? null, model: def.model, cwd, allowedTools: baseOpts.allowedTools, compaction: compactionOver, outbox, armIdentityRefresh, noticeCompacted }); } catch { /* non-fatal */ }
       return { text, sessionId: newSession ?? sessionId ?? null, being };
