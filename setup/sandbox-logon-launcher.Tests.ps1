@@ -1021,3 +1021,43 @@ Describe 'the launch summary line (the launcher wiring)' {
 # provision-service-account.Tests.ps1. Nothing outside it was created or
 # modified, and no DACL anywhere was written.
 Remove-Item -LiteralPath $script:TempRoot -Recurse -Force -ErrorAction SilentlyContinue
+
+Describe 'the session namespace grant (the launcher wiring)' {
+  # The ACE arithmetic is covered against the measured DACL in
+  # setup\sandbox-account.Tests.ps1; this is only where and how the shipped
+  # launcher calls it. Nothing here opens a real session directory.
+  $script:NsCallPattern = 'Grant-SandboxSessionNamespace -SessionId'
+
+  It 'runs on the launcher''s OWN session - the one CreateProcessWithLogonW puts the child in' {
+    Get-LauncherStatement $script:NsCallPattern | Should Match '-SessionId \$launcherSession -PoolGroupSid \$poolGroupSid'
+    Get-LauncherStatement '^\s*\$launcherSession = ' | Should Match 'GetCurrentProcess\(\)\.SessionId'
+  }
+
+  It 'is not fatal: the call sits alone in a try whose catch only warns' {
+    $i = Get-LauncherLineIndex $script:NsCallPattern
+    $script:LauncherLines[$i - 1].Trim() | Should Be 'try {'
+    $script:LauncherLines[$i + 1].Trim() | Should Be '} catch {'
+    $script:LauncherLines[$i + 2].Trim() | Should Match '^Log "WARNING: '
+    $script:LauncherLines[$i + 3].Trim() | Should Be '}'
+  }
+
+  It 'runs after the desktop exists and before anything runs as the leased account' {
+    $grant = Get-LauncherLineIndex $script:NsCallPattern
+    ((Get-LauncherLineIndex '\$sandboxDesk = New-SandboxDesktop ') -lt $grant) | Should Be $true
+    ($grant -lt (Get-LauncherLineIndex $script:ScrubCallPattern)) | Should Be $true
+    ($grant -lt (Get-LauncherLineIndex $script:LaunchPattern)) | Should Be $true
+  }
+
+  It 'opens that session''s BNOLINKS link and reads the DACL back after writing it' {
+    $start = Get-LauncherLineIndex '^function Grant-SandboxSessionNamespace \{'
+    $end = $start + 1
+    while ($end -lt $script:LauncherLines.Count -and $script:LauncherLines[$end] -notmatch '^\}') { $end++ }
+    $body = $script:LauncherLines[$start..$end] -join "`n"
+    $body | Should Match ([regex]::Escape('"\Sessions\BNOLINKS\$SessionId"'))
+    $body | Should Match 'SD_EDIT_ACCESS'
+    $write = $body.IndexOf('SetKernelObjectSecurity(')
+    $readBack = $body.IndexOf('$readBack = Get-KernelObjectDacl')
+    $verify = $body.IndexOf('Test-SandboxSessionNamespaceAce -SdBytes $readBack')
+    ($write -gt 0 -and $readBack -gt $write -and $verify -gt $readBack) | Should Be $true
+  }
+}

@@ -2372,3 +2372,118 @@ Describe 'Grant-SandboxPoolAce writes an EXPLICIT ACE even where an inherited on
     $script:IcaclsSpy.Count | Should Be 0
   }
 }
+
+Describe 'the session namespace grant (against the DACL measured on kg and do, 2026-09-24)' {
+  # \Sessions\1\BaseNamedObjects as read on reve, BUILT IN MEMORY in the measured
+  # order. The operator, the session's logon SID and the pool group are
+  # SYNTHETIC; the rest are the real well-known SIDs (DWM-1 is S-1-5-90-0-1).
+  $script:NsOperator = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-21-1111111111-2222222222-3333333333-1001')
+  $script:NsLogon = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-5-0-2127776')
+  $script:NsPool = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-21-1111111111-2222222222-3333333333-1100')
+  $script:NsEveryone = New-Object System.Security.Principal.SecurityIdentifier('S-1-1-0')
+  $IO = [System.Security.AccessControl.AceFlags]'ObjectInherit,ContainerInherit,InheritOnly'
+  $CI = [System.Security.AccessControl.AceFlags]::ContainerInherit
+  $NONE = [System.Security.AccessControl.AceFlags]::None
+  $script:NsMeasured = @(
+    @('S-1-5-90-0-1', 0x000F000F, $NONE), @('S-1-5-18', 0x000F000F, $NONE), @('S-1-5-18', 0x10000000, $IO),
+    @('S-1-3-0', 0x10000000, $IO), @($script:NsOperator.Value, 0x000F000F, $NONE), @($script:NsLogon.Value, 0x10000000, $IO),
+    @($script:NsLogon.Value, 0x0002000F, $NONE), @('S-1-5-32-544', 0x0002000F, $NONE), @('S-1-1-0', 0x00000003, $CI),
+    @('S-1-5-12', 0x00000002, $NONE)
+  )
+  function New-NsSd([object[]]$Rows, [switch]$NullDacl) {
+    $dacl = $null
+    if (-not $NullDacl) {
+      $dacl = New-Object System.Security.AccessControl.RawAcl([byte]2, $Rows.Count)
+      foreach ($r in $Rows) {
+        $dacl.InsertAce($dacl.Count, (New-Object System.Security.AccessControl.CommonAce(
+              $r[2], [System.Security.AccessControl.AceQualifier]::AccessAllowed, [int]$r[1],
+              (New-Object System.Security.Principal.SecurityIdentifier($r[0])), $false, $null)))
+      }
+    }
+    $sd = New-Object System.Security.AccessControl.RawSecurityDescriptor(
+      [System.Security.AccessControl.ControlFlags]::DiscretionaryAclPresent, $null, $null, $null, $dacl)
+    $b = New-Object byte[] ($sd.BinaryLength)
+    $sd.GetBinaryForm($b, 0)
+    return , $b
+  }
+  function Get-NsAces([byte[]]$Bytes) {
+    @((New-Object System.Security.AccessControl.RawSecurityDescriptor($Bytes, 0)).DiscretionaryAcl)
+  }
+  function Get-NsRows([byte[]]$Bytes, [System.Security.Principal.SecurityIdentifier]$Sid) {
+    @(Get-NsAces $Bytes | Where-Object { $_.SecurityIdentifier -eq $Sid } | ForEach-Object { '{0}/0x{1:X8}' -f [int]$_.AceFlags, $_.AccessMask })
+  }
+
+  It 'REPRODUCE: the pool is only Everyone there, and Everyone may open but never create' {
+    $sd = New-NsSd $script:NsMeasured
+    Test-SandboxSessionNamespaceAce -SdBytes $sd -Sid $script:NsPool | Should Be $false
+    Test-SandboxSessionNamespaceAce -SdBytes $sd -Sid $script:NsEveryone | Should Be $false
+  }
+
+  It 'the rows ARE the session logon SID''s own - the logon SID passes as measured' {
+    $want = @($SandboxSessionNamespaceAces | ForEach-Object { '{0}/0x{1:X8}' -f [int]$_.Flags, [int]$_.Mask }) | Sort-Object
+    $logon = @(Get-NsRows (New-NsSd $script:NsMeasured) $script:NsLogon) | Sort-Object
+    ($want -join ',') | Should Be ($logon -join ',')
+    Test-SandboxSessionNamespaceAce -SdBytes (New-NsSd $script:NsMeasured) -Sid $script:NsLogon | Should Be $true
+  }
+
+  It 'grants the pool both rows: create on the directory, full access to what is created inside' {
+    $after = Add-SandboxSessionNamespaceAce -SdBytes (New-NsSd $script:NsMeasured) -Sid $script:NsPool
+    Test-SandboxSessionNamespaceAce -SdBytes $after -Sid $script:NsPool | Should Be $true
+    $rows = @(Get-NsRows $after $script:NsPool)
+    $rows.Count | Should Be 2
+    ($rows -contains ('{0}/0x0002000F' -f [int]$NONE)) | Should Be $true
+    ($rows -contains ('{0}/0x10000000' -f [int]$IO)) | Should Be $true
+  }
+
+  It 'copies the logon SID''s rows, not the operator''s: no WRITE_DAC, WRITE_OWNER or DELETE on the directory' {
+    $after = Add-SandboxSessionNamespaceAce -SdBytes (New-NsSd $script:NsMeasured) -Sid $script:NsPool
+    foreach ($a in @(Get-NsAces $after | Where-Object { $_.SecurityIdentifier -eq $script:NsPool })) {
+      ($a.AccessMask -band 0x000D0000) | Should Be 0
+    }
+  }
+
+  It 'is strictly additive: every measured ACE survives, unchanged and in order, and the new ones come last' {
+    $before = @(Get-NsAces (New-NsSd $script:NsMeasured))
+    $after = @(Get-NsAces (Add-SandboxSessionNamespaceAce -SdBytes (New-NsSd $script:NsMeasured) -Sid $script:NsPool))
+    $after.Count | Should Be ($before.Count + 2)
+    for ($i = 0; $i -lt $before.Count; $i++) {
+      $after[$i].SecurityIdentifier | Should Be $before[$i].SecurityIdentifier
+      $after[$i].AccessMask | Should Be $before[$i].AccessMask
+      $after[$i].AceFlags | Should Be $before[$i].AceFlags
+    }
+    $after[-1].SecurityIdentifier | Should Be $script:NsPool
+    $after[-2].SecurityIdentifier | Should Be $script:NsPool
+  }
+
+  It 'is idempotent: a DACL that already grants both rows gets nothing written' {
+    $after = Add-SandboxSessionNamespaceAce -SdBytes (New-NsSd $script:NsMeasured) -Sid $script:NsPool
+    Add-SandboxSessionNamespaceAce -SdBytes $after -Sid $script:NsPool | Should Be $null
+  }
+
+  It 'upgrades a session that carries only the first, one-row grant (kg''s session 1 as left at 2026-09-24 midday) by adding just the missing row' {
+    $rows = @($script:NsMeasured) + , @($script:NsPool.Value, 0x0002000F, $NONE)
+    Test-SandboxSessionNamespaceAce -SdBytes (New-NsSd $rows) -Sid $script:NsPool | Should Be $false
+    $after = Add-SandboxSessionNamespaceAce -SdBytes (New-NsSd $rows) -Sid $script:NsPool
+    @(Get-NsRows $after $script:NsPool).Count | Should Be 2
+    (Get-NsAces $after).Count | Should Be ($rows.Count + 1)
+  }
+
+  It 'one row never stands in for the other - flags are compared exactly' {
+    $onlyInherit = @($script:NsMeasured) + , @($script:NsPool.Value, 0x10000000, $IO)
+    Test-SandboxSessionNamespaceAce -SdBytes (New-NsSd $onlyInherit) -Sid $script:NsPool | Should Be $false
+    @(Get-NsRows (Add-SandboxSessionNamespaceAce -SdBytes (New-NsSd $onlyInherit) -Sid $script:NsPool) $script:NsPool).Count | Should Be 2
+    $inheritOnDir = @($script:NsMeasured) + , @($script:NsPool.Value, 0x0002000F, $IO)
+    Test-SandboxSessionNamespaceAce -SdBytes (New-NsSd $inheritOnDir) -Sid $script:NsPool | Should Be $false
+  }
+
+  It 'a narrower grant for the pool does not count' {
+    $rows = @($script:NsMeasured) + @(, @($script:NsPool.Value, 0x00000003, $NONE)) + @(, @($script:NsPool.Value, 0x10000000, $IO))
+    Test-SandboxSessionNamespaceAce -SdBytes (New-NsSd $rows) -Sid $script:NsPool | Should Be $false
+  }
+
+  It 'a NULL DACL already lets anyone - nothing is synthesized over it' {
+    $sd = New-NsSd @() -NullDacl
+    Test-SandboxSessionNamespaceAce -SdBytes $sd -Sid $script:NsPool | Should Be $true
+    Add-SandboxSessionNamespaceAce -SdBytes $sd -Sid $script:NsPool | Should Be $null
+  }
+}

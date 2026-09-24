@@ -141,9 +141,12 @@ export function jsonlStoreDirOf(threadId, options = {}) {
 // Windows is ALREADY Claude Code's own first auto-detect candidate, so naming it here would change
 // nothing and fix nothing. It stays as the second candidate for a node that has no msys2 at all.
 //
-// RESIDUAL, NOT FIXED HERE: on a node where nothing keeps an msys2 process alive, msys64's bash
-// will fail the same way. The real cure is the BNOLINKS DACL, which is per-session, set by the
-// session manager, and outside this module's reach.
+// THE RESIDUAL, CURED 2026-09-24 OUTSIDE THIS MODULE: on a node where nothing kept an msys2
+// process alive in the session - do, whose session 1 had none - msys64's bash failed the same way.
+// The launcher now grants the pool group the session logon SID's own rights on
+// \Sessions\BNOLINKS\<n> at every launch (step e; THE SESSION NAMESPACE GRANT in
+// setup/sandbox-account.ps1), so a box creates the directory itself and no longer depends on an
+// operator process holding it open. The candidate order above is unchanged.
 const GIT_BASH_ENV = 'CLAUDE_CODE_GIT_BASH_PATH';
 
 // FIRST ONE THAT EXISTS WINS; when NEITHER does this contributes nothing at all, so a node with no

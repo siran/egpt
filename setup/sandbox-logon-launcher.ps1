@@ -497,6 +497,54 @@ public static class SandboxLogon {
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool SetUserObjectSecurity(IntPtr hObj, ref uint pSIRequested, IntPtr pSid);
+
+    // ---- the session's named-object directory (see Grant-SandboxSessionNamespace) ----
+    [StructLayout(LayoutKind.Sequential)]
+    public struct UNICODE_STRING { public ushort Length; public ushort MaximumLength; public IntPtr Buffer; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct OBJECT_ATTRIBUTES {
+        public int Length; public IntPtr RootDirectory; public IntPtr ObjectName;
+        public uint Attributes; public IntPtr SecurityDescriptor; public IntPtr SecurityQualityOfService;
+    }
+    public const uint OBJ_CASE_INSENSITIVE = 0x00000040;
+
+    // Returns an NTSTATUS, not a BOOL: 0 is success, and there is no last error.
+    [DllImport("ntdll.dll")]
+    public static extern int NtOpenDirectoryObject(out IntPtr DirectoryHandle, uint DesiredAccess, ref OBJECT_ATTRIBUTES ObjectAttributes);
+
+    // SECURITY_INFORMATION BY VALUE here, unlike Get/SetUserObjectSecurity
+    // above, which take a pointer to it.
+    [DllImport("advapi32.dll", SetLastError = true)]
+    public static extern bool GetKernelObjectSecurity(IntPtr Handle, uint RequestedInformation,
+        IntPtr pSecurityDescriptor, uint nLength, out uint lpnLengthNeeded);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    public static extern bool SetKernelObjectSecurity(IntPtr Handle, uint SecurityInformation, IntPtr SecurityDescriptor);
+
+    // Opens an object-manager DIRECTORY by its NT path. A symbolic link on the
+    // way is FOLLOWED - \Sessions\BNOLINKS\<n> is one - so the handle is the
+    // link's target, \Sessions\<n>\BaseNamedObjects. Returns the NTSTATUS.
+    public static int OpenDirectoryObject(string name, uint access, out IntPtr handle) {
+        IntPtr buf = Marshal.StringToHGlobalUni(name);
+        IntPtr pus = IntPtr.Zero;
+        try {
+            UNICODE_STRING us = new UNICODE_STRING();
+            us.Length = (ushort)(name.Length * 2);
+            us.MaximumLength = (ushort)(name.Length * 2 + 2);
+            us.Buffer = buf;
+            pus = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(UNICODE_STRING)));
+            Marshal.StructureToPtr(us, pus, false);
+            OBJECT_ATTRIBUTES oa = new OBJECT_ATTRIBUTES();
+            oa.Length = Marshal.SizeOf(typeof(OBJECT_ATTRIBUTES));
+            oa.ObjectName = pus;
+            oa.Attributes = OBJ_CASE_INSENSITIVE;
+            return NtOpenDirectoryObject(out handle, access, ref oa);
+        } finally {
+            if (pus != IntPtr.Zero) Marshal.FreeHGlobal(pus);
+            Marshal.FreeHGlobal(buf);
+        }
+    }
 }
 '@
 Add-Type -TypeDefinition $sig -ErrorAction Stop
@@ -701,6 +749,77 @@ function New-SandboxDesktop {
 
   Log "created per-turn desktop '$winStaName\$DesktopName' (SwitchDesktop there to watch this turn)"
   [PSCustomObject]@{ Handle = $hDesk; LpDesktop = "$winStaName\$DesktopName" }
+}
+
+function Get-KernelObjectDacl {
+  # The DACL of a kernel object handle, as self-relative SD bytes (DACL only).
+  param(
+    [Parameter(Mandatory = $true)][IntPtr]$Handle,
+    [Parameter(Mandatory = $true)][string]$Label
+  )
+  [uint32]$len = 4096
+  for ($try = 0; $try -lt 2; $try++) {
+    $buf = [Runtime.InteropServices.Marshal]::AllocHGlobal([int]$len)
+    try {
+      [uint32]$needed = 0
+      if ([SandboxLogon]::GetKernelObjectSecurity($Handle, [SandboxLogon]::DACL_SECURITY_INFORMATION, $buf, $len, [ref]$needed)) {
+        $bytes = New-Object byte[] ([int]$len)
+        [Runtime.InteropServices.Marshal]::Copy($buf, $bytes, 0, [int]$len)
+        return , $bytes
+      }
+      $werr = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+      if ($werr -ne 122) {   # 122 = ERROR_INSUFFICIENT_BUFFER
+        throw "sandbox-logon-launcher: GetKernelObjectSecurity on $Label failed, Win32 error $werr"
+      }
+      $len = $needed
+    } finally {
+      [Runtime.InteropServices.Marshal]::FreeHGlobal($buf)
+    }
+  }
+  throw "sandbox-logon-launcher: GetKernelObjectSecurity on $Label kept reporting ERROR_INSUFFICIENT_BUFFER"
+}
+
+function Grant-SandboxSessionNamespace {
+  # Lets the pool group NAME objects in logon session $SessionId, as that
+  # session's own logon SID may. The measured DACL, the why and the exact mask
+  # are under THE SESSION NAMESPACE GRANT in sandbox-account.ps1; the ACE
+  # arithmetic is Add-SandboxSessionNamespaceAce there, and this is only the OS
+  # half: open, read, write, READ BACK. THE DACL DECIDES - a write that returns
+  # success but does not show up in the read-back throws.
+  param(
+    [Parameter(Mandatory = $true)][int]$SessionId,
+    [Parameter(Mandatory = $true)][System.Security.Principal.SecurityIdentifier]$PoolGroupSid
+  )
+  $name = "\Sessions\BNOLINKS\$SessionId"
+  $h = [IntPtr]::Zero
+  $status = [SandboxLogon]::OpenDirectoryObject($name, [SandboxLogon]::SD_EDIT_ACCESS, [ref]$h)
+  if ($status -ne 0) {
+    throw ("sandbox-logon-launcher: NtOpenDirectoryObject('{0}', READ_CONTROL|WRITE_DAC) failed, NTSTATUS 0x{1:X8}" -f $name, $status)
+  }
+  try {
+    $before = Get-KernelObjectDacl -Handle $h -Label $name
+    $after = Add-SandboxSessionNamespaceAce -SdBytes $before -Sid $PoolGroupSid
+    if ($null -eq $after) {
+      Log "$name already lets $($PoolGroupSid.Value) name objects in session $SessionId  - no ACE added"
+      return
+    }
+    $wbuf = [Runtime.InteropServices.Marshal]::AllocHGlobal($after.Length)
+    try {
+      [Runtime.InteropServices.Marshal]::Copy($after, 0, $wbuf, $after.Length)
+      if (-not [SandboxLogon]::SetKernelObjectSecurity($h, [SandboxLogon]::DACL_SECURITY_INFORMATION, $wbuf)) {
+        throw "sandbox-logon-launcher: SetKernelObjectSecurity on $name failed, Win32 error $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+      }
+    } finally {
+      [Runtime.InteropServices.Marshal]::FreeHGlobal($wbuf)
+    }
+    $readBack = Get-KernelObjectDacl -Handle $h -Label $name
+    if (-not (Test-SandboxSessionNamespaceAce -SdBytes $readBack -Sid $PoolGroupSid)) {
+      throw "sandbox-logon-launcher: SetKernelObjectSecurity on $name reported success, but the DACL read back does not let $($PoolGroupSid.Value) create there"
+    }
+    Log ("granted {0} the session logon SID's rows on {1} - the pool may name and open objects in session {2}" -f $PoolGroupSid.Value, $name, $SessionId)
+  } finally {
+    [SandboxLogon]::CloseHandle($h) | Out-Null
+  }
 }
 
 function Format-Win32Arg([string]$Arg) {
@@ -1915,6 +2034,22 @@ try {
   $poolGroupSid = (New-Object System.Security.Principal.NTAccount($SandboxPoolGroup)).Translate([System.Security.Principal.SecurityIdentifier])
   $sandboxDesk = New-SandboxDesktop -DesktopName $leasedName -LeasedSid $leasedSid -PoolGroupSid $poolGroupSid
   $hSandboxDesk = $sandboxDesk.Handle
+
+  # ---- (e, session namespace) and let the pool group NAME objects in this
+  # session. An msys2 runtime must CREATE its object directory under
+  # \Sessions\BNOLINKS\<n> the first time it starts there, which until
+  # 2026-09-24 only the operator could, so Bash in a box lived or died on
+  # whether an operator msys process happened to be running in the session (see
+  # THE SESSION NAMESPACE GRANT in sandbox-account.ps1). THE LAUNCHER'S OWN
+  # SESSION, because CreateProcessWithLogonW creates the child in the caller's.
+  # NOT FATAL: a failed grant leaves the box as it was before this existed -
+  # every other tool works - so it warns and the turn goes on. ----
+  $launcherSession = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
+  try {
+    Grant-SandboxSessionNamespace -SessionId $launcherSession -PoolGroupSid $poolGroupSid
+  } catch {
+    Log "WARNING: could not let $SandboxPoolGroup name objects in session $launcherSession  - $($_.Exception.Message). msys programs in this box (Bash among them) start only while an operator msys process runs in that session."
+  }
 
   # ---- (f, scrub pass) empty this account's scratch profile BEFORE InnerBin
   # runs, as the account itself - the only principal that can delete those files
