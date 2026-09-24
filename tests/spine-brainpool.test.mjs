@@ -13,9 +13,12 @@ import { createBrains } from '../src/spine/brains.mjs';
 import { ConversationRoom } from '../src/room-core.mjs';
 import { buildClaudeArgs, DEFAULT_ALLOWED_TOOLS } from '../src/claude-args.mjs';
 import { emptyState, getBeing, getContact, ensureContact, recordThread, patchBeing, slugDir, fillCardPlaceholders } from '../src/conversations-state.mjs';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 // A fake warm pool that records run() calls and lets a test script the results.
 function fakePool(scriptedResults, { steerTakes = true } = {}) {
@@ -803,7 +806,9 @@ describe('brainpool.turn — confine-by-default (allowed_tools list) + allowed_p
       name: 'egpt', type: 'ccode', allowed_tools: ['Read'],
       allowed_paths: { '/c/work/rw': { allowed_tools: ['Read', 'Write'] } },   // includes a write tool
     }) };
-    const { brain, pool } = harnessWithLog(logs, brains);
+    // 'linux' — this describe owns the UNBOXED tier's CLI lists (see its header); the boxed
+    // tier's half of the same classification is asserted on the share lists below.
+    const { brain, pool } = harnessWithLog(logs, brains, 'linux');
     await brain.turn('e', ev);
     const opts = pool.calls[0].brainOptions;
     expect(opts.addDirs).toEqual(['C:/work/rw']);               // full access, not RO
@@ -923,8 +928,9 @@ describe('brainpool.turn — a sandboxed turn hands the CLI no path it should no
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains: both, platform: 'win32' });
     await brain.turn('e', ev);
     const opts = pool.calls[0].brainOptions;
-    // The def's own classification still happens — it is what the two ACE classes come from.
-    expect(opts.addDirs).toEqual(['C:/work/project']);
+    // The def's own classification still happens — it is what the two ACE classes come from —
+    // but it reaches the OS consumer ONLY (2026-09-23; see the describe below this one).
+    expect(opts.addDirs).toBeUndefined();
     expect(opts.sandboxSharePaths).toEqual(['C:/work/project']);          // -SharePath  -> Modify
     expect(opts.sandboxSharePathsReadOnly).toEqual(['C:/Users/an/src']);  // -SharePathReadOnly -> RX
     const args = buildClaudeArgs(opts);
@@ -939,7 +945,7 @@ describe('brainpool.turn — a sandboxed turn hands the CLI no path it should no
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains: declaresSrc, platform: 'win32' });
     await brain.turn('e', ev);
     const opts = pool.calls[0].brainOptions;
-    expect(opts.readOnlyDirs).toEqual(['C:/Users/an/src']);   // still classified...
+    expect(opts.readOnlyDirs).toBeUndefined();                            // no CLI list at all...
     expect(opts.sandboxSharePathsReadOnly).toEqual(['C:/Users/an/src']);  // ...and still ACE'd
     expect(argVals(buildClaudeArgs(opts), '--settings')).toEqual([]);     // ...and silent in argv
   });
@@ -956,9 +962,10 @@ describe('brainpool.turn — a sandboxed turn hands the CLI no path it should no
 
     expect(args).toContain('--dangerously-skip-permissions');
     expect(argVals(args, '--permission-mode')).toEqual(['bypassPermissions']);
-    // The FULL list, file tools included — no more withholding Read/Grep from the allow-list.
-    const allow = argVals(args, '--allowedTools')[0].split(' ');
-    expect(allow).toEqual(['Read', 'Grep', 'WebFetch']);
+    // ...and NO --allowedTools either (2026-09-23, the second half): under the bypass pair on
+    // the two lines above an allow-list is inert, so emitting one states a fence that is not
+    // there. See the describe below.
+    expect(argVals(args, '--allowedTools')).toEqual([]);
     expect(argVals(args, '--setting-sources')).toEqual([]);
   });
 
@@ -1013,6 +1020,205 @@ describe('brainpool.turn — a sandboxed turn hands the CLI no path it should no
     }
     expect(buildClaudeArgs(boxed.pool.calls[0].brainOptions))
       .toEqual(buildClaudeArgs(unboxed.pool.calls[0].brainOptions));
+  });
+});
+
+// ── `allowed_paths` HAS ONE CONSUMER LEFT, AND `allowed_tools` NAMES NO FENCE (operator
+//    2026-09-23: "we are not using allowed_paths from the CLI nor allowed_tools; these
+//    restrictions are OS enforced").
+//
+//    WHAT WAS ALREADY DONE, so the remainder is legible: claude-args stopped EMITTING --add-dir
+//    and the deny rules under `osConfined` earlier the same day. What survived was the feeding —
+//    confinementFor still classified the paths and still handed the CLI layer two lists it was
+//    forbidden to use, which is a second consumer kept alive with nothing to consume. The walk
+//    still RUNS (it is what warns about per-path tool granularity, once), and its answer now
+//    goes only to sandboxSharePathsFor, which is the layer that enforces.
+//
+//    AND --allowedTools GOES WITH THEM, which is the honest reading of the same ruling rather
+//    than a new one: a boxed turn already carries --dangerously-skip-permissions and
+//    --permission-mode bypassPermissions, and under that pair an allow-list gates nothing. The
+//    alternative — emitting "every tool" — would mean a second hand-written tool list in this
+//    repo that silently goes stale the next time Claude Code ships a tool. There is no
+//    capability change either way; there is only whether the argv claims a fence it does not
+//    have.
+//
+//    THE TIER GUARD IS THE WHOLE RISK, and it is `osConfined`, unchanged: a being with no OS box
+//    (access_level 'regular' on a posix node, or `sandboxed: false`) has the argv as its ONLY
+//    boundary and keeps every part of it. ──
+describe('brainpool.turn — the boxed tier feeds the CLI nothing at all (operator 2026-09-23)', () => {
+  const declares = { resolve: () => ({
+    name: 'egpt', type: 'ccode', allowed_tools: ['Read', 'Grep', 'WebFetch'],
+    allowed_paths: { '/c/work/project': null, '/c/Users/an/src': { allowed_tools: ['Read', 'Glob', 'Grep'] } },
+  }) };
+
+  it('REPRODUCE-FIRST: a BOXED being carried addDirs/readOnlyDirs into the CLI options — now it carries neither', async () => {
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains: declares, platform: 'win32' });
+    await brain.turn('e', ev);
+    const opts = pool.calls[0].brainOptions;
+    expect(opts.osConfined).toBe(true);
+    expect(opts).not.toHaveProperty('addDirs');
+    expect(opts).not.toHaveProperty('readOnlyDirs');
+    // ...and the ONE surviving consumer has both classes, in their own classes.
+    expect(opts.sandboxSharePaths).toEqual(['C:/work/project']);
+    expect(opts.sandboxSharePathsReadOnly).toEqual(['C:/Users/an/src']);
+  });
+
+  it('REPRODUCE-FIRST: a BOXED being\'s argv named a tool list — now it names none', async () => {
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains: declares, platform: 'win32' });
+    await brain.turn('e', ev);
+    const opts = pool.calls[0].brainOptions;
+    // The RESOLVED list still travels — it is what the transcript and the post-turn hook read,
+    // and dropping it would be a different change with real consequences.
+    expect(opts.allowedTools).toEqual(['Read', 'Grep', 'WebFetch']);
+    // It simply stops being spelled into an argv where it decides nothing.
+    expect(argVals(buildClaudeArgs(opts), '--allowedTools')).toEqual([]);
+  });
+
+  it('the boxed argv is now the SAME for a being that declares paths and one that declares none', async () => {
+    // The strongest form of "the CLI layer is gone": two defs whose only difference is their
+    // allowed_paths produce one argv. Any surviving CLI consumer would show up right here.
+    const bare = { resolve: () => ({ name: 'egpt', type: 'ccode', allowed_tools: ['Read', 'Grep', 'WebFetch'] }) };
+    const withPaths = harness([{ text: 'ok', sessionId: 's' }], { brains: declares, platform: 'win32' });
+    await withPaths.brain.turn('e', ev);
+    const without = harness([{ text: 'ok', sessionId: 's' }], { brains: bare, platform: 'win32' });
+    await without.brain.turn('e', ev);
+    expect(buildClaudeArgs(withPaths.pool.calls[0].brainOptions))
+      .toEqual(buildClaudeArgs(without.pool.calls[0].brainOptions));
+  });
+
+  it('the per-path warning is STILL emitted once — the walk runs for its diagnostic, not for its answer', async () => {
+    // Dropping the call outright would have taken this line with it, and a being whose
+    // allowed_paths asks for write-tool granularity would then be told nothing at all.
+    const logs = [];
+    const writey = { resolve: () => ({
+      name: 'egpt', type: 'ccode', allowed_tools: ['Read'],
+      allowed_paths: { '/c/work/rw': { allowed_tools: ['Read', 'Write'] } },
+    }) };
+    const { brain } = harness([{ text: 'ok', sessionId: 's' }], { brains: writey, platform: 'win32', onLog: (l) => logs.push(String(l)) });
+    await brain.turn('e', ev);
+    expect(logs.filter((l) => l.includes("per-path tool granularity beyond read-only isn't native"))).toHaveLength(1);
+  });
+
+  it('TIER LOCK — the UNBOXED confined tier keeps every byte of its CLI confinement', async () => {
+    // Its only boundary. A change that left this being unconfined on both layers would be the
+    // bug, not the fix.
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains: declares, platform: 'linux' });
+    await brain.turn('e', ev);
+    const opts = pool.calls[0].brainOptions;
+    expect(opts.sandboxed).toBe(false);
+    expect(opts.confineToDirs).toEqual([opts.cwd]);
+    expect(opts.addDirs).toEqual(['C:/work/project']);
+    expect(opts.readOnlyDirs).toEqual(['C:/Users/an/src']);
+    const args = buildClaudeArgs(opts);
+    expect(argVals(args, '--add-dir')).toEqual(['C:/work/project', opts.cwd, 'C:/Users/an/src']);
+    expect(argVals(args, '--allowedTools')).toEqual(['WebFetch']);   // file tools NOT pre-approved
+    expect(argVals(args, '--permission-mode')).toEqual(['default']);
+    expect(JSON.parse(argVals(args, '--settings')[0]).permissions.deny).toContain('Write(C:/Users/an/src/**)');
+  });
+
+  it('TIER LOCK — the UNCONFINED tier still spells its verbatim tool list, boxed or not', async () => {
+    // dangerously_skip_permissions returns {} from confinementFor, so it never sees osConfined,
+    // and its list is a TYPE FILE's own trusted grant rather than a fence — bare Bash/Agent
+    // included. Nothing here changed.
+    const meta = { resolve: () => ({ name: 'meta', type: 'ccode', dangerously_skip_permissions: true, allowed_tools: ['Read', 'Bash', 'Agent'], allowed_paths: { '/c/work/project': null } }) };
+    for (const platform of ['win32', 'linux']) {
+      const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains: meta, platform });
+      await brain.turn('e', ev);
+      const args = buildClaudeArgs(pool.calls[0].brainOptions);
+      expect(argVals(args, '--allowedTools')).toEqual(['Read Bash Agent']);
+      expect(argVals(args, '--add-dir')).toEqual([]);
+    }
+  });
+});
+
+// ── A BEING THAT DECLARES NO LEVEL IS BORN IN THE BOX (operator 2026-09-23: "all agents
+//    sandboxed, but the meta engineers" / "we work only with OS confinement").
+//
+//    WHAT WAS WRONG. resolveConv's two-tier walk fell back to 'regular' (operator 2026-08-20,
+//    when 'sandbox' did not exist yet), so silence meant the CONFINED-BY-CLI tier — and on a
+//    non-win32 node, or with `sandboxed: false` anywhere under it, that tier has no OS box at
+//    all. Four beings on the live node declare nothing. The fallback is now 'sandbox', which
+//    resolveSandboxed rung 1 turns into a FORCED box no lower rung can switch off.
+//
+//    THE META ENGINEERS ARE SAFE BECAUSE THEY SAY SO, not because the default spares them:
+//    wren (kg) and dren (do) declare `access_level: all` explicitly, which is rung 0 of this
+//    same walk — asserted below on the tier, and on the shipped skeleton that is the only copy
+//    of that config this repo can see (the live one lives outside it).
+//
+//    AND 'regular' STAYS EXPRESSIBLE. It is no longer the DEFAULT; it is still a level, and a
+//    being that asks for it gets exactly the tier it always got. A change that quietly made
+//    the value unreachable would be a different (and worse) change. ──
+describe('brainpool.turn — the access-level default is the BOX (operator 2026-09-23)', () => {
+  const brains = { resolve: () => ({ name: 'egpt', type: 'ccode', allowed_tools: ['Read', 'Grep'] }) };
+  const levelOf = async ({ seed, platform = 'win32' } = {}) => {
+    let seenLevel = null;
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
+      brains, platform, skipAccessLevelDefault: true,
+      ...(seed ? { seedAgents: { e: seed } } : {}),
+      loadPermission: (level) => { seenLevel = level; return loadPermissionLevel(level); },
+    });
+    await brain.turn('e', ev);
+    return { level: seenLevel, opts: pool.calls[0].brainOptions };
+  };
+
+  it('REPRODUCE-FIRST: UNDECLARED at both tiers resolved to \'regular\' — it now resolves to \'sandbox\' and the box is forced on', async () => {
+    const { level, opts } = await levelOf();
+    expect(level).toBe('sandbox');            // was 'regular' — the line this change is
+    expect(opts.sandboxed).toBe(true);
+  });
+
+  it('...and the forced box survives a conversation that asked to be UNBOXED — rung 1 beats rung 2', async () => {
+    // The whole reason the default had to be a LEVEL and not a `sandboxed: true`: a level is
+    // read before the two `sandboxed` rungs, so silence-about-the-level can no longer be
+    // undone by a stale `sandboxed: false` sitting in conversations.yaml.
+    const { level, opts } = await levelOf({ seed: { sandboxed: false } });
+    expect(level).toBe('sandbox');
+    expect(opts.sandboxed).toBe(true);
+  });
+
+  it('...and it boxes an undeclared being on a POSIX node too, because rung 1 is platform-blind', async () => {
+    // rung 4 (the platform-aware default) answers false off win32; rung 1 never gets there.
+    // sandbox-cli-session.mjs is where that becomes a loud refusal — resolution here, refusal
+    // there — which is exactly what a node with no launcher should get rather than silence.
+    const { level, opts } = await levelOf({ platform: 'linux' });
+    expect(level).toBe('sandbox');
+    expect(opts.sandboxed).toBe(true);
+  });
+
+  it('THE META ENGINEER IS UNCHANGED: an explicit \'all\' is read before the default and still runs unboxed', async () => {
+    const { level, opts } = await levelOf({ seed: { access_level: 'all', allowed_users: ['123'], sandboxed: false } });
+    expect(level).toBe('all');
+    expect(opts.sandboxed).toBe(false);                  // `sandboxed: false` is a real override under 'all'
+    expect(opts.dangerouslySkipPermissions).toBe(true);  // config/permissions/all.md, verbatim
+    expect(opts.osConfined).toBeUndefined();
+    expect(opts.confineToDirs).toBeUndefined();
+  });
+
+  it('EXPLICIT \'regular\' IS STILL EXPRESSIBLE: it is no longer the default, and it is still a level', async () => {
+    const { level, opts } = await levelOf({ seed: { access_level: 'regular' }, platform: 'linux' });
+    expect(level).toBe('regular');
+    expect(opts.sandboxed).toBe(false);                  // no box asked for, none given, off win32
+    expect(opts.dangerouslySkipPermissions).toBe(false);
+    expect(opts.allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);
+    expect(opts.confineToDirs).toEqual([opts.cwd]);      // its ONLY boundary, untouched
+  });
+
+  it('EXPLICIT \'sandbox\' IS UNCHANGED — the default now agrees with it, which is the point', async () => {
+    const explicit = await levelOf({ seed: { access_level: 'sandbox' } });
+    const silent = await levelOf();
+    expect(explicit.level).toBe('sandbox');
+    expect(explicit.opts.sandboxed).toBe(true);
+    // Byte-for-byte the same turn: saying nothing and saying 'sandbox' are now one thing.
+    expect(buildClaudeArgs(silent.opts)).toEqual(buildClaudeArgs(explicit.opts));
+  });
+
+  it('the SHIPPED skeleton\'s meta engineer declares its level explicitly, so the new default cannot reach it', () => {
+    // The live config.yaml is outside this repo; the skeleton is the copy that ships, and it is
+    // what a fresh node is built from. If the meta engineer ever stopped declaring a level here,
+    // a fresh node's wren would be born sandboxed — which is the one being that must not be.
+    const skeleton = readFileSync(join(REPO_ROOT, 'config', 'skeletons', 'config.yaml'), 'utf8');
+    const wren = skeleton.slice(skeleton.indexOf('\n  wren:'));
+    expect(wren).toMatch(/conversation_defaults:[\s\S]{0,200}access_level: all/);
   });
 });
 
@@ -1170,24 +1376,25 @@ describe('brainpool.turn — accessLevel override (operator 2026-08-14, was /e a
     expect(opts.confineToDirs).toBeUndefined();                             // dangerously_skip_permissions:true → unconfined
   });
 
-  // REWRITTEN (operator 2026-08-20): accessLevel null/unset used to REFUSE the turn (the
-  // 2026-08-16 structural gate). Refined the same day: resolveConv's own fallback now resolves
-  // an unset accessLevel to the explicit 'regular' instead of null, so the turn proceeds
-  // CONFINED rather than refusing — loadPermission('regular') IS consulted (this is no longer
-  // the "no override" case; it is now the ordinary 'regular' override path, just reached via
-  // the default instead of an explicit setting).
-  it("accessLevel null/unset at both tiers now resolves to 'regular' and runs CONFINED, instead of refusing (operator 2026-08-20 refinement)", async () => {
+  // REWRITTEN TWICE. 2026-08-20: accessLevel null/unset used to REFUSE the turn (the 2026-08-16
+  // structural gate); refined the same day so the fallback resolved to the explicit 'regular'
+  // and the turn proceeded CONFINED. 2026-09-23: that fallback is now 'sandbox' ("all agents
+  // sandboxed, but the meta engineers") — the turn still proceeds, loadPermission is still
+  // consulted, and the confinement it gets is the OS box instead of a CLI root. The tier walk
+  // itself is asserted in its own describe ("the access-level default is the BOX").
+  it("accessLevel null/unset at both tiers resolves to 'sandbox' and runs BOXED, instead of refusing", async () => {
     const brains = { resolve: () => ({ name: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'all' }) };
     let seenLevel = null;
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
-      brains, skipAccessLevelDefault: true,
+      brains, skipAccessLevelDefault: true, platform: 'win32',
       loadPermission: (level) => { seenLevel = level; return { dangerouslySkipPermissions: false, allowedTools: DEFAULT_ALLOWED_TOOLS }; },
     });
     await brain.turn('e', ev);
-    expect(seenLevel).toBe('regular');     // the override block DOES run now, on the resolved default
+    expect(seenLevel).toBe('sandbox');     // the override block DOES run now, on the resolved default
     expect(pool.calls).toHaveLength(1);    // the turn reaches the engine
     expect(pool.calls[0].brainOptions.allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);
-    expectConfined(pool.calls[0].brainOptions);                  // confined
+    expect(pool.calls[0].brainOptions.sandboxed).toBe(true);
+    expectConfined(pool.calls[0].brainOptions);                  // confined — by the box
   });
 
   it('end-to-end with the REAL config/permissions/*.md files (no injected loadPermission): all → dangerously_skip_permissions + bare Bash/Agent, regular → confined DEFAULT_ALLOWED_TOOLS', async () => {
@@ -1930,19 +2137,20 @@ describe('brainpool.turn — accessLevel GLOBAL-DEFAULT tier (operator 2026-08-1
     expectConfined(opts);                                        // confined, not the global tier's unconfined grant
   });
 
-  // REWRITTEN (operator 2026-08-20): "neither tier set" used to REFUSE outright (the 2026-08-16
-  // gate). Refined the same day — see the identical note on its twin above: an unset accessLevel
-  // now resolves to 'regular' and the turn runs CONFINED, loadPermission('regular') included.
-  it("neither tier set → resolves to 'regular', runs CONFINED (superseded — was \"turn() REFUSES\")", async () => {
+  // REWRITTEN TWICE — see the identical note on its twin above. "Neither tier set" used to
+  // REFUSE outright (2026-08-16), then resolved to 'regular' (2026-08-20), and since 2026-09-23
+  // resolves to 'sandbox'. What this one is actually guarding is unchanged throughout: the
+  // allowed_users gate below must not fire on a being that never asked for 'all'.
+  it("neither tier set → resolves to 'sandbox', runs BOXED (superseded twice — was \"turn() REFUSES\")", async () => {
     const brains = { resolve: () => ({ name: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'all' }) };
     let seenLevel = null;
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
-      brains, skipAccessLevelDefault: true,
+      brains, skipAccessLevelDefault: true, platform: 'win32',
       loadPermission: (level) => { seenLevel = level; return { dangerouslySkipPermissions: false, allowedTools: DEFAULT_ALLOWED_TOOLS }; },
     });
     await brain.turn('e', ev);
-    expect(seenLevel).toBe('regular');
-    expect(pool.calls).toHaveLength(1);
+    expect(seenLevel).toBe('sandbox');
+    expect(pool.calls).toHaveLength(1);    // ...and no allowed_users is required for it
   });
 });
 
@@ -1998,7 +2206,11 @@ describe('brainpool.turn — dangerously_skip_permissions:true escalation hole i
 });
 
 // A harness variant that captures onLog (the write-tools-in-allowed_paths log line).
-function harnessWithLog(logs, brains) {
+// PLATFORM IS A PARAMETER HERE TOO (2026-09-23), for the reason the main harness() carries
+// one: it decides whether the turn is BOXED, and a boxed turn's `allowed_paths` classification
+// reaches the OS share lists instead of the CLI ones. A caller that asserts addDirs/readOnlyDirs
+// is asking about the unboxed tier and must say so; the default stays win32, the live shape.
+function harnessWithLog(logs, brains, platform = 'win32') {
   let state = emptyState();
   const pool = fakePool([{ text: 'ok', sessionId: 's' }]);
   const loadState = async () => state;
@@ -2016,6 +2228,7 @@ function harnessWithLog(logs, brains) {
     loadFeed: async () => '', loadManifest: async () => '',
     brains,
     loadPermission: () => null,
+    platform,
     onLog: (m) => logs.push(String(m)),
   });
   return { brain, pool };
@@ -2427,7 +2640,13 @@ describe('brainpool.turn — allowed_paths reach the OS layer as brainOptions.sa
     expect(opts.sandboxSharePathsReadOnly).toEqual(['C:/work/reference']);
   });
 
-  it('a CONFINED sandboxed being gets BOTH layers from the one walk, and they agree on the path list', async () => {
+  it('a sandboxed being gets the OS layer and ONLY it — every declared path, in its own class', async () => {
+    // WAS "gets BOTH layers ... and they agree" until 2026-09-23. There is no second layer to
+    // agree with any more: the CLI half was retired for a boxed being (operator: "we are not
+    // using allowed_paths from the CLI ... these restrictions are OS enforced"), so what the
+    // one walk produces goes to the launcher and nowhere else. The property the old assertion
+    // was really protecting — the two CLASSES stay apart, and nothing is dropped — is asserted
+    // directly below instead of through the CLI lists that used to mirror them.
     const brains = { resolve: () => ({ name: 'egpt', type: 'ccode', allowed_tools: ['Read', 'Edit'], allowed_paths: PATHS }) };
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
       brains, platform: 'win32',
@@ -2435,17 +2654,19 @@ describe('brainpool.turn — allowed_paths reach the OS layer as brainOptions.sa
     });
     await brain.turn('e', ev);
     const opts = pool.calls[0].brainOptions;
-    expect(opts.addDirs).toEqual(['C:/work/project']);
-    expect(opts.readOnlyDirs).toEqual(['C:/work/reference']);
+    expect(opts.osConfined).toBe(true);
+    expect(opts).not.toHaveProperty('addDirs');
+    expect(opts).not.toHaveProperty('readOnlyDirs');
     // REPRODUCE-FIRST (operator 2026-09-13): the OS layer covers EVERY declared path — leaving a
     // read-only one out would reproduce the original defect for exactly that path (permitted by
     // Claude Code, unreadable to the kernel) — but it covers it IN ITS OWN CLASS. Concatenating
-    // the two lists here is what made "read-only" advisory: the launcher granted Modify on every
+    // the two lists is what made "read-only" advisory: the launcher granted Modify on every
     // -SharePath entry, so a being holding Bash wrote straight past readOnlyDenyRules.
-    expect(opts.sandboxSharePaths).toEqual(opts.addDirs);
-    expect(opts.sandboxSharePathsReadOnly).toEqual(opts.readOnlyDirs);
-    // The two layers still agree about WHICH folders this being was told it may use...
-    expect([...opts.sandboxSharePaths, ...opts.sandboxSharePathsReadOnly]).toEqual([...opts.addDirs, ...opts.readOnlyDirs]);
+    expect(opts.sandboxSharePaths).toEqual(['C:/work/project']);
+    expect(opts.sandboxSharePathsReadOnly).toEqual(['C:/work/reference']);
+    // Nothing declared went missing...
+    expect([...opts.sandboxSharePaths, ...opts.sandboxSharePathsReadOnly].sort())
+      .toEqual(Object.keys(PATHS).map((p) => p.replace(/^\/c\//, 'C:/')).sort());
     // ...and no path is in both classes, which is what would hand the launcher two ACEs for one path.
     expect(opts.sandboxSharePaths.filter((p) => opts.sandboxSharePathsReadOnly.includes(p))).toEqual([]);
   });
@@ -2494,9 +2715,12 @@ describe('brainpool.turn — allowed_paths reach the OS layer as brainOptions.sa
       name: 'egpt', type: 'ccode', allowed_tools: ['Read'],
       allowed_paths: { '/c/work/rw': { allowed_tools: ['Read', 'Write'] } },
     }) };
-    const { brain, pool } = harnessWithLog(logs, brains);
+    const { brain, pool } = harnessWithLog(logs, brains);   // win32: BOXED, the live shape
     await brain.turn('e', ev);
-    expect(pool.calls[0].brainOptions.addDirs).toEqual(['C:/work/rw']);
+    // The classification now reaches the one surviving consumer (2026-09-23) — but the WALK
+    // still runs under confinementFor, which is what emits this line, and it must still emit
+    // it exactly once however many consumers read the answer.
+    expect(pool.calls[0].brainOptions.sandboxSharePaths).toEqual(['C:/work/rw']);
     const hits = logs.filter((l) => String(l).includes("per-path tool granularity beyond read-only isn't native"));
     expect(hits, `the line was emitted ${hits.length} times`).toHaveLength(1);
   });
@@ -2507,14 +2731,15 @@ describe('brainpool.turn — allowed_paths reach the OS layer as brainOptions.sa
 //    per TYPE FILE, so granting one folder to a second being meant writing the block into a
 //    second file — and revoking it meant finding every copy. config.yaml's own top-level
 //    `allowed_paths:` is merged into every being's def by resolveBeingDef (withNodeAllowedPaths),
-//    UNDER the def's own entries, so the ONE walk (allowedPathsFor) still has one map and the two
-//    consumers — confinementFor's CLI lists and sandboxSharePathsFor's OS share lists — cannot
-//    disagree about what the node granted. ──
+//    UNDER the def's own entries, so the ONE walk (allowedPathsFor) still has one map. Since
+//    2026-09-23 a BOXED being has only one consumer left for that map — sandboxSharePathsFor's
+//    OS share lists — so these read the merge off the share lists; the CLI lists are asserted
+//    ABSENT once, below, and in full on the unboxed tier in its own describe. ──
 describe('brainpool — a NODE-LEVEL allowed_paths reaches every being', () => {
   const SRC = 'C:/Users/an/src';
   const NODE = { [SRC]: { allowed_tools: ['Read', 'Glob', 'Grep'] } };
 
-  it('REPRODUCE-FIRST: a being whose type file declares NO allowed_paths is granted the node\'s — at BOTH layers, and they agree', async () => {
+  it('REPRODUCE-FIRST: a being whose type file declares NO allowed_paths is granted the node\'s — and the kernel is where it lands', async () => {
     const brains = { resolve: () => ({ name: 'egpt', type: 'ccode', allowed_tools: ['Read', 'Edit'] }) };
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
       brains, platform: 'win32',
@@ -2523,10 +2748,12 @@ describe('brainpool — a NODE-LEVEL allowed_paths reaches every being', () => {
     });
     await brain.turn('e', ev);
     const opts = pool.calls[0].brainOptions;
-    expect(opts.readOnlyDirs).toEqual([SRC]);                     // the CLI layer confines but PERMITS it...
-    expect(opts.sandboxSharePathsReadOnly).toEqual([SRC]);        // ...and the kernel gets the same folder, same class
-    expect(opts).not.toHaveProperty('addDirs');
+    expect(opts.sandboxSharePathsReadOnly).toEqual([SRC]);        // the kernel gets the folder, in the node's class
     expect(opts).not.toHaveProperty('sandboxSharePaths');
+    // ...and the CLI layer is not fed at all under the box (2026-09-23), which is what keeps a
+    // node-wide grant from spelling the operator's own path into a sandboxed being's argv.
+    expect(opts).not.toHaveProperty('readOnlyDirs');
+    expect(opts).not.toHaveProperty('addDirs');
   });
 
   it('THE DEF WINS: a being that names the same path keeps its OWN grant, and the path is not granted twice', async () => {
@@ -2541,10 +2768,8 @@ describe('brainpool — a NODE-LEVEL allowed_paths reaches every being', () => {
     });
     await brain.turn('e', ev);
     const opts = pool.calls[0].brainOptions;
-    expect(opts.addDirs).toEqual([SRC]);                          // full access, the DEF's class — msys form normalized
-    expect(opts).not.toHaveProperty('readOnlyDirs');              // …and the node's read-only entry did not also land
-    expect(opts.sandboxSharePaths).toEqual([SRC]);
-    expect(opts).not.toHaveProperty('sandboxSharePathsReadOnly');
+    expect(opts.sandboxSharePaths).toEqual([SRC]);                     // full access, the DEF's class — msys form normalized
+    expect(opts).not.toHaveProperty('sandboxSharePathsReadOnly');      // …and the node's read-only entry did not also land
   });
 
   it('a NARROWER path of the being\'s own is kept BESIDE the node grant — its own entries first', async () => {
@@ -2560,8 +2785,7 @@ describe('brainpool — a NODE-LEVEL allowed_paths reaches every being', () => {
     });
     await brain.turn('e', ev);
     const opts = pool.calls[0].brainOptions;
-    expect(opts.readOnlyDirs).toEqual(['C:/Users/an/src/egpt', SRC]);
-    expect(opts.sandboxSharePathsReadOnly).toEqual(opts.readOnlyDirs);
+    expect(opts.sandboxSharePathsReadOnly).toEqual(['C:/Users/an/src/egpt', SRC]);
   });
 
   it('the widest tier gets it too: a skip-permissions being has no CLI layer at all, and the ACE is the only reachability there is', async () => {

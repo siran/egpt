@@ -210,13 +210,34 @@ describe('the OTHER half: a standing read grant on the junction target', () => {
     // ~\src keeps its TRAVERSE ace (walk through, do not list) — that is what still lets the
     // pool reach the checkout by name without enumerating what else is in there.
     expect(p).toMatch(/'the operator source' = Join-Path \$env:USERPROFILE 'src'/);
+    // ...AND THE RETIREMENT HAS TO PUT IT BACK (2026-09-23, second pass). `/remove:g` takes off
+    // EVERY explicit ACE for the named principal on that object — it cannot remove one of two —
+    // so the revoke above also removed the traverse ACE the ancestor step had just granted,
+    // every run, leaving the pool unable to walk ~\src and the checkout unreachable BY NAME
+    // through the junction that points at it. The behaviour is proved for real in
+    // setup/sandbox-account.Tests.ps1; this locks that the shipped script does it at all.
+    expect(p).toMatch(/Grant-SandboxPoolAce -Path \$srcDir -Grant 'Traverse'/);
+    expect(p.indexOf("Grant-SandboxPoolAce -Path $srcDir -Grant 'Traverse'"))
+      .toBeGreaterThan(p.indexOf('Revoke-SandboxPathAces -Path $srcDir'));
+    // CHECK-FIRST SURVIVES IT: a node already narrowed must still write NOTHING, because a
+    // blind revoke-then-re-grant is two inheritance re-propagations over ~\src (307 s a pass)
+    // on every single run. The guard asks the same "already granted" predicate the grant itself
+    // branches on, so the two cannot disagree about what the wide ACE is.
+    expect(p).toMatch(/Test-SandboxPoolAcePresent -Path \$srcDir -Grant 'Read'/);
+    expect(p.indexOf("Test-SandboxPoolAcePresent -Path $srcDir -Grant 'Read'"))
+      .toBeLessThan(p.indexOf('Revoke-SandboxPathAces -Path $srcDir'));
   });
 
   it('it is granted to the GROUP, which is what keeps it distinguishable from lease litter', () => {
     // An ACE naming egpt-sandbox-pool on ~\src is this standing grant. An ACE naming an
     // individual egpt-sbx-NN anywhere under it is a lease ACE that should have been revoked.
     // Reading an icacls dump depends on the two never being written by the same code path.
-    expect(accountLib()).toMatch(/function Grant-SandboxPoolAce[\s\S]{0,1200}NTAccount\(\$SandboxPoolGroup\)/);
+    // The default principal is the GROUP, resolved by name in the one place that resolves it
+    // (Get-SandboxPoolGroupSid, extracted 2026-09-23 when the provisioner's ~\src retirement
+    // became its third caller — three NTAccount translations would be three chances to name a
+    // principal that merely shares the name).
+    expect(accountLib()).toMatch(/function Grant-SandboxPoolAce[\s\S]{0,1200}\$Sid = Get-SandboxPoolGroupSid/);
+    expect(accountLib()).toMatch(/function Get-SandboxPoolGroupSid[\s\S]{0,300}NTAccount\(\$SandboxPoolGroup\)/);
     // The Read row of the one grant table: inheritable ReadAndExecute, nothing more.
     expect(accountLib()).toMatch(/Read\s+= @\{ Spec = '\(OI\)\(CI\)\(RX\)';[\s\S]{0,200}'ReadAndExecute, Synchronize'/);
   });
@@ -231,11 +252,18 @@ describe('the OTHER half: a standing read grant on the junction target', () => {
     // order, which is the part a refactor could quietly lose.
     const lib = accountLib();
     const fn = lib.slice(lib.indexOf('function Grant-SandboxPoolAce'), lib.indexOf('function Test-SandboxPoolReadCovered'));
-    const read = fn.indexOf('$present = @((Get-Acl');
+    // The check is a CALL since 2026-09-23 — Test-SandboxPoolAcePresent, so the provisioner can
+    // ask the same question without writing — but it is still asked BEFORE the one icacls line.
+    const read = fn.indexOf('Test-SandboxPoolAcePresent');
     const write = fn.indexOf('& icacls.exe');
     expect(read).toBeGreaterThan(0);
     expect(write).toBeGreaterThan(read);
     expect(fn).toMatch(/return 'already granted'/);
+    // ...and the predicate it calls is the DACL read, and reads only: one Get-Acl, no icacls.
+    const pred = lib.slice(lib.indexOf('function Test-SandboxPoolAcePresent'), lib.indexOf('function Get-SandboxPoolGroupSid'));
+    expect(pred).toMatch(/\$present = @\(\(Get-Acl/);
+    expect(pred).not.toMatch(/icacls/);
+    expect(pred).not.toMatch(/Set-Acl/);
     // ONE ACL tool for every grant, the same one the revoke uses. Set-Acl is what hung twice
     // on C:\Users\an, and it persists the SACL as well as the DACL.
     expect(fn).not.toMatch(/Set-Acl/);
@@ -253,8 +281,13 @@ describe('the OTHER half: a standing read grant on the junction target', () => {
     // source, between turns as well as during them. It has to be a decision on the page.
     const p = provisioner();
     const i = p.indexOf("$srcDir = Join-Path $env:USERPROFILE 'src'");
-    const header = p.slice(Math.max(0, i - 2600), i);
+    // The window is "the comment block immediately above the step", measured from the step's
+    // own first line — it grew on 2026-09-23 when the inherited-vs-explicit story joined it.
+    const header = p.slice(Math.max(0, i - 4000), i);
     expect(header).toMatch(/STANDING, NOT PER-TURN/);
+    // ...and so is the OTHER decision that block now carries: the checkout's ACE has to be its
+    // own, because on the live node it was INHERITED from the ~\src grant the next step retires.
+    expect(header).toMatch(/THE CHECKOUT'S ACE MUST BE ITS OWN, NOT AN INHERITED ONE/);
   });
 });
 

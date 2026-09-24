@@ -27,7 +27,9 @@
 #     directory above the conversation folders;
 #   inheritable ReadAndExecute to the pool GROUP on the CLI tool dirs and on
 #     ~\src\egpt  - the eGPT checkout, and since 2026-09-23 NOT all of ~\src;
-#     the step after that one takes the old wide grant back off;
+#     the step after that one takes the old wide grant back off, and puts ~\src's
+#     traverse ACE back, because `/remove:g` cannot take off one of a principal's
+#     two ACEs and the walk-through is what makes the checkout reachable at all;
 #   inheritable Modify to the pool GROUP on pi's own config dir;
 #   per-lease Modify to ONE pool ACCOUNT on ONE conversation folder  - NOT here;
 #     that is the launcher's, granted at launch and revoked with the lease. The
@@ -184,6 +186,17 @@ try {
   # cannot enumerate what else is in ~\src. Removing the old wide grant is the
   # step right after this one: leaving it would make the narrowing cosmetic.
   #
+  # THE CHECKOUT'S ACE MUST BE ITS OWN, NOT AN INHERITED ONE, and that is what
+  # makes the two steps safe in this order. Measured on the live node 2026-09-23,
+  # ~\src\egpt read `egpt-sandbox-pool:(I)(OI)(CI)(RX)` - the (I) is INHERITED,
+  # from the wide ~\src grant the next step retires, so retiring the parent would
+  # have taken the checkout's access with it and silently. Grant-SandboxPoolAce's
+  # "already granted" check is EXPLICIT-ONLY (see its header), so an inherited ACE
+  # does not satisfy it and this step writes a real one on the object; a later
+  # revoke on the parent then re-propagates inheritance and leaves that explicit
+  # ACE exactly where it is. The requirement it is serving is the operator's, in
+  # one line: "make sure agents can always see their own code".
+  #
   # KEEP THE TWO KINDS APART when reading an icacls dump of this tree: an ACE
   # naming the GROUP (egpt-sandbox-pool) is this permanent grant; one naming an
   # individual egpt-sbx-NN is lease litter, and the last step of this script is
@@ -208,19 +221,55 @@ try {
   # advertises it, which is worse than the state being retired, not better.
   #
   # Revoke-SandboxPathAces, not a second icacls line: it is the ONE revoke in this
-  # sandbox, it reads the DACL first, and on a node that has already been narrowed
-  # it finds nothing and costs not one write. The first run on a node that has the
-  # ACE pays one re-propagation over ~\src, which is minutes - said here rather
-  # than discovered as a hang.
+  # sandbox, it reads the DACL first, and the first run on a node that has the ACE
+  # pays one re-propagation over ~\src, which is minutes - said here rather than
+  # discovered as a hang.
   #
   # THE GROUP, NEVER AN ACCOUNT: an ACE naming an individual egpt-sbx-NN under
   # ~\src is lease litter and belongs to the sweep at the end of this script; this
   # step takes off exactly the standing grant this script used to write.
+  #
+  # ---- AND IT PUTS THE TRAVERSE ACE BACK, WHICH IS THE WHOLE OF THIS STEP'S
+  # CORRECTION (2026-09-23, second pass). `/remove:g` takes off EVERY explicit ACE
+  # for the named principal on that object - it cannot remove one of two - and
+  # ~\src carries TWO for this group: the wide (OI)(CI)(RX) being retired here and
+  # the traverse-only (X,RA,RC) the ancestor step above just granted. So the
+  # revoke as first written removed BOTH, every run, and left the pool unable to
+  # WALK ~\src at all.
+  #
+  # THAT BREAKS THE ONE THING THE OPERATOR ASKED TO PRESERVE - "make sure agents
+  # can always see their own code". ~\src\egpt's own explicit ReadAndExecute
+  # (granted in the step above) is an ACE on the CHECKOUT, and an ACE on a leaf
+  # buys nothing unless every directory above it can be opened: the per-profile
+  # `src` junction points AT the checkout, and a junction is only a name - the
+  # kernel checks the TARGET's DACL, and Node stats every component on the way.
+  #
+  # CHECK FIRST, SO A CONVERGED RUN STILL WRITES NOTHING. A blind revoke-then-
+  # re-grant would cost TWO re-propagations over ~\src on every single run (that
+  # tree measured 307 s a pass), and this script's whole 2026-09-20 correction was
+  # that a grant is a fact to converge on. Test-SandboxPoolAcePresent asks for
+  # exactly the ACE being retired - the same "already granted" predicate
+  # Grant-SandboxPoolAce itself branches on, so the two cannot disagree - and on a
+  # node already narrowed the answer is no and not one DACL is touched.
   $step = Start-Step "retiring the old standing grant for '$SandboxPoolGroup' on $srcDir" `
     'This is the OTHER half of narrowing the src mount to the eGPT checkout. Nothing to do on a node already narrowed; on one that is not, removing an inheritable ACE re-propagates over the whole tree and takes minutes.'
-  $retired = @(Revoke-SandboxPathAces -Path $srcDir -AccountNames @($SandboxPoolGroup))
-  foreach ($rec in $retired) { Write-Host "         $srcDir : $($rec.Status)  - $($rec.Message)" }
-  Stop-Step $step (@($retired | Where-Object { $_.Status -eq 'revoked' }).Count.ToString() + ' wide grant(s) removed')
+  $poolGroupSid = Get-SandboxPoolGroupSid
+  if (-not (Test-SandboxPoolAcePresent -Path $srcDir -Grant 'Read' -Sid $poolGroupSid)) {
+    Write-Host "         $srcDir : already narrowed  - no wide read grant for '$SandboxPoolGroup' on it, nothing written"
+    Stop-Step $step '0 wide grant(s) removed'
+  } else {
+    $retired = @(Revoke-SandboxPathAces -Path $srcDir -AccountNames @($SandboxPoolGroup))
+    foreach ($rec in $retired) { Write-Host "         $srcDir : $($rec.Status)  - $($rec.Message)" }
+    if (@($retired | Where-Object { $_.Status -eq 'failed' }).Count -gt 0) {
+      throw "the wide '$SandboxPoolGroup' grant on $srcDir is still there after the revoke  - see the line(s) above"
+    }
+    # The traverse ACE went out with it (one principal, one /remove:g). Put it
+    # back through the ONE granting call, so the ancestor chain this script
+    # promises in its own summary is actually the state it leaves behind.
+    Write-Host "         $srcDir : re-granting the traverse ACE the revoke took off with it"
+    Grant-SandboxPoolAce -Path $srcDir -Grant 'Traverse' | Out-Null
+    Stop-Step $step (@($retired | Where-Object { $_.Status -eq 'revoked' }).Count.ToString() + ' wide grant(s) removed, traverse restored')
+  }
 
   # pi (@p): LET PI KEEP ITS OWN DEFAULT CONFIG DIR (~/.pi/agent) and point the
   # sandbox at it, rather than relocating pi to a directory eGPT invented

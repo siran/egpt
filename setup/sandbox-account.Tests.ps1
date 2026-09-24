@@ -2174,3 +2174,201 @@ Describe 'the launcher per-lease grants (the statements the launcher really runs
     (@([regex]::Matches($src, '(?m)^\s*Set-Acl ')).Count) | Should Be 0
   }
 }
+
+# ---------------------------------------------------------------------------
+# THE ~\src RETIREMENT, AND THE TRAVERSE ACE IT USED TO TAKE WITH IT (2026-09-23).
+#
+# THE DEFECT, reasoned from the live node's own icacls output:
+#   ~\src        reve\egpt-sandbox-pool:(Rc,X,RA)  AND  (OI)(CI)(RX)
+#   ~\src\egpt   reve\egpt-sandbox-pool:(I)(OI)(CI)(RX)       <- INHERITED
+# The provisioner's step 5 retires the wide (OI)(CI)(RX) on ~\src, and it does
+# that with Revoke-SandboxPathAces, i.e. `icacls <path> /remove:g *<sid> /C`.
+# That verb takes off EVERY explicit ACE for the named principal on that object -
+# it cannot remove one of two - so it also removed the traverse-only (Rc,X,RA)
+# that step 3 had just granted, EVERY run. The pool was then unable to walk ~\src
+# at all, and ~\src\egpt - whose own access was INHERITED from the ACE being
+# retired - became unreachable by name through the `src` junction every pool
+# profile plants, because a junction is only a name and the kernel checks the
+# TARGET's DACL.
+#
+# "make sure agents can always see their own code" (operator, the same day) is
+# the requirement that breaks, and it breaks silently: nothing fails at
+# provision time, the next sandboxed turn simply cannot read the repo.
+#
+# THE FIX HAS TWO HALVES, both asserted below: ~\src\egpt gets its OWN EXPLICIT
+# ReadAndExecute (Grant-SandboxPoolAce's "already granted" check is explicit-only,
+# so an inherited ACE does not satisfy it and a real one is written on the
+# object), and the retirement puts ~\src's traverse ACE back after the revoke -
+# behind a check-first guard, so a node that is already narrowed still writes
+# nothing at all.
+#
+# HOW: the shipped statements are EXTRACTED from provision-sandbox-account.ps1
+# and run, never pasted - a copy here would pass while the shipped script still
+# stripped the ACE. They run against throwaway directories under $env:TEMP with
+# $SandboxPoolGroup pointed at the CURRENT USER, the same substitution every
+# grant test above makes. No pool account, no operator path, no live ACL.
+$script:ProvisionSandboxScript = Join-Path $PSScriptRoot 'provision-sandbox-account.ps1'
+
+function Get-ProvisionStatement([string]$Pattern) {
+  $hits = @(Get-Content -LiteralPath $script:ProvisionSandboxScript | Where-Object { $_ -match $Pattern })
+  if ($hits.Count -ne 1) { throw "expected exactly ONE provisioner line matching /$Pattern/, found $($hits.Count)" }
+  return $hits[0]
+}
+function Get-ProvisionLineIndex([string]$Pattern) {
+  $lines = @(Get-Content -LiteralPath $script:ProvisionSandboxScript)
+  $hits = @(0..($lines.Count - 1) | Where-Object { $lines[$_] -match $Pattern })
+  if ($hits.Count -ne 1) { throw "expected exactly ONE provisioner line matching /$Pattern/, found $($hits.Count)" }
+  return $hits[0]
+}
+# ReadAndExecute + Synchronize, inheritable - the (OI)(CI)(RX) row of the one
+# grant table, as it lands on disk. Spelled here for the same reason
+# $script:TraverseRights is.
+$script:ReadRights = 1179817
+
+Describe 'the provisioner retires the WIDE ~\src grant without taking the traverse ACE with it' {
+  $revokeStmt = $null
+  $regrantStmt = $null
+  $srcDir = $null
+  $poolGroupSid = $null
+
+  BeforeEach {
+    $script:TraverseSavedGroup = $SandboxPoolGroup
+    $script:SandboxPoolGroup = $script:MeName
+    $revokeStmt = Get-ProvisionStatement 'Revoke-SandboxPathAces -Path \$srcDir -AccountNames'
+    $regrantStmt = Get-ProvisionStatement 'Grant-SandboxPoolAce -Path \$srcDir -Grant ''Traverse'''
+    $srcDir = New-LedgerTempDir
+    $poolGroupSid = Get-SandboxPoolGroupSid
+  }
+
+  AfterEach {
+    $script:SandboxPoolGroup = $script:TraverseSavedGroup
+    $script:IcaclsSpy = $null
+  }
+
+  It 'REPRODUCE: the shipped revoke takes BOTH of the group ACEs off ~\src - the traverse one included' {
+    # The node's real shape: walk-through on itself, plus the wide inheritable
+    # read for the subtree. /remove:g cannot take off one of the two.
+    Grant-SandboxPoolAce -Path $srcDir -Grant 'Traverse' | Out-Null
+    Grant-SandboxPoolAce -Path $srcDir -Grant 'Read' | Out-Null
+    (Get-TestExplicitAceCount $srcDir) | Should Be 2
+
+    # The shipped line is itself an assignment to $retired, so it is run, not
+    # captured - Invoke-Expression executes in this scope.
+    $retired = $null
+    Invoke-Expression $revokeStmt
+
+    (@($retired | Where-Object { $_.Status -eq 'revoked' }).Count) | Should Be 1
+    # BOTH gone. This is the whole defect, and it is a property of icacls, not a
+    # bug in the revoke - which is why the step has to put the traverse back.
+    (Get-TestExplicitAceCount $srcDir) | Should Be 0
+  }
+
+  It 'THE FIX: the shipped statements, run in order, leave the traverse ACE and only it' {
+    Grant-SandboxPoolAce -Path $srcDir -Grant 'Traverse' | Out-Null
+    Grant-SandboxPoolAce -Path $srcDir -Grant 'Read' | Out-Null
+
+    # The guard the shipped step branches on, asked here as the question it is.
+    (Test-SandboxPoolAcePresent -Path $srcDir -Grant 'Read' -Sid $poolGroupSid) | Should Be $true
+    Invoke-Expression $revokeStmt
+    Invoke-Expression $regrantStmt
+
+    $aces = @(Get-TestExplicitAces $srcDir)
+    $aces.Count | Should Be 1
+    ([int]$aces[0].FileSystemRights) | Should Be $script:TraverseRights
+    # ...and the wide read really is gone: (Rc,X,RA) withholds read-data, which
+    # is the whole difference between walking through ~\src and reading it.
+    (([int]$aces[0].FileSystemRights -band $script:ReadRights) -eq $script:ReadRights) | Should Be $false
+  }
+
+  It 'A CONVERGED RUN WRITES NOTHING: on a node already narrowed the guard says no and no DACL is touched' {
+    # The 2026-09-20 correction this step must not undo. A blind revoke-then-
+    # re-grant would cost TWO inheritance re-propagations over ~\src on every
+    # run, and that tree measured 307 s for one pass.
+    Grant-SandboxPoolAce -Path $srcDir -Grant 'Traverse' | Out-Null
+    $script:IcaclsSpy = New-Object System.Collections.Generic.List[object]
+
+    (Test-SandboxPoolAcePresent -Path $srcDir -Grant 'Read' -Sid $poolGroupSid) | Should Be $false
+
+    $script:IcaclsSpy.Count | Should Be 0
+    (Get-TestExplicitAceCount $srcDir) | Should Be 1
+  }
+
+  It 'the guard asks for exactly the ACE being retired, so a traverse-only path is not mistaken for a wide one' {
+    # The direction that would be a silent disaster: answering "yes, the wide
+    # grant is there" on a narrowed node revokes the traverse every run.
+    Grant-SandboxPoolAce -Path $srcDir -Grant 'Traverse' | Out-Null
+    (Test-SandboxPoolAcePresent -Path $srcDir -Grant 'Read' -Sid $poolGroupSid) | Should Be $false
+    Grant-SandboxPoolAce -Path $srcDir -Grant 'Read' | Out-Null
+    (Test-SandboxPoolAcePresent -Path $srcDir -Grant 'Read' -Sid $poolGroupSid) | Should Be $true
+  }
+
+  It 'the ORDER is the fix: the guard comes first, the re-grant comes after the revoke' {
+    $guard = Get-ProvisionLineIndex 'Test-SandboxPoolAcePresent -Path \$srcDir -Grant ''Read'''
+    $revoke = Get-ProvisionLineIndex 'Revoke-SandboxPathAces -Path \$srcDir -AccountNames'
+    $regrant = Get-ProvisionLineIndex 'Grant-SandboxPoolAce -Path \$srcDir -Grant ''Traverse'''
+    $revoke | Should BeGreaterThan $guard
+    $regrant | Should BeGreaterThan $revoke
+    # ...and the whole step still comes after the standing read grant on the
+    # checkout, which is the ACE that must exist on the object BEFORE its
+    # parent's inheritable one is removed.
+    $repoGrant = Get-ProvisionLineIndex 'Grant-PoolOn -Targets \$readOnly -Grant ''Read'''
+    $guard | Should BeGreaterThan $repoGrant
+  }
+}
+
+# ---------------------------------------------------------------------------
+# EXPLICIT, NEVER INHERITED - the half of the repo grant that makes the step
+# above safe (2026-09-23). ~\src\egpt read `(I)(OI)(CI)(RX)` on the live node:
+# its access was INHERITED from the ~\src ACE being retired, so if the grant had
+# accepted that as "already granted" it would have written nothing, the parent's
+# ACE would have come off, and the checkout would have lost its access with no
+# line of output anywhere saying so.
+Describe 'Grant-SandboxPoolAce writes an EXPLICIT ACE even where an inherited one already covers it' {
+  $parent = $null
+  $child = $null
+
+  BeforeEach {
+    $script:TraverseSavedGroup = $SandboxPoolGroup
+    $script:SandboxPoolGroup = $script:MeName
+    $parent = New-LedgerTempDir                                  # stands in for ~\src
+    Grant-SandboxPoolAce -Path $parent -Grant 'Read' | Out-Null  # the wide, inheritable grant
+    $child = Join-Path $parent 'egpt'                            # stands in for ~\src\egpt
+    New-Item -ItemType Directory -Path $child -Force | Out-Null
+  }
+
+  AfterEach {
+    $script:SandboxPoolGroup = $script:TraverseSavedGroup
+    $script:IcaclsSpy = $null
+  }
+
+  It 'REPRODUCE: the checkout starts with an INHERITED read ACE and no explicit one of its own' {
+    (Get-TestExplicitAceCount $child) | Should Be 0
+    $inherited = @((Get-Acl -LiteralPath $child).GetAccessRules($false, $true, [System.Security.Principal.SecurityIdentifier]) |
+      Where-Object { $_.IdentityReference.Value -eq $script:MeSid.Value })
+    $inherited.Count | Should Be 1
+  }
+
+  It 'the grant is NOT skipped by the inherited ACE - an explicit one is written on the object' {
+    (Test-SandboxPoolAcePresent -Path $child -Grant 'Read' -Sid $script:MeSid) | Should Be $false
+    (Grant-SandboxPoolAce -Path $child -Grant 'Read') | Should Be 'granted'
+    (Get-TestExplicitAceCount $child) | Should Be 1
+  }
+
+  It 'and it SURVIVES the parent being revoked, which is the whole point' {
+    Grant-SandboxPoolAce -Path $child -Grant 'Read' | Out-Null
+
+    Revoke-SandboxPathAces -Path $parent -AccountNames @($script:MeName) | Out-Null
+
+    # The inherited copy went with the parent's ACE; the explicit one did not.
+    (Get-TestExplicitAceCount $parent) | Should Be 0
+    (Get-TestExplicitAceCount $child) | Should Be 1
+    (Test-SandboxPoolAcePresent -Path $child -Grant 'Read' -Sid $script:MeSid) | Should Be $true
+  }
+
+  It 'Test-SandboxPoolAcePresent never writes - it is the question, not the answer' {
+    $script:IcaclsSpy = New-Object System.Collections.Generic.List[object]
+    Test-SandboxPoolAcePresent -Path $child -Grant 'Read' -Sid $script:MeSid | Out-Null
+    Test-SandboxPoolAcePresent -Path $parent -Grant 'Read' -Sid $script:MeSid | Out-Null
+    $script:IcaclsSpy.Count | Should Be 0
+  }
+}

@@ -1705,9 +1705,18 @@ export const CONFIG_SCHEMA = {
           access_level
             ENUM: regular | all | sandbox. Points this agent at
             config/permissions/<level>.md (src/spine/permission-levels.mjs),
-            resolved fresh every turn (brainpool.mjs) - never a freeze. UNSET
-            = this node's ordinary default (the type file's own grant,
-            unmodified). All three are the SAME values /agents <handle>|all
+            resolved fresh every turn (brainpool.mjs) - never a freeze.
+
+            UNSET = 'sandbox' (operator 2026-09-23: "all agents sandboxed, but
+            the meta engineers"). Silence is not an absence of a level: it
+            resolves to the OS box, which resolveSandboxed then FORCES on (its
+            rung 1), so a being that declares nothing runs inside a Windows
+            logon session whose ACEs are its only boundary. It was 'regular'
+            until that ruling, i.e. silence meant a CLI-flag boundary that the
+            being's own Bash walks past. A meta engineer must therefore declare
+            access_level: all explicitly - the shipped skeleton's wren does.
+
+            All three are the SAME values /agents <handle>|all
             access_level <level> writes per-conversation - that validator and
             this enum are the same list, ACCESS_LEVELS in
             src/spine/permission-levels.mjs, so a fourth tier cannot reach one
@@ -1955,10 +1964,16 @@ export const CONFIG_SCHEMA = {
 
     HOW IT APPLIES: src/spine/brainpool.mjs's resolveBeingDef merges this map
     into EVERY being's resolved def (withNodeAllowedPaths), UNDER the def's
-    own entries. So both consumers of the one allowed_paths walk see the
-    merged result and cannot disagree: confinementFor (the CLI layer -
-    --add-dir and read-only deny rules) and sandboxSharePathsFor (the OS
-    layer - the launcher's per-turn -SharePath / -SharePathReadOnly ACE).
+    own entries, so the one allowed_paths walk has one map.
+
+    WHERE IT LANDS depends on whether the being is OS-sandboxed, and since
+    2026-09-23 it is one place or the other, never both. SANDBOXED: the OS
+    layer only - sandboxSharePathsFor, i.e. the launcher's per-turn
+    -SharePath / -SharePathReadOnly ACE. No --add-dir and no deny rules are
+    emitted at all; the ACE is the boundary and the kernel checks it on every
+    open. NOT SANDBOXED (access_level regular on a node with no box): the CLI
+    layer only - confinementFor's --add-dir and read-only deny rules, which
+    are then that being's only boundary and are untouched.
 
     THE DEF WINS. A being whose type file names the SAME path keeps its own,
     possibly narrower, grant - a node-wide line added later never widens it.
