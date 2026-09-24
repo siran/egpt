@@ -877,6 +877,218 @@ function Get-SandboxLaunchSummary {
   return "launch account=$AccountName cwd=$Cwd junction=$junction target=$target"
 }
 
+# ---- THE FILE ID, AND WHY A LEDGER NEEDS ONE (2026-09-23).
+#
+# THE HOLE THIS CLOSES, measured on kg the day it was found. A lease grants one
+# pool account a Modify ACE on exactly one conversation folder and records that
+# PATH in its lock's ledger; the revoke looks the ACE up again by that path. A
+# PATH IS A NAME, and NTFS carries a DACL through a rename - so renaming the
+# folder leaves the ACE alive at the new name while the only record of it points
+# at nothing:
+#   egpt-sbx-08, -13 -> ...\conversations\whatsapp\Favel Konefka-2608141626
+#   egpt-sbx-03, -04, -10 -> ...\conversations\whatsapp\Favel Elena Konefka-2608141626
+# One conversation (the -2608141626 id is identical), renamed slug. The revoke
+# reported 'missing', both callers read 'missing' as resolved, dropped the line
+# and released the lock, and three pool accounts were left holding Modify on a
+# conversation none of them was leased to - the exact cross-conversation exposure
+# the lease design exists to prevent, re-opened one rename at a time.
+#
+# SO THE LEDGER RECORDS WHAT THE OBJECT IS, NOT ONLY WHAT IT IS CALLED. The name
+# stays first and stays authoritative while it still names the same object; the
+# id is what the revoke falls back to when it does not.
+#
+# ---- WHAT WAS MEASURED, unelevated as the operator on reve, 2026-09-23. All of
+# it decided the shape below and none of it is reasoning:
+#  * `fsutil file queryfileid <dir>` works on a DIRECTORY, UNELEVATED, and prints
+#    the 128-bit id: 0x0000000000000000002900000008f38a. It agrees exactly with
+#    GetFileInformationByHandleEx(FileIdInfo)'s FILE_ID_INFO.FileId - both were
+#    run against the same directory and compared byte for byte.
+#  * `fsutil file queryFileNameById <anydir-on-the-volume> <id>` FOLLOWS THE
+#    RENAME, unelevated, and also follows a MOVE to a different parent. It
+#    answers with the object's current path.
+#  * A DELETED object answers `Error 87` and exit 1. That is the distinction this
+#    whole block has to preserve: a folder that was deleted took its ACEs with it
+#    and is genuinely resolved; a folder that was renamed did not.
+#  * NTFS VALIDATES THE SEQUENCE NUMBER, which is the hazard that would otherwise
+#    make this dangerous. A directory was created, its id recorded, deleted, and
+#    the very next directory created REUSED its MFT record (the low 48 bits are
+#    identical) with the sequence number bumped 0x0073 -> 0x0074. Resolving the
+#    OLD id then returned Error 87 while the NEW id resolved. A recycled record
+#    therefore CANNOT make a stale ledger line resolve to an innocent folder.
+#  * OpenFileById via P/Invoke resolves the same thing, also unelevated, with the
+#    128-bit ExtendedFileIdType and a hint handle to any directory on the volume
+#    (the 64-bit FileIdType form is not needed and was not used). It is NOT what
+#    this uses: fsutil is already the shape this file is built on - a native tool,
+#    shelled to, spy-able in Pester exactly like icacls - and Add-Type costs a
+#    C# compile (~130 ms measured, once per process) on the launcher's turn path
+#    where fsutil costs ~14 ms per call. The P/Invoke buys precision this does not
+#    need, because the round trip below re-checks every answer anyway.
+#
+# ---- NEVER ACT ON A HANDLE, ALWAYS ON A PATH. An id could be opened and its
+# security descriptor written through the handle, and that would be a SECOND DACL
+# writer in a file whose whole doctrine is "one icacls call, keyed by path, read
+# back before and after". So the id is used for exactly one thing: to ask the
+# filesystem what the object is CALLED NOW. What comes back is a path, and it
+# goes through the same Revoke-SandboxPathAces as everything else.
+#
+# ---- THE VOLUME IS PART OF THE ID. A file id is unique within a volume and
+# nowhere else, so the serial is recorded beside it and compared before a lookup.
+# Measured the same day: Win32_LogicalDisk's VolumeSerialNumber for C: is
+# 54118918, which is exactly the low half of FILE_ID_INFO's 64-bit
+# VolumeSerialNumber 0x0854119754118918 - the same fact in two widths. The CIM
+# read is ~137 ms, so it is cached per process and per drive letter; the launcher
+# grants two paths on one volume, so it happens once.
+$script:SandboxVolumeSerials = @{}
+function Get-SandboxVolumeSerial {
+  param([Parameter(Mandatory = $true)][string]$Path)
+  try {
+    $root = [System.IO.Path]::GetPathRoot([System.IO.Path]::GetFullPath($Path))
+    # A UNC share has no drive letter and no file ids worth recording; '' means
+    # "no volume identity", which every caller below treats as "do not check".
+    if ($root -notmatch '^([A-Za-z]):\\$') { return '' }
+    $drive = $Matches[1].ToUpperInvariant()
+    if ($script:SandboxVolumeSerials.ContainsKey($drive)) { return $script:SandboxVolumeSerials[$drive] }
+    $serial = ''
+    try {
+      $disk = Get-CimInstance -ClassName Win32_LogicalDisk -Filter "DeviceID='$drive`:'" -ErrorAction Stop
+      if ($disk -and $disk.VolumeSerialNumber) { $serial = ([string]$disk.VolumeSerialNumber).Trim().ToLowerInvariant() }
+    } catch {
+      # No serial is not an error: the id still works, it is just unconfirmed
+      # which volume it came from. Cached as '' so a broken WMI is asked once.
+      $serial = ''
+    }
+    $script:SandboxVolumeSerials[$drive] = $serial
+    return $serial
+  } catch { return '' }
+}
+
+# THE ID OF WHAT IS AT THIS PATH RIGHT NOW, as the one string the ledger stores:
+# '<volume serial>:<32 hex digits>'. $null when it cannot be had, and $null is a
+# FIRST-CLASS ANSWER, not a failure: the ledger line is then written exactly as
+# it was before this change and the revoke behaves exactly as it did. Nothing
+# here is allowed to cost a turn its grant.
+#
+# A REPARSE POINT IS DELIBERATELY REFUSED. fsutil follows a junction to its
+# target, so the id of a link is the id of the thing it points AT, while the ACE
+# this ledger is about sits on the LINK. Recording the target's id would let a
+# renamed link resolve to the target and take ACEs off the wrong object. The
+# launcher never grants on a junction anyway (an ACE on one would be an ACE on
+# nothing), so this costs nothing real and removes the one case that could be
+# wrong in the dangerous direction.
+#
+# A PATH WITH NO DRIVE LETTER IS REFUSED TOO, and for a sharper reason than
+# tidiness: a UNC share has no volume this side of the wire to look an id up on,
+# so an id recorded for one could never resolve - and an id that can never
+# resolve reads as 'unknown', which is 'failed', which KEEPS THE LOCK FOR EVER.
+# Recording nothing leaves such a path on the revoke-by-name path it has always
+# been on, which is the honest answer rather than a permanent retry.
+function Get-SandboxPathFileId {
+  param([Parameter(Mandatory = $true)][string]$Path)
+  try {
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { return $null }
+    if ([System.IO.Path]::GetPathRoot([System.IO.Path]::GetFullPath($Path)) -notmatch '^[A-Za-z]:\\$') { return $null }
+    # No 2>&1, for the reason Grant-SandboxPoolAce and Revoke-SandboxPathAces
+    # both carry: PS 5.1 turns a redirected native stderr into NativeCommandError
+    # records, which throw under the provisioner's $ErrorActionPreference='Stop'.
+    $out = & fsutil.exe file queryfileid $Path
+    if ($LASTEXITCODE -ne 0) { return $null }
+    # PARSED WITHOUT THE ENGLISH. fsutil's wording is localised; the hex literal
+    # is not. Any answer this misreads is caught by the round trip in
+    # Resolve-SandboxFileId, which re-asks this same function about the path it
+    # got back and refuses to act when the two disagree.
+    $m = [regex]::Match(($out | Out-String), '0x([0-9a-fA-F]{1,32})')
+    if (-not $m.Success) { return $null }
+    $id = $m.Groups[1].Value.ToLowerInvariant().PadLeft(32, '0')
+    if ($id -match '^0+$') { return $null }
+    return "$(Get-SandboxVolumeSerial -Path $Path):$id"
+  } catch { return $null }
+}
+
+# ARE THESE TWO RECORDS THE SAME OBJECT? Ids match, AND the volumes do not
+# contradict each other. An empty serial on either side is "unknown", not
+# "different" - an old ledger line and a WMI that would not answer both look like
+# that, and neither is evidence of a mismatch. Two different volumes really can
+# carry the same file id, which is the whole reason the serial is stored.
+function Test-SandboxFileIdMatch {
+  param([string]$Left, [string]$Right)
+  if (-not $Left -or -not $Right) { return $false }
+  $l = $Left.Split(':'); $r = $Right.Split(':')
+  if ($l.Count -lt 2 -or $r.Count -lt 2) { return $false }
+  if ($l[-1].ToLowerInvariant() -ne $r[-1].ToLowerInvariant()) { return $false }
+  if ($l[0] -and $r[0] -and $l[0].ToLowerInvariant() -ne $r[0].ToLowerInvariant()) { return $false }
+  return $true
+}
+
+# WHAT IS THIS OBJECT CALLED NOW? Returns { Status; Path; Message } with Status
+# one of:
+#   resolved  the object exists; Path is where it lives now, round-trip confirmed
+#   gone      the filesystem says no such id on that volume. The object was
+#             DELETED and its ACEs went with it - this one really is resolved,
+#             and it is the distinction the 'missing' warning was written about.
+#   unknown   it could not be looked up. NOT resolved, NOT proven gone: the
+#             caller must keep the lease and retry rather than drop the line.
+#
+# THE VOLUME HINT IS THE NEAREST SURVIVING ANCESTOR of the recorded path, walked
+# up until something exists. That is how the lookup stays on the volume the id
+# came from without opening a device or guessing a drive letter - a renamed
+# conversation folder still sits under the same ...\conversations\whatsapp, and
+# in the worst case the walk reaches the drive root, which is always there.
+#
+# THE ROUND TRIP IS THE GUARANTEE, and it is why a localised fsutil or a parse
+# that went wrong cannot cause a wrong revoke: whatever path comes back is asked
+# for ITS OWN id, and unless that id is the one we were looking for, the answer
+# is 'unknown' and nothing is written. Fail closed.
+function Resolve-SandboxFileId {
+  param(
+    [Parameter(Mandatory = $true)][string]$FileId,
+    [Parameter(Mandatory = $true)][string]$HintPath
+  )
+  $parts = $FileId.Split(':')
+  if ($parts.Count -lt 2 -or -not $parts[-1]) {
+    return [pscustomobject]@{ Status = 'unknown'; Path = $null; Message = "the ledger's file id '$FileId' is not in the '<volume serial>:<id>' form this can look up" }
+  }
+  $serial = $parts[0]
+  $id = $parts[-1]
+  try {
+    $hint = [System.IO.Path]::GetFullPath($HintPath)
+    while ($hint -and -not (Test-Path -LiteralPath $hint)) {
+      $parent = [System.IO.Path]::GetDirectoryName($hint)
+      if (-not $parent -or $parent -eq $hint) { $hint = $null; break }
+      $hint = $parent
+    }
+    if (-not $hint) {
+      return [pscustomobject]@{ Status = 'unknown'; Path = $null; Message = "nothing on the way up from '$HintPath' still exists, so there is no volume to ask about file id $id" }
+    }
+    if ($serial) {
+      $now = Get-SandboxVolumeSerial -Path $hint
+      if ($now -and $now -ne $serial.ToLowerInvariant()) {
+        return [pscustomobject]@{ Status = 'unknown'; Path = $null; Message = "the volume behind '$hint' is serial $now, not the $serial this id was taken from - a file id means nothing on another volume, so nothing was looked up" }
+      }
+    }
+    $out = & fsutil.exe file queryFileNameById $hint "0x$id"
+    if ($LASTEXITCODE -ne 0) {
+      return [pscustomobject]@{ Status = 'gone'; Path = $null; Message = "file id $id no longer exists on that volume, so the object itself was DELETED and took its ACEs with it" }
+    }
+    # Locale-free again: the answer is the only thing in the output shaped like a
+    # rooted path. \\?\ is how the API spells it; icacls and Get-Acl want it off.
+    $m = [regex]::Match(($out | Out-String), '(\\\\\?\\[^\r\n]+|[A-Za-z]:\\[^\r\n]+)')
+    if (-not $m.Success) {
+      return [pscustomobject]@{ Status = 'unknown'; Path = $null; Message = "file id $id resolved, but no path could be read out of what fsutil answered ($(($out | Out-String).Trim()))" }
+    }
+    $found = $m.Groups[1].Value.Trim()
+    if ($found.StartsWith('\\?\UNC\')) { $found = '\\' + $found.Substring(8) }
+    elseif ($found.StartsWith('\\?\')) { $found = $found.Substring(4) }
+    $back = Get-SandboxPathFileId -Path $found
+    if (-not (Test-SandboxFileIdMatch $back $FileId)) {
+      return [pscustomobject]@{ Status = 'unknown'; Path = $null; Message = "file id $id was answered with '$found', but that path's own id reads '$back' - the two disagree, so nothing was touched" }
+    }
+    return [pscustomobject]@{ Status = 'resolved'; Path = $found; Message = "file id $id is now at '$found'" }
+  } catch {
+    return [pscustomobject]@{ Status = 'unknown'; Path = $null; Message = "file id $id could not be looked up - $($_.Exception.Message)" }
+  }
+}
+
 # ---- THE LEASE LEDGER, and the ACE revoke that rides the stale-lease reclaim
 # (operator 2026-09-11). These five functions live HERE, beside
 # Get-SandboxPoolLeaseOrder, because they are lease machinery and because
@@ -913,11 +1125,56 @@ function Get-SandboxLaunchSummary {
 # has in its hand. It holds PATHS ONLY, one per line - never a credential, never
 # an environment value - and it is unreadable by anyone else for the life of the
 # lease because the launcher holds it FileShare::None.
-$SandboxLeaseLedgerHeader = '# egpt sandbox lease ledger - one path per line, each granted an explicit ACE (Modify, or ReadAndExecute for a read-only share path) to this lock''s pool account by the turn holding it. A RECLAIM of this lock revokes them - by SID, whatever rights they carry: the turn that wrote them was hard-killed before its own release ran. Deleted with the lock on a clean release.'
+$SandboxLeaseLedgerHeader = '# egpt sandbox lease ledger - one granted path per line, each holding an explicit ACE (Modify, or ReadAndExecute for a read-only share path) to this lock''s pool account, written by the turn holding it. A line may carry the path''s NTFS file id after a ''|'' (|fid=<volume serial>:<id>); that is what follows the ACE when the folder is RENAMED, since NTFS carries a DACL through a rename and the name then finds nothing. A RECLAIM of this lock revokes them - by SID, whatever rights they carry: the turn that wrote them was hard-killed before its own release ran. Deleted with the lock on a clean release.'
 
-# Read the ledger back. Comment lines and blanks are skipped, so an EMPTY or
-# pre-ledger lock file (every lock written before 2026-09-11 is 0 bytes) reads
-# as zero paths rather than as an error - honest: those turns' ACEs were never
+# ---- THE LINE FORMAT, AND THE OLD LEDGERS IT MUST NOT BREAK (2026-09-23).
+#
+#   C:\Users\an\.egpt\conversations\whatsapp\Favel Konefka-2608141626
+#   C:\Users\an\.egpt\conversations\whatsapp\Favel Konefka-2608141626|fid=54118918:0000000000000000002900000008f38a
+#
+# THE PATH IS STILL FIRST AND STILL WHOLE, so what an operator reads in a lock
+# file is what it always was. Everything after the first '|' is machinery.
+#
+# '|' IS THE SEPARATOR BECAUSE IT CANNOT BE IN A PATH. Windows reserves
+# \ / : * ? " < > | in a file name, so a '|' in a ledger line is never part of
+# the path and the split can never be ambiguous. (A tab can be in an NTFS name;
+# that is why it is not this.)
+#
+# A LINE WITH NO '|' IS AN OLD LEDGER LINE and reads as a path with no id, which
+# is exactly what every lock written before today holds. Those leases behave
+# precisely as they did: revoke by path, and 'missing' - with its "this cannot
+# tell a delete from a rename" message - when the name finds nothing. Nothing
+# about this change invents an id for a grant that never recorded one.
+# UNKNOWN FIELDS ARE IGNORED rather than rejected, so a future field cannot make
+# today's code refuse a ledger it could otherwise clean up.
+function ConvertTo-SandboxLeaseLedgerLine {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [string]$FileId = ''
+  )
+  $p = $Path.Trim()
+  if (-not $FileId) { return $p }
+  return "$p|fid=$($FileId.Trim())"
+}
+
+function ConvertFrom-SandboxLeaseLedgerLine {
+  param([Parameter(Mandatory = $true)][string]$Line)
+  $text = $Line.Trim()
+  $cut = $text.IndexOf('|')
+  if ($cut -lt 0) { return [pscustomobject]@{ Path = $text; FileId = '' } }
+  $path = $text.Substring(0, $cut).Trim()
+  $fileId = ''
+  foreach ($field in @($text.Substring($cut + 1) -split '\|')) {
+    $f = $field.Trim()
+    if ($f.StartsWith('fid=', [System.StringComparison]::OrdinalIgnoreCase)) { $fileId = $f.Substring(4).Trim() }
+  }
+  return [pscustomobject]@{ Path = $path; FileId = $fileId }
+}
+
+# Read the ledger back AS ENTRIES - { Path, FileId } - which is what every
+# revoke below actually wants. Comment lines and blanks are skipped, so an EMPTY
+# or pre-ledger lock file (every lock written before 2026-09-11 is 0 bytes) reads
+# as zero entries rather than as an error - honest: those turns' ACEs were never
 # recorded and this cannot invent them.
 #
 # Leaves the stream positioned at the end, so an Add- straight afterwards
@@ -925,7 +1182,7 @@ $SandboxLeaseLedgerHeader = '# egpt sandbox lease ledger - one path per line, ea
 # reason Get-SandboxPoolLeaseOrder documents above: `return ,$out` puts a NESTED
 # array on the pipeline, and every call site here is an @(...) that would then
 # collect ONE element - the whole list as a single object. Callers wrap in @().
-function Read-SandboxLeaseLedger {
+function Read-SandboxLeaseLedgerEntries {
   param([Parameter(Mandatory = $true)][System.IO.FileStream]$Stream)
   $Stream.Position = 0
   $len = [int]$Stream.Length
@@ -941,13 +1198,35 @@ function Read-SandboxLeaseLedger {
     $text = [System.Text.Encoding]::UTF8.GetString($bytes, 0, $read)
   }
   $Stream.Position = $Stream.Length
-  $out = @($text -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -and -not $_.StartsWith('#') })
+  $out = @($text -split "`r?`n" |
+    ForEach-Object { $_.Trim() } |
+    Where-Object { $_ -and -not $_.StartsWith('#') } |
+    ForEach-Object { ConvertFrom-SandboxLeaseLedgerLine -Line $_ } |
+    Where-Object { $_.Path })
   return $out
 }
 
-# Replace the whole ledger: truncate, header, then these paths. Used twice - to
+# THE PATHS ONLY, and it is a PROJECTION of the reader above rather than a
+# second parser - one ledger, one thing that knows how a line is spelled. Kept
+# because it is the honest answer to "what did that turn grant?", which is what
+# the operator sweep's -WhatIf and every existing caller asks.
+function Read-SandboxLeaseLedger {
+  param([Parameter(Mandatory = $true)][System.IO.FileStream]$Stream)
+  $out = @(Read-SandboxLeaseLedgerEntries -Stream $Stream | ForEach-Object { $_.Path })
+  return $out
+}
+
+# Replace the whole ledger: truncate, header, then these lines. Used twice - to
 # stamp a header on a freshly CreateNew'd lock, and to rewrite a reclaimed one
 # with whatever the revoke could NOT clear (see Clear-SandboxStaleLease).
+#
+# -Paths OR -Entries, and the difference is only whether the ids survive the
+# rewrite. -Paths is the old contract, unchanged, and writes path-only lines.
+# -Entries takes { Path, FileId } records and keeps the id on the line, which is
+# what every carry-over must use: a path the revoke could NOT clear is still
+# leaking, and rewriting it WITHOUT its id would hand the next reclaim back the
+# bare name - re-opening, on the retry, exactly the hole the id was recorded to
+# close.
 #
 # Flush($true) is flush-TO-DISK, not flush-to-cache, and it is the whole point:
 # the reader of this file is the launcher that runs after this process was
@@ -955,9 +1234,18 @@ function Read-SandboxLeaseLedger {
 function Write-SandboxLeaseLedger {
   param(
     [Parameter(Mandatory = $true)][System.IO.FileStream]$Stream,
-    [string[]]$Paths = @()
+    [string[]]$Paths = @(),
+    [object[]]$Entries = @()
   )
-  $lines = @($SandboxLeaseLedgerHeader) + @($Paths | Where-Object { $_ -and $_.Trim() } | ForEach-Object { $_.Trim() })
+  $written = @()
+  if ($Entries -and $Entries.Count -gt 0) {
+    $written = @($Entries |
+      Where-Object { $_ -and $_.Path -and "$($_.Path)".Trim() } |
+      ForEach-Object { ConvertTo-SandboxLeaseLedgerLine -Path "$($_.Path)" -FileId "$($_.FileId)" })
+  } else {
+    $written = @($Paths | Where-Object { $_ -and $_.Trim() } | ForEach-Object { $_.Trim() })
+  }
+  $lines = @($SandboxLeaseLedgerHeader) + $written
   $bytes = [System.Text.Encoding]::UTF8.GetBytes((($lines -join "`r`n") + "`r`n"))
   $Stream.SetLength(0)
   $Stream.Position = 0
@@ -965,17 +1253,23 @@ function Write-SandboxLeaseLedger {
   $Stream.Flush($true)
 }
 
-# Append ONE path. The launcher calls this BEFORE the matching grant, so the
-# ledger is a SUPERSET of what actually landed - the safe direction for a crash
-# log. A grant that threw leaves no ACE behind, and Revoke-SandboxLeaseAces
-# skips a path that carries none, so the superset costs a read and never a stray
-# write.
+# Append ONE path, with the id of the object it names when one could be had. The
+# launcher calls this BEFORE the matching grant, so the ledger is a SUPERSET of
+# what actually landed - the safe direction for a crash log. A grant that threw
+# leaves no ACE behind, and Revoke-SandboxLeaseAces skips a path that carries
+# none, so the superset costs a read and never a stray write.
+#
+# -FileId IS OPTIONAL AND ITS ABSENCE IS NOT AN ERROR. A path whose id cannot be
+# read (a junction, a filesystem without ids, an fsutil that would not answer)
+# is recorded the way it always was. A turn must never fail, or lose a grant,
+# over a cleanup optimisation.
 function Add-SandboxLeaseLedgerPath {
   param(
     [Parameter(Mandatory = $true)][System.IO.FileStream]$Stream,
-    [Parameter(Mandatory = $true)][string]$Path
+    [Parameter(Mandatory = $true)][string]$Path,
+    [string]$FileId = ''
   )
-  $bytes = [System.Text.Encoding]::UTF8.GetBytes(($Path.Trim() + "`r`n"))
+  $bytes = [System.Text.Encoding]::UTF8.GetBytes(((ConvertTo-SandboxLeaseLedgerLine -Path $Path -FileId $FileId) + "`r`n"))
   $Stream.Position = $Stream.Length
   $Stream.Write($bytes, 0, $bytes.Length)
   $Stream.Flush($true)
@@ -1022,13 +1316,18 @@ function Add-SandboxLeaseLedgerPath {
 #
 # RETURNS RECORDS, LOGS NOTHING. The "sandbox-logon-launcher:" prefix belongs to
 # the launcher, and a function that writes to a host's stderr cannot be asserted
-# on in Pester. One record per account, { Path, Account, Sid, Status, Message },
-# with Status one of:
+# on in Pester. One record per account,
+# { Path, ResolvedPath, FileId, Account, Sid, Status, Message }, with Status one
+# of:
 #   revoked  explicit ACEs for this account were there and are gone
 #   clean    the path exists and carried none - nothing was written
 #   missing  the path is gone FROM THAT NAME. See the warning below - this is
-#            only equivalent to "no ACE survives" when the folder was DELETED.
+#            only equivalent to "no ACE survives" when the folder was DELETED,
+#            which -FileId below is what finally tells apart.
 #   failed   it could not be done, and the ACE may well still be there
+# Path is ALWAYS the path the caller passed - it is the ledger's key and the
+# sweep groups on it, so it must not move under a caller. ResolvedPath is where
+# the ACE was really found when the id had to be followed, and $null otherwise.
 # A 'failed' is the only one a caller must act on, and it must never be
 # swallowed: the path is still granted.
 #
@@ -1049,15 +1348,41 @@ function Add-SandboxLeaseLedgerPath {
 # Same conversation (the -2608141626 id is identical), renamed display slug. Two
 # of those five ledgers name a folder that is not there any more, and the ACEs
 # they were written to revoke rode the rename.
-# THIS FUNCTION CANNOT FIX IT - a name is all it is given, and following a moved
-# folder would need its NTFS file id recorded at grant time, which is a bigger
-# change than this one. What it does instead is STOP CALLING IT CLEAN: the
-# message says which of the two happened is unknown, so the log of a reclaim that
-# quietly forgot a leak no longer reads like the log of one that cleared it.
+#
+# ---- -FileId IS THE FIX (2026-09-23, later the same day). A name is no longer
+# all this is given: the ledger now records the granted object's NTFS file id
+# beside its path, and an id survives a rename and a move because it IS the
+# object (see the file-id block above for everything that was measured). So:
+#
+#   THE NAME IS TRIED FIRST AND IS STILL AUTHORITATIVE WHEN IT IS RIGHT. If the
+#   path exists and its id is the recorded one, this is the same function it was
+#   - one Get-Acl, one icacls pass, no lookup in the middle of the hot path.
+#
+#   THE ID IS THE FALLBACK, AND ALSO THE ARBITER. It is consulted when the path
+#   is gone OR when the path exists and names a DIFFERENT object, which is the
+#   rename-then-recreate case: a new folder wearing the old name must never be
+#   the thing an old lease's ACEs are stripped from.
+#
+#   AN ID THAT RESOLVES TO NOTHING IS A DELETED FOLDER, and a deleted folder
+#   took its ACEs with it. That is 'missing' and it is genuinely resolved -
+#   measured, not assumed: NTFS answers Error 87 for an id that no longer
+#   exists, and it validates the sequence number, so a recycled MFT record
+#   cannot make a stale id resolve to an innocent folder.
+#
+#   AN ID THAT CANNOT BE LOOKED UP AT ALL IS 'failed', NOT 'missing'. Unknown is
+#   not resolved. The lock is kept, the line is kept, the next reclaim retries -
+#   the one direction that cannot lose a leak.
+#
+# WITHOUT -FileId NOTHING CHANGES, which is the whole back-compatibility story:
+# every lock written before today holds bare paths, and for those this is
+# exactly the function it was, 'missing' message included.
 function Revoke-SandboxPathAces {
   param(
     [Parameter(Mandatory = $true)][string]$Path,
-    [string[]]$AccountNames = @()
+    [string[]]$AccountNames = @(),
+    # '<volume serial>:<32 hex>' as the ledger stores it. Empty = an old ledger
+    # line, or a path whose id could not be read at grant time.
+    [string]$FileId = ''
   )
   $names = @($AccountNames | Where-Object { $_ -and $_.Trim() } | ForEach-Object { $_.Trim() } | Select-Object -Unique)
   $records = New-Object System.Collections.Generic.List[object]
@@ -1068,14 +1393,45 @@ function Revoke-SandboxPathAces {
   $sids = @{}
   foreach ($n in $names) {
     try { $sids[$n] = (New-Object System.Security.Principal.NTAccount($n)).Translate([System.Security.Principal.SecurityIdentifier]) }
-    catch { [void]$records.Add([pscustomobject]@{ Path = $Path; Account = $n; Sid = $null; Status = 'failed'; Message = "could not resolve the SID of '$n' - $($_.Exception.Message)" }) }
+    catch { [void]$records.Add([pscustomobject]@{ Path = $Path; ResolvedPath = $null; FileId = $FileId; Account = $n; Sid = $null; Status = 'failed'; Message = "could not resolve the SID of '$n' - $($_.Exception.Message)" }) }
   }
   $named = @($names | Where-Object { $sids.ContainsKey($_) })
   if ($named.Count -eq 0) { return $records.ToArray() }
+  # WHERE THE ACE ACTUALLY IS, which is the ledger path until the id says
+  # otherwise. $resolved stays $null on the ordinary path, so a record only
+  # carries a ResolvedPath when this really did follow the object somewhere.
+  $target = $Path
+  $resolved = $null
+  if ($FileId) {
+    $follow = $true
+    if (Test-Path -LiteralPath $Path) {
+      $here = Get-SandboxPathFileId -Path $Path
+      # NO ID READABLE HERE is not evidence of a rename - a junction, or an
+      # fsutil that would not answer. Trust the name, exactly as before.
+      if (-not $here -or (Test-SandboxFileIdMatch $here $FileId)) { $follow = $false }
+    }
+    if ($follow) {
+      $found = Resolve-SandboxFileId -FileId $FileId -HintPath $Path
+      if ($found.Status -eq 'resolved') {
+        $target = $found.Path
+        $resolved = $found.Path
+      } elseif ($found.Status -eq 'gone') {
+        foreach ($n in $named) {
+          [void]$records.Add([pscustomobject]@{ Path = $Path; ResolvedPath = $null; FileId = $FileId; Account = $n; Sid = $sids[$n].Value; Status = 'missing'; Message = "$($found.Message) - nothing to revoke" })
+        }
+        return $records.ToArray()
+      } else {
+        foreach ($n in $named) {
+          [void]$records.Add([pscustomobject]@{ Path = $Path; ResolvedPath = $null; FileId = $FileId; Account = $n; Sid = $sids[$n].Value; Status = 'failed'; Message = "the recorded path is not this object any more and its file id could not be followed, so the ACE is neither found nor proven gone - $($found.Message)" })
+        }
+        return $records.ToArray()
+      }
+    }
+  }
   try {
-    if (-not (Test-Path -LiteralPath $Path)) {
+    if (-not (Test-Path -LiteralPath $target)) {
       foreach ($n in $named) {
-        [void]$records.Add([pscustomobject]@{ Path = $Path; Account = $n; Sid = $sids[$n].Value; Status = 'missing'; Message = 'nothing is at that path any more. If the folder was DELETED its ACEs went with it and this is clean; if it was RENAMED or MOVED, NTFS carried its DACL along and this account is STILL granted at the new name, which nothing now records. This cannot tell the two apart.' })
+        [void]$records.Add([pscustomobject]@{ Path = $Path; ResolvedPath = $resolved; FileId = $FileId; Account = $n; Sid = $sids[$n].Value; Status = 'missing'; Message = 'nothing is at that path any more. If the folder was DELETED its ACEs went with it and this is clean; if it was RENAMED or MOVED, NTFS carried its DACL along and this account is STILL granted at the new name, which nothing now records. This cannot tell the two apart.' })
       }
       return $records.ToArray()
     }
@@ -1087,10 +1443,10 @@ function Revoke-SandboxPathAces {
     # by default, so a DACL this process cannot read would otherwise come back as
     # an EMPTY rule set - i.e. every account reported 'clean' and the leak
     # forgotten. It has to land in the catch below and be reported 'failed'.
-    $before = @((Get-Acl -LiteralPath $Path -ErrorAction Stop).GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]) | ForEach-Object { $_.IdentityReference.Value })
+    $before = @((Get-Acl -LiteralPath $target -ErrorAction Stop).GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]) | ForEach-Object { $_.IdentityReference.Value })
     $targets = @($named | Where-Object { $before -contains $sids[$_].Value })
     foreach ($n in @($named | Where-Object { $targets -notcontains $_ })) {
-      [void]$records.Add([pscustomobject]@{ Path = $Path; Account = $n; Sid = $sids[$n].Value; Status = 'clean'; Message = 'no explicit ACE for this account was on it - nothing written' })
+      [void]$records.Add([pscustomobject]@{ Path = $Path; ResolvedPath = $resolved; FileId = $FileId; Account = $n; Sid = $sids[$n].Value; Status = 'clean'; Message = 'no explicit ACE for this account was on it - nothing written' })
     }
     if ($targets.Count -eq 0) { return $records.ToArray() }
     # No 2>&1: PS 5.1 turns a redirected native stderr into NativeCommandError
@@ -1098,15 +1454,16 @@ function Revoke-SandboxPathAces {
     # something unrelated to what went wrong (the same note Grant-SandboxPoolAce
     # carries). Capturing stdout also keeps icacls's chatter off the launcher's
     # stdout, which is the inner process's stream-json pipe.
-    $icaclsArgs = @($Path, '/remove:g') + @($targets | ForEach-Object { "*$($sids[$_].Value)" }) + @('/C')
+    $icaclsArgs = @($target, '/remove:g') + @($targets | ForEach-Object { "*$($sids[$_].Value)" }) + @('/C')
     $out = & icacls.exe @icaclsArgs
     $code = $LASTEXITCODE
-    $after = @((Get-Acl -LiteralPath $Path -ErrorAction Stop).GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]) | ForEach-Object { $_.IdentityReference.Value })
+    $after = @((Get-Acl -LiteralPath $target -ErrorAction Stop).GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]) | ForEach-Object { $_.IdentityReference.Value })
+    $followed = if ($resolved) { " (followed by file id from '$Path' to '$resolved')" } else { '' }
     foreach ($n in $targets) {
       if ($after -contains $sids[$n].Value) {
-        [void]$records.Add([pscustomobject]@{ Path = $Path; Account = $n; Sid = $sids[$n].Value; Status = 'failed'; Message = "the explicit ACE is STILL there after icacls /remove:g (exit $code) - $($out -join ' ')" })
+        [void]$records.Add([pscustomobject]@{ Path = $Path; ResolvedPath = $resolved; FileId = $FileId; Account = $n; Sid = $sids[$n].Value; Status = 'failed'; Message = "the explicit ACE is STILL there after icacls /remove:g (exit $code)$followed - $($out -join ' ')" })
       } else {
-        [void]$records.Add([pscustomobject]@{ Path = $Path; Account = $n; Sid = $sids[$n].Value; Status = 'revoked'; Message = "explicit ACE(s) removed in one icacls pass over $($targets.Count) account(s)" })
+        [void]$records.Add([pscustomobject]@{ Path = $Path; ResolvedPath = $resolved; FileId = $FileId; Account = $n; Sid = $sids[$n].Value; Status = 'revoked'; Message = "explicit ACE(s) removed in one icacls pass over $($targets.Count) account(s)$followed" })
       }
     }
   } catch {
@@ -1115,7 +1472,7 @@ function Revoke-SandboxPathAces {
     # paths their cleanup.
     $done = @($records | ForEach-Object { $_.Account })
     foreach ($n in @($named | Where-Object { $done -notcontains $_ })) {
-      [void]$records.Add([pscustomobject]@{ Path = $Path; Account = $n; Sid = $sids[$n].Value; Status = 'failed'; Message = $_.Exception.Message })
+      [void]$records.Add([pscustomobject]@{ Path = $Path; ResolvedPath = $resolved; FileId = $FileId; Account = $n; Sid = $sids[$n].Value; Status = 'failed'; Message = $_.Exception.Message })
     }
   }
   return $records.ToArray()
@@ -1126,18 +1483,47 @@ function Revoke-SandboxPathAces {
 # NOT a second revoke: one call per path, the same records, in the order the
 # caller listed them. A path that cannot be purged does not cost the paths after
 # it their cleanup, because Revoke-SandboxPathAces reports rather than throws.
+#
+# -Paths OR -Entries, exactly as Write-SandboxLeaseLedger takes them and for the
+# same reason: -Entries carries each path's file id through to the revoke, so a
+# renamed folder is followed; -Paths is the old contract and revokes by name
+# alone. A ledger read gives entries, so the callers that matter pass those.
 function Revoke-SandboxLeaseAces {
   param(
     [Parameter(Mandatory = $true)][string]$AccountName,
-    [string[]]$Paths = @()
+    [string[]]$Paths = @(),
+    [object[]]$Entries = @()
   )
-  $wanted = @($Paths | Where-Object { $_ -and $_.Trim() } | ForEach-Object { $_.Trim() })
+  $wanted = @()
+  if ($Entries -and $Entries.Count -gt 0) {
+    $wanted = @($Entries |
+      Where-Object { $_ -and $_.Path -and "$($_.Path)".Trim() } |
+      ForEach-Object { [pscustomobject]@{ Path = "$($_.Path)".Trim(); FileId = "$($_.FileId)".Trim() } })
+  } else {
+    $wanted = @($Paths |
+      Where-Object { $_ -and $_.Trim() } |
+      ForEach-Object { [pscustomobject]@{ Path = $_.Trim(); FileId = '' } })
+  }
   if ($wanted.Count -eq 0) { return @() }
   $records = New-Object System.Collections.Generic.List[object]
-  foreach ($p in $wanted) {
-    foreach ($rec in @(Revoke-SandboxPathAces -Path $p -AccountNames @($AccountName))) { [void]$records.Add($rec) }
+  foreach ($e in $wanted) {
+    foreach ($rec in @(Revoke-SandboxPathAces -Path $e.Path -FileId $e.FileId -AccountNames @($AccountName))) { [void]$records.Add($rec) }
   }
   return $records.ToArray()
+}
+
+# WHAT A CARRY-OVER LINE MUST SAY, in one place because three callers write one
+# (the launcher's finally, the per-account reclaim, the pool sweep). A record
+# that could not be cleared goes back on the ledger as:
+#   * the path the ACE is really at, if the id had to be followed to find it -
+#     so the next reclaim starts from the CURRENT name and the operator reading
+#     the lock file sees the folder that actually carries the grant
+#   * and its file id, always, because a retry without the id is a retry with
+#     the hole back open.
+function ConvertTo-SandboxLeaseCarryEntry {
+  param([Parameter(Mandatory = $true)][object]$Record)
+  $path = if ($Record.ResolvedPath) { $Record.ResolvedPath } else { $Record.Path }
+  return [pscustomobject]@{ Path = $path; FileId = "$($Record.FileId)" }
 }
 
 # THE RECLAIM'S HALF, in one call: read the dead turn's ledger off the lock we
@@ -1159,10 +1545,10 @@ function Clear-SandboxStaleLease {
     [Parameter(Mandatory = $true)][System.IO.FileStream]$Stream,
     [Parameter(Mandatory = $true)][string]$AccountName
   )
-  $ledger = @(Read-SandboxLeaseLedger -Stream $Stream)
-  $records = @(Revoke-SandboxLeaseAces -AccountName $AccountName -Paths $ledger)
-  $carry = @($records | Where-Object { $_.Status -eq 'failed' } | ForEach-Object { $_.Path })
-  Write-SandboxLeaseLedger -Stream $Stream -Paths $carry
+  $ledger = @(Read-SandboxLeaseLedgerEntries -Stream $Stream)
+  $records = @(Revoke-SandboxLeaseAces -AccountName $AccountName -Entries $ledger)
+  $carry = @($records | Where-Object { $_.Status -eq 'failed' } | ForEach-Object { ConvertTo-SandboxLeaseCarryEntry -Record $_ })
+  Write-SandboxLeaseLedger -Stream $Stream -Entries $carry
   return $records
 }
 
@@ -1298,7 +1684,11 @@ function Clear-SandboxAbandonedLeases {
       continue
     }
     try {
-      $ledger = @(Read-SandboxLeaseLedger -Stream $stream)
+      # ENTRIES, not bare paths: a ledger line may carry the granted object's
+      # file id, and that is what lets phase 2 follow a folder that was renamed
+      # after the ACE was written. A line without one is an old ledger's line
+      # and is revoked by name exactly as it always was.
+      $ledger = @(Read-SandboxLeaseLedgerEntries -Stream $stream)
     } catch {
       $stream.Close()
       Log "lease sweep $n/$($lockFiles.Count): $account - its ledger could not be read ($($_.Exception.Message))"
@@ -1306,18 +1696,25 @@ function Clear-SandboxAbandonedLeases {
       continue
     }
     Log "lease sweep $n/$($lockFiles.Count): $account is abandoned - $($ledger.Count) path(s) on its ledger"
-    [void]$leases.Add([pscustomobject]@{ Account = $account; Lock = $file.FullName; Stream = $stream; Paths = $ledger })
+    [void]$leases.Add([pscustomobject]@{ Account = $account; Lock = $file.FullName; Stream = $stream; Entries = $ledger })
   }
 
   try {
     # ---- phase 2: one pass per PATH, every account that leaked onto it named in it.
     $byPath = [ordered]@{}
     foreach ($lease in $leases) {
-      foreach ($p in $lease.Paths) {
+      foreach ($e in $lease.Entries) {
         # Pure string math, used ONLY as the grouping key - icacls is still handed
         # the ledger's own spelling of the path, the first one seen for it.
-        $key = $p.ToLowerInvariant().TrimEnd('\')
-        if (-not $byPath.Contains($key)) { $byPath[$key] = [pscustomobject]@{ Path = $p; Accounts = (New-Object System.Collections.Generic.List[string]) } }
+        #
+        # THE FILE ID IS PART OF THE KEY, and it has to be: two leases naming the
+        # same path with DIFFERENT ids are two different objects (a folder
+        # deleted and a new one created under the old name), and batching them
+        # into one pass would revoke both leases' accounts off whichever object
+        # the first entry's id points at. Same path, same id - or no id on
+        # either, which is how every old ledger groups, exactly as before.
+        $key = $e.Path.ToLowerInvariant().TrimEnd('\') + '|' + $e.FileId
+        if (-not $byPath.Contains($key)) { $byPath[$key] = [pscustomobject]@{ Path = $e.Path; FileId = $e.FileId; Accounts = (New-Object System.Collections.Generic.List[string]) } }
         if (-not $byPath[$key].Accounts.Contains($lease.Account)) { [void]$byPath[$key].Accounts.Add($lease.Account) }
       }
     }
@@ -1345,9 +1742,13 @@ function Clear-SandboxAbandonedLeases {
       }
       Log "lease sweep: path $pathNo/$($byPath.Count) - revoking $($entry.Accounts.Count) account(s) from $($entry.Path) (a big tree can take minutes)"
       $watch = [System.Diagnostics.Stopwatch]::StartNew()
-      $recs = @(Revoke-SandboxPathAces -Path $entry.Path -AccountNames $entry.Accounts.ToArray())
+      $recs = @(Revoke-SandboxPathAces -Path $entry.Path -FileId $entry.FileId -AccountNames $entry.Accounts.ToArray())
       $watch.Stop()
       foreach ($rec in $recs) { $aceByKey["$($rec.Account)|$key"] = $rec }
+      $followedTo = @($recs | Where-Object { $_.ResolvedPath } | ForEach-Object { $_.ResolvedPath } | Select-Object -Unique)
+      if ($followedTo.Count -gt 0) {
+        Log "lease sweep: path $pathNo/$($byPath.Count) was RENAMED since the grant - its file id put it at $($followedTo -join ', '), which is where the ACEs were taken off"
+      }
       $revoked = @($recs | Where-Object { $_.Status -eq 'revoked' }).Count
       $stillThere = @($recs | Where-Object { $_.Status -eq 'failed' }).Count
       Log ("lease sweep: path {0}/{1} done in {2:n1}s - {3} revoked, {4} already clear, {5} still granted" -f $pathNo, $byPath.Count, $watch.Elapsed.TotalSeconds, $revoked, ($recs.Count - $revoked - $stillThere), $stillThere)
@@ -1363,23 +1764,35 @@ function Clear-SandboxAbandonedLeases {
       # rather than left to fall out of the Where-Object below, because the old
       # filter DROPPED an unmatched path silently - which, with a budget in play,
       # would truncate the ledger and delete the lock for an ACE nobody touched.
-      $aces = @($lease.Paths | ForEach-Object {
-          $rec = $aceByKey["$($lease.Account)|$($_.ToLowerInvariant().TrimEnd('\'))"]
+      $aces = @($lease.Entries | ForEach-Object {
+          $rec = $aceByKey["$($lease.Account)|$($_.Path.ToLowerInvariant().TrimEnd('\'))|$($_.FileId)"]
           if ($rec) { $rec }
-          else { [pscustomobject]@{ Path = $_; Account = $lease.Account; Sid = $null; Status = 'deferred'; Message = 'not reached before the sweep budget ran out - still granted, still on this ledger' } }
+          else { [pscustomobject]@{ Path = $_.Path; ResolvedPath = $null; FileId = $_.FileId; Account = $lease.Account; Sid = $null; Status = 'deferred'; Message = 'not reached before the sweep budget ran out - still granted, still on this ledger' } }
         })
       $stuck = @($aces | Where-Object { $_.Status -eq 'failed' -or $_.Status -eq 'deferred' })
       # SAID OUT LOUD, because it is the one outcome that looks like success and
       # is not necessarily one - see Revoke-SandboxPathAces's 'missing' note.
       $vanished = @($aces | Where-Object { $_.Status -eq 'missing' })
-      if ($vanished.Count -gt 0) {
-        Log "lease sweep: WARNING - $($lease.Account) has $($vanished.Count) ledger path(s) that nothing is at any more: $(@($vanished | ForEach-Object { $_.Path }) -join ', '). Deleted folders took their ACEs with them; a RENAMED one did not, and that ACE is now at a name nothing records. This cannot tell which happened."
+      # ...EXCEPT WHERE THE LEDGER RECORDED AN ID, and that is the whole point of
+      # recording one. A 'missing' with an id was not guessed at: the filesystem
+      # was asked for the object itself and answered that there is no such id on
+      # that volume, so the folder was DELETED and its ACEs went with it. Only
+      # the id-less lines - old ledgers - are still the ambiguous case the
+      # warning was written for, so only they still get it.
+      $vanishedBlind = @($vanished | Where-Object { -not $_.FileId })
+      if ($vanishedBlind.Count -gt 0) {
+        Log "lease sweep: WARNING - $($lease.Account) has $($vanishedBlind.Count) ledger path(s) that nothing is at any more, and NO file id was recorded for them (a lease written before ids were recorded): $(@($vanishedBlind | ForEach-Object { $_.Path }) -join ', '). Deleted folders took their ACEs with them; a RENAMED one did not, and that ACE is now at a name nothing records. This cannot tell which happened."
+      }
+      if ($vanished.Count -gt $vanishedBlind.Count) {
+        Log "lease sweep: $($lease.Account) had $($vanished.Count - $vanishedBlind.Count) ledger path(s) whose recorded file id no longer exists on the volume - those folders were DELETED, so their ACEs went with them. Nothing is leaking there."
       }
       # THE CARRY-OVER IS THE POINT of rewriting rather than truncating - the same
       # discipline Clear-SandboxStaleLease applies on the launcher's path. A path
-      # the revoke could not clear stays on the list so the next reclaim retries.
+      # the revoke could not clear stays on the list so the next reclaim retries -
+      # WITH ITS ID, and under the name the id resolved to if it had to be
+      # followed (ConvertTo-SandboxLeaseCarryEntry).
       try {
-        Write-SandboxLeaseLedger -Stream $lease.Stream -Paths @($stuck | ForEach-Object { $_.Path })
+        Write-SandboxLeaseLedger -Stream $lease.Stream -Entries @($stuck | ForEach-Object { ConvertTo-SandboxLeaseCarryEntry -Record $_ })
       } catch {
         $lease.Stream.Close()
         Log "lease sweep: $($lease.Account) - its ACEs were processed but the ledger could not be rewritten ($($_.Exception.Message)); the lock is KEPT"

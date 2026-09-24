@@ -66,6 +66,19 @@ function icacls.exe {
   & (Join-Path $env:SystemRoot 'System32\icacls.exe') @args
 }
 
+# THE fsutil SPY (2026-09-23), for the file-id half. Same shadowing trick, same
+# lexical-scope reason - and ONE deliberate difference: it RECORDS AND THEN
+# FORWARDS. fsutil here is only ever asked read-only questions (queryfileid,
+# queryFileNameById), so forwarding changes nothing on disk, and the tests that
+# watch it need the REAL answer about a real temp directory. What is being
+# observed is WHICH question was asked - specifically that an ordinary revoke,
+# whose path still names the same object, never has to ask "where did this go?".
+$script:FsutilSpy = $null
+function fsutil.exe {
+  if ($null -ne $script:FsutilSpy) { [void]$script:FsutilSpy.Add(@($args)) }
+  & (Join-Path $env:SystemRoot 'System32\fsutil.exe') @args
+}
+
 . (Join-Path $PSScriptRoot 'sandbox-account.ps1')
 
 # Kept in a script-scoped variable for the cross-process determinism test at the
@@ -1189,6 +1202,448 @@ Describe 'Clear-SandboxAbandonedLeases (the repair path for leases nothing will 
     (@($recs | ForEach-Object { $_.Aces } | Where-Object { $_.Status -eq 'clean' }).Count) | Should Be 2
     (@(Get-ChildItem -LiteralPath $locks -Filter '*.lock' -File).Count) | Should Be 0
     $script:IcaclsSpy.Count | Should Be 0
+  }
+}
+
+# ---------------------------------------------------------------------------
+# THE FILE ID, i.e. FOLLOWING A CONVERSATION FOLDER THAT WAS RENAMED
+# (2026-09-23). A lease records the path it granted an ACE on; NTFS carries a
+# DACL through a rename, so the ACE outlives the name and the ledger line stops
+# finding it. Measured on kg that morning: three pool accounts left holding
+# Modify on a conversation none of them was leased to, because the folder had
+# been renamed between grant and revoke and 'missing' read as 'resolved'.
+#
+# Everything below runs UNELEVATED against throwaway directories under $env:TEMP
+# and grants only the CURRENT user's own SID. No pool account, no conversation
+# folder, no real C:\ProgramData\egpt.
+Describe 'Get-SandboxPathFileId / Get-SandboxVolumeSerial (the id is the object, not the name)' {
+  It 'reads an id for a real directory, in the <volume serial>:<128-bit id> shape the ledger stores' {
+    $d = New-LedgerTempDir
+    $id = Get-SandboxPathFileId -Path $d
+    ($id -match '^[0-9a-f]*:[0-9a-f]{32}$') | Should Be $true
+    # The serial half really is this volume's, not a placeholder.
+    $id.Split(':')[0] | Should Be (Get-SandboxVolumeSerial -Path $d)
+  }
+
+  It 'REPRODUCE-FIRST: the id is UNCHANGED by a rename - which is the whole reason it is recorded' {
+    $d = New-LedgerTempDir
+    $before = Get-SandboxPathFileId -Path $d
+    $renamed = Join-Path (Split-Path $d -Parent) ('renamed-' + (Split-Path $d -Leaf))
+    Rename-Item -LiteralPath $d -NewName (Split-Path $renamed -Leaf)
+    (Get-SandboxPathFileId -Path $renamed) | Should Be $before
+    # ...and by a MOVE to a different parent, which is the same fact.
+    $elsewhere = New-LedgerTempDir
+    $moved = Join-Path $elsewhere (Split-Path $renamed -Leaf)
+    Move-Item -LiteralPath $renamed -Destination $moved
+    (Get-SandboxPathFileId -Path $moved) | Should Be $before
+  }
+
+  It 'gives two different directories two different ids' {
+    (Get-SandboxPathFileId -Path (New-LedgerTempDir)) | Should Not Be (Get-SandboxPathFileId -Path (New-LedgerTempDir))
+  }
+
+  It 'answers $null rather than throwing for a path that is not there' {
+    (Get-SandboxPathFileId -Path (Join-Path $script:LedgerTempRoot 'never-existed-fileid')) | Should Be $null
+  }
+
+  It 'REFUSES a junction - fsutil follows one to its target, and the ACE is on the LINK' {
+    # Recording the target's id would let a renamed link resolve to the target
+    # and take ACEs off the wrong object. $null keeps that case on the old
+    # revoke-by-name path, where it is merely unhelpful instead of wrong.
+    $target = New-LedgerTempDir
+    $link = Join-Path $script:LedgerTempRoot ('junction-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Junction -Path $link -Target $target | Out-Null
+    try { (Get-SandboxPathFileId -Path $link) | Should Be $null }
+    finally { (Get-Item -LiteralPath $link -Force).Delete() }
+  }
+}
+
+Describe 'Resolve-SandboxFileId (what is this object called NOW?)' {
+  It 'follows a renamed directory to its new path, and confirms the round trip' {
+    $d = New-LedgerTempDir
+    $id = Get-SandboxPathFileId -Path $d
+    $renamed = Join-Path (Split-Path $d -Parent) ('now-called-' + (Split-Path $d -Leaf))
+    Rename-Item -LiteralPath $d -NewName (Split-Path $renamed -Leaf)
+
+    $r = Resolve-SandboxFileId -FileId $id -HintPath $d
+
+    $r.Status | Should Be 'resolved'
+    $r.Path | Should Be $renamed
+  }
+
+  It 'says GONE - not unknown, not resolved-somewhere - for a directory that was really DELETED' {
+    # The distinction the whole thing turns on: a deleted folder took its ACEs
+    # with it and is genuinely finished with; a renamed one did not.
+    $d = New-LedgerTempDir
+    $id = Get-SandboxPathFileId -Path $d
+    Remove-Item -LiteralPath $d -Recurse -Force
+
+    $r = Resolve-SandboxFileId -FileId $id -HintPath $d
+
+    $r.Status | Should Be 'gone'
+    ($r.Message -match 'DELETED') | Should Be $true
+  }
+
+  It 'says UNKNOWN for a ledger field it cannot parse - never a guess at a path' {
+    $r = Resolve-SandboxFileId -FileId 'not-an-id' -HintPath (New-LedgerTempDir)
+    $r.Status | Should Be 'unknown'
+    $r.Path | Should Be $null
+  }
+
+  It 'says UNKNOWN when the recorded VOLUME is not the one behind that path any more' {
+    # A file id means nothing on another volume. A serial that disagrees must
+    # stop the lookup rather than resolve to whatever happens to hold that id.
+    $d = New-LedgerTempDir
+    $id = Get-SandboxPathFileId -Path $d
+    $wrongVolume = '0badf00d:' + $id.Split(':')[-1]
+
+    $r = Resolve-SandboxFileId -FileId $wrongVolume -HintPath $d
+
+    $r.Status | Should Be 'unknown'
+    ($r.Message -match 'another volume|not the') | Should Be $true
+  }
+}
+
+Describe 'Revoke-SandboxPathAces -FileId (the rename hole, closed)' {
+  AfterEach { $script:IcaclsSpy = $null }
+
+  It 'REPRODUCE: today''s revoke LOSES the ACE when the folder is renamed, and the id-carrying one FOLLOWS it' {
+    # This is the kg failure, reproduced end to end on a throwaway directory:
+    #   egpt-sbx-03/-04/-10 -> ...\Favel Elena Konefka-2608141626
+    #   egpt-sbx-08/-13     -> ...\Favel Konefka-2608141626
+    # one conversation, renamed slug, and the ACEs alive at the new name while
+    # the ledger pointed at nothing.
+    $parent = New-LedgerTempDir
+    $conv = Join-Path $parent 'Favel Elena Konefka-2608141626'
+    New-Item -ItemType Directory -Path $conv -Force | Out-Null
+    Grant-TestModify $conv
+    $id = Get-SandboxPathFileId -Path $conv
+    $renamed = Join-Path $parent 'Favel Konefka-2608141626'
+    Rename-Item -LiteralPath $conv -NewName (Split-Path $renamed -Leaf)
+
+    # WITHOUT the id - today's behaviour, and the loss itself: reported missing,
+    # and the grant is still standing at the new name.
+    $blind = @(Revoke-SandboxPathAces -Path $conv -AccountNames @($script:MeName))
+    $blind[0].Status | Should Be 'missing'
+    (Get-TestExplicitAceCount $renamed) | Should Be 1
+
+    # WITH it: followed, removed, and said out loud where it went.
+    $seeing = @(Revoke-SandboxPathAces -Path $conv -FileId $id -AccountNames @($script:MeName))
+    $seeing[0].Status | Should Be 'revoked'
+    $seeing[0].ResolvedPath | Should Be $renamed
+    # The record's Path stays the LEDGER's path - it is the key the sweep groups
+    # on and must not move under a caller.
+    $seeing[0].Path | Should Be $conv
+    (Get-TestExplicitAceCount $renamed) | Should Be 0
+  }
+
+  It 'a DELETED folder reads MISSING and is RESOLVED - its ACEs went with it, and the message says so' {
+    $d = New-LedgerTempDir
+    Grant-TestModify $d
+    $id = Get-SandboxPathFileId -Path $d
+    Remove-Item -LiteralPath $d -Recurse -Force
+
+    $recs = @(Revoke-SandboxPathAces -Path $d -FileId $id -AccountNames @($script:MeName))
+
+    $recs[0].Status | Should Be 'missing'
+    ($recs[0].Message -match 'DELETED') | Should Be $true
+    # ...and the old ambiguous wording is NOT what a lease with an id gets.
+    ($recs[0].Message -match 'cannot tell the two apart') | Should Be $false
+  }
+
+  It 'an id that cannot be looked up is FAILED, never missing - unknown is not resolved' {
+    # The one direction that cannot lose a leak: keep the lock, keep the line,
+    # retry. Treating "I could not tell" as "nothing to do" is the bug.
+    $d = New-LedgerTempDir
+    $recs = @(Revoke-SandboxPathAces -Path (Join-Path $d 'gone-child') -FileId 'deadbeef:not-a-real-id' -AccountNames @($script:MeName))
+    $recs[0].Status | Should Be 'failed'
+  }
+
+  It 'RENAME-THEN-RECREATE: a NEW folder wearing the old name is never the one stripped' {
+    # The name is a hint; the id is the arbiter. A conversation renamed and a
+    # fresh folder created under the old name must not have the fresh folder's
+    # ACEs taken off by the old lease.
+    $parent = New-LedgerTempDir
+    $original = Join-Path $parent 'conv-2608141626'
+    New-Item -ItemType Directory -Path $original -Force | Out-Null
+    Grant-TestModify $original
+    $id = Get-SandboxPathFileId -Path $original
+    $renamed = Join-Path $parent 'conv-renamed-2608141626'
+    Rename-Item -LiteralPath $original -NewName (Split-Path $renamed -Leaf)
+    # Something else now answers to the old name, and it is granted too.
+    New-Item -ItemType Directory -Path $original -Force | Out-Null
+    Grant-TestModify $original
+
+    $recs = @(Revoke-SandboxPathAces -Path $original -FileId $id -AccountNames @($script:MeName))
+
+    $recs[0].Status | Should Be 'revoked'
+    $recs[0].ResolvedPath | Should Be $renamed
+    (Get-TestExplicitAceCount $renamed) | Should Be 0
+    # THE INNOCENT ONE IS UNTOUCHED.
+    (Get-TestExplicitAceCount $original) | Should Be 1
+  }
+
+  It 'BY SID AND NEVER BY NAME - measured: icacls /remove:g <domain>\<name> exits 0 and removes nothing' {
+    # 2026-09-23 on reve: `icacls <dir> /remove:g reve\egpt-sbx-03` exited 0 and
+    # left the ACE exactly where it was; the SID literal form removed it. The
+    # positive half is pinned above; this is the negative one, because an exit
+    # code that lies is only caught by looking at what was actually passed.
+    $parent = New-LedgerTempDir
+    $conv = Join-Path $parent 'by-sid-please'
+    New-Item -ItemType Directory -Path $conv -Force | Out-Null
+    Grant-TestModify $conv
+    $id = Get-SandboxPathFileId -Path $conv
+    $renamed = Join-Path $parent 'by-sid-please-renamed'
+    Rename-Item -LiteralPath $conv -NewName (Split-Path $renamed -Leaf)
+    $script:IcaclsSpy = New-Object System.Collections.Generic.List[object]
+
+    Revoke-SandboxPathAces -Path $conv -FileId $id -AccountNames @($script:MeName) | Out-Null
+
+    $script:IcaclsSpy.Count | Should Be 1
+    $callArgs = @($script:IcaclsSpy[0])
+    # The path it aimed at is the FOLLOWED one, not the ledger's dead name.
+    $callArgs[0] | Should Be $renamed
+    ($callArgs -contains "*$($script:MeSid.Value)") | Should Be $true
+    # Not one argument is the account NAME, in any spelling.
+    $bare = ($script:MeName -replace '^.*\\', '')
+    foreach ($a in $callArgs) {
+      ($a -eq $script:MeName) | Should Be $false
+      ($a -eq $bare) | Should Be $false
+    }
+  }
+
+  It 'costs no lookup at all when the path still names the same object - the hot path is unchanged' {
+    # An id on the ledger must not turn every ordinary revoke into an fsutil
+    # round trip. The name is tried first and is authoritative when it is right.
+    $d = New-LedgerTempDir
+    Grant-TestModify $d
+    $id = Get-SandboxPathFileId -Path $d
+    $script:FsutilSpy = New-Object System.Collections.Generic.List[object]
+    try {
+      $recs = @(Revoke-SandboxPathAces -Path $d -FileId $id -AccountNames @($script:MeName))
+      $recs[0].Status | Should Be 'revoked'
+      $recs[0].ResolvedPath | Should Be $null
+      # One queryfileid to check the name still means this object, and NO
+      # queryFileNameById: nothing had to be followed.
+      (@($script:FsutilSpy | Where-Object { $_ -contains 'queryFileNameById' }).Count) | Should Be 0
+    } finally { $script:FsutilSpy = $null }
+  }
+}
+
+Describe 'the ledger line format (new ids, old ledgers, same file)' {
+  It 'round-trips a path WITH an id, and keeps the path first and whole' {
+    $line = ConvertTo-SandboxLeaseLedgerLine -Path 'C:\two dir\with space' -FileId '54118918:0000000000000000002900000008f38a'
+    $line | Should Be 'C:\two dir\with space|fid=54118918:0000000000000000002900000008f38a'
+    $e = ConvertFrom-SandboxLeaseLedgerLine -Line $line
+    $e.Path | Should Be 'C:\two dir\with space'
+    $e.FileId | Should Be '54118918:0000000000000000002900000008f38a'
+  }
+
+  It 'BACK-COMPAT: an OLD-SHAPE line - a bare path, as every lock on a live node holds today - reads as a path with no id' {
+    $e = ConvertFrom-SandboxLeaseLedgerLine -Line 'C:\Users\an\.egpt\conversations\whatsapp\Favel Konefka-2608141626'
+    $e.Path | Should Be 'C:\Users\an\.egpt\conversations\whatsapp\Favel Konefka-2608141626'
+    $e.FileId | Should Be ''
+  }
+
+  It 'ignores a field it does not know, so a future one cannot make today''s code refuse a ledger' {
+    $e = ConvertFrom-SandboxLeaseLedgerLine -Line 'C:\x|granted=2026-09-23|fid=abc:def|whatever'
+    $e.Path | Should Be 'C:\x'
+    $e.FileId | Should Be 'abc:def'
+  }
+
+  It 'writes and reads a MIXED ledger - some lines with ids, some without' {
+    $lock = Join-Path $script:LedgerTempRoot 'mixed.lock'
+    $s = New-TestLock $lock
+    try {
+      Write-SandboxLeaseLedger -Stream $s
+      Add-SandboxLeaseLedgerPath -Stream $s -Path 'C:\with-id' -FileId '54118918:00000000000000000029000000000001'
+      Add-SandboxLeaseLedgerPath -Stream $s -Path 'C:\without-id'
+      $entries = @(Read-SandboxLeaseLedgerEntries -Stream $s)
+      $entries.Count | Should Be 2
+      $entries[0].FileId | Should Be '54118918:00000000000000000029000000000001'
+      $entries[1].FileId | Should Be ''
+      # ...and the PATHS-only reader is unchanged for every existing caller.
+      ((Read-SandboxLeaseLedger -Stream $s) -join '|') | Should Be 'C:\with-id|C:\without-id'
+    } finally { $s.Close(); Remove-Item -LiteralPath $lock -Force }
+  }
+
+  It 'a CARRY-OVER keeps the id - a retry without it is a retry with the hole back open' {
+    $lock = Join-Path $script:LedgerTempRoot 'carry-id.lock'
+    $s = New-TestLock $lock
+    try {
+      Write-SandboxLeaseLedger -Stream $s -Entries @([pscustomobject]@{ Path = 'C:\still-granted'; FileId = '54118918:00000000000000000029000000000002' })
+      $entries = @(Read-SandboxLeaseLedgerEntries -Stream $s)
+      $entries.Count | Should Be 1
+      $entries[0].FileId | Should Be '54118918:00000000000000000029000000000002'
+    } finally { $s.Close(); Remove-Item -LiteralPath $lock -Force }
+  }
+}
+
+Describe 'the reclaim and the sweep, with ids on the ledger' {
+  $locks = $null
+  BeforeEach {
+    $script:PrefixSaved = $SandboxPoolPrefix
+    $script:SandboxPoolPrefix = $script:MeUser
+    $locks = Join-Path $script:LedgerTempRoot ([guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $locks -Force | Out-Null
+  }
+  AfterEach {
+    $script:SandboxPoolPrefix = $script:PrefixSaved
+    $script:IcaclsSpy = $null
+    Remove-Item -LiteralPath $locks -Recurse -Force -ErrorAction SilentlyContinue
+  }
+
+  It 'Clear-SandboxStaleLease FOLLOWS a folder renamed since the dead turn granted it' {
+    $parent = New-LedgerTempDir
+    $conv = Join-Path $parent 'dead-turn-conv'
+    New-Item -ItemType Directory -Path $conv -Force | Out-Null
+    Grant-TestModify $conv
+    $lock = Join-Path $script:LedgerTempRoot 'reclaim-id.lock'
+    $s = New-TestLock $lock
+    try {
+      Write-SandboxLeaseLedger -Stream $s -Entries @([pscustomobject]@{ Path = $conv; FileId = (Get-SandboxPathFileId -Path $conv) })
+      $renamed = Join-Path $parent 'dead-turn-conv-renamed'
+      Rename-Item -LiteralPath $conv -NewName (Split-Path $renamed -Leaf)
+
+      $recs = @(Clear-SandboxStaleLease -Stream $s -AccountName $script:MeName)
+
+      $recs[0].Status | Should Be 'revoked'
+      $recs[0].ResolvedPath | Should Be $renamed
+      (Get-TestExplicitAceCount $renamed) | Should Be 0
+      (@(Read-SandboxLeaseLedger -Stream $s).Count) | Should Be 0
+    } finally { $s.Close(); Remove-Item -LiteralPath $lock -Force }
+  }
+
+  It 'a carry-over from a FAILED revoke keeps its id AND moves to the name the id resolved to' {
+    # The revoke has to get far enough to FOLLOW the id and then fail, so the
+    # icacls spy stands in for a write that reports success and changes nothing
+    # - which is the failure mode this repo already measured icacls doing. The
+    # DACL decides: the ACE is still there afterwards, so the record is 'failed'.
+    $parent = New-LedgerTempDir
+    $conv = Join-Path $parent 'unpurgeable'
+    New-Item -ItemType Directory -Path $conv -Force | Out-Null
+    Grant-TestModify $conv
+    $id = Get-SandboxPathFileId -Path $conv
+    $lock = Join-Path $script:LedgerTempRoot 'carry-follow.lock'
+    $s = New-TestLock $lock
+    try {
+      Write-SandboxLeaseLedger -Stream $s -Entries @([pscustomobject]@{ Path = $conv; FileId = $id })
+      $renamed = Join-Path $parent 'unpurgeable-renamed'
+      Rename-Item -LiteralPath $conv -NewName (Split-Path $renamed -Leaf)
+      $script:IcaclsSpy = New-Object System.Collections.Generic.List[object]
+
+      $recs = @(Clear-SandboxStaleLease -Stream $s -AccountName $script:MeName)
+
+      $recs[0].Status | Should Be 'failed'
+      $recs[0].ResolvedPath | Should Be $renamed
+      $entries = @(Read-SandboxLeaseLedgerEntries -Stream $s)
+      $entries.Count | Should Be 1
+      $entries[0].FileId | Should Be $id
+      # The next reclaim starts from where the object actually is.
+      $entries[0].Path | Should Be $renamed
+      (Get-TestExplicitAceCount $renamed) | Should Be 1
+    } finally { $script:IcaclsSpy = $null; $s.Close(); Remove-Item -LiteralPath $lock -Force }
+  }
+
+  It 'a carry-over of a path nothing could even LOOK UP keeps the ledger line as it was' {
+    # The other failure shape: the account could not be named, so the revoke
+    # never got as far as asking where the folder went. Nothing is known about
+    # a new name, so nothing is invented - the line is carried exactly as
+    # written, id included, for the next reclaim to retry.
+    $d = New-LedgerTempDir
+    Grant-TestModify $d
+    $id = Get-SandboxPathFileId -Path $d
+    $lock = Join-Path $script:LedgerTempRoot 'carry-blind.lock'
+    $s = New-TestLock $lock
+    try {
+      Write-SandboxLeaseLedger -Stream $s -Entries @([pscustomobject]@{ Path = $d; FileId = $id })
+      $recs = @(Clear-SandboxStaleLease -Stream $s -AccountName 'egpt-no-such-account-zzz')
+      $recs[0].Status | Should Be 'failed'
+      $entries = @(Read-SandboxLeaseLedgerEntries -Stream $s)
+      $entries[0].Path | Should Be $d
+      $entries[0].FileId | Should Be $id
+    } finally { $s.Close(); Remove-Item -LiteralPath $lock -Force }
+  }
+
+  It 'ACCEPTANCE: the kg case - two ledgers, two names, ONE conversation, and nothing left granted' {
+    # egpt-sbx-08/-13 named ...\Favel Konefka-2608141626 while -03/-04/-10 named
+    # ...\Favel Elena Konefka-2608141626 - the same folder, before and after a
+    # rename. Two leases, two spellings, one object. The sweep must clear BOTH
+    # ledgers' ACEs off the folder that exists now, and release both locks.
+    $script:SandboxPoolPrefix = ''
+    $parent = New-LedgerTempDir
+    $oldName = Join-Path $parent 'Favel Elena Konefka-2608141626'
+    New-Item -ItemType Directory -Path $oldName -Force | Out-Null
+    $two = @($script:MeUser, 'Everyone')
+    foreach ($a in $two) { Grant-TestModifyTo $oldName $a }
+    $id = Get-SandboxPathFileId -Path $oldName
+    $newName = Join-Path $parent 'Favel Konefka-2608141626'
+    Rename-Item -LiteralPath $oldName -NewName (Split-Path $newName -Leaf)
+
+    # One lock naming the OLD slug (its turn ran before the rename), one naming
+    # the NEW one (its turn ran after). Both carry the same id, because it is
+    # the same folder - and that is the only thing tying them together.
+    $s1 = New-TestLock (Join-Path $locks "$($two[0]).lock")
+    try { Write-SandboxLeaseLedger -Stream $s1 -Entries @([pscustomobject]@{ Path = $oldName; FileId = $id }) } finally { $s1.Close() }
+    $s2 = New-TestLock (Join-Path $locks "$($two[1]).lock")
+    try { Write-SandboxLeaseLedger -Stream $s2 -Entries @([pscustomobject]@{ Path = $newName; FileId = $id }) } finally { $s2.Close() }
+
+    $recs = @(Clear-SandboxAbandonedLeases -LocksDir $locks)
+
+    (@($recs | Where-Object { $_.Status -eq 'reclaimed' }).Count) | Should Be 2
+    foreach ($a in $two) { (Get-TestExplicitAceCountFor $newName $a) | Should Be 0 }
+    (@(Get-ChildItem -LiteralPath $locks -Filter '*.lock' -File).Count) | Should Be 0
+  }
+
+  It 'BACK-COMPAT: an OLD-SHAPE lock file, byte for byte as the old code wrote it, still sweeps' {
+    # No id anywhere on it. It must behave EXACTLY as it did: revoke by name,
+    # release the lock, and - when the name is gone - say 'missing' with the
+    # old "this cannot tell a delete from a rename" message.
+    $conv = New-LedgerTempDir
+    Grant-TestModify $conv
+    $gone = Join-Path $script:LedgerTempRoot ([guid]::NewGuid().ToString('N'))
+    $lock = Join-Path $locks "$($script:MeUser).lock"
+    [System.IO.File]::WriteAllText($lock, "# egpt sandbox lease ledger - one path per line`r`n$conv`r`n$gone`r`n")
+
+    $recs = @(Clear-SandboxAbandonedLeases -LocksDir $locks)
+
+    $recs[0].Status | Should Be 'reclaimed'
+    (Get-TestExplicitAceCount $conv) | Should Be 0
+    $vanished = @($recs[0].Aces | Where-Object { $_.Status -eq 'missing' })
+    $vanished.Count | Should Be 1
+    ($vanished[0].Message -match 'RENAMED or MOVED') | Should Be $true
+    ($vanished[0].Message -match 'cannot tell the two apart') | Should Be $true
+    (Test-Path -LiteralPath $lock) | Should Be $false
+  }
+
+  It 'A LIVE LEASE IS STILL NEVER SWEPT, id on its ledger or not' {
+    $conv = New-LedgerTempDir
+    Grant-TestModify $conv
+    $lock = Join-Path $locks "$($script:MeUser).lock"
+    $s = New-TestLock $lock
+    try {
+      Write-SandboxLeaseLedger -Stream $s -Entries @([pscustomobject]@{ Path = $conv; FileId = (Get-SandboxPathFileId -Path $conv) })
+      $recs = @(Clear-SandboxAbandonedLeases -LocksDir $locks)
+      $recs[0].Status | Should Be 'held'
+      (Get-TestExplicitAceCount $conv) | Should Be 1
+      (Test-Path -LiteralPath $lock) | Should Be $true
+    } finally { $s.Close() }
+  }
+
+  It 'a DELETED folder with an id on its ledger releases the lock and is NOT warned about' {
+    $d = New-LedgerTempDir
+    $id = Get-SandboxPathFileId -Path $d
+    Remove-Item -LiteralPath $d -Recurse -Force
+    $lock = Join-Path $locks "$($script:MeUser).lock"
+    $s = New-TestLock $lock
+    try { Write-SandboxLeaseLedger -Stream $s -Entries @([pscustomobject]@{ Path = $d; FileId = $id }) } finally { $s.Close() }
+
+    $recs = @(Clear-SandboxAbandonedLeases -LocksDir $locks)
+
+    $recs[0].Status | Should Be 'reclaimed'
+    $recs[0].Aces[0].Status | Should Be 'missing'
+    ($recs[0].Aces[0].Message -match 'DELETED') | Should Be $true
+    (Test-Path -LiteralPath $lock) | Should Be $false
   }
 }
 

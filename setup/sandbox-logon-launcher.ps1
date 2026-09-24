@@ -1626,7 +1626,11 @@ for ($attempt = 1; $attempt -le $maxLeaseAttempts -and -not $leasedName; $attemp
         # there.
         try {
           $reclaimed = @(Clear-SandboxStaleLease -Stream $lockStream -AccountName $name)
-          $reclaimCarryOver = @($reclaimed | Where-Object { $_.Status -eq 'failed' } | ForEach-Object { $_.Path })
+          # CARRIED AS ENTRIES, not as bare paths: each one keeps the file id the
+          # dead turn recorded (and the name that id resolved to, if the folder
+          # had been renamed), so this turn's own finally retries the SAME
+          # object rather than a name that may already have moved again.
+          $reclaimCarryOver = @($reclaimed | Where-Object { $_.Status -eq 'failed' } | ForEach-Object { ConvertTo-SandboxLeaseCarryEntry -Record $_ })
           # AN EMPTY LEDGER IS NOT A CLEAN BILL OF HEALTH, and must not read like
           # one. Every lock file written before 2026-09-11 is 0 bytes, so a
           # reclaim of one of those knows nothing about what that turn granted
@@ -1734,7 +1738,13 @@ $plainPwd = $null
 # is now enforced where it belongs - Revoke-SandboxLeaseAces looks before it
 # writes and reports 'clean' for a path that carries no ACE of ours, so a path
 # whose grant threw is still never re-ACLed on the way out.
-$acesGranted = New-Object System.Collections.Generic.List[string]
+#
+# ENTRIES, NOT PATHS (2026-09-23): each item is { Path, FileId }, the same shape
+# a ledger line parses to. The id is what lets the revoke find the ACE again
+# after the conversation folder has been RENAMED - NTFS carries a DACL through a
+# rename, so the name stops finding it and the object does not. A path whose id
+# cannot be read carries '' and behaves exactly as this list always did.
+$acesGranted = New-Object System.Collections.Generic.List[object]
 # Seeded with anything the reclaim above could not clear: those ACEs belong to
 # THIS account and are still live, so the finally gets one more go at them. Not
 # re-appended to the file - Clear-SandboxStaleLease already wrote them back into
@@ -1760,9 +1770,15 @@ try {
   # Ledger first, ACE second. If this process dies between the two lines the
   # reclaim revokes a path that carries nothing, which costs one Get-Acl; the
   # other order would leak the ACE it failed to record.
-  [void]$acesGranted.Add($TargetFolder)
+  # THE ID OF THE FOLDER, READ BEFORE THE GRANT AND RECORDED WITH IT. This is
+  # the one thing that makes a rename survivable: the ledger stops being a list
+  # of names and becomes a list of objects. $null when it cannot be had, which
+  # costs nothing - the line is then written exactly as it was before ids
+  # existed, and the revoke falls back to the name.
+  $targetFileId = Get-SandboxPathFileId -Path $TargetFolder
+  [void]$acesGranted.Add([pscustomobject]@{ Path = $TargetFolder; FileId = "$targetFileId" })
   try {
-    Add-SandboxLeaseLedgerPath -Stream $lockStream -Path $TargetFolder
+    Add-SandboxLeaseLedgerPath -Stream $lockStream -Path $TargetFolder -FileId "$targetFileId"
   } catch {
     Log "WARNING: could not record $TargetFolder in the ACE ledger at $lockPath  - $($_.Exception.Message). This turn's own revoke is unaffected, but a HARD KILL will leave '$leasedName' holding Modify there with nothing to find it by."
   }
@@ -1874,9 +1890,10 @@ try {
         # to RECORD is warned about but does not skip the grant: a being losing
         # a share path it was promised is a worse outcome than a crash-path
         # cleanup gap, and this says which one happened.
-        [void]$acesGranted.Add($sp)
+        $shareFileId = Get-SandboxPathFileId -Path $sp
+        [void]$acesGranted.Add([pscustomobject]@{ Path = $sp; FileId = "$shareFileId" })
         try {
-          Add-SandboxLeaseLedgerPath -Stream $lockStream -Path $sp
+          Add-SandboxLeaseLedgerPath -Stream $lockStream -Path $sp -FileId "$shareFileId"
         } catch {
           Log "WARNING: could not record shared path $sp in the ACE ledger at $lockPath  - $($_.Exception.Message). This turn's own revoke is unaffected, but a HARD KILL will leave '$leasedName' holding $shareGrant there with nothing to find it by."
         }
@@ -2008,13 +2025,13 @@ try {
   # path got this right from the start - Clear-SandboxStaleLease rewrites the
   # ledger with exactly what it could not revoke - so this is that same carry-over
   # discipline applied to the clean path, not a second idea about it.
-  $stillGranted = New-Object System.Collections.Generic.List[string]
+  $stillGranted = New-Object System.Collections.Generic.List[object]
   if ($acesGranted -and $acesGranted.Count -gt 0) {
-    foreach ($rec in @(Revoke-SandboxLeaseAces -AccountName $leasedName -Paths $acesGranted.ToArray())) {
+    foreach ($rec in @(Revoke-SandboxLeaseAces -AccountName $leasedName -Entries $acesGranted.ToArray())) {
       if ($rec.Status -eq 'revoked') {
         Log "revoked ACE for $($rec.Sid) ($leasedName) on $($rec.Path)  - $($rec.Message)"
       } elseif ($rec.Status -eq 'failed') {
-        [void]$stillGranted.Add($rec.Path)
+        [void]$stillGranted.Add((ConvertTo-SandboxLeaseCarryEntry -Record $rec))
         Log "WARNING: could not revoke the ACE for '$leasedName' on $($rec.Path)  - $($rec.Message). That account STILL has an explicit ACE there; the next reclaim of this lease will retry it."
       } else {
         Log "nothing to revoke for '$leasedName' on $($rec.Path)  - $($rec.Status): $($rec.Message)"
@@ -2034,7 +2051,7 @@ try {
     $keepLock = $stillGranted.Count -gt 0
     if ($keepLock) {
       try {
-        Write-SandboxLeaseLedger -Stream $lockStream -Paths $stillGranted.ToArray()
+        Write-SandboxLeaseLedger -Stream $lockStream -Entries $stillGranted.ToArray()
       } catch {
         $keepLock = $false
         Log "WARNING: could not write the unrevoked paths back into the ACE ledger at $lockPath  - $($_.Exception.Message). Releasing the lease anyway; '$leasedName' keeps $($stillGranted.Count) ACE(s) that nothing now names."
@@ -2046,7 +2063,7 @@ try {
       Log "WARNING: could not close lease lock stream for '$leasedName'  - $($_.Exception.Message)"
     }
     if ($keepLock) {
-      Log "KEEPING lease lock $lockPath for '$leasedName'  - $($stillGranted.Count) ACE(s) could not be revoked and stay on its ledger. Nothing holds the lock, so the next lease of this account reclaims it and retries: $($stillGranted -join ', ')"
+      Log "KEEPING lease lock $lockPath for '$leasedName'  - $($stillGranted.Count) ACE(s) could not be revoked and stay on its ledger. Nothing holds the lock, so the next lease of this account reclaims it and retries: $(@($stillGranted | ForEach-Object { $_.Path }) -join ', ')"
     } else {
       try {
         Remove-Item -LiteralPath $lockPath -Force -ErrorAction Stop
