@@ -43,7 +43,7 @@ import { SHELL_SURFACE } from './identity.mjs';
 import { sanitizeName } from '../sanitize.mjs';
 import { loadAdapters as defaultLoadAdapters, matchAdapter } from '../adapters/registry.mjs';
 import { agentPaths } from '../mesh/relay.mjs';
-import { compactionTargets, dueForCompaction, windowForModel } from '../tools/compact-being.mjs';
+import { compactionTargets, dueForCompaction, windowForModel, compactionPolicy, compactionOverrideOf } from '../tools/compact-being.mjs';
 import { compactionRatio } from './compaction.mjs';
 import { NODE_FILE, REGISTRY_FILE, parseEntityConfig } from './config-resolver.mjs';
 import { CONFIG_YAML_PATH, writeConfigKey } from '../tools/config-io.mjs';
@@ -3208,7 +3208,13 @@ export function createCommands({
           let targets = [];
           try {
             const st = loadState ? await loadState() : null;
-            targets = compactionTargets({ config: cfg(), convState: st ?? {}, slugDir });
+            // EACH BEING'S OWN MODEL (2026-09-24): resolved through resolveBeingDef, the resolver
+            // turn() uses and the one /agents status calls just above, so a target carries the
+            // window and ratio the spine compacts THIS being at (compact-being's compactionPolicy),
+            // not the node default brain's. Was: every conversation read haiku's 200k, and an opus
+            // being showed 160k while the spine compacted it at 800k.
+            const modelOf = ({ being, surface, slug, beingView }) => resolveBeingDef(being, slugDir(surface, slug), { getConfig: cfg, brains, brainType: CCODE, configuration: beingView?.configuration, onLog })?.model ?? null;
+            targets = compactionTargets({ config: cfg(), convState: st ?? {}, slugDir, modelOf });
           } catch { targets = []; }
           const byKey = new Map(targets.map((t) => [t.key, t]));
           const ratio = compactionRatio(cfg());
@@ -3217,8 +3223,9 @@ export function createCommands({
             let detail = 'no session';
             if (t) {
               try {
-                const { tokens, threshold } = dueFor(t, { ratio });
-                const limit = threshold ?? Math.round((t.window || windowForModel(t.model)) * ratio);
+                const r = t.ratio ?? ratio;
+                const { tokens, threshold } = dueFor(t, { ratio: r });
+                const limit = threshold ?? Math.round((t.window || windowForModel(t.model)) * r);
                 detail = tokens == null ? 'no session file' : `${tokens}/${limit} tok (${Math.round((tokens / limit) * 100)}% of compact)`;
               } catch { detail = '?'; }
             }
@@ -3349,10 +3356,13 @@ export function createCommands({
     if (b?.threadId) {
       try {
         const model = previewDef?.model ?? cfg().default_brain?.model ?? 'haiku';
-        const ratio = compactionRatio(cfg());
-        const { tokens, threshold } = dueFor({ sessionId: b.threadId, model, window: windowForModel(model) }, { ratio });
-        const limit = threshold ?? Math.round(windowForModel(model) * ratio);
-        if (tokens != null) context = `${tokens}/${limit} tok (compact at ${Math.round(ratio * 100)}% of ${windowForModel(model)})`;
+        // The ratio AND window the spine applies to this being here, override included
+        // (compact-being's compactionPolicy, 2026-09-24) - not the node ratio over the model's
+        // table window, which ignored a conversation's own `compaction:` and `context_window`.
+        const p = compactionPolicy(cfg(), model, compactionOverrideOf(b, cfg(), defaultKey));
+        const { tokens, threshold } = dueFor({ sessionId: b.threadId, model, window: p.window }, { ratio: p.ratio });
+        const limit = threshold ?? p.threshold;
+        if (tokens != null) context = `${tokens}/${limit} tok (compact at ${Math.round(p.ratio * 100)}% of ${p.window})`;
       } catch { context = null; }
     }
 

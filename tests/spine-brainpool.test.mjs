@@ -41,7 +41,7 @@ function fakePool(scriptedResults, { steerTakes = true } = {}) {
 
 const ev = { surface: 'whatsapp', chatId: '!room:beeper.com', chatName: 'SPOILER', line: 'An@[SPOILER].wa (14:05) #m1: hola', body: 'hola' };
 
-function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, loadFeed, loadManifest, loadAutoLayer, labelOf, seedSession, seedMode, seedAgents, brains, afterTurn, io, seedLayers, resolveConfig, loadPermission, skipAccessLevelDefault, poolOverride, onLog, onAlert, steerTakes, platform } = {}) {
+function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, loadFeed, loadManifest, loadAutoLayer, labelOf, seedSession, seedMode, seedAgents, brains, afterTurn, io, seedLayers, resolveConfig, loadPermission, skipAccessLevelDefault, poolOverride, onLog, onAlert, noticeTo, steerTakes, platform } = {}) {
   let state = emptyState();
   if (seedSession || seedMode || seedAgents) {   // pre-register the contact (WITH a stored thread, an E mode, and/or per-being pins)
     const ens = ensureContact(state, ev.surface, ev.chatId, { pushedName: ev.chatName, slugHint: ev.chatName });
@@ -121,6 +121,7 @@ function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, load
     loadPermission: loadPermission ?? (() => null),
     ...(onLog ? { onLog } : {}),                   // the diagnostic sink (allow_new_input validation)
     ...(onAlert ? { onAlert } : {}),               // the OPERATOR channel — the small set of events worth waking someone for (thread loss)
+    ...(noticeTo ? { noticeTo } : {}),             // (chatId, text, being) -> one line into that chat — the compaction notice
     ...(platform ? { platform } : {}),             // 'win32' | 'linux' | ... — drives the PLATFORM-AWARE `sandboxed` default below (omit → this host's real process.platform)
   });
   return { brain, pool, getState: () => state, setState: (s) => { state = s; } };
@@ -3000,5 +3001,39 @@ describe('brainpool.turn: the compaction arming hook', () => {
     expect(pool.calls[1].message.endsWith(ev.line)).toBe(true);
     // …and it disarms: a third turn is an ordinary one again.
     expect(getContact(getState(), ev.surface, ev.chatId).entry.agents.e.identityInjectedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+});
+
+// ── THE COMPACTION NOTICE (operator 2026-09-24: "can the bridge emit notice of this when it
+// happens?"). Same shape as the arming hook above: only compaction.mjs knows a compact succeeded,
+// only this turn knows its chat and the being's name, so brainpool hands a closure out on afterTurn.
+describe('brainpool.turn: the compaction notice hook', () => {
+  it('afterTurn carries noticeCompacted, bound to THIS turn\'s chat and saying the being\'s display name', async () => {
+    const seen = [], said = [];
+    const { brain } = harness([{ text: 'ok', sessionId: 'sid-n' }], {
+      afterTurn: (x) => seen.push(x),
+      labelOf: (b) => (b === 'e' ? 'E' : ''),
+      noticeTo: async (chatId, text, being) => { said.push({ chatId, text, being }); },
+    });
+    await brain.turn('e', ev);
+    expect(typeof seen[0].noticeCompacted).toBe('function');
+    expect(said).toEqual([]);                                   // nothing is said on the turn itself
+    await seen[0].noticeCompacted({ tokens: 480_000 });         // ← what a successful /compact does
+    expect(said).toEqual([{ chatId: ev.chatId, being: 'e', text: '🗜️ E compacted its context (was 480k tokens). The full history stays in transcript.md.' }]);
+  });
+
+  it('a being with no display name is named by its key', async () => {
+    const seen = [], said = [];
+    const { brain } = harness([{ text: 'ok', sessionId: 'sid-n' }], { afterTurn: (x) => seen.push(x), noticeTo: async (chatId, text) => { said.push(text); } });
+    await brain.turn('e', ev);
+    await seen[0].noticeCompacted({ tokens: 250_000 });
+    expect(said).toEqual(['🗜️ e compacted its context (was 250k tokens). The full history stays in transcript.md.']);
+  });
+
+  it('with no noticeTo wired, afterTurn carries no notice at all', async () => {
+    const seen = [];
+    const { brain } = harness([{ text: 'ok', sessionId: 'sid-n' }], { afterTurn: (x) => seen.push(x) });
+    await brain.turn('e', ev);
+    expect(seen[0].noticeCompacted).toBeNull();
   });
 });

@@ -5,7 +5,12 @@
 // another agent — avoid the same-file race.)
 import { describe, it, expect } from 'vitest';
 import { createCommands } from '../src/spine/commands.mjs';
-import { emptyState, ensureContact, patchContact, recordThread, slugDir, getContact } from '../src/conversations-state.mjs';
+import { emptyState, ensureContact, patchContact, recordThread, slugDir, getContact, patchBeing } from '../src/conversations-state.mjs';
+import { createCompaction } from '../src/spine/compaction.mjs';
+import { dueForCompaction } from '../src/tools/compact-being.mjs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 // A readonly.yaml with two heartbeat entries (the shape heartbeat-loader writes).
 const READONLY_YAML = `heartbeats:
@@ -899,5 +904,75 @@ describe('/status — rung attribution, thread size, and the warm pool', () => {
     await cmds.run({ body: '/status HFM', chatId: '!self', surface: 'whatsapp' });
     expect(sent.at(-1).text).toContain('thread_id: not started');
     expect(sent.at(-1).text).not.toContain('context:');
+  });
+});
+
+// ── /status READS THE THRESHOLD THE SPINE APPLIES TO EACH BEING (2026-09-24) ──────────────────────
+// compactionTargets gave every conversation the node's default brain (haiku, 200k), so an opus
+// being read 0.8 x 200k = 160k while compaction.mjs compacted it at 0.8 x 1M = 800k - and the
+// operator's own list of "sessions due" was built on that number. The expected threshold below is
+// never typed in: it is read off a real createCompaction, frozen from the same model and override.
+describe('/status: each being\'s threshold is the one compaction.mjs applies', () => {
+  const OPUS = { type: 'ccode', model: 'opus', effort: 'high' };
+  const CFG8 = { whatsapp: { chat_id: '!self' }, node_name: 'kg', compaction: { ratio: 0.8 }, agents: { egpt: { configuration: 'opus-default', handles: ['egpt'] } } };
+  const brains = { resolve: () => OPUS };
+  const IO = { stat: async () => ({ mtimeMs: Date.now() }), readFile: readFileBySuffix({ 'transcript.md': new Error('none'), 'heartbeats.readonly.yaml': READONLY_YAML }) };
+
+  // What the SPINE compacts this being at: the window x ratio a real createCompaction freezes onto
+  // its target on afterTurn, exactly as brainpool calls it (model: def.model, compaction: override).
+  async function spineThreshold(compaction = null) {
+    let seen = null;
+    const sched = { fn: null, set(fn) { sched.fn = fn; return 1; }, clear() {} };
+    const c = createCompaction({
+      pool: { run: async () => ({}) }, getConfig: () => CFG8, scheduler: sched,
+      dueFor: (t, o) => { seen = { window: t.window, ratio: o.ratio }; return { due: false }; },
+    });
+    c.afterTurn({ key: 'k', sessionId: 's', model: OPUS.model, compaction });
+    await sched.fn();
+    return Math.round(seen.window * seen.ratio);
+  }
+  const sessionOf = (tokens) => {
+    const f = join(mkdtempSync(join(tmpdir(), 'status-threshold-')), 's.jsonl');
+    writeFileSync(f, JSON.stringify({ type: 'assistant', message: { role: 'assistant', usage: { input_tokens: 10, cache_read_input_tokens: tokens, cache_creation_input_tokens: 0 } } }));
+    return f;
+  };
+  async function warmLine(st) {
+    const key = `egpt:ccode:whatsapp:${getContact(st, 'whatsapp', '!fam:beeper.local').slug}`;
+    const file = sessionOf(300_000);
+    const { cmds, sent } = harness({
+      getConfig: () => CFG8, brains, io: IO, gitOut: () => 'abc1234', loadState: async () => st,
+      warmStats: () => ({ size: 1, max: 6, keys: [key] }),
+      dueFor: (t, o) => dueForCompaction(t, { ...o, resolveFile: () => file }),   // the REAL probe, a fake file
+    });
+    await cmds.run({ body: '/status', chatId: '!self', surface: 'whatsapp' });
+    return { key, text: sent.at(-1)?.text ?? '' };
+  }
+
+  it('REPRODUCE: an opus being in the warm list reads 0.8 x 1M, the threshold compaction.mjs applies - not 0.8 x 200k', async () => {
+    const st = recordThread(threeContacts(), 'whatsapp', '!fam:beeper.local', 'sid-fam', undefined, 'egpt');
+    const want = await spineThreshold();
+    expect(want).toBe(800_000);
+    const { key, text } = await warmLine(st);
+    expect(text).toContain(`${key}: 300010/${want} tok`);
+  });
+
+  it('a being\'s own compaction override reaches the warm list exactly as it reaches the spine', async () => {
+    let st = recordThread(threeContacts(), 'whatsapp', '!fam:beeper.local', 'sid-fam', undefined, 'egpt');
+    st = patchBeing(st, 'whatsapp', '!fam:beeper.local', 'egpt', { compaction: { ratio: 0.5 } });
+    const want = await spineThreshold({ ratio: 0.5 });
+    expect(want).toBe(500_000);
+    const { key, text } = await warmLine(st);
+    expect(text).toContain(`${key}: 300010/${want} tok`);
+  });
+
+  it('/status <fragment> applies the conversation\'s own ratio AND context_window, not the node ratio over the model table', async () => {
+    let st = recordThread(threeContacts(), 'whatsapp', '!hfm:beeper.local', 'sid-hfm', undefined, 'e');
+    st = patchBeing(st, 'whatsapp', '!hfm:beeper.local', 'e', { compaction: { ratio: 0.5, context_window: 400_000 } });
+    const { cmds, sent } = harness({
+      getConfig: () => ({ ...CFG8, compaction: { ratio: 0.20 } }), io: IO, gitOut: () => 'abc1234', loadState: async () => st,
+      dueFor: (t, o) => ({ due: false, tokens: 12_345, threshold: Math.round(t.window * o.ratio) }),
+    });
+    await cmds.run({ body: '/status HFM', chatId: '!self', surface: 'whatsapp' });
+    expect(sent.at(-1)?.text ?? '').toMatch(/context: 12345\/200000 tok \(compact at 50% of 400000\)/);
   });
 });

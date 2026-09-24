@@ -2745,7 +2745,16 @@ export async function boot({
   // single shape. The drain goes FIRST because it cannot throw (createOutboxDrain guarantees it),
   // so compaction's behaviour on this hook is byte-for-byte what it was.
   const afterEveryTurn = (t) => { outboxDrain.afterTurn(t); compaction.afterTurn(t); };
-  const brain = createBrainPool({ pool, getConfig, contacts, loadState: _loadState, writeState: _writeState, brains, defaultKey, labelOf, afterTurn: afterEveryTurn, onAlert: alertOperator, resolveConfig: configResolver.configFor, resolveScope: createIdentityScope({ resolveMembers: memberResolver, getConfig, onLog: (m) => log.line?.(`[scope] ${m}`) }), io, onLog: (m) => log.line?.(`[brain] ${m}`) });
+  // THE COMPACTION NOTICE (operator 2026-09-24: "i'll just let the conversations compact on its
+  // own. can the bridge emit notice of this when it happens?"). compaction.mjs calls brainpool's
+  // closure after a compact that SUCCEEDED; this is how the line reaches the chat - sayOnce, the
+  // ONE placement, from the being's own mouth, the helper the outbox drain and the heartbeat
+  // posts already take. Logged first, like the alert above: the log does not need a network.
+  const noticeInChat = (chatId, text, being) => {
+    log.line?.(`[compact] notice to ${chatId}: ${text}`);
+    return sayOnce({ being, chatId, text, what: 'compaction' });
+  };
+  const brain = createBrainPool({ pool, getConfig, contacts, loadState: _loadState, writeState: _writeState, brains, defaultKey, labelOf, afterTurn: afterEveryTurn, onAlert: alertOperator, noticeTo: noticeInChat, resolveConfig: configResolver.configFor, resolveScope: createIdentityScope({ resolveMembers: memberResolver, getConfig, onLog: (m) => log.line?.(`[scope] ${m}`) }), io, onLog: (m) => log.line?.(`[brain] ${m}`) });
 
   // ONE turn machinery for the whole node (see the import note). Built here because it needs
   // `brain` (its scopeOf/allowNewInput/steer seams) and the bridge pair the steer-ack rides —

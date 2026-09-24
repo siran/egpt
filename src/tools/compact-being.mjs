@@ -60,6 +60,52 @@ export function windowForModel(model) {
   return DEFAULT_WINDOW;
 }
 
+// ── pure: THE SPINE'S COMPACTION POLICY, in one place (2026-09-24). It lived as closures inside
+//    src/spine/compaction.mjs, so /status could only approximate it: every conversation read the
+//    node's default brain (haiku, 200k) and the node ratio, and an opus being showed a threshold
+//    of 160k while the spine compacted it at 0.8 x 1M = 800k. The service and /status now both
+//    ask these functions. compaction.mjs re-exports compactionRatio and DEFAULT_RATIO unchanged. ──
+
+// THE NODE RATIO the spine applies: `compaction.ratio` from config, else 0.20. It is not this
+// module's COMPACT_RATIO (0.25), which is only dueForCompaction's default PARAMETER when a caller
+// passes none; the spine always passes this one.
+export const DEFAULT_RATIO = 0.20;    // compact at 20% of the model window (operator 2026-06-30)
+export function compactionRatio(config) {
+  return Number(config?.compaction?.ratio ?? DEFAULT_RATIO) || DEFAULT_RATIO;
+}
+
+// A positive number, or null. BOOLEANS ARE REJECTED: `Number(true)` is 1, so `ratio: true` would
+// read as "compact at 100% of the window", i.e. never, and a thread that overshoots is not
+// compacted late, it is LOST (brainpool's overflow backstop resets it). Zero and negatives are
+// rejected too (a ratio of 0 means "after every turn"). Numeric STRINGS still coerce: '0.6' is an
+// ordinary YAML quoting accident, and it means what it says.
+export function positiveOrNull(v) {
+  const n = typeof v === 'boolean' ? NaN : Number(v);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+// THE PER-CONVERSATION OVERRIDE a turn carries (operator 2026-09-03): this conversation's own
+// `compaction:` block for the being, else the being's `agents.<being>.conversation_defaults.
+// compaction` in config.yaml, else null (the node-global block). The same order brainpool's
+// resolveConv has always read; a non-mapping is null, which is what the service made of it anyway.
+export function compactionOverrideOf(beingView, config, being) {
+  const o = beingView?.compaction ?? config?.agents?.[being]?.conversation_defaults?.compaction ?? null;
+  return (o && typeof o === 'object' && !Array.isArray(o)) ? o : null;
+}
+
+// What the spine compacts a being's thread at: the override's `ratio` when it is a usable one
+// (0 < r <= 1), else the node ratio; the override's `context_window`, else the node's
+// `compaction.context_window`, else the MODEL's own window. `model` is the being's resolved model
+// (brainpool passes def.model on afterTurn); a null model reads DEFAULT_WINDOW, exactly as the
+// spine does.
+export function compactionPolicy(config, model, over = null) {
+  const o = (over && typeof over === 'object' && !Array.isArray(over)) ? over : null;
+  const r = positiveOrNull(o?.ratio);
+  const ratio = r && r <= 1 ? r : compactionRatio(config);
+  const window = positiveOrNull(o?.context_window) ?? (Number(config?.compaction?.context_window) || windowForModel(model));
+  return { ratio, window, threshold: Math.round(window * ratio) };
+}
+
 // ── pure: the real context size (tokens) of the most recent turn, from Claude
 //    Code's own usage accounting (input + cache_read + cache_creation = all that
 //    counts against the window). CRUCIAL: if a compact boundary is NEWER than the
@@ -196,7 +242,13 @@ export function compactableBeings(config) {
 //    as it already did for a never-instanced conversation. `threadCwd` is retired, so no cwd
 //    travels here: the caller resolves the slug-dir, which is the cwd the daemon actually
 //    resumes with. ──
-export function compactableConversations(state, model = 'haiku') {
+//
+//    EACH BEING'S OWN MODEL AND POLICY (2026-09-24). `model` is only the fallback; a caller that
+//    can resolve a being's def hands `modelOf({ being, surface, slug, beingView })` (/status does,
+//    through brainpool's resolveBeingDef - the resolver turn() itself uses), and its answer is
+//    taken AS IS, null included, because the spine passes def.model as is. `config` gives each
+//    target the ratio and window compactionPolicy says the spine applies, override included.
+export function compactableConversations(state, model = 'haiku', { config = null, modelOf = null } = {}) {
   const out = [];
   const contacts = state?.contacts ?? {};
   for (const surface of Object.keys(contacts)) {
@@ -207,7 +259,12 @@ export function compactableConversations(state, model = 'haiku') {
       for (const being of residentsOf(e)) {
         const b = getBeing(state, surface, jid, being);
         if (typeof b?.threadId !== 'string' || !b.threadId) continue;   // no live thread → nothing to compact
-        out.push({ name: `${surface}/${slug}#${being}`, surface, slug, being, sessionId: b.threadId, engine: null, model, window: windowForModel(model) });
+        let own = model;
+        if (typeof modelOf === 'function') {
+          try { own = modelOf({ being, surface, slug, beingView: b }) ?? null; } catch { own = model; }
+        }
+        const { window, ratio } = compactionPolicy(config, own, compactionOverrideOf(b, config, being));
+        out.push({ name: `${surface}/${slug}#${being}`, surface, slug, being, sessionId: b.threadId, engine: null, model: own, window, ratio });
       }
     }
   }
@@ -249,15 +306,15 @@ export function findSessionFile(sessionId, { claudeProjects = join(homedir(), '.
 // The conversation half was written `e:<brainType>:…` when the persona was hardcoded 'e'; the
 // resident's own name is what brainpool keys on (live profiles run `egpt`), so it comes from the
 // enumeration now instead of being spelled a second time here.
-export function compactionTargets({ config, convState, slugDir, convBrainType = 'ccode' } = {}) {
+export function compactionTargets({ config, convState, slugDir, convBrainType = 'ccode', modelOf = null } = {}) {
   const targets = [];
   for (const b of compactableBeings(config)) {
     targets.push({ name: b.name, key: `sib:${b.name}:${b.sessionId}`, sessionId: b.sessionId, cwd: b.cwd, model: b.model, window: b.window, klass: 'resident' });
   }
   const model = config?.default_brain?.model || 'haiku';
-  for (const c of compactableConversations(convState, model)) {
+  for (const c of compactableConversations(convState, model, { config, modelOf })) {
     const cwd = typeof slugDir === 'function' ? slugDir(c.surface, c.slug) : null;
-    targets.push({ name: c.name, key: `${c.being}:${c.engine ?? convBrainType}:${c.surface}:${c.slug}`, sessionId: c.sessionId, cwd, model: c.model, window: c.window, klass: 'conversation' });
+    targets.push({ name: c.name, key: `${c.being}:${c.engine ?? convBrainType}:${c.surface}:${c.slug}`, sessionId: c.sessionId, cwd, model: c.model, window: c.window, ratio: c.ratio, klass: 'conversation' });
   }
   return targets;
 }
