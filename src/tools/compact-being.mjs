@@ -31,7 +31,7 @@
 // CLI (`node src/tools/compact-being.mjs`) is now READ-ONLY diagnostics — it
 // reports token sizes + what's over threshold; the spine does the compacting.
 
-import { readFileSync, readdirSync, statSync,
+import { readFileSync, statSync,
          openSync as _openSync, fstatSync as _fstatSync,
          readSync as _readSync, closeSync as _closeSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -40,7 +40,8 @@ import { pathToFileURL } from 'node:url';
 // THE readers of the per-being conversation shape — imported, never re-derived here: residentsOf
 // knows which object-valued keys are residents and which are contact-level containers
 // (readonly/agents/guard), and getBeing layers the `agents.<name>` override over the block.
-import { residentsOf, getBeing } from '../conversations-state.mjs';
+import { residentsOf, getBeing, findThreadJsonl } from '../conversations-state.mjs';
+import { jsonlStoreDirOf } from '../sandbox-cli-session.mjs';
 
 // Context window is PER-MODEL: haiku is 200k, the large-context 4.x models
 // (sonnet/opus) are ~1M. Match by substring; a being may override with
@@ -213,15 +214,28 @@ export function compactableConversations(state, model = 'haiku') {
   return out;
 }
 
-// ── side-effecting: locate a session's jsonl across the Claude Code projects. ──
-export function findSessionFile(sessionId) {
-  const proj = join(homedir(), '.claude', 'projects');
-  let dirs; try { dirs = readdirSync(proj); } catch { return null; }
-  for (const d of dirs) {
-    const f = join(proj, d, `${sessionId}.jsonl`);
-    try { if (statSync(f).isFile()) return f; } catch { /* not here */ }
+// ── side-effecting: locate a session's jsonl, BY ID, wherever its CLI keeps it. ──
+// TWO ROOTS (operator 2026-09-24). An unboxed being's CLI files its sessions under the operator's
+// ~/.claude/projects; a BOXED being's runs with CLAUDE_CONFIG_DIR=~/.egpt-jsonl/<threadId>
+// (src/sandbox-cli-session.mjs), so its session lives under THAT root. Looking only in ~/.claude
+// found no boxed session at all, dueForCompaction answered { due: false } for every one, and no
+// boxed being was ever compacted - measured on kg: 0 compactions of either kind across 65 boxed
+// sessions, the largest at 478k tokens. Both roots are asked BY ID (findThreadJsonl), never by the
+// folder a cwd would name. When both hold the thread (0026 copies, never moves), the one written
+// last is the live one. The roots are parameters only so a test never reads a real profile.
+export function findSessionFile(sessionId, { claudeProjects = join(homedir(), '.claude', 'projects'), storeRoot = null } = {}) {
+  if (!sessionId) return null;
+  const storeDir = jsonlStoreDirOf(sessionId, storeRoot ? { jsonlStoreRoot: storeRoot } : {});
+  const found = [
+    storeDir ? findThreadJsonl(sessionId, [], { projectsRoot: join(storeDir, 'projects') }) : null,
+    findThreadJsonl(sessionId, [], { projectsRoot: claudeProjects }),
+  ].filter(Boolean).map((f) => f.jsonlPath);
+  let newest = null, newestAt = -Infinity;
+  for (const f of found) {
+    let at; try { at = statSync(f).mtimeMs; } catch { continue; }
+    if (at > newestAt) { newest = f; newestAt = at; }
   }
-  return null;
+  return newest;
 }
 
 // Build the full compaction target list (beings + ccode conversation threads),
