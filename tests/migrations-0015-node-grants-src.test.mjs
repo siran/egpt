@@ -219,34 +219,22 @@ describe('0015 through the runner', () => {
   // so 0007 reads nothing as this node's own (as tests/migrations-0014-*).
   const ctx = { ps: () => JSON.stringify({ map: [], services: [], from: { exists: false }, to: { exists: false } }), localAddresses: new Set() };
   const dir = join(import.meta.dirname, '..', 'migrations');
-  // 0025 runs LAST in this chain and states an `access_level:` on every being that declares none,
-  // so the live config.yaml is no longer the end state THIS migration is about. Its BACKUP is:
-  // ctx.backup copies the file the instant before 0025 writes it, which is exactly what the chain
-  // up to 0024 left behind - so the byte-for-byte assertions below are unchanged.
-  const upTo0024 = (h) => {
-    const d = join(h, 'config');
-    return readFileSync(join(d, readdirSync(d).find((f) => f.startsWith('config.yaml.bak-0025-'))), 'utf8');
-  };
   const ledger = (h) => JSON.parse(readFileSync(join(h, 'state', 'migrations-applied.json'), 'utf8'))['0015-node-grants-the-operators-src'].outcome;
 
   it('kg: applied and recorded, the block at the root, a backup beside config.yaml', async () => {
     const h = home();
-    const { exitCode } = await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0015', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(ledger(h)).toBe('applied');
-    // 0014 rewrites wren.yaml on this fixture, so config.yaml is asserted on the grant itself - and
-    // read off what 0025 backed up, because 0025 RETIRES this very grant later in the same chain:
-    // an allowed_paths entry is now a per-lease OS ACE, so the blanket line would re-open the whole
-    // src/ the provisioner narrowed. 0015 still writes it; the node simply no longer ends with it.
-    expect(YAML.parse(upTo0024(h)).allowed_paths)
+    // 0014 rewrites wren.yaml on this fixture, so config.yaml is asserted on the grant itself.
+    expect(YAML.parse(readFileSync(cfgPath(h), 'utf8')).allowed_paths)
       .toEqual({ [srcOf(h)]: { allowed_tools: ['Read', 'Glob', 'Grep'] } });
-    expect(YAML.parse(readFileSync(cfgPath(h), 'utf8')).allowed_paths).toBeUndefined();
     expect(readdirSync(join(h, 'config')).filter((f) => f.startsWith('config.yaml.bak-0015-'))).toHaveLength(1);
   });
 
   it('a node with no src/: recorded as already satisfied, nothing touched, no backup', async () => {
     const h = home({ config: DO, src: false });
-    const { exitCode } = await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0015', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(ledger(h)).toBe('already-satisfied');
     expect(readFileSync(cfgPath(h), 'utf8')).toBe(DO);

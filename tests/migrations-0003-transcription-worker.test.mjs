@@ -147,7 +147,7 @@ describe('0003 on do - already there', () => {
     // Stub the Windows probes of 0001/0002 to "nothing there", and the fixture carries do's transcriptor
     // block already on, so 0007 reads satisfied: this exercises 0003 only.
     const ctx = { ps: () => JSON.stringify({ map: [], services: [], from: { exists: false }, to: { exists: false } }), localAddresses: new Set() };
-    const { exitCode } = await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0003', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     const ledger = JSON.parse(readFileSync(join(h, 'state', 'migrations-applied.json'), 'utf8'));
     expect(ledger['0003-transcription-worker-shape'].outcome).toBe('already-satisfied');
@@ -160,7 +160,7 @@ describe('0003 on do - already there', () => {
     const lines = [];
     // localAddresses empty: on dolly itself, kg's worker address would otherwise read as this node's own.
     const ctx = { ps: () => JSON.stringify({ map: [], services: [], from: { exists: false }, to: { exists: false } }), localAddresses: new Set() };
-    const { exitCode } = await runMigrations({ dir: join(import.meta.dirname, '..', 'migrations'), egptHome: h, dryRun: true, elevated: false, platform: 'win32', ctx, log: (l) => lines.push(l) });
+    const { exitCode } = await runMigrations({ through: '0003', dir: join(import.meta.dirname, '..', 'migrations'), egptHome: h, dryRun: true, elevated: false, platform: 'win32', ctx, log: (l) => lines.push(l) });
     expect(exitCode).toBe(0);
     expect(lines.join('\n')).toContain('+     worker:');
     expect(readFileSync(cfgPath(h), 'utf8')).toBe(KG);

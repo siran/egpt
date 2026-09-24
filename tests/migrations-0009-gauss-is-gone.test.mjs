@@ -213,22 +213,14 @@ describe('0009 through the runner', () => {
   // 0007 reads nothing as this node's own (as tests/migrations-0008-*).
   const ctx = { ps: () => JSON.stringify({ map: [], services: [], from: { exists: false }, to: { exists: false } }), localAddresses: new Set() };
   const dir = join(import.meta.dirname, '..', 'migrations');
-  // 0025 runs LAST in this chain and states an `access_level:` on every being that declares none,
-  // so the live config.yaml is no longer the end state THIS migration is about. Its BACKUP is:
-  // ctx.backup copies the file the instant before 0025 writes it, which is exactly what the chain
-  // up to 0024 left behind - so the byte-for-byte assertions below are unchanged.
-  const upTo0024 = (h) => {
-    const d = join(h, 'config');
-    return readFileSync(join(d, readdirSync(d).find((f) => f.startsWith('config.yaml.bak-0025-'))), 'utf8');
-  };
 
   it('kg: 0009 applies, is recorded, removes only the gauss lines and the identity file, and leaves a backup of each', async () => {
     const h = home({ config: KG, identity: IDENTITY, conversations: CONVERSATIONS });
-    const { exitCode } = await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0009', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     const ledger = JSON.parse(readFileSync(join(h, 'state', 'migrations-applied.json'), 'utf8'));
     expect(ledger['0009-gauss-is-gone'].outcome).toBe('applied');
-    expect(upTo0024(h)).toBe(KG_WITHOUT);
+    expect(readFileSync(cfgPath(h), 'utf8')).toBe(KG_WITHOUT);
     expect(existsSync(idPath(h))).toBe(false);
     expect(readdirSync(join(h, 'config')).filter((f) => f.startsWith('config.yaml.bak-0009-'))).toHaveLength(1);
     expect(readdirSync(join(h, 'config', 'agents', 'identities')).filter((f) => f.startsWith('gauss.md.bak-0009-'))).toHaveLength(1);
@@ -236,15 +228,11 @@ describe('0009 through the runner', () => {
 
   it('do: recorded as already satisfied, nothing touched, no backup', async () => {
     const h = home({ config: DO });
-    const { exitCode } = await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0009', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     const ledger = JSON.parse(readFileSync(join(h, 'state', 'migrations-applied.json'), 'utf8'));
     expect(ledger['0009-gauss-is-gone'].outcome).toBe('already-satisfied');
-    // Three later migrations act on this same fixture: 0018 keys do's persona by its handle
-    // (`don`), 0020 hands it `rodz` and 0025 states the level it already resolves to. None of them
-    // is 0009's doing — what is asserted here is that 0009 itself left no mark: no file of its own,
-    // and no backup of its own.
-    expect(upTo0024(h)).toBe(DO.replace('  egpt:', '  don:').replace('[ d, don ]', '[ d, don, rodz ]'));
+    expect(readFileSync(cfgPath(h), 'utf8')).toBe(DO);
     expect(readdirSync(join(h, 'config')).filter((f) => !f.includes('.bak-')).sort()).toEqual(['agents', 'config.yaml']);
     expect(readdirSync(join(h, 'config')).filter((f) => f.includes('.bak-0009-'))).toEqual([]);
   });

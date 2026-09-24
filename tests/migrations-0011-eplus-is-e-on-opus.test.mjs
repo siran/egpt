@@ -253,33 +253,22 @@ describe('0011 through the runner', () => {
   // so 0007 reads nothing as this node's own (as tests/migrations-0009-*).
   const ctx = { ps: () => JSON.stringify({ map: [], services: [], from: { exists: false }, to: { exists: false } }), localAddresses: new Set() };
   const dir = join(import.meta.dirname, '..', 'migrations');
-  // 0025 runs LAST in this chain and states an `access_level:` on every being that declares none,
-  // so the live config.yaml is no longer the end state THIS migration is about. Its BACKUP is:
-  // ctx.backup copies the file the instant before 0025 writes it, which is exactly what the chain
-  // up to 0024 left behind - so the byte-for-byte assertions below are unchanged.
-  const upTo0024 = (h) => {
-    const d = join(h, 'config');
-    return readFileSync(join(d, readdirSync(d).find((f) => f.startsWith('config.yaml.bak-0025-'))), 'utf8');
-  };
 
   it('kg: applied and recorded, only the E+ lines added, a backup left beside the config', async () => {
     const h = home();
-    const { exitCode } = await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0011', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(JSON.parse(readFileSync(join(h, 'state', 'migrations-applied.json'), 'utf8'))['0011-eplus-is-e-on-opus'].outcome).toBe('applied');
-    expect(upTo0024(h)).toBe(KG_WITH);
+    expect(readFileSync(cfgPath(h), 'utf8')).toBe(KG_WITH);
     expect(readdirSync(join(h, 'config')).filter((f) => f.startsWith('config.yaml.bak-0011-'))).toHaveLength(1);
   });
 
   it('do: recorded as already satisfied, nothing touched, no backup', async () => {
     const h = home({ config: DO, configuration: false });
-    const { exitCode } = await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0011', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(JSON.parse(readFileSync(join(h, 'state', 'migrations-applied.json'), 'utf8'))['0011-eplus-is-e-on-opus'].outcome).toBe('already-satisfied');
-    // 0018 keys do's persona by its handle (`don`), 0020 hands it `rodz` and 0025 states the level
-    // each being already resolves to - all later in the same chain, each with its own backup. What
-    // is asserted here is that 0011 left no mark.
-    expect(upTo0024(h)).toBe(DO.replace('  egpt:', '  don:').replace('[ d, don ]', '[ d, don, rodz ]'));
+    expect(readFileSync(cfgPath(h), 'utf8')).toBe(DO);
     expect(readdirSync(join(h, 'config')).filter((f) => f.includes('.bak-0011-'))).toEqual([]);
     expect(existsSync(join(h, 'config', 'agents', 'opus-high.yaml'))).toBe(false);
   });

@@ -728,36 +728,28 @@ describe('0023 through the runner', () => {
   const dir = join(import.meta.dirname, '..', 'migrations');
   const ledgerOf = (h) => JSON.parse(readFileSync(join(h, 'state', 'migrations-applied.json'), 'utf8'));
   const ID = '0023-do-drives-its-own-browser';
-  // 0025 runs LAST in this chain and states an `access_level:` on every being that declares none,
-  // so the live config.yaml is no longer the end state THIS migration is about. Its BACKUP is:
-  // ctx.backup copies the file the instant before 0025 writes it, which is exactly what the chain
-  // up to 0024 left behind - so the byte-for-byte assertions below are unchanged.
-  const upTo0024 = (h) => {
-    const d = join(h, 'config');
-    return readFileSync(join(d, readdirSync(d).find((f) => f.startsWith('config.yaml.bak-0025-'))), 'utf8');
-  };
 
   it('do: applied and recorded, three files changed and a backup beside each', async () => {
     const h = home();
-    const { exitCode } = await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0023', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(ledgerOf(h)[ID].outcome).toBe('applied');
     const after = doAfter(h);
-    expect(upTo0024(h)).toBe(after.config);
+    expect(readFileSync(cfgPath(h), 'utf8')).toBe(after.config);
     expect(readFileSync(roomsPath(h), 'utf8')).toBe(after.rooms);
     expect(readFileSync(convPath(h), 'utf8')).toBe(after.conversations);
-    expect(baks(h).filter((f) => !f.includes('.bak-0025-')).map((f) => f.replace(/\d{8}T\d{6}$/, '<stamp>')).sort()).toEqual([
+    expect(baks(h).map((f) => f.replace(/\d{8}T\d{6}$/, '<stamp>')).sort()).toEqual([
       'config.yaml.bak-0023-<stamp>', 'conversations.yaml.bak-0023-<stamp>', 'rooms.yaml.bak-0023-<stamp>',
     ]);
   });
 
   it('kg converges too, recorded as already-satisfied with nothing written', async () => {
     const h = home({ config: KG, rooms: KG_ROOMS, conversations: KG_CONV });
-    const { exitCode } = await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0023', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(ledgerOf(h)[ID].outcome).toBe('already-satisfied');
-    expect(upTo0024(h)).toBe(KG);
-    expect(baks(h).filter((f) => !f.includes('.bak-0025-'))).toEqual([]);
+    expect(readFileSync(cfgPath(h), 'utf8')).toBe(KG);
+    expect(baks(h)).toEqual([]);
   });
 
   // THE ORDERING TEST. 0022 runs BEFORE this migration, so a room created here is never seen by
@@ -766,13 +758,13 @@ describe('0023 through the runner', () => {
   // and 0022 must find that ratio already stated and read satisfied, not write a second one.
   it('0022 has nothing to do on the room 0023 creates - on the same pass and on a later one', async () => {
     const fresh = home();
-    await runMigrations({ dir, egptHome: fresh, elevated: false, platform: 'win32', ctx, log: () => {} });
+    await runMigrations({ through: '0023', dir, egptHome: fresh, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(ledgerOf(fresh)['0022-a-room-that-carries-every-chat-compacts-sooner'].outcome).toBe('already-satisfied');
 
     // …and again from scratch, this time with the room already in place before 0022 is asked.
     const converged = appliedHome();
     const text = readFileSync(roomsPath(converged), 'utf8');
-    const { exitCode } = await runMigrations({ dir, egptHome: converged, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0023', dir, egptHome: converged, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(ledgerOf(converged)['0022-a-room-that-carries-every-chat-compacts-sooner'].outcome).toBe('already-satisfied');
     expect(readFileSync(roomsPath(converged), 'utf8')).toBe(text);
@@ -781,13 +773,13 @@ describe('0023 through the runner', () => {
 
   it('EVERY earlier migration reads satisfied on these fixtures - one that acted would invalidate them', async () => {
     for (const h of [home(), home({ config: KG, rooms: KG_ROOMS, conversations: KG_CONV }), appliedHome()]) {
-      await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+      await runMigrations({ through: '0023', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
       const earlier = Object.entries(ledgerOf(h)).filter(([id]) => id < '0023');
       expect(earlier.length).toBeGreaterThanOrEqual(22);
       expect(earlier.filter(([, e]) => e.outcome !== 'already-satisfied')).toEqual([]);
       // At most three backups in the chain up to this migration, and they are this migration's:
-      // nothing EARLIER wrote. 0025 runs after it and its own suite asserts what it writes.
-      expect(baks(h).filter((f) => !f.includes('.bak-0025-')).map((f) => f.replace(/\d{8}T\d{6}$/, '<stamp>')).sort().map((f) => f.split('.bak-')[1])).toEqual(
+      // nothing EARLIER wrote.
+      expect(baks(h).map((f) => f.replace(/\d{8}T\d{6}$/, '<stamp>')).sort().map((f) => f.split('.bak-')[1])).toEqual(
         ledgerOf(h)[ID].outcome === 'applied' ? ['0023-<stamp>', '0023-<stamp>', '0023-<stamp>'] : [],
       );
       rmSync(dirname(h), { recursive: true, force: true });
