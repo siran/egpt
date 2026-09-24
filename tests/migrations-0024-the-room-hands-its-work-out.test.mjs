@@ -605,15 +605,23 @@ describe('0024 through the runner', () => {
   const dir = join(import.meta.dirname, '..', 'migrations');
   const ledgerOf = (h) => JSON.parse(readFileSync(join(h, 'state', 'migrations-applied.json'), 'utf8'));
   const ID = '0024-the-room-hands-its-work-out';
+  // 0025 runs LAST in this chain and states an `access_level:` on every being that declares none,
+  // so the live config.yaml is no longer the end state THIS migration is about. Its BACKUP is:
+  // ctx.backup copies the file the instant before 0025 writes it, which is exactly what the chain
+  // up to 0024 left behind - so the byte-for-byte assertions below are unchanged.
+  const upTo0024 = (h) => {
+    const d = join(h, 'config');
+    return readFileSync(join(d, readdirSync(d).find((f) => f.startsWith('config.yaml.bak-0025-'))), 'utf8');
+  };
 
   it('kg: applied and recorded, two files changed and a backup beside each', async () => {
     const h = home();
     const { exitCode } = await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(ledgerOf(h)[ID].outcome).toBe('applied');
-    expect(readFileSync(cfgPath(h), 'utf8')).toBe(KG_AFTER);
+    expect(upTo0024(h)).toBe(KG_AFTER);
     expect(readFileSync(roomsPath(h), 'utf8')).toBe(KG_ROOMS_AFTER);
-    expect(baks(h).map((f) => f.replace(/\d{8}T\d{6}$/, '<stamp>')).sort()).toEqual([
+    expect(baks(h).filter((f) => !f.includes('.bak-0025-')).map((f) => f.replace(/\d{8}T\d{6}$/, '<stamp>')).sort()).toEqual([
       'config.yaml.bak-0024-<stamp>', 'rooms.yaml.bak-0024-<stamp>',
     ]);
     // And the node READS what the chain left behind.
@@ -629,9 +637,9 @@ describe('0024 through the runner', () => {
     });
     expect(exitCode).toBe(0);
     expect(ledgerOf(h)[ID].outcome).toBe('already-satisfied');
-    expect(readFileSync(cfgPath(h), 'utf8')).toBe(KG);
+    expect(upTo0024(h)).toBe(KG);
     expect(readFileSync(roomsPath(h), 'utf8')).toBe(KG_ROOMS);
-    expect(baks(h)).toEqual([]);
+    expect(baks(h).filter((f) => !f.includes('.bak-0025-'))).toEqual([]);
   });
 
   it('a node with no rooms.yaml converges too - a refusal here would stop every later migration', async () => {
@@ -648,8 +656,9 @@ describe('0024 through the runner', () => {
       const earlier = Object.entries(ledgerOf(h)).filter(([id]) => id < '0024');
       expect(earlier.length).toBeGreaterThanOrEqual(23);
       expect(earlier.filter(([, e]) => e.outcome !== 'already-satisfied')).toEqual([]);
-      // At most two backups in the whole chain, and they are this migration's: nothing earlier wrote.
-      expect(baks(h).map((f) => f.replace(/\d{8}T\d{6}$/, '<stamp>')).sort().map((f) => f.split('.bak-')[1])).toEqual(
+      // At most two backups in the chain up to this migration, and they are this migration's:
+      // nothing EARLIER wrote. 0025 runs after it and its own suite asserts what it writes.
+      expect(baks(h).filter((f) => !f.includes('.bak-0025-')).map((f) => f.replace(/\d{8}T\d{6}$/, '<stamp>')).sort().map((f) => f.split('.bak-')[1])).toEqual(
         ledgerOf(h)[ID].outcome === 'applied' ? ['0024-<stamp>', '0024-<stamp>'] : [],
       );
       rmSync(dirname(h), { recursive: true, force: true });

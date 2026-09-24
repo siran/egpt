@@ -345,6 +345,14 @@ describe('0020 through the runner', () => {
   // so 0007 reads nothing as this node's own (as tests/migrations-0008-*).
   const ctx = { ps: () => JSON.stringify({ map: [], services: [], from: { exists: false }, to: { exists: false } }), localAddresses: new Set() };
   const dir = join(import.meta.dirname, '..', 'migrations');
+  // 0025 runs LAST in this chain and states an `access_level:` on every being that declares none,
+  // so the live config.yaml is no longer the end state THIS migration is about. Its BACKUP is:
+  // ctx.backup copies the file the instant before 0025 writes it, which is exactly what the chain
+  // up to 0024 left behind - so the byte-for-byte assertions below are unchanged.
+  const upTo0024 = (h) => {
+    const d = join(h, 'config');
+    return readFileSync(join(d, readdirSync(d).find((f) => f.startsWith('config.yaml.bak-0025-'))), 'utf8');
+  };
   const ledgerOf = (h) => JSON.parse(readFileSync(join(h, 'state', 'migrations-applied.json'), 'utf8'));
 
   it('kg: applied and recorded; the being, its four records and its identity are gone', async () => {
@@ -352,7 +360,7 @@ describe('0020 through the runner', () => {
     const { exitCode } = await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(ledgerOf(h)['0020-the-mouth-is-not-a-being'].outcome).toBe('applied');
-    expect(readFileSync(cfgPath(h), 'utf8')).toBe(KG_WITHOUT);
+    expect(upTo0024(h)).toBe(KG_WITHOUT);
     expect(readFileSync(convPath(h), 'utf8')).toBe(CONV_WITHOUT);
     expect(existsSync(idPath(h))).toBe(false);
     expect(readdirSync(join(h, 'config')).filter((f) => f.startsWith('config.yaml.bak-0020-'))).toHaveLength(1);
@@ -364,7 +372,7 @@ describe('0020 through the runner', () => {
     const { exitCode } = await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(ledgerOf(h)['0020-the-mouth-is-not-a-being'].outcome).toBe('applied');
-    expect(readFileSync(cfgPath(h), 'utf8')).toBe(DO_AFTER);
+    expect(upTo0024(h)).toBe(DO_AFTER);
   });
 
   it('EVERY earlier migration reads satisfied on both fixtures - one that acted would invalidate these', async () => {

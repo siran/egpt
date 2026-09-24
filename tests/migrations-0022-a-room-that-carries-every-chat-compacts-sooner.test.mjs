@@ -566,8 +566,9 @@ describe('0022 through the runner', () => {
       const earlier = Object.entries(ledgerOf(h)).filter(([id]) => id < '0022');
       expect(earlier.length).toBeGreaterThanOrEqual(21);
       expect(earlier.filter(([, e]) => e.outcome !== 'already-satisfied')).toEqual([]);
-      // At most one backup in the whole chain, and it is this migration's: nothing earlier wrote.
-      expect(baks(h).map((f) => f.replace(/\d{8}T\d{6}$/, '<stamp>'))).toEqual(
+      // At most one backup in the chain up to this migration, and it is this migration's: nothing
+      // EARLIER wrote. 0025 runs after it, writes config.yaml, and its own suite asserts that.
+      expect(baks(h).filter((f) => !f.includes('.bak-0025-')).map((f) => f.replace(/\d{8}T\d{6}$/, '<stamp>'))).toEqual(
         existsSync(roomsPath(h)) ? ['rooms.yaml.bak-0022-<stamp>'] : [],
       );
     }
