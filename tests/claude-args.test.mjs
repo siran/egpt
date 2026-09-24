@@ -176,11 +176,17 @@ describe('passthrough: model, effort, resume, append-system-prompt, add-dir', ()
 describe('the three permission tiers (2026-09-23)', () => {
   const opts = { allowedTools: ['Read', 'Grep', 'WebFetch'], addDirs: ['/c/work'], readOnlyDirs: ['/c/ro'] };
 
-  it('osConfined (the OS box) — bypass, the WHOLE tool list, and not one path in argv', () => {
+  it('osConfined (the OS box) — bypass, and NOTHING else: no tool list, not one path in argv', () => {
     const a = buildClaudeArgs({ ...opts, osConfined: true });
     expect(has(a, '--dangerously-skip-permissions')).toBe(true);
     expect(valsOf(a, '--permission-mode')).toEqual(['bypassPermissions']);
-    expect(valsOf(a, '--allowedTools')).toEqual(['Read Grep WebFetch']);   // file tools included
+    // NO --allowedTools (operator 2026-09-23, the second half of the same ruling). Under the
+    // bypass pair on the two lines above an allow-list gates nothing, so emitting one only
+    // states a fence that is not there — and DEFAULT_ALLOWED_TOOLS, with no bare Bash and no
+    // Agent, stated a narrow one. The list still travels in brainOptions; it just decides
+    // nothing here. Emitting a "complete" set instead was rejected: a second hand-written tool
+    // list goes stale the next time Claude Code ships a tool.
+    expect(has(a, '--allowedTools')).toBe(false);
     // NO roots at all: not the declared addDirs, not the read-only ones. Those paths are real
     // locations under the operator's profile, and naming them is what put the operator's
     // username into every sandboxed being's argv.
@@ -202,12 +208,15 @@ describe('the three permission tiers (2026-09-23)', () => {
     expect(JSON.parse(valsOf(a, '--settings')[0]).permissions.deny).toContain('Write(/c/ro/**)');
   });
 
-  it('dangerouslySkipPermissions — UNCHANGED, and the boxed tier is now its twin', () => {
+  it('dangerouslySkipPermissions — UNCHANGED: it still spells its verbatim list', () => {
     const a = buildClaudeArgs({ ...opts, dangerouslySkipPermissions: true });
     expect(has(a, '--dangerously-skip-permissions')).toBe(true);
     expect(valsOf(a, '--permission-mode')).toEqual(['bypassPermissions']);
+    // Inert here too, strictly speaking — but this tier's list is a TYPE FILE's own trusted
+    // grant (bare Bash/Agent included), not a fence egpt invented, and the ruling that retired
+    // the boxed tier's list was about the box. Not touched.
     expect(valsOf(a, '--allowedTools')).toEqual(['Read Grep WebFetch']);
-    // The one thing that still differs from osConfined, and it is not a tier decision: an
+    // The other thing that still differs from osConfined, and it is not a tier decision: an
     // unconfined turn is not in a box, so its declared roots are still the only thing telling
     // the CLI where it may work.
     expect(addDirs(a)).toEqual(['/c/work', '/c/ro']);

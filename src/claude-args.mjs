@@ -16,8 +16,10 @@
 //     boundary)                       2026-09-23): the same
 //                                     --dangerously-skip-permissions +
 //                                     --permission-mode bypassPermissions pair the
-//                                     unconfined tier gets, the full --allowedTools
-//                                     list, NO --add-dir (not the cwd, not an
+//                                     unconfined tier gets, and then NOTHING else —
+//                                     no --allowedTools (inert under that pair, and
+//                                     a list that reads as a fence it is not),
+//                                     NO --add-dir (not the cwd, not an
 //                                     allowed_paths root), no --setting-sources ""
 //                                     and no readOnlyDirs deny rules. The leased
 //                                     pool account's ACEs are the boundary and are
@@ -154,7 +156,36 @@ export function buildClaudeArgs(options = {}) {
   }
 
   // ── tool permission + confinement (mirror buildSdkOptions) ──
-  if (options.allowedTools) {
+  //
+  // AN OS-SANDBOXED TURN NAMES NO TOOL LIST EITHER (operator ruling 2026-09-23: "agents are
+  // sandboxed with all tools available. dangerously skip permissions enabled. allowed_tools
+  // should be all of them" / "we are not using allowed_paths from the CLI nor allowed_tools;
+  // these restrictions are OS enforced").
+  //
+  // IT CHANGES NO CAPABILITY, and that is the first thing to check when reading this: the block
+  // above has already pushed --dangerously-skip-permissions and --permission-mode
+  // bypassPermissions for exactly this tier, and --allowedTools is an ALLOW-LIST of permission
+  // rules, not a restriction of which tools exist. Under bypass nothing is ever asked, so every
+  // tool runs whether or not it is named. The list was inert the moment the bypass landed.
+  //
+  // SO WHY REMOVE IT: because an inert flag reads as a fence. DEFAULT_ALLOWED_TOOLS holds no
+  // bare Bash and no Agent, so a boxed being's argv said "eight safe tools" while the process
+  // it launched could run anything — and the measurable drift is that "all tools" otherwise
+  // depends on every type file remembering to spell Bash and Agent out, which is a list nobody
+  // maintains. THE OTHER OPTION WAS TO EMIT A COMPLETE SET, and it was rejected: that is a
+  // second hand-written tool list in this repo, in a second place, stale the next time Claude
+  // Code ships a tool — curating one for a flag that gates nothing is the drift, not the fix.
+  //
+  // THE RESOLVED LIST STILL TRAVELS in brainOptions (the transcript and the post-turn hook read
+  // it, /agents status prints it); it simply stops being spelled into an argv where it decides
+  // nothing.
+  //
+  // THE GUARD IS `osConfined`, NOTHING ELSE, exactly as for the roots above. A being with no OS
+  // box takes the `confined` branch below, where --permission-mode is `default` and the list is
+  // the REAL boundary — withholding it there would hand that being every tool with no box to
+  // hold it. The unconfined (`dangerouslySkipPermissions`) tier is untouched too: its list is a
+  // type file's own trusted grant and is still passed verbatim, bare Bash/Agent included.
+  if (options.allowedTools && !osConfined) {
     // 'all'/'*' is REJECTED (operator 2026-07-03: "better to reject 'all'"). It
     // never buys full/bypass access on its OWN — it is coerced to the explicit
     // default tool list and routed through the normal path. egpt never WRITES

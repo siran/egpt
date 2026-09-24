@@ -226,9 +226,14 @@ export function createSandboxCliSession(options = {}) {
   // this factory at all means some tier said `sandboxed: true`, so we refuse rather than quietly
   // run the being unsandboxed behind a config key that claims otherwise. Thrown BEFORE the inner
   // session exists — and therefore before any spawn — exactly like the engine check above.
+  // AND THE REMEDY DEPENDS ON WHICH RUNG ASKED (2026-09-23). Since the access-level default
+  // became 'sandbox', a being that declares NOTHING reaches here on a posix node — and for that
+  // being `sandboxed: false` is DEAD config, because access_level 'sandbox' forces the box ahead
+  // of it (resolveSandboxed rung 1). Naming only that remedy would send the operator to a line
+  // that changes nothing, so both are named and the message says which is which.
   const platform = options.platform ?? process.platform;   // injectable for tests, same DI convention as `spawn` below
   if (platform !== 'win32') {
-    throw new Error(`sandboxed: true does not support platform=${platform} — OS-level sandboxing is Windows-only on this build (set \`sandboxed: false\` for this agent, or run this node on Windows)`);
+    throw new Error(`sandboxed: true does not support platform=${platform} — OS-level sandboxing is Windows-only on this build. Run this node on Windows, or give this agent an explicit \`access_level: regular\` (the default level is now 'sandbox', which FORCES the box on — under it a \`sandboxed: false\` is dead config, not an override).`);
   }
 
   const _spawn = options.spawn || nodeSpawn;   // injectable for tests, same DI convention as warm-cli-session.mjs

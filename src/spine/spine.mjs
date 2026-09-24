@@ -238,7 +238,8 @@ export function createSpine({
   // Is this routed target a META ENGINEER? (operator 2026-09-16: "meta engineers are beyond the
   // bridge" / "a meta engineer is an `access_level: all`, all-powerful agent" — GENOME I8, "E is
   // gated; meta-engineers are not".) The level is the one a TURN runs at, so it is asked of the
-  // Brain — brainpool's resolveConv walks per-conversation → conversation_defaults → 'regular' —
+  // Brain — brainpool's resolveConv walks per-conversation → conversation_defaults → 'sandbox'
+  // (the default since 2026-09-23; it was 'regular') —
   // and only compared here: no list of names, no flag. 'sandbox' is not 'all'. The agent asked
   // about is the one the target is GATED as (gateAs), so a relay target asks about its relay
   // agent. OPTIONAL seam: a Brain without it has no meta engineers and the guard is unchanged. An

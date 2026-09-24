@@ -171,12 +171,21 @@ function allowedPathsFor(def, onLog = () => {}) {
 // boundary here anyway - these beings hold bare Bash.
 //
 // AND SINCE 2026-09-23 THE WHOLE CLI GATE GOES, not just the root (operator: "and so
-// --permission-mode [should] be none at all. free roam inside the sandbox"). `addDirs` and
-// `readOnlyDirs` are still RETURNED here — they are what the def declared, and they are read by
-// the def's other consumer — but claude-args.mjs emits no argv for them under `osConfined`. That
-// is deliberately decided THERE, in the one function that expresses the permission tier, rather
-// than by withholding fields here: sandboxSharePathsFor reads the SAME walk for the OS half, and
-// a second place that decides what `allowed_paths` means is how the two layers drift.
+// --permission-mode [should] be none at all. free roam inside the sandbox"). claude-args.mjs
+// emits no `--add-dir` and no deny rules under `osConfined`.
+//
+// ...AND THE FEEDING GOES WITH IT, later the same day (operator: "we are not using allowed_paths
+// from the CLI nor allowed_tools; these restrictions are OS enforced"). `addDirs`/`readOnlyDirs`
+// were still RETURNED to the CLI layer after it had stopped being allowed to use them — a second
+// consumer kept alive with nothing to consume, which is a standing invitation for some later
+// argv line to read one and quote an operator path again. `allowed_paths` now has exactly ONE
+// consumer, sandboxSharePathsFor, which is the layer that actually enforces.
+//
+// THE WALK STILL RUNS for a boxed being, and that is deliberate rather than leftover: it is what
+// emits the one per-path "granularity isn't native" warning, exactly once per turn (the share
+// accessor deliberately passes no logger). Its ANSWER is discarded here; its diagnostic is not.
+// The alternative — teaching sandboxSharePathsFor to log — would give the one walk two places
+// that decide when to speak, which is the drift this split exists to prevent.
 //
 // IT IS NOT THE 2026-09-05 DEFECT IN REVERSE. That defect was the OS granting a path the CLI
 // then refused to use. Here the OS still grants it — the per-lease ACE is untouched — and the
@@ -196,9 +205,12 @@ function allowedPathsFor(def, onLog = () => {}) {
 function confinementFor(def, cwd, onLog, sandboxed = false) {
   if (def?.dangerously_skip_permissions === true) return {};   // the unconfined tier — no confineToDirs/addDirs/readOnlyDirs, ever
   if (!Array.isArray(def?.allowed_tools)) return {};   // defensive: post-coercion this is always a list
-  const { addDirs, readOnlyDirs } = allowedPathsFor(def, onLog);
+  const { addDirs, readOnlyDirs } = allowedPathsFor(def, onLog);   // for the WARNING; the answer is the OS layer's
+  // THE BOXED TIER GETS THE TIER AND NOTHING ELSE. No root, no path lists — the leased
+  // account's ACEs are the boundary, and sandboxSharePathsFor is what writes them.
+  if (sandboxed === true) return { osConfined: true };
   return {
-    ...(sandboxed === true ? { osConfined: true } : { confineToDirs: [cwd] }),
+    confineToDirs: [cwd],
     ...(addDirs.length ? { addDirs } : {}),
     ...(readOnlyDirs.length ? { readOnlyDirs } : {}),
   };
@@ -741,9 +753,9 @@ export function createBrainPool({
     const b0 = (state && scope.scoped) ? getBeing(state, ev.surface, ev.chatId, being) : b;
     // Hoisted out of the literal below ONLY because `sandboxed:` now has to read it (operator
     // 2026-09-05) and an object literal cannot reference a sibling property. Same two-tier walk,
-    // same 'regular' fallback, still decided in exactly one place — see the ACCESS LEVEL comment
-    // block on the field itself below, which is where this is documented.
-    const accessLevel = b?.accessLevel ?? getConfig()?.agents?.[being]?.conversation_defaults?.access_level ?? 'regular';
+    // 'sandbox' fallback since 2026-09-23, still decided in exactly one place — see the ACCESS
+    // LEVEL comment block on the field itself below, which is where this is documented.
+    const accessLevel = b?.accessLevel ?? getConfig()?.agents?.[being]?.conversation_defaults?.access_level ?? 'sandbox';
     // SANDBOXED, resolved by resolveSandboxed above — the four rungs, and the history behind
     // each, are documented there. Hoisted out of the literal for the same reason accessLevel is:
     // the contradiction check needs both values before the object exists.
@@ -782,12 +794,34 @@ export function createBrainPool({
       // null = no override at either tier (today's ordinary default). conversation_defaults
       // (not a flat sibling of handles/configuration) is the allowlist of which agent fields
       // get this two-tier treatment — see router.mjs's allowed_users read for the twin of this.
-      // UNSET RESOLVES TO 'regular' (operator 2026-08-20, refinement of the 2026-08-16
-      // structural gate): accessLevel can now only ever be a real level — 'all', 'regular', or
-      // (2026-09-05) 'sandbox' — an unset
-      // value at both tiers is no longer a distinct "undeclared" state that refuses the
-      // turn, it explicitly resolves to the confined tier. Gate #1 below (which used to
-      // catch the null case) is now unreachable and has been removed accordingly.
+      // UNSET RESOLVES TO A REAL LEVEL (operator 2026-08-20, refinement of the 2026-08-16
+      // structural gate): accessLevel can only ever be 'all', 'regular', or (2026-09-05)
+      // 'sandbox' — an unset value at both tiers is not a distinct "undeclared" state that
+      // refuses the turn. Gate #1 below (which used to catch the null case) is now unreachable
+      // and has been removed accordingly.
+      //
+      // AND THAT LEVEL IS 'sandbox' (operator 2026-09-23: "all agents sandboxed, but the meta
+      // engineers", "we work only with OS confinement"). It was 'regular' from 2026-08-20, back
+      // when 'regular' was the only confined tier there was and 'sandbox' did not exist yet —
+      // so SILENCE meant the tier whose boundary is a CLI flag the being's own Bash can walk
+      // past, and on a posix node, or under a `sandboxed: false` on any lower rung, meant no
+      // boundary at all. Four beings on the live node declare nothing.
+      //
+      // WHY A LEVEL AND NOT A `sandboxed: true` DEFAULT: resolveSandboxed's rung 1 reads the
+      // LEVEL, above both `sandboxed` rungs, so this default cannot be undone by a stale
+      // `sandboxed: false` in conversations.yaml — it is loudly contradicted instead (see
+      // isSandboxContradiction, logged just below). It is also the tier that MEANS the ruling:
+      // 'sandbox' is all's capability inside the OS box, which is "sandboxed with all tools
+      // available" exactly.
+      //
+      // THE META ENGINEERS ARE UNTOUCHED BECAUSE THEY SAY SO, not because this default spares
+      // them: wren (kg) and dren (do) declare `access_level: all` explicitly, which is read
+      // before this fallback is ever reached. A meta engineer that stopped declaring one would
+      // be boxed — that is the intended direction of the mistake, and it is locked by test.
+      //
+      // 'regular' REMAINS EXPRESSIBLE, just no longer the default: a being that asks for it
+      // gets the CLI-confined tier it always got, which on a node with no OS box is its only
+      // boundary (see confinementFor).
       // AND IT JOINS THE SCOPE (operator 2026-08-31, ruled explicitly for acim + "perrito
       // traducciones"): the invited group's members are in his circle of trust, so the ROOM's
       // `all` applies to a turn the group triggers — the group does not keep the 'regular' it

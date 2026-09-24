@@ -346,6 +346,64 @@ $SandboxPoolGrants = @{
 # all (measured 2026-09-20). So the leaf case is derived here, once, rather than
 # left to each caller: strip the inheritance from the spec and from the flags the
 # check compares, and the two agree by construction.
+#
+# THIS HEADER COVERS THE THREE FUNCTIONS BELOW, which are one thing split in
+# 2026-09-23 only so the QUESTION can be asked without the WRITE: the shape a
+# grant lands as, the predicate that says whether it is already there, and the
+# grant itself, which is both of the others plus one icacls call.
+
+# THE SHAPE ONE GRANT LANDS AS, derived in ONE place (2026-09-23). Pulled out of
+# Grant-SandboxPoolAce so the predicate below and the grant itself cannot drift
+# about what "this grant" means - the leaf derivation especially, which is easy
+# to reproduce nearly-right. Pure: a table row plus whether the target is a leaf.
+function Get-SandboxPoolGrantShape {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][ValidateSet('Traverse', 'Read', 'Modify')][string]$Grant
+  )
+  $want = $SandboxPoolGrants[$Grant]
+  $isLeaf = -not (Test-Path -LiteralPath $Path -PathType Container)
+  $spec    = if ($isLeaf) { $want.Spec -replace '^\(OI\)\(CI\)', '' } else { $want.Spec }
+  $inherit = if ($isLeaf) { [System.Security.AccessControl.InheritanceFlags]::None } else { $want.Inherit }
+  return [PSCustomObject]@{ Spec = $spec; Rights = $want.Rights; Inherit = $inherit }
+}
+
+# IS THIS EXACT GRANT ALREADY ON THIS OBJECT? - the "already granted" fact of
+# Grant-SandboxPoolAce's header, as a function, so it can be ASKED without
+# writing (2026-09-23). Grant-SandboxPoolAce is its first caller and the reason
+# it says what it says; the provisioner's ~\src retirement is the second, and
+# needs to know whether the WIDE read grant is there before it revokes anything,
+# because the revoke it would otherwise run takes the traverse ACE off too.
+#
+# EXPLICIT ONLY ($false for inherited), flags included, rights AT LEAST - every
+# clause of that header applies here unchanged, because this IS that check.
+# -ErrorAction Stop: a DACL this process cannot read must not come back as an
+# empty rule set and be mistaken for "not granted yet".
+function Test-SandboxPoolAcePresent {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][ValidateSet('Traverse', 'Read', 'Modify')][string]$Grant,
+    [Parameter(Mandatory = $true)][System.Security.Principal.SecurityIdentifier]$Sid
+  )
+  $want = Get-SandboxPoolGrantShape -Path $Path -Grant $Grant
+  $present = @((Get-Acl -LiteralPath $Path -ErrorAction Stop).GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]) | Where-Object {
+      $_.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow -and
+      $_.IdentityReference.Value -eq $Sid.Value -and
+      $_.InheritanceFlags -eq $want.Inherit -and
+      $_.PropagationFlags -eq [System.Security.AccessControl.PropagationFlags]::None -and
+      ([int]$_.FileSystemRights -band $want.Rights) -eq $want.Rights
+    })
+  return ($present.Count -gt 0)
+}
+
+# The pool GROUP's own SID, resolved by NAME. Its own function because three
+# callers now need it and each one translating for itself is three chances to
+# name a principal that merely SHARES the name (see Grant-SandboxPoolAce's note
+# on why the translation happens at all).
+function Get-SandboxPoolGroupSid {
+  return (New-Object System.Security.Principal.NTAccount($SandboxPoolGroup)).Translate([System.Security.Principal.SecurityIdentifier])
+}
+
 function Grant-SandboxPoolAce {
   param(
     [Parameter(Mandatory = $true)][string]$Path,
@@ -361,27 +419,15 @@ function Grant-SandboxPoolAce {
     # By SID. Translating first means a missing pool group fails loudly right
     # here instead of letting icacls resolve some other principal that happens to
     # carry the same name. '*' is icacls's prefix for a SID literal.
-    $Sid = (New-Object System.Security.Principal.NTAccount($SandboxPoolGroup)).Translate([System.Security.Principal.SecurityIdentifier])
+    $Sid = Get-SandboxPoolGroupSid
     if (-not $Principal) { $Principal = $SandboxPoolGroup }
   }
   if (-not $Principal) { $Principal = $Sid.Value }
   if (-not (Test-Path -LiteralPath $Path)) {
     throw "sandbox-logon-launcher: cannot grant $Grant to $Principal -- path does not exist: $Path"
   }
-  $want = $SandboxPoolGrants[$Grant]
-  $isLeaf = -not (Test-Path -LiteralPath $Path -PathType Container)
-  $spec    = if ($isLeaf) { $want.Spec -replace '^\(OI\)\(CI\)', '' } else { $want.Spec }
-  $inherit = if ($isLeaf) { [System.Security.AccessControl.InheritanceFlags]::None } else { $want.Inherit }
-  # -ErrorAction Stop: a DACL this process cannot read must not come back as an
-  # empty rule set and be mistaken for "not granted yet".
-  $present = @((Get-Acl -LiteralPath $Path -ErrorAction Stop).GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]) | Where-Object {
-      $_.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow -and
-      $_.IdentityReference.Value -eq $Sid.Value -and
-      $_.InheritanceFlags -eq $inherit -and
-      $_.PropagationFlags -eq [System.Security.AccessControl.PropagationFlags]::None -and
-      ([int]$_.FileSystemRights -band $want.Rights) -eq $want.Rights
-    })
-  if ($present.Count -gt 0) {
+  $spec = (Get-SandboxPoolGrantShape -Path $Path -Grant $Grant).Spec
+  if (Test-SandboxPoolAcePresent -Path $Path -Grant $Grant -Sid $Sid) {
     Log "already granted $Grant $spec to $Principal on $Path  - nothing written"
     return 'already granted'
   }

@@ -16,6 +16,14 @@ before use, and the grant is revoked when the turn's process exits. The boundary
 is enforced by the kernel on every file open, so unlike `--add-dir` it does not
 depend on the Claude Code CLI being correct.
 
+**Who gets it: everyone who does not say otherwise** (operator 2026-09-23: *"all
+agents sandboxed, but the meta engineers"*). A being that declares no
+`access_level` resolves to `sandbox`, which forces the box on ahead of every
+`sandboxed:` rung — so silence means the box, and running *unboxed* is the thing
+that has to be asked for in writing (`access_level: all`, as the meta engineers
+declare). `access_level: regular` is still a level, and on a node with no box it
+is CLI-confined exactly as it always was.
+
 ```
 warm session spawns
    │
@@ -104,9 +112,23 @@ or if you are unsure. What it does:
    the JS sits under the operator's profile). Each skipped if absent.
 5. `Revoke-SandboxPathAces` on `~\src` for the pool **group** — retiring the
    old standing grant on the operator's *whole* source tree (operator
-   2026-09-23: *"dismiss mounting ~/src always, that was a faux-pas"*). Nothing
-   to do on a node already narrowed; on one that is not, removing an inheritable
-   ACE re-propagates over the tree and takes minutes.
+   2026-09-23: *"dismiss mounting ~/src always, that was a faux-pas"*) — **and
+   then re-granting `~\src`'s traverse ACE**, because `/remove:g` takes off
+   *every* explicit ACE for a principal on an object and cannot remove one of
+   two, so the revoke also carried away the walk-through ACE step 3 had just
+   written. Without it the pool cannot walk `~\src` at all and `~\src\egpt`
+   becomes unreachable *by name* through the junction that points at it — the
+   agents lose sight of their own code, silently. The step is **guarded**
+   (`Test-SandboxPoolAcePresent`, the same "already granted" predicate the grant
+   itself branches on), so a node already narrowed still writes nothing; on one
+   that is not, removing an inheritable ACE re-propagates over the tree and
+   takes minutes.
+
+   Step 4's grant on `~\src\egpt` is what makes this safe, and it has to be
+   **explicit**: on the live node that path read `(I)(OI)(CI)(RX)` — *inherited*
+   from the very ACE step 5 retires. `Grant-SandboxPoolAce`'s check is
+   explicit-only, so it writes a real ACE on the object, and the later
+   re-propagation leaves that one alone.
 6. `-Grant 'Modify'` on `~\.pi\agent`, and sets `PI_CODING_AGENT_DIR` at
    **Machine** scope, because the launcher cannot pass a per-spawn environment
    (see *Known gaps*).
@@ -344,6 +366,9 @@ icacls C:\Users\$env:USERNAME\src
 icacls C:\Users\$env:USERNAME\.local\bin
 icacls $env:APPDATA\npm
 icacls C:\Users\$env:USERNAME\bin\egpt
+# ...and on the checkout specifically, expect it WITHOUT a leading (I): an
+# (I)(OI)(CI)(RX) row is INHERITED from ~\src and would disappear with the wide
+# grant when it is retired. Re-run provision-sandbox-account.cmd to make it real.
 icacls C:\Users\$env:USERNAME\src\egpt
 
 # ...and ~\src itself carries the (Rc,X,RA) TRAVERSE ace and NOT a read one.
@@ -594,12 +619,16 @@ Real, current, and worth knowing before relying on any of this.
    which is gap 1's territory, well past the model gate.
 
 4. **Shared paths are wired end to end, in two classes.** `brainpool.mjs`'s
-   `allowedPathsFor` is one walk with two consumers: `confinementFor` (the CLI
-   layer — `--add-dir` and read-only deny rules) and `sandboxSharePathsFor` (the
-   OS layer). The second has **no `dangerously_skip_permissions` early return**,
-   deliberately: under the `all` and `sandbox` tiers `confinementFor` returns
-   `{}`, so the CLI layer is off and the ACE is the *only* way a shared folder is
-   reachable — exactly the tiers most likely to declare one.
+   `allowedPathsFor` is one walk, and **which consumer reads its answer depends on
+   whether the being is boxed** (2026-09-23): `sandboxSharePathsFor` (the OS layer)
+   for a sandboxed being, `confinementFor` (the CLI layer — `--add-dir` and
+   read-only deny rules) for one with no box. Never both. The OS consumer has **no
+   `dangerously_skip_permissions` early return**, deliberately: under the `all` and
+   `sandbox` tiers `confinementFor` returns `{}`, so the CLI layer is off and the
+   ACE is the *only* way a shared folder is reachable — exactly the tiers most
+   likely to declare one. The walk still *runs* for a boxed being, because it is
+   what emits the one per-path "granularity isn't native" warning; its answer is
+   discarded there.
 
    **A sandboxed turn has NO CLI confinement at all since 2026-09-23.** It began
    with the cwd root: `confinementFor` sends `osConfined: true` instead of
@@ -613,10 +642,21 @@ Real, current, and worth knowing before relying on any of this.
    The same day the operator took the rest — *"and so --permission-mode [should]
    be none at all. free roam inside the sandbox"*, and, asked whether the coherent
    end state is that a sandboxed being also gets `bypassPermissions`, **yes**. So
-   `osConfined` now takes the **same argv tier as the unconfined one**:
-   `--dangerously-skip-permissions` + `--permission-mode bypassPermissions`, the
-   whole `--allowedTools` list (file tools included), **no `--add-dir` for
-   anything**, no `--setting-sources ''` and no `readOnlyDirs` deny rules.
+   `osConfined` now takes the **bypass pair and nothing else**:
+   `--dangerously-skip-permissions` + `--permission-mode bypassPermissions`, **no
+   `--allowedTools`**, **no `--add-dir` for anything**, no `--setting-sources ''`
+   and no `readOnlyDirs` deny rules.
+
+   **Why no `--allowedTools` either** (*"allowed_tools should be all of them"* /
+   *"we are not using allowed_paths from the CLI nor allowed_tools; these
+   restrictions are OS enforced"*): under that bypass pair an allow-list is a list
+   of *permission rules*, not a restriction on which tools exist, so it gates
+   nothing — while `DEFAULT_ALLOWED_TOOLS` (no bare `Bash`, no `Agent`) read as a
+   fence the process did not have. Emitting a "complete" set instead was rejected:
+   that is a second hand-written tool list, stale the next time Claude Code ships a
+   tool. The resolved list still travels in `brainOptions` (the transcript, the
+   post-turn hook, `/agents status`); it is simply not spelled into the argv. **No
+   capability changed** — the bypass was already there.
 
    **Why that is not a widening.** The account is the boundary. A `Read` that
    escapes its root escapes into a directory the pool account holds no ACE on and
@@ -635,6 +675,12 @@ Real, current, and worth knowing before relying on any of this.
    launcher's `-SharePath`/`-SharePathReadOnly` are untouched. This is *not*
    migration 0015 in reverse: 0015's defect was the OS permitting a path the CLI
    then refused, and here the CLI refuses nothing.
+
+   **And the CLI is no longer even fed.** `confinementFor` returned `addDirs` /
+   `readOnlyDirs` for a boxed being well after the argv stopped using them — a
+   consumer kept alive with nothing to consume, and a standing invitation for some
+   later argv line to read one and quote an operator path again. A sandboxed turn's
+   `brainOptions` now carry `osConfined: true` and no path lists at all.
 
    **The guard is `sandboxed === true`, not the access level.** A being with no OS
    box — `sandboxed: false`, or any non-win32 node — keeps `confineToDirs`,
