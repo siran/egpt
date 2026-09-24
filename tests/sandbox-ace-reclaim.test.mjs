@@ -238,7 +238,7 @@ describe('read-only share paths get a READ-ONLY ACE, not a write-capable one', (
     // class went through the existing loop rather than a copy of it. A read-only ACE the ledger
     // does not name is a leak the reclaim cannot find after a hard kill.
     expect((step.match(/Add-SandboxLeaseLedgerPath/g) || []).length, 'the share grant loop was copied instead of parameterised').toBe(1);
-    expect((step.match(/\$acesGranted\.Add\(\$sp\)/g) || []).length).toBe(1);
+    expect((step.match(/\$acesGranted\.Add\(\[pscustomobject\]@\{ Path = \$sp;/g) || []).length).toBe(1);
     // Ledger BEFORE the ACE still holds for both classes.
     expect(step.indexOf('Add-SandboxLeaseLedgerPath -Stream')).toBeLessThan(step.indexOf('Grant-SandboxPoolAce -Path $sp'));
     // And the revoke is untouched in the way that matters — it removes by SID, so it takes a

@@ -267,7 +267,7 @@ describe('a lease share is released with the lease', () => {
     const src = launcher();
     const fin = src.slice(src.indexOf('} finally {', src.indexOf('$acesGranted = New-Object')));
     expect(fin).toMatch(/\$stillGranted/);
-    expect(fin).toMatch(/Write-SandboxLeaseLedger -Stream \$lockStream -Paths \$stillGranted/);
+    expect(fin).toMatch(/Write-SandboxLeaseLedger -Stream \$lockStream -Entries \$stillGranted/);
     // The Remove-Item is now conditional on there being nothing left to find.
     expect(fin).toMatch(/if \(\$keepLock\) \{[\s\S]{0,600}\} else \{[\s\S]{0,400}Remove-Item -LiteralPath \$lockPath/);
   });
@@ -279,8 +279,8 @@ describe('a lease share is released with the lease', () => {
     // ledger read/write. No second purge loop, no second opinion about what an ACE is.
     const lib = accountLib();
     const fn = lib.slice(lib.indexOf('function Clear-SandboxAbandonedLeases'));
-    expect(fn).toMatch(/Revoke-SandboxPathAces -Path \$entry\.Path -AccountNames/);
-    expect(fn).toMatch(/Read-SandboxLeaseLedger -Stream \$stream/);
+    expect(fn).toMatch(/Revoke-SandboxPathAces -Path \$entry\.Path -FileId \$entry\.FileId -AccountNames/);
+    expect(fn).toMatch(/Read-SandboxLeaseLedgerEntries -Stream \$stream/);
     expect(fn).toMatch(/Write-SandboxLeaseLedger -Stream \$lease\.Stream/);
     expect(fn).not.toMatch(/PurgeAccessRules/);
     expect(fn).not.toMatch(/Set-Acl/);
@@ -418,13 +418,22 @@ describe('a lease share is released with the lease', () => {
 //    the provisioner runs, once, right after it has taken its own lease — so every abandoned
 //    lease is cleared by the next turn on the box rather than by the next turn on that account.
 //
-//    A SECOND DEFECT, FOUND IN THE SAME LEDGERS AND NOT FIXABLE FROM A PATH: egpt-sbx-08 and -13
-//    named ...\Favel Konefka-2608141626 while -03, -04 and -10 named ...\Favel Elena
+//    A SECOND DEFECT, FOUND IN THE SAME LEDGERS, AND NOW FIXED: egpt-sbx-08 and -13 named
+//    ...\Favel Konefka-2608141626 while -03, -04 and -10 named ...\Favel Elena
 //    Konefka-2608141626 — the SAME conversation (identical -2608141626 id), renamed slug. NTFS
 //    carries a DACL through a rename, so those two ledgers pointed at nothing while the ACEs they
 //    were written to revoke were alive at the new name. The revoke called that 'missing' and both
-//    callers treated it as resolved. It cannot be followed without a file id recorded at grant
-//    time; what it must not do is read like success. ──
+//    callers treated it as resolved — three pool accounts left holding Modify on a conversation
+//    none of them was leased to, removable only by hand and by SID.
+//
+//    THE FIX: the ledger records the granted object's NTFS FILE ID beside its path, and the
+//    revoke follows the id when the name stops naming the same object. Measured unelevated on
+//    reve 2026-09-23: `fsutil file queryfileid` reads a directory's 128-bit id; `fsutil file
+//    queryFileNameById` follows it through a rename AND a move; a DELETED object answers
+//    Error 87, which is what finally separates "gone, ACEs went with it" from "renamed, ACE is
+//    still out there"; and NTFS validates the sequence number, so a recycled MFT record cannot
+//    make a stale id resolve to an innocent folder. An old ledger has no ids and must keep
+//    behaving exactly as it did — which is asserted below. ──
 describe('the reclaim reaches accounts nothing will lease again', () => {
   it('REPRODUCE: the launcher sweeps the WHOLE POOL on lease, not just the account it took', () => {
     const src = launcher();
@@ -487,9 +496,10 @@ describe('the reclaim reaches accounts nothing will lease again', () => {
     expect(fn).toMatch(/\$_\.Status -eq 'failed' -or \$_\.Status -eq 'deferred'/);
   });
 
-  it("REPRODUCE: a ledger path that VANISHED is no longer reported as if it were clean", () => {
-    // The rename case, straight out of the live ledgers. The revoke cannot follow a moved
-    // folder; it must stop calling the outcome success.
+  it("REPRODUCE: a ledger path that VANISHED is still never reported as if it were clean", () => {
+    // The rename case, straight out of the live ledgers. For a lease with NO id — every lock
+    // written before 2026-09-23 — the revoke still cannot follow a moved folder, and still must
+    // not call the outcome success.
     const lib = accountLib();
     const revoke = lib.slice(lib.indexOf('function Revoke-SandboxPathAces'), lib.indexOf('function Revoke-SandboxLeaseAces'));
     expect(revoke).toMatch(/Status = 'missing'; Message = 'nothing is at that path any more\./);
@@ -498,6 +508,105 @@ describe('the reclaim reaches accounts nothing will lease again', () => {
     const fn = lib.slice(lib.indexOf('function Clear-SandboxAbandonedLeases'));
     expect(fn).toMatch(/\$vanished = @\(\$aces \| Where-Object \{ \$_\.Status -eq 'missing' \}\)/);
     expect(sweepScript()).toMatch(/PATH GONE/);
+    // The loud warning is now aimed at the lines that DESERVE it — the id-less ones. A 'missing'
+    // whose id was checked is not ambiguous and must not be reported as if it were.
+    expect(fn).toMatch(/\$vanishedBlind = @\(\$vanished \| Where-Object \{ -not \$_\.FileId \}\)/);
+  });
+});
+
+// ── THE RENAME IS FOLLOWED (2026-09-23). Everything here is a STRUCTURAL lock; the behaviour —
+//    a real directory, really renamed, its ACE really followed and really removed — is measured
+//    for real in setup/sandbox-account.Tests.ps1 ('Revoke-SandboxPathAces -FileId (the rename
+//    hole, closed)' and 'the reclaim and the sweep, with ids on the ledger'). ──
+describe('the ledger records the OBJECT, not only its name', () => {
+  it('REPRODUCE: the id is read BEFORE the grant, on both grant steps, beside the path', () => {
+    // Same order and same reason as the ledger append it rides: the crash log must be a
+    // SUPERSET of what landed. An id recorded after a grant is an id a hard kill loses.
+    const src = launcher();
+    for (const [step, anchor, idVar] of [
+      ['(d) TargetFolder', 'Grant-SandboxPoolAce -Path $TargetFolder', '$targetFileId'],
+      ['(d2) share path', 'Grant-SandboxPoolAce -Path $sp', '$shareFileId'],
+    ]) {
+      const at = src.indexOf(anchor);
+      expect(at, `step ${step} is gone`).toBeGreaterThan(0);
+      const before = src.slice(Math.max(0, at - 1600), at);
+      expect(before, `step ${step} records a path without the id that survives a rename`).toContain(
+        'Get-SandboxPathFileId -Path',
+      );
+      expect(before).toContain(`-FileId "${idVar}"`);
+    }
+  });
+
+  it('the id follows through the WHOLE lifecycle — append, revoke, carry-over', () => {
+    const src = launcher();
+    // The finally revokes ENTRIES (path + id), not bare paths...
+    expect(src).toMatch(/Revoke-SandboxLeaseAces -AccountName \$leasedName -Entries \$acesGranted/);
+    // ...and what it could not clear goes back on the ledger WITH its id. A retry without the id
+    // is a retry with the hole back open.
+    expect(src).toMatch(/ConvertTo-SandboxLeaseCarryEntry -Record \$rec/);
+    expect(src).toMatch(/Write-SandboxLeaseLedger -Stream \$lockStream -Entries \$stillGranted/);
+    // The per-account reclaim carries entries too, for the same reason.
+    expect(src).toMatch(/\$reclaimCarryOver = @\(\$reclaimed \| Where-Object \{ \$_\.Status -eq 'failed' \} \| ForEach-Object \{ ConvertTo-SandboxLeaseCarryEntry/);
+  });
+
+  it('BACK-COMPAT: a line with no id is a path, and an old ledger is still just paths', () => {
+    // Every lock on a live node right now holds bare paths. Reading one must not change, and
+    // must not need a migration — the format is additive by construction.
+    const lib = accountLib();
+    const from = lib.slice(lib.indexOf('function ConvertFrom-SandboxLeaseLedgerLine'), lib.indexOf('function Read-SandboxLeaseLedgerEntries'));
+    expect(from).toMatch(/if \(\$cut -lt 0\) \{ return \[pscustomobject\]@\{ Path = \$text; FileId = '' \} \}/);
+    // An unknown field is ignored rather than rejected, so a future one cannot make today's
+    // code refuse a ledger it could otherwise clean up.
+    expect(from).toMatch(/StartsWith\('fid='/);
+    // And the paths-only reader every existing caller uses is a PROJECTION of the entry reader,
+    // not a second parser: one ledger, one thing that knows how a line is spelled.
+    const read = lib.slice(lib.indexOf('function Read-SandboxLeaseLedger {'));
+    expect(read).toMatch(/Read-SandboxLeaseLedgerEntries -Stream \$Stream \| ForEach-Object \{ \$_\.Path \}/);
+  });
+
+  it('NOTHING IS WIDENED to make this work — no new privilege, no second DACL writer', () => {
+    const lib = accountLib();
+    // CODE ONLY — the comments in this block discuss the P/Invoke route that was measured and
+    // NOT taken, and prose about a thing is not the thing.
+    const idBlock = lib
+      .slice(lib.indexOf('# ---- THE FILE ID'), lib.indexOf('# ---- THE LEASE LEDGER'))
+      .split('\n')
+      .filter((l) => !l.trim().startsWith('#'))
+      .join('\n');
+    // The id is used to ASK WHERE THE OBJECT IS, never to write through a handle. A security
+    // descriptor set on a handle would be a second DACL writer in a file whose whole doctrine
+    // is one icacls call, keyed by path, read back before and after.
+    expect(idBlock).not.toMatch(/SetAccessControl|SetSecurityInfo|Add-Type|OpenFileById/);
+    expect(idBlock).not.toMatch(/SeBackupPrivilege|SeRestorePrivilege|AdjustTokenPrivileges/);
+    // ...and it writes no DACL of its own at all: the only tools it runs are read-only queries.
+    expect(idBlock).not.toMatch(/icacls|Set-Acl/);
+    // Still exactly one icacls invocation in the revoke, and it is still aimed at ONE path.
+    const fn = lib.slice(lib.indexOf('function Revoke-SandboxPathAces'), lib.indexOf('function Revoke-SandboxLeaseAces'));
+    expect((fn.match(/icacls\.exe/g) || []).length).toBe(1);
+    expect(fn).not.toMatch(/'\/T'/);
+  });
+
+  it('UNKNOWN IS NOT RESOLVED: an id that cannot be looked up keeps the lease, it does not drop it', () => {
+    const lib = accountLib();
+    const fn = lib.slice(lib.indexOf('function Revoke-SandboxPathAces'), lib.indexOf('function Revoke-SandboxLeaseAces'));
+    // Three outcomes, and only one of them lets the ledger line go: 'gone' (the id resolves to
+    // nothing, so the folder was deleted and took its ACEs along). 'unknown' is 'failed' — lock
+    // kept, line kept, retried — because forgetting a leak is the one unrecoverable move.
+    expect(fn).toMatch(/\$found\.Status -eq 'gone'/);
+    expect(fn).toMatch(/Status = 'failed'; Message = "the recorded path is not this object any more/);
+    const resolve = lib.slice(lib.indexOf('function Resolve-SandboxFileId'));
+    // Fail closed on a round trip that disagrees: whatever path comes back is asked for its own
+    // id, and a mismatch writes nothing.
+    expect(resolve).toMatch(/Test-SandboxFileIdMatch \$back \$FileId/);
+  });
+
+  it('the operator sweep SAYS when it followed a rename, and stops crying wolf when it did not need to', () => {
+    const s = sweepScript();
+    expect(s).toMatch(/FOLLOWED BY FILE ID/);
+    // A 'missing' with an id is PROVEN gone, so it no longer gets the ambiguous warning — that
+    // one is now reserved for the id-less lines it is actually true of.
+    expect(s).toMatch(/if \(\$ace\.FileId\)/);
+    expect(s).toMatch(/no file id was recorded for this lease/);
   });
 });
 
@@ -533,7 +642,7 @@ describe('the operator can actually run the sweep', () => {
   it('-WhatIf takes each lock only to READ it, and writes no DACL at all', () => {
     const s = sweepScript();
     const whatIf = s.slice(s.indexOf('if ($WhatIf) {'), s.indexOf('# NO -TimeBudgetSeconds'));
-    expect(whatIf).toMatch(/Read-SandboxLeaseLedger -Stream \$stream/);
+    expect(whatIf).toMatch(/Read-SandboxLeaseLedgerEntries -Stream \$stream/);
     expect(whatIf).not.toMatch(/Revoke-/);
     expect(whatIf).not.toMatch(/Remove-Item/);
     expect(whatIf).not.toMatch(/Write-SandboxLeaseLedger/);

@@ -81,10 +81,19 @@ if ($WhatIf) {
     }
     try {
       $stale++
-      $ledger = @(Read-SandboxLeaseLedger -Stream $stream)
+      # ENTRIES, so the preview can say which lines carry a file id. That is the
+      # difference between a line a real run can FOLLOW through a rename and one
+      # it can only look up by name - and a preview that hides it would promise
+      # more than the thing it previews.
+      $ledger = @(Read-SandboxLeaseLedgerEntries -Stream $stream)
       $paths += $ledger.Count
       Write-Host "  $account : abandoned, $($ledger.Count) path(s) it would revoke:"
-      foreach ($p in $ledger) { Write-Host "      $p" }
+      # WHAT THE LINE CAN DO, not what it will do: this view looks up nothing,
+      # so it must not promise an outcome it did not check.
+      foreach ($e in $ledger) {
+        if ($e.FileId) { Write-Host "      $($e.Path)   [file id $($e.FileId) recorded - a real run can follow this one through a rename]" }
+        else { Write-Host "      $($e.Path)   [no file id - an older lease; a real run can only look it up by name]" }
+      }
     } finally { $stream.Close() }
   }
   Write-Host ("WHAT-IF done in {0:n1}s - {1} abandoned lease(s) holding {2} ACE(s), {3} live lease(s) left alone. Nothing was changed." -f $watch.Elapsed.TotalSeconds, $stale, $paths, $held)
@@ -98,7 +107,7 @@ $records = @(Clear-SandboxAbandonedLeases -LocksDir $LocksDir)
 # WHAT IT REMOVED, PER PATH, because "3 locks released" does not tell an operator
 # whose conversation stopped being readable by a stranger - which is the whole
 # reason this is run.
-$revoked = 0; $stillThere = 0; $vanished = 0
+$revoked = 0; $stillThere = 0; $vanished = 0; $blind = 0; $followed = 0
 foreach ($rec in $records) {
   if ($rec.Status -eq 'held') {
     Write-Host "  $($rec.Account): LIVE - a turn holds this lease, left alone."
@@ -106,11 +115,25 @@ foreach ($rec in $records) {
   }
   Write-Host "  $($rec.Account): $($rec.Status) - $($rec.Message)"
   foreach ($ace in @($rec.Aces)) {
+    # WHERE IT WAS ACTUALLY FOUND, when that is not where the ledger said. This
+    # is the rename case, and the operator whose conversation was renamed has to
+    # be able to see that the ACE was followed rather than quietly dropped.
+    $where = if ($ace.ResolvedPath) { $followed++; "$($ace.Path)  -> FOLLOWED BY FILE ID to $($ace.ResolvedPath)" } else { "$($ace.Path)" }
     switch ($ace.Status) {
-      'revoked'  { $revoked++;    Write-Host "      REVOKED  $($ace.Path)" }
-      'failed'   { $stillThere++; Write-Host "      STILL GRANTED  $($ace.Path)  - $($ace.Message)" }
+      'revoked'  { $revoked++;    Write-Host "      REVOKED  $where" }
+      'failed'   { $stillThere++; Write-Host "      STILL GRANTED  $where  - $($ace.Message)" }
       'deferred' { $stillThere++; Write-Host "      NOT REACHED  $($ace.Path)" }
-      'missing'  { $vanished++;   Write-Host "      PATH GONE  $($ace.Path)  - if it was renamed rather than deleted, the ACE moved with it and nothing now names it" }
+      'missing'  {
+        $vanished++
+        if ($ace.FileId) {
+          # PROVEN, not guessed: the volume was asked for the object itself and
+          # has no such id, so the folder was deleted and took its ACEs along.
+          Write-Host "      PATH GONE  $($ace.Path)  - its file id no longer exists on that volume, so the folder was DELETED and its ACEs went with it"
+        } else {
+          $blind++
+          Write-Host "      PATH GONE  $($ace.Path)  - no file id was recorded for this lease, so if it was renamed rather than deleted, the ACE moved with it and nothing now names it"
+        }
+      }
       default    { Write-Host "      already clear  $($ace.Path)" }
     }
   }
@@ -122,8 +145,14 @@ Write-Host ("DONE in {0:n1}s - {1} leaked ACE(s) revoked, {2} lock(s) released, 
 if ($stillThere -gt 0) {
   Write-Host "WARNING: $stillThere path(s) are STILL granted. Their locks were kept with those paths on the ledger - run this again, and if it repeats, the reason is on the STILL GRANTED line above."
 }
-if ($vanished -gt 0) {
-  Write-Host "NOTE: $vanished ledger path(s) no longer exist. A DELETED folder took its ACEs with it; a RENAMED one did not - NTFS carries a DACL through a rename, so that grant is alive at a name nothing records any more."
+if ($followed -gt 0) {
+  Write-Host "NOTE: $followed ACE(s) were on folders that had been RENAMED since the grant. NTFS carries a DACL through a rename, so the ledger's name found nothing and the recorded file id is what found the object. Before ids were recorded these were the leaks nothing could name."
+}
+if ($blind -gt 0) {
+  Write-Host "WARNING: $blind ledger path(s) no longer exist AND carry no file id - leases written before ids were recorded. A DELETED folder took its ACEs with it; a RENAMED one did not, and that grant is alive at a name nothing records any more. This cannot tell which happened. New leases can."
+}
+if ($vanished -gt $blind) {
+  Write-Host "NOTE: $($vanished - $blind) ledger path(s) are gone and their file ids no longer exist on the volume - those folders were DELETED, so nothing is leaking there."
 }
 # A leak that could not be cleared is not a successful run.
 exit ([int]($stillThere -gt 0))
