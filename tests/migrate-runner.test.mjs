@@ -73,6 +73,15 @@ describe('pending detection', () => {
     await t.run();
     expect(globalThis.__mig.calls.filter((c) => c.endsWith(':apply'))).toEqual(['0001-a:apply', '0002-b:apply', '0010-c:apply']);
   });
+
+  it('`through` stops the chain after that number: a later migration is neither loaded nor recorded', async () => {
+    // 0003 has no `elevated` export - loading it would FAIL. Being left out is what keeps this green.
+    const t = setup({ '0001-a': { elevated: false }, '0002-b': { elevated: false }, '0003-c': {} });
+    const { exitCode, results } = await t.run({ through: '0002' });
+    expect(exitCode).toBe(0);
+    expect(results.map((r) => r.id)).toEqual(['0001-a', '0002-b']);
+    expect(Object.keys(t.ledger())).toEqual(['0001-a', '0002-b']);
+  });
 });
 
 describe('already satisfied', () => {

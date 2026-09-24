@@ -831,7 +831,7 @@ describe('0025 through the runner', () => {
 
   it('kg: applied and recorded, one file changed and one backup beside it', async () => {
     const h = home();
-    const { exitCode } = await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {}, through: '0025' });
     expect(exitCode).toBe(0);
     expect(ledgerOf(h)[ID].outcome).toBe('applied');
     expect(read(h)).toBe(KG_AFTER);
@@ -840,7 +840,7 @@ describe('0025 through the runner', () => {
 
   it('do: applied and recorded, and D is the only part that acted', async () => {
     const h = home({ config: DO });
-    const { exitCode } = await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {}, through: '0025' });
     expect(exitCode).toBe(0);
     expect(ledgerOf(h)[ID].outcome).toBe('applied');
     expect(read(h)).toBe(DO_AFTER);
@@ -848,7 +848,7 @@ describe('0025 through the runner', () => {
 
   it('a node this has already run on converges too, recorded as already-satisfied with nothing written', async () => {
     const h = home({ config: KG_AFTER });
-    const { exitCode } = await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {}, through: '0025' });
     expect(exitCode).toBe(0);
     expect(ledgerOf(h)[ID].outcome).toBe('already-satisfied');
     expect(read(h)).toBe(KG_AFTER);
@@ -857,7 +857,7 @@ describe('0025 through the runner', () => {
 
   it('EVERY earlier migration reads satisfied on these fixtures - one that acted would invalidate them', async () => {
     for (const h of [home(), home({ config: DO }), home({ config: KG_AFTER })]) {
-      await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+      await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {}, through: '0025' });
       const earlier = Object.entries(ledgerOf(h)).filter(([id]) => id < '0025');
       expect(earlier.length).toBeGreaterThanOrEqual(24);
       expect(earlier.filter(([, e]) => e.outcome !== 'already-satisfied')).toEqual([]);
