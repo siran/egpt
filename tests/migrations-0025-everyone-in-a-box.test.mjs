@@ -63,11 +63,13 @@ const CD_LINES = (pad) => [
 ];
 const MODE_LINES = (pad) => [
   `${pad}# OFF UNTIL SOMETHING HOLDS IT (0025, operator 2026-09-23: "for now we can disable L, P, and`,
-  `${pad}# C"). A \`regular\` being gets NO OS box - resolveSandboxed never reaches the rung that`,
-  `${pad}# forces one - and since 33c9eb5 the CLI is no longer a fence for anyone: no --add-dir, no`,
-  `${pad}# deny rules. So this is the one tier with nothing holding it. \`off\` is the mode the gate`,
-  `${pad}# already has (src/auto-mode.mjs): it neither receives nor replies, so the being never sees`,
-  `${pad}# the chat. Give it a box - \`conversation_defaults.access_level: sandbox\` - to switch it back on.`,
+  `${pad}# C", "backburn them for now"). A \`regular\` being gets NO OS box - resolveSandboxed never`,
+  `${pad}# reaches the rung that forces one - and since 33c9eb5 the CLI is no longer a fence for`,
+  `${pad}# anyone: no --add-dir, no deny rules. So this is the one tier with nothing holding it.`,
+  `${pad}# \`off\` is the mode the gate already has (src/auto-mode.mjs): it neither receives nor`,
+  `${pad}# replies, so the being never sees the chat. Its level and any \`sandboxed:\` line beside it`,
+  `${pad}# are left EXACTLY as they are - a being being switched off keeps whatever tier it had, and`,
+  `${pad}# on this node that line is what makes the being work at all.`,
   `${pad}mode: off`,
 ];
 
@@ -108,20 +110,24 @@ const KG_DECLARED = [
   '      compaction:',
   '        ratio: 0.50',
 ];
-// The two `regular` beings C answers - one with no `mode:` at all, one carrying a stale mode and a
-// comment of the operator's beside it.
+// The two `regular` beings C answers, IN THEIR LIVE SHAPE - one with no `mode:` at all, one
+// carrying a stale mode, and BOTH carrying the `sandboxed: false` that is the reason they work at
+// all. C must switch them off and leave everything else byte-identical: boxing `codex` would put
+// it in a logon session that cannot read CODEX_HOME, and boxing `llama` would confine an HTTP call.
 const KG_REGULAR = [
   '  codex:',
   '    configuration: codex',
   '    handles: [ codex ]',
   '    conversation_defaults:',
   '      access_level: regular',
+  '      sandboxed: false # authenticates from CODEX_HOME, which a pool account cannot read',
   '  llama:',
   '    configuration: llama',
   '    handles: [ llama, l ]',
   '    mode: mention # answers when addressed',
   '    conversation_defaults:',
   '      access_level: regular',
+  '      sandboxed: false # HTTP, so there is no process to confine',
 ];
 // The three that state nothing: a relay with no `conversation_defaults:` at all, a being that has
 // the block but no level in it, and a second relay.
@@ -179,6 +185,7 @@ const KG_AFTER_LINES = () => [
   '    handles: [ codex ]',
   '    conversation_defaults:',
   '      access_level: regular',
+  '      sandboxed: false # authenticates from CODEX_HOME, which a pool account cannot read',
   ...MODE_LINES('    '),
   '  llama:',
   '    configuration: llama',
@@ -186,6 +193,7 @@ const KG_AFTER_LINES = () => [
   '    mode: off # answers when addressed',
   '    conversation_defaults:',
   '      access_level: regular',
+  '      sandboxed: false # HTTP, so there is no process to confine',
   '  carol:',
   '    relay_channel: rodz1',
   '    to: don.do',
@@ -313,10 +321,18 @@ describe('0025 on kg - the grant goes, the undeclared say what they are, the unh
     ]);
 
     // C: one insert and one scalar, one per `regular` being.
-    expect(p.changes.some((l) => l.endsWith('insert `mode: off` at agents.codex'))).toBe(true);
     expect(p.changes.some((l) => l.endsWith(
-      '`agents.llama.mode`: mention -> off, because a `regular` being has no OS box and the CLI is no longer a fence',
+      'insert `mode: off` at agents.codex - a `regular` being has no OS box and the CLI is no longer a fence; it is switched off, not re-tiered',
     ))).toBe(true);
+    expect(p.changes.some((l) => l.endsWith(
+      '`agents.llama.mode`: mention -> off - a `regular` being has no OS box and the CLI is no longer a fence; it is switched off, not re-tiered',
+    ))).toBe(true);
+    // ...and each is TOLD that its `sandboxed:` line stays, which is the whole of C-beats-D.
+    for (const n of ['codex', 'llama']) {
+      expect(p.changes).toContain(
+        `agents.${n}.conversation_defaults.sandboxed in ${cfgPath(h)} stays exactly as it is, comment and all - a being being switched off keeps whatever tier it had, and that line is not dead config on a being that is not meant to keep taking turns`,
+      );
+    }
 
     // B: the whole block for the two that have none, the one line for the one that has it.
     expect(p.changes.some((l) => l.endsWith('insert `conversation_defaults.access_level: sandbox` at agents.carol - the tier it already resolves to, written down'))).toBe(true);
@@ -358,16 +374,21 @@ describe('0025 on kg - the grant goes, the undeclared say what they are, the unh
     expect(cfg.agents.egpt.conversation_defaults).toEqual({ access_level: 'sandbox', allowed_users: JSON.parse(OPERATOR) });
     expect(cfg.agents.wren.conversation_defaults).toEqual({ access_level: 'all', allowed_users: JSON.parse(DRIVEN), compaction: { ratio: 0.5 } });
     expect(cfg.agents.wren.sandboxed).toBe(false);          // a flat one, on an `all` being: not D's, not touched
-    expect(cfg.agents.codex).toEqual({ configuration: 'codex', handles: ['codex'], mode: 'off', conversation_defaults: { access_level: 'regular' } });
+    expect(cfg.agents.codex).toEqual({ configuration: 'codex', handles: ['codex'], mode: 'off', conversation_defaults: { access_level: 'regular', sandboxed: false } });
     expect(cfg.agents.llama.mode).toBe('off');
+    expect(cfg.agents.llama.conversation_defaults).toEqual({ access_level: 'regular', sandboxed: false });
     expect(cfg.agents.carol).toEqual({ relay_channel: 'rodz1', to: 'don.do', handles: ['carol'], conversation_defaults: { access_level: 'sandbox' } });
     expect(cfg.agents.cara.conversation_defaults).toEqual({ allowed_users: JSON.parse(OPERATOR), access_level: 'sandbox' });
     expect(cfg.agents.don.conversation_defaults).toEqual({ access_level: 'sandbox' });
     expect(cfg.chrome.bin).toBe('C:/Program Files/Google/Chrome/Application/chrome.exe');
     expect(cfg.compaction).toEqual({ ratio: 0.8, cooling_ms: 600000 });
-    // AND NOT ONE `sandboxed:` LINE WAS WRITTEN. The level decides; a second opinion beside it is
-    // the contradiction the boot gate refuses.
-    expect(Object.values(cfg.agents).filter((a) => Object.hasOwn(a.conversation_defaults ?? {}, 'sandboxed'))).toEqual([]);
+    // AND NOT ONE `sandboxed:` LINE WAS WRITTEN - the two that carry one are the two that already
+    // did, both switched off rather than re-tiered. Where this migration WRITES a level it never
+    // writes a second opinion beside it: that is the contradiction the boot gate refuses.
+    expect(Object.entries(cfg.agents).filter(([, a]) => Object.hasOwn(a.conversation_defaults ?? {}, 'sandboxed')).map(([n]) => n))
+      .toEqual(['codex', 'llama']);
+    expect(Object.entries(cfg.agents).filter(([, a]) => a.conversation_defaults?.access_level === 'sandbox')
+      .every(([, a]) => !Object.hasOwn(a.conversation_defaults, 'sandboxed'))).toBe(true);
   });
 
   // THE EVIDENCE TEST. Not "is the key in the file" but "does the node READ it, and to what": the
@@ -414,7 +435,11 @@ describe('0025 on kg - the grant goes, the undeclared say what they are, the unh
   });
 
   it('and a being KEYED `llama` that answers to something else entirely is left alone', async () => {
-    const h = home({ config: (hh) => KG(hh).replace('    handles: [ llama, l ]\r\n', '    handles: [ ollama ]\r\n') });
+    const h = home({ config: (hh) => KG(hh)
+      .replace('    handles: [ llama, l ]\r\n', '    handles: [ ollama ]\r\n')
+      // ...and without its `sandboxed:` line, which is what would otherwise hand it to D: the
+      // question this test asks is C's alone.
+      .replace('      sandboxed: false # HTTP, so there is no process to confine\r\n', '') });
     const p = await plan(ctxFor(h));
     expect(p.changes).toContain(
       `agents.llama in ${cfgPath(h)} states \`access_level: regular\` and answers to none of [ codex, llama ] - which beings run unheld is the operator's call and this names only the ones it was given`,
@@ -430,7 +455,7 @@ describe('0025 on do - the level and the line beside it, corrected together', ()
     const p = await plan(ctxFor(h));
     expect(p.satisfied).toBe(false);
     expect(p.changes).toEqual([
-      `${cfgPath(h)}:10-10  \`agents.don.conversation_defaults.access_level\`: regular -> sandbox, which FORCES the OS box on (resolveSandboxed rung 1)`,
+      `${cfgPath(h)}:10-10  \`agents.don.conversation_defaults.access_level\`: regular -> sandbox, which FORCES the OS box on (resolveSandboxed rung 1) - this being is not one of [ codex, llama ], so it keeps taking turns and its \`sandboxed:\` line is dead config`,
       '  -       access_level: regular',
       '  +       access_level: sandbox',
       `${cfgPath(h)}:11-11  remove the now-dead \`sandboxed: false\` at agents.don.conversation_defaults - under \`sandbox\` it is unreachable, and src/spine/boot.mjs makes it FATAL rather than let it read like an override`,
@@ -501,9 +526,10 @@ describe('0025 on do - the level and the line beside it, corrected together', ()
     expect(isSandboxContradiction(parsed(h).agents.don.conversation_defaults.access_level, parsed(h).agents.don.conversation_defaults.sandboxed)).toBe(false);
   });
 
-  // D and C can only ever want the same being when it is `regular`, states a `sandboxed:` AND
-  // answers to one of C's handles. D takes it: a being with a box is no longer the unheld tier.
-  it('a `regular` being that both answers `codex` and states a `sandboxed:` is boxed, not switched off', async () => {
+  // C AND D CAN ONLY EVER WANT THE SAME BEING when it is `regular`, states a `sandboxed:` AND
+  // answers to one of C's handles. C TAKES IT - a `sandboxed: false` is dead config only on a
+  // being meant to keep taking turns, and this one is being switched off instead.
+  it('a `regular` being that both answers `codex` and states a `sandboxed:` is switched off, not boxed', async () => {
     const both = crlf([
       'node_name: kg',
       'agents:',
@@ -516,12 +542,43 @@ describe('0025 on do - the level and the line beside it, corrected together', ()
     const h = home({ config: both });
     const p = await plan(ctxFor(h));
     expect(p.changes).toContain(
-      `agents.codex also answers to [ codex ] - it is given a box above rather than switched off, because the tier with nothing holding it is what \`mode: off\` is for and this being no longer is one`,
+      `agents.codex.conversation_defaults.sandboxed in ${cfgPath(h)} stays exactly as it is, comment and all - a being being switched off keeps whatever tier it had, and that line is not dead config on a being that is not meant to keep taking turns`,
     );
     await p.apply();
     const cfg = parsed(h);
-    expect(cfg.agents.codex).toEqual({ handles: ['codex'], conversation_defaults: { access_level: 'sandbox' } });
-    expect(cfg.agents.codex.mode).toBeUndefined();
+    expect(cfg.agents.codex).toEqual({ handles: ['codex'], mode: 'off', conversation_defaults: { access_level: 'regular', sandboxed: true } });
+  });
+
+  // THE LOCK ON THE INVERSION, in the live shape the dry run caught: both beings carry the
+  // `sandboxed: false` that is the reason they work at all - `codex` authenticates from a
+  // CODEX_HOME a pool account cannot read, `llama` is an HTTP call with no process to confine.
+  // Boxing either would break it. Exactly ONE line is added to each, and every byte of the tier
+  // and of the comment beside it survives.
+  it('codex and llama, live shape: ONLY `mode: off` is added - level, `sandboxed:` line and comment byte-identical', async () => {
+    const h = home();
+    const before = read(h);
+    await (await plan(ctxFor(h))).apply();
+    const after = read(h);
+
+    for (const line of [
+      '      access_level: regular\r\n',
+      '      sandboxed: false # authenticates from CODEX_HOME, which a pool account cannot read\r\n',
+      '      sandboxed: false # HTTP, so there is no process to confine\r\n',
+    ]) {
+      expect(before).toContain(line);
+      expect(after).toContain(line);            // byte for byte, comment included
+    }
+    const cfg = parsed(h);
+    for (const n of ['codex', 'llama']) {
+      // Neither tier moved and neither line was taken out - the only difference is the mode...
+      expect(cfg.agents[n].conversation_defaults.access_level).toBe('regular');
+      expect(cfg.agents[n].conversation_defaults.sandboxed).toBe(false);
+      expect(cfg.agents[n].mode).toBe('off');
+      // ...so the node still reads them exactly as it did: NOT in a box, which is the whole point.
+      expect(resolvedLevel(await beingIn(h, n), cfg, n)).toBe('regular');
+      expect(resolvedBox(await beingIn(h, n), cfg, n)).toBe(false);
+      expect(isSandboxContradiction(resolvedLevel(await beingIn(h, n), cfg, n), cfg.agents[n].conversation_defaults.sandboxed)).toBe(false);
+    }
   });
 });
 

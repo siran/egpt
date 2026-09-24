@@ -59,7 +59,7 @@
 // deciding a tier, which is the one thing it must never do.
 //
 // ── C. THE ONE TIER WITH NOTHING HOLDING IT IS SWITCHED OFF ─────────────────────────────────
-// Operator, 2026-09-23: *"for now we can disable L, P, and C."*
+// Operator, 2026-09-23: *"for now we can disable L, P, and C… backburn them for now."*
 //
 // `regular` means NO OS box (resolveSandboxed never reaches rung 1), and after point 2 the CLI is
 // not a fence for anyone. On a `regular` being the CLI layer is still built — that is why point 2
@@ -70,6 +70,19 @@
 // `off` is the mode the gate already has (src/auto-mode.mjs): neither receive nor reply, so the
 // being never sees the chat at all. 0006 wrote that same line for `djh` on do, which is why the
 // spelling here is copied from it rather than invented.
+//
+// AND NOTHING ELSE ABOUT THESE BEINGS IS TOUCHED — not the level, not a `sandboxed:` line beside
+// it, not its comment. A BEING BEING SWITCHED OFF KEEPS WHATEVER TIER IT HAD. That is the whole
+// of C's contract with D below, and it is not tidiness: on kg those two lines are the reason
+// these beings work at all —
+//
+//   codex:  sandboxed: false  # authenticates from CODEX_HOME, which a pool account cannot read
+//   llama:  sandboxed: false  # HTTP, so there is no process to confine
+//
+// — so "correcting" them the way D corrects a stale one would put `codex` in a logon session that
+// cannot reach its own credentials and wrap `llama`'s HTTP call in a box with no process in it.
+// The operator's instruction for these two is to DISABLE them, not to box them, and rewriting the
+// tier of a being we are disabling is churn that can only break something.
 //
 // QUALIFIED BY HANDLE, THROUGH router.mjs's wakeTokens — the node's own definition of who answers
 // to what, never a map key and never re-implemented here. `don` on do is keyed `don` today and
@@ -85,7 +98,13 @@
 // being's ruling and a refusal here would stop every later migration on the node over a chat that
 // is the operator's to change (the 0003/0007/0011/0012 lesson). The chat is named instead.
 //
-// ── D. A LEVEL AND A SECOND OPINION BESIDE IT, BOTH CORRECTED AT ONCE ───────────────────────
+// ── D. A LEVEL AND A *STALE* SECOND OPINION BESIDE IT, BOTH CORRECTED AT ONCE ───────────────
+// C BEATS D, AND D IS WHAT IS LEFT OVER. D's target is a `regular` being with a `sandboxed:`
+// line that C does NOT name — because a `sandboxed: false` is only ever dead config when the
+// being is meant to keep taking turns. On a being C switches off it is not dead at all, and the
+// paragraph above says what it costs to treat it as though it were. So the order below is C
+// first, D on what remains; a being that is both is C's, keeping its tier and its line.
+//
 // Operator, 2026-09-23: *"don debería tener access_level: sandbox."* On do:
 //
 //   don:
@@ -114,9 +133,9 @@
 // A node carrying only some of these gets only the rest, and every part is asked as a PROPERTY of
 // what is in the file — the `allowed_paths` key is there; a being states no `access_level`; a
 // being answering to a named handle is `regular`; a being is `regular` and states a `sandboxed:`.
-// No node name appears below. D and C can only ever pick the same being if it is `regular`, states
-// a `sandboxed:` AND answers to one of C's handles; D takes it, because D is what the being IS and
-// a being with a box is no longer the tier C switches off.
+// No node name appears below. C and D can only ever pick the same being if it is `regular`, states
+// a `sandboxed:` AND answers to one of C's handles; C TAKES IT, and the being keeps its level and
+// its line — see D's own header for why that way round and not the other.
 //
 // SATISFIED, NOT REFUSED — A REFUSAL STOPS EVERY LATER MIGRATION on that node (setup/migrate.mjs).
 // "Nothing to do here" is a note: no `allowed_paths:` or none naming this node's src/; no `agents:`
@@ -142,7 +161,7 @@ import { spliceYamlInsertKey, spliceYamlRemoveKey, spliceYamlScalar } from '../s
 import { wakeTokens } from '../src/spine/router.mjs';
 
 export const elevated = false;
-export const summary = 'every being is in the OS box unless it says otherwise: the blanket ~/src grant goes, an undeclared being states `access_level: sandbox`, the one tier with nothing holding it is switched off, and a level and the dead `sandboxed:` line beside it are corrected together';
+export const summary = 'every being is in the OS box unless it says otherwise: the blanket ~/src grant goes, an undeclared being states `access_level: sandbox`, the one tier with nothing holding it is switched off (keeping its tier), and a being NOT switched off has its level and the stale `sandboxed:` line beside it corrected together';
 
 const ID = '0025';
 // config.yaml's node-level map of folders the launcher opens to a leased account, and the one
@@ -256,11 +275,13 @@ const cdLines = (pad) => [
 ];
 const modeLines = (pad) => [
   `${pad}# OFF UNTIL SOMETHING HOLDS IT (${ID}, operator 2026-09-23: "for now we can disable L, P, and`,
-  `${pad}# C"). A \`${REGULAR}\` being gets NO OS box - resolveSandboxed never reaches the rung that`,
-  `${pad}# forces one - and since 33c9eb5 the CLI is no longer a fence for anyone: no --add-dir, no`,
-  `${pad}# deny rules. So this is the one tier with nothing holding it. \`${OFF}\` is the mode the gate`,
-  `${pad}# already has (src/auto-mode.mjs): it neither receives nor replies, so the being never sees`,
-  `${pad}# the chat. Give it a box - \`${CD}.${LEVEL}: ${SANDBOX}\` - to switch it back on.`,
+  `${pad}# C", "backburn them for now"). A \`${REGULAR}\` being gets NO OS box - resolveSandboxed never`,
+  `${pad}# reaches the rung that forces one - and since 33c9eb5 the CLI is no longer a fence for`,
+  `${pad}# anyone: no --add-dir, no deny rules. So this is the one tier with nothing holding it.`,
+  `${pad}# \`${OFF}\` is the mode the gate already has (src/auto-mode.mjs): it neither receives nor`,
+  `${pad}# replies, so the being never sees the chat. Its level and any \`${SANDBOXED}:\` line beside it`,
+  `${pad}# are left EXACTLY as they are - a being being switched off keeps whatever tier it had, and`,
+  `${pad}# on this node that line is what makes the being work at all.`,
   `${pad}${MODE}: ${OFF}`,
 ];
 
@@ -350,9 +371,6 @@ export async function plan(ctx) {
   }
 
   const levelOf = (a) => (isMap(a[CD]) ? a[CD][LEVEL] : undefined);
-  // D's beings, decided BEFORE anything is written: `regular` and carrying a second opinion about
-  // the box. A being D moves to `sandbox` is no longer the tier C switches off, so it is D's.
-  const corrected = new Set(beings.filter(([, a]) => levelOf(a) === REGULAR && isMap(a[CD]) && Object.hasOwn(a[CD], SANDBOXED)).map(([n]) => n));
   const switchedOff = [];
 
   for (const [name, a] of beings) {
@@ -360,54 +378,61 @@ export async function plan(ctx) {
     const cd = a[CD];
     const level = levelOf(a);
     const answers = wakeTokens(name, a).filter((h) => OFF_HANDLES.includes(h));
+    const statesSandboxed = isMap(cd) && Object.hasOwn(cd, SANDBOXED);
 
-    // ── D. the level and the dead line beside it, as ONE correction ───────────────────────────
-    if (corrected.has(name)) {
-      const stated = cd[SANDBOXED];
-      if (typeof stated !== 'boolean') {
-        refuse(`\`${SANDBOXED}:\` at ${at}.${CD} in ${file} is ${show(stated)}, not a boolean - whether this being asked for the OS box cannot be read, and \`${LEVEL}: ${SANDBOX}\` written beside an unreadable one is what src/spine/boot.mjs refuses at boot`);
-      }
-      const r = write([
-        { label: `\`${at}.${CD}.${LEVEL}\`: ${REGULAR} -> ${SANDBOX}, which FORCES the OS box on (resolveSandboxed rung 1)`, fn: (t) => spliceYamlScalar(t, [AGENTS, name, CD, LEVEL], { expect: REGULAR, to: SANDBOX }) },
-        { label: `remove the now-dead \`${SANDBOXED}: ${stated}\` at ${at}.${CD} - under \`${SANDBOX}\` it is unreachable, and src/spine/boot.mjs makes it FATAL rather than let it read like an override`, fn: (t) => spliceYamlRemoveKey(t, [AGENTS, name, CD], { key: SANDBOXED }) },
-      ]);
-      if (!r.ok) {
-        notes.push(`${at}.${CD} in ${file} cannot take both lines of this correction as it is written (${r.why}) - \`${LEVEL}: ${SANDBOX}\` beside a \`${SANDBOXED}: ${stated}\` is the contradiction src/spine/boot.mjs refuses at boot, so NEITHER line is written here`);
-      }
-      if (answers.length) {
-        notes.push(`${at} also answers to [ ${answers.join(', ')} ] - it is given a box above rather than switched off, because the tier with nothing holding it is what \`${MODE}: ${OFF}\` is for and this being no longer is one`);
-      }
-      continue;
-    }
-
-    // ── C. the one tier with nothing holding it ───────────────────────────────────────────────
+    // ── the `regular` tier: C FIRST, then D on what C did not take ────────────────────────────
     if (level === REGULAR) {
-      if (!answers.length) {
-        notes.push(`${at} in ${file} states \`${LEVEL}: ${REGULAR}\` and answers to none of [ ${OFF_HANDLES.join(', ')} ] - which beings run unheld is the operator's call and this names only the ones it was given`);
+      // ── C. the one tier with nothing holding it. IT BEATS D, and it changes only the mode: a
+      // being being switched off keeps whatever tier it had, and on this node the `sandboxed:`
+      // line beside that tier is what makes the being work at all (see the header).
+      if (answers.length) {
+        if (statesSandboxed) {
+          notes.push(`${at}.${CD}.${SANDBOXED} in ${file} stays exactly as it is, comment and all - a being being switched off keeps whatever tier it had, and that line is not dead config on a being that is not meant to keep taking turns`);
+        }
+        const mode = a[MODE];
+        if (mode === OFF) {
+          notes.push(`${at}.${MODE} in ${file} is already \`${OFF}\`, so this being already takes no turns`);
+          switchedOff.push(name);
+          continue;
+        }
+        if (Object.hasOwn(a, MODE) && typeof mode !== 'string') {
+          notes.push(`${at}.${MODE} in ${file} is ${show(mode)}, not a mode name - left alone rather than overwritten`);
+          continue;
+        }
+        let r;
+        if (Object.hasOwn(a, MODE)) {
+          // A mode is already stated: ONE scalar, so the line's own trailing comment and every byte
+          // around it stay exactly where they are.
+          r = write([{ label: `\`${at}.${MODE}\`: ${mode} -> ${OFF} - a \`${REGULAR}\` being has no OS box and the CLI is no longer a fence; it is switched off, not re-tiered`, fn: (t) => spliceYamlScalar(t, [AGENTS, name, MODE], { expect: mode, to: OFF }) }]);
+        } else if (!writable(f, [AGENTS, name])) {
+          r = { ok: false, why: 'it is an empty or flow mapping - there is no column to match and no sibling to follow' };
+        } else {
+          r = write([{ label: `insert \`${MODE}: ${OFF}\` at ${at} - a \`${REGULAR}\` being has no OS box and the CLI is no longer a fence; it is switched off, not re-tiered`, fn: (t) => spliceYamlInsertKey(t, [AGENTS, name], { key: MODE, text: modeLines(columnOf(f, [AGENTS, name])).join('\n') }) }]);
+        }
+        if (r.ok) switchedOff.push(name);
+        else notes.push(`\`${MODE}: ${OFF}\` cannot be written at ${at} in ${file} (${r.why}) - not switched off here`);
         continue;
       }
-      const mode = a[MODE];
-      if (mode === OFF) {
-        notes.push(`${at}.${MODE} in ${file} is already \`${OFF}\`, so this being already takes no turns`);
-        switchedOff.push(name);
+
+      // ── D. the level and the STALE line beside it, as ONE correction. Only reached for a being
+      // C did not name: a `sandboxed: false` is dead config only on a being meant to keep taking
+      // turns, which is exactly the being C has not switched off.
+      if (statesSandboxed) {
+        const stated = cd[SANDBOXED];
+        if (typeof stated !== 'boolean') {
+          refuse(`\`${SANDBOXED}:\` at ${at}.${CD} in ${file} is ${show(stated)}, not a boolean - whether this being asked for the OS box cannot be read, and \`${LEVEL}: ${SANDBOX}\` written beside an unreadable one is what src/spine/boot.mjs refuses at boot`);
+        }
+        const r = write([
+          { label: `\`${at}.${CD}.${LEVEL}\`: ${REGULAR} -> ${SANDBOX}, which FORCES the OS box on (resolveSandboxed rung 1) - this being is not one of [ ${OFF_HANDLES.join(', ')} ], so it keeps taking turns and its \`${SANDBOXED}:\` line is dead config`, fn: (t) => spliceYamlScalar(t, [AGENTS, name, CD, LEVEL], { expect: REGULAR, to: SANDBOX }) },
+          { label: `remove the now-dead \`${SANDBOXED}: ${stated}\` at ${at}.${CD} - under \`${SANDBOX}\` it is unreachable, and src/spine/boot.mjs makes it FATAL rather than let it read like an override`, fn: (t) => spliceYamlRemoveKey(t, [AGENTS, name, CD], { key: SANDBOXED }) },
+        ]);
+        if (!r.ok) {
+          notes.push(`${at}.${CD} in ${file} cannot take both lines of this correction as it is written (${r.why}) - \`${LEVEL}: ${SANDBOX}\` beside a \`${SANDBOXED}: ${stated}\` is the contradiction src/spine/boot.mjs refuses at boot, so NEITHER line is written here`);
+        }
         continue;
       }
-      if (Object.hasOwn(a, MODE) && typeof mode !== 'string') {
-        notes.push(`${at}.${MODE} in ${file} is ${show(mode)}, not a mode name - left alone rather than overwritten`);
-        continue;
-      }
-      let r;
-      if (Object.hasOwn(a, MODE)) {
-        // A mode is already stated: ONE scalar, so the line's own trailing comment and every byte
-        // around it stay exactly where they are.
-        r = write([{ label: `\`${at}.${MODE}\`: ${mode} -> ${OFF}, because a \`${REGULAR}\` being has no OS box and the CLI is no longer a fence`, fn: (t) => spliceYamlScalar(t, [AGENTS, name, MODE], { expect: mode, to: OFF }) }]);
-      } else if (!writable(f, [AGENTS, name])) {
-        r = { ok: false, why: 'it is an empty or flow mapping - there is no column to match and no sibling to follow' };
-      } else {
-        r = write([{ label: `insert \`${MODE}: ${OFF}\` at ${at}`, fn: (t) => spliceYamlInsertKey(t, [AGENTS, name], { key: MODE, text: modeLines(columnOf(f, [AGENTS, name])).join('\n') }) }]);
-      }
-      if (r.ok) switchedOff.push(name);
-      else notes.push(`\`${MODE}: ${OFF}\` cannot be written at ${at} in ${file} (${r.why}) - not switched off here`);
+
+      notes.push(`${at} in ${file} states \`${LEVEL}: ${REGULAR}\` and answers to none of [ ${OFF_HANDLES.join(', ')} ] - which beings run unheld is the operator's call and this names only the ones it was given`);
       continue;
     }
 
