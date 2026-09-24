@@ -451,7 +451,9 @@ describe('brainpool.turn', () => {
     });
     await brain.turn('e', ev);
     expect(seeded).toEqual([false]);   // copy-if-missing, the mid-thread default
-    expect(rolled).toEqual([]);        // nothing archived out from under a running thread
+    // nothing archived out from under a running thread. The room's config.readonly.yaml is
+    // written through the same io (temp + rename) and is not an archive — it is set aside here.
+    expect(rolled.filter(([, to]) => !to.endsWith('config.readonly.yaml'))).toEqual([]);
   });
 
   // THE dj-son OVERFLOW (2026-08-28): `@pd` on a local 16k model died with
