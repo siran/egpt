@@ -152,6 +152,10 @@ export async function runMigrations({
   log = (line) => console.log(line),
   now = () => new Date(),
   ctx: ctxOverrides = {},
+  // Stop the chain after this migration number ('0025'): a migration's own runner test runs the
+  // chain AS IT STOOD WHEN THAT MIGRATION SHIPPED, so a later one acting on the same fixture (0027
+  // resting kg's relays in 0025's kg fixture) cannot invalidate it. Never set in production.
+  through = null,
 } = {}) {
   if (!egptHome) throw new Error('runMigrations: egptHome is required');
   const results = [];
@@ -168,6 +172,7 @@ export async function runMigrations({
   try {
     ledger = readLedger(egptHome);
     migrations = listMigrations(dir);
+    if (through) migrations = migrations.filter(({ id }) => id.slice(0, 4) <= String(through).slice(0, 4));
   } catch (e) {
     say(`FAILED before any migration ran: ${e.message}`);
     return { results, exitCode: 1 };
