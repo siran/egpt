@@ -199,7 +199,7 @@ function fakePool(results) {
 // A brainpool over an in-memory registry, counting the IO a TURN costs. `rooms: undefined`
 // wires NO resolveScope at all — which is exactly the derivation as it stood before the scope
 // existed, and is what the locks below compare against.
-async function harness({ rooms, results = [{ text: 'ok', sessionId: ACIM_THREAD }], scope } = {}) {
+async function harness({ rooms, results = [{ text: 'ok', sessionId: ACIM_THREAD }], scope, afterTurn, noticeTo } = {}) {
   let state = emptyState();
   const io = { loadState: 0, resolve: 0 };
   const loadState = async () => { io.loadState++; return state; };
@@ -226,12 +226,35 @@ async function harness({ rooms, results = [{ text: 'ok', sessionId: ACIM_THREAD 
     // which access_level was resolved for it.
     loadPermission: (level) => ({ dangerouslySkipPermissions: level === 'all', allowedTools: level === 'all' ? ['ALL'] : ['Read'] }),
     ...(scope ? { resolveScope: scope } : rooms === undefined ? {} : { resolveScope: scopeOver(rooms) }),
+    ...(afterTurn ? { afterTurn } : {}),
+    ...(noticeTo ? { noticeTo } : {}),
   });
   return { brain, pool, io, getState: () => state };
 }
 
 const roomEv = { surface: 'room', chatId: ROOM, chatName: ROOM, line: 'An@[acim].room (14:05): sigue con el capítulo 3', body: 'sigue con el capítulo 3' };
 const groupEv = { surface: 'whatsapp', chatId: GROUP, chatName: GROUP_NAME, line: `An@[${GROUP_NAME}].wa (14:05) #m1: traduce esto`, body: 'traduce esto' };
+
+// THE COMPACTION NOTICE NAMES THE CONVERSATION WHOSE THREAD WAS COMPACTED (operator 2026-09-24:
+// "make it's posted on admin channel, eGPT Admin"). An invited group runs on the ROOM's thread, so
+// it is the room that was compacted and the room the admin channel is told about - not the group.
+describe('the compaction notice for an invited group names the ROOM', () => {
+  it('a turn from the invited group hands out a notice naming room/acim, not "perrito traducciones"', async () => {
+    const seen = [], said = [];
+    const { brain } = await harness({ rooms: JOINED, afterTurn: (x) => seen.push(x), noticeTo: async (text) => { said.push(text); } });
+    await brain.turn('e', groupEv);
+    await seen[0].noticeCompacted({ tokens: 300_000 });
+    expect(said).toEqual(['🗜️ e in acim compacted its context (was 300k tokens). The full history stays in its transcript.md.']);
+  });
+
+  it('LOCK — the same group with no room scope is named as itself', async () => {
+    const seen = [], said = [];
+    const { brain } = await harness({ rooms: NO_ROOMS, afterTurn: (x) => seen.push(x), noticeTo: async (text) => { said.push(text); } });
+    await brain.turn('e', groupEv);
+    await seen[0].noticeCompacted({ tokens: 300_000 });
+    expect(said).toEqual([`🗜️ e in ${GROUP_NAME} compacted its context (was 300k tokens). The full history stays in its transcript.md.`]);
+  });
+});
 
 describe('brainpool — the four identity keys derive from the SCOPE, not the chat', () => {
   it('THE ASK: an invited group runs on the ROOM\'s being — one warm key, one thread, the room\'s access_level', async () => {

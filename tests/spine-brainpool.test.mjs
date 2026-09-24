@@ -121,7 +121,7 @@ function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, load
     loadPermission: loadPermission ?? (() => null),
     ...(onLog ? { onLog } : {}),                   // the diagnostic sink (allow_new_input validation)
     ...(onAlert ? { onAlert } : {}),               // the OPERATOR channel — the small set of events worth waking someone for (thread loss)
-    ...(noticeTo ? { noticeTo } : {}),             // (chatId, text, being) -> one line into that chat — the compaction notice
+    ...(noticeTo ? { noticeTo } : {}),             // (text, being) -> one line in the admin channel — the compaction notice
     ...(platform ? { platform } : {}),             // 'win32' | 'linux' | ... — drives the PLATFORM-AWARE `sandboxed` default below (omit → this host's real process.platform)
   });
   return { brain, pool, getState: () => state, setState: (s) => { state = s; } };
@@ -3006,28 +3006,43 @@ describe('brainpool.turn: the compaction arming hook', () => {
 
 // ── THE COMPACTION NOTICE (operator 2026-09-24: "can the bridge emit notice of this when it
 // happens?"). Same shape as the arming hook above: only compaction.mjs knows a compact succeeded,
-// only this turn knows its chat and the being's name, so brainpool hands a closure out on afterTurn.
+// only this turn knows its conversation and the being's name, so brainpool hands a closure out on
+// afterTurn. The line goes to the ADMIN CHANNEL (operator: "make it's posted on admin channel, eGPT
+// Admin"), which is boot's - so no chat id rides along, and the line NAMES the conversation.
 describe('brainpool.turn: the compaction notice hook', () => {
-  it('afterTurn carries noticeCompacted, bound to THIS turn\'s chat and saying the being\'s display name', async () => {
+  it('afterTurn carries noticeCompacted, naming THIS turn\'s conversation and the being\'s display name', async () => {
     const seen = [], said = [];
     const { brain } = harness([{ text: 'ok', sessionId: 'sid-n' }], {
       afterTurn: (x) => seen.push(x),
       labelOf: (b) => (b === 'e' ? 'E' : ''),
-      noticeTo: async (chatId, text, being) => { said.push({ chatId, text, being }); },
+      noticeTo: async (text, being) => { said.push({ text, being }); },
     });
     await brain.turn('e', ev);
     expect(typeof seen[0].noticeCompacted).toBe('function');
     expect(said).toEqual([]);                                   // nothing is said on the turn itself
     await seen[0].noticeCompacted({ tokens: 480_000 });         // ← what a successful /compact does
-    expect(said).toEqual([{ chatId: ev.chatId, being: 'e', text: '🗜️ E compacted its context (was 480k tokens). The full history stays in transcript.md.' }]);
+    expect(said).toEqual([{ being: 'e', text: '🗜️ E in SPOILER compacted its context (was 480k tokens). The full history stays in its transcript.md.' }]);
+  });
+
+  it('names the node too - every node posts into the one admin channel', async () => {
+    const seen = [], said = [];
+    const { brain } = harness([{ text: 'ok', sessionId: 'sid-n' }], {
+      config: { node_name: 'kg' },
+      afterTurn: (x) => seen.push(x),
+      labelOf: (b) => (b === 'e' ? 'E' : ''),
+      noticeTo: async (text) => { said.push(text); },
+    });
+    await brain.turn('e', ev);
+    await seen[0].noticeCompacted({ tokens: 480_000 });
+    expect(said).toEqual(['🗜️ kg · E in SPOILER compacted its context (was 480k tokens). The full history stays in its transcript.md.']);
   });
 
   it('a being with no display name is named by its key', async () => {
     const seen = [], said = [];
-    const { brain } = harness([{ text: 'ok', sessionId: 'sid-n' }], { afterTurn: (x) => seen.push(x), noticeTo: async (chatId, text) => { said.push(text); } });
+    const { brain } = harness([{ text: 'ok', sessionId: 'sid-n' }], { afterTurn: (x) => seen.push(x), noticeTo: async (text) => { said.push(text); } });
     await brain.turn('e', ev);
     await seen[0].noticeCompacted({ tokens: 250_000 });
-    expect(said).toEqual(['🗜️ e compacted its context (was 250k tokens). The full history stays in transcript.md.']);
+    expect(said).toEqual(['🗜️ e in SPOILER compacted its context (was 250k tokens). The full history stays in its transcript.md.']);
   });
 
   it('with no noticeTo wired, afterTurn carries no notice at all', async () => {

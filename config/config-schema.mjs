@@ -2641,6 +2641,22 @@ export const CONFIG_SCHEMA = {
     /agents auto <handle> auto); the turn-counter guard bounds runaway unchanged.
   `,
 
+  admin_channel: `
+    The node's admin channel (operator 2026-09-24: "make it's posted on admin
+    channel, eGPT Admin. BTW the 'admin channel' must be defined in config.yaml")
+    - the ONE chat this node posts its own notices to. Today that is the
+    compaction notice: "🗜️ <node> · <being> in <chat> compacted its context
+    (was Nk tokens)...", said after a /compact that succeeded
+    (src/spine/compaction.mjs, boot.mjs noticeToAdmin). Every node may name the
+    same chat; the line says which node it came from.
+
+    VALUE: a chat NAME or a raw Beeper room id in SHORT form, exactly like
+    advice_channel. A name is resolved to its room by the bridge's own
+    resolveChatId before the line is said, so the being's mouth can say it in
+    its own room. Unset (or empty): nothing is posted, the notice stays in the
+    daemon log. Operator alerts are NOT sent here; they stay on the Self chat.
+  `,
+
   aliases: `
     Display-name overrides for the /status member counters:
       { <sender-id>: <alias> }

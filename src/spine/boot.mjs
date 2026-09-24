@@ -2745,16 +2745,33 @@ export async function boot({
   // single shape. The drain goes FIRST because it cannot throw (createOutboxDrain guarantees it),
   // so compaction's behaviour on this hook is byte-for-byte what it was.
   const afterEveryTurn = (t) => { outboxDrain.afterTurn(t); compaction.afterTurn(t); };
-  // THE COMPACTION NOTICE (operator 2026-09-24: "i'll just let the conversations compact on its
-  // own. can the bridge emit notice of this when it happens?"). compaction.mjs calls brainpool's
-  // closure after a compact that SUCCEEDED; this is how the line reaches the chat - sayOnce, the
-  // ONE placement, from the being's own mouth, the helper the outbox drain and the heartbeat
-  // posts already take. Logged first, like the alert above: the log does not need a network.
-  const noticeInChat = (chatId, text, being) => {
-    log.line?.(`[compact] notice to ${chatId}: ${text}`);
+  // THE COMPACTION NOTICE (operator 2026-09-24: "can the bridge emit notice of this when it
+  // happens?", then "make it's posted on admin channel, eGPT Admin. BTW the 'admin channel' must be
+  // defined in config.yaml"). compaction.mjs calls brainpool's closure after a compact that
+  // SUCCEEDED; this is how the line reaches config.yaml's `admin_channel` - declared and read
+  // exactly like `advice_channel` (config/config-schema.mjs; trimmed, empty => unset) and said
+  // through sayOnce, the ONE placement, from the being's own mouth.
+  //
+  // A configured NAME becomes its room HERE, by the bridge's own resolveChatId - the resolver its
+  // send already runs - because the mouth decides whether it can say a line by reading that ROOM's
+  // roster, and a name has none: left a name, every notice would fall back to the ear. Logged
+  // first, like the alert above: the log does not need a network. Unset => the log is all there
+  // is (fail-closed, like the advice channel).
+  const adminChannelDeclared = () => { const c = getConfig()?.admin_channel; const s = c == null ? '' : String(c).trim(); return s || null; };
+  const noticeToAdmin = async (text, being) => {
+    log.line?.(`[compact] ${text}`);
+    const to = adminChannelDeclared();
+    if (!to) { log.line?.('[compact] admin_channel is not set in config.yaml - the notice stays in this log'); return false; }
+    const on = outbound(null, to).bridge;
+    let chatId = to;
+    if (typeof on?.resolveChatId === 'function') {
+      try { chatId = await on.resolveChatId(to); }
+      catch (e) { log.line?.(`[compact] admin_channel ${JSON.stringify(to)} could not be resolved - notice not sent: ${e?.message ?? e}`); return false; }
+      if (!chatId) { log.line?.(`[compact] admin_channel ${JSON.stringify(to)} names no chat on this node - notice not sent`); return false; }
+    }
     return sayOnce({ being, chatId, text, what: 'compaction' });
   };
-  const brain = createBrainPool({ pool, getConfig, contacts, loadState: _loadState, writeState: _writeState, brains, defaultKey, labelOf, afterTurn: afterEveryTurn, onAlert: alertOperator, noticeTo: noticeInChat, resolveConfig: configResolver.configFor, resolveScope: createIdentityScope({ resolveMembers: memberResolver, getConfig, onLog: (m) => log.line?.(`[scope] ${m}`) }), io, onLog: (m) => log.line?.(`[brain] ${m}`) });
+  const brain = createBrainPool({ pool, getConfig, contacts, loadState: _loadState, writeState: _writeState, brains, defaultKey, labelOf, afterTurn: afterEveryTurn, onAlert: alertOperator, noticeTo: noticeToAdmin, resolveConfig: configResolver.configFor, resolveScope: createIdentityScope({ resolveMembers: memberResolver, getConfig, onLog: (m) => log.line?.(`[scope] ${m}`) }), io, onLog: (m) => log.line?.(`[brain] ${m}`) });
 
   // ONE turn machinery for the whole node (see the import note). Built here because it needs
   // `brain` (its scopeOf/allowNewInput/steer seams) and the bridge pair the steer-ack rides —
@@ -3204,6 +3221,7 @@ export async function boot({
   return {
     spine, bridge, shellPort, pool, cfg, peerNodes,      // shellPort: the second LIMB — exposed so its regulation is assertable, like bridge's
     peerMouth,                                           // null on a node with no peer_spine — exposed for the same reason: "absent means absent" is assertable
+    noticeToAdmin,                                       // the admin-channel notice compaction says — exposed so it is assertable without a cooling timer
 
     stop: () => {
       // No alive-timer teardown: the beat is a heartbeat now, riding the spine's
