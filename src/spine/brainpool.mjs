@@ -34,6 +34,10 @@ import { Room } from '../room-core.mjs';
 // The room's ./directives/config.readonly.yaml (operator 2026-09-24) and the mode ladder it states.
 import { renderConfigBlock, writeConfigCard } from './being-config-card.mjs';
 import { resolveMode } from './gating.mjs';
+// The chat line a compaction leaves behind, and the per-conversation override the service reads -
+// both owned by the compaction policy, never re-spelled here (operator 2026-09-24).
+import { compactedNotice } from './compaction.mjs';
+import { compactionOverrideOf } from '../tools/compact-being.mjs';
 // WHICH APPROVED TARGET a room's outbox/ is drained to, resolved by the ONE owner of that walk
 // (the boot sweep is the other reader) — see src/room-outbox.mjs. The conversation names a KEY;
 // only config.yaml's `outbox_targets:` map ever holds a path.
@@ -622,7 +626,7 @@ export function createBrainPool({
   writeCard = writeConfigCard,      // (room, being, block, {io, onLog}) -> <room>/directives/config.readonly.yaml when it changed
   loadAutoLayer = readAutoModeLayer,// () -> the `mode: auto` operator-role instruction layer (appended to an auto conversation's kickoff)
   loadManifest = null,              // () -> e_identity.md fallback (default below)
-  afterTurn = null,                 // ({key, sessionId, model, cwd, allowedTools, compaction, outbox, armIdentityRefresh}) — THE post-turn hook (auto-compaction AND the room-outbox drain ride this one, never a second). `armIdentityRefresh` is a CALLBACK the service invokes after a compact that succeeded — see the arming block at the end of turn(); `outbox` is {target:{key,to,unknown}, surface, slug, being, chatId} or null (src/room-outbox.mjs)
+  afterTurn = null,                 // ({key, sessionId, model, cwd, allowedTools, compaction, outbox, armIdentityRefresh, noticeCompacted}) — THE post-turn hook (auto-compaction AND the room-outbox drain ride this one, never a second). `armIdentityRefresh` is a CALLBACK the service invokes after a compact that succeeded — see the arming block at the end of turn(); `noticeCompacted` ({tokens}) says so in the turn's chat, null unless noticeTo is wired; `outbox` is {target:{key,to,unknown}, surface, slug, being, chatId} or null (src/room-outbox.mjs)
   loadPermission = loadPermissionLevel,  // (level) -> {dangerouslySkipPermissions, allowedTools}|null — config/permissions/<level>.md for /agents ... access_level; injectable (tests), NO caching in the real implementation (see permission-levels.mjs)
   // THE PLATFORM THIS NODE RUNS ON, injected rather than read off the global, so a test can
   // drive win32 AND posix in one run without redefining process.platform (same options-DI
@@ -640,6 +644,11 @@ export function createBrainPool({
   // events worth waking someone for, and boot routes it to the operator's Self chat. Default is
   // a no-op rather than onLog, so an unwired caller (every test) logs exactly what it did before.
   onAlert = () => {},
+  // SAYS ONE LINE INTO A CHAT, from the being's own mouth: (chatId, text, being) -> Promise. Boot
+  // hands its sayOnce - the ONE placement every node line takes - so this module never holds a
+  // sender. Read by exactly one thing: the compaction notice handed out on afterTurn below
+  // (operator 2026-09-24). null (every test that wires none) means no notice, nothing else.
+  noticeTo = null,
   onLog = () => {},
 } = {}) {
   if (!pool || typeof pool.run !== 'function') throw new Error('createBrainPool: pool (createWarmPool) is required');
@@ -912,7 +921,7 @@ export function createBrainPool({
       // exactly as it does today. REPLACES rather than merges at whichever tier answers, the
       // same rule allowed_users follows: a half-overridden compaction policy assembled from two
       // files is far harder to reason about than one that says what it means where it is written.
-      compaction: b?.compaction ?? getConfig()?.agents?.[being]?.conversation_defaults?.compaction ?? null,
+      compaction: compactionOverrideOf(b, getConfig(), being),
       // WHICH APPROVED TARGET THIS ROOM'S outbox/ GOES TO (operator 2026-09-22). The key itself
       // takes the SAME two-tier walk as `compaction` directly above, deliberately, because it is
       // the same rung: for a room the per-conversation block is its row in config/rooms.yaml.
@@ -1379,7 +1388,15 @@ export function createBrainPool({
       // A RESOLVED TARGET RIDES EVEN WHEN ITS KEY NAMED NOTHING — `{ key, to: null, unknown }` —
       // so a typo in `outbox_to:` is reported by name instead of behaving exactly like "off".
       const outbox = outboxTarget ? { target: outboxTarget, surface: scope.surface, slug, being, chatId: ev.chatId } : null;
-      try { afterTurn?.({ key, sessionId: newSession ?? sessionId ?? null, model: def.model, cwd, allowedTools: baseOpts.allowedTools, compaction: compactionOver, outbox, armIdentityRefresh }); } catch { /* non-fatal */ }
+      // THE COMPACTION NOTICE (operator 2026-09-24: "can the bridge emit notice of this when it
+      // happens?"), handed out on the SAME hook and for the same reason as armIdentityRefresh:
+      // only compaction.mjs knows whether a compact succeeded, a cooling period from now, and only
+      // this turn knows which chat it came from and what the being is called. Bound to the chat
+      // this turn's REPLY went to - which, for a chat invited into a room, is that chat, not the room.
+      const noticeCompacted = typeof noticeTo === 'function'
+        ? ({ tokens } = {}) => noticeTo(ev.chatId, compactedNotice(labelOf(being) || being, tokens), being)
+        : null;
+      try { afterTurn?.({ key, sessionId: newSession ?? sessionId ?? null, model: def.model, cwd, allowedTools: baseOpts.allowedTools, compaction: compactionOver, outbox, armIdentityRefresh, noticeCompacted }); } catch { /* non-fatal */ }
       return { text, sessionId: newSession ?? sessionId ?? null, being };
     },
 

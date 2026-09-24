@@ -29,21 +29,21 @@
 // CLAUDE_AUTOCOMPACT_PCT_OVERRIDE (read in the claude.exe bundle, which calls it a TEST override -
 // measure it before relying on it; it would still not re-feed the identity).
 // THIS DECISION CAN BE REVISITED.
-import { dueForCompaction, windowForModel, criticallyOver } from '../tools/compact-being.mjs';
+import { dueForCompaction, criticallyOver, compactionPolicy, compactionRatio, positiveOrNull } from '../tools/compact-being.mjs';
 
 const DEFAULT_COOLING_MS = 120_000;   // 2 min of quiet after the last reply
-export const DEFAULT_RATIO = 0.20;    // compact at 20% of the model window (operator 2026-06-30)
 
-/**
- * THE compaction ratio the spine applies: `compaction.ratio` from config, else 0.20.
- * ONE owner, because there are two numbers in the tree and only this one is real —
- * compact-being.mjs also carries a COMPACT_RATIO of 0.25, but it is only that module's
- * default PARAMETER, used when a caller passes no ratio. The spine always passes this one,
- * so 0.25 reaches nothing but `node src/tools/compact-being.mjs`'s read-only printout.
- * /status reports what the spine applies, so it calls this rather than re-deriving it.
- */
-export function compactionRatio(config) {
-  return Number(config?.compaction?.ratio ?? DEFAULT_RATIO) || DEFAULT_RATIO;
+// THE compaction ratio the spine applies, and its 0.20 default: defined in compact-being.mjs with
+// the rest of the policy since 2026-09-24 (compactionPolicy - so /status reads the SAME rule the
+// service applies), re-exported here so every existing importer keeps its import.
+export { compactionRatio, DEFAULT_RATIO } from '../tools/compact-being.mjs';
+
+// THE LINE A CHAT GETS when the spine compacts a being in it (operator 2026-09-24). `label` is the
+// being's display name (brainpool's labelOf, the same one its "lost its thread" alert uses);
+// `tokens` is the size the compaction was decided at. Pure, so the wording is pinned by a test.
+export function compactedNotice(label, tokens) {
+  const was = Number.isFinite(tokens) && tokens > 0 ? ` (was ${Math.round(tokens / 1000)}k tokens)` : '';
+  return `🗜️ ${label} compacted its context${was}. The full history stays in transcript.md.`;
 }
 
 export function createCompaction({
@@ -58,7 +58,6 @@ export function createCompaction({
   const pending = new Map();          // warm key -> timer handle
   const ratio = () => compactionRatio(getConfig());
   const coolingMs = () => Number(cfg().cooling_ms ?? DEFAULT_COOLING_MS) || DEFAULT_COOLING_MS;
-  const windowOf = (model) => Number(cfg().context_window) || windowForModel(model);
 
   // PER-CONVERSATION OVERRIDES (operator 2026-09-03), carried in on afterTurn from brainpool's
   // resolveConv and using config.yaml's OWN `compaction:` key names — `enabled`, `ratio`,
@@ -80,11 +79,12 @@ export function createCompaction({
   // and `enabled: true` sits directly above `ratio:` in the block, which makes transposing them
   // the realistic mistake. Numeric STRINGS are deliberately still coerced ('0.6' is an ordinary
   // YAML quoting accident, and it means what it says).
+  //
+  // THE RATIO AND THE WINDOW are compact-being's compactionPolicy (2026-09-24), the one rule
+  // /status reads too; `_pos` is that module's positiveOrNull, the validation above.
   const _obj = (v) => (v && typeof v === 'object' && !Array.isArray(v)) ? v : null;
-  const _pos = (v) => { const n = typeof v === 'boolean' ? NaN : Number(v); return Number.isFinite(n) && n > 0 ? n : null; };
-  const ratioFor = (o) => { const n = _pos(o?.ratio); return n && n <= 1 ? n : ratio(); };
+  const _pos = positiveOrNull;
   const coolingFor = (o) => _pos(o?.cooling_ms) ?? coolingMs();
-  const windowFor = (model, o) => _pos(o?.context_window) ?? windowOf(model);
   // THE CRITICAL RATIO (operator 2026-09-14: "10 minutes of quiet or a critical .9"). The
   // cooling wait exists so a compact lands in a gap between turns instead of mid-exchange --
   // but the timer is RE-ARMED on every turn, so a conversation that stays busy never goes
@@ -126,13 +126,20 @@ export function createCompaction({
       // reading as a failed compact — here the compact SUCCEEDED and only the arming was lost.
       try { await target.armIdentityRefresh?.(); }
       catch (e) { onLog(`compact ${key}: compacted, but arming the identity re-feed failed: ${e?.message ?? e}`); }
+      // …AND THE CHAT IS TOLD (operator 2026-09-24: "i'll just let the conversations compact on its
+      // own. can the bridge emit notice of this when it happens?"). brainpool's closure, bound to
+      // the chat of the turn that armed this compaction; it says the line through boot's one
+      // placement. Only here, after a compact that SUCCEEDED, and in its own catch: a notice that
+      // could not be said is logged and is never a failed compact.
+      try { await target.noticeCompacted?.({ tokens }); }
+      catch (e) { onLog(`compact ${key}: compacted, but the chat notice failed: ${e?.message ?? e}`); }
     } catch (e) { onLog(`compact ${key}: ${e?.message ?? e}`); }
   }
 
   return {
     // Called after every bot turn. (Re)arms the cooling timer for this conversation;
     // the check + /compact run only once it goes quiet for the cooling period.
-    afterTurn({ key, sessionId, model, cwd, allowedTools, compaction, armIdentityRefresh } = {}) {
+    afterTurn({ key, sessionId, model, cwd, allowedTools, compaction, armIdentityRefresh, noticeCompacted } = {}) {
       const over = _obj(compaction);
       if (!enabledFor(over) || !pool || !key || !sessionId) return;
       const prev = pending.get(key);
@@ -144,7 +151,10 @@ export function createCompaction({
       // `armIdentityRefresh` is frozen onto the target for the same reason the ratio and the
       // window are: the turn that armed this compaction is the turn whose being should get its
       // identity back, and it closes over that turn's scope/being (operator 2026-09-10).
-      const target = { sessionId, model, window: windowFor(model, over), ratio: ratioFor(over), armIdentityRefresh, brainOptions: { sessionId, cwd, model, allowedTools } };
+      // `noticeCompacted` is frozen onto the target for the same reason: it is bound to the chat of
+      // the turn that armed this compaction, and that is the chat told it happened.
+      const { window, ratio: frozenRatio } = compactionPolicy(getConfig(), model, over);
+      const target = { sessionId, model, window, ratio: frozenRatio, armIdentityRefresh, noticeCompacted, brainOptions: { sessionId, cwd, model, allowedTools } };
       // ALREADY CRITICAL? Then do not wait for a quiet that may never come. The probe reads a
       // BOUNDED TAIL of the session jsonl rather than the whole file (compact-being's
       // criticallyOver): this runs after every single turn, and the ordinary check's
