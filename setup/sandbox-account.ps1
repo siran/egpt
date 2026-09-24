@@ -1904,6 +1904,14 @@ function Clear-SandboxAbandonedLeases {
 # The inheritable row reaches objects created AFTER it lands; an object created
 # earlier keeps the DACL it was born with.
 #
+# TEST THE LAUNCHER FROM NODE, NEVER FROM AN MSYS SHELL. Run from the operator's
+# msys64 bash, the box inherits that bash's stdio - msys64 PIPES the operator's
+# runtime owns - and msys64 bash in the box dies "open_setup failed, Win32 error 5"
+# (fhandler_pipe::open_setup) with or without this grant. It is the harness, not
+# the box: from node, as the spine launches it, the same bash starts (measured
+# 2026-09-24, kg and do). Git bash is a different installation, sees plain pipes,
+# and hides the trap.
+#
 # NOT PERSISTENT: the directory and its DACL are rebuilt at every logon, so the
 # launcher applies this per launch (step e). Additive and idempotent, one set of
 # group ACEs for all accounts, never revoked - the window-station ACE's shape.
