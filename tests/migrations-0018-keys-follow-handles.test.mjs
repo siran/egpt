@@ -560,6 +560,14 @@ describe('0018 through the runner', () => {
   // so 0007 reads nothing as this node's own (as tests/migrations-0008-* and -0016-*).
   const ctx = { ps: () => JSON.stringify({ map: [], services: [], from: { exists: false }, to: { exists: false } }), localAddresses: new Set() };
   const dir = join(import.meta.dirname, '..', 'migrations');
+  // 0025 runs LAST in this chain and states an `access_level:` on every being that declares none,
+  // so the live config.yaml is no longer the end state THIS migration is about. Its BACKUP is:
+  // ctx.backup copies the file the instant before 0025 writes it, which is exactly what the chain
+  // up to 0024 left behind - so the byte-for-byte assertions below are unchanged.
+  const upTo0024 = (h) => {
+    const d = join(h, 'config');
+    return readFileSync(join(d, readdirSync(d).find((f) => f.startsWith('config.yaml.bak-0025-'))), 'utf8');
+  };
   const ledger = (h) => JSON.parse(readFileSync(join(h, 'state', 'migrations-applied.json'), 'utf8'))['0018-keys-follow-handles'].outcome;
 
   it('do: applied and recorded, every file moved and backed up, the folder renamed', async () => {
@@ -568,8 +576,8 @@ describe('0018 through the runner', () => {
     expect(exitCode).toBe(0);
     expect(ledger(h)).toBe('applied');
     // 0020 runs later in the same chain and hands the being answering `don` the `rodz` handle -
-    // not 0018's doing, and the only difference between the chain's end state and 0018's own.
-    expect(readFileSync(cfgPath(h), 'utf8')).toBe(DO_AFTER.replace('[ d, don ]', '[ d, don, rodz ]'));
+    // not 0018's doing, and the only difference between 0018's own end state and what 0025 found.
+    expect(upTo0024(h)).toBe(DO_AFTER.replace('[ d, don ]', '[ d, don, rodz ]'));
     expect(readFileSync(convPath(h), 'utf8')).toBe(DO_CONV_AFTER);
     expect(readFileSync(roomsPath(h), 'utf8')).toBe(DO_ROOMS_AFTER);
     expect(readFileSync(agentsPath(h), 'utf8')).toBe(DO_AGENTS_AFTER);
@@ -588,7 +596,7 @@ describe('0018 through the runner', () => {
     // is the last block of this fixture (the blank line above it stays - a removal takes the key's
     // own lines, not its neighbour's). Everything else kg has is untouched by the whole chain, and
     // 0018 itself left no backup.
-    expect(readFileSync(cfgPath(h), 'utf8')).toBe(crlf(KG_LINES.slice(0, -3)));
+    expect(upTo0024(h)).toBe(crlf(KG_LINES.slice(0, -3)));
     expect(readFileSync(convPath(h), 'utf8')).toBe(KG_CONV);
     expect(readFileSync(agentsPath(h), 'utf8')).toBe(KG_AGENTS);
     expect(baks(h).filter((f) => f.includes('.bak-0018-'))).toEqual([]);
