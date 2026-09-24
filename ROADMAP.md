@@ -226,6 +226,14 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
 
 ## 2. In flight right now
 
+- **2026-09-24 — the sandbox case is closed; the next themes are the SHELL and ADOPTION.**
+  Operator: *"only improvements to the shell might be necessary. and user adoption. egpt does
+  enough for me already."* Every being but the meta engineers runs in the OS box, Bash works in
+  it on both nodes, boxed threads survive the move into it (0026), boxed beings compact again
+  and thin (0.2; meta engineers and acim 0.8, 0028) with a chat notice, and each room carries a
+  `directives/config.readonly.yaml`. Checklist and small open items: continuity 2026-09-24 and
+  the local `HANDOFF.2409.disposable.md`.
+
 - **⚠️ CHAT-LIST PAGINATION — the silent name-resolution failure (found + FIXED 2026-07-25,
   `2f4bd0e`).** `GET /v1/chats` is CURSOR-PAGINATED and `listChats()` read ONE page as if it
   were the whole account. Live evidence off REVE's real account: a page is 25 items plus
