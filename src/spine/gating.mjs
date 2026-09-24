@@ -25,27 +25,32 @@ import { receives, replyAllowed, mayEmitChat, isSilenceReply, isAutoMode, DEFAUL
 
 const _send = (v) => (v === 'always' || v === 'mode') ? v : null;
 
+// The mode an agent takes when its conversation says nothing. PER-AGENT FIRST (operator
+// 2026-07-25: "better to have in config.yaml the configuration per agent on its mode"): an
+// agent may declare its own default as `agents.<name>.mode` in the SAME registry entry that
+// already carries its configuration/handles/relay_channel — that is what lets @don be
+// mention-direct while @e is mention in the very same chat. Keyed lowercase, boot's own
+// convention for that map. Below it (phase 2, operator 2026-08-14: "remove the concept of
+// siblings" — every being's un-configured default gate resolves the SAME way now, no more
+// being === defaultKey branch): the node's dispatch.auto_default_mode (legacy
+// whatsapp.auto_e_default), falling back to DEFAULT_AUTO_MODE ('mention') when that's also
+// unset — which is today's ultimate fallback for every being anyway, so this is a no-op for
+// a node that never configured auto_default_mode.
+//
+// THE MODE A BEING RUNS UNDER, and which tier set it: the conversation's own mode when it names a
+// real one, else that ladder. Exported (operator 2026-09-24) so the room's config.readonly.yaml
+// states the mode decide() uses, and where it came from, without a second copy of this order.
+// `bv` is getBeing's view of the conversation (only `.mode` is read), null for "none".
+export function resolveMode(bv, being, c = {}) {
+  if (isAutoMode(bv?.mode)) return { mode: bv.mode, source: 'conversation' };
+  const own = c.agents?.[String(being ?? '').toLowerCase()]?.mode;
+  if (isAutoMode(own)) return { mode: own, source: 'agent' };
+  const def = c.dispatch?.auto_default_mode ?? c.whatsapp?.auto_e_default;
+  return isAutoMode(def) ? { mode: def, source: 'node' } : { mode: DEFAULT_AUTO_MODE, source: 'default' };
+}
+
 export function createGating({ getConfig = () => ({}), loadState = null, defaultKey = 'e' } = {}) {
   const cfg = () => getConfig() ?? {};
-
-  // The mode an agent takes when its conversation says nothing. PER-AGENT FIRST (operator
-  // 2026-07-25: "better to have in config.yaml the configuration per agent on its mode"): an
-  // agent may declare its own default as `agents.<name>.mode` in the SAME registry entry that
-  // already carries its configuration/handles/relay_channel — that is what lets @don be
-  // mention-direct while @e is mention in the very same chat. Keyed lowercase, boot's own
-  // convention for that map. Below it (phase 2, operator 2026-08-14: "remove the concept of
-  // siblings" — every being's un-configured default gate resolves the SAME way now, no more
-  // being === defaultKey branch): the node's dispatch.auto_default_mode (legacy
-  // whatsapp.auto_e_default), falling back to DEFAULT_AUTO_MODE ('mention') when that's also
-  // unset — which is today's ultimate fallback for every being anyway, so this is a no-op for
-  // a node that never configured auto_default_mode.
-  function defaultMode(being, c) {
-    const own = c.agents?.[String(being ?? '').toLowerCase()]?.mode;
-    if (isAutoMode(own)) return own;
-    const def = c.dispatch?.auto_default_mode ?? c.whatsapp?.auto_e_default;
-    return isAutoMode(def) ? def : DEFAULT_AUTO_MODE;
-  }
-
   async function beingView(being, ev) {
     if (!loadState) return null;
     try { return getBeing(await loadState(), ev.surface, ev.chatId, being); } catch { return null; }
@@ -59,7 +64,7 @@ export function createGating({ getConfig = () => ({}), loadState = null, default
   async function decide(being, ev, mention = ev.mention) {
     const c = cfg();
     const bv = await beingView(being, ev);
-    const mode = isAutoMode(bv?.mode) ? bv.mode : defaultMode(being, c);
+    const { mode } = resolveMode(bv, being, c);
     const paused = !!(c.dispatch?.auto_paused ?? c.whatsapp?.auto_e_paused);
     const allowed = replyAllowed(mode, mention ?? {});
     const mayReply = mayEmitChat({ paused, mode, replyAllowed: allowed, isReaction: ev.kind === 'reaction' });

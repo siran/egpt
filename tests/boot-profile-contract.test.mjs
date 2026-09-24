@@ -298,8 +298,10 @@ describe('GUARD 1 — boot reads the canonical layout (real constants, hermetic 
       expect(await fs.readFile(join(P.directives, file), 'utf8')).toBe(body);
     }
     expect(existsSync(join(P.directives, '00-identity.md'))).toBe(false);
+    // …beside the room's config.readonly.yaml (operator 2026-09-24), which the turn writes there
+    // too: how the beings here are configured (src/spine/being-config-card.mjs), not a layer.
     expect((await fs.readdir(P.directives)).sort())
-      .toEqual(['10-actions.md', '30-pointers.md', '40-rules.md', '50-extra.md']);
+      .toEqual(['10-actions.md', '30-pointers.md', '40-rules.md', '50-extra.md', 'config.readonly.yaml']);
     // …and the OLD folder is not created beside it.
     expect(existsSync(join(HOME, 'conversations', 'whatsapp', SLUG, 'identity.d'))).toBe(false);
   });

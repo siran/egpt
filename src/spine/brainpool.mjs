@@ -31,6 +31,9 @@ import { slugDir, getBeing, recordThread, patchBeing, readIdentityFeed, seedIden
 // CONDITIONAL fallback_handle, exactly as the mention matcher resolves them, so what the card
 // tells an agent it answers to can never drift from what actually wakes it (feedConfig below).
 import { Room } from '../room-core.mjs';
+// The room's ./directives/config.readonly.yaml (operator 2026-09-24) and the mode ladder it states.
+import { renderConfigBlock, writeConfigCard } from './being-config-card.mjs';
+import { resolveMode } from './gating.mjs';
 // WHICH APPROVED TARGET a room's outbox/ is drained to, resolved by the ONE owner of that walk
 // (the boot sweep is the other reader) — see src/room-outbox.mjs. The conversation names a KEY;
 // only config.yaml's `outbox_targets:` map ever holds a path.
@@ -575,11 +578,18 @@ function withOrigin(ev) {
 // leave the being unconfined at BOTH levels and make the level's own name a lie. It is an
 // EXPLICIT REQUEST in precisely the sense the paragraph above defends, so it is platform-blind
 // for the same reason — resolution here, refusal in sandbox-cli-session.mjs.
-export function resolveSandboxed({ accessLevel, conversationValue, agentDefaultValue, platform }) {
-  if (accessLevel === 'sandbox') return true;               // 1. the LEVEL forces the box (2026-09-05)
-  if (conversationValue != null) return conversationValue;  // 2. this being, in THIS conversation (conversations.yaml)
-  if (agentDefaultValue != null) return agentDefaultValue;  // 3. agents.<being>.conversation_defaults.sandboxed (config.yaml)
-  return platform === 'win32';                              // 4. nobody asked → the platform-aware default (2026-09-04)
+export function resolveSandboxed(args) {
+  return resolveSandboxedRung(args).value;
+}
+
+// ...AND WHICH RUNG ANSWERED (operator 2026-09-24, for the room's config.readonly.yaml): the same
+// four rungs, returning the value together with the rung that produced it, so the card can say
+// why a being is boxed without a second copy of the order. resolveSandboxed is this, minus the rung.
+export function resolveSandboxedRung({ accessLevel, conversationValue, agentDefaultValue, platform }) {
+  if (accessLevel === 'sandbox') return { value: true, rung: 'level' };                        // 1. the LEVEL forces the box (2026-09-05)
+  if (conversationValue != null) return { value: conversationValue, rung: 'conversation' };  // 2. this being, in THIS conversation (conversations.yaml)
+  if (agentDefaultValue != null) return { value: agentDefaultValue, rung: 'agent' };         // 3. agents.<being>.conversation_defaults.sandboxed (config.yaml)
+  return { value: platform === 'win32', rung: 'platform' };                                  // 4. nobody asked → the platform-aware default (2026-09-04)
 }
 
 // THE ONE CONTRADICTION those rungs can be handed: `access_level: sandbox` (rung 1, which forces
@@ -609,6 +619,7 @@ export function createBrainPool({
   loadFeed = readIdentityFeed,      // (personality, config) -> the persona's full feed
   labelOf = () => '',               // (being) -> its DISPLAY NAME — THE resolver (boot.mjs labelOf: the agents-registry `name:`, NEVER the map key, c346d8e), the SAME function the sender and the transcript service are handed, so the card stamps the name the chat stamps. Fed to the kickoff as {{agent_name}} (feedConfig below). Default '' — an unwired caller (a test) renders that line AWAY rather than leaking a key into an identity card
   seedLayers = seedIdentityLayers,  // (room, personality, {io}) -> copy the SHARED fed layers into <room>/directives
+  writeCard = writeConfigCard,      // (room, being, block, {io, onLog}) -> <room>/directives/config.readonly.yaml when it changed
   loadAutoLayer = readAutoModeLayer,// () -> the `mode: auto` operator-role instruction layer (appended to an auto conversation's kickoff)
   loadManifest = null,              // () -> e_identity.md fallback (default below)
   afterTurn = null,                 // ({key, sessionId, model, cwd, allowedTools, compaction, outbox, armIdentityRefresh}) — THE post-turn hook (auto-compaction AND the room-outbox drain ride this one, never a second). `armIdentityRefresh` is a CALLBACK the service invokes after a compact that succeeded — see the arming block at the end of turn(); `outbox` is {target:{key,to,unknown}, surface, slug, being, chatId} or null (src/room-outbox.mjs)
@@ -769,10 +780,24 @@ export function createBrainPool({
     if (isSandboxContradiction(accessLevel, convSandboxed)) {
       onLog(`brainpool: ${being} access_level 'sandbox' FORCES the OS sandbox on — this conversation's sandboxed:${JSON.stringify(convSandboxed)} is dead config, not an override (conversations.yaml). Remove it, or set this conversation's access_level to 'all'/'regular' to run unboxed.`);
     }
+    // WHICH RUNG DECIDED THE BOX, and WHICH TIER each two-tier field below came from (operator
+    // 2026-09-24): read by the room's config.readonly.yaml (being-config-card.mjs), so it can say
+    // where a value came from. The same two inputs and the same `conversation ?? agent default ??
+    // built-in` order as the fields themselves: `!= null` is exactly `??`'s fall-through test.
+    const cd = getConfig()?.agents?.[being]?.conversation_defaults ?? {};
+    const box = resolveSandboxedRung({ accessLevel, conversationValue: convSandboxed, agentDefaultValue: cd.sandboxed ?? null, platform });
+    const tierOf = (conv, agent) => (conv != null ? 'conversation' : agent != null ? 'agent' : 'default');
     return {
       scope,
       slug,
       sessionId: b?.threadId ?? null,
+      sources: {
+        accessLevel: tierOf(b?.accessLevel, cd.access_level),
+        allowedUsers: tierOf(b?.allowedUsers, cd.allowed_users),
+        verboseThinking: tierOf(b?.verboseThinking, cd.verbose_thinking),
+        compaction: tierOf(b?.compaction, cd.compaction),
+        outboxTo: tierOf(b?.outboxTo, cd.outbox_to),
+      },
       // `/agents refresh <handle>` armed an identity re-feed on this being's RUNNING thread
       // (getBeing owns what "armed" means — an EXPLICIT null identityInjectedAt, never a
       // merely absent one). Read by turn() below, with sessionId. Joins the SCOPE like
@@ -840,12 +865,8 @@ export function createBrainPool({
       // SANDBOXED — the whole precedence is resolveSandboxed (above), which is the ONE thing that
       // answers this field for every caller. Rungs 2 and 3 are the same two-tier read
       // accessLevel/allowedUsers use above; rung 1 is the level, rung 4 this node's OS.
-      sandboxed: resolveSandboxed({
-        accessLevel,
-        conversationValue: convSandboxed,
-        agentDefaultValue: getConfig()?.agents?.[being]?.conversation_defaults?.sandboxed ?? null,
-        platform,
-      }),
+      sandboxed: box.value,
+      sandboxedRung: box.rung,
       // VERBOSE_THINKING, same two-tier resolution as accessLevel/allowedUsers/sandboxed above
       // (operator 2026-08-30: "verbose thinking should be controlled from config.yaml rather
       // than the agent.yaml"). It shipped the day before as a TYPE-FILE-ONLY field, which made
@@ -922,7 +943,7 @@ export function createBrainPool({
       // derives from it and none from `ev`: thread, warm key, conv dir, run config, transcript
       // roll, thread stats. `ev` still owns what belongs to the MESSAGE — its line, its reply,
       // its own transcript (see resolveConv above).
-      const { scope, slug, sessionId, identityRefreshArmed, mode, accessLevel, allowedUsers, sandboxed, verboseThinking, compaction: compactionOver, outboxTarget, configuration } = await resolveConv(ev, being);
+      const { scope, slug, sessionId, identityRefreshArmed, mode, accessLevel, allowedUsers, sandboxed, sandboxedRung, verboseThinking, compaction: compactionOver, outboxTarget, configuration, sources } = await resolveConv(ev, being);
       if (!slug) throw new Error(`brainpool: no slug for ${scope.surface}/${scope.chatId}`);
 
       // STRUCTURAL SAFETY GATE (operator 2026-08-16; refined 2026-08-20). Refuses the ENTIRE
@@ -1071,6 +1092,20 @@ export function createBrainPool({
       // Room.forChat, not slugDir: seedIdentityLayers is keyed on the Room instance now (a
       // conversation IS a Room), so its own ensureTree/directivesDir resolve off convDir too.
       await seedLayers(Room.forChat(scope.surface, slug), personality, { io, overwrite: fresh });
+      // HOW THIS BEING IS CONFIGURED HERE, beside those layers (operator 2026-09-24): its block in
+      // ./directives/config.readonly.yaml, rendered from the values THIS turn runs with and written
+      // only when it changed — see being-config-card.mjs. Before the spawn, so a fresh thread's
+      // first turn already finds it. Best-effort by contract (writeConfigCard never throws).
+      // `verbose` is the one reading of verbose_thinking, shared with baseOpts below.
+      const verbose = (verboseThinking ?? def.verbose_thinking) === true;
+      await writeCard(Room.forChat(scope.surface, slug), being, renderConfigBlock({
+        being, config: getConfig() ?? {}, scoped: scope.scoped, configuration, def, engine,
+        model: runModel, effort: runEffort, accessLevel, sandboxed, sandboxedRung,
+        mode: resolveMode({ mode }, being, getConfig() ?? {}),
+        verboseThinking: verbose,
+        verboseSource: verboseThinking != null ? sources.verboseThinking : (def.verbose_thinking != null ? 'type' : 'default'),
+        allowedUsers, compaction: compactionOver, sources, outboxTarget, threadId: sessionId,
+      }), { io, onLog });
 
       const key = `${being}:${engine}:${scope.surface}:${slug}`;
       lastKeyByConv.set(`${being}:${ev.surface}:${ev.chatId}`, key);
@@ -1156,7 +1191,7 @@ export function createBrainPool({
         // tier's `true` — the whole point of adding the config.yaml tiers over a type file one
         // conversation can't otherwise escape. The `=== true` keeps a hand-typed non-boolean
         // (`verbose_thinking: "yes"`) from reaching warm-cli-session as anything but a boolean.
-        verboseThinking: (verboseThinking ?? def.verbose_thinking) === true,
+        verboseThinking: verbose,
         // Plain passthrough (operator 2026-08-20) — boot.mjs's makeSession reads this to pick
         // createSandboxCliSession over createBrainSession. No structural gating beyond this:
         // the STRUCTURAL SAFETY GATES above already refuse the whole turn when accessLevel
