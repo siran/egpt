@@ -17,6 +17,18 @@
 // SUCCEEDS calls back into brainpool's `armIdentityRefresh` (handed in on afterTurn) — which is
 // the same explicit-null gesture `/agents refresh` writes, so the re-feed rides the being's next
 // real turn on the same session and there is no second feed path here. See fire() below.
+//
+// SANDBOXED BEINGS ARE COMPACTED HERE TOO (operator 2026-09-24, "go B"). Until that day the size
+// probe looked for a session only in ~/.claude, a boxed being's CLI keeps it in its own store
+// (~/.egpt-jsonl/<threadId>), and so no boxed being was ever due. compact-being's findSessionFile
+// now finds a session BY ID in both roots, and a boxed being compacts at the same ratio, with the
+// same identity re-feed, as any other. Claude Code's NATIVE autocompact stays on underneath as the
+// backstop it already was - measured on kg: 16 native auto compactions, all at 934k-1,000k tokens
+// of a 1M window, i.e. only once the window is essentially full, and never followed by a re-feed.
+// THE FORCED FALLBACK, should this path ever fail, is to move that native trigger earlier with
+// CLAUDE_AUTOCOMPACT_PCT_OVERRIDE (read in the claude.exe bundle, which calls it a TEST override -
+// measure it before relying on it; it would still not re-feed the identity).
+// THIS DECISION CAN BE REVISITED.
 import { dueForCompaction, windowForModel, criticallyOver } from '../tools/compact-being.mjs';
 
 const DEFAULT_COOLING_MS = 120_000;   // 2 min of quiet after the last reply
