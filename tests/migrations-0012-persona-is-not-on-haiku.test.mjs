@@ -223,31 +223,20 @@ describe('0012 through the runner', () => {
   // so 0007 reads nothing as this node's own (as tests/migrations-0011-*).
   const ctx = { ps: () => JSON.stringify({ map: [], services: [], from: { exists: false }, to: { exists: false } }), localAddresses: new Set() };
   const dir = join(import.meta.dirname, '..', 'migrations');
-  // 0025 runs LAST in this chain and states an `access_level:` on every being that declares none,
-  // so the live config.yaml is no longer the end state THIS migration is about. Its BACKUP is:
-  // ctx.backup copies the file the instant before 0025 writes it, which is exactly what the chain
-  // up to 0024 left behind - so the byte-for-byte assertions below are unchanged.
-  const upTo0024 = (h) => {
-    const d = join(h, 'config');
-    return readFileSync(join(d, readdirSync(d).find((f) => f.startsWith('config.yaml.bak-0025-'))), 'utf8');
-  };
   const ledger = (h) => JSON.parse(readFileSync(join(h, 'state', 'migrations-applied.json'), 'utf8'))['0012-persona-is-not-on-haiku'].outcome;
 
   it('do: applied and recorded, only that one line changed, a backup left beside the config', async () => {
     const h = home();
-    const { exitCode } = await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0012', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(ledger(h)).toBe('applied');
-    // 0018 keys do's persona by its handle (`don`), 0020 hands it `rodz` and 0025 gives it the box
-    // its `sandboxed: false` said it had no pool for - all later in the chain, all landing on top of
-    // 0012's own one-line edit.
-    expect(upTo0024(h)).toBe(DO_AFTER.replace('  egpt:', '  don:').replace('[ d, don ]', '[ d, don, rodz ]'));
+    expect(readFileSync(cfgPath(h), 'utf8')).toBe(DO_AFTER);
     expect(readdirSync(join(h, 'config')).filter((f) => f.startsWith('config.yaml.bak-0012-'))).toHaveLength(1);
   });
 
   it('kg: recorded as already satisfied, nothing touched, no backup', async () => {
     const h = home({ config: KG });
-    const { exitCode } = await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0012', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(ledger(h)).toBe('already-satisfied');
     expect(readFileSync(cfgPath(h), 'utf8')).toBe(KG);

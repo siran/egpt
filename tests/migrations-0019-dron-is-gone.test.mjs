@@ -332,7 +332,7 @@ describe('0019 through the runner', () => {
 
   it('do: applied and recorded; the block, the record and the identity are gone, each backed up', async () => {
     const h = home();
-    const { exitCode } = await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0019', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(ledgerOf(h)['0019-dron-is-gone'].outcome).toBe('applied');
     const out = readFileSync(cfgPath(h), 'utf8');
@@ -348,7 +348,7 @@ describe('0019 through the runner', () => {
 
   it('kg: recorded as already satisfied, nothing touched, no backup of anything 0019 owns', async () => {
     const h = home({ config: KG, conversations: null, identity: null });
-    const { exitCode } = await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0019', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(ledgerOf(h)['0019-dron-is-gone'].outcome).toBe('already-satisfied');
     expect(readdirSync(join(h, 'config')).filter((f) => f.includes('.bak-0019-'))).toEqual([]);
@@ -356,7 +356,7 @@ describe('0019 through the runner', () => {
 
   it('EVERY earlier migration reads satisfied on both fixtures - one that acted would invalidate these', async () => {
     for (const h of [home(), home({ config: KG, conversations: null, identity: null })]) {
-      await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+      await runMigrations({ through: '0019', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
       const earlier = Object.entries(ledgerOf(h)).filter(([id]) => id < '0019');
       expect(earlier.length).toBeGreaterThanOrEqual(17);
       expect(earlier.filter(([, e]) => e.outcome !== 'already-satisfied')).toEqual([]);

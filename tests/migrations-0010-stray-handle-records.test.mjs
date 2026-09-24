@@ -201,7 +201,7 @@ describe('0010 through the runner', () => {
 
   it('kg: 0010 applies, is recorded, removes only the stray lines, and leaves a backup', async () => {
     const h = home({ rooms: ROOMS, conversations: CONVERSATIONS });
-    const { exitCode } = await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0010', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     const ledger = JSON.parse(readFileSync(join(h, 'state', 'migrations-applied.json'), 'utf8'));
     expect(ledger['0010-stray-handle-records'].outcome).toBe('applied');
@@ -211,7 +211,7 @@ describe('0010 through the runner', () => {
 
   it('do: recorded as already satisfied, nothing touched, no backup', async () => {
     const h = home({ config: DO_CONFIG });
-    const { exitCode } = await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0010', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     const ledger = JSON.parse(readFileSync(join(h, 'state', 'migrations-applied.json'), 'utf8'));
     expect(ledger['0010-stray-handle-records'].outcome).toBe('already-satisfied');

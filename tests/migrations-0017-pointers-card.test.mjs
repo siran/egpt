@@ -174,7 +174,7 @@ describe('0017 through the runner', () => {
 
   it('kg: applied and recorded, both lines named, a backup beside the card', async () => {
     const h = home();
-    const { exitCode } = await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0017', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(ledger(h)).toBe('applied');
     expect(readFileSync(cardPath(h), 'utf8')).toBe(AFTER);
@@ -183,7 +183,7 @@ describe('0017 through the runner', () => {
 
   it('a node whose card already names both: recorded as already satisfied, nothing touched', async () => {
     const h = home({ card: AFTER });
-    const { exitCode } = await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0017', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(ledger(h)).toBe('already-satisfied');
     expect(readFileSync(cardPath(h), 'utf8')).toBe(AFTER);
@@ -194,7 +194,7 @@ describe('0017 through the runner', () => {
     const repoCard = join(import.meta.dirname, '..', 'config', 'skeletons', 'room', '30-pointers.md');
     const before = readFileSync(repoCard);
     const h = home();
-    await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    await runMigrations({ through: '0017', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(readFileSync(repoCard).equals(before)).toBe(true);
     rmSync(h, { recursive: true, force: true });
   });

@@ -272,25 +272,16 @@ describe('0016 through the runner', () => {
 
   it('do: applied and recorded, both edits made, a backup beside config.yaml', async () => {
     const h = home();
-    const { exitCode } = await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0016', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(ledger(h)).toBe('applied');
-    // Three later migrations act on this fixture. 0018 keys the persona by its handle (`don`);
-    // `rodz` answers to `dron`, not one of 0018's three handles, so it keeps its key just long
-    // enough for 0019 to REMOVE it entirely ("dron needs not to exist"); then 0020 hands the persona
-    // the `rodz` handle. So at the end of the chain the promoted block is gone with its being, and
-    // what remains of 0016 is the ledger entry and the backup 0019 took.
-    expect(readFileSync(cfgPath(h), 'utf8')).toBe(crlf(DO_LINES.slice(0, 12)).replace('  egpt:', '  don:').replace('[ d, don ]', '[ d, don, rodz ]'));
-    // 0019's backup is the file as 0018 left it - which is 0016's two edits plus that one key
-    // rename, and the only place either of 0016's edits is still observable after the chain.
-    const bak0019 = readdirSync(join(h, 'config')).find((f) => f.startsWith('config.yaml.bak-0019-'));
-    expect(readFileSync(join(h, 'config', bak0019), 'utf8')).toBe(DO_AFTER.replace('  egpt:', '  don:'));
+    expect(readFileSync(cfgPath(h), 'utf8')).toBe(DO_AFTER);
     expect(readdirSync(join(h, 'config')).filter((f) => f.startsWith('config.yaml.bak-0016-'))).toHaveLength(1);
   });
 
   it('kg: recorded as already satisfied, nothing touched, no backup', async () => {
     const h = home({ config: KG });
-    const { exitCode } = await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0016', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(ledger(h)).toBe('already-satisfied');
     expect(readFileSync(cfgPath(h), 'utf8')).toBe(KG);

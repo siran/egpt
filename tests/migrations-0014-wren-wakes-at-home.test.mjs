@@ -336,7 +336,7 @@ describe('0014 through the runner', () => {
 
   it('kg: applied and recorded, the one line moved, the rules named, a backup beside each file', async () => {
     const h = home();
-    const { exitCode } = await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0014', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(ledger(h)).toBe('applied');
     expect(readFileSync(typePath(h, 'wren'), 'utf8')).toBe(typeAfter(h));
@@ -347,7 +347,7 @@ describe('0014 through the runner', () => {
 
   it('do: recorded as already satisfied, nothing touched, no backup', async () => {
     const h = home({ config: DO });
-    const { exitCode } = await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0014', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(ledger(h)).toBe('already-satisfied');
     expect(readFileSync(typePath(h, 'wren'), 'utf8')).toBe(WREN_TYPE);

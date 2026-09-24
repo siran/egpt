@@ -188,7 +188,7 @@ describe('0013 through the runner', () => {
 
   it('kg: applied and recorded, only those four lines changed, a backup left beside the config', async () => {
     const h = home();
-    const { exitCode } = await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0013', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(ledger(h)).toBe('applied');
     expect(readFileSync(cfgPath(h), 'utf8')).toBe(KG_AFTER);
@@ -197,7 +197,7 @@ describe('0013 through the runner', () => {
 
   it('a node whose classes already idle out: recorded as already satisfied, nothing touched, no backup', async () => {
     const h = home({ config: KG_AFTER });
-    const { exitCode } = await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0013', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(ledger(h)).toBe('already-satisfied');
     expect(readFileSync(cfgPath(h), 'utf8')).toBe(KG_AFTER);

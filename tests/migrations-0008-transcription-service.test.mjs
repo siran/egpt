@@ -184,7 +184,7 @@ describe('0008 through the runner', () => {
 
   it('kg: 0008 applies, is recorded, and changes only the enabled line', async () => {
     const h = home(KG);
-    const { exitCode } = await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0008', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     const ledger = JSON.parse(readFileSync(join(h, 'state', 'migrations-applied.json'), 'utf8'));
     expect(ledger['0008-transcription-service-is-on'].outcome).toBe('applied');
@@ -194,7 +194,7 @@ describe('0008 through the runner', () => {
 
   it('do: recorded as already satisfied, file untouched, no backup', async () => {
     const h = home(DO);
-    const { exitCode } = await runMigrations({ dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0008', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     const ledger = JSON.parse(readFileSync(join(h, 'state', 'migrations-applied.json'), 'utf8'));
     expect(ledger['0008-transcription-service-is-on'].outcome).toBe('already-satisfied');
