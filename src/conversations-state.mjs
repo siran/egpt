@@ -714,11 +714,15 @@ export function reverseSanitizeCwd(projectDir, candidateCwds = []) {
 }
 
 // Scan ~/.claude/projects/*/<threadId>.jsonl. Returns { projectDir, cwd }
-// or null when not found anywhere.
+// or null when not found anywhere. BY ID, never by the folder name (operator
+// 2026-09-24): the folder is named after the cwd, the cwd is the Room, and the
+// Room carries the group's name, which changes; the id does not. `projectsRoot`
+// points the same scan at another CLI root - a boxed thread's own store,
+// ~/.egpt-jsonl/<threadId>/projects (migration 0026) - or at a test fixture.
 import { readdirSync as _readdirSync, existsSync as _existsSync } from 'node:fs';
-export function findThreadJsonl(threadId, candidateCwds = []) {
+export function findThreadJsonl(threadId, candidateCwds = [], { projectsRoot = null } = {}) {
   if (!threadId) return null;
-  const projects = join(homedir(), '.claude', 'projects');
+  const projects = projectsRoot ?? join(homedir(), '.claude', 'projects');
   if (!_existsSync(projects)) return null;
   let entries;
   try { entries = _readdirSync(projects); } catch (e) { console.error(`!! findThreadJsonl readdir(${projects}): ${e?.message ?? e}`); return null; }
