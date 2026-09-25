@@ -47,7 +47,8 @@
 // EMIT SYNTAX (documented for E in config/skeletons/room/10-actions.md — a SPINE
 // CONTRACT that feeds EVERY being independent of identity, operator 2026-07-06):
 //   /react #<id> <emoji>       react to message #<id>
-//   /reply #<id> <text>        quote-reply to message #<id>
+//   /reply #<id> <text>        quote-reply to message #<id>; its text runs on over the lines
+//                              below it, to the next action line or the end (2026-09-25)
 //   /media <path> [caption]    send a file from this conversation's folder (relative path)
 //   /edit #<id> <text>         edit one of your OWN earlier messages
 //   /ask <question>            (mode: auto) consult the operator in the advice channel
@@ -213,9 +214,9 @@ function parseOne(verb, args, ev, opts = {}) {
   }
 }
 
-// The welded action inside ONE line: { head (the prose before it), r (the parseOne verdict) },
-// or null when the line carries none. Only a WELL-FORMED (or demoting) tail splits the line —
-// see the anti-accident note in parseReplyActions.
+// The welded action inside ONE line: { head (the prose before it), verb, args, r (the parseOne
+// verdict on the line's own tail) }, or null when the line carries none. Only a WELL-FORMED (or
+// demoting) tail splits the line — see the anti-accident note in parseReplyActions.
 function weldedAction(line, ev, opts) {
   const s = String(line ?? '');
   for (const i of weldStarts(s)) {
@@ -227,7 +228,7 @@ function weldedAction(line, ev, opts) {
     // here: inside a sentence a half-shaped command is indistinguishable from prose about one, so
     // the line stays whole (parseReplyActions' note below). Only a well-formed tail — or the
     // redundancy demote, which is not malformed — splits it.
-    return (r.ok || (r.demote != null && r.reason == null)) ? { head: s.slice(0, i), r } : null;
+    return (r.ok || (r.demote != null && r.reason == null)) ? { head: s.slice(0, i), verb, args: m[2] ?? '', r } : null;
   }
   return null;
 }
@@ -246,34 +247,59 @@ export function parseReplyActions(text, ev = {}, opts = {}) {
   const proseLines = [];
   const run = [];
   const stripped = [];
+  // DEMOTE (a redundant /reply, or a malformed one): the action is dropped but its TEXT is
+  // content — it becomes prose VERBATIM, never re-parsed, so an action-shaped payload can't
+  // smuggle a live limb. A verdict may carry BOTH: a malformed limb demotes its words AND is
+  // still logged as the malformed limb it is.
+  const settle = (r, raw) => {
+    if (r.ok) run.push(r.action);
+    else {
+      if (r.demote != null) proseLines.push(r.demote);
+      if (r.reason) stripped.push({ raw, reason: r.reason });
+    }
+  };
+  // A /REPLY'S TEXT RUNS ON (operator 2026-09-25). King Ken's quote-replies arrived as one flat
+  // paragraph with "1) ... 2) ... 3)" inline: the text was the rest of ONE line, so a quote-reply
+  // could never carry a line break, while the same beings' plain messages kept their paragraphs.
+  // So a /reply stays OPEN over the lines below it, blank ones included, and is parsed ONCE, whole,
+  // when the next action starts (a whole line or a weld) or the message ends. That is the ONE rule
+  // for which lines belong to an action; partialProse streams through this same parse, so the live
+  // message hides the continuation exactly as the delivered one does. /edit and the rest keep their
+  // one-line form: the operator asked for quote-replies, and a multi-line /edit would swallow the
+  // prose after it, changing what a being's edits have meant since 2026-07.
+  let open = null;   // the /reply still collecting: { raw: [lines], args: [its text, line by line] }
+  const close = () => {
+    if (!open) return;
+    const o = open; open = null;
+    settle(parseOne('reply', o.args.join('\n'), ev, opts), o.raw.join('\n').trim());
+  };
   for (const line of String(text ?? '').split('\n')) {
     // The historical rule first: the WHOLE line is the action.
     const m = ACTION_LINE.exec(line.trim());
     const verb = m ? m[1].toLowerCase() : null;
     if (verb && ACTION_VERBS.has(verb)) {
-      const r = parseOne(verb, m[2] ?? '', ev, opts);
-      // DEMOTE (a redundant /reply, or a malformed one): the action is dropped but its TEXT is
-      // content — it becomes prose VERBATIM, never re-parsed, so an action-shaped payload can't
-      // smuggle a live limb. A verdict may carry BOTH: a malformed limb demotes its words AND is
-      // still logged as the malformed limb it is.
-      if (r.ok) run.push(r.action);
-      else {
-        if (r.demote != null) proseLines.push(r.demote);
-        if (r.reason) stripped.push({ raw: line.trim(), reason: r.reason });
-      }
+      close();
+      if (verb === 'reply') { open = { raw: [line.trim()], args: [m[2] ?? ''] }; continue; }
+      settle(parseOne(verb, m[2] ?? '', ev, opts), line.trim());
       continue;
     }
     // ...then the LOST NEWLINE (weldStarts). RESTORING it is the whole treatment: the sentence
-    // becomes its own prose line and the command becomes the line it was always meant to be, so
-    // ONE code path decides prose/run/demote for both shapes and the stream cannot disagree with
-    // the delivered text. A welded fragment that is MALFORMED is left ALONE — the line stays
-    // prose, whole, exactly as before — because a half-shaped command is indistinguishable from
-    // prose about one, and executing on a guess is the accident this module exists to prevent.
+    // becomes its own line and the command becomes the line it was always meant to be, so ONE code
+    // path decides prose/run/demote for both shapes and the stream cannot disagree with the
+    // delivered text. A welded fragment that is MALFORMED is left ALONE — the line stays whole,
+    // exactly as before — because a half-shaped command is indistinguishable from prose about one,
+    // and executing on a guess is the accident this module exists to prevent.
     const w = weldedAction(line, ev, opts);
-    if (!w) { proseLines.push(line); continue; }
-    proseLines.push(w.head);
-    if (w.r.ok) run.push(w.r.action); else proseLines.push(w.r.demote);
+    if (!w) {
+      if (open) { open.raw.push(line); open.args.push(line); } else proseLines.push(line);
+      continue;
+    }
+    // The sentence before the weld belongs to whatever it was part of: an open /reply's text, or prose.
+    if (open) { open.raw.push(w.head); open.args.push(w.head); close(); } else proseLines.push(w.head);
+    if (w.verb === 'reply') { open = { raw: [line.slice(w.head.length).trim()], args: [w.args] }; continue; }
+    settle(w.r, line.slice(w.head.length).trim());
   }
+  close();
   // Collapse the blank lines a removed action leaves behind; trim the ends.
   const prose = proseLines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
   return { prose, run, stripped };
@@ -347,7 +373,20 @@ export function partialProse(partial, ev = {}, opts = {}) {
     const frag = tail.slice(i);
     if (couldBecomeAction(frag) && !isDemotingReply(frag, opts)) { hold = i; break; }
   }
-  return parseReplyActions(hold < 0 ? s : s.slice(0, cut + 1 + hold), ev, opts).prose;
+  let upTo = hold < 0 ? s.length : cut + 1 + hold;
+  // A /REPLY THAT SO FAR NAMES ONLY ITS TARGET ('/reply #5', then nothing but blank lines) is still
+  // being written: its text may start on the line below (2026-09-25), so the parse would call it
+  // malformed and demote '#5' to prose for a frame, and the next line would make it a real
+  // quote-reply and SHRINK the frame — on an append-only message the '#5' would stay shown. So the
+  // unfinished reply is withheld until its text begins.
+  const lines = s.slice(0, upTo).split('\n');
+  let k = lines.length - 1;
+  while (k > 0 && !lines[k].trim()) k--;
+  const last = ACTION_LINE.exec(lines[k].trim());
+  if (last && last[1].toLowerCase() === 'reply' && ID_RE.test(String(last[2] ?? '').trim())) {
+    upTo = lines.slice(0, k).join('\n').length + (k > 0 ? 1 : 0);
+  }
+  return parseReplyActions(s.slice(0, upTo), ev, opts).prose;
 }
 
 /**
