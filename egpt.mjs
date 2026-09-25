@@ -20,6 +20,7 @@ import { shellPortFrom } from './src/bridges/shell-port.mjs';
 import { readConfigSync } from './src/tools/config-io.mjs';
 import { listThemes } from './src/tools/theme.mjs';
 import { runApp } from './src/shell/app.mjs';
+import { historyFileOf, loadHistory, recordHistory } from './src/shell/history-file.mjs';
 
 // defaultPort is the port THIS NODE serves (config `shell.port`), not the module default:
 // on a node running two spines the editor would otherwise dial the wrong one and hang on an
@@ -65,4 +66,9 @@ link.start();
 const themes = await listThemes();
 const initialTheme = themes.includes(args.theme) ? args.theme : (themes.includes('catppuccin') ? 'catppuccin' : themes[0]);
 
-runApp({ link, themes, initialTheme, port: args.port, onError: (fn) => errorListeners.push(fn) });
+// ↑ reaches past sessions: the last entries of <EGPT_HOME>/state/shell-history.jsonl seed the
+// composer's history, and every send is appended there (src/shell/history-file.mjs).
+const historyFile = historyFileOf();
+const history = { entries: loadHistory(historyFile), record: (t) => recordHistory(historyFile, t) };
+
+runApp({ link, themes, initialTheme, port: args.port, onError: (fn) => errorListeners.push(fn), history });

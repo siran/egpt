@@ -15,6 +15,15 @@
 // Fresh empty history buffer.
 export function empty() { return { entries: [], cursor: null, draft: '' }; }
 
+// A buffer holding a previous session's entries (history-file.mjs loads them), oldest first. A
+// run of identical consecutive entries is kept once, shell-style, so sending the same line again
+// and again does not fill the ↑ walk with copies. Non-strings are dropped.
+export function fromEntries(entries) {
+  const kept = [];
+  for (const e of entries ?? []) if (typeof e === 'string' && e !== kept[kept.length - 1]) kept.push(e);
+  return { entries: kept, cursor: null, draft: '' };
+}
+
 // Record a submitted line. Ends any in-progress navigation.
 export function push(state, line) {
   return { entries: [...state.entries, line], cursor: null, draft: '' };
