@@ -103,18 +103,22 @@ function stateFromText(t) {
 // the cursor within a multi-line draft as before; only at the top/bottom row boundary —
 // where edit.up/edit.down are a no-op (same object back, checked by reference) — do they
 // fall through to history.mjs's ↑/↓ recall.
-function MultiLineInput({ onSubmit }) {
+// `history` ({ entries, record }, from egpt.mjs via history-file.mjs) carries ↑ across sessions:
+// the buffer starts from the previous sessions' entries and every send is recorded to disk.
+function MultiLineInput({ onSubmit, history }) {
   const [st, setSt] = useState(edit.empty());
-  const [hbuf, setHbuf] = useState(hist.empty());
+  const [hbuf, setHbuf] = useState(() => hist.fromEntries(history?.entries));
   useInput((input, key) => {
     if (key.ctrl && input === 'd') {
       const t = edit.text(st);
-      if (t.trim()) { onSubmit(t); setHbuf(hist.push(hbuf, t)); }
+      if (t.trim()) { onSubmit(t); setHbuf(hist.push(hbuf, t)); history?.record?.(t); }
       setSt(edit.empty());
       return;
     }
     if (key.return) return setSt(edit.newline(st));
     if (key.backspace || key.delete) return setSt(edit.backspace(st));
+    if (key.leftArrow && (key.ctrl || key.meta)) return setSt(edit.wordLeft(st));
+    if (key.rightArrow && (key.ctrl || key.meta)) return setSt(edit.wordRight(st));
     if (key.leftArrow) return setSt(edit.left(st));
     if (key.rightArrow) return setSt(edit.right(st));
     if (key.upArrow) {
@@ -149,7 +153,7 @@ function MultiLineInput({ onSubmit }) {
     }));
 }
 
-function App({ link, themes, initialTheme, onError }) {
+function App({ link, themes, initialTheme, onError, history }) {
   const { exit } = useApp();
   const [items, setItems] = useState([]);
   const [live, setLive] = useState(null);   // the in-progress streaming line: { text } or null
@@ -222,11 +226,11 @@ function App({ link, themes, initialTheme, onError }) {
     h(Static, { items: withDaySeparators(items) }, (it) => renderItem(T, it)),
     h(Box, { flexDirection: 'column', marginTop: 1 },
       live ? renderLive(T, live) : null,
-      h(MultiLineInput, { onSubmit: submit })));
+      h(MultiLineInput, { onSubmit: submit, history })));
 }
 
 // v1 rendered Ink with NO JSX and exitOnCtrlC:false so its own Ctrl+C handler ran; we mirror
 // both. Returns the Ink instance (has .waitUntilExit()).
-export function runApp({ link, themes, initialTheme = 'catppuccin', onError }) {
-  return render(h(App, { link, themes, initialTheme, onError }), { exitOnCtrlC: false });
+export function runApp({ link, themes, initialTheme = 'catppuccin', onError, history }) {
+  return render(h(App, { link, themes, initialTheme, onError, history }), { exitOnCtrlC: false });
 }

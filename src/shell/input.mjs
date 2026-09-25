@@ -73,6 +73,34 @@ export function right(state) {
   if (row < lines.length - 1) return { lines, row: row + 1, col: 0 };
   return state;
 }
+// Ctrl+← / Ctrl+→ (Alt on some terminals) — jump by word, readline-style: ← lands on the start of
+// the word the cursor is in, or the previous one; → on the end of the word it is in, or the next
+// one. A word is a run of non-whitespace and a line break counts as whitespace, so the jump wraps
+// across lines as left/right do. At the very start (←) or end (→) the same state comes back.
+const _flat = (lines, row, col) => lines.slice(0, row).reduce((n, l) => n + l.length + 1, 0) + col;
+function _at(lines, pos) {
+  let row = 0;
+  while (row < lines.length - 1 && pos > lines[row].length) { pos -= lines[row].length + 1; row++; }
+  return { row, col: pos };
+}
+export function wordLeft(state) {
+  const { lines, row, col } = state;
+  const text = lines.join('\n');
+  let p = _flat(lines, row, col);
+  if (p === 0) return state;
+  while (p > 0 && /\s/.test(text[p - 1])) p--;
+  while (p > 0 && !/\s/.test(text[p - 1])) p--;
+  return { lines, ..._at(lines, p) };
+}
+export function wordRight(state) {
+  const { lines, row, col } = state;
+  const text = lines.join('\n');
+  let p = _flat(lines, row, col);
+  if (p === text.length) return state;
+  while (p < text.length && /\s/.test(text[p])) p++;
+  while (p < text.length && !/\s/.test(text[p])) p++;
+  return { lines, ..._at(lines, p) };
+}
 export function up(state) {
   const { lines, row, col } = state;
   if (row > 0) { const r = row - 1; return { lines, row: r, col: Math.min(col, lines[r].length) }; }
