@@ -231,6 +231,11 @@ export function streamFromTab({
   pollScript,
   onUpdate,
   timeoutMs = 180000,
+  // A reply visibly under way - its message is on the page - with no text yet is a model still
+  // reasoning (kg, 2026-09-24: a reasoning phase can outlast timeoutMs). Its wait is extended,
+  // timeoutMs at a time, up to this cap instead of failing at timeoutMs; a send that never
+  // produced a message still fails at timeoutMs, exactly as before.
+  reasoningCapMs = 900000,
 }) {
   return new Promise(async (resolve, reject) => {
     let tab;
@@ -332,10 +337,15 @@ export function streamFromTab({
           }
         }, 250);
 
-        timeoutHandle = setTimeout(() => {
-          if (lastText) done(lastText);
-          else fail(new Error(`Timed out waiting for response (${timeoutMs}ms)`));
-        }, timeoutMs);
+        const onTimeout = () => {
+          if (lastText) return done(lastText);
+          const left = reasoningCapMs - (Date.now() - pollStartMs);
+          if (sawNew && left > 0) { timeoutHandle = setTimeout(onTimeout, Math.min(timeoutMs, left)); return; }
+          fail(new Error(sawNew
+            ? `Timed out waiting for response: the reply was still reasoning after ${Math.round((Date.now() - pollStartMs) / 1000)}s`
+            : `Timed out waiting for response (${timeoutMs}ms)`));
+        };
+        timeoutHandle = setTimeout(onTimeout, timeoutMs);
       } catch (e) {
         fail(e);
       }
