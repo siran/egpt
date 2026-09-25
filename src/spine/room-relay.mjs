@@ -254,7 +254,11 @@ export function createRoomRelay({
             targetId: m.targetId,
             injectScript: adapter.injectScript(text),
             pollScript: adapter.pollScript,
+            // The reply's source through the page's own copy action, when the adapter has one
+            // (chatgpt-cdp); the relay posts it verbatim. Absent (claude-cdp), the rendered text.
+            copyScript: adapter.copyScript ?? null,
             onUpdate: (p) => { try { out.update(p); } catch {} },
+            onLog: (msg) => onLog(`relay '${m.id}': ${msg}`),
           });
         } catch (e) { onLog(`relay '${m.id}': ${e?.message ?? e}`); try { await out.fail?.(e); } catch {} continue; }
         const finalText = String(reply ?? '').trim();

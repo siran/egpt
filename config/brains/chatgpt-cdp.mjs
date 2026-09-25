@@ -29,8 +29,12 @@ export const pollScript = `
     document.querySelector('.result-streaming');
   const streaming = !!stopBtn || !!flag;
   const msgs = document.querySelectorAll('[data-message-author-role="assistant"]');
+  // EVERY assistant id on the page, not just the last one's (kg, 2026-09-25, room tpoef):
+  // streamFromTab records them before the send and never takes text from any of them, so a
+  // moment in which the previous answer is last again cannot hand its text in as the reply.
+  const ids = Array.from(msgs, (m) => m.getAttribute('data-message-id')).filter(Boolean);
   const last = msgs[msgs.length - 1];
-  if (!last) return { id: null, text: '', streaming };
+  if (!last) return { id: null, ids, text: '', streaming };
   // THE REPLY IS ITS BODY (kg, 2026-09-24, room tpoef). A reasoning model's message is on the
   // page before it has one, and its only text then is a status line ("Thinking" - localized,
   // so this keys on structure, never on the word). Read whole, that line was taken for the
@@ -44,11 +48,59 @@ export const pollScript = `
   const finished = !streaming && !!turn.querySelector('[data-testid="copy-turn-action-button"]');
   return {
     id: last.getAttribute('data-message-id'),
+    ids,
     text: body ? (body.innerText || '') : (finished ? (last.innerText || '') : ''),
     streaming
   };
 })()
 `;
+
+// THE REPLY, VERBATIM, THROUGH ITS OWN COPY (operator 2026-09-25: "chatgpt is rendering html at
+// times, or ascii, or latex, you should copy back verbatim"). The page holds only the rendering -
+// KaTeX leaves "n(ω)", no TeX annotation - but the turn's Copy action writes the source to the
+// clipboard (measured on the live tab: navigator.clipboard.write, text/plain "\\(n(\\omega)\\)").
+// So streamFromTab, once a reply is done, runs this against that reply's id: the page's clipboard
+// writes are caught in a variable for the length of one click - the OS clipboard is never
+// written - and put back in a finally. Resolves { text } or { text: null, error } for the log.
+export function copyScript(messageId) {
+  return `
+(async () => {
+  const id = ${JSON.stringify(messageId)};
+  const el = Array.from(document.querySelectorAll('[data-message-author-role="assistant"]'))
+    .find((m) => m.getAttribute('data-message-id') === id);
+  if (!el) return { text: null, error: 'the reply is not on the page' };
+  const turn = el.closest('article, [data-testid^="conversation-turn"]');
+  const btn = turn && turn.querySelector('[data-testid="copy-turn-action-button"]');
+  if (!btn) return { text: null, error: 'the reply has no copy button' };
+  const cb = navigator.clipboard;
+  if (!cb) return { text: null, error: 'the page has no clipboard API' };
+  const own = (k) => Object.prototype.hasOwnProperty.call(cb, k);
+  const saved = { write: [own('write'), cb.write], writeText: [own('writeText'), cb.writeText] };
+  let copied = null;
+  let wrote;
+  const written = new Promise((r) => { wrote = r; });
+  cb.writeText = async (t) => { copied = String(t); wrote(); };
+  cb.write = async (items) => {
+    try {
+      for (const it of items) {
+        if (!it.types || !it.types.includes('text/plain')) continue;
+        copied = await (await it.getType('text/plain')).text();
+        break;
+      }
+    } finally { wrote(); }
+  };
+  try {
+    btn.click();
+    await Promise.race([written, new Promise((r) => setTimeout(r, 1500))]);
+  } finally {
+    for (const k of ['write', 'writeText']) {
+      if (saved[k][0]) cb[k] = saved[k][1]; else delete cb[k];
+    }
+  }
+  return copied ? { text: copied } : { text: null, error: 'the copy wrote nothing' };
+})()
+`;
+}
 
 export function injectScript(message, ask = null) {
   return `
@@ -165,7 +217,9 @@ export function stream({ message, ask = null }, onUpdate, options = {}) {
     targetId: options.targetId,
     injectScript: injectScript(message, ask),
     pollScript,
+    copyScript,
     onUpdate,
+    onLog: options.onLog,
   });
 }
 
