@@ -118,6 +118,22 @@
 // gating.mjs, so a `mode: mention` being runs it without that also making the being answer
 // un-addressed messages.
 //
+// A BEING'S OWN BEATS: <entity>/heartbeats/<name>.yaml (operator 2026-09-25: "please add the
+// possibility for beings to write their own heartbeat … maybe a heartbeats/ with the different yaml
+// files"). One file = one beat, named after the file, its body one entry in the shape above. The
+// resolver reads them in its walk and hands them over in the entity's union, marked `beingWritten`;
+// a file never takes a name the operator's rungs already declare. THE ONE RULE: A FILE A BEING CAN
+// WRITE MAY SCHEDULE A TURN, NEVER A COMMAND. The folder is the conversation's, where
+// setup/sandbox-logon-launcher.ps1 grants the leased pool account Modify, and a command beat runs
+// HERE, in the spine, as the operator, outside every sandbox. So `command:`, the `post:` that rides
+// one, and ANY `script_path:` are refused by name; only `agent:` + `prompt:` passes, and runs as that
+// being, inside the box it already has. `script_path:` goes even beside `agent:`: the spine READS
+// that script as the operator and feeds it into the turn, so a being naming `../` or an absolute
+// path would get any file the operator can read (the card says turns are `agent: + prompt:`). The turn
+// carries `beingWritten` to brainpool.turn, which refuses it for an access_level 'all' being: a
+// scheduled turn has no sender, so allowed_users — what makes an 'all' being safe to reach — never
+// sees it. The operator's rungs (config.yaml, conversations.yaml, rooms.yaml) are untouched.
+//
 // THE WALK IS NOT HERE ANY MORE (2026-07-26). Reading the node config + every
 // conversation folder + every room folder is ONE walk serving FOUR concerns
 // (heartbeats, warm, transcription, members), so it moved to the config RESOLVER
@@ -374,10 +390,16 @@ const _INVALID_ACTION = Symbol('invalid-action');
 // header). Mutually exclusive. `alive` with no explicit action falls back to aliveCommand.
 // `ns` is the entity namespace (`<surface>/<slug>`), absent for a node-level entry; `agents`
 // is config.yaml's `agents:` map, the ONE registry an `agent:` value must be a WAKE TOKEN of.
-function _resolveAction({ name, raw, isAlive, aliveCommand, cwd, aliveCwd, ns, agents = {}, onLog }) {
+function _resolveAction({ name, raw, isAlive, aliveCommand, cwd, aliveCwd, ns, agents = {}, source, beingWritten, onLog }) {
   const hasCommand = typeof raw?.command === 'string' && raw.command.trim();
   const hasScriptPath = typeof raw?.script_path === 'string' && raw.script_path.trim();
   const hasAgent = typeof raw?.agent === 'string' && raw.agent.trim();
+  // A FILE A BEING CAN WRITE SCHEDULES A TURN, NEVER A COMMAND (2026-09-25) — see the header. The
+  // three ways to run a process here are refused by name, whatever else the entry says.
+  if (beingWritten) {
+    const refused = [raw.command != null && 'command:', raw.post != null && 'post:', raw.script_path != null && 'script_path:'].filter(Boolean);
+    if (refused.length) { onLog(`${name}: ${refused.join(' + ')} refused — ${source} is a file a being can write, so it may schedule a TURN (agent: + prompt:), never a command or a file read; command beats are the operator's, in config/`); return _INVALID_ACTION; }
+  }
   // The OLD key (2026-08-22 rename) is INVALID, not ignored: falling through would leave a
   // beat that used to run a script with no action at all — a silent no-op on a cadence the
   // operator still sees armed. The message carries the fix.
@@ -439,15 +461,18 @@ function _resolveAction({ name, raw, isAlive, aliveCommand, cwd, aliveCwd, ns, a
 // Normalize one raw declaration into a registered entry, or null (skipped + logged)
 // when a trigger/action is missing, unparseable, or the two triggers/actions
 // collide. `isAlive` gives the deadman its defaults (aliveFallbackMs + aliveCommand).
-function _normalizeEntry({ name, source, cwd, raw, isAlive, aliveFallbackMs, aliveCommand, aliveCwd, ns, agents, timeZone, nowMs, onLog }) {
+function _normalizeEntry({ name, source, cwd, raw, isAlive, aliveFallbackMs, aliveCommand, aliveCwd, ns, agents, beingWritten = false, timeZone, nowMs, onLog }) {
   const triggers = ['frequency', 'when', 'daily'].filter((k) => raw?.[k] != null);
   if (triggers.length > 1) { onLog(`${name}: ${triggers.length === 2 ? 'both' : 'all of'} ${triggers.slice(0, -1).join(', ')} and ${triggers.at(-1)} set — skipped (use one trigger)`); return null; }
   const hasWhen = raw?.when != null;
   const hasDaily = raw?.daily != null;
   if (raw?.time_zone != null && !hasDaily) { onLog(`${name}: time_zone without daily — skipped (time_zone: is the zone of a daily: time; when: uses default_time_zone)`); return null; }
 
-  const action = _resolveAction({ name, raw, isAlive, aliveCommand, cwd, aliveCwd, ns, agents, onLog });
+  const action = _resolveAction({ name, raw, isAlive, aliveCommand, cwd, aliveCwd, ns, agents, source, beingWritten, onLog });
   if (action === _INVALID_ACTION) return null;
+  // What survives from a being-written file is a turn; it carries the mark to brainpool, which
+  // refuses it for an access_level 'all' being (a scheduled turn has no sender for allowed_users).
+  if (action && beingWritten) action.beingWritten = true;
 
   // ── daily: every day at a wall-clock time in a zone (see the header) ──
   if (hasDaily) {
@@ -489,7 +514,7 @@ function _normalizeEntry({ name, source, cwd, raw, isAlive, aliveFallbackMs, ali
  * @param {string} [deps.aliveCommand]                  the default alive command boot passes in: the one-liner `echo beat > state/alive.txt` (run with cwd = egptHome so the relative state/ resolves into the profile)
  * @param {() => number} [deps.now]                     clock for the stale-`when` check at load time AND for each run's elapsed time
  * @param {(cmd:string, opts:object) => any} deps.spawn                        child_process.spawn seam (shell:true)
- * @param {(t:{being:string, ns:string, prompt:string, name:string}) => Promise<{text?:string}>} [deps.dispatchTurn]   an `agent:` beat's TURN, injected by boot (ns → the conversation, then brainpool.turn). The loader never imports the brain: it hands over the being, the entity and the framed prompt and lets boot run it through the ONE turn path. It RETURNS the turn result; the loader puts a prefix of `text` in the run's outcome line.
+ * @param {(t:{being:string, ns:string, prompt:string, name:string, beingWritten?:boolean}) => Promise<{text?:string}>} [deps.dispatchTurn]   an `agent:` beat's TURN, injected by boot (ns → the conversation, then brainpool.turn). The loader never imports the brain: it hands over the being, the entity and the framed prompt and lets boot run it through the ONE turn path. It RETURNS the turn result; the loader puts a prefix of `text` in the run's outcome line.
  * @param {(p:{ns:string, name:string, text:string}) => Promise<any>} [deps.dispatchPost]   a `post:` beat's message into its entity's chat, injected by boot. Throws → the run logs FAILED.
  * @param {(p:{ns:string, name:string}) => Promise<any>} [deps.placeChat]   boot's seeding of which connection holds an entity's chat, asked once per entity when a beat that SENDS into it (post:, agent:) is registered — so a scheduled send finds the holder a message arrival would have recorded
  * @param {string} [deps.platform]                      process.platform seam — win32 runs command beats under POSIX bash
@@ -605,10 +630,10 @@ export function createHeartbeatLoader({
     //    is why this appends rather than replaces). Names are namespaced
     //    (`<surface>/<slug>:<name>`, `room/<name>:<name>`) so they can't collide with
     //    node-level names.
-    for (const { dir, ns, heartbeats, heartbeatSource } of set.entities.values()) {
+    for (const { dir, ns, heartbeats, heartbeatSource, beingWritten } of set.entities.values()) {
       for (const [name, raw] of Object.entries(heartbeats)) {
         if (!raw || typeof raw !== 'object') { onLog(`${ns}:${name}: not a heartbeat block — skipped`); continue; }
-        const e = _normalizeEntry({ name: `${ns}:${name}`, source: heartbeatSource[name], cwd: dir, raw, isAlive: false, aliveFallbackMs, aliveCommand, aliveCwd, ns, agents: agentsMap, timeZone, nowMs, onLog });
+        const e = _normalizeEntry({ name: `${ns}:${name}`, source: heartbeatSource[name], cwd: dir, raw, isAlive: false, aliveFallbackMs, aliveCommand, aliveCwd, ns, agents: agentsMap, beingWritten: beingWritten.has(name), timeZone, nowMs, onLog });
         if (e) entries.push(e);
       }
     }
@@ -672,7 +697,7 @@ export function createHeartbeatLoader({
   // logs the run's ONE outcome line; on success with a prefix of the dispatcher's reply,
   // which is the only trace a turn otherwise leaves (its output is the script's business).
   async function _dispatchTurn(entry, startedMs, onSettle) {
-    const { being, script, prompt: line, cwd, ns } = entry.action;
+    const { being, script, prompt: line, cwd, ns, beingWritten } = entry.action;
     try {
       if (typeof dispatchTurn !== 'function') throw new Error('no turn dispatcher wired — boot injects dispatchTurn');
       // A `prompt:` beat hands its one-liner over AS the trigger text — textecute's frame is for scripts.
@@ -681,7 +706,7 @@ export function createHeartbeatLoader({
         const path = resolvePath(cwd, script);
         prompt = framePrompt(basename(path), await readFile(path, 'utf8'));
       }
-      const res = await dispatchTurn({ being, ns, name: entry.name, prompt });
+      const res = await dispatchTurn({ being, ns, name: entry.name, prompt, beingWritten });
       const reply = _replyPrefix(res?.text);
       onLog(`${entry.name}: ok in ${_elapsed(now() - startedMs)}${reply ? ` — ${reply}` : ''}`);
     } catch (e) {

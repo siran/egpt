@@ -981,6 +981,14 @@ export function createBrainPool({
       if (accessLevel === 'all' && !(Array.isArray(allowedUsers) && allowedUsers.length)) {
         throw new Error(`brainpool: ${being} has access_level 'all' but no allowed_users set — refusing to run (set allowed_users, or ['*'] to explicitly allow anyone)`);
       }
+      // A HEARTBEAT A BEING WROTE NEVER WAKES AN 'all' BEING (2026-09-25). `ev.beingWritten` marks a
+      // turn scheduled from <entity>/heartbeats/ (heartbeat-loader.mjs) — a folder a sandboxed being
+      // can write — and a scheduled turn has no sender, so the allowed_users gate that makes an
+      // 'all' being safe to reach never sees it. Checked here because this is where the level is
+      // resolved, at both tiers. The operator's own beats (config/rooms.yaml) carry no mark.
+      if (ev?.beingWritten && accessLevel === 'all') {
+        throw new Error(`brainpool: ${being} has access_level 'all' — a heartbeat a being wrote (<entity>/heartbeats/) may not wake it; declare the beat in config/rooms.yaml`);
+      }
 
       const convDir = slugDir(scope.surface, slug);
       // 'mode: auto' — every agent's own conversations.yaml mode is eligible (operator
