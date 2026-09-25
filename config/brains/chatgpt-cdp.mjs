@@ -31,10 +31,20 @@ export const pollScript = `
   const msgs = document.querySelectorAll('[data-message-author-role="assistant"]');
   const last = msgs[msgs.length - 1];
   if (!last) return { id: null, text: '', streaming };
-  const content = last.querySelector('.markdown, .prose, [class*="markdown"]') || last;
+  // THE REPLY IS ITS BODY (kg, 2026-09-24, room tpoef). A reasoning model's message is on the
+  // page before it has one, and its only text then is a status line ("Thinking" - localized,
+  // so this keys on structure, never on the word). Read whole, that line was taken for the
+  // answer: it does not change while the model thinks, so streamFromTab's end rules finished
+  // on it and the real reply never came back. No body -> no text, and both end rules need
+  // text, so a reasoning phase can end nothing. A turn that FINISHED with no body - nothing
+  // streaming and its copy action shown - is read whole, so a reply rendered some other way
+  // is still captured.
+  const body = last.querySelector('.markdown, .prose, [class*="markdown"]');
+  const turn = last.closest('article, [data-testid^="conversation-turn"]') || last;
+  const finished = !streaming && !!turn.querySelector('[data-testid="copy-turn-action-button"]');
   return {
     id: last.getAttribute('data-message-id'),
-    text: content.innerText || '',
+    text: body ? (body.innerText || '') : (finished ? (last.innerText || '') : ''),
     streaming
   };
 })()
