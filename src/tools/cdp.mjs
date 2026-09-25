@@ -236,6 +236,11 @@ export function streamFromTab({
   // timeoutMs at a time, up to this cap instead of failing at timeoutMs; a send that never
   // produced a message still fails at timeoutMs, exactly as before.
   reasoningCapMs = 900000,
+  // (replyId) => a page expression resolving { text } with the reply's SOURCE - the adapter's
+  // own copy action (chatgpt-cdp.mjs copyScript). Run once, when the reply is done; without it,
+  // or when it cannot give the source, the rendered text the poll read is the reply.
+  copyScript = null,
+  onLog = () => {},
 }) {
   return new Promise(async (resolve, reject) => {
     let tab;
@@ -279,6 +284,11 @@ export function streamFromTab({
       try {
         const initial = await cdp('Runtime.evaluate', { expression: pollScript, returnByValue: true });
         const initialId = initial?.result?.value?.id ?? null;
+        // EVERY message already on the page before the send is NOT the reply (kg, 2026-09-25,
+        // room tpoef): once one new id had been seen, whatever was last used to be read, and a
+        // moment in which the previous answer was last again made it the reply. A poll that
+        // reports all ids (`ids`) names them all; one that does not still names its last.
+        const before = new Set([...(initial?.result?.value?.ids ?? []), ...(initialId ? [initialId] : [])]);
 
         const sent = await cdp('Runtime.evaluate', { expression: injectScript, returnByValue: true });
         if (!sent?.result?.value) {
@@ -289,8 +299,35 @@ export function streamFromTab({
         let textStable = 0;
         let noStreamingCount = 0;
         let sawNew = false;
+        let replyId = null;
         let pollErrs = 0;
+        let finishing = false;
         const pollStartMs = Date.now();
+        // DONE, VERBATIM WHEN IT CAN BE (operator 2026-09-25: "you should copy back verbatim").
+        // The poll reads the page's rendering; the adapter's copyScript reads the reply's source
+        // through its own copy action. Polling stops first so no tick lands mid-copy; anything
+        // short of a source - no copy script, no button, nothing written, ~2s gone - keeps the
+        // rendered text and says why in the log.
+        const finish = async (rendered) => {
+          if (finishing || settled) return;
+          finishing = true;
+          if (pollHandle) { clearInterval(pollHandle); pollHandle = null; }
+          let text = rendered;
+          if (typeof copyScript === 'function' && replyId) {
+            try {
+              const r = await Promise.race([
+                cdp('Runtime.evaluate', { expression: copyScript(replyId), awaitPromise: true, returnByValue: true, userGesture: true }),
+                new Promise((_, rej) => setTimeout(() => rej(new Error('no answer within 2.5s')), 2500)),
+              ]);
+              const v = r?.result?.value;
+              if (typeof v?.text === 'string' && v.text.trim()) text = v.text;
+              else onLog(`reply ${replyId}: not verbatim, kept the rendered text - ${v?.error ?? 'the copy gave nothing'}`);
+            } catch (e) {
+              onLog(`reply ${replyId}: not verbatim, kept the rendered text - ${e?.message ?? e}`);
+            }
+          }
+          done(text);
+        };
         // Primary: both signals (no-streaming + text-stable) agree for ~1s.
         // This dampens false "done" during latex/code rendering pauses.
         const STABLE_TICKS = 4;
@@ -306,11 +343,14 @@ export function streamFromTab({
             const r = await cdp('Runtime.evaluate', { expression: pollScript, returnByValue: true });
             pollErrs = 0;
             const v = r?.result?.value;
-            if (!v) return;
-            if (!sawNew) {
-              if (v.id && v.id !== initialId) sawNew = true;
-              else return;
-            }
+            if (!v || finishing) return;
+            // Only a message that was NOT on the page before the send can be the reply. A tick
+            // whose last message is one of those - or has no id yet - says nothing about the
+            // reply, so it moves no text and no counter. The newest new message is the reply:
+            // a reasoning block and then its answer, as two new messages, ends on the answer.
+            if (!v.id || before.has(v.id)) return;
+            sawNew = true;
+            replyId = v.id;
             if (v.text !== lastText) {
               lastText = v.text;
               onUpdate(lastText);
@@ -321,7 +361,7 @@ export function streamFromTab({
             if (!v.streaming) noStreamingCount++;
             else noStreamingCount = 0;
             if (noStreamingCount >= STABLE_TICKS && textStable >= STABLE_TICKS && lastText) {
-              done(lastText);
+              finish(lastText);
               return;
             }
             // Fallback: text dead-stable for a long time despite the
@@ -329,7 +369,7 @@ export function streamFromTab({
             if (textStable >= TEXT_STALE_FALLBACK_TICKS &&
                 lastText &&
                 (Date.now() - pollStartMs) >= MIN_POLL_MS) {
-              done(lastText);
+              finish(lastText);
             }
           } catch {
             pollErrs++;
@@ -338,7 +378,7 @@ export function streamFromTab({
         }, 250);
 
         const onTimeout = () => {
-          if (lastText) return done(lastText);
+          if (lastText) return finish(lastText);
           const left = reasoningCapMs - (Date.now() - pollStartMs);
           if (sawNew && left > 0) { timeoutHandle = setTimeout(onTimeout, Math.min(timeoutMs, left)); return; }
           fail(new Error(sawNew
