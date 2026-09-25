@@ -82,4 +82,11 @@ describe('the pointers card (config/skeletons/room/30-pointers.md)', () => {
     expect(CONV.treeDirs().map((d) => basename(d))).toContain('desktop');
   });
 
+  // 2026-09-25: a being asked for a reminder had nowhere a heartbeat could live. The card tells
+  // it where, and what may go there — one file per beat, and only a turn.
+  it('names ./heartbeats/ — one file per beat, turns only — and the Room tree really creates it', () => {
+    expect(CARD).toMatch(/\.\/heartbeats\/ .*one <name>\.yaml per beat, turns only/);
+    expect(CONV.treeDirs().map((d) => basename(d))).toContain('heartbeats');
+  });
+
 });

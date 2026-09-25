@@ -96,7 +96,9 @@ describe('ONE owner of the Room tree — both creation paths make the SAME tree'
     // same reason desktop/ is, and with one more: the drain (src/room-outbox.mjs) deliberately
     // creates nothing at all, so a being confined to this folder would have no way to make the
     // one folder the feature is addressed at.
-    expect(treeOf(named.mkdirs, ROOM())).toEqual(['', 'desktop', 'directives', 'files', 'media', 'outbox', 'scripts', 'transcripts']);
+    // heartbeats/ joined on 2026-09-25 — the being's own schedule, one <name>.yaml per beat, named
+    // on the pointers card, so it must be really there.
+    expect(treeOf(named.mkdirs, ROOM())).toEqual(['', 'desktop', 'directives', 'files', 'heartbeats', 'media', 'outbox', 'scripts', 'transcripts']);
   });
 
   // (The pointers card naming these folders is guarded in tests/pointers.test.mjs, which

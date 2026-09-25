@@ -365,6 +365,61 @@ describe('boot()', () => {
   });
 });
 
+// heartbeats/ END TO END (2026-09-25): the reader boot wires into the resolver, the loader, the turn
+// dispatcher and brainpool's gate — the whole path a being's own beat takes. A room needs no registry
+// entry (its chatId is its name), so its folder is the whole fixture. Each test removes the folder,
+// so no later boot in this file inherits its beats.
+describe('boot() — heartbeats/: a being\'s own beats, end to end', () => {
+  const lab = join(tmpHome, 'rooms', 'lab');
+  const REMIND = 'frequency: 1h\nagent: e\nprompt: Remind An to call Julio.\n';
+
+  async function bootWith(level, files, { folderConfig } = {}) {
+    await fs.mkdir(join(lab, 'heartbeats'), { recursive: true });
+    for (const [f, text] of Object.entries(files)) await fs.writeFile(join(lab, 'heartbeats', f), text);
+    if (folderConfig) await fs.writeFile(join(lab, 'config.yaml'), folderConfig);
+    const { start } = fakeStart();
+    let state = emptyState();
+    const logs = [], spawned = [], prompts = [];
+    const config = { whatsapp: {}, node_name: 'kg', agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true, conversation_defaults: { access_level: level, allowed_users: ['*'] } } } };
+    const app = await boot({
+      readConfig: () => config, startBridge: start,
+      makeSession: (opts) => { const s = fakeSession(opts); const turn = s.turn.bind(s); s.turn = (m, u) => { prompts.push(m); return turn(m, u); }; return s; },
+      loadState: async () => state, writeState: async (s) => { state = s; },
+      io: memIo(), ingest: false, now: () => Date.UTC(2026, 8, 25, 8, 0), tickMs: 0,
+      spawn: (cmd) => { spawned.push(cmd); return { on(ev, cb) { if (ev === 'exit') cb(0); return this; } }; },
+      log: { line: (m) => logs.push(m) },
+    });
+    // boot's first tick fires the beat; its turn settles asynchronously
+    for (const until = Date.now() + 2000; Date.now() < until && !logs.some((l) => /room\/lab:remind: (ok|FAILED)/.test(l));) await new Promise((r) => setTimeout(r, 5));
+    return { app, logs, spawned, prompts };
+  }
+  const cleanup = (app) => { app.stop(); return fs.rm(lab, { recursive: true, force: true }); };
+
+  it('a heartbeats/ file is a beat that runs as the being\'s TURN; a command there, and any beat in the folder\'s config.yaml, never arm', async () => {
+    const { app, logs, spawned, prompts } = await bootWith('regular',
+      { 'remind.yaml': REMIND, 'escape.yaml': 'frequency: 1h\ncommand: echo from-heartbeats\n' },
+      { folderConfig: 'heartbeats:\n  cfg:\n    frequency: 1h\n    command: echo from-config\n' });
+    try {
+      const ro = await fs.readFile(join(tmpHome, 'heartbeats.readonly.yaml'), 'utf8');
+      expect(ro).toContain('name: room/lab:remind');
+      expect(ro).toContain('source: rooms/lab/heartbeats/remind.yaml');
+      expect(ro).not.toContain('room/lab:escape');
+      expect(ro).not.toContain('room/lab:cfg');
+      expect(logs.some((l) => l.includes('room/lab:escape: command: refused'))).toBe(true);
+      expect(spawned.filter((c) => /from-(heartbeats|config)/.test(c))).toEqual([]);
+      expect(prompts.some((m) => m.includes('Remind An to call Julio.'))).toBe(true);
+    } finally { await cleanup(app); }
+  });
+
+  it('the same file into an access_level: all being is REFUSED at the turn — FAILED, logged, no engine call', async () => {
+    const { app, logs, prompts } = await bootWith('all', { 'remind.yaml': REMIND });
+    try {
+      expect(logs.find((l) => l.includes('room/lab:remind: FAILED'))).toMatch(/egpt has access_level 'all' — a heartbeat a being wrote/);
+      expect(prompts).toEqual([]);
+    } finally { await cleanup(app); }
+  });
+});
+
 // CONFIG-SHAPE MIGRATION (operator 2026-07-09): the new beeper:/networks:/peer_nodes shape
 // (back-compat with the old flat shape) + the REMOVED wake-word injection (symmetric nodes wake on
 // their OWN handles only). Assert boot RESOLVES each by capturing the opts it hands the bridge

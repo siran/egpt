@@ -1519,6 +1519,46 @@ describe('brainpool.turn — STRUCTURAL SAFETY GATE (operator 2026-08-16, refine
   });
 });
 
+// ── A HEARTBEAT A BEING WROTE NEVER WAKES AN 'all' BEING (2026-09-25). <entity>/heartbeats/*.yaml
+//    sits in the folder a sandboxed being's pool account can write, and a scheduled turn has no
+//    sender, so allowed_users — what makes an 'all' being safe to reach — never sees it. The loader
+//    marks such a turn `beingWritten`; turn() refuses it for an 'all' being at EITHER tier, which is
+//    why the check lives here, where the level is resolved. Nothing unmarked changes. ──
+describe("brainpool.turn — a heartbeat a being wrote never wakes an 'all' being", () => {
+  const brains = { resolve: () => ({ name: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: ['Read'] }) };
+  const grant = (level) => (level === 'all' ? { dangerouslySkipPermissions: true, allowedTools: ['Bash'] } : { dangerouslySkipPermissions: false, allowedTools: DEFAULT_ALLOWED_TOOLS });
+  const written = { ...ev, beingWritten: true };
+  const REFUSED = /brainpool: e has access_level 'all' — a heartbeat a being wrote \(<entity>\/heartbeats\/\) may not wake it/;
+
+  it("REPRODUCE-FIRST: 'all' from the NODE tier (a meta engineer's conversation_defaults — wren, dren, djh) → refused, no engine call", async () => {
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
+      brains, skipAccessLevelDefault: true, loadPermission: grant,
+      config: { agents: { e: { conversation_defaults: { access_level: 'all', allowed_users: ['123'] } } } },
+    });
+    await expect(brain.turn('e', written)).rejects.toThrow(REFUSED);
+    expect(pool.calls).toHaveLength(0);
+  });
+
+  it("'all' from the CONVERSATION tier → refused too (a check on config.yaml alone would miss this one)", async () => {
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
+      brains, skipAccessLevelDefault: true, loadPermission: grant, seedAgents: { e: { access_level: 'all', allowed_users: ['123'] } },
+    });
+    await expect(brain.turn('e', written)).rejects.toThrow(REFUSED);
+    expect(pool.calls).toHaveLength(0);
+  });
+
+  it("the same marked turn into a 'regular' being runs; an 'all' being's UNMARKED turn (a message, an operator beat) runs exactly as before", async () => {
+    const regular = harness([{ text: 'ok', sessionId: 's' }], { brains, skipAccessLevelDefault: true, loadPermission: grant, seedAgents: { e: { access_level: 'regular' } } });
+    await regular.brain.turn('e', written);
+    expect(regular.pool.calls).toHaveLength(1);
+
+    const all = harness([{ text: 'ok', sessionId: 's' }], { brains, skipAccessLevelDefault: true, loadPermission: grant, seedAgents: { e: { access_level: 'all', allowed_users: ['123'] } } });
+    await all.brain.turn('e', ev);
+    expect(all.pool.calls).toHaveLength(1);
+    expect(all.pool.calls[0].brainOptions.dangerouslySkipPermissions).toBe(true);
+  });
+});
+
 // ── SANDBOXED default-on (operator 2026-08-20), PLATFORM-AWARE since 2026-09-04: same two-tier
 //    resolution (per-conversation, then agents.<being>.conversation_defaults) as
 //    accessLevel/allowedUsers, but the FALLBACK when unset at both tiers is now

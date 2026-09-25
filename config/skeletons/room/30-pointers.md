@@ -6,6 +6,7 @@
   ./media/          files from this chat
   ./files/          the operator's shelf — what he put here for me
   ./desktop/        mine — what I'm working on right now
+  ./heartbeats/     my schedule — one <name>.yaml per beat, turns only (agent: + prompt:)
   ./scripts/        *.x.md textecutables — when asked to DO something, look
                     here first and carry out the steps with my own tools
 

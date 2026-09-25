@@ -6,8 +6,11 @@
 // loader never touches the real profile.
 import { describe, it, expect } from 'vitest';
 import { join } from 'node:path';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { createHeartbeatLoader, parseFrequency, parseWhen, resolveTimeZone, zonedWallClockToEpoch } from '../src/spine/heartbeat-loader.mjs';
-import { createConfigResolver, parseEntityConfig, NODE_FILE } from '../src/spine/config-resolver.mjs';
+import { createConfigResolver, parseEntityConfig, readHeartbeatFiles, NODE_FILE } from '../src/spine/config-resolver.mjs';
+import { readRoomConfig } from '../src/rooms-file.mjs';
 import { createHeartbeats } from '../src/spine/heartbeats.mjs';   // the REAL cadence registry, for the no-per-tick-spam lock
 import { framePrompt } from '../src/tools/textecute.mjs';
 import { GIT_BASH_CANDIDATES } from '../src/sandbox-cli-session.mjs';
@@ -1355,6 +1358,177 @@ describe('createHeartbeatLoader — post: (a command beat that posts its stdout)
     const ro = h.writes.filter((w) => w.p.endsWith('heartbeats.readonly.yaml')).at(-1).c;
     expect(ro).toContain('command: node prime.js');
     expect(ro).toContain(`post: ${TEMPLATE}`);
+  });
+});
+
+// ── heartbeats/ FILES — a being's own beats (operator 2026-09-25: "please add the possibility for
+//    beings to write their own heartbeat … maybe a heartbeats/ with the different yaml files"), and
+//    THE ONE RULE under them: A FILE A BEING CAN WRITE MAY SCHEDULE A TURN, NEVER A COMMAND.
+//    heartbeats/ is inside the conversation folder, where setup/sandbox-logon-launcher.ps1 grants the
+//    leased pool account an inheritable Modify; a command beat runs in the spine, as the operator,
+//    outside every sandbox. Real temp folders on the resolver side (boot's reader), in-memory io on
+//    the loader side. ──
+describe('createHeartbeatLoader — heartbeats/ files: a being\'s own beats schedule a TURN, never a COMMAND', () => {
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+  const CONFIG = { default_time_zone: 'UTC', agents: { egpt: { default: true, handles: ['e'] }, djh: { handles: ['djh'] } } };
+  // dolly's live beat, byte for byte (conversations/whatsapp/Radio WnL-2608291938/config.yaml, measured 2026-09-25)
+  const RADIO_WNL = 'heartbeats:\n  djh:\n    frequency: 15m\n    agent: djh\n    script_path: dj.x.md\n';
+
+  // `rung` is the operator's rung as the resolver hands it (config/rooms.yaml's row); `realRung`
+  // swaps in boot's own reader instead (readRoomConfig, pointed at this temp profile); `folderConfig`
+  // is written to <entity>/config.yaml — the file a being could write, which no rung reads.
+  function build({ files = {}, rung = {}, realRung = false, folderConfig = null, ledger = {}, clock = Date.UTC(2026, 8, 25, 8, 0), slug = 'e-2609250900' } = {}) {
+    const home = mkdtempSync(join(tmpdir(), 'egpt-hb-loader-'));
+    const dir = join(home, 'conversations', 'whatsapp', slug);
+    const ns = `whatsapp/${slug}`;
+    mkdirSync(join(dir, 'heartbeats'), { recursive: true });
+    for (const [f, text] of Object.entries(files)) writeFileSync(join(dir, 'heartbeats', f), text);
+    if (folderConfig != null) writeFileSync(join(dir, 'config.yaml'), folderConfig);
+    const roomsYaml = join(home, 'config', 'rooms.yaml');
+    const logs = [], turns = [], posts = [];
+    const { spawn, calls } = makeSpawn();
+    const registry = makeRegistry();
+    const mem = new Map([[join(home, 'state', 'heartbeats-daily.json'), JSON.stringify(ledger)]]);
+    const onLog = (m) => logs.push(m);
+    const resolver = createConfigResolver({
+      getConfig: () => CONFIG,
+      listEntityDirs: async () => [{ dir, ns }],
+      readEntityConfig: realRung ? (_dir, n) => readRoomConfig(n, { path: roomsYaml }) : async () => rung,
+      readEntityBeats: readHeartbeatFiles,
+      egptHome: home, io: noopIo(), onLog,
+    });
+    const loader = createHeartbeatLoader({
+      resolver, aliveMs: 0, egptHome: home, platform: 'linux', spawn,
+      dispatchTurn: async (t) => { turns.push(t); return { text: 'ok' }; },
+      dispatchPost: async (p) => { posts.push(p); },
+      io: { writeFile: async (p, c) => { mem.set(p, c); }, mkdir: async () => {}, readFile: async (p) => (String(p).endsWith('.x.md') ? 'Pon tres temas.\n' : mem.get(p)) },
+      onLog, now: () => clock,
+    });
+    return {
+      home, dir, ns, loader, registry, logs, turns, posts, calls, roomsYaml,
+      file: (f) => `conversations/whatsapp/${slug}/heartbeats/${f}`,
+      async start() { loader.wrapRegistry(registry); const { entries } = await loader.collect(); await loader.activate({ stats: () => ({}) }); return entries; },
+      beat: (name) => registry.registered.find((r) => r.name === `${ns}:${name}`)?.fn,
+    };
+  }
+  const WHY = 'is a file a being can write, so it may schedule a TURN (agent: + prompt:), never a command or a file read; command beats are the operator\'s, in config/';
+
+  it('REPRODUCE-FIRST: heartbeats/call-julio.yaml IS the beat `call-julio` — an agent: + prompt: TURN, sourced to its file', async () => {
+    const h = build({ files: { 'call-julio.yaml': 'daily: "09:00"\ntime_zone: Atlantic/Canary\nagent: e\nprompt: Remind An to call Julio.\n' } });
+    const entries = await h.start();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      name: `${h.ns}:call-julio`, source: h.file('call-julio.yaml'), daily: { hour: 9, minute: 0 }, timeZone: 'Atlantic/Canary',
+      action: { kind: 'turn', being: 'egpt', prompt: 'Remind An to call Julio.', cwd: h.dir, ns: h.ns, beingWritten: true },
+    });
+  });
+
+  it('it fires as a TURN through dispatchTurn, marked beingWritten — the mark brainpool refuses an access_level: all being on', async () => {
+    const h = build({ files: { 'ping.yaml': 'frequency: 1h\nagent: e\nprompt: Say hi.\n' } });
+    await h.start();
+    h.beat('ping')(); await flush();
+    expect(h.calls).toHaveLength(0);
+    expect(h.turns).toEqual([{ being: 'egpt', ns: h.ns, name: `${h.ns}:ping`, prompt: 'Say hi.', beingWritten: true }]);
+  });
+
+  it('REPRODUCE-FIRST: REFUSED by name, logged, never armed, nothing spawned — command:, command: + post:, a bare script_path:', async () => {
+    const h = build({ files: {
+      'escape.yaml': 'frequency: 1m\ncommand: whoami > owned.txt\n',
+      'posted.yaml': 'daily: "11:00"\ncommand: node prime.js\npost: "{stdout}"\n',
+      'textecute.yaml': 'frequency: 1m\nscript_path: dj.x.md\n',
+    } });
+    expect(await h.start()).toEqual([]);
+    expect(h.registry.registered).toEqual([]);
+    expect(h.calls).toHaveLength(0);
+    expect(h.logs).toEqual([
+      `${h.ns}:escape: command: refused — ${h.file('escape.yaml')} ${WHY}`,
+      `${h.ns}:posted: command: + post: refused — ${h.file('posted.yaml')} ${WHY}`,
+      `${h.ns}:textecute: script_path: refused — ${h.file('textecute.yaml')} ${WHY}`,
+    ]);
+  });
+
+  // The spine READS an agent: beat's script as the operator and feeds it into the turn, so a
+  // script_path a being writes is a file read in the operator's name — `../`, an absolute path, a
+  // link it made. Refused even beside agent:; the being can put the text in prompt: instead.
+  it('agent: + script_path: is REFUSED too — the script is read as the operator, so it is a file read', async () => {
+    const h = build({ files: {
+      'peek.yaml': 'frequency: 1m\nagent: e\nscript_path: ../../../config/config.yaml\n',
+    } });
+    expect(await h.start()).toEqual([]);
+    expect(h.registry.registered).toEqual([]);
+    expect(h.calls).toHaveLength(0);
+    expect(h.logs).toEqual([`${h.ns}:peek: script_path: refused — ${h.file('peek.yaml')} ${WHY}`]);
+  });
+
+  it('a malformed file degrades — logged by name, never a crash — and its siblings still load', async () => {
+    const h = build({ files: {
+      'broken.yaml': 'agent: e\nprompt: [unclosed\n',
+      'empty.yaml': '',
+      'ok.yaml': 'frequency: 1h\nagent: e\nprompt: Say hi.\n',
+    } });
+    await h.start();
+    expect(h.registry.registered.map((r) => r.name)).toEqual([`${h.ns}:ok`]);
+    expect(h.logs.some((l) => l.includes(join('heartbeats', 'broken.yaml')) && l.includes('skipped'))).toBe(true);
+    expect(h.logs).toContain(`${h.ns}:empty: not a heartbeat block — skipped`);
+  });
+
+  it('REGRESSION LOCK: the operator\'s rung (config/rooms.yaml) keeps command: + post: exactly as today — the rule never reaches it', async () => {
+    const PRIMO = { daily: '14:00', time_zone: 'Atlantic/Canary', command: 'bash scripts/nth_prime.sh', post: 'el primo del día es {stdout}' };
+    const h = build({ rung: { heartbeats: { 'primo-del-dia': PRIMO } }, clock: Date.UTC(2026, 8, 16, 12, 0) });
+    const [e] = await h.start();
+    expect(e).toMatchObject({ source: 'config/rooms.yaml', action: { kind: 'command', command: 'bash scripts/nth_prime.sh', post: PRIMO.post, cwd: h.dir } });
+    expect(e.action.beingWritten).toBeUndefined();
+    h.beat('primo-del-dia')(Date.UTC(2026, 8, 16, 13, 0));   // 14:00 WEST
+    await flush();
+    expect(h.calls).toHaveLength(1);
+    expect(h.calls[0].opts).toMatchObject({ shell: true, cwd: h.dir });
+    h.calls[0].child.stdout.emit('data', '251\n');
+    h.calls[0].child.emit('close', 0);
+    await flush();
+    expect(h.posts).toEqual([{ ns: h.ns, name: `${h.ns}:primo-del-dia`, text: 'el primo del día es 251' }]);
+  });
+
+  // DOLLY'S RADIO WnL BEAT: `agent: djh` + `script_path:` — a TURN, into djh, which is access_level: all.
+  // It sits in the conversation FOLDER's config.yaml, and no rung has read that file since df94855
+  // (2026-08-24, "rooms.yaml wired: the room rung leaves the conversation folder") — the room rung is
+  // config/rooms.yaml, keyed by ns. So on today's code it is not armed, and this change keeps it so.
+  // The same YAML in the operator's row runs as a turn, unmarked; in heartbeats/ it is marked.
+  it('LOCK: the Radio WnL shape — and a command: beat — in the FOLDER\'s config.yaml arm NOTHING; the same YAML in config/rooms.yaml runs, unmarked', async () => {
+    const escape = '  escape:\n    frequency: 1m\n    command: whoami > owned.txt\n';
+    const h = build({ slug: 'Radio WnL-2608291938', realRung: true, folderConfig: RADIO_WNL + escape });
+    expect(await h.loader.collect()).toMatchObject({ entries: [] });
+
+    mkdirSync(join(h.home, 'config'), { recursive: true });
+    writeFileSync(h.roomsYaml, `rooms:\n  ${h.ns}:\n${(RADIO_WNL + escape).replace(/^/gm, '    ')}`);
+    const { entries } = await h.loader.collect();
+    expect(entries.map((e) => [e.name, e.source, e.action.kind, e.action.being ?? e.action.command, e.action.beingWritten])).toEqual([
+      [`${h.ns}:djh`, 'config/rooms.yaml', 'turn', 'djh', undefined],
+      [`${h.ns}:escape`, 'config/rooms.yaml', 'command', 'whoami > owned.txt', undefined],
+    ]);
+  });
+
+  // The Radio WnL beat's own shape (agent: djh + script_path:) is now refused at LOAD by the
+  // script_path rule above; with a prompt: it loads as a turn, and it is brainpool that refuses it.
+  it('a heartbeats/djh.yaml turn (agent: + prompt:) loads MARKED beingWritten — brainpool refuses it (djh is access_level: all)', async () => {
+    const h = build({ files: { 'djh.yaml': 'frequency: 15m\nagent: djh\nprompt: play the next track\n' } });
+    await h.start();
+    h.beat('djh')(); await flush();
+    expect(h.calls).toHaveLength(0);
+    expect(h.turns).toHaveLength(1);
+    expect(h.turns[0]).toMatchObject({ being: 'djh', ns: h.ns, beingWritten: true });
+  });
+
+  it('PRECEDENCE + LEDGER: the operator\'s rung keeps a name both declare; a daily beat moved into a file keeps its ledger row — no second fire today', async () => {
+    const both = build({ rung: { heartbeats: { prime: { frequency: '1h', command: 'node prime.js' } } }, files: { 'prime.yaml': 'frequency: 1m\nagent: e\nprompt: say a prime\n' } });
+    expect((await both.start()).map((e) => [e.name, e.source, e.action.kind])).toEqual([[`${both.ns}:prime`, 'config/rooms.yaml', 'command']]);
+
+    // It fired from the operator's rung at 11:00 today, then the beat moved into heartbeats/prime.yaml.
+    const moved = build({ files: { 'prime.yaml': 'daily: "11:00"\nagent: e\nprompt: say a prime\n' }, ledger: { 'whatsapp/e-2609250900:prime': '2026-09-25' }, clock: Date.UTC(2026, 8, 25, 11, 0) });
+    await moved.start();
+    moved.beat('prime')(Date.UTC(2026, 8, 25, 11, 0)); await flush();
+    expect(moved.turns).toHaveLength(0);
+    moved.beat('prime')(Date.UTC(2026, 8, 26, 11, 0)); await flush();
+    expect(moved.turns).toHaveLength(1);
   });
 });
 

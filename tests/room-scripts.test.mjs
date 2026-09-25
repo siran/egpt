@@ -41,7 +41,8 @@ const CONV = join(HOME, 'conversations', SURFACE, SLUG);
 // Room.treeDirs, so the card may name it, and the disk check below is what keeps that honest.
 // files/ joined the CARD on 2026-09-20 (it was always in Room.treeDirs, just never named):
 // the operator's shelf, written by /inject, invisible to every being until the card said so.
-const SEEDED_NOW = ['directives', 'scripts', 'media', 'transcripts', 'desktop', 'files'];
+// heartbeats/ joined both on 2026-09-25: the being's own schedule, one <name>.yaml per beat.
+const SEEDED_NOW = ['directives', 'scripts', 'media', 'transcripts', 'desktop', 'files', 'heartbeats'];
 const ON_DEMAND = [];
 
 let seeded;

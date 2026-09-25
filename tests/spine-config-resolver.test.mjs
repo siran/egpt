@@ -10,9 +10,11 @@
 // winning value was read from. All fakes; the resolver never touches a real profile.
 import { describe, it, expect } from 'vitest';
 import { join } from 'node:path';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import * as YAML from 'yaml';
 import {
-  createConfigResolver, layerInto, mirrorSource, isPlainObject,
+  createConfigResolver, layerInto, mirrorSource, isPlainObject, readHeartbeatFiles,
   NODE_FILE, REGISTRY_FILE, UNION_KEYS,
 } from '../src/spine/config-resolver.mjs';
 
@@ -164,6 +166,87 @@ describe('combining rule — heartbeats UNION (every rung contributes)', () => {
     expect(e.heartbeats.only_reg).toEqual({ frequency: '9h', command: 'node r.js' });
     expect(e.heartbeatSource.daily).toBe(CONV_FILE);
     expect(e.heartbeatSource.only_reg).toBe(REGISTRY_FILE);
+  });
+});
+
+// ── THE BEING'S OWN BEATS: <entity>/heartbeats/<name>.yaml (operator 2026-09-25: "please add the
+//    possibility for beings to write their own heartbeat … maybe a heartbeats/ with the different
+//    yaml files"). One file = one beat, named after the file. A THIRD contributor to the entity's
+//    union — and the only one a being can write, so every name it contributes is marked. Real
+//    temp folders: the reader is the one boot wires. ──
+describe('heartbeats/ — a being\'s own beats, one file each', () => {
+  function entity() {
+    const home = mkdtempSync(join(tmpdir(), 'egpt-hb-resolver-'));
+    const dir = join(home, 'conversations', 'whatsapp', 'e-2609250900');
+    mkdirSync(join(dir, 'heartbeats'), { recursive: true });
+    const put = (name, text) => writeFileSync(join(dir, 'heartbeats', name), text);
+    return { home, dir, put, ns: 'whatsapp/e-2609250900', file: (name) => `conversations/whatsapp/e-2609250900/heartbeats/${name}` };
+  }
+  const resolverFor = ({ home, dir, ns }, { registry = {}, folder = {}, onLog } = {}) => createConfigResolver({
+    getConfig: () => ({ heartbeats: { alive: { frequency: '1s' } } }),
+    loadRegistry: async () => registry,
+    listEntityDirs: async () => [{ dir, ns }],
+    readEntityConfig: async () => folder,
+    readEntityBeats: readHeartbeatFiles,
+    egptHome: home, io: { writeFile: async () => {}, mkdir: async () => {} },
+    ...(onLog ? { onLog } : {}),
+  });
+  const REMIND = 'when: "2026-09-26T09:00"\nagent: e\nprompt: Remind An to call Julio.\n';
+
+  it('readHeartbeatFiles: one beat per <name>.yaml, the body verbatim; anything else ignored; no folder → no beats', async () => {
+    const e = entity();
+    e.put('call-julio.yaml', REMIND);
+    e.put('notes.md', 'not a beat\n');
+    expect(await readHeartbeatFiles(e.dir)).toEqual({ 'call-julio': { when: '2026-09-26T09:00', agent: 'e', prompt: 'Remind An to call Julio.' } });
+    expect(await readHeartbeatFiles(join(e.dir, 'transcripts'))).toEqual({});
+  });
+
+  it('a file that does not parse is skipped and logged by name — its siblings still load', async () => {
+    const e = entity();
+    e.put('broken.yaml', 'agent: e\nprompt: [unclosed\n');
+    e.put('ok.yaml', REMIND);
+    const logs = [];
+    expect(Object.keys(await readHeartbeatFiles(e.dir, { onLog: (m) => logs.push(m) }))).toEqual(['ok']);
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toContain(join('heartbeats', 'broken.yaml'));
+    expect(logs[0]).toContain('skipped');
+  });
+
+  it('files CONTRIBUTE to the entity\'s union, sourced to the file, and are marked beingWritten; the node block is untouched', async () => {
+    const e = entity();
+    e.put('call-julio.yaml', REMIND);
+    const set = await resolverFor(e).collect();
+    const ent = set.entities.get(e.dir);
+    expect(ent.heartbeats['call-julio']).toEqual({ when: '2026-09-26T09:00', agent: 'e', prompt: 'Remind An to call Julio.' });
+    expect(ent.heartbeatSource['call-julio']).toBe(e.file('call-julio.yaml'));
+    expect([...ent.beingWritten]).toEqual(['call-julio']);
+    expect(Object.keys(set.node.config.heartbeats)).toEqual(['alive']);
+  });
+
+  // PRECEDENCE (2026-09-25): the operator's rungs WIN a name, the being's file does not. The folder
+  // is the one a sandboxed being's pool account can write, so "nearest wins" here would let it
+  // REPLACE an operator beat by writing a file with its name — or disable it with `false`. The
+  // name is one entry either way, so there is one ledger row and nothing can fire twice.
+  it('PRECEDENCE: a name the operator\'s rungs declare stays theirs — the file is ignored and logged, never an override', async () => {
+    const e = entity();
+    e.put('prime.yaml', 'daily: "11:00"\nagent: e\nprompt: say a prime\n');
+    e.put('own.yaml', REMIND);
+    const logs = [];
+    const set = await resolverFor(e, {
+      folder: { heartbeats: { prime: { daily: '11:00', command: 'node prime.js', post: '{stdout}' } } },
+      onLog: (m) => logs.push(m),
+    }).collect();
+    const ent = set.entities.get(e.dir);
+    expect(ent.heartbeats.prime).toEqual({ daily: '11:00', command: 'node prime.js', post: '{stdout}' });
+    expect(ent.heartbeatSource.prime).toBe('config/rooms.yaml');
+    expect([...ent.beingWritten]).toEqual(['own']);
+    expect(logs).toEqual([`${e.ns}:prime: ${e.file('prime.yaml')} ignored — config/rooms.yaml declares that beat, and a file a being can write never overrides the operator's`]);
+  });
+
+  it('with no reader wired (every caller but boot), an entity has no file beats and an empty beingWritten', async () => {
+    const r = makeResolver({ registry: registryWith({}) });
+    const set = await r.collect();
+    expect(set.entities.get(CONV_DIR).beingWritten.size).toBe(0);
   });
 });
 

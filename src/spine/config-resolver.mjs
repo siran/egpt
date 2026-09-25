@@ -28,7 +28,9 @@
 // BLOCK and each one is test-locked in tests/spine-config-resolver.test.mjs:
 //   heartbeats:  UNION    — every rung CONTRIBUTES entries; the node's block does not lose
 //                           to a conversation's. (Within ONE entity, a same-named entry at
-//                           the folder rung still overrides the registry rung's.)
+//                           the folder rung still overrides the registry rung's.) The entity's
+//                           own <dir>/heartbeats/<name>.yaml files contribute LAST and never
+//                           override — see readHeartbeatFiles.
 //   everything else: OVERRIDE, nearest rung wins — DEEP-merged per leaf, so a folder that
 //                           pins `transcription_service.posts_back` does not delete the
 //                           node's `use_config` and engine profiles. A list is one value,
@@ -61,11 +63,12 @@
 // Nothing here is fatal: a missing dir, an unreadable registry, a malformed entity config —
 // all log and degrade to the rung above.
 
-import { writeFile as fsWriteFile, mkdir as fsMkdir } from 'node:fs/promises';
+import { writeFile as fsWriteFile, mkdir as fsMkdir, readdir as fsReaddir, readFile as fsReadFile } from 'node:fs/promises';
 import { join, dirname, relative, sep } from 'node:path';
 import * as YAML from 'yaml';
 import { EGPT_HOME } from '../egpt-home.mjs';
 import { CONTACT_BOOKKEEPING_KEYS, residentsOf } from '../conversations-state.mjs';
+import { HEARTBEATS_DIR } from '../room-core.mjs';
 
 // The two top rungs, named the way they are written into `source:` — profile-relative.
 export const NODE_FILE = 'config/config.yaml';
@@ -87,6 +90,30 @@ export function parseEntityConfig(yamlText) {
   let doc;
   try { doc = YAML.parse(yamlText); } catch { return {}; }
   return isPlainObject(doc) ? doc : {};
+}
+
+/**
+ * THE BEING'S OWN BEATS (operator 2026-09-25: "please add the possibility for beings to write their
+ * own heartbeat … maybe a heartbeats/ with the different yaml files") — `<dir>/heartbeats/*.yaml`
+ * → `{ <name>: <body> }`: one file per beat, the name is the filename minus `.yaml`, the body ONE
+ * heartbeat entry as the loader parses it. No folder → no beats; other files are ignored; a file
+ * that does not parse is skipped and logged. Boot wires this as the resolver's `readEntityBeats`.
+ */
+export async function readHeartbeatFiles(dir, { onLog = () => {}, io = {} } = {}) {
+  const readdir = io.readdir ?? fsReaddir;
+  const readFile = io.readFile ?? fsReadFile;
+  const folder = join(dir, HEARTBEATS_DIR);
+  let names;
+  try { names = await readdir(folder); }
+  catch (e) { if (e?.code !== 'ENOENT') onLog(`${folder}: ${e?.message ?? e}`); return {}; }
+  const out = {};
+  for (const f of names.sort()) {
+    const m = /^(.+)\.yaml$/.exec(f);
+    if (!m) continue;
+    try { out[m[1]] = YAML.parse(await readFile(join(folder, f), 'utf8')); }
+    catch (e) { onLog(`${join(folder, f)}: unreadable — skipped (${e?.message ?? e})`); }
+  }
+  return out;
 }
 
 /** A provenance tree shaped like `value`, every leaf the file `src` was read from. */
@@ -130,6 +157,7 @@ function _rel(egptHome, abs) {
  * @param {() => Promise<object>} deps.loadRegistry                   conversations.yaml state ({contacts:{surface:{jid:entry}}})
  * @param {() => Promise<Array<{dir:string, ns:string}>>} deps.listEntityDirs  conversation + room folders
  * @param {(dir:string) => Promise<object>} deps.readEntityConfig     a folder's WHOLE config.yaml doc ({} when absent/malformed)
+ * @param {(dir:string, o:{onLog:Function}) => Promise<object>} [deps.readEntityBeats]  a folder's heartbeats/ files, `{ <name>: <body> }` (boot: readHeartbeatFiles; default none)
  * @param {string} [deps.egptHome]
  * @param {{writeFile?:Function, mkdir?:Function}} [deps.io]
  * @param {(m:string) => void} [deps.onLog]
@@ -139,6 +167,7 @@ export function createConfigResolver({
   loadRegistry = async () => ({}),
   listEntityDirs = async () => [],
   readEntityConfig = async () => ({}),
+  readEntityBeats = async () => ({}),
   egptHome = EGPT_HOME,
   io = {},
   onLog = () => {},
@@ -245,10 +274,28 @@ export function createConfigResolver({
         }
       }
 
+      // The entity's OWN heartbeats/ files — the one contributor a being can WRITE: the folder is
+      // the conversation's, where setup/sandbox-logon-launcher.ps1 grants the leased pool account
+      // Modify. So a file never takes a name the operator's rungs above already declare (it could
+      // otherwise replace or disable their beat), and every name it does add is in `beingWritten`,
+      // which the loader holds to a TURN, never a command. Same `<ns>:<name>` as any other entry,
+      // so the daily ledger row is shared: a beat moved into a file cannot fire twice in a day.
+      const beingWritten = new Set();
+      let files = {};
+      try { files = (await readEntityBeats(dir, { onLog })) ?? {}; }
+      catch (e) { onLog(`${ns}: ${e?.message ?? e}`); }
+      for (const [name, raw] of Object.entries(files)) {
+        const file = _rel(egptHome, join(dir, HEARTBEATS_DIR, `${name}.yaml`));
+        if (Object.hasOwn(heartbeats, name)) { onLog(`${ns}:${name}: ${file} ignored — ${heartbeatSource[name]} declares that beat, and a file a being can write never overrides the operator's`); continue; }
+        heartbeats[name] = raw;
+        heartbeatSource[name] = file;
+        beingWritten.add(name);
+      }
+
       entities.set(dir, {
         ns, dir,
         kind: ns.startsWith('room/') ? 'room' : 'conversation',
-        config, source, touched, heartbeats, heartbeatSource,
+        config, source, touched, heartbeats, heartbeatSource, beingWritten,
       });
     }
 

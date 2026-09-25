@@ -98,7 +98,7 @@ import { createCompaction } from './compaction.mjs';
 import { createOutboxDrain } from '../room-outbox.mjs';
 import { createHeartbeats } from './heartbeats.mjs';
 import { createHeartbeatLoader, parseFrequency, resolveTimeZone } from './heartbeat-loader.mjs';
-import { createConfigResolver, parseEntityConfig } from './config-resolver.mjs';
+import { createConfigResolver, parseEntityConfig, readHeartbeatFiles } from './config-resolver.mjs';
 import { seedSkeletons } from './seed.mjs';
 import { readRoomConfig, readRoomsFile } from '../rooms-file.mjs';
 import { isSilenceReply } from '../auto-mode.mjs';
@@ -1258,6 +1258,7 @@ export async function boot({
   // here, before the loader, because the loader's collect() drives its scan.
   const configResolver = createConfigResolver({
     getConfig, loadRegistry: _loadState, listEntityDirs, readEntityConfig,
+    readEntityBeats: readHeartbeatFiles,   // <entity>/heartbeats/*.yaml — a being's own beats, turns only
     egptHome: EGPT_HOME, io: { writeFile, mkdir },
     onLog: (m) => log.line?.(`[config] ${m}`),
   });
@@ -2962,11 +2963,12 @@ export async function boot({
   // nothing posted. A failure-shaped result (isBrainFailureResult, the spine's own test) is not a
   // reply: it throws, so nothing is posted and the beat's outcome line says FAILED. The LOADER still
   // logs the run's one outcome line from the returned result.
-  const dispatchHeartbeatTurn = async ({ being, ns, prompt }) => {
+  const dispatchHeartbeatTurn = async ({ being, ns, prompt, beingWritten }) => {
     const target = chatIdForEntity(await _loadState(), ns);
     if (!target) throw new Error(`no conversation for ${ns} — not registered in conversations.yaml`);
     const ev = { surface: target.surface, chatId: target.chatId };
-    const res = await brain.turn(being, { ...ev, line: prompt, body: prompt });
+    // beingWritten: the beat came from <entity>/heartbeats/ — brainpool.turn refuses it for an 'all' being
+    const res = await brain.turn(being, { ...ev, line: prompt, body: prompt, beingWritten });
     const text = String(res?.text ?? '').trim();
     if (isBrainFailureResult(text)) throw new Error(`the turn failed: ${text.slice(0, 200)}`);
     if (isSilenceReply(text)) return res;

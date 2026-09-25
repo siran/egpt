@@ -48,6 +48,10 @@ export const CONVERSATIONS_ROOT = join(EGPT_HOME, 'conversations');
 export const ROOMS_ROOT = join(EGPT_HOME, 'rooms');
 export const AGENTS_ROOT = join(EGPT_HOME, 'agents');
 
+// The being's schedule folder's NAME, spelled once: Room.heartbeatsDir builds it, and the config
+// resolver's reader (which has an entity dir, not a Room) joins it.
+export const HEARTBEATS_DIR = 'heartbeats';
+
 // ── Member model (the Room's contribution gate) ─────────────────────────────
 // A member is { kind, id, state }. `state` is the contribution gate, mirroring
 // the per-chat auto-mode (GENOME §2.5): muted = nothing it says enters · mention
@@ -170,6 +174,12 @@ export class Room {
   // record: what is still sitting here is what has NOT been delivered, and both the being and
   // the operator read that off the same folder.
   get outboxDir()      { return join(this.baseDir(), 'outbox'); }          // files the being is handing OUT — the spine drains it to the operator's destination
+  // THE BEING'S OWN SCHEDULE (operator 2026-09-25: "please add the possibility for beings to write
+  // their own heartbeat … maybe a heartbeats/ with the different yaml files"). One <name>.yaml per
+  // beat, read by the config resolver's walk (src/spine/config-resolver.mjs readHeartbeatFiles) as
+  // one more contributor to this entity's heartbeats. Being-writable, so it may schedule a TURN and
+  // never a COMMAND — the loader refuses the rest (src/spine/heartbeat-loader.mjs).
+  get heartbeatsDir()  { return join(this.baseDir(), HEARTBEATS_DIR); }    // one <name>.yaml per beat — turns only
 
   // ── the tree, ENSURED (ONE owner) ─────────────────────────────────────────
   // The list used to be written out twice — /rooms create's mkdir loop (spine/commands.mjs)
@@ -204,8 +214,11 @@ export class Room {
   // tree did not make it eagerly, the one folder the feature is addressed at would not exist
   // until someone made it by hand. Created for every room and every conversation whether or not
   // a destination is configured: an empty folder is the honest "nothing pending here".
+  //
+  // heartbeats/ JOINED on 2026-09-25 for the pointers card's sake: a being told it has a
+  // schedule folder must find one there.
   treeDirs() {
-    return [this.baseDir(), this.mediaDir, this.filesDir, this.directivesDir, this.scriptsDir, this.transcriptsDir, this.desktopDir, this.outboxDir];
+    return [this.baseDir(), this.mediaDir, this.filesDir, this.directivesDir, this.scriptsDir, this.transcriptsDir, this.desktopDir, this.outboxDir, this.heartbeatsDir];
   }
 
   // Create the tree. Idempotent (mkdir -p on every call). `io.mkdir` is the seam both
