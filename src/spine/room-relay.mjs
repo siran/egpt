@@ -82,6 +82,15 @@ export function createRoomRelay({
 
   const esc = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+  // ONE REPLY IN FLIGHT PER TAB (operator 2026-09-25: "just make sure no text is lost on
+  // replies"). Every room message starts its own fanOut, so two quick ones used to drive one tab
+  // at once: the second was typed in while the first reply was still being written, and its send
+  // could press the page's Stop. A tab's focus + send + capture now waits for the one before it
+  // on that tab, in arrival order; a failed capture releases the tab like a finished one. The
+  // post and the re-entry stay OUTSIDE this chain: a re-entered reply fans out to the other
+  // members, and a two-brain room would otherwise wait on itself.
+  const inFlight = new Map();   // targetId -> the capture holding that tab (settles, never rejects)
+
   // Does member m's MODE admit event ev? Returns the TEXT to relay, or null when the mode
   // doesn't admit it. muted → never; active → the whole body; mention → only when @<id>
   // addresses it, with the addressing @<id> stripped (so `@chatgpt hello` relays `hello`).
@@ -245,12 +254,11 @@ export function createRoomRelay({
         const adapter = await adapterOf(m.adapter);
         if (!adapter?.injectScript || !adapter?.pollScript) { onLog(`no adapter '${m.adapter}' for member '${m.id}'`); continue; }
         const out = openStream(m.id, ev.chatId, { replyTo: ev.msgId ?? null });
-        // Focus the tab before injecting: Chrome throttles background tabs, so a backgrounded
-        // brain can miss the send or never stream a reply. Best-effort — never blocks the send.
-        try { await activateTarget(m.targetId); } catch {}
-        let reply = '';
-        try {
-          reply = await streamFromTab({
+        const capture = async () => {
+          // Focus the tab before injecting: Chrome throttles background tabs, so a backgrounded
+          // brain can miss the send or never stream a reply. Best-effort — never blocks the send.
+          try { await activateTarget(m.targetId); } catch {}
+          return streamFromTab({
             targetId: m.targetId,
             injectScript: adapter.injectScript(text),
             pollScript: adapter.pollScript,
@@ -260,6 +268,14 @@ export function createRoomRelay({
             onUpdate: (p) => { try { out.update(p); } catch {} },
             onLog: (msg) => onLog(`relay '${m.id}': ${msg}`),
           });
+        };
+        const turn = (inFlight.get(m.targetId) ?? Promise.resolve()).then(capture);
+        const held = turn.then(() => {}, () => {});
+        inFlight.set(m.targetId, held);
+        held.then(() => { if (inFlight.get(m.targetId) === held) inFlight.delete(m.targetId); });
+        let reply = '';
+        try {
+          reply = await turn;
         } catch (e) { onLog(`relay '${m.id}': ${e?.message ?? e}`); try { await out.fail?.(e); } catch {} continue; }
         const finalText = String(reply ?? '').trim();
         if (!finalText) { try { await out.finish({ text: '' }, { surface: false }); } catch {} continue; }  // brain said nothing → post nothing

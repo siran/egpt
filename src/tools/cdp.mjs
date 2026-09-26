@@ -231,11 +231,20 @@ export function streamFromTab({
   pollScript,
   onUpdate,
   timeoutMs = 180000,
-  // A reply visibly under way - its message is on the page - with no text yet is a model still
-  // reasoning (kg, 2026-09-24: a reasoning phase can outlast timeoutMs). Its wait is extended,
-  // timeoutMs at a time, up to this cap instead of failing at timeoutMs; a send that never
-  // produced a message still fails at timeoutMs, exactly as before.
+  // A reply visibly under way - its message is on the page - is waited for, timeoutMs at a time,
+  // up to this cap instead of ending at timeoutMs: a model still reasoning with no text yet (kg,
+  // 2026-09-24: a reasoning phase can outlast timeoutMs), or one still writing - a long answer
+  // used to be cut at timeoutMs with whatever it had so far. A send that never produced a message
+  // still fails at timeoutMs, exactly as before. At the cap, text so far is kept and logged.
   reasoningCapMs = 900000,
+  // THE FALLBACKS WHEN A PAGE REPORTS A "FINISHED" MARKER (`copyShown`, chatgpt-cdp) BUT THE
+  // REPLY NEVER SHOWS IT - a page whose markup moved on. Minutes, not seconds (operator
+  // 2026-09-25: "just make sure no text is lost on replies"): ChatGPT pauses mid-answer to
+  // search the web or run code for tens of seconds with half its reply written, and the 5s rule
+  // these replace ended the capture right there. Quiet = no text change and nothing streaming;
+  // stuck = no text change while the stop signal still shows (a selector that overmatches).
+  quietFallbackMs = 120000,
+  stuckFallbackMs = 300000,
   // (replyId) => a page expression resolving { text } with the reply's SOURCE - the adapter's
   // own copy action (chatgpt-cdp.mjs copyScript). Run once, when the reply is done; without it,
   // or when it cannot give the source, the rendered text the poll read is the reply.
@@ -292,10 +301,11 @@ export function streamFromTab({
 
         const sent = await cdp('Runtime.evaluate', { expression: injectScript, returnByValue: true });
         if (!sent?.result?.value) {
-          return fail(new Error('Inject script returned falsy — selectors may not match the current page.'));
+          return fail(new Error('Inject script returned falsy — the composer was not found, or the tab is still answering (its Stop control is showing), so nothing was sent.'));
         }
 
         let lastText = '';
+        let lastChangeAt = Date.now();
         let textStable = 0;
         let noStreamingCount = 0;
         let sawNew = false;
@@ -328,10 +338,11 @@ export function streamFromTab({
           }
           done(text);
         };
-        // Primary: both signals (no-streaming + text-stable) agree for ~1s.
+        // Text held ~1s: the guard on a page's finished marker, and - on a page with NO such
+        // marker (claude-cdp) - the primary rule with no-streaming, both signals agreeing for ~1s.
         // This dampens false "done" during latex/code rendering pauses.
         const STABLE_TICKS = 4;
-        // Safety net: if text is dead-stable for 5s AND polling has run >= 10s,
+        // Safety net (a page with no finished marker only): if text is dead-stable for 5s AND polling has run >= 10s,
         // finalize even if the stop-button selector is broken (e.g. a locale we
         // don't recognize, or a selector that overmatches and stays "true"
         // forever). Without this, a misconfigured selector means infinite hang.
@@ -353,6 +364,7 @@ export function streamFromTab({
             replyId = v.id;
             if (v.text !== lastText) {
               lastText = v.text;
+              lastChangeAt = Date.now();
               onUpdate(lastText);
               textStable = 0;
             } else if (lastText) {
@@ -360,6 +372,24 @@ export function streamFromTab({
             }
             if (!v.streaming) noStreamingCount++;
             else noStreamingCount = 0;
+            // THE REPLY'S OWN "FINISHED" MARKER, when the page reports one (chatgpt-cdp
+            // `copyShown`): done when its turn shows it and the text has held ~1s - a guard for a
+            // marker that shows a moment before the last words land. A pause, quiet text or the
+            // stop button end nothing here; a page that never shows the marker ends on the
+            // minute-scale fallbacks, and the log says so.
+            if ('copyShown' in v) {
+              if (v.copyShown && textStable >= STABLE_TICKS && lastText) { finish(lastText); return; }
+              const still = Date.now() - lastChangeAt;
+              if (lastText && !v.streaming && still >= quietFallbackMs) {
+                onLog(`reply ${replyId}: done without its finished marker - no change and nothing streaming for ${Math.round(still / 1000)}s`);
+                finish(lastText);
+              } else if (lastText && still >= stuckFallbackMs) {
+                onLog(`reply ${replyId}: done without its finished marker - no change for ${Math.round(still / 1000)}s while the stop signal still showed`);
+                finish(lastText);
+              }
+              return;
+            }
+            // A page with no such marker (claude-cdp): the two signals it has, as before.
             if (noStreamingCount >= STABLE_TICKS && textStable >= STABLE_TICKS && lastText) {
               finish(lastText);
               return;
@@ -378,9 +408,13 @@ export function streamFromTab({
         }, 250);
 
         const onTimeout = () => {
-          if (lastText) return finish(lastText);
+          if (finishing || settled) return;
           const left = reasoningCapMs - (Date.now() - pollStartMs);
           if (sawNew && left > 0) { timeoutHandle = setTimeout(onTimeout, Math.min(timeoutMs, left)); return; }
+          if (lastText) {
+            onLog(`reply ${replyId}: not finished after ${Math.round((Date.now() - pollStartMs) / 1000)}s - kept the text so far, which may be incomplete`);
+            return finish(lastText);
+          }
           fail(new Error(sawNew
             ? `Timed out waiting for response: the reply was still reasoning after ${Math.round((Date.now() - pollStartMs) / 1000)}s`
             : `Timed out waiting for response (${timeoutMs}ms)`));
