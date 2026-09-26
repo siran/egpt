@@ -57,6 +57,11 @@ main profile then the other machine over ssh; it does NOT touch the secondary
 role. A spine keeps running the code it loaded even after prod changes under it —
 only a respawn picks it up.
 
+**Measured 2026-09-25: `~/.egpt-secondary` is not running.** It carries a `STOP` file
+and its heartbeat last beat 2026-09-15, so while that holds the `-Peer` line alone
+deploys every live spine (and `upgrade.ps1` would refuse the second line anyway).
+Check `<profile>/STOP` and `alive.txt` before believing the three-spine table above.
+
 **Commit and push first**: it pulls `origin/main`, so unpushed work silently does
 not ship. It drops `/upgrade` into `EGPT_HOME/state/ingest`; the spine sweeps that
 every second, exits **42**, and the daemon pulls, builds, respawns — then verifies
