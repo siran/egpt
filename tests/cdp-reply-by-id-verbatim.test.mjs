@@ -168,11 +168,14 @@ describe('B. the reply comes back VERBATIM, through its own Copy', () => {
   }, 20000);
 
   it('no copy button on the reply: the rendered text, and the log says why', async () => {
+    // With no copy button the reply never shows its finished marker either, so it ends on the
+    // quiet fallback (shortened here from its 2-minute default) - both are logged.
     page = freshPage();
     const logs = [];
     timeline = newAnswer(0, { body: RENDERED, copy: 'none' });
-    await expect(capture({ copyScript: chatgpt.copyScript, onLog: (m) => logs.push(m) })).resolves.toBe(RENDERED);
+    await expect(capture({ copyScript: chatgpt.copyScript, quietFallbackMs: 1500, onLog: (m) => logs.push(m) })).resolves.toBe(RENDERED);
     expect(logs.join('\n')).toMatch(/verbatim/i);
+    expect(logs.join('\n')).toMatch(/without its finished marker/);
   }, 20000);
 
   it('a copy that writes nothing: the rendered text within a couple of seconds, logged', async () => {

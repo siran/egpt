@@ -11,19 +11,24 @@ export const urlMatch = /chatgpt\.com|chat\.openai\.com/;
 // relay (design B, phase 4) can drive them through streamFromTab directly —
 // `streamFromTab(targetId, adapter.injectScript(text), adapter.pollScript)`. stream()/peek()
 // below reuse the same two, so the adapter has ONE source of truth for its page knowledge.
+//
+// Stop-button detection. Only use signals that are NOT translated by the UI:
+//   - data-testid (test hooks, locale-stable by convention)
+//   - id (also locale-stable)
+// Avoid aria-label/visible text — those get i18n'd and overmatch. ONE list, read by the poll
+// ("is a reply streaming?") and by injectScript ("may I send, or would I press Stop?").
+const STOP_SELECTOR = [
+  'button[data-testid="stop-button"]',
+  'button[data-testid="composer-stop-button"]',
+  'button[data-testid="fruitjuice-stop-button"]',
+  'button#stop-button',
+  'button#composer-stop-button',
+].join(', ');
+
 export const pollScript = `
 (() => {
-  // Stop-button detection. Only use signals that are NOT translated by the UI:
-  //   - data-testid (test hooks, locale-stable by convention)
-  //   - id (also locale-stable)
-  //   - DOM-state markers (data-is-streaming, .result-streaming)
-  // Avoid aria-label/visible text — those get i18n'd and overmatch.
-  const stopBtn =
-    document.querySelector('button[data-testid="stop-button"]') ||
-    document.querySelector('button[data-testid="composer-stop-button"]') ||
-    document.querySelector('button[data-testid="fruitjuice-stop-button"]') ||
-    document.querySelector('button#stop-button') ||
-    document.querySelector('button#composer-stop-button');
+  // DOM-state markers (data-is-streaming, .result-streaming) count as streaming too.
+  const stopBtn = document.querySelector(${JSON.stringify(STOP_SELECTOR)});
   const flag =
     document.querySelector('[data-is-streaming="true"]') ||
     document.querySelector('.result-streaming');
@@ -34,7 +39,7 @@ export const pollScript = `
   // moment in which the previous answer is last again cannot hand its text in as the reply.
   const ids = Array.from(msgs, (m) => m.getAttribute('data-message-id')).filter(Boolean);
   const last = msgs[msgs.length - 1];
-  if (!last) return { id: null, ids, text: '', streaming };
+  if (!last) return { id: null, ids, text: '', streaming, copyShown: false };
   // THE REPLY IS ITS BODY (kg, 2026-09-24, room tpoef). A reasoning model's message is on the
   // page before it has one, and its only text then is a status line ("Thinking" - localized,
   // so this keys on structure, never on the word). Read whole, that line was taken for the
@@ -45,12 +50,20 @@ export const pollScript = `
   // is still captured.
   const body = last.querySelector('.markdown, .prose, [class*="markdown"]');
   const turn = last.closest('article, [data-testid^="conversation-turn"]') || last;
-  const finished = !streaming && !!turn.querySelector('[data-testid="copy-turn-action-button"]');
+  // THE REPLY'S OWN "FINISHED" MARKER (operator 2026-09-25: "just make sure no text is lost on
+  // replies"). A turn shows its Copy action once its reply is done (measured on the live tab),
+  // and streamFromTab ends on THAT - not on text that stopped changing, which a mid-answer
+  // pause (web search, running code) also does, nor on the stop button, whose selectors can
+  // miss the current page. Reported for the last message; streamFromTab reads it only when
+  // that message is the new reply.
+  const copyShown = !!turn.querySelector('[data-testid="copy-turn-action-button"]');
+  const finished = !streaming && copyShown;
   return {
     id: last.getAttribute('data-message-id'),
     ids,
     text: body ? (body.innerText || '') : (finished ? (last.innerText || '') : ''),
-    streaming
+    streaming,
+    copyShown
   };
 })()
 `;
@@ -107,6 +120,10 @@ export function injectScript(message, ask = null) {
 (() => {
   const ta = document.querySelector('#prompt-textarea');
   if (!ta) return false;
+  // NEVER PRESS STOP (operator 2026-09-25: "just make sure no text is lost on replies"). While a
+  // reply is still being written the composer's submit control IS ChatGPT's Stop, so a send now
+  // would cut that reply off. Nothing is pasted or clicked: the send is reported as not made.
+  if (document.querySelector(${JSON.stringify(STOP_SELECTOR)})) return false;
   ta.focus();
   const contentText = ${JSON.stringify(message)};
   const askText = ${JSON.stringify(ask)};
@@ -125,6 +142,11 @@ export function injectScript(message, ask = null) {
     el.closest('[aria-disabled="true"]');
   const looksLikeVoiceButton = (el) =>
     /voice|dictation|audio/i.test(el.getAttribute('aria-label') || '');
+  // A control that stops the reply is never a send button, whatever selector found it: its
+  // data-testid first (locale-stable), then an English aria-label as a second net for a testid
+  // the stop list above does not know yet.
+  const looksLikeStopButton = (el) =>
+    /stop/i.test(el.getAttribute('data-testid') || '') || /stop/i.test(el.getAttribute('aria-label') || '');
   const findSendButton = () => {
     const selectors = [
       '#composer-submit-button',
@@ -136,10 +158,10 @@ export function injectScript(message, ask = null) {
     ];
     for (const selector of selectors) {
       const btn = document.querySelector(selector);
-      if (btn && !isDisabled(btn)) return btn;
+      if (btn && !isDisabled(btn) && !looksLikeStopButton(btn)) return btn;
     }
     const composerBtn = document.querySelector('button.composer-submit-button-color');
-    if (composerBtn && !isDisabled(composerBtn) && !looksLikeVoiceButton(composerBtn)) return composerBtn;
+    if (composerBtn && !isDisabled(composerBtn) && !looksLikeVoiceButton(composerBtn) && !looksLikeStopButton(composerBtn)) return composerBtn;
     return null;
   };
   const htmlFromText = (value) => value.split('\\n').map(l => {
